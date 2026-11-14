@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const { fileURLToPath } = require('url');
 const { connect } = require('./local-api');
 const {
@@ -47,7 +48,8 @@ const ALLOWED_ROUTES = [
   '/localize-conversations',
   '/brain-stats',
   '/read-local-file',
-  '/write-local-file'
+  '/write-local-file',
+  '/open-external-url'
 ];
 
 // 解析并校验可编辑本地文件路径，禁止读写系统关键目录与敏感凭据目录
@@ -83,6 +85,21 @@ function resolveSafeEditablePath(rawInput) {
     return null;
   }
   return resolved;
+}
+
+// 校验并规范化待使用系统默认浏览器打开的外部链接，仅允许 http/https/mailto
+function resolveSafeExternalUrl(rawInput) {
+  const input = String(rawInput || '').trim();
+  if (!input || /[\r\n\0]/.test(input)) return null;
+  try {
+    const parsed = new URL(input);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
+      return parsed.href;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 const customTitlesPath = path.join(getStateDir(), 'custom-conversation-titles.json');
@@ -653,6 +670,28 @@ function collectBrainStats() {
           }
           fs.writeFileSync(filePath, request.content, 'utf8');
           res.end(JSON.stringify({ ok: true, filePath, bytes: Buffer.byteLength(request.content, 'utf8') }));
+          return;
+        }
+        if (req.url === '/open-external-url') {
+          const safeUrl = resolveSafeExternalUrl(request?.url);
+          res.setHeader('Content-Type', 'application/json');
+          if (!safeUrl) {
+            res.end(JSON.stringify({ ok: false, error: '仅支持 http/https/mailto 外部链接' }));
+            return;
+          }
+          if (request?.dryRun === true) {
+            res.end(JSON.stringify({ ok: true, url: safeUrl, dryRun: true }));
+            return;
+          }
+          const execOpts = { timeout: 5000 };
+          if (process.platform === 'darwin') {
+            execFile('/usr/bin/open', [safeUrl], execOpts, () => {});
+          } else if (process.platform === 'win32') {
+            execFile('cmd.exe', ['/c', 'start', '', safeUrl], { ...execOpts, windowsHide: true }, () => {});
+          } else {
+            execFile('xdg-open', [safeUrl], execOpts, () => {});
+          }
+          res.end(JSON.stringify({ ok: true, url: safeUrl }));
           return;
         }
         const data = await collect(api.origin, request.id, { force: request.force === true });

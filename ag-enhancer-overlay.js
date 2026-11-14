@@ -930,6 +930,16 @@
           line-height: 1.65;
           tab-size: 2;
         }
+        html[data-ag-cmd-down="1"] a[href^="http://"],
+        html[data-ag-cmd-down="1"] a[href^="https://"],
+        html[data-ag-cmd-down="1"] a[href^="mailto:"],
+        html[data-ag-cmd-down="1"] code {
+          cursor: pointer !important;
+        }
+        html[data-ag-cmd-down="1"] a[href^="http://"]:hover,
+        html[data-ag-cmd-down="1"] a[href^="https://"]:hover {
+          text-decoration: underline !important;
+        }
       `;
       document.head.appendChild(styleEl);
     }
@@ -2175,6 +2185,75 @@
     renderFileEditorControls(ctx);
   }
 
+  // ==================== Cmd+点击使用系统浏览器打开链接 ====================
+
+  function normalizeExternalUrlCandidate(raw) {
+    const trimmed = String(raw || '').trim().replace(/[.,;:!?'"`）)\]}]+$/g, '');
+    if (!/^(?:https?:\/\/|mailto:)/i.test(trimmed)) return null;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
+        return parsed.href;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  function extractExternalUrlFromTarget(target) {
+    const el = target instanceof Element ? target : target?.parentElement;
+    if (!el) return null;
+    if (el.closest(`textarea, input, [contenteditable="true"], #${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${FILE_EDITOR_CONTROLS_ID}, #${FILE_EDITOR_WRAP_ID}`)) {
+      return null;
+    }
+    const anchor = el.closest('a[href]');
+    if (anchor) {
+      const rawHref = (anchor.getAttribute('href') || '').trim();
+      return normalizeExternalUrlCandidate(rawHref);
+    }
+    // 跳过文件引用胶囊或普通按钮（避免劫持内部操作）
+    if (el.closest('button, [data-uri]')) return null;
+    const codeEl = el.closest('code');
+    if (codeEl) {
+      const match = (codeEl.textContent || '').match(/(https?:\/\/[^\s<>"'`)\]]+)/i);
+      return match ? normalizeExternalUrlCandidate(match[1]) : null;
+    }
+    const textHost = el.closest('span, p, li, td');
+    if (textHost && (textHost.textContent || '').length <= 500) {
+      const match = (textHost.textContent || '').match(/(https?:\/\/[^\s<>"'`)\]]+)/i);
+      if (match) return normalizeExternalUrlCandidate(match[1]);
+    }
+    return null;
+  }
+
+  async function openExternalUrlInSystemBrowser(url, opts) {
+    const safeUrl = normalizeExternalUrlCandidate(url);
+    if (!safeUrl) return { ok: false, error: '无效的外部链接' };
+    const dryRun = Boolean(opts && opts.dryRun);
+    const res = await postToLiveHost('/open-external-url', { url: safeUrl, dryRun });
+    if (res && res.ok) {
+      if (!dryRun) showQuickToast('🌐 已用系统浏览器打开链接');
+      return res;
+    }
+    if (!dryRun && typeof window.electronNative?.openExternal === 'function') {
+      try {
+        window.electronNative.openExternal(safeUrl);
+        showQuickToast('🌐 已用系统浏览器打开链接');
+        return { ok: true, url: safeUrl, fallback: 'electronNative' };
+      } catch {
+        // ignore fallback error
+      }
+    }
+    if (!dryRun) showQuickToast('⚠️ 未能打开外部链接');
+    return { ok: false, error: '打开失败' };
+  }
+
+  function syncCmdModifierState(active) {
+    if (active) document.documentElement.setAttribute('data-ag-cmd-down', '1');
+    else document.documentElement.removeAttribute('data-ag-cmd-down');
+  }
+
   // ==================== 全局事件与定时巡检 ====================
 
   function onDocClick(e) {
@@ -2188,18 +2267,42 @@
     toggleQuotaPopover(false);
   }
 
+  function onWindowClickCapture(e) {
+    if (!(e.metaKey || e.ctrlKey) || e.button !== 0 || e.altKey) return;
+    const url = extractExternalUrlFromTarget(e.target);
+    if (!url) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') {
+      e.stopImmediatePropagation();
+    }
+    void openExternalUrlInSystemBrowser(url);
+  }
+
   function onDocKeydown(e) {
+    syncCmdModifierState(Boolean(e.metaKey || e.ctrlKey));
     if (e.key === 'Escape' && popoverOpen) {
       toggleQuotaPopover(false);
     }
+  }
+
+  function onDocKeyup(e) {
+    syncCmdModifierState(Boolean(e.metaKey || e.ctrlKey));
+  }
+
+  function onWindowBlur() {
+    syncCmdModifierState(false);
   }
 
   function onWindowResize() {
     positionChatNavFloat(document.getElementById(CHAT_NAV_ID));
   }
 
+  window.addEventListener('click', onWindowClickCapture, true);
   document.addEventListener('click', onDocClick, true);
   document.addEventListener('keydown', onDocKeydown, true);
+  document.addEventListener('keyup', onDocKeyup, true);
+  window.addEventListener('blur', onWindowBlur);
   window.addEventListener('resize', onWindowResize);
 
   let lastQuotaFetchAt = 0;
@@ -2239,8 +2342,12 @@
       localizeMutationObserver = null;
     }
     document.removeEventListener('click', onDocClick, true);
+    window.removeEventListener('click', onWindowClickCapture, true);
     document.removeEventListener('keydown', onDocKeydown, true);
+    document.removeEventListener('keyup', onDocKeyup, true);
+    window.removeEventListener('blur', onWindowBlur);
     window.removeEventListener('resize', onWindowResize);
+    syncCmdModifierState(false);
     if (fileEditorState.active) exitFileEditor(false);
     safeRemove(document.getElementById(FILE_EDITOR_CONTROLS_ID));
     safeRemove(document.getElementById(FILE_EDITOR_WRAP_ID));
@@ -2259,7 +2366,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.4.0',
+    version: '1.5.0',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -2272,6 +2379,8 @@
     enterFileEditor,
     saveFileEditor,
     exitFileEditor,
+    extractExternalUrlFromTarget,
+    openExternalUrlInSystemBrowser,
     getBrainStats: () => latestBrainStats,
     getAutoAccept: () => autoAcceptEnabled,
     exportMarkdown,
