@@ -775,13 +775,11 @@
           backdrop-filter: blur(10px);
           -webkit-backdrop-filter: blur(10px);
           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-          opacity: 0.35;
-          transform: translateX(4px);
-          transition: opacity 0.16s ease, transform 0.16s ease, padding 0.16s ease;
+          opacity: 0.78;
+          transition: opacity 0.16s ease, padding 0.16s ease;
         }
         #${CHAT_NAV_ID}:hover {
           opacity: 0.98;
-          transform: translateX(0);
           padding: 5px;
         }
         #${CHAT_NAV_ID}[hidden] {
@@ -1328,18 +1326,17 @@
       return;
     }
     nav.hidden = false;
-    const bar = document.getElementById(QUICK_BAR_ID);
     const composer = document.querySelector('.surface-composer');
-    const barRect = bar?.getBoundingClientRect();
     const composerRect = composer?.getBoundingClientRect();
-    const anchorTop = (barRect && barRect.height > 0)
-      ? barRect.top
-      : ((composerRect && composerRect.height > 0) ? composerRect.top : vpRect.bottom);
     const navRect = nav.getBoundingClientRect();
-    const rightOffset = Math.max(4, Math.round(window.innerWidth - vpRect.right + 4));
-    const top = Math.max(vpRect.top + 12, anchorTop - navRect.height - 12);
-    nav.style.left = 'auto';
-    nav.style.right = `${rightOffset}px`;
+    const hasRightMargin = composerRect && composerRect.width > 0 && (vpRect.right - composerRect.right >= 42);
+    const left = hasRightMargin
+      ? (composerRect.right + 10)
+      : Math.max(8, vpRect.right - navRect.width - 6);
+    const bottomAnchor = (composerRect && composerRect.height > 0) ? composerRect.bottom : vpRect.bottom;
+    const top = Math.min(window.innerHeight - navRect.height - 8, Math.max(vpRect.top + 12, bottomAnchor - navRect.height));
+    nav.style.right = 'auto';
+    nav.style.left = `${Math.round(left)}px`;
     nav.style.top = `${Math.round(top)}px`;
   }
 
@@ -2401,7 +2398,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.1',
+    version: '1.5.2',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();

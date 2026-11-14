@@ -257,6 +257,9 @@ console.log(`随客户端自启：${autoOn ? "✅ 已开启" : "⭕ 未开启"}`
   check)
     exec node "$APP_DIR/cli.js" check
     ;;
+  upstreams)
+    exec node "$APP_DIR/scripts/check-upstreams.js" "${@:2}"
+    ;;
   install|restore|uninstall|unlock|unlock-restore|chinese:*|proxy:enable|proxy:disable|proxy:set)
     echo "已禁用 '$cmd'：为保护 macOS 官方应用签名与账号合规，本命令禁止改盘注入 app.asar 及二进制补丁操作。" >&2
     exit 1
@@ -272,6 +275,7 @@ console.log(`随客户端自启：${autoOn ? "✅ 已开启" : "⭕ 未开启"}`
   auto-off       关闭“启动 Antigravity 时自动加载”，并停止/卸载当前挂载
   status         查看当前 4 项核心状态（加 --json 可输出原始 JSON 数据）
   check          执行本地运行环境预检
+  upstreams      检查 5 个参考上游项目的 GitHub 更新并与基线比对（支持 --json）
 EOF
     ;;
   *)

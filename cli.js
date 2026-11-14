@@ -13,7 +13,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { loadAsarEngine, getStateDir } = require('./asar-engine');
 const { install, findAsarPath, tryHotInject } = require('./install');
 const { restore } = require('./restore');
@@ -350,12 +350,22 @@ async function main() {
     await cmdStatus(customPath);
   } else if (cmd === 'check') {
     await cmdCheck(customPath);
+  } else if (cmd === 'upstreams') {
+    const cmdIdx = process.argv.indexOf('upstreams');
+    const passthrough = cmdIdx >= 0 ? process.argv.slice(cmdIdx + 1) : [];
+    const res = spawnSync(process.execPath, [path.join(__dirname, 'scripts', 'check-upstreams.js'), ...passthrough], {
+      stdio: 'inherit'
+    });
+    if (typeof res.status === 'number' && res.status !== 0) {
+      process.exitCode = res.status;
+    }
   } else {
     console.log(`用法:
   node cli.js install [--path <app.asar>]   一键持久化安装并热注入当前运行窗口
   node cli.js live                          免改盘 CDP 热挂载到当前运行窗口
   node cli.js status                        查看安装状态与当前对话实时上下文用量
   node cli.js check                         执行前置环境健康检查
+  node cli.js upstreams [--json]            检查参考上游项目更新并与当前基线比对
   node cli.js restore                       一键无损卸载并恢复备份
   node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文加长状态
   node cli.js unlock [--path <bin>]         执行上下文加长解锁（解除 256K 限制）

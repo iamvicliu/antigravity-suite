@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-11-15T03:12:00+08:00",
+  "upstreams": [
+    {
+      "repo": "elviscjn-cjn/antigravity-context-viewer",
+      "branch": "main",
+      "absorbedSha": "189f931ea1246eda125e3fb0f17e8166afac99cc",
+      "version": "v0.8.3",
+      "role": "基础框架、顶部上下文圆环看板、Token 分类统计、52 周热力图与 API 折算费用",
+      "mergeStrategy": "定向提取新模型上下文配额、API 价格表与前端渲染修复，禁止合入 app.asar 改盘与解锁逻辑",
+      "localTargets": [
+        "meter-core.js",
+        "meter-collector.js",
+        "meter-renderer.js"
+      ],
+      "forbiddenPatterns": [
+        "app.asar",
+        "codesign",
+        "applyContextUnlock",
+        "meter-context-unlock.js",
+        "meter-enhance.js"
+      ]
+    },
+    {
+      "repo": "akelabs/antigravity-pulse",
+      "branch": "main",
+      "absorbedSha": "c8a31e392973f93a11a45b3374a8e5a62c5207f9",
+      "version": "v1.3.1",
+      "role": "输入框底部实时能量胶囊 (tok/s、上下文占比、缓存命中与 5h 倒计时)",
+      "mergeStrategy": "仅提取胶囊渲染、速率计算与选择器适配逻辑，禁止合入任何直接改写 workbench.html 或 app.asar 的安装脚本",
+      "localTargets": [
+        "agy-context-capsule.js"
+      ],
+      "forbiddenPatterns": [
+        "app.asar",
+        "workbench.html"
+      ]
+    },
+    {
+      "repo": "n2ns/antigravity-panel",
+      "branch": "main",
+      "absorbedSha": "8e7513e6236f0ce1361db857a80f83ee962a284a",
+      "version": "v2.8.3",
+      "role": "模型配额倒计时、Auto-Accept 安全自动确认与 Brain 缓存监控设计",
+      "mergeStrategy": "由 Agent 审阅上游功能演进与交互优化后，移植兼容到 Desktop 2.0 悬浮层",
+      "localTargets": [
+        "ag-enhancer-overlay.js",
+        "live-host.js"
+      ],
+      "forbiddenPatterns": []
+    },
+    {
+      "repo": "yiheng8023/antigravity-chinese",
+      "branch": "main",
+      "absorbedSha": "aa7d8c2d29d1630ceaa531de4bebb36266a689e0",
+      "version": "v3.3.48",
+      "role": "适配 Antigravity 2.32.1 的精确词条与安全动态正则规则",
+      "mergeStrategy": "增量提取新增精确词条与安全正则并去重合并，保留本地 [data-uri] 路径保护等跳过规则后更新补丁指纹",
+      "localTargets": [
+        "antigravity-hans-overlay.js",
+        "install.js"
+      ],
+      "forbiddenPatterns": [
+        "app.asar",
+        "codesign"
+      ]
+    },
+    {
+      "repo": "wycocoyu/agy-context-dashboard",
+      "branch": "main",
+      "absorbedSha": "b3c1066d5b67c6233fcf7d277b8b4e35f84efebe",
+      "version": "v0.8.15",
+      "role": "轻量级状态栏信息排布与指标展示参考",
+      "mergeStrategy": "审阅展示指标与视觉细节，按需合并到顶部/底部状态条并避免重复展示",
+      "localTargets": [
+        "meter-renderer.js",
+        "agy-context-capsule.js"
+      ],
+      "forbiddenPatterns": [
+        "app.asar"
+      ]
+    }
+  ]
+}
