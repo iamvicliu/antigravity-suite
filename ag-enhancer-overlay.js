@@ -1295,11 +1295,22 @@
     const hasCollapsed = triggers.some((t) => t.getAttribute('aria-expanded') !== 'true');
     let toggled = 0;
     for (const trg of triggers) {
+      const key = getThinkingTriggerKey(trg);
+      if (hasCollapsed) {
+        if (key) {
+          userCollapsedThinkingKeys.delete(key);
+          keepExpandedThinkingKeys.add(key);
+        }
+      } else if (key) {
+        keepExpandedThinkingKeys.delete(key);
+        userCollapsedThinkingKeys.add(key);
+      }
       const expanded = trg.getAttribute('aria-expanded') === 'true';
       if ((hasCollapsed && !expanded) || (!hasCollapsed && expanded)) {
         trg.click();
         toggled++;
       }
+      if (hasCollapsed) disarmThinkingAutoCollapse(trg);
     }
     updateThinkToggleLabel();
     if (hasCollapsed) {
@@ -1586,6 +1597,158 @@
   let localizeMutationObserver = null;
   let thinkingShellTimerRunning = false;
   let thinkingReRunNeeded = false;
+  let lastThinkingCascadeId = '';
+  const keepExpandedThinkingKeys = new Set();
+  const userCollapsedThinkingKeys = new Set();
+  const thinkingScrollTopMap = new Map();
+  const thinkingReexpandCooldown = new Map();
+  let guardingThinking = false;
+
+  function findThinkingFiberNode(trigger) {
+    if (!trigger) return null;
+    try {
+      const fiberKey = Object.keys(trigger).find((k) => k.startsWith('__reactFiber$'));
+      let f = fiberKey ? trigger[fiberKey] : null;
+      for (let i = 0; i < 8 && f; i++) {
+        const p = f.memoizedProps;
+        if (p && 'isActive' in p && 'autoScroll' in p && 'trigger' in p) {
+          return f;
+        }
+        f = f.return;
+      }
+    } catch {}
+    return null;
+  }
+
+  function getThinkingTriggerKey(trigger) {
+    if (!trigger) return '';
+    try {
+      const fiberKey = Object.keys(trigger).find((k) => k.startsWith('__reactFiber$'));
+      let f = fiberKey ? trigger[fiberKey] : null;
+      for (let i = 0; i < 14 && f; i++) {
+        const p = f.memoizedProps;
+        if (p) {
+          const metaIdx = p.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+          if (metaIdx !== undefined && metaIdx !== null) return `step:${metaIdx}`;
+          if (p.stepIndex !== undefined && p.stepIndex !== null) return `step:${p.stepIndex}`;
+        }
+        f = f.return;
+      }
+    } catch {}
+    return trigger.id ? `id:${trigger.id}` : '';
+  }
+
+  function resetThinkingPrevActiveHook(fiber) {
+    if (!fiber) return false;
+    try {
+      const h0 = fiber.memoizedState;
+      const h1 = h0?.next;
+      const h2 = h1?.next;
+      if (!h0 || !h2 || !h2.queue) return false;
+      if (h0.memoizedState === true && h2.memoizedState === true) {
+        h2.memoizedState = false;
+        h2.baseState = false;
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function disarmThinkingAutoCollapse(trigger) {
+    const f = findThinkingFiberNode(trigger);
+    if (!f) return false;
+    let changed = resetThinkingPrevActiveHook(f);
+    if (f.alternate) {
+      changed = resetThinkingPrevActiveHook(f.alternate) || changed;
+    }
+    return changed;
+  }
+
+  function applyCachedThoughtsSync(container) {
+    if (!container) return 0;
+    let restored = 0;
+    const roots = container.querySelectorAll('[data-markdown-root]');
+    for (const root of roots) {
+      const blocks = root.querySelectorAll('p, li');
+      for (const el of blocks) {
+        if (el.querySelector('p, li, ul, ol')) continue;
+        const curText = (el.textContent || '').trim();
+        if (!curText) continue;
+        const cached = thoughtZhCache.get(curText);
+        if (cached) {
+          applyThoughtTranslation(el, curText, cached);
+          restored++;
+        }
+      }
+    }
+    return restored;
+  }
+
+  function bindThinkingScrollRecorder(trigger, key) {
+    if (!trigger || !key) return;
+    const scrollBox = trigger.nextElementSibling;
+    if (!scrollBox || scrollBox.dataset.agScrollBound === key) return;
+    scrollBox.dataset.agScrollBound = key;
+    scrollBox.addEventListener('scroll', () => {
+      if (disposed) return;
+      thinkingScrollTopMap.set(key, scrollBox.scrollTop);
+    }, { passive: true });
+  }
+
+  function guardExpandedThinkingBlocks() {
+    if (disposed || guardingThinking) return 0;
+    guardingThinking = true;
+    try {
+      const curCascadeId = getSessionIdFromLocation() || '';
+      if (curCascadeId !== lastThinkingCascadeId) {
+        lastThinkingCascadeId = curCascadeId;
+        keepExpandedThinkingKeys.clear();
+        userCollapsedThinkingKeys.clear();
+        thinkingScrollTopMap.clear();
+        thinkingReexpandCooldown.clear();
+      }
+      const triggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
+      const now = Date.now();
+      let restoredCount = 0;
+      for (const trigger of triggers) {
+        const key = getThinkingTriggerKey(trigger);
+        if (!key) continue;
+        const isExpanded = trigger.getAttribute('aria-expanded') === 'true';
+        if (isExpanded) {
+          if (!userCollapsedThinkingKeys.has(key)) {
+            keepExpandedThinkingKeys.add(key);
+            disarmThinkingAutoCollapse(trigger);
+            bindThinkingScrollRecorder(trigger, key);
+          }
+          continue;
+        }
+        if (keepExpandedThinkingKeys.has(key) && !userCollapsedThinkingKeys.has(key)) {
+          const lastAttempt = thinkingReexpandCooldown.get(key) || 0;
+          if (now - lastAttempt < 120) continue;
+          thinkingReexpandCooldown.set(key, now);
+          trigger.click();
+          restoredCount++;
+          requestAnimationFrame(() => {
+            if (disposed) return;
+            disarmThinkingAutoCollapse(trigger);
+            bindThinkingScrollRecorder(trigger, key);
+            if (trigger.parentElement) applyCachedThoughtsSync(trigger.parentElement);
+            const savedTop = thinkingScrollTopMap.get(key);
+            const scrollBox = trigger.nextElementSibling;
+            if (scrollBox && typeof savedTop === 'number' && savedTop > 0) {
+              scrollBox.scrollTop = savedTop;
+            }
+            localizeThinkingShells();
+            void translateExpandedThoughts();
+          });
+        }
+      }
+      if (restoredCount > 0) updateThinkToggleLabel();
+      return restoredCount;
+    } finally {
+      guardingThinking = false;
+    }
+  }
 
   async function postToLiveHost(route, payload) {
     const live = window.__AGContextMeterLive;
@@ -1909,18 +2072,27 @@
     localizeMutationObserver = new MutationObserver((mutations) => {
       if (disposed) return;
       let fastExpand = false;
+      let needGuardThinking = false;
       let needSchedule = false;
       for (const m of mutations) {
         if (m.type === 'attributes') {
           if (m.attributeName !== 'aria-expanded') continue;
           const target = m.target;
-          if (target?.getAttribute?.('data-testid') === 'thinking-collapsible-trigger' && target.getAttribute('aria-expanded') === 'true') {
-            fastExpand = true;
+          if (target?.getAttribute?.('data-testid') === 'thinking-collapsible-trigger') {
+            if (target.getAttribute('aria-expanded') === 'true') {
+              fastExpand = true;
+            } else {
+              needGuardThinking = true;
+            }
           }
           needSchedule = true;
         } else {
+          needGuardThinking = true;
           needSchedule = true;
         }
+      }
+      if (needGuardThinking) {
+        guardExpandedThinkingBlocks();
       }
       if (fastExpand) {
         setTimeout(() => {
@@ -2304,6 +2476,22 @@
   }
 
   function onWindowClickCapture(e) {
+    if (e.isTrusted && !e.metaKey && !e.ctrlKey && !e.altKey && e.button === 0) {
+      const thinkTrigger = e.target?.closest?.('[data-testid="thinking-collapsible-trigger"]');
+      if (thinkTrigger) {
+        const key = getThinkingTriggerKey(thinkTrigger);
+        if (key) {
+          const curExpanded = thinkTrigger.getAttribute('aria-expanded') === 'true';
+          if (curExpanded) {
+            userCollapsedThinkingKeys.add(key);
+            keepExpandedThinkingKeys.delete(key);
+          } else {
+            userCollapsedThinkingKeys.delete(key);
+            keepExpandedThinkingKeys.add(key);
+          }
+        }
+      }
+    }
     if (!(e.metaKey || e.ctrlKey) || e.button !== 0 || e.altKey) return;
     const url = extractExternalUrlFromTarget(e.target);
     if (!url) return;
@@ -2349,6 +2537,7 @@
     ensureFileViewerEditor();
     scanHighRiskCommands();
     renderQuotaUI();
+    guardExpandedThinkingBlocks();
     localizeThinkingShells();
     scheduleLocalization();
     runAutoAcceptTick();
@@ -2402,7 +2591,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.3',
+    version: '1.5.4',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -2412,6 +2601,7 @@
     refreshBrainStats,
     scanHighRiskCommands,
     toggleAllThinking,
+    guardExpandedThinkingBlocks,
     enterFileEditor,
     saveFileEditor,
     exitFileEditor,
@@ -2431,6 +2621,7 @@
   ensureFileViewerEditor();
   scanHighRiskCommands();
   renderQuotaUI();
+  guardExpandedThinkingBlocks();
   localizeThinkingShells();
   startLocalizationObserver();
   void translateExpandedThoughts();
