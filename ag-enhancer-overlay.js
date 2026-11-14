@@ -16,8 +16,19 @@
   const DOC_STYLE_ID = 'ag-enhancer-doc-style';
   const QUICK_BAR_ID = 'ag-quick-capsule-bar';
   const CHAT_NAV_ID = 'ag-chat-nav-float';
+  const FILE_EDITOR_CONTROLS_ID = 'ag-file-editor-controls';
+  const FILE_EDITOR_WRAP_ID = 'ag-inline-file-editor-wrap';
 
   let disposed = false;
+  let fileEditorState = {
+    active: false,
+    fileUri: '',
+    filePath: '',
+    dirty: false,
+    saving: false,
+    loading: false,
+    statusText: ''
+  };
   let quotaState = {
     loading: false,
     lastFetchedAt: 0,
@@ -813,6 +824,112 @@
           border-color: rgba(0, 0, 0, 0.2);
           color: #09090b;
         }
+        #${FILE_EDITOR_CONTROLS_ID} {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          margin-right: 4px;
+          app-region: no-drag;
+          -webkit-app-region: no-drag;
+        }
+        #${FILE_EDITOR_CONTROLS_ID} .ag-fedit-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+          height: 24px;
+          padding: 0 8px;
+          border-radius: 6px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(255, 255, 255, 0.07);
+          color: rgba(244, 244, 245, 0.92);
+          font-size: 12px;
+          font-weight: 500;
+          line-height: 1;
+          white-space: nowrap;
+          cursor: pointer;
+          transition: background-color 0.14s ease, border-color 0.14s ease;
+        }
+        #${FILE_EDITOR_CONTROLS_ID} .ag-fedit-btn:hover {
+          background: rgba(255, 255, 255, 0.15);
+          border-color: rgba(255, 255, 255, 0.28);
+          color: #ffffff;
+        }
+        #${FILE_EDITOR_CONTROLS_ID} .ag-fedit-btn[data-primary="true"] {
+          border-color: rgba(56, 189, 248, 0.5);
+          background: rgba(56, 189, 248, 0.16);
+          color: #7dd3fc;
+        }
+        #${FILE_EDITOR_CONTROLS_ID} .ag-fedit-btn[data-primary="true"]:hover {
+          background: rgba(56, 189, 248, 0.26);
+          border-color: rgba(56, 189, 248, 0.75);
+        }
+        #${FILE_EDITOR_CONTROLS_ID}[data-ag-theme="light"] .ag-fedit-btn {
+          border-color: rgba(0, 0, 0, 0.12);
+          background: rgba(0, 0, 0, 0.05);
+          color: rgba(24, 24, 27, 0.9);
+        }
+        #${FILE_EDITOR_CONTROLS_ID}[data-ag-theme="light"] .ag-fedit-btn:hover {
+          background: rgba(0, 0, 0, 0.1);
+          color: #09090b;
+        }
+        #${FILE_EDITOR_CONTROLS_ID}[data-ag-theme="light"] .ag-fedit-btn[data-primary="true"] {
+          border-color: rgba(2, 132, 199, 0.45);
+          background: rgba(2, 132, 199, 0.12);
+          color: #0369a1;
+        }
+        [data-ag-editor-host="1"] {
+          display: flex !important;
+          flex-direction: column !important;
+          height: 100% !important;
+          min-height: 0 !important;
+        }
+        #${FILE_EDITOR_WRAP_ID} {
+          display: flex;
+          flex-direction: column;
+          flex: 1 1 auto;
+          width: 100%;
+          height: 100%;
+          min-height: 0;
+          background: rgba(24, 24, 27, 0.96);
+          color: #e4e4e7;
+        }
+        #${FILE_EDITOR_WRAP_ID}[data-ag-theme="light"] {
+          background: #ffffff;
+          color: #18181b;
+        }
+        #${FILE_EDITOR_WRAP_ID} .ag-fedit-statusbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 6px 12px;
+          font-size: 11.5px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+          background: rgba(255, 255, 255, 0.03);
+          color: #a1a1aa;
+          flex-shrink: 0;
+        }
+        #${FILE_EDITOR_WRAP_ID}[data-ag-theme="light"] .ag-fedit-statusbar {
+          border-bottom-color: rgba(0, 0, 0, 0.08);
+          background: rgba(0, 0, 0, 0.025);
+          color: #52525b;
+        }
+        #${FILE_EDITOR_WRAP_ID} #ag-inline-file-textarea {
+          flex: 1 1 auto;
+          width: 100%;
+          min-height: 0;
+          padding: 14px 16px;
+          border: none;
+          outline: none;
+          resize: none;
+          box-sizing: border-box;
+          background: transparent;
+          color: inherit;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-size: 13px;
+          line-height: 1.65;
+          tab-size: 2;
+        }
       `;
       document.head.appendChild(styleEl);
     }
@@ -1096,6 +1213,22 @@
     vp.scrollTo({ top: targetTop, behavior: 'smooth' });
   }
 
+  function scrollToNextTurn() {
+    const vp = getScrollViewport();
+    if (!vp) return;
+    const vpRect = vp.getBoundingClientRect();
+    const msgs = Array.from(vp.querySelectorAll('[data-testid="user-message"]'));
+    for (const msg of msgs) {
+      const r = msg.getBoundingClientRect();
+      const relTop = r.top - vpRect.top + vp.scrollTop;
+      if (relTop > vp.scrollTop + 24) {
+        vp.scrollTo({ top: Math.max(0, relTop - 12), behavior: 'smooth' });
+        return;
+      }
+    }
+    vp.scrollTo({ top: vp.scrollHeight, behavior: 'smooth' });
+  }
+
   function scrollToNextOrBottom() {
     const vp = getScrollViewport();
     if (!vp) return;
@@ -1178,7 +1311,8 @@
       const items = [
         { id: 'ag-nav-top', label: '⏫ 顶部', title: '跳回当前对话最顶部', onClick: scrollToTop },
         { id: 'ag-nav-prev', label: '🔼 上一轮', title: '跳到上一条用户提问', onClick: scrollToPrevTurn },
-        { id: 'ag-nav-bottom', label: '🔽 底部', title: '直达最新回复底部', onClick: scrollToNextOrBottom },
+        { id: 'ag-nav-next', label: '🔽 下一轮', title: '跳到下一条用户提问', onClick: scrollToNextTurn },
+        { id: 'ag-nav-bottom', label: '⏬ 底部', title: '直达最新回复底部', onClick: scrollToNextOrBottom },
         { id: 'ag-nav-think', label: '💡 展开思考', title: '一键展开或收起当前对话全部思考过程', onClick: () => { toggleAllThinking(); } }
       ];
       for (const item of items) {
@@ -1761,6 +1895,286 @@
     });
   }
 
+  // ==================== 右侧边栏文件内联编辑器 ====================
+
+  function getFileViewerContext() {
+    const header = document.querySelector('[aria-label="File Viewer header"], [aria-label="文件查看器标题栏"], .group\\/file-row');
+    if (!header) return null;
+    const uriNodes = header.querySelectorAll('[data-uri]');
+    const lastUriNode = uriNodes[uriNodes.length - 1];
+    const fileUri = lastUriNode?.getAttribute('data-uri') || '';
+    const actionRow = header.querySelector('.flex.items-center.gap-1.shrink') || header.lastElementChild;
+    const bodyContainer = header.nextElementSibling;
+    return { header, fileUri, actionRow, bodyContainer };
+  }
+
+  function updateFileEditorStatusBar(text) {
+    if (text !== undefined) fileEditorState.statusText = text;
+    const wrap = document.getElementById(FILE_EDITOR_WRAP_ID);
+    const leftEl = wrap?.querySelector('.ag-fedit-status-left');
+    if (leftEl) {
+      const prefix = fileEditorState.dirty ? '● 未保存' : '已同步';
+      const detail = fileEditorState.statusText || (fileEditorState.filePath || '');
+      leftEl.textContent = `${prefix} · ${detail}`;
+      leftEl.title = fileEditorState.filePath || '';
+    }
+  }
+
+  function restoreHiddenViewerChildren() {
+    document.querySelectorAll('[data-ag-editor-host="1"]').forEach((hostEl) => {
+      hostEl.removeAttribute('data-ag-editor-host');
+    });
+    document.querySelectorAll('[data-ag-hidden-by-editor="1"]').forEach((el) => {
+      el.style.display = el.dataset.agPrevDisplay || '';
+      delete el.dataset.agPrevDisplay;
+      el.removeAttribute('data-ag-hidden-by-editor');
+    });
+  }
+
+  function exitFileEditor(shouldRefresh = true) {
+    safeRemove(document.getElementById(FILE_EDITOR_WRAP_ID));
+    restoreHiddenViewerChildren();
+    const ctx = getFileViewerContext();
+    fileEditorState.active = false;
+    fileEditorState.filePath = '';
+    fileEditorState.dirty = false;
+    fileEditorState.saving = false;
+    fileEditorState.loading = false;
+    fileEditorState.statusText = '';
+    renderFileEditorControls(ctx);
+    if (shouldRefresh && ctx?.header) {
+      const refreshBtn = ctx.header.querySelector('[data-testid="file-view-refresh"]');
+      if (refreshBtn) {
+        try { refreshBtn.click(); } catch {}
+      }
+    }
+  }
+
+  async function saveFileEditor() {
+    if (!fileEditorState.active || fileEditorState.saving) return false;
+    const textarea = document.getElementById('ag-inline-file-textarea');
+    if (!textarea || !fileEditorState.fileUri) return false;
+    fileEditorState.saving = true;
+    renderFileEditorControls(getFileViewerContext());
+    updateFileEditorStatusBar('正在保存...');
+    try {
+      const res = await postToLiveHost('/write-local-file', {
+        path: fileEditorState.fileUri,
+        content: textarea.value
+      });
+      if (!res || !res.ok) {
+        updateFileEditorStatusBar(`❌ 保存失败: ${res?.error || '桥接未连接'}`);
+        showQuickToast(`❌ 保存失败: ${res?.error || '桥接未连接'}`);
+        return false;
+      }
+      fileEditorState.dirty = false;
+      updateFileEditorStatusBar(`✅ 已保存 (${res.bytes} 字节)`);
+      showQuickToast('✅ 文件已保存');
+      const ctx = getFileViewerContext();
+      const refreshBtn = ctx?.header?.querySelector('[data-testid="file-view-refresh"]');
+      if (refreshBtn) {
+        try { refreshBtn.click(); } catch {}
+      }
+      return true;
+    } finally {
+      fileEditorState.saving = false;
+      renderFileEditorControls(getFileViewerContext());
+    }
+  }
+
+  async function enterFileEditor() {
+    const ctx = getFileViewerContext();
+    if (!ctx || !ctx.fileUri || !ctx.bodyContainer) {
+      showQuickToast('未检测到当前打开的本地文件');
+      return;
+    }
+    if (fileEditorState.loading) return;
+    fileEditorState.loading = true;
+    renderFileEditorControls(ctx);
+    try {
+      const res = await postToLiveHost('/read-local-file', { path: ctx.fileUri });
+      if (!res || !res.ok) {
+        showQuickToast(`无法编辑: ${res?.error || '读取文件失败'}`);
+        return;
+      }
+      // 再次确认用户未在等待期间关闭面板
+      const curCtx = getFileViewerContext();
+      if (!curCtx || curCtx.fileUri !== ctx.fileUri || !curCtx.bodyContainer) return;
+
+      const { host } = getMeterHostAndShadow();
+      const theme = resolveHostTheme(host);
+
+      curCtx.bodyContainer.setAttribute('data-ag-editor-host', '1');
+      for (const child of Array.from(curCtx.bodyContainer.children)) {
+        if (child.id === FILE_EDITOR_WRAP_ID) continue;
+        if (child.getAttribute('data-ag-hidden-by-editor') !== '1') {
+          child.dataset.agPrevDisplay = child.style.display || '';
+          child.setAttribute('data-ag-hidden-by-editor', '1');
+          child.style.display = 'none';
+        }
+      }
+
+      let wrap = document.getElementById(FILE_EDITOR_WRAP_ID);
+      if (!wrap) {
+        wrap = document.createElement('div');
+        wrap.id = FILE_EDITOR_WRAP_ID;
+        wrap.setAttribute('data-ag-theme', theme);
+
+        const statusbar = document.createElement('div');
+        statusbar.className = 'ag-fedit-statusbar';
+        const statusLeft = document.createElement('span');
+        statusLeft.className = 'ag-fedit-status-left';
+        statusLeft.style.overflow = 'hidden';
+        statusLeft.style.textOverflow = 'ellipsis';
+        statusLeft.style.whiteSpace = 'nowrap';
+        const statusRight = document.createElement('span');
+        statusRight.textContent = '⌘S / Ctrl+S 保存 · Tab 缩进';
+        statusRight.style.flexShrink = '0';
+        statusbar.appendChild(statusLeft);
+        statusbar.appendChild(statusRight);
+
+        const textarea = document.createElement('textarea');
+        textarea.id = 'ag-inline-file-textarea';
+        textarea.spellcheck = false;
+        textarea.value = res.content;
+        textarea.addEventListener('input', () => {
+          if (!fileEditorState.dirty) {
+            fileEditorState.dirty = true;
+            renderFileEditorControls(getFileViewerContext());
+          }
+          updateFileEditorStatusBar('有未保存修改');
+        });
+        textarea.addEventListener('keydown', (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+            e.preventDefault();
+            e.stopPropagation();
+            void saveFileEditor();
+            return;
+          }
+          if (e.key === 'Tab') {
+            e.preventDefault();
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const val = textarea.value;
+            textarea.value = val.slice(0, start) + '  ' + val.slice(end);
+            textarea.selectionStart = textarea.selectionEnd = start + 2;
+            if (!fileEditorState.dirty) {
+              fileEditorState.dirty = true;
+              renderFileEditorControls(getFileViewerContext());
+            }
+            updateFileEditorStatusBar('有未保存修改');
+          }
+        });
+
+        wrap.appendChild(statusbar);
+        wrap.appendChild(textarea);
+        curCtx.bodyContainer.appendChild(wrap);
+      } else {
+        wrap.setAttribute('data-ag-theme', theme);
+        const textarea = wrap.querySelector('#ag-inline-file-textarea');
+        if (textarea) textarea.value = res.content;
+      }
+
+      fileEditorState.active = true;
+      fileEditorState.fileUri = ctx.fileUri;
+      fileEditorState.filePath = res.filePath || '';
+      fileEditorState.dirty = false;
+      fileEditorState.statusText = res.filePath || '';
+      updateFileEditorStatusBar(res.filePath || '');
+
+      const textareaEl = document.getElementById('ag-inline-file-textarea');
+      if (textareaEl) textareaEl.focus();
+    } finally {
+      fileEditorState.loading = false;
+      renderFileEditorControls(getFileViewerContext());
+    }
+  }
+
+  function renderFileEditorControls(ctx) {
+    if (!ctx || !ctx.actionRow || !ctx.fileUri || !/^file:\/\//i.test(ctx.fileUri)) {
+      safeRemove(document.getElementById(FILE_EDITOR_CONTROLS_ID));
+      return;
+    }
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveHostTheme(host);
+    let controls = document.getElementById(FILE_EDITOR_CONTROLS_ID);
+    if (!controls) {
+      controls = document.createElement('div');
+      controls.id = FILE_EDITOR_CONTROLS_ID;
+    }
+    if (controls.getAttribute('data-ag-theme') !== theme) {
+      controls.setAttribute('data-ag-theme', theme);
+    }
+    if (controls.parentElement !== ctx.actionRow || controls !== ctx.actionRow.firstElementChild) {
+      ctx.actionRow.insertBefore(controls, ctx.actionRow.firstChild);
+    }
+
+    const modeKey = [
+      fileEditorState.active ? 'edit' : 'view',
+      fileEditorState.loading ? 'loading' : '',
+      fileEditorState.saving ? 'saving' : '',
+      fileEditorState.dirty ? 'dirty' : ''
+    ].join(':');
+    if (controls.getAttribute('data-ag-mode-key') === modeKey) {
+      const wrap = document.getElementById(FILE_EDITOR_WRAP_ID);
+      if (wrap && wrap.getAttribute('data-ag-theme') !== theme) {
+        wrap.setAttribute('data-ag-theme', theme);
+      }
+      return;
+    }
+    controls.setAttribute('data-ag-mode-key', modeKey);
+    controls.textContent = '';
+
+    if (!fileEditorState.active) {
+      const editBtn = document.createElement('button');
+      editBtn.id = 'ag-fedit-toggle';
+      editBtn.type = 'button';
+      editBtn.className = 'ag-fedit-btn';
+      editBtn.textContent = fileEditorState.loading ? '⏳ 读取中' : '✏️ 编辑';
+      editBtn.title = '在侧边栏直接编辑当前文件';
+      editBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      editBtn.addEventListener('click', () => { void enterFileEditor(); });
+      controls.appendChild(editBtn);
+    } else {
+      const saveBtn = document.createElement('button');
+      saveBtn.id = 'ag-fedit-save';
+      saveBtn.type = 'button';
+      saveBtn.className = 'ag-fedit-btn';
+      saveBtn.setAttribute('data-primary', 'true');
+      saveBtn.textContent = fileEditorState.saving ? '⏳ 保存中' : (fileEditorState.dirty ? '💾 保存*' : '💾 保存');
+      saveBtn.title = '保存更改到硬盘 (⌘S / Ctrl+S)';
+      saveBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      saveBtn.addEventListener('click', () => { void saveFileEditor(); });
+
+      const doneBtn = document.createElement('button');
+      doneBtn.id = 'ag-fedit-done';
+      doneBtn.type = 'button';
+      doneBtn.className = 'ag-fedit-btn';
+      doneBtn.textContent = '↩️ 完成';
+      doneBtn.title = '退出编辑并返回预览（自动刷新最新内容）';
+      doneBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      doneBtn.addEventListener('click', () => { exitFileEditor(true); });
+
+      controls.appendChild(saveBtn);
+      controls.appendChild(doneBtn);
+    }
+  }
+
+  function ensureFileViewerEditor() {
+    if (disposed) return;
+    ensureDocStyle();
+    const ctx = getFileViewerContext();
+    if (!ctx) {
+      if (fileEditorState.active) exitFileEditor(false);
+      else safeRemove(document.getElementById(FILE_EDITOR_CONTROLS_ID));
+      return;
+    }
+    if (fileEditorState.active && fileEditorState.fileUri && ctx.fileUri !== fileEditorState.fileUri) {
+      exitFileEditor(false);
+    }
+    renderFileEditorControls(ctx);
+  }
+
   // ==================== 全局事件与定时巡检 ====================
 
   function onDocClick(e) {
@@ -1793,6 +2207,7 @@
     if (disposed) return;
     ensureQuickCapsuleBar();
     ensureChatNavFloat();
+    ensureFileViewerEditor();
     scanHighRiskCommands();
     renderQuotaUI();
     localizeThinkingShells();
@@ -1826,6 +2241,10 @@
     document.removeEventListener('click', onDocClick, true);
     document.removeEventListener('keydown', onDocKeydown, true);
     window.removeEventListener('resize', onWindowResize);
+    if (fileEditorState.active) exitFileEditor(false);
+    safeRemove(document.getElementById(FILE_EDITOR_CONTROLS_ID));
+    safeRemove(document.getElementById(FILE_EDITOR_WRAP_ID));
+    restoreHiddenViewerChildren();
     const { sr } = getMeterHostAndShadow();
     if (sr) {
       safeRemove(sr.getElementById(QUOTA_BADGE_ID));
@@ -1840,7 +2259,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.3.0',
+    version: '1.4.0',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -1850,6 +2269,9 @@
     refreshBrainStats,
     scanHighRiskCommands,
     toggleAllThinking,
+    enterFileEditor,
+    saveFileEditor,
+    exitFileEditor,
     getBrainStats: () => latestBrainStats,
     getAutoAccept: () => autoAcceptEnabled,
     exportMarkdown,
@@ -1861,6 +2283,7 @@
 
   ensureQuickCapsuleBar();
   ensureChatNavFloat();
+  ensureFileViewerEditor();
   scanHighRiskCommands();
   renderQuotaUI();
   localizeThinkingShells();

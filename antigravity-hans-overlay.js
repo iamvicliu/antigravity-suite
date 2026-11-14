@@ -1,6 +1,6 @@
 (() => {
   if (typeof window === 'undefined') return;
-  const fingerprint = window.__antigravityZhPatchRequestedFingerprint || 'app-2.32.1-20261115-r21';
+  const fingerprint = window.__antigravityZhPatchRequestedFingerprint || 'app-2.32.1-20261115-r22';
   if (window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === fingerprint) return;
   const updating = window.__antigravityZhPatchInstalled === true && window.__observedDocument === document;
   if (typeof window.__antigravityZhPatchCleanup === 'function') window.__antigravityZhPatchCleanup();
@@ -4760,7 +4760,7 @@
     if (isProtectedMentionLabel(element)) return true;
 
     // 跳过代码与编辑区（textarea 放到下方输入区规则中，保留自身 placeholder/aria-label 翻译）
-    if (element.closest('script, style, code, pre, .xterm, .monaco-editor, [data-agy-hans-ui], #ag-quick-capsule-bar, #ag-context-meter, [data-agy-context-capsule], #__agy_ctx_capsule_tooltip__, #ag-chat-nav-float, .ag-risk-banner')) {
+    if (element.closest('script, style, code, pre, .xterm, .monaco-editor, [data-agy-hans-ui], #ag-quick-capsule-bar, #ag-context-meter, [data-agy-context-capsule], #__agy_ctx_capsule_tooltip__, #ag-chat-nav-float, .ag-risk-banner, #ag-file-editor-controls, #ag-inline-file-editor-wrap')) {
       return true;
     }
 
@@ -4781,8 +4781,8 @@
       }
     }
 
-    // 跳过会话标题与面包屑（用户或模型生成的自定义会话名）
-    if (element.closest('[data-testid="breadcrumb-segment"], nav [class*="breadcrumb"]')) {
+    // 跳过会话标题与面包屑（用户或模型生成的自定义会话名与文件路径）
+    if (element.closest('[data-testid="breadcrumb-segment"], nav [class*="breadcrumb"], [data-uri]')) {
       return true;
     }
 

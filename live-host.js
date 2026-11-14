@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { fileURLToPath } = require('url');
 const { connect } = require('./local-api');
 const {
   collect,
@@ -44,8 +45,45 @@ const ALLOWED_ROUTES = [
   '/export-markdown',
   '/translate-zh',
   '/localize-conversations',
-  '/brain-stats'
+  '/brain-stats',
+  '/read-local-file',
+  '/write-local-file'
 ];
+
+// 解析并校验可编辑本地文件路径，禁止读写系统关键目录与敏感凭据目录
+function resolveSafeEditablePath(rawInput) {
+  const input = String(rawInput || '').trim();
+  if (!input) return null;
+  let fsPath = input;
+  if (/^file:\/\//i.test(input)) {
+    try {
+      fsPath = fileURLToPath(input);
+    } catch {
+      return null;
+    }
+  }
+  if (!path.isAbsolute(fsPath)) return null;
+  const resolved = path.resolve(fsPath);
+  const blockedPrefixes = [
+    '/System',
+    '/usr',
+    '/bin',
+    '/sbin',
+    '/etc',
+    '/var',
+    '/private/etc',
+    '/Applications/Antigravity.app'
+  ];
+  for (const prefix of blockedPrefixes) {
+    if (resolved === prefix || resolved.startsWith(prefix + '/')) {
+      return null;
+    }
+  }
+  if (/\/(?:\.ssh|\.gnupg|\.aws|1Password)\//i.test(resolved)) {
+    return null;
+  }
+  return resolved;
+}
 
 const customTitlesPath = path.join(getStateDir(), 'custom-conversation-titles.json');
 let customTitlesCache = { mtimeMs: -1, data: {} };
@@ -576,6 +614,45 @@ function collectBrainStats() {
           const stats = collectBrainStats();
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(stats));
+          return;
+        }
+        if (req.url === '/read-local-file') {
+          const filePath = resolveSafeEditablePath(request?.path);
+          res.setHeader('Content-Type', 'application/json');
+          if (!filePath) {
+            res.end(JSON.stringify({ ok: false, error: '路径不合法或位于受保护目录' }));
+            return;
+          }
+          if (!fs.existsSync(filePath)) {
+            res.end(JSON.stringify({ ok: false, error: '目标文件不存在' }));
+            return;
+          }
+          const stat = fs.statSync(filePath);
+          if (!stat.isFile()) {
+            res.end(JSON.stringify({ ok: false, error: '目标不是普通文件' }));
+            return;
+          }
+          if (stat.size > 2 * 1024 * 1024) {
+            res.end(JSON.stringify({ ok: false, error: '文件体积超过 2MB，暂不支持侧边栏直接编辑' }));
+            return;
+          }
+          const content = fs.readFileSync(filePath, 'utf8');
+          res.end(JSON.stringify({ ok: true, filePath, content, size: stat.size }));
+          return;
+        }
+        if (req.url === '/write-local-file') {
+          const filePath = resolveSafeEditablePath(request?.path);
+          res.setHeader('Content-Type', 'application/json');
+          if (!filePath) {
+            res.end(JSON.stringify({ ok: false, error: '路径不合法或位于受保护目录' }));
+            return;
+          }
+          if (typeof request?.content !== 'string') {
+            res.end(JSON.stringify({ ok: false, error: '缺少有效的文件文本内容' }));
+            return;
+          }
+          fs.writeFileSync(filePath, request.content, 'utf8');
+          res.end(JSON.stringify({ ok: true, filePath, bytes: Buffer.byteLength(request.content, 'utf8') }));
           return;
         }
         const data = await collect(api.origin, request.id, { force: request.force === true });
