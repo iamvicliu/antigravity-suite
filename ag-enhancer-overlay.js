@@ -1580,8 +1580,8 @@
   const thoughtZhCache = new Map();
   const sidebarZhCache = new Map();
   const sidebarPendingIds = new Set();
-  const sidebarPersistedIds = new Set();
-  const sidebarRpcFailedIds = new Set();
+  const sidebarRawTitleMap = new Map();
+  const sidebarUserRenamedIds = new Set();
   let localizeTimer = null;
   let localizeMutationObserver = null;
   let thinkingShellTimerRunning = false;
@@ -1795,34 +1795,23 @@
     }
   }
 
-  async function persistConversationTitle(cascadeId, zhTitle) {
-    if (!cascadeId || !zhTitle) return false;
-    if (sidebarPersistedIds.has(cascadeId) || sidebarRpcFailedIds.has(cascadeId)) return false;
-    const csrf = window.__APP_CONFIG__?.csrfToken;
-    if (!csrf) return false;
+  function getSidebarReactTitle(span) {
+    if (!span) return '';
     try {
-      const resp = await fetch('/exa.language_server_pb.LanguageServerService/UpdateConversationAnnotations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Connect-Protocol-Version': '1',
-          'x-codeium-csrf-token': csrf
-        },
-        body: JSON.stringify({
-          cascadeIds: [cascadeId],
-          annotations: { title: zhTitle },
-          mergeAnnotations: true
-        })
-      });
-      if (resp.ok) {
-        sidebarPersistedIds.add(cascadeId);
-        return true;
+      const propKey = Object.keys(span).find((k) => k.startsWith('__reactProps$'));
+      if (propKey && typeof span[propKey]?.children === 'string') {
+        const raw = span[propKey].children.trim();
+        if (raw) return raw;
       }
-      sidebarRpcFailedIds.add(cascadeId);
-      return false;
-    } catch {
-      return false;
-    }
+    } catch {}
+    return (span.textContent || '').trim();
+  }
+
+  function shouldAutoTranslateSidebarTitle(title) {
+    if (!title) return false;
+    if (/[\u4e00-\u9fff]/.test(title)) return false;
+    const enWords = (title.match(/\b[a-zA-Z]{2,}\b/g) || []).length;
+    return enWords >= 3;
   }
 
   function applySidebarTitleDom(row, rawTitle, zhTitle) {
@@ -1844,27 +1833,43 @@
 
     for (const row of rows) {
       const id = row.getAttribute('data-cascade-id');
+      if (!id) continue;
+      if (row.querySelector('input, textarea, [contenteditable="true"]')) continue;
       const span = row.querySelector('span.truncate');
-      if (!id || !span) continue;
-      const curTitle = (span.textContent || '').trim();
-      if (!curTitle) continue;
+      if (!span) continue;
+      const reactTitle = getSidebarReactTitle(span);
+      if (!reactTitle) continue;
+      const domTitle = (span.textContent || '').trim();
 
-      if (/[\u4e00-\u9fff]/.test(curTitle) || !/[a-zA-Z]/.test(curTitle)) {
+      const prevRaw = sidebarRawTitleMap.get(id);
+      if (prevRaw !== undefined && prevRaw !== reactTitle) {
+        sidebarUserRenamedIds.add(id);
+        sidebarZhCache.delete(id);
+        sidebarRawTitleMap.set(id, reactTitle);
+      } else if (prevRaw === undefined) {
+        sidebarRawTitleMap.set(id, reactTitle);
+      }
+
+      if (sidebarUserRenamedIds.has(id) || !shouldAutoTranslateSidebarTitle(reactTitle)) {
+        if (domTitle !== reactTitle) {
+          updateSingleTextSafely(span, reactTitle);
+          appliedCount++;
+        }
+        if (span.hasAttribute('title')) {
+          span.removeAttribute('title');
+        }
         continue;
       }
 
       const cached = sidebarZhCache.get(id);
       if (cached) {
-        if (applySidebarTitleDom(row, curTitle, cached)) appliedCount++;
-        if (!sidebarPersistedIds.has(id) && !sidebarRpcFailedIds.has(id)) {
-          void persistConversationTitle(id, cached);
-        }
+        if (applySidebarTitleDom(row, reactTitle, cached)) appliedCount++;
         continue;
       }
 
       if (sidebarPendingIds.has(id) || seenNeed.has(id)) continue;
       seenNeed.add(id);
-      needLocalize.push({ id, title: curTitle });
+      needLocalize.push({ id, title: reactTitle });
     }
 
     if (!needLocalize.length) return appliedCount;
@@ -1874,14 +1879,13 @@
       const res = await postToLiveHost('/localize-conversations', { items: needLocalize });
       const titles = res?.titles || {};
       for (const [id, zhTitle] of Object.entries(titles)) {
-        if (!zhTitle) continue;
+        if (!zhTitle || sidebarUserRenamedIds.has(id)) continue;
         sidebarZhCache.set(id, zhTitle);
         const row = document.querySelector(`[data-testid="conversation-row-sidebar"][data-cascade-id="${CSS.escape(id)}"]`);
         if (row) {
           const rawTitle = needLocalize.find((x) => x.id === id)?.title || '';
           if (applySidebarTitleDom(row, rawTitle, zhTitle)) appliedCount++;
         }
-        void persistConversationTitle(id, zhTitle);
       }
       return appliedCount;
     } finally {
@@ -2398,7 +2402,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.2',
+    version: '1.5.3',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();

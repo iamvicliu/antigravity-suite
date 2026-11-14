@@ -582,25 +582,14 @@ function collectBrainStats() {
         }
         if (req.url === '/localize-conversations') {
           const rawItems = Array.isArray(request.items) ? request.items.slice(0, 50) : [];
-          const customTitles = getCustomConversationTitles();
           const titles = {};
           const toTranslate = [];
           for (const item of rawItems) {
             const id = String(item?.id || '').trim();
             const title = String(item?.title || '').trim();
             if (!id) continue;
-            if (customTitles[id]) {
-              if (title !== customTitles[id]) {
-                titles[id] = customTitles[id];
-              }
-              continue;
-            }
-            if (!title || /[\u4e00-\u9fff]/.test(title) || !/[a-zA-Z]/.test(title)) {
-              continue;
-            }
-            const fromTranscript = extractTitleFromLocalTranscript(id);
-            if (fromTranscript && fromTranscript !== title) {
-              titles[id] = fromTranscript;
+            const enWordCount = (title.match(/\b[a-zA-Z]{2,}\b/g) || []).length;
+            if (!title || /[\u4e00-\u9fff]/.test(title) || enWordCount < 3) {
               continue;
             }
             if (typeof translationCache[title] === 'string' && translationCache[title]) {
