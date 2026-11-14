@@ -136,7 +136,7 @@ async function tryHotInject(options = {}) {
           }
         }
         if (options && options.onlyMissing) {
-          const checkRes = await evalExpr(`Boolean(window.__AGContextMeter && window.__AGContextMeterLive && window.__AGContextMeterLive.port === ${Number(liveInfo?.port || 0)} && (${enhancerOverlay ? 'window.__AGEnhancer && window.__AGEnhancer.version === "1.5.0" && typeof window.__AGEnhancer.isAlive === "function" && window.__AGEnhancer.isAlive()' : 'true'}))`);
+          const checkRes = await evalExpr(`Boolean(window.__AGContextMeter && window.__AGContextMeterLive && window.__AGContextMeterLive.port === ${Number(liveInfo?.port || 0)} && (${enhancerOverlay ? 'window.__AGEnhancer && window.__AGEnhancer.version === "1.5.1" && typeof window.__AGEnhancer.isAlive === "function" && window.__AGEnhancer.isAlive()' : 'true'}))`);
           if (checkRes?.result?.result?.value === true) {
             injectedCount++;
             continue;

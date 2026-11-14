@@ -766,19 +766,23 @@
           z-index: 2147483580;
           display: flex;
           flex-direction: column;
-          gap: 4px;
-          padding: 5px;
-          border-radius: 12px;
+          align-items: stretch;
+          gap: 3px;
+          padding: 3px;
+          border-radius: 10px;
           border: 1px solid rgba(255, 255, 255, 0.12);
           background: rgba(24, 24, 27, 0.78);
           backdrop-filter: blur(10px);
           -webkit-backdrop-filter: blur(10px);
           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-          opacity: 0.72;
-          transition: opacity 0.16s ease;
+          opacity: 0.35;
+          transform: translateX(4px);
+          transition: opacity 0.16s ease, transform 0.16s ease, padding 0.16s ease;
         }
         #${CHAT_NAV_ID}:hover {
-          opacity: 1;
+          opacity: 0.98;
+          transform: translateX(0);
+          padding: 5px;
         }
         #${CHAT_NAV_ID}[hidden] {
           display: none !important;
@@ -793,8 +797,9 @@
           align-items: center;
           justify-content: center;
           gap: 4px;
+          width: 24px;
           height: 24px;
-          padding: 0 8px;
+          padding: 0;
           border-radius: 8px;
           border: 1px solid rgba(255, 255, 255, 0.1);
           background: rgba(255, 255, 255, 0.06);
@@ -805,6 +810,23 @@
           white-space: nowrap;
           cursor: pointer;
           transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.08s ease;
+        }
+        #${CHAT_NAV_ID}:hover .ag-nav-btn {
+          width: auto;
+          padding: 0 8px;
+          justify-content: flex-start;
+        }
+        #${CHAT_NAV_ID} .ag-nav-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        #${CHAT_NAV_ID} .ag-nav-label {
+          display: none;
+        }
+        #${CHAT_NAV_ID}:hover .ag-nav-label {
+          display: inline;
         }
         #${CHAT_NAV_ID} .ag-nav-btn:hover {
           background: rgba(255, 255, 255, 0.14);
@@ -1245,12 +1267,25 @@
     vp.scrollTo({ top: vp.scrollHeight, behavior: 'smooth' });
   }
 
+  function setNavBtnContent(btn, icon, text) {
+    if (!btn) return;
+    btn.textContent = '';
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'ag-nav-icon';
+    iconSpan.textContent = icon;
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'ag-nav-label';
+    labelSpan.textContent = ` ${text}`;
+    btn.appendChild(iconSpan);
+    btn.appendChild(labelSpan);
+  }
+
   function updateThinkToggleLabel() {
     const btn = document.getElementById('ag-nav-think');
     if (!btn) return;
     const triggers = Array.from(document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]'));
     const hasCollapsed = triggers.some((t) => t.getAttribute('aria-expanded') !== 'true');
-    btn.textContent = hasCollapsed || triggers.length === 0 ? '💡 展开思考' : '💡 收起思考';
+    setNavBtnContent(btn, '💡', hasCollapsed || triggers.length === 0 ? '展开思考' : '收起思考');
   }
 
   function toggleAllThinking() {
@@ -1300,11 +1335,11 @@
     const anchorTop = (barRect && barRect.height > 0)
       ? barRect.top
       : ((composerRect && composerRect.height > 0) ? composerRect.top : vpRect.bottom);
-    const rightBound = (composerRect && composerRect.width > 0) ? composerRect.right : vpRect.right;
     const navRect = nav.getBoundingClientRect();
-    const left = Math.max(8, Math.min(window.innerWidth - navRect.width - 12, rightBound - navRect.width - 10));
-    const top = Math.max(vpRect.top + 12, anchorTop - navRect.height - 10);
-    nav.style.left = `${Math.round(left)}px`;
+    const rightOffset = Math.max(4, Math.round(window.innerWidth - vpRect.right + 4));
+    const top = Math.max(vpRect.top + 12, anchorTop - navRect.height - 12);
+    nav.style.left = 'auto';
+    nav.style.right = `${rightOffset}px`;
     nav.style.top = `${Math.round(top)}px`;
   }
 
@@ -1319,18 +1354,18 @@
       nav.id = CHAT_NAV_ID;
       nav.setAttribute('aria-label', '长对话快捷导航');
       const items = [
-        { id: 'ag-nav-top', label: '⏫ 顶部', title: '跳回当前对话最顶部', onClick: scrollToTop },
-        { id: 'ag-nav-prev', label: '🔼 上一轮', title: '跳到上一条用户提问', onClick: scrollToPrevTurn },
-        { id: 'ag-nav-next', label: '🔽 下一轮', title: '跳到下一条用户提问', onClick: scrollToNextTurn },
-        { id: 'ag-nav-bottom', label: '⏬ 底部', title: '直达最新回复底部', onClick: scrollToNextOrBottom },
-        { id: 'ag-nav-think', label: '💡 展开思考', title: '一键展开或收起当前对话全部思考过程', onClick: () => { toggleAllThinking(); } }
+        { id: 'ag-nav-top', icon: '⏫', text: '顶部', title: '跳回当前对话最顶部', onClick: scrollToTop },
+        { id: 'ag-nav-prev', icon: '🔼', text: '上一轮', title: '跳到上一条用户提问', onClick: scrollToPrevTurn },
+        { id: 'ag-nav-next', icon: '🔽', text: '下一轮', title: '跳到下一条用户提问', onClick: scrollToNextTurn },
+        { id: 'ag-nav-bottom', icon: '⏬', text: '底部', title: '直达最新回复底部', onClick: scrollToNextOrBottom },
+        { id: 'ag-nav-think', icon: '💡', text: '展开思考', title: '一键展开或收起当前对话全部思考过程', onClick: () => { toggleAllThinking(); } }
       ];
       for (const item of items) {
         const btn = document.createElement('button');
         btn.id = item.id;
         btn.type = 'button';
         btn.className = 'ag-nav-btn';
-        btn.textContent = item.label;
+        setNavBtnContent(btn, item.icon, item.text);
         btn.title = item.title;
         btn.addEventListener('mousedown', (e) => e.preventDefault());
         btn.addEventListener('click', item.onClick);
@@ -2366,7 +2401,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.0',
+    version: '1.5.1',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
