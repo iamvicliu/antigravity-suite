@@ -223,7 +223,7 @@ function printHumanReport(results) {
   }
 
   if (updateCount === 0 && errorCount === 0) {
-    console.log('🎉 全部 5 个参考项目均已对齐最新基线，暂无需要合入的上游更新。');
+    console.log(`🎉 全部 ${results.length} 个参考项目均已对齐最新基线，暂无需要合入的上游更新。`);
   } else {
     console.log(`📌 汇总: ${updateCount} 个上游仓库有新提交，${errorCount} 个查询失败。合入验收后可运行：`);
     console.log('   ag-context-meter upstreams --mark-synced <owner/repo> latest [版本号]');
