@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:$PATH"
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+  LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+  case "$LINK_TARGET" in
+    /*) SCRIPT_PATH="$LINK_TARGET" ;;
+    *) SCRIPT_PATH="$(dirname "$SCRIPT_PATH")/$LINK_TARGET" ;;
+  esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+DEFAULT_APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -n "${AG_SUITE_DIR:-}" ] && [ -f "$AG_SUITE_DIR/cli.js" ]; then
+  APP_DIR="$AG_SUITE_DIR"
+elif [ -f "$DEFAULT_APP_DIR/cli.js" ]; then
+  APP_DIR="$DEFAULT_APP_DIR"
+else
+  APP_DIR="$HOME/.local/share/antigravity-context-viewer"
+fi
+
+CURRENT_USER="$(id -un | tr -cd 'a-zA-Z0-9._-')"
+LABEL="${AG_LIVE_LABEL:-com.${CURRENT_USER}.ag-live-helper}"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+STATE_FILE="$HOME/Library/Application Support/AntigravityContextMeter/.live-session.json"
+LEGACY_FILE="$APP_DIR/.live-session.json"
+PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
+LOG_DIR="$HOME/Library/Logs"
+LOG_FILE="$LOG_DIR/antigravity-hans.log"
+
+cmd="${1:-live}"
+
+stop_live() {
+  local stopped=0
+  local f pid cmdline
+
+  for f in "$STATE_FILE" "$LEGACY_FILE"; do
+    if [ -f "$f" ]; then
+      pid=$(node -e "try{const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));if(d&&d.pid)console.log(d.pid)}catch{}" "$f" 2>/dev/null || true)
+      if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+        cmdline=$(ps -p "$pid" -o command= 2>/dev/null || true)
+        if echo "$cmdline" | grep -q "live-host.js"; then
+          kill "$pid" 2>/dev/null || true
+          stopped=1
+          echo "已停止后台桥接服务 (PID: $pid)"
+        fi
+      fi
+      rm -f "$f"
+    fi
+  done
+
+  # 兜底清理残留的本项目 live-host.js 进程，避免 3 秒巡检重新注入
+  pkill -f "$APP_DIR/live-host.js" 2>/dev/null && stopped=1 || true
+  if [ "$stopped" -eq 0 ]; then
+    echo "未发现运行中的后台桥接服务"
+  else
+    sleep 0.2
+  fi
+
+  # 通过 CDP 从当前 Antigravity 窗口卸载前端汉化与上下文看板
+  local unload_count=0
+  unload_count=$(PORT_FILE="$PORT_FILE" node -e '
+const fs = require("fs");
+(async () => {
+  const portFile = process.env.PORT_FILE;
+  if (!portFile || !fs.existsSync(portFile)) {
+    console.log("0");
+    return;
+  }
+  const firstLine = fs.readFileSync(portFile, "utf8").split(/\r?\n/)[0]?.trim();
+  const port = Number(firstLine);
+  if (!Number.isInteger(port) || port <= 0) {
+    console.log("0");
+    return;
+  }
+
+  let targets = [];
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/list`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) {
+      console.log("0");
+      return;
+    }
+    targets = await res.json();
+  } catch {
+    console.log("0");
+    return;
+  }
+
+  const pages = Array.isArray(targets)
+    ? targets.filter(
+        (p) =>
+          p &&
+          p.type === "page" &&
+          typeof p.url === "string" &&
+          /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url) &&
+          typeof p.webSocketDebuggerUrl === "string"
+      )
+    : [];
+
+  let count = 0;
+  for (const page of pages) {
+    try {
+      await new Promise((resolve) => {
+        const ws = new WebSocket(page.webSocketDebuggerUrl);
+        const timer = setTimeout(() => {
+          try { ws.close(); } catch {}
+          resolve();
+        }, 3000);
+
+        ws.addEventListener("open", () => {
+          ws.send(
+            JSON.stringify({
+              id: 1,
+              method: "Runtime.evaluate",
+              params: {
+                expression: [
+                  "try { window.__AGEnhancer?.dispose?.(); } catch {}",
+                  "try { delete window.__AGEnhancer; } catch {}",
+                  "try { window.__AGY_CTX_CAPSULE_DISPOSE__?.(); } catch {}",
+                  "try { delete window.__AGY_CTX_CAPSULE_ACTIVE__; } catch {}",
+                  "try { window.__antigravityZhPatchCleanup?.(); } catch {}",
+                  "try { delete window.__antigravityZhPatchInstalled; } catch {}",
+                  "try { window.__AGContextMeter?.dispose?.(); } catch {}",
+                  "try { delete window.__AGContextMeter; } catch {}",
+                  "try { delete window.__AGContextMeterLive; } catch {}",
+                  "void 0",
+                ].join("; "),
+                returnByValue: true,
+              },
+            })
+          );
+        });
+
+        ws.addEventListener("message", (ev) => {
+          try {
+            const msg = JSON.parse(String(ev.data));
+            if (msg.id === 1) {
+              clearTimeout(timer);
+              count += 1;
+              try { ws.close(); } catch {}
+              resolve();
+            }
+          } catch {}
+        });
+
+        ws.addEventListener("error", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    } catch {}
+  }
+
+  console.log(String(count));
+})();
+' 2>/dev/null || echo "0")
+
+  if [ "${unload_count:-0}" -gt 0 ] 2>/dev/null; then
+    echo "已从当前窗口卸载中文汉化与上下文看板（已恢复英文原样）"
+  fi
+}
+
+case "$cmd" in
+  start|live)
+    exec node "$APP_DIR/cli.js" live
+    ;;
+  stop)
+    stop_live
+    ;;
+  auto-on)
+    if [ ! -f "$PLIST" ]; then
+      echo "未找到 LaunchAgent 配置文件: $PLIST" >&2
+      exit 1
+    fi
+    if [ -f "$PORT_FILE" ]; then
+      node "$APP_DIR/cli.js" live || echo "提示：当前未能立即挂载，下次启动 Antigravity 时将自动挂载。"
+    else
+      echo "提示：当前未检测到运行中的 Antigravity 窗口，待下次启动客户端时将自动挂载。"
+    fi
+    uid="$(id -u)"
+    launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
+    launchctl bootstrap "gui/$uid" "$PLIST"
+    echo "已开启“启动 Antigravity 时自动加载”"
+    ;;
+  auto-off)
+    uid="$(id -u)"
+    launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
+    echo "已关闭“启动 Antigravity 时自动加载”"
+    stop_live
+    ;;
+  status)
+    if [ "${2:-}" = "--json" ]; then
+      exec node "$APP_DIR/cli.js" status
+    fi
+
+    auto_on=0
+    if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+      auto_on=1
+    fi
+
+    status_rc=0
+    status_out="$(node "$APP_DIR/cli.js" status 2>&1)" || status_rc=$?
+    if [ "$status_rc" -ne 0 ]; then
+      echo "获取运行状态失败：" >&2
+      echo "$status_out" >&2
+      exit "$status_rc"
+    fi
+
+    AUTO_ON="$auto_on" STATUS_JSON="$status_out" node -e '
+const data = JSON.parse(process.env.STATUS_JSON);
+const autoOn = process.env.AUTO_ON === "1";
+const lw = data.liveWindow || {};
+const ver = data.antigravityVersion ? ` (v${data.antigravityVersion})` : "";
+
+console.log(`官方安装包${ver}：${data.asarPatched ? "⚠️ 检测到 app.asar 已被修改" : "✅ 未修改（官方签名完好）"}`);
+
+if (!lw.running) {
+  console.log("中文汉化：⭕ 未生效（客户端未运行或调试端口未开启）");
+  console.log("上下文看板：⭕ 未生效（客户端未运行或调试端口未开启）");
+  console.log("配额双胶囊：⭕ 未生效（客户端未运行或调试端口未开启）");
+  console.log("输入框快捷栏：⭕ 未生效（客户端未运行或调试端口未开启）");
+  console.log("底部能量胶囊：⭕ 未生效（客户端未运行或调试端口未开启）");
+} else {
+  console.log(`中文汉化：${lw.hansActive ? "✅ 已生效" : "⭕ 未启用"}`);
+  const badge = lw.badgeText ? `（当前显示: ${lw.badgeText}）` : "";
+  console.log(`上下文看板：${lw.active ? "✅ 已生效" + badge : "⭕ 未启用"}`);
+  const quotaBadge = lw.quotaBadgeText ? `（当前显示: ${lw.quotaBadgeText}）` : "";
+  console.log(`配额双胶囊：${lw.enhancerActive ? "✅ 已生效" + quotaBadge : "⭕ 未启用"}`);
+  console.log(`输入框快捷栏：${lw.quickBarActive ? "✅ 已生效" : "⭕ 未启用"}`);
+  const pulseBadge = lw.pulseText ? `（当前显示: ${lw.pulseText}）` : "";
+  console.log(`底部能量胶囊：${lw.pulseActive ? "✅ 已生效" + pulseBadge : "⭕ 未启用"}`);
+}
+
+console.log(`随客户端自启：${autoOn ? "✅ 已开启" : "⭕ 未开启"}`);
+'
+    ;;
+  _auto-trigger)
+    mkdir -p "$LOG_DIR"
+    # 若 DevToolsActivePort 不存在（例如客户端退出时触发的 WatchPaths），快速退出避免空等
+    if [ ! -f "$PORT_FILE" ]; then
+      exit 0
+    fi
+    for _ in $(seq 1 15); do
+      if [ ! -f "$PORT_FILE" ]; then
+        exit 0
+      fi
+      if node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
+        break
+      fi
+      sleep 2
+    done
+    ;;
+  check)
+    exec node "$APP_DIR/cli.js" check
+    ;;
+  install|restore|uninstall|unlock|unlock-restore|chinese:*|proxy:enable|proxy:disable|proxy:set)
+    echo "已禁用 '$cmd'：为保护 macOS 官方应用签名与账号合规，本命令禁止改盘注入 app.asar 及二进制补丁操作。" >&2
+    exit 1
+    ;;
+  -h|--help|help)
+    cat <<'EOF'
+用法: ag-context-meter [命令]
+
+常用命令:
+  start / live   立即挂载「中文汉化 + 上下文看板」到当前窗口（不传命令时默认执行）
+  stop           停止后台守护进程，并卸载当前窗口的中文汉化与看板（恢复英文原样）
+  auto-on        开启“启动 Antigravity 时自动加载”，并立即执行一次挂载
+  auto-off       关闭“启动 Antigravity 时自动加载”，并停止/卸载当前挂载
+  status         查看当前 4 项核心状态（加 --json 可输出原始 JSON 数据）
+  check          执行本地运行环境预检
+EOF
+    ;;
+  *)
+    echo "未知命令: $cmd（请运行 ag-context-meter --help 查看可用命令）" >&2
+    exit 1
+    ;;
+esac
