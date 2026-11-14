@@ -110,6 +110,12 @@ cd ~/.local/share/antigravity-context-viewer
 2. **封堵高危底层补丁**：[`live-host.js`](live-host.js) 与 CLI 默认禁用所有二进制解锁与内核改包入口，避免误伤客户端完整性。
 3. **本地数据与代码仓库隔离**：翻译缓存、自定义会话标题等均保存在 `~/Library/Application Support/AntigravityContextMeter/`，不写入代码仓库；侧边栏文件编辑器亦严格限制绝对路径访问，拒绝系统目录、`Antigravity.app` 与敏感凭据目录。
 
+### 💻 为什么目前只提供 macOS 一键版？
+
+1. **macOS 系统签名限制更严格**：macOS 的 Gatekeeper 会强校验应用签名，直接修改客户端 `app.asar` 很容易触发“应用已损坏”警告、丢失系统权限或影响官方更新，因此本套件重点针对 Mac 做了「零改包 CDP 热注入 + 自动监听恢复」的完整适配。
+2. **自启与一键脚本依赖苹果系统特性**：当前的一键安装脚本 [`setup-macos-cdp.sh`](scripts/setup-macos-cdp.sh) 与 [`ag-context-meter`](bin/ag-context-meter) 基于 macOS 原生的 `launchd`（`~/Library/LaunchAgents/`）监听客户端启动，暂未打包 Windows / Linux 的一键守护脚本。
+   - **Windows / Linux 也能用核心功能**：底层的 [`cli.js`](cli.js)、[`live-host.js`](live-host.js) 与所有前端挂件本身跨平台兼容；只要安装了 Node.js 22.4+，在 Antigravity 已开启调试端口的前提下手动执行 `node cli.js live` 即可使用（`status` 查看状态）。
+
 ### 参考与致谢（Credits & Acknowledgements）
 
 本套件吸收并整合了社区多位作者的开源成果，谨此致谢：
