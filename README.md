@@ -37,6 +37,8 @@
 | `🤖 自动确认: 关/开` | 默认关闭；开启后自动点击常规读写确认按钮，**遇到删除、拒绝、取消或标红高危命令时强制跳过** |
 | `📦 缓存 xxxMB` | 只读统计 `~/.gemini/antigravity/brain` 缓存体积，悬停显示 Top 5 占用对话，点击刷新并复制明细（绝不删文件） |
 
+> ⚡ **可选内置 Agent 提速规则**：仓库内附带 [`rules/fast-io-AGENTS.md`](rules/fast-io-AGENTS.md)（源自 `oil-oil/agy-fast-io`），通过只读白名单命令绕过桌面端云端审查、同轮并行读文件及合并必审命令，可显著减少 AI 回合数与等待耗时，可直接并入你的全局 `AGENTS.md` / `CLAUDE.md`。
+
 ---
 
 ## 二、怎么安装？（二选一）
@@ -100,7 +102,7 @@ cd ~/.local/share/antigravity-context-viewer
 | `ag-context-meter stop` | **秒级退场**：停止桥接服务并卸载附加界面，立即还原纯英文原版 |
 | `ag-context-meter auto-on` | 开启「每次打开 Antigravity 自动挂载」 |
 | `ag-context-meter auto-off` | 关闭自动挂载并清理当前窗口增强界面 |
-| `ag-context-meter upstreams` | 检查 5 个参考上游仓库的最新更新并与本地基线账本 [`upstreams.json`](upstreams.json) 比对 |
+| `ag-context-meter upstreams` | 检查 6 个参考上游仓库的最新更新并与本地基线账本 [`upstreams.json`](upstreams.json) 比对 |
 
 > 💡 **想让 AI Agent 帮你检查并安全合入参考项目更新？** 直接对 Agent 说：
 > `请运行 ag-context-meter upstreams --json，过滤掉改写 app.asar / 二进制解锁的提交，把安全可吸收的新词条、新模型价格或好用的交互移植进项目并更新 upstreams.json 基线。`
@@ -132,6 +134,7 @@ cd ~/.local/share/antigravity-context-viewer
 | **[n2ns/antigravity-panel](https://github.com/n2ns/antigravity-panel)** | [@n2ns](https://github.com/n2ns) | 模型额度监控、Auto-Accept 安全自动确认与 Brain 缓存体积监控思路 |
 | **[yiheng8023/antigravity-chinese](https://github.com/yiheng8023/antigravity-chinese)** | [@yiheng8023](https://github.com/yiheng8023) | 适配 Antigravity `2.32.1` (`v3.3.48`) 的 **2,282 条** 精确词条与 **239 条** 动态正则规则 |
 | **[wycocoyu/agy-context-dashboard](https://github.com/wycocoyu/agy-context-dashboard)** | [@wycocoyu](https://github.com/wycocoyu) | 轻量状态栏排布与指标展示思路（已整合去重） |
+| **[oil-oil/agy-fast-io](https://github.com/oil-oil/agy-fast-io)** | [@oil-oil](https://github.com/oil-oil) | 桌面端 Fast IO 提速规则 (`v0.2.1`)：免审白名单命令、同轮并读与回合压缩规范 |
 
 ---
 

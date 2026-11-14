@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-15T03:12:00+08:00",
+  "updatedAt": "2026-11-15T05:41:00+08:00",
   "upstreams": [
     {
       "repo": "elviscjn-cjn/antigravity-context-viewer",
@@ -80,6 +80,18 @@
       "forbiddenPatterns": [
         "app.asar"
       ]
+    },
+    {
+      "repo": "oil-oil/agy-fast-io",
+      "branch": "main",
+      "absorbedSha": "c9231ac2fe8511815064b43e16403018508190d8",
+      "version": "v0.2.1",
+      "role": "Antigravity 桌面端快速检索与读写提速规则 (Fast IO：免审白名单命令、同轮并读与必审命令合并)",
+      "mergeStrategy": "审阅 plugin/rules/AGENTS.md 的白名单命令与回合压缩规则演进，同步更新至 rules/fast-io-AGENTS.md 与本地 AGENTS.md",
+      "localTargets": [
+        "rules/fast-io-AGENTS.md"
+      ],
+      "forbiddenPatterns": []
     }
   ]
 }
