@@ -67,6 +67,106 @@ async function githubApiJson(endpoint) {
   return res.json();
 }
 
+function decodeXmlEntities(str) {
+  return String(str || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * 第三段兜底：抓取 GitHub Web Atom Feed（不消耗 API 配额），解析最新提交列表。
+ */
+async function fetchGithubAtomCommits(repo, branch, limit = 20) {
+  const url = `https://github.com/${repo}/commits/${encodeURIComponent(branch)}.atom`;
+  const res = await fetch(url, {
+    headers: {
+      'Accept': 'application/atom+xml, application/xml, text/xml',
+      'User-Agent': 'antigravity-suite-upstream-checker'
+    },
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub Atom 请求失败 (${res.status}): ${res.statusText}`);
+  }
+  const xml = await res.text();
+  const entries = [];
+  const entryRe = /<entry\b[^>]*>([\s\S]*?)<\/entry>/gi;
+  let m;
+  while ((m = entryRe.exec(xml)) !== null && entries.length < limit) {
+    const block = m[1];
+    const idMatch = block.match(/<id>[^<]*Commit\/([0-9a-f]{40})<\/id>/i);
+    if (!idMatch) continue;
+    const sha = idMatch[1];
+    const updatedMatch = block.match(/<updated>([^<]+)<\/updated>/i);
+    const titleMatch = block.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+    const titleText = decodeXmlEntities(titleMatch ? titleMatch[1] : '').trim();
+    entries.push({
+      sha,
+      shortSha: sha.slice(0, 7),
+      date: updatedMatch ? updatedMatch[1].trim() : null,
+      message: titleText.split(/\r?\n/)[0]
+    });
+  }
+  if (!entries.length) {
+    throw new Error(`GitHub Atom 未解析到提交记录: ${url}`);
+  }
+  return entries;
+}
+
+/**
+ * 第三段兜底：通过 GitHub Web 重定向解析最新 Release Tag（不消耗 API 配额）。
+ */
+async function fetchGithubLatestReleaseTagWeb(repo) {
+  const res = await fetch(`https://github.com/${repo}/releases/latest`, {
+    redirect: 'follow',
+    headers: { 'User-Agent': 'antigravity-suite-upstream-checker' },
+    signal: AbortSignal.timeout(12000)
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`GitHub Release Web 请求失败 (${res.status})`);
+  }
+  const tagMatch = String(res.url || '').match(/\/releases\/tag\/([^/?#]+)/);
+  return tagMatch ? decodeURIComponent(tagMatch[1]) : null;
+}
+
+async function fetchLatestBranchCommit(repo, branch) {
+  try {
+    const commit = await githubApiJson(`repos/${repo}/commits/${encodeURIComponent(branch)}`);
+    return {
+      sha: commit.sha,
+      date: commit.commit?.committer?.date || commit.commit?.author?.date || null,
+      message: String(commit.commit?.message || '').split(/\r?\n/)[0]
+    };
+  } catch (apiErr) {
+    if (apiErr.code === 'NOT_FOUND') throw apiErr;
+    const atomCommits = await fetchGithubAtomCommits(repo, branch, 5);
+    const head = atomCommits[0];
+    return {
+      sha: head.sha,
+      date: head.date,
+      message: head.message
+    };
+  }
+}
+
+async function fetchLatestReleaseTag(repo) {
+  try {
+    const rel = await githubApiJson(`repos/${repo}/releases/latest`);
+    return rel.tag_name || null;
+  } catch (e) {
+    if (e.code === 'NOT_FOUND') return null;
+    try {
+      return await fetchGithubLatestReleaseTagWeb(repo);
+    } catch {
+      return null;
+    }
+  }
+}
+
 /**
  * 判断文件变更是否命中禁止改包/解锁红线模式。
  */
@@ -101,41 +201,44 @@ async function inspectUpstream(entry) {
   };
 
   try {
-    const commit = await githubApiJson(`repos/${repo}/commits/${encodeURIComponent(branch)}`);
+    const commit = await fetchLatestBranchCommit(repo, branch);
     result.latestSha = commit.sha;
-    result.latestDate = commit.commit?.committer?.date || commit.commit?.author?.date || null;
-    result.latestMessage = String(commit.commit?.message || '').split(/\r?\n/)[0];
-
-    try {
-      const rel = await githubApiJson(`repos/${repo}/releases/latest`);
-      result.latestReleaseTag = rel.tag_name || null;
-    } catch (e) {
-      if (e.code !== 'NOT_FOUND') {
-        result.latestReleaseTag = null;
-      }
-    }
+    result.latestDate = commit.date;
+    result.latestMessage = commit.message;
+    result.latestReleaseTag = await fetchLatestReleaseTag(repo);
 
     if (entry.absorbedSha === result.latestSha) {
       result.status = 'up_to_date';
       return result;
     }
 
-    const cmp = await githubApiJson(`repos/${repo}/compare/${entry.absorbedSha}...${result.latestSha}`);
-    result.status = 'update_available';
-    result.aheadBy = Number(cmp.ahead_by || (Array.isArray(cmp.commits) ? cmp.commits.length : 0));
-    result.commits = (Array.isArray(cmp.commits) ? cmp.commits : []).slice(-15).map((c) => ({
-      sha: c.sha,
-      shortSha: String(c.sha || '').slice(0, 7),
-      date: c.commit?.committer?.date || null,
-      message: String(c.commit?.message || '').split(/\r?\n/)[0]
-    }));
-    result.files = (Array.isArray(cmp.files) ? cmp.files : []).map((f) => ({
-      filename: f.filename,
-      status: f.status,
-      additions: f.additions || 0,
-      deletions: f.deletions || 0,
-      blocked: isForbiddenFile(f.filename, entry.forbiddenPatterns)
-    }));
+    try {
+      const cmp = await githubApiJson(`repos/${repo}/compare/${entry.absorbedSha}...${result.latestSha}`);
+      result.status = 'update_available';
+      result.aheadBy = Number(cmp.ahead_by || (Array.isArray(cmp.commits) ? cmp.commits.length : 0));
+      result.commits = (Array.isArray(cmp.commits) ? cmp.commits : []).slice(-15).map((c) => ({
+        sha: c.sha,
+        shortSha: String(c.sha || '').slice(0, 7),
+        date: c.commit?.committer?.date || null,
+        message: String(c.commit?.message || '').split(/\r?\n/)[0]
+      }));
+      result.files = (Array.isArray(cmp.files) ? cmp.files : []).map((f) => ({
+        filename: f.filename,
+        status: f.status,
+        additions: f.additions || 0,
+        deletions: f.deletions || 0,
+        blocked: isForbiddenFile(f.filename, entry.forbiddenPatterns)
+      }));
+    } catch {
+      // Compare API 受限时退化为 Atom 提交序列比对
+      const atomCommits = await fetchGithubAtomCommits(repo, branch, 25);
+      const idx = atomCommits.findIndex((c) => c.sha === entry.absorbedSha);
+      const aheadCommits = idx >= 0 ? atomCommits.slice(0, idx) : atomCommits.slice(0, 15);
+      result.status = 'update_available';
+      result.aheadBy = aheadCommits.length;
+      result.commits = aheadCommits.slice().reverse();
+      result.files = [];
+    }
   } catch (err) {
     result.status = 'error';
     result.error = err.message;
@@ -157,13 +260,11 @@ async function markSynced(targetRepo, rawSha, rawVersion) {
   let nextVersion = rawVersion || entry.version;
   if (!nextSha || nextSha === 'latest') {
     const branch = entry.branch || 'main';
-    const commit = await githubApiJson(`repos/${entry.repo}/commits/${encodeURIComponent(branch)}`);
+    const commit = await fetchLatestBranchCommit(entry.repo, branch);
     nextSha = commit.sha;
     if (!rawVersion) {
-      try {
-        const rel = await githubApiJson(`repos/${entry.repo}/releases/latest`);
-        if (rel?.tag_name) nextVersion = rel.tag_name;
-      } catch {}
+      const tag = await fetchLatestReleaseTag(entry.repo);
+      if (tag) nextVersion = tag;
     }
   }
   entry.absorbedSha = nextSha;

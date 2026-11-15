@@ -147,6 +147,18 @@
     return 'gemini';
   }
 
+  function resolveProtoFraction(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    if (typeof obj.remainingFraction === 'number' && Number.isFinite(obj.remainingFraction)) {
+      return Math.max(0, Math.min(1, obj.remainingFraction));
+    }
+    // Protobuf3 JSON 序列化会省略默认零值 0，若存在 resetTime/window/bucketId 说明配额桶存在且已耗尽 (0%)
+    if (obj.resetTime || obj.window || obj.bucketId) {
+      return 0;
+    }
+    return null;
+  }
+
   function aggregatePoolsFromConfigs(configs) {
     if (!Array.isArray(configs) || !configs.length) return { gemini: null, claude: null };
     let gemini = null;
@@ -154,11 +166,10 @@
 
     for (const c of configs) {
       if (!c || typeof c !== 'object') continue;
-      const id = String(c.modelId || c.label || '').toLowerCase();
+      // 拼接 modelId / modelOrAlias.model / label，避免 MODEL_PLACEHOLDER_* 遮蔽真实模型名称
+      const id = `${c.modelId || ''} ${c.modelOrAlias?.model || ''} ${c.label || ''}`.toLowerCase();
       const qi = c.quotaInfo || {};
-      const frac = typeof qi.remainingFraction === 'number' && Number.isFinite(qi.remainingFraction)
-        ? qi.remainingFraction
-        : null;
+      const frac = resolveProtoFraction(qi);
       const resetTime = qi.resetTime || null;
       if (frac === null && !resetTime) continue;
 
@@ -173,6 +184,80 @@
       }
     }
     return { gemini, claude };
+  }
+
+  function parseQuotaSummaryGroups(summaryPayload) {
+    const groups = summaryPayload?.response?.groups || summaryPayload?.groups || [];
+    const result = {
+      gemini: { fiveHour: null, weekly: null },
+      claude: { fiveHour: null, weekly: null }
+    };
+    if (!Array.isArray(groups) || !groups.length) return result;
+
+    for (const grp of groups) {
+      if (!grp || typeof grp !== 'object') continue;
+      const nameLower = String(grp.displayName || '').toLowerCase();
+      const buckets = Array.isArray(grp.buckets) ? grp.buckets : [];
+      let targetKey = null;
+      if (nameLower.includes('gemini')) {
+        targetKey = 'gemini';
+      } else if (nameLower.includes('claude') || nameLower.includes('gpt') || nameLower.includes('3p')) {
+        targetKey = 'claude';
+      } else if (buckets.some((b) => String(b?.bucketId || '').toLowerCase().includes('gemini'))) {
+        targetKey = 'gemini';
+      } else if (buckets.some((b) => /3p|claude|gpt/i.test(String(b?.bucketId || '')))) {
+        targetKey = 'claude';
+      }
+      if (!targetKey) continue;
+
+      for (const b of buckets) {
+        if (!b || typeof b !== 'object') continue;
+        const win = String(b.window || '').toLowerCase();
+        const bid = String(b.bucketId || '').toLowerCase();
+        const frac = resolveProtoFraction(b);
+        const resetTime = b.resetTime || null;
+        if (frac === null && !resetTime) continue;
+
+        const bucketInfo = { remainingFraction: frac, resetTime };
+        if (win === '5h' || bid.includes('5h')) {
+          result[targetKey].fiveHour = bucketInfo;
+        } else if (win === 'weekly' || bid.includes('weekly')) {
+          result[targetKey].weekly = bucketInfo;
+        }
+      }
+    }
+    return result;
+  }
+
+  function mergePoolWithSummary(configPool, summaryItem, fallbackLabel) {
+    const fiveHour = summaryItem?.fiveHour || null;
+    const weekly = summaryItem?.weekly || null;
+    if (!configPool && !fiveHour && !weekly) return null;
+
+    // 顶栏胶囊与池主指标取各有效窗口中剩余比例最低（最紧）的值
+    const candidates = [fiveHour, weekly, configPool].filter(
+      (item) => item && typeof item.remainingFraction === 'number' && Number.isFinite(item.remainingFraction)
+    );
+    let tightest = null;
+    for (const c of candidates) {
+      if (!tightest || c.remainingFraction < tightest.remainingFraction) {
+        tightest = c;
+      }
+    }
+
+    const remainingFraction = tightest
+      ? tightest.remainingFraction
+      : (configPool?.remainingFraction ?? null);
+    const resetTime = tightest?.resetTime || fiveHour?.resetTime || weekly?.resetTime || configPool?.resetTime || null;
+    const sampleLabel = configPool?.sampleLabel || fallbackLabel;
+
+    return {
+      remainingFraction,
+      resetTime,
+      sampleLabel,
+      fiveHour,
+      weekly
+    };
   }
 
   function normalizeCredits(userStatus, historyPlan) {
@@ -209,25 +294,38 @@
       const csrf = window.__APP_CONFIG__?.csrfToken;
       let configs = null;
       let userStatus = null;
+      let summaryData = null;
 
       if (csrf) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 8000);
+        const headers = {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': csrf
+        };
         try {
-          const resp = await fetch('/exa.language_server_pb.LanguageServerService/GetUserStatus', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Connect-Protocol-Version': '1',
-              'x-codeium-csrf-token': csrf
-            },
-            body: '{}',
-            signal: controller.signal
-          });
-          if (resp.ok) {
-            const payload = await resp.json();
+          const [statusRes, summaryRes] = await Promise.allSettled([
+            fetch('/exa.language_server_pb.LanguageServerService/GetUserStatus', {
+              method: 'POST',
+              headers,
+              body: '{}',
+              signal: controller.signal
+            }),
+            fetch('/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary', {
+              method: 'POST',
+              headers,
+              body: '{}',
+              signal: controller.signal
+            })
+          ]);
+          if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+            const payload = await statusRes.value.json();
             userStatus = payload?.userStatus || null;
             configs = userStatus?.cascadeModelConfigData?.clientModelConfigs || null;
+          }
+          if (summaryRes.status === 'fulfilled' && summaryRes.value.ok) {
+            summaryData = await summaryRes.value.json();
           }
         } finally {
           clearTimeout(timer);
@@ -239,12 +337,15 @@
         configs = historyRaw?.cascadeModelConfigs || [];
       }
 
-      const pools = aggregatePoolsFromConfigs(configs);
+      const configPools = aggregatePoolsFromConfigs(configs);
+      const summaryPools = parseQuotaSummaryGroups(summaryData);
+      const mergedGemini = mergePoolWithSummary(configPools.gemini, summaryPools.gemini, 'Gemini');
+      const mergedClaude = mergePoolWithSummary(configPools.claude, summaryPools.claude, 'Claude / GPT');
       const credits = normalizeCredits(userStatus, historyRaw);
 
-      if (pools.gemini || pools.claude) {
-        quotaState.gemini = pools.gemini;
-        quotaState.claude = pools.claude;
+      if (mergedGemini || mergedClaude) {
+        quotaState.gemini = mergedGemini;
+        quotaState.claude = mergedClaude;
         quotaState.lastFetchedAt = Date.now();
         quotaState.error = '';
       } else if (!quotaState.gemini && !quotaState.claude) {
@@ -422,6 +523,35 @@
           font-size: 10.5px;
           color: var(--ag-text-muted, #a1a1aa);
         }
+        .ag-qp-subrows {
+          display: flex;
+          flex-direction: column;
+          gap: 7px;
+          margin-top: 2px;
+        }
+        .ag-qp-subrow {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+        }
+        .ag-qp-subhead {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          font-size: 11px;
+        }
+        .ag-qp-sublabel {
+          color: var(--ag-text-primary, #e4e4e7);
+          font-weight: 500;
+        }
+        .ag-qp-subpct {
+          font-size: 11.5px;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+        }
+        .ag-qp-subrow .ag-qp-bar {
+          margin-bottom: 1px;
+        }
         .ag-qp-footer {
           margin-top: 6px;
           padding-top: 8px;
@@ -483,8 +613,10 @@
       const vw = window.innerWidth || 1280;
       const vh = window.innerHeight || 800;
       const popW = Math.min(320, vw - 24);
-      const top = Math.max(36, Math.min(vh - 220, Math.round(bRect.bottom + 6)));
-      let left = Math.round(bRect.left + bRect.width / 2 - popW / 2);
+      const popH = Math.max(240, Math.round(popover.offsetHeight || 300));
+      const top = Math.max(36, Math.min(vh - popH - 12, Math.round(bRect.bottom + 6)));
+      // 右边缘优先对齐触发按钮，与顶栏其他面板对齐行为保持一致
+      let left = Math.round(bRect.right - popW);
       left = Math.max(12, Math.min(vw - popW - 12, left));
       popover.style.top = `${top}px`;
       popover.style.left = `${left}px`;
@@ -536,12 +668,47 @@
     const activeKey = quotaState.activePoolKey;
     const modelName = quotaState.activeModelText || '未检测到模型';
 
+    const renderWindowRow = (label, bucket) => {
+      if (!bucket) return '';
+      const bFrac = bucket.remainingFraction;
+      const bPctInt = typeof bFrac === 'number' ? Math.max(0, Math.min(100, bFrac * 100)) : 0;
+      const bColor = getQuotaColor(bFrac);
+      const bPctText = formatPctOne(bFrac);
+      const bResetText = bucket.resetTime ? formatResetCountdownZh(bucket.resetTime) : '暂无重置时间信息';
+      return `
+        <div class="ag-qp-subrow">
+          <div class="ag-qp-subhead">
+            <span class="ag-qp-sublabel">${escapeHtml(label)}</span>
+            <span class="ag-qp-subpct" style="color:${bColor}">${escapeHtml(bPctText)}</span>
+          </div>
+          <div class="ag-qp-bar">
+            <div class="ag-qp-bar-fill" style="width:${bPctInt.toFixed(1)}%;background:${bColor}"></div>
+          </div>
+          <div class="ag-qp-reset">${escapeHtml(bResetText)}</div>
+        </div>
+      `;
+    };
+
     const renderPoolCard = (title, pool, isActive) => {
       const frac = pool?.remainingFraction;
       const pctInt = typeof frac === 'number' ? Math.max(0, Math.min(100, frac * 100)) : 0;
       const color = getQuotaColor(frac);
       const pctText = formatPctOne(frac);
       const resetText = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : '暂无重置时间信息';
+      const hasDualWindows = Boolean(pool?.fiveHour || pool?.weekly);
+      const bodyHtml = hasDualWindows
+        ? `
+          <div class="ag-qp-subrows">
+            ${pool?.fiveHour ? renderWindowRow('⏱️ 5 小时限额', pool.fiveHour) : ''}
+            ${pool?.weekly ? renderWindowRow('📅 每周限额', pool.weekly) : ''}
+          </div>
+        `
+        : `
+          <div class="ag-qp-bar">
+            <div class="ag-qp-bar-fill" style="width:${pctInt.toFixed(1)}%;background:${color}"></div>
+          </div>
+          <div class="ag-qp-reset">${escapeHtml(resetText)}</div>
+        `;
       return `
         <div class="ag-qp-card${isActive ? ' is-active' : ''}">
           <div class="ag-qp-row">
@@ -549,12 +716,9 @@
               <span>${escapeHtml(title)}</span>
               ${isActive ? '<span class="ag-qp-active-tag">当前</span>' : ''}
             </span>
-            <span class="ag-qp-pct" style="color:${color}">${escapeHtml(pctText)}</span>
+            <span class="ag-qp-pct" style="color:${color}">${escapeHtml(hasDualWindows ? `最紧 ${pctText}` : pctText)}</span>
           </div>
-          <div class="ag-qp-bar">
-            <div class="ag-qp-bar-fill" style="width:${pctInt.toFixed(1)}%;background:${color}"></div>
-          </div>
-          <div class="ag-qp-reset">${escapeHtml(resetText)}</div>
+          ${bodyHtml}
         </div>
       `;
     };
@@ -645,9 +809,19 @@
       textEl.textContent = badgeText;
     }
 
-    const gTip = quotaState.gemini?.resetTime ? formatResetCountdownZh(quotaState.gemini.resetTime) : '未知';
-    const cTip = quotaState.claude?.resetTime ? formatResetCountdownZh(quotaState.claude.resetTime) : '未知';
-    quotaBtn.title = `Gemini 4/3.8: ${formatPctOne(gFrac)} (${gTip})\nClaude/GPT: ${formatPctOne(cFrac)} (${cTip})\n点击查看完整配额面板`;
+    const formatPoolTooltip = (label, pool, fallbackFrac) => {
+      const hasDual = Boolean(pool?.fiveHour || pool?.weekly);
+      if (hasDual) {
+        const s5 = pool?.fiveHour ? `5h ${formatPctOne(pool.fiveHour.remainingFraction)}` : '';
+        const sw = pool?.weekly ? `周 ${formatPctOne(pool.weekly.remainingFraction)}` : '';
+        const detail = [s5, sw].filter(Boolean).join(' · ');
+        const tightReset = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : '未知';
+        return `${label}: ${detail}（${tightReset}）`;
+      }
+      const tip = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : '未知';
+      return `${label}: ${formatPctOne(fallbackFrac)} (${tip})`;
+    };
+    quotaBtn.title = `${formatPoolTooltip('Gemini 4/3.8', quotaState.gemini, gFrac)}\n${formatPoolTooltip('Claude/GPT', quotaState.claude, cFrac)}\n点击查看完整配额面板`;
 
     if (popoverOpen && popover && !popover.hidden) {
       renderQuotaPopoverContent(popover);
@@ -698,7 +872,7 @@
           color: #ffffff;
         }
         #${QUICK_BAR_ID} .ag-qcap-btn:active {
-          transform: scale(0.96);
+          opacity: 0.85;
         }
         #${QUICK_BAR_ID} .ag-qcap-btn[data-active="true"] {
           border-color: rgba(16, 185, 129, 0.55);
@@ -844,7 +1018,7 @@
           color: #ffffff;
         }
         #${CHAT_NAV_ID} .ag-nav-btn:active {
-          transform: scale(0.96);
+          opacity: 0.85;
         }
         #${CHAT_NAV_ID}[data-ag-theme="light"] .ag-nav-btn {
           border-color: rgba(0, 0, 0, 0.1);
@@ -3047,7 +3221,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.8',
+    version: '1.5.9',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();

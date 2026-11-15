@@ -265,7 +265,6 @@
     }
     .ag-unit:active{
       background:var(--ag-toolbar-bg-active);
-      transform:scale(0.96);
     }
 
     /* 单元 1: 上下文小圆环按钮（按内容自适应，圆环+百分比共存） */
@@ -946,7 +945,7 @@
       contain:layout paint;
     }
     #panel{width:472px;max-width:calc(100vw - 24px)}
-    #panel-tokens{width:730px;transition:width .22s cubic-bezier(0.16,1,0.3,1),left .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1)}
+    #panel-tokens{width:730px;transition:width .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1)}
     #panel-tokens.cost-compact-view{width:400px!important;max-width:calc(100vw - 24px)}
     .ag-panel[hidden]{display:block!important;opacity:0;transform:translateY(-6px);visibility:hidden;pointer-events:none}
 
@@ -8032,6 +8031,8 @@
     return 0;
   }
 
+  let activeContextAnchor = null;
+
   function positionFloatingPanels() {
     if (!host.getBoundingClientRect) return;
     try {
@@ -8065,7 +8066,7 @@
         panelEl.style.transformOrigin = 'top right';
       };
 
-      placePanel(el('panel'), 472, el('badge'));
+      placePanel(el('panel'), 472, activeContextAnchor || el('badge'));
       placePanel(el('panel-tokens'), 730, el('badge-tokens'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
@@ -8150,26 +8151,26 @@
     if (target === 'tokens') {
       hideContextTooltip();
       closeColorPicker();
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
       pContext.hidden = true;
       pTokens.hidden = false;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
-      syncHostStackingElevation(true);
-      positionFloatingPanels();
       void syncTokenHistoryFromHost(false);
       renderActiveHeatView(true);
     } else if (target === 'context') {
       hideContextTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
       pTokens.hidden = true;
       pContext.hidden = false;
       bContext.setAttribute('aria-expanded', 'true');
       bSpeed?.setAttribute('aria-expanded', 'true');
       bTokens.setAttribute('aria-expanded', 'false');
-      syncHostStackingElevation(true);
-      positionFloatingPanels();
       applyContextViewVisibility?.();
       if (activeContextTab === 'models' && !isContextSettingsView) {
         void refreshUnlockStatus();
@@ -8200,9 +8201,13 @@
     }
   }
 
-  function toggleContext() {
-    if (!el('panel').hidden) showPanel('none');
-    else showPanel('context');
+  function toggleContext(anchorEl) {
+    if (!el('panel').hidden) {
+      showPanel('none');
+    } else {
+      activeContextAnchor = (anchorEl && anchorEl.getBoundingClientRect) ? anchorEl : el('badge');
+      showPanel('context');
+    }
   }
 
   function toggleTokens() {
@@ -10217,11 +10222,14 @@ function closeAllDropdowns(exceptWrap = null) {
   }
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
-  el('badge').addEventListener('click', toggleContext);
-  el('badge-speed')?.addEventListener('click', toggleContext);
+  el('badge').addEventListener('click', () => toggleContext(el('badge')));
+  el('badge-speed')?.addEventListener('click', () => toggleContext(el('badge-speed')));
   el('badge-tokens').addEventListener('click', toggleTokens);
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
-  el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context'));
+  el('overflow-speed-btn')?.addEventListener('click', () => {
+    activeContextAnchor = el('badge-overflow') || el('badge');
+    showPanel('context');
+  });
   el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens'));
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
