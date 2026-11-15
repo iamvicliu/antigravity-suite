@@ -1855,8 +1855,8 @@
       const tabBtn = document.createElement('button');
       tabBtn.type = 'button';
       tabBtn.className = 'ag-ns-kbd ag-ns-tab';
-      tabBtn.textContent = 'Tab 补全';
-      tabBtn.title = '按 Tab 将建议填入输入框';
+      tabBtn.textContent = 'Tab / → 补全';
+      tabBtn.title = '按 Tab 或 → 右箭头将建议填入输入框';
       tabBtn.addEventListener('mousedown', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -2905,7 +2905,7 @@
     if (!nextStepState.visible || isAssistantBusy() || !isComposerEmpty(ed) || ed.getAttribute('aria-expanded') === 'true') return;
     if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
 
-    if (e.key === 'Tab') {
+    if (e.key === 'Tab' || e.key === 'ArrowRight') {
       e.preventDefault();
       e.stopPropagation();
       if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
@@ -3047,7 +3047,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.7',
+    version: '1.5.8',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
