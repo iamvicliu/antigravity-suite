@@ -93,8 +93,12 @@ async function tryHotInject(options = {}) {
       .join('\n');
     const hansPath = path.join(__dirname, 'antigravity-hans-overlay.js');
     const hansOverlay = fs.existsSync(hansPath) ? fs.readFileSync(hansPath, 'utf8') : '';
+    const hansFpMatch = hansOverlay.match(/const\s+PATCH_FINGERPRINT\s*=\s*['"]([^'"]+)['"]/);
+    const expectedHansFp = hansFpMatch ? hansFpMatch[1] : '';
     const enhancerPath = path.join(__dirname, 'ag-enhancer-overlay.js');
     const enhancerOverlay = fs.existsSync(enhancerPath) ? fs.readFileSync(enhancerPath, 'utf8') : '';
+    const enhancerVerMatch = enhancerOverlay.match(/globalThis\.__AGEnhancer\s*=\s*\{[\s\S]*?version\s*:\s*['"]([^'"]+)['"]/);
+    const expectedEnhancerVer = enhancerVerMatch ? enhancerVerMatch[1] : '';
     const pulsePath = path.join(__dirname, 'pulse-capsule-overlay.js');
     const pulseOverlay = fs.existsSync(pulsePath) ? fs.readFileSync(pulsePath, 'utf8') : '';
 
@@ -123,7 +127,8 @@ async function tryHotInject(options = {}) {
           ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
         });
         if (hansOverlay) {
-          const hansCheck = await evalExpr('Boolean(window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === \'app-2.32.1-20261115-r22\')');
+          const hansFpExpr = expectedHansFp ? ` && window.__antigravityZhPatchFingerprint === ${JSON.stringify(expectedHansFp)}` : '';
+          const hansCheck = await evalExpr(`Boolean(window.__antigravityZhPatchInstalled === true && window.__observedDocument === document${hansFpExpr})`);
           if (hansCheck?.result?.result?.value !== true) {
             await evalExpr(hansOverlay);
           }
@@ -136,7 +141,10 @@ async function tryHotInject(options = {}) {
           }
         }
         if (options && options.onlyMissing) {
-          const checkRes = await evalExpr(`Boolean(window.__AGContextMeter && window.__AGContextMeterLive && window.__AGContextMeterLive.port === ${Number(liveInfo?.port || 0)} && (${enhancerOverlay ? 'window.__AGEnhancer && window.__AGEnhancer.version === "1.5.2" && typeof window.__AGEnhancer.isAlive === "function" && window.__AGEnhancer.isAlive()' : 'true'}))`);
+          const enhancerCond = enhancerOverlay
+            ? `window.__AGEnhancer${expectedEnhancerVer ? ` && window.__AGEnhancer.version === ${JSON.stringify(expectedEnhancerVer)}` : ''} && typeof window.__AGEnhancer.isAlive === "function" && window.__AGEnhancer.isAlive()`
+            : 'true';
+          const checkRes = await evalExpr(`Boolean(window.__AGContextMeter && window.__AGContextMeterLive && window.__AGContextMeterLive.port === ${Number(liveInfo?.port || 0)} && (${enhancerCond}))`);
           if (checkRes?.result?.result?.value === true) {
             injectedCount++;
             continue;

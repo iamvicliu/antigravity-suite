@@ -27,8 +27,10 @@
     dirty: false,
     saving: false,
     loading: false,
+    savedOnce: false,
     statusText: ''
   };
+  let activeEditorWrapEl = null;
   let quotaState = {
     loading: false,
     lastFetchedAt: 0,
@@ -2116,7 +2118,10 @@
   // ==================== 右侧边栏文件内联编辑器 ====================
 
   function getFileViewerContext() {
-    const header = document.querySelector('[aria-label="File Viewer header"], [aria-label="文件查看器标题栏"], .group\\/file-row');
+    const header =
+      document.querySelector('[aria-label="File Viewer header"], [aria-label="文件查看器标题栏"]') ||
+      Array.from(document.querySelectorAll('.group\\/file-row')).find((el) => el.querySelector('[data-uri]')) ||
+      null;
     if (!header) return null;
     const uriNodes = header.querySelectorAll('[data-uri]');
     const lastUriNode = uriNodes[uriNodes.length - 1];
@@ -2149,7 +2154,38 @@
     });
   }
 
+  /** 隐藏文件查看器原有的预览子节点，保留内联编辑器容器 */
+  function hideNativeViewerChildren(bodyContainer) {
+    if (!bodyContainer) return;
+    if (bodyContainer.getAttribute('data-ag-editor-host') !== '1') {
+      bodyContainer.setAttribute('data-ag-editor-host', '1');
+    }
+    for (const child of Array.from(bodyContainer.children)) {
+      if (child.id === FILE_EDITOR_WRAP_ID) continue;
+      if (child.getAttribute('data-ag-hidden-by-editor') !== '1' || child.style.display !== 'none') {
+        if (!('agPrevDisplay' in child.dataset)) {
+          child.dataset.agPrevDisplay = child.style.display || '';
+        }
+        child.setAttribute('data-ag-hidden-by-editor', '1');
+        child.style.display = 'none';
+      }
+    }
+  }
+
+  /** 在编辑态持续保护编辑器 DOM 不被 React 重渲染覆盖或脱离宿主 */
+  function syncFileEditorHostDom(ctx) {
+    if (!fileEditorState.active || !ctx?.bodyContainer) return;
+    hideNativeViewerChildren(ctx.bodyContainer);
+    if (activeEditorWrapEl && activeEditorWrapEl.parentElement !== ctx.bodyContainer) {
+      ctx.bodyContainer.appendChild(activeEditorWrapEl);
+    }
+  }
+
   function exitFileEditor(shouldRefresh = true) {
+    if (activeEditorWrapEl) {
+      safeRemove(activeEditorWrapEl);
+      activeEditorWrapEl = null;
+    }
     safeRemove(document.getElementById(FILE_EDITOR_WRAP_ID));
     restoreHiddenViewerChildren();
     const ctx = getFileViewerContext();
@@ -2158,6 +2194,7 @@
     fileEditorState.dirty = false;
     fileEditorState.saving = false;
     fileEditorState.loading = false;
+    fileEditorState.savedOnce = false;
     fileEditorState.statusText = '';
     renderFileEditorControls(ctx);
     if (shouldRefresh && ctx?.header) {
@@ -2186,13 +2223,9 @@
         return false;
       }
       fileEditorState.dirty = false;
+      fileEditorState.savedOnce = true;
       updateFileEditorStatusBar(`✅ 已保存 (${res.bytes} 字节)`);
       showQuickToast('✅ 文件已保存');
-      const ctx = getFileViewerContext();
-      const refreshBtn = ctx?.header?.querySelector('[data-testid="file-view-refresh"]');
-      if (refreshBtn) {
-        try { refreshBtn.click(); } catch {}
-      }
       return true;
     } finally {
       fileEditorState.saving = false;
@@ -2222,15 +2255,7 @@
       const { host } = getMeterHostAndShadow();
       const theme = resolveHostTheme(host);
 
-      curCtx.bodyContainer.setAttribute('data-ag-editor-host', '1');
-      for (const child of Array.from(curCtx.bodyContainer.children)) {
-        if (child.id === FILE_EDITOR_WRAP_ID) continue;
-        if (child.getAttribute('data-ag-hidden-by-editor') !== '1') {
-          child.dataset.agPrevDisplay = child.style.display || '';
-          child.setAttribute('data-ag-hidden-by-editor', '1');
-          child.style.display = 'none';
-        }
-      }
+      hideNativeViewerChildren(curCtx.bodyContainer);
 
       let wrap = document.getElementById(FILE_EDITOR_WRAP_ID);
       if (!wrap) {
@@ -2293,10 +2318,12 @@
         if (textarea) textarea.value = res.content;
       }
 
+      activeEditorWrapEl = wrap;
       fileEditorState.active = true;
       fileEditorState.fileUri = ctx.fileUri;
       fileEditorState.filePath = res.filePath || '';
       fileEditorState.dirty = false;
+      fileEditorState.savedOnce = false;
       fileEditorState.statusText = res.filePath || '';
       updateFileEditorStatusBar(res.filePath || '');
 
@@ -2389,6 +2416,9 @@
     }
     if (fileEditorState.active && fileEditorState.fileUri && ctx.fileUri !== fileEditorState.fileUri) {
       exitFileEditor(false);
+    }
+    if (fileEditorState.active) {
+      syncFileEditorHostDom(ctx);
     }
     renderFileEditorControls(ctx);
   }
@@ -2591,7 +2621,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.4',
+    version: '1.5.5',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
