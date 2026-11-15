@@ -57,6 +57,7 @@
     visible: false
   };
   let isComposerComposing = false;
+  let lastUserSubmitAt = 0;
 
   function safeRemove(node) {
     try {
@@ -1689,14 +1690,42 @@
     return meterMatch ? Number(meterMatch[1]) : 0;
   }
 
-  function computeNextStepCandidates() {
-    const sessionId = getSessionIdFromLocation() || '';
-    const allMd = Array.from(document.querySelectorAll('[data-markdown-root]'));
-    const assistantMds = allMd.filter((m) => (
+  function getAssistantMarkdownRoots() {
+    return Array.from(document.querySelectorAll('[data-markdown-root]')).filter((m) => (
       !m.closest('[data-testid="user-message"]') &&
       !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
       !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
     ));
+  }
+
+  function isAssistantBusy() {
+    if (Date.now() - lastUserSubmitAt < 2500) return true;
+    const cancelBtn =
+      document.querySelector('.surface-composer [data-testid="input-cancel-button"]') ||
+      document.querySelector('[data-testid="input-cancel-button"]');
+    if (cancelBtn && cancelBtn.offsetWidth > 0 && !cancelBtn.disabled) {
+      return true;
+    }
+    const thinkingTriggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
+    for (const trigger of thinkingTriggers) {
+      const text = (trigger.textContent || '').trim();
+      if (/^(?:Thinking|思考中)/i.test(text)) return true;
+    }
+    const userMsgs = document.querySelectorAll('[data-testid="user-message"]');
+    if (userMsgs.length > 0) {
+      const lastUser = userMsgs[userMsgs.length - 1];
+      const assistantMds = getAssistantMarkdownRoots();
+      const lastAsst = assistantMds[assistantMds.length - 1];
+      if (!lastAsst || (lastAsst.compareDocumentPosition(lastUser) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function computeNextStepCandidates() {
+    const sessionId = getSessionIdFromLocation() || '';
+    const assistantMds = getAssistantMarkdownRoots();
     const lastMd = assistantMds[assistantMds.length - 1];
     const fullText = (lastMd?.innerText || '').trim();
     const sig = `${sessionId}|${assistantMds.length}|${fullText.length}|${fullText.slice(-80)}`;
@@ -1778,7 +1807,7 @@
     if (disposed) return;
     const ed = getComposerEditor();
     const hostParent = ed?.parentElement;
-    if (!ed || !hostParent) {
+    if (!ed || !hostParent || isAssistantBusy()) {
       hideNextStepGhost();
       return;
     }
@@ -1796,6 +1825,7 @@
 
     const shouldShow = (
       !isComposerComposing &&
+      !isAssistantBusy() &&
       candidates.length > 0 &&
       nextStepState.dismissedSig !== sig &&
       ed.getAttribute('aria-expanded') !== 'true' &&
@@ -2827,6 +2857,10 @@
 
   function onWindowClickCapture(e) {
     if (e.isTrusted && !e.metaKey && !e.ctrlKey && !e.altKey && e.button === 0) {
+      if (e.target?.closest?.('[data-testid="input-send-button"], [aria-label="Send"], [aria-label="发送"]')) {
+        lastUserSubmitAt = Date.now();
+        hideNextStepGhost();
+      }
       const thinkTrigger = e.target?.closest?.('[data-testid="thinking-collapsible-trigger"]');
       if (thinkTrigger) {
         const key = getThinkingTriggerKey(thinkTrigger);
@@ -2863,7 +2897,12 @@
     const ed = getComposerEditor();
     const target = e.target instanceof Element ? e.target : e.target?.parentElement;
     if (!ed || !target || !ed.contains(target)) return;
-    if (!nextStepState.visible || !isComposerEmpty(ed) || ed.getAttribute('aria-expanded') === 'true') return;
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isComposerEmpty(ed) && ed.getAttribute('aria-expanded') !== 'true') {
+      lastUserSubmitAt = Date.now();
+      hideNextStepGhost();
+      return;
+    }
+    if (!nextStepState.visible || isAssistantBusy() || !isComposerEmpty(ed) || ed.getAttribute('aria-expanded') === 'true') return;
     if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
 
     if (e.key === 'Tab') {
@@ -3008,7 +3047,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.6',
+    version: '1.5.7',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -3022,6 +3061,7 @@
     enterFileEditor,
     saveFileEditor,
     exitFileEditor,
+    isAssistantBusy,
     ensureNextStepGhost,
     acceptNextStepSuggestion,
     cycleNextStepSuggestion,
