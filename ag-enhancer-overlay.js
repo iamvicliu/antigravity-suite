@@ -18,6 +18,7 @@
   const CHAT_NAV_ID = 'ag-chat-nav-float';
   const FILE_EDITOR_CONTROLS_ID = 'ag-file-editor-controls';
   const FILE_EDITOR_WRAP_ID = 'ag-inline-file-editor-wrap';
+  const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
 
   let disposed = false;
   let fileEditorState = {
@@ -48,6 +49,14 @@
   const autoClickedButtons = new WeakMap();
   let latestBrainStats = null;
   let lastBrainFetchAt = 0;
+  let nextStepState = {
+    candidates: [],
+    index: 0,
+    replySig: '',
+    dismissedSig: '',
+    visible: false
+  };
+  let isComposerComposing = false;
 
   function safeRemove(node) {
     try {
@@ -962,6 +971,71 @@
         html[data-ag-cmd-down="1"] a[href^="https://"]:hover {
           text-decoration: underline !important;
         }
+        [data-ag-has-ghost="1"] > p.pointer-events-none {
+          opacity: 0 !important;
+          visibility: hidden !important;
+        }
+        #${NEXT_STEP_GHOST_ID} {
+          position: absolute;
+          left: 8px;
+          right: 8px;
+          top: 8px;
+          min-height: 24px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          pointer-events: none;
+          z-index: 2;
+          user-select: none;
+          font-size: 13.5px;
+          line-height: 24px;
+          color: rgba(228, 228, 231, 0.46);
+        }
+        #${NEXT_STEP_GHOST_ID}[data-ag-theme="light"] {
+          color: rgba(63, 63, 70, 0.52);
+        }
+        #${NEXT_STEP_GHOST_ID} .ag-ns-text {
+          flex: 1 1 auto;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        #${NEXT_STEP_GHOST_ID} .ag-ns-badges {
+          flex-shrink: 0;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          pointer-events: auto;
+        }
+        #${NEXT_STEP_GHOST_ID} .ag-ns-kbd {
+          appearance: none;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(255, 255, 255, 0.06);
+          color: rgba(228, 228, 231, 0.68);
+          border-radius: 5px;
+          padding: 1px 6px;
+          font-size: 11px;
+          line-height: 16px;
+          cursor: pointer;
+          transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+        #${NEXT_STEP_GHOST_ID} .ag-ns-kbd:hover {
+          background: rgba(56, 189, 248, 0.16);
+          border-color: rgba(56, 189, 248, 0.42);
+          color: #e4e4e7;
+        }
+        #${NEXT_STEP_GHOST_ID}[data-ag-theme="light"] .ag-ns-kbd {
+          border-color: rgba(0, 0, 0, 0.14);
+          background: rgba(0, 0, 0, 0.045);
+          color: rgba(63, 63, 70, 0.78);
+        }
+        #${NEXT_STEP_GHOST_ID}[data-ag-theme="light"] .ag-ns-kbd:hover {
+          background: rgba(2, 132, 199, 0.12);
+          border-color: rgba(2, 132, 199, 0.36);
+          color: #18181b;
+        }
       `;
       document.head.appendChild(styleEl);
     }
@@ -1586,6 +1660,252 @@
     if (bar.parentElement !== composer.parentElement || bar.nextElementSibling !== composer) {
       composer.parentElement.insertBefore(bar, composer);
     }
+  }
+
+  // ==================== 输入框“下一步建议”幽灵提示与 Tab 补全 ====================
+
+  function getComposerEditor() {
+    return (
+      document.querySelector('.surface-composer [data-lexical-editor="true"]') ||
+      document.querySelector('.surface-composer [contenteditable="true"]') ||
+      document.querySelector('[aria-label="Message input"][contenteditable="true"]')
+    );
+  }
+
+  function isComposerEmpty(ed) {
+    if (!ed) return false;
+    const raw = typeof ed.__lexicalTextContent === 'string'
+      ? ed.__lexicalTextContent
+      : (ed.textContent || '');
+    return raw.replace(/[\u200B-\u200D\uFEFF\s]/g, '').length === 0;
+  }
+
+  function extractContextPercent() {
+    const cap = document.querySelector('[data-agy-context-capsule="1"]');
+    const capMatch = (cap?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
+    if (capMatch) return Number(capMatch[1]);
+    const { sr } = getMeterHostAndShadow();
+    const meterMatch = (sr?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
+    return meterMatch ? Number(meterMatch[1]) : 0;
+  }
+
+  function computeNextStepCandidates() {
+    const sessionId = getSessionIdFromLocation() || '';
+    const allMd = Array.from(document.querySelectorAll('[data-markdown-root]'));
+    const assistantMds = allMd.filter((m) => (
+      !m.closest('[data-testid="user-message"]') &&
+      !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
+      !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
+    ));
+    const lastMd = assistantMds[assistantMds.length - 1];
+    const fullText = (lastMd?.innerText || '').trim();
+    const sig = `${sessionId}|${assistantMds.length}|${fullText.length}|${fullText.slice(-80)}`;
+    const recent = fullText.slice(-700);
+    const tail = fullText.slice(-180);
+    const list = [];
+    const addCandidate = (txt) => {
+      if (txt && !list.includes(txt)) list.push(txt);
+    };
+
+    if (!fullText) {
+      addCandidate('先帮我梳理下当前任务并给出方案');
+      addCandidate('/plan ');
+      addCandidate('重新读取 AGENTS');
+      return { sig, candidates: list };
+    }
+
+    const asksConfirm = /(?:请确认|是否确认|是否合适|确认后|是否继续|你倾向于|请选择|方案\s*[A-Z1-9]|选项\s*[A-Z1-9])/i.test(recent);
+    const hasRecommend = /(?:推荐|方案\s*[A1](?!\d))/.test(recent);
+    const asksQuestion = /[？?]\s*$/.test(tail);
+    const hasUnnegatedError = (txt) => {
+      if (!txt || /(?:已修复|验证通过|PASSED|0\s*failed)/i.test(tail)) return false;
+      const re = /(?:报错|失败|异常|未通过|Error:|Exception|exited with code [1-9])/gi;
+      let m;
+      while ((m = re.exec(txt)) !== null) {
+        const before = txt.slice(Math.max(0, m.index - 4), m.index);
+        if (/(?:不|无|没有|未见|未发现|未|零|0\s*|避免|防止|防|非)$/.test(before)) continue;
+        return true;
+      }
+      return false;
+    };
+    const hasError = hasUnnegatedError(recent);
+    const hasDoneOrPushed = /(?:已提交|已推送|origin\/main|commit\s+[0-9a-f]{6,}|验证通过|全部组件显示\s*✅|PASSED)/i.test(recent);
+    const mentionsCodeChange = /(?:已修改|已新增|已修复|文件修改|函数|补丁|\.(?:js|ts|tsx|py|sh|md|json)\b)/i.test(recent);
+
+    if (asksConfirm) {
+      if (hasRecommend) addCandidate('确认，按推荐方案执行');
+      addCandidate('确认，直接按这个方案落地');
+      addCandidate('先微调一下方案细节：');
+    } else if (asksQuestion) {
+      addCandidate('好，就按你说的执行');
+    }
+
+    if (hasError) {
+      addCandidate('分析报错原因并直接修复');
+      addCandidate('贴一下关键报错原因并给出修复方案');
+    }
+
+    if (mentionsCodeChange && !hasDoneOrPushed) {
+      addCandidate('运行测试验证，通过后提交并推送');
+      addCandidate('先跑一遍实测看看效果');
+    }
+
+    if (hasDoneOrPushed) {
+      addCandidate('检查还有没有遗漏的边界情况');
+      addCandidate('继续处理下一个问题');
+    }
+
+    if (extractContextPercent() >= 70) {
+      addCandidate('/compact');
+    }
+
+    addCandidate('继续下一步');
+    addCandidate('展开说说具体细节');
+
+    return { sig, candidates: list.slice(0, 4) };
+  }
+
+  function hideNextStepGhost() {
+    nextStepState.visible = false;
+    const ghost = document.getElementById(NEXT_STEP_GHOST_ID);
+    if (ghost) ghost.hidden = true;
+    document.querySelectorAll('[data-ag-has-ghost="1"]').forEach((el) => {
+      el.removeAttribute('data-ag-has-ghost');
+    });
+  }
+
+  function ensureNextStepGhost() {
+    if (disposed) return;
+    const ed = getComposerEditor();
+    const hostParent = ed?.parentElement;
+    if (!ed || !hostParent) {
+      hideNextStepGhost();
+      return;
+    }
+
+    const { sig, candidates } = computeNextStepCandidates();
+    if (sig !== nextStepState.replySig) {
+      nextStepState.replySig = sig;
+      nextStepState.candidates = candidates;
+      nextStepState.index = 0;
+      nextStepState.dismissedSig = '';
+    } else {
+      nextStepState.candidates = candidates;
+      if (nextStepState.index >= candidates.length) nextStepState.index = 0;
+    }
+
+    const shouldShow = (
+      !isComposerComposing &&
+      candidates.length > 0 &&
+      nextStepState.dismissedSig !== sig &&
+      ed.getAttribute('aria-expanded') !== 'true' &&
+      isComposerEmpty(ed)
+    );
+
+    if (!shouldShow) {
+      hideNextStepGhost();
+      return;
+    }
+
+    ensureDocStyle();
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveHostTheme(host);
+    let ghost = document.getElementById(NEXT_STEP_GHOST_ID);
+    if (!ghost) {
+      ghost = document.createElement('div');
+      ghost.id = NEXT_STEP_GHOST_ID;
+      ghost.setAttribute('aria-hidden', 'true');
+
+      const textSpan = document.createElement('span');
+      textSpan.className = 'ag-ns-text';
+
+      const badges = document.createElement('span');
+      badges.className = 'ag-ns-badges';
+
+      const tabBtn = document.createElement('button');
+      tabBtn.type = 'button';
+      tabBtn.className = 'ag-ns-kbd ag-ns-tab';
+      tabBtn.textContent = 'Tab 补全';
+      tabBtn.title = '按 Tab 将建议填入输入框';
+      tabBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      tabBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void acceptNextStepSuggestion();
+      });
+
+      const cycleBtn = document.createElement('button');
+      cycleBtn.type = 'button';
+      cycleBtn.className = 'ag-ns-kbd ag-ns-cycle';
+      cycleBtn.title = '按 ↓ 切换下一条建议';
+      cycleBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      cycleBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        cycleNextStepSuggestion(1);
+      });
+
+      badges.appendChild(tabBtn);
+      badges.appendChild(cycleBtn);
+      ghost.appendChild(textSpan);
+      ghost.appendChild(badges);
+    }
+
+    if (ghost.parentElement !== hostParent) {
+      hostParent.appendChild(ghost);
+    }
+    if (ghost.getAttribute('data-ag-theme') !== theme) {
+      ghost.setAttribute('data-ag-theme', theme);
+    }
+    ghost.hidden = false;
+
+    const currentText = candidates[nextStepState.index] || '';
+    const textSpan = ghost.querySelector('.ag-ns-text');
+    const cycleBtn = ghost.querySelector('.ag-ns-cycle');
+    if (textSpan) {
+      const nextDisplay = `💡 ${currentText}`;
+      if (textSpan.textContent !== nextDisplay) textSpan.textContent = nextDisplay;
+      textSpan.title = currentText;
+    }
+    if (cycleBtn) {
+      if (candidates.length > 1) {
+        cycleBtn.hidden = false;
+        cycleBtn.textContent = `↓ ${nextStepState.index + 1}/${candidates.length}`;
+      } else {
+        cycleBtn.hidden = true;
+      }
+    }
+
+    if (hostParent.getAttribute('data-ag-has-ghost') !== '1') {
+      hostParent.setAttribute('data-ag-has-ghost', '1');
+    }
+    nextStepState.visible = true;
+  }
+
+  function cycleNextStepSuggestion(step = 1) {
+    const len = nextStepState.candidates.length;
+    if (len <= 1) return false;
+    nextStepState.index = (nextStepState.index + step + len) % len;
+    ensureNextStepGhost();
+    return true;
+  }
+
+  async function acceptNextStepSuggestion() {
+    const text = nextStepState.candidates[nextStepState.index];
+    if (!text) return false;
+    hideNextStepGhost();
+    const ok = await fillComposerText(text);
+    if (ok) {
+      showQuickToast('✨ 已补全建议，按回车即可发送');
+    }
+    ensureNextStepGhost();
+    return ok;
   }
 
   // ==================== 思考过程与侧边栏中文化 ====================
@@ -2537,6 +2857,64 @@
     syncCmdModifierState(Boolean(e.metaKey || e.ctrlKey));
     if (e.key === 'Escape' && popoverOpen) {
       toggleQuotaPopover(false);
+      return;
+    }
+    if (disposed || e.isComposing || isComposerComposing) return;
+    const ed = getComposerEditor();
+    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+    if (!ed || !target || !ed.contains(target)) return;
+    if (!nextStepState.visible || !isComposerEmpty(ed) || ed.getAttribute('aria-expanded') === 'true') return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      void acceptNextStepSuggestion();
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (nextStepState.candidates.length > 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        cycleNextStepSuggestion(e.key === 'ArrowDown' ? 1 : -1);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      nextStepState.dismissedSig = nextStepState.replySig;
+      hideNextStepGhost();
+    }
+  }
+
+  function onDocCompositionStart(e) {
+    const ed = getComposerEditor();
+    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+    if (!ed || !target || !ed.contains(target)) return;
+    isComposerComposing = true;
+    hideNextStepGhost();
+  }
+
+  function onDocCompositionEnd(e) {
+    const ed = getComposerEditor();
+    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+    if (!ed || !target || !ed.contains(target)) return;
+    isComposerComposing = false;
+    setTimeout(() => {
+      if (!disposed) ensureNextStepGhost();
+    }, 0);
+  }
+
+  function onDocInput(e) {
+    if (disposed) return;
+    const ed = getComposerEditor();
+    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+    if (!ed || !target || !ed.contains(target)) return;
+    if (isComposerComposing || !isComposerEmpty(ed)) {
+      hideNextStepGhost();
+    } else {
+      setTimeout(() => {
+        if (!disposed) ensureNextStepGhost();
+      }, 0);
     }
   }
 
@@ -2556,6 +2934,9 @@
   document.addEventListener('click', onDocClick, true);
   document.addEventListener('keydown', onDocKeydown, true);
   document.addEventListener('keyup', onDocKeyup, true);
+  document.addEventListener('input', onDocInput, true);
+  document.addEventListener('compositionstart', onDocCompositionStart, true);
+  document.addEventListener('compositionend', onDocCompositionEnd, true);
   window.addEventListener('blur', onWindowBlur);
   window.addEventListener('resize', onWindowResize);
 
@@ -2563,6 +2944,7 @@
   function tickEnhancer() {
     if (disposed) return;
     ensureQuickCapsuleBar();
+    ensureNextStepGhost();
     ensureChatNavFloat();
     ensureFileViewerEditor();
     scanHighRiskCommands();
@@ -2600,9 +2982,14 @@
     window.removeEventListener('click', onWindowClickCapture, true);
     document.removeEventListener('keydown', onDocKeydown, true);
     document.removeEventListener('keyup', onDocKeyup, true);
+    document.removeEventListener('input', onDocInput, true);
+    document.removeEventListener('compositionstart', onDocCompositionStart, true);
+    document.removeEventListener('compositionend', onDocCompositionEnd, true);
     window.removeEventListener('blur', onWindowBlur);
     window.removeEventListener('resize', onWindowResize);
     syncCmdModifierState(false);
+    hideNextStepGhost();
+    safeRemove(document.getElementById(NEXT_STEP_GHOST_ID));
     if (fileEditorState.active) exitFileEditor(false);
     safeRemove(document.getElementById(FILE_EDITOR_CONTROLS_ID));
     safeRemove(document.getElementById(FILE_EDITOR_WRAP_ID));
@@ -2621,7 +3008,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.5.5',
+    version: '1.5.6',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -2635,6 +3022,10 @@
     enterFileEditor,
     saveFileEditor,
     exitFileEditor,
+    ensureNextStepGhost,
+    acceptNextStepSuggestion,
+    cycleNextStepSuggestion,
+    getNextStepState: () => ({ ...nextStepState, candidates: [...nextStepState.candidates] }),
     extractExternalUrlFromTarget,
     openExternalUrlInSystemBrowser,
     getBrainStats: () => latestBrainStats,
@@ -2647,6 +3038,7 @@
   };
 
   ensureQuickCapsuleBar();
+  ensureNextStepGhost();
   ensureChatNavFloat();
   ensureFileViewerEditor();
   scanHighRiskCommands();
