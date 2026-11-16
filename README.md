@@ -131,10 +131,24 @@ cd ~/.local/share/antigravity-context-viewer
 | :--- | :--- |
 | `ag-context-meter status` | 查看各模块运行状态与官方安装包签名完整性 |
 | `ag-context-meter live` | 立即将增强界面热注入到当前运行的 Antigravity 窗口 |
+| `ag-context-meter remote` | 显示**手机极速版 PWA 遥控链接与终端二维码**（支持 `--reset-token` / `--json`） |
 | `ag-context-meter stop` | **秒级无痕还原**：停止桥接服务并卸下所有附加界面，恢复纯英文原版 |
 | `ag-context-meter auto-on` | 开启「每次打开 Antigravity 自动挂载」 |
 | `ag-context-meter auto-off` | 关闭自动挂载并清理当前窗口增强界面 |
 | `ag-context-meter upstreams` | 检查 6 个参考上游仓库更新并与基线账本 [`upstreams.json`](upstreams.json) 比对（内置 GitHub API 限流三段式回退） |
+
+### 📱 手机极速 PWA 遥控（Tailscale / 同 Wi-Fi 内网直连）
+
+如果你在手机上打开官方云端 Remote 觉得加载慢、切后台易断、软键盘常遮挡输入框，可以直接运行：
+
+```bash
+ag-context-meter remote
+```
+
+用 iPhone 相机扫码并在 Safari 点 **「分享」→「添加到主屏幕」**，即可获得独立全屏 App 体验：
+- **100% 合规本机直连**：不碰账号认证与私有 gRPC 接口，仅在 Tailscale（`100.64.0.0/10`）或局域网内通过本机 CDP 镜像控制正版桌面端；
+- **防遮挡 & 防杀后台**：自适应 `visualViewport` 键盘高度（输入框永不遮挡），支持右上角 `🔆` 屏幕常亮锁，切后台回来 **50ms 内**瞬时重连刷新；
+- **单手友好操作**：同步显示最近 20 条对话与中文思考译文、`G4/C` 双窗口配额，待审批时底部直接弹出大号「✅ 批准 / ❌ 拒绝」卡片（高危命令红框预警），并可直接点击下一步建议快速发送。
 
 > 💡 **想让 AI Agent 帮你检查并安全合入参考项目更新？** 直接对 Agent 说：
 > `请运行 ag-context-meter upstreams --json，过滤掉改写 app.asar / 二进制解锁的提交，把安全可吸收的新词条、新模型价格或好用的交互移植进项目并更新 upstreams.json 基线。`

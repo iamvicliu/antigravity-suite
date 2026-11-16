@@ -3220,8 +3220,300 @@
     safeRemove(document.getElementById(DOC_STYLE_ID));
   }
 
+  // ==================== 手机端极速遥控面板数据桥接 (v1.6.0) ====================
+
+  const MOBILE_APPROVE_RE = /^(?:proceed|accept(?:\s+all|\s+changes|\s+step)?|allow(?:\s+once)?|run(?:\s+command)?|approve|continue|继续|接受|全部接受|接受更改|接受此步骤|允许|允许一次|运行|批准)(?:\s+\([^)]+\))?$/i;
+  const MOBILE_REJECT_RE = /^(?:reject|deny|cancel|discard|decline|abort|拒绝|取消|丢弃|中止)(?:\s+\([^)]+\))?$/i;
+
+  function findApprovalCandidateButtons() {
+    const container = document.querySelector('main') || document.body;
+    if (!container) return [];
+    const results = [];
+    const buttons = container.querySelectorAll('button');
+    for (const btn of buttons) {
+      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .surface-composer, [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="thinking-collapsible-trigger"], [data-testid="conversation-row-sidebar"]`)) {
+        continue;
+      }
+      if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+      if (btn.offsetWidth <= 0 || btn.offsetHeight <= 0) continue;
+      const label = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!label || label.length > 32) continue;
+
+      let kind = '';
+      if (MOBILE_REJECT_RE.test(label)) {
+        kind = 'reject';
+      } else if (MOBILE_APPROVE_RE.test(label)) {
+        kind = 'approve';
+      }
+      if (!kind) continue;
+
+      const cardScope = btn.closest('[data-testid="turn-cards-container"], [data-testid="agent-response"], [role="dialog"], [data-testid="tool-group-collapsible"]') || btn.parentElement?.parentElement;
+      const riskEl = cardScope ? (cardScope.matches('[data-ag-risk-card="high"]') ? cardScope : cardScope.querySelector('[data-ag-risk-card="high"]')) : null;
+      const riskBanner = cardScope?.querySelector('.ag-risk-banner');
+      const highRisk = Boolean(riskEl || riskBanner);
+      const riskText = (riskBanner?.textContent || '').trim();
+
+      let contextText = '';
+      if (cardScope) {
+        const codeNode = cardScope.querySelector('pre, code');
+        const rawCtx = (codeNode?.textContent || cardScope.innerText || '').replace(/\s+/g, ' ').trim();
+        contextText = rawCtx.slice(0, 240);
+      }
+
+      results.push({ btn, label, kind, highRisk, riskText, contextText });
+    }
+    return results;
+  }
+
+  function collectPendingApprovals() {
+    return findApprovalCandidateButtons().map((item, index) => ({
+      index,
+      label: item.label,
+      kind: item.kind,
+      highRisk: item.highRisk,
+      riskText: item.riskText,
+      contextText: item.contextText
+    }));
+  }
+
+  function cleanUserMessageText(raw) {
+    let s = String(raw || '').replace(/\r\n/g, '\n').trim();
+    s = s.replace(/^(?:You said|你说)\s*\n+/i, '');
+    s = s.replace(/\n+(?:刚刚|\d+\s*[smhd]\s*ago|\d+\s*(?:秒|分钟|小时|天)前)\s*$/i, '');
+    return s.trim().slice(0, 3000);
+  }
+
+  function collectRecentMessages(limit = 20) {
+    const viewport = getScrollViewport() || document.querySelector('main') || document.body;
+    if (!viewport) return [];
+    const nodes = Array.from(viewport.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]'));
+    const slice = nodes.slice(-Math.max(1, limit));
+    const out = [];
+
+    for (let i = 0; i < slice.length; i++) {
+      const node = slice[i];
+      const testId = node.getAttribute('data-testid');
+      if (testId === 'user-message') {
+        const text = cleanUserMessageText(node.innerText || node.textContent || '');
+        if (!text) continue;
+        out.push({ id: `u-${i}`, role: 'user', text });
+        continue;
+      }
+
+      const triggers = Array.from(node.querySelectorAll('[data-testid="thinking-collapsible-trigger"]'));
+      const thoughtLabel = triggers.map((t) => (t.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' · ');
+      const thoughtChunks = [];
+      for (const trg of triggers) {
+        if (trg.getAttribute('aria-expanded') === 'true') {
+          const panel = trg.parentElement?.nextElementSibling;
+          const zhNode = panel?.querySelector?.('[data-ag-thought-zh]') || trg.nextElementSibling;
+          const txt = (zhNode?.innerText || panel?.innerText || '').trim();
+          if (txt) thoughtChunks.push(txt);
+        }
+      }
+      const mdRoots = Array.from(node.querySelectorAll('[data-markdown-root]')).filter((m) => (
+        !m.closest('[data-testid="user-message"]') &&
+        !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
+        !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
+      ));
+      let replyText = mdRoots.map((m) => (m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
+      if (!replyText) {
+        const cloneText = (node.innerText || '').replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n+/i, '').trim();
+        replyText = cloneText;
+      }
+      const riskBanner = node.querySelector('.ag-risk-banner');
+      const highRisk = Boolean(node.querySelector('[data-ag-risk-card="high"]') || riskBanner);
+
+      out.push({
+        id: `a-${i}`,
+        role: 'assistant',
+        text: replyText.slice(0, 4000),
+        thoughtLabel: thoughtLabel.slice(0, 120),
+        thoughtText: thoughtChunks.join('\n\n').slice(0, 1200),
+        highRisk,
+        riskText: (riskBanner?.textContent || '').trim()
+      });
+    }
+    return out;
+  }
+
+  function collectSidebarConversations(limit = 25) {
+    const currentId = getSessionIdFromLocation() || '';
+    const rows = Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"]'));
+    const list = [];
+    for (const row of rows) {
+      const id = row.getAttribute('data-cascade-id') || '';
+      if (!id) continue;
+      const span = row.querySelector('span.truncate');
+      const title = (span?.textContent || row.innerText || '').replace(/\s+/g, ' ').trim() || id.slice(0, 8);
+      const cls = String(row.className || '');
+      const active = Boolean(
+        (currentId && id === currentId) ||
+        row.getAttribute('aria-current') === 'true' ||
+        row.getAttribute('data-active') === 'true' ||
+        /\bbg-accent\b|\bbg-secondary\b/.test(cls)
+      );
+      list.push({ id, title: title.slice(0, 80), active });
+      if (list.length >= limit) break;
+    }
+    return list;
+  }
+
+  function getMobileSnapshot() {
+    const sessionId = getSessionIdFromLocation() || '';
+    const conversations = collectSidebarConversations(25);
+    const activeConv = conversations.find((c) => c.active);
+    const busy = isAssistantBusy();
+    const { sr } = getMeterHostAndShadow();
+    const contextBadge = (
+      sr?.getElementById('amount')?.textContent ||
+      sr?.getElementById('badge-pct-val')?.textContent ||
+      sr?.getElementById('badge')?.textContent ||
+      ''
+    ).replace(/\s+/g, ' ').trim();
+    const speedBadge = (sr?.getElementById('badge-speed')?.textContent || '').replace(/\s+/g, ' ').trim();
+    const pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
+    const pulseText = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
+    const model = detectCurrentModelText();
+    const pendingApprovals = collectPendingApprovals();
+    const messages = collectRecentMessages(20);
+    const suggestions = !busy ? computeNextStepCandidates().candidates : [];
+
+    return {
+      ok: true,
+      version: '1.6.0',
+      timestamp: Date.now(),
+      sessionId,
+      title: activeConv?.title || document.title || 'Antigravity',
+      busy,
+      autoAccept: autoAcceptEnabled,
+      model,
+      contextBadge,
+      pulseText,
+      quota: {
+        activePoolKey: quotaState.activePoolKey,
+        gemini: quotaState.gemini,
+        claude: quotaState.claude,
+        lastFetchedAt: quotaState.lastFetchedAt
+      },
+      pendingApprovals,
+      suggestions,
+      messages,
+      conversations
+    };
+  }
+
+  async function performMobileAction(payload) {
+    const action = String(payload?.action || '').trim();
+    if (!action) return { ok: false, error: '缺少 action 参数' };
+
+    if (action === 'send') {
+      const text = String(payload?.text || '').trim();
+      if (!text) return { ok: false, error: '发送内容不能为空' };
+      const filled = await fillComposerText(text);
+      if (!filled) return { ok: false, error: '未能填入输入框' };
+      await new Promise((r) => setTimeout(r, 60));
+      const sendBtn =
+        document.querySelector('.surface-composer [data-testid="send-button"]') ||
+        document.querySelector('.surface-composer .agy-send-button') ||
+        document.querySelector('.surface-composer button[aria-label*="Send"], .surface-composer button[aria-label*="发送"]');
+      if (sendBtn && !sendBtn.disabled) {
+        sendBtn.click();
+        lastUserSubmitAt = Date.now();
+        hideNextStepGhost();
+        return { ok: true, method: 'button' };
+      }
+      const ed = getComposerEditor();
+      if (ed) {
+        ed.focus();
+        const evOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        ed.dispatchEvent(new KeyboardEvent('keydown', evOpts));
+        ed.dispatchEvent(new KeyboardEvent('keyup', evOpts));
+        lastUserSubmitAt = Date.now();
+        hideNextStepGhost();
+        return { ok: true, method: 'enter' };
+      }
+      return { ok: false, error: '未找到发送按钮或输入框' };
+    }
+
+    if (action === 'fill') {
+      const ok = await fillComposerText(String(payload?.text || ''));
+      return { ok };
+    }
+
+    if (action === 'stop') {
+      const cancelBtn =
+        document.querySelector('.surface-composer [data-testid="input-cancel-button"]') ||
+        document.querySelector('[data-testid="input-cancel-button"]');
+      if (!cancelBtn || cancelBtn.disabled) return { ok: false, error: '当前未在执行中' };
+      cancelBtn.click();
+      return { ok: true };
+    }
+
+    if (action === 'toggle-auto-accept') {
+      autoAcceptEnabled = !autoAcceptEnabled;
+      updateAutoAcceptBtn();
+      showQuickToast(autoAcceptEnabled ? '🤖 自动确认已开启（仅限安全确认按钮）' : '🤖 自动确认已关闭');
+      if (autoAcceptEnabled) runAutoAcceptTick();
+      return { ok: true, autoAccept: autoAcceptEnabled };
+    }
+
+    if (action === 'click-approval') {
+      const candidates = findApprovalCandidateButtons();
+      if (!candidates.length) return { ok: false, error: '当前没有待审批操作' };
+      const reqLabel = String(payload?.label || '').trim();
+      const reqIndex = Number.isInteger(payload?.index) ? payload.index : -1;
+      let picked = null;
+      if (reqLabel) {
+        picked = candidates.find((c) => c.label === reqLabel) || null;
+      }
+      if (!picked && reqIndex >= 0 && reqIndex < candidates.length) {
+        picked = candidates[reqIndex];
+      }
+      if (!picked) return { ok: false, error: '目标审批按钮已消失或已处理' };
+      picked.btn.click();
+      return { ok: true, label: picked.label, kind: picked.kind };
+    }
+
+    if (action === 'switch-conversation') {
+      const targetId = String(payload?.id || '').trim();
+      if (!targetId) return { ok: false, error: '缺少会话 ID' };
+      if (targetId === 'new') {
+        const newBtn = document.querySelector('[data-testid="new-conversation-button"]');
+        if (!newBtn) return { ok: false, error: '未找到新建对话按钮' };
+        newBtn.click();
+        return { ok: true, id: 'new' };
+      }
+      const row = document.querySelector(`[data-testid="conversation-row-sidebar"][data-cascade-id="${CSS.escape(targetId)}"]`) ||
+        document.querySelector(`a[href*="/c/${CSS.escape(targetId)}"]`);
+      if (!row) return { ok: false, error: '未在侧边栏找到该会话' };
+      row.click();
+      return { ok: true, id: targetId };
+    }
+
+    if (action === 'toggle-thinking') {
+      const toggled = toggleAllThinking();
+      return { ok: true, toggled };
+    }
+
+    if (action === 'refresh-quota') {
+      await refreshQuota();
+      return {
+        ok: true,
+        quota: {
+          activePoolKey: quotaState.activePoolKey,
+          gemini: quotaState.gemini,
+          claude: quotaState.claude,
+          lastFetchedAt: quotaState.lastFetchedAt
+        }
+      };
+    }
+
+    return { ok: false, error: `未知操作: ${action}` };
+  }
+
   globalThis.__AGEnhancer = {
-    version: '1.5.9',
+    version: '1.6.0',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -3240,6 +3532,8 @@
     acceptNextStepSuggestion,
     cycleNextStepSuggestion,
     getNextStepState: () => ({ ...nextStepState, candidates: [...nextStepState.candidates] }),
+    getMobileSnapshot,
+    performMobileAction,
     extractExternalUrlFromTarget,
     openExternalUrlInSystemBrowser,
     getBrainStats: () => latestBrainStats,

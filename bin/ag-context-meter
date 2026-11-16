@@ -236,7 +236,11 @@ if (!lw.running) {
 }
 
 console.log(`随客户端自启：${autoOn ? "✅ 已开启" : "⭕ 未开启"}`);
+console.log("手机极速遥控：✅ 已就绪（运行 ag-context-meter remote 扫码连接）");
 '
+    ;;
+  remote)
+    exec node "$APP_DIR/mobile-remote.js" --print-info "${@:2}"
     ;;
   _auto-trigger)
     mkdir -p "$LOG_DIR"
@@ -273,9 +277,10 @@ console.log(`随客户端自启：${autoOn ? "✅ 已开启" : "⭕ 未开启"}`
   stop           停止后台守护进程，并卸载当前窗口的中文汉化与看板（恢复英文原样）
   auto-on        开启“启动 Antigravity 时自动加载”，并立即执行一次挂载
   auto-off       关闭“启动 Antigravity 时自动加载”，并停止/卸载当前挂载
-  status         查看当前 4 项核心状态（加 --json 可输出原始 JSON 数据）
+  status         查看当前各项核心状态（加 --json 可输出原始 JSON 数据）
+  remote         打印手机极速版 PWA 遥控链接与终端二维码（支持 --reset-token / --json）
   check          执行本地运行环境预检
-  upstreams      检查 5 个参考上游项目的 GitHub 更新并与基线比对（支持 --json）
+  upstreams      检查 6 个参考上游项目的 GitHub 更新并与基线比对（支持 --json）
 EOF
     ;;
   *)

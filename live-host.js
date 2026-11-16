@@ -22,6 +22,7 @@ const {
 const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const { tryHotInject } = require('./install');
+const { startMobileRemoteServer } = require('./mobile-remote');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
@@ -690,11 +691,26 @@ function collectBrainStats() {
       catch (e) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: false, error: e.message })); }
     });
   });
+  let remoteHandle = null;
   server.listen(0, '127.0.0.1', () => {
     const info = { port: server.address().port, token: secret, pid: process.pid, origin: api.origin, startedAt: Date.now() };
     fs.writeFileSync(stamp, JSON.stringify(info));
     console.log('Context Meter local bridge ready on loopback port ' + info.port);
+    try {
+      remoteHandle = startMobileRemoteServer();
+    } catch (e) {
+      console.error('Mobile Remote PWA startup skipped:', e?.message || e);
+    }
   });
+  const shutdownAll = (code = 0) => {
+    clearInterval(check);
+    try { remoteHandle?.stop?.(); } catch {}
+    try { fs.unlinkSync(stamp); } catch {}
+    try { server.close(); } catch {}
+    process.exit(code);
+  };
+  process.on('SIGTERM', () => shutdownAll(0));
+  process.on('SIGINT', () => shutdownAll(0));
   let misses = 0;
   let checking = false;
   const check = setInterval(async () => {
@@ -711,10 +727,7 @@ function collectBrainStats() {
       await tryHotInject({ onlyMissing: true });
     } catch {
       if (++misses >= 10) {
-        clearInterval(check);
-        try { fs.unlinkSync(stamp); } catch {}
-        server.close();
-        process.exit(0);
+        shutdownAll(0);
       }
     } finally {
       checking = false;
