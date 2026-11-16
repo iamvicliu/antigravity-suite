@@ -730,40 +730,29 @@ function buildMobileAppHtml() {
       padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
     }
     .topbar{
-      flex-shrink:0;display:flex;align-items:center;gap:6px;padding:8px 10px;
-      border-bottom:1px solid var(--border);background:rgba(24,24,27,.94);backdrop-filter:blur(14px);
+      flex-shrink:0;display:flex;align-items:center;gap:8px;padding:8px 12px;
+      border-bottom:1px solid rgba(255,255,255,.07);background:rgba(12,12,15,.88);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
     }
     .icon-btn{
-      appearance:none;border:1px solid var(--border);background:var(--card2);color:var(--fg);
-      border-radius:10px;height:34px;min-width:34px;padding:0 9px;font-size:13px;font-weight:600;
-      display:inline-flex;align-items:center;justify-content:center;gap:4px;flex-shrink:0;cursor:pointer;
+      appearance:none;border:none;background:transparent;color:#a1a1aa;
+      border-radius:10px;height:34px;min-width:34px;padding:0 6px;
+      display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;
     }
-    .icon-btn.is-on{border-color:rgba(52,211,153,.55);background:rgba(16,185,129,.18);color:var(--green)}
-    .title-wrap{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
+    .icon-btn:active{background:rgba(255,255,255,.08);color:#fff}
+    .title-wrap{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
     .title-row{display:flex;align-items:center;gap:6px;min-width:0}
-    .dot{width:8px;height:8px;border-radius:99px;background:var(--green);flex-shrink:0}
+    .dot{width:7px;height:7px;border-radius:99px;background:var(--green);flex-shrink:0}
     .dot.busy{background:var(--amber);animation:pulse 1s infinite ease-in-out}
     .dot.err{background:var(--red)}
-    @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.85)}}
-    .conv-title{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .sub-meta{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
+    .conv-title{font-size:15px;font-weight:600;color:#fafafa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em}
+    .sub-meta{font-size:11px;color:#71717a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
     .quota-pill{
-      appearance:none;border:1px solid var(--border);background:var(--card2);color:var(--fg);
-      border-radius:10px;padding:4px 8px;font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;
-      flex-shrink:0;cursor:pointer;display:flex;flex-direction:column;align-items:flex-end;line-height:1.15;
+      appearance:none;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.05);color:#e4e4e7;
+      border-radius:11px;padding:5px 10px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;
+      flex-shrink:0;cursor:pointer;display:flex;flex-direction:column;align-items:flex-end;line-height:1.2;gap:1px;
     }
-    .quota-pill span:last-child{font-size:10px;color:var(--muted);font-weight:500}
-    .ctrl-bar{
-      flex-shrink:0;display:flex;align-items:center;gap:8px;padding:6px 10px;
-      background:rgba(20,20,24,.94);border-bottom:1px solid var(--border);
-    }
-    .ctrl-pill{
-      appearance:none;flex:1 1 0;min-width:0;height:32px;padding:0 10px;border-radius:9px;
-      border:1px solid rgba(167,139,250,.35);background:rgba(139,92,246,.12);color:#e9d5ff;
-      font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;justify-content:space-between;gap:6px;cursor:pointer;
-    }
-    .ctrl-pill.perm{flex:0 0 auto;border-color:rgba(56,189,248,.35);background:rgba(56,189,248,.12);color:#bae6fd}
-    .ctrl-pill-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .quota-pill span:last-child{font-size:10px;color:#71717a;font-weight:500}
     .quota-drawer{
       position:fixed;top:calc(env(safe-area-inset-top) + 52px);right:10px;left:10px;max-width:360px;margin-left:auto;
       z-index:60;background:#18181b;border:1px solid rgba(255,255,255,.16);border-radius:14px;
@@ -779,13 +768,24 @@ function buildMobileAppHtml() {
     .qreset{font-size:10.5px;color:var(--muted);margin-top:2px}
     .messages{
       flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
-      padding:10px 12px;display:flex;flex-direction:column;gap:10px;
+      padding:14px 16px 12px;display:flex;flex-direction:column;gap:16px;
     }
-    .msg{border-radius:14px;padding:10px 12px;word-break:break-word}
-    .msg.user{align-self:flex-end;max-width:88%;background:#0369a1;color:#f0f9ff;border-bottom-right-radius:4px;white-space:pre-wrap}
-    .msg.assistant{align-self:stretch;background:var(--card);border:1px solid var(--border)}
-    .msg.assistant .msg-plain{white-space:pre-wrap}
-    .msg.assistant.is-risk{border-color:rgba(248,113,113,.65);box-shadow:0 0 0 1px rgba(248,113,113,.2)}
+    .msg{word-break:break-word}
+    .msg.user{
+      align-self:flex-end;max-width:84%;padding:10px 14px;border-radius:18px 18px 4px 18px;
+      background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#f8fafc;
+      font-size:14.5px;line-height:1.48;white-space:pre-wrap;
+      box-shadow:0 2px 12px rgba(37,99,235,.22);
+    }
+    .msg.assistant{align-self:stretch;background:transparent;border:none;padding:2px 2px}
+    .msg.assistant .msg-plain{white-space:pre-wrap;font-size:14.5px;line-height:1.65;color:#e4e4e7}
+    .msg.assistant.is-risk{padding:10px 12px;border-radius:14px;background:rgba(239,68,68,.06);border:1px solid rgba(248,113,113,.5)}
+    .busy-pill{
+      display:inline-flex;align-items:center;gap:8px;align-self:flex-start;
+      padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
+      font-size:12.5px;color:#a1a1aa;
+    }
+    .busy-spark{width:7px;height:7px;border-radius:99px;background:#38bdf8;animation:pulse 1s infinite ease-in-out}
     .md-body{font-size:14px;line-height:1.62;color:var(--fg)}
     .md-body>:first-child{margin-top:0}
     .md-body>:last-child{margin-bottom:0}
@@ -838,40 +838,53 @@ function buildMobileAppHtml() {
     .ap-btn.approve{background:#10b981;color:#052e16}
     .ap-btn.reject{background:#3f3f46;color:#f4f4f5;border:1px solid rgba(255,255,255,.15)}
     .composer-dock{
-      flex-shrink:0;background:rgba(15,15,18,.98);border-top:1px solid var(--border);padding:6px 10px 8px;
+      flex-shrink:0;background:transparent;padding:4px 10px 8px;
       display:flex;flex-direction:column;gap:6px;
     }
-    .chips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:1px}
+    .chips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 2px}
     .chips::-webkit-scrollbar{display:none}
     .chip{
-      appearance:none;flex-shrink:0;border:1px solid var(--border);background:var(--card2);color:#e4e4e7;
-      border-radius:999px;padding:6px 11px;font-size:12.5px;white-space:nowrap;cursor:pointer;
+      appearance:none;flex-shrink:0;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.04);color:#a1a1aa;
+      border-radius:999px;padding:5px 11px;font-size:12px;white-space:nowrap;cursor:pointer;
     }
-    .chip.suggest{border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.14);color:#7dd3fc;font-weight:500}
-    .chip.ctrl{border-color:rgba(167,139,250,.4);background:rgba(139,92,246,.14);color:#ddd6fe;font-weight:500}
-    .chip.stop{border-color:rgba(248,113,113,.5);background:rgba(239,68,68,.16);color:#fca5a5}
+    .chip.suggest{border-color:rgba(56,189,248,.32);background:rgba(56,189,248,.09);color:#7dd3fc;font-weight:500}
     .attach-hint{
-      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 10px;border-radius:8px;
-      background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.3);font-size:12px;color:#bae6fd;
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 12px;border-radius:12px;
+      background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.28);font-size:12px;color:#bae6fd;
     }
     .attach-hint[hidden]{display:none}
-    .input-row{display:flex;align-items:flex-end;gap:6px}
-    .tool-btn{
-      appearance:none;flex-shrink:0;width:38px;height:40px;border-radius:11px;border:1px solid var(--border);
-      background:var(--card2);color:var(--fg);font-size:17px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+    .composer-card{
+      background:#16161a;border:1px solid rgba(255,255,255,.11);border-radius:22px;
+      padding:10px 10px 8px 12px;display:flex;flex-direction:column;gap:6px;
+      box-shadow:0 8px 28px rgba(0,0,0,.45);transition:border-color .15s ease;
     }
-    .tool-btn.rec{border-color:rgba(248,113,113,.85);background:rgba(239,68,68,.24);color:#fca5a5;animation:pulse 1s infinite ease-in-out}
-    textarea{
-      flex:1 1 auto;min-height:40px;max-height:110px;resize:none;border-radius:12px;
-      border:1px solid rgba(255,255,255,.16);background:#18181b;color:var(--fg);
-      padding:9px 12px;font-size:15px;line-height:1.35;font-family:inherit;outline:none;
+    .composer-card:focus-within{border-color:rgba(56,189,248,.45)}
+    .composer-card textarea{
+      width:100%;min-height:28px;max-height:112px;resize:none;border:none;background:transparent;
+      color:var(--fg);padding:2px 4px;font-size:15px;line-height:1.42;font-family:inherit;outline:none;
     }
-    textarea:focus{border-color:var(--accent)}
-    .send-btn{
-      flex-shrink:0;height:40px;min-width:56px;border:none;border-radius:12px;
-      background:var(--accent);color:#082f49;font-size:14.5px;font-weight:700;cursor:pointer;
+    .composer-card textarea::placeholder{color:#71717a}
+    .composer-toolbar{display:flex;align-items:center;justify-content:space-between;gap:6px;padding-top:2px}
+    .toolbar-left{display:flex;align-items:center;gap:4px;min-width:0;flex:1 1 auto}
+    .toolbar-right{display:flex;align-items:center;gap:6px;flex-shrink:0}
+    .ghost-btn{
+      appearance:none;border:none;background:transparent;color:#a1a1aa;
+      height:32px;padding:0 7px;border-radius:999px;font-size:12.5px;font-weight:500;
+      display:inline-flex;align-items:center;gap:4px;cursor:pointer;min-width:0;max-width:100%;
     }
-    .send-btn:disabled{opacity:.45}
+    .ghost-btn:active{background:rgba(255,255,255,.08);color:#fff}
+    .ghost-btn.icon-only{width:32px;padding:0;justify-content:center}
+    .ghost-btn.rec{background:rgba(239,68,68,.2);color:#fca5a5;animation:pulse 1s infinite ease-in-out}
+    .ghost-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .send-circle{
+      appearance:none;flex-shrink:0;width:32px;height:32px;border-radius:999px;border:none;
+      background:#27272a;color:#71717a;display:inline-flex;align-items:center;justify-content:center;
+      cursor:pointer;transition:background-color .15s ease,color .15s ease,transform .1s ease;
+    }
+    .send-circle.ready{background:#38bdf8;color:#082f49}
+    .send-circle.stop{background:rgba(239,68,68,.2);color:#f87171;border:1px solid rgba(248,113,113,.45)}
+    .send-circle:active{transform:scale(.94)}
+    .send-circle:disabled{opacity:.5}
     .sheet-backdrop{
       position:fixed;inset:0;z-index:75;background:rgba(0,0,0,.58);display:flex;align-items:flex-end;justify-content:center;
     }
@@ -929,24 +942,21 @@ function buildMobileAppHtml() {
 <body>
   <div class="app">
     <header class="topbar">
-      <button id="btn-drawer" class="icon-btn" type="button" aria-label="会话与窗口">☰</button>
+      <button id="btn-drawer" class="icon-btn" type="button" aria-label="会话与窗口">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="14" y2="17"/></svg>
+      </button>
       <div class="title-wrap">
         <div class="title-row">
           <span id="status-dot" class="dot"></span>
           <span id="conv-title" class="conv-title">正在连接 Mac…</span>
         </div>
-        <div id="sub-meta" class="sub-meta">Tailscale / 内网直连</div>
+        <div id="sub-meta" class="sub-meta">内网直连</div>
       </div>
       <button id="btn-quota" class="quota-pill" type="button">
         <span id="quota-main">G4 -- · C --</span>
         <span id="ctx-badge">--%</span>
       </button>
     </header>
-
-    <div class="ctrl-bar">
-      <button id="btn-model-top" class="ctrl-pill" type="button"><span>🧠</span><span id="model-top-label" class="ctrl-pill-label">切换模型</span><span>▾</span></button>
-      <button id="btn-perm-top" class="ctrl-pill perm" type="button"><span>⚡</span><span id="perm-top-label" class="ctrl-pill-label">权限</span><span>▾</span></button>
-    </div>
 
     <div id="quota-drawer" class="quota-drawer" hidden></div>
 
@@ -959,12 +969,32 @@ function buildMobileAppHtml() {
     <footer class="composer-dock">
       <div id="attach-hint" class="attach-hint" hidden></div>
       <div id="chips" class="chips"></div>
-      <div class="input-row">
-        <button id="btn-img" class="tool-btn" type="button" title="拍照或上传图片">🖼️</button>
+      <div class="composer-card">
+        <textarea id="input" rows="1" placeholder="发消息给 Antigravity…"></textarea>
         <input id="img-input" type="file" accept="image/*" multiple hidden>
-        <textarea id="input" rows="1" placeholder="发消息给桌面端 Antigravity…"></textarea>
-        <button id="btn-voice" class="tool-btn" type="button" title="语音输入">🎤</button>
-        <button id="btn-send" class="send-btn" type="button">发送</button>
+        <div class="composer-toolbar">
+          <div class="toolbar-left">
+            <button id="btn-img" class="ghost-btn icon-only" type="button" title="拍照或上传图片" aria-label="上传图片">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+            <button id="btn-model-inline" class="ghost-btn" type="button" title="切换模型">
+              <span id="model-inline-label" class="ghost-label">切换模型</span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.7"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <button id="btn-perm-inline" class="ghost-btn" type="button" title="切换权限预设" style="flex-shrink:0">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0;color:#fbbf24"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+              <span id="perm-inline-label">权限</span>
+            </button>
+          </div>
+          <div class="toolbar-right">
+            <button id="btn-voice" class="ghost-btn icon-only" type="button" title="语音输入" aria-label="语音输入">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+            </button>
+            <button id="btn-send" class="send-circle" type="button" aria-label="发送消息">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            </button>
+          </div>
+        </div>
       </div>
     </footer>
   </div>
@@ -1130,37 +1160,41 @@ function buildMobileAppHtml() {
 
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
-      $('sub-meta').textContent = [snap.model || '', snap.pulseText || (snap.busy ? 'AI 正在运行…' : '空闲')].filter(Boolean).join(' · ');
+      $('sub-meta').textContent = snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '空闲'));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
       $('quota-main').textContent = 'G4 ' + gStr + ' · C ' + cStr;
       $('ctx-badge').textContent = snap.contextBadge || '--%';
-      $('model-top-label').textContent = snap.model || '切换模型';
-      $('perm-top-label').textContent = snap.permissionLabel || '权限';
+      $('model-inline-label').textContent = snap.model || '切换模型';
+      $('perm-inline-label').textContent = snap.permissionLabel || '权限';
 
       renderQuotaDrawer(snap);
+      syncSendButtonUI();
 
       // Messages
       const wasBottom = stickBottom;
       const msgs = Array.isArray(snap.messages) ? snap.messages : [];
-      if (!msgs.length) {
-        msgEl.innerHTML = '<div class="empty-tip">当前会话暂无消息，直接发送指令或点左上方切换对话</div>';
+      if (!msgs.length && !snap.busy) {
+        msgEl.innerHTML = '<div class="empty-tip">暂无消息，发一句话或在屏幕右滑切换会话</div>';
       } else {
-        const html = msgs.map((m) => {
+        let html = msgs.map((m) => {
           if (m.role === 'user') {
             return '<div class="msg user">' + esc(m.text) + '</div>';
           }
           const risk = m.highRisk ? '<span class="risk-tag">' + esc(m.riskText || '🛡️ 检测到高危命令，请人工核对') + '</span>' : '';
           const thought = m.thoughtLabel
-            ? '<details class="thought-box"><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? '（点此看思考译文）' : '（桌面端折叠中）') + '</summary>' +
+            ? '<details class="thought-box"><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? ' · 展开思考' : '') + '</summary>' +
               (m.thoughtText ? '<div class="thought-body">' + esc(m.thoughtText) + '</div>' : '') + '</details>'
             : '';
           const bodyHtml = m.html
             ? '<div class="md-body">' + m.html + '</div>'
-            : '<div class="msg-plain">' + esc(m.text || (snap.busy ? '正在生成内容…' : '')) + '</div>';
+            : '<div class="msg-plain">' + esc(m.text || '') + '</div>';
           return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + '">' + risk + thought + bodyHtml + '</div>';
         }).join('');
+        if (snap.busy) {
+          html += '<div class="busy-pill"><span class="busy-spark"></span><span>正在思考与执行…</span></div>';
+        }
         if (msgEl.dataset.lastHtml !== html) {
           msgEl.innerHTML = html;
           msgEl.dataset.lastHtml = html;
@@ -1195,22 +1229,16 @@ function buildMobileAppHtml() {
         });
       }
 
-      // Quick Chips, Model/Permission Controls & Next Step Suggestions
+      // 轻盈下一步建议 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
       const chips = $('chips');
       const items = [];
-      if (snap.busy) {
-        items.push({ cls: 'chip stop', text: '⏹ 停止生成', act: () => apiAction({ action: 'stop' }) });
-      }
-      const shortModel = (snap.model || '切换模型').replace(/^Gemini\\s+/i, 'G').replace(/\\s*\\((Medium|High|Low|XHigh)\\)/i, (_, e) => '·' + e[0]);
-      items.push({ cls: 'chip ctrl', text: '🧠 ' + shortModel, act: openModelPicker });
-      items.push({ cls: 'chip ctrl', text: '⚡ ' + (snap.permissionLabel || '权限'), act: openPermPicker });
       if (!snap.busy) {
         for (const s of (snap.suggestions || [])) {
-          items.push({ cls: 'chip suggest', text: '💡 ' + s, raw: s, isSuggest: true });
+          items.push({ cls: 'chip suggest', text: '✦ ' + s, raw: s, isSuggest: true });
         }
       }
-      items.push({ cls: 'chip', text: '🗜️ /compact', act: () => apiAction({ action: 'send', text: '/compact' }) });
-      items.push({ cls: 'chip', text: '💡 展开/收起思考', act: () => apiAction({ action: 'toggle-thinking' }) });
+      items.push({ cls: 'chip', text: '/compact', act: () => apiAction({ action: 'send', text: '/compact' }) });
+      items.push({ cls: 'chip', text: '展开/收起思考', act: () => apiAction({ action: 'toggle-thinking' }) });
 
       chips.innerHTML = '';
       for (const it of items) {
@@ -1347,8 +1375,8 @@ function buildMobileAppHtml() {
       });
     }
 
-    $('btn-model-top').onclick = openModelPicker;
-    $('btn-perm-top').onclick = openPermPicker;
+    $('btn-model-inline').onclick = openModelPicker;
+    $('btn-perm-inline').onclick = openPermPicker;
 
     // 拍照/传图压缩并注入桌面端输入框
     let uploadedNames = [];
@@ -1410,8 +1438,9 @@ function buildMobileAppHtml() {
       if (uploadedNames.length) {
         const hint = $('attach-hint');
         hint.innerHTML = '<span>🖼️ 已传至桌面端: ' + esc(uploadedNames.slice(-3).join('、')) + (uploadedNames.length > 3 ? ' 等' + uploadedNames.length + '张' : '') + '</span><button type="button" style="background:none;border:none;color:#bae6fd;font-weight:700;cursor:pointer">✕</button>';
-        hint.querySelector('button').onclick = () => { uploadedNames = []; hint.hidden = true; };
+        hint.querySelector('button').onclick = () => { uploadedNames = []; hint.hidden = true; syncSendButtonUI(); };
         hint.hidden = false;
+        syncSendButtonUI();
         showToast('✅ 图片已附带到输入框');
       }
     };
@@ -1598,9 +1627,32 @@ function buildMobileAppHtml() {
     document.addEventListener('touchcancel', finishSwipe, { passive: true });
 
     const ta = $('input');
+    const SEND_ARROW_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
+    const STOP_SQUARE_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="3"/></svg>';
+
+    function syncSendButtonUI() {
+      const btn = $('btn-send');
+      if (!btn) return;
+      const hasContent = Boolean(ta.value.trim() || uploadedNames.length);
+      if (hasContent) {
+        btn.className = 'send-circle ready';
+        btn.innerHTML = SEND_ARROW_SVG;
+        btn.setAttribute('aria-label', '发送消息');
+      } else if (latestSnap?.busy) {
+        btn.className = 'send-circle stop';
+        btn.innerHTML = STOP_SQUARE_SVG;
+        btn.setAttribute('aria-label', '停止生成');
+      } else {
+        btn.className = 'send-circle';
+        btn.innerHTML = SEND_ARROW_SVG;
+        btn.setAttribute('aria-label', '发送消息');
+      }
+    }
+
     const autoGrow = () => {
       ta.style.height = 'auto';
-      ta.style.height = Math.min(110, Math.max(40, ta.scrollHeight)) + 'px';
+      ta.style.height = Math.min(112, Math.max(28, ta.scrollHeight)) + 'px';
+      syncSendButtonUI();
     };
     ta.addEventListener('input', autoGrow);
     ta.addEventListener('focus', () => { setTimeout(syncViewportHeight, 120); });
@@ -1609,6 +1661,11 @@ function buildMobileAppHtml() {
       if (sending) return;
       if (voiceActive) stopVoice();
       const rawText = ta.value.trim();
+      if (!rawText && !uploadedNames.length && latestSnap?.busy) {
+        await apiAction({ action: 'stop' });
+        showToast('已请求停止生成');
+        return;
+      }
       const text = rawText || (uploadedNames.length ? '请查看图片' : '');
       if (!text) return;
       sending = true;
@@ -1627,6 +1684,7 @@ function buildMobileAppHtml() {
       } finally {
         sending = false;
         $('btn-send').disabled = false;
+        syncSendButtonUI();
       }
     }
     $('btn-send').onclick = sendInput;

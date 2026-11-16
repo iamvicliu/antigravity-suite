@@ -3279,7 +3279,7 @@
   function cleanUserMessageText(raw) {
     let s = String(raw || '').replace(/\r\n/g, '\n').trim();
     s = s.replace(/^(?:You said|你说)\s*\n+/i, '');
-    s = s.replace(/\n+(?:刚刚|\d+\s*[smhd]\s*ago|\d+\s*(?:秒|分钟|小时|天)前)\s*$/i, '');
+    s = s.replace(/\n+(?:just\s+now|刚刚|\d+\s*(?:second|minute|hour|day|sec|min|hr)s?\s*ago|\d+\s*[smhd]\s*ago|\d+\s*(?:秒|分钟|小时|天)前)\s*$/i, '');
     return s.trim().slice(0, 3000);
   }
 
@@ -3396,11 +3396,20 @@
       let replyText = mdRoots.map((m) => (m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
       const replyHtml = extractSanitizedMarkdownHtml(mdRoots);
       if (!replyText) {
-        const cloneText = (node.innerText || '').replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n+/i, '').trim();
-        replyText = cloneText;
+        const cloneText = (node.innerText || '')
+          .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
+          .replace(/^Worked\s+for\s+\S+(?:\s+in\s+this\s+step)?\s*\n*/i, '')
+          .trim();
+        if (cloneText && !/^(?:Agent\s+working|Worked\s+for|Running\s+)/i.test(cloneText)) {
+          replyText = cloneText;
+        }
       }
       const riskBanner = node.querySelector('.ag-risk-banner');
       const highRisk = Boolean(node.querySelector('[data-ag-risk-card="high"]') || riskBanner);
+
+      if (!replyText && !replyHtml && !thoughtLabel && !highRisk) {
+        continue;
+      }
 
       out.push({
         id: `a-${i}`,
@@ -3479,7 +3488,10 @@
     ).replace(/\s+/g, ' ').trim();
     const speedBadge = (sr?.getElementById('badge-speed')?.textContent || '').replace(/\s+/g, ' ').trim();
     const pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
-    const pulseText = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
+    const rawPulse = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
+    const speedMatch = rawPulse.match(/(\d+(?:\.\d+)?\s*tok\/s)/i);
+    const ratioMatch = contextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/);
+    const pulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : contextBadge].filter(Boolean).join(' · ') || rawPulse;
     const modelCtx = getModelSelectorContext();
     const model = modelCtx?.selectedModel?.label || detectCurrentModelText();
     const modelOptions = Array.isArray(modelCtx?.modelOptions)
@@ -3499,7 +3511,7 @@
 
     return {
       ok: true,
-      version: '1.6.3',
+      version: '1.6.5',
       timestamp: Date.now(),
       sessionId,
       title: activeConv?.title || document.title || 'Antigravity',
@@ -3748,7 +3760,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.6.3',
+    version: '1.6.5',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
