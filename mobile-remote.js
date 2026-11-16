@@ -731,20 +731,21 @@ function buildMobileAppHtml() {
     :root{
       --bg:#09090b;--card:#18181b;--card2:#27272a;--border:rgba(255,255,255,.1);
       --fg:#f4f4f5;--muted:#a1a1aa;--accent:#38bdf8;--green:#34d399;--amber:#fbbf24;--red:#f87171;
-      --vvh:100dvh;
     }
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     html,body{
-      margin:0;padding:0;width:100%;height:var(--vvh,100dvh);position:fixed;inset:0;overflow:hidden;
+      margin:0;padding:0;width:100%;height:100%;position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;
       background:var(--bg);color:var(--fg);
       font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
       font-size:14px;line-height:1.45;overscroll-behavior:none;
     }
     .app{
       display:flex;flex-direction:column;width:100%;height:100%;
-      padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);
+      padding-top:env(safe-area-inset-top);
+      padding-bottom:max(6px,calc(env(safe-area-inset-bottom) - 10px));
       padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
     }
+    .app.kb-open{padding-bottom:4px}
     .topbar{
       flex-shrink:0;display:flex;align-items:center;gap:8px;padding:8px 12px;
       border-bottom:1px solid rgba(255,255,255,.07);background:rgba(12,12,15,.88);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
@@ -854,7 +855,7 @@ function buildMobileAppHtml() {
     .ap-btn.approve{background:#10b981;color:#052e16}
     .ap-btn.reject{background:#3f3f46;color:#f4f4f5;border:1px solid rgba(255,255,255,.15)}
     .composer-dock{
-      flex-shrink:0;background:transparent;padding:4px 10px 8px;
+      flex-shrink:0;background:transparent;padding:2px 10px 4px;
       display:flex;flex-direction:column;gap:6px;
     }
     .chips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 2px}
@@ -1057,12 +1058,30 @@ function buildMobileAppHtml() {
     const $ = (id) => document.getElementById(id);
     const msgEl = $('messages');
 
+    const appEl = document.querySelector('.app');
+    let maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+
     function syncViewportHeight() {
       const vv = window.visualViewport;
-      const h = vv ? vv.height : window.innerHeight;
-      const top = vv ? vv.offsetTop : 0;
-      document.documentElement.style.setProperty('--vvh', h + 'px');
-      document.body.style.transform = top ? 'translateY(' + top + 'px)' : '';
+      const curH = vv ? vv.height : window.innerHeight;
+      const isInputFocused = document.activeElement === $('input');
+      if (!isInputFocused && curH > maxVvHeight) {
+        maxVvHeight = curH;
+      }
+      const baseH = Math.max(maxVvHeight, window.innerHeight || 0);
+      const kbOpen = Boolean(isInputFocused && vv && (baseH - curH > 100));
+      if (kbOpen) {
+        const top = vv.offsetTop || 0;
+        document.body.style.bottom = 'auto';
+        document.body.style.height = curH + 'px';
+        document.body.style.transform = top ? 'translateY(' + top + 'px)' : '';
+        appEl?.classList.add('kb-open');
+      } else {
+        document.body.style.bottom = '0';
+        document.body.style.height = '100%';
+        document.body.style.transform = '';
+        appEl?.classList.remove('kb-open');
+      }
       if (stickBottom) msgEl.scrollTop = msgEl.scrollHeight;
     }
     if (window.visualViewport) {
@@ -1594,10 +1613,10 @@ function buildMobileAppHtml() {
     };
     ta.addEventListener('input', autoGrow);
     ta.addEventListener('focus', () => { setTimeout(syncViewportHeight, 120); });
+    ta.addEventListener('blur', () => { setTimeout(syncViewportHeight, 80); });
 
     async function sendInput() {
       if (sending) return;
-      if (voiceActive) stopVoice();
       const rawText = ta.value.trim();
       if (!rawText && !uploadedNames.length && latestSnap?.busy) {
         await apiAction({ action: 'stop' });

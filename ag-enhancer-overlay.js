@@ -3879,7 +3879,7 @@
 
     return {
       ok: true,
-      version: '1.6.6',
+      version: '1.6.7',
       timestamp: Date.now(),
       sessionId,
       title: activeConv?.title || document.title || 'Antigravity',
@@ -3913,11 +3913,15 @@
       if (!text) return { ok: false, error: '发送内容不能为空' };
       const filled = await fillComposerText(text);
       if (!filled) return { ok: false, error: '未能填入输入框' };
-      await new Promise((r) => setTimeout(r, 60));
-      const sendBtn =
-        document.querySelector('.surface-composer [data-testid="send-button"]') ||
-        document.querySelector('.surface-composer .agy-send-button') ||
-        document.querySelector('.surface-composer button[aria-label*="Send"], .surface-composer button[aria-label*="发送"]');
+      let sendBtn = null;
+      for (let i = 0; i < 8; i++) {
+        await new Promise((r) => setTimeout(r, 35));
+        sendBtn =
+          document.querySelector('.surface-composer [data-testid="send-button"]') ||
+          document.querySelector('.surface-composer .agy-send-button') ||
+          document.querySelector('.surface-composer button[aria-label*="Send"], .surface-composer button[aria-label*="发送"]');
+        if (sendBtn && !sendBtn.disabled) break;
+      }
       if (sendBtn && !sendBtn.disabled) {
         sendBtn.click();
         lastUserSubmitAt = Date.now();
@@ -4128,7 +4132,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.6.6',
+    version: '1.6.7',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
