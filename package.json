@@ -1,7 +1,7 @@
 {
   "name": "antigravity-context-viewer",
   "version": "0.8.3",
-  "description": "Antigravity Desktop 全功能免改包增强套件｜融合上下文看板、Pulse 能量胶囊、双池配额监控、2.32.1 深度汉化、Auto-Accept、高危命令红框预警与长对话导航",
+  "description": "Google Antigravity 桌面端全能增强套件（macOS 免改包）：实时显示上下文占比与 5h/每周剩余额度、全界面与英文思考过程自动中译（零 Token）、右侧文件直接编辑保存、下一步建议 Tab 补全、高危命令红框防误触与安全自动确认。",
   "repository": {
     "type": "git",
     "url": "https://github.com/iamvicliu/antigravity-suite.git"
