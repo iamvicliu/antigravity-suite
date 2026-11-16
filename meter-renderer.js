@@ -256,7 +256,7 @@
       background:var(--ag-toolbar-bg);color:var(--ag-toolbar-fg);
       white-space:nowrap;font-variant-numeric:tabular-nums;
       font-size:12px;font-weight:500;letter-spacing:-0.01em;gap:4px;
-      transition:background-color .14s ease,color .14s ease,border-color .14s ease,opacity .14s ease,transform .1s cubic-bezier(0.16,1,0.3,1);
+      transition:background-color .14s ease,color .14s ease,border-color .14s ease,opacity .14s ease;
       flex-shrink:0;
     }
     .ag-unit:hover,.ag-unit:focus-visible,.ag-unit[aria-expanded="true"]{
@@ -504,6 +504,7 @@
 
     /* 窄屏溢出菜单浮层 */
     #overflow-menu{
+      box-sizing:border-box;
       position:fixed;top:36px;right:12px;z-index:2147483500;
       width:220px;padding:6px;border-radius:10px;
       border:1px solid var(--ag-float-border);
@@ -560,6 +561,7 @@
 
     /* 自定义颜色选取器悬浮面板（参考样式：吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL三行） */
     #color-picker-popover{
+      box-sizing:border-box;
       position:fixed;z-index:2147483640;width:304px;max-height:calc(100vh - 48px);overflow-y:auto;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);
       border:1px solid var(--ag-border-panel);border-radius:10px;
@@ -943,6 +945,8 @@
       transform-origin:top right;
       transition:opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1),visibility .16s ease;
       contain:layout paint;
+      will-change:transform,opacity;
+      backface-visibility:hidden;
     }
     #panel{width:472px;max-width:calc(100vw - 24px)}
     #panel-tokens{width:730px;transition:width .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1)}
@@ -1194,6 +1198,7 @@
       background:#ef4444;box-shadow:0 0 0 1.5px var(--ag-bg-panel);
     }
     .update-popover{
+      box-sizing:border-box;
       position:fixed;top:80px;right:24px;width:290px;max-width:calc(100vw - 28px);
       background:var(--ag-unified-bg,#1e1e24);border:1px solid var(--ag-float-border,rgba(255,255,255,0.18));
       border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.3);

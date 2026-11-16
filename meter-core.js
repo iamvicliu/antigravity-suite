@@ -12,13 +12,19 @@
 
   function getModelPoolKey(raw) {
     if (!raw) return 'unknown';
-    const s = String(raw).toLowerCase();
-    if (s.includes('argon') || s.includes('gemini-4-argon')) return 'gemini-4-argon';
+    const text = typeof raw === 'object'
+      ? [raw.modelId, raw.model, raw.label, raw.modelDisplayName, raw.modelOrAlias?.model, raw.poolKey].filter(Boolean).join(' ')
+      : String(raw);
+    const s = String(text || '').trim().toLowerCase().replace(/^word\//, '');
+    if (!s) return 'unknown';
+    if (s.includes('carbon') || s.includes('gemini-4-carbon') || s.includes('m670')) return 'gemini-4-carbon';
+    if (s.includes('argon') || s.includes('gemini-4-argon') || s.includes('m668') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?(?![a-z0-9-])/.test(s)) return 'gemini-4-argon';
+    if (s.includes('hydrogen') || s.includes('gemini-4-hydrogen')) return 'gemini-4-hydrogen';
     if (s.includes('flash') || s.includes('gemini-3.8-flash')) return 'gemini-3.8-flash';
     if (s.includes('opus') || s.includes('claude-opus')) return 'claude-opus-5-5';
     if (s.includes('sonnet') || s.includes('claude-sonnet')) return 'claude-sonnet-5-5';
     if (s.includes('gpt-oss')) return 'gpt-oss-120b';
-    return s.replace(/[^a-z0-9_-]/g, '');
+    return s.replace(/[^a-z0-9_-]/g, '') || 'unknown';
   }
 
   function formatResetTimeZh(isoStr) {
@@ -62,6 +68,8 @@
 
     const qi = matched.quotaInfo || {};
     const poolNames = {
+      'gemini-4-hydrogen': 'Gemini 4 Hydrogen 配额池',
+      'gemini-4-carbon': 'Gemini 4 Carbon 配额池',
       'gemini-4-argon': 'Gemini 4 Argon 配额池（周限额）',
       'gemini-3.8-flash': 'Gemini 3.8 Flash 配额池',
       'claude-opus-5-5': 'Claude Opus 5.5 配额池',
@@ -417,8 +425,10 @@
   }
 
   // 官方 Developer API Standard 公开费率表 (USD / 百万 Token)
-  // 来源: https://ai.google.dev/gemini-api/docs/pricing
-  // 核对日期: 2026-11-08
+  // 来源: https://ai.google.dev/gemini-api/docs/pricing , https://aistudio.google.com/docs/pricing
+  //       https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-hydrogen/
+  //       https://platform.claude.com/docs/en/about-claude/pricing
+  // 核对日期: 2026-11-16
   const GEMINI_PRICING_TABLE = {
     'gemini-3.8-flash': [
       {
@@ -432,6 +442,27 @@
         inputPerMillion: 1.50,
         outputPerMillion: 7.50,
         cacheReadPerMillion: 0.15
+      }
+    ],
+    'gemini-4-hydrogen': [
+      {
+        inputPerMillion: 1.50,
+        outputPerMillion: 7.50,
+        cacheReadPerMillion: 0.075
+      }
+    ],
+    'gemini-4-carbon': [
+      {
+        effectiveTo: '2026-11-30',
+        inputPerMillion: 2.00,
+        outputPerMillion: 10.00,
+        cacheReadPerMillion: 0.10
+      },
+      {
+        effectiveFrom: '2026-12-01',
+        inputPerMillion: 4.00,
+        outputPerMillion: 20.00,
+        cacheReadPerMillion: 0.20
       }
     ],
     'gemini-4-argon': [
@@ -482,6 +513,20 @@
         outputPerMillion: 15.00,
         cacheReadPerMillion: 0.25
       }
+    ],
+    'claude-opus-5-5': [
+      {
+        inputPerMillion: 4.00,
+        outputPerMillion: 20.00,
+        cacheReadPerMillion: 0.20
+      }
+    ],
+    'claude-sonnet-5-5': [
+      {
+        inputPerMillion: 2.00,
+        outputPerMillion: 10.00,
+        cacheReadPerMillion: 0.10
+      }
     ]
   };
 
@@ -494,12 +539,16 @@
 
   function normalizeModelId(raw) {
     if (!raw || typeof raw !== 'string') return null;
-    const str = raw.trim().toLowerCase();
+    const str = raw.trim().toLowerCase().replace(/^word\//, '');
     if (str.includes('3.8-flash') || str.includes('3.8 flash') || str.includes('flash-n')) return 'gemini-3.8-flash';
-    if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon')) return 'gemini-4-argon';
+    if (str.includes('4-hydrogen') || str.includes('4 hydrogen') || str.includes('hydrogen')) return 'gemini-4-hydrogen';
+    if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || str.includes('m670')) return 'gemini-4-carbon';
+    if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?(?![a-z0-9-])/.test(str) || str.includes('m668')) return 'gemini-4-argon';
     if (str.includes('3.1-pro') || str.includes('3.1 pro')) return 'gemini-3.1-pro-preview';
     if (str.includes('3.5-flash-lite') || str.includes('3.5 flash-lite') || str.includes('flash-lite')) return 'gemini-3.5-flash-lite';
     if (str.includes('2.5-pro') || str.includes('2.5 pro')) return 'gemini-2.5-pro';
+    if (/(?:opus[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]opus)/.test(str)) return 'claude-opus-5-5';
+    if (/(?:sonnet[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]sonnet)/.test(str)) return 'claude-sonnet-5-5';
     return null;
   }
 
@@ -1374,10 +1423,14 @@
 
     const modelNameMap = {
       'gemini-3.8-flash': 'Gemini 3.8 Flash Standard',
+      'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
+      'gemini-4-carbon': 'Gemini 4 Carbon',
       'gemini-4-argon': 'Gemini 4 Argon',
       'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',
       'gemini-3.5-flash-lite': 'Gemini 3.5 Flash-Lite',
-      'gemini-2.5-pro': 'Gemini 2.5 Pro'
+      'gemini-2.5-pro': 'Gemini 2.5 Pro',
+      'claude-opus-5-5': 'Claude Opus 5.5',
+      'claude-sonnet-5-5': 'Claude Sonnet 5.5'
     };
 
     return {
