@@ -10,6 +10,8 @@
   } catch {}
 
   const METER_HOST_ID = 'ag-context-meter';
+  const REMOTE_BADGE_ID = 'badge-remote';
+  const REMOTE_POPOVER_ID = 'ag-remote-popover';
   const QUOTA_STYLE_ID = 'ag-enhancer-quota-style';
   const QUOTA_BADGE_ID = 'badge-quota';
   const QUOTA_POPOVER_ID = 'ag-quota-popover';
@@ -21,6 +23,8 @@
   const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
 
   let disposed = false;
+  let remotePopoverOpen = false;
+  let remotePairState = { loading: false, error: '', data: null, mode: 'auto', copiedAt: 0 };
   let fileEditorState = {
     active: false,
     fileUri: '',
@@ -567,12 +571,157 @@
           align-items: center;
           justify-content: space-between;
         }
+        #badge-remote {
+          gap: 4px;
+          padding: 0 7px;
+          color: var(--ag-toolbar-fg, #d4d4d8);
+        }
+        #badge-remote:hover,
+        #badge-remote:focus-visible,
+        #badge-remote[aria-expanded="true"] {
+          color: #38bdf8;
+        }
+        :host([data-layout="compact"]) #badge-remote {
+          padding: 0 5px;
+          font-size: 11.5px;
+          gap: 3px;
+        }
+        :host([data-layout="ring-only"]) #badge-remote {
+          padding: 0 5px;
+        }
+        :host([data-layout="ring-only"]) #badge-remote .ag-remote-text {
+          display: none;
+        }
+        #ag-remote-popover {
+          position: fixed;
+          z-index: 2147483610;
+          width: 300px;
+          max-width: calc(100vw - 24px);
+          padding: 12px 14px;
+          border-radius: 12px;
+          border: 1px solid var(--ag-float-border, rgba(255, 255, 255, 0.12));
+          background: var(--ag-float-bg, rgba(24, 24, 27, 0.96));
+          color: var(--ag-text-primary, #f4f4f5);
+          box-shadow: var(--ag-float-shadow, 0 12px 32px rgba(0, 0, 0, 0.45));
+          backdrop-filter: blur(14px);
+          -webkit-backdrop-filter: blur(14px);
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        #ag-remote-popover[hidden] {
+          display: none !important;
+        }
+        .ag-rp-tabs {
+          display: flex;
+          gap: 6px;
+          margin-bottom: 8px;
+        }
+        .ag-rp-tab {
+          flex: 1 1 0;
+          height: 26px;
+          padding: 0 8px;
+          border-radius: 7px;
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.12));
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.05));
+          color: var(--ag-text-muted, #a1a1aa);
+          font-size: 11px;
+          font-weight: 500;
+          cursor: pointer;
+        }
+        .ag-rp-tab[data-active="true"] {
+          border-color: rgba(56, 189, 248, 0.55);
+          background: rgba(56, 189, 248, 0.16);
+          color: #38bdf8;
+          font-weight: 600;
+        }
+        .ag-rp-status {
+          font-size: 11.5px;
+          font-weight: 500;
+          color: var(--ag-text-primary, #e4e4e7);
+          text-align: center;
+          margin-bottom: 4px;
+        }
+        .ag-rp-qr {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 8px;
+          border-radius: 10px;
+          background: #ffffff;
+          margin: 6px auto 8px;
+          width: fit-content;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+        }
+        .ag-rp-qr svg {
+          display: block;
+          width: 168px;
+          height: 168px;
+        }
+        .ag-rp-url {
+          padding: 6px 8px;
+          border-radius: 7px;
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.04));
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 10.5px;
+          color: var(--ag-text-muted, #a1a1aa);
+          word-break: break-all;
+          margin-bottom: 8px;
+          max-height: 52px;
+          overflow-y: auto;
+        }
+        .ag-rp-actions {
+          display: flex;
+          gap: 6px;
+        }
+        .ag-rp-btn {
+          flex: 1 1 0;
+          height: 28px;
+          padding: 0 8px;
+          border-radius: 7px;
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.12));
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.06));
+          color: var(--ag-text-primary, #f4f4f5);
+          font-size: 11.5px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background-color 0.15s ease;
+        }
+        .ag-rp-btn:hover {
+          background: var(--ag-toolbar-bg-hover, rgba(255, 255, 255, 0.12));
+        }
+        .ag-rp-btn[data-primary="true"] {
+          border-color: rgba(56, 189, 248, 0.5);
+          background: rgba(56, 189, 248, 0.16);
+          color: #38bdf8;
+        }
+        .ag-rp-tip {
+          margin-top: 8px;
+          font-size: 10.5px;
+          color: var(--ag-text-muted, #a1a1aa);
+          line-height: 1.4;
+        }
       `;
       sr.appendChild(styleEl);
     }
 
-    let quotaBtn = sr.getElementById(QUOTA_BADGE_ID);
     const contextBadge = sr.getElementById('badge');
+    let remoteBtn = sr.getElementById(REMOTE_BADGE_ID);
+    if (!remoteBtn && contextBadge) {
+      remoteBtn = document.createElement('button');
+      remoteBtn.id = REMOTE_BADGE_ID;
+      remoteBtn.className = 'ag-unit';
+      remoteBtn.type = 'button';
+      remoteBtn.setAttribute('aria-label', '手机遥控一键配对');
+      remoteBtn.setAttribute('aria-expanded', 'false');
+      remoteBtn.title = '一键弹出手机遥控配对二维码（Tailscale / 同 Wi-Fi 直连）';
+      remoteBtn.innerHTML = '<span class="ag-remote-icon">📱</span><span class="ag-remote-text">遥控</span>';
+      contextBadge.insertAdjacentElement('beforebegin', remoteBtn);
+
+      remoteBtn.addEventListener('click', onRemoteBtnClick);
+    }
+
+    let quotaBtn = sr.getElementById(QUOTA_BADGE_ID);
     if (!quotaBtn && contextBadge) {
       quotaBtn = document.createElement('button');
       quotaBtn.id = QUOTA_BADGE_ID;
@@ -598,7 +747,18 @@
       sr.appendChild(popover);
     }
 
-    return { host, sr, quotaBtn, popover };
+    let remotePopover = sr.getElementById(REMOTE_POPOVER_ID);
+    if (!remotePopover) {
+      remotePopover = document.createElement('div');
+      remotePopover.id = REMOTE_POPOVER_ID;
+      remotePopover.hidden = true;
+      remotePopover.setAttribute('role', 'dialog');
+      remotePopover.setAttribute('aria-label', '手机遥控一键配对二维码');
+      remotePopover.addEventListener('click', (e) => e.stopPropagation());
+      sr.appendChild(remotePopover);
+    }
+
+    return { host, sr, remoteBtn, quotaBtn, popover, remotePopover };
   }
 
   function positionQuotaPopover() {
@@ -624,6 +784,196 @@
     } catch {}
   }
 
+  function positionRemotePopover() {
+    const { sr } = getMeterHostAndShadow();
+    if (!sr) return;
+    const btn = sr.getElementById(REMOTE_BADGE_ID);
+    const popover = sr.getElementById(REMOTE_POPOVER_ID);
+    if (!btn || !popover || popover.hidden) return;
+
+    try {
+      const bRect = btn.getBoundingClientRect();
+      const vw = window.innerWidth || 1280;
+      const vh = window.innerHeight || 800;
+      const popW = Math.min(300, vw - 24);
+      const popH = Math.max(260, Math.round(popover.offsetHeight || 360));
+      const top = Math.max(36, Math.min(vh - popH - 12, Math.round(bRect.bottom + 6)));
+      let left = Math.round(bRect.right - popW);
+      left = Math.max(12, Math.min(vw - popW - 12, left));
+      popover.style.top = `${top}px`;
+      popover.style.left = `${left}px`;
+      popover.style.width = `${popW}px`;
+    } catch {}
+  }
+
+  function resolveRemoteEndpoint(data) {
+    if (!data) return null;
+    const tsList = Array.isArray(data.tailscaleUrls) ? data.tailscaleUrls : [];
+    const lanList = Array.isArray(data.lanUrls) ? data.lanUrls : [];
+    let picked = null;
+    let kindLabel = '';
+    if (remotePairState.mode === 'lan' && lanList.length) {
+      picked = lanList[0];
+      kindLabel = `📶 同 Wi-Fi 局域网直连 (${picked.iface})`;
+    } else if (remotePairState.mode === 'tailscale' && tsList.length) {
+      picked = tsList[0];
+      kindLabel = `✅ Tailscale 内网首选 (${picked.iface})`;
+    } else if (tsList.length) {
+      picked = tsList[0];
+      kindLabel = `✅ Tailscale 内网首选 (${picked.iface})`;
+    } else if (lanList.length) {
+      picked = lanList[0];
+      kindLabel = `📶 同 Wi-Fi 局域网直连 (${picked.iface})`;
+    } else {
+      picked = { url: data.primaryUrl || data.localUrl || '', qrSvg: data.qrSvg || '', iface: 'lo0' };
+      kindLabel = '🖥️ 仅本机回环地址';
+    }
+    return {
+      picked,
+      kindLabel,
+      hasTailscale: tsList.length > 0,
+      hasLan: lanList.length > 0,
+      effectiveMode: (remotePairState.mode === 'lan' && lanList.length)
+        ? 'lan'
+        : ((tsList.length && remotePairState.mode !== 'lan') ? 'tailscale' : 'lan')
+    };
+  }
+
+  function renderRemotePopoverContent(popover) {
+    if (!popover) return;
+    const ep = resolveRemoteEndpoint(remotePairState.data);
+    const copiedRecent = Date.now() - remotePairState.copiedAt < 2000;
+    let bodyHtml = '';
+
+    if (remotePairState.loading && !remotePairState.data) {
+      bodyHtml = '<div class="ag-rp-status">⏳ 正在生成配对二维码…</div>';
+    } else if (!remotePairState.data) {
+      bodyHtml = `<div class="ag-rp-status" style="color:#f87171">${escapeHtml(remotePairState.error || '未能连接到本地遥控桥接服务')}</div>`;
+    } else {
+      const safeQr = (ep.picked?.qrSvg && ep.picked.qrSvg.startsWith('<svg') && !/<script/i.test(ep.picked.qrSvg))
+        ? ep.picked.qrSvg
+        : '';
+      const tabsHtml = (ep.hasTailscale && ep.hasLan)
+        ? `<div class="ag-rp-tabs">
+            <button class="ag-rp-tab" data-mode="tailscale" data-active="${ep.effectiveMode === 'tailscale' ? 'true' : 'false'}" type="button">✅ Tailscale (4G/5G可用)</button>
+            <button class="ag-rp-tab" data-mode="lan" data-active="${ep.effectiveMode === 'lan' ? 'true' : 'false'}" type="button">📶 同 Wi-Fi 局域网</button>
+          </div>`
+        : '';
+      bodyHtml = `
+        ${tabsHtml}
+        <div class="ag-rp-status">${escapeHtml(ep.kindLabel)}</div>
+        ${safeQr ? `<div class="ag-rp-qr">${safeQr}</div>` : ''}
+        <div class="ag-rp-url">${escapeHtml(ep.picked?.url || '')}</div>
+        <div class="ag-rp-actions">
+          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button">${copiedRecent ? '✅ 已复制链接' : '📋 复制配对链接'}</button>
+          <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${remotePairState.loading ? 'disabled' : ''}>🔑 重置密钥</button>
+        </div>
+        <div class="ag-rp-tip">iPhone 扫码后点 Safari「分享」→「添加到主屏幕」，即可作为全屏独立 App 瞬时秒连。</div>
+      `;
+    }
+
+    popover.innerHTML = `
+      <div class="ag-qp-header">
+        <span class="ag-qp-title">📱 手机极速遥控一键配对</span>
+        <button id="ag-remote-refresh" class="ag-qp-refresh" type="button">${remotePairState.loading ? '刷新中…' : '↻ 刷新'}</button>
+      </div>
+      ${bodyHtml}
+    `;
+
+    popover.querySelector('#ag-remote-refresh')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      void refreshRemotePairInfo(false);
+    });
+    popover.querySelectorAll('.ag-rp-tab').forEach((tab) => {
+      tab.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        remotePairState.mode = tab.getAttribute('data-mode') || 'auto';
+        renderRemotePopoverContent(popover);
+        positionRemotePopover();
+      });
+    });
+    popover.querySelector('#ag-remote-copy')?.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const url = ep?.picked?.url;
+      if (!url) return;
+      const ok = await copyToClipboard(url);
+      if (ok) {
+        remotePairState.copiedAt = Date.now();
+        renderRemotePopoverContent(popover);
+        setTimeout(() => {
+          if (remotePopoverOpen) renderRemotePopoverContent(popover);
+        }, 2100);
+      }
+    });
+    popover.querySelector('#ag-remote-reset')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      void refreshRemotePairInfo(true);
+    });
+  }
+
+  async function refreshRemotePairInfo(resetToken = false) {
+    if (disposed || remotePairState.loading) return remotePairState;
+    remotePairState.loading = true;
+    remotePairState.error = '';
+    const nodes = ensureQuotaStylesAndNodes();
+    if (remotePopoverOpen && nodes?.remotePopover) {
+      renderRemotePopoverContent(nodes.remotePopover);
+      positionRemotePopover();
+    }
+    try {
+      const res = await postToLiveHost('/remote-info', { resetToken: Boolean(resetToken) });
+      if (res && res.ok && res.data) {
+        remotePairState.data = res.data;
+        if (resetToken) showQuickToast('🔑 已生成新配对密钥，旧链接已失效');
+      } else {
+        remotePairState.error = '请确认 Antigravity 桥接服务正在运行';
+      }
+    } catch (err) {
+      remotePairState.error = err?.message || '获取配对二维码失败';
+    } finally {
+      remotePairState.loading = false;
+      const curNodes = ensureQuotaStylesAndNodes();
+      if (remotePopoverOpen && curNodes?.remotePopover) {
+        renderRemotePopoverContent(curNodes.remotePopover);
+        positionRemotePopover();
+      }
+    }
+    return remotePairState;
+  }
+
+  function toggleRemotePopover(forceOpen) {
+    const nodes = ensureQuotaStylesAndNodes();
+    if (!nodes || !nodes.remotePopover) return;
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !remotePopoverOpen;
+    remotePopoverOpen = nextOpen;
+    nodes.remotePopover.hidden = !nextOpen;
+    nodes.remoteBtn?.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+
+    if (nextOpen) {
+      if (popoverOpen) {
+        popoverOpen = false;
+        nodes.popover.hidden = true;
+        nodes.quotaBtn?.setAttribute('aria-expanded', 'false');
+      }
+      try {
+        const pCtx = nodes.sr.getElementById('panel');
+        const pTok = nodes.sr.getElementById('panel-tokens');
+        if (pCtx && !pCtx.hidden) pCtx.hidden = true;
+        if (pTok && !pTok.hidden) pTok.hidden = true;
+        nodes.sr.getElementById('badge')?.setAttribute('aria-expanded', 'false');
+        nodes.sr.getElementById('badge-tokens')?.setAttribute('aria-expanded', 'false');
+      } catch {}
+      renderRemotePopoverContent(nodes.remotePopover);
+      positionRemotePopover();
+      void refreshRemotePairInfo(false);
+    }
+  }
+
+  function onRemoteBtnClick(e) {
+    e.stopPropagation();
+    toggleRemotePopover();
+  }
+
   function toggleQuotaPopover(forceOpen) {
     const nodes = ensureQuotaStylesAndNodes();
     if (!nodes) return;
@@ -633,6 +983,11 @@
     nodes.quotaBtn?.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
 
     if (nextOpen) {
+      if (remotePopoverOpen && nodes.remotePopover) {
+        remotePopoverOpen = false;
+        nodes.remotePopover.hidden = true;
+        nodes.remoteBtn?.setAttribute('aria-expanded', 'false');
+      }
       // 避免与原有上下文面板重叠
       try {
         const pCtx = nodes.sr.getElementById('panel');
@@ -3019,14 +3374,24 @@
   // ==================== 全局事件与定时巡检 ====================
 
   function onDocClick(e) {
-    if (!popoverOpen) return;
-    const { host, sr } = getMeterHostAndShadow();
+    if (!popoverOpen && !remotePopoverOpen) return;
+    const { sr } = getMeterHostAndShadow();
     if (!sr) return;
     const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-    const btn = sr.getElementById(QUOTA_BADGE_ID);
-    const pop = sr.getElementById(QUOTA_POPOVER_ID);
-    if ((btn && path.includes(btn)) || (pop && path.includes(pop))) return;
-    toggleQuotaPopover(false);
+    if (popoverOpen) {
+      const btn = sr.getElementById(QUOTA_BADGE_ID);
+      const pop = sr.getElementById(QUOTA_POPOVER_ID);
+      if (!(btn && path.includes(btn)) && !(pop && path.includes(pop))) {
+        toggleQuotaPopover(false);
+      }
+    }
+    if (remotePopoverOpen) {
+      const rBtn = sr.getElementById(REMOTE_BADGE_ID);
+      const rPop = sr.getElementById(REMOTE_POPOVER_ID);
+      if (!(rBtn && path.includes(rBtn)) && !(rPop && path.includes(rPop))) {
+        toggleRemotePopover(false);
+      }
+    }
   }
 
   function onWindowClickCapture(e) {
@@ -3063,8 +3428,9 @@
 
   function onDocKeydown(e) {
     syncCmdModifierState(Boolean(e.metaKey || e.ctrlKey));
-    if (e.key === 'Escape' && popoverOpen) {
-      toggleQuotaPopover(false);
+    if (e.key === 'Escape' && (popoverOpen || remotePopoverOpen)) {
+      if (popoverOpen) toggleQuotaPopover(false);
+      if (remotePopoverOpen) toggleRemotePopover(false);
       return;
     }
     if (disposed || e.isComposing || isComposerComposing) return;
@@ -3209,6 +3575,8 @@
     restoreHiddenViewerChildren();
     const { sr } = getMeterHostAndShadow();
     if (sr) {
+      safeRemove(sr.getElementById(REMOTE_BADGE_ID));
+      safeRemove(sr.getElementById(REMOTE_POPOVER_ID));
       safeRemove(sr.getElementById(QUOTA_BADGE_ID));
       safeRemove(sr.getElementById(QUOTA_POPOVER_ID));
       safeRemove(sr.getElementById(QUOTA_STYLE_ID));
@@ -3511,7 +3879,7 @@
 
     return {
       ok: true,
-      version: '1.6.5',
+      version: '1.6.6',
       timestamp: Date.now(),
       sessionId,
       title: activeConv?.title || document.title || 'Antigravity',
@@ -3760,11 +4128,11 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.6.5',
+    version: '1.6.6',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
-      return Boolean(sr && sr.getElementById(QUOTA_BADGE_ID));
+      return Boolean(sr && sr.getElementById(QUOTA_BADGE_ID) && sr.getElementById(REMOTE_BADGE_ID));
     },
     refreshQuota,
     refreshBrainStats,

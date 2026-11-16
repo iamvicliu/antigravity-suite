@@ -491,6 +491,22 @@ function renderTerminalQr(url) {
   return lines.join('\n');
 }
 
+function renderQrSvg(url) {
+  const grid = encodeQrCodeMatrix(url);
+  const size = grid.length;
+  const pad = 3;
+  const total = size + pad * 2;
+  let pathData = '';
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (grid[r][c]) {
+        pathData += `M${c + pad} ${r + pad}h1v1h-1z`;
+      }
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" width="180" height="180" shape-rendering="crispEdges"><rect width="${total}" height="${total}" rx="2.5" fill="#ffffff"/><path d="${pathData}" fill="#09090b"/></svg>`;
+}
+
 // ==================== CDP 目标枚举与脚本求值 ====================
 
 function getDevToolsPortFile() {
@@ -874,7 +890,6 @@ function buildMobileAppHtml() {
     }
     .ghost-btn:active{background:rgba(255,255,255,.08);color:#fff}
     .ghost-btn.icon-only{width:32px;padding:0;justify-content:center}
-    .ghost-btn.rec{background:rgba(239,68,68,.2);color:#fca5a5;animation:pulse 1s infinite ease-in-out}
     .ghost-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .send-circle{
       appearance:none;flex-shrink:0;width:32px;height:32px;border-radius:999px;border:none;
@@ -921,14 +936,17 @@ function buildMobileAppHtml() {
     }
     .drawer-backdrop.open .drawer{transform:translateX(0)}
     .drawer-backdrop.dragging .drawer{transition:none}
-    .drawer-h{display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:15px}
-    .win-select{
-      width:100%;padding:8px 10px;border-radius:10px;background:#27272a;color:var(--fg);
-      border:1px solid var(--border);font-size:13px;
+    .new-chat-btn{
+      appearance:none;width:100%;min-height:44px;padding:10px 14px;border-radius:12px;
+      background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.13);color:#fafafa;
+      font-size:14.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;
+      flex-shrink:0;
     }
+    .new-chat-btn:active{background:rgba(56,189,248,.18);border-color:rgba(56,189,248,.5);color:#fff}
+    .drawer-sub{font-size:12px;font-weight:600;color:#71717a;padding:2px 4px 0;flex-shrink:0}
     .conv-item{
-      width:100%;text-align:left;padding:10px 12px;border-radius:10px;border:1px solid transparent;
-      background:rgba(255,255,255,.04);color:var(--fg);font-size:13.5px;cursor:pointer;
+      width:100%;text-align:left;padding:11px 12px;border-radius:11px;border:1px solid transparent;
+      background:rgba(255,255,255,.04);color:var(--fg);font-size:14px;cursor:pointer;
     }
     .conv-item.active{border-color:rgba(56,189,248,.6);background:rgba(56,189,248,.14);font-weight:600}
     .toast{
@@ -987,9 +1005,6 @@ function buildMobileAppHtml() {
             </button>
           </div>
           <div class="toolbar-right">
-            <button id="btn-voice" class="ghost-btn icon-only" type="button" title="语音输入" aria-label="语音输入">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
-            </button>
             <button id="btn-send" class="send-circle" type="button" aria-label="发送消息">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
             </button>
@@ -1011,11 +1026,11 @@ function buildMobileAppHtml() {
 
   <div id="drawer-backdrop" class="drawer-backdrop" aria-hidden="true">
     <div id="drawer-panel" class="drawer">
-      <div class="drawer-h">
-        <span>会话与窗口</span>
-        <button id="btn-new-chat" class="icon-btn" type="button">+ 新对话</button>
-      </div>
-      <select id="win-select" class="win-select"></select>
+      <button id="btn-new-chat" class="new-chat-btn" type="button">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>新建对话</span>
+      </button>
+      <div class="drawer-sub">历史对话</div>
       <div id="conv-list" style="display:flex;flex-direction:column;gap:6px"></div>
     </div>
   </div>
@@ -1264,17 +1279,7 @@ function buildMobileAppHtml() {
         chips.appendChild(b);
       }
 
-      // Drawer Windows & Conversations
-      const winSel = $('win-select');
-      if (Array.isArray(snap.windows)) {
-        const winHtml = snap.windows.map((w) =>
-          '<option value="' + esc(w.id) + '"' + (w.id === currentTargetId ? ' selected' : '') + '>窗口：' + esc(w.title) + '</option>'
-        ).join('');
-        if (winSel.dataset.lastHtml !== winHtml) {
-          winSel.innerHTML = winHtml;
-          winSel.dataset.lastHtml = winHtml;
-        }
-      }
+      // Drawer Conversations
       const convList = $('conv-list');
       if (Array.isArray(snap.conversations)) {
         const convHtml = snap.conversations.map((c) =>
@@ -1445,68 +1450,6 @@ function buildMobileAppHtml() {
       }
     };
 
-    // 语音实时听写（支持 Web Speech API，iOS Standalone 兜底唤起系统键盘听写）
-    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    let voiceRec = null;
-    let voiceActive = false;
-    let voicePrefix = '';
-
-    function stopVoice() {
-      voiceActive = false;
-      $('btn-voice').classList.remove('rec');
-      try { voiceRec?.stop?.(); } catch {}
-      voiceRec = null;
-    }
-
-    $('btn-voice').onclick = () => {
-      if (!SpeechRec) {
-        $('input').focus();
-        showToast('请点 iPhone 键盘右下角 🎙️ 麦克风进行系统语音听写');
-        return;
-      }
-      if (voiceActive) {
-        stopVoice();
-        showToast('已停止语音识别');
-        return;
-      }
-      try {
-        const rec = new SpeechRec();
-        rec.lang = 'zh-CN';
-        rec.continuous = true;
-        rec.interimResults = true;
-        voicePrefix = $('input').value ? ($('input').value.replace(/\\s+$/, '') + ' ') : '';
-        rec.onresult = (ev) => {
-          let txt = '';
-          for (let i = 0; i < ev.results.length; i++) {
-            txt += ev.results[i][0]?.transcript || '';
-          }
-          $('input').value = voicePrefix + txt;
-          autoGrow();
-        };
-        rec.onerror = (ev) => {
-          stopVoice();
-          if (ev?.error === 'not-allowed') {
-            $('input').focus();
-            showToast('未授予浏览器麦克风权限，可用键盘右下角 🎙️ 听写');
-          } else {
-            showToast('语音识别结束 (' + (ev?.error || 'unknown') + ')');
-          }
-        };
-        rec.onend = () => {
-          if (voiceActive) stopVoice();
-        };
-        voiceRec = rec;
-        voiceActive = true;
-        $('btn-voice').classList.add('rec');
-        rec.start();
-        showToast('🎤 请说话（再点一次停止）');
-      } catch {
-        stopVoice();
-        $('input').focus();
-        showToast('请点键盘右下角 🎙️ 进行语音输入');
-      }
-    };
-
     $('btn-quota').onclick = (e) => {
       e.stopPropagation();
       const box = $('quota-drawer');
@@ -1547,13 +1490,8 @@ function buildMobileAppHtml() {
     backdropEl.onclick = (e) => { if (e.target === backdropEl) closeDrawer(); };
     $('btn-new-chat').onclick = async () => {
       closeDrawer();
+      showToast('已新建对话');
       await apiAction({ action: 'switch-conversation', id: 'new' });
-    };
-    $('win-select').onchange = () => {
-      currentTargetId = $('win-select').value;
-      closeDrawer();
-      stickBottom = true;
-      void fetchSnapshot();
     };
 
     // 全屏随手右滑打开左侧抽屉 & 左滑关闭抽屉
@@ -1901,15 +1839,28 @@ function buildRemoteInfo({ resetToken = false } = {}) {
   const cfg = loadOrCreateRemoteConfig({ resetToken });
   const { tailscale, lan } = enumerateLocalAddresses();
   const buildUrl = (ip) => `http://${ip}:${cfg.port}/?token=${cfg.token}`;
-  const tailscaleUrls = tailscale.map((x) => ({ ...x, url: buildUrl(x.address) }));
-  const lanUrls = lan.map((x) => ({ ...x, url: buildUrl(x.address) }));
-  const primary = tailscaleUrls[0] || lanUrls[0] || { iface: 'lo0', address: '127.0.0.1', kind: 'loopback', url: buildUrl('127.0.0.1') };
+  const tailscaleUrls = tailscale.map((x) => {
+    const url = buildUrl(x.address);
+    return { ...x, url, qrSvg: renderQrSvg(url) };
+  });
+  const lanUrls = lan.map((x) => {
+    const url = buildUrl(x.address);
+    return { ...x, url, qrSvg: renderQrSvg(url) };
+  });
+  const primary = tailscaleUrls[0] || lanUrls[0] || {
+    iface: 'lo0',
+    address: '127.0.0.1',
+    kind: 'loopback',
+    url: buildUrl('127.0.0.1'),
+    qrSvg: renderQrSvg(buildUrl('127.0.0.1'))
+  };
   return {
     port: cfg.port,
     token: cfg.token,
     configPath: getRemoteConfigPath(),
     primaryUrl: primary.url,
     primaryKind: primary.kind,
+    qrSvg: primary.qrSvg,
     tailscaleUrls,
     lanUrls,
     localUrl: buildUrl('127.0.0.1')
@@ -1952,7 +1903,7 @@ function printRemoteCli({ resetToken = false, jsonMode = false } = {}) {
   console.log('💡 iPhone 最佳防杀后台 & 全屏无遮挡配置：');
   console.log('   1. 扫码在 Safari 打开后，点击底部「分享」→「添加到主屏幕」');
   console.log('   2. 以后直接从桌面图标启动，即成为独立全屏 App（已内置键盘防遮挡与切回秒刷新）');
-  console.log('   3. 在聊天区右滑即可拉出左侧会话抽屉，底部可直接切换模型/权限、传图与语音听写');
+  console.log('   3. 在聊天区右滑即可拉出左侧会话抽屉，底部可直接切换模型/权限与拍照传图');
   console.log('');
 }
 
@@ -1975,6 +1926,7 @@ module.exports = {
   enumerateLocalAddresses,
   encodeQrCodeMatrix,
   renderTerminalQr,
+  renderQrSvg,
   startMobileRemoteServer,
   buildRemoteInfo,
   printRemoteCli

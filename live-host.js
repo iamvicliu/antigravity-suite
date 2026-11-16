@@ -22,7 +22,7 @@ const {
 const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const { tryHotInject } = require('./install');
-const { startMobileRemoteServer } = require('./mobile-remote');
+const { startMobileRemoteServer, buildRemoteInfo } = require('./mobile-remote');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
@@ -50,7 +50,8 @@ const ALLOWED_ROUTES = [
   '/brain-stats',
   '/read-local-file',
   '/write-local-file',
-  '/open-external-url'
+  '/open-external-url',
+  '/remote-info'
 ];
 
 // 解析并校验可编辑本地文件路径，禁止读写系统关键目录与敏感凭据目录
@@ -682,6 +683,12 @@ function collectBrainStats() {
             execFile('xdg-open', [safeUrl], execOpts, () => {});
           }
           res.end(JSON.stringify({ ok: true, url: safeUrl }));
+          return;
+        }
+        if (req.url === '/remote-info') {
+          const info = buildRemoteInfo({ resetToken: request?.resetToken === true });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: info }));
           return;
         }
         const data = await collect(api.origin, request.id, { force: request.force === true });
