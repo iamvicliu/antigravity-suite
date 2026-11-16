@@ -753,6 +753,17 @@ function buildMobileAppHtml() {
       flex-shrink:0;cursor:pointer;display:flex;flex-direction:column;align-items:flex-end;line-height:1.15;
     }
     .quota-pill span:last-child{font-size:10px;color:var(--muted);font-weight:500}
+    .ctrl-bar{
+      flex-shrink:0;display:flex;align-items:center;gap:8px;padding:6px 10px;
+      background:rgba(20,20,24,.94);border-bottom:1px solid var(--border);
+    }
+    .ctrl-pill{
+      appearance:none;flex:1 1 0;min-width:0;height:32px;padding:0 10px;border-radius:9px;
+      border:1px solid rgba(167,139,250,.35);background:rgba(139,92,246,.12);color:#e9d5ff;
+      font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;justify-content:space-between;gap:6px;cursor:pointer;
+    }
+    .ctrl-pill.perm{flex:0 0 auto;border-color:rgba(56,189,248,.35);background:rgba(56,189,248,.12);color:#bae6fd}
+    .ctrl-pill-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .quota-drawer{
       position:fixed;top:calc(env(safe-area-inset-top) + 52px);right:10px;left:10px;max-width:360px;margin-left:auto;
       z-index:60;background:#18181b;border:1px solid rgba(255,255,255,.16);border-radius:14px;
@@ -931,6 +942,11 @@ function buildMobileAppHtml() {
         <span id="ctx-badge">--%</span>
       </button>
     </header>
+
+    <div class="ctrl-bar">
+      <button id="btn-model-top" class="ctrl-pill" type="button"><span>🧠</span><span id="model-top-label" class="ctrl-pill-label">切换模型</span><span>▾</span></button>
+      <button id="btn-perm-top" class="ctrl-pill perm" type="button"><span>⚡</span><span id="perm-top-label" class="ctrl-pill-label">权限</span><span>▾</span></button>
+    </div>
 
     <div id="quota-drawer" class="quota-drawer" hidden></div>
 
@@ -1120,6 +1136,8 @@ function buildMobileAppHtml() {
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
       $('quota-main').textContent = 'G4 ' + gStr + ' · C ' + cStr;
       $('ctx-badge').textContent = snap.contextBadge || '--%';
+      $('model-top-label').textContent = snap.model || '切换模型';
+      $('perm-top-label').textContent = snap.permissionLabel || '权限';
 
       renderQuotaDrawer(snap);
 
@@ -1183,7 +1201,7 @@ function buildMobileAppHtml() {
       if (snap.busy) {
         items.push({ cls: 'chip stop', text: '⏹ 停止生成', act: () => apiAction({ action: 'stop' }) });
       }
-      const shortModel = (snap.model || '切换模型').replace(/^Gemini\s+/i, 'G').replace(/\s*\((Medium|High|Low|XHigh)\)/i, (_, e) => '·' + e[0]);
+      const shortModel = (snap.model || '切换模型').replace(/^Gemini\\s+/i, 'G').replace(/\\s*\\((Medium|High|Low|XHigh)\\)/i, (_, e) => '·' + e[0]);
       items.push({ cls: 'chip ctrl', text: '🧠 ' + shortModel, act: openModelPicker });
       items.push({ cls: 'chip ctrl', text: '⚡ ' + (snap.permissionLabel || '权限'), act: openPermPicker });
       if (!snap.busy) {
@@ -1329,6 +1347,9 @@ function buildMobileAppHtml() {
       });
     }
 
+    $('btn-model-top').onclick = openModelPicker;
+    $('btn-perm-top').onclick = openPermPicker;
+
     // 拍照/传图压缩并注入桌面端输入框
     let uploadedNames = [];
     function compressAndReadImage(file) {
@@ -1337,7 +1358,8 @@ function buildMobileAppHtml() {
         reader.onerror = () => reject(new Error('读取图片失败'));
         reader.onload = () => {
           const dataUrl = String(reader.result || '');
-          if (file.size <= 350 * 1024 && /^image\/(png|jpeg|jpg|webp|gif)$/i.test(file.type)) {
+          const lowType = String(file.type || '').toLowerCase();
+          if (file.size <= 350 * 1024 && ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'].includes(lowType)) {
             resolve({ name: file.name || 'image.jpg', mimeType: file.type, base64: dataUrl });
             return;
           }
@@ -1357,7 +1379,7 @@ function buildMobileAppHtml() {
             canvas.height = h;
             canvas.getContext('2d').drawImage(img, 0, 0, w, h);
             const outUrl = canvas.toDataURL('image/jpeg', 0.85);
-            const baseName = (file.name || 'mobile').replace(/\.[^.]+$/, '') + '.jpg';
+            const baseName = (file.name || 'mobile').replace(/\\.[^.]+$/, '') + '.jpg';
             resolve({ name: baseName, mimeType: 'image/jpeg', base64: outUrl });
           };
           img.src = dataUrl;
@@ -1423,7 +1445,7 @@ function buildMobileAppHtml() {
         rec.lang = 'zh-CN';
         rec.continuous = true;
         rec.interimResults = true;
-        voicePrefix = $('input').value ? ($('input').value.replace(/\s+$/, '') + ' ') : '';
+        voicePrefix = $('input').value ? ($('input').value.replace(/\\s+$/, '') + ' ') : '';
         rec.onresult = (ev) => {
           let txt = '';
           for (let i = 0; i < ev.results.length; i++) {

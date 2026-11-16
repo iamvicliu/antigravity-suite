@@ -1,7 +1,7 @@
 {
   "name": "antigravity-context-viewer",
   "version": "0.8.3",
-  "description": "Google Antigravity 桌面端全能增强套件（macOS 免改包）：实时显示上下文占比与 5h/每周剩余额度、全界面与英文思考过程自动中译（零 Token）、右侧文件直接编辑保存、下一步建议 Tab 补全、高危命令红框防误触与安全自动确认。",
+  "description": "Google Antigravity 桌面端（macOS 免改包）全能增强与手机极速遥控套件：内置 Tailscale/局域网极速 PWA 手机遥控（切换模型/权限、传图、语音、右滑切会话），以及桌面端上下文/5h与每周配额监控、英文思考中译（零 Token）、行内编辑、Tab 补全与高危命令红框预警。",
   "repository": {
     "type": "git",
     "url": "https://github.com/iamvicliu/antigravity-suite.git"
