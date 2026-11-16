@@ -627,7 +627,8 @@ async function performActionInTarget(payload) {
     return await fn(${serialized});
   })()`;
   const actionResult = await evalInCdpTarget(target.wsUrl, expr, 6000);
-  await new Promise((r) => setTimeout(r, 120));
+  const settleMs = payload?.action === 'switch-conversation' ? 250 : 120;
+  await new Promise((r) => setTimeout(r, settleMs));
   const snapshot = await fetchSnapshotFromTarget(target.id).catch(() => null);
   return {
     ok: Boolean(actionResult?.ok),
@@ -1140,22 +1141,23 @@ function buildMobileAppHtml() {
       // Drawer Windows & Conversations
       const winSel = $('win-select');
       if (Array.isArray(snap.windows)) {
-        winSel.innerHTML = snap.windows.map((w) =>
+        const winHtml = snap.windows.map((w) =>
           '<option value="' + esc(w.id) + '"' + (w.id === currentTargetId ? ' selected' : '') + '>窗口：' + esc(w.title) + '</option>'
         ).join('');
+        if (winSel.dataset.lastHtml !== winHtml) {
+          winSel.innerHTML = winHtml;
+          winSel.dataset.lastHtml = winHtml;
+        }
       }
       const convList = $('conv-list');
       if (Array.isArray(snap.conversations)) {
-        convList.innerHTML = snap.conversations.map((c) =>
+        const convHtml = snap.conversations.map((c) =>
           '<button class="conv-item' + (c.active ? ' active' : '') + '" data-cid="' + esc(c.id) + '" type="button">' + esc(c.title) + '</button>'
         ).join('');
-        convList.querySelectorAll('.conv-item').forEach((btn) => {
-          btn.onclick = async () => {
-            $('drawer-backdrop').hidden = true;
-            stickBottom = true;
-            await apiAction({ action: 'switch-conversation', id: btn.dataset.cid });
-          };
-        });
+        if (convList.dataset.lastHtml !== convHtml) {
+          convList.innerHTML = convHtml;
+          convList.dataset.lastHtml = convHtml;
+        }
       }
     }
 
@@ -1232,6 +1234,15 @@ function buildMobileAppHtml() {
       if (!box.hidden && !box.contains(e.target) && e.target !== $('btn-quota')) box.hidden = true;
     });
 
+    $('conv-list').addEventListener('click', async (e) => {
+      const btn = e.target?.closest?.('.conv-item');
+      if (!btn || !btn.dataset.cid) return;
+      $('drawer-backdrop').hidden = true;
+      stickBottom = true;
+      showToast('正在切换会话…');
+      const r = await apiAction({ action: 'switch-conversation', id: btn.dataset.cid });
+      if (!r?.ok) showToast(r?.actionResult?.error || '切换会话失败');
+    });
     $('btn-drawer').onclick = () => { $('drawer-backdrop').hidden = false; };
     $('drawer-backdrop').onclick = (e) => { if (e.target === $('drawer-backdrop')) $('drawer-backdrop').hidden = true; };
     $('btn-new-chat').onclick = async () => {

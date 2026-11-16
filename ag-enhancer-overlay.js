@@ -3349,6 +3349,7 @@
       const cls = String(row.className || '');
       const active = Boolean(
         (currentId && id === currentId) ||
+        row.getAttribute('data-selected') === 'true' ||
         row.getAttribute('aria-current') === 'true' ||
         row.getAttribute('data-active') === 'true' ||
         /\bbg-accent\b|\bbg-secondary\b/.test(cls)
@@ -3381,7 +3382,7 @@
 
     return {
       ok: true,
-      version: '1.6.0',
+      version: '1.6.1',
       timestamp: Date.now(),
       sessionId,
       title: activeConv?.title || document.title || 'Antigravity',
@@ -3479,16 +3480,19 @@
       const targetId = String(payload?.id || '').trim();
       if (!targetId) return { ok: false, error: '缺少会话 ID' };
       if (targetId === 'new') {
-        const newBtn = document.querySelector('[data-testid="new-conversation-button"]');
+        const newBtn = document.querySelector('a[data-testid="new-conversation-button"], [data-testid="new-conversation-button"] a, [data-testid="new-conversation-button"]');
         if (!newBtn) return { ok: false, error: '未找到新建对话按钮' };
         newBtn.click();
+        await new Promise((r) => setTimeout(r, 180));
         return { ok: true, id: 'new' };
       }
-      const row = document.querySelector(`[data-testid="conversation-row-sidebar"][data-cascade-id="${CSS.escape(targetId)}"]`) ||
-        document.querySelector(`a[href*="/c/${CSS.escape(targetId)}"]`);
-      if (!row) return { ok: false, error: '未在侧边栏找到该会话' };
-      row.click();
-      return { ok: true, id: targetId };
+      const row = document.querySelector(`[data-testid="conversation-row-sidebar"][data-cascade-id="${CSS.escape(targetId)}"]`);
+      const link = row?.querySelector('a[href]') || document.querySelector(`a[href*="/c/${CSS.escape(targetId)}"]`);
+      const clickTarget = link || row;
+      if (!clickTarget) return { ok: false, error: '未在侧边栏找到该会话' };
+      clickTarget.click();
+      await new Promise((r) => setTimeout(r, 180));
+      return { ok: true, id: targetId, pathname: location.pathname };
     }
 
     if (action === 'toggle-thinking') {
@@ -3513,7 +3517,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.6.0',
+    version: '1.6.1',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
