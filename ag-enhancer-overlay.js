@@ -3283,6 +3283,83 @@
     return s.trim().slice(0, 3000);
   }
 
+  const MD_ALLOWED_TAGS = new Set([
+    'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'P', 'UL', 'OL', 'LI', 'STRONG', 'B', 'EM', 'I', 'DEL',
+    'CODE', 'PRE', 'BLOCKQUOTE', 'HR', 'BR',
+    'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD'
+  ]);
+  const MD_SKIP_TAGS = new Set(['STYLE', 'SCRIPT', 'NOSCRIPT', 'SVG', 'MATH', 'ANNOTATION']);
+
+  function sanitizeMarkdownNodeToHtml(node, depth = 0) {
+    if (!node) return '';
+    if (node.nodeType === Node.TEXT_NODE) {
+      return escapeHtml(node.nodeValue || '');
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+    const tag = node.tagName;
+    if (MD_SKIP_TAGS.has(tag)) return '';
+    if (depth > 24) return escapeHtml(node.textContent || '');
+
+    const cls = typeof node.className === 'string' ? node.className : '';
+    if (cls.includes('katex-mathml') || (cls.includes('pointer-events-none') && cls.includes('sticky'))) {
+      return '';
+    }
+    if (tag === 'BDI' && cls.includes('context-scope-mention')) {
+      const txt = (node.textContent || '').trim();
+      return txt ? `<code class="md-pill">${escapeHtml(txt)}</code>` : '';
+    }
+    if (tag === 'BUTTON') {
+      if (cls.includes('inline-pill')) {
+        const txt = (node.textContent || '').trim();
+        return txt ? `<code class="md-pill">${escapeHtml(txt)}</code>` : '';
+      }
+      return '';
+    }
+
+    if (tag === 'HR') return '<hr>';
+    if (tag === 'BR') return '<br>';
+
+    let inner = '';
+    for (const child of node.childNodes) {
+      inner += sanitizeMarkdownNodeToHtml(child, depth + 1);
+      if (inner.length > 15800) break;
+    }
+
+    if (tag === 'A') {
+      const rawHref = node.getAttribute('href') || '';
+      if (/^https?:\/\//i.test(rawHref)) {
+        return `<a href="${escapeHtml(rawHref)}" target="_blank" rel="noopener">${inner}</a>`;
+      }
+      return inner;
+    }
+
+    if (tag === 'DIV' && cls.includes('markdown-alert')) {
+      return `<blockquote class="md-alert">${inner}</blockquote>`;
+    }
+    if (tag === 'TABLE') {
+      return `<div class="md-table-wrap"><table>${inner}</table></div>`;
+    }
+    if (MD_ALLOWED_TAGS.has(tag)) {
+      const lower = tag.toLowerCase();
+      return `<${lower}>${inner}</${lower}>`;
+    }
+    return inner;
+  }
+
+  function extractSanitizedMarkdownHtml(mdRoots) {
+    if (!Array.isArray(mdRoots) || !mdRoots.length) return '';
+    let out = '';
+    for (const root of mdRoots) {
+      const piece = sanitizeMarkdownNodeToHtml(root, 0).trim();
+      if (!piece) continue;
+      if (out && out.length + piece.length > 16000) break;
+      out += piece;
+    }
+    return out;
+  }
+
   function collectRecentMessages(limit = 20) {
     const viewport = getScrollViewport() || document.querySelector('main') || document.body;
     if (!viewport) return [];
@@ -3317,6 +3394,7 @@
         !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
       ));
       let replyText = mdRoots.map((m) => (m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
+      const replyHtml = extractSanitizedMarkdownHtml(mdRoots);
       if (!replyText) {
         const cloneText = (node.innerText || '').replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n+/i, '').trim();
         replyText = cloneText;
@@ -3328,6 +3406,7 @@
         id: `a-${i}`,
         role: 'assistant',
         text: replyText.slice(0, 4000),
+        html: replyHtml,
         thoughtLabel: thoughtLabel.slice(0, 120),
         thoughtText: thoughtChunks.join('\n\n').slice(0, 1200),
         highRisk,
@@ -3382,7 +3461,7 @@
 
     return {
       ok: true,
-      version: '1.6.1',
+      version: '1.6.2',
       timestamp: Date.now(),
       sessionId,
       title: activeConv?.title || document.title || 'Antigravity',
@@ -3517,7 +3596,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.6.1',
+    version: '1.6.2',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();

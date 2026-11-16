@@ -770,10 +770,37 @@ function buildMobileAppHtml() {
       flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
       padding:10px 12px;display:flex;flex-direction:column;gap:10px;
     }
-    .msg{border-radius:14px;padding:10px 12px;word-break:break-word;white-space:pre-wrap}
-    .msg.user{align-self:flex-end;max-width:88%;background:#0369a1;color:#f0f9ff;border-bottom-right-radius:4px}
+    .msg{border-radius:14px;padding:10px 12px;word-break:break-word}
+    .msg.user{align-self:flex-end;max-width:88%;background:#0369a1;color:#f0f9ff;border-bottom-right-radius:4px;white-space:pre-wrap}
     .msg.assistant{align-self:stretch;background:var(--card);border:1px solid var(--border)}
+    .msg.assistant .msg-plain{white-space:pre-wrap}
     .msg.assistant.is-risk{border-color:rgba(248,113,113,.65);box-shadow:0 0 0 1px rgba(248,113,113,.2)}
+    .md-body{font-size:14px;line-height:1.62;color:var(--fg)}
+    .md-body>:first-child{margin-top:0}
+    .md-body>:last-child{margin-bottom:0}
+    .md-body h1{font-size:19px;font-weight:700;margin:14px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--border);line-height:1.35;color:#fff}
+    .md-body h2{font-size:17px;font-weight:700;margin:12px 0 6px;padding-bottom:3px;border-bottom:1px solid rgba(255,255,255,.07);line-height:1.35;color:#fff}
+    .md-body h3{font-size:15.5px;font-weight:700;margin:11px 0 5px;line-height:1.38;color:#f4f4f5}
+    .md-body h4,.md-body h5,.md-body h6{font-size:14.5px;font-weight:600;margin:9px 0 4px;color:#e4e4e7}
+    .md-body p{margin:6px 0}
+    .md-body ul,.md-body ol{margin:6px 0;padding-left:20px}
+    .md-body li{margin:4px 0}
+    .md-body li>p{margin:2px 0}
+    .md-body strong,.md-body b{font-weight:700;color:#fff}
+    .md-body em{color:#e4e4e7}
+    .md-body hr{border:none;border-top:1px solid var(--border);margin:10px 0}
+    .md-body a{color:#38bdf8;text-decoration:underline;text-underline-offset:2px}
+    .md-body blockquote{margin:8px 0;padding:6px 10px;border-left:3px solid #38bdf8;background:rgba(56,189,248,.08);border-radius:0 8px 8px 0;color:#d4d4d8}
+    .md-body code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;padding:1px 5px;border-radius:5px;background:rgba(255,255,255,.1);color:#7dd3fc}
+    .md-body code.md-pill{background:rgba(56,189,248,.14);border:1px solid rgba(56,189,248,.28);color:#bae6fd}
+    .md-body pre{margin:8px 0;padding:10px 12px;border-radius:10px;background:#09090b;border:1px solid rgba(255,255,255,.1);overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .md-body pre code{background:none;padding:0;border:none;color:#e4e4e7;font-size:12px;line-height:1.5;white-space:pre}
+    .md-table-wrap{margin:8px 0;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:10px}
+    .md-body table{width:max-content;min-width:100%;border-collapse:collapse;font-size:12.5px}
+    .md-body th,.md-body td{padding:6px 9px;border-bottom:1px solid rgba(255,255,255,.08);border-right:1px solid rgba(255,255,255,.06);text-align:left;vertical-align:top;max-width:260px}
+    .md-body th{background:rgba(255,255,255,.05);font-weight:600;color:#fff}
+    .md-body tr:last-child td{border-bottom:none}
+    .md-body th:last-child,.md-body td:last-child{border-right:none}
     .risk-tag{
       display:block;margin-bottom:6px;padding:4px 8px;border-radius:8px;
       background:rgba(239,68,68,.16);border:1px solid rgba(239,68,68,.45);color:#fca5a5;font-size:12px;font-weight:600;
@@ -824,14 +851,25 @@ function buildMobileAppHtml() {
     }
     .send-btn:disabled{opacity:.45}
     .drawer-backdrop{
-      position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.58);display:flex;justify-content:flex-start;
+      position:fixed;inset:0;z-index:70;background:rgba(0,0,0,0);display:flex;justify-content:flex-start;
+      opacity:0;visibility:hidden;pointer-events:none;
+      transition:opacity .22s ease,visibility .22s ease,background-color .22s ease;
     }
-    .drawer-backdrop[hidden]{display:none}
+    .drawer-backdrop.open{
+      background:rgba(0,0,0,.58);opacity:1;visibility:visible;pointer-events:auto;
+    }
+    .drawer-backdrop.dragging{
+      transition:none;opacity:1;visibility:visible;pointer-events:auto;
+    }
     .drawer{
       width:min(82vw,320px);height:100%;background:#18181b;border-right:1px solid var(--border);
       padding:calc(env(safe-area-inset-top) + 12px) 12px calc(env(safe-area-inset-bottom) + 12px);
       display:flex;flex-direction:column;gap:10px;overflow-y:auto;
+      transform:translateX(-100%);transition:transform .24s cubic-bezier(.22,1,.36,1);
+      will-change:transform;
     }
+    .drawer-backdrop.open .drawer{transform:translateX(0)}
+    .drawer-backdrop.dragging .drawer{transition:none}
     .drawer-h{display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:15px}
     .win-select{
       width:100%;padding:8px 10px;border-radius:10px;background:#27272a;color:var(--fg);
@@ -886,8 +924,8 @@ function buildMobileAppHtml() {
     </footer>
   </div>
 
-  <div id="drawer-backdrop" class="drawer-backdrop" hidden>
-    <div class="drawer">
+  <div id="drawer-backdrop" class="drawer-backdrop" aria-hidden="true">
+    <div id="drawer-panel" class="drawer">
       <div class="drawer-h">
         <span>会话与窗口</span>
         <button id="btn-new-chat" class="icon-btn" type="button">+ 新对话</button>
@@ -1065,7 +1103,10 @@ function buildMobileAppHtml() {
             ? '<details class="thought-box"><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? '（点此看思考译文）' : '（桌面端折叠中）') + '</summary>' +
               (m.thoughtText ? '<div class="thought-body">' + esc(m.thoughtText) + '</div>' : '') + '</details>'
             : '';
-          return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + '">' + risk + thought + esc(m.text || (snap.busy ? '正在生成内容…' : '')) + '</div>';
+          const bodyHtml = m.html
+            ? '<div class="md-body">' + m.html + '</div>'
+            : '<div class="msg-plain">' + esc(m.text || (snap.busy ? '正在生成内容…' : '')) + '</div>';
+          return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + '">' + risk + thought + bodyHtml + '</div>';
         }).join('');
         if (msgEl.dataset.lastHtml !== html) {
           msgEl.innerHTML = html;
@@ -1234,27 +1275,113 @@ function buildMobileAppHtml() {
       if (!box.hidden && !box.contains(e.target) && e.target !== $('btn-quota')) box.hidden = true;
     });
 
+    const backdropEl = $('drawer-backdrop');
+    const drawerEl = $('drawer-panel');
+    function openDrawer() {
+      backdropEl.classList.remove('dragging');
+      drawerEl.style.transform = '';
+      backdropEl.style.backgroundColor = '';
+      backdropEl.classList.add('open');
+      backdropEl.setAttribute('aria-hidden', 'false');
+    }
+    function closeDrawer() {
+      backdropEl.classList.remove('dragging', 'open');
+      drawerEl.style.transform = '';
+      backdropEl.style.backgroundColor = '';
+      backdropEl.setAttribute('aria-hidden', 'true');
+    }
+
     $('conv-list').addEventListener('click', async (e) => {
       const btn = e.target?.closest?.('.conv-item');
       if (!btn || !btn.dataset.cid) return;
-      $('drawer-backdrop').hidden = true;
+      closeDrawer();
       stickBottom = true;
       showToast('正在切换会话…');
       const r = await apiAction({ action: 'switch-conversation', id: btn.dataset.cid });
       if (!r?.ok) showToast(r?.actionResult?.error || '切换会话失败');
     });
-    $('btn-drawer').onclick = () => { $('drawer-backdrop').hidden = false; };
-    $('drawer-backdrop').onclick = (e) => { if (e.target === $('drawer-backdrop')) $('drawer-backdrop').hidden = true; };
+    $('btn-drawer').onclick = openDrawer;
+    backdropEl.onclick = (e) => { if (e.target === backdropEl) closeDrawer(); };
     $('btn-new-chat').onclick = async () => {
-      $('drawer-backdrop').hidden = true;
+      closeDrawer();
       await apiAction({ action: 'switch-conversation', id: 'new' });
     };
     $('win-select').onchange = () => {
       currentTargetId = $('win-select').value;
-      $('drawer-backdrop').hidden = true;
+      closeDrawer();
       stickBottom = true;
       void fetchSnapshot();
     };
+
+    // 全屏随手右滑打开左侧抽屉 & 左滑关闭抽屉
+    let swipeState = null;
+    document.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) { swipeState = null; return; }
+      const t = e.touches[0];
+      const isOpen = backdropEl.classList.contains('open');
+      const target = e.target;
+      if (!isOpen) {
+        if (!$('quota-drawer').hidden) return;
+        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select')) return;
+        if (t.clientX > window.innerWidth * 0.85) return;
+      }
+      swipeState = {
+        startX: t.clientX,
+        startY: t.clientY,
+        startTime: Date.now(),
+        isOpen,
+        dragging: false,
+        dx: 0
+      };
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+      if (!swipeState || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      const dx = t.clientX - swipeState.startX;
+      const dy = t.clientY - swipeState.startY;
+      swipeState.dx = dx;
+
+      if (!swipeState.dragging) {
+        if (Math.abs(dy) > 18 && Math.abs(dy) > Math.abs(dx)) {
+          swipeState = null;
+          return;
+        }
+        const wantOpenDrag = !swipeState.isOpen && dx > 14 && dx > Math.abs(dy) * 1.25;
+        const wantCloseDrag = swipeState.isOpen && dx < -14 && Math.abs(dx) > Math.abs(dy) * 1.25;
+        if (wantOpenDrag || wantCloseDrag) {
+          swipeState.dragging = true;
+          backdropEl.classList.add('dragging');
+        }
+      }
+
+      if (swipeState.dragging) {
+        const w = drawerEl.offsetWidth || 300;
+        const progress = swipeState.isOpen
+          ? Math.max(0, Math.min(1, 1 + dx / w))
+          : Math.max(0, Math.min(1, dx / w));
+        drawerEl.style.transform = 'translateX(' + ((progress - 1) * 100).toFixed(2) + '%)';
+        backdropEl.style.backgroundColor = 'rgba(0,0,0,' + (0.58 * progress).toFixed(3) + ')';
+      }
+    }, { passive: true });
+
+    const finishSwipe = () => {
+      if (!swipeState) return;
+      const st = swipeState;
+      swipeState = null;
+      if (!st.dragging) return;
+      const elapsed = Math.max(1, Date.now() - st.startTime);
+      const velocity = Math.abs(st.dx) / elapsed;
+      if (!st.isOpen) {
+        if (st.dx > 52 || (st.dx > 26 && velocity > 0.35)) openDrawer();
+        else closeDrawer();
+      } else {
+        if (st.dx < -45 || (st.dx < -24 && velocity > 0.35)) closeDrawer();
+        else openDrawer();
+      }
+    };
+    document.addEventListener('touchend', finishSwipe, { passive: true });
+    document.addEventListener('touchcancel', finishSwipe, { passive: true });
 
     const ta = $('input');
     const autoGrow = () => {
