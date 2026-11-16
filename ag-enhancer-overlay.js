@@ -3439,6 +3439,32 @@
     return list;
   }
 
+  function getModelSelectorContext() {
+    try {
+      const btn = document.querySelector('[data-testid="model-selector-trigger"]');
+      if (!btn) return null;
+      const fk = Object.keys(btn).find((k) => k.startsWith('__reactFiber$'));
+      let f = fk ? btn[fk] : null;
+      for (let i = 0; i < 28 && f; i++) {
+        const v = f.memoizedProps?.value;
+        if (v && typeof v.setSelectedModel === 'function' && Array.isArray(v.modelOptions)) {
+          return v;
+        }
+        f = f.return;
+      }
+    } catch {}
+    return null;
+  }
+
+  function getPermissionPresetsMeta() {
+    return [
+      { key: 'turbo', label: '⚡ 极速 (Turbo)' },
+      { key: 'auto', label: '🛡️ 自动 (Auto)' },
+      { key: 'default', label: '🔒 默认 (Default)' },
+      { key: 'request_review', label: '👁️ 请求审查 (Review)' }
+    ];
+  }
+
   function getMobileSnapshot() {
     const sessionId = getSessionIdFromLocation() || '';
     const conversations = collectSidebarConversations(25);
@@ -3454,20 +3480,35 @@
     const speedBadge = (sr?.getElementById('badge-speed')?.textContent || '').replace(/\s+/g, ' ').trim();
     const pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
     const pulseText = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
-    const model = detectCurrentModelText();
+    const modelCtx = getModelSelectorContext();
+    const model = modelCtx?.selectedModel?.label || detectCurrentModelText();
+    const modelOptions = Array.isArray(modelCtx?.modelOptions)
+      ? modelCtx.modelOptions
+        .filter((o) => o && !o.disabled && o.label)
+        .map((o) => ({
+          label: String(o.label),
+          modelId: String(o.modelId || ''),
+          selected: Boolean(o.label === modelCtx.selectedModel?.label)
+        }))
+      : [];
+    const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
+    const permissionLabel = (permBtn?.textContent || '').replace(/\s+/g, ' ').trim() || '未知';
     const pendingApprovals = collectPendingApprovals();
     const messages = collectRecentMessages(20);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
 
     return {
       ok: true,
-      version: '1.6.2',
+      version: '1.6.3',
       timestamp: Date.now(),
       sessionId,
       title: activeConv?.title || document.title || 'Antigravity',
       busy,
       autoAccept: autoAcceptEnabled,
       model,
+      modelOptions,
+      permissionLabel,
+      permissionOptions: getPermissionPresetsMeta(),
       contextBadge,
       pulseText,
       quota: {
@@ -3592,11 +3633,122 @@
       };
     }
 
+    if (action === 'select-model') {
+      const targetLabel = String(payload?.label || '').trim();
+      const targetModelId = String(payload?.modelId || '').trim();
+      const modelCtx = getModelSelectorContext();
+      if (!modelCtx || !Array.isArray(modelCtx.modelOptions)) {
+        return { ok: false, error: '未找到桌面端模型选择器' };
+      }
+      const picked = modelCtx.modelOptions.find((o) =>
+        o && !o.disabled && (
+          (targetLabel && o.label === targetLabel) ||
+          (targetModelId && o.modelId === targetModelId)
+        )
+      );
+      if (!picked) {
+        return { ok: false, error: `未找到目标模型: ${targetLabel || targetModelId}` };
+      }
+      modelCtx.setSelectedModel(picked);
+      await new Promise((r) => setTimeout(r, 80));
+      return { ok: true, model: picked.label };
+    }
+
+    if (action === 'select-permission') {
+      const preset = String(payload?.preset || '').trim();
+      if (!preset) return { ok: false, error: '缺少权限预设名称' };
+      const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
+      if (!permBtn) return { ok: false, error: '未找到桌面端权限选择器' };
+      if (permBtn.getAttribute('aria-disabled') === 'true' || permBtn.disabled) {
+        return { ok: false, error: '当前会话不允许切换权限预设' };
+      }
+
+      let menuCtx = null;
+      try {
+        const fk = Object.keys(permBtn).find((k) => k.startsWith('__reactFiber$'));
+        let f = fk ? permBtn[fk] : null;
+        for (let i = 0; i < 20 && f; i++) {
+          const v = f.memoizedProps?.value;
+          if (v && typeof v.setIsOpen === 'function' && 'open' in v) {
+            menuCtx = v;
+            break;
+          }
+          f = f.return;
+        }
+      } catch {}
+
+      if (menuCtx) menuCtx.setIsOpen(true);
+      else permBtn.click();
+
+      let opt = null;
+      for (let i = 0; i < 8; i++) {
+        await new Promise((r) => setTimeout(r, 40));
+        opt = document.querySelector(`[data-testid="permissions-preset-option-${CSS.escape(preset)}"]`);
+        if (opt) break;
+      }
+      if (!opt) {
+        if (menuCtx) menuCtx.setIsOpen(false);
+        return { ok: false, error: `权限选项不可用: ${preset}` };
+      }
+      if (opt.getAttribute('aria-disabled') === 'true' || opt.hasAttribute('disabled')) {
+        if (menuCtx) menuCtx.setIsOpen(false);
+        return { ok: false, error: `该权限预设当前被锁定: ${preset}` };
+      }
+      opt.click();
+      await new Promise((r) => setTimeout(r, 90));
+      if (menuCtx && menuCtx.open) {
+        menuCtx.setIsOpen(false);
+      }
+      const nextLabel = (permBtn.textContent || '').replace(/\s+/g, ' ').trim();
+      return { ok: true, preset, permissionLabel: nextLabel };
+    }
+
+    if (action === 'upload-image') {
+      const rawB64 = String(payload?.base64 || '').trim();
+      if (!rawB64) return { ok: false, error: '缺少图片数据' };
+      const cleanB64 = rawB64.replace(/^data:[^;]+;base64,/, '');
+      const mimeType = String(payload?.mimeType || 'image/jpeg').trim() || 'image/jpeg';
+      const fileName = String(payload?.name || `mobile-${Date.now()}.jpg`).trim();
+
+      let bytes;
+      try {
+        const binStr = atob(cleanB64);
+        bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+      } catch {
+        return { ok: false, error: '图片 Base64 解码失败' };
+      }
+
+      const inp =
+        document.querySelector('.surface-composer input[type="file"]') ||
+        document.querySelector('input[type="file"][multiple]') ||
+        document.querySelector('input[type="file"]');
+      if (!inp) return { ok: false, error: '未找到桌面端文件上传控件' };
+
+      const file = new File([bytes], fileName, { type: mimeType });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      try {
+        Object.defineProperty(inp, 'files', { configurable: true, writable: true, value: dt.files });
+      } catch {
+        inp.files = dt.files;
+      }
+
+      const pk = Object.keys(inp).find((k) => k.startsWith('__reactProps$'));
+      if (pk && typeof inp[pk]?.onChange === 'function') {
+        inp[pk].onChange({ target: inp, currentTarget: inp });
+      } else {
+        inp.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await new Promise((r) => setTimeout(r, 90));
+      return { ok: true, name: file.name, size: file.size };
+    }
+
     return { ok: false, error: `未知操作: ${action}` };
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.6.2',
+    version: '1.6.3',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();

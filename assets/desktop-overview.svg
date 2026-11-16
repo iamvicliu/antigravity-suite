@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 680" width="1120" height="680">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#09090b"/>
+      <stop offset="100%" stop-color="#111116"/>
+    </linearGradient>
+    <linearGradient id="pillGlow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0.22"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 窗口外框 -->
+  <rect x="0" y="0" width="1120" height="680" rx="18" fill="url(#bgGrad)"/>
+  <rect x="1" y="1" width="1118" height="678" rx="17" fill="none" stroke="rgba(255,255,255,0.12)"/>
+
+  <!-- 顶栏 -->
+  <rect x="0" y="0" width="1120" height="46" rx="18" fill="#18181b"/>
+  <rect x="0" y="28" width="1120" height="18" fill="#18181b"/>
+  <line x1="0" y1="46" x2="1120" y2="46" stroke="rgba(255,255,255,0.08)"/>
+
+  <!-- macOS 红黄绿灯 -->
+  <circle cx="24" cy="23" r="6" fill="#ff5f56"/>
+  <circle cx="44" cy="23" r="6" fill="#ffbd2e"/>
+  <circle cx="64" cy="23" r="6" fill="#27c93f"/>
+  <text x="90" y="27" fill="#d4d4d8" font-family="-apple-system,PingFang SC,sans-serif" font-size="13" font-weight="600">Antigravity — 增强体验示例视图（已全界面汉化）</text>
+
+  <!-- 顶栏右侧：上下文圆环 + 双池配额胶囊 + Token 热力图 -->
+  <g transform="translate(595, 9)">
+    <rect x="0" y="0" width="142" height="28" rx="8" fill="#27272a" stroke="rgba(56,189,248,0.45)"/>
+    <circle cx="16" cy="14" r="6" fill="none" stroke="#3f3f46" stroke-width="2.5"/>
+    <circle cx="16" cy="14" r="6" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-dasharray="14 25" transform="rotate(-90 16 14)"/>
+    <text x="29" y="18" fill="#f4f4f5" font-family="-apple-system,PingFang SC,sans-serif" font-size="12" font-weight="600">84.2K (33%) · 108t/s</text>
+
+    <rect x="150" y="0" width="146" height="28" rx="8" fill="#27272a" stroke="rgba(52,211,153,0.45)"/>
+    <circle cx="164" cy="14" r="4" fill="#34d399"/>
+    <text x="174" y="18" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12" font-weight="600">G4 92% · C 86%</text>
+
+    <rect x="304" y="0" width="114" height="28" rx="8" fill="#27272a" stroke="rgba(255,255,255,0.14)"/>
+    <text x="316" y="18" fill="#d4d4d8" font-family="-apple-system,PingFang SC,sans-serif" font-size="12">📊 用量 · $4.8</text>
+
+    <rect x="426" y="0" width="84" height="28" rx="8" fill="url(#pillGlow)" stroke="rgba(56,189,248,0.45)"/>
+    <text x="438" y="18" fill="#7dd3fc" font-family="-apple-system,PingFang SC,sans-serif" font-size="12" font-weight="600">📱 遥控</text>
+  </g>
+
+  <!-- 左侧栏：对话标题自动中译 -->
+  <rect x="0" y="46" width="220" height="634" fill="#131316"/>
+  <line x1="220" y1="46" x2="220" y2="680" stroke="rgba(255,255,255,0.08)"/>
+  <text x="18" y="76" fill="#71717a" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5" font-weight="600">近期对话（英文自动中译）</text>
+
+  <rect x="12" y="88" width="196" height="36" rx="8" fill="rgba(56,189,248,0.14)" stroke="rgba(56,189,248,0.45)"/>
+  <text x="24" y="111" fill="#f4f4f5" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5" font-weight="600">重构缓存层并补充测试</text>
+
+  <rect x="12" y="132" width="196" height="34" rx="8" fill="rgba(255,255,255,0.03)"/>
+  <text x="24" y="153" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="12">修复构建脚本路径兼容</text>
+
+  <rect x="12" y="172" width="196" height="34" rx="8" fill="rgba(255,255,255,0.03)"/>
+  <text x="24" y="193" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="12">优化列表虚拟滚动卡顿</text>
+
+  <!-- 左下角 EN / 中 切换按钮 -->
+  <rect x="16" y="632" width="188" height="32" rx="8" fill="#27272a" stroke="rgba(255,255,255,0.12)"/>
+  <text x="36" y="652" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12" font-weight="600">🌐 界面语言：EN / 中</text>
+
+  <!-- 中间聊天区 -->
+  <!-- 思考过程自动翻译块 -->
+  <rect x="244" y="66" width="528" height="82" rx="10" fill="rgba(255,255,255,0.035)" stroke="rgba(255,255,255,0.1)"/>
+  <text x="260" y="88" fill="#7dd3fc" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5" font-weight="600">💡 已思考 6 秒（自动译为中文 · 零大模型 Token 消耗）</text>
+  <text x="260" y="110" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="12">先检查 src/cache.ts 中的过期淘汰逻辑，确认单元测试覆盖率后</text>
+  <text x="260" y="130" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="12">再补充边界用例，展开阅读期间收到新消息也不会自动折叠…</text>
+
+  <!-- 助手回复 & 高危命令红框预警 -->
+  <text x="244" y="176" fill="#f4f4f5" font-family="-apple-system,PingFang SC,sans-serif" font-size="14" font-weight="700">一、缓存模块测试已完成，清理旧构建产物前请人工确认：</text>
+
+  <rect x="244" y="192" width="528" height="86" rx="10" fill="rgba(239,68,68,0.08)" stroke="#ef4444" stroke-width="1.8"/>
+  <rect x="256" y="202" width="504" height="24" rx="6" fill="rgba(239,68,68,0.18)"/>
+  <text x="266" y="218" fill="#fca5a5" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5" font-weight="700">🛡️ 高危命令预警：检测到 rm -rf，自动确认已强制跳过，请人工核对</text>
+  <text x="260" y="246" fill="#e4e4e7" font-family="ui-monospace,Menlo,monospace" font-size="12.5">rm -rf ./dist &amp;&amp; npx jest --coverage</text>
+  <rect x="652" y="244" width="54" height="24" rx="6" fill="#3f3f46"/>
+  <text x="665" y="260" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5">拒绝</text>
+  <rect x="712" y="244" width="52" height="24" rx="6" fill="#10b981"/>
+  <text x="726" y="260" fill="#052e16" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5" font-weight="700">允许</text>
+
+  <!-- 5h + Weekly 配额浮窗展示 -->
+  <rect x="528" y="54" width="268" height="218" rx="12" fill="rgba(24,24,27,0.98)" stroke="rgba(255,255,255,0.18)"/>
+  <text x="544" y="78" fill="#f4f4f5" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5" font-weight="700">模型剩余配额实时看板（5h + 每周）</text>
+  <line x1="544" y1="88" x2="780" y2="88" stroke="rgba(255,255,255,0.08)"/>
+  <text x="544" y="108" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5" font-weight="600">Gemini 4 / 3.8</text>
+  <text x="738" y="108" fill="#34d399" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5" font-weight="700">92.0%</text>
+  <text x="544" y="126" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="10.5">⏱️ 5 小时限额 · 96.4%</text>
+  <rect x="544" y="132" width="236" height="5" rx="2.5" fill="rgba(255,255,255,0.12)"/>
+  <rect x="544" y="132" width="226" height="5" rx="2.5" fill="#34d399"/>
+  <text x="544" y="152" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="10.5">📅 每周限额 · 92.0%（5天后重置）</text>
+  <rect x="544" y="158" width="236" height="5" rx="2.5" fill="rgba(255,255,255,0.12)"/>
+  <rect x="544" y="158" width="217" height="5" rx="2.5" fill="#34d399"/>
+  <line x1="544" y1="176" x2="780" y2="176" stroke="rgba(255,255,255,0.08)"/>
+  <text x="544" y="196" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5" font-weight="600">Claude 5.5 / GPT</text>
+  <text x="738" y="196" fill="#34d399" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5" font-weight="700">86.0%</text>
+  <text x="544" y="214" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="10.5">⏱️ 5 小时限额 · 100.0%</text>
+  <rect x="544" y="220" width="236" height="5" rx="2.5" fill="rgba(255,255,255,0.12)"/>
+  <rect x="544" y="220" width="236" height="5" rx="2.5" fill="#34d399"/>
+  <text x="544" y="240" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="10.5">📅 每周限额 · 86.0%</text>
+  <rect x="544" y="246" width="236" height="5" rx="2.5" fill="rgba(255,255,255,0.12)"/>
+  <rect x="544" y="246" width="203" height="5" rx="2.5" fill="#34d399"/>
+
+  <!-- 输入框上方快捷胶囊栏 -->
+  <g transform="translate(244, 514)">
+    <rect x="0" y="0" width="90" height="26" rx="13" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.12)"/>
+    <text x="12" y="17" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">🗜️ /compact</text>
+
+    <rect x="96" y="0" width="76" height="26" rx="13" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.12)"/>
+    <text x="108" y="17" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">🎯 /plan</text>
+
+    <rect x="178" y="0" width="82" height="26" rx="13" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.12)"/>
+    <text x="190" y="17" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">🔄 重载规则</text>
+
+    <rect x="266" y="0" width="84" height="26" rx="13" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.12)"/>
+    <text x="278" y="17" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">📝 导出 MD</text>
+
+    <rect x="356" y="0" width="102" height="26" rx="13" fill="rgba(16,185,129,0.16)" stroke="rgba(16,185,129,0.55)"/>
+    <text x="366" y="17" fill="#34d399" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">🤖 自动确认: 开</text>
+
+    <rect x="464" y="0" width="90" height="26" rx="13" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.12)"/>
+    <text x="476" y="17" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">📦 缓存 42MB</text>
+  </g>
+
+  <!-- 输入框 + 下一步建议 Tab / -> 补全 -->
+  <rect x="244" y="548" width="528" height="82" rx="12" fill="#18181b" stroke="rgba(255,255,255,0.16)"/>
+  <text x="260" y="574" fill="rgba(228,228,231,0.52)" font-family="-apple-system,PingFang SC,sans-serif" font-size="13">💡 运行测试验证，通过后提交并推送</text>
+  <rect x="614" y="558" width="90" height="22" rx="5" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.16)"/>
+  <text x="623" y="573" fill="#d4d4d8" font-family="-apple-system,PingFang SC,sans-serif" font-size="10.5">Tab / → 补全</text>
+  <rect x="710" y="558" width="46" height="22" rx="5" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.16)"/>
+  <text x="720" y="573" fill="#d4d4d8" font-family="-apple-system,PingFang SC,sans-serif" font-size="10.5">↓ 1/4</text>
+  <text x="260" y="614" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5">Orchestrator (Argon) · ⚡ 极速</text>
+
+  <!-- 实时能量条 Pulse -->
+  <rect x="244" y="638" width="528" height="26" rx="8" fill="rgba(56,189,248,0.09)" stroke="rgba(56,189,248,0.28)"/>
+  <text x="260" y="655" fill="#7dd3fc" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5" font-weight="600">⚡ Pulse: 108 tok/s · 84.2k / 256k (32.9%) · 缓存命中 82% · 5h 窗口正常</text>
+
+  <!-- 长对话电梯（紧贴输入框右侧） -->
+  <rect x="782" y="516" width="28" height="148" rx="8" fill="#18181b" stroke="rgba(255,255,255,0.14)"/>
+  <text x="789" y="538" fill="#d4d4d8" font-size="13">⏫</text>
+  <text x="789" y="566" fill="#d4d4d8" font-size="13">🔼</text>
+  <text x="789" y="594" fill="#d4d4d8" font-size="13">🔽</text>
+  <text x="789" y="622" fill="#d4d4d8" font-size="13">⏬</text>
+  <text x="789" y="650" fill="#fbbf24" font-size="13">💡</text>
+
+  <!-- 右侧预览/行内编辑区 -->
+  <line x1="820" y1="46" x2="820" y2="680" stroke="rgba(255,255,255,0.08)"/>
+  <rect x="820" y="46" width="300" height="38" fill="#141418"/>
+  <line x1="820" y1="84" x2="1120" y2="84" stroke="rgba(255,255,255,0.08)"/>
+  <text x="834" y="70" fill="#e4e4e7" font-family="ui-monospace,Menlo,monospace" font-size="12">src/cache.ts</text>
+  <rect x="974" y="54" width="66" height="22" rx="6" fill="rgba(56,189,248,0.18)" stroke="rgba(56,189,248,0.5)"/>
+  <text x="984" y="69" fill="#7dd3fc" font-family="-apple-system,PingFang SC,sans-serif" font-size="11" font-weight="600">💾 保存</text>
+  <rect x="1046" y="54" width="62" height="22" rx="6" fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.14)"/>
+  <text x="1055" y="69" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">↩️ 完成</text>
+
+  <text x="834" y="106" fill="#71717a" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">✏️ 行内编辑模式（Cmd+S 保存，不跳回预览）</text>
+  <rect x="832" y="120" width="274" height="540" rx="8" fill="#0d0d11" stroke="rgba(56,189,248,0.28)"/>
+  <text x="846" y="148" fill="#93c5fd" font-family="ui-monospace,Menlo,monospace" font-size="12">export class MemoryCache {</text>
+  <text x="846" y="170" fill="#e4e4e7" font-family="ui-monospace,Menlo,monospace" font-size="12">  private store = new Map();</text>
+  <text x="846" y="192" fill="#e4e4e7" font-family="ui-monospace,Menlo,monospace" font-size="12">  get(key: string) {</text>
+  <text x="846" y="214" fill="#34d399" font-family="ui-monospace,Menlo,monospace" font-size="12">    const entry = this.store.get(key);</text>
+  <text x="846" y="236" fill="#34d399" font-family="ui-monospace,Menlo,monospace" font-size="12">    if (!entry) return null;</text>
+  <text x="846" y="258" fill="#e4e4e7" font-family="ui-monospace,Menlo,monospace" font-size="12">    return entry.value;</text>
+  <text x="846" y="280" fill="#e4e4e7" font-family="ui-monospace,Menlo,monospace" font-size="12">  }</text>
+  <text x="846" y="302" fill="#93c5fd" font-family="ui-monospace,Menlo,monospace" font-size="12">}</text>
+</svg>

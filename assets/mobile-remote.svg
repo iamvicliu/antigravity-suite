@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 660" width="960" height="660">
+  <rect width="960" height="660" rx="18" fill="#09090b"/>
+  <rect x="1" y="1" width="958" height="658" rx="17" fill="none" stroke="rgba(255,255,255,0.1)"/>
+
+  <!-- 标题区 -->
+  <text x="480" y="38" text-anchor="middle" fill="#f4f4f5" font-family="-apple-system,PingFang SC,sans-serif" font-size="18" font-weight="700">手机极速版 PWA 遥控面板（Tailscale / 同 Wi-Fi 内网直连）</text>
+  <text x="480" y="60" text-anchor="middle" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">独立全屏防杀后台 · 软键盘防遮挡 · 完整 Markdown 排版 · 全屏右滑切换会话</text>
+
+  <!-- 左手机：主对话 + 模型/权限切换 + 传图/语音 + 审批卡片 -->
+  <g transform="translate(88, 82)">
+    <rect x="0" y="0" width="350" height="552" rx="38" fill="#111115" stroke="rgba(255,255,255,0.22)" stroke-width="2.5"/>
+    <rect x="10" y="10" width="330" height="532" rx="30" fill="#09090b"/>
+    <!-- 灵动岛 -->
+    <rect x="130" y="18" width="90" height="20" rx="10" fill="#000"/>
+
+    <!-- 顶栏（极简：左抽屉 + 标题 + G4/C 配额） -->
+    <rect x="10" y="42" width="330" height="48" fill="#18181b"/>
+    <line x1="10" y1="90" x2="340" y2="90" stroke="rgba(255,255,255,0.1)"/>
+    <rect x="20" y="51" width="30" height="30" rx="8" fill="#27272a" stroke="rgba(255,255,255,0.12)"/>
+    <text x="29" y="71" fill="#f4f4f5" font-size="14">☰</text>
+    <circle cx="62" cy="61" r="4" fill="#34d399"/>
+    <text x="72" y="65" fill="#f4f4f5" font-family="-apple-system,PingFang SC,sans-serif" font-size="13" font-weight="700">重构 API 缓存层</text>
+    <text x="60" y="81" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="10.5">Gemini 4 Argon · 108 tok/s</text>
+
+    <rect x="242" y="49" width="88" height="34" rx="9" fill="#27272a" stroke="rgba(255,255,255,0.12)"/>
+    <text x="250" y="64" fill="#f4f4f5" font-family="-apple-system,PingFang SC,sans-serif" font-size="11" font-weight="700">G4 92% · C 86%</text>
+    <text x="275" y="78" fill="#a1a1aa" font-family="-apple-system,PingFang SC,sans-serif" font-size="10">84.2K (33%)</text>
+
+    <!-- 用户消息 -->
+    <rect x="112" y="102" width="218" height="34" rx="12" fill="#0369a1"/>
+    <text x="124" y="123" fill="#f0f9ff" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">补充单测，然后运行检查看看</text>
+
+    <!-- 助手 Markdown 富文本回复 -->
+    <rect x="20" y="146" width="310" height="196" rx="12" fill="#18181b" stroke="rgba(255,255,255,0.1)"/>
+    <rect x="30" y="156" width="290" height="26" rx="7" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="40" y="173" fill="#93c5fd" font-family="-apple-system,PingFang SC,sans-serif" font-size="11" font-weight="600">💡 已思考 4s（点此展开中文思考过程）</text>
+
+    <text x="32" y="202" fill="#fff" font-family="-apple-system,PingFang SC,sans-serif" font-size="14" font-weight="700">一、已完成缓存淘汰测试</text>
+    <text x="32" y="222" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12">已修改 </text>
+    <rect x="74" y="210" width="90" height="16" rx="4" fill="rgba(56,189,248,0.16)"/>
+    <text x="80" y="222" fill="#bae6fd" font-family="ui-monospace,Menlo,monospace" font-size="11">src/cache.ts</text>
+    <text x="170" y="222" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12"> 并补充 6 条边界用例：</text>
+
+    <rect x="32" y="232" width="286" height="44" rx="8" fill="#09090b" stroke="rgba(255,255,255,0.1)"/>
+    <text x="42" y="250" fill="#e4e4e7" font-family="ui-monospace,Menlo,monospace" font-size="11">$ npx jest tests/cache.test.ts</text>
+    <text x="42" y="266" fill="#34d399" font-family="ui-monospace,Menlo,monospace" font-size="11">PASS 6/6 tests (0.42s)</text>
+
+    <text x="32" y="296" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12">• 命中率提升至 </text>
+    <text x="116" y="296" fill="#fff" font-family="-apple-system,PingFang SC,sans-serif" font-size="12" font-weight="700">98.4%</text>
+    <text x="32" y="316" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12">• 右滑屏幕任意位置可直接切换会话</text>
+
+    <!-- 审批操作卡片 -->
+    <rect x="10" y="352" width="330" height="76" fill="#18181b"/>
+    <line x1="10" y1="352" x2="340" y2="352" stroke="rgba(255,255,255,0.1)"/>
+    <rect x="20" y="359" width="310" height="62" rx="10" fill="rgba(56,189,248,0.1)" stroke="rgba(56,189,248,0.4)"/>
+    <text x="30" y="376" fill="#e4e4e7" font-family="ui-monospace,Menlo,monospace" font-size="11">请求执行: npm run build</text>
+    <rect x="30" y="384" width="140" height="30" rx="8" fill="#10b981"/>
+    <text x="72" y="403" fill="#052e16" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5" font-weight="700">✅ 允许</text>
+    <rect x="180" y="384" width="140" height="30" rx="8" fill="#3f3f46"/>
+    <text x="224" y="403" fill="#f4f4f5" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5" font-weight="700">❌ 拒绝</text>
+
+    <!-- 底部控制胶囊（切换模型 + 切换权限 + 下一步建议） + 输入栏（传图 + 输入 + 语音 + 发送） -->
+    <rect x="10" y="428" width="330" height="104" rx="16" fill="#111115"/>
+    <line x1="10" y1="428" x2="340" y2="428" stroke="rgba(255,255,255,0.1)"/>
+
+    <rect x="20" y="436" width="112" height="24" rx="12" fill="rgba(139,92,246,0.18)" stroke="rgba(167,139,250,0.45)"/>
+    <text x="30" y="452" fill="#ddd6fe" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">🧠 G4 Argon·M</text>
+    <rect x="138" y="436" width="66" height="24" rx="12" fill="rgba(139,92,246,0.18)" stroke="rgba(167,139,250,0.45)"/>
+    <text x="148" y="452" fill="#ddd6fe" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">⚡ 极速</text>
+    <rect x="210" y="436" width="120" height="24" rx="12" fill="rgba(56,189,248,0.14)" stroke="rgba(56,189,248,0.45)"/>
+    <text x="220" y="452" fill="#7dd3fc" font-family="-apple-system,PingFang SC,sans-serif" font-size="11">💡 运行测试验证…</text>
+
+    <rect x="20" y="468" width="34" height="36" rx="9" fill="#27272a" stroke="rgba(255,255,255,0.12)"/>
+    <text x="29" y="491" font-size="15">🖼️</text>
+    <rect x="60" y="468" width="174" height="36" rx="10" fill="#18181b" stroke="rgba(255,255,255,0.16)"/>
+    <text x="72" y="490" fill="#71717a" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">发消息给桌面端…</text>
+    <rect x="240" y="468" width="34" height="36" rx="9" fill="#27272a" stroke="rgba(255,255,255,0.12)"/>
+    <text x="249" y="491" font-size="15">🎤</text>
+    <rect x="280" y="468" width="50" height="36" rx="10" fill="#38bdf8"/>
+    <text x="291" y="491" fill="#082f49" font-family="-apple-system,PingFang SC,sans-serif" font-size="13" font-weight="700">发送</text>
+
+    <rect x="125" y="528" width="100" height="4" rx="2" fill="rgba(255,255,255,0.28)"/>
+  </g>
+
+  <!-- 右手机：全屏右滑抽屉 + 底部模型/权限切换弹层 -->
+  <g transform="translate(522, 82)">
+    <rect x="0" y="0" width="350" height="552" rx="38" fill="#111115" stroke="rgba(255,255,255,0.22)" stroke-width="2.5"/>
+    <rect x="10" y="10" width="330" height="532" rx="30" fill="#09090b"/>
+    <rect x="130" y="18" width="90" height="20" rx="10" fill="#000"/>
+
+    <!-- 右滑抽屉叠加示意 -->
+    <rect x="10" y="10" width="248" height="310" rx="22" fill="#18181b" stroke="rgba(255,255,255,0.14)"/>
+    <text x="26" y="66" fill="#fff" font-family="-apple-system,PingFang SC,sans-serif" font-size="14" font-weight="700">会话与窗口（👉 右滑呼出）</text>
+    <rect x="180" y="48" width="66" height="26" rx="8" fill="#27272a" stroke="rgba(255,255,255,0.12)"/>
+    <text x="190" y="65" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5">+ 新对话</text>
+
+    <rect x="24" y="82" width="220" height="30" rx="8" fill="#27272a"/>
+    <text x="34" y="101" fill="#d4d4d8" font-family="-apple-system,PingFang SC,sans-serif" font-size="11.5">窗口：demo-app — Antigravity</text>
+
+    <rect x="24" y="122" width="220" height="34" rx="9" fill="rgba(56,189,248,0.16)" stroke="rgba(56,189,248,0.6)"/>
+    <text x="36" y="143" fill="#fff" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5" font-weight="600">重构 API 缓存层</text>
+
+    <rect x="24" y="162" width="220" height="34" rx="9" fill="rgba(255,255,255,0.04)"/>
+    <text x="36" y="183" fill="#d4d4d8" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">新增 TypeScript 单元测试</text>
+
+    <rect x="24" y="202" width="220" height="34" rx="9" fill="rgba(255,255,255,0.04)"/>
+    <text x="36" y="223" fill="#d4d4d8" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">优化列表虚拟滚动卡顿</text>
+
+    <rect x="24" y="242" width="220" height="34" rx="9" fill="rgba(255,255,255,0.04)"/>
+    <text x="36" y="263" fill="#d4d4d8" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">配置 CI 自动打包发布</text>
+
+    <!-- 底部半屏选择器（切换模型 / 切换权限） -->
+    <rect x="10" y="328" width="330" height="214" rx="20" fill="#18181b" stroke="rgba(255,255,255,0.18)"/>
+    <text x="26" y="354" fill="#fff" font-family="-apple-system,PingFang SC,sans-serif" font-size="14" font-weight="700">快速切换模型 / 权限预设</text>
+    <rect x="22" y="366" width="306" height="34" rx="9" fill="rgba(56,189,248,0.16)" stroke="rgba(56,189,248,0.65)"/>
+    <text x="34" y="387" fill="#fff" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5" font-weight="600">Gemini 4 Argon (Medium)</text>
+    <text x="308" y="387" fill="#38bdf8" font-size="13">✓</text>
+    <rect x="22" y="406" width="306" height="34" rx="9" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="34" y="427" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">Claude Opus 5.5 (High)</text>
+    <rect x="22" y="446" width="306" height="34" rx="9" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="34" y="467" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">⚡ 极速 (Turbo) · 🛡️ 自动 · 🔒 默认</text>
+    <rect x="22" y="486" width="306" height="34" rx="9" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="34" y="507" fill="#e4e4e7" font-family="-apple-system,PingFang SC,sans-serif" font-size="12.5">🖼️ 压缩传图 · 🎤 语音听写转文字</text>
+
+    <rect x="125" y="528" width="100" height="4" rx="2" fill="rgba(255,255,255,0.28)"/>
+  </g>
+</svg>

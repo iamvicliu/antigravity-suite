@@ -10,7 +10,7 @@ const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 
 const DEFAULT_REMOTE_PORT = 18765;
-const MAX_ACTION_BODY_BYTES = 256 * 1024;
+const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 
 // ==================== 配置与内网安全校验 ====================
@@ -837,8 +837,19 @@ function buildMobileAppHtml() {
       border-radius:999px;padding:6px 11px;font-size:12.5px;white-space:nowrap;cursor:pointer;
     }
     .chip.suggest{border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.14);color:#7dd3fc;font-weight:500}
+    .chip.ctrl{border-color:rgba(167,139,250,.4);background:rgba(139,92,246,.14);color:#ddd6fe;font-weight:500}
     .chip.stop{border-color:rgba(248,113,113,.5);background:rgba(239,68,68,.16);color:#fca5a5}
-    .input-row{display:flex;align-items:flex-end;gap:8px}
+    .attach-hint{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 10px;border-radius:8px;
+      background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.3);font-size:12px;color:#bae6fd;
+    }
+    .attach-hint[hidden]{display:none}
+    .input-row{display:flex;align-items:flex-end;gap:6px}
+    .tool-btn{
+      appearance:none;flex-shrink:0;width:38px;height:40px;border-radius:11px;border:1px solid var(--border);
+      background:var(--card2);color:var(--fg);font-size:17px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+    }
+    .tool-btn.rec{border-color:rgba(248,113,113,.85);background:rgba(239,68,68,.24);color:#fca5a5;animation:pulse 1s infinite ease-in-out}
     textarea{
       flex:1 1 auto;min-height:40px;max-height:110px;resize:none;border-radius:12px;
       border:1px solid rgba(255,255,255,.16);background:#18181b;color:var(--fg);
@@ -846,10 +857,26 @@ function buildMobileAppHtml() {
     }
     textarea:focus{border-color:var(--accent)}
     .send-btn{
-      flex-shrink:0;height:40px;min-width:60px;border:none;border-radius:12px;
+      flex-shrink:0;height:40px;min-width:56px;border:none;border-radius:12px;
       background:var(--accent);color:#082f49;font-size:14.5px;font-weight:700;cursor:pointer;
     }
     .send-btn:disabled{opacity:.45}
+    .sheet-backdrop{
+      position:fixed;inset:0;z-index:75;background:rgba(0,0,0,.58);display:flex;align-items:flex-end;justify-content:center;
+    }
+    .sheet-backdrop[hidden]{display:none}
+    .sheet{
+      width:100%;max-width:520px;max-height:72dvh;background:#18181b;border-top:1px solid rgba(255,255,255,.16);
+      border-radius:18px 18px 0 0;padding:12px 14px calc(env(safe-area-inset-bottom) + 14px);
+      display:flex;flex-direction:column;gap:8px;overflow:hidden;
+    }
+    .sheet-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+    .sheet-list{display:flex;flex-direction:column;gap:6px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+    .sheet-opt{
+      width:100%;text-align:left;padding:11px 12px;border-radius:11px;border:1px solid var(--border);
+      background:rgba(255,255,255,.04);color:var(--fg);font-size:14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;
+    }
+    .sheet-opt.active{border-color:rgba(56,189,248,.65);background:rgba(56,189,248,.16);color:#fff;font-weight:600}
     .drawer-backdrop{
       position:fixed;inset:0;z-index:70;background:rgba(0,0,0,0);display:flex;justify-content:flex-start;
       opacity:0;visibility:hidden;pointer-events:none;
@@ -903,8 +930,6 @@ function buildMobileAppHtml() {
         <span id="quota-main">G4 -- · C --</span>
         <span id="ctx-badge">--%</span>
       </button>
-      <button id="btn-wake" class="icon-btn" type="button" title="屏幕常亮防锁屏">🔆</button>
-      <button id="btn-auto" class="icon-btn" type="button" title="安全自动确认">🤖 关</button>
     </header>
 
     <div id="quota-drawer" class="quota-drawer" hidden></div>
@@ -916,12 +941,26 @@ function buildMobileAppHtml() {
     <section id="approval-dock" class="approval-dock" hidden></section>
 
     <footer class="composer-dock">
+      <div id="attach-hint" class="attach-hint" hidden></div>
       <div id="chips" class="chips"></div>
       <div class="input-row">
+        <button id="btn-img" class="tool-btn" type="button" title="拍照或上传图片">🖼️</button>
+        <input id="img-input" type="file" accept="image/*" multiple hidden>
         <textarea id="input" rows="1" placeholder="发消息给桌面端 Antigravity…"></textarea>
+        <button id="btn-voice" class="tool-btn" type="button" title="语音输入">🎤</button>
         <button id="btn-send" class="send-btn" type="button">发送</button>
       </div>
     </footer>
+  </div>
+
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden>
+    <div class="sheet">
+      <div class="sheet-title">
+        <span id="sheet-title-text">选择选项</span>
+        <button id="sheet-close" class="icon-btn" style="height:28px;font-size:12px" type="button">关闭</button>
+      </div>
+      <div id="sheet-list" class="sheet-list"></div>
+    </div>
   </div>
 
   <div id="drawer-backdrop" class="drawer-backdrop" aria-hidden="true">
@@ -1082,10 +1121,6 @@ function buildMobileAppHtml() {
       $('quota-main').textContent = 'G4 ' + gStr + ' · C ' + cStr;
       $('ctx-badge').textContent = snap.contextBadge || '--%';
 
-      const autoBtn = $('btn-auto');
-      autoBtn.textContent = snap.autoAccept ? '🤖 开' : '🤖 关';
-      autoBtn.classList.toggle('is-on', Boolean(snap.autoAccept));
-
       renderQuotaDrawer(snap);
 
       // Messages
@@ -1142,12 +1177,16 @@ function buildMobileAppHtml() {
         });
       }
 
-      // Quick Chips & Next Step Suggestions
+      // Quick Chips, Model/Permission Controls & Next Step Suggestions
       const chips = $('chips');
       const items = [];
       if (snap.busy) {
         items.push({ cls: 'chip stop', text: '⏹ 停止生成', act: () => apiAction({ action: 'stop' }) });
-      } else {
+      }
+      const shortModel = (snap.model || '切换模型').replace(/^Gemini\s+/i, 'G').replace(/\s*\((Medium|High|Low|XHigh)\)/i, (_, e) => '·' + e[0]);
+      items.push({ cls: 'chip ctrl', text: '🧠 ' + shortModel, act: openModelPicker });
+      items.push({ cls: 'chip ctrl', text: '⚡ ' + (snap.permissionLabel || '权限'), act: openPermPicker });
+      if (!snap.busy) {
         for (const s of (snap.suggestions || [])) {
           items.push({ cls: 'chip suggest', text: '💡 ' + s, raw: s, isSuggest: true });
         }
@@ -1227,41 +1266,194 @@ function buildMobileAppHtml() {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
         void fetchSnapshot();
-        if (wakeWanted) void acquireWakeLock();
       } else {
         clearTimeout(pollTimer);
       }
     });
     window.addEventListener('pageshow', () => { void fetchSnapshot(); });
 
-    async function acquireWakeLock() {
-      if (!('wakeLock' in navigator)) return false;
-      try {
-        wakeLock = await navigator.wakeLock.request('screen');
-        wakeLock.addEventListener('release', () => { wakeLock = null; });
-        return true;
-      } catch {
-        return false;
+    function openSheet(title, options, onSelect) {
+      $('sheet-title-text').textContent = title;
+      const listEl = $('sheet-list');
+      listEl.innerHTML = options.map((o, idx) =>
+        '<button class="sheet-opt' + (o.active ? ' active' : '') + '" data-idx="' + idx + '" type="button">' +
+        '<span>' + esc(o.label) + '</span>' + (o.active ? '<span>✓</span>' : '') + '</button>'
+      ).join('');
+      listEl.onclick = async (e) => {
+        const btn = e.target?.closest?.('.sheet-opt');
+        if (!btn) return;
+        const opt = options[Number(btn.dataset.idx)];
+        $('sheet-backdrop').hidden = true;
+        if (opt) await onSelect(opt);
+      };
+      $('sheet-backdrop').hidden = false;
+    }
+    $('sheet-close').onclick = () => { $('sheet-backdrop').hidden = true; };
+    $('sheet-backdrop').onclick = (e) => { if (e.target === $('sheet-backdrop')) $('sheet-backdrop').hidden = true; };
+
+    function openModelPicker() {
+      const opts = (latestSnap?.modelOptions || []).map((m) => ({
+        label: m.label,
+        modelId: m.modelId,
+        active: Boolean(m.selected || m.label === latestSnap?.model)
+      }));
+      if (!opts.length) {
+        showToast('未检测到可用模型列表');
+        return;
       }
+      openSheet('切换模型', opts, async (opt) => {
+        showToast('正在切换至 ' + opt.label + '…');
+        const r = await apiAction({ action: 'select-model', label: opt.label, modelId: opt.modelId });
+        if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
+        else showToast(r?.actionResult?.error || '切换模型失败');
+      });
     }
 
-    $('btn-wake').onclick = async () => {
-      wakeWanted = !wakeWanted;
-      if (wakeWanted) {
-        const ok = await acquireWakeLock();
-        $('btn-wake').classList.toggle('is-on', ok);
-        showToast(ok ? '🔆 屏幕常亮已开启' : '当前浏览器不支持常亮锁');
-        if (!ok) wakeWanted = false;
-      } else {
-        if (wakeLock) { try { await wakeLock.release(); } catch {} wakeLock = null; }
-        $('btn-wake').classList.remove('is-on');
-        showToast('已关闭屏幕常亮');
+    function openPermPicker() {
+      const cur = (latestSnap?.permissionLabel || '').toLowerCase();
+      const opts = (latestSnap?.permissionOptions || [
+        { key: 'turbo', label: '⚡ 极速 (Turbo)' },
+        { key: 'auto', label: '🛡️ 自动 (Auto)' },
+        { key: 'default', label: '🔒 默认 (Default)' },
+        { key: 'request_review', label: '👁️ 请求审查 (Review)' }
+      ]).map((p) => ({
+        key: p.key,
+        label: p.label,
+        active: Boolean(cur && p.label.toLowerCase().includes(cur))
+      }));
+      openSheet('切换权限预设', opts, async (opt) => {
+        showToast('正在切换权限…');
+        const r = await apiAction({ action: 'select-permission', preset: opt.key });
+        if (r?.ok) showToast('已切换权限: ' + (r.actionResult?.permissionLabel || opt.label));
+        else showToast(r?.actionResult?.error || '切换权限失败');
+      });
+    }
+
+    // 拍照/传图压缩并注入桌面端输入框
+    let uploadedNames = [];
+    function compressAndReadImage(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('读取图片失败'));
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '');
+          if (file.size <= 350 * 1024 && /^image\/(png|jpeg|jpg|webp|gif)$/i.test(file.type)) {
+            resolve({ name: file.name || 'image.jpg', mimeType: file.type, base64: dataUrl });
+            return;
+          }
+          const img = new Image();
+          img.onerror = () => resolve({ name: file.name || 'image.jpg', mimeType: file.type || 'image/jpeg', base64: dataUrl });
+          img.onload = () => {
+            const maxDim = 1920;
+            let w = img.naturalWidth || img.width;
+            let h = img.naturalHeight || img.height;
+            if (w > maxDim || h > maxDim) {
+              const scale = maxDim / Math.max(w, h);
+              w = Math.round(w * scale);
+              h = Math.round(h * scale);
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            const outUrl = canvas.toDataURL('image/jpeg', 0.85);
+            const baseName = (file.name || 'mobile').replace(/\.[^.]+$/, '') + '.jpg';
+            resolve({ name: baseName, mimeType: 'image/jpeg', base64: outUrl });
+          };
+          img.src = dataUrl;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    $('btn-img').onclick = () => $('img-input').click();
+    $('img-input').onchange = async (e) => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = '';
+      if (!files.length) return;
+      showToast('正在上传 ' + files.length + ' 张图片…');
+      for (const f of files) {
+        try {
+          const payload = await compressAndReadImage(f);
+          const r = await apiAction({ action: 'upload-image', ...payload });
+          if (r?.ok) {
+            uploadedNames.push(payload.name);
+          } else {
+            showToast(r?.actionResult?.error || '传图失败');
+          }
+        } catch (err) {
+          showToast(err?.message || '传图失败');
+        }
+      }
+      if (uploadedNames.length) {
+        const hint = $('attach-hint');
+        hint.innerHTML = '<span>🖼️ 已传至桌面端: ' + esc(uploadedNames.slice(-3).join('、')) + (uploadedNames.length > 3 ? ' 等' + uploadedNames.length + '张' : '') + '</span><button type="button" style="background:none;border:none;color:#bae6fd;font-weight:700;cursor:pointer">✕</button>';
+        hint.querySelector('button').onclick = () => { uploadedNames = []; hint.hidden = true; };
+        hint.hidden = false;
+        showToast('✅ 图片已附带到输入框');
       }
     };
 
-    $('btn-auto').onclick = async () => {
-      const r = await apiAction({ action: 'toggle-auto-accept' });
-      if (r?.ok) showToast(r.actionResult?.autoAccept ? '🤖 已开启安全自动确认' : '🤖 已关闭自动确认');
+    // 语音实时听写（支持 Web Speech API，iOS Standalone 兜底唤起系统键盘听写）
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let voiceRec = null;
+    let voiceActive = false;
+    let voicePrefix = '';
+
+    function stopVoice() {
+      voiceActive = false;
+      $('btn-voice').classList.remove('rec');
+      try { voiceRec?.stop?.(); } catch {}
+      voiceRec = null;
+    }
+
+    $('btn-voice').onclick = () => {
+      if (!SpeechRec) {
+        $('input').focus();
+        showToast('请点 iPhone 键盘右下角 🎙️ 麦克风进行系统语音听写');
+        return;
+      }
+      if (voiceActive) {
+        stopVoice();
+        showToast('已停止语音识别');
+        return;
+      }
+      try {
+        const rec = new SpeechRec();
+        rec.lang = 'zh-CN';
+        rec.continuous = true;
+        rec.interimResults = true;
+        voicePrefix = $('input').value ? ($('input').value.replace(/\s+$/, '') + ' ') : '';
+        rec.onresult = (ev) => {
+          let txt = '';
+          for (let i = 0; i < ev.results.length; i++) {
+            txt += ev.results[i][0]?.transcript || '';
+          }
+          $('input').value = voicePrefix + txt;
+          autoGrow();
+        };
+        rec.onerror = (ev) => {
+          stopVoice();
+          if (ev?.error === 'not-allowed') {
+            $('input').focus();
+            showToast('未授予浏览器麦克风权限，可用键盘右下角 🎙️ 听写');
+          } else {
+            showToast('语音识别结束 (' + (ev?.error || 'unknown') + ')');
+          }
+        };
+        rec.onend = () => {
+          if (voiceActive) stopVoice();
+        };
+        voiceRec = rec;
+        voiceActive = true;
+        $('btn-voice').classList.add('rec');
+        rec.start();
+        showToast('🎤 请说话（再点一次停止）');
+      } catch {
+        stopVoice();
+        $('input').focus();
+        showToast('请点键盘右下角 🎙️ 进行语音输入');
+      }
     };
 
     $('btn-quota').onclick = (e) => {
@@ -1321,7 +1513,7 @@ function buildMobileAppHtml() {
       const isOpen = backdropEl.classList.contains('open');
       const target = e.target;
       if (!isOpen) {
-        if (!$('quota-drawer').hidden) return;
+        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden) return;
         if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select')) return;
         if (t.clientX > window.innerWidth * 0.85) return;
       }
@@ -1392,8 +1584,11 @@ function buildMobileAppHtml() {
     ta.addEventListener('focus', () => { setTimeout(syncViewportHeight, 120); });
 
     async function sendInput() {
-      const text = ta.value.trim();
-      if (!text || sending) return;
+      if (sending) return;
+      if (voiceActive) stopVoice();
+      const rawText = ta.value.trim();
+      const text = rawText || (uploadedNames.length ? '请查看图片' : '');
+      if (!text) return;
       sending = true;
       $('btn-send').disabled = true;
       try {
@@ -1401,6 +1596,8 @@ function buildMobileAppHtml() {
         const r = await apiAction({ action: 'send', text });
         if (r?.ok) {
           ta.value = '';
+          uploadedNames = [];
+          $('attach-hint').hidden = true;
           autoGrow();
         } else {
           showToast(r?.actionResult?.error || '发送失败');
@@ -1675,7 +1872,7 @@ function printRemoteCli({ resetToken = false, jsonMode = false } = {}) {
   console.log('💡 iPhone 最佳防杀后台 & 全屏无遮挡配置：');
   console.log('   1. 扫码在 Safari 打开后，点击底部「分享」→「添加到主屏幕」');
   console.log('   2. 以后直接从桌面图标启动，即成为独立全屏 App（已内置键盘防遮挡与切回秒刷新）');
-  console.log('   3. 盯着长任务时可点右上角 🔆 图标开启屏幕常亮防锁屏');
+  console.log('   3. 在聊天区右滑即可拉出左侧会话抽屉，底部可直接切换模型/权限、传图与语音听写');
   console.log('');
 }
 
