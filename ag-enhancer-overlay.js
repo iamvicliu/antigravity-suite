@@ -3862,15 +3862,28 @@
     const pulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : contextBadge].filter(Boolean).join(' · ') || rawPulse;
     const modelCtx = getModelSelectorContext();
     const model = modelCtx?.selectedModel?.label || detectCurrentModelText();
-    const modelOptions = Array.isArray(modelCtx?.modelOptions)
-      ? modelCtx.modelOptions
-        .filter((o) => o && !o.disabled && o.label)
-        .map((o) => ({
-          label: String(o.label),
-          modelId: String(o.modelId || ''),
-          selected: Boolean(o.label === modelCtx.selectedModel?.label)
-        }))
+    const EFFORT_ORDER = { xhigh: 1, high: 2, medium: 3, low: 4 };
+    const rawModels = Array.isArray(modelCtx?.modelOptions)
+      ? modelCtx.modelOptions.filter((o) => o && !o.disabled && o.label)
       : [];
+    const familyOrder = new Map();
+    const parsedModels = rawModels.map((o, idx) => {
+      const label = String(o.label);
+      const m = label.match(/^(.*?)\s*\((XHigh|High|Medium|Low)\)\s*$/i);
+      const family = m ? m[1].trim().toLowerCase() : label.trim().toLowerCase();
+      const effort = m ? (EFFORT_ORDER[m[2].toLowerCase()] || 9) : 0;
+      if (!familyOrder.has(family)) familyOrder.set(family, idx);
+      return {
+        label,
+        modelId: String(o.modelId || ''),
+        selected: Boolean(o.label === modelCtx?.selectedModel?.label),
+        familyRank: familyOrder.get(family),
+        effortRank: effort,
+        origIdx: idx
+      };
+    });
+    parsedModels.sort((a, b) => (a.familyRank - b.familyRank) || (a.effortRank - b.effortRank) || (a.origIdx - b.origIdx));
+    const modelOptions = parsedModels.map(({ label, modelId, selected }) => ({ label, modelId, selected }));
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
     const permissionLabel = (permBtn?.textContent || '').replace(/\s+/g, ' ').trim() || '未知';
     const pendingApprovals = collectPendingApprovals();
@@ -3879,7 +3892,7 @@
 
     return {
       ok: true,
-      version: '1.6.7',
+      version: '1.6.8',
       timestamp: Date.now(),
       sessionId,
       title: activeConv?.title || document.title || 'Antigravity',
@@ -4132,7 +4145,7 @@
   }
 
   globalThis.__AGEnhancer = {
-    version: '1.6.7',
+    version: '1.6.8',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();

@@ -12,6 +12,7 @@ const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
+const MOBILE_UI_VERSION = '1.6.8';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -167,7 +168,9 @@ function extractRequestToken(req, urlObj) {
   const cookieToken = cookies.ag_remote_token || '';
   return {
     token: queryToken || headerToken || cookieToken,
-    fromQuery: Boolean(queryToken)
+    fromQuery: Boolean(queryToken),
+    fromCookie: Boolean(!queryToken && !headerToken && cookieToken),
+    uiVersion: cookies.ag_ui_ver || ''
   };
 }
 
@@ -731,18 +734,19 @@ function buildMobileAppHtml() {
     :root{
       --bg:#09090b;--card:#18181b;--card2:#27272a;--border:rgba(255,255,255,.1);
       --fg:#f4f4f5;--muted:#a1a1aa;--accent:#38bdf8;--green:#34d399;--amber:#fbbf24;--red:#f87171;
+      --app-h:100vh;
     }
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     html,body{
-      margin:0;padding:0;width:100%;height:100%;position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;
+      margin:0;padding:0;width:100%;height:var(--app-h,100vh);position:fixed;top:0;left:0;right:0;overflow:hidden;
       background:var(--bg);color:var(--fg);
       font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
       font-size:14px;line-height:1.45;overscroll-behavior:none;
     }
     .app{
-      display:flex;flex-direction:column;width:100%;height:100%;
+      display:flex;flex-direction:column;width:100%;height:var(--app-h,100vh);
       padding-top:env(safe-area-inset-top);
-      padding-bottom:max(6px,calc(env(safe-area-inset-bottom) - 10px));
+      padding-bottom:8px;
       padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
     }
     .app.kb-open{padding-bottom:4px}
@@ -902,7 +906,7 @@ function buildMobileAppHtml() {
     .send-circle:active{transform:scale(.94)}
     .send-circle:disabled{opacity:.5}
     .sheet-backdrop{
-      position:fixed;inset:0;z-index:75;background:rgba(0,0,0,.58);display:flex;align-items:flex-end;justify-content:center;
+      position:fixed;top:0;left:0;right:0;height:var(--app-h,100vh);z-index:75;background:rgba(0,0,0,.58);display:flex;align-items:flex-end;justify-content:center;
     }
     .sheet-backdrop[hidden]{display:none}
     .sheet{
@@ -918,7 +922,7 @@ function buildMobileAppHtml() {
     }
     .sheet-opt.active{border-color:rgba(56,189,248,.65);background:rgba(56,189,248,.16);color:#fff;font-weight:600}
     .drawer-backdrop{
-      position:fixed;inset:0;z-index:70;background:rgba(0,0,0,0);display:flex;justify-content:flex-start;
+      position:fixed;top:0;left:0;right:0;height:var(--app-h,100vh);z-index:70;background:rgba(0,0,0,0);display:flex;justify-content:flex-start;
       opacity:0;visibility:hidden;pointer-events:none;
       transition:opacity .22s ease,visibility .22s ease,background-color .22s ease;
     }
@@ -930,7 +934,7 @@ function buildMobileAppHtml() {
     }
     .drawer{
       width:min(82vw,320px);height:100%;background:#18181b;border-right:1px solid var(--border);
-      padding:calc(env(safe-area-inset-top) + 12px) 12px calc(env(safe-area-inset-bottom) + 12px);
+      padding:calc(env(safe-area-inset-top) + 12px) 12px 16px;
       display:flex;flex-direction:column;gap:10px;overflow-y:auto;
       transform:translateX(-100%);transition:transform .24s cubic-bezier(.22,1,.36,1);
       will-change:transform;
@@ -1061,6 +1065,22 @@ function buildMobileAppHtml() {
     const appEl = document.querySelector('.app');
     let maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
 
+    function getFullLayoutHeight() {
+      const innerH = window.innerHeight || 0;
+      const clientH = document.documentElement?.clientHeight || 0;
+      const vvH = window.visualViewport ? window.visualViewport.height : 0;
+      let h = Math.max(innerH, clientH, vvH);
+      const isStandalone = Boolean(window.navigator.standalone || window.matchMedia?.('(display-mode: standalone)')?.matches);
+      const scrH = (window.innerWidth < window.innerHeight)
+        ? (window.screen?.height || 0)
+        : (window.screen?.width || 0);
+      // iOS Standalone 模式下 innerHeight 比物理屏幕高度少 40~90pt（状态栏/安全区），直接取物理屏幕高度填满到底
+      if (scrH > h && (isStandalone || (scrH - h >= 40 && scrH - h <= 90))) {
+        h = scrH;
+      }
+      return h;
+    }
+
     function syncViewportHeight() {
       const vv = window.visualViewport;
       const curH = vv ? vv.height : window.innerHeight;
@@ -1072,13 +1092,12 @@ function buildMobileAppHtml() {
       const kbOpen = Boolean(isInputFocused && vv && (baseH - curH > 100));
       if (kbOpen) {
         const top = vv.offsetTop || 0;
-        document.body.style.bottom = 'auto';
-        document.body.style.height = curH + 'px';
+        document.documentElement.style.setProperty('--app-h', Math.round(curH) + 'px');
         document.body.style.transform = top ? 'translateY(' + top + 'px)' : '';
         appEl?.classList.add('kb-open');
       } else {
-        document.body.style.bottom = '0';
-        document.body.style.height = '100%';
+        const fullH = getFullLayoutHeight();
+        document.documentElement.style.setProperty('--app-h', Math.round(fullH) + 'px');
         document.body.style.transform = '';
         appEl?.classList.remove('kb-open');
       }
@@ -1746,7 +1765,7 @@ function createRemoteHttpHandler(initialConfig) {
       return;
     }
 
-    const { token, fromQuery } = extractRequestToken(req, urlObj);
+    const { token, fromQuery, fromCookie, uiVersion } = extractRequestToken(req, urlObj);
     const authed = timingSafeTokenMatch(token, config.token);
     if (!authed) {
       if (pathname.startsWith('/api/')) {
@@ -1759,17 +1778,32 @@ function createRemoteHttpHandler(initialConfig) {
       return;
     }
 
+    const cookiesToSet = [];
     if (fromQuery) {
-      res.setHeader('Set-Cookie', `ag_remote_token=${encodeURIComponent(config.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
+      cookiesToSet.push(`ag_remote_token=${encodeURIComponent(config.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
     }
 
     if (req.method === 'GET' && pathname === '/') {
+      if (uiVersion !== MOBILE_UI_VERSION) {
+        cookiesToSet.push(`ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax; Max-Age=31536000`);
+      }
+      if (cookiesToSet.length) res.setHeader('Set-Cookie', cookiesToSet);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(cachedHtml);
       return;
     }
 
+    if (cookiesToSet.length) {
+      res.setHeader('Set-Cookie', cookiesToSet);
+    }
+
     if (req.method === 'GET' && pathname === '/api/snapshot') {
+      if (fromCookie && uiVersion !== MOBILE_UI_VERSION) {
+        res.setHeader('Set-Cookie', `ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax; Max-Age=31536000`);
+        res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, reloadRequired: true, error: '界面已升级，正在自动刷新…' }));
+        return;
+      }
       try {
         const targetId = urlObj.searchParams.get('targetId') || '';
         const snap = await fetchSnapshotFromTarget(targetId);

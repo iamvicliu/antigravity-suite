@@ -20,7 +20,7 @@
      - **100% 合规安全**：不碰账号鉴权与私有 API，所有对话与执行均在桌面正版端运行，仅允许私网 IP 并带 48 位随机配对口令保护。
 
 <p align="center">
-  <img src="assets/mobile-remote.svg" alt="手机极速 PWA 遥控效果示意图" width="92%">
+  <img src="assets/mobile-preview.jpg" alt="手机极速 PWA 遥控真机效果（主对话界面与全屏右滑抽屉，已脱敏）" width="92%">
 </p>
 
 2. **📊 告别“额度与上下文盲盒”**
