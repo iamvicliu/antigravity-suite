@@ -1760,7 +1760,9 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
       decodeEndpointsParam,
       encodeQrCodeMatrix,
       buildFusedPairingUrl,
-      buildMobileAppHtml
+      buildMobileAppHtml,
+      recordPairedDeviceAccess,
+      getPairedDevicesSummary
     } = require('./mobile-remote.js');
     const info = buildRemoteInfo({ resetToken: true });
     assert.ok(info.port > 0, 'mobile-remote 应返回有效端口');
@@ -1838,11 +1840,17 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     });
 
     let copiedUrl = '';
+    let mockPairSummary = { pairedCount: 0, onlineCount: 0, pairedDevices: [] };
     const env = createDomEnv();
     env.sandbox.navigator.clipboard = { writeText: async (t) => { copiedUrl = String(t); } };
     env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
-    env.sandbox.fetch = async (url) => {
+    env.sandbox.fetch = async (url, init) => {
       if (String(url).includes('/remote-info')) {
+        let reqBody = {};
+        try { reqBody = JSON.parse(init?.body || '{}'); } catch {}
+        if (reqBody.resetToken) {
+          mockPairSummary = { pairedCount: 0, onlineCount: 0, pairedDevices: [] };
+        }
         return {
           ok: true,
           json: async () => ({
@@ -1854,6 +1862,7 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
               tailscaleDnsName: 'dev-mac.tailnet-demo.ts.net',
               fusedUrl: mockTsUrl,
               primaryUrl: mockTsUrl,
+              ...mockPairSummary,
               channels: [
                 { key: 'lan', label: '此 Wi-Fi', labelEn: 'This Wi-Fi', available: true, displayHost: '192.168.1.2', entryHost: '192.168.1.2', iface: 'en0', url: mockLanUrl, qrSvg: '<svg id="qr-lan"><rect/></svg>' },
                 { key: 'tailscale', label: 'Tailscale', labelEn: 'Tailscale', available: true, displayHost: 'dev-mac.tailnet-demo.ts.net', entryHost: '100.64.0.2', iface: 'utun0', url: mockTsUrl, qrSvg: '<svg id="qr-ts"><rect/></svg>' },
@@ -1916,9 +1925,59 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     enhancer.toggleRemotePopover(false);
     assert.equal(host.getAttribute('data-elevated'), null, '关闭所有浮窗后应恢复宿主层叠上下文');
 
+    // 验证已关联设备追踪、去重与密钥重置清空
+    const curToken = buildRemoteInfo().token;
+    assert.equal(recordPairedDeviceAccess({ headers: { 'user-agent': 'curl/8.0' }, socket: { remoteAddress: '127.0.0.1' } }, curToken), null,
+      '本机 CLI/脚本健康探测不应计为关联设备');
+    recordPairedDeviceAccess({
+      headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148', host: '100.64.0.2:18765' },
+      socket: { remoteAddress: '100.64.0.99' }
+    }, curToken);
+    recordPairedDeviceAccess({
+      headers: {
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148',
+        'x-ag-device-id': 'dev-iphone-1',
+        host: '100.64.0.2:18765'
+      },
+      socket: { remoteAddress: '100.64.0.99' }
+    }, curToken);
+    const devSnap1 = getPairedDevicesSummary(curToken);
+    assert.equal(devSnap1.pairedCount, 1, '同一台 iPhone 从首屏加载升级上报 X-AG-Device-Id 应合并去重为 1 台');
+    assert.equal(devSnap1.onlineCount, 1);
+    assert.equal(devSnap1.devices[0].label, 'iPhone');
+    assert.equal(devSnap1.devices[0].channel, 'tailscale');
+
+    // 浮窗与顶栏实时渲染关联设备数及在线设备芯片
+    mockPairSummary = {
+      pairedCount: devSnap1.pairedCount,
+      onlineCount: devSnap1.onlineCount,
+      pairedDevices: devSnap1.devices
+    };
+    enhancer.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+    assert.ok(remotePop.innerHTML.includes('已关联 1 台设备（1 台在线）'), '浮窗应显示已关联设备数与在线数');
+    assert.ok(remotePop.innerHTML.includes('iPhone (Tailscale · 在线)'), '浮窗应展示设备小标签');
+    assert.equal(remoteBtn.textContent.trim(), '📱远程 · 1', '顶栏按钮应同步显示关联设备角标');
+    assert.equal(remoteBtn.getAttribute('data-online'), 'true');
+
+    api.setLocale('en');
+    assert.equal(remoteBtn.textContent.trim(), '📱Remote · 1', '英文模式下顶栏按钮应显示 Remote · 1');
+    assert.ok(remotePop.innerHTML.includes('1 paired (1 online)'), '英文模式下浮窗应显示英文设备统计');
+    api.setLocale('zh-CN');
+
+    // 点击重置密钥后应清空已关联设备计数
+    remotePop.querySelector('#ag-remote-reset')?.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.ok(remotePop.innerHTML.includes('内网口令保护 · 暂未关联设备'), '重置密钥后浮窗应恢复暂未关联设备提示');
+    assert.equal(remoteBtn.textContent.trim(), '📱远程', '重置密钥后顶栏角标应清零恢复 📱远程');
+    const resetInfo = buildRemoteInfo({ resetToken: true });
+    assert.equal(resetInfo.pairedCount, 0, '服务端重置密钥后 pairedCount 应归零');
+    enhancer.toggleRemotePopover(false);
+
     const mobileHtml = buildMobileAppHtml();
     assert.ok(mobileHtml.includes('height:100%;position:fixed;top:0;left:0;right:0;bottom:0'), '手机端页面应使用 bottom:0 贴底全高布局');
     assert.ok(!/window\.screen\?\.(height|width)/.test(mobileHtml), '手机端不应使用 window.screen 高度放大视口，避免截断底部工具栏');
+    assert.ok(mobileHtml.includes('X-AG-Device-Id'), '手机端应上报 X-AG-Device-Id 以精确追踪关联设备');
     const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
     assert.ok(inlineScriptMatch, '手机端 HTML 应包含内联 <script>');
     assert.doesNotThrow(() => new (require('node:vm').Script)(inlineScriptMatch[1]), '手机端内联 <script> 必须通过语法校验');

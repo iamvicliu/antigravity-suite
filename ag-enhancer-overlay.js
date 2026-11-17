@@ -35,6 +35,8 @@
 
   let disposed = false;
   let remotePopoverOpen = false;
+  let remotePollTimer = null;
+  let lastRemoteFetchAt = 0;
   let remotePairState = { loading: false, error: '', data: null, mode: 'auto', copiedAt: 0 };
   let fileEditorState = {
     active: false,
@@ -673,6 +675,23 @@
           padding: 0 7px;
           color: var(--ag-toolbar-fg, #d4d4d8);
         }
+        #badge-remote[data-online="true"] {
+          color: #34d399;
+        }
+        :host([data-theme="light"]) #badge-remote[data-online="true"] {
+          color: #059669;
+        }
+        #badge-remote .ag-remote-dot {
+          display: none;
+          width: 6px;
+          height: 6px;
+          border-radius: 9999px;
+          background: #34d399;
+          flex-shrink: 0;
+        }
+        #badge-remote[data-online="true"] .ag-remote-dot {
+          display: inline-block;
+        }
         #badge-remote:hover,
         #badge-remote:focus-visible,
         #badge-remote[aria-expanded="true"] {
@@ -815,6 +834,54 @@
           margin: 0 0 10px;
           text-align: center;
         }
+        .ag-rp-sec[data-active="true"] {
+          color: #34d399;
+          font-weight: 600;
+        }
+        :host([data-theme="light"]) .ag-rp-sec[data-active="true"] {
+          color: #059669;
+        }
+        .ag-rp-devices {
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: center;
+          gap: 5px;
+          margin: -4px 0 10px;
+        }
+        .ag-rp-dev-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 2px 7px;
+          border-radius: 9999px;
+          font-size: 10.5px;
+          line-height: 1.35;
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.06));
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.1));
+          color: var(--ag-text-primary, #e4e4e7);
+        }
+        .ag-rp-dev-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 9999px;
+          background: var(--ag-text-muted, #71717a);
+          flex-shrink: 0;
+        }
+        .ag-rp-dev-chip[data-online="true"] {
+          border-color: rgba(52, 211, 153, 0.35);
+          background: rgba(52, 211, 153, 0.1);
+        }
+        .ag-rp-dev-chip[data-online="true"] .ag-rp-dev-dot {
+          background: #34d399;
+        }
+        :host([data-theme="light"]) .ag-rp-dev-chip {
+          background: rgba(0, 0, 0, 0.04);
+          border-color: rgba(0, 0, 0, 0.1);
+        }
+        :host([data-theme="light"]) .ag-rp-dev-chip[data-online="true"] {
+          border-color: rgba(5, 150, 105, 0.35);
+          background: rgba(5, 150, 105, 0.08);
+        }
         .ag-rp-actions {
           display: flex;
           gap: 8px;
@@ -873,7 +940,7 @@
       remoteBtn.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
       remoteBtn.setAttribute('aria-expanded', 'false');
       remoteBtn.title = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
-      remoteBtn.innerHTML = `<span class="ag-remote-icon">📱</span><span class="ag-remote-text">${escapeHtml(tr('远程', 'Remote'))}</span>`;
+      remoteBtn.innerHTML = `<span class="ag-remote-icon">📱</span><span class="ag-remote-dot"></span><span class="ag-remote-text">${escapeHtml(tr('远程', 'Remote'))}</span>`;
       contextBadge.insertAdjacentElement('beforebegin', remoteBtn);
 
       remoteBtn.addEventListener('click', onRemoteBtnClick);
@@ -931,12 +998,29 @@
   function updateRemoteBtnLanguage() {
     const { sr } = getMeterHostAndShadow();
     if (!sr) return;
+    const pairedCount = Math.max(0, Number(remotePairState.data?.pairedCount || 0));
+    const onlineCount = Math.max(0, Number(remotePairState.data?.onlineCount || 0));
     const remoteBtn = sr.getElementById(REMOTE_BADGE_ID);
     if (remoteBtn) {
       remoteBtn.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
-      remoteBtn.title = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
+      const baseTitle = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
+      const countTitle = pairedCount > 0
+        ? tr(`\n已关联 ${pairedCount} 台设备（${onlineCount} 台在线）`, `\n${pairedCount} paired (${onlineCount} online)`)
+        : '';
+      remoteBtn.title = `${baseTitle}${countTitle}`;
+      if (pairedCount > 0) {
+        remoteBtn.setAttribute('data-paired', String(pairedCount));
+        remoteBtn.setAttribute('data-online', onlineCount > 0 ? 'true' : 'false');
+      } else {
+        remoteBtn.removeAttribute('data-paired');
+        remoteBtn.removeAttribute('data-online');
+      }
       const textSpan = remoteBtn.querySelector?.('.ag-remote-text');
-      if (textSpan) textSpan.textContent = tr('远程', 'Remote');
+      if (textSpan) {
+        textSpan.textContent = pairedCount > 0
+          ? tr(`远程 · ${pairedCount}`, `Remote · ${pairedCount}`)
+          : tr('远程', 'Remote');
+      }
     }
     const remotePopover = sr.getElementById(REMOTE_POPOVER_ID);
     if (remotePopover) {
@@ -1056,10 +1140,30 @@
     };
   }
 
+  function formatRemoteDeviceChannel(ch) {
+    if (ch === 'tailscale') return 'Tailscale';
+    if (ch === 'bonjour') return 'Bonjour';
+    if (ch === 'loopback') return tr('本机', 'Local');
+    return 'Wi-Fi';
+  }
+
+  function formatRemoteDeviceTime(dev) {
+    if (dev?.online) return tr('在线', 'Online');
+    const sec = Math.max(1, Math.round((Date.now() - Number(dev?.lastSeenAt || 0)) / 1000));
+    if (sec < 60) return tr('刚刚', 'Just now');
+    const mins = Math.round(sec / 60);
+    if (mins < 60) return tr(`${mins}分钟前`, `${mins}m ago`);
+    const hrs = Math.round(mins / 60);
+    return tr(`${hrs}小时前`, `${hrs}h ago`);
+  }
+
   function renderRemotePopoverContent(popover) {
     if (!popover) return;
     const ep = resolveRemoteEndpoint(remotePairState.data);
     const copiedRecent = Date.now() - remotePairState.copiedAt < 2000;
+    const pairedDevices = Array.isArray(remotePairState.data?.pairedDevices) ? remotePairState.data.pairedDevices : [];
+    const pairedCount = Math.max(pairedDevices.length, Number(remotePairState.data?.pairedCount || 0));
+    const onlineCount = Math.max(0, Number(remotePairState.data?.onlineCount || 0));
     let bodyHtml = '';
 
     if (remotePairState.loading && !remotePairState.data) {
@@ -1080,10 +1184,23 @@
           + `</button>`;
       }).join('');
 
+      const statusText = pairedCount > 0
+        ? tr(`已关联 ${pairedCount} 台设备（${onlineCount} 台在线）`, `${pairedCount} paired (${onlineCount} online)`)
+        : tr('内网口令保护 · 暂未关联设备', 'Token protected · No paired devices yet');
+      const devicesHtml = pairedDevices.length > 0
+        ? `<div class="ag-rp-devices">${pairedDevices.slice(0, 6).map((d) => {
+            const devLabel = escapeHtml(d?.label || tr('移动设备', 'Mobile'));
+            const devCh = escapeHtml(formatRemoteDeviceChannel(d?.channel));
+            const devTime = escapeHtml(formatRemoteDeviceTime(d));
+            return `<span class="ag-rp-dev-chip" data-online="${d?.online ? 'true' : 'false'}"><span class="ag-rp-dev-dot"></span><span>${devLabel} (${devCh} · ${devTime})</span></span>`;
+          }).join('')}${pairedDevices.length > 6 ? `<span class="ag-rp-dev-chip">+${pairedDevices.length - 6}</span>` : ''}</div>`
+        : '';
+
       bodyHtml = `
         ${safeQr ? `<div class="ag-rp-qr">${safeQr}</div>` : ''}
         <div class="ag-rp-channels">${channelsHtml}</div>
-        <div class="ag-rp-sec">${LOCK_SHIELD_SVG}<span>${escapeHtml(tr('内网口令保护 · 一码融合多通道自动切换', 'Token protected · Single QR with multi-route failover'))}</span></div>
+        <div class="ag-rp-sec" data-active="${onlineCount > 0 ? 'true' : 'false'}">${LOCK_SHIELD_SVG}<span>${escapeHtml(statusText)}</span></div>
+        ${devicesHtml}
         <div class="ag-rp-actions">
           <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button">${escapeHtml(copiedRecent ? tr('✅ 已复制链接', '✅ Copied') : tr('复制链接', 'Copy Link'))}</button>
           <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${remotePairState.loading ? 'disabled' : ''}>${escapeHtml(tr('重置密钥', 'Reset Token'))}</button>
@@ -1160,6 +1277,7 @@
       remotePairState.error = err?.message || tr('获取配对二维码失败', 'Failed to fetch pairing QR code');
     } finally {
       remotePairState.loading = false;
+      updateRemoteBtnLanguage();
       const curNodes = ensureQuotaStylesAndNodes();
       if (remotePopoverOpen && curNodes?.remotePopover) {
         renderRemotePopoverContent(curNodes.remotePopover);
@@ -1167,6 +1285,13 @@
       }
     }
     return remotePairState;
+  }
+
+  function clearRemotePollTimer() {
+    if (remotePollTimer) {
+      clearInterval(remotePollTimer);
+      remotePollTimer = null;
+    }
   }
 
   function toggleRemotePopover(forceOpen) {
@@ -1177,6 +1302,7 @@
     remotePopoverOpen = nextOpen;
     nodes.remotePopover.hidden = !nextOpen;
     nodes.remoteBtn?.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+    clearRemotePollTimer();
 
     if (nextOpen) {
       if (popoverOpen) {
@@ -1200,6 +1326,11 @@
       positionRemotePopover();
       try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(true); } catch {}
       void refreshRemotePairInfo(false);
+      remotePollTimer = setInterval(() => {
+        if (!disposed && remotePopoverOpen && !remotePairState.loading) {
+          void refreshRemotePairInfo(false);
+        }
+      }, 4000);
     } else {
       try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(Boolean(popoverOpen || remotePopoverOpen)); } catch {}
     }
@@ -4011,6 +4142,10 @@
       lastBrainFetchAt = Date.now();
       void refreshBrainStats(false);
     }
+    if (!remotePopoverOpen && Date.now() - lastRemoteFetchAt >= 10000) {
+      lastRemoteFetchAt = Date.now();
+      void refreshRemotePairInfo(false);
+    }
   }
 
   const enhancerTimer = setInterval(tickEnhancer, 1000);
@@ -4019,6 +4154,7 @@
     if (disposed) return;
     disposed = true;
     clearInterval(enhancerTimer);
+    clearRemotePollTimer();
     if (toastTimer) clearTimeout(toastTimer);
     if (localizeTimer) {
       clearTimeout(localizeTimer);
@@ -4684,6 +4820,8 @@
   }
   lastQuotaFetchAt = Date.now();
   lastBrainFetchAt = Date.now();
+  lastRemoteFetchAt = Date.now();
   void refreshQuota();
   void refreshBrainStats(false);
+  void refreshRemotePairInfo(false);
 })();

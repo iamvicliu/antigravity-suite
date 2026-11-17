@@ -13,7 +13,7 @@ const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
-const MOBILE_UI_VERSION = '1.7.1';
+const MOBILE_UI_VERSION = '1.7.2';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -59,6 +59,113 @@ function loadOrCreateRemoteConfig(options = {}) {
   }
 
   return next;
+}
+
+// ==================== 已关联远程设备追踪（内存级，随 Token 隔离） ====================
+
+const DEVICE_ONLINE_TTL_MS = 15000;
+const MAX_PAIRED_DEVICES = 50;
+let trackedDeviceToken = '';
+const pairedDevicesMap = new Map();
+
+function syncTrackedDeviceToken(activeToken) {
+  const clean = String(activeToken || '');
+  if (clean && clean !== trackedDeviceToken) {
+    pairedDevicesMap.clear();
+    trackedDeviceToken = clean;
+  }
+}
+
+function parseDeviceLabel(rawUa) {
+  const ua = String(rawUa || '');
+  if (/iPhone/i.test(ua)) return 'iPhone';
+  if (/iPad/i.test(ua)) return 'iPad';
+  if (/Android/i.test(ua)) return 'Android';
+  if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac';
+  if (/Windows NT/i.test(ua)) return 'Windows';
+  return '移动设备';
+}
+
+function detectRequestChannel(cleanIp, hostHeader) {
+  const host = String(hostHeader || '').toLowerCase();
+  if (isTailscaleCgnatIpv4(cleanIp) || /^fd7a:115c:a1e0:/i.test(cleanIp) || /\.ts\.net(?::\d+)?$/i.test(host)) {
+    return 'tailscale';
+  }
+  if (/\.local(?::\d+)?$/i.test(host)) {
+    return 'bonjour';
+  }
+  if (cleanIp === '127.0.0.1' || cleanIp === '::1') {
+    return 'loopback';
+  }
+  return 'lan';
+}
+
+function recordPairedDeviceAccess(req, activeToken, now = Date.now()) {
+  if (!req) return null;
+  syncTrackedDeviceToken(activeToken);
+  const headers = req.headers || {};
+  const headerDevId = String(headers['x-ag-device-id'] || '').trim().slice(0, 64);
+  const ua = String(headers['user-agent'] || '').trim();
+  const cleanIp = normalizeRemoteIp(req.socket?.remoteAddress || req.ip || '');
+  const hostHeader = String(headers.host || '').trim();
+
+  // 过滤本机非浏览器健康检查或 CLI 脚本探测，避免误计为关联设备
+  if (!headerDevId && (cleanIp === '127.0.0.1' || cleanIp === '::1') && !/Mozilla\/|Mobile|Safari|Chrome|Firefox/i.test(ua)) {
+    return null;
+  }
+
+  const fallbackId = 'ua-' + crypto.createHash('sha1').update(`${cleanIp}|${ua}`).digest('hex').slice(0, 12);
+  const deviceId = headerDevId || fallbackId;
+  let prev = pairedDevicesMap.get(deviceId) || null;
+  if (headerDevId && pairedDevicesMap.has(fallbackId)) {
+    const fallbackEntry = pairedDevicesMap.get(fallbackId);
+    if (!prev && fallbackEntry) prev = fallbackEntry;
+    pairedDevicesMap.delete(fallbackId);
+  }
+
+  const record = {
+    id: deviceId,
+    label: parseDeviceLabel(ua),
+    channel: detectRequestChannel(cleanIp, hostHeader),
+    ip: cleanIp,
+    firstSeenAt: prev?.firstSeenAt || now,
+    lastSeenAt: now
+  };
+  pairedDevicesMap.set(deviceId, record);
+
+  if (pairedDevicesMap.size > MAX_PAIRED_DEVICES) {
+    let oldestKey = null;
+    let oldestSeen = Infinity;
+    for (const [k, v] of pairedDevicesMap.entries()) {
+      if ((v?.lastSeenAt || 0) < oldestSeen) {
+        oldestSeen = v?.lastSeenAt || 0;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey) pairedDevicesMap.delete(oldestKey);
+  }
+  return record;
+}
+
+function getPairedDevicesSummary(activeToken, now = Date.now()) {
+  syncTrackedDeviceToken(activeToken);
+  const devices = Array.from(pairedDevicesMap.values())
+    .sort((a, b) => (b.lastSeenAt - a.lastSeenAt))
+    .map((d) => ({
+      id: d.id,
+      label: d.label,
+      channel: d.channel,
+      ip: d.ip,
+      firstSeenAt: d.firstSeenAt,
+      lastSeenAt: d.lastSeenAt,
+      online: (now - d.lastSeenAt) <= DEVICE_ONLINE_TTL_MS
+    }));
+  const onlineCount = devices.filter((d) => d.online).length;
+  return {
+    pairedCount: devices.length,
+    onlineCount,
+    devices
+  };
 }
 
 function normalizeRemoteIp(rawAddr) {
@@ -1156,6 +1263,19 @@ function buildMobileAppHtml() {
   <script>
   (function(){
     const PAIR_STORAGE_KEY = 'ag_remote_pair_v1';
+    const DEVICE_ID_STORAGE_KEY = 'ag_remote_device_id_v1';
+    const deviceId = (() => {
+      try {
+        let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY) || '';
+        if (!id) {
+          id = 'dev-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+          localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
+        }
+        return id;
+      } catch {
+        return '';
+      }
+    })();
     function decodeEndpointsClient(raw) {
       if (!raw) return [];
       try {
@@ -1212,6 +1332,7 @@ function buildMobileAppHtml() {
     function authHeaders(extra) {
       const h = Object.assign({}, extra || {});
       if (pairState.token) h['X-AG-Remote-Token'] = pairState.token;
+      if (deviceId) h['X-AG-Device-Id'] = deviceId;
       return h;
     }
     function getCandidateEndpoints() {
@@ -2002,7 +2123,7 @@ function createRemoteHttpHandler(initialConfig) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id');
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
     if (req.method === 'OPTIONS') {
@@ -2055,6 +2176,10 @@ function createRemoteHttpHandler(initialConfig) {
     const cookiesToSet = [];
     if (fromQuery) {
       cookiesToSet.push(`ag_remote_token=${encodeURIComponent(config.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
+    }
+
+    if (pathname === '/' || pathname === '/api/ping' || pathname === '/api/snapshot' || pathname === '/api/action') {
+      recordPairedDeviceAccess(req, config.token);
     }
 
     if (req.method === 'GET' && pathname === '/') {
@@ -2246,7 +2371,12 @@ function collectFusedEndpointDescriptor(port) {
 
 function buildRemoteInfo({ resetToken = false } = {}) {
   const cfg = loadOrCreateRemoteConfig({ resetToken });
+  if (resetToken) {
+    pairedDevicesMap.clear();
+    trackedDeviceToken = cfg.token;
+  }
   const desc = collectFusedEndpointDescriptor(cfg.port);
+  const devSummary = getPairedDevicesSummary(cfg.token);
 
   const mkFused = (entryHost) => buildFusedPairingUrl({
     entryHost,
@@ -2325,6 +2455,9 @@ function buildRemoteInfo({ resetToken = false } = {}) {
     hosts: desc.hosts,
     endpoints: desc.endpoints,
     channels,
+    pairedCount: devSummary.pairedCount,
+    onlineCount: devSummary.onlineCount,
+    pairedDevices: devSummary.devices,
     fusedUrl: primary.url,
     primaryUrl: primary.url,
     primaryKind: primary.kind,
@@ -2399,6 +2532,8 @@ module.exports = {
   renderTerminalQr,
   renderQrSvg,
   buildMobileAppHtml,
+  recordPairedDeviceAccess,
+  getPairedDevicesSummary,
   startMobileRemoteServer,
   buildRemoteInfo,
   printRemoteCli
