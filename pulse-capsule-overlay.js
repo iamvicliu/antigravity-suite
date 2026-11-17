@@ -5,7 +5,7 @@
 (function () {
     if (window.__AGY_CTX_CAPSULE_ACTIVE__) return;
 
-    const CAPSULE_VERSION = '1.3.1';
+    const CAPSULE_VERSION = '1.4.0';
 
     // 网页端非 Antigravity 站点快速排除守卫 (避免在 Gmail / Google 搜索 / Cloud / Colab 等无关或敏感页面挂载钩子)
     const isElectronHost = typeof navigator !== 'undefined' && /Antigravity|Electron/i.test(navigator.userAgent || '');
@@ -47,8 +47,10 @@
     };
 
     const COMPRESSION_MIN_DROP = 5000; // 连续快照含缓存输入下降 > 5000 tokens 判定为自动压缩
-    const DEFAULT_LIMIT = 256000;      // Gemini 4 Argon / Flash 3.8 / Claude 5.5 官方自动压缩上限 256k
-    const GPT_OSS_LIMIT = 80000;       // GPT-OSS 120B 官方自动压缩上限 80k
+    const DEFAULT_LIMIT = 256000;      // 基础保底压缩上限 256k
+    const GPT_OSS_LIMIT = 131072;      // GPT-OSS 120B 模型上限 131072 (128Ki)
+    const CLAUDE_55_LIMIT = 1000000;   // Claude 5.5 模型上下文上限 1M
+    const GEMINI_4_LIMIT = 1048576;    // Gemini 4 / 3.8 Flash 模型物理上下文上限 1Mi (1048576)
 
     // 已知共享 5 小时配额池映射 (对齐官方 LanguageServer 配额池划分)
     const KNOWN_QUOTA_POOLS = {
@@ -88,6 +90,9 @@
     const sessionCache = new Map();     // cascadeId -> { stepCount, lastModifiedTime, status, steps, usage }
     const sniffedStepsMap = new Map();  // cascadeId -> steps[] (通过 fetch/XHR 旁路嗅探捕获的本地或云端步骤)
     const domStreamTracker = new Map(); // panelKey -> { lastTokens, lastTime, lastSpeed, avgTokensSum, avgDurSum }
+    const availableModelsMap = new Map();      // normKey -> { modelId, displayName, maxTokens, maxOutputTokens }
+    const sessionRuntimeBudgetMap = new Map(); // cascadeId -> { modelKey, maxContextTokens }
+    const modelRuntimeBudgetMap = new Map();   // modelKey -> maxContextTokens
     let trajectoriesMap = new Map();    // cascadeId -> summary
     let sniffedCsrfToken = '';
     let panelAutoIdCounter = 0;
@@ -181,11 +186,147 @@
         return false;
     }
 
-    // 根据模型 ID 或显示名称动态获取官方压缩上限
-    function getContextLimitForModel(modelId, label) {
+    function toPositiveIntLimit(v) {
+        if (v === null || v === undefined || v === '') return 0;
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+    }
+
+    function normalizeModelKey(val) {
+        const s = String(val || '').trim().toLowerCase();
+        return s || '';
+    }
+
+    function getModelCandidateKeys(modelId, label) {
+        const keys = [];
+        const addKey = (raw) => {
+            const k = normalizeModelKey(raw);
+            if (!k) return;
+            if (!keys.includes(k)) keys.push(k);
+            const stripped = k.replace(/^model_placeholder_/, '').replace(/^model_/, '');
+            if (stripped && !keys.includes(stripped)) keys.push(stripped);
+            const mTag = k.match(/\b(m\d{2,4})\b/);
+            if (mTag && !keys.includes(mTag[1])) keys.push(mTag[1]);
+        };
+        addKey(modelId);
+        addKey(label);
+        return keys;
+    }
+
+    function ingestAvailableModelsPayload(raw) {
+        const modelsObj = raw?.response?.models || raw?.models || (raw && typeof raw === 'object' && !Array.isArray(raw) && !raw.userStatus ? raw : null);
+        if (!modelsObj || typeof modelsObj !== 'object') return 0;
+        let count = 0;
+        const entries = Array.isArray(modelsObj)
+            ? modelsObj.map(item => [item?.model || item?.modelId || item?.id || '', item])
+            : Object.entries(modelsObj);
+        for (const [entryKey, d] of entries) {
+            if (!d || typeof d !== 'object') continue;
+            const rawId = String(d.model || d.modelId || entryKey || '').trim();
+            const displayName = typeof (d.displayName ?? d.label) === 'string' ? (d.displayName ?? d.label).trim() : '';
+            const maxTokens = toPositiveIntLimit(d.maxTokens ?? d.max_tokens ?? d.contextWindow ?? d.maxContextTokens);
+            const maxOutputTokens = toPositiveIntLimit(d.maxOutputTokens ?? d.max_output_tokens);
+            if (!rawId && !displayName) continue;
+            if (!maxTokens && !displayName) continue;
+            const info = { modelId: rawId || displayName, displayName: displayName || rawId, maxTokens, maxOutputTokens };
+            for (const key of getModelCandidateKeys(rawId, displayName)) {
+                availableModelsMap.set(key, info);
+            }
+            for (const key of getModelCandidateKeys(entryKey, '')) {
+                if (!availableModelsMap.has(key)) availableModelsMap.set(key, info);
+            }
+            count++;
+        }
+        return count;
+    }
+
+    function ingestUserStatusModelConfigs(configs) {
+        if (!Array.isArray(configs)) return;
+        for (const c of configs) {
+            if (!c || typeof c !== 'object') continue;
+            const cid = (c.modelOrAlias && c.modelOrAlias.model) || c.model || c.modelId || '';
+            const maxTokens = toPositiveIntLimit(c.maxTokens ?? c.max_tokens ?? c.contextWindow ?? c.maxContextTokens);
+            if (!maxTokens || (!cid && !c.label)) continue;
+            const info = { modelId: cid || c.label, displayName: c.label || cid, maxTokens, maxOutputTokens: toPositiveIntLimit(c.maxOutputTokens) };
+            for (const key of getModelCandidateKeys(cid, c.label)) {
+                if (!availableModelsMap.has(key) || !availableModelsMap.get(key).maxTokens) {
+                    availableModelsMap.set(key, info);
+                }
+            }
+        }
+    }
+
+    function ingestGeneratorMetadataRows(rows, cascadeId) {
+        if (!Array.isArray(rows) || rows.length === 0) return null;
+        for (let i = rows.length - 1; i >= 0; i--) {
+            const cm = rows[i]?.chatModel;
+            if (!cm) continue;
+            const budget = toPositiveIntLimit(cm.chatStartMetadata?.contextWindowMetadata?.maxContextTokens);
+            if (!budget) continue;
+            const turnModel = cm.model || cm.modelId || cm.responseModel || '';
+            const turnLabel = cm.modelDisplayName || '';
+            const turnKeys = getModelCandidateKeys(turnModel, turnLabel);
+            const primaryKey = turnKeys[0] || '';
+            const entry = { modelKey: primaryKey, maxContextTokens: budget };
+            if (cascadeId) {
+                setBoundedMap(sessionRuntimeBudgetMap, cascadeId, entry, 40);
+                const shortCid = normalizeCidKey(cascadeId);
+                if (shortCid && shortCid !== cascadeId) {
+                    setBoundedMap(sessionRuntimeBudgetMap, shortCid, entry, 40);
+                }
+            }
+            for (const k of turnKeys) {
+                setBoundedMap(modelRuntimeBudgetMap, k, budget, 60);
+            }
+            return entry;
+        }
+        return null;
+    }
+
+    // 根据模型 ID 或显示名称动态获取实际上下文上限 (实测运行时预算 > 当前模型运行时记录 > GetAvailableModels 能力 > 家族兜底)
+    function getContextLimitForModel(modelId, label, options = {}) {
+        const candidateKeys = getModelCandidateKeys(modelId, label);
+        const rtBudget = toPositiveIntLimit(options.runtimeBudget);
+        if (rtBudget > 0) {
+            if (!candidateKeys.length || !options.runtimeModelKey || candidateKeys.includes(normalizeModelKey(options.runtimeModelKey))) {
+                return rtBudget;
+            }
+        }
+
+        for (const k of candidateKeys) {
+            const observed = toPositiveIntLimit(modelRuntimeBudgetMap.get(k));
+            if (observed > 0) return observed;
+        }
+
+        const fiberMax = toPositiveIntLimit(options.fiberMaxTokens);
+        if (fiberMax > 0) return fiberMax;
+
+        for (const k of candidateKeys) {
+            const info = availableModelsMap.get(k);
+            if (info && info.maxTokens > 0) return info.maxTokens;
+        }
+
+        for (const c of userStatusCache.modelConfigs) {
+            if (!c) continue;
+            const cKeys = getModelCandidateKeys((c.modelOrAlias && c.modelOrAlias.model) || c.model || c.modelId, c.label);
+            if (candidateKeys.some(k => cKeys.includes(k))) {
+                const mcMax = toPositiveIntLimit(c.maxTokens ?? c.max_tokens ?? c.contextWindow ?? c.maxContextTokens);
+                if (mcMax > 0) return mcMax;
+            }
+        }
+
         const combined = ((modelId || '') + ' ' + (label || '')).toUpperCase();
         if (combined.includes('GPT_OSS') || combined.includes('GPT-OSS') || combined.includes('120B')) {
             return GPT_OSS_LIMIT;
+        }
+        if (combined.includes('CLAUDE') || combined.includes('OPUS') || combined.includes('SONNET')) {
+            if (/5[._-]5|M400|M401|M402|M403|M404|M405/.test(combined)) {
+                return CLAUDE_55_LIMIT;
+            }
+            return 200000;
+        }
+        if (combined.includes('GEMINI') || combined.includes('CARBON') || combined.includes('ARGON') || combined.includes('HYDROGEN') || combined.includes('ORCHESTRATOR') || combined.includes('FLASH') || /M41[789]|M427|M43[78]|M52[5-8]|M667|M669|M681|M31[89]|M320/.test(combined)) {
+            return GEMINI_4_LIMIT;
         }
         return DEFAULT_LIMIT;
     }
@@ -196,7 +337,7 @@
             return KNOWN_QUOTA_POOLS[modelId];
         }
         const combined = ((modelId || '') + ' ' + (label || '')).toUpperCase();
-        if (combined.includes('GEMINI') || combined.includes('ARGON') || combined.includes('FLASH')) {
+        if (combined.includes('GEMINI') || combined.includes('CARBON') || combined.includes('ARGON') || combined.includes('HYDROGEN') || combined.includes('ORCHESTRATOR') || combined.includes('FLASH')) {
             return 'gemini';
         }
         if (combined.includes('CLAUDE') || combined.includes('OPUS') || combined.includes('SONNET') || combined.includes('GPT') || combined.includes('OSS')) {
@@ -209,13 +350,28 @@
     function resolveModelDisplayName(modelId, fallbackLabel) {
         if (fallbackLabel) return fallbackLabel;
         if (!modelId) return getLangMode() === 'en' ? 'Default Model' : '默认模型';
+        const candKeys = getModelCandidateKeys(modelId, '');
+        for (const k of candKeys) {
+            const av = availableModelsMap.get(k);
+            if (av?.displayName) return av.displayName;
+        }
         for (const c of userStatusCache.modelConfigs) {
-            const cid = (c.modelOrAlias && c.modelOrAlias.model) || c.model || '';
-            if (cid === modelId || c.modelId === modelId) {
+            const cid = (c.modelOrAlias && c.modelOrAlias.model) || c.model || c.modelId || '';
+            if (cid === modelId || c.modelId === modelId || c.model === modelId) {
                 return c.label || modelId;
             }
         }
         const m = String(modelId);
+        if (m.includes('M667')) return 'Orchestrator (Carbon)';
+        if (m.includes('M669')) return 'Gemini 4 Hydrogen (Orchestrator)';
+        if (m.includes('M681')) return 'Orchestrator (Argon)';
+        if (m.includes('M427')) return 'Gemini 4 Carbon (High)';
+        if (m.includes('M437')) return 'Gemini 4 Carbon (Medium)';
+        if (m.includes('M438')) return 'Gemini 4 Carbon (Low)';
+        if (m.includes('M525')) return 'Gemini 4 Hydrogen (High)';
+        if (m.includes('M526')) return 'Gemini 4 Hydrogen (Medium)';
+        if (m.includes('M527')) return 'Gemini 4 Hydrogen (Low)';
+        if (m.includes('M528')) return 'Gemini 4 Hydrogen (XHigh)';
         if (m.includes('M419')) return 'Gemini 4 Argon (Low)';
         if (m.includes('M418')) return 'Gemini 4 Argon (Medium)';
         if (m.includes('M417')) return 'Gemini 4 Argon (High)';
@@ -311,11 +467,18 @@
                     const clone = resp.clone();
                     clone.json().then((data) => {
                         if (!data || typeof data !== 'object') return;
-                        // 1. 捕获 GetUserStatus 或模型配额列表
+                        // 1. 捕获 GetUserStatus 或模型配额列表与 GetAvailableModels 能力列表
                         const us = data.userStatus || (data.cascadeModelConfigData ? data : null);
                         if (us && us.cascadeModelConfigData && Array.isArray(us.cascadeModelConfigData.clientModelConfigs)) {
                             userStatusCache.fetchedAt = Date.now();
                             userStatusCache.modelConfigs = us.cascadeModelConfigData.clientModelConfigs;
+                            ingestUserStatusModelConfigs(userStatusCache.modelConfigs);
+                        }
+                        if (data.models || data.response?.models) {
+                            ingestAvailableModelsPayload(data);
+                        }
+                        if (Array.isArray(data.generatorMetadata)) {
+                            ingestGeneratorMetadataRows(data.generatorMetadata, reqBodyCid);
                         }
                         // 2. 捕获会话摘要字典
                         if (data.trajectorySummaries && typeof data.trajectorySummaries === 'object') {
@@ -382,23 +545,30 @@
         }
     }
 
-    // 刷新 GetUserStatus 缓存
+    // 刷新 GetUserStatus 与 GetAvailableModels 能力缓存
     async function refreshUserStatus(force = false) {
         const now = Date.now();
-        if (!force && (isFetchingUserStatus || (now - userStatusCache.fetchedAt < 30000 && userStatusCache.modelConfigs.length > 0))) {
+        if (!force && (isFetchingUserStatus || (now - userStatusCache.fetchedAt < 30000 && userStatusCache.modelConfigs.length > 0 && availableModelsMap.size > 0))) {
             return;
         }
         isFetchingUserStatus = true;
         try {
-            const usResp = await callLsRpc('GetUserStatus', {
-                metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
-            });
+            const [usSet, availSet] = await Promise.allSettled([
+                callLsRpc('GetUserStatus', { metadata: { ideName: 'antigravity', extensionName: 'antigravity' } }),
+                callLsRpc('GetAvailableModels', { forceRefresh: false })
+            ]);
+            const usResp = usSet.status === 'fulfilled' ? usSet.value : null;
+            const availResp = availSet.status === 'fulfilled' ? availSet.value : null;
+            if (availResp) {
+                ingestAvailableModelsPayload(availResp);
+            }
             if (usResp && usResp.userStatus) {
                 const us = usResp.userStatus;
                 userStatusCache.fetchedAt = Date.now();
                 userStatusCache.planName = (us.planStatus && us.planStatus.planInfo && us.planStatus.planInfo.planName) || '';
                 userStatusCache.tierName = (us.userTier && us.userTier.name) || '';
                 userStatusCache.modelConfigs = (us.cascadeModelConfigData && us.cascadeModelConfigData.clientModelConfigs) || [];
+                ingestUserStatusModelConfigs(userStatusCache.modelConfigs);
             }
         } catch (e) {
         } finally {
@@ -457,7 +627,7 @@
     }
 
     // 核心计算函数：精确快照 + 字符级尾差估算 + 云端无 modelUsage 步骤自适应测速与容量拆解
-    function analyzeSteps(steps, preferredModelId, preferredModelLabel, totalStepCount) {
+    function analyzeSteps(steps, preferredModelId, preferredModelLabel, totalStepCount, extraLimits = {}) {
         let baseTokens = 0;
         let inputTokens = 0;
         let cacheReadTokens = 0;
@@ -478,6 +648,8 @@
         let lastDurationSec = 0;
         let timedOutTokensSum = 0;
         let timedDurationSum = 0;
+        let stepObservedLimit = 0;
+        let stepObservedModelKey = '';
 
         if (Array.isArray(steps)) {
             for (const st of steps) {
@@ -485,6 +657,18 @@
                 const meta = st.metadata || st;
                 const mu = meta.modelUsage || st.modelUsage || (st.checkpoint && st.checkpoint.modelUsage) || (st.usage) || null;
                 const stepModel = (mu && (mu.model || mu.modelId)) || meta.generatorModel || st.model || '';
+                const stepMaxCtx = toPositiveIntLimit(
+                    meta.chatStartMetadata?.contextWindowMetadata?.maxContextTokens
+                    ?? st.chatStartMetadata?.contextWindowMetadata?.maxContextTokens
+                    ?? meta.modelInfo?.maxTokens
+                    ?? meta.model_info?.max_tokens
+                    ?? mu?.maxContextTokens
+                );
+                if (stepMaxCtx > 0 && (!stepModel || !isShadowOrImageModel(stepModel))) {
+                    stepObservedLimit = stepMaxCtx;
+                    const smKey = normalizeModelKey(stepModel || activeModelId);
+                    if (smKey) stepObservedModelKey = smKey;
+                }
 
                 // 尝试从用户输入配置中识别初始选中的模型
                 if (!activeModelId && st.userInput && st.userInput.userConfig && st.userInput.userConfig.plannerConfig) {
@@ -579,7 +763,13 @@
             hasPreciseSnapshot = totalEst > 0;
         }
 
-        const finalLimit = getContextLimitForModel(activeModelId || preferredModelId, preferredModelLabel);
+        const rtBudget = toPositiveIntLimit(extraLimits?.runtimeBudget) || stepObservedLimit || 0;
+        const rtModelKey = extraLimits?.runtimeModelKey || stepObservedModelKey || '';
+        const finalLimit = getContextLimitForModel(activeModelId || preferredModelId, preferredModelLabel, {
+            runtimeBudget: rtBudget,
+            runtimeModelKey: rtModelKey,
+            fiberMaxTokens: extraLimits?.fiberMaxTokens || 0
+        });
         const contextUsed = baseTokens + estimatedDelta;
         const usagePercent = finalLimit > 0 ? (contextUsed / finalLimit) * 100 : 0;
         const remainPercent = Math.max(0, 100 - usagePercent);
@@ -590,6 +780,9 @@
         return {
             contextUsed,
             contextLimit: finalLimit,
+            runtimeBudget: rtBudget,
+            runtimeModelKey: rtModelKey,
+            modelMaxTokens: toPositiveIntLimit(extraLimits?.fiberMaxTokens),
             usagePercent,
             remainPercent,
             inputTokens,
@@ -651,9 +844,17 @@
                     result.modelId = mid;
                     result.modelLabel = mc.label || mc.displayName || '';
                 }
+                const mcMax = toPositiveIntLimit(mc.maxTokens ?? mc.max_tokens ?? mc.contextWindow ?? mc.maxContextTokens);
+                if (mcMax > 0 && !result.modelMaxTokens) {
+                    result.modelMaxTokens = mcMax;
+                }
                 if (mc.quotaInfo && (!result.quotaInfo || parseResetTimeMs(mc.quotaInfo.resetTime || mc.quotaInfo.reset_time) > 0)) {
                     result.quotaInfo = mc.quotaInfo;
                 }
+            }
+            const cwmBudget = toPositiveIntLimit(obj.contextWindowMetadata?.maxContextTokens ?? obj.value?.contextWindowMetadata?.maxContextTokens);
+            if (cwmBudget > 0 && !result.observedBudget) {
+                result.observedBudget = cwmBudget;
             }
             if (obj.quotaInfo && typeof obj.quotaInfo === 'object' && (!result.quotaInfo || parseResetTimeMs(obj.quotaInfo.resetTime || obj.quotaInfo.reset_time) > 0)) {
                 result.quotaInfo = obj.quotaInfo;
@@ -665,6 +866,7 @@
                     (obj.value && (obj.value.clientModelConfigs || obj.value.modelConfigs));
                 if (Array.isArray(cfgList) && cfgList.length > 0) {
                     result.fiberModelConfigs = cfgList;
+                    ingestUserStatusModelConfigs(cfgList);
                 }
             }
             // 提取云端项目 / 网页端在 React 树中持有的当前会话步骤数组
@@ -713,6 +915,8 @@
             conversationId: '',
             modelId: '',
             modelLabel: '',
+            modelMaxTokens: 0,
+            observedBudget: 0,
             quotaInfo: null,
             fiberModelConfigs: null,
             fiberSteps: null,
@@ -868,7 +1072,7 @@
     }
 
     // 云端项目 / 网页端 DOM 实时感知兜底：当 RPC 与 Fiber 均未暴露原始 steps 数组时，直接扫描当前对话面板内的已渲染消息并实时测速
-    function computeDomFallbackUsage(footerEl, cid, preferredModelId, preferredModelLabel) {
+    function computeDomFallbackUsage(footerEl, cid, preferredModelId, preferredModelLabel, extraLimits = {}) {
         const panelEl = findChatPanelContainer(footerEl);
         if (!panelEl) return null;
 
@@ -913,7 +1117,12 @@
 
         const sysOverhead = 12500; // 云端 Agent 系统指令与工具声明基线
         const contextUsed = sysOverhead + textTokens;
-        const finalLimit = getContextLimitForModel(preferredModelId, preferredModelLabel);
+        const rtBudget = toPositiveIntLimit(extraLimits?.runtimeBudget);
+        const finalLimit = getContextLimitForModel(preferredModelId, preferredModelLabel, {
+            runtimeBudget: rtBudget,
+            runtimeModelKey: extraLimits?.runtimeModelKey || '',
+            fiberMaxTokens: extraLimits?.fiberMaxTokens || 0
+        });
         const usagePercent = finalLimit > 0 ? (contextUsed / finalLimit) * 100 : 0;
         const remainPercent = Math.max(0, 100 - usagePercent);
         const cacheReadTokens = Math.round(sysOverhead + textTokens * 0.68);
@@ -926,6 +1135,9 @@
         return {
             contextUsed,
             contextLimit: finalLimit,
+            runtimeBudget: rtBudget,
+            runtimeModelKey: extraLimits?.runtimeModelKey || '',
+            modelMaxTokens: toPositiveIntLimit(extraLimits?.fiberMaxTokens),
             usagePercent,
             remainPercent,
             inputTokens,
@@ -1147,6 +1359,26 @@
         return MORANDI_3A.green;                          // 剩余 > 50%
     }
 
+    function getRuntimeLimitInfo(cascadeId, shortCid, ctx) {
+        let rt = sessionRuntimeBudgetMap.get(cascadeId) || (shortCid ? sessionRuntimeBudgetMap.get(shortCid) : null) || null;
+        if (!rt) {
+            try {
+                const snap = window.__AGContextMeter?.snapshot?.();
+                const snapRoute = snap?.route || '';
+                const snapBudget = toPositiveIntLimit(snap?.latest?.budget);
+                if (snapBudget > 0 && (snapRoute === cascadeId || snapRoute === shortCid)) {
+                    const snapModel = snap?.latest?.modelRaw || snap?.latest?.modelId || snap?.latest?.model || '';
+                    rt = { modelKey: normalizeModelKey(snapModel), maxContextTokens: snapBudget };
+                }
+            } catch {}
+        }
+        return {
+            runtimeBudget: rt?.maxContextTokens || toPositiveIntLimit(ctx?.observedBudget) || 0,
+            runtimeModelKey: rt?.modelKey || '',
+            fiberMaxTokens: toPositiveIntLimit(ctx?.modelMaxTokens) || 0
+        };
+    }
+
     // 拉取或合并指定会话的最新步骤并计算用量 (兼容本地项目 RPC、云端项目 Fiber/Fetch 嗅探、以及 DOM 实时兜底)
     async function refreshConversationUsage(cascadeId, summary, preferredModelId, preferredModelLabel, ctx, footerEl) {
         if (!cascadeId) return null;
@@ -1157,9 +1389,29 @@
         const lastMod = (effectiveSummary && effectiveSummary.lastModifiedTime) || '';
         const isRunning = status.includes('RUNNING');
 
+        let runtimeInfo = sessionRuntimeBudgetMap.get(cascadeId) || (shortCid ? sessionRuntimeBudgetMap.get(shortCid) : null) || null;
+        if (!runtimeInfo || isRunning) {
+            let gmResp = await callLsRpc('GetCascadeTrajectoryGeneratorMetadata', {
+                cascadeId,
+                generatorMetadataOffset: 0,
+                includeMessages: false
+            });
+            if ((!gmResp || !Array.isArray(gmResp.generatorMetadata) || gmResp.generatorMetadata.length === 0) && shortCid && shortCid !== cascadeId) {
+                gmResp = await callLsRpc('GetCascadeTrajectoryGeneratorMetadata', {
+                    cascadeId: shortCid,
+                    generatorMetadataOffset: 0,
+                    includeMessages: false
+                });
+            }
+            if (gmResp && Array.isArray(gmResp.generatorMetadata) && gmResp.generatorMetadata.length > 0) {
+                runtimeInfo = ingestGeneratorMetadataRows(gmResp.generatorMetadata, cascadeId) || runtimeInfo;
+            }
+        }
+        const extraLimits = getRuntimeLimitInfo(cascadeId, shortCid, ctx);
+
         const cached = sessionCache.get(cascadeId);
         if (cached && effectiveSummary && !isRunning && cached.stepCount === stepCount && cached.lastModifiedTime === lastMod && cached.steps && cached.steps.length > 0) {
-            cached.usage = analyzeSteps(cached.steps, preferredModelId, preferredModelLabel, stepCount);
+            cached.usage = analyzeSteps(cached.steps, preferredModelId, preferredModelLabel, stepCount, extraLimits);
             cached.usage.title = (effectiveSummary.annotations && effectiveSummary.annotations.title) || effectiveSummary.summary || '';
             return cached.usage;
         }
@@ -1206,19 +1458,19 @@
 
         let usage = null;
         if (Array.isArray(steps) && steps.length > 0) {
-            usage = analyzeSteps(steps, preferredModelId, preferredModelLabel, Math.max(stepCount, steps.length));
+            usage = analyzeSteps(steps, preferredModelId, preferredModelLabel, Math.max(stepCount, steps.length), extraLimits);
         }
 
         // 通道 3：若云端项目或网页端未在 RPC/Fiber 暴露原始 steps (或算出来 contextUsed 为 0)，启用 DOM 对话面板实时感知与流式测速兜底
         if ((!usage || usage.contextUsed === 0) && footerEl) {
-            const domUsage = computeDomFallbackUsage(footerEl, cascadeId, preferredModelId, preferredModelLabel);
+            const domUsage = computeDomFallbackUsage(footerEl, cascadeId, preferredModelId, preferredModelLabel, extraLimits);
             if (domUsage && domUsage.contextUsed > 0) {
                 usage = domUsage;
             }
         }
 
         if (!usage) {
-            usage = analyzeSteps([], preferredModelId, preferredModelLabel, stepCount);
+            usage = analyzeSteps([], preferredModelId, preferredModelLabel, stepCount, extraLimits);
         }
 
         if (effectiveSummary) {
@@ -1260,7 +1512,7 @@
         tooltipEl.setAttribute('translate', 'no');
         tooltipEl.style.cssText = [
             'position: fixed',
-            'z-index: 999999',
+            'z-index: 99995',
             'pointer-events: none',
             'opacity: 0',
             'transition: opacity 0.12s ease',
@@ -1465,16 +1717,12 @@
             ));
         }
 
-        // 8. 底部栏：步数 + 点击切换中英文提示
-        const switchHint = isEn ? 'Click to switch: 中文' : '点击切换: English';
+        // 8. 底部栏：步数统计（语言配置统一移至套件设置面板）
         const footerRow = document.createElement('div');
         footerRow.style.cssText = `border-top:1px solid ${borderColor};margin-top:6px;padding-top:5px;font-size:11px;color:${mutedColor};font-weight:400;display:flex;justify-content:space-between;gap:12px;`;
         const stepsSpan = document.createElement('span');
         stepsSpan.textContent = `${isEn ? 'Steps' : '步数'}: ${data.stepCount || 0}`;
-        const hintSpan = document.createElement('span');
-        hintSpan.textContent = switchHint;
         footerRow.appendChild(stepsSpan);
-        footerRow.appendChild(hintSpan);
         nodes.push(footerRow);
 
         if (typeof el.replaceChildren === 'function') {
@@ -1587,7 +1835,9 @@
             capsuleBtn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                toggleLangMode();
+                try {
+                    window.__AGContextMeter?.toggle?.(true, 'context');
+                } catch {}
             });
             capsuleBtn.addEventListener('mouseenter', () => {
                 activeTooltipTarget = capsuleBtn;
@@ -1697,14 +1947,31 @@
 
             if (baseUsage) {
                 const effectiveModelId = ctx.modelId || baseUsage.modelId;
-                const effectiveQuota = quotaInfo || findQuotaForModel(effectiveModelId, baseUsage.modelDisplayName, null, ctx.fiberModelConfigs) || baseUsage.quotaInfo;
+                const modelSwitched = Boolean(ctx.modelId && baseUsage.modelId && normalizeModelKey(ctx.modelId) !== normalizeModelKey(baseUsage.modelId));
+                const effectiveLabel = ctx.modelLabel || (modelSwitched ? '' : baseUsage.modelDisplayName);
+                const shortCid = cid ? normalizeCidKey(cid) : '';
+                const runtimeInfo = sessionRuntimeBudgetMap.get(cid) || (shortCid ? sessionRuntimeBudgetMap.get(shortCid) : null) || null;
+                const dynamicLimit = getContextLimitForModel(effectiveModelId, effectiveLabel, {
+                    runtimeBudget: modelSwitched ? 0 : (runtimeInfo?.maxContextTokens || toPositiveIntLimit(ctx.observedBudget) || toPositiveIntLimit(baseUsage.runtimeBudget)),
+                    runtimeModelKey: runtimeInfo?.modelKey || baseUsage.runtimeModelKey || '',
+                    fiberMaxTokens: toPositiveIntLimit(ctx.modelMaxTokens) || (modelSwitched ? 0 : toPositiveIntLimit(baseUsage.modelMaxTokens))
+                });
+                const usagePercent = dynamicLimit > 0 ? (baseUsage.contextUsed / dynamicLimit) * 100 : 0;
+                const remainPercent = Math.max(0, 100 - usagePercent);
+                const effectiveQuota = quotaInfo || findQuotaForModel(effectiveModelId, effectiveLabel, null, ctx.fiberModelConfigs) || baseUsage.quotaInfo;
                 const usage = Object.assign({}, baseUsage, {
-                    modelDisplayName: resolveModelDisplayName(effectiveModelId, ctx.modelLabel || baseUsage.modelDisplayName),
+                    contextLimit: dynamicLimit,
+                    usagePercent,
+                    remainPercent,
+                    modelDisplayName: resolveModelDisplayName(effectiveModelId, effectiveLabel),
                     quotaInfo: effectiveQuota
                 });
                 renderFooterCapsule(footer, usage);
             } else {
-                const limit = getContextLimitForModel(ctx.modelId, ctx.modelLabel);
+                const limit = getContextLimitForModel(ctx.modelId, ctx.modelLabel, {
+                    fiberMaxTokens: toPositiveIntLimit(ctx.modelMaxTokens),
+                    runtimeBudget: toPositiveIntLimit(ctx.observedBudget)
+                });
                 const emptyUsage = {
                     contextUsed: 0,
                     contextLimit: limit,
@@ -1855,15 +2122,37 @@
         }
         renderAllFooters();
         pollCycle();
+        const onSuitePrefsChanged = () => {
+            renderAllFooters();
+            if (activeTooltipTarget) updateTooltipContent(activeTooltipTarget);
+        };
+        try { window.addEventListener?.('ag-suite-prefs-changed', onSuitePrefsChanged); } catch {}
+        window.__AGY_CTX_CAPSULE_API__ = {
+            version: CAPSULE_VERSION,
+            getContextLimitForModel,
+            resolveModelDisplayName,
+            ingestAvailableModels: ingestAvailableModelsPayload,
+            ingestUserStatusModelConfigs,
+            ingestGeneratorMetadata: ingestGeneratorMetadataRows,
+            clearCaches: () => {
+                sessionCache.clear();
+                availableModelsMap.clear();
+                sessionRuntimeBudgetMap.clear();
+                modelRuntimeBudgetMap.clear();
+                userStatusCache.modelConfigs = [];
+            }
+        };
         const __agyPollTimer = setInterval(pollCycle, 3000);
         window.__AGY_CTX_CAPSULE_DISPOSE__ = () => {
             try { clearInterval(__agyPollTimer); } catch {}
+            try { window.removeEventListener?.('ag-suite-prefs-changed', onSuitePrefsChanged); } catch {}
             try { if (typeof mutationTimer !== "undefined" && mutationTimer) clearTimeout(mutationTimer); } catch {}
             try { if (typeof domObserver !== "undefined") domObserver.disconnect(); } catch {}
             try {
                 document.querySelectorAll("[data-agy-context-capsule=\"1\"]").forEach(el => el.remove());
                 document.getElementById("__agy_ctx_capsule_tooltip__")?.remove();
             } catch {}
+            try { delete window.__AGY_CTX_CAPSULE_API__; } catch {}
             window.__AGY_CTX_CAPSULE_ACTIVE__ = false;
         };
     }

@@ -98,13 +98,34 @@ async function queryLiveWindow() {
   }
 }
 
-async function ensureLiveBridgeIfNeeded() {
+async function ensureLiveBridgeIfNeeded(options = {}) {
+  const forceFreshBridge = options.forceFreshBridge === true;
   const live = await queryLiveWindow();
-  if (!live.running || !live.pageFound || live.hasIpcBridge) return;
+  if (!live.running || !live.pageFound) return;
+  if (live.hasIpcBridge && !forceFreshBridge) return;
   const stateDir = getStateDir();
   const statePath = path.join(stateDir, '.live-session.json');
   const legacyPath = path.join(__dirname, '.live-session.json');
   const liveSessionPath = fs.existsSync(statePath) ? statePath : legacyPath;
+
+  const backendModules = [
+    'live-host.js',
+    'mobile-remote.js',
+    'local-api.js',
+    'meter-collector.js',
+    'meter-cli-launcher.js',
+    'meter-terminals.js',
+    'meter-core.js',
+    'meter-proxy.js',
+    'modules-config.js'
+  ];
+  let latestBackendMtime = 0;
+  for (const modName of backendModules) {
+    try {
+      const mtimeMs = fs.statSync(path.join(__dirname, modName)).mtimeMs || 0;
+      if (mtimeMs > latestBackendMtime) latestBackendMtime = mtimeMs;
+    } catch {}
+  }
 
   let alive = false;
   let existingInfo = null;
@@ -113,7 +134,10 @@ async function ensureLiveBridgeIfNeeded() {
       const info = JSON.parse(fs.readFileSync(liveSessionPath, 'utf8'));
       existingInfo = info;
       process.kill(info.pid, 0);
-      if (!live.origin || info.origin === live.origin) {
+      const startedAt = Number(info.startedAt || 0);
+      const originMatches = !live.origin || info.origin === live.origin;
+      const isUpToDate = startedAt >= latestBackendMtime;
+      if (originMatches && isUpToDate && !forceFreshBridge) {
         alive = true;
       }
     } catch {}
@@ -121,6 +145,15 @@ async function ensureLiveBridgeIfNeeded() {
   if (!alive) {
     if (existingInfo?.pid) {
       try { process.kill(existingInfo.pid); } catch {}
+      const exitDeadline = Date.now() + 600;
+      while (Date.now() < exitDeadline) {
+        try {
+          process.kill(existingInfo.pid, 0);
+          await new Promise(r => setTimeout(r, 50));
+        } catch {
+          break;
+        }
+      }
     }
     try { if (fs.existsSync(statePath)) fs.unlinkSync(statePath); } catch {}
     try { if (fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath); } catch {}
@@ -141,7 +174,7 @@ async function ensureLiveBridgeIfNeeded() {
       if (checkPath) {
         try {
           const info = JSON.parse(fs.readFileSync(checkPath, 'utf8'));
-          if (info && info.pid && (!live.origin || info.origin === live.origin)) {
+          if (info && info.pid === child.pid && (!live.origin || info.origin === live.origin)) {
             process.kill(info.pid, 0);
             alive = true;
             break;
@@ -207,7 +240,7 @@ async function main() {
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
     console.log(`🚀 [Antigravity 对话上下文查看器 v${meterVersion}] 正在安装上下文可视化组件...`);
-    await ensureLiveBridgeIfNeeded();
+    await ensureLiveBridgeIfNeeded({ forceFreshBridge: true });
     const manifest = await install({ path: customPath, backup: customBackup, force: isForce });
     await tryHotInject();
     console.log(`✅ 插件 v${manifest.meterVersion} 安装完成 (Antigravity 宿主 v${manifest.version})`);
@@ -233,7 +266,7 @@ async function main() {
     console.log(`     * 模型请求验证: 待通过真实在线会话验证 (分层标定，未发送请求前不宣称生效)`);
     console.log(`✅ 运行中窗口热挂载状态: ${manifest.liveInjected ? '已即时生效（无需重启）' : '将在下次启动 Antigravity 时自动生效'}`);
   } else if (cmd === 'live') {
-    await ensureLiveBridgeIfNeeded();
+    await ensureLiveBridgeIfNeeded({ forceFreshBridge: true });
     const ok = await tryHotInject();
     if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
     console.log('✅ 已通过 CDP 热注入当前运行的 Antigravity 窗口！');
@@ -350,6 +383,11 @@ async function main() {
     await cmdStatus(customPath);
   } else if (cmd === 'check') {
     await cmdCheck(customPath);
+  } else if (cmd === 'remote') {
+    require('./mobile-remote').printRemoteCli({
+      resetToken: args.includes('--reset-token'),
+      jsonMode: args.includes('--json')
+    });
   } else if (cmd === 'upstreams') {
     const cmdIdx = process.argv.indexOf('upstreams');
     const passthrough = cmdIdx >= 0 ? process.argv.slice(cmdIdx + 1) : [];
@@ -364,6 +402,7 @@ async function main() {
   node cli.js install [--path <app.asar>]   一键持久化安装并热注入当前运行窗口
   node cli.js live                          免改盘 CDP 热挂载到当前运行窗口
   node cli.js status                        查看安装状态与当前对话实时上下文用量
+  node cli.js remote [--reset-token] [--json]  打印手机局域网/Tailscale 扫码远程地址与二维码
   node cli.js check                         执行前置环境健康检查
   node cli.js upstreams [--json]            检查参考上游项目更新并与当前基线比对
   node cli.js restore                       一键无损卸载并恢复备份

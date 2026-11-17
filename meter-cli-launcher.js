@@ -5,6 +5,7 @@ const path = require('path');
 const { fileURLToPath } = require('url');
 const { spawn, spawnSync, execFile } = require('child_process');
 const { buildCliProxyEnv } = require('./meter-proxy');
+const { launchInConfiguredTerminal } = require('./meter-terminals');
 
 const windowsTerminalPlacement = `
 using System;
@@ -629,6 +630,26 @@ function resolveHelperExecutable(options = {}) {
  * 组装启动环境并调度启动 Antigravity CLI 会话
  */
 async function launchCliSession(options = {}, ownerHwnd = 0) {
+  if (options.testOnly === true) {
+    const wsInfo = await resolveCliWorkspace(options);
+    const cwd = wsInfo.ok ? wsInfo.cwd : os.homedir();
+    const env = buildCliProxyEnv(process.env);
+    if (process.platform === 'win32') {
+      delete env.NO_COLOR;
+      env.TERM = 'xterm-256color';
+      env.COLORTERM = 'truecolor';
+    }
+    return launchInConfiguredTerminal({
+      terminalApp: options.terminalApp || 'auto',
+      customTerminalPath: options.customTerminalPath || '',
+      cwd,
+      wsSource: wsInfo.source || 'home',
+      env,
+      dryRun: options.dryRun === true,
+      testOnly: true
+    });
+  }
+
   const cliInfo = resolveCliExecutable(options.cliPath);
   if (!cliInfo.ok) {
     return cliInfo;
@@ -640,20 +661,46 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
   }
 
   const cwd = wsInfo.cwd;
-  const model = (typeof options.model === 'string' && /^[a-zA-Z0-9._-]+$/.test(options.model.trim()))
-    ? options.model.trim()
-    : 'gemini-3.8-flash-high';
+  const rawModelInput = options.model;
+  const explicitNoModel = options.noModel === true
+    || rawModelInput === null
+    || (typeof rawModelInput === 'string' && ['', 'none', 'default', 'auto'].includes(rawModelInput.trim().toLowerCase()));
+  const model = explicitNoModel
+    ? null
+    : ((typeof rawModelInput === 'string' && /^[a-zA-Z0-9._-]+$/.test(rawModelInput.trim()))
+      ? rawModelInput.trim()
+      : 'gemini-3.8-flash-high');
+  const skipPermissions = options.skipPermissions === true;
   const extraArgs = Array.isArray(options.args)
     ? options.args.filter(a => typeof a === 'string' && a.trim().length > 0 && !/[\r\n\0]/.test(a))
     : [];
+  if (skipPermissions && !extraArgs.includes('--dangerously-skip-permissions')) {
+    extraArgs.unshift('--dangerously-skip-permissions');
+  }
 
-  const cliArgs = ['--model', model, ...extraArgs];
+  const cliArgs = [...(model ? ['--model', model] : []), ...extraArgs];
   const env = buildCliProxyEnv(process.env);
   // 恢复 Windows 交互式 CLI 子进程环境的原生彩虹渐变 Logo 与颜色能力（隔离宿主环境的 NO_COLOR/dumb）
   if (process.platform === 'win32') {
     delete env.NO_COLOR;
     env.TERM = 'xterm-256color';
     env.COLORTERM = 'truecolor';
+  }
+
+  const configuredTerm = typeof options.terminalApp === 'string' ? options.terminalApp.trim().toLowerCase() : 'auto';
+  if ((configuredTerm && configuredTerm !== 'auto') || (configuredTerm === 'custom' && options.customTerminalPath)) {
+    return launchInConfiguredTerminal({
+      terminalApp: configuredTerm,
+      customTerminalPath: options.customTerminalPath || '',
+      cwd,
+      wsSource: wsInfo.source,
+      cliInfo,
+      cliArgs,
+      model,
+      skipPermissions,
+      env,
+      dryRun: options.dryRun === true
+    });
   }
 
   if (options.dryRun === true) {
@@ -666,6 +713,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       cwd,
       cwdSource: wsInfo.source,
       model,
+      skipPermissions,
       args: cliArgs,
       env: {
         NO_COLOR: env.NO_COLOR,
@@ -687,17 +735,19 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       try { if (fs.existsSync(probeFile)) fs.unlinkSync(probeFile); } catch {}
 
       const extraArgsStr = extraArgs.map(a => `"${String(a).replace(/"/g, '')}"`).join(' ');
+      const modelArgStr = model ? ` --model "${model}"` : '';
+      const extraSection = extraArgsStr ? ` ${extraArgsStr}` : '';
       const batContent = [
         '@echo off',
         'if defined AG_CLI_PROBE_FILE (',
         '  > "%AG_CLI_PROBE_FILE%" echo %CD%',
         ')',
-        `"${cliInfo.exePath}" --model "${model}" ${extraArgsStr}`
+        `"${cliInfo.exePath}"${modelArgStr}${extraSection}`
       ].join('\r\n') + '\r\n';
       fs.writeFileSync(runnerBat, batContent, 'ascii');
 
       env.AG_CLI_TARGET_EXE = cliInfo.exePath;
-      env.AG_CLI_TARGET_MODEL = model;
+      env.AG_CLI_TARGET_MODEL = model || '';
       env.AG_CLI_TARGET_CWD = cwd;
       env.AG_CLI_RUNNER_BAT = runnerBat;
       env.AG_CLI_PROBE_FILE = probeFile;
@@ -902,7 +952,8 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       const safeCwd = escapePosixArg(cwd);
       const safeCli = escapePosixArg(cliInfo.exePath);
       const safeArgs = cliArgs.map(escapePosixArg).join(' ');
-      const bashCmd = `cd ${safeCwd} && ${safeCli} ${safeArgs}; exec bash`;
+      const cliInvoke = safeArgs ? `${safeCli} ${safeArgs}` : safeCli;
+      const bashCmd = `cd ${safeCwd} && ${cliInvoke}; exec bash`;
       const escapedScriptCmd = bashCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       const appleScript = `tell application "Terminal"\n  do script "${escapedScriptCmd}"\n  activate\nend tell`;
 
@@ -924,6 +975,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
         cwd,
         cwdSource: wsInfo.source,
         model,
+        skipPermissions,
         args: cliArgs
       };
     } else if (process.platform === 'linux') {
@@ -939,7 +991,8 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       const safeCwd = escapePosixArg(cwd);
       const safeCli = escapePosixArg(cliInfo.exePath);
       const safeArgs = cliArgs.map(escapePosixArg).join(' ');
-      const targetCommand = `cd ${safeCwd} && ${safeCli} ${safeArgs}`;
+      const cliInvoke = safeArgs ? `${safeCli} ${safeArgs}` : safeCli;
+      const targetCommand = `cd ${safeCwd} && ${cliInvoke}`;
 
       let foundTerm = null;
       const pathDirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
