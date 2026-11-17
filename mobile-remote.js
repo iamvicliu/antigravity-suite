@@ -6,13 +6,14 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
-const MOBILE_UI_VERSION = '1.6.8';
+const MOBILE_UI_VERSION = '1.7.0';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -107,17 +108,29 @@ function isAllowedPrivateAddress(rawAddr) {
   return false;
 }
 
+const isVirtualBridgeIface = (name) => /^(?:bridge|vmenet|vmnet|vboxnet|docker|br-|veth|awdl|llw|utun)/i.test(String(name || ''));
+
 function enumerateLocalAddresses() {
   const nets = os.networkInterfaces();
   const tailscale = [];
   const lan = [];
+  const tailscaleIpv6 = [];
   const seen = new Set();
 
   for (const [ifName, entries] of Object.entries(nets)) {
     for (const info of entries || []) {
-      if (!info || info.family !== 'IPv4' || info.internal) continue;
+      if (!info || info.internal) continue;
       const addr = String(info.address || '').trim();
-      if (!addr || seen.has(addr)) continue;
+      if (!addr) continue;
+      if (info.family === 'IPv6') {
+        const cleanV6 = normalizeRemoteIp(addr);
+        if (/^fd7a:115c:a1e0:/i.test(cleanV6) && !seen.has(cleanV6)) {
+          seen.add(cleanV6);
+          tailscaleIpv6.push(cleanV6);
+        }
+        continue;
+      }
+      if (info.family !== 'IPv4' || seen.has(addr)) continue;
       seen.add(addr);
 
       if (isTailscaleCgnatIpv4(addr)) {
@@ -128,14 +141,124 @@ function enumerateLocalAddresses() {
     }
   }
 
-  // en0 / en1 排到局域网首位
+  // 物理网卡 (en0 / en* / eth* / wlan*) 排在虚拟网桥 (bridge100 等) 之前
   lan.sort((a, b) => {
-    const score = (x) => (x.iface === 'en0' ? 0 : (x.iface.startsWith('en') ? 1 : 2));
+    const score = (x) => {
+      if (isVirtualBridgeIface(x.iface)) return 3;
+      if (x.iface === 'en0') return 0;
+      if (/^(?:en|eth|wlan|wi-fi)/i.test(x.iface)) return 1;
+      return 2;
+    };
     return score(a) - score(b);
   });
 
-  const bindIps = ['127.0.0.1', ...tailscale.map((x) => x.address), ...lan.map((x) => x.address)];
-  return { tailscale, lan, bindIps };
+  const physicalLan = lan.filter((x) => !isVirtualBridgeIface(x.iface));
+  const bindIps = ['127.0.0.1', '::1', ...tailscale.map((x) => x.address), ...lan.map((x) => x.address), ...tailscaleIpv6];
+  return { tailscale, lan, physicalLan, tailscaleIpv6, bindIps };
+}
+
+let cachedHostMeta = null;
+let cachedHostMetaAt = 0;
+
+function detectHostIdentityMeta({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && cachedHostMeta && now - cachedHostMetaAt < 45000) {
+    return cachedHostMeta;
+  }
+
+  const skipProbes = process.env.AG_REMOTE_SKIP_PROBES === '1';
+  let localHostLabel = '';
+  if (!skipProbes && process.platform === 'darwin') {
+    try {
+      localHostLabel = execFileSync('scutil', ['--get', 'LocalHostName'], {
+        timeout: 500,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim();
+    } catch {}
+  }
+  if (!localHostLabel) {
+    localHostLabel = String(os.hostname() || '').trim();
+  }
+  localHostLabel = localHostLabel.replace(/\.+$/, '').replace(/\.local$/i, '').trim();
+  const bonjourHost = localHostLabel ? `${localHostLabel}.local` : '';
+
+  let tailscaleDnsName = '';
+  let tailscaleNodeName = '';
+  if (!skipProbes) {
+    const tsBins = process.platform === 'darwin'
+      ? ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']
+      : ['tailscale'];
+    for (const bin of tsBins) {
+      try {
+        const out = execFileSync(bin, ['status', '--json'], {
+          timeout: 800,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore']
+        });
+        const parsed = JSON.parse(out);
+        const dns = String(parsed?.Self?.DNSName || '').trim().replace(/\.+$/, '');
+        const hostName = String(parsed?.Self?.HostName || '').trim();
+        if (dns) tailscaleDnsName = dns;
+        if (dns) tailscaleNodeName = dns.split('.')[0] || hostName;
+        else if (hostName) tailscaleNodeName = hostName;
+        break;
+      } catch {}
+    }
+  }
+
+  const deviceName = tailscaleNodeName || localHostLabel || 'antigravity-mac';
+  cachedHostMeta = { localHostLabel, bonjourHost, tailscaleDnsName, tailscaleNodeName, deviceName };
+  cachedHostMetaAt = now;
+  return cachedHostMeta;
+}
+
+function encodeEndpointsParam(endpoints) {
+  const compact = (Array.isArray(endpoints) ? endpoints : [])
+    .filter((ep) => ep && typeof ep.url === 'string' && /^https?:\/\//i.test(ep.url))
+    .map(({ url, kind, priority }) => ({
+      url,
+      kind: String(kind || 'lan'),
+      priority: Number.isFinite(Number(priority)) ? Number(priority) : 100
+    }));
+  return Buffer.from(JSON.stringify(compact), 'utf8').toString('base64url');
+}
+
+function decodeEndpointsParam(raw) {
+  if (!raw || typeof raw !== 'string') return [];
+  try {
+    const normalized = raw.replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(normalized, 'base64').toString('utf8');
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((ep) => ep && typeof ep.url === 'string' && /^https?:\/\//i.test(ep.url))
+      .map((ep) => ({
+        url: String(ep.url),
+        kind: String(ep.kind || 'lan'),
+        priority: Number.isFinite(Number(ep.priority)) ? Number(ep.priority) : 100
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function formatHostForUrl(host) {
+  const clean = String(host || '').trim();
+  if (!clean) return '127.0.0.1';
+  if (clean.includes(':') && !clean.startsWith('[')) return `[${clean}]`;
+  return clean;
+}
+
+function buildFusedPairingUrl({ entryHost, port, token, name, hosts, endpoints }) {
+  const authority = `${formatHostForUrl(entryHost)}:${port}`;
+  const cleanHosts = Array.isArray(hosts) ? hosts.filter(Boolean) : [];
+  const encodedEndpoints = encodeEndpointsParam(endpoints);
+  return `http://${authority}/?token=${encodeURIComponent(token || '')}`
+    + `&address=${encodeURIComponent(authority)}`
+    + `&name=${encodeURIComponent(name || 'antigravity-mac')}`
+    + `&hosts=${encodeURIComponent(cleanHosts.join(','))}`
+    + `&endpoints=${encodedEndpoints}`;
 }
 
 function timingSafeTokenMatch(candidate, expected) {
@@ -234,13 +357,23 @@ const QR_SPECS_L = {
   7:  [156, 20, 2, 78, 0,  0, [6, 22, 38]],
   8:  [194, 24, 2, 97, 0,  0, [6, 24, 42]],
   9:  [232, 30, 2, 116, 0, 0, [6, 26, 46]],
-  10: [274, 18, 2, 68, 2, 69, [6, 28, 50]]
+  10: [274, 18, 2, 68, 2, 69, [6, 28, 50]],
+  11: [324, 20, 4, 81, 0,  0, [6, 30, 54]],
+  12: [370, 24, 2, 92, 2, 93, [6, 32, 58]],
+  13: [428, 26, 4, 107, 0, 0, [6, 34, 62]],
+  14: [461, 30, 3, 115, 1, 116, [6, 26, 46, 66]],
+  15: [523, 22, 5, 87, 1, 88, [6, 26, 48, 70]],
+  16: [589, 24, 5, 98, 1, 99, [6, 26, 50, 74]],
+  17: [647, 28, 1, 107, 5, 108, [6, 30, 54, 78]],
+  18: [721, 30, 5, 120, 1, 121, [6, 30, 56, 82]],
+  19: [795, 28, 3, 113, 4, 114, [6, 30, 58, 86]],
+  20: [861, 28, 3, 107, 5, 108, [6, 34, 62, 90]]
 };
 
 function encodeQrCodeMatrix(text) {
   const bytes = Array.from(Buffer.from(String(text || ''), 'utf8'));
   let version = 0;
-  for (let v = 1; v <= 10; v++) {
+  for (let v = 1; v <= 20; v++) {
     const charCountBits = v <= 9 ? 8 : 16;
     const neededBits = 4 + charCountBits + bytes.length * 8;
     if (neededBits <= QR_SPECS_L[v][0] * 8) {
@@ -507,7 +640,7 @@ function renderQrSvg(url) {
       }
     }
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" width="180" height="180" shape-rendering="crispEdges"><rect width="${total}" height="${total}" rx="2.5" fill="#ffffff"/><path d="${pathData}" fill="#09090b"/></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" width="200" height="200" shape-rendering="crispEdges"><rect width="${total}" height="${total}" rx="2.5" fill="#ffffff"/><path d="${pathData}" fill="#09090b"/></svg>`;
 }
 
 // ==================== CDP 目标枚举与脚本求值 ====================
@@ -674,7 +807,7 @@ function buildMobileIconSvg() {
 
 function buildManifestJson() {
   return JSON.stringify({
-    name: 'Antigravity 极速遥控',
+    name: 'Antigravity 远程操作',
     short_name: 'AG Remote',
     start_url: '/',
     display: 'standalone',
@@ -699,7 +832,7 @@ function buildUnauthorizedHtml() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>Antigravity 遥控未授权</title>
+  <title>Antigravity 远程未授权</title>
   <style>
     body{margin:0;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px;background:#09090b;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}
     .card{max-width:400px;width:100%;padding:22px;border-radius:16px;background:#18181b;border:1px solid rgba(255,255,255,.12);line-height:1.6}
@@ -711,7 +844,7 @@ function buildUnauthorizedHtml() {
 <body>
   <div class="card">
     <h1>🔒 需要配对口令</h1>
-    <p>当前浏览器未携带有效的遥控配对 Token。请在 Mac 终端运行下方命令重新扫码打开：</p>
+    <p>当前浏览器未携带有效的远程配对 Token。请在 Mac 终端运行下方命令重新扫码打开：</p>
     <code>ag-context-meter remote</code>
   </div>
 </body>
@@ -1044,10 +1177,132 @@ function buildMobileAppHtml() {
 
   <script>
   (function(){
+    const PAIR_STORAGE_KEY = 'ag_remote_pair_v1';
+    function decodeEndpointsClient(raw) {
+      if (!raw) return [];
+      try {
+        let b64 = String(raw).replace(/-/g, '+').replace(/_/g, '/');
+        while (b64.length % 4) b64 += '=';
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const json = typeof TextDecoder === 'function' ? new TextDecoder().decode(bytes) : decodeURIComponent(escape(bin));
+        const list = JSON.parse(json);
+        return Array.isArray(list) ? list.filter((x) => x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url)) : [];
+      } catch {
+        return [];
+      }
+    }
+    function loadStoredPair() {
+      try {
+        const raw = localStorage.getItem(PAIR_STORAGE_KEY);
+        if (!raw) return null;
+        const p = JSON.parse(raw);
+        return (p && typeof p === 'object') ? p : null;
+      } catch {
+        return null;
+      }
+    }
+    function saveStoredPair(st) {
+      try {
+        localStorage.setItem(PAIR_STORAGE_KEY, JSON.stringify({
+          token: st.token || '',
+          name: st.name || '',
+          hosts: Array.isArray(st.hosts) ? st.hosts : [],
+          endpoints: Array.isArray(st.endpoints) ? st.endpoints : []
+        }));
+      } catch {}
+    }
+
     const urlParams = new URLSearchParams(location.search);
     const urlToken = urlParams.get('token') || '';
-    if (urlToken) {
+    const urlName = urlParams.get('name') || '';
+    const urlHosts = (urlParams.get('hosts') || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const urlEndpoints = decodeEndpointsClient(urlParams.get('endpoints') || '');
+    const storedPair = loadStoredPair() || {};
+    const pairState = {
+      token: urlToken || storedPair.token || '',
+      name: urlName || storedPair.name || '',
+      hosts: urlHosts.length ? urlHosts : (Array.isArray(storedPair.hosts) ? storedPair.hosts : []),
+      endpoints: urlEndpoints.length ? urlEndpoints : (Array.isArray(storedPair.endpoints) ? storedPair.endpoints : [])
+    };
+    if (urlToken || urlEndpoints.length || urlHosts.length) {
+      saveStoredPair(pairState);
       history.replaceState(null, '', location.pathname);
+    }
+    let apiBase = '';
+    function authHeaders(extra) {
+      const h = Object.assign({}, extra || {});
+      if (pairState.token) h['X-AG-Remote-Token'] = pairState.token;
+      return h;
+    }
+    function getCandidateEndpoints() {
+      const seen = new Set();
+      const list = [];
+      const add = (url, kind, priority) => {
+        const clean = String(url || '').replace(/\/+$/, '');
+        if (!clean || seen.has(clean)) return;
+        seen.add(clean);
+        list.push({ url: clean, kind: kind || 'lan', priority: Number.isFinite(priority) ? priority : 100 });
+      };
+      for (const ep of (pairState.endpoints || [])) add(ep.url, ep.kind, ep.priority);
+      const portStr = location.port ? ':' + location.port : '';
+      const proto = location.protocol === 'https:' ? 'https:' : 'http:';
+      for (const h of (pairState.hosts || [])) {
+        const hostFmt = (h.includes(':') && !h.startsWith('[')) ? ('[' + h + ']') : h;
+        const kind = h.endsWith('.local') ? 'bonjour' : (h.includes('.ts.net') || /^100\./.test(h) ? 'tailscale' : 'lan');
+        add(proto + '//' + hostFmt + portStr, kind, 300);
+      }
+      add(location.origin, 'current', 999);
+      list.sort((a, b) => a.priority - b.priority);
+      return list;
+    }
+    let failoverBusy = null;
+    async function tryFailoverEndpoint() {
+      if (failoverBusy) return failoverBusy;
+      failoverBusy = (async () => {
+        const candidates = getCandidateEndpoints();
+        if (candidates.length <= 1 && !apiBase) return false;
+        const probeOne = async (ep) => {
+          const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+          const t = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, 1800) : null;
+          try {
+            const r = await fetch(ep.url + '/api/ping', {
+              headers: authHeaders(),
+              cache: 'no-store',
+              signal: ctrl ? ctrl.signal : undefined
+            });
+            if (!r.ok) return null;
+            const d = await r.json().catch(() => null);
+            return d && d.ok ? { ep, data: d } : null;
+          } catch {
+            return null;
+          } finally {
+            if (t) clearTimeout(t);
+          }
+        };
+        const probed = await Promise.all(candidates.map(probeOne));
+        const winner = probed.find(Boolean);
+        if (!winner) return false;
+        const nextBase = winner.ep.url === location.origin ? '' : winner.ep.url;
+        const changed = nextBase !== apiBase;
+        apiBase = nextBase;
+        if (Array.isArray(winner.data?.endpoints) && winner.data.endpoints.length) {
+          pairState.endpoints = winner.data.endpoints;
+          if (Array.isArray(winner.data.hosts)) pairState.hosts = winner.data.hosts;
+          saveStoredPair(pairState);
+        }
+        if (changed) {
+          const kindName = winner.ep.kind === 'tailscale' ? 'Tailscale' : (winner.ep.kind === 'bonjour' ? 'Bonjour' : 'Wi-Fi');
+          showToast('已自动切至 ' + kindName + ' 通道');
+        }
+        return true;
+      })();
+      try {
+        return await failoverBusy;
+      } finally {
+        failoverBusy = null;
+      }
     }
 
     let currentTargetId = '';
@@ -1152,11 +1407,21 @@ function buildMobileAppHtml() {
     }
 
     async function apiAction(payload) {
-      const res = await fetch('/api/action', {
+      const doPost = () => fetch((apiBase || '') + '/api/action', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ targetId: currentTargetId || undefined, ...payload })
       });
+      let res;
+      try {
+        res = await doPost();
+      } catch (err) {
+        if (await tryFailoverEndpoint()) {
+          res = await doPost();
+        } else {
+          throw err;
+        }
+      }
       if (res.status === 401) {
         location.reload();
         return null;
@@ -1331,13 +1596,24 @@ function buildMobileAppHtml() {
     }
 
     async function fetchSnapshot() {
+      const q = currentTargetId ? '?targetId=' + encodeURIComponent(currentTargetId) : '';
+      const doFetch = () => fetch((apiBase || '') + '/api/snapshot' + q, { headers: authHeaders(), cache: 'no-store' });
       try {
-        const q = currentTargetId ? '?targetId=' + encodeURIComponent(currentTargetId) : '';
-        const res = await fetch('/api/snapshot' + q, { cache: 'no-store' });
+        let res = await doFetch();
         if (res.status === 401) { location.reload(); return; }
         const data = await res.json();
         renderSnapshot(data);
       } catch {
+        const switched = await tryFailoverEndpoint();
+        if (switched) {
+          try {
+            const retryRes = await doFetch();
+            if (retryRes.status === 401) { location.reload(); return; }
+            const retryData = await retryRes.json();
+            renderSnapshot(retryData);
+            return;
+          } catch {}
+        }
         $('status-dot').className = 'dot err';
         $('sub-meta').textContent = '连接中断，正在重连…';
       } finally {
@@ -1401,7 +1677,7 @@ function buildMobileAppHtml() {
     function openPermPicker() {
       const cur = (latestSnap?.permissionLabel || '').toLowerCase();
       const opts = (latestSnap?.permissionOptions || [
-        { key: 'turbo', label: '⚡ 极速 (Turbo)' },
+        { key: 'turbo', label: '⚡ 无限 (Turbo)' },
         { key: 'auto', label: '🛡️ 自动 (Auto)' },
         { key: 'default', label: '🔒 默认 (Default)' },
         { key: 'request_review', label: '👁️ 请求审查 (Review)' }
@@ -1703,6 +1979,20 @@ function readJsonBody(req) {
   });
 }
 
+function isAllowedPrivateOrigin(rawOrigin) {
+  if (!rawOrigin || typeof rawOrigin !== 'string') return false;
+  try {
+    const u = new URL(rawOrigin);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const cleanHost = String(u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+    if (!cleanHost) return false;
+    if (cleanHost === 'localhost' || cleanHost.endsWith('.local') || cleanHost.endsWith('.ts.net')) return true;
+    return isAllowedPrivateAddress(cleanHost);
+  } catch {
+    return false;
+  }
+}
+
 function createRemoteHttpHandler(initialConfig) {
   let activeConfig = initialConfig;
   let lastMtimeMs = 0;
@@ -1734,6 +2024,20 @@ function createRemoteHttpHandler(initialConfig) {
     if (!isAllowedPrivateAddress(remoteIp)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('403 Forbidden: Private network only');
+      return;
+    }
+
+    const reqOrigin = String(req.headers.origin || '').trim();
+    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token');
+      res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
       return;
     }
 
@@ -1797,6 +2101,19 @@ function createRemoteHttpHandler(initialConfig) {
       res.setHeader('Set-Cookie', cookiesToSet);
     }
 
+    if (req.method === 'GET' && pathname === '/api/ping') {
+      const snapInfo = collectFusedEndpointDescriptor(config.port);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({
+        ok: true,
+        port: config.port,
+        name: snapInfo.deviceName,
+        hosts: snapInfo.hosts,
+        endpoints: snapInfo.endpoints
+      }));
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/snapshot') {
       if (fromCookie && uiVersion !== MOBILE_UI_VERSION) {
         res.setHeader('Set-Cookie', `ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax; Max-Age=31536000`);
@@ -1838,6 +2155,7 @@ function startMobileRemoteServer() {
   const config = loadOrCreateRemoteConfig();
   const handler = createRemoteHttpHandler(config);
   const boundServers = new Map();
+  let ifaceTimer = null;
   let stopped = false;
 
   const tryBindAddress = (ip) => {
@@ -1855,19 +2173,41 @@ function startMobileRemoteServer() {
     });
   };
 
+  const tryBindDualStackWildcard = () => {
+    if (stopped || boundServers.has('::')) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const srv = http.createServer(handler);
+      srv.once('error', () => {
+        try { srv.close(); } catch {}
+        resolve(false);
+      });
+      srv.listen({ port: config.port, host: '::', ipv6Only: false }, () => {
+        boundServers.set('::', srv);
+        resolve(true);
+      });
+    });
+  };
+
   const syncBindings = async () => {
+    if (boundServers.has('::')) return;
     const { bindIps } = enumerateLocalAddresses();
     for (const ip of bindIps) {
       await tryBindAddress(ip);
     }
   };
 
-  const ifaceTimer = setInterval(() => {
-    if (!stopped) void syncBindings();
-  }, 15000);
-  ifaceTimer.unref?.();
-
-  void syncBindings().then(() => {
+  void tryBindDualStackWildcard().then(async (ok) => {
+    if (stopped) return;
+    if (ok) {
+      const activeIps = enumerateLocalAddresses().bindIps;
+      console.log(`Mobile Remote PWA ready on dual-stack [::]:${config.port} (${activeIps.join(', ')})`);
+      return;
+    }
+    ifaceTimer = setInterval(() => {
+      if (!stopped) void syncBindings();
+    }, 15000);
+    ifaceTimer.unref?.();
+    await syncBindings();
     const activeIps = Array.from(boundServers.keys());
     if (activeIps.length) {
       console.log(`Mobile Remote PWA ready on port ${config.port} (${activeIps.join(', ')})`);
@@ -1876,10 +2216,10 @@ function startMobileRemoteServer() {
 
   return {
     config,
-    getBoundAddresses: () => Array.from(boundServers.keys()),
+    getBoundAddresses: () => (boundServers.has('::') ? enumerateLocalAddresses().bindIps : Array.from(boundServers.keys())),
     stop: () => {
       stopped = true;
-      clearInterval(ifaceTimer);
+      if (ifaceTimer) clearInterval(ifaceTimer);
       for (const srv of boundServers.values()) {
         try { srv.close(); } catch {}
       }
@@ -1888,35 +2228,140 @@ function startMobileRemoteServer() {
   };
 }
 
+function collectFusedEndpointDescriptor(port) {
+  const { tailscale, lan, physicalLan } = enumerateLocalAddresses();
+  const meta = detectHostIdentityMeta();
+  const primaryLan = physicalLan[0] || lan[0] || null;
+  const secondaryLan = physicalLan[1] || lan[1] || null;
+
+  const endpoints = [];
+  const seenHosts = new Set();
+  const addEp = (host, kind, priority, iface = '') => {
+    const cleanHost = String(host || '').trim();
+    if (!cleanHost || seenHosts.has(cleanHost) || endpoints.length >= 5) return;
+    seenHosts.add(cleanHost);
+    endpoints.push({
+      url: `http://${formatHostForUrl(cleanHost)}:${port}`,
+      host: cleanHost,
+      kind,
+      priority,
+      iface
+    });
+  };
+
+  if (primaryLan) addEp(primaryLan.address, 'lan', 0, primaryLan.iface);
+  if (secondaryLan) addEp(secondaryLan.address, 'lan', 50, secondaryLan.iface);
+  if (tailscale[0]) addEp(tailscale[0].address, 'tailscale', 100, tailscale[0].iface);
+  if (tailscale.length > 0 && meta.tailscaleDnsName) {
+    addEp(meta.tailscaleDnsName, 'tailscale', 150, tailscale[0]?.iface || 'utun0');
+  }
+  if (meta.bonjourHost && primaryLan) {
+    addEp(meta.bonjourHost, 'bonjour', 200, primaryLan.iface);
+  }
+  if (endpoints.length === 0) {
+    addEp('127.0.0.1', 'loopback', 900, 'lo0');
+  }
+
+  return {
+    tailscale,
+    lan,
+    primaryLan,
+    deviceName: meta.deviceName,
+    bonjourHost: meta.bonjourHost,
+    tailscaleDnsName: meta.tailscaleDnsName,
+    hosts: endpoints.map((ep) => ep.host),
+    endpoints: endpoints.map(({ url, kind, priority }) => ({ url, kind, priority }))
+  };
+}
+
 function buildRemoteInfo({ resetToken = false } = {}) {
   const cfg = loadOrCreateRemoteConfig({ resetToken });
-  const { tailscale, lan } = enumerateLocalAddresses();
-  const buildUrl = (ip) => `http://${ip}:${cfg.port}/?token=${cfg.token}`;
-  const tailscaleUrls = tailscale.map((x) => {
-    const url = buildUrl(x.address);
+  const desc = collectFusedEndpointDescriptor(cfg.port);
+
+  const mkFused = (entryHost) => buildFusedPairingUrl({
+    entryHost,
+    port: cfg.port,
+    token: cfg.token,
+    name: desc.deviceName,
+    hosts: desc.hosts,
+    endpoints: desc.endpoints
+  });
+
+  const tsEntryHost = desc.tailscale[0]?.address || desc.tailscaleDnsName || '';
+  const tsDisplayHost = (desc.tailscale.length > 0 && desc.tailscaleDnsName)
+    ? desc.tailscaleDnsName
+    : (desc.tailscale[0]?.address || '');
+  const lanEntryHost = desc.primaryLan?.address || '';
+  const bonjourEntryHost = (desc.bonjourHost && desc.primaryLan) ? desc.bonjourHost : '';
+
+  const channels = [
+    {
+      key: 'lan',
+      label: '此 Wi-Fi',
+      labelEn: 'This Wi-Fi',
+      available: Boolean(desc.primaryLan),
+      displayHost: desc.primaryLan?.address || '',
+      entryHost: lanEntryHost,
+      iface: desc.primaryLan?.iface || ''
+    },
+    {
+      key: 'tailscale',
+      label: 'Tailscale',
+      labelEn: 'Tailscale',
+      available: desc.tailscale.length > 0,
+      displayHost: tsDisplayHost,
+      entryHost: tsEntryHost,
+      iface: desc.tailscale[0]?.iface || ''
+    },
+    {
+      key: 'bonjour',
+      label: 'Bonjour',
+      labelEn: 'Bonjour',
+      available: Boolean(bonjourEntryHost),
+      displayHost: bonjourEntryHost,
+      entryHost: bonjourEntryHost,
+      iface: desc.primaryLan?.iface || ''
+    }
+  ].map((ch) => {
+    if (!ch.available || !ch.entryHost) return { ...ch, url: '', qrSvg: '' };
+    const url = mkFused(ch.entryHost);
+    return { ...ch, url, qrSvg: renderQrSvg(url) };
+  });
+
+  const tailscaleUrls = desc.tailscale.map((x) => {
+    const url = mkFused(x.address);
     return { ...x, url, qrSvg: renderQrSvg(url) };
   });
-  const lanUrls = lan.map((x) => {
-    const url = buildUrl(x.address);
+  const lanUrls = desc.lan.map((x) => {
+    const url = mkFused(x.address);
     return { ...x, url, qrSvg: renderQrSvg(url) };
   });
-  const primary = tailscaleUrls[0] || lanUrls[0] || {
-    iface: 'lo0',
-    address: '127.0.0.1',
-    kind: 'loopback',
-    url: buildUrl('127.0.0.1'),
-    qrSvg: renderQrSvg(buildUrl('127.0.0.1'))
-  };
+
+  const pickedChannel = channels.find((c) => c.key === 'tailscale' && c.available)
+    || channels.find((c) => c.key === 'lan' && c.available)
+    || channels.find((c) => c.available);
+  const localUrl = mkFused('127.0.0.1');
+  const primary = pickedChannel
+    ? { iface: pickedChannel.iface, address: pickedChannel.entryHost, kind: pickedChannel.key, url: pickedChannel.url, qrSvg: pickedChannel.qrSvg }
+    : { iface: 'lo0', address: '127.0.0.1', kind: 'loopback', url: localUrl, qrSvg: renderQrSvg(localUrl) };
+
   return {
     port: cfg.port,
     token: cfg.token,
     configPath: getRemoteConfigPath(),
+    deviceName: desc.deviceName,
+    bonjourHost: desc.bonjourHost,
+    tailscaleDnsName: desc.tailscaleDnsName,
+    hosts: desc.hosts,
+    endpoints: desc.endpoints,
+    channels,
+    fusedUrl: primary.url,
     primaryUrl: primary.url,
     primaryKind: primary.kind,
     qrSvg: primary.qrSvg,
     tailscaleUrls,
     lanUrls,
-    localUrl: buildUrl('127.0.0.1')
+    localUrl
   };
 }
 
@@ -1928,34 +2373,33 @@ function printRemoteCli({ resetToken = false, jsonMode = false } = {}) {
   }
 
   console.log('');
-  console.log('📱 Antigravity 手机极速遥控面板（纯内网直连 / 免修改官方包）');
+  console.log(`📱 Antigravity 手机远程操作面板（一码三用多通道融合 · ${info.deviceName}）`);
   if (resetToken) console.log('🔑 已重置并生成新的配对 Token（旧链接将自动失效）');
   console.log('');
 
-  if (info.tailscaleUrls.length) {
-    console.log(`✅ Tailscale 内网首选（支持外出 4G/5G 安全直连）：`);
-    for (const item of info.tailscaleUrls) {
-      console.log(`   [${item.iface}] ${item.url}`);
-    }
-  } else {
-    console.log('⭕ 当前未检测到在线 Tailscale IP（仅显示同一 Wi-Fi 局域网链接；开启 Tailscale 后会自动热绑定并支持出门 5G 访问）');
-  }
-
-  if (info.lanUrls.length) {
-    console.log('📶 同 Wi-Fi 局域网直连：');
-    for (const item of info.lanUrls) {
-      console.log(`   [${item.iface}] ${item.url}`);
+  for (const ch of (info.channels || [])) {
+    if (ch.available) {
+      console.log(`✅ ${ch.label.padEnd(10, ' ')} ${ch.displayHost} (${ch.iface || 'auto'})`);
+    } else {
+      console.log(`⭕ ${ch.label.padEnd(10, ' ')} 未就绪`);
     }
   }
-  console.log(`🖥️ 本机调试地址：${info.localUrl}`);
   console.log('');
-  console.log('📷 用 iPhone 相机扫描下方二维码即可打开：');
+  console.log(`🔗 融合配对链接: ${info.fusedUrl}`);
+  console.log(`🖥️ 本机调试地址: ${info.localUrl}`);
   console.log('');
-  console.log(renderTerminalQr(info.primaryUrl));
+  console.log('📷 用 iPhone 相机扫描下方融合二维码即可打开：');
   console.log('');
-  console.log('💡 iPhone 最佳防杀后台 & 全屏无遮挡配置：');
+  const primaryGrid = encodeQrCodeMatrix(info.primaryUrl);
+  const cols = Number(process.stdout.columns || 0);
+  const qrForTerminal = (cols > 0 && cols < primaryGrid.length + 6)
+    ? `http://${(info.tailscaleUrls[0]?.address || info.lanUrls[0]?.address || '127.0.0.1')}:${info.port}/?token=${info.token}`
+    : info.primaryUrl;
+  console.log(renderTerminalQr(qrForTerminal));
+  console.log('');
+  console.log('💡 一码三用说明：');
   console.log('   1. 扫码在 Safari 打开后，点击底部「分享」→「添加到主屏幕」');
-  console.log('   2. 以后直接从桌面图标启动，即成为独立全屏 App（已内置键盘防遮挡与切回秒刷新）');
+  console.log('   2. 二维码与链接已融合 Wi-Fi / Tailscale / Bonjour 多端点，换网或离线时自动切换通道');
   console.log('   3. 在聊天区右滑即可拉出左侧会话抽屉，底部可直接切换模型/权限与拍照传图');
   console.log('');
 }
@@ -1976,7 +2420,11 @@ module.exports = {
   DEFAULT_REMOTE_PORT,
   loadOrCreateRemoteConfig,
   isAllowedPrivateAddress,
+  isAllowedPrivateOrigin,
   enumerateLocalAddresses,
+  encodeEndpointsParam,
+  decodeEndpointsParam,
+  buildFusedPairingUrl,
   encodeQrCodeMatrix,
   renderTerminalQr,
   renderQrSvg,

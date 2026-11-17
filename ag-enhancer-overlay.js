@@ -21,6 +21,17 @@
   const FILE_EDITOR_CONTROLS_ID = 'ag-file-editor-controls';
   const FILE_EDITOR_WRAP_ID = 'ag-inline-file-editor-wrap';
   const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
+  const CHECK_OK_SVG = '<svg class="ag-rp-icon ag-rp-ok" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#34d399" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+  const CHANNEL_OFF_SVG = '<svg class="ag-rp-icon ag-rp-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><line x1="8" y1="12" x2="16" y2="12"></line></svg>';
+  const LOCK_SHIELD_SVG = '<svg class="ag-rp-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
+  const makeNavSvg = (paths) => '<svg class="ag-nav-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
+  const CHAT_NAV_ICONS = {
+    top: makeNavSvg('<path d="m17 11-5-5-5 5"></path><path d="m17 18-5-5-5 5"></path>'),
+    prev: makeNavSvg('<path d="m18 15-6-6-6 6"></path>'),
+    next: makeNavSvg('<path d="m6 9 6 6 6-6"></path>'),
+    bottom: makeNavSvg('<path d="m7 6 5 5 5-5"></path><path d="m7 13 5 5 5-5"></path>'),
+    think: makeNavSvg('<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"></path><path d="M9 18h6"></path><path d="M10 22h4"></path>')
+  };
 
   let disposed = false;
   let remotePopoverOpen = false;
@@ -42,6 +53,7 @@
     error: '',
     gemini: null,
     claude: null,
+    subGroups: [],
     promptCredits: null,
     flowCredits: null,
     activeModelText: '',
@@ -50,7 +62,57 @@
   let popoverOpen = false;
   let toastTimer = null;
   let autoAcceptEnabled = false;
+  let ghostSuggestEnabled = true;
+  let uiLang = 'zh';
   const autoClickedButtons = new WeakMap();
+
+  function tr(zhText, enText) {
+    return uiLang === 'en' ? enText : zhText;
+  }
+
+  function syncSuitePrefsFromStorage(detail = null) {
+    try {
+      if (detail && typeof detail.autoAccept === 'boolean') {
+        autoAcceptEnabled = detail.autoAccept;
+      } else if (typeof localStorage !== 'undefined') {
+        autoAcceptEnabled = localStorage.getItem('ag_suite_auto_accept') === 'true';
+      }
+    } catch {}
+    try {
+      if (detail && typeof detail.ghostSuggest === 'boolean') {
+        ghostSuggestEnabled = detail.ghostSuggest;
+      } else if (typeof localStorage !== 'undefined') {
+        const rawGhost = localStorage.getItem('ag_suite_ghost_suggest');
+        if (rawGhost === 'true' || rawGhost === 'false') {
+          ghostSuggestEnabled = rawGhost === 'true';
+        }
+      }
+    } catch {}
+    try {
+      let rawLang = '';
+      if (detail && typeof detail === 'object') {
+        rawLang = String(detail.hansCode || detail.capsuleLang || detail.locale || '').trim();
+      }
+      if (!rawLang && typeof document !== 'undefined' && document.documentElement?.getAttribute) {
+        rawLang = String(
+          document.documentElement.getAttribute('data-ag-hans-lang')
+          || document.documentElement.getAttribute('data-ag-suite-locale')
+          || ''
+        ).trim();
+      }
+      if (!rawLang && typeof localStorage !== 'undefined') {
+        rawLang = String(
+          localStorage.getItem('ag_suite_locale')
+          || localStorage.getItem('antigravityHansLang')
+          || ''
+        ).trim();
+      }
+      uiLang = (rawLang && !/^(?:zh|cn)/i.test(rawLang)) ? 'en' : 'zh';
+    } catch {
+      uiLang = 'zh';
+    }
+  }
+  syncSuitePrefsFromStorage();
   let latestBrainStats = null;
   let lastBrainFetchAt = 0;
   let nextStepState = {
@@ -194,9 +256,21 @@
     const groups = summaryPayload?.response?.groups || summaryPayload?.groups || [];
     const result = {
       gemini: { fiveHour: null, weekly: null },
-      claude: { fiveHour: null, weekly: null }
+      claude: { fiveHour: null, weekly: null },
+      subGroups: []
     };
     if (!Array.isArray(groups) || !groups.length) return result;
+
+    const pickTighter = (existing, incoming) => {
+      if (!existing) return incoming;
+      if (!incoming) return existing;
+      if (typeof incoming.remainingFraction === 'number') {
+        if (existing.remainingFraction === null || existing.remainingFraction === undefined || incoming.remainingFraction < existing.remainingFraction) {
+          return incoming;
+        }
+      }
+      return existing;
+    };
 
     for (const grp of groups) {
       if (!grp || typeof grp !== 'object') continue;
@@ -214,6 +288,9 @@
       }
       if (!targetKey) continue;
 
+      let grpFiveHour = null;
+      let grpWeekly = null;
+      let grpTightest = null;
       for (const b of buckets) {
         if (!b || typeof b !== 'object') continue;
         const win = String(b.window || '').toLowerCase();
@@ -223,11 +300,25 @@
         if (frac === null && !resetTime) continue;
 
         const bucketInfo = { remainingFraction: frac, resetTime };
+        grpTightest = pickTighter(grpTightest, bucketInfo);
         if (win === '5h' || bid.includes('5h')) {
-          result[targetKey].fiveHour = bucketInfo;
+          grpFiveHour = pickTighter(grpFiveHour, bucketInfo);
+          result[targetKey].fiveHour = pickTighter(result[targetKey].fiveHour, bucketInfo);
         } else if (win === 'weekly' || bid.includes('weekly')) {
-          result[targetKey].weekly = bucketInfo;
+          grpWeekly = pickTighter(grpWeekly, bucketInfo);
+          result[targetKey].weekly = pickTighter(result[targetKey].weekly, bucketInfo);
         }
+      }
+      if (grpFiveHour || grpWeekly || grpTightest) {
+        result.subGroups.push({
+          id: grp.groupId || grp.id || grp.displayName || `${targetKey}-${result.subGroups.length}`,
+          displayName: grp.displayName || (targetKey === 'claude' ? 'Claude 5.5 / GPT' : 'Gemini 4 / 3.8'),
+          poolKey: targetKey,
+          fiveHour: grpFiveHour,
+          weekly: grpWeekly,
+          remainingFraction: grpTightest ? grpTightest.remainingFraction : null,
+          resetTime: grpTightest?.resetTime || grpFiveHour?.resetTime || grpWeekly?.resetTime || null
+        });
       }
     }
     return result;
@@ -350,9 +441,11 @@
       if (mergedGemini || mergedClaude) {
         quotaState.gemini = mergedGemini;
         quotaState.claude = mergedClaude;
+        quotaState.subGroups = Array.isArray(summaryPools.subGroups) ? summaryPools.subGroups : [];
         quotaState.lastFetchedAt = Date.now();
         quotaState.error = '';
       } else if (!quotaState.gemini && !quotaState.claude) {
+        quotaState.subGroups = [];
         quotaState.error = '暂无可用配额数据';
       }
       quotaState.promptCredits = credits.promptCredits;
@@ -412,12 +505,13 @@
           font-size: 11.5px;
           gap: 4px;
         }
+        :host([data-layout="minimal"]) #badge-quota,
         :host([data-layout="ring-only"]) #badge-quota {
           display: none !important;
         }
         #ag-quota-popover {
           position: fixed;
-          z-index: 2147483610;
+          z-index: 2147483645;
           width: 320px;
           max-width: calc(100vw - 24px);
           padding: 12px 14px;
@@ -581,6 +675,11 @@
         #badge-remote[aria-expanded="true"] {
           color: #38bdf8;
         }
+        :host([data-theme="light"]) #badge-remote:hover,
+        :host([data-theme="light"]) #badge-remote:focus-visible,
+        :host([data-theme="light"]) #badge-remote[aria-expanded="true"] {
+          color: #0284c7;
+        }
         :host([data-layout="compact"]) #badge-remote {
           padding: 0 5px;
           font-size: 11.5px;
@@ -594,9 +693,10 @@
         }
         #ag-remote-popover {
           position: fixed;
-          z-index: 2147483610;
-          width: 300px;
+          z-index: 2147483645;
+          width: 320px;
           max-width: calc(100vw - 24px);
+          box-sizing: border-box;
           padding: 12px 14px;
           border-radius: 12px;
           border: 1px solid var(--ag-float-border, rgba(255, 255, 255, 0.12));
@@ -611,73 +711,123 @@
         #ag-remote-popover[hidden] {
           display: none !important;
         }
-        .ag-rp-tabs {
-          display: flex;
-          gap: 6px;
-          margin-bottom: 8px;
-        }
-        .ag-rp-tab {
-          flex: 1 1 0;
-          height: 26px;
-          padding: 0 8px;
-          border-radius: 7px;
-          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.12));
-          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.05));
-          color: var(--ag-text-muted, #a1a1aa);
-          font-size: 11px;
-          font-weight: 500;
-          cursor: pointer;
-        }
-        .ag-rp-tab[data-active="true"] {
-          border-color: rgba(56, 189, 248, 0.55);
-          background: rgba(56, 189, 248, 0.16);
-          color: #38bdf8;
-          font-weight: 600;
+        .ag-rp-icon {
+          width: 14px;
+          height: 14px;
+          flex-shrink: 0;
+          display: inline-block;
         }
         .ag-rp-status {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
           font-size: 11.5px;
           font-weight: 500;
+          line-height: 1.4;
           color: var(--ag-text-primary, #e4e4e7);
           text-align: center;
-          margin-bottom: 4px;
+          margin: 2px 0 8px;
         }
         .ag-rp-qr {
           display: flex;
           align-items: center;
           justify-content: center;
-          padding: 8px;
-          border-radius: 10px;
+          padding: 12px;
+          border-radius: 14px;
           background: #ffffff;
-          margin: 6px auto 8px;
+          margin: 4px auto 12px;
           width: fit-content;
           box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
         }
         .ag-rp-qr svg {
           display: block;
-          width: 168px;
-          height: 168px;
+          width: 196px;
+          height: 196px;
         }
-        .ag-rp-url {
+        .ag-rp-channels {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          margin: 0 0 10px;
+        }
+        .ag-rp-channel {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          width: 100%;
+          box-sizing: border-box;
           padding: 6px 8px;
+          border: none;
           border-radius: 7px;
-          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.04));
-          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
+          background: transparent;
+          color: var(--ag-text-primary, #e4e4e7);
+          font-size: 12px;
+          line-height: 1.3;
+          text-align: left;
+          cursor: pointer;
+          transition: background-color 0.14s ease;
+        }
+        .ag-rp-channel[disabled] {
+          opacity: 0.48;
+          cursor: default;
+        }
+        .ag-rp-channel:not([disabled]):hover {
+          background: rgba(255, 255, 255, 0.06);
+        }
+        .ag-rp-channel[data-selected="true"] {
+          background: rgba(56, 189, 248, 0.1);
+        }
+        :host([data-theme="light"]) .ag-rp-channel:not([disabled]):hover {
+          background: rgba(0, 0, 0, 0.05);
+        }
+        :host([data-theme="light"]) .ag-rp-channel[data-selected="true"] {
+          background: rgba(2, 132, 199, 0.08);
+        }
+        .ag-rp-ch-left {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          font-weight: 500;
+          white-space: nowrap;
+          flex-shrink: 0;
+        }
+        .ag-rp-ch-host {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          font-size: 10.5px;
+          font-size: 11px;
           color: var(--ag-text-muted, #a1a1aa);
-          word-break: break-all;
-          margin-bottom: 8px;
-          max-height: 52px;
-          overflow-y: auto;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          min-width: 0;
+        }
+        .ag-rp-sec {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 5px;
+          font-size: 11px;
+          color: var(--ag-text-muted, #a1a1aa);
+          margin: 0 0 10px;
+          text-align: center;
         }
         .ag-rp-actions {
           display: flex;
-          gap: 6px;
+          gap: 8px;
         }
         .ag-rp-btn {
           flex: 1 1 0;
-          height: 28px;
-          padding: 0 8px;
+          min-width: 0;
+          min-height: 30px;
+          height: auto;
+          padding: 5px 10px;
+          box-sizing: border-box;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 5px;
+          white-space: nowrap;
           border-radius: 7px;
           border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.12));
           background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.06));
@@ -694,6 +844,11 @@
           border-color: rgba(56, 189, 248, 0.5);
           background: rgba(56, 189, 248, 0.16);
           color: #38bdf8;
+        }
+        :host([data-theme="light"]) .ag-rp-btn[data-primary="true"] {
+          border-color: rgba(2, 132, 199, 0.45);
+          background: rgba(2, 132, 199, 0.12);
+          color: #0284c7;
         }
         .ag-rp-tip {
           margin-top: 8px;
@@ -712,17 +867,18 @@
       remoteBtn.id = REMOTE_BADGE_ID;
       remoteBtn.className = 'ag-unit';
       remoteBtn.type = 'button';
-      remoteBtn.setAttribute('aria-label', '手机遥控一键配对');
+      remoteBtn.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
       remoteBtn.setAttribute('aria-expanded', 'false');
-      remoteBtn.title = '一键弹出手机遥控配对二维码（Tailscale / 同 Wi-Fi 直连）';
-      remoteBtn.innerHTML = '<span class="ag-remote-icon">📱</span><span class="ag-remote-text">遥控</span>';
+      remoteBtn.title = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
+      remoteBtn.innerHTML = `<span class="ag-remote-icon">📱</span><span class="ag-remote-text">${escapeHtml(tr('远程', 'Remote'))}</span>`;
       contextBadge.insertAdjacentElement('beforebegin', remoteBtn);
 
       remoteBtn.addEventListener('click', onRemoteBtnClick);
     }
 
     let quotaBtn = sr.getElementById(QUOTA_BADGE_ID);
-    if (!quotaBtn && contextBadge) {
+    const anchorBadge = contextBadge;
+    if (!quotaBtn && anchorBadge) {
       quotaBtn = document.createElement('button');
       quotaBtn.id = QUOTA_BADGE_ID;
       quotaBtn.className = 'ag-unit';
@@ -731,9 +887,17 @@
       quotaBtn.setAttribute('aria-expanded', 'false');
       quotaBtn.title = '查看 Gemini / Claude 模型剩余配额与重置倒计时';
       quotaBtn.innerHTML = '<span id="ag-quota-dot" class="ag-quota-dot"></span><span id="ag-quota-text">配额 --%</span>';
-      contextBadge.insertAdjacentElement('afterend', quotaBtn);
+      anchorBadge.insertAdjacentElement('afterend', quotaBtn);
 
       quotaBtn.addEventListener('click', onQuotaBtnClick);
+    } else if (
+      quotaBtn &&
+      contextBadge &&
+      typeof quotaBtn.previousElementSibling !== 'undefined' &&
+      quotaBtn.previousElementSibling !== contextBadge &&
+      typeof contextBadge.insertAdjacentElement === 'function'
+    ) {
+      contextBadge.insertAdjacentElement('afterend', quotaBtn);
     }
 
     let popover = sr.getElementById(QUOTA_POPOVER_ID);
@@ -753,12 +917,29 @@
       remotePopover.id = REMOTE_POPOVER_ID;
       remotePopover.hidden = true;
       remotePopover.setAttribute('role', 'dialog');
-      remotePopover.setAttribute('aria-label', '手机遥控一键配对二维码');
+      remotePopover.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
       remotePopover.addEventListener('click', (e) => e.stopPropagation());
       sr.appendChild(remotePopover);
     }
 
     return { host, sr, remoteBtn, quotaBtn, popover, remotePopover };
+  }
+
+  function updateRemoteBtnLanguage() {
+    const { sr } = getMeterHostAndShadow();
+    if (!sr) return;
+    const remoteBtn = sr.getElementById(REMOTE_BADGE_ID);
+    if (remoteBtn) {
+      remoteBtn.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
+      remoteBtn.title = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
+      const textSpan = remoteBtn.querySelector?.('.ag-remote-text');
+      if (textSpan) textSpan.textContent = tr('远程', 'Remote');
+    }
+    const remotePopover = sr.getElementById(REMOTE_POPOVER_ID);
+    if (remotePopover) {
+      remotePopover.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
+      if (remotePopoverOpen) renderRemotePopoverContent(remotePopover);
+    }
   }
 
   function positionQuotaPopover() {
@@ -795,7 +976,7 @@
       const bRect = btn.getBoundingClientRect();
       const vw = window.innerWidth || 1280;
       const vh = window.innerHeight || 800;
-      const popW = Math.min(300, vw - 24);
+      const popW = Math.min(316, vw - 24);
       const popH = Math.max(260, Math.round(popover.offsetHeight || 360));
       const top = Math.max(36, Math.min(vh - popH - 12, Math.round(bRect.bottom + 6)));
       let left = Math.round(bRect.right - popW);
@@ -806,36 +987,69 @@
     } catch {}
   }
 
+  function extractUrlHostSafe(rawUrl) {
+    try {
+      return new URL(String(rawUrl || '')).hostname || '';
+    } catch {
+      return '';
+    }
+  }
+
   function resolveRemoteEndpoint(data) {
     if (!data) return null;
     const tsList = Array.isArray(data.tailscaleUrls) ? data.tailscaleUrls : [];
     const lanList = Array.isArray(data.lanUrls) ? data.lanUrls : [];
-    let picked = null;
-    let kindLabel = '';
-    if (remotePairState.mode === 'lan' && lanList.length) {
-      picked = lanList[0];
-      kindLabel = `📶 同 Wi-Fi 局域网直连 (${picked.iface})`;
-    } else if (remotePairState.mode === 'tailscale' && tsList.length) {
-      picked = tsList[0];
-      kindLabel = `✅ Tailscale 内网首选 (${picked.iface})`;
-    } else if (tsList.length) {
-      picked = tsList[0];
-      kindLabel = `✅ Tailscale 内网首选 (${picked.iface})`;
-    } else if (lanList.length) {
-      picked = lanList[0];
-      kindLabel = `📶 同 Wi-Fi 局域网直连 (${picked.iface})`;
-    } else {
-      picked = { url: data.primaryUrl || data.localUrl || '', qrSvg: data.qrSvg || '', iface: 'lo0' };
-      kindLabel = '🖥️ 仅本机回环地址';
+
+    let channels = Array.isArray(data.channels) && data.channels.length
+      ? data.channels.map((ch) => ({ ...ch }))
+      : [
+          {
+            key: 'lan',
+            label: '此 Wi-Fi',
+            labelEn: 'This Wi-Fi',
+            available: lanList.length > 0,
+            displayHost: extractUrlHostSafe(lanList[0]?.url),
+            url: lanList[0]?.url || '',
+            qrSvg: lanList[0]?.qrSvg || ''
+          },
+          {
+            key: 'tailscale',
+            label: 'Tailscale',
+            labelEn: 'Tailscale',
+            available: tsList.length > 0,
+            displayHost: data.tailscaleDnsName || extractUrlHostSafe(tsList[0]?.url),
+            url: tsList[0]?.url || '',
+            qrSvg: tsList[0]?.qrSvg || ''
+          },
+          {
+            key: 'bonjour',
+            label: 'Bonjour',
+            labelEn: 'Bonjour',
+            available: Boolean(data.bonjourHost && lanList.length > 0),
+            displayHost: data.bonjourHost || '',
+            url: data.fusedUrl || data.primaryUrl || lanList[0]?.url || '',
+            qrSvg: data.qrSvg || lanList[0]?.qrSvg || ''
+          }
+        ];
+
+    const availableList = channels.filter((c) => c.available && c.url);
+    let activeChannel = availableList.find((c) => c.key === remotePairState.mode);
+    if (!activeChannel) {
+      activeChannel = availableList.find((c) => c.key === 'tailscale')
+        || availableList.find((c) => c.key === 'lan')
+        || availableList[0]
+        || null;
     }
+
+    const activeUrl = activeChannel?.url || data.fusedUrl || data.primaryUrl || data.localUrl || '';
+    const activeQr = activeChannel?.qrSvg || data.qrSvg || '';
+
     return {
-      picked,
-      kindLabel,
-      hasTailscale: tsList.length > 0,
-      hasLan: lanList.length > 0,
-      effectiveMode: (remotePairState.mode === 'lan' && lanList.length)
-        ? 'lan'
-        : ((tsList.length && remotePairState.mode !== 'lan') ? 'tailscale' : 'lan')
+      channels,
+      activeChannel,
+      activeKey: activeChannel?.key || 'loopback',
+      activeUrl,
+      activeQr
     };
   }
 
@@ -846,36 +1060,39 @@
     let bodyHtml = '';
 
     if (remotePairState.loading && !remotePairState.data) {
-      bodyHtml = '<div class="ag-rp-status">⏳ 正在生成配对二维码…</div>';
+      bodyHtml = `<div class="ag-rp-status">${escapeHtml(tr('⏳ 正在生成融合配对二维码…', '⏳ Generating unified pairing QR…'))}</div>`;
     } else if (!remotePairState.data) {
-      bodyHtml = `<div class="ag-rp-status" style="color:#f87171">${escapeHtml(remotePairState.error || '未能连接到本地遥控桥接服务')}</div>`;
+      bodyHtml = `<div class="ag-rp-status" style="color:#f87171">${escapeHtml(remotePairState.error || tr('未能连接到本地远程桥接服务', 'Failed to connect to local remote bridge'))}</div>`;
     } else {
-      const safeQr = (ep.picked?.qrSvg && ep.picked.qrSvg.startsWith('<svg') && !/<script/i.test(ep.picked.qrSvg))
-        ? ep.picked.qrSvg
+      const safeQr = (ep.activeQr && ep.activeQr.startsWith('<svg') && !/<script/i.test(ep.activeQr))
+        ? ep.activeQr
         : '';
-      const tabsHtml = (ep.hasTailscale && ep.hasLan)
-        ? `<div class="ag-rp-tabs">
-            <button class="ag-rp-tab" data-mode="tailscale" data-active="${ep.effectiveMode === 'tailscale' ? 'true' : 'false'}" type="button">✅ Tailscale (4G/5G可用)</button>
-            <button class="ag-rp-tab" data-mode="lan" data-active="${ep.effectiveMode === 'lan' ? 'true' : 'false'}" type="button">📶 同 Wi-Fi 局域网</button>
-          </div>`
-        : '';
+      const channelsHtml = ep.channels.map((ch) => {
+        const label = tr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
+        const hostText = ch.available && ch.displayHost ? ch.displayHost : tr('未连接', 'Offline');
+        const selected = ch.available && ch.key === ep.activeKey;
+        return `<button class="ag-rp-channel" data-channel="${escapeHtml(ch.key)}" data-selected="${selected ? 'true' : 'false'}" type="button" ${ch.available ? '' : 'disabled'}>`
+          + `<span class="ag-rp-ch-left">${ch.available ? CHECK_OK_SVG : CHANNEL_OFF_SVG}<span>${escapeHtml(label)}</span></span>`
+          + `<span class="ag-rp-ch-host">${escapeHtml(hostText)}</span>`
+          + `</button>`;
+      }).join('');
+
       bodyHtml = `
-        ${tabsHtml}
-        <div class="ag-rp-status">${escapeHtml(ep.kindLabel)}</div>
         ${safeQr ? `<div class="ag-rp-qr">${safeQr}</div>` : ''}
-        <div class="ag-rp-url">${escapeHtml(ep.picked?.url || '')}</div>
+        <div class="ag-rp-channels">${channelsHtml}</div>
+        <div class="ag-rp-sec">${LOCK_SHIELD_SVG}<span>${escapeHtml(tr('内网口令保护 · 一码融合多通道自动切换', 'Token protected · Single QR with multi-route failover'))}</span></div>
         <div class="ag-rp-actions">
-          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button">${copiedRecent ? '✅ 已复制链接' : '📋 复制配对链接'}</button>
-          <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${remotePairState.loading ? 'disabled' : ''}>🔑 重置密钥</button>
+          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button">${escapeHtml(copiedRecent ? tr('✅ 已复制链接', '✅ Copied') : tr('复制链接', 'Copy Link'))}</button>
+          <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${remotePairState.loading ? 'disabled' : ''}>${escapeHtml(tr('重置密钥', 'Reset Token'))}</button>
         </div>
-        <div class="ag-rp-tip">iPhone 扫码后点 Safari「分享」→「添加到主屏幕」，即可作为全屏独立 App 瞬时秒连。</div>
+        <div class="ag-rp-tip">${escapeHtml(tr('可连到这台电脑：在同一 Wi-Fi 上、在你的 Tailnet 上或通过 Bonjour 域名；iPhone 扫码后添加到主屏幕即可全屏秒连。', 'Connect over this Wi-Fi, Tailscale, or Bonjour. Scan with Phone and Add to Home Screen for instant full-screen control.'))}</div>
       `;
     }
 
     popover.innerHTML = `
       <div class="ag-qp-header">
-        <span class="ag-qp-title">📱 手机极速遥控一键配对</span>
-        <button id="ag-remote-refresh" class="ag-qp-refresh" type="button">${remotePairState.loading ? '刷新中…' : '↻ 刷新'}</button>
+        <span class="ag-qp-title">${escapeHtml(tr('手机远程操作配对', 'Mobile Remote Pairing'))}</span>
+        <button id="ag-remote-refresh" class="ag-qp-refresh" type="button">${escapeHtml(remotePairState.loading ? tr('刷新中…', 'Refreshing…') : tr('↻ 刷新', '↻ Refresh'))}</button>
       </div>
       ${bodyHtml}
     `;
@@ -884,17 +1101,19 @@
       ev.stopPropagation();
       void refreshRemotePairInfo(false);
     });
-    popover.querySelectorAll('.ag-rp-tab').forEach((tab) => {
-      tab.addEventListener('click', (ev) => {
+    popover.querySelectorAll('.ag-rp-channel').forEach((row) => {
+      row.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        remotePairState.mode = tab.getAttribute('data-mode') || 'auto';
+        const key = row.getAttribute('data-channel');
+        if (!key || row.hasAttribute('disabled')) return;
+        remotePairState.mode = key;
         renderRemotePopoverContent(popover);
         positionRemotePopover();
       });
     });
     popover.querySelector('#ag-remote-copy')?.addEventListener('click', async (ev) => {
       ev.stopPropagation();
-      const url = ep?.picked?.url;
+      const url = ep?.activeUrl;
       if (!url) return;
       const ok = await copyToClipboard(url);
       if (ok) {
@@ -924,12 +1143,12 @@
       const res = await postToLiveHost('/remote-info', { resetToken: Boolean(resetToken) });
       if (res && res.ok && res.data) {
         remotePairState.data = res.data;
-        if (resetToken) showQuickToast('🔑 已生成新配对密钥，旧链接已失效');
+        if (resetToken) showQuickToast(tr('🔑 已生成新配对密钥，旧链接已失效', '🔑 New pair token generated; old links revoked'));
       } else {
-        remotePairState.error = '请确认 Antigravity 桥接服务正在运行';
+        remotePairState.error = tr('请确认 Antigravity 桥接服务正在运行', 'Ensure Antigravity local bridge service is running');
       }
     } catch (err) {
-      remotePairState.error = err?.message || '获取配对二维码失败';
+      remotePairState.error = err?.message || tr('获取配对二维码失败', 'Failed to fetch pairing QR code');
     } finally {
       remotePairState.loading = false;
       const curNodes = ensureQuotaStylesAndNodes();
@@ -944,7 +1163,8 @@
   function toggleRemotePopover(forceOpen) {
     const nodes = ensureQuotaStylesAndNodes();
     if (!nodes || !nodes.remotePopover) return;
-    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !remotePopoverOpen;
+    const isActuallyOpen = remotePopoverOpen && !nodes.remotePopover.hidden;
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !isActuallyOpen;
     remotePopoverOpen = nextOpen;
     nodes.remotePopover.hidden = !nextOpen;
     nodes.remoteBtn?.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
@@ -958,14 +1178,21 @@
       try {
         const pCtx = nodes.sr.getElementById('panel');
         const pTok = nodes.sr.getElementById('panel-tokens');
+        const pSet = nodes.sr.getElementById('panel-settings');
         if (pCtx && !pCtx.hidden) pCtx.hidden = true;
         if (pTok && !pTok.hidden) pTok.hidden = true;
+        if (pSet && !pSet.hidden) pSet.hidden = true;
         nodes.sr.getElementById('badge')?.setAttribute('aria-expanded', 'false');
+        nodes.sr.getElementById('badge-speed')?.setAttribute('aria-expanded', 'false');
         nodes.sr.getElementById('badge-tokens')?.setAttribute('aria-expanded', 'false');
+        nodes.sr.getElementById('badge-settings')?.setAttribute('aria-expanded', 'false');
       } catch {}
       renderRemotePopoverContent(nodes.remotePopover);
       positionRemotePopover();
+      try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(true); } catch {}
       void refreshRemotePairInfo(false);
+    } else {
+      try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(Boolean(popoverOpen || remotePopoverOpen)); } catch {}
     }
   }
 
@@ -977,7 +1204,8 @@
   function toggleQuotaPopover(forceOpen) {
     const nodes = ensureQuotaStylesAndNodes();
     if (!nodes) return;
-    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !popoverOpen;
+    const isActuallyOpen = popoverOpen && !nodes.popover.hidden;
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !isActuallyOpen;
     popoverOpen = nextOpen;
     nodes.popover.hidden = !nextOpen;
     nodes.quotaBtn?.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
@@ -992,14 +1220,21 @@
       try {
         const pCtx = nodes.sr.getElementById('panel');
         const pTok = nodes.sr.getElementById('panel-tokens');
+        const pSet = nodes.sr.getElementById('panel-settings');
         if (pCtx && !pCtx.hidden) pCtx.hidden = true;
         if (pTok && !pTok.hidden) pTok.hidden = true;
+        if (pSet && !pSet.hidden) pSet.hidden = true;
         nodes.sr.getElementById('badge')?.setAttribute('aria-expanded', 'false');
+        nodes.sr.getElementById('badge-speed')?.setAttribute('aria-expanded', 'false');
         nodes.sr.getElementById('badge-tokens')?.setAttribute('aria-expanded', 'false');
+        nodes.sr.getElementById('badge-settings')?.setAttribute('aria-expanded', 'false');
       } catch {}
       renderQuotaPopoverContent(nodes.popover);
       positionQuotaPopover();
+      try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(true); } catch {}
       void refreshQuota();
+    } else {
+      try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(Boolean(popoverOpen || remotePopoverOpen)); } catch {}
     }
   }
 
@@ -1021,7 +1256,7 @@
     const g = quotaState.gemini;
     const c = quotaState.claude;
     const activeKey = quotaState.activePoolKey;
-    const modelName = quotaState.activeModelText || '未检测到模型';
+    const modelName = quotaState.activeModelText || tr('未检测到模型', 'No model detected');
 
     const renderWindowRow = (label, bucket) => {
       if (!bucket) return '';
@@ -1029,7 +1264,7 @@
       const bPctInt = typeof bFrac === 'number' ? Math.max(0, Math.min(100, bFrac * 100)) : 0;
       const bColor = getQuotaColor(bFrac);
       const bPctText = formatPctOne(bFrac);
-      const bResetText = bucket.resetTime ? formatResetCountdownZh(bucket.resetTime) : '暂无重置时间信息';
+      const bResetText = bucket.resetTime ? formatResetCountdownZh(bucket.resetTime) : tr('暂无重置时间信息', 'Reset time unknown');
       return `
         <div class="ag-qp-subrow">
           <div class="ag-qp-subhead">
@@ -1049,13 +1284,13 @@
       const pctInt = typeof frac === 'number' ? Math.max(0, Math.min(100, frac * 100)) : 0;
       const color = getQuotaColor(frac);
       const pctText = formatPctOne(frac);
-      const resetText = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : '暂无重置时间信息';
+      const resetText = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : tr('暂无重置时间信息', 'Reset time unknown');
       const hasDualWindows = Boolean(pool?.fiveHour || pool?.weekly);
       const bodyHtml = hasDualWindows
         ? `
           <div class="ag-qp-subrows">
-            ${pool?.fiveHour ? renderWindowRow('⏱️ 5 小时限额', pool.fiveHour) : ''}
-            ${pool?.weekly ? renderWindowRow('📅 每周限额', pool.weekly) : ''}
+            ${pool?.fiveHour ? renderWindowRow(tr('⏱️ 5 小时限额', '⏱️ 5h Limit'), pool.fiveHour) : ''}
+            ${pool?.weekly ? renderWindowRow(tr('📅 每周限额', '📅 Weekly Limit'), pool.weekly) : ''}
           </div>
         `
         : `
@@ -1069,55 +1304,134 @@
           <div class="ag-qp-row">
             <span class="ag-qp-pool-name">
               <span>${escapeHtml(title)}</span>
-              ${isActive ? '<span class="ag-qp-active-tag">当前</span>' : ''}
+              ${isActive ? `<span class="ag-qp-active-tag">${tr('当前', 'Active')}</span>` : ''}
             </span>
-            <span class="ag-qp-pct" style="color:${color}">${escapeHtml(hasDualWindows ? `最紧 ${pctText}` : pctText)}</span>
+            <span class="ag-qp-pct" style="color:${color}">${escapeHtml(hasDualWindows ? `${tr('最紧', 'Min')} ${pctText}` : pctText)}</span>
           </div>
           ${bodyHtml}
         </div>
       `;
     };
 
+    function resolvePopoverPlanPools() {
+      const histPlan = window.__AGContextMeterHistory?.planStatus || {};
+      const liveSettings = window.__AGContextMeter?.getPlanSettings?.() || {};
+      const mergedPlan = {
+        tierKey: histPlan.tierKey || (liveSettings.ultraSubTier ? 'ultra' : ''),
+        tierName: (liveSettings.tierName && liveSettings.tierName !== '未知') ? liveSettings.tierName : (histPlan.tierName || ''),
+        ultraSubTier: liveSettings.ultraSubTier || histPlan.ultraSubTier || null,
+        ultraSubTierSpec: histPlan.ultraSubTierSpec || null,
+        promptCredits: quotaState.promptCredits || histPlan.promptCredits || null,
+        flowCredits: quotaState.flowCredits || histPlan.flowCredits || null
+      };
+      const coreRef = (typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null) || window.__AGContextMeterCore;
+      if (coreRef && typeof coreRef.resolvePlanQuotaPools === 'function') {
+        return coreRef.resolvePlanQuotaPools(mergedPlan);
+      }
+      const tk = String(mergedPlan.tierKey || '').toLowerCase();
+      const st = String(mergedPlan.ultraSubTier || '').toLowerCase();
+      if (tk === 'ultra' && st === '20x') {
+        return { subGroupLabel: 'Google AI Ultra · 20x 子组', promptPoolText: '20× Pro 配额（5h 滚动窗口 + 周限额）', flowPoolText: '25,000 套餐月积分 / 月' };
+      }
+      if (tk === 'ultra' && st === '5x') {
+        return { subGroupLabel: 'Google AI Ultra · 5x 子组', promptPoolText: '5× Pro 配额（5h 滚动窗口 + 周限额）', flowPoolText: '10,000 套餐月积分 / 月' };
+      }
+      if (tk === 'ultra') {
+        return { subGroupLabel: 'Google AI Ultra · 待选子档', promptPoolText: '5× ~ 20× Pro 配额（请选 5x / 20x）', flowPoolText: '10,000 ~ 25,000 套餐月积分 / 月' };
+      }
+      if (tk === 'pro') {
+        return { subGroupLabel: 'Google AI Pro · 1x 标准组', promptPoolText: '1× Pro 基准配额（5h 滚动窗口 + 周限额）', flowPoolText: '1,000 套餐月积分 / 月' };
+      }
+      if (tk === 'plus') {
+        return { subGroupLabel: 'Google AI Plus · 基础组', promptPoolText: 'Plus 基础配额', flowPoolText: '200 套餐月积分 / 月' };
+      }
+      if (tk === 'free') {
+        return { subGroupLabel: 'Google AI Free · 免费组', promptPoolText: '免费基础配额', flowPoolText: '100 体验积分 / 月' };
+      }
+      return null;
+    }
+
+    const qpd = resolvePopoverPlanPools();
     const creditsRows = [];
-    if (quotaState.promptCredits) {
-      const pc = quotaState.promptCredits;
+    if (qpd) {
       creditsRows.push(`
         <div class="ag-qp-credit-row">
-          <span>Prompt Credits</span>
-          <strong>${pc.available}${pc.monthly ? ` / ${pc.monthly}` : ''}</strong>
+          <span>${tr('当前套餐子组', 'Plan Subgroup')}</span>
+          <strong>${escapeHtml(qpd.subGroupLabel)}</strong>
         </div>
-      `);
-    }
-    if (quotaState.flowCredits) {
-      const fc = quotaState.flowCredits;
-      creditsRows.push(`
         <div class="ag-qp-credit-row">
-          <span>Flow Credits</span>
-          <strong>${fc.available}${fc.monthly ? ` / ${fc.monthly}` : ''}</strong>
+          <span>${tr('Prompt 额度池', 'Prompt Pool')}</span>
+          <strong>${escapeHtml(qpd.promptPoolText)}</strong>
+        </div>
+        <div class="ag-qp-credit-row">
+          <span>${tr('Flow 额度池', 'Flow Pool')}</span>
+          <strong>${escapeHtml(qpd.flowPoolText)}</strong>
         </div>
       `);
+    } else {
+      if (quotaState.promptCredits) {
+        const pc = quotaState.promptCredits;
+        creditsRows.push(`
+          <div class="ag-qp-credit-row">
+            <span>${tr('Prompt 额度池', 'Prompt Pool')}</span>
+            <strong>${pc.available}${pc.monthly ? ` / ${pc.monthly}` : ''}</strong>
+          </div>
+        `);
+      }
+      if (quotaState.flowCredits) {
+        const fc = quotaState.flowCredits;
+        creditsRows.push(`
+          <div class="ag-qp-credit-row">
+            <span>${tr('Flow 额度池', 'Flow Pool')}</span>
+            <strong>${fc.available}${fc.monthly ? ` / ${fc.monthly}` : ''}</strong>
+          </div>
+        `);
+      }
     }
+
+    const subGroups = Array.isArray(quotaState.subGroups) ? quotaState.subGroups : [];
+    const modelLower = String(modelName || '').toLowerCase();
+    const poolCardsHtml = subGroups.length > 0
+      ? subGroups.map((sg) => {
+          const dispLower = String(sg.displayName || '').toLowerCase();
+          const isMatch = (dispLower.includes('flash') && modelLower.includes('flash'))
+            || (dispLower.includes('pro') && (modelLower.includes('pro') || modelLower.includes('argon') || modelLower.includes('gemini 4')))
+            || (sg.poolKey === activeKey && !subGroups.some((o) => o !== sg && o.poolKey === sg.poolKey));
+          return renderPoolCard(sg.displayName, sg, isMatch);
+        }).join('')
+      : `${renderPoolCard(tr('Gemini 4 / 3.8 配额池', 'Gemini 4 / 3.8 Pool'), g, activeKey === 'gemini')}${renderPoolCard(tr('Claude 5.5 / GPT 配额池', 'Claude 5.5 / GPT Pool'), c, activeKey === 'claude')}`;
+
     const updatedStr = quotaState.lastFetchedAt
-      ? `上次刷新：${new Date(quotaState.lastFetchedAt).toLocaleTimeString('zh-CN', { hour12: false })}`
-      : (quotaState.error || '等待数据…');
+      ? `${tr('上次刷新：', 'Updated: ')}${new Date(quotaState.lastFetchedAt).toLocaleTimeString(uiLang === 'en' ? 'en-US' : 'zh-CN', { hour12: false })}`
+      : (quotaState.error || tr('等待数据…', 'Waiting for data…'));
 
     popover.innerHTML = `
       <div class="ag-qp-header">
-        <span class="ag-qp-title">模型剩余配额实时看板</span>
-        <button id="ag-quota-refresh" class="ag-qp-refresh" type="button">${quotaState.loading ? '刷新中…' : '↻ 刷新'}</button>
+        <span class="ag-qp-title">${tr('模型剩余配额实时看板', 'Model Quota Live')}</span>
+        <div style="display:flex;align-items:center;gap:4px">
+          <button id="ag-quota-open-settings" class="ag-qp-refresh" type="button" title="${tr('前往统一设置调整套餐子档', 'Open Suite Settings')}">⚙️</button>
+          <button id="ag-quota-refresh" class="ag-qp-refresh" type="button">${quotaState.loading ? tr('刷新中…', 'Refreshing…') : tr('↻ 刷新', '↻ Refresh')}</button>
+        </div>
       </div>
       <div class="ag-qp-model">
-        <span>当前选中模型</span>
+        <span>${tr('当前选中模型', 'Active Model')}</span>
         <strong>${escapeHtml(modelName)}</strong>
       </div>
-      ${renderPoolCard('Gemini 4 / 3.8 配额池', g, activeKey === 'gemini')}
-      ${renderPoolCard('Claude 5.5 / GPT 配额池', c, activeKey === 'claude')}
+      ${poolCardsHtml}
       <div class="ag-qp-footer">
         ${creditsRows.join('')}
         <div>${escapeHtml(updatedStr)}</div>
       </div>
     `;
 
+    const openSettingsBtn = popover.querySelector('#ag-quota-open-settings');
+    if (openSettingsBtn) {
+      openSettingsBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        toggleQuotaPopover(false);
+        (globalThis.__AGContextMeter || window.__AGContextMeter)?.openSettings?.('subscription');
+      });
+    }
     const refreshBtn = popover.querySelector('#ag-quota-refresh');
     if (refreshBtn) {
       refreshBtn.addEventListener('click', (ev) => {
@@ -1158,7 +1472,7 @@
         ? `C ${cStr} · G4 ${gStr}`
         : `G4 ${gStr} · C ${cStr}`;
     } else {
-      badgeText = `配额 ${formatPctInt(activeFrac)}`;
+      badgeText = `${tr('配额', 'Quota')} ${formatPctInt(activeFrac)}`;
     }
     if (textEl && textEl.textContent !== badgeText) {
       textEl.textContent = badgeText;
@@ -1168,15 +1482,15 @@
       const hasDual = Boolean(pool?.fiveHour || pool?.weekly);
       if (hasDual) {
         const s5 = pool?.fiveHour ? `5h ${formatPctOne(pool.fiveHour.remainingFraction)}` : '';
-        const sw = pool?.weekly ? `周 ${formatPctOne(pool.weekly.remainingFraction)}` : '';
+        const sw = pool?.weekly ? `${tr('周', 'Wk')} ${formatPctOne(pool.weekly.remainingFraction)}` : '';
         const detail = [s5, sw].filter(Boolean).join(' · ');
-        const tightReset = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : '未知';
+        const tightReset = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : tr('未知', 'Unknown');
         return `${label}: ${detail}（${tightReset}）`;
       }
-      const tip = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : '未知';
+      const tip = pool?.resetTime ? formatResetCountdownZh(pool.resetTime) : tr('未知', 'Unknown');
       return `${label}: ${formatPctOne(fallbackFrac)} (${tip})`;
     };
-    quotaBtn.title = `${formatPoolTooltip('Gemini 4/3.8', quotaState.gemini, gFrac)}\n${formatPoolTooltip('Claude/GPT', quotaState.claude, cFrac)}\n点击查看完整配额面板`;
+    quotaBtn.title = `${formatPoolTooltip('Gemini 4/3.8', quotaState.gemini, gFrac)}\n${formatPoolTooltip('Claude/GPT', quotaState.claude, cFrac)}\n${tr('点击查看完整配额面板', 'Click to view full quota details')}`;
 
     if (popoverOpen && popover && !popover.hidden) {
       renderQuotaPopoverContent(popover);
@@ -1304,51 +1618,56 @@
         }
         #${CHAT_NAV_ID} {
           position: fixed;
-          z-index: 2147483580;
+          z-index: 99990;
           display: flex;
           flex-direction: column;
           align-items: stretch;
-          gap: 3px;
-          padding: 3px;
+          gap: 2px;
+          padding: 4px;
           border-radius: 10px;
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          background: rgba(24, 24, 27, 0.78);
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-          opacity: 0.78;
-          transition: opacity 0.16s ease, padding 0.16s ease;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: rgba(18, 18, 22, 0.88);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+          opacity: 0.84;
+          transition: opacity 0.15s ease, border-color 0.15s ease;
         }
         #${CHAT_NAV_ID}:hover {
-          opacity: 0.98;
-          padding: 5px;
+          opacity: 1;
+          border-color: rgba(255, 255, 255, 0.13);
         }
         #${CHAT_NAV_ID}[hidden] {
           display: none !important;
         }
         #${CHAT_NAV_ID}[data-ag-theme="light"] {
-          border-color: rgba(0, 0, 0, 0.12);
-          background: rgba(255, 255, 255, 0.86);
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+          border-color: rgba(0, 0, 0, 0.08);
+          background: rgba(255, 255, 255, 0.92);
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.04);
+        }
+        #${CHAT_NAV_ID}[data-ag-theme="light"]:hover {
+          border-color: rgba(0, 0, 0, 0.13);
         }
         #${CHAT_NAV_ID} .ag-nav-btn {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          gap: 4px;
-          width: 24px;
-          height: 24px;
+          gap: 7px;
+          width: 28px;
+          height: 28px;
           padding: 0;
-          border-radius: 8px;
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          background: rgba(255, 255, 255, 0.06);
-          color: rgba(244, 244, 245, 0.9);
-          font-size: 11px;
+          border-radius: 6px;
+          border: none;
+          outline: none;
+          box-shadow: none;
+          background: transparent;
+          color: rgba(228, 228, 231, 0.82);
+          font-size: 12px;
           font-weight: 500;
           line-height: 1;
           white-space: nowrap;
           cursor: pointer;
-          transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.08s ease;
+          transition: background-color 0.12s ease, color 0.12s ease;
         }
         #${CHAT_NAV_ID}:hover .ag-nav-btn {
           width: auto;
@@ -1359,6 +1678,16 @@
           display: inline-flex;
           align-items: center;
           justify-content: center;
+          width: 15px;
+          height: 15px;
+          flex-shrink: 0;
+          color: rgba(161, 161, 170, 0.92);
+          transition: color 0.12s ease;
+        }
+        #${CHAT_NAV_ID} .ag-nav-svg {
+          width: 14px;
+          height: 14px;
+          display: block;
           flex-shrink: 0;
         }
         #${CHAT_NAV_ID} .ag-nav-label {
@@ -1368,22 +1697,31 @@
           display: inline;
         }
         #${CHAT_NAV_ID} .ag-nav-btn:hover {
-          background: rgba(255, 255, 255, 0.14);
-          border-color: rgba(255, 255, 255, 0.24);
-          color: #ffffff;
+          background: rgba(255, 255, 255, 0.08);
+          color: #fafafa;
+        }
+        #${CHAT_NAV_ID} .ag-nav-btn:hover .ag-nav-icon {
+          color: #fafafa;
         }
         #${CHAT_NAV_ID} .ag-nav-btn:active {
-          opacity: 0.85;
+          background: rgba(255, 255, 255, 0.13);
         }
         #${CHAT_NAV_ID}[data-ag-theme="light"] .ag-nav-btn {
-          border-color: rgba(0, 0, 0, 0.1);
-          background: rgba(0, 0, 0, 0.04);
-          color: rgba(24, 24, 27, 0.88);
+          background: transparent;
+          color: rgba(39, 39, 42, 0.86);
+        }
+        #${CHAT_NAV_ID}[data-ag-theme="light"] .ag-nav-icon {
+          color: rgba(113, 113, 122, 0.95);
         }
         #${CHAT_NAV_ID}[data-ag-theme="light"] .ag-nav-btn:hover {
-          background: rgba(0, 0, 0, 0.09);
-          border-color: rgba(0, 0, 0, 0.2);
+          background: rgba(0, 0, 0, 0.06);
           color: #09090b;
+        }
+        #${CHAT_NAV_ID}[data-ag-theme="light"] .ag-nav-btn:hover .ag-nav-icon {
+          color: #09090b;
+        }
+        #${CHAT_NAV_ID}[data-ag-theme="light"] .ag-nav-btn:active {
+          background: rgba(0, 0, 0, 0.1);
         }
         #${FILE_EDITOR_CONTROLS_ID} {
           display: inline-flex;
@@ -1871,15 +2209,18 @@
     vp.scrollTo({ top: vp.scrollHeight, behavior: 'smooth' });
   }
 
-  function setNavBtnContent(btn, icon, text) {
+  function setNavBtnContent(btn, iconSvg, text) {
     if (!btn) return;
+    if (btn._navIconSvg === iconSvg && btn._navLabelText === text && btn.children?.length >= 2) return;
+    btn._navIconSvg = iconSvg;
+    btn._navLabelText = text;
     btn.textContent = '';
     const iconSpan = document.createElement('span');
     iconSpan.className = 'ag-nav-icon';
-    iconSpan.textContent = icon;
+    iconSpan.innerHTML = iconSvg;
     const labelSpan = document.createElement('span');
     labelSpan.className = 'ag-nav-label';
-    labelSpan.textContent = ` ${text}`;
+    labelSpan.textContent = text;
     btn.appendChild(iconSpan);
     btn.appendChild(labelSpan);
   }
@@ -1889,7 +2230,13 @@
     if (!btn) return;
     const triggers = Array.from(document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]'));
     const hasCollapsed = triggers.some((t) => t.getAttribute('aria-expanded') !== 'true');
-    setNavBtnContent(btn, '💡', hasCollapsed || triggers.length === 0 ? '展开思考' : '收起思考');
+    setNavBtnContent(
+      btn,
+      CHAT_NAV_ICONS.think,
+      hasCollapsed || triggers.length === 0
+        ? tr('展开思考', 'Expand Thoughts')
+        : tr('收起思考', 'Collapse Thoughts')
+    );
   }
 
   function toggleAllThinking() {
@@ -1945,16 +2292,48 @@
     nav.hidden = false;
     const composer = document.querySelector('.surface-composer');
     const composerRect = composer?.getBoundingClientRect();
+    const quickBar = document.getElementById(QUICK_BAR_ID);
+    const quickBarRect = quickBar?.getBoundingClientRect();
     const navRect = nav.getBoundingClientRect();
     const hasRightMargin = composerRect && composerRect.width > 0 && (vpRect.right - composerRect.right >= 42);
-    const left = hasRightMargin
-      ? (composerRect.right + 10)
-      : Math.max(8, vpRect.right - navRect.width - 6);
-    const bottomAnchor = (composerRect && composerRect.height > 0) ? composerRect.bottom : vpRect.bottom;
+    const composerTop = (composerRect && composerRect.height > 0) ? composerRect.top : null;
+    const upperTop = (composerTop !== null && quickBarRect && quickBarRect.height > 0)
+      ? Math.min(composerTop, quickBarRect.top)
+      : composerTop;
+    const bottomAnchor = upperTop !== null ? (upperTop - 8) : vpRect.bottom;
     const top = Math.min(window.innerHeight - navRect.height - 8, Math.max(vpRect.top + 12, bottomAnchor - navRect.height));
-    nav.style.right = 'auto';
-    nav.style.left = `${Math.round(left)}px`;
+    if (hasRightMargin) {
+      nav.style.right = 'auto';
+      nav.style.left = `${Math.round(composerRect.right + 10)}px`;
+    } else {
+      const right = Math.max(6, window.innerWidth - vpRect.right + 6);
+      nav.style.left = 'auto';
+      nav.style.right = `${Math.round(right)}px`;
+    }
     nav.style.top = `${Math.round(top)}px`;
+  }
+
+  function getChatNavDefinitions() {
+    return [
+      { id: 'ag-nav-top', icon: CHAT_NAV_ICONS.top, text: tr('顶部', 'Top'), title: tr('跳回当前对话最顶部', 'Scroll to top'), onClick: scrollToTop },
+      { id: 'ag-nav-prev', icon: CHAT_NAV_ICONS.prev, text: tr('上一轮', 'Prev'), title: tr('跳到上一条用户提问', 'Previous turn'), onClick: scrollToPrevTurn },
+      { id: 'ag-nav-next', icon: CHAT_NAV_ICONS.next, text: tr('下一轮', 'Next'), title: tr('跳到下一条用户提问', 'Next turn'), onClick: scrollToNextTurn },
+      { id: 'ag-nav-bottom', icon: CHAT_NAV_ICONS.bottom, text: tr('底部', 'Bottom'), title: tr('直达最新回复底部', 'Scroll to bottom'), onClick: scrollToNextOrBottom },
+      { id: 'ag-nav-think', icon: CHAT_NAV_ICONS.think, text: tr('展开思考', 'Expand Thoughts'), title: tr('一键展开或收起当前对话全部思考过程', 'Toggle all thought blocks'), onClick: () => { toggleAllThinking(); } }
+    ];
+  }
+
+  function updateChatNavLanguage() {
+    const nav = document.getElementById(CHAT_NAV_ID);
+    if (!nav) return;
+    nav.setAttribute('aria-label', tr('长对话快捷导航', 'Chat Quick Navigation'));
+    for (const item of getChatNavDefinitions()) {
+      const btn = document.getElementById(item.id);
+      if (!btn) continue;
+      if (item.id !== 'ag-nav-think') setNavBtnContent(btn, item.icon, item.text);
+      btn.title = item.title;
+    }
+    updateThinkToggleLabel();
   }
 
   function ensureChatNavFloat() {
@@ -1966,15 +2345,8 @@
     if (!nav) {
       nav = document.createElement('div');
       nav.id = CHAT_NAV_ID;
-      nav.setAttribute('aria-label', '长对话快捷导航');
-      const items = [
-        { id: 'ag-nav-top', icon: '⏫', text: '顶部', title: '跳回当前对话最顶部', onClick: scrollToTop },
-        { id: 'ag-nav-prev', icon: '🔼', text: '上一轮', title: '跳到上一条用户提问', onClick: scrollToPrevTurn },
-        { id: 'ag-nav-next', icon: '🔽', text: '下一轮', title: '跳到下一条用户提问', onClick: scrollToNextTurn },
-        { id: 'ag-nav-bottom', icon: '⏬', text: '底部', title: '直达最新回复底部', onClick: scrollToNextOrBottom },
-        { id: 'ag-nav-think', icon: '💡', text: '展开思考', title: '一键展开或收起当前对话全部思考过程', onClick: () => { toggleAllThinking(); } }
-      ];
-      for (const item of items) {
+      nav.setAttribute('aria-label', tr('长对话快捷导航', 'Chat Quick Navigation'));
+      for (const item of getChatNavDefinitions()) {
         const btn = document.createElement('button');
         btn.id = item.id;
         btn.type = 'button';
@@ -2037,36 +2409,36 @@
   function updateAutoAcceptBtn() {
     const btn = document.getElementById('ag-qcap-autoaccept');
     if (!btn) return;
-    btn.textContent = autoAcceptEnabled ? '🤖 自动确认: 开' : '🤖 自动确认: 关';
+    btn.textContent = autoAcceptEnabled ? tr('🤖 自动确认: 开', '🤖 Auto-Accept: ON') : tr('🤖 自动确认: 关', '🤖 Auto-Accept: OFF');
     btn.setAttribute('data-active', autoAcceptEnabled ? 'true' : 'false');
     btn.title = autoAcceptEnabled
-      ? '自动确认已开启（仅点击 Proceed / Accept / 继续 等安全步骤按钮）；点击关闭'
-      : '开启后自动点击对话中的 Proceed / Accept / 继续 等确认按钮（默认关闭）';
+      ? tr('自动确认已开启（仅点击 Proceed / Accept / 继续 等安全步骤按钮）；点击关闭', 'Auto-Accept enabled for safe Proceed / Accept buttons; click to disable')
+      : tr('开启后自动点击对话中的 Proceed / Accept / 继续 等确认按钮（默认关闭）', 'Enable auto-clicking Proceed / Accept confirmation buttons (off by default)');
   }
 
   function formatBrainTooltip(stats) {
-    if (!stats || !stats.ok) return '点击查询 Brain 历史会话缓存占用';
-    const lines = [`Brain 历史缓存：共 ${stats.count} 个会话，合计 ${stats.totalMB} MB`];
+    if (!stats || !stats.ok) return tr('点击查询 Brain 历史会话缓存占用', 'Click to check Brain session cache usage');
+    const lines = [tr(`Brain 历史缓存：共 ${stats.count} 个会话，合计 ${stats.totalMB} MB`, `Brain cache: ${stats.count} sessions, ${stats.totalMB} MB total`)];
     if (Array.isArray(stats.topSessions) && stats.topSessions.length) {
-      lines.push('', '占用 Top 5：');
+      lines.push('', tr('占用 Top 5：', 'Top 5 sessions:'));
       stats.topSessions.forEach((s, idx) => {
         lines.push(`${idx + 1}. ${s.title || s.shortId} (${s.shortId}) — ${s.mb} MB`);
       });
     }
-    lines.push('', '目录：~/.gemini/antigravity/brain（只读统计，点击刷新并复制明细）');
+    lines.push('', tr('目录：~/.gemini/antigravity/brain（只读统计，点击刷新并复制明细）', 'Path: ~/.gemini/antigravity/brain (read-only, click to refresh & copy)'));
     return lines.join('\n');
   }
 
   async function refreshBrainStats(showDetailToast = false) {
     const res = await postToLiveHost('/brain-stats', {});
     if (!res || !res.ok) {
-      if (showDetailToast) showQuickToast('缓存统计获取失败（桥接服务未连接）');
+      if (showDetailToast) showQuickToast(tr('缓存统计获取失败（桥接服务未连接）', 'Failed to fetch cache stats (bridge offline)'));
       return null;
     }
     latestBrainStats = res;
     const btn = document.getElementById('ag-qcap-brain');
     if (btn) {
-      btn.textContent = `📦 缓存 ${res.totalMB}MB`;
+      btn.textContent = tr(`📦 缓存 ${res.totalMB}MB`, `📦 Cache ${res.totalMB}MB`);
       btn.title = formatBrainTooltip(res);
     }
     if (showDetailToast) {
@@ -2075,11 +2447,78 @@
       const top1 = res.topSessions && res.topSessions[0];
       showQuickToast(
         top1
-          ? `📦 共 ${res.count} 个会话 (${res.totalMB}MB)，最大: ${top1.title} (${top1.mb}MB)，明细已复制`
-          : `📦 共 ${res.count} 个会话 (${res.totalMB}MB)，明细已复制`
+          ? tr(`📦 共 ${res.count} 个会话 (${res.totalMB}MB)，最大: ${top1.title} (${top1.mb}MB)，明细已复制`, `📦 ${res.count} sessions (${res.totalMB}MB), largest: ${top1.title} (${top1.mb}MB), copied`)
+          : tr(`📦 共 ${res.count} 个会话 (${res.totalMB}MB)，明细已复制`, `📦 ${res.count} sessions (${res.totalMB}MB), copied`)
       );
     }
     return res;
+  }
+
+  function getQuickBarActions() {
+    return [
+      {
+        id: 'ag-qcap-compact',
+        label: tr('🗜️ /compact 压缩', '🗜️ /compact'),
+        title: tr('快速填入 /compact 压缩上下文命令', 'Fill /compact command'),
+        onClick: async () => {
+          if (await fillComposerText('/compact')) showQuickToast(tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run'));
+        }
+      },
+      {
+        id: 'ag-qcap-plan',
+        label: tr('🎯 /plan 规划', '🎯 /plan'),
+        title: tr('快速填入 /plan 前缀进入规划模式', 'Fill /plan prefix to enter plan mode'),
+        onClick: async () => {
+          if (await fillComposerText('/plan ')) showQuickToast(tr('已填入 /plan ，请输入规划需求', 'Inserted /plan , enter your goal'));
+        }
+      },
+      {
+        id: 'ag-qcap-reload',
+        label: tr('🔄 重载规则', '🔄 Reload Rules'),
+        title: tr('快速填入“重新读取 AGENTS”指令', 'Fill reload AGENTS prompt'),
+        onClick: async () => {
+          if (await fillComposerText('重新读取 AGENTS')) showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
+        }
+      },
+      {
+        id: 'ag-qcap-copyid',
+        label: tr('📋 复制会话 ID', '📋 Copy ID'),
+        title: tr('复制当前对话窗口的会话 ID', 'Copy current conversation ID'),
+        onClick: async () => {
+          const id = getSessionIdFromLocation();
+          if (!id) {
+            showQuickToast(tr('当前页面未包含会话 ID', 'No conversation ID in current URL'));
+            return;
+          }
+          const ok = await copyToClipboard(id);
+          showQuickToast(ok ? tr(`✅ 已复制会话 ID (${id.slice(0, 8)})`, `✅ Copied ID (${id.slice(0, 8)})`) : tr('复制失败，请检查剪贴板权限', 'Copy failed'));
+        }
+      },
+      {
+        id: 'ag-qcap-export',
+        label: tr('📝 导出 Markdown', '📝 Export MD'),
+        title: tr('将完整对话导出为 Markdown 保存到 ~/Downloads 并复制', 'Export conversation to Markdown in ~/Downloads and copy'),
+        onClick: () => { void exportMarkdown(); }
+      },
+      {
+        id: 'ag-qcap-brain',
+        label: latestBrainStats ? tr(`📦 缓存 ${latestBrainStats.totalMB}MB`, `📦 Cache ${latestBrainStats.totalMB}MB`) : tr('📦 缓存统计', '📦 Brain Cache'),
+        title: latestBrainStats ? formatBrainTooltip(latestBrainStats) : tr('查看 ~/.gemini/antigravity/brain 历史会话占用（只读）', 'View ~/.gemini/antigravity/brain cache size (read-only)'),
+        onClick: () => { void refreshBrainStats(true); }
+      }
+    ];
+  }
+
+  function updateQuickBarLanguage() {
+    const bar = document.getElementById(QUICK_BAR_ID);
+    if (!bar) return;
+    bar.setAttribute('aria-label', tr('输入框快捷操作栏', 'Composer Quick Actions'));
+    for (const act of getQuickBarActions()) {
+      const btn = document.getElementById(act.id);
+      if (!btn) continue;
+      btn.textContent = act.label;
+      btn.title = act.title;
+    }
   }
 
   function ensureQuickCapsuleBar() {
@@ -2095,72 +2534,9 @@
     if (!bar) {
       bar = document.createElement('div');
       bar.id = QUICK_BAR_ID;
-      bar.setAttribute('aria-label', '输入框快捷操作栏');
+      bar.setAttribute('aria-label', tr('输入框快捷操作栏', 'Composer Quick Actions'));
 
-      const actions = [
-        {
-          id: 'ag-qcap-compact',
-          label: '🗜️ /compact 压缩',
-          title: '快速填入 /compact 压缩上下文命令',
-          onClick: async () => {
-            if (await fillComposerText('/compact')) showQuickToast('已填入 /compact，按回车即可执行');
-          }
-        },
-        {
-          id: 'ag-qcap-plan',
-          label: '🎯 /plan 规划',
-          title: '快速填入 /plan 前缀进入规划模式',
-          onClick: async () => {
-            if (await fillComposerText('/plan ')) showQuickToast('已填入 /plan ，请输入规划需求');
-          }
-        },
-        {
-          id: 'ag-qcap-reload',
-          label: '🔄 重载规则',
-          title: '快速填入“重新读取 AGENTS”指令',
-          onClick: async () => {
-            if (await fillComposerText('重新读取 AGENTS')) showQuickToast('已填入重载规则指令，按回车即可发送');
-          }
-        },
-        {
-          id: 'ag-qcap-copyid',
-          label: '📋 复制会话 ID',
-          title: '复制当前对话窗口的会话 ID',
-          onClick: async () => {
-            const id = getSessionIdFromLocation();
-            if (!id) {
-              showQuickToast('当前页面未包含会话 ID');
-              return;
-            }
-            const ok = await copyToClipboard(id);
-            showQuickToast(ok ? `✅ 已复制会话 ID (${id.slice(0, 8)})` : '复制失败，请检查剪贴板权限');
-          }
-        },
-        {
-          id: 'ag-qcap-export',
-          label: '📝 导出 Markdown',
-          title: '将完整对话导出为 Markdown 保存到 ~/Downloads 并复制',
-          onClick: () => { void exportMarkdown(); }
-        },
-        {
-          id: 'ag-qcap-autoaccept',
-          label: autoAcceptEnabled ? '🤖 自动确认: 开' : '🤖 自动确认: 关',
-          title: '开启后自动点击对话中的 Proceed / Accept / 继续 等确认按钮（默认关闭）',
-          active: autoAcceptEnabled,
-          onClick: () => {
-            autoAcceptEnabled = !autoAcceptEnabled;
-            updateAutoAcceptBtn();
-            showQuickToast(autoAcceptEnabled ? '🤖 自动确认已开启（仅限安全确认按钮）' : '🤖 自动确认已关闭');
-            if (autoAcceptEnabled) runAutoAcceptTick();
-          }
-        },
-        {
-          id: 'ag-qcap-brain',
-          label: latestBrainStats ? `📦 缓存 ${latestBrainStats.totalMB}MB` : '📦 缓存统计',
-          title: latestBrainStats ? formatBrainTooltip(latestBrainStats) : '查看 ~/.gemini/antigravity/brain 历史会话占用（只读）',
-          onClick: () => { void refreshBrainStats(true); }
-        }
-      ];
+      const actions = getQuickBarActions();
 
       for (const act of actions) {
         const btn = document.createElement('button');
@@ -2333,7 +2709,10 @@
   }
 
   function ensureNextStepGhost() {
-    if (disposed) return;
+    if (disposed || !ghostSuggestEnabled) {
+      hideNextStepGhost();
+      return;
+    }
     const ed = getComposerEditor();
     const hostParent = ed?.parentElement;
     if (!ed || !hostParent || isAssistantBusy()) {
@@ -2670,8 +3049,71 @@
     return null;
   }
 
+  function revertThinkingShellText(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    let m;
+    if ((m = trimmed.match(/^已思考\s*(\d+(?:\.\d+)?)\s*秒$/))) {
+      return raw.replace(trimmed, `Thought for ${m[1]}s`);
+    }
+    if ((m = trimmed.match(/^思考中\s*\(\s*(\d+(?:\.\d+)?)\s*秒\s*\)$/))) {
+      return raw.replace(trimmed, `Thinking for ${m[1]}s`);
+    }
+    if ((m = trimmed.match(/^思考中(\.{0,3})$/))) {
+      return raw.replace(trimmed, `Thinking${m[1]}`);
+    }
+    if (trimmed === '思考过程') {
+      return raw.replace(trimmed, 'Thought Process');
+    }
+    return null;
+  }
+
+  function revertEnhancerTranslations() {
+    let reverted = 0;
+    const triggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
+    for (const btn of triggers) {
+      const walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if (!node.nodeValue || !node.nodeValue.trim()) continue;
+        const rev = revertThinkingShellText(node.nodeValue);
+        if (rev && rev !== node.nodeValue) {
+          node.nodeValue = rev;
+          reverted++;
+        }
+      }
+    }
+    const translatedBlocks = document.querySelectorAll('[data-ag-zh-done="1"]');
+    for (const elNode of translatedBlocks) {
+      const origSrc = elNode.dataset?.agZhSrc;
+      if (origSrc) {
+        if (elNode.children?.length > 0) {
+          for (const childEl of elNode.children) {
+            if (childEl.style?.display === 'none') childEl.style.display = '';
+          }
+        }
+        updateSingleTextSafely(elNode, origSrc);
+        reverted++;
+      }
+      elNode.removeAttribute('data-ag-zh-done');
+      elNode.removeAttribute('data-ag-zh-pending');
+    }
+    const rows = document.querySelectorAll('[data-testid="conversation-row-sidebar"]');
+    for (const row of rows) {
+      const span = row.querySelector('span.truncate');
+      if (!span) continue;
+      const reactTitle = getSidebarReactTitle(span);
+      if (reactTitle && (span.textContent || '').trim() !== reactTitle) {
+        updateSingleTextSafely(span, reactTitle);
+        if (span.getAttribute('title') === reactTitle) span.removeAttribute('title');
+        reverted++;
+      }
+    }
+    return reverted;
+  }
+
   function localizeThinkingShells() {
-    if (disposed) return 0;
+    if (disposed || uiLang !== 'zh') return 0;
     let changedCount = 0;
     const triggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
     for (const btn of triggers) {
@@ -2750,7 +3192,7 @@
   }
 
   async function translateExpandedThoughts() {
-    if (disposed) return 0;
+    if (disposed || uiLang !== 'zh') return 0;
     if (thinkingShellTimerRunning) {
       thinkingReRunNeeded = true;
       return 0;
@@ -2869,7 +3311,7 @@
   }
 
   async function localizeSidebarConversations() {
-    if (disposed) return 0;
+    if (disposed || uiLang !== 'zh') return 0;
     const rows = document.querySelectorAll('[data-testid="conversation-row-sidebar"]');
     const needLocalize = [];
     const seenNeed = new Set();
@@ -2938,7 +3380,7 @@
   }
 
   function scheduleLocalization() {
-    if (disposed || localizeTimer) return;
+    if (disposed || uiLang !== 'zh' || localizeTimer) return;
     localizeTimer = setTimeout(() => {
       localizeTimer = null;
       if (disposed) return;
@@ -3509,6 +3951,25 @@
     positionChatNavFloat(document.getElementById(CHAT_NAV_ID));
   }
 
+  function onSuitePrefsChanged(ev) {
+    const prevLang = uiLang;
+    syncSuitePrefsFromStorage(ev?.detail || null);
+    if (!ghostSuggestEnabled) hideNextStepGhost();
+    else ensureNextStepGhost();
+    updateQuickBarLanguage();
+    updateChatNavLanguage();
+    updateAutoAcceptBtn();
+    updateRemoteBtnLanguage();
+    renderQuotaUI();
+    if (uiLang !== 'zh') {
+      revertEnhancerTranslations();
+    } else if (prevLang !== 'zh') {
+      localizeThinkingShells();
+      scheduleLocalization();
+    }
+  }
+
+  window.addEventListener('ag-suite-prefs-changed', onSuitePrefsChanged);
   window.addEventListener('click', onWindowClickCapture, true);
   document.addEventListener('click', onDocClick, true);
   document.addEventListener('keydown', onDocKeydown, true);
@@ -3558,6 +4019,7 @@
       localizeMutationObserver = null;
     }
     document.removeEventListener('click', onDocClick, true);
+    window.removeEventListener('ag-suite-prefs-changed', onSuitePrefsChanged);
     window.removeEventListener('click', onWindowClickCapture, true);
     document.removeEventListener('keydown', onDocKeydown, true);
     document.removeEventListener('keyup', onDocKeyup, true);
@@ -3573,6 +4035,7 @@
     safeRemove(document.getElementById(FILE_EDITOR_CONTROLS_ID));
     safeRemove(document.getElementById(FILE_EDITOR_WRAP_ID));
     restoreHiddenViewerChildren();
+    try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(false); } catch {}
     const { sr } = getMeterHostAndShadow();
     if (sr) {
       safeRemove(sr.getElementById(REMOTE_BADGE_ID));
@@ -3588,7 +4051,7 @@
     safeRemove(document.getElementById(DOC_STYLE_ID));
   }
 
-  // ==================== 手机端极速遥控面板数据桥接 (v1.6.0) ====================
+  // ==================== 手机端极速遥控面板数据桥接 (v1.6.9) ====================
 
   const MOBILE_APPROVE_RE = /^(?:proceed|accept(?:\s+all|\s+changes|\s+step)?|allow(?:\s+once)?|run(?:\s+command)?|approve|continue|继续|接受|全部接受|接受更改|接受此步骤|允许|允许一次|运行|批准)(?:\s+\([^)]+\))?$/i;
   const MOBILE_REJECT_RE = /^(?:reject|deny|cancel|discard|decline|abort|拒绝|取消|丢弃|中止)(?:\s+\([^)]+\))?$/i;
@@ -3835,7 +4298,7 @@
 
   function getPermissionPresetsMeta() {
     return [
-      { key: 'turbo', label: '⚡ 极速 (Turbo)' },
+      { key: 'turbo', label: '⚡ 无限 (Turbo)' },
       { key: 'auto', label: '🛡️ 自动 (Auto)' },
       { key: 'default', label: '🔒 默认 (Default)' },
       { key: 'request_review', label: '👁️ 请求审查 (Review)' }
@@ -3892,7 +4355,7 @@
 
     return {
       ok: true,
-      version: '1.6.8',
+      version: '1.6.9',
       timestamp: Date.now(),
       sessionId,
       title: activeConv?.title || document.title || 'Antigravity',
@@ -4144,14 +4607,18 @@
     return { ok: false, error: `未知操作: ${action}` };
   }
 
-  globalThis.__AGEnhancer = {
-    version: '1.6.8',
+    globalThis.__AGEnhancer = {
+    version: '1.6.12',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
       return Boolean(sr && sr.getElementById(QUOTA_BADGE_ID) && sr.getElementById(REMOTE_BADGE_ID));
     },
     refreshQuota,
+    toggleQuotaPopover,
+    closeQuotaPopover: () => toggleQuotaPopover(false),
+    toggleRemotePopover,
+    closeRemotePopover: () => toggleRemotePopover(false),
     refreshBrainStats,
     scanHighRiskCommands,
     toggleAllThinking,
@@ -4170,6 +4637,19 @@
     openExternalUrlInSystemBrowser,
     getBrainStats: () => latestBrainStats,
     getAutoAccept: () => autoAcceptEnabled,
+    setAutoAccept: (val) => {
+      autoAcceptEnabled = Boolean(val);
+      try { localStorage.setItem('ag_suite_auto_accept', autoAcceptEnabled ? 'true' : 'false'); } catch {}
+      if (autoAcceptEnabled) runAutoAcceptTick();
+    },
+    getGhostSuggest: () => ghostSuggestEnabled,
+    setGhostSuggest: (val) => {
+      ghostSuggestEnabled = Boolean(val);
+      try { localStorage.setItem('ag_suite_ghost_suggest', ghostSuggestEnabled ? 'true' : 'false'); } catch {}
+      if (!ghostSuggestEnabled) hideNextStepGhost();
+      else ensureNextStepGhost();
+    },
+    parseQuotaSummaryGroups,
     exportMarkdown,
     localizeSidebarConversations,
     localizeThinkingShells,
@@ -4184,10 +4664,14 @@
   scanHighRiskCommands();
   renderQuotaUI();
   guardExpandedThinkingBlocks();
-  localizeThinkingShells();
   startLocalizationObserver();
-  void translateExpandedThoughts();
-  void localizeSidebarConversations();
+  if (uiLang === 'zh') {
+    localizeThinkingShells();
+    void translateExpandedThoughts();
+    void localizeSidebarConversations();
+  } else {
+    revertEnhancerTranslations();
+  }
   lastQuotaFetchAt = Date.now();
   lastBrainFetchAt = Date.now();
   void refreshQuota();
