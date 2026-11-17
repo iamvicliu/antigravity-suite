@@ -82,7 +82,7 @@
   let heatYearOffset = 0;
   let activeCostModel = 'gemini-3.8-flash';
   let activeCostMode = 'ref';
-  let autoCheckUpdate = true;
+  let autoCheckUpdate = false;
   let cachedLatestRelease = null;
 
   /* @INSERT_COLORS_MODULE */
@@ -91,8 +91,12 @@
   // =========================================================================
   let resizeObserver = null;
   let hostDomObserver = null;
+  let domMutationThrottleTimer = null;
   let observedTitlebar = null;
   let layoutRaf = 0;
+  let cachedMeasuredAvailWidth = null;
+  let cachedMeasuredAvailAt = 0;
+  let cachedMeasuredWinWidth = 0;
 
   function findHostTitlebar() {
     try {
@@ -423,8 +427,13 @@
     return 'ring-only';
   }
 
-  function measureAvailableWidth() {
+  function measureAvailableWidth(force = false) {
     try {
+      const now = Date.now();
+      const curWinW = typeof window !== 'undefined' ? (window.innerWidth || 0) : 0;
+      if (!force && cachedMeasuredAvailWidth !== null && curWinW === cachedMeasuredWinWidth && (now - cachedMeasuredAvailAt) < 350) {
+        return cachedMeasuredAvailWidth;
+      }
       const titlebar = findHostTitlebar();
       if (titlebar?.getBoundingClientRect) {
         const tbRect = titlebar.getBoundingClientRect();
@@ -463,11 +472,19 @@
               if (sum > 0) nativeButtonsWidth = sum + 6;
             }
           }
-          return tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          const avail = tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          cachedMeasuredAvailWidth = avail;
+          cachedMeasuredAvailAt = now;
+          cachedMeasuredWinWidth = curWinW;
+          return avail;
         }
       }
       if (typeof window !== 'undefined' && window.innerWidth) {
-        return window.innerWidth - 360;
+        const avail = window.innerWidth - 360;
+        cachedMeasuredAvailWidth = avail;
+        cachedMeasuredAvailAt = now;
+        cachedMeasuredWinWidth = curWinW;
+        return avail;
       }
     } catch {}
     return 400;
@@ -513,10 +530,10 @@
     renderSessionCost();
   }
 
-  function updateResponsiveLayout() {
+  function updateResponsiveLayout(forceMeasure = false) {
     if (state.disposed) return;
     syncWindowControlsOverlay();
-    const avail = measureAvailableWidth();
+    const avail = measureAvailableWidth(forceMeasure);
     const nextMode = computeNextLayoutMode(avail, state.layoutMode);
     applyLayoutMode(nextMode);
     if (state.tooltipOpen) positionContextTooltip();
@@ -586,19 +603,53 @@
     tip.setAttribute('data-visible', 'false');
   }
 
-  let elevatedStackAncestor = null;
+  let elevatedStackAncestors = [];
 
   function syncHostStackingElevation(elevate) {
     try {
       if (elevate) {
-        const z0 = host.closest?.('div.relative.z-0');
-        if (z0?.style) {
-          elevatedStackAncestor = z0;
-          z0.style.zIndex = '40';
+        host.setAttribute?.('data-elevated', 'true');
+        let cur = host.parentElement || null;
+        while (cur && cur !== document.body && cur !== document.documentElement) {
+          let shouldElevate = false;
+          try {
+            const cs = typeof window !== 'undefined' && typeof window.getComputedStyle === 'function'
+              ? window.getComputedStyle(cur)
+              : null;
+            if (cs && ((cs.position && cs.position !== 'static') || (cs.zIndex && cs.zIndex !== 'auto') || cs.isolation === 'isolate')) {
+              shouldElevate = true;
+            }
+          } catch {}
+          const cls = typeof cur.className === 'string' ? cur.className : '';
+          if (!shouldElevate && /\b(relative|fixed|absolute|sticky|z-\d+)\b/.test(cls)) {
+            shouldElevate = true;
+          }
+          if (shouldElevate && cur.style && !elevatedStackAncestors.some(item => item.el === cur)) {
+            elevatedStackAncestors.push({ el: cur, prevZIndex: cur.style.zIndex || '' });
+            cur.style.zIndex = '2147483646';
+          }
+          cur = cur.parentElement;
         }
-      } else if (elevatedStackAncestor?.style) {
-        elevatedStackAncestor.style.zIndex = '';
-        elevatedStackAncestor = null;
+        if (elevatedStackAncestors.length === 0) {
+          const z0 = host.closest?.('div.relative.z-0');
+          if (z0?.style) {
+            elevatedStackAncestors.push({ el: z0, prevZIndex: z0.style.zIndex || '' });
+            z0.style.zIndex = '2147483646';
+          }
+        }
+      } else {
+        const quotaOpen = Boolean(el('ag-quota-popover') && !el('ag-quota-popover').hidden)
+          || Boolean(document?.getElementById?.('ag-quota-popover') && !document.getElementById('ag-quota-popover').hidden);
+        if (!state.disposed && (isAnyPanelOpen() || (el('overflow-menu') && !el('overflow-menu').hidden) || quotaOpen)) {
+          return;
+        }
+        host.removeAttribute?.('data-elevated');
+        for (const item of elevatedStackAncestors) {
+          try {
+            if (item?.el?.style) item.el.style.zIndex = item.prevZIndex || '';
+          } catch {}
+        }
+        elevatedStackAncestors = [];
       }
     } catch {}
   }
@@ -654,6 +705,7 @@
 
       placePanel(el('panel'), 450, activeContextAnchor || el('badge'));
       placePanel(el('panel-tokens'), 730, el('badge-tokens'));
+      placePanel(el('panel-settings'), 600, el('badge-settings') || el('badge-overflow') || el('badge'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
     } catch {}
@@ -661,20 +713,29 @@
 
   try {
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => updateResponsiveLayout());
+      resizeObserver = new ResizeObserver(() => updateResponsiveLayout(true));
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
       hostDomObserver = new MutationObserver(() => {
-        if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
+        if (!host.isConnected || host.getAttribute('data-dock') !== 'flow') {
           scheduleLayoutSync();
+          return;
         }
+        if (domMutationThrottleTimer) return;
+        domMutationThrottleTimer = setTimeout(() => {
+          domMutationThrottleTimer = null;
+          if (state.disposed) return;
+          if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
+            scheduleLayoutSync();
+          }
+        }, 120);
       });
       hostDomObserver.observe(document.body, { childList: true, subtree: true });
     }
   } catch {}
 
-  const onWindowResize = () => updateResponsiveLayout();
+  const onWindowResize = () => updateResponsiveLayout(true);
   const onWindowFocus = () => host.setAttribute('data-window-active', 'true');
   const onWindowBlur = () => host.setAttribute('data-window-active', 'false');
   try {
@@ -718,31 +779,58 @@
   }
 
   function isAnyPanelOpen() {
-    return !el('panel').hidden || !el('panel-tokens').hidden;
+    return !el('panel').hidden || !el('panel-tokens').hidden || Boolean(el('panel-settings') && !el('panel-settings').hidden);
   }
 
   function showPanel(target) {
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
+    const pSettings = el('panel-settings');
     const pOverflow = el('overflow-menu');
     const bContext = el('badge');
     const bSpeed = el('badge-speed');
     const bTokens = el('badge-tokens');
+    const bSettings = el('badge-settings');
     const bOverflow = el('badge-overflow');
 
     hideUpdatePopover();
+    try {
+      globalThis.__AGEnhancer?.closeQuotaPopover?.();
+      globalThis.__AGEnhancer?.closeRemotePopover?.();
+      const pQuota = el('ag-quota-popover');
+      if (pQuota && !pQuota.hidden) pQuota.hidden = true;
+      el('badge-quota')?.setAttribute('aria-expanded', 'false');
+      const pRemote = el('ag-remote-popover');
+      if (pRemote && !pRemote.hidden) pRemote.hidden = true;
+      el('badge-remote')?.setAttribute('aria-expanded', 'false');
+    } catch {}
     if (pOverflow) pOverflow.hidden = true;
     bOverflow?.setAttribute('aria-expanded', 'false');
 
-    if (target === 'tokens') {
+    if (target === 'settings') {
+      hideContextTooltip();
+      closeColorPicker();
+      setPlanDetailExpanded(false, { skipReposition: true });
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
+      pContext.hidden = true;
+      pTokens.hidden = true;
+      if (pSettings) pSettings.hidden = false;
+      bContext.setAttribute('aria-expanded', 'false');
+      bSpeed?.setAttribute('aria-expanded', 'false');
+      bTokens.setAttribute('aria-expanded', 'false');
+      bSettings?.setAttribute('aria-expanded', 'true');
+    } else if (target === 'tokens') {
       hideContextTooltip();
       closeColorPicker();
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pContext.hidden = true;
+      if (pSettings) pSettings.hidden = true;
       pTokens.hidden = false;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
+      bSettings?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
       void syncTokenHistoryFromHost(false);
       renderActiveHeatView(true);
@@ -753,17 +841,21 @@
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pTokens.hidden = true;
+      if (pSettings) pSettings.hidden = true;
       pContext.hidden = false;
       bContext.setAttribute('aria-expanded', 'true');
       bSpeed?.setAttribute('aria-expanded', 'true');
+      bSettings?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
       void refreshModulesDisplay();
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
       pContext.hidden = true;
       pTokens.hidden = true;
+      if (pSettings) pSettings.hidden = true;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
+      bSettings?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
       closeColorPicker();
       hidePopover();
@@ -998,7 +1090,7 @@
     }
 
     // 3. 数字滚动/递减递增动画 (Rolling Numeric Count Tween)
-    if (startNum !== endNum && numEl) {
+    if (targetNum !== null && targetNum !== undefined && startNum !== endNum && numEl) {
       if (badgeEl && badgeEl.classList) badgeEl.classList.add('is-animating');
 
       const startTime = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -1042,8 +1134,13 @@
     if (!ps) return;
     const sumTxt = el('plan-summary-text');
     if (sumTxt) {
-      const modeTxt = ps.status === 'identified' ? '已自动识别' : ps.hasCustomSettings ? '自定义生效' : '未识别/默认';
-      sumTxt.textContent = `${ps.tierName || 'Pro'} · ${modeTxt} · 刚刚更新`;
+      if (ps.ultraSubTierSpec) {
+        const subModeTxt = ps.ultraSubTierSource === 'custom' ? '子档自定义' : '已自动识别';
+        sumTxt.textContent = `${ps.tierName} · ${ps.ultraSubTierSpec.quotaMultiplierText} · ${subModeTxt}`;
+      } else {
+        const modeTxt = ps.status === 'identified' ? '已自动识别' : ps.hasCustomSettings ? '自定义生效' : '未识别/默认';
+        sumTxt.textContent = `${ps.tierName || 'Pro'} · ${modeTxt} · 刚刚更新`;
+      }
     }
     // 实时联动更新黄框位置的订阅费与汇率胶囊 (支持动效与符号消散)
     const curSymbol = ps.currencySymbol || '$';
@@ -1072,7 +1169,13 @@
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = '/月';
-      targetCny = '(≈ ¥134.3 CNY)';
+      const cnyVal = typeof convertToCNY === 'function' ? convertToCNY(targetNum, 'USD') : Number((targetNum * 6.72).toFixed(2));
+      targetCny = cnyVal !== null ? `(≈ ¥${cnyVal.toFixed(1)} CNY)` : '';
+    } else if (ps.tierKey === 'ultra') {
+      targetSymbol = '$99.99~199.99';
+      targetNum = null;
+      targetCycle = '/月';
+      targetCny = '(待选子档)';
     } else {
       targetSymbol = '$';
       targetNum = 19.99;
@@ -1080,10 +1183,53 @@
       targetCny = '(≈ ¥134.3 CNY)';
     }
 
-    renderPlanSummaryPriceBadge(targetSymbol, targetNum, targetCycle, targetCny);
+    renderPlanSummaryPriceBadge(targetSymbol, targetNum, targetCycle, targetCny, targetNum === null ? { forceDirect: true } : {});
 
     const detName = el('p-det-name');
     if (detName) detName.textContent = ps.tierName || 'Google AI Pro';
+
+    const isUltraPlan = ps.tierKey === 'ultra' || Boolean(ps.ultraSubTier);
+    const summarySubWrap = el('summary-subtier-wrap');
+    if (summarySubWrap) {
+      summarySubWrap.style.display = isUltraPlan ? 'inline-flex' : 'none';
+    }
+    const dtSub = el('p-dt-subtier');
+    const ddSub = el('p-dd-subtier');
+    const tagSub = el('p-det-subtier-tag');
+    const dtSubSpecs = el('p-dt-subtier-specs');
+    const ddSubSpecs = el('p-det-subtier-specs');
+    if (dtSub && ddSub) {
+      dtSub.style.display = isUltraPlan ? 'block' : 'none';
+      ddSub.style.display = isUltraPlan ? 'flex' : 'none';
+    }
+    if (tagSub) {
+      if (isUltraPlan && ps.ultraSubTier) {
+        tagSub.style.display = 'inline-block';
+        tagSub.textContent = ps.ultraSubTierSource === 'live' ? '自动识别' : '自定义';
+      } else {
+        tagSub.style.display = 'none';
+        tagSub.textContent = '';
+      }
+    }
+    if (dtSubSpecs && ddSubSpecs) {
+      if (isUltraPlan) {
+        dtSubSpecs.style.display = 'block';
+        ddSubSpecs.style.display = 'block';
+        if (ps.ultraSubTierSpec) {
+          const spec = ps.ultraSubTierSpec;
+          ddSubSpecs.textContent = `配额倍率：${spec.quotaMultiplier}× Pro 基准额度（5h 滚动窗口 + 周上限）｜Google Flow：${spec.flowCreditsMonthly.toLocaleString('en-US')} 积分/月｜开发者抵扣金：$${spec.developerCreditsMonthlyUSD}/月｜云存储：${spec.storageTB} TB｜美区公开参考价：$${spec.officialPriceMonthly}/月`;
+        } else {
+          ddSubSpecs.textContent = '官方本地接口仅返回 Google AI Ultra，未下发 5x / 20x 子档；请在上方下拉菜单选择您的实际子档以展示对应配额倍率与权益数据。';
+        }
+      } else {
+        dtSubSpecs.style.display = 'none';
+        ddSubSpecs.style.display = 'none';
+      }
+    }
+    if (typeof refreshDirectSubTierDisplay === 'function') {
+      refreshDirectSubTierDisplay(ps.ultraSubTier || '');
+    }
+
     const detAcc = el('p-det-account');
     if (detAcc) detAcc.textContent = ps.email || '未识别当前登录邮箱';
 
@@ -1226,22 +1372,44 @@
       }
     }
 
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const qpd = ps.quotaPoolDisplay || (core?.resolvePlanQuotaPools ? core.resolvePlanQuotaPools(ps) : null);
     const pPrompt = el('p-det-prompt-credits');
     const pFlow = el('p-det-flow-credits');
-    if (pPrompt && ps.promptCredits) {
-      const promptTxt = `Prompt Credits: ${ps.promptCredits.available ?? '—'} 可用 / ${ps.promptCredits.monthly ?? '—'} 月额度`;
+    if (pPrompt) {
+      const promptTxt = qpd?.promptPoolText || (ps.promptCredits ? `${ps.promptCredits.available ?? '—'} 可用 / ${ps.promptCredits.monthly ?? '—'} 月额度` : '—');
       pPrompt.textContent = promptTxt;
       const pLegacy = el('p-det-credits');
       if (pLegacy) pLegacy.textContent = promptTxt;
     }
-    if (pFlow && ps.flowCredits) {
-      pFlow.textContent = `${ps.flowCredits?.available ?? '—'} 可用 / ${ps.flowCredits?.monthly ?? '—'} 月额度`;
+    if (pFlow) {
+      const flowTxt = qpd?.flowPoolText || (ps.ultraSubTierSpec
+        ? `${ps.ultraSubTierSpec.flowCreditsMonthly.toLocaleString('en-US')} 套餐月积分 / 月`
+        : (ps.flowCredits ? `${ps.flowCredits.available ?? '—'} 可用 / ${ps.flowCredits.monthly ?? '—'} 月额度` : '—'));
+      pFlow.textContent = flowTxt;
+    }
+    const sumSubRo = el('summary-subtier-readonly');
+    const detSubRo = el('p-det-subtier-readonly');
+    const roText = isUltraPlan
+      ? (ps.ultraSubTier === '20x' ? '🚀 Ultra 20x' : (ps.ultraSubTier === '5x' ? '⚡ Ultra 5x' : '🌐 子档: 未设'))
+      : '';
+    if (sumSubRo) {
+      sumSubRo.style.display = isUltraPlan ? 'inline-flex' : 'none';
+      sumSubRo.textContent = roText;
+    }
+    if (detSubRo) {
+      detSubRo.textContent = isUltraPlan
+        ? (ps.ultraSubTier === '20x' ? '🚀 Ultra 20x · 20× Pro 配额 ($199.99/月)' : (ps.ultraSubTier === '5x' ? '⚡ Ultra 5x · 5× Pro 配额 ($99.99/月)' : '🌐 未设置 / 自动识别'))
+        : '—';
     }
     const detTime = el('p-det-time');
     if (detTime) {
       const timeStr = ps.updatedAt ? new Date(ps.updatedAt).toLocaleString() : '—';
       const verifyStr = ps.pricingTableVerifiedDate ? ` · 价表核对：${ps.pricingTableVerifiedDate}` : '';
       detTime.textContent = `${timeStr}${verifyStr}`;
+    }
+    if (typeof syncSettingsSubPreview === 'function') {
+      syncSettingsSubPreview();
     }
   }
 
@@ -1316,9 +1484,13 @@
   el('btn-cost-details-toggle')?.addEventListener('click', () => toggleCostDetails());
   el('btn-cost-details-collapse')?.addEventListener('click', () => toggleCostDetails(false));
   el('btn-cost-fill-sub')?.addEventListener('click', () => {
-    switchTokenView('tokens');
-    setPlanDetailExpanded(true);
-    togglePlanCustomForm(true);
+    if (el('plan-custom-form')?.getAttribute?.('data-in-settings') === 'true' && typeof openSuiteSettings === 'function') {
+      openSuiteSettings('subscription');
+    } else {
+      switchTokenView('tokens');
+      setPlanDetailExpanded(true);
+      togglePlanCustomForm(true);
+    }
   });
   toggleCostDetails(false);
 
@@ -1389,6 +1561,30 @@
     }, isError ? 5200 : 3200);
   }
 
+  async function invokeHostBridge(liveRoute, payload, ipcMethod) {
+    const fetchFn = typeof fetch === 'function'
+      ? fetch
+      : (typeof window !== 'undefined' && typeof window.fetch === 'function' ? window.fetch.bind(window) : null);
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port && fetchFn) {
+      try {
+        const live = window.__AGContextMeterLive;
+        const r = await fetchFn(`http://127.0.0.1:${live.port}${liveRoute}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+          body: JSON.stringify(payload ?? {})
+        });
+        if (r && r.ok) {
+          const json = await r.json().catch(() => null);
+          if (json !== null) return json;
+        }
+      } catch {}
+    }
+    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.[ipcMethod] === 'function') {
+      return await window.contextMeterAPI[ipcMethod](payload);
+    }
+    return null;
+  }
+
   async function triggerLaunchCli(customOpts = {}) {
     if (cliLaunchBusy) {
       showCliToast('CLI 正在启动中，请稍候…', false);
@@ -1412,25 +1608,22 @@
       height: typeof window !== 'undefined' ? (window.outerHeight || window.innerHeight || 800) : 800
     };
 
+    const termOpts = typeof getSuiteTerminalSettings === 'function' ? getSuiteTerminalSettings() : {};
+    const hasCustomModel = customOpts && Object.prototype.hasOwnProperty.call(customOpts, 'model');
     const reqOpts = {
       cascadeId: state.route || undefined,
       cwd: customOpts.cwd !== undefined ? customOpts.cwd : (state.scan?.workspacePath || undefined),
       hostBounds,
+      ...termOpts,
       ...customOpts
     };
+    if (hasCustomModel && customOpts.noModel === undefined) {
+      const mStr = typeof customOpts.model === 'string' ? customOpts.model.trim() : '';
+      reqOpts.noModel = !mStr;
+    }
     try {
-      let res = null;
-      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.launchCli === 'function') {
-        res = await window.contextMeterAPI.launchCli(reqOpts);
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-        const live = window.__AGContextMeterLive;
-        const r = await fetch(`http://127.0.0.1:${live.port}/launch-cli`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify(reqOpts)
-        });
-        res = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
-      } else {
+      let res = await invokeHostBridge('/launch-cli', reqOpts, 'launchCli');
+      if (res === null && !window?.contextMeterAPI?.launchCli) {
         res = { ok: false, code: 'NO_BRIDGE', error: '本地桥接服务未连接，请执行 node cli.js install 或重启客户端' };
       }
 
@@ -1478,7 +1671,10 @@
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
   el('badge').addEventListener('click', () => toggleContext(el('badge')));
-  el('badge-speed')?.addEventListener('click', () => toggleContext(el('badge-speed')));
+  el('badge-speed')?.addEventListener('click', e => {
+    e?.stopPropagation?.();
+    toggleContext(el('badge'));
+  });
   el('badge-tokens').addEventListener('click', toggleTokens);
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
   el('overflow-speed-btn')?.addEventListener('click', () => {
@@ -1588,7 +1784,15 @@
       const data = res.data;
       currentUnlockStatus = data;
 
-      unlockBadge.textContent = data.statusText || data.status;
+      const statusLabelMap = {
+        unsupported: '当前平台不支持',
+        failed: '检测失败',
+        not_patched: '未解锁',
+        verified_active: '已验证生效',
+        patched_runtime_unconfirmed: '运行待确认',
+        patched_pending_restart: '待重启生效'
+      };
+      unlockBadge.textContent = data.statusText || statusLabelMap[data.status] || data.status;
       if (data.status === 'verified_active') {
         unlockBadge.className = 'key-pill pill-ok';
       } else if (data.status === 'patched_runtime_unconfirmed') {
@@ -1837,11 +2041,40 @@
     btnToggleProxy?.setAttribute('aria-expanded', String(isProxyExpanded));
   });
 
+  async function invokeModuleApi(action, payload = {}) {
+    const api = typeof window !== 'undefined' ? window.contextMeterAPI : null;
+    if (action === 'status' && typeof api?.getModulesStatus === 'function') {
+      return await api.getModulesStatus();
+    }
+    if (action === 'toggle' && typeof api?.toggleModule === 'function') {
+      return await api.toggleModule(payload.name, payload.enable, payload.opts);
+    }
+    if (action === 'test-proxy' && typeof api?.testProxy === 'function') {
+      return await api.testProxy(payload.proxyUrl);
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const routeMap = {
+        status: '/modules-status',
+        toggle: '/toggle-module',
+        'test-proxy': '/test-proxy'
+      };
+      const route = routeMap[action];
+      if (route) {
+        const r = await fetch(`http://127.0.0.1:${live.port}${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+          body: JSON.stringify(payload)
+        });
+        return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+      }
+    }
+    return { ok: false, error: '未连接到桥接服务（请重启客户端或执行 node cli.js live）' };
+  }
+
   async function refreshModulesDisplay() {
     try {
-      const api = window.contextMeterAPI;
-      if (!api || typeof api.getModulesStatus !== 'function') return;
-      const res = await api.getModulesStatus();
+      const res = await invokeModuleApi('status');
       if (!res || !res.ok || !res.data) {
         const errMsg = (res && res.error) ? res.error : '模块状态返回异常';
         if (chineseBadge) {
@@ -1988,11 +2221,9 @@
 
   btnToggleChineseModule?.addEventListener('click', async () => {
     try {
-      const api = window.contextMeterAPI;
-      if (!api || typeof api.toggleModule !== 'function') return;
       btnToggleChineseModule.disabled = true;
       btnToggleChineseModule.textContent = '正在处理…';
-      const res = await api.toggleModule('chinese', !currentChineseEnabled);
+      const res = await invokeModuleApi('toggle', { name: 'chinese', enable: !currentChineseEnabled });
       if (!res || !res.ok) {
         alert(res?.error || '切换汉化模块失败');
       }
@@ -2009,13 +2240,15 @@
 
   btnToggleProxyModule?.addEventListener('click', async () => {
     try {
-      const api = window.contextMeterAPI;
-      if (!api || typeof api.toggleModule !== 'function') return;
       btnToggleProxyModule.disabled = true;
       btnToggleProxyModule.textContent = '正在处理…';
-      const res = await api.toggleModule('proxy', !currentProxyEnabled, {
-        proxyUrl: inputProxyUrl?.value?.trim(),
-        bypassList: inputProxyBypass?.value?.trim()
+      const res = await invokeModuleApi('toggle', {
+        name: 'proxy',
+        enable: !currentProxyEnabled,
+        opts: {
+          proxyUrl: inputProxyUrl?.value?.trim(),
+          bypassList: inputProxyBypass?.value?.trim()
+        }
       });
       if (!res || !res.ok) {
         alert(res?.error || '切换代理模块失败');
@@ -2033,15 +2266,13 @@
 
   btnTestProxy?.addEventListener('click', async () => {
     try {
-      const api = window.contextMeterAPI;
-      if (!api || typeof api.testProxy !== 'function') return;
       btnTestProxy.disabled = true;
       btnTestProxy.textContent = '正在测试…';
       if (proxyTestResult) {
         proxyTestResult.style.display = 'block';
         proxyTestResult.textContent = '正在发起本地与网络连通性测试…';
       }
-      const res = await api.testProxy(inputProxyUrl?.value?.trim());
+      const res = await invokeModuleApi('test-proxy', { proxyUrl: inputProxyUrl?.value?.trim() });
       if (proxyTestResult) {
         if (!res || !res.ok) {
           proxyTestResult.textContent = '❌ 测试失败: ' + (res?.error || '未知异常');
@@ -2123,7 +2354,13 @@
     }
   }
   btnTokenColors?.addEventListener('click', () => toggleTokenColorsDrawer());
-  el('heat-legend-scale')?.addEventListener('click', () => toggleTokenColorsDrawer(true));
+  el('heat-legend-scale')?.addEventListener('click', () => {
+    if (typeof isRealShadowDomTree === 'function' && isRealShadowDomTree() && typeof openSuiteSettings === 'function') {
+      openSuiteSettings('appearance');
+    } else {
+      toggleTokenColorsDrawer(true);
+    }
+  });
 
   // 热力图视图切换（每天 / 每周 / 累计总量）
 
@@ -3038,18 +3275,9 @@
       let settingsRes = null;
       const currentEmail = ANTIGRAVITY_TOKEN_DATA.planStatus?.email || 'default';
 
-      // 权威配置同步：宿主通信桥接可用时，以宿主最新持久化配置为准，避免启动快照覆盖最新状态
-      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getSettings === 'function') {
-        settingsRes = await window.contextMeterAPI.getSettings({ email: currentEmail });
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-        const live = window.__AGContextMeterLive;
-        const r = await fetch(`http://127.0.0.1:${live.port}/get-settings`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify({ email: currentEmail })
-        });
-        if (r.ok) settingsRes = await r.json().catch(() => null);
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
+      // 权威配置同步：热注入实时桥接优先，未开启实时桥接时走宿主 IPC 或启动快照
+      settingsRes = await invokeHostBridge('/get-settings', { email: currentEmail }, 'getSettings');
+      if (!settingsRes && typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
         settingsRes = window.__AGContextMeterSettings;
       }
 
@@ -3063,13 +3291,12 @@
         if (savedView && ['daily', 'weekly', 'monthly', 'yearly', 'cum'].includes(savedView)) {
           switchHeatView(savedView, false);
         }
-        const savedAutoUpdate = settingsRes.autoCheckUpdate !== undefined
-          ? settingsRes.autoCheckUpdate
-          : settingsRes.uiPreferences?.autoCheckUpdate;
-        if (savedAutoUpdate !== undefined) {
-          autoCheckUpdate = savedAutoUpdate !== false;
-          const chk = el('check-auto-update');
-          if (chk) chk.checked = autoCheckUpdate;
+        // 隐藏检查更新与自动更新后，启动时禁止自动请求上游 GitHub Releases
+        autoCheckUpdate = false;
+        const chk = el('check-auto-update');
+        if (chk) chk.checked = false;
+        if (typeof applyHostUiPreferences === 'function' && settingsRes.uiPreferences) {
+          applyHostUiPreferences(settingsRes.uiPreferences);
         }
       }
 
@@ -3849,6 +4076,7 @@
   }
 
   const timer = setInterval(tick, 500);
+  /* @INSERT_SUITE_SETTINGS_MODULE */
   globalThis.__AGContextMeter = {
     version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.2',
     ensureAlive: () => {
@@ -3885,6 +4113,8 @@
     openGithubRepo: path => openGithubRepo(path),
     updateHeatTabThumb: () => updateHeatTabThumb(),
     getPlanSettings: () => ({
+      tierName: ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName || '未知',
+      ultraSubTier: ANTIGRAVITY_TOKEN_DATA.planStatus?.ultraSubTier || null,
       country: ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '未知',
       subscriptionRegion: ANTIGRAVITY_TOKEN_DATA.planStatus?.subscriptionRegion || ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知',
       region: ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知',
@@ -3895,7 +4125,18 @@
     }),
     setCountry: val => applyDirectCountrySelection(val),
     setCurrency: val => applyDirectCurrencySelection(val),
+    setUltraSubTier: val => applyDirectSubTierSelection(val),
     restoreSettingsFromHost,
+    openSettings: tab => openSuiteSettings(tab),
+    getTerminalSettings: () => getSuiteTerminalSettings(),
+    setTerminalSettings: (app, customPath) => setSuiteTerminalSettings(app, customPath),
+    getCliSettings: () => getSuiteCliSettings(),
+    setCliSettings: opts => setSuiteCliSettings(opts),
+    getSupportedLocales: () => getSupportedLocales(),
+    registerLocale: def => registerSuiteLocale(def),
+    getLocale: () => getSuiteLocale(),
+    setLocale: (code, opts) => setSuiteLocale(code, opts),
+    setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,
     getTimelineWindow: () => {
@@ -3928,6 +4169,7 @@
       syncHostStackingElevation(false);
       try { themeObserver?.disconnect(); } catch {}
       try { resizeObserver?.disconnect(); } catch {}
+      if (domMutationThrottleTimer) { clearTimeout(domMutationThrottleTimer); domMutationThrottleTimer = null; }
       try { hostDomObserver?.disconnect(); } catch {}
       try {
         window.removeEventListener?.('resize', onWindowResize);

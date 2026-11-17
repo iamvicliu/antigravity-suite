@@ -21,16 +21,27 @@ const targetFile = path.join(rootDir, 'meter-renderer.js');
 
 function buildRenderer() {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
-  const meterVersion = pkg.version || '0.8.2';
+  const meterVersion = pkg.version || '0.8.5';
 
-  const styles = fs.readFileSync(path.join(srcDir, 'styles.css'), 'utf8').trim();
-  let template = fs.readFileSync(path.join(srcDir, 'template.html'), 'utf8').trim();
+  const stylesBase = fs.readFileSync(path.join(srcDir, 'styles.css'), 'utf8').trim();
+  const suiteStylesPath = path.join(srcDir, 'suite-settings.css');
+  const styles = fs.existsSync(suiteStylesPath)
+    ? `${stylesBase}\n${fs.readFileSync(suiteStylesPath, 'utf8').trim()}`
+    : stylesBase;
+
+  const templateBase = fs.readFileSync(path.join(srcDir, 'template.html'), 'utf8').trim();
+  const suiteTemplatePath = path.join(srcDir, 'suite-settings.html');
+  let template = fs.existsSync(suiteTemplatePath)
+    ? `${templateBase}\n${fs.readFileSync(suiteTemplatePath, 'utf8').trim()}`
+    : templateBase;
   template = template.replace(/<span id="v">v[^<]*<\/span>/g, `<span id="v">v${meterVersion}</span>`);
   template = template.replace(/<span id="up-pop-ver"[^>]*>v[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v${meterVersion}</span>`);
 
   const colors = fs.readFileSync(path.join(srcDir, 'colors.js'), 'utf8').trim();
   const dropdown = fs.readFileSync(path.join(srcDir, 'dropdown.js'), 'utf8').trim();
   const heatmap = fs.readFileSync(path.join(srcDir, 'heatmap.js'), 'utf8').trim();
+  const suiteSettingsPath = path.join(srcDir, 'suite-settings.js');
+  const suiteSettings = fs.existsSync(suiteSettingsPath) ? fs.readFileSync(suiteSettingsPath, 'utf8').trim() : '';
   let mainTemplate = fs.readFileSync(path.join(srcDir, 'main.js'), 'utf8');
 
   // 注入或同步构建期版本常量
@@ -47,7 +58,8 @@ function buildRenderer() {
     .replace('  /* @INSERT_STYLES_AND_TEMPLATE */', () => domString)
     .replace('  /* @INSERT_COLORS_MODULE */', () => colors)
     .replace('  /* @INSERT_DROPDOWN_MODULE */', () => dropdown)
-    .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap);
+    .replace('  /* @INSERT_HEATMAP_MODULE */', () => heatmap)
+    .replace('  /* @INSERT_SUITE_SETTINGS_MODULE */', () => suiteSettings);
 
   fs.writeFileSync(targetFile, output, 'utf8');
   console.log(`[构建成功] 渲染层构建完成: ${targetFile} (v${meterVersion}, ${Buffer.byteLength(output, 'utf8')} 字节)`);
