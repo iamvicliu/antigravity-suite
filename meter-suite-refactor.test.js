@@ -2090,7 +2090,8 @@ test('需求 8: #panel-settings 顶部版本检测、#badge-settings 更新红�
   const verEl = shadow.getElementById('suite-ver-status');
   const checkBtn = shadow.getElementById('btn-suite-check-update');
   const applyBtn = shadow.getElementById('btn-suite-apply-update');
-  assert.ok(settingsBtn && verEl && checkBtn && applyBtn, '应渲染设置版本状态与检查/更新按钮');
+  assert.ok(settingsBtn && verEl && applyBtn, '应渲染设置版本状态与一键更新按钮');
+  assert.equal(checkBtn, null, '已移除手动检查更新按钮，全自动静默检查提醒');
 
   await new Promise(r => setTimeout(r, 25));
   assert.equal(settingsBtn.getAttribute('data-has-update'), 'true', '发现更新时右上角 ⚙️ 应亮起提示圆点');
@@ -2099,7 +2100,6 @@ test('需求 8: #panel-settings 顶部版本检测、#badge-settings 更新红�
 
   api.setLocale('en');
   assert.ok(verEl.textContent.includes('+2 update(s) (abc1234)'), '英文模式下应同步翻译更新状态');
-  assert.ok(checkBtn.textContent.includes('Check Updates'));
   assert.ok(applyBtn.textContent.includes('Update Now'));
   api.setLocale('zh-CN');
 
@@ -2123,7 +2123,7 @@ test('需求 8: #panel-settings 顶部版本检测、#badge-settings 更新红�
     latestRelativeTime: '',
     fetchError: ''
   };
-  checkBtn.click();
+  verEl.click();
   await new Promise(r => setTimeout(r, 25));
   assert.ok(verEl.textContent.includes('v0.8.5 (abc1234 · 已是最新)'), '已是最新时应显示短哈希与最新提示');
   assert.equal(applyBtn.hidden, true);

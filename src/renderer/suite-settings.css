@@ -29,6 +29,7 @@
     #suite-ver-status{
       font-size:10px;
       white-space:nowrap;
+      cursor:pointer;
     }
     #suite-ver-status[data-state="update"]{
       color:#f59e0b;
@@ -50,7 +51,6 @@
       background:#dcfce7;
       border-color:#86efac;
     }
-    #btn-suite-check-update,
     #btn-suite-apply-update{
       font-size:10.5px;
       padding:2px 7px;

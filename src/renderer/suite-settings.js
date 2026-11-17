@@ -200,12 +200,9 @@
     '套件设置': 'Suite Settings',
     '配置': 'Settings',
     '上下文窗口：': 'Context Window:',
-    '🔄 检查更新': '🔄 Check Updates',
-    '⏳ 检查中…': '⏳ Checking…',
     '⬆️ 一键更新': '⬆️ Update Now',
     '⏳ 正在更新…': '⏳ Updating…',
     '当前版本状态': 'Current Version Status',
-    '检查 GitHub 仓库是否有新版本': 'Check GitHub repository for updates',
     '拉取最新提交并免重启热生效': 'Pull latest commits and hot-reload without restart',
     '打开 Antigravity Suite 统一设置面板': 'Open Antigravity Suite Settings',
     '发现新版本，点击打开设置一键更新': 'Update available — click to open Settings and update'
@@ -1023,6 +1020,7 @@
     positionFloatingPanels();
   }
 
+  const AUTO_UPDATE_CHECK_TTL_MS = 300000;
   let lastSuiteVersionCheckAt = 0;
   let suiteVersionCheckBusy = false;
   let suiteVersionApplyBusy = false;
@@ -1086,7 +1084,6 @@
 
   async function checkSuiteRepoUpdate(opts = {}) {
     if (suiteVersionCheckBusy || suiteVersionApplyBusy) return suiteVersionInfo;
-    const checkBtn = el('btn-suite-check-update');
     if (typeof window === 'undefined' || !window.__AGContextMeterLive?.port) {
       const verEl = el('suite-ver-status');
       const fallbackVer = typeof METER_VERSION === 'string' && METER_VERSION ? METER_VERSION : '0.8.5';
@@ -1094,11 +1091,6 @@
       return null;
     }
     suiteVersionCheckBusy = true;
-    if (checkBtn) {
-      checkBtn.disabled = true;
-      checkBtn.textContent = '⏳ 检查中…';
-      applySuiteShadowLocale();
-    }
     try {
       const res = await invokeHostBridge('/suite-version-check', { fetchRemote: opts?.fetchRemote !== false }, 'suiteVersionCheck');
       if (res && res.ok) {
@@ -1111,11 +1103,6 @@
       return null;
     } finally {
       suiteVersionCheckBusy = false;
-      if (checkBtn) {
-        checkBtn.disabled = false;
-        checkBtn.textContent = '🔄 检查更新';
-        applySuiteShadowLocale();
-      }
     }
   }
 
@@ -1186,7 +1173,7 @@
     transplantConfigControlsOnce();
     showPanel('settings');
     switchSuiteSettingsTab(tabName || activeSettingsTab);
-    if (!lastSuiteVersionCheckAt || Date.now() - lastSuiteVersionCheckAt >= 60000) {
+    if (!lastSuiteVersionCheckAt || Date.now() - lastSuiteVersionCheckAt >= AUTO_UPDATE_CHECK_TTL_MS) {
       void checkSuiteRepoUpdate({ fetchRemote: true });
     }
   }
@@ -1316,13 +1303,28 @@
     void saveSuiteUiPrefs({ englishLabels: suiteEnhancerPrefs.englishLabels });
   });
 
-  el('btn-suite-check-update')?.addEventListener('click', () => {
+  el('suite-ver-status')?.addEventListener('click', () => {
     void checkSuiteRepoUpdate({ fetchRemote: true });
   });
 
   el('btn-suite-apply-update')?.addEventListener('click', () => {
     void applySuiteRepoUpdate();
   });
+
+  const onSuiteWindowFocusForUpdate = () => {
+    if (typeof state !== 'undefined' && state?.disposed) {
+      try { window.removeEventListener?.('focus', onSuiteWindowFocusForUpdate); } catch {}
+      return;
+    }
+    if (!lastSuiteVersionCheckAt || Date.now() - lastSuiteVersionCheckAt >= AUTO_UPDATE_CHECK_TTL_MS) {
+      void checkSuiteRepoUpdate({ fetchRemote: true });
+    }
+  };
+  try {
+    if (isRealShadowDomTree() && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('focus', onSuiteWindowFocusForUpdate);
+    }
+  } catch {}
 
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
