@@ -15,8 +15,8 @@ const http = require('http');
 const https = require('https');
 const { getStateDir } = require('./asar-engine');
 
-const SCHEMA_VERSION = '0.8.3';
-const PROJECT_VERSION = '0.8.3';
+const SCHEMA_VERSION = '0.8.5';
+const PROJECT_VERSION = '0.8.5';
 
 const DEFAULT_CONFIG = {
   schemaVersion: SCHEMA_VERSION,

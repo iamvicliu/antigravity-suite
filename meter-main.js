@@ -4,11 +4,13 @@ const os = require('os');
 const path = require('path');
 let ipcMain = null;
 let app = null;
+let electronDialog = null;
 try {
   const electron = require('electron');
   if (electron && typeof electron === 'object') {
     ipcMain = electron.ipcMain;
     app = electron.app;
+    electronDialog = electron.dialog;
   }
 } catch {}
 const {
@@ -19,6 +21,8 @@ const {
   getPluginSettings,
   savePluginSettings,
   launchCliSession,
+  detectAvailableTerminals,
+  pickTerminalExecutableDialog,
   checkUpdateAsync,
   applyUpdateAsync,
   getContextUnlockStatus,
@@ -374,6 +378,31 @@ function registerIpcOnce() {
       const { testProxyHealth } = require('./modules-config');
       const report = await testProxyHealth(proxyUrl);
       return { ok: true, data: report };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:list-terminals', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const savedPrefs = getPluginSettings()?.uiPreferences || {};
+      const customPath = options?.customTerminalPath ?? savedPrefs.customTerminalPath ?? '';
+      return detectAvailableTerminals({ customPath });
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:pick-terminal-path', async (event) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      return await pickTerminalExecutableDialog({
+        electronDialog,
+        targetWin: resolveTargetWindow(event.sender)
+      });
     } catch (e) {
       return { ok: false, error: e.message };
     }
