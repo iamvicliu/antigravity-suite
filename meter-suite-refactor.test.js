@@ -1759,7 +1759,8 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
       buildRemoteInfo,
       decodeEndpointsParam,
       encodeQrCodeMatrix,
-      buildFusedPairingUrl
+      buildFusedPairingUrl,
+      buildMobileAppHtml
     } = require('./mobile-remote.js');
     const info = buildRemoteInfo({ resetToken: true });
     assert.ok(info.port > 0, 'mobile-remote 应返回有效端口');
@@ -1914,6 +1915,13 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     enhancer.toggleRemotePopover(true);
     enhancer.toggleRemotePopover(false);
     assert.equal(host.getAttribute('data-elevated'), null, '关闭所有浮窗后应恢复宿主层叠上下文');
+
+    const mobileHtml = buildMobileAppHtml();
+    assert.ok(mobileHtml.includes('height:100%;position:fixed;top:0;left:0;right:0;bottom:0'), '手机端页面应使用 bottom:0 贴底全高布局');
+    assert.ok(!/window\.screen\?\.(height|width)/.test(mobileHtml), '手机端不应使用 window.screen 高度放大视口，避免截断底部工具栏');
+    const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(inlineScriptMatch, '手机端 HTML 应包含内联 <script>');
+    assert.doesNotThrow(() => new (require('node:vm').Script)(inlineScriptMatch[1]), '手机端内联 <script> 必须通过语法校验');
 
     api.dispose?.();
     enhancer.dispose?.();
