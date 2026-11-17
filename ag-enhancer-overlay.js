@@ -1979,6 +1979,36 @@
         html[data-ag-cmd-down="1"] a[href^="https://"]:hover {
           text-decoration: underline !important;
         }
+        [data-testid="conversation-row-sidebar"][data-ag-shortcut] {
+          position: relative !important;
+        }
+        html[data-ag-cmd-down="1"] [data-testid="conversation-row-sidebar"][data-ag-shortcut]::after {
+          content: attr(data-ag-shortcut);
+          position: absolute;
+          right: 8px;
+          top: 50%;
+          transform: translateY(-50%);
+          padding: 1px 5px;
+          border-radius: 4px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          font-size: 10.5px;
+          font-weight: 600;
+          line-height: 15px;
+          letter-spacing: 0.2px;
+          color: #e4e4e7;
+          background: rgba(24, 24, 27, 0.88);
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+          pointer-events: none;
+          z-index: 6;
+        }
+        html.light[data-ag-cmd-down="1"] [data-testid="conversation-row-sidebar"][data-ag-shortcut]::after,
+        html[data-theme="light"][data-ag-cmd-down="1"] [data-testid="conversation-row-sidebar"][data-ag-shortcut]::after {
+          color: #18181b;
+          background: rgba(255, 255, 255, 0.94);
+          border-color: rgba(24, 24, 27, 0.16);
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+        }
         [data-ag-has-ghost="1"] > p.pointer-events-none {
           opacity: 0 !important;
           visibility: hidden !important;
@@ -3949,9 +3979,97 @@
     return { ok: false, error: '打开失败' };
   }
 
+  function getOrderedSidebarConversationRows() {
+    return Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"]'))
+      .filter((row) => Boolean(row.getAttribute('data-cascade-id')));
+  }
+
+  function isSidebarRowActive(row, currentId = getSessionIdFromLocation() || '') {
+    if (!row) return false;
+    const id = row.getAttribute('data-cascade-id') || '';
+    const cls = String(row.className || '');
+    return Boolean(
+      (currentId && id === currentId) ||
+      row.getAttribute('data-selected') === 'true' ||
+      row.getAttribute('aria-current') === 'true' ||
+      row.getAttribute('data-active') === 'true' ||
+      /\bbg-accent\b|\bbg-secondary\b/.test(cls)
+    );
+  }
+
+  function getSidebarRowDisplayTitle(row) {
+    if (!row) return '';
+    const span = row.querySelector('span.truncate');
+    const id = row.getAttribute('data-cascade-id') || '';
+    return (span?.textContent || row.innerText || row.textContent || '').replace(/\s+/g, ' ').trim() || id.slice(0, 8);
+  }
+
+  function syncSidebarShortcutBadges() {
+    if (disposed) return 0;
+    ensureDocStyle();
+    const allRows = document.querySelectorAll('[data-testid="conversation-row-sidebar"]');
+    let idx = 0;
+    for (const row of allRows) {
+      const hasId = Boolean(row.getAttribute('data-cascade-id'));
+      if (hasId && idx < 9) {
+        const label = `⌘${idx + 1}`;
+        if (row.getAttribute('data-ag-shortcut') !== label) {
+          row.setAttribute('data-ag-shortcut', label);
+        }
+        idx += 1;
+      } else if (row.hasAttribute('data-ag-shortcut')) {
+        row.removeAttribute('data-ag-shortcut');
+      }
+    }
+    return idx;
+  }
+
+  function switchSidebarConversationByIndex(targetIndex) {
+    const rows = getOrderedSidebarConversationRows();
+    if (!rows.length) {
+      return { ok: false, reason: 'empty' };
+    }
+    if (targetIndex < 0 || targetIndex >= rows.length) {
+      showQuickToast(tr(`当前仅有 ${rows.length} 个对话`, `Only ${rows.length} conversation(s)`));
+      return { ok: false, reason: 'out-of-range', total: rows.length };
+    }
+    const row = rows[targetIndex];
+    const id = row.getAttribute('data-cascade-id') || '';
+    const title = getSidebarRowDisplayTitle(row).slice(0, 36);
+    if (isSidebarRowActive(row, getSessionIdFromLocation() || '')) {
+      showQuickToast(tr(`已在对话 #${targetIndex + 1}：${title}`, `Already in #${targetIndex + 1}: ${title}`));
+      return { ok: true, alreadyActive: true, index: targetIndex, id, title };
+    }
+    const clickTarget = row.querySelector('a[href]') || row;
+    clickTarget.click();
+    showQuickToast(tr(`💬 已切换至 #${targetIndex + 1}：${title}`, `💬 Switched to #${targetIndex + 1}: ${title}`));
+    return { ok: true, alreadyActive: false, index: targetIndex, id, title };
+  }
+
+  function cycleSidebarConversation(delta) {
+    const rows = getOrderedSidebarConversationRows();
+    if (!rows.length) {
+      return { ok: false, reason: 'empty' };
+    }
+    if (rows.length === 1) {
+      return switchSidebarConversationByIndex(0);
+    }
+    const currentId = getSessionIdFromLocation() || '';
+    const curIdx = rows.findIndex((r) => isSidebarRowActive(r, currentId));
+    const step = delta < 0 ? -1 : 1;
+    const nextIdx = curIdx >= 0
+      ? (curIdx + step + rows.length) % rows.length
+      : (step > 0 ? 0 : rows.length - 1);
+    return switchSidebarConversationByIndex(nextIdx);
+  }
+
   function syncCmdModifierState(active) {
-    if (active) document.documentElement.setAttribute('data-ag-cmd-down', '1');
-    else document.documentElement.removeAttribute('data-ag-cmd-down');
+    if (active) {
+      syncSidebarShortcutBadges();
+      document.documentElement.setAttribute('data-ag-cmd-down', '1');
+    } else {
+      document.documentElement.removeAttribute('data-ag-cmd-down');
+    }
   }
 
   // ==================== 全局事件与定时巡检 ====================
@@ -4017,8 +4135,49 @@
       return;
     }
     if (disposed || e.isComposing || isComposerComposing) return;
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+    const inShortcutSafeField = Boolean(
+      target?.closest?.('[data-testid="conversation-row-sidebar"] input, [data-testid="conversation-row-sidebar"] textarea, #ag-inline-file-textarea')
+    );
+    if (!inShortcutSafeField) {
+      if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        const codeMatch = /^Digit([1-9])$/.exec(String(e.code || ''));
+        const digit = /^[1-9]$/.test(String(e.key || ''))
+          ? Number(e.key)
+          : (codeMatch ? Number(codeMatch[1]) : 0);
+        if (digit >= 1 && digit <= 9) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+          switchSidebarConversationByIndex(digit - 1);
+          return;
+        }
+      }
+      if (e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === '[' || e.key === '{' || e.code === 'BracketLeft') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+          cycleSidebarConversation(-1);
+          return;
+        }
+        if (e.key === ']' || e.key === '}' || e.code === 'BracketRight') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+          cycleSidebarConversation(1);
+          return;
+        }
+      }
+      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Tab') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        cycleSidebarConversation(e.shiftKey ? -1 : 1);
+        return;
+      }
+    }
     const ed = getComposerEditor();
-    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
     if (!ed || !target || !ed.contains(target)) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isComposerEmpty(ed) && ed.getAttribute('aria-expanded') !== 'true') {
       lastUserSubmitAt = Date.now();
@@ -4133,6 +4292,7 @@
     guardExpandedThinkingBlocks();
     localizeThinkingShells();
     scheduleLocalization();
+    syncSidebarShortcutBadges();
     runAutoAcceptTick();
     if (Date.now() - lastQuotaFetchAt >= 30000) {
       lastQuotaFetchAt = Date.now();
@@ -4194,6 +4354,7 @@
     safeRemove(document.getElementById(CHAT_NAV_ID));
     document.querySelectorAll('.ag-risk-banner').forEach(safeRemove);
     document.querySelectorAll('[data-ag-risk-card]').forEach((el) => el.removeAttribute('data-ag-risk-card'));
+    document.querySelectorAll('[data-ag-shortcut]').forEach((el) => el.removeAttribute('data-ag-shortcut'));
     safeRemove(document.getElementById(DOC_STYLE_ID));
   }
 
@@ -4404,21 +4565,13 @@
 
   function collectSidebarConversations(limit = 25) {
     const currentId = getSessionIdFromLocation() || '';
-    const rows = Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"]'));
+    const rows = getOrderedSidebarConversationRows();
     const list = [];
     for (const row of rows) {
       const id = row.getAttribute('data-cascade-id') || '';
       if (!id) continue;
-      const span = row.querySelector('span.truncate');
-      const title = (span?.textContent || row.innerText || '').replace(/\s+/g, ' ').trim() || id.slice(0, 8);
-      const cls = String(row.className || '');
-      const active = Boolean(
-        (currentId && id === currentId) ||
-        row.getAttribute('data-selected') === 'true' ||
-        row.getAttribute('aria-current') === 'true' ||
-        row.getAttribute('data-active') === 'true' ||
-        /\bbg-accent\b|\bbg-secondary\b/.test(cls)
-      );
+      const title = getSidebarRowDisplayTitle(row);
+      const active = isSidebarRowActive(row, currentId);
       list.push({ id, title: title.slice(0, 80), active });
       if (list.length >= limit) break;
     }
@@ -4800,6 +4953,9 @@
     localizeSidebarConversations,
     localizeThinkingShells,
     translateExpandedThoughts,
+    syncSidebarShortcutBadges,
+    switchConversationByIndex: switchSidebarConversationByIndex,
+    cycleConversation: cycleSidebarConversation,
     dispose
   };
 
@@ -4807,6 +4963,7 @@
   ensureNextStepGhost();
   ensureChatNavFloat();
   ensureFileViewerEditor();
+  syncSidebarShortcutBadges();
   scanHighRiskCommands();
   renderQuotaUI();
   guardExpandedThinkingBlocks();

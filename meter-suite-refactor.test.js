@@ -2234,3 +2234,124 @@ test('需求 8: #panel-settings 顶部版本检测、#badge-settings 更新红�
 
   api.dispose?.();
 });
+
+// =========================================================================
+// 需求 9: ⌘1~⌘9 快速切换对话、按住 ⌘ 浮现序号角标与 ⌘⇧[/] 循环切会话
+// =========================================================================
+test('需求 9: ⌘1~⌘9 快速切换对话、按住 ⌘ 浮现序号角标与 ⌘⇧[/] 循环切会话', async () => {
+  const env = createDomEnv();
+  const rows = [];
+  const clickedIds = [];
+  for (let i = 1; i <= 10; i++) {
+    const row = env.doc.createElement('div');
+    row.setAttribute('data-testid', 'conversation-row-sidebar');
+    row.setAttribute('data-cascade-id', `conv-${i}`);
+    if (i === 1) row.setAttribute('data-selected', 'true');
+    const link = env.doc.createElement('a');
+    link.setAttribute('href', `/c/conv-${i}`);
+    const span = env.doc.createElement('span');
+    span.className = 'truncate';
+    span.textContent = `会话 ${i}`;
+    link.appendChild(span);
+    link.addEventListener('click', () => {
+      for (const r of rows) r.removeAttribute('data-selected');
+      row.setAttribute('data-selected', 'true');
+      clickedIds.push(`conv-${i}`);
+    });
+    row.appendChild(link);
+    env.doc.body.appendChild(row);
+    rows.push(row);
+  }
+
+  // 内联重命名输入框（测试在其聚焦时不误触发快捷键）
+  const renameInput = env.doc.createElement('input');
+  rows[0].appendChild(renameInput);
+
+  vm.runInContext(RENDERER_SRC, env.sandbox);
+  vm.runInContext(ENHANCER_SRC, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const enhancer = env.sandbox.__AGEnhancer;
+
+  const docStyleEl = env.doc.getElementById('ag-enhancer-doc-style');
+  assert.ok(docStyleEl, '应挂载 #ag-enhancer-doc-style 全局样式');
+  assert.ok(
+    docStyleEl.textContent.includes('html[data-ag-cmd-down="1"] [data-testid="conversation-row-sidebar"][data-ag-shortcut]::after'),
+    '样式表应包含按住 ⌘ 时浮现 ::after 序号角标的规则'
+  );
+
+  // 初始化即同步前 9 个对话的 data-ag-shortcut，第 10 个不标注
+  for (let i = 0; i < 9; i++) {
+    assert.equal(rows[i].getAttribute('data-ag-shortcut'), `⌘${i + 1}`, `第 ${i + 1} 个对话应标记 ⌘${i + 1}`);
+  }
+  assert.equal(rows[9].getAttribute('data-ag-shortcut'), null, '第 10 个对话不应标记序号角标');
+
+  const mkKeyEv = (type, extra = {}) => {
+    const ev = {
+      type,
+      key: '',
+      code: '',
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      isComposing: false,
+      target: env.doc.body,
+      prevented: false,
+      stopped: false,
+      preventDefault() { this.prevented = true; },
+      stopPropagation() { this.stopped = true; },
+      stopImmediatePropagation() { this.stopped = true; },
+      ...extra
+    };
+    env.doc.dispatchEvent(ev);
+    return ev;
+  };
+
+  // 1. 按住 Command 键 -> html[data-ag-cmd-down="1"] 激活；松开 -> 移除
+  mkKeyEv('keydown', { key: 'Meta', code: 'MetaLeft', metaKey: true });
+  assert.equal(env.doc.documentElement.getAttribute('data-ag-cmd-down'), '1', '按下 ⌘ 时应激活 data-ag-cmd-down');
+  mkKeyEv('keyup', { key: 'Meta', code: 'MetaLeft', metaKey: false });
+  assert.equal(env.doc.documentElement.getAttribute('data-ag-cmd-down'), null, '松开 ⌘ 时应关闭 data-ag-cmd-down');
+
+  // 2. ⌘2 切换到第 2 个对话
+  const ev2 = mkKeyEv('keydown', { key: '2', code: 'Digit2', metaKey: true });
+  assert.equal(ev2.prevented, true, '⌘2 应阻止默认事件并接管切换');
+  assert.equal(clickedIds[0], 'conv-2', '⌘2 应触发点击第 2 个对话');
+
+  // 3. ⌘⇧3（Mac 系统截图）绝对不能拦截或切换对话
+  const evShot = mkKeyEv('keydown', { key: '3', code: 'Digit3', metaKey: true, shiftKey: true });
+  assert.equal(evShot.prevented, false, '⌘⇧3 不应被拦截，需放行系统截图');
+  assert.equal(clickedIds.length, 1, '⌘⇧3 不得触发对话切换');
+
+  // 4. 在重命名 input 内按 ⌘1 不得误触发切换
+  const evRename = mkKeyEv('keydown', { key: '1', code: 'Digit1', metaKey: true, target: renameInput });
+  assert.equal(evRename.prevented, false, '侧边栏重命名输入框内应放行原生快捷键');
+  assert.equal(clickedIds.length, 1);
+
+  // 5. ⌘⇧] 切到下一个（#3）、⌘⇧[ 切回上一个（#2）、⌃Tab 再切到下一个（#3）
+  const evNext = mkKeyEv('keydown', { key: ']', code: 'BracketRight', metaKey: true, shiftKey: true });
+  assert.equal(evNext.prevented, true);
+  assert.equal(clickedIds[1], 'conv-3', '⌘⇧] 应切换至下一个对话 conv-3');
+
+  const evPrev = mkKeyEv('keydown', { key: '[', code: 'BracketLeft', metaKey: true, shiftKey: true });
+  assert.equal(evPrev.prevented, true);
+  assert.equal(clickedIds[2], 'conv-2', '⌘⇧[ 应切换回上一个对话 conv-2');
+
+  const evCtrlTab = mkKeyEv('keydown', { key: 'Tab', code: 'Tab', ctrlKey: true });
+  assert.equal(evCtrlTab.prevented, true);
+  assert.equal(clickedIds[3], 'conv-3', '⌃Tab 应切换至下一个对话 conv-3');
+
+  // 6. 第 10 个循环回到第 1 个（验证环绕）
+  enhancer.switchConversationByIndex(9);
+  assert.equal(clickedIds[4], 'conv-10');
+  enhancer.cycleConversation(1);
+  assert.equal(clickedIds[5], 'conv-1', '最后一个对话按下一个应循环回到第一个对话');
+
+  // 7. dispose 后清理 data-ag-shortcut 与 data-ag-cmd-down
+  enhancer.dispose?.();
+  api.dispose?.();
+  assert.equal(env.doc.documentElement.getAttribute('data-ag-cmd-down'), null);
+  for (const r of rows) {
+    assert.equal(r.getAttribute('data-ag-shortcut'), null, 'dispose 后应移除所有 data-ag-shortcut 属性');
+  }
+});
