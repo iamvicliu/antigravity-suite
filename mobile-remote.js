@@ -13,7 +13,7 @@ const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
-const MOBILE_UI_VERSION = '1.7.2';
+const MOBILE_UI_VERSION = '1.7.3';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -76,7 +76,10 @@ function syncTrackedDeviceToken(activeToken) {
   }
 }
 
-function parseDeviceLabel(rawUa) {
+function parseDeviceLabel(rawUa, rawHint) {
+  const hint = String(rawHint || '').trim();
+  if (/^iPad$/i.test(hint)) return 'iPad';
+  if (/^iPhone$/i.test(hint)) return 'iPhone';
   const ua = String(rawUa || '');
   if (/iPhone/i.test(ua)) return 'iPhone';
   if (/iPad/i.test(ua)) return 'iPad';
@@ -105,6 +108,7 @@ function recordPairedDeviceAccess(req, activeToken, now = Date.now()) {
   syncTrackedDeviceToken(activeToken);
   const headers = req.headers || {};
   const headerDevId = String(headers['x-ag-device-id'] || '').trim().slice(0, 64);
+  const deviceHint = String(headers['x-ag-device-hint'] || '').trim().slice(0, 24);
   const ua = String(headers['user-agent'] || '').trim();
   const cleanIp = normalizeRemoteIp(req.socket?.remoteAddress || req.ip || '');
   const hostHeader = String(headers.host || '').trim();
@@ -125,7 +129,7 @@ function recordPairedDeviceAccess(req, activeToken, now = Date.now()) {
 
   const record = {
     id: deviceId,
-    label: parseDeviceLabel(ua),
+    label: parseDeviceLabel(ua, deviceHint),
     channel: detectRequestChannel(cleanIp, hostHeader),
     ip: cleanIp,
     firstSeenAt: prev?.firstSeenAt || now,
@@ -941,7 +945,7 @@ function buildMobileAppHtml() {
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#09090b">
@@ -957,7 +961,7 @@ function buildMobileAppHtml() {
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     html,body{
       margin:0;padding:0;width:100%;height:100%;position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;
-      background:var(--bg);color:var(--fg);
+      background:var(--bg);color:var(--fg);touch-action:manipulation;
       font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
       font-size:14px;line-height:1.45;overscroll-behavior:none;
     }
@@ -1100,7 +1104,7 @@ function buildMobileAppHtml() {
     .composer-card:focus-within{border-color:rgba(56,189,248,.45)}
     .composer-card textarea{
       width:100%;min-height:28px;max-height:112px;resize:none;border:none;background:transparent;
-      color:var(--fg);padding:2px 4px;font-size:15px;line-height:1.42;font-family:inherit;outline:none;
+      color:var(--fg);padding:2px 4px;font-size:16px;line-height:1.42;font-family:inherit;outline:none;
     }
     .composer-card textarea::placeholder{color:#71717a}
     .composer-toolbar{display:flex;align-items:center;justify-content:space-between;gap:6px;padding-top:2px}
@@ -1152,7 +1156,7 @@ function buildMobileAppHtml() {
     }
     .drawer{
       width:min(82vw,320px);height:100%;background:#18181b;border-right:1px solid var(--border);
-      padding:calc(env(safe-area-inset-top) + 12px) 12px 16px;
+      padding:calc(env(safe-area-inset-top) + 12px) 12px calc(16px + env(safe-area-inset-bottom));
       display:flex;flex-direction:column;gap:10px;overflow-y:auto;
       transform:translateX(-100%);transition:transform .24s cubic-bezier(.22,1,.36,1);
       will-change:transform;
@@ -1172,12 +1176,114 @@ function buildMobileAppHtml() {
       background:rgba(255,255,255,.04);color:var(--fg);font-size:14px;cursor:pointer;
     }
     .conv-item.active{border-color:rgba(56,189,248,.6);background:rgba(56,189,248,.14);font-weight:600}
+    .composer-card.drag-over{border-color:#38bdf8;background:rgba(56,189,248,.07)}
+    .drawer-brand{display:none}
+    .conv-list{display:flex;flex-direction:column;gap:6px}
     .toast{
       position:fixed;top:calc(env(safe-area-inset-top) + 56px);left:50%;transform:translateX(-50%);
       z-index:80;background:#27272a;color:#fff;padding:7px 14px;border-radius:999px;font-size:12.5px;
       border:1px solid rgba(255,255,255,.15);box-shadow:0 8px 24px rgba(0,0,0,.5);pointer-events:none;
     }
     .toast[hidden]{display:none}
+    /* 细滚动条 */
+    .messages,.conv-list,.drawer,.sheet-list,.thought-body,.md-body pre,.md-table-wrap{
+      scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.16) transparent;
+    }
+    .messages{scrollbar-gutter:stable}
+    .messages::-webkit-scrollbar,.conv-list::-webkit-scrollbar,.drawer::-webkit-scrollbar,.sheet-list::-webkit-scrollbar,.thought-body::-webkit-scrollbar,.md-body pre::-webkit-scrollbar,.md-table-wrap::-webkit-scrollbar{
+      width:6px;height:6px;
+    }
+    .messages::-webkit-scrollbar-thumb,.conv-list::-webkit-scrollbar-thumb,.drawer::-webkit-scrollbar-thumb,.sheet-list::-webkit-scrollbar-thumb,.thought-body::-webkit-scrollbar-thumb,.md-body pre::-webkit-scrollbar-thumb,.md-table-wrap::-webkit-scrollbar-thumb{
+      background:rgba(255,255,255,.14);border-radius:99px;
+    }
+    .messages::-webkit-scrollbar-thumb:hover,.conv-list::-webkit-scrollbar-thumb:hover,.drawer::-webkit-scrollbar-thumb:hover,.sheet-list::-webkit-scrollbar-thumb:hover,.md-table-wrap::-webkit-scrollbar-thumb:hover{
+      background:rgba(255,255,255,.26);
+    }
+    .messages::-webkit-scrollbar-track,.conv-list::-webkit-scrollbar-track,.drawer::-webkit-scrollbar-track,.sheet-list::-webkit-scrollbar-track,.md-table-wrap::-webkit-scrollbar-track{
+      background:transparent;
+    }
+    /* 鼠标设备悬停交互 */
+    @media (hover:hover){
+      .icon-btn:hover{background:rgba(255,255,255,.08);color:#f4f4f5}
+      .quota-pill:hover{background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.18)}
+      .chip:hover{background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.18);color:#e4e4e7}
+      .chip.suggest:hover{background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.5);color:#bae6fd}
+      .ghost-btn:hover{background:rgba(255,255,255,.08);color:#e4e4e7}
+      .send-circle.ready:hover{background:#7dd3fc}
+      .send-circle.stop:hover{background:rgba(239,68,68,.3)}
+      .new-chat-btn:hover{background:rgba(255,255,255,.11);border-color:rgba(56,189,248,.4);color:#fff}
+      .conv-item:hover{background:rgba(255,255,255,.08)}
+      .conv-item.active:hover{background:rgba(56,189,248,.18)}
+      .sheet-opt:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18)}
+      .sheet-opt.active:hover{background:rgba(56,189,248,.22)}
+    }
+    /* 电脑端宽屏控制台适配（>= 860px 且具备精细鼠标指针与足够高度，避免横屏手机/平板误入双栏） */
+    @media (min-width:860px) and (min-height:521px) and (hover:hover) and (pointer:fine){
+      body{display:flex;flex-direction:row}
+      .app{
+        flex:1 1 auto;min-width:0;width:auto;height:100%;position:relative;
+        padding-top:0;padding-bottom:0;
+      }
+      .topbar{height:54px;padding:0 24px;gap:12px}
+      .conv-title{font-size:15.5px}
+      .sub-meta{font-size:11.5px}
+      .quota-pill{flex-direction:row;align-items:center;gap:8px;padding:6px 12px;font-size:12px;border-radius:10px}
+      .quota-pill span:last-child{font-size:11.5px;color:#a1a1aa;padding-left:8px;border-left:1px solid rgba(255,255,255,.12)}
+      .drawer-backdrop{
+        order:-1;position:relative;top:auto;left:auto;right:auto;bottom:auto;
+        width:268px;height:100%;flex-shrink:0;z-index:10;
+        opacity:1;visibility:visible;pointer-events:auto;background:transparent;
+        overflow:hidden;transition:width .2s cubic-bezier(.22,1,.36,1);
+      }
+      body.sidebar-collapsed .drawer-backdrop{width:0;pointer-events:none}
+      .drawer{
+        width:268px;height:100%;min-height:0;overflow:hidden;
+        background:#111114;border-right:1px solid rgba(255,255,255,.08);
+        padding:14px 12px 14px;transform:none!important;transition:none;gap:10px;
+      }
+      .drawer-brand{
+        display:flex;align-items:center;gap:8px;padding:2px 4px 6px;
+        font-size:13.5px;font-weight:700;color:#fafafa;letter-spacing:-.01em;flex-shrink:0;
+      }
+      .drawer-brand-dot{
+        width:8px;height:8px;border-radius:99px;
+        background:linear-gradient(135deg,#38bdf8,#6366f1);box-shadow:0 0 10px rgba(56,189,248,.45);
+      }
+      .new-chat-btn{min-height:38px;padding:8px 12px;font-size:13px;border-radius:10px}
+      .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:2px}
+      .conv-item{
+        padding:9px 10px;font-size:13px;border-radius:9px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        transition:background-color .14s ease,border-color .14s ease;
+      }
+      .messages{
+        padding:24px max(24px,calc(50% - 410px)) 18px;gap:18px;
+      }
+      .msg.user{max-width:72%;font-size:14.5px;padding:11px 16px}
+      .approval-dock{padding:10px max(24px,calc(50% - 410px))}
+      .composer-dock{
+        padding:6px max(24px,calc(50% - 410px)) 18px;gap:8px;
+      }
+      .composer-card{
+        border-radius:18px;padding:12px 14px 10px 16px;
+        box-shadow:0 12px 36px rgba(0,0,0,.4);
+      }
+      .composer-card textarea{min-height:32px;max-height:180px;font-size:14.5px}
+      .quota-drawer{
+        position:absolute;top:60px;right:24px;left:auto;width:348px;max-width:none;margin-left:0;
+      }
+      .sheet-backdrop{
+        align-items:center;padding:24px;background:rgba(0,0,0,.55);
+        backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+      }
+      .sheet{
+        max-width:440px;max-height:min(560px,80vh);border-radius:16px;
+        border:1px solid rgba(255,255,255,.14);padding:16px;
+        box-shadow:0 24px 64px rgba(0,0,0,.65);
+      }
+      .sheet-opt{padding:10px 12px;font-size:13.5px}
+      .toast{top:18px}
+    }
   </style>
 </head>
 <body>
@@ -1249,12 +1355,16 @@ function buildMobileAppHtml() {
 
   <div id="drawer-backdrop" class="drawer-backdrop" aria-hidden="true">
     <div id="drawer-panel" class="drawer">
+      <div class="drawer-brand">
+        <span class="drawer-brand-dot"></span>
+        <span>Antigravity Remote</span>
+      </div>
       <button id="btn-new-chat" class="new-chat-btn" type="button">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <span>新建对话</span>
       </button>
       <div class="drawer-sub">历史对话</div>
-      <div id="conv-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div id="conv-list" class="conv-list"></div>
     </div>
   </div>
 
@@ -1329,10 +1439,18 @@ function buildMobileAppHtml() {
       history.replaceState(null, '', location.pathname);
     }
     let apiBase = '';
+    const isIpadDesktopUa = (() => {
+      try {
+        return Number(navigator.maxTouchPoints || 0) > 1 && /Mac/i.test(String(navigator.platform || ''));
+      } catch {
+        return false;
+      }
+    })();
     function authHeaders(extra) {
       const h = Object.assign({}, extra || {});
       if (pairState.token) h['X-AG-Remote-Token'] = pairState.token;
       if (deviceId) h['X-AG-Device-Id'] = deviceId;
+      if (isIpadDesktopUa) h['X-AG-Device-Hint'] = 'iPad';
       return h;
     }
     function getCandidateEndpoints() {
@@ -1424,6 +1542,15 @@ function buildMobileAppHtml() {
       return Math.round(vvH || window.innerHeight || document.documentElement?.clientHeight || 0);
     }
 
+    const desktopMq = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width:860px) and (min-height:521px) and (hover:hover) and (pointer:fine)')
+      : null;
+    const isDesktopLayout = () => {
+      if (desktopMq) return desktopMq.matches;
+      const fine = typeof window.matchMedia === 'function' && window.matchMedia('(pointer:fine)').matches;
+      return window.innerWidth >= 860 && window.innerHeight > 520 && (fine || Number(navigator.maxTouchPoints || 0) <= 1);
+    };
+
     function syncViewportHeight() {
       const vv = window.visualViewport;
       const curH = vv ? vv.height : window.innerHeight;
@@ -1454,6 +1581,14 @@ function buildMobileAppHtml() {
       window.visualViewport.addEventListener('scroll', syncViewportHeight);
     }
     window.addEventListener('resize', syncViewportHeight);
+    window.addEventListener('orientationchange', () => {
+      maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      setTimeout(() => {
+        maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        syncViewportHeight();
+        if (typeof syncSidebarA11y === 'function') syncSidebarA11y();
+      }, 150);
+    });
     syncViewportHeight();
 
     msgEl.addEventListener('scroll', () => {
@@ -1469,7 +1604,12 @@ function buildMobileAppHtml() {
     }
 
     function esc(s) {
-      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     function fmtPct(frac) {
@@ -1517,7 +1657,19 @@ function buildMobileAppHtml() {
         location.reload();
         return null;
       }
-      const data = await res.json();
+      const ctype = String(res.headers.get('content-type') || '').toLowerCase();
+      let data = null;
+      if (ctype.includes('application/json')) {
+        data = await res.json().catch(() => null);
+      }
+      if (!data) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text().catch(() => '');
+        throw new Error(text ? text.slice(0, 80) : '响应格式异常');
+      }
+      if (!res.ok && data.ok !== false) {
+        data = Object.assign({ ok: false, error: 'HTTP ' + res.status }, data);
+      }
       if (data?.snapshot) renderSnapshot(data.snapshot);
       return data;
     }
@@ -1553,8 +1705,13 @@ function buildMobileAppHtml() {
         renderPool('Gemini 4 / 3.8', snap?.quota?.gemini) +
         renderPool('Claude 5.5 / GPT', snap?.quota?.claude);
       $('btn-refresh-quota').onclick = async () => {
-        await apiAction({ action: 'refresh-quota' });
-        showToast('已刷新配额');
+        try {
+          const r = await apiAction({ action: 'refresh-quota' });
+          if (r?.ok) showToast('已刷新配额');
+          else showToast(r?.error || r?.actionResult?.error || '刷新配额失败');
+        } catch (e) {
+          showToast(e?.message || '刷新配额失败');
+        }
       };
     }
 
@@ -1585,7 +1742,11 @@ function buildMobileAppHtml() {
       const wasBottom = stickBottom;
       const msgs = Array.isArray(snap.messages) ? snap.messages : [];
       if (!msgs.length && !snap.busy) {
-        msgEl.innerHTML = '<div class="empty-tip">暂无消息，发一句话或在屏幕右滑切换会话</div>';
+        const emptyHtml = '<div class="empty-tip">暂无消息，发一句话' + (isDesktopLayout() ? '或在左侧切换会话' : '或在屏幕右滑切换会话') + '</div>';
+        if (msgEl.dataset.lastHtml !== emptyHtml) {
+          msgEl.innerHTML = emptyHtml;
+          msgEl.dataset.lastHtml = emptyHtml;
+        }
       } else {
         let html = msgs.map((m) => {
           if (m.role === 'user') {
@@ -1631,9 +1792,17 @@ function buildMobileAppHtml() {
         dock.querySelectorAll('.ap-btn').forEach((btn) => {
           btn.onclick = async () => {
             btn.disabled = true;
-            const res = await apiAction({ action: 'click-approval', index: Number(btn.dataset.idx), label: btn.dataset.label });
-            if (res?.ok) showToast('已触发: ' + btn.dataset.label);
-            else showToast(res?.actionResult?.error || '操作失败');
+            try {
+              const res = await apiAction({ action: 'click-approval', index: Number(btn.dataset.idx), label: btn.dataset.label });
+              if (res?.ok) showToast('已触发: ' + btn.dataset.label);
+              else {
+                btn.disabled = false;
+                showToast(res?.error || res?.actionResult?.error || '操作失败');
+              }
+            } catch (e) {
+              btn.disabled = false;
+              showToast(e?.message || '操作失败');
+            }
           };
         });
       }
@@ -1649,28 +1818,39 @@ function buildMobileAppHtml() {
       items.push({ cls: 'chip', text: '/compact', act: () => apiAction({ action: 'send', text: '/compact' }) });
       items.push({ cls: 'chip', text: '展开/收起思考', act: () => apiAction({ action: 'toggle-thinking' }) });
 
-      chips.innerHTML = '';
-      for (const it of items) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = it.cls;
-        b.textContent = it.text;
-        b.onclick = async () => {
-          if (it.isSuggest) {
-            const ta = $('input');
-            if (!ta.value.trim()) {
-              stickBottom = true;
-              await apiAction({ action: 'send', text: it.raw });
-              showToast('已发送建议');
-            } else {
-              ta.value = it.raw;
-              ta.focus();
+      const chipsSig = JSON.stringify(items.map((it) => [it.cls, it.text, it.raw || '']));
+      if (chips.dataset.sig !== chipsSig) {
+        chips.dataset.sig = chipsSig;
+        chips.innerHTML = '';
+        for (const it of items) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = it.cls;
+          b.textContent = it.text;
+          b.onclick = async () => {
+            try {
+              if (it.isSuggest) {
+                const taEl = $('input');
+                if (!taEl.value.trim()) {
+                  stickBottom = true;
+                  const r = await apiAction({ action: 'send', text: it.raw });
+                  if (r?.ok) showToast('已发送建议');
+                  else showToast(r?.error || r?.actionResult?.error || '发送失败');
+                } else {
+                  taEl.value = it.raw;
+                  if (typeof autoGrow === 'function') autoGrow();
+                  taEl.focus();
+                }
+              } else if (it.act) {
+                const r = await it.act();
+                if (r && !r.ok) showToast(r.error || r.actionResult?.error || '操作失败');
+              }
+            } catch (e) {
+              showToast(e?.message || '操作失败');
             }
-          } else if (it.act) {
-            await it.act();
-          }
-        };
-        chips.appendChild(b);
+          };
+          chips.appendChild(b);
+        }
       }
 
       // Drawer Conversations
@@ -1686,28 +1866,36 @@ function buildMobileAppHtml() {
       }
     }
 
+    let snapshotInflight = false;
+    let snapshotSeq = 0;
     async function fetchSnapshot() {
+      if (snapshotInflight) return;
+      snapshotInflight = true;
+      const mySeq = ++snapshotSeq;
       const q = currentTargetId ? '?targetId=' + encodeURIComponent(currentTargetId) : '';
       const doFetch = () => fetch((apiBase || '') + '/api/snapshot' + q, { headers: authHeaders(), cache: 'no-store' });
       try {
         let res = await doFetch();
         if (res.status === 401) { location.reload(); return; }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        renderSnapshot(data);
+        if (mySeq === snapshotSeq) renderSnapshot(data);
       } catch {
         const switched = await tryFailoverEndpoint();
         if (switched) {
           try {
             const retryRes = await doFetch();
             if (retryRes.status === 401) { location.reload(); return; }
+            if (!retryRes.ok) throw new Error('HTTP ' + retryRes.status);
             const retryData = await retryRes.json();
-            renderSnapshot(retryData);
+            if (mySeq === snapshotSeq) renderSnapshot(retryData);
             return;
           } catch {}
         }
         $('status-dot').className = 'dot err';
         $('sub-meta').textContent = '连接中断，正在重连…';
       } finally {
+        snapshotInflight = false;
         schedulePoll();
       }
     }
@@ -1759,9 +1947,13 @@ function buildMobileAppHtml() {
       }
       openSheet('切换模型', opts, async (opt) => {
         showToast('正在切换至 ' + opt.label + '…');
-        const r = await apiAction({ action: 'select-model', label: opt.label, modelId: opt.modelId });
-        if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
-        else showToast(r?.actionResult?.error || '切换模型失败');
+        try {
+          const r = await apiAction({ action: 'select-model', label: opt.label, modelId: opt.modelId });
+          if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
+          else showToast(r?.error || r?.actionResult?.error || '切换模型失败');
+        } catch (err) {
+          showToast(err?.message || '切换模型失败');
+        }
       });
     }
 
@@ -1779,9 +1971,13 @@ function buildMobileAppHtml() {
       }));
       openSheet('切换权限预设', opts, async (opt) => {
         showToast('正在切换权限…');
-        const r = await apiAction({ action: 'select-permission', preset: opt.key });
-        if (r?.ok) showToast('已切换权限: ' + (r.actionResult?.permissionLabel || opt.label));
-        else showToast(r?.actionResult?.error || '切换权限失败');
+        try {
+          const r = await apiAction({ action: 'select-permission', preset: opt.key });
+          if (r?.ok) showToast('已切换权限: ' + (r.actionResult?.permissionLabel || opt.label));
+          else showToast(r?.error || r?.actionResult?.error || '切换权限失败');
+        } catch (err) {
+          showToast(err?.message || '切换权限失败');
+        }
       });
     }
 
@@ -1826,10 +2022,8 @@ function buildMobileAppHtml() {
       });
     }
 
-    $('btn-img').onclick = () => $('img-input').click();
-    $('img-input').onchange = async (e) => {
-      const files = Array.from(e.target.files || []);
-      e.target.value = '';
+    async function uploadImageFiles(rawFiles) {
+      const files = Array.from(rawFiles || []).filter(Boolean);
       if (!files.length) return;
       showToast('正在上传 ' + files.length + ' 张图片…');
       for (const f of files) {
@@ -1839,7 +2033,7 @@ function buildMobileAppHtml() {
           if (r?.ok) {
             uploadedNames.push(payload.name);
           } else {
-            showToast(r?.actionResult?.error || '传图失败');
+            showToast(r?.error || r?.actionResult?.error || '传图失败');
           }
         } catch (err) {
           showToast(err?.message || '传图失败');
@@ -1853,7 +2047,52 @@ function buildMobileAppHtml() {
         syncSendButtonUI();
         showToast('✅ 图片已附带到输入框');
       }
+    }
+
+    $('btn-img').onclick = () => $('img-input').click();
+    $('img-input').onchange = (e) => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = '';
+      void uploadImageFiles(files);
     };
+
+    const composerCardEl = document.querySelector('.composer-card');
+    let dragDepth = 0;
+    const hasDraggedFiles = (e) => Boolean(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+    if (composerCardEl) {
+      composerCardEl.addEventListener('dragenter', (e) => {
+        if (!hasDraggedFiles(e)) return;
+        e.preventDefault();
+        dragDepth += 1;
+        composerCardEl.classList.add('drag-over');
+      });
+      composerCardEl.addEventListener('dragover', (e) => {
+        if (!hasDraggedFiles(e)) return;
+        e.preventDefault();
+        composerCardEl.classList.add('drag-over');
+      });
+      composerCardEl.addEventListener('dragleave', () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) composerCardEl.classList.remove('drag-over');
+      });
+      composerCardEl.addEventListener('drop', (e) => {
+        dragDepth = 0;
+        composerCardEl.classList.remove('drag-over');
+        if (!hasDraggedFiles(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const imgFiles = Array.from(e.dataTransfer?.files || []).filter((f) => String(f.type || '').startsWith('image/'));
+        if (imgFiles.length) void uploadImageFiles(imgFiles);
+      });
+    }
+    document.addEventListener('dragover', (e) => {
+      if (hasDraggedFiles(e)) e.preventDefault();
+    });
+    document.addEventListener('drop', (e) => {
+      dragDepth = 0;
+      if (composerCardEl) composerCardEl.classList.remove('drag-over');
+      if (hasDraggedFiles(e)) e.preventDefault();
+    });
 
     $('btn-quota').onclick = (e) => {
       e.stopPropagation();
@@ -1868,41 +2107,83 @@ function buildMobileAppHtml() {
 
     const backdropEl = $('drawer-backdrop');
     const drawerEl = $('drawer-panel');
+    function syncSidebarA11y() {
+      const btnDrawer = $('btn-drawer');
+      const visible = isDesktopLayout()
+        ? !document.body.classList.contains('sidebar-collapsed')
+        : backdropEl.classList.contains('open');
+      if (!visible && backdropEl.contains(document.activeElement)) {
+        try { document.activeElement.blur(); } catch {}
+      }
+      backdropEl.setAttribute('aria-hidden', visible ? 'false' : 'true');
+      if ('inert' in backdropEl) backdropEl.inert = !visible;
+      if (btnDrawer) btnDrawer.setAttribute('aria-expanded', visible ? 'true' : 'false');
+    }
     function openDrawer() {
       backdropEl.classList.remove('dragging');
       drawerEl.style.transform = '';
       backdropEl.style.backgroundColor = '';
       backdropEl.classList.add('open');
-      backdropEl.setAttribute('aria-hidden', 'false');
+      syncSidebarA11y();
     }
     function closeDrawer() {
       backdropEl.classList.remove('dragging', 'open');
       drawerEl.style.transform = '';
       backdropEl.style.backgroundColor = '';
-      backdropEl.setAttribute('aria-hidden', 'true');
+      syncSidebarA11y();
     }
 
     $('conv-list').addEventListener('click', async (e) => {
       const btn = e.target?.closest?.('.conv-item');
       if (!btn || !btn.dataset.cid) return;
-      closeDrawer();
+      if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
       showToast('正在切换会话…');
-      const r = await apiAction({ action: 'switch-conversation', id: btn.dataset.cid });
-      if (!r?.ok) showToast(r?.actionResult?.error || '切换会话失败');
+      try {
+        const r = await apiAction({ action: 'switch-conversation', id: btn.dataset.cid });
+        if (!r?.ok) showToast(r?.error || r?.actionResult?.error || '切换会话失败');
+      } catch (err) {
+        showToast(err?.message || '切换会话失败');
+      }
     });
-    $('btn-drawer').onclick = openDrawer;
-    backdropEl.onclick = (e) => { if (e.target === backdropEl) closeDrawer(); };
-    $('btn-new-chat').onclick = async () => {
-      closeDrawer();
-      showToast('已新建对话');
-      await apiAction({ action: 'switch-conversation', id: 'new' });
+    $('btn-drawer').onclick = () => {
+      if (isDesktopLayout()) {
+        document.body.classList.toggle('sidebar-collapsed');
+        syncSidebarA11y();
+      } else {
+        openDrawer();
+      }
     };
+    backdropEl.onclick = (e) => { if (!isDesktopLayout() && e.target === backdropEl) closeDrawer(); };
+    $('btn-new-chat').onclick = async () => {
+      if (!isDesktopLayout()) closeDrawer();
+      try {
+        const r = await apiAction({ action: 'switch-conversation', id: 'new' });
+        if (r?.ok) showToast('已新建对话');
+        else showToast(r?.error || r?.actionResult?.error || '新建对话失败');
+      } catch (err) {
+        showToast(err?.message || '新建对话失败');
+      }
+    };
+    const handleLayoutChange = () => {
+      if (isDesktopLayout() && backdropEl.classList.contains('open')) {
+        closeDrawer();
+      } else {
+        syncSidebarA11y();
+      }
+      if (typeof autoGrow === 'function') autoGrow();
+    };
+    window.addEventListener('resize', handleLayoutChange);
+    if (desktopMq) {
+      if (typeof desktopMq.addEventListener === 'function') desktopMq.addEventListener('change', handleLayoutChange);
+      else if (typeof desktopMq.addListener === 'function') desktopMq.addListener(handleLayoutChange);
+    }
+    syncSidebarA11y();
 
-    // 全屏随手右滑打开左侧抽屉 & 左滑关闭抽屉
+    // 全屏随手右滑打开左侧抽屉 & 左滑关闭抽屉（仅移动端启用）
     let swipeState = null;
     document.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1) { swipeState = null; return; }
+      if (isDesktopLayout() || e.touches.length !== 1) { swipeState = null; return; }
       const t = e.touches[0];
       const isOpen = backdropEl.classList.contains('open');
       const target = e.target;
@@ -1922,7 +2203,7 @@ function buildMobileAppHtml() {
     }, { passive: true });
 
     document.addEventListener('touchmove', (e) => {
-      if (!swipeState || e.touches.length !== 1) return;
+      if (!swipeState || isDesktopLayout() || e.touches.length !== 1) return;
       const t = e.touches[0];
       const dx = t.clientX - swipeState.startX;
       const dy = t.clientY - swipeState.startY;
@@ -1994,19 +2275,49 @@ function buildMobileAppHtml() {
 
     const autoGrow = () => {
       ta.style.height = 'auto';
-      ta.style.height = Math.min(112, Math.max(28, ta.scrollHeight)) + 'px';
+      const maxH = isDesktopLayout() ? 180 : 112;
+      ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
       syncSendButtonUI();
     };
     ta.addEventListener('input', autoGrow);
     ta.addEventListener('focus', () => { setTimeout(syncViewportHeight, 120); });
     ta.addEventListener('blur', () => { setTimeout(syncViewportHeight, 80); });
+    ta.addEventListener('paste', (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imgFiles = [];
+      for (const it of items) {
+        if (String(it.type || '').startsWith('image/')) {
+          const f = it.getAsFile?.();
+          if (f) imgFiles.push(f);
+        }
+      }
+      if (!imgFiles.length) {
+        const directFiles = Array.from(e.clipboardData?.files || []).filter((f) => String(f.type || '').startsWith('image/'));
+        imgFiles.push(...directFiles);
+      }
+      if (imgFiles.length) {
+        e.preventDefault();
+        void uploadImageFiles(imgFiles);
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (!$('sheet-backdrop').hidden) { $('sheet-backdrop').hidden = true; return; }
+      if (!$('quota-drawer').hidden) { $('quota-drawer').hidden = true; return; }
+      if (!isDesktopLayout() && backdropEl.classList.contains('open')) closeDrawer();
+    });
 
     async function sendInput() {
       if (sending) return;
       const rawText = ta.value.trim();
       if (!rawText && !uploadedNames.length && latestSnap?.busy) {
-        await apiAction({ action: 'stop' });
-        showToast('已请求停止生成');
+        try {
+          const r = await apiAction({ action: 'stop' });
+          if (r?.ok) showToast('已请求停止生成');
+          else showToast(r?.error || r?.actionResult?.error || '停止失败');
+        } catch (err) {
+          showToast(err?.message || '停止失败');
+        }
         return;
       }
       const text = rawText || (uploadedNames.length ? '请查看图片' : '');
@@ -2022,8 +2333,10 @@ function buildMobileAppHtml() {
           $('attach-hint').hidden = true;
           autoGrow();
         } else {
-          showToast(r?.actionResult?.error || '发送失败');
+          showToast(r?.error || r?.actionResult?.error || '发送失败');
         }
+      } catch (err) {
+        showToast(err?.message || '发送失败');
       } finally {
         sending = false;
         $('btn-send').disabled = false;
@@ -2045,28 +2358,45 @@ function buildMobileAppHtml() {
 </html>`;
 }
 
-// ==================== HTTP 服务器管理器（仅监听本机回环 + 内网私网 IP） ====================
+// ==================== HTTP 服务器管理器（双栈监听，入口强制仅放行本机及内网私网/Tailscale 来源） ====================
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
-    let raw = '';
+    const chunks = [];
     let len = 0;
-    let aborted = false;
+    let settled = false;
+    const finishErr = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
     req.on('data', (chunk) => {
-      len += chunk.length;
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      len += buf.length;
       if (len > MAX_ACTION_BODY_BYTES) {
-        aborted = true;
-        reject(Object.assign(new Error('请求体过大'), { status: 413 }));
-        req.destroy();
+        try { req.pause(); } catch {}
+        finishErr(Object.assign(new Error('请求体过大'), { status: 413 }));
         return;
       }
-      raw += chunk;
+      chunks.push(buf);
     });
     req.on('end', () => {
-      if (aborted) return;
-      try { resolve(raw ? JSON.parse(raw) : {}); } catch { reject(Object.assign(new Error('JSON 格式错误'), { status: 400 })); }
+      if (settled) return;
+      settled = true;
+      try {
+        const raw = chunks.length ? Buffer.concat(chunks, len).toString('utf8') : '';
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch {
+        reject(Object.assign(new Error('JSON 格式错误'), { status: 400 }));
+      }
     });
-    req.on('error', reject);
+    req.on('close', () => {
+      if (!settled && !req.complete) {
+        finishErr(Object.assign(new Error('请求连接已中断'), { status: 400 }));
+      }
+    });
+    req.on('error', finishErr);
   });
 }
 
@@ -2111,6 +2441,8 @@ function createRemoteHttpHandler(initialConfig) {
 
   return async (req, res) => {
     const config = getActiveConfig();
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const HTML_CSP = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https:; base-uri 'none'; frame-ancestors 'none'";
     const remoteIp = req.socket?.remoteAddress || '';
     if (!isAllowedPrivateAddress(remoteIp)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -2123,7 +2455,7 @@ function createRemoteHttpHandler(initialConfig) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id, X-AG-Device-Hint');
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
     if (req.method === 'OPTIONS') {
@@ -2167,7 +2499,7 @@ function createRemoteHttpHandler(initialConfig) {
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: '未授权，请在终端运行 ag-context-meter remote 重新扫码' }));
       } else {
-        res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': HTML_CSP });
         res.end(cached401);
       }
       return;
@@ -2187,7 +2519,7 @@ function createRemoteHttpHandler(initialConfig) {
         cookiesToSet.push(`ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax; Max-Age=31536000`);
       }
       if (cookiesToSet.length) res.setHeader('Set-Cookie', cookiesToSet);
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_CSP });
       res.end(cachedHtml);
       return;
     }
@@ -2235,7 +2567,9 @@ function createRemoteHttpHandler(initialConfig) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(result));
       } catch (err) {
-        res.writeHead(err?.status || 500, { 'Content-Type': 'application/json; charset=utf-8' });
+        const errHeaders = { 'Content-Type': 'application/json; charset=utf-8' };
+        if (err?.status === 413) errHeaders.Connection = 'close';
+        res.writeHead(err?.status || 500, errHeaders);
         res.end(JSON.stringify({ ok: false, error: err?.message || '操作失败' }));
       }
       return;
@@ -2493,12 +2827,16 @@ function printRemoteCli({ resetToken = false, jsonMode = false } = {}) {
   console.log('');
   console.log('📷 用 iPhone 相机扫描下方融合二维码即可打开：');
   console.log('');
-  const primaryGrid = encodeQrCodeMatrix(info.primaryUrl);
-  const cols = Number(process.stdout.columns || 0);
-  const qrForTerminal = (cols > 0 && cols < primaryGrid.length + 6)
-    ? `http://${(info.tailscaleUrls[0]?.address || info.lanUrls[0]?.address || '127.0.0.1')}:${info.port}/?token=${info.token}`
-    : info.primaryUrl;
-  console.log(renderTerminalQr(qrForTerminal));
+  try {
+    const primaryGrid = encodeQrCodeMatrix(info.primaryUrl);
+    const cols = Number(process.stdout.columns || 0);
+    const qrForTerminal = (cols > 0 && cols < primaryGrid.length + 6)
+      ? `http://${(info.tailscaleUrls[0]?.address || info.lanUrls[0]?.address || '127.0.0.1')}:${info.port}/?token=${info.token}`
+      : info.primaryUrl;
+    console.log(renderTerminalQr(qrForTerminal));
+  } catch (err) {
+    console.log(`⚠️ 融合二维码字符过长已降级，请直接复制上方融合链接或缩短主机名后重试 (${err?.message || err})`);
+  }
   console.log('');
   console.log('💡 一码三用说明：');
   console.log('   1. 扫码在 Safari 打开后，点击底部「分享」→「添加到主屏幕」');
@@ -2532,6 +2870,8 @@ module.exports = {
   renderTerminalQr,
   renderQrSvg,
   buildMobileAppHtml,
+  readJsonBody,
+  createRemoteHttpHandler,
   recordPairedDeviceAccess,
   getPairedDevicesSummary,
   startMobileRemoteServer,

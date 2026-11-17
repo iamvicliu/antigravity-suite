@@ -1761,6 +1761,8 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
       encodeQrCodeMatrix,
       buildFusedPairingUrl,
       buildMobileAppHtml,
+      readJsonBody,
+      createRemoteHttpHandler,
       recordPairedDeviceAccess,
       getPairedDevicesSummary
     } = require('./mobile-remote.js');
@@ -1981,6 +1983,107 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
     assert.ok(inlineScriptMatch, '手机端 HTML 应包含内联 <script>');
     assert.doesNotThrow(() => new (require('node:vm').Script)(inlineScriptMatch[1]), '手机端内联 <script> 必须通过语法校验');
+
+    // 桌面宽屏双栏适配与 Opus 审计安全/A11y/UTF-8 修复验证
+    assert.ok(
+      mobileHtml.includes('@media (min-width:860px) and (min-height:521px) and (hover:hover) and (pointer:fine)'),
+      '应包含仅桌面精细指针与非横屏矮屏生效的双栏媒体查询'
+    );
+    assert.ok(
+      mobileHtml.includes('.drawer-brand') && mobileHtml.includes('sidebar-collapsed') && mobileHtml.includes('.composer-card.drag-over'),
+      '桌面端应包含侧边栏品牌区、折叠态样式及拖拽上传高亮样式'
+    );
+    assert.ok(
+      !mobileHtml.includes('user-scalable=no') && mobileHtml.includes('touch-action:manipulation'),
+      '应遵循无障碍缩放规范并通过 touch-action:manipulation 抑制双击缩放'
+    );
+    assert.ok(
+      mobileHtml.includes('syncSidebarA11y') && mobileHtml.includes('aria-expanded') && mobileHtml.includes('dragDepth') && mobileHtml.includes('snapshotInflight'),
+      '客户端脚本应包含侧边栏无障碍同步、拖拽防抖计数与 snapshot 并发去重'
+    );
+    const escFnMatch = inlineScriptMatch[1].match(/function esc\(s\)\s*\{[\s\S]*?\n\s*\}/);
+    assert.ok(escFnMatch, '应可提取客户端 esc() 函数进行直接行为校验');
+    const escFn = new Function(`${escFnMatch[0]}; return esc;`)();
+    assert.equal(escFn(0), '0', 'esc(0) 应保留数字 0');
+    assert.equal(
+      escFn(`<a "b" 'c' &>`),
+      '&lt;a &quot;b&quot; &#39;c&#39; &amp;&gt;',
+      'esc() 必须完整转义 < > " \' &'
+    );
+
+    // iPadOS 桌面模式 UA + 客户端 X-AG-Device-Hint 识别为 iPad
+    recordPairedDeviceAccess({
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15',
+        'x-ag-device-id': 'dev-ipad-1',
+        'x-ag-device-hint': 'iPad',
+        host: '100.64.0.2:18765'
+      },
+      socket: { remoteAddress: '100.64.0.88' }
+    }, resetInfo.token);
+    const ipadSnap = getPairedDevicesSummary(resetInfo.token);
+    assert.equal(ipadSnap.devices[0]?.label, 'iPad', '携带 X-AG-Device-Hint: iPad 时即使为 Mac 桌面 UA 也应识别为 iPad');
+
+    // readJsonBody UTF-8 多字节汉字跨 chunk 拼接与 413 上限拦截
+    const { EventEmitter } = require('node:events');
+    const utf8Buf = Buffer.from(JSON.stringify({ msg: '桌面宽屏适配中文分片测试' }), 'utf8');
+    const splitAt = utf8Buf.indexOf(0xe4) + 1; // 刻意在汉字 UTF-8 首字节后劈开
+    const chunkReq = new EventEmitter();
+    chunkReq.complete = true;
+    chunkReq.pause = () => {};
+    const bodyPromise = readJsonBody(chunkReq);
+    chunkReq.emit('data', utf8Buf.subarray(0, splitAt));
+    chunkReq.emit('data', utf8Buf.subarray(splitAt));
+    chunkReq.emit('end');
+    const parsedUtf8 = await bodyPromise;
+    assert.equal(parsedUtf8.msg, '桌面宽屏适配中文分片测试', 'readJsonBody 跨多字节 UTF-8 分片拼接应无乱码');
+
+    const overReq = new EventEmitter();
+    overReq.complete = false;
+    overReq.pause = () => { overReq.paused = true; };
+    const overPromise = readJsonBody(overReq);
+    const bigChunk = Buffer.alloc(8 * 1024 * 1024, 0x61);
+    overReq.emit('data', bigChunk);
+    overReq.emit('data', bigChunk); // 16MB > 15MB (MAX_ACTION_BODY_BYTES)
+    await assert.rejects(overPromise, (err) => err?.status === 413, '超过请求体上限时应返回 413');
+    assert.equal(overReq.paused, true, '触发 413 时应暂停流而非粗暴 destroy 导致客户端收不到 JSON');
+
+    // HTTP 安全响应头 (CSP / nosniff / CORS X-AG-Device-Hint)
+    const remoteHandler = createRemoteHttpHandler({ port: resetInfo.port, token: resetInfo.token });
+    const runMockReq = async ({ method = 'GET', reqUrl = '/', headers = {} }) => {
+      const resHeaders = {};
+      let statusCode = 0;
+      let body = '';
+      const mockRes = {
+        setHeader(k, v) { resHeaders[String(k).toLowerCase()] = v; },
+        writeHead(code, hdrs = {}) {
+          statusCode = code;
+          for (const [k, v] of Object.entries(hdrs)) {
+            resHeaders[String(k).toLowerCase()] = v;
+          }
+        },
+        end(chunk) { if (chunk) body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); }
+      };
+      await remoteHandler({ method, url: reqUrl, headers, socket: { remoteAddress: '127.0.0.1' } }, mockRes);
+      return { statusCode, headers: resHeaders, body };
+    };
+    const r401 = await runMockReq({ reqUrl: '/' });
+    assert.equal(r401.statusCode, 401);
+    assert.equal(r401.headers['x-content-type-options'], 'nosniff');
+    assert.ok(String(r401.headers['content-security-policy'] || '').includes("frame-ancestors 'none'"));
+
+    const r200 = await runMockReq({ reqUrl: '/?token=' + encodeURIComponent(resetInfo.token), headers: { 'user-agent': 'curl/8.0' } });
+    assert.equal(r200.statusCode, 200);
+    assert.equal(r200.headers['x-content-type-options'], 'nosniff');
+    assert.ok(String(r200.headers['content-security-policy'] || '').includes("base-uri 'none'"));
+
+    const rOpt = await runMockReq({
+      method: 'OPTIONS',
+      reqUrl: '/api/snapshot',
+      headers: { origin: 'http://localhost:18765' }
+    });
+    assert.equal(rOpt.statusCode, 204);
+    assert.ok(String(rOpt.headers['access-control-allow-headers'] || '').includes('X-AG-Device-Hint'));
 
     api.dispose?.();
     enhancer.dispose?.();
