@@ -1970,3 +1970,150 @@ test('需求 7: #ag-chat-nav-float 移除按钮内圈边框并使用 Lucide SVG 
   enhancer.dispose?.();
   api.dispose?.();
 });
+
+// =========================================================================
+// 需求 8: Cloudflare 远程公网隧道（免登录 Quick Tunnel + 自有账号固定域名）与安全防护
+// =========================================================================
+test('需求 8: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开关切换与安全拦截', async () => {
+  const os = require('node:os');
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cf-tunnel-test-'));
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_CONTEXT_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const {
+      extractCloudflareTunnelToken,
+      normalizeTunnelHostname,
+      saveRemoteTunnelConfig,
+      buildFusedPairingUrl,
+      buildRemoteInfo,
+      isAllowedPrivateOrigin
+    } = require('./mobile-remote.js');
+
+    // 1. Token 与域名规范化提取
+    assert.equal(
+      extractCloudflareTunnelToken('sudo cloudflared service install eyJhIjoiMTIzIiwidCI6IjQ1NiIsInMiOiI3ODkifQ=='),
+      'eyJhIjoiMTIzIiwidCI6IjQ1NiIsInMiOiI3ODkifQ',
+      '应从完整的 service install 命令中提取 JWT Tunnel Token'
+    );
+    assert.equal(
+      normalizeTunnelHostname('ag.example.com/path'),
+      'https://ag.example.com',
+      '缺少 https:// 前缀的公网域名应自动补齐并规范为 origin'
+    );
+    assert.equal(normalizeTunnelHostname('http://insecure.example.com'), '', '公网固定域名必须使用 https://');
+
+    // 2. HTTPS 公网引导链接应省略 :18765 端口并保持 ?token= 首参数与 &endpoints=
+    const tunnelUrl = buildFusedPairingUrl({
+      entryBaseUrl: 'https://demo-words.trycloudflare.com',
+      port: 18765,
+      token: 'tok-cf-123456',
+      name: 'dev-mac',
+      hosts: ['10.0.1.25', 'demo-words.trycloudflare.com'],
+      endpoints: [
+        { url: 'http://10.0.1.25:18765', kind: 'lan', priority: 0 },
+        { url: 'https://demo-words.trycloudflare.com', kind: 'tunnel', priority: 250 }
+      ]
+    });
+    assert.ok(tunnelUrl.startsWith('https://demo-words.trycloudflare.com/?token=tok-cf-123456'), '公网隧道链接应使用 https:// 无端口前缀并保留 ?token=');
+    assert.ok(!tunnelUrl.includes(':18765/?token='), 'HTTPS 公网入口不得拼接本地 :18765 端口');
+    assert.ok(tunnelUrl.includes('&endpoints='), '公网隧道融合链接应保留 &endpoints= 多端点列表');
+
+    // 3. 保存固定域名与 Token 后 buildRemoteInfo 不得泄露明文 tunnelToken
+    saveRemoteTunnelConfig({
+      enabled: false,
+      tunnelMode: 'named',
+      tunnelHostname: 'ag.example.com',
+      tunnelToken: 'eyJhIjoiMTIzIiwidCI6IjQ1NiIsInMiOiI3ODkifQ'
+    });
+    const baseInfo = buildRemoteInfo({
+      resetToken: false,
+      tunnelStatus: { enabled: false, state: 'stopped', mode: 'named', binaryAvailable: true }
+    });
+    assert.equal(baseInfo.hasTunnelToken, true);
+    assert.equal(baseInfo.tunnelHostname, 'https://ag.example.com');
+    assert.ok(!JSON.stringify(baseInfo).includes('eyJhIjoi'), 'buildRemoteInfo 输出中绝不得回显明文 tunnelToken');
+    assert.equal(baseInfo.channels.length, 4, '默认 buildRemoteInfo 应包含 Wi-Fi / Tailscale / Bonjour / Cloudflare 四通道');
+
+    // 4. 运行态 activeTunnelOrigin CORS 放行校验
+    assert.equal(isAllowedPrivateOrigin('https://demo-words.trycloudflare.com', 'https://demo-words.trycloudflare.com'), true);
+    assert.equal(isAllowedPrivateOrigin('https://evil.com', 'https://demo-words.trycloudflare.com'), false);
+
+    // 4b. cloudflared 启动参数强制 IPv4 + HTTP/2，移动端不硬编码“内网直连”并启用超时切换
+    const remoteSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+    assert.ok(
+      remoteSrc.includes("'--edge-ip-version', '4'") && remoteSrc.includes("'--protocol', 'http2'"),
+      'cloudflared 应固定传入 --edge-ip-version 4 与 --protocol http2'
+    );
+    assert.ok(
+      !remoteSrc.includes('<div id="sub-meta" class="sub-meta">内网直连</div>'),
+      'mobile-remote PWA 不得硬编码静态“内网直连”文本'
+    );
+    assert.ok(
+      remoteSrc.includes('function getActiveChannelLabel()') && remoteSrc.includes('function fetchWithTimeout(') && remoteSrc.includes('AbortController'),
+      'mobile-remote PWA 应具备通道标签识别与 AbortController 超时故障切换'
+    );
+
+    // 5. #ag-remote-popover 开关启用 / 固定域名表单交互验证
+    let tunnelPosts = [];
+    const env = createDomEnv();
+    env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
+    env.sandbox.fetch = async (url, init) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (String(url).includes('/remote-info')) {
+        return { ok: true, json: async () => ({ ok: true, data: baseInfo }) };
+      }
+      if (String(url).includes('/remote-tunnel')) {
+        tunnelPosts.push(body);
+        saveRemoteTunnelConfig(body);
+        const runningInfo = buildRemoteInfo({
+          resetToken: false,
+          tunnelStatus: {
+            enabled: Boolean(body.enabled),
+            state: body.enabled ? 'running' : 'stopped',
+            mode: body.tunnelMode || 'quick',
+            publicUrl: body.enabled ? 'https://live-demo.trycloudflare.com' : '',
+            binaryAvailable: true
+          }
+        });
+        return { ok: true, json: async () => ({ ok: true, data: runningInfo }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const enhancer = env.sandbox.__AGEnhancer;
+    const shadow = env.getShadow();
+    const remotePop = shadow.getElementById('ag-remote-popover');
+
+    enhancer.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+    const toggleBtn = remotePop.querySelector('#ag-rp-tunnel-toggle');
+    const cfgBtn = remotePop.querySelector('#ag-rp-tunnel-cfg-btn');
+    assert.ok(toggleBtn && cfgBtn, '弹窗应渲染 #ag-rp-tunnel-toggle 与 #ag-rp-tunnel-cfg-btn');
+
+    // 点击展开固定域名配置表单
+    cfgBtn.click();
+    assert.ok(remotePop.querySelector('#ag-rp-tunnel-form'), '点击 固定域名 应展开固定域名与 Token 配置表单');
+
+    // Re-query fresh button after cfgBtn.click() re-rendered popover
+    remotePop.querySelector('#ag-rp-tunnel-toggle')?.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(tunnelPosts[0]?.enabled, true, '点击开启应请求 /remote-tunnel enabled=true');
+    const tunnelRow = remotePop.querySelectorAll('.ag-rp-channel').find(el => el.getAttribute('data-channel') === 'tunnel');
+    assert.equal(tunnelRow?.getAttribute('data-selected'), 'true', '隧道就绪后应优先作为通用跨网扫码默认通道');
+
+    enhancer.dispose?.();
+    api.dispose?.();
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});

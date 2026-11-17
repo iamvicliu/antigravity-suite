@@ -16,12 +16,14 @@
 
 ## 一、装上它，能帮你解决哪 6 个日常痛点？
 
-1. **📱 手机远程操作 PWA（一码三用融合配对 · 告别官方远程卡顿、杀后台与键盘遮挡）**
+1. **📱 手机远程操作 PWA（四通道可选 · Cloudflare 跨网免装软件直连 + Wi-Fi / Tailscale / Bonjour 内网直连）**
    - 官方 Remote 依赖 Google 云端中继，在手机 Safari 中常见加载慢、切后台断连与键盘遮挡输入框的问题。
-   - **一码三用融合配对（Wi-Fi / Tailscale / Bonjour）**：点击桌面端右上角工具栏中的 **`「📱 远程」`**（弹窗标题 **`「手机远程操作配对」`**，或终端运行 `ag-context-meter remote`），生成**单枚高清融合二维码与单条配对链接**：同一套载荷同时嵌入 **`此 Wi-Fi`（物理局域网 IP）**、**`Tailscale`（Tailnet IP / MagicDNS `*.ts.net`）** 与 **`Bonjour`（`*.local` 局域网域名）** 多端点列表（弹窗下方三行状态清单支持点击切换引导主机，无需双 Tab 来回切码）。用 iPhone 扫码在 Safari 打开后点 **「分享」→「添加到主屏幕」**，即可作为**纯内网毫秒直连的全屏独立 App** 稳定使用。
-   - **断线自动切网容灾 & 4G/5G 可用**：首次扫码会将多通道端点列表与凭证持久化至手机本地；室内切出门（Wi-Fi → 4G/5G Tailscale）或局域网重分配 IP 时，客户端并发探测 `GET /api/ping` 在毫秒级自动切换可用通道；服务端采用 IPv4/IPv6 双栈 `[::]:18765` 监听与私网 `Origin`/IP 白名单 + 48 位随机口令保护，可在弹窗点 **「重置密钥」**（或运行 `ag-context-meter remote --reset-token`）立即作废旧链接。
+   - **一键开启 Cloudflare 公网 HTTPS 隧道（解决 4G/5G 外网冷扫码）**：在桌面端右上角点击 **`「📱 远程」`**，弹窗通道栏最下方提供 **`Cloudflare 隧道` 一键开关**（或终端运行 `ag-context-meter remote --tunnel on`）：
+     - **免登录临时隧道（默认）**：无需注册 Cloudflare 账号，开启即由本机 `cloudflared` 自动分配 `https://*.trycloudflare.com` 公网入口，自动成为默认万能码；手机无论在 4G/5G 外网、公司/家用 Wi-Fi，还是未安装 Tailscale，直接用系统相机扫码即可秒进，且全程 HTTPS 支持 Safari PWA 离线 Service Worker 缓存。
+     - **自有 Cloudflare 账号固定域名隧道（可选）**：点行尾 **`固定域名 ▾`**，粘贴自有 Cloudflare Zero Trust 域名与 Tunnel Token（支持直接粘贴完整的 `cloudflared service install eyJ...` 命令自动提取 Token），重启电脑与“添加到主屏幕”后**固定网址永不失效**。
+   - **纯内网三通道融合 & 会话期自动切换**：不开启公网隧道时，二维码与链接默认融合 **`此 Wi-Fi`（物理局域网 IP）**、**`Tailscale`（Tailnet IP / MagicDNS `*.ts.net`）** 与 **`Bonjour`（`*.local` 域名）**；打开网页后将多端点列表持久化至手机本地，内网切网或重分配 IP 时自动通过 `GET /api/ping` 并发探测切流；点任意可用通道行即可切换二维码引导入口。
+   - **安全与口令防护**：所有远程请求均需校验 48 位随机 `token`（支持在弹窗点 **`重置密钥`** 或 `--reset-token` 立即作废旧链接）；`tunnelEnabled` 关闭时服务端自动拒绝一切带 `CF-Ray`/`CF-Connecting-IP` 代理头请求（403），并内置单 IP 失败限流（60s 内错误 12 次触发 429）。
    - **流畅不遮挡 & 完整操控**：全宽无框 Markdown 排版、灵动岛与 `visualViewport` 键盘动态适配、切回前台 **50ms 内**瞬时重连；复刻 Mac 圆角输入卡，支持**全屏右滑切换会话**、内嵌**切换模型（`XHigh/High/Medium/Low`）与权限预设（含 `无限 (Turbo)`）**、**`+` 拍照/相册压缩传图**、**`G4/C` 双窗口配额**与**高危命令红框一键审批**。
-   - **安全可控**：不碰账号鉴权与私有 API，所有对话均在桌面正版端运行，仅允许私网 IP 访问并带 48 位随机配对口令保护。
 
 <p align="center">
   <img src="assets/mobile-preview.jpg" alt="手机极速 PWA 遥控真机效果（主对话界面与全屏右滑抽屉）" width="88%">
@@ -57,7 +59,7 @@
 
 | 界面位置 | 组件名称 | 核心作用 |
 | :--- | :--- | :--- |
-| **顶栏右上工具条** | **手机远程配对 (`📱 远程`)** | 点击弹出「一码三用」融合配对二维码，展示 `此 Wi-Fi` / `Tailscale` / `Bonjour` 状态与切换、复制链接及重置密钥 |
+| **顶栏右上工具条** | **手机远程配对 (`📱 远程`)** | 展示 `此 Wi-Fi` / `Tailscale` / `Bonjour` / `Cloudflare 隧道` 状态，支持免登录公网临时隧道或自有账号固定域名，复制链接与重置密钥 |
 | **顶栏右侧** | **上下文圆环 & 费用看板** | 合并展示上下文占用与输出速度；点开查看 Token 分类（`总计`/`今日`/`本月`/`本年`）、52 周热力图与 API 折算费用 |
 | **顶栏右侧** | **模型额度双胶囊 (`G4` / `C`)** | 展示 Gemini 4 与 Claude/GPT 多子组余量与 Google AI Ultra (`5x`/`20x`) 积分池；看 **5h + 每周** 双进度条与倒计时 |
 | **顶栏右侧** | **CLI 启动与统一设置 (`>_ CLI` · `⚙️`)** | 一键调起已探测的多端命令行（支持免审核与默认模型）；`⚙️` 集中管理主题配色、套餐订阅、网络直连与实时中英切换 |
@@ -129,7 +131,7 @@ cd ~/.local/share/antigravity-context-viewer
 
 | 命令 | 作用 |
 | :--- | :--- |
-| `ag-context-meter remote` | 显示**手机远程操作「一码三用」融合链接、三通道状态与终端二维码**（支持 `--reset-token` / `--json`） |
+| `ag-context-meter remote` | 显示**手机远程操作多通道链接、Cloudflare 隧道状态与终端二维码**（支持 `--tunnel on/off` / `--reset-token` / `--json`） |
 | `ag-context-meter status` | 查看各模块运行状态与官方安装包签名完整性 |
 | `ag-context-meter live` | 立即将增强界面热注入到当前运行的 Antigravity 窗口 |
 | `ag-context-meter stop` | **秒级无痕还原**：停止桥接服务并卸下所有附加界面，恢复纯英文原版 |

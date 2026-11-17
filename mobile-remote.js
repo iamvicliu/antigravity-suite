@@ -6,19 +6,45 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
+const { detectProxyConfig } = require('./meter-proxy');
 
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
-const MOBILE_UI_VERSION = '1.7.0';
+const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
+const MOBILE_UI_VERSION = '1.8.1';
 
 // ==================== 配置与内网安全校验 ====================
 
 function getRemoteConfigPath() {
   return path.join(getStateDir(), CONFIG_FILE_NAME);
+}
+
+function getTunnelStatePath() {
+  return path.join(getStateDir(), TUNNEL_STATE_FILE_NAME);
+}
+
+function extractCloudflareTunnelToken(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  const m = text.match(/\beyJ[A-Za-z0-9_-]{12,}(?:\.[A-Za-z0-9_-]+)*/);
+  return m ? m[0] : '';
+}
+
+function normalizeTunnelHostname(raw) {
+  let text = String(raw || '').trim();
+  if (!text) return '';
+  if (!/^https?:\/\//i.test(text)) text = `https://${text}`;
+  try {
+    const u = new URL(text);
+    if (u.protocol !== 'https:' || !u.hostname || !u.hostname.includes('.')) return '';
+    return u.origin;
+  } catch {
+    return '';
+  }
 }
 
 function loadOrCreateRemoteConfig(options = {}) {
@@ -35,7 +61,20 @@ function loadOrCreateRemoteConfig(options = {}) {
   let token = (!resetToken && typeof existing.token === 'string' && existing.token.length >= 24)
     ? existing.token
     : '';
-  let changed = !loaded.ok || !existing.token || resetToken || existing.port !== port;
+  const tunnelEnabled = typeof existing.tunnelEnabled === 'boolean'
+    ? existing.tunnelEnabled
+    : Boolean(resolveCloudflaredBinary());
+  const tunnelMode = existing.tunnelMode === 'named' ? 'named' : 'quick';
+  const tunnelToken = typeof existing.tunnelToken === 'string'
+    ? extractCloudflareTunnelToken(existing.tunnelToken)
+    : '';
+  const tunnelHostname = normalizeTunnelHostname(existing.tunnelHostname || '');
+
+  let changed = !loaded.ok || !existing.token || resetToken || existing.port !== port
+    || existing.tunnelEnabled !== tunnelEnabled
+    || existing.tunnelMode !== tunnelMode
+    || (existing.tunnelToken || '') !== tunnelToken
+    || (existing.tunnelHostname || '') !== tunnelHostname;
 
   if (!token) {
     token = crypto.randomBytes(24).toString('hex');
@@ -45,6 +84,10 @@ function loadOrCreateRemoteConfig(options = {}) {
   const next = {
     port,
     token,
+    tunnelEnabled,
+    tunnelMode,
+    tunnelToken,
+    tunnelHostname,
     updatedAt: changed ? new Date().toISOString() : (existing.updatedAt || new Date().toISOString())
   };
 
@@ -58,6 +101,40 @@ function loadOrCreateRemoteConfig(options = {}) {
     } catch {}
   }
 
+  return next;
+}
+
+function saveRemoteTunnelConfig(patch = {}) {
+  const cur = loadOrCreateRemoteConfig();
+  const nextEnabled = patch.enabled !== undefined
+    ? Boolean(patch.enabled)
+    : (patch.tunnelEnabled !== undefined ? Boolean(patch.tunnelEnabled) : cur.tunnelEnabled);
+  const nextModeRaw = patch.tunnelMode !== undefined ? patch.tunnelMode : cur.tunnelMode;
+  const nextMode = nextModeRaw === 'named' ? 'named' : 'quick';
+  const nextToken = patch.tunnelToken !== undefined
+    ? extractCloudflareTunnelToken(patch.tunnelToken)
+    : cur.tunnelToken;
+  const nextHost = patch.tunnelHostname !== undefined
+    ? normalizeTunnelHostname(patch.tunnelHostname)
+    : cur.tunnelHostname;
+
+  const next = {
+    ...cur,
+    tunnelEnabled: nextEnabled,
+    tunnelMode: nextMode,
+    tunnelToken: nextToken,
+    tunnelHostname: nextHost,
+    updatedAt: new Date().toISOString()
+  };
+
+  const cfgPath = getRemoteConfigPath();
+  safeWriteJsonSync(cfgPath, next, {
+    indent: 2,
+    validate: (d) => d && typeof d.token === 'string' && d.token.length >= 24
+  });
+  try {
+    fs.chmodSync(cfgPath, 0o600);
+  } catch {}
   return next;
 }
 
@@ -250,11 +327,23 @@ function formatHostForUrl(host) {
   return clean;
 }
 
-function buildFusedPairingUrl({ entryHost, port, token, name, hosts, endpoints }) {
-  const authority = `${formatHostForUrl(entryHost)}:${port}`;
+function buildFusedPairingUrl({ entryBaseUrl, entryHost, port, token, name, hosts, endpoints }) {
+  let cleanBase = '';
+  let authority = '';
+  if (entryBaseUrl) {
+    try {
+      const u = new URL(String(entryBaseUrl));
+      cleanBase = `${u.protocol}//${u.host}`;
+      authority = u.host;
+    } catch {}
+  }
+  if (!cleanBase) {
+    authority = `${formatHostForUrl(entryHost)}:${port}`;
+    cleanBase = `http://${authority}`;
+  }
   const cleanHosts = Array.isArray(hosts) ? hosts.filter(Boolean) : [];
   const encodedEndpoints = encodeEndpointsParam(endpoints);
-  return `http://${authority}/?token=${encodeURIComponent(token || '')}`
+  return `${cleanBase}/?token=${encodeURIComponent(token || '')}`
     + `&address=${encodeURIComponent(authority)}`
     + `&name=${encodeURIComponent(name || 'antigravity-mac')}`
     + `&hosts=${encodeURIComponent(cleanHosts.join(','))}`
@@ -367,13 +456,18 @@ const QR_SPECS_L = {
   17: [647, 28, 1, 107, 5, 108, [6, 30, 54, 78]],
   18: [721, 30, 5, 120, 1, 121, [6, 30, 56, 82]],
   19: [795, 28, 3, 113, 4, 114, [6, 30, 58, 86]],
-  20: [861, 28, 3, 107, 5, 108, [6, 34, 62, 90]]
+  20: [861, 28, 3, 107, 5, 108, [6, 34, 62, 90]],
+  21: [932, 28, 4, 116, 4, 117, [6, 28, 50, 72, 94]],
+  22: [1006, 28, 2, 111, 7, 112, [6, 26, 50, 74, 98]],
+  23: [1094, 30, 4, 121, 5, 122, [6, 30, 54, 78, 102]],
+  24: [1174, 30, 6, 117, 4, 118, [6, 28, 54, 80, 106]],
+  25: [1276, 26, 8, 106, 4, 107, [6, 32, 58, 84, 110]]
 };
 
 function encodeQrCodeMatrix(text) {
   const bytes = Array.from(Buffer.from(String(text || ''), 'utf8'));
   let version = 0;
-  for (let v = 1; v <= 20; v++) {
+  for (let v = 1; v <= 25; v++) {
     const charCountBits = v <= 9 ? 8 : 16;
     const neededBits = 4 + charCountBits + bytes.length * 8;
     if (neededBits <= QR_SPECS_L[v][0] * 8) {
@@ -1106,7 +1200,7 @@ function buildMobileAppHtml() {
           <span id="status-dot" class="dot"></span>
           <span id="conv-title" class="conv-title">正在连接 Mac…</span>
         </div>
-        <div id="sub-meta" class="sub-meta">内网直连</div>
+        <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
       </div>
       <button id="btn-quota" class="quota-pill" type="button">
         <span id="quota-main">G4 -- · C --</span>
@@ -1230,6 +1324,9 @@ function buildMobileAppHtml() {
       saveStoredPair(pairState);
       history.replaceState(null, '', location.pathname);
     }
+    if (location.protocol === 'https:' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
     let apiBase = '';
     function authHeaders(extra) {
       const h = Object.assign({}, extra || {});
@@ -1239,19 +1336,22 @@ function buildMobileAppHtml() {
     function getCandidateEndpoints() {
       const seen = new Set();
       const list = [];
+      const isHttpsPage = location.protocol === 'https:';
       const add = (url, kind, priority) => {
         const clean = String(url || '').replace(/\/+$/, '');
         if (!clean || seen.has(clean)) return;
+        if (isHttpsPage && /^http:\/\//i.test(clean)) return;
         seen.add(clean);
         list.push({ url: clean, kind: kind || 'lan', priority: Number.isFinite(priority) ? priority : 100 });
       };
       for (const ep of (pairState.endpoints || [])) add(ep.url, ep.kind, ep.priority);
       const portStr = location.port ? ':' + location.port : '';
-      const proto = location.protocol === 'https:' ? 'https:' : 'http:';
       for (const h of (pairState.hosts || [])) {
         const hostFmt = (h.includes(':') && !h.startsWith('[')) ? ('[' + h + ']') : h;
         const kind = h.endsWith('.local') ? 'bonjour' : (h.includes('.ts.net') || /^100\./.test(h) ? 'tailscale' : 'lan');
-        add(proto + '//' + hostFmt + portStr, kind, 300);
+        if (!isHttpsPage) {
+          add('http://' + hostFmt + (portStr || ':18765'), kind, 300);
+        }
       }
       add(location.origin, 'current', 999);
       list.sort((a, b) => a.priority - b.priority);
@@ -1293,7 +1393,7 @@ function buildMobileAppHtml() {
           saveStoredPair(pairState);
         }
         if (changed) {
-          const kindName = winner.ep.kind === 'tailscale' ? 'Tailscale' : (winner.ep.kind === 'bonjour' ? 'Bonjour' : 'Wi-Fi');
+          const kindName = winner.ep.kind === 'tunnel' ? 'Cloudflare' : (winner.ep.kind === 'tailscale' ? 'Tailscale' : (winner.ep.kind === 'bonjour' ? 'Bonjour' : 'Wi-Fi'));
           showToast('已自动切至 ' + kindName + ' 通道');
         }
         return true;
@@ -1316,6 +1416,25 @@ function buildMobileAppHtml() {
 
     const $ = (id) => document.getElementById(id);
     const msgEl = $('messages');
+
+    function fetchWithTimeout(url, init, timeoutMs) {
+      const ms = Number(timeoutMs) > 0 ? Number(timeoutMs) : 5000;
+      const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, ms) : null;
+      const opts = Object.assign({}, init || {}, ctrl ? { signal: ctrl.signal } : {});
+      return fetch(url, opts).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+    }
+
+    function getActiveChannelLabel() {
+      const origin = String(apiBase || location.origin || '').toLowerCase();
+      if (/\.trycloudflare\.com\b/.test(origin) || /^https:\/\//.test(origin)) return 'Cloudflare 隧道';
+      if (/\.ts\.net\b/.test(origin) || /^https?:\/\/100\./.test(origin)) return 'Tailscale 直连';
+      if (/\.local(?::|$)/.test(origin)) return 'Bonjour 局域网';
+      return 'Wi-Fi 局域网';
+    }
+    $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
 
     const appEl = document.querySelector('.app');
     let maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -1407,11 +1526,11 @@ function buildMobileAppHtml() {
     }
 
     async function apiAction(payload) {
-      const doPost = () => fetch((apiBase || '') + '/api/action', {
+      const doPost = () => fetchWithTimeout((apiBase || '') + '/api/action', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ targetId: currentTargetId || undefined, ...payload })
-      });
+      }, 8000);
       let res;
       try {
         res = await doPost();
@@ -1475,10 +1594,15 @@ function buildMobileAppHtml() {
       }
       latestSnap = snap;
       if (snap.currentTargetId) currentTargetId = snap.currentTargetId;
+      if (Array.isArray(snap.endpoints) && snap.endpoints.length) {
+        pairState.endpoints = snap.endpoints;
+        if (Array.isArray(snap.hosts) && snap.hosts.length) pairState.hosts = snap.hosts;
+        saveStoredPair(pairState);
+      }
 
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
-      $('sub-meta').textContent = snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '空闲'));
+      $('sub-meta').textContent = getActiveChannelLabel() + ' · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
@@ -1597,13 +1721,14 @@ function buildMobileAppHtml() {
 
     async function fetchSnapshot() {
       const q = currentTargetId ? '?targetId=' + encodeURIComponent(currentTargetId) : '';
-      const doFetch = () => fetch((apiBase || '') + '/api/snapshot' + q, { headers: authHeaders(), cache: 'no-store' });
+      const doFetch = () => fetchWithTimeout((apiBase || '') + '/api/snapshot' + q, { headers: authHeaders(), cache: 'no-store' }, latestSnap ? 4500 : 2200);
       try {
         let res = await doFetch();
         if (res.status === 401) { location.reload(); return; }
         const data = await res.json();
         renderSnapshot(data);
       } catch {
+        $('sub-meta').textContent = '连接中断 · 正在切换可用通道…';
         const switched = await tryFailoverEndpoint();
         if (switched) {
           try {
@@ -1979,11 +2104,17 @@ function readJsonBody(req) {
   });
 }
 
-function isAllowedPrivateOrigin(rawOrigin) {
+function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '') {
   if (!rawOrigin || typeof rawOrigin !== 'string') return false;
   try {
     const u = new URL(rawOrigin);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    if (extraOrigin) {
+      try {
+        const eu = new URL(extraOrigin);
+        if (u.origin === eu.origin) return true;
+      } catch {}
+    }
     const cleanHost = String(u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
     if (!cleanHost) return false;
     if (cleanHost === 'localhost' || cleanHost.endsWith('.local') || cleanHost.endsWith('.ts.net')) return true;
@@ -1993,7 +2124,361 @@ function isAllowedPrivateOrigin(rawOrigin) {
   }
 }
 
-function createRemoteHttpHandler(initialConfig) {
+// ==================== Cloudflare Tunnel 管理 (免登录 Quick Tunnel + 自有账号 Named Tunnel) ====================
+
+function resolveCloudflaredBinary() {
+  const candidates = [];
+  if (process.env.AG_CLOUDFLARED_BIN) candidates.push(process.env.AG_CLOUDFLARED_BIN);
+  if (process.platform === 'win32') {
+    candidates.push(
+      path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'cloudflared', 'cloudflared.exe'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'cloudflared', 'cloudflared.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Links', 'cloudflared.exe')
+    );
+  } else {
+    candidates.push(
+      '/opt/homebrew/bin/cloudflared',
+      '/usr/local/bin/cloudflared',
+      path.join(os.homedir(), '.local', 'bin', 'cloudflared'),
+      '/usr/bin/cloudflared'
+    );
+  }
+  for (const p of candidates) {
+    if (!p) continue;
+    try {
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
+    } catch {}
+  }
+  try {
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const out = execFileSync(cmd, ['cloudflared'], {
+      timeout: 600,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).split(/\r?\n/)[0]?.trim();
+    if (out && fs.existsSync(out)) return out;
+  } catch {}
+  return '';
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeTunnelStateFile(payload) {
+  const stPath = getTunnelStatePath();
+  safeWriteJsonSync(stPath, payload, { indent: 2 });
+  try {
+    fs.chmodSync(stPath, 0o600);
+  } catch {}
+}
+
+function removeTunnelStateFile() {
+  try {
+    const stPath = getTunnelStatePath();
+    if (fs.existsSync(stPath)) fs.unlinkSync(stPath);
+  } catch {}
+}
+
+function reapStaleCloudflaredPid() {
+  const stPath = getTunnelStatePath();
+  const loaded = safeReadJsonSync(stPath, null);
+  if (!loaded.ok || !loaded.data || !Number.isInteger(loaded.data.pid)) {
+    removeTunnelStateFile();
+    return false;
+  }
+  const pid = loaded.data.pid;
+  if (!isPidAlive(pid)) {
+    removeTunnelStateFile();
+    return false;
+  }
+  let shouldKill = process.platform === 'win32';
+  if (!shouldKill) {
+    try {
+      const cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+        timeout: 600,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim();
+      shouldKill = /cloudflared/i.test(cmdline);
+    } catch {}
+  }
+  if (shouldKill) {
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  }
+  removeTunnelStateFile();
+  return shouldKill;
+}
+
+function readPersistedTunnelStatus() {
+  const cfg = loadOrCreateRemoteConfig();
+  if (!cfg.tunnelEnabled) {
+    return {
+      enabled: false,
+      mode: cfg.tunnelMode,
+      state: 'stopped',
+      pid: null,
+      publicUrl: '',
+      error: '',
+      binaryAvailable: Boolean(resolveCloudflaredBinary())
+    };
+  }
+  const loaded = safeReadJsonSync(getTunnelStatePath(), null);
+  if (loaded.ok && loaded.data && Number.isInteger(loaded.data.pid) && isPidAlive(loaded.data.pid)) {
+    return {
+      enabled: true,
+      mode: loaded.data.mode === 'named' ? 'named' : 'quick',
+      state: loaded.data.state || 'running',
+      pid: loaded.data.pid,
+      publicUrl: String(loaded.data.publicUrl || ''),
+      error: String(loaded.data.error || ''),
+      binaryAvailable: Boolean(resolveCloudflaredBinary())
+    };
+  }
+  return {
+    enabled: true,
+    mode: cfg.tunnelMode,
+    state: 'stopped',
+    pid: null,
+    publicUrl: '',
+    error: '',
+    binaryAvailable: Boolean(resolveCloudflaredBinary())
+  };
+}
+
+function createCloudflareTunnelController(getPort) {
+  let child = null;
+  let state = 'stopped';
+  let publicUrl = '';
+  let errorMsg = '';
+  let mode = 'quick';
+  let killEscalationTimer = null;
+  let lastAutoRetryAt = 0;
+
+  const getStatus = () => {
+    const cfg = loadOrCreateRemoteConfig();
+    return {
+      enabled: Boolean(cfg.tunnelEnabled),
+      mode: cfg.tunnelMode || mode,
+      state,
+      pid: (child && child.pid && isPidAlive(child.pid)) ? child.pid : null,
+      publicUrl: state === 'running' ? publicUrl : '',
+      error: errorMsg,
+      binaryAvailable: Boolean(resolveCloudflaredBinary())
+    };
+  };
+
+  const stop = async () => {
+    if (killEscalationTimer) {
+      clearTimeout(killEscalationTimer);
+      killEscalationTimer = null;
+    }
+    const target = child;
+    child = null;
+    state = 'stopped';
+    publicUrl = '';
+    errorMsg = '';
+    removeTunnelStateFile();
+    if (target && !target.killed) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        target.once('exit', finish);
+        try { target.kill('SIGTERM'); } catch { finish(); }
+        killEscalationTimer = setTimeout(() => {
+          try { target.kill('SIGKILL'); } catch {}
+          finish();
+        }, 450);
+        killEscalationTimer.unref?.();
+      });
+    }
+    return getStatus();
+  };
+
+  const start = async (overrideCfg = null) => {
+    const cfg = overrideCfg || loadOrCreateRemoteConfig();
+    mode = cfg.tunnelMode === 'named' ? 'named' : 'quick';
+    if (!cfg.tunnelEnabled) {
+      return await stop();
+    }
+    const bin = resolveCloudflaredBinary();
+    if (!bin) {
+      state = 'error';
+      publicUrl = '';
+      errorMsg = '未检测到 cloudflared（macOS 可执行 brew install cloudflared 安装）';
+      return getStatus();
+    }
+    if (mode === 'named' && (!cfg.tunnelToken || !cfg.tunnelHostname)) {
+      state = 'error';
+      publicUrl = '';
+      errorMsg = '请先填写有效的 Cloudflare 固定域名 (https://...) 与 Tunnel Token';
+      return getStatus();
+    }
+
+    await stop();
+    mode = cfg.tunnelMode === 'named' ? 'named' : 'quick';
+    state = 'starting';
+    publicUrl = '';
+    errorMsg = '';
+
+    const port = Number(typeof getPort === 'function' ? getPort() : cfg.port) || DEFAULT_REMOTE_PORT;
+    const args = mode === 'named'
+      ? ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
+      : ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
+
+    const childEnv = { ...process.env };
+    const appendNoProxy = (cur) => {
+      const base = String(cur || '').trim();
+      const parts = base ? base.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      for (const local of ['127.0.0.1', 'localhost', '::1']) {
+        if (!parts.includes(local)) parts.push(local);
+      }
+      return parts.join(',');
+    };
+    childEnv.NO_PROXY = appendNoProxy(childEnv.NO_PROXY);
+    childEnv.no_proxy = appendNoProxy(childEnv.no_proxy);
+    try {
+      const proxyCfg = detectProxyConfig();
+      if (proxyCfg?.enabled && proxyCfg?.url && !childEnv.HTTPS_PROXY && !childEnv.https_proxy) {
+        childEnv.HTTPS_PROXY = proxyCfg.url;
+        childEnv.HTTP_PROXY = proxyCfg.url;
+      }
+    } catch {}
+    if (mode === 'named') {
+      childEnv.TUNNEL_TOKEN = cfg.tunnelToken;
+    }
+
+    return await new Promise((resolve) => {
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        resolve(getStatus());
+      };
+
+      const waitTimer = setTimeout(settle, 9000);
+      waitTimer.unref?.();
+
+      const spawned = spawn(bin, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: childEnv,
+        windowsHide: true
+      });
+      child = spawned;
+
+      const handleChunk = (buf) => {
+        if (child !== spawned) return;
+        const text = String(buf || '');
+        if (mode === 'quick') {
+          const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\b/i);
+          if (m) {
+            publicUrl = m[0];
+            state = 'running';
+            errorMsg = '';
+            writeTunnelStateFile({
+              pid: spawned.pid,
+              mode,
+              state,
+              publicUrl,
+              error: '',
+              startedAt: Date.now()
+            });
+            clearTimeout(waitTimer);
+            settle();
+          } else {
+            const mErr = text.match(/failed to request quick Tunnel:\s*([^\r\n]+)/i);
+            if (mErr) errorMsg = `Cloudflare 临时隧道连接失败: ${mErr[1].trim()}`;
+          }
+        } else {
+          if (/Registered tunnel connection|Connection [0-9a-f-]+ registered/i.test(text)) {
+            publicUrl = cfg.tunnelHostname;
+            state = 'running';
+            errorMsg = '';
+            writeTunnelStateFile({
+              pid: spawned.pid,
+              mode,
+              state,
+              publicUrl,
+              error: '',
+              startedAt: Date.now()
+            });
+            clearTimeout(waitTimer);
+            settle();
+          } else if (/(?:failed to unmarshal|Provided Tunnel token is not valid|Unauthorized|ERR .*token)/i.test(text)) {
+            errorMsg = 'Cloudflare Tunnel Token 无效或已被吊销';
+          }
+        }
+      };
+
+      spawned.stdout?.on('data', handleChunk);
+      spawned.stderr?.on('data', handleChunk);
+
+      spawned.once('error', (err) => {
+        if (child !== spawned) return;
+        child = null;
+        state = 'error';
+        publicUrl = '';
+        errorMsg = err?.message || '启动 cloudflared 失败';
+        removeTunnelStateFile();
+        clearTimeout(waitTimer);
+        settle();
+      });
+
+      spawned.once('exit', (code) => {
+        if (child !== spawned) return;
+        child = null;
+        if (state !== 'stopped') {
+          state = 'error';
+          publicUrl = '';
+          if (!errorMsg) errorMsg = `cloudflared 意外退出 (code=${code ?? 'signal'})`;
+        }
+        removeTunnelStateFile();
+        clearTimeout(waitTimer);
+        settle();
+      });
+    });
+  };
+
+  const ensureRunning = () => {
+    const cfg = loadOrCreateRemoteConfig();
+    if (!cfg.tunnelEnabled) return getStatus();
+    if (state === 'running' || state === 'starting') return getStatus();
+    const now = Date.now();
+    if (state === 'error' && now - lastAutoRetryAt < 8000) return getStatus();
+    lastAutoRetryAt = now;
+    void start(cfg);
+    return getStatus();
+  };
+
+  return {
+    start,
+    stop,
+    getStatus,
+    ensureRunning,
+    configure: async (patch = {}) => {
+      const nextCfg = saveRemoteTunnelConfig(patch);
+      if (!nextCfg.tunnelEnabled) {
+        await stop();
+        return getStatus();
+      }
+      await stop();
+      return await start(nextCfg);
+    }
+  };
+}
+
+function createRemoteHttpHandler(initialConfig, options = {}) {
+  const getTunnelOrigin = typeof options.getTunnelOrigin === 'function' ? options.getTunnelOrigin : () => '';
   let activeConfig = initialConfig;
   let lastMtimeMs = 0;
   try {
@@ -2012,6 +2497,36 @@ function createRemoteHttpHandler(initialConfig) {
     return activeConfig;
   };
 
+  // 按客户端 IP 统计失败 Token 次数（60 秒窗口内失败 12 次触发限流 429）
+  const failedAuthMap = new Map();
+  const RATE_LIMIT_WINDOW_MS = 60000;
+  const RATE_LIMIT_MAX_FAILS = 12;
+
+  const isRateLimited = (clientKey) => {
+    const rec = failedAuthMap.get(clientKey);
+    if (!rec) return false;
+    if (Date.now() - rec.windowStart > RATE_LIMIT_WINDOW_MS) {
+      failedAuthMap.delete(clientKey);
+      return false;
+    }
+    return rec.count >= RATE_LIMIT_MAX_FAILS;
+  };
+
+  const recordAuthFailure = (clientKey) => {
+    const now = Date.now();
+    if (failedAuthMap.size > 512) {
+      for (const [k, v] of failedAuthMap.entries()) {
+        if (now - v.windowStart > RATE_LIMIT_WINDOW_MS) failedAuthMap.delete(k);
+      }
+    }
+    const prev = failedAuthMap.get(clientKey);
+    if (!prev || now - prev.windowStart > RATE_LIMIT_WINDOW_MS) {
+      failedAuthMap.set(clientKey, { count: 1, windowStart: now });
+    } else {
+      prev.count += 1;
+    }
+  };
+
   const cachedHtml = buildMobileAppHtml();
   const cachedIcon = buildMobileIconSvg();
   const cachedManifest = buildManifestJson();
@@ -2020,6 +2535,9 @@ function createRemoteHttpHandler(initialConfig) {
 
   return async (req, res) => {
     const config = getActiveConfig();
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+
     const remoteIp = req.socket?.remoteAddress || '';
     if (!isAllowedPrivateAddress(remoteIp)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -2027,8 +2545,16 @@ function createRemoteHttpHandler(initialConfig) {
       return;
     }
 
+    const isCfProxied = Boolean(req.headers['cf-connecting-ip'] || req.headers['cf-ray']);
+    if (isCfProxied && !config.tunnelEnabled) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('403 Forbidden: Cloudflare Tunnel is disabled');
+      return;
+    }
+
+    const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
     const reqOrigin = String(req.headers.origin || '').trim();
-    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin)) {
+    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl)) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -2069,9 +2595,17 @@ function createRemoteHttpHandler(initialConfig) {
       return;
     }
 
+    const clientKey = String(req.headers['cf-connecting-ip'] || normalizeRemoteIp(remoteIp) || 'unknown');
+    if (isRateLimited(clientKey)) {
+      res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '60' });
+      res.end(JSON.stringify({ ok: false, error: 'Too many failed auth attempts. Retry in 60s.' }));
+      return;
+    }
+
     const { token, fromQuery, fromCookie, uiVersion } = extractRequestToken(req, urlObj);
     const authed = timingSafeTokenMatch(token, config.token);
     if (!authed) {
+      recordAuthFailure(clientKey);
       if (pathname.startsWith('/api/')) {
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: '未授权，请在终端运行 ag-context-meter remote 重新扫码' }));
@@ -2081,15 +2615,18 @@ function createRemoteHttpHandler(initialConfig) {
       }
       return;
     }
+    failedAuthMap.delete(clientKey);
 
+    const isHttpsForwarded = String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https';
+    const secureAttr = isHttpsForwarded ? '; Secure' : '';
     const cookiesToSet = [];
     if (fromQuery) {
-      cookiesToSet.push(`ag_remote_token=${encodeURIComponent(config.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
+      cookiesToSet.push(`ag_remote_token=${encodeURIComponent(config.token)}; Path=/; HttpOnly; SameSite=Lax${secureAttr}; Max-Age=31536000`);
     }
 
     if (req.method === 'GET' && pathname === '/') {
       if (uiVersion !== MOBILE_UI_VERSION) {
-        cookiesToSet.push(`ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax; Max-Age=31536000`);
+        cookiesToSet.push(`ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax${secureAttr}; Max-Age=31536000`);
       }
       if (cookiesToSet.length) res.setHeader('Set-Cookie', cookiesToSet);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -2102,7 +2639,12 @@ function createRemoteHttpHandler(initialConfig) {
     }
 
     if (req.method === 'GET' && pathname === '/api/ping') {
-      const snapInfo = collectFusedEndpointDescriptor(config.port);
+      const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
+        enabled: Boolean(config.tunnelEnabled),
+        state: 'running',
+        publicUrl: activeTunnelUrl,
+        mode: config.tunnelMode
+      } : null);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({
         ok: true,
@@ -2116,7 +2658,7 @@ function createRemoteHttpHandler(initialConfig) {
 
     if (req.method === 'GET' && pathname === '/api/snapshot') {
       if (fromCookie && uiVersion !== MOBILE_UI_VERSION) {
-        res.setHeader('Set-Cookie', `ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax; Max-Age=31536000`);
+        res.setHeader('Set-Cookie', `ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax${secureAttr}; Max-Age=31536000`);
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, reloadRequired: true, error: '界面已升级，正在自动刷新…' }));
         return;
@@ -2124,8 +2666,18 @@ function createRemoteHttpHandler(initialConfig) {
       try {
         const targetId = urlObj.searchParams.get('targetId') || '';
         const snap = await fetchSnapshotFromTarget(targetId);
+        let payloadOut = snap;
+        if (snap && snap.ok !== false) {
+          const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
+            enabled: Boolean(config.tunnelEnabled),
+            state: 'running',
+            publicUrl: activeTunnelUrl,
+            mode: config.tunnelMode
+          } : null);
+          payloadOut = { ...snap, hosts: snapInfo.hosts, endpoints: snapInfo.endpoints };
+        }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify(snap));
+        res.end(JSON.stringify(payloadOut));
       } catch (err) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, error: err?.message || '读取 Antigravity 状态失败' }));
@@ -2152,8 +2704,12 @@ function createRemoteHttpHandler(initialConfig) {
 }
 
 function startMobileRemoteServer() {
+  reapStaleCloudflaredPid();
   const config = loadOrCreateRemoteConfig();
-  const handler = createRemoteHttpHandler(config);
+  const tunnelCtrl = createCloudflareTunnelController(() => config.port);
+  const handler = createRemoteHttpHandler(config, {
+    getTunnelOrigin: () => tunnelCtrl.getStatus().publicUrl || ''
+  });
   const boundServers = new Map();
   let ifaceTimer = null;
   let stopped = false;
@@ -2201,44 +2757,58 @@ function startMobileRemoteServer() {
     if (ok) {
       const activeIps = enumerateLocalAddresses().bindIps;
       console.log(`Mobile Remote PWA ready on dual-stack [::]:${config.port} (${activeIps.join(', ')})`);
-      return;
+    } else {
+      ifaceTimer = setInterval(() => {
+        if (!stopped) void syncBindings();
+      }, 15000);
+      ifaceTimer.unref?.();
+      await syncBindings();
+      const activeIps = Array.from(boundServers.keys());
+      if (activeIps.length) {
+        console.log(`Mobile Remote PWA ready on port ${config.port} (${activeIps.join(', ')})`);
+      }
     }
-    ifaceTimer = setInterval(() => {
-      if (!stopped) void syncBindings();
-    }, 15000);
-    ifaceTimer.unref?.();
-    await syncBindings();
-    const activeIps = Array.from(boundServers.keys());
-    if (activeIps.length) {
-      console.log(`Mobile Remote PWA ready on port ${config.port} (${activeIps.join(', ')})`);
+    const latestCfg = loadOrCreateRemoteConfig();
+    if (!stopped && latestCfg.tunnelEnabled) {
+      void tunnelCtrl.start(latestCfg);
     }
+  });
+
+  const stop = () => {
+    stopped = true;
+    if (ifaceTimer) clearInterval(ifaceTimer);
+    void tunnelCtrl.stop();
+    for (const srv of boundServers.values()) {
+      try { srv.close(); } catch {}
+    }
+    boundServers.clear();
+  };
+
+  process.once('exit', () => {
+    try { void tunnelCtrl.stop(); } catch {}
   });
 
   return {
     config,
     getBoundAddresses: () => (boundServers.has('::') ? enumerateLocalAddresses().bindIps : Array.from(boundServers.keys())),
-    stop: () => {
-      stopped = true;
-      if (ifaceTimer) clearInterval(ifaceTimer);
-      for (const srv of boundServers.values()) {
-        try { srv.close(); } catch {}
-      }
-      boundServers.clear();
-    }
+    getTunnelStatus: () => tunnelCtrl.getStatus(),
+    ensureTunnelRunning: () => tunnelCtrl.ensureRunning(),
+    configureTunnel: (patch) => tunnelCtrl.configure(patch),
+    stop
   };
 }
 
-function collectFusedEndpointDescriptor(port) {
+function collectFusedEndpointDescriptor(port, tunnelStatus = null) {
   const { tailscale, lan, physicalLan } = enumerateLocalAddresses();
   const meta = detectHostIdentityMeta();
   const primaryLan = physicalLan[0] || lan[0] || null;
-  const secondaryLan = physicalLan[1] || lan[1] || null;
+  const secondaryLan = physicalLan[1] || null;
 
   const endpoints = [];
   const seenHosts = new Set();
   const addEp = (host, kind, priority, iface = '') => {
     const cleanHost = String(host || '').trim();
-    if (!cleanHost || seenHosts.has(cleanHost) || endpoints.length >= 5) return;
+    if (!cleanHost || seenHosts.has(cleanHost) || endpoints.length >= 6) return;
     seenHosts.add(cleanHost);
     endpoints.push({
       url: `http://${formatHostForUrl(cleanHost)}:${port}`,
@@ -2258,6 +2828,22 @@ function collectFusedEndpointDescriptor(port) {
   if (meta.bonjourHost && primaryLan) {
     addEp(meta.bonjourHost, 'bonjour', 200, primaryLan.iface);
   }
+  const tunnelUrl = String(tunnelStatus?.publicUrl || '').trim().replace(/\/+$/, '');
+  if (tunnelStatus?.enabled && tunnelStatus?.state === 'running' && /^https:\/\//i.test(tunnelUrl)) {
+    try {
+      const tu = new URL(tunnelUrl);
+      if (!seenHosts.has(tu.host)) {
+        seenHosts.add(tu.host);
+        endpoints.push({
+          url: tunnelUrl,
+          host: tu.host,
+          kind: 'tunnel',
+          priority: 250,
+          iface: 'cloudflare'
+        });
+      }
+    } catch {}
+  }
   if (endpoints.length === 0) {
     addEp('127.0.0.1', 'loopback', 900, 'lo0');
   }
@@ -2274,11 +2860,25 @@ function collectFusedEndpointDescriptor(port) {
   };
 }
 
-function buildRemoteInfo({ resetToken = false } = {}) {
+function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
   const cfg = loadOrCreateRemoteConfig({ resetToken });
-  const desc = collectFusedEndpointDescriptor(cfg.port);
+  const persisted = readPersistedTunnelStatus();
+  const effTunnel = (tunnelStatus && typeof tunnelStatus === 'object')
+    ? {
+        enabled: tunnelStatus.enabled !== undefined ? Boolean(tunnelStatus.enabled) : Boolean(cfg.tunnelEnabled),
+        mode: tunnelStatus.mode || cfg.tunnelMode,
+        state: tunnelStatus.state || (cfg.tunnelEnabled ? persisted.state : 'stopped'),
+        pid: tunnelStatus.pid || persisted.pid || null,
+        publicUrl: (tunnelStatus.publicUrl || (cfg.tunnelEnabled ? persisted.publicUrl : '') || '').replace(/\/+$/, ''),
+        error: tunnelStatus.error || '',
+        binaryAvailable: tunnelStatus.binaryAvailable !== undefined ? Boolean(tunnelStatus.binaryAvailable) : Boolean(resolveCloudflaredBinary())
+      }
+    : persisted;
 
-  const mkFused = (entryHost) => buildFusedPairingUrl({
+  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel);
+
+  const mkFused = (entryHost, entryBaseUrl = '') => buildFusedPairingUrl({
+    entryBaseUrl,
     entryHost,
     port: cfg.port,
     token: cfg.token,
@@ -2293,6 +2893,62 @@ function buildRemoteInfo({ resetToken = false } = {}) {
     : (desc.tailscale[0]?.address || '');
   const lanEntryHost = desc.primaryLan?.address || '';
   const bonjourEntryHost = (desc.bonjourHost && desc.primaryLan) ? desc.bonjourHost : '';
+
+  const tunnelActiveUrl = (effTunnel.enabled && effTunnel.state === 'running' && /^https:\/\//i.test(effTunnel.publicUrl))
+    ? effTunnel.publicUrl
+    : '';
+  let tunnelHostDisplay = '';
+  if (tunnelActiveUrl) {
+    try { tunnelHostDisplay = new URL(tunnelActiveUrl).host; } catch {}
+  }
+
+  const tunnelChannel = {
+    key: 'tunnel',
+    label: 'Cloudflare 隧道',
+    labelEn: 'Cloudflare Tunnel',
+    available: Boolean(tunnelActiveUrl),
+    enabled: Boolean(cfg.tunnelEnabled),
+    state: effTunnel.state || 'stopped',
+    mode: cfg.tunnelMode || 'quick',
+    binaryAvailable: Boolean(effTunnel.binaryAvailable),
+    hasTunnelToken: Boolean(cfg.tunnelToken),
+    tunnelHostname: cfg.tunnelHostname || '',
+    error: effTunnel.error || '',
+    displayHost: tunnelHostDisplay
+      ? (cfg.tunnelMode === 'named' ? tunnelHostDisplay : `随时随地 · ${tunnelHostDisplay}`)
+      : (effTunnel.state === 'starting'
+          ? '正在分配公网隧道…'
+          : (effTunnel.error || '未开启（4G/5G 免装软件直连）')),
+    entryHost: tunnelHostDisplay,
+    entryBaseUrl: tunnelActiveUrl,
+    iface: 'cloudflare'
+  };
+
+  const mkQrSafe = (entryHost, entryBaseUrl = '') => {
+    const full = mkFused(entryHost, entryBaseUrl);
+    try {
+      return { url: full, qrSvg: renderQrSvg(full) };
+    } catch {
+      const compactEps = (desc.endpoints || []).filter((e) => e.kind === 'tunnel' || e.priority === 0 || e.priority === 100);
+      const compact = buildFusedPairingUrl({
+        entryBaseUrl,
+        entryHost,
+        port: cfg.port,
+        token: cfg.token,
+        name: desc.deviceName,
+        hosts: [],
+        endpoints: compactEps
+      });
+      try {
+        return { url: compact, qrSvg: renderQrSvg(compact) };
+      } catch {
+        const bare = entryBaseUrl
+          ? `${entryBaseUrl.replace(/\/+$/, '')}/?token=${encodeURIComponent(cfg.token)}`
+          : `http://${formatHostForUrl(entryHost)}:${cfg.port}/?token=${encodeURIComponent(cfg.token)}`;
+        return { url: bare, qrSvg: renderQrSvg(bare) };
+      }
+    }
+  };
 
   const channels = [
     {
@@ -2321,29 +2977,26 @@ function buildRemoteInfo({ resetToken = false } = {}) {
       displayHost: bonjourEntryHost,
       entryHost: bonjourEntryHost,
       iface: desc.primaryLan?.iface || ''
-    }
+    },
+    tunnelChannel
   ].map((ch) => {
-    if (!ch.available || !ch.entryHost) return { ...ch, url: '', qrSvg: '' };
-    const url = mkFused(ch.entryHost);
-    return { ...ch, url, qrSvg: renderQrSvg(url) };
+    if (!ch.available || (!ch.entryHost && !ch.entryBaseUrl)) return { ...ch, url: '', qrSvg: '' };
+    const { url, qrSvg } = mkQrSafe(ch.entryHost, ch.entryBaseUrl || '');
+    return { ...ch, url, qrSvg };
   });
 
-  const tailscaleUrls = desc.tailscale.map((x) => {
-    const url = mkFused(x.address);
-    return { ...x, url, qrSvg: renderQrSvg(url) };
-  });
-  const lanUrls = desc.lan.map((x) => {
-    const url = mkFused(x.address);
-    return { ...x, url, qrSvg: renderQrSvg(url) };
-  });
+  const tailscaleUrls = desc.tailscale.map((x) => ({ ...x, ...mkQrSafe(x.address) }));
+  const lanUrls = desc.lan.map((x) => ({ ...x, ...mkQrSafe(x.address) }));
 
-  const pickedChannel = channels.find((c) => c.key === 'tailscale' && c.available)
+  const pickedChannel = channels.find((c) => c.key === 'tunnel' && c.available)
+    || channels.find((c) => c.key === 'tailscale' && c.available)
     || channels.find((c) => c.key === 'lan' && c.available)
     || channels.find((c) => c.available);
-  const localUrl = mkFused('127.0.0.1');
+  const localBuilt = mkQrSafe('127.0.0.1');
+  const localUrl = localBuilt.url;
   const primary = pickedChannel
     ? { iface: pickedChannel.iface, address: pickedChannel.entryHost, kind: pickedChannel.key, url: pickedChannel.url, qrSvg: pickedChannel.qrSvg }
-    : { iface: 'lo0', address: '127.0.0.1', kind: 'loopback', url: localUrl, qrSvg: renderQrSvg(localUrl) };
+    : { iface: 'lo0', address: '127.0.0.1', kind: 'loopback', url: localUrl, qrSvg: localBuilt.qrSvg };
 
   return {
     port: cfg.port,
@@ -2352,6 +3005,18 @@ function buildRemoteInfo({ resetToken = false } = {}) {
     deviceName: desc.deviceName,
     bonjourHost: desc.bonjourHost,
     tailscaleDnsName: desc.tailscaleDnsName,
+    tunnelEnabled: Boolean(cfg.tunnelEnabled),
+    tunnelMode: cfg.tunnelMode,
+    tunnelHostname: cfg.tunnelHostname || '',
+    hasTunnelToken: Boolean(cfg.tunnelToken),
+    tunnelStatus: {
+      enabled: Boolean(cfg.tunnelEnabled),
+      mode: cfg.tunnelMode,
+      state: effTunnel.state,
+      publicUrl: tunnelActiveUrl,
+      error: effTunnel.error || '',
+      binaryAvailable: Boolean(effTunnel.binaryAvailable)
+    },
     hosts: desc.hosts,
     endpoints: desc.endpoints,
     channels,
@@ -2365,7 +3030,15 @@ function buildRemoteInfo({ resetToken = false } = {}) {
   };
 }
 
-function printRemoteCli({ resetToken = false, jsonMode = false } = {}) {
+function printRemoteCli({ resetToken = false, jsonMode = false, tunnelAction = '' } = {}) {
+  if (tunnelAction === 'on' || tunnelAction === 'off') {
+    saveRemoteTunnelConfig({ enabled: tunnelAction === 'on' });
+    if (!jsonMode) {
+      console.log(tunnelAction === 'on'
+        ? '✅ 已开启 Cloudflare 远程公网隧道（若桌面端正在运行，点弹窗刷新或在弹窗开关切换即可生效）'
+        : '⭕ 已关闭 Cloudflare 远程公网隧道');
+    }
+  }
   const info = buildRemoteInfo({ resetToken });
   if (jsonMode) {
     console.log(JSON.stringify(info, null, 2));
@@ -2373,22 +3046,22 @@ function printRemoteCli({ resetToken = false, jsonMode = false } = {}) {
   }
 
   console.log('');
-  console.log(`📱 Antigravity 手机远程操作面板（一码三用多通道融合 · ${info.deviceName}）`);
+  console.log(`📱 Antigravity 手机远程操作面板（多通道融合 · ${info.deviceName}）`);
   if (resetToken) console.log('🔑 已重置并生成新的配对 Token（旧链接将自动失效）');
   console.log('');
 
   for (const ch of (info.channels || [])) {
     if (ch.available) {
-      console.log(`✅ ${ch.label.padEnd(10, ' ')} ${ch.displayHost} (${ch.iface || 'auto'})`);
+      console.log(`✅ ${ch.label.padEnd(14, ' ')} ${ch.displayHost} (${ch.iface || 'auto'})`);
     } else {
-      console.log(`⭕ ${ch.label.padEnd(10, ' ')} 未就绪`);
+      console.log(`⭕ ${ch.label.padEnd(14, ' ')} ${ch.key === 'tunnel' ? ch.displayHost : '未就绪'}`);
     }
   }
   console.log('');
-  console.log(`🔗 融合配对链接: ${info.fusedUrl}`);
+  console.log(`🔗 配对链接: ${info.fusedUrl}`);
   console.log(`🖥️ 本机调试地址: ${info.localUrl}`);
   console.log('');
-  console.log('📷 用 iPhone 相机扫描下方融合二维码即可打开：');
+  console.log('📷 用 iPhone 相机扫描下方二维码即可打开：');
   console.log('');
   const primaryGrid = encodeQrCodeMatrix(info.primaryUrl);
   const cols = Number(process.stdout.columns || 0);
@@ -2397,19 +3070,23 @@ function printRemoteCli({ resetToken = false, jsonMode = false } = {}) {
     : info.primaryUrl;
   console.log(renderTerminalQr(qrForTerminal));
   console.log('');
-  console.log('💡 一码三用说明：');
+  console.log('💡 使用提示：');
   console.log('   1. 扫码在 Safari 打开后，点击底部「分享」→「添加到主屏幕」');
-  console.log('   2. 二维码与链接已融合 Wi-Fi / Tailscale / Bonjour 多端点，换网或离线时自动切换通道');
+  console.log('   2. 支持 ag-context-meter remote --tunnel on|off 开关 Cloudflare 公网隧道（免装 Tailscale）');
   console.log('   3. 在聊天区右滑即可拉出左侧会话抽屉，底部可直接切换模型/权限与拍照传图');
   console.log('');
 }
 
 if (require.main === module) {
-  const args = new Set(process.argv.slice(2));
+  const rawArgs = process.argv.slice(2);
+  const args = new Set(rawArgs);
+  const tIdx = rawArgs.indexOf('--tunnel');
+  const tunnelAction = (tIdx >= 0 && rawArgs[tIdx + 1]) ? String(rawArgs[tIdx + 1]).trim().toLowerCase() : '';
   if (args.has('--print-info')) {
     printRemoteCli({
       resetToken: args.has('--reset-token'),
-      jsonMode: args.has('--json')
+      jsonMode: args.has('--json'),
+      tunnelAction
     });
   } else {
     startMobileRemoteServer();
@@ -2419,6 +3096,11 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_REMOTE_PORT,
   loadOrCreateRemoteConfig,
+  saveRemoteTunnelConfig,
+  extractCloudflareTunnelToken,
+  normalizeTunnelHostname,
+  resolveCloudflaredBinary,
+  createCloudflareTunnelController,
   isAllowedPrivateAddress,
   isAllowedPrivateOrigin,
   enumerateLocalAddresses,

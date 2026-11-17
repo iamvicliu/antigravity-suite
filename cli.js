@@ -384,9 +384,12 @@ async function main() {
   } else if (cmd === 'check') {
     await cmdCheck(customPath);
   } else if (cmd === 'remote') {
+    const tIdx = args.indexOf('--tunnel');
+    const tunnelAction = (tIdx >= 0 && args[tIdx + 1]) ? String(args[tIdx + 1]).trim().toLowerCase() : '';
     require('./mobile-remote').printRemoteCli({
       resetToken: args.includes('--reset-token'),
-      jsonMode: args.includes('--json')
+      jsonMode: args.includes('--json'),
+      tunnelAction
     });
   } else if (cmd === 'upstreams') {
     const cmdIdx = process.argv.indexOf('upstreams');

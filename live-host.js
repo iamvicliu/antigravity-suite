@@ -56,7 +56,8 @@ const ALLOWED_ROUTES = [
   '/read-local-file',
   '/write-local-file',
   '/open-external-url',
-  '/remote-info'
+  '/remote-info',
+  '/remote-tunnel'
 ];
 
 // 解析并校验可编辑本地文件路径，禁止读写系统关键目录与敏感凭据目录
@@ -712,8 +713,28 @@ function collectBrainStats() {
           return;
         }
         if (req.url === '/remote-info') {
-          const info = buildRemoteInfo({ resetToken: request?.resetToken === true });
+          const tunnelStatus = remoteHandle?.ensureTunnelRunning
+            ? remoteHandle.ensureTunnelRunning()
+            : (remoteHandle?.getTunnelStatus?.() || null);
+          const info = buildRemoteInfo({
+            resetToken: request?.resetToken === true,
+            tunnelStatus
+          });
           res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: info }));
+          return;
+        }
+        if (req.url === '/remote-tunnel') {
+          res.setHeader('Content-Type', 'application/json');
+          if (!remoteHandle?.configureTunnel) {
+            res.end(JSON.stringify({ ok: false, error: '远程服务尚未就绪' }));
+            return;
+          }
+          await remoteHandle.configureTunnel(request || {});
+          const info = buildRemoteInfo({
+            resetToken: false,
+            tunnelStatus: remoteHandle.getTunnelStatus()
+          });
           res.end(JSON.stringify({ ok: true, data: info }));
           return;
         }
