@@ -300,6 +300,7 @@
 
     var translated = translateSingleUnit(trimmed);
     if (translated !== null && translated !== trimmed) {
+      if (node._agySourceEn === undefined) node._agySourceEn = original;
       var leadingSpace = original.match(/^\s*/)[0];
       var trailingSpace = original.match(/\s*$/)[0];
       // 盘古之白排版优化：若前一个兄弟节点以英数结尾且当前译文以汉字开头，自动补齐规范空格
@@ -367,6 +368,7 @@
 
           var trans = translateSingleUnit(val);
           if (trans !== null && trans !== val) {
+            if (el['_agySrcAttr_' + attr] === undefined) el['_agySrcAttr_' + attr] = val;
             el.setAttribute(attr, trans);
             el[markKey] = trans; // 标记已翻译的值
           } else {
@@ -395,10 +397,12 @@
         if (combinedText) {
           var combinedTrans = translateSingleUnit(combinedText);
           if (combinedTrans !== null && combinedTrans !== combinedText) {
+            if (first._agySourceEn === undefined) first._agySourceEn = first.nodeValue;
             first.nodeValue = combinedTrans;
             first._agyOriginal = combinedTrans;
             var other = first.nextSibling;
             while (other) {
+              if (other._agySourceEn === undefined) other._agySourceEn = other.nodeValue;
               other.nodeValue = '';
               other._agyOriginal = '';
               other = other.nextSibling;
@@ -485,11 +489,170 @@
     }
   }
 
+  var CANONICAL_ZH_TO_EN = {
+    '新增': 'New',
+    '新建': 'New',
+    '新建会话': 'New Conversation',
+    '自动化': 'Automations',
+    '自定义扩展': 'Customizations',
+    '项目列表': 'Projects',
+    '设置': 'Settings',
+    '扩展': 'Extensions',
+    '扩展插件': 'Extensions',
+    '收件箱': 'Inbox',
+    '文件列表': 'Files',
+    '概览': 'Overview',
+    '无限': 'Turbo',
+    '无限模式': 'Turbo mode',
+    '智能规划': 'Planning',
+    '快速执行': 'Fast',
+    '标准': 'Default',
+    '自动': 'Auto',
+    '请求审核': 'Request Review',
+    '始终继续': 'Always Proceed'
+  };
+
+  var reverseExactDict = {};
+  (function buildReverseExactDict() {
+    var hasOwn = Object.prototype.hasOwnProperty;
+    function scoreKey(k) {
+      var s = 0;
+      if (/^[A-Z][a-z]/.test(k)) s += 4;
+      if (/[a-z]/.test(k) && !/^[a-z]/.test(k)) s += 2;
+      if (k.length <= 32) s += 1;
+      return s;
+    }
+    for (var ek in exactDict) {
+      if (!hasOwn.call(exactDict, ek)) continue;
+      var zhVal = exactDict[ek];
+      if (!zhVal || typeof zhVal !== 'string') continue;
+      var trimmedZh = zhVal.trim();
+      var prev = hasOwn.call(reverseExactDict, trimmedZh) ? reverseExactDict[trimmedZh] : null;
+      if (!prev || scoreKey(ek) > scoreKey(prev)) {
+        reverseExactDict[trimmedZh] = ek;
+      }
+    }
+    for (var ck in CANONICAL_ZH_TO_EN) {
+      if (hasOwn.call(CANONICAL_ZH_TO_EN, ck)) reverseExactDict[ck] = CANONICAL_ZH_TO_EN[ck];
+    }
+  })();
+
+  function isRuntimeChineseEnabled() {
+    try {
+      var attrHans = doc && doc.documentElement && doc.documentElement.getAttribute
+        ? String(doc.documentElement.getAttribute('data-ag-hans-lang') || '').trim()
+        : '';
+      if (/^en/i.test(attrHans)) return false;
+      if (/^zh/i.test(attrHans)) return true;
+      var attrSuite = doc && doc.documentElement && doc.documentElement.getAttribute
+        ? String(doc.documentElement.getAttribute('data-ag-suite-locale') || '').trim()
+        : '';
+      if (attrSuite && !/^(?:zh|cn)/i.test(attrSuite)) return false;
+      if (!root || !root.localStorage) return true;
+      var hansPref = String(root.localStorage.getItem('antigravityHansLang') || '').trim();
+      if (/^en/i.test(hansPref)) return false;
+      var suitePref = String(root.localStorage.getItem('ag_suite_locale') || '').trim();
+      if (suitePref && !/^(?:zh|cn)/i.test(suitePref)) return false;
+    } catch (e) {}
+    return true;
+  }
+
+  function shouldSkipRevertEl(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (shouldIgnoreElement(el)) return true;
+    if (el.id === 'ag-context-meter' || el.id === 'ag-quick-capsule-bar' || el.id === 'ag-quota-popover' || el.id === 'ag-chat-nav-float') return true;
+    if (el.closest) {
+      if (el.closest('#ag-context-meter, #ag-quick-capsule-bar, #ag-quota-popover, #ag-chat-nav-float, [data-agy-context-capsule], #__agy_ctx_capsule_tooltip__, [data-testid="user-input-step"], [aria-label="User message"], [aria-label="用户消息"]')) {
+        return true;
+      }
+      if (el.closest('[data-testid="conversation-row-sidebar"] span.truncate')) return true;
+    }
+    return false;
+  }
+
+  function lookupReverseEn(rawStr) {
+    if (!rawStr || typeof rawStr !== 'string') return null;
+    var trimmed = rawStr.trim();
+    if (!trimmed || !/[\u4e00-\u9fa5]/.test(trimmed)) return null;
+    var hasOwn = Object.prototype.hasOwnProperty;
+    if (hasOwn.call(reverseExactDict, trimmed)) return reverseExactDict[trimmed];
+    var pMatch = trimmed.match(/^(.+?)([：:…\.？\?!！]+)$/);
+    if (pMatch) {
+      var base = pMatch[1].trim();
+      var punc = pMatch[2] === '：' ? ':' : pMatch[2];
+      if (hasOwn.call(reverseExactDict, base)) return reverseExactDict[base] + punc;
+    }
+    return null;
+  }
+
+  function revertElementSubtree(el) {
+    if (!el || el.nodeType !== 1 || shouldSkipRevertEl(el)) return;
+    el._agyScanId = 0;
+    for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
+      var attr = TRANSLATABLE_ATTRS[i];
+      var srcAttrKey = '_agySrcAttr_' + attr;
+      if (typeof el[srcAttrKey] === 'string') {
+        el.setAttribute(attr, el[srcAttrKey]);
+      } else if (el.hasAttribute && el.hasAttribute(attr)) {
+        var curA = el.getAttribute(attr);
+        var revA = lookupReverseEn(curA);
+        if (revA) el.setAttribute(attr, revA);
+      }
+      el[MARK_ATTR + '_' + attr] = undefined;
+    }
+    var child = el.firstChild;
+    while (child) {
+      if (child.nodeType === 3) {
+        if (typeof child._agySourceEn === 'string' && child._agySourceEn !== child.nodeValue) {
+          child.nodeValue = child._agySourceEn;
+        } else if (child.nodeValue) {
+          var revT = lookupReverseEn(child.nodeValue);
+          if (revT) {
+            var lead = child.nodeValue.match(/^\s*/)[0];
+            var tail = child.nodeValue.match(/\s*$/)[0];
+            child.nodeValue = lead + revT + tail;
+          }
+        }
+        child._agyOriginal = undefined;
+      } else if (child.nodeType === 1) {
+        revertElementSubtree(child);
+      }
+      child = child.nextSibling;
+    }
+  }
+
+  function revertAllRuntimeTranslations() {
+    if (!doc || !doc.documentElement) return;
+    disconnectObserver();
+    try {
+      revertElementSubtree(doc.documentElement);
+      if (doc.documentElement.lang && /^zh/i.test(doc.documentElement.lang)) {
+        doc.documentElement.lang = 'en';
+      }
+    } catch (e) {}
+    reconnectObserver();
+  }
+
+  function resetAllNegativeMarks(el) {
+    if (!el || el.nodeType !== 1) return;
+    el._agyScanId = 0;
+    for (var i = 0; i < TRANSLATABLE_ATTRS.length; i++) {
+      el[MARK_ATTR + '_' + TRANSLATABLE_ATTRS[i]] = undefined;
+    }
+    var ch = el.firstChild;
+    while (ch) {
+      if (ch.nodeType === 3) ch._agyOriginal = undefined;
+      else if (ch.nodeType === 1) resetAllNegativeMarks(ch);
+      ch = ch.nextSibling;
+    }
+  }
+
   /**
    * 安全地翻译一组节点
    * 在翻译期间暂停 Observer，完成后重新连接
    */
   function safeTranslateNodes(nodes) {
+    if (!isRuntimeChineseEnabled()) return;
     disconnectObserver();
     try {
       for (var i = 0; i < nodes.length; i++) {
@@ -510,7 +673,7 @@
    * 安全地执行全量扫描
    */
   function safeFullScan() {
-    if (!doc || !doc.documentElement) return;
+    if (!doc || !doc.documentElement || !isRuntimeChineseEnabled()) return;
     currentScanId++;
     disconnectObserver();
     try {
@@ -663,7 +826,7 @@
       var hoverScanTimer = null;
 
       function scanFloatingContainers() {
-        if (!doc || !doc.body) return;
+        if (!doc || !doc.body || !isRuntimeChineseEnabled()) return;
         disconnectObserver();
         try {
           // 定向扫描顶层 Portal 容器、Tooltip、Popover 节点，门禁拦截非浮层元素，绝不遍历整棵 DOM 树
@@ -685,6 +848,7 @@
       }
 
       var onHoverAction = function (e) {
+        if (!isRuntimeChineseEnabled()) return;
         // 120ms 节流阀：阻断高频事件风暴，杜绝掉帧卡顿
         var now = Date.now ? Date.now() : (+new Date());
         if (now - lastHoverTime < 120) return;
@@ -717,11 +881,41 @@
     } catch (e) {}
   }
 
+  if (doc && doc.documentElement) {
+    try {
+      var lastSyncedZhState = isRuntimeChineseEnabled();
+      var syncRuntimeLanguageMode = function () {
+        var nextZh = isRuntimeChineseEnabled();
+        if (nextZh === lastSyncedZhState) return;
+        lastSyncedZhState = nextZh;
+        if (!nextZh) {
+          revertAllRuntimeTranslations();
+        } else {
+          resetAllNegativeMarks(doc.documentElement);
+          doc.documentElement.lang = 'zh-CN';
+          safeFullScan();
+        }
+      };
+      var LocaleObserver = root.MutationObserver || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
+      if (LocaleObserver) {
+        var localeAttrObserver = new LocaleObserver(syncRuntimeLanguageMode);
+        localeAttrObserver.observe(doc.documentElement, {
+          attributes: true,
+          attributeFilter: ['data-ag-hans-lang', 'data-ag-suite-locale']
+        });
+      }
+      if (root && typeof root.addEventListener === 'function') {
+        root.addEventListener('storage', syncRuntimeLanguageMode);
+      }
+    } catch (e) {}
+  }
+
   if (root) {
     root.__AGY_CREATE_ENGINE__ = createI18nEngine;
     root.__AGY_TRANSLATE_UNIT__ = translateSingleUnit;
     root.__AGY_TRANSLATE_EL__ = translateElement;
     root.__AGY_RUN_FULL_SCAN__ = safeFullScan;
+    root.__AGY_REVERT_ALL__ = revertAllRuntimeTranslations;
     root.__AGY_CACHE__ = translationCache;
     root.__AGY_IS_FLOATING__ = isFloatingElement;
   }
