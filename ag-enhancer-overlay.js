@@ -66,6 +66,15 @@
   let autoAcceptEnabled = false;
   let ghostSuggestEnabled = true;
   let uiLang = 'zh';
+  const DEFAULT_FEATURE_FLAGS = {
+    showTopbarTokens: true,
+    showTopbarCli: true,
+    showTopbarQuota: true,
+    showTopbarRemote: true,
+    showQuickBar: true,
+    showChatNav: true
+  };
+  let featureFlags = { ...DEFAULT_FEATURE_FLAGS };
   const autoClickedButtons = new WeakMap();
 
   function tr(zhText, enText) {
@@ -87,6 +96,27 @@
         const rawGhost = localStorage.getItem('ag_suite_ghost_suggest');
         if (rawGhost === 'true' || rawGhost === 'false') {
           ghostSuggestEnabled = rawGhost === 'true';
+        }
+      }
+    } catch {}
+    try {
+      if (detail && detail.featureFlags && typeof detail.featureFlags === 'object') {
+        for (const k of Object.keys(DEFAULT_FEATURE_FLAGS)) {
+          if (typeof detail.featureFlags[k] === 'boolean') {
+            featureFlags[k] = detail.featureFlags[k];
+          }
+        }
+      } else if (typeof localStorage !== 'undefined') {
+        const rawFeat = localStorage.getItem('ag_suite_feature_flags');
+        if (rawFeat) {
+          const parsedFeat = JSON.parse(rawFeat);
+          if (parsedFeat && typeof parsedFeat === 'object') {
+            for (const k of Object.keys(DEFAULT_FEATURE_FLAGS)) {
+              if (typeof parsedFeat[k] === 'boolean') {
+                featureFlags[k] = parsedFeat[k];
+              }
+            }
+          }
         }
       }
     } catch {}
@@ -517,12 +547,10 @@
           max-width: calc(100vw - 24px);
           padding: 12px 14px;
           border-radius: 10px;
-          border: 1px solid var(--ag-float-border, rgba(255, 255, 255, 0.12));
-          background: var(--ag-float-bg, rgba(24, 24, 27, 0.96));
-          color: var(--ag-text-primary, #f4f4f5);
-          box-shadow: var(--ag-float-shadow, 0 12px 32px rgba(0, 0, 0, 0.45));
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
+          border: 1px solid var(--ag-border-panel, var(--ag-float-border, rgba(255, 255, 255, 0.11)));
+          background: var(--ag-bg-panel, var(--ag-float-bg, #18181b));
+          color: var(--ag-text-primary, #ececef);
+          box-shadow: var(--ag-shadow-panel, var(--ag-float-shadow, 0 16px 40px rgba(0, 0, 0, 0.58)));
           font-size: 13px;
           line-height: 1.45;
         }
@@ -547,8 +575,8 @@
           height: 26px;
           padding: 0 8px;
           border-radius: 6px;
-          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.12));
-          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.05));
+          border: 1px solid var(--ag-btn-border, var(--ag-border-subcard, rgba(255, 255, 255, 0.12)));
+          background: var(--ag-btn-bg, var(--ag-bg-subcard, rgba(255, 255, 255, 0.04)));
           color: var(--ag-text-primary, #e4e4e7);
           font-size: 12px;
           white-space: nowrap;
@@ -557,7 +585,7 @@
           transition: background-color 0.15s ease;
         }
         .ag-qp-refresh:hover {
-          background: var(--ag-toolbar-bg-hover, rgba(255, 255, 255, 0.12));
+          background: var(--ag-btn-hover, var(--ag-toolbar-bg-hover, rgba(255, 255, 255, 0.08)));
         }
         .ag-qp-model {
           font-size: 12px;
@@ -575,12 +603,12 @@
         .ag-qp-card {
           padding: 8px 10px;
           border-radius: 8px;
-          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.04));
-          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
+          background: var(--ag-bg-card, var(--ag-bg-subcard, rgba(255, 255, 255, 0.025)));
+          border: 1px solid var(--ag-border-card, var(--ag-border-subcard, rgba(255, 255, 255, 0.09)));
           margin-bottom: 8px;
         }
         .ag-qp-card.is-active {
-          border-color: rgba(56, 189, 248, 0.45);
+          border-color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa));
         }
         .ag-qp-row {
           display: flex;
@@ -600,8 +628,8 @@
           font-weight: 500;
           padding: 1px 5px;
           border-radius: 4px;
-          background: rgba(56, 189, 248, 0.18);
-          color: #38bdf8;
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+          color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa));
         }
         .ag-qp-pct {
           font-size: 13px;
@@ -694,12 +722,12 @@
         #badge-remote:hover,
         #badge-remote:focus-visible,
         #badge-remote[aria-expanded="true"] {
-          color: #38bdf8;
+          color: var(--ag-toolbar-fg-hover, #ececef);
         }
         :host([data-theme="light"]) #badge-remote:hover,
         :host([data-theme="light"]) #badge-remote:focus-visible,
         :host([data-theme="light"]) #badge-remote[aria-expanded="true"] {
-          color: #0284c7;
+          color: var(--ag-toolbar-fg-hover, #18181b);
         }
         :host([data-layout="compact"]) #badge-remote {
           padding: 0 5px;
@@ -720,12 +748,10 @@
           box-sizing: border-box;
           padding: 12px 14px;
           border-radius: 10px;
-          border: 1px solid var(--ag-float-border, rgba(255, 255, 255, 0.12));
-          background: var(--ag-float-bg, rgba(24, 24, 27, 0.96));
-          color: var(--ag-text-primary, #f4f4f5);
-          box-shadow: var(--ag-float-shadow, 0 12px 32px rgba(0, 0, 0, 0.45));
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
+          border: 1px solid var(--ag-border-panel, var(--ag-float-border, rgba(255, 255, 255, 0.11)));
+          background: var(--ag-bg-panel, var(--ag-float-bg, #18181b));
+          color: var(--ag-text-primary, #ececef);
+          box-shadow: var(--ag-shadow-panel, var(--ag-float-shadow, 0 16px 40px rgba(0, 0, 0, 0.58)));
           font-size: 13px;
           line-height: 1.45;
         }
@@ -795,16 +821,16 @@
           cursor: default;
         }
         .ag-rp-channel:not([disabled]):hover {
-          background: rgba(255, 255, 255, 0.06);
+          background: var(--ag-btn-hover, rgba(255, 255, 255, 0.08));
         }
         .ag-rp-channel[data-selected="true"] {
-          background: rgba(56, 189, 248, 0.1);
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
         }
         :host([data-theme="light"]) .ag-rp-channel:not([disabled]):hover {
-          background: rgba(0, 0, 0, 0.05);
+          background: var(--ag-btn-hover, rgba(0, 0, 0, 0.06));
         }
         :host([data-theme="light"]) .ag-rp-channel[data-selected="true"] {
-          background: rgba(2, 132, 199, 0.08);
+          background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
         }
         .ag-rp-ch-left {
           display: inline-flex;
@@ -855,15 +881,15 @@
           border-radius: 6px;
           font-size: 11.5px;
           line-height: 1.35;
-          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.06));
-          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.1));
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.04));
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
           color: var(--ag-text-primary, #e4e4e7);
         }
         .ag-rp-dev-dot {
           width: 6px;
           height: 6px;
           border-radius: 9999px;
-          background: var(--ag-text-muted, #71717a);
+          background: var(--ag-text-muted, #a1a1aa);
           flex-shrink: 0;
         }
         .ag-rp-dev-chip[data-online="true"] {
@@ -874,8 +900,8 @@
           background: #34d399;
         }
         :host([data-theme="light"]) .ag-rp-dev-chip {
-          background: rgba(0, 0, 0, 0.04);
-          border-color: rgba(0, 0, 0, 0.1);
+          background: var(--ag-bg-subcard, rgba(0, 0, 0, 0.035));
+          border-color: var(--ag-border-subcard, rgba(0, 0, 0, 0.09));
         }
         :host([data-theme="light"]) .ag-rp-dev-chip[data-online="true"] {
           border-color: rgba(5, 150, 105, 0.35);
@@ -899,7 +925,7 @@
           white-space: nowrap;
           border-radius: 7px;
           border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.12));
-          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.06));
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.04));
           color: var(--ag-text-primary, #f4f4f5);
           font-size: 12.5px;
           font-weight: 500;
@@ -907,17 +933,17 @@
           transition: background-color 0.15s ease;
         }
         .ag-rp-btn:hover {
-          background: var(--ag-toolbar-bg-hover, rgba(255, 255, 255, 0.12));
+          background: var(--ag-toolbar-bg-hover, rgba(255, 255, 255, 0.08));
         }
         .ag-rp-btn[data-primary="true"] {
-          border-color: rgba(56, 189, 248, 0.5);
-          background: rgba(56, 189, 248, 0.16);
-          color: #38bdf8;
+          border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+          color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa));
         }
         :host([data-theme="light"]) .ag-rp-btn[data-primary="true"] {
-          border-color: rgba(2, 132, 199, 0.45);
-          background: rgba(2, 132, 199, 0.12);
-          color: #0284c7;
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
+          color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #7c3aed));
         }
         .ag-rp-tip {
           margin-top: 8px;
@@ -944,6 +970,7 @@
 
       remoteBtn.addEventListener('click', onRemoteBtnClick);
     }
+    if (remoteBtn) remoteBtn.hidden = featureFlags.showTopbarRemote === false;
 
     let quotaBtn = sr.getElementById(QUOTA_BADGE_ID);
     const anchorBadge = contextBadge;
@@ -968,6 +995,7 @@
     ) {
       contextBadge.insertAdjacentElement('afterend', quotaBtn);
     }
+    if (quotaBtn) quotaBtn.hidden = featureFlags.showTopbarQuota === false;
 
     let popover = sr.getElementById(QUOTA_POPOVER_ID);
     if (!popover) {
@@ -1201,7 +1229,7 @@
         <div class="ag-rp-sec" data-active="${onlineCount > 0 ? 'true' : 'false'}">${LOCK_SHIELD_SVG}<span>${escapeHtml(statusText)}</span></div>
         ${devicesHtml}
         <div class="ag-rp-actions">
-          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button">${escapeHtml(copiedRecent ? tr('✅ 已复制链接', '✅ Copied') : tr('复制链接', 'Copy Link'))}</button>
+          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button">${escapeHtml(copiedRecent ? tr('已复制链接', 'Copied') : tr('复制链接', 'Copy Link'))}</button>
           <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${remotePairState.loading ? 'disabled' : ''}>${escapeHtml(tr('重置密钥', 'Reset Token'))}</button>
         </div>
         <div class="ag-rp-tip">${escapeHtml(tr('可连到这台电脑：在同一 Wi-Fi 上、在你的 Tailnet 上或通过 Bonjour 域名；iPhone 扫码后添加到主屏幕即可全屏秒连。', 'Connect over this Wi-Fi, Tailscale, or Bonjour. Scan with Phone and Add to Home Screen for instant full-screen control.'))}</div>
@@ -1268,7 +1296,7 @@
         );
       } else if (res && res.ok && res.data) {
         remotePairState.data = res.data;
-        if (resetToken) showQuickToast(tr('🔑 已生成新配对密钥，旧链接已失效', '🔑 New pair token generated; old links revoked'));
+        if (resetToken) showQuickToast(tr('已生成新配对密钥，旧链接已失效', 'New pair token generated; old links revoked'));
       } else {
         remotePairState.error = tr('请确认 Antigravity 桥接服务正在运行', 'Ensure Antigravity local bridge service is running');
       }
@@ -1548,7 +1576,7 @@
       <div class="ag-qp-header">
         <span class="ag-qp-title">${tr('模型剩余配额实时看板', 'Model Quota Live')}</span>
         <div style="display:flex;align-items:center;gap:4px">
-          <button id="ag-quota-open-settings" class="ag-qp-refresh" type="button" title="${tr('前往统一设置调整套餐子档', 'Open Suite Settings')}">⚙️</button>
+          <button id="ag-quota-open-settings" class="ag-qp-refresh" type="button" title="${tr('前往统一设置调整套餐子档', 'Open Suite Settings')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
           <button id="ag-quota-refresh" class="ag-qp-refresh" type="button">${quotaState.loading ? tr('刷新中…', 'Refreshing…') : tr('↻ 刷新', '↻ Refresh')}</button>
         </div>
       </div>
@@ -2505,7 +2533,7 @@
   }
 
   function ensureChatNavFloat() {
-    if (disposed) return;
+    if (disposed || featureFlags.showChatNav === false) return;
     ensureDocStyle();
     const { host } = getMeterHostAndShadow();
     const theme = resolveHostTheme(host);
@@ -2690,7 +2718,7 @@
   }
 
   function ensureQuickCapsuleBar() {
-    if (disposed) return;
+    if (disposed || featureFlags.showQuickBar === false) return;
     ensureDocStyle();
     const composer = document.querySelector('.surface-composer');
     if (!composer || !composer.parentElement) return;
@@ -4249,9 +4277,33 @@
     positionChatNavFloat(document.getElementById(CHAT_NAV_ID));
   }
 
+  function applyEnhancerFeatureVisibility() {
+    if (disposed) return;
+    if (!featureFlags.showQuickBar) {
+      safeRemove(document.getElementById(QUICK_BAR_ID));
+    } else {
+      ensureQuickCapsuleBar();
+    }
+    if (!featureFlags.showChatNav) {
+      safeRemove(document.getElementById(CHAT_NAV_ID));
+    } else {
+      ensureChatNavFloat();
+    }
+    const { sr } = getMeterHostAndShadow();
+    if (sr) {
+      const qBtn = sr.getElementById(QUOTA_BADGE_ID);
+      if (qBtn) qBtn.hidden = featureFlags.showTopbarQuota === false;
+      if (featureFlags.showTopbarQuota === false) toggleQuotaPopover(false);
+      const rBtn = sr.getElementById(REMOTE_BADGE_ID);
+      if (rBtn) rBtn.hidden = featureFlags.showTopbarRemote === false;
+      if (featureFlags.showTopbarRemote === false) toggleRemotePopover(false);
+    }
+  }
+
   function onSuitePrefsChanged(ev) {
     const prevLang = uiLang;
     syncSuitePrefsFromStorage(ev?.detail || null);
+    applyEnhancerFeatureVisibility();
     if (!ghostSuggestEnabled) hideNextStepGhost();
     else ensureNextStepGhost();
     updateQuickBarLanguage();
@@ -4281,9 +4333,8 @@
   let lastQuotaFetchAt = 0;
   function tickEnhancer() {
     if (disposed) return;
-    ensureQuickCapsuleBar();
+    applyEnhancerFeatureVisibility();
     ensureNextStepGhost();
-    ensureChatNavFloat();
     ensureFileViewerEditor();
     scanHighRiskCommands();
     renderQuotaUI();
@@ -4292,15 +4343,15 @@
     scheduleLocalization();
     syncSidebarShortcutBadges();
     runAutoAcceptTick();
-    if (Date.now() - lastQuotaFetchAt >= 30000) {
+    if (featureFlags.showTopbarQuota !== false && Date.now() - lastQuotaFetchAt >= 30000) {
       lastQuotaFetchAt = Date.now();
       void refreshQuota();
     }
-    if (Date.now() - lastBrainFetchAt >= 60000) {
+    if (featureFlags.showQuickBar !== false && Date.now() - lastBrainFetchAt >= 60000) {
       lastBrainFetchAt = Date.now();
       void refreshBrainStats(false);
     }
-    if (!remotePopoverOpen && Date.now() - lastRemoteFetchAt >= 10000) {
+    if (featureFlags.showTopbarRemote !== false && !remotePopoverOpen && Date.now() - lastRemoteFetchAt >= 10000) {
       lastRemoteFetchAt = Date.now();
       void refreshRemotePairInfo(false);
     }
@@ -4946,6 +4997,7 @@
       if (!ghostSuggestEnabled) hideNextStepGhost();
       else ensureNextStepGhost();
     },
+    getFeatureFlags: () => ({ ...featureFlags }),
     parseQuotaSummaryGroups,
     exportMarkdown,
     localizeSidebarConversations,
@@ -4957,9 +5009,8 @@
     dispose
   };
 
-  ensureQuickCapsuleBar();
+  applyEnhancerFeatureVisibility();
   ensureNextStepGhost();
-  ensureChatNavFloat();
   ensureFileViewerEditor();
   syncSidebarShortcutBadges();
   scanHighRiskCommands();
@@ -4976,7 +5027,7 @@
   lastQuotaFetchAt = Date.now();
   lastBrainFetchAt = Date.now();
   lastRemoteFetchAt = Date.now();
-  void refreshQuota();
-  void refreshBrainStats(false);
-  void refreshRemotePairInfo(false);
+  if (featureFlags.showTopbarQuota !== false) void refreshQuota();
+  if (featureFlags.showQuickBar !== false) void refreshBrainStats(false);
+  if (featureFlags.showTopbarRemote !== false) void refreshRemotePairInfo(false);
 })();

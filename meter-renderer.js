@@ -77,9 +77,10 @@
       --ag-accent-border-hover:rgba(167,139,250,0.56);
       --ag-accent-glow:rgba(167,139,250,0.44);
 
-      /* 0 级主题背景与一级/二级严格统一背景色 */
-      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#181818));
+      /* 0 级主题背景与一级/二级微明度表面层级 */
+      --ag-bg-panel-default:var(--ag-host-bg,var(--background,#18181b));
       --ag-unified-bg:var(--ag-custom-panel-bg,var(--ag-bg-panel-default));
+      --ag-link:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
 
       --ag-float-bg:var(--ag-unified-bg);
       --ag-float-border:rgba(255,255,255,0.12);
@@ -93,29 +94,29 @@
       --ag-text-muted:#a1a1aa;
       --ag-border-subtle:rgba(255,255,255,0.08);
 
-      /* 一级面板与二级内部菜单/卡片/抽屉背景严格一致 */
-      --ag-bg-card:var(--ag-unified-bg);
-      --ag-bg-card-hover:var(--ag-unified-bg);
+      /* 一级卡片与二级子卡片采用柔和微差层次 */
+      --ag-bg-card:rgba(255,255,255,0.025);
+      --ag-bg-card-hover:rgba(255,255,255,0.045);
       --ag-border-card:rgba(255,255,255,0.09);
-      --ag-bg-subcard:var(--ag-unified-bg);
+      --ag-bg-subcard:rgba(255,255,255,0.04);
       --ag-border-subcard:rgba(255,255,255,0.08);
-      --ag-bg-status:var(--ag-unified-bg);
+      --ag-bg-status:rgba(255,255,255,0.035);
       --ag-text-status:#c8c8d0;
 
-      --ag-btn-bg:var(--ag-unified-bg);
+      --ag-btn-bg:rgba(255,255,255,0.04);
       --ag-btn-hover:rgba(255,255,255,0.08);
       --ag-btn-border:rgba(255,255,255,0.12);
       --ag-btn-border-hover:rgba(255,255,255,0.22);
       --ag-btn-text:#d4d4d8;
 
-      --ag-pill-muted-bg:var(--ag-unified-bg);
+      --ag-pill-muted-bg:rgba(255,255,255,0.04);
       --ag-pill-muted-border:rgba(255,255,255,0.12);
-      --ag-pill-muted-text:#9a9aa2;
+      --ag-pill-muted-text:#a1a1aa;
 
       --ag-track-bg:rgba(255,255,255,0.12);
       --ag-track-shadow:none;
 
-      --ag-heat-bg:var(--ag-unified-bg);
+      --ag-heat-bg:rgba(255,255,255,0.025);
       --ag-heat-lvl-0:#27272a;
       --ag-heat-lvl-1:#3f1e6b;
       --ag-heat-lvl-2:#652ab7;
@@ -160,7 +161,7 @@
       opacity:1;
     }
 
-    /* 浅色模式规范（与 0 级浅色主题协调，且一级/二级背景严格统一） */
+    /* 浅色模式规范（与 0 级浅色主题协调，且微明度层次一致） */
     :host([data-theme="light"]),
     :host([data-panel-tone="light"]){
       --ag-toolbar-fg:#52525b;
@@ -180,6 +181,7 @@
       --ag-speed-default:#52525b;
       --ag-token-total-default:#52525b;
       --ag-token-accent-default:#7c3aed;
+      --ag-link:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));
       --ag-accent-bg:rgba(124,58,237,0.10);
       --ag-accent-bg-hover:rgba(124,58,237,0.18);
       --ag-accent-border:rgba(124,58,237,0.28);
@@ -201,28 +203,28 @@
       --ag-text-muted:#52525b;
       --ag-border-subtle:rgba(0,0,0,0.08);
 
-      --ag-bg-card:var(--ag-unified-bg);
-      --ag-bg-card-hover:var(--ag-unified-bg);
+      --ag-bg-card:rgba(0,0,0,0.02);
+      --ag-bg-card-hover:rgba(0,0,0,0.04);
       --ag-border-card:rgba(0,0,0,0.10);
-      --ag-bg-subcard:var(--ag-unified-bg);
+      --ag-bg-subcard:rgba(0,0,0,0.035);
       --ag-border-subcard:rgba(0,0,0,0.09);
-      --ag-bg-status:var(--ag-unified-bg);
+      --ag-bg-status:rgba(0,0,0,0.03);
       --ag-text-status:#27272a;
 
-      --ag-btn-bg:var(--ag-unified-bg);
-      --ag-btn-hover:rgba(0,0,0,0.05);
+      --ag-btn-bg:rgba(0,0,0,0.035);
+      --ag-btn-hover:rgba(0,0,0,0.06);
       --ag-btn-border:rgba(0,0,0,0.12);
       --ag-btn-border-hover:rgba(0,0,0,0.22);
       --ag-btn-text:#18181b;
 
-      --ag-pill-muted-bg:var(--ag-unified-bg);
+      --ag-pill-muted-bg:rgba(0,0,0,0.035);
       --ag-pill-muted-border:rgba(0,0,0,0.12);
       --ag-pill-muted-text:#52525b;
 
       --ag-track-bg:rgba(0,0,0,0.08);
       --ag-track-shadow:none;
 
-      --ag-heat-bg:var(--ag-unified-bg);
+      --ag-heat-bg:rgba(0,0,0,0.02);
       --ag-heat-lvl-0:#e4e4e7;
       --ag-heat-lvl-1:#e9d5ff;
       --ag-heat-lvl-2:#c084fc;
@@ -543,6 +545,16 @@
     :host([data-layout="ring-only"]) #badge-cli,
     :host([data-layout="ring-only"]) #badge-settings,
     :host([data-layout="ring-only"]) #badge-overflow{
+      display:none!important;
+    }
+
+    /* 用户自定义功能显示开关 */
+    :host([data-hide-tokens="true"]) #badge-tokens,
+    :host([data-hide-tokens="true"]) #overflow-tokens-btn,
+    :host([data-hide-cli="true"]) #badge-cli,
+    :host([data-hide-cli="true"]) #overflow-cli-btn,
+    :host([data-hide-quota="true"]) #badge-quota,
+    :host([data-hide-remote="true"]) #badge-remote{
       display:none!important;
     }
 
@@ -1124,9 +1136,9 @@
     .quota-cur-est{font-size:12px;color:var(--ag-text-secondary);margin-top:3px;font-variant-numeric:tabular-nums}
     .quota-cur-alert{
       margin-top:7px;padding:6px 9px;border-radius:6px;font-size:12px;line-height:1.45;
-      background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.28);color:var(--ag-text-secondary);
+      background:var(--ag-accent-bg);border:1px solid var(--ag-accent-border);color:var(--ag-text-secondary);
     }
-    .quota-cur-alert[data-kind="notice"]{background:rgba(24,144,255,0.08);border-color:rgba(24,144,255,0.26)}
+    .quota-cur-alert[data-kind="notice"]{background:var(--ag-accent-bg);border-color:var(--ag-accent-border)}
     .quota-buckets-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
     .quota-bucket-row{display:flex;flex-direction:column;gap:4px}
     .quota-bucket-meta{display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:6px}
@@ -1198,21 +1210,21 @@
       border-radius:8px;padding:10px 12px;cursor:pointer;transition:border-color .14s ease,background-color .14s ease;
     }
     .quota-pool-card:hover{border-color:var(--ag-btn-border-hover)}
-    .quota-pool-card[data-active-current="true"]{border-color:rgba(34,197,94,0.45)}
-    .quota-pool-card[data-browsing="true"]{box-shadow:inset 0 0 0 1px rgba(24,144,255,0.45)}
+    .quota-pool-card[data-active-current="true"]{border-color:var(--ag-accent-border)}
+    .quota-pool-card[data-browsing="true"]{box-shadow:inset 0 0 0 1px var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
     .quota-pool-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px}
     .quota-pool-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);line-height:1.35}
     .quota-pool-tags{display:flex;align-items:center;gap:4px;flex-shrink:0;flex-wrap:wrap}
-    .quota-current-tag{font-size:11px;padding:1px 6px;border-radius:9px;background:rgba(24,144,255,0.14);color:#38bdf8;border:1px solid rgba(56,189,248,0.3);font-weight:600}
-    :host([data-theme="light"]) .quota-current-tag{color:#0284c7;background:#e0f2fe;border-color:#7dd3fc}
+    .quota-current-tag{font-size:11px;padding:1px 6px;border-radius:9px;background:var(--ag-accent-bg,rgba(167,139,250,0.14));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));font-weight:600}
+    :host([data-theme="light"]) .quota-current-tag{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28))}
     .quota-models-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;padding-top:6px;border-top:1px solid var(--ag-border-subcard)}
     .quota-model-chip{
       display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:5px;
       font-size:11.5px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-secondary);
     }
-    .quota-model-chip[data-current-model="true"]{border-color:rgba(56,189,248,0.5);color:var(--ag-text-primary);font-weight:600}
+    .quota-model-chip[data-current-model="true"]{border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));color:var(--ag-text-primary);font-weight:600}
     .quota-chip-efforts{font-size:11px;color:var(--ag-text-muted)}
-    .quota-chip-notice{font-size:11px;padding:0 4px;border-radius:3px;background:rgba(24,144,255,0.14);color:#60a5fa}
+    .quota-chip-notice{font-size:11px;padding:0 4px;border-radius:3px;background:var(--ag-accent-bg,rgba(167,139,250,0.14));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
     .quota-chip-noperm{font-size:11px;padding:0 4px;border-radius:3px;background:rgba(168,85,247,0.15);color:#c084fc}
     .quota-basis-note{margin-top:10px;padding-top:8px;border-top:1px solid var(--ag-border-subtle);font-size:12px;color:var(--ag-text-muted);line-height:1.5}
     .quota-usage-tip{margin-top:6px;padding:7px 9px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);font-size:12px;color:var(--ag-text-secondary);line-height:1.5}
@@ -1228,14 +1240,14 @@
     .key-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
     .key-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:5px}
     .key-pill{font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:10px;border:1px solid transparent}
-    .pill-good, .pill-ok{color:#52c41a;background:rgba(82,196,26,0.12);border-color:rgba(82,196,26,0.28)}
-    :host([data-theme="light"]) .pill-good, :host([data-theme="light"]) .pill-ok{color:#389e0d;background:#f6ffed;border-color:#b7eb8f}
-    .pill-info{color:#1890ff;background:rgba(24,144,255,0.12);border-color:rgba(24,144,255,0.28)}
-    :host([data-theme="light"]) .pill-info{color:#096dd9;background:#e6f7ff;border-color:#91d5ff}
-    .pill-warn{color:#faad14;background:rgba(250,173,20,0.12);border-color:rgba(250,173,20,0.28)}
-    :host([data-theme="light"]) .pill-warn{color:#d46b08;background:#fff7e6;border-color:#ffd591}
-    .pill-danger{color:#ff4d4f;background:rgba(255,77,79,0.14);border-color:rgba(255,77,79,0.32)}
-    :host([data-theme="light"]) .pill-danger{color:#cf1322;background:#fff1f0;border-color:#ffa39e}
+    .pill-good, .pill-ok{color:#34d399;background:rgba(52,211,153,0.12);border-color:rgba(52,211,153,0.28)}
+    :host([data-theme="light"]) .pill-good, :host([data-theme="light"]) .pill-ok{color:#059669;background:rgba(5,150,105,0.09);border-color:rgba(5,150,105,0.26)}
+    .pill-info{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));background:var(--ag-accent-bg,rgba(167,139,250,0.12));border-color:var(--ag-accent-border,rgba(167,139,250,0.28))}
+    :host([data-theme="light"]) .pill-info{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.26))}
+    .pill-warn{color:#fbbf24;background:rgba(251,191,36,0.12);border-color:rgba(251,191,36,0.28)}
+    :host([data-theme="light"]) .pill-warn{color:#d97706;background:rgba(217,119,6,0.09);border-color:rgba(217,119,6,0.26)}
+    .pill-danger{color:#f87171;background:rgba(248,113,113,0.12);border-color:rgba(248,113,113,0.28)}
+    :host([data-theme="light"]) .pill-danger{color:#dc2626;background:rgba(220,38,38,0.09);border-color:rgba(220,38,38,0.26)}
     .pill-muted{color:var(--ag-pill-muted-text);background:var(--ag-pill-muted-bg);border-color:var(--ag-pill-muted-border)}
 
     .key-bar-track{width:100%;height:6px;background:var(--ag-custom-ring-track,var(--ag-track-bg));border-radius:3px;overflow:hidden;margin-bottom:9px}
@@ -1271,7 +1283,7 @@
     .t-card-lbl{font-size:12px;color:var(--ag-text-muted);display:flex;justify-content:space-between}
     .t-card-val{font-size:17px;font-weight:600;color:var(--ag-text-primary);letter-spacing:0;font-variant-numeric:tabular-nums}
     #t-total-val{color:var(--ag-custom-token-total,var(--ag-text-primary))}
-    #t-today-val{color:var(--ag-custom-token-accent,var(--ag-text-primary))}
+    #t-today-val{color:var(--ag-text-primary)}
     .t-card-sub{font-size:11.5px;color:var(--ag-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .t-card-cost{font-size:11.5px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 
@@ -1309,8 +1321,8 @@
     .unlock-status-row{display:flex;justify-content:space-between;align-items:flex-start;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
     .unlock-label{font-size:12px;font-weight:600;color:var(--ag-text-primary);margin-bottom:2px}
     .unlock-desc{font-size:12px;color:var(--ag-text-secondary);line-height:1.45}
-    .unlock-notice{background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.22);border-radius:6px;padding:8px 10px}
-    .unlock-notice-title{font-size:12px;font-weight:600;color:#eab308;margin-bottom:4px}
+    .unlock-notice{background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
+    .unlock-notice-title{font-size:12px;font-weight:600;color:var(--ag-text-primary);margin-bottom:4px}
     .unlock-notice-list{margin:0;padding-left:14px;font-size:12px;color:var(--ag-text-secondary);line-height:1.55}
     .unlock-notice-list li{margin-bottom:2px}
     .unlock-notice-list strong{color:var(--ag-text-primary)}
@@ -1329,13 +1341,13 @@
     .unlock-meta-dl dd{margin:0;color:var(--ag-text-secondary);word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
     .unlock-credit-bar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:12px;color:var(--ag-text-muted);border-top:1px solid var(--ag-border-subtle);padding-top:8px;margin-top:4px}
     .unlock-credit-left{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
-    .unlock-author-link{color:var(--ag-link,#38bdf8);text-decoration:underline;text-underline-offset:2px;font-weight:600;cursor:pointer;padding:1px 4px;border-radius:4px;transition:all .15s ease;display:inline-flex;align-items:center}
-    .unlock-author-link:hover{color:#7dd3fc;background:rgba(56,189,248,0.12)}
-    .unlock-author-link:focus-visible{outline:2px solid var(--ag-link,#38bdf8);background:rgba(56,189,248,0.18)}
+    .unlock-author-link{color:var(--ag-link);text-decoration:underline;text-underline-offset:2px;font-weight:600;cursor:pointer;padding:1px 4px;border-radius:4px;transition:all .15s ease;display:inline-flex;align-items:center}
+    .unlock-author-link:hover{color:var(--ag-link);background:var(--ag-accent-bg)}
+    .unlock-author-link:focus-visible{outline:2px solid var(--ag-link);background:var(--ag-accent-bg-hover)}
     .unlock-copy-link-btn{background:transparent;border:1px solid var(--ag-border-subcard);color:var(--ag-text-muted);border-radius:4px;font-size:11.5px;padding:2px 7px;cursor:pointer;transition:all .15s ease}
     .unlock-copy-link-btn:hover{color:var(--ag-text-primary);border-color:var(--ag-text-muted);background:var(--ag-bg-card-hover)}
-    .unlock-copy-link-btn:focus-visible{outline:1px solid var(--ag-link,#38bdf8)}
-    .unlock-link-toast{margin-top:4px;font-size:11.5px;padding:4px 8px;border-radius:4px;background:rgba(56,189,248,0.12);color:var(--ag-text-primary);border:1px solid rgba(56,189,248,0.3);line-height:1.45;animation:agSmoothExpand 0.15s ease}
+    .unlock-copy-link-btn:focus-visible{outline:1px solid var(--ag-link)}
+    .unlock-link-toast{margin-top:4px;font-size:11.5px;padding:4px 8px;border-radius:4px;background:var(--ag-accent-bg);color:var(--ag-text-primary);border:1px solid var(--ag-accent-border);line-height:1.45;animation:agSmoothExpand 0.15s ease}
     .unlock-adapter-note{font-size:11.5px;color:var(--ag-text-muted)}
 
     @media (prefers-reduced-motion: reduce){
@@ -1494,7 +1506,7 @@
     .ag-dropdown-group-title{display:flex;align-items:center;gap:6px;padding:5px 8px 3px;font-size:11.5px;font-weight:600;color:var(--ag-text-muted);letter-spacing:0;cursor:default;user-select:none;border-top:1px solid var(--ag-border-subtle);margin-top:3px}
     .ag-dropdown-group-title:first-child{border-top:0;margin-top:0}
     .ag-vendor-dot{width:7px;height:7px;border-radius:999px;display:inline-block;flex-shrink:0;background:var(--ag-text-muted)}
-    .ag-dropdown-badge{font-size:11px;padding:0 5px;border-radius:9px;background:rgba(56,189,248,0.14);color:var(--ag-link,#38bdf8);border:1px solid rgba(56,189,248,0.3);margin-left:4px;flex-shrink:0}
+    .ag-dropdown-badge{font-size:11px;padding:0 5px;border-radius:9px;background:var(--ag-accent-bg,rgba(167,139,250,0.14));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));margin-left:4px;flex-shrink:0}
 
     .ctx-tabs-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:7px;padding:3px;margin-bottom:9px;box-sizing:border-box;width:100%}
     .ctx-tab-btn{display:flex;align-items:center;justify-content:center;min-width:0;border:1px solid transparent;background:transparent;color:var(--ag-text-muted);font-size:12.5px;font-weight:500;padding:6px 4px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background-color .15s ease,color .15s ease,border-color .15s ease}
@@ -1887,14 +1899,14 @@
       border-color:#fcd34d;
     }
     #suite-ver-status[data-state="ok"]{
-      color:#22c55e;
-      background:rgba(34,197,94,0.12);
-      border-color:rgba(34,197,94,0.3);
+      color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-border-subcard);
     }
     :host([data-theme="light"]) #suite-ver-status[data-state="ok"]{
-      color:#15803d;
-      background:#dcfce7;
-      border-color:#86efac;
+      color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-border-subcard);
     }
     #btn-suite-apply-update{
       font-size:12px;
@@ -2035,14 +2047,14 @@
       color:var(--ag-text-muted);
     }
     .term-option-badge[data-installed="true"]{
-      color:#22c55e;
-      background:rgba(34,197,94,0.12);
-      border-color:rgba(34,197,94,0.3);
+      color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-border-subcard);
     }
     :host([data-theme="light"]) .term-option-badge[data-installed="true"]{
-      color:#15803d;
-      background:#dcfce7;
-      border-color:#86efac;
+      color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-border-subcard);
     }
     .term-option-path{
       font-size:11.5px;
@@ -2211,10 +2223,39 @@
     #panel-settings #plan-custom-form{
       animation:none!important;
     }
+    .settings-feature-grid{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:6px;
+    }
+    .settings-feature-item{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      padding:7px 10px;
+      border-radius:7px;
+      background:var(--ag-bg-subcard);
+      border:1px solid var(--ag-border-subcard);
+      cursor:pointer;
+      transition:border-color .14s ease,background-color .14s ease;
+    }
+    .settings-feature-item:hover{
+      border-color:var(--ag-btn-border-hover);
+      background:var(--ag-btn-hover);
+    }
+    .settings-feature-name{
+      font-size:12.5px;
+      font-weight:500;
+      color:var(--ag-text-primary);
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
     @media (max-width:560px){
       #panel-settings{width:calc(100vw - 24px);}
       .settings-tabs-bar{grid-template-columns:repeat(2,1fr);}
-      .term-app-grid{grid-template-columns:1fr;}
+      .term-app-grid,.settings-feature-grid{grid-template-columns:1fr;}
     }
   </style>
 
@@ -2249,7 +2290,7 @@
   </button>
 
   <!-- 顶部基本单元 4B: 套件统一设置入口 -->
-  <button id="badge-settings" class="ag-unit" type="button" aria-label="套件设置" aria-expanded="false" title="打开 Antigravity Suite 统一设置面板">⚙️</button>
+  <button id="badge-settings" class="ag-unit" type="button" aria-label="套件设置" aria-expanded="false" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
 
   <!-- 顶部基本单元 5: 窄屏溢出菜单按钮 -->
   <button id="badge-overflow" class="ag-unit" type="button" aria-label="更多统计指标" aria-expanded="false">
@@ -2285,7 +2326,7 @@
       <span id="overflow-cli-val" class="overflow-item-val">agy</span>
     </button>
     <button id="overflow-settings-btn" class="overflow-item" type="button">
-      <span class="overflow-item-label"><span>⚙️</span><span>套件设置</span></span>
+      <span class="overflow-item-label"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg><span>套件设置</span></span>
       <span class="overflow-item-val">配置</span>
     </button>
   </div>
@@ -2294,7 +2335,8 @@
   <section id="panel" class="ag-panel" hidden aria-label="会话与上下文详情">
     <div class="panel-header-bar">
       <div class="panel-title">
-        <span style="font-size:13px;font-weight:600;color:var(--ag-text-primary)">💬 当前会话上下文</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 1.5"/></svg>
+        <span style="font-size:13px;font-weight:600;color:var(--ag-text-primary)">当前会话上下文</span>
       </div>
       <div class="panel-header-actions">
         <button id="btn-github-repo-ctx" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库" hidden style="display:none">
@@ -2304,7 +2346,7 @@
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-open-settings-ctx" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板">⚙️</button>
+        <button id="btn-open-settings-ctx" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
         <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
     </div>
@@ -2322,7 +2364,7 @@
 
       <!-- 卡片 1: 核心用量速览 -->
       <div id="key-summary">
-        <div class="key-header"><span class="key-title">⭐ 核心用量速览</span><span id="key-badge" class="key-pill pill-muted">读取中</span></div>
+        <div class="key-header"><span class="key-title">核心用量速览</span><span id="key-badge" class="key-pill pill-muted">读取中</span></div>
         <div class="key-bar-track"><div id="key-bar-fill" class="key-bar-fill"></div></div>
         <div class="key-stats"><div class="key-stat"><div class="key-stat-label">当前已用</div><div id="key-used" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">预算上限</div><div id="key-limit" class="key-stat-val">—</div></div><div class="key-stat"><div class="key-stat-label">剩余可用</div><div id="key-remaining" class="key-stat-val">—</div></div></div>
         <div id="key-takeaway" class="key-takeaway">正在计算核心指标…</div>
@@ -2331,7 +2373,7 @@
       <!-- 卡片 2: 输出速度与延迟速览 -->
       <div id="speed-summary" style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:8px 0 10px;">
         <div class="key-header">
-          <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));">⚡ 最新生成速度与耗时</span>
+          <span class="key-title">最新生成速度与耗时</span>
           <span id="speed-badge" class="key-pill pill-muted">待生成</span>
         </div>
         <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
@@ -2560,7 +2602,7 @@
       <div class="tech-drawer">
         <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
           <span class="drawer-trigger-left">
-            <span>📋 底层技术参数与附件审计</span>
+            <span>底层技术参数与附件审计</span>
           </span>
           <span id="drawer-arrow" class="drawer-arrow">▼ 点击展开明细</span>
         </button>
@@ -2583,7 +2625,7 @@
     <div class="panel-header-bar">
       <div class="panel-title panel-title-tokens">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"><path d="M3 13V9M8 13V4M13 13V7"></path></svg>
-        <span id="panel-tokens-title" style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">本机已记录用量</span>
+        <span id="panel-tokens-title" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)">本机已记录用量</span>
       </div>
       <div class="panel-header-actions">
         <button id="btn-github-repo" class="panel-icon-btn" type="button" aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库" hidden style="display:none">
@@ -2593,7 +2635,7 @@
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-open-settings-tokens" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板">⚙️</button>
+        <button id="btn-open-settings-tokens" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
         <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
     </div>
@@ -2615,7 +2657,6 @@
       <!-- 账号套餐状态摘要行 -->
       <div id="plan-summary-bar" class="plan-summary-bar">
         <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
-          <span>💎</span>
           <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · 已自动识别 · 刚刚更新</span>
         </div>
         <span id="summary-subtier-readonly" class="plan-subtier-readonly-pill" style="display:none" title="当前订阅子档（前往套件设置修改）"></span>
@@ -2641,7 +2682,7 @@
       <div id="plan-detail-card" class="plan-detail-card collapsible-pane" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
           <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)">💎 AI 订阅与额度详情</span>
+            <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)">AI 订阅与额度详情</span>
             <span id="plan-save-feedback" style="font-size:10px;color:var(--ag-text-muted);display:none"></span>
           </div>
           <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:10.5px" title="收回 AI Pro 详情面板">详情收回 ▲</button>
@@ -3024,26 +3065,26 @@
       <div id="tokens-main-view">
         <div class="token-stat-cards" id="token-stat-cards">
           <div class="t-card">
-            <div class="t-card-lbl"><span>累计处理 Token</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">总计</span></div>
+            <div class="t-card-lbl"><span>累计处理 Token</span><span style="color:var(--ag-text-muted)">总计</span></div>
             <div style="font-size:9.5px;color:var(--ag-text-muted);margin:-2px 0 4px">含缓存读取</div>
             <div class="t-card-val" id="t-total-val">--</div>
             <div class="t-card-sub" id="t-total-sub">读取中...</div>
             <div class="t-card-cost" id="t-total-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>今日使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">今日</span></div>
+            <div class="t-card-lbl"><span>今日使用</span><span style="color:var(--ag-text-muted)">今日</span></div>
             <div class="t-card-val" id="t-today-val">--</div>
             <div class="t-card-sub" id="t-today-sub">读取中...</div>
             <div class="t-card-cost" id="t-today-cost">≈ $0.00 (¥0.00)</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>本月使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">本月</span></div>
+            <div class="t-card-lbl"><span>本月使用</span><span style="color:var(--ag-text-muted)">本月</span></div>
             <div class="t-card-val" id="t-month-val">--</div>
             <div class="t-card-sub" id="t-month-sub">读取中...</div>
             <div class="t-card-cost" id="t-month-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
           </div>
           <div class="t-card">
-            <div class="t-card-lbl"><span>年度使用</span><span style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">本年</span></div>
+            <div class="t-card-lbl"><span>年度使用</span><span style="color:var(--ag-text-muted)">本年</span></div>
             <div class="t-card-val" id="t-year-val">--</div>
             <div class="t-card-sub" id="t-year-sub">读取中...</div>
             <div class="t-card-cost" id="t-year-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
@@ -3256,13 +3297,13 @@
   <div id="color-picker-popover" hidden role="dialog" aria-label="颜色选取器">
     <div class="cp-header">
       <div class="cp-title">
-        <span>🎨 颜色选取器</span>
+        <span>颜色选取器</span>
         <span id="cp-target-name" class="cp-target-lbl"></span>
       </div>
       <button id="cp-close" class="panel-icon-btn" type="button" aria-label="关闭颜色选取器">×</button>
     </div>
     <div class="cp-toolbar">
-      <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色">🖊 取色</button>
+      <button id="cp-eyedropper" class="cp-eyedropper-btn" type="button" title="从屏幕吸取颜色">取色</button>
       <div class="cp-presets" id="cp-presets">
         <button class="cp-preset-dot" type="button" data-cp-hex="#ef4444" style="background:#ef4444" title="#EF4444"></button>
         <button class="cp-preset-dot" type="button" data-cp-hex="#f97316" style="background:#f97316" title="#F97316"></button>
@@ -3286,7 +3327,7 @@
       <div class="cp-row">
         <span class="cp-fmt-lbl">HEX</span>
         <input id="cp-input-hex" class="cp-fmt-input" type="text" value="#652ab7" spellcheck="false" aria-label="HEX 色值输入" />
-        <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX">📋</button>
+        <button id="cp-copy-hex" class="cp-copy-btn" type="button" title="复制 HEX">复制</button>
       </div>
       <details class="cp-advanced-formats">
         <summary class="cp-fmt-summary">更多格式 (RGB / HSL)</summary>
@@ -3294,12 +3335,12 @@
           <div class="cp-row">
             <span class="cp-fmt-lbl">RGB</span>
             <input id="cp-input-rgb" class="cp-fmt-input" type="text" value="rgb(101, 42, 183)" spellcheck="false" aria-label="RGB 色值输入" />
-            <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB">📋</button>
+            <button id="cp-copy-rgb" class="cp-copy-btn" type="button" title="复制 RGB">复制</button>
           </div>
           <div class="cp-row">
             <span class="cp-fmt-lbl">HSL</span>
             <input id="cp-input-hsl" class="cp-fmt-input" type="text" value="hsl(265, 63%, 44%)" spellcheck="false" aria-label="HSL 色值输入" />
-            <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL">📋</button>
+            <button id="cp-copy-hsl" class="cp-copy-btn" type="button" title="复制 HSL">复制</button>
           </div>
         </div>
       </details>
@@ -3314,7 +3355,7 @@
   <div class="update-popover" id="update-popover" style="display:none" role="dialog" aria-label="版本更新详情">
     <div class="update-pop-hdr">
       <div style="display:flex;align-items:center;gap:6px">
-        <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">🚀 检查更新</span>
+        <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)">检查更新</span>
         <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.5</span>
       </div>
       <button id="btn-close-update-pop" class="panel-icon-btn" type="button" style="padding:1px 5px;font-size:13px">×</button>
@@ -3341,7 +3382,7 @@
     <div class="panel-header-bar">
       <div class="panel-title">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg>
-        <span style="font-size:14.5px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Antigravity Suite 统一设置</span>
+        <span style="font-size:14.5px;font-weight:600;color:var(--ag-text-primary)">Antigravity Suite 统一设置</span>
       </div>
       <div class="panel-header-actions">
         <span id="suite-ver-status" class="key-pill pill-muted" title="当前版本状态">v0.8.5</span>
@@ -3360,6 +3401,40 @@
     <div id="settings-body" class="settings-body">
       <!-- 分页 1: 终端与通用 -->
       <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel">
+        <div id="settings-card-features" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">功能显示开关</span>
+            <button id="btn-reset-feature-toggles" class="switch-pill-btn" type="button" title="恢复显示全部顶栏入口与对话区挂件">全部恢复显示</button>
+          </div>
+          <div class="settings-card-desc">按需开启或隐藏顶栏入口与对话区挂件，点击立即生效。</div>
+          <div class="settings-feature-grid">
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：总用量统计</span>
+              <input id="set-feat-tokens" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：CLI 终端入口</span>
+              <input id="set-feat-cli" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：模型配额胶囊</span>
+              <input id="set-feat-quota" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：手机远程入口</span>
+              <input id="set-feat-remote" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">输入框快捷操作栏</span>
+              <input id="set-feat-quickbar" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">对话右侧悬浮导航</span>
+              <input id="set-feat-chatnav" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+
         <div class="settings-card-box">
           <div class="settings-card-hdr">
             <div class="settings-card-title-wrap">
@@ -3507,7 +3582,7 @@
         <div class="settings-card-box">
           <div id="settings-sub-summary-bar" class="settings-sub-preview-bar">
             <div style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">
-              <span id="settings-sub-preview-plan" style="font-size:13.5px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">当前套餐：读取中…</span>
+              <span id="settings-sub-preview-plan" style="font-size:13.5px;font-weight:600;color:var(--ag-text-primary)">当前套餐：读取中…</span>
               <span id="settings-sub-preview-pools" style="font-size:12px;color:var(--ag-text-secondary)">额度池同步中…</span>
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
@@ -3925,7 +4000,7 @@
       case 'ringUsed': return isLight ? '#18181b' : '#e6e6eb';
       case 'ringTrack': return isLight ? '#b8b8c2' : '#52525b';
       case 'contextText': return isLight ? '#18181b' : '#ececef';
-      case 'speedText': return isLight ? '#0284c7' : '#38bdf8';
+      case 'speedText': return isLight ? '#52525b' : '#b8b8c0';
       case 'tokenTotal': return customHeatAccent || (isLight ? accentSpec.totalLight : accentSpec.totalDark);
       case 'tokenAccent': return customHeatAccent || (isLight ? accentSpec.light : accentSpec.dark);
       case 'heatLow': return presetScale[0];
@@ -10452,8 +10527,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       pct = Math.min(100, Math.max(0, (d.actual / d.budget) * 100));
     }
 
-    const barColor = danger ? '#ff4d4f' : pct != null && pct >= 90 ? '#ff4d4f' : pct != null && pct >= 75 || stale || incomplete ? '#faad14' : '#69c0ff';
-    const tone = danger ? '#ff9292' : stale || incomplete || d?.estimated ? '#f2c46d' : '#b7c1ff';
+    const barColor = danger ? '#f87171' : pct != null && pct >= 90 ? '#f87171' : pct != null && pct >= 75 || stale || incomplete ? '#fbbf24' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
+    const tone = danger ? '#f87171' : stale || incomplete || d?.estimated ? '#fbbf24' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
     host.style.setProperty('--tone', tone);
     host.style.setProperty('--bar-color', barColor);
 
@@ -10835,6 +10910,23 @@ function renderHeatmapGrid(forceRebuild = false) {
     '色阶「多」端颜色（自动插值）': 'Scale High Color (Auto-Interpolate)',
     '面板与菜单统一背景色（0级跟随 / 自定义）': 'Panel & Menu Background (Auto / Custom)',
     '面板与菜单统一背景色': 'Panel & Menu Background',
+    '功能显示开关': 'Feature Toggles',
+    '全部恢复显示': 'Show All',
+    '恢复显示全部顶栏入口与对话区挂件': 'Restore all topbar badges and chat widgets',
+    '按需开启或隐藏顶栏入口与对话区挂件，点击立即生效。': 'Show or hide topbar badges and chat widgets; takes effect immediately.',
+    '顶部：总用量统计': 'Topbar: Total Usage',
+    '顶部：CLI 终端入口': 'Topbar: CLI Button',
+    '顶部：模型配额胶囊': 'Topbar: Quota Badge',
+    '顶部：手机远程入口': 'Topbar: Remote Badge',
+    '输入框快捷操作栏': 'Composer Quick Bar',
+    '对话右侧悬浮导航': 'Chat Navigation Float',
+    '当前会话上下文': 'Session Context',
+    '核心用量速览': 'Core Context Usage',
+    '最新生成速度与耗时': 'Output Speed & Latency',
+    '底层技术参数与附件审计': 'Technical Details & Attachments',
+    'AI 订阅与额度详情': 'AI Subscription & Quota Details',
+    '颜色选取器': 'Color Picker',
+    '检查更新': 'Check for Updates',
     '累计与强调指标色': 'Total & Accent Colors',
     '圆环已用部分': 'Ring Used',
     '圆环轨道': 'Ring Track',
@@ -11024,6 +11116,15 @@ function renderHeatmapGrid(forceRebuild = false) {
     capsuleLang: 'zh',
     englishLabels: false
   };
+  const DEFAULT_SUITE_FEATURE_FLAGS = {
+    showTopbarTokens: true,
+    showTopbarCli: true,
+    showTopbarQuota: true,
+    showTopbarRemote: true,
+    showQuickBar: true,
+    showChatNav: true
+  };
+  let suiteFeatureFlags = { ...DEFAULT_SUITE_FEATURE_FLAGS };
 
   function findSupportedLocaleEntry(codeRaw) {
     const clean = String(codeRaw || '').trim();
@@ -11064,6 +11165,15 @@ function renderHeatmapGrid(forceRebuild = false) {
     const lsEngLbl = localStorage?.getItem?.('antigravityHansEnglishLabels');
     if (lsEngLbl === '1' || lsEngLbl === '0') {
       suiteEnhancerPrefs.englishLabels = lsEngLbl === '1';
+    }
+    const lsFeatFlags = localStorage?.getItem?.('ag_suite_feature_flags');
+    if (lsFeatFlags) {
+      const parsedFeat = JSON.parse(lsFeatFlags);
+      if (parsedFeat && typeof parsedFeat === 'object') {
+        for (const k of Object.keys(DEFAULT_SUITE_FEATURE_FLAGS)) {
+          if (typeof parsedFeat[k] === 'boolean') suiteFeatureFlags[k] = parsedFeat[k];
+        }
+      }
     }
   } catch {}
 
@@ -11207,6 +11317,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       localStorage?.setItem?.('__agy_ctx_lang__', curEntry.capsuleLang === 'en' ? 'en' : 'zh');
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
       localStorage?.setItem?.('antigravityHansEnglishLabels', suiteEnhancerPrefs.englishLabels ? '1' : '0');
+      localStorage?.setItem?.('ag_suite_feature_flags', JSON.stringify(suiteFeatureFlags));
     } catch {}
     try {
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
@@ -11221,7 +11332,8 @@ function renderHeatmapGrid(forceRebuild = false) {
             locale: activeLocale,
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
-            englishLabels: Boolean(suiteEnhancerPrefs.englishLabels)
+            englishLabels: Boolean(suiteEnhancerPrefs.englishLabels),
+            featureFlags: { ...suiteFeatureFlags }
           }
         }));
       }
@@ -11457,6 +11569,64 @@ function renderHeatmapGrid(forceRebuild = false) {
     uiCliModelDropdown?.refresh?.();
   }
 
+  function applySuiteFeatureFlags() {
+    if (host?.setAttribute && host?.removeAttribute) {
+      const toggleAttr = (attr, visible) => {
+        if (visible === false) host.setAttribute(attr, 'true');
+        else host.removeAttribute(attr);
+      };
+      toggleAttr('data-hide-tokens', suiteFeatureFlags.showTopbarTokens);
+      toggleAttr('data-hide-cli', suiteFeatureFlags.showTopbarCli);
+      toggleAttr('data-hide-quota', suiteFeatureFlags.showTopbarQuota);
+      toggleAttr('data-hide-remote', suiteFeatureFlags.showTopbarRemote);
+    }
+    if (suiteFeatureFlags.showTopbarTokens === false) {
+      const pTok = el('panel-tokens');
+      if (pTok && !pTok.hidden && typeof showPanel === 'function') showPanel('none');
+    }
+    try {
+      const ge = globalThis.__AGEnhancer || window?.__AGEnhancer;
+      if (suiteFeatureFlags.showTopbarQuota === false) ge?.closeQuotaPopover?.();
+      if (suiteFeatureFlags.showTopbarRemote === false) ge?.closeRemotePopover?.();
+    } catch {}
+  }
+
+  function syncFeatureFlagControls() {
+    const map = [
+      ['set-feat-tokens', 'showTopbarTokens'],
+      ['set-feat-cli', 'showTopbarCli'],
+      ['set-feat-quota', 'showTopbarQuota'],
+      ['set-feat-remote', 'showTopbarRemote'],
+      ['set-feat-quickbar', 'showQuickBar'],
+      ['set-feat-chatnav', 'showChatNav']
+    ];
+    for (const [id, key] of map) {
+      const chk = el(id);
+      if (chk) chk.checked = suiteFeatureFlags[key] !== false;
+    }
+  }
+
+  function getSuiteFeatureFlags() {
+    return { ...suiteFeatureFlags };
+  }
+
+  async function setSuiteFeatureFlags(partialFlags = {}, opts = {}) {
+    if (partialFlags && typeof partialFlags === 'object') {
+      for (const k of Object.keys(DEFAULT_SUITE_FEATURE_FLAGS)) {
+        if (typeof partialFlags[k] === 'boolean') {
+          suiteFeatureFlags[k] = partialFlags[k];
+        }
+      }
+    }
+    syncFeatureFlagControls();
+    applySuiteFeatureFlags();
+    dispatchSuitePrefsChanged();
+    if (opts.syncHost !== false) {
+      await saveSuiteUiPrefs({ featureFlags: { ...suiteFeatureFlags } });
+    }
+    return { ...suiteFeatureFlags };
+  }
+
   function syncEnhancerPrefControls() {
     const chkAuto = el('set-auto-accept');
     const chkGhost = el('set-ghost-suggest');
@@ -11469,6 +11639,8 @@ function renderHeatmapGrid(forceRebuild = false) {
         document.querySelectorAll('[data-agy-hans-ui]')?.forEach?.(node => node.remove?.());
       }
     } catch {}
+    syncFeatureFlagControls();
+    applySuiteFeatureFlags();
     syncLanguageDropdownOptions();
     syncCliOptionControls();
     syncSettingsThemePills();
@@ -11745,8 +11917,16 @@ function renderHeatmapGrid(forceRebuild = false) {
       suiteEnhancerPrefs.englishLabels = uiPrefs.englishLabels;
       try { window.__antigravityZhSetEnglishLabels?.(suiteEnhancerPrefs.englishLabels, true); } catch {}
     }
+    if (uiPrefs.featureFlags && typeof uiPrefs.featureFlags === 'object') {
+      for (const k of Object.keys(DEFAULT_SUITE_FEATURE_FLAGS)) {
+        if (typeof uiPrefs.featureFlags[k] === 'boolean') {
+          suiteFeatureFlags[k] = uiPrefs.featureFlags[k];
+        }
+      }
+    }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
+    applySuiteFeatureFlags();
     renderTerminalGrid();
     applySuiteShadowLocale();
   }
@@ -12063,6 +12243,23 @@ function renderHeatmapGrid(forceRebuild = false) {
     void saveSuiteUiPrefs({ englishLabels: suiteEnhancerPrefs.englishLabels });
   });
 
+  [
+    ['set-feat-tokens', 'showTopbarTokens'],
+    ['set-feat-cli', 'showTopbarCli'],
+    ['set-feat-quota', 'showTopbarQuota'],
+    ['set-feat-remote', 'showTopbarRemote'],
+    ['set-feat-quickbar', 'showQuickBar'],
+    ['set-feat-chatnav', 'showChatNav']
+  ].forEach(([id, key]) => {
+    el(id)?.addEventListener('change', e => {
+      void setSuiteFeatureFlags({ [key]: Boolean(e?.target?.checked) });
+    });
+  });
+
+  el('btn-reset-feature-toggles')?.addEventListener('click', () => {
+    void setSuiteFeatureFlags({ ...DEFAULT_SUITE_FEATURE_FLAGS });
+  });
+
   el('suite-ver-status')?.addEventListener('click', () => {
     void checkSuiteRepoUpdate({ fetchRemote: true });
   });
@@ -12088,6 +12285,7 @@ function renderHeatmapGrid(forceRebuild = false) {
 
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
+  applySuiteFeatureFlags();
   renderTerminalGrid();
   dispatchSuitePrefsChanged();
   applySuiteShadowLocale();
@@ -12156,6 +12354,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     registerLocale: def => registerSuiteLocale(def),
     getLocale: () => getSuiteLocale(),
     setLocale: (code, opts) => setSuiteLocale(code, opts),
+    getFeatureFlags: () => getSuiteFeatureFlags(),
+    setFeatureFlags: (flags, opts) => setSuiteFeatureFlags(flags, opts),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,

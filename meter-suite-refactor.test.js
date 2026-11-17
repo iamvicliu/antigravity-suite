@@ -2355,3 +2355,102 @@ test('需求 9: ⌘1~⌘9 快速切换对话、按住 ⌘ 浮现序号角标与 
     assert.equal(r.getAttribute('data-ag-shortcut'), null, 'dispose 后应移除所有 data-ag-shortcut 属性');
   }
 });
+
+// =========================================================================
+// 需求 10: 统一设置面板内的「功能显示开关」实时控制顶栏与对话挂件显隐并持久化
+// =========================================================================
+test('需求 10: 功能显示开关实时隐藏/显示顶栏入口与对话区挂件并持久化同步', async () => {
+  const env = createDomEnv();
+  const composerWrap = env.doc.createElement('div');
+  const composer = env.doc.createElement('div');
+  composer.className = 'surface-composer';
+  composerWrap.appendChild(composer);
+  env.doc.body.appendChild(composerWrap);
+
+  vm.runInContext(RENDERER_SRC, env.sandbox);
+  vm.runInContext(ENHANCER_SRC, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const enhancer = env.sandbox.__AGEnhancer;
+  const host = env.getHost();
+  const shadow = env.getShadow();
+
+  // 1. 默认开启全部 6 项功能
+  assert.ok(shadow.getElementById('settings-card-features'), '设置面板首页应包含功能显示开关卡片');
+  const toggleIds = [
+    ['set-feat-tokens', 'showTopbarTokens'],
+    ['set-feat-cli', 'showTopbarCli'],
+    ['set-feat-quota', 'showTopbarQuota'],
+    ['set-feat-remote', 'showTopbarRemote'],
+    ['set-feat-quickbar', 'showQuickBar'],
+    ['set-feat-chatnav', 'showChatNav']
+  ];
+  for (const [id] of toggleIds) {
+    const chk = shadow.getElementById(id);
+    assert.ok(chk, `应存在开关 #${id}`);
+    assert.equal(chk.checked, true, `#${id} 默认应为开启状态`);
+  }
+  assert.ok(env.doc.getElementById('ag-quick-capsule-bar'), '默认应挂载输入框快捷操作栏');
+  assert.ok(env.doc.getElementById('ag-chat-nav-float'), '默认应挂载对话右侧悬浮导航');
+  assert.equal(shadow.getElementById('badge-quota')?.hidden, false, '默认应显示配额胶囊');
+  assert.equal(shadow.getElementById('badge-remote')?.hidden, false, '默认应显示远程入口');
+
+  // 2. 通过设置面板关闭顶部 CLI 入口与总用量统计（模拟用户典型精简需求）
+  let lastPrefDetail = null;
+  env.win.addEventListener('ag-suite-prefs-changed', ev => { lastPrefDetail = ev.detail; });
+
+  const chkTokens = shadow.getElementById('set-feat-tokens');
+  chkTokens.checked = false;
+  chkTokens.dispatchEvent({ type: 'change', target: chkTokens });
+  assert.equal(host.getAttribute('data-hide-tokens'), 'true', '关闭总用量开关后应标记 data-hide-tokens="true"');
+
+  const chkCli = shadow.getElementById('set-feat-cli');
+  chkCli.checked = false;
+  chkCli.dispatchEvent({ type: 'change', target: chkCli });
+  assert.equal(host.getAttribute('data-hide-cli'), 'true', '关闭 CLI 开关后应标记 data-hide-cli="true"');
+
+  // 3. 关闭配额胶囊、手机远程、快捷操作栏与悬浮导航
+  for (const id of ['set-feat-quota', 'set-feat-remote', 'set-feat-quickbar', 'set-feat-chatnav']) {
+    const chk = shadow.getElementById(id);
+    chk.checked = false;
+    chk.dispatchEvent({ type: 'change', target: chk });
+  }
+  await new Promise(r => setTimeout(r, 15));
+
+  assert.equal(host.getAttribute('data-hide-quota'), 'true');
+  assert.equal(host.getAttribute('data-hide-remote'), 'true');
+  assert.equal(shadow.getElementById('badge-quota')?.hidden, true, '关闭配额开关后应隐藏 #badge-quota');
+  assert.equal(shadow.getElementById('badge-remote')?.hidden, true, '关闭远程开关后应隐藏 #badge-remote');
+  assert.equal(env.doc.getElementById('ag-quick-capsule-bar'), null, '关闭快捷栏开关后应移除 #ag-quick-capsule-bar');
+  assert.equal(env.doc.getElementById('ag-chat-nav-float'), null, '关闭悬浮导航开关后应移除 #ag-chat-nav-float');
+
+  const savedJson = JSON.parse(env.localStorage.getItem('ag_suite_feature_flags') || '{}');
+  assert.equal(savedJson.showTopbarTokens, false);
+  assert.equal(savedJson.showTopbarCli, false);
+  assert.equal(savedJson.showQuickBar, false);
+  assert.equal(lastPrefDetail?.featureFlags?.showChatNav, false);
+  assert.equal(enhancer.getFeatureFlags().showQuickBar, false);
+
+  // 验证 saveSettings 请求写入 uiPreferences.featureFlags
+  assert.ok(
+    env.postedSettings.some(p => p?.uiPreferences?.featureFlags?.showTopbarCli === false),
+    '关闭功能开关后应透传 uiPreferences.featureFlags 到宿主保存'
+  );
+
+  // 4. 一键全部恢复显示
+  shadow.getElementById('btn-reset-feature-toggles')?.click();
+  await new Promise(r => setTimeout(r, 15));
+  for (const [id] of toggleIds) {
+    assert.equal(shadow.getElementById(id)?.checked, true, `恢复全部后 #${id} 应重新勾选`);
+  }
+  assert.equal(host.getAttribute('data-hide-tokens'), null);
+  assert.equal(host.getAttribute('data-hide-cli'), null);
+  assert.equal(host.getAttribute('data-hide-quota'), null);
+  assert.equal(host.getAttribute('data-hide-remote'), null);
+  assert.equal(shadow.getElementById('badge-quota')?.hidden, false);
+  assert.equal(shadow.getElementById('badge-remote')?.hidden, false);
+  assert.ok(env.doc.getElementById('ag-quick-capsule-bar'), '恢复全部后应重新挂载快捷操作栏');
+  assert.ok(env.doc.getElementById('ag-chat-nav-float'), '恢复全部后应重新挂载悬浮导航');
+
+  enhancer.dispose?.();
+  api.dispose?.();
+});

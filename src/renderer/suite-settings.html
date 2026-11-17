@@ -3,7 +3,7 @@
     <div class="panel-header-bar">
       <div class="panel-title">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg>
-        <span style="font-size:14.5px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Antigravity Suite 统一设置</span>
+        <span style="font-size:14.5px;font-weight:600;color:var(--ag-text-primary)">Antigravity Suite 统一设置</span>
       </div>
       <div class="panel-header-actions">
         <span id="suite-ver-status" class="key-pill pill-muted" title="当前版本状态">v0.8.5</span>
@@ -22,6 +22,40 @@
     <div id="settings-body" class="settings-body">
       <!-- 分页 1: 终端与通用 -->
       <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel">
+        <div id="settings-card-features" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">功能显示开关</span>
+            <button id="btn-reset-feature-toggles" class="switch-pill-btn" type="button" title="恢复显示全部顶栏入口与对话区挂件">全部恢复显示</button>
+          </div>
+          <div class="settings-card-desc">按需开启或隐藏顶栏入口与对话区挂件，点击立即生效。</div>
+          <div class="settings-feature-grid">
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：总用量统计</span>
+              <input id="set-feat-tokens" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：CLI 终端入口</span>
+              <input id="set-feat-cli" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：模型配额胶囊</span>
+              <input id="set-feat-quota" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：手机远程入口</span>
+              <input id="set-feat-remote" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">输入框快捷操作栏</span>
+              <input id="set-feat-quickbar" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">对话右侧悬浮导航</span>
+              <input id="set-feat-chatnav" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+
         <div class="settings-card-box">
           <div class="settings-card-hdr">
             <div class="settings-card-title-wrap">
@@ -169,7 +203,7 @@
         <div class="settings-card-box">
           <div id="settings-sub-summary-bar" class="settings-sub-preview-bar">
             <div style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">
-              <span id="settings-sub-preview-plan" style="font-size:13.5px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">当前套餐：读取中…</span>
+              <span id="settings-sub-preview-plan" style="font-size:13.5px;font-weight:600;color:var(--ag-text-primary)">当前套餐：读取中…</span>
               <span id="settings-sub-preview-pools" style="font-size:12px;color:var(--ag-text-secondary)">额度池同步中…</span>
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">

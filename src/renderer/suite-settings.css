@@ -43,14 +43,14 @@
       border-color:#fcd34d;
     }
     #suite-ver-status[data-state="ok"]{
-      color:#22c55e;
-      background:rgba(34,197,94,0.12);
-      border-color:rgba(34,197,94,0.3);
+      color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-border-subcard);
     }
     :host([data-theme="light"]) #suite-ver-status[data-state="ok"]{
-      color:#15803d;
-      background:#dcfce7;
-      border-color:#86efac;
+      color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-border-subcard);
     }
     #btn-suite-apply-update{
       font-size:12px;
@@ -191,14 +191,14 @@
       color:var(--ag-text-muted);
     }
     .term-option-badge[data-installed="true"]{
-      color:#22c55e;
-      background:rgba(34,197,94,0.12);
-      border-color:rgba(34,197,94,0.3);
+      color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-border-subcard);
     }
     :host([data-theme="light"]) .term-option-badge[data-installed="true"]{
-      color:#15803d;
-      background:#dcfce7;
-      border-color:#86efac;
+      color:var(--ag-text-secondary);
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-border-subcard);
     }
     .term-option-path{
       font-size:11.5px;
@@ -367,8 +367,37 @@
     #panel-settings #plan-custom-form{
       animation:none!important;
     }
+    .settings-feature-grid{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:6px;
+    }
+    .settings-feature-item{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      padding:7px 10px;
+      border-radius:7px;
+      background:var(--ag-bg-subcard);
+      border:1px solid var(--ag-border-subcard);
+      cursor:pointer;
+      transition:border-color .14s ease,background-color .14s ease;
+    }
+    .settings-feature-item:hover{
+      border-color:var(--ag-btn-border-hover);
+      background:var(--ag-btn-hover);
+    }
+    .settings-feature-name{
+      font-size:12.5px;
+      font-weight:500;
+      color:var(--ag-text-primary);
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
     @media (max-width:560px){
       #panel-settings{width:calc(100vw - 24px);}
       .settings-tabs-bar{grid-template-columns:repeat(2,1fr);}
-      .term-app-grid{grid-template-columns:1fr;}
+      .term-app-grid,.settings-feature-grid{grid-template-columns:1fr;}
     }

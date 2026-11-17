@@ -329,7 +329,7 @@
       case 'ringUsed': return isLight ? '#18181b' : '#e6e6eb';
       case 'ringTrack': return isLight ? '#b8b8c2' : '#52525b';
       case 'contextText': return isLight ? '#18181b' : '#ececef';
-      case 'speedText': return isLight ? '#0284c7' : '#38bdf8';
+      case 'speedText': return isLight ? '#52525b' : '#b8b8c0';
       case 'tokenTotal': return customHeatAccent || (isLight ? accentSpec.totalLight : accentSpec.totalDark);
       case 'tokenAccent': return customHeatAccent || (isLight ? accentSpec.light : accentSpec.dark);
       case 'heatLow': return presetScale[0];

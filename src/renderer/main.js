@@ -3782,8 +3782,8 @@
       pct = Math.min(100, Math.max(0, (d.actual / d.budget) * 100));
     }
 
-    const barColor = danger ? '#ff4d4f' : pct != null && pct >= 90 ? '#ff4d4f' : pct != null && pct >= 75 || stale || incomplete ? '#faad14' : '#69c0ff';
-    const tone = danger ? '#ff9292' : stale || incomplete || d?.estimated ? '#f2c46d' : '#b7c1ff';
+    const barColor = danger ? '#f87171' : pct != null && pct >= 90 ? '#f87171' : pct != null && pct >= 75 || stale || incomplete ? '#fbbf24' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
+    const tone = danger ? '#f87171' : stale || incomplete || d?.estimated ? '#fbbf24' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
     host.style.setProperty('--tone', tone);
     host.style.setProperty('--bar-color', barColor);
 
@@ -4136,6 +4136,8 @@
     registerLocale: def => registerSuiteLocale(def),
     getLocale: () => getSuiteLocale(),
     setLocale: (code, opts) => setSuiteLocale(code, opts),
+    getFeatureFlags: () => getSuiteFeatureFlags(),
+    setFeatureFlags: (flags, opts) => setSuiteFeatureFlags(flags, opts),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,

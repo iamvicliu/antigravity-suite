@@ -87,6 +87,23 @@
     '色阶「多」端颜色（自动插值）': 'Scale High Color (Auto-Interpolate)',
     '面板与菜单统一背景色（0级跟随 / 自定义）': 'Panel & Menu Background (Auto / Custom)',
     '面板与菜单统一背景色': 'Panel & Menu Background',
+    '功能显示开关': 'Feature Toggles',
+    '全部恢复显示': 'Show All',
+    '恢复显示全部顶栏入口与对话区挂件': 'Restore all topbar badges and chat widgets',
+    '按需开启或隐藏顶栏入口与对话区挂件，点击立即生效。': 'Show or hide topbar badges and chat widgets; takes effect immediately.',
+    '顶部：总用量统计': 'Topbar: Total Usage',
+    '顶部：CLI 终端入口': 'Topbar: CLI Button',
+    '顶部：模型配额胶囊': 'Topbar: Quota Badge',
+    '顶部：手机远程入口': 'Topbar: Remote Badge',
+    '输入框快捷操作栏': 'Composer Quick Bar',
+    '对话右侧悬浮导航': 'Chat Navigation Float',
+    '当前会话上下文': 'Session Context',
+    '核心用量速览': 'Core Context Usage',
+    '最新生成速度与耗时': 'Output Speed & Latency',
+    '底层技术参数与附件审计': 'Technical Details & Attachments',
+    'AI 订阅与额度详情': 'AI Subscription & Quota Details',
+    '颜色选取器': 'Color Picker',
+    '检查更新': 'Check for Updates',
     '累计与强调指标色': 'Total & Accent Colors',
     '圆环已用部分': 'Ring Used',
     '圆环轨道': 'Ring Track',
@@ -276,6 +293,15 @@
     capsuleLang: 'zh',
     englishLabels: false
   };
+  const DEFAULT_SUITE_FEATURE_FLAGS = {
+    showTopbarTokens: true,
+    showTopbarCli: true,
+    showTopbarQuota: true,
+    showTopbarRemote: true,
+    showQuickBar: true,
+    showChatNav: true
+  };
+  let suiteFeatureFlags = { ...DEFAULT_SUITE_FEATURE_FLAGS };
 
   function findSupportedLocaleEntry(codeRaw) {
     const clean = String(codeRaw || '').trim();
@@ -316,6 +342,15 @@
     const lsEngLbl = localStorage?.getItem?.('antigravityHansEnglishLabels');
     if (lsEngLbl === '1' || lsEngLbl === '0') {
       suiteEnhancerPrefs.englishLabels = lsEngLbl === '1';
+    }
+    const lsFeatFlags = localStorage?.getItem?.('ag_suite_feature_flags');
+    if (lsFeatFlags) {
+      const parsedFeat = JSON.parse(lsFeatFlags);
+      if (parsedFeat && typeof parsedFeat === 'object') {
+        for (const k of Object.keys(DEFAULT_SUITE_FEATURE_FLAGS)) {
+          if (typeof parsedFeat[k] === 'boolean') suiteFeatureFlags[k] = parsedFeat[k];
+        }
+      }
     }
   } catch {}
 
@@ -459,6 +494,7 @@
       localStorage?.setItem?.('__agy_ctx_lang__', curEntry.capsuleLang === 'en' ? 'en' : 'zh');
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
       localStorage?.setItem?.('antigravityHansEnglishLabels', suiteEnhancerPrefs.englishLabels ? '1' : '0');
+      localStorage?.setItem?.('ag_suite_feature_flags', JSON.stringify(suiteFeatureFlags));
     } catch {}
     try {
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
@@ -473,7 +509,8 @@
             locale: activeLocale,
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
-            englishLabels: Boolean(suiteEnhancerPrefs.englishLabels)
+            englishLabels: Boolean(suiteEnhancerPrefs.englishLabels),
+            featureFlags: { ...suiteFeatureFlags }
           }
         }));
       }
@@ -709,6 +746,64 @@
     uiCliModelDropdown?.refresh?.();
   }
 
+  function applySuiteFeatureFlags() {
+    if (host?.setAttribute && host?.removeAttribute) {
+      const toggleAttr = (attr, visible) => {
+        if (visible === false) host.setAttribute(attr, 'true');
+        else host.removeAttribute(attr);
+      };
+      toggleAttr('data-hide-tokens', suiteFeatureFlags.showTopbarTokens);
+      toggleAttr('data-hide-cli', suiteFeatureFlags.showTopbarCli);
+      toggleAttr('data-hide-quota', suiteFeatureFlags.showTopbarQuota);
+      toggleAttr('data-hide-remote', suiteFeatureFlags.showTopbarRemote);
+    }
+    if (suiteFeatureFlags.showTopbarTokens === false) {
+      const pTok = el('panel-tokens');
+      if (pTok && !pTok.hidden && typeof showPanel === 'function') showPanel('none');
+    }
+    try {
+      const ge = globalThis.__AGEnhancer || window?.__AGEnhancer;
+      if (suiteFeatureFlags.showTopbarQuota === false) ge?.closeQuotaPopover?.();
+      if (suiteFeatureFlags.showTopbarRemote === false) ge?.closeRemotePopover?.();
+    } catch {}
+  }
+
+  function syncFeatureFlagControls() {
+    const map = [
+      ['set-feat-tokens', 'showTopbarTokens'],
+      ['set-feat-cli', 'showTopbarCli'],
+      ['set-feat-quota', 'showTopbarQuota'],
+      ['set-feat-remote', 'showTopbarRemote'],
+      ['set-feat-quickbar', 'showQuickBar'],
+      ['set-feat-chatnav', 'showChatNav']
+    ];
+    for (const [id, key] of map) {
+      const chk = el(id);
+      if (chk) chk.checked = suiteFeatureFlags[key] !== false;
+    }
+  }
+
+  function getSuiteFeatureFlags() {
+    return { ...suiteFeatureFlags };
+  }
+
+  async function setSuiteFeatureFlags(partialFlags = {}, opts = {}) {
+    if (partialFlags && typeof partialFlags === 'object') {
+      for (const k of Object.keys(DEFAULT_SUITE_FEATURE_FLAGS)) {
+        if (typeof partialFlags[k] === 'boolean') {
+          suiteFeatureFlags[k] = partialFlags[k];
+        }
+      }
+    }
+    syncFeatureFlagControls();
+    applySuiteFeatureFlags();
+    dispatchSuitePrefsChanged();
+    if (opts.syncHost !== false) {
+      await saveSuiteUiPrefs({ featureFlags: { ...suiteFeatureFlags } });
+    }
+    return { ...suiteFeatureFlags };
+  }
+
   function syncEnhancerPrefControls() {
     const chkAuto = el('set-auto-accept');
     const chkGhost = el('set-ghost-suggest');
@@ -721,6 +816,8 @@
         document.querySelectorAll('[data-agy-hans-ui]')?.forEach?.(node => node.remove?.());
       }
     } catch {}
+    syncFeatureFlagControls();
+    applySuiteFeatureFlags();
     syncLanguageDropdownOptions();
     syncCliOptionControls();
     syncSettingsThemePills();
@@ -997,8 +1094,16 @@
       suiteEnhancerPrefs.englishLabels = uiPrefs.englishLabels;
       try { window.__antigravityZhSetEnglishLabels?.(suiteEnhancerPrefs.englishLabels, true); } catch {}
     }
+    if (uiPrefs.featureFlags && typeof uiPrefs.featureFlags === 'object') {
+      for (const k of Object.keys(DEFAULT_SUITE_FEATURE_FLAGS)) {
+        if (typeof uiPrefs.featureFlags[k] === 'boolean') {
+          suiteFeatureFlags[k] = uiPrefs.featureFlags[k];
+        }
+      }
+    }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
+    applySuiteFeatureFlags();
     renderTerminalGrid();
     applySuiteShadowLocale();
   }
@@ -1315,6 +1420,23 @@
     void saveSuiteUiPrefs({ englishLabels: suiteEnhancerPrefs.englishLabels });
   });
 
+  [
+    ['set-feat-tokens', 'showTopbarTokens'],
+    ['set-feat-cli', 'showTopbarCli'],
+    ['set-feat-quota', 'showTopbarQuota'],
+    ['set-feat-remote', 'showTopbarRemote'],
+    ['set-feat-quickbar', 'showQuickBar'],
+    ['set-feat-chatnav', 'showChatNav']
+  ].forEach(([id, key]) => {
+    el(id)?.addEventListener('change', e => {
+      void setSuiteFeatureFlags({ [key]: Boolean(e?.target?.checked) });
+    });
+  });
+
+  el('btn-reset-feature-toggles')?.addEventListener('click', () => {
+    void setSuiteFeatureFlags({ ...DEFAULT_SUITE_FEATURE_FLAGS });
+  });
+
   el('suite-ver-status')?.addEventListener('click', () => {
     void checkSuiteRepoUpdate({ fetchRemote: true });
   });
@@ -1340,6 +1462,7 @@
 
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
+  applySuiteFeatureFlags();
   renderTerminalGrid();
   dispatchSuitePrefsChanged();
   applySuiteShadowLocale();
