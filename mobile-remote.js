@@ -15,7 +15,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.8.1';
+const MOBILE_UI_VERSION = '1.9.0';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -61,17 +61,32 @@ function loadOrCreateRemoteConfig(options = {}) {
   let token = (!resetToken && typeof existing.token === 'string' && existing.token.length >= 24)
     ? existing.token
     : '';
-  const tunnelEnabled = typeof existing.tunnelEnabled === 'boolean'
+  const rawCh = (existing.enabledChannels && typeof existing.enabledChannels === 'object') ? existing.enabledChannels : {};
+  const defaultTunnelOn = typeof existing.tunnelEnabled === 'boolean'
     ? existing.tunnelEnabled
     : Boolean(resolveCloudflaredBinary());
+  const tunnelEnabled = typeof rawCh.tunnel === 'boolean' ? rawCh.tunnel : defaultTunnelOn;
+  const enabledChannels = {
+    lan: typeof rawCh.lan === 'boolean' ? rawCh.lan : true,
+    tailscale: typeof rawCh.tailscale === 'boolean' ? rawCh.tailscale : true,
+    bonjour: typeof rawCh.bonjour === 'boolean' ? rawCh.bonjour : true,
+    tunnel: tunnelEnabled
+  };
   const tunnelMode = existing.tunnelMode === 'named' ? 'named' : 'quick';
   const tunnelToken = typeof existing.tunnelToken === 'string'
     ? extractCloudflareTunnelToken(existing.tunnelToken)
     : '';
   const tunnelHostname = normalizeTunnelHostname(existing.tunnelHostname || '');
 
+  const sameChannels = Boolean(existing.enabledChannels)
+    && existing.enabledChannels.lan === enabledChannels.lan
+    && existing.enabledChannels.tailscale === enabledChannels.tailscale
+    && existing.enabledChannels.bonjour === enabledChannels.bonjour
+    && existing.enabledChannels.tunnel === enabledChannels.tunnel;
+
   let changed = !loaded.ok || !existing.token || resetToken || existing.port !== port
     || existing.tunnelEnabled !== tunnelEnabled
+    || !sameChannels
     || existing.tunnelMode !== tunnelMode
     || (existing.tunnelToken || '') !== tunnelToken
     || (existing.tunnelHostname || '') !== tunnelHostname;
@@ -85,6 +100,7 @@ function loadOrCreateRemoteConfig(options = {}) {
     port,
     token,
     tunnelEnabled,
+    enabledChannels,
     tunnelMode,
     tunnelToken,
     tunnelHostname,
@@ -106,9 +122,18 @@ function loadOrCreateRemoteConfig(options = {}) {
 
 function saveRemoteTunnelConfig(patch = {}) {
   const cur = loadOrCreateRemoteConfig();
-  const nextEnabled = patch.enabled !== undefined
+  const patchCh = (patch.enabledChannels && typeof patch.enabledChannels === 'object') ? patch.enabledChannels : {};
+  const nextTunnelEnabled = patch.enabled !== undefined
     ? Boolean(patch.enabled)
-    : (patch.tunnelEnabled !== undefined ? Boolean(patch.tunnelEnabled) : cur.tunnelEnabled);
+    : (patch.tunnelEnabled !== undefined
+        ? Boolean(patch.tunnelEnabled)
+        : (typeof patchCh.tunnel === 'boolean' ? patchCh.tunnel : cur.tunnelEnabled));
+  const nextEnabledChannels = {
+    lan: typeof patchCh.lan === 'boolean' ? patchCh.lan : cur.enabledChannels.lan,
+    tailscale: typeof patchCh.tailscale === 'boolean' ? patchCh.tailscale : cur.enabledChannels.tailscale,
+    bonjour: typeof patchCh.bonjour === 'boolean' ? patchCh.bonjour : cur.enabledChannels.bonjour,
+    tunnel: nextTunnelEnabled
+  };
   const nextModeRaw = patch.tunnelMode !== undefined ? patch.tunnelMode : cur.tunnelMode;
   const nextMode = nextModeRaw === 'named' ? 'named' : 'quick';
   const nextToken = patch.tunnelToken !== undefined
@@ -120,7 +145,8 @@ function saveRemoteTunnelConfig(patch = {}) {
 
   const next = {
     ...cur,
-    tunnelEnabled: nextEnabled,
+    tunnelEnabled: nextTunnelEnabled,
+    enabledChannels: nextEnabledChannels,
     tunnelMode: nextMode,
     tunnelToken: nextToken,
     tunnelHostname: nextHost,
@@ -183,6 +209,64 @@ function isAllowedPrivateAddress(rawAddr) {
   // 链路本地 fe80::/10 与 ULA fc00::/7 (包含 Tailscale IPv6 fd7a:...)
   if (/^fe[89ab][0-9a-f]:/i.test(ip) || /^f[cd][0-9a-f]{2}:/i.test(ip)) return true;
   return false;
+}
+
+function parseHostHeaderHostname(rawHost) {
+  const text = String(rawHost || '').trim();
+  if (!text) return '';
+  try {
+    return new URL(`http://${text}`).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  } catch {
+    return text.replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  }
+}
+
+function isTailscaleIp(rawAddr) {
+  const ip = normalizeRemoteIp(rawAddr);
+  if (!ip) return false;
+  return isTailscaleCgnatIpv4(ip) || /^fd7a:115c:a1e0:/i.test(ip);
+}
+
+function isLoopbackIp(rawAddr) {
+  const ip = normalizeRemoteIp(rawAddr);
+  if (!ip) return false;
+  if (ip === '127.0.0.1' || ip === '::1') return true;
+  const p = parseIpv4Parts(ip);
+  return Boolean(p && p[0] === 127);
+}
+
+function detectRequestChannel(req, activeTunnelUrl = '') {
+  const headers = (req && req.headers) || {};
+  const remoteIp = normalizeRemoteIp(req?.socket?.remoteAddress || '');
+  const localIp = normalizeRemoteIp(req?.socket?.localAddress || '');
+  const hostName = parseHostHeaderHostname(headers.host || '');
+  let activeTunnelHost = '';
+  if (activeTunnelUrl) {
+    try { activeTunnelHost = new URL(activeTunnelUrl).hostname.toLowerCase(); } catch {}
+  }
+  if (
+    headers['cf-connecting-ip']
+    || headers['cf-ray']
+    || hostName.endsWith('.trycloudflare.com')
+    || (activeTunnelHost && hostName === activeTunnelHost)
+  ) {
+    return 'tunnel';
+  }
+  if (hostName.endsWith('.local')) {
+    return 'bonjour';
+  }
+  if (
+    hostName.endsWith('.ts.net')
+    || isTailscaleIp(hostName)
+    || isTailscaleIp(remoteIp)
+    || isTailscaleIp(localIp)
+  ) {
+    return 'tailscale';
+  }
+  if (isLoopbackIp(remoteIp) && (!hostName || hostName === 'localhost' || isLoopbackIp(hostName))) {
+    return 'loopback';
+  }
+  return 'lan';
 }
 
 const isVirtualBridgeIface = (name) => /^(?:bridge|vmenet|vmnet|vboxnet|docker|br-|veth|awdl|llw|utun)/i.test(String(name || ''));
@@ -994,7 +1078,8 @@ function buildMobileAppHtml() {
     .dot.err{background:var(--red)}
     @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
     .conv-title{font-size:15px;font-weight:600;color:#fafafa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em}
-    .sub-meta{font-size:11px;color:#71717a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+    .sub-meta{font-size:11px;color:#71717a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+    .sub-meta:active{color:#38bdf8}
     .quota-pill{
       appearance:none;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.05);color:#e4e4e7;
       border-radius:11px;padding:5px 10px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;
@@ -1068,6 +1153,25 @@ function buildMobileAppHtml() {
     .thought-box summary{cursor:pointer;font-weight:600;color:#93c5fd;list-style:none}
     .thought-body{margin-top:6px;white-space:pre-wrap;color:#a1a1aa;max-height:220px;overflow-y:auto}
     .empty-tip{margin:auto;text-align:center;color:var(--muted);padding:24px 12px;font-size:13px}
+    .mode-entry-card{
+      margin:auto;width:100%;max-width:400px;padding:16px 14px;border-radius:16px;
+      background:#18181b;border:1px solid rgba(255,255,255,.12);
+      display:flex;flex-direction:column;gap:10px;
+    }
+    .mode-entry-title{font-size:13px;font-weight:600;color:#e4e4e7;line-height:1.45}
+    .mode-entry-list{display:flex;flex-direction:column;gap:8px}
+    .mode-entry-btn{
+      appearance:none;width:100%;padding:10px 12px;border-radius:11px;
+      border:1px solid rgba(255,255,255,.11);background:rgba(255,255,255,.04);color:#f4f4f5;
+      display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;cursor:pointer;
+      transition:border-color .15s ease,background-color .15s ease;
+    }
+    .mode-entry-btn:active{background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.6)}
+    .mode-entry-btn.active{border-color:rgba(56,189,248,.55);background:rgba(56,189,248,.1)}
+    .mode-entry-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
+    .mode-entry-name{font-size:13.5px;font-weight:600;color:#fafafa}
+    .mode-entry-host{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#a1a1aa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .mode-entry-tag{font-size:11.5px;font-weight:600;color:#38bdf8;flex-shrink:0;white-space:nowrap}
     .approval-dock{
       flex-shrink:0;padding:8px 10px;background:rgba(24,24,27,.98);border-top:1px solid var(--border);
       display:flex;flex-direction:column;gap:6px;
@@ -1282,10 +1386,38 @@ function buildMobileAppHtml() {
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         const json = typeof TextDecoder === 'function' ? new TextDecoder().decode(bytes) : decodeURIComponent(escape(bin));
         const list = JSON.parse(json);
-        return Array.isArray(list) ? list.filter((x) => x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url)) : [];
+        return Array.isArray(list) ? list.filter((x) => x && typeof x.url === 'string' && (/^https?:\\/\\//i.test(x.url) || x.url.startsWith('http://') || x.url.startsWith('https://'))) : [];
       } catch {
         return [];
       }
+    }
+    function encodeEndpointsClient(list) {
+      try {
+        const json = JSON.stringify(Array.isArray(list) ? list : []);
+        let bin = '';
+        if (typeof TextEncoder === 'function') {
+          const bytes = new TextEncoder().encode(json);
+          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        } else {
+          bin = unescape(encodeURIComponent(json));
+        }
+        return btoa(bin).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+      } catch {
+        return '';
+      }
+    }
+    function detectKindFromOrigin(rawUrl) {
+      const origin = String(rawUrl || '').toLowerCase();
+      if (origin.includes('.trycloudflare.com') || origin.startsWith('https://')) return 'tunnel';
+      if (origin.includes('.ts.net') || origin.startsWith('http://100.') || origin.startsWith('https://100.')) return 'tailscale';
+      if (origin.includes('.local:') || origin.endsWith('.local')) return 'bonjour';
+      return 'lan';
+    }
+    function formatKindLabel(kind) {
+      if (kind === 'tunnel') return 'Cloudflare 隧道';
+      if (kind === 'tailscale') return 'Tailscale';
+      if (kind === 'bonjour') return 'Bonjour';
+      return '局域网';
     }
     function loadStoredPair() {
       try {
@@ -1313,6 +1445,7 @@ function buildMobileAppHtml() {
     const urlName = urlParams.get('name') || '';
     const urlHosts = (urlParams.get('hosts') || '').split(',').map((s) => s.trim()).filter(Boolean);
     const urlEndpoints = decodeEndpointsClient(urlParams.get('endpoints') || '');
+    const isManualEntry = urlParams.get('manual') === '1';
     const storedPair = loadStoredPair() || {};
     const pairState = {
       token: urlToken || storedPair.token || '',
@@ -1338,9 +1471,9 @@ function buildMobileAppHtml() {
       const list = [];
       const isHttpsPage = location.protocol === 'https:';
       const add = (url, kind, priority) => {
-        const clean = String(url || '').replace(/\/+$/, '');
+        const clean = String(url || '').replace(/\\/+$/, '');
         if (!clean || seen.has(clean)) return;
-        if (isHttpsPage && /^http:\/\//i.test(clean)) return;
+        if (isHttpsPage && clean.toLowerCase().startsWith('http://')) return;
         seen.add(clean);
         list.push({ url: clean, kind: kind || 'lan', priority: Number.isFinite(priority) ? priority : 100 });
       };
@@ -1348,7 +1481,7 @@ function buildMobileAppHtml() {
       const portStr = location.port ? ':' + location.port : '';
       for (const h of (pairState.hosts || [])) {
         const hostFmt = (h.includes(':') && !h.startsWith('[')) ? ('[' + h + ']') : h;
-        const kind = h.endsWith('.local') ? 'bonjour' : (h.includes('.ts.net') || /^100\./.test(h) ? 'tailscale' : 'lan');
+        const kind = h.endsWith('.local') ? 'bonjour' : (h.includes('.ts.net') || h.startsWith('100.') ? 'tailscale' : 'lan');
         if (!isHttpsPage) {
           add('http://' + hostFmt + (portStr || ':18765'), kind, 300);
         }
@@ -1393,7 +1526,7 @@ function buildMobileAppHtml() {
           saveStoredPair(pairState);
         }
         if (changed) {
-          const kindName = winner.ep.kind === 'tunnel' ? 'Cloudflare' : (winner.ep.kind === 'tailscale' ? 'Tailscale' : (winner.ep.kind === 'bonjour' ? 'Bonjour' : 'Wi-Fi'));
+          const kindName = winner.ep.kind === 'tunnel' ? 'Cloudflare' : (winner.ep.kind === 'tailscale' ? 'Tailscale' : (winner.ep.kind === 'bonjour' ? 'Bonjour' : '局域网'));
           showToast('已自动切至 ' + kindName + ' 通道');
         }
         return true;
@@ -1416,10 +1549,11 @@ function buildMobileAppHtml() {
 
     const $ = (id) => document.getElementById(id);
     const msgEl = $('messages');
+    let activeSnapAbort = null;
 
-    function fetchWithTimeout(url, init, timeoutMs) {
+    function fetchWithTimeout(url, init, timeoutMs, externalCtrl) {
       const ms = Number(timeoutMs) > 0 ? Number(timeoutMs) : 5000;
-      const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      const ctrl = externalCtrl || (typeof AbortController === 'function' ? new AbortController() : null);
       const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, ms) : null;
       const opts = Object.assign({}, init || {}, ctrl ? { signal: ctrl.signal } : {});
       return fetch(url, opts).finally(() => {
@@ -1428,13 +1562,109 @@ function buildMobileAppHtml() {
     }
 
     function getActiveChannelLabel() {
-      const origin = String(apiBase || location.origin || '').toLowerCase();
-      if (/\.trycloudflare\.com\b/.test(origin) || /^https:\/\//.test(origin)) return 'Cloudflare 隧道';
-      if (/\.ts\.net\b/.test(origin) || /^https?:\/\/100\./.test(origin)) return 'Tailscale 直连';
-      if (/\.local(?::|$)/.test(origin)) return 'Bonjour 局域网';
-      return 'Wi-Fi 局域网';
+      return formatKindLabel(detectKindFromOrigin(apiBase || location.origin || ''));
     }
+
+    function getEnabledModeEntries() {
+      const order = { tunnel: 0, lan: 1, tailscale: 2, bonjour: 3, loopback: 9 };
+      const byKind = new Map();
+      const sorted = [...(pairState.endpoints || [])].sort((a, b) => (Number(a?.priority) || 999) - (Number(b?.priority) || 999));
+      for (const ep of sorted) {
+        if (!ep || !ep.url) continue;
+        const k = ep.kind || detectKindFromOrigin(ep.url);
+        if (k === 'loopback' && sorted.length > 1) continue;
+        if (!byKind.has(k)) {
+          byKind.set(k, { url: String(ep.url).replace(/\\/+$/, ''), kind: k });
+        }
+      }
+      if (byKind.size === 0) {
+        const curKind = detectKindFromOrigin(location.origin);
+        byKind.set(curKind, { url: String(location.origin || '').replace(/\\/+$/, ''), kind: curKind });
+      }
+      return Array.from(byKind.values()).sort((a, b) => (order[a.kind] ?? 5) - (order[b.kind] ?? 5));
+    }
+
+    function buildClientEntryUrl(targetBaseUrl) {
+      const cleanBase = String(targetBaseUrl || '').replace(/\\/+$/, '');
+      const params = [];
+      if (pairState.token) params.push('token=' + encodeURIComponent(pairState.token));
+      if (pairState.name) params.push('name=' + encodeURIComponent(pairState.name));
+      if (pairState.hosts?.length) params.push('hosts=' + encodeURIComponent(pairState.hosts.join(',')));
+      const encEps = encodeEndpointsClient(pairState.endpoints || []);
+      if (encEps) params.push('endpoints=' + encodeURIComponent(encEps));
+      params.push('manual=1');
+      return cleanBase + '/?' + params.join('&');
+    }
+
+    function enterConnectionMode(ep) {
+      if (!ep || !ep.url) return;
+      if (activeSnapAbort) {
+        try { activeSnapAbort.abort(); } catch {}
+        activeSnapAbort = null;
+      }
+      clearTimeout(pollTimer);
+      saveStoredPair(pairState);
+      const cleanTarget = String(ep.url).replace(/\\/+$/, '');
+      const cleanCur = String(location.origin || '').replace(/\\/+$/, '');
+      if (cleanTarget === cleanCur) {
+        apiBase = '';
+        const modeName = formatKindLabel(ep.kind);
+        $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
+        renderModeEntryGate('正在通过 ' + modeName + ' 连接 Mac…');
+        void fetchSnapshot();
+        return;
+      }
+      location.href = buildClientEntryUrl(cleanTarget);
+    }
+
+    function renderModeEntryGate(statusText) {
+      if (latestSnap) return;
+      const entries = getEnabledModeEntries();
+      const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+      const btnsHtml = entries.map((ep, idx) => {
+        let hostText = ep.url;
+        try { hostText = new URL(ep.url).host; } catch {}
+        const isCurrent = ep.url === curOrigin;
+        return '<button class="mode-entry-btn' + (isCurrent ? ' active' : '') + '" data-mode-idx="' + idx + '" type="button">'
+          + '<span class="mode-entry-left">'
+          + '<span class="mode-entry-name">' + esc(formatKindLabel(ep.kind)) + '</span>'
+          + '<span class="mode-entry-host">' + esc(hostText) + '</span>'
+          + '</span>'
+          + '<span class="mode-entry-tag">' + (isCurrent ? '当前入口 →' : '直接进入 →') + '</span>'
+          + '</button>';
+      }).join('');
+      msgEl.innerHTML = '<div id="mode-entry-panel" class="mode-entry-card">'
+        + '<div id="mode-entry-status" class="mode-entry-title">' + esc(statusText || '请选择或等待连接方式进入：') + '</div>'
+        + '<div class="mode-entry-list">' + btnsHtml + '</div>'
+        + '</div>';
+      msgEl.querySelectorAll('.mode-entry-btn').forEach((btn) => {
+        btn.onclick = () => {
+          const ep = entries[Number(btn.dataset.modeIdx)];
+          if (ep) enterConnectionMode(ep);
+        };
+      });
+    }
+
+    function openModeSwitcherSheet() {
+      const entries = getEnabledModeEntries();
+      if (!entries.length) return;
+      const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+      const opts = entries.map((ep) => {
+        let hostText = ep.url;
+        try { hostText = new URL(ep.url).host; } catch {}
+        return {
+          label: formatKindLabel(ep.kind) + ' · ' + hostText,
+          active: ep.url === curOrigin,
+          ep
+        };
+      });
+      openSheet('切换连接方式（已开启）', opts, async (opt) => {
+        if (opt?.ep) enterConnectionMode(opt.ep);
+      });
+    }
+
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
+    $('sub-meta').onclick = openModeSwitcherSheet;
 
     const appEl = document.querySelector('.app');
     let maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -1534,6 +1764,7 @@ function buildMobileAppHtml() {
       let res;
       try {
         res = await doPost();
+        if (res.status === 403) throw new Error('channel_disabled');
       } catch (err) {
         if (await tryFailoverEndpoint()) {
           res = await doPost();
@@ -1602,7 +1833,8 @@ function buildMobileAppHtml() {
 
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
-      $('sub-meta').textContent = getActiveChannelLabel() + ' · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
+      const chSuffix = getEnabledModeEntries().length > 1 ? ' ▾' : '';
+      $('sub-meta').textContent = getActiveChannelLabel() + chSuffix + ' · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
@@ -1721,14 +1953,22 @@ function buildMobileAppHtml() {
 
     async function fetchSnapshot() {
       const q = currentTargetId ? '?targetId=' + encodeURIComponent(currentTargetId) : '';
-      const doFetch = () => fetchWithTimeout((apiBase || '') + '/api/snapshot' + q, { headers: authHeaders(), cache: 'no-store' }, latestSnap ? 4500 : 2200);
+      const doFetch = () => {
+        if (activeSnapAbort) { try { activeSnapAbort.abort(); } catch {} }
+        activeSnapAbort = typeof AbortController === 'function' ? new AbortController() : null;
+        return fetchWithTimeout((apiBase || '') + '/api/snapshot' + q, { headers: authHeaders(), cache: 'no-store' }, latestSnap ? 4500 : 2200, activeSnapAbort);
+      };
       try {
         let res = await doFetch();
         if (res.status === 401) { location.reload(); return; }
+        if (res.status === 403) throw new Error('channel_disabled');
         const data = await res.json();
         renderSnapshot(data);
       } catch {
         $('sub-meta').textContent = '连接中断 · 正在切换可用通道…';
+        if (!latestSnap) {
+          renderModeEntryGate('正在自动尝试备用通道，也可直接点击已开启的方式立即进入：');
+        }
         const switched = await tryFailoverEndpoint();
         if (switched) {
           try {
@@ -1740,8 +1980,12 @@ function buildMobileAppHtml() {
           } catch {}
         }
         $('status-dot').className = 'dot err';
-        $('sub-meta').textContent = '连接中断，正在重连…';
+        $('sub-meta').textContent = '连接中断，点击可切换连接方式';
+        if (!latestSnap) {
+          renderModeEntryGate('当前入口暂未连通，请点击下方已开启的连接方式直接进入：');
+        }
       } finally {
+        activeSnapAbort = null;
         schedulePoll();
       }
     }
@@ -2072,6 +2316,11 @@ function buildMobileAppHtml() {
       }
     });
 
+    renderModeEntryGate(
+      isManualEntry
+        ? ('正在通过 ' + getActiveChannelLabel() + ' 连接 Mac…')
+        : '正在自动连接最佳通道，也可直接点击已开启的方式立即进入：'
+    );
     void fetchSnapshot();
   })();
   </script>
@@ -2466,9 +2715,17 @@ function createCloudflareTunnelController(getPort) {
     getStatus,
     ensureRunning,
     configure: async (patch = {}) => {
+      const prevCfg = loadOrCreateRemoteConfig();
       const nextCfg = saveRemoteTunnelConfig(patch);
       if (!nextCfg.tunnelEnabled) {
         await stop();
+        return getStatus();
+      }
+      const tunnelConfigChanged = prevCfg.tunnelEnabled !== nextCfg.tunnelEnabled
+        || prevCfg.tunnelMode !== nextCfg.tunnelMode
+        || prevCfg.tunnelHostname !== nextCfg.tunnelHostname
+        || prevCfg.tunnelToken !== nextCfg.tunnelToken;
+      if (!tunnelConfigChanged && (state === 'running' || state === 'starting')) {
         return getStatus();
       }
       await stop();
@@ -2545,13 +2802,6 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
-    const isCfProxied = Boolean(req.headers['cf-connecting-ip'] || req.headers['cf-ray']);
-    if (isCfProxied && !config.tunnelEnabled) {
-      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('403 Forbidden: Cloudflare Tunnel is disabled');
-      return;
-    }
-
     const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
     const reqOrigin = String(req.headers.origin || '').trim();
     if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl)) {
@@ -2577,6 +2827,26 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
     const pathname = urlObj.pathname;
+
+    const reqChannel = detectRequestChannel(req, activeTunnelUrl);
+    const enabledMap = config.enabledChannels || {
+      lan: true,
+      tailscale: true,
+      bonjour: true,
+      tunnel: Boolean(config.tunnelEnabled)
+    };
+    if (reqChannel !== 'loopback' && !enabledMap[reqChannel]) {
+      const chNames = { lan: '局域网', tailscale: 'Tailscale', bonjour: 'Bonjour', tunnel: 'Cloudflare 隧道' };
+      const msg = `${chNames[reqChannel] || reqChannel} 连接方式已停用`;
+      if (pathname.startsWith('/api/')) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, channelDisabled: reqChannel, error: msg }));
+      } else {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(`403 Forbidden: ${msg}`);
+      }
+      return;
+    }
 
     // 静态 PWA 元数据无任何敏感状态，允许系统桌面图标抓取稳定通过
     if (pathname === '/icon.svg') {
@@ -2644,14 +2914,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         state: 'running',
         publicUrl: activeTunnelUrl,
         mode: config.tunnelMode
-      } : null);
+      } : null, config.enabledChannels);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({
         ok: true,
         port: config.port,
         name: snapInfo.deviceName,
         hosts: snapInfo.hosts,
-        endpoints: snapInfo.endpoints
+        endpoints: snapInfo.endpoints,
+        enabledChannels: config.enabledChannels
       }));
       return;
     }
@@ -2673,8 +2944,13 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             state: 'running',
             publicUrl: activeTunnelUrl,
             mode: config.tunnelMode
-          } : null);
-          payloadOut = { ...snap, hosts: snapInfo.hosts, endpoints: snapInfo.endpoints };
+          } : null, config.enabledChannels);
+          payloadOut = {
+            ...snap,
+            hosts: snapInfo.hosts,
+            endpoints: snapInfo.endpoints,
+            enabledChannels: config.enabledChannels
+          };
         }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(payloadOut));
@@ -2798,11 +3074,17 @@ function startMobileRemoteServer() {
   };
 }
 
-function collectFusedEndpointDescriptor(port, tunnelStatus = null) {
+function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChannels = null) {
   const { tailscale, lan, physicalLan } = enumerateLocalAddresses();
   const meta = detectHostIdentityMeta();
   const primaryLan = physicalLan[0] || lan[0] || null;
   const secondaryLan = physicalLan[1] || null;
+  const en = {
+    lan: enabledChannels?.lan !== false,
+    tailscale: enabledChannels?.tailscale !== false,
+    bonjour: enabledChannels?.bonjour !== false,
+    tunnel: enabledChannels?.tunnel !== false
+  };
 
   const endpoints = [];
   const seenHosts = new Set();
@@ -2819,17 +3101,17 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null) {
     });
   };
 
-  if (primaryLan) addEp(primaryLan.address, 'lan', 0, primaryLan.iface);
-  if (secondaryLan) addEp(secondaryLan.address, 'lan', 50, secondaryLan.iface);
-  if (tailscale[0]) addEp(tailscale[0].address, 'tailscale', 100, tailscale[0].iface);
-  if (tailscale.length > 0 && meta.tailscaleDnsName) {
+  if (en.lan && primaryLan) addEp(primaryLan.address, 'lan', 0, primaryLan.iface);
+  if (en.lan && secondaryLan) addEp(secondaryLan.address, 'lan', 50, secondaryLan.iface);
+  if (en.tailscale && tailscale[0]) addEp(tailscale[0].address, 'tailscale', 100, tailscale[0].iface);
+  if (en.tailscale && tailscale.length > 0 && meta.tailscaleDnsName) {
     addEp(meta.tailscaleDnsName, 'tailscale', 150, tailscale[0]?.iface || 'utun0');
   }
-  if (meta.bonjourHost && primaryLan) {
+  if (en.bonjour && meta.bonjourHost && primaryLan) {
     addEp(meta.bonjourHost, 'bonjour', 200, primaryLan.iface);
   }
   const tunnelUrl = String(tunnelStatus?.publicUrl || '').trim().replace(/\/+$/, '');
-  if (tunnelStatus?.enabled && tunnelStatus?.state === 'running' && /^https:\/\//i.test(tunnelUrl)) {
+  if (en.tunnel && tunnelStatus?.enabled && tunnelStatus?.state === 'running' && /^https:\/\//i.test(tunnelUrl)) {
     try {
       const tu = new URL(tunnelUrl);
       if (!seenHosts.has(tu.host)) {
@@ -2844,7 +3126,8 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null) {
       }
     } catch {}
   }
-  if (endpoints.length === 0) {
+  const anyEnabled = en.lan || en.tailscale || en.bonjour || en.tunnel;
+  if (endpoints.length === 0 && anyEnabled) {
     addEp('127.0.0.1', 'loopback', 900, 'lo0');
   }
 
@@ -2875,7 +3158,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       }
     : persisted;
 
-  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel);
+  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel, cfg.enabledChannels);
 
   const mkFused = (entryHost, entryBaseUrl = '') => buildFusedPairingUrl({
     entryBaseUrl,
@@ -2902,23 +3185,28 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     try { tunnelHostDisplay = new URL(tunnelActiveUrl).host; } catch {}
   }
 
+  const enCh = cfg.enabledChannels || { lan: true, tailscale: true, bonjour: true, tunnel: Boolean(cfg.tunnelEnabled) };
   const tunnelChannel = {
     key: 'tunnel',
     label: 'Cloudflare 隧道',
     labelEn: 'Cloudflare Tunnel',
-    available: Boolean(tunnelActiveUrl),
-    enabled: Boolean(cfg.tunnelEnabled),
+    enabled: Boolean(enCh.tunnel),
+    detected: Boolean(effTunnel.binaryAvailable),
+    available: Boolean(enCh.tunnel && tunnelActiveUrl),
     state: effTunnel.state || 'stopped',
     mode: cfg.tunnelMode || 'quick',
     binaryAvailable: Boolean(effTunnel.binaryAvailable),
     hasTunnelToken: Boolean(cfg.tunnelToken),
     tunnelHostname: cfg.tunnelHostname || '',
     error: effTunnel.error || '',
-    displayHost: tunnelHostDisplay
-      ? (cfg.tunnelMode === 'named' ? tunnelHostDisplay : `随时随地 · ${tunnelHostDisplay}`)
-      : (effTunnel.state === 'starting'
-          ? '正在分配公网隧道…'
-          : (effTunnel.error || '未开启（4G/5G 免装软件直连）')),
+    rawHost: tunnelHostDisplay,
+    displayHost: !enCh.tunnel
+      ? '已停用'
+      : (tunnelHostDisplay
+          ? (cfg.tunnelMode === 'named' ? tunnelHostDisplay : `随时随地 · ${tunnelHostDisplay}`)
+          : (effTunnel.state === 'starting'
+              ? '正在分配公网隧道…'
+              : (effTunnel.error || '未就绪'))),
     entryHost: tunnelHostDisplay,
     entryBaseUrl: tunnelActiveUrl,
     iface: 'cloudflare'
@@ -2953,10 +3241,13 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
   const channels = [
     {
       key: 'lan',
-      label: '此 Wi-Fi',
-      labelEn: 'This Wi-Fi',
-      available: Boolean(desc.primaryLan),
-      displayHost: desc.primaryLan?.address || '',
+      label: '局域网',
+      labelEn: 'LAN',
+      enabled: Boolean(enCh.lan),
+      detected: Boolean(desc.primaryLan),
+      available: Boolean(enCh.lan && desc.primaryLan),
+      rawHost: lanEntryHost,
+      displayHost: enCh.lan ? lanEntryHost : (lanEntryHost ? `已停用 · ${lanEntryHost}` : '已停用'),
       entryHost: lanEntryHost,
       iface: desc.primaryLan?.iface || ''
     },
@@ -2964,8 +3255,11 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       key: 'tailscale',
       label: 'Tailscale',
       labelEn: 'Tailscale',
-      available: desc.tailscale.length > 0,
-      displayHost: tsDisplayHost,
+      enabled: Boolean(enCh.tailscale),
+      detected: desc.tailscale.length > 0,
+      available: Boolean(enCh.tailscale && desc.tailscale.length > 0),
+      rawHost: tsDisplayHost,
+      displayHost: enCh.tailscale ? tsDisplayHost : (tsDisplayHost ? `已停用 · ${tsDisplayHost}` : '已停用'),
       entryHost: tsEntryHost,
       iface: desc.tailscale[0]?.iface || ''
     },
@@ -2973,8 +3267,11 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       key: 'bonjour',
       label: 'Bonjour',
       labelEn: 'Bonjour',
-      available: Boolean(bonjourEntryHost),
-      displayHost: bonjourEntryHost,
+      enabled: Boolean(enCh.bonjour),
+      detected: Boolean(bonjourEntryHost),
+      available: Boolean(enCh.bonjour && bonjourEntryHost),
+      rawHost: bonjourEntryHost,
+      displayHost: enCh.bonjour ? bonjourEntryHost : (bonjourEntryHost ? `已停用 · ${bonjourEntryHost}` : '已停用'),
       entryHost: bonjourEntryHost,
       iface: desc.primaryLan?.iface || ''
     },
@@ -2985,8 +3282,8 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     return { ...ch, url, qrSvg };
   });
 
-  const tailscaleUrls = desc.tailscale.map((x) => ({ ...x, ...mkQrSafe(x.address) }));
-  const lanUrls = desc.lan.map((x) => ({ ...x, ...mkQrSafe(x.address) }));
+  const tailscaleUrls = enCh.tailscale ? desc.tailscale.map((x) => ({ ...x, ...mkQrSafe(x.address) })) : [];
+  const lanUrls = enCh.lan ? desc.lan.map((x) => ({ ...x, ...mkQrSafe(x.address) })) : [];
 
   const pickedChannel = channels.find((c) => c.key === 'tunnel' && c.available)
     || channels.find((c) => c.key === 'tailscale' && c.available)
@@ -2996,7 +3293,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
   const localUrl = localBuilt.url;
   const primary = pickedChannel
     ? { iface: pickedChannel.iface, address: pickedChannel.entryHost, kind: pickedChannel.key, url: pickedChannel.url, qrSvg: pickedChannel.qrSvg }
-    : { iface: 'lo0', address: '127.0.0.1', kind: 'loopback', url: localUrl, qrSvg: localBuilt.qrSvg };
+    : { iface: '', address: '', kind: 'none', url: '', qrSvg: '' };
 
   return {
     port: cfg.port,
@@ -3005,6 +3302,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     deviceName: desc.deviceName,
     bonjourHost: desc.bonjourHost,
     tailscaleDnsName: desc.tailscaleDnsName,
+    enabledChannels: enCh,
     tunnelEnabled: Boolean(cfg.tunnelEnabled),
     tunnelMode: cfg.tunnelMode,
     tunnelHostname: cfg.tunnelHostname || '',
@@ -3063,12 +3361,16 @@ function printRemoteCli({ resetToken = false, jsonMode = false, tunnelAction = '
   console.log('');
   console.log('📷 用 iPhone 相机扫描下方二维码即可打开：');
   console.log('');
-  const primaryGrid = encodeQrCodeMatrix(info.primaryUrl);
-  const cols = Number(process.stdout.columns || 0);
-  const qrForTerminal = (cols > 0 && cols < primaryGrid.length + 6)
-    ? `http://${(info.tailscaleUrls[0]?.address || info.lanUrls[0]?.address || '127.0.0.1')}:${info.port}/?token=${info.token}`
-    : info.primaryUrl;
-  console.log(renderTerminalQr(qrForTerminal));
+  if (info.primaryUrl) {
+    const primaryGrid = encodeQrCodeMatrix(info.primaryUrl);
+    const cols = Number(process.stdout.columns || 0);
+    const qrForTerminal = (cols > 0 && cols < primaryGrid.length + 6)
+      ? `http://${(info.tailscaleUrls[0]?.address || info.lanUrls[0]?.address || '127.0.0.1')}:${info.port}/?token=${info.token}`
+      : info.primaryUrl;
+    console.log(renderTerminalQr(qrForTerminal));
+  } else {
+    console.log('⚠️ 所有连接通道均已停用，请启用至少一种连接方式。');
+  }
   console.log('');
   console.log('💡 使用提示：');
   console.log('   1. 扫码在 Safari 打开后，点击底部「分享」→「添加到主屏幕」');
@@ -3103,6 +3405,8 @@ module.exports = {
   createCloudflareTunnelController,
   isAllowedPrivateAddress,
   isAllowedPrivateOrigin,
+  detectRequestChannel,
+  createRemoteHttpHandler,
   enumerateLocalAddresses,
   encodeEndpointsParam,
   decodeEndpointsParam,

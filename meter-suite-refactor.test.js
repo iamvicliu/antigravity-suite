@@ -1852,9 +1852,9 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
               fusedUrl: mockTsUrl,
               primaryUrl: mockTsUrl,
               channels: [
-                { key: 'lan', label: '此 Wi-Fi', labelEn: 'This Wi-Fi', available: true, displayHost: '192.168.1.2', entryHost: '192.168.1.2', iface: 'en0', url: mockLanUrl, qrSvg: '<svg id="qr-lan"><rect/></svg>' },
-                { key: 'tailscale', label: 'Tailscale', labelEn: 'Tailscale', available: true, displayHost: 'dev-mac.tailnet-demo.ts.net', entryHost: '100.64.0.2', iface: 'utun0', url: mockTsUrl, qrSvg: '<svg id="qr-ts"><rect/></svg>' },
-                { key: 'bonjour', label: 'Bonjour', labelEn: 'Bonjour', available: true, displayHost: 'dev-macbook-pro.local', entryHost: 'dev-macbook-pro.local', iface: 'en0', url: mockBonjourUrl, qrSvg: '<svg id="qr-bonjour"><rect/></svg>' }
+                { key: 'lan', label: '局域网', labelEn: 'LAN', available: true, enabled: true, displayHost: '192.168.1.2', rawHost: '192.168.1.2', entryHost: '192.168.1.2', iface: 'en0', url: mockLanUrl, qrSvg: '<svg id="qr-lan"><rect/></svg>' },
+                { key: 'tailscale', label: 'Tailscale', labelEn: 'Tailscale', available: true, enabled: true, displayHost: 'dev-mac.tailnet-demo.ts.net', rawHost: 'dev-mac.tailnet-demo.ts.net', entryHost: '100.64.0.2', iface: 'utun0', url: mockTsUrl, qrSvg: '<svg id="qr-ts"><rect/></svg>' },
+                { key: 'bonjour', label: 'Bonjour', labelEn: 'Bonjour', available: true, enabled: true, displayHost: 'dev-macbook-pro.local', rawHost: 'dev-macbook-pro.local', entryHost: 'dev-macbook-pro.local', iface: 'en0', url: mockBonjourUrl, qrSvg: '<svg id="qr-bonjour"><rect/></svg>' }
               ]
             }
           })
@@ -1890,8 +1890,8 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     assert.equal(remotePop.querySelectorAll('.ag-rp-qr').length, 1, '应只展示唯一融合二维码卡片 .ag-rp-qr');
 
     const rows = remotePop.querySelectorAll('.ag-rp-channel');
-    assert.equal(rows.length, 3, '应展示 Wi-Fi / Tailscale / Bonjour 三行通道清单');
-    assert.ok(rows[0].textContent.includes('此 Wi-Fi') && rows[0].textContent.includes('192.168.1.2'));
+    assert.equal(rows.length, 3, '应展示 局域网 / Tailscale / Bonjour 三行通道清单');
+    assert.ok(rows[0].textContent.includes('局域网') && rows[0].textContent.includes('192.168.1.2'));
     assert.ok(rows[1].textContent.includes('Tailscale') && rows[1].textContent.includes('dev-mac.tailnet-demo.ts.net'));
     assert.ok(rows[2].textContent.includes('Bonjour') && rows[2].textContent.includes('dev-macbook-pro.local'));
     assert.equal(rows[1].getAttribute('data-selected'), 'true', 'Tailscale 可用时默认优先选中 Tailscale 引导地址');
@@ -2111,6 +2111,163 @@ test('需求 8: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开关
     assert.equal(tunnelPosts[0]?.enabled, true, '点击开启应请求 /remote-tunnel enabled=true');
     const tunnelRow = remotePop.querySelectorAll('.ag-rp-channel').find(el => el.getAttribute('data-channel') === 'tunnel');
     assert.equal(tunnelRow?.getAttribute('data-selected'), 'true', '隧道就绪后应优先作为通用跨网扫码默认通道');
+
+    enhancer.dispose?.();
+    api.dispose?.();
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 9: “局域网”命名、四通道复选框启停门禁（停用返回 403）及客户页直选入口
+// =========================================================================
+test('需求 9: 局域网命名、通道复选框启停与后端 403 拦截、客户端直选模式入口验证', async () => {
+  const os = require('node:os');
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-channel-gate-test-'));
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const {
+      saveRemoteTunnelConfig,
+      buildRemoteInfo,
+      createRemoteHttpHandler,
+      detectRequestChannel
+    } = require('./mobile-remote.js');
+
+    const remoteSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+    assert.ok(!remoteSrc.includes('此 Wi-Fi') && !ENHANCER_SRC.includes('此 Wi-Fi'), '应统一将“此 Wi-Fi”替换为“局域网”');
+
+    // 1. 通道命名 & 按复选框过滤端点
+    const defaultInfo = buildRemoteInfo({
+      tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true }
+    });
+    const lanChDefault = defaultInfo.channels.find(c => c.key === 'lan');
+    assert.equal(lanChDefault?.label, '局域网');
+    assert.equal(lanChDefault?.labelEn, 'LAN');
+
+    const cfg = saveRemoteTunnelConfig({
+      enabledChannels: { lan: false, bonjour: false, tailscale: true, tunnel: false }
+    });
+    const gatedInfo = buildRemoteInfo({
+      tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true }
+    });
+    assert.equal(gatedInfo.channels.find(c => c.key === 'lan')?.enabled, false);
+    assert.equal(gatedInfo.channels.find(c => c.key === 'lan')?.available, false);
+    assert.equal(gatedInfo.channels.find(c => c.key === 'bonjour')?.enabled, false);
+    assert.ok(!gatedInfo.endpoints.some(ep => ep.kind === 'lan' || ep.kind === 'bonjour'), '已停用的通道不得出现在融合 endpoints 中');
+
+    // 2. 后端 HTTP 处理器严格按启停状态拦截停用通道（403）并放行已启用通道（200）
+    const handler = createRemoteHttpHandler(cfg, { getTunnelOrigin: () => '' });
+    const invokeMockReq = async ({ url, headers = {}, remoteAddress = '127.0.0.1' }) => {
+      let status = 0;
+      const resHeaders = {};
+      let body = '';
+      const req = { method: 'GET', url, headers, socket: { remoteAddress } };
+      const res = {
+        setHeader(k, v) { resHeaders[String(k).toLowerCase()] = v; },
+        writeHead(code, h = {}) {
+          status = code;
+          for (const [k, v] of Object.entries(h)) resHeaders[String(k).toLowerCase()] = v;
+        },
+        end(chunk = '') { body += String(chunk); }
+      };
+      await handler(req, res);
+      return { status, body, resHeaders };
+    };
+
+    assert.equal(detectRequestChannel({ headers: { host: '192.168.1.25:18765' }, socket: { remoteAddress: '192.168.1.50' } }), 'lan');
+    const lanBlocked = await invokeMockReq({
+      url: `/api/snapshot?token=${cfg.token}`,
+      headers: { host: '192.168.1.25:18765' },
+      remoteAddress: '192.168.1.50'
+    });
+    assert.equal(lanBlocked.status, 403, '停用局域网后来自局域网链接的请求必须返回 403');
+    assert.equal(JSON.parse(lanBlocked.body).channelDisabled, 'lan');
+
+    const bonjourBlocked = await invokeMockReq({
+      url: `/api/ping?token=${cfg.token}`,
+      headers: { host: 'dev-mac.local:18765' },
+      remoteAddress: '192.168.1.50'
+    });
+    assert.equal(bonjourBlocked.status, 403, '停用 Bonjour 后 .local 链接请求必须返回 403');
+    assert.equal(JSON.parse(bonjourBlocked.body).channelDisabled, 'bonjour');
+
+    const tunnelBlocked = await invokeMockReq({
+      url: `/api/ping?token=${cfg.token}`,
+      headers: { host: 'demo-words.trycloudflare.com', 'cf-ray': 'abc123' },
+      remoteAddress: '127.0.0.1'
+    });
+    assert.equal(tunnelBlocked.status, 403, '停用 Cloudflare 隧道后代理请求必须返回 403');
+    assert.equal(JSON.parse(tunnelBlocked.body).channelDisabled, 'tunnel');
+
+    const tsAllowed = await invokeMockReq({
+      url: `/api/ping?token=${cfg.token}`,
+      headers: { host: '100.64.0.2:18765' },
+      remoteAddress: '100.64.0.9'
+    });
+    assert.equal(tsAllowed.status, 200, '保持启用的 Tailscale 通道应允许调用并返回 200');
+    assert.equal(JSON.parse(tsAllowed.body).ok, true);
+
+    // 3. 验证客户端页面 HTML 脚本语法完全有效且包含自动进入前直选入口控件
+    const pageResp = await invokeMockReq({
+      url: `/?token=${cfg.token}`,
+      headers: { host: `127.0.0.1:${cfg.port}` },
+      remoteAddress: '127.0.0.1'
+    });
+    assert.equal(pageResp.status, 200);
+    assert.ok(pageResp.body.includes('mode-entry-panel') && pageResp.body.includes('mode-entry-btn'), '客户端页面应渲染直选模式入口面板');
+    assert.ok(pageResp.body.includes('enterConnectionMode') && pageResp.body.includes('buildClientEntryUrl'), '客户端页面应包含手动直切连接方式逻辑');
+    const scriptMatch = pageResp.body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch && scriptMatch[1], '客户端 HTML 应包含内联脚本');
+    assert.doesNotThrow(() => new Function(scriptMatch[1]), '客户端页面内联 <script> 不得存在模板字符串转义语法错误');
+
+    // 4. 验证桌面弹窗 4 通道统一复选框及点击交互
+    saveRemoteTunnelConfig({ enabled: false, enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } });
+    const allOnInfo = buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
+    let postedPatches = [];
+    const env = createDomEnv();
+    env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
+    env.sandbox.fetch = async (url, init) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (String(url).includes('/remote-info')) {
+        return { ok: true, json: async () => ({ ok: true, data: allOnInfo }) };
+      }
+      if (String(url).includes('/remote-tunnel')) {
+        postedPatches.push(body);
+        saveRemoteTunnelConfig(body);
+        const updated = buildRemoteInfo({ tunnelStatus: { enabled: Boolean(body.enabled), state: 'stopped', binaryAvailable: true } });
+        return { ok: true, json: async () => ({ ok: true, data: updated }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const enhancer = env.sandbox.__AGEnhancer;
+    const shadow = env.getShadow();
+    const remotePop = shadow.getElementById('ag-remote-popover');
+
+    enhancer.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+    const checkBtns = remotePop.querySelectorAll('.ag-rp-check');
+    assert.equal(checkBtns.length, 4, '4 个连接通道应统一渲染 4 个复选框控件');
+    assert.equal(checkBtns.every(b => b.getAttribute('role') === 'checkbox'), true);
+
+    const lanChk = remotePop.querySelector('#ag-rp-toggle-lan');
+    assert.equal(lanChk?.getAttribute('aria-checked'), 'true');
+    lanChk.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.deepEqual(postedPatches[0]?.enabledChannels, { lan: false }, '取消勾选局域网应提交 enabledChannels.lan=false');
+    assert.equal(remotePop.querySelector('#ag-rp-toggle-lan')?.getAttribute('aria-checked'), 'false');
 
     enhancer.dispose?.();
     api.dispose?.();

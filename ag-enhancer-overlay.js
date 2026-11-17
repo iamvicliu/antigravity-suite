@@ -23,6 +23,8 @@
   const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
   const CHECK_OK_SVG = '<svg class="ag-rp-icon ag-rp-ok" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#34d399" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   const CHANNEL_OFF_SVG = '<svg class="ag-rp-icon ag-rp-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><line x1="8" y1="12" x2="16" y2="12"></line></svg>';
+  const CHECKBOX_CHECKED_SVG = '<svg class="ag-rp-icon ag-rp-ok" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4.5" fill="rgba(52, 211, 153, 0.16)" stroke="#34d399" stroke-width="2"></rect><polyline points="8.5 12.2 11.2 14.9 15.8 9.4" stroke="#34d399" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>';
+  const CHECKBOX_UNCHECKED_SVG = '<svg class="ag-rp-icon ag-rp-off" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4.5"></rect></svg>';
   const LOCK_SHIELD_SVG = '<svg class="ag-rp-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
   const makeNavSvg = (paths) => '<svg class="ag-nav-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
   const CHAT_NAV_ICONS = {
@@ -813,6 +815,34 @@
           flex: 1 1 auto;
           min-width: 0;
         }
+        .ag-rp-check {
+          appearance: none;
+          width: 26px;
+          height: 26px;
+          padding: 0;
+          margin-left: 3px;
+          border: none;
+          border-radius: 6px;
+          background: transparent;
+          color: var(--ag-text-muted, #a1a1aa);
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          flex-shrink: 0;
+          transition: background-color 0.14s ease, color 0.14s ease;
+        }
+        .ag-rp-check:hover:not([disabled]) {
+          background: rgba(255, 255, 255, 0.08);
+          color: var(--ag-text-primary, #f4f4f5);
+        }
+        :host([data-theme="light"]) .ag-rp-check:hover:not([disabled]) {
+          background: rgba(0, 0, 0, 0.06);
+        }
+        .ag-rp-check[disabled] {
+          opacity: 0.45;
+          cursor: default;
+        }
         .ag-rp-channel-wrap[data-selected="true"] {
           background: rgba(56, 189, 248, 0.1);
         }
@@ -967,7 +997,7 @@
       remoteBtn.type = 'button';
       remoteBtn.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
       remoteBtn.setAttribute('aria-expanded', 'false');
-      remoteBtn.title = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
+      remoteBtn.title = tr('手机远程操作配对（局域网 / Tailscale / Cloudflare）', 'Mobile Remote Pairing (LAN / Tailscale / Cloudflare)');
       remoteBtn.innerHTML = `<span class="ag-remote-icon">📱</span><span class="ag-remote-text">${escapeHtml(tr('远程', 'Remote'))}</span>`;
       contextBadge.insertAdjacentElement('beforebegin', remoteBtn);
 
@@ -1029,7 +1059,7 @@
     const remoteBtn = sr.getElementById(REMOTE_BADGE_ID);
     if (remoteBtn) {
       remoteBtn.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
-      remoteBtn.title = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
+      remoteBtn.title = tr('手机远程操作配对（局域网 / Tailscale / Cloudflare）', 'Mobile Remote Pairing (LAN / Tailscale / Cloudflare)');
       const textSpan = remoteBtn.querySelector?.('.ag-remote-text');
       if (textSpan) textSpan.textContent = tr('远程', 'Remote');
     }
@@ -1103,9 +1133,11 @@
       : [
           {
             key: 'lan',
-            label: '此 Wi-Fi',
-            labelEn: 'This Wi-Fi',
-            available: lanList.length > 0,
+            label: '局域网',
+            labelEn: 'LAN',
+            enabled: data.enabledChannels?.lan !== false,
+            available: (data.enabledChannels?.lan !== false) && lanList.length > 0,
+            rawHost: extractUrlHostSafe(lanList[0]?.url),
             displayHost: extractUrlHostSafe(lanList[0]?.url),
             url: lanList[0]?.url || '',
             qrSvg: lanList[0]?.qrSvg || ''
@@ -1114,7 +1146,9 @@
             key: 'tailscale',
             label: 'Tailscale',
             labelEn: 'Tailscale',
-            available: tsList.length > 0,
+            enabled: data.enabledChannels?.tailscale !== false,
+            available: (data.enabledChannels?.tailscale !== false) && tsList.length > 0,
+            rawHost: data.tailscaleDnsName || extractUrlHostSafe(tsList[0]?.url),
             displayHost: data.tailscaleDnsName || extractUrlHostSafe(tsList[0]?.url),
             url: tsList[0]?.url || '',
             qrSvg: tsList[0]?.qrSvg || ''
@@ -1123,14 +1157,16 @@
             key: 'bonjour',
             label: 'Bonjour',
             labelEn: 'Bonjour',
-            available: Boolean(data.bonjourHost && lanList.length > 0),
+            enabled: data.enabledChannels?.bonjour !== false,
+            available: (data.enabledChannels?.bonjour !== false) && Boolean(data.bonjourHost && lanList.length > 0),
+            rawHost: data.bonjourHost || '',
             displayHost: data.bonjourHost || '',
             url: data.fusedUrl || data.primaryUrl || lanList[0]?.url || '',
             qrSvg: data.qrSvg || lanList[0]?.qrSvg || ''
           }
         ];
 
-    const availableList = channels.filter((c) => c.available && c.url);
+    const availableList = channels.filter((c) => (c.enabled !== false) && c.available && c.url);
     let activeChannel = availableList.find((c) => c.key === remotePairState.mode);
     if (!activeChannel) {
       activeChannel = availableList.find((c) => c.key === 'tunnel')
@@ -1140,13 +1176,17 @@
         || null;
     }
 
-    const activeUrl = activeChannel?.url || data.fusedUrl || data.primaryUrl || data.localUrl || '';
-    const activeQr = activeChannel?.qrSvg || data.qrSvg || '';
+    const activeUrl = availableList.length > 0
+      ? (activeChannel?.url || data.fusedUrl || data.primaryUrl || '')
+      : '';
+    const activeQr = availableList.length > 0
+      ? (activeChannel?.qrSvg || data.qrSvg || '')
+      : '';
 
     return {
       channels,
       activeChannel,
-      activeKey: activeChannel?.key || 'loopback',
+      activeKey: activeChannel?.key || 'none',
       activeUrl,
       activeQr
     };
@@ -1181,18 +1221,30 @@
       const res = await postToLiveHost('/remote-tunnel', payload);
       if (res && res.ok && res.data) {
         remotePairState.data = res.data;
-        const tch = Array.isArray(res.data.channels) ? res.data.channels.find((c) => c.key === 'tunnel') : null;
-        if (tch?.available) {
+        const chs = Array.isArray(res.data.channels) ? res.data.channels : [];
+        const tch = chs.find((c) => c.key === 'tunnel');
+        const toggledNonTunnel = payload.enabledChannels && typeof payload.enabledChannels === 'object'
+          ? Object.entries(payload.enabledChannels).find(([k]) => k !== 'tunnel')
+          : null;
+        if (toggledNonTunnel) {
+          const [chKey, chOn] = toggledNonTunnel;
+          const chMeta = chs.find((c) => c.key === chKey);
+          const chLabel = chMeta ? tr(chMeta.label || chKey, chMeta.labelEn || chKey) : chKey;
+          if (!chOn && remotePairState.mode === chKey) remotePairState.mode = 'auto';
+          showQuickToast(chOn
+            ? tr(`✅ 已启用 ${chLabel}（后端允许调用）`, `✅ Enabled ${chLabel}`)
+            : tr(`🚫 已停用 ${chLabel}（后端拒绝该方式调用）`, `🚫 Disabled ${chLabel}`));
+        } else if (tch?.available) {
           remotePairState.mode = 'tunnel';
           showQuickToast(tr('☁️ Cloudflare 隧道已就绪，4G/5G 可直接扫码', '☁️ Cloudflare Tunnel ready for any network'));
-        } else if (payload.enabled === false) {
+        } else if (payload.enabled === false || payload.enabledChannels?.tunnel === false) {
           if (remotePairState.mode === 'tunnel') remotePairState.mode = 'auto';
-          showQuickToast(tr('⭕ Cloudflare 隧道已关闭', '⭕ Cloudflare Tunnel stopped'));
+          showQuickToast(tr('⭕ Cloudflare 隧道已停用（后端已阻断）', '⭕ Cloudflare Tunnel disabled'));
         } else if (tch?.error) {
           showQuickToast(tch.error);
         }
       } else {
-        remotePairState.error = res?.error || tr('更新 Cloudflare 隧道失败', 'Failed to configure Cloudflare Tunnel');
+        remotePairState.error = res?.error || tr('更新远程通道配置失败', 'Failed to update remote channels');
       }
     } catch (err) {
       remotePairState.error = err?.message || tr('配置 Cloudflare 隧道失败', 'Failed to configure Cloudflare Tunnel');
@@ -1226,30 +1278,28 @@
       const tunnelCh = ep.channels.find((c) => c.key === 'tunnel') || null;
       const channelsHtml = ep.channels.map((ch) => {
         const label = tr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
-        const hostText = (ch.displayHost || (ch.available ? '' : tr('未连接', 'Offline')));
-        const selected = ch.available && ch.key === ep.activeKey;
-        if (ch.key === 'tunnel') {
-          const isOn = Boolean(ch.enabled || ch.state === 'running' || ch.state === 'starting');
-          const toggleLabel = (remotePairState.tunnelBusy || ch.state === 'starting')
-            ? tr('启动中…', 'Starting…')
-            : (isOn ? tr('关闭', 'Stop') : tr('开启', 'Enable'));
-          const cfgLabel = remotePairState.tunnelConfigOpen
-            ? tr('收起 ▴', 'Hide ▴')
-            : tr('固定域名 ▾', 'Domain ▾');
-          return `<div class="ag-rp-channel-wrap" data-selected="${selected ? 'true' : 'false'}">`
-            + `<button class="ag-rp-channel" data-channel="tunnel" data-selected="${selected ? 'true' : 'false'}" type="button" ${ch.available ? '' : 'disabled'}>`
-            + `<span class="ag-rp-ch-left">${ch.available ? CHECK_OK_SVG : CHANNEL_OFF_SVG}<span>${escapeHtml(label)}</span></span>`
-            + `<span class="ag-rp-ch-host">${escapeHtml(hostText)}</span>`
-            + `</button>`
-            + `<div class="ag-rp-channel-tools">`
-            + `<button id="ag-rp-tunnel-toggle" class="ag-rp-mini-btn" data-active="${isOn ? 'true' : 'false'}" type="button" ${remotePairState.tunnelBusy ? 'disabled' : ''}>${escapeHtml(toggleLabel)}</button>`
-            + `<button id="ag-rp-tunnel-cfg-btn" class="ag-rp-mini-btn" type="button">${escapeHtml(cfgLabel)}</button>`
-            + `</div></div>`;
-        }
-        return `<button class="ag-rp-channel" data-channel="${escapeHtml(ch.key)}" data-selected="${selected ? 'true' : 'false'}" type="button" ${ch.available ? '' : 'disabled'}>`
-          + `<span class="ag-rp-ch-left">${ch.available ? CHECK_OK_SVG : CHANNEL_OFF_SVG}<span>${escapeHtml(label)}</span></span>`
+        const isEnabled = ch.key === 'tunnel'
+          ? Boolean(ch.enabled || ch.state === 'running' || ch.state === 'starting')
+          : (ch.enabled !== false);
+        const hostText = !isEnabled
+          ? (ch.rawHost ? `${tr('已停用', 'Disabled')} · ${ch.rawHost}` : tr('已停用', 'Disabled'))
+          : (ch.displayHost || (ch.available ? '' : tr('未连接', 'Offline')));
+        const selected = isEnabled && ch.available && ch.key === ep.activeKey;
+        const checkId = ch.key === 'tunnel' ? 'ag-rp-tunnel-toggle' : `ag-rp-toggle-${escapeHtml(ch.key)}`;
+        const cfgLabel = remotePairState.tunnelConfigOpen
+          ? tr('收起 ▴', 'Hide ▴')
+          : tr('固定域名 ▾', 'Domain ▾');
+        const toolsHtml = ch.key === 'tunnel'
+          ? `<div class="ag-rp-channel-tools"><button id="ag-rp-tunnel-cfg-btn" class="ag-rp-mini-btn" type="button">${escapeHtml(cfgLabel)}</button></div>`
+          : '';
+        return `<div class="ag-rp-channel-wrap" data-selected="${selected ? 'true' : 'false'}">`
+          + `<button id="${checkId}" class="ag-rp-check" data-channel-toggle="${escapeHtml(ch.key)}" role="checkbox" aria-checked="${isEnabled ? 'true' : 'false'}" title="${escapeHtml(isEnabled ? tr(`停用 ${label} 通道`, `Disable ${label}`) : tr(`启用 ${label} 通道`, `Enable ${label}`))}" type="button" ${remotePairState.tunnelBusy ? 'disabled' : ''}>${isEnabled ? CHECKBOX_CHECKED_SVG : CHECKBOX_UNCHECKED_SVG}</button>`
+          + `<button class="ag-rp-channel" data-channel="${escapeHtml(ch.key)}" data-selected="${selected ? 'true' : 'false'}" type="button" ${(isEnabled && ch.available) ? '' : 'disabled'}>`
+          + `<span class="ag-rp-ch-left">${(isEnabled && ch.available) ? CHECK_OK_SVG : ''}<span>${escapeHtml(label)}</span></span>`
           + `<span class="ag-rp-ch-host">${escapeHtml(hostText)}</span>`
-          + `</button>`;
+          + `</button>`
+          + toolsHtml
+          + `</div>`;
       }).join('');
 
       const tunnelFormHtml = (tunnelCh && remotePairState.tunnelConfigOpen)
@@ -1270,19 +1320,23 @@
 
       const secLabel = ep.activeKey === 'tunnel'
         ? tr('口令保护 · 已启用公网 HTTPS 隧道 (PWA 可离线缓存)', 'Token protected · Public HTTPS tunnel active')
-        : tr('内网口令保护 · 可选开启 Cloudflare 隧道全网扫码', 'Token protected · Enable Cloudflare Tunnel for 4G/5G');
+        : tr('口令保护 · 仅已勾选连接方式允许后端调用', 'Token protected · Only checked modes allowed');
+
+      const qrOrEmptyHtml = safeQr
+        ? `<div class="ag-rp-qr">${safeQr}</div>`
+        : `<div class="ag-rp-status">${escapeHtml(tr('请至少勾选启用一种连接方式', 'Enable at least one connection mode'))}</div>`;
 
       bodyHtml = `
-        ${safeQr ? `<div class="ag-rp-qr">${safeQr}</div>` : ''}
+        ${qrOrEmptyHtml}
         <div class="ag-rp-channels">${channelsHtml}</div>
         ${tunnelFormHtml}
         ${errHtml}
         <div class="ag-rp-sec">${LOCK_SHIELD_SVG}<span>${escapeHtml(secLabel)}</span></div>
         <div class="ag-rp-actions">
-          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button">${escapeHtml(copiedRecent ? tr('✅ 已复制链接', '✅ Copied') : tr('复制链接', 'Copy Link'))}</button>
+          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button" ${ep.activeUrl ? '' : 'disabled'}>${escapeHtml(copiedRecent ? tr('✅ 已复制链接', '✅ Copied') : tr('复制链接', 'Copy Link'))}</button>
           <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeHtml(tr('重置密钥', 'Reset Token'))}</button>
         </div>
-        <div class="ag-rp-tip">${escapeHtml(tr('开启「Cloudflare 隧道」后任意 4G/5G 直接扫码秒连；未开启时需与电脑同 Wi-Fi 或开启手机 Tailscale。', 'Enable Cloudflare Tunnel for direct 4G/5G scanning anywhere; otherwise use same Wi-Fi or Tailscale.'))}</div>
+        <div class="ag-rp-tip">${escapeHtml(tr('勾选启用所需通道，未勾选的连接方式后端将拒绝调用；客户端页面支持直接手动点选已启用的入口。', 'Checked modes are allowed by the server and selectable directly on the client page.'))}</div>
       `;
     }
 
@@ -1308,11 +1362,22 @@
         positionRemotePopover();
       });
     });
-    popover.querySelector('#ag-rp-tunnel-toggle')?.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const tunnelCh = ep?.channels?.find((c) => c.key === 'tunnel');
-      const isOn = Boolean(tunnelCh && (tunnelCh.enabled || tunnelCh.state === 'running' || tunnelCh.state === 'starting'));
-      void configureRemoteTunnel({ enabled: !isOn });
+    popover.querySelectorAll('.ag-rp-check').forEach((chk) => {
+      chk.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const key = chk.getAttribute('data-channel-toggle');
+        if (!key || chk.hasAttribute('disabled')) return;
+        const targetCh = ep?.channels?.find((c) => c.key === key);
+        const curOn = key === 'tunnel'
+          ? Boolean(targetCh && (targetCh.enabled || targetCh.state === 'running' || targetCh.state === 'starting'))
+          : (targetCh?.enabled !== false);
+        const nextOn = !curOn;
+        if (key === 'tunnel') {
+          void configureRemoteTunnel({ enabled: nextOn, enabledChannels: { tunnel: nextOn } });
+        } else {
+          void configureRemoteTunnel({ enabledChannels: { [key]: nextOn } });
+        }
+      });
     });
     popover.querySelector('#ag-rp-tunnel-cfg-btn')?.addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -4857,7 +4922,7 @@
   }
 
     globalThis.__AGEnhancer = {
-    version: '1.6.14',
+    version: '1.6.15',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
