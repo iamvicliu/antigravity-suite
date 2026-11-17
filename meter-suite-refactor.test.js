@@ -1711,7 +1711,7 @@ test('需求 5e: 打开面板/浮层时提升全部定位祖先堆叠至 2147483
   assert.ok(RENDERER_SRC.includes(':host([data-elevated="true"])') && RENDERER_SRC.includes('z-index:2147483646 !important'),
     'host 提升态必须在 CSS 中强制置顶至 2147483646');
   assert.ok(RENDERER_SRC.includes('z-index:2147483645'), '.ag-panel 与 #overflow-menu 应使用 2147483645');
-  assert.ok(ENHANCER_SRC.includes('z-index: 99990;'), '右下角对话导航条 z-index 必须低于 2147483645');
+  assert.ok(ENHANCER_SRC.includes('z-index: 8;'), '右下角对话导航条 z-index 必须低于 2147483645 且低于所有弹窗');
   assert.ok(ENHANCER_SRC.includes('#ag-quota-popover') && ENHANCER_SRC.includes('z-index: 2147483645;'),
     '配额浮窗应使用 2147483645');
 
@@ -1748,10 +1748,10 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
   const os = require('node:os');
   const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-remote-test-'));
   const prevAppData = process.env.APPDATA;
-  const prevStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
   try {
     process.env.APPDATA = tmpState;
-    process.env.AG_CONTEXT_METER_STATE_DIR = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
     delete require.cache[require.resolve('./mobile-remote.js')];
     const {
       buildRemoteInfo,
@@ -1918,8 +1918,8 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;
-    if (prevStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
-    else process.env.AG_CONTEXT_METER_STATE_DIR = prevStateDir;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
     delete require.cache[require.resolve('./mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
@@ -1933,9 +1933,14 @@ test('需求 7: #ag-chat-nav-float 移除按钮内圈边框并使用 Lucide SVG 
   assert.ok(navCssMatch, 'ag-enhancer-overlay.js 应包含 .ag-nav-btn 样式规则');
   assert.ok(navCssMatch[0].includes('border: none;'), '.ag-nav-btn 必须移除内圈边框 (border: none)');
   assert.ok(navCssMatch[0].includes('background: transparent;'), '.ag-nav-btn 默认态必须透明无嵌套底色');
-  assert.ok(ENHANCER_SRC.includes('z-index: 99990;'), '#ag-chat-nav-float 必须维持 z-index: 99990;');
+  const navContainerCss = ENHANCER_SRC.match(/#\$\{CHAT_NAV_ID\}\s*\{[\s\S]*?\}/);
+  assert.ok(navContainerCss && navContainerCss[0].includes('z-index: 8;'), '#ag-chat-nav-float 必须使用 z-index: 8; 处于所有弹窗下方');
+  assert.ok(!ENHANCER_SRC.includes('z-index: 99990;'), '不得再使用过高 z-index: 99990;');
 
   const env = createDomEnv();
+  const sheetEl = env.doc.createElement('div');
+  sheetEl.className = 'agy-sheet';
+  env.doc.body.appendChild(sheetEl);
   vm.runInContext(RENDERER_SRC, env.sandbox);
   vm.runInContext(ENHANCER_SRC, env.sandbox);
 
@@ -1943,6 +1948,7 @@ test('需求 7: #ag-chat-nav-float 移除按钮内圈边框并使用 Lucide SVG 
   const enhancer = env.sandbox.__AGEnhancer;
   const nav = env.doc.getElementById('ag-chat-nav-float');
   assert.ok(nav, '应挂载 #ag-chat-nav-float 浮层');
+  assert.equal(nav.parentElement, sheetEl, '存在 .agy-sheet 时应挂载于其堆叠上下文内部，避免盖住弹窗');
 
   const expectedIds = ['ag-nav-top', 'ag-nav-prev', 'ag-nav-next', 'ag-nav-bottom', 'ag-nav-think'];
   const btns = expectedIds.map(id => env.doc.getElementById(id));
@@ -1978,10 +1984,10 @@ test('需求 8: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开关
   const os = require('node:os');
   const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cf-tunnel-test-'));
   const prevAppData = process.env.APPDATA;
-  const prevStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
   try {
     process.env.APPDATA = tmpState;
-    process.env.AG_CONTEXT_METER_STATE_DIR = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
     delete require.cache[require.resolve('./mobile-remote.js')];
     const {
       extractCloudflareTunnelToken,
@@ -2111,8 +2117,8 @@ test('需求 8: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开关
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;
-    if (prevStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
-    else process.env.AG_CONTEXT_METER_STATE_DIR = prevStateDir;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
     delete require.cache[require.resolve('./mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }

@@ -2325,7 +2325,7 @@ function createCloudflareTunnelController(getPort) {
       return getStatus();
     }
 
-    await stop();
+    if (child) await stop();
     mode = cfg.tunnelMode === 'named' ? 'named' : 'quick';
     state = 'starting';
     publicUrl = '';

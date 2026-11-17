@@ -1850,7 +1850,7 @@
         }
         #${CHAT_NAV_ID} {
           position: fixed;
-          z-index: 99990;
+          z-index: 8;
           display: flex;
           flex-direction: column;
           align-items: stretch;
@@ -2511,6 +2511,13 @@
 
   function positionChatNavFloat(nav) {
     if (!nav) return;
+    const openModal = typeof document.querySelector === 'function'
+      ? document.querySelector('[aria-modal="true"]:not([hidden])')
+      : null;
+    if (openModal && openModal.offsetWidth > 0 && openModal.offsetHeight > 0) {
+      nav.hidden = true;
+      return;
+    }
     const vp = getScrollViewport();
     if (!vp) {
       nav.hidden = true;
@@ -2573,6 +2580,10 @@
     ensureDocStyle();
     const { host } = getMeterHostAndShadow();
     const theme = resolveHostTheme(host);
+    const vp = getScrollViewport();
+    const mountRoot = vp?.closest?.('.agy-sheet')
+      || (typeof document.querySelector === 'function' ? document.querySelector('.agy-sheet') : null)
+      || document.body;
     let nav = document.getElementById(CHAT_NAV_ID);
     if (!nav) {
       nav = document.createElement('div');
@@ -2589,7 +2600,9 @@
         btn.addEventListener('click', item.onClick);
         nav.appendChild(btn);
       }
-      document.body.appendChild(nav);
+      mountRoot.appendChild(nav);
+    } else if (mountRoot && nav.parentElement !== mountRoot) {
+      mountRoot.appendChild(nav);
     }
     if (nav.getAttribute('data-ag-theme') !== theme) {
       nav.setAttribute('data-ag-theme', theme);
@@ -4844,7 +4857,7 @@
   }
 
     globalThis.__AGEnhancer = {
-    version: '1.6.13',
+    version: '1.6.14',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
