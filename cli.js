@@ -393,6 +393,58 @@ async function main() {
       resetToken: args.includes('--reset-token'),
       jsonMode: args.includes('--json')
     });
+  } else if (cmd === 'update') {
+    const { execFileSync } = require('child_process');
+    if (!fs.existsSync(path.join(__dirname, '.git'))) {
+      throw new Error('当前安装目录非 Git 仓库，请通过 git clone 安装后再执行 update');
+    }
+    const runGit = (gitArgs, timeout = 10000) => execFileSync('git', gitArgs, {
+      cwd: __dirname,
+      encoding: 'utf8',
+      timeout,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }).trim();
+    const dirty = runGit(['status', '--porcelain', '--untracked-files=no'], 3000);
+    if (dirty) {
+      throw new Error('本地有未提交改动，已取消自动更新以避免覆盖');
+    }
+    let remote = 'origin';
+    let branch = 'main';
+    try {
+      const upstream = runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], 2000);
+      if (upstream && upstream.includes('/')) {
+        const slash = upstream.indexOf('/');
+        remote = upstream.slice(0, slash);
+        branch = upstream.slice(slash + 1);
+      }
+    } catch {
+      try {
+        const cur = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], 2000);
+        if (cur && cur !== 'HEAD') branch = cur;
+      } catch {}
+    }
+    const beforeSha = runGit(['rev-parse', '--short', 'HEAD'], 2500);
+    console.log(`🔄 正在从 ${remote}/${branch} 检查并拉取最新代码（当前: ${beforeSha}）...`);
+    runGit(['fetch', '--quiet', remote, branch], 10000);
+    const pullOut = runGit(['pull', '--ff-only', remote, branch], 15000);
+    const afterSha = runGit(['rev-parse', '--short', 'HEAD'], 2500);
+    const pkgVer = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
+    if (beforeSha === afterSha && /already up[- ]to[- ]date/i.test(pullOut)) {
+      console.log(`✅ 当前已是最新版本：v${pkgVer} (${afterSha})`);
+    } else {
+      console.log(`✅ 代码已更新：${beforeSha} -> ${afterSha} (v${pkgVer})`);
+    }
+    const { resolveActiveCdpTarget } = require('./asar-engine');
+    const cdpInfo = await resolveActiveCdpTarget({ timeoutMs: 2000 }).catch(() => ({ port: null, targets: [] }));
+    if (cdpInfo && cdpInfo.targets && cdpInfo.targets.length > 0) {
+      await ensureLiveBridgeIfNeeded({ forceFreshBridge: true, noRemote });
+      const ok = await tryHotInject();
+      if (ok) {
+        console.log(`✅ 已自动热刷新当前 Antigravity 窗口！${noRemote ? '（已禁用手机远程端口）' : ''}`);
+      }
+    } else {
+      console.log('ℹ️ 当前未检测到运行中的 Antigravity 窗口，下次启动时将自动加载最新版本。');
+    }
   } else if (cmd === 'upstreams') {
     const cmdIdx = process.argv.indexOf('upstreams');
     const passthrough = cmdIdx >= 0 ? process.argv.slice(cmdIdx + 1) : [];
@@ -405,6 +457,7 @@ async function main() {
   } else {
     console.log(`用法 (100% 零改包模式):
   node cli.js live [--no-remote]            免改盘 CDP 热挂载到当前运行窗口（默认命令；加 --no-remote 关闭手机远程监听）
+  node cli.js update [--no-remote]          从 GitHub 拉取最新代码并自动热刷新当前窗口
   node cli.js status                        查看运行状态与官方安装包签名完整性
   node cli.js remote [--reset-token] [--json]  打印手机「一码三用」融合配对链接与终端二维码
   node cli.js check                         执行前置环境健康检查

@@ -2041,3 +2041,93 @@ test('需求 7: #ag-chat-nav-float 移除按钮内圈边框并使用 Lucide SVG 
   enhancer.dispose?.();
   api.dispose?.();
 });
+
+// =========================================================================
+// 需求 8: #panel-settings 顶部版本检测、#badge-settings 更新红点与一键热更新
+// =========================================================================
+test('需求 8: #panel-settings 顶部版本检测、#badge-settings 更新红点与一键热更新', async () => {
+  const env = createDomEnv();
+  env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
+  let checkPayload = {
+    ok: true,
+    isGitRepo: true,
+    version: '0.8.5',
+    branch: 'main',
+    localShortSha: '7c2bc39',
+    localSubject: 'feat(remote): prev commit',
+    remoteShortSha: 'abc1234',
+    behindCount: 2,
+    hasUpdate: true,
+    latestSubject: 'feat: new release',
+    latestRelativeTime: '1 minute ago',
+    fetchError: ''
+  };
+  env.sandbox.fetch = async (url) => {
+    if (String(url).includes('/suite-version-check')) {
+      return { ok: true, json: async () => checkPayload };
+    }
+    if (String(url).includes('/suite-apply-update')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          updated: true,
+          alreadyUpToDate: false,
+          version: '0.8.5',
+          beforeSha: '7c2bc39',
+          localShortSha: 'abc1234',
+          localSubject: 'feat: new release'
+        })
+      };
+    }
+    return { ok: false, json: async () => ({}) };
+  };
+
+  vm.runInContext(RENDERER_SRC, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const shadow = env.getShadow();
+  const settingsBtn = shadow.getElementById('badge-settings');
+  const verEl = shadow.getElementById('suite-ver-status');
+  const checkBtn = shadow.getElementById('btn-suite-check-update');
+  const applyBtn = shadow.getElementById('btn-suite-apply-update');
+  assert.ok(settingsBtn && verEl && checkBtn && applyBtn, '应渲染设置版本状态与检查/更新按钮');
+
+  await new Promise(r => setTimeout(r, 25));
+  assert.equal(settingsBtn.getAttribute('data-has-update'), 'true', '发现更新时右上角 ⚙️ 应亮起提示圆点');
+  assert.ok(verEl.textContent.includes('有新更新 (+2 · abc1234)'), '状态胶囊应展示落后提交数与远端短哈希');
+  assert.equal(applyBtn.hidden, false, '有更新时应显示一键更新按钮');
+
+  api.setLocale('en');
+  assert.ok(verEl.textContent.includes('+2 update(s) (abc1234)'), '英文模式下应同步翻译更新状态');
+  assert.ok(checkBtn.textContent.includes('Check Updates'));
+  assert.ok(applyBtn.textContent.includes('Update Now'));
+  api.setLocale('zh-CN');
+
+  applyBtn.click();
+  await new Promise(r => setTimeout(r, 25));
+  assert.ok(verEl.textContent.includes('已更新至 v0.8.5 (abc1234)'), '点击一键更新后应展示已更新状态');
+  assert.equal(applyBtn.hidden, true, '更新完成后应隐藏一键更新按钮');
+  assert.equal(settingsBtn.getAttribute('data-has-update'), null, '更新完成后应消除右上角提示圆点');
+
+  checkPayload = {
+    ok: true,
+    isGitRepo: true,
+    version: '0.8.5',
+    branch: 'main',
+    localShortSha: 'abc1234',
+    localSubject: 'feat: new release',
+    remoteShortSha: 'abc1234',
+    behindCount: 0,
+    hasUpdate: false,
+    latestSubject: 'feat: new release',
+    latestRelativeTime: '',
+    fetchError: ''
+  };
+  checkBtn.click();
+  await new Promise(r => setTimeout(r, 25));
+  assert.ok(verEl.textContent.includes('v0.8.5 (abc1234 · 已是最新)'), '已是最新时应显示短哈希与最新提示');
+  assert.equal(applyBtn.hidden, true);
+  assert.equal(settingsBtn.getAttribute('data-has-update'), null);
+
+  api.dispose?.();
+});

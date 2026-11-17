@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const { fileURLToPath } = require('url');
 const { connect } = require('./local-api');
 const {
@@ -56,8 +56,148 @@ const ALLOWED_ROUTES = [
   '/read-local-file',
   '/write-local-file',
   '/open-external-url',
-  '/remote-info'
+  '/remote-info',
+  '/suite-version-check',
+  '/suite-apply-update'
 ];
+
+function readSuitePackageVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    return String(pkg?.version || '0.8.5').trim();
+  } catch {
+    return '0.8.5';
+  }
+}
+
+function runSuiteGitSync(args, timeoutMs = 5000) {
+  return execFileSync('git', args, {
+    cwd: __dirname,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true
+  }).trim();
+}
+
+function resolveSuiteGitTarget() {
+  let remote = 'origin';
+  let branch = 'main';
+  let ref = 'origin/main';
+  try {
+    const curBranch = runSuiteGitSync(['rev-parse', '--abbrev-ref', 'HEAD'], 2000);
+    if (curBranch && curBranch !== 'HEAD') branch = curBranch;
+  } catch {}
+  try {
+    const upstream = runSuiteGitSync(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], 2000);
+    if (upstream && upstream.includes('/')) {
+      const slash = upstream.indexOf('/');
+      remote = upstream.slice(0, slash);
+      branch = upstream.slice(slash + 1);
+      ref = upstream;
+    }
+  } catch {
+    ref = `${remote}/${branch}`;
+  }
+  return { remote, branch, ref };
+}
+
+function checkSuiteRepoVersion(options = {}) {
+  const version = readSuitePackageVersion();
+  const fetchRemote = options?.fetchRemote !== false;
+  if (!fs.existsSync(path.join(__dirname, '.git'))) {
+    return {
+      ok: true,
+      isGitRepo: false,
+      version,
+      branch: '',
+      localShortSha: '',
+      localSubject: '',
+      remoteShortSha: '',
+      behindCount: 0,
+      hasUpdate: false,
+      latestSubject: '',
+      latestRelativeTime: '',
+      fetchError: ''
+    };
+  }
+
+  let localShortSha = '';
+  let localSubject = '';
+  try { localShortSha = runSuiteGitSync(['rev-parse', '--short', 'HEAD'], 2500); } catch {}
+  try { localSubject = runSuiteGitSync(['log', '-1', '--format=%s', 'HEAD'], 2500); } catch {}
+  const { remote, branch, ref } = resolveSuiteGitTarget();
+
+  let fetchError = '';
+  if (fetchRemote) {
+    try {
+      runSuiteGitSync(['fetch', '--quiet', remote, branch], 8000);
+    } catch (e) {
+      fetchError = String(e?.stderr || e?.message || '检查远端更新失败').trim().split(/\r?\n/)[0].slice(0, 120);
+    }
+  }
+
+  let behindCount = 0;
+  let remoteShortSha = localShortSha;
+  let latestSubject = localSubject;
+  let latestRelativeTime = '';
+  try {
+    const cntStr = runSuiteGitSync(['rev-list', '--count', `HEAD..${ref}`], 2500);
+    behindCount = Math.max(0, Number.parseInt(cntStr, 10) || 0);
+    if (behindCount > 0) {
+      remoteShortSha = runSuiteGitSync(['rev-parse', '--short', ref], 2500);
+      latestSubject = runSuiteGitSync(['log', '-1', '--format=%s', ref], 2500);
+      latestRelativeTime = runSuiteGitSync(['log', '-1', '--format=%cr', ref], 2500);
+    }
+  } catch {}
+
+  return {
+    ok: true,
+    isGitRepo: true,
+    version,
+    branch,
+    localShortSha,
+    localSubject,
+    remoteShortSha,
+    behindCount,
+    hasUpdate: behindCount > 0,
+    latestSubject,
+    latestRelativeTime,
+    fetchError
+  };
+}
+
+function applySuiteRepoUpdate() {
+  const version = readSuitePackageVersion();
+  if (!fs.existsSync(path.join(__dirname, '.git'))) {
+    return { ok: false, noGitRepo: true, version, error: '当前安装目录非 Git 仓库，请通过 git clone 安装后使用在线更新' };
+  }
+  try {
+    const dirty = runSuiteGitSync(['status', '--porcelain', '--untracked-files=no'], 3000);
+    if (dirty) {
+      return { ok: false, dirty: true, version, error: '本地有未提交修改，为保护本地改动已取消自动拉取' };
+    }
+    const { remote, branch } = resolveSuiteGitTarget();
+    const beforeSha = runSuiteGitSync(['rev-parse', '--short', 'HEAD'], 2500);
+    const pullOut = runSuiteGitSync(['pull', '--ff-only', remote, branch], 15000);
+    const afterSha = runSuiteGitSync(['rev-parse', '--short', 'HEAD'], 2500);
+    const localSubject = runSuiteGitSync(['log', '-1', '--format=%s', 'HEAD'], 2500);
+    const nextVersion = readSuitePackageVersion();
+    const alreadyUpToDate = beforeSha === afterSha && /already up[- ]to[- ]date/i.test(pullOut);
+    return {
+      ok: true,
+      updated: true,
+      alreadyUpToDate,
+      version: nextVersion,
+      beforeSha,
+      localShortSha: afterSha,
+      localSubject
+    };
+  } catch (e) {
+    const msg = String(e?.stderr || e?.message || '拉取更新失败').trim().split(/\r?\n/)[0];
+    return { ok: false, version, error: msg || '拉取更新失败' };
+  }
+}
 
 // 解析并校验可编辑本地文件路径，禁止读写系统关键目录与敏感凭据目录
 function resolveSafeEditablePath(rawInput) {
@@ -721,6 +861,33 @@ function collectBrainStats() {
           const info = buildRemoteInfo({ resetToken: request?.resetToken === true });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, data: info }));
+          return;
+        }
+        if (req.url === '/suite-version-check') {
+          const info = checkSuiteRepoVersion({ fetchRemote: request?.fetchRemote !== false });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(info));
+          return;
+        }
+        if (req.url === '/suite-apply-update') {
+          const result = applySuiteRepoUpdate();
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          if (result && result.ok && !result.alreadyUpToDate) {
+            setTimeout(() => {
+              try {
+                const args = [path.join(__dirname, 'cli.js'), 'live'];
+                if (mobileRemoteDisabled) args.push('--no-remote');
+                const child = spawn(process.execPath, args, {
+                  detached: true,
+                  stdio: 'ignore',
+                  windowsHide: true,
+                  env: { ...process.env }
+                });
+                child.unref();
+              } catch {}
+            }, 250);
+          }
           return;
         }
         const data = await collect(api.origin, request.id, { force: request.force === true });

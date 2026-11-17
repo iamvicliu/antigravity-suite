@@ -254,6 +254,13 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
   upstreams)
     exec node "$APP_DIR/scripts/check-upstreams.js" "${@:2}"
     ;;
+  update)
+    if node "$APP_DIR/cli.js" update "${@:2}"; then
+      exit 0
+    else
+      exit $?
+    fi
+    ;;
   install|restore|uninstall|unlock|unlock-restore|chinese:*|proxy:enable|proxy:disable|proxy:set)
     echo "已禁用 '$cmd'：为保护 macOS 官方应用签名与账号合规，本命令禁止改盘注入 app.asar 及二进制补丁操作。" >&2
     exit 1
@@ -268,6 +275,7 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
   auto-on        开启“启动 Antigravity 时自动加载”，并立即执行一次挂载
   auto-off       关闭“启动 Antigravity 时自动加载”，并停止/卸载当前挂载
   status         查看当前各项核心状态（加 --json 可输出原始 JSON 数据）
+  update         从 GitHub 拉取最新版本并自动热刷新运行中窗口
   remote         打印手机极速版 PWA 远程操作链接与终端二维码（支持 --reset-token / --json）
   check          执行本地运行环境预检
   upstreams      检查 6 个参考上游项目的 GitHub 更新并与基线比对（支持 --json）

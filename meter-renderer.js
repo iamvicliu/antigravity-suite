@@ -1916,9 +1916,65 @@
       display: none !important;
     }
 /* ==================== 统一设置面板 (#panel-settings) ==================== */
+    #badge-settings{
+      position:relative;
+    }
+    #badge-settings[data-has-update="true"]::after{
+      content:"";
+      position:absolute;
+      top:3px;
+      right:3px;
+      width:6px;
+      height:6px;
+      border-radius:999px;
+      background:#f59e0b;
+      box-shadow:0 0 0 1.5px var(--ag-bg-panel,#18181b);
+    }
     #panel-settings{
       width:600px;
       max-width:calc(100vw - 24px);
+    }
+    #panel-settings .panel-header-bar{
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    #panel-settings .panel-header-actions{
+      gap:5px;
+      flex-wrap:wrap;
+      justify-content:flex-end;
+    }
+    #suite-ver-status{
+      font-size:10px;
+      white-space:nowrap;
+    }
+    #suite-ver-status[data-state="update"]{
+      color:#f59e0b;
+      background:rgba(245,158,11,0.14);
+      border-color:rgba(245,158,11,0.38);
+    }
+    :host([data-theme="light"]) #suite-ver-status[data-state="update"]{
+      color:#b45309;
+      background:#fef3c7;
+      border-color:#fcd34d;
+    }
+    #suite-ver-status[data-state="ok"]{
+      color:#22c55e;
+      background:rgba(34,197,94,0.12);
+      border-color:rgba(34,197,94,0.3);
+    }
+    :host([data-theme="light"]) #suite-ver-status[data-state="ok"]{
+      color:#15803d;
+      background:#dcfce7;
+      border-color:#86efac;
+    }
+    #btn-suite-check-update,
+    #btn-suite-apply-update{
+      font-size:10.5px;
+      padding:2px 7px;
+      white-space:nowrap;
+    }
+    #btn-suite-apply-update[hidden]{
+      display:none!important;
     }
     .settings-tabs-bar{
       display:grid;
@@ -3357,6 +3413,9 @@
         <span style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Antigravity Suite 统一设置</span>
       </div>
       <div class="panel-header-actions">
+        <span id="suite-ver-status" class="key-pill pill-muted" title="当前版本状态">v0.8.5</span>
+        <button id="btn-suite-check-update" class="switch-pill-btn" type="button" title="检查 GitHub 仓库是否有新版本">🔄 检查更新</button>
+        <button id="btn-suite-apply-update" class="switch-pill-btn active" type="button" hidden title="拉取最新提交并免重启热生效">⬆️ 一键更新</button>
         <button id="close-settings" class="panel-icon-btn" type="button" aria-label="关闭设置">×</button>
       </div>
     </div>
@@ -10958,7 +11017,16 @@ function renderHeatmapGrid(forceRebuild = false) {
     '启动 CLI 终端': 'Launch CLI Terminal',
     '套件设置': 'Suite Settings',
     '配置': 'Settings',
-    '上下文窗口：': 'Context Window:'
+    '上下文窗口：': 'Context Window:',
+    '🔄 检查更新': '🔄 Check Updates',
+    '⏳ 检查中…': '⏳ Checking…',
+    '⬆️ 一键更新': '⬆️ Update Now',
+    '⏳ 正在更新…': '⏳ Updating…',
+    '当前版本状态': 'Current Version Status',
+    '检查 GitHub 仓库是否有新版本': 'Check GitHub repository for updates',
+    '拉取最新提交并免重启热生效': 'Pull latest commits and hot-reload without restart',
+    '打开 Antigravity Suite 统一设置面板': 'Open Antigravity Suite Settings',
+    '发现新版本，点击打开设置一键更新': 'Update available — click to open Settings and update'
   };
 
   function translateSuiteDynamicFragmentEn(fragment) {
@@ -10988,7 +11056,13 @@ function renderHeatmapGrid(forceRebuild = false) {
     [/^(\d+)月$/, (_, m) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(m) - 1] || `${m}M`],
     [/^周累计 \(折合日均 (\$[\d.,]+)\)$/, 'Weekly Total (Avg $1/day)'],
     [/^截至当日累计 \(折合日均 (\$[\d.,]+)\)$/, 'Cumulative Total (Avg $1/day)'],
-    [/^月累计 · 折合日均 (\$[\d.,]+) \(活跃 (\d+) 天\)$/, 'Monthly Total · Avg $1/day ($2 active days)']
+    [/^月累计 · 折合日均 (\$[\d.,]+) \(活跃 (\d+) 天\)$/, 'Monthly Total · Avg $1/day ($2 active days)'],
+    [/^v([^\s(]+)\s*\(([0-9a-f]+)\s*·\s*已是最新\)$/i, 'v$1 ($2 · Up to date)'],
+    [/^v([^\s(]+)\s*·\s*已是最新$/i, 'v$1 · Up to date'],
+    [/^🔔 有新更新 \(\+(\d+)\s*·\s*([0-9a-f]+)\)$/i, '🔔 +$1 update(s) ($2)'],
+    [/^✅ 已更新至 v([^\s(]+)\s*\(([0-9a-f]+)\)$/i, '✅ Updated to v$1 ($2)'],
+    [/^v([^\s(]+)\s*\(非 Git 安装\)$/i, 'v$1 (Non-Git)'],
+    [/^✖ 更新失败：([\s\S]+)$/, '✖ Update failed: $1']
   ];
 
   const SUITE_SUPPORTED_LOCALES = [
@@ -11767,10 +11841,172 @@ function renderHeatmapGrid(forceRebuild = false) {
     positionFloatingPanels();
   }
 
+  let lastSuiteVersionCheckAt = 0;
+  let suiteVersionCheckBusy = false;
+  let suiteVersionApplyBusy = false;
+  let suiteVersionInfo = null;
+
+  function renderSuiteVersionUi(info) {
+    const verEl = el('suite-ver-status');
+    const applyBtn = el('btn-suite-apply-update');
+    const settingsBtn = el('badge-settings');
+    const fallbackVer = typeof METER_VERSION === 'string' && METER_VERSION ? METER_VERSION : '0.8.5';
+
+    if (!info || !info.ok) {
+      if (verEl && !verEl.textContent) verEl.textContent = `v${fallbackVer}`;
+      return;
+    }
+
+    const ver = info.version || fallbackVer;
+    const sha = info.localShortSha || '';
+    if (info.hasUpdate) {
+      if (verEl) {
+        verEl.setAttribute('data-state', 'update');
+        verEl.textContent = `🔔 有新更新 (+${info.behindCount || 1} · ${info.remoteShortSha || 'new'})`;
+        verEl.title = `${info.latestSubject || ''}${info.latestRelativeTime ? ` (${info.latestRelativeTime})` : ''}`.trim() || 'GitHub 仓库有新提交';
+      }
+      if (applyBtn) {
+        applyBtn.hidden = false;
+        applyBtn.disabled = false;
+        applyBtn.textContent = '⬆️ 一键更新';
+      }
+      if (settingsBtn) {
+        settingsBtn.setAttribute('data-has-update', 'true');
+        settingsBtn.setAttribute('title', '发现新版本，点击打开设置一键更新');
+      }
+    } else if (info.isGitRepo === false) {
+      if (verEl) {
+        verEl.setAttribute('data-state', 'muted');
+        verEl.textContent = `v${ver} (非 Git 安装)`;
+        verEl.title = '当前目录非 Git 仓库，请通过 git clone 安装以支持一键更新';
+      }
+      if (applyBtn) applyBtn.hidden = true;
+      if (settingsBtn) {
+        settingsBtn.removeAttribute('data-has-update');
+        settingsBtn.setAttribute('title', '打开 Antigravity Suite 统一设置面板');
+      }
+    } else {
+      if (verEl) {
+        verEl.setAttribute('data-state', info.fetchError ? 'muted' : 'ok');
+        verEl.textContent = sha ? `v${ver} (${sha} · 已是最新)` : `v${ver} · 已是最新`;
+        verEl.title = info.fetchError
+          ? `远端检查失败: ${info.fetchError}`
+          : (info.localSubject ? `当前提交: ${info.localSubject}` : '当前版本与仓库同步');
+      }
+      if (applyBtn) applyBtn.hidden = true;
+      if (settingsBtn) {
+        settingsBtn.removeAttribute('data-has-update');
+        settingsBtn.setAttribute('title', '打开 Antigravity Suite 统一设置面板');
+      }
+    }
+    applySuiteShadowLocale();
+  }
+
+  async function checkSuiteRepoUpdate(opts = {}) {
+    if (suiteVersionCheckBusy || suiteVersionApplyBusy) return suiteVersionInfo;
+    const checkBtn = el('btn-suite-check-update');
+    if (typeof window === 'undefined' || !window.__AGContextMeterLive?.port) {
+      const verEl = el('suite-ver-status');
+      const fallbackVer = typeof METER_VERSION === 'string' && METER_VERSION ? METER_VERSION : '0.8.5';
+      if (verEl && !verEl.textContent) verEl.textContent = `v${fallbackVer}`;
+      return null;
+    }
+    suiteVersionCheckBusy = true;
+    if (checkBtn) {
+      checkBtn.disabled = true;
+      checkBtn.textContent = '⏳ 检查中…';
+      applySuiteShadowLocale();
+    }
+    try {
+      const res = await invokeHostBridge('/suite-version-check', { fetchRemote: opts?.fetchRemote !== false }, 'suiteVersionCheck');
+      if (res && res.ok) {
+        lastSuiteVersionCheckAt = Date.now();
+        suiteVersionInfo = res;
+        renderSuiteVersionUi(res);
+      }
+      return res || null;
+    } catch {
+      return null;
+    } finally {
+      suiteVersionCheckBusy = false;
+      if (checkBtn) {
+        checkBtn.disabled = false;
+        checkBtn.textContent = '🔄 检查更新';
+        applySuiteShadowLocale();
+      }
+    }
+  }
+
+  async function applySuiteRepoUpdate() {
+    if (suiteVersionApplyBusy) return null;
+    const applyBtn = el('btn-suite-apply-update');
+    const verEl = el('suite-ver-status');
+    const settingsBtn = el('badge-settings');
+    suiteVersionApplyBusy = true;
+    if (applyBtn) {
+      applyBtn.disabled = true;
+      applyBtn.textContent = '⏳ 正在更新…';
+      applySuiteShadowLocale();
+    }
+    try {
+      const res = await invokeHostBridge('/suite-apply-update', {}, 'suiteApplyUpdate');
+      if (res && res.ok) {
+        suiteVersionInfo = {
+          ok: true,
+          isGitRepo: true,
+          version: res.version,
+          localShortSha: res.localShortSha,
+          localSubject: res.localSubject,
+          hasUpdate: false,
+          behindCount: 0
+        };
+        if (verEl) {
+          verEl.setAttribute('data-state', 'ok');
+          verEl.textContent = `✅ 已更新至 v${res.version} (${res.localShortSha})`;
+          verEl.title = res.localSubject ? `最新提交: ${res.localSubject}` : '已完成热更新';
+        }
+        if (applyBtn) applyBtn.hidden = true;
+        if (settingsBtn) {
+          settingsBtn.removeAttribute('data-has-update');
+          settingsBtn.setAttribute('title', '打开 Antigravity Suite 统一设置面板');
+        }
+        applySuiteShadowLocale();
+        return res;
+      }
+      const errMsg = res?.error || '未能拉取仓库更新';
+      if (verEl) {
+        verEl.setAttribute('data-state', 'muted');
+        verEl.textContent = `✖ 更新失败：${errMsg}`;
+      }
+      if (applyBtn) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = '⬆️ 一键更新';
+      }
+      applySuiteShadowLocale();
+      return res || null;
+    } catch (e) {
+      if (verEl) {
+        verEl.setAttribute('data-state', 'muted');
+        verEl.textContent = `✖ 更新失败：${e?.message || e}`;
+      }
+      if (applyBtn) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = '⬆️ 一键更新';
+      }
+      applySuiteShadowLocale();
+      return null;
+    } finally {
+      suiteVersionApplyBusy = false;
+    }
+  }
+
   function openSuiteSettings(tabName = activeSettingsTab) {
     transplantConfigControlsOnce();
     showPanel('settings');
     switchSuiteSettingsTab(tabName || activeSettingsTab);
+    if (!lastSuiteVersionCheckAt || Date.now() - lastSuiteVersionCheckAt >= 60000) {
+      void checkSuiteRepoUpdate({ fetchRemote: true });
+    }
   }
 
   function toggleSuiteSettings(tabName) {
@@ -11898,11 +12134,25 @@ function renderHeatmapGrid(forceRebuild = false) {
     void saveSuiteUiPrefs({ englishLabels: suiteEnhancerPrefs.englishLabels });
   });
 
+  el('btn-suite-check-update')?.addEventListener('click', () => {
+    void checkSuiteRepoUpdate({ fetchRemote: true });
+  });
+
+  el('btn-suite-apply-update')?.addEventListener('click', () => {
+    void applySuiteRepoUpdate();
+  });
+
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
   renderTerminalGrid();
   dispatchSuitePrefsChanged();
   applySuiteShadowLocale();
+  if (el('suite-ver-status') && typeof METER_VERSION === 'string' && METER_VERSION) {
+    el('suite-ver-status').textContent = `v${METER_VERSION}`;
+  }
+  if (isRealShadowDomTree() && typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+    void checkSuiteRepoUpdate({ fetchRemote: true });
+  }
   globalThis.__AGContextMeter = {
     version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.2',
     ensureAlive: () => {
