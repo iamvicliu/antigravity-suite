@@ -15,6 +15,8 @@ const {
   getPluginSettings,
   savePluginSettings,
   launchCliSession,
+  detectAvailableTerminals,
+  pickTerminalExecutableDialog,
   getContextUnlockStatus,
   applyContextUnlock,
   restoreContextUnlock
@@ -34,6 +36,8 @@ const ALLOWED_ROUTES = [
   '/get-settings',
   '/save-settings',
   '/launch-cli',
+  '/list-terminals',
+  '/pick-terminal-path',
   '/context-unlock-status',
   '/context-unlock-apply',
   '/context-unlock-restore',
@@ -43,6 +47,7 @@ const ALLOWED_ROUTES = [
   '/restart-language-servers',
   '/modules-status',
   '/toggle-module',
+  '/test-proxy',
   '/restart-host',
   '/export-markdown',
   '/translate-zh',
@@ -404,6 +409,20 @@ function collectBrainStats() {
           res.end(JSON.stringify(result));
           return;
         }
+        if (req.url === '/list-terminals') {
+          const savedPrefs = getPluginSettings()?.uiPreferences || {};
+          const customPath = request?.customTerminalPath ?? savedPrefs.customTerminalPath ?? '';
+          const result = detectAvailableTerminals({ customPath });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/pick-terminal-path') {
+          const result = await pickTerminalExecutableDialog({});
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
         if (req.url === '/context-unlock-status') {
           const result = await getContextUnlockStatus(undefined, request || {});
           res.setHeader('Content-Type', 'application/json');
@@ -479,6 +498,13 @@ function collectBrainStats() {
           saveModulesConfig(cfg);
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, status: 'config_toggled', data: cfg, disk: inspectDiskModules(extra.asarPath || null), restartRequired: true }));
+          return;
+        }
+        if (req.url === '/test-proxy') {
+          const { testProxyHealth } = require('./modules-config');
+          const report = await testProxyHealth(request?.proxyUrl || '');
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: report }));
           return;
         }
         if (req.url === '/restart-host') {

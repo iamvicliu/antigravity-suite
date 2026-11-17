@@ -1,6 +1,6 @@
 {
   "name": "antigravity-context-viewer",
-  "version": "0.8.3",
+  "version": "0.8.5",
   "description": "Google Antigravity 桌面端（macOS 免改包）全能增强与手机极速遥控套件：内置 Tailscale/局域网极速 PWA 手机遥控（切换模型/权限、传图、语音、右滑切会话），以及桌面端上下文/5h与每周配额监控、英文思考中译（零 Token）、行内编辑、Tab 补全与高危命令红框预警。",
   "repository": {
     "type": "git",
@@ -24,6 +24,7 @@
     "uninstall-patch": "node cli.js restore",
     "build:renderer": "node scripts/build-renderer.js",
     "pretest": "node scripts/build-renderer.js",
+    "test:suite": "node --test meter-core.test.js meter-renderer.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-suite-refactor.test.js",
     "test": "node --test meter-core.test.js meter-renderer.test.js meter-storage-proxy.test.js meter-subscription.test.js meter-integration.test.js meter-security-update.test.js meter-context-unlock.test.js meter-enhance.test.js meter-update-delivery.test.js meter-cli-launcher.test.js meter-v083-fixes.test.js meter-model-context-isolation.test.js",
     "format": "npx prettier --write \"*.js\" \"*.json\" \"*.md\"",
     "format:check": "npx prettier --check \"*.js\" \"*.json\" \"*.md\"",

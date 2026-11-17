@@ -101,6 +101,272 @@ async function tryHotInject(options = {}) {
     const expectedEnhancerVer = enhancerVerMatch ? enhancerVerMatch[1] : '';
     const pulsePath = path.join(__dirname, 'pulse-capsule-overlay.js');
     const pulseOverlay = fs.existsSync(pulsePath) ? fs.readFileSync(pulsePath, 'utf8') : '';
+    const pulseVerMatch = pulseOverlay.match(/const\s+CAPSULE_VERSION\s*=\s*['"]([^'"]+)['"]/);
+    const expectedPulseVer = pulseVerMatch ? pulseVerMatch[1] : '';
+    const i18nExactPath = path.join(__dirname, 'i18n', 'zh-CN.json');
+    let latestExact = {};
+    try {
+      if (fs.existsSync(i18nExactPath)) {
+        const parsedExact = JSON.parse(fs.readFileSync(i18nExactPath, 'utf8'));
+        if (parsedExact && parsedExact.exact && typeof parsedExact.exact === 'object') {
+          latestExact = parsedExact.exact;
+        }
+      }
+    } catch {}
+    const latestExactJson = JSON.stringify(latestExact)
+      .replace(/</g, '\\u003c')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+
+    const isolatedBridgeExpr = `(function() {
+      if (!window.__AGY_I18N_DATA__) return false;
+      var latestExact = ${latestExactJson};
+      if (window.__AGY_I18N_DATA__.exact && latestExact) {
+        try { Object.assign(window.__AGY_I18N_DATA__.exact, latestExact); } catch (e) {}
+      }
+      if (window.__AGY_CACHE__) {
+        try {
+          if (typeof Map !== 'undefined' && window.__AGY_CACHE__ instanceof Map && Map.prototype && typeof Map.prototype.clear === 'function') {
+            Map.prototype.clear.call(window.__AGY_CACHE__);
+          } else if (typeof window.__AGY_CACHE__.clear === 'function') {
+            window.__AGY_CACHE__.clear();
+          }
+        } catch (e) {}
+      }
+      if (window.__AGY_ISOLATED_LIVE_BRIDGE__ === '2.2.0') {
+        try { window.__AGY_UPGRADE_STALE_ZH__ && window.__AGY_UPGRADE_STALE_ZH__(); } catch (e) {}
+        try { window.__AGY_SYNC_ISOLATED_LOCALE__ && window.__AGY_SYNC_ISOLATED_LOCALE__(); } catch (e) {}
+        return true;
+      }
+      window.__AGY_ISOLATED_LIVE_BRIDGE__ = '2.2.0';
+      var exact = (window.__AGY_I18N_DATA__ && window.__AGY_I18N_DATA__.exact) || {};
+      var rev = Object.create(null);
+      var canon = {
+        '新增': 'New',
+        '新建': 'New',
+        '新建会话': 'New Conversation',
+        '自动化': 'Automations',
+        '自定义扩展': 'Customizations',
+        '项目列表': 'Projects',
+        '设置': 'Settings',
+        '扩展': 'Extensions',
+        '扩展插件': 'Extensions',
+        '收件箱': 'Inbox',
+        '文件列表': 'Files',
+        '概览': 'Overview',
+        '极速': 'Turbo',
+        '极速模式': 'Turbo mode',
+        '智能体权限预设选择器，当前：极速': 'Agent permissions preset selector, current: Turbo',
+        '无限': 'Turbo',
+        '无限模式': 'Turbo mode',
+        '智能规划': 'Planning',
+        '快速执行': 'Fast',
+        '标准': 'Default',
+        '自动': 'Auto',
+        '请求审核': 'Request Review',
+        '始终继续': 'Always Proceed'
+      };
+      function scoreKey(k) {
+        var s = 0;
+        if (/^[A-Z][a-z]/.test(k)) s += 4;
+        if (/[a-z]/.test(k) && !/^[a-z]/.test(k)) s += 2;
+        if (k.length <= 32) s += 1;
+        return s;
+      }
+      for (var ek in exact) {
+        if (!Object.prototype.hasOwnProperty.call(exact, ek)) continue;
+        var zv = exact[ek];
+        if (!zv || typeof zv !== 'string') continue;
+        var tz = zv.trim();
+        var prev = rev[tz];
+        if (!prev || scoreKey(ek) > scoreKey(prev)) rev[tz] = ek;
+      }
+      for (var ck in canon) rev[ck] = canon[ck];
+      function isZhEnabled() {
+        try {
+          var ah = String(document.documentElement && document.documentElement.getAttribute ? (document.documentElement.getAttribute('data-ag-hans-lang') || '') : '').trim();
+          if (/^en/i.test(ah)) return false;
+          if (/^zh/i.test(ah)) return true;
+          var as = String(document.documentElement && document.documentElement.getAttribute ? (document.documentElement.getAttribute('data-ag-suite-locale') || '') : '').trim();
+          if (as && !/^(?:zh|cn)/i.test(as)) return false;
+          var hl = String(localStorage.getItem('antigravityHansLang') || '').trim();
+          if (/^en/i.test(hl)) return false;
+          var sl = String(localStorage.getItem('ag_suite_locale') || '').trim();
+          if (sl && !/^(?:zh|cn)/i.test(sl)) return false;
+        } catch (e) {}
+        return true;
+      }
+      var cache = window.__AGY_CACHE__;
+      if (cache && !cache.__agWrappedByLiveBridge) {
+        cache.__agWrappedByLiveBridge = true;
+        var origHas = cache.has.bind(cache);
+        var origGet = cache.get.bind(cache);
+        cache.has = function(k) { return !isZhEnabled() ? true : origHas(k); };
+        cache.get = function(k) { return !isZhEnabled() ? null : origGet(k); };
+      }
+      var ATTRS = ['title', 'placeholder', 'aria-label', 'data-tooltip', 'alt', 'aria-description'];
+      var SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'CODE', 'PRE', 'NOSCRIPT', 'SVG', 'PATH', 'CANVAS', 'IFRAME', 'VIDEO', 'AUDIO']);
+      function shouldSkipEl(el) {
+        if (!el || el.nodeType !== 1) return false;
+        if (SKIP_TAGS.has(el.tagName)) return true;
+        if (el.id === 'ag-context-meter' || el.id === 'ag-quick-capsule-bar' || el.id === 'ag-quota-popover' || el.id === 'ag-chat-nav-float') return true;
+        if (el.closest && el.closest('#ag-context-meter, #ag-quick-capsule-bar, #ag-quota-popover, #ag-chat-nav-float, [data-agy-context-capsule], #__agy_ctx_capsule_tooltip__, [data-testid="user-input-step"], [aria-label="User message"], [aria-label="用户消息"], [data-testid="conversation-row-sidebar"] span.truncate')) return true;
+        return false;
+      }
+      function lookupRev(str) {
+        if (!str || typeof str !== 'string') return null;
+        var t = str.trim();
+        if (!t || !/[\\u4e00-\\u9fa5]/.test(t)) return null;
+        if (Object.prototype.hasOwnProperty.call(rev, t)) return rev[t];
+        var pm = t.match(/^(.+?)([：:…\\.？\\?!！]+)$/);
+        if (pm) {
+          var base = pm[1].trim();
+          var punc = pm[2] === '：' ? ':' : pm[2];
+          if (Object.prototype.hasOwnProperty.call(rev, base)) return rev[base] + punc;
+        }
+        return null;
+      }
+      function revertIsolatedDom() {
+        function visit(el) {
+          if (!el || el.nodeType !== 1 || shouldSkipEl(el)) return;
+          el._agyScanId = 0;
+          for (var i = 0; i < ATTRS.length; i++) {
+            var attr = ATTRS[i];
+            var val = el.getAttribute && el.getAttribute(attr);
+            if (val) {
+              var enA = lookupRev(val);
+              if (enA) el.setAttribute(attr, enA);
+            }
+            el['_agyDone_' + attr] = undefined;
+          }
+          for (var ch = el.firstChild; ch; ch = ch.nextSibling) {
+            if (ch.nodeType === 3) {
+              if (typeof ch._agySourceEn === 'string' && ch._agySourceEn !== ch.nodeValue) {
+                ch.nodeValue = ch._agySourceEn;
+              } else if (ch.nodeValue) {
+                var enT = lookupRev(ch.nodeValue);
+                if (enT) {
+                  var lead = ch.nodeValue.match(/^\\s*/)[0];
+                  var tail = ch.nodeValue.match(/\\s*$/)[0];
+                  ch.nodeValue = lead + enT + tail;
+                }
+              }
+              ch._agyOriginal = ch.nodeValue;
+            } else if (ch.nodeType === 1) {
+              visit(ch);
+            }
+          }
+        }
+        if (document.documentElement) {
+          visit(document.documentElement);
+          if (document.documentElement.lang && /^zh/i.test(document.documentElement.lang)) {
+            document.documentElement.lang = 'en';
+          }
+        }
+      }
+      function clearIsolatedMarks(el) {
+        if (!el || el.nodeType !== 1) return;
+        el._agyScanId = 0;
+        for (var i = 0; i < ATTRS.length; i++) el['_agyDone_' + ATTRS[i]] = undefined;
+        for (var ch = el.firstChild; ch; ch = ch.nextSibling) {
+          if (ch.nodeType === 3) ch._agyOriginal = undefined;
+          else if (ch.nodeType === 1) clearIsolatedMarks(ch);
+        }
+      }
+      var STALE_ZH_UPGRADES = {
+        '极速': { zh: '无限', en: 'Turbo' },
+        '极速模式': { zh: '无限模式', en: 'Turbo mode' },
+        '智能体权限预设选择器，当前：极速': {
+          zh: '智能体权限预设选择器，当前：无限',
+          en: 'Agent permissions preset selector, current: Turbo'
+        }
+      };
+      function shouldSkipStaleEl(el) {
+        if (!el || el.nodeType !== 1) return true;
+        var tag = el.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'CODE' || tag === 'PRE') return true;
+        if (el.id === 'ag-context-meter' || el.id === 'ag-suite-capsule' || el.id === 'ag-suite-settings-panel') return true;
+        if (el.isContentEditable) return true;
+        if (el.getAttribute && (el.getAttribute('data-testid') === 'user-input-step' || el.getAttribute('data-ag-enhancer') != null)) return true;
+        return false;
+      }
+      function upgradeStaleZhTerms() {
+        if (!isZhEnabled() || !document.documentElement) return;
+        function walkUpgrade(el) {
+          if (shouldSkipStaleEl(el)) return;
+          for (var i = 0; i < ATTRS.length; i++) {
+            var attr = ATTRS[i];
+            if (!el.hasAttribute || !el.hasAttribute(attr)) continue;
+            var rawAttr = el.getAttribute(attr);
+            if (!rawAttr) continue;
+            var attrTrim = rawAttr.trim();
+            var attrSpec = STALE_ZH_UPGRADES[attrTrim];
+            if (attrSpec) {
+              var aLead = rawAttr.match(/^\\s*/)[0];
+              var aTail = rawAttr.match(/\\s*$/)[0];
+              el.setAttribute(attr, aLead + attrSpec.zh + aTail);
+              el['_agySrcAttr_' + attr] = attrSpec.en;
+              el['_agyDone_' + attr] = undefined;
+              el._agyScanId = 0;
+            }
+          }
+          var inMenuPopup = Boolean(
+            el.closest && el.closest('[role="menu"], [role="listbox"], [role="menuitem"], [role="option"], [data-radix-popper-content-wrapper]')
+          );
+          for (var ch = el.firstChild; ch; ch = ch.nextSibling) {
+            if (ch.nodeType === 3 && ch.nodeValue) {
+              var rawTxt = ch.nodeValue;
+              var txtTrim = rawTxt.trim();
+              var txtSpec = STALE_ZH_UPGRADES[txtTrim] || (inMenuPopup && txtTrim === '新建' ? { zh: '新增', en: 'New' } : null);
+              if (txtSpec) {
+                var tLead = rawTxt.match(/^\\s*/)[0];
+                var tTail = rawTxt.match(/\\s*$/)[0];
+                ch.nodeValue = tLead + txtSpec.zh + tTail;
+                ch._agySourceEn = txtSpec.en;
+                ch._agyOriginal = undefined;
+                el._agyScanId = 0;
+              }
+            } else if (ch.nodeType === 1) {
+              walkUpgrade(ch);
+            }
+          }
+        }
+        walkUpgrade(document.documentElement);
+      }
+      window.__AGY_UPGRADE_STALE_ZH__ = upgradeStaleZhTerms;
+      var lastZh = null;
+      function syncIsolatedLocale() {
+        var nextZh = isZhEnabled();
+        if (lastZh !== null && nextZh === lastZh) return;
+        if (!nextZh) {
+          revertIsolatedDom();
+        } else if (lastZh === false || lastZh === null) {
+          if (document.documentElement) {
+            clearIsolatedMarks(document.documentElement);
+            document.documentElement.lang = 'zh-CN';
+          }
+          upgradeStaleZhTerms();
+          try { if (typeof window.__AGY_RUN_FULL_SCAN__ === 'function') window.__AGY_RUN_FULL_SCAN__(); } catch (e) {}
+        }
+        lastZh = nextZh;
+      }
+      window.__AGY_SYNC_ISOLATED_LOCALE__ = syncIsolatedLocale;
+      if (window.__AGY_ISOLATED_LOCALE_OBS__ && typeof window.__AGY_ISOLATED_LOCALE_OBS__.disconnect === 'function') {
+        try { window.__AGY_ISOLATED_LOCALE_OBS__.disconnect(); } catch (e) {}
+      }
+      if (document.documentElement && typeof MutationObserver === 'function') {
+        var obs = new MutationObserver(syncIsolatedLocale);
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-ag-hans-lang', 'data-ag-suite-locale'] });
+        window.__AGY_ISOLATED_LOCALE_OBS__ = obs;
+      }
+      if (window.__AGY_ISOLATED_STORAGE_FN__ && window.removeEventListener) {
+        window.removeEventListener('storage', window.__AGY_ISOLATED_STORAGE_FN__);
+      }
+      window.__AGY_ISOLATED_STORAGE_FN__ = syncIsolatedLocale;
+      if (window.addEventListener) window.addEventListener('storage', syncIsolatedLocale);
+      syncIsolatedLocale();
+      return true;
+    })()`;
 
     let injectedCount = 0;
     for (const target of targets) {
@@ -112,9 +378,22 @@ async function tryHotInject(options = {}) {
           ws.addEventListener('error', reject, { once: true });
         });
         let seq = 0;
-        const evalExpr = expression => new Promise((resolve, reject) => {
+        const execContexts = [];
+        const onContextEvent = ev => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.method === 'Runtime.executionContextCreated' && msg.params?.context) {
+              execContexts.push(msg.params.context);
+            }
+          } catch {}
+        };
+        ws.addEventListener('message', onContextEvent);
+        const sendCdp = (method, params = {}) => new Promise((resolve, reject) => {
           const id = ++seq;
-          const timer = setTimeout(() => reject(new Error('CDP eval timeout')), 5000);
+          const timer = setTimeout(() => {
+            ws.removeEventListener('message', handler);
+            reject(new Error(`CDP ${method} timeout`));
+          }, 5000);
           const handler = ev => {
             const d = JSON.parse(ev.data);
             if (d.id === id) {
@@ -124,17 +403,36 @@ async function tryHotInject(options = {}) {
             }
           };
           ws.addEventListener('message', handler);
-          ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
+          ws.send(JSON.stringify({ id, method, params }));
         });
+        const evalExpr = (expression, contextId) => {
+          const params = { expression, returnByValue: true, awaitPromise: true };
+          if (typeof contextId === 'number') params.contextId = contextId;
+          return sendCdp('Runtime.evaluate', params);
+        };
+        try {
+          await sendCdp('Runtime.enable');
+          const targetOrigin = new URL(target.url).origin;
+          for (const ctx of execContexts) {
+            if (ctx?.auxData?.type === 'isolated' && ctx.origin === targetOrigin) {
+              const hasPreload = await evalExpr('Boolean(window.__AGY_I18N_DATA__)', ctx.id).catch(() => null);
+              if (hasPreload?.result?.result?.value === true) {
+                await evalExpr(isolatedBridgeExpr, ctx.id).catch(() => null);
+              }
+            }
+          }
+        } catch {}
+        ws.removeEventListener('message', onContextEvent);
         if (hansOverlay) {
           const hansFpExpr = expectedHansFp ? ` && window.__antigravityZhPatchFingerprint === ${JSON.stringify(expectedHansFp)}` : '';
-          const hansCheck = await evalExpr(`Boolean(window.__antigravityZhPatchInstalled === true && window.__observedDocument === document${hansFpExpr})`);
+          const hansCheck = await evalExpr(`Boolean(window.__antigravityZhPatchInstalled === true && window.__observedDocument === document${hansFpExpr} && !document.querySelector('[data-agy-hans-ui]'))`);
           if (hansCheck?.result?.result?.value !== true) {
             await evalExpr(hansOverlay);
           }
         }
         if (pulseOverlay) {
-          const pulseCheck = await evalExpr('Boolean(window.__AGY_CTX_CAPSULE_ACTIVE__ === true && document.querySelector(\'[data-agy-context-capsule="1"]\'))');
+          const pulseVerExpr = expectedPulseVer ? ` && window.__AGY_CTX_CAPSULE_VERSION__ === ${JSON.stringify(expectedPulseVer)}` : '';
+          const pulseCheck = await evalExpr(`Boolean(window.__AGY_CTX_CAPSULE_ACTIVE__ === true${pulseVerExpr} && document.querySelector(\'[data-agy-context-capsule="1"]\'))`);
           if (pulseCheck?.result?.result?.value !== true) {
             await evalExpr('try { window.__AGY_CTX_CAPSULE_DISPOSE__?.(); } catch {} window.__AGY_CTX_CAPSULE_ACTIVE__ = false;');
             await evalExpr(pulseOverlay);
@@ -490,6 +788,7 @@ async function install(options = {}) {
         'meter-storage.js',
         'meter-proxy.js',
         'meter-cli-launcher.js',
+        'meter-terminals.js',
         'meter-context-unlock.js',
         'local-api.js',
         'attachment_scan.py'

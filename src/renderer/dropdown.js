@@ -18,8 +18,59 @@
     trigger._bound = true;
 
     let keyboardFocusIndex = -1;
+    let listScrollTimer = null;
+    let lastClosedMenuSig = '';
+    const renderedItemMap = new Map();
 
-    function renderMenu(kw = '') {
+    /**
+     * 清空挂起的菜单内定位定时器，避免关闭或重建后继续触发滚动。
+     */
+    function clearListScrollTimer() {
+      if (listScrollTimer) {
+        clearTimeout(listScrollTimer);
+        listScrollTimer = null;
+      }
+    }
+
+    /**
+     * 仅在不触发祖先滚动容器跳转的前提下聚焦元素。
+     */
+    function focusNoScroll(targetEl) {
+      if (!targetEl || typeof targetEl.focus !== 'function') return;
+      try {
+        targetEl.focus({ preventScroll: true });
+      } catch {
+        targetEl.focus();
+      }
+    }
+
+    /**
+     * 仅调整下拉菜单自身 scrollTop，严禁调用会穿透滚动外层面板的 scrollIntoView。
+     */
+    function scrollChildNearestInContainer(scrollBox, childEl) {
+      if (!scrollBox || !childEl) return;
+      if (typeof scrollBox.getBoundingClientRect !== 'function' || typeof childEl.getBoundingClientRect !== 'function') return;
+      try {
+        const boxRect = scrollBox.getBoundingClientRect();
+        const itemRect = childEl.getBoundingClientRect();
+        if (!boxRect || !itemRect || boxRect.height <= 0 || itemRect.height <= 0) return;
+        const searchBar = menu.querySelector ? menu.querySelector('.ag-dropdown-search-wrap') : null;
+        const stickyTopH = (searchBar && typeof searchBar.getBoundingClientRect === 'function')
+          ? Math.max(0, Math.round(searchBar.getBoundingClientRect().height || 0))
+          : 0;
+        const visTop = boxRect.top + stickyTopH;
+        const visBottom = boxRect.bottom;
+        const curScroll = Number(scrollBox.scrollTop) || 0;
+        if (itemRect.top < visTop) {
+          scrollBox.scrollTop = Math.max(0, curScroll - (visTop - itemRect.top + 4));
+        } else if (itemRect.bottom > visBottom) {
+          scrollBox.scrollTop = curScroll + (itemRect.bottom - visBottom + 4);
+        }
+      } catch { }
+    }
+
+    function renderMenu(kw = '', menuOpts = {}) {
+      clearListScrollTimer();
       menu.innerHTML = '';
       if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
       keyboardFocusIndex = -1;
@@ -37,7 +88,7 @@
 
       searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
       searchInput.addEventListener('input', (e) => {
-        renderList(e.target.value.trim().toLowerCase());
+        renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
       });
 
       // 2. 列表容器
@@ -54,16 +105,18 @@
         Array.from(itemEls).forEach((elNode, idx) => {
           if (idx === keyboardFocusIndex) {
             addClass(elNode, 'is-keyboard-focus');
-            elNode.scrollIntoView?.({ block: 'nearest' });
+            scrollChildNearestInContainer(menu, elNode);
           } else {
             removeClass(elNode, 'is-keyboard-focus');
           }
         });
       }
 
-      function renderList(searchKey = '') {
+      function renderList(searchKey = '', listOpts = {}) {
+        clearListScrollTimer();
         if (typeof listContainer.replaceChildren === 'function') listContainer.replaceChildren();
         listContainer.innerHTML = '';
+        renderedItemMap.clear();
         const allItems = cfg.getOptions();
         const selectedVal = cfg.getSelectedValue();
 
@@ -90,6 +143,8 @@
           const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
           itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
           itemEl.setAttribute?.('data-index', String(idx));
+          itemEl.setAttribute?.('data-value', String(opt.value || ''));
+          if (opt.tooltip) itemEl.title = opt.tooltip;
 
           const leftSpan = document.createElement('span');
           leftSpan.textContent = opt.displayLeft || opt.label;
@@ -100,13 +155,25 @@
             rightSpan.textContent = opt.displayRight;
           }
 
+          const extraEl = typeof cfg.renderOptionExtras === 'function' ? cfg.renderOptionExtras(opt) : null;
+
           const check = document.createElement('span');
           check.className = 'ag-dropdown-item-check';
           check.textContent = '✓';
 
           itemEl.appendChild(leftSpan);
-          if (opt.displayRight) itemEl.appendChild(rightSpan);
+          if (extraEl) {
+            const rightGroup = document.createElement('span');
+            rightGroup.className = 'ag-dropdown-item-right';
+            rightGroup.appendChild(extraEl);
+            if (opt.displayRight) rightGroup.appendChild(rightSpan);
+            itemEl.appendChild(rightGroup);
+          } else if (opt.displayRight) {
+            itemEl.appendChild(rightSpan);
+          }
           itemEl.appendChild(check);
+
+          renderedItemMap.set(opt.value, { itemEl, extraEl });
 
           itemEl.addEventListener('click', (e) => {
             e?.stopPropagation?.();
@@ -116,14 +183,20 @@
           listContainer.appendChild(itemEl);
         });
 
-        // 滚入可视区
-        setTimeout(() => {
-          const selNode = listContainer.querySelector ? listContainer.querySelector('.ag-dropdown-item.is-selected') : null;
-          selNode?.scrollIntoView?.({ block: 'nearest' });
-        }, 30);
+        // 仅在主动展开菜单时，将当前选中项滚动到下拉列表自身可视区域（绝不触发祖先面板滚动）
+        if (listOpts.scrollSelected === true) {
+          listScrollTimer = setTimeout(() => {
+            listScrollTimer = null;
+            if (!hasClass(wrap, 'is-open')) return;
+            const selNode = listContainer.querySelector ? listContainer.querySelector('.ag-dropdown-item.is-selected') : null;
+            scrollChildNearestInContainer(menu, selNode);
+          }, 30);
+        }
       }
 
       function selectOption(opt) {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
         const text = cfg.getLabelText ? cfg.getLabelText(opt) : (opt.label || opt.value);
         label.textContent = text;
@@ -133,10 +206,10 @@
           });
         }
         if (cfg.onSelect) cfg.onSelect(opt);
-        trigger.focus?.();
+        focusNoScroll(trigger);
       }
 
-      renderList(kw);
+      renderList(kw, menuOpts);
 
       // 键盘导航
       const keyHandler = (e) => {
@@ -156,8 +229,10 @@
           }
         } else if (e.key === 'Escape') {
           e.preventDefault?.();
+          clearListScrollTimer();
+          clearInputFocusTimer();
           removeClass(wrap, 'is-open');
-          trigger.focus?.();
+          focusNoScroll(trigger);
         }
       };
 
@@ -165,13 +240,22 @@
       menu.addEventListener('keydown', keyHandler);
     }
 
-    // 立即预渲染一次菜单内容，避免初次点击或测试环境遇到空白
-    renderMenu();
+    let inputFocusTimer = null;
+    function clearInputFocusTimer() {
+      if (inputFocusTimer) {
+        clearTimeout(inputFocusTimer);
+        inputFocusTimer = null;
+      }
+    }
+
+    // 立即预渲染一次菜单内容，避免初次点击或测试环境遇到空白（不触发滚动）
+    renderMenu('', { scrollSelected: false });
 
     function toggleOpen() {
       const isOpen = hasClass(wrap, 'is-open');
       if (!isOpen) {
         closeAllDropdowns(wrap);
+        clearInputFocusTimer();
 
         // 空间不足检测，自适应展开方向
         try {
@@ -186,13 +270,17 @@
           removeClass(wrap, 'open-up');
         }
 
-        renderMenu();
         addClass(wrap, 'is-open');
-        setTimeout(() => {
+        renderMenu('', { scrollSelected: true });
+        inputFocusTimer = setTimeout(() => {
+          inputFocusTimer = null;
+          if (!hasClass(wrap, 'is-open')) return;
           const input = menu.querySelector ? menu.querySelector('.ag-dropdown-search-input') : null;
-          input?.focus?.();
+          focusNoScroll(input);
         }, 50);
       } else {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
       }
     }
@@ -207,6 +295,8 @@
         e.preventDefault?.();
         toggleOpen();
       } else if (e.key === 'Escape') {
+        clearListScrollTimer();
+        clearInputFocusTimer();
         removeClass(wrap, 'is-open');
       }
     });
@@ -215,12 +305,34 @@
       refresh: () => {
         const val = cfg.getSelectedValue();
         const opts = cfg.getOptions();
-        const found = opts.find(o => o.value === val);
-        if (found) {
-          label.textContent = cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value);
+        const found = opts.find(o => !o.isGroupHeader && o.value === val);
+        const nextText = found
+          ? (cfg.getLabelText ? cfg.getLabelText(found) : (found.label || found.value))
+          : (typeof cfg.emptyLabel === 'function' ? cfg.emptyLabel() : cfg.emptyLabel);
+        if (nextText != null && label.textContent !== nextText) {
+          label.textContent = nextText;
+        }
+        // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
+        if (!hasClass(wrap, 'is-open')) {
+          const optsSig = `${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
+          if (optsSig !== lastClosedMenuSig) {
+            lastClosedMenuSig = optsSig;
+            renderMenu('', { scrollSelected: false });
+          }
         }
       },
-      close: () => removeClass(wrap, 'is-open'),
+      isOpen: () => hasClass(wrap, 'is-open'),
+      updateItemsInPlace: (updater) => {
+        if (typeof updater !== 'function') return;
+        for (const [val, entry] of renderedItemMap.entries()) {
+          updater(val, entry.itemEl, entry.extraEl);
+        }
+      },
+      close: () => {
+        clearListScrollTimer();
+        clearInputFocusTimer();
+        removeClass(wrap, 'is-open');
+      },
       open: () => toggleOpen()
     };
     wrap._controller = controller;
@@ -267,6 +379,50 @@
     if (val === 'NTD') val = 'TWD';
     const matched = CURRENCY_OPTIONS.find(o => o.value === val);
     label.textContent = matched ? matched.label : val;
+  }
+
+  const ULTRA_SUB_TIER_OPTIONS = [
+    {
+      value: '',
+      shortLabel: '子档: 未设',
+      label: '🌐 未设置 / 自动识别',
+      displayLeft: '🌐 未设置 / 自动识别',
+      displayRight: '默认显示子档未知',
+      aliases: ['auto', 'unknown', '未知', '自动']
+    },
+    {
+      value: '5x',
+      shortLabel: '⚡ 5x',
+      label: '⚡ Ultra 5x · 5× Pro 配额 ($99.99/月)',
+      displayLeft: '⚡ Ultra 5x (5× Pro 配额)',
+      displayRight: '$99.99/月 · 10K Flow · 20TB',
+      aliases: ['5x', '99.99', '10000', '20tb']
+    },
+    {
+      value: '20x',
+      shortLabel: '🚀 20x',
+      label: '🚀 Ultra 20x · 20× Pro 配额 ($199.99/月)',
+      displayLeft: '🚀 Ultra 20x (20× Pro 配额)',
+      displayRight: '$199.99/月 · 25K Flow · 30TB',
+      aliases: ['20x', '199.99', '25000', '30tb']
+    }
+  ];
+
+  function refreshDirectSubTierDisplay(subTierVal) {
+    const cleanVal = (subTierVal === '5x' || subTierVal === '20x') ? subTierVal : '';
+    const matched = ULTRA_SUB_TIER_OPTIONS.find(o => o.value === cleanVal) || ULTRA_SUB_TIER_OPTIONS[0];
+    const directLabel = el('direct-subtier-label');
+    const summaryLabel = el('summary-subtier-label');
+    const directSel = el('direct-subtier-select');
+    if (directLabel) directLabel.textContent = matched.label;
+    if (summaryLabel) summaryLabel.textContent = matched.shortLabel;
+    if (directSel) {
+      runWithUiHydration(() => {
+        directSel.value = cleanVal;
+      });
+    }
+    el('direct-subtier-wrap')?._controller?.refresh?.();
+    el('summary-subtier-wrap')?._controller?.refresh?.();
   }
 
   function renderDirectRegionMenu(filterText = '') {
@@ -331,7 +487,7 @@
       btn.setAttribute?.('aria-expanded', String(next));
     }
     if (!next) {
-      if (form) form.style.display = 'none';
+      if (form && form.getAttribute?.('data-in-settings') !== 'true') form.style.display = 'none';
       closeOpenRegionDropdowns();
     }
     if (!options.skipReposition) {
@@ -378,6 +534,7 @@
       isZeroExtraCost: Boolean(ps.isZeroExtraCost),
       validEndDate: ps.validEndDate || null,
       customNote: ps.customNote || '',
+      ultraSubTier: ps.ultraSubTier || lastSavedCustomPlan?.ultraSubTier || undefined,
       priceSource: ps.priceSource || (pm === 'preset' ? 'preset_region' : 'custom')
     };
   }
@@ -753,6 +910,54 @@
     applyDirectCurrencySelection(e.target?.value || 'USD');
   });
 
+  // 用户手动选择 Google AI Ultra 子档 (5x / 20x / 自动)
+  function applyDirectSubTierSelection(newSubTierVal) {
+    ++userActionSeq;
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const email = ps.email || 'default';
+    const prevCustom = getStoredCustomPlanSnapshot(email);
+    const norm = core?.normalizeUltraSubTier
+      ? (core.normalizeUltraSubTier(newSubTierVal) || '')
+      : ((newSubTierVal === '5x' || newSubTierVal === '20x') ? newSubTierVal : '');
+
+    const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
+    const currentPriceMode = (prevCustom.priceMode === 'custom' || prevCustom.priceMode === 'preset')
+      ? prevCustom.priceMode
+      : (prevCustom.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
+
+    const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
+    const matchedRegPreset = core?.findRegionPreset ? core.findRegionPreset(currentReg) : null;
+    const subSpec = norm && core?.ULTRA_SUB_TIER_PRESETS ? core.ULTRA_SUB_TIER_PRESETS[norm] : null;
+
+    const customObj = {
+      ...prevCustom,
+      ultraSubTier: norm || null,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (currentPriceMode === 'preset') {
+      if (matchedRegPreset && matchedRegPreset.currency === 'USD' && subSpec) {
+        customObj.actualPricePaid = subSpec.officialPriceMonthly;
+        customObj.priceMode = 'preset';
+        customObj.priceSource = 'preset_region';
+      } else if (!matchedRegPreset) {
+        customObj.actualPricePaid = null;
+        customObj.priceMode = 'preset';
+        customObj.priceSource = subSpec ? 'official_reference' : 'unknown';
+      }
+    }
+
+    refreshDirectSubTierDisplay(norm);
+    applyCustomPlanObjectLocally(customObj, email);
+    void persistSettingsToHost({ email, customPlan: customObj });
+  }
+
+  el('direct-subtier-select')?.addEventListener('change', (e) => {
+    if (isHydratingUiControls) return;
+    applyDirectSubTierSelection(e.target?.value || '');
+  });
+
   // 绑定统一定制「账号所在地区」、「订阅国家」与「订阅币种」下拉组件
   function initDirectCountryDropdown() {
     return initDropdownController({
@@ -866,10 +1071,54 @@
     });
   }
 
-  // 立即触发初始化三大原生定制下拉
+  function initDirectSubTierDropdown() {
+    return initDropdownController({
+      wrapId: 'direct-subtier-wrap',
+      triggerId: 'direct-subtier-trigger',
+      labelId: 'direct-subtier-label',
+      menuId: 'direct-subtier-menu',
+      selectId: 'direct-subtier-select',
+      searchPlaceholder: '🔍 搜索 Ultra 子档 (5x / 20x)...',
+      getOptions: () => ULTRA_SUB_TIER_OPTIONS,
+      getSelectedValue: () => {
+        const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+        return (ps.ultraSubTier === '5x' || ps.ultraSubTier === '20x') ? ps.ultraSubTier : '';
+      },
+      getLabelText: (opt) => opt.label,
+      onSelect: (opt) => {
+        applyDirectSubTierSelection(opt.value);
+      },
+      emptyText: '未找到匹配的子档'
+    });
+  }
+
+  function initSummarySubTierDropdown() {
+    return initDropdownController({
+      wrapId: 'summary-subtier-wrap',
+      triggerId: 'summary-subtier-trigger',
+      labelId: 'summary-subtier-label',
+      menuId: 'summary-subtier-menu',
+      selectId: 'direct-subtier-select',
+      searchPlaceholder: '🔍 选择 Ultra 子档 (5x / 20x)...',
+      getOptions: () => ULTRA_SUB_TIER_OPTIONS,
+      getSelectedValue: () => {
+        const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+        return (ps.ultraSubTier === '5x' || ps.ultraSubTier === '20x') ? ps.ultraSubTier : '';
+      },
+      getLabelText: (opt) => opt.shortLabel || opt.label,
+      onSelect: (opt) => {
+        applyDirectSubTierSelection(opt.value);
+      },
+      emptyText: '未找到匹配的子档'
+    });
+  }
+
+  // 立即触发初始化三大原生定制下拉及 Ultra 子档选择器
   initDirectCountryDropdown();
   initDirectRegionDropdown();
   initDirectCurrencyDropdown();
+  initDirectSubTierDropdown();
+  initSummarySubTierDropdown();
 
   // 全局点击外部关闭所有下拉
   if (typeof shadow !== 'undefined' && shadow && shadow.addEventListener) {
@@ -1045,7 +1294,8 @@
     if (!form) return;
     const curHidden = form.style.display === 'none' || !form.style.display;
     const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
-    form.style.display = next ? 'block' : 'none';
+    const keepOpen = form.getAttribute?.('data-in-settings') === 'true';
+    form.style.display = (next || keepOpen) ? 'block' : 'none';
     if (next) {
       const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
       const acqSelect = el('select-custom-acq');

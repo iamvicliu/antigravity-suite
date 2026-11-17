@@ -1,0 +1,215 @@
+  <!-- 弹出式面板 3: Antigravity Suite 统一设置面板 (#panel-settings, 600px) -->
+  <section id="panel-settings" class="ag-panel" hidden aria-label="套件统一设置">
+    <div class="panel-header-bar">
+      <div class="panel-title">
+        <span style="font-size:14px;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">⚙️</span>
+        <span style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">Antigravity Suite 统一设置</span>
+      </div>
+      <div class="panel-header-actions">
+        <button id="close-settings" class="panel-icon-btn" type="button" aria-label="关闭设置">×</button>
+      </div>
+    </div>
+
+    <div id="settings-tabs-bar" class="settings-tabs-bar" role="tablist" aria-label="设置分类">
+      <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" data-settings-tab="terminal">🖥️ 终端与通用</button>
+      <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="appearance">🎨 外观与主题</button>
+      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="subscription">💎 套餐与订阅</button>
+      <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="system">🌐 网络与高级</button>
+    </div>
+
+    <div id="settings-body" class="settings-body">
+      <!-- 分页 1: 终端与通用 -->
+      <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel">
+        <div class="settings-card-box">
+          <div class="settings-card-hdr">
+            <div class="settings-card-title-wrap">
+              <span class="settings-card-title">>_ CLI 启动终端配置</span>
+              <span id="term-os-badge" class="key-pill pill-muted" style="font-size:10px">检测中…</span>
+            </div>
+            <button id="btn-refresh-terminals" class="switch-pill-btn" type="button" title="重新扫描本机已安装的终端程序">🔄 重新检测</button>
+          </div>
+          <div class="settings-card-desc">选择点击顶栏 CLI 按钮时启动的终端程序；支持本机主流终端自动识别与自定义路径。</div>
+          <div id="term-app-grid" class="term-app-grid"></div>
+          <div id="term-custom-box" class="term-custom-box">
+            <label for="input-custom-term-path" class="settings-field-lbl">自定义终端程序路径（选择「自定义程序路径」时生效）</label>
+            <div class="term-custom-row">
+              <input id="input-custom-term-path" type="text" class="settings-input" placeholder="输入或选择可执行程序路径（如 /Applications/Ghostty.app 或 C:\Program Files\Git\git-bash.exe）" />
+              <button id="btn-pick-term-path" class="unlock-btn unlock-btn-secondary" type="button">📂 浏览选择…</button>
+              <button id="btn-save-term-path" class="unlock-btn unlock-btn-primary" type="button">保存路径</button>
+            </div>
+          </div>
+          <div id="cli-launch-options-box" class="term-custom-box" data-active="true" style="gap:7px;">
+            <label class="settings-pref-row settings-pref-check" style="margin:0;">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">开启 CLI 免审核模式 (--dangerously-skip-permissions)</span>
+                <span class="settings-pref-desc">启动 agy 时自动批准终端内工具调用权限，无需逐次手动确认</span>
+              </div>
+              <input id="set-cli-skip-permissions" type="checkbox" class="settings-checkbox" />
+            </label>
+            <div class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">CLI 默认启动模型 (--model)</span>
+                <span class="settings-pref-desc">选择启动 agy CLI 时传入的模型，或保持「不选择模型」以跟随 agy 默认设置</span>
+              </div>
+              <div class="settings-select-wrap">
+                <select id="set-cli-model-select" class="settings-select" aria-label="CLI 默认启动模型">
+                  <option value="">不选择模型 · 跟随 agy 默认设置</option>
+                  <option value="gemini-4-carbon-high">Gemini 4 Carbon (High)</option>
+                  <option value="gemini-4-carbon-medium">Gemini 4 Carbon (Medium)</option>
+                  <option value="gemini-4-carbon-low">Gemini 4 Carbon (Low)</option>
+                  <option value="gemini-4-argon-high">Gemini 4 Argon (High)</option>
+                  <option value="gemini-4-argon-medium">Gemini 4 Argon (Medium)</option>
+                  <option value="gemini-4-argon-low">Gemini 4 Argon (Low)</option>
+                  <option value="gemini-4-hydrogen-xhigh">Gemini 4 Hydrogen (XHigh)</option>
+                  <option value="gemini-4-hydrogen-high">Gemini 4 Hydrogen (High)</option>
+                  <option value="gemini-4-hydrogen-medium">Gemini 4 Hydrogen (Medium)</option>
+                  <option value="gemini-4-hydrogen-low">Gemini 4 Hydrogen (Low)</option>
+                  <option value="gemini-pro-orchestrator">Orchestrator (Carbon)</option>
+                  <option value="gemini-pro-orchestrator-argon">Orchestrator (Argon)</option>
+                  <option value="gemini-3.8-flash-high">Gemini 3.8 Flash (High)</option>
+                  <option value="gemini-3.8-flash-medium">Gemini 3.8 Flash (Medium)</option>
+                  <option value="gemini-3.8-flash-low">Gemini 3.8 Flash (Low)</option>
+                  <option value="claude-opus-5-5-high">Claude Opus 5.5 (High)</option>
+                  <option value="claude-opus-5-5-medium">Claude Opus 5.5 (Medium)</option>
+                  <option value="claude-opus-5-5-low">Claude Opus 5.5 (Low)</option>
+                  <option value="claude-sonnet-5-5-high">Claude Sonnet 5.5 (High)</option>
+                  <option value="claude-sonnet-5-5-medium">Claude Sonnet 5.5 (Medium)</option>
+                  <option value="claude-sonnet-5-5-low">Claude Sonnet 5.5 (Low)</option>
+                  <option value="gpt-oss-120b-medium">GPT-OSS 120B (Medium)</option>
+                  <option value="__custom__">自定义模型 ID…</option>
+                </select>
+              </div>
+            </div>
+            <div id="cli-custom-model-row" class="term-custom-row" style="display:none;">
+              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入 agy 支持的模型 ID（留空则不传 --model）" />
+              <button id="btn-save-cli-model" class="unlock-btn unlock-btn-primary" type="button">保存模型</button>
+            </div>
+          </div>
+          <div class="settings-card-footer">
+            <span id="term-config-status" class="settings-status-note">当前使用：自动默认</span>
+            <button id="btn-test-terminal" class="switch-pill-btn active" type="button" title="在当前项目目录尝试打开所选终端以验证路径与权限">▶ 测试打开终端</button>
+          </div>
+        </div>
+
+        <div class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">🧩 界面与对话增强偏好</span>
+          </div>
+          <div class="settings-pref-list">
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">界面深浅主题</span>
+                <span class="settings-pref-desc">控制状态栏、浮窗面板与调色默认色调</span>
+              </div>
+              <div class="source-switch-bar">
+                <button id="set-theme-auto" class="switch-pill-btn active" type="button">🌗 跟随宿主</button>
+                <button id="set-theme-light" class="switch-pill-btn" type="button">☀️ 浅色</button>
+                <button id="set-theme-dark" class="switch-pill-btn" type="button">🌙 深色</button>
+              </div>
+            </div>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">安全自动确认 (Auto-Accept)</span>
+                <span class="settings-pref-desc">自动点击 Proceed / Accept / 继续 等低风险确认按钮，高危命令自动拦截预警</span>
+              </div>
+              <input id="set-auto-accept" type="checkbox" class="settings-checkbox" />
+            </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">下一步建议幽灵补全 (Tab / →)</span>
+                <span class="settings-pref-desc">对话空闲且输入框为空时显示高匹配下一步指令提示，按 Tab 一键填入</span>
+              </div>
+              <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">界面与提示语言 (Language)</span>
+                <span class="settings-pref-desc">统一切换客户端界面汉化、悬浮胶囊与插件多语言展示（可扩展多语言包）</span>
+              </div>
+              <div class="settings-select-wrap">
+                <select id="set-ui-language-select" class="settings-select" aria-label="界面与提示语言">
+                  <option value="zh-CN">简体中文 · Simplified Chinese</option>
+                  <option value="en">English · 英文原版</option>
+                </select>
+              </div>
+            </div>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">选项名保留英文</span>
+                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 与 High / Medium / Low 等档位英文原名</span>
+              </div>
+              <input id="set-english-labels" type="checkbox" class="settings-checkbox" />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分页 2: 外观与主题 -->
+      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" hidden>
+        <div class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">🎨 热力图颜色主题与 5 档色阶自定义</span>
+          </div>
+          <div class="settings-card-desc">切换色系预设或单独调色后，顶部标题文字、胶囊边框、按钮高亮及热力图色阶均同步跟随该颜色主题。</div>
+          <div id="settings-slot-heatmap-colors"></div>
+        </div>
+
+        <div class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">🖌️ 面板背景与顶部指标颜色自定义</span>
+          </div>
+          <div id="settings-slot-meter-colors"></div>
+        </div>
+      </div>
+
+      <!-- 分页 3: 套餐与订阅 -->
+      <div id="settings-pane-subscription" class="settings-tab-pane" role="tabpanel" hidden>
+        <div class="settings-card-box">
+          <div id="settings-sub-summary-bar" class="settings-sub-preview-bar">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">
+              <span id="settings-sub-preview-plan" style="font-size:12px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))">当前套餐：读取中…</span>
+              <span id="settings-sub-preview-pools" style="font-size:10.5px;color:var(--ag-text-secondary)">额度池同步中…</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+              <span id="settings-slot-sub-feedback"></span>
+              <span id="settings-sub-preview-price" class="plan-summary-price-badge">--</span>
+            </div>
+          </div>
+
+          <dl class="plan-detail-dl settings-sub-grid">
+            <dt id="settings-subtier-dt">Ultra 套餐子档：</dt>
+            <dd id="settings-subtier-dd"><div id="settings-slot-subtier"></div></dd>
+            <dt>账号所在地区：</dt>
+            <dd><div id="settings-slot-country"></div></dd>
+            <dt>订阅国家：</dt>
+            <dd><div id="settings-slot-region"></div></dd>
+            <dt>订阅币种：</dt>
+            <dd><div id="settings-slot-currency"></div></dd>
+            <dt>计价模式：</dt>
+            <dd><div id="settings-slot-pricemode"></div></dd>
+          </dl>
+
+          <div id="settings-slot-custom-plan-form"></div>
+        </div>
+      </div>
+
+      <!-- 分页 4: 网络与高级 -->
+      <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" hidden>
+        <div class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">🌐 免 TUN 网络直连（本地代理）</span>
+            <span id="settings-slot-proxy-badge"></span>
+          </div>
+          <div id="settings-slot-proxy"></div>
+        </div>
+
+        <div class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">⚡ 上下文加长（实验特性说明）</span>
+            <span id="settings-slot-unlock-badge"></span>
+          </div>
+          <div id="settings-slot-unlock"></div>
+        </div>
+      </div>
+    </div>
+  </section>

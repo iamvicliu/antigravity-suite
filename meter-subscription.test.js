@@ -450,3 +450,140 @@ test('独立配置目录持久化、多账号隔离与重启后显示与落盘�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+// ============================================================================
+// 验收测试 5: Google AI Ultra 子档（未知 -> 5x -> 20x -> 重置）自定义下拉与数据展示
+// ============================================================================
+test('Google AI Ultra 子档自定义下拉支持 5x / 20x 数据展示、自定义实付隔离与持久化重置', async () => {
+  const h = harness();
+  h.finishScan();
+  h.pending[0].resolve(response({
+    usage: { inputTokens: 10000, outputTokens: 1000 },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 200000 } }
+  }));
+  await h.flush();
+
+  const api = h.sandbox.__AGContextMeter;
+  const ultraRaw = core.parseUserPlanStatus({
+    userStatus: {
+      email: 'ultra_user@enterprise.invalid',
+      userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+      planStatus: {
+        planInfo: { planName: 'Pro', monthlyPromptCredits: 50000, monthlyFlowCredits: 150000 },
+        availablePromptCredits: 500,
+        availableFlowCredits: 100
+      }
+    }
+  });
+  assert.equal(ultraRaw.tierName, 'Google AI Ultra（子档未知）');
+  assert.equal(ultraRaw.ultraSubTier, null);
+
+  api.setTokenHistoryForTest({
+    summary: { grandTotalTokens: 10000, todayTokens: 1000 },
+    planStatus: ultraRaw,
+    rawPlanStatus: ultraRaw
+  });
+
+  const detName = h.elements.get('p-det-name');
+  const summarySubWrap = h.elements.get('summary-subtier-wrap');
+  const dtSub = h.elements.get('p-dt-subtier');
+  const ddSub = h.elements.get('p-dd-subtier');
+  const dtSubSpecs = h.elements.get('p-dt-subtier-specs');
+  const ddSubSpecs = h.elements.get('p-det-subtier-specs');
+  const priceVal = h.elements.get('plan-summary-price-val');
+  const priceCny = h.elements.get('plan-summary-price-cny');
+
+  assert.equal(detName.textContent, 'Google AI Ultra（子档未知）');
+  assert.equal(summarySubWrap.style.display, 'inline-flex');
+  assert.equal(dtSub.style.display, 'block');
+  assert.equal(ddSub.style.display, 'flex');
+  assert.equal(dtSubSpecs.style.display, 'block');
+  assert.equal(ddSubSpecs.style.display, 'block');
+  assert.match(ddSubSpecs.textContent, /未下发 5x \/ 20x 子档/);
+  assert.match(priceVal.textContent, /\$99\.99~199\.99\/月/);
+  assert.match(priceCny.textContent, /待选子档/);
+
+  // 通过下拉菜单选择 5x
+  h.elements.get('direct-subtier-trigger').click();
+  let subMenu = h.elements.get('direct-subtier-menu');
+  let listContainer = subMenu.children.find(c => c.className === 'ag-dropdown-list-container');
+  let item5x = listContainer.children.find(it => it.textContent.includes('5x') || it.children?.some(c => c.textContent.includes('5x')));
+  assert.ok(item5x, '5x option exists in sub-tier dropdown');
+  item5x.click();
+  await h.flush();
+
+  assert.equal(api.getPlanSettings().ultraSubTier, '5x');
+  assert.equal(detName.textContent, 'Google AI Ultra (5x)');
+  assert.match(priceVal.textContent, /\$99\.99\/月/);
+  assert.match(priceCny.textContent, /671\.9/);
+  assert.match(ddSubSpecs.textContent, /5× Pro/);
+  assert.match(ddSubSpecs.textContent, /10,000/);
+  assert.match(ddSubSpecs.textContent, /20 TB/);
+  assert.match(ddSubSpecs.textContent, /\$40\/月/);
+
+  // 通过首屏摘要栏快捷下拉切换为 20x
+  h.elements.get('summary-subtier-trigger').click();
+  subMenu = h.elements.get('summary-subtier-menu');
+  listContainer = subMenu.children.find(c => c.className === 'ag-dropdown-list-container');
+  const item20x = listContainer.children.find(it => it.textContent.includes('20x') || it.children?.some(c => c.textContent.includes('20x')));
+  assert.ok(item20x, '20x option exists in summary sub-tier dropdown');
+  item20x.click();
+  await h.flush();
+
+  assert.equal(api.getPlanSettings().ultraSubTier, '20x');
+  assert.equal(detName.textContent, 'Google AI Ultra (20x)');
+  assert.match(priceVal.textContent, /\$199\.99\/月/);
+  assert.match(priceCny.textContent, /1343\.9/);
+  assert.match(ddSubSpecs.textContent, /20× Pro/);
+  assert.match(ddSubSpecs.textContent, /25,000/);
+  assert.match(ddSubSpecs.textContent, /30 TB/);
+  assert.match(ddSubSpecs.textContent, /\$100\/月/);
+
+  // 自定义实付模式下切换子档不得覆盖用户实付金额与币种
+  h.elements.get('btn-mode-custom').click();
+  await h.flush();
+  h.elements.get('input-custom-paid').value = '2949.99';
+  h.elements.get('select-custom-currency').value = 'TRY';
+  h.elements.get('select-custom-cycle').value = '月付';
+  h.elements.get('btn-custom-plan-save').click();
+  await h.flush();
+
+  api.setUltraSubTier('5x');
+  await h.flush();
+  assert.equal(api.getPlanSettings().ultraSubTier, '5x');
+  assert.equal(api.getPlanSettings().currency, 'TRY');
+  assert.equal(api.getPlanSettings().actualPricePaid, 2949.99);
+  assert.match(priceVal.textContent, /₺2949\.99/);
+
+  // 独立目录落盘与清空重置验证
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ultra-subtier-'));
+  try {
+    const saveRes = savePluginSettings({
+      email: 'ultra_user@enterprise.invalid',
+      customPlan: { ultraSubTier: '20x' }
+    }, { agDir: tmpDir });
+    assert.equal(saveRes.ok, true);
+    const loaded = getPluginSettings({ agDir: tmpDir, email: 'ultra_user@enterprise.invalid' });
+    assert.equal(loaded.customPlan.ultraSubTier, '20x');
+
+    const resolved20x = core.resolveEffectivePlanStatus(ultraRaw, loaded.customPlan, { currentEmail: 'ultra_user@enterprise.invalid' });
+    assert.equal(resolved20x.tierName, 'Google AI Ultra (20x)');
+    assert.equal(resolved20x.ultraSubTier, '20x');
+    assert.equal(resolved20x.officialPriceMonthly, 199.99);
+
+    const clearRes = savePluginSettings({
+      email: 'ultra_user@enterprise.invalid',
+      customPlan: { ultraSubTier: '' }
+    }, { agDir: tmpDir });
+    assert.equal(clearRes.ok, true);
+    const loadedCleared = getPluginSettings({ agDir: tmpDir, email: 'ultra_user@enterprise.invalid' });
+    assert.equal(loadedCleared.customPlan.ultraSubTier, undefined);
+    const resolvedUnknown = core.resolveEffectivePlanStatus(ultraRaw, loadedCleared.customPlan, { currentEmail: 'ultra_user@enterprise.invalid' });
+    assert.equal(resolvedUnknown.tierName, 'Google AI Ultra（子档未知）');
+    assert.equal(resolvedUnknown.ultraSubTier, null);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  api.dispose();
+});

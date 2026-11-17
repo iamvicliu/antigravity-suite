@@ -128,12 +128,23 @@
   function normalizeHex(input) {
     if (!input || typeof input !== 'string') return null;
     const s = input.trim();
+    if (!s || /^transparent$/i.test(s)) return null;
     const direct = hexToRgb(s);
     if (direct) return rgbToHex(direct.r, direct.g, direct.b);
-    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (mRgb) return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
-    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?/i);
+    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+%?))?/i);
+    if (mRgb) {
+      if (mRgb[4] !== undefined) {
+        const alphaRaw = mRgb[4].endsWith('%') ? Number(mRgb[4].slice(0, -1)) / 100 : Number(mRgb[4]);
+        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+      }
+      return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
+    }
+    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?(?:\s*[,/]\s*([\d.]+%?))?/i);
     if (mHsl) {
+      if (mHsl[4] !== undefined) {
+        const alphaRaw = mHsl[4].endsWith('%') ? Number(mHsl[4].slice(0, -1)) / 100 : Number(mHsl[4]);
+        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+      }
       const rgb = hslToRgb(Number(mHsl[1]), Number(mHsl[2]), Number(mHsl[3]));
       return rgbToHex(rgb.r, rgb.g, rgb.b);
     }
@@ -215,18 +226,28 @@
   }
 
   function getHostZeroLevelBg(isLight) {
+    const fallback = isLight ? '#ffffff' : '#181818';
     try {
       if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
         const rootEl = document.body || document.documentElement;
         if (rootEl) {
           const cs = window.getComputedStyle(rootEl);
-          const raw = cs.getPropertyValue('--background')?.trim() || cs.backgroundColor?.trim();
-          const norm = normalizeHex(raw);
-          if (norm) return norm;
+          const candidates = [
+            cs.getPropertyValue('--background')?.trim(),
+            cs.backgroundColor?.trim()
+          ].filter(Boolean);
+          for (const raw of candidates) {
+            const norm = normalizeHex(raw);
+            if (!norm) continue;
+            const lum = parseRgbLuminance(norm);
+            const normIsLight = lum != null ? lum > 0.55 : Boolean(isLight);
+            if (normIsLight === Boolean(isLight)) return norm;
+            return fallback;
+          }
         }
       }
     } catch {}
-    return isLight ? '#ffffff' : '#181818';
+    return fallback;
   }
 
   function getSystemTheme() {
@@ -289,18 +310,28 @@
     return scale;
   }
 
+  const PRESET_ACCENT_COLORS = {
+    purple: { dark: '#a78bfa', light: '#7c3aed', totalDark: '#c084fc', totalLight: '#7c3aed' },
+    yellow: { dark: '#facc15', light: '#b45309', totalDark: '#fde047', totalLight: '#a16207' },
+    green: { dark: '#4ade80', light: '#16a34a', totalDark: '#86efac', totalLight: '#15803d' },
+    blue: { dark: '#60a5fa', light: '#2563eb', totalDark: '#93c5fd', totalLight: '#1d4ed8' },
+    red: { dark: '#f87171', light: '#dc2626', totalDark: '#fca5a5', totalLight: '#b91c1c' }
+  };
+
   function getDefaultSlotColor(slotKey) {
     const isLight = resolveTheme() === 'light';
     const presetScale = getPresetHeatmapScale();
     const baseScale = getBaseHeatmapScale();
+    const accentSpec = PRESET_ACCENT_COLORS[heatPreset] || PRESET_ACCENT_COLORS.purple;
+    const customHeatAccent = normalizeHex(customColors.heatLvl4) || normalizeHex(customColors.heatHigh);
     switch (slotKey) {
       case 'panelBg': return getHostZeroLevelBg(isLight);
       case 'ringUsed': return isLight ? '#18181b' : '#e6e6eb';
       case 'ringTrack': return isLight ? '#b8b8c2' : '#52525b';
       case 'contextText': return isLight ? '#18181b' : '#ececef';
       case 'speedText': return isLight ? '#0284c7' : '#38bdf8';
-      case 'tokenTotal': return isLight ? '#7c3aed' : '#c084fc';
-      case 'tokenAccent': return isLight ? '#7c3aed' : '#a78bfa';
+      case 'tokenTotal': return customHeatAccent || (isLight ? accentSpec.totalLight : accentSpec.totalDark);
+      case 'tokenAccent': return customHeatAccent || (isLight ? accentSpec.light : accentSpec.dark);
       case 'heatLow': return presetScale[0];
       case 'heatHigh': return presetScale[4];
       case 'heatLvl0': return baseScale[0];
@@ -316,6 +347,21 @@
     return normalizeHex(customColors[slotKey]) || getDefaultSlotColor(slotKey);
   }
 
+  function syncThemeAccentVars() {
+    const isLight = resolveTheme() === 'light';
+    const defaultAccent = getDefaultSlotColor('tokenAccent');
+    const defaultTotal = getDefaultSlotColor('tokenTotal');
+    const effAccent = getEffectiveSlotColor('tokenAccent');
+    host.style.setProperty('--ag-token-accent-default', defaultAccent);
+    host.style.setProperty('--ag-token-total-default', defaultTotal);
+    const rgb = hexToRgb(effAccent) || { r: 167, g: 139, b: 250 };
+    host.style.setProperty('--ag-accent-bg', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.10 : 0.14})`);
+    host.style.setProperty('--ag-accent-bg-hover', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.18 : 0.24})`);
+    host.style.setProperty('--ag-accent-border', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.28 : 0.34})`);
+    host.style.setProperty('--ag-accent-border-hover', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.48 : 0.56})`);
+    host.style.setProperty('--ag-accent-glow', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.32 : 0.44})`);
+  }
+
   function applyHeatmapPalette() {
     const scale = getEffectiveHeatmapScale();
     for (let i = 0; i < 5; i++) {
@@ -327,6 +373,7 @@
         legEl.setAttribute('data-custom', String(Boolean(customColors[`heatLvl${i}`])));
       }
     }
+    syncThemeAccentVars();
     const hasCustomHeat = Boolean(
       customColors.heatLow || customColors.heatHigh ||
       customColors.heatLvl0 || customColors.heatLvl1 || customColors.heatLvl2 || customColors.heatLvl3 || customColors.heatLvl4
@@ -417,6 +464,7 @@
     }
     applyHeatmapPalette();
     syncSwatchAndResetButtons();
+    if (typeof syncSettingsThemePills === 'function') syncSettingsThemePills();
     if (activeHeatView === 'weekly') renderHeatmapWeekly();
     else if (activeHeatView === 'cum') renderHeatmapCum();
   }
@@ -481,6 +529,7 @@
     });
     applyHeatmapPalette();
     syncSwatchAndResetButtons();
+    if (typeof syncSettingsThemePills === 'function') syncSettingsThemePills();
     if (activeHeatView === 'weekly') renderHeatmapWeekly();
     else if (activeHeatView === 'cum') renderHeatmapCum();
     syncNativeOverlayTheme();
@@ -726,8 +775,8 @@
     const slotKey = `heatLvl${i}`;
     legBtn?.addEventListener('click', e => {
       e?.stopPropagation?.();
-      toggleTokenColorsDrawer(true);
-      const swatchBtn = el(`swatch-${slotKey}`) || legBtn;
+      const settingsOpen = el('panel-settings') && !el('panel-settings').hidden;
+      const swatchBtn = settingsOpen ? (el(`swatch-${slotKey}`) || legBtn) : legBtn;
       openColorPicker(slotKey, swatchBtn, legBtn.getAttribute('data-color-label') || HEAT_LVL_LABELS[i]);
     });
   }

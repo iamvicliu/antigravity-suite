@@ -375,7 +375,7 @@ test('6 independent custom color slots support custom values, reset to theme def
 test('window controls overlay spacer, convPane flex-grow self-healing, and clean dispose', () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
-  assert.equal(api.version, '0.8.2');
+  assert.equal(api.version, require('./package.json').version);
 
   // 1. Antigravity 1.x: class contains 'top-0'
   const cluster1x = h.sandbox.document.createElement();
@@ -1504,4 +1504,302 @@ test('online update and GitHub entry points: openExternal whitelist enforcement 
   assert.ok(appliedUpdateOpts);
 
   api.dispose();
+});
+
+test('chinese i18n drawer, GitHub links and check-update buttons stay hidden while preserving DOM/JS compatibility and disabling auto update check', async () => {
+  const path = require('node:path');
+  const templateHtml = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const stylesCss = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+
+  assert.match(templateHtml, /<div class="tech-drawer" id="chinese-i18n-drawer" hidden style="display:none">/);
+  assert.match(templateHtml, /<button id="btn-github-repo-ctx"[^>]*hidden style="display:none"/);
+  assert.match(templateHtml, /<button id="btn-check-update-ctx"[^>]*hidden style="position:relative;display:none"/);
+  assert.match(templateHtml, /<button id="btn-github-repo"[^>]*hidden style="display:none"/);
+  assert.match(templateHtml, /<button id="btn-check-update"[^>]*hidden style="position:relative;display:none"/);
+  assert.match(templateHtml, /<div id="auto-update-setting-row" hidden style="display:none;/);
+  assert.match(stylesCss, /#chinese-i18n-drawer,\s*#btn-github-repo,\s*#btn-github-repo-ctx,\s*#btn-check-update,\s*#btn-check-update-ctx,\s*#auto-update-setting-row\s*\{\s*display:\s*none !important;/);
+
+  let autoCheckCalled = false;
+  const h = harness();
+  const scheduledCallbacks = [];
+  h.sandbox.setTimeout = fn => {
+    if (typeof fn === 'function') scheduledCallbacks.push(fn);
+    return 1;
+  };
+  h.sandbox.window.contextMeterAPI = {
+    scan: () => new Promise(resolve => h.scans.push({ id: '1', resolve })),
+    getSettings: async () => ({ ok: true, autoCheckUpdate: true }),
+    checkUpdate: async () => {
+      autoCheckCalled = true;
+      return { ok: true, hasUpdate: false, currentVersion: '0.8.5', latestVersion: '0.8.5' };
+    }
+  };
+
+  await h.sandbox.__AGContextMeter.restoreSettingsFromHost();
+  h.elements.get('badge-tokens').click();
+  await h.flush();
+  for (const fn of scheduledCallbacks) {
+    try { fn(); } catch {}
+  }
+  await h.flush();
+  assert.equal(autoCheckCalled, false, '隐藏检查更新后，不得在后台自动触发 checkUpdate');
+  assert.equal(h.elements.get('check-auto-update').checked, false);
+
+  h.sandbox.__AGContextMeter.dispose();
+});
+
+test('topbar badge order places 5h/week quota after tok/s so first two open context panel and third opens 5h/week popover', async () => {
+  const path = require('node:path');
+  const enhancerSource = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+
+  const elementsById = new Map();
+  const docById = new Map();
+  const makeNode = (tagName = 'div', id = '') => {
+    const attrs = new Map();
+    const listeners = new Map();
+    const node = {
+      tagName: String(tagName).toUpperCase(),
+      style: {
+        display: '',
+        opacity: '',
+        setProperty() {},
+        removeProperty() {},
+        getPropertyValue() { return ''; }
+      },
+      children: [],
+      parentElement: null,
+      hidden: false,
+      textContent: '',
+      _innerHTML: '',
+      get id() { return attrs.get('id') || ''; },
+      set id(v) {
+        attrs.set('id', String(v));
+        if (v) {
+          elementsById.set(String(v), node);
+          docById.set(String(v), node);
+        }
+      },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      classList: {
+        add(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+          if (!cur.includes(c)) cur.push(c);
+          attrs.set('class', cur.join(' '));
+        },
+        remove(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c);
+          attrs.set('class', cur.join(' '));
+        },
+        contains(c) { return (attrs.get('class') || '').split(/\s+/).includes(c); }
+      },
+      get previousElementSibling() {
+        if (!node.parentElement) return null;
+        const idx = node.parentElement.children.indexOf(node);
+        return idx > 0 ? node.parentElement.children[idx - 1] : null;
+      },
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id' && v) {
+          elementsById.set(String(v), node);
+          docById.set(String(v), node);
+        }
+      },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      appendChild(child) {
+        if (!child) return child;
+        if (child.parentElement && Array.isArray(child.parentElement.children)) {
+          const oldIdx = child.parentElement.children.indexOf(child);
+          if (oldIdx >= 0) child.parentElement.children.splice(oldIdx, 1);
+        }
+        child.parentElement = node;
+        node.children.push(child);
+        if (child.id) elementsById.set(child.id, child);
+        return child;
+      },
+      insertAdjacentElement(pos, child) {
+        if ((pos === 'afterend' || pos === 'beforebegin') && node.parentElement) {
+          if (child.parentElement && Array.isArray(child.parentElement.children)) {
+            const oldIdx = child.parentElement.children.indexOf(child);
+            if (oldIdx >= 0) child.parentElement.children.splice(oldIdx, 1);
+          }
+          const idx = node.parentElement.children.indexOf(node);
+          const insertIdx = pos === 'beforebegin' ? Math.max(0, idx) : idx + 1;
+          child.parentElement = node.parentElement;
+          node.parentElement.children.splice(insertIdx, 0, child);
+          if (child.id) elementsById.set(child.id, child);
+        }
+        return child;
+      },
+      replaceChildren() { node.children = []; },
+      remove() {
+        if (node.parentElement) {
+          const idx = node.parentElement.children.indexOf(node);
+          if (idx >= 0) node.parentElement.children.splice(idx, 1);
+        }
+      },
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(fn);
+      },
+      removeEventListener() {},
+      click() {
+        for (const fn of (listeners.get('click') || [])) fn({ stopPropagation() {}, preventDefault() {} });
+      },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      getBoundingClientRect() { return { left: 100, top: 10, width: 40, height: 24, right: 140, bottom: 34 }; }
+    };
+    if (id) node.id = id;
+    return node;
+  };
+
+  let hostEl = null;
+  let shadowRoot = null;
+  const initShadowNodes = () => {
+    const badge = makeNode('button', 'badge');
+    const badgeSpeed = makeNode('span', 'badge-speed');
+    badge.appendChild(badgeSpeed);
+    const badgeTokens = makeNode('button', 'badge-tokens');
+    const badgeCli = makeNode('button', 'badge-cli');
+    const badgeSettings = makeNode('button', 'badge-settings');
+    const badgeOverflow = makeNode('button', 'badge-overflow');
+    const panel = makeNode('section', 'panel');
+    panel.hidden = true;
+    const panelTokens = makeNode('section', 'panel-tokens');
+    panelTokens.hidden = true;
+    const panelSettings = makeNode('section', 'panel-settings');
+    panelSettings.hidden = true;
+    for (const child of [badge, badgeTokens, badgeCli, badgeSettings, badgeOverflow, panel, panelTokens, panelSettings]) {
+      shadowRoot.appendChild(child);
+    }
+  };
+
+  const dynamicEnhancerIds = new Set([
+    'badge-quota',
+    'ag-quota-popover',
+    'ag-enhancer-quota-style',
+    'ag-quota-dot',
+    'ag-quota-text'
+  ]);
+  const docRoot = makeNode('div', 'doc-root');
+  const docListeners = new Map();
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    Element: function () {},
+    HTMLElement: function () {},
+    Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 },
+    MutationObserver: function () { return { observe() {}, disconnect() {} }; },
+    ResizeObserver: function () { return { observe() {}, disconnect() {} }; },
+    document: {
+      documentElement: docRoot,
+      head: makeNode('head'),
+      body: docRoot,
+      hidden: false,
+      createElement(tag) {
+        const n = makeNode(tag);
+        if (!hostEl) {
+          hostEl = n;
+          hostEl.attachShadow = () => {
+            shadowRoot = makeNode('shadow-root');
+            Object.defineProperty(shadowRoot, 'innerHTML', {
+              set() { initShadowNodes(); }
+            });
+            shadowRoot.getElementById = id => {
+              if (!elementsById.has(id)) {
+                if (dynamicEnhancerIds.has(id)) return null;
+                elementsById.set(id, makeNode('div', id));
+              }
+              return elementsById.get(id);
+            };
+            hostEl.shadowRoot = shadowRoot;
+            return shadowRoot;
+          };
+        }
+        return n;
+      },
+      getElementById: id => docById.get(id) || null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener(type, fn) {
+        if (!docListeners.has(type)) docListeners.set(type, []);
+        docListeners.get(type).push(fn);
+      },
+      removeEventListener() {}
+    },
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      addEventListener() {},
+      removeEventListener() {},
+      innerWidth: 1280,
+      innerHeight: 800
+    },
+    __AGContextMeterCore: core,
+    AbortController: global.AbortController,
+    Date,
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    setInterval: () => 1,
+    clearInterval: () => {},
+    fetch: () => new Promise(() => {})
+  };
+  sandbox.window.document = sandbox.document;
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  vm.runInContext(enhancerSource, sandbox);
+
+  const badgeOrder = shadowRoot.children
+    .map(c => c.id)
+    .filter(id => ['badge', 'badge-speed', 'badge-quota', 'badge-tokens', 'badge-cli', 'badge-settings'].includes(id));
+  assert.deepEqual(badgeOrder, ['badge', 'badge-quota', 'badge-tokens', 'badge-cli', 'badge-settings']);
+
+  const pContext = elementsById.get('panel');
+  const pTokens = elementsById.get('panel-tokens');
+  const pSettings = elementsById.get('panel-settings');
+  const pQuota = elementsById.get('ag-quota-popover');
+  const bContext = elementsById.get('badge');
+  const bSpeed = elementsById.get('badge-speed');
+  const bQuota = elementsById.get('badge-quota');
+  const bSettings = elementsById.get('badge-settings');
+
+  // 1. 合并后的上下文/速度按钮点击展开上下文面板
+  assert.equal(bSpeed.parentElement, bContext);
+  bContext.click();
+  assert.equal(pContext.hidden, false);
+  assert.equal(pQuota.hidden, true);
+  assert.equal(pSettings.hidden, true);
+  // 再次点击收起
+  bContext.click();
+  assert.equal(pContext.hidden, true);
+
+  // 2. 点击内置 tok/s 区域也打开上下文面板，且点击设置齿轮互不干扰并互斥切换
+  bSpeed.click();
+  assert.equal(pContext.hidden, false);
+  assert.equal(pTokens.hidden, true);
+  assert.equal(pQuota.hidden, true);
+
+  // 3. 配额按钮点击展开配额浮层，并互斥关闭上下文面板与设置面板
+  bQuota.click();
+  assert.equal(pQuota.hidden, false);
+  assert.equal(pContext.hidden, true);
+  assert.equal(bContext.getAttribute('aria-expanded'), 'false');
+  assert.equal(bSpeed.getAttribute('aria-expanded'), 'false');
+  assert.equal(bQuota.getAttribute('aria-expanded'), 'true');
+
+  // 4. 点击设置按钮打开设置面板并互斥关闭配额浮层
+  bSettings.click();
+  assert.equal(pSettings.hidden, false);
+  assert.equal(pQuota.hidden, true);
+  assert.equal(pContext.hidden, true);
+
+  // 5. 再点击 tok/s 打开上下文面板，并互斥关闭设置与配额浮层
+  bSpeed.click();
+  assert.equal(pContext.hidden, false);
+  assert.equal(pSettings.hidden, true);
+  assert.equal(pQuota.hidden, true);
+  assert.equal(bQuota.getAttribute('aria-expanded'), 'false');
+
+  sandbox.__AGEnhancer.dispose();
+  sandbox.__AGContextMeter.dispose();
 });
