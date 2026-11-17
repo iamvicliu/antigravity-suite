@@ -36,6 +36,7 @@ function buildRenderer() {
     : templateBase;
   template = template.replace(/<span id="v">v[^<]*<\/span>/g, `<span id="v">v${meterVersion}</span>`);
   template = template.replace(/<span id="up-pop-ver"[^>]*>v[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v${meterVersion}</span>`);
+  template = template.replace(/(<span id="suite-ver-status"[^>]*>)v[^<]*(<\/span>)/g, `$1v${meterVersion}$2`);
 
   const colors = fs.readFileSync(path.join(srcDir, 'colors.js'), 'utf8').trim();
   const dropdown = fs.readFileSync(path.join(srcDir, 'dropdown.js'), 'utf8').trim();

@@ -1519,12 +1519,12 @@
             'padding: 8px 12px',
             'border-radius: 6px',
             'font-family: inherit',
-            'font-size: 12px',
+            'font-size: 12.5px',
             'font-weight: 400',
             'line-height: 1.5',
             'font-variant-numeric: tabular-nums',
-            'min-width: 240px',
-            'max-width: 310px'
+            'min-width: 256px',
+            'max-width: 336px'
         ].join(';');
         document.body.appendChild(tooltipEl);
         return tooltipEl;
@@ -1576,7 +1576,7 @@
         // 对齐官方 Turbo 下拉菜单 (Radix Popover + Tailwind shadow-md) 的白天/黑夜双模式参数
         const bgColor = light ? '#FFFFFF' : '#18181B';
         const fgColor = light ? '#18181B' : '#E4E4E7';
-        const mutedColor = light ? '#71717A' : '#A1A1AA';
+        const mutedColor = light ? '#52525B' : '#A1A1AA';
         const borderColor = light ? '#E4E4E7' : '#27272A';
         const trackColor = light ? '#F4F4F5' : '#27272A';
 
@@ -1659,7 +1659,7 @@
                 `${data.cacheHitRate.toFixed(1)}%`
             ));
             const breakdownRow = document.createElement('div');
-            breakdownRow.style.cssText = `display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:11px;color:${mutedColor};font-weight:400;`;
+            breakdownRow.style.cssText = `display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;color:${mutedColor};font-weight:400;`;
             const bdLeft = document.createElement('span');
             bdLeft.textContent = `${isEn ? 'Cache' : '缓存'}: ${formatTokenValue(data.cacheReadTokens)} · ${isEn ? 'Input' : '新入'}: ${formatTokenValue(data.inputTokens)}`;
             const bdRight = document.createElement('span');
@@ -1672,7 +1672,7 @@
         // 5. 快照后实时估算增量
         if (data.estimatedDelta > 0) {
             const deltaRow = document.createElement('div');
-            deltaRow.style.cssText = `display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:11px;color:${mutedColor};font-weight:400;`;
+            deltaRow.style.cssText = `display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;color:${mutedColor};font-weight:400;`;
             const deltaLeft = document.createElement('span');
             deltaLeft.textContent = isEn ? 'Estimated Delta' : '实时估算增量';
             const deltaRight = document.createElement('span');
@@ -1688,7 +1688,7 @@
             const dropPct = data.compressionBefore > 0 ? ((data.compressionDrop / data.compressionBefore) * 100).toFixed(1) : '0';
             nodes.push(createDivider());
             const compRow = document.createElement('div');
-            compRow.style.cssText = 'display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:11px;font-weight:400;';
+            compRow.style.cssText = 'display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;font-weight:400;';
             const compLeft = document.createElement('span');
             compLeft.style.cssText = `color:${mutedColor};`;
             compLeft.textContent = isEn ? 'Auto-compressed' : '已触发自动压缩';
@@ -1701,7 +1701,7 @@
         } else if (data.usagePercent >= 85) {
             nodes.push(createDivider());
             const warnRow = document.createElement('div');
-            warnRow.style.cssText = `padding:1px 0;font-size:11px;font-weight:400;color:${MORANDI_3A.red};`;
+            warnRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${MORANDI_3A.red};`;
             warnRow.textContent = isEn ? 'Approaching auto-compaction threshold' : '接近自动压缩阈值，建议适时归档上下文';
             nodes.push(warnRow);
         }
@@ -1719,7 +1719,7 @@
 
         // 8. 底部栏：步数统计（语言配置统一移至套件设置面板）
         const footerRow = document.createElement('div');
-        footerRow.style.cssText = `border-top:1px solid ${borderColor};margin-top:6px;padding-top:5px;font-size:11px;color:${mutedColor};font-weight:400;display:flex;justify-content:space-between;gap:12px;`;
+        footerRow.style.cssText = `border-top:1px solid ${borderColor};margin-top:6px;padding-top:5px;font-size:12px;color:${mutedColor};font-weight:400;display:flex;justify-content:space-between;gap:12px;`;
         const stepsSpan = document.createElement('span');
         stepsSpan.textContent = `${isEn ? 'Steps' : '步数'}: ${data.stepCount || 0}`;
         footerRow.appendChild(stepsSpan);

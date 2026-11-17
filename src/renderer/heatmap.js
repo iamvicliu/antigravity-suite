@@ -532,7 +532,7 @@
         peakBadge.setAttribute('x', String(cx));
         peakBadge.setAttribute('y', String(cy - radius - 5));
         peakBadge.setAttribute('text-anchor', 'middle');
-        peakBadge.setAttribute('font-size', '8.5');
+        peakBadge.setAttribute('font-size', '10.5');
         peakBadge.setAttribute('font-weight', '600');
         peakBadge.setAttribute('fill', 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))');
         peakBadge.textContent = '峰值';
@@ -543,7 +543,7 @@
       text.setAttribute('x', String(cx));
       text.setAttribute('y', String(H - 12));
       text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('font-size', '10');
+      text.setAttribute('font-size', '11');
       text.setAttribute('fill', item.isCurrent ? 'var(--ag-text-primary)' : 'var(--ag-text-muted)');
       text.setAttribute('font-weight', item.isCurrent ? '600' : '400');
       text.textContent = item.monthName;

@@ -499,8 +499,7 @@
           border-radius: 9999px;
           flex-shrink: 0;
           background: #9ca3af;
-          box-shadow: 0 0 6px rgba(156, 163, 175, 0.45);
-          transition: background-color 0.2s ease, box-shadow 0.2s ease;
+          transition: background-color 0.2s ease;
         }
         :host([data-layout="compact"]) #badge-quota {
           padding: 0 5px;
@@ -514,17 +513,17 @@
         #ag-quota-popover {
           position: fixed;
           z-index: 2147483645;
-          width: 320px;
+          width: 340px;
           max-width: calc(100vw - 24px);
           padding: 12px 14px;
-          border-radius: 12px;
+          border-radius: 10px;
           border: 1px solid var(--ag-float-border, rgba(255, 255, 255, 0.12));
           background: var(--ag-float-bg, rgba(24, 24, 27, 0.96));
           color: var(--ag-text-primary, #f4f4f5);
           box-shadow: var(--ag-float-shadow, 0 12px 32px rgba(0, 0, 0, 0.45));
-          backdrop-filter: blur(14px);
-          -webkit-backdrop-filter: blur(14px);
-          font-size: 12px;
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          font-size: 13px;
           line-height: 1.45;
         }
         #ag-quota-popover[hidden] {
@@ -540,18 +539,18 @@
           border-bottom: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
         }
         .ag-qp-title {
-          font-size: 12.5px;
+          font-size: 13.5px;
           font-weight: 600;
           color: var(--ag-text-primary, #f4f4f5);
         }
         .ag-qp-refresh {
-          height: 22px;
+          height: 26px;
           padding: 0 8px;
           border-radius: 6px;
           border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.12));
           background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.05));
           color: var(--ag-text-primary, #e4e4e7);
-          font-size: 11px;
+          font-size: 12px;
           white-space: nowrap;
           flex-shrink: 0;
           cursor: pointer;
@@ -561,7 +560,7 @@
           background: var(--ag-toolbar-bg-hover, rgba(255, 255, 255, 0.12));
         }
         .ag-qp-model {
-          font-size: 11px;
+          font-size: 12px;
           color: var(--ag-text-muted, #a1a1aa);
           margin-bottom: 10px;
           display: flex;
@@ -590,14 +589,14 @@
           margin-bottom: 5px;
         }
         .ag-qp-pool-name {
-          font-size: 11.5px;
+          font-size: 12.5px;
           font-weight: 600;
           display: flex;
           align-items: center;
           gap: 5px;
         }
         .ag-qp-active-tag {
-          font-size: 10px;
+          font-size: 11.5px;
           font-weight: 500;
           padding: 1px 5px;
           border-radius: 4px;
@@ -605,7 +604,7 @@
           color: #38bdf8;
         }
         .ag-qp-pct {
-          font-size: 12px;
+          font-size: 13px;
           font-weight: 700;
           font-variant-numeric: tabular-nums;
         }
@@ -623,7 +622,7 @@
           transition: width 0.25s ease, background-color 0.2s ease;
         }
         .ag-qp-reset {
-          font-size: 10.5px;
+          font-size: 11.5px;
           color: var(--ag-text-muted, #a1a1aa);
         }
         .ag-qp-subrows {
@@ -641,14 +640,14 @@
           display: flex;
           align-items: center;
           justify-content: space-between;
-          font-size: 11px;
+          font-size: 12px;
         }
         .ag-qp-sublabel {
           color: var(--ag-text-primary, #e4e4e7);
           font-weight: 500;
         }
         .ag-qp-subpct {
-          font-size: 11.5px;
+          font-size: 12.5px;
           font-weight: 700;
           font-variant-numeric: tabular-nums;
         }
@@ -662,7 +661,7 @@
           display: flex;
           flex-direction: column;
           gap: 3px;
-          font-size: 11px;
+          font-size: 12px;
           color: var(--ag-text-muted, #a1a1aa);
         }
         .ag-qp-credit-row {
@@ -716,18 +715,18 @@
         #ag-remote-popover {
           position: fixed;
           z-index: 2147483645;
-          width: 320px;
+          width: 340px;
           max-width: calc(100vw - 24px);
           box-sizing: border-box;
           padding: 12px 14px;
-          border-radius: 12px;
+          border-radius: 10px;
           border: 1px solid var(--ag-float-border, rgba(255, 255, 255, 0.12));
           background: var(--ag-float-bg, rgba(24, 24, 27, 0.96));
           color: var(--ag-text-primary, #f4f4f5);
           box-shadow: var(--ag-float-shadow, 0 12px 32px rgba(0, 0, 0, 0.45));
-          backdrop-filter: blur(14px);
-          -webkit-backdrop-filter: blur(14px);
-          font-size: 12px;
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          font-size: 13px;
           line-height: 1.45;
         }
         #ag-remote-popover[hidden] {
@@ -744,7 +743,7 @@
           align-items: center;
           justify-content: center;
           gap: 6px;
-          font-size: 11.5px;
+          font-size: 12.5px;
           font-weight: 500;
           line-height: 1.4;
           color: var(--ag-text-primary, #e4e4e7);
@@ -756,7 +755,7 @@
           align-items: center;
           justify-content: center;
           padding: 12px;
-          border-radius: 14px;
+          border-radius: 10px;
           background: #ffffff;
           margin: 4px auto 12px;
           width: fit-content;
@@ -785,7 +784,7 @@
           border-radius: 7px;
           background: transparent;
           color: var(--ag-text-primary, #e4e4e7);
-          font-size: 12px;
+          font-size: 12.5px;
           line-height: 1.3;
           text-align: left;
           cursor: pointer;
@@ -817,7 +816,7 @@
         }
         .ag-rp-ch-host {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          font-size: 11px;
+          font-size: 11.5px;
           color: var(--ag-text-muted, #a1a1aa);
           overflow: hidden;
           text-overflow: ellipsis;
@@ -829,7 +828,7 @@
           align-items: center;
           justify-content: center;
           gap: 5px;
-          font-size: 11px;
+          font-size: 11.5px;
           color: var(--ag-text-muted, #a1a1aa);
           margin: 0 0 10px;
           text-align: center;
@@ -852,9 +851,9 @@
           display: inline-flex;
           align-items: center;
           gap: 4px;
-          padding: 2px 7px;
-          border-radius: 9999px;
-          font-size: 10.5px;
+          padding: 2px 8px;
+          border-radius: 6px;
+          font-size: 11.5px;
           line-height: 1.35;
           background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.06));
           border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.1));
@@ -889,7 +888,7 @@
         .ag-rp-btn {
           flex: 1 1 0;
           min-width: 0;
-          min-height: 30px;
+          min-height: 32px;
           height: auto;
           padding: 5px 10px;
           box-sizing: border-box;
@@ -902,7 +901,7 @@
           border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.12));
           background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.06));
           color: var(--ag-text-primary, #f4f4f5);
-          font-size: 11.5px;
+          font-size: 12.5px;
           font-weight: 500;
           cursor: pointer;
           transition: background-color 0.15s ease;
@@ -922,7 +921,7 @@
         }
         .ag-rp-tip {
           margin-top: 8px;
-          font-size: 10.5px;
+          font-size: 11.5px;
           color: var(--ag-text-muted, #a1a1aa);
           line-height: 1.4;
         }
@@ -1429,8 +1428,8 @@
       const bodyHtml = hasDualWindows
         ? `
           <div class="ag-qp-subrows">
-            ${pool?.fiveHour ? renderWindowRow(tr('⏱️ 5 小时限额', '⏱️ 5h Limit'), pool.fiveHour) : ''}
-            ${pool?.weekly ? renderWindowRow(tr('📅 每周限额', '📅 Weekly Limit'), pool.weekly) : ''}
+            ${pool?.fiveHour ? renderWindowRow(tr('5 小时限额', '5h Limit'), pool.fiveHour) : ''}
+            ${pool?.weekly ? renderWindowRow(tr('每周限额', 'Weekly Limit'), pool.weekly) : ''}
           </div>
         `
         : `
@@ -1600,7 +1599,7 @@
     const textEl = sr.getElementById('ag-quota-text');
     if (dotEl) {
       dotEl.style.background = dotColor;
-      dotEl.style.boxShadow = `0 0 6px ${dotColor}80`;
+      dotEl.style.boxShadow = '';
     }
 
     const layoutMode = host.getAttribute('data-layout') || 'wide';
@@ -1662,10 +1661,10 @@
           display: inline-flex;
           align-items: center;
           gap: 4px;
-          height: 24px;
+          height: 26px;
           padding: 0 9px;
-          border-radius: 9999px;
-          font-size: 11.5px;
+          border-radius: 6px;
+          font-size: 12px;
           font-weight: 500;
           line-height: 1;
           white-space: nowrap;
@@ -1673,7 +1672,7 @@
           border: 1px solid rgba(255, 255, 255, 0.12);
           background: rgba(255, 255, 255, 0.06);
           color: rgba(244, 244, 245, 0.88);
-          transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.08s ease;
+          transition: background-color 0.14s ease, border-color 0.14s ease;
         }
         #${QUICK_BAR_ID} .ag-qcap-btn:hover {
           background: rgba(255, 255, 255, 0.13);
@@ -1715,7 +1714,7 @@
         }
         #${QUICK_BAR_ID} .ag-qcap-toast {
           margin-left: auto;
-          font-size: 11px;
+          font-size: 12px;
           color: #38bdf8;
           opacity: 0;
           transition: opacity 0.18s ease;
@@ -1735,7 +1734,6 @@
           border: 1.5px solid rgba(239, 68, 68, 0.78) !important;
           background: rgba(239, 68, 68, 0.06) !important;
           border-radius: 8px !important;
-          box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.2) !important;
         }
         .ag-risk-banner {
           display: flex;
@@ -1747,7 +1745,7 @@
           background: rgba(239, 68, 68, 0.16);
           border: 1px solid rgba(239, 68, 68, 0.45);
           color: #fca5a5;
-          font-size: 11.5px;
+          font-size: 12px;
           font-weight: 600;
           line-height: 1.35;
         }
@@ -1875,7 +1873,7 @@
           display: inline-flex;
           align-items: center;
           gap: 3px;
-          height: 24px;
+          height: 26px;
           padding: 0 8px;
           border-radius: 6px;
           border: 1px solid rgba(255, 255, 255, 0.14);
@@ -1942,7 +1940,7 @@
           justify-content: space-between;
           gap: 10px;
           padding: 6px 12px;
-          font-size: 11.5px;
+          font-size: 12px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.09);
           background: rgba(255, 255, 255, 0.03);
           color: #a1a1aa;
@@ -1991,14 +1989,14 @@
           padding: 1px 5px;
           border-radius: 4px;
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          font-size: 10.5px;
+          font-size: 11px;
           font-weight: 600;
           line-height: 15px;
           letter-spacing: 0.2px;
           color: #e4e4e7;
           background: rgba(24, 24, 27, 0.88);
           border: 1px solid rgba(255, 255, 255, 0.18);
-          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
           pointer-events: none;
           z-index: 6;
         }
@@ -2007,7 +2005,7 @@
           color: #18181b;
           background: rgba(255, 255, 255, 0.94);
           border-color: rgba(24, 24, 27, 0.16);
-          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
         }
         [data-ag-has-ghost="1"] > p.pointer-events-none {
           opacity: 0 !important;
@@ -2054,7 +2052,7 @@
           color: rgba(228, 228, 231, 0.68);
           border-radius: 5px;
           padding: 1px 6px;
-          font-size: 11px;
+          font-size: 11.5px;
           line-height: 16px;
           cursor: pointer;
           transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
@@ -2571,7 +2569,7 @@
       autoClickedButtons.set(btn, now);
       try {
         btn.click();
-        showQuickToast(`🤖 已自动确认: ${rawText}`);
+        showQuickToast(`已自动确认: ${rawText}`);
       } catch {}
     }
   }
@@ -2579,7 +2577,7 @@
   function updateAutoAcceptBtn() {
     const btn = document.getElementById('ag-qcap-autoaccept');
     if (!btn) return;
-    btn.textContent = autoAcceptEnabled ? tr('🤖 自动确认: 开', '🤖 Auto-Accept: ON') : tr('🤖 自动确认: 关', '🤖 Auto-Accept: OFF');
+    btn.textContent = autoAcceptEnabled ? tr('自动确认: 开', 'Auto-Accept: ON') : tr('自动确认: 关', 'Auto-Accept: OFF');
     btn.setAttribute('data-active', autoAcceptEnabled ? 'true' : 'false');
     btn.title = autoAcceptEnabled
       ? tr('自动确认已开启（仅点击 Proceed / Accept / 继续 等安全步骤按钮）；点击关闭', 'Auto-Accept enabled for safe Proceed / Accept buttons; click to disable')
@@ -2608,7 +2606,7 @@
     latestBrainStats = res;
     const btn = document.getElementById('ag-qcap-brain');
     if (btn) {
-      btn.textContent = tr(`📦 缓存 ${res.totalMB}MB`, `📦 Cache ${res.totalMB}MB`);
+      btn.textContent = tr(`缓存 ${res.totalMB}MB`, `Cache ${res.totalMB}MB`);
       btn.title = formatBrainTooltip(res);
     }
     if (showDetailToast) {
@@ -2617,8 +2615,8 @@
       const top1 = res.topSessions && res.topSessions[0];
       showQuickToast(
         top1
-          ? tr(`📦 共 ${res.count} 个会话 (${res.totalMB}MB)，最大: ${top1.title} (${top1.mb}MB)，明细已复制`, `📦 ${res.count} sessions (${res.totalMB}MB), largest: ${top1.title} (${top1.mb}MB), copied`)
-          : tr(`📦 共 ${res.count} 个会话 (${res.totalMB}MB)，明细已复制`, `📦 ${res.count} sessions (${res.totalMB}MB), copied`)
+          ? tr(`共 ${res.count} 个会话 (${res.totalMB}MB)，最大: ${top1.title} (${top1.mb}MB)，明细已复制`, `${res.count} sessions (${res.totalMB}MB), largest: ${top1.title} (${top1.mb}MB), copied`)
+          : tr(`共 ${res.count} 个会话 (${res.totalMB}MB)，明细已复制`, `${res.count} sessions (${res.totalMB}MB), copied`)
       );
     }
     return res;
@@ -2628,7 +2626,7 @@
     return [
       {
         id: 'ag-qcap-compact',
-        label: tr('🗜️ /compact 压缩', '🗜️ /compact'),
+        label: tr('/compact 压缩', '/compact'),
         title: tr('快速填入 /compact 压缩上下文命令', 'Fill /compact command'),
         onClick: async () => {
           if (await fillComposerText('/compact')) showQuickToast(tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run'));
@@ -2636,7 +2634,7 @@
       },
       {
         id: 'ag-qcap-plan',
-        label: tr('🎯 /plan 规划', '🎯 /plan'),
+        label: tr('/plan 规划', '/plan'),
         title: tr('快速填入 /plan 前缀进入规划模式', 'Fill /plan prefix to enter plan mode'),
         onClick: async () => {
           if (await fillComposerText('/plan ')) showQuickToast(tr('已填入 /plan ，请输入规划需求', 'Inserted /plan , enter your goal'));
@@ -2644,7 +2642,7 @@
       },
       {
         id: 'ag-qcap-reload',
-        label: tr('🔄 重载规则', '🔄 Reload Rules'),
+        label: tr('重载规则', 'Reload Rules'),
         title: tr('快速填入“重新读取 AGENTS”指令', 'Fill reload AGENTS prompt'),
         onClick: async () => {
           if (await fillComposerText('重新读取 AGENTS')) showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
@@ -2652,7 +2650,7 @@
       },
       {
         id: 'ag-qcap-copyid',
-        label: tr('📋 复制会话 ID', '📋 Copy ID'),
+        label: tr('复制会话 ID', 'Copy ID'),
         title: tr('复制当前对话窗口的会话 ID', 'Copy current conversation ID'),
         onClick: async () => {
           const id = getSessionIdFromLocation();
@@ -2661,18 +2659,18 @@
             return;
           }
           const ok = await copyToClipboard(id);
-          showQuickToast(ok ? tr(`✅ 已复制会话 ID (${id.slice(0, 8)})`, `✅ Copied ID (${id.slice(0, 8)})`) : tr('复制失败，请检查剪贴板权限', 'Copy failed'));
+          showQuickToast(ok ? tr(`已复制会话 ID (${id.slice(0, 8)})`, `Copied ID (${id.slice(0, 8)})`) : tr('复制失败，请检查剪贴板权限', 'Copy failed'));
         }
       },
       {
         id: 'ag-qcap-export',
-        label: tr('📝 导出 Markdown', '📝 Export MD'),
+        label: tr('导出 Markdown', 'Export MD'),
         title: tr('将完整对话导出为 Markdown 保存到 ~/Downloads 并复制', 'Export conversation to Markdown in ~/Downloads and copy'),
         onClick: () => { void exportMarkdown(); }
       },
       {
         id: 'ag-qcap-brain',
-        label: latestBrainStats ? tr(`📦 缓存 ${latestBrainStats.totalMB}MB`, `📦 Cache ${latestBrainStats.totalMB}MB`) : tr('📦 缓存统计', '📦 Brain Cache'),
+        label: latestBrainStats ? tr(`缓存 ${latestBrainStats.totalMB}MB`, `Cache ${latestBrainStats.totalMB}MB`) : tr('缓存统计', 'Brain Cache'),
         title: latestBrainStats ? formatBrainTooltip(latestBrainStats) : tr('查看 ~/.gemini/antigravity/brain 历史会话占用（只读）', 'View ~/.gemini/antigravity/brain cache size (read-only)'),
         onClick: () => { void refreshBrainStats(true); }
       }
@@ -3867,7 +3865,7 @@
       editBtn.id = 'ag-fedit-toggle';
       editBtn.type = 'button';
       editBtn.className = 'ag-fedit-btn';
-      editBtn.textContent = fileEditorState.loading ? '⏳ 读取中' : '✏️ 编辑';
+      editBtn.textContent = fileEditorState.loading ? '读取中…' : '编辑';
       editBtn.title = '在侧边栏直接编辑当前文件';
       editBtn.addEventListener('mousedown', (e) => e.preventDefault());
       editBtn.addEventListener('click', () => { void enterFileEditor(); });
@@ -3878,7 +3876,7 @@
       saveBtn.type = 'button';
       saveBtn.className = 'ag-fedit-btn';
       saveBtn.setAttribute('data-primary', 'true');
-      saveBtn.textContent = fileEditorState.saving ? '⏳ 保存中' : (fileEditorState.dirty ? '💾 保存*' : '💾 保存');
+      saveBtn.textContent = fileEditorState.saving ? '保存中…' : (fileEditorState.dirty ? '保存*' : '保存');
       saveBtn.title = '保存更改到硬盘 (⌘S / Ctrl+S)';
       saveBtn.addEventListener('mousedown', (e) => e.preventDefault());
       saveBtn.addEventListener('click', () => { void saveFileEditor(); });
@@ -3887,7 +3885,7 @@
       doneBtn.id = 'ag-fedit-done';
       doneBtn.type = 'button';
       doneBtn.className = 'ag-fedit-btn';
-      doneBtn.textContent = '↩️ 完成';
+      doneBtn.textContent = '完成';
       doneBtn.title = '退出编辑并返回预览（自动刷新最新内容）';
       doneBtn.addEventListener('mousedown', (e) => e.preventDefault());
       doneBtn.addEventListener('click', () => { exitFileEditor(true); });

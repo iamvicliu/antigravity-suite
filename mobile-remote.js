@@ -932,7 +932,7 @@ function buildUnauthorizedHtml() {
 </head>
 <body>
   <div class="card">
-    <h1>🔒 需要配对口令</h1>
+    <h1>需要配对口令</h1>
     <p>当前浏览器未携带有效的远程配对 Token。请在 Mac 终端运行下方命令重新扫码打开：</p>
     <code>ag-context-meter remote</code>
   </div>
@@ -989,13 +989,13 @@ function buildMobileAppHtml() {
     .dot.err{background:var(--red)}
     @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
     .conv-title{font-size:15px;font-weight:600;color:#fafafa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em}
-    .sub-meta{font-size:11px;color:#71717a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+    .sub-meta{font-size:12px;color:#a1a1aa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
     .quota-pill{
       appearance:none;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.05);color:#e4e4e7;
-      border-radius:11px;padding:5px 10px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;
+      border-radius:11px;padding:5px 10px;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;
       flex-shrink:0;cursor:pointer;display:flex;flex-direction:column;align-items:flex-end;line-height:1.2;gap:1px;
     }
-    .quota-pill span:last-child{font-size:10px;color:#71717a;font-weight:500}
+    .quota-pill span:last-child{font-size:11.5px;color:#a1a1aa;font-weight:500}
     .quota-drawer{
       position:fixed;top:calc(env(safe-area-inset-top) + 52px);right:10px;left:10px;max-width:360px;margin-left:auto;
       z-index:60;background:#18181b;border:1px solid rgba(255,255,255,.16);border-radius:14px;
@@ -1003,12 +1003,12 @@ function buildMobileAppHtml() {
     }
     .quota-drawer[hidden]{display:none}
     .qcard{padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--border);margin-bottom:8px}
-    .qhead{display:flex;justify-content:space-between;font-weight:600;font-size:12.5px;margin-bottom:6px}
+    .qhead{display:flex;justify-content:space-between;font-weight:600;font-size:13.5px;margin-bottom:6px}
     .qsub{margin-top:5px}
-    .qsub-row{display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:3px}
+    .qsub-row{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px}
     .qbar{height:5px;border-radius:99px;background:rgba(255,255,255,.12);overflow:hidden}
     .qfill{height:100%;border-radius:99px}
-    .qreset{font-size:10.5px;color:var(--muted);margin-top:2px}
+    .qreset{font-size:11.5px;color:var(--muted);margin-top:2px}
     .messages{
       flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
       padding:14px 16px 12px;display:flex;flex-direction:column;gap:16px;
@@ -1016,9 +1016,9 @@ function buildMobileAppHtml() {
     .msg{word-break:break-word}
     .msg.user{
       align-self:flex-end;max-width:84%;padding:10px 14px;border-radius:18px 18px 4px 18px;
-      background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#f8fafc;
+      background:#1d4ed8;color:#f8fafc;
       font-size:14.5px;line-height:1.48;white-space:pre-wrap;
-      box-shadow:0 2px 12px rgba(37,99,235,.22);
+      box-shadow:none;
     }
     .msg.assistant{align-self:stretch;background:transparent;border:none;padding:2px 2px}
     .msg.assistant .msg-plain{white-space:pre-wrap;font-size:14.5px;line-height:1.65;color:#e4e4e7}
@@ -1057,9 +1057,9 @@ function buildMobileAppHtml() {
     .md-body th:last-child,.md-body td:last-child{border-right:none}
     .risk-tag{
       display:block;margin-bottom:6px;padding:4px 8px;border-radius:8px;
-      background:rgba(239,68,68,.16);border:1px solid rgba(239,68,68,.45);color:#fca5a5;font-size:12px;font-weight:600;
+      background:rgba(239,68,68,.16);border:1px solid rgba(239,68,68,.45);color:#fca5a5;font-size:12.5px;font-weight:600;
     }
-    .thought-box{margin-bottom:8px;padding:6px 9px;border-radius:9px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);font-size:12px;color:#d4d4d8}
+    .thought-box{margin-bottom:8px;padding:6px 9px;border-radius:9px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);font-size:12.5px;color:#d4d4d8}
     .thought-box summary{cursor:pointer;font-weight:600;color:#93c5fd;list-style:none}
     .thought-body{margin-top:6px;white-space:pre-wrap;color:#a1a1aa;max-height:220px;overflow-y:auto}
     .empty-tip{margin:auto;text-align:center;color:var(--muted);padding:24px 12px;font-size:13px}
@@ -1073,7 +1073,7 @@ function buildMobileAppHtml() {
       display:flex;flex-direction:column;gap:6px;
     }
     .approval-card.is-risk{background:rgba(239,68,68,.14);border-color:rgba(248,113,113,.8)}
-    .approval-ctx{font-size:12px;color:#e4e4e7;max-height:54px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,Menlo,monospace}
+    .approval-ctx{font-size:12.5px;color:#e4e4e7;max-height:54px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,Menlo,monospace}
     .approval-btns{display:flex;gap:8px;flex-wrap:wrap}
     .ap-btn{
       flex:1 1 110px;min-height:42px;border-radius:10px;border:none;font-size:14px;font-weight:700;cursor:pointer;
@@ -1088,12 +1088,12 @@ function buildMobileAppHtml() {
     .chips::-webkit-scrollbar{display:none}
     .chip{
       appearance:none;flex-shrink:0;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.04);color:#a1a1aa;
-      border-radius:999px;padding:5px 11px;font-size:12px;white-space:nowrap;cursor:pointer;
+      border-radius:999px;padding:5px 11px;font-size:12.5px;white-space:nowrap;cursor:pointer;
     }
     .chip.suggest{border-color:rgba(56,189,248,.32);background:rgba(56,189,248,.09);color:#7dd3fc;font-weight:500}
     .attach-hint{
       display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 12px;border-radius:12px;
-      background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.28);font-size:12px;color:#bae6fd;
+      background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.28);font-size:12.5px;color:#bae6fd;
     }
     .attach-hint[hidden]{display:none}
     .composer-card{
@@ -1226,7 +1226,7 @@ function buildMobileAppHtml() {
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
       .conv-title{font-size:15.5px}
-      .sub-meta{font-size:11.5px}
+      .sub-meta{font-size:12px}
       .quota-pill{flex-direction:row;align-items:center;gap:8px;padding:6px 12px;font-size:12px;border-radius:10px}
       .quota-pill span:last-child{font-size:11.5px;color:#a1a1aa;padding-left:8px;border-left:1px solid rgba(255,255,255,.12)}
       .drawer-backdrop{
@@ -1247,12 +1247,12 @@ function buildMobileAppHtml() {
       }
       .drawer-brand-dot{
         width:8px;height:8px;border-radius:99px;
-        background:linear-gradient(135deg,#38bdf8,#6366f1);box-shadow:0 0 10px rgba(56,189,248,.45);
+        background:#38bdf8;box-shadow:none;
       }
       .new-chat-btn{min-height:38px;padding:8px 12px;font-size:13px;border-radius:10px}
       .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:2px}
       .conv-item{
-        padding:9px 10px;font-size:13px;border-radius:9px;
+        padding:9px 10px;font-size:13.5px;border-radius:9px;
         white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
         transition:background-color .14s ease,border-color .14s ease;
       }
@@ -1260,6 +1260,9 @@ function buildMobileAppHtml() {
         padding:24px max(24px,calc(50% - 410px)) 18px;gap:18px;
       }
       .msg.user{max-width:72%;font-size:14.5px;padding:11px 16px}
+      .md-body{font-size:14.5px}
+      .md-body code{font-size:13px}
+      .md-body pre code{font-size:12.5px}
       .approval-dock{padding:10px max(24px,calc(50% - 410px))}
       .composer-dock{
         padding:6px max(24px,calc(50% - 410px)) 18px;gap:8px;
@@ -1680,10 +1683,10 @@ function buildMobileAppHtml() {
       const renderPool = (title, pool) => {
         const rows = [];
         if (pool?.fiveHour) {
-          rows.push(['⏱️ 5 小时限额', pool.fiveHour]);
+          rows.push(['5 小时限额', pool.fiveHour]);
         }
         if (pool?.weekly) {
-          rows.push(['📅 每周限额', pool.weekly]);
+          rows.push(['每周限额', pool.weekly]);
         }
         if (!rows.length && pool) {
           rows.push(['当前额度', pool]);

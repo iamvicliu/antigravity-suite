@@ -14,7 +14,7 @@
       box-shadow:0 0 0 1.5px var(--ag-bg-panel,#18181b);
     }
     #panel-settings{
-      width:600px;
+      width:640px;
       max-width:calc(100vw - 24px);
     }
     #panel-settings .panel-header-bar{
@@ -22,12 +22,13 @@
       flex-wrap:wrap;
     }
     #panel-settings .panel-header-actions{
-      gap:5px;
+      gap:6px;
       flex-wrap:wrap;
       justify-content:flex-end;
     }
     #suite-ver-status{
-      font-size:10px;
+      font-size:12px;
+      font-weight:500;
       white-space:nowrap;
       cursor:pointer;
     }
@@ -52,8 +53,9 @@
       border-color:#86efac;
     }
     #btn-suite-apply-update{
-      font-size:10.5px;
-      padding:2px 7px;
+      font-size:12px;
+      font-weight:500;
+      padding:3px 9px;
       white-space:nowrap;
     }
     #btn-suite-apply-update[hidden]{
@@ -62,7 +64,7 @@
     .settings-tabs-bar{
       display:grid;
       grid-template-columns:repeat(4,1fr);
-      gap:4px;
+      gap:6px;
       background:var(--ag-bg-subcard);
       border:1px solid var(--ag-border-subcard);
       border-radius:8px;
@@ -73,9 +75,9 @@
       border:1px solid transparent;
       background:transparent;
       color:var(--ag-text-muted);
-      font-size:11.5px;
+      font-size:13px;
       font-weight:500;
-      padding:6px 4px;
+      padding:7px 6px;
       border-radius:6px;
       cursor:pointer;
       white-space:nowrap;
@@ -104,12 +106,12 @@
     .settings-card-box{
       background:var(--ag-bg-card);
       border:1px solid var(--ag-border-card);
-      border-radius:8px;
-      padding:10px 12px;
-      margin-bottom:9px;
+      border-radius:10px;
+      padding:12px 14px;
+      margin-bottom:10px;
       display:flex;
       flex-direction:column;
-      gap:8px;
+      gap:10px;
     }
     .settings-card-box:last-child{
       margin-bottom:0;
@@ -127,14 +129,15 @@
       flex-wrap:wrap;
     }
     .settings-card-title{
-      font-size:12px;
+      font-size:14px;
       font-weight:600;
+      line-height:1.3;
       color:var(--ag-text-primary);
     }
     .settings-card-desc{
-      font-size:11px;
+      font-size:12px;
       color:var(--ag-text-muted);
-      line-height:1.4;
+      line-height:1.55;
     }
     .term-app-grid{
       display:grid;
@@ -168,8 +171,8 @@
       gap:6px;
     }
     .term-option-name{
-      font-size:11.5px;
-      font-weight:600;
+      font-size:13px;
+      font-weight:500;
       color:var(--ag-text-primary);
       overflow:hidden;
       text-overflow:ellipsis;
@@ -179,8 +182,9 @@
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .term-option-badge{
-      font-size:9.5px;
-      padding:0 5px;
+      font-size:11px;
+      font-weight:500;
+      padding:1px 6px;
       border-radius:999px;
       flex-shrink:0;
       border:1px solid var(--ag-border-subcard);
@@ -197,7 +201,7 @@
       border-color:#86efac;
     }
     .term-option-path{
-      font-size:10px;
+      font-size:11.5px;
       color:var(--ag-text-muted);
       font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
       white-space:nowrap;
@@ -207,18 +211,18 @@
     .term-custom-box{
       display:flex;
       flex-direction:column;
-      gap:5px;
-      padding:8px 9px;
-      border-radius:6px;
+      gap:7px;
+      padding:10px 12px;
+      border-radius:8px;
       background:var(--ag-bg-subcard);
-      border:1px dashed var(--ag-border-subcard);
+      border:1px solid var(--ag-border-subcard);
     }
     .term-custom-box[data-active="true"]{
       border-style:solid;
       border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.45));
     }
     .settings-field-lbl{
-      font-size:10.5px;
+      font-size:12px;
       color:var(--ag-text-secondary);
       font-weight:500;
     }
@@ -231,12 +235,12 @@
     .settings-input{
       flex:1 1 220px;
       min-width:0;
-      padding:5px 8px;
-      font-size:11px;
+      padding:6px 9px;
+      font-size:13px;
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);
       color:var(--ag-text-primary);
-      border-radius:5px;
+      border-radius:6px;
       outline:none;
     }
     .settings-input:focus{
@@ -247,12 +251,12 @@
       align-items:center;
       justify-content:space-between;
       gap:8px;
-      padding-top:4px;
+      padding-top:6px;
       border-top:1px solid var(--ag-border-subtle);
       flex-wrap:wrap;
     }
     .settings-status-note{
-      font-size:10.5px;
+      font-size:12px;
       color:var(--ag-text-secondary);
       overflow:hidden;
       text-overflow:ellipsis;
@@ -262,15 +266,15 @@
     .settings-pref-list{
       display:flex;
       flex-direction:column;
-      gap:7px;
+      gap:8px;
     }
     .settings-pref-row{
       display:flex;
       align-items:center;
       justify-content:space-between;
       gap:10px;
-      padding:7px 9px;
-      border-radius:6px;
+      padding:8px 10px;
+      border-radius:7px;
       background:var(--ag-bg-subcard);
       border:1px solid var(--ag-border-subcard);
     }
@@ -280,19 +284,19 @@
     .settings-pref-meta{
       display:flex;
       flex-direction:column;
-      gap:2px;
+      gap:3px;
       min-width:0;
       flex:1;
     }
     .settings-pref-name{
-      font-size:11.5px;
-      font-weight:600;
+      font-size:13px;
+      font-weight:500;
       color:var(--ag-text-primary);
     }
     .settings-pref-desc{
-      font-size:10px;
+      font-size:12px;
       color:var(--ag-text-muted);
-      line-height:1.35;
+      line-height:1.5;
     }
     .settings-checkbox{
       width:15px;
@@ -309,12 +313,12 @@
     }
     .settings-select{
       width:100%;
-      padding:5px 8px;
-      font-size:11px;
+      padding:6px 9px;
+      font-size:13px;
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);
       color:var(--ag-text-primary);
-      border-radius:5px;
+      border-radius:6px;
       outline:none;
       cursor:pointer;
     }

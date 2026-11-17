@@ -16,9 +16,11 @@
     '>_ CLI 启动终端配置': '>_ CLI Launch Terminal',
     '检测中…': 'Detecting…',
     '🔄 重新检测': '🔄 Re-detect',
+    '重新检测': 'Re-detect',
     '选择点击顶栏 CLI 按钮时启动的终端程序；支持本机主流终端自动识别与自定义路径。': 'Choose the terminal launched by the topbar CLI button; supports auto-detected terminals and custom paths.',
     '自定义终端程序路径（选择「自定义程序路径」时生效）': 'Custom Terminal Path (active when "Custom Path" is selected)',
     '📂 浏览选择…': '📂 Browse…',
+    '浏览选择…': 'Browse…',
     '保存路径': 'Save Path',
     '自定义程序路径': 'Custom Path',
     '自动默认 (Terminal.app)': 'Auto Default (Terminal.app)',
@@ -41,13 +43,18 @@
     '保存模型': 'Save Model',
     '当前使用：自动默认': 'Active: Auto Default',
     '▶ 测试打开终端': '▶ Test Terminal',
+    '测试打开终端': 'Test Terminal',
     '⏳ 正在尝试打开所选终端…': '⏳ Launching selected terminal…',
     '🧩 界面与对话增强偏好': '🧩 UI & Conversation Preferences',
+    '界面与对话增强偏好': 'UI & Conversation Preferences',
     '界面深浅主题': 'Appearance Theme',
     '控制状态栏、浮窗面板与调色默认色调': 'Controls default palette for toolbar badges, popovers, and panels',
     '🌗 跟随宿主': '🌗 Auto',
+    '跟随宿主': 'Auto',
     '☀️ 浅色': '☀️ Light',
+    '浅色': 'Light',
     '🌙 深色': '🌙 Dark',
+    '深色': 'Dark',
     '安全自动确认 (Auto-Accept)': 'Safe Auto-Accept',
     '自动点击 Proceed / Accept / 继续 等低风险确认按钮，高危命令自动拦截预警': 'Auto-click low-risk Proceed / Accept buttons while blocking high-risk commands',
     '下一步建议幽灵补全 (Tab / →)': 'Next-Step Ghost Suggestions (Tab / →)',
@@ -57,8 +64,10 @@
     '选项名保留英文': 'Keep Option Names in English',
     '中文界面下保留 Default / Auto / Turbo 与 High / Medium / Low 等档位英文原名': 'Keep original English option names (Default / Auto / Turbo / Effort) under Chinese UI',
     '🎨 热力图颜色主题与 5 档色阶自定义': '🎨 Heatmap Theme & 5-Level Color Scale',
+    '热力图颜色主题与 5 档色阶自定义': 'Heatmap Theme & 5-Level Color Scale',
     '切换色系预设或单独调色后，顶部标题文字、胶囊边框、按钮高亮及热力图色阶均同步跟随该颜色主题。': 'Topbar titles, accents, highlights, and heatmap palette sync automatically with the selected theme.',
     '🖌️ 面板背景与顶部指标颜色自定义': '🖌️ Panel Background & Badge Colors',
+    '面板背景与顶部指标颜色自定义': 'Panel Background & Badge Colors',
     '5 档色阶预设：': '5-Level Presets:',
     '紫色系': 'Purple',
     '黄色系': 'Yellow',
@@ -113,6 +122,7 @@
     '取消': 'Cancel',
     '保存': 'Save',
     '🌐 免 TUN 网络直连（本地代理）': '🌐 Proxy-No-TUN Direct Connect',
+    '免 TUN 网络直连（本地代理）': 'Proxy-No-TUN Direct Connect',
     '代理直连配置与状态': 'Proxy Status & Config',
     '正在核对代理设置…': 'Checking proxy settings…',
     '本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：': 'Local Proxy URL (e.g. http://127.0.0.1:7897 or socks5://...):',
@@ -122,6 +132,7 @@
     '开启免 TUN 直连': 'Enable Proxy',
     '关闭免 TUN 直连': 'Disable Proxy',
     '⚡ 上下文加长（实验特性说明）': '⚡ Context Window Unlock (Experimental)',
+    '上下文加长（实验特性说明）': 'Context Window Unlock (Experimental)',
     '当前后端补丁状态': 'Backend Patch Status',
     '正在分析当前 Antigravity 后端二进制…': 'Analyzing backend binary…',
     '⚠️ 技术边界与重要说明': '⚠️ Technical Notes & Disclaimers',
@@ -201,6 +212,7 @@
     '配置': 'Settings',
     '上下文窗口：': 'Context Window:',
     '⬆️ 一键更新': '⬆️ Update Now',
+    '立即更新': 'Update Now',
     '⏳ 正在更新…': '⏳ Updating…',
     '当前版本状态': 'Current Version Status',
     '拉取最新提交并免重启热生效': 'Pull latest commits and hot-reload without restart',
@@ -1048,7 +1060,7 @@
       if (applyBtn) {
         applyBtn.hidden = false;
         applyBtn.disabled = false;
-        applyBtn.textContent = '⬆️ 一键更新';
+        applyBtn.textContent = '立即更新';
       }
       if (settingsBtn) {
         settingsBtn.setAttribute('data-has-update', 'true');
@@ -1149,7 +1161,7 @@
       }
       if (applyBtn) {
         applyBtn.disabled = false;
-        applyBtn.textContent = '⬆️ 一键更新';
+        applyBtn.textContent = '立即更新';
       }
       applySuiteShadowLocale();
       return res || null;
@@ -1160,7 +1172,7 @@
       }
       if (applyBtn) {
         applyBtn.disabled = false;
-        applyBtn.textContent = '⬆️ 一键更新';
+        applyBtn.textContent = '立即更新';
       }
       applySuiteShadowLocale();
       return null;
