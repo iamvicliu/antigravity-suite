@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { getStateDir, builtinAsar, loadAsarEngine } = require('./asar-engine');
+const { getStateDir, builtinAsar, loadAsarEngine, resolveActiveCdpTarget } = require('./asar-engine');
 const { acquireFileLock } = require('./modules-config');
 const {
   TAGS,
@@ -55,20 +55,7 @@ async function tryHotDispose() {
       if (!isIsolatedTemp) return false;
     }
 
-    const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
-    if (!fs.existsSync(portFile)) return false;
-    const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-    if (!port) return false;
-    const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
-        let body = '';
-        res.on('data', c => body += c);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-      });
-      req.setTimeout(2500, () => req.destroy(new Error('timeout')));
-      req.on('error', reject);
-    });
-    const targets = pages.filter(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
+    const { targets } = await resolveActiveCdpTarget({ timeoutMs: 2500 });
     for (const target of targets) {
       let ws = null;
       try {

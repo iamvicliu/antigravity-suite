@@ -3,7 +3,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
 function readHeader(archivePath) {
   const fd = fs.openSync(archivePath, 'r');
@@ -181,17 +183,147 @@ function loadAsarEngine() {
   return builtinAsar;
 }
 
+function ensureWritableDir(dir) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
 function getStateDir() {
-  if (process.env.AG_METER_STATE_DIR) return process.env.AG_METER_STATE_DIR;
+  const envStateDir = process.env.AG_METER_STATE_DIR || process.env.AG_CONTEXT_METER_STATE_DIR;
+  if (envStateDir) {
+    return ensureWritableDir(envStateDir) || envStateDir;
+  }
   const home = os.homedir();
-  const base = process.platform === 'win32'
-    ? (process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'))
-    : process.platform === 'darwin'
+  const isTestEnv = process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  const base = (isTestEnv && process.env.APPDATA)
+    ? process.env.APPDATA
+    : process.platform === 'win32'
+      ? (process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'))
+      : process.platform === 'darwin'
+        ? path.join(home, 'Library', 'Application Support')
+        : (process.env.XDG_STATE_HOME || path.join(home, '.local', 'state'));
+
+  const primaryDir = path.join(base, 'AntigravityContextMeter');
+  if (ensureWritableDir(primaryDir)) return primaryDir;
+
+  // macOS TCC 或只读目录限制时自动回退到 ~/.config 或系统临时目录
+  const fallbackXdg = path.join(home, '.config', 'antigravity-context-meter');
+  if (ensureWritableDir(fallbackXdg)) return fallbackXdg;
+
+  const fallbackTmp = path.join(os.tmpdir(), 'antigravity-context-meter');
+  ensureWritableDir(fallbackTmp);
+  return fallbackTmp;
+}
+
+/**
+ * 探测正在运行的 Antigravity DevTools 调试端口列表（优先读 DevToolsActivePort，macOS TCC 受限时自动回退 lsof）
+ */
+function discoverDevToolsPorts() {
+  const home = os.homedir();
+  const appData = process.env.APPDATA || (
+    process.platform === 'darwin'
       ? path.join(home, 'Library', 'Application Support')
-      : (process.env.XDG_STATE_HOME || path.join(home, '.local', 'state'));
-  const dir = path.join(base, 'AntigravityContextMeter');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
+      : path.join(home, '.config')
+  );
+  const isTestEnv = process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  if (isTestEnv && !appData.toLowerCase().includes(os.tmpdir().toLowerCase())) {
+    return [];
+  }
+
+  const ports = [];
+  const pushPort = (raw) => {
+    const num = Number(String(raw || '').trim());
+    if (Number.isInteger(num) && num > 0 && num < 65536 && !ports.includes(num)) {
+      ports.push(num);
+    }
+  };
+
+  try {
+    const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
+    if (fs.existsSync(portFile)) {
+      const firstLine = fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0];
+      pushPort(firstLine);
+    }
+  } catch {
+    // 忽略 macOS TCC EPERM/EACCES，继续走进程端口探测
+  }
+
+  if (!isTestEnv && process.platform === 'darwin') {
+    try {
+      const out = execFileSync(
+        'lsof',
+        ['-nP', '-a', '-c', 'Antigravity', '-iTCP', '-sTCP:LISTEN'],
+        { encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }
+      );
+      const re = /(?:127\.0\.0\.1|localhost|\[::1\]|\*):(\d+)\s+\(LISTEN\)/g;
+      let m;
+      while ((m = re.exec(out)) !== null) {
+        pushPort(m[1]);
+      }
+    } catch {
+      // 忽略 lsof 不存在或无权限情况
+    }
+  }
+
+  return ports;
+}
+
+function getDevToolsPort() {
+  return discoverDevToolsPorts()[0] || null;
+}
+
+function fetchHttpJsonLoopback(port, urlPath, timeoutMs = 1500) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: urlPath,
+      method: 'GET',
+      agent: false
+    }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function resolveActiveCdpTarget(options = {}) {
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 1500;
+  const ports = discoverDevToolsPorts();
+  for (const port of ports) {
+    try {
+      const pages = await fetchHttpJsonLoopback(port, '/json/list', timeoutMs);
+      if (!Array.isArray(pages)) continue;
+      const targets = pages.filter(
+        (p) => p && p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(String(p.url || ''))
+      );
+      if (targets.length > 0) {
+        return { port, pages, targets };
+      }
+    } catch {
+      // 尝试下一个候选端口
+    }
+  }
+  return { port: ports[0] || null, pages: [], targets: [] };
 }
 
 /**
@@ -244,4 +376,12 @@ function findAsarPath(customPath) {
   throw new Error('Could not auto-detect Antigravity installation (app.asar). Use --path <path-to-app.asar>.');
 }
 
-module.exports = { loadAsarEngine, builtinAsar, getStateDir, findAsarPath };
+module.exports = {
+  loadAsarEngine,
+  builtinAsar,
+  getStateDir,
+  findAsarPath,
+  discoverDevToolsPorts,
+  getDevToolsPort,
+  resolveActiveCdpTarget
+};

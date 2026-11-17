@@ -118,7 +118,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
   const url = isLocalMainFrameSender(event);
   if (!url) throw new Error('仅允许本机主聊天窗口');
   try {
-    const { loadModulesConfig, saveModulesConfig, inspectDiskModules } = require('./modules-config');
+    const { loadModulesConfig, saveModulesConfig, inspectDiskModules, normalizeBrandTitle, normalizeClientLanguage } = require('./modules-config');
     const cfg = loadModulesConfig();
     if (!cfg.modules[moduleName]) throw new Error(`未知的模块标识: ${moduleName}`);
 
@@ -139,10 +139,18 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
 
     // 结果类型 1: 已有完整运行时可通过配置切换 (config_toggled)
     if (hasDiskCapability) {
-      cfg.modules[moduleName].enabled = targetEnable;
-      if (moduleName === 'proxy' && extraOpts) {
-        if (extraOpts.proxyUrl) cfg.modules.proxy.proxyUrl = extraOpts.proxyUrl;
-        if (extraOpts.bypassList) cfg.modules.proxy.bypassList = extraOpts.bypassList;
+      if (moduleName === 'chinese') {
+        const nextLang = normalizeClientLanguage(extraOpts?.language, targetEnable);
+        cfg.modules.chinese.language = nextLang;
+        cfg.modules.chinese.enabled = nextLang === 'zh-CN';
+        if (extraOpts?.brandTitle !== undefined) cfg.modules.chinese.brandTitle = normalizeBrandTitle(extraOpts.brandTitle);
+        cfg.modules.chinese.lastUpdated = new Date().toISOString();
+      } else {
+        cfg.modules[moduleName].enabled = targetEnable;
+        if (moduleName === 'proxy' && extraOpts) {
+          if (extraOpts.proxyUrl) cfg.modules.proxy.proxyUrl = extraOpts.proxyUrl;
+          if (extraOpts.bypassList) cfg.modules.proxy.bypassList = extraOpts.bypassList;
+        }
       }
       saveModulesConfig(cfg);
       const msg = targetEnable
@@ -161,6 +169,9 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     // 若用户是关闭一个原本就未注入的模块，直接同步配置
     if (!targetEnable) {
       cfg.modules[moduleName].enabled = false;
+      if (moduleName === 'chinese') {
+        cfg.modules.chinese.language = 'en';
+      }
       saveModulesConfig(cfg);
       return {
         ok: true,

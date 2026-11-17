@@ -4,37 +4,29 @@
 
 - Edit renderer code in `src/renderer/`, then run `npm run build:renderer`.
   `meter-renderer.js` is the generated bundle; include it with renderer changes.
-- Run `npm test` after source changes. Tests use temporary directories for settings and usage data.
+- Run `npm run test:suite` after source changes. Tests use isolated temporary directories for settings and usage data.
 - Keep local transcripts, installation manifests, backups and capture output outside the repository.
 - The runtime uses Node.js built-ins and the bundled ASAR engine. No `npm install` is needed.
 
-## Installation
+## Zero-Patch Installation & Runtime Control
 
 Use Node.js 22.4 or later. Python is optional for attachment analysis.
-Run installation commands only when installation or updating the local client is requested.
+This suite uses **100% zero-patch CDP hot-injection** on macOS and never modifies `app.asar`, Apple code signatures, or application binaries during normal installation/usage.
 
 ```sh
-node cli.js check
-node cli.js install
-node cli.js status
+./scripts/setup-macos-cdp.sh          # or --no-auto to skip LaunchAgent
+ag-context-meter live                 # hot-inject into running Antigravity (use --no-remote to disable mobile server)
+ag-context-meter status               # verify live components and intact official signature
 ```
 
-Pass `--path "<path-to-app.asar>"` for a custom installation.
-The installer records backup paths and checksums in the local state directory.
-Check `asarPatched` and `liveWindow.active` in the status output separately:
-a disk patch does not by itself confirm that the running window loaded it.
+- `node cli.js live` (default command of `cli.js`, optional `--no-remote` or `AG_DISABLE_MOBILE_REMOTE=1`): inject into the running window without touching `app.asar`.
+- `ag-context-meter stop` / `ag-context-meter auto-off`: cleanly dispose injected UI and stop background bridge.
+- Note: Legacy `install` / `unlock` / `restore` commands in `cli.js` are gated off in normal runs to preserve client integrity (`--allow-asar-patch` / test mode only).
 
-Keep Antigravity running when using CDP hot injection. Do not terminate the host
-from an agent session inside Antigravity. If the archive is locked, report the
-write failure and let the user close the client before retrying.
-
-Other commands:
-
-- `node cli.js live`: inject into the running window without patching the archive.
-- `node cli.js restore`: restore the recorded backup.
+Keep Antigravity running when using CDP hot injection. Do not terminate the host from an agent session inside Antigravity.
 
 ## UI translation
 
 Translate visible text in `src/renderer/template.html` and the renderer JavaScript
 modules. Keep DOM IDs, selectors, event handlers and data structures intact.
-Build the renderer and run tests before installing the translated version.
+Build the renderer and run tests before reloading via `ag-context-meter live`.

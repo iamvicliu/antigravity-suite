@@ -1748,9 +1748,11 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
   const os = require('node:os');
   const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-remote-test-'));
   const prevAppData = process.env.APPDATA;
-  const prevStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevMeterStateDir = process.env.AG_METER_STATE_DIR;
+  const prevContextStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
   try {
     process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
     process.env.AG_CONTEXT_METER_STATE_DIR = tmpState;
     delete require.cache[require.resolve('./mobile-remote.js')];
     const {
@@ -1918,8 +1920,10 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;
-    if (prevStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
-    else process.env.AG_CONTEXT_METER_STATE_DIR = prevStateDir;
+    if (prevMeterStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevMeterStateDir;
+    if (prevContextStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevContextStateDir;
     delete require.cache[require.resolve('./mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }

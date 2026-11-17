@@ -196,25 +196,53 @@
     };
   }
 
+  const DECORATIVE_BADGE_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|最新|预览|預覽|推荐|推薦|新增)$/i;
+
+  function isDecorativeBadgeTagTitle(tagTitle) {
+    return DECORATIVE_BADGE_TAG_RE.test(String(tagTitle || '').trim());
+  }
+
+  function buildAllowedTierMatchSet(planStatus) {
+    const out = new Set();
+    if (!planStatus || typeof planStatus !== 'object') return out;
+    const rawIds = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey];
+    for (const raw of rawIds) {
+      if (!raw) continue;
+      const val = String(raw).trim().toLowerCase();
+      if (!val) continue;
+      out.add(val);
+      out.add(val.replace(/^g1-/, '').replace(/-tier$/, ''));
+      if (val.includes('ultra')) out.add('ultra');
+      else if (val.includes('pro')) out.add('pro');
+      else if (val.includes('plus')) out.add('plus');
+      else if (val.includes('teams') || val.includes('team')) out.add('teams');
+      else if (val.includes('enterprise')) out.add('enterprise');
+      else if (val.includes('free')) out.add('free');
+    }
+    return out;
+  }
+
   function classifyModelQuotaAvailability(config, planStatus = null) {
     if (!config || typeof config !== 'object') {
       return { noPermission: false, unavailable: false, reason: null, noticeTitle: null, noticeText: null };
     }
     const tagTitle = typeof config.tagTitle === 'string' ? config.tagTitle.trim() : '';
     const tagDesc = typeof config.tagDescription === 'string' ? config.tagDescription.trim() : '';
-    const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用/i.test(tagTitle);
-    const isDecorativeBadgeTag = /^(new|beta|preview|alpha|experimental|recommended|最新|预览|預覽|推荐|推薦)$/i.test(tagTitle);
+    const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle);
+    const isDecorativeBadgeTag = isDecorativeBadgeTagTitle(tagTitle);
     const isExplicitNoticeTag = /^notice$/i.test(tagTitle);
     const isTagNotice = !isTagUnavailable && (Boolean(tagDesc) || isExplicitNoticeTag || (Boolean(tagTitle) && !isDecorativeBadgeTag));
 
     let tierBlocked = false;
     let tierReason = null;
-    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus && (planStatus.tierId || planStatus.teamsTier)) {
-      const myIds = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey]
-        .filter(Boolean)
-        .map(v => String(v).toLowerCase());
-      const allowedLower = config.allowedTiers.map(v => String(v).toLowerCase());
-      const hit = myIds.some(id => allowedLower.some(a => a === id || a.includes(id) || id.includes(a)));
+    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus && (planStatus.tierId || planStatus.teamsTier || planStatus.tierKey)) {
+      const myMatchSet = buildAllowedTierMatchSet(planStatus);
+      const hit = myMatchSet.size > 0 && config.allowedTiers.some(v => {
+        const a = String(v || '').trim().toLowerCase();
+        if (!a) return false;
+        const stripped = a.replace(/^g1-/, '').replace(/-tier$/, '');
+        return myMatchSet.has(a) || myMatchSet.has(stripped);
+      });
       if (!hit) {
         tierBlocked = true;
         tierReason = `仅限 ${config.allowedTiers.join(' / ')} 套餐可用`;
@@ -235,17 +263,18 @@
     const noticeText = isTagNotice
       ? (tagDesc || (!isDecorativeBadgeTag ? tagTitle : null))
       : (hasConfigNotice ? config.notice.trim() : null);
+    const fallbackTagReason = isDecorativeBadgeTag ? null : (tagTitle || null);
 
     return {
       noPermission: explicitlyDisabled,
       unavailable: explicitlyDisabled,
-      reason: explicitlyDisabled ? (config.unavailabilityReason || tagDesc || tagTitle || tierReason || '当前套餐无权访问该模型') : null,
+      reason: explicitlyDisabled ? (config.unavailabilityReason || tagDesc || fallbackTagReason || tierReason || '当前套餐无权访问该模型') : null,
       noticeTitle: (noticeText && (isTagNotice || hasConfigNotice)) ? (tagTitle || 'Notice') : null,
       noticeText: noticeText || null
     };
   }
 
-  function resolveModelQuota(modelIdOrName, cascadeModelConfigs) {
+  function resolveModelQuota(modelIdOrName, cascadeModelConfigs, options = {}) {
     if (!Array.isArray(cascadeModelConfigs) || !cascadeModelConfigs.length || !modelIdOrName) {
       return null;
     }
@@ -275,7 +304,7 @@
 
     if (!matched) return null;
 
-    const avail = classifyModelQuotaAvailability(matched);
+    const avail = classifyModelQuotaAvailability(matched, options?.planStatus || null);
     const qi = matched.quotaInfo || {};
     const parsed = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
     const poolNames = {
@@ -307,7 +336,11 @@
     const error = typeof input === 'string' ? input : String(input?.error || input?.message || '');
     const currentModel = options.currentModel || '';
     const cascadeConfigs = options.cascadeModelConfigs || [];
-    const modelQuota = resolveModelQuota(currentModel, cascadeConfigs);
+    const modelQuota = resolveModelQuota(
+      currentModel,
+      cascadeConfigs,
+      options.planStatus ? { planStatus: options.planStatus } : undefined
+    );
 
     if (!error) {
       return {
@@ -1630,6 +1663,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: null,
         ultraSubTier: null,
         ultraSubTierSource: 'unknown',
         planName: '未知',
@@ -1653,11 +1687,13 @@
     const planInfo = planStatus.planInfo || {};
     const email = us.email || null;
     const rawTierName = String(userTier.name || planInfo.planName || '').trim();
+    const teamsTier = userTier.teamsTier || us.teamsTier || planInfo.teamsTier || null;
 
     // 只有具备明确权益证据时才识别套餐，避免空对象或缺省状态被当成 Free
     const hasTierEvidence = Boolean(
       rawTierName ||
       userTier.id ||
+      teamsTier ||
       planStatus.availablePromptCredits !== undefined ||
       planInfo.monthlyPromptCredits !== undefined
     );
@@ -1668,6 +1704,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: null,
         ultraSubTier: null,
         ultraSubTierSource: 'unknown',
         planName: '未知',
@@ -1744,6 +1781,7 @@
       tierKey,
       tierName: tierDisplayName,
       tierId: userTier.id || null,
+      teamsTier,
       ultraSubTier,
       ultraSubTierSource,
       planName: planInfo.planName || tierDisplayName,
@@ -3962,6 +4000,8 @@
     parseQuotaFraction,
     formatQuotaPercentText,
     formatQuotaResetMeta,
+    isDecorativeBadgeTagTitle,
+    buildAllowedTierMatchSet,
     classifyModelQuotaAvailability,
     buildModelQuotaSnapshot,
     formatApproxTokensShort,

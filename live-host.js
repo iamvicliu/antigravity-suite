@@ -342,6 +342,7 @@ function collectBrainStats() {
 (async () => {
   let api = await connect();
   const secret = crypto.randomBytes(32).toString('hex');
+  const mobileRemoteDisabled = process.env.AG_DISABLE_MOBILE_REMOTE === '1' || process.argv.includes('--no-remote');
   const stamp = path.join(getStateDir(), '.live-session.json');
   const server = http.createServer(async (req, res) => {
     const origin = req.headers.origin;
@@ -712,6 +713,11 @@ function collectBrainStats() {
           return;
         }
         if (req.url === '/remote-info') {
+          if (mobileRemoteDisabled) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: false, disabled: true, error: '已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用手机远程监听' }));
+            return;
+          }
           const info = buildRemoteInfo({ resetToken: request?.resetToken === true });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ ok: true, data: info }));
@@ -726,13 +732,24 @@ function collectBrainStats() {
   });
   let remoteHandle = null;
   server.listen(0, '127.0.0.1', () => {
-    const info = { port: server.address().port, token: secret, pid: process.pid, origin: api.origin, startedAt: Date.now() };
+    const info = {
+      port: server.address().port,
+      token: secret,
+      pid: process.pid,
+      origin: api.origin,
+      remoteDisabled: mobileRemoteDisabled,
+      startedAt: Date.now()
+    };
     fs.writeFileSync(stamp, JSON.stringify(info));
     console.log('Context Meter local bridge ready on loopback port ' + info.port);
-    try {
-      remoteHandle = startMobileRemoteServer();
-    } catch (e) {
-      console.error('Mobile Remote PWA startup skipped:', e?.message || e);
+    if (mobileRemoteDisabled) {
+      console.log('Mobile Remote PWA disabled via --no-remote / AG_DISABLE_MOBILE_REMOTE=1');
+    } else {
+      try {
+        remoteHandle = startMobileRemoteServer();
+      } catch (e) {
+        console.error('Mobile Remote PWA startup skipped:', e?.message || e);
+      }
     }
   });
   const shutdownAll = (code = 0) => {

@@ -7,7 +7,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
-const { getStateDir } = require('./asar-engine');
+const { getStateDir, resolveActiveCdpTarget } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 
 const DEFAULT_REMOTE_PORT = 18765;
@@ -645,35 +645,13 @@ function renderQrSvg(url) {
 
 // ==================== CDP 目标枚举与脚本求值 ====================
 
-function getDevToolsPortFile() {
-  const appData = process.env.APPDATA || (
-    process.platform === 'darwin'
-      ? path.join(os.homedir(), 'Library', 'Application Support')
-      : path.join(os.homedir(), '.config')
-  );
-  return path.join(appData, 'Antigravity', 'DevToolsActivePort');
-}
-
 async function listAntigravityCdpTargets() {
-  const portFile = getDevToolsPortFile();
-  if (!fs.existsSync(portFile)) {
+  const { port, targets } = await resolveActiveCdpTarget({ timeoutMs: 2500 });
+  if (!port) {
     throw new Error('Antigravity 未运行或未开启远程调试端口');
   }
-  const firstLine = fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]?.trim();
-  const port = Number(firstLine);
-  if (!Number.isInteger(port) || port <= 0) {
-    throw new Error('DevToolsActivePort 端口号无效');
-  }
-
-  const res = await fetch(`http://127.0.0.1:${port}/json/list`, {
-    signal: AbortSignal.timeout(2500)
-  });
-  if (!res.ok) {
-    throw new Error(`查询 Antigravity CDP 页面列表失败 (${res.status})`);
-  }
-  const pages = await res.json();
-  return (Array.isArray(pages) ? pages : [])
-    .filter((p) => p && p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(String(p.url || '')) && p.webSocketDebuggerUrl)
+  return targets
+    .filter((p) => p && p.webSocketDebuggerUrl)
     .map((p) => ({
       id: String(p.id),
       title: String(p.title || 'Antigravity'),

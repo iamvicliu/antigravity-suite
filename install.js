@@ -11,7 +11,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { loadAsarEngine, builtinAsar, getStateDir, findAsarPath } = require('./asar-engine');
+const { loadAsarEngine, builtinAsar, getStateDir, findAsarPath, resolveActiveCdpTarget } = require('./asar-engine');
 const { loadModulesConfig, saveModulesConfig, acquireFileLock } = require('./modules-config');
 const {
   TAGS,
@@ -67,20 +67,7 @@ async function tryHotInject(options = {}) {
       if (!isIsolatedTemp) return false;
     }
 
-    const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
-    if (!fs.existsSync(portFile)) return false;
-    const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-    if (!port) return false;
-    const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
-        let body = '';
-        res.on('data', c => body += c);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-      });
-      req.setTimeout(2500, () => req.destroy(new Error('timeout')));
-      req.on('error', reject);
-    });
-    const targets = pages.filter(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
+    const { targets } = await resolveActiveCdpTarget({ timeoutMs: 2500 });
     if (!targets.length) return false;
 
     const stateDir = getStateDir();
@@ -640,11 +627,25 @@ async function install(options = {}) {
     const modulesConfig = loadModulesConfig();
     if (options.modules) {
       if (options.modules.meter) Object.assign(modulesConfig.modules.meter, options.modules.meter);
-      if (options.modules.chinese) Object.assign(modulesConfig.modules.chinese, options.modules.chinese);
+      if (options.modules.chinese) {
+        Object.assign(modulesConfig.modules.chinese, options.modules.chinese);
+        if (options.modules.chinese.language !== undefined) {
+          modulesConfig.modules.chinese.language = String(options.modules.chinese.language).toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+          modulesConfig.modules.chinese.enabled = modulesConfig.modules.chinese.language === 'zh-CN';
+        } else if (options.modules.chinese.enabled !== undefined) {
+          modulesConfig.modules.chinese.language = options.modules.chinese.enabled ? 'zh-CN' : 'en';
+        }
+      }
       if (options.modules.proxy) Object.assign(modulesConfig.modules.proxy, options.modules.proxy);
     }
-    if (process.argv.includes('--enable-chinese')) modulesConfig.modules.chinese.enabled = true;
-    if (process.argv.includes('--disable-chinese')) modulesConfig.modules.chinese.enabled = false;
+    if (process.argv.includes('--enable-chinese')) {
+      modulesConfig.modules.chinese.enabled = true;
+      modulesConfig.modules.chinese.language = 'zh-CN';
+    }
+    if (process.argv.includes('--disable-chinese')) {
+      modulesConfig.modules.chinese.enabled = false;
+      modulesConfig.modules.chinese.language = 'en';
+    }
     if (process.argv.includes('--enable-proxy')) modulesConfig.modules.proxy.enabled = true;
     if (process.argv.includes('--disable-proxy')) modulesConfig.modules.proxy.enabled = false;
     const proxyUrlIdx = process.argv.indexOf('--proxy-url');
@@ -1002,12 +1003,19 @@ async function install(options = {}) {
 }
 
 if (require.main === module) {
-  install()
-    .then(manifest => console.log(JSON.stringify(manifest, null, 2)))
-    .catch(error => {
-      console.error(String(error.stack || error.message).slice(0, 2000));
-      process.exitCode = 1;
-    });
+  const isTestEnv = process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  const allowAsarPatch = isTestEnv || process.argv.includes('--allow-asar-patch');
+  if (!allowAsarPatch) {
+    console.error('❌ 本套件默认采用 100% 零改包设计，已禁用直接运行 install.js 修改 app.asar；请改用 node cli.js live。');
+    process.exitCode = 1;
+  } else {
+    install()
+      .then(manifest => console.log(JSON.stringify(manifest, null, 2)))
+      .catch(error => {
+        console.error(String(error.stack || error.message).slice(0, 2000));
+        process.exitCode = 1;
+      });
+  }
 }
 
 module.exports = { install, findAsarPath, tryHotInject, extractAsarFile };

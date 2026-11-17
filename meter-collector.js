@@ -58,6 +58,7 @@ const {
   parseUserPlanStatus,
   normalizeUltraSubTier,
   buildModelQuotaSnapshot,
+  isDecorativeBadgeTagTitle,
   getModelPoolKey,
   getSharedQuotaGroupKey,
   extractCallId,
@@ -279,7 +280,9 @@ function sanitizeCascadeModelConfig(c) {
   if (!c || typeof c !== 'object') return null;
   const tagTitle = typeof c.tagTitle === 'string' ? c.tagTitle.trim() : '';
   const tagDesc = typeof c.tagDescription === 'string' ? c.tagDescription.trim() : '';
-  const isTagUnavailable = /unavailable|disabled|不可用/i.test(tagTitle);
+  const isTagUnavailable = /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle);
+  const decorativeTag = isDecorativeBadgeTagTitle(tagTitle);
+  const fallbackTagReason = decorativeTag ? null : (tagTitle || null);
   const isUnavail = Boolean(
     c.unavailable === true ||
     c.isUnavailable === true ||
@@ -321,8 +324,8 @@ function sanitizeCascadeModelConfig(c) {
     disabled: c.disabled === true,
     allowedTiers: Array.isArray(c.allowedTiers) ? c.allowedTiers.slice() : undefined,
     unavailable: isUnavail,
-    unavailabilityReason: c.unavailabilityReason || c.disabledReason || c.reason || (isUnavail ? (tagDesc || tagTitle || null) : null),
-    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && tagTitle ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : null),
+    unavailabilityReason: c.unavailabilityReason || c.disabledReason || c.reason || (isUnavail ? (tagDesc || fallbackTagReason) : null),
+    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && (tagDesc || (!decorativeTag && tagTitle)) ? `${(!decorativeTag && tagTitle) ? tagTitle : ''}${tagDesc ? `${(!decorativeTag && tagTitle) ? '：' : ''}${tagDesc}` : ''}` : null),
     isHistorical: isHist,
     releaseDate: c.releaseDate || null,
     family: c.family || null,
@@ -2488,6 +2491,16 @@ async function fetchUserStatusFromHost(options = {}) {
       api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)
     ]);
     const parsed = parseUserPlanStatus(res);
+    const rawEmail = parsed?.email || res?.userStatus?.email || '';
+    if (rawEmail) {
+      const nextScopeKey = buildAccountScopeKey(rawEmail);
+      if (lastHostAccountScopeKey && nextScopeKey !== lastHostAccountScopeKey) {
+        cachedQuotaState = null;
+        cachedHostUserStatus = null;
+        cachedHostUserStatusAt = 0;
+      }
+      lastHostAccountScopeKey = nextScopeKey;
+    }
     const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
     const availMap = availRes ? parseAvailableModelsResponse(availRes) : {};
     if (parsed) {
@@ -3735,7 +3748,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     }
   };
 
-  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
+  const archiveSig = `${agDir}|${earliestDate}|${totalConversations}|${grandTotalTokens}|${totalSteps}|${effectivePlanStatus?.tierKey || ''}|${effectivePlanStatus?.tierId || ''}|${effectivePlanStatus?.teamsTier || ''}|${effectivePlanStatus?.actualPricePaid ?? ''}|${effectivePlanStatus?.currency || ''}|${costEstimate?.pricedCostUSD ?? ''}`;
   const isStaleCheck = typeof extraContext.isStale === 'function' ? extraContext.isStale : null;
   if (isStaleCheck && isStaleCheck()) {
     return { out, archiveSig: null, accountKey: currentAccountKey || null, stale: true };

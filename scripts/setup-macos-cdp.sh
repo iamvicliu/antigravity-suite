@@ -17,18 +17,23 @@ LOG_PATH="$HOME/Library/Logs/antigravity-hans.log"
 PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
 
 ENABLE_AUTO=1
+DISABLE_REMOTE=0
 for arg in "$@"; do
   case "$arg" in
     --no-auto)
       ENABLE_AUTO=0
+      ;;
+    --no-remote)
+      DISABLE_REMOTE=1
       ;;
     -h|--help)
       cat <<'EOF'
 用法: ./scripts/setup-macos-cdp.sh [选项]
 
 选项:
-  --no-auto   仅配置 ~/.local/bin/ag-context-meter 软链，不安装 LaunchAgent 自启守护
-  -h, --help  显示帮助信息
+  --no-auto    仅配置 ~/.local/bin/ag-context-meter 软链，不写入 LaunchAgent 后台自启守护
+  --no-remote  仅启用桌面端界面增强，禁用 18765 手机远程监听端口
+  -h, --help   显示帮助信息
 EOF
       exit 0
       ;;
@@ -67,9 +72,21 @@ if [ ! -e "$STANDARD_SHARE_DIR" ]; then
   echo "✅ 已建立运行目录软链: $STANDARD_SHARE_DIR -> $REPO_DIR"
 fi
 
-# 3. 写入 LaunchAgent（通过 WatchPaths 监听 DevToolsActivePort，随 Antigravity 启动自动挂载）
-mkdir -p "$LAUNCH_AGENTS_DIR" "$HOME/Library/Logs"
-cat > "$PLIST_PATH" <<EOF
+# 3. 仅在开启自启时写入 LaunchAgent（传 --no-auto 时零写入系统后台自启目录）
+if [ "$ENABLE_AUTO" -eq 1 ]; then
+  ENV_BLOCK=""
+  AUTO_ARGS=()
+  if [ "$DISABLE_REMOTE" -eq 1 ]; then
+    ENV_BLOCK="  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AG_DISABLE_MOBILE_REMOTE</key>
+    <string>1</string>
+  </dict>
+"
+    AUTO_ARGS+=(--no-remote)
+  fi
+  mkdir -p "$LAUNCH_AGENTS_DIR" "$HOME/Library/Logs"
+  cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -81,7 +98,7 @@ cat > "$PLIST_PATH" <<EOF
     <string>${BIN_DEST}</string>
     <string>_auto-trigger</string>
   </array>
-  <key>RunAtLoad</key>
+${ENV_BLOCK}  <key>RunAtLoad</key>
   <true/>
   <key>WatchPaths</key>
   <array>
@@ -94,19 +111,23 @@ cat > "$PLIST_PATH" <<EOF
 </dict>
 </plist>
 EOF
-echo "✅ 已写入 LaunchAgent 配置文件: $PLIST_PATH"
-
-if [ "$ENABLE_AUTO" -eq 1 ]; then
-  "$BIN_DEST" auto-on
+  echo "✅ 已写入 LaunchAgent 配置文件: $PLIST_PATH"
+  "$BIN_DEST" auto-on "${AUTO_ARGS[@]}"
+else
+  echo "⚪ 已跳过 LaunchAgent 后台自启守护 (--no-auto)，可随时手动运行：ag-context-meter live${DISABLE_REMOTE:+ --no-remote}"
 fi
 
 echo ""
 echo "📋 安装状态与提示："
-if [ -f "$PORT_FILE" ]; then
+if [ -r "$PORT_FILE" ]; then
   echo "  - 已检测到 Antigravity DevToolsActivePort（CDP 就绪）"
+elif command -v lsof >/dev/null 2>&1 && lsof -nP -a -c Antigravity -iTCP -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "  - 已通过进程端口监听检测到运行中的 Antigravity（免读 DevToolsActivePort 文件）"
 else
-  echo "  - 当前未检测到 DevToolsActivePort：请确认 Antigravity 已开启远程调试端口，或重新启动 Antigravity。"
+  echo "  - 当前未检测到运行中的 Antigravity CDP 端口：请确认 Antigravity 已开启远程调试端口，或重新启动 Antigravity。"
 fi
+
+echo "  - 安全说明：本脚本 100% 零修改 Antigravity.app / app.asar；若无需后台自启可加 --no-auto，若仅需桌面增强（关闭 18765 手机远程端口）可加 --no-remote 或设置 AG_DISABLE_MOBILE_REMOTE=1"
 
 case ":$PATH:" in
   *":$LOCAL_BIN_DIR:"*)

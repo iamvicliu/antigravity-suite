@@ -5,8 +5,8 @@
     {
       "repo": "elviscjn-cjn/antigravity-context-viewer",
       "branch": "main",
-      "absorbedSha": "868b25b46e2ac773daea2623f9e09e769e1384c1",
-      "version": "v0.8.5",
+      "absorbedSha": "47c4140fcb92ceb2e271a450a9622b8de6b486c4",
+      "version": "v0.8.6",
       "role": "基础框架、顶部上下文圆环看板、Token 分类统计、52 周热力图与 API 折算费用",
       "mergeStrategy": "定向提取新模型上下文配额、API 价格表与前端渲染修复，禁止合入 app.asar 改盘与解锁逻辑",
       "localTargets": [

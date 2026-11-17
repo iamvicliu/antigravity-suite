@@ -532,6 +532,7 @@
           display: flex;
           align-items: center;
           justify-content: space-between;
+          gap: 8px;
           margin-bottom: 8px;
           padding-bottom: 8px;
           border-bottom: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
@@ -549,6 +550,8 @@
           background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.05));
           color: var(--ag-text-primary, #e4e4e7);
           font-size: 11px;
+          white-space: nowrap;
+          flex-shrink: 0;
           cursor: pointer;
           transition: background-color 0.15s ease;
         }
@@ -1141,7 +1144,13 @@
     }
     try {
       const res = await postToLiveHost('/remote-info', { resetToken: Boolean(resetToken) });
-      if (res && res.ok && res.data) {
+      if (res && res.disabled) {
+        remotePairState.data = null;
+        remotePairState.error = tr(
+          '当前已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用手机远程监听',
+          'Mobile remote server disabled via --no-remote / AG_DISABLE_MOBILE_REMOTE=1'
+        );
+      } else if (res && res.ok && res.data) {
         remotePairState.data = res.data;
         if (resetToken) showQuickToast(tr('🔑 已生成新配对密钥，旧链接已失效', '🔑 New pair token generated; old links revoked'));
       } else {
@@ -3024,6 +3033,7 @@
       });
       if (!resp.ok) return null;
       const data = await resp.json();
+      if (route === '/remote-info' && data && data.disabled) return data;
       return data && data.ok ? data : null;
     } catch {
       return null;

@@ -14,7 +14,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
-const { loadAsarEngine, getStateDir } = require('./asar-engine');
+const { loadAsarEngine, getStateDir, getDevToolsPort, resolveActiveCdpTarget } = require('./asar-engine');
 const { install, findAsarPath, tryHotInject } = require('./install');
 const { restore } = require('./restore');
 const { resolvePython } = require('./meter-collector');
@@ -23,30 +23,11 @@ const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, AUTHOR_IN
 const asar = loadAsarEngine();
 const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
-function getDevToolsPort() {
-  const appData = process.env.APPDATA || (process.platform === 'darwin'
-    ? path.join(os.homedir(), 'Library', 'Application Support')
-    : path.join(os.homedir(), '.config'));
-  const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
-  if (!fs.existsSync(portFile)) return null;
-  const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-  return Number.isFinite(port) && port > 0 ? port : null;
-}
-
 async function queryLiveWindow() {
-  const port = getDevToolsPort();
-  if (!port) return { running: false };
   try {
-    const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, res => {
-        let body = '';
-        res.on('data', c => body += c);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-      });
-      req.setTimeout(2500, () => req.destroy(new Error('timeout')));
-      req.on('error', reject);
-    });
-    const target = pages.find(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
+    const { port, targets } = await resolveActiveCdpTarget({ timeoutMs: 2500 });
+    if (!port) return { running: false };
+    const target = targets[0];
     if (!target) return { running: true, cdpPort: port, pageFound: false };
     const origin = new URL(target.url).origin;
 
@@ -100,6 +81,7 @@ async function queryLiveWindow() {
 
 async function ensureLiveBridgeIfNeeded(options = {}) {
   const forceFreshBridge = options.forceFreshBridge === true;
+  const noRemote = options.noRemote === true || process.env.AG_DISABLE_MOBILE_REMOTE === '1';
   const live = await queryLiveWindow();
   if (!live.running || !live.pageFound) return;
   if (live.hasIpcBridge && !forceFreshBridge) return;
@@ -136,8 +118,9 @@ async function ensureLiveBridgeIfNeeded(options = {}) {
       process.kill(info.pid, 0);
       const startedAt = Number(info.startedAt || 0);
       const originMatches = !live.origin || info.origin === live.origin;
+      const remoteMatches = Boolean(info.remoteDisabled) === noRemote;
       const isUpToDate = startedAt >= latestBackendMtime;
-      if (originMatches && isUpToDate && !forceFreshBridge) {
+      if (originMatches && remoteMatches && isUpToDate && !forceFreshBridge) {
         alive = true;
       }
     } catch {}
@@ -158,10 +141,14 @@ async function ensureLiveBridgeIfNeeded(options = {}) {
     try { if (fs.existsSync(statePath)) fs.unlinkSync(statePath); } catch {}
     try { if (fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath); } catch {}
 
+    const childEnv = { ...process.env };
+    if (noRemote) childEnv.AG_DISABLE_MOBILE_REMOTE = '1';
+    else delete childEnv.AG_DISABLE_MOBILE_REMOTE;
     const child = spawn(process.execPath, [path.join(__dirname, 'live-host.js')], {
       detached: true,
       stdio: 'ignore',
-      windowsHide: true
+      windowsHide: true,
+      env: childEnv
     });
     child.unref();
 
@@ -230,17 +217,34 @@ async function cmdCheck(customPath) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const cmd = (args.find(a => !a.startsWith('-')) || 'install').toLowerCase();
+  const rawPositional = args.find(a => !a.startsWith('-'));
+  const wantsHelp = args.includes('--help') || args.includes('-h');
+  const cmd = (wantsHelp && !rawPositional) ? 'help' : (rawPositional || 'live').toLowerCase();
   const pathIdx = args.indexOf('--path');
   const customPath = pathIdx >= 0 ? args[pathIdx + 1] : null;
   const backupIdx = args.indexOf('--backup');
   const customBackup = backupIdx >= 0 ? args[backupIdx + 1] : null;
   const isForce = args.includes('--force');
+  const noRemote = args.includes('--no-remote') || process.env.AG_DISABLE_MOBILE_REMOTE === '1';
+
+  const isTestEnv = process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  const allowAsarPatch = isTestEnv || args.includes('--allow-asar-patch');
+  const ASAR_PATCH_CMDS = new Set([
+    'install', 'restore', 'uninstall',
+    'unlock', 'unlock-restore',
+    'chinese:enable', 'chinese:disable',
+    'proxy:enable', 'proxy:disable', 'proxy:set'
+  ]);
+  if (ASAR_PATCH_CMDS.has(cmd) && !allowAsarPatch) {
+    console.error(`❌ 已禁用 '${cmd}'：本套件默认采用 100% 零改包设计（绝不修改 app.asar 或客户端二进制），请使用 'node cli.js live' 或 'ag-context-meter live'。`);
+    process.exitCode = 1;
+    return;
+  }
 
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
     console.log(`🚀 [Antigravity 对话上下文查看器 v${meterVersion}] 正在安装上下文可视化组件...`);
-    await ensureLiveBridgeIfNeeded({ forceFreshBridge: true });
+    await ensureLiveBridgeIfNeeded({ forceFreshBridge: true, noRemote });
     const manifest = await install({ path: customPath, backup: customBackup, force: isForce });
     await tryHotInject();
     console.log(`✅ 插件 v${manifest.meterVersion} 安装完成 (Antigravity 宿主 v${manifest.version})`);
@@ -266,10 +270,10 @@ async function main() {
     console.log(`     * 模型请求验证: 待通过真实在线会话验证 (分层标定，未发送请求前不宣称生效)`);
     console.log(`✅ 运行中窗口热挂载状态: ${manifest.liveInjected ? '已即时生效（无需重启）' : '将在下次启动 Antigravity 时自动生效'}`);
   } else if (cmd === 'live') {
-    await ensureLiveBridgeIfNeeded({ forceFreshBridge: true });
+    await ensureLiveBridgeIfNeeded({ forceFreshBridge: true, noRemote });
     const ok = await tryHotInject();
-    if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
-    console.log('✅ 已通过 CDP 热注入当前运行的 Antigravity 窗口！');
+    if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请确认 Antigravity 已开启并带远程调试端口启动。');
+    console.log(`✅ 已通过 CDP 免改包热注入当前运行的 Antigravity 窗口！${noRemote ? '（已按请求禁用手机远程端口）' : ''}`);
   } else if (cmd === 'restore' || cmd === 'uninstall') {
     const res = await restore({ path: customPath, force: isForce });
     console.log(`✅ 已完成卸载还原: ${res.restored}`);
@@ -346,6 +350,7 @@ async function main() {
     const cfg = loadModulesConfig();
     const enable = cmd === 'chinese:enable';
     cfg.modules.chinese.enabled = enable;
+    cfg.modules.chinese.language = enable ? 'zh-CN' : 'en';
     saveModulesConfig(cfg);
     await install({ path: customPath, modules: { chinese: { enabled: enable } } });
     console.log(`✅ 客户端界面汉化模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
@@ -398,17 +403,15 @@ async function main() {
       process.exitCode = res.status;
     }
   } else {
-    console.log(`用法:
-  node cli.js install [--path <app.asar>]   一键持久化安装并热注入当前运行窗口
-  node cli.js live                          免改盘 CDP 热挂载到当前运行窗口
-  node cli.js status                        查看安装状态与当前对话实时上下文用量
-  node cli.js remote [--reset-token] [--json]  打印手机局域网/Tailscale 扫码远程地址与二维码
+    console.log(`用法 (100% 零改包模式):
+  node cli.js live [--no-remote]            免改盘 CDP 热挂载到当前运行窗口（默认命令；加 --no-remote 关闭手机远程监听）
+  node cli.js status                        查看运行状态与官方安装包签名完整性
+  node cli.js remote [--reset-token] [--json]  打印手机「一码三用」融合配对链接与终端二维码
   node cli.js check                         执行前置环境健康检查
   node cli.js upstreams [--json]            检查参考上游项目更新并与当前基线比对
-  node cli.js restore                       一键无损卸载并恢复备份
-  node cli.js unlock-status [--path <bin>]  检查 Antigravity 后端上下文加长状态
-  node cli.js unlock [--path <bin>]         执行上下文加长解锁（解除 256K 限制）
-  node cli.js unlock-restore [--path <bin>] 恢复官方原版二进制`);
+
+说明:
+  已默认禁用所有修改 app.asar 与二进制补丁命令；可通过环境变量 AG_DISABLE_MOBILE_REMOTE=1 全局关闭手机远程端口。`);
   }
 }
 

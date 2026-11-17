@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -e
 cd "$(dirname "$0")"
-node cli.js install "$@"
+node cli.js live "$@"
