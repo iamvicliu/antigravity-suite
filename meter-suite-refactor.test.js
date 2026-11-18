@@ -3607,3 +3607,45 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 16: Antigravity v2.33.0+ 裸进程识别、运行时长解析与调试参数探测
+// =========================================================================
+test('需求 16: parsePsElapsedSeconds 与 inspectAntigravityHostProcess 准确识别裸进程与调试端口参数', () => {
+  const { parsePsElapsedSeconds, inspectAntigravityHostProcess } = require('./asar-engine');
+
+  assert.equal(parsePsElapsedSeconds('00:08'), 8);
+  assert.equal(parsePsElapsedSeconds('15:55'), 15 * 60 + 55);
+  assert.equal(parsePsElapsedSeconds('01:02:03'), 3723);
+  assert.equal(parsePsElapsedSeconds('2-00:01:05'), 2 * 86400 + 65);
+  assert.equal(parsePsElapsedSeconds('invalid'), null);
+
+  const barePs = [
+    '81197 15:40 /Applications/Antigravity.app/Contents/Resources/bin/language_server',
+    '81368 15:42 /Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper (Renderer).app/Contents/MacOS/Antigravity Helper (Renderer)',
+    '81122 00:07 /Applications/Antigravity.app/Contents/MacOS/Antigravity'
+  ].join('\n');
+  const bareRes = inspectAntigravityHostProcess({ psOutput: barePs });
+  assert.equal(bareRes.running, true);
+  assert.equal(bareRes.pid, 81122);
+  assert.equal(bareRes.hasDebugSwitch, false);
+  assert.equal(bareRes.elapsedSec, 7);
+
+  const cdpPs = [
+    '90012 01:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0'
+  ].join('\n');
+  const cdpRes = inspectAntigravityHostProcess({ psOutput: cdpPs });
+  assert.equal(cdpRes.running, true);
+  assert.equal(cdpRes.pid, 90012);
+  assert.equal(cdpRes.hasDebugSwitch, true);
+  assert.equal(cdpRes.elapsedSec, 72);
+
+  const helperOnly = '81368 00:05 /Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper';
+  assert.deepEqual(inspectAntigravityHostProcess({ psOutput: helperOnly }), {
+    running: false,
+    pid: null,
+    hasDebugSwitch: false,
+    elapsedSec: null,
+    command: ''
+  });
+});

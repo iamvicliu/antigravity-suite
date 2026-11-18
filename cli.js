@@ -14,7 +14,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
-const { loadAsarEngine, getStateDir, getDevToolsPort, resolveActiveCdpTarget } = require('./asar-engine');
+const { loadAsarEngine, getStateDir, getDevToolsPort, resolveActiveCdpTarget, inspectAntigravityHostProcess } = require('./asar-engine');
 const { install, findAsarPath, tryHotInject } = require('./install');
 const { restore } = require('./restore');
 const { resolvePython } = require('./meter-collector');
@@ -26,7 +26,16 @@ const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).di
 async function queryLiveWindow() {
   try {
     const { port, targets } = await resolveActiveCdpTarget({ timeoutMs: 2500 });
-    if (!port) return { running: false };
+    if (!port) {
+      const hostProc = inspectAntigravityHostProcess();
+      return {
+        running: false,
+        hostProcessRunning: Boolean(hostProc.running),
+        hostPid: hostProc.pid || null,
+        cdpDisabled: Boolean(hostProc.running && !hostProc.hasDebugSwitch),
+        elapsedSec: hostProc.elapsedSec ?? null
+      };
+    }
     const target = targets[0];
     if (!target) return { running: true, cdpPort: port, pageFound: false };
     const origin = new URL(target.url).origin;
@@ -211,7 +220,12 @@ async function cmdCheck(customPath) {
   const py = resolvePython();
   console.log(`  - Python 附件深度解析器: ${py || '未检测到（基础上下文统计不受影响）'}`);
   const live = await queryLiveWindow();
-  console.log(`  - 运行中窗口 CDP 状态: ${live.running ? `已连接 (端口 ${live.cdpPort})` : '客户端未运行或未开启调试端口'}`);
+  const cdpDesc = live.running
+    ? `已连接 (端口 ${live.cdpPort})`
+    : (live.cdpDisabled
+      ? '客户端已运行 (v2.33.0+ 默认未开启远程调试端口)，请退出后重开一次或在外部终端运行 ag-context-meter restart'
+      : '客户端未运行或未开启调试端口');
+  console.log(`  - 运行中窗口 CDP 状态: ${cdpDesc}`);
   console.log('✅ 环境预检通过！');
 }
 
@@ -272,7 +286,13 @@ async function main() {
   } else if (cmd === 'live') {
     await ensureLiveBridgeIfNeeded({ forceFreshBridge: true, noRemote });
     const ok = await tryHotInject();
-    if (!ok) throw new Error('未检测到运行中的 Antigravity 主窗口，请确认 Antigravity 已开启并带远程调试端口启动。');
+    if (!ok) {
+      const hostProc = inspectAntigravityHostProcess();
+      if (hostProc.running && !hostProc.hasDebugSwitch) {
+        throw new Error('检测到 Antigravity 已运行但未开启远程调试端口（v2.33.0+ 默认关闭）；请在外部终端执行 ag-context-meter restart，或按 ⌘Q 退出后重新点开 Antigravity。');
+      }
+      throw new Error('未检测到运行中的 Antigravity 主窗口，请确认 Antigravity 已开启并带远程调试端口启动。');
+    }
     console.log(`✅ 已通过 CDP 免改包热注入当前运行的 Antigravity 窗口！${noRemote ? '（已按请求禁用手机远程端口）' : ''}`);
   } else if (cmd === 'restore' || cmd === 'uninstall') {
     const res = await restore({ path: customPath, force: isForce });

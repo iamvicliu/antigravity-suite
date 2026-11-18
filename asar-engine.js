@@ -309,10 +309,12 @@ function fetchHttpJsonLoopback(port, urlPath, timeoutMs = 1500) {
 async function resolveActiveCdpTarget(options = {}) {
   const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 1500;
   const ports = discoverDevToolsPorts();
+  let validCdpPort = null;
   for (const port of ports) {
     try {
       const pages = await fetchHttpJsonLoopback(port, '/json/list', timeoutMs);
       if (!Array.isArray(pages)) continue;
+      if (!validCdpPort) validCdpPort = port;
       const targets = pages.filter(
         (p) => p && p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(String(p.url || ''))
       );
@@ -320,10 +322,75 @@ async function resolveActiveCdpTarget(options = {}) {
         return { port, pages, targets };
       }
     } catch {
-      // 尝试下一个候选端口
+      // 尝试下一个候选端口（跳过内部 RPC 401/404 端口）
     }
   }
-  return { port: ports[0] || null, pages: [], targets: [] };
+  return { port: validCdpPort, pages: [], targets: [] };
+}
+
+/**
+ * 解析 `ps -o etime=` 的运行耗时为秒数（支持 mm:ss、hh:mm:ss、dd-hh:mm:ss）
+ */
+function parsePsElapsedSeconds(raw) {
+  const clean = String(raw || '').trim();
+  if (!clean) return null;
+  const m = clean.match(/^(?:(\d+)-)?(?:(\d+):)?(\d{1,2}):(\d{1,2})$/);
+  if (!m) return null;
+  const days = Number(m[1] || 0);
+  const hours = Number(m[2] || 0);
+  const mins = Number(m[3] || 0);
+  const secs = Number(m[4] || 0);
+  if (![days, hours, mins, secs].every(Number.isFinite)) return null;
+  return days * 86400 + hours * 3600 + mins * 60 + secs;
+}
+
+/**
+ * 检查当前 macOS Antigravity 宿主主进程是否在运行，以及是否携带了 --remote-debugging-port 参数
+ */
+function inspectAntigravityHostProcess(options = {}) {
+  const empty = { running: false, pid: null, hasDebugSwitch: false, elapsedSec: null, command: '' };
+  const isTestEnv = process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  if (isTestEnv && typeof options.psOutput !== 'string') {
+    return empty;
+  }
+
+  let psOut = '';
+  if (typeof options.psOutput === 'string') {
+    psOut = options.psOutput;
+  } else if (process.platform === 'darwin') {
+    try {
+      psOut = execFileSync('ps', ['-ax', '-o', 'pid=,etime=,command='], {
+        encoding: 'utf8',
+        timeout: 1500,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } catch {
+      return empty;
+    }
+  } else {
+    return empty;
+  }
+
+  for (const line of psOut.split(/\r?\n/)) {
+    const m = line.match(/^\s*(\d+)\s+([0-9:-]+)\s+(.+)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const etime = m[2];
+    const cmd = m[3].trim();
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    // 只匹配真正的主进程可执行文件，排除 Helper、language_server 与其他进程
+    if (!/\/Contents\/MacOS\/Antigravity(?:\s|$)/.test(cmd)) continue;
+    if (/Antigravity Helper|language_server/.test(cmd)) continue;
+    return {
+      running: true,
+      pid,
+      hasDebugSwitch: /--remote-debugging-port(?:=|\s|$)/.test(cmd),
+      elapsedSec: parsePsElapsedSeconds(etime),
+      command: cmd
+    };
+  }
+
+  return empty;
 }
 
 /**
@@ -383,5 +450,7 @@ module.exports = {
   findAsarPath,
   discoverDevToolsPorts,
   getDevToolsPort,
-  resolveActiveCdpTarget
+  resolveActiveCdpTarget,
+  parsePsElapsedSeconds,
+  inspectAntigravityHostProcess
 };

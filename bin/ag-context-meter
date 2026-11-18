@@ -27,16 +27,96 @@ STATE_FILE="$HOME/Library/Application Support/AntigravityContextMeter/.live-sess
 FALLBACK_STATE_FILE="$HOME/.config/antigravity-context-meter/.live-session.json"
 LEGACY_FILE="$APP_DIR/.live-session.json"
 PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
+LOCK_FILE="$HOME/Library/Application Support/Antigravity/SingletonLock"
+RELAUNCH_LOCK_FILE="/tmp/ag-context-meter-relaunch.lock"
 LOG_DIR="$HOME/Library/Logs"
 LOG_FILE="$LOG_DIR/antigravity-hans.log"
 
 cmd="${1:-live}"
 
+is_inside_antigravity_agent() {
+  [ "${ANTIGRAVITY_AGENT:-}" = "1" ] || [ "${__CFBundleIdentifier:-}" = "com.google.antigravity" ]
+}
+
+has_active_cdp_target() {
+  APP_DIR="$APP_DIR" node -e '
+const { resolveActiveCdpTarget } = require(process.env.APP_DIR + "/asar-engine");
+resolveActiveCdpTarget({ timeoutMs: 1200 })
+  .then(r => process.exit(r && Array.isArray(r.targets) && r.targets.length > 0 ? 0 : 1))
+  .catch(() => process.exit(1));
+' >/dev/null 2>&1
+}
+
+get_bare_antigravity_info() {
+  APP_DIR="$APP_DIR" node -e '
+const { inspectAntigravityHostProcess } = require(process.env.APP_DIR + "/asar-engine");
+const info = inspectAntigravityHostProcess();
+if (info.running && !info.hasDebugSwitch && info.pid) {
+  const elapsed = info.elapsedSec == null ? 9999 : info.elapsedSec;
+  console.log(`${info.pid} ${elapsed}`);
+}
+' 2>/dev/null || true
+}
+
+relaunch_antigravity_with_cdp() {
+  local live_args=()
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --restart|--force|-f) ;;
+      *) live_args+=("$arg") ;;
+    esac
+  done
+
+  date +%s > "$RELAUNCH_LOCK_FILE" 2>/dev/null || true
+
+  local bare_info bare_pid i
+  bare_info="$(get_bare_antigravity_info || true)"
+  bare_pid="${bare_info%% *}"
+  if [ -n "${bare_pid:-}" ]; then
+    echo "正在优雅重启 Antigravity（补充 --remote-debugging-port=0）..."
+    osascript -e 'tell application "Antigravity" to quit' >/dev/null 2>&1 || true
+    for i in $(seq 1 16); do
+      if ! kill -0 "$bare_pid" 2>/dev/null; then
+        bare_pid=""
+        break
+      fi
+      if [ "$i" -eq 8 ]; then
+        kill -TERM "$bare_pid" 2>/dev/null || true
+      fi
+      sleep 0.5
+    done
+    if [ -n "${bare_pid:-}" ] && kill -0 "$bare_pid" 2>/dev/null; then
+      echo "❌ 等待原 Antigravity 进程 (PID: $bare_pid) 退出超时，请手动按 ⌘Q 退出后再试。" >&2
+      return 1
+    fi
+  else
+    echo "正在带调试端口启动 Antigravity..."
+  fi
+
+  open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0
+
+  local ready=0
+  for i in $(seq 1 40); do
+    if has_active_cdp_target; then
+      ready=1
+      break
+    fi
+    sleep 0.5
+  done
+  if [ "$ready" -eq 0 ]; then
+    echo "❌ 已重启 Antigravity，但等待调试端口就绪超时。" >&2
+    return 1
+  fi
+
+  node "$APP_DIR/cli.js" live ${live_args[@]:+"${live_args[@]}"}
+}
+
 has_live_antigravity() {
-  if [ -r "$PORT_FILE" ]; then
+  if [ -r "$PORT_FILE" ] || has_active_cdp_target; then
     return 0
   fi
-  if command -v lsof >/dev/null 2>&1 && lsof -nP -a -c Antigravity -iTCP -sTCP:LISTEN >/dev/null 2>&1; then
+  if [ -n "$(get_bare_antigravity_info || true)" ]; then
     return 0
   fi
   return 1
@@ -146,7 +226,45 @@ const { resolveActiveCdpTarget } = require(process.env.APP_DIR + "/asar-engine")
 
 case "$cmd" in
   start|live)
-    exec node "$APP_DIR/cli.js" live "${@:2}"
+    if has_active_cdp_target; then
+      exec node "$APP_DIR/cli.js" live "${@:2}"
+    fi
+    bare_info="$(get_bare_antigravity_info || true)"
+    if [ -n "${bare_info:-}" ]; then
+      if is_inside_antigravity_agent; then
+        echo "⚠️ 检测到当前 Antigravity (v2.33.0+) 未带调试端口运行，且脚本正在客户端内部会话中执行。" >&2
+        echo "   已为你避开强制关闭当前窗口；请在外部终端执行: ag-context-meter restart（或按 ⌘Q 退出后重新点开 Antigravity，自启守护会自动注入）。" >&2
+        exit 1
+      fi
+      relaunch_antigravity_with_cdp "${@:2}"
+    else
+      exec node "$APP_DIR/cli.js" live "${@:2}"
+    fi
+    ;;
+  open|restart)
+    force_restart=0
+    forward_args=()
+    for arg in "${@:2}"; do
+      case "$arg" in
+        --force|-f) force_restart=1 ;;
+        *) forward_args+=("$arg") ;;
+      esac
+    done
+    if is_inside_antigravity_agent; then
+      if [ "$force_restart" -eq 1 ]; then
+        echo "⏳ 将在 1 秒后于后台平滑重启 Antigravity 并挂载插件…"
+        nohup bash -c 'sleep 1; exec "$1" "$2" "${@:3}"' _ "$0" restart ${forward_args[@]:+"${forward_args[@]}"} >/dev/null 2>&1 &
+        exit 0
+      fi
+      bare_info="$(get_bare_antigravity_info || true)"
+      if [ -n "${bare_info:-}" ] || has_active_cdp_target; then
+        echo "⚠️ 当前处于 Antigravity 内部会话，直接重启会中断当前对话。" >&2
+        echo "   请在外部终端执行: ag-context-meter restart，或按 ⌘Q 退出后重新点击 Dock 图标（自启守护将自动挂载）。" >&2
+        echo "   若确定要立刻重拉当前客户端，请运行: ag-context-meter restart --force" >&2
+        exit 1
+      fi
+    fi
+    relaunch_antigravity_with_cdp ${forward_args[@]:+"${forward_args[@]}"}
     ;;
   stop)
     stop_live
@@ -156,14 +274,33 @@ case "$cmd" in
       echo "未找到 LaunchAgent 配置文件: $PLIST" >&2
       exit 1
     fi
-    if has_live_antigravity; then
-      node "$APP_DIR/cli.js" live "${@:2}" || echo "提示：当前未能立即挂载，下次启动 Antigravity 时将自动挂载。"
-    else
-      echo "提示：当前未检测到运行中的 Antigravity 窗口，待下次启动客户端时将自动挂载。"
+    if ! grep -q "SingletonLock" "$PLIST" 2>/dev/null; then
+      PLIST_PATH="$PLIST" LOCK_PATH="$LOCK_FILE" node -e '
+const fs = require("fs");
+const p = process.env.PLIST_PATH;
+const lock = process.env.LOCK_PATH;
+let xml = fs.readFileSync(p, "utf8");
+if (!xml.includes(lock)) {
+  const next = xml.replace(/(<key>WatchPaths<\/key>\s*<array>)/, `$1\n    <string>${lock}</string>`);
+  if (next !== xml) fs.writeFileSync(p, next, "utf8");
+}
+'
+      echo "✅ 已升级 LaunchAgent WatchPaths 监听 (新增 SingletonLock 适配 v2.33.0+)"
     fi
     uid="$(id -u)"
     launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
     launchctl bootstrap "gui/$uid" "$PLIST"
+    if has_active_cdp_target; then
+      node "$APP_DIR/cli.js" live "${@:2}" || echo "提示：当前未能立即挂载，下次启动 Antigravity 时将自动挂载。"
+    elif [ -n "$(get_bare_antigravity_info || true)" ]; then
+      if is_inside_antigravity_agent; then
+        echo "提示：已开启 v2.33.0+ 自启守护；当前窗口未开启调试端口且正在会话中，按 ⌘Q 重新点开 Antigravity 或在外部终端执行 ag-context-meter restart 后插件将自动恢复。"
+      else
+        relaunch_antigravity_with_cdp "${@:2}" || echo "提示：未能自动重启，请退出后重新点开 Antigravity。"
+      fi
+    else
+      echo "提示：当前未检测到运行中的 Antigravity 窗口，待下次启动客户端时将自动挂载。"
+    fi
     echo "已开启“启动 Antigravity 时自动加载”"
     ;;
   auto-off)
@@ -199,11 +336,19 @@ const ver = data.antigravityVersion ? ` (v${data.antigravityVersion})` : "";
 console.log(`官方安装包${ver}：${data.asarPatched ? "⚠️ 检测到 app.asar 已被修改" : "✅ 未修改（官方签名完好）"}`);
 
 if (!lw.running) {
-  console.log("中文汉化：⭕ 未生效（客户端未运行或调试端口未开启）");
-  console.log("上下文看板：⭕ 未生效（客户端未运行或调试端口未开启）");
-  console.log("配额双胶囊：⭕ 未生效（客户端未运行或调试端口未开启）");
-  console.log("输入框快捷栏：⭕ 未生效（客户端未运行或调试端口未开启）");
-  console.log("底部能量胶囊：⭕ 未生效（客户端未运行或调试端口未开启）");
+  if (lw.cdpDisabled) {
+    console.log("中文汉化：⭕ 未生效（客户端已运行但未开启调试端口；请按 ⌘Q 重开一次或在外部终端运行 ag-context-meter restart）");
+    console.log("上下文看板：⭕ 未生效（等待调试端口就绪）");
+    console.log("配额双胶囊：⭕ 未生效（等待调试端口就绪）");
+    console.log("输入框快捷栏：⭕ 未生效（等待调试端口就绪）");
+    console.log("底部能量胶囊：⭕ 未生效（等待调试端口就绪）");
+  } else {
+    console.log("中文汉化：⭕ 未生效（客户端未运行或调试端口未开启）");
+    console.log("上下文看板：⭕ 未生效（客户端未运行或调试端口未开启）");
+    console.log("配额双胶囊：⭕ 未生效（客户端未运行或调试端口未开启）");
+    console.log("输入框快捷栏：⭕ 未生效（客户端未运行或调试端口未开启）");
+    console.log("底部能量胶囊：⭕ 未生效（客户端未运行或调试端口未开启）");
+  }
 } else {
   console.log(`中文汉化：${lw.hansActive ? "✅ 已生效" : "⭕ 未启用"}`);
   const badge = lw.badgeText ? `（当前显示: ${lw.badgeText}）` : "";
@@ -238,11 +383,31 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
     if ! has_live_antigravity; then
       exit 0
     fi
+    if ! has_active_cdp_target; then
+      bare_info="$(get_bare_antigravity_info || true)"
+      if [ -n "${bare_info:-}" ]; then
+        bare_pid="${bare_info%% *}"
+        bare_elapsed="${bare_info#* }"
+        if [ "${bare_elapsed:-999}" -le 20 ]; then
+          now_ts="$(date +%s)"
+          last_ts=0
+          if [ -f "$RELAUNCH_LOCK_FILE" ]; then
+            last_ts="$(cat "$RELAUNCH_LOCK_FILE" 2>/dev/null || echo 0)"
+          fi
+          case "$last_ts" in ''|*[!0-9]*) last_ts=0 ;; esac
+          if [ $((now_ts - last_ts)) -ge 20 ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $bare_pid, 启动 ${bare_elapsed}s) 未带调试端口，自动补参重拉..." >> "$LOG_FILE"
+            relaunch_antigravity_with_cdp >> "$LOG_FILE" 2>&1 || true
+            exit 0
+          fi
+        fi
+      fi
+    fi
     for _ in $(seq 1 15); do
       if ! has_live_antigravity; then
         exit 0
       fi
-      if node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
+      if has_active_cdp_target && node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
         break
       fi
       sleep 2
@@ -271,8 +436,9 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
 
 常用命令:
   start / live   免改盘挂载「中文汉化 + 上下文看板」到当前窗口（默认；加 --no-remote 可禁用手机远程端口）
+  open / restart 以带远程调试端口方式启动或平滑重启 Antigravity（适配 v2.33.0+）并热注入插件
   stop           停止后台守护进程，并卸载当前窗口的中文汉化与看板（恢复英文原样）
-  auto-on        开启“启动 Antigravity 时自动加载”，并立即执行一次挂载
+  auto-on        开启“启动 Antigravity 时自动加载”（含 v2.33.0+ 自动补参自愈）并立即尝试挂载
   auto-off       关闭“启动 Antigravity 时自动加载”，并停止/卸载当前挂载
   status         查看当前各项核心状态（加 --json 可输出原始 JSON 数据）
   update         从 GitHub 拉取最新版本并自动热刷新运行中窗口

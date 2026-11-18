@@ -15,6 +15,7 @@ LABEL="${AG_LIVE_LABEL:-com.${CURRENT_USER}.ag-live-helper}"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/${LABEL}.plist"
 LOG_PATH="$HOME/Library/Logs/antigravity-hans.log"
 PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
+LOCK_FILE="$HOME/Library/Application Support/Antigravity/SingletonLock"
 
 ENABLE_AUTO=1
 DISABLE_REMOTE=0
@@ -103,6 +104,7 @@ ${ENV_BLOCK}  <key>RunAtLoad</key>
   <key>WatchPaths</key>
   <array>
     <string>${PORT_FILE}</string>
+    <string>${LOCK_FILE}</string>
   </array>
   <key>StandardOutPath</key>
   <string>${LOG_PATH}</string>
