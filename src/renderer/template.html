@@ -249,11 +249,11 @@
             <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
               <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
                 <span>本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：</span>
-                <input id="input-proxy-url" type="text" class="unlock-input" style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;" value="http://127.0.0.1:7897" />
+                <input id="input-proxy-url" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="http://127.0.0.1:7897" />
               </label>
               <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
                 <span>绕过代理列表 (NO_PROXY)：</span>
-                <input id="input-proxy-bypass" type="text" class="unlock-input" style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;" value="localhost,127.0.0.1,::1,<local>" />
+                <input id="input-proxy-bypass" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="localhost,127.0.0.1,::1,<local>" />
               </label>
             </div>
             <div class="unlock-actions" style="display:flex;gap:8px;">
@@ -580,7 +580,7 @@
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">获取方式 / 活动来源</label>
-              <select id="select-custom-acq" style="width:100%;font-size:11px;padding:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <select id="select-custom-acq" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                 <option value="normal_paid">正常付费订阅</option>
                 <option value="student_offer">学生认证优惠</option>
                 <option value="pixel_bundle">Google Pixel 设备赠送</option>
@@ -595,7 +595,7 @@
             </div>
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">自定义活动 / 合作方名称</label>
-              <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
           </div>
           <div style="margin-bottom:6px">
@@ -609,7 +609,7 @@
               <label style="font-size:10px;color:var(--ag-text-muted)">预设订阅国家与汇率 (可选快捷套用)</label>
               <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
             </div>
-            <select id="select-custom-region-preset" style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <select id="select-custom-region-preset" style="width:100%;height:28px;font-size:11px;padding:0 8px;margin-bottom:4px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
               <option value="">-- 选择预设地区 (自动填入价格与汇率) --</option>
               <option value="US">🇺🇸 美国 (US) · $19.99/月 (折合 ≈ ¥134.3)</option>
               <option value="KR">🇰🇷 韩国 (KR) · ₩29,000/月 (折合 ≈ ¥147.9)</option>
@@ -634,16 +634,16 @@
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">账号所在地区 (仅本地记录)</label>
-              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" title="仅作为本地显示记录，不修改实际 Google 账号" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" title="仅作为本地显示记录，不修改实际 Google 账号" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅国家 (购买/结算地区)</label>
-              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" title="实际购买或支付订阅所在的国家或地区" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" title="实际购买或支付订阅所在的国家或地区" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅币种与实付金额</label>
               <div style="display:flex;gap:4px">
-                <select id="select-custom-currency" title="订阅计价/结算币种" style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                <select id="select-custom-currency" title="订阅计价/结算币种" style="height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                   <option value="USD">USD</option>
                   <option value="KRW">KRW</option>
                   <option value="HKD">HKD</option>
@@ -662,14 +662,14 @@
                   <option value="AUD">AUD</option>
                   <option value="MYR">MYR</option>
                 </select>
-                <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
               </div>
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">计费周期</label>
-              <select id="select-custom-cycle" style="width:100%;font-size:11px;padding:4px 6px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <select id="select-custom-cycle" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                 <option value="月付">月付</option>
                 <option value="年付">年付</option>
                 <option value="免费/赠送">免费 / 促销赠送</option>
@@ -679,12 +679,12 @@
             </div>
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">权益到期日</label>
-              <input id="input-valid-end" type="date" style="width:100%;font-size:11px;padding:3px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <input id="input-valid-end" type="date" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
           </div>
           <div style="margin-bottom:6px">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">补充说明备注</label>
-            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
           </div>
           <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
             <button id="btn-custom-plan-clear" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px;color:#ef4444">清除自定义</button>

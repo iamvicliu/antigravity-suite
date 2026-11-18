@@ -5,7 +5,7 @@ const path = require('path');
 const { fileURLToPath } = require('url');
 const { spawn, spawnSync, execFile } = require('child_process');
 const { buildCliProxyEnv } = require('./meter-proxy');
-const { launchInConfiguredTerminal } = require('./meter-terminals');
+const { launchInConfiguredTerminal, sanitizeMuxHost } = require('./meter-terminals');
 
 const windowsTerminalPlacement = `
 using System;
@@ -630,6 +630,9 @@ function resolveHelperExecutable(options = {}) {
  * 组装启动环境并调度启动 Antigravity CLI 会话
  */
 async function launchCliSession(options = {}, ownerHwnd = 0) {
+  const muxHost = typeof options.muxHost === 'string' ? options.muxHost.trim() : '';
+  const cleanRemoteMuxHost = sanitizeMuxHost(muxHost);
+  const configuredTermPre = typeof options.terminalApp === 'string' ? options.terminalApp.trim().toLowerCase() : 'auto';
   if (options.testOnly === true) {
     const wsInfo = await resolveCliWorkspace(options);
     const cwd = wsInfo.ok ? wsInfo.cwd : os.homedir();
@@ -642,6 +645,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
     return launchInConfiguredTerminal({
       terminalApp: options.terminalApp || 'auto',
       customTerminalPath: options.customTerminalPath || '',
+      muxHost,
       cwd,
       wsSource: wsInfo.source || 'home',
       env,
@@ -650,9 +654,13 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
     });
   }
 
-  const cliInfo = resolveCliExecutable(options.cliPath);
+  let cliInfo = resolveCliExecutable(options.cliPath);
   if (!cliInfo.ok) {
-    return cliInfo;
+    if (cleanRemoteMuxHost && configuredTermPre !== 'auto') {
+      cliInfo = { ok: true, command: 'agy', cliPath: 'agy', exePath: 'agy', source: 'remote_mux' };
+    } else {
+      return cliInfo;
+    }
   }
 
   const wsInfo = await resolveCliWorkspace(options);
@@ -692,6 +700,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
     return launchInConfiguredTerminal({
       terminalApp: configuredTerm,
       customTerminalPath: options.customTerminalPath || '',
+      muxHost,
       cwd,
       wsSource: wsInfo.source,
       cliInfo,
@@ -710,6 +719,7 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       cliPath: cliInfo.cliPath,
       exePath: cliInfo.exePath,
       cliSource: cliInfo.source,
+      muxHost: cleanRemoteMuxHost || '',
       cwd,
       cwdSource: wsInfo.source,
       model,

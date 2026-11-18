@@ -64,7 +64,13 @@ async function tryHotDispose() {
           ws.addEventListener('open', resolve, { once: true });
           ws.addEventListener('error', reject, { once: true });
         });
-        ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'window.__AGContextMeter?.dispose()' } }));
+        ws.send(JSON.stringify({
+          id: 1,
+          method: 'Runtime.evaluate',
+          params: {
+            expression: 'try { window.__AGEnhancer?.dispose?.(); } catch {} try { window.__AGY_CTX_CAPSULE_DISPOSE__?.(); window.__AGY_CTX_CAPSULE_ACTIVE__ = false; } catch {} try { window.__antigravityZhPatchCleanup?.(); } catch {} try { window.__AGContextMeter?.dispose?.(); } catch {}'
+          }
+        }));
         await new Promise(r => setTimeout(r, 100));
       } catch {} finally {
         if (ws) { try { ws.close(); } catch {} }
@@ -207,6 +213,13 @@ async function restore(options = {}) {
             'meter-proxy.js',
             'meter-cli-launcher.js',
             'meter-context-unlock.js',
+            'meter-terminals.js',
+            'ag-enhancer-overlay.js',
+            'pulse-capsule-overlay.js',
+            'antigravity-hans-overlay.js',
+            'live-host.js',
+            'mobile-remote.js',
+            'meter-enhance.js',
             'local-api.js',
             'attachment_scan.py'
           ];

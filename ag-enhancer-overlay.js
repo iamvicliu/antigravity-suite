@@ -21,8 +21,9 @@
   const FILE_EDITOR_CONTROLS_ID = 'ag-file-editor-controls';
   const FILE_EDITOR_WRAP_ID = 'ag-inline-file-editor-wrap';
   const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
-  const CHECK_OK_SVG = '<svg class="ag-rp-icon ag-rp-ok" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa))" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-  const CHANNEL_OFF_SVG = '<svg class="ag-rp-icon ag-rp-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><line x1="8" y1="12" x2="16" y2="12"></line></svg>';
+  const CLOUDFLARE_TUNNEL_DASHBOARD_URL = 'https://one.dash.cloudflare.com/?to=/:account/networks/tunnels';
+  const CHECKBOX_CHECKED_SVG = '<svg class="ag-rp-icon ag-rp-ok" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4.5" fill="var(--ag-accent-bg, rgba(167, 139, 250, 0.14))" stroke="var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa))" stroke-width="2"></rect><polyline points="8.5 12.2 11.2 14.9 15.8 9.4" stroke="var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa))" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>';
+  const CHECKBOX_UNCHECKED_SVG = '<svg class="ag-rp-icon ag-rp-off" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4.5"></rect></svg>';
   const LOCK_SHIELD_SVG = '<svg class="ag-rp-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
   const makeNavSvg = (paths) => '<svg class="ag-nav-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
   const CHAT_NAV_ICONS = {
@@ -37,7 +38,7 @@
   let remotePopoverOpen = false;
   let remotePollTimer = null;
   let lastRemoteFetchAt = 0;
-  let remotePairState = { loading: false, error: '', data: null, mode: 'auto', copiedAt: 0 };
+  let remotePairState = { loading: false, tunnelBusy: false, tunnelPendingAction: '', error: '', data: null, copiedAt: 0, tunnelConfigOpen: false, tunnelPollTimer: null, draftHost: null, draftToken: '' };
   let fileEditorState = {
     active: false,
     fileUri: '',
@@ -818,14 +819,18 @@
           line-height: 1.3;
           text-align: left;
           cursor: pointer;
-          transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+          transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease, opacity 0.14s ease;
+        }
+        .ag-rp-channel[aria-checked="false"] {
+          opacity: 0.68;
         }
         .ag-rp-channel[disabled] {
-          opacity: 0.48;
+          opacity: 0.45;
           cursor: default;
         }
         .ag-rp-channel:not([disabled]):hover {
           background: var(--ag-btn-hover, rgba(255, 255, 255, 0.08));
+          opacity: 1;
         }
         .ag-rp-channel[data-selected="true"] {
           background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
@@ -849,6 +854,13 @@
           white-space: nowrap;
           flex-shrink: 0;
         }
+        .ag-rp-check-box {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--ag-text-muted, #a1a1aa);
+          flex-shrink: 0;
+        }
         .ag-rp-ch-host {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-size: 11.5px;
@@ -857,6 +869,147 @@
           text-overflow: ellipsis;
           white-space: nowrap;
           min-width: 0;
+        }
+        .ag-rp-channel-wrap {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          border-radius: 7px;
+          transition: background-color 0.14s ease;
+        }
+        .ag-rp-channel-wrap .ag-rp-channel {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+        .ag-rp-channel-tools {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding-right: 4px;
+          flex-shrink: 0;
+        }
+        .ag-rp-mini-btn {
+          padding: 3px 7px;
+          border-radius: 5px;
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.14));
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.06));
+          color: var(--ag-text-primary, #e4e4e7);
+          font-size: 10.5px;
+          font-weight: 500;
+          line-height: 1.2;
+          white-space: nowrap;
+          cursor: pointer;
+          transition: background-color 0.14s ease, border-color 0.14s ease;
+        }
+        .ag-rp-mini-btn:hover:not([disabled]) {
+          background: rgba(255, 255, 255, 0.14);
+        }
+        .ag-rp-mini-btn[data-active="true"] {
+          border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+          color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa));
+        }
+        :host([data-theme="light"]) .ag-rp-mini-btn[data-active="true"] {
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
+          color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #7c3aed));
+        }
+        .ag-rp-mini-btn[disabled] {
+          opacity: 0.5;
+          cursor: default;
+        }
+        @keyframes ag-rp-spin {
+          to { transform: rotate(360deg); }
+        }
+        .ag-rp-spin {
+          display: inline-block;
+          width: 11px;
+          height: 11px;
+          border: 1.8px solid currentColor;
+          border-right-color: transparent;
+          border-radius: 50%;
+          animation: ag-rp-spin 0.65s linear infinite;
+          vertical-align: -1.5px;
+          margin-right: 4px;
+          flex-shrink: 0;
+        }
+        .ag-rp-tunnel-form {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          padding: 8px 10px;
+          margin: 2px 0 8px;
+          border-radius: 8px;
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.1));
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.04));
+        }
+        .ag-rp-tunnel-head {
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+        .ag-rp-tunnel-note {
+          font-size: 10.5px;
+          color: var(--ag-text-muted, #a1a1aa);
+          line-height: 1.35;
+        }
+        .ag-rp-cf-link {
+          display: inline-flex;
+          align-items: center;
+          align-self: flex-start;
+          gap: 4px;
+          padding: 3px 8px;
+          border-radius: 5px;
+          border: 1px solid rgba(249, 115, 22, 0.42);
+          background: rgba(249, 115, 22, 0.12);
+          color: #fb923c;
+          font-size: 10.5px;
+          font-weight: 500;
+          line-height: 1.3;
+          text-decoration: none;
+          cursor: pointer;
+          transition: background-color 0.14s ease, border-color 0.14s ease;
+        }
+        .ag-rp-cf-link:hover {
+          background: rgba(249, 115, 22, 0.22);
+          border-color: rgba(249, 115, 22, 0.62);
+        }
+        :host([data-theme="light"]) .ag-rp-cf-link {
+          border-color: rgba(234, 88, 12, 0.36);
+          background: rgba(234, 88, 12, 0.08);
+          color: #c2410c;
+        }
+        :host([data-theme="light"]) .ag-rp-cf-link:hover {
+          background: rgba(234, 88, 12, 0.15);
+        }
+        .ag-rp-input {
+          width: 100%;
+          box-sizing: border-box;
+          padding: 5px 8px;
+          border-radius: 6px;
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.14));
+          background: var(--ag-bg-input, rgba(0, 0, 0, 0.28));
+          color: var(--ag-text-primary, #f4f4f5);
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 11px;
+          outline: none;
+        }
+        :host([data-theme="light"]) .ag-rp-input {
+          background: rgba(255, 255, 255, 0.9);
+          border-color: rgba(0, 0, 0, 0.16);
+          color: #18181b;
+        }
+        .ag-rp-input:focus {
+          border-color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa));
+        }
+        :host([data-theme="light"]) .ag-rp-input:focus {
+          border-color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #7c3aed));
+        }
+        .ag-rp-err {
+          font-size: 10.5px;
+          color: #f87171;
+          line-height: 1.35;
+          margin: 0 0 6px;
         }
         .ag-rp-sec {
           display: flex;
@@ -976,7 +1129,7 @@
       remoteBtn.type = 'button';
       remoteBtn.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
       remoteBtn.setAttribute('aria-expanded', 'false');
-      remoteBtn.title = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
+      remoteBtn.title = tr('手机远程操作配对（局域网 / Tailscale / Cloudflare）', 'Mobile Remote Pairing (LAN / Tailscale / Cloudflare)');
       remoteBtn.innerHTML = `<span class="ag-remote-icon">📱</span><span class="ag-remote-dot"></span><span class="ag-remote-text">${escapeHtml(tr('远程', 'Remote'))}</span>`;
       contextBadge.insertAdjacentElement('beforebegin', remoteBtn);
 
@@ -1034,7 +1187,7 @@
     return { host, sr, remoteBtn, quotaBtn, popover, remotePopover };
   }
 
-  function updateRemoteBtnLanguage() {
+  function updateRemoteBtnLanguage(opts = {}) {
     const { sr } = getMeterHostAndShadow();
     if (!sr) return;
     const pairedCount = Math.max(0, Number(remotePairState.data?.pairedCount || 0));
@@ -1042,7 +1195,7 @@
     const remoteBtn = sr.getElementById(REMOTE_BADGE_ID);
     if (remoteBtn) {
       remoteBtn.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
-      const baseTitle = tr('手机远程操作配对（Tailscale / 同 Wi-Fi 局域网）', 'Mobile Remote Pairing (Tailscale / Same Wi-Fi LAN)');
+      const baseTitle = tr('手机远程操作配对（局域网 / Tailscale / Cloudflare）', 'Mobile Remote Pairing (LAN / Tailscale / Cloudflare)');
       const countTitle = pairedCount > 0
         ? tr(`\n已关联 ${pairedCount} 台设备（${onlineCount} 台在线）`, `\n${pairedCount} paired (${onlineCount} online)`)
         : '';
@@ -1064,7 +1217,7 @@
     const remotePopover = sr.getElementById(REMOTE_POPOVER_ID);
     if (remotePopover) {
       remotePopover.setAttribute('aria-label', tr('手机远程操作配对', 'Mobile Remote Pairing'));
-      if (remotePopoverOpen) renderRemotePopoverContent(remotePopover);
+      if (!opts?.skipRender && remotePopoverOpen) renderRemotePopoverContent(remotePopover);
     }
   }
 
@@ -1102,7 +1255,7 @@
       const bRect = btn.getBoundingClientRect();
       const vw = window.innerWidth || 1280;
       const vh = window.innerHeight || 800;
-      const popW = Math.min(316, vw - 24);
+      const popW = Math.min(340, vw - 24);
       const popH = Math.max(260, Math.round(popover.offsetHeight || 360));
       const top = Math.max(36, Math.min(vh - popH - 12, Math.round(bRect.bottom + 6)));
       let left = Math.round(bRect.right - popW);
@@ -1131,9 +1284,11 @@
       : [
           {
             key: 'lan',
-            label: '此 Wi-Fi',
-            labelEn: 'This Wi-Fi',
-            available: lanList.length > 0,
+            label: '局域网',
+            labelEn: 'LAN',
+            enabled: data.enabledChannels?.lan !== false,
+            available: (data.enabledChannels?.lan !== false) && lanList.length > 0,
+            rawHost: extractUrlHostSafe(lanList[0]?.url),
             displayHost: extractUrlHostSafe(lanList[0]?.url),
             url: lanList[0]?.url || '',
             qrSvg: lanList[0]?.qrSvg || ''
@@ -1142,7 +1297,9 @@
             key: 'tailscale',
             label: 'Tailscale',
             labelEn: 'Tailscale',
-            available: tsList.length > 0,
+            enabled: data.enabledChannels?.tailscale !== false,
+            available: (data.enabledChannels?.tailscale !== false) && tsList.length > 0,
+            rawHost: data.tailscaleDnsName || extractUrlHostSafe(tsList[0]?.url),
             displayHost: data.tailscaleDnsName || extractUrlHostSafe(tsList[0]?.url),
             url: tsList[0]?.url || '',
             qrSvg: tsList[0]?.qrSvg || ''
@@ -1151,39 +1308,54 @@
             key: 'bonjour',
             label: 'Bonjour',
             labelEn: 'Bonjour',
-            available: Boolean(data.bonjourHost && lanList.length > 0),
+            enabled: data.enabledChannels?.bonjour !== false,
+            available: (data.enabledChannels?.bonjour !== false) && Boolean(data.bonjourHost && lanList.length > 0),
+            rawHost: data.bonjourHost || '',
             displayHost: data.bonjourHost || '',
             url: data.fusedUrl || data.primaryUrl || lanList[0]?.url || '',
             qrSvg: data.qrSvg || lanList[0]?.qrSvg || ''
           }
         ];
 
-    const availableList = channels.filter((c) => c.available && c.url);
-    let activeChannel = availableList.find((c) => c.key === remotePairState.mode);
-    if (!activeChannel) {
-      activeChannel = availableList.find((c) => c.key === 'tailscale')
-        || availableList.find((c) => c.key === 'lan')
-        || availableList[0]
-        || null;
+    const switchingTunnelMode = Boolean(
+      remotePairState.tunnelBusy
+      && (remotePairState.tunnelPendingAction === 'quick' || remotePairState.tunnelPendingAction === 'named')
+    );
+    if (switchingTunnelMode) {
+      channels = channels.map((ch) => (ch.key === 'tunnel'
+        ? { ...ch, available: false, url: '', qrSvg: '', rawHost: '', entryHost: '', entryBaseUrl: '' }
+        : ch));
     }
 
-    const activeUrl = activeChannel?.url || data.fusedUrl || data.primaryUrl || data.localUrl || '';
-    const activeQr = activeChannel?.qrSvg || data.qrSvg || '';
+    const availableList = channels.filter((c) => (c.enabled !== false) && c.available && c.url);
+    const activeChannel = availableList.find((c) => c.key === 'tunnel')
+      || availableList.find((c) => c.key === 'tailscale')
+      || availableList.find((c) => c.key === 'lan')
+      || availableList[0]
+      || null;
+
+    const activeUrl = availableList.length > 0
+      ? (activeChannel?.url || (!switchingTunnelMode ? (data.fusedUrl || data.primaryUrl || '') : ''))
+      : '';
+    const activeQr = availableList.length > 0
+      ? (activeChannel?.qrSvg || (!switchingTunnelMode ? (data.qrSvg || '') : ''))
+      : '';
 
     return {
       channels,
       activeChannel,
-      activeKey: activeChannel?.key || 'loopback',
+      activeKey: activeChannel?.key || 'none',
       activeUrl,
       activeQr
     };
   }
 
   function formatRemoteDeviceChannel(ch) {
+    if (ch === 'tunnel') return 'Cloudflare';
     if (ch === 'tailscale') return 'Tailscale';
     if (ch === 'bonjour') return 'Bonjour';
     if (ch === 'loopback') return tr('本机', 'Local');
-    return 'Wi-Fi';
+    return tr('局域网', 'LAN');
   }
 
   function formatRemoteDeviceTime(dev) {
@@ -1196,6 +1368,98 @@
     return tr(`${hrs}小时前`, `${hrs}h ago`);
   }
 
+  function scheduleTunnelStartingPoll() {
+    if (remotePairState.tunnelPollTimer) {
+      clearTimeout(remotePairState.tunnelPollTimer);
+      remotePairState.tunnelPollTimer = null;
+    }
+    if (!remotePopoverOpen || disposed) return;
+    const chs = remotePairState.data?.channels;
+    const tunnelCh = Array.isArray(chs) ? chs.find((c) => c.key === 'tunnel') : null;
+    if (tunnelCh?.state === 'starting') {
+      remotePairState.tunnelPollTimer = setTimeout(() => {
+        remotePairState.tunnelPollTimer = null;
+        if (remotePopoverOpen && !disposed) void refreshRemotePairInfo(false);
+      }, 1500);
+    }
+  }
+
+  async function configureRemoteTunnel(payload = {}) {
+    if (disposed || remotePairState.tunnelBusy) return remotePairState;
+    remotePairState.tunnelBusy = true;
+    remotePairState.tunnelPendingAction = payload.tunnelMode === 'quick'
+      ? 'quick'
+      : (payload.tunnelMode === 'named' ? 'named' : 'toggle');
+    remotePairState.error = '';
+    const nodes = ensureQuotaStylesAndNodes();
+    if (remotePopoverOpen && nodes?.remotePopover) {
+      renderRemotePopoverContent(nodes.remotePopover);
+      positionRemotePopover();
+    }
+    try {
+      const res = await postToLiveHost('/remote-tunnel', payload);
+      if (res && res.ok && res.data) {
+        remotePairState.data = res.data;
+        const chs = Array.isArray(res.data.channels) ? res.data.channels : [];
+        const tch = chs.find((c) => c.key === 'tunnel');
+        const hasErr = Boolean(tch?.error || tch?.state === 'error');
+        if (payload.tunnelMode === 'named') {
+          if (!hasErr) {
+            remotePairState.tunnelConfigOpen = false;
+            remotePairState.draftHost = null;
+            remotePairState.draftToken = '';
+          } else {
+            remotePairState.tunnelConfigOpen = true;
+          }
+        } else if (payload.tunnelMode === 'quick') {
+          if (!hasErr) {
+            remotePairState.tunnelConfigOpen = false;
+            remotePairState.draftHost = null;
+            remotePairState.draftToken = '';
+          }
+        }
+        const toggledNonTunnel = payload.enabledChannels && typeof payload.enabledChannels === 'object'
+          ? Object.entries(payload.enabledChannels).find(([k]) => k !== 'tunnel')
+          : null;
+        if (toggledNonTunnel) {
+          const [chKey, chOn] = toggledNonTunnel;
+          const chMeta = chs.find((c) => c.key === chKey);
+          const chLabel = chMeta ? tr(chMeta.label || chKey, chMeta.labelEn || chKey) : chKey;
+          showQuickToast(chOn
+            ? tr(`✅ 已启用 ${chLabel}（后端允许调用）`, `✅ Enabled ${chLabel}`)
+            : tr(`🚫 已停用 ${chLabel}（后端拒绝该方式调用）`, `🚫 Disabled ${chLabel}`));
+        } else if (payload.tunnelMode === 'quick' && tch?.available) {
+          showQuickToast(tr('☁️ 已切换至免登录临时隧道，4G/5G 可直接扫码', '☁️ Switched to Quick Tunnel'));
+        } else if (tch?.available) {
+          showQuickToast(tr('☁️ Cloudflare 隧道已就绪，4G/5G 可直接扫码', '☁️ Cloudflare Tunnel ready for any network'));
+        } else if (payload.enabled === false || payload.enabledChannels?.tunnel === false) {
+          showQuickToast(tr('⭕ Cloudflare 隧道已停用（后端已阻断）', '⭕ Cloudflare Tunnel disabled'));
+        } else if (tch?.state === 'starting') {
+          showQuickToast(tr('⏳ 公网隧道正在分配中，请稍候数秒…', '⏳ Provisioning Cloudflare Tunnel…'));
+        } else if (tch?.error) {
+          showQuickToast(tch.error);
+        }
+      } else {
+        remotePairState.error = res?.error || tr('更新远程通道配置失败', 'Failed to update remote channels');
+        if (payload.tunnelMode === 'named') remotePairState.tunnelConfigOpen = true;
+      }
+    } catch (err) {
+      remotePairState.error = err?.message || tr('配置 Cloudflare 隧道失败', 'Failed to configure Cloudflare Tunnel');
+      if (payload.tunnelMode === 'named') remotePairState.tunnelConfigOpen = true;
+    } finally {
+      remotePairState.tunnelBusy = false;
+      remotePairState.tunnelPendingAction = '';
+      updateRemoteBtnLanguage({ skipRender: true });
+      const curNodes = ensureQuotaStylesAndNodes();
+      if (remotePopoverOpen && curNodes?.remotePopover) {
+        renderRemotePopoverContent(curNodes.remotePopover);
+        positionRemotePopover();
+      }
+      scheduleTunnelStartingPoll();
+    }
+    return remotePairState;
+  }
+
   function renderRemotePopoverContent(popover) {
     if (!popover) return;
     const ep = resolveRemoteEndpoint(remotePairState.data);
@@ -1203,6 +1467,8 @@
     const pairedDevices = Array.isArray(remotePairState.data?.pairedDevices) ? remotePairState.data.pairedDevices : [];
     const pairedCount = Math.max(pairedDevices.length, Number(remotePairState.data?.pairedCount || 0));
     const onlineCount = Math.max(0, Number(remotePairState.data?.onlineCount || 0));
+    const busyAny = remotePairState.loading || remotePairState.tunnelBusy;
+    const pendingAct = remotePairState.tunnelBusy ? remotePairState.tunnelPendingAction : '';
     let bodyHtml = '';
 
     if (remotePairState.loading && !remotePairState.data) {
@@ -1213,19 +1479,71 @@
       const safeQr = (ep.activeQr && ep.activeQr.startsWith('<svg') && !/<script/i.test(ep.activeQr))
         ? ep.activeQr
         : '';
+      const tunnelCh = ep.channels.find((c) => c.key === 'tunnel') || null;
       const channelsHtml = ep.channels.map((ch) => {
         const label = tr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
-        const hostText = ch.available && ch.displayHost ? ch.displayHost : tr('未连接', 'Offline');
-        const selected = ch.available && ch.key === ep.activeKey;
-        return `<button class="ag-rp-channel" data-channel="${escapeHtml(ch.key)}" data-selected="${selected ? 'true' : 'false'}" type="button" ${ch.available ? '' : 'disabled'}>`
-          + `<span class="ag-rp-ch-left">${ch.available ? CHECK_OK_SVG : CHANNEL_OFF_SVG}<span>${escapeHtml(label)}</span></span>`
-          + `<span class="ag-rp-ch-host">${escapeHtml(hostText)}</span>`
-          + `</button>`;
+        const isEnabled = ch.key === 'tunnel'
+          ? Boolean(ch.enabled || ch.state === 'running' || ch.state === 'starting' || pendingAct === 'quick' || pendingAct === 'named')
+          : (ch.enabled !== false);
+        let hostHtml = '';
+        if (ch.key === 'tunnel' && pendingAct === 'quick') {
+          hostHtml = `<span class="ag-rp-spin"></span>${escapeHtml(tr('正在切换临时隧道…', 'Switching to Quick Tunnel…'))}`;
+        } else if (ch.key === 'tunnel' && pendingAct === 'named') {
+          hostHtml = `<span class="ag-rp-spin"></span>${escapeHtml(tr('正在连接固定隧道…', 'Connecting Named Tunnel…'))}`;
+        } else if (!isEnabled) {
+          hostHtml = escapeHtml(ch.rawHost ? `${tr('已停用', 'Disabled')} · ${ch.rawHost}` : tr('已停用', 'Disabled'));
+        } else if (ch.key === 'tunnel' && !ch.available && ch.state === 'starting') {
+          hostHtml = `<span class="ag-rp-spin"></span>${escapeHtml(ch.displayHost || tr('正在分配公网隧道…', 'Provisioning Tunnel…'))}`;
+        } else {
+          hostHtml = escapeHtml(ch.displayHost || (ch.available ? '' : tr('未连接', 'Offline')));
+        }
+        const checkId = ch.key === 'tunnel' ? 'ag-rp-tunnel-toggle' : `ag-rp-toggle-${escapeHtml(ch.key)}`;
+        const cfgLabel = remotePairState.tunnelConfigOpen
+          ? tr('收起 ▴', 'Hide ▴')
+          : tr('固定域名 ▾', 'Domain ▾');
+        const toolsHtml = ch.key === 'tunnel'
+          ? `<div class="ag-rp-channel-tools"><button id="ag-rp-tunnel-cfg-btn" class="ag-rp-mini-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeHtml(cfgLabel)}</button></div>`
+          : '';
+        return `<div class="ag-rp-channel-wrap">`
+          + `<button id="${checkId}" class="ag-rp-channel ag-rp-check" data-channel="${escapeHtml(ch.key)}" data-channel-toggle="${escapeHtml(ch.key)}" role="checkbox" aria-checked="${isEnabled ? 'true' : 'false'}" title="${escapeHtml(isEnabled ? tr(`点击停用 ${label}`, `Click to disable ${label}`) : tr(`点击启用 ${label}`, `Click to enable ${label}`))}" type="button" ${remotePairState.tunnelBusy ? 'disabled' : ''}>`
+          + `<span class="ag-rp-ch-left"><span class="ag-rp-check-box">${isEnabled ? CHECKBOX_CHECKED_SVG : CHECKBOX_UNCHECKED_SVG}</span><span>${escapeHtml(label)}</span></span>`
+          + `<span class="ag-rp-ch-host">${hostHtml}</span>`
+          + `</button>`
+          + toolsHtml
+          + `</div>`;
       }).join('');
+
+      const saveBtnHtml = pendingAct === 'named'
+        ? `<span class="ag-rp-spin"></span>${escapeHtml(tr('正在连接固定隧道…', 'Connecting…'))}`
+        : escapeHtml(tr('保存并启用固定隧道', 'Save Named Tunnel'));
+      const quickBtnHtml = pendingAct === 'quick'
+        ? `<span class="ag-rp-spin"></span>${escapeHtml(tr('正在切换临时隧道…', 'Switching…'))}`
+        : escapeHtml(tr('改用免登录临时隧道', 'Use Quick Tunnel'));
+
+      const tunnelFormHtml = (tunnelCh && remotePairState.tunnelConfigOpen)
+        ? `<div id="ag-rp-tunnel-form" class="ag-rp-tunnel-form">
+            <div class="ag-rp-tunnel-head">
+              <div class="ag-rp-tunnel-note">${escapeHtml(tr('默认免登录使用临时隧道 (*.trycloudflare.com)；如需固定域名，需自有域名并在隧道 Public Hostname 指向 http://127.0.0.1:18765（勿填 *.cloudflareaccess.com）：', 'Quick Tunnel needs no login (*.trycloudflare.com). For a fixed domain, bind your own domain in Tunnel Public Hostname -> http://127.0.0.1:18765 (do not enter *.cloudflareaccess.com):'))}</div>
+              <a id="ag-rp-cf-get-token" class="ag-rp-cf-link" href="${CLOUDFLARE_TUNNEL_DASHBOARD_URL}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(tr('在系统默认浏览器中打开 Cloudflare Zero Trust 隧道控制台创建并获取 Token', 'Open Cloudflare Zero Trust Tunnels in default browser to create & copy Token'))}">${escapeHtml(tr('☁️ 前往 Cloudflare 获取 Token ↗', '☁️ Get Token on Cloudflare ↗'))}</a>
+            </div>
+            <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="https://ag.example.com" value="${escapeHtml(remotePairState.draftHost !== null ? remotePairState.draftHost : (tunnelCh.tunnelHostname || ''))}">
+            <input id="ag-rp-cf-token" class="ag-rp-input" type="password" value="${escapeHtml(remotePairState.draftToken || '')}" placeholder="${escapeHtml(tunnelCh.hasTunnelToken ? tr('已保存 Token（留空保持不变，或粘贴新 eyJ...）', 'Token saved (leave blank to keep, or paste new eyJ...)') : tr('粘贴 eyJ... 或 cloudflared service install 命令', 'Paste eyJ... or cloudflared service install command'))}">
+            <div class="ag-rp-actions">
+              <button id="ag-rp-cf-save" class="ag-rp-mini-btn" data-active="true" style="flex:1" type="button" ${remotePairState.tunnelBusy ? 'disabled' : ''}>${saveBtnHtml}</button>
+              <button id="ag-rp-cf-quick" class="ag-rp-mini-btn" type="button" ${remotePairState.tunnelBusy ? 'disabled' : ''}>${quickBtnHtml}</button>
+            </div>
+          </div>`
+        : '';
+
+      const errHtml = (tunnelCh?.error || remotePairState.error)
+        ? `<div class="ag-rp-err">${escapeHtml(tunnelCh?.error || remotePairState.error)}</div>`
+        : '';
 
       const statusText = pairedCount > 0
         ? tr(`已关联 ${pairedCount} 台设备（${onlineCount} 台在线）`, `${pairedCount} paired (${onlineCount} online)`)
-        : tr('内网口令保护 · 暂未关联设备', 'Token protected · No paired devices yet');
+        : (ep.activeKey === 'tunnel'
+            ? tr('口令保护 · 已启用公网 HTTPS 隧道 · 暂未关联设备', 'Token protected · Public HTTPS tunnel · No paired devices yet')
+            : tr('内网口令保护 · 暂未关联设备', 'Token protected · No paired devices yet'));
       const devicesHtml = pairedDevices.length > 0
         ? `<div class="ag-rp-devices">${pairedDevices.slice(0, 6).map((d) => {
             const devLabel = escapeHtml(d?.label || tr('移动设备', 'Mobile'));
@@ -1235,23 +1553,29 @@
           }).join('')}${pairedDevices.length > 6 ? `<span class="ag-rp-dev-chip">+${pairedDevices.length - 6}</span>` : ''}</div>`
         : '';
 
+      const qrOrEmptyHtml = safeQr
+        ? `<div class="ag-rp-qr">${safeQr}</div>`
+        : `<div class="ag-rp-status">${escapeHtml(tr('请至少勾选启用一种连接方式', 'Enable at least one connection mode'))}</div>`;
+
       bodyHtml = `
-        ${safeQr ? `<div class="ag-rp-qr">${safeQr}</div>` : ''}
+        ${qrOrEmptyHtml}
         <div class="ag-rp-channels">${channelsHtml}</div>
+        ${tunnelFormHtml}
+        ${errHtml}
         <div class="ag-rp-sec" data-active="${onlineCount > 0 ? 'true' : 'false'}">${LOCK_SHIELD_SVG}<span>${escapeHtml(statusText)}</span></div>
         ${devicesHtml}
         <div class="ag-rp-actions">
-          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button">${escapeHtml(copiedRecent ? tr('已复制链接', 'Copied') : tr('复制链接', 'Copy Link'))}</button>
-          <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${remotePairState.loading ? 'disabled' : ''}>${escapeHtml(tr('重置密钥', 'Reset Token'))}</button>
+          <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button" ${ep.activeUrl ? '' : 'disabled'}>${escapeHtml(copiedRecent ? tr('已复制链接', 'Copied') : tr('复制链接', 'Copy Link'))}</button>
+          <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeHtml(tr('重置密钥', 'Reset Token'))}</button>
         </div>
-        <div class="ag-rp-tip">${escapeHtml(tr('可连到这台电脑：在同一 Wi-Fi 上、在你的 Tailnet 上或通过 Bonjour 域名；iPhone 扫码后添加到主屏幕即可全屏秒连。', 'Connect over this Wi-Fi, Tailscale, or Bonjour. Scan with Phone and Add to Home Screen for instant full-screen control.'))}</div>
+        <div class="ag-rp-tip">${escapeHtml(tr('整行点击启用或停用对应连接方式，未勾选的方式后端将拒绝调用；客户端支持手动直选已启用入口。', 'Click any row to enable or disable it; unchecked modes are blocked by the server and enabled ones are selectable on the client.'))}</div>
       `;
     }
 
     popover.innerHTML = `
       <div class="ag-qp-header">
         <span class="ag-qp-title">${escapeHtml(tr('手机远程操作配对', 'Mobile Remote Pairing'))}</span>
-        <button id="ag-remote-refresh" class="ag-qp-refresh" type="button">${escapeHtml(remotePairState.loading ? tr('刷新中…', 'Refreshing…') : tr('↻ 刷新', '↻ Refresh'))}</button>
+        <button id="ag-remote-refresh" class="ag-qp-refresh" type="button">${escapeHtml(busyAny ? tr('处理中…', 'Working…') : tr('↻ 刷新', '↻ Refresh'))}</button>
       </div>
       ${bodyHtml}
     `;
@@ -1263,12 +1587,54 @@
     popover.querySelectorAll('.ag-rp-channel').forEach((row) => {
       row.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        const key = row.getAttribute('data-channel');
+        const key = row.getAttribute('data-channel-toggle') || row.getAttribute('data-channel');
         if (!key || row.hasAttribute('disabled')) return;
-        remotePairState.mode = key;
-        renderRemotePopoverContent(popover);
-        positionRemotePopover();
+        const targetCh = ep?.channels?.find((c) => c.key === key);
+        const curOn = key === 'tunnel'
+          ? Boolean(targetCh && (targetCh.enabled || targetCh.state === 'running' || targetCh.state === 'starting'))
+          : (targetCh?.enabled !== false);
+        const nextOn = !curOn;
+        if (key === 'tunnel') {
+          void configureRemoteTunnel({ enabled: nextOn, enabledChannels: { tunnel: nextOn } });
+        } else {
+          void configureRemoteTunnel({ enabledChannels: { [key]: nextOn } });
+        }
       });
+    });
+    popover.querySelector('#ag-rp-tunnel-cfg-btn')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      remotePairState.tunnelConfigOpen = !remotePairState.tunnelConfigOpen;
+      renderRemotePopoverContent(popover);
+      positionRemotePopover();
+    });
+    popover.querySelector('#ag-rp-cf-get-token')?.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void openExternalUrlInSystemBrowser(CLOUDFLARE_TUNNEL_DASHBOARD_URL);
+    });
+    popover.querySelector('#ag-rp-cf-host')?.addEventListener('input', (ev) => {
+      remotePairState.draftHost = String(ev.target?.value ?? '');
+    });
+    popover.querySelector('#ag-rp-cf-token')?.addEventListener('input', (ev) => {
+      remotePairState.draftToken = String(ev.target?.value ?? '');
+    });
+    popover.querySelector('#ag-rp-cf-save')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const hostVal = String(popover.querySelector('#ag-rp-cf-host')?.value || '').trim();
+      const tokVal = String(popover.querySelector('#ag-rp-cf-token')?.value || '').trim();
+      remotePairState.draftHost = hostVal;
+      remotePairState.draftToken = tokVal;
+      const req = { enabled: true, tunnelMode: 'named', tunnelHostname: hostVal };
+      if (tokVal) req.tunnelToken = tokVal;
+      showQuickToast(tr('⏳ 正在校验并连接固定域名隧道…', '⏳ Validating & connecting Named Tunnel…'));
+      void configureRemoteTunnel(req);
+    });
+    popover.querySelector('#ag-rp-cf-quick')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      remotePairState.draftHost = null;
+      remotePairState.draftToken = '';
+      showQuickToast(tr('⏳ 正在申请免登录临时隧道 (*.trycloudflare.com)，约需 3~8 秒…', '⏳ Provisioning Quick Tunnel (*.trycloudflare.com)…'));
+      void configureRemoteTunnel({ enabled: true, tunnelMode: 'quick' });
     });
     popover.querySelector('#ag-remote-copy')?.addEventListener('click', async (ev) => {
       ev.stopPropagation();
@@ -1316,12 +1682,13 @@
       remotePairState.error = err?.message || tr('获取配对二维码失败', 'Failed to fetch pairing QR code');
     } finally {
       remotePairState.loading = false;
-      updateRemoteBtnLanguage();
+      updateRemoteBtnLanguage({ skipRender: true });
       const curNodes = ensureQuotaStylesAndNodes();
       if (remotePopoverOpen && curNodes?.remotePopover) {
         renderRemotePopoverContent(curNodes.remotePopover);
         positionRemotePopover();
       }
+      scheduleTunnelStartingPoll();
     }
     return remotePairState;
   }
@@ -1366,11 +1733,18 @@
       try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(true); } catch {}
       void refreshRemotePairInfo(false);
       remotePollTimer = setInterval(() => {
-        if (!disposed && remotePopoverOpen && !remotePairState.loading) {
+        if (!disposed && remotePopoverOpen && !remotePairState.loading && !remotePairState.tunnelBusy && !remotePairState.tunnelConfigOpen) {
           void refreshRemotePairInfo(false);
         }
       }, 4000);
     } else {
+      remotePairState.tunnelConfigOpen = false;
+      remotePairState.draftHost = null;
+      remotePairState.draftToken = '';
+      if (remotePairState.tunnelPollTimer) {
+        clearTimeout(remotePairState.tunnelPollTimer);
+        remotePairState.tunnelPollTimer = null;
+      }
       try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(Boolean(popoverOpen || remotePopoverOpen)); } catch {}
     }
   }
@@ -1391,7 +1765,15 @@
 
     if (nextOpen) {
       if (remotePopoverOpen && nodes.remotePopover) {
+        clearRemotePollTimer();
+        if (remotePairState.tunnelPollTimer) {
+          clearTimeout(remotePairState.tunnelPollTimer);
+          remotePairState.tunnelPollTimer = null;
+        }
         remotePopoverOpen = false;
+        remotePairState.tunnelConfigOpen = false;
+        remotePairState.draftHost = null;
+        remotePairState.draftToken = '';
         nodes.remotePopover.hidden = true;
         nodes.remoteBtn?.setAttribute('aria-expanded', 'false');
       }
@@ -1413,6 +1795,10 @@
       try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(true); } catch {}
       void refreshQuota();
     } else {
+      if (remotePairState.tunnelPollTimer) {
+        clearTimeout(remotePairState.tunnelPollTimer);
+        remotePairState.tunnelPollTimer = null;
+      }
       try { (globalThis.__AGContextMeter || window.__AGContextMeter)?.setHostElevated?.(Boolean(popoverOpen || remotePopoverOpen)); } catch {}
     }
   }
@@ -1796,7 +2182,7 @@
         }
         #${CHAT_NAV_ID} {
           position: fixed;
-          z-index: 99990;
+          z-index: 8;
           display: flex;
           flex-direction: column;
           align-items: stretch;
@@ -2051,7 +2437,8 @@
           border-color: rgba(24, 24, 27, 0.16);
           box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
         }
-        [data-ag-has-ghost="1"] > p.pointer-events-none {
+        [data-ag-has-ghost="1"] > p.pointer-events-none,
+        [data-ag-has-ghost="1"] > div.pointer-events-none {
           opacity: 0 !important;
           visibility: hidden !important;
         }
@@ -2134,7 +2521,7 @@
   }
 
   async function fillComposerText(text) {
-    const ed = document.querySelector('.surface-composer [contenteditable="true"]') || document.querySelector('[contenteditable="true"]');
+    const ed = getComposerEditor() || document.querySelector('[contenteditable="true"]');
     if (!ed) {
       showQuickToast('未找到聊天输入框');
       return false;
@@ -2491,6 +2878,13 @@
 
   function positionChatNavFloat(nav) {
     if (!nav) return;
+    const openModal = typeof document.querySelector === 'function'
+      ? document.querySelector('[aria-modal="true"]:not([hidden])')
+      : null;
+    if (openModal && openModal.offsetWidth > 0 && openModal.offsetHeight > 0) {
+      nav.hidden = true;
+      return;
+    }
     const vp = getScrollViewport();
     if (!vp) {
       nav.hidden = true;
@@ -2553,6 +2947,10 @@
     ensureDocStyle();
     const { host } = getMeterHostAndShadow();
     const theme = resolveHostTheme(host);
+    const vp = getScrollViewport();
+    const mountRoot = vp?.closest?.('.agy-sheet')
+      || (typeof document.querySelector === 'function' ? document.querySelector('.agy-sheet') : null)
+      || document.body;
     let nav = document.getElementById(CHAT_NAV_ID);
     if (!nav) {
       nav = document.createElement('div');
@@ -2569,7 +2967,9 @@
         btn.addEventListener('click', item.onClick);
         nav.appendChild(btn);
       }
-      document.body.appendChild(nav);
+      mountRoot.appendChild(nav);
+    } else if (mountRoot && nav.parentElement !== mountRoot) {
+      mountRoot.appendChild(nav);
     }
     if (nav.getAttribute('data-ag-theme') !== theme) {
       nav.setAttribute('data-ag-theme', theme);
@@ -2786,7 +3186,10 @@
     return (
       document.querySelector('.surface-composer [data-lexical-editor="true"]') ||
       document.querySelector('.surface-composer [contenteditable="true"]') ||
-      document.querySelector('[aria-label="Message input"][contenteditable="true"]')
+      document.querySelector('[data-testid="agent-input-box"] [data-lexical-editor="true"]') ||
+      document.querySelector('[data-testid="agent-input-box"] [contenteditable="true"]') ||
+      document.querySelector('[aria-label="Message input"][contenteditable="true"]') ||
+      document.querySelector('[aria-label="消息输入"][contenteditable="true"]')
     );
   }
 
@@ -3237,7 +3640,7 @@
       if (!resp.ok) return null;
       const data = await resp.json();
       if (route === '/remote-info' && data && data.disabled) return data;
-      return data && data.ok ? data : null;
+      return (data && typeof data === 'object') ? data : null;
     } catch {
       return null;
     }
@@ -3523,6 +3926,32 @@
     return true;
   }
 
+  function extractSidebarRowId(row) {
+    if (!row) return '';
+    const attrId = (row.getAttribute('data-cascade-id') || '').trim();
+    if (attrId) return attrId;
+    const href = row.querySelector?.('a[href*="/c/"]')?.getAttribute('href') || '';
+    const m = href.match(/\/c\/([^/?#]+)/);
+    return m ? m[1] : '';
+  }
+
+  function escapeCssIdent(v) {
+    return (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+      ? CSS.escape(v)
+      : String(v).replace(/["\\]/g, '\\$&');
+  }
+
+  function findSidebarRowById(id) {
+    if (!id) return null;
+    const direct = document.querySelector(`[data-testid="conversation-row-sidebar"][data-cascade-id="${escapeCssIdent(id)}"]`);
+    if (direct) return direct;
+    const rows = document.querySelectorAll('[data-testid="conversation-row-sidebar"]');
+    for (const row of rows) {
+      if (extractSidebarRowId(row) === id) return row;
+    }
+    return null;
+  }
+
   async function localizeSidebarConversations() {
     if (disposed || uiLang !== 'zh') return 0;
     const rows = document.querySelectorAll('[data-testid="conversation-row-sidebar"]');
@@ -3531,7 +3960,7 @@
     let appliedCount = 0;
 
     for (const row of rows) {
-      const id = row.getAttribute('data-cascade-id');
+      const id = extractSidebarRowId(row);
       if (!id) continue;
       if (row.querySelector('input, textarea, [contenteditable="true"]')) continue;
       const span = row.querySelector('span.truncate');
@@ -3580,7 +4009,7 @@
       for (const [id, zhTitle] of Object.entries(titles)) {
         if (!zhTitle || sidebarUserRenamedIds.has(id)) continue;
         sidebarZhCache.set(id, zhTitle);
-        const row = document.querySelector(`[data-testid="conversation-row-sidebar"][data-cascade-id="${CSS.escape(id)}"]`);
+        const row = findSidebarRowById(id);
         if (row) {
           const rawTitle = needLocalize.find((x) => x.id === id)?.title || '';
           if (applySidebarTitleDom(row, rawTitle, zhTitle)) appliedCount++;
@@ -4005,30 +4434,52 @@
     const dryRun = Boolean(opts && opts.dryRun);
     const res = await postToLiveHost('/open-external-url', { url: safeUrl, dryRun });
     if (res && res.ok) {
-      if (!dryRun) showQuickToast('🌐 已用系统浏览器打开链接');
+      if (!dryRun) showQuickToast(tr('🌐 已用系统浏览器打开链接', '🌐 Opened in system browser'));
       return res;
+    }
+    if (!dryRun && typeof window.contextMeterAPI?.openBrowserUrl === 'function') {
+      try {
+        const ipcRes = await window.contextMeterAPI.openBrowserUrl(safeUrl);
+        if (ipcRes && ipcRes.ok) {
+          showQuickToast(tr('🌐 已用系统浏览器打开链接', '🌐 Opened in system browser'));
+          return { ...ipcRes, fallback: 'contextMeterAPI' };
+        }
+      } catch {
+        // ignore fallback error
+      }
     }
     if (!dryRun && typeof window.electronNative?.openExternal === 'function') {
       try {
         window.electronNative.openExternal(safeUrl);
-        showQuickToast('🌐 已用系统浏览器打开链接');
+        showQuickToast(tr('🌐 已用系统浏览器打开链接', '🌐 Opened in system browser'));
         return { ok: true, url: safeUrl, fallback: 'electronNative' };
       } catch {
         // ignore fallback error
       }
     }
-    if (!dryRun) showQuickToast('⚠️ 未能打开外部链接');
+    if (!dryRun && typeof window.open === 'function') {
+      try {
+        const opened = window.open(safeUrl, '_blank', 'noopener,noreferrer');
+        if (opened) {
+          showQuickToast(tr('🌐 已用系统浏览器打开链接', '🌐 Opened in system browser'));
+          return { ok: true, url: safeUrl, fallback: 'windowOpen' };
+        }
+      } catch {
+        // ignore fallback error
+      }
+    }
+    if (!dryRun) showQuickToast(tr('⚠️ 未能打开外部链接', '⚠️ Failed to open external link'));
     return { ok: false, error: '打开失败' };
   }
 
   function getOrderedSidebarConversationRows() {
     return Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"]'))
-      .filter((row) => Boolean(row.getAttribute('data-cascade-id')));
+      .filter((row) => Boolean(extractSidebarRowId(row)));
   }
 
   function isSidebarRowActive(row, currentId = getSessionIdFromLocation() || '') {
     if (!row) return false;
-    const id = row.getAttribute('data-cascade-id') || '';
+    const id = extractSidebarRowId(row);
     const cls = String(row.className || '');
     return Boolean(
       (currentId && id === currentId) ||
@@ -4042,7 +4493,7 @@
   function getSidebarRowDisplayTitle(row) {
     if (!row) return '';
     const span = row.querySelector('span.truncate');
-    const id = row.getAttribute('data-cascade-id') || '';
+    const id = extractSidebarRowId(row);
     return (span?.textContent || row.innerText || row.textContent || '').replace(/\s+/g, ' ').trim() || id.slice(0, 8);
   }
 
@@ -4052,7 +4503,7 @@
     const allRows = document.querySelectorAll('[data-testid="conversation-row-sidebar"]');
     let idx = 0;
     for (const row of allRows) {
-      const hasId = Boolean(row.getAttribute('data-cascade-id'));
+      const hasId = Boolean(extractSidebarRowId(row));
       if (hasId && idx < 9) {
         const label = `⌘${idx + 1}`;
         if (row.getAttribute('data-ag-shortcut') !== label) {
@@ -4076,7 +4527,7 @@
       return { ok: false, reason: 'out-of-range', total: rows.length };
     }
     const row = rows[targetIndex];
-    const id = row.getAttribute('data-cascade-id') || '';
+    const id = extractSidebarRowId(row);
     const title = getSidebarRowDisplayTitle(row).slice(0, 36);
     if (isSidebarRowActive(row, getSessionIdFromLocation() || '')) {
       showQuickToast(tr(`已在对话 #${targetIndex + 1}：${title}`, `Already in #${targetIndex + 1}: ${title}`));
@@ -4381,6 +4832,10 @@
     clearInterval(enhancerTimer);
     clearRemotePollTimer();
     if (toastTimer) clearTimeout(toastTimer);
+    if (remotePairState.tunnelPollTimer) {
+      clearTimeout(remotePairState.tunnelPollTimer);
+      remotePairState.tunnelPollTimer = null;
+    }
     if (localizeTimer) {
       clearTimeout(localizeTimer);
       localizeTimer = null;
@@ -4481,7 +4936,7 @@
 
   function cleanUserMessageText(raw) {
     let s = String(raw || '').replace(/\r\n/g, '\n').trim();
-    s = s.replace(/^(?:You said|你说)\s*\n+/i, '');
+    s = s.replace(/^(?:You said|你说)\s*/i, '');
     s = s.replace(/\n+(?:just\s+now|刚刚|\d+\s*(?:second|minute|hour|day|sec|min|hr)s?\s*ago|\d+\s*[smhd]\s*ago|\d+\s*(?:秒|分钟|小时|天)前)\s*$/i, '');
     return s.trim().slice(0, 3000);
   }
@@ -4574,7 +5029,8 @@
       const node = slice[i];
       const testId = node.getAttribute('data-testid');
       if (testId === 'user-message') {
-        const text = cleanUserMessageText(node.innerText || node.textContent || '');
+        const contentNode = node.querySelector('[data-testid="user-message-content"]') || node;
+        const text = cleanUserMessageText(contentNode.innerText || contentNode.textContent || '');
         if (!text) continue;
         out.push({ id: `u-${i}`, role: 'user', text });
         continue;
@@ -4633,7 +5089,7 @@
     const rows = getOrderedSidebarConversationRows();
     const list = [];
     for (const row of rows) {
-      const id = row.getAttribute('data-cascade-id') || '';
+      const id = extractSidebarRowId(row);
       if (!id) continue;
       const title = getSidebarRowDisplayTitle(row);
       const active = isSidebarRowActive(row, currentId);
@@ -4830,8 +5286,8 @@
         await new Promise((r) => setTimeout(r, 180));
         return { ok: true, id: 'new' };
       }
-      const row = document.querySelector(`[data-testid="conversation-row-sidebar"][data-cascade-id="${CSS.escape(targetId)}"]`);
-      const link = row?.querySelector('a[href]') || document.querySelector(`a[href*="/c/${CSS.escape(targetId)}"]`);
+      const row = findSidebarRowById(targetId);
+      const link = row?.querySelector('a[href]') || document.querySelector(`a[href*="/c/${escapeCssIdent(targetId)}"]`);
       const clickTarget = link || row;
       if (!clickTarget) return { ok: false, error: '未在侧边栏找到该会话' };
       clickTarget.click();
@@ -4972,7 +5428,7 @@
   }
 
     globalThis.__AGEnhancer = {
-    version: '1.6.12',
+    version: '1.7.3',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -4983,6 +5439,7 @@
     closeQuotaPopover: () => toggleQuotaPopover(false),
     toggleRemotePopover,
     closeRemotePopover: () => toggleRemotePopover(false),
+    configureRemoteTunnel,
     refreshBrainStats,
     scanHighRiskCommands,
     toggleAllThinking,

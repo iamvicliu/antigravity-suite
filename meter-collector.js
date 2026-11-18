@@ -5246,6 +5246,9 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       if (safeOpts.customTerminalPath === undefined && typeof uiPrefs.customTerminalPath === 'string' && uiPrefs.customTerminalPath.trim()) {
         safeOpts.customTerminalPath = uiPrefs.customTerminalPath.trim();
       }
+      if (safeOpts.muxHost === undefined && typeof uiPrefs.cliMuxHost === 'string') {
+        safeOpts.muxHost = uiPrefs.cliMuxHost.trim();
+      }
       if (safeOpts.skipPermissions === undefined && typeof uiPrefs.cliSkipPermissions === 'boolean') {
         safeOpts.skipPermissions = uiPrefs.cliSkipPermissions;
       }

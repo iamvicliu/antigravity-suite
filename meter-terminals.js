@@ -8,7 +8,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn, execFile } = require('child_process');
+const { spawn, spawnSync, execFile } = require('child_process');
 
 function escapePosixArg(arg) {
   const s = String(arg ?? '');
@@ -96,6 +96,137 @@ function normalizeMacAppBinary(appOrBinPath, innerRelBin) {
   return appOrBinPath;
 }
 
+/**
+ * 校验并规范化多路复用器目标主机名：
+ * - 空值 / local / localhost / 127.0.0.1 / unix:// 返回 ''（表示本机）
+ * - 合法远端主机名/域名/IP/ssh user@host 返回修剪后的字符串
+ * - 含空白、引号、换行、前导 '-' 或 shell 元字符返回 null（拒绝执行）
+ */
+function sanitizeMuxHost(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  const lower = trimmed.toLowerCase();
+  if (['local', 'localhost', '127.0.0.1', '__local__'].includes(lower) || lower.startsWith('unix://')) {
+    return '';
+  }
+  if (/^[a-zA-Z0-9][a-zA-Z0-9._:@-]{0,127}$/.test(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+
+function detectMuxHosts(options = {}) {
+  const platform = options.platform || process.platform;
+  const env = options.env || process.env;
+  const homedir = options.homedir || os.homedir();
+  const existsSync = options.existsSync || fs.existsSync;
+  const readFileSync = options.readFileSync || fs.readFileSync;
+  const statSync = options.statSync || fs.statSync;
+  const spawnSyncFn = options.spawnSyncFn || spawnSync;
+
+  const hosts = [
+    {
+      id: '',
+      label: '本机 (Local)',
+      labelEn: 'This Mac (Local)',
+      source: 'local',
+      isLocal: true
+    }
+  ];
+  const seen = new Set(['']);
+  const pushHost = (rawName, extra = {}) => {
+    const clean = sanitizeMuxHost(rawName);
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    hosts.push({
+      id: clean,
+      label: String(extra.label || clean),
+      labelEn: String(extra.labelEn || extra.label || clean),
+      source: extra.source || 'detected',
+      icon: extra.icon || '',
+      isLocal: false
+    });
+  };
+
+  if (Array.isArray(options.muxHosts)) {
+    for (const item of options.muxHosts) {
+      if (typeof item === 'string') {
+        pushHost(item, { source: 'injected' });
+      } else if (item && typeof item === 'object') {
+        pushHost(item.id || item.label || item.name, {
+          label: item.label || item.name || item.id,
+          labelEn: item.labelEn || item.label || item.id,
+          source: item.source || 'injected',
+          icon: item.icon || ''
+        });
+      }
+    }
+  }
+
+  const isTestEnv = Boolean(
+    process.env.NODE_TEST_CONTEXT
+    || process.env.AG_METER_TEST_MODE === '1'
+    || process.env.NODE_ENV === 'test'
+  );
+  const shouldProbe = options.probeMuxHosts === true || (existsSync === fs.existsSync && !isTestEnv);
+
+  if (platform === 'darwin' && shouldProbe) {
+    // 1. 探测 Rex 已配置主机（通过 --autostart=false 快速查询，不唤醒未运行的服务）
+    try {
+      const rexBin = firstExistingPath([
+        '~/.rex/bin/rex',
+        '~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex',
+        '/opt/homebrew/bin/rex',
+        '/usr/local/bin/rex'
+      ], { existsSync, homedir }) || findInPath('rex', { platform, env, existsSync });
+
+      if (rexBin && typeof spawnSyncFn === 'function') {
+        const res = spawnSyncFn(rexBin, ['hosts', '--json', '--timeout', '1200ms', '--autostart=false'], {
+          encoding: 'utf8',
+          timeout: 1500,
+          windowsHide: true
+        });
+        if (res && res.status === 0 && res.stdout) {
+          const parsed = JSON.parse(res.stdout);
+          const list = Array.isArray(parsed?.hosts) ? parsed.hosts : [];
+          for (const entry of list) {
+            const h = entry?.host || entry;
+            const hLabel = h?.label || h?.name || '';
+            const eps = Array.isArray(h?.endpoints) ? h.endpoints : [];
+            const isUnixOnly = eps.length > 0 && eps.every((ep) => String(ep?.address || ep || '').startsWith('unix://'));
+            if (!isUnixOnly && hLabel) {
+              pushHost(hLabel, { source: 'rex', icon: h?.icon || '' });
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // 2. 扫描 WezTerm 配置中的 mux/ssh domain
+    try {
+      const wezCfgs = [
+        path.posix.join(homedir, '.wezterm.lua'),
+        path.posix.join(homedir, '.config', 'wezterm', 'wezterm.lua')
+      ];
+      for (const cfgPath of wezCfgs) {
+        if (!existsSync(cfgPath)) continue;
+        const size = statSync ? statSync(cfgPath).size : 0;
+        if (size > 262144) continue;
+        const content = readFileSync(cfgPath, 'utf8');
+        const re = /\bname\s*=\s*['"]([^'"]+)['"]/g;
+        let m;
+        while ((m = re.exec(content)) !== null) {
+          pushHost(m[1], { source: 'wezterm' });
+        }
+      }
+    } catch {}
+  }
+
+  return hosts;
+}
+
 const TERMINAL_CATALOG = {
   darwin: [
     {
@@ -147,7 +278,8 @@ const TERMINAL_CATALOG = {
     {
       id: 'rex',
       name: 'Rex',
-      description: '多工作区原生协同终端 (支持正式版与 Beta 版)',
+      description: '多工作区原生协同终端 (支持正式版与 Beta 版，支持指定主机名)',
+      supportsMuxHost: true,
       detect: (ctx) => firstExistingPath([
         '/Applications/Rex.app',
         '/Applications/Rex Beta.app',
@@ -170,13 +302,25 @@ const TERMINAL_CATALOG = {
     {
       id: 'wezterm',
       name: 'WezTerm',
-      description: 'Rust 编写的 GPU 跨平台多路终端',
+      description: 'Rust 编写的 GPU 跨平台多路终端 (支持指定 Domain)',
+      supportsMuxHost: true,
       detect: (ctx) => firstExistingPath([
         '/Applications/WezTerm.app',
         '~/Applications/WezTerm.app',
         '/opt/homebrew/bin/wezterm',
         '/usr/local/bin/wezterm'
       ], ctx) || findInPath('wezterm', ctx)
+    },
+    {
+      id: 'tmux',
+      name: 'tmux (多路复用器)',
+      description: '通过 Terminal 启动本机或 SSH 远端 tmux 会话',
+      supportsMuxHost: true,
+      detect: (ctx) => firstExistingPath([
+        '/opt/homebrew/bin/tmux',
+        '/usr/local/bin/tmux',
+        '/usr/bin/tmux'
+      ], ctx) || findInPath('tmux', ctx)
     },
     {
       id: 'alacritty',
@@ -194,6 +338,7 @@ const TERMINAL_CATALOG = {
       name: '自定义程序路径',
       description: '手动输入或浏览选择本机任意终端应用 / 脚本',
       isCustom: true,
+      supportsMuxHost: true,
       detect: (ctx) => {
         const custom = expandHomePath(ctx.customPath, ctx.homedir);
         return (custom && ctx.existsSync(custom)) ? custom : null;
@@ -251,6 +396,7 @@ const TERMINAL_CATALOG = {
       id: 'wsl',
       name: 'WSL (Linux 子系统)',
       description: 'Windows Subsystem for Linux 终端环境',
+      supportsMuxHost: true,
       detect: (ctx) => {
         const sysRoot = ctx.env.SystemRoot || ctx.env.windir || 'C:\\Windows';
         const localApp = ctx.env.LOCALAPPDATA || path.win32.join(ctx.homedir, 'AppData', 'Local');
@@ -288,6 +434,7 @@ const TERMINAL_CATALOG = {
       name: '自定义程序路径',
       description: '手动输入或浏览选择 .exe / .cmd / .bat 终端程序',
       isCustom: true,
+      supportsMuxHost: true,
       detect: (ctx) => {
         const custom = expandHomePath(ctx.customPath, ctx.homedir);
         return (custom && ctx.existsSync(custom)) ? custom : null;
@@ -304,7 +451,7 @@ const TERMINAL_CATALOG = {
     { id: 'gnome-terminal', name: 'GNOME Terminal', description: 'GNOME 桌面默认终端', detect: (ctx) => findInPath('gnome-terminal', ctx) },
     { id: 'konsole', name: 'Konsole', description: 'KDE 桌面终端', detect: (ctx) => findInPath('konsole', ctx) },
     { id: 'kitty', name: 'Kitty', description: 'GPU 加速终端', detect: (ctx) => findInPath('kitty', ctx) },
-    { id: 'wezterm', name: 'WezTerm', description: 'GPU 加速跨平台终端', detect: (ctx) => findInPath('wezterm', ctx) },
+    { id: 'wezterm', name: 'WezTerm', description: 'GPU 加速跨平台终端', supportsMuxHost: true, detect: (ctx) => findInPath('wezterm', ctx) },
     { id: 'alacritty', name: 'Alacritty', description: '高速 OpenGL 终端', detect: (ctx) => findInPath('alacritty', ctx) },
     { id: 'xfce4-terminal', name: 'XFCE Terminal', description: 'XFCE 轻量终端', detect: (ctx) => findInPath('xfce4-terminal', ctx) },
     { id: 'xterm', name: 'XTerm', description: '标准 X11 终端', detect: (ctx) => findInPath('xterm', ctx) },
@@ -313,6 +460,7 @@ const TERMINAL_CATALOG = {
       name: '自定义程序路径',
       description: '手动输入或选择本机终端可执行文件',
       isCustom: true,
+      supportsMuxHost: true,
       detect: (ctx) => {
         const custom = expandHomePath(ctx.customPath, ctx.homedir);
         return (custom && ctx.existsSync(custom)) ? custom : null;
@@ -346,14 +494,18 @@ function detectAvailableTerminals(options = {}) {
       installed,
       executablePath: executablePath || (item.isCustom ? customPath : null) || null,
       description: item.description,
-      isCustom: Boolean(item.isCustom)
+      isCustom: Boolean(item.isCustom),
+      supportsMuxHost: Boolean(item.supportsMuxHost)
     };
   });
+
+  const muxHosts = detectMuxHosts(options);
 
   return {
     ok: true,
     platform,
     terminals,
+    muxHosts,
     defaultTerminalId: 'auto'
   };
 }
@@ -398,6 +550,20 @@ function buildShellStrings({ cwd, cliInfo, cliArgs, terminalName, testOnly }) {
   return { posixInner, posixFull };
 }
 
+function buildRemotePosixShellCommand({ cwd, cliArgs, testOnly, muxHost }) {
+  if (testOnly) {
+    const msg = `[Antigravity Suite] 多路复用器远端主机测试成功 (${muxHost})`;
+    return `printf '\\n%s\\n\\n' ${escapePosixArg(msg)}; pwd; exec "\${SHELL:-/bin/bash}" -l`;
+  }
+  const safeCwd = escapePosixArg(cwd);
+  const safeArgs = (Array.isArray(cliArgs) ? cliArgs : []).map(escapePosixArg).join(' ');
+  const agyCmd = safeArgs ? `agy ${safeArgs}` : 'agy';
+  const missingMsg = escapePosixArg(`[Antigravity Suite] 未在远端主机 (${muxHost}) 找到 agy 命令，请确认已安装 Antigravity CLI。`);
+  const dirPart = cwd ? `if [ -d ${safeCwd} ]; then cd ${safeCwd}; fi; ` : '';
+  const pathExport = 'export PATH="$HOME/.antigravity/bin:$HOME/.gemini/antigravity/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
+  return `${dirPart}${pathExport}if command -v agy >/dev/null 2>&1; then ${agyCmd}; else printf '\\n%s\\n\\n' ${missingMsg}; fi; exec "\${SHELL:-/bin/bash}" -l`;
+}
+
 function launchInConfiguredTerminal(options = {}) {
   const platform = options.platform || process.platform;
   const env = options.env || process.env;
@@ -412,11 +578,24 @@ function launchInConfiguredTerminal(options = {}) {
 
   const terminalId = String(options.terminalApp || 'auto').trim().toLowerCase() || 'auto';
   const customTerminalPath = expandHomePath(options.customTerminalPath || '', homedir);
+  const rawMuxHost = typeof options.muxHost === 'string' ? options.muxHost.trim() : '';
+  const cleanMuxHost = rawMuxHost ? sanitizeMuxHost(rawMuxHost) : '';
+  if (cleanMuxHost === null) {
+    return {
+      ok: false,
+      code: 'INVALID_MUX_HOST',
+      error: `多路复用器目标主机名包含非法字符: ${rawMuxHost}`,
+      terminalId,
+      cwd: options.cwd || process.cwd()
+    };
+  }
+  const muxHost = cleanMuxHost || '';
+  const isLocalMuxHost = !muxHost;
   const cwd = options.cwd || process.cwd();
   const cliInfo = options.cliInfo || { cliPath: 'agy', exePath: 'agy', source: testOnly ? 'test' : 'default' };
   const cliArgs = Array.isArray(options.cliArgs) ? options.cliArgs : [];
 
-  const detected = detectAvailableTerminals({ platform, env, homedir, customPath: customTerminalPath, existsSync });
+  const detected = detectAvailableTerminals({ platform, env, homedir, customPath: customTerminalPath, existsSync, probeMuxHosts: false });
   const targetEntry = detected.terminals.find((t) => t.id === terminalId);
 
   if (!targetEntry) {
@@ -467,6 +646,9 @@ function launchInConfiguredTerminal(options = {}) {
     terminalName: targetEntry.name,
     testOnly
   });
+  const remoteCmd = !isLocalMuxHost
+    ? buildRemotePosixShellCommand({ cwd, cliArgs, testOnly, muxHost })
+    : '';
 
   let spawnSpec = null;
   let extraArtifacts = null;
@@ -495,15 +677,42 @@ function launchInConfiguredTerminal(options = {}) {
         ].join('\n');
         spawnSpec = { file: 'osascript', args: ['-e', script], options: { detached: true, stdio: 'ignore' } };
       } else if (terminalId === 'rex') {
-        const escapedCmd = escapeAppleScriptString(posixInner);
-        const escapedCwd = escapeAppleScriptString(cwd);
-        const script = [
-          'tell application id "com.superlogical.rex"',
-          '  activate',
-          `  run command "${escapedCmd}" at "${escapedCwd}"`,
-          'end tell'
-        ].join('\n');
-        spawnSpec = { file: 'osascript', args: ['-e', script], options: { detached: true, stdio: 'ignore' } };
+        if (isLocalMuxHost) {
+          const escapedCmd = escapeAppleScriptString(posixInner);
+          const escapedSessionCmd = escapeAppleScriptString(`${posixInner}; exec "\${SHELL:-/bin/zsh}" -i`);
+          const escapedCwd = escapeAppleScriptString(cwd);
+          const script = [
+            'tell application id "com.superlogical.rex"',
+            '  activate',
+            '  set localSessions to (every session whose remote is false)',
+            '  if (count of localSessions) > 0 then',
+            '    set targetSession to item 1 of localSessions',
+            '    show targetSession',
+            `    run command "${escapedCmd}" in targetSession at "${escapedCwd}"`,
+            '  else',
+            `    new session at "${escapedCwd}" running "${escapedSessionCmd}"`,
+            '  end if',
+            'end tell'
+          ].join('\n');
+          spawnSpec = { file: 'osascript', args: ['-e', script], options: { detached: true, stdio: 'ignore' } };
+        } else {
+          const escapedHost = escapeAppleScriptString(muxHost);
+          const escapedRemoteCmd = escapeAppleScriptString(remoteCmd);
+          const script = [
+            'tell application id "com.superlogical.rex"',
+            '  activate',
+            `  set hostSessions to (every session whose host name is "${escapedHost}")`,
+            '  if (count of hostSessions) > 0 then',
+            '    set targetSession to item 1 of hostSessions',
+            '    show targetSession',
+            `    run command "${escapedRemoteCmd}" in targetSession`,
+            '  else',
+            `    new session on "${escapedHost}" running "${escapedRemoteCmd}"`,
+            '  end if',
+            'end tell'
+          ].join('\n');
+          spawnSpec = { file: 'osascript', args: ['-e', script], options: { detached: true, stdio: 'ignore' } };
+        }
       } else if (terminalId === 'warp') {
         if (!dryRun || options.allowDryWrite) {
           extraArtifacts = writeWarpLaunchConfig({
@@ -552,12 +761,32 @@ function launchInConfiguredTerminal(options = {}) {
           };
         }
       } else if (terminalId === 'wezterm') {
-        const wezBin = normalizeMacAppBinary(execPath, 'wezterm') || 'wezterm';
-        spawnSpec = {
-          file: wezBin,
-          args: ['start', '--cwd', cwd, '--', '/bin/zsh', '-lic', `${posixInner}; exec "\${SHELL:-/bin/zsh}" -i`],
-          options: { cwd, env, detached: true, stdio: 'ignore' }
-        };
+        const innerBin = normalizeMacAppBinary(execPath, 'wezterm');
+        const hasInnerBin = innerBin && (innerBin === execPath || existsSync(innerBin));
+        const wezArgs = isLocalMuxHost
+          ? ['start', '--cwd', cwd, '--', '/bin/zsh', '-lic', `${posixInner}; exec "\${SHELL:-/bin/zsh}" -i`]
+          : ['start', '--domain', muxHost, '--', 'sh', '-lc', remoteCmd];
+        if (execPath && execPath.endsWith('.app') && !hasInnerBin) {
+          spawnSpec = {
+            file: '/usr/bin/open',
+            args: ['-na', execPath, '--args', ...wezArgs],
+            options: { cwd, env, detached: true, stdio: 'ignore' }
+          };
+        } else {
+          spawnSpec = {
+            file: hasInnerBin ? innerBin : (execPath || 'wezterm'),
+            args: wezArgs,
+            options: { cwd, env, detached: true, stdio: 'ignore' }
+          };
+        }
+      } else if (terminalId === 'tmux') {
+        const safeCwd = escapePosixArg(cwd);
+        const localWinCmd = `${posixInner}; exec "\${SHELL:-/bin/zsh}" -i`;
+        const tmuxShellCmd = isLocalMuxHost
+          ? `cd ${safeCwd} && (if tmux has-session -t agy 2>/dev/null; then tmux new-window -t agy -c ${safeCwd} ${escapePosixArg(localWinCmd)} && exec tmux attach-session -t agy; else exec tmux new-session -s agy -c ${safeCwd} ${escapePosixArg(localWinCmd)}; fi)`
+          : `ssh -t ${escapePosixArg(muxHost)} ${escapePosixArg(`if command -v tmux >/dev/null 2>&1; then if tmux has-session -t agy 2>/dev/null; then tmux new-window -t agy ${escapePosixArg(remoteCmd)} && exec tmux attach-session -t agy; else exec tmux new-session -s agy ${escapePosixArg(remoteCmd)}; fi; else exec sh -lc ${escapePosixArg(remoteCmd)}; fi`)}; exec "\${SHELL:-/bin/zsh}" -i`;
+        const script = `tell application "Terminal"\n  do script "${escapeAppleScriptString(tmuxShellCmd)}"\n  activate\nend tell`;
+        spawnSpec = { file: 'osascript', args: ['-e', script], options: { detached: true, stdio: 'ignore' } };
       } else if (terminalId === 'alacritty') {
         if (execPath && execPath.endsWith('.app')) {
           spawnSpec = {
@@ -573,7 +802,20 @@ function launchInConfiguredTerminal(options = {}) {
           };
         }
       } else if (terminalId === 'custom') {
-        if (customTerminalPath.endsWith('.app')) {
+        const customBase = path.basename(customTerminalPath).toLowerCase();
+        if (!isLocalMuxHost && customBase === 'rex') {
+          spawnSpec = {
+            file: customTerminalPath,
+            args: ['-S', muxHost, 'run', '--interactive', '--keep-open', '--', 'sh', '-lc', remoteCmd],
+            options: { cwd, env, detached: true, stdio: 'ignore' }
+          };
+        } else if (!isLocalMuxHost && customBase === 'wezterm') {
+          spawnSpec = {
+            file: customTerminalPath,
+            args: ['start', '--domain', muxHost, '--', 'sh', '-lc', remoteCmd],
+            options: { cwd, env, detached: true, stdio: 'ignore' }
+          };
+        } else if (customTerminalPath.endsWith('.app')) {
           const cmdFile = path.join(os.tmpdir(), 'ag-suite-cli-launch.command');
           const scriptBody = `#!/bin/zsh\ncd ${escapePosixArg(cwd)}\n${posixInner}\nexec "\${SHELL:-/bin/zsh}" -i\n`;
           if (!dryRun || options.allowDryWrite) {
@@ -726,6 +968,7 @@ function launchInConfiguredTerminal(options = {}) {
         platform,
         terminalId,
         terminal: targetEntry.name,
+        muxHost,
         executablePath: targetEntry.executablePath || customTerminalPath || null,
         cliPath: cliInfo.cliPath,
         exePath: cliInfo.exePath,
@@ -750,6 +993,7 @@ function launchInConfiguredTerminal(options = {}) {
       fallback: false,
       terminalId,
       terminal: targetEntry.name,
+      muxHost,
       executablePath: targetEntry.executablePath || customTerminalPath || null,
       pid: child?.pid || null,
       cliPath: cliInfo.cliPath,
@@ -854,6 +1098,8 @@ module.exports = {
   TERMINAL_CATALOG,
   expandHomePath,
   toWslPath,
+  sanitizeMuxHost,
+  detectMuxHosts,
   detectAvailableTerminals,
   launchInConfiguredTerminal,
   pickTerminalExecutableDialog

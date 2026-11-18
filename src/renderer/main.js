@@ -1631,7 +1631,8 @@
       if (res && res.ok) {
         const om = el('overflow-menu');
         if (om) om.hidden = true;
-        showCliToast(`✔ 已启动 Antigravity CLI（目录：${res.cwd || '默认'}）`, false);
+        const hostNote = reqOpts.muxHost ? ` · 主机：${reqOpts.muxHost}` : '';
+        showCliToast(`✔ 已启动 Antigravity CLI（目录：${res.cwd || '默认'}${hostNote}）`, false);
         return res;
       } else {
         const errMsg = res?.error || '未检测到可用的 Antigravity CLI (agy)，请检查安装路径';
@@ -4129,7 +4130,7 @@
     restoreSettingsFromHost,
     openSettings: tab => openSuiteSettings(tab),
     getTerminalSettings: () => getSuiteTerminalSettings(),
-    setTerminalSettings: (app, customPath) => setSuiteTerminalSettings(app, customPath),
+    setTerminalSettings: (app, customPath, muxHost) => setSuiteTerminalSettings(app, customPath, muxHost),
     getCliSettings: () => getSuiteCliSettings(),
     setCliSettings: opts => setSuiteCliSettings(opts),
     getSupportedLocales: () => getSupportedLocales(),

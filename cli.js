@@ -120,13 +120,13 @@ async function ensureLiveBridgeIfNeeded(options = {}) {
       const originMatches = !live.origin || info.origin === live.origin;
       const remoteMatches = Boolean(info.remoteDisabled) === noRemote;
       const isUpToDate = startedAt >= latestBackendMtime;
-      if (originMatches && remoteMatches && isUpToDate && !forceFreshBridge) {
+      if (originMatches && remoteMatches && (info.embedded === true || (isUpToDate && !forceFreshBridge))) {
         alive = true;
       }
     } catch {}
   }
   if (!alive) {
-    if (existingInfo?.pid) {
+    if (existingInfo?.pid && existingInfo.embedded !== true && existingInfo.pid !== process.pid) {
       try { process.kill(existingInfo.pid); } catch {}
       const exitDeadline = Date.now() + 600;
       while (Date.now() < exitDeadline) {
@@ -389,9 +389,12 @@ async function main() {
   } else if (cmd === 'check') {
     await cmdCheck(customPath);
   } else if (cmd === 'remote') {
+    const tIdx = args.indexOf('--tunnel');
+    const tunnelAction = (tIdx >= 0 && args[tIdx + 1]) ? String(args[tIdx + 1]).trim().toLowerCase() : '';
     require('./mobile-remote').printRemoteCli({
       resetToken: args.includes('--reset-token'),
-      jsonMode: args.includes('--json')
+      jsonMode: args.includes('--json'),
+      tunnelAction
     });
   } else if (cmd === 'update') {
     const { execFileSync } = require('child_process');
@@ -459,7 +462,7 @@ async function main() {
   node cli.js live [--no-remote]            免改盘 CDP 热挂载到当前运行窗口（默认命令；加 --no-remote 关闭手机远程监听）
   node cli.js update [--no-remote]          从 GitHub 拉取最新代码并自动热刷新当前窗口
   node cli.js status                        查看运行状态与官方安装包签名完整性
-  node cli.js remote [--reset-token] [--json]  打印手机「一码三用」融合配对链接与终端二维码
+  node cli.js remote [--tunnel on|off] [--reset-token] [--json]  打印手机「四通道」融合配对链接与终端二维码
   node cli.js check                         执行前置环境健康检查
   node cli.js upstreams [--json]            检查参考上游项目更新并与当前基线比对
 

@@ -120,6 +120,22 @@
               <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入 agy 支持的模型 ID（留空则不传 --model）" />
               <button id="btn-save-cli-model" class="unlock-btn unlock-btn-primary" type="button">保存模型</button>
             </div>
+            <div id="cli-mux-host-pref-row" class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">多路复用器目标主机 (Rex / WezTerm / tmux)</span>
+                <span class="settings-pref-desc">多路复用器启动 agy 时指定目标主机名；选「本机」避免误入远端会话，选远端主机自动执行远端 agy</span>
+              </div>
+              <div class="settings-select-wrap">
+                <select id="set-cli-mux-host-select" class="settings-select" aria-label="多路复用器目标主机">
+                  <option value="">本机 · This Mac (Local)</option>
+                  <option value="__custom__">自定义主机名 / Domain…</option>
+                </select>
+              </div>
+            </div>
+            <div id="cli-custom-mux-host-row" class="term-custom-row" style="display:none;">
+              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="输入 Rex 主机名、WezTerm Domain 或 SSH 主机名（留空为本机）" />
+              <button id="btn-save-cli-mux-host" class="unlock-btn unlock-btn-primary" type="button">保存主机</button>
+            </div>
           </div>
           <div class="settings-card-footer">
             <span id="term-config-status" class="settings-status-note">当前使用：自动默认</span>

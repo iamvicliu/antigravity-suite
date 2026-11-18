@@ -6,6 +6,7 @@
   let suiteDropdownsEnhanced = false;
   let uiLangDropdown = null;
   let uiCliModelDropdown = null;
+  let uiCliMuxHostDropdown = null;
 
   const SUITE_EN_UI_DICT = {
     'Antigravity Suite 统一设置': 'Antigravity Suite Settings',
@@ -41,6 +42,13 @@
     '不选择模型 · 跟随 agy 默认设置': 'No Model · Follow agy default',
     '自定义模型 ID…': 'Custom Model ID…',
     '保存模型': 'Save Model',
+    '多路复用器目标主机 (Rex / WezTerm / tmux)': 'Multiplexer Target Host (Rex / WezTerm / tmux)',
+    '多路复用器启动 agy 时指定目标主机名；选「本机」避免误入远端会话，选远端主机自动执行远端 agy': 'Target host for multiplexer CLI launch; choose Local to stay on this Mac, or a remote host to launch agy remotely',
+    '本机 · This Mac (Local)': 'Local · This Mac',
+    '自定义主机名 / Domain…': 'Custom Host / Domain…',
+    '保存主机': 'Save Host',
+    'tmux (多路复用器)': 'tmux (Multiplexer)',
+    '输入 Rex 主机名、WezTerm Domain 或 SSH 主机名（留空为本机）': 'Enter Rex host label, WezTerm domain, or SSH host (blank = local)',
     '当前使用：自动默认': 'Active: Auto Default',
     '▶ 测试打开终端': '▶ Test Terminal',
     '测试打开终端': 'Test Terminal',
@@ -245,6 +253,8 @@
       .replace(/系统默认/g, 'System Default')
       .replace(/模型:\s*默认/g, 'Model: Default')
       .replace(/模型:/g, 'Model:')
+      .replace(/主机:\s*本机/g, 'Host: Local')
+      .replace(/主机:/g, 'Host:')
       .replace(/免审核/g, 'Skip Perms')
       .replace(/标准权限/g, 'Standard Perms');
   }
@@ -283,6 +293,8 @@
     customTerminalPath: '',
     cliSkipPermissions: false,
     cliDefaultModel: '',
+    cliMuxHost: '',
+    muxHosts: [],
     terminals: [],
     platform: (typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')) ? 'win32' : 'darwin'
   };
@@ -327,6 +339,8 @@
     if (lsCliSkip === 'true' || lsCliSkip === 'false') suiteTerminalState.cliSkipPermissions = lsCliSkip === 'true';
     const lsCliModel = localStorage?.getItem?.('ag_suite_cli_model');
     if (typeof lsCliModel === 'string') suiteTerminalState.cliDefaultModel = lsCliModel.trim();
+    const lsCliMuxHost = localStorage?.getItem?.('ag_suite_cli_mux_host');
+    if (typeof lsCliMuxHost === 'string') suiteTerminalState.cliMuxHost = lsCliMuxHost.trim();
     const lsAutoAccept = localStorage?.getItem?.('ag_suite_auto_accept');
     if (lsAutoAccept === 'true' || lsAutoAccept === 'false') suiteEnhancerPrefs.autoAccept = lsAutoAccept === 'true';
     const lsGhost = localStorage?.getItem?.('ag_suite_ghost_suggest');
@@ -365,6 +379,7 @@
     if (!isRealShadowDomTree() || typeof enhanceCustomSelect !== 'function') return;
     suiteDropdownsEnhanced = true;
     try { uiCliModelDropdown = enhanceCustomSelect('set-cli-model-select'); } catch {}
+    try { uiCliMuxHostDropdown = enhanceCustomSelect('set-cli-mux-host-select'); } catch {}
     try { uiLangDropdown = enhanceCustomSelect('set-ui-language-select'); } catch {}
   }
 
@@ -488,6 +503,7 @@
       localStorage?.setItem?.('ag_suite_custom_term_path', suiteTerminalState.customTerminalPath || '');
       localStorage?.setItem?.('ag_suite_cli_skip_perms', suiteTerminalState.cliSkipPermissions ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_cli_model', suiteTerminalState.cliDefaultModel || '');
+      localStorage?.setItem?.('ag_suite_cli_mux_host', suiteTerminalState.cliMuxHost || '');
       localStorage?.setItem?.('ag_suite_auto_accept', suiteEnhancerPrefs.autoAccept ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_ghost_suggest', suiteEnhancerPrefs.ghostSuggest ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_locale', activeLocale);
@@ -504,6 +520,7 @@
             customTerminalPath: suiteTerminalState.customTerminalPath,
             cliSkipPermissions: Boolean(suiteTerminalState.cliSkipPermissions),
             cliDefaultModel: suiteTerminalState.cliDefaultModel || '',
+            cliMuxHost: suiteTerminalState.cliMuxHost || '',
             autoAccept: suiteEnhancerPrefs.autoAccept,
             ghostSuggest: suiteEnhancerPrefs.ghostSuggest,
             locale: activeLocale,
@@ -672,6 +689,7 @@
         translateShadowSubtreeLocale(shadow, entry.uiDict, entry.uiPatterns);
       }
       try { uiCliModelDropdown?.refresh?.(); } catch {}
+      try { uiCliMuxHostDropdown?.refresh?.(); } catch {}
       try { uiLangDropdown?.refresh?.(); } catch {}
       if (!isZh) ensureSuiteShadowObserver(true);
     } finally {
@@ -744,6 +762,50 @@
       if (customRow && sel.value !== '__custom__') customRow.style.display = 'none';
     }
     uiCliModelDropdown?.refresh?.();
+
+    const hostSel = el('set-cli-mux-host-select');
+    const customHostRow = el('cli-custom-mux-host-row');
+    const customHostInp = el('input-cli-mux-host');
+    if (hostSel) {
+      const detectedHosts = Array.isArray(suiteTerminalState.muxHosts) ? suiteTerminalState.muxHosts : [];
+      if (detectedHosts.length && typeof document?.createElement === 'function') {
+        const customOpt = hostSel.options
+          ? Array.from(hostSel.options).find(o => String(o.value || '') === '__custom__')
+          : null;
+        // 清理旧的动态选项，保留 '' (本机) 与 '__custom__'
+        if (hostSel.options) {
+          for (const opt of Array.from(hostSel.options)) {
+            const v = String(opt?.value ?? '');
+            if (v !== '' && v !== '__custom__') opt.remove?.();
+          }
+        }
+        const seenHostVals = new Set(['', '__custom__']);
+        for (const h of detectedHosts) {
+          const hid = String(h?.id ?? '').trim();
+          if (!hid || seenHostVals.has(hid)) continue;
+          seenHostVals.add(hid);
+          const opt = document.createElement('option');
+          opt.setAttribute?.('value', hid);
+          opt.value = hid;
+          const srcTag = h?.source === 'rex' ? 'Rex' : (h?.source === 'wezterm' ? 'WezTerm' : 'Detected');
+          opt.textContent = `${h?.label || hid} · ${srcTag}`;
+          if (customOpt && typeof hostSel.insertBefore === 'function') hostSel.insertBefore(opt, customOpt);
+          else hostSel.appendChild?.(opt);
+        }
+      }
+      const curHost = String(suiteTerminalState.cliMuxHost || '').trim();
+      const hostOptVals = hostSel.options ? Array.from(hostSel.options).map(o => String(o.value || '')) : [];
+      const isCustomHost = Boolean(curHost) && !hostOptVals.includes(curHost);
+      if (isCustomHost) {
+        hostSel.value = '__custom__';
+        if (customHostRow) customHostRow.style.display = 'flex';
+        if (customHostInp && customHostInp.value !== curHost) customHostInp.value = curHost;
+      } else {
+        hostSel.value = curHost;
+        if (customHostRow && hostSel.value !== '__custom__') customHostRow.style.display = 'none';
+      }
+      uiCliMuxHostDropdown?.refresh?.();
+    }
   }
 
   function applySuiteFeatureFlags() {
@@ -903,11 +965,12 @@
         { id: 'iterm2', name: 'iTerm2', installed: false, executablePath: '/Applications/iTerm.app' },
         { id: 'ghostty', name: 'Ghostty', installed: false, executablePath: '/Applications/Ghostty.app' },
         { id: 'warp', name: 'Warp', installed: false, executablePath: '/Applications/Warp.app' },
-        { id: 'rex', name: 'Rex', installed: false, executablePath: '/Applications/Rex.app' },
+        { id: 'rex', name: 'Rex', installed: false, executablePath: '/Applications/Rex.app', supportsMuxHost: true },
         { id: 'kitty', name: 'Kitty', installed: false, executablePath: '/Applications/kitty.app' },
-        { id: 'wezterm', name: 'WezTerm', installed: false, executablePath: '/Applications/WezTerm.app' },
+        { id: 'wezterm', name: 'WezTerm', installed: false, executablePath: '/Applications/WezTerm.app', supportsMuxHost: true },
+        { id: 'tmux', name: 'tmux (多路复用器)', installed: false, executablePath: '/opt/homebrew/bin/tmux', supportsMuxHost: true },
         { id: 'alacritty', name: 'Alacritty', installed: false, executablePath: '/Applications/Alacritty.app' },
-        { id: 'custom', name: '自定义程序路径', installed: Boolean(customPath), executablePath: customPath || null, isCustom: true }
+        { id: 'custom', name: '自定义程序路径', installed: Boolean(customPath), executablePath: customPath || null, isCustom: true, supportsMuxHost: true }
       ]
     };
   }
@@ -942,7 +1005,10 @@
         : (selectedItem.executablePath || '系统默认');
       const modelHint = suiteTerminalState.cliDefaultModel ? `模型: ${suiteTerminalState.cliDefaultModel}` : '模型: 默认';
       const skipHint = suiteTerminalState.cliSkipPermissions ? '免审核' : '标准权限';
-      statusEl.textContent = `当前使用：${selectedItem.name} (${pathHint}) · ${modelHint} · ${skipHint}`;
+      const hostHint = (selectedItem.supportsMuxHost || suiteTerminalState.cliMuxHost)
+        ? ` · 主机: ${suiteTerminalState.cliMuxHost || '本机'}`
+        : '';
+      statusEl.textContent = `当前使用：${selectedItem.name} (${pathHint}) · ${modelHint}${hostHint} · ${skipHint}`;
     }
 
     if (!grid) return;
@@ -995,6 +1061,9 @@
       if (res && res.ok && Array.isArray(res.terminals)) {
         suiteTerminalState.platform = res.platform || suiteTerminalState.platform;
         suiteTerminalState.terminals = res.terminals;
+        if (Array.isArray(res.muxHosts)) {
+          suiteTerminalState.muxHosts = res.muxHosts;
+        }
       } else {
         const fb = getFallbackTerminalCatalog();
         suiteTerminalState.platform = fb.platform;
@@ -1004,21 +1073,29 @@
       const fb = getFallbackTerminalCatalog();
       suiteTerminalState.terminals = fb.terminals;
     }
+    syncCliOptionControls();
     renderTerminalGrid();
-    return { ...suiteTerminalState, terminals: [...suiteTerminalState.terminals] };
+    return { ...suiteTerminalState, terminals: [...suiteTerminalState.terminals], muxHosts: [...suiteTerminalState.muxHosts] };
   }
 
-  async function setSuiteTerminalSettings(terminalApp, customTerminalPath) {
+  async function setSuiteTerminalSettings(terminalApp, customTerminalPath, muxHost) {
     suiteTerminalState.terminalApp = String(terminalApp || 'auto').trim().toLowerCase() || 'auto';
     if (customTerminalPath !== undefined) {
       suiteTerminalState.customTerminalPath = String(customTerminalPath || '').trim();
     }
-    dispatchSuitePrefsChanged();
-    renderTerminalGrid();
-    await saveSuiteUiPrefs({
+    const partial = {
       terminalApp: suiteTerminalState.terminalApp,
       customTerminalPath: suiteTerminalState.customTerminalPath
-    });
+    };
+    if (muxHost !== undefined) {
+      const rawHost = String(muxHost ?? '').trim();
+      suiteTerminalState.cliMuxHost = ['local', '__local__', '__custom__'].includes(rawHost.toLowerCase()) ? '' : rawHost;
+      partial.cliMuxHost = suiteTerminalState.cliMuxHost;
+    }
+    syncCliOptionControls();
+    dispatchSuitePrefsChanged();
+    renderTerminalGrid();
+    await saveSuiteUiPrefs(partial);
     return { ...suiteTerminalState };
   }
 
@@ -1033,6 +1110,12 @@
       const normalized = ['none', 'default', 'auto', '__custom__'].includes(raw.toLowerCase()) ? '' : raw;
       suiteTerminalState.cliDefaultModel = normalized;
       partial.cliDefaultModel = normalized;
+    }
+    if (opts.muxHost !== undefined) {
+      const rawHost = String(opts.muxHost ?? '').trim();
+      const normHost = ['local', '__local__', '__custom__'].includes(rawHost.toLowerCase()) ? '' : rawHost;
+      suiteTerminalState.cliMuxHost = normHost;
+      partial.cliMuxHost = normHost;
     }
     syncCliOptionControls();
     renderTerminalGrid();
@@ -1057,6 +1140,7 @@
     return {
       terminalApp: suiteTerminalState.terminalApp || 'auto',
       customTerminalPath: suiteTerminalState.customTerminalPath || '',
+      muxHost: String(suiteTerminalState.cliMuxHost || '').trim(),
       skipPermissions: cliCfg.skipPermissions,
       model: cliCfg.model,
       noModel: cliCfg.noModel
@@ -1070,6 +1154,9 @@
     }
     if (typeof uiPrefs.customTerminalPath === 'string') {
       suiteTerminalState.customTerminalPath = uiPrefs.customTerminalPath.trim();
+    }
+    if (typeof uiPrefs.cliMuxHost === 'string') {
+      suiteTerminalState.cliMuxHost = uiPrefs.cliMuxHost.trim();
     }
     if (typeof uiPrefs.cliSkipPermissions === 'boolean') {
       suiteTerminalState.cliSkipPermissions = uiPrefs.cliSkipPermissions;
@@ -1367,6 +1454,22 @@
     void setSuiteCliSettings({ model: raw });
   });
 
+  el('set-cli-mux-host-select')?.addEventListener('change', e => {
+    const val = String(e?.target?.value ?? '').trim();
+    const customRow = el('cli-custom-mux-host-row');
+    if (val === '__custom__') {
+      if (customRow) customRow.style.display = 'flex';
+      return;
+    }
+    if (customRow) customRow.style.display = 'none';
+    void setSuiteCliSettings({ muxHost: val });
+  });
+
+  el('btn-save-cli-mux-host')?.addEventListener('click', () => {
+    const raw = el('input-cli-mux-host')?.value?.trim() || '';
+    void setSuiteCliSettings({ muxHost: raw });
+  });
+
   el('btn-test-terminal')?.addEventListener('click', async () => {
     const statusEl = el('term-config-status');
     if (statusEl) statusEl.textContent = '⏳ 正在尝试打开所选终端…';
@@ -1374,14 +1477,16 @@
     const res = await triggerLaunchCli({
       terminalApp: suiteTerminalState.terminalApp,
       customTerminalPath: el('input-custom-term-path')?.value?.trim() || suiteTerminalState.customTerminalPath,
+      muxHost: suiteTerminalState.cliMuxHost || '',
       skipPermissions: cliCfg.skipPermissions,
       model: cliCfg.model,
       noModel: cliCfg.noModel,
       testOnly: true
     });
     if (statusEl) {
+      const hostSuffix = res?.muxHost ? ` · 主机: ${res.muxHost}` : '';
       statusEl.textContent = res?.ok
-        ? `✅ 测试启动成功：${res.terminal || suiteTerminalState.terminalApp} (${res.cwd || '默认目录'})`
+        ? `✅ 测试启动成功：${res.terminal || suiteTerminalState.terminalApp} (${res.cwd || '默认目录'}${hostSuffix})`
         : `✖ 测试启动失败：${res?.error || '请检查终端安装状态或路径'}`;
     }
   });
