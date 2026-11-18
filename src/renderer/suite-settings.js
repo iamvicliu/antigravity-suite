@@ -424,14 +424,18 @@
     const customForm = moveTo('plan-custom-form', 'settings-slot-custom-plan-form');
     if (customForm) {
       customForm.setAttribute?.('data-in-settings', 'true');
-      customForm.style.display = 'block';
+      customForm.style.display = 'none';
     }
     const presetSel = el('select-custom-region-preset');
     if (presetSel?.parentElement) {
       presetSel.parentElement.style.display = 'none';
     }
-    const cancelBtn = el('btn-custom-plan-cancel');
-    if (cancelBtn) cancelBtn.style.display = 'none';
+    const countryCol = el('input-custom-country')?.parentElement;
+    if (countryCol) countryCol.style.display = 'none';
+    const regionCol = el('input-custom-region')?.parentElement;
+    if (regionCol) regionCol.style.display = 'none';
+    const paidCol = el('input-custom-paid')?.parentElement?.parentElement;
+    if (paidCol) paidCol.style.gridColumn = '1 / -1';
 
     el('summary-subtier-wrap')?.remove?.();
     el('btn-edit-plan-custom')?.remove?.();
@@ -1218,8 +1222,8 @@
       void refreshTerminalsList();
     } else if (target === 'subscription') {
       syncSettingsSubPreview();
-      if (typeof togglePlanCustomForm === 'function' && isRealShadowDomTree()) {
-        togglePlanCustomForm(true);
+      if (typeof syncPlanCustomFormFields === 'function' && isRealShadowDomTree()) {
+        syncPlanCustomFormFields(ANTIGRAVITY_TOKEN_DATA.planStatus, { enhance: true });
       }
     } else if (target === 'system') {
       void refreshModulesDisplay();

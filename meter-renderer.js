@@ -6276,9 +6276,16 @@ function closeAllDropdowns(exceptWrap = null) {
         updatedAt: new Date().toISOString()
       };
       applyCustomPlanObjectLocally(customObj, email);
+      togglePlanCustomForm(false);
       void persistSettingsToHost({ email, customPlan: customObj });
     } else {
-      // 切换为「自定义实付金额」：开启自定义模式并展开行内编辑表单
+      // 切换为「自定义实付金额」：若已在自定义模式且表单正展开，再点一次收起；否则展开编辑表单
+      const formEl = el('plan-custom-form');
+      const isFormOpen = Boolean(formEl && formEl.style.display && formEl.style.display !== 'none');
+      if (ps.priceMode === 'custom' && isFormOpen) {
+        togglePlanCustomForm(false);
+        return;
+      }
       const isZero = Boolean(prevCustom.isZeroExtraCost || prevCustom.actualPricePaid === 0);
       const paid = isZero ? 0 : (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined ? prevCustom.actualPricePaid : (prevCustom.customActualPrice ?? null));
 
@@ -6931,12 +6938,12 @@ function closeAllDropdowns(exceptWrap = null) {
     if (!form) return;
     const curHidden = form.style.display === 'none' || !form.style.display;
     const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
-    const keepOpen = form.getAttribute?.('data-in-settings') === 'true';
-    form.style.display = (next || keepOpen) ? 'block' : 'none';
+    const inSettings = form.getAttribute?.('data-in-settings') === 'true';
+    form.style.display = next ? 'block' : 'none';
     if (next) {
       const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
       syncPlanCustomFormFields(ps, { enhance: true });
-      if (!keepOpen) el('input-custom-region')?.focus?.();
+      if (!inSettings) el('input-custom-region')?.focus?.();
     }
     positionFloatingPanels();
   }
@@ -11381,14 +11388,18 @@ function renderHeatmapGrid(forceRebuild = false) {
     const customForm = moveTo('plan-custom-form', 'settings-slot-custom-plan-form');
     if (customForm) {
       customForm.setAttribute?.('data-in-settings', 'true');
-      customForm.style.display = 'block';
+      customForm.style.display = 'none';
     }
     const presetSel = el('select-custom-region-preset');
     if (presetSel?.parentElement) {
       presetSel.parentElement.style.display = 'none';
     }
-    const cancelBtn = el('btn-custom-plan-cancel');
-    if (cancelBtn) cancelBtn.style.display = 'none';
+    const countryCol = el('input-custom-country')?.parentElement;
+    if (countryCol) countryCol.style.display = 'none';
+    const regionCol = el('input-custom-region')?.parentElement;
+    if (regionCol) regionCol.style.display = 'none';
+    const paidCol = el('input-custom-paid')?.parentElement?.parentElement;
+    if (paidCol) paidCol.style.gridColumn = '1 / -1';
 
     el('summary-subtier-wrap')?.remove?.();
     el('btn-edit-plan-custom')?.remove?.();
@@ -12175,8 +12186,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       void refreshTerminalsList();
     } else if (target === 'subscription') {
       syncSettingsSubPreview();
-      if (typeof togglePlanCustomForm === 'function' && isRealShadowDomTree()) {
-        togglePlanCustomForm(true);
+      if (typeof syncPlanCustomFormFields === 'function' && isRealShadowDomTree()) {
+        syncPlanCustomFormFields(ANTIGRAVITY_TOKEN_DATA.planStatus, { enhance: true });
       }
     } else if (target === 'system') {
       void refreshModulesDisplay();

@@ -690,9 +690,16 @@
         updatedAt: new Date().toISOString()
       };
       applyCustomPlanObjectLocally(customObj, email);
+      togglePlanCustomForm(false);
       void persistSettingsToHost({ email, customPlan: customObj });
     } else {
-      // 切换为「自定义实付金额」：开启自定义模式并展开行内编辑表单
+      // 切换为「自定义实付金额」：若已在自定义模式且表单正展开，再点一次收起；否则展开编辑表单
+      const formEl = el('plan-custom-form');
+      const isFormOpen = Boolean(formEl && formEl.style.display && formEl.style.display !== 'none');
+      if (ps.priceMode === 'custom' && isFormOpen) {
+        togglePlanCustomForm(false);
+        return;
+      }
       const isZero = Boolean(prevCustom.isZeroExtraCost || prevCustom.actualPricePaid === 0);
       const paid = isZero ? 0 : (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined ? prevCustom.actualPricePaid : (prevCustom.customActualPrice ?? null));
 
@@ -1345,12 +1352,12 @@
     if (!form) return;
     const curHidden = form.style.display === 'none' || !form.style.display;
     const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
-    const keepOpen = form.getAttribute?.('data-in-settings') === 'true';
-    form.style.display = (next || keepOpen) ? 'block' : 'none';
+    const inSettings = form.getAttribute?.('data-in-settings') === 'true';
+    form.style.display = next ? 'block' : 'none';
     if (next) {
       const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
       syncPlanCustomFormFields(ps, { enhance: true });
-      if (!keepOpen) el('input-custom-region')?.focus?.();
+      if (!inSettings) el('input-custom-region')?.focus?.();
     }
     positionFloatingPanels();
   }
