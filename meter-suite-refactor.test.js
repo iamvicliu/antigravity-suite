@@ -4973,17 +4973,26 @@ test('需求 19: 项目分组头样式层级、Enter换行按钮发送及本机�
           fs.writeFileSync(path.join(projectsDir, `${proj.id}.json`), JSON.stringify(proj, null, 2), 'utf8');
           return { project: proj };
         }
+        if (method === 'ReadProject') {
+          const pFile = path.join(projectsDir, `${body.id}.json`);
+          if (fs.existsSync(pFile)) {
+            return { project: JSON.parse(fs.readFileSync(pFile, 'utf8')) };
+          }
+        }
         return {};
       }
     });
 
     const httpCfg = remoteMod.loadOrCreateRemoteConfig();
     let currentProjIdState = existingProjId;
+    let failNextNavError = '';
     const navCalls = [];
     const buildDynamicSnap = () => {
       const { metaMap } = (() => {
         const files = fs.readdirSync(projectsDir).filter((f) => f.endsWith('.json'));
-        const list = files.map((f) => JSON.parse(fs.readFileSync(path.join(projectsDir, f), 'utf8')));
+        const list = files
+          .map((f) => JSON.parse(fs.readFileSync(path.join(projectsDir, f), 'utf8')))
+          .filter((p) => !p.archived);
         return { metaMap: list };
       })();
       const projectsList = metaMap.map((p) => ({
@@ -5033,6 +5042,13 @@ test('需求 19: 项目分组头样式层级、Enter换行按钮发送及本机�
       localApiConnect: mockConnect,
       performAction: async (act) => {
         navCalls.push(act);
+        if (failNextNavError) {
+          return {
+            ok: false,
+            actionResult: { ok: false, error: failNextNavError },
+            snapshot: buildDynamicSnap()
+          };
+        }
         if (act.action === 'new-conversation' && act.projectId) {
           currentProjIdState = act.projectId;
         }
@@ -5209,7 +5225,47 @@ test('需求 19: 项目分组头样式层级、Enter换行按钮发送及本机�
     assert.ok(navCalls.some((c) => c.action === 'new-conversation' && c.projectId === createRpc.body.project.id));
     assert.ok((envUi.doc.getElementById('new-chat-label')?.textContent || '').includes('repo-a'), '新建对话按钮应联动显示刚创建的新项目名');
 
-    // 验证重名拦截与已有主目录项目直接进入复用
+    // 验证创建成功但桌面端导航失败时：不误关弹窗也不误报成功，且支持直接重试进入已有项目
+    failNextNavError = '桌面端路由正忙';
+    envUi.doc.getElementById('btn-new-project').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-roots').querySelectorAll('.proj-root-pill')
+      .find((b) => (b.textContent || '') === 'codebase').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
+      .find((b) => (b.textContent || '').includes('brand-new-dir')).click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    const createRpcBeforeNavFail = rpcCalls.filter((c) => c.method === 'CreateProject').length;
+    envUi.doc.getElementById('proj-create-submit').click();
+    await new Promise((r) => setTimeout(r, 80));
+
+    const brandNewCreateRpcs = rpcCalls.filter((c) => c.method === 'CreateProject');
+    assert.equal(brandNewCreateRpcs.length, createRpcBeforeNavFail + 1, '首次创建时应调用一次 CreateProject');
+    const brandNewProjId = brandNewCreateRpcs[brandNewCreateRpcs.length - 1].body.project.id;
+    assert.equal(modalBackdrop.hidden, false, '导航失败时弹窗必须保持打开以便用户看到提示并重试');
+    assert.ok((envUi.doc.getElementById('toast').textContent || '').includes('项目「brand-new-dir」已创建，但未成功进入对话'), 'Toast 应明确告知项目已创建但未进入对话');
+    assert.ok((envUi.doc.getElementById('toast').textContent || '').includes('桌面端路由正忙'));
+    assert.ok((envUi.doc.getElementById('proj-selected-summary').textContent || '').includes('已创建，但未成功进入新对话'));
+    assert.equal(envUi.doc.getElementById('proj-create-submit').textContent, '重试进入已有项目「brand-new-dir」');
+    const emptyToggleBtn = convListEl.querySelector('.proj-empty-toggle');
+    if (emptyToggleBtn && emptyToggleBtn.getAttribute('aria-expanded') === 'false') {
+      emptyToggleBtn.click();
+    }
+    assert.ok((convListEl.textContent || '').includes('brand-new-dir'), '侧边栏项目列表应已同步刷新显示新建项目');
+    assert.ok(convListEl.querySelector(`.proj-new-btn[data-new-proj="${brandNewProjId}"]`), '侧边栏也应提供该已有项目的新建对话重连入口');
+    assert.notEqual(currentProjIdState, brandNewProjId);
+
+    failNextNavError = '';
+    envUi.doc.getElementById('proj-create-submit').click();
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(rpcCalls.filter((c) => c.method === 'CreateProject').length, createRpcBeforeNavFail + 1, '重试进入已有项目时不得重复调用 CreateProject');
+    assert.equal(modalBackdrop.hidden, true, '重试进入成功后应自动关闭弹窗');
+    assert.equal(currentProjIdState, brandNewProjId, '重试后桌面端应成功进入该已有项目的新建对话');
+    assert.ok(navCalls.filter((c) => c.action === 'new-conversation' && c.projectId === brandNewProjId).length >= 2);
+    assert.ok((envUi.doc.getElementById('toast').textContent || '').includes('已进入项目「brand-new-dir」'));
+
+    // 验证重名拦截、已有主目录项目直接进入复用与 archived:true 项目排除
     await assert.rejects(
       () => remoteMod.createRemoteProject({ folderPath: plainBDir, name: 'repo-a' }, { homeDir, configDir, localApiConnect: mockConnect }),
       /同名项目「repo-a」已存在/
@@ -5217,6 +5273,24 @@ test('需求 19: 项目分组头样式层级、Enter换行按钮发送及本机�
     const reuseRes = await remoteMod.createRemoteProject({ folderPath: existingRepoDir, name: 'repo-existing' }, { homeDir, configDir, localApiConnect: mockConnect });
     assert.equal(reuseRes.alreadyExists, true);
     assert.equal(reuseRes.project.id, existingProjId);
+
+    const archivedProjId = '33333333-3333-4333-8333-333333333333';
+    const archivedDir = path.join(codebaseDir, 'archived-repo');
+    fs.mkdirSync(archivedDir, { recursive: true });
+    fs.writeFileSync(path.join(projectsDir, `${archivedProjId}.json`), JSON.stringify({
+      id: archivedProjId,
+      name: 'archived-repo',
+      archived: true,
+      projectResources: { resources: [{ folderUri: pathToFileURL(archivedDir).href }] }
+    }), 'utf8');
+    const cbAfterArchive = remoteMod.listHostDirectories({ dirPath: codebaseDir, homeDir, configDir });
+    const archivedDirEntry = cbAfterArchive.entries.find((e) => e.name === 'archived-repo');
+    assert.equal(archivedDirEntry?.existingProjectId, '', '已归档项目不得继续在目录中标记为已关联项目');
+    const snapAfterArchive = await remoteMod.enrichSnapshotWithCatalog(
+      { ok: true, sessionId: 'conv-existing-1', projects: [{ id: archivedProjId, name: 'archived-repo' }], conversations: [] },
+      { stateDir, configDir, bypassCache: true }
+    );
+    assert.equal(snapAfterArchive.projects.some((p) => p.id === archivedProjId), false, 'archived:true 的项目不得出现在活跃项目列表中');
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;

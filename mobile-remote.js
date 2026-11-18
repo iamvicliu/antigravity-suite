@@ -16,7 +16,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.7';
+const MOBILE_UI_VERSION = '1.9.8';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1338,6 +1338,7 @@ function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
 
   const metaMap = new Map();
   const excludedIds = new Set();
+  const archivedIds = new Set();
   try {
     if (fs.existsSync(projectsDir)) {
       const files = fs.readdirSync(projectsDir).filter((f) => f.endsWith('.json'));
@@ -1347,6 +1348,13 @@ function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
         if (!parsed || typeof parsed !== 'object') continue;
         const id = String(parsed.id || parsed.projectId || f.slice(0, -5)).trim();
         const name = String(parsed.name || id).trim();
+        if (parsed.archived === true) {
+          if (id) {
+            excludedIds.add(id);
+            archivedIds.add(id);
+          }
+          continue;
+        }
         if (parsed.sidecar || name === 'swarm/swarm_board') {
           if (id) excludedIds.add(id);
           continue;
@@ -1364,7 +1372,7 @@ function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
     }
   } catch {}
 
-  const resData = { metaMap, excludedIds };
+  const resData = { metaMap, excludedIds, archivedIds };
   if (cacheRef) {
     cacheRef.projectsDir = projectsDir;
     cacheRef.fetchedAt = nowMs;
@@ -1540,7 +1548,7 @@ function createSessionCatalogStore() {
     if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
 
     const store = getStickyStoreForDir(options.stateDir || getStateDir());
-    const { metaMap: projectsMeta, excludedIds: excludedProjectIds } = loadProjectsMetaFromDisk(options, projectsCache);
+    const { metaMap: projectsMeta, excludedIds: excludedProjectIds, archivedIds: archivedProjectIds } = loadProjectsMetaFromDisk(options, projectsCache);
     const trajData = await fetchTrajectories(options);
 
     // 1. 构建项目名称字典（融合磁盘配置 + 语言服务项目 ID + 前端 DOM/Fiber 项目组）
@@ -1642,15 +1650,6 @@ function createSessionCatalogStore() {
       const roll = subagentRollup.get(id);
       const isActive = Boolean((activeSessionId && id === activeSessionId) || sc?.active);
 
-      const archived = (t?.annotations?.archived === true && !isActive)
-        ? true
-        : (t ? false : Boolean(prev?.archived && !isActive));
-
-      const snapTitle = String(sc?.title || '').trim();
-      const isUsefulSnapTitle = Boolean(snapTitle && snapTitle !== id.slice(0, 8));
-      const trajTitle = String(t?.annotations?.title || t?.summary || '').trim();
-      const title = (isUsefulSnapTitle ? snapTitle : '') || trajTitle || prev?.title || snapTitle || id.slice(0, 8);
-
       const snapPid = String(sc?.projectId || '').trim();
       const trajPid = String(t?.trajectoryMetadata?.projectId || '').trim();
       const wsPid = t ? matchWorkspaceToProjectId(t, projectsMeta) : '';
@@ -1658,6 +1657,16 @@ function createSessionCatalogStore() {
       if (projectId === 'outside-of-project' && !projectNameMap.has('outside-of-project')) {
         projectNameMap.set('outside-of-project', '独立对话');
       }
+      const projArchived = Boolean(projectId && archivedProjectIds?.has(projectId));
+
+      const archived = ((t?.annotations?.archived === true || projArchived) && !isActive)
+        ? true
+        : ((t && !projArchived) ? false : Boolean(prev?.archived && !isActive));
+
+      const snapTitle = String(sc?.title || '').trim();
+      const isUsefulSnapTitle = Boolean(snapTitle && snapTitle !== id.slice(0, 8));
+      const trajTitle = String(t?.annotations?.title || t?.summary || '').trim();
+      const title = (isUsefulSnapTitle ? snapTitle : '') || trajTitle || prev?.title || snapTitle || id.slice(0, 8);
 
       const modMs = parseIsoTimestampMs(t?.lastModifiedTime);
       const scTimeMs = parseIsoTimestampMs(sc?.timeKey);
@@ -1692,7 +1701,7 @@ function createSessionCatalogStore() {
         (projectId ? projectId : '未归属项目')
       );
 
-      if (projectId && !projectNameMap.has(projectId)) {
+      if (projectId && !archived && !excludedProjectIds.has(projectId) && !projectNameMap.has(projectId)) {
         projectNameMap.set(projectId, projectName);
       }
 
@@ -2114,6 +2123,7 @@ async function createRemoteProject(payload = {}, options = {}) {
   const requestedName = String(payload?.name || '').trim();
   const projectName = requestedName || path.basename(resolvedPath) || 'new-project';
   const forceNew = Boolean(payload?.forceNew);
+  const requestedExistingId = String(payload?.existingProjectId || '').trim();
 
   const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
   let matchedExisting = null;
@@ -2122,6 +2132,9 @@ async function createRemoteProject(payload = {}, options = {}) {
       matchedExisting = proj;
       break;
     }
+  }
+  if (!matchedExisting && requestedExistingId && metaMap.has(requestedExistingId)) {
+    matchedExisting = metaMap.get(requestedExistingId);
   }
 
   if (matchedExisting && !forceNew && (!requestedName || requestedName.toLowerCase() === matchedExisting.name.toLowerCase())) {
@@ -2135,19 +2148,6 @@ async function createRemoteProject(payload = {}, options = {}) {
       }
     };
   }
-
-  for (const proj of metaMap.values()) {
-    if (proj.name && proj.name.toLowerCase() === projectName.toLowerCase()) {
-      throw Object.assign(new Error(`同名项目「${proj.name}」已存在，请修改项目名称`), { status: 400 });
-    }
-  }
-
-  const folderUri = pathToFileURL(resolvedPath).href.replace(/\/+$/, '');
-  let isGitRepo = false;
-  try {
-    isGitRepo = fs.existsSync(path.join(resolvedPath, '.git'));
-  } catch {}
-  let defaultBranch = isGitRepo ? readGitDefaultBranchFromDisk(resolvedPath) : '';
 
   const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
   let connectFn = customConnect;
@@ -2165,6 +2165,40 @@ async function createRemoteProject(payload = {}, options = {}) {
       lsApi = null;
     }
   }
+
+  if (!forceNew && requestedExistingId && lsApi && typeof lsApi.call === 'function') {
+    try {
+      const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: requestedExistingId }), 1500, null);
+      const rp = readRes?.project;
+      if (rp && rp.id === requestedExistingId && !rp.archived) {
+        const rpName = String(rp.name || requestedName || '').trim();
+        if (!requestedName || requestedName.toLowerCase() === rpName.toLowerCase()) {
+          return {
+            ok: true,
+            alreadyExists: true,
+            project: {
+              id: rp.id,
+              name: rpName,
+              folderPath: resolvedPath
+            }
+          };
+        }
+      }
+    } catch {}
+  }
+
+  for (const proj of metaMap.values()) {
+    if (proj.name && proj.name.toLowerCase() === projectName.toLowerCase()) {
+      throw Object.assign(new Error(`同名项目「${proj.name}」已存在，请修改项目名称`), { status: 400 });
+    }
+  }
+
+  const folderUri = pathToFileURL(resolvedPath).href.replace(/\/+$/, '');
+  let isGitRepo = false;
+  try {
+    isGitRepo = fs.existsSync(path.join(resolvedPath, '.git'));
+  } catch {}
+  let defaultBranch = isGitRepo ? readGitDefaultBranchFromDisk(resolvedPath) : '';
 
   if (lsApi && typeof lsApi.call === 'function') {
     try {
@@ -2740,7 +2774,7 @@ async function performActionInTarget(payload) {
   await new Promise((r) => setTimeout(r, settleMs));
   const snapshot = await fetchSnapshotFromTarget(target.id, {
     convLimit: 100,
-    bypassCache: act === 'send' || act === 'switch-conversation'
+    bypassCache: act === 'send' || act === 'switch-conversation' || act === 'new-conversation'
   }).catch(() => null);
   return {
     ok: Boolean(actionResult?.ok),
@@ -3176,6 +3210,7 @@ function buildMobileAppHtml() {
       padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--border);
       font-size:12px;color:#d4d4d8;display:flex;flex-direction:column;gap:3px;flex-shrink:0;
     }
+    .proj-summary-card.is-warn{border-color:rgba(245,158,11,.55);background:rgba(245,158,11,.12);color:#fde68a}
     .proj-summary-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#7dd3fc;word-break:break-all;font-size:11.5px}
     .proj-name-row{display:flex;flex-direction:column;gap:5px;flex-shrink:0}
     .proj-name-label{font-size:12px;font-weight:600;color:#a1a1aa}
@@ -5079,24 +5114,54 @@ function buildMobileAppHtml() {
       showHidden: false,
       isGitRepo: false,
       existingProject: null,
+      navFailedError: '',
+      justCreatedButNavFailed: false,
       loading: false,
       submitting: false
     };
 
+    function renderProjModalSummary() {
+      const sumEl = $('proj-selected-summary');
+      if (!sumEl) return;
+      if (projBrowserState.navFailedError && projBrowserState.existingProject) {
+        sumEl.classList.add('is-warn');
+        const exName = projBrowserState.existingProject.name || $('proj-name-input')?.value || '';
+        const headline = projBrowserState.justCreatedButNavFailed
+          ? ('项目「' + exName + '」已创建，但未成功进入新对话')
+          : ('未能进入已有项目「' + exName + '」');
+        sumEl.innerHTML =
+          '<div><strong>' + esc(headline) + '</strong></div>' +
+          '<div>原因：' + esc(projBrowserState.navFailedError) + '（请点击下方按钮重试进入已有项目）</div>' +
+          '<div class="proj-summary-path">' + esc(projBrowserState.currentPath) + '</div>';
+        return;
+      }
+      sumEl.classList.remove('is-warn');
+      const repoBadge = projBrowserState.isGitRepo ? 'Git 仓库' : '普通目录';
+      const linkedHint = projBrowserState.existingProject
+        ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」（可直接进入或修改下方名称另建）')
+        : '';
+      sumEl.innerHTML =
+        '<div><strong>当前选中目录</strong> (' + esc(repoBadge) + esc(linkedHint) + ')</div>' +
+        '<div class="proj-summary-path">' + esc(projBrowserState.currentPath) + '</div>';
+    }
+
     function syncCreateProjectSubmitUi() {
       const submitBtn = $('proj-create-submit');
       if (!submitBtn) return;
+      const typedName = String($('proj-name-input')?.value || '').trim();
+      const ex = projBrowserState.existingProject;
+      const matchesExisting = Boolean(ex && typedName && typedName.toLowerCase() === String(ex.name || '').toLowerCase());
       if (projBrowserState.submitting) {
         submitBtn.disabled = true;
-        submitBtn.textContent = '正在创建并打开项目…';
+        submitBtn.textContent = (projBrowserState.navFailedError && matchesExisting)
+          ? '正在重试进入项目…'
+          : '正在创建并打开项目…';
         return;
       }
-      const typedName = String($('proj-name-input')?.value || '').trim();
       const hasPath = Boolean(projBrowserState.currentPath);
       submitBtn.disabled = !hasPath || !typedName;
-      const ex = projBrowserState.existingProject;
-      if (ex && typedName && typedName.toLowerCase() === String(ex.name || '').toLowerCase()) {
-        submitBtn.textContent = '进入已有项目「' + ex.name + '」';
+      if (matchesExisting) {
+        submitBtn.textContent = (projBrowserState.navFailedError ? '重试进入已有项目「' : '进入已有项目「') + ex.name + '」';
       } else {
         submitBtn.textContent = '创建项目并进入对话';
       }
@@ -5107,6 +5172,8 @@ function buildMobileAppHtml() {
       projBrowserState.parentPath = data?.parentPath || null;
       projBrowserState.isGitRepo = Boolean(data?.isGitRepo);
       projBrowserState.existingProject = data?.existingProject || null;
+      projBrowserState.navFailedError = '';
+      projBrowserState.justCreatedButNavFailed = false;
       projBrowserState.showHidden = Boolean(data?.showHidden);
 
       const pathIn = $('proj-path-input');
@@ -5144,16 +5211,7 @@ function buildMobileAppHtml() {
         }
       }
 
-      const sumEl = $('proj-selected-summary');
-      if (sumEl) {
-        const repoBadge = projBrowserState.isGitRepo ? 'Git 仓库' : '普通目录';
-        const linkedHint = projBrowserState.existingProject
-          ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」（可直接进入或修改下方名称另建）')
-          : '';
-        sumEl.innerHTML =
-          '<div><strong>当前选中目录</strong> (' + esc(repoBadge) + esc(linkedHint) + ')</div>' +
-          '<div class="proj-summary-path">' + esc(projBrowserState.currentPath) + '</div>';
-      }
+      renderProjModalSummary();
 
       const nameIn = $('proj-name-input');
       if (nameIn) nameIn.value = String(data?.suggestedName || data?.currentName || '');
@@ -5196,6 +5254,8 @@ function buildMobileAppHtml() {
     async function openCreateProjectModal() {
       const backdrop = $('proj-modal-backdrop');
       if (!backdrop) return;
+      projBrowserState.navFailedError = '';
+      projBrowserState.justCreatedButNavFailed = false;
       if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
       if ($('proj-mkdir-input')) $('proj-mkdir-input').value = '';
       backdrop.hidden = false;
@@ -5260,6 +5320,7 @@ function buildMobileAppHtml() {
             folderPath,
             name: projectName,
             forceNew,
+            existingProjectId: (!forceNew && ex?.id) ? ex.id : undefined,
             targetId: currentTargetId || undefined
           })
         }, 8000);
@@ -5268,13 +5329,32 @@ function buildMobileAppHtml() {
         if (!res.ok || !data || data.ok === false) {
           throw new Error(data?.error || ('创建项目失败 (HTTP ' + res.status + ')'));
         }
-        closeCreateProjectModal();
-        if (!isDesktopLayout()) closeDrawer();
-        stickBottom = true;
         if (data.snapshot) renderSnapshot(data.snapshot);
         else void fetchSnapshot();
         const createdName = data.project?.name || projectName;
-        showToast(data.alreadyExists ? ('已进入项目「' + createdName + '」') : ('已创建项目「' + createdName + '」'));
+        const createdId = String(data.project?.id || ex?.id || '').trim();
+        const navFailed = (data.navOk === false) || Boolean(data.navResult && data.navResult.ok === false);
+        if (navFailed) {
+          const reason = String(data.navError || data.navResult?.error || '桌面端未能进入新对话').trim();
+          projBrowserState.existingProject = { id: createdId, name: createdName };
+          projBrowserState.navFailedError = reason;
+          projBrowserState.justCreatedButNavFailed = !data.alreadyExists;
+          const nameIn = $('proj-name-input');
+          if (nameIn) nameIn.value = createdName;
+          renderProjModalSummary();
+          showToast(
+            data.alreadyExists
+              ? ('未能进入已有项目「' + createdName + '」：' + reason)
+              : ('项目「' + createdName + '」已创建，但未成功进入对话：' + reason + '（可点击重试进入）')
+          );
+          return;
+        }
+        projBrowserState.navFailedError = '';
+        projBrowserState.justCreatedButNavFailed = false;
+        closeCreateProjectModal();
+        if (!isDesktopLayout()) closeDrawer();
+        stickBottom = true;
+        showToast(data.alreadyExists ? ('已进入项目「' + createdName + '」') : ('已创建并进入项目「' + createdName + '」'));
       } catch (err) {
         showToast(err?.message || '创建项目失败');
       } finally {
@@ -5330,7 +5410,16 @@ function buildMobileAppHtml() {
         if (val) void loadHostDirListing(val);
       }
     });
-    $('proj-name-input')?.addEventListener('input', syncCreateProjectSubmitUi);
+    $('proj-name-input')?.addEventListener('input', () => {
+      const typedName = String($('proj-name-input')?.value || '').trim();
+      const ex = projBrowserState.existingProject;
+      if (projBrowserState.navFailedError && (!ex || typedName.toLowerCase() !== String(ex.name || '').toLowerCase())) {
+        projBrowserState.navFailedError = '';
+        projBrowserState.justCreatedButNavFailed = false;
+        renderProjModalSummary();
+      }
+      syncCreateProjectSubmitUi();
+    });
     $('proj-create-submit')?.addEventListener('click', () => { void submitCreateProjectModal(); });
 
     const convViewTabsEl = $('conv-view-tabs');
@@ -6453,25 +6542,48 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
           ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
         });
+        const shouldNavigate = payload?.openInDesktop !== false && options.openInDesktop !== false && Boolean(createdRes?.project?.id);
+        let navOk = shouldNavigate ? false : null;
+        let navError = '';
         let navResult = null;
         let snapshot = null;
         const doPerformAction = typeof options.performAction === 'function' ? options.performAction : performActionInTarget;
         const doFetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
-        if (payload?.openInDesktop !== false && options.openInDesktop !== false && createdRes?.project?.id) {
-          if (!createdRes.alreadyExists) {
-            await new Promise((r) => setTimeout(r, 150));
+        if (shouldNavigate) {
+          const checkNavOk = (r) => Boolean(r && r.ok !== false && (!r.actionResult || r.actionResult.ok !== false));
+          if (!createdRes.alreadyExists && !options.performAction) {
+            await new Promise((r) => setTimeout(r, 180));
           }
-          const actionRes = await doPerformAction({
+          let actionRes = await doPerformAction({
             action: 'new-conversation',
             projectId: createdRes.project.id,
             targetId: payload?.targetId || ''
           }).catch((err) => ({ ok: false, error: err?.message || '未能切换桌面端至新建项目' }));
-          navResult = actionRes?.actionResult || actionRes;
+          if (!checkNavOk(actionRes) && !createdRes.alreadyExists && !options.performAction) {
+            await new Promise((r) => setTimeout(r, 350));
+            actionRes = await doPerformAction({
+              action: 'new-conversation',
+              projectId: createdRes.project.id,
+              targetId: payload?.targetId || ''
+            }).catch((err) => ({ ok: false, error: err?.message || '未能切换桌面端至新建项目' }));
+          }
+          const rawNav = (actionRes?.actionResult && typeof actionRes.actionResult === 'object')
+            ? actionRes.actionResult
+            : (actionRes && typeof actionRes === 'object' ? actionRes : {});
+          navOk = checkNavOk(actionRes);
+          navError = navOk ? '' : String(rawNav.error || actionRes?.error || '桌面端未能进入该项目新对话');
+          navResult = {
+            ...rawNav,
+            ok: navOk,
+            ...(navError ? { error: navError } : {})
+          };
           snapshot = actionRes?.snapshot || await doFetchSnapshot(payload?.targetId || '', { convLimit: 100, bypassCache: true }).catch(() => null);
         }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({
           ...createdRes,
+          navOk,
+          navError,
           navResult,
           snapshot
         }));
