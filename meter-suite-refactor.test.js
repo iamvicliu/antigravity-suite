@@ -3833,3 +3833,136 @@ test('需求 17: parsePsElapsedSeconds 与 inspectAntigravityHostProcess 准确�
     command: ''
   });
 });
+
+// =========================================================================
+// 需求 18: 长上下文 Prompt Cache 脱落 (cache=0) 归零修真与 328K 雪崩预警联动
+// =========================================================================
+test('需求 18: meter-core 修复 cache=0 掩盖，pulse-capsule 与 renderer 识别缓存脱落及 328K 雪崩线', async () => {
+  // 1. meter-core summarize: 当新请求返回真实输入且 cacheReadTokens=0 时，严禁沿用 prevContext.cached
+  const dropSummary = core.summarize({
+    chatModel: {
+      model: 'gemini-4-carbon-medium',
+      usage: { inputTokens: 334262, cacheReadTokens: 0, outputTokens: 800 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  }, {
+    previousValidContext: { used: 330000, actual: 330000, cached: 327727, budget: 512000 }
+  });
+  assert.equal(dropSummary.cached, 0, 'hasInput 且 cacheReadTokens=0 时 cached 必须真实归零，禁止沿用 prevContext.cached');
+  assert.equal(dropSummary.uncachedInput, 334262);
+  assert.equal(dropSummary.cacheHitRate, 0);
+  assert.equal(dropSummary.input, 334262);
+
+  // 2. pulse-capsule-overlay: analyzeSteps 与 renderFooterCapsule / tooltip 缓存脱落及 328K 雪崩线联动
+  const envCap = createDomEnv();
+  envCap.sandbox.location.href = 'https://127.0.0.1:12345/';
+  envCap.win.location = envCap.sandbox.location;
+  const footerEl = envCap.doc.createElement('div');
+  footerEl.className = 'agy-composer-footer';
+  const permBtn = envCap.doc.createElement('button');
+  permBtn.setAttribute('data-testid', 'permissions-selector-trigger');
+  footerEl.appendChild(permBtn);
+  envCap.doc.body.appendChild(footerEl);
+
+  vm.runInContext(CAPSULE_SRC, envCap.sandbox);
+  const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
+  assert.equal(typeof capsApi.analyzeSteps, 'function');
+
+  const uDrop = capsApi.analyzeSteps([
+    {
+      metadata: {
+        modelUsage: { model: 'gemini-4-carbon-medium', inputTokens: '2163', cacheReadTokens: '327727', outputTokens: '500' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    },
+    {
+      metadata: {
+        modelUsage: { model: 'gemini-4-carbon-medium', inputTokens: '334262', cacheReadTokens: '0', outputTokens: '400' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    }
+  ], 'gemini-4-carbon-medium', 'Gemini 4 Carbon (Medium)', 2);
+  assert.equal(uDrop.cacheDropDetected, true);
+  assert.equal(uDrop.cacheCliffRisk, 'critical');
+  assert.equal(uDrop.cacheHitRate, 0);
+
+  capsApi.renderFooterCapsule(footerEl, uDrop);
+  const capBtn = footerEl.querySelector('[data-agy-context-capsule="1"]');
+  assert.equal(capBtn.querySelector('.agy-ctx-cache')?.getAttribute('data-cache-alert'), 'drop');
+  assert.equal(capBtn.querySelector('.agy-ctx-fill')?.getAttribute('fill'), '#ef4444');
+  assert.equal(capBtn.querySelector('.agy-ctx-cache-val')?.textContent, '0%');
+
+  const uCliff = capsApi.analyzeSteps([
+    {
+      metadata: {
+        modelUsage: { model: 'gemini-4-carbon-medium', inputTokens: '5000', cacheReadTokens: '335000', outputTokens: '500' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    }
+  ], 'gemini-4-carbon-medium', 'Gemini 4 Carbon (Medium)', 1);
+  assert.equal(uCliff.cacheDropDetected, false);
+  assert.equal(uCliff.cacheCliffRisk, 'critical');
+
+  capsApi.renderFooterCapsule(footerEl, uCliff);
+  assert.equal(capBtn.querySelector('.agy-ctx-cache')?.getAttribute('data-cache-alert'), 'cliff');
+  assert.equal(capBtn.querySelector('.agy-ctx-fill')?.getAttribute('fill'), '#f59e0b');
+  envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
+
+  // 3. meter-renderer: #key-badge 在 334K (cache=0) 显示 “缓存脱落”，在 340K / 512K (高缓存) 显示 “建议压缩”
+  const envDrop = createDomEnv();
+  vm.runInContext(RENDERER_SRC, envDrop.sandbox);
+  const pollDrop = envDrop.pendingFetches.find(f => String(f.url).includes('GetCascadeTrajectoryGeneratorMetadata'));
+  assert.ok(pollDrop, '应触发 GetCascadeTrajectoryGeneratorMetadata 请求');
+  pollDrop.resolve({
+    ok: true,
+    json: async () => ({
+      generatorMetadata: [
+        {
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Carbon (Medium)',
+            usage: { inputTokens: 2163, cacheReadTokens: 327727, outputTokens: 500 },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        },
+        {
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Carbon (Medium)',
+            usage: { inputTokens: 334262, cacheReadTokens: 0, outputTokens: 400 },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }
+      ]
+    })
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const sdDrop = envDrop.getShadow();
+  assert.equal(sdDrop.getElementById('key-badge').textContent, '缓存脱落');
+  assert.match(sdDrop.getElementById('key-takeaway').textContent, /缓存已脱落.*\/compact/);
+  envDrop.sandbox.__AGContextMeter.dispose();
+
+  const envCliff = createDomEnv();
+  vm.runInContext(RENDERER_SRC, envCliff.sandbox);
+  const pollCliff = envCliff.pendingFetches.find(f => String(f.url).includes('GetCascadeTrajectoryGeneratorMetadata'));
+  assert.ok(pollCliff);
+  pollCliff.resolve({
+    ok: true,
+    json: async () => ({
+      generatorMetadata: [
+        {
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Carbon (Medium)',
+            usage: { inputTokens: 5000, cacheReadTokens: 335000, outputTokens: 500 },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }
+      ]
+    })
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const sdCliff = envCliff.getShadow();
+  assert.equal(sdCliff.getElementById('key-badge').textContent, '建议压缩');
+  assert.match(sdCliff.getElementById('key-takeaway').textContent, /328K.*\/compact/);
+  envCliff.sandbox.__AGContextMeter.dispose();
+});

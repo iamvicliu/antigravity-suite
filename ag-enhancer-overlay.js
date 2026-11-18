@@ -2118,6 +2118,16 @@
           border-color: var(--ag-accent-border-hover, rgba(167, 139, 250, 0.56));
           color: var(--ag-effective-accent, #a78bfa);
         }
+        #${QUICK_BAR_ID} .ag-qcap-btn[data-risk="warn"] {
+          border-color: rgba(245, 158, 11, 0.55);
+          background: rgba(245, 158, 11, 0.14);
+          color: #fbbf24;
+        }
+        #${QUICK_BAR_ID} .ag-qcap-btn[data-risk="danger"] {
+          border-color: rgba(239, 68, 68, 0.65);
+          background: rgba(239, 68, 68, 0.16);
+          color: #f87171;
+        }
         #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-btn {
           border-color: rgba(0, 0, 0, 0.11);
           background: rgba(0, 0, 0, 0.045);
@@ -2137,6 +2147,16 @@
           background: var(--ag-accent-bg-hover, rgba(124, 58, 237, 0.18));
           border-color: var(--ag-accent-border-hover, rgba(124, 58, 237, 0.48));
           color: var(--ag-effective-accent, #7c3aed);
+        }
+        #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-btn[data-risk="warn"] {
+          border-color: rgba(217, 119, 6, 0.55);
+          background: rgba(245, 158, 11, 0.12);
+          color: #b45309;
+        }
+        #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-btn[data-risk="danger"] {
+          border-color: rgba(220, 38, 38, 0.6);
+          background: rgba(239, 68, 68, 0.12);
+          color: #dc2626;
         }
         #${QUICK_BAR_ID} .ag-qcap-toast {
           margin-left: auto;
@@ -3174,6 +3194,20 @@
       bar.setAttribute('data-ag-theme', theme);
     }
 
+    const compactBtn = document.getElementById('ag-qcap-compact');
+    if (compactBtn) {
+      const risk = extractContextRiskState();
+      if (risk.cacheDropDetected) {
+        compactBtn.setAttribute('data-risk', 'danger');
+      } else if (risk.contextUsed >= 328000) {
+        compactBtn.setAttribute('data-risk', 'danger');
+      } else if (risk.contextUsed >= 240000 || risk.percent >= 70) {
+        compactBtn.setAttribute('data-risk', 'warn');
+      } else {
+        compactBtn.removeAttribute('data-risk');
+      }
+    }
+
       // 始终保证快捷胶囊栏位于 .surface-composer 的紧邻正上方
     if (bar.parentElement !== composer.parentElement || bar.nextElementSibling !== composer) {
       composer.parentElement.insertBefore(bar, composer);
@@ -3208,6 +3242,28 @@
     const { sr } = getMeterHostAndShadow();
     const meterMatch = (sr?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
     return meterMatch ? Number(meterMatch[1]) : 0;
+  }
+
+  function extractContextRiskState() {
+    const percent = extractContextPercent();
+    let contextUsed = 0;
+    let cacheDropDetected = false;
+    try {
+      const capData = document.querySelector('[data-agy-context-capsule="1"]')?.__ctxUsageData;
+      const meterLatest = window.__AGContextMeter?.snapshot?.()?.latest;
+      contextUsed = Math.max(Number(capData?.contextUsed || 0), Number(meterLatest?.actual || meterLatest?.used || 0));
+      cacheDropDetected = Boolean(capData?.cacheDropDetected || meterLatest?.cacheDropDetected);
+      if (
+        !cacheDropDetected &&
+        capData?.hasPreciseSnapshot &&
+        contextUsed >= 240000 &&
+        Number(capData?.inputTokens || 0) >= 200000 &&
+        Number(capData?.cacheHitRate || 0) < 25
+      ) {
+        cacheDropDetected = true;
+      }
+    } catch {}
+    return { percent, contextUsed, cacheDropDetected };
   }
 
   function getAssistantMarkdownRoots() {
@@ -3304,7 +3360,12 @@
       addCandidate('继续处理下一个问题');
     }
 
-    if (extractContextPercent() >= 70) {
+    const risk = extractContextRiskState();
+    if (risk.cacheDropDetected || risk.contextUsed >= 328000) {
+      const existingIdx = list.indexOf('/compact');
+      if (existingIdx >= 0) list.splice(existingIdx, 1);
+      list.unshift('/compact');
+    } else if (risk.contextUsed >= 240000 || risk.percent >= 65) {
       addCandidate('/compact');
     }
 

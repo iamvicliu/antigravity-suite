@@ -10867,18 +10867,26 @@ function renderHeatmapGrid(forceRebuild = false) {
         const remainPct = Math.max(0, 100 - pct);
 
         if (keyBadge) {
-          if (pct >= 90) { keyBadge.textContent = '紧张'; keyBadge.className = 'key-pill pill-danger'; }
+          if (d.cacheDropDetected) { keyBadge.textContent = '缓存脱落'; keyBadge.className = 'key-pill pill-danger'; }
+          else if (pct >= 90) { keyBadge.textContent = '紧张'; keyBadge.className = 'key-pill pill-danger'; }
           else if (pct >= 75) { keyBadge.textContent = '偏高'; keyBadge.className = 'key-pill pill-warn'; }
+          else if (d.actual >= 328000) { keyBadge.textContent = '建议压缩'; keyBadge.className = 'key-pill pill-warn'; }
           else { keyBadge.textContent = '正常'; keyBadge.className = 'key-pill pill-good'; }
         }
         if (keyUsed) keyUsed.textContent = `${short(d.actual)} (${pct.toFixed(1)}%)`;
         if (keyLimit) keyLimit.textContent = short(limitVal);
         if (keyRemaining) keyRemaining.textContent = `${short(remainVal)} (${remainPct.toFixed(1)}%)`;
         if (keyTakeaway) {
-          if (pct >= 90) {
+          if (d.cacheDropDetected) {
+            keyTakeaway.textContent = `⚠ 缓存已脱落（命中率 ${(d.cacheHitRate ?? 0).toFixed(1)}%），本步全量重算 ${short(d.uncachedInput || d.input)} tokens！已使用 ${pct.toFixed(1)}%，极易引发 4~5 分钟卡顿与配额加速消耗，建议立即执行 /compact。`;
+          } else if (pct >= 90) {
             keyTakeaway.textContent = `⚠ 上下文已消耗 ${pct.toFixed(1)}%，仅剩约 ${short(remainVal)} tokens，接近预算上限！建议清理冗余上下文。`;
           } else if (pct >= 75) {
             keyTakeaway.textContent = `⚡ 已使用 ${pct.toFixed(1)}%，剩余可用空间约 ${short(remainVal)} tokens，注意大文件或长输出。`;
+          } else if (d.actual >= 328000) {
+            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已跨过 328K 缓存雪崩线）；一旦停顿超 3 分钟或缓存失活将触发 4~5 分钟全量重算，建议尽快执行 /compact。`;
+          } else if (d.actual >= 240000) {
+            keyTakeaway.textContent = `✔ 当前用量正常（${pct.toFixed(1)}%，已达 ${short(d.actual)}），处于 240K+ 长上下文区间，建议在任务段落间适时执行 /compact 规避缓存脱落。`;
           } else {
             keyTakeaway.textContent = `✔ 当前用量健康（${pct.toFixed(1)}%），剩余可用空间充足（约 ${short(remainVal)} tokens），可正常继续对话。`;
           }
@@ -10914,7 +10922,11 @@ function renderHeatmapGrid(forceRebuild = false) {
         if (spTakeaway) {
           const modelStr = d?.model ? `（${d.model}）` : '';
           const streamInfo = sp.streamingTps ? `，纯流式传输达 ${sp.streamingTps} tok/s` : '';
-          spTakeaway.textContent = `✔ 输出${sp.tps >= 35 ? '流畅' : '平稳'}（${sp.tps} tok/s${streamInfo}），总耗时 ${sp.duration}s 内生成 ${fmt(sp.outputTokens)} tokens${modelStr}。`;
+          if (sp.ttft != null && sp.ttft >= 30 && (d?.cacheDropDetected || (d?.uncachedInput || 0) >= 150000)) {
+            spTakeaway.textContent = `⚠ 本步首字延迟达 ${sp.ttft}s，系缓存脱落引发全量重算所致（输出 ${sp.tps} tok/s，总耗时 ${sp.duration}s${modelStr}），建议立即执行 /compact。`;
+          } else {
+            spTakeaway.textContent = `✔ 输出${sp.tps >= 35 ? '流畅' : '平稳'}（${sp.tps} tok/s${streamInfo}），总耗时 ${sp.duration}s 内生成 ${fmt(sp.outputTokens)} tokens${modelStr}。`;
+          }
         }
       } else {
         if (spBadge) { spBadge.textContent = state.requestBusy ? '计算中' : '待生成'; spBadge.className = 'key-pill pill-muted'; }
@@ -10989,7 +11001,28 @@ function renderHeatmapGrid(forceRebuild = false) {
           void recordModelCallsRemote(callsToReport);
         }
       }
-      for (let i = rows.length - 1; i >= 0; i--) { const value = summarize(rows[i]); if (value) { state.latest = withStepError(value, rows[i]); break; } }
+      let latestVal = null;
+      let latestIdx = -1;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const value = summarize(rows[i]);
+        if (value) { latestVal = withStepError(value, rows[i]); latestIdx = i; break; }
+      }
+      if (latestVal) {
+        const hadPriorHighCache = rows.slice(0, Math.max(0, latestIdx)).some(r => {
+          const s = summarize(r);
+          return (s?.cached || 0) >= 50000;
+        }) || (state.sessionCalls || []).slice(0, -1).some(c => (c?.cacheReadTokens || 0) >= 50000);
+        const totalIn = Number(latestVal.input || 0);
+        const uncachedIn = Number(latestVal.uncachedInput ?? Math.max(0, totalIn - Number(latestVal.cached || 0)));
+        const hitRate = latestVal.cacheHitRate;
+        latestVal.cacheDropDetected = Boolean(
+          totalIn >= 150000 && hitRate != null && hitRate < 25 && (hadPriorHighCache || uncachedIn >= 240000)
+        );
+        latestVal.cacheCliffRisk = (latestVal.actual || 0) >= 328000
+          ? 'critical'
+          : ((latestVal.actual || 0) >= 240000 ? 'warn' : 'none');
+        state.latest = latestVal;
+      }
       state.requestAt = Date.now(); state.requestError = '';
     } catch (e) { if (generation === state.generation && !state.disposed) state.requestError = e.name === 'AbortError' ? '读取超时' : e.message; }
     finally { clearTimeout(timeout); state.controllers.delete(controller); if (generation === state.generation && !state.disposed) { state.requestBusy = false; state.requestNext = Date.now() + (document.hidden ? 15000 : 3000); render(); } }
