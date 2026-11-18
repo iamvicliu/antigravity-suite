@@ -4823,3 +4823,410 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 19: 项目名条视觉层级、回车换行交互与浏览本机目录创建新项目
+// =========================================================================
+test('需求 19: 项目分组头样式层级、Enter换行按钮发送及本机目录浏览创建新项目全链路', async () => {
+  const { pathToFileURL } = require('url');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req19-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const homeDir = path.join(tmpRoot, 'home');
+  const configDir = path.join(homeDir, '.gemini', 'config');
+  const projectsDir = path.join(configDir, 'projects');
+  const codebaseDir = path.join(homeDir, 'codebase');
+  const sharedDir = path.join(homeDir, 'shared');
+  const sharedArmyDir = path.join(sharedDir, 'shared-dir');
+  const repoADir = path.join(codebaseDir, 'repo-a');
+  const plainBDir = path.join(codebaseDir, 'plain-b');
+  const existingRepoDir = path.join(codebaseDir, 'repo-existing');
+  const dupOwnerDir = path.join(homeDir, 'other', 'plain-b-owner');
+  const hiddenDir = path.join(codebaseDir, '.hidden-dir');
+
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(projectsDir, { recursive: true });
+  fs.mkdirSync(path.join(repoADir, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(repoADir, '.git', 'HEAD'), 'ref: refs/heads/develop\n', 'utf8');
+  fs.mkdirSync(plainBDir, { recursive: true });
+  fs.mkdirSync(existingRepoDir, { recursive: true });
+  fs.mkdirSync(sharedArmyDir, { recursive: true });
+  fs.mkdirSync(dupOwnerDir, { recursive: true });
+  fs.mkdirSync(hiddenDir, { recursive: true });
+  fs.writeFileSync(path.join(codebaseDir, 'note.txt'), 'not a folder', 'utf8');
+
+  // 预设两个已有项目：一个将 ~/shared/shared-dir 作为辅资源 [1]（不应误标 shared-dir），一个占用名称 plain-b
+  const existingProjId = '11111111-1111-4111-8111-111111111111';
+  fs.writeFileSync(path.join(projectsDir, `${existingProjId}.json`), JSON.stringify({
+    id: existingProjId,
+    name: 'repo-existing',
+    projectResources: {
+      resources: [
+        { folderUri: pathToFileURL(existingRepoDir).href },
+        { folderUri: pathToFileURL(sharedArmyDir).href }
+      ]
+    },
+    settings: {},
+    isWorkspaceOnly: false
+  }), 'utf8');
+
+  const dupNameProjId = '22222222-2222-4222-8222-222222222222';
+  fs.writeFileSync(path.join(projectsDir, `${dupNameProjId}.json`), JSON.stringify({
+    id: dupNameProjId,
+    name: 'plain-b',
+    projectResources: {
+      resources: [{ folderUri: pathToFileURL(dupOwnerDir).href }]
+    },
+    settings: {},
+    isWorkspaceOnly: false
+  }), 'utf8');
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+
+    // 1. CSS 与 HTML 层级校验（项目头字号 > 会话项字号、桌面媒体查询同步、enterkeyhint="enter"）
+    const html = remoteMod.buildMobileAppHtml();
+    const cssText = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
+    const inlineScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
+    assert.doesNotThrow(() => new vm.Script(inlineScript));
+
+    const mobileCss = cssText.split('@media (min-width:860px)')[0];
+    const desktopCss = cssText.split('@media (min-width:860px)')[1] || '';
+    const parseFontPx = (chunk, sel) => {
+      const m = chunk.match(new RegExp(`\\${sel}\\{[^}]*?font-size:([0-9.]+)px`));
+      return m ? Number(m[1]) : 0;
+    };
+    const mobProjFs = parseFontPx(mobileCss, '.proj-toggle');
+    const mobConvFs = parseFontPx(mobileCss, '.conv-item');
+    const deskProjFs = parseFontPx(desktopCss, '.proj-toggle');
+    const deskConvFs = parseFontPx(desktopCss, '.conv-item');
+    assert.ok(mobProjFs > mobConvFs && mobProjFs >= 14, `移动端项目头字号 (${mobProjFs}px) 应显著大于会话项 (${mobConvFs}px)`);
+    assert.ok(deskProjFs > deskConvFs && deskProjFs >= 13.5, `桌面端项目头字号 (${deskProjFs}px) 应大于会话项 (${deskConvFs}px)`);
+    assert.ok(mobileCss.includes('.proj-group.is-current .proj-head'), '应包含当前活跃项目高亮样式');
+    assert.ok(mobileCss.includes('.proj-body') && mobileCss.includes('border-left:'), '子会话容器应带缩进左导引线');
+    assert.ok(html.includes('enterkeyhint="enter"'), '输入框应声明 enterkeyhint="enter" 以配合手机软键盘换行');
+    assert.ok(html.includes('id="btn-new-project"') && html.includes('id="proj-modal-backdrop"'), '应包含新建项目入口与目录选择弹窗');
+
+    // 2. 本机目录读取、隐藏项切换、primaryPath 精确关联及非法目录名拦截
+    const homeListing = remoteMod.listHostDirectories({ homeDir, configDir });
+    assert.equal(homeListing.path, path.resolve(homeDir));
+    assert.ok(homeListing.roots.some((r) => r.path === path.resolve(homeDir) && r.label.includes('~')));
+    assert.ok(homeListing.roots.some((r) => r.path === path.resolve(codebaseDir) && r.label === 'codebase'));
+    assert.ok(homeListing.roots.some((r) => r.path === path.resolve(sharedDir) && r.label === 'shared'));
+
+    const codebaseDefault = remoteMod.listHostDirectories({ dirPath: codebaseDir, homeDir, configDir });
+    const cbNames = codebaseDefault.entries.map((e) => e.name);
+    assert.equal(cbNames.includes('note.txt'), false, '目录浏览不得列出普通文件');
+    assert.equal(cbNames.includes('.hidden-dir'), false, '默认不列出点开头隐藏目录');
+    const repoAEntry = codebaseDefault.entries.find((e) => e.name === 'repo-a');
+    assert.equal(repoAEntry?.isGitRepo, true, '包含 .git 的目录应识别为 Git 仓库');
+    assert.equal(repoAEntry?.existingProjectId, '', '未创建项目的目录不得误关联');
+    const exEntry = codebaseDefault.entries.find((e) => e.name === 'repo-existing');
+    assert.equal(exEntry?.existingProjectId, existingProjId, '已有主目录项目应准确标出');
+
+    const sharedListing = remoteMod.listHostDirectories({ dirPath: sharedDir, homeDir, configDir });
+    const armyEntry = sharedListing.entries.find((e) => e.name === 'shared-dir');
+    assert.equal(armyEntry?.existingProjectId, '', '仅作辅资源 resources[1] 出现的共享目录不得被误判成已有主项目');
+
+    const plainBListing = remoteMod.listHostDirectories({ dirPath: plainBDir, homeDir, configDir });
+    assert.equal(plainBListing.suggestedName, 'plain-b (2)', '同名冲突目录应自动建议递增项目名 plain-b (2)');
+
+    const codebaseWithHidden = remoteMod.listHostDirectories({ dirPath: codebaseDir, showHidden: true, homeDir, configDir });
+    assert.ok(codebaseWithHidden.entries.some((e) => e.name === '.hidden-dir'), 'showHidden=true 时应显示隐藏目录');
+
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: path.join(codebaseDir, 'note.txt'), homeDir, configDir }), /不是文件夹/);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: path.join(codebaseDir, 'missing-dir'), homeDir, configDir }), /不存在/);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: codebaseDir, name: '../escape' }, { homeDir }), /非法/);
+
+    // 3. HTTP Handler (/api/fs/dirs, /api/fs/mkdir, /api/projects) + Mock Language Server 全链路
+    const rpcCalls = [];
+    const mockConnect = async () => ({
+      call: async (method, body) => {
+        rpcCalls.push({ method, body });
+        if (method === 'ResolveFolder') {
+          const p = decodeURIComponent(new URL(body.folderUri).pathname);
+          return fs.existsSync(path.join(p, '.git'))
+            ? { resourceType: 'FOLDER_TYPE_GIT_FOLDER', vcsType: 'VCS_TYPE_GIT' }
+            : { resourceType: 'FOLDER_TYPE_LOCAL_FOLDER', vcsType: 'VCS_TYPE_UNSPECIFIED' };
+        }
+        if (method === 'GetRepoInfos') {
+          return {
+            repos: [{
+              branches: [
+                { name: 'develop', isCurrentBranch: true },
+                { name: 'main', isCurrentBranch: false }
+              ]
+            }]
+          };
+        }
+        if (method === 'CreateProject') {
+          const proj = body.project;
+          fs.writeFileSync(path.join(projectsDir, `${proj.id}.json`), JSON.stringify(proj, null, 2), 'utf8');
+          return { project: proj };
+        }
+        return {};
+      }
+    });
+
+    const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+    let currentProjIdState = existingProjId;
+    const navCalls = [];
+    const buildDynamicSnap = () => {
+      const { metaMap } = (() => {
+        const files = fs.readdirSync(projectsDir).filter((f) => f.endsWith('.json'));
+        const list = files.map((f) => JSON.parse(fs.readFileSync(path.join(projectsDir, f), 'utf8')));
+        return { metaMap: list };
+      })();
+      const projectsList = metaMap.map((p) => ({
+        id: p.id,
+        name: p.name,
+        conversationCount: p.id === existingProjId ? 1 : 0,
+        runningCount: 0,
+        waitingCount: 0,
+        unreadCount: 0,
+        isEmpty: p.id !== existingProjId,
+        active: p.id === currentProjIdState
+      }));
+      const curP = projectsList.find((x) => x.id === currentProjIdState);
+      return {
+        ok: true,
+        sessionId: currentProjIdState === existingProjId ? 'conv-existing-1' : '',
+        isNewConversation: currentProjIdState !== existingProjId,
+        currentProjectId: currentProjIdState,
+        currentProjectName: curP?.name || '',
+        title: currentProjIdState === existingProjId ? '既有会话' : `新建对话 · ${curP?.name || ''}`,
+        busy: false,
+        model: 'Claude Opus 4.6',
+        permissionKey: 'auto',
+        permissionLabel: '自动',
+        messages: currentProjIdState === existingProjId ? [{ id: 'm1', msgIndex: 0, role: 'user', text: 'hi' }] : [],
+        totalMessages: currentProjIdState === existingProjId ? 1 : 0,
+        messagesStartIndex: 0,
+        hasEarlierMessages: false,
+        projects: projectsList,
+        conversations: [
+          {
+            id: 'conv-existing-1',
+            projectId: existingProjId,
+            projectName: 'repo-existing',
+            title: '既有项目会话',
+            active: currentProjIdState === existingProjId,
+            status: 'idle',
+            updatedAt: Date.now()
+          }
+        ]
+      };
+    };
+
+    const handler = remoteMod.createRemoteHttpHandler(httpCfg, {
+      homeDir,
+      configDir,
+      localApiConnect: mockConnect,
+      performAction: async (act) => {
+        navCalls.push(act);
+        if (act.action === 'new-conversation' && act.projectId) {
+          currentProjIdState = act.projectId;
+        }
+        return { ok: true, actionResult: { ok: true, projectId: act.projectId || '' }, snapshot: buildDynamicSnap() };
+      },
+      fetchSnapshot: async () => buildDynamicSnap()
+    });
+
+    const invokeHttp = (method, reqPath, bodyObj = null) => new Promise((resolve) => {
+      const req = new (require('events').EventEmitter)();
+      req.method = method;
+      req.url = reqPath;
+      req.headers = {
+        host: `127.0.0.1:${httpCfg.port}`,
+        'x-ag-remote-token': httpCfg.token,
+        ...(bodyObj ? { 'content-type': 'application/json' } : {})
+      };
+      req.socket = { remoteAddress: '127.0.0.1' };
+      const res = {
+        status: 200,
+        headers: {},
+        setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
+        writeHead(st, hdrs) {
+          this.status = st;
+          if (hdrs) Object.assign(this.headers, hdrs);
+        },
+        end(buf) {
+          const text = String(buf || '');
+          let json = null;
+          try { json = JSON.parse(text); } catch {}
+          resolve({ status: this.status, headers: this.headers, text, json });
+        }
+      };
+      void handler(req, res);
+      if (bodyObj !== null) {
+        req.emit('data', Buffer.from(JSON.stringify(bodyObj)));
+        req.complete = true;
+        req.emit('end');
+      }
+    });
+
+    // 验证 /api/fs/mkdir 与非法路径拦截
+    const mkdirRes = await invokeHttp('POST', '/api/fs/mkdir', { parentPath: codebaseDir, name: 'brand-new-dir' });
+    assert.equal(mkdirRes.status, 200);
+    assert.equal(mkdirRes.json.ok, true);
+    assert.ok(fs.existsSync(path.join(codebaseDir, 'brand-new-dir')));
+
+    const badMkdirRes = await invokeHttp('POST', '/api/fs/mkdir', { parentPath: codebaseDir, name: '../bad' });
+    assert.equal(badMkdirRes.status, 400);
+
+    // 4. 验证前端 UI：项目标题渲染、Enter 仅换行不发送、点击按钮 & Cmd+Enter 发送、从弹窗创建项目与入口跳转
+    const sentActions = [];
+    const envUi = createDomEnv();
+    envUi.doc.body.innerHTML = html.match(/<body>([\s\S]*?)<script>/)[1];
+    envUi.win.innerWidth = 414;
+    envUi.win.innerHeight = 840;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const method = String(init?.method || 'GET').toUpperCase();
+      if (u.pathname === '/api/snapshot') {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : '') },
+          json: async () => buildDynamicSnap()
+        };
+      }
+      if (u.pathname === '/api/action') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        sentActions.push(body);
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : '') },
+          json: async () => ({ ok: true, actionResult: { ok: true }, snapshot: buildDynamicSnap() })
+        };
+      }
+      if (u.pathname === '/api/fs/dirs' || u.pathname === '/api/fs/mkdir' || u.pathname === '/api/projects') {
+        const bodyObj = init?.body ? JSON.parse(String(init.body)) : null;
+        const r = await invokeHttp(method, u.pathname + u.search, bodyObj);
+        return {
+          ok: r.status >= 200 && r.status < 300,
+          status: r.status,
+          headers: { get: () => 'application/json' },
+          json: async () => r.json
+        };
+      }
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(inlineScript, envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // 校验渲染的项目头 DOM 结构（.proj-group.is-current、.proj-icon、.proj-count、.proj-body）
+    const convListEl = envUi.doc.getElementById('conv-list');
+    assert.ok(convListEl.querySelector('.proj-group.is-current'), '当前项目组应带有 is-current 高亮类');
+    assert.ok(convListEl.querySelector('.proj-toggle .proj-icon svg'), '项目标题条应渲染文件夹 SVG 图标');
+    assert.ok(convListEl.querySelector('.proj-body .conv-item'), '项目下应有带导引线的 .proj-body 包裹会话项');
+
+    // 校验 Enter 仅自然换行不发送，点按钮 & Cmd+Enter 才发送多行消息
+    const ta = envUi.doc.getElementById('input');
+    const sendBtn = envUi.doc.getElementById('btn-send');
+    assert.equal(ta.getAttribute('enterkeyhint'), 'enter');
+    ta.value = '第一行内容';
+    const plainEnterEv = { type: 'keydown', key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, isComposing: false };
+    const allowNativeNewline = ta.dispatchEvent(plainEnterEv);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(allowNativeNewline, true, '普通 Enter 不得被 preventDefault() 拦截');
+    assert.equal(plainEnterEv._prevented, undefined, '普通 Enter 应保留默认换行行为');
+    assert.equal(sentActions.filter((a) => a.action === 'send').length, 0, '按回车换行后绝不能直接发送消息');
+
+    ta.value = '第一行内容\n第二行内容';
+    ta.dispatchEvent({ type: 'input' });
+    assert.ok(sendBtn.classList.contains('ready'));
+    sendBtn.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(sentActions.filter((a) => a.action === 'send').length, 1, '点击发送按钮应触发发送');
+    assert.equal(sentActions[0].text, '第一行内容\n第二行内容', '多行换行内容应完整发送');
+
+    ta.value = '第三行\n第四行';
+    const cmdEnterEv = { type: 'keydown', key: 'Enter', metaKey: true, ctrlKey: false, shiftKey: false, isComposing: false };
+    ta.dispatchEvent(cmdEnterEv);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(cmdEnterEv._prevented, true, '桌面端 Cmd+Enter 快捷键应拦截默认换行并发送');
+    assert.equal(sentActions.filter((a) => a.action === 'send').length, 2);
+    assert.equal(sentActions[1].text, '第三行\n第四行');
+
+    // 验证「选择项目新建对话」下拉菜单中也提供「新建项目（选择电脑目录）…」入口
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const pickerCreateOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt')
+      .find((b) => (b.textContent || '').includes('新建项目（选择电脑目录）'));
+    assert.ok(pickerCreateOpt, '项目下拉列表应包含新建项目选项');
+    envUi.doc.getElementById('sheet-close').click();
+
+    // 验证侧边栏「＋ 新建项目」按钮打开目录浏览器 -> 进入 codebase -> 进入 repo-a -> 创建并进入对话
+    const modalBackdrop = envUi.doc.getElementById('proj-modal-backdrop');
+    assert.equal(modalBackdrop.hidden, true);
+    envUi.doc.getElementById('btn-new-project').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(modalBackdrop.hidden, false, '点击＋新建项目应弹出电脑目录浏览器');
+
+    const codebaseRootBtn = envUi.doc.getElementById('proj-roots').querySelectorAll('.proj-root-pill')
+      .find((b) => (b.textContent || '') === 'codebase');
+    assert.ok(codebaseRootBtn, '目录弹窗应渲染快捷根目录 codebase');
+    codebaseRootBtn.click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    const repoAItem = envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
+      .find((b) => (b.textContent || '').includes('repo-a'));
+    assert.ok(repoAItem && (repoAItem.textContent || '').includes('Git'), 'codebase 下应列出带 Git 标记的 repo-a');
+    repoAItem.click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    assert.equal(envUi.doc.getElementById('proj-path-input').value, path.resolve(repoADir));
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, 'repo-a');
+
+    envUi.doc.getElementById('proj-create-submit').click();
+    await new Promise((r) => setTimeout(r, 220));
+    assert.equal(modalBackdrop.hidden, true, '创建项目完成后应自动关闭弹窗');
+
+    const createRpc = rpcCalls.find((c) => c.method === 'CreateProject');
+    assert.ok(createRpc, '应调用 Language Server CreateProject 创建项目');
+    assert.equal(createRpc.body.project.name, 'repo-a');
+    assert.equal(createRpc.body.project.projectResources.resources[0].gitFolder.folderUri, pathToFileURL(path.resolve(repoADir)).href);
+    assert.equal(createRpc.body.project.projectResources.resources[0].gitFolder.defaultBranch, 'main');
+    assert.equal(currentProjIdState, createRpc.body.project.id, '创建后应导航并切换当前项目至新建的 repo-a');
+    assert.ok(navCalls.some((c) => c.action === 'new-conversation' && c.projectId === createRpc.body.project.id));
+    assert.ok((envUi.doc.getElementById('new-chat-label')?.textContent || '').includes('repo-a'), '新建对话按钮应联动显示刚创建的新项目名');
+
+    // 验证重名拦截与已有主目录项目直接进入复用
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: plainBDir, name: 'repo-a' }, { homeDir, configDir, localApiConnect: mockConnect }),
+      /同名项目「repo-a」已存在/
+    );
+    const reuseRes = await remoteMod.createRemoteProject({ folderPath: existingRepoDir, name: 'repo-existing' }, { homeDir, configDir, localApiConnect: mockConnect });
+    assert.equal(reuseRes.alreadyExists, true);
+    assert.equal(reuseRes.project.id, existingProjId);
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
