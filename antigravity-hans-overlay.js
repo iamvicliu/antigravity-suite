@@ -1,6 +1,6 @@
 (() => {
   if (typeof window === 'undefined') return;
-  const PATCH_FINGERPRINT = 'app-2.32.1-20261117-r28';
+  const PATCH_FINGERPRINT = 'app-2.33.0-20261118-r29';
   const fingerprint = window.__antigravityZhPatchRequestedFingerprint || PATCH_FINGERPRINT;
   if (window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === fingerprint) return;
   const updating = window.__antigravityZhPatchInstalled === true && window.__observedDocument === document;
@@ -4086,9 +4086,75 @@
     ["Each takes a task, and they run in parallel.", "每位执行者负责一项任务，并行开展工作。"],
     ["One board", "一个共享看板"],
     ["Updates land here. You step in only when asked.", "进展会汇集到这里。需要您参与时才会请您介入。"],
-    ["Waiting for the first update", "等待首次更新"]
+    ["Waiting for the first update", "等待首次更新"],
+    // v3.3.52 (Antigravity 2.33.0) Swarm 画面查看器增量词条（Previous/Next 在 translateScopedNavigation 中按作用域限定）
+    ["Compare then and now", "对比前后画面"],
+    ["Scrub through progress", "拖动查看进度"],
+    ["Filter by worker", "按执行成员筛选"],
+    ["All workers", "所有执行成员"],
+    ["Frames", "画面列表"]
   ];
   for (const [k, v] of swarmExactPhrases) {
+    if (!phrases.has(k)) phrases.set(k, v);
+    const low = k.toLowerCase();
+    if (!lowerPhrases.has(low)) lowerPhrases.set(low, v);
+  }
+
+  // v3.3.52 (Antigravity 2.33.0) SSH / GitHub PR / 查找栏 / 初始化脚本精确词条：仅写入 O(1) 精确查找表
+  const desktop233ExactPhrases = [
+    ["Open SSH Host", "打开 SSH 主机"],
+    ["Connect to SSH Host", "连接到 SSH 主机"],
+    ["SSH Host…", "SSH 主机…"],
+    ["SSH host", "SSH 主机"],
+    ["Create a project on a machine you reach over SSH. It opens in that host's own window.", "在可通过 SSH 访问的主机上创建项目，项目会在该主机的独立窗口中打开。"],
+    ["Enter [user@]host[:port], or pick a host from your SSH config.", "输入 [user@]host[:port]，或从 SSH 配置中选择主机。"],
+    ["Then create the project in its window.", "然后在该主机的窗口中创建项目。"],
+    ["A host can't contain spaces.", "主机名不能包含空格。"],
+    ["SSH Config", "SSH 配置"],
+    ["SSH config:", "SSH 配置："],
+    ["~/.ssh/config (default)", "~/.ssh/config（默认）"],
+    ["Choose File…", "选择文件…"],
+    ["Use Default", "使用默认配置"],
+    ["Remove from Recent", "从最近使用中移除"],
+    ["Hide from this list", "从此列表中隐藏"],
+    ["Show in the list again", "重新在列表中显示"],
+    ["Hidden hosts", "隐藏的主机"],
+    ["1 hidden host", "1 台隐藏主机"],
+    ["Loading hosts…", "正在加载主机…"],
+    ["Loading Hosts…", "正在加载主机…"],
+    ["Couldn't load your SSH hosts", "无法加载 SSH 主机"],
+    ["Couldn't load your SSH hosts. You can still type one.", "无法加载 SSH 主机。仍可手动输入主机地址。"],
+    ["No matching hosts", "没有匹配的主机"],
+    ["No hosts in ~/.ssh/config yet", "~/.ssh/config 中尚无主机"],
+    ["Pull Requests", "拉取请求 (PR)"],
+    ["Connect GitHub", "连接 GitHub"],
+    ["GitHub: not signed in", "GitHub：未登录"],
+    ["Connect GitHub: Run gh auth login in a terminal", "连接 GitHub：请在终端运行 gh auth login"],
+    ["Copy gh auth login command", "复制 gh auth login 命令"],
+    ["Grant repository access", "授予仓库访问权限"],
+    ["GitHub Repositories", "GitHub 仓库"],
+    ["Loading Repositories…", "正在加载仓库…"],
+    ["No matching repositories", "没有匹配的仓库"],
+    ["No repositories found", "未找到仓库"],
+    ["Insert into main conversation", "插入主会话"],
+    ["Side Question Selection", "对所选内容发起旁路提问"],
+    ["Unarchive the main conversation to insert", "取消归档主会话后即可插入"],
+    ["Previous Match (Shift+Enter)", "上一处匹配（Shift+Enter）"],
+    ["Next Match (Enter)", "下一处匹配（Enter）"],
+    ["Use Regular Expression (.*)", "使用正则表达式（.*）"],
+    ["0 results", "0 个结果"],
+    ["managed by your organization", "由您的组织管理"],
+    ["Terminal sandbox is not supported in this environment", "此环境不支持终端沙盒"],
+    ["Checking availability…", "正在检查可用性…"],
+    ["Saving setup routine", "正在保存环境初始化脚本"],
+    ["Canceled saving setup routine", "已取消保存环境初始化脚本"],
+    ["Saved setup routine", "已保存环境初始化脚本"],
+    ["Deleting setup routine", "正在删除环境初始化脚本"],
+    ["Canceled deletion of setup routine", "已取消删除环境初始化脚本"],
+    ["Deleted setup routine", "已删除环境初始化脚本"],
+    ["Open in settings", "在设置中打开"]
+  ];
+  for (const [k, v] of desktop233ExactPhrases) {
     if (!phrases.has(k)) phrases.set(k, v);
     const low = k.toLowerCase();
     if (!lowerPhrases.has(low)) lowerPhrases.set(low, v);
@@ -4950,9 +5016,47 @@
       !label.closest?.('[data-testid="menu-category-row"]');
   }
 
+  function isPullRequestLink(el) {
+    return Boolean(
+      el &&
+      el.tagName === 'A' &&
+      /^https?:\/\/(?:github\.com|depot\.code\.corp\.goog)\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*(?:[/?#]|$)/i.test(el.getAttribute?.('href') || '')
+    );
+  }
+
+  function hasPullRequestCardHeader(el) {
+    const header = el?.firstElementChild;
+    return Boolean(
+      header &&
+      header.classList?.contains('text-compact') &&
+      header.classList?.contains('gap-1.5') &&
+      isPullRequestLink(header.querySelector?.('a[href]'))
+    );
+  }
+
+  function isRemoteMetadataElement(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const testId = el.getAttribute?.('data-testid');
+    if (testId === 'ssh-config-file-name') return Boolean(el.hasAttribute?.('tabindex'));
+    const classes = el.classList;
+    if (el.tagName === 'SPAN' && classes?.contains('truncate') && el.closest?.('[data-ssh-host]')) return true;
+    if (classes?.contains('whitespace-pre-line') && el.closest?.('[data-testid="ssh-connect-error"]')) return true;
+
+    // PR 卡片共享同一槽位渲染仓库标题、正文与作者名，保护用户/仓库元信息不被误译
+    if (el.tagName === 'DIV' && classes?.contains('text-compact') &&
+        (classes?.contains('-mt-1') || classes?.contains('font-medium')) && hasPullRequestCardHeader(el.parentElement)) return true;
+    if (classes?.contains('line-clamp-4') && classes?.contains('whitespace-pre-wrap') && hasPullRequestCardHeader(el.parentElement)) return true;
+    if (el.tagName === 'SPAN' && classes?.contains('break-words') && classes?.contains('min-w-0') &&
+        el.parentElement?.classList?.contains('grid-cols-[auto_1fr]') && hasPullRequestCardHeader(el.parentElement.parentElement)) return true;
+    return isPullRequestLink(el) && Boolean(el.closest?.('.text-compact.gap-1\\.5') || el.hasAttribute?.('data-item-id'));
+  }
+
   function shouldSkipSubtree(node) {
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     if (!element) return false;
+
+    // 保护 SSH 主机名、配置文件名及 GitHub/depot PR 卡片中的仓库远程元数据
+    if (isRemoteMetadataElement(element)) return true;
 
     // 协调员欢迎语中的项目名由用户提供，即使与词条同名也不翻译。
     if (element.closest('[data-testid="coordinator-welcome"] strong')) return true;
@@ -5013,6 +5117,17 @@
         element.closest('[data-testid="workspace-customizations-view"]')) return true;
 
     if (node.nodeType === Node.TEXT_NODE) {
+      // React 将 SSH 别名/路径拆分为紧邻固定英文前缀后的独立文本节点，保留其原样（例如主机名为 "Open" 时）
+      const previous = node.previousSibling;
+      if (previous && previous.nodeType === Node.TEXT_NODE && element.classList &&
+          (element.classList.contains('text-foreground') || element.classList.contains('text-muted-foreground'))) {
+        const trackedPrev = originals.texts.get(previous);
+        const prefix = (trackedPrev && trackedPrev.zh === previous.nodeValue ? trackedPrev.orig : (previous.nodeValue || '')).trim();
+        if ((prefix === "Couldn't connect to" && element.closest?.('[data-testid="ssh-connect-error"]')) ||
+            (prefix === 'No hosts in' && element.closest?.('[data-testid="ssh-connect-dialog"]'))) {
+          return true;
+        }
+      }
       const project = element.closest('[data-testid="project-header"][data-project-label], [data-testid="project-selector-item"][data-project-name]');
       const projectName = project?.getAttribute?.('data-project-label') ?? project?.getAttribute?.('data-project-name');
       if (projectName != null && (node.nodeValue || '').trim() === projectName.trim()) return true;
@@ -5213,10 +5328,59 @@
     const text = value.trim();
     const match = text.match(/^(Next|Previous)(\s*\([←→]\))?$/);
     if (!match) return null;
+    if (!match[2] && element.closest?.('.o2-tvstage > .o2-tvnav')) {
+      return value.replace(text, () => (match[1] === 'Next' ? '下一帧' : '上一帧'));
+    }
     const testId = match[1] === 'Next' ? 'media-modal-next' : 'media-modal-previous';
     if (!element.closest?.(`[data-testid="${testId}"]`) && !element.closest?.('.carousel')) return null;
     const label = (match[1] === 'Next' ? '下一项' : '上一项') + (match[2] || '');
     return value.replace(text, () => label);
+  }
+
+  function translateScopedControlText(element, value) {
+    if (!element || !value) return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const testId = element.getAttribute?.('data-testid');
+
+    if (trimmed === 'SSH Host' && element.closest?.('[data-testid="project-selector-ssh-host-trigger"]')) {
+      return value.replace(trimmed, () => 'SSH 主机');
+    }
+    if (element.classList?.contains('text-muted-foreground') && element.closest?.('[data-testid="ssh-connect-dialog"]')) {
+      if (trimmed === 'No hosts in') return value.replace(trimmed, () => '尚无主机记录，配置文件：');
+      if (trimmed === 'yet. Type one above.') return value.replace(trimmed, () => '。可在上方手动输入。');
+    }
+    if (element.classList?.contains('text-foreground') && element.closest?.('[data-testid="ssh-connect-error"]') &&
+        trimmed === "Couldn't connect to") {
+      return value.replace(trimmed, () => '无法连接到');
+    }
+    if (element.tagName === 'SPAN' && element.classList?.contains('whitespace-nowrap') &&
+        element.closest?.('[data-testid="github-hover-auth-actions"]') && trimmed === 'in a terminal') {
+      return value.replace(trimmed, () => '（在终端中）');
+    }
+    if (element.tagName === 'SPAN' && element.classList?.contains('text-muted-foreground') &&
+        element.parentElement?.classList?.contains('grid-cols-[auto_1fr]') &&
+        hasPullRequestCardHeader(element.parentElement.parentElement) && trimmed === 'Author') {
+      return value.replace(trimmed, () => '作者');
+    }
+    if (testId === 'find-bar-match-count') {
+      const matchCount = trimmed.match(/^(\d+) of (\d+\+?)$/);
+      if (matchCount) return value.replace(trimmed, () => `第 ${matchCount[1]} 项，共 ${matchCount[2]} 项`);
+    }
+    if (testId === 'ssh-connect-hidden-hosts-toggle') {
+      const hidden = trimmed.match(/^(\d+) hidden hosts?$/);
+      if (hidden) return value.replace(trimmed, () => `${hidden[1]} 台隐藏主机`);
+    }
+    if (testId === 'ssh-connect-host-group-label') {
+      const config = trimmed.match(/^SSH Config \((.+)\)$/);
+      if (config) return value.replace(trimmed, () => `SSH 配置（${config[1]}）`);
+    }
+    if (element.classList?.contains('z-10') && element.parentElement?.classList?.contains('text-compact') &&
+        hasPullRequestCardHeader(element.parentElement.parentElement?.parentElement)) {
+      const state = { Open: '开放', Closed: '已关闭', Merged: '已合并', Draft: '草稿' }[trimmed];
+      if (typeof state === 'string') return value.replace(trimmed, () => state);
+    }
+    return null;
   }
 
   // 菜单搜索会把匹配片段拆成多个高亮节点；只重组已核对的内置命令说明。
@@ -5354,13 +5518,19 @@
       const tracked = originals.attrs.get(element)?.get(attr);
       if (tracked && tracked.zh === value) {
         if (tracked.orig && tracked.orig !== value) {
-          const retranslated = translateScopedNavigation(element, tracked.orig) ??
+          const sshSearchPlaceholder = attr === 'placeholder' && tracked.orig === 'Search Hosts…' && element.tagName === 'INPUT' &&
+            element.parentElement?.getAttribute?.('data-testid') === 'project-selector-ssh-host-search'
+            ? '搜索主机…' : null;
+          const retranslated = sshSearchPlaceholder ?? translateScopedNavigation(element, tracked.orig) ??
             (attr === 'aria-label' ? translateAriaLabel(tracked.orig) : null) ?? translate(tracked.orig);
           if (retranslated && retranslated !== value) writeAttr(element, attr, retranslated);
         }
         continue;
       }
-      const translated = translateScopedNavigation(element, value) ??
+      const sshSearchPlaceholder = attr === 'placeholder' && value === 'Search Hosts…' && element.tagName === 'INPUT' &&
+        element.parentElement?.getAttribute?.('data-testid') === 'project-selector-ssh-host-search'
+        ? '搜索主机…' : null;
+      const translated = sshSearchPlaceholder ?? translateScopedNavigation(element, value) ??
         (attr === 'aria-label' ? translateAriaLabel(value) : null) ?? translate(value);
       if (translated !== value) writeAttr(element, attr, translated);
     }
@@ -5372,8 +5542,10 @@
     const tracked = originals.texts.get(node);
     if (tracked && tracked.zh === value) {
       if (tracked.orig && tracked.orig !== value) {
-        const navRetranslated = node.parentElement ? translateScopedNavigation(node.parentElement, tracked.orig) : null;
-        const retranslated = navRetranslated !== null ? navRetranslated : translate(tracked.orig);
+        const scopedRetranslated = node.parentElement
+          ? (translateScopedControlText(node.parentElement, tracked.orig) ?? translateScopedNavigation(node.parentElement, tracked.orig))
+          : null;
+        const retranslated = scopedRetranslated !== null ? scopedRetranslated : translate(tracked.orig);
         if (retranslated && retranslated !== value) return retranslated;
       }
       return value;
@@ -5384,6 +5556,8 @@
     if (value.trim() === 'Next' && node.parentElement?.nextElementSibling?.matches('[data-testid="automation-next-run"]')) {
       return value.replace('Next', '下次');
     }
+    const scoped = node.parentElement ? translateScopedControlText(node.parentElement, value) : null;
+    if (scoped !== null) return scoped;
     const navigation = node.parentElement ? translateScopedNavigation(node.parentElement, value) : null;
     if (navigation !== null) return navigation;
     return translate(value);
