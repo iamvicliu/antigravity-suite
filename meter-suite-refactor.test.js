@@ -4536,6 +4536,7 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
       ]
     };
 
+    let delayNextMessagesGate = null;
     envUi.win.innerWidth = 414;
     envUi.win.innerHeight = 840;
     envUi.win.AbortController = AbortController;
@@ -4552,6 +4553,11 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
         return { ok: true, status: 200, headers: jsonHeaders, json: async () => liveSnapState };
       }
       if (u.pathname === '/api/messages') {
+        if (delayNextMessagesGate) {
+          const gate = delayNextMessagesGate;
+          delayNextMessagesGate = null;
+          await gate.promise;
+        }
         const page = await remoteMod.getConversationMessagesPage({
           sessionId: u.searchParams.get('sessionId') || sid,
           before: u.searchParams.get('before'),
@@ -4577,19 +4583,101 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
       return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
     };
 
+    const msgContainer = envUi.doc.getElementById('messages');
+    // 为 #messages 挂载贴近真实 Flex 纵向排版的非均匀尺寸与动态视口几何计算器
+    (function attachVerticalLayout(container) {
+      const VIEWPORT_TOP = 54;
+      const CLIENT_H = 400;
+      const PAD_TOP = 14;
+      const PAD_BOT = 12;
+      const GAP = 16;
+      let scrollTopVal = 0;
+      let scrollHeightVal = CLIENT_H;
+
+      container.clientHeight = CLIENT_H;
+      container.getBoundingClientRect = () => ({
+        top: VIEWPORT_TOP,
+        left: 0,
+        width: 380,
+        right: 380,
+        height: CLIENT_H,
+        bottom: VIEWPORT_TOP + CLIENT_H
+      });
+      Object.defineProperty(container, 'scrollHeight', {
+        configurable: true,
+        get() { return scrollHeightVal; },
+        set(v) { scrollHeightVal = Number(v) || CLIENT_H; }
+      });
+      Object.defineProperty(container, 'scrollTop', {
+        configurable: true,
+        get() { return scrollTopVal; },
+        set(v) {
+          const maxScroll = Math.max(0, scrollHeightVal - CLIENT_H);
+          const n = Number(v) || 0;
+          scrollTopVal = Math.max(0, Math.min(maxScroll, n));
+        }
+      });
+
+      const innerHtmlDesc = Object.getOwnPropertyDescriptor(container, 'innerHTML');
+      Object.defineProperty(container, 'innerHTML', {
+        configurable: true,
+        get() { return innerHtmlDesc.get.call(container); },
+        set(htmlStr) {
+          innerHtmlDesc.set.call(container, htmlStr);
+          let y = PAD_TOP;
+          for (const ch of container.children) {
+            let h = 32;
+            if (ch.id === 'btn-load-earlier') {
+              h = 34;
+            } else if (ch.classList?.contains('msg')) {
+              const idx = Number(ch.getAttribute('data-msg-idx'));
+              h = 56 + ((Number.isFinite(idx) ? idx : 0) % 4) * 22;
+            }
+            ch.offsetTop = y;
+            ch.offsetHeight = h;
+            ch.getBoundingClientRect = () => {
+              const top = VIEWPORT_TOP + (ch.offsetTop - scrollTopVal);
+              return { top, left: 0, width: 380, right: 380, height: h, bottom: top + h };
+            };
+            y += h + GAP;
+          }
+          scrollHeightVal = container.children.length
+            ? Math.max(CLIENT_H, y - GAP + PAD_BOT)
+            : CLIENT_H;
+        }
+      });
+    })(msgContainer);
+
     vm.runInContext(inlineScript, envUi.sandbox);
     await new Promise((r) => setTimeout(r, 40));
 
-    const msgContainer = envUi.doc.getElementById('messages');
     assert.ok(msgContainer.querySelector('#btn-load-earlier'), '存在更早消息时顶部应渲染加载更早按钮');
     assert.equal(msgContainer.querySelectorAll('.msg').length, 30);
 
-    // 点击一次向上翻页加载 [90..119]
+    const getViewportOffset = (idx) => {
+      const node = msgContainer.querySelector(`[data-msg-idx="${idx}"]`);
+      assert.ok(node, `消息 #${idx} 节点应存在`);
+      return node.getBoundingClientRect().top - msgContainer.getBoundingClientRect().top;
+    };
+
+    // 场景 1（向上分页）：向上滚到停在 #124（视口偏移 -18px），加载前 30 条 [90..119] 后阅读位置应精准锁在 #124 (-18px)
+    const el124Before = msgContainer.querySelector('[data-msg-idx="124"]');
+    const oldTop124 = el124Before.offsetTop;
+    msgContainer.scrollTop = oldTop124 + 18;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    const scrollBeforePage = msgContainer.scrollTop;
+    assert.equal(getViewportOffset(124), -18);
+
     msgContainer.querySelector('#btn-load-earlier').click();
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(msgContainer.querySelectorAll('.msg').length, 60);
+    const newTop124 = msgContainer.querySelector('[data-msg-idx="124"]').offsetTop;
+    const insertedAbove124 = newTop124 - oldTop124;
+    assert.ok(insertedAbove124 > 2000, '顶部插入 30 条后 #124 应真实下移超过 2000px');
+    assert.equal(msgContainer.scrollTop, scrollBeforePage + insertedAbove124, '上翻分页应精确补偿上方新增高度');
+    assert.equal(getViewportOffset(124), -18, '上翻分页后可见锚点 #124 视口偏移应丝毫不差保持 -18px');
 
-    // 底部新增 2 条消息使尾窗滑动为 [122..151]，已加载的 [90..121] 应无间隙衔接
+    // 底部新增 2 条消息使尾窗滑动为 [122..151]，已加载的 [90..121] 应无间隙衔接，且不拉动上方阅读锚点
     steps150.push(
       { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '新增用户问题 #75' }] } },
       { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '新增助手回复 #75' } }
@@ -4605,8 +4693,16 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(msgContainer.querySelectorAll('.msg').length, 62, '底部滑动窗口更新后已加载历史 [90..121] 不得出现断层');
+    assert.equal(getViewportOffset(124), -18, '尾部追加消息时不主动打断上方阅读位置');
 
-    // 再一次性突发新增 40 条消息 (总计 192 条，尾窗变为 [162..191]，产生 [152..161] 空洞)，验证自动检测并无损回填全部 10 条空洞消息
+    // 场景 2（缺口位于视口下方）：停在上方历史 #105（视口偏移 +14px），底部突发新增 40 条产生下方空洞 [152..161] 并回填
+    const el105Before = msgContainer.querySelector('[data-msg-idx="105"]');
+    msgContainer.scrollTop = el105Before.offsetTop - 14;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    const scrollBeforeGapBelow = msgContainer.scrollTop;
+    const scrollHBeforeGapBelow = msgContainer.scrollHeight;
+    assert.equal(getViewportOffset(105), 14);
+
     for (let k = 76; k < 96; k++) {
       steps150.push(
         { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: `新增空洞用户 #${k}` }] } },
@@ -4632,15 +4728,63 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
     }
     assert.ok((msgContainer.textContent || '').includes('新增空洞用户 #76'), '空洞区间内第 152 条消息必须完整补回');
     assert.ok((msgContainer.textContent || '').includes('新增空洞回复 #80'), '空洞区间内第 161 条消息必须完整补回');
+    assert.ok(msgContainer.scrollHeight > scrollHBeforeGapBelow + 3000, '下方补齐 40 条后总滚动高度应显著增加');
+    assert.equal(msgContainer.scrollTop, scrollBeforeGapBelow, '缺口位于视口下方时不得把下方新增高度累加到 scrollTop');
+    assert.equal(getViewportOffset(105), 14, '缺口位于视口下方回填后，原可见锚点 #105 视口偏移应纹丝不动保持 14px');
 
-    // 继续上翻直至第 0 条（首轮原始指令 @spec.md）完整呈现，且顶部按钮自动消失
+    // 场景 3（缺口位于视口上方）：延迟空洞拉取，用户停留在下方 #210（+22px），待上方空洞 [192..201] 插入后锚点保持 +22px
+    let resolveGapAboveGate;
+    delayNextMessagesGate = {
+      promise: new Promise((resolve) => { resolveGapAboveGate = resolve; })
+    };
+    for (let k = 96; k < 116; k++) {
+      steps150.push(
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: `二次跳跃用户 #${k}` }] } },
+        { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: `二次跳跃回复 #${k}` } }
+      );
+    }
+    liveSnapState = await remoteMod.enrichSnapshotWithCatalog({
+      ...liveSnapState,
+      messages: [
+        { id: 'u-jump2-last', role: 'user', text: '二次跳跃用户 #115' },
+        { id: 'a-jump2-last', role: 'assistant', text: '二次跳跃回复 #115' }
+      ]
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+    assert.equal(liveSnapState.totalMessages, 232);
+    assert.equal(liveSnapState.messagesStartIndex, 202);
+
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+
+    // 用户滚动到下方尾窗的 #210（距底远超 80px），使空洞 [192..201] 恰好位于当前视口上方
+    const el210Before = msgContainer.querySelector('[data-msg-idx="210"]');
+    const oldTop210 = el210Before.offsetTop;
+    msgContainer.scrollTop = oldTop210 - 22;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    const scrollBeforeGapAbove = msgContainer.scrollTop;
+    assert.equal(getViewportOffset(210), 22);
+
+    resolveGapAboveGate();
+    await new Promise((r) => setTimeout(r, 80));
+    const afterGap2Msgs = msgContainer.querySelectorAll('.msg');
+    assert.equal(afterGap2Msgs.length, 142, '上方空洞 [192..201] 回填完成后应拥有 [90..231] 共 142 条连续消息');
+    for (let i = 0; i < afterGap2Msgs.length; i++) {
+      assert.equal(Number(afterGap2Msgs[i].getAttribute('data-msg-idx')), 90 + i);
+    }
+    const newTop210 = msgContainer.querySelector('[data-msg-idx="210"]').offsetTop;
+    const insertedAbove210 = newTop210 - oldTop210;
+    assert.ok(insertedAbove210 > 800, '视口上方插入 [192..201] 后 #210 的 offsetTop 应下移超过 800px');
+    assert.equal(msgContainer.scrollTop, scrollBeforeGapAbove + insertedAbove210, '缺口位于视口上方回填时应精准下移 scrollTop');
+    assert.equal(getViewportOffset(210), 22, '缺口位于视口上方回填后，#210 视口偏移仍严格保持 22px');
+
+    // 继续上翻直至第 0 条（首轮原始指令 @spec.md）完整呈现，且顶部按钮自动消失后锚点仍不跳动
     for (let step = 0; step < 5; step++) {
       const earlierBtn = msgContainer.querySelector('#btn-load-earlier');
       if (!earlierBtn) break;
       earlierBtn.click();
       await new Promise((r) => setTimeout(r, 40));
     }
-    assert.equal(msgContainer.querySelectorAll('.msg').length, 192, '连续上翻应能读到从第 0 条至今全部 192 条对话内容');
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 232, '连续上翻应能读到从第 0 条至今全部 232 条对话内容');
     assert.ok((msgContainer.textContent || '').includes('首轮原始指令 @spec.md'), '第 0 条首轮消息及 @文件引用应完整可读');
     assert.equal(msgContainer.querySelector('#btn-load-earlier'), null, '翻到首条后顶部加载按钮应自动消失');
 

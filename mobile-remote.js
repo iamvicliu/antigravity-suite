@@ -2505,7 +2505,7 @@ function buildMobileAppHtml() {
     .qfill{height:100%;border-radius:99px}
     .qreset{font-size:11.5px;color:var(--muted);margin-top:2px}
     .messages{
-      flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
+      position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
       padding:14px 16px 12px;display:flex;flex-direction:column;gap:16px;
     }
     .msg{word-break:break-word}
@@ -3175,6 +3175,7 @@ function buildMobileAppHtml() {
     let toastTimer = null;
     let sending = false;
     let stickBottom = true;
+    let programmaticScrollTop = null;
 
     const $ = (id) => document.getElementById(id);
     const msgEl = $('messages');
@@ -3353,6 +3354,11 @@ function buildMobileAppHtml() {
     syncViewportHeight();
 
     msgEl.addEventListener('scroll', () => {
+      if (programmaticScrollTop !== null && Math.abs(msgEl.scrollTop - programmaticScrollTop) <= 2) {
+        programmaticScrollTop = null;
+        return;
+      }
+      programmaticScrollTop = null;
       stickBottom = (msgEl.scrollHeight - msgEl.scrollTop - msgEl.clientHeight) < 80;
       if (msgEl.scrollTop <= 50 && !stickBottom && msgEl.scrollHeight > msgEl.clientHeight + 40) {
         void loadEarlierMessages();
@@ -4175,8 +4181,6 @@ function buildMobileAppHtml() {
             const rows = Array.isArray(data?.messages) ? data.messages : [];
             if (!rows.length) break;
             const baseIdx = Number.isFinite(Number(data?.startIndex)) ? Number(data.startIndex) : Math.max(0, cursorEnd - rows.length);
-            const prevHeight = msgEl.scrollHeight;
-            const prevTop = msgEl.scrollTop;
             for (let i = 0; i < rows.length; i++) {
               const m = rows[i];
               if (!m) continue;
@@ -4184,7 +4188,7 @@ function buildMobileAppHtml() {
               sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
               progressed = true;
             }
-            renderMessagesView(latestSnap, stickBottom ? {} : { preserveAnchor: true, prevHeight, prevTop });
+            renderMessagesView(latestSnap);
             if (baseIdx >= cursorEnd) break;
             cursorEnd = baseIdx;
           }
@@ -4194,6 +4198,61 @@ function buildMobileAppHtml() {
       } finally {
         backfillingMsgGaps = false;
       }
+    }
+
+    function setMsgScrollTop(nextTop) {
+      const maxScroll = Math.max(0, (msgEl.scrollHeight || 0) - (msgEl.clientHeight || 0));
+      const clamped = (msgEl.scrollHeight > 0 && msgEl.clientHeight > 0)
+        ? Math.max(0, Math.min(maxScroll, nextTop))
+        : Math.max(0, nextTop);
+      programmaticScrollTop = clamped;
+      msgEl.scrollTop = clamped;
+    }
+
+    function measureMsgViewportMetrics(el) {
+      if (!el || typeof el.offsetTop !== 'number') return null;
+      const byOffset = el.offsetTop - msgEl.scrollTop;
+      const er = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+      const br = typeof msgEl.getBoundingClientRect === 'function' ? msgEl.getBoundingClientRect() : null;
+      const h = (typeof el.offsetHeight === 'number' && el.offsetHeight > 0) ? el.offsetHeight : (er?.height || 0);
+      if (er && br && Number.isFinite(er.top) && Number.isFinite(br.top) && Math.abs((er.top - br.top) - byOffset) < 4) {
+        return { offset: er.top - br.top, height: er.height || h };
+      }
+      return { offset: byOffset, height: h };
+    }
+
+    function captureReadingAnchor() {
+      const fallbackTop = msgEl.scrollTop;
+      const nodes = msgEl.querySelectorAll('[data-msg-idx]');
+      if (!nodes.length) return { msgIndex: null, viewportOffset: 0, fallbackTop };
+      let chosen = null;
+      let chosenMetrics = null;
+      for (let i = 0; i < nodes.length; i++) {
+        const m = measureMsgViewportMetrics(nodes[i]);
+        if (!m) return { msgIndex: null, viewportOffset: 0, fallbackTop };
+        chosen = nodes[i];
+        chosenMetrics = m;
+        if (m.offset + m.height > 0.5 || (m.height === 0 && m.offset >= 0)) {
+          break;
+        }
+      }
+      if (!chosen || !chosenMetrics) return { msgIndex: null, viewportOffset: 0, fallbackTop };
+      const idx = Number(chosen.getAttribute('data-msg-idx'));
+      if (!Number.isFinite(idx)) return { msgIndex: null, viewportOffset: 0, fallbackTop };
+      return { msgIndex: idx, viewportOffset: chosenMetrics.offset, fallbackTop };
+    }
+
+    function restoreReadingAnchor(anchor) {
+      if (!anchor) return;
+      if (anchor.msgIndex !== null && anchor.msgIndex !== undefined) {
+        const targetEl = msgEl.querySelector('[data-msg-idx="' + anchor.msgIndex + '"]');
+        const curMetrics = measureMsgViewportMetrics(targetEl);
+        if (curMetrics) {
+          setMsgScrollTop(msgEl.scrollTop + (curMetrics.offset - anchor.viewportOffset));
+          return;
+        }
+      }
+      setMsgScrollTop(anchor.fallbackTop);
     }
 
     function renderMessagesView(snap, opts = {}) {
@@ -4236,16 +4295,15 @@ function buildMobileAppHtml() {
       }
 
       if (msgEl.dataset.lastHtml !== html) {
-        const prevTop = opts.preserveAnchor ? Number(opts.prevTop || 0) : msgEl.scrollTop;
-        const prevHeight = opts.preserveAnchor ? Number(opts.prevHeight || 0) : msgEl.scrollHeight;
+        const shouldPreserve = !stickBottom || Boolean(opts.preserveAnchor);
+        const anchor = shouldPreserve ? captureReadingAnchor() : null;
         msgEl.innerHTML = html;
         msgEl.dataset.lastHtml = html;
-        if (opts.preserveAnchor) {
-          msgEl.scrollTop = prevTop + Math.max(0, msgEl.scrollHeight - prevHeight);
-        } else if (stickBottom) {
+        if (!shouldPreserve) {
+          programmaticScrollTop = msgEl.scrollHeight;
           msgEl.scrollTop = msgEl.scrollHeight;
-        } else {
-          msgEl.scrollTop = prevTop;
+        } else if (anchor) {
+          restoreReadingAnchor(anchor);
         }
       }
     }
@@ -4270,8 +4328,6 @@ function buildMobileAppHtml() {
         if (reqSid !== activeMsgSessionId) return;
         const rows = Array.isArray(data?.messages) ? data.messages : [];
         const baseIdx = Number.isFinite(Number(data?.startIndex)) ? Number(data.startIndex) : Math.max(0, earliestIdx - rows.length);
-        const prevHeight = msgEl.scrollHeight;
-        const prevTop = msgEl.scrollTop;
         stickBottom = false;
         for (let i = 0; i < rows.length; i++) {
           const m = rows[i];
@@ -4280,7 +4336,7 @@ function buildMobileAppHtml() {
           sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
         }
         loadingEarlierMsgs = false;
-        renderMessagesView(latestSnap, { preserveAnchor: true, prevHeight, prevTop });
+        renderMessagesView(latestSnap, { preserveAnchor: true });
       } catch (err) {
         loadingEarlierMsgs = false;
         msgEl.dataset.lastHtml = '';
