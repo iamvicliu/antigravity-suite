@@ -243,6 +243,14 @@
     // 模型选择器相关边界元素及其子元素保持英文原样（纯属性 O(1) 短路）
     if (isModelSelectorBoundary(el)) return true;
 
+    // 跳过套件增强控件、用户输入正文、Agent Markdown 正文与侧边栏会话标题
+    if (
+      typeof el.closest === 'function' &&
+      el.closest('#ag-context-meter, #ag-quick-capsule-bar, #ag-quota-popover, #ag-remote-popover, #ag-chat-nav-float, [data-agy-context-capsule], #__agy_ctx_capsule_tooltip__, #ag-file-editor-controls, #ag-inline-file-editor-wrap, [data-testid="user-input-step"], [data-testid="user-message-content"], [data-markdown-root], [data-testid="conversation-row-sidebar"] span.truncate')
+    ) {
+      return true;
+    }
+
     var className = typeof el.className === 'string' ? el.className : '';
     if (className) {
       for (var i = 0; i < IGNORED_CLASSES.length; i++) {

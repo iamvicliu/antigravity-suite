@@ -349,6 +349,31 @@ function registerIpcOnce() {
     }
   });
 
+  ipcMain.handle('context-meter:open-browser-url', async (event, targetUrl) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    const raw = String(targetUrl || '').trim();
+    if (!raw || /[\r\n\0]/.test(raw)) {
+      return { ok: false, error: '无效的外部链接' };
+    }
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return { ok: false, error: '无效的外部链接' };
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'mailto:') {
+      return { ok: false, error: '仅支持 http/https/mailto 外部链接' };
+    }
+    try {
+      const { shell } = require('electron');
+      await shell.openExternal(parsed.href);
+      return { ok: true, url: parsed.href };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('context-meter:context-unlock-status', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
@@ -469,6 +494,89 @@ function syncWindowOverlayHeight(win) {
   } catch {}
 }
 
+let embeddedBridge = null;
+let embeddedBridgePromise = null;
+let embeddedBridgeQuitHooked = false;
+
+function canStartEmbeddedLiveBridge() {
+  return Boolean(
+    ipcMain &&
+    app &&
+    typeof app.on === 'function' &&
+    process.env.AG_METER_TEST_MODE !== '1' &&
+    process.env.NODE_ENV !== 'test' &&
+    fs.existsSync(path.join(__dirname, 'live-host.js'))
+  );
+}
+
+function readDiskLiveSession(hubOrigin) {
+  try {
+    const { getStateDir } = require('./asar-engine');
+    const stampPath = path.join(getStateDir(), '.live-session.json');
+    if (!fs.existsSync(stampPath)) return null;
+    const info = JSON.parse(fs.readFileSync(stampPath, 'utf8'));
+    if (!info || !info.port || !info.token) return null;
+    if (hubOrigin && info.origin && info.origin !== hubOrigin) return null;
+    if (info.pid) {
+      process.kill(info.pid, 0);
+    }
+    return { port: Number(info.port), token: String(info.token) };
+  } catch {
+    return null;
+  }
+}
+
+async function ensureEmbeddedLiveBridge(hubOrigin) {
+  if (!canStartEmbeddedLiveBridge()) return null;
+  if (embeddedBridge) {
+    if (hubOrigin) embeddedBridge.setOrigin(hubOrigin);
+    return embeddedBridge;
+  }
+  if (embeddedBridgePromise) {
+    const b = await embeddedBridgePromise;
+    if (b && hubOrigin) b.setOrigin(hubOrigin);
+    return b;
+  }
+  embeddedBridgePromise = (async () => {
+    try {
+      const { startEmbeddedLiveBridge } = require('./live-host');
+      const bridge = await startEmbeddedLiveBridge({
+        origin: hubOrigin,
+        embedded: true
+      });
+      embeddedBridge = bridge;
+      if (!embeddedBridgeQuitHooked && typeof app?.once === 'function') {
+        embeddedBridgeQuitHooked = true;
+        app.once('will-quit', () => {
+          try { embeddedBridge?.stop?.(); } catch {}
+          embeddedBridge = null;
+        });
+      }
+      return bridge;
+    } catch (err) {
+      console.warn('[Context Meter] Embedded live bridge startup warning:', err?.message || err);
+      return null;
+    } finally {
+      embeddedBridgePromise = null;
+    }
+  })();
+  return await embeddedBridgePromise;
+}
+
+function readOverlayFile(filename) {
+  try {
+    const p = path.join(__dirname, filename);
+    if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+  } catch {}
+  return '';
+}
+
+function extractOverlayTag(source, regex) {
+  if (!source) return '';
+  const m = source.match(regex);
+  return m ? m[1] : '';
+}
+
 async function ensureMeterInjected(win, options = {}) {
   try {
     if (!win || win.isDestroyed?.()) return false;
@@ -505,19 +613,85 @@ async function ensureMeterInjected(win, options = {}) {
 
     syncWindowOverlayHeight(win);
 
+    let liveInfo = null;
+    try {
+      const hubOrigin = new URL(url).origin;
+      const bridge = await ensureEmbeddedLiveBridge(hubOrigin);
+      liveInfo = bridge?.getInfo?.() || readDiskLiveSession(hubOrigin);
+    } catch {}
+
+    const hansSrc = readOverlayFile('antigravity-hans-overlay.js');
+    const pulseSrc = readOverlayFile('pulse-capsule-overlay.js');
+    const enhancerSrc = readOverlayFile('ag-enhancer-overlay.js');
+    const hasHansFile = Boolean(hansSrc);
+    const hasPulseFile = Boolean(pulseSrc);
+    const hasEnhancerFile = Boolean(enhancerSrc);
+    const expectedHansFp = extractOverlayTag(hansSrc, /const\s+PATCH_FINGERPRINT\s*=\s*['"]([^'"]+)['"]/);
+    const expectedPulseVer = extractOverlayTag(pulseSrc, /const\s+CAPSULE_VERSION\s*=\s*['"]([^'"]+)['"]/);
+    const expectedEnhancerVer = extractOverlayTag(enhancerSrc, /globalThis\.__AGEnhancer\s*=\s*\{[\s\S]*?version\s*:\s*['"]([^'"]+)['"]/);
+    const expectedPort = Number(liveInfo?.port || 0);
+
+    let state = null;
     if (!options.force) {
       try {
-        const alive = await wc.executeJavaScript(
-          'Boolean(window.__AGContextMeter && document.getElementById("ag-context-meter") && (window.__AGContextMeter.ensureAlive ? window.__AGContextMeter.ensureAlive() : true))'
-        );
-        if (alive === true) return true;
+        const probeExpr = `(() => ({
+          meterAlive: Boolean(window.__AGContextMeter && document.getElementById("ag-context-meter") && (window.__AGContextMeter.ensureAlive ? window.__AGContextMeter.ensureAlive() : true)),
+          liveAlive: ${expectedPort ? `Boolean(window.__AGContextMeterLive && window.__AGContextMeterLive.port === ${expectedPort})` : 'true'},
+          hansAlive: ${hasHansFile ? `Boolean(window.__antigravityZhPatchInstalled === true && window.__observedDocument === document${expectedHansFp ? ` && window.__antigravityZhPatchFingerprint === ${JSON.stringify(expectedHansFp)}` : ''})` : 'true'},
+          pulseAlive: ${hasPulseFile ? `Boolean(window.__AGY_CTX_CAPSULE_ACTIVE__ === true${expectedPulseVer ? ` && window.__AGY_CTX_CAPSULE_VERSION__ === ${JSON.stringify(expectedPulseVer)}` : ''} && (document.querySelector('[data-agy-context-capsule="1"]') || !document.querySelector('.agy-composer-footer')))` : 'true'},
+          enhancerAlive: ${hasEnhancerFile ? `Boolean(window.__AGEnhancer${expectedEnhancerVer ? ` && window.__AGEnhancer.version === ${JSON.stringify(expectedEnhancerVer)}` : ''} && typeof window.__AGEnhancer.isAlive === 'function' && window.__AGEnhancer.isAlive())` : 'true'}
+        }))()`;
+        const res = await wc.executeJavaScript(probeExpr);
+        if (res && typeof res === 'object') state = res;
       } catch {}
     }
 
-    const runtimeSource = getMeterSource();
-    if (!runtimeSource) return false;
+    const meterAlive = Boolean(state?.meterAlive);
+    const liveAlive = Boolean(state?.liveAlive);
+    const hansAlive = Boolean(state?.hansAlive);
+    const pulseAlive = Boolean(state?.pulseAlive);
+    const enhancerAlive = Boolean(state?.enhancerAlive);
 
-    await wc.executeJavaScript(runtimeSource);
+    if (!options.force && meterAlive && liveAlive && hansAlive && pulseAlive && enhancerAlive) {
+      return true;
+    }
+
+    if (liveInfo?.port && liveInfo?.token && (options.force || !liveAlive)) {
+      try {
+        await wc.executeJavaScript('window.__AGContextMeterLive=' + JSON.stringify({ port: liveInfo.port, token: liveInfo.token }) + ';');
+      } catch {}
+    }
+
+    if (options.force || !meterAlive) {
+      const runtimeSource = getMeterSource();
+      if (!runtimeSource) return false;
+      await wc.executeJavaScript(runtimeSource);
+    }
+
+    if (hasHansFile && (options.force || !hansAlive)) {
+      try {
+        await wc.executeJavaScript(hansSrc);
+      } catch (e) {
+        console.warn('[Context Meter] hans overlay inject warning:', e?.message || e);
+      }
+    }
+
+    if (hasPulseFile && (options.force || !pulseAlive)) {
+      try {
+        await wc.executeJavaScript('try { window.__AGY_CTX_CAPSULE_DISPOSE__?.(); } catch {} window.__AGY_CTX_CAPSULE_ACTIVE__ = false;\n' + pulseSrc);
+      } catch (e) {
+        console.warn('[Context Meter] pulse overlay inject warning:', e?.message || e);
+      }
+    }
+
+    if (hasEnhancerFile && (options.force || !enhancerAlive)) {
+      try {
+        await wc.executeJavaScript(enhancerSrc);
+      } catch (e) {
+        console.warn('[Context Meter] enhancer overlay inject warning:', e?.message || e);
+      }
+    }
+
     return true;
   } catch (error) {
     const attempt = Number(options.attempt || 0);

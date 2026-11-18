@@ -23,7 +23,6 @@ const {
 } = require('./meter-collector');
 const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
-const { tryHotInject } = require('./install');
 const { startMobileRemoteServer, buildRemoteInfo } = require('./mobile-remote');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
@@ -57,6 +56,7 @@ const ALLOWED_ROUTES = [
   '/write-local-file',
   '/open-external-url',
   '/remote-info',
+  '/remote-tunnel',
   '/suite-version-check',
   '/suite-apply-update'
 ];
@@ -479,15 +479,52 @@ function collectBrainStats() {
   };
 }
 
-(async () => {
-  let api = await connect();
+async function startEmbeddedLiveBridge(options = {}) {
+  let currentOrigin = String(
+    options.origin ||
+    (typeof options.getOrigin === 'function' ? options.getOrigin() : '') ||
+    ''
+  ).trim();
+  const resolveOrigin = () => {
+    if (typeof options.getOrigin === 'function') {
+      const dynamic = String(options.getOrigin() || '').trim();
+      if (dynamic) currentOrigin = dynamic;
+    }
+    return currentOrigin;
+  };
+
   const secret = crypto.randomBytes(32).toString('hex');
-  const mobileRemoteDisabled = process.env.AG_DISABLE_MOBILE_REMOTE === '1' || process.argv.includes('--no-remote');
-  const stamp = path.join(getStateDir(), '.live-session.json');
+  const mobileRemoteDisabled = Boolean(
+    options.skipMobileRemote ||
+    process.env.AG_DISABLE_MOBILE_REMOTE === '1' ||
+    process.argv.includes('--no-remote')
+  );
+  const stamp = options.stampPath || path.join(getStateDir(), '.live-session.json');
+  const writeStamp = options.writeStamp !== false;
+  let remoteHandle = null;
+  let serverPort = 0;
+
+  const persistStamp = () => {
+    if (!writeStamp || !serverPort) return;
+    try {
+      fs.mkdirSync(path.dirname(stamp), { recursive: true });
+      const info = {
+        port: serverPort,
+        token: secret,
+        pid: process.pid,
+        origin: resolveOrigin(),
+        remoteDisabled: mobileRemoteDisabled,
+        startedAt: Date.now(),
+        embedded: Boolean(options.embedded)
+      };
+      fs.writeFileSync(stamp, JSON.stringify(info));
+    } catch {}
+  };
   const server = http.createServer(async (req, res) => {
+    const allowedOrigin = resolveOrigin();
     const origin = req.headers.origin;
-    if (origin !== api.origin) { res.writeHead(403); res.end(); return; }
-    res.setHeader('Access-Control-Allow-Origin', api.origin);
+    if (!allowedOrigin || origin !== allowedOrigin) { res.writeHead(403); res.end(); return; }
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
     res.setHeader('Vary', 'Origin');
     if (req.method === 'OPTIONS') {
@@ -858,8 +895,32 @@ function collectBrainStats() {
             res.end(JSON.stringify({ ok: false, disabled: true, error: '已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用手机远程监听' }));
             return;
           }
-          const info = buildRemoteInfo({ resetToken: request?.resetToken === true });
+          const tunnelStatus = remoteHandle?.ensureTunnelRunning
+            ? remoteHandle.ensureTunnelRunning()
+            : (remoteHandle?.getTunnelStatus?.() || null);
+          const info = buildRemoteInfo({
+            resetToken: request?.resetToken === true,
+            tunnelStatus
+          });
           res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, data: info }));
+          return;
+        }
+        if (req.url === '/remote-tunnel') {
+          res.setHeader('Content-Type', 'application/json');
+          if (mobileRemoteDisabled) {
+            res.end(JSON.stringify({ ok: false, disabled: true, error: '已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用手机远程监听' }));
+            return;
+          }
+          if (!remoteHandle?.configureTunnel) {
+            res.end(JSON.stringify({ ok: false, error: '远程服务尚未就绪' }));
+            return;
+          }
+          await remoteHandle.configureTunnel(request || {});
+          const info = buildRemoteInfo({
+            resetToken: false,
+            tunnelStatus: remoteHandle.getTunnelStatus()
+          });
           res.end(JSON.stringify({ ok: true, data: info }));
           return;
         }
@@ -890,64 +951,151 @@ function collectBrainStats() {
           }
           return;
         }
-        const data = await collect(api.origin, request.id, { force: request.force === true });
+        let scanOrigin = resolveOrigin();
+        if (!scanOrigin) {
+          const a = await connect();
+          scanOrigin = a.origin;
+          currentOrigin = scanOrigin;
+        }
+        const data = await collect(scanOrigin, request.id, { force: request.force === true });
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ ok: true, data }));
       }
       catch (e) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: false, error: e.message })); }
     });
   });
-  let remoteHandle = null;
-  server.listen(0, '127.0.0.1', () => {
-    const info = {
-      port: server.address().port,
-      token: secret,
-      pid: process.pid,
-      origin: api.origin,
-      remoteDisabled: mobileRemoteDisabled,
-      startedAt: Date.now()
-    };
-    fs.writeFileSync(stamp, JSON.stringify(info));
-    console.log('Context Meter local bridge ready on loopback port ' + info.port);
-    if (mobileRemoteDisabled) {
-      console.log('Mobile Remote PWA disabled via --no-remote / AG_DISABLE_MOBILE_REMOTE=1');
-    } else {
-      try {
-        remoteHandle = startMobileRemoteServer();
-      } catch (e) {
-        console.error('Mobile Remote PWA startup skipped:', e?.message || e);
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      serverPort = server.address().port;
+      persistStamp();
+      console.log('Context Meter local bridge ready on loopback port ' + serverPort);
+      if (mobileRemoteDisabled) {
+        console.log('Mobile Remote PWA disabled via --no-remote / AG_DISABLE_MOBILE_REMOTE=1');
+      } else {
+        try {
+          remoteHandle = startMobileRemoteServer();
+        } catch (e) {
+          console.error('Mobile Remote PWA startup skipped:', e?.message || e);
+        }
       }
-    }
+      resolve();
+    });
   });
-  const shutdownAll = (code = 0) => {
-    clearInterval(check);
-    try { remoteHandle?.stop?.(); } catch {}
-    try { fs.unlinkSync(stamp); } catch {}
-    try { server.close(); } catch {}
-    process.exit(code);
-  };
-  process.on('SIGTERM', () => shutdownAll(0));
-  process.on('SIGINT', () => shutdownAll(0));
-  let misses = 0;
-  let checking = false;
-  const check = setInterval(async () => {
-    if (checking) return;
-    checking = true;
-    try {
-      const a = await connect();
-      misses = 0;
-      if (a.origin !== api.origin) {
-        api = a;
-        const info = { port: server.address().port, token: secret, pid: process.pid, origin: api.origin, startedAt: Date.now() };
-        fs.writeFileSync(stamp, JSON.stringify(info));
-      }
-      await tryHotInject({ onlyMissing: true });
-    } catch {
-      if (++misses >= 10) {
-        shutdownAll(0);
-      }
-    } finally {
-      checking = false;
+
+  const getInfo = () => ({
+    port: serverPort,
+    token: secret,
+    pid: process.pid,
+    origin: resolveOrigin()
+  });
+
+  const setOrigin = (nextOrigin) => {
+    const clean = String(nextOrigin || '').trim();
+    if (clean && clean !== currentOrigin) {
+      currentOrigin = clean;
+      persistStamp();
     }
-  }, 3000);
-})().catch(e => { console.error(e.message); process.exitCode = 1; });
+  };
+
+  const stop = async (opts = {}) => {
+    const rh = remoteHandle;
+    remoteHandle = null;
+    if (writeStamp && !opts.preserveStamp) {
+      try {
+        if (fs.existsSync(stamp)) {
+          const disk = JSON.parse(fs.readFileSync(stamp, 'utf8'));
+          if (disk && disk.pid === process.pid && disk.token === secret) {
+            fs.unlinkSync(stamp);
+          }
+        }
+      } catch {}
+    }
+    try { server.close(); } catch {}
+    try { await rh?.stop?.(); } catch {}
+  };
+
+  return {
+    port: serverPort,
+    token: secret,
+    getInfo,
+    setOrigin,
+    stop
+  };
+}
+
+function isLiveSessionTakenOver(stampPath, myPid, myToken) {
+  try {
+    if (!fs.existsSync(stampPath)) return false;
+    const diskInfo = JSON.parse(fs.readFileSync(stampPath, 'utf8'));
+    if (!diskInfo || !diskInfo.pid) return false;
+    if (diskInfo.pid === myPid && diskInfo.token === myToken) return false;
+    process.kill(diskInfo.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (require.main === module) {
+  (async () => {
+    const { tryHotInject } = require('./install');
+    let api = await connect();
+    const stamp = path.join(getStateDir(), '.live-session.json');
+    const bridge = await startEmbeddedLiveBridge({
+      origin: api.origin,
+      getOrigin: () => api.origin,
+      stampPath: stamp,
+      embedded: false
+    });
+    const shutdownAll = async (code = 0, opts = {}) => {
+      clearInterval(check);
+      try {
+        await Promise.race([
+          Promise.resolve(bridge.stop(opts)),
+          new Promise((r) => setTimeout(r, 700))
+        ]);
+      } catch {}
+      process.exit(code);
+    };
+    process.on('SIGTERM', () => shutdownAll(0));
+    process.on('SIGINT', () => shutdownAll(0));
+    let misses = 0;
+    let checking = false;
+    const check = setInterval(async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        if (isLiveSessionTakenOver(stamp, process.pid, bridge.token)) {
+          shutdownAll(0, { preserveStamp: true });
+          return;
+        }
+        const a = await connect();
+        misses = 0;
+        if (a.origin !== api.origin) {
+          api = a;
+          bridge.setOrigin(a.origin);
+        }
+        await tryHotInject({ onlyMissing: true });
+      } catch {
+        if (isLiveSessionTakenOver(stamp, process.pid, bridge.token)) {
+          shutdownAll(0, { preserveStamp: true });
+          return;
+        }
+        if (++misses >= 40) {
+          shutdownAll(0);
+        }
+      } finally {
+        checking = false;
+      }
+    }, 3000);
+  })().catch(e => { console.error(e.message); process.exitCode = 1; });
+}
+
+module.exports = {
+  startEmbeddedLiveBridge,
+  resolveSafeExternalUrl,
+  resolveSafeEditablePath
+};

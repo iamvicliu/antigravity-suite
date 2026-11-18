@@ -855,15 +855,35 @@
       position:relative;width:100%;box-sizing:border-box;
     }
     .ag-dropdown-trigger{
-      width:100%;box-sizing:border-box;
+      width:100%;height:28px;min-height:28px;box-sizing:border-box;
       display:flex;align-items:center;justify-content:space-between;gap:6px;
-      padding:6px 9px;font-size:12.5px;
+      padding:0 8px;font-size:12.5px;
       color:var(--ag-text-primary);
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);
       border-radius:5px;
       cursor:pointer;user-select:none;
       transition:background .15s cubic-bezier(0.16,1,0.3,1),border-color .15s cubic-bezier(0.16,1,0.3,1),box-shadow .15s cubic-bezier(0.16,1,0.3,1);
+    }
+    #plan-custom-form input:not([type="checkbox"]):not([type="radio"]),
+    #plan-custom-form select,
+    .unlock-input{
+      height:28px;
+      min-height:28px;
+      padding:0 8px !important;
+      font-size:11px;
+      line-height:26px;
+      border-radius:5px !important;
+      box-sizing:border-box;
+      outline:none;
+    }
+    #plan-custom-form input[type="date"]{
+      display:inline-flex;
+      align-items:center;
+    }
+    #plan-custom-form input:not([type="checkbox"]):not([type="radio"]):focus,
+    .unlock-input:focus{
+      border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)) !important;
     }
     .ag-dropdown-trigger:hover{
       background:rgba(255,255,255,0.08);
@@ -1826,6 +1846,8 @@
     }
     .ag-subtier-compact-trigger{
       width:auto;
+      height:auto;
+      min-height:0;
       padding:3px 9px;
       gap:4px;
       border-radius:999px;
@@ -2107,8 +2129,12 @@
     .settings-input{
       flex:1 1 220px;
       min-width:0;
-      padding:6px 9px;
+      height:28px;
+      min-height:28px;
+      box-sizing:border-box;
+      padding:0 8px;
       font-size:13px;
+      line-height:26px;
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);
       color:var(--ag-text-primary);
@@ -2185,7 +2211,10 @@
     }
     .settings-select{
       width:100%;
-      padding:6px 9px;
+      height:28px;
+      min-height:28px;
+      box-sizing:border-box;
+      padding:0 8px;
       font-size:13px;
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);
@@ -2526,11 +2555,11 @@
             <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
               <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
                 <span>本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：</span>
-                <input id="input-proxy-url" type="text" class="unlock-input" style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;" value="http://127.0.0.1:7897" />
+                <input id="input-proxy-url" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="http://127.0.0.1:7897" />
               </label>
               <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
                 <span>绕过代理列表 (NO_PROXY)：</span>
-                <input id="input-proxy-bypass" type="text" class="unlock-input" style="padding:4px 8px;font-size:11px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;" value="localhost,127.0.0.1,::1,<local>" />
+                <input id="input-proxy-bypass" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="localhost,127.0.0.1,::1,<local>" />
               </label>
             </div>
             <div class="unlock-actions" style="display:flex;gap:8px;">
@@ -2857,7 +2886,7 @@
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">获取方式 / 活动来源</label>
-              <select id="select-custom-acq" style="width:100%;font-size:11px;padding:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <select id="select-custom-acq" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                 <option value="normal_paid">正常付费订阅</option>
                 <option value="student_offer">学生认证优惠</option>
                 <option value="pixel_bundle">Google Pixel 设备赠送</option>
@@ -2872,7 +2901,7 @@
             </div>
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">自定义活动 / 合作方名称</label>
-              <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
           </div>
           <div style="margin-bottom:6px">
@@ -2886,7 +2915,7 @@
               <label style="font-size:10px;color:var(--ag-text-muted)">预设订阅国家与汇率 (可选快捷套用)</label>
               <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
             </div>
-            <select id="select-custom-region-preset" style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <select id="select-custom-region-preset" style="width:100%;height:28px;font-size:11px;padding:0 8px;margin-bottom:4px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
               <option value="">-- 选择预设地区 (自动填入价格与汇率) --</option>
               <option value="US">🇺🇸 美国 (US) · $19.99/月 (折合 ≈ ¥134.3)</option>
               <option value="KR">🇰🇷 韩国 (KR) · ₩29,000/月 (折合 ≈ ¥147.9)</option>
@@ -2911,16 +2940,16 @@
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">账号所在地区 (仅本地记录)</label>
-              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" title="仅作为本地显示记录，不修改实际 Google 账号" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" title="仅作为本地显示记录，不修改实际 Google 账号" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅国家 (购买/结算地区)</label>
-              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" title="实际购买或支付订阅所在的国家或地区" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" title="实际购买或支付订阅所在的国家或地区" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅币种与实付金额</label>
               <div style="display:flex;gap:4px">
-                <select id="select-custom-currency" title="订阅计价/结算币种" style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                <select id="select-custom-currency" title="订阅计价/结算币种" style="height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                   <option value="USD">USD</option>
                   <option value="KRW">KRW</option>
                   <option value="HKD">HKD</option>
@@ -2939,14 +2968,14 @@
                   <option value="AUD">AUD</option>
                   <option value="MYR">MYR</option>
                 </select>
-                <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
               </div>
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">计费周期</label>
-              <select id="select-custom-cycle" style="width:100%;font-size:11px;padding:4px 6px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <select id="select-custom-cycle" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                 <option value="月付">月付</option>
                 <option value="年付">年付</option>
                 <option value="免费/赠送">免费 / 促销赠送</option>
@@ -2956,12 +2985,12 @@
             </div>
             <div>
               <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">权益到期日</label>
-              <input id="input-valid-end" type="date" style="width:100%;font-size:11px;padding:3px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+              <input id="input-valid-end" type="date" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
           </div>
           <div style="margin-bottom:6px">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">补充说明备注</label>
-            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
           </div>
           <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
             <button id="btn-custom-plan-clear" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px;color:#ef4444">清除自定义</button>
@@ -3514,6 +3543,22 @@
             <div id="cli-custom-model-row" class="term-custom-row" style="display:none;">
               <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入 agy 支持的模型 ID（留空则不传 --model）" />
               <button id="btn-save-cli-model" class="unlock-btn unlock-btn-primary" type="button">保存模型</button>
+            </div>
+            <div id="cli-mux-host-pref-row" class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">多路复用器目标主机 (Rex / WezTerm / tmux)</span>
+                <span class="settings-pref-desc">多路复用器启动 agy 时指定目标主机名；选「本机」避免误入远端会话，选远端主机自动执行远端 agy</span>
+              </div>
+              <div class="settings-select-wrap">
+                <select id="set-cli-mux-host-select" class="settings-select" aria-label="多路复用器目标主机">
+                  <option value="">本机 · This Mac (Local)</option>
+                  <option value="__custom__">自定义主机名 / Domain…</option>
+                </select>
+              </div>
+            </div>
+            <div id="cli-custom-mux-host-row" class="term-custom-row" style="display:none;">
+              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="输入 Rex 主机名、WezTerm Domain 或 SSH 主机名（留空为本机）" />
+              <button id="btn-save-cli-mux-host" class="unlock-btn unlock-btn-primary" type="button">保存主机</button>
             </div>
           </div>
           <div class="settings-card-footer">
@@ -7635,7 +7680,8 @@ function closeAllDropdowns(exceptWrap = null) {
       if (res && res.ok) {
         const om = el('overflow-menu');
         if (om) om.hidden = true;
-        showCliToast(`✔ 已启动 Antigravity CLI（目录：${res.cwd || '默认'}）`, false);
+        const hostNote = reqOpts.muxHost ? ` · 主机：${reqOpts.muxHost}` : '';
+        showCliToast(`✔ 已启动 Antigravity CLI（目录：${res.cwd || '默认'}${hostNote}）`, false);
         return res;
       } else {
         const errMsg = res?.error || '未检测到可用的 Antigravity CLI (agy)，请检查安装路径';
@@ -10845,6 +10891,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   let suiteDropdownsEnhanced = false;
   let uiLangDropdown = null;
   let uiCliModelDropdown = null;
+  let uiCliMuxHostDropdown = null;
 
   const SUITE_EN_UI_DICT = {
     'Antigravity Suite 统一设置': 'Antigravity Suite Settings',
@@ -10880,6 +10927,13 @@ function renderHeatmapGrid(forceRebuild = false) {
     '不选择模型 · 跟随 agy 默认设置': 'No Model · Follow agy default',
     '自定义模型 ID…': 'Custom Model ID…',
     '保存模型': 'Save Model',
+    '多路复用器目标主机 (Rex / WezTerm / tmux)': 'Multiplexer Target Host (Rex / WezTerm / tmux)',
+    '多路复用器启动 agy 时指定目标主机名；选「本机」避免误入远端会话，选远端主机自动执行远端 agy': 'Target host for multiplexer CLI launch; choose Local to stay on this Mac, or a remote host to launch agy remotely',
+    '本机 · This Mac (Local)': 'Local · This Mac',
+    '自定义主机名 / Domain…': 'Custom Host / Domain…',
+    '保存主机': 'Save Host',
+    'tmux (多路复用器)': 'tmux (Multiplexer)',
+    '输入 Rex 主机名、WezTerm Domain 或 SSH 主机名（留空为本机）': 'Enter Rex host label, WezTerm domain, or SSH host (blank = local)',
     '当前使用：自动默认': 'Active: Auto Default',
     '▶ 测试打开终端': '▶ Test Terminal',
     '测试打开终端': 'Test Terminal',
@@ -11084,6 +11138,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       .replace(/系统默认/g, 'System Default')
       .replace(/模型:\s*默认/g, 'Model: Default')
       .replace(/模型:/g, 'Model:')
+      .replace(/主机:\s*本机/g, 'Host: Local')
+      .replace(/主机:/g, 'Host:')
       .replace(/免审核/g, 'Skip Perms')
       .replace(/标准权限/g, 'Standard Perms');
   }
@@ -11122,6 +11178,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     customTerminalPath: '',
     cliSkipPermissions: false,
     cliDefaultModel: '',
+    cliMuxHost: '',
+    muxHosts: [],
     terminals: [],
     platform: (typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')) ? 'win32' : 'darwin'
   };
@@ -11166,6 +11224,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (lsCliSkip === 'true' || lsCliSkip === 'false') suiteTerminalState.cliSkipPermissions = lsCliSkip === 'true';
     const lsCliModel = localStorage?.getItem?.('ag_suite_cli_model');
     if (typeof lsCliModel === 'string') suiteTerminalState.cliDefaultModel = lsCliModel.trim();
+    const lsCliMuxHost = localStorage?.getItem?.('ag_suite_cli_mux_host');
+    if (typeof lsCliMuxHost === 'string') suiteTerminalState.cliMuxHost = lsCliMuxHost.trim();
     const lsAutoAccept = localStorage?.getItem?.('ag_suite_auto_accept');
     if (lsAutoAccept === 'true' || lsAutoAccept === 'false') suiteEnhancerPrefs.autoAccept = lsAutoAccept === 'true';
     const lsGhost = localStorage?.getItem?.('ag_suite_ghost_suggest');
@@ -11204,6 +11264,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (!isRealShadowDomTree() || typeof enhanceCustomSelect !== 'function') return;
     suiteDropdownsEnhanced = true;
     try { uiCliModelDropdown = enhanceCustomSelect('set-cli-model-select'); } catch {}
+    try { uiCliMuxHostDropdown = enhanceCustomSelect('set-cli-mux-host-select'); } catch {}
     try { uiLangDropdown = enhanceCustomSelect('set-ui-language-select'); } catch {}
   }
 
@@ -11327,6 +11388,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       localStorage?.setItem?.('ag_suite_custom_term_path', suiteTerminalState.customTerminalPath || '');
       localStorage?.setItem?.('ag_suite_cli_skip_perms', suiteTerminalState.cliSkipPermissions ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_cli_model', suiteTerminalState.cliDefaultModel || '');
+      localStorage?.setItem?.('ag_suite_cli_mux_host', suiteTerminalState.cliMuxHost || '');
       localStorage?.setItem?.('ag_suite_auto_accept', suiteEnhancerPrefs.autoAccept ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_ghost_suggest', suiteEnhancerPrefs.ghostSuggest ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_locale', activeLocale);
@@ -11343,6 +11405,7 @@ function renderHeatmapGrid(forceRebuild = false) {
             customTerminalPath: suiteTerminalState.customTerminalPath,
             cliSkipPermissions: Boolean(suiteTerminalState.cliSkipPermissions),
             cliDefaultModel: suiteTerminalState.cliDefaultModel || '',
+            cliMuxHost: suiteTerminalState.cliMuxHost || '',
             autoAccept: suiteEnhancerPrefs.autoAccept,
             ghostSuggest: suiteEnhancerPrefs.ghostSuggest,
             locale: activeLocale,
@@ -11511,6 +11574,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         translateShadowSubtreeLocale(shadow, entry.uiDict, entry.uiPatterns);
       }
       try { uiCliModelDropdown?.refresh?.(); } catch {}
+      try { uiCliMuxHostDropdown?.refresh?.(); } catch {}
       try { uiLangDropdown?.refresh?.(); } catch {}
       if (!isZh) ensureSuiteShadowObserver(true);
     } finally {
@@ -11583,6 +11647,50 @@ function renderHeatmapGrid(forceRebuild = false) {
       if (customRow && sel.value !== '__custom__') customRow.style.display = 'none';
     }
     uiCliModelDropdown?.refresh?.();
+
+    const hostSel = el('set-cli-mux-host-select');
+    const customHostRow = el('cli-custom-mux-host-row');
+    const customHostInp = el('input-cli-mux-host');
+    if (hostSel) {
+      const detectedHosts = Array.isArray(suiteTerminalState.muxHosts) ? suiteTerminalState.muxHosts : [];
+      if (detectedHosts.length && typeof document?.createElement === 'function') {
+        const customOpt = hostSel.options
+          ? Array.from(hostSel.options).find(o => String(o.value || '') === '__custom__')
+          : null;
+        // 清理旧的动态选项，保留 '' (本机) 与 '__custom__'
+        if (hostSel.options) {
+          for (const opt of Array.from(hostSel.options)) {
+            const v = String(opt?.value ?? '');
+            if (v !== '' && v !== '__custom__') opt.remove?.();
+          }
+        }
+        const seenHostVals = new Set(['', '__custom__']);
+        for (const h of detectedHosts) {
+          const hid = String(h?.id ?? '').trim();
+          if (!hid || seenHostVals.has(hid)) continue;
+          seenHostVals.add(hid);
+          const opt = document.createElement('option');
+          opt.setAttribute?.('value', hid);
+          opt.value = hid;
+          const srcTag = h?.source === 'rex' ? 'Rex' : (h?.source === 'wezterm' ? 'WezTerm' : 'Detected');
+          opt.textContent = `${h?.label || hid} · ${srcTag}`;
+          if (customOpt && typeof hostSel.insertBefore === 'function') hostSel.insertBefore(opt, customOpt);
+          else hostSel.appendChild?.(opt);
+        }
+      }
+      const curHost = String(suiteTerminalState.cliMuxHost || '').trim();
+      const hostOptVals = hostSel.options ? Array.from(hostSel.options).map(o => String(o.value || '')) : [];
+      const isCustomHost = Boolean(curHost) && !hostOptVals.includes(curHost);
+      if (isCustomHost) {
+        hostSel.value = '__custom__';
+        if (customHostRow) customHostRow.style.display = 'flex';
+        if (customHostInp && customHostInp.value !== curHost) customHostInp.value = curHost;
+      } else {
+        hostSel.value = curHost;
+        if (customHostRow && hostSel.value !== '__custom__') customHostRow.style.display = 'none';
+      }
+      uiCliMuxHostDropdown?.refresh?.();
+    }
   }
 
   function applySuiteFeatureFlags() {
@@ -11742,11 +11850,12 @@ function renderHeatmapGrid(forceRebuild = false) {
         { id: 'iterm2', name: 'iTerm2', installed: false, executablePath: '/Applications/iTerm.app' },
         { id: 'ghostty', name: 'Ghostty', installed: false, executablePath: '/Applications/Ghostty.app' },
         { id: 'warp', name: 'Warp', installed: false, executablePath: '/Applications/Warp.app' },
-        { id: 'rex', name: 'Rex', installed: false, executablePath: '/Applications/Rex.app' },
+        { id: 'rex', name: 'Rex', installed: false, executablePath: '/Applications/Rex.app', supportsMuxHost: true },
         { id: 'kitty', name: 'Kitty', installed: false, executablePath: '/Applications/kitty.app' },
-        { id: 'wezterm', name: 'WezTerm', installed: false, executablePath: '/Applications/WezTerm.app' },
+        { id: 'wezterm', name: 'WezTerm', installed: false, executablePath: '/Applications/WezTerm.app', supportsMuxHost: true },
+        { id: 'tmux', name: 'tmux (多路复用器)', installed: false, executablePath: '/opt/homebrew/bin/tmux', supportsMuxHost: true },
         { id: 'alacritty', name: 'Alacritty', installed: false, executablePath: '/Applications/Alacritty.app' },
-        { id: 'custom', name: '自定义程序路径', installed: Boolean(customPath), executablePath: customPath || null, isCustom: true }
+        { id: 'custom', name: '自定义程序路径', installed: Boolean(customPath), executablePath: customPath || null, isCustom: true, supportsMuxHost: true }
       ]
     };
   }
@@ -11781,7 +11890,10 @@ function renderHeatmapGrid(forceRebuild = false) {
         : (selectedItem.executablePath || '系统默认');
       const modelHint = suiteTerminalState.cliDefaultModel ? `模型: ${suiteTerminalState.cliDefaultModel}` : '模型: 默认';
       const skipHint = suiteTerminalState.cliSkipPermissions ? '免审核' : '标准权限';
-      statusEl.textContent = `当前使用：${selectedItem.name} (${pathHint}) · ${modelHint} · ${skipHint}`;
+      const hostHint = (selectedItem.supportsMuxHost || suiteTerminalState.cliMuxHost)
+        ? ` · 主机: ${suiteTerminalState.cliMuxHost || '本机'}`
+        : '';
+      statusEl.textContent = `当前使用：${selectedItem.name} (${pathHint}) · ${modelHint}${hostHint} · ${skipHint}`;
     }
 
     if (!grid) return;
@@ -11834,6 +11946,9 @@ function renderHeatmapGrid(forceRebuild = false) {
       if (res && res.ok && Array.isArray(res.terminals)) {
         suiteTerminalState.platform = res.platform || suiteTerminalState.platform;
         suiteTerminalState.terminals = res.terminals;
+        if (Array.isArray(res.muxHosts)) {
+          suiteTerminalState.muxHosts = res.muxHosts;
+        }
       } else {
         const fb = getFallbackTerminalCatalog();
         suiteTerminalState.platform = fb.platform;
@@ -11843,21 +11958,29 @@ function renderHeatmapGrid(forceRebuild = false) {
       const fb = getFallbackTerminalCatalog();
       suiteTerminalState.terminals = fb.terminals;
     }
+    syncCliOptionControls();
     renderTerminalGrid();
-    return { ...suiteTerminalState, terminals: [...suiteTerminalState.terminals] };
+    return { ...suiteTerminalState, terminals: [...suiteTerminalState.terminals], muxHosts: [...suiteTerminalState.muxHosts] };
   }
 
-  async function setSuiteTerminalSettings(terminalApp, customTerminalPath) {
+  async function setSuiteTerminalSettings(terminalApp, customTerminalPath, muxHost) {
     suiteTerminalState.terminalApp = String(terminalApp || 'auto').trim().toLowerCase() || 'auto';
     if (customTerminalPath !== undefined) {
       suiteTerminalState.customTerminalPath = String(customTerminalPath || '').trim();
     }
-    dispatchSuitePrefsChanged();
-    renderTerminalGrid();
-    await saveSuiteUiPrefs({
+    const partial = {
       terminalApp: suiteTerminalState.terminalApp,
       customTerminalPath: suiteTerminalState.customTerminalPath
-    });
+    };
+    if (muxHost !== undefined) {
+      const rawHost = String(muxHost ?? '').trim();
+      suiteTerminalState.cliMuxHost = ['local', '__local__', '__custom__'].includes(rawHost.toLowerCase()) ? '' : rawHost;
+      partial.cliMuxHost = suiteTerminalState.cliMuxHost;
+    }
+    syncCliOptionControls();
+    dispatchSuitePrefsChanged();
+    renderTerminalGrid();
+    await saveSuiteUiPrefs(partial);
     return { ...suiteTerminalState };
   }
 
@@ -11872,6 +11995,12 @@ function renderHeatmapGrid(forceRebuild = false) {
       const normalized = ['none', 'default', 'auto', '__custom__'].includes(raw.toLowerCase()) ? '' : raw;
       suiteTerminalState.cliDefaultModel = normalized;
       partial.cliDefaultModel = normalized;
+    }
+    if (opts.muxHost !== undefined) {
+      const rawHost = String(opts.muxHost ?? '').trim();
+      const normHost = ['local', '__local__', '__custom__'].includes(rawHost.toLowerCase()) ? '' : rawHost;
+      suiteTerminalState.cliMuxHost = normHost;
+      partial.cliMuxHost = normHost;
     }
     syncCliOptionControls();
     renderTerminalGrid();
@@ -11896,6 +12025,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     return {
       terminalApp: suiteTerminalState.terminalApp || 'auto',
       customTerminalPath: suiteTerminalState.customTerminalPath || '',
+      muxHost: String(suiteTerminalState.cliMuxHost || '').trim(),
       skipPermissions: cliCfg.skipPermissions,
       model: cliCfg.model,
       noModel: cliCfg.noModel
@@ -11909,6 +12039,9 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
     if (typeof uiPrefs.customTerminalPath === 'string') {
       suiteTerminalState.customTerminalPath = uiPrefs.customTerminalPath.trim();
+    }
+    if (typeof uiPrefs.cliMuxHost === 'string') {
+      suiteTerminalState.cliMuxHost = uiPrefs.cliMuxHost.trim();
     }
     if (typeof uiPrefs.cliSkipPermissions === 'boolean') {
       suiteTerminalState.cliSkipPermissions = uiPrefs.cliSkipPermissions;
@@ -12206,6 +12339,22 @@ function renderHeatmapGrid(forceRebuild = false) {
     void setSuiteCliSettings({ model: raw });
   });
 
+  el('set-cli-mux-host-select')?.addEventListener('change', e => {
+    const val = String(e?.target?.value ?? '').trim();
+    const customRow = el('cli-custom-mux-host-row');
+    if (val === '__custom__') {
+      if (customRow) customRow.style.display = 'flex';
+      return;
+    }
+    if (customRow) customRow.style.display = 'none';
+    void setSuiteCliSettings({ muxHost: val });
+  });
+
+  el('btn-save-cli-mux-host')?.addEventListener('click', () => {
+    const raw = el('input-cli-mux-host')?.value?.trim() || '';
+    void setSuiteCliSettings({ muxHost: raw });
+  });
+
   el('btn-test-terminal')?.addEventListener('click', async () => {
     const statusEl = el('term-config-status');
     if (statusEl) statusEl.textContent = '⏳ 正在尝试打开所选终端…';
@@ -12213,14 +12362,16 @@ function renderHeatmapGrid(forceRebuild = false) {
     const res = await triggerLaunchCli({
       terminalApp: suiteTerminalState.terminalApp,
       customTerminalPath: el('input-custom-term-path')?.value?.trim() || suiteTerminalState.customTerminalPath,
+      muxHost: suiteTerminalState.cliMuxHost || '',
       skipPermissions: cliCfg.skipPermissions,
       model: cliCfg.model,
       noModel: cliCfg.noModel,
       testOnly: true
     });
     if (statusEl) {
+      const hostSuffix = res?.muxHost ? ` · 主机: ${res.muxHost}` : '';
       statusEl.textContent = res?.ok
-        ? `✅ 测试启动成功：${res.terminal || suiteTerminalState.terminalApp} (${res.cwd || '默认目录'})`
+        ? `✅ 测试启动成功：${res.terminal || suiteTerminalState.terminalApp} (${res.cwd || '默认目录'}${hostSuffix})`
         : `✖ 测试启动失败：${res?.error || '请检查终端安装状态或路径'}`;
     }
   });
@@ -12363,7 +12514,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     restoreSettingsFromHost,
     openSettings: tab => openSuiteSettings(tab),
     getTerminalSettings: () => getSuiteTerminalSettings(),
-    setTerminalSettings: (app, customPath) => setSuiteTerminalSettings(app, customPath),
+    setTerminalSettings: (app, customPath, muxHost) => setSuiteTerminalSettings(app, customPath, muxHost),
     getCliSettings: () => getSuiteCliSettings(),
     setCliSettings: opts => setSuiteCliSettings(opts),
     getSupportedLocales: () => getSupportedLocales(),

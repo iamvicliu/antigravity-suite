@@ -5,7 +5,7 @@
 (function () {
     if (window.__AGY_CTX_CAPSULE_ACTIVE__) return;
 
-    const CAPSULE_VERSION = '1.4.0';
+    const CAPSULE_VERSION = '1.5.0';
 
     // 网页端非 Antigravity 站点快速排除守卫 (避免在 Gmail / Google 搜索 / Cloud / Colab 等无关或敏感页面挂载钩子)
     const isElectronHost = typeof navigator !== 'undefined' && /Antigravity|Electron/i.test(navigator.userAgent || '');
@@ -1753,22 +1753,25 @@
     }
 
     // 使用纯原生 DOM + SVG API 构建胶囊按钮子节点 (纯节点树组装，兼容严格内容安全策略)
-    function populateCapsuleButtonDom(capsuleBtn) {
+    function createSvgEl(tag, attrs = {}) {
         const svgNs = 'http://www.w3.org/2000/svg';
+        const el = document.createElementNS(svgNs, tag);
+        for (const [k, v] of Object.entries(attrs)) {
+            el.setAttribute(k, String(v));
+        }
+        return el;
+    }
+
+    function populateCapsuleButtonDom(capsuleBtn) {
+        const isEn = getLangMode() === 'en';
 
         const speedWrap = document.createElement('span');
         speedWrap.className = 'agy-ctx-speed';
         speedWrap.style.cssText = 'display:inline-flex;align-items:center;gap:2.5px;margin-right:3px;opacity:0.85;';
 
-        const boltSvg = document.createElementNS(svgNs, 'svg');
-        boltSvg.setAttribute('width', '10');
-        boltSvg.setAttribute('height', '12');
-        boltSvg.setAttribute('viewBox', '0 0 12 14');
-        boltSvg.setAttribute('fill', 'currentColor');
+        const boltSvg = createSvgEl('svg', { width: 10, height: 12, viewBox: '0 0 12 14', fill: 'currentColor' });
         boltSvg.style.cssText = 'display:block;opacity:0.8;';
-        const boltPath = document.createElementNS(svgNs, 'path');
-        boltPath.setAttribute('d', 'M7.2 1L1.5 8h4.2L4.8 13l5.7-7H6.3L7.2 1z');
-        boltSvg.appendChild(boltPath);
+        boltSvg.appendChild(createSvgEl('path', { d: 'M7.2 1L1.5 8h4.2L4.8 13l5.7-7H6.3L7.2 1z' }));
 
         const speedVal = document.createElement('span');
         speedVal.className = 'agy-ctx-speed-val';
@@ -1777,43 +1780,74 @@
         speedWrap.appendChild(boltSvg);
         speedWrap.appendChild(speedVal);
 
-        const trackSvg = document.createElementNS(svgNs, 'svg');
-        trackSvg.setAttribute('width', '18');
-        trackSvg.setAttribute('height', '12');
-        trackSvg.setAttribute('viewBox', '0 0 18 12');
-        trackSvg.setAttribute('class', 'shrink-0');
+        const tokensWrap = document.createElement('span');
+        tokensWrap.className = 'agy-ctx-tokens';
+        tokensWrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;';
+
+        const trackSvg = createSvgEl('svg', { width: 18, height: 12, viewBox: '0 0 18 12', class: 'shrink-0' });
         trackSvg.style.cssText = 'display:block;';
-
-        const outerRect = document.createElementNS(svgNs, 'rect');
-        outerRect.setAttribute('x', '1');
-        outerRect.setAttribute('y', '1.8');
-        outerRect.setAttribute('width', '16');
-        outerRect.setAttribute('height', '8.4');
-        outerRect.setAttribute('rx', '4.2');
-        outerRect.setAttribute('fill', 'none');
-        outerRect.setAttribute('stroke', 'currentColor');
-        outerRect.setAttribute('stroke-width', '1.3');
-        outerRect.setAttribute('stroke-opacity', '0.5');
-
-        const fillRect = document.createElementNS(svgNs, 'rect');
-        fillRect.setAttribute('class', 'agy-ctx-fill');
-        fillRect.setAttribute('x', '2.8');
-        fillRect.setAttribute('y', '3.4');
-        fillRect.setAttribute('width', '12.4');
-        fillRect.setAttribute('height', '5.2');
-        fillRect.setAttribute('rx', '2.6');
-        fillRect.setAttribute('fill', MORANDI_3A.green);
-
-        trackSvg.appendChild(outerRect);
-        trackSvg.appendChild(fillRect);
+        trackSvg.appendChild(createSvgEl('rect', {
+            x: 1, y: 1.8, width: 16, height: 8.4, rx: 4.2,
+            fill: 'none', stroke: 'currentColor', 'stroke-width': 1.3, 'stroke-opacity': 0.5
+        }));
+        trackSvg.appendChild(createSvgEl('rect', {
+            class: 'agy-ctx-fill', x: 2.8, y: 3.4, width: 12.4, height: 5.2, rx: 2.6, fill: MORANDI_3A.green
+        }));
 
         const labelSpan = document.createElement('span');
         labelSpan.className = 'agy-ctx-label';
-        labelSpan.textContent = '0k/256k, 0%';
+        labelSpan.textContent = '0k/256k';
+
+        tokensWrap.appendChild(trackSvg);
+        tokensWrap.appendChild(labelSpan);
+
+        const occWrap = document.createElement('span');
+        occWrap.className = 'agy-ctx-occ';
+        occWrap.style.cssText = 'display:inline-flex;align-items:center;gap:2.5px;opacity:0.92;';
+        occWrap.title = isEn ? 'Context Window Occupancy' : '上下文窗口占用率';
+
+        const occIcon = createSvgEl('svg', {
+            class: 'agy-ctx-occ-icon shrink-0', width: 11, height: 11, viewBox: '0 0 16 16',
+            fill: 'none', stroke: 'currentColor', 'stroke-width': 1.65,
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round'
+        });
+        occIcon.style.cssText = 'display:block;opacity:0.82;';
+        occIcon.appendChild(createSvgEl('path', { d: 'M14 8A6 6 0 1 1 8 2' }));
+        occIcon.appendChild(createSvgEl('path', { d: 'M8 2a6 6 0 0 1 6 6H8z' }));
+
+        const occVal = document.createElement('span');
+        occVal.className = 'agy-ctx-occ-val';
+        occVal.textContent = '0%';
+
+        occWrap.appendChild(occIcon);
+        occWrap.appendChild(occVal);
+
+        const cacheWrap = document.createElement('span');
+        cacheWrap.className = 'agy-ctx-cache';
+        cacheWrap.style.cssText = 'display:inline-flex;align-items:center;gap:2.5px;opacity:0.88;';
+        cacheWrap.title = isEn ? 'Prompt Cache Hit Rate' : 'Prompt 缓存命中率';
+
+        const cacheIcon = createSvgEl('svg', {
+            class: 'agy-ctx-cache-icon shrink-0', width: 11, height: 11, viewBox: '0 0 16 16',
+            fill: 'none', stroke: 'currentColor', 'stroke-width': 1.6,
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round'
+        });
+        cacheIcon.style.cssText = 'display:block;opacity:0.82;';
+        cacheIcon.appendChild(createSvgEl('ellipse', { cx: 8, cy: 3.5, rx: 5, ry: 2 }));
+        cacheIcon.appendChild(createSvgEl('path', { d: 'M3 3.5v4.5c0 1.1 2.24 2 5 2s5-.9 5-2V3.5' }));
+        cacheIcon.appendChild(createSvgEl('path', { d: 'M3 8v4.5c0 1.1 2.24 2 5 2s5-.9 5-2V8' }));
+
+        const cacheVal = document.createElement('span');
+        cacheVal.className = 'agy-ctx-cache-val';
+        cacheVal.textContent = '--%';
+
+        cacheWrap.appendChild(cacheIcon);
+        cacheWrap.appendChild(cacheVal);
 
         capsuleBtn.appendChild(speedWrap);
-        capsuleBtn.appendChild(trackSvg);
-        capsuleBtn.appendChild(labelSpan);
+        capsuleBtn.appendChild(tokensWrap);
+        capsuleBtn.appendChild(occWrap);
+        capsuleBtn.appendChild(cacheWrap);
     }
 
     // 在单个 .agy-composer-footer 内创建或更新 3A 莫兰迪跑道胶囊
@@ -1865,12 +1899,22 @@
                     footerEl.appendChild(capsuleBtn);
                 }
             }
-        } else if (permBtn && permBtn.parentNode && capsuleBtn.nextSibling !== permBtn) {
-            permBtn.parentNode.insertBefore(capsuleBtn, permBtn);
+        } else {
+            if (!capsuleBtn.querySelector('.agy-ctx-occ') || !capsuleBtn.querySelector('.agy-ctx-cache')) {
+                if (typeof capsuleBtn.replaceChildren === 'function') capsuleBtn.replaceChildren();
+                else {
+                    while (capsuleBtn.firstChild) capsuleBtn.removeChild(capsuleBtn.firstChild);
+                }
+                populateCapsuleButtonDom(capsuleBtn);
+            }
+            if (permBtn && permBtn.parentNode && capsuleBtn.nextSibling !== permBtn) {
+                permBtn.parentNode.insertBefore(capsuleBtn, permBtn);
+            }
         }
 
         capsuleBtn.__ctxUsageData = usageData;
 
+        const isEn = getLangMode() === 'en';
         const color = getMorandi3AColor(usageData.usagePercent);
         const remainPct = Math.max(0, Math.min(100, 100 - usageData.usagePercent));
         const fillWidth = Math.max(2.2, (12.4 * remainPct) / 100).toFixed(1);
@@ -1884,11 +1928,37 @@
         const usedStr = formatTokenValue(usageData.contextUsed);
         const limitStr = formatTokenValue(usageData.contextLimit);
         const pctStr = usageData.usagePercent.toFixed(1).replace(/\.0$/, '') + '%';
-        const nextText = `${usedStr}/${limitStr}, ${pctStr}`;
+        const nextText = `${usedStr}/${limitStr}`;
 
         const labelSpan = capsuleBtn.querySelector('.agy-ctx-label');
         if (labelSpan && labelSpan.textContent !== nextText) {
             labelSpan.textContent = nextText;
+        }
+
+        const occWrap = capsuleBtn.querySelector('.agy-ctx-occ');
+        if (occWrap) {
+            occWrap.title = isEn ? 'Context Window Occupancy' : '上下文窗口占用率';
+        }
+        const occValSpan = capsuleBtn.querySelector('.agy-ctx-occ-val');
+        if (occValSpan && occValSpan.textContent !== pctStr) {
+            occValSpan.textContent = pctStr;
+        }
+
+        const cacheWrap = capsuleBtn.querySelector('.agy-ctx-cache');
+        if (cacheWrap) {
+            cacheWrap.title = isEn ? 'Prompt Cache Hit Rate' : 'Prompt 缓存命中率';
+        }
+        const cacheValSpan = capsuleBtn.querySelector('.agy-ctx-cache-val');
+        if (cacheValSpan) {
+            const hasCacheMetrics = Boolean(
+                usageData && (usageData.hasPreciseSnapshot || usageData.contextUsed > 0 || usageData.cacheReadTokens > 0)
+            ) && Number.isFinite(usageData.cacheHitRate);
+            const cacheStr = hasCacheMetrics
+                ? Math.max(0, Math.min(100, usageData.cacheHitRate)).toFixed(1).replace(/\.0$/, '') + '%'
+                : '--%';
+            if (cacheValSpan.textContent !== cacheStr) {
+                cacheValSpan.textContent = cacheStr;
+            }
         }
 
         const speedValSpan = capsuleBtn.querySelector('.agy-ctx-speed-val');
@@ -2131,6 +2201,7 @@
             version: CAPSULE_VERSION,
             getContextLimitForModel,
             resolveModelDisplayName,
+            renderFooterCapsule,
             ingestAvailableModels: ingestAvailableModelsPayload,
             ingestUserStatusModelConfigs,
             ingestGeneratorMetadata: ingestGeneratorMetadataRows,

@@ -235,8 +235,12 @@
     .settings-input{
       flex:1 1 220px;
       min-width:0;
-      padding:6px 9px;
+      height:28px;
+      min-height:28px;
+      box-sizing:border-box;
+      padding:0 8px;
       font-size:13px;
+      line-height:26px;
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);
       color:var(--ag-text-primary);
@@ -313,7 +317,10 @@
     }
     .settings-select{
       width:100%;
-      padding:6px 9px;
+      height:28px;
+      min-height:28px;
+      box-sizing:border-box;
+      padding:0 8px;
       font-size:13px;
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);

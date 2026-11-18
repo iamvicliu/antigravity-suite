@@ -434,14 +434,16 @@ async function tryHotInject(options = {}) {
             injectedCount++;
             continue;
           }
-          // 若主看板与桥接仍正常且仅缺少增强挂件，就地补注而不重绘主看板
+          // 若主看板与桥接仍正常且仅缺少增强挂件，就地补注而不重绘主看板（即使挂件失败也不得重绘主看板，避免误关闭已打开浮窗）
           const baseOk = await evalExpr(`Boolean(window.__AGContextMeter && window.__AGContextMeterLive && window.__AGContextMeterLive.port === ${Number(liveInfo?.port || 0)})`);
-          if (baseOk?.result?.result?.value === true && enhancerOverlay) {
-            const enhRes = await evalExpr(enhancerOverlay);
-            if (enhRes && !enhRes.error && !enhRes.result?.exceptionDetails) {
-              injectedCount++;
-              continue;
+          if (baseOk?.result?.result?.value === true) {
+            if (enhancerOverlay) {
+              const enhRes = await evalExpr(enhancerOverlay);
+              if (enhRes && !enhRes.error && !enhRes.result?.exceptionDetails) {
+                injectedCount++;
+              }
             }
+            continue;
           }
         }
         if (liveInfo && liveInfo.origin === new URL(target.url).origin) {
@@ -806,6 +808,26 @@ async function install(options = {}) {
         }
       }
 
+      const optionalAdditions = [
+        'ag-enhancer-overlay.js',
+        'pulse-capsule-overlay.js',
+        'antigravity-hans-overlay.js',
+        'live-host.js',
+        'mobile-remote.js',
+        'meter-enhance.js'
+      ];
+      const copiedOptionalAdditions = [];
+      for (const file of optionalAdditions) {
+        const srcP = path.join(__dirname, file);
+        const dstP = path.join(staging, 'dist', file);
+        if (fs.existsSync(srcP) && !fs.statSync(srcP).isDirectory()) {
+          fs.copyFileSync(srcP, dstP);
+          copiedOptionalAdditions.push(file);
+        } else if (fs.existsSync(dstP)) {
+          copiedOptionalAdditions.push(file);
+        }
+      }
+
       // 拷贝 i18n 资源文件至 ASAR 内部，确保运行中客户端可离线切换汉化
       const i18nSrcDir = path.join(__dirname, 'i18n');
       if (fs.existsSync(i18nSrcDir)) {
@@ -835,7 +857,8 @@ async function install(options = {}) {
         'dist/preload.js',
         'dist/i18n/zh-CN.json',
         'dist/i18n/i18n-runtime.js',
-        ...additions.map(f => 'dist/' + f)
+        ...additions.map(f => 'dist/' + f),
+        ...copiedOptionalAdditions.map(f => 'dist/' + f)
       ].map(p => path.normalize(p));
       for (const file of originalEntries) {
         const name = path.normalize(file.slice(1));
@@ -874,7 +897,7 @@ async function install(options = {}) {
         originalSha256: origSha,
         patchedSha256: sha(fs.readFileSync(packed)),
         originalFilesVerified: verified,
-        added: additions.map(f => 'dist/' + f),
+        added: [...additions, ...copiedOptionalAdditions].map(f => 'dist/' + f),
         modified: ['dist/utils.js', 'dist/preload.js'],
         installedAt: new Date().toISOString(),
         enabledModules: Object.entries(modulesConfig.modules).filter(([, v]) => v.enabled).map(([k]) => k)

@@ -527,6 +527,9 @@ function createDomEnv(options = {}) {
       };
       return node;
     },
+    createElementNS(_ns, tag) {
+      return doc.createElement(tag);
+    },
     getElementById(id) {
       return documentElement.getElementById(id);
     },
@@ -593,8 +596,13 @@ function createDomEnv(options = {}) {
         { id: 'iterm2', name: 'iTerm2', installed: true, executablePath: '/Applications/iTerm.app' },
         { id: 'ghostty', name: 'Ghostty', installed: true, executablePath: '/Applications/Ghostty.app' },
         { id: 'warp', name: 'Warp', installed: true, executablePath: '/Applications/Warp.app' },
-        { id: 'rex', name: 'Rex', installed: true, executablePath: '/Applications/Rex Beta.app' },
-        { id: 'custom', name: '自定义终端路径…', installed: false, executablePath: '', isCustom: true }
+        { id: 'rex', name: 'Rex', installed: true, executablePath: '/Applications/Rex Beta.app', supportsMuxHost: true },
+        { id: 'wezterm', name: 'WezTerm', installed: true, executablePath: '/Applications/WezTerm.app', supportsMuxHost: true },
+        { id: 'tmux', name: 'tmux (多路复用器)', installed: true, executablePath: '/opt/homebrew/bin/tmux', supportsMuxHost: true },
+        { id: 'custom', name: '自定义终端路径…', installed: false, executablePath: '', isCustom: true, supportsMuxHost: true }
+      ],
+      muxHosts: options.mockMuxHosts || [
+        { id: '', label: '本机 (Local)', labelEn: 'This Mac (Local)', source: 'local', isLocal: true }
       ]
     }),
     pickTerminalPath: () => Promise.resolve({ ok: true, canceled: false, path: '/Applications/WezTerm.app' }),
@@ -1711,7 +1719,7 @@ test('需求 5e: 打开面板/浮层时提升全部定位祖先堆叠至 2147483
   assert.ok(RENDERER_SRC.includes(':host([data-elevated="true"])') && RENDERER_SRC.includes('z-index:2147483646 !important'),
     'host 提升态必须在 CSS 中强制置顶至 2147483646');
   assert.ok(RENDERER_SRC.includes('z-index:2147483645'), '.ag-panel 与 #overflow-menu 应使用 2147483645');
-  assert.ok(ENHANCER_SRC.includes('z-index: 99990;'), '右下角对话导航条 z-index 必须低于 2147483645');
+  assert.ok(ENHANCER_SRC.includes('z-index: 8;'), '右下角对话导航条 z-index 必须低于 2147483645 且低于所有弹窗');
   assert.ok(ENHANCER_SRC.includes('#ag-quota-popover') && ENHANCER_SRC.includes('z-index: 2147483645;'),
     '配额浮窗应使用 2147483645');
 
@@ -1866,9 +1874,9 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
               primaryUrl: mockTsUrl,
               ...mockPairSummary,
               channels: [
-                { key: 'lan', label: '此 Wi-Fi', labelEn: 'This Wi-Fi', available: true, displayHost: '192.168.1.2', entryHost: '192.168.1.2', iface: 'en0', url: mockLanUrl, qrSvg: '<svg id="qr-lan"><rect/></svg>' },
-                { key: 'tailscale', label: 'Tailscale', labelEn: 'Tailscale', available: true, displayHost: 'dev-mac.tailnet-demo.ts.net', entryHost: '100.64.0.2', iface: 'utun0', url: mockTsUrl, qrSvg: '<svg id="qr-ts"><rect/></svg>' },
-                { key: 'bonjour', label: 'Bonjour', labelEn: 'Bonjour', available: true, displayHost: 'dev-macbook-pro.local', entryHost: 'dev-macbook-pro.local', iface: 'en0', url: mockBonjourUrl, qrSvg: '<svg id="qr-bonjour"><rect/></svg>' }
+                { key: 'lan', label: '局域网', labelEn: 'LAN', available: true, enabled: true, displayHost: '192.168.1.2', rawHost: '192.168.1.2', entryHost: '192.168.1.2', iface: 'en0', url: mockLanUrl, qrSvg: '<svg id="qr-lan"><rect/></svg>' },
+                { key: 'tailscale', label: 'Tailscale', labelEn: 'Tailscale', available: true, enabled: true, displayHost: 'dev-mac.tailnet-demo.ts.net', rawHost: 'dev-mac.tailnet-demo.ts.net', entryHost: '100.64.0.2', iface: 'utun0', url: mockTsUrl, qrSvg: '<svg id="qr-ts"><rect/></svg>' },
+                { key: 'bonjour', label: 'Bonjour', labelEn: 'Bonjour', available: true, enabled: true, displayHost: 'dev-macbook-pro.local', rawHost: 'dev-macbook-pro.local', entryHost: 'dev-macbook-pro.local', iface: 'en0', url: mockBonjourUrl, qrSvg: '<svg id="qr-bonjour"><rect/></svg>' }
               ]
             }
           })
@@ -1904,21 +1912,17 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     assert.equal(remotePop.querySelectorAll('.ag-rp-qr').length, 1, '应只展示唯一融合二维码卡片 .ag-rp-qr');
 
     const rows = remotePop.querySelectorAll('.ag-rp-channel');
-    assert.equal(rows.length, 3, '应展示 Wi-Fi / Tailscale / Bonjour 三行通道清单');
-    assert.ok(rows[0].textContent.includes('此 Wi-Fi') && rows[0].textContent.includes('192.168.1.2'));
+    assert.equal(rows.length, 3, '应展示 局域网 / Tailscale / Bonjour 三行通道清单');
+    assert.ok(rows[0].textContent.includes('局域网') && rows[0].textContent.includes('192.168.1.2'));
     assert.ok(rows[1].textContent.includes('Tailscale') && rows[1].textContent.includes('dev-mac.tailnet-demo.ts.net'));
     assert.ok(rows[2].textContent.includes('Bonjour') && rows[2].textContent.includes('dev-macbook-pro.local'));
-    assert.equal(rows[1].getAttribute('data-selected'), 'true', 'Tailscale 可用时默认优先选中 Tailscale 引导地址');
-    assert.ok(remotePop.innerHTML.includes('ag-rp-ok') && remotePop.innerHTML.includes('<svg'), '通道列表应使用 SVG 对号图标');
+    assert.equal(rows.every(r => r.getAttribute('role') === 'checkbox' && r.getAttribute('aria-checked') === 'true'), true, '每行通道应统一作为整行复选框');
+    assert.equal(remotePop.querySelectorAll('.ag-rp-check-box').length, 3, '每行仅保留左侧 1 个复选框视觉');
+    assert.equal(remotePop.querySelectorAll('.ag-rp-ok').length, 3, '不得在右侧额外重复渲染对号图标');
 
-    // 点击 Wi-Fi 通道行可切换引导主地址，并仍保留完整的 &endpoints= 融合载荷
-    rows[0].click();
-    const updatedRows = remotePop.querySelectorAll('.ag-rp-channel');
-    assert.equal(updatedRows[0].getAttribute('data-selected'), 'true', '点击 Wi-Fi 行后应选中 Wi-Fi 引导通道');
-    assert.ok(remotePop.innerHTML.includes('qr-lan') && remotePop.querySelector('#qr-lan'), '切换后应同步刷新融合二维码引导主机');
     remotePop.querySelector('#ag-remote-copy')?.click();
     await new Promise(r => setTimeout(r, 10));
-    assert.ok(copiedUrl.includes('192.168.1.2:18765') && copiedUrl.includes('&endpoints='), '复制链接应使用选中通道作引导地址并保留多端点融合参数');
+    assert.ok(copiedUrl.includes('100.64.0.2:18765') && copiedUrl.includes('&endpoints='), '复制链接应使用优先级最高通道作引导地址并保留多端点融合参数');
 
     api.openSettings('terminal');
     assert.equal(remotePop.hidden, true, '打开设置面板时应互斥关闭遥控浮窗');
@@ -2107,9 +2111,14 @@ test('需求 7: #ag-chat-nav-float 移除按钮内圈边框并使用 Lucide SVG 
   assert.ok(navCssMatch, 'ag-enhancer-overlay.js 应包含 .ag-nav-btn 样式规则');
   assert.ok(navCssMatch[0].includes('border: none;'), '.ag-nav-btn 必须移除内圈边框 (border: none)');
   assert.ok(navCssMatch[0].includes('background: transparent;'), '.ag-nav-btn 默认态必须透明无嵌套底色');
-  assert.ok(ENHANCER_SRC.includes('z-index: 99990;'), '#ag-chat-nav-float 必须维持 z-index: 99990;');
+  const navContainerCss = ENHANCER_SRC.match(/#\$\{CHAT_NAV_ID\}\s*\{[\s\S]*?\}/);
+  assert.ok(navContainerCss && navContainerCss[0].includes('z-index: 8;'), '#ag-chat-nav-float 必须使用 z-index: 8; 处于所有弹窗下方');
+  assert.ok(!ENHANCER_SRC.includes('z-index: 99990;'), '不得再使用过高 z-index: 99990;');
 
   const env = createDomEnv();
+  const sheetEl = env.doc.createElement('div');
+  sheetEl.className = 'agy-sheet';
+  env.doc.body.appendChild(sheetEl);
   vm.runInContext(RENDERER_SRC, env.sandbox);
   vm.runInContext(ENHANCER_SRC, env.sandbox);
 
@@ -2117,6 +2126,7 @@ test('需求 7: #ag-chat-nav-float 移除按钮内圈边框并使用 Lucide SVG 
   const enhancer = env.sandbox.__AGEnhancer;
   const nav = env.doc.getElementById('ag-chat-nav-float');
   assert.ok(nav, '应挂载 #ag-chat-nav-float 浮层');
+  assert.equal(nav.parentElement, sheetEl, '存在 .agy-sheet 时应挂载于其堆叠上下文内部，避免盖住弹窗');
 
   const expectedIds = ['ag-nav-top', 'ag-nav-prev', 'ag-nav-next', 'ag-nav-bottom', 'ag-nav-think'];
   const btns = expectedIds.map(id => env.doc.getElementById(id));
@@ -2453,4 +2463,1147 @@ test('需求 10: 功能显示开关实时隐藏/显示顶栏入口与对话区�
 
   enhancer.dispose?.();
   api.dispose?.();
+});
+
+// =========================================================================
+// 需求 11: Cloudflare 远程公网隧道（免登录 Quick Tunnel + 自有账号固定域名）与安全防护
+// =========================================================================
+test('需求 11: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开关切换与安全拦截', async () => {
+  const os = require('node:os');
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cf-tunnel-test-'));
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const {
+      extractCloudflareTunnelToken,
+      normalizeTunnelHostname,
+      saveRemoteTunnelConfig,
+      buildFusedPairingUrl,
+      buildRemoteInfo,
+      isAllowedPrivateOrigin
+    } = require('./mobile-remote.js');
+
+    // 1. Token 与域名规范化提取
+    assert.equal(
+      extractCloudflareTunnelToken('sudo cloudflared service install eyJhIjoiMTIzIiwidCI6IjQ1NiIsInMiOiI3ODkifQ=='),
+      'eyJhIjoiMTIzIiwidCI6IjQ1NiIsInMiOiI3ODkifQ==',
+      '应从完整的 service install 命令中提取完整带填充的 Tunnel Token'
+    );
+    assert.equal(
+      normalizeTunnelHostname('ag.example.com/path'),
+      'https://ag.example.com',
+      '缺少 https:// 前缀的公网域名应自动补齐并规范为 origin'
+    );
+    assert.equal(normalizeTunnelHostname('http://insecure.example.com'), '', '公网固定域名必须使用 https://');
+
+    // 2. HTTPS 公网引导链接应省略 :18765 端口并保持 ?token= 首参数与 &endpoints=
+    const tunnelUrl = buildFusedPairingUrl({
+      entryBaseUrl: 'https://demo-words.trycloudflare.com',
+      port: 18765,
+      token: 'tok-cf-123456',
+      name: 'dev-mac',
+      hosts: ['10.0.1.25', 'demo-words.trycloudflare.com'],
+      endpoints: [
+        { url: 'http://10.0.1.25:18765', kind: 'lan', priority: 0 },
+        { url: 'https://demo-words.trycloudflare.com', kind: 'tunnel', priority: 250 }
+      ]
+    });
+    assert.ok(tunnelUrl.startsWith('https://demo-words.trycloudflare.com/?token=tok-cf-123456'), '公网隧道链接应使用 https:// 无端口前缀并保留 ?token=');
+    assert.ok(!tunnelUrl.includes(':18765/?token='), 'HTTPS 公网入口不得拼接本地 :18765 端口');
+    assert.ok(tunnelUrl.includes('&endpoints='), '公网隧道融合链接应保留 &endpoints= 多端点列表');
+
+    // 3. 保存固定域名与 Token 后 buildRemoteInfo 不得泄露明文 tunnelToken
+    saveRemoteTunnelConfig({
+      enabled: false,
+      tunnelMode: 'named',
+      tunnelHostname: 'ag.example.com',
+      tunnelToken: 'eyJhIjoiMTIzIiwidCI6IjQ1NiIsInMiOiI3ODkifQ'
+    });
+    const baseInfo = buildRemoteInfo({
+      resetToken: false,
+      tunnelStatus: { enabled: false, state: 'stopped', mode: 'named', binaryAvailable: true }
+    });
+    assert.equal(baseInfo.hasTunnelToken, true);
+    assert.equal(baseInfo.tunnelHostname, 'https://ag.example.com');
+    assert.ok(!JSON.stringify(baseInfo).includes('eyJhIjoi'), 'buildRemoteInfo 输出中绝不得回显明文 tunnelToken');
+    assert.equal(baseInfo.channels.length, 4, '默认 buildRemoteInfo 应包含 Wi-Fi / Tailscale / Bonjour / Cloudflare 四通道');
+
+    // 4. 运行态 activeTunnelOrigin CORS 放行校验
+    assert.equal(isAllowedPrivateOrigin('https://demo-words.trycloudflare.com', 'https://demo-words.trycloudflare.com'), true);
+    assert.equal(isAllowedPrivateOrigin('https://evil.com', 'https://demo-words.trycloudflare.com'), false);
+
+    // 4b. cloudflared 启动参数强制 IPv4 + HTTP/2，移动端不硬编码“内网直连”并启用超时切换
+    const remoteSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+    assert.ok(
+      remoteSrc.includes("'--edge-ip-version', '4'") && remoteSrc.includes("'--protocol', 'http2'"),
+      'cloudflared 应固定传入 --edge-ip-version 4 与 --protocol http2'
+    );
+    assert.ok(
+      !remoteSrc.includes('<div id="sub-meta" class="sub-meta">内网直连</div>'),
+      'mobile-remote PWA 不得硬编码静态“内网直连”文本'
+    );
+    assert.ok(
+      remoteSrc.includes('function getActiveChannelLabel()') && remoteSrc.includes('function fetchWithTimeout(') && remoteSrc.includes('AbortController'),
+      'mobile-remote PWA 应具备通道标签识别与 AbortController 超时故障切换'
+    );
+
+    // 5. #ag-remote-popover 开关启用 / 固定域名表单交互验证
+    let tunnelPosts = [];
+    const env = createDomEnv();
+    env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
+    env.sandbox.fetch = async (url, init) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (String(url).includes('/remote-info')) {
+        return { ok: true, json: async () => ({ ok: true, data: baseInfo }) };
+      }
+      if (String(url).includes('/remote-tunnel')) {
+        tunnelPosts.push(body);
+        saveRemoteTunnelConfig(body);
+        const runningInfo = buildRemoteInfo({
+          resetToken: false,
+          tunnelStatus: {
+            enabled: Boolean(body.enabled),
+            state: body.enabled ? 'running' : 'stopped',
+            mode: body.tunnelMode || 'quick',
+            publicUrl: body.enabled ? 'https://live-demo.trycloudflare.com' : '',
+            binaryAvailable: true
+          }
+        });
+        return { ok: true, json: async () => ({ ok: true, data: runningInfo }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const enhancer = env.sandbox.__AGEnhancer;
+    const shadow = env.getShadow();
+    const remotePop = shadow.getElementById('ag-remote-popover');
+
+    enhancer.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+    const toggleBtn = remotePop.querySelector('#ag-rp-tunnel-toggle');
+    const cfgBtn = remotePop.querySelector('#ag-rp-tunnel-cfg-btn');
+    assert.ok(toggleBtn && cfgBtn, '弹窗应渲染 #ag-rp-tunnel-toggle 与 #ag-rp-tunnel-cfg-btn');
+
+    // 点击展开固定域名配置表单
+    cfgBtn.click();
+    assert.ok(remotePop.querySelector('#ag-rp-tunnel-form'), '点击 固定域名 应展开固定域名与 Token 配置表单');
+
+    // Re-query fresh button after cfgBtn.click() re-rendered popover
+    remotePop.querySelector('#ag-rp-tunnel-toggle')?.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(tunnelPosts[0]?.enabled, true, '点击开启应请求 /remote-tunnel enabled=true');
+    const tunnelRow = remotePop.querySelector('#ag-rp-tunnel-toggle');
+    assert.equal(tunnelRow?.getAttribute('aria-checked'), 'true', '隧道就绪后行复选框应呈勾选状态');
+    assert.ok(remotePop.querySelector('.ag-rp-qr svg'), '隧道就绪后应刷新融合公网二维码');
+
+    enhancer.dispose?.();
+    api.dispose?.();
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 12: “局域网”命名、四通道复选框启停门禁（停用返回 403）及客户页直选入口
+// =========================================================================
+test('需求 12: 局域网命名、通道复选框启停与后端 403 拦截、客户端直选模式入口验证', async () => {
+  const os = require('node:os');
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-channel-gate-test-'));
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const {
+      saveRemoteTunnelConfig,
+      buildRemoteInfo,
+      createRemoteHttpHandler,
+      detectRequestChannel
+    } = require('./mobile-remote.js');
+
+    const remoteSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+    assert.ok(!remoteSrc.includes('此 Wi-Fi') && !ENHANCER_SRC.includes('此 Wi-Fi'), '应统一将“此 Wi-Fi”替换为“局域网”');
+
+    // 1. 通道命名 & 按复选框过滤端点
+    const defaultInfo = buildRemoteInfo({
+      tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true }
+    });
+    const lanChDefault = defaultInfo.channels.find(c => c.key === 'lan');
+    assert.equal(lanChDefault?.label, '局域网');
+    assert.equal(lanChDefault?.labelEn, 'LAN');
+
+    const cfg = saveRemoteTunnelConfig({
+      enabledChannels: { lan: false, bonjour: false, tailscale: true, tunnel: false }
+    });
+    const gatedInfo = buildRemoteInfo({
+      tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true }
+    });
+    assert.equal(gatedInfo.channels.find(c => c.key === 'lan')?.enabled, false);
+    assert.equal(gatedInfo.channels.find(c => c.key === 'lan')?.available, false);
+    assert.equal(gatedInfo.channels.find(c => c.key === 'bonjour')?.enabled, false);
+    assert.ok(!gatedInfo.endpoints.some(ep => ep.kind === 'lan' || ep.kind === 'bonjour'), '已停用的通道不得出现在融合 endpoints 中');
+
+    // 2. 后端 HTTP 处理器严格按启停状态拦截停用通道（403）并放行已启用通道（200）
+    const handler = createRemoteHttpHandler(cfg, { getTunnelOrigin: () => '' });
+    const invokeMockReq = async ({ url, headers = {}, remoteAddress = '127.0.0.1' }) => {
+      let status = 0;
+      const resHeaders = {};
+      let body = '';
+      const req = { method: 'GET', url, headers, socket: { remoteAddress } };
+      const res = {
+        setHeader(k, v) { resHeaders[String(k).toLowerCase()] = v; },
+        writeHead(code, h = {}) {
+          status = code;
+          for (const [k, v] of Object.entries(h)) resHeaders[String(k).toLowerCase()] = v;
+        },
+        end(chunk = '') { body += String(chunk); }
+      };
+      await handler(req, res);
+      return { status, body, resHeaders };
+    };
+
+    assert.equal(detectRequestChannel({ headers: { host: '192.168.1.25:18765' }, socket: { remoteAddress: '192.168.1.50' } }), 'lan');
+    const lanBlocked = await invokeMockReq({
+      url: `/api/snapshot?token=${cfg.token}`,
+      headers: { host: '192.168.1.25:18765' },
+      remoteAddress: '192.168.1.50'
+    });
+    assert.equal(lanBlocked.status, 403, '停用局域网后来自局域网链接的请求必须返回 403');
+    assert.equal(JSON.parse(lanBlocked.body).channelDisabled, 'lan');
+
+    const bonjourBlocked = await invokeMockReq({
+      url: `/api/ping?token=${cfg.token}`,
+      headers: { host: 'dev-mac.local:18765' },
+      remoteAddress: '192.168.1.50'
+    });
+    assert.equal(bonjourBlocked.status, 403, '停用 Bonjour 后 .local 链接请求必须返回 403');
+    assert.equal(JSON.parse(bonjourBlocked.body).channelDisabled, 'bonjour');
+
+    const tunnelBlocked = await invokeMockReq({
+      url: `/api/ping?token=${cfg.token}`,
+      headers: { host: 'demo-words.trycloudflare.com', 'cf-ray': 'abc123' },
+      remoteAddress: '127.0.0.1'
+    });
+    assert.equal(tunnelBlocked.status, 403, '停用 Cloudflare 隧道后代理请求必须返回 403');
+    assert.equal(JSON.parse(tunnelBlocked.body).channelDisabled, 'tunnel');
+
+    const tsAllowed = await invokeMockReq({
+      url: `/api/ping?token=${cfg.token}`,
+      headers: { host: '100.64.0.2:18765' },
+      remoteAddress: '100.64.0.9'
+    });
+    assert.equal(tsAllowed.status, 200, '保持启用的 Tailscale 通道应允许调用并返回 200');
+    assert.equal(JSON.parse(tsAllowed.body).ok, true);
+
+    // 3. 验证客户端页面 HTML 脚本语法完全有效且包含自动进入前直选入口控件
+    const pageResp = await invokeMockReq({
+      url: `/?token=${cfg.token}`,
+      headers: { host: `127.0.0.1:${cfg.port}` },
+      remoteAddress: '127.0.0.1'
+    });
+    assert.equal(pageResp.status, 200);
+    assert.ok(pageResp.body.includes('mode-entry-panel') && pageResp.body.includes('mode-entry-btn'), '客户端页面应渲染直选模式入口面板');
+    assert.ok(pageResp.body.includes('enterConnectionMode') && pageResp.body.includes('buildClientEntryUrl'), '客户端页面应包含手动直切连接方式逻辑');
+    const scriptMatch = pageResp.body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch && scriptMatch[1], '客户端 HTML 应包含内联脚本');
+    assert.doesNotThrow(() => new Function(scriptMatch[1]), '客户端页面内联 <script> 不得存在模板字符串转义语法错误');
+
+    // 4. 验证桌面弹窗 4 通道统一复选框及点击交互
+    saveRemoteTunnelConfig({ enabled: false, enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } });
+    const allOnInfo = buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
+    let postedPatches = [];
+    const env = createDomEnv();
+    env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
+    env.sandbox.fetch = async (url, init) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (String(url).includes('/remote-info')) {
+        return { ok: true, json: async () => ({ ok: true, data: allOnInfo }) };
+      }
+      if (String(url).includes('/remote-tunnel')) {
+        postedPatches.push(body);
+        saveRemoteTunnelConfig(body);
+        const updated = buildRemoteInfo({ tunnelStatus: { enabled: Boolean(body.enabled), state: 'stopped', binaryAvailable: true } });
+        return { ok: true, json: async () => ({ ok: true, data: updated }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const enhancer = env.sandbox.__AGEnhancer;
+    const shadow = env.getShadow();
+    const remotePop = shadow.getElementById('ag-remote-popover');
+
+    enhancer.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+    const checkBtns = remotePop.querySelectorAll('.ag-rp-check');
+    assert.equal(checkBtns.length, 4, '4 个连接通道应统一渲染 4 个复选框控件');
+    assert.equal(checkBtns.every(b => b.getAttribute('role') === 'checkbox'), true);
+
+    const lanChk = remotePop.querySelector('#ag-rp-toggle-lan');
+    assert.equal(lanChk?.getAttribute('aria-checked'), 'true');
+    lanChk.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.deepEqual(postedPatches[0]?.enabledChannels, { lan: false }, '取消勾选局域网应提交 enabledChannels.lan=false');
+    assert.equal(remotePop.querySelector('#ag-rp-toggle-lan')?.getAttribute('aria-checked'), 'false');
+
+    enhancer.dispose?.();
+    api.dispose?.();
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 13: 整行复选远程通道 + CLI 多路复用器主机名 + 胶囊缓存命中率双图标
+// =========================================================================
+test('需求 13: 远程浮窗整行热区勾选、CLI 多路复用器指定主机名、输入胶囊双比例图标与缓存命中率', async () => {
+  // 1. #ag-remote-popover 整行点击热区勾选启用/停用 + 独立固定域名按钮不误触
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req10-remote-'));
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const { saveRemoteTunnelConfig, buildRemoteInfo } = require('./mobile-remote.js');
+    saveRemoteTunnelConfig({ enabled: false, enabledChannels: { lan: true, tailscale: false, bonjour: true, tunnel: false } });
+    const initInfo = buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
+
+    const remotePosts = [];
+    const envR = createDomEnv();
+    envR.win.__AGContextMeterLive = { port: 61221, token: 'tok-req10' };
+    envR.sandbox.fetch = async (url, init) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (String(url).includes('/remote-info')) {
+        return { ok: true, json: async () => ({ ok: true, data: initInfo }) };
+      }
+      if (String(url).includes('/remote-tunnel')) {
+        remotePosts.push(body);
+        saveRemoteTunnelConfig(body);
+        const updated = buildRemoteInfo({
+          tunnelStatus: {
+            enabled: Boolean(body.enabled ?? body.enabledChannels?.tunnel),
+            state: (body.enabled ?? body.enabledChannels?.tunnel) ? 'running' : 'stopped',
+            binaryAvailable: true
+          }
+        });
+        return { ok: true, json: async () => ({ ok: true, data: updated }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+
+    vm.runInContext(RENDERER_SRC, envR.sandbox);
+    const apiR = envR.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, envR.sandbox);
+    const enhR = envR.sandbox.__AGEnhancer;
+    const remotePop = envR.getShadow().getElementById('ag-remote-popover');
+
+    enhR.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+
+    const tsRow = remotePop.querySelector('#ag-rp-toggle-tailscale');
+    assert.ok(tsRow && tsRow.classList.contains('ag-rp-channel'), 'Tailscale 行自身即为 .ag-rp-channel 整行复选框热区');
+    assert.equal(tsRow.getAttribute('aria-checked'), 'false', '未启用的通道应展示为未勾选，但允许整行点击重新启用');
+    assert.equal(tsRow.hasAttribute('disabled'), false);
+
+    // 整行点击未启用的 Tailscale 行应提交启用请求
+    tsRow.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.deepEqual(remotePosts[0]?.enabledChannels, { tailscale: true }, '点击未勾选整行应启用对应通道');
+    assert.equal(remotePop.querySelector('#ag-rp-toggle-tailscale')?.getAttribute('aria-checked'), 'true');
+
+    // 点击 固定域名 按钮只展开表单，不额外触发 /remote-tunnel 请求
+    const postCountBeforeCfg = remotePosts.length;
+    remotePop.querySelector('#ag-rp-tunnel-cfg-btn')?.click();
+    assert.ok(remotePop.querySelector('#ag-rp-tunnel-form'), '点击固定域名按钮应展开表单');
+    assert.equal(remotePosts.length, postCountBeforeCfg, '点击固定域名不得误触隧道勾选请求');
+
+    enhR.dispose?.();
+    apiR.dispose?.();
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+
+  // 2. CLI 多路复用器主机名校验、探测、各复用器启动命令生成与设置界面联动
+  assert.equal(terminals.sanitizeMuxHost(''), '');
+  assert.equal(terminals.sanitizeMuxHost('local'), '');
+  assert.equal(terminals.sanitizeMuxHost('unix:///tmp/rex.sock'), '');
+  assert.equal(terminals.sanitizeMuxHost('dev-remote-box'), 'dev-remote-box');
+  assert.equal(terminals.sanitizeMuxHost('alice@build-01.internal'), 'alice@build-01.internal');
+  assert.equal(terminals.sanitizeMuxHost('-oProxyCommand=id'), null, '前导连字符选项注入必须拒绝');
+  assert.equal(terminals.sanitizeMuxHost('bad;rm -rf'), null, '含空白与分号的 shell 注入必须拒绝');
+
+  const muxMacPaths = new Set([
+    '/Applications/Rex Beta.app',
+    '/Applications/WezTerm.app',
+    '/opt/homebrew/bin/tmux'
+  ]);
+  const detectedMux = terminals.detectAvailableTerminals({
+    platform: 'darwin',
+    existsSync: p => muxMacPaths.has(p),
+    muxHosts: [
+      { id: 'dev-mux-a', label: 'dev-mux-a', source: 'rex' },
+      { id: 'dev-mux-b', label: 'dev-mux-b', source: 'wezterm' }
+    ]
+  });
+  const termById = Object.fromEntries(detectedMux.terminals.map(t => [t.id, t]));
+  assert.equal(termById.rex.supportsMuxHost, true);
+  assert.equal(termById.wezterm.supportsMuxHost, true);
+  assert.equal(termById.tmux.installed, true);
+  assert.equal(termById.tmux.supportsMuxHost, true);
+  assert.deepEqual(
+    detectedMux.muxHosts.map(h => h.id),
+    ['', 'dev-mux-a', 'dev-mux-b'],
+    'muxHosts 应始终包含本机空值及探测到的远端主机'
+  );
+
+  const tmpCli = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req10-cli-'));
+  try {
+    const cliInfo = { command: 'agy', cliPath: 'agy', exePath: '/usr/local/bin/agy' };
+    // Rex 本机：强制限定 remote is false / new session at，防止误入远端聚焦标签
+    const rexLocal = terminals.launchInConfiguredTerminal({
+      platform: 'darwin',
+      terminalApp: 'rex',
+      muxHost: '',
+      cwd: tmpCli,
+      cliInfo,
+      cliArgs: ['--dangerously-skip-permissions'],
+      dryRun: true,
+      existsSync: p => p === '/Applications/Rex Beta.app' || p === tmpCli
+    });
+    assert.equal(rexLocal.ok, true);
+    assert.equal(rexLocal.muxHost, '');
+    const rexLocalScript = rexLocal.spawnSpec.args.join('\n');
+    assert.ok(rexLocalScript.includes('every session whose remote is false'), 'Rex 本机模式应筛选 local session');
+    assert.ok(rexLocalScript.includes('new session at'), 'Rex 无本机会话时应在本机创建新会话');
+
+    // Rex 远端主机：指定 host name 并安全尝试切换存在目录后启动远端 agy
+    const rexRemote = terminals.launchInConfiguredTerminal({
+      platform: 'darwin',
+      terminalApp: 'rex',
+      muxHost: 'dev-mux-a',
+      cwd: tmpCli,
+      cliInfo,
+      cliArgs: ['--model', 'gemini-4-carbon-high'],
+      dryRun: true,
+      existsSync: p => p === '/Applications/Rex Beta.app' || p === tmpCli
+    });
+    assert.equal(rexRemote.ok, true);
+    assert.equal(rexRemote.muxHost, 'dev-mux-a');
+    const rexRemoteScript = rexRemote.spawnSpec.args.join('\n');
+    assert.ok(rexRemoteScript.includes('every session whose host name is \\"dev-mux-a\\"') || rexRemoteScript.includes('host name is "dev-mux-a"'));
+    assert.ok(rexRemoteScript.includes('new session on "dev-mux-a" running'));
+    assert.ok(rexRemoteScript.includes('command -v agy') && rexRemoteScript.includes('[ -d'));
+
+    // WezTerm 远端 domain
+    const wezRemote = terminals.launchInConfiguredTerminal({
+      platform: 'darwin',
+      terminalApp: 'wezterm',
+      muxHost: 'dev-mux-b',
+      cwd: tmpCli,
+      cliInfo,
+      dryRun: true,
+      existsSync: p => p === '/Applications/WezTerm.app' || p === '/Applications/WezTerm.app/Contents/MacOS/wezterm' || p === tmpCli
+    });
+    assert.equal(wezRemote.ok, true);
+    assert.deepEqual(wezRemote.spawnSpec.args.slice(0, 4), ['start', '--domain', 'dev-mux-b', '--']);
+
+    // tmux 远端主机
+    const tmuxRemote = terminals.launchInConfiguredTerminal({
+      platform: 'darwin',
+      terminalApp: 'tmux',
+      muxHost: 'dev-mux-a',
+      cwd: tmpCli,
+      cliInfo,
+      dryRun: true,
+      existsSync: p => p === '/opt/homebrew/bin/tmux' || p === tmpCli
+    });
+    assert.equal(tmuxRemote.ok, true);
+    assert.ok(tmuxRemote.spawnSpec.args.join('\n').includes("ssh -t 'dev-mux-a'"));
+
+    // 非法主机名阻断
+    const badHostRes = terminals.launchInConfiguredTerminal({
+      platform: 'darwin',
+      terminalApp: 'rex',
+      muxHost: '-oProxyCommand=evil',
+      cwd: tmpCli,
+      cliInfo,
+      dryRun: true,
+      existsSync: p => p === '/Applications/Rex Beta.app' || p === tmpCli
+    });
+    assert.equal(badHostRes.ok, false);
+    assert.equal(badHostRes.code, 'INVALID_MUX_HOST');
+
+    // 设置面板下拉渲染探测主机并透传到 api.launchCli
+    const envCli = createDomEnv({
+      savedTerminalApp: 'rex',
+      mockMuxHosts: [
+        { id: '', label: '本机 (Local)', isLocal: true },
+        { id: 'dev-mux-a', label: 'dev-mux-a', source: 'rex', isLocal: false }
+      ]
+    });
+    vm.runInContext(RENDERER_SRC, envCli.sandbox);
+    const apiCli = envCli.sandbox.__AGContextMeter;
+    const shadowCli = envCli.getShadow();
+    apiCli.openSettings('terminal');
+    await new Promise(r => setTimeout(r, 20));
+
+    const hostSel = shadowCli.getElementById('set-cli-mux-host-select');
+    assert.ok(hostSel, '设置面板应渲染 #set-cli-mux-host-select 主机选择器');
+    assert.ok(hostSel.options.some(o => o.value === 'dev-mux-a'), '主机选择器应包含自动探测到的远端主机');
+
+    hostSel.value = 'dev-mux-a';
+    hostSel.dispatchEvent({ type: 'change' });
+    await new Promise(r => setTimeout(r, 15));
+    assert.equal(apiCli.getTerminalSettings().muxHost, 'dev-mux-a');
+    assert.equal(envCli.localStorage.getItem('ag_suite_cli_mux_host'), 'dev-mux-a');
+
+    await apiCli.launchCli({ workspacePath: tmpCli });
+    assert.equal(envCli.cliRequests.at(-1)?.muxHost, 'dev-mux-a', 'launchCli 应透传选定的多路复用器主机名');
+
+    apiCli.dispose?.();
+  } finally {
+    fs.rmSync(tmpCli, { recursive: true, force: true });
+  }
+
+  // 3. 输入框底部胶囊显示上下文占用率与缓存命中率双比例及对应图标
+  const envCap = createDomEnv();
+  envCap.sandbox.location.href = 'https://127.0.0.1:12345/';
+  envCap.win.location = envCap.sandbox.location;
+  const footerEl = envCap.doc.createElement('div');
+  footerEl.className = 'agy-composer-footer';
+  const permBtn = envCap.doc.createElement('button');
+  permBtn.setAttribute('data-testid', 'permissions-selector-trigger');
+  footerEl.appendChild(permBtn);
+  envCap.doc.body.appendChild(footerEl);
+
+  vm.runInContext(CAPSULE_SRC, envCap.sandbox);
+  const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
+  assert.equal(capsApi.version, '1.5.0');
+
+  capsApi.renderFooterCapsule(footerEl, {
+    contextUsed: 181000,
+    contextLimit: 512000,
+    usagePercent: 35.35,
+    cacheHitRate: 91.24,
+    hasPreciseSnapshot: true,
+    tokPerSec: 84,
+    cacheReadTokens: 165000,
+    inputTokens: 16000
+  });
+
+  const capBtn = footerEl.querySelector('[data-agy-context-capsule="1"]');
+  assert.ok(capBtn, '底部输入框应渲染上下文胶囊按钮');
+  assert.equal(capBtn.querySelector('.agy-ctx-label')?.textContent, '181k/512k');
+  assert.ok(capBtn.querySelector('.agy-ctx-occ .agy-ctx-occ-icon'), '上下文占用率应附带对应 SVG 图标');
+  assert.equal(capBtn.querySelector('.agy-ctx-occ .agy-ctx-occ-val')?.textContent, '35.4%');
+  assert.ok(capBtn.querySelector('.agy-ctx-cache .agy-ctx-cache-icon'), '缓存命中率应附带对应 SVG 图标');
+  assert.equal(capBtn.querySelector('.agy-ctx-cache .agy-ctx-cache-val')?.textContent, '91.2%');
+
+  const occNode = capBtn.querySelector('.agy-ctx-occ');
+  const cacheNode = capBtn.querySelector('.agy-ctx-cache');
+  const childIdxOcc = capBtn.children.indexOf(occNode);
+  const childIdxCache = capBtn.children.indexOf(cacheNode);
+  assert.ok(childIdxOcc >= 0 && childIdxCache === childIdxOcc + 1, '缓存命中率必须位于上下文窗口占用率紧邻右侧');
+
+  // 未产生首轮快照时显示 --%
+  capsApi.renderFooterCapsule(footerEl, {
+    contextUsed: 0,
+    contextLimit: 256000,
+    usagePercent: 0,
+    cacheHitRate: 0,
+    hasPreciseSnapshot: false,
+    tokPerSec: 0,
+    cacheReadTokens: 0,
+    inputTokens: 0
+  });
+  assert.equal(capBtn.querySelector('.agy-ctx-cache .agy-ctx-cache-val')?.textContent, '--%');
+
+  envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
+});
+
+// =========================================================================
+// 需求 14: Cloudflare Token 直达入口 + ASAR 全组件随宿主自启 + 2.32.1 DOM 兼容
+// =========================================================================
+test('需求 14: Cloudflare Token 入口、ASAR 全组件打包自注与 Antigravity 2.32.1 DOM 兼容', async () => {
+  // 1. #ag-remote-popover 固定域名表单渲染 #ag-rp-cf-get-token 并跳转 Cloudflare
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req11-cf-'));
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const { saveRemoteTunnelConfig, buildRemoteInfo } = require('./mobile-remote.js');
+    saveRemoteTunnelConfig({ enabled: false, enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } });
+    const initInfo = buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
+
+    const openedExternal = [];
+    const tunnelPosts = [];
+    const env = createDomEnv();
+    env.win.__AGContextMeterLive = { port: 61231, token: 'tok-req11' };
+    env.sandbox.fetch = async (url, init) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (String(url).includes('/remote-info')) {
+        return { ok: true, json: async () => ({ ok: true, data: initInfo }) };
+      }
+      if (String(url).includes('/remote-tunnel')) {
+        tunnelPosts.push(body);
+        return { ok: true, json: async () => ({ ok: true, data: initInfo }) };
+      }
+      if (String(url).includes('/open-external-url')) {
+        openedExternal.push(body);
+        return { ok: true, json: async () => ({ ok: true, url: body.url }) };
+      }
+      if (String(url).includes('/localize-conversations')) {
+        const titles = {};
+        for (const it of (body.items || [])) {
+          titles[it.id] = `已翻译: ${it.title}`;
+        }
+        return { ok: true, json: async () => ({ ok: true, titles }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const enhancer = env.sandbox.__AGEnhancer;
+    const remotePop = env.getShadow().getElementById('ag-remote-popover');
+
+    enhancer.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+    remotePop.querySelector('#ag-rp-tunnel-cfg-btn')?.click();
+
+    const cfLink = remotePop.querySelector('#ag-rp-cf-get-token');
+    assert.ok(cfLink, '固定域名表单应渲染 #ag-rp-cf-get-token 入口');
+    assert.equal(
+      cfLink.getAttribute('href'),
+      'https://one.dash.cloudflare.com/?to=/:account/networks/tunnels',
+      'Cloudflare Token 链接应指向 Zero Trust 隧道控制台'
+    );
+    assert.match(cfLink.textContent || '', /Cloudflare.*Token/);
+
+    cfLink.click();
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(openedExternal.length, 1, '点击入口应通过 /open-external-url 打开系统浏览器');
+    assert.equal(openedExternal[0]?.url, 'https://one.dash.cloudflare.com/?to=/:account/networks/tunnels');
+    assert.equal(remotePop.hidden, false, '点击获取 Token 不应关闭远程配对浮窗');
+    assert.equal(tunnelPosts.length, 0, '点击获取 Token 不得误发 /remote-tunnel 请求');
+
+    // 切换英文界面文案校验
+    env.win.dispatchEvent({ type: 'ag-suite-prefs-changed', detail: { locale: 'en', hansCode: 'en', capsuleLang: 'en' } });
+    assert.match(remotePop.querySelector('#ag-rp-cf-get-token')?.textContent || '', /Get Token on Cloudflare/);
+    env.win.dispatchEvent({ type: 'ag-suite-prefs-changed', detail: { locale: 'zh-CN', hansCode: 'zh', capsuleLang: 'zh' } });
+
+    // 2. 2.32.1 DOM 兼容：无 data-cascade-id 仅含 <a href="/c/..."> 的侧边栏行 + <h5 class="sr-only">You said</h5> 用户消息
+    const row = env.doc.createElement('div');
+    row.setAttribute('data-testid', 'conversation-row-sidebar');
+    const rowLink = env.doc.createElement('a');
+    rowLink.setAttribute('href', '/c/12345678-1111-2222-3333-444455556666');
+    const rowSpan = env.doc.createElement('span');
+    rowSpan.className = 'truncate inline-block w-full';
+    rowSpan.textContent = 'Refactor Authentication Flow Quickly';
+    row.appendChild(rowLink);
+    row.appendChild(rowSpan);
+    env.doc.body.appendChild(row);
+
+    const locCount = await enhancer.localizeSidebarConversations();
+    assert.equal(locCount, 1, '无 data-cascade-id 时应从 a[href="/c/..."] 提取 ID 并完成侧边栏汉化');
+    assert.equal(rowSpan.textContent, '已翻译: Refactor Authentication Flow Quickly');
+
+    const viewport = env.doc.createElement('div');
+    viewport.setAttribute('data-testid', 'autoscroll-viewport');
+    const userMsg = env.doc.createElement('div');
+    userMsg.setAttribute('data-testid', 'user-message');
+    const srOnly = env.doc.createElement('h5');
+    srOnly.className = 'sr-only';
+    srOnly.textContent = 'You said';
+    const userBody = env.doc.createElement('div');
+    userBody.setAttribute('data-testid', 'user-message-content');
+    userBody.textContent = 'Check build status';
+    userMsg.appendChild(srOnly);
+    userMsg.appendChild(userBody);
+    viewport.appendChild(userMsg);
+    env.doc.body.appendChild(viewport);
+
+    const snap = enhancer.getMobileSnapshot();
+    assert.equal(snap.conversations[0]?.id, '12345678-1111-2222-3333-444455556666');
+    assert.equal(snap.messages[0]?.text, 'Check build status', '2.32.1 user-message 应只提取 user-message-content 不拼接 You said');
+
+    enhancer.dispose?.();
+    api.dispose?.();
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+
+  // 3. 验证 install() 将全量挂件与桥接脚本打包进目标 ASAR，且 meter-main.ensureMeterInjected 全量注入
+  const tmpInstall = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req11-asar-'));
+  const prevAppData2 = process.env.APPDATA;
+  const prevStateDir2 = process.env.AG_METER_STATE_DIR;
+  const prevTestMode = process.env.AG_METER_TEST_MODE;
+  try {
+    process.env.APPDATA = tmpInstall;
+    process.env.AG_METER_STATE_DIR = tmpInstall;
+    process.env.AG_METER_TEST_MODE = '1';
+
+    const { builtinAsar } = require('./asar-engine');
+    const { install } = require('./install');
+    const { ensureMeterInjected } = require('./meter-main');
+
+    const mockSrc = path.join(tmpInstall, 'mock-app');
+    fs.mkdirSync(path.join(mockSrc, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(mockSrc, 'package.json'), JSON.stringify({ name: 'antigravity', version: '2.32.1' }));
+    fs.writeFileSync(path.join(mockSrc, 'dist', 'utils.js'), '"use strict";\nfunction setupNodeWrapper(env) {}\nfunction createWindow(url, storageManager, options) {\n    void win.loadURL(url);\n}\n');
+    fs.writeFileSync(path.join(mockSrc, 'dist', 'preload.js'), '"use strict";\n');
+    const mockAsar = path.join(tmpInstall, 'app.asar');
+    await builtinAsar.createPackageWithOptions(mockSrc, mockAsar, {});
+
+    const manifest = await install({ path: mockAsar });
+    for (const file of [
+      'dist/ag-enhancer-overlay.js',
+      'dist/pulse-capsule-overlay.js',
+      'dist/antigravity-hans-overlay.js',
+      'dist/live-host.js',
+      'dist/mobile-remote.js',
+      'dist/meter-enhance.js'
+    ]) {
+      assert.ok(manifest.added.includes(file), `manifest.added 应包含 ${file}`);
+      const buf = builtinAsar.extractFile(mockAsar, file.replace(/^dist\//, 'dist/'));
+      assert.ok(buf && buf.length > 0, `ASAR 内应存在非空文件 ${file}`);
+    }
+
+    const injectedScripts = [];
+    const mockWc = {
+      isDestroyed: () => false,
+      getURL: () => 'https://127.0.0.1:54321/c/test',
+      executeJavaScript: async (expr) => {
+        injectedScripts.push(String(expr));
+        if (String(expr).includes('meterAlive:')) {
+          return { meterAlive: false, liveAlive: true, hansAlive: false, pulseAlive: false, enhancerAlive: false };
+        }
+        return true;
+      }
+    };
+    const mockWin = {
+      isDestroyed: () => false,
+      webContents: mockWc
+    };
+    const ok = await ensureMeterInjected(mockWin, { force: false });
+    assert.equal(ok, true, 'ensureMeterInjected 应成功完成全组件注入');
+    assert.ok(injectedScripts.some(s => s.includes('__AGContextMeter')), '应注入主监控脚本');
+    assert.ok(injectedScripts.some(s => s.includes('__antigravityZhPatchInstalled')), '应注入全量汉化脚本');
+    assert.ok(injectedScripts.some(s => s.includes('__AGY_CTX_CAPSULE_ACTIVE__')), '应注入底部胶囊脚本');
+    assert.ok(injectedScripts.some(s => s.includes('__AGEnhancer')), '应注入增强挂件脚本');
+  } finally {
+    if (prevAppData2 === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData2;
+    if (prevStateDir2 === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir2;
+    if (prevTestMode === undefined) delete process.env.AG_METER_TEST_MODE;
+    else process.env.AG_METER_TEST_MODE = prevTestMode;
+    fs.rmSync(tmpInstall, { recursive: true, force: true });
+  }
+
+  // 4. antigravity-hans-overlay 在 2.32.1 agent-response 下保护 Markdown 正文、翻译步骤按钮
+  const hansSrc = fs.readFileSync(path.join(ROOT, 'antigravity-hans-overlay.js'), 'utf8');
+  const envH = createDomEnv();
+  envH.sandbox.location.pathname = '/c/test-hans';
+  envH.sandbox.location.href = 'https://127.0.0.1:12345/c/test-hans';
+  envH.win.location = envH.sandbox.location;
+  envH.win.top = envH.win;
+  envH.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 };
+  envH.sandbox.NodeFilter = { SHOW_TEXT: 4, SHOW_ELEMENT: 1 };
+  envH.doc.createTreeWalker = (rootNode, whatToShow) => {
+    const flat = [];
+    const walk = (n) => {
+      if (!n) return;
+      const children = n.childNodes || n.children || [];
+      for (const ch of children) {
+        if ((ch.nodeType === 1 && (whatToShow & 1)) || (ch.nodeType === 3 && (whatToShow & 4))) {
+          flat.push(ch);
+        }
+        walk(ch);
+      }
+    };
+    walk(rootNode);
+    let idx = 0;
+    return { nextNode: () => (idx < flat.length ? flat[idx++] : null) };
+  };
+  const agentResp = envH.doc.createElement('div');
+  agentResp.setAttribute('data-testid', 'agent-response');
+  const thinkBtn = envH.doc.createElement('button');
+  thinkBtn.setAttribute('data-testid', 'thinking-collapsible-trigger');
+  const thinkText = {
+    nodeType: 3,
+    nodeValue: 'Thought Process',
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement: thinkBtn
+  };
+  thinkBtn.childNodes.push(thinkText);
+  const mdRoot = envH.doc.createElement('div');
+  mdRoot.setAttribute('data-markdown-root', '');
+  const mdP = envH.doc.createElement('p');
+  const mdText = {
+    nodeType: 3,
+    nodeValue: 'Settings',
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement: mdP
+  };
+  mdP.childNodes.push(mdText);
+  mdRoot.appendChild(mdP);
+  agentResp.appendChild(thinkBtn);
+  agentResp.appendChild(mdRoot);
+  envH.doc.body.appendChild(agentResp);
+
+  vm.runInContext(hansSrc, envH.sandbox);
+  assert.equal(thinkText.nodeValue, '思考过程', '2.32.1 agent-response 内的思考折叠按钮应正常汉化');
+  assert.equal(mdText.nodeValue, 'Settings', '2.32.1 agent-response 内的 data-markdown-root 正文应受保护不被汉化改写');
+
+  // 5. 表单输入框与下拉框高度/圆角统一规范为 28px / 5px，且紧凑徽章保持 height:auto
+  const builtRenderer = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  assert.match(builtRenderer, /\.ag-dropdown-trigger\{[^}]*height:28px;min-height:28px;/);
+  assert.match(builtRenderer, /#plan-custom-form input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\s*#plan-custom-form select,\s*\.unlock-input\{[^}]*height:28px;\s*min-height:28px;/);
+  assert.match(builtRenderer, /\.settings-input\{[^}]*height:28px;\s*min-height:28px;/);
+  assert.match(builtRenderer, /\.ag-subtier-compact-trigger\{[^}]*height:auto;\s*min-height:0;/);
+  for (const inputId of [
+    'input-custom-acq-name',
+    'input-custom-country',
+    'input-custom-region',
+    'input-custom-paid',
+    'input-valid-end',
+    'input-custom-note',
+    'input-proxy-url',
+    'input-proxy-bypass'
+  ]) {
+    const tagMatch = builtRenderer.match(new RegExp(`<input[^>]*id="${inputId}"[^>]*>`));
+    assert.ok(tagMatch, `RENDERER_SRC 应包含 #${inputId}`);
+    assert.ok(tagMatch[0].includes('height:28px'), `#${inputId} 应设置 height:28px`);
+    assert.ok(tagMatch[0].includes('border-radius:5px'), `#${inputId} 应设置 border-radius:5px`);
+  }
+
+  // 6. tryHotInject({ onlyMissing: true }) 当主监控 __AGContextMeter 已存活时绝不重绘主看板导致浮窗关闭
+  const installSrc = fs.readFileSync(path.join(ROOT, 'install.js'), 'utf8');
+  const baseOkIdx = installSrc.indexOf('if (baseOk?.result?.result?.value === true)');
+  assert.ok(baseOkIdx > 0, 'install.js tryHotInject 应校验 baseOk');
+  const baseOkSlice = installSrc.slice(baseOkIdx, baseOkIdx + 420);
+  assert.match(baseOkSlice, /\n\s*continue;\s*\n\s*\}/, 'baseOk 为 true 时无论 enhancer 注入结果都应直接 continue，禁止重跑 bundle 关闭浮窗');
+});
+
+// =========================================================================
+// 需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留与免登录快速切换加载验证
+// =========================================================================
+test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留与免登录快速切换加载验证', async () => {
+  const os = require('node:os');
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-token-fix-test-'));
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const {
+      extractCloudflareTunnelToken,
+      validateCloudflareTunnelToken,
+      validateTunnelHostname,
+      normalizeTunnelHostname,
+      saveRemoteTunnelConfig,
+      loadOrCreateRemoteConfig,
+      createCloudflareTunnelController,
+      buildRemoteInfo
+    } = require('./mobile-remote.js');
+
+    // 1. 标准 Base64 (+ / =) 与 URL-safe (- _) Token 提取和预校验
+    const stdToken = Buffer.from(
+      JSON.stringify({ a: 'acct?>~', t: 'tun?>1', s: 'sec+/' }),
+      'utf8'
+    ).toString('base64');
+    assert.ok(stdToken.includes('+') || stdToken.includes('/'), '构造的测试 Token 应包含标准 Base64 字符 + 或 /');
+    assert.equal(
+      extractCloudflareTunnelToken(`cloudflared.exe service install ${stdToken}`),
+      stdToken,
+      'extractCloudflareTunnelToken 应完整保留 + / = 而不截断'
+    );
+    assert.equal(validateCloudflareTunnelToken(`sudo cloudflared service install ${stdToken}`).ok, true);
+
+    const urlSafeToken = stdToken.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const urlSafeExtracted = extractCloudflareTunnelToken(urlSafeToken);
+    assert.equal(urlSafeExtracted, stdToken, '单段 URL-safe Token 应规范化为带 = 填充的标准 Base64');
+    assert.equal(validateCloudflareTunnelToken(urlSafeToken).ok, true);
+
+    const validJwt = [
+      Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'),
+      Buffer.from(JSON.stringify({ a: '1', t: '2', s: '3' })).toString('base64url'),
+      'sigPart1234'
+    ].join('.');
+    assert.equal(validateCloudflareTunnelToken(validJwt).ok, true, '2/3 段合法 JWT 应通过预校验');
+
+    // 异常 Token 校验
+    assert.equal(validateCloudflareTunnelToken('').ok, false);
+    assert.equal(validateCloudflareTunnelToken('not-a-token').ok, false);
+    assert.equal(validateCloudflareTunnelToken('eyJ1234567890').ok, false, 'len%4===1 的截断 Token 应被拒绝');
+    const missingFieldsToken = Buffer.from(JSON.stringify({ a: 'only-account' }), 'utf8').toString('base64');
+    const missingRes = validateCloudflareTunnelToken(missingFieldsToken);
+    assert.equal(missingRes.ok, false);
+    assert.match(missingRes.error, /a\/t\/s/);
+
+    // 2. configure() 在校验失败时不覆盖已保存的合法 Token / Hostname
+    saveRemoteTunnelConfig({
+      enabled: false,
+      tunnelMode: 'named',
+      tunnelHostname: 'https://ag.example.com',
+      tunnelToken: stdToken
+    });
+    const ctrl = createCloudflareTunnelController(() => 18765);
+    const badTokStatus = await ctrl.configure({
+      enabled: true,
+      tunnelMode: 'named',
+      tunnelHostname: 'https://ag.example.com',
+      tunnelToken: 'eyJbroken_truncated'
+    });
+    assert.equal(badTokStatus.state, 'error', '非法 Token 应同步返回 error 状态');
+    assert.match(badTokStatus.error, /Base64 JSON|未能识别|缺少必要字段/);
+    assert.equal(loadOrCreateRemoteConfig().tunnelToken, stdToken, '校验失败时不得覆盖已保存的合法 Token');
+    assert.equal(loadOrCreateRemoteConfig().tunnelHostname, 'https://ag.example.com');
+
+    const badHostStatus = await ctrl.configure({
+      enabled: true,
+      tunnelMode: 'named',
+      tunnelHostname: 'http://insecure.example.com'
+    });
+    assert.equal(badHostStatus.state, 'error');
+    assert.match(badHostStatus.error, /HTTPS|固定域名/);
+    assert.equal(loadOrCreateRemoteConfig().tunnelHostname, 'https://ag.example.com', '非法域名不得覆盖已保存的域名');
+
+    // *.cloudflareaccess.com / dash.cloudflare.com / *.trycloudflare.com 误填防护
+    const accessCheck = validateTunnelHostname('https://hubo1989.cloudflareaccess.com');
+    assert.equal(accessCheck.ok, false);
+    assert.match(accessCheck.error, /cloudflareaccess\.com/);
+    assert.match(accessCheck.error, /NoAuth/);
+    assert.equal(normalizeTunnelHostname('https://hubo1989.cloudflareaccess.com'), '');
+    assert.equal(validateTunnelHostname('https://one.dash.cloudflare.com').ok, false);
+    assert.equal(validateTunnelHostname('https://abc.trycloudflare.com').ok, false);
+
+    const accessStatus = await ctrl.configure({
+      enabled: true,
+      tunnelMode: 'named',
+      tunnelHostname: 'https://hubo1989.cloudflareaccess.com',
+      tunnelToken: stdToken
+    });
+    assert.equal(accessStatus.state, 'error');
+    assert.match(accessStatus.error, /cloudflareaccess\.com/);
+    assert.match(accessStatus.error, /NoAuth/);
+    assert.equal(loadOrCreateRemoteConfig().tunnelHostname, 'https://ag.example.com', '误填 cloudflareaccess.com 不得覆盖已保存域名');
+
+    // 3. UI 表单保存失败时保持展开并保留草稿、显示错误；成功后收起并清空草稿
+    const env = createDomEnv();
+    env.win.__AGContextMeterLive = { port: 61220, token: 'tok-ui-test' };
+    const initInfo = buildRemoteInfo({
+      resetToken: false,
+      tunnelStatus: { enabled: false, state: 'stopped', mode: 'quick', binaryAvailable: true }
+    });
+    env.sandbox.fetch = async (url, init) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (String(url).includes('/remote-info')) {
+        return { ok: true, json: async () => ({ ok: true, data: initInfo }) };
+      }
+      if (String(url).includes('/remote-tunnel')) {
+        if (body.tunnelMode === 'named') {
+          const check = validateCloudflareTunnelToken(body.tunnelToken || '');
+          if (!check.ok) {
+            return {
+              ok: true,
+              json: async () => ({
+                ok: true,
+                data: buildRemoteInfo({
+                  resetToken: false,
+                  tunnelStatus: {
+                    enabled: true,
+                    mode: 'named',
+                    state: 'error',
+                    error: check.error,
+                    binaryAvailable: true
+                  }
+                })
+              })
+            };
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              data: buildRemoteInfo({
+                resetToken: false,
+                tunnelStatus: {
+                  enabled: true,
+                  mode: 'named',
+                  state: 'running',
+                  publicUrl: body.tunnelHostname || 'https://ag.example.com',
+                  error: '',
+                  binaryAvailable: true
+                }
+              })
+            })
+          };
+        }
+        return { ok: true, json: async () => ({ ok: true, data: initInfo }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const enhancer = env.sandbox.__AGEnhancer;
+    const shadow = env.getShadow();
+    const remotePop = shadow.getElementById('ag-remote-popover');
+
+    enhancer.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+    remotePop.querySelector('#ag-rp-tunnel-cfg-btn')?.click();
+    assert.ok(remotePop.querySelector('#ag-rp-tunnel-form'), '应展开固定域名表单');
+
+    remotePop.querySelector('#ag-rp-cf-host').value = 'https://draft.example.com';
+    remotePop.querySelector('#ag-rp-cf-token').value = 'eyJbad_token_draft';
+    remotePop.querySelector('#ag-rp-cf-save')?.click();
+    await new Promise(r => setTimeout(r, 30));
+
+    assert.ok(remotePop.querySelector('#ag-rp-tunnel-form'), '保存报错时表单必须保持展开，不得自动折叠');
+    assert.equal(remotePop.querySelector('#ag-rp-cf-host')?.value, 'https://draft.example.com', '保存报错后应保留域名草稿');
+    assert.equal(remotePop.querySelector('#ag-rp-cf-token')?.value, 'eyJbad_token_draft', '保存报错后应保留 Token 草稿');
+    assert.ok(remotePop.querySelector('.ag-rp-err')?.textContent, '保存报错后应在表单下方显示错误提示');
+
+    // 修正为合法 Token 后重试保存应成功并自动收起、清空草稿
+    remotePop.querySelector('#ag-rp-cf-token').value = stdToken;
+    remotePop.querySelector('#ag-rp-cf-save')?.click();
+    await new Promise(r => setTimeout(r, 30));
+
+    assert.equal(remotePop.querySelector('#ag-rp-tunnel-form'), null, '保存成功后应自动收起配置表单');
+    remotePop.querySelector('#ag-rp-tunnel-cfg-btn')?.click();
+    assert.equal(remotePop.querySelector('#ag-rp-cf-token')?.value, '', '保存成功后重新展开不应残留明文 Token 草稿');
+
+    // 验证弹窗关闭会清理草稿
+    remotePop.querySelector('#ag-rp-cf-token').value = 'temp-draft-tok';
+    remotePop.querySelector('#ag-rp-cf-token')?.dispatchEvent({ type: 'input', target: { value: 'temp-draft-tok' } });
+    enhancer.toggleRemotePopover(false);
+    enhancer.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 20));
+    remotePop.querySelector('#ag-rp-tunnel-cfg-btn')?.click();
+    assert.equal(remotePop.querySelector('#ag-rp-cf-token')?.value, '', '关闭弹窗应清空未提交的 Token 草稿');
+
+    enhancer.dispose?.();
+    api.dispose?.();
+
+    // 4. 验证从误填 cloudflareaccess.com 点击「改用免登录临时隧道」时的慢请求加载状态与旧地址屏蔽
+    const envQ = createDomEnv();
+    envQ.win.__AGContextMeterLive = { port: 61221, token: 'tok-quick-switch' };
+    const staleNamedInfo = buildRemoteInfo({
+      resetToken: false,
+      tunnelStatus: {
+        enabled: true,
+        mode: 'named',
+        state: 'running',
+        publicUrl: 'https://hubo1989.cloudflareaccess.com',
+        error: '',
+        binaryAvailable: true
+      }
+    });
+    staleNamedInfo.tunnelHostname = 'https://hubo1989.cloudflareaccess.com';
+    const staleTunnelCh = staleNamedInfo.channels.find((c) => c.key === 'tunnel');
+    if (staleTunnelCh) {
+      staleTunnelCh.enabled = true;
+      staleTunnelCh.available = true;
+      staleTunnelCh.displayHost = 'hubo1989.cloudflareaccess.com';
+      staleTunnelCh.tunnelHostname = 'https://hubo1989.cloudflareaccess.com';
+    }
+    saveRemoteTunnelConfig({ enabled: true, tunnelMode: 'quick' });
+    const quickReadyInfo = buildRemoteInfo({
+      resetToken: false,
+      tunnelStatus: {
+        enabled: true,
+        mode: 'quick',
+        state: 'running',
+        publicUrl: 'https://demo-quick.trycloudflare.com',
+        error: '',
+        binaryAvailable: true
+      }
+    });
+    let resolveQuickReq = null;
+    envQ.sandbox.fetch = async (url, init) => {
+      if (String(url).includes('/remote-info')) {
+        return { ok: true, json: async () => ({ ok: true, data: staleNamedInfo }) };
+      }
+      if (String(url).includes('/remote-tunnel')) {
+        return await new Promise((resolve) => {
+          resolveQuickReq = resolve;
+        });
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+    vm.runInContext(RENDERER_SRC, envQ.sandbox);
+    const apiQ = envQ.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, envQ.sandbox);
+    const enhQ = envQ.sandbox.__AGEnhancer;
+    const popQ = envQ.getShadow().getElementById('ag-remote-popover');
+
+    enhQ.toggleRemotePopover(true);
+    await new Promise(r => setTimeout(r, 30));
+    popQ.querySelector('#ag-rp-tunnel-cfg-btn')?.click();
+    assert.ok(popQ.querySelector('#ag-rp-tunnel-form'));
+
+    popQ.querySelector('#ag-rp-cf-quick')?.click();
+    await new Promise(r => setTimeout(r, 10));
+    assert.ok(popQ.querySelector('#ag-rp-tunnel-form'), '临时隧道协商期间应保持表单展开以展示加载动画');
+    assert.ok(popQ.querySelector('#ag-rp-cf-quick .ag-rp-spin'), '切换按钮应渲染 .ag-rp-spin 加载动画');
+    const toggleHostText = popQ.querySelector('#ag-rp-tunnel-toggle')?.textContent || '';
+    assert.ok(toggleHostText.includes('正在切换临时隧道'), '通道行应显示正在切换临时隧道');
+    assert.ok(!toggleHostText.includes('hubo1989.cloudflareaccess.com'), '切换期间通道行不得继续显示旧的 cloudflareaccess.com');
+
+    resolveQuickReq({ ok: true, json: async () => ({ ok: true, data: quickReadyInfo }) });
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(popQ.querySelector('#ag-rp-tunnel-form'), null, '临时隧道就绪后应自动收起表单');
+    assert.ok(
+      (popQ.querySelector('#ag-rp-tunnel-toggle')?.textContent || '').includes('demo-quick.trycloudflare.com'),
+      '临时隧道就绪后通道行应更新为 *.trycloudflare.com 地址'
+    );
+
+    enhQ.dispose?.();
+    apiQ.dispose?.();
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
 });

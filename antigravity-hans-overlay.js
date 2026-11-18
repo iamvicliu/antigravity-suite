@@ -1,6 +1,6 @@
 (() => {
   if (typeof window === 'undefined') return;
-  const PATCH_FINGERPRINT = 'app-2.33.0-20261118-r29';
+  const PATCH_FINGERPRINT = 'app-2.33.0-20261118-r30';
   const fingerprint = window.__antigravityZhPatchRequestedFingerprint || PATCH_FINGERPRINT;
   if (window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === fingerprint) return;
   const updating = window.__antigravityZhPatchInstalled === true && window.__observedDocument === document;
@@ -5100,7 +5100,7 @@
     }
 
     // 跳过用户输入
-    if (element.closest('[data-testid="user-input-step"], [aria-label="User message"], [aria-label="用户消息"]')) {
+    if (element.closest('[data-testid="user-input-step"], [data-testid="user-message-content"], [aria-label="User message"], [aria-label="用户消息"]')) {
       return true;
     }
 
@@ -5142,10 +5142,11 @@
     }
 
     // 跳过回复正文（保留控件、折叠步骤栏、变更概览与系统提示卡片）
-    const agentResponse = element.closest('[aria-label="Agent response"], [aria-label="智能体回复"]');
+    const agentResponse = element.closest('[data-testid="agent-response"], [aria-label="Agent response"], [aria-label="智能体回复"]');
     if (agentResponse) {
       if (node.nodeType === Node.ELEMENT_NODE && element === agentResponse) return false;
-      const isInteractive = element.closest('button, [role="button"], [class*="action"], [class*="button-container"], [data-testid="cleared-step-notice"], .files-changed-header');
+      if (element.closest('[data-markdown-root]')) return true;
+      const isInteractive = element.closest('button, [role="button"], [class*="action"], [class*="button-container"], [data-testid="cleared-step-notice"], .files-changed-header, [data-testid="thinking-collapsible-trigger"], [data-testid="worked-for-collapsible"], [data-testid="tool-group-collapsible"], [data-testid="changed-files-card-header"], [data-testid="cascade-system-message-toolbar"]');
       if (!isInteractive) return true;
     }
 
