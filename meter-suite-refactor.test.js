@@ -3649,3 +3649,286 @@ test('需求 16: parsePsElapsedSeconds 与 inspectAntigravityHostProcess 准确�
     command: ''
   });
 });
+
+// =========================================================================
+// 需求 17: 远程面板多项目分组浏览、按项目新建对话、全会话状态与防缩水持久列表
+// =========================================================================
+test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话、全会话状态汇总与防缩水持久列表', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req17-remote-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const configDir = path.join(tmpRoot, 'config');
+  const projDir = path.join(configDir, 'projects');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(projDir, { recursive: true });
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+
+    fs.writeFileSync(path.join(projDir, 'proj-a.json'), JSON.stringify({
+      id: 'proj-a',
+      name: 'Alpha App',
+      projectResources: { resources: [{ folderUri: 'file:///tmp/ws-alpha' }] }
+    }));
+    fs.writeFileSync(path.join(projDir, 'proj-b.json'), JSON.stringify({
+      id: 'proj-b',
+      name: 'Beta Service',
+      projectResources: { resources: [{ folderUri: 'file:///tmp/ws-beta' }] }
+    }));
+    fs.writeFileSync(path.join(projDir, 'proj-empty.json'), JSON.stringify({
+      id: 'proj-empty',
+      name: 'EmptyProj',
+      projectResources: { resources: [{ folderUri: 'file:///tmp/ws-empty' }] }
+    }));
+    fs.writeFileSync(path.join(projDir, 'proj-sidecar.json'), JSON.stringify({
+      id: 'proj-sidecar',
+      name: 'swarm/swarm_board',
+      sidecar: true
+    }));
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const {
+      buildMobileAppHtml,
+      enrichSnapshotWithCatalog,
+      createSessionCatalogStore
+    } = require('./mobile-remote.js');
+
+    // 1. 验证后端多源融合、Subagent 子代理状态向上汇总、过滤归档及列表防缩水持久化
+    const baseMs = Date.now() - 30 * 60000;
+    const traj22 = {};
+    for (let i = 1; i <= 22; i++) {
+      const cid = `conv-root-${String(i).padStart(2, '0')}`;
+      const pid = i % 2 === 1 ? 'proj-a' : 'proj-b';
+      let status = 'CASCADE_RUN_STATUS_IDLE';
+      let termReason = 'EXECUTOR_TERMINATION_REASON_NO_TOOL_CALL';
+      if (i === 1) status = 'CASCADE_RUN_STATUS_RUNNING';
+      if (i === 2) status = 'CASCADE_RUN_STATUS_WAITING_FOR_USER';
+      if (i === 3) termReason = 'EXECUTOR_TERMINATION_REASON_ERROR';
+      traj22[cid] = {
+        summary: `Task ${i}`,
+        status,
+        latestExecutorTerminationReason: termReason,
+        lastModifiedTime: new Date(baseMs + i * 30000).toISOString(),
+        trajectoryMetadata: {
+          projectId: pid,
+          rootConversationId: cid
+        },
+        annotations: {
+          title: `任务 ${i}`,
+          lastUserViewTime: new Date(baseMs + 5000).toISOString()
+        }
+      };
+    }
+    // 增加 1 个已归档对话与 1 个后台运行中的 Subagent（应聚合到 conv-root-04 且自身不进列表）
+    traj22['conv-archived-1'] = {
+      summary: 'Archived Conversation',
+      status: 'CASCADE_RUN_STATUS_IDLE',
+      lastModifiedTime: new Date(baseMs + 1000).toISOString(),
+      trajectoryMetadata: { projectId: 'proj-a', rootConversationId: 'conv-archived-1' },
+      annotations: { title: '已归档会话', archived: true }
+    };
+    traj22['subagent-child-1'] = {
+      summary: 'Subagent Worker',
+      status: 'CASCADE_RUN_STATUS_RUNNING',
+      lastModifiedTime: new Date(baseMs + 990000).toISOString(),
+      trajectoryMetadata: {
+        projectId: 'proj-b',
+        rootConversationId: 'conv-root-04',
+        parentConversationId: 'conv-root-04'
+      }
+    };
+
+    const store = createSessionCatalogStore();
+    const snap1 = await store.enrichSnapshot({
+      ok: true,
+      sessionId: 'conv-root-01',
+      busy: true,
+      pendingApprovals: [],
+      conversations: [
+        { id: 'conv-root-01', title: '任务 1', active: true, projectId: 'proj-a' }
+      ],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: traj22 };
+          if (method === 'ListProjects') return { projectIds: ['proj-a', 'proj-b', 'proj-empty', 'proj-sidecar'] };
+          return {};
+        }
+      })
+    });
+
+    assert.equal(snap1.conversations.length, 22, '应完整保留全部 22 条非归档根会话且剔除 Subagent 与归档会话');
+    assert.equal(snap1.conversations.some((c) => c.id === 'subagent-child-1'), false, 'Subagent 子代理不应混入会话列表');
+    assert.equal(snap1.conversations.some((c) => c.id === 'conv-archived-1'), false, '已归档会话不应出现在默认活跃列表');
+    const c1 = snap1.conversations.find((c) => c.id === 'conv-root-01');
+    const c2 = snap1.conversations.find((c) => c.id === 'conv-root-02');
+    const c3 = snap1.conversations.find((c) => c.id === 'conv-root-03');
+    const c4 = snap1.conversations.find((c) => c.id === 'conv-root-04');
+    assert.equal(c1?.status, 'running');
+    assert.equal(c2?.status, 'waiting');
+    assert.equal(c3?.status, 'error');
+    assert.equal(c4?.status, 'running', '主会话 IDLE 时若旗下 Subagent 仍在运行，状态应向上汇总为 running');
+
+    assert.equal(snap1.projects.some((p) => p.id === 'proj-sidecar' || p.name === 'swarm/swarm_board'), false, 'sidecar 内部项目应被过滤');
+    const emptyP = snap1.projects.find((p) => p.id === 'proj-empty');
+    assert.ok(emptyP && emptyP.isEmpty && emptyP.conversationCount === 0, '无历史会话的普通项目应作为空项目保留');
+    assert.equal(snap1.currentProjectId, 'proj-a');
+    assert.equal(snap1.currentProjectName, 'Alpha App');
+
+    // 模拟桌面端自动折叠与语言服务只返回 2 条时，Sticky Catalog 仍保底不缩水
+    const shrunkTrajs = {
+      'conv-root-01': traj22['conv-root-01'],
+      'conv-root-02': traj22['conv-root-02']
+    };
+    const snap2 = await enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-root-01',
+      busy: false,
+      conversations: [{ id: 'conv-root-01', title: '任务 1', active: true, projectId: 'proj-a' }],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: shrunkTrajs };
+          return {};
+        }
+      })
+    });
+    assert.equal(snap2.conversations.length, 22, '桌面端折叠或语言服务缩减条目后，会话列表数量不得缩水');
+
+    // 2. 验证 ag-enhancer-overlay.js 按项目新建对话与跨折叠项目 SPA 路由跳转
+    const envEnh = createDomEnv();
+    envEnh.sandbox.setTimeout = setTimeout;
+    envEnh.sandbox.clearTimeout = clearTimeout;
+    envEnh.win.location = { pathname: '/c/conv-root-01', search: '' };
+    envEnh.win.history = {
+      pushState(_st, _t, url) {
+        const u = new URL(String(url), 'https://127.0.0.1');
+        envEnh.win.location.pathname = u.pathname;
+        envEnh.win.location.search = u.search;
+      }
+    };
+    envEnh.sandbox.location = envEnh.win.location;
+    envEnh.sandbox.fetch = async (url) => {
+      if (String(url).includes('/get-settings')) return { ok: true, json: async () => ({ uiPreferences: {} }) };
+      return { ok: true, json: async () => ({ ok: true }) };
+    };
+    const projBtn = envEnh.doc.createElement('button');
+    projBtn.setAttribute('data-testid', 'project-header');
+    projBtn.setAttribute('data-project-id', 'proj-b');
+    projBtn.setAttribute('data-project-label', 'Beta Service');
+    envEnh.doc.body.appendChild(projBtn);
+
+    vm.runInContext(RENDERER_SRC, envEnh.sandbox);
+    const apiEnh = envEnh.sandbox.__AGContextMeter;
+    vm.runInContext(ENHANCER_SRC, envEnh.sandbox);
+    const enhancer = envEnh.sandbox.__AGEnhancer;
+
+    const newProjAct = await enhancer.performMobileAction({ action: 'new-conversation', projectId: 'proj-b' });
+    assert.equal(newProjAct.ok, true);
+    assert.equal(envEnh.win.location.pathname, '/');
+    assert.equal(envEnh.win.location.search, '?project=proj-b');
+    const newProjSnap = enhancer.getMobileSnapshot();
+    assert.equal(newProjSnap.currentProjectId, 'proj-b');
+    assert.equal(newProjSnap.isNewConversation, true);
+    assert.ok(newProjSnap.title.includes('Beta Service'), '在指定项目新建对话时标题应体现所属项目名');
+
+    const switchCollapsedAct = await enhancer.performMobileAction({ action: 'switch-conversation', id: 'collapsed-conv-999' });
+    assert.equal(switchCollapsedAct.ok, true);
+    assert.equal(envEnh.win.location.pathname, '/c/collapsed-conv-999');
+
+    enhancer.dispose?.();
+    apiEnh?.dispose?.();
+
+    // 3. 验证远程网页 UI：按项目 / 最近活跃双视图、项目独立 + 按钮、选项目弹窗及全状态徽标渲染
+    const mobileHtml = buildMobileAppHtml();
+    const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(inlineScriptMatch, 'buildMobileAppHtml 应包含内联 <script>');
+    assert.doesNotThrow(() => new vm.Script(inlineScriptMatch[1]), '内联 <script> 必须通过语法校验');
+
+    const envUi = createDomEnv();
+    const bodyMatch = mobileHtml.match(/<body>([\s\S]*?)<script>/);
+    assert.ok(bodyMatch, 'HTML 应包含 <body> 内容');
+    envUi.doc.body.innerHTML = bodyMatch[1];
+
+    const dispatchedActions = [];
+    envUi.win.innerWidth = 1200;
+    envUi.win.innerHeight = 800;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: '?token=testtok', protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+    envUi.sandbox.fetch = async (url, init) => {
+      if (String(url).includes('/api/action')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        dispatchedActions.push(body);
+        return { ok: true, status: 200, json: async () => ({ ok: true, snapshot: snap1 }) };
+      }
+      if (String(url).includes('/api/snapshot')) {
+        return { ok: true, status: 200, json: async () => snap1 };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(inlineScriptMatch[1], envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    const convListEl = envUi.doc.getElementById('conv-list');
+    assert.ok(convListEl.querySelectorAll('.proj-group').length >= 2, '默认「按项目」视图应渲染多项目分组');
+    assert.equal(convListEl.querySelectorAll('.conv-item').length, 22, '展开态应渲染全部 22 条对话');
+    assert.ok(convListEl.innerHTML.includes('运行中') && convListEl.innerHTML.includes('待确认') && convListEl.innerHTML.includes('异常'),
+      '列表应呈现运行中、待确认与异常状态徽标');
+
+    const betaNewBtn = convListEl.querySelector('button[data-new-proj="proj-b"]');
+    assert.ok(betaNewBtn, '每个项目分组应提供独立 + 新建对话按钮');
+    betaNewBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(dispatchedActions[0], { action: 'new-conversation', projectId: 'proj-b' });
+
+    const pickProjBtn = envUi.doc.getElementById('btn-new-chat-project');
+    pickProjBtn.click();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(envUi.doc.getElementById('sheet-backdrop').hidden, false, '点击选项目下拉应弹出项目选择面板');
+    const sheetOpts = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt');
+    assert.ok(sheetOpts.some((o) => (o.textContent || '').includes('EmptyProj')), '选项目新建弹窗应包含空项目');
+    const emptyOpt = sheetOpts.find((o) => (o.textContent || '').includes('EmptyProj'));
+    emptyOpt.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(dispatchedActions[1], { action: 'new-conversation', projectId: 'proj-empty' });
+
+    const recentTab = envUi.doc.getElementById('conv-view-tabs').querySelector('button[data-conv-view="recent"]');
+    recentTab.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(convListEl.querySelectorAll('.conv-item').length, 22, '切换到「最近活跃」视图应保留展示至少 20+ 全量对话');
+    assert.ok(convListEl.querySelector('.c-sub')?.textContent?.includes('Alpha App') || convListEl.innerHTML.includes('Beta Service'),
+      '「最近活跃」视图应在每条对话旁标注所属项目名称');
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

@@ -2609,8 +2609,27 @@
   }
 
   function getSessionIdFromLocation() {
-    const m = location.pathname.match(/\/c\/([0-9a-fA-F-]{8,})/);
+    const pathname = String(location?.pathname || '');
+    const m = pathname.match(/\/c\/([0-9a-fA-F-]{8,})/);
     return m ? m[1] : null;
+  }
+
+  function parseProjectIdFromHref(href) {
+    const s = String(href || '');
+    const m = s.match(/[?&]project=([^&#]+)/);
+    if (!m || !m[1]) return '';
+    try { return decodeURIComponent(m[1]).trim(); } catch { return m[1].trim(); }
+  }
+
+  function getProjectIdFromLocation() {
+    try {
+      const rawSearch = String(location?.search || '').trim();
+      if (!rawSearch) return '';
+      const q = rawSearch.startsWith('?') ? rawSearch : `?${rawSearch}`;
+      return parseProjectIdFromHref(q);
+    } catch {
+      return '';
+    }
   }
 
   function extractDomFallbackMarkdown(sessionId) {
@@ -5084,18 +5103,284 @@
     return out;
   }
 
-  function collectSidebarConversations(limit = 25) {
+  function toSafeNumber(v) {
+    if (typeof v === 'bigint') return Number(v);
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function findTanStackRouter() {
+    try {
+      const anchors = [
+        document.querySelector('[data-testid="new-conversation-button"]'),
+        document.querySelector('[data-testid="conversation-list-sidebar"]'),
+        document.querySelector('a[href^="/c/"]')
+      ].filter(Boolean);
+      for (const el of anchors) {
+        const fk = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+        let f = fk ? el[fk] : null;
+        for (let d = 0; d < 45 && f; d++) {
+          let ctx = f.dependencies?.firstContext;
+          let guard = 0;
+          while (ctx && guard++ < 20) {
+            const v = ctx.memoizedValue;
+            if (v && typeof v === 'object' && (typeof v.history?.push === 'function' || (typeof v.navigate === 'function' && typeof v.parseLocation === 'function'))) {
+              return v;
+            }
+            ctx = ctx.next;
+          }
+          f = f.return;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  async function navigateSpaRoute(targetHref) {
+    const href = String(targetHref || '/').trim() || '/';
+    const cMatch = href.match(/^\/c\/([^/?#]+)/);
+    const pId = parseProjectIdFromHref(href);
+
+    if (cMatch) {
+      const cid = cMatch[1];
+      const row = findSidebarRowById(cid);
+      const link = row?.querySelector('a[href]')
+        || document.querySelector(`a[href="/c/${escapeCssIdent(cid)}"]`)
+        || document.querySelector(`a[href*="/c/${escapeCssIdent(cid)}"]`)
+        || row;
+      if (link && typeof link.click === 'function') {
+        link.click();
+        return { ok: true, method: 'dom-link' };
+      }
+    } else if (pId) {
+      const projLink = document.querySelector(`a[href="/?project=${escapeCssIdent(pId)}"]`)
+        || Array.from(document.querySelectorAll('a[href*="project="]')).find((a) => parseProjectIdFromHref(a.getAttribute('href')) === pId);
+      if (projLink && typeof projLink.click === 'function') {
+        projLink.click();
+        return { ok: true, method: 'dom-link' };
+      }
+    } else if (href === '/') {
+      const newBtn = document.querySelector('a[data-testid="new-conversation-button"], [data-testid="new-conversation-button"] a, [data-testid="new-conversation-button"]');
+      if (newBtn && typeof newBtn.click === 'function') {
+        newBtn.click();
+        return { ok: true, method: 'dom-link' };
+      }
+    }
+
+    const router = findTanStackRouter();
+    if (router) {
+      try {
+        if (typeof router.history?.push === 'function') {
+          router.history.push(href);
+          return { ok: true, method: 'router-history' };
+        }
+        if (typeof router.navigate === 'function') {
+          if (pId) await router.navigate({ to: '/', search: { project: pId } });
+          else await router.navigate({ to: href, search: {} });
+          return { ok: true, method: 'router-navigate' };
+        }
+      } catch {}
+    }
+
+    if (typeof window !== 'undefined' && typeof window.history?.pushState === 'function') {
+      try {
+        window.history.pushState({}, '', href);
+        const ev = typeof PopStateEvent === 'function' ? new PopStateEvent('popstate') : new Event('popstate');
+        window.dispatchEvent(ev);
+        return { ok: true, method: 'history-push' };
+      } catch {}
+    }
+
+    return { ok: false, error: '未找到可用的桌面端导航控制接口' };
+  }
+
+  function extractSidebarStoreCatalog() {
+    const projectMap = new Map();
+    const convs = [];
+    const seenConv = new Set();
+
+    const addProject = (raw) => {
+      const id = String(raw?.id || '').trim();
+      const name = String(raw?.name || raw?.label || '').trim();
+      if (!id || !name) return;
+      if (name === 'swarm/swarm_board') return;
+      const prev = projectMap.get(id);
+      if (!prev) {
+        projectMap.set(id, {
+          id,
+          name,
+          kind: String(raw?.kind || 'project'),
+          isCollapsed: Boolean(raw?.isCollapsed)
+        });
+      } else if (raw?.isCollapsed !== undefined) {
+        prev.isCollapsed = Boolean(raw.isCollapsed);
+      }
+    };
+
+    try {
+      const listEl = document.querySelector('[data-testid="conversation-list-sidebar"]');
+      if (listEl) {
+        const fk = Object.keys(listEl).find((k) => k.startsWith('__reactFiber$'));
+        let f = fk ? listEl[fk] : null;
+        const collapsedById = new Map();
+        const convGroupMap = new Map();
+
+        // 从虚拟列表 items 读取当前折叠态与会话归属映射
+        const uMc = f?.return;
+        if (Array.isArray(uMc?.memoizedProps?.items)) {
+          for (const it of uMc.memoizedProps.items) {
+            if (!it || typeof it !== 'object') continue;
+            if (it.type === 'header' && typeof it.id === 'string' && it.id.startsWith('header-')) {
+              collapsedById.set(it.id.slice(7), Boolean(it.isCollapsed));
+            } else if (it.type === 'row' && it.cascadeId && it.groupId) {
+              convGroupMap.set(String(it.cascadeId), String(it.groupId));
+            }
+          }
+        }
+
+        // 向上查找包含完整项目分组（含折叠组内全量会话）的 Hook 状态
+        let groups = null;
+        for (let d = 0; d < 16 && f; d++) {
+          let st = f.memoizedState;
+          let guard = 0;
+          while (st && guard++ < 30) {
+            const val = st.memoizedState;
+            if (Array.isArray(val) && val.length > 0 && val[0] && typeof val[0] === 'object'
+              && typeof val[0].id === 'string' && (Array.isArray(val[0].entries) || Array.isArray(val[0].conversationIds))) {
+              groups = val;
+              break;
+            }
+            st = st.next;
+          }
+          if (groups) break;
+          f = f.return;
+        }
+
+        if (Array.isArray(groups)) {
+          for (const g of groups) {
+            if (!g || typeof g !== 'object') continue;
+            const gId = String(g.id || '').trim();
+            const gName = String(g.label || '').trim();
+            if (!gId || gName === 'swarm/swarm_board') continue;
+            const entries = Array.isArray(g.entries) ? g.entries : [];
+            if ((gId === 'outside-of-project' || gId === 'standalone') && entries.length === 0) continue;
+            addProject({
+              id: gId,
+              name: gName || gId,
+              kind: g.kind || 'project',
+              isCollapsed: collapsedById.get(gId)
+            });
+            for (const entry of entries) {
+              const cid = String(entry?.cascadeId || entry?.conversation?.conversationId || '').trim();
+              if (!cid || seenConv.has(cid)) continue;
+              seenConv.add(cid);
+              const rawSummary = String(entry?.conversation?.summary || '').replace(/\s+/g, ' ').trim();
+              const cachedZh = (uiLang === 'zh' && !sidebarUserRenamedIds.has(cid)) ? sidebarZhCache.get(cid) : '';
+              const pid = String(entry?.projectId || convGroupMap.get(cid) || gId).trim();
+              convs.push({
+                id: cid,
+                projectId: pid,
+                projectName: gName || '',
+                title: (cachedZh || rawSummary || cid.slice(0, 8)).slice(0, 80),
+                timeKey: toSafeNumber(entry?.timeKey),
+                workspaceUri: String(entry?.workspaceUriStr || '')
+              });
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // DOM 项目标题栏回退与补充（兼容无 React Fiber 的环境及测试 DOM）
+    try {
+      const headers = document.querySelectorAll('[data-testid="project-header"]');
+      for (const btn of headers) {
+        const name = String(btn.getAttribute('data-project-label') || btn.textContent || '').replace(/\s+/g, ' ').trim();
+        const wrap = btn.parentElement?.parentElement || btn.parentElement;
+        const projLink = wrap?.querySelector?.('a[href*="project="]');
+        const pid = parseProjectIdFromHref(projLink?.getAttribute?.('href')) || btn.getAttribute('data-project-id') || '';
+        if (!pid || !name) continue;
+        addProject({
+          id: pid,
+          name,
+          kind: 'project',
+          isCollapsed: btn.getAttribute('aria-expanded') === 'false'
+        });
+      }
+    } catch {}
+
+    return {
+      projects: Array.from(projectMap.values()),
+      conversations: convs
+    };
+  }
+
+  function collectSidebarConversations(limit = 100) {
     const currentId = getSessionIdFromLocation() || '';
     const rows = getOrderedSidebarConversationRows();
     const list = [];
+    const byId = new Map();
+    const domProjectMap = new Map();
+
+    // 从当前渲染序列追踪 DOM 行所属的项目头（用于无 Fiber 时的 DOM 分组推断）
+    try {
+      const nodes = document.querySelectorAll('[data-testid="project-header"], [data-testid="conversation-row-sidebar"]');
+      let activeHeaderPid = '';
+      for (const n of nodes) {
+        if (n.getAttribute('data-testid') === 'project-header') {
+          const wrap = n.parentElement?.parentElement || n.parentElement;
+          const pLink = wrap?.querySelector?.('a[href*="project="]');
+          activeHeaderPid = parseProjectIdFromHref(pLink?.getAttribute?.('href')) || n.getAttribute('data-project-id') || '';
+        } else {
+          const cid = extractSidebarRowId(n);
+          if (cid && activeHeaderPid) domProjectMap.set(cid, activeHeaderPid);
+        }
+      }
+    } catch {}
+
+    const storeCatalog = extractSidebarStoreCatalog();
+    const storeById = new Map(storeCatalog.conversations.map((c) => [c.id, c]));
+
     for (const row of rows) {
       const id = extractSidebarRowId(row);
-      if (!id) continue;
+      if (!id || byId.has(id)) continue;
+      const storeMeta = storeById.get(id);
       const title = getSidebarRowDisplayTitle(row);
       const active = isSidebarRowActive(row, currentId);
-      list.push({ id, title: title.slice(0, 80), active });
+      const domBusy = Boolean(row.querySelector('[data-testid="status-loading-spinner"], button[aria-label*="停止"], button[aria-label*="Stop"]'));
+      const pinned = row.getAttribute('data-pinned') === 'true';
+      const item = {
+        id,
+        title: title.slice(0, 80),
+        active,
+        projectId: storeMeta?.projectId || domProjectMap.get(id) || '',
+        projectName: storeMeta?.projectName || '',
+        domBusy,
+        pinned,
+        timeKey: toSafeNumber(storeMeta?.timeKey)
+      };
+      byId.set(id, item);
+      list.push(item);
       if (list.length >= limit) break;
     }
+
+    for (const sc of storeCatalog.conversations) {
+      if (list.length >= limit) break;
+      if (byId.has(sc.id)) continue;
+      const item = {
+        id: sc.id,
+        title: sc.title,
+        active: Boolean(currentId && sc.id === currentId),
+        projectId: sc.projectId || '',
+        projectName: sc.projectName || '',
+        domBusy: false,
+        pinned: false,
+        timeKey: toSafeNumber(sc.timeKey)
+      };
+      byId.set(sc.id, item);
+      list.push(item);
+    }
+
     return list;
   }
 
@@ -5127,9 +5412,15 @@
 
   function getMobileSnapshot() {
     const sessionId = getSessionIdFromLocation() || '';
-    const conversations = collectSidebarConversations(25);
+    const storeCatalog = extractSidebarStoreCatalog();
+    const conversations = collectSidebarConversations(100);
     const activeConv = conversations.find((c) => c.active);
     const busy = isAssistantBusy();
+    const locProjectId = getProjectIdFromLocation();
+    const currentProjectId = locProjectId || activeConv?.projectId || '';
+    const matchedProj = storeCatalog.projects.find((p) => p.id === currentProjectId);
+    const currentProjectName = activeConv?.projectName || matchedProj?.name || '';
+    const isNewConversation = !sessionId;
     const { sr } = getMeterHostAndShadow();
     const contextBadge = (
       sr?.getElementById('amount')?.textContent ||
@@ -5173,12 +5464,23 @@
     const messages = collectRecentMessages(20);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
 
+    if (activeConv) {
+      if (pendingApprovals.length > 0) activeConv.status = 'waiting';
+      else if (busy) activeConv.status = 'running';
+    }
+
+    const title = activeConv?.title
+      || (isNewConversation ? (currentProjectName ? `新建对话 · ${currentProjectName}` : '新建对话') : (document.title || 'Antigravity'));
+
     return {
       ok: true,
-      version: '1.6.9',
+      version: '1.7.0',
       timestamp: Date.now(),
       sessionId,
-      title: activeConv?.title || document.title || 'Antigravity',
+      isNewConversation,
+      currentProjectId,
+      currentProjectName,
+      title,
       busy,
       autoAccept: autoAcceptEnabled,
       model,
@@ -5196,6 +5498,7 @@
       pendingApprovals,
       suggestions,
       messages,
+      projects: storeCatalog.projects,
       conversations
     };
   }
@@ -5276,23 +5579,23 @@
       return { ok: true, label: picked.label, kind: picked.kind };
     }
 
+    if (action === 'new-conversation' || (action === 'switch-conversation' && String(payload?.id || '').trim() === 'new')) {
+      const projectId = String(payload?.projectId || '').trim();
+      const skipProject = !projectId || projectId === 'ungrouped' || projectId === 'outside-of-project' || projectId === 'standalone';
+      const targetHref = skipProject ? '/' : `/?project=${encodeURIComponent(projectId)}`;
+      const nav = await navigateSpaRoute(targetHref);
+      if (!nav.ok) return { ok: false, error: nav.error || '新建对话导航失败' };
+      await new Promise((r) => setTimeout(r, 180));
+      return { ok: true, id: 'new', projectId: skipProject ? '' : projectId, method: nav.method, pathname: location?.pathname || '/', search: location?.search || '' };
+    }
+
     if (action === 'switch-conversation') {
       const targetId = String(payload?.id || '').trim();
       if (!targetId) return { ok: false, error: '缺少会话 ID' };
-      if (targetId === 'new') {
-        const newBtn = document.querySelector('a[data-testid="new-conversation-button"], [data-testid="new-conversation-button"] a, [data-testid="new-conversation-button"]');
-        if (!newBtn) return { ok: false, error: '未找到新建对话按钮' };
-        newBtn.click();
-        await new Promise((r) => setTimeout(r, 180));
-        return { ok: true, id: 'new' };
-      }
-      const row = findSidebarRowById(targetId);
-      const link = row?.querySelector('a[href]') || document.querySelector(`a[href*="/c/${escapeCssIdent(targetId)}"]`);
-      const clickTarget = link || row;
-      if (!clickTarget) return { ok: false, error: '未在侧边栏找到该会话' };
-      clickTarget.click();
+      const nav = await navigateSpaRoute(`/c/${targetId}`);
+      if (!nav.ok) return { ok: false, error: nav.error || '未找到该会话的跳转入口' };
       await new Promise((r) => setTimeout(r, 180));
-      return { ok: true, id: targetId, pathname: location.pathname };
+      return { ok: true, id: targetId, method: nav.method, pathname: location?.pathname || `/c/${targetId}` };
     }
 
     if (action === 'toggle-thinking') {

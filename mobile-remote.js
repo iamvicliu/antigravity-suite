@@ -15,7 +15,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.1';
+const MOBILE_UI_VERSION = '1.9.2';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1193,6 +1193,486 @@ async function pickCdpTarget(requestedId) {
   return { target: targets[0], windows: cleanWindows };
 }
 
+// ==================== 多项目融合目录、会话状态汇总与防缩水缓存 ====================
+
+const SESSION_CATALOG_FILE_NAME = 'remote-session-catalog.json';
+const MAX_CATALOG_PERSIST = 200;
+const MAX_CATALOG_OUTPUT = 150;
+const INTERNAL_EMPTY_PROJECT_IDS = new Set(['default-cli-project', 'outside-of-project', 'standalone']);
+
+function isCatalogTestEnv() {
+  return process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+}
+
+function normalizeTrajectoryStatus(rawStatus, termReason, options = {}) {
+  const s = String(rawStatus || '');
+  const r = String(termReason || '');
+  if (
+    options.hasPendingApprovals ||
+    s === 'CASCADE_RUN_STATUS_WAITING_FOR_USER' ||
+    options.subagentWaiting
+  ) {
+    return 'waiting';
+  }
+  if (
+    options.activeBusy ||
+    options.domBusy ||
+    s === 'CASCADE_RUN_STATUS_RUNNING' ||
+    options.subagentRunning
+  ) {
+    return 'running';
+  }
+  if (r === 'EXECUTOR_TERMINATION_REASON_ERROR') {
+    return 'error';
+  }
+  return 'idle';
+}
+
+function statusToLabel(status) {
+  if (status === 'waiting') return '待确认';
+  if (status === 'running') return '运行中';
+  if (status === 'error') return '异常';
+  return '';
+}
+
+function parseIsoTimestampMs(raw) {
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw > 1e12 && raw < 4e12 ? raw : 0;
+  }
+  const s = String(raw || '').trim();
+  if (!s) return 0;
+  const ms = Date.parse(s);
+  return Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
+function decodeFileUriToPath(rawUri) {
+  const s = String(rawUri || '').trim();
+  if (!s) return '';
+  if (!/^file:\/\//i.test(s)) return path.resolve(s);
+  try {
+    const u = new URL(s);
+    let p = decodeURIComponent(u.pathname || '');
+    if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(p)) p = p.slice(1);
+    return p ? path.resolve(p) : '';
+  } catch {
+    return '';
+  }
+}
+
+function matchWorkspaceToProjectId(traj, projectsMetaMap) {
+  const meta = traj?.trajectoryMetadata || {};
+  const uris = [];
+  for (const ws of (Array.isArray(traj?.workspaces) ? traj.workspaces : [])) {
+    if (ws?.workspaceFolderAbsoluteUri) uris.push(ws.workspaceFolderAbsoluteUri);
+    if (ws?.gitRootAbsoluteUri) uris.push(ws.gitRootAbsoluteUri);
+  }
+  for (const ws of (Array.isArray(meta.workspaces) ? meta.workspaces : [])) {
+    if (ws?.workspaceFolderAbsoluteUri) uris.push(ws.workspaceFolderAbsoluteUri);
+    if (ws?.gitRootAbsoluteUri) uris.push(ws.gitRootAbsoluteUri);
+  }
+  for (const u of (Array.isArray(meta.workspaceUris) ? meta.workspaceUris : [])) {
+    uris.push(u);
+  }
+
+  for (const uri of uris) {
+    const wsPath = decodeFileUriToPath(uri);
+    if (!wsPath) continue;
+    for (const proj of projectsMetaMap.values()) {
+      for (const pPath of proj.workspacePaths) {
+        if (wsPath === pPath || wsPath.startsWith(pPath + path.sep) || pPath.startsWith(wsPath + path.sep)) {
+          return proj.id;
+        }
+      }
+    }
+  }
+  return '';
+}
+
+function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
+  const explicitDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim();
+  let configDir = explicitDir;
+  if (!configDir) {
+    if (isCatalogTestEnv()) return { metaMap: new Map(), excludedIds: new Set() };
+    configDir = path.join(os.homedir(), '.gemini', 'config');
+  }
+  const projectsDir = path.join(configDir, 'projects');
+  const nowMs = Date.now();
+  if (
+    cacheRef &&
+    !options.bypassCache &&
+    cacheRef.projectsDir === projectsDir &&
+    cacheRef.data &&
+    nowMs - cacheRef.fetchedAt < 10000
+  ) {
+    return cacheRef.data;
+  }
+
+  const metaMap = new Map();
+  const excludedIds = new Set();
+  try {
+    if (fs.existsSync(projectsDir)) {
+      const files = fs.readdirSync(projectsDir).filter((f) => f.endsWith('.json'));
+      for (const f of files) {
+        const readRes = safeReadJsonSync(path.join(projectsDir, f), null);
+        const parsed = readRes?.ok ? readRes.data : null;
+        if (!parsed || typeof parsed !== 'object') continue;
+        const id = String(parsed.id || parsed.projectId || f.slice(0, -5)).trim();
+        const name = String(parsed.name || id).trim();
+        if (parsed.sidecar || name === 'swarm/swarm_board') {
+          if (id) excludedIds.add(id);
+          continue;
+        }
+        if (!id || !name) continue;
+        const workspacePaths = [];
+        const resources = Array.isArray(parsed.projectResources?.resources) ? parsed.projectResources.resources : [];
+        for (const r of resources) {
+          const uri = r?.gitFolder?.folderUri || r?.folderUri;
+          const p = decodeFileUriToPath(uri);
+          if (p) workspacePaths.push(p);
+        }
+        metaMap.set(id, { id, name, workspacePaths });
+      }
+    }
+  } catch {}
+
+  const resData = { metaMap, excludedIds };
+  if (cacheRef) {
+    cacheRef.projectsDir = projectsDir;
+    cacheRef.fetchedAt = nowMs;
+    cacheRef.data = resData;
+  }
+  return resData;
+}
+
+function withRaceTimeout(promise, ms, fallback = null) {
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms);
+      timer.unref?.();
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function createSessionCatalogStore() {
+  const registryByDir = new Map();
+  const projectsCache = { projectsDir: '', fetchedAt: 0, data: null };
+  const trajCache = { at: 0, data: null };
+
+  function getStickyStoreForDir(stateDir) {
+    const dir = String(stateDir || getStateDir());
+    let entry = registryByDir.get(dir);
+    if (!entry) {
+      const filePath = path.join(dir, SESSION_CATALOG_FILE_NAME);
+      const savedRes = safeReadJsonSync(filePath, null);
+      const saved = savedRes?.ok ? savedRes.data : null;
+      const map = new Map();
+      const rawItems = Array.isArray(saved?.conversations) ? saved.conversations : [];
+      for (const item of rawItems) {
+        if (!item || typeof item !== 'object' || !item.id) continue;
+        map.set(String(item.id), { ...item });
+      }
+      entry = { dir, filePath, map, lastSig: '' };
+      registryByDir.set(dir, entry);
+    }
+    return entry;
+  }
+
+  async function fetchTrajectories(options = {}) {
+    const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
+    const nowMs = Date.now();
+    if (!customConnect && !options.bypassCache && trajCache.data && nowMs - trajCache.at < 2000) {
+      return trajCache.data;
+    }
+
+    let connectFn = customConnect;
+    if (!connectFn) {
+      if (isCatalogTestEnv()) return null;
+      try {
+        connectFn = require('./local-api').connect;
+      } catch {
+        return null;
+      }
+    }
+
+    try {
+      const api = typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1200, null) : connectFn;
+      if (!api || typeof api.call !== 'function') return null;
+      const [trajRes, listProjRes] = await Promise.all([
+        withRaceTimeout(api.call('GetAllCascadeTrajectories', {}), 1500, null),
+        withRaceTimeout(api.call('ListProjects', {}), 1000, null)
+      ]);
+      const data = {
+        summaries: (trajRes && typeof trajRes.trajectorySummaries === 'object') ? trajRes.trajectorySummaries : {},
+        projectIds: Array.isArray(listProjRes?.projectIds) ? listProjRes.projectIds : []
+      };
+      if (!customConnect) {
+        trajCache.at = Date.now();
+        trajCache.data = data;
+      }
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
+  async function enrichSnapshot(snap, options = {}) {
+    if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
+
+    const store = getStickyStoreForDir(options.stateDir || getStateDir());
+    const { metaMap: projectsMeta, excludedIds: excludedProjectIds } = loadProjectsMetaFromDisk(options, projectsCache);
+    const trajData = await fetchTrajectories(options);
+
+    // 1. 构建项目名称字典（融合磁盘配置 + 语言服务项目 ID + 前端 DOM/Fiber 项目组）
+    const projectNameMap = new Map();
+    for (const p of projectsMeta.values()) {
+      projectNameMap.set(p.id, p.name);
+    }
+    for (const pid of (trajData?.projectIds || [])) {
+      const id = String(pid || '').trim();
+      if (!id || id === 'swarm/swarm_board' || excludedProjectIds.has(id)) continue;
+      if (!projectNameMap.has(id)) {
+        projectNameMap.set(id, id === 'default-cli-project' ? 'CLI Project' : id);
+      }
+    }
+    for (const fp of (Array.isArray(snap.projects) ? snap.projects : [])) {
+      const id = String(fp?.id || '').trim();
+      const name = String(fp?.name || '').trim();
+      if (!id || !name || name === 'swarm/swarm_board' || excludedProjectIds.has(id)) continue;
+      if (!projectNameMap.has(id) || projectNameMap.get(id) === id) {
+        projectNameMap.set(id, name);
+      }
+    }
+
+    // 2. 分析轨迹汇总：区分根会话与 Subagent 子代理并向上汇总运行态
+    const summaries = trajData?.summaries || {};
+    const rootTrajs = new Map();
+    const subagentRollup = new Map();
+
+    for (const [cid, t] of Object.entries(summaries)) {
+      if (!t || typeof t !== 'object') continue;
+      const meta = t.trajectoryMetadata || {};
+      const rootId = String(meta.rootConversationId || meta.parentConversationId || t.parentConversationId || '').trim();
+      const isSubagent = Boolean(
+        (rootId && rootId !== cid) ||
+        meta.parentConversationId ||
+        t.parentConversationId ||
+        meta.isSubagent ||
+        t.isSubagent
+      );
+      if (isSubagent) {
+        if (rootId) {
+          const prevRoll = subagentRollup.get(rootId) || { waiting: false, running: false, maxUpdatedAt: 0 };
+          const s = String(t.status || '');
+          if (s === 'CASCADE_RUN_STATUS_WAITING_FOR_USER') prevRoll.waiting = true;
+          else if (s === 'CASCADE_RUN_STATUS_RUNNING') prevRoll.running = true;
+          const modMs = parseIsoTimestampMs(t.lastModifiedTime);
+          if (modMs > prevRoll.maxUpdatedAt) prevRoll.maxUpdatedAt = modMs;
+          subagentRollup.set(rootId, prevRoll);
+        }
+        continue;
+      }
+      rootTrajs.set(cid, t);
+    }
+
+    // 3. 索引前端捕获的当前快照会话（含本地化译名与即时 DOM 状态）
+    const snapConvMap = new Map();
+    for (const c of (Array.isArray(snap.conversations) ? snap.conversations : [])) {
+      if (c && c.id) snapConvMap.set(String(c.id), c);
+    }
+
+    const activeSessionId = String(snap.sessionId || '').trim();
+    const hasPendingApprovals = Array.isArray(snap.pendingApprovals) && snap.pendingApprovals.length > 0;
+    const nowMs = Date.now();
+    const allIds = new Set([...store.map.keys(), ...rootTrajs.keys(), ...snapConvMap.keys()]);
+
+    for (const id of allIds) {
+      const prev = store.map.get(id);
+      const t = rootTrajs.get(id);
+      const sc = snapConvMap.get(id);
+      const roll = subagentRollup.get(id);
+      const isActive = Boolean((activeSessionId && id === activeSessionId) || sc?.active);
+
+      const archived = (t?.annotations?.archived === true && !isActive)
+        ? true
+        : (t ? false : Boolean(prev?.archived && !isActive));
+
+      const snapTitle = String(sc?.title || '').trim();
+      const isUsefulSnapTitle = Boolean(snapTitle && snapTitle !== id.slice(0, 8));
+      const trajTitle = String(t?.annotations?.title || t?.summary || '').trim();
+      const title = (isUsefulSnapTitle ? snapTitle : '') || trajTitle || prev?.title || snapTitle || id.slice(0, 8);
+
+      const snapPid = String(sc?.projectId || '').trim();
+      const trajPid = String(t?.trajectoryMetadata?.projectId || '').trim();
+      const wsPid = t ? matchWorkspaceToProjectId(t, projectsMeta) : '';
+      let projectId = (snapPid && snapPid !== 'ungrouped') ? snapPid : (trajPid || wsPid || String(prev?.projectId || '').trim());
+      if (projectId === 'outside-of-project' && !projectNameMap.has('outside-of-project')) {
+        projectNameMap.set('outside-of-project', '独立对话');
+      }
+
+      const modMs = parseIsoTimestampMs(t?.lastModifiedTime);
+      const scTimeMs = parseIsoTimestampMs(sc?.timeKey);
+      const subMs = roll?.maxUpdatedAt || 0;
+      const updatedAt = Math.max(modMs, scTimeMs, subMs, Number(prev?.updatedAt) || 0) || nowMs;
+
+      const viewMs = Math.max(
+        parseIsoTimestampMs(t?.annotations?.lastUserViewTime),
+        Number(prev?.lastViewedAt) || 0,
+        isActive ? updatedAt : 0
+      );
+
+      const pinned = Boolean(
+        sc?.pinned !== undefined ? sc.pinned
+          : (t?.annotations?.pinned !== undefined ? t.annotations.pinned : prev?.pinned)
+      );
+
+      const status = normalizeTrajectoryStatus(t?.status, t?.latestExecutorTerminationReason, {
+        hasPendingApprovals: isActive && hasPendingApprovals,
+        activeBusy: isActive && Boolean(snap.busy),
+        domBusy: Boolean(sc?.domBusy),
+        subagentWaiting: Boolean(roll?.waiting),
+        subagentRunning: Boolean(roll?.running)
+      });
+
+      const projectName = String(
+        projectNameMap.get(projectId) ||
+        sc?.projectName ||
+        prev?.projectName ||
+        (projectId ? projectId : '未归属项目')
+      );
+
+      if (projectId && !projectNameMap.has(projectId)) {
+        projectNameMap.set(projectId, projectName);
+      }
+
+      store.map.set(id, {
+        id,
+        title: title.slice(0, 100),
+        projectId: projectId || 'ungrouped',
+        projectName,
+        pinned,
+        archived,
+        updatedAt,
+        lastViewedAt: viewMs,
+        status,
+        statusLabel: statusToLabel(status)
+      });
+    }
+
+    // 4. 裁剪持久化目录上限并按需落盘（避免无变化时高频写盘）
+    const persistedSorted = Array.from(store.map.values())
+      .sort((a, b) => (b.updatedAt - a.updatedAt))
+      .slice(0, MAX_CATALOG_PERSIST);
+    if (persistedSorted.length < store.map.size) {
+      store.map.clear();
+      for (const item of persistedSorted) store.map.set(item.id, item);
+    }
+
+    const activeConvs = persistedSorted
+      .filter((c) => !c.archived)
+      .sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt))
+      .slice(0, MAX_CATALOG_OUTPUT)
+      .map((c) => {
+        const isActive = Boolean((activeSessionId && c.id === activeSessionId) || snapConvMap.get(c.id)?.active);
+        const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
+        return {
+          id: c.id,
+          title: c.title,
+          active: isActive,
+          projectId: c.projectId || 'ungrouped',
+          projectName: c.projectName || '未归属项目',
+          status: c.status || 'idle',
+          statusLabel: c.statusLabel || '',
+          unread,
+          pinned: Boolean(c.pinned),
+          updatedAt: c.updatedAt
+        };
+      });
+
+    const persistSig = JSON.stringify(persistedSorted.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt]));
+    if (persistSig !== store.lastSig) {
+      store.lastSig = persistSig;
+      safeWriteJsonSync(store.filePath, {
+        version: 1,
+        updatedAt: nowMs,
+        conversations: persistedSorted
+      });
+    }
+
+    // 5. 聚合并排序多项目列表（包含无历史会话的空项目，过滤内部空项目）
+    const activeConvObj = activeConvs.find((c) => c.active);
+    const currentProjectId = String(snap.currentProjectId || activeConvObj?.projectId || '').trim();
+    const projectStats = new Map();
+
+    const ensureProjBucket = (pid, name) => {
+      if (!projectStats.has(pid)) {
+        projectStats.set(pid, {
+          id: pid,
+          name: name || pid,
+          conversationCount: 0,
+          runningCount: 0,
+          waitingCount: 0,
+          unreadCount: 0,
+          lastActiveAt: 0
+        });
+      }
+      return projectStats.get(pid);
+    };
+
+    for (const [pid, name] of projectNameMap.entries()) {
+      ensureProjBucket(pid, name);
+    }
+
+    for (const c of activeConvs) {
+      const pid = c.projectId || 'ungrouped';
+      const bucket = ensureProjBucket(pid, c.projectName || '未归属项目');
+      bucket.conversationCount += 1;
+      if (c.status === 'running') bucket.runningCount += 1;
+      if (c.status === 'waiting') bucket.waitingCount += 1;
+      if (c.unread) bucket.unreadCount += 1;
+      if (c.updatedAt > bucket.lastActiveAt) bucket.lastActiveAt = c.updatedAt;
+    }
+
+    const projects = Array.from(projectStats.values())
+      .filter((p) => !(INTERNAL_EMPTY_PROJECT_IDS.has(p.id) && p.conversationCount === 0))
+      .filter((p) => !(p.id === 'ungrouped' && p.conversationCount === 0))
+      .map((p) => ({
+        ...p,
+        isEmpty: p.conversationCount === 0,
+        active: Boolean(currentProjectId && p.id === currentProjectId)
+      }))
+      .sort((a, b) => {
+        if ((a.conversationCount > 0) !== (b.conversationCount > 0)) {
+          return a.conversationCount > 0 ? -1 : 1;
+        }
+        if (b.lastActiveAt !== a.lastActiveAt) return b.lastActiveAt - a.lastActiveAt;
+        return a.name.localeCompare(b.name, 'zh-Hans-CN');
+      });
+
+    const currentProj = projects.find((p) => p.id === currentProjectId);
+    const currentProjectName = String(snap.currentProjectName || currentProj?.name || '').trim();
+
+    return {
+      ...snap,
+      currentProjectId,
+      currentProjectName,
+      projects,
+      conversations: activeConvs
+    };
+  }
+
+  return { enrichSnapshot };
+}
+
+const defaultCatalogStore = createSessionCatalogStore();
+
+function enrichSnapshotWithCatalog(snap, options = {}) {
+  return defaultCatalogStore.enrichSnapshot(snap, options);
+}
+
 async function fetchSnapshotFromTarget(requestedTargetId) {
   const { target, windows } = await pickCdpTarget(requestedTargetId);
   const expr = `(() => {
@@ -1206,11 +1686,16 @@ async function fetchSnapshotFromTarget(requestedTargetId) {
   if (!snap || typeof snap !== 'object') {
     throw new Error('未能读取窗口快照');
   }
-  return {
+  const baseSnap = {
     ...snap,
     currentTargetId: target.id,
     windows
   };
+  try {
+    return await enrichSnapshotWithCatalog(baseSnap);
+  } catch {
+    return baseSnap;
+  }
 }
 
 async function performActionInTarget(payload) {
@@ -1224,7 +1709,8 @@ async function performActionInTarget(payload) {
     return await fn(${serialized});
   })()`;
   const actionResult = await evalInTarget(target, expr, 6000);
-  const settleMs = payload?.action === 'switch-conversation' ? 250 : 120;
+  const act = payload?.action;
+  const settleMs = (act === 'switch-conversation' || act === 'new-conversation') ? 260 : 120;
   await new Promise((r) => setTimeout(r, settleMs));
   const snapshot = await fetchSnapshotFromTarget(target.id).catch(() => null);
   return {
@@ -1539,22 +2025,89 @@ function buildMobileAppHtml() {
     }
     .drawer-backdrop.open .drawer{transform:translateX(0)}
     .drawer-backdrop.dragging .drawer{transition:none}
+    .new-chat-group{display:flex;align-items:stretch;gap:6px;flex-shrink:0}
     .new-chat-btn{
-      appearance:none;width:100%;min-height:44px;padding:10px 14px;border-radius:12px;
+      appearance:none;flex:1 1 auto;min-width:0;min-height:44px;padding:10px 12px;border-radius:12px;
       background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.13);color:#fafafa;
-      font-size:14.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;
-      flex-shrink:0;
+      font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;
     }
-    .new-chat-btn:active{background:rgba(56,189,248,.18);border-color:rgba(56,189,248,.5);color:#fff}
-    .drawer-sub{font-size:12px;font-weight:600;color:#71717a;padding:2px 4px 0;flex-shrink:0}
+    .new-chat-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .new-chat-pick-btn{
+      appearance:none;width:42px;min-height:44px;flex-shrink:0;border-radius:12px;
+      background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.13);color:#d4d4d8;
+      display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+    }
+    .new-chat-btn:active,.new-chat-pick-btn:active{background:rgba(56,189,248,.18);border-color:rgba(56,189,248,.5);color:#fff}
+    .conv-view-tabs{
+      display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:3px;border-radius:10px;
+      background:rgba(255,255,255,.04);border:1px solid var(--border);flex-shrink:0;
+    }
+    .conv-tab{
+      appearance:none;border:none;background:transparent;color:#a1a1aa;border-radius:7px;
+      padding:6px 8px;font-size:12px;font-weight:600;cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center;gap:4px;
+    }
+    .conv-tab.active{background:rgba(56,189,248,.18);color:#e0f2fe}
+    .tab-count{font-size:11px;opacity:.78;font-variant-numeric:tabular-nums}
+    .proj-group{display:flex;flex-direction:column;gap:4px}
+    .proj-head{display:flex;align-items:center;gap:4px;padding:2px 0}
+    .proj-toggle{
+      appearance:none;flex:1 1 auto;min-width:0;border:none;background:transparent;color:#d4d4d8;
+      padding:6px 6px;border-radius:8px;font-size:12.5px;font-weight:600;
+      display:flex;align-items:center;gap:6px;cursor:pointer;text-align:left;
+    }
+    .proj-chev{font-size:10px;color:#71717a;width:11px;flex-shrink:0;text-align:center}
+    .proj-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .proj-stat-dot{width:6px;height:6px;border-radius:99px;flex-shrink:0}
+    .proj-stat-dot.running{background:var(--green);animation:pulse 1.1s infinite ease-in-out}
+    .proj-stat-dot.waiting{background:var(--amber);animation:pulse 1s infinite ease-in-out}
+    .proj-count{margin-left:auto;font-size:11px;color:#71717a;font-weight:500;font-variant-numeric:tabular-nums;flex-shrink:0}
+    .proj-new-btn{
+      appearance:none;width:28px;height:28px;flex-shrink:0;border-radius:8px;
+      border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.04);color:#a1a1aa;
+      display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;line-height:1;
+    }
+    .proj-new-btn:active{background:rgba(56,189,248,.18);border-color:rgba(56,189,248,.45);color:#fff}
+    .proj-body{display:flex;flex-direction:column;gap:5px;padding-left:6px}
+    .proj-empty-sec{margin-top:4px;border-top:1px dashed var(--border);padding-top:6px;display:flex;flex-direction:column;gap:4px}
+    .proj-empty-toggle{
+      appearance:none;border:none;background:transparent;color:#71717a;font-size:12px;font-weight:600;
+      padding:4px 6px;border-radius:8px;display:flex;align-items:center;gap:6px;cursor:pointer;text-align:left;
+    }
+    .proj-empty-row{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 4px 4px 10px;
+      border-radius:8px;color:#a1a1aa;font-size:12.5px;
+    }
+    .proj-empty-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .conv-item{
-      width:100%;text-align:left;padding:11px 12px;border-radius:11px;border:1px solid transparent;
-      background:rgba(255,255,255,.04);color:var(--fg);font-size:14px;cursor:pointer;
+      width:100%;text-align:left;padding:9px 11px;border-radius:10px;border:1px solid transparent;
+      background:rgba(255,255,255,.04);color:var(--fg);font-size:13.5px;cursor:pointer;
+      display:flex;flex-direction:column;gap:3px;
     }
     .conv-item.active{border-color:rgba(56,189,248,.6);background:rgba(56,189,248,.14);font-weight:600}
+    .conv-item.is-unread .c-title{font-weight:600;color:#fff}
+    .c-row{display:flex;align-items:center;gap:6px;min-width:0;width:100%}
+    .c-dot{width:7px;height:7px;border-radius:99px;flex-shrink:0;background:rgba(255,255,255,.16)}
+    .c-dot.running{background:var(--green);animation:pulse 1.1s infinite ease-in-out}
+    .c-dot.waiting{background:var(--amber);animation:pulse 1s infinite ease-in-out}
+    .c-dot.error{background:var(--red)}
+    .c-dot.unread{background:var(--accent)}
+    .c-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.35}
+    .c-badge{
+      flex-shrink:0;font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;line-height:1.4;
+    }
+    .c-badge.running{background:rgba(34,197,94,.16);color:#86efac}
+    .c-badge.waiting{background:rgba(245,158,11,.18);color:#fde68a}
+    .c-badge.error{background:rgba(239,68,68,.18);color:#fca5a5}
+    .c-time{flex-shrink:0;font-size:11px;color:#71717a;font-variant-numeric:tabular-nums}
+    .c-sub{font-size:11px;color:#a1a1aa;padding-left:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .conv-more-btn{
+      appearance:none;width:100%;padding:8px 10px;border-radius:9px;border:1px dashed var(--border);
+      background:rgba(255,255,255,.03);color:#a1a1aa;font-size:12px;cursor:pointer;margin-top:2px;
+    }
     .composer-card.drag-over{border-color:#38bdf8;background:rgba(56,189,248,.07)}
     .drawer-brand{display:none}
-    .conv-list{display:flex;flex-direction:column;gap:6px}
+    .conv-list{display:flex;flex-direction:column;gap:6px;flex:1 1 auto;min-height:0;overflow-y:auto}
     .toast{
       position:fixed;top:calc(env(safe-area-inset-top) + 56px);left:50%;transform:translateX(-50%);
       z-index:80;background:#27272a;color:#fff;padding:7px 14px;border-radius:999px;font-size:12.5px;
@@ -1587,7 +2140,11 @@ function buildMobileAppHtml() {
       .ghost-btn:hover{background:rgba(255,255,255,.08);color:#e4e4e7}
       .send-circle.ready:hover{background:#7dd3fc}
       .send-circle.stop:hover{background:rgba(239,68,68,.3)}
-      .new-chat-btn:hover{background:rgba(255,255,255,.11);border-color:rgba(56,189,248,.4);color:#fff}
+      .new-chat-btn:hover,.new-chat-pick-btn:hover{background:rgba(255,255,255,.11);border-color:rgba(56,189,248,.4);color:#fff}
+      .conv-tab:hover{color:#e4e4e7}
+      .proj-toggle:hover,.proj-empty-toggle:hover{background:rgba(255,255,255,.05);color:#fff}
+      .proj-new-btn:hover{background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.45);color:#fff}
+      .conv-more-btn:hover{background:rgba(255,255,255,.07);color:#e4e4e7}
       .conv-item:hover{background:rgba(255,255,255,.08)}
       .conv-item.active:hover{background:rgba(56,189,248,.18)}
       .sheet-opt:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18)}
@@ -1625,11 +2182,11 @@ function buildMobileAppHtml() {
         width:8px;height:8px;border-radius:99px;
         background:#38bdf8;box-shadow:none;
       }
-      .new-chat-btn{min-height:38px;padding:8px 12px;font-size:13px;border-radius:10px}
+      .new-chat-btn,.new-chat-pick-btn{min-height:38px;border-radius:10px}
+      .new-chat-btn{padding:8px 10px;font-size:13px}
       .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:2px}
       .conv-item{
-        padding:9px 10px;font-size:13.5px;border-radius:9px;
-        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        padding:8px 10px;font-size:13px;border-radius:9px;
         transition:background-color .14s ease,border-color .14s ease;
       }
       .messages{
@@ -1738,11 +2295,19 @@ function buildMobileAppHtml() {
         <span class="drawer-brand-dot"></span>
         <span>Antigravity Remote</span>
       </div>
-      <button id="btn-new-chat" class="new-chat-btn" type="button">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        <span>新建对话</span>
-      </button>
-      <div class="drawer-sub">历史对话</div>
+      <div class="new-chat-group">
+        <button id="btn-new-chat" class="new-chat-btn" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span id="new-chat-label" class="new-chat-label">新建对话</span>
+        </button>
+        <button id="btn-new-chat-project" class="new-chat-pick-btn" type="button" title="选择项目新建对话" aria-label="选择项目新建对话">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+      </div>
+      <div id="conv-view-tabs" class="conv-view-tabs" role="tablist" aria-label="会话视图切换">
+        <button class="conv-tab active" data-conv-view="projects" type="button" role="tab" aria-selected="true">按项目 <span id="tab-proj-count" class="tab-count"></span></button>
+        <button class="conv-tab" data-conv-view="recent" type="button" role="tab" aria-selected="false">最近活跃 <span id="tab-conv-count" class="tab-count"></span></button>
+      </div>
       <div id="conv-list" class="conv-list"></div>
     </div>
   </div>
@@ -2271,6 +2836,10 @@ function buildMobileAppHtml() {
       $('ctx-badge').textContent = snap.contextBadge || '--%';
       $('model-inline-label').textContent = snap.model || '切换模型';
       $('perm-inline-label').textContent = snap.permissionLabel || '权限';
+      const newChatLabelEl = $('new-chat-label');
+      if (newChatLabelEl) {
+        newChatLabelEl.textContent = snap.currentProjectName ? ('新建对话 · ' + snap.currentProjectName) : '新建对话';
+      }
 
       renderQuotaDrawer(snap);
       syncSendButtonUI();
@@ -2279,7 +2848,10 @@ function buildMobileAppHtml() {
       const wasBottom = stickBottom;
       const msgs = Array.isArray(snap.messages) ? snap.messages : [];
       if (!msgs.length && !snap.busy) {
-        const emptyHtml = '<div class="empty-tip">暂无消息，发一句话' + (isDesktopLayout() ? '或在左侧切换会话' : '或在屏幕右滑切换会话') + '</div>';
+        const emptyTipText = (snap.isNewConversation && snap.currentProjectName)
+          ? ('正在「' + esc(snap.currentProjectName) + '」下新建对话，发一句话即可开始…')
+          : ('暂无消息，发一句话' + (isDesktopLayout() ? '或在左侧切换会话' : '或在屏幕右滑切换会话'));
+        const emptyHtml = '<div class="empty-tip">' + emptyTipText + '</div>';
         if (msgEl.dataset.lastHtml !== emptyHtml) {
           msgEl.innerHTML = emptyHtml;
           msgEl.dataset.lastHtml = emptyHtml;
@@ -2390,16 +2962,191 @@ function buildMobileAppHtml() {
         }
       }
 
-      // Drawer Conversations
+      // Drawer Conversations & Multi-Project Grouping
+      renderConversationList(snap);
+    }
+
+    const CONV_VIEW_KEY = 'ag_remote_conv_view_v1';
+    const COLLAPSED_PROJ_KEY = 'ag_remote_collapsed_projects_v1';
+    let convViewMode = (() => {
+      try {
+        const v = localStorage.getItem(CONV_VIEW_KEY);
+        return v === 'recent' ? 'recent' : 'projects';
+      } catch {
+        return 'projects';
+      }
+    })();
+    let collapsedProjMap = (() => {
+      try {
+        const raw = localStorage.getItem(COLLAPSED_PROJ_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+      } catch {
+        return {};
+      }
+    })();
+    let emptyProjExpanded = false;
+    let showAllRecent = false;
+
+    function saveConvUiPrefs() {
+      try {
+        localStorage.setItem(CONV_VIEW_KEY, convViewMode);
+        localStorage.setItem(COLLAPSED_PROJ_KEY, JSON.stringify(collapsedProjMap));
+      } catch {}
+    }
+
+    function syncConvTabsUi() {
+      const tabsEl = $('conv-view-tabs');
+      if (!tabsEl) return;
+      tabsEl.querySelectorAll('.conv-tab').forEach((btn) => {
+        const isActive = btn.getAttribute('data-conv-view') === convViewMode;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      });
+    }
+
+    function formatRelTime(ts) {
+      const n = Number(ts) || 0;
+      if (!n || n <= 0) return '';
+      const diff = Math.max(0, Date.now() - n);
+      const mins = Math.floor(diff / 60000);
+      if (mins < 2) return '刚刚';
+      if (mins < 60) return mins + 'm';
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return hrs + 'h';
+      const days = Math.floor(hrs / 24);
+      return days + 'd';
+    }
+
+    function statusDotHtml(c) {
+      if (c.status === 'waiting') return '<span class="c-dot waiting" title="待确认"></span>';
+      if (c.status === 'running') return '<span class="c-dot running" title="运行中"></span>';
+      if (c.status === 'error') return '<span class="c-dot error" title="异常中断"></span>';
+      if (c.unread) return '<span class="c-dot unread" title="有新结果"></span>';
+      return '<span class="c-dot"></span>';
+    }
+
+    function renderConvItemHtml(c, showProjectName) {
+      const cls = 'conv-item' + (c.active ? ' active' : '') + (c.unread ? ' is-unread' : '');
+      const titleText = (c.pinned ? '📌 ' : '') + String(c.title || c.id || '');
+      let badgeHtml = '';
+      if (c.status === 'waiting') badgeHtml = '<span class="c-badge waiting">' + esc(c.statusLabel || '待确认') + '</span>';
+      else if (c.status === 'running') badgeHtml = '<span class="c-badge running">' + esc(c.statusLabel || '运行中') + '</span>';
+      else if (c.status === 'error') badgeHtml = '<span class="c-badge error">' + esc(c.statusLabel || '异常') + '</span>';
+      const rel = formatRelTime(c.updatedAt);
+      const rightMeta = badgeHtml || (rel ? '<span class="c-time">' + esc(rel) + '</span>' : '');
+      let subHtml = '';
+      if (showProjectName || (badgeHtml && rel)) {
+        const subParts = [];
+        if (showProjectName && c.projectName) subParts.push(c.projectName);
+        if (rel) subParts.push(rel);
+        if (subParts.length) subHtml = '<div class="c-sub">' + esc(subParts.join(' · ')) + '</div>';
+      }
+      return '<button class="' + cls + '" data-cid="' + esc(c.id) + '" type="button">' +
+        '<div class="c-row">' + statusDotHtml(c) + '<span class="c-title">' + esc(titleText) + '</span>' + rightMeta + '</div>' +
+        subHtml + '</button>';
+    }
+
+    function renderConversationList(snap) {
       const convList = $('conv-list');
-      if (Array.isArray(snap.conversations)) {
-        const convHtml = snap.conversations.map((c) =>
-          '<button class="conv-item' + (c.active ? ' active' : '') + '" data-cid="' + esc(c.id) + '" type="button">' + esc(c.title) + '</button>'
-        ).join('');
-        if (convList.dataset.lastHtml !== convHtml) {
-          convList.innerHTML = convHtml;
-          convList.dataset.lastHtml = convHtml;
+      if (!convList || !snap) return;
+      const convs = Array.isArray(snap.conversations) ? snap.conversations : [];
+      const rawProjects = Array.isArray(snap.projects) ? snap.projects : [];
+      const projMap = new Map();
+      const grouped = new Map();
+
+      for (const p of rawProjects) {
+        if (!p || !p.id) continue;
+        projMap.set(p.id, p);
+        grouped.set(p.id, []);
+      }
+      for (const c of convs) {
+        const pid = c.projectId || 'ungrouped';
+        if (!projMap.has(pid)) {
+          projMap.set(pid, {
+            id: pid,
+            name: c.projectName || (pid === 'ungrouped' ? '未归属项目' : pid),
+            conversationCount: 0,
+            runningCount: 0,
+            waitingCount: 0,
+            isEmpty: false
+          });
         }
+        if (!grouped.has(pid)) grouped.set(pid, []);
+        grouped.get(pid).push(c);
+      }
+
+      const projCountEl = $('tab-proj-count');
+      const convCountEl = $('tab-conv-count');
+      if (projCountEl) projCountEl.textContent = projMap.size ? ('(' + projMap.size + ')') : '';
+      if (convCountEl) convCountEl.textContent = convs.length ? ('(' + convs.length + ')') : '';
+      syncConvTabsUi();
+
+      let html = '';
+      if (convViewMode === 'recent') {
+        if (!convs.length) {
+          html = '<div class="empty-tip" style="padding:18px 8px">暂无历史对话</div>';
+        } else {
+          const limit = showAllRecent ? convs.length : Math.min(30, convs.length);
+          html = convs.slice(0, limit).map((c) => renderConvItemHtml(c, true)).join('');
+          if (convs.length > limit) {
+            html += '<button class="conv-more-btn" data-conv-more="1" type="button">展开全部历史 (共 ' + convs.length + ' 条)</button>';
+          }
+        }
+      } else {
+        const orderedProjects = Array.from(projMap.values());
+        const nonEmptyProjects = orderedProjects.filter((p) => (grouped.get(p.id)?.length || 0) > 0);
+        const emptyProjects = orderedProjects.filter((p) => (grouped.get(p.id)?.length || 0) === 0 && p.id !== 'ungrouped');
+
+        if (!nonEmptyProjects.length && !emptyProjects.length) {
+          html = '<div class="empty-tip" style="padding:18px 8px">暂无项目与历史对话</div>';
+        } else {
+          html = nonEmptyProjects.map((p) => {
+            const list = grouped.get(p.id) || [];
+            const hasRunning = (p.runningCount > 0) || list.some((x) => x.status === 'running');
+            const hasWaiting = (p.waitingCount > 0) || list.some((x) => x.status === 'waiting');
+            const collapsed = Boolean(collapsedProjMap[p.id]);
+            const statDot = hasWaiting
+              ? '<span class="proj-stat-dot waiting" title="有待确认操作"></span>'
+              : (hasRunning ? '<span class="proj-stat-dot running" title="有运行中对话"></span>' : '');
+            const newBtnHtml = p.id !== 'ungrouped'
+              ? '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话" aria-label="在 ' + esc(p.name) + ' 中新建对话">+</button>'
+              : '';
+            const itemsHtml = collapsed ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + '</div>');
+            return '<div class="proj-group">' +
+              '<div class="proj-head">' +
+                '<button class="proj-toggle" data-proj-toggle="' + esc(p.id) + '" type="button" aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
+                  '<span class="proj-chev">' + (collapsed ? '▸' : '▾') + '</span>' +
+                  '<span class="proj-name">' + esc(p.name) + '</span>' +
+                  statDot +
+                  '<span class="proj-count">' + list.length + '</span>' +
+                '</button>' +
+                newBtnHtml +
+              '</div>' +
+              itemsHtml +
+            '</div>';
+          }).join('');
+
+          if (emptyProjects.length) {
+            html += '<div class="proj-empty-sec">' +
+              '<button class="proj-empty-toggle" data-empty-toggle="1" type="button" aria-expanded="' + (emptyProjExpanded ? 'true' : 'false') + '">' +
+                '<span class="proj-chev">' + (emptyProjExpanded ? '▾' : '▸') + '</span>' +
+                '<span>空项目 (' + emptyProjects.length + ')</span>' +
+              '</button>' +
+              (emptyProjExpanded ? emptyProjects.map((p) =>
+                '<div class="proj-empty-row">' +
+                  '<span class="proj-empty-name">' + esc(p.name) + '</span>' +
+                  '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话">+</button>' +
+                '</div>'
+              ).join('') : '') +
+            '</div>';
+          }
+        }
+      }
+
+      if (convList.dataset.lastHtml !== html) {
+        convList.innerHTML = html;
+        convList.dataset.lastHtml = html;
       }
     }
 
@@ -2467,24 +3214,29 @@ function buildMobileAppHtml() {
     });
     window.addEventListener('pageshow', () => { void fetchSnapshot(); });
 
+    let activeSheetState = null;
+    $('sheet-list').addEventListener('click', async (e) => {
+      const btn = e.target?.closest?.('.sheet-opt');
+      if (!btn || !activeSheetState) return;
+      const idx = Number(btn.getAttribute('data-idx'));
+      const opt = activeSheetState.options[idx];
+      const onSelect = activeSheetState.onSelect;
+      activeSheetState = null;
+      $('sheet-backdrop').hidden = true;
+      if (opt && typeof onSelect === 'function') await onSelect(opt);
+    });
     function openSheet(title, options, onSelect) {
       $('sheet-title-text').textContent = title;
       const listEl = $('sheet-list');
+      activeSheetState = { options, onSelect };
       listEl.innerHTML = options.map((o, idx) =>
         '<button class="sheet-opt' + (o.active ? ' active' : '') + '" data-idx="' + idx + '" type="button">' +
         '<span>' + esc(o.label) + '</span>' + (o.active ? '<span>✓</span>' : '') + '</button>'
       ).join('');
-      listEl.onclick = async (e) => {
-        const btn = e.target?.closest?.('.sheet-opt');
-        if (!btn) return;
-        const opt = options[Number(btn.dataset.idx)];
-        $('sheet-backdrop').hidden = true;
-        if (opt) await onSelect(opt);
-      };
       $('sheet-backdrop').hidden = false;
     }
-    $('sheet-close').onclick = () => { $('sheet-backdrop').hidden = true; };
-    $('sheet-backdrop').onclick = (e) => { if (e.target === $('sheet-backdrop')) $('sheet-backdrop').hidden = true; };
+    $('sheet-close').addEventListener('click', () => { $('sheet-backdrop').hidden = true; });
+    $('sheet-backdrop').addEventListener('click', (e) => { if (e.target === $('sheet-backdrop')) $('sheet-backdrop').hidden = true; });
 
     function openModelPicker() {
       const opts = (latestSnap?.modelOptions || []).map((m) => ({
@@ -2684,38 +3436,127 @@ function buildMobileAppHtml() {
       syncSidebarA11y();
     }
 
+    async function startNewConversationInProject(projectId, projectName) {
+      if (!isDesktopLayout()) closeDrawer();
+      stickBottom = true;
+      try {
+        const payload = { action: 'new-conversation' };
+        if (projectId) payload.projectId = projectId;
+        const r = await apiAction(payload);
+        if (r?.ok) {
+          showToast(projectName ? ('已在「' + projectName + '」中新建对话') : '已新建对话');
+        } else {
+          showToast(r?.error || r?.actionResult?.error || '新建对话失败');
+        }
+      } catch (err) {
+        showToast(err?.message || '新建对话失败');
+      }
+    }
+
+    function openNewChatProjectPicker() {
+      const projs = (latestSnap?.projects || []).filter((p) => p && p.id && p.id !== 'ungrouped');
+      const opts = projs.map((p) => ({
+        projectId: p.id,
+        projectName: p.name,
+        label: p.name + (p.conversationCount > 0 ? (' (' + p.conversationCount + ')') : ' (空项目)'),
+        active: Boolean(latestSnap?.currentProjectId && p.id === latestSnap.currentProjectId)
+      }));
+      opts.push({
+        projectId: '',
+        projectName: '',
+        label: '默认工作区（不指定项目）',
+        active: !latestSnap?.currentProjectId
+      });
+      openSheet('选择项目新建对话', opts, async (opt) => {
+        await startNewConversationInProject(opt.projectId, opt.projectName);
+      });
+    }
+
+    const convViewTabsEl = $('conv-view-tabs');
+    if (convViewTabsEl) {
+      convViewTabsEl.addEventListener('click', (e) => {
+        const tab = e.target?.closest?.('.conv-tab');
+        if (!tab) return;
+        const nextMode = tab.getAttribute('data-conv-view');
+        if (nextMode !== 'projects' && nextMode !== 'recent') return;
+        if (convViewMode === nextMode) return;
+        convViewMode = nextMode;
+        saveConvUiPrefs();
+        if (latestSnap) renderConversationList(latestSnap);
+        else syncConvTabsUi();
+      });
+    }
+
     $('conv-list').addEventListener('click', async (e) => {
+      const newProjBtn = e.target?.closest?.('.proj-new-btn');
+      if (newProjBtn) {
+        e.stopPropagation();
+        const pid = newProjBtn.getAttribute('data-new-proj') || '';
+        if (!pid) return;
+        const matchedProj = (latestSnap?.projects || []).find((p) => p.id === pid);
+        await startNewConversationInProject(pid, matchedProj?.name || '');
+        return;
+      }
+
+      const toggleBtn = e.target?.closest?.('.proj-toggle');
+      if (toggleBtn) {
+        const pid = toggleBtn.getAttribute('data-proj-toggle') || '';
+        if (!pid) return;
+        if (collapsedProjMap[pid]) delete collapsedProjMap[pid];
+        else collapsedProjMap[pid] = true;
+        saveConvUiPrefs();
+        if (latestSnap) renderConversationList(latestSnap);
+        return;
+      }
+
+      const emptyToggleBtn = e.target?.closest?.('.proj-empty-toggle');
+      if (emptyToggleBtn) {
+        emptyProjExpanded = !emptyProjExpanded;
+        if (latestSnap) renderConversationList(latestSnap);
+        return;
+      }
+
+      const moreBtn = e.target?.closest?.('.conv-more-btn');
+      if (moreBtn) {
+        showAllRecent = true;
+        if (latestSnap) renderConversationList(latestSnap);
+        return;
+      }
+
       const btn = e.target?.closest?.('.conv-item');
-      if (!btn || !btn.dataset.cid) return;
+      const cid = btn?.getAttribute('data-cid') || btn?.dataset?.cid || '';
+      if (!btn || !cid) return;
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
       showToast('正在切换会话…');
       try {
-        const r = await apiAction({ action: 'switch-conversation', id: btn.dataset.cid });
+        const r = await apiAction({ action: 'switch-conversation', id: cid });
         if (!r?.ok) showToast(r?.error || r?.actionResult?.error || '切换会话失败');
       } catch (err) {
         showToast(err?.message || '切换会话失败');
       }
     });
-    $('btn-drawer').onclick = () => {
+    $('btn-drawer').addEventListener('click', () => {
       if (isDesktopLayout()) {
         document.body.classList.toggle('sidebar-collapsed');
         syncSidebarA11y();
       } else {
         openDrawer();
       }
-    };
-    backdropEl.onclick = (e) => { if (!isDesktopLayout() && e.target === backdropEl) closeDrawer(); };
-    $('btn-new-chat').onclick = async () => {
-      if (!isDesktopLayout()) closeDrawer();
-      try {
-        const r = await apiAction({ action: 'switch-conversation', id: 'new' });
-        if (r?.ok) showToast('已新建对话');
-        else showToast(r?.error || r?.actionResult?.error || '新建对话失败');
-      } catch (err) {
-        showToast(err?.message || '新建对话失败');
-      }
-    };
+    });
+    backdropEl.addEventListener('click', (e) => { if (!isDesktopLayout() && e.target === backdropEl) closeDrawer(); });
+    $('btn-new-chat').addEventListener('click', async () => {
+      const pid = latestSnap?.currentProjectId || '';
+      const pname = pid ? (latestSnap?.currentProjectName || '') : '';
+      await startNewConversationInProject(pid, pname);
+    });
+    const newChatProjBtn = $('btn-new-chat-project');
+    if (newChatProjBtn) {
+      newChatProjBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openNewChatProjectPicker();
+      });
+    }
     const handleLayoutChange = () => {
       if (isDesktopLayout() && backdropEl.classList.contains('open')) {
         closeDrawer();
@@ -4117,6 +4958,9 @@ module.exports = {
   renderTerminalQr,
   renderQrSvg,
   buildMobileAppHtml,
+  normalizeTrajectoryStatus,
+  createSessionCatalogStore,
+  enrichSnapshotWithCatalog,
   readJsonBody,
   createRemoteHttpHandler,
   recordPairedDeviceAccess,
