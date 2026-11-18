@@ -3687,6 +3687,11 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
       name: 'EmptyProj',
       projectResources: { resources: [{ folderUri: 'file:///tmp/ws-empty' }] }
     }));
+    fs.writeFileSync(path.join(projDir, 'default-cli-project.json'), JSON.stringify({
+      id: 'default-cli-project',
+      name: 'CLI Project',
+      projectResources: {}
+    }));
     fs.writeFileSync(path.join(projDir, 'proj-sidecar.json'), JSON.stringify({
       id: 'proj-sidecar',
       name: 'swarm/swarm_board',
@@ -3717,6 +3722,7 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
       if (i === 1) status = 'CASCADE_RUN_STATUS_RUNNING';
       if (i === 2) status = 'CASCADE_RUN_STATUS_WAITING_FOR_USER';
       if (i === 3) termReason = 'EXECUTOR_TERMINATION_REASON_ERROR';
+      if (i === 240) status = 'CASCADE_RUN_STATUS_RUNNING';
       traj245[cid] = {
         summary: `Task ${i}`,
         status,
@@ -3765,7 +3771,7 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
       localApiConnect: async () => ({
         call: async (method) => {
           if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: traj245 };
-          if (method === 'ListProjects') return { projectIds: ['proj-a', 'proj-b', 'proj-empty', 'proj-sidecar'] };
+          if (method === 'ListProjects') return { projectIds: ['proj-a', 'proj-b', 'proj-empty', 'default-cli-project', 'outside-of-project', 'proj-sidecar'] };
           return {};
         }
       })
@@ -3787,6 +3793,8 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     assert.equal(snap1.projects.find((p) => p.id === 'proj-a')?.conversationCount, 120);
     assert.equal(snap1.projects.find((p) => p.id === 'proj-b')?.conversationCount, 125);
     assert.ok(snap1.projects.find((p) => p.id === 'proj-empty')?.isEmpty);
+    assert.ok(snap1.projects.find((p) => p.id === 'default-cli-project')?.isEmpty, '有效的空 default-cli-project 应保留');
+    assert.equal(snap1.projects.some((p) => p.id === 'outside-of-project'), false, '空 virtual bucket outside-of-project 应排除');
 
     // 2. 模拟桌面端折叠、滚动至仅剩 1 行 + 服务重启（清除模块缓存并重建 store），验证 245 条完整保留、Subagent 持续被过滤及 /api/conversations 分页
     delete require.cache[require.resolve('./mobile-remote.js')];
@@ -3817,6 +3825,7 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     });
     assert.equal(snapRestart.totalConversations, 245, '服务重启且桌面端折叠仅余 1 条后，全量 245 条对话仍完好保留');
     assert.equal(snapRestart.conversations.some((c) => c.id === 'subagent-child-1'), false, '重启后仅由快照回流的已知 Subagent 仍被过滤');
+    assert.ok(snapRestart.projects.find((p) => p.id === 'default-cli-project')?.isEmpty, '重启后空的 default-cli-project 仍保留');
 
     const page1 = remoteMod.listCatalogConversations({ stateDir, offset: 0, limit: 150 });
     const page2 = remoteMod.listCatalogConversations({ stateDir, offset: 150, limit: 150 });
@@ -3942,7 +3951,7 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
         memoizedProps: {
           customHeaderRenderer: (item) => {
             const pid = String(item?.id || '').replace(/^header-/, '');
-            if (!['proj-a', 'proj-b', 'proj-empty'].includes(pid)) return null;
+            if (!['proj-a', 'proj-b', 'proj-empty', 'default-cli-project'].includes(pid)) return null;
             return {
               props: {
                 onAddClick: () => applyRouterUrl(`/?project=${encodeURIComponent(pid)}`)
@@ -4013,10 +4022,29 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     assert.equal(resSwitch245.verifiedState.inExistingConversation, true);
     assert.equal(resSwitch245.verifiedState.inputCascadeId, 'conv-root-245');
 
-    enhReal.dispose?.();
-    envReal.sandbox.__AGContextMeter?.dispose?.();
+    // 4. 验证远程网页 UI：空 default-cli-project 双入口进入真实桌面归属、全量分页及分页缓存持续更新/移除
+    const refreshLiveTestSnap = async () => remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: composerProps.inExistingConversation ? (composerProps.cascadeId || '') : '',
+      currentProjectId: routerState.location.search?.project || '',
+      isNewConversation: !composerProps.inExistingConversation,
+      busy: false,
+      conversations: [],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      convLimit: 100,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: traj245 };
+          if (method === 'ListProjects') return { projectIds: ['proj-a', 'proj-b', 'proj-empty', 'default-cli-project', 'outside-of-project', 'proj-sidecar'] };
+          return {};
+        }
+      })
+    });
 
-    // 4. 验证远程网页 UI 全量分页访问、双视图交互与点击第 245 条最老历史对话
     const mobileHtml = remoteMod.buildMobileAppHtml();
     const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
     assert.ok(inlineScriptMatch, 'buildMobileAppHtml 应包含内联 <script>');
@@ -4027,6 +4055,7 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     envUi.doc.body.innerHTML = bodyMatch[1];
 
     const dispatchedActions = [];
+    let currentUiSnap = snapRestart;
     envUi.win.innerWidth = 1200;
     envUi.win.innerHeight = 800;
     envUi.win.AbortController = AbortController;
@@ -4038,6 +4067,7 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     envUi.sandbox.URLSearchParams = URLSearchParams;
     envUi.sandbox.fetch = async (url, init) => {
       const u = new URL(String(url), 'http://127.0.0.1');
+      const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
       if (u.pathname === '/api/conversations') {
         const pid = u.searchParams.get('projectId') || '';
         const offset = Number(u.searchParams.get('offset') || '0');
@@ -4045,24 +4075,51 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
         return {
           ok: true,
           status: 200,
+          headers: jsonHeaders,
           json: async () => remoteMod.listCatalogConversations({ stateDir, projectId: pid, offset, limit })
         };
       }
       if (u.pathname === '/api/action') {
         const body = JSON.parse(String(init?.body || '{}'));
         dispatchedActions.push(body);
-        return { ok: true, status: 200, json: async () => ({ ok: true, snapshot: snapRestart }) };
+        const actionResult = await enhReal.performMobileAction(body);
+        currentUiSnap = await refreshLiveTestSnap();
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: Boolean(actionResult?.ok), actionResult, snapshot: currentUiSnap }) };
       }
       if (u.pathname === '/api/snapshot') {
-        return { ok: true, status: 200, json: async () => snapRestart };
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => currentUiSnap };
       }
-      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
     };
 
     vm.runInContext(inlineScriptMatch[1], envUi.sandbox);
     await new Promise((r) => setTimeout(r, 40));
 
     const convListEl = envUi.doc.getElementById('conv-list');
+    // 4a. 通过远程网页「空项目」入口及顶部下拉选择器进入空 default-cli-project 并验证真实桌面项目归属
+    const emptySecToggle = convListEl.querySelector('.proj-empty-toggle');
+    assert.ok(emptySecToggle, '左侧栏按项目视图应显示空项目折叠入口');
+    emptySecToggle.click();
+    const cliNewBtn = convListEl.querySelector('button[data-new-proj="default-cli-project"]');
+    assert.ok(cliNewBtn, '展开空项目后应提供 default-cli-project 新建入口');
+    cliNewBtn.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(composerProps.inExistingConversation, false);
+    assert.equal(routerState.location.search?.project, 'default-cli-project', '点击空 CLI 项目入口应进入真实桌面项目路由');
+    assert.equal(projBadge.getAttribute('data-active-project-id'), 'default-cli-project');
+    await enhReal.performMobileAction({ action: 'send', text: 'CLI web sidebar prompt' });
+    assert.equal(createdByFirstMsg[createdByFirstMsg.length - 1]?.projectId, 'default-cli-project', '从侧边栏 CLI 入口新建后首条消息应归属 default-cli-project');
+
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const cliSheetOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes('CLI Project'));
+    assert.ok(cliSheetOpt, '顶部新建项目下拉选择器应包含 CLI Project');
+    cliSheetOpt.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(composerProps.inExistingConversation, false);
+    assert.equal(routerState.location.search?.project, 'default-cli-project', '通过下拉选择器应进入 default-cli-project 新建状态');
+    await enhReal.performMobileAction({ action: 'send', text: 'CLI dropdown prompt' });
+    assert.equal(createdByFirstMsg[createdByFirstMsg.length - 1]?.projectId, 'default-cli-project');
+
     assert.ok(convListEl.innerHTML.includes('加载该项目更多对话'), '当单项目历史超过首屏预览时应显示项目分页按钮');
     const projAMore = convListEl.querySelector('button[data-proj-more="proj-a"]');
     assert.ok(projAMore);
@@ -4071,7 +4128,7 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     const projAToggle = convListEl.querySelector('button[data-proj-toggle="proj-a"]');
     assert.ok((projAToggle.textContent || '').includes('120'), '分页加载后 Alpha App 应显示 120 条对话');
 
-    // 切换到「最近活跃」并通过分页加载全部 245 条历史后点击最老一条
+    // 4b. 切换到「最近活跃」并通过分页加载全部 245 条历史后点击最老一条
     const recentTab = envUi.doc.getElementById('conv-view-tabs').querySelector('button[data-conv-view="recent"]');
     recentTab.click();
     await new Promise((r) => setTimeout(r, 20));
@@ -4085,8 +4142,41 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     const oldestBtn = convListEl.querySelector('button[data-cid="conv-root-245"]');
     assert.ok(oldestBtn, '应能访问最末尾的第 245 条历史对话');
     oldestBtn.click();
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 30));
     assert.deepEqual(dispatchedActions[dispatchedActions.length - 1], { action: 'switch-conversation', id: 'conv-root-245' });
+
+    // 4c. 回归验证分页缓存 extraConvMap 持续同步与清理：状态变化、查看清未读、归档与晚识别 Subagent 移除
+    const btn240Init = convListEl.querySelector('button[data-cid="conv-root-240"]');
+    assert.ok(btn240Init?.classList.contains('is-unread'), '分页项 #240 初始应带未读标记');
+    assert.ok((btn240Init?.textContent || '').includes('运行中'), '分页项 #240 初始应显示运行中状态');
+    btn240Init.click();
+    await new Promise((r) => setTimeout(r, 40));
+    convListEl.querySelector('button[data-cid="conv-root-001"]').click();
+    await new Promise((r) => setTimeout(r, 40));
+    const btn240AfterView = convListEl.querySelector('button[data-cid="conv-root-240"]');
+    assert.equal(btn240AfterView?.classList.contains('is-unread'), false, '查看分页项 #240 并切走后，未读标记应持续保持清除');
+
+    traj245['conv-root-240'].status = 'CASCADE_RUN_STATUS_IDLE';
+    traj245['conv-root-241'].annotations.archived = true;
+    traj245['conv-root-242'].trajectoryMetadata = {
+      projectId: 'proj-b',
+      rootConversationId: 'conv-root-004',
+      parentConversationId: 'conv-root-004'
+    };
+    currentUiSnap = await refreshLiveTestSnap();
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 60));
+
+    const btn240Synced = convListEl.querySelector('button[data-cid="conv-root-240"]');
+    assert.ok(btn240Synced);
+    assert.equal((btn240Synced.textContent || '').includes('运行中'), false, '分页项 #240 后台完成后状态应同步更新');
+    assert.equal(btn240Synced.classList.contains('is-unread'), false, '分页项 #240 未读标记应保持已读');
+    assert.equal(convListEl.querySelector('button[data-cid="conv-root-241"]'), null, '已归档的分页项 #241 应从前端缓存与列表移除');
+    assert.equal(convListEl.querySelector('button[data-cid="conv-root-242"]'), null, '后续识别出的 Subagent #242 应从前端缓存与列表移除');
+    assert.equal(convListEl.querySelectorAll('.conv-item').length, 243, '清理归档与 Subagent 后总数应精确缩减至 243 条');
+
+    enhReal.dispose?.();
+    envReal.sandbox.__AGContextMeter?.dispose?.();
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;

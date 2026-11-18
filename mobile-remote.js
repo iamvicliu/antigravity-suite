@@ -15,7 +15,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.3';
+const MOBILE_UI_VERSION = '1.9.4';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1197,7 +1197,7 @@ async function pickCdpTarget(requestedId) {
 
 const SESSION_CATALOG_FILE_NAME = 'remote-session-catalog.json';
 const MAX_ARCHIVED_TOMBSTONES = 500;
-const INTERNAL_EMPTY_PROJECT_IDS = new Set(['default-cli-project', 'outside-of-project', 'standalone']);
+const INTERNAL_EMPTY_PROJECT_IDS = new Set(['outside-of-project', 'standalone']);
 
 function isCatalogTestEnv() {
   return process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
@@ -1414,10 +1414,42 @@ function createSessionCatalogStore() {
         }
         map.set(cid, { ...item, id: cid });
       }
-      entry = { dir, filePath, map, subagentIds, subagentRoots, lastSig: '' };
+      entry = { dir, filePath, map, subagentIds, subagentRoots, lastSig: '', lastActiveSessionId: '', catalogRevision: '' };
       registryByDir.set(dir, entry);
     }
     return entry;
+  }
+
+  function buildActiveCatalogItems(store, activeSessionId = '', snapConvMap = null) {
+    const items = [];
+    let archivedCount = 0;
+    for (const c of store.map.values()) {
+      if (store.subagentIds.has(c.id)) continue;
+      if (c.archived) {
+        archivedCount += 1;
+        continue;
+      }
+      const isActive = Boolean((activeSessionId && c.id === activeSessionId) || snapConvMap?.get(c.id)?.active);
+      const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
+      items.push({
+        id: c.id,
+        title: c.title,
+        active: isActive,
+        projectId: c.projectId || 'ungrouped',
+        projectName: c.projectName || '未归属项目',
+        status: c.status || 'idle',
+        statusLabel: c.statusLabel || '',
+        unread,
+        pinned: Boolean(c.pinned),
+        updatedAt: c.updatedAt
+      });
+    }
+    items.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+    const revPayload = items
+      .map((c) => `${c.id}\t${c.title}\t${c.projectId}\t${c.status}\t${c.unread ? 1 : 0}\t${c.pinned ? 1 : 0}\t${c.updatedAt}`)
+      .join('\n') + `|s:${store.subagentIds.size}|a:${archivedCount}`;
+    const catalogRevision = crypto.createHash('sha1').update(revPayload).digest('hex').slice(0, 16);
+    return { items, catalogRevision };
   }
 
   async function fetchTrajectories(options = {}) {
@@ -1557,7 +1589,7 @@ function createSessionCatalogStore() {
       const viewMs = Math.max(
         parseIsoTimestampMs(t?.annotations?.lastUserViewTime),
         Number(prev?.lastViewedAt) || 0,
-        isActive ? updatedAt : 0
+        isActive ? Math.max(updatedAt, nowMs) : 0
       );
 
       const pinned = Boolean(
@@ -1614,29 +1646,13 @@ function createSessionCatalogStore() {
       for (const item of persistedAll) store.map.set(item.id, item);
     }
 
-    const allActiveConvs = nonArchivedPersisted
-      .slice()
-      .sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id))
-      .map((c) => {
-        const isActive = Boolean((activeSessionId && c.id === activeSessionId) || snapConvMap.get(c.id)?.active);
-        const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
-        return {
-          id: c.id,
-          title: c.title,
-          active: isActive,
-          projectId: c.projectId || 'ungrouped',
-          projectName: c.projectName || '未归属项目',
-          status: c.status || 'idle',
-          statusLabel: c.statusLabel || '',
-          unread,
-          pinned: Boolean(c.pinned),
-          updatedAt: c.updatedAt
-        };
-      });
+    store.lastActiveSessionId = activeSessionId;
+    const { items: allActiveConvs, catalogRevision } = buildActiveCatalogItems(store, activeSessionId, snapConvMap);
+    store.catalogRevision = catalogRevision;
 
     const persistSig = JSON.stringify([
       store.subagentIds.size,
-      persistedAll.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt])
+      persistedAll.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt, c.status, c.lastViewedAt])
     ]);
     if (persistSig !== store.lastSig) {
       store.lastSig = persistSig;
@@ -1727,6 +1743,7 @@ function createSessionCatalogStore() {
       ...snap,
       currentProjectId,
       currentProjectName,
+      catalogRevision,
       totalConversations: allActiveConvs.length,
       hasMoreConversations: outputConvs.length < allActiveConvs.length,
       projects,
@@ -1740,26 +1757,10 @@ function createSessionCatalogStore() {
     const offset = Math.max(0, Number.parseInt(options.offset ?? 0, 10) || 0);
     const rawLimit = options.limit === undefined || options.limit === null || options.limit === '' ? 100 : Number.parseInt(options.limit, 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 0;
+    const activeSessionId = String(options.activeSessionId ?? store.lastActiveSessionId ?? '').trim();
 
-    let items = [];
-    for (const c of store.map.values()) {
-      if (c.archived || store.subagentIds.has(c.id)) continue;
-      if (projectId && c.projectId !== projectId) continue;
-      const unread = Boolean(c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
-      items.push({
-        id: c.id,
-        title: c.title,
-        active: false,
-        projectId: c.projectId || 'ungrouped',
-        projectName: c.projectName || '未归属项目',
-        status: c.status || 'idle',
-        statusLabel: c.statusLabel || '',
-        unread,
-        pinned: Boolean(c.pinned),
-        updatedAt: c.updatedAt
-      });
-    }
-    items.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+    const { items: allItems, catalogRevision } = buildActiveCatalogItems(store, activeSessionId, null);
+    const items = projectId ? allItems.filter((c) => c.projectId === projectId) : allItems;
     const total = items.length;
     const sliced = limit > 0 ? items.slice(offset, offset + limit) : items.slice(offset);
     return {
@@ -1767,6 +1768,7 @@ function createSessionCatalogStore() {
       total,
       offset,
       hasMore: offset + sliced.length < total,
+      catalogRevision,
       conversations: sliced
     };
   }
@@ -3074,6 +3076,7 @@ function buildMobileAppHtml() {
       }
 
       // Drawer Conversations & Multi-Project Grouping
+      reconcileExtraConversations(snap);
       renderConversationList(snap);
     }
 
@@ -3102,6 +3105,9 @@ function buildMobileAppHtml() {
     const projOffsetMap = new Map();
     const extraConvMap = new Map();
     let loadingMoreConvs = false;
+    let lastSyncedCatalogRev = '';
+    let syncingExtraConvs = false;
+    let pendingCatalogRev = '';
 
     function saveConvUiPrefs() {
       try {
@@ -3135,28 +3141,126 @@ function buildMobileAppHtml() {
       );
     }
 
+    async function fetchPagedConversations(url) {
+      const res = await fetchWithTimeout((apiBase || '') + url, { headers: authHeaders(), cache: 'no-store' }, 5000);
+      if (res.status === 401) { location.reload(); return null; }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    }
+
+    async function triggerRefreshExtraConversations(rev) {
+      const targetRev = String(rev || '').trim();
+      if (!targetRev || targetRev === lastSyncedCatalogRev) return;
+      pendingCatalogRev = targetRev;
+      if (syncingExtraConvs) return;
+      syncingExtraConvs = true;
+      try {
+        while (pendingCatalogRev && pendingCatalogRev !== lastSyncedCatalogRev) {
+          const reqRev = pendingCatalogRev;
+          const rebuilt = new Map();
+          let globalCoveredAll = false;
+          let latestRespRev = '';
+
+          if (nextGlobalOffset > 0) {
+            const lim = Math.max(nextGlobalOffset, extraConvMap.size, 150);
+            const data = await fetchPagedConversations('/api/conversations?offset=0&limit=' + lim);
+            if (!data) break;
+            const rows = Array.isArray(data.conversations) ? data.conversations : [];
+            for (const c of rows) {
+              if (c && c.id) rebuilt.set(c.id, c);
+            }
+            globalCoveredAll = !data.hasMore;
+            const tot = Number(data.total);
+            nextGlobalOffset = Math.min(Math.max(nextGlobalOffset, rows.length), Number.isFinite(tot) ? tot : rows.length);
+            if (data.catalogRevision) latestRespRev = String(data.catalogRevision);
+          }
+
+          if (!globalCoveredAll && projOffsetMap.size > 0) {
+            for (const [pid, pOff] of Array.from(projOffsetMap.entries())) {
+              if (!(pOff > 0)) continue;
+              const lim = Math.max(pOff, 150);
+              const data = await fetchPagedConversations('/api/conversations?offset=0&limit=' + lim + '&projectId=' + encodeURIComponent(pid));
+              if (!data) continue;
+              const rows = Array.isArray(data.conversations) ? data.conversations : [];
+              for (const c of rows) {
+                if (c && c.id) rebuilt.set(c.id, c);
+              }
+              const tot = Number(data.total);
+              projOffsetMap.set(pid, Math.min(Math.max(pOff, rows.length), Number.isFinite(tot) ? tot : rows.length));
+              if (data.catalogRevision) latestRespRev = String(data.catalogRevision);
+            }
+          }
+
+          const curSid = String(latestSnap?.sessionId || '');
+          extraConvMap.clear();
+          for (const [id, c] of rebuilt.entries()) {
+            const isAct = Boolean(curSid && id === curSid);
+            extraConvMap.set(id, { ...c, active: isAct, unread: isAct ? false : Boolean(c.unread) });
+          }
+          lastSyncedCatalogRev = latestRespRev || reqRev;
+          if (pendingCatalogRev === reqRev || pendingCatalogRev === lastSyncedCatalogRev) {
+            pendingCatalogRev = '';
+          }
+          if (latestSnap) renderConversationList(latestSnap);
+        }
+      } catch {
+      } finally {
+        syncingExtraConvs = false;
+      }
+    }
+
+    function reconcileExtraConversations(snap) {
+      const rev = String(snap?.catalogRevision || '').trim();
+      if (extraConvMap.size === 0 && nextGlobalOffset === 0 && projOffsetMap.size === 0) {
+        if (rev) lastSyncedCatalogRev = rev;
+        return;
+      }
+      const activeSid = String(snap?.sessionId || '');
+      const snapConvs = Array.isArray(snap?.conversations) ? snap.conversations : [];
+      for (const c of snapConvs) {
+        if (c && c.id && extraConvMap.has(c.id)) {
+          extraConvMap.set(c.id, c);
+        }
+      }
+      for (const [id, c] of extraConvMap.entries()) {
+        if (!c) continue;
+        const isAct = Boolean(activeSid && id === activeSid);
+        if (Boolean(c.active) !== isAct || (isAct && c.unread)) {
+          extraConvMap.set(id, { ...c, active: isAct, unread: isAct ? false : Boolean(c.unread) });
+        }
+      }
+      if (rev && rev !== lastSyncedCatalogRev) {
+        void triggerRefreshExtraConversations(rev);
+      }
+    }
+
     async function loadMoreConversations(opts = {}) {
       if (loadingMoreConvs) return;
       loadingMoreConvs = true;
       try {
+        const wasEmpty = extraConvMap.size === 0 && nextGlobalOffset === 0 && projOffsetMap.size === 0;
         const pid = String(opts.projectId || '').trim();
         const offset = pid ? (projOffsetMap.get(pid) || 0) : nextGlobalOffset;
         const limit = 150;
         let q = '/api/conversations?offset=' + offset + '&limit=' + limit;
         if (pid) q += '&projectId=' + encodeURIComponent(pid);
-        const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
-        if (res.status === 401) { location.reload(); return; }
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
+        const data = await fetchPagedConversations(q);
+        if (!data) return;
         const rows = Array.isArray(data?.conversations) ? data.conversations : [];
+        const curSid = String(latestSnap?.sessionId || '');
         for (const c of rows) {
-          if (c && c.id) extraConvMap.set(c.id, c);
+          if (!c || !c.id) continue;
+          const isAct = Boolean(curSid && c.id === curSid);
+          extraConvMap.set(c.id, { ...c, active: isAct, unread: isAct ? false : Boolean(c.unread) });
         }
         if (pid) {
           projOffsetMap.set(pid, offset + rows.length);
         } else {
           nextGlobalOffset = offset + rows.length;
           recentDisplayLimit = Math.max(recentDisplayLimit + rows.length, extraConvMap.size);
+        }
+        if (wasEmpty && data?.catalogRevision) {
+          lastSyncedCatalogRev = String(data.catalogRevision);
         }
         if (latestSnap) renderConversationList(latestSnap);
       } catch (err) {
