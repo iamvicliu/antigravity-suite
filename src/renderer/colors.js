@@ -352,14 +352,29 @@
     const defaultAccent = getDefaultSlotColor('tokenAccent');
     const defaultTotal = getDefaultSlotColor('tokenTotal');
     const effAccent = getEffectiveSlotColor('tokenAccent');
-    host.style.setProperty('--ag-token-accent-default', defaultAccent);
-    host.style.setProperty('--ag-token-total-default', defaultTotal);
     const rgb = hexToRgb(effAccent) || { r: 167, g: 139, b: 250 };
-    host.style.setProperty('--ag-accent-bg', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.10 : 0.14})`);
-    host.style.setProperty('--ag-accent-bg-hover', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.18 : 0.24})`);
-    host.style.setProperty('--ag-accent-border', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.28 : 0.34})`);
-    host.style.setProperty('--ag-accent-border-hover', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.48 : 0.56})`);
-    host.style.setProperty('--ag-accent-glow', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.32 : 0.44})`);
+    const accentVars = {
+      '--ag-effective-accent': effAccent,
+      '--ag-token-accent-default': defaultAccent,
+      '--ag-token-total-default': defaultTotal,
+      '--ag-accent-bg': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.10 : 0.14})`,
+      '--ag-accent-bg-hover': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.18 : 0.24})`,
+      '--ag-accent-border': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.28 : 0.34})`,
+      '--ag-accent-border-hover': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.48 : 0.56})`,
+      '--ag-accent-glow': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.32 : 0.44})`
+    };
+    for (const [k, v] of Object.entries(accentVars)) {
+      host.style.setProperty(k, v);
+    }
+    // 镜像写入宿主根节点，供 Shadow DOM 外部的浮层与底部胶囊继承当前主题强调色
+    try {
+      const rootStyle = typeof document !== 'undefined' ? document.documentElement?.style : null;
+      if (rootStyle && typeof rootStyle.setProperty === 'function') {
+        for (const [k, v] of Object.entries(accentVars)) {
+          rootStyle.setProperty(k, v);
+        }
+      }
+    } catch {}
   }
 
   function applyHeatmapPalette() {

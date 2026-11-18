@@ -1352,11 +1352,35 @@
         return null;
     }
 
-    // 获取 3A 冷雾莫兰迪颜色 (基于剩余健康度)
+    // 读取当前主套件实时生效的主题强调色，仅当主宿主不可用时回退 3A 雾松青
+    function getThemeAccentColor() {
+        try {
+            const readVar = (el, name) => {
+                if (!el) return '';
+                const inlineVal = el.style?.getPropertyValue?.(name)?.trim?.() || '';
+                if (inlineVal) return inlineVal;
+                if (typeof getComputedStyle === 'function') {
+                    return getComputedStyle(el).getPropertyValue(name)?.trim?.() || '';
+                }
+                return '';
+            };
+            const meterHost = typeof document !== 'undefined'
+                ? (document.getElementById('ag-context-meter') || document.getElementById('ag-context-meter-host'))
+                : null;
+            const fromHost = readVar(meterHost, '--ag-custom-token-accent') || readVar(meterHost, '--ag-token-accent-default');
+            if (fromHost) return fromHost;
+            const rootEl = typeof document !== 'undefined' ? document.documentElement : null;
+            const fromRoot = readVar(rootEl, '--ag-effective-accent') || readVar(rootEl, '--ag-token-accent-default');
+            if (fromRoot) return fromRoot;
+        } catch (e) {}
+        return MORANDI_3A.green;
+    }
+
+    // 获取胶囊颜色：正常态 (<50%) 跟随当前主题色，偏高/告急时亮起语义预警色
     function getMorandi3AColor(usagePercent) {
         if (usagePercent >= 80) return MORANDI_3A.red;    // 剩余 <= 20%
         if (usagePercent >= 50) return MORANDI_3A.yellow; // 剩余 20%~50%
-        return MORANDI_3A.green;                          // 剩余 > 50%
+        return getThemeAccentColor();                     // 剩余 > 50%
     }
 
     function getRuntimeLimitInfo(cascadeId, shortCid, ctx) {
@@ -1802,7 +1826,7 @@
         fillRect.setAttribute('width', '12.4');
         fillRect.setAttribute('height', '5.2');
         fillRect.setAttribute('rx', '2.6');
-        fillRect.setAttribute('fill', MORANDI_3A.green);
+        fillRect.setAttribute('fill', getThemeAccentColor());
 
         trackSvg.appendChild(outerRect);
         trackSvg.appendChild(fillRect);

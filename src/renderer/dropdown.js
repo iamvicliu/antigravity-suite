@@ -449,7 +449,7 @@
       saveFeedbackTimer = null;
     }
     fb.style.display = 'inline-block';
-    fb.style.color = ok ? '#34d399' : '#f87171';
+    fb.style.color = ok ? 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))' : '#f87171';
     fb.textContent = ok ? (message || '✔ 已自动保存') : `✖ 保存失败：${message || '无法写入配置文件'}`;
     if (ok) {
       saveFeedbackTimer = setTimeout(() => {
