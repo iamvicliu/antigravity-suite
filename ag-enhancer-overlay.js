@@ -4992,7 +4992,7 @@
     let s = String(raw || '').replace(/\r\n/g, '\n').trim();
     s = s.replace(/^(?:You said|你说)\s*/i, '');
     s = s.replace(/\n+(?:just\s+now|刚刚|\d+\s*(?:second|minute|hour|day|sec|min|hr)s?\s*ago|\d+\s*[smhd]\s*ago|\d+\s*(?:秒|分钟|小时|天)前)\s*$/i, '');
-    return s.trim().slice(0, 3000);
+    return s.trim();
   }
 
   const MD_ALLOWED_TAGS = new Set([
@@ -5036,7 +5036,6 @@
     let inner = '';
     for (const child of node.childNodes) {
       inner += sanitizeMarkdownNodeToHtml(child, depth + 1);
-      if (inner.length > 120000) break;
     }
 
     if (tag === 'A') {
@@ -5066,7 +5065,6 @@
     for (const root of mdRoots) {
       const piece = sanitizeMarkdownNodeToHtml(root, 0).trim();
       if (!piece) continue;
-      if (out && out.length + piece.length > 120000) break;
       out += piece;
     }
     return out;
@@ -5127,10 +5125,10 @@
       out.push({
         id: `a-${i}`,
         role: 'assistant',
-        text: replyText.slice(0, 120000),
+        text: replyText,
         html: replyHtml,
         thoughtLabel: thoughtLabel.slice(0, 120),
-        thoughtText: thoughtChunks.join('\n\n').slice(0, 12000),
+        thoughtText: thoughtChunks.join('\n\n'),
         highRisk,
         riskText: (riskBanner?.textContent || '').trim()
       });

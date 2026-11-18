@@ -1910,7 +1910,7 @@ function renderSafeMarkdownToHtml(rawMd) {
       return `\u0000LN${idx}\u0000`;
     });
     let escaped = escSafeHtml(s);
-    escaped = escaped.replace(/\*\*([^\n*][\s\S]*?[^\n*]|[^\n*])\*\*/g, '<strong>$1</strong>');
+    escaped = escaped.replace(/\*\*([^\n*][^\n]*?[^\n*]|[^\n*])\*\*/g, '<strong>$1</strong>');
     escaped = escaped.replace(/(^|[^*])\*([^\s*\n][^*\n]*?[^\s*\n]|[^\s*\n])\*(?!\*)/g, '$1<em>$2</em>');
     escaped = escaped.replace(/\u0000LN(\d+)\u0000/g, (_m, idx) => tokens[Number(idx)] || '');
     escaped = escaped.replace(/\u0000IC(\d+)\u0000/g, (_m, idx) => inlineCodes[Number(idx)] || '');
@@ -2084,7 +2084,7 @@ function extractMessagesFromTrajectorySteps(steps) {
       text: '',
       html: '',
       thoughtLabel: '思考过程',
-      thoughtText: pendingThoughts.join('\n\n').slice(0, 12000),
+      thoughtText: pendingThoughts.join('\n\n'),
       highRisk: false,
       riskText: ''
     });
@@ -2102,7 +2102,7 @@ function extractMessagesFromTrajectorySteps(steps) {
       messages.push({
         id: `t-u-${i}`,
         role: 'user',
-        text: userText.slice(0, 120000)
+        text: userText
       });
       continue;
     }
@@ -2112,8 +2112,8 @@ function extractMessagesFromTrajectorySteps(steps) {
       if (thought) pendingThoughts.push(thought);
       const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
       if (replyRaw) {
-        const replyText = replyRaw.slice(0, 120000);
-        const thoughtText = pendingThoughts.join('\n\n').slice(0, 12000);
+        const replyText = replyRaw;
+        const thoughtText = pendingThoughts.join('\n\n');
         messages.push({
           id: `t-a-${i}`,
           role: 'assistant',
@@ -3518,12 +3518,13 @@ function buildMobileAppHtml() {
       renderQuotaDrawer(snap);
       syncSendButtonUI();
 
-      // Messages (full history + upward pagination + scroll anchor)
+      // Messages (full history + upward pagination + gap backfill + scroll anchor)
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
       if (snapSid !== activeMsgSessionId) {
         activeMsgSessionId = snapSid;
         sessionMsgsByIndex.clear();
         loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         stickBottom = true;
       }
       const rawMsgs = Array.isArray(snap.messages) ? snap.messages : [];
@@ -3543,6 +3544,9 @@ function buildMobileAppHtml() {
         sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
       }
       renderMessagesView(snap);
+      if (snapSid && snapSid !== '__new__' && findMissingMsgRanges(totalMsgs).length > 0) {
+        void backfillMissingMsgGaps(snapSid);
+      }
 
       // Pending Approvals
       const approvals = Array.isArray(snap.pendingApprovals) ? snap.pendingApprovals : [];
@@ -4123,9 +4127,73 @@ function buildMobileAppHtml() {
     let activeMsgSessionId = null;
     const sessionMsgsByIndex = new Map();
     let loadingEarlierMsgs = false;
+    let backfillingMsgGaps = false;
 
     function getOrderedSessionMessages() {
       return Array.from(sessionMsgsByIndex.values()).sort((a, b) => (a.msgIndex - b.msgIndex));
+    }
+
+    function findMissingMsgRanges(totalCount) {
+      if (sessionMsgsByIndex.size === 0) return [];
+      const keys = Array.from(sessionMsgsByIndex.keys()).sort((a, b) => a - b);
+      const minIdx = keys[0];
+      const maxKey = keys[keys.length - 1];
+      const maxEnd = (Number.isFinite(totalCount) && totalCount > 0) ? Math.max(totalCount, maxKey + 1) : (maxKey + 1);
+      const keySet = new Set(keys);
+      const ranges = [];
+      let gapStart = -1;
+      for (let idx = minIdx; idx < maxEnd; idx++) {
+        if (!keySet.has(idx)) {
+          if (gapStart < 0) gapStart = idx;
+        } else if (gapStart >= 0) {
+          ranges.push([gapStart, idx]);
+          gapStart = -1;
+        }
+      }
+      if (gapStart >= 0) ranges.push([gapStart, maxEnd]);
+      return ranges;
+    }
+
+    async function backfillMissingMsgGaps(expectedSid) {
+      if (backfillingMsgGaps || !expectedSid || expectedSid === '__new__' || expectedSid !== activeMsgSessionId) return;
+      backfillingMsgGaps = true;
+      try {
+        while (expectedSid === activeMsgSessionId) {
+          const ranges = findMissingMsgRanges(Number(latestSnap?.totalMessages));
+          if (!ranges.length) break;
+          const [gapStart, gapEnd] = ranges[0];
+          let cursorEnd = gapEnd;
+          let progressed = false;
+          while (cursorEnd > gapStart && expectedSid === activeMsgSessionId) {
+            const chunkLim = Math.max(1, Math.min(200, cursorEnd - gapStart));
+            const q = '/api/messages?sessionId=' + encodeURIComponent(expectedSid) + '&before=' + cursorEnd + '&limit=' + chunkLim;
+            const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
+            if (res.status === 401) { location.reload(); return; }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            if (expectedSid !== activeMsgSessionId) return;
+            const rows = Array.isArray(data?.messages) ? data.messages : [];
+            if (!rows.length) break;
+            const baseIdx = Number.isFinite(Number(data?.startIndex)) ? Number(data.startIndex) : Math.max(0, cursorEnd - rows.length);
+            const prevHeight = msgEl.scrollHeight;
+            const prevTop = msgEl.scrollTop;
+            for (let i = 0; i < rows.length; i++) {
+              const m = rows[i];
+              if (!m) continue;
+              const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + i);
+              sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
+              progressed = true;
+            }
+            renderMessagesView(latestSnap, stickBottom ? {} : { preserveAnchor: true, prevHeight, prevTop });
+            if (baseIdx >= cursorEnd) break;
+            cursorEnd = baseIdx;
+          }
+          if (!progressed) break;
+        }
+      } catch {
+      } finally {
+        backfillingMsgGaps = false;
+      }
     }
 
     function renderMessagesView(snap, opts = {}) {

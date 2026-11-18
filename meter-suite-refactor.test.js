@@ -4396,21 +4396,74 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
     });
     assert.equal(missingSidRes.status, 400);
 
-    // 3. 验证 ag-enhancer-overlay.js：长消息 DOM 不截断 + 授权模式（含窄侧栏纯图标 SVG）精准识别
+    // 3. 验证 ag-enhancer-overlay.js：>120000 字长用户消息/回复 DOM 不截断 + 轨迹与 DOM 回退双路径全文保留 + 授权模式（含窄侧栏纯图标 SVG）精准识别
+    const ultraUserDom = '超长用户DOM消息_' + 'U'.repeat(135000) + '_DOM_USER_135K_END';
+    const ultraReplyDom = '超长助手DOM回复_' + 'A'.repeat(135000) + '_DOM_REPLY_135K_END';
+    const ultraUserTraj = '超长用户轨迹消息_' + 'Q'.repeat(135000) + '_TRAJ_USER_135K_END';
+    const ultraReplyTraj = '超长助手轨迹回复_' + 'R'.repeat(135000) + '_TRAJ_REPLY_135K_END';
+
+    const trajUltraSnap = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'sess-ultra-traj-135k',
+      busy: false,
+      messages: [],
+      conversations: [],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      msgLimit: 10,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => method === 'GetCascadeTrajectory'
+          ? {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: ultraUserTraj }] } },
+                  { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: ultraReplyTraj } }
+                ]
+              }
+            }
+          : {}
+      })
+    });
+    assert.equal(trajUltraSnap.messages.length, 2);
+    assert.ok(trajUltraSnap.messages[0].text.length > 135000 && trajUltraSnap.messages[0].text.endsWith('TRAJ_USER_135K_END'), '轨迹路径用户消息 >120000 字不得截断');
+    assert.ok(trajUltraSnap.messages[1].text.length > 135000 && trajUltraSnap.messages[1].text.endsWith('TRAJ_REPLY_135K_END'), '轨迹路径助手回复 >120000 字不得截断');
+    assert.ok(trajUltraSnap.messages[1].html.includes('TRAJ_REPLY_135K_END'), '轨迹路径助手 HTML >120000 字不得截断');
+    const ultraPage = await remoteMod.getConversationMessagesPage({
+      sessionId: 'sess-ultra-traj-135k',
+      before: 2,
+      limit: 10
+    });
+    assert.ok(ultraPage.messages[0].text.endsWith('TRAJ_USER_135K_END'));
+    assert.ok(ultraPage.messages[1].text.endsWith('TRAJ_REPLY_135K_END'));
+
     const envEnh = createDomEnv();
+    envEnh.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9, DOCUMENT_POSITION_FOLLOWING: 4 };
     envEnh.win.location = { pathname: '/c/enh-perm-test', search: '' };
     envEnh.sandbox.location = envEnh.win.location;
     envEnh.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
 
     const scrollVp = envEnh.doc.createElement('div');
     scrollVp.setAttribute('data-testid', 'chat-scroll-container');
+    const longUserEl = envEnh.doc.createElement('div');
+    longUserEl.setAttribute('data-testid', 'user-message');
+    const longUserContent = envEnh.doc.createElement('div');
+    longUserContent.setAttribute('data-testid', 'user-message-content');
+    longUserContent.textContent = ultraUserDom;
+    longUserEl.appendChild(longUserContent);
+    scrollVp.appendChild(longUserEl);
+
     const longAgentEl = envEnh.doc.createElement('div');
     longAgentEl.setAttribute('data-testid', 'agent-response');
     const longMdEl = envEnh.doc.createElement('div');
     longMdEl.setAttribute('data-markdown-root', '');
-    const longSpan = envEnh.doc.createElement('p');
-    longSpan.textContent = '长DOM文本' + 'A'.repeat(9500) + 'TAIL_OK';
-    longMdEl.appendChild(longSpan);
+    longMdEl.compareDocumentPosition = () => 2;
+    longMdEl.innerHTML = `<p>${ultraReplyDom}</p>`;
+    if (longMdEl.children[0]?.childNodes?.[0]) {
+      longMdEl.children[0].childNodes[0].nodeValue = ultraReplyDom;
+    }
     longAgentEl.appendChild(longMdEl);
     scrollVp.appendChild(longAgentEl);
     envEnh.doc.body.appendChild(scrollVp);
@@ -4426,7 +4479,29 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
 
     const snapEnhReview = enhApi.getMobileSnapshot();
     assert.equal(snapEnhReview.permissionKey, 'request_review');
-    assert.ok(snapEnhReview.messages[0]?.text?.endsWith('TAIL_OK') && snapEnhReview.messages[0].text.length > 9500, 'DOM 回复超过 4000 字时不应再被截断');
+    assert.equal(snapEnhReview.messages.length, 2);
+    assert.ok(snapEnhReview.messages[0]?.text?.endsWith('DOM_USER_135K_END') && snapEnhReview.messages[0].text.length > 135000, 'DOM 用户消息超过 120000 字时不应截断');
+    assert.ok(snapEnhReview.messages[1]?.text?.endsWith('DOM_REPLY_135K_END') && snapEnhReview.messages[1].text.length > 135000, 'DOM 回复超过 120000 字时不应截断');
+    assert.ok(snapEnhReview.messages[1]?.html?.includes('DOM_REPLY_135K_END'), 'DOM 回复 HTML 超过 120000 字时不应截断');
+
+    const domFallbackUltraSnap = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'sess-dom-fallback-135k',
+      busy: false,
+      messages: snapEnhReview.messages,
+      conversations: [],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      msgLimit: 10,
+      bypassCache: true,
+      localApiConnect: async () => null
+    });
+    assert.equal(domFallbackUltraSnap.messages.length, 2);
+    assert.ok(domFallbackUltraSnap.messages[0].text.endsWith('DOM_USER_135K_END') && domFallbackUltraSnap.messages[0].text.length > 135000, '无轨迹连接 DOM 回退路径用户消息 >120000 字应完整保留');
+    assert.ok(domFallbackUltraSnap.messages[1].text.endsWith('DOM_REPLY_135K_END') && domFallbackUltraSnap.messages[1].text.length > 135000, '无轨迹连接 DOM 回退路径助手回复 >120000 字应完整保留');
+    assert.ok(domFallbackUltraSnap.messages[1].html.includes('DOM_REPLY_135K_END'), '无轨迹连接 DOM 回退路径 HTML >120000 字应完整保留');
 
     // 窄屏下按钮文字隐藏、仅余原生 SVG 路径时仍能精确识别 4 种模式
     permTrigger.textContent = '';
@@ -4531,14 +4606,41 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(msgContainer.querySelectorAll('.msg').length, 62, '底部滑动窗口更新后已加载历史 [90..121] 不得出现断层');
 
+    // 再一次性突发新增 40 条消息 (总计 192 条，尾窗变为 [162..191]，产生 [152..161] 空洞)，验证自动检测并无损回填全部 10 条空洞消息
+    for (let k = 76; k < 96; k++) {
+      steps150.push(
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: `新增空洞用户 #${k}` }] } },
+        { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: `新增空洞回复 #${k}` } }
+      );
+    }
+    liveSnapState = await remoteMod.enrichSnapshotWithCatalog({
+      ...liveSnapState,
+      messages: [
+        { id: 'u-jump-last', role: 'user', text: '新增空洞用户 #95' },
+        { id: 'a-jump-last', role: 'assistant', text: '新增空洞回复 #95' }
+      ]
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+    assert.equal(liveSnapState.totalMessages, 192);
+    assert.equal(liveSnapState.messagesStartIndex, 162);
+
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 80));
+    const afterGapMsgs = msgContainer.querySelectorAll('.msg');
+    assert.equal(afterGapMsgs.length, 102, '突发新增 40 条产生索引空洞 [152..161] 后应自动回填补齐 [90..191] 共 102 条连续消息');
+    for (let i = 0; i < afterGapMsgs.length; i++) {
+      assert.equal(Number(afterGapMsgs[i].getAttribute('data-msg-idx')), 90 + i, `消息索引第 ${i} 项应严格连续为 ${90 + i}`);
+    }
+    assert.ok((msgContainer.textContent || '').includes('新增空洞用户 #76'), '空洞区间内第 152 条消息必须完整补回');
+    assert.ok((msgContainer.textContent || '').includes('新增空洞回复 #80'), '空洞区间内第 161 条消息必须完整补回');
+
     // 继续上翻直至第 0 条（首轮原始指令 @spec.md）完整呈现，且顶部按钮自动消失
-    for (let step = 0; step < 4; step++) {
+    for (let step = 0; step < 5; step++) {
       const earlierBtn = msgContainer.querySelector('#btn-load-earlier');
       if (!earlierBtn) break;
       earlierBtn.click();
       await new Promise((r) => setTimeout(r, 40));
     }
-    assert.equal(msgContainer.querySelectorAll('.msg').length, 152, '连续上翻应能读到从第 0 条至今全部 152 条对话内容');
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 192, '连续上翻应能读到从第 0 条至今全部 192 条对话内容');
     assert.ok((msgContainer.textContent || '').includes('首轮原始指令 @spec.md'), '第 0 条首轮消息及 @文件引用应完整可读');
     assert.equal(msgContainer.querySelector('#btn-load-earlier'), null, '翻到首条后顶部加载按钮应自动消失');
 
