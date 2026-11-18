@@ -5136,10 +5136,144 @@
     return null;
   }
 
-  async function navigateSpaRoute(targetHref) {
+  function triggerNativeProjectNewChat(projectId) {
+    try {
+      const listEl = document.querySelector('[data-testid="conversation-list-sidebar"]');
+      if (!listEl) return null;
+      const fk = Object.keys(listEl).find((k) => k.startsWith('__reactFiber$'));
+      let f = fk ? listEl[fk] : null;
+      for (let d = 0; d < 6 && f; d++) {
+        const renderer = f.memoizedProps?.customHeaderRenderer;
+        if (typeof renderer === 'function') {
+          const el = renderer({ id: `header-${projectId}`, type: 'header' });
+          if (typeof el?.props?.onAddClick === 'function') {
+            el.props.onAddClick({ stopPropagation() {}, preventDefault() {} });
+            return { triggered: true, method: 'sidebar-header-action' };
+          }
+        }
+        f = f.return;
+      }
+    } catch {}
+    return null;
+  }
+
+  function readDesktopAppNavigationState() {
+    const router = findTanStackRouter();
+    const hasRouter = Boolean(router && router.state);
+    const routerReady = Boolean(hasRouter && !router.state.isLoading && router.state.status !== 'pending');
+    const routePath = String(router?.state?.location?.pathname || location?.pathname || '');
+    const searchVal = router?.state?.location?.search;
+    const routeProjectId = (searchVal && typeof searchVal === 'object' && searchVal.project)
+      ? String(searchVal.project).trim()
+      : getProjectIdFromLocation();
+
+    let matchedCascadeId = '';
+    if (Array.isArray(router?.state?.matches)) {
+      for (let i = router.state.matches.length - 1; i >= 0; i--) {
+        const cid = router.state.matches[i]?.params?.cascadeId;
+        if (cid) {
+          matchedCascadeId = String(cid);
+          break;
+        }
+      }
+    }
+
+    let hasInputProps = false;
+    let inExistingConversation = false;
+    let inputCascadeId = '';
+    let isConvoLoading = false;
+    try {
+      const compHost = document.querySelector('.surface-composer') || getComposerEditor();
+      if (compHost) {
+        const fk = Object.keys(compHost).find((k) => k.startsWith('__reactFiber$'));
+        let f = fk ? compHost[fk] : null;
+        for (let i = 0; i < 16 && f; i++) {
+          const p = f.memoizedProps;
+          if (p && typeof p === 'object' && ('inExistingConversation' in p || 'handleSubmit' in p)) {
+            hasInputProps = true;
+            inExistingConversation = Boolean(p.inExistingConversation);
+            inputCascadeId = String(p.cascadeId || '');
+            isConvoLoading = Boolean(p.isConvoLoading);
+            break;
+          }
+          f = f.return;
+        }
+      }
+    } catch {}
+
+    let domSelectedProjectId = '';
+    try {
+      const selProj = document.querySelector('[data-active-project-id]')
+        || document.querySelector('[data-testid="new-convo-project-trigger"][data-project-id]')
+        || Array.from(document.querySelectorAll('[data-project-id]')).find((n) => n.getAttribute('data-selected') === 'true' || n.getAttribute('aria-pressed') === 'true');
+      if (selProj) {
+        domSelectedProjectId = String(selProj.getAttribute('data-active-project-id') || selProj.getAttribute('data-project-id') || '').trim();
+      }
+    } catch {}
+
+    let activeDomRowId = '';
+    try {
+      const rows = getOrderedSidebarConversationRows();
+      const activeRow = rows.find((r) => isSidebarRowActive(r, ''));
+      if (activeRow) activeDomRowId = extractSidebarRowId(activeRow);
+    } catch {}
+
+    return {
+      hasRouter,
+      routerReady,
+      routePath,
+      routeProjectId,
+      matchedCascadeId,
+      hasComposer: Boolean(getComposerEditor()),
+      hasInputProps,
+      inExistingConversation,
+      inputCascadeId,
+      isConvoLoading,
+      domSelectedProjectId,
+      activeDomRowId
+    };
+  }
+
+  async function waitForVerifiedNavigationState(kind, targetValue, timeoutMs = 1200) {
+    const start = Date.now();
+    let lastState = readDesktopAppNavigationState();
+    const isMatched = (st) => {
+      if (kind === 'new') {
+        const pid = String(targetValue || '').trim();
+        if (st.hasRouter || st.hasInputProps) {
+          const inputLandingOk = st.hasInputProps && st.inExistingConversation === false && !st.isConvoLoading && !st.inputCascadeId;
+          const routerLandingOk = st.hasRouter && st.routerReady && st.routePath === '/' && !st.matchedCascadeId;
+          const projectOk = !pid || st.routeProjectId === pid || st.domSelectedProjectId === pid;
+          return st.hasComposer && (inputLandingOk || routerLandingOk) && projectOk;
+        }
+        return st.hasComposer && !st.activeDomRowId && (!pid || st.domSelectedProjectId === pid);
+      }
+      if (kind === 'switch') {
+        const cid = String(targetValue || '').trim();
+        if (!cid) return false;
+        if (st.hasRouter || st.hasInputProps) {
+          const routerSwitched = st.hasRouter && st.routerReady && st.matchedCascadeId === cid;
+          const inputSwitched = st.hasInputProps && st.inExistingConversation === true && st.inputCascadeId === cid && !st.isConvoLoading;
+          return routerSwitched || inputSwitched;
+        }
+        return st.activeDomRowId === cid;
+      }
+      return false;
+    };
+
+    while (Date.now() - start <= timeoutMs) {
+      lastState = readDesktopAppNavigationState();
+      if (isMatched(lastState)) return { ok: true, state: lastState };
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    return { ok: false, state: lastState };
+  }
+
+  async function navigateSpaRoute(targetHref, options = {}) {
     const href = String(targetHref || '/').trim() || '/';
     const cMatch = href.match(/^\/c\/([^/?#]+)/);
     const pId = parseProjectIdFromHref(href);
+    let method = '';
 
     if (cMatch) {
       const cid = cMatch[1];
@@ -5150,48 +5284,58 @@
         || row;
       if (link && typeof link.click === 'function') {
         link.click();
-        return { ok: true, method: 'dom-link' };
+        method = 'dom-link';
       }
     } else if (pId) {
-      const projLink = document.querySelector(`a[href="/?project=${escapeCssIdent(pId)}"]`)
-        || Array.from(document.querySelectorAll('a[href*="project="]')).find((a) => parseProjectIdFromHref(a.getAttribute('href')) === pId);
-      if (projLink && typeof projLink.click === 'function') {
-        projLink.click();
-        return { ok: true, method: 'dom-link' };
+      if (options.preferNativeProjectAction) {
+        const nativeRes = triggerNativeProjectNewChat(pId);
+        if (nativeRes?.triggered) method = nativeRes.method;
+      }
+      if (!method) {
+        const projLink = document.querySelector(`a[href="/?project=${escapeCssIdent(pId)}"]`)
+          || Array.from(document.querySelectorAll('a[href*="project="]')).find((a) => parseProjectIdFromHref(a.getAttribute('href')) === pId);
+        if (projLink && typeof projLink.click === 'function') {
+          projLink.click();
+          method = 'dom-link';
+        }
       }
     } else if (href === '/') {
       const newBtn = document.querySelector('a[data-testid="new-conversation-button"], [data-testid="new-conversation-button"] a, [data-testid="new-conversation-button"]');
       if (newBtn && typeof newBtn.click === 'function') {
         newBtn.click();
-        return { ok: true, method: 'dom-link' };
+        method = 'dom-link';
       }
     }
 
-    const router = findTanStackRouter();
-    if (router) {
-      try {
-        if (typeof router.history?.push === 'function') {
-          router.history.push(href);
-          return { ok: true, method: 'router-history' };
-        }
-        if (typeof router.navigate === 'function') {
-          if (pId) await router.navigate({ to: '/', search: { project: pId } });
-          else await router.navigate({ to: href, search: {} });
-          return { ok: true, method: 'router-navigate' };
-        }
-      } catch {}
+    if (!method) {
+      const router = findTanStackRouter();
+      if (router) {
+        try {
+          if (typeof router.history?.push === 'function') {
+            router.history.push(href);
+            method = 'router-history';
+          } else if (typeof router.navigate === 'function') {
+            if (pId) await router.navigate({ to: '/', search: { project: pId } });
+            else await router.navigate({ to: href, search: {} });
+            method = 'router-navigate';
+          }
+        } catch {}
+      }
     }
 
-    if (typeof window !== 'undefined' && typeof window.history?.pushState === 'function') {
+    if (!method && typeof window !== 'undefined' && typeof window.history?.pushState === 'function') {
       try {
         window.history.pushState({}, '', href);
         const ev = typeof PopStateEvent === 'function' ? new PopStateEvent('popstate') : new Event('popstate');
         window.dispatchEvent(ev);
-        return { ok: true, method: 'history-push' };
+        method = 'popstate-dispatch';
       } catch {}
     }
 
-    return { ok: false, error: '未找到可用的桌面端导航控制接口' };
+    if (!method) {
+      return { ok: false, error: '未找到可用的桌面端导航控制接口' };
+    }
+    return { ok: true, method };
   }
 
   function extractSidebarStoreCatalog() {
@@ -5315,7 +5459,8 @@
     };
   }
 
-  function collectSidebarConversations(limit = 100) {
+  function collectSidebarConversations(limit = 0) {
+    const maxItems = Number(limit) > 0 ? Number(limit) : Infinity;
     const currentId = getSessionIdFromLocation() || '';
     const rows = getOrderedSidebarConversationRows();
     const list = [];
@@ -5361,11 +5506,11 @@
       };
       byId.set(id, item);
       list.push(item);
-      if (list.length >= limit) break;
+      if (list.length >= maxItems) break;
     }
 
     for (const sc of storeCatalog.conversations) {
-      if (list.length >= limit) break;
+      if (list.length >= maxItems) break;
       if (byId.has(sc.id)) continue;
       const item = {
         id: sc.id,
@@ -5413,7 +5558,7 @@
   function getMobileSnapshot() {
     const sessionId = getSessionIdFromLocation() || '';
     const storeCatalog = extractSidebarStoreCatalog();
-    const conversations = collectSidebarConversations(100);
+    const conversations = collectSidebarConversations(0);
     const activeConv = conversations.find((c) => c.active);
     const busy = isAssistantBusy();
     const locProjectId = getProjectIdFromLocation();
@@ -5582,11 +5727,28 @@
     if (action === 'new-conversation' || (action === 'switch-conversation' && String(payload?.id || '').trim() === 'new')) {
       const projectId = String(payload?.projectId || '').trim();
       const skipProject = !projectId || projectId === 'ungrouped' || projectId === 'outside-of-project' || projectId === 'standalone';
+      const expectedPid = skipProject ? '' : projectId;
       const targetHref = skipProject ? '/' : `/?project=${encodeURIComponent(projectId)}`;
-      const nav = await navigateSpaRoute(targetHref);
+      const nav = await navigateSpaRoute(targetHref, { preferNativeProjectAction: Boolean(expectedPid) });
       if (!nav.ok) return { ok: false, error: nav.error || '新建对话导航失败' };
-      await new Promise((r) => setTimeout(r, 180));
-      return { ok: true, id: 'new', projectId: skipProject ? '' : projectId, method: nav.method, pathname: location?.pathname || '/', search: location?.search || '' };
+      const verified = await waitForVerifiedNavigationState('new', expectedPid, 1200);
+      if (!verified.ok) {
+        return {
+          ok: false,
+          error: expectedPid ? `桌面端未进入目标项目新建对话状态: ${expectedPid}` : '桌面端未进入新建对话状态',
+          method: nav.method,
+          verifiedState: verified.state
+        };
+      }
+      return {
+        ok: true,
+        id: 'new',
+        projectId: expectedPid,
+        method: nav.method,
+        pathname: location?.pathname || '/',
+        search: location?.search || '',
+        verifiedState: verified.state
+      };
     }
 
     if (action === 'switch-conversation') {
@@ -5594,8 +5756,22 @@
       if (!targetId) return { ok: false, error: '缺少会话 ID' };
       const nav = await navigateSpaRoute(`/c/${targetId}`);
       if (!nav.ok) return { ok: false, error: nav.error || '未找到该会话的跳转入口' };
-      await new Promise((r) => setTimeout(r, 180));
-      return { ok: true, id: targetId, method: nav.method, pathname: location?.pathname || `/c/${targetId}` };
+      const verified = await waitForVerifiedNavigationState('switch', targetId, 1200);
+      if (!verified.ok) {
+        return {
+          ok: false,
+          error: `桌面端未切换至目标会话状态: ${targetId}`,
+          method: nav.method,
+          verifiedState: verified.state
+        };
+      }
+      return {
+        ok: true,
+        id: targetId,
+        method: nav.method,
+        pathname: location?.pathname || `/c/${targetId}`,
+        verifiedState: verified.state
+      };
     }
 
     if (action === 'toggle-thinking') {

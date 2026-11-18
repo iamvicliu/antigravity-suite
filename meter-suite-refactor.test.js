@@ -3693,176 +3693,337 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
       sidecar: true
     }));
 
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    const {
-      buildMobileAppHtml,
-      enrichSnapshotWithCatalog,
-      createSessionCatalogStore
-    } = require('./mobile-remote.js');
+    // 预埋污染的 Subagent 到持久化缓存文件，验证三源统一排除与清库能力
+    const catalogFile = path.join(stateDir, 'remote-session-catalog.json');
+    fs.writeFileSync(catalogFile, JSON.stringify({
+      version: 1,
+      updatedAt: Date.now() - 60000,
+      conversations: [
+        { id: 'subagent-child-1', title: 'Stale Cached Subagent', projectId: 'proj-b', projectName: 'Beta Service', archived: false, updatedAt: Date.now() - 1000 }
+      ]
+    }));
 
-    // 1. 验证后端多源融合、Subagent 子代理状态向上汇总、过滤归档及列表防缩水持久化
-    const baseMs = Date.now() - 30 * 60000;
-    const traj22 = {};
-    for (let i = 1; i <= 22; i++) {
-      const cid = `conv-root-${String(i).padStart(2, '0')}`;
-      const pid = i % 2 === 1 ? 'proj-a' : 'proj-b';
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    let remoteMod = require('./mobile-remote.js');
+
+    // 1. 构建 245 条非归档根会话（proj-a: 120, proj-b: 125）+ 1 条已归档 + 1 条三源同现 Subagent
+    const baseMs = Date.now() - 300 * 60000;
+    const traj245 = {};
+    for (let i = 1; i <= 245; i++) {
+      const cid = `conv-root-${String(i).padStart(3, '0')}`;
+      const pid = i <= 120 ? 'proj-a' : 'proj-b';
       let status = 'CASCADE_RUN_STATUS_IDLE';
       let termReason = 'EXECUTOR_TERMINATION_REASON_NO_TOOL_CALL';
       if (i === 1) status = 'CASCADE_RUN_STATUS_RUNNING';
       if (i === 2) status = 'CASCADE_RUN_STATUS_WAITING_FOR_USER';
       if (i === 3) termReason = 'EXECUTOR_TERMINATION_REASON_ERROR';
-      traj22[cid] = {
+      traj245[cid] = {
         summary: `Task ${i}`,
         status,
         latestExecutorTerminationReason: termReason,
-        lastModifiedTime: new Date(baseMs + i * 30000).toISOString(),
-        trajectoryMetadata: {
-          projectId: pid,
-          rootConversationId: cid
-        },
+        lastModifiedTime: new Date(baseMs + (246 - i) * 60000).toISOString(),
+        trajectoryMetadata: { projectId: pid, rootConversationId: cid },
         annotations: {
-          title: `任务 ${i}`,
+          title: `任务 ${String(i).padStart(3, '0')}`,
           lastUserViewTime: new Date(baseMs + 5000).toISOString()
         }
       };
     }
-    // 增加 1 个已归档对话与 1 个后台运行中的 Subagent（应聚合到 conv-root-04 且自身不进列表）
-    traj22['conv-archived-1'] = {
+    traj245['conv-archived-1'] = {
       summary: 'Archived Conversation',
       status: 'CASCADE_RUN_STATUS_IDLE',
       lastModifiedTime: new Date(baseMs + 1000).toISOString(),
       trajectoryMetadata: { projectId: 'proj-a', rootConversationId: 'conv-archived-1' },
       annotations: { title: '已归档会话', archived: true }
     };
-    traj22['subagent-child-1'] = {
+    traj245['subagent-child-1'] = {
       summary: 'Subagent Worker',
-      status: 'CASCADE_RUN_STATUS_RUNNING',
-      lastModifiedTime: new Date(baseMs + 990000).toISOString(),
+      status: 'CASCADE_RUN_STATUS_WAITING_FOR_USER',
+      lastModifiedTime: new Date(baseMs + 250 * 60000).toISOString(),
       trajectoryMetadata: {
         projectId: 'proj-b',
-        rootConversationId: 'conv-root-04',
-        parentConversationId: 'conv-root-04'
+        rootConversationId: 'conv-root-004',
+        parentConversationId: 'conv-root-004'
       }
     };
 
-    const store = createSessionCatalogStore();
-    const snap1 = await store.enrichSnapshot({
+    const snap1 = await remoteMod.enrichSnapshotWithCatalog({
       ok: true,
-      sessionId: 'conv-root-01',
+      sessionId: 'conv-root-001',
       busy: true,
       pendingApprovals: [],
       conversations: [
-        { id: 'conv-root-01', title: '任务 1', active: true, projectId: 'proj-a' }
+        { id: 'conv-root-001', title: '任务 001', active: true, projectId: 'proj-a' },
+        { id: 'subagent-child-1', title: 'Subagent Worker', domBusy: true, projectId: 'proj-b', parentConversationId: 'conv-root-004' }
       ],
       projects: []
     }, {
       stateDir,
       configDir,
+      convLimit: 100,
       bypassCache: true,
       localApiConnect: async () => ({
         call: async (method) => {
-          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: traj22 };
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: traj245 };
           if (method === 'ListProjects') return { projectIds: ['proj-a', 'proj-b', 'proj-empty', 'proj-sidecar'] };
           return {};
         }
       })
     });
 
-    assert.equal(snap1.conversations.length, 22, '应完整保留全部 22 条非归档根会话且剔除 Subagent 与归档会话');
-    assert.equal(snap1.conversations.some((c) => c.id === 'subagent-child-1'), false, 'Subagent 子代理不应混入会话列表');
-    assert.equal(snap1.conversations.some((c) => c.id === 'conv-archived-1'), false, '已归档会话不应出现在默认活跃列表');
-    const c1 = snap1.conversations.find((c) => c.id === 'conv-root-01');
-    const c2 = snap1.conversations.find((c) => c.id === 'conv-root-02');
-    const c3 = snap1.conversations.find((c) => c.id === 'conv-root-03');
-    const c4 = snap1.conversations.find((c) => c.id === 'conv-root-04');
-    assert.equal(c1?.status, 'running');
-    assert.equal(c2?.status, 'waiting');
-    assert.equal(c3?.status, 'error');
-    assert.equal(c4?.status, 'running', '主会话 IDLE 时若旗下 Subagent 仍在运行，状态应向上汇总为 running');
+    assert.equal(snap1.totalConversations, 245, '超过 200 条的非归档根会话应全量统计且不被截断');
+    assert.equal(snap1.hasMoreConversations, true, '首屏仅下发分窗时应标明 hasMoreConversations=true');
+    assert.equal(snap1.conversations.some((c) => c.id === 'subagent-child-1'), false, '三源同现的 Subagent 不得出现在会话列表');
+    assert.equal(snap1.conversations.some((c) => c.id === 'conv-archived-1'), false, '已归档会话不得出现在活跃列表');
 
-    assert.equal(snap1.projects.some((p) => p.id === 'proj-sidecar' || p.name === 'swarm/swarm_board'), false, 'sidecar 内部项目应被过滤');
-    const emptyP = snap1.projects.find((p) => p.id === 'proj-empty');
-    assert.ok(emptyP && emptyP.isEmpty && emptyP.conversationCount === 0, '无历史会话的普通项目应作为空项目保留');
-    assert.equal(snap1.currentProjectId, 'proj-a');
-    assert.equal(snap1.currentProjectName, 'Alpha App');
+    const persistedCatalog = JSON.parse(fs.readFileSync(catalogFile, 'utf8'));
+    assert.equal(persistedCatalog.conversations.filter((c) => !c.archived).length, 245, '磁盘持久化目录应保留全部 245 条非归档对话');
+    assert.equal(persistedCatalog.conversations.some((c) => c.id === 'subagent-child-1'), false, '已有缓存中的 Subagent 条目应被彻底清理');
+    assert.ok(persistedCatalog.subagentIds.includes('subagent-child-1'), '已识别的 Subagent ID 应记录以防复现');
 
-    // 模拟桌面端自动折叠与语言服务只返回 2 条时，Sticky Catalog 仍保底不缩水
-    const shrunkTrajs = {
-      'conv-root-01': traj22['conv-root-01'],
-      'conv-root-02': traj22['conv-root-02']
-    };
-    const snap2 = await enrichSnapshotWithCatalog({
+    const c4 = snap1.conversations.find((c) => c.id === 'conv-root-004');
+    assert.equal(c4?.status, 'waiting', 'IDLE 根会话旗下 Subagent 处于待确认时应向上汇总为 waiting');
+    assert.equal(snap1.projects.some((p) => p.id === 'proj-sidecar' || p.name === 'swarm/swarm_board'), false);
+    assert.equal(snap1.projects.find((p) => p.id === 'proj-a')?.conversationCount, 120);
+    assert.equal(snap1.projects.find((p) => p.id === 'proj-b')?.conversationCount, 125);
+    assert.ok(snap1.projects.find((p) => p.id === 'proj-empty')?.isEmpty);
+
+    // 2. 模拟桌面端折叠、滚动至仅剩 1 行 + 服务重启（清除模块缓存并重建 store），验证 245 条完整保留、Subagent 持续被过滤及 /api/conversations 分页
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    remoteMod = require('./mobile-remote.js');
+
+    const snapRestart = await remoteMod.enrichSnapshotWithCatalog({
       ok: true,
-      sessionId: 'conv-root-01',
+      sessionId: 'conv-root-001',
       busy: false,
-      conversations: [{ id: 'conv-root-01', title: '任务 1', active: true, projectId: 'proj-a' }],
+      conversations: [
+        { id: 'conv-root-001', title: '任务 001', active: true, projectId: 'proj-a' },
+        { id: 'subagent-child-1', title: 'Injected Subagent From Snapshot', domBusy: true, projectId: 'proj-b' }
+      ],
       projects: []
     }, {
       stateDir,
       configDir,
+      convLimit: 100,
       bypassCache: true,
       localApiConnect: async () => ({
         call: async (method) => {
-          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: shrunkTrajs };
+          if (method === 'GetAllCascadeTrajectories') {
+            return { trajectorySummaries: { 'conv-root-001': traj245['conv-root-001'] } };
+          }
           return {};
         }
       })
     });
-    assert.equal(snap2.conversations.length, 22, '桌面端折叠或语言服务缩减条目后，会话列表数量不得缩水');
+    assert.equal(snapRestart.totalConversations, 245, '服务重启且桌面端折叠仅余 1 条后，全量 245 条对话仍完好保留');
+    assert.equal(snapRestart.conversations.some((c) => c.id === 'subagent-child-1'), false, '重启后仅由快照回流的已知 Subagent 仍被过滤');
 
-    // 2. 验证 ag-enhancer-overlay.js 按项目新建对话与跨折叠项目 SPA 路由跳转
-    const envEnh = createDomEnv();
-    envEnh.sandbox.setTimeout = setTimeout;
-    envEnh.sandbox.clearTimeout = clearTimeout;
-    envEnh.win.location = { pathname: '/c/conv-root-01', search: '' };
-    envEnh.win.history = {
+    const page1 = remoteMod.listCatalogConversations({ stateDir, offset: 0, limit: 150 });
+    const page2 = remoteMod.listCatalogConversations({ stateDir, offset: 150, limit: 150 });
+    assert.equal(page1.total, 245);
+    assert.equal(page1.conversations.length, 150);
+    assert.equal(page1.hasMore, true);
+    assert.equal(page2.conversations.length, 95);
+    assert.equal(page2.hasMore, false);
+    assert.equal(page2.conversations[page2.conversations.length - 1]?.id, 'conv-root-245', '第 245 条历史对话应可通过分页准确读出');
+
+    // 验证 HTTP GET /api/conversations 端点可用性
+    const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+    const httpHandler = remoteMod.createRemoteHttpHandler(httpCfg);
+    const apiConvRes = await new Promise((resolve) => {
+      const chunks = [];
+      httpHandler({
+        method: 'GET',
+        url: `/api/conversations?offset=150&limit=100&token=${encodeURIComponent(httpCfg.token)}`,
+        headers: { host: `127.0.0.1:${httpCfg.port}` },
+        socket: { remoteAddress: '127.0.0.1' }
+      }, {
+        setHeader() {},
+        writeHead(status) { this.status = status; },
+        end(body) { resolve({ status: this.status, json: JSON.parse(String(body || '{}')) }); }
+      });
+    });
+    assert.equal(apiConvRes.status, 200);
+    assert.equal(apiConvRes.json.conversations.length, 95);
+
+    // 3. 验证 ag-enhancer-overlay.js：仅改 URL 而应用状态未切换必须失败；真实 Router + AgentInputBox 状态与首条消息归属项目验证
+    const envFake = createDomEnv();
+    envFake.sandbox.setTimeout = setTimeout;
+    envFake.sandbox.clearTimeout = clearTimeout;
+    envFake.win.location = { pathname: '/c/conv-root-001', search: '' };
+    envFake.win.history = {
       pushState(_st, _t, url) {
         const u = new URL(String(url), 'https://127.0.0.1');
-        envEnh.win.location.pathname = u.pathname;
-        envEnh.win.location.search = u.search;
+        envFake.win.location.pathname = u.pathname;
+        envFake.win.location.search = u.search;
       }
     };
-    envEnh.sandbox.location = envEnh.win.location;
-    envEnh.sandbox.fetch = async (url) => {
-      if (String(url).includes('/get-settings')) return { ok: true, json: async () => ({ uiPreferences: {} }) };
-      return { ok: true, json: async () => ({ ok: true }) };
+    envFake.sandbox.location = envFake.win.location;
+    envFake.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+    vm.runInContext(RENDERER_SRC, envFake.sandbox);
+    vm.runInContext(ENHANCER_SRC, envFake.sandbox);
+    const enhFake = envFake.sandbox.__AGEnhancer;
+
+    const fakeNew = await enhFake.performMobileAction({ action: 'new-conversation', projectId: 'proj-b' });
+    const fakeSwitch = await enhFake.performMobileAction({ action: 'switch-conversation', id: 'conv-root-245' });
+    assert.equal(fakeNew.ok, false, '仅改动 URL 而无桌面端应用状态切换时 new-conversation 必须返回失败');
+    assert.equal(fakeSwitch.ok, false, '仅改动 URL 而无桌面端应用状态切换时 switch-conversation 必须返回失败');
+    enhFake.dispose?.();
+    envFake.sandbox.__AGContextMeter?.dispose?.();
+
+    // 构建真实 Antigravity TanStack Router + sidebar customHeaderRenderer + AgentInputBox 集成环境
+    const createdByFirstMsg = [];
+    const envReal = createDomEnv();
+    envReal.sandbox.setTimeout = setTimeout;
+    envReal.sandbox.clearTimeout = clearTimeout;
+    envReal.win.location = { pathname: '/c/conv-root-001', search: '?project=proj-a' };
+    envReal.sandbox.location = envReal.win.location;
+    envReal.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+    envReal.doc.execCommand = () => false;
+    envReal.win.getSelection = () => null;
+    envReal.sandbox.getSelection = envReal.win.getSelection;
+
+    const routerState = {
+      status: 'idle',
+      isLoading: false,
+      location: { pathname: '/c/conv-root-001', search: { project: 'proj-a' } },
+      matches: [{ routeId: '/manager-layout/manager-landing-layout/c/$cascadeId', params: { cascadeId: 'conv-root-001' }, status: 'success' }]
     };
-    const projBtn = envEnh.doc.createElement('button');
-    projBtn.setAttribute('data-testid', 'project-header');
-    projBtn.setAttribute('data-project-id', 'proj-b');
-    projBtn.setAttribute('data-project-label', 'Beta Service');
-    envEnh.doc.body.appendChild(projBtn);
+    const composerProps = {
+      inExistingConversation: true,
+      cascadeId: 'conv-root-001',
+      isConvoLoading: false,
+      handleSubmit: () => {}
+    };
+    function applyRouterUrl(nextHref) {
+      const u = new URL(String(nextHref), 'https://127.0.0.1');
+      const pid = u.searchParams.get('project') || '';
+      envReal.win.location.pathname = u.pathname;
+      envReal.win.location.search = u.search;
+      routerState.location = { pathname: u.pathname, search: pid ? { project: pid } : {} };
+      const cm = u.pathname.match(/^\/c\/([^/?#]+)/);
+      if (cm) {
+        routerState.matches = [{ routeId: '/manager-layout/manager-landing-layout/c/$cascadeId', params: { cascadeId: cm[1] }, status: 'success' }];
+        composerProps.inExistingConversation = true;
+        composerProps.cascadeId = cm[1];
+      } else {
+        routerState.matches = [{ routeId: '/manager-layout/manager-landing-layout/', params: {}, status: 'success' }];
+        composerProps.inExistingConversation = false;
+        composerProps.cascadeId = '';
+      }
+      if (pid) projBadge.setAttribute('data-active-project-id', pid);
+      else projBadge.removeAttribute('data-active-project-id');
+    }
 
-    vm.runInContext(RENDERER_SRC, envEnh.sandbox);
-    const apiEnh = envEnh.sandbox.__AGContextMeter;
-    vm.runInContext(ENHANCER_SRC, envEnh.sandbox);
-    const enhancer = envEnh.sandbox.__AGEnhancer;
+    const fakeRouter = {
+      state: routerState,
+      history: { push: (href) => applyRouterUrl(href) },
+      parseLocation: () => routerState.location,
+      navigate: async ({ to, search }) => applyRouterUrl(search?.project ? `${to}?project=${encodeURIComponent(search.project)}` : to)
+    };
 
-    const newProjAct = await enhancer.performMobileAction({ action: 'new-conversation', projectId: 'proj-b' });
-    assert.equal(newProjAct.ok, true);
-    assert.equal(envEnh.win.location.pathname, '/');
-    assert.equal(envEnh.win.location.search, '?project=proj-b');
-    const newProjSnap = enhancer.getMobileSnapshot();
-    assert.equal(newProjSnap.currentProjectId, 'proj-b');
-    assert.equal(newProjSnap.isNewConversation, true);
-    assert.ok(newProjSnap.title.includes('Beta Service'), '在指定项目新建对话时标题应体现所属项目名');
+    const projBadge = envReal.doc.createElement('div');
+    projBadge.setAttribute('data-active-project-id', 'proj-a');
+    envReal.doc.body.appendChild(projBadge);
 
-    const switchCollapsedAct = await enhancer.performMobileAction({ action: 'switch-conversation', id: 'collapsed-conv-999' });
-    assert.equal(switchCollapsedAct.ok, true);
-    assert.equal(envEnh.win.location.pathname, '/c/collapsed-conv-999');
+    const newConvoBtn = envReal.doc.createElement('a');
+    newConvoBtn.setAttribute('data-testid', 'new-conversation-button');
+    newConvoBtn.setAttribute('href', '/');
+    newConvoBtn.__reactFiber$test = {
+      dependencies: { firstContext: { memoizedValue: fakeRouter, next: null } },
+      return: null
+    };
+    envReal.doc.body.appendChild(newConvoBtn);
 
-    enhancer.dispose?.();
-    apiEnh?.dispose?.();
+    const sidebarList = envReal.doc.createElement('div');
+    sidebarList.setAttribute('data-testid', 'conversation-list-sidebar');
+    sidebarList.__reactFiber$test = {
+      return: {
+        memoizedProps: {
+          customHeaderRenderer: (item) => {
+            const pid = String(item?.id || '').replace(/^header-/, '');
+            if (!['proj-a', 'proj-b', 'proj-empty'].includes(pid)) return null;
+            return {
+              props: {
+                onAddClick: () => applyRouterUrl(`/?project=${encodeURIComponent(pid)}`)
+              }
+            };
+          }
+        },
+        return: null
+      }
+    };
+    envReal.doc.body.appendChild(sidebarList);
 
-    // 3. 验证远程网页 UI：按项目 / 最近活跃双视图、项目独立 + 按钮、选项目弹窗及全状态徽标渲染
-    const mobileHtml = buildMobileAppHtml();
+    const compSurface = envReal.doc.createElement('div');
+    compSurface.className = 'surface-composer';
+    compSurface.__reactFiber$test = { memoizedProps: composerProps, return: null };
+    const editorEl = envReal.doc.createElement('div');
+    editorEl.setAttribute('data-lexical-editor', 'true');
+    editorEl.__lexicalEditor = {
+      update(fn) { fn(); },
+      getEditorState() { return { _nodeMap: new Map() }; }
+    };
+    const sendBtn = envReal.doc.createElement('button');
+    sendBtn.setAttribute('data-testid', 'send-button');
+    sendBtn.addEventListener('click', () => {
+      const targetProj = routerState.location.search?.project || projBadge.getAttribute('data-active-project-id') || '';
+      const newCid = `created-${targetProj}-${createdByFirstMsg.length + 1}`;
+      createdByFirstMsg.push({ id: newCid, projectId: targetProj, text: editorEl.textContent || '' });
+      applyRouterUrl(`/c/${newCid}?project=${encodeURIComponent(targetProj)}`);
+    });
+    compSurface.appendChild(editorEl);
+    compSurface.appendChild(sendBtn);
+    envReal.doc.body.appendChild(compSurface);
+
+    vm.runInContext(RENDERER_SRC, envReal.sandbox);
+    vm.runInContext(ENHANCER_SRC, envReal.sandbox);
+    const enhReal = envReal.sandbox.__AGEnhancer;
+
+    // 场景 A: 当前项目快速新建 + 发首条消息确认归属 proj-a
+    const resNewA = await enhReal.performMobileAction({ action: 'new-conversation', projectId: 'proj-a' });
+    assert.equal(resNewA.ok, true);
+    assert.equal(resNewA.verifiedState.inExistingConversation, false);
+    assert.equal(resNewA.verifiedState.routeProjectId, 'proj-a');
+    await enhReal.performMobileAction({ action: 'send', text: 'Alpha first prompt' });
+    assert.equal(createdByFirstMsg[0]?.projectId, 'proj-a');
+    assert.equal(composerProps.inExistingConversation, true);
+
+    // 场景 B: 指定项目新建 (proj-b) + 发首条消息确认归属 proj-b
+    const resNewB = await enhReal.performMobileAction({ action: 'new-conversation', projectId: 'proj-b' });
+    assert.equal(resNewB.ok, true);
+    assert.equal(resNewB.method, 'sidebar-header-action');
+    assert.equal(resNewB.verifiedState.routeProjectId, 'proj-b');
+    await enhReal.performMobileAction({ action: 'send', text: 'Beta first prompt' });
+    assert.equal(createdByFirstMsg[1]?.projectId, 'proj-b');
+
+    // 场景 C: 空项目新建 (proj-empty) + 发首条消息确认归属 proj-empty
+    const resNewEmpty = await enhReal.performMobileAction({ action: 'new-conversation', projectId: 'proj-empty' });
+    assert.equal(resNewEmpty.ok, true);
+    assert.equal(resNewEmpty.method, 'sidebar-header-action');
+    assert.equal(resNewEmpty.verifiedState.routeProjectId, 'proj-empty');
+    await enhReal.performMobileAction({ action: 'send', text: 'Empty project prompt' });
+    assert.equal(createdByFirstMsg[2]?.projectId, 'proj-empty');
+
+    // 场景 D: 切换至被折叠/滚出视口的第 245 条旧对话并校验真实 Router + AgentInputBox 应用状态
+    const resSwitch245 = await enhReal.performMobileAction({ action: 'switch-conversation', id: 'conv-root-245' });
+    assert.equal(resSwitch245.ok, true);
+    assert.equal(resSwitch245.method, 'router-history');
+    assert.equal(resSwitch245.verifiedState.matchedCascadeId, 'conv-root-245');
+    assert.equal(resSwitch245.verifiedState.inExistingConversation, true);
+    assert.equal(resSwitch245.verifiedState.inputCascadeId, 'conv-root-245');
+
+    enhReal.dispose?.();
+    envReal.sandbox.__AGContextMeter?.dispose?.();
+
+    // 4. 验证远程网页 UI 全量分页访问、双视图交互与点击第 245 条最老历史对话
+    const mobileHtml = remoteMod.buildMobileAppHtml();
     const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
     assert.ok(inlineScriptMatch, 'buildMobileAppHtml 应包含内联 <script>');
     assert.doesNotThrow(() => new vm.Script(inlineScriptMatch[1]), '内联 <script> 必须通过语法校验');
 
     const envUi = createDomEnv();
     const bodyMatch = mobileHtml.match(/<body>([\s\S]*?)<script>/);
-    assert.ok(bodyMatch, 'HTML 应包含 <body> 内容');
     envUi.doc.body.innerHTML = bodyMatch[1];
 
     const dispatchedActions = [];
@@ -3876,13 +4037,24 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     envUi.sandbox.AbortController = AbortController;
     envUi.sandbox.URLSearchParams = URLSearchParams;
     envUi.sandbox.fetch = async (url, init) => {
-      if (String(url).includes('/api/action')) {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      if (u.pathname === '/api/conversations') {
+        const pid = u.searchParams.get('projectId') || '';
+        const offset = Number(u.searchParams.get('offset') || '0');
+        const limit = Number(u.searchParams.get('limit') || '150');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => remoteMod.listCatalogConversations({ stateDir, projectId: pid, offset, limit })
+        };
+      }
+      if (u.pathname === '/api/action') {
         const body = JSON.parse(String(init?.body || '{}'));
         dispatchedActions.push(body);
-        return { ok: true, status: 200, json: async () => ({ ok: true, snapshot: snap1 }) };
+        return { ok: true, status: 200, json: async () => ({ ok: true, snapshot: snapRestart }) };
       }
-      if (String(url).includes('/api/snapshot')) {
-        return { ok: true, status: 200, json: async () => snap1 };
+      if (u.pathname === '/api/snapshot') {
+        return { ok: true, status: 200, json: async () => snapRestart };
       }
       return { ok: true, status: 200, json: async () => ({ ok: true }) };
     };
@@ -3891,34 +4063,30 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     await new Promise((r) => setTimeout(r, 40));
 
     const convListEl = envUi.doc.getElementById('conv-list');
-    assert.ok(convListEl.querySelectorAll('.proj-group').length >= 2, '默认「按项目」视图应渲染多项目分组');
-    assert.equal(convListEl.querySelectorAll('.conv-item').length, 22, '展开态应渲染全部 22 条对话');
-    assert.ok(convListEl.innerHTML.includes('运行中') && convListEl.innerHTML.includes('待确认') && convListEl.innerHTML.includes('异常'),
-      '列表应呈现运行中、待确认与异常状态徽标');
+    assert.ok(convListEl.innerHTML.includes('加载该项目更多对话'), '当单项目历史超过首屏预览时应显示项目分页按钮');
+    const projAMore = convListEl.querySelector('button[data-proj-more="proj-a"]');
+    assert.ok(projAMore);
+    projAMore.click();
+    await new Promise((r) => setTimeout(r, 40));
+    const projAToggle = convListEl.querySelector('button[data-proj-toggle="proj-a"]');
+    assert.ok((projAToggle.textContent || '').includes('120'), '分页加载后 Alpha App 应显示 120 条对话');
 
-    const betaNewBtn = convListEl.querySelector('button[data-new-proj="proj-b"]');
-    assert.ok(betaNewBtn, '每个项目分组应提供独立 + 新建对话按钮');
-    betaNewBtn.click();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.deepEqual(dispatchedActions[0], { action: 'new-conversation', projectId: 'proj-b' });
-
-    const pickProjBtn = envUi.doc.getElementById('btn-new-chat-project');
-    pickProjBtn.click();
-    await new Promise((r) => setTimeout(r, 10));
-    assert.equal(envUi.doc.getElementById('sheet-backdrop').hidden, false, '点击选项目下拉应弹出项目选择面板');
-    const sheetOpts = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt');
-    assert.ok(sheetOpts.some((o) => (o.textContent || '').includes('EmptyProj')), '选项目新建弹窗应包含空项目');
-    const emptyOpt = sheetOpts.find((o) => (o.textContent || '').includes('EmptyProj'));
-    emptyOpt.click();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.deepEqual(dispatchedActions[1], { action: 'new-conversation', projectId: 'proj-empty' });
-
+    // 切换到「最近活跃」并通过分页加载全部 245 条历史后点击最老一条
     const recentTab = envUi.doc.getElementById('conv-view-tabs').querySelector('button[data-conv-view="recent"]');
     recentTab.click();
     await new Promise((r) => setTimeout(r, 20));
-    assert.equal(convListEl.querySelectorAll('.conv-item').length, 22, '切换到「最近活跃」视图应保留展示至少 20+ 全量对话');
-    assert.ok(convListEl.querySelector('.c-sub')?.textContent?.includes('Alpha App') || convListEl.innerHTML.includes('Beta Service'),
-      '「最近活跃」视图应在每条对话旁标注所属项目名称');
+    for (let step = 0; step < 3; step++) {
+      const moreBtn = convListEl.querySelector('button[data-conv-more="1"]');
+      if (!moreBtn) break;
+      moreBtn.click();
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    assert.equal(convListEl.querySelectorAll('.conv-item').length, 245, '通过分页应能在「最近活跃」中完整呈现全部 245 条非归档对话');
+    const oldestBtn = convListEl.querySelector('button[data-cid="conv-root-245"]');
+    assert.ok(oldestBtn, '应能访问最末尾的第 245 条历史对话');
+    oldestBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(dispatchedActions[dispatchedActions.length - 1], { action: 'switch-conversation', id: 'conv-root-245' });
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;

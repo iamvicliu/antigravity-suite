@@ -15,7 +15,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.2';
+const MOBILE_UI_VERSION = '1.9.3';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1196,8 +1196,7 @@ async function pickCdpTarget(requestedId) {
 // ==================== 多项目融合目录、会话状态汇总与防缩水缓存 ====================
 
 const SESSION_CATALOG_FILE_NAME = 'remote-session-catalog.json';
-const MAX_CATALOG_PERSIST = 200;
-const MAX_CATALOG_OUTPUT = 150;
+const MAX_ARCHIVED_TOMBSTONES = 500;
 const INTERNAL_EMPTY_PROJECT_IDS = new Set(['default-cli-project', 'outside-of-project', 'standalone']);
 
 function isCatalogTestEnv() {
@@ -1357,6 +1356,32 @@ function withRaceTimeout(promise, ms, fallback = null) {
   });
 }
 
+function inspectSubagentRecord(cid, traj, snapConv, knownSubIds = null, knownRoots = null) {
+  const id = String(cid || '').trim();
+  const meta = traj?.trajectoryMetadata || {};
+  const rawRoot = String(
+    meta.rootConversationId ||
+    meta.parentConversationId ||
+    traj?.parentConversationId ||
+    snapConv?.rootConversationId ||
+    snapConv?.parentConversationId ||
+    (knownRoots?.get ? knownRoots.get(id) : '') ||
+    ''
+  ).trim();
+  const rootId = (rawRoot && rawRoot !== id) ? rawRoot : '';
+  const isSub = Boolean(
+    knownSubIds?.has?.(id) ||
+    rootId ||
+    meta.parentConversationId ||
+    traj?.parentConversationId ||
+    meta.isSubagent ||
+    traj?.isSubagent ||
+    snapConv?.parentConversationId ||
+    snapConv?.isSubagent
+  );
+  return { isSub, rootId };
+}
+
 function createSessionCatalogStore() {
   const registryByDir = new Map();
   const projectsCache = { projectsDir: '', fetchedAt: 0, data: null };
@@ -1370,12 +1395,26 @@ function createSessionCatalogStore() {
       const savedRes = safeReadJsonSync(filePath, null);
       const saved = savedRes?.ok ? savedRes.data : null;
       const map = new Map();
+      const subagentIds = new Set(Array.isArray(saved?.subagentIds) ? saved.subagentIds.map((x) => String(x || '').trim()).filter(Boolean) : []);
+      const subagentRoots = new Map();
+      if (saved?.subagentRoots && typeof saved.subagentRoots === 'object') {
+        for (const [k, v] of Object.entries(saved.subagentRoots)) {
+          if (k && v) subagentRoots.set(String(k), String(v));
+        }
+      }
       const rawItems = Array.isArray(saved?.conversations) ? saved.conversations : [];
       for (const item of rawItems) {
         if (!item || typeof item !== 'object' || !item.id) continue;
-        map.set(String(item.id), { ...item });
+        const cid = String(item.id);
+        const subInfo = inspectSubagentRecord(cid, null, item, subagentIds, subagentRoots);
+        if (subInfo.isSub) {
+          subagentIds.add(cid);
+          if (subInfo.rootId) subagentRoots.set(cid, subInfo.rootId);
+          continue;
+        }
+        map.set(cid, { ...item, id: cid });
       }
-      entry = { dir, filePath, map, lastSig: '' };
+      entry = { dir, filePath, map, subagentIds, subagentRoots, lastSig: '' };
       registryByDir.set(dir, entry);
     }
     return entry;
@@ -1447,49 +1486,46 @@ function createSessionCatalogStore() {
       }
     }
 
-    // 2. 分析轨迹汇总：区分根会话与 Subagent 子代理并向上汇总运行态
-    const summaries = trajData?.summaries || {};
-    const rootTrajs = new Map();
-    const subagentRollup = new Map();
-
-    for (const [cid, t] of Object.entries(summaries)) {
-      if (!t || typeof t !== 'object') continue;
-      const meta = t.trajectoryMetadata || {};
-      const rootId = String(meta.rootConversationId || meta.parentConversationId || t.parentConversationId || '').trim();
-      const isSubagent = Boolean(
-        (rootId && rootId !== cid) ||
-        meta.parentConversationId ||
-        t.parentConversationId ||
-        meta.isSubagent ||
-        t.isSubagent
-      );
-      if (isSubagent) {
-        if (rootId) {
-          const prevRoll = subagentRollup.get(rootId) || { waiting: false, running: false, maxUpdatedAt: 0 };
-          const s = String(t.status || '');
-          if (s === 'CASCADE_RUN_STATUS_WAITING_FOR_USER') prevRoll.waiting = true;
-          else if (s === 'CASCADE_RUN_STATUS_RUNNING') prevRoll.running = true;
-          const modMs = parseIsoTimestampMs(t.lastModifiedTime);
-          if (modMs > prevRoll.maxUpdatedAt) prevRoll.maxUpdatedAt = modMs;
-          subagentRollup.set(rootId, prevRoll);
-        }
-        continue;
-      }
-      rootTrajs.set(cid, t);
-    }
-
-    // 3. 索引前端捕获的当前快照会话（含本地化译名与即时 DOM 状态）
+    // 2. 索引快照与轨迹，统一识别 Subagent（跨越轨迹 / 快照 / 持久化缓存三源）并清库汇总状态
     const snapConvMap = new Map();
     for (const c of (Array.isArray(snap.conversations) ? snap.conversations : [])) {
       if (c && c.id) snapConvMap.set(String(c.id), c);
+    }
+    const summaries = trajData?.summaries || {};
+    const rootTrajs = new Map();
+    const subagentRollup = new Map();
+    const candidateIds = new Set([...store.map.keys(), ...Object.keys(summaries), ...snapConvMap.keys()]);
+    const rootIds = [];
+
+    for (const cid of candidateIds) {
+      const t = summaries[cid];
+      const sc = snapConvMap.get(cid);
+      const cached = store.map.get(cid);
+      const subInfo = inspectSubagentRecord(cid, t, sc || cached, store.subagentIds, store.subagentRoots);
+      if (subInfo.isSub) {
+        store.subagentIds.add(cid);
+        if (subInfo.rootId) {
+          store.subagentRoots.set(cid, subInfo.rootId);
+          const prevRoll = subagentRollup.get(subInfo.rootId) || { waiting: false, running: false, maxUpdatedAt: 0 };
+          const s = String(t?.status || '');
+          if (s === 'CASCADE_RUN_STATUS_WAITING_FOR_USER' || sc?.status === 'waiting') prevRoll.waiting = true;
+          else if (s === 'CASCADE_RUN_STATUS_RUNNING' || sc?.domBusy || sc?.status === 'running') prevRoll.running = true;
+          const modMs = Math.max(parseIsoTimestampMs(t?.lastModifiedTime), parseIsoTimestampMs(sc?.timeKey));
+          if (modMs > prevRoll.maxUpdatedAt) prevRoll.maxUpdatedAt = modMs;
+          subagentRollup.set(subInfo.rootId, prevRoll);
+        }
+        store.map.delete(cid);
+        continue;
+      }
+      if (t) rootTrajs.set(cid, t);
+      rootIds.push(cid);
     }
 
     const activeSessionId = String(snap.sessionId || '').trim();
     const hasPendingApprovals = Array.isArray(snap.pendingApprovals) && snap.pendingApprovals.length > 0;
     const nowMs = Date.now();
-    const allIds = new Set([...store.map.keys(), ...rootTrajs.keys(), ...snapConvMap.keys()]);
 
-    for (const id of allIds) {
+    for (const id of rootIds) {
       const prev = store.map.get(id);
       const t = rootTrajs.get(id);
       const sc = snapConvMap.get(id);
@@ -1562,19 +1598,25 @@ function createSessionCatalogStore() {
       });
     }
 
-    // 4. 裁剪持久化目录上限并按需落盘（避免无变化时高频写盘）
-    const persistedSorted = Array.from(store.map.values())
-      .sort((a, b) => (b.updatedAt - a.updatedAt))
-      .slice(0, MAX_CATALOG_PERSIST);
-    if (persistedSorted.length < store.map.size) {
+    // 4. 全量保留非归档根会话并落盘（仅回收超量已归档墓碑）
+    const nonArchivedPersisted = [];
+    const archivedTombstones = [];
+    for (const item of store.map.values()) {
+      if (item.archived) archivedTombstones.push(item);
+      else nonArchivedPersisted.push(item);
+    }
+    nonArchivedPersisted.sort((a, b) => (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+    archivedTombstones.sort((a, b) => (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+    const keptArchived = archivedTombstones.slice(0, MAX_ARCHIVED_TOMBSTONES);
+    const persistedAll = [...nonArchivedPersisted, ...keptArchived];
+    if (archivedTombstones.length > MAX_ARCHIVED_TOMBSTONES) {
       store.map.clear();
-      for (const item of persistedSorted) store.map.set(item.id, item);
+      for (const item of persistedAll) store.map.set(item.id, item);
     }
 
-    const activeConvs = persistedSorted
-      .filter((c) => !c.archived)
-      .sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt))
-      .slice(0, MAX_CATALOG_OUTPUT)
+    const allActiveConvs = nonArchivedPersisted
+      .slice()
+      .sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id))
       .map((c) => {
         const isActive = Boolean((activeSessionId && c.id === activeSessionId) || snapConvMap.get(c.id)?.active);
         const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
@@ -1592,18 +1634,23 @@ function createSessionCatalogStore() {
         };
       });
 
-    const persistSig = JSON.stringify(persistedSorted.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt]));
+    const persistSig = JSON.stringify([
+      store.subagentIds.size,
+      persistedAll.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt])
+    ]);
     if (persistSig !== store.lastSig) {
       store.lastSig = persistSig;
       safeWriteJsonSync(store.filePath, {
-        version: 1,
+        version: 2,
         updatedAt: nowMs,
-        conversations: persistedSorted
+        subagentIds: Array.from(store.subagentIds).sort(),
+        subagentRoots: Object.fromEntries(store.subagentRoots),
+        conversations: persistedAll
       });
     }
 
-    // 5. 聚合并排序多项目列表（包含无历史会话的空项目，过滤内部空项目）
-    const activeConvObj = activeConvs.find((c) => c.active);
+    // 5. 基于全量未归档会话聚合并排序多项目列表（包含空项目，过滤内部空项目）
+    const activeConvObj = allActiveConvs.find((c) => c.active);
     const currentProjectId = String(snap.currentProjectId || activeConvObj?.projectId || '').trim();
     const projectStats = new Map();
 
@@ -1626,7 +1673,7 @@ function createSessionCatalogStore() {
       ensureProjBucket(pid, name);
     }
 
-    for (const c of activeConvs) {
+    for (const c of allActiveConvs) {
       const pid = c.projectId || 'ungrouped';
       const bucket = ensureProjBucket(pid, c.projectName || '未归属项目');
       bucket.conversationCount += 1;
@@ -1652,6 +1699,27 @@ function createSessionCatalogStore() {
         return a.name.localeCompare(b.name, 'zh-Hans-CN');
       });
 
+    // 支持快照首屏分窗大小（0=全量，>0 时确保每项目至少前3条及当前活跃会话且总条数受控，其余通过 /api/conversations 分页拉取）
+    const convLimit = options.convLimit === undefined ? 0 : Math.max(0, Number(options.convLimit) || 0);
+    let outputConvs = allActiveConvs;
+    if (convLimit > 0 && allActiveConvs.length > convLimit) {
+      const picked = new Set();
+      if (activeConvObj) picked.add(activeConvObj.id);
+      const perProj = new Map();
+      for (const c of allActiveConvs) {
+        const cnt = perProj.get(c.projectId) || 0;
+        if (cnt < 3 && picked.size < convLimit) {
+          picked.add(c.id);
+          perProj.set(c.projectId, cnt + 1);
+        }
+      }
+      for (const c of allActiveConvs) {
+        if (picked.size >= convLimit) break;
+        picked.add(c.id);
+      }
+      outputConvs = allActiveConvs.filter((c) => picked.has(c.id));
+    }
+
     const currentProj = projects.find((p) => p.id === currentProjectId);
     const currentProjectName = String(snap.currentProjectName || currentProj?.name || '').trim();
 
@@ -1659,12 +1727,51 @@ function createSessionCatalogStore() {
       ...snap,
       currentProjectId,
       currentProjectName,
+      totalConversations: allActiveConvs.length,
+      hasMoreConversations: outputConvs.length < allActiveConvs.length,
       projects,
-      conversations: activeConvs
+      conversations: outputConvs
     };
   }
 
-  return { enrichSnapshot };
+  function listConversations(options = {}) {
+    const store = getStickyStoreForDir(options.stateDir || getStateDir());
+    const projectId = String(options.projectId || '').trim();
+    const offset = Math.max(0, Number.parseInt(options.offset ?? 0, 10) || 0);
+    const rawLimit = options.limit === undefined || options.limit === null || options.limit === '' ? 100 : Number.parseInt(options.limit, 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 0;
+
+    let items = [];
+    for (const c of store.map.values()) {
+      if (c.archived || store.subagentIds.has(c.id)) continue;
+      if (projectId && c.projectId !== projectId) continue;
+      const unread = Boolean(c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
+      items.push({
+        id: c.id,
+        title: c.title,
+        active: false,
+        projectId: c.projectId || 'ungrouped',
+        projectName: c.projectName || '未归属项目',
+        status: c.status || 'idle',
+        statusLabel: c.statusLabel || '',
+        unread,
+        pinned: Boolean(c.pinned),
+        updatedAt: c.updatedAt
+      });
+    }
+    items.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+    const total = items.length;
+    const sliced = limit > 0 ? items.slice(offset, offset + limit) : items.slice(offset);
+    return {
+      ok: true,
+      total,
+      offset,
+      hasMore: offset + sliced.length < total,
+      conversations: sliced
+    };
+  }
+
+  return { enrichSnapshot, listConversations };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -1673,7 +1780,11 @@ function enrichSnapshotWithCatalog(snap, options = {}) {
   return defaultCatalogStore.enrichSnapshot(snap, options);
 }
 
-async function fetchSnapshotFromTarget(requestedTargetId) {
+function listCatalogConversations(options = {}) {
+  return defaultCatalogStore.listConversations(options);
+}
+
+async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
   const { target, windows } = await pickCdpTarget(requestedTargetId);
   const expr = `(() => {
     const fn = window.__AGEnhancer?.getMobileSnapshot;
@@ -1692,7 +1803,7 @@ async function fetchSnapshotFromTarget(requestedTargetId) {
     windows
   };
   try {
-    return await enrichSnapshotWithCatalog(baseSnap);
+    return await enrichSnapshotWithCatalog(baseSnap, snapOptions);
   } catch {
     return baseSnap;
   }
@@ -1712,7 +1823,7 @@ async function performActionInTarget(payload) {
   const act = payload?.action;
   const settleMs = (act === 'switch-conversation' || act === 'new-conversation') ? 260 : 120;
   await new Promise((r) => setTimeout(r, settleMs));
-  const snapshot = await fetchSnapshotFromTarget(target.id).catch(() => null);
+  const snapshot = await fetchSnapshotFromTarget(target.id, { convLimit: 100 }).catch(() => null);
   return {
     ok: Boolean(actionResult?.ok),
     actionResult: actionResult || null,
@@ -2986,7 +3097,11 @@ function buildMobileAppHtml() {
       }
     })();
     let emptyProjExpanded = false;
-    let showAllRecent = false;
+    let recentDisplayLimit = 50;
+    let nextGlobalOffset = 0;
+    const projOffsetMap = new Map();
+    const extraConvMap = new Map();
+    let loadingMoreConvs = false;
 
     function saveConvUiPrefs() {
       try {
@@ -3003,6 +3118,52 @@ function buildMobileAppHtml() {
         btn.classList.toggle('active', isActive);
         btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
       });
+    }
+
+    function getMergedConversations(snap) {
+      const merged = new Map();
+      for (const [id, c] of extraConvMap.entries()) {
+        if (id && c) merged.set(id, c);
+      }
+      for (const c of (Array.isArray(snap?.conversations) ? snap.conversations : [])) {
+        if (c && c.id) merged.set(c.id, c);
+      }
+      return Array.from(merged.values()).sort((a, b) =>
+        (Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))) ||
+        ((Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0)) ||
+        String(a.id).localeCompare(String(b.id))
+      );
+    }
+
+    async function loadMoreConversations(opts = {}) {
+      if (loadingMoreConvs) return;
+      loadingMoreConvs = true;
+      try {
+        const pid = String(opts.projectId || '').trim();
+        const offset = pid ? (projOffsetMap.get(pid) || 0) : nextGlobalOffset;
+        const limit = 150;
+        let q = '/api/conversations?offset=' + offset + '&limit=' + limit;
+        if (pid) q += '&projectId=' + encodeURIComponent(pid);
+        const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
+        if (res.status === 401) { location.reload(); return; }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const rows = Array.isArray(data?.conversations) ? data.conversations : [];
+        for (const c of rows) {
+          if (c && c.id) extraConvMap.set(c.id, c);
+        }
+        if (pid) {
+          projOffsetMap.set(pid, offset + rows.length);
+        } else {
+          nextGlobalOffset = offset + rows.length;
+          recentDisplayLimit = Math.max(recentDisplayLimit + rows.length, extraConvMap.size);
+        }
+        if (latestSnap) renderConversationList(latestSnap);
+      } catch (err) {
+        showToast(err?.message || '加载更多会话失败');
+      } finally {
+        loadingMoreConvs = false;
+      }
     }
 
     function formatRelTime(ts) {
@@ -3050,7 +3211,8 @@ function buildMobileAppHtml() {
     function renderConversationList(snap) {
       const convList = $('conv-list');
       if (!convList || !snap) return;
-      const convs = Array.isArray(snap.conversations) ? snap.conversations : [];
+      const convs = getMergedConversations(snap);
+      const totalAllCount = Math.max(convs.length, Number(snap.totalConversations) || 0);
       const rawProjects = Array.isArray(snap.projects) ? snap.projects : [];
       const projMap = new Map();
       const grouped = new Map();
@@ -3079,30 +3241,31 @@ function buildMobileAppHtml() {
       const projCountEl = $('tab-proj-count');
       const convCountEl = $('tab-conv-count');
       if (projCountEl) projCountEl.textContent = projMap.size ? ('(' + projMap.size + ')') : '';
-      if (convCountEl) convCountEl.textContent = convs.length ? ('(' + convs.length + ')') : '';
+      if (convCountEl) convCountEl.textContent = totalAllCount ? ('(' + totalAllCount + ')') : '';
       syncConvTabsUi();
 
       let html = '';
       if (convViewMode === 'recent') {
-        if (!convs.length) {
+        if (!convs.length && !totalAllCount) {
           html = '<div class="empty-tip" style="padding:18px 8px">暂无历史对话</div>';
         } else {
-          const limit = showAllRecent ? convs.length : Math.min(30, convs.length);
-          html = convs.slice(0, limit).map((c) => renderConvItemHtml(c, true)).join('');
-          if (convs.length > limit) {
-            html += '<button class="conv-more-btn" data-conv-more="1" type="button">展开全部历史 (共 ' + convs.length + ' 条)</button>';
+          const shown = convs.slice(0, recentDisplayLimit);
+          html = shown.map((c) => renderConvItemHtml(c, true)).join('');
+          if (shown.length < totalAllCount || snap.hasMoreConversations) {
+            html += '<button class="conv-more-btn" data-conv-more="1" type="button">加载更多历史对话 (' + shown.length + '/' + totalAllCount + ')</button>';
           }
         }
       } else {
         const orderedProjects = Array.from(projMap.values());
-        const nonEmptyProjects = orderedProjects.filter((p) => (grouped.get(p.id)?.length || 0) > 0);
-        const emptyProjects = orderedProjects.filter((p) => (grouped.get(p.id)?.length || 0) === 0 && p.id !== 'ungrouped');
+        const nonEmptyProjects = orderedProjects.filter((p) => (p.conversationCount > 0) || (grouped.get(p.id)?.length || 0) > 0);
+        const emptyProjects = orderedProjects.filter((p) => (p.conversationCount || 0) === 0 && (grouped.get(p.id)?.length || 0) === 0 && p.id !== 'ungrouped');
 
         if (!nonEmptyProjects.length && !emptyProjects.length) {
           html = '<div class="empty-tip" style="padding:18px 8px">暂无项目与历史对话</div>';
         } else {
           html = nonEmptyProjects.map((p) => {
             const list = grouped.get(p.id) || [];
+            const projTotal = Math.max(list.length, Number(p.conversationCount) || 0);
             const hasRunning = (p.runningCount > 0) || list.some((x) => x.status === 'running');
             const hasWaiting = (p.waitingCount > 0) || list.some((x) => x.status === 'waiting');
             const collapsed = Boolean(collapsedProjMap[p.id]);
@@ -3112,14 +3275,17 @@ function buildMobileAppHtml() {
             const newBtnHtml = p.id !== 'ungrouped'
               ? '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话" aria-label="在 ' + esc(p.name) + ' 中新建对话">+</button>'
               : '';
-            const itemsHtml = collapsed ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + '</div>');
+            const projMoreHtml = list.length < projTotal
+              ? '<button class="conv-more-btn" data-proj-more="' + esc(p.id) + '" type="button">加载该项目更多对话 (' + list.length + '/' + projTotal + ')</button>'
+              : '';
+            const itemsHtml = collapsed ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + projMoreHtml + '</div>');
             return '<div class="proj-group">' +
               '<div class="proj-head">' +
                 '<button class="proj-toggle" data-proj-toggle="' + esc(p.id) + '" type="button" aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
                   '<span class="proj-chev">' + (collapsed ? '▸' : '▾') + '</span>' +
                   '<span class="proj-name">' + esc(p.name) + '</span>' +
                   statDot +
-                  '<span class="proj-count">' + list.length + '</span>' +
+                  '<span class="proj-count">' + projTotal + '</span>' +
                 '</button>' +
                 newBtnHtml +
               '</div>' +
@@ -3518,8 +3684,19 @@ function buildMobileAppHtml() {
 
       const moreBtn = e.target?.closest?.('.conv-more-btn');
       if (moreBtn) {
-        showAllRecent = true;
-        if (latestSnap) renderConversationList(latestSnap);
+        const projMorePid = moreBtn.getAttribute('data-proj-more') || '';
+        if (projMorePid) {
+          await loadMoreConversations({ projectId: projMorePid });
+        } else {
+          const merged = getMergedConversations(latestSnap);
+          const totalCount = Math.max(merged.length, Number(latestSnap?.totalConversations) || 0);
+          if (merged.length < totalCount) {
+            await loadMoreConversations({ projectId: '' });
+          } else {
+            recentDisplayLimit = Math.max(recentDisplayLimit + 150, totalCount);
+            if (latestSnap) renderConversationList(latestSnap);
+          }
+        }
         return;
       }
 
@@ -4464,7 +4641,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       }
       try {
         const targetId = urlObj.searchParams.get('targetId') || '';
-        const snap = await fetchSnapshotFromTarget(targetId);
+        const rawLimit = urlObj.searchParams.get('convLimit');
+        const convLimit = rawLimit === 'all' || rawLimit === '0'
+          ? 0
+          : (rawLimit !== null && rawLimit !== '' ? Math.max(1, Number.parseInt(rawLimit, 10) || 100) : 100);
+        const snap = await fetchSnapshotFromTarget(targetId, { convLimit });
         let payloadOut = snap;
         if (snap && snap.ok !== false) {
           const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
@@ -4485,6 +4666,22 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       } catch (err) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, error: err?.message || '读取 Antigravity 状态失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/conversations') {
+      try {
+        const projectId = urlObj.searchParams.get('projectId') || '';
+        const offset = Math.max(0, Number.parseInt(urlObj.searchParams.get('offset') || '0', 10) || 0);
+        const rawLimit = urlObj.searchParams.get('limit') || '100';
+        const limit = (rawLimit === 'all' || rawLimit === '0') ? 0 : Math.max(1, Number.parseInt(rawLimit, 10) || 100);
+        const page = listCatalogConversations({ projectId, offset, limit });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(page));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取会话列表失败' }));
       }
       return;
     }
@@ -4961,6 +5158,7 @@ module.exports = {
   normalizeTrajectoryStatus,
   createSessionCatalogStore,
   enrichSnapshotWithCatalog,
+  listCatalogConversations,
   readJsonBody,
   createRemoteHttpHandler,
   recordPairedDeviceAccess,
