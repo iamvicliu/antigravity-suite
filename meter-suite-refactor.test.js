@@ -4269,3 +4269,311 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 18: 远程会话全量历史消息上翻加载、长回复防截断与授权模式图标动态联动
+// =========================================================================
+test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断与授权模式图标动态联动', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req18-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const configDir = path.join(tmpRoot, 'config');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(path.join(configDir, 'projects'), { recursive: true });
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+
+    // 1. 服务端 Markdown 安全渲染（表格、代码块、外链/文件胶囊与 XSS 过滤）
+    const mdHtml = remoteMod.renderSafeMarkdownToHtml(
+      '## 架构汇总\n\n| 模块 | 状态 |\n| --- | --- |\n| history | OK |\n\n```js\nconst x = "<script>alert(1)</script>";\n```\n\n参考 [doc](file:///tmp/a.md)、[官网](https://example.com) 与 [xss](javascript:alert(1)) <script>evil()</script>'
+    );
+    assert.ok(mdHtml.includes('<h2>架构汇总</h2>'));
+    assert.ok(mdHtml.includes('<div class="md-table-wrap"><table>'));
+    assert.ok(mdHtml.includes('<pre><code>const x = &quot;&lt;script&gt;'));
+    assert.ok(mdHtml.includes('<code class="md-pill">doc</code>'));
+    assert.ok(mdHtml.includes('href="https://example.com"'));
+    assert.equal(mdHtml.includes('javascript:'), false, '禁止渲染 javascript: 危险协议');
+    assert.equal(mdHtml.includes('<script>evil'), false, '原始 script 标签必须转义不得透传');
+
+    // 2. 75 轮 (150 条消息 / >500 步含工具调用、@文件、思考与 12000 字长回复) 轨迹完整提取 + 桌面 DOM 虚拟化仅剩 3 条 + 失败保底
+    const steps150 = [];
+    const longBody = '长文报告头部。' + '详细分析内容段落。'.repeat(1200) + '长文结尾标记_END';
+    for (let t = 0; t < 75; t++) {
+      steps150.push({
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        userInput: {
+          items: t === 0
+            ? [{ text: '首轮原始指令' }, { item: { file: { absoluteUri: 'file:///tmp/spec.md' } } }]
+            : [{ text: `用户问题 #${t}` }]
+        }
+      });
+      steps150.push({ type: 'CORTEX_STEP_TYPE_RUN_COMMAND', runCommand: { command: 'ls' } });
+      steps150.push({
+        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+        plannerResponse: { thinking: `思考步骤 #${t}`, response: '' }
+      });
+      steps150.push({
+        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+        plannerResponse: {
+          response: t === 74 ? longBody : `助手回复 #${t}`
+        }
+      });
+    }
+    const sid = 'sess-long-150';
+    let failTraj = false;
+    const mockConnect = async () => ({
+      call: async (method) => {
+        if (method === 'GetCascadeTrajectory') {
+          if (failTraj) throw new Error('LS busy');
+          return { trajectory: { steps: steps150 } };
+        }
+        if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+        return {};
+      }
+    });
+
+    const tail3DomMsgs = [
+      { id: 'u-dom-1', role: 'user', text: '用户问题 #73' },
+      { id: 'a-dom-1', role: 'assistant', text: '助手回复 #73', highRisk: true, riskText: '🛡️ 含高危命令' },
+      { id: 'u-dom-2', role: 'user', text: '用户问题 #74' },
+      { id: 'a-dom-2', role: 'assistant', text: longBody }
+    ];
+
+    const snapFull = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: sid,
+      busy: false,
+      messages: tail3DomMsgs,
+      conversations: [],
+      projects: []
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+
+    assert.equal(snapFull.totalMessages, 150, '桌面 DOM 仅剩 3~4 条时应从轨迹恢复全部 150 条消息');
+    assert.equal(snapFull.messagesStartIndex, 120);
+    assert.equal(snapFull.hasEarlierMessages, true);
+    assert.equal(snapFull.messages.length, 30);
+    const lastMsg = snapFull.messages[snapFull.messages.length - 1];
+    assert.ok(lastMsg.text.includes('长文结尾标记_END') && lastMsg.text.length > 10000, '长回复不得被 4000 字截断');
+    assert.equal(snapFull.messages.find((m) => m.text === '助手回复 #73')?.highRisk, true, 'DOM 高危标记应无损并入轨迹消息');
+
+    // 轨迹接口临时失败时保留缓存的 150 条全量历史，不得缩水成 4 条 DOM 消息
+    failTraj = true;
+    const snapOnFail = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: sid,
+      busy: false,
+      messages: tail3DomMsgs,
+      conversations: [],
+      projects: []
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+    assert.equal(snapOnFail.totalMessages, 150, '轨迹请求失败时应保留已缓存的 150 条消息不缩水');
+    failTraj = false;
+
+    // HTTP /api/messages 缺 sessionId 校验返回 400
+    const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+    const httpHandler = remoteMod.createRemoteHttpHandler(httpCfg);
+    const missingSidRes = await new Promise((resolve) => {
+      httpHandler({
+        method: 'GET',
+        url: `/api/messages?token=${encodeURIComponent(httpCfg.token)}`,
+        headers: { host: `127.0.0.1:${httpCfg.port}` },
+        socket: { remoteAddress: '127.0.0.1' }
+      }, {
+        setHeader() {},
+        writeHead(status) { this.status = status; },
+        end(body) { resolve({ status: this.status, json: JSON.parse(String(body || '{}')) }); }
+      });
+    });
+    assert.equal(missingSidRes.status, 400);
+
+    // 3. 验证 ag-enhancer-overlay.js：长消息 DOM 不截断 + 授权模式（含窄侧栏纯图标 SVG）精准识别
+    const envEnh = createDomEnv();
+    envEnh.win.location = { pathname: '/c/enh-perm-test', search: '' };
+    envEnh.sandbox.location = envEnh.win.location;
+    envEnh.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+    const scrollVp = envEnh.doc.createElement('div');
+    scrollVp.setAttribute('data-testid', 'chat-scroll-container');
+    const longAgentEl = envEnh.doc.createElement('div');
+    longAgentEl.setAttribute('data-testid', 'agent-response');
+    const longMdEl = envEnh.doc.createElement('div');
+    longMdEl.setAttribute('data-markdown-root', '');
+    const longSpan = envEnh.doc.createElement('p');
+    longSpan.textContent = '长DOM文本' + 'A'.repeat(9500) + 'TAIL_OK';
+    longMdEl.appendChild(longSpan);
+    longAgentEl.appendChild(longMdEl);
+    scrollVp.appendChild(longAgentEl);
+    envEnh.doc.body.appendChild(scrollVp);
+
+    const permTrigger = envEnh.doc.createElement('button');
+    permTrigger.setAttribute('data-testid', 'permissions-selector-trigger');
+    permTrigger.textContent = '请求审核';
+    envEnh.doc.body.appendChild(permTrigger);
+
+    vm.runInContext(RENDERER_SRC, envEnh.sandbox);
+    vm.runInContext(ENHANCER_SRC, envEnh.sandbox);
+    const enhApi = envEnh.sandbox.__AGEnhancer;
+
+    const snapEnhReview = enhApi.getMobileSnapshot();
+    assert.equal(snapEnhReview.permissionKey, 'request_review');
+    assert.ok(snapEnhReview.messages[0]?.text?.endsWith('TAIL_OK') && snapEnhReview.messages[0].text.length > 9500, 'DOM 回复超过 4000 字时不应再被截断');
+
+    // 窄屏下按钮文字隐藏、仅余原生 SVG 路径时仍能精确识别 4 种模式
+    permTrigger.textContent = '';
+    for (const [expectedKey, pathD] of [
+      ['turbo', 'M502.92-344.77q9.38'],
+      ['auto', 'M480-100.77Q350.23'],
+      ['default', 'M252.31-100q-29.92'],
+      ['request_review', 'M595.58-384.51q47.5']
+    ]) {
+      permTrigger.innerHTML = `<svg viewBox="0 -960 960 960"><path d="${pathD}"></path></svg>`;
+      assert.equal(enhApi.getMobileSnapshot().permissionKey, expectedKey, `纯图标 SVG 应识别为 ${expectedKey}`);
+    }
+    enhApi.dispose?.();
+    envEnh.sandbox.__AGContextMeter?.dispose?.();
+
+    // 4. 验证远程网页 UI：向上翻页加载全部 150+2 条历史、无间隙新消息合并及 4 种授权模式图标动态变化
+    const mobileHtml = remoteMod.buildMobileAppHtml();
+    const inlineScript = mobileHtml.match(/<script>([\s\S]*?)<\/script>/)[1];
+    assert.doesNotThrow(() => new vm.Script(inlineScript));
+
+    const envUi = createDomEnv();
+    envUi.doc.body.innerHTML = mobileHtml.match(/<body>([\s\S]*?)<script>/)[1];
+    let liveSnapState = {
+      ...snapFull,
+      permissionKey: 'turbo',
+      permissionLabel: '无限',
+      permissionOptions: [
+        { key: 'turbo', label: '⚡ 无限 (Turbo)' },
+        { key: 'auto', label: '🛡️ 自动 (Auto)' },
+        { key: 'default', label: '🔒 默认 (Default)' },
+        { key: 'request_review', label: '👁️ 请求审核 (Review)' }
+      ]
+    };
+
+    envUi.win.innerWidth = 414;
+    envUi.win.innerHeight = 840;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: '?token=testtok', protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/snapshot') {
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => liveSnapState };
+      }
+      if (u.pathname === '/api/messages') {
+        const page = await remoteMod.getConversationMessagesPage({
+          sessionId: u.searchParams.get('sessionId') || sid,
+          before: u.searchParams.get('before'),
+          limit: Number(u.searchParams.get('limit') || '30'),
+          localApiConnect: mockConnect
+        });
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => page };
+      }
+      if (u.pathname === '/api/action') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (body.action === 'select-permission') {
+          const labels = { turbo: '无限', auto: '自动', default: '默认', request_review: '请求审核' };
+          liveSnapState = { ...liveSnapState, permissionKey: body.preset, permissionLabel: labels[body.preset] || body.preset };
+          return {
+            ok: true,
+            status: 200,
+            headers: jsonHeaders,
+            json: async () => ({ ok: true, actionResult: { ok: true, preset: body.preset, permissionKey: body.preset, permissionLabel: labels[body.preset] }, snapshot: liveSnapState })
+          };
+        }
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true, snapshot: liveSnapState }) };
+      }
+      return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(inlineScript, envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    const msgContainer = envUi.doc.getElementById('messages');
+    assert.ok(msgContainer.querySelector('#btn-load-earlier'), '存在更早消息时顶部应渲染加载更早按钮');
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 30);
+
+    // 点击一次向上翻页加载 [90..119]
+    msgContainer.querySelector('#btn-load-earlier').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 60);
+
+    // 底部新增 2 条消息使尾窗滑动为 [122..151]，已加载的 [90..121] 应无间隙衔接
+    steps150.push(
+      { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '新增用户问题 #75' }] } },
+      { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '新增助手回复 #75' } }
+    );
+    liveSnapState = await remoteMod.enrichSnapshotWithCatalog({
+      ...liveSnapState,
+      messages: [
+        ...tail3DomMsgs,
+        { id: 'u-new', role: 'user', text: '新增用户问题 #75' },
+        { id: 'a-new', role: 'assistant', text: '新增助手回复 #75' }
+      ]
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 62, '底部滑动窗口更新后已加载历史 [90..121] 不得出现断层');
+
+    // 继续上翻直至第 0 条（首轮原始指令 @spec.md）完整呈现，且顶部按钮自动消失
+    for (let step = 0; step < 4; step++) {
+      const earlierBtn = msgContainer.querySelector('#btn-load-earlier');
+      if (!earlierBtn) break;
+      earlierBtn.click();
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 152, '连续上翻应能读到从第 0 条至今全部 152 条对话内容');
+    assert.ok((msgContainer.textContent || '').includes('首轮原始指令 @spec.md'), '第 0 条首轮消息及 @文件引用应完整可读');
+    assert.equal(msgContainer.querySelector('#btn-load-earlier'), null, '翻到首条后顶部加载按钮应自动消失');
+
+    // 验证 4 种授权模式图标随选择与快照实时切换（绝不固定在 Turbo 闪电图标）
+    const permIconEl = envUi.doc.getElementById('perm-inline-icon');
+    const seenSvgs = new Map();
+    for (const [mode, expectedText] of [
+      ['turbo', '无限'],
+      ['auto', '自动'],
+      ['default', '默认'],
+      ['request_review', '请求审核']
+    ]) {
+      envUi.doc.getElementById('btn-perm-inline').click();
+      const targetOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes(expectedText));
+      assert.ok(targetOpt, `权限弹窗应包含 ${expectedText}`);
+      targetOpt.click();
+      await new Promise((r) => setTimeout(r, 40));
+      assert.equal(permIconEl.getAttribute('data-perm-mode'), mode, `切换到 ${expectedText} 后图标模式应变为 ${mode}`);
+      assert.ok(permIconEl.classList.contains(mode));
+      seenSvgs.set(mode, permIconEl.innerHTML);
+    }
+    assert.equal(new Set(seenSvgs.values()).size, 4, '4 种授权模式必须渲染 4 个各不相同的图标 SVG');
+    envUi.doc.getElementById('btn-perm-inline').click();
+    const activeOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((b) => b.classList.contains('active'));
+    assert.ok((activeOpt?.textContent || '').includes('请求审核'), '权限弹窗应精确高亮当前 请求审核 模式');
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

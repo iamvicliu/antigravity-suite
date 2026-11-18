@@ -5036,7 +5036,7 @@
     let inner = '';
     for (const child of node.childNodes) {
       inner += sanitizeMarkdownNodeToHtml(child, depth + 1);
-      if (inner.length > 15800) break;
+      if (inner.length > 120000) break;
     }
 
     if (tag === 'A') {
@@ -5066,13 +5066,13 @@
     for (const root of mdRoots) {
       const piece = sanitizeMarkdownNodeToHtml(root, 0).trim();
       if (!piece) continue;
-      if (out && out.length + piece.length > 16000) break;
+      if (out && out.length + piece.length > 120000) break;
       out += piece;
     }
     return out;
   }
 
-  function collectRecentMessages(limit = 20) {
+  function collectRecentMessages(limit = 60) {
     const viewport = getScrollViewport() || document.querySelector('main') || document.body;
     if (!viewport) return [];
     const nodes = Array.from(viewport.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]'));
@@ -5127,10 +5127,10 @@
       out.push({
         id: `a-${i}`,
         role: 'assistant',
-        text: replyText.slice(0, 4000),
+        text: replyText.slice(0, 120000),
         html: replyHtml,
         thoughtLabel: thoughtLabel.slice(0, 120),
-        thoughtText: thoughtChunks.join('\n\n').slice(0, 1200),
+        thoughtText: thoughtChunks.join('\n\n').slice(0, 12000),
         highRisk,
         riskText: (riskBanner?.textContent || '').trim()
       });
@@ -5586,8 +5586,41 @@
       { key: 'turbo', label: '⚡ 无限 (Turbo)' },
       { key: 'auto', label: '🛡️ 自动 (Auto)' },
       { key: 'default', label: '🔒 默认 (Default)' },
-      { key: 'request_review', label: '👁️ 请求审查 (Review)' }
+      { key: 'request_review', label: '👁️ 请求审核 (Review)' }
     ];
+  }
+
+  const PERMISSION_DEFAULT_LABELS = {
+    turbo: '无限',
+    auto: '自动',
+    default: '默认',
+    request_review: '请求审核'
+  };
+
+  function resolvePermissionStateFromDom(permBtn) {
+    const rawText = (permBtn?.textContent || '').replace(/\s+/g, ' ').trim();
+    const presetAttr = String(permBtn?.getAttribute?.('data-perm-preset') || '').trim().toLowerCase();
+    const aria = String(permBtn?.getAttribute?.('aria-label') || '').trim();
+    const svgEl = permBtn?.querySelector?.('svg');
+    const svgSig = String(svgEl?.innerHTML || svgEl?.querySelector?.('path')?.getAttribute?.('d') || '');
+
+    let key = '';
+    if (presetAttr === 'turbo' || presetAttr === 'auto' || presetAttr === 'default' || presetAttr === 'request_review') {
+      key = presetAttr;
+    } else {
+      const combined = `${rawText} ${aria}`.toLowerCase();
+      if (/(?:turbo|无限|unrestricted)/i.test(combined)) key = 'turbo';
+      else if (/(?:request_review|review|请求审核|请求审查|审核|审查)/i.test(combined)) key = 'request_review';
+      else if (/(?:\bauto\b|自动)/i.test(combined)) key = 'auto';
+      else if (/(?:\bdefault\b|默认)/i.test(combined)) key = 'default';
+      else if (svgSig.includes('502.92-344.77')) key = 'turbo';
+      else if (svgSig.includes('595.58-384.51')) key = 'request_review';
+      else if (svgSig.includes('252.31-100')) key = 'default';
+      else if (svgSig.includes('480-100.77')) key = 'auto';
+      else key = 'unknown';
+    }
+    const label = rawText || PERMISSION_DEFAULT_LABELS[key] || '未知';
+    return { permissionKey: key, permissionLabel: label };
   }
 
   function getMobileSnapshot() {
@@ -5639,9 +5672,9 @@
     parsedModels.sort((a, b) => (a.familyRank - b.familyRank) || (a.effortRank - b.effortRank) || (a.origIdx - b.origIdx));
     const modelOptions = parsedModels.map(({ label, modelId, selected }) => ({ label, modelId, selected }));
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
-    const permissionLabel = (permBtn?.textContent || '').replace(/\s+/g, ' ').trim() || '未知';
+    const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
     const pendingApprovals = collectPendingApprovals();
-    const messages = collectRecentMessages(20);
+    const messages = collectRecentMessages(60);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
 
     if (activeConv) {
@@ -5665,6 +5698,7 @@
       autoAccept: autoAcceptEnabled,
       model,
       modelOptions,
+      permissionKey,
       permissionLabel,
       permissionOptions: getPermissionPresetsMeta(),
       contextBadge,
@@ -5893,8 +5927,9 @@
       if (menuCtx && menuCtx.open) {
         menuCtx.setIsOpen(false);
       }
-      const nextLabel = (permBtn.textContent || '').replace(/\s+/g, ' ').trim();
-      return { ok: true, preset, permissionLabel: nextLabel };
+      const resolved = resolvePermissionStateFromDom(permBtn);
+      const nextKey = resolved.permissionKey !== 'unknown' ? resolved.permissionKey : preset;
+      return { ok: true, preset, permissionKey: nextKey, permissionLabel: resolved.permissionLabel };
     }
 
     if (action === 'upload-image') {

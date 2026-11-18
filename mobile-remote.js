@@ -15,7 +15,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.5';
+const MOBILE_UI_VERSION = '1.9.6';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1859,12 +1859,467 @@ function createSessionCatalogStore() {
 
 const defaultCatalogStore = createSessionCatalogStore();
 
-function enrichSnapshotWithCatalog(snap, options = {}) {
-  return defaultCatalogStore.enrichSnapshot(snap, options);
+async function enrichSnapshotWithCatalog(snap, options = {}) {
+  const withCatalog = await defaultCatalogStore.enrichSnapshot(snap, options);
+  return await defaultHistoryManager.enrichMessages(withCatalog, options);
 }
 
 function listCatalogConversations(options = {}) {
   return defaultCatalogStore.listConversations(options);
+}
+
+// ==================== 全量会话轨迹读取、Markdown 渲染与向上分页 ====================
+
+function escSafeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderSafeMarkdownToHtml(rawMd) {
+  const src = String(rawMd || '').replace(/\r\n?/g, '\n');
+  if (!src.trim()) return '';
+
+  const codeBlocks = [];
+  const withCodePlaceholders = src.replace(/```[^\n]*\n([\s\S]*?)```/g, (_m, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(`<pre><code>${escSafeHtml(String(code || '').replace(/\n$/, ''))}</code></pre>`);
+    return `\n\u0000CB${idx}\u0000\n`;
+  });
+
+  const formatInline = (text) => {
+    const inlineCodes = [];
+    const tokens = [];
+    let s = String(text || '').replace(/`([^`\n]+)`/g, (_m, c) => {
+      const idx = inlineCodes.length;
+      inlineCodes.push(`<code>${escSafeHtml(c)}</code>`);
+      return `\u0000IC${idx}\u0000`;
+    });
+    s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_m, label, rawUrl) => {
+      const idx = tokens.length;
+      if (/^https?:\/\//i.test(rawUrl)) {
+        tokens.push(`<a href="${escSafeHtml(rawUrl)}" target="_blank" rel="noopener">${escSafeHtml(label)}</a>`);
+      } else if (/^file:\/\//i.test(rawUrl)) {
+        tokens.push(`<code class="md-pill">${escSafeHtml(label)}</code>`);
+      } else {
+        tokens.push(escSafeHtml(label));
+      }
+      return `\u0000LN${idx}\u0000`;
+    });
+    let escaped = escSafeHtml(s);
+    escaped = escaped.replace(/\*\*([^\n*][\s\S]*?[^\n*]|[^\n*])\*\*/g, '<strong>$1</strong>');
+    escaped = escaped.replace(/(^|[^*])\*([^\s*\n][^*\n]*?[^\s*\n]|[^\s*\n])\*(?!\*)/g, '$1<em>$2</em>');
+    escaped = escaped.replace(/\u0000LN(\d+)\u0000/g, (_m, idx) => tokens[Number(idx)] || '');
+    escaped = escaped.replace(/\u0000IC(\d+)\u0000/g, (_m, idx) => inlineCodes[Number(idx)] || '');
+    return escaped;
+  };
+
+  const splitTableCells = (line) => {
+    let trimmed = line.trim();
+    if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+    if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+    return trimmed.split('|').map((c) => c.trim());
+  };
+  const isTableSep = (line) => /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
+
+  const lines = withCodePlaceholders.split('\n');
+  const out = [];
+  let para = [];
+  let listTag = '';
+  let listItems = [];
+
+  const flushPara = () => {
+    if (!para.length) return;
+    out.push(`<p>${para.map((ln) => formatInline(ln)).join('<br>')}</p>`);
+    para = [];
+  };
+  const flushList = () => {
+    if (!listItems.length || !listTag) return;
+    out.push(`<${listTag}>${listItems.map((it) => `<li>${formatInline(it)}</li>`).join('')}</${listTag}>`);
+    listTag = '';
+    listItems = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushPara();
+      flushList();
+      continue;
+    }
+    const cbMatch = trimmed.match(/^\u0000CB(\d+)\u0000$/);
+    if (cbMatch) {
+      flushPara();
+      flushList();
+      out.push(codeBlocks[Number(cbMatch[1])] || '');
+      continue;
+    }
+    const hMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (hMatch) {
+      flushPara();
+      flushList();
+      const lvl = hMatch[1].length;
+      out.push(`<h${lvl}>${formatInline(hMatch[2])}</h${lvl}>`);
+      continue;
+    }
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      flushPara();
+      flushList();
+      out.push('<hr>');
+      continue;
+    }
+    if (trimmed.startsWith('>')) {
+      flushPara();
+      flushList();
+      const bqLines = [];
+      while (i < lines.length && lines[i].trim().startsWith('>')) {
+        bqLines.push(lines[i].trim().replace(/^>\s?/, ''));
+        i++;
+      }
+      i--;
+      const isAlert = /^\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(bqLines[0] || '');
+      const clsAttr = isAlert ? ' class="md-alert"' : '';
+      out.push(`<blockquote${clsAttr}>${bqLines.map((l) => formatInline(l)).join('<br>')}</blockquote>`);
+      continue;
+    }
+    if (trimmed.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushPara();
+      flushList();
+      const headers = splitTableCells(trimmed);
+      i += 2;
+      const bodyRows = [];
+      while (i < lines.length && lines[i].trim().includes('|') && !/^\s*$/.test(lines[i])) {
+        bodyRows.push(splitTableCells(lines[i]));
+        i++;
+      }
+      i--;
+      const thead = `<thead><tr>${headers.map((h) => `<th>${formatInline(h)}</th>`).join('')}</tr></thead>`;
+      const tbody = bodyRows.length
+        ? `<tbody>${bodyRows.map((row) => `<tr>${headers.map((_, ci) => `<td>${formatInline(row[ci] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`
+        : '';
+      out.push(`<div class="md-table-wrap"><table>${thead}${tbody}</table></div>`);
+      continue;
+    }
+    const ulMatch = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (ulMatch) {
+      flushPara();
+      if (listTag !== 'ul') {
+        flushList();
+        listTag = 'ul';
+      }
+      listItems.push(ulMatch[1]);
+      continue;
+    }
+    const olMatch = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (olMatch) {
+      flushPara();
+      if (listTag !== 'ol') {
+        flushList();
+        listTag = 'ol';
+      }
+      listItems.push(olMatch[1]);
+      continue;
+    }
+    flushList();
+    para.push(line);
+  }
+  flushPara();
+  flushList();
+  return out.join('');
+}
+
+function formatTrajectoryUserInput(ui) {
+  if (!ui || typeof ui !== 'object') return '';
+  const pieces = [];
+  if (Array.isArray(ui.items)) {
+    for (const it of ui.items) {
+      if (!it || typeof it !== 'object') continue;
+      if (typeof it.text === 'string' && it.text) {
+        pieces.push(it.text);
+      } else if (it.item?.file?.absoluteUri) {
+        const uri = String(it.item.file.absoluteUri);
+        const base = decodeURIComponent(uri.split('/').pop() || uri);
+        pieces.push(`@${base}`);
+      } else if (it.item?.directory?.absoluteUri) {
+        const uri = String(it.item.directory.absoluteUri);
+        const base = decodeURIComponent(uri.replace(/\/+$/, '').split('/').pop() || uri);
+        pieces.push(`@${base}`);
+      } else if (it.item?.slashCommand?.info?.name) {
+        pieces.push(`/${it.item.slashCommand.info.name}`);
+      }
+    }
+  }
+  let raw = pieces.join(' ').trim() || String(ui.userResponse || '').trim();
+  const urMatch = raw.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i);
+  if (urMatch) raw = urMatch[1];
+  raw = raw
+    .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '')
+    .replace(/<\/?USER_REQUEST>/gi, '')
+    .trim();
+  if (!raw || /^(?:<SYSTEM_MESSAGE>|<CONTEXT_SUMMARY>)/i.test(raw)) {
+    raw = '';
+  }
+  if (!raw && Array.isArray(ui.media) && ui.media.length > 0) {
+    raw = '[图片附件]';
+  } else if (raw && Array.isArray(ui.media) && ui.media.length > 0) {
+    raw += `\n[附带 ${ui.media.length} 张图片]`;
+  }
+  return raw;
+}
+
+function extractMessagesFromTrajectorySteps(steps) {
+  if (!Array.isArray(steps) || !steps.length) return [];
+  const messages = [];
+  let pendingThoughts = [];
+
+  const flushPendingThoughtsOnly = (idxTag) => {
+    if (!pendingThoughts.length) return;
+    messages.push({
+      id: `t-think-${idxTag}`,
+      role: 'assistant',
+      text: '',
+      html: '',
+      thoughtLabel: '思考过程',
+      thoughtText: pendingThoughts.join('\n\n').slice(0, 12000),
+      highRisk: false,
+      riskText: ''
+    });
+    pendingThoughts = [];
+  };
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (!step || typeof step !== 'object') continue;
+    const type = String(step.type || '');
+    if (type === 'CORTEX_STEP_TYPE_USER_INPUT') {
+      const userText = formatTrajectoryUserInput(step.userInput);
+      if (!userText) continue;
+      flushPendingThoughtsOnly(i);
+      messages.push({
+        id: `t-u-${i}`,
+        role: 'user',
+        text: userText.slice(0, 120000)
+      });
+      continue;
+    }
+    if (type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') {
+      const pr = step.plannerResponse || {};
+      const thought = String(pr.thinking || pr.thought || '').trim();
+      if (thought) pendingThoughts.push(thought);
+      const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
+      if (replyRaw) {
+        const replyText = replyRaw.slice(0, 120000);
+        const thoughtText = pendingThoughts.join('\n\n').slice(0, 12000);
+        messages.push({
+          id: `t-a-${i}`,
+          role: 'assistant',
+          text: replyText,
+          html: renderSafeMarkdownToHtml(replyText),
+          thoughtLabel: thoughtText ? '思考过程' : '',
+          thoughtText,
+          highRisk: false,
+          riskText: ''
+        });
+        pendingThoughts = [];
+      }
+    }
+  }
+  flushPendingThoughtsOnly('end');
+  return messages;
+}
+
+function normMsgPrefix(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
+  const domList = Array.isArray(domMessages) ? domMessages.filter(Boolean) : [];
+  const baseList = Array.isArray(trajMsgs) ? trajMsgs.map((m) => ({ ...m })) : [];
+  if (!baseList.length) {
+    return domList.map((m, idx) => ({ ...m, msgIndex: idx }));
+  }
+
+  for (const dm of domList) {
+    if (dm.role !== 'assistant') continue;
+    const dSig = normMsgPrefix(dm.text);
+    const matchTarget = baseList
+      .slice(-8)
+      .reverse()
+      .find((tm) => tm.role === 'assistant' && dSig && normMsgPrefix(tm.text) && (
+        normMsgPrefix(tm.text).startsWith(dSig.slice(0, 32)) || dSig.startsWith(normMsgPrefix(tm.text).slice(0, 32))
+      ));
+    if (matchTarget) {
+      if (dm.highRisk) {
+        matchTarget.highRisk = true;
+        matchTarget.riskText = dm.riskText || matchTarget.riskText || '';
+      }
+      if (options.busy && String(dm.text || '').length > String(matchTarget.text || '').length) {
+        matchTarget.text = dm.text;
+        matchTarget.html = dm.html || matchTarget.html;
+      }
+      if (!matchTarget.thoughtText && dm.thoughtText) {
+        matchTarget.thoughtLabel = dm.thoughtLabel || '思考过程';
+        matchTarget.thoughtText = dm.thoughtText;
+      }
+    }
+  }
+
+  // 如果桌面 DOM 末尾刚发送/流式生成了轨迹接口尚未索引的最新消息，无损补入尾部
+  const lastBaseUserSig = (() => {
+    for (let i = baseList.length - 1; i >= 0; i--) {
+      if (baseList[i].role === 'user') return normMsgPrefix(baseList[i].text);
+    }
+    return '';
+  })();
+  let startAppendIdx = -1;
+  for (let i = domList.length - 1; i >= 0; i--) {
+    if (domList[i].role === 'user' && lastBaseUserSig && normMsgPrefix(domList[i].text) === lastBaseUserSig) {
+      startAppendIdx = i + 1;
+      break;
+    }
+  }
+  if (startAppendIdx >= 0) {
+    const tailBaseMsgs = baseList.slice(-4);
+    for (let j = startAppendIdx; j < domList.length; j++) {
+      const dm = domList[j];
+      const dSig = normMsgPrefix(dm.text);
+      const dup = tailBaseMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
+      if (!dup) {
+        baseList.push({ ...dm, id: `dom-tail-${j}` });
+      }
+    }
+  } else if (!lastBaseUserSig && domList.length) {
+    for (let j = 0; j < domList.length; j++) {
+      const dm = domList[j];
+      if (dm.role === 'user') baseList.push({ ...dm, id: `dom-tail-${j}` });
+    }
+  }
+
+  return baseList.map((m, idx) => ({ ...m, msgIndex: idx }));
+}
+
+function createConversationHistoryManager() {
+  const cache = new Map();
+  const MAX_CACHE_ENTRIES = 12;
+
+  function touchCache(sessionId, rec) {
+    if (cache.has(sessionId)) cache.delete(sessionId);
+    cache.set(sessionId, rec);
+    if (cache.size > MAX_CACHE_ENTRIES) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey !== undefined) cache.delete(oldestKey);
+    }
+  }
+
+  async function fetchTrajectoryMessages(sessionId, options = {}) {
+    const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
+    let connectFn = customConnect;
+    if (!connectFn) {
+      if (isCatalogTestEnv()) return null;
+      try {
+        connectFn = require('./local-api').connect;
+      } catch {
+        return null;
+      }
+    }
+    try {
+      const api = typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1200, null) : connectFn;
+      if (!api || typeof api.call !== 'function') return null;
+      const res = await withRaceTimeout(
+        Promise.resolve().then(() => api.call('GetCascadeTrajectory', { cascadeId: sessionId })).catch(() => null),
+        2500,
+        null
+      );
+      const steps = res?.trajectory?.steps;
+      if (!Array.isArray(steps)) return null;
+      return extractMessagesFromTrajectorySteps(steps);
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveFullMessages(sessionId, domMessages, options = {}) {
+    const sid = String(sessionId || '').trim();
+    const domTail = Array.isArray(domMessages) ? domMessages : [];
+    if (!sid) {
+      return domTail.map((m, idx) => ({ ...m, msgIndex: idx }));
+    }
+    const existing = cache.get(sid);
+    const nowMs = Date.now();
+    const ttl = options.busy ? 1000 : 3500;
+    let trajMsgs = null;
+    if (!options.bypassCache && existing && Array.isArray(existing.trajMsgs) && (nowMs - existing.at < ttl)) {
+      trajMsgs = existing.trajMsgs;
+    } else {
+      const fetched = await fetchTrajectoryMessages(sid, options);
+      if (Array.isArray(fetched)) {
+        trajMsgs = fetched;
+      } else if (existing && Array.isArray(existing.trajMsgs)) {
+        trajMsgs = existing.trajMsgs;
+      }
+    }
+
+    const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
+    touchCache(sid, {
+      trajMsgs: Array.isArray(trajMsgs) ? trajMsgs : (existing?.trajMsgs || null),
+      domTail: domTail.length ? domTail : (existing?.domTail || []),
+      merged,
+      at: nowMs
+    });
+    return merged;
+  }
+
+  async function enrichMessages(snap, options = {}) {
+    if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
+    const fullMsgs = await resolveFullMessages(snap.sessionId, snap.messages, {
+      ...options,
+      busy: Boolean(snap.busy)
+    });
+    const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
+    const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
+    const sliced = fullMsgs.slice(startIdx);
+    return {
+      ...snap,
+      totalMessages: fullMsgs.length,
+      messagesStartIndex: startIdx,
+      hasEarlierMessages: startIdx > 0,
+      messages: sliced
+    };
+  }
+
+  async function getMessagesPage(options = {}) {
+    const sid = String(options.sessionId || '').trim();
+    if (!sid) return { ok: false, error: '缺少 sessionId 参数' };
+    const limit = Math.max(1, Math.min(200, Number.parseInt(options.limit ?? 30, 10) || 30));
+    const existing = cache.get(sid);
+    const fullMsgs = await resolveFullMessages(sid, existing?.domTail || [], options);
+    const total = fullMsgs.length;
+    const hasBefore = options.before !== undefined && options.before !== null && options.before !== '';
+    const rawBefore = hasBefore ? Number.parseInt(options.before, 10) : total;
+    const endIdx = Math.max(0, Math.min(total, Number.isFinite(rawBefore) ? rawBefore : total));
+    const startIdx = Math.max(0, endIdx - limit);
+    return {
+      ok: true,
+      sessionId: sid,
+      totalMessages: total,
+      startIndex: startIdx,
+      endIndex: endIdx,
+      hasEarlier: startIdx > 0,
+      messages: fullMsgs.slice(startIdx, endIdx)
+    };
+  }
+
+  return { enrichMessages, getMessagesPage };
+}
+
+const defaultHistoryManager = createConversationHistoryManager();
+
+function getConversationMessagesPage(options = {}) {
+  return defaultHistoryManager.getMessagesPage(options);
 }
 
 async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
@@ -1906,7 +2361,10 @@ async function performActionInTarget(payload) {
   const act = payload?.action;
   const settleMs = (act === 'switch-conversation' || act === 'new-conversation') ? 260 : 120;
   await new Promise((r) => setTimeout(r, settleMs));
-  const snapshot = await fetchSnapshotFromTarget(target.id, { convLimit: 100 }).catch(() => null);
+  const snapshot = await fetchSnapshotFromTarget(target.id, {
+    convLimit: 100,
+    bypassCache: act === 'send' || act === 'switch-conversation'
+  }).catch(() => null);
   return {
     ok: Boolean(actionResult?.ok),
     actionResult: actionResult || null,
@@ -2302,6 +2760,18 @@ function buildMobileAppHtml() {
       background:rgba(255,255,255,.03);color:#a1a1aa;font-size:12px;cursor:pointer;margin-top:2px;
     }
     .composer-card.drag-over{border-color:#38bdf8;background:rgba(56,189,248,.07)}
+    .load-earlier-btn{
+      appearance:none;align-self:center;padding:6px 14px;border-radius:999px;
+      border:1px solid var(--border);background:rgba(255,255,255,.05);color:#cbd5e1;
+      font-size:12px;font-weight:500;cursor:pointer;flex-shrink:0;
+    }
+    .load-earlier-btn:disabled{opacity:.6;cursor:default}
+    .perm-ico{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+    .perm-ico.turbo{color:#fbbf24}
+    .perm-ico.auto{color:#38bdf8}
+    .perm-ico.default{color:#a1a1aa}
+    .perm-ico.request_review{color:#c084fc}
+    .perm-ico.unknown{color:#71717a}
     .drawer-brand{display:none}
     .conv-list{display:flex;flex-direction:column;gap:6px;flex:1 1 auto;min-height:0;overflow-y:auto}
     .toast{
@@ -2461,7 +2931,7 @@ function buildMobileAppHtml() {
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.7"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
             <button id="btn-perm-inline" class="ghost-btn" type="button" title="切换权限预设" style="flex-shrink:0">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0;color:#fbbf24"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+              <span id="perm-inline-icon" class="perm-ico unknown" data-perm-mode="unknown"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
               <span id="perm-inline-label">权限</span>
             </button>
           </div>
@@ -2884,6 +3354,14 @@ function buildMobileAppHtml() {
 
     msgEl.addEventListener('scroll', () => {
       stickBottom = (msgEl.scrollHeight - msgEl.scrollTop - msgEl.clientHeight) < 80;
+      if (msgEl.scrollTop <= 50 && !stickBottom && msgEl.scrollHeight > msgEl.clientHeight + 40) {
+        void loadEarlierMessages();
+      }
+    });
+    msgEl.addEventListener('click', (e) => {
+      if (e.target?.closest?.('#btn-load-earlier')) {
+        void loadEarlierMessages();
+      }
     });
 
     function showToast(txt) {
@@ -3031,7 +3509,7 @@ function buildMobileAppHtml() {
       $('quota-main').textContent = 'G4 ' + gStr + ' · C ' + cStr;
       $('ctx-badge').textContent = snap.contextBadge || '--%';
       $('model-inline-label').textContent = snap.model || '切换模型';
-      $('perm-inline-label').textContent = snap.permissionLabel || '权限';
+      syncPermInlineUi(snap.permissionKey, snap.permissionLabel);
       const newChatLabelEl = $('new-chat-label');
       if (newChatLabelEl) {
         newChatLabelEl.textContent = snap.currentProjectName ? ('新建对话 · ' + snap.currentProjectName) : '新建对话';
@@ -3040,42 +3518,31 @@ function buildMobileAppHtml() {
       renderQuotaDrawer(snap);
       syncSendButtonUI();
 
-      // Messages
-      const wasBottom = stickBottom;
-      const msgs = Array.isArray(snap.messages) ? snap.messages : [];
-      if (!msgs.length && !snap.busy) {
-        const emptyTipText = (snap.isNewConversation && snap.currentProjectName)
-          ? ('正在「' + esc(snap.currentProjectName) + '」下新建对话，发一句话即可开始…')
-          : ('暂无消息，发一句话' + (isDesktopLayout() ? '或在左侧切换会话' : '或在屏幕右滑切换会话'));
-        const emptyHtml = '<div class="empty-tip">' + emptyTipText + '</div>';
-        if (msgEl.dataset.lastHtml !== emptyHtml) {
-          msgEl.innerHTML = emptyHtml;
-          msgEl.dataset.lastHtml = emptyHtml;
-        }
-      } else {
-        let html = msgs.map((m) => {
-          if (m.role === 'user') {
-            return '<div class="msg user">' + esc(m.text) + '</div>';
-          }
-          const risk = m.highRisk ? '<span class="risk-tag">' + esc(m.riskText || '🛡️ 检测到高危命令，请人工核对') + '</span>' : '';
-          const thought = m.thoughtLabel
-            ? '<details class="thought-box"><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? ' · 展开思考' : '') + '</summary>' +
-              (m.thoughtText ? '<div class="thought-body">' + esc(m.thoughtText) + '</div>' : '') + '</details>'
-            : '';
-          const bodyHtml = m.html
-            ? '<div class="md-body">' + m.html + '</div>'
-            : '<div class="msg-plain">' + esc(m.text || '') + '</div>';
-          return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + '">' + risk + thought + bodyHtml + '</div>';
-        }).join('');
-        if (snap.busy) {
-          html += '<div class="busy-pill"><span class="busy-spark"></span><span>正在思考与执行…</span></div>';
-        }
-        if (msgEl.dataset.lastHtml !== html) {
-          msgEl.innerHTML = html;
-          msgEl.dataset.lastHtml = html;
-          if (wasBottom) msgEl.scrollTop = msgEl.scrollHeight;
-        }
+      // Messages (full history + upward pagination + scroll anchor)
+      const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
+      if (snapSid !== activeMsgSessionId) {
+        activeMsgSessionId = snapSid;
+        sessionMsgsByIndex.clear();
+        loadingEarlierMsgs = false;
+        stickBottom = true;
       }
+      const rawMsgs = Array.isArray(snap.messages) ? snap.messages : [];
+      const totalMsgs = Number(snap.totalMessages);
+      if (Number.isFinite(totalMsgs) && totalMsgs >= 0) {
+        for (const k of Array.from(sessionMsgsByIndex.keys())) {
+          if (totalMsgs === 0 || k >= totalMsgs) sessionMsgsByIndex.delete(k);
+        }
+      } else if (!rawMsgs.length) {
+        sessionMsgsByIndex.clear();
+      }
+      const baseIdx = Number.isFinite(Number(snap.messagesStartIndex)) ? Number(snap.messagesStartIndex) : 0;
+      for (let idx = 0; idx < rawMsgs.length; idx++) {
+        const m = rawMsgs[idx];
+        if (!m) continue;
+        const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + idx);
+        sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
+      }
+      renderMessagesView(snap);
 
       // Pending Approvals
       const approvals = Array.isArray(snap.pendingApprovals) ? snap.pendingApprovals : [];
@@ -3615,32 +4082,176 @@ function buildMobileAppHtml() {
       });
     }
 
+    const PERM_ICONS = {
+      turbo: '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>',
+      auto: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11.2 14.2 15.5 10"/></svg>',
+      default: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+      request_review: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.8"/></svg>',
+      unknown: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>'
+    };
+
+    function resolvePermKey(rawKey, rawLabel) {
+      const k = String(rawKey || '').trim().toLowerCase();
+      if (k === 'turbo' || k === 'auto' || k === 'default' || k === 'request_review') return k;
+      const lbl = String(rawLabel || '').trim().toLowerCase();
+      if (!lbl) return 'unknown';
+      if (/(?:turbo|无限|unrestricted)/i.test(lbl)) return 'turbo';
+      if (/(?:request_review|review|请求审核|请求审查|审核|审查)/i.test(lbl)) return 'request_review';
+      if (/(?:\bauto\b|自动)/i.test(lbl)) return 'auto';
+      if (/(?:\bdefault\b|默认)/i.test(lbl)) return 'default';
+      return 'unknown';
+    }
+
+    function syncPermInlineUi(rawKey, rawLabel) {
+      const mode = resolvePermKey(rawKey, rawLabel);
+      const lblEl = $('perm-inline-label');
+      if (lblEl) {
+        lblEl.textContent = String(rawLabel || '').trim() || ({ turbo: '无限', auto: '自动', default: '默认', request_review: '请求审核' }[mode]) || '权限';
+      }
+      const icoEl = $('perm-inline-icon');
+      if (icoEl) {
+        icoEl.className = 'perm-ico ' + mode;
+        icoEl.setAttribute('data-perm-mode', mode);
+        const svgHtml = PERM_ICONS[mode] || PERM_ICONS.unknown;
+        if (icoEl.dataset.svgMode !== mode) {
+          icoEl.innerHTML = svgHtml;
+          icoEl.dataset.svgMode = mode;
+        }
+      }
+    }
+
+    let activeMsgSessionId = null;
+    const sessionMsgsByIndex = new Map();
+    let loadingEarlierMsgs = false;
+
+    function getOrderedSessionMessages() {
+      return Array.from(sessionMsgsByIndex.values()).sort((a, b) => (a.msgIndex - b.msgIndex));
+    }
+
+    function renderMessagesView(snap, opts = {}) {
+      const msgs = getOrderedSessionMessages();
+      if (!msgs.length && !snap?.busy) {
+        const emptyTipText = (snap?.isNewConversation && snap?.currentProjectName)
+          ? ('正在「' + esc(snap.currentProjectName) + '」下新建对话，发一句话即可开始…')
+          : ('暂无消息，发一句话' + (isDesktopLayout() ? '或在左侧切换会话' : '或在屏幕右滑切换会话'));
+        const emptyHtml = '<div class="empty-tip">' + emptyTipText + '</div>';
+        if (msgEl.dataset.lastHtml !== emptyHtml) {
+          msgEl.innerHTML = emptyHtml;
+          msgEl.dataset.lastHtml = emptyHtml;
+        }
+        return;
+      }
+
+      const earliestIdx = msgs.length ? Math.max(0, Number(msgs[0].msgIndex) || 0) : 0;
+      let html = '';
+      if (earliestIdx > 0) {
+        html += '<button class="load-earlier-btn" id="btn-load-earlier" data-before="' + earliestIdx + '" type="button"' +
+          (loadingEarlierMsgs ? ' disabled' : '') + '>' +
+          (loadingEarlierMsgs ? '正在加载更早内容…' : ('↑ 加载更早的对话内容（前 ' + earliestIdx + ' 条）')) + '</button>';
+      }
+      html += msgs.map((m) => {
+        if (m.role === 'user') {
+          return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + esc(m.text) + '</div>';
+        }
+        const risk = m.highRisk ? '<span class="risk-tag">' + esc(m.riskText || '🛡️ 检测到高危命令，请人工核对') + '</span>' : '';
+        const thought = m.thoughtLabel
+          ? '<details class="thought-box"><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? ' · 展开思考' : '') + '</summary>' +
+            (m.thoughtText ? '<div class="thought-body">' + esc(m.thoughtText) + '</div>' : '') + '</details>'
+          : '';
+        const bodyHtml = m.html
+          ? '<div class="md-body">' + m.html + '</div>'
+          : '<div class="msg-plain">' + esc(m.text || '') + '</div>';
+        return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + '" data-msg-idx="' + m.msgIndex + '">' + risk + thought + bodyHtml + '</div>';
+      }).join('');
+      if (snap?.busy) {
+        html += '<div class="busy-pill"><span class="busy-spark"></span><span>正在思考与执行…</span></div>';
+      }
+
+      if (msgEl.dataset.lastHtml !== html) {
+        const prevTop = opts.preserveAnchor ? Number(opts.prevTop || 0) : msgEl.scrollTop;
+        const prevHeight = opts.preserveAnchor ? Number(opts.prevHeight || 0) : msgEl.scrollHeight;
+        msgEl.innerHTML = html;
+        msgEl.dataset.lastHtml = html;
+        if (opts.preserveAnchor) {
+          msgEl.scrollTop = prevTop + Math.max(0, msgEl.scrollHeight - prevHeight);
+        } else if (stickBottom) {
+          msgEl.scrollTop = msgEl.scrollHeight;
+        } else {
+          msgEl.scrollTop = prevTop;
+        }
+      }
+    }
+
+    async function loadEarlierMessages() {
+      const msgs = getOrderedSessionMessages();
+      const earliestIdx = msgs.length ? Math.max(0, Number(msgs[0].msgIndex) || 0) : 0;
+      const reqSid = activeMsgSessionId;
+      if (loadingEarlierMsgs || !reqSid || reqSid === '__new__' || !(earliestIdx > 0)) return;
+      loadingEarlierMsgs = true;
+      const btn = $('btn-load-earlier');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '正在加载更早内容…';
+      }
+      try {
+        const q = '/api/messages?sessionId=' + encodeURIComponent(reqSid) + '&before=' + earliestIdx + '&limit=30';
+        const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
+        if (res.status === 401) { location.reload(); return; }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (reqSid !== activeMsgSessionId) return;
+        const rows = Array.isArray(data?.messages) ? data.messages : [];
+        const baseIdx = Number.isFinite(Number(data?.startIndex)) ? Number(data.startIndex) : Math.max(0, earliestIdx - rows.length);
+        const prevHeight = msgEl.scrollHeight;
+        const prevTop = msgEl.scrollTop;
+        stickBottom = false;
+        for (let i = 0; i < rows.length; i++) {
+          const m = rows[i];
+          if (!m) continue;
+          const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + i);
+          sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
+        }
+        loadingEarlierMsgs = false;
+        renderMessagesView(latestSnap, { preserveAnchor: true, prevHeight, prevTop });
+      } catch (err) {
+        loadingEarlierMsgs = false;
+        msgEl.dataset.lastHtml = '';
+        renderMessagesView(latestSnap);
+        showToast(err?.message || '加载更早消息失败');
+      }
+    }
+
     function openPermPicker() {
+      const curKey = resolvePermKey(latestSnap?.permissionKey, latestSnap?.permissionLabel);
       const cur = (latestSnap?.permissionLabel || '').toLowerCase();
       const opts = (latestSnap?.permissionOptions || [
         { key: 'turbo', label: '⚡ 无限 (Turbo)' },
         { key: 'auto', label: '🛡️ 自动 (Auto)' },
         { key: 'default', label: '🔒 默认 (Default)' },
-        { key: 'request_review', label: '👁️ 请求审查 (Review)' }
+        { key: 'request_review', label: '👁️ 请求审核 (Review)' }
       ]).map((p) => ({
         key: p.key,
         label: p.label,
-        active: Boolean(cur && p.label.toLowerCase().includes(cur))
+        active: curKey !== 'unknown' ? (p.key === curKey) : Boolean(cur && p.label.toLowerCase().includes(cur))
       }));
       openSheet('切换权限预设', opts, async (opt) => {
         showToast('正在切换权限…');
         try {
           const r = await apiAction({ action: 'select-permission', preset: opt.key });
-          if (r?.ok) showToast('已切换权限: ' + (r.actionResult?.permissionLabel || opt.label));
-          else showToast(r?.error || r?.actionResult?.error || '切换权限失败');
+          if (r?.ok) {
+            syncPermInlineUi(r.actionResult?.permissionKey || opt.key, r.actionResult?.permissionLabel || opt.label);
+            showToast('已切换权限: ' + (r.actionResult?.permissionLabel || opt.label));
+          } else {
+            showToast(r?.error || r?.actionResult?.error || '切换权限失败');
+          }
         } catch (err) {
           showToast(err?.message || '切换权限失败');
         }
       });
     }
 
-    $('btn-model-inline').onclick = openModelPicker;
-    $('btn-perm-inline').onclick = openPermPicker;
+    $('btn-model-inline').addEventListener('click', openModelPicker);
+    $('btn-perm-inline').addEventListener('click', openPermPicker);
 
     // 拍照/传图压缩并注入桌面端输入框
     let uploadedNames = [];
@@ -4834,7 +5445,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const convLimit = rawLimit === 'all' || rawLimit === '0'
           ? 0
           : (rawLimit !== null && rawLimit !== '' ? Math.max(1, Number.parseInt(rawLimit, 10) || 100) : 100);
-        const snap = await fetchSnapshotFromTarget(targetId, { convLimit });
+        const rawMsgLimit = urlObj.searchParams.get('msgLimit');
+        const msgLimit = rawMsgLimit === 'all' || rawMsgLimit === '0'
+          ? 0
+          : (rawMsgLimit !== null && rawMsgLimit !== '' ? Math.max(1, Number.parseInt(rawMsgLimit, 10) || 30) : 30);
+        const snap = await fetchSnapshotFromTarget(targetId, { convLimit, msgLimit });
         let payloadOut = snap;
         if (snap && snap.ok !== false) {
           const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
@@ -4871,6 +5486,27 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, error: err?.message || '读取会话列表失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/messages') {
+      try {
+        const sessionId = urlObj.searchParams.get('sessionId') || '';
+        if (!String(sessionId).trim()) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ ok: false, error: '缺少 sessionId 参数' }));
+          return;
+        }
+        const before = urlObj.searchParams.get('before');
+        const rawLimit = urlObj.searchParams.get('limit') || '30';
+        const limit = Math.max(1, Math.min(200, Number.parseInt(rawLimit, 10) || 30));
+        const page = await getConversationMessagesPage({ sessionId, before, limit });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(page));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取会话消息失败' }));
       }
       return;
     }
@@ -5345,9 +5981,12 @@ module.exports = {
   renderQrSvg,
   buildMobileAppHtml,
   normalizeTrajectoryStatus,
+  renderSafeMarkdownToHtml,
+  extractMessagesFromTrajectorySteps,
   createSessionCatalogStore,
   enrichSnapshotWithCatalog,
   listCatalogConversations,
+  getConversationMessagesPage,
   readJsonBody,
   createRemoteHttpHandler,
   recordPairedDeviceAccess,
