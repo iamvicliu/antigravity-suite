@@ -15,7 +15,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.4';
+const MOBILE_UI_VERSION = '1.9.5';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1203,13 +1203,25 @@ function isCatalogTestEnv() {
   return process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
 }
 
+const CREDIBLE_TRAJ_IDLE_STATUSES = new Set([
+  'CASCADE_RUN_STATUS_IDLE',
+  'CASCADE_RUN_STATUS_DONE',
+  'CASCADE_RUN_STATUS_COMPLETED',
+  'CASCADE_RUN_STATUS_STOPPED',
+  'CASCADE_RUN_STATUS_CANCELED',
+  'CASCADE_RUN_STATUS_CANCELLED'
+]);
+const CREDIBLE_STATUS_VALUES = new Set(['waiting', 'running', 'error', 'idle']);
+
 function normalizeTrajectoryStatus(rawStatus, termReason, options = {}) {
-  const s = String(rawStatus || '');
-  const r = String(termReason || '');
+  const s = String(rawStatus || '').trim();
+  const r = String(termReason || '').trim();
+  const fallback = CREDIBLE_STATUS_VALUES.has(options.fallbackStatus) ? options.fallbackStatus : '';
   if (
     options.hasPendingApprovals ||
     s === 'CASCADE_RUN_STATUS_WAITING_FOR_USER' ||
-    options.subagentWaiting
+    options.subagentWaiting ||
+    options.domStatus === 'waiting'
   ) {
     return 'waiting';
   }
@@ -1217,20 +1229,37 @@ function normalizeTrajectoryStatus(rawStatus, termReason, options = {}) {
     options.activeBusy ||
     options.domBusy ||
     s === 'CASCADE_RUN_STATUS_RUNNING' ||
-    options.subagentRunning
+    options.subagentRunning ||
+    options.domStatus === 'running'
   ) {
     return 'running';
   }
-  if (r === 'EXECUTOR_TERMINATION_REASON_ERROR') {
+  if (
+    r === 'EXECUTOR_TERMINATION_REASON_ERROR' ||
+    s === 'CASCADE_RUN_STATUS_ERROR' ||
+    s === 'CASCADE_RUN_STATUS_FAILED' ||
+    options.domStatus === 'error'
+  ) {
     return 'error';
   }
-  return 'idle';
+  const explicitTrajIdle = Boolean(
+    CREDIBLE_TRAJ_IDLE_STATUSES.has(s) ||
+    (r && r !== 'EXECUTOR_TERMINATION_REASON_UNSPECIFIED' && !s)
+  );
+  if (explicitTrajIdle || options.explicitIdle) {
+    return 'idle';
+  }
+  if (fallback) {
+    return fallback;
+  }
+  return 'unknown';
 }
 
 function statusToLabel(status) {
   if (status === 'waiting') return '待确认';
   if (status === 'running') return '运行中';
   if (status === 'error') return '异常';
+  if (status === 'unknown') return '未知';
   return '';
 }
 
@@ -1402,6 +1431,18 @@ function createSessionCatalogStore() {
           if (k && v) subagentRoots.set(String(k), String(v));
         }
       }
+      const subagentStates = new Map();
+      if (saved?.subagentStates && typeof saved.subagentStates === 'object') {
+        for (const [k, v] of Object.entries(saved.subagentStates)) {
+          if (k && v && typeof v === 'object' && v.rootId && (v.status === 'waiting' || v.status === 'running')) {
+            subagentStates.set(String(k), {
+              rootId: String(v.rootId),
+              status: String(v.status),
+              updatedAt: Number(v.updatedAt) || 0
+            });
+          }
+        }
+      }
       const rawItems = Array.isArray(saved?.conversations) ? saved.conversations : [];
       for (const item of rawItems) {
         if (!item || typeof item !== 'object' || !item.id) continue;
@@ -1412,9 +1453,10 @@ function createSessionCatalogStore() {
           if (subInfo.rootId) subagentRoots.set(cid, subInfo.rootId);
           continue;
         }
-        map.set(cid, { ...item, id: cid });
+        const savedStatus = (CREDIBLE_STATUS_VALUES.has(item.status) || item.status === 'unknown') ? item.status : 'unknown';
+        map.set(cid, { ...item, id: cid, status: savedStatus, statusLabel: statusToLabel(savedStatus) });
       }
-      entry = { dir, filePath, map, subagentIds, subagentRoots, lastSig: '', lastActiveSessionId: '', catalogRevision: '' };
+      entry = { dir, filePath, map, subagentIds, subagentRoots, subagentStates, lastSig: '', lastActiveSessionId: '', catalogRevision: '' };
       registryByDir.set(dir, entry);
     }
     return entry;
@@ -1431,14 +1473,15 @@ function createSessionCatalogStore() {
       }
       const isActive = Boolean((activeSessionId && c.id === activeSessionId) || snapConvMap?.get(c.id)?.active);
       const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
+      const itemStatus = (CREDIBLE_STATUS_VALUES.has(c.status) || c.status === 'unknown') ? c.status : 'unknown';
       items.push({
         id: c.id,
         title: c.title,
         active: isActive,
         projectId: c.projectId || 'ungrouped',
         projectName: c.projectName || '未归属项目',
-        status: c.status || 'idle',
-        statusLabel: c.statusLabel || '',
+        status: itemStatus,
+        statusLabel: statusToLabel(itemStatus),
         unread,
         pinned: Boolean(c.pinned),
         updatedAt: c.updatedAt
@@ -1473,14 +1516,16 @@ function createSessionCatalogStore() {
       const api = typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1200, null) : connectFn;
       if (!api || typeof api.call !== 'function') return null;
       const [trajRes, listProjRes] = await Promise.all([
-        withRaceTimeout(api.call('GetAllCascadeTrajectories', {}), 1500, null),
-        withRaceTimeout(api.call('ListProjects', {}), 1000, null)
+        withRaceTimeout(Promise.resolve().then(() => api.call('GetAllCascadeTrajectories', {})).catch(() => null), 1500, null),
+        withRaceTimeout(Promise.resolve().then(() => api.call('ListProjects', {})).catch(() => null), 1000, null)
       ]);
+      const hasSummaries = Boolean(trajRes && trajRes.trajectorySummaries && typeof trajRes.trajectorySummaries === 'object');
       const data = {
-        summaries: (trajRes && typeof trajRes.trajectorySummaries === 'object') ? trajRes.trajectorySummaries : {},
+        trajOk: hasSummaries,
+        summaries: hasSummaries ? trajRes.trajectorySummaries : {},
         projectIds: Array.isArray(listProjRes?.projectIds) ? listProjRes.projectIds : []
       };
-      if (!customConnect) {
+      if (!customConnect && hasSummaries) {
         trajCache.at = Date.now();
         trajCache.data = data;
       }
@@ -1527,6 +1572,7 @@ function createSessionCatalogStore() {
     const rootTrajs = new Map();
     const subagentRollup = new Map();
     const candidateIds = new Set([...store.map.keys(), ...Object.keys(summaries), ...snapConvMap.keys()]);
+    const seenSubIds = new Set();
     const rootIds = [];
 
     for (const cid of candidateIds) {
@@ -1536,21 +1582,52 @@ function createSessionCatalogStore() {
       const subInfo = inspectSubagentRecord(cid, t, sc || cached, store.subagentIds, store.subagentRoots);
       if (subInfo.isSub) {
         store.subagentIds.add(cid);
-        if (subInfo.rootId) {
-          store.subagentRoots.set(cid, subInfo.rootId);
-          const prevRoll = subagentRollup.get(subInfo.rootId) || { waiting: false, running: false, maxUpdatedAt: 0 };
-          const s = String(t?.status || '');
-          if (s === 'CASCADE_RUN_STATUS_WAITING_FOR_USER' || sc?.status === 'waiting') prevRoll.waiting = true;
-          else if (s === 'CASCADE_RUN_STATUS_RUNNING' || sc?.domBusy || sc?.status === 'running') prevRoll.running = true;
-          const modMs = Math.max(parseIsoTimestampMs(t?.lastModifiedTime), parseIsoTimestampMs(sc?.timeKey));
+        seenSubIds.add(cid);
+        const rootId = subInfo.rootId || store.subagentRoots.get(cid) || store.subagentStates.get(cid)?.rootId || '';
+        if (rootId) store.subagentRoots.set(cid, rootId);
+        const prevSub = store.subagentStates.get(cid);
+        const hasChildData = Boolean(t || sc);
+        const childStatus = hasChildData
+          ? normalizeTrajectoryStatus(t?.status, t?.latestExecutorTerminationReason, {
+              domBusy: Boolean(sc?.domBusy),
+              domStatus: sc?.status,
+              fallbackStatus: prevSub?.status
+            })
+          : (prevSub?.status || 'unknown');
+        const childArchived = t?.annotations?.archived === true;
+        if (!childArchived && (childStatus === 'waiting' || childStatus === 'running') && rootId) {
+          store.subagentStates.set(cid, {
+            rootId,
+            status: childStatus,
+            updatedAt: Math.max(parseIsoTimestampMs(t?.lastModifiedTime), parseIsoTimestampMs(sc?.timeKey), Number(prevSub?.updatedAt) || 0)
+          });
+        } else if (hasChildData && (childArchived || childStatus === 'idle' || childStatus === 'error')) {
+          store.subagentStates.delete(cid);
+        }
+        if (rootId) {
+          const prevRoll = subagentRollup.get(rootId) || { waiting: false, running: false, maxUpdatedAt: 0 };
+          if (!childArchived) {
+            if (childStatus === 'waiting') prevRoll.waiting = true;
+            else if (childStatus === 'running') prevRoll.running = true;
+          }
+          const modMs = Math.max(parseIsoTimestampMs(t?.lastModifiedTime), parseIsoTimestampMs(sc?.timeKey), Number(prevSub?.updatedAt) || 0);
           if (modMs > prevRoll.maxUpdatedAt) prevRoll.maxUpdatedAt = modMs;
-          subagentRollup.set(subInfo.rootId, prevRoll);
+          subagentRollup.set(rootId, prevRoll);
         }
         store.map.delete(cid);
         continue;
       }
       if (t) rootTrajs.set(cid, t);
       rootIds.push(cid);
+    }
+
+    for (const [subId, subRec] of store.subagentStates.entries()) {
+      if (seenSubIds.has(subId) || !subRec || !subRec.rootId) continue;
+      const prevRoll = subagentRollup.get(subRec.rootId) || { waiting: false, running: false, maxUpdatedAt: 0 };
+      if (subRec.status === 'waiting') prevRoll.waiting = true;
+      else if (subRec.status === 'running') prevRoll.running = true;
+      if ((Number(subRec.updatedAt) || 0) > prevRoll.maxUpdatedAt) prevRoll.maxUpdatedAt = Number(subRec.updatedAt) || 0;
+      subagentRollup.set(subRec.rootId, prevRoll);
     }
 
     const activeSessionId = String(snap.sessionId || '').trim();
@@ -1601,8 +1678,10 @@ function createSessionCatalogStore() {
         hasPendingApprovals: isActive && hasPendingApprovals,
         activeBusy: isActive && Boolean(snap.busy),
         domBusy: Boolean(sc?.domBusy),
+        domStatus: sc?.status,
         subagentWaiting: Boolean(roll?.waiting),
-        subagentRunning: Boolean(roll?.running)
+        subagentRunning: Boolean(roll?.running),
+        fallbackStatus: prev?.status
       });
 
       const projectName = String(
@@ -1652,6 +1731,7 @@ function createSessionCatalogStore() {
 
     const persistSig = JSON.stringify([
       store.subagentIds.size,
+      Array.from(store.subagentStates.entries()).sort((a, b) => a[0].localeCompare(b[0])),
       persistedAll.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt, c.status, c.lastViewedAt])
     ]);
     if (persistSig !== store.lastSig) {
@@ -1661,6 +1741,7 @@ function createSessionCatalogStore() {
         updatedAt: nowMs,
         subagentIds: Array.from(store.subagentIds).sort(),
         subagentRoots: Object.fromEntries(store.subagentRoots),
+        subagentStates: Object.fromEntries(store.subagentStates),
         conversations: persistedAll
       });
     }
@@ -2204,6 +2285,7 @@ function buildMobileAppHtml() {
     .c-dot.running{background:var(--green);animation:pulse 1.1s infinite ease-in-out}
     .c-dot.waiting{background:var(--amber);animation:pulse 1s infinite ease-in-out}
     .c-dot.error{background:var(--red)}
+    .c-dot.unknown{background:transparent;border:1.5px solid #71717a}
     .c-dot.unread{background:var(--accent)}
     .c-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.35}
     .c-badge{
@@ -2212,6 +2294,7 @@ function buildMobileAppHtml() {
     .c-badge.running{background:rgba(34,197,94,.16);color:#86efac}
     .c-badge.waiting{background:rgba(245,158,11,.18);color:#fde68a}
     .c-badge.error{background:rgba(239,68,68,.18);color:#fca5a5}
+    .c-badge.unknown{background:rgba(113,113,122,.18);color:#a1a1aa}
     .c-time{flex-shrink:0;font-size:11px;color:#71717a;font-variant-numeric:tabular-nums}
     .c-sub{font-size:11px;color:#a1a1aa;padding-left:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .conv-more-btn{
@@ -3287,6 +3370,7 @@ function buildMobileAppHtml() {
       if (c.status === 'waiting') return '<span class="c-dot waiting" title="待确认"></span>';
       if (c.status === 'running') return '<span class="c-dot running" title="运行中"></span>';
       if (c.status === 'error') return '<span class="c-dot error" title="异常中断"></span>';
+      if (c.status === 'unknown') return '<span class="c-dot unknown" title="状态未知"></span>';
       if (c.unread) return '<span class="c-dot unread" title="有新结果"></span>';
       return '<span class="c-dot"></span>';
     }
@@ -3298,6 +3382,7 @@ function buildMobileAppHtml() {
       if (c.status === 'waiting') badgeHtml = '<span class="c-badge waiting">' + esc(c.statusLabel || '待确认') + '</span>';
       else if (c.status === 'running') badgeHtml = '<span class="c-badge running">' + esc(c.statusLabel || '运行中') + '</span>';
       else if (c.status === 'error') badgeHtml = '<span class="c-badge error">' + esc(c.statusLabel || '异常') + '</span>';
+      else if (c.status === 'unknown') badgeHtml = '<span class="c-badge unknown">' + esc(c.statusLabel || '未知') + '</span>';
       const rel = formatRelTime(c.updatedAt);
       const rightMeta = badgeHtml || (rel ? '<span class="c-time">' + esc(rel) + '</span>' : '');
       let subHtml = '';

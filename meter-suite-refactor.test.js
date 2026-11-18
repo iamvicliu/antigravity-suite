@@ -3835,6 +3835,75 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     assert.equal(page2.conversations.length, 95);
     assert.equal(page2.hasMore, false);
     assert.equal(page2.conversations[page2.conversations.length - 1]?.id, 'conv-root-245', '第 245 条历史对话应可通过分页准确读出');
+    assert.equal(page1.conversations.find((c) => c.id === 'conv-root-002')?.status, 'waiting', '重启+轨迹缺项后后台 waiting 状态不得被抹成 idle');
+    assert.equal(page1.conversations.find((c) => c.id === 'conv-root-003')?.status, 'error', '重启+轨迹缺项后后台 error 状态不得被抹成 idle');
+    assert.equal(page1.conversations.find((c) => c.id === 'conv-root-004')?.status, 'running', '重启后快照回流 Subagent domBusy=true 应汇总为 running 而非 idle');
+    assert.equal(page1.conversations.find((c) => c.id === 'conv-root-005')?.status, 'idle', '明确 IDLE 会话保持 idle');
+    assert.equal(page2.conversations.find((c) => c.id === 'conv-root-240')?.status, 'running', '重启+轨迹缺项后后台 running 状态不得被抹成 idle');
+
+    // 2b. 回归验证：区分「缺少状态数据」与「明确空闲」（无状态返回 unknown；轨迹缺项、请求失败及重启后保留后台与 Subagent 汇总态）
+    assert.equal(remoteMod.normalizeTrajectoryStatus(undefined, undefined, {}), 'unknown');
+    assert.equal(remoteMod.normalizeTrajectoryStatus('CASCADE_RUN_STATUS_IDLE', '', {}), 'idle');
+    const statusDir = path.join(tmpRoot, 'status-state');
+    fs.mkdirSync(statusDir, { recursive: true });
+    const baseStTraj = {
+      'bg-wait': { status: 'CASCADE_RUN_STATUS_WAITING_FOR_USER', trajectoryMetadata: { projectId: 'proj-a' } },
+      'bg-err': { status: 'CASCADE_RUN_STATUS_IDLE', latestExecutorTerminationReason: 'EXECUTOR_TERMINATION_REASON_ERROR', trajectoryMetadata: { projectId: 'proj-a' } },
+      'bg-run': { status: 'CASCADE_RUN_STATUS_RUNNING', trajectoryMetadata: { projectId: 'proj-a' } },
+      'root-sub': { status: 'CASCADE_RUN_STATUS_IDLE', trajectoryMetadata: { projectId: 'proj-a', rootConversationId: 'root-sub' } },
+      'child-wait': { status: 'CASCADE_RUN_STATUS_WAITING_FOR_USER', trajectoryMetadata: { projectId: 'proj-a', parentConversationId: 'root-sub', rootConversationId: 'root-sub' } }
+    };
+    const stInit = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'bg-run', busy: false, conversations: [], projects: [] }, {
+      stateDir: statusDir, configDir, bypassCache: true,
+      localApiConnect: async () => ({ call: async (m) => m === 'GetAllCascadeTrajectories' ? { trajectorySummaries: baseStTraj } : {} })
+    });
+    assert.equal(stInit.conversations.find((c) => c.id === 'root-sub')?.status, 'waiting');
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    remoteMod = require('./mobile-remote.js');
+    const stFail = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true, sessionId: '', busy: false,
+      conversations: [{ id: 'dom-unknown', title: 'No Traj Status', domBusy: false, projectId: 'proj-a' }],
+      projects: []
+    }, {
+      stateDir: statusDir, configDir, bypassCache: true,
+      localApiConnect: async () => { throw new Error('LS unavailable'); }
+    });
+    assert.equal(stFail.conversations.find((c) => c.id === 'bg-wait')?.status, 'waiting', '请求失败时应保留最近可信 waiting');
+    assert.equal(stFail.conversations.find((c) => c.id === 'bg-err')?.status, 'error', '请求失败时应保留最近可信 error');
+    assert.equal(stFail.conversations.find((c) => c.id === 'bg-run')?.status, 'running', '请求失败时应保留最近可信 running');
+    assert.equal(stFail.conversations.find((c) => c.id === 'root-sub')?.status, 'waiting', '请求失败时应保留 Subagent 汇总 waiting');
+    assert.equal(stFail.conversations.find((c) => c.id === 'dom-unknown')?.status, 'unknown', '无历史状态且缺少轨迹数据时必须标记 unknown 而非 idle');
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    remoteMod = require('./mobile-remote.js');
+    const stPartial = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: '', busy: false, conversations: [], projects: [] }, {
+      stateDir: statusDir, configDir, bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (m) => m === 'GetAllCascadeTrajectories'
+          ? { trajectorySummaries: { 'root-sub': baseStTraj['root-sub'] } }
+          : {}
+      })
+    });
+    assert.equal(stPartial.conversations.find((c) => c.id === 'bg-wait')?.status, 'waiting');
+    assert.equal(stPartial.conversations.find((c) => c.id === 'bg-err')?.status, 'error');
+    assert.equal(stPartial.conversations.find((c) => c.id === 'root-sub')?.status, 'waiting', '子代理缺项时即使根轨迹报 IDLE 仍应保留持久化的 Subagent 汇总 waiting');
+    assert.equal(stPartial.conversations.find((c) => c.id === 'dom-unknown')?.status, 'unknown');
+
+    const stRecovered = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: '', busy: false, conversations: [], projects: [] }, {
+      stateDir: statusDir, configDir, bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (m) => m === 'GetAllCascadeTrajectories' ? {
+          trajectorySummaries: {
+            'root-sub': baseStTraj['root-sub'],
+            'child-wait': { ...baseStTraj['child-wait'], status: 'CASCADE_RUN_STATUS_IDLE' },
+            'dom-unknown': { status: 'CASCADE_RUN_STATUS_IDLE', trajectoryMetadata: { projectId: 'proj-a' } }
+          }
+        } : {}
+      })
+    });
+    assert.equal(stRecovered.conversations.find((c) => c.id === 'root-sub')?.status, 'idle', '子代理明确返回 IDLE 后根会话应恢复 idle');
+    assert.equal(stRecovered.conversations.find((c) => c.id === 'dom-unknown')?.status, 'idle', '轨迹明确返回 IDLE 后应从 unknown 转为 idle');
 
     // 验证 HTTP GET /api/conversations 端点可用性
     const httpCfg = remoteMod.loadOrCreateRemoteConfig();
@@ -3969,9 +4038,18 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     compSurface.__reactFiber$test = { memoizedProps: composerProps, return: null };
     const editorEl = envReal.doc.createElement('div');
     editorEl.setAttribute('data-lexical-editor', 'true');
+    const lexRootChildren = [];
+    const fakeLexRoot = {
+      clear() { lexRootChildren.length = 0; editorEl.textContent = ''; },
+      append(node) { lexRootChildren.push(node); editorEl.textContent = node._txt || ''; }
+    };
     editorEl.__lexicalEditor = {
+      _nodes: new Map([
+        ['paragraph', { klass: class { constructor() { this._txt = ''; } append(ch) { this._txt += ch?._v || ''; } } }],
+        ['text', { klass: class { constructor(v) { this._v = v; } } }]
+      ]),
       update(fn) { fn(); },
-      getEditorState() { return { _nodeMap: new Map() }; }
+      getEditorState() { return { _nodeMap: new Map([['root', fakeLexRoot]]) }; }
     };
     const sendBtn = envReal.doc.createElement('button');
     sendBtn.setAttribute('data-testid', 'send-button');
@@ -3995,6 +4073,7 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
     assert.equal(resNewA.verifiedState.inExistingConversation, false);
     assert.equal(resNewA.verifiedState.routeProjectId, 'proj-a');
     await enhReal.performMobileAction({ action: 'send', text: 'Alpha first prompt' });
+    assert.equal(createdByFirstMsg[0]?.text, 'Alpha first prompt', 'execCommand 返回 false 时应通过 Lexical _nodes 回退写入编辑器正文');
     assert.equal(createdByFirstMsg[0]?.projectId, 'proj-a');
     assert.equal(composerProps.inExistingConversation, true);
 

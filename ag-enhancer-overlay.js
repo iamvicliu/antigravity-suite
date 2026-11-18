@@ -2553,17 +2553,52 @@
         sel.addRange(range);
       }
 
-      const ok = document.execCommand('insertText', false, text);
-      if (!ok) {
-        try {
-          const ev = new InputEvent('beforeinput', {
-            bubbles: true,
-            cancelable: true,
-            inputType: 'insertText',
-            data: text
+      const trimmedExpected = String(text || '').replace(/[\u200B-\u200D\uFEFF\s]+/g, '');
+      const execOk = text ? document.execCommand('insertText', false, text) : true;
+      await new Promise((r) => setTimeout(r, 25));
+      const actualClean = String(ed.textContent || '').replace(/[\u200B-\u200D\uFEFF\s]+/g, '');
+      const insertedByExec = Boolean(execOk && (!trimmedExpected || actualClean.includes(trimmedExpected.slice(0, 12))));
+      if (text && !insertedByExec) {
+        const PNode = lex?._nodes?.get?.('paragraph')?.klass;
+        const TNode = lex?._nodes?.get?.('text')?.klass;
+        const LBNode = lex?._nodes?.get?.('linebreak')?.klass;
+        if (lex && typeof lex.update === 'function' && PNode && TNode) {
+          lex.update(() => {
+            const root = lex.getEditorState()?._nodeMap?.get('root');
+            const wRoot = root?.getWritable ? root.getWritable() : root;
+            if (!wRoot || typeof wRoot.append !== 'function') return;
+            if (typeof wRoot.clear === 'function') wRoot.clear();
+            const p = new PNode();
+            String(text).split(/\r?\n/).forEach((ln, idx) => {
+              if (idx > 0 && LBNode) p.append(new LBNode());
+              if (ln) p.append(new TNode(ln));
+            });
+            wRoot.append(p);
+            if (typeof p.selectEnd === 'function') p.selectEnd();
           });
-          ed.dispatchEvent(ev);
-        } catch {}
+        } else {
+          try {
+            const ev = new InputEvent('beforeinput', {
+              bubbles: true,
+              cancelable: true,
+              inputType: 'insertText',
+              data: text
+            });
+            ed.dispatchEvent(ev);
+          } catch {}
+        }
+      } else if (!text && lex && typeof lex.update === 'function') {
+        const PNode = lex?._nodes?.get?.('paragraph')?.klass;
+        if (PNode) {
+          lex.update(() => {
+            const root = lex.getEditorState()?._nodeMap?.get('root');
+            const wRoot = root?.getWritable ? root.getWritable() : root;
+            if (wRoot && typeof wRoot.clear === 'function') {
+              wRoot.clear();
+              wRoot.append(new PNode());
+            }
+          });
+        }
       }
 
       await new Promise((r) => setTimeout(r, 20));
