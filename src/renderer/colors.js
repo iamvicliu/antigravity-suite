@@ -311,11 +311,11 @@
   }
 
   const PRESET_ACCENT_COLORS = {
-    purple: { dark: '#a78bfa', light: '#7c3aed', totalDark: '#c084fc', totalLight: '#7c3aed' },
-    yellow: { dark: '#facc15', light: '#b45309', totalDark: '#fde047', totalLight: '#a16207' },
-    green: { dark: '#4ade80', light: '#16a34a', totalDark: '#86efac', totalLight: '#15803d' },
-    blue: { dark: '#60a5fa', light: '#2563eb', totalDark: '#93c5fd', totalLight: '#1d4ed8' },
-    red: { dark: '#f87171', light: '#dc2626', totalDark: '#fca5a5', totalLight: '#b91c1c' }
+    purple: { dark: '#a78bfa', light: '#7c3aed', totalDark: '#a78bfa', totalLight: '#7c3aed' },
+    yellow: { dark: '#fbbf24', light: '#d97706', totalDark: '#fbbf24', totalLight: '#d97706' },
+    green: { dark: '#34d399', light: '#059669', totalDark: '#34d399', totalLight: '#059669' },
+    blue: { dark: '#60a5fa', light: '#2563eb', totalDark: '#60a5fa', totalLight: '#2563eb' },
+    red: { dark: '#f87171', light: '#dc2626', totalDark: '#f87171', totalLight: '#dc2626' }
   };
 
   function getDefaultSlotColor(slotKey) {

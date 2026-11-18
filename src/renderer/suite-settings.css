@@ -162,7 +162,7 @@
     }
     .term-option-card[data-selected="true"]{
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
-      border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
     }
     .term-option-top{
       display:flex;

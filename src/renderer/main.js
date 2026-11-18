@@ -2681,7 +2681,7 @@
     thumb.style.transform = `translateX(${offsetLeft}px)`;
     thumb.style.width = `${offsetWidth}px`;
 
-    const thumbColor = customColors.tokenAccent || (typeof getEffectiveHeatmapScale === 'function' ? getEffectiveHeatmapScale()[4] : '#a78bfa');
+    const thumbColor = typeof getEffectiveSlotColor === 'function' ? getEffectiveSlotColor('tokenAccent') : (customColors.tokenAccent || '#a78bfa');
     thumb.style.setProperty('--ag-tab-thumb-bg', thumbColor);
   }
 
