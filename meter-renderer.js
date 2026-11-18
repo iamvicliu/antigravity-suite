@@ -5934,6 +5934,24 @@ function closeAllDropdowns(exceptWrap = null) {
     label.textContent = matched ? matched.label : (val !== '未知' ? `🌐 ${val}` : '🌐 未设置 / 自动');
   }
 
+  /**
+   * 格式化「订阅国家」选择器当前标签：自定义实付或 Ultra 套餐仅展示国家与币种，避免混入 Pro 1x 参考价。
+   */
+  function formatDirectRegionLabel(matched, core) {
+    const curCode = matched.currency === 'TWD' ? 'NTD' : matched.currency;
+    const baseText = (matched.flag || '🌏') + ' ' + matched.name + ' (' + curCode + ')';
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const hideProPresetPrice = ps.priceMode === 'custom' || ps.tierKey === 'ultra' || Boolean(ps.ultraSubTier);
+    if (hideProPresetPrice) {
+      return baseText;
+    }
+    if (matched.currency === 'CNY') {
+      return baseText + ' · ¥' + matched.monthlyPrice + '/月';
+    }
+    const cny = core?.convertToCNY ? core.convertToCNY(matched.monthlyPrice, matched.currency, matched.name) : (matched.monthlyPrice * matched.rateToCNY);
+    return baseText + ' · ' + matched.symbol + matched.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
+  }
+
   // 刷新订阅地区直接选择器显示
   function refreshDirectRegionDisplay(currentRegionText) {
     const directLabel = el('direct-region-label');
@@ -5943,13 +5961,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const reg = currentRegionText || ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知';
     const matched = core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg);
     if (matched) {
-      const curCode = matched.currency === 'TWD' ? 'NTD' : matched.currency;
-      const cny = core?.convertToCNY ? core.convertToCNY(matched.monthlyPrice, matched.currency, matched.name) : (matched.monthlyPrice * matched.rateToCNY);
-      if (matched.currency === 'CNY') {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + matched.name + ' (' + curCode + ') · ¥' + matched.monthlyPrice + '/月';
-      } else {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + matched.name + ' (' + curCode + ') · ' + matched.symbol + matched.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
-      }
+      directLabel.textContent = formatDirectRegionLabel(matched, core);
     } else if (reg && reg !== '未知') {
       directLabel.textContent = '🌏 ' + reg;
     } else {
@@ -6612,12 +6624,7 @@ function closeAllDropdowns(exceptWrap = null) {
       getLabelText: (opt) => {
         const p = opt.rawItem;
         if (!p) return opt.label;
-        const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-        if (p.currency === 'CNY') {
-          return (p.flag || '🌏') + ' ' + p.name + ' (' + curCode + ') · ¥' + p.monthlyPrice + '/月';
-        }
-        const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-        return (p.flag || '🌏') + ' ' + p.name + ' (' + curCode + ') · ' + p.symbol + p.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
+        return formatDirectRegionLabel(p, core);
       },
       onSelect: (opt) => {
         if (opt.rawItem) applyDirectRegionSelection(opt.rawItem);
@@ -6874,6 +6881,50 @@ function closeAllDropdowns(exceptWrap = null) {
     });
   }
 
+  /**
+   * 将当前账号套餐状态同步回填到自定义订阅表单控件，可选跳过用户正在编辑的输入框。
+   */
+  function syncPlanCustomFormFields(ps, opts = {}) {
+    if (!ps) return;
+    const acqSelect = el('select-custom-acq');
+    const acqNameInput = el('input-custom-acq-name');
+    const zeroCheck = el('check-zero-extra');
+    const countryInput = el('input-custom-country');
+    const regInput = el('input-custom-region');
+    const paidInput = el('input-custom-paid');
+    const curSelect = el('select-custom-currency');
+    const cycleSelect = el('select-custom-cycle');
+    const validEndInput = el('input-valid-end');
+    const noteInput = el('input-custom-note');
+    const activeEl = opts.skipFocused ? (shadow?.activeElement || document?.activeElement || null) : null;
+    const canWrite = (node) => Boolean(node) && (!activeEl || node !== activeEl);
+    const coreRef = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const isPresetAcqName = ps.acquisitionSourceName === '正常付费订阅'
+      || Boolean(coreRef?.SUBSCRIPTION_ACQUISITION_PRESETS?.some?.(p => p.name === ps.acquisitionSourceName));
+
+    runWithUiHydration(() => {
+      if (acqSelect && ps.acquisitionSource) acqSelect.value = ps.acquisitionSource;
+      if (canWrite(acqNameInput)) acqNameInput.value = (ps.acquisitionSourceName && !isPresetAcqName) ? ps.acquisitionSourceName : '';
+      if (zeroCheck) zeroCheck.checked = Boolean(ps.isZeroExtraCost || ps.actualPricePaid === 0);
+      if (canWrite(countryInput)) countryInput.value = (ps.country && !ps.country.includes('未知')) ? ps.country : '';
+      if (canWrite(regInput)) regInput.value = (ps.region && !ps.region.includes('未知')) ? ps.region : '';
+      if (canWrite(paidInput)) {
+        paidInput.value = (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) ? ps.actualPricePaid : (zeroCheck?.checked ? '0' : '');
+        paidInput.disabled = Boolean(zeroCheck?.checked);
+      }
+      if (curSelect && ps.currency) curSelect.value = ps.currency;
+      if (cycleSelect && ps.billingCycle && !ps.billingCycle.includes('未知')) cycleSelect.value = ps.billingCycle.replace(/（.*）/, '').trim();
+      if (canWrite(validEndInput)) validEndInput.value = ps.validEndDate || '';
+      if (canWrite(noteInput)) noteInput.value = ps.customNote || '';
+      const ids = ['select-custom-acq', 'select-custom-region-preset', 'select-custom-currency', 'select-custom-cycle'];
+      if (opts.enhance) {
+        ids.forEach(id => enhanceCustomSelect(id));
+      } else {
+        ids.forEach(id => enhancedDropdowns.get(id)?.refresh?.());
+      }
+    });
+  }
+
   // 就地行内自定义订阅表单交互（实际读取优先于手填，支持官方依据活动来源）
   function togglePlanCustomForm(forceOpen) {
     const form = el('plan-custom-form');
@@ -6884,34 +6935,8 @@ function closeAllDropdowns(exceptWrap = null) {
     form.style.display = (next || keepOpen) ? 'block' : 'none';
     if (next) {
       const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-      const acqSelect = el('select-custom-acq');
-      const acqNameInput = el('input-custom-acq-name');
-      const zeroCheck = el('check-zero-extra');
-      const countryInput = el('input-custom-country');
-      const regInput = el('input-custom-region');
-      const paidInput = el('input-custom-paid');
-      const curSelect = el('select-custom-currency');
-      const cycleSelect = el('select-custom-cycle');
-      const validEndInput = el('input-valid-end');
-      const noteInput = el('input-custom-note');
-
-      runWithUiHydration(() => {
-        if (acqSelect && ps.acquisitionSource) acqSelect.value = ps.acquisitionSource;
-        if (acqNameInput) acqNameInput.value = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅') ? ps.acquisitionSourceName : '';
-        if (zeroCheck) zeroCheck.checked = Boolean(ps.isZeroExtraCost || ps.actualPricePaid === 0);
-        if (countryInput) countryInput.value = (ps.country && !ps.country.includes('未知')) ? ps.country : '';
-        if (regInput) regInput.value = (ps.region && !ps.region.includes('未知')) ? ps.region : '';
-        if (paidInput) {
-          paidInput.value = (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) ? ps.actualPricePaid : (zeroCheck?.checked ? '0' : '');
-          paidInput.disabled = Boolean(zeroCheck?.checked);
-        }
-        if (curSelect && ps.currency) curSelect.value = ps.currency;
-        if (cycleSelect && ps.billingCycle && !ps.billingCycle.includes('未知')) cycleSelect.value = ps.billingCycle.replace(/（.*）/, '').trim();
-        if (validEndInput) validEndInput.value = ps.validEndDate || '';
-        if (noteInput) noteInput.value = ps.customNote || '';
-        ['select-custom-acq', 'select-custom-region-preset', 'select-custom-currency', 'select-custom-cycle'].forEach(id => enhanceCustomSelect(id));
-      });
-      regInput?.focus?.();
+      syncPlanCustomFormFields(ps, { enhance: true });
+      if (!keepOpen) el('input-custom-region')?.focus?.();
     }
     positionFloatingPanels();
   }
@@ -6940,6 +6965,21 @@ function closeAllDropdowns(exceptWrap = null) {
         paidInput.disabled = false;
         if (paidInput.value === '0') paidInput.value = '';
       }
+      const cycleSelect = el('select-custom-cycle');
+      if (cycleSelect && (cycleSelect.value === '免费/赠送' || cycleSelect.value === '随套餐包含')) {
+        cycleSelect.value = '月付';
+        enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+      }
+    }
+  });
+
+  el('input-custom-paid')?.addEventListener('input', (e) => {
+    if (isHydratingUiControls) return;
+    const numVal = Number(String(e.target?.value || '').trim());
+    const cycleSelect = el('select-custom-cycle');
+    if (Number.isFinite(numVal) && numVal > 0 && cycleSelect && (cycleSelect.value === '免费/赠送' || cycleSelect.value === '随套餐包含')) {
+      cycleSelect.value = '月付';
+      enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
     }
   });
 
@@ -6956,14 +6996,20 @@ function closeAllDropdowns(exceptWrap = null) {
         paidInput.value = '0';
         paidInput.disabled = true;
       }
-      if (cycleSelect) cycleSelect.value = '免费/赠送';
+      if (cycleSelect) {
+        cycleSelect.value = '免费/赠送';
+        enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+      }
     } else if (val === 'normal_paid') {
       if (zeroCheck) zeroCheck.checked = false;
       if (paidInput) {
         paidInput.disabled = false;
         if (!paidInput.value || paidInput.value === '0') paidInput.value = '19.99';
       }
-      if (cycleSelect) cycleSelect.value = '月付';
+      if (cycleSelect) {
+        cycleSelect.value = '月付';
+        enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+      }
     }
   });
 
@@ -6987,7 +7033,15 @@ function closeAllDropdowns(exceptWrap = null) {
     const rawPaid = el('input-custom-paid')?.value?.trim();
     const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
     const cur = el('select-custom-currency')?.value || prevCustom.subscriptionCurrency || prevCustom.currency || 'USD';
-    const cycle = el('select-custom-cycle')?.value || (isZero ? '随套餐赠送/免费' : '月付');
+    const cycleEl = el('select-custom-cycle');
+    let cycle = cycleEl?.value || (isZero ? '随套餐赠送/免费' : '月付');
+    if (!isZero && paid !== null && paid > 0 && (cycle === '免费/赠送' || cycle === '随套餐赠送/免费')) {
+      cycle = '月付';
+      if (cycleEl) {
+        cycleEl.value = '月付';
+        enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+      }
+    }
     const validEnd = el('input-valid-end')?.value?.trim() || '';
     const note = el('input-custom-note')?.value?.trim() || '';
 
@@ -6999,7 +7053,7 @@ function closeAllDropdowns(exceptWrap = null) {
       subscriptionRegion: reg || undefined,
       region: reg || undefined,
       acquisitionSource: acq,
-      acquisitionSourceName: acqName || undefined,
+      acquisitionSourceName: acqName || '',
       isZeroExtraCost: isZero,
       actualPricePaid: paid,
       customActualPrice: paid,
@@ -7362,6 +7416,9 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     if (typeof refreshDirectCurrencyDisplay === 'function') {
       refreshDirectCurrencyDisplay(curText);
+    }
+    if (el('plan-custom-form')?.getAttribute?.('data-in-settings') === 'true' && typeof syncPlanCustomFormFields === 'function') {
+      syncPlanCustomFormFields(ps, { skipFocused: true, enhance: false });
     }
 
     const detAcq = el('p-det-acq');
@@ -11325,6 +11382,10 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (customForm) {
       customForm.setAttribute?.('data-in-settings', 'true');
       customForm.style.display = 'block';
+    }
+    const presetSel = el('select-custom-region-preset');
+    if (presetSel?.parentElement) {
+      presetSel.parentElement.style.display = 'none';
     }
     const cancelBtn = el('btn-custom-plan-cancel');
     if (cancelBtn) cancelBtn.style.display = 'none';

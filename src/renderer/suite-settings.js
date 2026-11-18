@@ -426,6 +426,10 @@
       customForm.setAttribute?.('data-in-settings', 'true');
       customForm.style.display = 'block';
     }
+    const presetSel = el('select-custom-region-preset');
+    if (presetSel?.parentElement) {
+      presetSel.parentElement.style.display = 'none';
+    }
     const cancelBtn = el('btn-custom-plan-cancel');
     if (cancelBtn) cancelBtn.style.display = 'none';
 

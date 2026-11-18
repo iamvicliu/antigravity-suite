@@ -1299,6 +1299,9 @@
     if (typeof refreshDirectCurrencyDisplay === 'function') {
       refreshDirectCurrencyDisplay(curText);
     }
+    if (el('plan-custom-form')?.getAttribute?.('data-in-settings') === 'true' && typeof syncPlanCustomFormFields === 'function') {
+      syncPlanCustomFormFields(ps, { skipFocused: true, enhance: false });
+    }
 
     const detAcq = el('p-det-acq');
     const tagAcq = el('p-det-acq-tag');

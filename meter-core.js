@@ -2371,7 +2371,9 @@
     const customAcqId = effectiveCustom?.acquisitionSource || 'normal_paid';
     const presetAcq = SUBSCRIPTION_ACQUISITION_PRESETS.find(p => p.id === customAcqId) || null;
     const acquisitionSource = customAcqId;
-    const acquisitionSourceName = effectiveCustom?.acquisitionSourceName || presetAcq?.name || '正常付费订阅';
+    const rawAcqName = effectiveCustom?.acquisitionSourceName ? String(effectiveCustom.acquisitionSourceName).trim() : '';
+    const validAcqName = (customAcqId !== 'normal_paid' && rawAcqName === '正常付费订阅') ? '' : rawAcqName;
+    const acquisitionSourceName = validAcqName || presetAcq?.name || '正常付费订阅';
     const acquisitionCategory = effectiveCustom?.acquisitionCategory || presetAcq?.category || 'paid';
     const validStartDate = effectiveCustom?.validStartDate || null;
     const validEndDate = effectiveCustom?.validEndDate || null;
@@ -2471,7 +2473,8 @@
         actualPricePaid = Number(effectiveCustom.actualPricePaid);
         isPriceEstimated = false;
         priceSource = 'custom';
-        billingCycle = effectiveCustom.billingCycle || '月付';
+        const rawCycle = effectiveCustom.billingCycle || '月付';
+        billingCycle = (actualPricePaid > 0 && (rawCycle === '免费/赠送' || rawCycle === '随套餐赠送/免费')) ? '月付' : rawCycle;
         priceRangeNote = isExpired
           ? `${acquisitionSourceName} · 权益已到期`
           : `${acquisitionSourceName} · 用户实付 ${curSymbol}${actualPricePaid} · ${billingCycle}`;
