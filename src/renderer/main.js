@@ -2202,7 +2202,7 @@
         }
       }
       if (btnToggleProxyModule) {
-        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭免 TUN 直连' : '开启免 TUN 直连';
+        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭代理直连' : '开启代理直连';
       }
     } catch (err) {
       const errMsg = err?.message || String(err);
@@ -2263,7 +2263,7 @@
     } finally {
       if (btnToggleProxyModule) {
         btnToggleProxyModule.disabled = false;
-        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭免 TUN 直连' : '开启免 TUN 直连';
+        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭代理直连' : '开启代理直连';
       }
     }
   });
@@ -2296,7 +2296,7 @@
     } finally {
       if (btnTestProxy) {
         btnTestProxy.disabled = false;
-        btnTestProxy.textContent = '🔍 测试代理连通性';
+        btnTestProxy.textContent = '🔍 测试代理连接';
       }
     }
   });

@@ -2455,17 +2455,17 @@
           <div class="unlock-panel-content">
             <div class="unlock-status-row">
               <div class="unlock-status-meta">
-                <div class="unlock-label">当前后端补丁状态</div>
-                <div id="unlock-status-desc" class="unlock-desc">正在分析当前 Antigravity 后端二进制…</div>
+                <div class="unlock-label">当前补丁状态</div>
+                <div id="unlock-status-desc" class="unlock-desc">正在检测客户端上下文限制状态…</div>
               </div>
             </div>
 
             <div class="unlock-notice">
-              <div class="unlock-notice-title">⚠️ 技术边界与重要说明</div>
+              <div class="unlock-notice-title">💡 功能说明与注意事项</div>
               <ul class="unlock-notice-list">
-                <li>本功能为非官方本地技术修补，通过移除 <code>language_server</code> 中的 256,000 封顶截断序列，恢复按模型物理窗口动态分配（如 1M 模型最高 983,040 tokens）。</li>
-                <li><strong>桌面端差异</strong>：桌面端为独立后端服务架构，仅解除底层压缩硬上限，无 CLI 档位切换菜单；亦无法突破模型服务端支持的最大物理窗口。</li>
-                <li><strong>更新与账号风险</strong>：官方更新客户端后可能需重新应用；账号风险未知，无法承诺“不会封号”。</li>
+                <li><strong>突破默认上限</strong>：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。</li>
+                <li><strong>安全可随时还原</strong>：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。</li>
+                <li><strong>客户端更新提示</strong>：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。</li>
               </ul>
             </div>
 
@@ -2485,12 +2485,15 @@
               <div id="unlock-result-text" class="unlock-result-text"></div>
             </div>
 
-            <dl class="unlock-meta-dl">
-              <dt>目标后端</dt><dd id="unlock-meta-target">—</dd>
-              <dt>目标架构</dt><dd id="unlock-meta-arch">—</dd>
-              <dt>文件哈希 (SHA-256)</dt><dd id="unlock-meta-sha">—</dd>
-              <dt>原版备份状态</dt><dd id="unlock-meta-backup">—</dd>
-            </dl>
+            <details class="unlock-tech-details" style="margin-top:6px">
+              <summary style="cursor:pointer;font-size:11.5px;color:var(--ag-text-muted);user-select:none">查看底层程序路径与备份详情</summary>
+              <dl class="unlock-meta-dl" style="margin-top:6px">
+                <dt>目标后端</dt><dd id="unlock-meta-target">—</dd>
+                <dt>目标架构</dt><dd id="unlock-meta-arch">—</dd>
+                <dt>文件哈希 (SHA-256)</dt><dd id="unlock-meta-sha">—</dd>
+                <dt>原版备份状态</dt><dd id="unlock-meta-backup">—</dd>
+              </dl>
+            </details>
 
             <div class="unlock-credit-bar">
               <div class="unlock-credit-left">
@@ -2554,17 +2557,17 @@
             </div>
             <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
               <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
-                <span>本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：</span>
+                <span>本地代理地址（支持 HTTP / SOCKS5，如 http://127.0.0.1:7897）：</span>
                 <input id="input-proxy-url" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="http://127.0.0.1:7897" />
               </label>
               <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
-                <span>绕过代理列表 (NO_PROXY)：</span>
+                <span>不走代理的地址（本地回环默认直连）：</span>
                 <input id="input-proxy-bypass" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="localhost,127.0.0.1,::1,<local>" />
               </label>
             </div>
             <div class="unlock-actions" style="display:flex;gap:8px;">
-              <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button">🔍 测试代理连通性</button>
-              <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button">切换代理直连</button>
+              <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button">🔍 测试代理连接</button>
+              <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button">开启代理直连</button>
             </div>
             <div id="proxy-test-result" style="font-size:11px;margin-top:6px;display:none;color:var(--ag-text-secondary);"></div>
           </div>
@@ -2579,60 +2582,60 @@
         </button>
         <div id="color-drawer-body" class="drawer-body" style="display:none;">
           <div class="color-grid">
-            <div class="color-item" style="grid-column:1 / -1">
-              <span class="color-item-lbl">面板与菜单统一背景色（0级跟随 / 自定义）</span>
+            <div class="color-item">
+              <span class="color-item-lbl">全局主题强调色</span>
               <div class="color-item-ctrls">
-                <input id="color-panelBg" class="color-picker" type="color" value="#181818" aria-label="面板背景色" />
-                <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
+                <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa" aria-label="全局主题强调色" />
+                <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="全局主题强调色" title="点击打开颜色选取器"></button>
+                <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+              </div>
+            </div>
+            <div class="color-item">
+              <span class="color-item-lbl">浮窗与面板背景色</span>
+              <div class="color-item-ctrls">
+                <input id="color-panelBg" class="color-picker" type="color" value="#181818" aria-label="浮窗与面板背景色" />
+                <button id="swatch-panelBg" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="浮窗与面板背景色" title="点击打开颜色选取器"></button>
                 <button id="reset-panelBg" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">圆环已用部分</span>
+              <span class="color-item-lbl">顶部圆环进度</span>
               <div class="color-item-ctrls">
-                <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb" aria-label="上下文圆环已用部分颜色" />
-                <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed" data-color-label="圆环已用部分" title="点击打开颜色选取器"></button>
+                <input id="color-ringUsed" class="color-picker" type="color" value="#e6e6eb" aria-label="顶部圆环进度颜色" />
+                <button id="swatch-ringUsed" class="color-swatch-btn" type="button" data-color-slot="ringUsed" data-color-label="顶部圆环进度" title="点击打开颜色选取器"></button>
                 <button id="reset-ringUsed" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">圆环轨道</span>
+              <span class="color-item-lbl">顶部圆环底轨</span>
               <div class="color-item-ctrls">
-                <input id="color-ringTrack" class="color-picker" type="color" value="#52525b" aria-label="圆环轨道颜色" />
-                <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack" data-color-label="圆环轨道" title="点击打开颜色选取器"></button>
+                <input id="color-ringTrack" class="color-picker" type="color" value="#52525b" aria-label="顶部圆环底轨颜色" />
+                <button id="swatch-ringTrack" class="color-swatch-btn" type="button" data-color-slot="ringTrack" data-color-label="顶部圆环底轨" title="点击打开颜色选取器"></button>
                 <button id="reset-ringTrack" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">上下文用量文字</span>
+              <span class="color-item-lbl">对话占用百分比</span>
               <div class="color-item-ctrls">
-                <input id="color-contextText" class="color-picker" type="color" value="#ececef" aria-label="上下文用量文字颜色" />
-                <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText" data-color-label="上下文用量文字" title="点击打开颜色选取器"></button>
+                <input id="color-contextText" class="color-picker" type="color" value="#ececef" aria-label="对话占用百分比颜色" />
+                <button id="swatch-contextText" class="color-swatch-btn" type="button" data-color-slot="contextText" data-color-label="对话占用百分比" title="点击打开颜色选取器"></button>
                 <button id="reset-contextText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">输出速度</span>
+              <span class="color-item-lbl">测速徽章文字</span>
               <div class="color-item-ctrls">
-                <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" aria-label="输出速度颜色" />
-                <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="输出速度" title="点击打开颜色选取器"></button>
+                <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" aria-label="测速徽章文字颜色" />
+                <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="测速徽章文字" title="点击打开颜色选取器"></button>
                 <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
             <div class="color-item">
-              <span class="color-item-lbl">累计 token 用量</span>
+              <span class="color-item-lbl">顶部总 Token 数</span>
               <div class="color-item-ctrls">
-                <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc" aria-label="累计 token 用量颜色" />
-                <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="点击打开颜色选取器"></button>
+                <input id="color-tokenTotal" class="color-picker" type="color" value="#c084fc" aria-label="顶部总 Token 数颜色" />
+                <button id="swatch-tokenTotal" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="顶部总 Token 数" title="点击打开颜色选取器"></button>
                 <button id="reset-tokenTotal" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
-              </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">其他 token 指标</span>
-              <div class="color-item-ctrls">
-                <input id="color-tokenAccent" class="color-picker" type="color" value="#a78bfa" aria-label="其他 token 指标颜色" />
-                <button id="swatch-tokenAccent" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="其他 token 指标" title="点击打开颜色选取器"></button>
-                <button id="reset-tokenAccent" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
             </div>
           </div>
@@ -2881,11 +2884,11 @@
         <!-- 就地行内自定义编辑表单 -->
         <div id="plan-custom-form" style="display:none;margin-top:8px;padding:10px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px">
           <div style="font-size:11px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)">
-            设置当前账号订阅信息
+            自定义实付金额与订阅备注
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">获取方式 / 活动来源</label>
+              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅渠道 / 优惠来源</label>
               <select id="select-custom-acq" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                 <option value="normal_paid">正常付费订阅</option>
                 <option value="student_offer">学生认证优惠</option>
@@ -2907,7 +2910,7 @@
           <div style="margin-bottom:6px">
             <label style="font-size:10.5px;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px;cursor:pointer">
               <input id="check-zero-extra" type="checkbox">
-              <span>本权益期间无需另付订阅费</span>
+              <span>免费获取（0 元实付，如赠送 / 试用）</span>
             </label>
           </div>
           <div style="margin-bottom:6px">
@@ -2989,7 +2992,7 @@
             </div>
           </div>
           <div style="margin-bottom:6px">
-            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">补充说明备注</label>
+            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">备注说明（选填）</label>
             <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
           </div>
           <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
@@ -3217,7 +3220,7 @@
         </button>
         <div id="token-color-drawer-body" class="drawer-body" style="display:none;">
           <div class="heat-preset-bar">
-            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档色阶预设：</span>
+            <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">整体主题色系：</span>
             <div class="heat-preset-group" id="heat-preset-group">
               <button class="heat-preset-btn" type="button" data-heat-preset="purple" data-active="true">
                 <span class="heat-preset-dots"><i style="background:#27272a"></i><i style="background:#3f1e6b"></i><i style="background:#652ab7"></i><i style="background:#9053f8"></i><i style="background:#c084fc"></i></span>
@@ -3242,85 +3245,87 @@
             </div>
           </div>
 
-          <div class="heat-lvl-custom-bar">
-            <div class="heat-lvl-custom-hdr">
-              <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">5 档逐格独立自定义（点击任意一格或图例「少 ▢▢▢▢▢ 多」单独调色，可设 5 种不同颜色）：</span>
-              <button id="reset-heat-lvls" class="color-reset-btn" type="button">恢复 5 档预设</button>
+          <div id="heat-advanced-colors-box" style="display:none;margin-top:8px;">
+            <div class="heat-lvl-custom-bar">
+              <div class="heat-lvl-custom-hdr">
+                <span style="font-size:11px;color:var(--ag-text-secondary);font-weight:500">热力图 5 档深浅单独调色（点击色块可逐档修改）：</span>
+                <button id="reset-heat-lvls" class="color-reset-btn" type="button">恢复 5 档预设</button>
+              </div>
+              <div class="heat-lvl-grid" id="heat-lvl-grid">
+                <div class="heat-lvl-item">
+                  <span class="heat-lvl-lbl" title="第 1 档（少/无用量）">1档 · 少/无</span>
+                  <div class="color-item-ctrls">
+                    <input id="color-heatLvl0" class="color-picker" type="color" value="#27272a" aria-label="热力图第1档颜色" />
+                    <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="点击单独设置第 1 档颜色"></button>
+                    <button id="reset-heatLvl0" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                  </div>
+                </div>
+                <div class="heat-lvl-item">
+                  <span class="heat-lvl-lbl" title="第 2 档（低用量）">2档 · 低</span>
+                  <div class="color-item-ctrls">
+                    <input id="color-heatLvl1" class="color-picker" type="color" value="#3f1e6b" aria-label="热力图第2档颜色" />
+                    <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="点击单独设置第 2 档颜色"></button>
+                    <button id="reset-heatLvl1" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                  </div>
+                </div>
+                <div class="heat-lvl-item">
+                  <span class="heat-lvl-lbl" title="第 3 档（中等用量）">3档 · 中</span>
+                  <div class="color-item-ctrls">
+                    <input id="color-heatLvl2" class="color-picker" type="color" value="#652ab7" aria-label="热力图第3档颜色" />
+                    <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="点击单独设置第 3 档颜色"></button>
+                    <button id="reset-heatLvl2" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                  </div>
+                </div>
+                <div class="heat-lvl-item">
+                  <span class="heat-lvl-lbl" title="第 4 档（高用量）">4档 · 高</span>
+                  <div class="color-item-ctrls">
+                    <input id="color-heatLvl3" class="color-picker" type="color" value="#9053f8" aria-label="热力图第4档颜色" />
+                    <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="点击单独设置第 4 档颜色"></button>
+                    <button id="reset-heatLvl3" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                  </div>
+                </div>
+                <div class="heat-lvl-item">
+                  <span class="heat-lvl-lbl" title="第 5 档（多/峰值用量）">5档 · 多/峰</span>
+                  <div class="color-item-ctrls">
+                    <input id="color-heatLvl4" class="color-picker" type="color" value="#c084fc" aria-label="热力图第5档颜色" />
+                    <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="点击单独设置第 5 档颜色"></button>
+                    <button id="reset-heatLvl4" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="heat-lvl-grid" id="heat-lvl-grid">
-              <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 1 档（少/无用量）">1档 · 少/无</span>
-                <div class="color-item-ctrls">
-                  <input id="color-heatLvl0" class="color-picker" type="color" value="#27272a" aria-label="热力图第1档颜色" />
-                  <button id="swatch-heatLvl0" class="color-swatch-btn" type="button" data-color-slot="heatLvl0" data-color-label="色阶第 1 档（少/无用量）" title="点击单独设置第 1 档颜色"></button>
-                  <button id="reset-heatLvl0" class="color-reset-btn" type="button" data-mode="auto">预设</button>
-                </div>
-              </div>
-              <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 2 档（低用量）">2档 · 低</span>
-                <div class="color-item-ctrls">
-                  <input id="color-heatLvl1" class="color-picker" type="color" value="#3f1e6b" aria-label="热力图第2档颜色" />
-                  <button id="swatch-heatLvl1" class="color-swatch-btn" type="button" data-color-slot="heatLvl1" data-color-label="色阶第 2 档（低用量）" title="点击单独设置第 2 档颜色"></button>
-                  <button id="reset-heatLvl1" class="color-reset-btn" type="button" data-mode="auto">预设</button>
-                </div>
-              </div>
-              <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 3 档（中等用量）">3档 · 中</span>
-                <div class="color-item-ctrls">
-                  <input id="color-heatLvl2" class="color-picker" type="color" value="#652ab7" aria-label="热力图第3档颜色" />
-                  <button id="swatch-heatLvl2" class="color-swatch-btn" type="button" data-color-slot="heatLvl2" data-color-label="色阶第 3 档（中等用量）" title="点击单独设置第 3 档颜色"></button>
-                  <button id="reset-heatLvl2" class="color-reset-btn" type="button" data-mode="auto">预设</button>
-                </div>
-              </div>
-              <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 4 档（高用量）">4档 · 高</span>
-                <div class="color-item-ctrls">
-                  <input id="color-heatLvl3" class="color-picker" type="color" value="#9053f8" aria-label="热力图第4档颜色" />
-                  <button id="swatch-heatLvl3" class="color-swatch-btn" type="button" data-color-slot="heatLvl3" data-color-label="色阶第 4 档（高用量）" title="点击单独设置第 4 档颜色"></button>
-                  <button id="reset-heatLvl3" class="color-reset-btn" type="button" data-mode="auto">预设</button>
-                </div>
-              </div>
-              <div class="heat-lvl-item">
-                <span class="heat-lvl-lbl" title="第 5 档（多/峰值用量）">5档 · 多/峰</span>
-                <div class="color-item-ctrls">
-                  <input id="color-heatLvl4" class="color-picker" type="color" value="#c084fc" aria-label="热力图第5档颜色" />
-                  <button id="swatch-heatLvl4" class="color-swatch-btn" type="button" data-color-slot="heatLvl4" data-color-label="色阶第 5 档（多/峰值用量）" title="点击单独设置第 5 档颜色"></button>
-                  <button id="reset-heatLvl4" class="color-reset-btn" type="button" data-mode="auto">预设</button>
-                </div>
-              </div>
-            </div>
-          </div>
 
-          <div class="color-grid">
-            <div class="color-item">
-              <span class="color-item-lbl">色阶「少」端颜色（自动插值）</span>
-              <div class="color-item-ctrls">
-                <input id="color-heatLow" class="color-picker" type="color" value="#27272a" aria-label="热力图少端颜色" />
-                <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow" data-color-label="热力图「少」端颜色" title="点击打开颜色选取器"></button>
-                <button id="reset-heatLow" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+            <div class="color-grid">
+              <div class="color-item">
+                <span class="color-item-lbl">热力图起始色（自动生成渐变）</span>
+                <div class="color-item-ctrls">
+                  <input id="color-heatLow" class="color-picker" type="color" value="#27272a" aria-label="热力图少端颜色" />
+                  <button id="swatch-heatLow" class="color-swatch-btn" type="button" data-color-slot="heatLow" data-color-label="热力图起始色" title="点击打开颜色选取器"></button>
+                  <button id="reset-heatLow" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                </div>
               </div>
-            </div>
-            <div class="color-item">
-              <span class="color-item-lbl">色阶「多」端颜色（自动插值）</span>
-              <div class="color-item-ctrls">
-                <input id="color-heatHigh" class="color-picker" type="color" value="#c084fc" aria-label="热力图多端颜色" />
-                <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh" data-color-label="热力图「多」端颜色" title="点击打开颜色选取器"></button>
-                <button id="reset-heatHigh" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+              <div class="color-item">
+                <span class="color-item-lbl">热力图峰值色（自动生成渐变）</span>
+                <div class="color-item-ctrls">
+                  <input id="color-heatHigh" class="color-picker" type="color" value="#c084fc" aria-label="热力图多端颜色" />
+                  <button id="swatch-heatHigh" class="color-swatch-btn" type="button" data-color-slot="heatHigh" data-color-label="热力图峰值色" title="点击打开颜色选取器"></button>
+                  <button id="reset-heatHigh" class="color-reset-btn" type="button" data-mode="auto">预设</button>
+                </div>
               </div>
-            </div>
-            <div class="color-item" id="token-drawer-mirror-bg">
-              <span class="color-item-lbl">面板与菜单统一背景色</span>
-              <div class="color-item-ctrls">
-                <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="面板与菜单背景色" title="点击打开颜色选取器"></button>
-                <button id="reset-panelBg-tokens" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+              <div class="color-item" id="token-drawer-mirror-bg">
+                <span class="color-item-lbl">浮窗与面板背景色</span>
+                <div class="color-item-ctrls">
+                  <button id="swatch-panelBg-tokens" class="color-swatch-btn" type="button" data-color-slot="panelBg" data-color-label="浮窗与面板背景色" title="点击打开颜色选取器"></button>
+                  <button id="reset-panelBg-tokens" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
+                </div>
               </div>
-            </div>
-            <div class="color-item" id="token-drawer-mirror-accent">
-              <span class="color-item-lbl">累计与强调指标色</span>
-              <div class="color-item-ctrls">
-                <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="累计 token 用量" title="总累计颜色"></button>
-                <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="Token 强调色" title="强调指标颜色"></button>
-                <button id="reset-all-colors-tokens" class="color-reset-btn" type="button">全部恢复跟随主题</button>
+              <div class="color-item" id="token-drawer-mirror-accent">
+                <span class="color-item-lbl">全局强调与顶部总数色</span>
+                <div class="color-item-ctrls">
+                  <button id="swatch-tokenTotal-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenTotal" data-color-label="顶部总 Token 数" title="总累计颜色"></button>
+                  <button id="swatch-tokenAccent-tokens" class="color-swatch-btn" type="button" data-color-slot="tokenAccent" data-color-label="全局主题强调色" title="强调指标颜色"></button>
+                  <button id="reset-all-colors-tokens" class="color-reset-btn" type="button">全部恢复跟随主题</button>
+                </div>
               </div>
             </div>
           </div>
@@ -3501,19 +3506,19 @@
           <div id="cli-launch-options-box" class="term-custom-box" data-active="true" style="gap:7px;">
             <label class="settings-pref-row settings-pref-check" style="margin:0;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">开启 CLI 免审核模式 (--dangerously-skip-permissions)</span>
-                <span class="settings-pref-desc">启动 agy 时自动批准终端内工具调用权限，无需逐次手动确认</span>
+                <span class="settings-pref-name">CLI 自动批准工具权限（免每次手动确认）</span>
+                <span class="settings-pref-desc">在终端启动 agy 时默认跳过权限询问（附带 --dangerously-skip-permissions）</span>
               </div>
               <input id="set-cli-skip-permissions" type="checkbox" class="settings-checkbox" />
             </label>
             <div class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">CLI 默认启动模型 (--model)</span>
-                <span class="settings-pref-desc">选择启动 agy CLI 时传入的模型，或保持「不选择模型」以跟随 agy 默认设置</span>
+                <span class="settings-pref-name">CLI 默认启动模型</span>
+                <span class="settings-pref-desc">指定启动 agy 时默认使用的模型；选「不指定」则使用 CLI 默认配置</span>
               </div>
               <div class="settings-select-wrap">
                 <select id="set-cli-model-select" class="settings-select" aria-label="CLI 默认启动模型">
-                  <option value="">不选择模型 · 跟随 agy 默认设置</option>
+                  <option value="">不指定 · 跟随 CLI 默认设置</option>
                   <option value="gemini-4-carbon-high">Gemini 4 Carbon (High)</option>
                   <option value="gemini-4-carbon-medium">Gemini 4 Carbon (Medium)</option>
                   <option value="gemini-4-carbon-low">Gemini 4 Carbon (Low)</option>
@@ -3546,13 +3551,13 @@
             </div>
             <div id="cli-mux-host-pref-row" class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">多路复用器目标主机 (Rex / WezTerm / tmux)</span>
-                <span class="settings-pref-desc">多路复用器启动 agy 时指定目标主机名；选「本机」避免误入远端会话，选远端主机自动执行远端 agy</span>
+                <span class="settings-pref-name">终端连接目标（本机 / 远程服务器）</span>
+                <span class="settings-pref-desc">仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在本机或远程服务器上启动 agy</span>
               </div>
               <div class="settings-select-wrap">
-                <select id="set-cli-mux-host-select" class="settings-select" aria-label="多路复用器目标主机">
-                  <option value="">本机 · This Mac (Local)</option>
-                  <option value="__custom__">自定义主机名 / Domain…</option>
+                <select id="set-cli-mux-host-select" class="settings-select" aria-label="终端连接目标">
+                  <option value="">本机（当前电脑）</option>
+                  <option value="__custom__">自定义远程主机名…</option>
                 </select>
               </div>
             </div>
@@ -3574,36 +3579,36 @@
           <div class="settings-pref-list">
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">界面深浅主题</span>
-                <span class="settings-pref-desc">控制状态栏、浮窗面板与调色默认色调</span>
+                <span class="settings-pref-name">面板深浅外观</span>
+                <span class="settings-pref-desc">设置所有插件浮窗与设置面板的明暗配色</span>
               </div>
               <div class="source-switch-bar">
-                <button id="set-theme-auto" class="switch-pill-btn active" type="button">跟随宿主</button>
+                <button id="set-theme-auto" class="switch-pill-btn active" type="button">跟随客户端</button>
                 <button id="set-theme-light" class="switch-pill-btn" type="button">浅色</button>
                 <button id="set-theme-dark" class="switch-pill-btn" type="button">深色</button>
               </div>
             </div>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">安全自动确认 (Auto-Accept)</span>
-                <span class="settings-pref-desc">自动点击 Proceed / Accept / 继续 等低风险确认按钮，高危命令自动拦截预警</span>
+                <span class="settings-pref-name">自动确认安全操作 (Auto-Accept)</span>
+                <span class="settings-pref-desc">自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截</span>
               </div>
               <input id="set-auto-accept" type="checkbox" class="settings-checkbox" />
             </label>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">下一步建议幽灵补全 (Tab / →)</span>
-                <span class="settings-pref-desc">对话空闲且输入框为空时显示高匹配下一步指令提示，按 Tab 一键填入</span>
+                <span class="settings-pref-name">输入框智能追问建议 (Tab / →)</span>
+                <span class="settings-pref-desc">回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入</span>
               </div>
               <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
             </label>
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">界面与提示语言 (Language)</span>
-                <span class="settings-pref-desc">统一切换客户端界面汉化、悬浮胶囊与插件多语言展示（可扩展多语言包）</span>
+                <span class="settings-pref-name">插件与客户端语言</span>
+                <span class="settings-pref-desc">同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言</span>
               </div>
               <div class="settings-select-wrap">
-                <select id="set-ui-language-select" class="settings-select" aria-label="界面与提示语言">
+                <select id="set-ui-language-select" class="settings-select" aria-label="插件与客户端语言">
                   <option value="zh-CN">简体中文 · Simplified Chinese</option>
                   <option value="en">English · 英文原版</option>
                 </select>
@@ -3611,8 +3616,8 @@
             </div>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">选项名保留英文</span>
-                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 与 High / Medium / Low 等档位英文原名</span>
+                <span class="settings-pref-name">模式与档位名保留英文</span>
+                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名</span>
               </div>
               <input id="set-english-labels" type="checkbox" class="settings-checkbox" />
             </label>
@@ -3624,15 +3629,16 @@
       <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">热力图颜色主题与 5 档色阶自定义</span>
+            <span class="settings-card-title">主题色系与热力图配色</span>
+            <button id="btn-toggle-heat-advanced" class="switch-pill-btn" type="button">高级色阶微调 ▼</button>
           </div>
-          <div class="settings-card-desc">切换色系预设或单独调色后，顶部标题文字、胶囊边框、按钮高亮及热力图色阶均同步跟随该颜色主题。</div>
+          <div class="settings-card-desc">切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。</div>
           <div id="settings-slot-heatmap-colors"></div>
         </div>
 
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">面板背景与顶部指标颜色自定义</span>
+            <span class="settings-card-title">全局强调色与顶部栏分项配色</span>
           </div>
           <div id="settings-slot-meter-colors"></div>
         </div>
@@ -3653,11 +3659,11 @@
           </div>
 
           <dl class="plan-detail-dl settings-sub-grid">
-            <dt id="settings-subtier-dt">Ultra 套餐子档：</dt>
+            <dt id="settings-subtier-dt">Ultra 套餐规格：</dt>
             <dd id="settings-subtier-dd"><div id="settings-slot-subtier"></div></dd>
-            <dt>账号所在地区：</dt>
+            <dt>账号归属地区：</dt>
             <dd><div id="settings-slot-country"></div></dd>
-            <dt>订阅国家：</dt>
+            <dt>订阅结算地区：</dt>
             <dd><div id="settings-slot-region"></div></dd>
             <dt>订阅币种：</dt>
             <dd><div id="settings-slot-currency"></div></dd>
@@ -3673,7 +3679,7 @@
       <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">免 TUN 网络直连（本地代理）</span>
+            <span class="settings-card-title">本地代理网络直连（免开 TUN 模式）</span>
             <span id="settings-slot-proxy-badge"></span>
           </div>
           <div id="settings-slot-proxy"></div>
@@ -3681,7 +3687,7 @@
 
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">上下文加长（实验特性说明）</span>
+            <span class="settings-card-title">解除 256K 上下文限制（实验性补丁）</span>
             <span id="settings-slot-unlock-badge"></span>
           </div>
           <div id="settings-slot-unlock"></div>
@@ -8327,7 +8333,7 @@ function closeAllDropdowns(exceptWrap = null) {
         }
       }
       if (btnToggleProxyModule) {
-        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭免 TUN 直连' : '开启免 TUN 直连';
+        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭代理直连' : '开启代理直连';
       }
     } catch (err) {
       const errMsg = err?.message || String(err);
@@ -8388,7 +8394,7 @@ function closeAllDropdowns(exceptWrap = null) {
     } finally {
       if (btnToggleProxyModule) {
         btnToggleProxyModule.disabled = false;
-        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭免 TUN 直连' : '开启免 TUN 直连';
+        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭代理直连' : '开启代理直连';
       }
     }
   });
@@ -8421,7 +8427,7 @@ function closeAllDropdowns(exceptWrap = null) {
     } finally {
       if (btnTestProxy) {
         btnTestProxy.disabled = false;
-        btnTestProxy.textContent = '🔍 测试代理连通性';
+        btnTestProxy.textContent = '🔍 测试代理连接';
       }
     }
   });
@@ -11076,6 +11082,68 @@ function renderHeatmapGrid(forceRebuild = false) {
     'AI 订阅与额度详情': 'AI Subscription & Quota Details',
     '颜色选取器': 'Color Picker',
     '检查更新': 'Check for Updates',
+    'CLI 自动批准工具权限（免每次手动确认）': 'Skip CLI Permissions (--dangerously-skip-permissions)',
+    '在终端启动 agy 时默认跳过权限询问（附带 --dangerously-skip-permissions）': 'Auto-approve terminal tool calls when launching agy without manual prompts',
+    'CLI 默认启动模型': 'CLI Default Launch Model',
+    '指定启动 agy 时默认使用的模型；选「不指定」则使用 CLI 默认配置': 'Select the default model when launching agy, or choose Unspecified to follow CLI defaults',
+    '不指定 · 跟随 CLI 默认设置': 'Unspecified · Follow CLI default',
+    '终端连接目标（本机 / 远程服务器）': 'Terminal Target Host (Local / Remote)',
+    '终端连接目标': 'Terminal Target Host',
+    '仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在本机或远程服务器上启动 agy': 'Applies to Rex, WezTerm, or tmux: choose Local or a remote server to launch agy',
+    '本机（当前电脑）': 'Local (This Mac)',
+    '自定义远程主机名…': 'Custom Remote Host…',
+    '面板深浅外观': 'Appearance Theme',
+    '设置所有插件浮窗与设置面板的明暗配色': 'Configure light/dark appearance for all popovers and settings panels',
+    '跟随客户端': 'Follow App',
+    '自动确认安全操作 (Auto-Accept)': 'Safe Auto-Accept',
+    '自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截': 'Auto-click safe Proceed / Accept buttons while blocking high-risk commands',
+    '输入框智能追问建议 (Tab / →)': 'Smart Follow-up Suggestions (Tab / →)',
+    '回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入': 'Show follow-up prompt suggestions in composer after responses (Tab or → to fill)',
+    '插件与客户端语言': 'Plugin & Client Language',
+    '同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言': 'Switch client UI localization, panels, and context capsule language together',
+    '模式与档位名保留英文': 'Keep Mode & Effort Names in English',
+    '中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名': 'Keep original English names (Default / Auto / Turbo / Effort) under Chinese UI',
+    '主题色系与热力图配色': 'Theme Palette & Heatmap Colors',
+    '高级色阶微调 ▼': 'Advanced Scale ▼',
+    '收起色阶微调 ▲': 'Hide Advanced ▲',
+    '切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。': 'Switching the theme palette syncs accents, progress bars, active controls, and the heatmap.',
+    '全局强调色与顶部栏分项配色': 'Global Accent & Topbar Colors',
+    'Ultra 套餐规格：': 'Ultra Tier Spec:',
+    '账号归属地区：': 'Account Region:',
+    '订阅结算地区：': 'Billing Region:',
+    '本地代理网络直连（免开 TUN 模式）': 'Local Proxy Direct Connect (No TUN)',
+    '解除 256K 上下文限制（实验性补丁）': 'Unlock 256K Context Limit (Experimental)',
+    '当前补丁状态': 'Patch Status',
+    '正在检测客户端上下文限制状态…': 'Checking client context limit status…',
+    '💡 功能说明与注意事项': '💡 Overview & Notes',
+    '突破默认上限': 'Raise Default Cap',
+    '：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。': ': Client caps context at 256K by default; applying this patch restores model limits up to ~1M.',
+    '安全可随时还原': 'Safe & Reversible',
+    '：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。': ': Automatically backs up original files before patching; restore anytime with one click.',
+    '客户端更新提示': 'Client Update Note',
+    '：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。': ': Major client updates overwrite binaries; simply re-apply the patch here afterward.',
+    '查看底层程序路径与备份详情': 'View Binary Path & Backup Details',
+    '本地代理地址（支持 HTTP / SOCKS5，如 http://127.0.0.1:7897）：': 'Local Proxy URL (HTTP / SOCKS5, e.g. http://127.0.0.1:7897):',
+    '不走代理的地址（本地回环默认直连）：': 'Bypass Proxy Addresses (Loopback Direct):',
+    '🔍 测试代理连接': '🔍 Test Proxy',
+    '开启代理直连': 'Enable Proxy',
+    '关闭代理直连': 'Disable Proxy',
+    '全局主题强调色': 'Global Theme Accent',
+    '浮窗与面板背景色': 'Popover & Panel Background',
+    '顶部圆环进度': 'Ring Progress',
+    '顶部圆环底轨': 'Ring Track',
+    '对话占用百分比': 'Context Usage %',
+    '测速徽章文字': 'Speed Badge Text',
+    '顶部总 Token 数': 'Topbar Total Tokens',
+    '自定义实付金额与订阅备注': 'Custom Paid Amount & Notes',
+    '订阅渠道 / 优惠来源': 'Channel / Promo Source',
+    '免费获取（0 元实付，如赠送 / 试用）': 'Free Access ($0 paid, e.g. promo / trial)',
+    '备注说明（选填）': 'Notes (Optional)',
+    '整体主题色系：': 'Theme Color Palette:',
+    '热力图 5 档深浅单独调色（点击色块可逐档修改）：': 'Per-level Heatmap Shading (click swatches to customize):',
+    '热力图起始色（自动生成渐变）': 'Heatmap Start Color (Auto Gradient)',
+    '热力图峰值色（自动生成渐变）': 'Heatmap Peak Color (Auto Gradient)',
+    '全局强调与顶部总数色': 'Accent & Total Tokens',
     '累计与强调指标色': 'Total & Accent Colors',
     '圆环已用部分': 'Ring Used',
     '圆环轨道': 'Ring Track',
@@ -11735,9 +11803,22 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
     uiCliModelDropdown?.refresh?.();
 
+    const hostPrefRow = el('cli-mux-host-pref-row');
     const hostSel = el('set-cli-mux-host-select');
     const customHostRow = el('cli-custom-mux-host-row');
     const customHostInp = el('input-cli-mux-host');
+    const termList = suiteTerminalState.terminals.length ? suiteTerminalState.terminals : getFallbackTerminalCatalog().terminals;
+    const curApp = String(suiteTerminalState.terminalApp || 'auto').toLowerCase();
+    const curTermObj = termList.find(t => t.id === curApp);
+    const supportsMuxHost = Boolean(curTermObj?.supportsMuxHost)
+      || ['rex', 'wezterm', 'tmux', 'custom'].includes(curApp)
+      || Boolean(suiteTerminalState.cliMuxHost);
+    if (hostPrefRow) {
+      hostPrefRow.style.display = supportsMuxHost ? '' : 'none';
+    }
+    if (!supportsMuxHost && customHostRow) {
+      customHostRow.style.display = 'none';
+    }
     if (hostSel) {
       const detectedHosts = Array.isArray(suiteTerminalState.muxHosts) ? suiteTerminalState.muxHosts : [];
       if (detectedHosts.length && typeof document?.createElement === 'function') {
@@ -11770,11 +11851,11 @@ function renderHeatmapGrid(forceRebuild = false) {
       const isCustomHost = Boolean(curHost) && !hostOptVals.includes(curHost);
       if (isCustomHost) {
         hostSel.value = '__custom__';
-        if (customHostRow) customHostRow.style.display = 'flex';
+        if (customHostRow) customHostRow.style.display = supportsMuxHost ? 'flex' : 'none';
         if (customHostInp && customHostInp.value !== curHost) customHostInp.value = curHost;
       } else {
         hostSel.value = curHost;
-        if (customHostRow && hostSel.value !== '__custom__') customHostRow.style.display = 'none';
+        if (customHostRow && (!supportsMuxHost || hostSel.value !== '__custom__')) customHostRow.style.display = 'none';
       }
       uiCliMuxHostDropdown?.refresh?.();
     }
@@ -12512,6 +12593,18 @@ function renderHeatmapGrid(forceRebuild = false) {
 
   el('btn-reset-feature-toggles')?.addEventListener('click', () => {
     void setSuiteFeatureFlags({ ...DEFAULT_SUITE_FEATURE_FLAGS });
+  });
+
+  el('btn-toggle-heat-advanced')?.addEventListener('click', () => {
+    const box = el('heat-advanced-colors-box');
+    const btn = el('btn-toggle-heat-advanced');
+    if (!box) return;
+    const isHidden = box.style.display === 'none' || !box.style.display;
+    box.style.display = isHidden ? 'block' : 'none';
+    if (btn) {
+      btn.textContent = isHidden ? '收起色阶微调 ▲' : '高级色阶微调 ▼';
+      applySuiteShadowLocale();
+    }
   });
 
   el('suite-ver-status')?.addEventListener('click', () => {

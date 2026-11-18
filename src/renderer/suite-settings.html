@@ -77,19 +77,19 @@
           <div id="cli-launch-options-box" class="term-custom-box" data-active="true" style="gap:7px;">
             <label class="settings-pref-row settings-pref-check" style="margin:0;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">开启 CLI 免审核模式 (--dangerously-skip-permissions)</span>
-                <span class="settings-pref-desc">启动 agy 时自动批准终端内工具调用权限，无需逐次手动确认</span>
+                <span class="settings-pref-name">CLI 自动批准工具权限（免每次手动确认）</span>
+                <span class="settings-pref-desc">在终端启动 agy 时默认跳过权限询问（附带 --dangerously-skip-permissions）</span>
               </div>
               <input id="set-cli-skip-permissions" type="checkbox" class="settings-checkbox" />
             </label>
             <div class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">CLI 默认启动模型 (--model)</span>
-                <span class="settings-pref-desc">选择启动 agy CLI 时传入的模型，或保持「不选择模型」以跟随 agy 默认设置</span>
+                <span class="settings-pref-name">CLI 默认启动模型</span>
+                <span class="settings-pref-desc">指定启动 agy 时默认使用的模型；选「不指定」则使用 CLI 默认配置</span>
               </div>
               <div class="settings-select-wrap">
                 <select id="set-cli-model-select" class="settings-select" aria-label="CLI 默认启动模型">
-                  <option value="">不选择模型 · 跟随 agy 默认设置</option>
+                  <option value="">不指定 · 跟随 CLI 默认设置</option>
                   <option value="gemini-4-carbon-high">Gemini 4 Carbon (High)</option>
                   <option value="gemini-4-carbon-medium">Gemini 4 Carbon (Medium)</option>
                   <option value="gemini-4-carbon-low">Gemini 4 Carbon (Low)</option>
@@ -122,13 +122,13 @@
             </div>
             <div id="cli-mux-host-pref-row" class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">多路复用器目标主机 (Rex / WezTerm / tmux)</span>
-                <span class="settings-pref-desc">多路复用器启动 agy 时指定目标主机名；选「本机」避免误入远端会话，选远端主机自动执行远端 agy</span>
+                <span class="settings-pref-name">终端连接目标（本机 / 远程服务器）</span>
+                <span class="settings-pref-desc">仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在本机或远程服务器上启动 agy</span>
               </div>
               <div class="settings-select-wrap">
-                <select id="set-cli-mux-host-select" class="settings-select" aria-label="多路复用器目标主机">
-                  <option value="">本机 · This Mac (Local)</option>
-                  <option value="__custom__">自定义主机名 / Domain…</option>
+                <select id="set-cli-mux-host-select" class="settings-select" aria-label="终端连接目标">
+                  <option value="">本机（当前电脑）</option>
+                  <option value="__custom__">自定义远程主机名…</option>
                 </select>
               </div>
             </div>
@@ -150,36 +150,36 @@
           <div class="settings-pref-list">
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">界面深浅主题</span>
-                <span class="settings-pref-desc">控制状态栏、浮窗面板与调色默认色调</span>
+                <span class="settings-pref-name">面板深浅外观</span>
+                <span class="settings-pref-desc">设置所有插件浮窗与设置面板的明暗配色</span>
               </div>
               <div class="source-switch-bar">
-                <button id="set-theme-auto" class="switch-pill-btn active" type="button">跟随宿主</button>
+                <button id="set-theme-auto" class="switch-pill-btn active" type="button">跟随客户端</button>
                 <button id="set-theme-light" class="switch-pill-btn" type="button">浅色</button>
                 <button id="set-theme-dark" class="switch-pill-btn" type="button">深色</button>
               </div>
             </div>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">安全自动确认 (Auto-Accept)</span>
-                <span class="settings-pref-desc">自动点击 Proceed / Accept / 继续 等低风险确认按钮，高危命令自动拦截预警</span>
+                <span class="settings-pref-name">自动确认安全操作 (Auto-Accept)</span>
+                <span class="settings-pref-desc">自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截</span>
               </div>
               <input id="set-auto-accept" type="checkbox" class="settings-checkbox" />
             </label>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">下一步建议幽灵补全 (Tab / →)</span>
-                <span class="settings-pref-desc">对话空闲且输入框为空时显示高匹配下一步指令提示，按 Tab 一键填入</span>
+                <span class="settings-pref-name">输入框智能追问建议 (Tab / →)</span>
+                <span class="settings-pref-desc">回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入</span>
               </div>
               <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
             </label>
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">界面与提示语言 (Language)</span>
-                <span class="settings-pref-desc">统一切换客户端界面汉化、悬浮胶囊与插件多语言展示（可扩展多语言包）</span>
+                <span class="settings-pref-name">插件与客户端语言</span>
+                <span class="settings-pref-desc">同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言</span>
               </div>
               <div class="settings-select-wrap">
-                <select id="set-ui-language-select" class="settings-select" aria-label="界面与提示语言">
+                <select id="set-ui-language-select" class="settings-select" aria-label="插件与客户端语言">
                   <option value="zh-CN">简体中文 · Simplified Chinese</option>
                   <option value="en">English · 英文原版</option>
                 </select>
@@ -187,8 +187,8 @@
             </div>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">选项名保留英文</span>
-                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 与 High / Medium / Low 等档位英文原名</span>
+                <span class="settings-pref-name">模式与档位名保留英文</span>
+                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名</span>
               </div>
               <input id="set-english-labels" type="checkbox" class="settings-checkbox" />
             </label>
@@ -200,15 +200,16 @@
       <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">热力图颜色主题与 5 档色阶自定义</span>
+            <span class="settings-card-title">主题色系与热力图配色</span>
+            <button id="btn-toggle-heat-advanced" class="switch-pill-btn" type="button">高级色阶微调 ▼</button>
           </div>
-          <div class="settings-card-desc">切换色系预设或单独调色后，顶部标题文字、胶囊边框、按钮高亮及热力图色阶均同步跟随该颜色主题。</div>
+          <div class="settings-card-desc">切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。</div>
           <div id="settings-slot-heatmap-colors"></div>
         </div>
 
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">面板背景与顶部指标颜色自定义</span>
+            <span class="settings-card-title">全局强调色与顶部栏分项配色</span>
           </div>
           <div id="settings-slot-meter-colors"></div>
         </div>
@@ -229,11 +230,11 @@
           </div>
 
           <dl class="plan-detail-dl settings-sub-grid">
-            <dt id="settings-subtier-dt">Ultra 套餐子档：</dt>
+            <dt id="settings-subtier-dt">Ultra 套餐规格：</dt>
             <dd id="settings-subtier-dd"><div id="settings-slot-subtier"></div></dd>
-            <dt>账号所在地区：</dt>
+            <dt>账号归属地区：</dt>
             <dd><div id="settings-slot-country"></div></dd>
-            <dt>订阅国家：</dt>
+            <dt>订阅结算地区：</dt>
             <dd><div id="settings-slot-region"></div></dd>
             <dt>订阅币种：</dt>
             <dd><div id="settings-slot-currency"></div></dd>
@@ -249,7 +250,7 @@
       <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">免 TUN 网络直连（本地代理）</span>
+            <span class="settings-card-title">本地代理网络直连（免开 TUN 模式）</span>
             <span id="settings-slot-proxy-badge"></span>
           </div>
           <div id="settings-slot-proxy"></div>
@@ -257,7 +258,7 @@
 
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">上下文加长（实验特性说明）</span>
+            <span class="settings-card-title">解除 256K 上下文限制（实验性补丁）</span>
             <span id="settings-slot-unlock-badge"></span>
           </div>
           <div id="settings-slot-unlock"></div>

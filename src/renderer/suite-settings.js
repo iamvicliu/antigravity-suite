@@ -112,6 +112,68 @@
     'AI 订阅与额度详情': 'AI Subscription & Quota Details',
     '颜色选取器': 'Color Picker',
     '检查更新': 'Check for Updates',
+    'CLI 自动批准工具权限（免每次手动确认）': 'Skip CLI Permissions (--dangerously-skip-permissions)',
+    '在终端启动 agy 时默认跳过权限询问（附带 --dangerously-skip-permissions）': 'Auto-approve terminal tool calls when launching agy without manual prompts',
+    'CLI 默认启动模型': 'CLI Default Launch Model',
+    '指定启动 agy 时默认使用的模型；选「不指定」则使用 CLI 默认配置': 'Select the default model when launching agy, or choose Unspecified to follow CLI defaults',
+    '不指定 · 跟随 CLI 默认设置': 'Unspecified · Follow CLI default',
+    '终端连接目标（本机 / 远程服务器）': 'Terminal Target Host (Local / Remote)',
+    '终端连接目标': 'Terminal Target Host',
+    '仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在本机或远程服务器上启动 agy': 'Applies to Rex, WezTerm, or tmux: choose Local or a remote server to launch agy',
+    '本机（当前电脑）': 'Local (This Mac)',
+    '自定义远程主机名…': 'Custom Remote Host…',
+    '面板深浅外观': 'Appearance Theme',
+    '设置所有插件浮窗与设置面板的明暗配色': 'Configure light/dark appearance for all popovers and settings panels',
+    '跟随客户端': 'Follow App',
+    '自动确认安全操作 (Auto-Accept)': 'Safe Auto-Accept',
+    '自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截': 'Auto-click safe Proceed / Accept buttons while blocking high-risk commands',
+    '输入框智能追问建议 (Tab / →)': 'Smart Follow-up Suggestions (Tab / →)',
+    '回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入': 'Show follow-up prompt suggestions in composer after responses (Tab or → to fill)',
+    '插件与客户端语言': 'Plugin & Client Language',
+    '同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言': 'Switch client UI localization, panels, and context capsule language together',
+    '模式与档位名保留英文': 'Keep Mode & Effort Names in English',
+    '中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名': 'Keep original English names (Default / Auto / Turbo / Effort) under Chinese UI',
+    '主题色系与热力图配色': 'Theme Palette & Heatmap Colors',
+    '高级色阶微调 ▼': 'Advanced Scale ▼',
+    '收起色阶微调 ▲': 'Hide Advanced ▲',
+    '切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。': 'Switching the theme palette syncs accents, progress bars, active controls, and the heatmap.',
+    '全局强调色与顶部栏分项配色': 'Global Accent & Topbar Colors',
+    'Ultra 套餐规格：': 'Ultra Tier Spec:',
+    '账号归属地区：': 'Account Region:',
+    '订阅结算地区：': 'Billing Region:',
+    '本地代理网络直连（免开 TUN 模式）': 'Local Proxy Direct Connect (No TUN)',
+    '解除 256K 上下文限制（实验性补丁）': 'Unlock 256K Context Limit (Experimental)',
+    '当前补丁状态': 'Patch Status',
+    '正在检测客户端上下文限制状态…': 'Checking client context limit status…',
+    '💡 功能说明与注意事项': '💡 Overview & Notes',
+    '突破默认上限': 'Raise Default Cap',
+    '：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。': ': Client caps context at 256K by default; applying this patch restores model limits up to ~1M.',
+    '安全可随时还原': 'Safe & Reversible',
+    '：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。': ': Automatically backs up original files before patching; restore anytime with one click.',
+    '客户端更新提示': 'Client Update Note',
+    '：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。': ': Major client updates overwrite binaries; simply re-apply the patch here afterward.',
+    '查看底层程序路径与备份详情': 'View Binary Path & Backup Details',
+    '本地代理地址（支持 HTTP / SOCKS5，如 http://127.0.0.1:7897）：': 'Local Proxy URL (HTTP / SOCKS5, e.g. http://127.0.0.1:7897):',
+    '不走代理的地址（本地回环默认直连）：': 'Bypass Proxy Addresses (Loopback Direct):',
+    '🔍 测试代理连接': '🔍 Test Proxy',
+    '开启代理直连': 'Enable Proxy',
+    '关闭代理直连': 'Disable Proxy',
+    '全局主题强调色': 'Global Theme Accent',
+    '浮窗与面板背景色': 'Popover & Panel Background',
+    '顶部圆环进度': 'Ring Progress',
+    '顶部圆环底轨': 'Ring Track',
+    '对话占用百分比': 'Context Usage %',
+    '测速徽章文字': 'Speed Badge Text',
+    '顶部总 Token 数': 'Topbar Total Tokens',
+    '自定义实付金额与订阅备注': 'Custom Paid Amount & Notes',
+    '订阅渠道 / 优惠来源': 'Channel / Promo Source',
+    '免费获取（0 元实付，如赠送 / 试用）': 'Free Access ($0 paid, e.g. promo / trial)',
+    '备注说明（选填）': 'Notes (Optional)',
+    '整体主题色系：': 'Theme Color Palette:',
+    '热力图 5 档深浅单独调色（点击色块可逐档修改）：': 'Per-level Heatmap Shading (click swatches to customize):',
+    '热力图起始色（自动生成渐变）': 'Heatmap Start Color (Auto Gradient)',
+    '热力图峰值色（自动生成渐变）': 'Heatmap Peak Color (Auto Gradient)',
+    '全局强调与顶部总数色': 'Accent & Total Tokens',
     '累计与强调指标色': 'Total & Accent Colors',
     '圆环已用部分': 'Ring Used',
     '圆环轨道': 'Ring Track',
@@ -771,9 +833,22 @@
     }
     uiCliModelDropdown?.refresh?.();
 
+    const hostPrefRow = el('cli-mux-host-pref-row');
     const hostSel = el('set-cli-mux-host-select');
     const customHostRow = el('cli-custom-mux-host-row');
     const customHostInp = el('input-cli-mux-host');
+    const termList = suiteTerminalState.terminals.length ? suiteTerminalState.terminals : getFallbackTerminalCatalog().terminals;
+    const curApp = String(suiteTerminalState.terminalApp || 'auto').toLowerCase();
+    const curTermObj = termList.find(t => t.id === curApp);
+    const supportsMuxHost = Boolean(curTermObj?.supportsMuxHost)
+      || ['rex', 'wezterm', 'tmux', 'custom'].includes(curApp)
+      || Boolean(suiteTerminalState.cliMuxHost);
+    if (hostPrefRow) {
+      hostPrefRow.style.display = supportsMuxHost ? '' : 'none';
+    }
+    if (!supportsMuxHost && customHostRow) {
+      customHostRow.style.display = 'none';
+    }
     if (hostSel) {
       const detectedHosts = Array.isArray(suiteTerminalState.muxHosts) ? suiteTerminalState.muxHosts : [];
       if (detectedHosts.length && typeof document?.createElement === 'function') {
@@ -806,11 +881,11 @@
       const isCustomHost = Boolean(curHost) && !hostOptVals.includes(curHost);
       if (isCustomHost) {
         hostSel.value = '__custom__';
-        if (customHostRow) customHostRow.style.display = 'flex';
+        if (customHostRow) customHostRow.style.display = supportsMuxHost ? 'flex' : 'none';
         if (customHostInp && customHostInp.value !== curHost) customHostInp.value = curHost;
       } else {
         hostSel.value = curHost;
-        if (customHostRow && hostSel.value !== '__custom__') customHostRow.style.display = 'none';
+        if (customHostRow && (!supportsMuxHost || hostSel.value !== '__custom__')) customHostRow.style.display = 'none';
       }
       uiCliMuxHostDropdown?.refresh?.();
     }
@@ -1548,6 +1623,18 @@
 
   el('btn-reset-feature-toggles')?.addEventListener('click', () => {
     void setSuiteFeatureFlags({ ...DEFAULT_SUITE_FEATURE_FLAGS });
+  });
+
+  el('btn-toggle-heat-advanced')?.addEventListener('click', () => {
+    const box = el('heat-advanced-colors-box');
+    const btn = el('btn-toggle-heat-advanced');
+    if (!box) return;
+    const isHidden = box.style.display === 'none' || !box.style.display;
+    box.style.display = isHidden ? 'block' : 'none';
+    if (btn) {
+      btn.textContent = isHidden ? '收起色阶微调 ▲' : '高级色阶微调 ▼';
+      applySuiteShadowLocale();
+    }
   });
 
   el('suite-ver-status')?.addEventListener('click', () => {
