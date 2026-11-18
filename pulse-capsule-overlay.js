@@ -39,11 +39,11 @@
     window.__AGY_CTX_CAPSULE_ACTIVE__ = true;
     window.__AGY_CTX_CAPSULE_VERSION__ = CAPSULE_VERSION;
 
-    // 3A 冷雾莫兰迪配色 (微提 12% 饱和度，日夜双模式高辨识度)
+    // 与顶栏保持一致的常态/预警语义色板
     const MORANDI_3A = {
-        green: '#5E9E8E',  // 雾松青 (充足: 剩余 > 50% / 已用 < 50%)
-        yellow: '#C6A265', // 沙金黄 (过半: 剩余 20%~50% / 已用 50%~80%)
-        red: '#C26C77'     // 烟玫瑰 (告急: 剩余 <= 20% / 已用 >= 80%)
+        green: '#34d399',  // 回退默认绿（正常态优先读取全局主题强调色）
+        yellow: '#f59e0b', // 偏高预警 (已用 50%~80% / 剩余 20%~50%，与顶栏一致)
+        red: '#ef4444'     // 高占用告急 (已用 >= 80% / 剩余 <= 20%，与顶栏一致)
     };
 
     const COMPRESSION_MIN_DROP = 5000; // 连续快照含缓存输入下降 > 5000 tokens 判定为自动压缩
@@ -2218,6 +2218,18 @@
         pollCycle();
         const onSuitePrefsChanged = () => {
             renderAllFooters();
+            try {
+                document.querySelectorAll('[data-agy-context-capsule="1"]').forEach((btn) => {
+                    const fillRect = btn.querySelector?.('.agy-ctx-fill');
+                    if (fillRect) {
+                        const pct = Number(btn.__ctxUsageData?.usagePercent || 0);
+                        const nextColor = getMorandi3AColor(pct);
+                        if (fillRect.getAttribute('fill') !== nextColor) {
+                            fillRect.setAttribute('fill', nextColor);
+                        }
+                    }
+                });
+            } catch {}
             if (activeTooltipTarget) updateTooltipContent(activeTooltipTarget);
         };
         try { window.addEventListener?.('ag-suite-prefs-changed', onSuitePrefsChanged); } catch {}

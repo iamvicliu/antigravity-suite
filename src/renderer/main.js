@@ -3307,7 +3307,7 @@
       if (settingsRes?.ok && settingsRes.customPlan && typeof settingsRes.customPlan === 'object') {
         lastSavedCustomPlan = { ...settingsRes.customPlan };
         if (typeof window !== 'undefined') {
-          window.__AGContextMeterSettings = { ok: true, customPlan: { ...settingsRes.customPlan } };
+          window.__AGContextMeterSettings = { ...(window.__AGContextMeterSettings || {}), ok: true, customPlan: { ...settingsRes.customPlan } };
         }
 
         const email = ANTIGRAVITY_TOKEN_DATA.planStatus?.email || settingsRes.customPlan?.account || currentEmail || 'default';
@@ -4090,7 +4090,14 @@
       return true;
     },
     theme: () => resolveTheme(),
-    setTheme: mode => { currentThemeMode = mode; try { localStorage.setItem('ag_theme_mode', mode); } catch {}; applyTheme(); },
+    setTheme: mode => {
+      currentThemeMode = mode;
+      try { localStorage.setItem('ag_theme_mode', mode); } catch {}
+      applyTheme();
+      if (typeof syncSettingsThemePills === 'function') syncSettingsThemePills();
+      if (typeof dispatchSuitePrefsChanged === 'function') dispatchSuitePrefsChanged();
+      if (typeof saveSuiteUiPrefs === 'function') void saveSuiteUiPrefs({ themeMode: mode });
+    },
     getCustomColors: () => ({ ...customColors }),
     setCustomColor,
     resetCustomColors,
