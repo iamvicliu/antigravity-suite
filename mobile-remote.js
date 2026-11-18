@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { pathToFileURL } = require('url');
 const { execFileSync, spawn } = require('child_process');
 const { getStateDir, resolveActiveCdpTarget } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
@@ -15,7 +16,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.6';
+const MOBILE_UI_VERSION = '1.9.7';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1358,7 +1359,7 @@ function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
           const p = decodeFileUriToPath(uri);
           if (p) workspacePaths.push(p);
         }
-        metaMap.set(id, { id, name, workspacePaths });
+        metaMap.set(id, { id, name, primaryPath: workspacePaths[0] || '', workspacePaths });
       }
     }
   } catch {}
@@ -1854,7 +1855,13 @@ function createSessionCatalogStore() {
     };
   }
 
-  return { enrichSnapshot, listConversations };
+  function invalidateProjectsCache() {
+    projectsCache.fetchedAt = 0;
+    projectsCache.data = null;
+    trajCache.at = 0;
+  }
+
+  return { enrichSnapshot, listConversations, invalidateProjectsCache };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -1866,6 +1873,376 @@ async function enrichSnapshotWithCatalog(snap, options = {}) {
 
 function listCatalogConversations(options = {}) {
   return defaultCatalogStore.listConversations(options);
+}
+
+// ==================== 宿主机目录浏览、新建子目录与远程创建项目 ====================
+
+function resolveHostPathInput(rawPath, homeDir = os.homedir()) {
+  const baseHome = path.resolve(String(homeDir || os.homedir()));
+  const raw = String(rawPath ?? '').trim();
+  if (raw.includes('\0')) {
+    throw Object.assign(new Error('目录路径包含非法字符'), { status: 400 });
+  }
+  if (!raw || raw === '~') return baseHome;
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) {
+    return path.resolve(baseHome, raw.slice(2));
+  }
+  if (!path.isAbsolute(raw)) {
+    return path.resolve(baseHome, raw);
+  }
+  return path.resolve(raw);
+}
+
+function readGitDefaultBranchFromDisk(dirPath) {
+  try {
+    const gitHeadPath = path.join(dirPath, '.git', 'HEAD');
+    if (fs.existsSync(gitHeadPath) && fs.statSync(gitHeadPath).isFile()) {
+      const head = fs.readFileSync(gitHeadPath, 'utf8').trim();
+      const m = head.match(/^ref:\s*refs\/heads\/(.+)$/);
+      if (m && m[1]) return m[1].trim();
+    }
+  } catch {}
+  return '';
+}
+
+function buildUniqueSuggestedProjectName(baseName, existingNamesSet, matchedExisting) {
+  if (matchedExisting?.name) return matchedExisting.name;
+  const clean = String(baseName || '').trim() || 'new-project';
+  const hasConflict = (candidate) => existingNamesSet.has(candidate.toLowerCase());
+  if (!hasConflict(clean)) return clean;
+  for (let i = 2; i < 100; i++) {
+    const cand = `${clean} (${i})`;
+    if (!hasConflict(cand)) return cand;
+  }
+  return `${clean}-${Date.now().toString(36).slice(-4)}`;
+}
+
+function listHostDirectories(options = {}) {
+  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
+  const showHidden = Boolean(options.showHidden);
+  const resolvedPath = resolveHostPathInput(options.dirPath, homeDir);
+
+  let stat;
+  try {
+    stat = fs.statSync(resolvedPath);
+  } catch (err) {
+    if (err?.code === 'EACCES' || err?.code === 'EPERM') {
+      throw Object.assign(new Error('无权限读取该目录'), { status: 403 });
+    }
+    throw Object.assign(new Error('目标路径不存在或无法访问'), { status: 400 });
+  }
+  if (!stat.isDirectory()) {
+    throw Object.assign(new Error('目标路径不是文件夹'), { status: 400 });
+  }
+
+  let dirents;
+  try {
+    dirents = fs.readdirSync(resolvedPath, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === 'EACCES' || err?.code === 'EPERM') {
+      throw Object.assign(new Error('无权限列出该目录内容'), { status: 403 });
+    }
+    throw Object.assign(new Error('读取目录列表失败'), { status: 400 });
+  }
+
+  const { metaMap } = loadProjectsMetaFromDisk({
+    configDir: options.configDir,
+    bypassCache: options.bypassCache !== undefined ? Boolean(options.bypassCache) : true
+  });
+  const primaryPathMap = new Map();
+  const existingNamesSet = new Set();
+  for (const proj of metaMap.values()) {
+    if (proj.name) existingNamesSet.add(proj.name.toLowerCase());
+    if (proj.primaryPath) {
+      const norm = path.resolve(proj.primaryPath);
+      if (!primaryPathMap.has(norm)) {
+        primaryPathMap.set(norm, { id: proj.id, name: proj.name });
+      }
+    }
+  }
+
+  const rootCandidates = [
+    { label: '主目录 (~)', path: homeDir },
+    { label: 'codebase', path: path.join(homeDir, 'codebase') },
+    { label: 'shared', path: path.join(homeDir, 'shared') },
+    { label: 'Projects', path: path.join(homeDir, 'Projects') },
+    { label: 'Developer', path: path.join(homeDir, 'Developer') },
+    { label: 'Desktop', path: path.join(homeDir, 'Desktop') },
+    { label: 'Documents', path: path.join(homeDir, 'Documents') }
+  ];
+  const roots = [];
+  const seenRoots = new Set();
+  for (const rc of rootCandidates) {
+    const abs = path.resolve(rc.path);
+    if (seenRoots.has(abs)) continue;
+    try {
+      if (fs.statSync(abs).isDirectory()) {
+        fs.accessSync(abs, fs.constants.R_OK);
+        seenRoots.add(abs);
+        roots.push({ label: rc.label, path: abs });
+      }
+    } catch {}
+  }
+
+  const allEntries = [];
+  for (const d of dirents) {
+    const name = String(d?.name || '');
+    if (!name || name === '.' || name === '..') continue;
+    const isHidden = name.startsWith('.');
+    if (!showHidden && isHidden) continue;
+    const childFull = path.join(resolvedPath, name);
+    let isDir = false;
+    try {
+      if (d.isDirectory()) isDir = true;
+      else if (d.isSymbolicLink() && fs.statSync(childFull).isDirectory()) isDir = true;
+    } catch {}
+    if (!isDir) continue;
+    const linked = primaryPathMap.get(childFull) || null;
+    let isGitRepo = false;
+    try {
+      isGitRepo = fs.existsSync(path.join(childFull, '.git'));
+    } catch {}
+    allEntries.push({
+      name,
+      path: childFull,
+      isHidden,
+      isGitRepo,
+      existingProjectId: linked?.id || '',
+      existingProjectName: linked?.name || ''
+    });
+  }
+
+  allEntries.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' }));
+  const MAX_DIR_ENTRIES = 300;
+  const truncated = allEntries.length > MAX_DIR_ENTRIES;
+  const entries = truncated ? allEntries.slice(0, MAX_DIR_ENTRIES) : allEntries;
+
+  const parsedRoot = path.parse(resolvedPath).root;
+  const parentPath = resolvedPath === parsedRoot ? null : path.dirname(resolvedPath);
+  const currentName = path.basename(resolvedPath) || resolvedPath;
+  const existingProject = primaryPathMap.get(resolvedPath) || null;
+  let selfIsGitRepo = false;
+  try {
+    selfIsGitRepo = fs.existsSync(path.join(resolvedPath, '.git'));
+  } catch {}
+  const suggestedName = buildUniqueSuggestedProjectName(currentName, existingNamesSet, existingProject);
+
+  return {
+    ok: true,
+    path: resolvedPath,
+    currentName,
+    parentPath,
+    isGitRepo: selfIsGitRepo,
+    existingProject,
+    suggestedName,
+    showHidden,
+    roots,
+    entries,
+    truncated
+  };
+}
+
+function createHostSubdirectory(payload = {}, options = {}) {
+  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
+  const rawParent = String(payload?.parentPath || '').trim();
+  if (!rawParent) {
+    throw Object.assign(new Error('缺少父目录路径'), { status: 400 });
+  }
+  const resolvedParent = resolveHostPathInput(rawParent, homeDir);
+  let parentStat;
+  try {
+    parentStat = fs.statSync(resolvedParent);
+  } catch (err) {
+    if (err?.code === 'EACCES' || err?.code === 'EPERM') {
+      throw Object.assign(new Error('无权限访问父目录'), { status: 403 });
+    }
+    throw Object.assign(new Error('父目录不存在'), { status: 400 });
+  }
+  if (!parentStat.isDirectory()) {
+    throw Object.assign(new Error('父路径不是文件夹'), { status: 400 });
+  }
+
+  const rawName = String(payload?.name || '').trim();
+  if (!rawName || rawName === '.' || rawName === '..' || /[\\/\0]/.test(rawName)) {
+    throw Object.assign(new Error('文件夹名称非法，不可为空或包含斜杠'), { status: 400 });
+  }
+
+  const targetPath = path.join(resolvedParent, rawName);
+  if (fs.existsSync(targetPath)) {
+    const st = fs.statSync(targetPath);
+    if (!st.isDirectory()) {
+      throw Object.assign(new Error('同名文件已存在且不是文件夹'), { status: 400 });
+    }
+    return { ok: true, existed: true, path: targetPath, name: rawName };
+  }
+
+  try {
+    fs.mkdirSync(targetPath);
+  } catch (err) {
+    if (err?.code === 'EACCES' || err?.code === 'EPERM') {
+      throw Object.assign(new Error('无权限在该目录创建文件夹'), { status: 403 });
+    }
+    throw Object.assign(new Error(err?.message || '创建文件夹失败'), { status: 500 });
+  }
+  return { ok: true, existed: false, path: targetPath, name: rawName };
+}
+
+async function createRemoteProject(payload = {}, options = {}) {
+  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
+  const rawFolder = String(payload?.folderPath || '').trim();
+  if (!rawFolder) {
+    throw Object.assign(new Error('请选择项目文件夹路径'), { status: 400 });
+  }
+  const resolvedPath = resolveHostPathInput(rawFolder, homeDir);
+  if (resolvedPath === path.parse(resolvedPath).root) {
+    throw Object.assign(new Error('不支持直接以系统根目录作为项目'), { status: 400 });
+  }
+
+  let dirStat;
+  try {
+    dirStat = fs.statSync(resolvedPath);
+  } catch (err) {
+    if (err?.code === 'EACCES' || err?.code === 'EPERM') {
+      throw Object.assign(new Error('无权限访问所选文件夹'), { status: 403 });
+    }
+    throw Object.assign(new Error('所选项目目录不存在'), { status: 400 });
+  }
+  if (!dirStat.isDirectory()) {
+    throw Object.assign(new Error('所选路径不是文件夹'), { status: 400 });
+  }
+
+  const requestedName = String(payload?.name || '').trim();
+  const projectName = requestedName || path.basename(resolvedPath) || 'new-project';
+  const forceNew = Boolean(payload?.forceNew);
+
+  const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
+  let matchedExisting = null;
+  for (const proj of metaMap.values()) {
+    if (proj.primaryPath && path.resolve(proj.primaryPath) === resolvedPath) {
+      matchedExisting = proj;
+      break;
+    }
+  }
+
+  if (matchedExisting && !forceNew && (!requestedName || requestedName.toLowerCase() === matchedExisting.name.toLowerCase())) {
+    return {
+      ok: true,
+      alreadyExists: true,
+      project: {
+        id: matchedExisting.id,
+        name: matchedExisting.name,
+        folderPath: resolvedPath
+      }
+    };
+  }
+
+  for (const proj of metaMap.values()) {
+    if (proj.name && proj.name.toLowerCase() === projectName.toLowerCase()) {
+      throw Object.assign(new Error(`同名项目「${proj.name}」已存在，请修改项目名称`), { status: 400 });
+    }
+  }
+
+  const folderUri = pathToFileURL(resolvedPath).href.replace(/\/+$/, '');
+  let isGitRepo = false;
+  try {
+    isGitRepo = fs.existsSync(path.join(resolvedPath, '.git'));
+  } catch {}
+  let defaultBranch = isGitRepo ? readGitDefaultBranchFromDisk(resolvedPath) : '';
+
+  const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
+  let connectFn = customConnect;
+  if (!connectFn && !isCatalogTestEnv()) {
+    try {
+      connectFn = require('./local-api').connect;
+    } catch {}
+  }
+
+  let lsApi = null;
+  if (connectFn) {
+    try {
+      lsApi = typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1500, null) : connectFn;
+    } catch {
+      lsApi = null;
+    }
+  }
+
+  if (lsApi && typeof lsApi.call === 'function') {
+    try {
+      const resolvedFolder = await withRaceTimeout(lsApi.call('ResolveFolder', { folderUri }), 2500, null);
+      if (resolvedFolder && (resolvedFolder.resourceType === 'FOLDER_TYPE_GIT_FOLDER' || resolvedFolder.resourceType === 2)) {
+        isGitRepo = true;
+      }
+    } catch {}
+    if (isGitRepo) {
+      try {
+        const repoRes = await withRaceTimeout(lsApi.call('GetRepoInfos', { repoUris: [folderUri] }), 2500, null);
+        const branches = Array.isArray(repoRes?.repos?.[0]?.branches) ? repoRes.repos[0].branches : [];
+        if (branches.length) {
+          const names = branches.map((b) => String(b?.name || '').trim()).filter(Boolean);
+          const cur = branches.find((b) => b?.isCurrentBranch && b?.name)?.name;
+          if (names.includes('main')) defaultBranch = 'main';
+          else if (names.includes('master')) defaultBranch = 'master';
+          else if (cur) defaultBranch = String(cur).trim();
+          else if (names[0] && !defaultBranch) defaultBranch = names[0];
+        }
+      } catch {}
+    }
+  }
+
+  const projectId = crypto.randomUUID();
+  const resource = isGitRepo
+    ? { gitFolder: { folderUri, defaultBranch: defaultBranch || '' } }
+    : { folderUri };
+  const projectObj = {
+    id: projectId,
+    name: projectName,
+    projectResources: { resources: [resource] },
+    permissionGrants: { v2Migrated: true },
+    settings: {},
+    isWorkspaceOnly: false
+  };
+
+  let created = false;
+  let lastLsError = '';
+  if (lsApi && typeof lsApi.call === 'function') {
+    try {
+      await lsApi.call('CreateProject', { project: projectObj });
+      created = true;
+    } catch (err) {
+      lastLsError = err?.message || 'CreateProject 调用失败';
+    }
+  }
+
+  const effectiveConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim()
+    || (isCatalogTestEnv() ? '' : path.join(os.homedir(), '.gemini', 'config'));
+  if (!created) {
+    const canFallback = Boolean(options.allowDiskFallback || options.configDir || process.env.AG_CONFIG_DIR);
+    if (!canFallback || !effectiveConfigDir) {
+      throw Object.assign(new Error(lastLsError || '无法连接 Antigravity 语言服务以创建项目'), { status: 503 });
+    }
+    const projFile = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    const writeRes = safeWriteJsonSync(projFile, projectObj, {
+      indent: 2,
+      validate: (d) => d && d.id === projectId && d.name === projectName
+    });
+    if (!writeRes?.ok) {
+      throw Object.assign(new Error(writeRes?.error || '保存项目配置失败'), { status: 500 });
+    }
+  }
+
+  defaultCatalogStore.invalidateProjectsCache();
+  return {
+    ok: true,
+    alreadyExists: false,
+    project: {
+      id: projectId,
+      name: projectName,
+      folderPath: resolvedPath,
+      folderUri,
+      isGitRepo,
+      defaultBranch
+    }
+  };
 }
 
 // ==================== 全量会话轨迹读取、Markdown 渲染与向上分页 ====================
@@ -2617,7 +2994,7 @@ function buildMobileAppHtml() {
     }
     .composer-card:focus-within{border-color:rgba(56,189,248,.45)}
     .composer-card textarea{
-      width:100%;min-height:28px;max-height:112px;resize:none;border:none;background:transparent;
+      width:100%;min-height:28px;max-height:148px;resize:none;border:none;background:transparent;
       color:var(--fg);padding:2px 4px;font-size:16px;line-height:1.42;font-family:inherit;outline:none;
     }
     .composer-card textarea::placeholder{color:#71717a}
@@ -2690,9 +3067,10 @@ function buildMobileAppHtml() {
       display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
     }
     .new-chat-btn:active,.new-chat-pick-btn:active{background:rgba(56,189,248,.18);border-color:rgba(56,189,248,.5);color:#fff}
+    .conv-toolbar{display:flex;align-items:center;gap:6px;flex-shrink:0}
     .conv-view-tabs{
-      display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:3px;border-radius:10px;
-      background:rgba(255,255,255,.04);border:1px solid var(--border);flex-shrink:0;
+      flex:1 1 auto;min-width:0;display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:3px;border-radius:10px;
+      background:rgba(255,255,255,.04);border:1px solid var(--border);
     }
     .conv-tab{
       appearance:none;border:none;background:transparent;color:#a1a1aa;border-radius:7px;
@@ -2701,36 +3079,111 @@ function buildMobileAppHtml() {
     }
     .conv-tab.active{background:rgba(56,189,248,.18);color:#e0f2fe}
     .tab-count{font-size:11px;opacity:.78;font-variant-numeric:tabular-nums}
-    .proj-group{display:flex;flex-direction:column;gap:4px}
-    .proj-head{display:flex;align-items:center;gap:4px;padding:2px 0}
+    .new-proj-mini-btn{
+      appearance:none;height:34px;padding:0 10px;border-radius:10px;flex-shrink:0;
+      border:1px solid rgba(56,189,248,.34);background:rgba(56,189,248,.12);color:#bae6fd;
+      font-size:12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;white-space:nowrap;
+    }
+    .new-proj-mini-btn:active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.6);color:#fff}
+    .proj-group{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+    .proj-group:first-child{margin-top:0}
+    .proj-head{
+      display:flex;align-items:center;gap:4px;padding:3px 5px 3px 3px;border-radius:11px;
+      background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);
+      transition:background-color .14s ease,border-color .14s ease;
+    }
+    .proj-group.is-current .proj-head{
+      background:rgba(56,189,248,.11);border-color:rgba(56,189,248,.34);
+    }
     .proj-toggle{
-      appearance:none;flex:1 1 auto;min-width:0;border:none;background:transparent;color:#d4d4d8;
-      padding:6px 6px;border-radius:8px;font-size:12.5px;font-weight:600;
+      appearance:none;flex:1 1 auto;min-width:0;border:none;background:transparent;color:#fafafa;
+      padding:6px 7px;border-radius:8px;font-size:14.5px;font-weight:700;letter-spacing:-.01em;
       display:flex;align-items:center;gap:6px;cursor:pointer;text-align:left;
     }
-    .proj-chev{font-size:10px;color:#71717a;width:11px;flex-shrink:0;text-align:center}
+    .proj-icon{display:inline-flex;align-items:center;justify-content:center;color:#38bdf8;flex-shrink:0}
+    .proj-group.is-ungrouped .proj-icon{color:#a1a1aa}
+    .proj-chev{font-size:11px;color:#a1a1aa;width:12px;flex-shrink:0;text-align:center;font-weight:700}
     .proj-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .proj-stat-dot{width:6px;height:6px;border-radius:99px;flex-shrink:0}
     .proj-stat-dot.running{background:var(--green);animation:pulse 1.1s infinite ease-in-out}
     .proj-stat-dot.waiting{background:var(--amber);animation:pulse 1s infinite ease-in-out}
-    .proj-count{margin-left:auto;font-size:11px;color:#71717a;font-weight:500;font-variant-numeric:tabular-nums;flex-shrink:0}
+    .proj-count{
+      margin-left:auto;padding:1px 7px;border-radius:999px;background:rgba(255,255,255,.09);
+      font-size:11px;color:#d4d4d8;font-weight:600;font-variant-numeric:tabular-nums;flex-shrink:0;
+    }
     .proj-new-btn{
       appearance:none;width:28px;height:28px;flex-shrink:0;border-radius:8px;
-      border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.04);color:#a1a1aa;
+      border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#d4d4d8;
       display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;line-height:1;
     }
     .proj-new-btn:active{background:rgba(56,189,248,.18);border-color:rgba(56,189,248,.45);color:#fff}
-    .proj-body{display:flex;flex-direction:column;gap:5px;padding-left:6px}
-    .proj-empty-sec{margin-top:4px;border-top:1px dashed var(--border);padding-top:6px;display:flex;flex-direction:column;gap:4px}
+    .proj-body{
+      display:flex;flex-direction:column;gap:4px;margin-left:11px;padding-left:9px;
+      border-left:1.5px solid rgba(255,255,255,.1);
+    }
+    .proj-empty-sec{margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;display:flex;flex-direction:column;gap:5px}
     .proj-empty-toggle{
-      appearance:none;border:none;background:transparent;color:#71717a;font-size:12px;font-weight:600;
-      padding:4px 6px;border-radius:8px;display:flex;align-items:center;gap:6px;cursor:pointer;text-align:left;
+      appearance:none;border:none;background:transparent;color:#a1a1aa;font-size:13px;font-weight:700;
+      padding:5px 7px;border-radius:8px;display:flex;align-items:center;gap:6px;cursor:pointer;text-align:left;
     }
     .proj-empty-row{
-      display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 4px 4px 10px;
-      border-radius:8px;color:#a1a1aa;font-size:12.5px;
+      display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 6px 6px 10px;
+      border-radius:9px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.06);
+      color:#e4e4e7;font-size:13.5px;font-weight:600;
     }
-    .proj-empty-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .proj-empty-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
+    /* 新建项目与电脑目录浏览器弹窗 */
+    .sheet.proj-modal{max-width:540px;max-height:84dvh;gap:10px}
+    .proj-roots-bar{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;flex-shrink:0;padding-bottom:2px}
+    .proj-roots-bar::-webkit-scrollbar{display:none}
+    .proj-root-pill{
+      appearance:none;flex-shrink:0;padding:5px 10px;border-radius:999px;border:1px solid var(--border);
+      background:rgba(255,255,255,.05);color:#e4e4e7;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;
+    }
+    .proj-root-pill.active{border-color:rgba(56,189,248,.6);background:rgba(56,189,248,.16);color:#e0f2fe}
+    .proj-path-row{display:flex;align-items:center;gap:6px;flex-shrink:0}
+    .proj-path-input,.proj-field-input{
+      flex:1 1 auto;min-width:0;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border);
+      background:rgba(9,9,11,.75);color:var(--fg);font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;
+    }
+    .proj-field-input{font-family:inherit;font-size:14px}
+    .proj-path-input:focus,.proj-field-input:focus{border-color:rgba(56,189,248,.6)}
+    .proj-act-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0}
+    .proj-act-btn{
+      appearance:none;height:32px;padding:0 10px;border-radius:9px;border:1px solid var(--border);
+      background:rgba(255,255,255,.05);color:#d4d4d8;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:4px;
+    }
+    .proj-act-btn.active{border-color:rgba(56,189,248,.55);background:rgba(56,189,248,.14);color:#bae6fd}
+    .proj-act-btn:disabled{opacity:.42;cursor:default}
+    .proj-mkdir-row{display:flex;align-items:center;gap:6px;flex-shrink:0}
+    .proj-mkdir-row[hidden]{display:none}
+    .proj-dir-list{
+      display:flex;flex-direction:column;gap:5px;min-height:120px;max-height:34dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+      padding:2px 0;
+    }
+    .proj-dir-item{
+      width:100%;text-align:left;padding:9px 11px;border-radius:10px;border:1px solid rgba(255,255,255,.08);
+      background:rgba(255,255,255,.035);color:var(--fg);font-size:13.5px;font-weight:500;cursor:pointer;
+      display:flex;align-items:center;gap:8px;
+    }
+    .proj-dir-item:active{background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.45)}
+    .proj-dir-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .proj-dir-badges{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
+    .proj-tag{font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:999px;line-height:1.4}
+    .proj-tag.git{background:rgba(52,211,153,.15);color:#6ee7b7}
+    .proj-tag.linked{background:rgba(56,189,248,.16);color:#7dd3fc}
+    .proj-summary-card{
+      padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--border);
+      font-size:12px;color:#d4d4d8;display:flex;flex-direction:column;gap:3px;flex-shrink:0;
+    }
+    .proj-summary-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#7dd3fc;word-break:break-all;font-size:11.5px}
+    .proj-name-row{display:flex;flex-direction:column;gap:5px;flex-shrink:0}
+    .proj-name-label{font-size:12px;font-weight:600;color:#a1a1aa}
+    .proj-primary-btn{
+      appearance:none;width:100%;height:42px;border-radius:11px;border:none;background:#38bdf8;color:#082f49;
+      font-size:14.5px;font-weight:700;cursor:pointer;flex-shrink:0;
+    }
+    .proj-primary-btn:disabled{opacity:.5;cursor:default}
     .conv-item{
       width:100%;text-align:left;padding:9px 11px;border-radius:10px;border:1px solid transparent;
       background:rgba(255,255,255,.04);color:var(--fg);font-size:13.5px;cursor:pointer;
@@ -2808,8 +3261,12 @@ function buildMobileAppHtml() {
       .send-circle.stop:hover{background:rgba(239,68,68,.3)}
       .new-chat-btn:hover,.new-chat-pick-btn:hover{background:rgba(255,255,255,.11);border-color:rgba(56,189,248,.4);color:#fff}
       .conv-tab:hover{color:#e4e4e7}
-      .proj-toggle:hover,.proj-empty-toggle:hover{background:rgba(255,255,255,.05);color:#fff}
+      .new-proj-mini-btn:hover{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.55);color:#fff}
+      .proj-head:hover{background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.15)}
+      .proj-toggle:hover,.proj-empty-toggle:hover{color:#fff}
       .proj-new-btn:hover{background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.45);color:#fff}
+      .proj-root-pill:hover,.proj-act-btn:hover,.proj-dir-item:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18)}
+      .proj-primary-btn:hover{background:#7dd3fc}
       .conv-more-btn:hover{background:rgba(255,255,255,.07);color:#e4e4e7}
       .conv-item:hover{background:rgba(255,255,255,.08)}
       .conv-item.active:hover{background:rgba(56,189,248,.18)}
@@ -2851,8 +3308,9 @@ function buildMobileAppHtml() {
       .new-chat-btn,.new-chat-pick-btn{min-height:38px;border-radius:10px}
       .new-chat-btn{padding:8px 10px;font-size:13px}
       .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:2px}
+      .proj-toggle{font-size:13.5px;padding:5px 7px}
       .conv-item{
-        padding:8px 10px;font-size:13px;border-radius:9px;
+        padding:7px 10px;font-size:12.5px;border-radius:9px;
         transition:background-color .14s ease,border-color .14s ease;
       }
       .messages{
@@ -2870,7 +3328,7 @@ function buildMobileAppHtml() {
         border-radius:18px;padding:12px 14px 10px 16px;
         box-shadow:0 12px 36px rgba(0,0,0,.4);
       }
-      .composer-card textarea{min-height:32px;max-height:180px;font-size:14.5px}
+      .composer-card textarea{min-height:32px;max-height:200px;font-size:14.5px}
       .quota-drawer{
         position:absolute;top:60px;right:24px;left:auto;width:348px;max-width:none;margin-left:0;
       }
@@ -2883,6 +3341,7 @@ function buildMobileAppHtml() {
         border:1px solid rgba(255,255,255,.14);padding:16px;
         box-shadow:0 24px 64px rgba(0,0,0,.65);
       }
+      .sheet.proj-modal{max-width:520px;max-height:min(680px,86vh)}
       .sheet-opt{padding:10px 12px;font-size:13.5px}
       .toast{top:18px}
     }
@@ -2919,7 +3378,7 @@ function buildMobileAppHtml() {
       <div id="attach-hint" class="attach-hint" hidden></div>
       <div id="chips" class="chips"></div>
       <div class="composer-card">
-        <textarea id="input" rows="1" placeholder="发消息给 Antigravity…"></textarea>
+        <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息给 Antigravity…（回车换行，点右侧按钮发送）"></textarea>
         <input id="img-input" type="file" accept="image/*" multiple hidden>
         <div class="composer-toolbar">
           <div class="toolbar-left">
@@ -2955,6 +3414,36 @@ function buildMobileAppHtml() {
     </div>
   </div>
 
+  <div id="proj-modal-backdrop" class="sheet-backdrop" hidden>
+    <div class="sheet proj-modal" role="dialog" aria-label="新建项目">
+      <div class="sheet-title">
+        <span>新建项目 · 选择电脑目录</span>
+        <button id="proj-modal-close" class="icon-btn" style="height:28px;font-size:12px" type="button">关闭</button>
+      </div>
+      <div id="proj-roots" class="proj-roots-bar"></div>
+      <div class="proj-path-row">
+        <input id="proj-path-input" class="proj-path-input" type="text" placeholder="输入电脑路径，例如 ~/codebase/my-app">
+        <button id="proj-path-go" class="proj-act-btn" type="button">前往</button>
+      </div>
+      <div class="proj-act-row">
+        <button id="proj-up-btn" class="proj-act-btn" type="button">↑ 上级目录</button>
+        <button id="proj-hidden-btn" class="proj-act-btn" type="button">显示隐藏目录</button>
+        <button id="proj-mkdir-toggle" class="proj-act-btn" type="button">＋ 新建文件夹</button>
+      </div>
+      <div id="proj-mkdir-row" class="proj-mkdir-row" hidden>
+        <input id="proj-mkdir-input" class="proj-field-input" type="text" placeholder="输入新文件夹名称…">
+        <button id="proj-mkdir-confirm" class="proj-act-btn active" type="button">创建</button>
+      </div>
+      <div id="proj-dir-list" class="proj-dir-list"></div>
+      <div id="proj-selected-summary" class="proj-summary-card"></div>
+      <div class="proj-name-row">
+        <label class="proj-name-label" for="proj-name-input">项目名称</label>
+        <input id="proj-name-input" class="proj-field-input" type="text" placeholder="输入项目名称…">
+      </div>
+      <button id="proj-create-submit" class="proj-primary-btn" type="button">创建项目并进入对话</button>
+    </div>
+  </div>
+
   <div id="drawer-backdrop" class="drawer-backdrop" aria-hidden="true">
     <div id="drawer-panel" class="drawer">
       <div class="drawer-brand">
@@ -2970,9 +3459,12 @@ function buildMobileAppHtml() {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
       </div>
-      <div id="conv-view-tabs" class="conv-view-tabs" role="tablist" aria-label="会话视图切换">
-        <button class="conv-tab active" data-conv-view="projects" type="button" role="tab" aria-selected="true">按项目 <span id="tab-proj-count" class="tab-count"></span></button>
-        <button class="conv-tab" data-conv-view="recent" type="button" role="tab" aria-selected="false">最近活跃 <span id="tab-conv-count" class="tab-count"></span></button>
+      <div class="conv-toolbar">
+        <div id="conv-view-tabs" class="conv-view-tabs" role="tablist" aria-label="会话视图切换">
+          <button class="conv-tab active" data-conv-view="projects" type="button" role="tab" aria-selected="true">按项目 <span id="tab-proj-count" class="tab-count"></span></button>
+          <button class="conv-tab" data-conv-view="recent" type="button" role="tab" aria-selected="false">最近活跃 <span id="tab-conv-count" class="tab-count"></span></button>
+        </div>
+        <button id="btn-new-project" class="new-proj-mini-btn" type="button" title="浏览电脑目录创建新项目" aria-label="新建项目">＋ 新建项目</button>
       </div>
       <div id="conv-list" class="conv-list"></div>
     </div>
@@ -3874,6 +4366,9 @@ function buildMobileAppHtml() {
         subHtml + '</button>';
     }
 
+    const FOLDER_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+    const FOLDER_SM_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+
     function renderConversationList(snap) {
       const convList = $('conv-list');
       if (!convList || !snap) return;
@@ -3935,20 +4430,24 @@ function buildMobileAppHtml() {
             const hasRunning = (p.runningCount > 0) || list.some((x) => x.status === 'running');
             const hasWaiting = (p.waitingCount > 0) || list.some((x) => x.status === 'waiting');
             const collapsed = Boolean(collapsedProjMap[p.id]);
+            const isCurrentProj = Boolean(snap.currentProjectId && p.id === snap.currentProjectId);
+            const isUngroupedProj = p.id === 'ungrouped';
+            const groupCls = 'proj-group' + (isCurrentProj ? ' is-current' : '') + (isUngroupedProj ? ' is-ungrouped' : '');
             const statDot = hasWaiting
               ? '<span class="proj-stat-dot waiting" title="有待确认操作"></span>'
               : (hasRunning ? '<span class="proj-stat-dot running" title="有运行中对话"></span>' : '');
-            const newBtnHtml = p.id !== 'ungrouped'
+            const newBtnHtml = !isUngroupedProj
               ? '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话" aria-label="在 ' + esc(p.name) + ' 中新建对话">+</button>'
               : '';
             const projMoreHtml = list.length < projTotal
               ? '<button class="conv-more-btn" data-proj-more="' + esc(p.id) + '" type="button">加载该项目更多对话 (' + list.length + '/' + projTotal + ')</button>'
               : '';
             const itemsHtml = collapsed ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + projMoreHtml + '</div>');
-            return '<div class="proj-group">' +
+            return '<div class="' + groupCls + '">' +
               '<div class="proj-head">' +
                 '<button class="proj-toggle" data-proj-toggle="' + esc(p.id) + '" type="button" aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
                   '<span class="proj-chev">' + (collapsed ? '▸' : '▾') + '</span>' +
+                  '<span class="proj-icon">' + FOLDER_ICON_SVG + '</span>' +
                   '<span class="proj-name">' + esc(p.name) + '</span>' +
                   statDot +
                   '<span class="proj-count">' + projTotal + '</span>' +
@@ -3967,6 +4466,7 @@ function buildMobileAppHtml() {
               '</button>' +
               (emptyProjExpanded ? emptyProjects.map((p) =>
                 '<div class="proj-empty-row">' +
+                  '<span class="proj-icon" style="opacity:.8">' + FOLDER_SM_SVG + '</span>' +
                   '<span class="proj-empty-name">' + esc(p.name) + '</span>' +
                   '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话">+</button>' +
                 '</div>'
@@ -4545,22 +5045,293 @@ function buildMobileAppHtml() {
 
     function openNewChatProjectPicker() {
       const projs = (latestSnap?.projects || []).filter((p) => p && p.id && p.id !== 'ungrouped');
-      const opts = projs.map((p) => ({
-        projectId: p.id,
-        projectName: p.name,
-        label: p.name + (p.conversationCount > 0 ? (' (' + p.conversationCount + ')') : ' (空项目)'),
-        active: Boolean(latestSnap?.currentProjectId && p.id === latestSnap.currentProjectId)
-      }));
-      opts.push({
-        projectId: '',
-        projectName: '',
-        label: '默认工作区（不指定项目）',
-        active: !latestSnap?.currentProjectId
-      });
+      const opts = [
+        {
+          isCreateProject: true,
+          label: '📁 新建项目（选择电脑目录）…',
+          active: false
+        },
+        ...projs.map((p) => ({
+          projectId: p.id,
+          projectName: p.name,
+          label: p.name + (p.conversationCount > 0 ? (' (' + p.conversationCount + ')') : ' (空项目)'),
+          active: Boolean(latestSnap?.currentProjectId && p.id === latestSnap.currentProjectId)
+        })),
+        {
+          projectId: '',
+          projectName: '',
+          label: '默认工作区（不指定项目）',
+          active: !latestSnap?.currentProjectId
+        }
+      ];
       openSheet('选择项目新建对话', opts, async (opt) => {
+        if (opt?.isCreateProject) {
+          await openCreateProjectModal();
+          return;
+        }
         await startNewConversationInProject(opt.projectId, opt.projectName);
       });
     }
+
+    const projBrowserState = {
+      currentPath: '',
+      parentPath: null,
+      showHidden: false,
+      isGitRepo: false,
+      existingProject: null,
+      loading: false,
+      submitting: false
+    };
+
+    function syncCreateProjectSubmitUi() {
+      const submitBtn = $('proj-create-submit');
+      if (!submitBtn) return;
+      if (projBrowserState.submitting) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = '正在创建并打开项目…';
+        return;
+      }
+      const typedName = String($('proj-name-input')?.value || '').trim();
+      const hasPath = Boolean(projBrowserState.currentPath);
+      submitBtn.disabled = !hasPath || !typedName;
+      const ex = projBrowserState.existingProject;
+      if (ex && typedName && typedName.toLowerCase() === String(ex.name || '').toLowerCase()) {
+        submitBtn.textContent = '进入已有项目「' + ex.name + '」';
+      } else {
+        submitBtn.textContent = '创建项目并进入对话';
+      }
+    }
+
+    function renderDirBrowserData(data) {
+      projBrowserState.currentPath = String(data?.path || '');
+      projBrowserState.parentPath = data?.parentPath || null;
+      projBrowserState.isGitRepo = Boolean(data?.isGitRepo);
+      projBrowserState.existingProject = data?.existingProject || null;
+      projBrowserState.showHidden = Boolean(data?.showHidden);
+
+      const pathIn = $('proj-path-input');
+      if (pathIn) pathIn.value = projBrowserState.currentPath;
+      const upBtn = $('proj-up-btn');
+      if (upBtn) upBtn.disabled = !projBrowserState.parentPath || projBrowserState.loading;
+      const hidBtn = $('proj-hidden-btn');
+      if (hidBtn) hidBtn.classList.toggle('active', projBrowserState.showHidden);
+
+      const rootsEl = $('proj-roots');
+      if (rootsEl) {
+        const roots = Array.isArray(data?.roots) ? data.roots : [];
+        rootsEl.innerHTML = roots.map((r) => {
+          const isCur = projBrowserState.currentPath === r.path;
+          return '<button class="proj-root-pill' + (isCur ? ' active' : '') + '" data-root-path="' + esc(r.path) + '" type="button">' + esc(r.label) + '</button>';
+        }).join('');
+      }
+
+      const listEl = $('proj-dir-list');
+      if (listEl) {
+        const entries = Array.isArray(data?.entries) ? data.entries : [];
+        if (!entries.length) {
+          listEl.innerHTML = '<div class="empty-tip" style="padding:18px 8px">当前目录下暂无子文件夹，可直接用当前目录创建项目，或点击上方「＋ 新建文件夹」</div>';
+        } else {
+          listEl.innerHTML = entries.map((d) => {
+            const gitTag = d.isGitRepo ? '<span class="proj-tag git">Git</span>' : '';
+            const linkedTag = d.existingProjectName ? ('<span class="proj-tag linked">已关联: ' + esc(d.existingProjectName) + '</span>') : '';
+            return '<button class="proj-dir-item" data-dir-path="' + esc(d.path) + '" type="button">' +
+              '<span class="proj-icon">' + FOLDER_SM_SVG + '</span>' +
+              '<span class="proj-dir-label">' + esc(d.name) + '</span>' +
+              '<span class="proj-dir-badges">' + gitTag + linkedTag + '</span>' +
+              '<span style="color:#71717a;font-size:13px">›</span>' +
+            '</button>';
+          }).join('') + (data?.truncated ? '<div style="text-align:center;font-size:11.5px;color:#71717a;padding:4px 0">仅显示前 300 个子目录，可输入路径精确定位</div>' : '');
+        }
+      }
+
+      const sumEl = $('proj-selected-summary');
+      if (sumEl) {
+        const repoBadge = projBrowserState.isGitRepo ? 'Git 仓库' : '普通目录';
+        const linkedHint = projBrowserState.existingProject
+          ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」（可直接进入或修改下方名称另建）')
+          : '';
+        sumEl.innerHTML =
+          '<div><strong>当前选中目录</strong> (' + esc(repoBadge) + esc(linkedHint) + ')</div>' +
+          '<div class="proj-summary-path">' + esc(projBrowserState.currentPath) + '</div>';
+      }
+
+      const nameIn = $('proj-name-input');
+      if (nameIn) nameIn.value = String(data?.suggestedName || data?.currentName || '');
+      syncCreateProjectSubmitUi();
+    }
+
+    async function loadHostDirListing(targetPath) {
+      projBrowserState.loading = true;
+      const listEl = $('proj-dir-list');
+      if (listEl && !listEl.children.length) {
+        listEl.innerHTML = '<div class="empty-tip" style="padding:18px 8px">正在读取电脑目录…</div>';
+      }
+      try {
+        const params = [];
+        if (targetPath !== undefined && targetPath !== null && String(targetPath).trim()) {
+          params.push('path=' + encodeURIComponent(String(targetPath).trim()));
+        }
+        if (projBrowserState.showHidden) params.push('showHidden=1');
+        const q = '/api/fs/dirs' + (params.length ? ('?' + params.join('&')) : '');
+        const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
+        if (res.status === 401) { location.reload(); return false; }
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data || data.ok === false) {
+          throw new Error(data?.error || ('读取目录失败 (HTTP ' + res.status + ')'));
+        }
+        projBrowserState.loading = false;
+        renderDirBrowserData(data);
+        return true;
+      } catch (err) {
+        projBrowserState.loading = false;
+        if (listEl && !projBrowserState.currentPath) {
+          listEl.innerHTML = '<div class="empty-tip" style="padding:18px 8px">' + esc(err?.message || '读取电脑目录失败') + '</div>';
+        }
+        showToast(err?.message || '读取电脑目录失败');
+        syncCreateProjectSubmitUi();
+        return false;
+      }
+    }
+
+    async function openCreateProjectModal() {
+      const backdrop = $('proj-modal-backdrop');
+      if (!backdrop) return;
+      if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
+      if ($('proj-mkdir-input')) $('proj-mkdir-input').value = '';
+      backdrop.hidden = false;
+      const initialPath = projBrowserState.currentPath || '';
+      await loadHostDirListing(initialPath);
+    }
+
+    function closeCreateProjectModal() {
+      const backdrop = $('proj-modal-backdrop');
+      if (backdrop) backdrop.hidden = true;
+    }
+
+    async function createNewSubdirInModal() {
+      const nameIn = $('proj-mkdir-input');
+      const dirName = String(nameIn?.value || '').trim();
+      if (!dirName) {
+        showToast('请输入新文件夹名称');
+        nameIn?.focus?.();
+        return;
+      }
+      try {
+        const res = await fetchWithTimeout((apiBase || '') + '/api/fs/mkdir', {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ parentPath: projBrowserState.currentPath, name: dirName })
+        }, 5000);
+        if (res.status === 401) { location.reload(); return; }
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data || data.ok === false) {
+          throw new Error(data?.error || '创建文件夹失败');
+        }
+        if (nameIn) nameIn.value = '';
+        if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
+        showToast(data.existed ? ('已进入文件夹「' + data.name + '」') : ('已创建文件夹「' + data.name + '」'));
+        await loadHostDirListing(data.path);
+      } catch (err) {
+        showToast(err?.message || '创建文件夹失败');
+      }
+    }
+
+    async function submitCreateProjectModal() {
+      if (projBrowserState.submitting) return;
+      const folderPath = String(projBrowserState.currentPath || '').trim();
+      const projectName = String($('proj-name-input')?.value || '').trim();
+      if (!folderPath) {
+        showToast('请先选择项目目录');
+        return;
+      }
+      if (!projectName) {
+        showToast('请输入项目名称');
+        return;
+      }
+      projBrowserState.submitting = true;
+      syncCreateProjectSubmitUi();
+      try {
+        const ex = projBrowserState.existingProject;
+        const forceNew = Boolean(ex && ex.name && projectName.toLowerCase() !== String(ex.name).toLowerCase());
+        const res = await fetchWithTimeout((apiBase || '') + '/api/projects', {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            folderPath,
+            name: projectName,
+            forceNew,
+            targetId: currentTargetId || undefined
+          })
+        }, 8000);
+        if (res.status === 401) { location.reload(); return; }
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data || data.ok === false) {
+          throw new Error(data?.error || ('创建项目失败 (HTTP ' + res.status + ')'));
+        }
+        closeCreateProjectModal();
+        if (!isDesktopLayout()) closeDrawer();
+        stickBottom = true;
+        if (data.snapshot) renderSnapshot(data.snapshot);
+        else void fetchSnapshot();
+        const createdName = data.project?.name || projectName;
+        showToast(data.alreadyExists ? ('已进入项目「' + createdName + '」') : ('已创建项目「' + createdName + '」'));
+      } catch (err) {
+        showToast(err?.message || '创建项目失败');
+      } finally {
+        projBrowserState.submitting = false;
+        syncCreateProjectSubmitUi();
+      }
+    }
+
+    const newProjMiniBtn = $('btn-new-project');
+    if (newProjMiniBtn) newProjMiniBtn.addEventListener('click', () => { void openCreateProjectModal(); });
+    $('proj-modal-close')?.addEventListener('click', closeCreateProjectModal);
+    $('proj-modal-backdrop')?.addEventListener('click', (e) => {
+      if (e.target === $('proj-modal-backdrop')) closeCreateProjectModal();
+    });
+    $('proj-roots')?.addEventListener('click', (e) => {
+      const btn = e.target?.closest?.('.proj-root-pill');
+      const target = btn?.getAttribute?.('data-root-path');
+      if (target) void loadHostDirListing(target);
+    });
+    $('proj-dir-list')?.addEventListener('click', (e) => {
+      const btn = e.target?.closest?.('.proj-dir-item');
+      const target = btn?.getAttribute?.('data-dir-path');
+      if (target) void loadHostDirListing(target);
+    });
+    $('proj-up-btn')?.addEventListener('click', () => {
+      if (projBrowserState.parentPath) void loadHostDirListing(projBrowserState.parentPath);
+    });
+    $('proj-hidden-btn')?.addEventListener('click', () => {
+      projBrowserState.showHidden = !projBrowserState.showHidden;
+      void loadHostDirListing(projBrowserState.currentPath || '');
+    });
+    $('proj-mkdir-toggle')?.addEventListener('click', () => {
+      const row = $('proj-mkdir-row');
+      if (!row) return;
+      row.hidden = !row.hidden;
+      if (!row.hidden) $('proj-mkdir-input')?.focus?.();
+    });
+    $('proj-mkdir-confirm')?.addEventListener('click', () => { void createNewSubdirInModal(); });
+    $('proj-mkdir-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing) {
+        e.preventDefault();
+        void createNewSubdirInModal();
+      }
+    });
+    $('proj-path-go')?.addEventListener('click', () => {
+      const val = String($('proj-path-input')?.value || '').trim();
+      if (val) void loadHostDirListing(val);
+    });
+    $('proj-path-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing) {
+        e.preventDefault();
+        const val = String($('proj-path-input')?.value || '').trim();
+        if (val) void loadHostDirListing(val);
+      }
+    });
+    $('proj-name-input')?.addEventListener('input', syncCreateProjectSubmitUi);
+    $('proj-create-submit')?.addEventListener('click', () => { void submitCreateProjectModal(); });
 
     const convViewTabsEl = $('conv-view-tabs');
     if (convViewTabsEl) {
@@ -4681,7 +5452,7 @@ function buildMobileAppHtml() {
       const isOpen = backdropEl.classList.contains('open');
       const target = e.target;
       if (!isOpen) {
-        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden) return;
+        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden) return;
         if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select')) return;
         if (t.clientX > window.innerWidth * 0.85) return;
       }
@@ -4768,7 +5539,7 @@ function buildMobileAppHtml() {
 
     const autoGrow = () => {
       ta.style.height = 'auto';
-      const maxH = isDesktopLayout() ? 180 : 112;
+      const maxH = isDesktopLayout() ? 200 : 148;
       ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
       syncSendButtonUI();
     };
@@ -4795,6 +5566,7 @@ function buildMobileAppHtml() {
     });
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
+      if (!$('proj-modal-backdrop').hidden) { closeCreateProjectModal(); return; }
       if (!$('sheet-backdrop').hidden) { $('sheet-backdrop').hidden = true; return; }
       if (!$('quota-drawer').hidden) { $('quota-drawer').hidden = true; return; }
       if (!isDesktopLayout() && backdropEl.classList.contains('open')) closeDrawer();
@@ -4836,9 +5608,9 @@ function buildMobileAppHtml() {
         syncSendButtonUI();
       }
     }
-    $('btn-send').onclick = sendInput;
+    $('btn-send').addEventListener('click', sendInput);
     ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
         e.preventDefault();
         void sendInput();
       }
@@ -5635,6 +6407,83 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/fs/dirs') {
+      try {
+        const dirPath = urlObj.searchParams.get('path') || '';
+        const rawHidden = String(urlObj.searchParams.get('showHidden') || '').trim().toLowerCase();
+        const showHidden = rawHidden === '1' || rawHidden === 'true';
+        const listing = listHostDirectories({
+          dirPath,
+          showHidden,
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(options.configDir ? { configDir: options.configDir } : {})
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(listing));
+      } catch (err) {
+        res.writeHead(err?.status || 400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取目录失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/fs/mkdir') {
+      try {
+        const payload = await readJsonBody(req);
+        const result = createHostSubdirectory(payload, {
+          ...(options.homeDir ? { homeDir: options.homeDir } : {})
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        const errHeaders = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+        if (err?.status === 413) errHeaders.Connection = 'close';
+        res.writeHead(err?.status || 400, errHeaders);
+        res.end(JSON.stringify({ ok: false, error: err?.message || '创建文件夹失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/projects') {
+      try {
+        const payload = await readJsonBody(req);
+        const createdRes = await createRemoteProject(payload, {
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(options.configDir ? { configDir: options.configDir } : {}),
+          ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
+          ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
+        });
+        let navResult = null;
+        let snapshot = null;
+        const doPerformAction = typeof options.performAction === 'function' ? options.performAction : performActionInTarget;
+        const doFetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
+        if (payload?.openInDesktop !== false && options.openInDesktop !== false && createdRes?.project?.id) {
+          if (!createdRes.alreadyExists) {
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          const actionRes = await doPerformAction({
+            action: 'new-conversation',
+            projectId: createdRes.project.id,
+            targetId: payload?.targetId || ''
+          }).catch((err) => ({ ok: false, error: err?.message || '未能切换桌面端至新建项目' }));
+          navResult = actionRes?.actionResult || actionRes;
+          snapshot = actionRes?.snapshot || await doFetchSnapshot(payload?.targetId || '', { convLimit: 100, bypassCache: true }).catch(() => null);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({
+          ...createdRes,
+          navResult,
+          snapshot
+        }));
+      } catch (err) {
+        const errHeaders = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+        if (err?.status === 413) errHeaders.Connection = 'close';
+        res.writeHead(err?.status || 400, errHeaders);
+        res.end(JSON.stringify({ ok: false, error: err?.message || '创建项目失败' }));
+      }
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/api/action') {
       try {
         const payload = await readJsonBody(req);
@@ -6111,6 +6960,9 @@ module.exports = {
   enrichSnapshotWithCatalog,
   listCatalogConversations,
   getConversationMessagesPage,
+  listHostDirectories,
+  createHostSubdirectory,
+  createRemoteProject,
   readJsonBody,
   createRemoteHttpHandler,
   recordPairedDeviceAccess,
