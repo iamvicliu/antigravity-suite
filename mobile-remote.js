@@ -4455,7 +4455,7 @@ function buildMobileAppHtml() {
       if (!snap || snap.ok === false) return;
       const snapPid = normalizeProjectId(snap.currentProjectId);
       const projects = Array.isArray(snap.projects) ? snap.projects : null;
-      const hasProj = (pid) => Boolean(pid && (!projects || projects.some((p) => p && p.id === pid) || pid === snapPid));
+      const hasProj = (pid) => Boolean(pid && (!projects || projects.some((p) => p && p.id === pid)));
       if (selectedProjectId === null) {
         selectedProjectId = hasProj(snapPid) ? snapPid : '';
         return;
