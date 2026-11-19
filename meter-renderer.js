@@ -3602,6 +3602,13 @@
               </div>
               <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
             </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">长上下文防卡死自动压缩 (240K Auto-Compact)</span>
+                <span class="settings-pref-desc">官方默认到 512K 才自动压缩，但超过 250K~330K 后一旦服务端缓存过期（如停顿超 3 分钟）就会每步重算 4~5 分钟并狂耗配额。开启后，当本轮回答结束且输入框为空时，若上下文已达 240K 或发生缓存脱落，将自动发送 /compact 提前压缩</span>
+              </div>
+              <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
+            </label>
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
                 <span class="settings-pref-name">插件与客户端语言</span>
@@ -10877,16 +10884,20 @@ function renderHeatmapGrid(forceRebuild = false) {
         if (keyLimit) keyLimit.textContent = short(limitVal);
         if (keyRemaining) keyRemaining.textContent = `${short(remainVal)} (${remainPct.toFixed(1)}%)`;
         if (keyTakeaway) {
+          const autoCompactOn = typeof localStorage === 'undefined' || localStorage.getItem('ag_suite_auto_compact') !== 'false';
+          const autoCompactHint = autoCompactOn
+            ? '（已开启 240K 自动压缩，本轮回答结束后将自动执行 /compact；可在套件设置关闭）'
+            : '（可在套件设置中开启 240K 自动压缩）';
           if (d.cacheDropDetected) {
-            keyTakeaway.textContent = `⚠ 缓存已脱落（命中率 ${(d.cacheHitRate ?? 0).toFixed(1)}%），本步全量重算 ${short(d.uncachedInput || d.input)} tokens！已使用 ${pct.toFixed(1)}%，极易引发 4~5 分钟卡顿与配额加速消耗，建议立即执行 /compact。`;
+            keyTakeaway.textContent = `⚠ 缓存已脱落（命中率 ${(d.cacheHitRate ?? 0).toFixed(1)}%），本步全量重算 ${short(d.uncachedInput || d.input)} tokens！已使用 ${pct.toFixed(1)}%，极易引发 4~5 分钟卡顿与配额加速消耗，建议立即执行 /compact。${autoCompactHint}`;
           } else if (pct >= 90) {
             keyTakeaway.textContent = `⚠ 上下文已消耗 ${pct.toFixed(1)}%，仅剩约 ${short(remainVal)} tokens，接近预算上限！建议清理冗余上下文。`;
           } else if (pct >= 75) {
             keyTakeaway.textContent = `⚡ 已使用 ${pct.toFixed(1)}%，剩余可用空间约 ${short(remainVal)} tokens，注意大文件或长输出。`;
           } else if (d.actual >= 328000) {
-            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已跨过 328K 缓存雪崩线）；一旦停顿超 3 分钟或缓存失活将触发 4~5 分钟全量重算，建议尽快执行 /compact。`;
+            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已跨过 328K 缓存雪崩线）；官方要到 512K 才压缩，一旦停顿超 3 分钟将触发 4~5 分钟全量重算，建议尽快执行 /compact。${autoCompactHint}`;
           } else if (d.actual >= 240000) {
-            keyTakeaway.textContent = `✔ 当前用量正常（${pct.toFixed(1)}%，已达 ${short(d.actual)}），处于 240K+ 长上下文区间，建议在任务段落间适时执行 /compact 规避缓存脱落。`;
+            keyTakeaway.textContent = `✔ 当前用量正常（${pct.toFixed(1)}%，已达 ${short(d.actual)}），处于 240K+ 长上下文区间，提前执行 /compact 可避开 300K+ 缓存过期卡顿。${autoCompactHint}`;
           } else {
             keyTakeaway.textContent = `✔ 当前用量健康（${pct.toFixed(1)}%），剩余可用空间充足（约 ${short(remainVal)} tokens），可正常继续对话。`;
           }
@@ -11210,6 +11221,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     '自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截': 'Auto-click safe Proceed / Accept buttons while blocking high-risk commands',
     '输入框智能追问建议 (Tab / →)': 'Smart Follow-up Suggestions (Tab / →)',
     '回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入': 'Show follow-up prompt suggestions in composer after responses (Tab or → to fill)',
+    '长上下文防卡死自动压缩 (240K Auto-Compact)': 'Auto-Compact Long Context (240K Anti-Stall)',
+    '官方默认到 512K 才自动压缩，但超过 250K~330K 后一旦服务端缓存过期（如停顿超 3 分钟）就会每步重算 4~5 分钟并狂耗配额。开启后，当本轮回答结束且输入框为空时，若上下文已达 240K 或发生缓存脱落，将自动发送 /compact 提前压缩': 'Client waits until 512K to auto-compact, risking 4-5m 0-cache stalls above 250K. When enabled, auto-sends /compact after a reply finishes if context reaches 240K or cache drops',
     '插件与客户端语言': 'Plugin & Client Language',
     '同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言': 'Switch client UI localization, panels, and context capsule language together',
     '模式与档位名保留英文': 'Keep Mode & Effort Names in English',
@@ -11444,6 +11457,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   let suiteEnhancerPrefs = {
     autoAccept: false,
     ghostSuggest: true,
+    autoCompact: true,
     locale: 'zh-CN',
     capsuleLang: 'zh',
     englishLabels: false
@@ -11488,6 +11502,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (lsAutoAccept === 'true' || lsAutoAccept === 'false') suiteEnhancerPrefs.autoAccept = lsAutoAccept === 'true';
     const lsGhost = localStorage?.getItem?.('ag_suite_ghost_suggest');
     if (lsGhost === 'true' || lsGhost === 'false') suiteEnhancerPrefs.ghostSuggest = lsGhost !== 'false';
+    const lsAutoCompact = localStorage?.getItem?.('ag_suite_auto_compact');
+    if (lsAutoCompact === 'true' || lsAutoCompact === 'false') suiteEnhancerPrefs.autoCompact = lsAutoCompact !== 'false';
     const lsLocale = localStorage?.getItem?.('ag_suite_locale')
       || localStorage?.getItem?.('antigravityHansLang')
       || localStorage?.getItem?.('__agy_ctx_lang__');
@@ -11657,6 +11673,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       localStorage?.setItem?.('ag_suite_cli_mux_host', suiteTerminalState.cliMuxHost || '');
       localStorage?.setItem?.('ag_suite_auto_accept', suiteEnhancerPrefs.autoAccept ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_ghost_suggest', suiteEnhancerPrefs.ghostSuggest ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_auto_compact', suiteEnhancerPrefs.autoCompact !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_locale', activeLocale);
       localStorage?.setItem?.('__agy_ctx_lang__', curEntry.capsuleLang === 'en' ? 'en' : 'zh');
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
@@ -11674,6 +11691,7 @@ function renderHeatmapGrid(forceRebuild = false) {
             cliMuxHost: suiteTerminalState.cliMuxHost || '',
             autoAccept: suiteEnhancerPrefs.autoAccept,
             ghostSuggest: suiteEnhancerPrefs.ghostSuggest,
+            autoCompact: suiteEnhancerPrefs.autoCompact !== false,
             locale: activeLocale,
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
@@ -12033,9 +12051,11 @@ function renderHeatmapGrid(forceRebuild = false) {
   function syncEnhancerPrefControls() {
     const chkAuto = el('set-auto-accept');
     const chkGhost = el('set-ghost-suggest');
+    const chkCompact = el('set-auto-compact');
     const chkEngLbl = el('set-english-labels');
     if (chkAuto) chkAuto.checked = Boolean(suiteEnhancerPrefs.autoAccept);
     if (chkGhost) chkGhost.checked = Boolean(suiteEnhancerPrefs.ghostSuggest);
+    if (chkCompact) chkCompact.checked = suiteEnhancerPrefs.autoCompact !== false;
     if (chkEngLbl) chkEngLbl.checked = Boolean(suiteEnhancerPrefs.englishLabels);
     try {
       if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
@@ -12333,6 +12353,9 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
     if (typeof uiPrefs.ghostSuggest === 'boolean') {
       suiteEnhancerPrefs.ghostSuggest = uiPrefs.ghostSuggest;
+    }
+    if (typeof uiPrefs.autoCompact === 'boolean') {
+      suiteEnhancerPrefs.autoCompact = uiPrefs.autoCompact;
     }
     const incomingLoc = uiPrefs.locale || uiPrefs.panelLanguage || uiPrefs.capsuleLang;
     if (typeof incomingLoc === 'string' && incomingLoc.trim()) {
@@ -12680,6 +12703,12 @@ function renderHeatmapGrid(forceRebuild = false) {
     suiteEnhancerPrefs.ghostSuggest = Boolean(e?.target?.checked);
     dispatchSuitePrefsChanged();
     void saveSuiteUiPrefs({ ghostSuggest: suiteEnhancerPrefs.ghostSuggest });
+  });
+
+  el('set-auto-compact')?.addEventListener('change', e => {
+    suiteEnhancerPrefs.autoCompact = Boolean(e?.target?.checked);
+    dispatchSuitePrefsChanged();
+    void saveSuiteUiPrefs({ autoCompact: suiteEnhancerPrefs.autoCompact });
   });
 
   el('set-ui-language-select')?.addEventListener('change', e => {

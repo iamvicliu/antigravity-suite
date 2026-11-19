@@ -3911,16 +3911,20 @@
         if (keyLimit) keyLimit.textContent = short(limitVal);
         if (keyRemaining) keyRemaining.textContent = `${short(remainVal)} (${remainPct.toFixed(1)}%)`;
         if (keyTakeaway) {
+          const autoCompactOn = typeof localStorage === 'undefined' || localStorage.getItem('ag_suite_auto_compact') !== 'false';
+          const autoCompactHint = autoCompactOn
+            ? '（已开启 240K 自动压缩，本轮回答结束后将自动执行 /compact；可在套件设置关闭）'
+            : '（可在套件设置中开启 240K 自动压缩）';
           if (d.cacheDropDetected) {
-            keyTakeaway.textContent = `⚠ 缓存已脱落（命中率 ${(d.cacheHitRate ?? 0).toFixed(1)}%），本步全量重算 ${short(d.uncachedInput || d.input)} tokens！已使用 ${pct.toFixed(1)}%，极易引发 4~5 分钟卡顿与配额加速消耗，建议立即执行 /compact。`;
+            keyTakeaway.textContent = `⚠ 缓存已脱落（命中率 ${(d.cacheHitRate ?? 0).toFixed(1)}%），本步全量重算 ${short(d.uncachedInput || d.input)} tokens！已使用 ${pct.toFixed(1)}%，极易引发 4~5 分钟卡顿与配额加速消耗，建议立即执行 /compact。${autoCompactHint}`;
           } else if (pct >= 90) {
             keyTakeaway.textContent = `⚠ 上下文已消耗 ${pct.toFixed(1)}%，仅剩约 ${short(remainVal)} tokens，接近预算上限！建议清理冗余上下文。`;
           } else if (pct >= 75) {
             keyTakeaway.textContent = `⚡ 已使用 ${pct.toFixed(1)}%，剩余可用空间约 ${short(remainVal)} tokens，注意大文件或长输出。`;
           } else if (d.actual >= 328000) {
-            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已跨过 328K 缓存雪崩线）；一旦停顿超 3 分钟或缓存失活将触发 4~5 分钟全量重算，建议尽快执行 /compact。`;
+            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已跨过 328K 缓存雪崩线）；官方要到 512K 才压缩，一旦停顿超 3 分钟将触发 4~5 分钟全量重算，建议尽快执行 /compact。${autoCompactHint}`;
           } else if (d.actual >= 240000) {
-            keyTakeaway.textContent = `✔ 当前用量正常（${pct.toFixed(1)}%，已达 ${short(d.actual)}），处于 240K+ 长上下文区间，建议在任务段落间适时执行 /compact 规避缓存脱落。`;
+            keyTakeaway.textContent = `✔ 当前用量正常（${pct.toFixed(1)}%，已达 ${short(d.actual)}），处于 240K+ 长上下文区间，提前执行 /compact 可避开 300K+ 缓存过期卡顿。${autoCompactHint}`;
           } else {
             keyTakeaway.textContent = `✔ 当前用量健康（${pct.toFixed(1)}%），剩余可用空间充足（约 ${short(remainVal)} tokens），可正常继续对话。`;
           }
