@@ -2523,6 +2523,7 @@
     ["Start Voice Recording", "开始语音录制"],
     ["Suggestions in Editor", "编辑器内联建议"],
     ["Terminal: Add to Chat", "终端：添加到对话"],
+    ["Terminal: Select All", "终端：全选"],
     ["Toggle Auxiliary Pane", "切换辅助面板"],
     ["Toggle Model Selector", "切换模型选择器"],
     ["Toggle Overview Panel", "切换概览面板"],

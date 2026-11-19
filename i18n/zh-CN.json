@@ -1922,6 +1922,7 @@
     "Terminal Commands": "终端命令权限",
     "Terminal commands the agent can execute in this workspace.": "智能体可在此工作区中执行的终端命令。",
     "Terminal: Add to Chat": "终端：添加到对话",
+    "Terminal: Select All": "终端：全选",
     "Terminals": "终端列表",
     "Terms of Service": "服务条款",
     "Test failed": "测试失败",
