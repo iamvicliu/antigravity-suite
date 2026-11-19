@@ -81,13 +81,15 @@
     showTopbarQuota: true,
     showTopbarRemote: true,
     showQuickBar: true,
-    showChatNav: true
+    showChatNav: true,
+    showQuickCopyId: true,
+    showQuickExport: true
   };
   let featureFlags = { ...DEFAULT_FEATURE_FLAGS };
   const DEFAULT_QUICK_PROMPTS = [
-    { id: 'compact', label: '/compact 压缩', labelEn: '/compact', text: '/compact', title: '快速填入 /compact 压缩上下文命令', titleEn: 'Fill /compact command' },
-    { id: 'plan', label: '/plan 规划', labelEn: '/plan', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式', titleEn: 'Fill /plan prefix to enter plan mode' },
-    { id: 'reload', label: '重载规则', labelEn: 'Reload Rules', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令', titleEn: 'Fill reload AGENTS prompt' }
+    { id: 'compact', label: '/compact 压缩', labelEn: '/compact', text: '/compact', title: '快速填入 /compact 压缩上下文命令', titleEn: 'Fill /compact command', enabled: true },
+    { id: 'plan', label: '/plan 规划', labelEn: '/plan', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式', titleEn: 'Fill /plan prefix to enter plan mode', enabled: true },
+    { id: 'reload', label: '重载规则', labelEn: 'Reload Rules', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令', titleEn: 'Fill reload AGENTS prompt', enabled: true }
   ];
   let customQuickPrompts = null;
 
@@ -106,7 +108,8 @@
         id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: String(item.title || '').trim().slice(0, 120)
+        title: String(item.title || '').trim().slice(0, 120),
+        enabled: item.enabled !== false
       });
       if (out.length >= 20) break;
     }
@@ -3436,41 +3439,44 @@
   function getQuickBarActions() {
     const useCustom = Array.isArray(customQuickPrompts);
     const sourcePrompts = useCustom ? customQuickPrompts : DEFAULT_QUICK_PROMPTS;
-    const promptActions = sourcePrompts.map((item, idx) => {
-      const btnId = (!useCustom && (item.id === 'compact' || item.id === 'plan' || item.id === 'reload'))
-        ? `ag-qcap-${item.id}`
-        : `ag-qcap-prompt-${idx}`;
-      const label = (!useCustom && item.labelEn) ? tr(item.label, item.labelEn) : item.label;
-      const title = (!useCustom && item.id === 'compact')
+    const promptActions = [];
+    sourcePrompts.forEach((item, idx) => {
+      if (!item || item.enabled === false) return;
+      const defaultDef = DEFAULT_QUICK_PROMPTS.find((d) => d.id === item.id);
+      const isBuiltinPrompt = Boolean(defaultDef && String(item.text || '').trim() === String(defaultDef.text || '').trim());
+      const btnId = isBuiltinPrompt ? `ag-qcap-${item.id}` : `ag-qcap-prompt-${idx}`;
+      const label = (isBuiltinPrompt && defaultDef.labelEn && item.label === defaultDef.label)
+        ? tr(item.label, defaultDef.labelEn)
+        : item.label;
+      const title = (isBuiltinPrompt && item.id === 'compact')
         ? buildCompactBtnTitle(extractContextRiskState())
-        : ((!useCustom && item.titleEn)
-            ? tr(item.title, item.titleEn)
+        : ((isBuiltinPrompt && defaultDef.titleEn)
+            ? tr(defaultDef.title, defaultDef.titleEn)
             : (item.title || tr(`点击填入：${item.text}`, `Insert: ${item.text}`)));
       const fillText = String(item.text || '');
-      return {
+      promptActions.push({
         id: btnId,
         label,
         title,
         fillText,
         onClick: async () => {
           if (await fillComposerText(fillText)) {
-            if (!useCustom && item.id === 'compact') {
+            if (isBuiltinPrompt && item.id === 'compact') {
               showQuickToast(tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run'));
-            } else if (!useCustom && item.id === 'plan') {
+            } else if (isBuiltinPrompt && item.id === 'plan') {
               showQuickToast(tr('已填入 /plan ，请输入规划需求', 'Inserted /plan , enter your goal'));
-            } else if (!useCustom && item.id === 'reload') {
+            } else if (isBuiltinPrompt && item.id === 'reload') {
               showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
             } else {
               showQuickToast(tr(`已填入「${label}」`, `Inserted "${label}"`));
             }
           }
         }
-      };
+      });
     });
 
-    return [
-      ...promptActions,
-      {
+    if (featureFlags.showQuickCopyId !== false) {
+      promptActions.push({
         id: 'ag-qcap-copyid',
         label: tr('复制会话 ID', 'Copy ID'),
         title: tr('复制当前对话窗口的会话 ID', 'Copy current conversation ID'),
@@ -3483,14 +3489,19 @@
           const ok = await copyToClipboard(id);
           showQuickToast(ok ? tr(`已复制会话 ID (${id.slice(0, 8)})`, `Copied ID (${id.slice(0, 8)})`) : tr('复制失败，请检查剪贴板权限', 'Copy failed'));
         }
-      },
-      {
+      });
+    }
+
+    if (featureFlags.showQuickExport !== false) {
+      promptActions.push({
         id: 'ag-qcap-export',
         label: tr('导出 Markdown', 'Export MD'),
         title: tr('将完整对话导出为 Markdown 保存到 ~/Downloads 并复制', 'Export conversation to Markdown in ~/Downloads and copy'),
         onClick: () => { void exportMarkdown(); }
-      }
-    ];
+      });
+    }
+
+    return promptActions;
   }
 
   function syncQuickBarActionButtons(bar) {
