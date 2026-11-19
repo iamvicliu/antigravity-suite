@@ -1957,8 +1957,8 @@
     }
     .settings-tabs-bar{
       display:grid;
-      grid-template-columns:repeat(4,1fr);
-      gap:6px;
+      grid-template-columns:repeat(5,minmax(0,1fr));
+      gap:4px;
       background:var(--ag-bg-subcard);
       border:1px solid var(--ag-border-subcard);
       border-radius:8px;
@@ -1969,9 +1969,9 @@
       border:1px solid transparent;
       background:transparent;
       color:var(--ag-text-muted);
-      font-size:13px;
+      font-size:12px;
       font-weight:500;
-      padding:7px 6px;
+      padding:6px 4px;
       border-radius:6px;
       cursor:pointer;
       white-space:nowrap;
@@ -2297,10 +2297,277 @@
       text-overflow:ellipsis;
       white-space:nowrap;
     }
+    .qp-editor-list{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      margin-bottom:8px;
+    }
+    .qp-row{
+      display:grid;
+      grid-template-columns:minmax(96px,130px) 1fr auto;
+      gap:6px;
+      align-items:center;
+    }
+    .qp-label-input,.qp-text-input,.ag-rp-input{
+      width:100%;
+      box-sizing:border-box;
+      border-radius:6px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-primary);
+      padding:5px 8px;
+      font-size:12px;
+      outline:none;
+    }
+    .qp-label-input:focus,.qp-text-input:focus,.ag-rp-input:focus{
+      border-color:rgba(16,185,129,0.55);
+    }
+    .qp-del-btn{
+      border:1px solid var(--ag-border-subcard);
+      background:transparent;
+      color:var(--ag-text-muted);
+      border-radius:6px;
+      width:26px;
+      height:26px;
+      cursor:pointer;
+      font-size:13px;
+      line-height:1;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .qp-del-btn:hover{
+      border-color:rgba(248,113,113,0.45);
+      color:#f87171;
+      background:rgba(248,113,113,0.08);
+    }
+    .qp-footer{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .qp-status{
+      font-size:11.5px;
+      color:var(--ag-text-muted);
+      min-height:16px;
+    }
+    .ag-rp-channels{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .ag-rp-channel{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      padding:7px 9px;
+      border-radius:7px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      font-size:12px;
+      cursor:pointer;
+      color:var(--ag-text-primary);
+    }
+    .ag-rp-channel[data-disabled="true"]{
+      opacity:.58;
+      cursor:not-allowed;
+    }
+    .ag-rp-channel[data-active="true"]{
+      border-color:rgba(16,185,129,0.45);
+      background:rgba(16,185,129,0.08);
+    }
+    .ag-rp-ch-check{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      min-width:0;
+      flex:1;
+    }
+    .ag-rp-ch-name{
+      font-weight:500;
+      white-space:nowrap;
+    }
+    .ag-rp-ch-addr{
+      font-size:11px;
+      color:var(--ag-text-muted);
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .ag-rp-ch-cfg{
+      border:1px solid var(--ag-border-subcard);
+      background:transparent;
+      color:var(--ag-text-secondary);
+      border-radius:6px;
+      padding:3px 8px;
+      font-size:11px;
+      cursor:pointer;
+      flex-shrink:0;
+    }
+    .ag-rp-ch-cfg:hover{
+      color:var(--ag-text-primary);
+      background:var(--ag-toolbar-bg-hover);
+    }
+    .ag-rp-tunnel-form{
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      margin-top:8px;
+      padding:10px;
+      border-radius:8px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-card);
+      font-size:11.5px;
+      color:var(--ag-text-secondary);
+    }
+    .ag-rp-tunnel-sub{
+      font-size:11px;
+      line-height:1.45;
+      color:var(--ag-text-muted);
+    }
+    .ag-rp-install-guide{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      margin-top:8px;
+      padding:8px 10px;
+      border-radius:8px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-card);
+      font-size:11.5px;
+      color:var(--ag-text-secondary);
+    }
+    .ag-rp-install-guide[data-missing="true"]{
+      border-color:rgba(245,158,11,0.48);
+      background:rgba(245,158,11,0.08);
+    }
+    .ag-rp-install-hdr{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .ag-rp-install-title{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      font-weight:600;
+      color:var(--ag-text-primary);
+      font-size:11.5px;
+    }
+    .ag-rp-install-badge{
+      display:inline-flex;
+      align-items:center;
+      padding:1px 6px;
+      border-radius:999px;
+      font-size:10.5px;
+      font-weight:500;
+      background:rgba(16,185,129,0.14);
+      color:#10b981;
+    }
+    .ag-rp-install-guide[data-missing="true"] .ag-rp-install-badge{
+      background:rgba(245,158,11,0.18);
+      color:#d97706;
+    }
+    .ag-rp-install-tabs{
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
+    }
+    .ag-rp-install-tab{
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-secondary);
+      border-radius:5px;
+      padding:2px 7px;
+      font-size:10.5px;
+      cursor:pointer;
+    }
+    .ag-rp-install-tab[data-active="true"]{
+      border-color:rgba(16,185,129,0.45);
+      background:rgba(16,185,129,0.14);
+      color:#10b981;
+      font-weight:600;
+    }
+    .ag-rp-install-cmd-row{
+      display:flex;
+      align-items:center;
+      gap:6px;
+    }
+    .ag-rp-install-cmd{
+      flex:1;
+      min-width:0;
+      margin:0;
+      padding:5px 8px;
+      border-radius:6px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-primary);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+      font-size:11px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      user-select:all;
+    }
+    .ag-rp-install-foot{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      flex-wrap:wrap;
+      font-size:11px;
+      color:var(--ag-text-muted);
+    }
+    .ag-rp-form-actions{
+      display:flex;
+      gap:6px;
+      flex-wrap:wrap;
+    }
+    .ag-rp-btn{
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-primary);
+      border-radius:6px;
+      padding:5px 10px;
+      font-size:11.5px;
+      cursor:pointer;
+    }
+    .ag-rp-btn.primary{
+      background:rgba(16,185,129,0.16);
+      border-color:rgba(16,185,129,0.45);
+      color:#10b981;
+      font-weight:600;
+    }
+    .ag-rp-err{
+      margin-top:8px;
+      padding:6px 8px;
+      border-radius:6px;
+      background:rgba(248,113,113,0.12);
+      border:1px solid rgba(248,113,113,0.35);
+      color:#f87171;
+      font-size:11.5px;
+    }
+    .ag-rp-spin{
+      display:inline-block;
+      width:11px;
+      height:11px;
+      border-radius:999px;
+      border:1.5px solid rgba(16,185,129,0.3);
+      border-top-color:#10b981;
+      animation:ag-spin .7s linear infinite;
+      vertical-align:middle;
+      margin-right:4px;
+    }
     @media (max-width:560px){
       #panel-settings{width:calc(100vw - 24px);}
       .settings-tabs-bar{grid-template-columns:repeat(2,1fr);}
-      .term-app-grid,.settings-feature-grid{grid-template-columns:1fr;}
+      .term-app-grid,.settings-feature-grid,.qp-row{grid-template-columns:1fr;}
     }
   </style>
 
@@ -2391,7 +2658,6 @@
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-open-settings-ctx" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
         <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
     </div>
@@ -2440,72 +2706,6 @@
           </div>
         </div>
         <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
-      </div>
-
-      <!-- 二级交互折叠区: 上下文加长 (解除 256K 限制 / 实验特性) -->
-      <div class="tech-drawer" id="context-unlock-drawer">
-        <button id="btn-toggle-unlock" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left">
-            <span>⚡ 上下文加长（解除 256K 限制 / 实验特性）</span>
-            <span id="unlock-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
-          </span>
-          <span id="unlock-drawer-arrow" class="drawer-arrow">▼ 展开</span>
-        </button>
-        <div id="unlock-drawer-body" class="drawer-body" style="display:none;">
-          <div class="unlock-panel-content">
-            <div class="unlock-status-row">
-              <div class="unlock-status-meta">
-                <div class="unlock-label">当前补丁状态</div>
-                <div id="unlock-status-desc" class="unlock-desc">正在检测客户端上下文限制状态…</div>
-              </div>
-            </div>
-
-            <div class="unlock-notice">
-              <div class="unlock-notice-title">💡 功能说明与注意事项</div>
-              <ul class="unlock-notice-list">
-                <li><strong>突破默认上限</strong>：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。</li>
-                <li><strong>安全可随时还原</strong>：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。</li>
-                <li><strong>客户端更新提示</strong>：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。</li>
-              </ul>
-            </div>
-
-            <div class="unlock-actions-row">
-              <button id="btn-apply-unlock" class="unlock-btn unlock-btn-primary" type="button">
-                <span>⚡ 立即应用加长补丁</span>
-              </button>
-              <button id="btn-restore-unlock" class="unlock-btn unlock-btn-secondary" type="button">
-                <span>🔄 恢复官方原版</span>
-              </button>
-              <button id="btn-refresh-unlock" class="unlock-btn unlock-btn-secondary" type="button" title="重新检测状态">
-                <span>🔄 刷新</span>
-              </button>
-            </div>
-
-            <div id="unlock-result-box" class="unlock-result-box" style="display:none;">
-              <div id="unlock-result-text" class="unlock-result-text"></div>
-            </div>
-
-            <details class="unlock-tech-details" style="margin-top:6px">
-              <summary style="cursor:pointer;font-size:11.5px;color:var(--ag-text-muted);user-select:none">查看底层程序路径与备份详情</summary>
-              <dl class="unlock-meta-dl" style="margin-top:6px">
-                <dt>目标后端</dt><dd id="unlock-meta-target">—</dd>
-                <dt>目标架构</dt><dd id="unlock-meta-arch">—</dd>
-                <dt>文件哈希 (SHA-256)</dt><dd id="unlock-meta-sha">—</dd>
-                <dt>原版备份状态</dt><dd id="unlock-meta-backup">—</dd>
-              </dl>
-            </details>
-
-            <div class="unlock-credit-bar">
-              <div class="unlock-credit-left">
-                <span class="unlock-credit-lbl">解锁方案来源：</span>
-                <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank" rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0" title="点击在系统默认浏览器中打开原作者帖子">原作者帖子 (Linux.do @23375) ↗</a>
-                <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接">📋 复制链接</button>
-              </div>
-              <span class="unlock-adapter-note">本项目负责 Node.js 原生适配与客户端集成</span>
-            </div>
-            <div id="unlock-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
-          </div>
-        </div>
       </div>
 
       <!-- 二级交互折叠区: 客户端界面汉化 (AntigravityChinese) -->
@@ -2683,7 +2883,6 @@
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-open-settings-tokens" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
         <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
     </div>
@@ -2707,7 +2906,7 @@
         <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
           <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · 已自动识别 · 刚刚更新</span>
         </div>
-        <span id="summary-subtier-readonly" class="plan-subtier-readonly-pill" style="display:none" title="当前订阅子档（前往套件设置修改）"></span>
+        <span id="summary-subtier-readonly" class="plan-subtier-readonly-pill" style="display:none" title="当前订阅子档"></span>
         <!-- Ultra 子档快捷选择下拉（仅当套餐为 Ultra 时显示） -->
         <div id="summary-subtier-wrap" class="ag-dropdown-wrapper ag-subtier-compact-wrap" style="display:none;width:auto;flex-shrink:0">
           <div id="summary-subtier-trigger" class="ag-dropdown-trigger ag-subtier-compact-trigger" tabindex="0" title="官方接口未返回 Ultra 子档，点击选择您的实际订阅子档 (5x / 20x)">
@@ -2874,10 +3073,6 @@
           <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button" title="点击展开编辑当前账号订阅详细信息与实付设置">
             <span style="font-size:12px">✎</span>
             <span>自定义订阅设置</span>
-          </button>
-          <button id="btn-jump-plan-settings" class="plan-edit-pill-btn" type="button" style="display:none" title="前往套件设置修改订阅、国家、子档与实付金额">
-            <span style="font-size:12px">⚙️</span>
-            <span>前往设置修改</span>
           </button>
         </div>
 
@@ -3445,6 +3640,7 @@
       <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" data-settings-tab="terminal">🖥️ 终端与通用</button>
       <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="appearance">🎨 外观与主题</button>
       <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="subscription">💎 套餐与订阅</button>
+      <button id="settings-tab-btn-remote" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="remote">📱 远程设置</button>
       <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="system">🌐 网络与高级</button>
     </div>
 
@@ -3482,6 +3678,22 @@
               <span class="settings-feature-name">对话右侧悬浮导航</span>
               <input id="set-feat-chatnav" type="checkbox" class="settings-checkbox" checked />
             </label>
+          </div>
+        </div>
+
+        <div id="settings-card-quick-prompts" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">快捷提示词</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button id="btn-add-quick-prompt" class="switch-pill-btn" type="button" title="添加一条快捷提示词">+ 新增</button>
+              <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
+            </div>
+          </div>
+          <div class="settings-card-desc">自定义输入框上方快捷栏的按钮名称与填入内容（最多 12 条，保存后立即生效，内置「复制会话 ID」与「导出 Markdown」始终保留）。</div>
+          <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
+          <div class="qp-footer">
+            <span id="quick-prompts-status" class="qp-status" role="status"></span>
+            <button id="btn-save-quick-prompts" class="term-action-btn" type="button">保存快捷提示词</button>
           </div>
         </div>
 
@@ -3682,7 +3894,68 @@
         </div>
       </div>
 
-      <!-- 分页 4: 网络与高级 -->
+      <!-- 分页 4: 远程设置 -->
+      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" hidden>
+        <div id="settings-card-remote-channels" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">远程通道与隧道</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button id="btn-settings-remote-refresh" class="switch-pill-btn" type="button" title="刷新远程连接通道与隧道状态">刷新状态</button>
+              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对令牌，旧链接与旧会话将失效">重置令牌</button>
+            </div>
+          </div>
+          <div class="settings-card-desc">管理 \`agy remote\` 的访问通道与配对令牌重置；Cloudflare 隧道默认启用免登录临时隧道（零配置开箱可用），如需绑定自定义域名可展开配置，顶栏「远程」图标可随时扫码。</div>
+          <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
+        </div>
+
+        <div id="settings-card-remote-display" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">Remote 页面显示内容</span>
+            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复 Remote 页面全部默认模块显示">恢复默认</button>
+          </div>
+          <div class="settings-card-desc">按需控制手机 / 浏览器打开 \`agy remote\` 时可见的面板入口与功能模块，修改后立即保存并在远程页面下次同步生效。</div>
+          <div class="settings-feature-grid">
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部上下文窗口面板</span>
+              <input id="set-remote-ctx-panel" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部本机已记录用量面板</span>
+              <input id="set-remote-usage-panel" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部模型配额胶囊</span>
+              <input id="set-remote-quota-pill" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部通道连接状态副标题</span>
+              <input id="set-remote-channel-meta" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">左侧会话与窗口抽屉</span>
+              <input id="set-remote-sidebar" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">AI 思考过程折叠区</span>
+              <input id="set-remote-thinking" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">底部快捷操作与下一步建议</span>
+              <input id="set-remote-quick-chips" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">输入区工具栏（模型/权限等）</span>
+              <input id="set-remote-composer-tools" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">待审批操作提醒横幅</span>
+              <input id="set-remote-approvals" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分页 5: 网络与高级 -->
       <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
@@ -3690,14 +3963,6 @@
             <span id="settings-slot-proxy-badge"></span>
           </div>
           <div id="settings-slot-proxy"></div>
-        </div>
-
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">解除 256K 上下文限制（实验性补丁）</span>
-            <span id="settings-slot-unlock-badge"></span>
-          </div>
-          <div id="settings-slot-unlock"></div>
         </div>
       </div>
     </div>
@@ -5499,6 +5764,9 @@
     } catch {}
     if (pOverflow) pOverflow.hidden = true;
     bOverflow?.setAttribute('aria-expanded', 'false');
+    if (target !== 'settings' && pSettings && !pSettings.hidden && typeof onSuiteSettingsClosed === 'function') {
+      try { onSuiteSettingsClosed(); } catch {}
+    }
 
     if (target === 'settings') {
       hideContextTooltip();
@@ -7927,293 +8195,6 @@ function closeAllDropdowns(exceptWrap = null) {
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
-  // 二级抽屉: 上下文加长折叠展开与状态机
-  const btnUnlock = el('btn-toggle-unlock');
-  const unlockDrawerBody = el('unlock-drawer-body');
-  const unlockDrawerArrow = el('unlock-drawer-arrow');
-  const unlockBadge = el('unlock-badge');
-  const unlockStatusDesc = el('unlock-status-desc');
-  const btnApplyUnlock = el('btn-apply-unlock');
-  const btnRestoreUnlock = el('btn-restore-unlock');
-  const btnRefreshUnlock = el('btn-refresh-unlock');
-  const unlockResultBox = el('unlock-result-box');
-  const unlockResultText = el('unlock-result-text');
-  const unlockMetaTarget = el('unlock-meta-target');
-  const unlockMetaArch = el('unlock-meta-arch');
-  const unlockMetaSha = el('unlock-meta-sha');
-  const unlockMetaBackup = el('unlock-meta-backup');
-  const linkUnlockAuthor = el('link-unlock-author');
-  const btnCopyUnlockLink = el('btn-copy-unlock-link');
-  const unlockLinkToast = el('unlock-link-toast');
-
-  let currentUnlockStatus = null;
-  let isUnlocking = false;
-  let unlockReqSeq = 0;
-
-  function toggleUnlockDrawer(forceOpen) {
-    if (!unlockDrawerBody) return;
-    const isHidden = unlockDrawerBody.style.display === 'none' || !unlockDrawerBody.style.display;
-    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
-    unlockDrawerBody.style.display = nextOpen ? 'block' : 'none';
-    if (unlockDrawerArrow) unlockDrawerArrow.textContent = nextOpen ? '▲ 收起' : '▼ 展开';
-    btnUnlock?.setAttribute('aria-expanded', String(nextOpen));
-    if (nextOpen && !currentUnlockStatus) {
-      void refreshUnlockStatus();
-    }
-  }
-  btnUnlock?.addEventListener('click', () => toggleUnlockDrawer());
-
-  async function invokeUnlockApi(endpoint, payload = {}) {
-    if (endpoint === 'status' && window.contextMeterAPI?.getContextUnlockStatus) {
-      return await window.contextMeterAPI.getContextUnlockStatus(payload);
-    }
-    if (endpoint === 'apply' && window.contextMeterAPI?.applyContextUnlock) {
-      return await window.contextMeterAPI.applyContextUnlock(payload);
-    }
-    if (endpoint === 'restore' && window.contextMeterAPI?.restoreContextUnlock) {
-      return await window.contextMeterAPI.restoreContextUnlock(payload);
-    }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const r = await fetch(`http://127.0.0.1:${live.port}/context-unlock-${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-        body: JSON.stringify(payload)
-      });
-      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
-    }
-    return { ok: false, error: '未连接到桥接服务（请重启客户端生效新 IPC，或执行 node cli.js live）' };
-  }
-
-  async function refreshUnlockStatus() {
-    if (!unlockBadge) return;
-    const thisSeq = ++unlockReqSeq;
-    try {
-      const currentObservedBudget = (state.latest?.budget && state.latest.budget > 0)
-        ? state.latest.budget
-        : undefined;
-      const res = await invokeUnlockApi('status', { currentBudget: currentObservedBudget });
-      if (thisSeq !== unlockReqSeq) return;
-
-      if (!res || !res.ok || !res.data) {
-        unlockBadge.textContent = '检测失败';
-        unlockBadge.className = 'key-pill pill-danger';
-        if (unlockStatusDesc) unlockStatusDesc.textContent = res?.error || '获取后端状态失败。';
-        return;
-      }
-      const data = res.data;
-      currentUnlockStatus = data;
-
-      const statusLabelMap = {
-        unsupported: '当前平台不支持',
-        failed: '检测失败',
-        not_patched: '未解锁',
-        verified_active: '已验证生效',
-        patched_runtime_unconfirmed: '运行待确认',
-        patched_pending_restart: '待重启生效'
-      };
-      unlockBadge.textContent = data.statusText || statusLabelMap[data.status] || data.status;
-      if (data.status === 'verified_active') {
-        unlockBadge.className = 'key-pill pill-ok';
-      } else if (data.status === 'patched_runtime_unconfirmed') {
-        unlockBadge.className = 'key-pill pill-info';
-      } else if (data.status === 'patched_pending_restart') {
-        unlockBadge.className = 'key-pill pill-warn';
-      } else if (data.status === 'not_patched') {
-        unlockBadge.className = 'key-pill pill-muted';
-      } else {
-        unlockBadge.className = 'key-pill pill-danger';
-      }
-
-      if (unlockStatusDesc) {
-        unlockStatusDesc.textContent = data.details || data.reason || '状态已更新。';
-      }
-
-      if (unlockMetaTarget) unlockMetaTarget.textContent = data.targetPath || '未检测到';
-      if (unlockMetaArch) unlockMetaArch.textContent = `${data.arch || '未知'} (${data.format || '未知'}, ${data.mode || '未知'})`;
-      if (unlockMetaSha) unlockMetaSha.textContent = data.sha256 ? `${data.sha256.slice(0, 16)}…` : '—';
-      if (unlockMetaBackup) {
-        if (data.hasBackup && data.backupInfo) {
-          unlockMetaBackup.textContent = `已备份 (${data.backupInfo.backupPath})`;
-        } else {
-          unlockMetaBackup.textContent = '尚未备份（首次应用时将自动安全备份至应用目录外部）';
-        }
-      }
-
-      if (btnApplyUnlock) {
-        if (data.status === 'not_patched') {
-          btnApplyUnlock.disabled = false;
-          btnApplyUnlock.textContent = '⚡ 立即应用加长补丁';
-        } else if (data.status === 'verified_active') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '✅ 已生效（无需重复应用）';
-        } else if (data.status === 'patched_runtime_unconfirmed') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '🔍 补丁已写入（运行状态待确认）';
-        } else if (data.status === 'patched_pending_restart') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '⏳ 已打补丁（待重启客户端）';
-        } else {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '⚠️ 当前目标不受支持';
-        }
-      }
-
-      if (btnRestoreUnlock) {
-        if (data.status === 'verified_active' || data.status === 'patched_pending_restart' || data.status === 'patched_runtime_unconfirmed' || data.hasBackup) {
-          btnRestoreUnlock.disabled = false;
-        } else {
-          btnRestoreUnlock.disabled = true;
-        }
-      }
-    } catch (e) {
-      if (thisSeq !== unlockReqSeq) return;
-      unlockBadge.textContent = '异常';
-      unlockBadge.className = 'key-pill pill-danger';
-      if (unlockStatusDesc) unlockStatusDesc.textContent = `检测异常: ${e.message}`;
-    }
-  }
-
-  btnRefreshUnlock?.addEventListener('click', () => {
-    void refreshUnlockStatus();
-  });
-
-  btnApplyUnlock?.addEventListener('click', async () => {
-    if (isUnlocking) return;
-    isUnlocking = true;
-    if (btnApplyUnlock) btnApplyUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
-
-    try {
-      const res = await invokeUnlockApi('apply');
-      if (!res || !res.ok) {
-        throw new Error(res?.error || '应用补丁失败');
-      }
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-success';
-        unlockResultText.innerHTML = `<strong>🎉 解锁成功！</strong><br>${res.message || '补丁已安全写入。'}`;
-      }
-    } catch (e) {
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-error';
-        unlockResultText.innerHTML = `<strong>❌ 应用补丁失败：</strong>${e.message}`;
-      }
-    } finally {
-      isUnlocking = false;
-      await refreshUnlockStatus();
-    }
-  });
-
-  btnRestoreUnlock?.addEventListener('click', async () => {
-    if (isUnlocking) return;
-    isUnlocking = true;
-    if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
-
-    try {
-      const res = await invokeUnlockApi('restore');
-      if (!res || !res.ok) {
-        throw new Error(res?.error || '恢复原版失败');
-      }
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-success';
-        unlockResultText.innerHTML = `<strong>🔄 恢复成功！</strong><br>${res.message || '已成功还原官方原版二进制。'}`;
-      }
-    } catch (e) {
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-error';
-        unlockResultText.innerHTML = `<strong>❌ 恢复原版失败：</strong>${e.message}`;
-      }
-    } finally {
-      isUnlocking = false;
-      await refreshUnlockStatus();
-    }
-  });
-
-  const UNLOCK_POST_URL = 'https://linux.do/t/topic/3117832';
-  let unlockToastTimer = null;
-
-  function showUnlockToast(msg) {
-    if (!unlockLinkToast) return;
-    if (unlockToastTimer) clearTimeout(unlockToastTimer);
-    unlockLinkToast.textContent = msg;
-    unlockLinkToast.style.display = 'block';
-    unlockToastTimer = setTimeout(() => {
-      unlockLinkToast.style.display = 'none';
-    }, 4500);
-  }
-
-  async function openUnlockAuthorPost() {
-    let opened = false;
-    try {
-      if (window.contextMeterAPI?.openExternal) {
-        const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
-        if (res && res.ok) opened = true;
-      }
-    } catch {}
-
-    if (!opened) {
-      try {
-        const w = window.open(UNLOCK_POST_URL, '_blank');
-        if (w) opened = true;
-      } catch {}
-    }
-
-    if (opened) {
-      showUnlockToast('已在系统默认浏览器中打开原作者帖子');
-    } else {
-      copyUnlockPostUrl(true);
-    }
-  }
-
-  function copyUnlockPostUrl(fromFailedOpen = false) {
-    let copied = false;
-    try {
-      if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(UNLOCK_POST_URL);
-        copied = true;
-      }
-    } catch {}
-    if (!copied) {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = UNLOCK_POST_URL;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        copied = true;
-      } catch {}
-    }
-    showUnlockToast(fromFailedOpen
-      ? '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。'
-      : '原作者帖子链接已成功复制到剪贴板！');
-  }
-
-  linkUnlockAuthor?.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    void openUnlockAuthorPost();
-  });
-
-  linkUnlockAuthor?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      e.stopPropagation();
-      void openUnlockAuthorPost();
-    }
-  });
-
-  btnCopyUnlockLink?.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    copyUnlockPostUrl(false);
-  });
-
   // -------------------------------------------------------------
   // 模块 2: 客户端界面汉化 (AntigravityChinese)
   // -------------------------------------------------------------
@@ -8517,9 +8498,8 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
-  // 静默初始化检测一次解锁状态与各模块状态
+  // 静默初始化检测各模块状态
   setTimeout(() => {
-    void refreshUnlockStatus();
     void refreshModulesDisplay();
   }, 500);
   setTimeout(() => {
@@ -10769,11 +10749,6 @@ function renderHeatmapGrid(forceRebuild = false) {
 
     updateRingAndBubble(d, session, pct, danger, stale, incomplete);
 
-    // 上下文预算与解锁状态自动联动：若观测到预算突破 256,000，且解锁抽屉中记录仍为待重启或未确认，则自动触发刷新同步
-    if (d?.budget && d.budget > 256000 && currentUnlockStatus && currentUnlockStatus.status !== 'verified_active') {
-      void refreshUnlockStatus();
-    }
-
     const status = disp.isError
       ? disp.statusText
       : stale ? '最近请求统计读取异常或延迟，不能判断剩余空间。'
@@ -11236,17 +11211,6 @@ function renderHeatmapGrid(forceRebuild = false) {
     '账号归属地区：': 'Account Region:',
     '订阅结算地区：': 'Billing Region:',
     '本地代理网络直连（免开 TUN 模式）': 'Local Proxy Direct Connect (No TUN)',
-    '解除 256K 上下文限制（实验性补丁）': 'Unlock 256K Context Limit (Experimental)',
-    '当前补丁状态': 'Patch Status',
-    '正在检测客户端上下文限制状态…': 'Checking client context limit status…',
-    '💡 功能说明与注意事项': '💡 Overview & Notes',
-    '突破默认上限': 'Raise Default Cap',
-    '：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。': ': Client caps context at 256K by default; applying this patch restores model limits up to ~1M.',
-    '安全可随时还原': 'Safe & Reversible',
-    '：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。': ': Automatically backs up original files before patching; restore anytime with one click.',
-    '客户端更新提示': 'Client Update Note',
-    '：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。': ': Major client updates overwrite binaries; simply re-apply the patch here afterward.',
-    '查看底层程序路径与备份详情': 'View Binary Path & Backup Details',
     '本地代理地址（支持 HTTP / SOCKS5，如 http://127.0.0.1:7897）：': 'Local Proxy URL (HTTP / SOCKS5, e.g. http://127.0.0.1:7897):',
     '不走代理的地址（本地回环默认直连）：': 'Bypass Proxy Addresses (Loopback Direct):',
     '🔍 测试代理连接': '🔍 Test Proxy',
@@ -11398,7 +11362,35 @@ function renderHeatmapGrid(forceRebuild = false) {
     '当前版本状态': 'Current Version Status',
     '拉取最新提交并免重启热生效': 'Pull latest commits and hot-reload without restart',
     '打开 Antigravity Suite 统一设置面板': 'Open Antigravity Suite Settings',
-    '发现新版本，点击打开设置一键更新': 'Update available — click to open Settings and update'
+    '发现新版本，点击打开设置一键更新': 'Update available — click to open Settings and update',
+    '📱 远程设置': '📱 Remote',
+    '远程通道与隧道': 'Remote Channels & Tunnel',
+    '刷新状态': 'Refresh',
+    '重置令牌': 'Reset Token',
+    'Remote 页面显示内容': 'Remote Page Visibility',
+    '恢复默认': 'Reset Default',
+    '顶部上下文窗口面板': 'Topbar Context Window Panel',
+    '顶部本机已记录用量面板': 'Topbar Local Usage Panel',
+    '顶部模型配额胶囊': 'Topbar Model Quota Pill',
+    '顶部通道连接状态副标题': 'Topbar Channel Meta Subtitle',
+    '左侧会话与窗口抽屉': 'Conversation & Window Drawer',
+    'AI 思考过程折叠区': 'Collapsible Thinking Process',
+    '底部快捷操作与下一步建议': 'Bottom Quick Chips & Suggestions',
+    '输入区工具栏（模型/权限等）': 'Composer Tools (Model / Perms / Upload)',
+    '待审批操作提醒横幅': 'Pending Approvals Banner',
+    '快捷提示词': 'Quick Prompts',
+    '+ 新增': '+ Add',
+    '保存快捷提示词': 'Save Quick Prompts',
+    '局域网': 'LAN',
+    'Cloudflare 隧道': 'Cloudflare Tunnel',
+    '固定域名': 'Fixed Domain',
+    '公网隧道已停用 · 点击启用公网域名': 'Tunnel disabled · click to enable public access',
+    '点击上方复选框或「固定域名」开启公网访问': 'Toggle checkbox or Fixed Domain to enable tunnel',
+    '获取 Token 前往 Cloudflare →': 'Get Token on Cloudflare →',
+    '前往 Cloudflare 获取 Token →': 'Get Token on Cloudflare →',
+    '保存并启用': 'Save & Enable',
+    '改用免登录临时隧道': 'Use Quick Tunnel',
+    '取消': 'Cancel'
   };
 
   function translateSuiteDynamicFragmentEn(fragment) {
@@ -11471,6 +11463,182 @@ function renderHeatmapGrid(forceRebuild = false) {
     showChatNav: true
   };
   let suiteFeatureFlags = { ...DEFAULT_SUITE_FEATURE_FLAGS };
+
+  const DEFAULT_QUICK_PROMPTS = [
+    { id: 'compact', label: '/compact 压缩', text: '/compact', title: '快速填入 /compact 压缩上下文命令' },
+    { id: 'plan', label: '/plan 规划', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式' },
+    { id: 'reload', label: '重载规则', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令' }
+  ];
+
+  function sanitizeQuickPromptsList(raw) {
+    if (!Array.isArray(raw)) return null;
+    const out = [];
+    for (let i = 0; i < raw.length; i++) {
+      const item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      const label = String(item.label ?? '').trim();
+      const text = String(item.text ?? '');
+      if (!label || !text.trim()) continue;
+      const rawId = String(item.id || '').trim();
+      const id = rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) ? rawId : `custom-${i}`;
+      out.push({
+        id,
+        label: label.slice(0, 40),
+        text: text.slice(0, 2000),
+        title: String(item.title || '').trim().slice(0, 120)
+      });
+      if (out.length >= 12) break;
+    }
+    return out;
+  }
+
+  let suiteQuickPrompts = (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_suite_quick_prompts') : '';
+      if (raw) {
+        const parsed = sanitizeQuickPromptsList(JSON.parse(raw));
+        if (parsed) return parsed;
+      }
+    } catch {}
+    return null;
+  })();
+
+  const DEFAULT_REMOTE_DISPLAY_CONFIG = {
+    showContextPanel: true,
+    showUsagePanel: true,
+    showQuotaPill: true,
+    showChannelMeta: true,
+    showSidebar: true,
+    showThinking: true,
+    showQuickChips: true,
+    showComposerTools: true,
+    showApprovals: true
+  };
+
+  function sanitizeRemoteDisplayConfig(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const out = {};
+    for (const [k, defVal] of Object.entries(DEFAULT_REMOTE_DISPLAY_CONFIG)) {
+      out[k] = typeof src[k] === 'boolean' ? src[k] : defVal;
+    }
+    return out;
+  }
+
+  const REMOTE_DISPLAY_BINDINGS = [
+    ['set-remote-ctx-panel', 'showContextPanel'],
+    ['set-remote-usage-panel', 'showUsagePanel'],
+    ['set-remote-quota-pill', 'showQuotaPill'],
+    ['set-remote-channel-meta', 'showChannelMeta'],
+    ['set-remote-sidebar', 'showSidebar'],
+    ['set-remote-thinking', 'showThinking'],
+    ['set-remote-quick-chips', 'showQuickChips'],
+    ['set-remote-composer-tools', 'showComposerTools'],
+    ['set-remote-approvals', 'showApprovals']
+  ];
+
+  const DEFAULT_CLOUDFLARED_INSTALL_COMMANDS = {
+    darwin: 'brew install cloudflared',
+    win32: 'winget install --id Cloudflare.cloudflared',
+    linux: 'mkdir -p ~/.local/bin && curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/.local/bin/cloudflared && chmod +x ~/.local/bin/cloudflared'
+  };
+
+  const remoteSettingsState = {
+    loading: false,
+    busy: false,
+    pendingAction: '',
+    data: null,
+    error: '',
+    tunnelConfigOpen: false,
+    draftHost: null,
+    draftToken: '',
+    installPlatform: '',
+    installCopiedAt: 0,
+    installCopyTimer: null,
+    pollTimer: null
+  };
+
+  function detectClientInstallPlatform(data) {
+    const serverPlatform = String(data?.cloudflaredInstall?.platform || '').trim();
+    if (serverPlatform && DEFAULT_CLOUDFLARED_INSTALL_COMMANDS[serverPlatform]) return serverPlatform;
+    try {
+      const navPlat = String(navigator?.platform || navigator?.userAgent || '').toLowerCase();
+      if (navPlat.includes('mac') || navPlat.includes('darwin')) return 'darwin';
+      if (navPlat.includes('win')) return 'win32';
+    } catch {}
+    return 'linux';
+  }
+
+  function resolveCloudflaredInstallGuideForSettings(data) {
+    const serverCmds = (data?.cloudflaredInstall?.commands && typeof data.cloudflaredInstall.commands === 'object')
+      ? data.cloudflaredInstall.commands
+      : {};
+    const commands = {
+      darwin: String(serverCmds.darwin || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.darwin),
+      win32: String(serverCmds.win32 || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.win32),
+      linux: String(serverCmds.linux || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.linux)
+    };
+    const hostPlatform = detectClientInstallPlatform(data);
+    const activePlatform = (remoteSettingsState.installPlatform && commands[remoteSettingsState.installPlatform])
+      ? remoteSettingsState.installPlatform
+      : hostPlatform;
+    return {
+      hostPlatform,
+      activePlatform,
+      command: commands[activePlatform] || commands.darwin,
+      commands
+    };
+  }
+
+  async function copyRemoteInstallCommand(text) {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    try {
+      if (navigator?.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {}
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = Boolean(document.execCommand && document.execCommand('copy'));
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function escapeSuiteHtml(str) {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function suiteTr(zh, en) {
+    const entry = findSupportedLocaleEntry(suiteEnhancerPrefs.locale);
+    return entry.hansCode === 'en' ? en : zh;
+  }
+
+  function onSuiteSettingsClosed() {
+    if (remoteSettingsState.pollTimer) {
+      clearTimeout(remoteSettingsState.pollTimer);
+      remoteSettingsState.pollTimer = null;
+    }
+    if (remoteSettingsState.installCopyTimer) {
+      clearTimeout(remoteSettingsState.installCopyTimer);
+      remoteSettingsState.installCopyTimer = null;
+    }
+    remoteSettingsState.tunnelConfigOpen = false;
+    remoteSettingsState.draftHost = null;
+    remoteSettingsState.draftToken = '';
+  }
 
   function findSupportedLocaleEntry(codeRaw) {
     const clean = String(codeRaw || '').trim();
@@ -11598,23 +11766,18 @@ function renderHeatmapGrid(forceRebuild = false) {
 
     el('summary-subtier-wrap')?.remove?.();
     el('btn-edit-plan-custom')?.remove?.();
-    ['p-det-subtier-readonly', 'p-det-country', 'p-det-region', 'p-det-currency', 'btn-jump-plan-settings'].forEach(id => {
+    ['p-det-subtier-readonly', 'p-det-country', 'p-det-region', 'p-det-currency'].forEach(id => {
       const node = el(id);
       if (node) {
-        node.style.display = id === 'btn-jump-plan-settings' ? 'inline-flex' : 'inline-block';
+        node.style.display = 'inline-block';
       }
     });
 
-    // 3. 网络代理与上下文加长移入「网络与高级」分页，并移除 #panel 内原有抽屉
+    // 3. 网络代理移入「网络与高级」分页，并移除 #panel 内原有抽屉
     moveTo('proxy-badge', 'settings-slot-proxy-badge');
     const proxyBody = moveTo('proxy-drawer-body', 'settings-slot-proxy');
     if (proxyBody) proxyBody.style.display = 'block';
     el('proxy-notun-drawer')?.remove?.();
-
-    moveTo('unlock-badge', 'settings-slot-unlock-badge');
-    const unlockBody = moveTo('unlock-drawer-body', 'settings-slot-unlock');
-    if (unlockBody) unlockBody.style.display = 'block';
-    el('context-unlock-drawer')?.remove?.();
 
     enhanceSuiteDropdownsOnce();
     return true;
@@ -11679,6 +11842,11 @@ function renderHeatmapGrid(forceRebuild = false) {
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
       localStorage?.setItem?.('antigravityHansEnglishLabels', suiteEnhancerPrefs.englishLabels ? '1' : '0');
       localStorage?.setItem?.('ag_suite_feature_flags', JSON.stringify(suiteFeatureFlags));
+      if (suiteQuickPrompts === null) {
+        localStorage?.removeItem?.('ag_suite_quick_prompts');
+      } else {
+        localStorage?.setItem?.('ag_suite_quick_prompts', JSON.stringify(suiteQuickPrompts));
+      }
     } catch {}
     try {
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
@@ -11696,7 +11864,8 @@ function renderHeatmapGrid(forceRebuild = false) {
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
             englishLabels: Boolean(suiteEnhancerPrefs.englishLabels),
-            featureFlags: { ...suiteFeatureFlags }
+            featureFlags: { ...suiteFeatureFlags },
+            quickPrompts: suiteQuickPrompts ? suiteQuickPrompts.map(item => ({ ...item })) : null
           }
         }));
       }
@@ -12378,15 +12547,606 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (typeof applyHostAppearancePreferences === 'function') {
       applyHostAppearancePreferences(uiPrefs);
     }
+    if ('quickPrompts' in uiPrefs) {
+      suiteQuickPrompts = uiPrefs.quickPrompts === null
+        ? null
+        : sanitizeQuickPromptsList(uiPrefs.quickPrompts);
+    }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
     applySuiteFeatureFlags();
+    renderQuickPromptsEditor();
     renderTerminalGrid();
     applySuiteShadowLocale();
   }
 
+  function getSuiteQuickPrompts() {
+    return (suiteQuickPrompts || DEFAULT_QUICK_PROMPTS).map(item => ({ ...item }));
+  }
+
+  async function setSuiteQuickPrompts(list, opts = {}) {
+    if (list === null) {
+      suiteQuickPrompts = null;
+    } else {
+      const cleaned = sanitizeQuickPromptsList(list);
+      suiteQuickPrompts = cleaned === null ? [] : cleaned;
+    }
+    dispatchSuitePrefsChanged();
+    renderQuickPromptsEditor();
+    const statusEl = el('quick-prompts-status');
+    if (statusEl) {
+      statusEl.textContent = suiteQuickPrompts === null
+        ? suiteTr('✅ 已恢复默认快捷提示词', '✅ Quick prompts reset to default')
+        : suiteTr(`✅ 已保存 ${suiteQuickPrompts.length} 条快捷提示词`, `✅ Saved ${suiteQuickPrompts.length} quick prompt(s)`);
+    }
+    if (!opts?.skipPersist) {
+      await saveSuiteUiPrefs({
+        quickPrompts: suiteQuickPrompts === null ? null : suiteQuickPrompts.map(item => ({ ...item }))
+      });
+    }
+    return getSuiteQuickPrompts();
+  }
+
+  async function resetSuiteQuickPrompts() {
+    return await setSuiteQuickPrompts(null);
+  }
+
+  function appendQuickPromptEditorRow(listEl, item, idx) {
+    const row = document.createElement('div');
+    row.className = 'qp-row';
+    row.setAttribute('data-qp-idx', String(idx));
+
+    const labelInp = document.createElement('input');
+    labelInp.type = 'text';
+    labelInp.className = 'qp-label-input';
+    labelInp.placeholder = suiteTr('按钮文案 (如 /plan)', 'Button label');
+    labelInp.value = String(item?.label || '');
+    labelInp.setAttribute('value', labelInp.value);
+
+    const textInp = document.createElement('input');
+    textInp.type = 'text';
+    textInp.className = 'qp-text-input';
+    textInp.placeholder = suiteTr('填入输入框的完整提示词…', 'Prompt text to insert…');
+    textInp.value = String(item?.text || '');
+    textInp.setAttribute('value', textInp.value);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'qp-del-btn';
+    delBtn.textContent = '×';
+    delBtn.title = suiteTr('删除此条', 'Remove');
+    delBtn.addEventListener('click', () => {
+      row.remove?.();
+    });
+
+    row.appendChild(labelInp);
+    row.appendChild(textInp);
+    row.appendChild(delBtn);
+    listEl.appendChild(row);
+  }
+
+  function renderQuickPromptsEditor() {
+    const listEl = el('quick-prompts-editor-list');
+    if (!listEl) return;
+    listEl.replaceChildren();
+    const items = suiteQuickPrompts !== null ? suiteQuickPrompts : DEFAULT_QUICK_PROMPTS;
+    for (let i = 0; i < items.length; i++) {
+      appendQuickPromptEditorRow(listEl, items[i], i);
+    }
+  }
+
+  function collectQuickPromptsFromEditor() {
+    const listEl = el('quick-prompts-editor-list');
+    if (!listEl) return [];
+    const rows = Array.from(listEl.querySelectorAll('.qp-row') || []);
+    const out = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const labelInp = row.querySelector('.qp-label-input');
+      const textInp = row.querySelector('.qp-text-input');
+      const label = String(labelInp?.value || '').trim();
+      const text = String(textInp?.value || '');
+      if (!label || !text.trim()) continue;
+      out.push({
+        id: `custom-${i}`,
+        label: label.slice(0, 40),
+        text: text.slice(0, 2000),
+        title: label.slice(0, 120)
+      });
+      if (out.length >= 12) break;
+    }
+    return out;
+  }
+
+  function broadcastRemoteStateChanged(data) {
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('ag-remote-state-changed', {
+          detail: { data }
+        }));
+      }
+    } catch {}
+  }
+
+  function getRemoteDisplayConfig() {
+    return sanitizeRemoteDisplayConfig(remoteSettingsState.data?.remoteDisplay);
+  }
+
+  function syncRemoteDisplayCheckboxes(displayCfg) {
+    const cfg = sanitizeRemoteDisplayConfig(displayCfg || remoteSettingsState.data?.remoteDisplay);
+    for (const [elId, key] of REMOTE_DISPLAY_BINDINGS) {
+      const box = el(elId);
+      if (box) box.checked = Boolean(cfg[key]);
+    }
+  }
+
+  function collectRemoteDisplayFromUI() {
+    const out = {};
+    for (const [elId, key] of REMOTE_DISPLAY_BINDINGS) {
+      const box = el(elId);
+      if (box) out[key] = Boolean(box.checked);
+    }
+    return sanitizeRemoteDisplayConfig({
+      ...(remoteSettingsState.data?.remoteDisplay || DEFAULT_REMOTE_DISPLAY_CONFIG),
+      ...out
+    });
+  }
+
+  function resolveRemoteChannelsForSettings(data) {
+    if (!data) return [];
+    const tsList = Array.isArray(data.tailscaleUrls) ? data.tailscaleUrls : [];
+    const lanList = Array.isArray(data.lanUrls) ? data.lanUrls : [];
+    const rawHost = rawUrl => {
+      try { return new URL(String(rawUrl || '')).hostname || ''; } catch { return ''; }
+    };
+    let channels = Array.isArray(data.channels) && data.channels.length
+      ? data.channels.map(ch => ({ ...ch }))
+      : [
+          {
+            key: 'lan',
+            label: '局域网',
+            labelEn: 'LAN',
+            enabled: data.enabledChannels?.lan !== false,
+            available: (data.enabledChannels?.lan !== false) && lanList.length > 0,
+            displayHost: rawHost(lanList[0]?.url)
+          },
+          {
+            key: 'tailscale',
+            label: 'Tailscale',
+            labelEn: 'Tailscale',
+            enabled: data.enabledChannels?.tailscale !== false,
+            available: (data.enabledChannels?.tailscale !== false) && tsList.length > 0,
+            displayHost: data.tailscaleDnsName || rawHost(tsList[0]?.url)
+          },
+          {
+            key: 'bonjour',
+            label: 'Bonjour',
+            labelEn: 'Bonjour',
+            enabled: data.enabledChannels?.bonjour !== false,
+            available: (data.enabledChannels?.bonjour !== false) && Boolean(data.bonjourHost && lanList.length > 0),
+            displayHost: data.bonjourHost || ''
+          },
+          {
+            key: 'tunnel',
+            label: 'Cloudflare 隧道',
+            labelEn: 'Cloudflare Tunnel',
+            enabled: Boolean(data.enabledChannels?.tunnel),
+            available: Boolean(data.tunnelAvailable),
+            state: data.tunnelState || 'stopped',
+            mode: data.tunnelMode || 'quick',
+            displayHost: data.tunnelPublicUrl ? rawHost(data.tunnelPublicUrl) : '',
+            tunnelHostname: data.tunnelHostname || '',
+            error: data.tunnelError || ''
+          }
+        ];
+
+    const switchingTunnelMode = Boolean(
+      remoteSettingsState.busy &&
+      (remoteSettingsState.pendingAction === 'quick' || remoteSettingsState.pendingAction === 'named')
+    );
+    if (switchingTunnelMode) {
+      channels = channels.map(ch => (ch.key === 'tunnel'
+        ? { ...ch, available: false, displayHost: '', rawHost: '' }
+        : ch));
+    }
+    return channels;
+  }
+
+  function scheduleRemoteSettingsPoll() {
+    if (remoteSettingsState.pollTimer) {
+      clearTimeout(remoteSettingsState.pollTimer);
+      remoteSettingsState.pollTimer = null;
+    }
+    if (activeSettingsTab !== 'remote') return;
+    const chs = Array.isArray(remoteSettingsState.data?.channels) ? remoteSettingsState.data.channels : [];
+    const tch = chs.find(c => c.key === 'tunnel');
+    if (tch && tch.state === 'starting') {
+      remoteSettingsState.pollTimer = setTimeout(() => {
+        remoteSettingsState.pollTimer = null;
+        if (activeSettingsTab === 'remote') {
+          void loadRemoteSettingsInfo(false);
+        }
+      }, 1500);
+    }
+  }
+
+  function renderRemoteSettingsChannels() {
+    const root = el('settings-remote-channels-root');
+    if (!root) return;
+    const data = remoteSettingsState.data;
+    const resetBtn = el('ag-remote-reset');
+    const refreshBtn = el('btn-settings-remote-refresh');
+    if (resetBtn) resetBtn.disabled = Boolean(remoteSettingsState.loading || remoteSettingsState.busy);
+    if (refreshBtn) {
+      refreshBtn.disabled = Boolean(remoteSettingsState.loading || remoteSettingsState.busy);
+      refreshBtn.textContent = (remoteSettingsState.loading || remoteSettingsState.busy)
+        ? suiteTr('处理中…', 'Working…')
+        : suiteTr('刷新状态', 'Refresh');
+    }
+
+    if (remoteSettingsState.loading && !data) {
+      root.innerHTML = `<div class="settings-card-desc">${escapeSuiteHtml(suiteTr('⏳ 正在读取远程通道状态…', '⏳ Loading remote channels…'))}</div>`;
+      return;
+    }
+    if (!data) {
+      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('未能连接到本地远程桥接服务', 'Failed to connect to local remote bridge'))}</div>`;
+      return;
+    }
+
+    const channels = resolveRemoteChannelsForSettings(data);
+    const availableList = channels.filter(c => (c.enabled !== false) && c.available);
+    const activeChannel = availableList.find(c => c.key === 'tunnel')
+      || availableList.find(c => c.key === 'tailscale')
+      || availableList.find(c => c.key === 'lan')
+      || availableList[0]
+      || null;
+    const activeKey = activeChannel?.key || 'none';
+    const tunnelCh = channels.find(c => c.key === 'tunnel') || null;
+    const busyAny = Boolean(remoteSettingsState.loading || remoteSettingsState.busy);
+    const switchingTunnelMode = Boolean(
+      remoteSettingsState.busy &&
+      (remoteSettingsState.pendingAction === 'quick' || remoteSettingsState.pendingAction === 'named')
+    );
+
+    const channelsHtml = `<div class="ag-rp-channels">${channels.map(ch => {
+      const label = suiteTr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
+      if (ch.key === 'tunnel') {
+        const isStarting = switchingTunnelMode || ch.state === 'starting';
+        const isRunning = !switchingTunnelMode && ch.state === 'running' && ch.available;
+        const checked = !switchingTunnelMode && Boolean(ch.enabled || isRunning || ch.state === 'starting');
+        const isNamedMode = ch.mode === 'named';
+        const modeHint = isNamedMode ? suiteTr('固定域名', 'Fixed Domain') : suiteTr('免登录零配置', 'Quick (Zero-Config)');
+        const cfgBtnLabel = isNamedMode ? suiteTr('固定域名 ▾', 'Fixed Domain ▾') : suiteTr('免登录零配置 ▾', 'Zero-Config ▾');
+        const statusHint = switchingTunnelMode
+          ? (remoteSettingsState.pendingAction === 'quick'
+              ? suiteTr('正在切换临时隧道…', 'Switching to quick tunnel…')
+              : suiteTr('正在切换固定域名…', 'Switching to fixed domain…'))
+          : isStarting
+            ? (ch.displayHost || suiteTr('正在分配公网隧道…', 'Provisioning Tunnel…'))
+            : (isRunning
+                ? (ch.displayHost || modeHint)
+                : (ch.binaryAvailable === false
+                    ? suiteTr('缺少 cloudflared（见下方一键安装命令）', 'cloudflared not found (see install guide below)')
+                    : suiteTr('免登录零配置 · 点击启用', 'Zero-Config · Click to enable')));
+        return `
+          <div id="ag-rp-tunnel-toggle" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tunnel" data-active="${activeKey === 'tunnel' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
+            <span class="ag-rp-ch-check">
+              <span aria-hidden="true">${checked ? '☑' : '☐'}</span>
+              <span class="ag-rp-ch-name">${escapeSuiteHtml(label)}</span>
+              <span class="ag-rp-ch-addr">${isStarting ? '<span class="ag-rp-spin"></span>' : ''}${escapeSuiteHtml(statusHint)}</span>
+            </span>
+            <button id="ag-rp-tunnel-cfg-btn" class="ag-rp-ch-cfg" type="button" title="${escapeSuiteHtml(suiteTr('切换免登录零配置或配置 Cloudflare 固定域名', 'Switch Quick Zero-Config or Configure Fixed Domain'))}">${escapeSuiteHtml(cfgBtnLabel)}</button>
+          </div>
+        `;
+      }
+      const checked = ch.enabled !== false;
+      const addrHint = checked
+        ? (ch.displayHost || (ch.available ? '' : suiteTr('当前网络不可用', 'Unavailable')))
+        : suiteTr('已停用 · 点击重新启用', 'Disabled · Click to enable');
+      return `
+        <button id="ag-rp-toggle-${escapeSuiteHtml(ch.key)}" class="ag-rp-channel ag-rp-check" type="button" role="checkbox" aria-checked="${checked ? 'true' : 'false'}" data-ch="${escapeSuiteHtml(ch.key)}" data-active="${activeKey === ch.key ? 'true' : 'false'}" ${busyAny ? 'disabled' : ''}>
+          <span class="ag-rp-ch-check">
+            <span aria-hidden="true">${checked ? '☑' : '☐'}</span>
+            <span class="ag-rp-ch-name">${escapeSuiteHtml(label)}</span>
+          </span>
+          <span class="ag-rp-ch-addr">${escapeSuiteHtml(addrHint)}</span>
+        </button>
+      `;
+    }).join('')}</div>`;
+
+    const tunnelHostDraft = remoteSettingsState.draftHost !== null
+      ? remoteSettingsState.draftHost
+      : (tunnelCh?.tunnelHostname || '');
+    const tunnelTokenDraft = remoteSettingsState.draftToken || '';
+    const hasSavedToken = Boolean(tunnelCh?.hasTunnelToken || tunnelCh?.hasToken || data?.hasTunnelToken);
+    const tokenConfiguredHint = hasSavedToken
+      ? suiteTr('（已配置 Token，留空保留原值）', '(Token saved — leave blank to keep)')
+      : suiteTr('（从 Cloudflare Zero Trust → Tunnels 获取）', '(From Cloudflare Zero Trust → Tunnels)');
+
+    const formHtml = remoteSettingsState.tunnelConfigOpen ? `
+      <div id="ag-rp-tunnel-form" class="ag-rp-tunnel-form">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+          <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（可选高级配置）', 'Cloudflare Fixed Domain (Optional)'))}</span>
+          <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
+        </div>
+        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('默认已启用免登录临时隧道（零配置开箱可用）；仅当需要绑定自有固定域名时才需填写下方信息。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span>${escapeSuiteHtml(suiteTr('自定义域名（例: ag.example.com）', 'Custom Hostname (e.g. ag.example.com)'))}</span>
+          <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="ag.example.com" value="${escapeSuiteHtml(tunnelHostDraft)}" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span>${escapeSuiteHtml(`Tunnel Token ${tokenConfiguredHint}`)}</span>
+          <input id="ag-rp-cf-token" class="ag-rp-input" type="password" placeholder="eyJ..." value="${escapeSuiteHtml(tunnelTokenDraft)}" />
+        </label>
+        <div class="ag-rp-form-actions">
+          <button id="ag-rp-cf-save" class="ag-rp-btn primary" type="button" ${busyAny ? 'disabled' : ''}>${remoteSettingsState.pendingAction === 'named' && remoteSettingsState.busy ? '<span class="ag-rp-spin"></span>' : ''}${escapeSuiteHtml(suiteTr('保存并启用', 'Save & Enable'))}</button>
+          <button id="ag-rp-cf-quick" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${remoteSettingsState.pendingAction === 'quick' && remoteSettingsState.busy ? '<span class="ag-rp-spin"></span>' : ''}${escapeSuiteHtml(suiteTr('改用免登录临时隧道', 'Use Quick Tunnel'))}</button>
+          <button id="ag-rp-cf-cancel" class="ag-rp-btn" type="button">${escapeSuiteHtml(suiteTr('取消', 'Cancel'))}</button>
+        </div>
+      </div>
+    ` : '';
+
+    const installGuide = resolveCloudflaredInstallGuideForSettings(data);
+    const missingCloudflared = tunnelCh?.binaryAvailable === false;
+    const copiedInstallRecent = (Date.now() - remoteSettingsState.installCopiedAt) < 2000;
+    const platformTabsHtml = [
+      ['darwin', 'macOS'],
+      ['win32', 'Windows'],
+      ['linux', 'Linux']
+    ].map(([platKey, platLabel]) => (
+      `<button id="ag-rp-install-tab-${platKey}" class="ag-rp-install-tab" type="button" data-install-platform="${platKey}" data-active="${installGuide.activePlatform === platKey ? 'true' : 'false'}">${platLabel}</button>`
+    )).join('');
+    const installGuideHtml = `
+      <div id="ag-rp-cf-install-guide" class="ag-rp-install-guide" data-missing="${missingCloudflared ? 'true' : 'false'}">
+        <div class="ag-rp-install-hdr">
+          <span class="ag-rp-install-title">
+            <span>${escapeSuiteHtml(missingCloudflared
+              ? suiteTr('安装 cloudflared（免登录零配置隧道依赖）', 'Install cloudflared (Required for Zero-Config Tunnel)')
+              : suiteTr('cloudflared 安装命令引导', 'cloudflared Install Command'))}</span>
+            <span class="ag-rp-install-badge">${escapeSuiteHtml(missingCloudflared
+              ? suiteTr('未检测到', 'Not Found')
+              : suiteTr('✓ 本机已安装', '✓ Installed'))}</span>
+          </span>
+          <div class="ag-rp-install-tabs" role="tablist" aria-label="${escapeSuiteHtml(suiteTr('选择操作系统', 'Select OS'))}">${platformTabsHtml}</div>
+        </div>
+        <div class="ag-rp-install-cmd-row">
+          <code id="ag-rp-cf-install-cmd" class="ag-rp-install-cmd" title="${escapeSuiteHtml(installGuide.command)}">${escapeSuiteHtml(installGuide.command)}</code>
+          <button id="ag-rp-cf-copy-install" class="ag-rp-btn${missingCloudflared ? ' primary' : ''}" type="button" title="${escapeSuiteHtml(suiteTr('一键复制安装命令', 'Copy install command'))}">${escapeSuiteHtml(copiedInstallRecent ? suiteTr('✓ 已复制', '✓ Copied') : suiteTr('📋 复制命令', '📋 Copy'))}</button>
+        </div>
+        <div class="ag-rp-install-foot">
+          <span>${escapeSuiteHtml(missingCloudflared
+            ? suiteTr('在终端粘贴运行上方命令完成安装后，点击右侧重新检测即可零配置启用公网隧道。', 'Run the command above in Terminal, then click Re-check to enable zero-config public tunnel.')
+            : suiteTr('无需注册或登录 Cloudflare 账号；在新设备部署时可一键复制上方命令安装。', 'No Cloudflare account required; copy the command above when setting up on a new machine.'))}</span>
+          ${missingCloudflared
+            ? `<button id="ag-rp-cf-recheck" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeSuiteHtml(suiteTr('↻ 重新检测', '↻ Re-check'))}</button>`
+            : ''}
+        </div>
+      </div>
+    `;
+
+    const errMsg = tunnelCh?.error || remoteSettingsState.error || '';
+    const errHtml = errMsg ? `<div class="ag-rp-err">${escapeSuiteHtml(errMsg)}</div>` : '';
+
+    root.innerHTML = `${channelsHtml}${formHtml}${installGuideHtml}${errHtml}`;
+
+    channels.filter(c => c.key !== 'tunnel').forEach(ch => {
+      const btn = root.querySelector(`#ag-rp-toggle-${ch.key}`);
+      btn?.addEventListener('click', ev => {
+        ev.stopPropagation();
+        if (remoteSettingsState.busy) return;
+        const nextOn = ch.enabled === false;
+        void configureRemoteSettings({ enabledChannels: { [ch.key]: nextOn } });
+      });
+    });
+
+    const toggleRow = root.querySelector('#ag-rp-tunnel-toggle');
+    const cfgBtn = root.querySelector('#ag-rp-tunnel-cfg-btn');
+    cfgBtn?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.tunnelConfigOpen = !remoteSettingsState.tunnelConfigOpen;
+      remoteSettingsState.error = '';
+      renderRemoteSettingsChannels();
+    });
+    const onTunnelRowToggle = ev => {
+      if (ev.target && cfgBtn && (ev.target === cfgBtn || cfgBtn.contains?.(ev.target))) return;
+      ev.stopPropagation();
+      if (remoteSettingsState.busy) return;
+      const isOn = Boolean(tunnelCh?.enabled || tunnelCh?.state === 'running' || tunnelCh?.state === 'starting');
+      void configureRemoteSettings({ enabled: !isOn, enabledChannels: { tunnel: !isOn } });
+    };
+    toggleRow?.addEventListener('click', onTunnelRowToggle);
+    toggleRow?.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        onTunnelRowToggle(ev);
+      }
+    });
+
+    const cfLink = root.querySelector('#ag-rp-cf-get-token');
+    cfLink?.addEventListener('click', async ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const targetUrl = cfLink.getAttribute('href') || 'https://one.dash.cloudflare.com/?to=/:account/networks/tunnels';
+      try {
+        await invokeHostBridge('/open-external-url', { url: targetUrl, dryRun: false }, 'openExternalUrl');
+      } catch {}
+    });
+
+    const hostInput = root.querySelector('#ag-rp-cf-host');
+    const tokenInput = root.querySelector('#ag-rp-cf-token');
+    hostInput?.addEventListener('input', ev => {
+      remoteSettingsState.draftHost = String(ev?.target?.value ?? hostInput.value ?? '');
+    });
+    tokenInput?.addEventListener('input', ev => {
+      remoteSettingsState.draftToken = String(ev?.target?.value ?? tokenInput.value ?? '');
+    });
+
+    root.querySelector('#ag-rp-cf-save')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const hostname = String(hostInput?.value ?? remoteSettingsState.draftHost ?? '').trim();
+      const token = String(tokenInput?.value ?? remoteSettingsState.draftToken ?? '').trim();
+      remoteSettingsState.draftHost = hostname;
+      remoteSettingsState.draftToken = token;
+      if (!hostname) {
+        remoteSettingsState.error = suiteTr('请先填写自定义域名（如 ag.example.com）', 'Please enter a custom hostname');
+        remoteSettingsState.tunnelConfigOpen = true;
+        renderRemoteSettingsChannels();
+        return;
+      }
+      if (!token && !hasSavedToken) {
+        remoteSettingsState.error = suiteTr('首次配置固定域名请粘贴 Cloudflare Tunnel Token', 'Paste Cloudflare Tunnel Token for fixed domain');
+        remoteSettingsState.tunnelConfigOpen = true;
+        renderRemoteSettingsChannels();
+        return;
+      }
+      void configureRemoteSettings({
+        enabled: true,
+        enabledChannels: { tunnel: true },
+        tunnelMode: 'named',
+        tunnelHostname: hostname,
+        ...(token ? { tunnelToken: token } : {})
+      });
+    });
+
+    root.querySelector('#ag-rp-cf-quick')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.tunnelConfigOpen = true;
+      void configureRemoteSettings({
+        enabled: true,
+        enabledChannels: { tunnel: true },
+        tunnelMode: 'quick'
+      });
+    });
+
+    root.querySelector('#ag-rp-cf-cancel')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.tunnelConfigOpen = false;
+      remoteSettingsState.draftHost = null;
+      remoteSettingsState.draftToken = '';
+      remoteSettingsState.error = '';
+      renderRemoteSettingsChannels();
+    });
+
+    ['darwin', 'win32', 'linux'].forEach(plat => {
+      const tabBtn = root.querySelector(`#ag-rp-install-tab-${plat}`);
+      tabBtn?.addEventListener('click', ev => {
+        ev.stopPropagation();
+        if (!DEFAULT_CLOUDFLARED_INSTALL_COMMANDS[plat]) return;
+        remoteSettingsState.installPlatform = plat;
+        remoteSettingsState.installCopiedAt = 0;
+        renderRemoteSettingsChannels();
+      });
+    });
+
+    root.querySelector('#ag-rp-cf-copy-install')?.addEventListener('click', async ev => {
+      ev.stopPropagation();
+      const cmd = installGuide.command;
+      const ok = await copyRemoteInstallCommand(cmd);
+      if (ok) {
+        remoteSettingsState.installCopiedAt = Date.now();
+        renderRemoteSettingsChannels();
+        if (remoteSettingsState.installCopyTimer) clearTimeout(remoteSettingsState.installCopyTimer);
+        remoteSettingsState.installCopyTimer = setTimeout(() => {
+          remoteSettingsState.installCopyTimer = null;
+          renderRemoteSettingsChannels();
+        }, 2100);
+      }
+    });
+
+    root.querySelector('#ag-rp-cf-recheck')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      if (remoteSettingsState.busy || remoteSettingsState.loading) return;
+      void loadRemoteSettingsInfo(false);
+    });
+  }
+
+  async function loadRemoteSettingsInfo(resetToken = false) {
+    if (remoteSettingsState.loading) return remoteSettingsState.data;
+    remoteSettingsState.loading = true;
+    remoteSettingsState.error = '';
+    renderRemoteSettingsChannels();
+    try {
+      const res = await invokeHostBridge('/remote-info', { resetToken: Boolean(resetToken) }, 'getRemoteInfo');
+      if (res && res.disabled) {
+        remoteSettingsState.data = null;
+        remoteSettingsState.error = suiteTr(
+          '当前已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用远程监听',
+          'Remote server disabled via --no-remote / AG_DISABLE_MOBILE_REMOTE=1'
+        );
+      } else if (res && res.ok && res.data) {
+        remoteSettingsState.data = res.data;
+        syncRemoteDisplayCheckboxes(res.data.remoteDisplay);
+        broadcastRemoteStateChanged(res.data);
+      } else {
+        remoteSettingsState.error = suiteTr('请确认 Antigravity 桥接服务正在运行', 'Ensure Antigravity local bridge service is running');
+      }
+    } catch (err) {
+      remoteSettingsState.error = err?.message || suiteTr('获取远程设置状态失败', 'Failed to fetch remote settings');
+    } finally {
+      remoteSettingsState.loading = false;
+      renderRemoteSettingsChannels();
+      scheduleRemoteSettingsPoll();
+    }
+    return remoteSettingsState.data;
+  }
+
+  async function configureRemoteSettings(payload = {}) {
+    if (remoteSettingsState.busy) return remoteSettingsState.data;
+    remoteSettingsState.busy = true;
+    remoteSettingsState.pendingAction = payload.tunnelMode === 'quick'
+      ? 'quick'
+      : (payload.tunnelMode === 'named' ? 'named' : (payload.remoteDisplay ? 'display' : 'toggle'));
+    remoteSettingsState.error = '';
+    renderRemoteSettingsChannels();
+    try {
+      const res = await invokeHostBridge('/remote-tunnel', payload, 'configureRemoteTunnel');
+      if (res && res.ok && res.data) {
+        remoteSettingsState.data = res.data;
+        syncRemoteDisplayCheckboxes(res.data.remoteDisplay);
+        broadcastRemoteStateChanged(res.data);
+        const chs = Array.isArray(res.data.channels) ? res.data.channels : [];
+        const tch = chs.find(c => c.key === 'tunnel');
+        const hasErr = Boolean(tch?.error || tch?.state === 'error');
+        if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
+          if (!hasErr) {
+            remoteSettingsState.tunnelConfigOpen = false;
+            remoteSettingsState.draftHost = null;
+            remoteSettingsState.draftToken = '';
+          } else {
+            remoteSettingsState.tunnelConfigOpen = true;
+          }
+        }
+      } else {
+        remoteSettingsState.error = res?.error || suiteTr('更新远程通道配置失败', 'Failed to update remote settings');
+        if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
+          remoteSettingsState.tunnelConfigOpen = true;
+        }
+      }
+    } catch (err) {
+      remoteSettingsState.error = err?.message || suiteTr('更新远程配置失败', 'Failed to update remote settings');
+      if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
+        remoteSettingsState.tunnelConfigOpen = true;
+      }
+    } finally {
+      remoteSettingsState.busy = false;
+      remoteSettingsState.pendingAction = '';
+      renderRemoteSettingsChannels();
+      scheduleRemoteSettingsPoll();
+    }
+    return remoteSettingsState.data;
+  }
+
+  async function setRemoteDisplayConfig(partialCfg) {
+    const next = sanitizeRemoteDisplayConfig({
+      ...getRemoteDisplayConfig(),
+      ...(partialCfg && typeof partialCfg === 'object' ? partialCfg : {})
+    });
+    syncRemoteDisplayCheckboxes(next);
+    return await configureRemoteSettings({ remoteDisplay: next });
+  }
+
   function switchSuiteSettingsTab(tabName = 'terminal') {
-    const valid = ['terminal', 'appearance', 'subscription', 'system'];
+    const valid = ['terminal', 'appearance', 'subscription', 'remote', 'system'];
     const target = valid.includes(tabName) ? tabName : 'terminal';
     activeSettingsTab = target;
     for (const key of valid) {
@@ -12401,15 +13161,19 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
     if (target === 'terminal') {
       syncEnhancerPrefControls();
+      renderQuickPromptsEditor();
       void refreshTerminalsList();
     } else if (target === 'subscription') {
       syncSettingsSubPreview();
       if (typeof syncPlanCustomFormFields === 'function' && isRealShadowDomTree()) {
         syncPlanCustomFormFields(ANTIGRAVITY_TOKEN_DATA.planStatus, { enhance: true });
       }
+    } else if (target === 'remote') {
+      renderRemoteSettingsChannels();
+      syncRemoteDisplayCheckboxes();
+      void loadRemoteSettingsInfo(false);
     } else if (target === 'system') {
       void refreshModulesDisplay();
-      void refreshUnlockStatus();
     }
     positionFloatingPanels();
   }
@@ -12583,15 +13347,69 @@ function renderHeatmapGrid(forceRebuild = false) {
 
   el('badge-settings')?.addEventListener('click', () => toggleSuiteSettings());
   el('overflow-settings-btn')?.addEventListener('click', () => openSuiteSettings());
-  el('btn-open-settings-ctx')?.addEventListener('click', () => openSuiteSettings('appearance'));
-  el('btn-open-settings-tokens')?.addEventListener('click', () => openSuiteSettings('subscription'));
-  el('btn-jump-plan-settings')?.addEventListener('click', () => openSuiteSettings('subscription'));
-  el('summary-subtier-readonly')?.addEventListener('click', () => openSuiteSettings('subscription'));
   el('close-settings')?.addEventListener('click', () => showPanel('none'));
 
-  ['terminal', 'appearance', 'subscription', 'system'].forEach(tab => {
+  ['terminal', 'appearance', 'subscription', 'remote', 'system'].forEach(tab => {
     el(`settings-tab-btn-${tab}`)?.addEventListener('click', () => switchSuiteSettingsTab(tab));
   });
+
+  el('btn-add-quick-prompt')?.addEventListener('click', () => {
+    const listEl = el('quick-prompts-editor-list');
+    if (!listEl) return;
+    const count = listEl.querySelectorAll('.qp-row')?.length || 0;
+    if (count >= 12) {
+      const statusEl = el('quick-prompts-status');
+      if (statusEl) statusEl.textContent = suiteTr('⚠️ 最多支持 12 条自定义快捷提示词', '⚠️ Maximum 12 custom quick prompts');
+      return;
+    }
+    appendQuickPromptEditorRow(listEl, { label: '', text: '' }, count);
+  });
+
+  el('btn-save-quick-prompts')?.addEventListener('click', () => {
+    const collected = collectQuickPromptsFromEditor();
+    void setSuiteQuickPrompts(collected);
+  });
+
+  el('btn-reset-quick-prompts')?.addEventListener('click', () => {
+    void resetSuiteQuickPrompts();
+  });
+
+  el('btn-settings-remote-refresh')?.addEventListener('click', () => {
+    void loadRemoteSettingsInfo(false);
+  });
+
+  el('ag-remote-reset')?.addEventListener('click', () => {
+    void loadRemoteSettingsInfo(true);
+  });
+
+  el('btn-reset-remote-display')?.addEventListener('click', () => {
+    void setRemoteDisplayConfig({ ...DEFAULT_REMOTE_DISPLAY_CONFIG });
+  });
+
+  for (const [elId] of REMOTE_DISPLAY_BINDINGS) {
+    el(elId)?.addEventListener('change', () => {
+      const nextCfg = collectRemoteDisplayFromUI();
+      void configureRemoteSettings({ remoteDisplay: nextCfg });
+    });
+  }
+
+  try {
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('ag-suite-prefs-changed', ev => {
+        if (ev?.detail && ('locale' in ev.detail || 'hansCode' in ev.detail || 'capsuleLang' in ev.detail)) {
+          const incoming = findSupportedLocaleEntry(ev.detail.locale || ev.detail.hansCode || ev.detail.capsuleLang);
+          if (incoming.code !== suiteEnhancerPrefs.locale) {
+            suiteEnhancerPrefs.locale = incoming.code;
+            suiteEnhancerPrefs.capsuleLang = incoming.capsuleLang;
+          }
+          if (activeSettingsTab === 'remote' && remoteSettingsState.data) {
+            renderRemoteSettingsChannels();
+          }
+          applySuiteShadowLocale();
+        }
+      });
+    }
+  } catch {}
 
   el('btn-refresh-terminals')?.addEventListener('click', () => {
     void refreshTerminalsList();
@@ -12778,6 +13596,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
   applySuiteFeatureFlags();
+  renderQuickPromptsEditor();
   renderTerminalGrid();
   dispatchSuitePrefsChanged();
   applySuiteShadowLocale();
@@ -12855,6 +13674,11 @@ function renderHeatmapGrid(forceRebuild = false) {
     setLocale: (code, opts) => setSuiteLocale(code, opts),
     getFeatureFlags: () => getSuiteFeatureFlags(),
     setFeatureFlags: (flags, opts) => setSuiteFeatureFlags(flags, opts),
+    getQuickPrompts: () => getSuiteQuickPrompts(),
+    setQuickPrompts: (list, opts) => setSuiteQuickPrompts(list, opts),
+    resetQuickPrompts: () => resetSuiteQuickPrompts(),
+    getRemoteDisplayConfig: () => getRemoteDisplayConfig(),
+    setRemoteDisplayConfig: cfg => setRemoteDisplayConfig(cfg),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,

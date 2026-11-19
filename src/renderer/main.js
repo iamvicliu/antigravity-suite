@@ -806,6 +806,9 @@
     } catch {}
     if (pOverflow) pOverflow.hidden = true;
     bOverflow?.setAttribute('aria-expanded', 'false');
+    if (target !== 'settings' && pSettings && !pSettings.hidden && typeof onSuiteSettingsClosed === 'function') {
+      try { onSuiteSettingsClosed(); } catch {}
+    }
 
     if (target === 'settings') {
       hideContextTooltip();
@@ -1711,293 +1714,6 @@
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
-  // 二级抽屉: 上下文加长折叠展开与状态机
-  const btnUnlock = el('btn-toggle-unlock');
-  const unlockDrawerBody = el('unlock-drawer-body');
-  const unlockDrawerArrow = el('unlock-drawer-arrow');
-  const unlockBadge = el('unlock-badge');
-  const unlockStatusDesc = el('unlock-status-desc');
-  const btnApplyUnlock = el('btn-apply-unlock');
-  const btnRestoreUnlock = el('btn-restore-unlock');
-  const btnRefreshUnlock = el('btn-refresh-unlock');
-  const unlockResultBox = el('unlock-result-box');
-  const unlockResultText = el('unlock-result-text');
-  const unlockMetaTarget = el('unlock-meta-target');
-  const unlockMetaArch = el('unlock-meta-arch');
-  const unlockMetaSha = el('unlock-meta-sha');
-  const unlockMetaBackup = el('unlock-meta-backup');
-  const linkUnlockAuthor = el('link-unlock-author');
-  const btnCopyUnlockLink = el('btn-copy-unlock-link');
-  const unlockLinkToast = el('unlock-link-toast');
-
-  let currentUnlockStatus = null;
-  let isUnlocking = false;
-  let unlockReqSeq = 0;
-
-  function toggleUnlockDrawer(forceOpen) {
-    if (!unlockDrawerBody) return;
-    const isHidden = unlockDrawerBody.style.display === 'none' || !unlockDrawerBody.style.display;
-    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
-    unlockDrawerBody.style.display = nextOpen ? 'block' : 'none';
-    if (unlockDrawerArrow) unlockDrawerArrow.textContent = nextOpen ? '▲ 收起' : '▼ 展开';
-    btnUnlock?.setAttribute('aria-expanded', String(nextOpen));
-    if (nextOpen && !currentUnlockStatus) {
-      void refreshUnlockStatus();
-    }
-  }
-  btnUnlock?.addEventListener('click', () => toggleUnlockDrawer());
-
-  async function invokeUnlockApi(endpoint, payload = {}) {
-    if (endpoint === 'status' && window.contextMeterAPI?.getContextUnlockStatus) {
-      return await window.contextMeterAPI.getContextUnlockStatus(payload);
-    }
-    if (endpoint === 'apply' && window.contextMeterAPI?.applyContextUnlock) {
-      return await window.contextMeterAPI.applyContextUnlock(payload);
-    }
-    if (endpoint === 'restore' && window.contextMeterAPI?.restoreContextUnlock) {
-      return await window.contextMeterAPI.restoreContextUnlock(payload);
-    }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const r = await fetch(`http://127.0.0.1:${live.port}/context-unlock-${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-        body: JSON.stringify(payload)
-      });
-      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
-    }
-    return { ok: false, error: '未连接到桥接服务（请重启客户端生效新 IPC，或执行 node cli.js live）' };
-  }
-
-  async function refreshUnlockStatus() {
-    if (!unlockBadge) return;
-    const thisSeq = ++unlockReqSeq;
-    try {
-      const currentObservedBudget = (state.latest?.budget && state.latest.budget > 0)
-        ? state.latest.budget
-        : undefined;
-      const res = await invokeUnlockApi('status', { currentBudget: currentObservedBudget });
-      if (thisSeq !== unlockReqSeq) return;
-
-      if (!res || !res.ok || !res.data) {
-        unlockBadge.textContent = '检测失败';
-        unlockBadge.className = 'key-pill pill-danger';
-        if (unlockStatusDesc) unlockStatusDesc.textContent = res?.error || '获取后端状态失败。';
-        return;
-      }
-      const data = res.data;
-      currentUnlockStatus = data;
-
-      const statusLabelMap = {
-        unsupported: '当前平台不支持',
-        failed: '检测失败',
-        not_patched: '未解锁',
-        verified_active: '已验证生效',
-        patched_runtime_unconfirmed: '运行待确认',
-        patched_pending_restart: '待重启生效'
-      };
-      unlockBadge.textContent = data.statusText || statusLabelMap[data.status] || data.status;
-      if (data.status === 'verified_active') {
-        unlockBadge.className = 'key-pill pill-ok';
-      } else if (data.status === 'patched_runtime_unconfirmed') {
-        unlockBadge.className = 'key-pill pill-info';
-      } else if (data.status === 'patched_pending_restart') {
-        unlockBadge.className = 'key-pill pill-warn';
-      } else if (data.status === 'not_patched') {
-        unlockBadge.className = 'key-pill pill-muted';
-      } else {
-        unlockBadge.className = 'key-pill pill-danger';
-      }
-
-      if (unlockStatusDesc) {
-        unlockStatusDesc.textContent = data.details || data.reason || '状态已更新。';
-      }
-
-      if (unlockMetaTarget) unlockMetaTarget.textContent = data.targetPath || '未检测到';
-      if (unlockMetaArch) unlockMetaArch.textContent = `${data.arch || '未知'} (${data.format || '未知'}, ${data.mode || '未知'})`;
-      if (unlockMetaSha) unlockMetaSha.textContent = data.sha256 ? `${data.sha256.slice(0, 16)}…` : '—';
-      if (unlockMetaBackup) {
-        if (data.hasBackup && data.backupInfo) {
-          unlockMetaBackup.textContent = `已备份 (${data.backupInfo.backupPath})`;
-        } else {
-          unlockMetaBackup.textContent = '尚未备份（首次应用时将自动安全备份至应用目录外部）';
-        }
-      }
-
-      if (btnApplyUnlock) {
-        if (data.status === 'not_patched') {
-          btnApplyUnlock.disabled = false;
-          btnApplyUnlock.textContent = '⚡ 立即应用加长补丁';
-        } else if (data.status === 'verified_active') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '✅ 已生效（无需重复应用）';
-        } else if (data.status === 'patched_runtime_unconfirmed') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '🔍 补丁已写入（运行状态待确认）';
-        } else if (data.status === 'patched_pending_restart') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '⏳ 已打补丁（待重启客户端）';
-        } else {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '⚠️ 当前目标不受支持';
-        }
-      }
-
-      if (btnRestoreUnlock) {
-        if (data.status === 'verified_active' || data.status === 'patched_pending_restart' || data.status === 'patched_runtime_unconfirmed' || data.hasBackup) {
-          btnRestoreUnlock.disabled = false;
-        } else {
-          btnRestoreUnlock.disabled = true;
-        }
-      }
-    } catch (e) {
-      if (thisSeq !== unlockReqSeq) return;
-      unlockBadge.textContent = '异常';
-      unlockBadge.className = 'key-pill pill-danger';
-      if (unlockStatusDesc) unlockStatusDesc.textContent = `检测异常: ${e.message}`;
-    }
-  }
-
-  btnRefreshUnlock?.addEventListener('click', () => {
-    void refreshUnlockStatus();
-  });
-
-  btnApplyUnlock?.addEventListener('click', async () => {
-    if (isUnlocking) return;
-    isUnlocking = true;
-    if (btnApplyUnlock) btnApplyUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
-
-    try {
-      const res = await invokeUnlockApi('apply');
-      if (!res || !res.ok) {
-        throw new Error(res?.error || '应用补丁失败');
-      }
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-success';
-        unlockResultText.innerHTML = `<strong>🎉 解锁成功！</strong><br>${res.message || '补丁已安全写入。'}`;
-      }
-    } catch (e) {
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-error';
-        unlockResultText.innerHTML = `<strong>❌ 应用补丁失败：</strong>${e.message}`;
-      }
-    } finally {
-      isUnlocking = false;
-      await refreshUnlockStatus();
-    }
-  });
-
-  btnRestoreUnlock?.addEventListener('click', async () => {
-    if (isUnlocking) return;
-    isUnlocking = true;
-    if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
-
-    try {
-      const res = await invokeUnlockApi('restore');
-      if (!res || !res.ok) {
-        throw new Error(res?.error || '恢复原版失败');
-      }
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-success';
-        unlockResultText.innerHTML = `<strong>🔄 恢复成功！</strong><br>${res.message || '已成功还原官方原版二进制。'}`;
-      }
-    } catch (e) {
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-error';
-        unlockResultText.innerHTML = `<strong>❌ 恢复原版失败：</strong>${e.message}`;
-      }
-    } finally {
-      isUnlocking = false;
-      await refreshUnlockStatus();
-    }
-  });
-
-  const UNLOCK_POST_URL = 'https://linux.do/t/topic/3117832';
-  let unlockToastTimer = null;
-
-  function showUnlockToast(msg) {
-    if (!unlockLinkToast) return;
-    if (unlockToastTimer) clearTimeout(unlockToastTimer);
-    unlockLinkToast.textContent = msg;
-    unlockLinkToast.style.display = 'block';
-    unlockToastTimer = setTimeout(() => {
-      unlockLinkToast.style.display = 'none';
-    }, 4500);
-  }
-
-  async function openUnlockAuthorPost() {
-    let opened = false;
-    try {
-      if (window.contextMeterAPI?.openExternal) {
-        const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
-        if (res && res.ok) opened = true;
-      }
-    } catch {}
-
-    if (!opened) {
-      try {
-        const w = window.open(UNLOCK_POST_URL, '_blank');
-        if (w) opened = true;
-      } catch {}
-    }
-
-    if (opened) {
-      showUnlockToast('已在系统默认浏览器中打开原作者帖子');
-    } else {
-      copyUnlockPostUrl(true);
-    }
-  }
-
-  function copyUnlockPostUrl(fromFailedOpen = false) {
-    let copied = false;
-    try {
-      if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(UNLOCK_POST_URL);
-        copied = true;
-      }
-    } catch {}
-    if (!copied) {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = UNLOCK_POST_URL;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        copied = true;
-      } catch {}
-    }
-    showUnlockToast(fromFailedOpen
-      ? '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。'
-      : '原作者帖子链接已成功复制到剪贴板！');
-  }
-
-  linkUnlockAuthor?.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    void openUnlockAuthorPost();
-  });
-
-  linkUnlockAuthor?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      e.stopPropagation();
-      void openUnlockAuthorPost();
-    }
-  });
-
-  btnCopyUnlockLink?.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    copyUnlockPostUrl(false);
-  });
-
   // -------------------------------------------------------------
   // 模块 2: 客户端界面汉化 (AntigravityChinese)
   // -------------------------------------------------------------
@@ -2301,9 +2017,8 @@
     }
   });
 
-  // 静默初始化检测一次解锁状态与各模块状态
+  // 静默初始化检测各模块状态
   setTimeout(() => {
-    void refreshUnlockStatus();
     void refreshModulesDisplay();
   }, 500);
   setTimeout(() => {
@@ -3796,11 +3511,6 @@
 
     updateRingAndBubble(d, session, pct, danger, stale, incomplete);
 
-    // 上下文预算与解锁状态自动联动：若观测到预算突破 256,000，且解锁抽屉中记录仍为待重启或未确认，则自动触发刷新同步
-    if (d?.budget && d.budget > 256000 && currentUnlockStatus && currentUnlockStatus.status !== 'verified_active') {
-      void refreshUnlockStatus();
-    }
-
     const status = disp.isError
       ? disp.statusText
       : stale ? '最近请求统计读取异常或延迟，不能判断剩余空间。'
@@ -4186,6 +3896,11 @@
     setLocale: (code, opts) => setSuiteLocale(code, opts),
     getFeatureFlags: () => getSuiteFeatureFlags(),
     setFeatureFlags: (flags, opts) => setSuiteFeatureFlags(flags, opts),
+    getQuickPrompts: () => getSuiteQuickPrompts(),
+    setQuickPrompts: (list, opts) => setSuiteQuickPrompts(list, opts),
+    resetQuickPrompts: () => resetSuiteQuickPrompts(),
+    getRemoteDisplayConfig: () => getRemoteDisplayConfig(),
+    setRemoteDisplayConfig: cfg => setRemoteDisplayConfig(cfg),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,
