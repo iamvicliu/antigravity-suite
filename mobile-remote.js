@@ -16,7 +16,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.13';
+const MOBILE_UI_VERSION = '1.9.14';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -2121,7 +2121,10 @@ async function createRemoteProject(payload = {}, options = {}) {
   }
 
   const requestedName = String(payload?.name || '').trim();
-  const projectName = requestedName || path.basename(resolvedPath) || 'new-project';
+  if (!requestedName) {
+    throw Object.assign(new Error('请输入项目名称'), { status: 400 });
+  }
+  const projectName = requestedName;
   const forceNew = Boolean(payload?.forceNew);
   const requestedExistingId = String(payload?.existingProjectId || '').trim();
 
@@ -3593,7 +3596,7 @@ function buildMobileAppHtml() {
         <div id="proj-selected-summary" class="proj-summary-card"></div>
         <div class="proj-name-row">
           <label class="proj-name-label" for="proj-name-input">项目名称</label>
-          <input id="proj-name-input" class="proj-field-input" type="text" placeholder="输入项目名称…">
+          <input id="proj-name-input" class="proj-field-input" type="text" placeholder="请填写项目名称…">
         </div>
         <button id="proj-create-submit" class="proj-primary-btn" type="button">创建项目并进入对话</button>
       </div>
@@ -5613,7 +5616,7 @@ function buildMobileAppHtml() {
       sumEl.classList.remove('is-warn');
       const repoBadge = projBrowserState.isGitRepo ? 'Git 仓库' : '普通目录';
       const linkedHint = projBrowserState.existingProject
-        ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」（可直接进入或修改下方名称另建）')
+        ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」（填写同名可直接进入，或填写新名称另建）')
         : '';
       sumEl.innerHTML =
         '<div><strong>当前选中目录</strong> (' + esc(repoBadge) + esc(linkedHint) + ')</div>' +
@@ -5688,8 +5691,6 @@ function buildMobileAppHtml() {
 
       renderProjModalSummary();
 
-      const nameIn = $('proj-name-input');
-      if (nameIn) nameIn.value = String(data?.suggestedName || data?.currentName || '');
       syncCreateProjectSubmitUi();
     }
 
@@ -5733,9 +5734,11 @@ function buildMobileAppHtml() {
       projBrowserState.justCreatedButNavFailed = false;
       if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
       if ($('proj-mkdir-input')) $('proj-mkdir-input').value = '';
+      if ($('proj-name-input')) $('proj-name-input').value = '';
       backdrop.hidden = false;
       resetModalSheetShift();
       syncViewportHeight();
+      syncCreateProjectSubmitUi();
       const initialPath = projBrowserState.currentPath || '';
       await loadHostDirListing(initialPath);
     }

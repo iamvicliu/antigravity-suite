@@ -5538,6 +5538,8 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     envUi.doc.getElementById('btn-new-project').click();
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(modalBackdrop.hidden, false, '点击＋新建项目应弹出电脑目录浏览器');
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, '', '打开新建项目弹窗时项目名称必须默认留空，不得预填主目录名');
+    assert.equal(envUi.doc.getElementById('proj-create-submit').disabled, true, '未填写项目名称前提交按钮应处于禁用状态');
 
     const codebaseRootBtn = envUi.doc.getElementById('proj-roots').querySelectorAll('.proj-root-pill')
       .find((b) => (b.textContent || '') === 'codebase');
@@ -5552,7 +5554,19 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     await new Promise((r) => setTimeout(r, 40));
 
     assert.equal(envUi.doc.getElementById('proj-path-input').value, path.resolve(repoADir));
-    assert.equal(envUi.doc.getElementById('proj-name-input').value, 'repo-a');
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, '', '切换目录后项目名称仍应保持留空，由用户自行填写');
+    assert.equal(envUi.doc.getElementById('proj-create-submit').disabled, true, '选好目录但未填项目名时提交按钮仍应禁用');
+
+    // 用户手填名称后按钮解锁，再切换/回到目录也应保留已填名称不被覆盖
+    envUi.doc.getElementById('proj-name-input').value = 'repo-a';
+    envUi.doc.getElementById('proj-name-input').dispatchEvent({ type: 'input' });
+    assert.equal(envUi.doc.getElementById('proj-create-submit').disabled, false, '填写项目名称后创建按钮应解锁');
+    envUi.doc.getElementById('proj-up-btn').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
+      .find((b) => (b.textContent || '').includes('repo-a')).click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, 'repo-a', '已填项目名称后更新目录不得清空或覆盖用户填写的名称');
 
     envUi.doc.getElementById('proj-create-submit').click();
     await new Promise((r) => setTimeout(r, 220));
@@ -5573,12 +5587,16 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     failNextNavError = '桌面端路由正忙';
     envUi.doc.getElementById('btn-new-project').click();
     await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, '', '重新打开新建项目弹窗时应清空上次输入，保持留空');
     envUi.doc.getElementById('proj-roots').querySelectorAll('.proj-root-pill')
       .find((b) => (b.textContent || '') === 'codebase').click();
     await new Promise((r) => setTimeout(r, 40));
     envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
       .find((b) => (b.textContent || '').includes('brand-new-dir')).click();
     await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, '', '浏览到新目录时项目名称仍应留空');
+    envUi.doc.getElementById('proj-name-input').value = 'brand-new-dir';
+    envUi.doc.getElementById('proj-name-input').dispatchEvent({ type: 'input' });
 
     const createRpcBeforeNavFail = rpcCalls.filter((c) => c.method === 'CreateProject').length;
     envUi.doc.getElementById('proj-create-submit').click();
@@ -5609,7 +5627,11 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.ok(navCalls.filter((c) => c.action === 'new-conversation' && c.projectId === brandNewProjId).length >= 2);
     assert.ok((envUi.doc.getElementById('toast').textContent || '').includes('已进入项目「brand-new-dir」'));
 
-    // 验证重名拦截、已有主目录项目直接进入复用与 archived:true 项目排除
+    // 验证空项目名拦截、重名拦截、已有主目录项目直接进入复用与 archived:true 项目排除
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: plainBDir, name: '   ' }, { homeDir, configDir, localApiConnect: mockConnect }),
+      /请输入项目名称/
+    );
     await assert.rejects(
       () => remoteMod.createRemoteProject({ folderPath: plainBDir, name: 'repo-a' }, { homeDir, configDir, localApiConnect: mockConnect }),
       /同名项目「repo-a」已存在/
