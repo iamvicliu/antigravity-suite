@@ -4748,6 +4748,155 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(dispatchedActions[dispatchedActions.length - 1]?.projectId, undefined);
 
+    // Case 3: 旧实例导航在途 -> 新实例快照已渲染 -> 旧实例导航回包迟到 + 晚起飞旧实例非导航回包 + 未见过更老实例回包，均不得污染视图或选中态
+    const baseBootAt = Math.max(Number(currentUiSnap.serverBootAt) || 0, Date.now() * 1000);
+    const oldProjectsC3 = [
+      { id: 'proj-a', name: 'Alpha App', conversationCount: 120 },
+      { id: 'proj-b', name: 'Beta Core', conversationCount: 125 },
+      { id: 'default-cli-project', name: 'CLI Project', conversationCount: 0 }
+    ];
+    const oldProjectsMissingCliC3 = oldProjectsC3.filter((p) => p.id !== 'default-cli-project');
+    currentUiSnap = {
+      ...currentUiSnap,
+      serverBootId: 'boot-old-case3',
+      serverBootAt: baseBootAt + 1000,
+      snapSeq: 50,
+      sessionId: 'conv-root-001',
+      isNewConversation: false,
+      title: '旧实例初始标题',
+      messages: [{ role: 'assistant', text: '旧实例初始内容' }],
+      totalMessages: 1,
+      currentProjectId: 'proj-a',
+      currentProjectName: 'Alpha App',
+      projects: oldProjectsC3
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '旧实例初始标题');
+
+    let nextNavOverrideSnap = null;
+    let nextNonNavOverrideResp = null;
+    const prevCase3Fetch = envUi.sandbox.fetch;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      if (u.pathname === '/api/action' && nextNonNavOverrideResp) {
+        const respBody = nextNonNavOverrideResp;
+        nextNonNavOverrideResp = null;
+        const body = JSON.parse(String(init?.body || '{}'));
+        dispatchedActions.push(body);
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') },
+          json: async () => respBody
+        };
+      }
+      const res = await prevCase3Fetch(url, init);
+      if (u.pathname === '/api/action' && nextNavOverrideSnap) {
+        const staleSnap = nextNavOverrideSnap;
+        nextNavOverrideSnap = null;
+        const origJson = await res.json();
+        return { ...res, json: async () => ({ ...origJson, snapshot: staleSnap }) };
+      }
+      return res;
+    };
+
+    convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
+    gateInlineSnap = true;
+    deferredGate = mkGate();
+    const gateOldNav = deferredGate;
+    nextNavOverrideSnap = {
+      ...currentUiSnap,
+      serverBootId: 'boot-old-case3',
+      serverBootAt: baseBootAt + 1000,
+      snapSeq: 51,
+      sessionId: projBConv.id,
+      isNewConversation: false,
+      title: '旧实例迟到脏标题',
+      messages: [{ role: 'assistant', text: '旧实例迟到脏消息' }],
+      totalMessages: 1,
+      currentProjectId: 'proj-b',
+      currentProjectName: 'Beta Core',
+      projects: oldProjectsMissingCliC3
+    };
+    convListEl.querySelector(`button[data-cid="${projBConv.id}"]`).click();
+    await new Promise((r) => setTimeout(r, 15));
+
+    // 在旧实例导航在途期间，手机再次点选 CLI Project，随后新实例上线并下发 snapSeq: 1 的快照
+    convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
+    currentUiSnap = {
+      ...currentUiSnap,
+      serverBootId: 'boot-new-case3',
+      serverBootAt: baseBootAt + 2000,
+      snapSeq: 1,
+      sessionId: 'conv-root-001',
+      isNewConversation: false,
+      title: '新实例最新标题',
+      messages: [{ role: 'assistant', text: '新实例最新回复' }],
+      totalMessages: 1,
+      currentProjectId: 'proj-b',
+      currentProjectName: 'Beta Core',
+      projects: oldProjectsC3
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '新实例最新标题', '新实例重启后的 snapSeq:1 快照应成功渲染');
+    assert.ok((envUi.doc.getElementById('messages')?.textContent || '').includes('新实例最新回复'));
+
+    // 放行旧实例在途导航回包（同一旧 bootId 的 snapSeq: 51）
+    gateOldNav.resolve();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '新实例最新标题', '旧实例迟到导航回包不得覆盖新实例标题');
+    const msgsAfterLateNav = envUi.doc.getElementById('messages')?.textContent || '';
+    assert.ok(msgsAfterLateNav.includes('新实例最新回复'), '旧实例迟到导航回包后应保持新实例消息');
+    assert.equal(msgsAfterLateNav.includes('旧实例迟到脏消息'), false, '旧实例迟到导航回包消息不得污染视图');
+
+    // 再发一个晚起飞的非导航动作（拥有更新的 reqStartEpoch），但错误路由回已淘汰旧实例 boot-old-case3 的更高 snapSeq:52
+    nextNonNavOverrideResp = {
+      ok: true,
+      actionResult: { ok: true },
+      snapshot: {
+        ...currentUiSnap,
+        serverBootId: 'boot-old-case3',
+        serverBootAt: baseBootAt + 1000,
+        snapSeq: 52,
+        sessionId: projBConv.id,
+        isNewConversation: false,
+        title: '旧实例晚起飞脏标题',
+        messages: [{ role: 'assistant', text: '旧实例晚起飞脏消息' }],
+        totalMessages: 1,
+        currentProjectId: 'proj-b',
+        currentProjectName: 'Beta Core',
+        projects: oldProjectsMissingCliC3
+      }
+    };
+    const toggleThinkingChip = envUi.doc.getElementById('chips').querySelectorAll('.chip').find((b) => (b.textContent || '').includes('展开/收起思考'));
+    assert.ok(toggleThinkingChip, '快捷操作条应包含「展开/收起思考」按钮');
+    toggleThinkingChip.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '新实例最新标题', '已淘汰旧实例即使带有更高 reqStartEpoch 也不得回退标题');
+    assert.equal((envUi.doc.getElementById('messages')?.textContent || '').includes('旧实例晚起飞脏消息'), false);
+
+    // 未曾渲染过的更早实例 boot-ancient-0（serverBootAt 更早）轮询回包同样必须被拒绝
+    currentUiSnap = {
+      ...currentUiSnap,
+      serverBootId: 'boot-ancient-0',
+      serverBootAt: baseBootAt + 500,
+      snapSeq: 999,
+      sessionId: projBConv.id,
+      isNewConversation: false,
+      title: '未见过老实例脏标题',
+      messages: [{ role: 'assistant', text: '未见过老实例脏消息' }],
+      totalMessages: 1,
+      projects: oldProjectsMissingCliC3
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '新实例最新标题', 'serverBootAt 更早的未知旧实例轮询不得回退视图');
+    assert.equal((envUi.doc.getElementById('messages')?.textContent || '').includes('未见过老实例脏消息'), false);
+
+    await assertProjectHeldC('default-cli-project', 'CLI Project');
+
     enhReal.dispose?.();
     envReal.sandbox.__AGContextMeter?.dispose?.();
   } finally {
