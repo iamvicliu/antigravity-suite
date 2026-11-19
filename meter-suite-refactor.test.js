@@ -9189,12 +9189,14 @@ test('需求 29: 融合回归——隔离会话后跨项目新建与进空项目
       hasEarlierMessages: false,
       projects: projectsAB,
       conversations: [
-        { id: 'conv-proj-a-1', projectId: 'proj-a', projectName: 'Alpha Main', title: 'Alpha 隔离目标', active: currentUiState.sessionId === 'conv-proj-a-1', status: 'idle', updatedAt: Date.now() }
+        { id: 'conv-proj-a-1', projectId: 'proj-a', projectName: 'Alpha Main', title: 'Alpha 隔离目标', active: currentUiState.sessionId === 'conv-proj-a-1', status: 'idle', updatedAt: Date.now() },
+        { id: 'conv-proj-a-2', projectId: 'proj-a', projectName: 'Alpha Main', title: 'Alpha 目标二', active: currentUiState.sessionId === 'conv-proj-a-2', status: 'idle', updatedAt: Date.now() - 500 }
       ]
     });
 
     const uiActions = [];
     const uiSnapUrls = [];
+    let holdNextNewConv = null;
     envUi.sandbox.fetch = async (url, init) => {
       const u = new URL(String(url), 'http://127.0.0.1');
       const headers = { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : '') };
@@ -9205,13 +9207,36 @@ test('需求 29: 融合回归——隔离会话后跨项目新建与进空项目
       if (u.pathname === '/api/action') {
         const body = JSON.parse(String(init?.body || '{}'));
         uiActions.push(body);
+        if (body.action === 'new-conversation' && holdNextNewConv) {
+          const gate = holdNextNewConv;
+          holdNextNewConv = null;
+          await gate.promise;
+          return {
+            ok: true,
+            status: 200,
+            headers,
+            json: async () => ({
+              ok: true,
+              actionResult: { ok: true },
+              snapshot: {
+                ...uiSnap(),
+                sessionId: '',
+                activeConversationId: '__new__',
+                isNewConversation: true,
+                currentProjectId: body.projectId || '',
+                currentProjectName: body.projectId === 'proj-b-empty' ? 'Empty Beta' : 'Alpha Main',
+                title: '过期新建响应标题'
+              }
+            })
+          };
+        }
         if (body.action === 'switch-conversation') {
           currentUiState = {
             sessionId: body.id,
             isNewConversation: false,
             currentProjectId: 'proj-a',
             currentProjectName: 'Alpha Main',
-            title: 'Alpha 隔离目标',
+            title: body.id === 'conv-proj-a-2' ? 'Alpha 目标二' : 'Alpha 隔离目标',
             isolated: true
           };
         } else if (body.action === 'new-conversation') {
@@ -9311,6 +9336,53 @@ test('需求 29: 融合回归——隔离会话后跨项目新建与进空项目
     assert.equal(countActions('select-model'), baseModelCnt + 2);
     assert.equal(countActions('new-conversation'), baseNewCnt + 2);
     assert.equal(uiActions[uiActions.length - 1].label, 'Claude Opus 4.6');
+
+    // 2c) 乱序竞态回归：新建请求挂起 → 切换至另一会话 → 旧新建响应迟到返回
+    // 2c-1) 跨项目场景：挂起 Empty Beta 新建对话 → 切换至 Alpha conv-proj-a-1 → 放行旧新建响应
+    let resolveCrossRaceNew;
+    holdNextNewConv = { promise: new Promise((r) => { resolveCrossRaceNew = r; }) };
+    convListEl.querySelector('button[data-new-proj="proj-b-empty"]').click();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(typeof resolveCrossRaceNew, 'function', '跨项目新建请求应已进入挂起态');
+
+    convListEl.querySelector('button[data-cid="conv-proj-a-1"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, 'Alpha 隔离目标');
+
+    resolveCrossRaceNew();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, 'Alpha 隔离目标', '迟到旧新建响应不得回退跨项目已切入会话标题');
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(uiSnapUrls[uiSnapUrls.length - 1].includes('conversationId=conv-proj-a-1'), '跨项目旧新建回包后轮询仍应保持最后切换目标 conv-proj-a-1');
+    const compactBtnCross = envUi.doc.getElementById('chips').querySelectorAll('.chip').find((b) => (b.textContent || '').trim() === '/compact');
+    assert.ok(compactBtnCross);
+    compactBtnCross.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(uiActions[uiActions.length - 1].conversationId, 'conv-proj-a-1', '跨项目旧新建回包后非导航动作仍应携带最后导航会话 ID');
+
+    // 2c-2) 同项目场景：在 Alpha 内挂起新建对话 → 立即切至同项目 conv-proj-a-2 → 放行旧新建响应
+    let resolveSameProjRaceNew;
+    holdNextNewConv = { promise: new Promise((r) => { resolveSameProjRaceNew = r; }) };
+    convListEl.querySelector('button[data-new-proj="proj-a"]').click();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(typeof resolveSameProjRaceNew, 'function', '同项目新建请求应已进入挂起态');
+
+    convListEl.querySelector('button[data-cid="conv-proj-a-2"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, 'Alpha 目标二');
+
+    resolveSameProjRaceNew();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, 'Alpha 目标二', '同项目内迟到旧新建响应不得回退后续切换标题');
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(uiSnapUrls[uiSnapUrls.length - 1].includes('conversationId=conv-proj-a-2'), '同项目旧新建回包后轮询仍应保持 conv-proj-a-2');
+    const compactBtnSame = envUi.doc.getElementById('chips').querySelectorAll('.chip').find((b) => (b.textContent || '').trim() === '/compact');
+    assert.ok(compactBtnSame);
+    compactBtnSame.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(uiActions[uiActions.length - 1].conversationId, 'conv-proj-a-2', '同项目旧新建回包后后续动作仍应保持 conv-proj-a-2');
   } finally {
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
