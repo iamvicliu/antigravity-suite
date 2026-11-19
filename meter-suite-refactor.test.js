@@ -4575,6 +4575,111 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     assert.equal(convListEl.querySelector('button[data-cid="conv-root-242"]'), null, '后续识别出的 Subagent #242 应从前端缓存与列表移除');
     assert.equal(convListEl.querySelectorAll('.conv-item').length, 243, '清理归档与 Subagent 后总数应精确缩减至 243 条');
 
+    // 4d. 回归验证：从项目 A 下拉选「默认工作区」以及切到无项目/ungrouped 会话后，均应清除旧项目高亮与顶部项目名，轮询不回跳且新建对话不携带旧项目 ID
+    const projTab = envUi.doc.getElementById('conv-view-tabs').querySelector('button[data-conv-view="projects"]');
+    projTab.click();
+    await new Promise((r) => setTimeout(r, 20));
+    convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
+
+    // 1) 通过下拉选择器选择「默认工作区（不指定项目）」
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const defaultWsOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt')
+      .find((b) => (b.textContent || '').includes('默认工作区'));
+    assert.ok(defaultWsOpt, '项目选择器应包含默认工作区选项');
+    defaultWsOpt.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '选择默认工作区后顶部项目副标题应隐藏');
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), '');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '选择默认工作区后不得高亮任何具体项目');
+    // 模拟滞后轮询仍返回旧宿主上下文或当前无项目快照
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '后台轮询后默认工作区状态不得回退至旧项目');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0);
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 40));
+    const actDefaultNew = dispatchedActions[dispatchedActions.length - 1];
+    assert.equal(actDefaultNew?.action, 'new-conversation');
+    assert.equal(actDefaultNew?.projectId, undefined, '选中默认工作区后点击顶部新建对话不得携带旧项目 ID');
+
+    // 2) 从已选中项目 A 切换到 ungrouped / 无项目历史会话后，清除旧项目选中态并在轮询与新建对话时不串项目
+    convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
+    const ungroupedConv = {
+      id: 'conv-ungrouped-test',
+      projectId: 'ungrouped',
+      projectName: '未归属项目',
+      title: '无项目历史对话',
+      active: true,
+      status: 'idle',
+      updatedAt: Date.now()
+    };
+    currentUiSnap = {
+      ...currentUiSnap,
+      sessionId: 'conv-ungrouped-test',
+      isNewConversation: false,
+      currentProjectId: 'ungrouped',
+      currentProjectName: '',
+      conversations: [ungroupedConv, ...(currentUiSnap.conversations || [])]
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '宿主切至 ungrouped 会话后必须清除旧项目高亮');
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '宿主切至 ungrouped 会话后顶部副标题应清空隐藏');
+    const ungroupedBtn = convListEl.querySelector('button[data-cid="conv-ungrouped-test"]');
+    assert.ok(ungroupedBtn, '应在未归属项目组下渲染无项目历史对话');
+    ungroupedBtn.click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0);
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true);
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 40));
+    const actAfterUngrouped = dispatchedActions[dispatchedActions.length - 1];
+    assert.equal(actAfterUngrouped?.action, 'new-conversation');
+    assert.equal(actAfterUngrouped?.projectId, undefined, '切换到 ungrouped 会话后点击顶部新建对话不得携带旧项目 ID');
+
+    // 3) 从已选中项目 A 切换到 outside-of-project 独立对话后，同样必须清除旧项目选中态且新建对话不携带 projectId
+    convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
+    const standaloneConv = {
+      id: 'conv-outside-test',
+      projectId: 'outside-of-project',
+      projectName: '独立对话',
+      title: '独立工作区对话',
+      active: false,
+      status: 'idle',
+      updatedAt: Date.now()
+    };
+    currentUiSnap = {
+      ...currentUiSnap,
+      sessionId: 'conv-root-001',
+      isNewConversation: false,
+      currentProjectId: 'proj-a',
+      currentProjectName: 'Alpha App',
+      conversations: [standaloneConv, ...(currentUiSnap.conversations || [])]
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 50));
+    const standaloneBtn = convListEl.querySelector('button[data-cid="conv-outside-test"]');
+    assert.ok(standaloneBtn, '应在独立对话分组下渲染 outside-of-project 会话');
+    standaloneBtn.click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '点击 outside-of-project 独立对话并轮询后应清除旧项目高亮');
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '点击 outside-of-project 独立对话后顶部副标题应清空隐藏');
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 40));
+    const actAfterStandalone = dispatchedActions[dispatchedActions.length - 1];
+    assert.equal(actAfterStandalone?.action, 'new-conversation');
+    assert.equal(actAfterStandalone?.projectId, undefined, '切换到 outside-of-project 会话后点击顶部新建对话不得携带旧项目 ID');
+
     enhReal.dispose?.();
     envReal.sandbox.__AGContextMeter?.dispose?.();
   } finally {
