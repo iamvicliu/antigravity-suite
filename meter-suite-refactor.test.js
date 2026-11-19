@@ -3981,6 +3981,93 @@ test('需求 18: meter-core 修复 cache=0 掩盖，pulse-capsule 与 renderer �
   assert.equal(sdCliff.getElementById('key-badge').textContent, '建议压缩');
   assert.match(sdCliff.getElementById('key-takeaway').textContent, /328K.*\/compact/);
   envCliff.sandbox.__AGContextMeter.dispose();
+
+  // 4. 设置面板 #set-auto-compact 开关与说明文案、双向同步及 240K 自动压缩状态机防重复验证
+  const envAc = createDomEnv();
+  envAc.sandbox.setTimeout = setTimeout;
+  envAc.sandbox.clearTimeout = clearTimeout;
+  const composer = envAc.doc.createElement('div');
+  composer.className = 'surface-composer';
+  const editor = envAc.doc.createElement('div');
+  editor.setAttribute('data-lexical-editor', 'true');
+  editor.setAttribute('contenteditable', 'true');
+  const sendBtn = envAc.doc.createElement('button');
+  sendBtn.setAttribute('data-testid', 'send-button');
+  let sendClicks = 0;
+  sendBtn.addEventListener('click', () => { sendClicks++; });
+  composer.appendChild(editor);
+  composer.appendChild(sendBtn);
+  envAc.doc.body.appendChild(composer);
+
+  const capMock = envAc.doc.createElement('button');
+  capMock.setAttribute('data-agy-context-capsule', '1');
+  capMock.__ctxUsageData = { contextUsed: 180000, usagePercent: 35, cacheDropDetected: false };
+  envAc.doc.body.appendChild(capMock);
+
+  const insertedTexts = [];
+  envAc.doc.execCommand = (cmd, _ui, val) => {
+    if (cmd === 'insertText') {
+      insertedTexts.push(val);
+      editor.textContent = String(val || '');
+      return true;
+    }
+    if (cmd === 'delete') {
+      editor.textContent = '';
+      return true;
+    }
+    return true;
+  };
+  envAc.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+  envAc.win.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+
+  vm.runInContext(RENDERER_SRC, envAc.sandbox);
+  vm.runInContext(ENHANCER_SRC, envAc.sandbox);
+  const sdAc = envAc.getShadow();
+  const enhAc = envAc.sandbox.__AGEnhancer;
+
+  const chkAutoCompact = sdAc.getElementById('set-auto-compact');
+  assert.ok(chkAutoCompact, '设置面板必须包含 #set-auto-compact 开关');
+  assert.equal(chkAutoCompact.checked, true, '240K 自动压缩开关应默认开启');
+  const terminalPaneText = sdAc.getElementById('settings-pane-terminal')?.textContent || '';
+  assert.match(terminalPaneText, /512K/);
+  assert.match(terminalPaneText, /240K/);
+  assert.match(terminalPaneText, /\/compact/);
+  assert.equal(enhAc.getAutoCompact(), true);
+
+  chkAutoCompact.checked = false;
+  chkAutoCompact.dispatchEvent({ type: 'change' });
+  assert.equal(envAc.localStorage.getItem('ag_suite_auto_compact'), 'false');
+  assert.ok(envAc.postedSettings.some(p => p.uiPreferences?.autoCompact === false));
+  assert.equal(enhAc.getAutoCompact(), false);
+  const disabledRes = enhAc.runAutoCompactTick({ immediate: true });
+  assert.equal(disabledRes.triggered, false);
+  assert.equal(disabledRes.reason, 'disabled');
+
+  chkAutoCompact.checked = true;
+  chkAutoCompact.dispatchEvent({ type: 'change' });
+  assert.equal(enhAc.getAutoCompact(), true);
+
+  // 未达 240K 阈值时不触发
+  const belowRes = enhAc.runAutoCompactTick({ immediate: true });
+  assert.equal(belowRes.triggered, false);
+  assert.equal(belowRes.reason, 'below_threshold');
+
+  // 达到 240K 阈值且输入框为空时自动触发 /compact 发送，并进入冷却防重
+  capMock.__ctxUsageData = { contextUsed: 256000, usagePercent: 50, cacheDropDetected: false };
+  const acRes = enhAc.runAutoCompactTick({ immediate: true });
+  assert.equal(acRes.triggered, true);
+  assert.equal(acRes.reason, 'threshold_240k');
+  await new Promise(r => setTimeout(r, 90));
+  assert.ok(insertedTexts.includes('/compact'), '自动压缩应向输入框写入 /compact');
+  assert.equal(sendClicks, 1, '自动压缩应点击发送按钮提交 /compact');
+
+  editor.textContent = '';
+  const cooldownRes = enhAc.runAutoCompactTick({ immediate: true });
+  assert.equal(cooldownRes.triggered, false);
+  assert.equal(sendClicks, 1, '冷却期内不得重复触发 /compact');
+
+  enhAc.dispose?.();
+  envAc.sandbox.__AGContextMeter.dispose();
 });
 // =========================================================================
 // 需求 19: 远程同设备跨通道去重合并、打开自动切换最快路线与连接方式测速弹窗验证

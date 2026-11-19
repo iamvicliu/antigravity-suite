@@ -129,6 +129,8 @@
     '自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截': 'Auto-click safe Proceed / Accept buttons while blocking high-risk commands',
     '输入框智能追问建议 (Tab / →)': 'Smart Follow-up Suggestions (Tab / →)',
     '回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入': 'Show follow-up prompt suggestions in composer after responses (Tab or → to fill)',
+    '长上下文防卡死自动压缩 (240K Auto-Compact)': 'Auto-Compact Long Context (240K Anti-Stall)',
+    '官方默认到 512K 才自动压缩，但超过 250K~330K 后一旦服务端缓存过期（如停顿超 3 分钟）就会每步重算 4~5 分钟并狂耗配额。开启后，当本轮回答结束且输入框为空时，若上下文已达 240K 或发生缓存脱落，将自动发送 /compact 提前压缩': 'Client waits until 512K to auto-compact, risking 4-5m 0-cache stalls above 250K. When enabled, auto-sends /compact after a reply finishes if context reaches 240K or cache drops',
     '插件与客户端语言': 'Plugin & Client Language',
     '同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言': 'Switch client UI localization, panels, and context capsule language together',
     '模式与档位名保留英文': 'Keep Mode & Effort Names in English',
@@ -380,6 +382,7 @@
   let suiteEnhancerPrefs = {
     autoAccept: false,
     ghostSuggest: true,
+    autoCompact: true,
     locale: 'zh-CN',
     capsuleLang: 'zh',
     englishLabels: false
@@ -600,6 +603,8 @@
     if (lsAutoAccept === 'true' || lsAutoAccept === 'false') suiteEnhancerPrefs.autoAccept = lsAutoAccept === 'true';
     const lsGhost = localStorage?.getItem?.('ag_suite_ghost_suggest');
     if (lsGhost === 'true' || lsGhost === 'false') suiteEnhancerPrefs.ghostSuggest = lsGhost !== 'false';
+    const lsAutoCompact = localStorage?.getItem?.('ag_suite_auto_compact');
+    if (lsAutoCompact === 'true' || lsAutoCompact === 'false') suiteEnhancerPrefs.autoCompact = lsAutoCompact !== 'false';
     const lsLocale = localStorage?.getItem?.('ag_suite_locale')
       || localStorage?.getItem?.('antigravityHansLang')
       || localStorage?.getItem?.('__agy_ctx_lang__');
@@ -764,6 +769,7 @@
       localStorage?.setItem?.('ag_suite_cli_mux_host', suiteTerminalState.cliMuxHost || '');
       localStorage?.setItem?.('ag_suite_auto_accept', suiteEnhancerPrefs.autoAccept ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_ghost_suggest', suiteEnhancerPrefs.ghostSuggest ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_auto_compact', suiteEnhancerPrefs.autoCompact !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_locale', activeLocale);
       localStorage?.setItem?.('__agy_ctx_lang__', curEntry.capsuleLang === 'en' ? 'en' : 'zh');
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
@@ -786,6 +792,7 @@
             cliMuxHost: suiteTerminalState.cliMuxHost || '',
             autoAccept: suiteEnhancerPrefs.autoAccept,
             ghostSuggest: suiteEnhancerPrefs.ghostSuggest,
+            autoCompact: suiteEnhancerPrefs.autoCompact !== false,
             locale: activeLocale,
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
@@ -1146,9 +1153,11 @@
   function syncEnhancerPrefControls() {
     const chkAuto = el('set-auto-accept');
     const chkGhost = el('set-ghost-suggest');
+    const chkCompact = el('set-auto-compact');
     const chkEngLbl = el('set-english-labels');
     if (chkAuto) chkAuto.checked = Boolean(suiteEnhancerPrefs.autoAccept);
     if (chkGhost) chkGhost.checked = Boolean(suiteEnhancerPrefs.ghostSuggest);
+    if (chkCompact) chkCompact.checked = suiteEnhancerPrefs.autoCompact !== false;
     if (chkEngLbl) chkEngLbl.checked = Boolean(suiteEnhancerPrefs.englishLabels);
     try {
       if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
@@ -1446,6 +1455,9 @@
     }
     if (typeof uiPrefs.ghostSuggest === 'boolean') {
       suiteEnhancerPrefs.ghostSuggest = uiPrefs.ghostSuggest;
+    }
+    if (typeof uiPrefs.autoCompact === 'boolean') {
+      suiteEnhancerPrefs.autoCompact = uiPrefs.autoCompact;
     }
     const incomingLoc = uiPrefs.locale || uiPrefs.panelLanguage || uiPrefs.capsuleLang;
     if (typeof incomingLoc === 'string' && incomingLoc.trim()) {
@@ -2442,6 +2454,12 @@
     suiteEnhancerPrefs.ghostSuggest = Boolean(e?.target?.checked);
     dispatchSuitePrefsChanged();
     void saveSuiteUiPrefs({ ghostSuggest: suiteEnhancerPrefs.ghostSuggest });
+  });
+
+  el('set-auto-compact')?.addEventListener('change', e => {
+    suiteEnhancerPrefs.autoCompact = Boolean(e?.target?.checked);
+    dispatchSuitePrefsChanged();
+    void saveSuiteUiPrefs({ autoCompact: suiteEnhancerPrefs.autoCompact });
   });
 
   el('set-ui-language-select')?.addEventListener('change', e => {

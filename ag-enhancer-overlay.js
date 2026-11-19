@@ -73,6 +73,7 @@
   let toastTimer = null;
   let autoAcceptEnabled = false;
   let ghostSuggestEnabled = true;
+  let autoCompactEnabled = true;
   let uiLang = 'zh';
   const DEFAULT_FEATURE_FLAGS = {
     showTopbarTokens: true,
@@ -133,6 +134,16 @@
         const rawGhost = localStorage.getItem('ag_suite_ghost_suggest');
         if (rawGhost === 'true' || rawGhost === 'false') {
           ghostSuggestEnabled = rawGhost === 'true';
+        }
+      }
+    } catch {}
+    try {
+      if (detail && typeof detail.autoCompact === 'boolean') {
+        autoCompactEnabled = detail.autoCompact;
+      } else if (typeof localStorage !== 'undefined') {
+        const rawCompact = localStorage.getItem('ag_suite_auto_compact');
+        if (rawCompact === 'true' || rawCompact === 'false') {
+          autoCompactEnabled = rawCompact !== 'false';
         }
       }
     } catch {}
@@ -220,6 +231,13 @@
   };
   let isComposerComposing = false;
   let lastUserSubmitAt = 0;
+  let autoCompactState = {
+    lastSessionId: '',
+    armedForSession: false,
+    inFlightSession: '',
+    idleSince: 0,
+    lastFiredMap: new Map()
+  };
 
   function scoreOptimizeModelCandidate(entry, isDefaultOverride = false) {
     const mid = String(entry?.modelId || '').toLowerCase();
@@ -2807,11 +2825,16 @@
     const rightSlot = bar?.querySelector(`#${QUICK_RIGHT_SLOT_ID}`);
     const toast = bar?.querySelector('.ag-qcap-toast');
     if (!toast) return;
-    const opts = (options && typeof options === 'object') ? options : {};
+    const opts = typeof options === 'number'
+      ? { durationMs: options }
+      : ((options && typeof options === 'object') ? options : {});
     const isError = Boolean(opts.isError);
     const persistent = Boolean(opts.persistent);
     const tag = String(opts.tag || '');
-    const durationMs = Number(opts.durationMs) > 0 ? Number(opts.durationMs) : (isError ? 7000 : 2800);
+    const rawDuration = Number(opts.durationMs);
+    const durationMs = (Number.isFinite(rawDuration) && rawDuration > 0)
+      ? Math.max(1000, rawDuration)
+      : (isError ? 7000 : 2800);
     toast.textContent = text;
     toast.title = String(opts.title || text || '');
     toast.setAttribute('data-tone', isError ? 'error' : 'info');
@@ -3382,6 +3405,34 @@
     return res;
   }
 
+  function buildCompactBtnTitle(risk = null) {
+    const autoTag = autoCompactEnabled
+      ? tr('（已开启 240K 自动压缩，可在套件设置关闭）', ' (240K Auto-Compact ON)')
+      : tr('（240K 自动压缩已关闭，可在套件设置开启）', ' (240K Auto-Compact OFF)');
+    if (risk?.cacheDropDetected) {
+      return tr(
+        '⚠ 检测到缓存脱落（命中率归零），每步将全量重算约 4~5 分钟并狂耗配额，建议立即执行 /compact',
+        '⚠ Cache dropped (0% hit), causing 4-5m stalls & heavy quota drain. Run /compact now'
+      ) + autoTag;
+    }
+    if ((risk?.contextUsed || 0) >= 328000) {
+      return tr(
+        '⚠ 已跨过 328K 缓存雪崩线（官方要到 512K 才压缩，此时一旦缓存过期就会步步重算 4~5 分钟），建议尽快 /compact',
+        '⚠ Past 328K cache cliff (client waits until 512K; >3m idle stalls 4-5m). Run /compact soon'
+      ) + autoTag;
+    }
+    if ((risk?.contextUsed || 0) >= 240000 || (risk?.percent || 0) >= 70) {
+      return tr(
+        '⚡ 已进入 240K+ 长上下文区间（官方默认 512K 才压缩），现在压缩可避开 300K+ 缓存过期卡死',
+        '⚡ In 240K+ zone (official threshold is 512K); compacting now prevents 300K+ stalls'
+      ) + autoTag;
+    }
+    return tr(
+      '快速填入 /compact 压缩上下文（官方默认 512K 才自动压缩，超过 250K 后一旦缓存过期会每步卡顿 4~5 分钟；可在套件设置开关 240K 自动压缩）',
+      'Fill /compact command (official auto-compact waits until 512K; compacting around 240K prevents 4-5m 0-cache stalls)'
+    ) + autoTag;
+  }
+
   function getQuickBarActions() {
     const useCustom = Array.isArray(customQuickPrompts);
     const sourcePrompts = useCustom ? customQuickPrompts : DEFAULT_QUICK_PROMPTS;
@@ -3390,9 +3441,11 @@
         ? `ag-qcap-${item.id}`
         : `ag-qcap-prompt-${idx}`;
       const label = (!useCustom && item.labelEn) ? tr(item.label, item.labelEn) : item.label;
-      const title = (!useCustom && item.titleEn)
-        ? tr(item.title, item.titleEn)
-        : (item.title || tr(`点击填入：${item.text}`, `Insert: ${item.text}`));
+      const title = (!useCustom && item.id === 'compact')
+        ? buildCompactBtnTitle(extractContextRiskState())
+        : ((!useCustom && item.titleEn)
+            ? tr(item.title, item.titleEn)
+            : (item.title || tr(`点击填入：${item.text}`, `Insert: ${item.text}`)));
       const fillText = String(item.text || '');
       return {
         id: btnId,
@@ -3538,6 +3591,7 @@
       } else {
         compactBtn.removeAttribute('data-risk');
       }
+      compactBtn.title = buildCompactBtnTitle(risk);
     }
 
     // 始终保证快捷胶囊栏位于 .surface-composer 的紧邻正上方
@@ -3601,6 +3655,97 @@
       }
     } catch {}
     return { percent, contextUsed, cacheDropDetected };
+  }
+
+  function runAutoCompactTick(opts = {}) {
+    if (!autoCompactEnabled || disposed) {
+      return { triggered: false, reason: 'disabled' };
+    }
+    const sessionId = getSessionIdFromLocation();
+    if (!sessionId) {
+      return { triggered: false, reason: 'no_session' };
+    }
+    if (sessionId !== autoCompactState.lastSessionId) {
+      autoCompactState.lastSessionId = sessionId;
+      autoCompactState.armedForSession = false;
+      autoCompactState.idleSince = 0;
+    }
+
+    const busy = isAssistantBusy();
+    if (busy) {
+      if (autoCompactState.inFlightSession !== sessionId) {
+        autoCompactState.armedForSession = true;
+      }
+      autoCompactState.idleSince = 0;
+      return { triggered: false, reason: 'assistant_busy' };
+    }
+    if (autoCompactState.inFlightSession === sessionId) {
+      autoCompactState.inFlightSession = '';
+      autoCompactState.armedForSession = false;
+      autoCompactState.idleSince = 0;
+      return { triggered: false, reason: 'compact_finished' };
+    }
+
+    if (!opts.immediate && !autoCompactState.armedForSession) {
+      return { triggered: false, reason: 'not_armed_after_turn' };
+    }
+
+    const risk = extractContextRiskState();
+    if (!risk.cacheDropDetected && risk.contextUsed < 240000) {
+      autoCompactState.idleSince = 0;
+      return { triggered: false, reason: 'below_threshold' };
+    }
+
+    const ed = getComposerEditor();
+    if (!ed || isComposerComposing || !isComposerEmpty(ed)) {
+      autoCompactState.idleSince = 0;
+      return { triggered: false, reason: 'composer_not_empty' };
+    }
+
+    const now = Date.now();
+    const prevFired = autoCompactState.lastFiredMap.get(sessionId);
+    if (prevFired && (now - prevFired.at < 90000)) {
+      return { triggered: false, reason: 'cooldown' };
+    }
+    if (!opts.immediate) {
+      const userMsgs = document.querySelectorAll('[data-testid="user-message"]');
+      const lastUserMsg = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
+      const lastUserText = (lastUserMsg?.textContent || '').trim();
+      if (lastUserText === '/compact') {
+        const assistantMds = getAssistantMarkdownRoots();
+        const lastAsst = assistantMds[assistantMds.length - 1];
+        if (!lastAsst || (lastAsst.compareDocumentPosition(lastUserMsg) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+          return { triggered: false, reason: 'cooldown' };
+        }
+      }
+      if (!autoCompactState.idleSince) {
+        autoCompactState.idleSince = now;
+        return { triggered: false, reason: 'waiting_idle_stability' };
+      }
+      if (now - autoCompactState.idleSince < 1800) {
+        return { triggered: false, reason: 'waiting_idle_stability' };
+      }
+    }
+
+    autoCompactState.armedForSession = false;
+    autoCompactState.inFlightSession = sessionId;
+    autoCompactState.idleSince = 0;
+    autoCompactState.lastFiredMap.set(sessionId, {
+      at: now,
+      contextUsed: risk.contextUsed,
+      assistantCount: getAssistantMarkdownRoots().length
+    });
+    void performMobileAction({ action: 'send', text: '/compact' });
+    const kVal = Math.round(risk.contextUsed / 1000);
+    const noticeText = risk.cacheDropDetected
+      ? tr(`⚡ 检测到缓存脱落 (${kVal}K)，已自动发送 /compact 压缩防卡死（可在设置关闭）`, `⚡ Cache drop (${kVal}K): auto-sent /compact to prevent stall (toggle in Settings)`)
+      : tr(`⚡ 上下文已达 ${kVal}K（超 240K 安全线），已自动发送 /compact 提前压缩（可在设置关闭）`, `⚡ Context reached ${kVal}K (>240K): auto-sent /compact early (toggle in Settings)`);
+    showQuickToast(noticeText, 6000);
+    return {
+      triggered: true,
+      reason: risk.cacheDropDetected ? 'cache_drop' : 'threshold_240k',
+      contextUsed: risk.contextUsed
+    };
   }
 
   function getAssistantMarkdownRoots() {
@@ -5793,6 +5938,7 @@
   function onSuitePrefsChanged(ev) {
     const prevLang = uiLang;
     syncSuitePrefsFromStorage(ev?.detail || null);
+    if (!autoCompactEnabled) autoCompactState.idleSince = 0;
     applyEnhancerFeatureVisibility();
     if (!ghostSuggestEnabled) hideNextStepGhost();
     else ensureNextStepGhost();
@@ -5840,6 +5986,7 @@
     scheduleLocalization();
     syncSidebarShortcutBadges();
     runAutoAcceptTick();
+    runAutoCompactTick();
     if (featureFlags.showTopbarQuota !== false && Date.now() - lastQuotaFetchAt >= 30000) {
       lastQuotaFetchAt = Date.now();
       void refreshQuota();
@@ -7129,6 +7276,13 @@
       if (!ghostSuggestEnabled) hideNextStepGhost();
       else ensureNextStepGhost();
     },
+    getAutoCompact: () => autoCompactEnabled,
+    setAutoCompact: (val) => {
+      autoCompactEnabled = Boolean(val);
+      try { localStorage.setItem('ag_suite_auto_compact', autoCompactEnabled ? 'true' : 'false'); } catch {}
+      if (!autoCompactEnabled) autoCompactState.idleSince = 0;
+    },
+    runAutoCompactTick,
     getFeatureFlags: () => ({ ...featureFlags }),
     parseQuotaSummaryGroups,
     exportMarkdown,

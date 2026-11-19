@@ -190,6 +190,13 @@
               </div>
               <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
             </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">长上下文防卡死自动压缩 (240K Auto-Compact)</span>
+                <span class="settings-pref-desc">官方默认到 512K 才自动压缩，但超过 250K~330K 后一旦服务端缓存过期（如停顿超 3 分钟）就会每步重算 4~5 分钟并狂耗配额。开启后，当本轮回答结束且输入框为空时，若上下文已达 240K 或发生缓存脱落，将自动发送 /compact 提前压缩</span>
+              </div>
+              <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
+            </label>
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
                 <span class="settings-pref-name">插件与客户端语言</span>
