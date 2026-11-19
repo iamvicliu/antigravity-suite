@@ -66,8 +66,20 @@
             </div>
           </div>
           <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。</div>
-          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置推荐池（点击开关显示 / 隐藏）</div>
+          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置推荐池（点击开关显示 / 隐藏 · 悬停查看指令解读）</div>
           <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置快捷按钮推荐池"></div>
+          <div id="quick-builtin-info-box" class="qp-info-box" role="region" aria-label="内置指令实时解读">
+            <div class="qp-info-top">
+              <div class="qp-info-title-wrap">
+                <span class="qp-info-prefix">💡 指令解读</span>
+                <span id="quick-info-title" class="qp-info-title">/compact 压缩</span>
+                <span id="quick-info-rec" class="qp-info-rec">★必开</span>
+              </div>
+              <span id="quick-info-tag" class="qp-info-tag">分类标签：防卡死</span>
+            </div>
+            <div id="quick-info-role" class="qp-info-role">作用：触发官方本地压缩，将冗长历史浓缩为高密度摘要。</div>
+            <div id="quick-info-scene" class="qp-info-scene">场景：上下文超过 150K~240K、响应变慢，或切换下一阶段任务前。</div>
+          </div>
           <div id="quick-custom-section-hdr" class="settings-field-lbl" style="margin:8px 0 6px;">自定义快捷提示词</div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
