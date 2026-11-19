@@ -5637,3 +5637,228 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高与按需位移
+// =========================================================================
+test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高与按需位移', async () => {
+  delete require.cache[require.resolve('./mobile-remote.js')];
+  const remoteMod = require('./mobile-remote.js');
+  const html = remoteMod.buildMobileAppHtml();
+  const cssText = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
+  const bodyHtml = html.match(/<body>([\s\S]*?)<script>/)?.[1] || '';
+  const inlineScripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+  const mainScript = inlineScripts[inlineScripts.length - 1]?.[1] || '';
+  assert.ok(cssText && bodyHtml && mainScript, 'HTML 应包含样式、主体与控制脚本');
+
+  // 1. CSS 布局与字号隔离校验：遮罩使用 --modal-h、移动端输入框 >=16px 防放大、桌面端恢复 13/14px
+  const sheetBackdropRule = cssText.match(/\.sheet-backdrop\{[^}]+\}/)?.[0] || '';
+  const drawerBackdropRule = cssText.match(/\.drawer-backdrop\{[^}]+\}/)?.[0] || '';
+  const sheetRule = cssText.match(/\.sheet\{[^}]+\}/)?.[0] || '';
+  const projModalRule = cssText.match(/\.sheet\.proj-modal\{[^}]+\}/)?.[0] || '';
+  const dirListRule = cssText.match(/\.proj-dir-list\{[^}]+\}/)?.[0] || '';
+  const desktopMediaBlock = cssText.slice(cssText.indexOf('@media (min-width:860px)'));
+  assert.ok(sheetBackdropRule.includes('--modal-h'), '.sheet-backdrop 应绑定 --modal-h 而非 --app-h');
+  assert.equal(sheetBackdropRule.includes('--app-h'), false, '.sheet-backdrop 不得再绑定会随键盘收缩的 --app-h');
+  assert.ok(drawerBackdropRule.includes('--modal-h'), '.drawer-backdrop 应绑定 --modal-h');
+  assert.ok(projModalRule.includes('var(--modal-h') && !/\b84dvh\b/.test(projModalRule), '.sheet.proj-modal 高度应锚定 --modal-h，不得因 dvh 收缩导致顶部下坠或触顶');
+  assert.ok(dirListRule.includes('var(--modal-h') && !/\b34dvh\b/.test(dirListRule), '.proj-dir-list 高度应锚定 --modal-h');
+  assert.equal(/\btransition\s*:[^;}]*transform/i.test(sheetRule), false, '.sheet 不应设置 transform transition 以免中断坐标测量');
+  assert.ok(/\.proj-path-input,\.proj-field-input\{[^}]*font-size:16px/.test(cssText), '移动端路径输入框字号应 >= 16px 防 iOS 自动缩放');
+  assert.ok(/\.proj-field-input\{[^}]*font-size:16px/.test(cssText), '移动端文本字段输入框字号应 >= 16px');
+  assert.ok(desktopMediaBlock.includes('.proj-path-input{font-size:13px}'), '桌面端应恢复 13px 路径输入框字号');
+  assert.ok(desktopMediaBlock.includes('.proj-field-input{font-size:14px}'), '桌面端应恢复 14px 字段输入框字号');
+
+  // 2. 构建 390x844 手机视口 + 可交互 visualViewport 测试环境
+  const activeTimers = new Set();
+  const env = createDomEnv();
+  try {
+    env.doc.body.innerHTML = bodyHtml;
+    env.win.innerWidth = 390;
+    env.win.innerHeight = 844;
+    env.win.AbortController = AbortController;
+    env.win.location = { pathname: '/', search: '?token=testtok', protocol: 'http:', origin: 'http://127.0.0.1:18765', reload() {} };
+    env.win.history = { replaceState() {} };
+
+    const scrollToCalls = [];
+    env.win.scrollTo = (x, y) => { scrollToCalls.push([x, y]); };
+    env.sandbox.scrollTo = env.win.scrollTo;
+
+    const vvListeners = new Map();
+    const vv = {
+      width: 390,
+      height: 844,
+      offsetTop: 0,
+      addEventListener(type, fn) {
+        if (!vvListeners.has(type)) vvListeners.set(type, []);
+        vvListeners.get(type).push(fn);
+      },
+      removeEventListener(type, fn) {
+        const list = vvListeners.get(type);
+        if (!list) return;
+        const i = list.indexOf(fn);
+        if (i >= 0) list.splice(i, 1);
+      },
+      _emit(type) {
+        for (const fn of [...(vvListeners.get(type) || [])]) fn({ type, target: vv });
+      }
+    };
+    env.win.visualViewport = vv;
+    env.sandbox.visualViewport = vv;
+    env.sandbox.location = env.win.location;
+    env.sandbox.history = env.win.history;
+    env.sandbox.AbortController = AbortController;
+    env.sandbox.URLSearchParams = URLSearchParams;
+    env.sandbox.setTimeout = (fn, ms) => {
+      const id = setTimeout(() => {
+        activeTimers.delete(id);
+        fn();
+      }, ms);
+      activeTimers.add(id);
+      return id;
+    };
+    env.sandbox.clearTimeout = (id) => {
+      activeTimers.delete(id);
+      clearTimeout(id);
+    };
+    env.sandbox.fetch = async (url) => {
+      const u = new URL(String(url), 'http://127.0.0.1:18765');
+      const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/fs/dirs') {
+        return {
+          ok: true,
+          status: 200,
+          headers: jsonHeaders,
+          json: async () => ({
+            ok: true,
+            path: '/Users/shenslu',
+            parentPath: '/Users',
+            currentName: 'shenslu',
+            suggestedName: 'shenslu',
+            roots: [{ label: '主目录 (~)', path: '/Users/shenslu' }],
+            entries: [{ name: 'codebase', path: '/Users/shenslu/codebase', isGitRepo: false }]
+          })
+        };
+      }
+      if (u.pathname === '/api/snapshot') {
+        return {
+          ok: true,
+          status: 200,
+          headers: jsonHeaders,
+          json: async () => ({ ok: true, sessionId: 's1', projects: [], conversations: [], messages: [] })
+        };
+      }
+      return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
+    };
+
+    env.doc.activeElement = env.doc.body;
+    const modalBackdrop = env.doc.getElementById('proj-modal-backdrop');
+    const modalSheet = modalBackdrop.querySelector('.sheet.proj-modal');
+    const parseShiftY = () => {
+      const m = String(modalSheet.style.transform || '').match(/translateY\((-?\d+(?:\.\d+)?)px\)/);
+      return m ? Number(m[1]) : 0;
+    };
+    const bindFocusableBox = (el, baseTop, baseBottom) => {
+      el.type = el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : '');
+      el.getBoundingClientRect = () => {
+        const dy = modalSheet.contains(el) ? parseShiftY() : 0;
+        return { left: 14, right: 376, width: 362, height: baseBottom - baseTop, top: baseTop + dy, bottom: baseBottom + dy };
+      };
+      el.focus = () => {
+        const prev = env.doc.activeElement;
+        if (prev === el) return;
+        if (prev && prev !== env.doc.body) {
+          env.doc.activeElement = env.doc.body;
+          env.doc.dispatchEvent({ type: 'focusout', target: prev });
+        }
+        env.doc.activeElement = el;
+        env.doc.dispatchEvent({ type: 'focusin', target: el });
+      };
+      el.blur = () => {
+        if (env.doc.activeElement !== el) return;
+        env.doc.activeElement = env.doc.body;
+        env.doc.dispatchEvent({ type: 'focusout', target: el });
+      };
+    };
+
+    const pathInput = env.doc.getElementById('proj-path-input');
+    const mkdirInput = env.doc.getElementById('proj-mkdir-input');
+    const nameInput = env.doc.getElementById('proj-name-input');
+    const chatInput = env.doc.getElementById('input');
+    bindFocusableBox(pathInput, 220, 256);
+    bindFocusableBox(mkdirInput, 306, 342);
+    bindFocusableBox(nameInput, 704, 740);
+    bindFocusableBox(chatInput, 780, 812);
+
+    vm.runInContext(mainScript, env.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // 打开新建项目弹窗
+    env.doc.getElementById('btn-new-project').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(modalBackdrop.hidden, false);
+
+    // 场景 1: 聚焦顶部 #proj-path-input（位于 [220, 256]，高于 460px 键盘顶边），即使 innerHeight 与 vv.height 同缩至 460，也禁止任何抬高
+    pathInput.focus();
+    vv.height = 460;
+    env.win.innerHeight = 460;
+    vv._emit('resize');
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(env.doc.documentElement.style.getPropertyValue('--modal-h'), '844px', '软键盘弹起时 --modal-h 必须锁定满屏 844px，不得把弹窗推出顶部或露出底层聊天');
+    assert.equal(env.doc.documentElement.style.getPropertyValue('--app-h'), '844px', '弹窗输入框聚焦时 --app-h 也应保持 844px 不抽缩');
+    assert.equal(modalSheet.style.transform, '', '顶部路径输入框已在键盘上方，弹窗绝不能被抬高');
+    assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
+
+    // 场景 2: 展开「＋ 新建文件夹」并聚焦 #proj-mkdir-input（[306, 342] <= 460 - 14），同样不抬高
+    env.doc.getElementById('proj-mkdir-toggle').click();
+    assert.equal(env.doc.getElementById('proj-mkdir-row').hidden, false);
+    assert.equal(env.doc.activeElement, mkdirInput);
+    assert.equal(modalSheet.style.transform, '', '高于键盘的新建文件夹输入框也不得触发多余抬高');
+
+    // 场景 3: 聚焦底部被键盘遮挡的 #proj-name-input（未位移 [704, 740] > 446），按重叠量精确上移至键盘上方 14px
+    nameInput.focus();
+    assert.equal(modalSheet.style.transform, 'translateY(-294px)', '底部项目名称输入框被遮挡时应按 (460-14)-740 = -294px 最小上移');
+    assert.deepEqual([nameInput.getBoundingClientRect().top, nameInput.getBoundingClientRect().bottom], [410, 446]);
+
+    // 场景 4: 保持键盘打开（460px），点键盘栏「^」把焦点切回顶部 #proj-path-input 时应准确反算并立即归零
+    pathInput.focus();
+    assert.equal(modalSheet.style.transform, '', '焦点从底部切回顶部未遮挡输入框时，弹窗应立即恢复 0px 位移');
+    assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
+
+    // 场景 5: 若残留 vv.offsetTop = 240 将顶部输入框推出可视区上沿（minTop = 252 > 220），应调用 scrollTo(0,0) 并温和下移保底可见，复位后归零；关闭弹窗彻底复位
+    vv.offsetTop = 240;
+    vv._emit('scroll');
+    assert.ok(scrollToCalls.some(([x, y]) => x === 0 && y === 0), '检测到 vv.offsetTop > 0 时应尝试 reset scroll');
+    assert.equal(modalSheet.style.transform, 'translateY(32px)', '顶部被偏移裁切时仅补偿至 vvTop + 12px');
+    vv.offsetTop = 0;
+    vv._emit('scroll');
+    assert.equal(modalSheet.style.transform, '');
+
+    env.doc.getElementById('proj-modal-close').click();
+    assert.equal(modalBackdrop.hidden, true);
+    assert.equal(env.doc.activeElement, env.doc.body);
+    assert.equal(modalSheet.style.transform, '');
+
+    // 场景 6: 键盘收回后聚焦主聊天输入框 #input 并重新弹出键盘，确认底部聊天框 kb-open 收缩行为零回归
+    vv.height = 844;
+    env.win.innerHeight = 844;
+    vv._emit('resize');
+    chatInput.focus();
+    vv.height = 460;
+    vv._emit('resize');
+    const appEl = env.doc.querySelector('.app');
+    assert.equal(appEl.classList.contains('kb-open'), true, '无弹窗时聚焦聊天输入框仍应启用 kb-open');
+    assert.equal(env.doc.body.style.height, '460px');
+
+    chatInput.blur();
+    vv.height = 844;
+    vv._emit('resize');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(appEl.classList.contains('kb-open'), false);
+    assert.equal(env.doc.body.style.height, '100%');
+  } finally {
+    for (const id of activeTimers) clearTimeout(id);
+    activeTimers.clear();
+    delete require.cache[require.resolve('./mobile-remote.js')];
+  }
+});
