@@ -81,17 +81,55 @@
     showTopbarQuota: true,
     showTopbarRemote: true,
     showQuickBar: true,
-    showChatNav: true,
-    showQuickCopyId: true,
-    showQuickExport: true
+    showChatNav: true
   };
   let featureFlags = { ...DEFAULT_FEATURE_FLAGS };
-  const DEFAULT_QUICK_PROMPTS = [
-    { id: 'compact', label: '/compact 压缩', labelEn: '/compact', text: '/compact', title: '快速填入 /compact 压缩上下文命令', titleEn: 'Fill /compact command', enabled: true },
-    { id: 'plan', label: '/plan 规划', labelEn: '/plan', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式', titleEn: 'Fill /plan prefix to enter plan mode', enabled: true },
-    { id: 'reload', label: '重载规则', labelEn: 'Reload Rules', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令', titleEn: 'Fill reload AGENTS prompt', enabled: true }
+
+  const BUILTIN_QUICK_POOL = [
+    { id: 'compact', label: '/compact 压缩', labelEn: '/compact', slash: 'compact', text: '/compact', title: '压缩上下文（执行官方 /compact 命令），防止超 240K~300K 缓存过期卡死', titleEn: 'Compact context via native /compact command', defaultEnabled: true },
+    { id: 'plan', label: '/plan 规划', labelEn: '/plan', slash: 'plan', text: '/plan ', title: '进入或切换规划模式，先出方案再动手改代码', titleEn: 'Enter plan mode via /plan', defaultEnabled: true },
+    { id: 'goal', label: '/goal 持续到底', labelEn: '/goal', slash: 'goal', text: '/goal ', title: '启动长程自主目标模式，持续推进直到目标彻底完成', titleEn: 'Run until the specified goal is completely finished', defaultEnabled: false },
+    { id: 'swarm', label: '/swarm 蜂群并发', labelEn: '/swarm', slash: 'swarm', text: '/swarm ', title: '调度多个子 Agent 并发协作拆分复杂任务', titleEn: 'Spawn parallel agents collaborating on one task', defaultEnabled: false },
+    { id: 'boost', label: '/boost 深度攻坚', labelEn: '/boost', slash: 'boost', text: '/boost ', title: '调用 Boost 多模型深度推理与严格验证编排', titleEn: 'Invoke Boost multi-agent orchestrator for complex tasks', defaultEnabled: false },
+    { id: 'teamwork', label: '/teamwork 团队协作', labelEn: '/teamwork', slash: 'teamwork', text: '/teamwork ', title: '调动自治 Agent 团队接管大型复杂项目', titleEn: 'Invoke autonomous agent team for large projects', defaultEnabled: false },
+    { id: 'grill-me', label: '/grill-me 追问对齐', labelEn: '/grill-me', slash: 'grill-me', text: '/grill-me ', title: '让 AI 像面试一样主动追问，把模糊需求与边界全部对齐', titleEn: 'Interview me to align on requirements and plan', defaultEnabled: false },
+    { id: 'btw', label: '/btw 插话提问', labelEn: '/btw', slash: 'btw', text: '/btw ', title: '不打断主线上下文，临时快速旁路提问', titleEn: 'Ask a quick side question without interrupting main chat', defaultEnabled: false },
+    { id: 'learn', label: '/learn 提炼经验', labelEn: '/learn', slash: 'learn', text: '/learn ', title: '复盘本轮纠偏与踩坑，沉淀为长期规则或 Skill', titleEn: 'Capture lessons learned as reusable skills or rules', defaultEnabled: false },
+    { id: 'browser', label: '/browser 浏览器', labelEn: '/browser', slash: 'browser', text: '/browser ', title: '唤醒浏览器子 Agent 执行网页操作与核验', titleEn: 'Invoke browser agent for web tasks', defaultEnabled: false },
+    { id: 'schedule', label: '/schedule 定时任务', labelEn: '/schedule', slash: 'schedule', text: '/schedule ', title: '创建定时轮询或一次性定时提醒任务', titleEn: 'Schedule a recurring cron or one-shot timer', defaultEnabled: false },
+    { id: 'reload', label: '重载规则', labelEn: 'Reload Rules', slash: '', text: '重新读取 AGENTS', title: '让 AI 重新读取 ~/.codex/AGENTS.md 行为规则', titleEn: 'Fill reload AGENTS prompt', defaultEnabled: true },
+    { id: 'copyid', label: '复制会话 ID', labelEn: 'Copy ID', slash: '', text: '', builtinAction: 'copyid', title: '一键复制当前对话窗口的会话 ID', titleEn: 'Copy current conversation ID', defaultEnabled: true },
+    { id: 'export', label: '导出 Markdown', labelEn: 'Export MD', slash: '', text: '', builtinAction: 'export', title: '将完整对话导出为 Markdown 保存到 ~/Downloads 并复制', titleEn: 'Export conversation to Markdown in ~/Downloads and copy', defaultEnabled: true }
   ];
+  const DEFAULT_QUICK_POOL_STATE = Object.fromEntries(
+    BUILTIN_QUICK_POOL.map((item) => [item.id, Boolean(item.defaultEnabled)])
+  );
+  let quickPoolState = { ...DEFAULT_QUICK_POOL_STATE };
   let customQuickPrompts = null;
+
+  function sanitizeQuickPoolState(raw, fallbackState = DEFAULT_QUICK_POOL_STATE) {
+    const out = { ...DEFAULT_QUICK_POOL_STATE, ...(fallbackState && typeof fallbackState === 'object' ? fallbackState : {}) };
+    if (raw && typeof raw === 'object') {
+      for (const item of BUILTIN_QUICK_POOL) {
+        if (typeof raw[item.id] === 'boolean') {
+          out[item.id] = raw[item.id];
+        }
+      }
+    }
+    return out;
+  }
+
+  function isLegacyDefaultPromptItem(item) {
+    if (!item || typeof item !== 'object') return false;
+    const id = String(item.id || '').trim();
+    if (id !== 'compact' && id !== 'plan' && id !== 'reload') return false;
+    const poolDef = BUILTIN_QUICK_POOL.find((p) => p.id === id);
+    return Boolean(
+      poolDef &&
+      String(item.text || '').trim() === String(poolDef.text || '').trim() &&
+      String(item.label || '').trim() === String(poolDef.label || '').trim()
+    );
+  }
 
   function sanitizeQuickPromptsList(raw) {
     if (!Array.isArray(raw)) return null;
@@ -102,14 +140,14 @@
       const label = String(item.label ?? '').trim();
       const text = String(item.text ?? '');
       if (!label || !text.trim()) continue;
+      if (isLegacyDefaultPromptItem(item)) continue;
       const rawId = String(item.id || '').trim();
       const id = rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) ? rawId : `custom-${i}`;
       out.push({
         id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: String(item.title || '').trim().slice(0, 120),
-        enabled: item.enabled !== false
+        title: String(item.title || '').trim().slice(0, 120)
       });
       if (out.length >= 20) break;
     }
@@ -195,12 +233,55 @@
       uiLang = 'zh';
     }
     try {
+      let hasExplicitPool = false;
+      if (detail && detail.quickPool && typeof detail.quickPool === 'object') {
+        quickPoolState = sanitizeQuickPoolState(detail.quickPool);
+        hasExplicitPool = true;
+      } else if (typeof localStorage !== 'undefined') {
+        const rawPool = localStorage.getItem('ag_suite_quick_pool');
+        if (rawPool) {
+          quickPoolState = sanitizeQuickPoolState(JSON.parse(rawPool));
+          hasExplicitPool = true;
+        }
+      }
+      if (!hasExplicitPool) {
+        const flagSrc = (detail && detail.featureFlags && typeof detail.featureFlags === 'object')
+          ? detail.featureFlags
+          : (typeof localStorage !== 'undefined' && localStorage.getItem('ag_suite_feature_flags')
+              ? JSON.parse(localStorage.getItem('ag_suite_feature_flags'))
+              : null);
+        if (flagSrc && typeof flagSrc === 'object') {
+          if (typeof flagSrc.showQuickCopyId === 'boolean') quickPoolState.copyid = flagSrc.showQuickCopyId;
+          if (typeof flagSrc.showQuickExport === 'boolean') quickPoolState.export = flagSrc.showQuickExport;
+        }
+      }
+    } catch {}
+    try {
       if (detail && 'quickPrompts' in detail) {
-        customQuickPrompts = detail.quickPrompts === null ? null : sanitizeQuickPromptsList(detail.quickPrompts);
+        if (detail.quickPrompts === null) {
+          customQuickPrompts = null;
+        } else {
+          if (Array.isArray(detail.quickPrompts) && !detail.quickPool) {
+            for (const item of detail.quickPrompts) {
+              if (isLegacyDefaultPromptItem(item) && item.enabled === false) {
+                quickPoolState[item.id] = false;
+              }
+            }
+          }
+          customQuickPrompts = sanitizeQuickPromptsList(detail.quickPrompts);
+        }
       } else if (typeof localStorage !== 'undefined') {
         const rawQp = localStorage.getItem('ag_suite_quick_prompts');
         if (rawQp) {
-          customQuickPrompts = sanitizeQuickPromptsList(JSON.parse(rawQp));
+          const parsedArr = JSON.parse(rawQp);
+          if (Array.isArray(parsedArr) && !localStorage.getItem('ag_suite_quick_pool')) {
+            for (const item of parsedArr) {
+              if (isLegacyDefaultPromptItem(item) && item.enabled === false) {
+                quickPoolState[item.id] = false;
+              }
+            }
+          }
+          customQuickPrompts = sanitizeQuickPromptsList(parsedArr);
         } else {
           customQuickPrompts = null;
         }
@@ -2861,27 +2942,66 @@
     }
   }
 
-  async function fillComposerText(text) {
+  const BUILTIN_SLASH_COMMAND_RE = /^\/(compact|plan|goal|swarm|boost|teamwork|grill-me|btw|learn|browser|schedule)\s*$/i;
+
+  function findMatchingSlashOption(cmdName) {
+    const lower = String(cmdName || '').trim().toLowerCase();
+    if (!lower) return null;
+    const opts = Array.from(document.querySelectorAll('[role="listbox"] [role="option"], [role="option"]') || []);
+    for (const opt of opts) {
+      const hasExactNode = Array.from(opt.querySelectorAll?.('span, div') || []).some(
+        (el) => (!el.children || el.children.length === 0) && String(el.textContent || '').trim().toLowerCase() === lower
+      );
+      if (hasExactNode) return opt;
+      const full = String(opt.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (full === lower || full.startsWith(`${lower} `) || full.startsWith(lower)) {
+        return opt;
+      }
+    }
+    return null;
+  }
+
+  async function fillComposerText(text, opts = {}) {
     const ed = getComposerEditor() || document.querySelector('[contenteditable="true"]');
     if (!ed) {
       showQuickToast('未找到聊天输入框');
       return false;
     }
 
+    const insertRawText = (val) => {
+      const ok = document.execCommand('insertText', false, val);
+      if (!ok) {
+        try {
+          const ev = new InputEvent('beforeinput', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertText',
+            data: val
+          });
+          ed.dispatchEvent(ev);
+        } catch {}
+      }
+    };
+
     try {
       const lex = ed.__lexicalEditor;
       if (lex && typeof lex.update === 'function') {
-        lex.update(() => {
-          const root = lex.getEditorState()?._nodeMap?.get('root');
-          if (root && typeof root.clear === 'function') {
-            root.clear();
-          }
-        });
-        await new Promise((r) => setTimeout(r, 20));
-      } else {
-        ed.focus();
-        document.execCommand('selectAll', false, null);
-        document.execCommand('delete', false, null);
+        try {
+          lex.update(() => {
+            const edState = lex._pendingEditorState || lex.getEditorState?.();
+            const root = edState?._nodeMap?.get('root');
+            if (root && typeof root.clear === 'function') {
+              root.clear();
+            }
+          }, { discrete: true });
+          await new Promise((r) => setTimeout(r, 20));
+        } catch {}
+      }
+      if (!lex || (ed.textContent || '').trim() || ed.querySelector?.('[data-uri]')) {
+        ed.focus?.();
+        document.execCommand?.('selectAll', false, null);
+        document.execCommand?.('delete', false, null);
+        if (lex) await new Promise((r) => setTimeout(r, 15));
       }
 
       ed.focus?.();
@@ -2894,22 +3014,45 @@
         sel.addRange(range);
       }
 
-      const ok = document.execCommand('insertText', false, text);
-      if (!ok) {
-        try {
-          const ev = new InputEvent('beforeinput', {
-            bubbles: true,
-            cancelable: true,
-            inputType: 'insertText',
-            data: text
-          });
-          ed.dispatchEvent(ev);
-        } catch {}
-      }
+      const rawStr = String(text ?? '');
+      const slashCmd = opts?.slashCommand
+        ? String(opts.slashCommand).trim().toLowerCase()
+        : (rawStr.match(BUILTIN_SLASH_COMMAND_RE)?.[1]?.toLowerCase() || '');
+      const initialInsert = slashCmd ? `/${slashCmd}` : rawStr;
 
+      insertRawText(initialInsert);
       await new Promise((r) => setTimeout(r, 20));
 
-      // 确保光标位于文本末尾
+      let convertedSlashPill = false;
+      if (slashCmd) {
+        let matchedOpt = findMatchingSlashOption(slashCmd);
+        if (!matchedOpt && lex) {
+          for (let i = 0; i < 6; i++) {
+            await new Promise((r) => setTimeout(r, 25));
+            matchedOpt = findMatchingSlashOption(slashCmd);
+            if (matchedOpt) break;
+          }
+        }
+        if (matchedOpt) {
+          const clickTarget = matchedOpt.querySelector?.('div.cursor-pointer') || matchedOpt;
+          try {
+            if (typeof MouseEvent === 'function') {
+              clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            }
+          } catch {}
+          clickTarget.click?.();
+          await new Promise((r) => setTimeout(r, 35));
+          convertedSlashPill = true;
+        } else if (rawStr !== initialInsert) {
+          ed.focus?.();
+          document.execCommand?.('selectAll', false, null);
+          document.execCommand?.('delete', false, null);
+          insertRawText(rawStr);
+          await new Promise((r) => setTimeout(r, 15));
+        }
+      }
+
+      // 确保光标位于内容末尾
       try {
         const endRange = document.createRange();
         endRange.selectNodeContents(ed);
@@ -2921,7 +3064,7 @@
         }
       } catch {}
       syncPromptOptimizerUI();
-      return true;
+      return convertedSlashPill ? 'slash_pill' : true;
     } catch {
       showQuickToast('填入输入框失败');
       return false;
@@ -3437,71 +3580,92 @@
   }
 
   function getQuickBarActions() {
-    const useCustom = Array.isArray(customQuickPrompts);
-    const sourcePrompts = useCustom ? customQuickPrompts : DEFAULT_QUICK_PROMPTS;
-    const promptActions = [];
-    sourcePrompts.forEach((item, idx) => {
-      if (!item || item.enabled === false) return;
-      const defaultDef = DEFAULT_QUICK_PROMPTS.find((d) => d.id === item.id);
-      const isBuiltinPrompt = Boolean(defaultDef && String(item.text || '').trim() === String(defaultDef.text || '').trim());
-      const btnId = isBuiltinPrompt ? `ag-qcap-${item.id}` : `ag-qcap-prompt-${idx}`;
-      const label = (isBuiltinPrompt && defaultDef.labelEn && item.label === defaultDef.label)
-        ? tr(item.label, defaultDef.labelEn)
-        : item.label;
-      const title = (isBuiltinPrompt && item.id === 'compact')
+    const actions = [];
+    for (const item of BUILTIN_QUICK_POOL) {
+      if (quickPoolState[item.id] === false) continue;
+      const btnId = `ag-qcap-${item.id}`;
+      const label = item.labelEn ? tr(item.label, item.labelEn) : item.label;
+      const title = item.id === 'compact'
         ? buildCompactBtnTitle(extractContextRiskState())
-        : ((isBuiltinPrompt && defaultDef.titleEn)
-            ? tr(defaultDef.title, defaultDef.titleEn)
-            : (item.title || tr(`点击填入：${item.text}`, `Insert: ${item.text}`)));
+        : (item.titleEn ? tr(item.title, item.titleEn) : item.title);
+
+      if (item.builtinAction === 'copyid') {
+        actions.push({
+          id: btnId,
+          label,
+          title,
+          onClick: async () => {
+            const id = getSessionIdFromLocation();
+            if (!id) {
+              showQuickToast(tr('当前页面未包含会话 ID', 'No conversation ID in current URL'));
+              return;
+            }
+            const ok = await copyToClipboard(id);
+            showQuickToast(ok ? tr(`已复制会话 ID (${id.slice(0, 8)})`, `Copied ID (${id.slice(0, 8)})`) : tr('复制失败，请检查剪贴板权限', 'Copy failed'));
+          }
+        });
+        continue;
+      }
+
+      if (item.builtinAction === 'export') {
+        actions.push({
+          id: btnId,
+          label,
+          title,
+          onClick: () => { void exportMarkdown(); }
+        });
+        continue;
+      }
+
       const fillText = String(item.text || '');
-      promptActions.push({
+      actions.push({
         id: btnId,
         label,
         title,
         fillText,
         onClick: async () => {
+          const fillRes = await fillComposerText(fillText, item.slash ? { slashCommand: item.slash } : {});
+          if (!fillRes) return;
+          if (item.id === 'compact') {
+            showQuickToast(
+              fillRes === 'slash_pill'
+                ? tr('已生成 /compact 命令胶囊，按回车即可执行', 'Ready: /compact command pill, press Enter to run')
+                : tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run')
+            );
+          } else if (item.slash) {
+            showQuickToast(
+              fillRes === 'slash_pill'
+                ? tr(`已生成 /${item.slash} 命令胶囊，输入需求后发送`, `Ready: /${item.slash} command pill, enter your prompt`)
+                : tr(`已填入 /${item.slash} ，请输入需求后发送`, `Inserted /${item.slash} , enter your prompt`)
+            );
+          } else if (item.id === 'reload') {
+            showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
+          } else {
+            showQuickToast(tr(`已填入「${label}」`, `Inserted "${label}"`));
+          }
+        }
+      });
+    }
+
+    const customList = Array.isArray(customQuickPrompts) ? customQuickPrompts : [];
+    customList.forEach((item, idx) => {
+      if (!item) return;
+      const fillText = String(item.text || '');
+      const label = item.label;
+      actions.push({
+        id: `ag-qcap-prompt-${idx}`,
+        label,
+        title: item.title || tr(`点击填入：${fillText}`, `Insert: ${fillText}`),
+        fillText,
+        onClick: async () => {
           if (await fillComposerText(fillText)) {
-            if (isBuiltinPrompt && item.id === 'compact') {
-              showQuickToast(tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run'));
-            } else if (isBuiltinPrompt && item.id === 'plan') {
-              showQuickToast(tr('已填入 /plan ，请输入规划需求', 'Inserted /plan , enter your goal'));
-            } else if (isBuiltinPrompt && item.id === 'reload') {
-              showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
-            } else {
-              showQuickToast(tr(`已填入「${label}」`, `Inserted "${label}"`));
-            }
+            showQuickToast(tr(`已填入「${label}」`, `Inserted "${label}"`));
           }
         }
       });
     });
 
-    if (featureFlags.showQuickCopyId !== false) {
-      promptActions.push({
-        id: 'ag-qcap-copyid',
-        label: tr('复制会话 ID', 'Copy ID'),
-        title: tr('复制当前对话窗口的会话 ID', 'Copy current conversation ID'),
-        onClick: async () => {
-          const id = getSessionIdFromLocation();
-          if (!id) {
-            showQuickToast(tr('当前页面未包含会话 ID', 'No conversation ID in current URL'));
-            return;
-          }
-          const ok = await copyToClipboard(id);
-          showQuickToast(ok ? tr(`已复制会话 ID (${id.slice(0, 8)})`, `Copied ID (${id.slice(0, 8)})`) : tr('复制失败，请检查剪贴板权限', 'Copy failed'));
-        }
-      });
-    }
-
-    if (featureFlags.showQuickExport !== false) {
-      promptActions.push({
-        id: 'ag-qcap-export',
-        label: tr('导出 Markdown', 'Export MD'),
-        title: tr('将完整对话导出为 Markdown 保存到 ~/Downloads 并复制', 'Export conversation to Markdown in ~/Downloads and copy'),
-        onClick: () => { void exportMarkdown(); }
-      });
-    }
-
-    return promptActions;
+    return actions;
   }
 
   function syncQuickBarActionButtons(bar) {
@@ -7295,6 +7459,8 @@
     },
     runAutoCompactTick,
     getFeatureFlags: () => ({ ...featureFlags }),
+    getQuickPool: () => ({ ...quickPoolState }),
+    fillComposerText,
     parseQuotaSummaryGroups,
     exportMarkdown,
     localizeSidebarConversations,

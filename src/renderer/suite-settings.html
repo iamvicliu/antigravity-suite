@@ -65,17 +65,10 @@
               <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
             </div>
           </div>
-          <div class="settings-card-desc">自定义输入框上方快捷栏的提示词与内置按钮（勾选即可显示或隐藏，最多 12 条提示词，点「恢复默认」可随时还原）。</div>
-          <div id="quick-builtin-toggles-grid" class="settings-feature-grid" style="margin-bottom:8px;">
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">内置按钮：复制会话 ID</span>
-              <input id="set-feat-quick-copyid" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">内置按钮：导出 Markdown</span>
-              <input id="set-feat-quick-export" type="checkbox" class="settings-checkbox" checked />
-            </label>
-          </div>
+          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。</div>
+          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置推荐池（点击开关显示 / 隐藏）</div>
+          <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置快捷按钮推荐池"></div>
+          <div id="quick-custom-section-hdr" class="settings-field-lbl" style="margin:8px 0 6px;">自定义快捷提示词</div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
             <span id="quick-prompts-status" class="qp-status" role="status"></span>

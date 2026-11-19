@@ -2297,6 +2297,65 @@
       text-overflow:ellipsis;
       white-space:nowrap;
     }
+    .qp-pool-grid{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:6px;
+      margin-bottom:6px;
+    }
+    .qp-pool-chip{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      min-width:0;
+      padding:6px 8px;
+      border-radius:7px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-muted);
+      font-size:12px;
+      font-weight:500;
+      cursor:pointer;
+      text-align:left;
+      transition:border-color .14s ease,background-color .14s ease,color .14s ease;
+    }
+    .qp-pool-chip:hover{
+      border-color:var(--ag-btn-border-hover);
+      background:var(--ag-btn-hover);
+      color:var(--ag-text-primary);
+    }
+    .qp-pool-chip[data-active="true"]{
+      border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#10b981));
+      background:rgba(16,185,129,0.10);
+      color:var(--ag-text-primary);
+    }
+    .qp-pool-chip-mark{
+      flex-shrink:0;
+      width:14px;
+      text-align:center;
+      font-size:11px;
+      font-weight:700;
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#10b981));
+    }
+    .qp-pool-chip[data-active="false"] .qp-pool-chip-mark{
+      color:var(--ag-text-muted);
+      font-weight:500;
+    }
+    .qp-pool-chip-label{
+      flex:1;
+      min-width:0;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .qp-empty-hint{
+      font-size:11.5px;
+      color:var(--ag-text-muted);
+      padding:7px 9px;
+      border-radius:6px;
+      border:1px dashed var(--ag-border-subcard);
+      background:transparent;
+    }
     .qp-editor-list{
       display:flex;
       flex-direction:column;
@@ -2305,13 +2364,9 @@
     }
     .qp-row{
       display:grid;
-      grid-template-columns:auto minmax(96px,130px) 1fr auto;
+      grid-template-columns:minmax(96px,130px) 1fr auto;
       gap:6px;
       align-items:center;
-    }
-    .qp-row[data-enabled="false"] .qp-label-input,
-    .qp-row[data-enabled="false"] .qp-text-input{
-      opacity:0.55;
     }
     .qp-label-input,.qp-text-input,.ag-rp-input{
       width:100%;
@@ -2571,6 +2626,7 @@
     @media (max-width:560px){
       #panel-settings{width:calc(100vw - 24px);}
       .settings-tabs-bar{grid-template-columns:repeat(2,1fr);}
+      .qp-pool-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
       .term-app-grid,.settings-feature-grid,.qp-row{grid-template-columns:1fr;}
     }
   </style>
@@ -3693,17 +3749,10 @@
               <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
             </div>
           </div>
-          <div class="settings-card-desc">自定义输入框上方快捷栏的提示词与内置按钮（勾选即可显示或隐藏，最多 12 条提示词，点「恢复默认」可随时还原）。</div>
-          <div id="quick-builtin-toggles-grid" class="settings-feature-grid" style="margin-bottom:8px;">
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">内置按钮：复制会话 ID</span>
-              <input id="set-feat-quick-copyid" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">内置按钮：导出 Markdown</span>
-              <input id="set-feat-quick-export" type="checkbox" class="settings-checkbox" checked />
-            </label>
-          </div>
+          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。</div>
+          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置推荐池（点击开关显示 / 隐藏）</div>
+          <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置快捷按钮推荐池"></div>
+          <div id="quick-custom-section-hdr" class="settings-field-lbl" style="margin:8px 0 6px;">自定义快捷提示词</div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
             <span id="quick-prompts-status" class="qp-status" role="status"></span>
@@ -11393,10 +11442,10 @@ function renderHeatmapGrid(forceRebuild = false) {
     '输入区工具栏（模型/权限等）': 'Composer Tools (Model / Perms / Upload)',
     '待审批操作提醒横幅': 'Pending Approvals Banner',
     '快捷提示词': 'Quick Prompts',
-    '内置按钮：复制会话 ID': 'Built-in: Copy ID',
-    '内置按钮：导出 Markdown': 'Built-in: Export MD',
-    '在快捷栏显示此按钮': 'Show this button in quick bar',
-    '自定义输入框上方快捷栏的提示词与内置按钮（勾选即可显示或隐藏，最多 12 条提示词，点「恢复默认」可随时还原）。': 'Customize composer quick bar prompts and built-in buttons (check to show or hide, up to 12 prompts, reset anytime).',
+    '内置推荐池（点击开关显示 / 隐藏）': 'Built-in Pool (click to toggle)',
+    '自定义快捷提示词': 'Custom Quick Prompts',
+    '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" above to create one.',
+    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" for custom prompts.',
     '+ 新增': '+ Add',
     '保存快捷提示词': 'Save Quick Prompts',
     '局域网': 'LAN',
@@ -11478,17 +11527,53 @@ function renderHeatmapGrid(forceRebuild = false) {
     showTopbarQuota: true,
     showTopbarRemote: true,
     showQuickBar: true,
-    showChatNav: true,
-    showQuickCopyId: true,
-    showQuickExport: true
+    showChatNav: true
   };
   let suiteFeatureFlags = { ...DEFAULT_SUITE_FEATURE_FLAGS };
 
-  const DEFAULT_QUICK_PROMPTS = [
-    { id: 'compact', label: '/compact 压缩', text: '/compact', title: '快速填入 /compact 压缩上下文命令', enabled: true },
-    { id: 'plan', label: '/plan 规划', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式', enabled: true },
-    { id: 'reload', label: '重载规则', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令', enabled: true }
+  const BUILTIN_QUICK_POOL = [
+    { id: 'compact', label: '/compact 压缩', labelEn: '/compact', text: '/compact', title: '压缩上下文（执行官方 /compact 命令），防止超 240K~300K 缓存过期卡死', titleEn: 'Compact context via native /compact command', defaultEnabled: true },
+    { id: 'plan', label: '/plan 规划', labelEn: '/plan', text: '/plan ', title: '进入或切换规划模式，先出方案再动手改代码', titleEn: 'Enter plan mode via /plan', defaultEnabled: true },
+    { id: 'goal', label: '/goal 持续到底', labelEn: '/goal', text: '/goal ', title: '启动长程自主目标模式，持续推进直到目标彻底完成', titleEn: 'Run until the specified goal is completely finished', defaultEnabled: false },
+    { id: 'swarm', label: '/swarm 蜂群并发', labelEn: '/swarm', text: '/swarm ', title: '调度多个子 Agent 并发协作拆分复杂任务', titleEn: 'Spawn parallel agents collaborating on one task', defaultEnabled: false },
+    { id: 'boost', label: '/boost 深度攻坚', labelEn: '/boost', text: '/boost ', title: '调用 Boost 多模型深度推理与严格验证编排', titleEn: 'Invoke Boost multi-agent orchestrator for complex tasks', defaultEnabled: false },
+    { id: 'teamwork', label: '/teamwork 团队协作', labelEn: '/teamwork', text: '/teamwork ', title: '调动自治 Agent 团队接管大型复杂项目', titleEn: 'Invoke autonomous agent team for large projects', defaultEnabled: false },
+    { id: 'grill-me', label: '/grill-me 追问对齐', labelEn: '/grill-me', text: '/grill-me ', title: '让 AI 像面试一样主动追问，把模糊需求与边界全部对齐', titleEn: 'Interview me to align on requirements and plan', defaultEnabled: false },
+    { id: 'btw', label: '/btw 插话提问', labelEn: '/btw', text: '/btw ', title: '不打断主线上下文，临时快速旁路提问', titleEn: 'Ask a quick side question without interrupting main chat', defaultEnabled: false },
+    { id: 'learn', label: '/learn 提炼经验', labelEn: '/learn', text: '/learn ', title: '复盘本轮纠偏与踩坑，沉淀为长期规则或 Skill', titleEn: 'Capture lessons learned as reusable skills or rules', defaultEnabled: false },
+    { id: 'browser', label: '/browser 浏览器', labelEn: '/browser', text: '/browser ', title: '唤醒浏览器子 Agent 执行网页操作与核验', titleEn: 'Invoke browser agent for web tasks', defaultEnabled: false },
+    { id: 'schedule', label: '/schedule 定时任务', labelEn: '/schedule', text: '/schedule ', title: '创建定时轮询或一次性定时提醒任务', titleEn: 'Schedule a recurring cron or one-shot timer', defaultEnabled: false },
+    { id: 'reload', label: '重载规则', labelEn: 'Reload Rules', text: '重新读取 AGENTS', title: '让 AI 重新读取 ~/.codex/AGENTS.md 行为规则', titleEn: 'Fill reload AGENTS prompt', defaultEnabled: true },
+    { id: 'copyid', label: '复制会话 ID', labelEn: 'Copy ID', text: '', title: '一键复制当前对话窗口的会话 ID', titleEn: 'Copy current conversation ID', defaultEnabled: true },
+    { id: 'export', label: '导出 Markdown', labelEn: 'Export MD', text: '', title: '将完整对话导出为 Markdown 保存到 ~/Downloads 并复制', titleEn: 'Export conversation to Markdown in ~/Downloads and copy', defaultEnabled: true }
   ];
+  const DEFAULT_QUICK_POOL_STATE = Object.fromEntries(
+    BUILTIN_QUICK_POOL.map(item => [item.id, Boolean(item.defaultEnabled)])
+  );
+
+  function sanitizeQuickPoolState(raw, fallbackState = DEFAULT_QUICK_POOL_STATE) {
+    const out = { ...DEFAULT_QUICK_POOL_STATE, ...(fallbackState && typeof fallbackState === 'object' ? fallbackState : {}) };
+    if (raw && typeof raw === 'object') {
+      for (const item of BUILTIN_QUICK_POOL) {
+        if (typeof raw[item.id] === 'boolean') {
+          out[item.id] = raw[item.id];
+        }
+      }
+    }
+    return out;
+  }
+
+  function isLegacyDefaultPromptItem(item) {
+    if (!item || typeof item !== 'object') return false;
+    const id = String(item.id || '').trim();
+    if (id !== 'compact' && id !== 'plan' && id !== 'reload') return false;
+    const poolDef = BUILTIN_QUICK_POOL.find(p => p.id === id);
+    return Boolean(
+      poolDef &&
+      String(item.text || '').trim() === String(poolDef.text || '').trim() &&
+      String(item.label || '').trim() === String(poolDef.label || '').trim()
+    );
+  }
 
   function sanitizeQuickPromptsList(raw) {
     if (!Array.isArray(raw)) return null;
@@ -11499,26 +11584,47 @@ function renderHeatmapGrid(forceRebuild = false) {
       const label = String(item.label ?? '').trim();
       const text = String(item.text ?? '');
       if (!label || !text.trim()) continue;
+      if (isLegacyDefaultPromptItem(item)) continue;
       const rawId = String(item.id || '').trim();
       const id = rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) ? rawId : `custom-${i}`;
       out.push({
         id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: String(item.title || '').trim().slice(0, 120),
-        enabled: item.enabled !== false
+        title: String(item.title || '').trim().slice(0, 120)
       });
       if (out.length >= 12) break;
     }
     return out;
   }
 
+  let suiteQuickPool = (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_suite_quick_pool') : '';
+      if (raw) {
+        return sanitizeQuickPoolState(JSON.parse(raw));
+      }
+    } catch {}
+    return { ...DEFAULT_QUICK_POOL_STATE };
+  })();
+
   let suiteQuickPrompts = (() => {
     try {
       const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_suite_quick_prompts') : '';
       if (raw) {
-        const parsed = sanitizeQuickPromptsList(JSON.parse(raw));
-        if (parsed) return parsed;
+        const rawArr = JSON.parse(raw);
+        if (Array.isArray(rawArr)) {
+          const hasStoredPool = Boolean(localStorage?.getItem?.('ag_suite_quick_pool'));
+          if (!hasStoredPool) {
+            for (const item of rawArr) {
+              if (isLegacyDefaultPromptItem(item) && item.enabled === false) {
+                suiteQuickPool[item.id] = false;
+              }
+            }
+          }
+          const parsed = sanitizeQuickPromptsList(rawArr);
+          if (parsed && parsed.length > 0) return parsed;
+        }
       }
     } catch {}
     return null;
@@ -11712,6 +11818,10 @@ function renderHeatmapGrid(forceRebuild = false) {
         for (const k of Object.keys(DEFAULT_SUITE_FEATURE_FLAGS)) {
           if (typeof parsedFeat[k] === 'boolean') suiteFeatureFlags[k] = parsedFeat[k];
         }
+        if (!localStorage?.getItem?.('ag_suite_quick_pool')) {
+          if (typeof parsedFeat.showQuickCopyId === 'boolean') suiteQuickPool.copyid = parsedFeat.showQuickCopyId;
+          if (typeof parsedFeat.showQuickExport === 'boolean') suiteQuickPool.export = parsedFeat.showQuickExport;
+        }
       }
     }
   } catch {}
@@ -11863,6 +11973,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
       localStorage?.setItem?.('antigravityHansEnglishLabels', suiteEnhancerPrefs.englishLabels ? '1' : '0');
       localStorage?.setItem?.('ag_suite_feature_flags', JSON.stringify(suiteFeatureFlags));
+      localStorage?.setItem?.('ag_suite_quick_pool', JSON.stringify(suiteQuickPool));
       if (suiteQuickPrompts === null) {
         localStorage?.removeItem?.('ag_suite_quick_prompts');
       } else {
@@ -11886,6 +11997,7 @@ function renderHeatmapGrid(forceRebuild = false) {
             hansCode: curEntry.hansCode,
             englishLabels: Boolean(suiteEnhancerPrefs.englishLabels),
             featureFlags: { ...suiteFeatureFlags },
+            quickPool: { ...suiteQuickPool },
             quickPrompts: suiteQuickPrompts ? suiteQuickPrompts.map(item => ({ ...item })) : null
           }
         }));
@@ -12209,9 +12321,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       ['set-feat-quota', 'showTopbarQuota'],
       ['set-feat-remote', 'showTopbarRemote'],
       ['set-feat-quickbar', 'showQuickBar'],
-      ['set-feat-chatnav', 'showChatNav'],
-      ['set-feat-quick-copyid', 'showQuickCopyId'],
-      ['set-feat-quick-export', 'showQuickExport']
+      ['set-feat-chatnav', 'showChatNav']
     ];
     for (const [id, key] of map) {
       const chk = el(id);
@@ -12296,6 +12406,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     suiteEnhancerPrefs.locale = entry.code;
     suiteEnhancerPrefs.capsuleLang = entry.capsuleLang;
     syncEnhancerPrefControls();
+    renderQuickBuiltinPool();
+    renderQuickPromptsEditor();
     dispatchSuitePrefsChanged();
     applySuiteShadowLocale();
     try {
@@ -12566,25 +12678,101 @@ function renderHeatmapGrid(forceRebuild = false) {
           suiteFeatureFlags[k] = uiPrefs.featureFlags[k];
         }
       }
+      if (!uiPrefs.quickPool && !localStorage?.getItem?.('ag_suite_quick_pool')) {
+        if (typeof uiPrefs.featureFlags.showQuickCopyId === 'boolean') {
+          suiteQuickPool.copyid = uiPrefs.featureFlags.showQuickCopyId;
+        }
+        if (typeof uiPrefs.featureFlags.showQuickExport === 'boolean') {
+          suiteQuickPool.export = uiPrefs.featureFlags.showQuickExport;
+        }
+      }
+    }
+    if (uiPrefs.quickPool && typeof uiPrefs.quickPool === 'object') {
+      suiteQuickPool = sanitizeQuickPoolState(uiPrefs.quickPool);
     }
     if (typeof applyHostAppearancePreferences === 'function') {
       applyHostAppearancePreferences(uiPrefs);
     }
     if ('quickPrompts' in uiPrefs) {
-      suiteQuickPrompts = uiPrefs.quickPrompts === null
-        ? null
-        : sanitizeQuickPromptsList(uiPrefs.quickPrompts);
+      if (uiPrefs.quickPrompts === null) {
+        suiteQuickPrompts = null;
+      } else {
+        if (!uiPrefs.quickPool && !localStorage?.getItem?.('ag_suite_quick_pool') && Array.isArray(uiPrefs.quickPrompts)) {
+          for (const item of uiPrefs.quickPrompts) {
+            if (isLegacyDefaultPromptItem(item) && item.enabled === false) {
+              suiteQuickPool[item.id] = false;
+            }
+          }
+        }
+        const cleaned = sanitizeQuickPromptsList(uiPrefs.quickPrompts);
+        suiteQuickPrompts = cleaned && cleaned.length > 0 ? cleaned : null;
+      }
     }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
     applySuiteFeatureFlags();
+    renderQuickBuiltinPool();
     renderQuickPromptsEditor();
     renderTerminalGrid();
     applySuiteShadowLocale();
   }
 
+  function getSuiteQuickPool() {
+    return { ...suiteQuickPool };
+  }
+
+  async function setSuiteQuickPool(partialPool = {}, opts = {}) {
+    if (partialPool && typeof partialPool === 'object') {
+      suiteQuickPool = sanitizeQuickPoolState({ ...suiteQuickPool, ...partialPool });
+    }
+    renderQuickBuiltinPool();
+    dispatchSuitePrefsChanged();
+    if (!opts?.skipPersist) {
+      await saveSuiteUiPrefs({ quickPool: { ...suiteQuickPool } });
+    }
+    return getSuiteQuickPool();
+  }
+
+  async function toggleSuiteQuickPoolItem(id, opts = {}) {
+    const cleanId = String(id || '').trim();
+    if (!BUILTIN_QUICK_POOL.some(item => item.id === cleanId)) return getSuiteQuickPool();
+    return await setSuiteQuickPool({ [cleanId]: suiteQuickPool[cleanId] === false }, opts);
+  }
+
+  function renderQuickBuiltinPool() {
+    const gridEl = el('quick-builtin-pool-grid');
+    if (!gridEl) return;
+    gridEl.replaceChildren();
+    for (const item of BUILTIN_QUICK_POOL) {
+      const active = suiteQuickPool[item.id] !== false;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.id = `ag-qp-pool-${item.id}`;
+      btn.className = 'qp-pool-chip';
+      btn.setAttribute('data-pool-id', item.id);
+      btn.setAttribute('data-active', active ? 'true' : 'false');
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      btn.title = suiteTr(item.title, item.titleEn || item.title);
+
+      const mark = document.createElement('span');
+      mark.className = 'qp-pool-chip-mark';
+      mark.textContent = active ? '✓' : '+';
+
+      const lbl = document.createElement('span');
+      lbl.className = 'qp-pool-chip-label';
+      lbl.textContent = suiteTr(item.label, item.labelEn || item.label);
+
+      btn.appendChild(mark);
+      btn.appendChild(lbl);
+      btn.addEventListener('click', () => {
+        void toggleSuiteQuickPoolItem(item.id);
+      });
+      gridEl.appendChild(btn);
+    }
+  }
+
   function getSuiteQuickPrompts() {
-    return (suiteQuickPrompts || DEFAULT_QUICK_PROMPTS).map(item => ({ ...item }));
+    return (Array.isArray(suiteQuickPrompts) ? suiteQuickPrompts : []).map(item => ({ ...item }));
   }
 
   async function setSuiteQuickPrompts(list, opts = {}) {
@@ -12598,9 +12786,9 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (!opts?.skipRenderEditor) renderQuickPromptsEditor();
     const statusEl = el('quick-prompts-status');
     if (statusEl) {
-      statusEl.textContent = suiteQuickPrompts === null
-        ? suiteTr('✅ 已恢复默认快捷提示词', '✅ Quick prompts reset to default')
-        : suiteTr(`✅ 已保存 ${suiteQuickPrompts.length} 条快捷提示词`, `✅ Saved ${suiteQuickPrompts.length} quick prompt(s)`);
+      statusEl.textContent = (!suiteQuickPrompts || suiteQuickPrompts.length === 0)
+        ? suiteTr('✅ 已恢复默认快捷按钮', '✅ Reset to default quick buttons')
+        : suiteTr(`✅ 已保存 ${suiteQuickPrompts.length} 条自定义提示词`, `✅ Saved ${suiteQuickPrompts.length} custom prompt(s)`);
     }
     if (!opts?.skipPersist) {
       await saveSuiteUiPrefs({
@@ -12611,45 +12799,35 @@ function renderHeatmapGrid(forceRebuild = false) {
   }
 
   async function resetSuiteQuickPrompts() {
-    const needRestoreBuiltin = suiteFeatureFlags.showQuickCopyId === false || suiteFeatureFlags.showQuickExport === false;
-    if (needRestoreBuiltin) {
-      suiteFeatureFlags.showQuickCopyId = true;
-      suiteFeatureFlags.showQuickExport = true;
-      syncFeatureFlagControls();
-      applySuiteFeatureFlags();
+    suiteQuickPool = { ...DEFAULT_QUICK_POOL_STATE };
+    suiteQuickPrompts = null;
+    renderQuickBuiltinPool();
+    renderQuickPromptsEditor();
+    dispatchSuitePrefsChanged();
+    const statusEl = el('quick-prompts-status');
+    if (statusEl) {
+      statusEl.textContent = suiteTr('✅ 已恢复默认快捷按钮', '✅ Reset to default quick buttons');
     }
-    const result = await setSuiteQuickPrompts(null, { skipPersist: true });
     await saveSuiteUiPrefs({
-      quickPrompts: null,
-      ...(needRestoreBuiltin ? { featureFlags: { ...suiteFeatureFlags } } : {})
+      quickPool: { ...suiteQuickPool },
+      quickPrompts: null
     });
-    return result;
+    return getSuiteQuickPrompts();
   }
 
   function appendQuickPromptEditorRow(listEl, item, idx) {
-    const enabled = item?.enabled !== false;
+    const emptyHint = listEl.querySelector?.('.qp-empty-hint');
+    if (emptyHint) emptyHint.remove?.();
+
     const row = document.createElement('div');
     row.className = 'qp-row';
     row.setAttribute('data-qp-idx', String(idx));
     if (item?.id) row.setAttribute('data-qp-id', String(item.id));
-    row.setAttribute('data-enabled', enabled ? 'true' : 'false');
-
-    const toggleChk = document.createElement('input');
-    toggleChk.type = 'checkbox';
-    toggleChk.className = 'settings-checkbox qp-enable-checkbox';
-    toggleChk.checked = enabled;
-    toggleChk.title = suiteTr('在快捷栏显示此按钮', 'Show this button in quick bar');
-    toggleChk.setAttribute('aria-label', suiteTr('在快捷栏显示此按钮', 'Show this button in quick bar'));
-    toggleChk.addEventListener('change', () => {
-      row.setAttribute('data-enabled', toggleChk.checked ? 'true' : 'false');
-      const collected = collectQuickPromptsFromEditor();
-      void setSuiteQuickPrompts(collected, { skipRenderEditor: true });
-    });
 
     const labelInp = document.createElement('input');
     labelInp.type = 'text';
     labelInp.className = 'qp-label-input';
-    labelInp.placeholder = suiteTr('按钮文案 (如 /plan)', 'Button label');
+    labelInp.placeholder = suiteTr('按钮文案 (如 逐行审查)', 'Button label');
     labelInp.value = String(item?.label || '');
     labelInp.setAttribute('value', labelInp.value);
 
@@ -12667,9 +12845,14 @@ function renderHeatmapGrid(forceRebuild = false) {
     delBtn.title = suiteTr('删除此条', 'Remove');
     delBtn.addEventListener('click', () => {
       row.remove?.();
+      const remain = listEl.querySelectorAll('.qp-row')?.length || 0;
+      if (remain === 0) renderQuickPromptsEditor();
+      if (suiteQuickPrompts !== null) {
+        const collected = collectQuickPromptsFromEditor();
+        void setSuiteQuickPrompts(collected.length ? collected : null, { skipRenderEditor: remain > 0 });
+      }
     });
 
-    row.appendChild(toggleChk);
     row.appendChild(labelInp);
     row.appendChild(textInp);
     row.appendChild(delBtn);
@@ -12680,7 +12863,17 @@ function renderHeatmapGrid(forceRebuild = false) {
     const listEl = el('quick-prompts-editor-list');
     if (!listEl) return;
     listEl.replaceChildren();
-    const items = suiteQuickPrompts !== null ? suiteQuickPrompts : DEFAULT_QUICK_PROMPTS;
+    const items = Array.isArray(suiteQuickPrompts) ? suiteQuickPrompts : [];
+    if (items.length === 0) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'qp-empty-hint';
+      emptyEl.textContent = suiteTr(
+        '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加',
+        'No custom prompts yet. Click "+ Add" above to create one.'
+      );
+      listEl.appendChild(emptyEl);
+      return;
+    }
     for (let i = 0; i < items.length; i++) {
       appendQuickPromptEditorRow(listEl, items[i], i);
     }
@@ -12694,7 +12887,6 @@ function renderHeatmapGrid(forceRebuild = false) {
     const usedIds = new Set();
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      const toggleChk = row.querySelector('.qp-enable-checkbox');
       const labelInp = row.querySelector('.qp-label-input');
       const textInp = row.querySelector('.qp-text-input');
       const label = String(labelInp?.value || '').trim();
@@ -12708,8 +12900,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: label.slice(0, 120),
-        enabled: toggleChk ? Boolean(toggleChk.checked) : true
+        title: label.slice(0, 120)
       });
       if (out.length >= 12) break;
     }
@@ -13219,6 +13410,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
     if (target === 'terminal') {
       syncEnhancerPrefControls();
+      renderQuickBuiltinPool();
       renderQuickPromptsEditor();
       void refreshTerminalsList();
     } else if (target === 'subscription') {
@@ -13605,9 +13797,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     ['set-feat-quota', 'showTopbarQuota'],
     ['set-feat-remote', 'showTopbarRemote'],
     ['set-feat-quickbar', 'showQuickBar'],
-    ['set-feat-chatnav', 'showChatNav'],
-    ['set-feat-quick-copyid', 'showQuickCopyId'],
-    ['set-feat-quick-export', 'showQuickExport']
+    ['set-feat-chatnav', 'showChatNav']
   ].forEach(([id, key]) => {
     el(id)?.addEventListener('change', e => {
       void setSuiteFeatureFlags({ [key]: Boolean(e?.target?.checked) });
@@ -13656,6 +13846,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
   applySuiteFeatureFlags();
+  renderQuickBuiltinPool();
   renderQuickPromptsEditor();
   renderTerminalGrid();
   dispatchSuitePrefsChanged();
@@ -13737,6 +13928,9 @@ function renderHeatmapGrid(forceRebuild = false) {
     getQuickPrompts: () => getSuiteQuickPrompts(),
     setQuickPrompts: (list, opts) => setSuiteQuickPrompts(list, opts),
     resetQuickPrompts: () => resetSuiteQuickPrompts(),
+    getQuickPool: () => getSuiteQuickPool(),
+    setQuickPool: (partial, opts) => setSuiteQuickPool(partial, opts),
+    toggleQuickPoolItem: (id, opts) => toggleSuiteQuickPoolItem(id, opts),
     getRemoteDisplayConfig: () => getRemoteDisplayConfig(),
     setRemoteDisplayConfig: cfg => setRemoteDisplayConfig(cfg),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),
