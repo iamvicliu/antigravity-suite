@@ -4604,23 +4604,24 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     assert.equal(actDefaultNew?.action, 'new-conversation');
     assert.equal(actDefaultNew?.projectId, undefined, '选中默认工作区后点击顶部新建对话不得携带旧项目 ID');
 
-    // 2) 从已选中项目 A 切换到 ungrouped / 无项目历史会话后，清除旧项目选中态并在轮询与新建对话时不串项目
+    // 2) 方案 A：从已选中项目 A 时，电脑端切至 ungrouped/其他项目不反向覆盖手机选中的 A；手机主动点选 ungrouped 会话后立即清零并保持
     convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
     assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
     assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
     const ungroupedConv = { id: 'conv-ungrouped-test', projectId: 'ungrouped', projectName: '未归属项目', title: '无项目历史对话', active: true, status: 'idle', updatedAt: Date.now() };
-    currentUiSnap = { ...currentUiSnap, sessionId: 'conv-ungrouped-test', isNewConversation: false, currentProjectId: 'ungrouped', currentProjectName: '', conversations: [ungroupedConv, ...(currentUiSnap.conversations || [])] };
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: 'conv-ungrouped-test', isNewConversation: false, currentProjectId: 'ungrouped', currentProjectName: '', conversations: [ungroupedConv, ...(currentUiSnap.conversations || [])] };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 50));
-    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '宿主切至 ungrouped 会话后必须清除旧项目高亮');
-    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '宿主切至 ungrouped 会话后顶部副标题应清空隐藏');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 1, '方案 A：电脑端后台切至 ungrouped 时不得反向覆盖手机已选中的项目 A');
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
     const ungroupedBtn = convListEl.querySelector('button[data-cid="conv-ungrouped-test"]');
     assert.ok(ungroupedBtn, '应在未归属项目组下渲染无项目历史对话');
     ungroupedBtn.click();
     await new Promise((r) => setTimeout(r, 40));
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: 'conv-root-001', currentProjectId: 'proj-a', currentProjectName: 'Alpha App' };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
-    assert.equal(convListEl.querySelectorAll('.is-current').length, 0);
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '手机主动点击 ungrouped 会话后必须清零，且电脑切回 A 不得反向覆写');
     assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true);
     envUi.doc.getElementById('btn-new-chat').click();
     await new Promise((r) => setTimeout(r, 40));
@@ -4633,7 +4634,7 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
     assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
     const standaloneConv = { id: 'conv-outside-test', projectId: 'outside-of-project', projectName: '独立对话', title: '独立工作区对话', active: false, status: 'idle', updatedAt: Date.now() };
-    currentUiSnap = { ...currentUiSnap, sessionId: 'conv-root-001', isNewConversation: false, currentProjectId: 'proj-a', currentProjectName: 'Alpha App', conversations: [standaloneConv, ...(currentUiSnap.conversations || [])] };
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: 'conv-root-001', isNewConversation: false, currentProjectId: 'proj-a', currentProjectName: 'Alpha App', conversations: [standaloneConv, ...(currentUiSnap.conversations || [])] };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 50));
     const standaloneBtn = convListEl.querySelector('button[data-cid="conv-outside-test"]');
@@ -4650,7 +4651,7 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     assert.equal(actAfterStandalone?.action, 'new-conversation');
     assert.equal(actAfterStandalone?.projectId, undefined, '切换到 outside-of-project 会话后点击顶部新建对话不得携带旧项目 ID');
 
-    // 4e. 并发时序回归：发起 B 会话切换或新建 -> 未落地前改点选 C -> B 快照延迟到达，均不得回跳至 B
+    // 4e. 方案 A 并发与边界回归：手机点选 C 后，无论延迟 B 回包、旧轮询、电脑端自行 A/B/ungrouped 往返均保持 C；仅该项目消失时兜底清零
     const assertProjectHeldC = async (expectedId, expectedName) => {
       const cur = convListEl.querySelectorAll('.is-current');
       assert.equal(cur.length, 1);
@@ -4670,7 +4671,6 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     let deferredGate = null;
     let deferredSnapGate = null;
     let gateInlineSnap = true;
-    let actionNoOp = false;
     const baseUiFetch = envUi.sandbox.fetch;
     envUi.sandbox.fetch = async (url, init) => {
       const u = new URL(String(url), 'http://127.0.0.1');
@@ -4681,25 +4681,18 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
         await g.promise;
         return { ...res, json: async () => captured };
       }
-      if (u.pathname === '/api/action') {
-        if (actionNoOp) {
-          const body = JSON.parse(String(init?.body || '{}'));
-          dispatchedActions.push(body);
-          return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ ok: true, actionResult: { ok: true } }) };
-        }
-        if (deferredGate) {
-          const g = deferredGate; const inline = gateInlineSnap; deferredGate = null;
-          const res = await baseUiFetch(url, init);
-          await g.promise;
-          if (!inline) { const body = await res.json(); return { ...res, json: async () => ({ ok: body.ok, actionResult: body.actionResult }) }; }
-          return res;
-        }
+      if (u.pathname === '/api/action' && deferredGate) {
+        const g = deferredGate; const inline = gateInlineSnap; deferredGate = null;
+        const res = await baseUiFetch(url, init);
+        await g.promise;
+        if (!inline) { const body = await res.json(); return { ...res, json: async () => ({ ok: body.ok, actionResult: body.actionResult }) }; }
+        return res;
       }
       return baseUiFetch(url, init);
     };
     const mkGate = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
-    // Case 1: A 旧轮询在途 -> 发起切换 B -> 点选 C -> B 内联快照返回 -> A 旧轮询迟到 -> 新轮询返回 B，保持 C
+    // Case 1: A 旧轮询在途 -> 发起切换 B -> 点选 C -> B 内联返回 -> A 旧轮询迟到 -> 电脑端依次切 A -> B -> ungrouped -> B，手机始终保持 C
     const projBConv = (currentUiSnap.conversations || []).find((c) => c && c.projectId === 'proj-b');
     assert.ok(projBConv);
     convListEl.querySelector('button[data-cid="conv-root-001"]').click();
@@ -4714,43 +4707,46 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     gate1.resolve();
     await new Promise((r) => setTimeout(r, 50));
     snapGateA.resolve();
-    await new Promise((r) => setTimeout(r, 40));
-    envUi.win.dispatchEvent({ type: 'pageshow' });
-    await new Promise((r) => setTimeout(r, 40));
+    await new Promise((r) => setTimeout(r, 30));
+    for (const [sid, pid, pname] of [['conv-root-001', 'proj-a', 'Alpha App'], [projBConv.id, 'proj-b', 'Beta Core'], ['conv-ungrouped-test', 'ungrouped', ''], [projBConv.id, 'proj-b', 'Beta Core']]) {
+      currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: sid, isNewConversation: false, currentProjectId: pid, currentProjectName: pname };
+      envUi.win.dispatchEvent({ type: 'pageshow' });
+      await new Promise((r) => setTimeout(r, 30));
+    }
     await assertProjectHeldC('default-cli-project', 'CLI Project');
 
-    // Case 2: 超过 15 秒后 B 新建迟到轮询落地，仍不覆盖点选 C
+    // Case 2: 宿主在 B -> 重复发起无内联快照的新建 B -> 手机改点选 EmptyProj -> 电脑切 A 再切 B，仍保持 EmptyProj；当 EmptyProj 被删除/归档时兜底清零
     gateInlineSnap = false; deferredGate = mkGate(); const gate2 = deferredGate;
     convListEl.querySelector('button[data-new-proj="proj-b"]').click();
     await new Promise((r) => setTimeout(r, 15));
     convListEl.querySelector('button[data-proj-toggle="proj-empty"]').click();
     gate2.resolve();
-    await new Promise((r) => setTimeout(r, 50));
-    const origDateNow = envUi.sandbox.Date.now;
-    envUi.sandbox.Date.now = () => origDateNow() + 30000;
-    envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: 'conv-root-001', isNewConversation: false, currentProjectId: 'proj-a', currentProjectName: 'Alpha App' };
     envUi.win.dispatchEvent({ type: 'pageshow' });
-    await new Promise((r) => setTimeout(r, 40));
-    envUi.sandbox.Date.now = origDateNow;
+    await new Promise((r) => setTimeout(r, 30));
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: '', isNewConversation: true, currentProjectId: 'proj-b', currentProjectName: 'Beta Core' };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
     await assertProjectHeldC('proj-empty', 'EmptyProj');
 
-    // Case 3: 中间连续穿插 20 次（>16 上限）导航后，最初切换 B 最终落地轮询仍不覆盖点选 C
-    convListEl.querySelector('button[data-cid="conv-root-001"]').click();
-    await new Promise((r) => setTimeout(r, 40));
-    actionNoOp = true;
-    convListEl.querySelector(`button[data-cid="${projBConv.id}"]`).click();
-    for (let k = 0; k < 20; k++) convListEl.querySelector('button[data-new-proj="proj-a"]').click();
-    await new Promise((r) => setTimeout(r, 30));
-    actionNoOp = false;
-    convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
-    await enhReal.performMobileAction({ action: 'switch-conversation', id: projBConv.id });
-    currentUiSnap = await refreshLiveTestSnap();
+    // 当当前选中的 proj-empty 从 projects 中消失（删除/归档）时，自动清零而非悬空指向不存在项目
+    currentUiSnap = {
+      ...currentUiSnap,
+      snapSeq: undefined,
+      sessionId: '',
+      isNewConversation: true,
+      currentProjectId: 'proj-b',
+      currentProjectName: 'Beta Core',
+      projects: (currentUiSnap.projects || []).filter((p) => p && p.id !== 'proj-empty')
+    };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
-    envUi.win.dispatchEvent({ type: 'pageshow' });
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '选中项目从宿主删除/归档后应自动清零高亮');
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '选中项目失效后顶部项目副标题应清空隐藏');
+    envUi.doc.getElementById('btn-new-chat').click();
     await new Promise((r) => setTimeout(r, 40));
-    await assertProjectHeldC('default-cli-project', 'CLI Project');
+    assert.equal(dispatchedActions[dispatchedActions.length - 1]?.projectId, undefined);
 
     enhReal.dispose?.();
     envReal.sandbox.__AGContextMeter?.dispose?.();
