@@ -1821,20 +1821,20 @@ function buildMobileAppHtml() {
     }
     .sheet-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-shrink:0}
     .sheet-title-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
-    .sheet-sub-text{font-size:11.5px;font-weight:400;color:#a1a1aa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .sheet-sub-text{font-size:11.5px;font-weight:400;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .sheet-title-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
     .sheet-back-btn{
       appearance:none;height:28px;padding:0 9px;border-radius:8px;
-      border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#e4e4e7;
+      border:1px solid var(--border-strong);background:var(--surface-subtle);color:var(--fg);
       font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:4px;cursor:pointer;flex-shrink:0;
     }
-    .sheet-back-btn:active{background:rgba(255,255,255,.14)}
+    .sheet-back-btn:active{background:var(--surface-hover)}
     .sheet-speed-btn{
       appearance:none;height:28px;padding:0 10px;border-radius:8px;
-      border:1px solid rgba(56,189,248,.38);background:rgba(56,189,248,.12);color:#7dd3fc;
+      border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
       font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:5px;cursor:pointer;
     }
-    .sheet-speed-btn:active{background:rgba(56,189,248,.22)}
+    .sheet-speed-btn:active{filter:brightness(1.08)}
     .sheet-speed-btn:disabled{opacity:.65;cursor:default}
     .sheet-list{display:flex;flex-direction:column;gap:6px;overflow-y:auto;-webkit-overflow-scrolling:touch}
     .sheet-stage-viewport{width:100%;overflow:hidden}
@@ -3425,7 +3425,7 @@ function buildMobileAppHtml() {
       const cacheStr = cp.cacheHitRate != null ? cp.cacheHitRate + '%' : '—';
       const durStr = cp.durationText || (cp.lastDurationSec != null ? cp.lastDurationSec + 's' : '—');
       const modelStr = cp.modelDisplayName || ctxRes?.model || snap?.model || '—';
-      const barCol = pct == null ? '#38bdf8' : (pct >= 85 ? '#f87171' : (pct >= 65 ? '#fbbf24' : '#34d399'));
+      const barCol = pct == null ? 'var(--accent)' : (pct >= 85 ? 'var(--red)' : (pct >= 65 ? 'var(--amber)' : 'var(--green)'));
       const isolatedTag = snap?.isolated ? '<span class="isolated-badge">独立浏览中</span>' : '';
 
       box.innerHTML =
