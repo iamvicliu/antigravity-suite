@@ -5912,11 +5912,34 @@ test('需求 24: 内置推荐池统一开关、三列自定义提示词与斜杠
     assert.equal(shadow.getElementById('quick-builtin-toggles-grid'), null, '不应再渲染孤立的内置开关大框');
     assert.equal(shadow.querySelector('.qp-enable-checkbox'), null, '自定义列表不得再出现左列原生复选框');
 
-    // 2. 内置推荐池应渲染完整 14 项胶囊开关（默认开启 5 项，其余 9 项默认隐藏）
+    // 2. 内置推荐池应按 3 大场景分组并按推荐度排序（共 14 项，默认开启 5 项，推荐项带 ★ 星标）
     const poolGrid = shadow.getElementById('quick-builtin-pool-grid');
+    const groups = Array.from(poolGrid?.querySelectorAll('.qp-pool-group') || []);
+    assert.equal(groups.length, 3, '内置推荐池应按 3 大场景分组渲染');
+    assert.deepEqual(
+      groups.map((g) => g.getAttribute('data-pool-group')),
+      ['daily', 'heavy', 'tools'],
+      '分组顺序应为 daily -> heavy -> tools'
+    );
+    const getGroupChipIds = (idx) => Array.from(groups[idx]?.querySelectorAll('.qp-pool-chip') || []).map((c) => c.getAttribute('data-pool-id'));
+    assert.deepEqual(getGroupChipIds(0), ['compact', 'plan', 'grill-me', 'btw', 'learn'], '日常高频组内部应按推荐程度排序');
+    assert.deepEqual(getGroupChipIds(1), ['goal', 'boost', 'swarm', 'teamwork', 'browser', 'schedule'], '复杂攻坚组内部应按推荐程度排序');
+    assert.deepEqual(getGroupChipIds(2), ['reload', 'copyid', 'export'], '会话工具组内部应排序正确');
+
     const chips = Array.from(poolGrid?.querySelectorAll('.qp-pool-chip') || []);
     assert.equal(chips.length, 14, '内置推荐池应包含全部 14 个内置推荐项');
     const getChip = (id) => shadow.getElementById(`ag-qp-pool-${id}`);
+    assert.ok(getChip('compact')?.querySelector('.qp-pool-chip-star'), '/compact 应带有 ★ 推荐星标');
+    assert.ok(getChip('boost')?.querySelector('.qp-pool-chip-star'), '/boost 应带有 ★ 推荐星标');
+    assert.equal(getChip('swarm')?.querySelector('.qp-pool-chip-star'), null, '/swarm 不应带有 ★ 星标');
+
+    // 悬停或点击内置胶囊时，底部实时解读栏 #quick-builtin-info-box 应零延迟切换
+    getChip('boost')?.dispatchEvent({ type: 'mouseenter' });
+    assert.match(shadow.getElementById('quick-info-title')?.textContent || '', /\/boost/);
+    assert.equal(shadow.getElementById('quick-info-rec')?.hidden, false);
+    assert.match(shadow.getElementById('quick-info-role')?.textContent || '', /Boost/);
+    assert.match(shadow.getElementById('quick-info-scene')?.textContent || '', /Bug|算法/);
+
     for (const onId of ['compact', 'plan', 'reload', 'copyid', 'export']) {
       assert.equal(getChip(onId)?.getAttribute('data-active'), 'true', `内置推荐项 ${onId} 默认应激活`);
       assert.ok(quickBar.querySelector(`#ag-qcap-${onId}`), `默认应在快捷栏显示 #ag-qcap-${onId}`);
@@ -5925,6 +5948,19 @@ test('需求 24: 内置推荐池统一开关、三列自定义提示词与斜杠
       assert.equal(getChip(offId)?.getAttribute('data-active'), 'false', `推荐池 ${offId} 默认应为未激活待选`);
       assert.equal(quickBar.querySelector(`#ag-qcap-${offId}`), null, `默认不在快捷栏显示 #ag-qcap-${offId}`);
     }
+
+    // 快捷栏按钮应移除原生 title 并支持方案 C 零延迟双行悬浮气泡 (#ag-quickbar-tooltip)
+    const compactBtn = quickBar.querySelector('#ag-qcap-compact');
+    assert.equal(compactBtn?.getAttribute('title'), null, '快捷栏按钮不应设置原生 title 以免遮挡双行气泡');
+    compactBtn?.dispatchEvent({ type: 'mouseenter' });
+    const qTip = env.doc.getElementById('ag-quickbar-tooltip');
+    assert.ok(qTip, '悬停快捷栏按钮应渲染 #ag-quickbar-tooltip 悬浮气泡');
+    assert.equal(qTip.hidden, false, 'mouseenter 时应立即显示 #ag-quickbar-tooltip');
+    assert.match(qTip.querySelector('.ag-qtip-title')?.textContent || '', /\/compact/);
+    assert.match(qTip.querySelector('.ag-qtip-role')?.textContent || '', /压缩/);
+    assert.match(qTip.querySelector('.ag-qtip-scene')?.textContent || '', /240K/);
+    compactBtn?.dispatchEvent({ type: 'mouseleave' });
+    assert.equal(qTip.hidden, true, 'mouseleave 时应立即隐藏 #ag-quickbar-tooltip');
 
     // 点亮 /goal 与 /swarm，并隐藏 复制会话 ID 与 导出 Markdown，均应立即同步并持久化
     getChip('goal')?.click();

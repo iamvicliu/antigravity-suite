@@ -22,6 +22,7 @@
   const FILE_EDITOR_WRAP_ID = 'ag-inline-file-editor-wrap';
   const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
   const NEXT_STEP_TOOLTIP_ID = 'ag-next-step-tooltip';
+  const QUICK_BAR_TOOLTIP_ID = 'ag-quickbar-tooltip';
   const QUICK_RIGHT_SLOT_ID = 'ag-qcap-right-slot';
   const PROMPT_OPT_WRAP_ID = 'ag-prompt-opt-wrap';
   const PROMPT_OPT_BTN_ID = 'ag-prompt-opt-btn';
@@ -86,20 +87,274 @@
   let featureFlags = { ...DEFAULT_FEATURE_FLAGS };
 
   const BUILTIN_QUICK_POOL = [
-    { id: 'compact', label: '/compact 压缩', labelEn: '/compact', slash: 'compact', text: '/compact', title: '压缩上下文（执行官方 /compact 命令），防止超 240K~300K 缓存过期卡死', titleEn: 'Compact context via native /compact command', defaultEnabled: true },
-    { id: 'plan', label: '/plan 规划', labelEn: '/plan', slash: 'plan', text: '/plan ', title: '进入或切换规划模式，先出方案再动手改代码', titleEn: 'Enter plan mode via /plan', defaultEnabled: true },
-    { id: 'goal', label: '/goal 持续到底', labelEn: '/goal', slash: 'goal', text: '/goal ', title: '启动长程自主目标模式，持续推进直到目标彻底完成', titleEn: 'Run until the specified goal is completely finished', defaultEnabled: false },
-    { id: 'swarm', label: '/swarm 蜂群并发', labelEn: '/swarm', slash: 'swarm', text: '/swarm ', title: '调度多个子 Agent 并发协作拆分复杂任务', titleEn: 'Spawn parallel agents collaborating on one task', defaultEnabled: false },
-    { id: 'boost', label: '/boost 深度攻坚', labelEn: '/boost', slash: 'boost', text: '/boost ', title: '调用 Boost 多模型深度推理与严格验证编排', titleEn: 'Invoke Boost multi-agent orchestrator for complex tasks', defaultEnabled: false },
-    { id: 'teamwork', label: '/teamwork 团队协作', labelEn: '/teamwork', slash: 'teamwork', text: '/teamwork ', title: '调动自治 Agent 团队接管大型复杂项目', titleEn: 'Invoke autonomous agent team for large projects', defaultEnabled: false },
-    { id: 'grill-me', label: '/grill-me 追问对齐', labelEn: '/grill-me', slash: 'grill-me', text: '/grill-me ', title: '让 AI 像面试一样主动追问，把模糊需求与边界全部对齐', titleEn: 'Interview me to align on requirements and plan', defaultEnabled: false },
-    { id: 'btw', label: '/btw 插话提问', labelEn: '/btw', slash: 'btw', text: '/btw ', title: '不打断主线上下文，临时快速旁路提问', titleEn: 'Ask a quick side question without interrupting main chat', defaultEnabled: false },
-    { id: 'learn', label: '/learn 提炼经验', labelEn: '/learn', slash: 'learn', text: '/learn ', title: '复盘本轮纠偏与踩坑，沉淀为长期规则或 Skill', titleEn: 'Capture lessons learned as reusable skills or rules', defaultEnabled: false },
-    { id: 'browser', label: '/browser 浏览器', labelEn: '/browser', slash: 'browser', text: '/browser ', title: '唤醒浏览器子 Agent 执行网页操作与核验', titleEn: 'Invoke browser agent for web tasks', defaultEnabled: false },
-    { id: 'schedule', label: '/schedule 定时任务', labelEn: '/schedule', slash: 'schedule', text: '/schedule ', title: '创建定时轮询或一次性定时提醒任务', titleEn: 'Schedule a recurring cron or one-shot timer', defaultEnabled: false },
-    { id: 'reload', label: '重载规则', labelEn: 'Reload Rules', slash: '', text: '重新读取 AGENTS', title: '让 AI 重新读取 ~/.codex/AGENTS.md 行为规则', titleEn: 'Fill reload AGENTS prompt', defaultEnabled: true },
-    { id: 'copyid', label: '复制会话 ID', labelEn: 'Copy ID', slash: '', text: '', builtinAction: 'copyid', title: '一键复制当前对话窗口的会话 ID', titleEn: 'Copy current conversation ID', defaultEnabled: true },
-    { id: 'export', label: '导出 Markdown', labelEn: 'Export MD', slash: '', text: '', builtinAction: 'export', title: '将完整对话导出为 Markdown 保存到 ~/Downloads 并复制', titleEn: 'Export conversation to Markdown in ~/Downloads and copy', defaultEnabled: true }
+    {
+      id: 'compact',
+      group: 'daily',
+      label: '/compact 压缩',
+      labelEn: '/compact',
+      slash: 'compact',
+      text: '/compact',
+      rec: '★必开',
+      recEn: '★Must',
+      tag: '防卡死',
+      tagEn: 'Anti-Stall',
+      role: '触发官方本地压缩，将冗长历史浓缩为高密度摘要。',
+      roleEn: 'Triggers native compaction to summarize long conversation history.',
+      scene: '上下文超过 150K~240K、响应变慢，或切换下一阶段任务前。',
+      sceneEn: 'When context exceeds 150K-240K, slows down, or before switching sub-tasks.',
+      title: '压缩上下文（执行官方 /compact 命令），防止超 240K~300K 缓存过期卡死',
+      titleEn: 'Compact context via native /compact command',
+      defaultEnabled: true
+    },
+    {
+      id: 'plan',
+      group: 'daily',
+      label: '/plan 规划',
+      labelEn: '/plan',
+      slash: 'plan',
+      text: '/plan ',
+      rec: '★推荐',
+      recEn: '★Rec',
+      tag: '先谋后动',
+      tagEn: 'Plan First',
+      role: '切换规划模式，强制先读代码并给出方案，确认后再动手改文件。',
+      roleEn: 'Enter planning mode to inspect code and propose a plan before editing.',
+      scene: '涉及多文件改造、架构调整，想先审阅思路再让 AI 动手时。',
+      sceneEn: 'Multi-file changes or architectural edits where you want to approve a plan first.',
+      title: '进入或切换规划模式，先出方案再动手改代码',
+      titleEn: 'Enter plan mode via /plan',
+      defaultEnabled: true
+    },
+    {
+      id: 'grill-me',
+      group: 'daily',
+      label: '/grill-me 追问对齐',
+      labelEn: '/grill-me',
+      slash: 'grill-me',
+      text: '/grill-me ',
+      rec: '★推荐',
+      recEn: '★Rec',
+      tag: '需求澄清',
+      tagEn: 'Clarify',
+      role: '让 AI 像面试官一样连环追问，逐项确认模糊需求与边界条件。',
+      roleEn: 'Have the AI interview you relentlessly to clarify requirements and edge cases.',
+      scene: '只有一个大概想法、细节还没想透，怕 AI 自作主张乱写时。',
+      sceneEn: 'When your idea is still rough and you want alignment before execution.',
+      title: '让 AI 像面试一样主动追问，把模糊需求与边界全部对齐',
+      titleEn: 'Interview me to align on requirements and plan',
+      defaultEnabled: false
+    },
+    {
+      id: 'btw',
+      group: 'daily',
+      label: '/btw 插话提问',
+      labelEn: '/btw',
+      slash: 'btw',
+      text: '/btw ',
+      rec: '',
+      recEn: '',
+      tag: '旁路问答',
+      tagEn: 'Side Q',
+      role: '开启轻量旁路问答，不打断当前主线进度也不污染主上下文。',
+      roleEn: 'Ask a quick side question without interrupting the main conversation flow.',
+      scene: '主线正在跑任务，你想顺手确认某条语法、报错或无关知识点。',
+      sceneEn: 'Quickly checking syntax or concepts without derailing the main task.',
+      title: '不打断主线上下文，临时快速旁路提问',
+      titleEn: 'Ask a quick side question without interrupting main chat',
+      defaultEnabled: false
+    },
+    {
+      id: 'learn',
+      group: 'daily',
+      label: '/learn 提炼经验',
+      labelEn: '/learn',
+      slash: 'learn',
+      text: '/learn ',
+      rec: '',
+      recEn: '',
+      tag: '规则沉淀',
+      tagEn: 'Learn',
+      role: '复盘本轮对话中你的纠正或成功路径，沉淀为可复用的规则或 Skill。',
+      roleEn: 'Reflect on corrections or setups from this turn into reusable rules or skills.',
+      scene: '费了多轮才教会 AI 某件事，希望它下次永远直接做对时。',
+      sceneEn: 'After correcting the agent or solving a tricky setup to persist the workflow.',
+      title: '复盘本轮纠偏与踩坑，沉淀为长期规则或 Skill',
+      titleEn: 'Capture lessons learned as reusable skills or rules',
+      defaultEnabled: false
+    },
+    {
+      id: 'goal',
+      group: 'heavy',
+      label: '/goal 持续到底',
+      labelEn: '/goal',
+      slash: 'goal',
+      text: '/goal ',
+      rec: '★推荐',
+      recEn: '★Rec',
+      tag: '长程死磕',
+      tagEn: 'Long Run',
+      role: '开启长程目标循环模式，反复校验执行直到目标彻底达成。',
+      roleEn: 'Run relentlessly toward the specified goal until every criterion is verified.',
+      scene: '全量测试修完所有报错、批量机械重构、夜间挂机跑完长任务。',
+      sceneEn: 'Fixing all failing tests, large refactors, or unattended long-horizon runs.',
+      title: '启动长程自主目标模式，持续推进直到目标彻底完成',
+      titleEn: 'Run until the specified goal is completely finished',
+      defaultEnabled: false
+    },
+    {
+      id: 'boost',
+      group: 'heavy',
+      label: '/boost 深度攻坚',
+      labelEn: '/boost',
+      slash: 'boost',
+      text: '/boost ',
+      rec: '★推荐',
+      recEn: '★Rec',
+      tag: '单点深研',
+      tagEn: 'Deep Dive',
+      role: '调用 Boost 多智能体编排器，深度推理并从多视角严格校验。',
+      roleEn: 'Invoke the Boost multi-agent orchestrator for deep thinking and strict verification.',
+      scene: '棘手疑难 Bug 反复修不好、复杂算法或需要严密论证的核心工程。',
+      sceneEn: 'Hard bugs, intricate algorithms, or research/code needing rigorous verification.',
+      title: '调用 Boost 多模型深度推理与严格验证编排',
+      titleEn: 'Invoke Boost multi-agent orchestrator for complex tasks',
+      defaultEnabled: false
+    },
+    {
+      id: 'swarm',
+      group: 'heavy',
+      label: '/swarm 蜂群并发',
+      labelEn: '/swarm',
+      slash: 'swarm',
+      text: '/swarm ',
+      rec: '',
+      recEn: '',
+      tag: '横向分包',
+      tagEn: 'Parallel',
+      role: '主 Agent 当协调者，在共享消息板上同时派多名工人+复核员并行分工。',
+      roleEn: 'Spawn parallel workers collaborating through a shared message board.',
+      scene: '可拆成多个互不冲突的子任务并行提速（改多文件/交叉审查，极耗额度）。',
+      sceneEn: 'Independent subtasks that can run simultaneously or need peer verification (quota heavy).',
+      title: '调度多个子 Agent 并发协作拆分复杂任务',
+      titleEn: 'Spawn parallel agents collaborating on one task',
+      defaultEnabled: false
+    },
+    {
+      id: 'teamwork',
+      group: 'heavy',
+      label: '/teamwork 团队协作',
+      labelEn: '/teamwork',
+      slash: 'teamwork',
+      text: '/teamwork ',
+      rec: '',
+      recEn: '',
+      tag: '军团流水',
+      tagEn: 'Pipeline',
+      role: '拉起探查→拆解→求解→批判审校→修补 5 阶段专业 Agent 团队接管项目。',
+      roleEn: 'Invoke an autonomous 5-phase team pipeline to tackle large projects end-to-end.',
+      scene: '超大型工程重构或从零搭建完整大项目，希望团队全自动一条龙交付。',
+      sceneEn: 'Large projects or greenfield builds best handled by a full autonomous team.',
+      title: '调动自治 Agent 团队接管大型复杂项目',
+      titleEn: 'Invoke autonomous agent team for large projects',
+      defaultEnabled: false
+    },
+    {
+      id: 'browser',
+      group: 'heavy',
+      label: '/browser 浏览器',
+      labelEn: '/browser',
+      slash: 'browser',
+      text: '/browser ',
+      rec: '',
+      recEn: '',
+      tag: '网页实操',
+      tagEn: 'Web UI',
+      role: '派遣内置浏览器子 Agent 访问网页、点击填表并截取视觉状态。',
+      roleEn: 'Launch the browser subagent to navigate, click, fill forms, and inspect UI.',
+      scene: '验证 localhost 前端页面表现、检查 UI 错位或跑通网页端交互流程。',
+      sceneEn: 'Testing localhost web apps, verifying rendered UI, or interactive web flows.',
+      title: '唤醒浏览器子 Agent 执行网页操作与核验',
+      titleEn: 'Invoke browser agent for web tasks',
+      defaultEnabled: false
+    },
+    {
+      id: 'schedule',
+      group: 'heavy',
+      label: '/schedule 定时任务',
+      labelEn: '/schedule',
+      slash: 'schedule',
+      text: '/schedule ',
+      rec: '',
+      recEn: '',
+      tag: '定时巡检',
+      tagEn: 'Cron',
+      role: '创建后台 Cron 周期巡检或一次性倒计时提醒任务，到点自动唤醒。',
+      roleEn: 'Schedule a recurring cron job or a one-time delayed timer notification.',
+      scene: '每 N 分钟巡检构建/服务状态，或约定稍后自动触发某项检查。',
+      sceneEn: 'Periodic monitoring, polling builds, or setting a delayed reminder.',
+      title: '创建定时轮询或一次性定时提醒任务',
+      titleEn: 'Schedule a recurring cron or one-shot timer',
+      defaultEnabled: false
+    },
+    {
+      id: 'reload',
+      group: 'tools',
+      label: '重载规则',
+      labelEn: 'Reload Rules',
+      slash: '',
+      text: '重新读取 AGENTS',
+      rec: '★默认',
+      recEn: '★Default',
+      tag: '恢复约束',
+      tagEn: 'Rules',
+      role: '一键填入「重新读取 AGENTS」，让 AI 立刻重新加载全局行为规则。',
+      roleEn: 'Insert "Reload AGENTS" so the agent immediately re-reads ~/.codex/AGENTS.md.',
+      scene: '刚改完 AGENTS.md 配置文件，或长对话后觉得 AI 忘了约定规矩时。',
+      sceneEn: 'Right after editing AGENTS.md or when guidelines start drifting in long chats.',
+      title: '让 AI 重新读取 ~/.codex/AGENTS.md 行为规则',
+      titleEn: 'Fill reload AGENTS prompt',
+      defaultEnabled: true
+    },
+    {
+      id: 'copyid',
+      group: 'tools',
+      label: '复制会话 ID',
+      labelEn: 'Copy ID',
+      slash: '',
+      text: '',
+      builtinAction: 'copyid',
+      rec: '★默认',
+      recEn: '★Default',
+      tag: '快速取值',
+      tagEn: 'Copy ID',
+      role: '一键提取并复制当前对话窗口的唯一会话 UUID。',
+      roleEn: 'Extract and copy the current conversation UUID to the clipboard.',
+      scene: '需要在终端定位当前会话日志，或在另一扇窗口中引用本会话时。',
+      sceneEn: 'Checking session transcript logs or referencing this conversation elsewhere.',
+      title: '一键复制当前对话窗口的会话 ID',
+      titleEn: 'Copy current conversation ID',
+      defaultEnabled: true
+    },
+    {
+      id: 'export',
+      group: 'tools',
+      label: '导出 Markdown',
+      labelEn: 'Export MD',
+      slash: '',
+      text: '',
+      builtinAction: 'export',
+      rec: '★默认',
+      recEn: '★Default',
+      tag: '对话归档',
+      tagEn: 'Archive',
+      role: '将当前完整对话导出为 Markdown 保存到 ~/Downloads 并复制。',
+      roleEn: 'Export the full conversation as Markdown to ~/Downloads and copy it.',
+      scene: '重要问题排查过程归档留存、发给他人复盘或跨工具交接上下文。',
+      sceneEn: 'Archiving troubleshooting records, sharing logs, or migrating context.',
+      title: '将完整对话导出为 Markdown 保存到 ~/Downloads 并复制',
+      titleEn: 'Export conversation to Markdown in ~/Downloads and copy',
+      defaultEnabled: true
+    }
   ];
   const DEFAULT_QUICK_POOL_STATE = Object.fromEntries(
     BUILTIN_QUICK_POOL.map((item) => [item.id, Boolean(item.defaultEnabled)])
@@ -2789,6 +3044,87 @@
           color: #18181b;
           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
         }
+        #${QUICK_BAR_TOOLTIP_ID} {
+          position: fixed;
+          z-index: 2147483646;
+          width: min(380px, calc(100vw - 24px));
+          padding: 8px 11px;
+          border-radius: 8px;
+          border: 1px solid rgba(16, 185, 129, 0.42);
+          background: rgba(20, 20, 23, 0.97);
+          color: #f4f4f5;
+          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+          font-size: 12px;
+          line-height: 1.45;
+          white-space: normal;
+          word-break: break-word;
+          pointer-events: none;
+        }
+        #${QUICK_BAR_TOOLTIP_ID}[hidden] {
+          display: none !important;
+        }
+        #${QUICK_BAR_TOOLTIP_ID}[data-ag-theme="light"] {
+          border-color: rgba(16, 185, 129, 0.45);
+          background: rgba(255, 255, 255, 0.98);
+          color: #18181b;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+        }
+        #${QUICK_BAR_TOOLTIP_ID} .ag-qtip-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          margin-bottom: 3px;
+        }
+        #${QUICK_BAR_TOOLTIP_ID} .ag-qtip-title-wrap {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-width: 0;
+        }
+        #${QUICK_BAR_TOOLTIP_ID} .ag-qtip-title {
+          font-size: 12px;
+          font-weight: 600;
+          color: inherit;
+        }
+        #${QUICK_BAR_TOOLTIP_ID} .ag-qtip-rec {
+          font-size: 11px;
+          font-weight: 600;
+          padding: 1px 5px;
+          border-radius: 4px;
+          background: rgba(16, 185, 129, 0.16);
+          color: #34d399;
+          flex-shrink: 0;
+        }
+        #${QUICK_BAR_TOOLTIP_ID}[data-ag-theme="light"] .ag-qtip-rec {
+          background: rgba(16, 185, 129, 0.12);
+          color: #059669;
+        }
+        #${QUICK_BAR_TOOLTIP_ID} .ag-qtip-rec[hidden] {
+          display: none !important;
+        }
+        #${QUICK_BAR_TOOLTIP_ID} .ag-qtip-tag {
+          font-size: 11px;
+          color: rgba(212, 212, 216, 0.78);
+          flex-shrink: 0;
+        }
+        #${QUICK_BAR_TOOLTIP_ID}[data-ag-theme="light"] .ag-qtip-tag {
+          color: rgba(63, 63, 70, 0.75);
+        }
+        #${QUICK_BAR_TOOLTIP_ID} .ag-qtip-role {
+          font-size: 12px;
+          color: inherit;
+          line-height: 1.42;
+        }
+        #${QUICK_BAR_TOOLTIP_ID} .ag-qtip-scene {
+          font-size: 11.5px;
+          color: rgba(212, 212, 216, 0.78);
+          line-height: 1.42;
+          margin-top: 2px;
+        }
+        #${QUICK_BAR_TOOLTIP_ID}[data-ag-theme="light"] .ag-qtip-scene {
+          color: rgba(63, 63, 70, 0.78);
+        }
         #${PROMPT_OPT_WRAP_ID} {
           display: flex;
           align-items: center;
@@ -3579,12 +3915,132 @@
     ) + autoTag;
   }
 
+  function hideQuickBarTooltip() {
+    const tip = document.getElementById(QUICK_BAR_TOOLTIP_ID);
+    if (tip) tip.hidden = true;
+  }
+
+  function showQuickBarTooltip(anchorBtn, act) {
+    if (disposed || !anchorBtn || !act) return;
+    ensureDocStyle();
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveHostTheme(host);
+    let tip = document.getElementById(QUICK_BAR_TOOLTIP_ID);
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = QUICK_BAR_TOOLTIP_ID;
+      tip.setAttribute('role', 'tooltip');
+
+      const topRow = document.createElement('div');
+      topRow.className = 'ag-qtip-top';
+
+      const titleWrap = document.createElement('div');
+      titleWrap.className = 'ag-qtip-title-wrap';
+
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ag-qtip-title';
+
+      const recSpan = document.createElement('span');
+      recSpan.className = 'ag-qtip-rec';
+
+      titleWrap.appendChild(titleSpan);
+      titleWrap.appendChild(recSpan);
+
+      const tagSpan = document.createElement('span');
+      tagSpan.className = 'ag-qtip-tag';
+
+      topRow.appendChild(titleWrap);
+      topRow.appendChild(tagSpan);
+
+      const roleDiv = document.createElement('div');
+      roleDiv.className = 'ag-qtip-role';
+
+      const sceneDiv = document.createElement('div');
+      sceneDiv.className = 'ag-qtip-scene';
+
+      tip.appendChild(topRow);
+      tip.appendChild(roleDiv);
+      tip.appendChild(sceneDiv);
+      (document.body || document.documentElement)?.appendChild(tip);
+    }
+
+    const titleEl = tip.querySelector('.ag-qtip-title');
+    const recEl = tip.querySelector('.ag-qtip-rec');
+    const tagEl = tip.querySelector('.ag-qtip-tag');
+    const roleEl = tip.querySelector('.ag-qtip-role');
+    const sceneEl = tip.querySelector('.ag-qtip-scene');
+
+    if (titleEl) titleEl.textContent = act.label || '';
+    if (recEl) {
+      if (act.rec) {
+        recEl.textContent = act.rec;
+        recEl.hidden = false;
+      } else {
+        recEl.textContent = '';
+        recEl.hidden = true;
+      }
+    }
+    if (tagEl) {
+      tagEl.textContent = act.tag
+        ? (act.isCustom ? act.tag : `${tr('推荐用途：', 'Use case: ')}${act.tag}`)
+        : '';
+    }
+    if (roleEl) {
+      roleEl.textContent = act.role ? `${tr('作用：', 'Role: ')}${act.role}` : (act.title || '');
+    }
+    if (sceneEl) {
+      let sceneText = act.scene || '';
+      if (act.poolId === 'compact') {
+        const risk = extractContextRiskState();
+        const autoStr = autoCompactEnabled
+          ? tr('240K 自动压缩: 已开启', '240K Auto-Compact: ON')
+          : tr('240K 自动压缩: 已关闭', '240K Auto-Compact: OFF');
+        if (risk.cacheDropDetected) {
+          sceneText = tr('⚠️ 当前检测到缓存脱落，建议立刻执行 /compact 压缩！', '⚠️ Cache drop detected — run /compact immediately!');
+        } else if (risk.contextUsed >= 240000) {
+          sceneText = tr(`当前已达 ${Math.round(risk.contextUsed / 1000)}K，建议尽快压缩 · ${autoStr}`, `At ${Math.round(risk.contextUsed / 1000)}K — compact soon · ${autoStr}`);
+        } else {
+          sceneText = `${sceneText}（${autoStr}）`;
+        }
+      }
+      if (sceneText) {
+        sceneEl.textContent = act.isCustom
+          ? `${tr('内容：', 'Prompt: ')}${sceneText}`
+          : `${tr('场景：', 'When to use: ')}${sceneText}`;
+        sceneEl.hidden = false;
+      } else {
+        sceneEl.textContent = '';
+        sceneEl.hidden = true;
+      }
+    }
+
+    tip.setAttribute('data-ag-theme', theme);
+    tip.hidden = false;
+
+    try {
+      if (typeof anchorBtn.getBoundingClientRect === 'function') {
+        const rect = anchorBtn.getBoundingClientRect();
+        const vw = window.innerWidth || 1280;
+        const tipW = tip.offsetWidth || 360;
+        const tipH = tip.offsetHeight || 68;
+        const left = Math.max(12, Math.min(vw - tipW - 12, Math.round(rect.left || 12)));
+        const top = Math.max(8, Math.round((rect.top || 76) - tipH - 7));
+        tip.style.left = `${left}px`;
+        tip.style.top = `${top}px`;
+      }
+    } catch {}
+  }
+
   function getQuickBarActions() {
     const actions = [];
     for (const item of BUILTIN_QUICK_POOL) {
       if (quickPoolState[item.id] === false) continue;
       const btnId = `ag-qcap-${item.id}`;
       const label = item.labelEn ? tr(item.label, item.labelEn) : item.label;
+      const rec = item.recEn !== undefined ? tr(item.rec || '', item.recEn || '') : (item.rec || '');
+      const tag = item.tagEn !== undefined ? tr(item.tag || '', item.tagEn || '') : (item.tag || '');
+      const role = item.roleEn ? tr(item.role || item.title, item.roleEn) : (item.role || item.title);
+      const scene = item.sceneEn ? tr(item.scene || '', item.sceneEn) : (item.scene || '');
       const title = item.id === 'compact'
         ? buildCompactBtnTitle(extractContextRiskState())
         : (item.titleEn ? tr(item.title, item.titleEn) : item.title);
@@ -3592,7 +4048,12 @@
       if (item.builtinAction === 'copyid') {
         actions.push({
           id: btnId,
+          poolId: item.id,
           label,
+          rec,
+          tag,
+          role,
+          scene,
           title,
           onClick: async () => {
             const id = getSessionIdFromLocation();
@@ -3610,7 +4071,12 @@
       if (item.builtinAction === 'export') {
         actions.push({
           id: btnId,
+          poolId: item.id,
           label,
+          rec,
+          tag,
+          role,
+          scene,
           title,
           onClick: () => { void exportMarkdown(); }
         });
@@ -3620,7 +4086,12 @@
       const fillText = String(item.text || '');
       actions.push({
         id: btnId,
+        poolId: item.id,
         label,
+        rec,
+        tag,
+        role,
+        scene,
         title,
         fillText,
         onClick: async () => {
@@ -3654,7 +4125,12 @@
       const label = item.label;
       actions.push({
         id: `ag-qcap-prompt-${idx}`,
+        isCustom: true,
         label,
+        rec: '',
+        tag: tr('自定义快捷提示词', 'Custom Prompt'),
+        role: tr('点击一键填入预设提示词到输入框', 'Click to insert preset prompt into composer'),
+        scene: truncateNextStepText(fillText, 64),
         title: item.title || tr(`点击填入：${fillText}`, `Insert: ${fillText}`),
         fillText,
         onClick: async () => {
@@ -3668,12 +4144,19 @@
     return actions;
   }
 
+  function applyQuickButtonMetadata(btn, act) {
+    btn.__agQuickAct = act;
+    btn.setAttribute('data-ag-tooltip', act.title || '');
+    btn.setAttribute('aria-label', act.title ? `${act.label} - ${act.title}` : act.label);
+    if (btn.hasAttribute?.('title')) btn.removeAttribute('title');
+  }
+
   function syncQuickBarActionButtons(bar) {
     if (!bar) return;
     const actions = getQuickBarActions();
     const sig = JSON.stringify({
       lang: uiLang,
-      items: actions.map((a) => [a.id, a.label, a.title, a.fillText || ''])
+      items: actions.map((a) => [a.id, a.label, a.title, a.fillText || '', a.rec || '', a.tag || '', a.role || '', a.scene || ''])
     });
     const rightSlot = bar.querySelector(`#${QUICK_RIGHT_SLOT_ID}`);
     if (bar.dataset.promptsSig === sig) {
@@ -3681,7 +4164,7 @@
         const btn = bar.querySelector(`#${act.id}`);
         if (!btn) continue;
         if (btn.textContent !== act.label) btn.textContent = act.label;
-        if (btn.title !== act.title) btn.title = act.title;
+        applyQuickButtonMetadata(btn, act);
       }
       return;
     }
@@ -3696,10 +4179,25 @@
       btn.className = 'ag-qcap-btn';
       btn.type = 'button';
       btn.textContent = act.label;
-      btn.title = act.title;
+      applyQuickButtonMetadata(btn, act);
       if (act.active) btn.setAttribute('data-active', 'true');
       btn.addEventListener('mousedown', (e) => e.preventDefault());
-      btn.addEventListener('click', act.onClick);
+      btn.addEventListener('mouseenter', () => {
+        showQuickBarTooltip(btn, btn.__agQuickAct);
+      });
+      btn.addEventListener('focus', () => {
+        showQuickBarTooltip(btn, btn.__agQuickAct);
+      });
+      btn.addEventListener('mouseleave', () => {
+        hideQuickBarTooltip();
+      });
+      btn.addEventListener('blur', () => {
+        hideQuickBarTooltip();
+      });
+      btn.addEventListener('click', () => {
+        hideQuickBarTooltip();
+        return btn.__agQuickAct?.onClick?.();
+      });
       if (rightSlot && rightSlot.parentElement === bar) {
         bar.insertBefore(btn, rightSlot);
       } else {
@@ -3766,7 +4264,10 @@
       } else {
         compactBtn.removeAttribute('data-risk');
       }
-      compactBtn.title = buildCompactBtnTitle(risk);
+      const compactSummary = buildCompactBtnTitle(risk);
+      compactBtn.setAttribute('data-ag-tooltip', compactSummary);
+      compactBtn.setAttribute('aria-label', `${compactBtn.textContent || '/compact'} - ${compactSummary}`);
+      if (compactBtn.hasAttribute?.('title')) compactBtn.removeAttribute('title');
     }
 
     // 始终保证快捷胶囊栏位于 .surface-composer 的紧邻正上方
@@ -6068,6 +6569,7 @@
   function applyEnhancerFeatureVisibility() {
     if (disposed) return;
     if (!featureFlags.showQuickBar) {
+      hideQuickBarTooltip();
       safeRemove(document.getElementById(QUICK_BAR_ID));
     } else {
       ensureQuickCapsuleBar();
@@ -6210,7 +6712,9 @@
     window.removeEventListener('resize', onWindowResize);
     syncCmdModifierState(false);
     hideNextStepGhost();
+    hideQuickBarTooltip();
     safeRemove(document.getElementById(NEXT_STEP_TOOLTIP_ID));
+    safeRemove(document.getElementById(QUICK_BAR_TOOLTIP_ID));
     safeRemove(document.getElementById(NEXT_STEP_GHOST_ID));
     safeRemove(document.getElementById(PROMPT_OPT_WRAP_ID));
     if (fileEditorState.active) exitFileEditor(false);
