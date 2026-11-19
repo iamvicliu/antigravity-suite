@@ -4484,19 +4484,31 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     await new Promise((r) => setTimeout(r, 40));
 
     const convListEl = envUi.doc.getElementById('conv-list');
-    // 4a. 通过远程网页「空项目」入口及顶部下拉选择器进入空 default-cli-project 并验证真实桌面项目归属
-    const emptySecToggle = convListEl.querySelector('.proj-empty-toggle');
-    assert.ok(emptySecToggle, '左侧栏按项目视图应显示空项目折叠入口');
-    emptySecToggle.click();
-    const cliNewBtn = convListEl.querySelector('button[data-new-proj="default-cli-project"]');
-    assert.ok(cliNewBtn, '展开空项目后应提供 default-cli-project 新建入口');
-    cliNewBtn.click();
+    // 4a. 验证无「空项目」折叠栏、所有空项目直接平铺展示、点击空项目选中后联动顶部 #new-chat-sub 与 #btn-new-chat
+    assert.equal(convListEl.querySelector('.proj-empty-toggle'), null, '侧边栏不应存在空项目折叠开关');
+    assert.equal(convListEl.querySelector('.proj-empty-sec'), null, '侧边栏不应单独隔离空项目区块');
+    const emptyProjToggle = convListEl.querySelector('button[data-proj-toggle="proj-empty"]');
+    assert.ok(emptyProjToggle, '空项目 EmptyProj 应直接作为普通项目头展示在列表中');
+    const cliProjToggle = convListEl.querySelector('button[data-proj-toggle="default-cli-project"]');
+    assert.ok(cliProjToggle, '空 CLI Project 应无需展开折叠即可直接点中');
+
+    // 先点选 EmptyProj 验证同步，再点选 CLI Project 并点击顶部「新建对话」确认不会串到别的项目
+    emptyProjToggle.click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'EmptyProj', '点中空项目后顶部新建对话副标题应即时切换为该项目名');
+    cliProjToggle.click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'CLI Project', '点中 CLI Project 后顶部新建对话副标题应联动为 CLI Project');
+    const curGroupsAfterClick = convListEl.querySelectorAll('.is-current');
+    assert.equal(curGroupsAfterClick.length, 1, '侧边栏同时只应有一个高亮项目');
+    assert.equal((curGroupsAfterClick[0].querySelector('.proj-name')?.textContent || '').trim(), 'CLI Project', '点中的空项目应获得 is-current 高亮');
+
+    // 点击顶部 #btn-new-chat，确认严格向刚点中的 CLI Project 发起新建会话而不串项目
+    envUi.doc.getElementById('btn-new-chat').click();
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(composerProps.inExistingConversation, false);
-    assert.equal(routerState.location.search?.project, 'default-cli-project', '点击空 CLI 项目入口应进入真实桌面项目路由');
+    assert.equal(routerState.location.search?.project, 'default-cli-project', '点击空项目后再点顶部新建对话必须进入该项目路由');
     assert.equal(projBadge.getAttribute('data-active-project-id'), 'default-cli-project');
     await enhReal.performMobileAction({ action: 'send', text: 'CLI web sidebar prompt' });
-    assert.equal(createdByFirstMsg[createdByFirstMsg.length - 1]?.projectId, 'default-cli-project', '从侧边栏 CLI 入口新建后首条消息应归属 default-cli-project');
+    assert.equal(createdByFirstMsg[createdByFirstMsg.length - 1]?.projectId, 'default-cli-project', '从侧边栏选中 CLI 项目新建后首条消息应归属 default-cli-project');
 
     envUi.doc.getElementById('btn-new-chat-project').click();
     const cliSheetOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes('CLI Project'));
@@ -5610,10 +5622,15 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.ok((envUi.doc.getElementById('toast').textContent || '').includes('桌面端路由正忙'));
     assert.ok((envUi.doc.getElementById('proj-selected-summary').textContent || '').includes('已创建，但未成功进入新对话'));
     assert.equal(envUi.doc.getElementById('proj-create-submit').textContent, '重试进入已有项目「brand-new-dir」');
-    const emptyToggleBtn = convListEl.querySelector('.proj-empty-toggle');
-    if (emptyToggleBtn && emptyToggleBtn.getAttribute('aria-expanded') === 'false') {
-      emptyToggleBtn.click();
-    }
+    assert.equal(convListEl.querySelector('.proj-empty-toggle'), null, '不得渲染空项目折叠控件');
+    assert.equal(convListEl.querySelector('.proj-empty-sec'), null, '新建空项目应直接展示在项目列表中');
+    const brandNewToggleBtn = convListEl.querySelector(`button[data-proj-toggle="${brandNewProjId}"]`);
+    assert.ok(brandNewToggleBtn, '新建的空项目无需展开折叠即可直接看见并点击');
+    brandNewToggleBtn.click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'brand-new-dir', '点中新建空项目后顶部新建对话应联动为 brand-new-dir');
+    const curProjGroups = convListEl.querySelectorAll('.is-current');
+    assert.equal(curProjGroups.length, 1, '侧边栏高亮项目应切换为唯一的新建空项目');
+    assert.equal((curProjGroups[0].querySelector('.proj-name')?.textContent || '').trim(), 'brand-new-dir');
     assert.ok((convListEl.textContent || '').includes('brand-new-dir'), '侧边栏项目列表应已同步刷新显示新建项目');
     assert.ok(convListEl.querySelector(`.proj-new-btn[data-new-proj="${brandNewProjId}"]`), '侧边栏也应提供该已有项目的新建对话重连入口');
     assert.notEqual(currentProjIdState, brandNewProjId);
