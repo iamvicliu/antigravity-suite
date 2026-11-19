@@ -6321,6 +6321,7 @@ test('需求 23: 远程端切换防轮询假死与中止旧请求、折叠思考
     let trajRpcCount = 0;
     let trajStepCount = 40;
     let trajModTime = '2026-11-19T10:00:00Z';
+    let failSigTraj = false;
     const steps40 = [];
     for (let i = 0; i < 20; i++) {
       steps40.push({ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: `问题 ${i}` }] } });
@@ -6341,6 +6342,7 @@ test('需求 23: 远程端切换防轮询假死与中止旧请求、折叠思考
         }
         if (method === 'GetCascadeTrajectory') {
           trajRpcCount += 1;
+          if (failSigTraj) throw new Error('LS temporarily unavailable');
           return { trajectory: { steps: steps40 } };
         }
         if (method === 'ListProjects') return { projectIds: [] };
@@ -6387,9 +6389,40 @@ test('需求 23: 远程端切换防轮询假死与中止旧请求、折叠思考
       stateDir, configDir, msgLimit: 6, bypassCache: true, localApiConnect: sigMockConnect
     });
     assert.equal(trajRpcCount, 3, 'bypassCache:true 应强制重新拉取轨迹');
+
+    // 签名变化 -> 拉取失败 -> 服务恢复：失败时绝不能将新 trajSig 绑定到旧轨迹，恢复后空闲会话必须重拉新内容
+    steps40.push({ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '新追加问题' }] } });
+    steps40.push({ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '回复 **#new44**' } });
+    trajStepCount = 44;
+    trajModTime = '2026-11-19T10:00:30Z';
+    failSigTraj = true;
+    mockNow += 500;
+    const snapFailFallback = await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 4);
+    assert.equal(snapFailFallback.totalMessages, 40, '拉取失败时应安全降级返回旧缓存的 40 条历史');
+    assert.equal(snapFailFallback.messages.some((m) => String(m.text || '').includes('#new44')), false);
+
+    // 服务恢复后签名保持 stepCount=44 不变（空闲状态）且 bypassCache=false，此时之前保留的旧签名与新签名仍不匹配，必须立即重拉！
+    failSigTraj = false;
+    mockNow += 1000;
+    const snapRecovered = await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 5, '服务恢复后即使签名未再变且超过任意周期，也必须重拉此前失败未能更新的轨迹');
+    assert.equal(snapRecovered.totalMessages, 42);
+    assert.ok(snapRecovered.messages.some((m) => String(m.text || '').includes('#new44')), '恢复后必须展示最新回复');
     Date.now = origDateNow;
 
-    // 2) HTTP gzip 压缩与 Cookie 版本号 1.9.17 验证
+    // 2) HTTP gzip 压缩、Accept-Encoding q=0 质量值协商与 Cookie 版本号 1.9.17 验证
+    assert.equal(remoteMod.acceptsGzipEncoding('gzip, deflate, br'), true);
+    assert.equal(remoteMod.acceptsGzipEncoding('gzip;q=0.5'), true);
+    assert.equal(remoteMod.acceptsGzipEncoding('deflate, *;q=0.8'), true);
+    assert.equal(remoteMod.acceptsGzipEncoding('gzip;q=0'), false);
+    assert.equal(remoteMod.acceptsGzipEncoding('br, gzip; q=0.0, *;q=1'), false);
+    assert.equal(remoteMod.acceptsGzipEncoding('identity;q=1, *;q=0'), false);
+
     const cfg = remoteMod.loadOrCreateRemoteConfig();
     const handler = remoteMod.createRemoteHttpHandler(cfg);
     const invokeHttp = (method, urlPath, headers = {}) => new Promise((resolve) => {
@@ -6411,12 +6444,104 @@ test('需求 23: 远程端切换防轮询假死与中止旧请求、折叠思考
     assert.equal(htmlPlainRes.status, 200);
     assert.ok(String(htmlPlainRes.setCookie || '').includes('ag_ui_ver=1.9.17'), '根目录响应应下发最新版本号 1.9.17');
 
+    for (const rejectHeader of ['gzip;q=0', 'br, gzip; q=0.0, *;q=1', 'identity;q=1, *;q=0']) {
+      const rejectedGzRes = await invokeHttp('GET', '/', { 'accept-encoding': rejectHeader });
+      assert.equal(rejectedGzRes.status, 200);
+      assert.equal(rejectedGzRes.headers['Content-Encoding'], undefined, `${rejectHeader} 禁止 gzip 时不得返回 Content-Encoding: gzip`);
+      assert.equal(typeof rejectedGzRes.body, 'string');
+      assert.ok(rejectedGzRes.body.includes('<!DOCTYPE html>'));
+    }
+
     const htmlGzipRes = await invokeHttp('GET', '/', { 'accept-encoding': 'gzip, deflate' });
     assert.equal(htmlGzipRes.status, 200);
     assert.equal(htmlGzipRes.headers['Content-Encoding'], 'gzip');
     assert.ok(Buffer.isBuffer(htmlGzipRes.body));
     const gunzippedHtml = zlib.gunzipSync(htmlGzipRes.body).toString('utf8');
     assert.ok(gunzippedHtml.includes('id="conv-list"') && gunzippedHtml.includes('openThoughtIdxSet'));
+
+    // 2b) evalInPickedTarget / performActionInTarget 非幂等副作用动作超时不得重放（send / new-conversation）
+    for (const sideEffectPayload of [
+      { action: 'send', text: 'do-not-replay-send' },
+      { action: 'new-conversation', projectId: 'proj-a' }
+    ]) {
+      let pickCount = 0;
+      const executedExprs = [];
+      const hangingWcTarget = {
+        id: 'wc-timeout-1',
+        title: 'Antigravity',
+        wc: {
+          isDestroyed: () => false,
+          executeJavaScript: (expr) => {
+            executedExprs.push(expr);
+            return new Promise(() => {});
+          }
+        }
+      };
+      await assert.rejects(
+        () => remoteMod.performActionInTarget(sideEffectPayload, {
+          timeoutMs: 40,
+          pickTarget: async () => {
+            pickCount += 1;
+            return { target: hangingWcTarget, windows: [{ id: 'wc-timeout-1', title: 'Antigravity' }] };
+          }
+        }),
+        /页面执行超时/
+      );
+      assert.equal(pickCount, 1, `${sideEffectPayload.action} 超时后不得重选窗口重试`);
+      assert.equal(executedExprs.length, 1, `${sideEffectPayload.action} 在动作已派发但响应超时时绝不能重复执行`);
+
+      // 模拟 evalInCdpTarget 抛出 CDP 请求超时（未注入 wc 的 WebSocket 超时场景）同样禁止重放
+      let cdpPickCount = 0;
+      let cdpEvalCount = 0;
+      await assert.rejects(
+        () => remoteMod.performActionInTarget(sideEffectPayload, {
+          pickTarget: async () => {
+            cdpPickCount += 1;
+            return { target: { id: 'cdp-1', title: 'Antigravity' }, windows: [{ id: 'cdp-1', title: 'Antigravity' }] };
+          },
+          evalInTarget: async () => {
+            cdpEvalCount += 1;
+            const err = new Error('CDP 请求超时');
+            err.cdpDispatched = true;
+            throw err;
+          }
+        }),
+        /CDP 请求超时/
+      );
+      assert.equal(cdpPickCount, 1);
+      assert.equal(cdpEvalCount, 1, `${sideEffectPayload.action} 在 CDP 请求超时后不得二次重放`);
+    }
+
+    // 对比验证：若是派发前连接失败（cdpDispatched === false），则允许重选新目标执行一次
+    let preErrPickCount = 0;
+    let preErrExecCount = 0;
+    const preErrRes = await remoteMod.performActionInTarget({ action: 'send', text: 'retry-only-on-pre-dispatch' }, {
+      pickTarget: async (_id, opts = {}) => {
+        preErrPickCount += 1;
+        return {
+          target: { id: opts.force ? 'cdp-fresh' : 'cdp-stale', title: 'Antigravity' },
+          windows: [{ id: 'cdp-fresh', title: 'Antigravity' }]
+        };
+      },
+      evalInTarget: async (target, expr) => {
+        if (target.id === 'cdp-stale') {
+          const err = new Error('CDP WebSocket 连接失败');
+          err.cdpDispatched = false;
+          throw err;
+        }
+        preErrExecCount += 1;
+        if (expr.includes('getMobileSnapshot')) {
+          return { ok: true, sessionId: 's1', messages: [], projects: [], conversations: [] };
+        }
+        return { ok: true };
+      }
+    }).catch((err) => {
+      // fetchSnapshotFromTarget 内部走默认 pickCdpTarget 在测试环境无 DevTools 会返回 null snapshot，actionResult 仍为 ok:true
+      return { unexpectedErr: err };
+    });
+    assert.equal(preErrRes.ok, true);
+    assert.equal(preErrPickCount, 2, '派发前连接失败应触发强制重选新目标');
+    assert.equal(preErrExecCount, 1, '重选后应精确执行一次目标动作');
 
     // 3) 客户端轮询保活/旧请求 Abort、折叠 <details> 惰性挂载、以及侧栏原地 class 乐观切换
     const mobileHtml = remoteMod.buildMobileAppHtml();

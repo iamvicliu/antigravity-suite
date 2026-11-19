@@ -1119,16 +1119,25 @@ async function listAntigravityCdpTargets(options = {}) {
 
 function evalInElectronWebContents(wc, expression, timeoutMs = 4500) {
   if (!wc || wc.isDestroyed?.() || typeof wc.executeJavaScript !== 'function') {
-    return Promise.reject(new Error('目标窗口已关闭'));
+    const err = new Error('目标窗口已关闭');
+    err.cdpDispatched = false;
+    return Promise.reject(err);
   }
   return new Promise((resolve, reject) => {
     let settled = false;
+    let dispatched = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error('页面执行超时'));
+      const err = new Error('页面执行超时');
+      err.cdpDispatched = dispatched;
+      reject(err);
     }, timeoutMs);
-    Promise.resolve(wc.executeJavaScript(expression, true))
+    Promise.resolve()
+      .then(() => {
+        dispatched = true;
+        return wc.executeJavaScript(expression, true);
+      })
       .then((val) => {
         if (settled) return;
         settled = true;
@@ -1139,7 +1148,9 @@ function evalInElectronWebContents(wc, expression, timeoutMs = 4500) {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        reject(err instanceof Error ? err : new Error(String(err || '页面执行异常')));
+        const wrapped = err instanceof Error ? err : new Error(String(err || '页面执行异常'));
+        wrapped.cdpDispatched = dispatched;
+        reject(wrapped);
       });
   });
 }
@@ -1155,23 +1166,28 @@ function evalInCdpTarget(wsUrl, expression, timeoutMs = 4500) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      try { ws.close(); } catch {}
-      reject(new Error('CDP 请求超时'));
-    }, timeoutMs);
+    let requestSent = false;
+    let timer = null;
 
     const finish = (err, val) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       try { ws.close(); } catch {}
-      if (err) reject(err);
-      else resolve(val);
+      if (err) {
+        if (err.cdpDispatched === undefined) err.cdpDispatched = requestSent;
+        reject(err);
+      } else {
+        resolve(val);
+      }
     };
 
+    timer = setTimeout(() => {
+      finish(new Error('CDP 请求超时'));
+    }, timeoutMs);
+
     ws.addEventListener('open', () => {
+      requestSent = true;
       ws.send(JSON.stringify({
         id: 1,
         method: 'Runtime.evaluate',
@@ -1200,7 +1216,8 @@ function evalInCdpTarget(wsUrl, expression, timeoutMs = 4500) {
       }
     });
 
-    ws.addEventListener('error', () => finish(new Error('CDP WebSocket 连接失败')));
+    ws.addEventListener('error', () => finish(new Error(requestSent ? 'CDP 连接在执行期间断开' : 'CDP WebSocket 连接失败')));
+    ws.addEventListener('close', () => finish(new Error(requestSent ? 'CDP 连接在执行期间断开' : 'CDP WebSocket 连接失败')));
   });
 }
 
@@ -1221,19 +1238,27 @@ async function pickCdpTarget(requestedId, options = {}) {
   return { target: targets[0], windows: cleanWindows };
 }
 
-async function evalInPickedTarget(requestedId, expression, timeoutMs = 4500) {
-  let picked = await pickCdpTarget(requestedId);
+async function evalInPickedTarget(requestedId, expression, timeoutMs = 4500, options = {}) {
+  const idempotent = Boolean(options.idempotent);
+  const pickFn = typeof options.pickTarget === 'function' ? options.pickTarget : pickCdpTarget;
+  const evalFn = typeof options.evalInTarget === 'function' ? options.evalInTarget : evalInTarget;
+  let picked = await pickFn(requestedId);
   try {
-    const value = await evalInTarget(picked.target, expression, timeoutMs);
+    const value = await evalFn(picked.target, expression, timeoutMs);
     return { value, target: picked.target, windows: picked.windows };
   } catch (err) {
+    invalidateCdpTargetsCache();
     const msg = String(err?.message || '');
-    if (!/(?:CDP WebSocket 连接失败|目标窗口已关闭|未找到激活|CDP 请求超时)/.test(msg)) {
+    const isTargetOrConnErr = /(?:CDP WebSocket 连接失败|CDP 连接在执行期间断开|目标窗口已关闭|未找到激活|CDP 请求超时|页面执行超时)/.test(msg);
+    if (!isTargetOrConnErr) {
       throw err;
     }
-    invalidateCdpTargetsCache();
-    picked = await pickCdpTarget(requestedId, { force: true });
-    const value = await evalInTarget(picked.target, expression, timeoutMs);
+    const mayHaveExecuted = Boolean(err?.cdpDispatched) || /(?:超时|执行期间断开)/.test(msg);
+    if (!idempotent && mayHaveExecuted) {
+      throw err;
+    }
+    picked = await pickFn(requestedId, { force: true });
+    const value = await evalFn(picked.target, expression, timeoutMs);
     return { value, target: picked.target, windows: picked.windows };
   }
 }
@@ -2873,24 +2898,28 @@ function createConversationHistoryManager() {
       (nowMs - existing.at < ttl)
     );
     let trajMsgs = null;
+    let trajFetchedFresh = false;
     if (trajHit) {
       trajMsgs = existing.trajMsgs;
     } else {
       const fetched = await fetchTrajectoryMessages(sid, options);
       if (Array.isArray(fetched)) {
         trajMsgs = fetched;
+        trajFetchedFresh = true;
       } else if (existing && Array.isArray(existing.trajMsgs)) {
         trajMsgs = existing.trajMsgs;
       }
     }
 
     const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
+    const nextTrajSig = trajFetchedFresh ? trajSig : (existing?.trajSig || '');
+    const nextAt = (trajFetchedFresh || trajHit) ? nowMs : (existing?.at || 0);
     touchCache(sid, {
       trajMsgs: Array.isArray(trajMsgs) ? trajMsgs : (existing?.trajMsgs || null),
-      trajSig: trajSig || (trajHit ? (existing?.trajSig || '') : ''),
+      trajSig: nextTrajSig,
       domTail: domTail.length ? domTail : (existing?.domTail || []),
       merged,
-      at: nowMs
+      at: nextAt
     });
     return { merged, trajMsgs: Array.isArray(trajMsgs) ? trajMsgs : (existing?.trajMsgs || null) };
   }
@@ -2971,7 +3000,7 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
     }
     return fn();
   })()`;
-  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr);
+  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr, 4500, { idempotent: true });
   if (!snap || typeof snap !== 'object') {
     throw new Error('未能读取窗口快照');
   }
@@ -2987,7 +3016,7 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
   }
 }
 
-async function performActionInTarget(payload) {
+async function performActionInTarget(payload, options = {}) {
   const act = String(payload?.action || '').trim();
   const warmPromise = (act === 'switch-conversation' && payload?.id && String(payload.id).trim() !== 'new')
     ? defaultHistoryManager.warmSession(String(payload.id).trim()).catch(() => null)
@@ -3000,7 +3029,12 @@ async function performActionInTarget(payload) {
     }
     return await fn(${serialized});
   })()`;
-  const { value: actionResult, target } = await evalInPickedTarget(payload?.targetId, expr, 6000);
+  const actionTimeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 6000;
+  const { value: actionResult, target } = await evalInPickedTarget(payload?.targetId, expr, actionTimeoutMs, {
+    idempotent: false,
+    pickTarget: options.pickTarget,
+    evalInTarget: options.evalInTarget
+  });
   const settleMs = (act === 'switch-conversation' || act === 'new-conversation')
     ? (actionResult?.verifiedState ? 45 : 180)
     : 80;
@@ -7171,6 +7205,37 @@ function createCloudflareTunnelController(getPort) {
   };
 }
 
+function acceptsGzipEncoding(rawHeader) {
+  if (Array.isArray(rawHeader)) rawHeader = rawHeader.join(',');
+  const raw = String(rawHeader || '').trim().toLowerCase();
+  if (!raw) return false;
+  let gzipQ = null;
+  let starQ = null;
+  for (const item of raw.split(',')) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(';').map((s) => s.trim()).filter(Boolean);
+    const coding = parts[0];
+    let q = 1;
+    for (let i = 1; i < parts.length; i++) {
+      const eqIdx = parts[i].indexOf('=');
+      if (eqIdx < 0) continue;
+      const k = parts[i].slice(0, eqIdx).trim();
+      const v = parts[i].slice(eqIdx + 1).trim();
+      if (k === 'q') {
+        q = /^(?:0(?:\.\d{1,3})?|1(?:\.0{1,3})?)$/.test(v) ? Number(v) : 0;
+      }
+    }
+    if (coding === 'gzip' || coding === 'x-gzip') {
+      gzipQ = gzipQ === null ? q : Math.min(gzipQ, q);
+    } else if (coding === '*') {
+      starQ = starQ === null ? q : Math.min(starQ, q);
+    }
+  }
+  if (gzipQ !== null) return gzipQ > 0;
+  return starQ !== null && starQ > 0;
+}
+
 function createRemoteHttpHandler(initialConfig, options = {}) {
   const getTunnelOrigin = typeof options.getTunnelOrigin === 'function' ? options.getTunnelOrigin : () => '';
   let activeConfig = initialConfig;
@@ -7230,8 +7295,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
 
   function sendPayload(req, res, statusCode, headers, bodyStr) {
     const raw = typeof bodyStr === 'string' ? bodyStr : String(bodyStr || '');
-    const acceptEnc = String(req?.headers?.['accept-encoding'] || '');
-    if (/\bgzip\b/i.test(acceptEnc) && Buffer.byteLength(raw, 'utf8') >= 1024) {
+    if (acceptsGzipEncoding(req?.headers?.['accept-encoding']) && Buffer.byteLength(raw, 'utf8') >= 1024) {
       const gz = raw === cachedHtml ? cachedHtmlGzip : zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 1 });
       res.writeHead(statusCode, { ...headers, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
       res.end(gz);
@@ -8037,6 +8101,10 @@ module.exports = {
   listHostDirectories,
   createHostSubdirectory,
   createRemoteProject,
+  evalInCdpTarget,
+  evalInPickedTarget,
+  performActionInTarget,
+  acceptsGzipEncoding,
   readJsonBody,
   createRemoteHttpHandler,
   recordPairedDeviceAccess,
