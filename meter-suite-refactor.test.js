@@ -8940,3 +8940,389 @@ test('需求 28: 远程端切换防轮询假死与中止旧请求、折叠思考
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 29: 融合回归——隔离会话后跨项目新建与进空项目、项目/模型选择器交替打开互不串扰
+// =========================================================================
+test('需求 29: 融合回归——隔离会话后跨项目新建与进空项目、项目/模型选择器交替打开互不串扰', async () => {
+  const { pathToFileURL } = require('url');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req29-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const homeDir = path.join(tmpRoot, 'home');
+  const configDir = path.join(homeDir, '.gemini', 'config');
+  const projectsDir = path.join(configDir, 'projects');
+  const emptyDir = path.join(homeDir, 'codebase', 'empty-proj-r2');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(projectsDir, { recursive: true });
+  fs.mkdirSync(emptyDir, { recursive: true });
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+  const prevHome = process.env.HOME;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+    process.env.HOME = homeDir;
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+    const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+
+    const fetchedSnaps = [];
+    const performedActs = [];
+    const mockConnect = async () => ({
+      rpc: async (method, body) => {
+        if (method === 'GetProjects') {
+          const files = fs.readdirSync(projectsDir).filter((f) => f.endsWith('.json'));
+          return {
+            projects: files.map((f) => ({
+              project: JSON.parse(fs.readFileSync(path.join(projectsDir, f), 'utf8'))
+            }))
+          };
+        }
+        if (method === 'CreateProject') {
+          const proj = body.project;
+          fs.writeFileSync(path.join(projectsDir, `${proj.id}.json`), JSON.stringify(proj, null, 2), 'utf8');
+          return { project: proj };
+        }
+        if (method === 'ReadProject') {
+          const pFile = path.join(projectsDir, `${body.id}.json`);
+          if (fs.existsSync(pFile)) return { project: JSON.parse(fs.readFileSync(pFile, 'utf8')) };
+        }
+        return {};
+      }
+    });
+
+    const handler = remoteMod.createRemoteHttpHandler(httpCfg, {
+      homeDir,
+      configDir,
+      localApiConnect: mockConnect,
+      fetchSnapshot: async (tid, opts = {}) => {
+        fetchedSnaps.push({ tid, opts });
+        const cid = String(opts.conversationId || '');
+        if (cid === '__new__') {
+          return { ok: true, isNewConversation: true, sessionId: '', currentProjectId: 'proj-b-empty', currentProjectName: 'Empty Beta', projects: [], conversations: [] };
+        }
+        return {
+          ok: true,
+          isNewConversation: false,
+          sessionId: cid || 'conv-desktop',
+          activeConversationId: cid || 'conv-desktop',
+          isolated: cid === 'conv-proj-a-1',
+          currentProjectId: cid === 'conv-proj-a-1' ? 'proj-a' : 'proj-b-empty',
+          projects: [],
+          conversations: []
+        };
+      },
+      performAction: async (act) => {
+        performedActs.push(act);
+        return {
+          ok: true,
+          actionResult: { ok: true, projectId: act.projectId || '' },
+          snapshot: {
+            ok: true,
+            isNewConversation: true,
+            sessionId: '',
+            currentProjectId: act.projectId || '',
+            currentProjectName: act.projectId === 'proj-b-empty' ? 'Empty Beta' : 'Empty Proj R2',
+            projects: [],
+            conversations: []
+          }
+        };
+      }
+    });
+
+    const invokeHttp = (method, reqPath, bodyObj = null, extraHeaders = {}) => new Promise((resolve) => {
+      const req = new (require('events').EventEmitter)();
+      req.method = method;
+      req.url = reqPath;
+      req.headers = {
+        host: `127.0.0.1:${httpCfg.port}`,
+        'x-ag-remote-token': httpCfg.token,
+        'x-ag-client-id': 'client-r2-cross',
+        ...(bodyObj ? { 'content-type': 'application/json' } : {}),
+        ...extraHeaders
+      };
+      req.socket = { remoteAddress: '127.0.0.1' };
+      const res = {
+        status: 200,
+        headers: {},
+        setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
+        writeHead(st, hdrs) {
+          this.status = st;
+          if (hdrs) Object.assign(this.headers, hdrs);
+        },
+        end(buf) {
+          const text = String(buf || '');
+          let json = null;
+          try { json = JSON.parse(text); } catch {}
+          resolve({ status: this.status, headers: this.headers, text, json });
+        }
+      };
+      void handler(req, res);
+      if (bodyObj !== null) {
+        req.emit('data', Buffer.from(JSON.stringify(bodyObj)));
+        req.complete = true;
+        req.emit('end');
+      } else {
+        req.complete = true;
+        req.emit('end');
+      }
+    });
+
+    // 1a) 服务端：隔离切到 Project A 的会话后，跨项目在空项目 B 新建对话不得携带旧 conversationId
+    const isoSwRes = await invokeHttp('POST', '/api/action', {
+      action: 'switch-conversation',
+      id: 'conv-proj-a-1',
+      isolated: true
+    });
+    assert.equal(isoSwRes.status, 200);
+    assert.equal(isoSwRes.json.ok, true);
+    await invokeHttp('GET', '/api/snapshot');
+    assert.equal(fetchedSnaps[fetchedSnaps.length - 1].opts.conversationId, 'conv-proj-a-1');
+
+    const crossNewRes = await invokeHttp('POST', '/api/action', {
+      action: 'new-conversation',
+      projectId: 'proj-b-empty'
+    });
+    assert.equal(crossNewRes.status, 200);
+    assert.equal(crossNewRes.json.ok, true);
+    const crossNewAct = performedActs[performedActs.length - 1];
+    assert.equal(crossNewAct.action, 'new-conversation');
+    assert.equal(crossNewAct.projectId, 'proj-b-empty');
+    assert.equal(crossNewAct.conversationId, '', '跨项目新建对话不得继承旧隔离会话 ID');
+
+    await invokeHttp('GET', '/api/snapshot');
+    assert.equal(fetchedSnaps[fetchedSnaps.length - 1].opts.conversationId, '__new__', '新建对话后轮询应绑定 __new__ 而非回跳旧隔离会话');
+
+    // 1b) 服务端：再次切回隔离会话后，经 /api/projects 新建并进入空项目不得被旧隔离会话劫持
+    await invokeHttp('POST', '/api/action', { action: 'switch-conversation', id: 'conv-proj-a-1', isolated: true });
+    const createEmptyRes = await invokeHttp('POST', '/api/projects', {
+      name: 'Empty Proj R2',
+      folderPath: emptyDir
+    });
+    assert.equal(createEmptyRes.status, 200);
+    assert.equal(createEmptyRes.json.ok, true);
+    assert.equal(createEmptyRes.json.navOk, true);
+    const projNavAct = performedActs[performedActs.length - 1];
+    assert.equal(projNavAct.action, 'new-conversation');
+    assert.equal(projNavAct.projectId, createEmptyRes.json.project.id);
+    assert.equal(projNavAct.clientId, 'client-r2-cross');
+    assert.equal(projNavAct.conversationId, '', '创建空项目进入新对话时不得携带旧隔离会话 ID');
+
+    await invokeHttp('GET', '/api/snapshot');
+    assert.equal(fetchedSnaps[fetchedSnaps.length - 1].opts.conversationId, '__new__');
+
+    // 2) 前端 UI：隔离会话切走后进入空项目新建对话 + 项目选择器与两档模型选择器交替打开互不串扰
+    const html = remoteMod.buildMobileAppHtml();
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
+    assert.ok(scriptMatch && bodyMatch);
+
+    const attachDatasetProxy = (root) => {
+      if (!root) return;
+      const syncNode = (n) => {
+        if (!n || typeof n.getAttribute !== 'function') return;
+        for (const attr of ['data-idx', 'data-group-idx', 'data-variant-idx', 'data-proj-key', 'data-cid', 'data-proj-toggle']) {
+          const val = n.getAttribute(attr);
+          if (val !== null) {
+            const camel = attr.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
+            n.dataset[camel] = val;
+          }
+        }
+        for (const ch of (n.children || [])) syncNode(ch);
+      };
+      syncNode(root);
+    };
+
+    const envUi = createDomEnv();
+    envUi.doc.body.innerHTML = bodyMatch[1];
+    envUi.win.innerWidth = 390;
+    envUi.win.innerHeight = 844;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+
+    const projectsAB = [
+      { id: 'proj-a', name: 'Alpha Main', path: pathToFileURL(path.join(homeDir, 'codebase', 'alpha')).href, conversationCount: 1, runningCount: 0, waitingCount: 0, unreadCount: 0, isEmpty: false, active: true },
+      { id: 'proj-b-empty', name: 'Empty Beta', path: pathToFileURL(emptyDir).href, conversationCount: 0, runningCount: 0, waitingCount: 0, unreadCount: 0, isEmpty: true, active: false }
+    ];
+    const modelOpts = [
+      { label: 'Gemini 4 Carbon (High)', modelId: 'MODEL_CARBON-high', selected: false },
+      { label: 'Gemini 4 Carbon (Medium)', modelId: 'MODEL_CARBON-medium', selected: false },
+      { label: 'Gemini 4 Carbon (Low)', modelId: 'MODEL_CARBON-low', selected: true },
+      { label: 'Claude Opus 4.6', modelId: 'MODEL_OPUS', selected: false }
+    ];
+    let currentUiState = {
+      sessionId: 'conv-proj-a-0',
+      isNewConversation: false,
+      currentProjectId: 'proj-a',
+      currentProjectName: 'Alpha Main',
+      title: 'Alpha 会话 0',
+      isolated: false
+    };
+    const uiSnap = () => ({
+      ok: true,
+      sessionId: currentUiState.sessionId,
+      isNewConversation: currentUiState.isNewConversation,
+      currentProjectId: currentUiState.currentProjectId,
+      currentProjectName: currentUiState.currentProjectName,
+      title: currentUiState.title,
+      isolated: currentUiState.isolated,
+      busy: false,
+      model: 'Gemini 4 Carbon (Low)',
+      modelOptions: modelOpts,
+      permissionKey: 'auto',
+      permissionLabel: '自动',
+      messages: [],
+      totalMessages: 0,
+      messagesStartIndex: 0,
+      hasEarlierMessages: false,
+      projects: projectsAB,
+      conversations: [
+        { id: 'conv-proj-a-1', projectId: 'proj-a', projectName: 'Alpha Main', title: 'Alpha 隔离目标', active: currentUiState.sessionId === 'conv-proj-a-1', status: 'idle', updatedAt: Date.now() }
+      ]
+    });
+
+    const uiActions = [];
+    const uiSnapUrls = [];
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const headers = { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/snapshot') {
+        uiSnapUrls.push(u.pathname + u.search);
+        return { ok: true, status: 200, headers, json: async () => uiSnap() };
+      }
+      if (u.pathname === '/api/action') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        uiActions.push(body);
+        if (body.action === 'switch-conversation') {
+          currentUiState = {
+            sessionId: body.id,
+            isNewConversation: false,
+            currentProjectId: 'proj-a',
+            currentProjectName: 'Alpha Main',
+            title: 'Alpha 隔离目标',
+            isolated: true
+          };
+        } else if (body.action === 'new-conversation') {
+          currentUiState = {
+            sessionId: '',
+            isNewConversation: true,
+            currentProjectId: body.projectId || '',
+            currentProjectName: body.projectId === 'proj-b-empty' ? 'Empty Beta' : 'Alpha Main',
+            title: '新对话',
+            isolated: true
+          };
+        }
+        return { ok: true, status: 200, headers, json: async () => ({ ok: true, actionResult: { ok: true, model: body.label || '' }, snapshot: uiSnap() }) };
+      }
+      return { ok: true, status: 200, headers, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(scriptMatch[1], envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // 2a) 点击会话进入隔离状态 -> 再点选空项目并在顶栏新建对话
+    const convListEl = envUi.doc.getElementById('conv-list');
+    convListEl.querySelector('button[data-cid="conv-proj-a-1"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    const lastSwAct = uiActions[uiActions.length - 1];
+    assert.equal(lastSwAct.action, 'switch-conversation');
+    assert.equal(lastSwAct.id, 'conv-proj-a-1');
+    assert.equal(lastSwAct.isolated, true);
+
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(uiSnapUrls[uiSnapUrls.length - 1].includes('conversationId=conv-proj-a-1'));
+
+    convListEl.querySelector('button[data-proj-toggle="proj-b-empty"]').click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Empty Beta');
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 30));
+    const newInEmptyAct = uiActions[uiActions.length - 1];
+    assert.equal(newInEmptyAct.action, 'new-conversation');
+    assert.equal(newInEmptyAct.projectId, 'proj-b-empty');
+    assert.equal(newInEmptyAct.conversationId, undefined, '点击新建对话时前端不得附带旧 selectedConversationId');
+
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(uiSnapUrls[uiSnapUrls.length - 1].includes('conversationId=__new__'), '新建进入空项目后轮询应附带 conversationId=__new__');
+
+    // 2b) 交替打开项目选择器与两档模型选择器并点击，验证事件与 activeSheetState 互不串扰
+    const sheetList = envUi.doc.getElementById('sheet-list');
+    const countActions = (act) => uiActions.filter((a) => a.action === act).length;
+
+    // Step A: 打开项目选择器再关闭
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    assert.ok(sheetList.querySelectorAll('.sheet-opt').some((b) => (b.textContent || '').includes('Empty Beta')));
+    envUi.doc.getElementById('sheet-close').onclick();
+
+    // Step B: 打开两档模型选择器 -> 先 dispatchEvent 再 onclick 点击多档模型（仅触发 1 次 select-model，不触发 new-conversation）
+    const baseNewCnt = countActions('new-conversation');
+    const baseModelCnt = countActions('select-model');
+    envUi.doc.getElementById('btn-model-inline').onclick();
+    attachDatasetProxy(sheetList);
+    const groupBtns = sheetList.querySelectorAll('[data-group-idx]');
+    assert.equal(groupBtns.length, 2);
+    sheetList.dispatchEvent({ type: 'click', target: groupBtns[0] });
+    sheetList.onclick({ target: groupBtns[0] });
+    attachDatasetProxy(sheetList);
+    assert.ok(envUi.doc.getElementById('sheet-stage-track')?.classList?.contains('step-effort'));
+    const variantBtns = sheetList.querySelectorAll('[data-variant-idx]');
+    assert.equal(variantBtns.length, 3);
+    sheetList.dispatchEvent({ type: 'click', target: variantBtns[0] });
+    await sheetList.onclick({ target: variantBtns[0] });
+    assert.equal(countActions('select-model'), baseModelCnt + 1, '切换模型分档后应精确发送 1 次 select-model');
+    assert.equal(countActions('new-conversation'), baseNewCnt, 'activeSheetState 清空后不得误触项目选择回调');
+    assert.equal(uiActions[uiActions.length - 1].label, 'Gemini 4 Carbon (High)');
+
+    // Step C: 立即再次打开项目选择器并选择 Empty Beta（验证 openSheet 恢复了 listEl.onclick = handleSheetListClick，且不走旧模型闭包）
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const emptyProjOpt1 = sheetList.querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes('Empty Beta'));
+    assert.ok(emptyProjOpt1);
+    emptyProjOpt1.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(countActions('new-conversation'), baseNewCnt + 1, '关闭模型弹窗后重新打开项目选择器必须正常新建项目会话');
+    assert.equal(countActions('select-model'), baseModelCnt + 1);
+    assert.equal(uiActions[uiActions.length - 1].projectId, 'proj-b-empty');
+
+    // Step C2: 再打开一次项目选择器，直接调用 restored listEl.onclick 确认 .onclick 路径同样已从模型闭包复原
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const emptyProjOpt2 = sheetList.querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes('Empty Beta'));
+    await sheetList.onclick({ target: emptyProjOpt2 });
+    assert.equal(countActions('new-conversation'), baseNewCnt + 2);
+    assert.equal(countActions('select-model'), baseModelCnt + 1);
+
+    // Step D: 立即再次打开模型选择器并点击单档模型 Claude Opus 4.6
+    envUi.doc.getElementById('btn-model-inline').onclick();
+    attachDatasetProxy(sheetList);
+    const groupBtns2 = sheetList.querySelectorAll('[data-group-idx]');
+    await sheetList.onclick({ target: groupBtns2[1] });
+    assert.equal(countActions('select-model'), baseModelCnt + 2);
+    assert.equal(countActions('new-conversation'), baseNewCnt + 2);
+    assert.equal(uiActions[uiActions.length - 1].label, 'Claude Opus 4.6');
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
