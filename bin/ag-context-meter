@@ -58,6 +58,18 @@ if (info.running && !info.hasDebugSwitch && info.pid) {
 ' 2>/dev/null || true
 }
 
+find_antigravity_app() {
+  if [ -d "/Applications/Antigravity.app" ]; then
+    echo "/Applications/Antigravity.app"
+    return 0
+  fi
+  if [ -d "$HOME/Applications/Antigravity.app" ]; then
+    echo "$HOME/Applications/Antigravity.app"
+    return 0
+  fi
+  return 1
+}
+
 relaunch_antigravity_with_cdp() {
   local live_args=()
   local arg
@@ -69,6 +81,12 @@ relaunch_antigravity_with_cdp() {
   done
 
   date +%s > "$RELAUNCH_LOCK_FILE" 2>/dev/null || true
+
+  local ag_app
+  ag_app="$(find_antigravity_app || true)"
+  if [ -z "$ag_app" ]; then
+    ag_app="/Applications/Antigravity.app"
+  fi
 
   local bare_info bare_pid i
   bare_info="$(get_bare_antigravity_info || true)"
@@ -94,7 +112,7 @@ relaunch_antigravity_with_cdp() {
     echo "正在带调试端口启动 Antigravity..."
   fi
 
-  open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0
+  open -a "$ag_app" --args --remote-debugging-port=0
 
   local ready=0
   for i in $(seq 1 40); do
@@ -110,6 +128,98 @@ relaunch_antigravity_with_cdp() {
   fi
 
   node "$APP_DIR/cli.js" live ${live_args[@]:+"${live_args[@]}"}
+}
+
+install_macos_launcher() {
+  local ag_app
+  ag_app="$(find_antigravity_app || true)"
+  local target_app="${ag_app:-/Applications/Antigravity.app}"
+  local launcher_dir="$HOME/Applications/Antigravity 增强启动器.app"
+  local macos_dir="$launcher_dir/Contents/MacOS"
+  local res_dir="$launcher_dir/Contents/Resources"
+  local bin_path="$HOME/.local/bin/ag-context-meter"
+  if [ ! -x "$bin_path" ]; then
+    bin_path="$APP_DIR/bin/ag-context-meter"
+  fi
+
+  mkdir -p "$macos_dir" "$res_dir"
+
+  if [ -n "$ag_app" ] && [ -f "$ag_app/Contents/Resources/icon.icns" ]; then
+    cp -f "$ag_app/Contents/Resources/icon.icns" "$res_dir/icon.icns"
+  fi
+
+  cat > "$launcher_dir/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Antigravity 增强启动器</string>
+  <key>CFBundleDisplayName</key>
+  <string>Antigravity 增强启动器</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.antigravity-suite.cdp-launcher</string>
+  <key>CFBundleVersion</key>
+  <string>1.0.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleExecutable</key>
+  <string>launch</string>
+  <key>CFBundleIconFile</key>
+  <string>icon.icns</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+EOF
+
+  cat > "$macos_dir/launch" <<EOF
+#!/usr/bin/env bash
+export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"
+BIN="${bin_path}"
+TARGET_APP="${target_app}"
+LOG_FILE="\$HOME/Library/Logs/antigravity-hans.log"
+mkdir -p "\$HOME/Library/Logs"
+
+notify() {
+  osascript -e "display notification \"\$1\" with title \"Antigravity 增强启动器\"" >/dev/null 2>&1 || true
+}
+
+if "\$BIN" status --json 2>/dev/null | grep -q '"running": true'; then
+  open -a "\$TARGET_APP"
+  notify "已检测到增强模式运行中，正在刷新挂载..."
+  "\$BIN" live >> "\$LOG_FILE" 2>&1 || true
+  exit 0
+fi
+
+if pgrep -f "/Antigravity\\.app/Contents/MacOS/Antigravity" >/dev/null 2>&1; then
+  choice=\$(osascript -e 'button returned of (display dialog "Antigravity 当前正在运行，但未开启增强所需的调试端口（2.33.0+ 默认关闭）。\n\n是否现在重启 Antigravity 并自动开启全部增强功能？" with title "Antigravity 增强启动器" buttons {"取消", "重启并开启增强"} default button "重启并开启增强")' 2>/dev/null || echo "取消")
+  if [ "\$choice" != "重启并开启增强" ]; then
+    exit 0
+  fi
+  notify "正在重启 Antigravity 并加载增强功能，请稍候..."
+  "\$BIN" restart --force >> "\$LOG_FILE" 2>&1
+  if [ \$? -eq 0 ]; then
+    notify "全部增强功能已加载完成！"
+  else
+    notify "重启挂载未完成，请打开终端运行 ag-context-meter status 查看原因。"
+  fi
+  exit 0
+fi
+
+notify "正在启动 Antigravity 增强版，请稍候..."
+"\$BIN" open >> "\$LOG_FILE" 2>&1
+if [ \$? -eq 0 ]; then
+  notify "全部增强功能已加载完成！"
+else
+  notify "启动后未完成自动挂载，请在终端运行 ag-context-meter live。"
+fi
+EOF
+  chmod +x "$macos_dir/launch"
+  echo "✅ 已创建 macOS 零改包启动器: $launcher_dir"
+  echo "   以后可直接从 Spotlight / 访达（~/Applications）打开它，或拖到程序坞代替原图标。"
 }
 
 has_live_antigravity() {
@@ -241,7 +351,7 @@ case "$cmd" in
       exec node "$APP_DIR/cli.js" live "${@:2}"
     fi
     ;;
-  open|restart)
+  open|launch|restart)
     force_restart=0
     forward_args=()
     for arg in "${@:2}"; do
@@ -265,6 +375,9 @@ case "$cmd" in
       fi
     fi
     relaunch_antigravity_with_cdp ${forward_args[@]:+"${forward_args[@]}"}
+    ;;
+  install-launcher)
+    install_macos_launcher
     ;;
   stop)
     stop_live
@@ -437,6 +550,7 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
 常用命令:
   start / live   免改盘挂载「中文汉化 + 上下文看板」到当前窗口（默认；加 --no-remote 可禁用手机远程端口）
   open / restart 以带远程调试端口方式启动或平滑重启 Antigravity（适配 v2.33.0+）并热注入插件
+  install-launcher [可选] 在 ~/Applications 创建「Antigravity 增强启动器.app」独立图标入口（适合 --no-auto 无守护场景）
   stop           停止后台守护进程，并卸载当前窗口的中文汉化与看板（恢复英文原样）
   auto-on        开启“启动 Antigravity 时自动加载”（含 v2.33.0+ 自动补参自愈）并立即尝试挂载
   auto-off       关闭“启动 Antigravity 时自动加载”，并停止/卸载当前挂载

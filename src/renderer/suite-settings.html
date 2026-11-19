@@ -16,6 +16,7 @@
       <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" data-settings-tab="terminal">🖥️ 终端与通用</button>
       <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="appearance">🎨 外观与主题</button>
       <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="subscription">💎 套餐与订阅</button>
+      <button id="settings-tab-btn-remote" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="remote">📱 远程设置</button>
       <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="system">🌐 网络与高级</button>
     </div>
 
@@ -53,6 +54,22 @@
               <span class="settings-feature-name">对话右侧悬浮导航</span>
               <input id="set-feat-chatnav" type="checkbox" class="settings-checkbox" checked />
             </label>
+          </div>
+        </div>
+
+        <div id="settings-card-quick-prompts" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">快捷提示词</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button id="btn-add-quick-prompt" class="switch-pill-btn" type="button" title="添加一条快捷提示词">+ 新增</button>
+              <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
+            </div>
+          </div>
+          <div class="settings-card-desc">自定义输入框上方快捷栏的按钮名称与填入内容（最多 12 条，保存后立即生效，内置「复制会话 ID」与「导出 Markdown」始终保留）。</div>
+          <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
+          <div class="qp-footer">
+            <span id="quick-prompts-status" class="qp-status" role="status"></span>
+            <button id="btn-save-quick-prompts" class="term-action-btn" type="button">保存快捷提示词</button>
           </div>
         </div>
 
@@ -253,7 +270,68 @@
         </div>
       </div>
 
-      <!-- 分页 4: 网络与高级 -->
+      <!-- 分页 4: 远程设置 -->
+      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" hidden>
+        <div id="settings-card-remote-channels" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">远程通道与隧道</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button id="btn-settings-remote-refresh" class="switch-pill-btn" type="button" title="刷新远程连接通道与隧道状态">刷新状态</button>
+              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对令牌，旧链接与旧会话将失效">重置令牌</button>
+            </div>
+          </div>
+          <div class="settings-card-desc">管理 `agy remote` 的访问通道与配对令牌重置；Cloudflare 隧道默认启用免登录临时隧道（零配置开箱可用），如需绑定自定义域名可展开配置，顶栏「远程」图标可随时扫码。</div>
+          <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
+        </div>
+
+        <div id="settings-card-remote-display" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">Remote 页面显示内容</span>
+            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复 Remote 页面全部默认模块显示">恢复默认</button>
+          </div>
+          <div class="settings-card-desc">按需控制手机 / 浏览器打开 `agy remote` 时可见的面板入口与功能模块，修改后立即保存并在远程页面下次同步生效。</div>
+          <div class="settings-feature-grid">
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部上下文窗口面板</span>
+              <input id="set-remote-ctx-panel" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部本机已记录用量面板</span>
+              <input id="set-remote-usage-panel" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部模型配额胶囊</span>
+              <input id="set-remote-quota-pill" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部通道连接状态副标题</span>
+              <input id="set-remote-channel-meta" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">左侧会话与窗口抽屉</span>
+              <input id="set-remote-sidebar" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">AI 思考过程折叠区</span>
+              <input id="set-remote-thinking" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">底部快捷操作与下一步建议</span>
+              <input id="set-remote-quick-chips" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">输入区工具栏（模型/权限等）</span>
+              <input id="set-remote-composer-tools" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">待审批操作提醒横幅</span>
+              <input id="set-remote-approvals" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分页 5: 网络与高级 -->
       <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
@@ -261,14 +339,6 @@
             <span id="settings-slot-proxy-badge"></span>
           </div>
           <div id="settings-slot-proxy"></div>
-        </div>
-
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">解除 256K 上下文限制（实验性补丁）</span>
-            <span id="settings-slot-unlock-badge"></span>
-          </div>
-          <div id="settings-slot-unlock"></div>
         </div>
       </div>
     </div>

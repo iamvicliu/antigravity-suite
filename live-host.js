@@ -23,7 +23,7 @@ const {
 } = require('./meter-collector');
 const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
-const { startMobileRemoteServer, buildRemoteInfo } = require('./mobile-remote');
+const { startMobileRemoteServer, buildRemoteInfo, saveRemoteTunnelConfig } = require('./mobile-remote');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
@@ -913,6 +913,20 @@ async function startEmbeddedLiveBridge(options = {}) {
             return;
           }
           if (!remoteHandle?.configureTunnel) {
+            const hasDisplayPatch = request && (request.remoteDisplay !== undefined || request.displayConfig !== undefined);
+            const touchesTunnelOrCh = request && (
+              request.enabled !== undefined
+              || request.tunnelEnabled !== undefined
+              || request.tunnelMode !== undefined
+              || request.tunnelHostname !== undefined
+              || request.tunnelToken !== undefined
+              || request.enabledChannels !== undefined
+            );
+            if (hasDisplayPatch && !touchesTunnelOrCh) {
+              saveRemoteTunnelConfig({ remoteDisplay: request.remoteDisplay ?? request.displayConfig });
+              res.end(JSON.stringify({ ok: true, data: buildRemoteInfo({ resetToken: false }) }));
+              return;
+            }
             res.end(JSON.stringify({ ok: false, error: '远程服务尚未就绪' }));
             return;
           }
