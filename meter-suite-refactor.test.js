@@ -5479,7 +5479,7 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
   const projectsDir = path.join(configDir, 'projects');
   const codebaseDir = path.join(homeDir, 'codebase');
   const sharedDir = path.join(homeDir, 'shared');
-  const sharedArmyDir = path.join(sharedDir, '_army');
+  const sharedResDir = path.join(sharedDir, '_shared_res');
   const repoADir = path.join(codebaseDir, 'repo-a');
   const plainBDir = path.join(codebaseDir, 'plain-b');
   const existingRepoDir = path.join(codebaseDir, 'repo-existing');
@@ -5492,12 +5492,12 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
   fs.writeFileSync(path.join(repoADir, '.git', 'HEAD'), 'ref: refs/heads/develop\n', 'utf8');
   fs.mkdirSync(plainBDir, { recursive: true });
   fs.mkdirSync(existingRepoDir, { recursive: true });
-  fs.mkdirSync(sharedArmyDir, { recursive: true });
+  fs.mkdirSync(sharedResDir, { recursive: true });
   fs.mkdirSync(dupOwnerDir, { recursive: true });
   fs.mkdirSync(hiddenDir, { recursive: true });
   fs.writeFileSync(path.join(codebaseDir, 'note.txt'), 'not a folder', 'utf8');
 
-  // 预设两个已有项目：一个将 ~/shared/_army 作为辅资源 [1]（不应误标 _army），一个占用名称 plain-b
+  // 预设两个已有项目：一个将 ~/shared/_shared_res 作为辅资源 [1]（不应误标 _shared_res），一个占用名称 plain-b
   const existingProjId = '11111111-1111-4111-8111-111111111111';
   fs.writeFileSync(path.join(projectsDir, `${existingProjId}.json`), JSON.stringify({
     id: existingProjId,
@@ -5505,7 +5505,7 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     projectResources: {
       resources: [
         { folderUri: pathToFileURL(existingRepoDir).href },
-        { folderUri: pathToFileURL(sharedArmyDir).href }
+        { folderUri: pathToFileURL(sharedResDir).href }
       ]
     },
     settings: {},
@@ -5594,8 +5594,8 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.equal(exEntry?.existingProjectId, existingProjId, '已有主目录项目应准确标出');
 
     const sharedListing = remoteMod.listHostDirectories({ dirPath: sharedDir, homeDir, configDir });
-    const armyEntry = sharedListing.entries.find((e) => e.name === '_army');
-    assert.equal(armyEntry?.existingProjectId, '', '仅作辅资源 resources[1] 出现的共享目录不得被误判成已有主项目');
+    const sharedResEntry = sharedListing.entries.find((e) => e.name === '_shared_res');
+    assert.equal(sharedResEntry?.existingProjectId, '', '仅作辅资源 resources[1] 出现的共享目录不得被误判成已有主项目');
 
     const plainBListing = remoteMod.listHostDirectories({ dirPath: plainBDir, homeDir, configDir });
     assert.equal(plainBListing.suggestedName, 'plain-b (2)', '同名冲突目录应自动建议递增项目名 plain-b (2)');
@@ -6124,12 +6124,12 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
           headers: jsonHeaders,
           json: async () => ({
             ok: true,
-            path: '/Users/shenslu',
+            path: '/Users/demo',
             parentPath: '/Users',
-            currentName: 'shenslu',
-            suggestedName: 'shenslu',
-            roots: [{ label: '主目录 (~)', path: '/Users/shenslu' }],
-            entries: [{ name: 'codebase', path: '/Users/shenslu/codebase', isGitRepo: false }]
+            currentName: 'demo',
+            suggestedName: 'demo',
+            roots: [{ label: '主目录 (~)', path: '/Users/demo' }],
+            entries: [{ name: 'codebase', path: '/Users/demo/codebase', isGitRepo: false }]
           })
         };
       }
