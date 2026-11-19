@@ -2114,6 +2114,9 @@ function savePluginSettings(payload = {}, options = {}) {
     if (nextUi.restartVerification === null) {
       delete nextUi.restartVerification;
     }
+    if (nextUi.quickPrompts === null) {
+      delete nextUi.quickPrompts;
+    }
     settings.uiPreferences = nextUi;
   }
 

@@ -85,7 +85,6 @@
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-open-settings-ctx" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
         <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
     </div>
@@ -134,72 +133,6 @@
           </div>
         </div>
         <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
-      </div>
-
-      <!-- 二级交互折叠区: 上下文加长 (解除 256K 限制 / 实验特性) -->
-      <div class="tech-drawer" id="context-unlock-drawer">
-        <button id="btn-toggle-unlock" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left">
-            <span>⚡ 上下文加长（解除 256K 限制 / 实验特性）</span>
-            <span id="unlock-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
-          </span>
-          <span id="unlock-drawer-arrow" class="drawer-arrow">▼ 展开</span>
-        </button>
-        <div id="unlock-drawer-body" class="drawer-body" style="display:none;">
-          <div class="unlock-panel-content">
-            <div class="unlock-status-row">
-              <div class="unlock-status-meta">
-                <div class="unlock-label">当前补丁状态</div>
-                <div id="unlock-status-desc" class="unlock-desc">正在检测客户端上下文限制状态…</div>
-              </div>
-            </div>
-
-            <div class="unlock-notice">
-              <div class="unlock-notice-title">💡 功能说明与注意事项</div>
-              <ul class="unlock-notice-list">
-                <li><strong>突破默认上限</strong>：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。</li>
-                <li><strong>安全可随时还原</strong>：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。</li>
-                <li><strong>客户端更新提示</strong>：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。</li>
-              </ul>
-            </div>
-
-            <div class="unlock-actions-row">
-              <button id="btn-apply-unlock" class="unlock-btn unlock-btn-primary" type="button">
-                <span>⚡ 立即应用加长补丁</span>
-              </button>
-              <button id="btn-restore-unlock" class="unlock-btn unlock-btn-secondary" type="button">
-                <span>🔄 恢复官方原版</span>
-              </button>
-              <button id="btn-refresh-unlock" class="unlock-btn unlock-btn-secondary" type="button" title="重新检测状态">
-                <span>🔄 刷新</span>
-              </button>
-            </div>
-
-            <div id="unlock-result-box" class="unlock-result-box" style="display:none;">
-              <div id="unlock-result-text" class="unlock-result-text"></div>
-            </div>
-
-            <details class="unlock-tech-details" style="margin-top:6px">
-              <summary style="cursor:pointer;font-size:11.5px;color:var(--ag-text-muted);user-select:none">查看底层程序路径与备份详情</summary>
-              <dl class="unlock-meta-dl" style="margin-top:6px">
-                <dt>目标后端</dt><dd id="unlock-meta-target">—</dd>
-                <dt>目标架构</dt><dd id="unlock-meta-arch">—</dd>
-                <dt>文件哈希 (SHA-256)</dt><dd id="unlock-meta-sha">—</dd>
-                <dt>原版备份状态</dt><dd id="unlock-meta-backup">—</dd>
-              </dl>
-            </details>
-
-            <div class="unlock-credit-bar">
-              <div class="unlock-credit-left">
-                <span class="unlock-credit-lbl">解锁方案来源：</span>
-                <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank" rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0" title="点击在系统默认浏览器中打开原作者帖子">原作者帖子 (Linux.do @23375) ↗</a>
-                <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接">📋 复制链接</button>
-              </div>
-              <span class="unlock-adapter-note">本项目负责 Node.js 原生适配与客户端集成</span>
-            </div>
-            <div id="unlock-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
-          </div>
-        </div>
       </div>
 
       <!-- 二级交互折叠区: 客户端界面汉化 (AntigravityChinese) -->
@@ -377,7 +310,6 @@
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-open-settings-tokens" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
         <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
     </div>
@@ -401,7 +333,7 @@
         <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
           <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · 已自动识别 · 刚刚更新</span>
         </div>
-        <span id="summary-subtier-readonly" class="plan-subtier-readonly-pill" style="display:none" title="当前订阅子档（前往套件设置修改）"></span>
+        <span id="summary-subtier-readonly" class="plan-subtier-readonly-pill" style="display:none" title="当前订阅子档"></span>
         <!-- Ultra 子档快捷选择下拉（仅当套餐为 Ultra 时显示） -->
         <div id="summary-subtier-wrap" class="ag-dropdown-wrapper ag-subtier-compact-wrap" style="display:none;width:auto;flex-shrink:0">
           <div id="summary-subtier-trigger" class="ag-dropdown-trigger ag-subtier-compact-trigger" tabindex="0" title="官方接口未返回 Ultra 子档，点击选择您的实际订阅子档 (5x / 20x)">
@@ -568,10 +500,6 @@
           <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button" title="点击展开编辑当前账号订阅详细信息与实付设置">
             <span style="font-size:12px">✎</span>
             <span>自定义订阅设置</span>
-          </button>
-          <button id="btn-jump-plan-settings" class="plan-edit-pill-btn" type="button" style="display:none" title="前往套件设置修改订阅、国家、子档与实付金额">
-            <span style="font-size:12px">⚙️</span>
-            <span>前往设置修改</span>
           </button>
         </div>
 
