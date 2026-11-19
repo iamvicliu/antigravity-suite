@@ -2819,6 +2819,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
 function createConversationHistoryManager() {
   const cache = new Map();
   const inflightMap = new Map();
+  const fetchGenMap = new Map();
   const MAX_CACHE_ENTRIES = 24;
 
   function touchCache(sessionId, rec) {
@@ -2830,56 +2831,62 @@ function createConversationHistoryManager() {
     }
   }
 
-  async function fetchTrajectoryMessagesOnce(sessionId, options = {}) {
-    const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
-    let connectFn = customConnect;
-    if (!connectFn) {
-      if (isCatalogTestEnv()) return null;
-      try {
-        connectFn = require('./local-api').connect;
-      } catch {
-        return null;
-      }
+  function nextFetchGen(sessionId) {
+    const next = (fetchGenMap.get(sessionId) || 0) + 1;
+    fetchGenMap.set(sessionId, next);
+    return next;
+  }
+
+  function findInflightBySession(sessionId) {
+    const prefix = `${sessionId}\n`;
+    for (const [key, entry] of inflightMap.entries()) {
+      if (key.startsWith(prefix)) return entry;
     }
-    try {
-      const api = typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1200, null) : connectFn;
-      if (!api || typeof api.call !== 'function') return null;
-      const res = await withRaceTimeout(
-        Promise.resolve().then(() => api.call('GetCascadeTrajectory', { cascadeId: sessionId })).catch(() => null),
-        4500,
-        null
-      );
-      const steps = res?.trajectory?.steps;
-      if (!Array.isArray(steps)) return null;
-      return extractMessagesFromTrajectorySteps(steps, { lazyHtml: true });
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   async function fetchTrajectoryMessages(sessionId, options = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return null;
     const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
-    if (customConnect) {
-      return await fetchTrajectoryMessagesOnce(sessionId, options);
+    if (!customConnect && isCatalogTestEnv()) return null;
+
+    const reqSig = String(options.trajSig || '').trim();
+    const inflightKey = `${sid}\n${reqSig}`;
+    if (!options.bypassCache) {
+      const existingEntry = inflightMap.get(inflightKey);
+      if (existingEntry) {
+        return await existingEntry.promise;
+      }
     }
-    if (isCatalogTestEnv()) return null;
-    if (inflightMap.has(sessionId)) {
-      return await inflightMap.get(sessionId);
-    }
-    const p = (async () => {
+
+    const gen = nextFetchGen(sid);
+    const startedAt = Date.now();
+    let entry = null;
+    const promise = (async () => {
       try {
-        const res = await callLocalLanguageServer('GetCascadeTrajectory', { cascadeId: sessionId }, 4500, options);
+        const res = await callLocalLanguageServer('GetCascadeTrajectory', { cascadeId: sid }, 4500, options);
         const steps = res?.trajectory?.steps;
-        if (!Array.isArray(steps)) return null;
-        return extractMessagesFromTrajectorySteps(steps, { lazyHtml: true });
+        if (!Array.isArray(steps)) {
+          return { messages: null, fetchedSig: reqSig, gen, startedAt };
+        }
+        return {
+          messages: extractMessagesFromTrajectorySteps(steps, { lazyHtml: true }),
+          fetchedSig: reqSig,
+          gen,
+          startedAt
+        };
       } catch {
-        return null;
+        return { messages: null, fetchedSig: reqSig, gen, startedAt };
       } finally {
-        inflightMap.delete(sessionId);
+        if (inflightMap.get(inflightKey) === entry) {
+          inflightMap.delete(inflightKey);
+        }
       }
     })();
-    inflightMap.set(sessionId, p);
-    return await p;
+    entry = { promise, sig: reqSig, gen, startedAt };
+    inflightMap.set(inflightKey, entry);
+    return await promise;
   }
 
   async function resolveFullMessages(sessionId, domMessages, options = {}) {
@@ -2892,36 +2899,84 @@ function createConversationHistoryManager() {
     const nowMs = Date.now();
     const ttl = options.busy ? 1000 : 3500;
     const trajSig = String(options.trajSig || '').trim();
-    const sigMismatch = Boolean(trajSig && existing?.trajSig && existing.trajSig !== trajSig);
-    const trajHit = !options.bypassCache && existing && Array.isArray(existing.trajMsgs) && !sigMismatch && (
-      (trajSig && existing.trajSig === trajSig && !options.busy) ||
-      (nowMs - existing.at < ttl)
+    const knownOldSig = String(existing?.trajSig || '').trim();
+    const observedOldSig = String(existing?.observedSig || '').trim();
+    const sigMismatch = Boolean(
+      trajSig && (
+        (knownOldSig && knownOldSig !== trajSig) ||
+        (!knownOldSig && observedOldSig && observedOldSig !== trajSig)
+      )
     );
-    let trajMsgs = null;
-    let trajFetchedFresh = false;
+    const verifiedIdleMatch = Boolean(trajSig && knownOldSig && knownOldSig === trajSig && !options.busy);
+    const withinTtl = Boolean(existing && existing.at > 0 && (nowMs - existing.at < ttl));
+    const trajHit = !options.bypassCache &&
+      Boolean(existing && Array.isArray(existing.trajMsgs)) &&
+      !sigMismatch &&
+      (verifiedIdleMatch || withinTtl);
+
     if (trajHit) {
-      trajMsgs = existing.trajMsgs;
-    } else {
-      const fetched = await fetchTrajectoryMessages(sid, options);
-      if (Array.isArray(fetched)) {
-        trajMsgs = fetched;
-        trajFetchedFresh = true;
-      } else if (existing && Array.isArray(existing.trajMsgs)) {
-        trajMsgs = existing.trajMsgs;
-      }
+      const trajMsgs = existing.trajMsgs;
+      const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
+      // Never extend `at` on cache hits: TTL must measure elapsed time since actual RPC fetch.
+      // For unknown-signature warm entries (knownOldSig === ''), record observedSig without promoting it to trajSig.
+      const nextObservedSig = knownOldSig ? '' : (observedOldSig || trajSig || '');
+      touchCache(sid, {
+        trajMsgs,
+        trajSig: knownOldSig,
+        observedSig: nextObservedSig,
+        domTail: domTail.length ? domTail : (existing?.domTail || []),
+        merged,
+        at: existing.at || 0,
+        gen: existing.gen || 0
+      });
+      return { merged, trajMsgs };
+    }
+
+    const fetchRes = await fetchTrajectoryMessages(sid, { ...options, trajSig });
+    const latestExisting = cache.get(sid);
+    const latestGen = fetchGenMap.get(sid) || 0;
+    const isSuperseded = Boolean(
+      !fetchRes ||
+      fetchRes.gen < latestGen ||
+      (latestExisting?.gen && latestExisting.gen > fetchRes.gen)
+    );
+    const fetchedMsgs = Array.isArray(fetchRes?.messages) ? fetchRes.messages : null;
+    const trajFetchedFresh = Boolean(fetchedMsgs && fetchRes.fetchedSig === trajSig);
+
+    if (isSuperseded) {
+      const activeTrajMsgs = Array.isArray(latestExisting?.trajMsgs)
+        ? latestExisting.trajMsgs
+        : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null));
+      const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
+      return { merged, trajMsgs: activeTrajMsgs };
+    }
+
+    const baseRec = latestExisting || existing;
+    let trajMsgs = null;
+    if (trajFetchedFresh) {
+      trajMsgs = fetchedMsgs;
+    } else if (baseRec && Array.isArray(baseRec.trajMsgs)) {
+      trajMsgs = baseRec.trajMsgs;
     }
 
     const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
-    const nextTrajSig = trajFetchedFresh ? trajSig : (existing?.trajSig || '');
-    const nextAt = (trajFetchedFresh || trajHit) ? nowMs : (existing?.at || 0);
+    const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');
+    const nextObservedSig = trajFetchedFresh ? '' : String(baseRec?.observedSig || '');
+    const nextAt = trajFetchedFresh ? fetchRes.startedAt : (baseRec?.at || 0);
+    const nextGen = trajFetchedFresh ? fetchRes.gen : (baseRec?.gen || 0);
+    const persistedTrajMsgs = Array.isArray(trajMsgs)
+      ? trajMsgs
+      : (Array.isArray(baseRec?.trajMsgs) ? baseRec.trajMsgs : null);
     touchCache(sid, {
-      trajMsgs: Array.isArray(trajMsgs) ? trajMsgs : (existing?.trajMsgs || null),
+      trajMsgs: persistedTrajMsgs,
       trajSig: nextTrajSig,
-      domTail: domTail.length ? domTail : (existing?.domTail || []),
+      observedSig: nextObservedSig,
+      domTail: domTail.length ? domTail : (baseRec?.domTail || []),
       merged,
-      at: nextAt
+      at: nextAt,
+      gen: nextGen
     });
-    return { merged, trajMsgs: Array.isArray(trajMsgs) ? trajMsgs : (existing?.trajMsgs || null) };
+    return { merged, trajMsgs: persistedTrajMsgs };
   }
 
   async function warmSession(sessionId, options = {}) {
@@ -2929,14 +2984,26 @@ function createConversationHistoryManager() {
     if (!sid || sid === 'new') return;
     const existing = cache.get(sid);
     if (existing && Array.isArray(existing.trajMsgs)) return;
-    const fetched = await fetchTrajectoryMessages(sid, options);
-    if (Array.isArray(fetched) && !cache.get(sid)?.trajMsgs) {
+    const activeInflight = findInflightBySession(sid);
+    if (activeInflight) {
+      await activeInflight.promise;
+      return;
+    }
+    const warmSig = String(options.trajSig || '').trim();
+    const fetchRes = await fetchTrajectoryMessages(sid, { ...options, trajSig: warmSig });
+    if (
+      Array.isArray(fetchRes?.messages) &&
+      fetchRes.gen === (fetchGenMap.get(sid) || 0) &&
+      !cache.get(sid)?.trajMsgs
+    ) {
       touchCache(sid, {
-        trajMsgs: fetched,
-        trajSig: '',
+        trajMsgs: fetchRes.messages,
+        trajSig: fetchRes.fetchedSig || '',
+        observedSig: '',
         domTail: [],
         merged: [],
-        at: Date.now()
+        at: fetchRes.startedAt,
+        gen: fetchRes.gen
       });
     }
   }
@@ -2966,9 +3033,34 @@ function createConversationHistoryManager() {
     if (!sid) return { ok: false, error: '缺少 sessionId 参数' };
     const limit = Math.max(1, Math.min(200, Number.parseInt(options.limit ?? 30, 10) || 30));
     const existing = cache.get(sid);
+    const hasBefore = options.before !== undefined && options.before !== null && options.before !== '';
+    const parsedBefore = hasBefore ? Number.parseInt(options.before, 10) : NaN;
+    if (
+      hasBefore &&
+      !options.bypassCache &&
+      !options.trajSig &&
+      existing &&
+      Array.isArray(existing.merged) &&
+      existing.merged.length > 0 &&
+      Number.isFinite(parsedBefore) &&
+      parsedBefore > 0 &&
+      parsedBefore <= existing.merged.length
+    ) {
+      const endIdx = parsedBefore;
+      const startIdx = Math.max(0, endIdx - limit);
+      return {
+        ok: true,
+        sessionId: sid,
+        totalMessages: existing.merged.length,
+        startIndex: startIdx,
+        endIndex: endIdx,
+        hasEarlier: startIdx > 0,
+        messages: ensureMessagesHtmlRendered(existing.merged.slice(startIdx, endIdx), existing.trajMsgs)
+      };
+    }
+
     const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(sid, existing?.domTail || [], options);
     const total = fullMsgs.length;
-    const hasBefore = options.before !== undefined && options.before !== null && options.before !== '';
     const rawBefore = hasBefore ? Number.parseInt(options.before, 10) : total;
     const endIdx = Math.max(0, Math.min(total, Number.isFinite(rawBefore) ? rawBefore : total));
     const startIdx = Math.max(0, endIdx - limit);
@@ -2990,6 +3082,10 @@ const defaultHistoryManager = createConversationHistoryManager();
 
 function getConversationMessagesPage(options = {}) {
   return defaultHistoryManager.getMessagesPage(options);
+}
+
+function warmConversationSession(sessionId, options = {}) {
+  return defaultHistoryManager.warmSession(sessionId, options);
 }
 
 async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
@@ -8095,9 +8191,11 @@ module.exports = {
   renderSafeMarkdownToHtml,
   extractMessagesFromTrajectorySteps,
   createSessionCatalogStore,
+  createConversationHistoryManager,
   enrichSnapshotWithCatalog,
   listCatalogConversations,
   getConversationMessagesPage,
+  warmConversationSession,
   listHostDirectories,
   createHostSubdirectory,
   createRemoteProject,

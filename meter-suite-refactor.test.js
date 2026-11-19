@@ -6413,6 +6413,329 @@ test('需求 23: 远程端切换防轮询假死与中止旧请求、折叠思考
     assert.equal(trajRpcCount, 5, '服务恢复后即使签名未再变且超过任意周期，也必须重拉此前失败未能更新的轨迹');
     assert.equal(snapRecovered.totalMessages, 42);
     assert.ok(snapRecovered.messages.some((m) => String(m.text || '').includes('#new44')), '恢复后必须展示最新回复');
+
+    // 1b) 回归测试：预热(warmSession) → 持续 2500ms 轮询 → 实际拉取 TTL 到期与签名变化失效
+    let warm1Rpc = 0;
+    let warm1StepCount = 10;
+    let warm1ModTime = '2026-11-19T10:05:00Z';
+    let warm1ReplyText = '回复 **#warm1-init**';
+    const warm1Connect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-warm-poll-1': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: warm1StepCount,
+                lastModifiedTime: warm1ModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          warm1Rpc += 1;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '预热测试1' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: warm1ReplyText } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const makeWarmSnap = (sid) => ({
+      ok: true,
+      sessionId: sid,
+      busy: false,
+      messages: [],
+      conversations: [],
+      projects: []
+    });
+
+    await remoteMod.warmConversationSession('sess-warm-poll-1', { localApiConnect: warm1Connect });
+    assert.equal(warm1Rpc, 1, 'warmConversationSession 应执行一次预热拉取');
+
+    // 第 1 次 2500ms 轮询（距预热 +500ms < 3500ms）：应命中预热缓存，不得延长 at，且不能将空签名升级为已验证 S1
+    mockNow += 500;
+    const warm1Poll1 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 1);
+    assert.ok(warm1Poll1.messages.some((m) => String(m.text || '').includes('#warm1-init')));
+
+    // 后端更新内容但摘要步数仍暂持 S1；连续 2500ms 轮询到 +3000ms (< 3500ms) 仍命中，绝不得把 at 滑动延长到 +3000
+    warm1ReplyText = '回复 **#warm1-ttl-refetched**';
+    mockNow += 2500;
+    await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 1, '距实际预热 3000ms < 3500ms 内命中缓存');
+
+    // 再推进 2500ms（距上次轮询仅 2500ms，但距实际预热拉取已 5500ms >= 3500ms）：TTL 必须到期并重拉最新轨迹！
+    mockNow += 2500;
+    const warm1Poll3 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 2, '连续 2500ms 轮询不得滑动刷新 at，超时后必须基于实际拉取时间过期重拉');
+    assert.ok(warm1Poll3.messages.some((m) => String(m.text || '').includes('#warm1-ttl-refetched')));
+
+    // 确认第 2 次真实拉取已将 S1 绑定为已验证签名，后续 S1 空闲轮询零 RPC，直到签名变更 S2 立刻重拉
+    mockNow += 2500;
+    await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 2, '签名 S1 验证锁定后空闲轮询应零 RPC');
+
+    warm1StepCount = 12;
+    warm1ModTime = '2026-11-19T10:05:25Z';
+    warm1ReplyText = '回复 **#warm1-sig-S2**';
+    mockNow += 2500;
+    const warm1Poll5 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 3, '预热周期后摘要签名推进到 S2 必须立刻重拉并展示最新内容');
+    assert.ok(warm1Poll5.messages.some((m) => String(m.text || '').includes('#warm1-sig-S2')));
+
+    // 预热子场景 B：3500ms TTL 窗口内首次轮询记录 observedSig=S1，下一次 2500ms 轮询前签名推进到 S2（总计 < 3500ms）也必须立刻重拉
+    let warm2Rpc = 0;
+    let warm2StepCount = 20;
+    let warm2ModTime = '2026-11-19T10:06:00Z';
+    let warm2ReplyText = '回复 **#warm2-v1**';
+    const warm2Connect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-warm-poll-2': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: warm2StepCount,
+                lastModifiedTime: warm2ModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          warm2Rpc += 1;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '预热测试2' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: warm2ReplyText } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    await remoteMod.warmConversationSession('sess-warm-poll-2', { localApiConnect: warm2Connect });
+    mockNow += 400;
+    const warm2Poll1 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm2Connect
+    });
+    assert.equal(warm2Rpc, 1);
+    assert.ok(warm2Poll1.messages.some((m) => String(m.text || '').includes('#warm2-v1')));
+
+    // 仅过 1200ms（总计 1600ms < 3500ms），摘要由 S1 推进到 S2，observedSig 不一致必须立刻失效重拉
+    warm2StepCount = 22;
+    warm2ModTime = '2026-11-19T10:06:05Z';
+    warm2ReplyText = '回复 **#warm2-v2**';
+    mockNow += 1200;
+    const warm2Poll2 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm2Connect
+    });
+    assert.equal(warm2Rpc, 2, '预热 TTL 窗口内观测签名从 S1 变为 S2 必须立刻重拉');
+    assert.ok(warm2Poll2.messages.some((m) => String(m.text || '').includes('#warm2-v2')));
+
+    // 1c) 回归测试：localApiConnect 真实走 inflightMap 并发去重 & “S1 拉取未完成 → 摘要推进 S2 → 旧请求返回” 跨签名隔离与代际保护
+    const createDeferred = () => {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      return { promise, resolve };
+    };
+    const waitUntil = async (pred) => {
+      for (let i = 0; i < 60; i++) {
+        if (pred()) return;
+        await new Promise((r) => setImmediate(r));
+      }
+      throw new Error('waitUntil timed out');
+    };
+
+    // 先确认同签名并发请求通过 localApiConnect 实际进入 inflightMap 去重（只发 1 次 RPC）
+    let dedupRpcCount = 0;
+    const sameSigGate = createDeferred();
+    const dedupConnect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-inflight-dedup': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: 8,
+                lastModifiedTime: '2026-11-19T10:08:00Z'
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          dedupRpcCount += 1;
+          await sameSigGate.promise;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '并发去重问题' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '回复 **#dedup-ok**' } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const dedupP1 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-inflight-dedup'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: dedupConnect
+    });
+    const dedupP2 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-inflight-dedup'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: dedupConnect
+    });
+    await waitUntil(() => dedupRpcCount === 1);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(dedupRpcCount, 1, 'localApiConnect 同签名并发请求必须走 inflightMap 去重');
+    sameSigGate.resolve();
+    const [dedupR1, dedupR2] = await Promise.all([dedupP1, dedupP2]);
+    assert.equal(dedupRpcCount, 1);
+    assert.ok(dedupR1.messages.some((m) => String(m.text || '').includes('#dedup-ok')));
+    assert.ok(dedupR2.messages.some((m) => String(m.text || '').includes('#dedup-ok')));
+
+    // 竞争顺序 1：S1 在途 → 摘要推进 S2 并发起 S2（不得复用 S1 in-flight）→ S1 先返回 → S2 后返回 → 后续 S2 轮询绝不命中 S1
+    let race1Rpc = 0;
+    let race1StepCount = 10;
+    let race1ModTime = '2026-11-19T10:10:00Z';
+    const race1GateS1 = createDeferred();
+    const race1GateS2 = createDeferred();
+    const race1Connect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-race-order1': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: race1StepCount,
+                lastModifiedTime: race1ModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          race1Rpc += 1;
+          const idx = race1Rpc;
+          const reply = idx === 1 ? await race1GateS1.promise : await race1GateS2.promise;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '竞态问题1' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: reply } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const req1S1 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race1Connect
+    });
+    await waitUntil(() => race1Rpc === 1);
+    race1StepCount = 12;
+    race1ModTime = '2026-11-19T10:10:15Z';
+    mockNow += 200;
+    const req1S2 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race1Connect
+    });
+    await waitUntil(() => race1Rpc === 2);
+
+    race1GateS1.resolve('回复 **#race1-S1-stale**');
+    await req1S1;
+    race1GateS2.resolve('回复 **#race1-S2-fresh**');
+    const res1S2 = await req1S2;
+    assert.ok(res1S2.messages.some((m) => String(m.text || '').includes('#race1-S2-fresh')), 'S2 请求必须拿到新轨迹内容');
+
+    mockNow += 15000;
+    const poll1After = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race1Connect
+    });
+    assert.equal(race1Rpc, 2, '稳定态 S2 应命中最新缓存，不再重拉');
+    assert.ok(poll1After.messages.some((m) => String(m.text || '').includes('#race1-S2-fresh')));
+    assert.equal(poll1After.messages.some((m) => String(m.text || '').includes('#race1-S1-stale')), false);
+
+    // 竞争顺序 2：S1 在途 → 摘要推进 S2 并发起 S2 → S2 先返回写入缓存 → 慢速 S1 后返回（绝不得覆盖 S2 缓存）
+    let race2Rpc = 0;
+    let race2StepCount = 10;
+    let race2ModTime = '2026-11-19T10:12:00Z';
+    const race2GateS1 = createDeferred();
+    const race2GateS2 = createDeferred();
+    const race2Connect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-race-order2': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: race2StepCount,
+                lastModifiedTime: race2ModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          race2Rpc += 1;
+          const idx = race2Rpc;
+          const reply = idx === 1 ? await race2GateS1.promise : await race2GateS2.promise;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '竞态问题2' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: reply } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const req2S1 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race2Connect
+    });
+    await waitUntil(() => race2Rpc === 1);
+    race2StepCount = 14;
+    race2ModTime = '2026-11-19T10:12:15Z';
+    mockNow += 200;
+    const req2S2 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race2Connect
+    });
+    await waitUntil(() => race2Rpc === 2);
+
+    race2GateS2.resolve('回复 **#race2-S2-fresh**');
+    const res2S2 = await req2S2;
+    assert.ok(res2S2.messages.some((m) => String(m.text || '').includes('#race2-S2-fresh')));
+    race2GateS1.resolve('回复 **#race2-S1-stale**');
+    await req2S1;
+
+    mockNow += 15000;
+    const poll2After = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race2Connect
+    });
+    assert.equal(race2Rpc, 2, '迟到的 S1 返回后绝不得覆盖 S2 缓存');
+    assert.ok(poll2After.messages.some((m) => String(m.text || '').includes('#race2-S2-fresh')));
+    assert.equal(poll2After.messages.some((m) => String(m.text || '').includes('#race2-S1-stale')), false);
     Date.now = origDateNow;
 
     // 2) HTTP gzip 压缩、Accept-Encoding q=0 质量值协商与 Cookie 版本号 1.9.17 验证
