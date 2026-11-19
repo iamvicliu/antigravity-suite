@@ -6025,3 +6025,68 @@ test('需求 24: 内置推荐池统一开关、三列自定义提示词与斜杠
     activeTimers.clear();
   }
 });
+
+// =========================================================================
+// 需求 25: UI 主题色系一致性静态门禁与动态主题变量绑定验证
+// =========================================================================
+test('需求 25: UI 主题色系一致性静态门禁与动态主题变量绑定验证', () => {
+  const uiFiles = [
+    ['src/renderer/suite-settings.css', fs.readFileSync(path.join(ROOT, 'src/renderer/suite-settings.css'), 'utf8')],
+    ['src/renderer/suite-settings.js', fs.readFileSync(path.join(ROOT, 'src/renderer/suite-settings.js'), 'utf8')],
+    ['src/renderer/suite-settings.html', fs.readFileSync(path.join(ROOT, 'src/renderer/suite-settings.html'), 'utf8')],
+    ['ag-enhancer-overlay.js', fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8')]
+  ];
+  const forbiddenPatterns = [
+    { name: '硬编码翠绿 #10b981', re: /#10b981/i },
+    { name: '硬编码翠绿 rgba(16,185,129)', re: /16,\s*185,\s*129/ },
+    { name: '硬编码翠绿 #34d399', re: /#34d399/i },
+    { name: '硬编码深绿 #059669', re: /#059669/i },
+    { name: '硬编码天蓝 #38bdf8', re: /#38bdf8/i },
+    { name: '硬编码天蓝 rgba(56,189,248)', re: /56,\s*189,\s*248/ },
+    { name: '硬编码天蓝 rgba(2,132,199)', re: /2,\s*132,\s*199/ },
+    { name: '硬编码浅蓝 #7dd3fc', re: /#7dd3fc/i },
+    { name: '硬编码深蓝 #0369a1/#0c4a6e', re: /#(?:0369a1|0c4a6e)/i },
+    { name: '硬编码橘色 #fb923c/#c2410c', re: /#(?:fb923c|c2410c)|249,\s*115,\s*22|234,\s*88,\s*12/i }
+  ];
+  for (const [relPath, src] of uiFiles) {
+    for (const rule of forbiddenPatterns) {
+      assert.equal(rule.re.test(src), false, `${relPath} 不得硬编码非主题色（命中：${rule.name}）`);
+    }
+  }
+
+  const suiteCss = uiFiles[0][1];
+  assert.match(suiteCss, /\.qp-pool-chip\[data-active="true"\][^}]*--ag-accent-border[^}]*--ag-accent-bg/, '内置推荐池激活态必须绑定 --ag-accent-* 变量');
+  assert.match(suiteCss, /\.qp-info-box[^}]*--ag-accent-border/, '底部指令解读框必须绑定 --ag-accent-border');
+  assert.match(suiteCss, /\.qp-info-rec[^}]*--ag-accent-bg[^}]*--ag-custom-token-accent/, '推荐徽章必须绑定 --ag-accent-* 与 --ag-custom-token-accent');
+  assert.match(suiteCss, /\.qp-label-input,\.qp-text-input,\.ag-rp-input\{[^}]*background:var\(--ag-bg-input\)/, '设置面板所有输入框底色必须统一使用 --ag-bg-input');
+
+  const enhancerSrc = uiFiles[3][1];
+  assert.match(enhancerSrc, /#\$\{QUICK_BAR_TOOLTIP_ID\}\s*\{[^}]*--ag-accent-border/, '快捷栏双行悬浮气泡必须绑定 --ag-accent-border');
+  assert.match(enhancerSrc, /#\$\{QUICK_BAR_TOOLTIP_ID\}\s+\.ag-qtip-rec\s*\{[^}]*--ag-accent-bg[^}]*--ag-effective-accent/, '快捷栏气泡推荐徽章必须绑定 --ag-accent-bg 与 --ag-effective-accent');
+  assert.match(enhancerSrc, /#\$\{QUICK_BAR_ID\}\s+#\$\{NEXT_STEP_GHOST_ID\}\s+\.ag-ns-accept\s*\{[^}]*--ag-accent-border[^}]*--ag-effective-accent/, '追问建议胶囊必须绑定动态主题强调色');
+  assert.match(enhancerSrc, /#\$\{PROMPT_OPT_WRAP_ID\}\s+\.ag-prompt-opt-btn\[data-loading="true"\]\s*\{[^}]*--ag-effective-accent/, '提示词优化按钮必须绑定动态主题强调色');
+
+  // 运行时动态切换色系预设时，host 与 documentElement 必须同步刷新 --ag-accent-* 与 --ag-effective-accent
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 10));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => { activeTimers.delete(t); clearTimeout(t); };
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  try {
+    api.setHeatPreset('blue');
+    const host = env.doc.getElementById('ag-context-meter');
+    assert.equal(host.style.getPropertyValue('--ag-effective-accent'), '#60a5fa', '切换蓝色预设后 host --ag-effective-accent 应跟随为 #60a5fa');
+    assert.equal(env.doc.documentElement.style.getPropertyValue('--ag-effective-accent'), '#60a5fa', 'documentElement --ag-effective-accent 必须同步镜像供外部悬浮气泡继承');
+    assert.match(env.doc.documentElement.style.getPropertyValue('--ag-accent-bg'), /96,\s*165,\s*250/, 'documentElement --ag-accent-bg 必须同步更新 RGB');
+  } finally {
+    api?.dispose?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
+  }
+});

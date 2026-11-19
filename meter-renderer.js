@@ -2342,9 +2342,13 @@
       color:var(--ag-text-primary);
     }
     .qp-pool-chip[data-active="true"]{
-      border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#10b981));
-      background:rgba(16,185,129,0.10);
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
       color:var(--ag-text-primary);
+    }
+    .qp-pool-chip[data-active="true"]:hover{
+      border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
+      background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
     }
     .qp-pool-chip-mark{
       flex-shrink:0;
@@ -2352,7 +2356,7 @@
       text-align:center;
       font-size:11px;
       font-weight:700;
-      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#10b981));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .qp-pool-chip[data-active="false"] .qp-pool-chip-mark{
       color:var(--ag-text-muted);
@@ -2369,7 +2373,8 @@
       flex-shrink:0;
       font-size:11px;
       line-height:1;
-      color:#f59e0b;
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      opacity:.88;
     }
     .qp-info-box{
       display:flex;
@@ -2377,7 +2382,7 @@
       gap:3px;
       padding:8px 10px;
       border-radius:8px;
-      border:1px solid rgba(16,185,129,0.35);
+      border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));
       background:var(--ag-bg-subcard);
       margin-bottom:4px;
     }
@@ -2397,7 +2402,7 @@
     .qp-info-prefix{
       font-size:11.5px;
       font-weight:600;
-      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#10b981));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       flex-shrink:0;
     }
     .qp-info-title{
@@ -2410,8 +2415,9 @@
       font-weight:600;
       padding:1px 5px;
       border-radius:4px;
-      background:rgba(16,185,129,0.14);
-      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#10b981));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       flex-shrink:0;
     }
     .qp-info-rec[hidden]{
@@ -2457,14 +2463,14 @@
       box-sizing:border-box;
       border-radius:6px;
       border:1px solid var(--ag-border-subcard);
-      background:var(--ag-bg-subcard);
+      background:var(--ag-bg-input);
       color:var(--ag-text-primary);
       padding:5px 8px;
       font-size:12px;
       outline:none;
     }
     .qp-label-input:focus,.qp-text-input:focus,.ag-rp-input:focus{
-      border-color:rgba(16,185,129,0.55);
+      border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .qp-del-btn{
       border:1px solid var(--ag-border-subcard);
@@ -2519,8 +2525,8 @@
       cursor:not-allowed;
     }
     .ag-rp-channel[data-active="true"]{
-      border-color:rgba(16,185,129,0.45);
-      background:rgba(16,185,129,0.08);
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
     }
     .ag-rp-ch-check{
       display:inline-flex;
@@ -2610,8 +2616,8 @@
       border-radius:999px;
       font-size:10.5px;
       font-weight:500;
-      background:rgba(16,185,129,0.14);
-      color:#10b981;
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .ag-rp-install-guide[data-missing="true"] .ag-rp-install-badge{
       background:rgba(245,158,11,0.18);
@@ -2632,9 +2638,9 @@
       cursor:pointer;
     }
     .ag-rp-install-tab[data-active="true"]{
-      border-color:rgba(16,185,129,0.45);
-      background:rgba(16,185,129,0.14);
-      color:#10b981;
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       font-weight:600;
     }
     .ag-rp-install-cmd-row{
@@ -2682,9 +2688,9 @@
       cursor:pointer;
     }
     .ag-rp-btn.primary{
-      background:rgba(16,185,129,0.16);
-      border-color:rgba(16,185,129,0.45);
-      color:#10b981;
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       font-weight:600;
     }
     .ag-rp-err{
@@ -2701,8 +2707,8 @@
       width:11px;
       height:11px;
       border-radius:999px;
-      border:1.5px solid rgba(16,185,129,0.3);
-      border-top-color:#10b981;
+      border:1.5px solid var(--ag-accent-border,rgba(167,139,250,0.34));
+      border-top-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       animation:ag-spin .7s linear infinite;
       vertical-align:middle;
       margin-right:4px;
@@ -13543,7 +13549,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       <div id="ag-rp-tunnel-form" class="ag-rp-tunnel-form">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
           <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（可选高级配置）', 'Cloudflare Fixed Domain (Optional)'))}</span>
-          <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
+          <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
         </div>
         <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('默认已启用免登录临时隧道（零配置开箱可用）；仅当需要绑定自有固定域名时才需填写下方信息。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
         <label style="display:flex;flex-direction:column;gap:4px;">
