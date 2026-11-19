@@ -3196,7 +3196,7 @@ function buildMobileAppHtml() {
     }
     .new-chat-main{display:inline-flex;align-items:center;justify-content:center;gap:6px;max-width:100%;line-height:1.2}
     .new-chat-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .new-chat-sub{display:block;max-width:100%;font-size:10.5px;font-weight:500;line-height:1.15;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .new-chat-sub{display:block;width:100%;max-width:100%;font-size:10.5px;font-weight:500;line-height:1.22;color:var(--muted);white-space:normal;overflow-wrap:anywhere;word-break:break-word;text-align:center}
     .new-chat-sub[hidden]{display:none}
     .new-chat-pick-btn{
       appearance:none;width:42px;min-height:44px;flex-shrink:0;border-radius:12px;
