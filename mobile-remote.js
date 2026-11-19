@@ -7624,20 +7624,22 @@ function buildMobileAppHtml() {
       if (latestSnap) renderConversationList(latestSnap);
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
+      const myNavSeqSnapshot = lastNavActionSeq;
       try {
         const payload = { action: 'new-conversation' };
         if (pid) payload.projectId = pid;
         const r = await apiAction(payload);
+        const isCurrentNav = mySelEpoch === selectedProjectEpoch && lastNavActionSeq === myNavSeqSnapshot + 1;
         if (r?.ok) {
-          applySelectedConversation(String(r?.snapshot?.activeConversationId || r?.snapshot?.sessionId || '__new__'));
-          if (mySelEpoch === selectedProjectEpoch) {
+          if (isCurrentNav) {
+            applySelectedConversation(String(r?.snapshot?.activeConversationId || r?.snapshot?.sessionId || '__new__'));
             showToast(projectName ? ('已在「' + projectName + '」中新建对话') : '已新建对话');
           }
-        } else if (mySelEpoch === selectedProjectEpoch) {
+        } else if (isCurrentNav) {
           showToast(r?.error || r?.actionResult?.error || '新建对话失败');
         }
       } catch (err) {
-        if (mySelEpoch === selectedProjectEpoch) {
+        if (mySelEpoch === selectedProjectEpoch && lastNavActionSeq === myNavSeqSnapshot + 1) {
           showToast(err?.message || '新建对话失败');
         }
       }
