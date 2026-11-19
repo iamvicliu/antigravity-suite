@@ -16,7 +16,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.10';
+const MOBILE_UI_VERSION = '1.9.11';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -2897,6 +2897,7 @@ function buildMobileAppHtml() {
       --warn-card-bg:rgba(245,158,11,.12);--warn-card-border:rgba(245,158,11,.55);--warn-card-fg:#fde68a;
       --perm-review:#c084fc;
       --app-h:100dvh;
+      --modal-h:100dvh;
     }
     @media (prefers-color-scheme:light){
       :root:not([data-theme="dark"]){
@@ -3152,12 +3153,12 @@ function buildMobileAppHtml() {
     .send-circle:active{transform:scale(.94)}
     .send-circle:disabled{opacity:.5}
     .sheet-backdrop{
-      position:fixed;top:0;left:0;right:0;height:var(--app-h,100vh);z-index:75;background:var(--backdrop-bg);display:flex;align-items:flex-end;justify-content:center;
+      position:fixed;top:0;left:0;right:0;height:var(--modal-h,100dvh);z-index:75;background:var(--backdrop-bg);box-shadow:0 0 0 100vmax var(--backdrop-bg);display:flex;align-items:flex-end;justify-content:center;
     }
     .sheet-backdrop[hidden]{display:none}
     .sheet{
-      width:100%;max-width:520px;max-height:72dvh;background:var(--card);border-top:1px solid var(--border-strong);
-      border-radius:18px 18px 0 0;padding:12px 14px calc(env(safe-area-inset-bottom) + 14px);
+      width:100%;max-width:520px;max-height:min(calc(var(--modal-h,100dvh) * 0.72),calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px));background:var(--card);border-top:1px solid var(--border-strong);
+      border-radius:18px 18px 0 0;padding:12px 14px calc(env(safe-area-inset-bottom) + 14px);box-shadow:0 240px 0 0 var(--card);
       display:flex;flex-direction:column;gap:8px;overflow:hidden;
     }
     .sheet-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
@@ -3168,7 +3169,7 @@ function buildMobileAppHtml() {
     }
     .sheet-opt.active{border-color:var(--accent);background:var(--accent-bg);color:var(--fg-strong);font-weight:600}
     .drawer-backdrop{
-      position:fixed;top:0;left:0;right:0;height:var(--app-h,100vh);z-index:70;background:rgba(0,0,0,0);display:flex;justify-content:flex-start;
+      position:fixed;top:0;left:0;right:0;height:var(--modal-h,100dvh);z-index:70;background:rgba(0,0,0,0);display:flex;justify-content:flex-start;
       opacity:0;visibility:hidden;pointer-events:none;
       transition:opacity .22s ease,visibility .22s ease,background-color .22s ease;
     }
@@ -3267,7 +3268,7 @@ function buildMobileAppHtml() {
     }
     .proj-empty-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
     /* 新建项目与电脑目录浏览器弹窗 */
-    .sheet.proj-modal{max-width:540px;max-height:84dvh;gap:10px}
+    .sheet.proj-modal{max-width:540px;max-height:min(680px,calc(var(--modal-h,100dvh) * 0.84),calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px));gap:10px}
     .proj-roots-bar{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;flex-shrink:0;padding-bottom:2px}
     .proj-roots-bar::-webkit-scrollbar{display:none}
     .proj-root-pill{
@@ -3278,9 +3279,9 @@ function buildMobileAppHtml() {
     .proj-path-row{display:flex;align-items:center;gap:6px;flex-shrink:0}
     .proj-path-input,.proj-field-input{
       flex:1 1 auto;min-width:0;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border);
-      background:var(--input-bg);color:var(--fg);font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;
+      background:var(--input-bg);color:var(--fg);font-size:16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;
     }
-    .proj-field-input{font-family:inherit;font-size:14px}
+    .proj-field-input{font-family:inherit;font-size:16px}
     .proj-path-input:focus,.proj-field-input:focus{border-color:var(--accent-border)}
     .proj-act-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0}
     .proj-act-btn{
@@ -3292,7 +3293,7 @@ function buildMobileAppHtml() {
     .proj-mkdir-row{display:flex;align-items:center;gap:6px;flex-shrink:0}
     .proj-mkdir-row[hidden]{display:none}
     .proj-dir-list{
-      display:flex;flex-direction:column;gap:5px;min-height:120px;max-height:34dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+      display:flex;flex-direction:column;gap:5px;flex:1 1 auto;min-height:84px;max-height:calc(var(--modal-h,100dvh) * 0.34);overflow-y:auto;-webkit-overflow-scrolling:touch;
       padding:2px 0;
     }
     .proj-dir-item{
@@ -3490,6 +3491,8 @@ function buildMobileAppHtml() {
         box-shadow:var(--sheet-shadow);
       }
       .sheet.proj-modal{max-width:520px;max-height:min(680px,86vh)}
+      .proj-path-input{font-size:13px}
+      .proj-field-input{font-size:14px}
       .sheet-opt{padding:10px 12px;font-size:13.5px}
       .toast{top:18px}
     }
@@ -3962,12 +3965,19 @@ function buildMobileAppHtml() {
     $('sub-meta').onclick = openModeSwitcherSheet;
 
     const appEl = document.querySelector('.app');
-    let maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
 
     function getFullLayoutHeight() {
       const vvH = window.visualViewport ? window.visualViewport.height : 0;
       return Math.round(vvH || window.innerHeight || document.documentElement?.clientHeight || 0);
     }
+
+    let maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    let lockedModalBaseH = getFullLayoutHeight();
+    let lastLayoutWidth = window.innerWidth || 0;
+    let lastTextBlurAt = 0;
+    let activeShiftedSheet = null;
+    let activeModalSheetShiftY = 0;
+    let viewportSyncTimers = [];
 
     const desktopMq = typeof window.matchMedia === 'function'
       ? window.matchMedia('(min-width:860px) and (min-height:521px) and (hover:hover) and (pointer:fine)')
@@ -3978,16 +3988,145 @@ function buildMobileAppHtml() {
       return window.innerWidth >= 860 && window.innerHeight > 520 && (fine || Number(navigator.maxTouchPoints || 0) <= 1);
     };
 
+    function isTextEntryElement(el) {
+      if (!el || el === document.body || el === document.documentElement) return false;
+      const tag = String(el.tagName || '').toUpperCase();
+      if (tag === 'TEXTAREA') return !el.disabled && !el.readOnly;
+      if (tag === 'INPUT') {
+        const type = String(el.type || 'text').toLowerCase();
+        if (['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type)) {
+          return false;
+        }
+        return !el.disabled && !el.readOnly;
+      }
+      return Boolean(el.isContentEditable);
+    }
+
+    function getOpenModalBackdrop() {
+      const projBackdrop = $('proj-modal-backdrop');
+      if (projBackdrop && !projBackdrop.hidden) return projBackdrop;
+      const sheetBackdrop = $('sheet-backdrop');
+      if (sheetBackdrop && !sheetBackdrop.hidden) return sheetBackdrop;
+      return null;
+    }
+
+    function resetModalSheetShift() {
+      if (activeShiftedSheet) {
+        activeShiftedSheet.style.transform = '';
+      }
+      const openBackdrop = getOpenModalBackdrop();
+      const sheetEl = openBackdrop?.querySelector?.('.sheet');
+      if (sheetEl && sheetEl !== activeShiftedSheet) {
+        sheetEl.style.transform = '';
+      }
+      activeShiftedSheet = null;
+      activeModalSheetShiftY = 0;
+    }
+
+    function computeModalSheetShiftY(metrics) {
+      const rawTop = Number(metrics?.rawTop);
+      const rawBottom = Number(metrics?.rawBottom);
+      const vvTop = Number(metrics?.vvTop) || 0;
+      const vvHeight = Number(metrics?.vvHeight) || 0;
+      const safeTopGap = Number.isFinite(metrics?.safeTopGap) ? Number(metrics.safeTopGap) : 12;
+      const safeBottomGap = Number.isFinite(metrics?.safeBottomGap) ? Number(metrics.safeBottomGap) : 14;
+      if (!Number.isFinite(rawTop) || !Number.isFinite(rawBottom) || !(vvHeight > 0)) return 0;
+
+      const vvBottom = vvTop + vvHeight;
+      const minTop = vvTop + safeTopGap;
+      const maxBottom = vvBottom - safeBottomGap;
+
+      // 只要当前聚焦输入框已完整处于键盘上方可视区，严格禁止盲目抬高
+      if (rawBottom <= maxBottom && rawTop >= minTop) return 0;
+
+      // 仅当输入框下方被软键盘遮挡时按实际重叠量最小幅上移，并确保顶部不越出可视区
+      if (rawBottom > maxBottom) {
+        let lift = maxBottom - rawBottom;
+        const maxSafeUp = minTop - rawTop;
+        lift = maxSafeUp <= 0 ? Math.max(lift, maxSafeUp) : Math.min(maxSafeUp, Math.max(lift, minTop - rawTop));
+        return Math.round(lift);
+      }
+
+      // 若残留视觉视口偏移 (vv.offsetTop > 0) 把顶部输入框推出上沿，按需轻微下移保底可见
+      const downShift = Math.min(minTop - rawTop, Math.max(0, maxBottom - rawBottom));
+      return downShift > 0 ? Math.round(downShift) : 0;
+    }
+
+    function syncModalKeyboardOffset() {
+      const openBackdrop = getOpenModalBackdrop();
+      const activeEl = document.activeElement;
+      if (!openBackdrop || isDesktopLayout() || !isTextEntryElement(activeEl) || !openBackdrop.contains(activeEl)) {
+        resetModalSheetShift();
+        return;
+      }
+      const sheetEl = openBackdrop.querySelector('.sheet');
+      if (!sheetEl || typeof activeEl.getBoundingClientRect !== 'function') {
+        resetModalSheetShift();
+        return;
+      }
+      if (activeShiftedSheet && activeShiftedSheet !== sheetEl) {
+        resetModalSheetShift();
+      }
+      const vv = window.visualViewport;
+      const vvTop = vv ? (Number(vv.offsetTop) || 0) : 0;
+      const vvHeight = vv ? (Number(vv.height) || window.innerHeight || 0) : (window.innerHeight || 0);
+      const baseH = Math.max(maxVvHeight || 0, lockedModalBaseH || 0, window.innerHeight || 0);
+      const kbLikelyOpen = Boolean(vv && ((baseH - vvHeight > 60) || vvTop > 2));
+      if (!kbLikelyOpen) {
+        resetModalSheetShift();
+        return;
+      }
+      const rect = activeEl.getBoundingClientRect();
+      const appliedShift = activeShiftedSheet === sheetEl ? activeModalSheetShiftY : 0;
+      const rawTop = rect.top - appliedShift;
+      const rawBottom = rect.bottom - appliedShift;
+      if (vvTop > 0 && rawTop < vvTop + 12 && typeof window.scrollTo === 'function') {
+        try { window.scrollTo(0, 0); } catch {}
+      }
+      const nextShift = computeModalSheetShiftY({
+        rawTop,
+        rawBottom,
+        vvTop,
+        vvHeight,
+        safeTopGap: 12,
+        safeBottomGap: 14
+      });
+      activeShiftedSheet = nextShift ? sheetEl : null;
+      activeModalSheetShiftY = nextShift;
+      sheetEl.style.transform = nextShift ? ('translateY(' + nextShift + 'px)') : '';
+    }
+
     function syncViewportHeight() {
       const vv = window.visualViewport;
-      const curH = vv ? vv.height : window.innerHeight;
-      const isInputFocused = document.activeElement === $('input');
-      if (!isInputFocused && curH > maxVvHeight) {
+      const curH = vv ? vv.height : (window.innerHeight || document.documentElement?.clientHeight || 0);
+      const curW = window.innerWidth || 0;
+      const desktop = isDesktopLayout();
+      const activeEl = document.activeElement;
+      const anyTextFocused = isTextEntryElement(activeEl);
+      const openModal = getOpenModalBackdrop();
+      const isComposerFocused = !openModal && activeEl === $('input');
+
+      if (!anyTextFocused && Math.abs(curW - lastLayoutWidth) > 2) {
+        lastLayoutWidth = curW;
+        maxVvHeight = curH;
+        lockedModalBaseH = Math.round(curH);
+      } else if (!anyTextFocused && curH > maxVvHeight) {
         maxVvHeight = curH;
       }
-      const baseH = Math.max(maxVvHeight, window.innerHeight || 0);
-      const kbOpen = Boolean(isInputFocused && vv && (baseH - curH > 100));
-      if (kbOpen) {
+
+      const refFullH = Math.max(maxVvHeight || 0, window.innerHeight || 0, lockedModalBaseH || 0);
+      const recentlyBlurred = (Date.now() - lastTextBlurAt) < 380;
+      const kbLikelyActive = Boolean(vv && ((refFullH - curH > 60) || ((Number(vv.offsetTop) || 0) > 2)));
+      const freezeModalShrink = !desktop && (anyTextFocused || kbLikelyActive || recentlyBlurred);
+      if (desktop || !freezeModalShrink || curH >= lockedModalBaseH) {
+        lockedModalBaseH = Math.round(curH);
+      }
+      const modalBaseH = Math.max(lockedModalBaseH || 0, Math.round(curH || 0));
+      document.documentElement.style.setProperty('--modal-h', modalBaseH + 'px');
+
+      const baseH = Math.max(maxVvHeight || 0, window.innerHeight || 0);
+      const kbOpenForComposer = Boolean(!desktop && !openModal && isComposerFocused && vv && (baseH - curH > 100));
+      if (kbOpenForComposer) {
         const top = vv.offsetTop || 0;
         document.body.style.bottom = 'auto';
         document.body.style.height = Math.round(curH) + 'px';
@@ -3997,21 +4136,53 @@ function buildMobileAppHtml() {
       } else {
         document.body.style.bottom = '0';
         document.body.style.height = '100%';
-        document.documentElement.style.setProperty('--app-h', getFullLayoutHeight() + 'px');
+        const appHeightPx = (!desktop && openModal && (anyTextFocused || kbLikelyActive || recentlyBlurred))
+          ? modalBaseH
+          : getFullLayoutHeight();
+        document.documentElement.style.setProperty('--app-h', appHeightPx + 'px');
         document.body.style.transform = '';
         appEl?.classList.remove('kb-open');
       }
-      if (stickBottom) msgEl.scrollTop = msgEl.scrollHeight;
+      syncModalKeyboardOffset();
+      if (!openModal && stickBottom) msgEl.scrollTop = msgEl.scrollHeight;
     }
+
+    function scheduleViewportSyncBurst() {
+      for (const tid of viewportSyncTimers) clearTimeout(tid);
+      viewportSyncTimers = [];
+      for (const delay of [60, 180, 320]) {
+        viewportSyncTimers.push(setTimeout(() => { syncViewportHeight(); }, delay));
+      }
+    }
+
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', syncViewportHeight);
       window.visualViewport.addEventListener('scroll', syncViewportHeight);
     }
     window.addEventListener('resize', syncViewportHeight);
+    document.addEventListener('focusin', (e) => {
+      if (isTextEntryElement(e?.target || document.activeElement)) {
+        syncViewportHeight();
+        scheduleViewportSyncBurst();
+      }
+    });
+    document.addEventListener('focusout', (e) => {
+      if (isTextEntryElement(e?.target)) {
+        lastTextBlurAt = Date.now();
+        setTimeout(syncViewportHeight, 16);
+        scheduleViewportSyncBurst();
+      }
+    });
     window.addEventListener('orientationchange', () => {
-      maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      const nextH = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      maxVvHeight = nextH;
+      lockedModalBaseH = Math.round(nextH || 0);
+      lastLayoutWidth = window.innerWidth || 0;
       setTimeout(() => {
-        maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        const settledH = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        maxVvHeight = settledH;
+        lockedModalBaseH = Math.round(settledH || 0);
+        lastLayoutWidth = window.innerWidth || 0;
         syncViewportHeight();
         if (typeof syncSidebarA11y === 'function') syncSidebarA11y();
       }, 150);
@@ -4719,6 +4890,16 @@ function buildMobileAppHtml() {
     });
     window.addEventListener('pageshow', () => { void fetchSnapshot(); });
 
+    function closeSheet() {
+      const backdrop = $('sheet-backdrop');
+      if (backdrop && backdrop.contains(document.activeElement)) {
+        try { document.activeElement.blur(); } catch {}
+      }
+      if (backdrop) backdrop.hidden = true;
+      resetModalSheetShift();
+      syncViewportHeight();
+    }
+
     let activeSheetState = null;
     async function handleSheetListClick(e) {
       const btn = e?.target?.closest?.('.sheet-opt');
@@ -4727,7 +4908,7 @@ function buildMobileAppHtml() {
       const opt = activeSheetState.options[idx];
       const onSelect = activeSheetState.onSelect;
       activeSheetState = null;
-      $('sheet-backdrop').hidden = true;
+      closeSheet();
       if (opt && typeof onSelect === 'function') await onSelect(opt);
     }
     $('sheet-list').onclick = handleSheetListClick;
@@ -4741,9 +4922,10 @@ function buildMobileAppHtml() {
         '<span>' + esc(o.label) + '</span>' + (o.active ? '<span>✓</span>' : '') + '</button>'
       ).join('');
       $('sheet-backdrop').hidden = false;
+      syncViewportHeight();
     }
-    $('sheet-close').addEventListener('click', () => { $('sheet-backdrop').hidden = true; });
-    $('sheet-backdrop').addEventListener('click', (e) => { if (e.target === $('sheet-backdrop')) $('sheet-backdrop').hidden = true; });
+    $('sheet-close').addEventListener('click', closeSheet);
+    $('sheet-backdrop').addEventListener('click', (e) => { if (e.target === $('sheet-backdrop')) closeSheet(); });
 
     function openModelPicker() {
       const opts = (latestSnap?.modelOptions || []).map((m) => ({
@@ -5497,13 +5679,20 @@ function buildMobileAppHtml() {
       if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
       if ($('proj-mkdir-input')) $('proj-mkdir-input').value = '';
       backdrop.hidden = false;
+      resetModalSheetShift();
+      syncViewportHeight();
       const initialPath = projBrowserState.currentPath || '';
       await loadHostDirListing(initialPath);
     }
 
     function closeCreateProjectModal() {
       const backdrop = $('proj-modal-backdrop');
+      if (backdrop && backdrop.contains(document.activeElement)) {
+        try { document.activeElement.blur(); } catch {}
+      }
       if (backdrop) backdrop.hidden = true;
+      resetModalSheetShift();
+      syncViewportHeight();
     }
 
     async function createNewSubdirInModal() {
@@ -5895,7 +6084,7 @@ function buildMobileAppHtml() {
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       if (!$('proj-modal-backdrop').hidden) { closeCreateProjectModal(); return; }
-      if (!$('sheet-backdrop').hidden) { $('sheet-backdrop').hidden = true; return; }
+      if (!$('sheet-backdrop').hidden) { closeSheet(); return; }
       if (!$('quota-drawer').hidden) { $('quota-drawer').hidden = true; return; }
       if (!isDesktopLayout() && backdropEl.classList.contains('open')) closeDrawer();
     });
