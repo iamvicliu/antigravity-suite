@@ -4057,27 +4057,36 @@ function buildMobileAppHtml() {
       const vvHeight = Number(metrics?.vvHeight) || 0;
       const safeTopGap = Number.isFinite(metrics?.safeTopGap) ? Number(metrics.safeTopGap) : 12;
       const safeBottomGap = Number.isFinite(metrics?.safeBottomGap) ? Number(metrics.safeBottomGap) : 14;
+      const hasScrollBody = Boolean(metrics?.hasScrollBody);
       if (!Number.isFinite(rawTop) || !Number.isFinite(rawBottom) || !(vvHeight > 0)) return 0;
 
       const vvBottom = vvTop + vvHeight;
       const minTop = vvTop + safeTopGap;
       const maxBottom = vvBottom - safeBottomGap;
+      const hasSheetTop = sheetRawTop !== null && Number.isFinite(sheetRawTop);
+      const sheetTopOk = (!hasSheetTop || vvTop <= 0) ? true : (sheetRawTop >= minTop);
 
-      // 只要当前聚焦输入框已完整处于键盘上方可视区，严格禁止盲目抬高
-      if (rawBottom <= maxBottom && rawTop >= minTop) return 0;
+      // 只要聚焦输入框和弹窗顶边（在正向视觉偏移下）均已完整处于可视安全区内，严格禁止任何位移
+      if (rawBottom <= maxBottom && rawTop >= minTop && sheetTopOk) return 0;
 
-      // 仅当输入框下方被软键盘遮挡时按弹窗顶边约束安全上移，不越出可视区顶部
-      if (rawBottom > maxBottom) {
-        const desiredLift = Math.floor(maxBottom - rawBottom);
-        const maxSheetUp = (sheetRawTop !== null && Number.isFinite(sheetRawTop))
-          ? Math.min(0, Math.ceil(minTop - sheetRawTop))
-          : -Infinity;
-        return Math.max(desiredLift, maxSheetUp, Math.ceil(minTop - rawTop));
+      const minShiftForSheetTop = hasSheetTop ? Math.ceil(minTop - sheetRawTop) : -Infinity;
+      const minShiftForInputTop = Math.ceil(minTop - rawTop);
+      const maxShiftForInputBottom = Math.floor(maxBottom - rawBottom);
+
+      if (hasScrollBody) {
+        if (rawBottom > maxBottom && minShiftForSheetTop <= 0) {
+          return Math.max(maxShiftForInputBottom, minShiftForSheetTop);
+        }
+        const needDownShift = Math.max(0, hasSheetTop ? minShiftForSheetTop : 0, minShiftForInputTop);
+        if (needDownShift > 0) return needDownShift;
+        return Math.max(maxShiftForInputBottom, minShiftForSheetTop);
       }
 
-      // 若残留视觉视口偏移 (vv.offsetTop > 0) 把顶部输入框推出上沿，按需轻微下移保底可见
-      const downShift = Math.min(Math.ceil(minTop - rawTop), Math.floor(Math.max(0, maxBottom - rawBottom)));
-      return downShift > 0 ? downShift : 0;
+      if (rawBottom > maxBottom) {
+        return Math.max(maxShiftForInputBottom, minShiftForSheetTop, minShiftForInputTop);
+      }
+      const downTarget = Math.max(0, hasSheetTop ? minShiftForSheetTop : 0, minShiftForInputTop);
+      return Math.max(minShiftForInputTop, Math.min(downTarget, Math.max(0, maxShiftForInputBottom)));
     }
 
     function syncModalKeyboardOffset() {
@@ -4106,8 +4115,9 @@ function buildMobileAppHtml() {
       }
 
       const scrollBody = sheetEl.querySelector('.proj-modal-body') || sheetEl.querySelector('.sheet-list') || null;
+      const hasScrollBody = Boolean(scrollBody && scrollBody.contains(activeEl));
       const appliedShift = activeShiftedSheet === sheetEl ? activeModalSheetShiftY : 0;
-      const bodyScroll = (scrollBody && scrollBody.contains(activeEl)) ? (Number(scrollBody.scrollTop) || 0) : 0;
+      const bodyScroll = hasScrollBody ? (Number(scrollBody.scrollTop) || 0) : 0;
       const sheetRect = sheetEl.getBoundingClientRect();
       const bodyRect = scrollBody && typeof scrollBody.getBoundingClientRect === 'function' ? scrollBody.getBoundingClientRect() : null;
       const rect = activeEl.getBoundingClientRect();
@@ -4119,13 +4129,14 @@ function buildMobileAppHtml() {
       const rawBottom = rect.bottom - appliedShift + bodyScroll;
       const minTop = vvTop + 12;
       const maxBottom = vvTop + vvHeight - 14;
+      const sheetTopOk = vvTop <= 0 ? true : (sheetRawTop >= minTop);
 
-      if (rawBottom <= maxBottom && rawTop >= minTop) {
+      if (rawBottom <= maxBottom && rawTop >= minTop && sheetTopOk) {
         resetModalSheetShift();
         return;
       }
 
-      if (vvTop > 0 && rawTop < minTop && typeof window.scrollTo === 'function') {
+      if (vvTop > 0 && (rawTop < minTop || !sheetTopOk) && typeof window.scrollTo === 'function') {
         try { window.scrollTo(0, 0); } catch {}
       }
 
@@ -4136,13 +4147,14 @@ function buildMobileAppHtml() {
         vvTop,
         vvHeight,
         safeTopGap: 12,
-        safeBottomGap: 14
+        safeBottomGap: 14,
+        hasScrollBody
       });
 
-      const remainingOverlap = (rawBottom > maxBottom) ? Math.ceil((rawBottom + nextShift) - maxBottom) : 0;
+      const remainingOverlap = Math.max(0, Math.ceil((rawBottom + nextShift) - maxBottom));
       sheetEl.style.transform = nextShift ? ('translateY(' + nextShift + 'px)') : '';
 
-      if (remainingOverlap > 0 && scrollBody && scrollBody.contains(activeEl)) {
+      if (remainingOverlap > 0 && hasScrollBody) {
         if (sheetRawHeight > 0) {
           sheetEl.style.height = sheetRawHeight + 'px';
           activeSheetLockedHeight = sheetRawHeight;
