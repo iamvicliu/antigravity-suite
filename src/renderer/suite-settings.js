@@ -142,17 +142,6 @@
     '账号归属地区：': 'Account Region:',
     '订阅结算地区：': 'Billing Region:',
     '本地代理网络直连（免开 TUN 模式）': 'Local Proxy Direct Connect (No TUN)',
-    '解除 256K 上下文限制（实验性补丁）': 'Unlock 256K Context Limit (Experimental)',
-    '当前补丁状态': 'Patch Status',
-    '正在检测客户端上下文限制状态…': 'Checking client context limit status…',
-    '💡 功能说明与注意事项': '💡 Overview & Notes',
-    '突破默认上限': 'Raise Default Cap',
-    '：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。': ': Client caps context at 256K by default; applying this patch restores model limits up to ~1M.',
-    '安全可随时还原': 'Safe & Reversible',
-    '：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。': ': Automatically backs up original files before patching; restore anytime with one click.',
-    '客户端更新提示': 'Client Update Note',
-    '：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。': ': Major client updates overwrite binaries; simply re-apply the patch here afterward.',
-    '查看底层程序路径与备份详情': 'View Binary Path & Backup Details',
     '本地代理地址（支持 HTTP / SOCKS5，如 http://127.0.0.1:7897）：': 'Local Proxy URL (HTTP / SOCKS5, e.g. http://127.0.0.1:7897):',
     '不走代理的地址（本地回环默认直连）：': 'Bypass Proxy Addresses (Loopback Direct):',
     '🔍 测试代理连接': '🔍 Test Proxy',
@@ -477,6 +466,12 @@
     ['set-remote-approvals', 'showApprovals']
   ];
 
+  const DEFAULT_CLOUDFLARED_INSTALL_COMMANDS = {
+    darwin: 'brew install cloudflared',
+    win32: 'winget install --id Cloudflare.cloudflared',
+    linux: 'mkdir -p ~/.local/bin && curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/.local/bin/cloudflared && chmod +x ~/.local/bin/cloudflared'
+  };
+
   const remoteSettingsState = {
     loading: false,
     busy: false,
@@ -486,8 +481,67 @@
     tunnelConfigOpen: false,
     draftHost: null,
     draftToken: '',
+    installPlatform: '',
+    installCopiedAt: 0,
+    installCopyTimer: null,
     pollTimer: null
   };
+
+  function detectClientInstallPlatform(data) {
+    const serverPlatform = String(data?.cloudflaredInstall?.platform || '').trim();
+    if (serverPlatform && DEFAULT_CLOUDFLARED_INSTALL_COMMANDS[serverPlatform]) return serverPlatform;
+    try {
+      const navPlat = String(navigator?.platform || navigator?.userAgent || '').toLowerCase();
+      if (navPlat.includes('mac') || navPlat.includes('darwin')) return 'darwin';
+      if (navPlat.includes('win')) return 'win32';
+    } catch {}
+    return 'linux';
+  }
+
+  function resolveCloudflaredInstallGuideForSettings(data) {
+    const serverCmds = (data?.cloudflaredInstall?.commands && typeof data.cloudflaredInstall.commands === 'object')
+      ? data.cloudflaredInstall.commands
+      : {};
+    const commands = {
+      darwin: String(serverCmds.darwin || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.darwin),
+      win32: String(serverCmds.win32 || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.win32),
+      linux: String(serverCmds.linux || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.linux)
+    };
+    const hostPlatform = detectClientInstallPlatform(data);
+    const activePlatform = (remoteSettingsState.installPlatform && commands[remoteSettingsState.installPlatform])
+      ? remoteSettingsState.installPlatform
+      : hostPlatform;
+    return {
+      hostPlatform,
+      activePlatform,
+      command: commands[activePlatform] || commands.darwin,
+      commands
+    };
+  }
+
+  async function copyRemoteInstallCommand(text) {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    try {
+      if (navigator?.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {}
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = Boolean(document.execCommand && document.execCommand('copy'));
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
 
   function escapeSuiteHtml(str) {
     return String(str ?? '')
@@ -506,6 +560,10 @@
     if (remoteSettingsState.pollTimer) {
       clearTimeout(remoteSettingsState.pollTimer);
       remoteSettingsState.pollTimer = null;
+    }
+    if (remoteSettingsState.installCopyTimer) {
+      clearTimeout(remoteSettingsState.installCopyTimer);
+      remoteSettingsState.installCopyTimer = null;
     }
     remoteSettingsState.tunnelConfigOpen = false;
     remoteSettingsState.draftHost = null;
@@ -643,16 +701,11 @@
       }
     });
 
-    // 3. 网络代理与上下文加长移入「网络与高级」分页，并移除 #panel 内原有抽屉
+    // 3. 网络代理移入「网络与高级」分页，并移除 #panel 内原有抽屉
     moveTo('proxy-badge', 'settings-slot-proxy-badge');
     const proxyBody = moveTo('proxy-drawer-body', 'settings-slot-proxy');
     if (proxyBody) proxyBody.style.display = 'block';
     el('proxy-notun-drawer')?.remove?.();
-
-    moveTo('unlock-badge', 'settings-slot-unlock-badge');
-    const unlockBody = moveTo('unlock-drawer-body', 'settings-slot-unlock');
-    if (unlockBody) unlockBody.style.display = 'block';
-    el('context-unlock-drawer')?.remove?.();
 
     enhanceSuiteDropdownsOnce();
     return true;
@@ -1682,7 +1735,9 @@
         const isStarting = switchingTunnelMode || ch.state === 'starting';
         const isRunning = !switchingTunnelMode && ch.state === 'running' && ch.available;
         const checked = !switchingTunnelMode && Boolean(ch.enabled || isRunning || ch.state === 'starting');
-        const modeHint = ch.mode === 'named' ? suiteTr('固定域名', 'Fixed Domain') : suiteTr('免登录临时', 'Quick');
+        const isNamedMode = ch.mode === 'named';
+        const modeHint = isNamedMode ? suiteTr('固定域名', 'Fixed Domain') : suiteTr('免登录零配置', 'Quick (Zero-Config)');
+        const cfgBtnLabel = isNamedMode ? suiteTr('固定域名 ▾', 'Fixed Domain ▾') : suiteTr('免登录零配置 ▾', 'Zero-Config ▾');
         const statusHint = switchingTunnelMode
           ? (remoteSettingsState.pendingAction === 'quick'
               ? suiteTr('正在切换临时隧道…', 'Switching to quick tunnel…')
@@ -1692,8 +1747,8 @@
             : (isRunning
                 ? (ch.displayHost || modeHint)
                 : (ch.binaryAvailable === false
-                    ? suiteTr('缺少 cloudflared', 'cloudflared not found')
-                    : suiteTr('点击启用公网访问', 'Click to enable tunnel')));
+                    ? suiteTr('缺少 cloudflared（见下方一键安装命令）', 'cloudflared not found (see install guide below)')
+                    : suiteTr('免登录零配置 · 点击启用', 'Zero-Config · Click to enable')));
         return `
           <div id="ag-rp-tunnel-toggle" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tunnel" data-active="${activeKey === 'tunnel' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
             <span class="ag-rp-ch-check">
@@ -1701,7 +1756,7 @@
               <span class="ag-rp-ch-name">${escapeSuiteHtml(label)}</span>
               <span class="ag-rp-ch-addr">${isStarting ? '<span class="ag-rp-spin"></span>' : ''}${escapeSuiteHtml(statusHint)}</span>
             </span>
-            <button id="ag-rp-tunnel-cfg-btn" class="ag-rp-ch-cfg" type="button" title="${escapeSuiteHtml(suiteTr('配置 Cloudflare 固定域名', 'Configure Fixed Domain'))}">${escapeSuiteHtml(suiteTr('固定域名 ▾', 'Fixed Domain ▾'))}</button>
+            <button id="ag-rp-tunnel-cfg-btn" class="ag-rp-ch-cfg" type="button" title="${escapeSuiteHtml(suiteTr('切换免登录零配置或配置 Cloudflare 固定域名', 'Switch Quick Zero-Config or Configure Fixed Domain'))}">${escapeSuiteHtml(cfgBtnLabel)}</button>
           </div>
         `;
       }
@@ -1724,16 +1779,18 @@
       ? remoteSettingsState.draftHost
       : (tunnelCh?.tunnelHostname || '');
     const tunnelTokenDraft = remoteSettingsState.draftToken || '';
-    const tokenConfiguredHint = tunnelCh?.hasToken
+    const hasSavedToken = Boolean(tunnelCh?.hasTunnelToken || tunnelCh?.hasToken || data?.hasTunnelToken);
+    const tokenConfiguredHint = hasSavedToken
       ? suiteTr('（已配置 Token，留空保留原值）', '(Token saved — leave blank to keep)')
       : suiteTr('（从 Cloudflare Zero Trust → Tunnels 获取）', '(From Cloudflare Zero Trust → Tunnels)');
 
     const formHtml = remoteSettingsState.tunnelConfigOpen ? `
       <div id="ag-rp-tunnel-form" class="ag-rp-tunnel-form">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-          <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（零配置内网穿透）', 'Cloudflare Fixed Domain Tunnel'))}</span>
+          <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（可选高级配置）', 'Cloudflare Fixed Domain (Optional)'))}</span>
           <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
         </div>
+        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('默认已启用免登录临时隧道（零配置开箱可用）；仅当需要绑定自有固定域名时才需填写下方信息。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span>${escapeSuiteHtml(suiteTr('自定义域名（例: ag.example.com）', 'Custom Hostname (e.g. ag.example.com)'))}</span>
           <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="ag.example.com" value="${escapeSuiteHtml(tunnelHostDraft)}" />
@@ -1750,10 +1807,48 @@
       </div>
     ` : '';
 
+    const installGuide = resolveCloudflaredInstallGuideForSettings(data);
+    const missingCloudflared = tunnelCh?.binaryAvailable === false;
+    const copiedInstallRecent = (Date.now() - remoteSettingsState.installCopiedAt) < 2000;
+    const platformTabsHtml = [
+      ['darwin', 'macOS'],
+      ['win32', 'Windows'],
+      ['linux', 'Linux']
+    ].map(([platKey, platLabel]) => (
+      `<button id="ag-rp-install-tab-${platKey}" class="ag-rp-install-tab" type="button" data-install-platform="${platKey}" data-active="${installGuide.activePlatform === platKey ? 'true' : 'false'}">${platLabel}</button>`
+    )).join('');
+    const installGuideHtml = `
+      <div id="ag-rp-cf-install-guide" class="ag-rp-install-guide" data-missing="${missingCloudflared ? 'true' : 'false'}">
+        <div class="ag-rp-install-hdr">
+          <span class="ag-rp-install-title">
+            <span>${escapeSuiteHtml(missingCloudflared
+              ? suiteTr('安装 cloudflared（免登录零配置隧道依赖）', 'Install cloudflared (Required for Zero-Config Tunnel)')
+              : suiteTr('cloudflared 安装命令引导', 'cloudflared Install Command'))}</span>
+            <span class="ag-rp-install-badge">${escapeSuiteHtml(missingCloudflared
+              ? suiteTr('未检测到', 'Not Found')
+              : suiteTr('✓ 本机已安装', '✓ Installed'))}</span>
+          </span>
+          <div class="ag-rp-install-tabs" role="tablist" aria-label="${escapeSuiteHtml(suiteTr('选择操作系统', 'Select OS'))}">${platformTabsHtml}</div>
+        </div>
+        <div class="ag-rp-install-cmd-row">
+          <code id="ag-rp-cf-install-cmd" class="ag-rp-install-cmd" title="${escapeSuiteHtml(installGuide.command)}">${escapeSuiteHtml(installGuide.command)}</code>
+          <button id="ag-rp-cf-copy-install" class="ag-rp-btn${missingCloudflared ? ' primary' : ''}" type="button" title="${escapeSuiteHtml(suiteTr('一键复制安装命令', 'Copy install command'))}">${escapeSuiteHtml(copiedInstallRecent ? suiteTr('✓ 已复制', '✓ Copied') : suiteTr('📋 复制命令', '📋 Copy'))}</button>
+        </div>
+        <div class="ag-rp-install-foot">
+          <span>${escapeSuiteHtml(missingCloudflared
+            ? suiteTr('在终端粘贴运行上方命令完成安装后，点击右侧重新检测即可零配置启用公网隧道。', 'Run the command above in Terminal, then click Re-check to enable zero-config public tunnel.')
+            : suiteTr('无需注册或登录 Cloudflare 账号；在新设备部署时可一键复制上方命令安装。', 'No Cloudflare account required; copy the command above when setting up on a new machine.'))}</span>
+          ${missingCloudflared
+            ? `<button id="ag-rp-cf-recheck" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeSuiteHtml(suiteTr('↻ 重新检测', '↻ Re-check'))}</button>`
+            : ''}
+        </div>
+      </div>
+    `;
+
     const errMsg = tunnelCh?.error || remoteSettingsState.error || '';
     const errHtml = errMsg ? `<div class="ag-rp-err">${escapeSuiteHtml(errMsg)}</div>` : '';
 
-    root.innerHTML = `${channelsHtml}${formHtml}${errHtml}`;
+    root.innerHTML = `${channelsHtml}${formHtml}${installGuideHtml}${errHtml}`;
 
     channels.filter(c => c.key !== 'tunnel').forEach(ch => {
       const btn = root.querySelector(`#ag-rp-toggle-${ch.key}`);
@@ -1819,7 +1914,7 @@
         renderRemoteSettingsChannels();
         return;
       }
-      if (!token && !tunnelCh?.hasToken) {
+      if (!token && !hasSavedToken) {
         remoteSettingsState.error = suiteTr('首次配置固定域名请粘贴 Cloudflare Tunnel Token', 'Paste Cloudflare Tunnel Token for fixed domain');
         remoteSettingsState.tunnelConfigOpen = true;
         renderRemoteSettingsChannels();
@@ -1851,6 +1946,38 @@
       remoteSettingsState.draftToken = '';
       remoteSettingsState.error = '';
       renderRemoteSettingsChannels();
+    });
+
+    ['darwin', 'win32', 'linux'].forEach(plat => {
+      const tabBtn = root.querySelector(`#ag-rp-install-tab-${plat}`);
+      tabBtn?.addEventListener('click', ev => {
+        ev.stopPropagation();
+        if (!DEFAULT_CLOUDFLARED_INSTALL_COMMANDS[plat]) return;
+        remoteSettingsState.installPlatform = plat;
+        remoteSettingsState.installCopiedAt = 0;
+        renderRemoteSettingsChannels();
+      });
+    });
+
+    root.querySelector('#ag-rp-cf-copy-install')?.addEventListener('click', async ev => {
+      ev.stopPropagation();
+      const cmd = installGuide.command;
+      const ok = await copyRemoteInstallCommand(cmd);
+      if (ok) {
+        remoteSettingsState.installCopiedAt = Date.now();
+        renderRemoteSettingsChannels();
+        if (remoteSettingsState.installCopyTimer) clearTimeout(remoteSettingsState.installCopyTimer);
+        remoteSettingsState.installCopyTimer = setTimeout(() => {
+          remoteSettingsState.installCopyTimer = null;
+          renderRemoteSettingsChannels();
+        }, 2100);
+      }
+    });
+
+    root.querySelector('#ag-rp-cf-recheck')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      if (remoteSettingsState.busy || remoteSettingsState.loading) return;
+      void loadRemoteSettingsInfo(false);
     });
   }
 
@@ -1968,7 +2095,6 @@
       void loadRemoteSettingsInfo(false);
     } else if (target === 'system') {
       void refreshModulesDisplay();
-      void refreshUnlockStatus();
     }
     positionFloatingPanels();
   }

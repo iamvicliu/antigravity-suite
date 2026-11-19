@@ -2424,6 +2424,106 @@
       font-size:11.5px;
       color:var(--ag-text-secondary);
     }
+    .ag-rp-tunnel-sub{
+      font-size:11px;
+      line-height:1.45;
+      color:var(--ag-text-muted);
+    }
+    .ag-rp-install-guide{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      margin-top:8px;
+      padding:8px 10px;
+      border-radius:8px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-card);
+      font-size:11.5px;
+      color:var(--ag-text-secondary);
+    }
+    .ag-rp-install-guide[data-missing="true"]{
+      border-color:rgba(245,158,11,0.48);
+      background:rgba(245,158,11,0.08);
+    }
+    .ag-rp-install-hdr{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .ag-rp-install-title{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      font-weight:600;
+      color:var(--ag-text-primary);
+      font-size:11.5px;
+    }
+    .ag-rp-install-badge{
+      display:inline-flex;
+      align-items:center;
+      padding:1px 6px;
+      border-radius:999px;
+      font-size:10.5px;
+      font-weight:500;
+      background:rgba(16,185,129,0.14);
+      color:#10b981;
+    }
+    .ag-rp-install-guide[data-missing="true"] .ag-rp-install-badge{
+      background:rgba(245,158,11,0.18);
+      color:#d97706;
+    }
+    .ag-rp-install-tabs{
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
+    }
+    .ag-rp-install-tab{
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-secondary);
+      border-radius:5px;
+      padding:2px 7px;
+      font-size:10.5px;
+      cursor:pointer;
+    }
+    .ag-rp-install-tab[data-active="true"]{
+      border-color:rgba(16,185,129,0.45);
+      background:rgba(16,185,129,0.14);
+      color:#10b981;
+      font-weight:600;
+    }
+    .ag-rp-install-cmd-row{
+      display:flex;
+      align-items:center;
+      gap:6px;
+    }
+    .ag-rp-install-cmd{
+      flex:1;
+      min-width:0;
+      margin:0;
+      padding:5px 8px;
+      border-radius:6px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-primary);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+      font-size:11px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      user-select:all;
+    }
+    .ag-rp-install-foot{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      flex-wrap:wrap;
+      font-size:11px;
+      color:var(--ag-text-muted);
+    }
     .ag-rp-form-actions{
       display:flex;
       gap:6px;
@@ -2606,72 +2706,6 @@
           </div>
         </div>
         <div id="speed-takeaway" class="key-takeaway">等待首次模型输出产生速度统计…</div>
-      </div>
-
-      <!-- 二级交互折叠区: 上下文加长 (解除 256K 限制 / 实验特性) -->
-      <div class="tech-drawer" id="context-unlock-drawer">
-        <button id="btn-toggle-unlock" class="drawer-trigger" aria-expanded="false" type="button">
-          <span class="drawer-trigger-left">
-            <span>⚡ 上下文加长（解除 256K 限制 / 实验特性）</span>
-            <span id="unlock-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
-          </span>
-          <span id="unlock-drawer-arrow" class="drawer-arrow">▼ 展开</span>
-        </button>
-        <div id="unlock-drawer-body" class="drawer-body" style="display:none;">
-          <div class="unlock-panel-content">
-            <div class="unlock-status-row">
-              <div class="unlock-status-meta">
-                <div class="unlock-label">当前补丁状态</div>
-                <div id="unlock-status-desc" class="unlock-desc">正在检测客户端上下文限制状态…</div>
-              </div>
-            </div>
-
-            <div class="unlock-notice">
-              <div class="unlock-notice-title">💡 功能说明与注意事项</div>
-              <ul class="unlock-notice-list">
-                <li><strong>突破默认上限</strong>：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。</li>
-                <li><strong>安全可随时还原</strong>：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。</li>
-                <li><strong>客户端更新提示</strong>：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。</li>
-              </ul>
-            </div>
-
-            <div class="unlock-actions-row">
-              <button id="btn-apply-unlock" class="unlock-btn unlock-btn-primary" type="button">
-                <span>⚡ 立即应用加长补丁</span>
-              </button>
-              <button id="btn-restore-unlock" class="unlock-btn unlock-btn-secondary" type="button">
-                <span>🔄 恢复官方原版</span>
-              </button>
-              <button id="btn-refresh-unlock" class="unlock-btn unlock-btn-secondary" type="button" title="重新检测状态">
-                <span>🔄 刷新</span>
-              </button>
-            </div>
-
-            <div id="unlock-result-box" class="unlock-result-box" style="display:none;">
-              <div id="unlock-result-text" class="unlock-result-text"></div>
-            </div>
-
-            <details class="unlock-tech-details" style="margin-top:6px">
-              <summary style="cursor:pointer;font-size:11.5px;color:var(--ag-text-muted);user-select:none">查看底层程序路径与备份详情</summary>
-              <dl class="unlock-meta-dl" style="margin-top:6px">
-                <dt>目标后端</dt><dd id="unlock-meta-target">—</dd>
-                <dt>目标架构</dt><dd id="unlock-meta-arch">—</dd>
-                <dt>文件哈希 (SHA-256)</dt><dd id="unlock-meta-sha">—</dd>
-                <dt>原版备份状态</dt><dd id="unlock-meta-backup">—</dd>
-              </dl>
-            </details>
-
-            <div class="unlock-credit-bar">
-              <div class="unlock-credit-left">
-                <span class="unlock-credit-lbl">解锁方案来源：</span>
-                <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank" rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0" title="点击在系统默认浏览器中打开原作者帖子">原作者帖子 (Linux.do @23375) ↗</a>
-                <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接">📋 复制链接</button>
-              </div>
-              <span class="unlock-adapter-note">本项目负责 Node.js 原生适配与客户端集成</span>
-            </div>
-            <div id="unlock-link-toast" class="unlock-link-toast" style="display:none;" role="status"></div>
-          </div>
-        </div>
       </div>
 
       <!-- 二级交互折叠区: 客户端界面汉化 (AntigravityChinese) -->
@@ -3863,7 +3897,7 @@
               <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对令牌，旧链接与旧会话将失效">重置令牌</button>
             </div>
           </div>
-          <div class="settings-card-desc">管理 \`agy remote\` 的访问通道（局域网 / Tailscale / Bonjour / Cloudflare 隧道）与配对令牌重置；点击顶栏「远程」图标仍可快捷查看二维码与复制链接。</div>
+          <div class="settings-card-desc">管理 \`agy remote\` 的访问通道与配对令牌重置；Cloudflare 隧道默认启用免登录临时隧道（零配置开箱可用），如需绑定自定义域名可展开配置，顶栏「远程」图标可随时扫码。</div>
           <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
         </div>
 
@@ -3922,14 +3956,6 @@
             <span id="settings-slot-proxy-badge"></span>
           </div>
           <div id="settings-slot-proxy"></div>
-        </div>
-
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">解除 256K 上下文限制（实验性补丁）</span>
-            <span id="settings-slot-unlock-badge"></span>
-          </div>
-          <div id="settings-slot-unlock"></div>
         </div>
       </div>
     </div>
@@ -8162,293 +8188,6 @@ function closeAllDropdowns(exceptWrap = null) {
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
-  // 二级抽屉: 上下文加长折叠展开与状态机
-  const btnUnlock = el('btn-toggle-unlock');
-  const unlockDrawerBody = el('unlock-drawer-body');
-  const unlockDrawerArrow = el('unlock-drawer-arrow');
-  const unlockBadge = el('unlock-badge');
-  const unlockStatusDesc = el('unlock-status-desc');
-  const btnApplyUnlock = el('btn-apply-unlock');
-  const btnRestoreUnlock = el('btn-restore-unlock');
-  const btnRefreshUnlock = el('btn-refresh-unlock');
-  const unlockResultBox = el('unlock-result-box');
-  const unlockResultText = el('unlock-result-text');
-  const unlockMetaTarget = el('unlock-meta-target');
-  const unlockMetaArch = el('unlock-meta-arch');
-  const unlockMetaSha = el('unlock-meta-sha');
-  const unlockMetaBackup = el('unlock-meta-backup');
-  const linkUnlockAuthor = el('link-unlock-author');
-  const btnCopyUnlockLink = el('btn-copy-unlock-link');
-  const unlockLinkToast = el('unlock-link-toast');
-
-  let currentUnlockStatus = null;
-  let isUnlocking = false;
-  let unlockReqSeq = 0;
-
-  function toggleUnlockDrawer(forceOpen) {
-    if (!unlockDrawerBody) return;
-    const isHidden = unlockDrawerBody.style.display === 'none' || !unlockDrawerBody.style.display;
-    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
-    unlockDrawerBody.style.display = nextOpen ? 'block' : 'none';
-    if (unlockDrawerArrow) unlockDrawerArrow.textContent = nextOpen ? '▲ 收起' : '▼ 展开';
-    btnUnlock?.setAttribute('aria-expanded', String(nextOpen));
-    if (nextOpen && !currentUnlockStatus) {
-      void refreshUnlockStatus();
-    }
-  }
-  btnUnlock?.addEventListener('click', () => toggleUnlockDrawer());
-
-  async function invokeUnlockApi(endpoint, payload = {}) {
-    if (endpoint === 'status' && window.contextMeterAPI?.getContextUnlockStatus) {
-      return await window.contextMeterAPI.getContextUnlockStatus(payload);
-    }
-    if (endpoint === 'apply' && window.contextMeterAPI?.applyContextUnlock) {
-      return await window.contextMeterAPI.applyContextUnlock(payload);
-    }
-    if (endpoint === 'restore' && window.contextMeterAPI?.restoreContextUnlock) {
-      return await window.contextMeterAPI.restoreContextUnlock(payload);
-    }
-    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-      const live = window.__AGContextMeterLive;
-      const r = await fetch(`http://127.0.0.1:${live.port}/context-unlock-${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-        body: JSON.stringify(payload)
-      });
-      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
-    }
-    return { ok: false, error: '未连接到桥接服务（请重启客户端生效新 IPC，或执行 node cli.js live）' };
-  }
-
-  async function refreshUnlockStatus() {
-    if (!unlockBadge) return;
-    const thisSeq = ++unlockReqSeq;
-    try {
-      const currentObservedBudget = (state.latest?.budget && state.latest.budget > 0)
-        ? state.latest.budget
-        : undefined;
-      const res = await invokeUnlockApi('status', { currentBudget: currentObservedBudget });
-      if (thisSeq !== unlockReqSeq) return;
-
-      if (!res || !res.ok || !res.data) {
-        unlockBadge.textContent = '检测失败';
-        unlockBadge.className = 'key-pill pill-danger';
-        if (unlockStatusDesc) unlockStatusDesc.textContent = res?.error || '获取后端状态失败。';
-        return;
-      }
-      const data = res.data;
-      currentUnlockStatus = data;
-
-      const statusLabelMap = {
-        unsupported: '当前平台不支持',
-        failed: '检测失败',
-        not_patched: '未解锁',
-        verified_active: '已验证生效',
-        patched_runtime_unconfirmed: '运行待确认',
-        patched_pending_restart: '待重启生效'
-      };
-      unlockBadge.textContent = data.statusText || statusLabelMap[data.status] || data.status;
-      if (data.status === 'verified_active') {
-        unlockBadge.className = 'key-pill pill-ok';
-      } else if (data.status === 'patched_runtime_unconfirmed') {
-        unlockBadge.className = 'key-pill pill-info';
-      } else if (data.status === 'patched_pending_restart') {
-        unlockBadge.className = 'key-pill pill-warn';
-      } else if (data.status === 'not_patched') {
-        unlockBadge.className = 'key-pill pill-muted';
-      } else {
-        unlockBadge.className = 'key-pill pill-danger';
-      }
-
-      if (unlockStatusDesc) {
-        unlockStatusDesc.textContent = data.details || data.reason || '状态已更新。';
-      }
-
-      if (unlockMetaTarget) unlockMetaTarget.textContent = data.targetPath || '未检测到';
-      if (unlockMetaArch) unlockMetaArch.textContent = `${data.arch || '未知'} (${data.format || '未知'}, ${data.mode || '未知'})`;
-      if (unlockMetaSha) unlockMetaSha.textContent = data.sha256 ? `${data.sha256.slice(0, 16)}…` : '—';
-      if (unlockMetaBackup) {
-        if (data.hasBackup && data.backupInfo) {
-          unlockMetaBackup.textContent = `已备份 (${data.backupInfo.backupPath})`;
-        } else {
-          unlockMetaBackup.textContent = '尚未备份（首次应用时将自动安全备份至应用目录外部）';
-        }
-      }
-
-      if (btnApplyUnlock) {
-        if (data.status === 'not_patched') {
-          btnApplyUnlock.disabled = false;
-          btnApplyUnlock.textContent = '⚡ 立即应用加长补丁';
-        } else if (data.status === 'verified_active') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '✅ 已生效（无需重复应用）';
-        } else if (data.status === 'patched_runtime_unconfirmed') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '🔍 补丁已写入（运行状态待确认）';
-        } else if (data.status === 'patched_pending_restart') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '⏳ 已打补丁（待重启客户端）';
-        } else {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '⚠️ 当前目标不受支持';
-        }
-      }
-
-      if (btnRestoreUnlock) {
-        if (data.status === 'verified_active' || data.status === 'patched_pending_restart' || data.status === 'patched_runtime_unconfirmed' || data.hasBackup) {
-          btnRestoreUnlock.disabled = false;
-        } else {
-          btnRestoreUnlock.disabled = true;
-        }
-      }
-    } catch (e) {
-      if (thisSeq !== unlockReqSeq) return;
-      unlockBadge.textContent = '异常';
-      unlockBadge.className = 'key-pill pill-danger';
-      if (unlockStatusDesc) unlockStatusDesc.textContent = `检测异常: ${e.message}`;
-    }
-  }
-
-  btnRefreshUnlock?.addEventListener('click', () => {
-    void refreshUnlockStatus();
-  });
-
-  btnApplyUnlock?.addEventListener('click', async () => {
-    if (isUnlocking) return;
-    isUnlocking = true;
-    if (btnApplyUnlock) btnApplyUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
-
-    try {
-      const res = await invokeUnlockApi('apply');
-      if (!res || !res.ok) {
-        throw new Error(res?.error || '应用补丁失败');
-      }
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-success';
-        unlockResultText.innerHTML = `<strong>🎉 解锁成功！</strong><br>${res.message || '补丁已安全写入。'}`;
-      }
-    } catch (e) {
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-error';
-        unlockResultText.innerHTML = `<strong>❌ 应用补丁失败：</strong>${e.message}`;
-      }
-    } finally {
-      isUnlocking = false;
-      await refreshUnlockStatus();
-    }
-  });
-
-  btnRestoreUnlock?.addEventListener('click', async () => {
-    if (isUnlocking) return;
-    isUnlocking = true;
-    if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
-
-    try {
-      const res = await invokeUnlockApi('restore');
-      if (!res || !res.ok) {
-        throw new Error(res?.error || '恢复原版失败');
-      }
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-success';
-        unlockResultText.innerHTML = `<strong>🔄 恢复成功！</strong><br>${res.message || '已成功还原官方原版二进制。'}`;
-      }
-    } catch (e) {
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-error';
-        unlockResultText.innerHTML = `<strong>❌ 恢复原版失败：</strong>${e.message}`;
-      }
-    } finally {
-      isUnlocking = false;
-      await refreshUnlockStatus();
-    }
-  });
-
-  const UNLOCK_POST_URL = 'https://linux.do/t/topic/3117832';
-  let unlockToastTimer = null;
-
-  function showUnlockToast(msg) {
-    if (!unlockLinkToast) return;
-    if (unlockToastTimer) clearTimeout(unlockToastTimer);
-    unlockLinkToast.textContent = msg;
-    unlockLinkToast.style.display = 'block';
-    unlockToastTimer = setTimeout(() => {
-      unlockLinkToast.style.display = 'none';
-    }, 4500);
-  }
-
-  async function openUnlockAuthorPost() {
-    let opened = false;
-    try {
-      if (window.contextMeterAPI?.openExternal) {
-        const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
-        if (res && res.ok) opened = true;
-      }
-    } catch {}
-
-    if (!opened) {
-      try {
-        const w = window.open(UNLOCK_POST_URL, '_blank');
-        if (w) opened = true;
-      } catch {}
-    }
-
-    if (opened) {
-      showUnlockToast('已在系统默认浏览器中打开原作者帖子');
-    } else {
-      copyUnlockPostUrl(true);
-    }
-  }
-
-  function copyUnlockPostUrl(fromFailedOpen = false) {
-    let copied = false;
-    try {
-      if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(UNLOCK_POST_URL);
-        copied = true;
-      }
-    } catch {}
-    if (!copied) {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = UNLOCK_POST_URL;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        copied = true;
-      } catch {}
-    }
-    showUnlockToast(fromFailedOpen
-      ? '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。'
-      : '原作者帖子链接已成功复制到剪贴板！');
-  }
-
-  linkUnlockAuthor?.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    void openUnlockAuthorPost();
-  });
-
-  linkUnlockAuthor?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      e.stopPropagation();
-      void openUnlockAuthorPost();
-    }
-  });
-
-  btnCopyUnlockLink?.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    copyUnlockPostUrl(false);
-  });
-
   // -------------------------------------------------------------
   // 模块 2: 客户端界面汉化 (AntigravityChinese)
   // -------------------------------------------------------------
@@ -8752,9 +8491,8 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
-  // 静默初始化检测一次解锁状态与各模块状态
+  // 静默初始化检测各模块状态
   setTimeout(() => {
-    void refreshUnlockStatus();
     void refreshModulesDisplay();
   }, 500);
   setTimeout(() => {
@@ -11004,11 +10742,6 @@ function renderHeatmapGrid(forceRebuild = false) {
 
     updateRingAndBubble(d, session, pct, danger, stale, incomplete);
 
-    // 上下文预算与解锁状态自动联动：若观测到预算突破 256,000，且解锁抽屉中记录仍为待重启或未确认，则自动触发刷新同步
-    if (d?.budget && d.budget > 256000 && currentUnlockStatus && currentUnlockStatus.status !== 'verified_active') {
-      void refreshUnlockStatus();
-    }
-
     const status = disp.isError
       ? disp.statusText
       : stale ? '最近请求统计读取异常或延迟，不能判断剩余空间。'
@@ -11465,17 +11198,6 @@ function renderHeatmapGrid(forceRebuild = false) {
     '账号归属地区：': 'Account Region:',
     '订阅结算地区：': 'Billing Region:',
     '本地代理网络直连（免开 TUN 模式）': 'Local Proxy Direct Connect (No TUN)',
-    '解除 256K 上下文限制（实验性补丁）': 'Unlock 256K Context Limit (Experimental)',
-    '当前补丁状态': 'Patch Status',
-    '正在检测客户端上下文限制状态…': 'Checking client context limit status…',
-    '💡 功能说明与注意事项': '💡 Overview & Notes',
-    '突破默认上限': 'Raise Default Cap',
-    '：客户端默认将单次对话上下文限制在 256K，应用补丁后可按模型真实上限（最高约 1M）分配长上下文。': ': Client caps context at 256K by default; applying this patch restores model limits up to ~1M.',
-    '安全可随时还原': 'Safe & Reversible',
-    '：应用前会自动备份原版程序文件，随时可点击下方「恢复官方原版」一键还原。': ': Automatically backs up original files before patching; restore anytime with one click.',
-    '客户端更新提示': 'Client Update Note',
-    '：客户端大版本升级后补丁会被官方覆盖，届时回到此处重新点击一次应用即可。': ': Major client updates overwrite binaries; simply re-apply the patch here afterward.',
-    '查看底层程序路径与备份详情': 'View Binary Path & Backup Details',
     '本地代理地址（支持 HTTP / SOCKS5，如 http://127.0.0.1:7897）：': 'Local Proxy URL (HTTP / SOCKS5, e.g. http://127.0.0.1:7897):',
     '不走代理的地址（本地回环默认直连）：': 'Bypass Proxy Addresses (Loopback Direct):',
     '🔍 测试代理连接': '🔍 Test Proxy',
@@ -11800,6 +11522,12 @@ function renderHeatmapGrid(forceRebuild = false) {
     ['set-remote-approvals', 'showApprovals']
   ];
 
+  const DEFAULT_CLOUDFLARED_INSTALL_COMMANDS = {
+    darwin: 'brew install cloudflared',
+    win32: 'winget install --id Cloudflare.cloudflared',
+    linux: 'mkdir -p ~/.local/bin && curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/.local/bin/cloudflared && chmod +x ~/.local/bin/cloudflared'
+  };
+
   const remoteSettingsState = {
     loading: false,
     busy: false,
@@ -11809,8 +11537,67 @@ function renderHeatmapGrid(forceRebuild = false) {
     tunnelConfigOpen: false,
     draftHost: null,
     draftToken: '',
+    installPlatform: '',
+    installCopiedAt: 0,
+    installCopyTimer: null,
     pollTimer: null
   };
+
+  function detectClientInstallPlatform(data) {
+    const serverPlatform = String(data?.cloudflaredInstall?.platform || '').trim();
+    if (serverPlatform && DEFAULT_CLOUDFLARED_INSTALL_COMMANDS[serverPlatform]) return serverPlatform;
+    try {
+      const navPlat = String(navigator?.platform || navigator?.userAgent || '').toLowerCase();
+      if (navPlat.includes('mac') || navPlat.includes('darwin')) return 'darwin';
+      if (navPlat.includes('win')) return 'win32';
+    } catch {}
+    return 'linux';
+  }
+
+  function resolveCloudflaredInstallGuideForSettings(data) {
+    const serverCmds = (data?.cloudflaredInstall?.commands && typeof data.cloudflaredInstall.commands === 'object')
+      ? data.cloudflaredInstall.commands
+      : {};
+    const commands = {
+      darwin: String(serverCmds.darwin || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.darwin),
+      win32: String(serverCmds.win32 || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.win32),
+      linux: String(serverCmds.linux || DEFAULT_CLOUDFLARED_INSTALL_COMMANDS.linux)
+    };
+    const hostPlatform = detectClientInstallPlatform(data);
+    const activePlatform = (remoteSettingsState.installPlatform && commands[remoteSettingsState.installPlatform])
+      ? remoteSettingsState.installPlatform
+      : hostPlatform;
+    return {
+      hostPlatform,
+      activePlatform,
+      command: commands[activePlatform] || commands.darwin,
+      commands
+    };
+  }
+
+  async function copyRemoteInstallCommand(text) {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    try {
+      if (navigator?.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {}
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = Boolean(document.execCommand && document.execCommand('copy'));
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
 
   function escapeSuiteHtml(str) {
     return String(str ?? '')
@@ -11829,6 +11616,10 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (remoteSettingsState.pollTimer) {
       clearTimeout(remoteSettingsState.pollTimer);
       remoteSettingsState.pollTimer = null;
+    }
+    if (remoteSettingsState.installCopyTimer) {
+      clearTimeout(remoteSettingsState.installCopyTimer);
+      remoteSettingsState.installCopyTimer = null;
     }
     remoteSettingsState.tunnelConfigOpen = false;
     remoteSettingsState.draftHost = null;
@@ -11966,16 +11757,11 @@ function renderHeatmapGrid(forceRebuild = false) {
       }
     });
 
-    // 3. 网络代理与上下文加长移入「网络与高级」分页，并移除 #panel 内原有抽屉
+    // 3. 网络代理移入「网络与高级」分页，并移除 #panel 内原有抽屉
     moveTo('proxy-badge', 'settings-slot-proxy-badge');
     const proxyBody = moveTo('proxy-drawer-body', 'settings-slot-proxy');
     if (proxyBody) proxyBody.style.display = 'block';
     el('proxy-notun-drawer')?.remove?.();
-
-    moveTo('unlock-badge', 'settings-slot-unlock-badge');
-    const unlockBody = moveTo('unlock-drawer-body', 'settings-slot-unlock');
-    if (unlockBody) unlockBody.style.display = 'block';
-    el('context-unlock-drawer')?.remove?.();
 
     enhanceSuiteDropdownsOnce();
     return true;
@@ -13005,7 +12791,9 @@ function renderHeatmapGrid(forceRebuild = false) {
         const isStarting = switchingTunnelMode || ch.state === 'starting';
         const isRunning = !switchingTunnelMode && ch.state === 'running' && ch.available;
         const checked = !switchingTunnelMode && Boolean(ch.enabled || isRunning || ch.state === 'starting');
-        const modeHint = ch.mode === 'named' ? suiteTr('固定域名', 'Fixed Domain') : suiteTr('免登录临时', 'Quick');
+        const isNamedMode = ch.mode === 'named';
+        const modeHint = isNamedMode ? suiteTr('固定域名', 'Fixed Domain') : suiteTr('免登录零配置', 'Quick (Zero-Config)');
+        const cfgBtnLabel = isNamedMode ? suiteTr('固定域名 ▾', 'Fixed Domain ▾') : suiteTr('免登录零配置 ▾', 'Zero-Config ▾');
         const statusHint = switchingTunnelMode
           ? (remoteSettingsState.pendingAction === 'quick'
               ? suiteTr('正在切换临时隧道…', 'Switching to quick tunnel…')
@@ -13015,8 +12803,8 @@ function renderHeatmapGrid(forceRebuild = false) {
             : (isRunning
                 ? (ch.displayHost || modeHint)
                 : (ch.binaryAvailable === false
-                    ? suiteTr('缺少 cloudflared', 'cloudflared not found')
-                    : suiteTr('点击启用公网访问', 'Click to enable tunnel')));
+                    ? suiteTr('缺少 cloudflared（见下方一键安装命令）', 'cloudflared not found (see install guide below)')
+                    : suiteTr('免登录零配置 · 点击启用', 'Zero-Config · Click to enable')));
         return `
           <div id="ag-rp-tunnel-toggle" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tunnel" data-active="${activeKey === 'tunnel' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
             <span class="ag-rp-ch-check">
@@ -13024,7 +12812,7 @@ function renderHeatmapGrid(forceRebuild = false) {
               <span class="ag-rp-ch-name">${escapeSuiteHtml(label)}</span>
               <span class="ag-rp-ch-addr">${isStarting ? '<span class="ag-rp-spin"></span>' : ''}${escapeSuiteHtml(statusHint)}</span>
             </span>
-            <button id="ag-rp-tunnel-cfg-btn" class="ag-rp-ch-cfg" type="button" title="${escapeSuiteHtml(suiteTr('配置 Cloudflare 固定域名', 'Configure Fixed Domain'))}">${escapeSuiteHtml(suiteTr('固定域名 ▾', 'Fixed Domain ▾'))}</button>
+            <button id="ag-rp-tunnel-cfg-btn" class="ag-rp-ch-cfg" type="button" title="${escapeSuiteHtml(suiteTr('切换免登录零配置或配置 Cloudflare 固定域名', 'Switch Quick Zero-Config or Configure Fixed Domain'))}">${escapeSuiteHtml(cfgBtnLabel)}</button>
           </div>
         `;
       }
@@ -13047,16 +12835,18 @@ function renderHeatmapGrid(forceRebuild = false) {
       ? remoteSettingsState.draftHost
       : (tunnelCh?.tunnelHostname || '');
     const tunnelTokenDraft = remoteSettingsState.draftToken || '';
-    const tokenConfiguredHint = tunnelCh?.hasToken
+    const hasSavedToken = Boolean(tunnelCh?.hasTunnelToken || tunnelCh?.hasToken || data?.hasTunnelToken);
+    const tokenConfiguredHint = hasSavedToken
       ? suiteTr('（已配置 Token，留空保留原值）', '(Token saved — leave blank to keep)')
       : suiteTr('（从 Cloudflare Zero Trust → Tunnels 获取）', '(From Cloudflare Zero Trust → Tunnels)');
 
     const formHtml = remoteSettingsState.tunnelConfigOpen ? `
       <div id="ag-rp-tunnel-form" class="ag-rp-tunnel-form">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-          <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（零配置内网穿透）', 'Cloudflare Fixed Domain Tunnel'))}</span>
+          <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（可选高级配置）', 'Cloudflare Fixed Domain (Optional)'))}</span>
           <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
         </div>
+        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('默认已启用免登录临时隧道（零配置开箱可用）；仅当需要绑定自有固定域名时才需填写下方信息。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span>${escapeSuiteHtml(suiteTr('自定义域名（例: ag.example.com）', 'Custom Hostname (e.g. ag.example.com)'))}</span>
           <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="ag.example.com" value="${escapeSuiteHtml(tunnelHostDraft)}" />
@@ -13073,10 +12863,48 @@ function renderHeatmapGrid(forceRebuild = false) {
       </div>
     ` : '';
 
+    const installGuide = resolveCloudflaredInstallGuideForSettings(data);
+    const missingCloudflared = tunnelCh?.binaryAvailable === false;
+    const copiedInstallRecent = (Date.now() - remoteSettingsState.installCopiedAt) < 2000;
+    const platformTabsHtml = [
+      ['darwin', 'macOS'],
+      ['win32', 'Windows'],
+      ['linux', 'Linux']
+    ].map(([platKey, platLabel]) => (
+      `<button id="ag-rp-install-tab-${platKey}" class="ag-rp-install-tab" type="button" data-install-platform="${platKey}" data-active="${installGuide.activePlatform === platKey ? 'true' : 'false'}">${platLabel}</button>`
+    )).join('');
+    const installGuideHtml = `
+      <div id="ag-rp-cf-install-guide" class="ag-rp-install-guide" data-missing="${missingCloudflared ? 'true' : 'false'}">
+        <div class="ag-rp-install-hdr">
+          <span class="ag-rp-install-title">
+            <span>${escapeSuiteHtml(missingCloudflared
+              ? suiteTr('安装 cloudflared（免登录零配置隧道依赖）', 'Install cloudflared (Required for Zero-Config Tunnel)')
+              : suiteTr('cloudflared 安装命令引导', 'cloudflared Install Command'))}</span>
+            <span class="ag-rp-install-badge">${escapeSuiteHtml(missingCloudflared
+              ? suiteTr('未检测到', 'Not Found')
+              : suiteTr('✓ 本机已安装', '✓ Installed'))}</span>
+          </span>
+          <div class="ag-rp-install-tabs" role="tablist" aria-label="${escapeSuiteHtml(suiteTr('选择操作系统', 'Select OS'))}">${platformTabsHtml}</div>
+        </div>
+        <div class="ag-rp-install-cmd-row">
+          <code id="ag-rp-cf-install-cmd" class="ag-rp-install-cmd" title="${escapeSuiteHtml(installGuide.command)}">${escapeSuiteHtml(installGuide.command)}</code>
+          <button id="ag-rp-cf-copy-install" class="ag-rp-btn${missingCloudflared ? ' primary' : ''}" type="button" title="${escapeSuiteHtml(suiteTr('一键复制安装命令', 'Copy install command'))}">${escapeSuiteHtml(copiedInstallRecent ? suiteTr('✓ 已复制', '✓ Copied') : suiteTr('📋 复制命令', '📋 Copy'))}</button>
+        </div>
+        <div class="ag-rp-install-foot">
+          <span>${escapeSuiteHtml(missingCloudflared
+            ? suiteTr('在终端粘贴运行上方命令完成安装后，点击右侧重新检测即可零配置启用公网隧道。', 'Run the command above in Terminal, then click Re-check to enable zero-config public tunnel.')
+            : suiteTr('无需注册或登录 Cloudflare 账号；在新设备部署时可一键复制上方命令安装。', 'No Cloudflare account required; copy the command above when setting up on a new machine.'))}</span>
+          ${missingCloudflared
+            ? `<button id="ag-rp-cf-recheck" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeSuiteHtml(suiteTr('↻ 重新检测', '↻ Re-check'))}</button>`
+            : ''}
+        </div>
+      </div>
+    `;
+
     const errMsg = tunnelCh?.error || remoteSettingsState.error || '';
     const errHtml = errMsg ? `<div class="ag-rp-err">${escapeSuiteHtml(errMsg)}</div>` : '';
 
-    root.innerHTML = `${channelsHtml}${formHtml}${errHtml}`;
+    root.innerHTML = `${channelsHtml}${formHtml}${installGuideHtml}${errHtml}`;
 
     channels.filter(c => c.key !== 'tunnel').forEach(ch => {
       const btn = root.querySelector(`#ag-rp-toggle-${ch.key}`);
@@ -13142,7 +12970,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         renderRemoteSettingsChannels();
         return;
       }
-      if (!token && !tunnelCh?.hasToken) {
+      if (!token && !hasSavedToken) {
         remoteSettingsState.error = suiteTr('首次配置固定域名请粘贴 Cloudflare Tunnel Token', 'Paste Cloudflare Tunnel Token for fixed domain');
         remoteSettingsState.tunnelConfigOpen = true;
         renderRemoteSettingsChannels();
@@ -13174,6 +13002,38 @@ function renderHeatmapGrid(forceRebuild = false) {
       remoteSettingsState.draftToken = '';
       remoteSettingsState.error = '';
       renderRemoteSettingsChannels();
+    });
+
+    ['darwin', 'win32', 'linux'].forEach(plat => {
+      const tabBtn = root.querySelector(`#ag-rp-install-tab-${plat}`);
+      tabBtn?.addEventListener('click', ev => {
+        ev.stopPropagation();
+        if (!DEFAULT_CLOUDFLARED_INSTALL_COMMANDS[plat]) return;
+        remoteSettingsState.installPlatform = plat;
+        remoteSettingsState.installCopiedAt = 0;
+        renderRemoteSettingsChannels();
+      });
+    });
+
+    root.querySelector('#ag-rp-cf-copy-install')?.addEventListener('click', async ev => {
+      ev.stopPropagation();
+      const cmd = installGuide.command;
+      const ok = await copyRemoteInstallCommand(cmd);
+      if (ok) {
+        remoteSettingsState.installCopiedAt = Date.now();
+        renderRemoteSettingsChannels();
+        if (remoteSettingsState.installCopyTimer) clearTimeout(remoteSettingsState.installCopyTimer);
+        remoteSettingsState.installCopyTimer = setTimeout(() => {
+          remoteSettingsState.installCopyTimer = null;
+          renderRemoteSettingsChannels();
+        }, 2100);
+      }
+    });
+
+    root.querySelector('#ag-rp-cf-recheck')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      if (remoteSettingsState.busy || remoteSettingsState.loading) return;
+      void loadRemoteSettingsInfo(false);
     });
   }
 
@@ -13291,7 +13151,6 @@ function renderHeatmapGrid(forceRebuild = false) {
       void loadRemoteSettingsInfo(false);
     } else if (target === 'system') {
       void refreshModulesDisplay();
-      void refreshUnlockStatus();
     }
     positionFloatingPanels();
   }

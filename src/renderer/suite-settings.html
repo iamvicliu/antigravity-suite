@@ -273,7 +273,7 @@
               <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对令牌，旧链接与旧会话将失效">重置令牌</button>
             </div>
           </div>
-          <div class="settings-card-desc">管理 `agy remote` 的访问通道（局域网 / Tailscale / Bonjour / Cloudflare 隧道）与配对令牌重置；点击顶栏「远程」图标仍可快捷查看二维码与复制链接。</div>
+          <div class="settings-card-desc">管理 `agy remote` 的访问通道与配对令牌重置；Cloudflare 隧道默认启用免登录临时隧道（零配置开箱可用），如需绑定自定义域名可展开配置，顶栏「远程」图标可随时扫码。</div>
           <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
         </div>
 
@@ -332,14 +332,6 @@
             <span id="settings-slot-proxy-badge"></span>
           </div>
           <div id="settings-slot-proxy"></div>
-        </div>
-
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">解除 256K 上下文限制（实验性补丁）</span>
-            <span id="settings-slot-unlock-badge"></span>
-          </div>
-          <div id="settings-slot-unlock"></div>
         </div>
       </div>
     </div>

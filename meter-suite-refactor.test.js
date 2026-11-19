@@ -939,16 +939,19 @@ test('需求 4a: 真实 DOM 树下所有配置项迁入 #panel-settings，原面
   const tokensPanel = shadow.getElementById('panel-tokens');
   assert.ok(settingsPanel && contextPanel && tokensPanel, '三主面板应同时存在');
 
-  // 1. 验证原配置抽屉和原编辑按钮已从 #panel / #panel-tokens 移除
+  // 1. 验证原配置抽屉、原编辑按钮与已移除的 256K 解锁区均不存在于面板
   for (const removedId of [
     'meter-colors-drawer',
     'token-colors-drawer',
     'proxy-notun-drawer',
     'context-unlock-drawer',
+    'unlock-drawer-body',
+    'settings-slot-unlock',
+    'settings-slot-unlock-badge',
     'summary-subtier-wrap',
     'btn-edit-plan-custom'
   ]) {
-    assert.equal(shadow.getElementById(removedId), null, `迁移后应彻底移除原配置容器: #${removedId}`);
+    assert.equal(shadow.getElementById(removedId), null, `迁移或移除后不应再存在旧配置容器: #${removedId}`);
   }
 
   // 2. 验证所有原配置主体已无损迁移进 #panel-settings 内部
@@ -956,7 +959,6 @@ test('需求 4a: 真实 DOM 树下所有配置项迁入 #panel-settings，原面
     'color-drawer-body',
     'token-color-drawer-body',
     'proxy-drawer-body',
-    'unlock-drawer-body',
     'direct-subtier-wrap',
     'direct-country-wrap',
     'direct-region-wrap',
@@ -5434,6 +5436,121 @@ test('需求 21: Tab 补全 8 字截断悬停完整展示、单色 SVG 上方优
     for (const t of activeTimers) clearTimeout(t);
     activeTimers.clear();
     try { enhancer?.dispose?.(); } catch {}
+    try { api?.dispose?.(); } catch {}
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 22: 远程设置默认启用免登录零配置隧道 + cloudflared 一键复制安装命令引导
+// =========================================================================
+test('需求 22: 远程设置默认免登录零配置可用与 cloudflared 一键复制安装命令引导', async () => {
+  const os = require('node:os');
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-remote-zero-cfg-'));
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  let api = null;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const {
+      loadOrCreateRemoteConfig,
+      saveRemoteTunnelConfig,
+      getCloudflaredInstallGuide,
+      buildRemoteInfo
+    } = require('./mobile-remote.js');
+
+    // 1. 全新配置默认启用免登录零配置临时隧道（tunnelEnabled=true, tunnelMode='quick'）
+    const freshCfg = loadOrCreateRemoteConfig();
+    assert.equal(freshCfg.tunnelEnabled, true, '全新配置默认应启用 Cloudflare 隧道');
+    assert.equal(freshCfg.enabledChannels?.tunnel, true, '全新配置 enabledChannels.tunnel 应默认为 true');
+    assert.equal(freshCfg.tunnelMode, 'quick', '全新配置默认应使用免登录零配置 quick 模式');
+
+    // 显式关闭后应尊重持久化状态
+    saveRemoteTunnelConfig({ enabled: false });
+    const disabledCfg = loadOrCreateRemoteConfig();
+    assert.equal(disabledCfg.tunnelEnabled, false, '显式关闭隧道后不应被强制重开');
+    assert.equal(disabledCfg.enabledChannels?.tunnel, false);
+
+    // 恢复默认启用，检查 getCloudflaredInstallGuide 与 buildRemoteInfo 字段
+    saveRemoteTunnelConfig({ enabled: true, tunnelMode: 'quick' });
+    const macGuide = getCloudflaredInstallGuide('darwin');
+    const winGuide = getCloudflaredInstallGuide('win32');
+    const linuxGuide = getCloudflaredInstallGuide('linux');
+    assert.equal(macGuide.command, 'brew install cloudflared');
+    assert.equal(winGuide.command, 'winget install --id Cloudflare.cloudflared');
+    assert.ok(linuxGuide.command.includes('cloudflared-linux-amd64'));
+
+    const missingInfo = buildRemoteInfo({
+      resetToken: false,
+      tunnelStatus: { enabled: true, mode: 'quick', state: 'error', binaryAvailable: false, error: '未检测到 cloudflared' }
+    });
+    assert.ok(missingInfo.cloudflaredInstall?.commands?.darwin, 'buildRemoteInfo 应暴露各平台 cloudflared 安装命令');
+    const readyInfo = buildRemoteInfo({
+      resetToken: false,
+      tunnelStatus: { enabled: true, mode: 'quick', state: 'running', publicUrl: 'https://zero-cfg.trycloudflare.com', binaryAvailable: true }
+    });
+
+    // 2. 设置面板渲染一键复制安装命令引导（缺失态 + 已安装态 + 平台切换 + 一键复制 + 重新检测）
+    const env = createDomEnv();
+    env.win.__AGContextMeterLive = { port: 61229, token: 'tok-install-guide' };
+    let infoMode = 'missing';
+    let infoFetchCount = 0;
+    let copiedText = '';
+    env.sandbox.navigator.clipboard = {
+      writeText: async (text) => { copiedText = String(text || ''); }
+    };
+    env.sandbox.fetch = async (url) => {
+      if (String(url).includes('/remote-info')) {
+        infoFetchCount++;
+        return { ok: true, json: async () => ({ ok: true, data: infoMode === 'missing' ? missingInfo : readyInfo }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+    const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+    vm.runInContext(freshRendererSrc, env.sandbox);
+    api = env.sandbox.__AGContextMeter;
+    const remotePane = env.getShadow().getElementById('settings-pane-remote');
+
+    api.openSettings('remote');
+    await new Promise((r) => setTimeout(r, 30));
+
+    // 缺失态：展示高亮安装引导与重新检测按钮
+    const guideMissing = remotePane.querySelector('#ag-rp-cf-install-guide');
+    assert.ok(guideMissing, '远程设置应渲染 #ag-rp-cf-install-guide 安装命令引导');
+    assert.equal(guideMissing.getAttribute('data-missing'), 'true', '缺少 cloudflared 时应标记 data-missing=true');
+    assert.ok(remotePane.querySelector('#ag-rp-cf-recheck'), '缺少 cloudflared 时应提供重新检测按钮');
+    assert.ok((remotePane.querySelector('#ag-rp-tunnel-cfg-btn')?.textContent || '').includes('免登录零配置'), 'quick 模式下配置按钮应体现免登录零配置');
+
+    // 切换 Windows 平台命令并一键复制
+    remotePane.querySelector('#ag-rp-install-tab-win32')?.click();
+    assert.equal(
+      remotePane.querySelector('#ag-rp-cf-install-cmd')?.textContent?.trim(),
+      'winget install --id Cloudflare.cloudflared',
+      '切换 Windows 标签应展示 winget 安装命令'
+    );
+    remotePane.querySelector('#ag-rp-cf-copy-install')?.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(copiedText, 'winget install --id Cloudflare.cloudflared', '点击一键复制应将当前平台安装命令写入剪贴板');
+    assert.ok((remotePane.querySelector('#ag-rp-cf-copy-install')?.textContent || '').includes('已复制'), '复制后按钮应显示已复制反馈');
+
+    // 点击重新检测后切换为已安装态，仍保留安装命令引导且 data-missing=false
+    infoMode = 'ready';
+    const beforeRecheck = infoFetchCount;
+    remotePane.querySelector('#ag-rp-cf-recheck')?.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(infoFetchCount > beforeRecheck, '点击重新检测应重新拉取 /remote-info');
+    const guideReady = remotePane.querySelector('#ag-rp-cf-install-guide');
+    assert.ok(guideReady, '已安装 cloudflared 时仍应保留可一键复制的安装命令引导');
+    assert.equal(guideReady.getAttribute('data-missing'), 'false');
+    assert.equal(remotePane.querySelector('#ag-rp-cf-recheck'), null, '已安装状态下无需再显示重新检测按钮');
+  } finally {
     try { api?.dispose?.(); } catch {}
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;

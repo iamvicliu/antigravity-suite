@@ -530,6 +530,106 @@
       font-size:11.5px;
       color:var(--ag-text-secondary);
     }
+    .ag-rp-tunnel-sub{
+      font-size:11px;
+      line-height:1.45;
+      color:var(--ag-text-muted);
+    }
+    .ag-rp-install-guide{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      margin-top:8px;
+      padding:8px 10px;
+      border-radius:8px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-card);
+      font-size:11.5px;
+      color:var(--ag-text-secondary);
+    }
+    .ag-rp-install-guide[data-missing="true"]{
+      border-color:rgba(245,158,11,0.48);
+      background:rgba(245,158,11,0.08);
+    }
+    .ag-rp-install-hdr{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .ag-rp-install-title{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      font-weight:600;
+      color:var(--ag-text-primary);
+      font-size:11.5px;
+    }
+    .ag-rp-install-badge{
+      display:inline-flex;
+      align-items:center;
+      padding:1px 6px;
+      border-radius:999px;
+      font-size:10.5px;
+      font-weight:500;
+      background:rgba(16,185,129,0.14);
+      color:#10b981;
+    }
+    .ag-rp-install-guide[data-missing="true"] .ag-rp-install-badge{
+      background:rgba(245,158,11,0.18);
+      color:#d97706;
+    }
+    .ag-rp-install-tabs{
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
+    }
+    .ag-rp-install-tab{
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-secondary);
+      border-radius:5px;
+      padding:2px 7px;
+      font-size:10.5px;
+      cursor:pointer;
+    }
+    .ag-rp-install-tab[data-active="true"]{
+      border-color:rgba(16,185,129,0.45);
+      background:rgba(16,185,129,0.14);
+      color:#10b981;
+      font-weight:600;
+    }
+    .ag-rp-install-cmd-row{
+      display:flex;
+      align-items:center;
+      gap:6px;
+    }
+    .ag-rp-install-cmd{
+      flex:1;
+      min-width:0;
+      margin:0;
+      padding:5px 8px;
+      border-radius:6px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-primary);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+      font-size:11px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      user-select:all;
+    }
+    .ag-rp-install-foot{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      flex-wrap:wrap;
+      font-size:11px;
+      color:var(--ag-text-muted);
+    }
     .ag-rp-form-actions{
       display:flex;
       gap:6px;

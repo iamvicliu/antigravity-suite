@@ -220,7 +220,7 @@ function loadOrCreateRemoteConfig(options = {}) {
   const rawCh = (existing.enabledChannels && typeof existing.enabledChannels === 'object') ? existing.enabledChannels : {};
   const defaultTunnelOn = typeof existing.tunnelEnabled === 'boolean'
     ? existing.tunnelEnabled
-    : false;
+    : true;
   const tunnelEnabled = typeof rawCh.tunnel === 'boolean' ? rawCh.tunnel : defaultTunnelOn;
   const enabledChannels = {
     lan: typeof rawCh.lan === 'boolean' ? rawCh.lan : true,
@@ -4797,6 +4797,20 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '') {
 
 // ==================== Cloudflare Tunnel 管理 (免登录 Quick Tunnel + 自有账号 Named Tunnel) ====================
 
+function getCloudflaredInstallGuide(platform = process.platform) {
+  const commands = {
+    darwin: 'brew install cloudflared',
+    win32: 'winget install --id Cloudflare.cloudflared',
+    linux: 'mkdir -p ~/.local/bin && curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/.local/bin/cloudflared && chmod +x ~/.local/bin/cloudflared'
+  };
+  const key = commands[platform] ? platform : 'linux';
+  return {
+    platform: key,
+    command: commands[key],
+    commands
+  };
+}
+
 function resolveCloudflaredBinary() {
   const candidates = [];
   if (process.env.AG_CLOUDFLARED_BIN) candidates.push(process.env.AG_CLOUDFLARED_BIN);
@@ -4984,9 +4998,10 @@ function createCloudflareTunnelController(getPort) {
     }
     const bin = resolveCloudflaredBinary();
     if (!bin) {
+      const installGuide = getCloudflaredInstallGuide();
       state = 'error';
       publicUrl = '';
-      errorMsg = '未检测到 cloudflared（macOS 可执行 brew install cloudflared 安装）';
+      errorMsg = `未检测到 cloudflared（可执行 ${installGuide.command} 安装）`;
       return getStatus();
     }
     if (mode === 'named') {
@@ -6207,6 +6222,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
   }
 
   const enCh = cfg.enabledChannels || { lan: true, tailscale: true, bonjour: true, tunnel: Boolean(cfg.tunnelEnabled) };
+  const cloudflaredInstall = getCloudflaredInstallGuide();
   const tunnelChannel = {
     key: 'tunnel',
     label: 'Cloudflare 隧道',
@@ -6217,6 +6233,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     state: effTunnel.state || 'stopped',
     mode: cfg.tunnelMode || 'quick',
     binaryAvailable: Boolean(effTunnel.binaryAvailable),
+    installCommand: cloudflaredInstall.command,
     hasTunnelToken: Boolean(cfg.tunnelToken),
     tunnelHostname: cfg.tunnelHostname || '',
     error: effTunnel.error || '',
@@ -6335,8 +6352,10 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       state: effTunnel.state,
       publicUrl: tunnelActiveUrl,
       error: effTunnel.error || '',
-      binaryAvailable: Boolean(effTunnel.binaryAvailable)
+      binaryAvailable: Boolean(effTunnel.binaryAvailable),
+      installCommand: cloudflaredInstall.command
     },
+    cloudflaredInstall,
     hosts: desc.hosts,
     endpoints: desc.endpoints,
     channels,
@@ -6432,6 +6451,7 @@ module.exports = {
   validateCloudflareTunnelToken,
   validateTunnelHostname,
   normalizeTunnelHostname,
+  getCloudflaredInstallGuide,
   resolveCloudflaredBinary,
   createCloudflareTunnelController,
   isAllowedPrivateAddress,
