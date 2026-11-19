@@ -205,35 +205,148 @@
   let promptOptState = {
     loading: false,
     abortCtrl: null,
+    userCancelled: false,
     backupText: '',
+    optimizedText: '',
+    undoHintActive: false,
     canUndo: false,
+    lastError: null,
     cacheModel: {
       primary: '',
       fallback: '',
+      candidates: [],
       fetchedAt: 0
     }
   };
   let isComposerComposing = false;
   let lastUserSubmitAt = 0;
 
-  function cacheDefaultModelFromConfigData(cfgData) {
-    if (!cfgData || typeof cfgData !== 'object') return;
+  function scoreOptimizeModelCandidate(entry, isDefaultOverride = false) {
+    const mid = String(entry?.modelId || '').toLowerCase();
+    const label = String(entry?.label || '').toLowerCase();
+    const model = String(entry?.model || '').toLowerCase();
+    const text = `${mid} ${label} ${model}`;
+    const remaining = entry?.remainingFraction;
+    const exhaustedPenalty = (typeof remaining === 'number' && Number.isFinite(remaining) && remaining <= 0) ? 200 : 0;
+
+    let baseScore = 50;
+    if (text.includes('orchestrator')) {
+      baseScore = 90;
+    } else if (text.includes('flash')) {
+      if (text.includes('low')) baseScore = 10;
+      else if (text.includes('medium')) baseScore = 15;
+      else if (text.includes('high') || text.includes('xhigh')) baseScore = 24;
+      else baseScore = 18;
+    } else if (text.includes('sonnet') && text.includes('low')) {
+      baseScore = 20;
+    } else if (/\b(?:haiku|mini|lite)\b|gpt[-_]oss/i.test(text)) {
+      baseScore = 22;
+    } else if (/\blow\b|\(low\)|-low\b|_low\b/.test(text)) {
+      baseScore = 26;
+    } else if (/\bmedium\b|\(medium\)|-medium\b|_medium\b/.test(text)) {
+      baseScore = 36;
+    } else if (/\bxhigh\b|\(xhigh\)|-xhigh\b|_xhigh\b/.test(text)) {
+      baseScore = 72;
+    } else if (/\bhigh\b|\(high\)|-high\b|_high\b/.test(text)) {
+      baseScore = 62;
+    } else if (isDefaultOverride) {
+      baseScore = 44;
+    }
+
+    return baseScore + exhaustedPenalty;
+  }
+
+  function detectOptimizeModelFamily(entry) {
+    const text = `${entry?.modelId || ''} ${entry?.label || ''} ${entry?.model || ''}`.toLowerCase();
+    if (text.includes('orchestrator')) return 'orchestrator';
+    if (text.includes('claude') || text.includes('sonnet') || text.includes('opus') || text.includes('haiku')) return 'claude';
+    if (text.includes('gpt') || text.includes('openai')) return 'openai';
+    if (text.includes('flash')) return 'gemini-flash';
+    if (text.includes('gemini')) return 'gemini';
+    return 'other';
+  }
+
+  function buildOptimizeModelCandidates(cfgData) {
+    if (!cfgData || typeof cfgData !== 'object') return [];
     const configs = Array.isArray(cfgData.clientModelConfigs) ? cfgData.clientModelConfigs : [];
     const primaryOverride = String(cfgData.defaultOverrideModelConfig?.modelOrAlias?.model || '').trim();
-    const nonOrchestrator = configs.find((c) => {
-      const mid = String(c?.modelId || '').toLowerCase();
-      return c?.modelOrAlias?.model && !mid.includes('orchestrator');
-    });
-    const firstValid = configs.find((c) => c?.modelOrAlias?.model);
-    const fallback = String(nonOrchestrator?.modelOrAlias?.model || firstValid?.modelOrAlias?.model || '').trim();
-    const primary = primaryOverride || fallback;
-    if (primary || fallback) {
-      promptOptState.cacheModel = {
-        primary,
-        fallback: fallback || primary,
-        fetchedAt: Date.now()
+    const byModel = new Map();
+
+    configs.forEach((c, idx) => {
+      const model = String(c?.modelOrAlias?.model || '').trim();
+      if (!model || byModel.has(model)) return;
+      const item = {
+        model,
+        modelId: String(c?.modelId || '').trim(),
+        label: String(c?.label || c?.modelId || model).trim(),
+        remainingFraction: typeof c?.quotaInfo?.remainingFraction === 'number' ? c.quotaInfo.remainingFraction : null,
+        isDefaultOverride: model === primaryOverride,
+        idx
       };
+      item.score = scoreOptimizeModelCandidate(item, item.isDefaultOverride);
+      item.family = detectOptimizeModelFamily(item);
+      byModel.set(model, item);
+    });
+
+    if (primaryOverride && !byModel.has(primaryOverride)) {
+      const item = {
+        model: primaryOverride,
+        modelId: '',
+        label: primaryOverride,
+        remainingFraction: null,
+        isDefaultOverride: true,
+        idx: configs.length
+      };
+      item.score = scoreOptimizeModelCandidate(item, true);
+      item.family = detectOptimizeModelFamily(item);
+      byModel.set(primaryOverride, item);
     }
+
+    const sorted = Array.from(byModel.values()).sort((a, b) => (a.score - b.score) || (a.idx - b.idx));
+    if (sorted.length <= 4) {
+      return sorted.map(({ model, modelId, label, family, score }) => ({ model, modelId, label, family, score }));
+    }
+
+    const picked = [];
+    const pickedModels = new Set();
+    const pushItem = (item) => {
+      if (!item || pickedModels.has(item.model)) return;
+      pickedModels.add(item.model);
+      picked.push(item);
+    };
+
+    // 1. 优先选择评分最优的轻量快速模型
+    pushItem(sorted[0]);
+    // 2. 第二候选优先挑选跨模型族的轻量备选（防止单一族限流/不可用）
+    const crossFamily = sorted.find((it) => !pickedModels.has(it.model) && it.family !== sorted[0].family && it.score < 200);
+    if (crossFamily) pushItem(crossFamily);
+    // 3. 加入同族或次优快速备选
+    for (const it of sorted) {
+      if (picked.length >= 3) break;
+      pushItem(it);
+    }
+    // 4. 若默认覆盖模型尚未进入前 3，作为兜底纳入第 4 候选；否则顺延补足至 4 个
+    if (primaryOverride && !pickedModels.has(primaryOverride) && byModel.has(primaryOverride)) {
+      pushItem(byModel.get(primaryOverride));
+    }
+    for (const it of sorted) {
+      if (picked.length >= 4) break;
+      pushItem(it);
+    }
+    return picked.map(({ model, modelId, label, family, score }) => ({ model, modelId, label, family, score }));
+  }
+
+  function cacheDefaultModelFromConfigData(cfgData) {
+    const candidates = buildOptimizeModelCandidates(cfgData);
+    if (!candidates.length) return;
+    const primary = candidates[0]?.model || '';
+    const fallback = candidates.find((c) => c.model !== primary)?.model || '';
+    promptOptState.cacheModel = {
+      primary,
+      fallback,
+      candidates,
+      fetchedAt: Date.now()
+    };
   }
 
   function safeRemove(node) {
@@ -2192,10 +2305,19 @@
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          max-width: 280px;
+          max-width: min(520px, 60vw);
         }
         #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-toast {
           color: var(--ag-effective-accent, #7c3aed);
+        }
+        #${QUICK_BAR_ID} .ag-qcap-toast[data-tone="error"] {
+          color: #f87171;
+          pointer-events: auto;
+          user-select: text;
+          cursor: text;
+        }
+        #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-toast[data-tone="error"] {
+          color: #dc2626;
         }
         #${QUICK_BAR_ID} .ag-qcap-toast[data-visible="true"] {
           display: inline-block;
@@ -2664,19 +2786,53 @@
     }
   }
 
-  function showQuickToast(text) {
+  function hideQuickToast(expectedTag = '') {
     const bar = document.getElementById(QUICK_BAR_ID);
     const rightSlot = bar?.querySelector(`#${QUICK_RIGHT_SLOT_ID}`);
     const toast = bar?.querySelector('.ag-qcap-toast');
     if (!toast) return;
+    if (expectedTag && toast.getAttribute('data-tag') !== expectedTag) return;
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    toast.setAttribute('data-visible', 'false');
+    toast.removeAttribute('data-persistent');
+    toast.removeAttribute('data-tag');
+    if (rightSlot) rightSlot.removeAttribute('data-toast-active');
+  }
+
+  function showQuickToast(text, options = {}) {
+    const bar = document.getElementById(QUICK_BAR_ID);
+    const rightSlot = bar?.querySelector(`#${QUICK_RIGHT_SLOT_ID}`);
+    const toast = bar?.querySelector('.ag-qcap-toast');
+    if (!toast) return;
+    const opts = (options && typeof options === 'object') ? options : {};
+    const isError = Boolean(opts.isError);
+    const persistent = Boolean(opts.persistent);
+    const tag = String(opts.tag || '');
+    const durationMs = Number(opts.durationMs) > 0 ? Number(opts.durationMs) : (isError ? 7000 : 2800);
     toast.textContent = text;
+    toast.title = String(opts.title || text || '');
+    toast.setAttribute('data-tone', isError ? 'error' : 'info');
+    if (tag) toast.setAttribute('data-tag', tag);
+    else toast.removeAttribute('data-tag');
+    if (persistent) toast.setAttribute('data-persistent', 'true');
+    else toast.removeAttribute('data-persistent');
     toast.setAttribute('data-visible', 'true');
     if (rightSlot) rightSlot.setAttribute('data-toast-active', 'true');
-    if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      toast.setAttribute('data-visible', 'false');
-      if (rightSlot) rightSlot.removeAttribute('data-toast-active');
-    }, 2800);
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    if (!persistent) {
+      toastTimer = setTimeout(() => {
+        toastTimer = null;
+        toast.setAttribute('data-visible', 'false');
+        toast.removeAttribute('data-tag');
+        if (rightSlot) rightSlot.removeAttribute('data-toast-active');
+      }, durationMs);
+    }
   }
 
   async function fillComposerText(text) {
@@ -3818,11 +3974,66 @@
     return out;
   }
 
+  function resolveLanguageServerCsrfToken() {
+    const direct = String(window.__APP_CONFIG__?.csrfToken || '').trim();
+    if (direct) return direct;
+    try {
+      const scripts = document.querySelectorAll?.('script') || [];
+      for (const s of scripts) {
+        const txt = String(s?.textContent || '');
+        if (!txt.includes('__APP_CONFIG__')) continue;
+        const m = txt.match(/__APP_CONFIG__\s*=\s*(\{[\s\S]*?\});/);
+        if (m) {
+          const parsed = JSON.parse(m[1]);
+          if (parsed?.csrfToken) return String(parsed.csrfToken).trim();
+        }
+      }
+    } catch {}
+    return '';
+  }
+
+  async function parseLanguageServerError(resp) {
+    const status = Number(resp?.status || 0);
+    let rawText = '';
+    let parsed = null;
+    try {
+      if (typeof resp?.text === 'function') {
+        rawText = String(await resp.text() || '').trim();
+        if (rawText) {
+          try { parsed = JSON.parse(rawText); } catch {}
+        }
+      } else if (typeof resp?.json === 'function') {
+        parsed = await resp.json().catch(() => null);
+        if (parsed && typeof parsed === 'object') {
+          rawText = JSON.stringify(parsed);
+        }
+      }
+    } catch {}
+    const code = String(parsed?.code || parsed?.error?.code || '').trim();
+    const msg = String(
+      parsed?.message
+      || parsed?.error?.message
+      || (typeof parsed?.error === 'string' ? parsed.error : '')
+      || parsed?.detail
+      || ''
+    ).trim();
+    const parts = [`HTTP ${status || 'ERR'}`];
+    if (code) parts.push(`(${code})`);
+    const detail = msg || (rawText && !rawText.startsWith('<') ? rawText.slice(0, 240) : '');
+    const message = detail ? `${parts.join(' ')}: ${detail}` : parts.join(' ');
+    return { status, code, detail, rawText: rawText.slice(0, 400), message };
+  }
+
   async function resolveDefaultModelForOptimize(signal) {
-    if (promptOptState.cacheModel.primary && (Date.now() - promptOptState.cacheModel.fetchedAt) < 60000) {
+    if (
+      promptOptState.cacheModel.primary
+      && Array.isArray(promptOptState.cacheModel.candidates)
+      && promptOptState.cacheModel.candidates.length > 0
+      && (Date.now() - promptOptState.cacheModel.fetchedAt) < 60000
+    ) {
       return promptOptState.cacheModel;
     }
-    const csrf = window.__APP_CONFIG__?.csrfToken || '';
+    const csrf = resolveLanguageServerCsrfToken();
     const headers = {
       'Content-Type': 'application/json',
       'Connect-Protocol-Version': '1'
@@ -3835,12 +4046,24 @@
       signal
     });
     if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`);
+      const parsedErr = await parseLanguageServerError(resp);
+      const err = new Error(parsedErr.message);
+      err.status = parsedErr.status;
+      err.rawBody = parsedErr.rawText;
+      throw err;
     }
     const payload = await resp.json();
     const cfgData = payload?.userStatus?.cascadeModelConfigData;
     if (cfgData) cacheDefaultModelFromConfigData(cfgData);
     return promptOptState.cacheModel;
+  }
+
+  function clearPromptOptUndoState({ clearHint = true } = {}) {
+    promptOptState.canUndo = false;
+    promptOptState.backupText = '';
+    promptOptState.optimizedText = '';
+    promptOptState.undoHintActive = false;
+    if (clearHint) hideQuickToast('prompt-opt-undo');
   }
 
   function syncPromptOptimizerUI() {
@@ -3854,9 +4077,14 @@
     }
 
     const ed = getComposerEditor();
-    const hasText = Boolean(ed && getComposerText(ed).trim().length > 0);
+    const curText = ed ? getComposerText(ed) : '';
+    const hasText = curText.trim().length > 0;
     if (!hasText && !promptOptState.loading) {
-      promptOptState.canUndo = false;
+      clearPromptOptUndoState();
+    } else if (promptOptState.undoHintActive && !promptOptState.loading && curText !== promptOptState.optimizedText) {
+      promptOptState.undoHintActive = false;
+      promptOptState.optimizedText = '';
+      hideQuickToast('prompt-opt-undo');
     }
 
     if (btn) {
@@ -3870,8 +4098,8 @@
         btn.disabled = !hasText;
         btn.innerHTML = `${PROMPT_OPT_SPARKLE_SVG}<span>${tr('优化', 'Optimize')}</span>`;
         btn.title = hasText
-          ? tr('调用当前默认模型优化输入框内的提示词', 'Optimize prompt using current default model')
-          : tr('先输入提示词草稿，点击调用默认模型优化', 'Enter a prompt draft first');
+          ? tr('优先使用轻量快速模型优化输入框内的提示词（支持多模型自动回退）', 'Optimize prompt using a fast lightweight model with automatic fallback')
+          : tr('先输入提示词草稿，点击快速优化', 'Enter a prompt draft first');
       }
     }
 
@@ -3964,8 +4192,7 @@
   async function undoPromptOptimize() {
     if (!promptOptState.canUndo || !promptOptState.backupText || promptOptState.loading) return false;
     const orig = promptOptState.backupText;
-    promptOptState.canUndo = false;
-    promptOptState.backupText = '';
+    clearPromptOptUndoState();
     const ok = await fillComposerText(orig);
     syncPromptOptimizerUI();
     if (ok) showQuickToast(tr('↩ 已恢复原始提示词', '↩ Restored original draft'));
@@ -3974,6 +4201,7 @@
 
   async function optimizeComposerPrompt() {
     if (promptOptState.loading) {
+      promptOptState.userCancelled = true;
       if (promptOptState.abortCtrl) {
         try { promptOptState.abortCtrl.abort(); } catch {}
       }
@@ -4006,82 +4234,219 @@
     }
 
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-    const timeoutId = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, 45000) : null;
+    let overallTimedOut = false;
+    const timeoutId = ctrl ? setTimeout(() => {
+      overallTimedOut = true;
+      try { ctrl.abort(); } catch {}
+    }, 45000) : null;
     promptOptState.loading = true;
     promptOptState.abortCtrl = ctrl;
+    promptOptState.userCancelled = false;
+    promptOptState.undoHintActive = false;
+    promptOptState.optimizedText = '';
+    hideQuickToast('prompt-opt-undo');
     syncPromptOptimizerUI();
+
+    const attempts = [];
+    const csrf = resolveLanguageServerCsrfToken();
 
     try {
       const modelInfo = await resolveDefaultModelForOptimize(ctrl ? ctrl.signal : undefined);
-      const primaryModel = modelInfo?.primary || '';
-      const fallbackModel = modelInfo?.fallback || '';
-      if (!primaryModel) {
-        throw new Error(tr('未能读取当前默认模型', 'Failed to resolve default model'));
+      const rawCandidates = Array.isArray(modelInfo?.candidates) && modelInfo.candidates.length > 0
+        ? modelInfo.candidates
+        : [modelInfo?.primary, modelInfo?.fallback]
+            .filter(Boolean)
+            .map((m) => ({ model: m, label: m, modelId: '' }));
+      const candidates = [];
+      const seenModels = new Set();
+      for (const c of rawCandidates) {
+        const modelEnum = String(c?.model || '').trim();
+        if (!modelEnum || seenModels.has(modelEnum)) continue;
+        seenModels.add(modelEnum);
+        candidates.push({
+          model: modelEnum,
+          label: String(c?.label || c?.modelId || modelEnum),
+          modelId: String(c?.modelId || '')
+        });
+      }
+      if (!candidates.length) {
+        throw new Error(tr('未能读取可用模型列表', 'Failed to resolve available models'));
       }
 
-      const csrf = window.__APP_CONFIG__?.csrfToken || '';
+      const effCsrf = resolveLanguageServerCsrfToken() || csrf;
       const headers = {
         'Content-Type': 'application/json',
         'Connect-Protocol-Version': '1'
       };
-      if (csrf) headers['x-codeium-csrf-token'] = csrf;
+      if (effCsrf) headers['x-codeium-csrf-token'] = effCsrf;
       const prompt = buildPromptOptimizeInstruction(draftBody);
 
-      const callGenerate = async (modelEnum) => {
-        const resp = await fetch('/exa.language_server_pb.LanguageServerService/GetModelResponse', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ prompt, model: modelEnum }),
-          signal: ctrl ? ctrl.signal : undefined
-        });
-        if (!resp.ok) {
-          const err = new Error(`HTTP ${resp.status}`);
-          err.status = resp.status;
-          throw err;
+      const callGenerate = async (modelEnum, hasMoreFallbacks) => {
+        const canSubAbort = typeof AbortController === 'function' && hasMoreFallbacks;
+        const attemptCtrl = canSubAbort ? new AbortController() : null;
+        let attemptTimedOut = false;
+        let onOverallAbort = null;
+        let attemptTimer = null;
+        if (attemptCtrl) {
+          if (ctrl?.signal) {
+            if (ctrl.signal.aborted) {
+              attemptCtrl.abort();
+            } else {
+              onOverallAbort = () => { try { attemptCtrl.abort(); } catch {} };
+              ctrl.signal.addEventListener('abort', onOverallAbort, { once: true });
+            }
+          }
+          attemptTimer = setTimeout(() => {
+            attemptTimedOut = true;
+            try { attemptCtrl.abort(); } catch {}
+          }, 18000);
         }
-        return await resp.json();
+        try {
+          const resp = await fetch('/exa.language_server_pb.LanguageServerService/GetModelResponse', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ prompt, model: modelEnum }),
+            signal: attemptCtrl ? attemptCtrl.signal : (ctrl ? ctrl.signal : undefined)
+          });
+          if (!resp.ok) {
+            const parsedErr = await parseLanguageServerError(resp);
+            const err = new Error(parsedErr.message);
+            err.status = parsedErr.status;
+            err.code = parsedErr.code;
+            err.rawBody = parsedErr.rawText;
+            throw err;
+          }
+          return await resp.json();
+        } catch (err) {
+          if (attemptTimedOut && !promptOptState.userCancelled && !overallTimedOut) {
+            const te = new Error(tr('单次响应超时 (18s)', 'Model timed out (18s)'));
+            te.status = 408;
+            te.isAttemptTimeout = true;
+            throw te;
+          }
+          throw err;
+        } finally {
+          if (attemptTimer) clearTimeout(attemptTimer);
+          if (onOverallAbort && ctrl?.signal) {
+            try { ctrl.signal.removeEventListener('abort', onOverallAbort); } catch {}
+          }
+        }
       };
 
-      let resPayload;
-      try {
-        resPayload = await callGenerate(primaryModel);
-      } catch (err) {
-        if ((err?.status === 400 || err?.status === 404) && fallbackModel && fallbackModel !== primaryModel && !ctrl?.signal?.aborted) {
-          resPayload = await callGenerate(fallbackModel);
-        } else {
-          throw err;
+      let optimized = '';
+      let usedCandidate = null;
+
+      for (let i = 0; i < candidates.length; i++) {
+        if (promptOptState.userCancelled || promptOptState.abortCtrl !== ctrl || overallTimedOut) break;
+        const cand = candidates[i];
+        const hasMoreFallbacks = i < candidates.length - 1;
+        try {
+          const resPayload = await callGenerate(cand.model, hasMoreFallbacks);
+          if (promptOptState.userCancelled || promptOptState.abortCtrl !== ctrl) {
+            return { ok: false, cancelled: true };
+          }
+          const cleaned = cleanOptimizedPromptOutput(resPayload?.response || '', slashPrefix);
+          if (!cleaned) {
+            const emptyErr = new Error(tr('模型未返回有效优化文本', 'Empty model response'));
+            emptyErr.status = 200;
+            throw emptyErr;
+          }
+          optimized = cleaned;
+          usedCandidate = cand;
+          break;
+        } catch (err) {
+          const isUserAbort = promptOptState.userCancelled || promptOptState.abortCtrl !== ctrl;
+          if (isUserAbort) return { ok: false, cancelled: true };
+          const isOverallAbort = overallTimedOut && (err?.name === 'AbortError' || ctrl?.signal?.aborted);
+          attempts.push({
+            model: cand.model,
+            label: cand.label,
+            status: Number(err?.status || 0),
+            error: isOverallAbort ? tr('请求超时 (45s)', 'Request timed out (45s)') : String(err?.message || 'failed'),
+            rawBody: String(err?.rawBody || '')
+          });
+          if (isOverallAbort) break;
+          if (err?.status === 401 || err?.status === 403) break;
         }
       }
 
-      if (promptOptState.abortCtrl !== ctrl) {
+      if (promptOptState.userCancelled || promptOptState.abortCtrl !== ctrl) {
         return { ok: false, cancelled: true };
       }
 
-      const optimized = cleanOptimizedPromptOutput(resPayload?.response || '', slashPrefix);
-      if (!optimized) {
-        throw new Error(tr('模型未返回有效优化文本', 'Empty model response'));
+      if (!optimized || !usedCandidate) {
+        const lastAttempt = attempts[attempts.length - 1];
+        const summary = lastAttempt
+          ? `${lastAttempt.error}${attempts.length > 1 ? tr(`（已尝试 ${attempts.length} 个模型）`, ` (${attempts.length} models tried)`) : ''}`
+          : (overallTimedOut ? tr('请求超时 (45s)', 'Request timed out (45s)') : tr('请稍后重试', 'Please retry'));
+        const detail = attempts.length > 0
+          ? attempts.map((a) => `${a.label || a.model}: ${a.error}`).join(' | ')
+          : summary;
+        const failErr = new Error(summary);
+        failErr.detail = detail;
+        throw failErr;
       }
 
+      promptOptState.lastError = null;
       promptOptState.backupText = rawText;
       promptOptState.canUndo = true;
       promptOptState.loading = false;
       promptOptState.abortCtrl = null;
 
       const filled = await fillComposerText(optimized);
+      if (filled) {
+        const curEd = getComposerEditor();
+        promptOptState.optimizedText = curEd ? getComposerText(curEd) : optimized;
+        promptOptState.undoHintActive = true;
+      } else {
+        promptOptState.optimizedText = '';
+        promptOptState.undoHintActive = false;
+      }
       syncPromptOptimizerUI();
       if (filled) {
-        showQuickToast(tr('✨ 提示词已优化（可点击 ↩ 撤回）', '✨ Prompt optimized (click ↩ Undo to revert)'));
+        showQuickToast(
+          tr('✨ 提示词已优化（可点击 ↩ 撤回）', '✨ Prompt optimized (click ↩ Undo to revert)'),
+          { persistent: true, tag: 'prompt-opt-undo' }
+        );
       }
-      return { ok: filled, text: optimized };
+      return { ok: filled, text: optimized, model: usedCandidate.model, attempts };
     } catch (err) {
-      const isAbort = err?.name === 'AbortError' || ctrl?.signal?.aborted;
+      const isUserCancel = Boolean(promptOptState.userCancelled);
+      const isTimeoutAbort = !isUserCancel && overallTimedOut;
+      const isSilentAbort = isUserCancel || (!isTimeoutAbort && (err?.name === 'AbortError' || ctrl?.signal?.aborted));
+      const errMsg = isTimeoutAbort
+        ? tr('请求超时 (45s)，请稍后重试', 'Request timed out (45s)')
+        : String(err?.message || tr('请稍后重试', 'Please retry'));
+      const fullDetail = String(err?.detail || errMsg);
+
       promptOptState.loading = false;
       promptOptState.abortCtrl = null;
       syncPromptOptimizerUI();
-      if (!isAbort) {
-        showQuickToast(tr(`优化失败：${err?.message || '请稍后重试'}`, `Optimize failed: ${err?.message || 'retry'}`));
+
+      if (!isSilentAbort) {
+        promptOptState.lastError = {
+          at: Date.now(),
+          pathname: String(globalThis.location?.pathname || ''),
+          hasCsrf: Boolean(resolveLanguageServerCsrfToken() || csrf),
+          message: errMsg,
+          detail: fullDetail,
+          attempts
+        };
+        try { console.warn('[AG-Enhancer] 提示词优化失败:', promptOptState.lastError); } catch {}
+        const toastMsg = tr(`优化失败：${errMsg}`, `Optimize failed: ${errMsg}`);
+        showQuickToast(toastMsg, {
+          isError: true,
+          durationMs: 7000,
+          title: tr(`优化失败详情：${fullDetail}`, `Optimize error details: ${fullDetail}`)
+        });
       }
-      return { ok: false, cancelled: isAbort, error: err?.message || 'failed' };
+      return {
+        ok: false,
+        cancelled: isSilentAbort,
+        error: errMsg,
+        detail: fullDetail,
+        attempts
+      };
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
       if (promptOptState.abortCtrl === ctrl) {
@@ -5223,8 +5588,7 @@
     if (e.isTrusted && !e.metaKey && !e.ctrlKey && !e.altKey && e.button === 0) {
       if (e.target?.closest?.('[data-testid="input-send-button"], [aria-label="Send"], [aria-label="发送"]')) {
         lastUserSubmitAt = Date.now();
-        promptOptState.canUndo = false;
-        promptOptState.backupText = '';
+        clearPromptOptUndoState();
         hideNextStepGhost();
         syncPromptOptimizerUI();
       }
@@ -5308,8 +5672,7 @@
     if (!ed || !target || !ed.contains(target)) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isComposerEmpty(ed) && ed.getAttribute('aria-expanded') !== 'true') {
       lastUserSubmitAt = Date.now();
-      promptOptState.canUndo = false;
-      promptOptState.backupText = '';
+      clearPromptOptUndoState();
       hideNextStepGhost();
       syncPromptOptimizerUI();
       return;
@@ -5339,7 +5702,7 @@
 
   function onDocCompositionStart(e) {
     const ed = getComposerEditor();
-    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
     if (!ed || !target || !ed.contains(target)) return;
     isComposerComposing = true;
     hideNextStepGhost();
@@ -5347,7 +5710,7 @@
 
   function onDocCompositionEnd(e) {
     const ed = getComposerEditor();
-    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
     if (!ed || !target || !ed.contains(target)) return;
     isComposerComposing = false;
     setTimeout(() => {
@@ -5358,7 +5721,7 @@
   function onDocInput(e) {
     if (disposed) return;
     const ed = getComposerEditor();
-    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
     if (!ed || !target || !ed.contains(target)) return;
     syncPromptOptimizerUI();
     if (isComposerComposing || !isComposerEmpty(ed)) {
@@ -6739,6 +7102,13 @@
     ensurePromptOptimizerControls,
     optimizeComposerPrompt,
     undoPromptOptimize,
+    getLastPromptOptError: () => (promptOptState.lastError
+      ? { ...promptOptState.lastError, attempts: [...(promptOptState.lastError.attempts || [])] }
+      : null),
+    getPromptOptModels: () => ({
+      ...promptOptState.cacheModel,
+      candidates: [...(promptOptState.cacheModel.candidates || [])]
+    }),
     syncRemotePairData,
     getMobileSnapshot,
     getMobileSnapshotAsync,

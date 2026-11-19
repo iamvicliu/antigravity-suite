@@ -5560,3 +5560,184 @@ test('需求 22: 远程设置默认免登录零配置可用与 cloudflared 一�
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 23: 提示词优化轻量快速模型优先、多模型自动回退与完整错误信息保留
+// =========================================================================
+test('需求 23: 提示词优化轻量快速模型优先、429/500/空响应自动回退与完整错误信息保留', async () => {
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const delay = Number(ms) > 500 ? Number(ms) : Math.min(Number(ms) || 0, 10);
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, delay);
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => {
+    activeTimers.delete(t);
+    clearTimeout(t);
+  };
+  env.sandbox.location = { pathname: '/', origin: 'https://127.0.0.1:53892', href: 'https://127.0.0.1:53892/' };
+  env.sandbox.window.__APP_CONFIG__ = { csrfToken: 'csrf-opt-test' };
+  env.sandbox.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+  env.win.getSelection = env.sandbox.getSelection;
+  env.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+
+  const composerWrap = env.doc.createElement('div');
+  const composerEl = env.doc.createElement('div');
+  composerEl.className = 'surface-composer';
+  const cardEl = env.doc.createElement('div');
+  cardEl.className = 'surface-composer-card';
+  const editorEl = env.doc.createElement('div');
+  editorEl.setAttribute('data-lexical-editor', 'true');
+  editorEl.setAttribute('contenteditable', 'true');
+  const footerEl = env.doc.createElement('div');
+  footerEl.className = 'agy-composer-footer';
+  cardEl.appendChild(editorEl);
+  cardEl.appendChild(footerEl);
+  composerEl.appendChild(cardEl);
+  composerWrap.appendChild(composerEl);
+  env.doc.body.appendChild(composerWrap);
+
+  env.doc.execCommand = (cmd, _ui, val) => {
+    if (cmd === 'insertText') {
+      editorEl.textContent = String(val || '');
+      return true;
+    }
+    if (cmd === 'delete') {
+      editorEl.textContent = '';
+      return true;
+    }
+    return true;
+  };
+
+  let mode = 'fallback-succeed';
+  const calledModels = [];
+  env.sandbox.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    if (u.includes('GetUserStatus')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          userStatus: {
+            cascadeModelConfigData: {
+              defaultOverrideModelConfig: { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M532' } },
+              clientModelConfigs: [
+                { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M532' } },
+                { label: 'Orchestrator (Neon)', modelId: 'gemini-pro-orchestrator-neon', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M537' } },
+                { label: 'Gemini 4 Neon (Low)', modelId: 'gemini-4-neon-low', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M534' } },
+                { label: 'Gemini 3.8 Flash (Low)', modelId: 'gemini-3.8-flash-low', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M320' } },
+                { label: 'Claude Sonnet 5.5 (Low)', modelId: 'claude-sonnet-5-5-low', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M403' } }
+              ]
+            }
+          }
+        })
+      };
+    }
+    if (u.includes('GetModelResponse')) {
+      calledModels.push(body.model);
+      if (mode === 'fallback-succeed') {
+        if (body.model === 'MODEL_PLACEHOLDER_M320') {
+          return {
+            ok: false,
+            status: 429,
+            text: async () => JSON.stringify({ code: 'resource_exhausted', message: 'flash quota hit' })
+          };
+        }
+        if (body.model === 'MODEL_PLACEHOLDER_M403') {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ response: '' })
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ response: '请为登录页补充表单校验、错误提示与键盘回车提交支持。' })
+        };
+      }
+      return {
+        ok: false,
+        status: 500,
+        text: async () => JSON.stringify({ code: 'internal', message: 'model backend unavailable' })
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  vm.runInContext(RENDERER_SRC, env.sandbox);
+  vm.runInContext(freshEnhancerSrc, env.sandbox);
+  const enhancer = env.sandbox.__AGEnhancer;
+
+  try {
+    // 1. 在新建会话 (/) 下优先尝试轻量快速模型，且遇到 429 与空响应自动回退至下一个不同模型并成功
+    editorEl.textContent = '帮我改下登录页';
+    enhancer.ensurePromptOptimizerControls();
+    const res1 = await enhancer.optimizeComposerPrompt();
+    assert.equal(res1.ok, true, '第 1 个模型 429、第 2 个模型空响应后应自动回退到第 3 个模型并成功');
+    assert.deepEqual(
+      calledModels,
+      ['MODEL_PLACEHOLDER_M320', 'MODEL_PLACEHOLDER_M403', 'MODEL_PLACEHOLDER_M534'],
+      '应按轻量快速优先且跨族多样顺序依次尝试不同模型（Flash Low -> Sonnet Low -> Neon Low）'
+    );
+    const modelCache = enhancer.getPromptOptModels();
+    assert.equal(modelCache.primary, 'MODEL_PLACEHOLDER_M320', '首选模型应为轻量快速的 Flash Low 而非 High');
+    assert.notEqual(modelCache.primary, modelCache.fallback, 'primary 与 fallback 不得为同一模型');
+    assert.equal(res1.attempts.length, 2, '应记录前两次失败尝试');
+    assert.equal(enhancer.getLastPromptOptError(), null, '成功后应清空 lastError');
+    assert.ok(editorEl.textContent.includes('登录页补充表单校验'), '应成功回填优化结果');
+
+    // 1b. 撤回提示在发送或修改输入框内容前应始终显示，修改或发送后立即收起
+    const undoToastEl = env.doc.querySelector('#ag-quick-capsule-bar .ag-qcap-toast');
+    assert.ok(undoToastEl, '应渲染快捷栏提示条');
+    assert.equal(undoToastEl.getAttribute('data-visible'), 'true', '优化成功后撤回提示应立即显示');
+    assert.equal(undoToastEl.getAttribute('data-persistent'), 'true', '撤回提示应持久显示不自动消失');
+    assert.equal(undoToastEl.getAttribute('data-tag'), 'prompt-opt-undo');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(undoToastEl.getAttribute('data-visible'), 'true', '未修改未发送时撤回提示应持续可见');
+
+    // 修改输入框内容后自动收起撤回提示
+    editorEl.textContent = `${editorEl.textContent}（补充修改）`;
+    env.doc.dispatchEvent({ type: 'input', target: editorEl });
+    assert.equal(undoToastEl.getAttribute('data-visible'), 'false', '修改输入框内容后应自动收起撤回提示');
+
+    // 再次优化后按回车发送，同样应自动收起撤回提示
+    calledModels.length = 0;
+    editorEl.textContent = '再优化一次';
+    const res1b = await enhancer.optimizeComposerPrompt();
+    assert.equal(res1b.ok, true);
+    assert.equal(undoToastEl.getAttribute('data-visible'), 'true');
+    assert.equal(undoToastEl.getAttribute('data-persistent'), 'true');
+    env.doc.dispatchEvent({ type: 'keydown', key: 'Enter', target: editorEl, shiftKey: false, altKey: false });
+    assert.equal(undoToastEl.getAttribute('data-visible'), 'false', '发送消息后应自动收起撤回提示');
+
+    // 2. 全部候选均返回 500 时保留完整 JSON 错误细节与诊断记录，并在 toast 中展示与悬停 title 保留
+    calledModels.length = 0;
+    mode = 'all-fail';
+    editorEl.textContent = '写一个脚本';
+    const res2 = await enhancer.optimizeComposerPrompt();
+    assert.equal(res2.ok, false);
+    assert.equal(calledModels.length, 4, '应依次尝试最多 4 个不重复候选模型（含兜底默认模型）');
+    assert.equal(new Set(calledModels).size, 4, '尝试的模型列表不得有重复');
+    const lastErr = enhancer.getLastPromptOptError();
+    assert.ok(lastErr, '失败后应通过 getLastPromptOptError() 保留完整诊断信息');
+    assert.equal(lastErr.attempts.length, 4);
+    assert.equal(lastErr.pathname, '/');
+    assert.equal(lastErr.hasCsrf, true);
+    assert.ok(lastErr.message.includes('HTTP 500') && lastErr.message.includes('model backend unavailable'), '应解析并保留服务端 JSON 错误详情');
+    const toastEl = env.doc.querySelector('#ag-quick-capsule-bar .ag-qcap-toast');
+    assert.ok(toastEl, '应渲染快捷栏提示条');
+    assert.equal(toastEl.getAttribute('data-tone'), 'error', '失败提示条应标记 data-tone=error');
+    assert.ok((toastEl.textContent || '').includes('model backend unavailable'), 'toast 应包含服务端错误详情');
+    assert.ok((toastEl.title || '').includes('Gemini 3.8 Flash (Low)'), 'toast title 应保留全部尝试模型的完整错误详情');
+  } finally {
+    enhancer?.dispose?.();
+    env.sandbox.__AGContextMeter?.dispose?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
+  }
+});
