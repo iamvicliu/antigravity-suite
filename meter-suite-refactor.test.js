@@ -5232,6 +5232,7 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.ok(mobileCss.includes('.proj-body') && mobileCss.includes('border-left:'), '子会话容器应带缩进左导引线');
     assert.ok(html.includes('enterkeyhint="enter"'), '输入框应声明 enterkeyhint="enter" 以配合手机软键盘换行');
     assert.ok(html.includes('id="btn-new-project"') && html.includes('id="proj-modal-backdrop"'), '应包含新建项目入口与目录选择弹窗');
+    assert.ok(cssText.includes('.new-proj-mini-btn{') && cssText.includes('width:34px;height:34px;padding:0'), '新建项目按钮应采用 34×34 紧凑纯图标样式以免挤压左侧栏');
     assert.ok(html.includes('id="btn-theme"') && html.includes('id="theme-seg"'), '三态外观开关按钮与底部三段选择器必须与新建项目/多项目控件并存');
     assert.ok(cssText.includes('.proj-head{') && cssText.includes('var(--proj-head-bg)'), '项目分组条应使用主题变量 var(--proj-head-bg)');
     assert.ok(cssText.includes('.proj-toggle{') && cssText.includes('color:var(--fg-strong)'), '项目标题文字应使用主题变量 var(--fg-strong)');
@@ -5477,6 +5478,10 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.ok(convListEl.querySelector('.proj-toggle .proj-icon svg'), '项目标题条应渲染文件夹 SVG 图标');
     assert.ok(convListEl.querySelector('.proj-body .conv-item'), '项目下应有带导引线的 .proj-body 包裹会话项');
     assert.ok(envUi.doc.getElementById('btn-theme') && envUi.doc.getElementById('theme-seg'), '外观切换控件应与多项目列表共存在渲染 DOM 中');
+    const newProjBtnDom = envUi.doc.getElementById('btn-new-project');
+    assert.ok(newProjBtnDom && newProjBtnDom.querySelector('svg'), '侧边栏新建项目按钮应渲染文件夹加号 SVG 图标');
+    assert.equal((newProjBtnDom.textContent || '').trim(), '', '侧边栏新建项目按钮应为紧凑纯图标形态，不附带占空间的文字');
+    assert.equal(newProjBtnDom.getAttribute('aria-label'), '新建项目');
     envUi.doc.querySelector('#theme-seg button[data-theme-mode="light"]').click();
     assert.equal(envUi.doc.documentElement.getAttribute('data-theme'), 'light', '切换固定浅色模式后应立即更新 html[data-theme="light"]');
     assert.ok(convListEl.querySelector('.proj-group.is-current'), '切换主题后当前项目高亮与分组列表仍保持正常');

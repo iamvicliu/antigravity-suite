@@ -16,7 +16,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.9';
+const MOBILE_UI_VERSION = '1.9.10';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -3213,11 +3213,12 @@ function buildMobileAppHtml() {
     .conv-tab.active{background:var(--accent-bg);color:var(--accent-strong-fg)}
     .tab-count{font-size:11px;opacity:.78;font-variant-numeric:tabular-nums}
     .new-proj-mini-btn{
-      appearance:none;height:34px;padding:0 10px;border-radius:10px;flex-shrink:0;
-      border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
-      font-size:12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;white-space:nowrap;
+      appearance:none;width:34px;height:34px;padding:0;border-radius:10px;flex-shrink:0;
+      border:1px solid var(--border-subtle);background:var(--surface-subtle);color:var(--muted);
+      display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+      transition:background-color .14s ease,border-color .14s ease,color .14s ease;
     }
-    .new-proj-mini-btn:active{background:var(--accent-bg);border-color:var(--accent);color:var(--fg-strong)}
+    .new-proj-mini-btn:active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
     .proj-group{display:flex;flex-direction:column;gap:5px;margin-top:6px}
     .proj-group:first-child{margin-top:0}
     .proj-head{
@@ -3407,7 +3408,7 @@ function buildMobileAppHtml() {
       .send-circle.stop:hover{opacity:.9}
       .new-chat-btn:hover,.new-chat-pick-btn:hover{background:var(--surface-strong-hover);border-color:var(--accent-border);color:var(--fg-strong)}
       .conv-tab:hover{color:var(--fg-secondary)}
-      .new-proj-mini-btn:hover{background:var(--accent-bg);border-color:var(--accent);color:var(--fg-strong)}
+      .new-proj-mini-btn:hover{background:var(--surface-hover);border-color:var(--border-strong);color:var(--fg-strong)}
       .proj-head:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .proj-toggle:hover,.proj-empty-toggle:hover{color:var(--fg-strong)}
       .proj-new-btn:hover{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
@@ -3614,7 +3615,9 @@ function buildMobileAppHtml() {
           <button class="conv-tab active" data-conv-view="projects" type="button" role="tab" aria-selected="true">按项目 <span id="tab-proj-count" class="tab-count"></span></button>
           <button class="conv-tab" data-conv-view="recent" type="button" role="tab" aria-selected="false">最近活跃 <span id="tab-conv-count" class="tab-count"></span></button>
         </div>
-        <button id="btn-new-project" class="new-proj-mini-btn" type="button" title="浏览电脑目录创建新项目" aria-label="新建项目">＋ 新建项目</button>
+        <button id="btn-new-project" class="new-proj-mini-btn" type="button" title="新建项目（选择电脑目录）" aria-label="新建项目">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v3.5"/><path d="M18 15v6"/><path d="M15 18h6"/></svg>
+        </button>
       </div>
       <div id="conv-list" class="conv-list"></div>
       <div class="drawer-footer">
