@@ -5828,3 +5828,112 @@ test('需求 23: 提示词优化轻量快速模型优先、429/500/空响应自�
     activeTimers.clear();
   }
 });
+
+// =========================================================================
+// 需求 24: 快捷栏全部内置按钮与单条快捷提示词可勾选隐藏与恢复默认
+// =========================================================================
+test('需求 24: 快捷栏内置「复制会话 ID」「导出 Markdown」与单条快捷提示词可单独勾选隐藏并一键恢复', async () => {
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const delay = Number(ms) > 500 ? Number(ms) : Math.min(Number(ms) || 0, 10);
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, delay);
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => {
+    activeTimers.delete(t);
+    clearTimeout(t);
+  };
+  env.sandbox.location = { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/cccccccc-3333-3333-3333-333333333333', origin: 'https://127.0.0.1:53892', href: 'https://127.0.0.1:53892/c/cccccccc-3333-3333-3333-333333333333' };
+
+  const composerEl = env.doc.createElement('div');
+  composerEl.className = 'surface-composer';
+  const editorEl = env.doc.createElement('div');
+  editorEl.setAttribute('data-lexical-editor', 'true');
+  editorEl.setAttribute('contenteditable', 'true');
+  composerEl.appendChild(editorEl);
+  env.doc.body.appendChild(composerEl);
+
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  vm.runInContext(freshEnhancerSrc, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const enhancer = env.sandbox.__AGEnhancer;
+  const shadow = env.getShadow();
+
+  try {
+    const quickBar = env.doc.getElementById('ag-quick-capsule-bar');
+    assert.ok(quickBar, '默认应挂载快捷栏');
+    assert.ok(quickBar.querySelector('#ag-qcap-compact'), '默认应显示 /compact 压缩');
+    assert.ok(quickBar.querySelector('#ag-qcap-plan'), '默认应显示 /plan 规划');
+    assert.ok(quickBar.querySelector('#ag-qcap-reload'), '默认应显示 重载规则');
+    assert.ok(quickBar.querySelector('#ag-qcap-copyid'), '默认应显示 复制会话 ID');
+    assert.ok(quickBar.querySelector('#ag-qcap-export'), '默认应显示 导出 Markdown');
+
+    // 1. 取消勾选内置「复制会话 ID」与「导出 Markdown」开关，实时隐藏并持久化
+    const chkCopyId = shadow.getElementById('set-feat-quick-copyid');
+    const chkExport = shadow.getElementById('set-feat-quick-export');
+    assert.ok(chkCopyId && chkCopyId.checked === true, '默认应勾选内置复制会话 ID 开关');
+    assert.ok(chkExport && chkExport.checked === true, '默认应勾选内置导出 Markdown 开关');
+
+    chkCopyId.checked = false;
+    chkCopyId.dispatchEvent({ type: 'change', target: chkCopyId });
+    chkExport.checked = false;
+    chkExport.dispatchEvent({ type: 'change', target: chkExport });
+    await new Promise(r => setTimeout(r, 20));
+
+    assert.equal(quickBar.querySelector('#ag-qcap-copyid'), null, '关闭后应立即从快捷栏隐藏复制会话 ID');
+    assert.equal(quickBar.querySelector('#ag-qcap-export'), null, '关闭后应立即从快捷栏隐藏导出 Markdown');
+    const savedFlags = JSON.parse(env.localStorage.getItem('ag_suite_feature_flags') || '{}');
+    assert.equal(savedFlags.showQuickCopyId, false);
+    assert.equal(savedFlags.showQuickExport, false);
+    assert.ok(
+      env.postedSettings.some(p => p?.uiPreferences?.featureFlags?.showQuickCopyId === false && p?.uiPreferences?.featureFlags?.showQuickExport === false),
+      '隐藏内置按钮应持久化到宿主 uiPreferences.featureFlags'
+    );
+
+    // 2. 在快捷提示词列表中取消勾选「/plan 规划」（无需删除整行），实时隐藏 #ag-qcap-plan 并保留 #ag-qcap-compact
+    const listEl = shadow.getElementById('quick-prompts-editor-list');
+    const rows = Array.from(listEl?.querySelectorAll('.qp-row') || []);
+    assert.equal(rows.length, 3, '默认应渲染 3 条默认快捷提示词编辑行');
+    const planRow = rows.find(r => r.getAttribute('data-qp-id') === 'plan');
+    const planChk = planRow?.querySelector('.qp-enable-checkbox');
+    assert.ok(planRow && planChk && planChk.checked === true, '默认应勾选 /plan 行显示开关');
+
+    planChk.checked = false;
+    planChk.dispatchEvent({ type: 'change', target: planChk });
+    await new Promise(r => setTimeout(r, 25));
+
+    assert.equal(planRow.getAttribute('data-enabled'), 'false', '取消勾选后行仍保留，状态标记为 false');
+    assert.equal(quickBar.querySelector('#ag-qcap-plan'), null, '取消勾选 /plan 后快捷栏应隐藏对应按钮');
+    assert.ok(quickBar.querySelector('#ag-qcap-compact'), '保留的 /compact 按钮应继续维持 #ag-qcap-compact ID 以保留风险告警染色');
+    assert.ok(quickBar.querySelector('#ag-qcap-reload'), '未隐藏的 重载规则 按钮应继续保留');
+
+    // 重新勾选「/plan 规划」后应立即重新出现
+    planChk.checked = true;
+    planChk.dispatchEvent({ type: 'change', target: planChk });
+    await new Promise(r => setTimeout(r, 25));
+    assert.ok(quickBar.querySelector('#ag-qcap-plan'), '重新勾选后应重新显示 /plan 按钮');
+
+    // 3. 再次隐藏其中一项后，点击「恢复默认」应连同内置按钮一起恢复显示
+    planChk.checked = false;
+    planChk.dispatchEvent({ type: 'change', target: planChk });
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(quickBar.querySelector('#ag-qcap-plan'), null);
+
+    shadow.getElementById('btn-reset-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(shadow.getElementById('set-feat-quick-copyid')?.checked, true, '恢复默认应重新勾选复制会话 ID');
+    assert.equal(shadow.getElementById('set-feat-quick-export')?.checked, true, '恢复默认应重新勾选导出 Markdown');
+    assert.ok(quickBar.querySelector('#ag-qcap-copyid'), '恢复默认后应重新显示 复制会话 ID');
+    assert.ok(quickBar.querySelector('#ag-qcap-export'), '恢复默认后应重新显示 导出 Markdown');
+    assert.ok(quickBar.querySelector('#ag-qcap-plan'), '恢复默认后应重新显示 /plan 规划');
+  } finally {
+    enhancer?.dispose?.();
+    api?.dispose?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
+  }
+});

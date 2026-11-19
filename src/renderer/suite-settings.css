@@ -411,9 +411,13 @@
     }
     .qp-row{
       display:grid;
-      grid-template-columns:minmax(96px,130px) 1fr auto;
+      grid-template-columns:auto minmax(96px,130px) 1fr auto;
       gap:6px;
       align-items:center;
+    }
+    .qp-row[data-enabled="false"] .qp-label-input,
+    .qp-row[data-enabled="false"] .qp-text-input{
+      opacity:0.55;
     }
     .qp-label-input,.qp-text-input,.ag-rp-input{
       width:100%;

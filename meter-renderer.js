@@ -2305,9 +2305,13 @@
     }
     .qp-row{
       display:grid;
-      grid-template-columns:minmax(96px,130px) 1fr auto;
+      grid-template-columns:auto minmax(96px,130px) 1fr auto;
       gap:6px;
       align-items:center;
+    }
+    .qp-row[data-enabled="false"] .qp-label-input,
+    .qp-row[data-enabled="false"] .qp-text-input{
+      opacity:0.55;
     }
     .qp-label-input,.qp-text-input,.ag-rp-input{
       width:100%;
@@ -3689,7 +3693,17 @@
               <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
             </div>
           </div>
-          <div class="settings-card-desc">自定义输入框上方快捷栏的按钮名称与填入内容（最多 12 条，保存后立即生效，内置「复制会话 ID」与「导出 Markdown」始终保留）。</div>
+          <div class="settings-card-desc">自定义输入框上方快捷栏的提示词与内置按钮（勾选即可显示或隐藏，最多 12 条提示词，点「恢复默认」可随时还原）。</div>
+          <div id="quick-builtin-toggles-grid" class="settings-feature-grid" style="margin-bottom:8px;">
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">内置按钮：复制会话 ID</span>
+              <input id="set-feat-quick-copyid" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">内置按钮：导出 Markdown</span>
+              <input id="set-feat-quick-export" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
             <span id="quick-prompts-status" class="qp-status" role="status"></span>
@@ -11379,6 +11393,10 @@ function renderHeatmapGrid(forceRebuild = false) {
     '输入区工具栏（模型/权限等）': 'Composer Tools (Model / Perms / Upload)',
     '待审批操作提醒横幅': 'Pending Approvals Banner',
     '快捷提示词': 'Quick Prompts',
+    '内置按钮：复制会话 ID': 'Built-in: Copy ID',
+    '内置按钮：导出 Markdown': 'Built-in: Export MD',
+    '在快捷栏显示此按钮': 'Show this button in quick bar',
+    '自定义输入框上方快捷栏的提示词与内置按钮（勾选即可显示或隐藏，最多 12 条提示词，点「恢复默认」可随时还原）。': 'Customize composer quick bar prompts and built-in buttons (check to show or hide, up to 12 prompts, reset anytime).',
     '+ 新增': '+ Add',
     '保存快捷提示词': 'Save Quick Prompts',
     '局域网': 'LAN',
@@ -11460,14 +11478,16 @@ function renderHeatmapGrid(forceRebuild = false) {
     showTopbarQuota: true,
     showTopbarRemote: true,
     showQuickBar: true,
-    showChatNav: true
+    showChatNav: true,
+    showQuickCopyId: true,
+    showQuickExport: true
   };
   let suiteFeatureFlags = { ...DEFAULT_SUITE_FEATURE_FLAGS };
 
   const DEFAULT_QUICK_PROMPTS = [
-    { id: 'compact', label: '/compact 压缩', text: '/compact', title: '快速填入 /compact 压缩上下文命令' },
-    { id: 'plan', label: '/plan 规划', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式' },
-    { id: 'reload', label: '重载规则', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令' }
+    { id: 'compact', label: '/compact 压缩', text: '/compact', title: '快速填入 /compact 压缩上下文命令', enabled: true },
+    { id: 'plan', label: '/plan 规划', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式', enabled: true },
+    { id: 'reload', label: '重载规则', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令', enabled: true }
   ];
 
   function sanitizeQuickPromptsList(raw) {
@@ -11485,7 +11505,8 @@ function renderHeatmapGrid(forceRebuild = false) {
         id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: String(item.title || '').trim().slice(0, 120)
+        title: String(item.title || '').trim().slice(0, 120),
+        enabled: item.enabled !== false
       });
       if (out.length >= 12) break;
     }
@@ -12188,7 +12209,9 @@ function renderHeatmapGrid(forceRebuild = false) {
       ['set-feat-quota', 'showTopbarQuota'],
       ['set-feat-remote', 'showTopbarRemote'],
       ['set-feat-quickbar', 'showQuickBar'],
-      ['set-feat-chatnav', 'showChatNav']
+      ['set-feat-chatnav', 'showChatNav'],
+      ['set-feat-quick-copyid', 'showQuickCopyId'],
+      ['set-feat-quick-export', 'showQuickExport']
     ];
     for (const [id, key] of map) {
       const chk = el(id);
@@ -12572,7 +12595,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       suiteQuickPrompts = cleaned === null ? [] : cleaned;
     }
     dispatchSuitePrefsChanged();
-    renderQuickPromptsEditor();
+    if (!opts?.skipRenderEditor) renderQuickPromptsEditor();
     const statusEl = el('quick-prompts-status');
     if (statusEl) {
       statusEl.textContent = suiteQuickPrompts === null
@@ -12588,13 +12611,40 @@ function renderHeatmapGrid(forceRebuild = false) {
   }
 
   async function resetSuiteQuickPrompts() {
-    return await setSuiteQuickPrompts(null);
+    const needRestoreBuiltin = suiteFeatureFlags.showQuickCopyId === false || suiteFeatureFlags.showQuickExport === false;
+    if (needRestoreBuiltin) {
+      suiteFeatureFlags.showQuickCopyId = true;
+      suiteFeatureFlags.showQuickExport = true;
+      syncFeatureFlagControls();
+      applySuiteFeatureFlags();
+    }
+    const result = await setSuiteQuickPrompts(null, { skipPersist: true });
+    await saveSuiteUiPrefs({
+      quickPrompts: null,
+      ...(needRestoreBuiltin ? { featureFlags: { ...suiteFeatureFlags } } : {})
+    });
+    return result;
   }
 
   function appendQuickPromptEditorRow(listEl, item, idx) {
+    const enabled = item?.enabled !== false;
     const row = document.createElement('div');
     row.className = 'qp-row';
     row.setAttribute('data-qp-idx', String(idx));
+    if (item?.id) row.setAttribute('data-qp-id', String(item.id));
+    row.setAttribute('data-enabled', enabled ? 'true' : 'false');
+
+    const toggleChk = document.createElement('input');
+    toggleChk.type = 'checkbox';
+    toggleChk.className = 'settings-checkbox qp-enable-checkbox';
+    toggleChk.checked = enabled;
+    toggleChk.title = suiteTr('在快捷栏显示此按钮', 'Show this button in quick bar');
+    toggleChk.setAttribute('aria-label', suiteTr('在快捷栏显示此按钮', 'Show this button in quick bar'));
+    toggleChk.addEventListener('change', () => {
+      row.setAttribute('data-enabled', toggleChk.checked ? 'true' : 'false');
+      const collected = collectQuickPromptsFromEditor();
+      void setSuiteQuickPrompts(collected, { skipRenderEditor: true });
+    });
 
     const labelInp = document.createElement('input');
     labelInp.type = 'text';
@@ -12619,6 +12669,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       row.remove?.();
     });
 
+    row.appendChild(toggleChk);
     row.appendChild(labelInp);
     row.appendChild(textInp);
     row.appendChild(delBtn);
@@ -12640,18 +12691,25 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (!listEl) return [];
     const rows = Array.from(listEl.querySelectorAll('.qp-row') || []);
     const out = [];
+    const usedIds = new Set();
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
+      const toggleChk = row.querySelector('.qp-enable-checkbox');
       const labelInp = row.querySelector('.qp-label-input');
       const textInp = row.querySelector('.qp-text-input');
       const label = String(labelInp?.value || '').trim();
       const text = String(textInp?.value || '');
       if (!label || !text.trim()) continue;
+      const rawId = String(row.getAttribute?.('data-qp-id') || '').trim();
+      let id = (rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) && !usedIds.has(rawId)) ? rawId : `custom-${i}`;
+      while (usedIds.has(id)) id = `${id}-${i}`;
+      usedIds.add(id);
       out.push({
-        id: `custom-${i}`,
+        id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: label.slice(0, 120)
+        title: label.slice(0, 120),
+        enabled: toggleChk ? Boolean(toggleChk.checked) : true
       });
       if (out.length >= 12) break;
     }
@@ -13547,7 +13605,9 @@ function renderHeatmapGrid(forceRebuild = false) {
     ['set-feat-quota', 'showTopbarQuota'],
     ['set-feat-remote', 'showTopbarRemote'],
     ['set-feat-quickbar', 'showQuickBar'],
-    ['set-feat-chatnav', 'showChatNav']
+    ['set-feat-chatnav', 'showChatNav'],
+    ['set-feat-quick-copyid', 'showQuickCopyId'],
+    ['set-feat-quick-export', 'showQuickExport']
   ].forEach(([id, key]) => {
     el(id)?.addEventListener('change', e => {
       void setSuiteFeatureFlags({ [key]: Boolean(e?.target?.checked) });

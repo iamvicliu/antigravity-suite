@@ -65,7 +65,17 @@
               <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
             </div>
           </div>
-          <div class="settings-card-desc">自定义输入框上方快捷栏的按钮名称与填入内容（最多 12 条，保存后立即生效，内置「复制会话 ID」与「导出 Markdown」始终保留）。</div>
+          <div class="settings-card-desc">自定义输入框上方快捷栏的提示词与内置按钮（勾选即可显示或隐藏，最多 12 条提示词，点「恢复默认」可随时还原）。</div>
+          <div id="quick-builtin-toggles-grid" class="settings-feature-grid" style="margin-bottom:8px;">
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">内置按钮：复制会话 ID</span>
+              <input id="set-feat-quick-copyid" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">内置按钮：导出 Markdown</span>
+              <input id="set-feat-quick-export" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
             <span id="quick-prompts-status" class="qp-status" role="status"></span>
