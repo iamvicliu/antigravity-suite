@@ -3269,6 +3269,7 @@ function buildMobileAppHtml() {
     .proj-empty-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
     /* 新建项目与电脑目录浏览器弹窗 */
     .sheet.proj-modal{max-width:540px;max-height:min(680px,calc(var(--modal-h,100dvh) * 0.84),calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px));gap:10px}
+    .proj-modal-body{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:10px}
     .proj-roots-bar{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;flex-shrink:0;padding-bottom:2px}
     .proj-roots-bar::-webkit-scrollbar{display:none}
     .proj-root-pill{
@@ -3293,7 +3294,7 @@ function buildMobileAppHtml() {
     .proj-mkdir-row{display:flex;align-items:center;gap:6px;flex-shrink:0}
     .proj-mkdir-row[hidden]{display:none}
     .proj-dir-list{
-      display:flex;flex-direction:column;gap:5px;flex:1 1 auto;min-height:84px;max-height:calc(var(--modal-h,100dvh) * 0.34);overflow-y:auto;-webkit-overflow-scrolling:touch;
+      display:flex;flex-direction:column;gap:5px;flex:0 0 auto;min-height:104px;max-height:calc(var(--modal-h,100dvh) * 0.32);overflow-y:auto;-webkit-overflow-scrolling:touch;
       padding:2px 0;
     }
     .proj-dir-item{
@@ -3381,20 +3382,20 @@ function buildMobileAppHtml() {
     }
     .toast[hidden]{display:none}
     /* 细滚动条 */
-    .messages,.conv-list,.drawer,.sheet-list,.thought-body,.md-body pre,.md-table-wrap{
+    .messages,.conv-list,.drawer,.sheet-list,.proj-modal-body,.thought-body,.md-body pre,.md-table-wrap{
       scrollbar-width:thin;scrollbar-color:var(--scroll-thumb) transparent;
     }
     .messages{scrollbar-gutter:stable}
-    .messages::-webkit-scrollbar,.conv-list::-webkit-scrollbar,.drawer::-webkit-scrollbar,.sheet-list::-webkit-scrollbar,.thought-body::-webkit-scrollbar,.md-body pre::-webkit-scrollbar,.md-table-wrap::-webkit-scrollbar{
+    .messages::-webkit-scrollbar,.conv-list::-webkit-scrollbar,.drawer::-webkit-scrollbar,.sheet-list::-webkit-scrollbar,.proj-modal-body::-webkit-scrollbar,.thought-body::-webkit-scrollbar,.md-body pre::-webkit-scrollbar,.md-table-wrap::-webkit-scrollbar{
       width:6px;height:6px;
     }
-    .messages::-webkit-scrollbar-thumb,.conv-list::-webkit-scrollbar-thumb,.drawer::-webkit-scrollbar-thumb,.sheet-list::-webkit-scrollbar-thumb,.thought-body::-webkit-scrollbar-thumb,.md-body pre::-webkit-scrollbar-thumb,.md-table-wrap::-webkit-scrollbar-thumb{
+    .messages::-webkit-scrollbar-thumb,.conv-list::-webkit-scrollbar-thumb,.drawer::-webkit-scrollbar-thumb,.sheet-list::-webkit-scrollbar-thumb,.proj-modal-body::-webkit-scrollbar-thumb,.thought-body::-webkit-scrollbar-thumb,.md-body pre::-webkit-scrollbar-thumb,.md-table-wrap::-webkit-scrollbar-thumb{
       background:var(--scroll-thumb);border-radius:99px;
     }
-    .messages::-webkit-scrollbar-thumb:hover,.conv-list::-webkit-scrollbar-thumb:hover,.drawer::-webkit-scrollbar-thumb:hover,.sheet-list::-webkit-scrollbar-thumb:hover,.md-table-wrap::-webkit-scrollbar-thumb:hover{
+    .messages::-webkit-scrollbar-thumb:hover,.conv-list::-webkit-scrollbar-thumb:hover,.drawer::-webkit-scrollbar-thumb:hover,.sheet-list::-webkit-scrollbar-thumb:hover,.proj-modal-body::-webkit-scrollbar-thumb:hover,.md-table-wrap::-webkit-scrollbar-thumb:hover{
       background:var(--scroll-thumb-hover);
     }
-    .messages::-webkit-scrollbar-track,.conv-list::-webkit-scrollbar-track,.drawer::-webkit-scrollbar-track,.sheet-list::-webkit-scrollbar-track,.md-table-wrap::-webkit-scrollbar-track{
+    .messages::-webkit-scrollbar-track,.conv-list::-webkit-scrollbar-track,.drawer::-webkit-scrollbar-track,.sheet-list::-webkit-scrollbar-track,.proj-modal-body::-webkit-scrollbar-track,.md-table-wrap::-webkit-scrollbar-track{
       background:transparent;
     }
     /* 鼠标设备悬停交互 */
@@ -3574,27 +3575,29 @@ function buildMobileAppHtml() {
         <span>新建项目 · 选择电脑目录</span>
         <button id="proj-modal-close" class="icon-btn" style="height:28px;font-size:12px" type="button">关闭</button>
       </div>
-      <div id="proj-roots" class="proj-roots-bar"></div>
-      <div class="proj-path-row">
-        <input id="proj-path-input" class="proj-path-input" type="text" placeholder="输入电脑路径，例如 ~/codebase/my-app">
-        <button id="proj-path-go" class="proj-act-btn" type="button">前往</button>
+      <div id="proj-modal-body" class="proj-modal-body">
+        <div id="proj-roots" class="proj-roots-bar"></div>
+        <div class="proj-path-row">
+          <input id="proj-path-input" class="proj-path-input" type="text" placeholder="输入电脑路径，例如 ~/codebase/my-app">
+          <button id="proj-path-go" class="proj-act-btn" type="button">前往</button>
+        </div>
+        <div class="proj-act-row">
+          <button id="proj-up-btn" class="proj-act-btn" type="button">↑ 上级目录</button>
+          <button id="proj-hidden-btn" class="proj-act-btn" type="button">显示隐藏目录</button>
+          <button id="proj-mkdir-toggle" class="proj-act-btn" type="button">＋ 新建文件夹</button>
+        </div>
+        <div id="proj-mkdir-row" class="proj-mkdir-row" hidden>
+          <input id="proj-mkdir-input" class="proj-field-input" type="text" placeholder="输入新文件夹名称…">
+          <button id="proj-mkdir-confirm" class="proj-act-btn active" type="button">创建</button>
+        </div>
+        <div id="proj-dir-list" class="proj-dir-list"></div>
+        <div id="proj-selected-summary" class="proj-summary-card"></div>
+        <div class="proj-name-row">
+          <label class="proj-name-label" for="proj-name-input">项目名称</label>
+          <input id="proj-name-input" class="proj-field-input" type="text" placeholder="输入项目名称…">
+        </div>
+        <button id="proj-create-submit" class="proj-primary-btn" type="button">创建项目并进入对话</button>
       </div>
-      <div class="proj-act-row">
-        <button id="proj-up-btn" class="proj-act-btn" type="button">↑ 上级目录</button>
-        <button id="proj-hidden-btn" class="proj-act-btn" type="button">显示隐藏目录</button>
-        <button id="proj-mkdir-toggle" class="proj-act-btn" type="button">＋ 新建文件夹</button>
-      </div>
-      <div id="proj-mkdir-row" class="proj-mkdir-row" hidden>
-        <input id="proj-mkdir-input" class="proj-field-input" type="text" placeholder="输入新文件夹名称…">
-        <button id="proj-mkdir-confirm" class="proj-act-btn active" type="button">创建</button>
-      </div>
-      <div id="proj-dir-list" class="proj-dir-list"></div>
-      <div id="proj-selected-summary" class="proj-summary-card"></div>
-      <div class="proj-name-row">
-        <label class="proj-name-label" for="proj-name-input">项目名称</label>
-        <input id="proj-name-input" class="proj-field-input" type="text" placeholder="输入项目名称…">
-      </div>
-      <button id="proj-create-submit" class="proj-primary-btn" type="button">创建项目并进入对话</button>
     </div>
   </div>
 
@@ -3977,6 +3980,9 @@ function buildMobileAppHtml() {
     let lastTextBlurAt = 0;
     let activeShiftedSheet = null;
     let activeModalSheetShiftY = 0;
+    let activeSheetLockedHeight = 0;
+    let activeScrolledModalBody = null;
+    let activeModalBodyScrollY = 0;
     let viewportSyncTimers = [];
 
     const desktopMq = typeof window.matchMedia === 'function'
@@ -4010,22 +4016,43 @@ function buildMobileAppHtml() {
       return null;
     }
 
+    function clearScrollBodyOffset(bodyEl) {
+      if (!bodyEl) return;
+      bodyEl.style.paddingBottom = '';
+      bodyEl.scrollTop = 0;
+    }
+
     function resetModalSheetShift() {
       if (activeShiftedSheet) {
         activeShiftedSheet.style.transform = '';
+        activeShiftedSheet.style.height = '';
       }
+      clearScrollBodyOffset(activeScrolledModalBody);
       const openBackdrop = getOpenModalBackdrop();
       const sheetEl = openBackdrop?.querySelector?.('.sheet');
-      if (sheetEl && sheetEl !== activeShiftedSheet) {
-        sheetEl.style.transform = '';
+      if (sheetEl) {
+        if (sheetEl !== activeShiftedSheet) {
+          sheetEl.style.transform = '';
+          sheetEl.style.height = '';
+        }
+        const bodyEl = sheetEl.querySelector?.('.proj-modal-body');
+        if (bodyEl && bodyEl !== activeScrolledModalBody) {
+          clearScrollBodyOffset(bodyEl);
+        }
       }
       activeShiftedSheet = null;
       activeModalSheetShiftY = 0;
+      activeSheetLockedHeight = 0;
+      activeScrolledModalBody = null;
+      activeModalBodyScrollY = 0;
     }
 
     function computeModalSheetShiftY(metrics) {
       const rawTop = Number(metrics?.rawTop);
       const rawBottom = Number(metrics?.rawBottom);
+      const sheetRawTop = metrics?.sheetRawTop !== undefined && metrics?.sheetRawTop !== null
+        ? Number(metrics.sheetRawTop)
+        : null;
       const vvTop = Number(metrics?.vvTop) || 0;
       const vvHeight = Number(metrics?.vvHeight) || 0;
       const safeTopGap = Number.isFinite(metrics?.safeTopGap) ? Number(metrics.safeTopGap) : 12;
@@ -4039,17 +4066,18 @@ function buildMobileAppHtml() {
       // 只要当前聚焦输入框已完整处于键盘上方可视区，严格禁止盲目抬高
       if (rawBottom <= maxBottom && rawTop >= minTop) return 0;
 
-      // 仅当输入框下方被软键盘遮挡时按实际重叠量最小幅上移，并确保顶部不越出可视区
+      // 仅当输入框下方被软键盘遮挡时按弹窗顶边约束安全上移，不越出可视区顶部
       if (rawBottom > maxBottom) {
-        let lift = maxBottom - rawBottom;
-        const maxSafeUp = minTop - rawTop;
-        lift = maxSafeUp <= 0 ? Math.max(lift, maxSafeUp) : Math.min(maxSafeUp, Math.max(lift, minTop - rawTop));
-        return Math.round(lift);
+        const desiredLift = Math.floor(maxBottom - rawBottom);
+        const maxSheetUp = (sheetRawTop !== null && Number.isFinite(sheetRawTop))
+          ? Math.min(0, Math.ceil(minTop - sheetRawTop))
+          : -Infinity;
+        return Math.max(desiredLift, maxSheetUp, Math.ceil(minTop - rawTop));
       }
 
       // 若残留视觉视口偏移 (vv.offsetTop > 0) 把顶部输入框推出上沿，按需轻微下移保底可见
-      const downShift = Math.min(minTop - rawTop, Math.max(0, maxBottom - rawBottom));
-      return downShift > 0 ? Math.round(downShift) : 0;
+      const downShift = Math.min(Math.ceil(minTop - rawTop), Math.floor(Math.max(0, maxBottom - rawBottom)));
+      return downShift > 0 ? downShift : 0;
     }
 
     function syncModalKeyboardOffset() {
@@ -4060,7 +4088,7 @@ function buildMobileAppHtml() {
         return;
       }
       const sheetEl = openBackdrop.querySelector('.sheet');
-      if (!sheetEl || typeof activeEl.getBoundingClientRect !== 'function') {
+      if (!sheetEl || typeof activeEl.getBoundingClientRect !== 'function' || typeof sheetEl.getBoundingClientRect !== 'function') {
         resetModalSheetShift();
         return;
       }
@@ -4076,24 +4104,68 @@ function buildMobileAppHtml() {
         resetModalSheetShift();
         return;
       }
-      const rect = activeEl.getBoundingClientRect();
+
+      const scrollBody = sheetEl.querySelector('.proj-modal-body') || sheetEl.querySelector('.sheet-list') || null;
       const appliedShift = activeShiftedSheet === sheetEl ? activeModalSheetShiftY : 0;
-      const rawTop = rect.top - appliedShift;
-      const rawBottom = rect.bottom - appliedShift;
-      if (vvTop > 0 && rawTop < vvTop + 12 && typeof window.scrollTo === 'function') {
+      const bodyScroll = (scrollBody && scrollBody.contains(activeEl)) ? (Number(scrollBody.scrollTop) || 0) : 0;
+      const sheetRect = sheetEl.getBoundingClientRect();
+      const bodyRect = scrollBody && typeof scrollBody.getBoundingClientRect === 'function' ? scrollBody.getBoundingClientRect() : null;
+      const rect = activeEl.getBoundingClientRect();
+
+      const sheetRawTop = sheetRect.top - appliedShift;
+      const sheetRawHeight = (activeShiftedSheet === sheetEl && activeSheetLockedHeight > 0) ? activeSheetLockedHeight : sheetRect.height;
+      const bodyRawTop = bodyRect ? (bodyRect.top - appliedShift) : sheetRawTop;
+      const rawTop = rect.top - appliedShift + bodyScroll;
+      const rawBottom = rect.bottom - appliedShift + bodyScroll;
+      const minTop = vvTop + 12;
+      const maxBottom = vvTop + vvHeight - 14;
+
+      if (rawBottom <= maxBottom && rawTop >= minTop) {
+        resetModalSheetShift();
+        return;
+      }
+
+      if (vvTop > 0 && rawTop < minTop && typeof window.scrollTo === 'function') {
         try { window.scrollTo(0, 0); } catch {}
       }
+
       const nextShift = computeModalSheetShiftY({
         rawTop,
         rawBottom,
+        sheetRawTop,
         vvTop,
         vvHeight,
         safeTopGap: 12,
         safeBottomGap: 14
       });
-      activeShiftedSheet = nextShift ? sheetEl : null;
-      activeModalSheetShiftY = nextShift;
+
+      const remainingOverlap = (rawBottom > maxBottom) ? Math.ceil((rawBottom + nextShift) - maxBottom) : 0;
       sheetEl.style.transform = nextShift ? ('translateY(' + nextShift + 'px)') : '';
+
+      if (remainingOverlap > 0 && scrollBody && scrollBody.contains(activeEl)) {
+        if (sheetRawHeight > 0) {
+          sheetEl.style.height = sheetRawHeight + 'px';
+          activeSheetLockedHeight = sheetRawHeight;
+        }
+        const maxBodyScroll = Math.max(0, Math.floor(rawTop - bodyRawTop - 4));
+        const targetScroll = Math.max(0, Math.min(remainingOverlap, maxBodyScroll));
+        scrollBody.style.paddingBottom = (targetScroll + 28) + 'px';
+        scrollBody.scrollTop = targetScroll;
+        activeScrolledModalBody = scrollBody;
+        activeModalBodyScrollY = targetScroll;
+      } else {
+        sheetEl.style.height = '';
+        activeSheetLockedHeight = 0;
+        clearScrollBodyOffset(activeScrolledModalBody);
+        if (scrollBody && scrollBody !== activeScrolledModalBody) {
+          clearScrollBodyOffset(scrollBody);
+        }
+        activeScrolledModalBody = null;
+        activeModalBodyScrollY = 0;
+      }
+
+      activeShiftedSheet = (nextShift || remainingOverlap > 0) ? sheetEl : null;
+      activeModalSheetShiftY = nextShift;
     }
 
     function syncViewportHeight() {
