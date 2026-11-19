@@ -15,7 +15,7 @@
 
       /* 圆环与各指标默认主题色 */
       --ag-ring-track-default:rgba(255,255,255,0.20);
-      --ag-ring-used-default:#e6e6eb;
+      --ag-ring-used-default:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       --ag-ring-warn:#f59e0b;
       --ag-ring-danger:#ef4444;
 
@@ -125,7 +125,7 @@
       --ag-divider:rgba(0,0,0,0.08);
 
       --ag-ring-track-default:rgba(0,0,0,0.18);
-      --ag-ring-used-default:#18181b;
+      --ag-ring-used-default:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));
       --ag-ring-warn:#d97706;
       --ag-ring-danger:#dc2626;
 

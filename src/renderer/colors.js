@@ -73,15 +73,79 @@
     }
     const savedPreset = typeof localStorage !== 'undefined' && localStorage.getItem(HEAT_PRESET_STORAGE_KEY);
     if (savedPreset && HEAT_PRESETS[savedPreset]) heatPreset = savedPreset;
+    const hostUiPrefs = typeof window !== 'undefined' ? window.__AGContextMeterSettings?.uiPreferences : null;
+    if (hostUiPrefs && typeof hostUiPrefs === 'object') {
+      let hostInitApplied = false;
+      if (typeof hostUiPrefs.heatPreset === 'string' && HEAT_PRESETS[hostUiPrefs.heatPreset]) {
+        if (heatPreset !== hostUiPrefs.heatPreset || savedPreset !== hostUiPrefs.heatPreset) {
+          hostInitApplied = true;
+        }
+        heatPreset = hostUiPrefs.heatPreset;
+      }
+      if (hostUiPrefs.customColors && typeof hostUiPrefs.customColors === 'object') {
+        for (const k of Object.keys(COLOR_SLOTS)) {
+          if (typeof hostUiPrefs.customColors[k] === 'string' && customColors[k] !== hostUiPrefs.customColors[k]) {
+            customColors[k] = hostUiPrefs.customColors[k];
+            hostInitApplied = true;
+          }
+        }
+      }
+      if (hostInitApplied) {
+        saveCustomColors(false);
+      }
+    }
   } catch {}
 
-  function saveCustomColors() {
+  function saveCustomColors(syncHost = true) {
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(COLOR_STORAGE_KEY, JSON.stringify({ ...customColors, heatPreset }));
         localStorage.setItem(HEAT_PRESET_STORAGE_KEY, heatPreset);
       }
     } catch {}
+    if (syncHost && typeof saveSuiteUiPrefs === 'function') {
+      void saveSuiteUiPrefs({
+        heatPreset,
+        customColors: { ...customColors },
+        themeMode: currentThemeMode
+      });
+    }
+  }
+
+  function applyHostAppearancePreferences(uiPrefs) {
+    if (!uiPrefs || typeof uiPrefs !== 'object') return;
+    let changed = false;
+    if (typeof uiPrefs.themeMode === 'string' && ['auto', 'light', 'dark'].includes(uiPrefs.themeMode)) {
+      if (currentThemeMode !== uiPrefs.themeMode) {
+        currentThemeMode = uiPrefs.themeMode;
+        try {
+          if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', currentThemeMode);
+        } catch {}
+        changed = true;
+      }
+    }
+    if (typeof uiPrefs.heatPreset === 'string' && HEAT_PRESETS[uiPrefs.heatPreset]) {
+      if (heatPreset !== uiPrefs.heatPreset) {
+        heatPreset = uiPrefs.heatPreset;
+        changed = true;
+      }
+    }
+    if (uiPrefs.customColors && typeof uiPrefs.customColors === 'object') {
+      for (const key of Object.keys(COLOR_SLOTS)) {
+        if (typeof uiPrefs.customColors[key] === 'string') {
+          const nextVal = uiPrefs.customColors[key];
+          if (customColors[key] !== nextVal) {
+            customColors[key] = nextVal;
+            changed = true;
+          }
+        }
+      }
+    }
+    if (changed) {
+      saveCustomColors(false);
+      applyTheme();
+      applyCustomColors();
+    }
   }
 
   // 色彩空间转换与格式化工具（HEX <-> RGB <-> HSV <-> HSL）
@@ -215,7 +279,15 @@
 
   let currentThemeMode = 'auto';
   try {
-    currentThemeMode = (typeof localStorage !== 'undefined' && localStorage.getItem('ag_theme_mode')) || 'auto';
+    const savedMode = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_theme_mode') : null;
+    currentThemeMode = savedMode || 'auto';
+    const hostThemeMode = typeof window !== 'undefined' ? window.__AGContextMeterSettings?.uiPreferences?.themeMode : null;
+    if (typeof hostThemeMode === 'string' && ['auto', 'light', 'dark'].includes(hostThemeMode)) {
+      currentThemeMode = hostThemeMode;
+      if (savedMode !== hostThemeMode && typeof localStorage !== 'undefined') {
+        localStorage.setItem('ag_theme_mode', hostThemeMode);
+      }
+    }
   } catch {}
 
   function parseRgbLuminance(colorStr) {
@@ -326,7 +398,7 @@
     const customHeatAccent = normalizeHex(customColors.heatLvl4) || normalizeHex(customColors.heatHigh);
     switch (slotKey) {
       case 'panelBg': return getHostZeroLevelBg(isLight);
-      case 'ringUsed': return isLight ? '#18181b' : '#e6e6eb';
+      case 'ringUsed': return customHeatAccent || (isLight ? accentSpec.light : accentSpec.dark);
       case 'ringTrack': return isLight ? '#b8b8c2' : '#52525b';
       case 'contextText': return isLight ? '#18181b' : '#ececef';
       case 'speedText': return isLight ? '#52525b' : '#b8b8c0';
@@ -493,6 +565,7 @@
     if (key === 'heatHigh' && norm) customColors.heatLvl4 = '';
     saveCustomColors();
     applyCustomColors();
+    if (typeof dispatchSuitePrefsChanged === 'function') dispatchSuitePrefsChanged();
   }
 
   function setHeatPreset(presetName) {
@@ -505,6 +578,7 @@
     }
     saveCustomColors();
     applyCustomColors();
+    if (typeof dispatchSuitePrefsChanged === 'function') dispatchSuitePrefsChanged();
   }
 
   function resetHeatmapLevels() {
@@ -515,6 +589,7 @@
     }
     saveCustomColors();
     applyCustomColors();
+    if (typeof dispatchSuitePrefsChanged === 'function') dispatchSuitePrefsChanged();
   }
 
   function resetCustomColors() {
@@ -522,6 +597,7 @@
     heatPreset = 'purple';
     saveCustomColors();
     applyCustomColors();
+    if (typeof dispatchSuitePrefsChanged === 'function') dispatchSuitePrefsChanged();
   }
 
   function applyTheme() {
@@ -578,6 +654,8 @@
       if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', currentThemeMode);
     } catch {}
     applyTheme();
+    if (typeof dispatchSuitePrefsChanged === 'function') dispatchSuitePrefsChanged();
+    if (typeof saveSuiteUiPrefs === 'function') void saveSuiteUiPrefs({ themeMode: currentThemeMode });
   }
 
   let themeObserver = null;

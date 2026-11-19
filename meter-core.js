@@ -530,6 +530,13 @@
 
     // 解耦维度：错误发生时不强制归零已有上下文用量
     const prevContext = options.previousValidContext || null;
+    const totalInputTokens = (input || 0) + (cached || 0);
+    const actualCached = hasInput ? (cached || 0) : (prevContext?.cached || 0);
+    const uncachedInput = hasInput ? (input || 0) : (prevContext?.uncachedInput ?? null);
+    const cacheHitRate = hasInput && totalInputTokens > 0
+      ? Number(((actualCached / totalInputTokens) * 100).toFixed(1))
+      : (prevContext?.cacheHitRate ?? null);
+
     let actual = hasInput && !error ? (input || 0) + (cached || 0) + (output || 0) : null;
     if (actual === null && prevContext && prevContext.actual != null && !exceeded) {
       actual = prevContext.actual;
@@ -588,8 +595,10 @@
       error,
       errorClassification: classification,
       estimated: actual === null,
-      input: hasInput ? (input || 0) + (cached || 0) : (prevContext?.input || null),
-      cached: cached || prevContext?.cached || 0,
+      input: hasInput ? totalInputTokens : (prevContext?.input || null),
+      cached: actualCached,
+      uncachedInput,
+      cacheHitRate,
       output: output ?? (prevContext?.output ?? null),
       percent: percentVal,
       model,
