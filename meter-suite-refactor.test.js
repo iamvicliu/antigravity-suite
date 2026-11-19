@@ -4668,45 +4668,89 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
       assert.equal(act?.projectId, expectedId, `新建请求必须保持目标项目 ${expectedId}`);
     };
     let deferredGate = null;
+    let deferredSnapGate = null;
     let gateInlineSnap = true;
+    let actionNoOp = false;
     const baseUiFetch = envUi.sandbox.fetch;
     envUi.sandbox.fetch = async (url, init) => {
       const u = new URL(String(url), 'http://127.0.0.1');
-      if (u.pathname === '/api/action' && deferredGate) {
-        const g = deferredGate; const inline = gateInlineSnap; deferredGate = null;
+      if (u.pathname === '/api/snapshot' && deferredSnapGate) {
+        const g = deferredSnapGate; deferredSnapGate = null;
         const res = await baseUiFetch(url, init);
+        const captured = await res.json();
         await g.promise;
-        if (!inline) { const body = await res.json(); return { ...res, json: async () => ({ ok: body.ok, actionResult: body.actionResult }) }; }
-        return res;
+        return { ...res, json: async () => captured };
+      }
+      if (u.pathname === '/api/action') {
+        if (actionNoOp) {
+          const body = JSON.parse(String(init?.body || '{}'));
+          dispatchedActions.push(body);
+          return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ ok: true, actionResult: { ok: true } }) };
+        }
+        if (deferredGate) {
+          const g = deferredGate; const inline = gateInlineSnap; deferredGate = null;
+          const res = await baseUiFetch(url, init);
+          await g.promise;
+          if (!inline) { const body = await res.json(); return { ...res, json: async () => ({ ok: body.ok, actionResult: body.actionResult }) }; }
+          return res;
+        }
       }
       return baseUiFetch(url, init);
     };
     const mkGate = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
-    // Case 1: 切换至 B 项目会话延迟返回内联 snapshot + 后续轮询; Case 2: B 新建无内联 snapshot + 轮询迟到
+    // Case 1: A 旧轮询在途 -> 发起切换 B -> 点选 C -> B 内联快照返回 -> A 旧轮询迟到 -> 新轮询返回 B，保持 C
     const projBConv = (currentUiSnap.conversations || []).find((c) => c && c.projectId === 'proj-b');
     assert.ok(projBConv);
+    convListEl.querySelector('button[data-cid="conv-root-001"]').click();
+    await new Promise((r) => setTimeout(r, 40));
+    deferredSnapGate = mkGate(); const snapGateA = deferredSnapGate;
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 15));
     gateInlineSnap = true; deferredGate = mkGate(); const gate1 = deferredGate;
     convListEl.querySelector(`button[data-cid="${projBConv.id}"]`).click();
     await new Promise((r) => setTimeout(r, 15));
     convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
     gate1.resolve();
     await new Promise((r) => setTimeout(r, 50));
+    snapGateA.resolve();
+    await new Promise((r) => setTimeout(r, 40));
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
     await assertProjectHeldC('default-cli-project', 'CLI Project');
 
+    // Case 2: 超过 15 秒后 B 新建迟到轮询落地，仍不覆盖点选 C
     gateInlineSnap = false; deferredGate = mkGate(); const gate2 = deferredGate;
     convListEl.querySelector('button[data-new-proj="proj-b"]').click();
     await new Promise((r) => setTimeout(r, 15));
     convListEl.querySelector('button[data-proj-toggle="proj-empty"]').click();
     gate2.resolve();
     await new Promise((r) => setTimeout(r, 50));
+    const origDateNow = envUi.sandbox.Date.now;
+    envUi.sandbox.Date.now = () => origDateNow() + 30000;
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
+    envUi.sandbox.Date.now = origDateNow;
     await assertProjectHeldC('proj-empty', 'EmptyProj');
+
+    // Case 3: 中间连续穿插 20 次（>16 上限）导航后，最初切换 B 最终落地轮询仍不覆盖点选 C
+    convListEl.querySelector('button[data-cid="conv-root-001"]').click();
+    await new Promise((r) => setTimeout(r, 40));
+    actionNoOp = true;
+    convListEl.querySelector(`button[data-cid="${projBConv.id}"]`).click();
+    for (let k = 0; k < 20; k++) convListEl.querySelector('button[data-new-proj="proj-a"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    actionNoOp = false;
+    convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
+    await enhReal.performMobileAction({ action: 'switch-conversation', id: projBConv.id });
+    currentUiSnap = await refreshLiveTestSnap();
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    await assertProjectHeldC('default-cli-project', 'CLI Project');
 
     enhReal.dispose?.();
     envReal.sandbox.__AGContextMeter?.dispose?.();
