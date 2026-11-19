@@ -5231,6 +5231,12 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     const deskSubFs = parseFontPx(desktopCss, '.new-chat-sub');
     assert.ok(mobSubFs > 0 && mobSubFs <= 11, `移动端新建对话下排项目名字号 (${mobSubFs}px) 应为极小字 <= 11px`);
     assert.ok(deskSubFs > 0 && deskSubFs <= 10.5, `桌面端新建对话下排项目名字号 (${deskSubFs}px) 应为极小字 <= 10.5px`);
+    const newChatSubRule = (mobileCss.match(/\.new-chat-sub\{[^}]*\}/) || [''])[0];
+    assert.ok(
+      newChatSubRule.includes('white-space:normal') && newChatSubRule.includes('overflow-wrap:anywhere'),
+      '新建对话下排项目名应允许自动换行完整显示'
+    );
+    assert.equal(newChatSubRule.includes('text-overflow:ellipsis'), false, '#new-chat-sub 不得省略截断长项目名');
     assert.ok(cssText.includes('.proj-head{') && cssText.includes('var(--proj-head-bg)'), '项目分组条应使用主题变量 var(--proj-head-bg)');
     assert.ok(cssText.includes('.proj-toggle{') && cssText.includes('color:var(--fg-strong)'), '项目标题文字应使用主题变量 var(--fg-strong)');
     assert.ok(cssText.includes('.proj-path-input,.proj-field-input{') && cssText.includes('var(--input-bg)'), '目录输入框应使用主题变量 var(--input-bg)');
@@ -5476,6 +5482,7 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.ok(convListEl.querySelector('.proj-body .conv-item'), '项目下应有带导引线的 .proj-body 包裹会话项');
     assert.equal(envUi.doc.getElementById('btn-theme'), null, '右上角顶栏不应渲染独立外观切换按钮');
     assert.ok(envUi.doc.getElementById('theme-seg'), '侧边栏底部三段外观图标控件应与多项目列表共存在渲染 DOM 中');
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'repo-existing', '新建对话下排小字应完整展示初始活跃项目名');
     const recentTabEl = envUi.doc.querySelector('#conv-view-tabs button[data-conv-view="recent"]');
     const recentTabTxt = (recentTabEl?.textContent || '').trim();
     assert.ok(recentTabTxt.startsWith('活跃') && !recentTabTxt.includes('最近活跃'), `顶部标签应简写为「活跃」，实际: ${recentTabTxt}`);
@@ -5627,6 +5634,26 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
       { stateDir, configDir, bypassCache: true }
     );
     assert.equal(snapAfterArchive.projects.some((p) => p.id === archivedProjId), false, 'archived:true 的项目不得出现在活跃项目列表中');
+
+    // 验证长项目名（56 字符）在 #new-chat-sub 中完整保留、不被 JS 截断
+    const longProjectName = 'antigravity-enterprise-multi-workspace-long-project-name';
+    envUi.doc.getElementById('btn-new-project').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-roots').querySelectorAll('.proj-root-pill')
+      .find((b) => (b.textContent || '') === 'codebase').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
+      .find((b) => (b.textContent || '').includes('plain-b')).click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-name-input').value = longProjectName;
+    envUi.doc.getElementById('proj-name-input').dispatchEvent({ type: 'input' });
+    envUi.doc.getElementById('proj-create-submit').click();
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(
+      (envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(),
+      longProjectName,
+      '#new-chat-sub 应完整展示超长项目名称而不得截取'
+    );
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;
