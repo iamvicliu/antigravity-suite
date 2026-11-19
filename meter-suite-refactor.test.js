@@ -6289,3 +6289,326 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     delete require.cache[require.resolve('./mobile-remote.js')];
   }
 });
+
+// =========================================================================
+// 需求 23: 远程端切换防轮询假死与中止旧请求、折叠思考惰性挂载、轨迹签名缓存及 gzip 压缩
+// =========================================================================
+test('需求 23: 远程端切换防轮询假死与中止旧请求、折叠思考惰性挂载、轨迹签名缓存及 gzip 压缩', async () => {
+  const zlib = require('zlib');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req23-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const configDir = path.join(tmpRoot, 'config');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(path.join(configDir, 'projects'), { recursive: true });
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+  const origDateNow = Date.now;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+
+    // 1) trajSig 轨迹签名缓存命中与变更失效（超越 3500ms TTL 后只要 stepCount/lastModifiedTime/status 未变即跳过 GetCascadeTrajectory）
+    let mockNow = origDateNow();
+    Date.now = () => mockNow;
+    let trajRpcCount = 0;
+    let trajStepCount = 40;
+    let trajModTime = '2026-11-19T10:00:00Z';
+    const steps40 = [];
+    for (let i = 0; i < 20; i++) {
+      steps40.push({ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: `问题 ${i}` }] } });
+      steps40.push({ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: `思考 ${i}`, response: `回复 **#${i}**` } });
+    }
+    const sigMockConnect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-sig-1': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: trajStepCount,
+                lastModifiedTime: trajModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          trajRpcCount += 1;
+          return { trajectory: { steps: steps40 } };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+
+    const baseSnapReq = () => ({
+      ok: true,
+      sessionId: 'sess-sig-1',
+      busy: false,
+      messages: [],
+      conversations: [],
+      projects: []
+    });
+    const snapSig1 = await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 1);
+    assert.equal(snapSig1.totalMessages, 40);
+    assert.equal(snapSig1.messages.length, 6);
+    assert.ok(snapSig1.messages.every((m) => m.role !== 'assistant' || (typeof m.html === 'string' && m.html.includes('<strong>'))), '返回给客户端的最后 6 条消息必须渲染好 Markdown HTML');
+    assert.equal(Object.prototype.hasOwnProperty.call(snapSig1, '_activeTrajSig'), false, '内部 _activeTrajSig 不得泄漏到对外快照中');
+
+    // 时间推进 12s（远超 3500ms TTL），因签名一致应零 RPC 命中缓存
+    mockNow += 12000;
+    const snapSig2 = await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 1, '签名一致时超 TTL 仍应命中缓存，不得重拉 GetCascadeTrajectory');
+    assert.equal(snapSig2.messages.length, 6);
+
+    // 轨迹摘要步数变更后签名失效，应触发重新拉取
+    trajStepCount = 42;
+    trajModTime = '2026-11-19T10:00:15Z';
+    mockNow += 500;
+    await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 2, 'trajSig 变更后必须失效并重新拉取轨迹');
+
+    // 显式 bypassCache: true 必须强制绕过缓存
+    await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: true, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 3, 'bypassCache:true 应强制重新拉取轨迹');
+    Date.now = origDateNow;
+
+    // 2) HTTP gzip 压缩与 Cookie 版本号 1.9.17 验证
+    const cfg = remoteMod.loadOrCreateRemoteConfig();
+    const handler = remoteMod.createRemoteHttpHandler(cfg);
+    const invokeHttp = (method, urlPath, headers = {}) => new Promise((resolve) => {
+      const resHeaders = {};
+      let setCookie = null;
+      handler({
+        method,
+        url: `${urlPath}${urlPath.includes('?') ? '&' : '?'}token=${encodeURIComponent(cfg.token)}`,
+        headers: { host: `127.0.0.1:${cfg.port}`, ...headers },
+        socket: { remoteAddress: '127.0.0.1' }
+      }, {
+        setHeader(k, v) { if (String(k).toLowerCase() === 'set-cookie') setCookie = v; resHeaders[k] = v; },
+        writeHead(status, h = {}) { this.status = status; Object.assign(resHeaders, h); },
+        end(body) { resolve({ status: this.status, headers: resHeaders, setCookie, body }); }
+      });
+    });
+
+    const htmlPlainRes = await invokeHttp('GET', '/');
+    assert.equal(htmlPlainRes.status, 200);
+    assert.ok(String(htmlPlainRes.setCookie || '').includes('ag_ui_ver=1.9.17'), '根目录响应应下发最新版本号 1.9.17');
+
+    const htmlGzipRes = await invokeHttp('GET', '/', { 'accept-encoding': 'gzip, deflate' });
+    assert.equal(htmlGzipRes.status, 200);
+    assert.equal(htmlGzipRes.headers['Content-Encoding'], 'gzip');
+    assert.ok(Buffer.isBuffer(htmlGzipRes.body));
+    const gunzippedHtml = zlib.gunzipSync(htmlGzipRes.body).toString('utf8');
+    assert.ok(gunzippedHtml.includes('id="conv-list"') && gunzippedHtml.includes('openThoughtIdxSet'));
+
+    // 3) 客户端轮询保活/旧请求 Abort、折叠 <details> 惰性挂载、以及侧栏原地 class 乐观切换
+    const mobileHtml = remoteMod.buildMobileAppHtml();
+    const scriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
+    const bodyMatch = mobileHtml.match(/<body>([\s\S]*?)<script>/);
+    assert.ok(scriptMatch && bodyMatch);
+    assert.doesNotThrow(() => new vm.Script(scriptMatch[1]));
+
+    const env = createDomEnv();
+    env.doc.body.innerHTML = bodyMatch[1];
+    env.win.innerWidth = 390;
+    env.win.innerHeight = 844;
+    env.win.location = { pathname: '/', search: '?token=tok23', protocol: 'http:', reload() {} };
+    env.win.history = { replaceState() {} };
+    env.sandbox.location = env.win.location;
+    env.sandbox.history = env.win.history;
+    env.sandbox.URLSearchParams = URLSearchParams;
+
+    let abortCreated = [];
+    class TrackedAbortController extends AbortController {
+      constructor() {
+        super();
+        abortCreated.push(this);
+      }
+    }
+    env.win.AbortController = TrackedAbortController;
+    env.sandbox.AbortController = TrackedAbortController;
+
+    let timerSeq = 1;
+    const activeTimerMap = new Map();
+    env.sandbox.setTimeout = (fn, ms) => {
+      const id = timerSeq++;
+      activeTimerMap.set(id, { fn, ms });
+      return id;
+    };
+    env.sandbox.clearTimeout = (id) => {
+      activeTimerMap.delete(id);
+    };
+    env.win.setTimeout = env.sandbox.setTimeout;
+    env.win.clearTimeout = env.sandbox.clearTimeout;
+
+    const projAlphaBeta = [
+      { id: 'proj-a', name: 'Alpha', conversationCount: 1 },
+      { id: 'proj-b', name: 'Beta', conversationCount: 1 }
+    ];
+    const convsAB = [
+      { id: 'sess-alpha', projectId: 'proj-a', projectName: 'Alpha', title: 'Alpha Title', active: true, status: 'idle', unread: false, updatedAt: 2000 },
+      { id: 'sess-beta', projectId: 'proj-b', projectName: 'Beta', title: 'Beta Title', active: false, status: 'idle', unread: true, updatedAt: 1000 }
+    ];
+    const alphaSnap = {
+      ok: true,
+      serverBootId: 'boot-req23',
+      serverBootAt: 5000,
+      snapSeq: 1,
+      sessionId: 'sess-alpha',
+      isNewConversation: false,
+      currentProjectId: 'proj-a',
+      currentProjectName: 'Alpha',
+      title: 'Alpha Title',
+      busy: false,
+      totalMessages: 1,
+      messagesStartIndex: 0,
+      messages: [{
+        msgIndex: 0,
+        role: 'assistant',
+        text: '正文简短回复',
+        html: '<p>正文简短回复</p>',
+        thoughtLabel: '思考 5 秒',
+        thoughtText: 'LAZY_THOUGHT_PAYLOAD_200KB'
+      }],
+      projects: projAlphaBeta,
+      conversations: convsAB
+    };
+
+    let holdNextSnap = null;
+    let nextActionMode = 'ok';
+    env.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const headers = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/snapshot') {
+        if (holdNextSnap) {
+          const g = holdNextSnap;
+          holdNextSnap = null;
+          await g.promise;
+        }
+        return { ok: true, status: 200, headers, json: async () => alphaSnap };
+      }
+      if (u.pathname === '/api/action') {
+        if (nextActionMode === 'fail') {
+          return { ok: true, status: 200, headers, json: async () => ({ ok: false, error: 'nav fail' }) };
+        }
+        const betaSnap = {
+          ...alphaSnap,
+          snapSeq: 2,
+          sessionId: 'sess-beta',
+          currentProjectId: 'proj-b',
+          currentProjectName: 'Beta',
+          title: 'Beta Title',
+          messages: [{
+            msgIndex: 0,
+            role: 'assistant',
+            text: 'Beta 正文回复',
+            html: '<p>Beta 正文回复</p>',
+            thoughtLabel: 'Beta 思考',
+            thoughtText: 'BETA_LAZY_THOUGHT'
+          }]
+        };
+        return { ok: true, status: 200, headers, json: async () => ({ ok: true, actionResult: { ok: true }, snapshot: betaSnap }) };
+      }
+      return { ok: true, status: 200, headers, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(scriptMatch[1], env.sandbox);
+    await new Promise((r) => setTimeout(r, 30));
+
+    // 3a) 折叠态 <details class="thought-box"> 不得预挂载 .thought-body，展开时惰性填充并跨同会话刷新保持打开
+    const msgEl = env.doc.getElementById('messages');
+    const thoughtDetails = msgEl.querySelector('.thought-box');
+    assert.ok(thoughtDetails, '应渲染思考折叠容器');
+    assert.equal(msgEl.querySelector('.thought-body'), null, '默认折叠态不得预挂载大量思考文本节点');
+    assert.equal(msgEl.innerHTML.includes('LAZY_THOUGHT_PAYLOAD_200KB'), false);
+
+    thoughtDetails.open = true;
+    msgEl.dispatchEvent({ type: 'toggle', target: thoughtDetails });
+    const hydratedBody = thoughtDetails.querySelector('.thought-body');
+    assert.ok(hydratedBody && (hydratedBody.textContent || '').includes('LAZY_THOUGHT_PAYLOAD_200KB'), '展开 <details> 时应立即按需挂载完整思考内容');
+
+    // 同会话再次刷新（触发 <details> 若重建应保留 open 与 .thought-body）
+    const snapTimerEntry = Array.from(activeTimerMap.values()).find((t) => t.ms === 2500 || t.ms === 900);
+    assert.ok(snapTimerEntry, '初次加载后必须调度后台轮询定时器');
+    alphaSnap.snapSeq = 2;
+    alphaSnap.messages[0].text = '正文更新内容';
+    alphaSnap.messages[0].html = '<p>正文更新内容</p>';
+    await snapTimerEntry.fn();
+    assert.ok(msgEl.querySelector('.thought-box')?.hasAttribute?.('open') || msgEl.querySelector('.thought-box')?.open, '同会话重绘应保留已展开思考块状态');
+    assert.ok((msgEl.querySelector('.thought-body')?.textContent || '').includes('LAZY_THOUGHT_PAYLOAD_200KB'));
+
+    // 3b) 启动一个在途 /api/snapshot，然后点击 sess-beta 验证：
+    //     - 旧 /api/snapshot 的 AbortController 被立即 abort()
+    //     - 侧栏按钮采用原地 class 切换（节点引用同一实例，不重刷 innerHTML）
+    //     - 消息区进入 .is-switching 且标题乐观切至 Beta Title
+    //     - 即便切换失败也回滚标题、撤除 .is-switching，且后台 2500ms 轮询器仍存活未被扼杀！
+    let resolveHeldSnap;
+    holdNextSnap = { promise: new Promise((r) => { resolveHeldSnap = r; }) };
+    const latestTimerFn = Array.from(activeTimerMap.values()).find((t) => t.ms === 2500 || t.ms === 900)?.fn;
+    assert.ok(latestTimerFn);
+    const inflightPollPromise = latestTimerFn();
+    await new Promise((r) => setTimeout(r, 10));
+    const snapAbortCtrl = abortCreated[abortCreated.length - 1];
+    assert.equal(snapAbortCtrl.signal.aborted, false);
+
+    const convListEl = env.doc.getElementById('conv-list');
+    const betaBtnBefore = convListEl.querySelector('button[data-cid="sess-beta"]');
+    assert.ok(betaBtnBefore);
+    nextActionMode = 'fail';
+    betaBtnBefore.click();
+
+    // 同步阶段验证乐观交互与旧请求 abort
+    assert.equal(snapAbortCtrl.signal.aborted, true, '点击切换对话必须立刻 abort 在途 /api/snapshot');
+    assert.equal(convListEl.querySelector('button[data-cid="sess-beta"]'), betaBtnBefore, '点击会话项不得同步销毁重建整棵 #conv-list DOM');
+    assert.equal(betaBtnBefore.classList.contains('active'), true);
+    assert.equal(betaBtnBefore.classList.contains('is-unread'), false);
+    assert.equal(msgEl.classList.contains('is-switching'), true, '切换途中消息区应添加 is-switching 视觉反馈');
+    assert.equal(env.doc.getElementById('conv-title')?.textContent, 'Beta Title');
+
+    resolveHeldSnap();
+    await inflightPollPromise;
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(msgEl.classList.contains('is-switching'), false, '切换失败后必须撤除 is-switching');
+    assert.equal(env.doc.getElementById('conv-title')?.textContent, 'Alpha Title', '切换失败后标题应恢复原会话');
+    assert.ok(Array.from(activeTimerMap.values()).some((t) => t.ms === 2500 || t.ms === 900), '即使中途中止旧轮询且切换失败，后台轮询定时器也必须继续存活');
+
+    // 3c) 正常切换至 sess-beta 成功后，openThoughtIdxSet 清理，轮询定时器继续保持调度
+    nextActionMode = 'ok';
+    convListEl.querySelector('button[data-cid="sess-beta"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(env.doc.getElementById('conv-title')?.textContent, 'Beta Title');
+    assert.equal(msgEl.classList.contains('is-switching'), false);
+    assert.equal(msgEl.querySelector('.thought-body'), null, '切入新会话后默认折叠，不预先注入新会话隐藏思考 DOM');
+    assert.ok(Array.from(activeTimerMap.values()).some((t) => t.ms === 2500 || t.ms === 900), '切换会话完成后后台轮询定时器必须保持激活');
+  } finally {
+    Date.now = origDateNow;
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
