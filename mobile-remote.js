@@ -1199,7 +1199,10 @@ async function pickCdpTarget(requestedId) {
 const SESSION_CATALOG_FILE_NAME = 'remote-session-catalog.json';
 const MAX_ARCHIVED_TOMBSTONES = 500;
 const INTERNAL_EMPTY_PROJECT_IDS = new Set(['outside-of-project', 'standalone']);
-const REMOTE_SERVER_BOOT_ID = `${process.pid}-${Date.now().toString(36)}`;
+globalThis.__AG_REMOTE_BOOT_SEQ = (globalThis.__AG_REMOTE_BOOT_SEQ || 0) + 1;
+const REMOTE_SERVER_BOOT_AT = Math.max(Date.now() * 1000, (Number(globalThis.__AG_REMOTE_LAST_BOOT_AT) || 0) + 1);
+globalThis.__AG_REMOTE_LAST_BOOT_AT = REMOTE_SERVER_BOOT_AT;
+const REMOTE_SERVER_BOOT_ID = `${REMOTE_SERVER_BOOT_AT}-${process.pid}-${globalThis.__AG_REMOTE_BOOT_SEQ.toString(36)}`;
 let remoteServerSnapSeq = 0;
 
 function isCatalogTestEnv() {
@@ -1840,6 +1843,7 @@ function createSessionCatalogStore() {
     return {
       ...snap,
       serverBootId: REMOTE_SERVER_BOOT_ID,
+      serverBootAt: REMOTE_SERVER_BOOT_AT,
       snapSeq: ++remoteServerSnapSeq,
       currentProjectId,
       currentProjectName,
@@ -2766,7 +2770,7 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
   try {
     return await enrichSnapshotWithCatalog(baseSnap, snapOptions);
   } catch {
-    return { ...baseSnap, serverBootId: REMOTE_SERVER_BOOT_ID, snapSeq: ++remoteServerSnapSeq };
+    return { ...baseSnap, serverBootId: REMOTE_SERVER_BOOT_ID, serverBootAt: REMOTE_SERVER_BOOT_AT, snapSeq: ++remoteServerSnapSeq };
   }
 }
 
@@ -4376,9 +4380,11 @@ function buildMobileAppHtml() {
         data = Object.assign({ ok: false, error: 'HTTP ' + res.status }, data);
       }
       if (data?.snapshot && (!isNavAction || myNavSeq === lastNavActionSeq)) {
-        if (isNavAction) invalidateInflightSnapshotPolls();
-        const snapApplyEpoch = isNavAction ? (++clientSyncEpoch) : actionStartEpoch;
-        renderSnapshot(data.snapshot, { reqStartEpoch: snapApplyEpoch });
+        const snapApplied = renderSnapshot(data.snapshot, {
+          reqStartEpoch: actionStartEpoch,
+          advanceFloorOnApply: isNavAction
+        });
+        if (snapApplied && isNavAction) invalidateInflightSnapshotPolls();
       }
       return data;
     }
@@ -4430,7 +4436,9 @@ function buildMobileAppHtml() {
     let clientSyncEpoch = 0;
     let minAcceptableReqStartEpoch = 0;
     let lastRenderedServerBootId = '';
+    let lastRenderedServerBootAt = 0;
     let lastRenderedServerSnapSeq = 0;
+    const retiredServerBootIds = new Set();
     let lastNavActionSeq = 0;
 
     function isNonProjectBucket(raw) {
@@ -4503,18 +4511,48 @@ function buildMobileAppHtml() {
         $('conv-title').textContent = snap?.error || '连接异常';
         return false;
       }
-      if (typeof opts?.reqStartEpoch === 'number') {
-        if (opts.reqStartEpoch < minAcceptableReqStartEpoch) return false;
-        minAcceptableReqStartEpoch = opts.reqStartEpoch;
+      const reqEpoch = typeof opts?.reqStartEpoch === 'number' ? opts.reqStartEpoch : null;
+      if (reqEpoch !== null && reqEpoch < minAcceptableReqStartEpoch) {
+        return false;
       }
-      if (Number.isInteger(snap.snapSeq) && snap.snapSeq > 0) {
-        const bootId = String(snap.serverBootId || '');
-        if (bootId && bootId !== lastRenderedServerBootId) {
-          lastRenderedServerBootId = bootId;
-          lastRenderedServerSnapSeq = 0;
+      const bootId = String(snap.serverBootId || '').trim();
+      const bootAt = Number(snap.serverBootAt) || 0;
+      const snapSeqNum = Number.isInteger(snap.snapSeq) && snap.snapSeq > 0 ? snap.snapSeq : 0;
+      if (bootId) {
+        if (retiredServerBootIds.has(bootId)) {
+          return false;
         }
-        if (snap.snapSeq < lastRenderedServerSnapSeq) return false;
-        lastRenderedServerSnapSeq = snap.snapSeq;
+        if (lastRenderedServerBootId && bootId !== lastRenderedServerBootId) {
+          if (bootAt > 0 && lastRenderedServerBootAt > 0 && bootAt < lastRenderedServerBootAt) {
+            return false;
+          }
+          if (lastRenderedServerBootAt > 0 && bootAt <= 0) {
+            return false;
+          }
+        } else if (snapSeqNum > 0 && snapSeqNum < lastRenderedServerSnapSeq) {
+          return false;
+        }
+      } else if (snapSeqNum > 0 && snapSeqNum < lastRenderedServerSnapSeq) {
+        return false;
+      }
+      if (reqEpoch !== null) {
+        minAcceptableReqStartEpoch = opts?.advanceFloorOnApply
+          ? Math.max(minAcceptableReqStartEpoch, ++clientSyncEpoch)
+          : Math.max(minAcceptableReqStartEpoch, reqEpoch);
+      }
+      if (bootId) {
+        if (lastRenderedServerBootId && bootId !== lastRenderedServerBootId) {
+          retiredServerBootIds.add(lastRenderedServerBootId);
+          lastRenderedServerBootId = bootId;
+          lastRenderedServerBootAt = bootAt > 0 ? bootAt : lastRenderedServerBootAt;
+          lastRenderedServerSnapSeq = snapSeqNum;
+        } else {
+          if (!lastRenderedServerBootId) lastRenderedServerBootId = bootId;
+          if (bootAt > lastRenderedServerBootAt) lastRenderedServerBootAt = bootAt;
+          if (snapSeqNum > lastRenderedServerSnapSeq) lastRenderedServerSnapSeq = snapSeqNum;
+        }
+      } else if (snapSeqNum > lastRenderedServerSnapSeq) {
+        lastRenderedServerSnapSeq = snapSeqNum;
       }
       latestSnap = snap;
       syncSelectedProjectFromSnapshot(snap);
@@ -5885,6 +5923,7 @@ function buildMobileAppHtml() {
       }
       projBrowserState.submitting = true;
       syncCreateProjectSubmitUi();
+      const createStartEpoch = ++clientSyncEpoch;
       const createSelEpochBefore = selectedProjectEpoch;
       const myNavSeq = ++lastNavActionSeq;
       invalidateInflightSnapshotPolls();
@@ -5915,10 +5954,15 @@ function buildMobileAppHtml() {
           setUserSelectedProject(createdId, createdName);
           didSetCreatedSelection = true;
         }
+        let appliedCreateSnap = false;
         if (data.snapshot && myNavSeq === lastNavActionSeq) {
-          invalidateInflightSnapshotPolls();
-          renderSnapshot(data.snapshot, { reqStartEpoch: ++clientSyncEpoch });
-        } else {
+          appliedCreateSnap = renderSnapshot(data.snapshot, {
+            reqStartEpoch: createStartEpoch,
+            advanceFloorOnApply: true
+          });
+          if (appliedCreateSnap) invalidateInflightSnapshotPolls();
+        }
+        if (!appliedCreateSnap) {
           if (didSetCreatedSelection) {
             syncNewChatButtonUi(latestSnap);
             if (latestSnap) renderConversationList(latestSnap);
