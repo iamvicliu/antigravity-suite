@@ -5755,6 +5755,7 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     env.doc.activeElement = env.doc.body;
     const modalBackdrop = env.doc.getElementById('proj-modal-backdrop');
     const modalSheet = modalBackdrop.querySelector('.sheet.proj-modal');
+    const titleEl = modalSheet.querySelector('.sheet-title');
     const modalBody = env.doc.getElementById('proj-modal-body');
     modalBody.scrollTop = 0;
     const parseShiftY = () => {
@@ -5764,6 +5765,10 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     modalSheet.getBoundingClientRect = () => {
       const dy = parseShiftY();
       return { left: 0, right: 390, width: 390, height: 666, top: 178 + dy, bottom: 844 + dy };
+    };
+    titleEl.getBoundingClientRect = () => {
+      const dy = parseShiftY();
+      return { left: 14, right: 376, width: 362, height: 28, top: 191 + dy, bottom: 219 + dy };
     };
     modalBody.getBoundingClientRect = () => {
       const dy = parseShiftY();
@@ -5843,14 +5848,26 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     assert.equal(modalBody.style.paddingBottom, '', '切回顶部输入框后内部临时 paddingBottom 应清空');
     assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
 
-    // 场景 5: 若残留 vv.offsetTop = 240 将顶部输入框推出可视区上沿（minTop = 252 > 220），应调用 scrollTo(0,0) 并温和下移保底可见，复位后归零；关闭弹窗彻底复位
+    // 场景 5: 若残留 vv.offsetTop = 240（可视区 [240, 700]，安全区 [252, 686]），应调用 scrollTo(0,0) 并同时约束弹窗顶边、标题与聚焦输入框都在可视区内，底部聚焦也由内部滚动配合消除遮挡，复位后彻底归零
     vv.offsetTop = 240;
     vv._emit('scroll');
     assert.ok(scrollToCalls.some(([x, y]) => x === 0 && y === 0), '检测到 vv.offsetTop > 0 时应尝试 reset scroll');
-    assert.equal(modalSheet.style.transform, 'translateY(32px)', '顶部被偏移裁切时仅补偿至 vvTop + 12px');
+    assert.equal(modalSheet.style.transform, 'translateY(74px)', '正 vv.offsetTop 下应将弹窗顶边补偿至 vvTop + 12 (252px)');
+    assert.ok(modalSheet.getBoundingClientRect().top >= 252, '弹窗顶边必须位于 vvTop + 12 之上可见区域内');
+    assert.ok(titleEl.getBoundingClientRect().top >= 252 && titleEl.getBoundingClientRect().bottom <= 686, '弹窗标题必须完整位于可视区内');
+    assert.ok(pathInput.getBoundingClientRect().top >= 252 && pathInput.getBoundingClientRect().bottom <= 686, '聚焦路径输入框必须完整位于可视区内');
+
+    nameInput.focus();
+    assert.equal(modalSheet.style.transform, 'translateY(74px)');
+    assert.ok(modalSheet.getBoundingClientRect().top >= 252 && titleEl.getBoundingClientRect().bottom <= 686, '正 offsetTop 下聚焦底部框时弹窗顶边与标题仍保持在可视区内');
+    assert.equal(modalBody.scrollTop, 166, '底部输入框超出可视区底边部分应由内部滚动吸收');
+    assert.ok(nameInput.getBoundingClientRect().top >= titleEl.getBoundingClientRect().bottom && nameInput.getBoundingClientRect().bottom <= 686, '底部输入框应处于标题下方且位于可视区内');
+
+    pathInput.focus();
     vv.offsetTop = 0;
     vv._emit('scroll');
     assert.equal(modalSheet.style.transform, '');
+    assert.equal(modalBody.scrollTop, 0);
 
     env.doc.getElementById('proj-modal-close').click();
     assert.equal(modalBackdrop.hidden, true);
