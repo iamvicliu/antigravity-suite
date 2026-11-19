@@ -4608,23 +4608,8 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
     assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
     assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
-    const ungroupedConv = {
-      id: 'conv-ungrouped-test',
-      projectId: 'ungrouped',
-      projectName: '未归属项目',
-      title: '无项目历史对话',
-      active: true,
-      status: 'idle',
-      updatedAt: Date.now()
-    };
-    currentUiSnap = {
-      ...currentUiSnap,
-      sessionId: 'conv-ungrouped-test',
-      isNewConversation: false,
-      currentProjectId: 'ungrouped',
-      currentProjectName: '',
-      conversations: [ungroupedConv, ...(currentUiSnap.conversations || [])]
-    };
+    const ungroupedConv = { id: 'conv-ungrouped-test', projectId: 'ungrouped', projectName: '未归属项目', title: '无项目历史对话', active: true, status: 'idle', updatedAt: Date.now() };
+    currentUiSnap = { ...currentUiSnap, sessionId: 'conv-ungrouped-test', isNewConversation: false, currentProjectId: 'ungrouped', currentProjectName: '', conversations: [ungroupedConv, ...(currentUiSnap.conversations || [])] };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '宿主切至 ungrouped 会话后必须清除旧项目高亮');
@@ -4647,23 +4632,8 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
     assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
     assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
-    const standaloneConv = {
-      id: 'conv-outside-test',
-      projectId: 'outside-of-project',
-      projectName: '独立对话',
-      title: '独立工作区对话',
-      active: false,
-      status: 'idle',
-      updatedAt: Date.now()
-    };
-    currentUiSnap = {
-      ...currentUiSnap,
-      sessionId: 'conv-root-001',
-      isNewConversation: false,
-      currentProjectId: 'proj-a',
-      currentProjectName: 'Alpha App',
-      conversations: [standaloneConv, ...(currentUiSnap.conversations || [])]
-    };
+    const standaloneConv = { id: 'conv-outside-test', projectId: 'outside-of-project', projectName: '独立对话', title: '独立工作区对话', active: false, status: 'idle', updatedAt: Date.now() };
+    currentUiSnap = { ...currentUiSnap, sessionId: 'conv-root-001', isNewConversation: false, currentProjectId: 'proj-a', currentProjectName: 'Alpha App', conversations: [standaloneConv, ...(currentUiSnap.conversations || [])] };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 50));
     const standaloneBtn = convListEl.querySelector('button[data-cid="conv-outside-test"]');
@@ -4679,6 +4649,64 @@ test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话
     const actAfterStandalone = dispatchedActions[dispatchedActions.length - 1];
     assert.equal(actAfterStandalone?.action, 'new-conversation');
     assert.equal(actAfterStandalone?.projectId, undefined, '切换到 outside-of-project 会话后点击顶部新建对话不得携带旧项目 ID');
+
+    // 4e. 并发时序回归：发起 B 会话切换或新建 -> 未落地前改点选 C -> B 快照延迟到达，均不得回跳至 B
+    const assertProjectHeldC = async (expectedId, expectedName) => {
+      const cur = convListEl.querySelectorAll('.is-current');
+      assert.equal(cur.length, 1);
+      assert.equal((cur[0].querySelector('.proj-name')?.textContent || '').trim(), expectedName);
+      assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, false);
+      assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), expectedName);
+      envUi.doc.getElementById('btn-new-chat-project').click();
+      const activeOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((o) => o.classList.contains('active'));
+      assert.ok(activeOpt && (activeOpt.textContent || '').includes(expectedName), `下拉高亮应保持 ${expectedName}`);
+      envUi.doc.getElementById('sheet-close').click();
+      envUi.doc.getElementById('btn-new-chat').click();
+      await new Promise((r) => setTimeout(r, 40));
+      const act = dispatchedActions[dispatchedActions.length - 1];
+      assert.equal(act?.action, 'new-conversation');
+      assert.equal(act?.projectId, expectedId, `新建请求必须保持目标项目 ${expectedId}`);
+    };
+    let deferredGate = null;
+    let gateInlineSnap = true;
+    const baseUiFetch = envUi.sandbox.fetch;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      if (u.pathname === '/api/action' && deferredGate) {
+        const g = deferredGate; const inline = gateInlineSnap; deferredGate = null;
+        const res = await baseUiFetch(url, init);
+        await g.promise;
+        if (!inline) { const body = await res.json(); return { ...res, json: async () => ({ ok: body.ok, actionResult: body.actionResult }) }; }
+        return res;
+      }
+      return baseUiFetch(url, init);
+    };
+    const mkGate = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+
+    // Case 1: 切换至 B 项目会话延迟返回内联 snapshot + 后续轮询; Case 2: B 新建无内联 snapshot + 轮询迟到
+    const projBConv = (currentUiSnap.conversations || []).find((c) => c && c.projectId === 'proj-b');
+    assert.ok(projBConv);
+    gateInlineSnap = true; deferredGate = mkGate(); const gate1 = deferredGate;
+    convListEl.querySelector(`button[data-cid="${projBConv.id}"]`).click();
+    await new Promise((r) => setTimeout(r, 15));
+    convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
+    gate1.resolve();
+    await new Promise((r) => setTimeout(r, 50));
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    await assertProjectHeldC('default-cli-project', 'CLI Project');
+
+    gateInlineSnap = false; deferredGate = mkGate(); const gate2 = deferredGate;
+    convListEl.querySelector('button[data-new-proj="proj-b"]').click();
+    await new Promise((r) => setTimeout(r, 15));
+    convListEl.querySelector('button[data-proj-toggle="proj-empty"]').click();
+    gate2.resolve();
+    await new Promise((r) => setTimeout(r, 50));
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    await assertProjectHeldC('proj-empty', 'EmptyProj');
 
     enhReal.dispose?.();
     envReal.sandbox.__AGContextMeter?.dispose?.();
