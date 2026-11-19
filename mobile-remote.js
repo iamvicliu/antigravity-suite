@@ -1199,6 +1199,7 @@ async function pickCdpTarget(requestedId) {
 const SESSION_CATALOG_FILE_NAME = 'remote-session-catalog.json';
 const MAX_ARCHIVED_TOMBSTONES = 500;
 const INTERNAL_EMPTY_PROJECT_IDS = new Set(['outside-of-project', 'standalone']);
+let remoteServerSnapSeq = 0;
 
 function isCatalogTestEnv() {
   return process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
@@ -1837,6 +1838,7 @@ function createSessionCatalogStore() {
 
     return {
       ...snap,
+      snapSeq: ++remoteServerSnapSeq,
       currentProjectId,
       currentProjectName,
       catalogRevision,
@@ -2762,7 +2764,7 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
   try {
     return await enrichSnapshotWithCatalog(baseSnap, snapOptions);
   } catch {
-    return baseSnap;
+    return { ...baseSnap, snapSeq: ++remoteServerSnapSeq };
   }
 }
 
@@ -4325,11 +4327,20 @@ function buildMobileAppHtml() {
       return p >= 50 ? 'var(--green)' : (p >= 20 ? 'var(--amber)' : 'var(--red)');
     }
 
+    let snapshotInflight = false;
+    let snapshotSeq = 0;
+    function invalidateInflightSnapshotPolls() {
+      snapshotSeq += 1;
+      snapshotInflight = false;
+    }
+
     async function apiAction(payload) {
       const act = String(payload?.action || '').trim();
       const isNavAction = act === 'new-conversation' || act === 'switch-conversation';
-      const actionStartEpoch = isNavAction ? recordRemoteNavIntent(payload) : (++clientSyncEpoch);
+      const navIntent = isNavAction ? recordRemoteNavIntent(payload) : null;
+      const actionStartEpoch = navIntent ? navIntent.startEpoch : (++clientSyncEpoch);
       const myNavSeq = isNavAction ? (++lastNavActionSeq) : 0;
+      if (isNavAction) invalidateInflightSnapshotPolls();
       const doPost = () => fetchWithTimeout((apiBase || '') + '/api/action', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -4363,10 +4374,19 @@ function buildMobileAppHtml() {
       if (!res.ok && data.ok !== false) {
         data = Object.assign({ ok: false, error: 'HTTP ' + res.status }, data);
       }
+      if (navIntent?.entry && data.ok === false && !data.actionResult?.method) {
+        markNavEntryConsumed(navIntent.entry);
+      }
       if (data?.snapshot && (!isNavAction || myNavSeq === lastNavActionSeq)) {
-        renderSnapshot(data.snapshot, {
+        if (isNavAction) invalidateInflightSnapshotPolls();
+        const snapApplyEpoch = isNavAction ? (++clientSyncEpoch) : actionStartEpoch;
+        const applied = renderSnapshot(data.snapshot, {
+          reqStartEpoch: snapApplyEpoch,
           preserveLocalSelection: actionStartEpoch < selectedProjectEpoch
         });
+        if (applied && navIntent?.entry && getSnapTargetKey(data.snapshot) === navIntent.entry.targetKey) {
+          markNavEntryConsumed(navIntent.entry);
+        }
       }
       return data;
     }
@@ -4415,9 +4435,11 @@ function buildMobileAppHtml() {
     let selectedProjectId = null;
     let selectedProjectEpoch = 0;
     let clientSyncEpoch = 0;
+    let minAcceptableReqStartEpoch = 0;
+    let lastRenderedServerSnapSeq = 0;
     let lastNavActionSeq = 0;
     let lastHostContextSig = '';
-    const recentRemoteNavs = [];
+    const pendingNavQueues = new Map();
 
     function isNonProjectBucket(raw) {
       const pid = String(raw || '').trim();
@@ -4435,34 +4457,60 @@ function buildMobileAppHtml() {
       return selectedProjectEpoch;
     }
 
+    function enqueueRemoteNav(targetKey, startEpoch) {
+      if (!targetKey) return null;
+      let q = pendingNavQueues.get(targetKey);
+      if (!q) { q = []; pendingNavQueues.set(targetKey, q); }
+      const entry = { targetKey, startEpoch, consumed: false };
+      q.push(entry);
+      return entry;
+    }
+
     function recordRemoteNavIntent(payload) {
-      const now = Date.now();
-      while (recentRemoteNavs.length && (recentRemoteNavs.length >= 16 || now - recentRemoteNavs[0].createdAt > 15000)) {
-        recentRemoteNavs.shift();
-      }
       const startEpoch = ++clientSyncEpoch;
       const act = String(payload?.action || '').trim();
       const rawId = String(payload?.id || '').trim();
+      let targetKey = '';
       if (act === 'new-conversation' || (act === 'switch-conversation' && rawId === 'new')) {
-        recentRemoteNavs.push({ startEpoch, createdAt: now, kind: 'new', sessionId: '', projectId: normalizeProjectId(payload?.projectId), consumed: false });
+        targetKey = '__new__::' + normalizeProjectId(payload?.projectId);
       } else if (act === 'switch-conversation' && rawId) {
-        const matchedConv = getMergedConversations(latestSnap).find((x) => x && x.id === rawId);
-        recentRemoteNavs.push({ startEpoch, createdAt: now, kind: 'switch', sessionId: rawId, projectId: normalizeProjectId(matchedConv?.projectId), consumed: false });
+        targetKey = 'sid::' + rawId;
       }
-      return startEpoch;
+      return { startEpoch, entry: enqueueRemoteNav(targetKey, startEpoch) };
     }
 
-    function consumeMatchingRemoteNav(snap, snapSid, snapPid) {
-      const now = Date.now();
-      for (let i = recentRemoteNavs.length - 1; i >= 0; i--) {
-        const nav = recentRemoteNavs[i];
-        if (!nav || nav.consumed || now - nav.createdAt > 15000) continue;
-        const matched = nav.kind === 'new'
-          ? (Boolean(snap.isNewConversation) && snapPid === nav.projectId)
-          : (nav.kind === 'switch' && Boolean(snapSid) && snapSid === nav.sessionId);
-        if (matched) { nav.consumed = true; return nav; }
+    function getSnapTargetKey(snap) {
+      if (!snap || snap.ok === false) return '';
+      if (snap.isNewConversation) return '__new__::' + normalizeProjectId(snap.currentProjectId);
+      const sid = String(snap.sessionId || '').trim();
+      return sid ? ('sid::' + sid) : '';
+    }
+
+    function consumePendingNavForSnap(snap) {
+      const key = getSnapTargetKey(snap);
+      const q = key ? pendingNavQueues.get(key) : null;
+      if (!q) return null;
+      while (q.length) {
+        const item = q.shift();
+        if (!q.length) pendingNavQueues.delete(key);
+        if (item && !item.consumed) {
+          item.consumed = true;
+          return item;
+        }
       }
+      pendingNavQueues.delete(key);
       return null;
+    }
+
+    function markNavEntryConsumed(entry) {
+      if (!entry || entry.consumed) return;
+      entry.consumed = true;
+      const q = pendingNavQueues.get(entry.targetKey);
+      if (q) {
+        const next = q.filter((x) => x && !x.consumed);
+        if (next.length) pendingNavQueues.set(entry.targetKey, next);
+        else pendingNavQueues.delete(entry.targetKey);
+      }
     }
 
     function syncSelectedProjectFromSnapshot(snap, opts) {
@@ -4470,7 +4518,6 @@ function buildMobileAppHtml() {
       const snapPid = normalizeProjectId(snap.currentProjectId);
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
       const hostSig = snapSid + '::' + snapPid;
-      const matchedNav = consumeMatchingRemoteNav(snap, snapSid, snapPid);
       const projects = Array.isArray(snap.projects) ? snap.projects : [];
       const selectedExists = typeof selectedProjectId === 'string' && (
         selectedProjectId === '' ||
@@ -4478,6 +4525,7 @@ function buildMobileAppHtml() {
         selectedProjectId === snapPid
       );
       if (hostSig !== lastHostContextSig) {
+        const matchedNav = consumePendingNavForSnap(snap);
         const preserveForNewerSelection = selectedProjectId !== null && (
           Boolean(opts?.preserveLocalSelection) ||
           Boolean(matchedNav && matchedNav.startEpoch < selectedProjectEpoch)
@@ -4527,7 +4575,15 @@ function buildMobileAppHtml() {
       if (!snap || snap.ok === false) {
         $('status-dot').className = 'dot err';
         $('conv-title').textContent = snap?.error || '连接异常';
-        return;
+        return false;
+      }
+      if (typeof opts?.reqStartEpoch === 'number') {
+        if (opts.reqStartEpoch < minAcceptableReqStartEpoch) return false;
+        minAcceptableReqStartEpoch = opts.reqStartEpoch;
+      }
+      if (Number.isInteger(snap.snapSeq) && snap.snapSeq > 0) {
+        if (snap.snapSeq < lastRenderedServerSnapSeq) return false;
+        lastRenderedServerSnapSeq = snap.snapSeq;
       }
       latestSnap = snap;
       syncSelectedProjectFromSnapshot(snap, opts);
@@ -4668,6 +4724,7 @@ function buildMobileAppHtml() {
       // Drawer Conversations & Multi-Project Grouping
       reconcileExtraConversations(snap);
       renderConversationList(snap);
+      return true;
     }
 
     const CONV_VIEW_KEY = 'ag_remote_conv_view_v1';
@@ -5007,8 +5064,6 @@ function buildMobileAppHtml() {
       }
     }
 
-    let snapshotInflight = false;
-    let snapshotSeq = 0;
     async function fetchSnapshot() {
       if (snapshotInflight) return;
       snapshotInflight = true;
@@ -5026,8 +5081,9 @@ function buildMobileAppHtml() {
         if (res.status === 403) throw new Error('channel_disabled');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        if (mySeq === snapshotSeq) renderSnapshot(data, { preserveLocalSelection: fetchStartEpoch < selectedProjectEpoch });
+        if (mySeq === snapshotSeq) renderSnapshot(data, { reqStartEpoch: fetchStartEpoch, preserveLocalSelection: fetchStartEpoch < selectedProjectEpoch });
       } catch {
+        if (mySeq !== snapshotSeq) return;
         $('sub-meta').textContent = '连接中断 · 正在切换可用通道…';
         if (!latestSnap) {
           renderModeEntryGate('正在自动尝试备用通道，也可直接点击已开启的方式立即进入：');
@@ -5040,7 +5096,7 @@ function buildMobileAppHtml() {
             if (retryRes.status === 403) throw new Error('channel_disabled');
             if (!retryRes.ok) throw new Error('HTTP ' + retryRes.status);
             const retryData = await retryRes.json();
-            if (mySeq === snapshotSeq) renderSnapshot(retryData, { preserveLocalSelection: fetchStartEpoch < selectedProjectEpoch });
+            if (mySeq === snapshotSeq) renderSnapshot(retryData, { reqStartEpoch: fetchStartEpoch, preserveLocalSelection: fetchStartEpoch < selectedProjectEpoch });
             return;
           } catch {}
         }
@@ -5050,9 +5106,11 @@ function buildMobileAppHtml() {
           renderModeEntryGate('当前入口暂未连通，请点击下方已开启的连接方式直接进入：');
         }
       } finally {
-        snapshotInflight = false;
-        activeSnapAbort = null;
-        schedulePoll();
+        if (mySeq === snapshotSeq) {
+          snapshotInflight = false;
+          activeSnapAbort = null;
+          schedulePoll();
+        }
       }
     }
 
@@ -5898,6 +5956,7 @@ function buildMobileAppHtml() {
       syncCreateProjectSubmitUi();
       const createStartEpoch = ++clientSyncEpoch;
       const myNavSeq = ++lastNavActionSeq;
+      invalidateInflightSnapshotPolls();
       try {
         const ex = projBrowserState.existingProject;
         const forceNew = Boolean(ex && ex.name && projectName.toLowerCase() !== String(ex.name).toLowerCase());
@@ -5920,15 +5979,23 @@ function buildMobileAppHtml() {
         const createdName = data.project?.name || projectName;
         const createdId = String(data.project?.id || ex?.id || '').trim();
         const navFailed = (data.navOk === false) || Boolean(data.navResult && data.navResult.ok === false);
+        let createdNavEntry = null;
         if (!navFailed && createdId) {
           if (createStartEpoch >= selectedProjectEpoch) {
             setUserSelectedProject(createdId);
           } else {
-            recentRemoteNavs.push({ startEpoch: createStartEpoch, createdAt: Date.now(), kind: 'new', sessionId: '', projectId: normalizeProjectId(createdId), consumed: false });
+            createdNavEntry = enqueueRemoteNav('__new__::' + normalizeProjectId(createdId), createStartEpoch);
           }
         }
         if (data.snapshot && myNavSeq === lastNavActionSeq) {
-          renderSnapshot(data.snapshot, { preserveLocalSelection: createStartEpoch < selectedProjectEpoch });
+          invalidateInflightSnapshotPolls();
+          const applied = renderSnapshot(data.snapshot, {
+            reqStartEpoch: ++clientSyncEpoch,
+            preserveLocalSelection: createStartEpoch < selectedProjectEpoch
+          });
+          if (applied && createdNavEntry && getSnapTargetKey(data.snapshot) === createdNavEntry.targetKey) {
+            markNavEntryConsumed(createdNavEntry);
+          }
         } else if (!data.snapshot) {
           void fetchSnapshot();
         }
