@@ -16,7 +16,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.12';
+const MOBILE_UI_VERSION = '1.9.13';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -3532,7 +3532,7 @@ function buildMobileAppHtml() {
       <div id="attach-hint" class="attach-hint" hidden></div>
       <div id="chips" class="chips"></div>
       <div class="composer-card">
-        <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息给 Antigravity…（回车换行，点右侧按钮发送）"></textarea>
+        <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息…"></textarea>
         <input id="img-input" type="file" accept="image/*" multiple hidden>
         <div class="composer-toolbar">
           <div class="toolbar-left">

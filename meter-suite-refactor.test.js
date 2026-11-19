@@ -5500,6 +5500,7 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     const ta = envUi.doc.getElementById('input');
     const sendBtn = envUi.doc.getElementById('btn-send');
     assert.equal(ta.getAttribute('enterkeyhint'), 'enter');
+    assert.equal(ta.getAttribute('placeholder'), '发消息…', '聊天输入框占位提示应精简为单行短句');
     ta.value = '第一行内容';
     const plainEnterEv = { type: 'keydown', key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, isComposing: false };
     const allowNativeNewline = ta.dispatchEvent(plainEnterEv);
