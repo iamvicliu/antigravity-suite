@@ -16,7 +16,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.11';
+const MOBILE_UI_VERSION = '1.9.12';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -3190,11 +3190,14 @@ function buildMobileAppHtml() {
     .drawer-backdrop.dragging .drawer{transition:none}
     .new-chat-group{display:flex;align-items:stretch;gap:6px;flex-shrink:0}
     .new-chat-btn{
-      appearance:none;flex:1 1 auto;min-width:0;min-height:44px;padding:10px 12px;border-radius:12px;
+      appearance:none;flex:1 1 auto;min-width:0;min-height:44px;padding:6px 10px;border-radius:12px;
       background:var(--surface-strong);border:1px solid var(--border);color:var(--fg-strong);
-      font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;
+      font-size:14px;font-weight:600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;
     }
+    .new-chat-main{display:inline-flex;align-items:center;justify-content:center;gap:6px;max-width:100%;line-height:1.2}
     .new-chat-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .new-chat-sub{display:block;max-width:100%;font-size:10.5px;font-weight:500;line-height:1.15;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .new-chat-sub[hidden]{display:none}
     .new-chat-pick-btn{
       appearance:none;width:42px;min-height:44px;flex-shrink:0;border-radius:12px;
       background:var(--surface-strong);border:1px solid var(--border);color:var(--fg-sub);
@@ -3364,17 +3367,15 @@ function buildMobileAppHtml() {
     .perm-ico.unknown{color:var(--placeholder)}
     .drawer-brand{display:none}
     .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;display:flex;flex-direction:column;gap:6px}
-    .drawer-footer{flex-shrink:0;padding-top:10px;border-top:1px solid var(--border-subtle);display:flex;flex-direction:column;gap:7px}
-    .drawer-footer-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 2px;font-size:12px;font-weight:600;color:var(--muted)}
-    .drawer-footer-hint{font-size:11.5px;font-weight:500;color:var(--placeholder)}
+    .drawer-footer{flex-shrink:0;padding-top:8px;border-top:1px solid var(--border-subtle)}
     .theme-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:11px;background:var(--seg-track);border:1px solid var(--border-subtle)}
     .theme-seg-btn{
       appearance:none;border:none;background:transparent;color:var(--muted);
-      height:32px;padding:0 6px;border-radius:8px;font-size:12px;font-weight:500;
-      display:inline-flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;white-space:nowrap;
+      height:30px;padding:0;border-radius:8px;
+      display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
       transition:background-color .15s ease,color .15s ease,box-shadow .15s ease;
     }
-    .theme-seg-btn.active{background:var(--seg-active-bg);color:var(--fg-strong);font-weight:600;box-shadow:var(--seg-active-shadow)}
+    .theme-seg-btn.active{background:var(--seg-active-bg);color:var(--fg-strong);box-shadow:var(--seg-active-shadow)}
     .toast{
       position:fixed;top:calc(env(safe-area-inset-top) + 56px);left:50%;transform:translateX(-50%);
       z-index:80;background:var(--toast-bg);color:var(--toast-fg);padding:7px 14px;border-radius:999px;font-size:12.5px;
@@ -3456,7 +3457,8 @@ function buildMobileAppHtml() {
         background:var(--accent);box-shadow:none;
       }
       .new-chat-btn,.new-chat-pick-btn{min-height:38px;border-radius:10px}
-      .new-chat-btn{padding:8px 10px;font-size:13px}
+      .new-chat-btn{padding:5px 10px;font-size:13px}
+      .new-chat-sub{font-size:10px}
       .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:2px}
       .proj-toggle{font-size:13.5px;padding:5px 7px}
       .conv-item{
@@ -3515,9 +3517,6 @@ function buildMobileAppHtml() {
       <button id="btn-quota" class="quota-pill" type="button">
         <span id="quota-main">G4 -- · C --</span>
         <span id="ctx-badge">--%</span>
-      </button>
-      <button id="btn-theme" class="icon-btn" type="button" title="切换外观模式" aria-label="切换外观模式">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </button>
     </header>
 
@@ -3609,8 +3608,11 @@ function buildMobileAppHtml() {
       </div>
       <div class="new-chat-group">
         <button id="btn-new-chat" class="new-chat-btn" type="button">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          <span id="new-chat-label" class="new-chat-label">新建对话</span>
+          <span class="new-chat-main">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span id="new-chat-label" class="new-chat-label">新建对话</span>
+          </span>
+          <span id="new-chat-sub" class="new-chat-sub" hidden></span>
         </button>
         <button id="btn-new-chat-project" class="new-chat-pick-btn" type="button" title="选择项目新建对话" aria-label="选择项目新建对话">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -3619,7 +3621,7 @@ function buildMobileAppHtml() {
       <div class="conv-toolbar">
         <div id="conv-view-tabs" class="conv-view-tabs" role="tablist" aria-label="会话视图切换">
           <button class="conv-tab active" data-conv-view="projects" type="button" role="tab" aria-selected="true">按项目 <span id="tab-proj-count" class="tab-count"></span></button>
-          <button class="conv-tab" data-conv-view="recent" type="button" role="tab" aria-selected="false">最近活跃 <span id="tab-conv-count" class="tab-count"></span></button>
+          <button class="conv-tab" data-conv-view="recent" type="button" role="tab" aria-selected="false">活跃 <span id="tab-conv-count" class="tab-count"></span></button>
         </div>
         <button id="btn-new-project" class="new-proj-mini-btn" type="button" title="新建项目（选择电脑目录）" aria-label="新建项目">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v3.5"/><path d="M18 15v6"/><path d="M15 18h6"/></svg>
@@ -3627,22 +3629,15 @@ function buildMobileAppHtml() {
       </div>
       <div id="conv-list" class="conv-list"></div>
       <div class="drawer-footer">
-        <div class="drawer-footer-head">
-          <span>外观模式</span>
-          <span id="theme-mode-hint" class="drawer-footer-hint">跟随系统</span>
-        </div>
-        <div id="theme-seg" class="theme-seg" role="radiogroup" aria-label="外观模式">
-          <button class="theme-seg-btn" type="button" role="radio" aria-checked="false" data-theme-mode="system" title="跟随系统深浅色">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-            <span>跟随</span>
+        <div id="theme-seg" class="theme-seg" role="radiogroup" aria-label="切换外观">
+          <button class="theme-seg-btn" type="button" role="radio" aria-checked="false" data-theme-mode="system" title="跟随系统" aria-label="跟随系统">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </button>
-          <button class="theme-seg-btn" type="button" role="radio" aria-checked="false" data-theme-mode="light" title="固定浅色模式">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
-            <span>浅色</span>
+          <button class="theme-seg-btn" type="button" role="radio" aria-checked="false" data-theme-mode="light" title="浅色模式" aria-label="浅色模式">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
           </button>
-          <button class="theme-seg-btn" type="button" role="radio" aria-checked="false" data-theme-mode="dark" title="固定深色模式">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
-            <span>深色</span>
+          <button class="theme-seg-btn" type="button" role="radio" aria-checked="false" data-theme-mode="dark" title="深色模式" aria-label="深色模式">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
           </button>
         </div>
       </div>
@@ -4437,8 +4432,16 @@ function buildMobileAppHtml() {
       $('model-inline-label').textContent = snap.model || '切换模型';
       syncPermInlineUi(snap.permissionKey, snap.permissionLabel);
       const newChatLabelEl = $('new-chat-label');
-      if (newChatLabelEl) {
-        newChatLabelEl.textContent = snap.currentProjectName ? ('新建对话 · ' + snap.currentProjectName) : '新建对话';
+      if (newChatLabelEl) newChatLabelEl.textContent = '新建对话';
+      const newChatSubEl = $('new-chat-sub');
+      if (newChatSubEl) {
+        const projName = String(snap.currentProjectName || '').trim();
+        newChatSubEl.textContent = projName;
+        newChatSubEl.hidden = !projName;
+      }
+      const newChatBtnEl = $('btn-new-chat');
+      if (newChatBtnEl) {
+        newChatBtnEl.title = snap.currentProjectName ? ('在「' + snap.currentProjectName + '」中新建对话') : '新建对话';
       }
 
       renderQuotaDrawer(snap);
@@ -5322,9 +5325,6 @@ function buildMobileAppHtml() {
     const lightSchemeMq = typeof window.matchMedia === 'function'
       ? window.matchMedia('(prefers-color-scheme: light)')
       : null;
-    const THEME_ICON_SYSTEM = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
-    const THEME_ICON_SUN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>';
-    const THEME_ICON_MOON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>';
 
     function normalizeThemePref(raw) {
       return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : 'system';
@@ -5359,38 +5359,12 @@ function buildMobileAppHtml() {
           btn.setAttribute('aria-checked', active ? 'true' : 'false');
         });
       }
-      const hint = $('theme-mode-hint');
-      const effLabel = effective === 'light' ? '浅色' : '深色';
-      if (hint) {
-        hint.textContent = pref === 'system' ? ('跟随 · ' + effLabel) : ('固定' + effLabel);
-      }
-      const themeBtn = $('btn-theme');
-      if (themeBtn) {
-        themeBtn.innerHTML = pref === 'light' ? THEME_ICON_SUN : (pref === 'dark' ? THEME_ICON_MOON : THEME_ICON_SYSTEM);
-        const label = pref === 'system'
-          ? ('外观：跟随系统（当前' + effLabel + '）')
-          : ('外观：固定' + effLabel);
-        themeBtn.title = label;
-        themeBtn.setAttribute('aria-label', label);
-      }
       return { pref, effective };
     }
     function selectThemePref(nextPref) {
       const { pref, effective } = applyTheme(nextPref, true);
       const effText = effective === 'light' ? '浅色' : '深色';
-      showToast(pref === 'system' ? ('外观已设为跟随系统（当前' + effText + '）') : ('外观已切换为固定' + effText));
-    }
-    function openThemePicker() {
-      const curPref = activeThemePref;
-      const sysLabel = lightSchemeMq && lightSchemeMq.matches ? '浅色' : '深色';
-      const opts = [
-        { mode: 'system', label: '🖥️ 跟随系统（当前：' + sysLabel + '）', active: curPref === 'system' },
-        { mode: 'light', label: '☀️ 固定浅色', active: curPref === 'light' },
-        { mode: 'dark', label: '🌙 固定深色', active: curPref === 'dark' }
-      ];
-      openSheet('外观模式', opts, async (opt) => {
-        selectThemePref(opt.mode);
-      });
+      showToast(pref === 'system' ? ('已设为跟随系统（当前' + effText + '）') : ('已切换为固定' + effText));
     }
     const themeSegEl = $('theme-seg');
     if (themeSegEl) {
@@ -5400,9 +5374,6 @@ function buildMobileAppHtml() {
         if (!mode) return;
         selectThemePref(mode);
       });
-    }
-    if ($('btn-theme')) {
-      $('btn-theme').addEventListener('click', openThemePicker);
     }
     if (lightSchemeMq) {
       const onSystemSchemeChange = () => {

@@ -3630,8 +3630,9 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     const html = buildMobileAppHtml();
     assert.ok(html.includes('id="ag-theme-boot"'), '应包含防首屏闪烁主题引导脚本 #ag-theme-boot');
     assert.ok(html.includes('id="meta-theme-color"'), '应包含可动态更新的 #meta-theme-color');
-    assert.ok(html.includes('id="btn-theme"'), '顶栏应包含快捷外观模式按钮 #btn-theme');
-    assert.ok(html.includes('id="theme-seg"'), '侧边栏/抽屉底部应包含三段式外观切换器 #theme-seg');
+    assert.equal(html.includes('id="btn-theme"'), false, '顶栏右上角应移除 #btn-theme，统一收口到侧边栏');
+    assert.equal(html.includes('id="theme-mode-hint"'), false, '侧边栏应去除多余的外观文字提示 #theme-mode-hint');
+    assert.ok(html.includes('id="theme-seg"'), '侧边栏/抽屉底部应包含三段式纯图标外观切换器 #theme-seg');
     assert.ok(html.includes('data-theme-mode="system"') && html.includes('data-theme-mode="light"') && html.includes('data-theme-mode="dark"'),
       '应同时提供跟随系统、固定浅色、固定深色三个选项');
     assert.ok(html.includes('html[data-theme="light"]') && html.includes('@media (prefers-color-scheme:light)'),
@@ -3723,23 +3724,26 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     const segSystem = env.doc.querySelector('button[data-theme-mode="system"]');
     const segLight = env.doc.querySelector('button[data-theme-mode="light"]');
     const segDark = env.doc.querySelector('button[data-theme-mode="dark"]');
-    const hintEl = env.doc.getElementById('theme-mode-hint');
-    const themeBtn = env.doc.getElementById('btn-theme');
-    assert.ok(segSystem && segLight && segDark && hintEl && themeBtn, '外观切换控件应完整渲染');
+    assert.equal(env.doc.getElementById('btn-theme'), null, '对话顶栏不应再包含外观按钮');
+    assert.equal(env.doc.getElementById('theme-mode-hint'), null, '侧边栏底部不应包含状态文字');
+    assert.equal(env.doc.querySelector('.drawer-footer-head'), null, '侧边栏底部不应包含标题文字行');
+    assert.ok(segSystem && segLight && segDark, '侧边栏三态外观纯图标切换控件应完整渲染');
+    for (const btn of [segSystem, segLight, segDark]) {
+      assert.ok(btn.querySelector('svg'), '外观按钮应包含 SVG 图标');
+      assert.equal((btn.textContent || '').trim(), '', '外观按钮应仅保留图标，不附带文字');
+      assert.ok((btn.getAttribute('aria-label') || '').length > 0, '纯图标外观按钮应保留无障碍标签');
+    }
     assert.equal(segSystem.classList.contains('active'), true);
     assert.equal(segSystem.getAttribute('aria-checked'), 'true');
-    assert.equal(hintEl.textContent, '跟随 · 深色');
 
     // 1. 跟随系统状态下 OS 切到浅色与深色应实时同步
     setSystemLight(true);
     assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'light');
     assert.equal(metaTheme.getAttribute('content'), '#f8fafc');
-    assert.equal(hintEl.textContent, '跟随 · 浅色');
 
     setSystemLight(false);
     assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'dark');
     assert.equal(metaTheme.getAttribute('content'), '#09090b');
-    assert.equal(hintEl.textContent, '跟随 · 深色');
 
     // 2. 在系统深色下切到「固定浅色」应持久化并无视系统变化
     segLight.click();
@@ -3748,7 +3752,6 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'light');
     assert.equal(segLight.getAttribute('aria-checked'), 'true');
     assert.equal(segSystem.getAttribute('aria-checked'), 'false');
-    assert.equal(hintEl.textContent, '固定浅色');
     assert.equal(metaTheme.getAttribute('content'), '#f8fafc');
     setSystemLight(true);
     setSystemLight(false);
@@ -3761,25 +3764,14 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'dark');
     assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'dark');
     assert.equal(segDark.getAttribute('aria-checked'), 'true');
-    assert.equal(hintEl.textContent, '固定深色');
     assert.equal(metaTheme.getAttribute('content'), '#09090b');
 
-    // 4. 点击顶栏外观按钮弹出 3 项选择面板，并切回「跟随系统」
-    themeBtn.click();
-    const sheetBackdrop = env.doc.getElementById('sheet-backdrop');
-    const sheetList = env.doc.getElementById('sheet-list');
-    assert.equal(sheetBackdrop.hidden, false, '点击顶栏外观按钮应打开外观选择面板');
-    assert.equal(env.doc.getElementById('sheet-title-text')?.textContent, '外观模式');
-    const sheetOpts = sheetList.querySelectorAll('.sheet-opt');
-    assert.equal(sheetOpts.length, 3, '外观选择面板应展示 3 个模式选项');
-    assert.equal(sheetOpts[2].classList.contains('active'), true, '当前固定深色选项应高亮');
-
-    await sheetList.onclick({ target: sheetOpts[0] });
-    assert.equal(sheetBackdrop.hidden, true, '选中后应关闭面板');
+    // 4. 在系统浅色下点击「跟随系统」图标切回系统联动，应立即呈现浅色
+    segSystem.click();
     assert.equal(env.localStorage.getItem('ag_remote_theme_v1'), 'system');
     assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'system');
+    assert.equal(segSystem.getAttribute('aria-checked'), 'true');
     assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'light', '当前系统为浅色时恢复跟随应立即呈现浅色');
-    assert.equal(hintEl.textContent, '跟随 · 浅色');
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;
@@ -5233,7 +5225,12 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.ok(html.includes('enterkeyhint="enter"'), '输入框应声明 enterkeyhint="enter" 以配合手机软键盘换行');
     assert.ok(html.includes('id="btn-new-project"') && html.includes('id="proj-modal-backdrop"'), '应包含新建项目入口与目录选择弹窗');
     assert.ok(cssText.includes('.new-proj-mini-btn{') && cssText.includes('width:34px;height:34px;padding:0'), '新建项目按钮应采用 34×34 紧凑纯图标样式以免挤压左侧栏');
-    assert.ok(html.includes('id="btn-theme"') && html.includes('id="theme-seg"'), '三态外观开关按钮与底部三段选择器必须与新建项目/多项目控件并存');
+    assert.equal(html.includes('id="btn-theme"'), false, '对话右上角外观按钮应已移除');
+    assert.ok(html.includes('id="theme-seg"'), '侧边栏底部纯图标三态选择器必须与新建项目/多项目控件并存');
+    const mobSubFs = parseFontPx(mobileCss, '.new-chat-sub');
+    const deskSubFs = parseFontPx(desktopCss, '.new-chat-sub');
+    assert.ok(mobSubFs > 0 && mobSubFs <= 11, `移动端新建对话下排项目名字号 (${mobSubFs}px) 应为极小字 <= 11px`);
+    assert.ok(deskSubFs > 0 && deskSubFs <= 10.5, `桌面端新建对话下排项目名字号 (${deskSubFs}px) 应为极小字 <= 10.5px`);
     assert.ok(cssText.includes('.proj-head{') && cssText.includes('var(--proj-head-bg)'), '项目分组条应使用主题变量 var(--proj-head-bg)');
     assert.ok(cssText.includes('.proj-toggle{') && cssText.includes('color:var(--fg-strong)'), '项目标题文字应使用主题变量 var(--fg-strong)');
     assert.ok(cssText.includes('.proj-path-input,.proj-field-input{') && cssText.includes('var(--input-bg)'), '目录输入框应使用主题变量 var(--input-bg)');
@@ -5477,7 +5474,11 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.ok(convListEl.querySelector('.proj-group.is-current'), '当前项目组应带有 is-current 高亮类');
     assert.ok(convListEl.querySelector('.proj-toggle .proj-icon svg'), '项目标题条应渲染文件夹 SVG 图标');
     assert.ok(convListEl.querySelector('.proj-body .conv-item'), '项目下应有带导引线的 .proj-body 包裹会话项');
-    assert.ok(envUi.doc.getElementById('btn-theme') && envUi.doc.getElementById('theme-seg'), '外观切换控件应与多项目列表共存在渲染 DOM 中');
+    assert.equal(envUi.doc.getElementById('btn-theme'), null, '右上角顶栏不应渲染独立外观切换按钮');
+    assert.ok(envUi.doc.getElementById('theme-seg'), '侧边栏底部三段外观图标控件应与多项目列表共存在渲染 DOM 中');
+    const recentTabEl = envUi.doc.querySelector('#conv-view-tabs button[data-conv-view="recent"]');
+    const recentTabTxt = (recentTabEl?.textContent || '').trim();
+    assert.ok(recentTabTxt.startsWith('活跃') && !recentTabTxt.includes('最近活跃'), `顶部标签应简写为「活跃」，实际: ${recentTabTxt}`);
     const newProjBtnDom = envUi.doc.getElementById('btn-new-project');
     assert.ok(newProjBtnDom && newProjBtnDom.querySelector('svg'), '侧边栏新建项目按钮应渲染文件夹加号 SVG 图标');
     assert.equal((newProjBtnDom.textContent || '').trim(), '', '侧边栏新建项目按钮应为紧凑纯图标形态，不附带占空间的文字');
@@ -5556,7 +5557,9 @@ test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机�
     assert.equal(createRpc.body.project.projectResources.resources[0].gitFolder.defaultBranch, 'main');
     assert.equal(currentProjIdState, createRpc.body.project.id, '创建后应导航并切换当前项目至新建的 repo-a');
     assert.ok(navCalls.some((c) => c.action === 'new-conversation' && c.projectId === createRpc.body.project.id));
-    assert.ok((envUi.doc.getElementById('new-chat-label')?.textContent || '').includes('repo-a'), '新建对话按钮应联动显示刚创建的新项目名');
+    assert.equal((envUi.doc.getElementById('new-chat-label')?.textContent || '').trim(), '新建对话', '主标题应固定保持「新建对话」');
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, false, '有活跃项目时第二行极小字 #new-chat-sub 应显示');
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'repo-a', '新建对话按钮下一行极小字应联动显示刚创建的新项目名');
 
     // 验证创建成功但桌面端导航失败时：不误关弹窗也不误报成功，且支持直接重试进入已有项目
     failNextNavError = '桌面端路由正忙';
