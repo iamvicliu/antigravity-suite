@@ -304,7 +304,35 @@
     '当前版本状态': 'Current Version Status',
     '拉取最新提交并免重启热生效': 'Pull latest commits and hot-reload without restart',
     '打开 Antigravity Suite 统一设置面板': 'Open Antigravity Suite Settings',
-    '发现新版本，点击打开设置一键更新': 'Update available — click to open Settings and update'
+    '发现新版本，点击打开设置一键更新': 'Update available — click to open Settings and update',
+    '📱 远程设置': '📱 Remote',
+    '远程通道与隧道': 'Remote Channels & Tunnel',
+    '刷新状态': 'Refresh',
+    '重置令牌': 'Reset Token',
+    'Remote 页面显示内容': 'Remote Page Visibility',
+    '恢复默认': 'Reset Default',
+    '顶部上下文窗口面板': 'Topbar Context Window Panel',
+    '顶部本机已记录用量面板': 'Topbar Local Usage Panel',
+    '顶部模型配额胶囊': 'Topbar Model Quota Pill',
+    '顶部通道连接状态副标题': 'Topbar Channel Meta Subtitle',
+    '左侧会话与窗口抽屉': 'Conversation & Window Drawer',
+    'AI 思考过程折叠区': 'Collapsible Thinking Process',
+    '底部快捷操作与下一步建议': 'Bottom Quick Chips & Suggestions',
+    '输入区工具栏（模型/权限等）': 'Composer Tools (Model / Perms / Upload)',
+    '待审批操作提醒横幅': 'Pending Approvals Banner',
+    '快捷提示词': 'Quick Prompts',
+    '+ 新增': '+ Add',
+    '保存快捷提示词': 'Save Quick Prompts',
+    '局域网': 'LAN',
+    'Cloudflare 隧道': 'Cloudflare Tunnel',
+    '固定域名': 'Fixed Domain',
+    '公网隧道已停用 · 点击启用公网域名': 'Tunnel disabled · click to enable public access',
+    '点击上方复选框或「固定域名」开启公网访问': 'Toggle checkbox or Fixed Domain to enable tunnel',
+    '获取 Token 前往 Cloudflare →': 'Get Token on Cloudflare →',
+    '前往 Cloudflare 获取 Token →': 'Get Token on Cloudflare →',
+    '保存并启用': 'Save & Enable',
+    '改用免登录临时隧道': 'Use Quick Tunnel',
+    '取消': 'Cancel'
   };
 
   function translateSuiteDynamicFragmentEn(fragment) {
@@ -376,6 +404,113 @@
     showChatNav: true
   };
   let suiteFeatureFlags = { ...DEFAULT_SUITE_FEATURE_FLAGS };
+
+  const DEFAULT_QUICK_PROMPTS = [
+    { id: 'compact', label: '/compact 压缩', text: '/compact', title: '快速填入 /compact 压缩上下文命令' },
+    { id: 'plan', label: '/plan 规划', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式' },
+    { id: 'reload', label: '重载规则', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令' }
+  ];
+
+  function sanitizeQuickPromptsList(raw) {
+    if (!Array.isArray(raw)) return null;
+    const out = [];
+    for (let i = 0; i < raw.length; i++) {
+      const item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      const label = String(item.label ?? '').trim();
+      const text = String(item.text ?? '');
+      if (!label || !text.trim()) continue;
+      const rawId = String(item.id || '').trim();
+      const id = rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) ? rawId : `custom-${i}`;
+      out.push({
+        id,
+        label: label.slice(0, 40),
+        text: text.slice(0, 2000),
+        title: String(item.title || '').trim().slice(0, 120)
+      });
+      if (out.length >= 12) break;
+    }
+    return out;
+  }
+
+  let suiteQuickPrompts = (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_suite_quick_prompts') : '';
+      if (raw) {
+        const parsed = sanitizeQuickPromptsList(JSON.parse(raw));
+        if (parsed) return parsed;
+      }
+    } catch {}
+    return null;
+  })();
+
+  const DEFAULT_REMOTE_DISPLAY_CONFIG = {
+    showContextPanel: true,
+    showUsagePanel: true,
+    showQuotaPill: true,
+    showChannelMeta: true,
+    showSidebar: true,
+    showThinking: true,
+    showQuickChips: true,
+    showComposerTools: true,
+    showApprovals: true
+  };
+
+  function sanitizeRemoteDisplayConfig(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const out = {};
+    for (const [k, defVal] of Object.entries(DEFAULT_REMOTE_DISPLAY_CONFIG)) {
+      out[k] = typeof src[k] === 'boolean' ? src[k] : defVal;
+    }
+    return out;
+  }
+
+  const REMOTE_DISPLAY_BINDINGS = [
+    ['set-remote-ctx-panel', 'showContextPanel'],
+    ['set-remote-usage-panel', 'showUsagePanel'],
+    ['set-remote-quota-pill', 'showQuotaPill'],
+    ['set-remote-channel-meta', 'showChannelMeta'],
+    ['set-remote-sidebar', 'showSidebar'],
+    ['set-remote-thinking', 'showThinking'],
+    ['set-remote-quick-chips', 'showQuickChips'],
+    ['set-remote-composer-tools', 'showComposerTools'],
+    ['set-remote-approvals', 'showApprovals']
+  ];
+
+  const remoteSettingsState = {
+    loading: false,
+    busy: false,
+    pendingAction: '',
+    data: null,
+    error: '',
+    tunnelConfigOpen: false,
+    draftHost: null,
+    draftToken: '',
+    pollTimer: null
+  };
+
+  function escapeSuiteHtml(str) {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function suiteTr(zh, en) {
+    const entry = findSupportedLocaleEntry(suiteEnhancerPrefs.locale);
+    return entry.hansCode === 'en' ? en : zh;
+  }
+
+  function onSuiteSettingsClosed() {
+    if (remoteSettingsState.pollTimer) {
+      clearTimeout(remoteSettingsState.pollTimer);
+      remoteSettingsState.pollTimer = null;
+    }
+    remoteSettingsState.tunnelConfigOpen = false;
+    remoteSettingsState.draftHost = null;
+    remoteSettingsState.draftToken = '';
+  }
 
   function findSupportedLocaleEntry(codeRaw) {
     const clean = String(codeRaw || '').trim();
@@ -501,10 +636,10 @@
 
     el('summary-subtier-wrap')?.remove?.();
     el('btn-edit-plan-custom')?.remove?.();
-    ['p-det-subtier-readonly', 'p-det-country', 'p-det-region', 'p-det-currency', 'btn-jump-plan-settings'].forEach(id => {
+    ['p-det-subtier-readonly', 'p-det-country', 'p-det-region', 'p-det-currency'].forEach(id => {
       const node = el(id);
       if (node) {
-        node.style.display = id === 'btn-jump-plan-settings' ? 'inline-flex' : 'inline-block';
+        node.style.display = 'inline-block';
       }
     });
 
@@ -581,6 +716,11 @@
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
       localStorage?.setItem?.('antigravityHansEnglishLabels', suiteEnhancerPrefs.englishLabels ? '1' : '0');
       localStorage?.setItem?.('ag_suite_feature_flags', JSON.stringify(suiteFeatureFlags));
+      if (suiteQuickPrompts === null) {
+        localStorage?.removeItem?.('ag_suite_quick_prompts');
+      } else {
+        localStorage?.setItem?.('ag_suite_quick_prompts', JSON.stringify(suiteQuickPrompts));
+      }
     } catch {}
     try {
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
@@ -597,7 +737,8 @@
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
             englishLabels: Boolean(suiteEnhancerPrefs.englishLabels),
-            featureFlags: { ...suiteFeatureFlags }
+            featureFlags: { ...suiteFeatureFlags },
+            quickPrompts: suiteQuickPrompts ? suiteQuickPrompts.map(item => ({ ...item })) : null
           }
         }));
       }
@@ -1274,15 +1415,532 @@
     if (typeof applyHostAppearancePreferences === 'function') {
       applyHostAppearancePreferences(uiPrefs);
     }
+    if ('quickPrompts' in uiPrefs) {
+      suiteQuickPrompts = uiPrefs.quickPrompts === null
+        ? null
+        : sanitizeQuickPromptsList(uiPrefs.quickPrompts);
+    }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
     applySuiteFeatureFlags();
+    renderQuickPromptsEditor();
     renderTerminalGrid();
     applySuiteShadowLocale();
   }
 
+  function getSuiteQuickPrompts() {
+    return (suiteQuickPrompts || DEFAULT_QUICK_PROMPTS).map(item => ({ ...item }));
+  }
+
+  async function setSuiteQuickPrompts(list, opts = {}) {
+    if (list === null) {
+      suiteQuickPrompts = null;
+    } else {
+      const cleaned = sanitizeQuickPromptsList(list);
+      suiteQuickPrompts = cleaned === null ? [] : cleaned;
+    }
+    dispatchSuitePrefsChanged();
+    renderQuickPromptsEditor();
+    const statusEl = el('quick-prompts-status');
+    if (statusEl) {
+      statusEl.textContent = suiteQuickPrompts === null
+        ? suiteTr('✅ 已恢复默认快捷提示词', '✅ Quick prompts reset to default')
+        : suiteTr(`✅ 已保存 ${suiteQuickPrompts.length} 条快捷提示词`, `✅ Saved ${suiteQuickPrompts.length} quick prompt(s)`);
+    }
+    if (!opts?.skipPersist) {
+      await saveSuiteUiPrefs({
+        quickPrompts: suiteQuickPrompts === null ? null : suiteQuickPrompts.map(item => ({ ...item }))
+      });
+    }
+    return getSuiteQuickPrompts();
+  }
+
+  async function resetSuiteQuickPrompts() {
+    return await setSuiteQuickPrompts(null);
+  }
+
+  function appendQuickPromptEditorRow(listEl, item, idx) {
+    const row = document.createElement('div');
+    row.className = 'qp-row';
+    row.setAttribute('data-qp-idx', String(idx));
+
+    const labelInp = document.createElement('input');
+    labelInp.type = 'text';
+    labelInp.className = 'qp-label-input';
+    labelInp.placeholder = suiteTr('按钮文案 (如 /plan)', 'Button label');
+    labelInp.value = String(item?.label || '');
+    labelInp.setAttribute('value', labelInp.value);
+
+    const textInp = document.createElement('input');
+    textInp.type = 'text';
+    textInp.className = 'qp-text-input';
+    textInp.placeholder = suiteTr('填入输入框的完整提示词…', 'Prompt text to insert…');
+    textInp.value = String(item?.text || '');
+    textInp.setAttribute('value', textInp.value);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'qp-del-btn';
+    delBtn.textContent = '×';
+    delBtn.title = suiteTr('删除此条', 'Remove');
+    delBtn.addEventListener('click', () => {
+      row.remove?.();
+    });
+
+    row.appendChild(labelInp);
+    row.appendChild(textInp);
+    row.appendChild(delBtn);
+    listEl.appendChild(row);
+  }
+
+  function renderQuickPromptsEditor() {
+    const listEl = el('quick-prompts-editor-list');
+    if (!listEl) return;
+    listEl.replaceChildren();
+    const items = suiteQuickPrompts !== null ? suiteQuickPrompts : DEFAULT_QUICK_PROMPTS;
+    for (let i = 0; i < items.length; i++) {
+      appendQuickPromptEditorRow(listEl, items[i], i);
+    }
+  }
+
+  function collectQuickPromptsFromEditor() {
+    const listEl = el('quick-prompts-editor-list');
+    if (!listEl) return [];
+    const rows = Array.from(listEl.querySelectorAll('.qp-row') || []);
+    const out = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const labelInp = row.querySelector('.qp-label-input');
+      const textInp = row.querySelector('.qp-text-input');
+      const label = String(labelInp?.value || '').trim();
+      const text = String(textInp?.value || '');
+      if (!label || !text.trim()) continue;
+      out.push({
+        id: `custom-${i}`,
+        label: label.slice(0, 40),
+        text: text.slice(0, 2000),
+        title: label.slice(0, 120)
+      });
+      if (out.length >= 12) break;
+    }
+    return out;
+  }
+
+  function broadcastRemoteStateChanged(data) {
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('ag-remote-state-changed', {
+          detail: { data }
+        }));
+      }
+    } catch {}
+  }
+
+  function getRemoteDisplayConfig() {
+    return sanitizeRemoteDisplayConfig(remoteSettingsState.data?.remoteDisplay);
+  }
+
+  function syncRemoteDisplayCheckboxes(displayCfg) {
+    const cfg = sanitizeRemoteDisplayConfig(displayCfg || remoteSettingsState.data?.remoteDisplay);
+    for (const [elId, key] of REMOTE_DISPLAY_BINDINGS) {
+      const box = el(elId);
+      if (box) box.checked = Boolean(cfg[key]);
+    }
+  }
+
+  function collectRemoteDisplayFromUI() {
+    const out = {};
+    for (const [elId, key] of REMOTE_DISPLAY_BINDINGS) {
+      const box = el(elId);
+      if (box) out[key] = Boolean(box.checked);
+    }
+    return sanitizeRemoteDisplayConfig({
+      ...(remoteSettingsState.data?.remoteDisplay || DEFAULT_REMOTE_DISPLAY_CONFIG),
+      ...out
+    });
+  }
+
+  function resolveRemoteChannelsForSettings(data) {
+    if (!data) return [];
+    const tsList = Array.isArray(data.tailscaleUrls) ? data.tailscaleUrls : [];
+    const lanList = Array.isArray(data.lanUrls) ? data.lanUrls : [];
+    const rawHost = rawUrl => {
+      try { return new URL(String(rawUrl || '')).hostname || ''; } catch { return ''; }
+    };
+    let channels = Array.isArray(data.channels) && data.channels.length
+      ? data.channels.map(ch => ({ ...ch }))
+      : [
+          {
+            key: 'lan',
+            label: '局域网',
+            labelEn: 'LAN',
+            enabled: data.enabledChannels?.lan !== false,
+            available: (data.enabledChannels?.lan !== false) && lanList.length > 0,
+            displayHost: rawHost(lanList[0]?.url)
+          },
+          {
+            key: 'tailscale',
+            label: 'Tailscale',
+            labelEn: 'Tailscale',
+            enabled: data.enabledChannels?.tailscale !== false,
+            available: (data.enabledChannels?.tailscale !== false) && tsList.length > 0,
+            displayHost: data.tailscaleDnsName || rawHost(tsList[0]?.url)
+          },
+          {
+            key: 'bonjour',
+            label: 'Bonjour',
+            labelEn: 'Bonjour',
+            enabled: data.enabledChannels?.bonjour !== false,
+            available: (data.enabledChannels?.bonjour !== false) && Boolean(data.bonjourHost && lanList.length > 0),
+            displayHost: data.bonjourHost || ''
+          },
+          {
+            key: 'tunnel',
+            label: 'Cloudflare 隧道',
+            labelEn: 'Cloudflare Tunnel',
+            enabled: Boolean(data.enabledChannels?.tunnel),
+            available: Boolean(data.tunnelAvailable),
+            state: data.tunnelState || 'stopped',
+            mode: data.tunnelMode || 'quick',
+            displayHost: data.tunnelPublicUrl ? rawHost(data.tunnelPublicUrl) : '',
+            tunnelHostname: data.tunnelHostname || '',
+            error: data.tunnelError || ''
+          }
+        ];
+
+    const switchingTunnelMode = Boolean(
+      remoteSettingsState.busy &&
+      (remoteSettingsState.pendingAction === 'quick' || remoteSettingsState.pendingAction === 'named')
+    );
+    if (switchingTunnelMode) {
+      channels = channels.map(ch => (ch.key === 'tunnel'
+        ? { ...ch, available: false, displayHost: '', rawHost: '' }
+        : ch));
+    }
+    return channels;
+  }
+
+  function scheduleRemoteSettingsPoll() {
+    if (remoteSettingsState.pollTimer) {
+      clearTimeout(remoteSettingsState.pollTimer);
+      remoteSettingsState.pollTimer = null;
+    }
+    if (activeSettingsTab !== 'remote') return;
+    const chs = Array.isArray(remoteSettingsState.data?.channels) ? remoteSettingsState.data.channels : [];
+    const tch = chs.find(c => c.key === 'tunnel');
+    if (tch && tch.state === 'starting') {
+      remoteSettingsState.pollTimer = setTimeout(() => {
+        remoteSettingsState.pollTimer = null;
+        if (activeSettingsTab === 'remote') {
+          void loadRemoteSettingsInfo(false);
+        }
+      }, 1500);
+    }
+  }
+
+  function renderRemoteSettingsChannels() {
+    const root = el('settings-remote-channels-root');
+    if (!root) return;
+    const data = remoteSettingsState.data;
+    const resetBtn = el('ag-remote-reset');
+    const refreshBtn = el('btn-settings-remote-refresh');
+    if (resetBtn) resetBtn.disabled = Boolean(remoteSettingsState.loading || remoteSettingsState.busy);
+    if (refreshBtn) {
+      refreshBtn.disabled = Boolean(remoteSettingsState.loading || remoteSettingsState.busy);
+      refreshBtn.textContent = (remoteSettingsState.loading || remoteSettingsState.busy)
+        ? suiteTr('处理中…', 'Working…')
+        : suiteTr('刷新状态', 'Refresh');
+    }
+
+    if (remoteSettingsState.loading && !data) {
+      root.innerHTML = `<div class="settings-card-desc">${escapeSuiteHtml(suiteTr('⏳ 正在读取远程通道状态…', '⏳ Loading remote channels…'))}</div>`;
+      return;
+    }
+    if (!data) {
+      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('未能连接到本地远程桥接服务', 'Failed to connect to local remote bridge'))}</div>`;
+      return;
+    }
+
+    const channels = resolveRemoteChannelsForSettings(data);
+    const availableList = channels.filter(c => (c.enabled !== false) && c.available);
+    const activeChannel = availableList.find(c => c.key === 'tunnel')
+      || availableList.find(c => c.key === 'tailscale')
+      || availableList.find(c => c.key === 'lan')
+      || availableList[0]
+      || null;
+    const activeKey = activeChannel?.key || 'none';
+    const tunnelCh = channels.find(c => c.key === 'tunnel') || null;
+    const busyAny = Boolean(remoteSettingsState.loading || remoteSettingsState.busy);
+    const switchingTunnelMode = Boolean(
+      remoteSettingsState.busy &&
+      (remoteSettingsState.pendingAction === 'quick' || remoteSettingsState.pendingAction === 'named')
+    );
+
+    const channelsHtml = `<div class="ag-rp-channels">${channels.map(ch => {
+      const label = suiteTr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
+      if (ch.key === 'tunnel') {
+        const isStarting = switchingTunnelMode || ch.state === 'starting';
+        const isRunning = !switchingTunnelMode && ch.state === 'running' && ch.available;
+        const checked = !switchingTunnelMode && Boolean(ch.enabled || isRunning || ch.state === 'starting');
+        const modeHint = ch.mode === 'named' ? suiteTr('固定域名', 'Fixed Domain') : suiteTr('免登录临时', 'Quick');
+        const statusHint = switchingTunnelMode
+          ? (remoteSettingsState.pendingAction === 'quick'
+              ? suiteTr('正在切换临时隧道…', 'Switching to quick tunnel…')
+              : suiteTr('正在切换固定域名…', 'Switching to fixed domain…'))
+          : isStarting
+            ? (ch.displayHost || suiteTr('正在分配公网隧道…', 'Provisioning Tunnel…'))
+            : (isRunning
+                ? (ch.displayHost || modeHint)
+                : (ch.binaryAvailable === false
+                    ? suiteTr('缺少 cloudflared', 'cloudflared not found')
+                    : suiteTr('点击启用公网访问', 'Click to enable tunnel')));
+        return `
+          <div id="ag-rp-tunnel-toggle" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tunnel" data-active="${activeKey === 'tunnel' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
+            <span class="ag-rp-ch-check">
+              <span aria-hidden="true">${checked ? '☑' : '☐'}</span>
+              <span class="ag-rp-ch-name">${escapeSuiteHtml(label)}</span>
+              <span class="ag-rp-ch-addr">${isStarting ? '<span class="ag-rp-spin"></span>' : ''}${escapeSuiteHtml(statusHint)}</span>
+            </span>
+            <button id="ag-rp-tunnel-cfg-btn" class="ag-rp-ch-cfg" type="button" title="${escapeSuiteHtml(suiteTr('配置 Cloudflare 固定域名', 'Configure Fixed Domain'))}">${escapeSuiteHtml(suiteTr('固定域名 ▾', 'Fixed Domain ▾'))}</button>
+          </div>
+        `;
+      }
+      const checked = ch.enabled !== false;
+      const addrHint = checked
+        ? (ch.displayHost || (ch.available ? '' : suiteTr('当前网络不可用', 'Unavailable')))
+        : suiteTr('已停用 · 点击重新启用', 'Disabled · Click to enable');
+      return `
+        <button id="ag-rp-toggle-${escapeSuiteHtml(ch.key)}" class="ag-rp-channel ag-rp-check" type="button" role="checkbox" aria-checked="${checked ? 'true' : 'false'}" data-ch="${escapeSuiteHtml(ch.key)}" data-active="${activeKey === ch.key ? 'true' : 'false'}" ${busyAny ? 'disabled' : ''}>
+          <span class="ag-rp-ch-check">
+            <span aria-hidden="true">${checked ? '☑' : '☐'}</span>
+            <span class="ag-rp-ch-name">${escapeSuiteHtml(label)}</span>
+          </span>
+          <span class="ag-rp-ch-addr">${escapeSuiteHtml(addrHint)}</span>
+        </button>
+      `;
+    }).join('')}</div>`;
+
+    const tunnelHostDraft = remoteSettingsState.draftHost !== null
+      ? remoteSettingsState.draftHost
+      : (tunnelCh?.tunnelHostname || '');
+    const tunnelTokenDraft = remoteSettingsState.draftToken || '';
+    const tokenConfiguredHint = tunnelCh?.hasToken
+      ? suiteTr('（已配置 Token，留空保留原值）', '(Token saved — leave blank to keep)')
+      : suiteTr('（从 Cloudflare Zero Trust → Tunnels 获取）', '(From Cloudflare Zero Trust → Tunnels)');
+
+    const formHtml = remoteSettingsState.tunnelConfigOpen ? `
+      <div id="ag-rp-tunnel-form" class="ag-rp-tunnel-form">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+          <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（零配置内网穿透）', 'Cloudflare Fixed Domain Tunnel'))}</span>
+          <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
+        </div>
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span>${escapeSuiteHtml(suiteTr('自定义域名（例: ag.example.com）', 'Custom Hostname (e.g. ag.example.com)'))}</span>
+          <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="ag.example.com" value="${escapeSuiteHtml(tunnelHostDraft)}" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span>${escapeSuiteHtml(`Tunnel Token ${tokenConfiguredHint}`)}</span>
+          <input id="ag-rp-cf-token" class="ag-rp-input" type="password" placeholder="eyJ..." value="${escapeSuiteHtml(tunnelTokenDraft)}" />
+        </label>
+        <div class="ag-rp-form-actions">
+          <button id="ag-rp-cf-save" class="ag-rp-btn primary" type="button" ${busyAny ? 'disabled' : ''}>${remoteSettingsState.pendingAction === 'named' && remoteSettingsState.busy ? '<span class="ag-rp-spin"></span>' : ''}${escapeSuiteHtml(suiteTr('保存并启用', 'Save & Enable'))}</button>
+          <button id="ag-rp-cf-quick" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${remoteSettingsState.pendingAction === 'quick' && remoteSettingsState.busy ? '<span class="ag-rp-spin"></span>' : ''}${escapeSuiteHtml(suiteTr('改用免登录临时隧道', 'Use Quick Tunnel'))}</button>
+          <button id="ag-rp-cf-cancel" class="ag-rp-btn" type="button">${escapeSuiteHtml(suiteTr('取消', 'Cancel'))}</button>
+        </div>
+      </div>
+    ` : '';
+
+    const errMsg = tunnelCh?.error || remoteSettingsState.error || '';
+    const errHtml = errMsg ? `<div class="ag-rp-err">${escapeSuiteHtml(errMsg)}</div>` : '';
+
+    root.innerHTML = `${channelsHtml}${formHtml}${errHtml}`;
+
+    channels.filter(c => c.key !== 'tunnel').forEach(ch => {
+      const btn = root.querySelector(`#ag-rp-toggle-${ch.key}`);
+      btn?.addEventListener('click', ev => {
+        ev.stopPropagation();
+        if (remoteSettingsState.busy) return;
+        const nextOn = ch.enabled === false;
+        void configureRemoteSettings({ enabledChannels: { [ch.key]: nextOn } });
+      });
+    });
+
+    const toggleRow = root.querySelector('#ag-rp-tunnel-toggle');
+    const cfgBtn = root.querySelector('#ag-rp-tunnel-cfg-btn');
+    cfgBtn?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.tunnelConfigOpen = !remoteSettingsState.tunnelConfigOpen;
+      remoteSettingsState.error = '';
+      renderRemoteSettingsChannels();
+    });
+    const onTunnelRowToggle = ev => {
+      if (ev.target && cfgBtn && (ev.target === cfgBtn || cfgBtn.contains?.(ev.target))) return;
+      ev.stopPropagation();
+      if (remoteSettingsState.busy) return;
+      const isOn = Boolean(tunnelCh?.enabled || tunnelCh?.state === 'running' || tunnelCh?.state === 'starting');
+      void configureRemoteSettings({ enabled: !isOn, enabledChannels: { tunnel: !isOn } });
+    };
+    toggleRow?.addEventListener('click', onTunnelRowToggle);
+    toggleRow?.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        onTunnelRowToggle(ev);
+      }
+    });
+
+    const cfLink = root.querySelector('#ag-rp-cf-get-token');
+    cfLink?.addEventListener('click', async ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const targetUrl = cfLink.getAttribute('href') || 'https://one.dash.cloudflare.com/?to=/:account/networks/tunnels';
+      try {
+        await invokeHostBridge('/open-external-url', { url: targetUrl, dryRun: false }, 'openExternalUrl');
+      } catch {}
+    });
+
+    const hostInput = root.querySelector('#ag-rp-cf-host');
+    const tokenInput = root.querySelector('#ag-rp-cf-token');
+    hostInput?.addEventListener('input', ev => {
+      remoteSettingsState.draftHost = String(ev?.target?.value ?? hostInput.value ?? '');
+    });
+    tokenInput?.addEventListener('input', ev => {
+      remoteSettingsState.draftToken = String(ev?.target?.value ?? tokenInput.value ?? '');
+    });
+
+    root.querySelector('#ag-rp-cf-save')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const hostname = String(hostInput?.value ?? remoteSettingsState.draftHost ?? '').trim();
+      const token = String(tokenInput?.value ?? remoteSettingsState.draftToken ?? '').trim();
+      remoteSettingsState.draftHost = hostname;
+      remoteSettingsState.draftToken = token;
+      if (!hostname) {
+        remoteSettingsState.error = suiteTr('请先填写自定义域名（如 ag.example.com）', 'Please enter a custom hostname');
+        remoteSettingsState.tunnelConfigOpen = true;
+        renderRemoteSettingsChannels();
+        return;
+      }
+      if (!token && !tunnelCh?.hasToken) {
+        remoteSettingsState.error = suiteTr('首次配置固定域名请粘贴 Cloudflare Tunnel Token', 'Paste Cloudflare Tunnel Token for fixed domain');
+        remoteSettingsState.tunnelConfigOpen = true;
+        renderRemoteSettingsChannels();
+        return;
+      }
+      void configureRemoteSettings({
+        enabled: true,
+        enabledChannels: { tunnel: true },
+        tunnelMode: 'named',
+        tunnelHostname: hostname,
+        ...(token ? { tunnelToken: token } : {})
+      });
+    });
+
+    root.querySelector('#ag-rp-cf-quick')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.tunnelConfigOpen = true;
+      void configureRemoteSettings({
+        enabled: true,
+        enabledChannels: { tunnel: true },
+        tunnelMode: 'quick'
+      });
+    });
+
+    root.querySelector('#ag-rp-cf-cancel')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.tunnelConfigOpen = false;
+      remoteSettingsState.draftHost = null;
+      remoteSettingsState.draftToken = '';
+      remoteSettingsState.error = '';
+      renderRemoteSettingsChannels();
+    });
+  }
+
+  async function loadRemoteSettingsInfo(resetToken = false) {
+    if (remoteSettingsState.loading) return remoteSettingsState.data;
+    remoteSettingsState.loading = true;
+    remoteSettingsState.error = '';
+    renderRemoteSettingsChannels();
+    try {
+      const res = await invokeHostBridge('/remote-info', { resetToken: Boolean(resetToken) }, 'getRemoteInfo');
+      if (res && res.disabled) {
+        remoteSettingsState.data = null;
+        remoteSettingsState.error = suiteTr(
+          '当前已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用远程监听',
+          'Remote server disabled via --no-remote / AG_DISABLE_MOBILE_REMOTE=1'
+        );
+      } else if (res && res.ok && res.data) {
+        remoteSettingsState.data = res.data;
+        syncRemoteDisplayCheckboxes(res.data.remoteDisplay);
+        broadcastRemoteStateChanged(res.data);
+      } else {
+        remoteSettingsState.error = suiteTr('请确认 Antigravity 桥接服务正在运行', 'Ensure Antigravity local bridge service is running');
+      }
+    } catch (err) {
+      remoteSettingsState.error = err?.message || suiteTr('获取远程设置状态失败', 'Failed to fetch remote settings');
+    } finally {
+      remoteSettingsState.loading = false;
+      renderRemoteSettingsChannels();
+      scheduleRemoteSettingsPoll();
+    }
+    return remoteSettingsState.data;
+  }
+
+  async function configureRemoteSettings(payload = {}) {
+    if (remoteSettingsState.busy) return remoteSettingsState.data;
+    remoteSettingsState.busy = true;
+    remoteSettingsState.pendingAction = payload.tunnelMode === 'quick'
+      ? 'quick'
+      : (payload.tunnelMode === 'named' ? 'named' : (payload.remoteDisplay ? 'display' : 'toggle'));
+    remoteSettingsState.error = '';
+    renderRemoteSettingsChannels();
+    try {
+      const res = await invokeHostBridge('/remote-tunnel', payload, 'configureRemoteTunnel');
+      if (res && res.ok && res.data) {
+        remoteSettingsState.data = res.data;
+        syncRemoteDisplayCheckboxes(res.data.remoteDisplay);
+        broadcastRemoteStateChanged(res.data);
+        const chs = Array.isArray(res.data.channels) ? res.data.channels : [];
+        const tch = chs.find(c => c.key === 'tunnel');
+        const hasErr = Boolean(tch?.error || tch?.state === 'error');
+        if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
+          if (!hasErr) {
+            remoteSettingsState.tunnelConfigOpen = false;
+            remoteSettingsState.draftHost = null;
+            remoteSettingsState.draftToken = '';
+          } else {
+            remoteSettingsState.tunnelConfigOpen = true;
+          }
+        }
+      } else {
+        remoteSettingsState.error = res?.error || suiteTr('更新远程通道配置失败', 'Failed to update remote settings');
+        if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
+          remoteSettingsState.tunnelConfigOpen = true;
+        }
+      }
+    } catch (err) {
+      remoteSettingsState.error = err?.message || suiteTr('更新远程配置失败', 'Failed to update remote settings');
+      if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
+        remoteSettingsState.tunnelConfigOpen = true;
+      }
+    } finally {
+      remoteSettingsState.busy = false;
+      remoteSettingsState.pendingAction = '';
+      renderRemoteSettingsChannels();
+      scheduleRemoteSettingsPoll();
+    }
+    return remoteSettingsState.data;
+  }
+
+  async function setRemoteDisplayConfig(partialCfg) {
+    const next = sanitizeRemoteDisplayConfig({
+      ...getRemoteDisplayConfig(),
+      ...(partialCfg && typeof partialCfg === 'object' ? partialCfg : {})
+    });
+    syncRemoteDisplayCheckboxes(next);
+    return await configureRemoteSettings({ remoteDisplay: next });
+  }
+
   function switchSuiteSettingsTab(tabName = 'terminal') {
-    const valid = ['terminal', 'appearance', 'subscription', 'system'];
+    const valid = ['terminal', 'appearance', 'subscription', 'remote', 'system'];
     const target = valid.includes(tabName) ? tabName : 'terminal';
     activeSettingsTab = target;
     for (const key of valid) {
@@ -1297,12 +1955,17 @@
     }
     if (target === 'terminal') {
       syncEnhancerPrefControls();
+      renderQuickPromptsEditor();
       void refreshTerminalsList();
     } else if (target === 'subscription') {
       syncSettingsSubPreview();
       if (typeof syncPlanCustomFormFields === 'function' && isRealShadowDomTree()) {
         syncPlanCustomFormFields(ANTIGRAVITY_TOKEN_DATA.planStatus, { enhance: true });
       }
+    } else if (target === 'remote') {
+      renderRemoteSettingsChannels();
+      syncRemoteDisplayCheckboxes();
+      void loadRemoteSettingsInfo(false);
     } else if (target === 'system') {
       void refreshModulesDisplay();
       void refreshUnlockStatus();
@@ -1479,15 +2142,69 @@
 
   el('badge-settings')?.addEventListener('click', () => toggleSuiteSettings());
   el('overflow-settings-btn')?.addEventListener('click', () => openSuiteSettings());
-  el('btn-open-settings-ctx')?.addEventListener('click', () => openSuiteSettings('appearance'));
-  el('btn-open-settings-tokens')?.addEventListener('click', () => openSuiteSettings('subscription'));
-  el('btn-jump-plan-settings')?.addEventListener('click', () => openSuiteSettings('subscription'));
-  el('summary-subtier-readonly')?.addEventListener('click', () => openSuiteSettings('subscription'));
   el('close-settings')?.addEventListener('click', () => showPanel('none'));
 
-  ['terminal', 'appearance', 'subscription', 'system'].forEach(tab => {
+  ['terminal', 'appearance', 'subscription', 'remote', 'system'].forEach(tab => {
     el(`settings-tab-btn-${tab}`)?.addEventListener('click', () => switchSuiteSettingsTab(tab));
   });
+
+  el('btn-add-quick-prompt')?.addEventListener('click', () => {
+    const listEl = el('quick-prompts-editor-list');
+    if (!listEl) return;
+    const count = listEl.querySelectorAll('.qp-row')?.length || 0;
+    if (count >= 12) {
+      const statusEl = el('quick-prompts-status');
+      if (statusEl) statusEl.textContent = suiteTr('⚠️ 最多支持 12 条自定义快捷提示词', '⚠️ Maximum 12 custom quick prompts');
+      return;
+    }
+    appendQuickPromptEditorRow(listEl, { label: '', text: '' }, count);
+  });
+
+  el('btn-save-quick-prompts')?.addEventListener('click', () => {
+    const collected = collectQuickPromptsFromEditor();
+    void setSuiteQuickPrompts(collected);
+  });
+
+  el('btn-reset-quick-prompts')?.addEventListener('click', () => {
+    void resetSuiteQuickPrompts();
+  });
+
+  el('btn-settings-remote-refresh')?.addEventListener('click', () => {
+    void loadRemoteSettingsInfo(false);
+  });
+
+  el('ag-remote-reset')?.addEventListener('click', () => {
+    void loadRemoteSettingsInfo(true);
+  });
+
+  el('btn-reset-remote-display')?.addEventListener('click', () => {
+    void setRemoteDisplayConfig({ ...DEFAULT_REMOTE_DISPLAY_CONFIG });
+  });
+
+  for (const [elId] of REMOTE_DISPLAY_BINDINGS) {
+    el(elId)?.addEventListener('change', () => {
+      const nextCfg = collectRemoteDisplayFromUI();
+      void configureRemoteSettings({ remoteDisplay: nextCfg });
+    });
+  }
+
+  try {
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('ag-suite-prefs-changed', ev => {
+        if (ev?.detail && ('locale' in ev.detail || 'hansCode' in ev.detail || 'capsuleLang' in ev.detail)) {
+          const incoming = findSupportedLocaleEntry(ev.detail.locale || ev.detail.hansCode || ev.detail.capsuleLang);
+          if (incoming.code !== suiteEnhancerPrefs.locale) {
+            suiteEnhancerPrefs.locale = incoming.code;
+            suiteEnhancerPrefs.capsuleLang = incoming.capsuleLang;
+          }
+          if (activeSettingsTab === 'remote' && remoteSettingsState.data) {
+            renderRemoteSettingsChannels();
+          }
+          applySuiteShadowLocale();
+        }
+      });
+    }
+  } catch {}
 
   el('btn-refresh-terminals')?.addEventListener('click', () => {
     void refreshTerminalsList();
@@ -1668,6 +2385,7 @@
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
   applySuiteFeatureFlags();
+  renderQuickPromptsEditor();
   renderTerminalGrid();
   dispatchSuitePrefsChanged();
   applySuiteShadowLocale();

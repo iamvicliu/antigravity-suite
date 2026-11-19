@@ -806,6 +806,9 @@
     } catch {}
     if (pOverflow) pOverflow.hidden = true;
     bOverflow?.setAttribute('aria-expanded', 'false');
+    if (target !== 'settings' && pSettings && !pSettings.hidden && typeof onSuiteSettingsClosed === 'function') {
+      try { onSuiteSettingsClosed(); } catch {}
+    }
 
     if (target === 'settings') {
       hideContextTooltip();
@@ -4182,6 +4185,11 @@
     setLocale: (code, opts) => setSuiteLocale(code, opts),
     getFeatureFlags: () => getSuiteFeatureFlags(),
     setFeatureFlags: (flags, opts) => setSuiteFeatureFlags(flags, opts),
+    getQuickPrompts: () => getSuiteQuickPrompts(),
+    setQuickPrompts: (list, opts) => setSuiteQuickPrompts(list, opts),
+    resetQuickPrompts: () => resetSuiteQuickPrompts(),
+    getRemoteDisplayConfig: () => getRemoteDisplayConfig(),
+    setRemoteDisplayConfig: cfg => setRemoteDisplayConfig(cfg),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,

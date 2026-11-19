@@ -85,7 +85,6 @@
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot-ctx" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-open-settings-ctx" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
         <button id="close" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
     </div>
@@ -377,7 +376,6 @@
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8A6 6 0 1 1 8 2M14 2v6h-6"></path></svg>
           <span id="update-badge-dot" class="update-badge-dot" style="display:none"></span>
         </button>
-        <button id="btn-open-settings-tokens" class="panel-icon-btn" type="button" aria-label="打开套件设置" title="打开 Antigravity Suite 统一设置面板"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
         <button id="close-tokens" class="panel-icon-btn" type="button" aria-label="收起详情">×</button>
       </div>
     </div>
@@ -401,7 +399,7 @@
         <div class="plan-summary-badge" style="display:flex;align-items:center;gap:6px;flex:1;overflow:hidden">
           <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · 已自动识别 · 刚刚更新</span>
         </div>
-        <span id="summary-subtier-readonly" class="plan-subtier-readonly-pill" style="display:none" title="当前订阅子档（前往套件设置修改）"></span>
+        <span id="summary-subtier-readonly" class="plan-subtier-readonly-pill" style="display:none" title="当前订阅子档"></span>
         <!-- Ultra 子档快捷选择下拉（仅当套餐为 Ultra 时显示） -->
         <div id="summary-subtier-wrap" class="ag-dropdown-wrapper ag-subtier-compact-wrap" style="display:none;width:auto;flex-shrink:0">
           <div id="summary-subtier-trigger" class="ag-dropdown-trigger ag-subtier-compact-trigger" tabindex="0" title="官方接口未返回 Ultra 子档，点击选择您的实际订阅子档 (5x / 20x)">
@@ -568,10 +566,6 @@
           <button id="btn-edit-plan-custom" class="plan-edit-pill-btn" type="button" title="点击展开编辑当前账号订阅详细信息与实付设置">
             <span style="font-size:12px">✎</span>
             <span>自定义订阅设置</span>
-          </button>
-          <button id="btn-jump-plan-settings" class="plan-edit-pill-btn" type="button" style="display:none" title="前往套件设置修改订阅、国家、子档与实付金额">
-            <span style="font-size:12px">⚙️</span>
-            <span>前往设置修改</span>
           </button>
         </div>
 

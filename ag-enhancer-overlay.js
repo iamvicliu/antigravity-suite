@@ -21,7 +21,14 @@
   const FILE_EDITOR_CONTROLS_ID = 'ag-file-editor-controls';
   const FILE_EDITOR_WRAP_ID = 'ag-inline-file-editor-wrap';
   const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
+  const NEXT_STEP_TOOLTIP_ID = 'ag-next-step-tooltip';
+  const QUICK_RIGHT_SLOT_ID = 'ag-qcap-right-slot';
+  const PROMPT_OPT_WRAP_ID = 'ag-prompt-opt-wrap';
+  const PROMPT_OPT_BTN_ID = 'ag-prompt-opt-btn';
+  const PROMPT_OPT_UNDO_ID = 'ag-prompt-undo-btn';
   const CLOUDFLARE_TUNNEL_DASHBOARD_URL = 'https://one.dash.cloudflare.com/?to=/:account/networks/tunnels';
+  const PROMPT_OPT_SPARKLE_SVG = '<svg class="ag-opt-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.3a2 2 0 0 0 1.2 1.2L20.4 11.4l-5.3 1.9a2 2 0 0 0-1.2 1.2L12 19.8l-1.9-5.3a2 2 0 0 0-1.2-1.2L3.6 11.4l5.3-1.9a2 2 0 0 0 1.2-1.2Z"></path><path d="M19 3v3"></path><path d="M20.5 4.5h-3"></path></svg>';
+  const PROMPT_OPT_UNDO_SVG = '<svg class="ag-opt-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"></path><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"></path></svg>';
   const CHECKBOX_CHECKED_SVG = '<svg class="ag-rp-icon ag-rp-ok" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4.5" fill="var(--ag-accent-bg, rgba(167, 139, 250, 0.14))" stroke="var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa))" stroke-width="2"></rect><polyline points="8.5 12.2 11.2 14.9 15.8 9.4" stroke="var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa))" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>';
   const CHECKBOX_UNCHECKED_SVG = '<svg class="ag-rp-icon ag-rp-off" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4.5"></rect></svg>';
   const LOCK_SHIELD_SVG = '<svg class="ag-rp-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
@@ -76,6 +83,35 @@
     showChatNav: true
   };
   let featureFlags = { ...DEFAULT_FEATURE_FLAGS };
+  const DEFAULT_QUICK_PROMPTS = [
+    { id: 'compact', label: '/compact 压缩', labelEn: '/compact', text: '/compact', title: '快速填入 /compact 压缩上下文命令', titleEn: 'Fill /compact command' },
+    { id: 'plan', label: '/plan 规划', labelEn: '/plan', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式', titleEn: 'Fill /plan prefix to enter plan mode' },
+    { id: 'reload', label: '重载规则', labelEn: 'Reload Rules', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令', titleEn: 'Fill reload AGENTS prompt' }
+  ];
+  let customQuickPrompts = null;
+
+  function sanitizeQuickPromptsList(raw) {
+    if (!Array.isArray(raw)) return null;
+    const out = [];
+    for (let i = 0; i < raw.length; i++) {
+      const item = raw[i];
+      if (!item || typeof item !== 'object') continue;
+      const label = String(item.label ?? '').trim();
+      const text = String(item.text ?? '');
+      if (!label || !text.trim()) continue;
+      const rawId = String(item.id || '').trim();
+      const id = rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) ? rawId : `custom-${i}`;
+      out.push({
+        id,
+        label: label.slice(0, 40),
+        text: text.slice(0, 2000),
+        title: String(item.title || '').trim().slice(0, 120)
+      });
+      if (out.length >= 20) break;
+    }
+    return out;
+  }
+
   const autoClickedButtons = new WeakMap();
 
   function tr(zhText, enText) {
@@ -144,10 +180,21 @@
     } catch {
       uiLang = 'zh';
     }
+    try {
+      if (detail && 'quickPrompts' in detail) {
+        customQuickPrompts = detail.quickPrompts === null ? null : sanitizeQuickPromptsList(detail.quickPrompts);
+      } else if (typeof localStorage !== 'undefined') {
+        const rawQp = localStorage.getItem('ag_suite_quick_prompts');
+        if (rawQp) {
+          customQuickPrompts = sanitizeQuickPromptsList(JSON.parse(rawQp));
+        } else {
+          customQuickPrompts = null;
+        }
+      }
+    } catch {}
   }
   syncSuitePrefsFromStorage();
   let latestBrainStats = null;
-  let lastBrainFetchAt = 0;
   let nextStepState = {
     candidates: [],
     index: 0,
@@ -155,8 +202,39 @@
     dismissedSig: '',
     visible: false
   };
+  let promptOptState = {
+    loading: false,
+    abortCtrl: null,
+    backupText: '',
+    canUndo: false,
+    cacheModel: {
+      primary: '',
+      fallback: '',
+      fetchedAt: 0
+    }
+  };
   let isComposerComposing = false;
   let lastUserSubmitAt = 0;
+
+  function cacheDefaultModelFromConfigData(cfgData) {
+    if (!cfgData || typeof cfgData !== 'object') return;
+    const configs = Array.isArray(cfgData.clientModelConfigs) ? cfgData.clientModelConfigs : [];
+    const primaryOverride = String(cfgData.defaultOverrideModelConfig?.modelOrAlias?.model || '').trim();
+    const nonOrchestrator = configs.find((c) => {
+      const mid = String(c?.modelId || '').toLowerCase();
+      return c?.modelOrAlias?.model && !mid.includes('orchestrator');
+    });
+    const firstValid = configs.find((c) => c?.modelOrAlias?.model);
+    const fallback = String(nonOrchestrator?.modelOrAlias?.model || firstValid?.modelOrAlias?.model || '').trim();
+    const primary = primaryOverride || fallback;
+    if (primary || fallback) {
+      promptOptState.cacheModel = {
+        primary,
+        fallback: fallback || primary,
+        fetchedAt: Date.now()
+      };
+    }
+  }
 
   function safeRemove(node) {
     try {
@@ -174,6 +252,8 @@
     try {
       const attr = host?.getAttribute?.('data-theme');
       if (attr === 'light' || attr === 'dark') return attr;
+      const docAttr = document.documentElement?.getAttribute?.('data-theme');
+      if (docAttr === 'light' || docAttr === 'dark') return docAttr;
       if (document.documentElement?.classList?.contains('light')) return 'light';
       if (document.documentElement?.classList?.contains('dark')) return 'dark';
       if (window.matchMedia?.('(prefers-color-scheme: light)')?.matches) return 'light';
@@ -450,6 +530,9 @@
           if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
             const payload = await statusRes.value.json();
             userStatus = payload?.userStatus || null;
+            if (userStatus?.cascadeModelConfigData) {
+              cacheDefaultModelFromConfigData(userStatus.cascadeModelConfigData);
+            }
             configs = userStatus?.cascadeModelConfigData?.clientModelConfigs || null;
           }
           if (summaryRes.status === 'fulfilled' && summaryRes.value.ok) {
@@ -1110,6 +1193,44 @@
           background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
           color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #7c3aed));
         }
+        .ag-rp-readonly-summary {
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+          margin: 0 0 10px;
+        }
+        .ag-rp-ch-pill {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 5px 9px;
+          border-radius: 7px;
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.035));
+          font-size: 12px;
+          color: var(--ag-text-primary, #e4e4e7);
+        }
+        .ag-rp-ch-pill[data-active="true"] {
+          border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+          color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa));
+          font-weight: 500;
+        }
+        :host([data-theme="light"]) .ag-rp-ch-pill[data-active="true"] {
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
+          color: var(--ag-custom-token-accent, var(--ag-token-accent-default, #7c3aed));
+        }
+        .ag-rp-ch-pill-host {
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 11px;
+          color: var(--ag-text-muted, #a1a1aa);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          min-width: 0;
+        }
         .ag-rp-tip {
           margin-top: 8px;
           font-size: 11.5px;
@@ -1468,7 +1589,6 @@
     const pairedCount = Math.max(pairedDevices.length, Number(remotePairState.data?.pairedCount || 0));
     const onlineCount = Math.max(0, Number(remotePairState.data?.onlineCount || 0));
     const busyAny = remotePairState.loading || remotePairState.tunnelBusy;
-    const pendingAct = remotePairState.tunnelBusy ? remotePairState.tunnelPendingAction : '';
     let bodyHtml = '';
 
     if (remotePairState.loading && !remotePairState.data) {
@@ -1480,59 +1600,19 @@
         ? ep.activeQr
         : '';
       const tunnelCh = ep.channels.find((c) => c.key === 'tunnel') || null;
-      const channelsHtml = ep.channels.map((ch) => {
-        const label = tr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
-        const isEnabled = ch.key === 'tunnel'
-          ? Boolean(ch.enabled || ch.state === 'running' || ch.state === 'starting' || pendingAct === 'quick' || pendingAct === 'named')
-          : (ch.enabled !== false);
-        let hostHtml = '';
-        if (ch.key === 'tunnel' && pendingAct === 'quick') {
-          hostHtml = `<span class="ag-rp-spin"></span>${escapeHtml(tr('正在切换临时隧道…', 'Switching to Quick Tunnel…'))}`;
-        } else if (ch.key === 'tunnel' && pendingAct === 'named') {
-          hostHtml = `<span class="ag-rp-spin"></span>${escapeHtml(tr('正在连接固定隧道…', 'Connecting Named Tunnel…'))}`;
-        } else if (!isEnabled) {
-          hostHtml = escapeHtml(ch.rawHost ? `${tr('已停用', 'Disabled')} · ${ch.rawHost}` : tr('已停用', 'Disabled'));
-        } else if (ch.key === 'tunnel' && !ch.available && ch.state === 'starting') {
-          hostHtml = `<span class="ag-rp-spin"></span>${escapeHtml(ch.displayHost || tr('正在分配公网隧道…', 'Provisioning Tunnel…'))}`;
-        } else {
-          hostHtml = escapeHtml(ch.displayHost || (ch.available ? '' : tr('未连接', 'Offline')));
-        }
-        const checkId = ch.key === 'tunnel' ? 'ag-rp-tunnel-toggle' : `ag-rp-toggle-${escapeHtml(ch.key)}`;
-        const cfgLabel = remotePairState.tunnelConfigOpen
-          ? tr('收起 ▴', 'Hide ▴')
-          : tr('固定域名 ▾', 'Domain ▾');
-        const toolsHtml = ch.key === 'tunnel'
-          ? `<div class="ag-rp-channel-tools"><button id="ag-rp-tunnel-cfg-btn" class="ag-rp-mini-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeHtml(cfgLabel)}</button></div>`
-          : '';
-        return `<div class="ag-rp-channel-wrap">`
-          + `<button id="${checkId}" class="ag-rp-channel ag-rp-check" data-channel="${escapeHtml(ch.key)}" data-channel-toggle="${escapeHtml(ch.key)}" role="checkbox" aria-checked="${isEnabled ? 'true' : 'false'}" title="${escapeHtml(isEnabled ? tr(`点击停用 ${label}`, `Click to disable ${label}`) : tr(`点击启用 ${label}`, `Click to enable ${label}`))}" type="button" ${remotePairState.tunnelBusy ? 'disabled' : ''}>`
-          + `<span class="ag-rp-ch-left"><span class="ag-rp-check-box">${isEnabled ? CHECKBOX_CHECKED_SVG : CHECKBOX_UNCHECKED_SVG}</span><span>${escapeHtml(label)}</span></span>`
-          + `<span class="ag-rp-ch-host">${hostHtml}</span>`
-          + `</button>`
-          + toolsHtml
-          + `</div>`;
-      }).join('');
-
-      const saveBtnHtml = pendingAct === 'named'
-        ? `<span class="ag-rp-spin"></span>${escapeHtml(tr('正在连接固定隧道…', 'Connecting…'))}`
-        : escapeHtml(tr('保存并启用固定隧道', 'Save Named Tunnel'));
-      const quickBtnHtml = pendingAct === 'quick'
-        ? `<span class="ag-rp-spin"></span>${escapeHtml(tr('正在切换临时隧道…', 'Switching…'))}`
-        : escapeHtml(tr('改用免登录临时隧道', 'Use Quick Tunnel'));
-
-      const tunnelFormHtml = (tunnelCh && remotePairState.tunnelConfigOpen)
-        ? `<div id="ag-rp-tunnel-form" class="ag-rp-tunnel-form">
-            <div class="ag-rp-tunnel-head">
-              <div class="ag-rp-tunnel-note">${escapeHtml(tr('默认免登录使用临时隧道 (*.trycloudflare.com)；如需固定域名，需自有域名并在隧道 Public Hostname 指向 http://127.0.0.1:18765（勿填 *.cloudflareaccess.com）：', 'Quick Tunnel needs no login (*.trycloudflare.com). For a fixed domain, bind your own domain in Tunnel Public Hostname -> http://127.0.0.1:18765 (do not enter *.cloudflareaccess.com):'))}</div>
-              <a id="ag-rp-cf-get-token" class="ag-rp-cf-link" href="${CLOUDFLARE_TUNNEL_DASHBOARD_URL}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(tr('在系统默认浏览器中打开 Cloudflare Zero Trust 隧道控制台创建并获取 Token', 'Open Cloudflare Zero Trust Tunnels in default browser to create & copy Token'))}">${escapeHtml(tr('☁️ 前往 Cloudflare 获取 Token ↗', '☁️ Get Token on Cloudflare ↗'))}</a>
-            </div>
-            <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="https://ag.example.com" value="${escapeHtml(remotePairState.draftHost !== null ? remotePairState.draftHost : (tunnelCh.tunnelHostname || ''))}">
-            <input id="ag-rp-cf-token" class="ag-rp-input" type="password" value="${escapeHtml(remotePairState.draftToken || '')}" placeholder="${escapeHtml(tunnelCh.hasTunnelToken ? tr('已保存 Token（留空保持不变，或粘贴新 eyJ...）', 'Token saved (leave blank to keep, or paste new eyJ...)') : tr('粘贴 eyJ... 或 cloudflared service install 命令', 'Paste eyJ... or cloudflared service install command'))}">
-            <div class="ag-rp-actions">
-              <button id="ag-rp-cf-save" class="ag-rp-mini-btn" data-active="true" style="flex:1" type="button" ${remotePairState.tunnelBusy ? 'disabled' : ''}>${saveBtnHtml}</button>
-              <button id="ag-rp-cf-quick" class="ag-rp-mini-btn" type="button" ${remotePairState.tunnelBusy ? 'disabled' : ''}>${quickBtnHtml}</button>
-            </div>
-          </div>`
+      const enabledChannels = ep.channels.filter((ch) => (
+        ch.key === 'tunnel'
+          ? Boolean(ch.enabled || ch.state === 'running' || ch.state === 'starting')
+          : (ch.enabled !== false)
+      ));
+      const activeSummaryHtml = enabledChannels.length > 0
+        ? `<div class="ag-rp-readonly-summary">${enabledChannels.map((ch) => {
+            const label = tr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
+            const hostVal = (ch.key === 'tunnel' && !ch.available && ch.state === 'starting')
+              ? (ch.displayHost || tr('正在分配公网隧道…', 'Provisioning Tunnel…'))
+              : (ch.displayHost || (ch.available ? '' : tr('未连接', 'Offline')));
+            return `<span class="ag-rp-ch-pill" data-active="${ep.activeKey === ch.key ? 'true' : 'false'}"><span>${escapeHtml(label)}</span>${hostVal ? `<span class="ag-rp-ch-pill-host">${escapeHtml(hostVal)}</span>` : ''}</span>`;
+          }).join('')}</div>`
         : '';
 
       const errHtml = (tunnelCh?.error || remotePairState.error)
@@ -1555,20 +1635,18 @@
 
       const qrOrEmptyHtml = safeQr
         ? `<div class="ag-rp-qr">${safeQr}</div>`
-        : `<div class="ag-rp-status">${escapeHtml(tr('请至少勾选启用一种连接方式', 'Enable at least one connection mode'))}</div>`;
+        : `<div class="ag-rp-status">${escapeHtml(tr('未启用任何连接方式，请在统一设置中开启', 'No active channels — enable one in Suite Settings'))}</div>`;
 
       bodyHtml = `
         ${qrOrEmptyHtml}
-        <div class="ag-rp-channels">${channelsHtml}</div>
-        ${tunnelFormHtml}
+        ${activeSummaryHtml}
         ${errHtml}
         <div class="ag-rp-sec" data-active="${onlineCount > 0 ? 'true' : 'false'}">${LOCK_SHIELD_SVG}<span>${escapeHtml(statusText)}</span></div>
         ${devicesHtml}
         <div class="ag-rp-actions">
           <button id="ag-remote-copy" class="ag-rp-btn" data-primary="true" type="button" ${ep.activeUrl ? '' : 'disabled'}>${escapeHtml(copiedRecent ? tr('已复制链接', 'Copied') : tr('复制链接', 'Copy Link'))}</button>
-          <button id="ag-remote-reset" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeHtml(tr('重置密钥', 'Reset Token'))}</button>
         </div>
-        <div class="ag-rp-tip">${escapeHtml(tr('整行点击启用或停用对应连接方式，未勾选的方式后端将拒绝调用；客户端支持手动直选已启用入口。', 'Click any row to enable or disable it; unchecked modes are blocked by the server and enabled ones are selectable on the client.'))}</div>
+        <div class="ag-rp-tip">${escapeHtml(tr('通道、隧道与重置密钥请在顶栏设置面板的「远程设置」中管理。', 'Manage channels, tunnel, and token reset in Suite Settings → Remote.'))}</div>
       `;
     }
 
@@ -1584,58 +1662,6 @@
       ev.stopPropagation();
       void refreshRemotePairInfo(false);
     });
-    popover.querySelectorAll('.ag-rp-channel').forEach((row) => {
-      row.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const key = row.getAttribute('data-channel-toggle') || row.getAttribute('data-channel');
-        if (!key || row.hasAttribute('disabled')) return;
-        const targetCh = ep?.channels?.find((c) => c.key === key);
-        const curOn = key === 'tunnel'
-          ? Boolean(targetCh && (targetCh.enabled || targetCh.state === 'running' || targetCh.state === 'starting'))
-          : (targetCh?.enabled !== false);
-        const nextOn = !curOn;
-        if (key === 'tunnel') {
-          void configureRemoteTunnel({ enabled: nextOn, enabledChannels: { tunnel: nextOn } });
-        } else {
-          void configureRemoteTunnel({ enabledChannels: { [key]: nextOn } });
-        }
-      });
-    });
-    popover.querySelector('#ag-rp-tunnel-cfg-btn')?.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      remotePairState.tunnelConfigOpen = !remotePairState.tunnelConfigOpen;
-      renderRemotePopoverContent(popover);
-      positionRemotePopover();
-    });
-    popover.querySelector('#ag-rp-cf-get-token')?.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      void openExternalUrlInSystemBrowser(CLOUDFLARE_TUNNEL_DASHBOARD_URL);
-    });
-    popover.querySelector('#ag-rp-cf-host')?.addEventListener('input', (ev) => {
-      remotePairState.draftHost = String(ev.target?.value ?? '');
-    });
-    popover.querySelector('#ag-rp-cf-token')?.addEventListener('input', (ev) => {
-      remotePairState.draftToken = String(ev.target?.value ?? '');
-    });
-    popover.querySelector('#ag-rp-cf-save')?.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const hostVal = String(popover.querySelector('#ag-rp-cf-host')?.value || '').trim();
-      const tokVal = String(popover.querySelector('#ag-rp-cf-token')?.value || '').trim();
-      remotePairState.draftHost = hostVal;
-      remotePairState.draftToken = tokVal;
-      const req = { enabled: true, tunnelMode: 'named', tunnelHostname: hostVal };
-      if (tokVal) req.tunnelToken = tokVal;
-      showQuickToast(tr('⏳ 正在校验并连接固定域名隧道…', '⏳ Validating & connecting Named Tunnel…'));
-      void configureRemoteTunnel(req);
-    });
-    popover.querySelector('#ag-rp-cf-quick')?.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      remotePairState.draftHost = null;
-      remotePairState.draftToken = '';
-      showQuickToast(tr('⏳ 正在申请免登录临时隧道 (*.trycloudflare.com)，约需 3~8 秒…', '⏳ Provisioning Quick Tunnel (*.trycloudflare.com)…'));
-      void configureRemoteTunnel({ enabled: true, tunnelMode: 'quick' });
-    });
     popover.querySelector('#ag-remote-copy')?.addEventListener('click', async (ev) => {
       ev.stopPropagation();
       const url = ep?.activeUrl;
@@ -1648,10 +1674,6 @@
           if (remotePopoverOpen) renderRemotePopoverContent(popover);
         }, 2100);
       }
-    });
-    popover.querySelector('#ag-remote-reset')?.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      void refreshRemotePairInfo(true);
     });
   }
 
@@ -1973,10 +1995,7 @@
     popover.innerHTML = `
       <div class="ag-qp-header">
         <span class="ag-qp-title">${tr('模型剩余配额实时看板', 'Model Quota Live')}</span>
-        <div style="display:flex;align-items:center;gap:4px">
-          <button id="ag-quota-open-settings" class="ag-qp-refresh" type="button" title="${tr('前往统一设置调整套餐子档', 'Open Suite Settings')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.82 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.69 0-1.25.4-1.51 1z"/></svg></button>
-          <button id="ag-quota-refresh" class="ag-qp-refresh" type="button">${quotaState.loading ? tr('刷新中…', 'Refreshing…') : tr('↻ 刷新', '↻ Refresh')}</button>
-        </div>
+        <button id="ag-quota-refresh" class="ag-qp-refresh" type="button">${quotaState.loading ? tr('刷新中…', 'Refreshing…') : tr('↻ 刷新', '↻ Refresh')}</button>
       </div>
       <div class="ag-qp-model">
         <span>${tr('当前选中模型', 'Active Model')}</span>
@@ -1989,14 +2008,6 @@
       </div>
     `;
 
-    const openSettingsBtn = popover.querySelector('#ag-quota-open-settings');
-    if (openSettingsBtn) {
-      openSettingsBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        toggleQuotaPopover(false);
-        (globalThis.__AGContextMeter || window.__AGContextMeter)?.openSettings?.('subscription');
-      });
-    }
     const refreshBtn = popover.querySelector('#ag-quota-refresh');
     if (refreshBtn) {
       refreshBtn.addEventListener('click', (ev) => {
@@ -2158,8 +2169,21 @@
           background: rgba(239, 68, 68, 0.12);
           color: #dc2626;
         }
-        #${QUICK_BAR_ID} .ag-qcap-toast {
+        #${QUICK_BAR_ID} .ag-qcap-right-slot {
           margin-left: auto;
+          display: inline-flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 6px;
+          min-width: 0;
+          max-width: 100%;
+          flex: 0 1 auto;
+        }
+        #${QUICK_BAR_ID} .ag-qcap-right-slot[data-toast-active="true"] #${NEXT_STEP_GHOST_ID} {
+          display: none !important;
+        }
+        #${QUICK_BAR_ID} .ag-qcap-toast {
+          display: none;
           font-size: 12px;
           color: var(--ag-effective-accent, #a78bfa);
           opacity: 0;
@@ -2168,12 +2192,13 @@
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          max-width: 260px;
+          max-width: 280px;
         }
         #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-toast {
           color: var(--ag-effective-accent, #7c3aed);
         }
         #${QUICK_BAR_ID} .ag-qcap-toast[data-visible="true"] {
+          display: inline-block;
           opacity: 1;
         }
         [data-ag-risk-card="high"] {
@@ -2457,66 +2482,177 @@
           border-color: rgba(24, 24, 27, 0.16);
           box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
         }
-        [data-ag-has-ghost="1"] > p.pointer-events-none,
-        [data-ag-has-ghost="1"] > div.pointer-events-none {
-          opacity: 0 !important;
-          visibility: hidden !important;
+        @keyframes ag-enh-spin {
+          to { transform: rotate(360deg); }
         }
         #${NEXT_STEP_GHOST_ID} {
-          position: absolute;
-          left: 8px;
-          right: 8px;
-          top: 8px;
-          min-height: 24px;
-          display: flex;
+          display: inline-flex;
           align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-          pointer-events: none;
-          z-index: 2;
-          user-select: none;
-          font-size: 13.5px;
-          line-height: 24px;
-          color: rgba(228, 228, 231, 0.46);
+          justify-content: flex-end;
+          gap: 5px;
+          min-width: 0;
+          max-width: 100%;
         }
-        #${NEXT_STEP_GHOST_ID}[data-ag-theme="light"] {
-          color: rgba(63, 63, 70, 0.52);
+        #${NEXT_STEP_GHOST_ID}[hidden] {
+          display: none !important;
+        }
+        #${QUICK_BAR_ID} #${NEXT_STEP_GHOST_ID} .ag-ns-accept {
+          border-color: rgba(56, 189, 248, 0.34);
+          background: rgba(56, 189, 248, 0.09);
+          color: rgba(224, 242, 254, 0.92);
+          max-width: 100%;
+          min-width: 0;
+        }
+        #${QUICK_BAR_ID} #${NEXT_STEP_GHOST_ID} .ag-ns-accept:hover {
+          border-color: rgba(56, 189, 248, 0.58);
+          background: rgba(56, 189, 248, 0.18);
+          color: #ffffff;
+        }
+        #${QUICK_BAR_ID}[data-ag-theme="light"] #${NEXT_STEP_GHOST_ID} .ag-ns-accept {
+          border-color: rgba(2, 132, 199, 0.32);
+          background: rgba(2, 132, 199, 0.08);
+          color: #0369a1;
+        }
+        #${QUICK_BAR_ID}[data-ag-theme="light"] #${NEXT_STEP_GHOST_ID} .ag-ns-accept:hover {
+          border-color: rgba(2, 132, 199, 0.52);
+          background: rgba(2, 132, 199, 0.16);
+          color: #0c4a6e;
         }
         #${NEXT_STEP_GHOST_ID} .ag-ns-text {
-          flex: 1 1 auto;
-          min-width: 0;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
+          max-width: 210px;
         }
-        #${NEXT_STEP_GHOST_ID} .ag-ns-badges {
+        #${NEXT_STEP_GHOST_ID} .ag-ns-kbd-tag {
+          font-size: 10.5px;
+          line-height: 1;
+          padding: 2px 5px;
+          border-radius: 4px;
+          background: rgba(255, 255, 255, 0.1);
+          color: rgba(228, 228, 231, 0.85);
           flex-shrink: 0;
+        }
+        #${QUICK_BAR_ID}[data-ag-theme="light"] #${NEXT_STEP_GHOST_ID} .ag-ns-kbd-tag {
+          background: rgba(0, 0, 0, 0.08);
+          color: rgba(24, 24, 27, 0.78);
+        }
+        #${NEXT_STEP_GHOST_ID} .ag-ns-cycle[hidden] {
+          display: none !important;
+        }
+        #${NEXT_STEP_TOOLTIP_ID} {
+          position: fixed;
+          z-index: 2147483645;
+          max-width: min(360px, calc(100vw - 24px));
+          padding: 6px 10px;
+          border-radius: 7px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(24, 24, 27, 0.96);
+          color: #f4f4f5;
+          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);
+          font-size: 12px;
+          line-height: 1.45;
+          white-space: normal;
+          word-break: break-word;
+          pointer-events: none;
+        }
+        #${NEXT_STEP_TOOLTIP_ID}[hidden] {
+          display: none !important;
+        }
+        #${NEXT_STEP_TOOLTIP_ID}[data-ag-theme="light"] {
+          border-color: rgba(0, 0, 0, 0.12);
+          background: rgba(255, 255, 255, 0.98);
+          color: #18181b;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+        }
+        #${PROMPT_OPT_WRAP_ID} {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 5px;
+          width: 100%;
+          box-sizing: border-box;
+          padding: 0 12px 4px 12px;
+          margin: 0;
+          flex-shrink: 0;
+          pointer-events: none;
+        }
+        #${PROMPT_OPT_WRAP_ID} .ag-prompt-opt-btn,
+        #${PROMPT_OPT_WRAP_ID} .ag-prompt-undo-btn {
+          pointer-events: auto;
+          appearance: none;
           display: inline-flex;
           align-items: center;
           gap: 4px;
-          pointer-events: auto;
-        }
-        #${NEXT_STEP_GHOST_ID} .ag-ns-kbd {
-          appearance: none;
+          height: 24px;
+          padding: 0 8px;
+          border-radius: 999px;
+          font-size: 11.5px;
+          font-weight: 500;
+          line-height: 1;
+          white-space: nowrap;
+          cursor: pointer;
           border: 1px solid rgba(255, 255, 255, 0.14);
           background: rgba(255, 255, 255, 0.06);
-          color: rgba(228, 228, 231, 0.68);
-          border-radius: 5px;
-          padding: 1px 6px;
-          font-size: 11.5px;
-          line-height: 16px;
+          color: rgba(244, 244, 245, 0.88);
+          transition: background-color 0.14s ease, border-color 0.14s ease, opacity 0.14s ease, color 0.14s ease;
+        }
+        #${PROMPT_OPT_WRAP_ID} .ag-opt-icon {
+          display: inline-block;
+          flex-shrink: 0;
+          color: currentColor;
+        }
+        #${PROMPT_OPT_WRAP_ID} .ag-opt-spin {
+          display: inline-block;
+          width: 11px;
+          height: 11px;
+          border-radius: 999px;
+          border: 1.5px solid rgba(125, 211, 252, 0.35);
+          border-top-color: currentColor;
+          animation: ag-enh-spin 0.7s linear infinite;
+          flex-shrink: 0;
+        }
+        #${PROMPT_OPT_WRAP_ID} .ag-prompt-opt-btn:hover:not(:disabled),
+        #${PROMPT_OPT_WRAP_ID} .ag-prompt-undo-btn:hover:not(:disabled) {
+          background: rgba(56, 189, 248, 0.16);
+          border-color: rgba(56, 189, 248, 0.45);
+          color: #ffffff;
+        }
+        #${PROMPT_OPT_WRAP_ID} .ag-prompt-opt-btn:disabled {
+          opacity: 0.42;
+          cursor: not-allowed;
+        }
+        #${PROMPT_OPT_WRAP_ID} .ag-prompt-opt-btn[data-loading="true"] {
+          border-color: rgba(56, 189, 248, 0.55);
+          background: rgba(56, 189, 248, 0.16);
+          color: #7dd3fc;
           cursor: pointer;
-          transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+          opacity: 1;
+        }
+        #${PROMPT_OPT_WRAP_ID} .ag-prompt-undo-btn[hidden] {
+          display: none !important;
+        }
+        #${PROMPT_OPT_WRAP_ID}[data-ag-theme="light"] .ag-prompt-opt-btn,
+        #${PROMPT_OPT_WRAP_ID}[data-ag-theme="light"] .ag-prompt-undo-btn {
+          border-color: rgba(0, 0, 0, 0.12);
+          background: rgba(0, 0, 0, 0.045);
+          color: rgba(24, 24, 27, 0.86);
+        }
+        #${PROMPT_OPT_WRAP_ID}[data-ag-theme="light"] .ag-prompt-opt-btn:hover:not(:disabled),
+        #${PROMPT_OPT_WRAP_ID}[data-ag-theme="light"] .ag-prompt-undo-btn:hover:not(:disabled) {
+          background: rgba(2, 132, 199, 0.12);
+          border-color: rgba(2, 132, 199, 0.4);
+          color: #0369a1;
+        }
+        #${PROMPT_OPT_WRAP_ID}[data-ag-theme="light"] .ag-prompt-opt-btn[data-loading="true"] {
+          border-color: rgba(2, 132, 199, 0.55);
+          background: rgba(2, 132, 199, 0.14);
+          color: #0369a1;
         }
         #${NEXT_STEP_GHOST_ID} .ag-ns-kbd:hover {
           background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
           border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
           color: #e4e4e7;
-        }
-        #${NEXT_STEP_GHOST_ID}[data-ag-theme="light"] .ag-ns-kbd {
-          border-color: rgba(0, 0, 0, 0.14);
-          background: rgba(0, 0, 0, 0.045);
-          color: rgba(63, 63, 70, 0.78);
         }
         #${NEXT_STEP_GHOST_ID}[data-ag-theme="light"] .ag-ns-kbd:hover {
           background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
@@ -2530,13 +2666,16 @@
 
   function showQuickToast(text) {
     const bar = document.getElementById(QUICK_BAR_ID);
+    const rightSlot = bar?.querySelector(`#${QUICK_RIGHT_SLOT_ID}`);
     const toast = bar?.querySelector('.ag-qcap-toast');
     if (!toast) return;
     toast.textContent = text;
     toast.setAttribute('data-visible', 'true');
+    if (rightSlot) rightSlot.setAttribute('data-toast-active', 'true');
     if (toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       toast.setAttribute('data-visible', 'false');
+      if (rightSlot) rightSlot.removeAttribute('data-toast-active');
     }, 2800);
   }
 
@@ -2563,8 +2702,8 @@
         document.execCommand('delete', false, null);
       }
 
-      ed.focus();
-      const sel = window.getSelection();
+      ed.focus?.();
+      const sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
       if (sel) {
         const range = document.createRange();
         range.selectNodeContents(ed);
@@ -2599,6 +2738,7 @@
           s2.addRange(endRange);
         }
       } catch {}
+      syncPromptOptimizerUI();
       return true;
     } catch {
       showQuickToast('填入输入框失败');
@@ -3087,31 +3227,40 @@
   }
 
   function getQuickBarActions() {
+    const useCustom = Array.isArray(customQuickPrompts);
+    const sourcePrompts = useCustom ? customQuickPrompts : DEFAULT_QUICK_PROMPTS;
+    const promptActions = sourcePrompts.map((item, idx) => {
+      const btnId = (!useCustom && (item.id === 'compact' || item.id === 'plan' || item.id === 'reload'))
+        ? `ag-qcap-${item.id}`
+        : `ag-qcap-prompt-${idx}`;
+      const label = (!useCustom && item.labelEn) ? tr(item.label, item.labelEn) : item.label;
+      const title = (!useCustom && item.titleEn)
+        ? tr(item.title, item.titleEn)
+        : (item.title || tr(`点击填入：${item.text}`, `Insert: ${item.text}`));
+      const fillText = String(item.text || '');
+      return {
+        id: btnId,
+        label,
+        title,
+        fillText,
+        onClick: async () => {
+          if (await fillComposerText(fillText)) {
+            if (!useCustom && item.id === 'compact') {
+              showQuickToast(tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run'));
+            } else if (!useCustom && item.id === 'plan') {
+              showQuickToast(tr('已填入 /plan ，请输入规划需求', 'Inserted /plan , enter your goal'));
+            } else if (!useCustom && item.id === 'reload') {
+              showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
+            } else {
+              showQuickToast(tr(`已填入「${label}」`, `Inserted "${label}"`));
+            }
+          }
+        }
+      };
+    });
+
     return [
-      {
-        id: 'ag-qcap-compact',
-        label: tr('/compact 压缩', '/compact'),
-        title: tr('快速填入 /compact 压缩上下文命令', 'Fill /compact command'),
-        onClick: async () => {
-          if (await fillComposerText('/compact')) showQuickToast(tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run'));
-        }
-      },
-      {
-        id: 'ag-qcap-plan',
-        label: tr('/plan 规划', '/plan'),
-        title: tr('快速填入 /plan 前缀进入规划模式', 'Fill /plan prefix to enter plan mode'),
-        onClick: async () => {
-          if (await fillComposerText('/plan ')) showQuickToast(tr('已填入 /plan ，请输入规划需求', 'Inserted /plan , enter your goal'));
-        }
-      },
-      {
-        id: 'ag-qcap-reload',
-        label: tr('重载规则', 'Reload Rules'),
-        title: tr('快速填入“重新读取 AGENTS”指令', 'Fill reload AGENTS prompt'),
-        onClick: async () => {
-          if (await fillComposerText('重新读取 AGENTS')) showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
-        }
-      },
+      ...promptActions,
       {
         id: 'ag-qcap-copyid',
         label: tr('复制会话 ID', 'Copy ID'),
@@ -3131,26 +3280,62 @@
         label: tr('导出 Markdown', 'Export MD'),
         title: tr('将完整对话导出为 Markdown 保存到 ~/Downloads 并复制', 'Export conversation to Markdown in ~/Downloads and copy'),
         onClick: () => { void exportMarkdown(); }
-      },
-      {
-        id: 'ag-qcap-brain',
-        label: latestBrainStats ? tr(`缓存 ${latestBrainStats.totalMB}MB`, `Cache ${latestBrainStats.totalMB}MB`) : tr('缓存统计', 'Brain Cache'),
-        title: latestBrainStats ? formatBrainTooltip(latestBrainStats) : tr('查看 ~/.gemini/antigravity/brain 历史会话占用（只读）', 'View ~/.gemini/antigravity/brain cache size (read-only)'),
-        onClick: () => { void refreshBrainStats(true); }
       }
     ];
   }
 
-  function updateQuickBarLanguage() {
-    const bar = document.getElementById(QUICK_BAR_ID);
+  function syncQuickBarActionButtons(bar) {
     if (!bar) return;
-    bar.setAttribute('aria-label', tr('输入框快捷操作栏', 'Composer Quick Actions'));
-    for (const act of getQuickBarActions()) {
-      const btn = document.getElementById(act.id);
-      if (!btn) continue;
+    const actions = getQuickBarActions();
+    const sig = JSON.stringify({
+      lang: uiLang,
+      items: actions.map((a) => [a.id, a.label, a.title, a.fillText || ''])
+    });
+    const rightSlot = bar.querySelector(`#${QUICK_RIGHT_SLOT_ID}`);
+    if (bar.dataset.promptsSig === sig) {
+      for (const act of actions) {
+        const btn = bar.querySelector(`#${act.id}`);
+        if (!btn) continue;
+        if (btn.textContent !== act.label) btn.textContent = act.label;
+        if (btn.title !== act.title) btn.title = act.title;
+      }
+      return;
+    }
+    bar.dataset.promptsSig = sig;
+    const oldBtns = Array.from(bar.children || []).filter((ch) => ch !== rightSlot && ch.id !== QUICK_RIGHT_SLOT_ID);
+    for (const oldBtn of oldBtns) {
+      safeRemove(oldBtn);
+    }
+    for (const act of actions) {
+      const btn = document.createElement('button');
+      btn.id = act.id;
+      btn.className = 'ag-qcap-btn';
+      btn.type = 'button';
       btn.textContent = act.label;
       btn.title = act.title;
+      if (act.active) btn.setAttribute('data-active', 'true');
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', act.onClick);
+      if (rightSlot && rightSlot.parentElement === bar) {
+        bar.insertBefore(btn, rightSlot);
+      } else {
+        bar.appendChild(btn);
+      }
     }
+  }
+
+  function updateQuickBarLanguage() {
+    const bar = document.getElementById(QUICK_BAR_ID);
+    if (bar) {
+      bar.setAttribute('aria-label', tr('输入框快捷操作栏', 'Composer Quick Actions'));
+      syncQuickBarActionButtons(bar);
+      const tabBtn = document.querySelector(`#${NEXT_STEP_GHOST_ID} .ag-ns-tab`);
+      if (tabBtn) {
+        const kbdTag = tabBtn.querySelector('.ag-ns-kbd-tag');
+        if (kbdTag) kbdTag.textContent = tr('Tab / → 补全', 'Tab / →');
+      }
+    }
+    syncPromptOptimizerUI();
   }
 
   function ensureQuickCapsuleBar() {
@@ -3168,27 +3353,18 @@
       bar.id = QUICK_BAR_ID;
       bar.setAttribute('aria-label', tr('输入框快捷操作栏', 'Composer Quick Actions'));
 
-      const actions = getQuickBarActions();
-
-      for (const act of actions) {
-        const btn = document.createElement('button');
-        btn.id = act.id;
-        btn.className = 'ag-qcap-btn';
-        btn.type = 'button';
-        btn.textContent = act.label;
-        btn.title = act.title;
-        if (act.active) btn.setAttribute('data-active', 'true');
-        // 阻止点击按钮时抢走输入框焦点
-        btn.addEventListener('mousedown', (e) => e.preventDefault());
-        btn.addEventListener('click', act.onClick);
-        bar.appendChild(btn);
-      }
+      const rightSlot = document.createElement('div');
+      rightSlot.id = QUICK_RIGHT_SLOT_ID;
+      rightSlot.className = 'ag-qcap-right-slot';
 
       const toast = document.createElement('span');
       toast.className = 'ag-qcap-toast';
       toast.setAttribute('data-visible', 'false');
-      bar.appendChild(toast);
+      rightSlot.appendChild(toast);
+      bar.appendChild(rightSlot);
     }
+
+    syncQuickBarActionButtons(bar);
 
     if (bar.getAttribute('data-ag-theme') !== theme) {
       bar.setAttribute('data-ag-theme', theme);
@@ -3208,7 +3384,7 @@
       }
     }
 
-      // 始终保证快捷胶囊栏位于 .surface-composer 的紧邻正上方
+    // 始终保证快捷胶囊栏位于 .surface-composer 的紧邻正上方
     if (bar.parentElement !== composer.parentElement || bar.nextElementSibling !== composer) {
       composer.parentElement.insertBefore(bar, composer);
     }
@@ -3227,12 +3403,17 @@
     );
   }
 
-  function isComposerEmpty(ed) {
-    if (!ed) return false;
+  function getComposerText(ed) {
+    if (!ed) return '';
     const raw = typeof ed.__lexicalTextContent === 'string'
       ? ed.__lexicalTextContent
-      : (ed.textContent || '');
-    return raw.replace(/[\u200B-\u200D\uFEFF\s]/g, '').length === 0;
+      : (typeof ed.innerText === 'string' && ed.innerText.length ? ed.innerText : (ed.textContent || ''));
+    return String(raw).replace(/[\u200B-\u200D\uFEFF]/g, '');
+  }
+
+  function isComposerEmpty(ed) {
+    if (!ed) return false;
+    return getComposerText(ed).trim().length === 0;
   }
 
   function extractContextPercent() {
@@ -3299,12 +3480,56 @@
     return false;
   }
 
-  function computeNextStepCandidates() {
-    const sessionId = getSessionIdFromLocation() || '';
-    const assistantMds = getAssistantMarkdownRoots();
-    const lastMd = assistantMds[assistantMds.length - 1];
-    const fullText = (lastMd?.innerText || '').trim();
-    const sig = `${sessionId}|${assistantMds.length}|${fullText.length}|${fullText.slice(-80)}`;
+  function truncateNextStepText(text, maxChars = 8) {
+    const str = String(text || '');
+    const chars = Array.from(str);
+    if (chars.length <= maxChars) return str;
+    return `${chars.slice(0, maxChars).join('')}..`;
+  }
+
+  function hideNextStepTooltip() {
+    const tip = document.getElementById(NEXT_STEP_TOOLTIP_ID);
+    if (tip) tip.hidden = true;
+  }
+
+  function showNextStepTooltip(anchorBtn) {
+    if (disposed || !anchorBtn) return;
+    const fullText = anchorBtn.getAttribute('data-full-text') || '';
+    if (!fullText) {
+      hideNextStepTooltip();
+      return;
+    }
+    ensureDocStyle();
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveHostTheme(host);
+    let tip = document.getElementById(NEXT_STEP_TOOLTIP_ID);
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = NEXT_STEP_TOOLTIP_ID;
+      tip.setAttribute('role', 'tooltip');
+      (document.body || document.documentElement)?.appendChild(tip);
+    }
+    tip.setAttribute('data-ag-theme', theme);
+    tip.textContent = fullText;
+    tip.hidden = false;
+
+    try {
+      if (typeof anchorBtn.getBoundingClientRect === 'function') {
+        const rect = anchorBtn.getBoundingClientRect();
+        const vw = window.innerWidth || 1280;
+        const tipW = Math.min(360, vw - 24);
+        const tipH = tip.offsetHeight || 32;
+        const left = Math.max(12, Math.min(vw - tipW - 12, Math.round(rect.left || 12)));
+        const top = Math.max(8, Math.round((rect.top || 48) - tipH - 6));
+        tip.style.left = `${left}px`;
+        tip.style.top = `${top}px`;
+      }
+    } catch {}
+  }
+
+  function computeNextStepCandidatesFromText(sessionId, rawText, contextPercent = 0, stepCount = 0) {
+    const fullText = String(rawText || '').trim();
+    const sig = `${sessionId}|${stepCount}|${fullText.length}|${fullText.slice(-80)}`;
     const recent = fullText.slice(-700);
     const tail = fullText.slice(-180);
     const list = [];
@@ -3365,7 +3590,7 @@
       const existingIdx = list.indexOf('/compact');
       if (existingIdx >= 0) list.splice(existingIdx, 1);
       list.unshift('/compact');
-    } else if (risk.contextUsed >= 240000 || risk.percent >= 65) {
+    } else if (risk.contextUsed >= 240000 || Math.max(Number(contextPercent) || 0, risk.percent || 0) >= 65) {
       addCandidate('/compact');
     }
 
@@ -3375,8 +3600,17 @@
     return { sig, candidates: list.slice(0, 4) };
   }
 
+  function computeNextStepCandidates() {
+    const sessionId = getSessionIdFromLocation() || '';
+    const assistantMds = getAssistantMarkdownRoots();
+    const lastMd = assistantMds[assistantMds.length - 1];
+    const fullText = (lastMd?.innerText || '').trim();
+    return computeNextStepCandidatesFromText(sessionId, fullText, extractContextPercent(), assistantMds.length);
+  }
+
   function hideNextStepGhost() {
     nextStepState.visible = false;
+    hideNextStepTooltip();
     const ghost = document.getElementById(NEXT_STEP_GHOST_ID);
     if (ghost) ghost.hidden = true;
     document.querySelectorAll('[data-ag-has-ghost="1"]').forEach((el) => {
@@ -3385,13 +3619,19 @@
   }
 
   function ensureNextStepGhost() {
-    if (disposed || !ghostSuggestEnabled) {
+    if (disposed || !ghostSuggestEnabled || featureFlags.showQuickBar === false) {
       hideNextStepGhost();
       return;
     }
     const ed = getComposerEditor();
-    const hostParent = ed?.parentElement;
-    if (!ed || !hostParent || isAssistantBusy()) {
+    if (!ed || isAssistantBusy()) {
+      hideNextStepGhost();
+      return;
+    }
+
+    ensureQuickCapsuleBar();
+    const rightSlot = document.getElementById(QUICK_RIGHT_SLOT_ID);
+    if (!rightSlot) {
       hideNextStepGhost();
       return;
     }
@@ -3428,19 +3668,20 @@
     if (!ghost) {
       ghost = document.createElement('div');
       ghost.id = NEXT_STEP_GHOST_ID;
-      ghost.setAttribute('aria-hidden', 'true');
+
+      const tabBtn = document.createElement('button');
+      tabBtn.type = 'button';
+      tabBtn.className = 'ag-qcap-btn ag-ns-accept ag-ns-tab';
 
       const textSpan = document.createElement('span');
       textSpan.className = 'ag-ns-text';
 
-      const badges = document.createElement('span');
-      badges.className = 'ag-ns-badges';
+      const kbdSpan = document.createElement('span');
+      kbdSpan.className = 'ag-ns-kbd-tag';
+      kbdSpan.textContent = tr('Tab / → 补全', 'Tab / →');
 
-      const tabBtn = document.createElement('button');
-      tabBtn.type = 'button';
-      tabBtn.className = 'ag-ns-kbd ag-ns-tab';
-      tabBtn.textContent = 'Tab / → 补全';
-      tabBtn.title = '按 Tab 或 → 右箭头将建议填入输入框';
+      tabBtn.appendChild(textSpan);
+      tabBtn.appendChild(kbdSpan);
       tabBtn.addEventListener('mousedown', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -3450,11 +3691,23 @@
         e.stopPropagation();
         void acceptNextStepSuggestion();
       });
+      tabBtn.addEventListener('mouseenter', () => {
+        showNextStepTooltip(tabBtn);
+      });
+      tabBtn.addEventListener('focus', () => {
+        showNextStepTooltip(tabBtn);
+      });
+      tabBtn.addEventListener('mouseleave', () => {
+        hideNextStepTooltip();
+      });
+      tabBtn.addEventListener('blur', () => {
+        hideNextStepTooltip();
+      });
 
       const cycleBtn = document.createElement('button');
       cycleBtn.type = 'button';
-      cycleBtn.className = 'ag-ns-kbd ag-ns-cycle';
-      cycleBtn.title = '按 ↓ 切换下一条建议';
+      cycleBtn.className = 'ag-qcap-btn ag-ns-cycle';
+      cycleBtn.title = tr('按 ↓ 切换下一条建议', 'Press ↓ to cycle suggestion');
       cycleBtn.addEventListener('mousedown', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -3465,14 +3718,14 @@
         cycleNextStepSuggestion(1);
       });
 
-      badges.appendChild(tabBtn);
-      badges.appendChild(cycleBtn);
-      ghost.appendChild(textSpan);
-      ghost.appendChild(badges);
+      ghost.appendChild(tabBtn);
+      ghost.appendChild(cycleBtn);
     }
 
-    if (ghost.parentElement !== hostParent) {
-      hostParent.appendChild(ghost);
+    const toastEl = rightSlot.querySelector('.ag-qcap-toast');
+    if (ghost.parentElement !== rightSlot) {
+      if (toastEl) rightSlot.insertBefore(ghost, toastEl);
+      else rightSlot.appendChild(ghost);
     }
     if (ghost.getAttribute('data-ag-theme') !== theme) {
       ghost.setAttribute('data-ag-theme', theme);
@@ -3480,12 +3733,18 @@
     ghost.hidden = false;
 
     const currentText = candidates[nextStepState.index] || '';
+    const displayShort = truncateNextStepText(currentText, 8);
+    const tabBtn = ghost.querySelector('.ag-ns-tab');
     const textSpan = ghost.querySelector('.ag-ns-text');
     const cycleBtn = ghost.querySelector('.ag-ns-cycle');
     if (textSpan) {
-      const nextDisplay = `💡 ${currentText}`;
+      const nextDisplay = `💡 ${displayShort}`;
       if (textSpan.textContent !== nextDisplay) textSpan.textContent = nextDisplay;
-      textSpan.title = currentText;
+    }
+    if (tabBtn) {
+      tabBtn.setAttribute('data-full-text', currentText);
+      tabBtn.setAttribute('data-truncated', displayShort !== currentText ? 'true' : 'false');
+      tabBtn.title = `${currentText}（${tr('点击或按 Tab / → 填入输入框', 'Click or press Tab / → to insert')}）`;
     }
     if (cycleBtn) {
       if (candidates.length > 1) {
@@ -3496,9 +3755,6 @@
       }
     }
 
-    if (hostParent.getAttribute('data-ag-has-ghost') !== '1') {
-      hostParent.setAttribute('data-ag-has-ghost', '1');
-    }
     nextStepState.visible = true;
   }
 
@@ -3516,10 +3772,324 @@
     hideNextStepGhost();
     const ok = await fillComposerText(text);
     if (ok) {
-      showQuickToast('✨ 已补全建议，按回车即可发送');
+      showQuickToast(tr('✨ 已补全建议，按回车即可发送', '✨ Suggestion inserted'));
     }
     ensureNextStepGhost();
     return ok;
+  }
+
+  // ==================== 输入框免 CLI 提示词优化 ====================
+
+  function buildPromptOptimizeInstruction(draftText) {
+    return [
+      '你是一位精通 Google Cloud 提示工程（Prompt Engineering）原则的提示词优化专家。',
+      '你的唯一任务是将 <draft> 标签内的用户原始提示词草稿，改写并优化为更清晰、具体、高质量的提示词，供软件工程与通用 AI 助手直接执行。',
+      '',
+      '请严格遵循以下提示工程准则：',
+      '1. 明确任务与具体性（Clarity & Specificity）：消除口语化模糊表达与指代不明，使用清晰的动作动词界定核心目标。',
+      '2. 语境与角色定位（Context & Persona）：根据任务性质自然提炼所需专业视角与作用范围；严禁编造草稿中未提及的业务事实、文件路径、接口名或参数。',
+      '3. 复杂任务分步拆解（Step-by-Step Breakdown）：若原草稿包含多个需求或复杂目标，拆解为逻辑清晰的有序步骤；若原草稿只是简单直接的单步指令，则保持精炼紧凑，不要强行扩写成冗长模板。',
+      '4. 明确边界与输出格式（Constraints & Output Format）：按需补充合理的边界约束、验收标准或期望的输出结构。',
+      '5. 格式与标识符保真（Strict Preservation）：',
+      '   - 保持与原草稿一致的自然语言（中文输入则输出中文，英文输入则输出英文）；',
+      '   - 原样保留草稿中的所有文件路径、代码片段、变量/函数名、URL 与 @ 引用。',
+      '',
+      '重要限制：不要回答、执行或解释 <draft> 中的问题！只直接输出优化后的提示词正文，不要包含任何开场白、解释说明、引号或外层代码块包裹。',
+      '',
+      '<draft>',
+      String(draftText || '').trim(),
+      '</draft>'
+    ].join('\n');
+  }
+
+  function cleanOptimizedPromptOutput(raw, slashPrefix = '') {
+    let out = String(raw || '').trim();
+    out = out.replace(/^<draft>\s*/i, '').replace(/\s*<\/draft>$/i, '').trim();
+    const fenceMatch = out.match(/^```(?:markdown|md|text|txt|prompt)?\r?\n([\s\S]*?)\r?\n```$/i);
+    if (fenceMatch) {
+      out = fenceMatch[1].trim();
+    }
+    if (slashPrefix && out) {
+      const cleanPrefix = slashPrefix.trim();
+      const escapedPrefix = cleanPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(`^${escapedPrefix}\\s*`), '').trim();
+      return `${cleanPrefix} ${out}`;
+    }
+    return out;
+  }
+
+  async function resolveDefaultModelForOptimize(signal) {
+    if (promptOptState.cacheModel.primary && (Date.now() - promptOptState.cacheModel.fetchedAt) < 60000) {
+      return promptOptState.cacheModel;
+    }
+    const csrf = window.__APP_CONFIG__?.csrfToken || '';
+    const headers = {
+      'Content-Type': 'application/json',
+      'Connect-Protocol-Version': '1'
+    };
+    if (csrf) headers['x-codeium-csrf-token'] = csrf;
+    const resp = await fetch('/exa.language_server_pb.LanguageServerService/GetUserStatus', {
+      method: 'POST',
+      headers,
+      body: '{}',
+      signal
+    });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    const payload = await resp.json();
+    const cfgData = payload?.userStatus?.cascadeModelConfigData;
+    if (cfgData) cacheDefaultModelFromConfigData(cfgData);
+    return promptOptState.cacheModel;
+  }
+
+  function syncPromptOptimizerUI() {
+    const btn = document.getElementById(PROMPT_OPT_BTN_ID);
+    const undoBtn = document.getElementById(PROMPT_OPT_UNDO_ID);
+    const wrap = document.getElementById(PROMPT_OPT_WRAP_ID);
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveHostTheme(host);
+    if (wrap && wrap.getAttribute('data-ag-theme') !== theme) {
+      wrap.setAttribute('data-ag-theme', theme);
+    }
+
+    const ed = getComposerEditor();
+    const hasText = Boolean(ed && getComposerText(ed).trim().length > 0);
+    if (!hasText && !promptOptState.loading) {
+      promptOptState.canUndo = false;
+    }
+
+    if (btn) {
+      if (promptOptState.loading) {
+        btn.disabled = false;
+        btn.setAttribute('data-loading', 'true');
+        btn.innerHTML = `<span class="ag-opt-spin"></span><span>${tr('优化中…', 'Optimizing…')}</span>`;
+        btn.title = tr('正在优化提示词，点击可立即取消', 'Optimizing prompt, click to cancel');
+      } else {
+        btn.removeAttribute('data-loading');
+        btn.disabled = !hasText;
+        btn.innerHTML = `${PROMPT_OPT_SPARKLE_SVG}<span>${tr('优化', 'Optimize')}</span>`;
+        btn.title = hasText
+          ? tr('调用当前默认模型优化输入框内的提示词', 'Optimize prompt using current default model')
+          : tr('先输入提示词草稿，点击调用默认模型优化', 'Enter a prompt draft first');
+      }
+    }
+
+    if (undoBtn) {
+      undoBtn.hidden = !(promptOptState.canUndo && !promptOptState.loading && hasText && promptOptState.backupText);
+      undoBtn.innerHTML = `${PROMPT_OPT_UNDO_SVG}<span>${tr('撤回', 'Undo')}</span>`;
+      undoBtn.title = tr('撤回优化，恢复原始草稿', 'Undo optimization and restore original draft');
+    }
+  }
+
+  function ensurePromptOptimizerControls() {
+    if (disposed) return;
+    ensureDocStyle();
+    const composer = document.querySelector('.surface-composer');
+    if (!composer) return;
+    const footer = composer.querySelector('.agy-composer-footer') || document.querySelector('.agy-composer-footer');
+    if (!footer) return;
+
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveHostTheme(host);
+    const mountParent = footer.parentElement || composer;
+
+    let wrap = document.getElementById(PROMPT_OPT_WRAP_ID);
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = PROMPT_OPT_WRAP_ID;
+      wrap.className = 'ag-prompt-opt-wrap';
+
+      const optBtn = document.createElement('button');
+      optBtn.id = PROMPT_OPT_BTN_ID;
+      optBtn.type = 'button';
+      optBtn.className = 'ag-prompt-opt-btn';
+      optBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      optBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void optimizeComposerPrompt();
+      });
+
+      const undoBtn = document.createElement('button');
+      undoBtn.id = PROMPT_OPT_UNDO_ID;
+      undoBtn.type = 'button';
+      undoBtn.className = 'ag-prompt-undo-btn';
+      undoBtn.hidden = true;
+      undoBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      undoBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void undoPromptOptimize();
+      });
+
+      wrap.appendChild(optBtn);
+      wrap.appendChild(undoBtn);
+    }
+
+    if (wrap.getAttribute('data-ag-theme') !== theme) {
+      wrap.setAttribute('data-ag-theme', theme);
+    }
+    if (wrap.getAttribute('data-position') !== 'above-send') {
+      wrap.setAttribute('data-position', 'above-send');
+    }
+
+    if (wrap.parentElement !== mountParent || wrap.nextElementSibling !== footer) {
+      mountParent.insertBefore(wrap, footer);
+    }
+
+    try {
+      const sendBtn = footer.querySelector(
+        '[data-testid="input-send-button"], [data-testid="send-button"], .agy-send-button, button[aria-label*="Send"], button[aria-label*="发送"], [data-testid="input-cancel-button"]'
+      ) || footer.querySelector('button:last-of-type');
+      if (sendBtn && typeof mountParent.getBoundingClientRect === 'function' && typeof sendBtn.getBoundingClientRect === 'function') {
+        const pRect = mountParent.getBoundingClientRect();
+        const sRect = sendBtn.getBoundingClientRect();
+        if (pRect && sRect && pRect.width > 0 && sRect.width > 0 && pRect.right >= sRect.right) {
+          const rightOffset = Math.max(8, Math.min(48, Math.round(pRect.right - sRect.right)));
+          wrap.style.paddingRight = `${rightOffset}px`;
+        }
+      }
+    } catch {}
+
+    syncPromptOptimizerUI();
+  }
+
+  async function undoPromptOptimize() {
+    if (!promptOptState.canUndo || !promptOptState.backupText || promptOptState.loading) return false;
+    const orig = promptOptState.backupText;
+    promptOptState.canUndo = false;
+    promptOptState.backupText = '';
+    const ok = await fillComposerText(orig);
+    syncPromptOptimizerUI();
+    if (ok) showQuickToast(tr('↩ 已恢复原始提示词', '↩ Restored original draft'));
+    return ok;
+  }
+
+  async function optimizeComposerPrompt() {
+    if (promptOptState.loading) {
+      if (promptOptState.abortCtrl) {
+        try { promptOptState.abortCtrl.abort(); } catch {}
+      }
+      promptOptState.loading = false;
+      promptOptState.abortCtrl = null;
+      syncPromptOptimizerUI();
+      showQuickToast(tr('已取消提示词优化', 'Prompt optimization cancelled'));
+      return { ok: false, cancelled: true };
+    }
+
+    const ed = getComposerEditor();
+    const rawText = getComposerText(ed);
+    const trimmed = rawText.trim();
+    if (!trimmed) {
+      showQuickToast(tr('先输入提示词草稿，再点击优化', 'Enter a prompt draft first'));
+      syncPromptOptimizerUI();
+      return { ok: false, error: 'empty' };
+    }
+
+    let slashPrefix = '';
+    let draftBody = trimmed;
+    const slashMatch = trimmed.match(/^(\/[a-zA-Z][\w-]*)(?:\s+([\s\S]*))?$/);
+    if (slashMatch) {
+      slashPrefix = slashMatch[1];
+      draftBody = (slashMatch[2] || '').trim();
+      if (!draftBody) {
+        showQuickToast(tr('当前仅包含斜杠命令，无需优化', 'Only slash command present'));
+        return { ok: false, error: 'slash-only' };
+      }
+    }
+
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeoutId = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, 45000) : null;
+    promptOptState.loading = true;
+    promptOptState.abortCtrl = ctrl;
+    syncPromptOptimizerUI();
+
+    try {
+      const modelInfo = await resolveDefaultModelForOptimize(ctrl ? ctrl.signal : undefined);
+      const primaryModel = modelInfo?.primary || '';
+      const fallbackModel = modelInfo?.fallback || '';
+      if (!primaryModel) {
+        throw new Error(tr('未能读取当前默认模型', 'Failed to resolve default model'));
+      }
+
+      const csrf = window.__APP_CONFIG__?.csrfToken || '';
+      const headers = {
+        'Content-Type': 'application/json',
+        'Connect-Protocol-Version': '1'
+      };
+      if (csrf) headers['x-codeium-csrf-token'] = csrf;
+      const prompt = buildPromptOptimizeInstruction(draftBody);
+
+      const callGenerate = async (modelEnum) => {
+        const resp = await fetch('/exa.language_server_pb.LanguageServerService/GetModelResponse', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ prompt, model: modelEnum }),
+          signal: ctrl ? ctrl.signal : undefined
+        });
+        if (!resp.ok) {
+          const err = new Error(`HTTP ${resp.status}`);
+          err.status = resp.status;
+          throw err;
+        }
+        return await resp.json();
+      };
+
+      let resPayload;
+      try {
+        resPayload = await callGenerate(primaryModel);
+      } catch (err) {
+        if ((err?.status === 400 || err?.status === 404) && fallbackModel && fallbackModel !== primaryModel && !ctrl?.signal?.aborted) {
+          resPayload = await callGenerate(fallbackModel);
+        } else {
+          throw err;
+        }
+      }
+
+      if (promptOptState.abortCtrl !== ctrl) {
+        return { ok: false, cancelled: true };
+      }
+
+      const optimized = cleanOptimizedPromptOutput(resPayload?.response || '', slashPrefix);
+      if (!optimized) {
+        throw new Error(tr('模型未返回有效优化文本', 'Empty model response'));
+      }
+
+      promptOptState.backupText = rawText;
+      promptOptState.canUndo = true;
+      promptOptState.loading = false;
+      promptOptState.abortCtrl = null;
+
+      const filled = await fillComposerText(optimized);
+      syncPromptOptimizerUI();
+      if (filled) {
+        showQuickToast(tr('✨ 提示词已优化（可点击 ↩ 撤回）', '✨ Prompt optimized (click ↩ Undo to revert)'));
+      }
+      return { ok: filled, text: optimized };
+    } catch (err) {
+      const isAbort = err?.name === 'AbortError' || ctrl?.signal?.aborted;
+      promptOptState.loading = false;
+      promptOptState.abortCtrl = null;
+      syncPromptOptimizerUI();
+      if (!isAbort) {
+        showQuickToast(tr(`优化失败：${err?.message || '请稍后重试'}`, `Optimize failed: ${err?.message || 'retry'}`));
+      }
+      return { ok: false, cancelled: isAbort, error: err?.message || 'failed' };
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (promptOptState.abortCtrl === ctrl) {
+        promptOptState.loading = false;
+        promptOptState.abortCtrl = null;
+        syncPromptOptimizerUI();
+      }
+    }
   }
 
   // ==================== 思考过程与侧边栏中文化 ====================
@@ -4653,7 +5223,10 @@
     if (e.isTrusted && !e.metaKey && !e.ctrlKey && !e.altKey && e.button === 0) {
       if (e.target?.closest?.('[data-testid="input-send-button"], [aria-label="Send"], [aria-label="发送"]')) {
         lastUserSubmitAt = Date.now();
+        promptOptState.canUndo = false;
+        promptOptState.backupText = '';
         hideNextStepGhost();
+        syncPromptOptimizerUI();
       }
       const thinkTrigger = e.target?.closest?.('[data-testid="thinking-collapsible-trigger"]');
       if (thinkTrigger) {
@@ -4735,7 +5308,10 @@
     if (!ed || !target || !ed.contains(target)) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isComposerEmpty(ed) && ed.getAttribute('aria-expanded') !== 'true') {
       lastUserSubmitAt = Date.now();
+      promptOptState.canUndo = false;
+      promptOptState.backupText = '';
       hideNextStepGhost();
+      syncPromptOptimizerUI();
       return;
     }
     if (!nextStepState.visible || isAssistantBusy() || !isComposerEmpty(ed) || ed.getAttribute('aria-expanded') === 'true') return;
@@ -4784,6 +5360,7 @@
     const ed = getComposerEditor();
     const target = e.target instanceof Element ? e.target : e.target?.parentElement;
     if (!ed || !target || !ed.contains(target)) return;
+    syncPromptOptimizerUI();
     if (isComposerComposing || !isComposerEmpty(ed)) {
       hideNextStepGhost();
     } else {
@@ -4828,12 +5405,39 @@
     }
   }
 
+  function syncRemotePairData(data) {
+    if (disposed || !data || typeof data !== 'object') return remotePairState;
+    remotePairState.data = data;
+    remotePairState.error = '';
+    updateRemoteBtnLanguage({ skipRender: true });
+    const nodes = ensureQuotaStylesAndNodes();
+    if (remotePopoverOpen && nodes?.remotePopover) {
+      renderRemotePopoverContent(nodes.remotePopover);
+      positionRemotePopover();
+    }
+    scheduleTunnelStartingPoll();
+    return remotePairState;
+  }
+
+  function onRemoteStateChanged(ev) {
+    if (disposed) return;
+    const data = ev?.detail?.data;
+    if (data && typeof data === 'object') {
+      syncRemotePairData(data);
+    }
+  }
+
   function onSuitePrefsChanged(ev) {
     const prevLang = uiLang;
     syncSuitePrefsFromStorage(ev?.detail || null);
     applyEnhancerFeatureVisibility();
     if (!ghostSuggestEnabled) hideNextStepGhost();
     else ensureNextStepGhost();
+    if (featureFlags.showQuickActions !== false) {
+      ensureQuickCapsuleBar();
+      const quickBar = document.getElementById(QUICK_BAR_ID);
+      if (quickBar) syncQuickBarActionButtons(quickBar);
+    }
     updateQuickBarLanguage();
     updateChatNavLanguage();
     updateAutoAcceptBtn();
@@ -4848,6 +5452,7 @@
   }
 
   window.addEventListener('ag-suite-prefs-changed', onSuitePrefsChanged);
+  window.addEventListener('ag-remote-state-changed', onRemoteStateChanged);
   window.addEventListener('click', onWindowClickCapture, true);
   document.addEventListener('click', onDocClick, true);
   document.addEventListener('keydown', onDocKeydown, true);
@@ -4862,6 +5467,7 @@
   function tickEnhancer() {
     if (disposed) return;
     applyEnhancerFeatureVisibility();
+    ensurePromptOptimizerControls();
     ensureNextStepGhost();
     ensureFileViewerEditor();
     scanHighRiskCommands();
@@ -4874,10 +5480,6 @@
     if (featureFlags.showTopbarQuota !== false && Date.now() - lastQuotaFetchAt >= 30000) {
       lastQuotaFetchAt = Date.now();
       void refreshQuota();
-    }
-    if (featureFlags.showQuickBar !== false && Date.now() - lastBrainFetchAt >= 60000) {
-      lastBrainFetchAt = Date.now();
-      void refreshBrainStats(false);
     }
     if (featureFlags.showTopbarRemote !== false && !remotePopoverOpen && Date.now() - lastRemoteFetchAt >= 10000) {
       lastRemoteFetchAt = Date.now();
@@ -4893,6 +5495,11 @@
     clearInterval(enhancerTimer);
     clearRemotePollTimer();
     if (toastTimer) clearTimeout(toastTimer);
+    if (promptOptState.abortCtrl) {
+      try { promptOptState.abortCtrl.abort(); } catch {}
+      promptOptState.abortCtrl = null;
+    }
+    promptOptState.loading = false;
     if (remotePairState.tunnelPollTimer) {
       clearTimeout(remotePairState.tunnelPollTimer);
       remotePairState.tunnelPollTimer = null;
@@ -4907,6 +5514,7 @@
     }
     document.removeEventListener('click', onDocClick, true);
     window.removeEventListener('ag-suite-prefs-changed', onSuitePrefsChanged);
+    window.removeEventListener('ag-remote-state-changed', onRemoteStateChanged);
     window.removeEventListener('click', onWindowClickCapture, true);
     document.removeEventListener('keydown', onDocKeydown, true);
     document.removeEventListener('keyup', onDocKeyup, true);
@@ -4917,7 +5525,9 @@
     window.removeEventListener('resize', onWindowResize);
     syncCmdModifierState(false);
     hideNextStepGhost();
+    safeRemove(document.getElementById(NEXT_STEP_TOOLTIP_ID));
     safeRemove(document.getElementById(NEXT_STEP_GHOST_ID));
+    safeRemove(document.getElementById(PROMPT_OPT_WRAP_ID));
     if (fileEditorState.active) exitFileEditor(false);
     safeRemove(document.getElementById(FILE_EDITOR_CONTROLS_ID));
     safeRemove(document.getElementById(FILE_EDITOR_WRAP_ID));
@@ -5145,19 +5755,198 @@
     return out;
   }
 
-  function collectSidebarConversations(limit = 25) {
+  const cascadeSummaryMap = new Map();
+  let lastCascadeSummaryFetchAt = 0;
+  let cascadeSummaryInflight = false;
+
+  function extractProjectNameFromUri(rawUri) {
+    if (!rawUri || typeof rawUri !== 'string') return '';
+    let clean = rawUri.replace(/^file:\/\//i, '').replace(/[\\/]+$/, '');
+    try { clean = decodeURIComponent(clean); } catch {}
+    const parts = clean.split(/[\\/]+/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  }
+
+  async function refreshCascadeTrajectorySummaries() {
+    if (disposed || cascadeSummaryInflight) return;
+    const csrf = window.__APP_CONFIG__?.csrfToken;
+    if (!csrf) return;
+    cascadeSummaryInflight = true;
+    try {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => { try { controller.abort(); } catch {} }, 4000) : null;
+      try {
+        const resp = await fetch('/exa.language_server_pb.LanguageServerService/GetAllCascadeTrajectories', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+            'x-codeium-csrf-token': csrf
+          },
+          body: '{}',
+          signal: controller ? controller.signal : undefined
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const summaries = data?.trajectorySummaries;
+        if (!summaries || typeof summaries !== 'object') return;
+        for (const [cid, meta] of Object.entries(summaries)) {
+          if (!cid || !meta || typeof meta !== 'object') continue;
+          const title = String(meta.summary || '').trim();
+          const ws0 = Array.isArray(meta.workspaces) ? meta.workspaces[0] : null;
+          const proj = extractProjectNameFromUri(ws0?.workspaceFolderAbsoluteUri || ws0?.gitRootAbsoluteUri || '');
+          const mtime = meta.lastModifiedTime ? (Date.parse(meta.lastModifiedTime) || 0) : 0;
+          cascadeSummaryMap.set(cid, { id: cid, title, project: proj, mtime });
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    } catch {
+      // 忽略后台摘要拉取失败
+    } finally {
+      cascadeSummaryInflight = false;
+    }
+  }
+
+  function findSidebarFiberProps() {
+    const list = document.querySelector('[data-testid="conversation-list-sidebar"]');
+    if (!list) return null;
+    try {
+      const fk = Object.keys(list).find((k) => k.startsWith('__reactFiber$'));
+      let f = fk ? list[fk] : null;
+      for (let d = 0; d < 12 && f; d++) {
+        if (Array.isArray(f.memoizedProps?.items)) return f.memoizedProps;
+        f = f.return;
+      }
+    } catch {}
+    return null;
+  }
+
+  function collectSidebarProjectGroups(limit = 60) {
     const currentId = getSessionIdFromLocation() || '';
-    const rows = getOrderedSidebarConversationRows();
-    const list = [];
-    for (const row of rows) {
+    const domRows = getOrderedSidebarConversationRows();
+    const domRowMap = new Map();
+    for (const row of domRows) {
       const id = extractSidebarRowId(row);
       if (!id) continue;
-      const title = getSidebarRowDisplayTitle(row);
-      const active = isSidebarRowActive(row, currentId);
-      list.push({ id, title: title.slice(0, 80), active });
-      if (list.length >= limit) break;
+      domRowMap.set(id, {
+        title: getSidebarRowDisplayTitle(row),
+        active: isSidebarRowActive(row, currentId)
+      });
     }
-    return list;
+
+    const resolveConvTitle = (cid) => (
+      domRowMap.get(cid)?.title
+      || sidebarZhCache.get(cid)
+      || sidebarRawTitleMap.get(cid)
+      || cascadeSummaryMap.get(cid)?.title
+      || `对话 ${cid.slice(0, 8)}`
+    );
+
+    const groups = [];
+    const groupById = new Map();
+    const ensureGroup = (gid, name, count = 0, isCollapsed = false) => {
+      const key = String(gid || `name:${name}`).trim();
+      if (groupById.has(key)) return groupById.get(key);
+      const grp = {
+        id: String(gid || ''),
+        key,
+        name: String(name || '未命名项目').trim() || '未命名项目',
+        count: Number(count) || 0,
+        isCollapsed: Boolean(isCollapsed),
+        active: false,
+        conversations: []
+      };
+      groups.push(grp);
+      groupById.set(key, grp);
+      return grp;
+    };
+
+    const fiberProps = findSidebarFiberProps();
+    const fiberItems = Array.isArray(fiberProps?.items) ? fiberProps.items : null;
+    if (fiberItems && fiberItems.some((x) => x && (x.type === 'header' || x.type === 'row'))) {
+      let curGrp = null;
+      for (const it of fiberItems) {
+        if (!it || typeof it !== 'object') continue;
+        if (it.type === 'header') {
+          const gid = String(it.id || '').replace(/^header-/, '') || String(it.label || '未命名项目');
+          curGrp = ensureGroup(gid, it.label || '未命名项目', it.count || 0, Boolean(it.isCollapsed));
+        } else if (it.type === 'row') {
+          const cid = String(it.cascadeId || it.id || '').trim();
+          if (!cid) continue;
+          const targetGrp = (it.groupId && groupById.get(String(it.groupId))) || curGrp || ensureGroup('default', '默认项目');
+          if (targetGrp.conversations.some((c) => c.id === cid)) continue;
+          const domMeta = domRowMap.get(cid);
+          const active = Boolean(domMeta?.active || (currentId && cid === currentId));
+          targetGrp.conversations.push({
+            id: cid,
+            title: resolveConvTitle(cid).slice(0, 80),
+            active,
+            project: targetGrp.name
+          });
+        }
+      }
+      if (cascadeSummaryMap.size > 0) {
+        const summariesSorted = Array.from(cascadeSummaryMap.values()).sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+        for (const grp of groups) {
+          if (grp.conversations.length > 0 && grp.conversations.length >= grp.count) continue;
+          for (const meta of summariesSorted) {
+            if (!meta || meta.project !== grp.name) continue;
+            if (grp.conversations.some((c) => c.id === meta.id)) continue;
+            grp.conversations.push({
+              id: meta.id,
+              title: resolveConvTitle(meta.id).slice(0, 80),
+              active: Boolean(domRowMap.get(meta.id)?.active || (currentId && meta.id === currentId)),
+              project: grp.name
+            });
+          }
+        }
+      }
+    } else {
+      const container = document.querySelector('[data-testid="conversation-list-sidebar"]') || document;
+      const nodes = container.querySelectorAll('[data-testid="project-header"], [data-testid="conversation-row-sidebar"]');
+      let curGrp = null;
+      for (const node of nodes) {
+        const tid = node.getAttribute?.('data-testid');
+        if (tid === 'project-header') {
+          const pname = (node.textContent || '').replace(/\s+/g, ' ').trim() || '未命名项目';
+          curGrp = ensureGroup(`dom:${pname}`, pname);
+        } else if (tid === 'conversation-row-sidebar') {
+          const cid = extractSidebarRowId(node);
+          if (!cid) continue;
+          const targetGrp = curGrp || ensureGroup('dom:默认项目', '默认项目');
+          if (targetGrp.conversations.some((c) => c.id === cid)) continue;
+          const active = isSidebarRowActive(node, currentId);
+          targetGrp.conversations.push({
+            id: cid,
+            title: getSidebarRowDisplayTitle(node).slice(0, 80),
+            active,
+            project: targetGrp.name
+          });
+        }
+      }
+    }
+
+    let projectGroups = groups.filter((g) => g.conversations.length > 0 || g.count > 0);
+    if (!projectGroups.length && groups.length) projectGroups = groups;
+
+    const flatConversations = [];
+    for (const grp of projectGroups) {
+      grp.count = Math.max(grp.count || 0, grp.conversations.length);
+      grp.active = grp.conversations.some((c) => c.active);
+      for (const conv of grp.conversations) {
+        if (flatConversations.length < limit || conv.active) {
+          if (!flatConversations.some((c) => c.id === conv.id)) {
+            flatConversations.push(conv);
+          }
+        }
+      }
+    }
+    return { projectGroups, conversations: flatConversations.slice(0, limit) };
+  }
+
+  function collectSidebarConversations(limit = 25) {
+    return collectSidebarProjectGroups(limit).conversations;
   }
 
   function getModelSelectorContext() {
@@ -5186,9 +5975,184 @@
     ];
   }
 
+  function collectDesktopContextPanelData(sr, pulseEl, contextBadge, model) {
+    const ctxData = pulseEl?.__ctxUsageData || null;
+    const readText = (id) => (sr?.getElementById(id)?.textContent || '').replace(/\s+/g, ' ').trim();
+    const usedText = readText('key-used');
+    const limitText = readText('key-limit');
+    const remainingText = readText('key-remaining');
+    const keyBadge = readText('key-badge');
+    const speedVal = readText('speed-val');
+    const durationText = readText('speed-duration');
+    const ttftText = readText('speed-ttft');
+    const outputTokensText = readText('speed-tokens');
+    const roundCostText = readText('round-cost-text');
+    const sessionCostText = readText('session-cost-text');
+    const pctText = readText('badge-pct-val') || contextBadge || '';
+    const pctMatch = pctText.match(/(\d+(?:\.\d+)?)\s*%/);
+    const usagePercent = ctxData && typeof ctxData.usagePercent === 'number'
+      ? Number(ctxData.usagePercent)
+      : (pctMatch ? Number(pctMatch[1]) : null);
+    const speedMatch = speedVal.match(/(\d+(?:\.\d+)?)/);
+    const durMatch = durationText.match(/(\d+(?:\.\d+)?)/);
+    return {
+      usedTokens: ctxData && typeof ctxData.contextUsed === 'number' ? ctxData.contextUsed : null,
+      limitTokens: ctxData && typeof ctxData.contextLimit === 'number' ? ctxData.contextLimit : null,
+      usagePercent,
+      cacheHitRate: ctxData && typeof ctxData.cacheHitRate === 'number' ? ctxData.cacheHitRate : null,
+      tokPerSec: ctxData && typeof ctxData.tokPerSec === 'number'
+        ? ctxData.tokPerSec
+        : (speedMatch ? Number(speedMatch[1]) : null),
+      lastDurationSec: ctxData && typeof ctxData.lastDurationSec === 'number'
+        ? ctxData.lastDurationSec
+        : (durMatch ? Number(durMatch[1]) : null),
+      outputTokens: ctxData && typeof ctxData.outputTokens === 'number' ? ctxData.outputTokens : null,
+      modelDisplayName: ctxData?.modelDisplayName || model || '',
+      contextBadge: contextBadge || '',
+      usedText,
+      limitText,
+      remainingText,
+      keyBadge,
+      speedText: speedVal,
+      durationText,
+      ttftText,
+      outputTokensText,
+      roundCostText,
+      sessionCostText
+    };
+  }
+
+  function collectDesktopUsageSummary(sr) {
+    const hist = window.__AGContextMeterHistory || null;
+    const sum = hist?.summary || null;
+    const badgeText = (sr?.getElementById('badge-tokens')?.textContent || '').replace(/\s+/g, ' ').trim();
+    const refCost = hist?.referenceCost || hist?.costEstimate || null;
+    return {
+      todayTokens: Number(sum?.todayTokens || 0) || 0,
+      sevenDayTokens: Number(sum?.sevenDayTokens || 0) || 0,
+      thirtyDayTokens: Number(sum?.thirtyDayTokens || 0) || 0,
+      totalTokens: Number(sum?.totalTokens || 0) || 0,
+      sessionCount: Number(sum?.sessionCount || 0) || 0,
+      totalCostUsd: Number(refCost?.totalUsd ?? sum?.totalCostUsd ?? 0) || 0,
+      badgeText
+    };
+  }
+
+  function parseRpcDurationSec(raw) {
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    if (!raw || typeof raw !== 'string') return null;
+    const m = raw.trim().match(/^(-?\d+(?:\.\d+)?)\s*(ms|s)?$/i);
+    if (!m) return null;
+    const val = Number(m[1]);
+    if (!Number.isFinite(val)) return null;
+    return String(m[2] || '').toLowerCase() === 'ms' ? val / 1000 : val;
+  }
+
+  function formatRpcTokensShort(n) {
+    const v = Number(n || 0);
+    if (!Number.isFinite(v) || v <= 0) return '0';
+    if (v >= 1000000) return `${(v / 1000000).toFixed(v >= 10000000 ? 1 : 2).replace(/\.0+$/, '')}M`;
+    if (v >= 1000) return `${(v / 1000).toFixed(v >= 100000 ? 0 : 1).replace(/\.0$/, '')}k`;
+    return String(Math.round(v));
+  }
+
+  async function callLanguageServerRpc(method, body = {}, timeoutMs = 4500) {
+    const csrf = window.__APP_CONFIG__?.csrfToken;
+    if (!csrf) throw new Error('缺少语言服务凭证 (csrfToken)');
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => { try { controller.abort(); } catch {} }, timeoutMs) : null;
+    try {
+      const resp = await fetch(`/exa.language_server_pb.LanguageServerService/${method}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': csrf
+        },
+        body: JSON.stringify(body || {}),
+        signal: controller ? controller.signal : undefined
+      });
+      if (!resp.ok) throw new Error(`RPC ${method} HTTP ${resp.status}`);
+      return await resp.json();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  function extractMessagesFromTrajectorySteps(steps, limit = 20) {
+    const list = Array.isArray(steps) ? steps : [];
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i];
+      if (!s || typeof s !== 'object') continue;
+      if (s.userInput) {
+        const u = s.userInput;
+        const text = String(
+          u.userResponse ||
+          (Array.isArray(u.items) ? u.items.map((item) => item?.text || '').filter(Boolean).join('\n') : '') ||
+          ''
+        ).trim();
+        if (text) {
+          out.push({ id: `rpc-u-${i}`, role: 'user', text: text.slice(0, 4000), html: '' });
+        }
+      } else if (s.plannerResponse) {
+        const pr = s.plannerResponse;
+        const text = String(pr.modifiedResponse || pr.response || '').trim();
+        const thoughtText = String(pr.thinking || '').trim();
+        if (text || thoughtText) {
+          out.push({
+            id: `rpc-a-${i}`,
+            role: 'assistant',
+            text: text.slice(0, 4000),
+            html: '',
+            thoughtLabel: thoughtText ? tr('已思考', 'Thought') : '',
+            thoughtText: thoughtText.slice(0, 1200),
+            highRisk: false,
+            riskText: ''
+          });
+        }
+      } else if (s.errorMessage) {
+        const errObj = s.errorMessage.error || s.errorMessage || {};
+        const errText = String(errObj.modelErrorMessage || errObj.shortError || errObj.fullError || '').trim();
+        if (errText) {
+          out.push({
+            id: `rpc-e-${i}`,
+            role: 'assistant',
+            text: errText.slice(0, 2000),
+            html: '',
+            thoughtLabel: '',
+            thoughtText: '',
+            highRisk: true,
+            riskText: tr('步骤异常', 'Step Error')
+          });
+        }
+      }
+    }
+    return out.slice(-limit);
+  }
+
+  function cloneSidebarWithActiveConversation(conversations, projectGroups, activeId) {
+    const nextConvs = (Array.isArray(conversations) ? conversations : []).map((c) => ({
+      ...c,
+      active: Boolean(activeId && c.id === activeId)
+    }));
+    const nextGroups = (Array.isArray(projectGroups) ? projectGroups : []).map((g) => ({
+      ...g,
+      conversations: (Array.isArray(g.conversations) ? g.conversations : []).map((c) => ({
+        ...c,
+        active: Boolean(activeId && c.id === activeId)
+      }))
+    }));
+    return { conversations: nextConvs, projectGroups: nextGroups };
+  }
+
   function getMobileSnapshot() {
     const sessionId = getSessionIdFromLocation() || '';
-    const conversations = collectSidebarConversations(25);
+    if (window.__APP_CONFIG__?.csrfToken && (Date.now() - lastCascadeSummaryFetchAt) >= 20000) {
+      lastCascadeSummaryFetchAt = Date.now();
+      void refreshCascadeTrajectorySummaries();
+    }
+    const { projectGroups, conversations } = collectSidebarProjectGroups(60);
     const activeConv = conversations.find((c) => c.active);
     const busy = isAssistantBusy();
     const { sr } = getMeterHostAndShadow();
@@ -5233,12 +6197,17 @@
     const pendingApprovals = collectPendingApprovals();
     const messages = collectRecentMessages(20);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
+    const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model);
+    const usageSummary = collectDesktopUsageSummary(sr);
 
     return {
       ok: true,
-      version: '1.6.9',
+      version: '1.7.4',
       timestamp: Date.now(),
       sessionId,
+      activeConversationId: sessionId,
+      desktopSessionId: sessionId,
+      isolated: false,
       title: activeConv?.title || document.title || 'Antigravity',
       busy,
       autoAccept: autoAcceptEnabled,
@@ -5248,6 +6217,8 @@
       permissionOptions: getPermissionPresetsMeta(),
       contextBadge,
       pulseText,
+      contextPanel,
+      usageSummary,
       quota: {
         activePoolKey: quotaState.activePoolKey,
         gemini: quotaState.gemini,
@@ -5257,14 +6228,225 @@
       pendingApprovals,
       suggestions,
       messages,
-      conversations
+      conversations,
+      projectGroups
     };
   }
 
-  async function performMobileAction(payload) {
-    const action = String(payload?.action || '').trim();
-    if (!action) return { ok: false, error: '缺少 action 参数' };
+  async function fetchIsolatedConversationSnapshot(baseSnap, reqConvId) {
+    try {
+      const full = await callLanguageServerRpc('GetCascadeTrajectory', {
+        cascadeId: reqConvId,
+        trajectoryVerbosity: 3
+      }, 4500);
+      const trajectory = full?.trajectory;
+      if (!trajectory || typeof trajectory !== 'object') {
+        throw new Error('未取得目标会话历史');
+      }
+      const steps = Array.isArray(trajectory.steps) ? trajectory.steps.slice() : [];
+      const expected = Number(full?.numTotalSteps ?? steps.length);
+      if (expected > steps.length) {
+        let offset = Math.max(steps.length, expected - 80);
+        for (let n = 0; n < 4 && offset < expected; n++) {
+          const page = await callLanguageServerRpc('GetCascadeTrajectorySteps', {
+            cascadeId: reqConvId,
+            stepOffset: offset,
+            trajectoryVerbosity: 3
+          }, 3500).catch(() => null);
+          const chunk = Array.isArray(page?.steps) ? page.steps : [];
+          if (!chunk.length) break;
+          steps.push(...chunk);
+          offset += chunk.length;
+        }
+      }
 
+      const genCount = Number(full?.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
+      let genList = Array.isArray(trajectory.generatorMetadata) ? trajectory.generatorMetadata : [];
+      if (genCount > 0) {
+        const tail = await callLanguageServerRpc('GetCascadeTrajectoryGeneratorMetadata', {
+          cascadeId: reqConvId,
+          generatorMetadataOffset: Math.max(0, genCount - 3),
+          includeMessages: false
+        }, 3000).catch(() => null);
+        if (Array.isArray(tail?.generatorMetadata) && tail.generatorMetadata.length) {
+          genList = tail.generatorMetadata;
+        }
+      }
+
+      let validMeta = null;
+      for (let i = genList.length - 1; i >= 0; i--) {
+        const cand = genList[i];
+        if (cand && (cand.chatModel || cand.usage)) {
+          validMeta = cand;
+          break;
+        }
+      }
+
+      const cm = validMeta?.chatModel || null;
+      const u = cm?.usage || validMeta?.usage || {};
+      const input = Number(u.inputTokens || 0) || 0;
+      const cached = Number(u.cacheReadTokens || 0) || 0;
+      const output = Number(u.outputTokens || 0) || 0;
+      const ctxMeta = cm?.chatStartMetadata?.contextWindowMetadata || {};
+      const usedTokens = (input + cached + output) || Number(ctxMeta.estimatedTokensUsed || 0) || 0;
+      const limitTokens = Number(ctxMeta.maxContextTokens || 0) || 0;
+      const usagePercent = limitTokens > 0
+        ? Number(((usedTokens / limitTokens) * 100).toFixed(1))
+        : null;
+      const cacheHitRate = (input + cached) > 0
+        ? Number(((cached / (input + cached)) * 100).toFixed(1))
+        : null;
+      const ttft = parseRpcDurationSec(cm?.timeToFirstToken);
+      const streaming = parseRpcDurationSec(cm?.streamingDuration);
+      const dur = (ttft != null && streaming != null)
+        ? Number((ttft + streaming).toFixed(2))
+        : (streaming != null ? Number(streaming.toFixed(2)) : (ttft != null ? Number(ttft.toFixed(2)) : null));
+      const tokPerSec = (output > 0 && dur && dur > 0)
+        ? Number((output / dur).toFixed(1))
+        : null;
+      const isolatedModel = cm?.modelDisplayName || cm?.responseModel || cm?.model || baseSnap.model || '';
+      const isolatedContextBadge = limitTokens > 0
+        ? `${formatRpcTokensShort(usedTokens)}/${formatRpcTokensShort(limitTokens)} (${usagePercent ?? 0}%)`
+        : (usedTokens > 0 ? formatRpcTokensShort(usedTokens) : '独立视图');
+      const isolatedPulseText = [
+        tokPerSec ? `${tokPerSec} tok/s` : '',
+        isolatedContextBadge
+      ].filter(Boolean).join(' · ');
+
+      const messages = extractMessagesFromTrajectorySteps(steps, 20);
+      const lastStep = steps.length ? steps[steps.length - 1] : null;
+      const busy = /RUNNING|IN_PROGRESS|ACTIVE|EXECUTING/i.test(String(trajectory.status || '')) ||
+        /RUNNING|PENDING|GENERATING/i.test(String(lastStep?.status || ''));
+
+      let lastAssistantText = '';
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'assistant' && messages[i].text) {
+          lastAssistantText = messages[i].text;
+          break;
+        }
+      }
+      const suggestions = !busy
+        ? computeNextStepCandidatesFromText(reqConvId, lastAssistantText, usagePercent || 0, steps.length).candidates
+        : [];
+      const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
+      const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
+      const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || String(trajectory.summary || '').trim() || `会话 ${reqConvId.slice(0, 8)}`;
+
+      return {
+        ...baseSnap,
+        sessionId: reqConvId,
+        activeConversationId: reqConvId,
+        desktopSessionId: baseSnap.sessionId || '',
+        isolated: true,
+        title,
+        busy,
+        model: isolatedModel,
+        contextBadge: isolatedContextBadge,
+        pulseText: isolatedPulseText,
+        contextPanel: {
+          usedTokens: usedTokens || null,
+          limitTokens: limitTokens || null,
+          usagePercent,
+          cacheHitRate,
+          tokPerSec,
+          lastDurationSec: dur,
+          outputTokens: output || null,
+          modelDisplayName: isolatedModel,
+          contextBadge: isolatedContextBadge,
+          usedText: usedTokens > 0 ? formatRpcTokensShort(usedTokens) : '—',
+          limitText: limitTokens > 0 ? formatRpcTokensShort(limitTokens) : '—',
+          remainingText: limitTokens > usedTokens ? formatRpcTokensShort(limitTokens - usedTokens) : (limitTokens > 0 ? '0' : '—'),
+          keyBadge: `${usagePercent ?? '--'}%`,
+          speedText: tokPerSec ? `${tokPerSec} tok/s` : '—',
+          durationText: dur != null ? `${dur}s` : '—',
+          ttftText: ttft != null ? `${ttft}s` : '—',
+          outputTokensText: output > 0 ? `${output}` : '—',
+          roundCostText: '',
+          sessionCostText: ''
+        },
+        pendingApprovals: [],
+        suggestions,
+        messages,
+        conversations: cloned.conversations,
+        projectGroups: cloned.projectGroups
+      };
+    } catch (err) {
+      const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
+      return {
+        ...baseSnap,
+        activeConversationId: reqConvId,
+        desktopSessionId: baseSnap.sessionId || '',
+        isolated: true,
+        conversations: cloned.conversations,
+        projectGroups: cloned.projectGroups,
+        isolationWarning: err?.message || '无法独立读取该会话'
+      };
+    }
+  }
+
+  async function getMobileSnapshotAsync(opts = {}) {
+    const baseSnap = getMobileSnapshot();
+    const reqConvId = String(opts?.conversationId || '').trim();
+    if (!reqConvId || reqConvId === (baseSnap.sessionId || '') || reqConvId === '__new__') {
+      return {
+        ...baseSnap,
+        activeConversationId: baseSnap.sessionId || '',
+        desktopSessionId: baseSnap.sessionId || '',
+        isolated: false
+      };
+    }
+    return await fetchIsolatedConversationSnapshot(baseSnap, reqConvId);
+  }
+
+  async function switchToConversationInternal(rawTargetId) {
+    const targetId = String(rawTargetId || '').trim();
+    if (!targetId) return { ok: false, error: '缺少会话 ID' };
+    if (targetId === 'new') {
+      const newBtn = document.querySelector('a[data-testid="new-conversation-button"], [data-testid="new-conversation-button"] a, [data-testid="new-conversation-button"]');
+      if (!newBtn) return { ok: false, error: '未找到新建对话按钮' };
+      newBtn.click();
+      await new Promise((r) => setTimeout(r, 180));
+      return { ok: true, id: 'new' };
+    }
+    let row = findSidebarRowById(targetId);
+    let link = row?.querySelector('a[href]') || document.querySelector(`a[href*="/c/${escapeCssIdent(targetId)}"]`);
+    let clickTarget = link || row;
+    if (!clickTarget) {
+      const props = findSidebarFiberProps();
+      const rowItem = props?.items?.find((x) => x && x.type === 'row' && (x.cascadeId === targetId || x.id === targetId));
+      if (rowItem?.groupId) {
+        const hdrItem = props.items.find((x) => x && x.type === 'header' && (x.id === `header-${rowItem.groupId}` || x.id === rowItem.groupId));
+        if (hdrItem?.isCollapsed) {
+          const domHdr = Array.from(document.querySelectorAll('[data-testid="project-header"]'))
+            .find((el) => (el.textContent || '').replace(/\s+/g, ' ').trim() === String(hdrItem.label || '').trim());
+          if (domHdr) domHdr.click();
+          else if (typeof props.onToggleCollapseSection === 'function') props.onToggleCollapseSection(hdrItem.collapseId || hdrItem.id);
+          await new Promise((r) => setTimeout(r, 140));
+          row = findSidebarRowById(targetId);
+          link = row?.querySelector('a[href]') || document.querySelector(`a[href*="/c/${escapeCssIdent(targetId)}"]`);
+          clickTarget = link || row;
+        }
+      }
+    }
+    if (clickTarget) {
+      clickTarget.click();
+      await new Promise((r) => setTimeout(r, 180));
+      return { ok: true, id: targetId, pathname: location.pathname };
+    }
+    if (typeof window.history?.pushState === 'function') {
+      window.history.pushState(null, '', `/c/${encodeURIComponent(targetId)}`);
+      if (typeof PopStateEvent === 'function') {
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      } else {
+        window.dispatchEvent(new Event('popstate'));
+      }
+      await new Promise((r) => setTimeout(r, 180));
+      return { ok: true, id: targetId, pathname: location.pathname, method: 'history' };
+    }
+    return { ok: false, error: '未在侧边栏找到该会话' };
+  }
+
+  async function executeMobileActionCore(action, payload) {
     if (action === 'send') {
       const text = String(payload?.text || '').trim();
       if (!text) return { ok: false, error: '发送内容不能为空' };
@@ -5337,23 +6519,31 @@
       return { ok: true, label: picked.label, kind: picked.kind };
     }
 
-    if (action === 'switch-conversation') {
-      const targetId = String(payload?.id || '').trim();
-      if (!targetId) return { ok: false, error: '缺少会话 ID' };
-      if (targetId === 'new') {
-        const newBtn = document.querySelector('a[data-testid="new-conversation-button"], [data-testid="new-conversation-button"] a, [data-testid="new-conversation-button"]');
-        if (!newBtn) return { ok: false, error: '未找到新建对话按钮' };
-        newBtn.click();
-        await new Promise((r) => setTimeout(r, 180));
-        return { ok: true, id: 'new' };
+    if (action === 'expand-project') {
+      const groupId = String(payload?.groupId || '').trim();
+      const groupName = String(payload?.name || '').trim();
+      const headers = Array.from(document.querySelectorAll('[data-testid="project-header"]'));
+      const domHdr = groupName ? headers.find((el) => (el.textContent || '').replace(/\s+/g, ' ').trim() === groupName) : null;
+      const props = findSidebarFiberProps();
+      const hdrItem = props?.items?.find((x) =>
+        x && x.type === 'header' && (
+          (groupId && (String(x.id || '') === groupId || String(x.id || '') === `header-${groupId}`))
+          || (groupName && String(x.label || '').trim() === groupName)
+        )
+      );
+      if (hdrItem?.isCollapsed) {
+        if (domHdr) {
+          domHdr.click();
+        } else if (typeof props?.onToggleCollapseSection === 'function') {
+          props.onToggleCollapseSection(hdrItem.collapseId || hdrItem.id || groupId);
+        }
+        await new Promise((r) => setTimeout(r, 150));
       }
-      const row = findSidebarRowById(targetId);
-      const link = row?.querySelector('a[href]') || document.querySelector(`a[href*="/c/${escapeCssIdent(targetId)}"]`);
-      const clickTarget = link || row;
-      if (!clickTarget) return { ok: false, error: '未在侧边栏找到该会话' };
-      clickTarget.click();
-      await new Promise((r) => setTimeout(r, 180));
-      return { ok: true, id: targetId, pathname: location.pathname };
+      return { ok: true, groupId, name: groupName };
+    }
+
+    if (action === 'switch-conversation') {
+      return await switchToConversationInternal(payload?.id);
     }
 
     if (action === 'toggle-thinking') {
@@ -5488,8 +6678,40 @@
     return { ok: false, error: `未知操作: ${action}` };
   }
 
+  async function performMobileAction(payload) {
+    const action = String(payload?.action || '').trim();
+    if (!action) return { ok: false, error: '缺少 action 参数' };
+
+    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'select-model', 'select-permission', 'upload-image'];
+    const reqConvId = String(payload?.conversationId || '').trim();
+    const prevConvId = getSessionIdFromLocation() || '';
+    const needsSwitch = Boolean(
+      scopedActions.includes(action) &&
+      reqConvId &&
+      reqConvId !== '__new__' &&
+      reqConvId !== prevConvId
+    );
+
+    if (!needsSwitch) {
+      return await executeMobileActionCore(action, payload);
+    }
+
+    const sw = await switchToConversationInternal(reqConvId);
+    if (!sw?.ok) return sw;
+    await new Promise((r) => setTimeout(r, 150));
+
+    try {
+      return await executeMobileActionCore(action, payload);
+    } finally {
+      if (prevConvId && prevConvId !== reqConvId && payload?.restoreDesktop !== false) {
+        await new Promise((r) => setTimeout(r, 120));
+        await switchToConversationInternal(prevConvId).catch(() => {});
+      }
+    }
+  }
+
     globalThis.__AGEnhancer = {
-    version: '1.7.3',
+    version: '1.7.4',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -5509,11 +6731,17 @@
     saveFileEditor,
     exitFileEditor,
     isAssistantBusy,
+    truncateNextStepText,
     ensureNextStepGhost,
     acceptNextStepSuggestion,
     cycleNextStepSuggestion,
     getNextStepState: () => ({ ...nextStepState, candidates: [...nextStepState.candidates] }),
+    ensurePromptOptimizerControls,
+    optimizeComposerPrompt,
+    undoPromptOptimize,
+    syncRemotePairData,
     getMobileSnapshot,
+    getMobileSnapshotAsync,
     performMobileAction,
     extractExternalUrlFromTarget,
     openExternalUrlInSystemBrowser,
@@ -5544,6 +6772,7 @@
   };
 
   applyEnhancerFeatureVisibility();
+  ensurePromptOptimizerControls();
   ensureNextStepGhost();
   ensureFileViewerEditor();
   syncSidebarShortcutBadges();
@@ -5559,9 +6788,7 @@
     revertEnhancerTranslations();
   }
   lastQuotaFetchAt = Date.now();
-  lastBrainFetchAt = Date.now();
   lastRemoteFetchAt = Date.now();
   if (featureFlags.showTopbarQuota !== false) void refreshQuota();
-  if (featureFlags.showQuickBar !== false) void refreshBrainStats(false);
   if (featureFlags.showTopbarRemote !== false) void refreshRemotePairInfo(false);
 })();
