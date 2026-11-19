@@ -16,7 +16,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.14';
+const MOBILE_UI_VERSION = '1.9.15';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1343,7 +1343,8 @@ function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
     if (fs.existsSync(projectsDir)) {
       const files = fs.readdirSync(projectsDir).filter((f) => f.endsWith('.json'));
       for (const f of files) {
-        const readRes = safeReadJsonSync(path.join(projectsDir, f), null);
+        const fp = path.join(projectsDir, f);
+        const readRes = safeReadJsonSync(fp, null);
         const parsed = readRes?.ok ? readRes.data : null;
         if (!parsed || typeof parsed !== 'object') continue;
         const id = String(parsed.id || parsed.projectId || f.slice(0, -5)).trim();
@@ -1367,7 +1368,11 @@ function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
           const p = decodeFileUriToPath(uri);
           if (p) workspacePaths.push(p);
         }
-        metaMap.set(id, { id, name, primaryPath: workspacePaths[0] || '', workspacePaths });
+        let mtimeMs = 0;
+        try {
+          mtimeMs = Number(fs.statSync(fp).mtimeMs) || 0;
+        } catch {}
+        metaMap.set(id, { id, name, primaryPath: workspacePaths[0] || '', workspacePaths, mtimeMs });
       }
     }
   } catch {}
@@ -1761,7 +1766,7 @@ function createSessionCatalogStore() {
     const currentProjectId = String(snap.currentProjectId || activeConvObj?.projectId || '').trim();
     const projectStats = new Map();
 
-    const ensureProjBucket = (pid, name) => {
+    const ensureProjBucket = (pid, name, seedLastActiveAt = 0) => {
       if (!projectStats.has(pid)) {
         projectStats.set(pid, {
           id: pid,
@@ -1770,14 +1775,14 @@ function createSessionCatalogStore() {
           runningCount: 0,
           waitingCount: 0,
           unreadCount: 0,
-          lastActiveAt: 0
+          lastActiveAt: Number(seedLastActiveAt) || 0
         });
       }
       return projectStats.get(pid);
     };
 
     for (const [pid, name] of projectNameMap.entries()) {
-      ensureProjBucket(pid, name);
+      ensureProjBucket(pid, name, projectsMeta.get(pid)?.mtimeMs || 0);
     }
 
     for (const c of allActiveConvs) {
@@ -1799,8 +1804,8 @@ function createSessionCatalogStore() {
         active: Boolean(currentProjectId && p.id === currentProjectId)
       }))
       .sort((a, b) => {
-        if ((a.conversationCount > 0) !== (b.conversationCount > 0)) {
-          return a.conversationCount > 0 ? -1 : 1;
+        if ((a.id === 'ungrouped') !== (b.id === 'ungrouped')) {
+          return a.id === 'ungrouped' ? 1 : -1;
         }
         if (b.lastActiveAt !== a.lastActiveAt) return b.lastActiveAt - a.lastActiveAt;
         return a.name.localeCompare(b.name, 'zh-Hans-CN');
@@ -3262,17 +3267,7 @@ function buildMobileAppHtml() {
       display:flex;flex-direction:column;gap:4px;margin-left:11px;padding-left:9px;
       border-left:1.5px solid var(--border);
     }
-    .proj-empty-sec{margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;display:flex;flex-direction:column;gap:5px}
-    .proj-empty-toggle{
-      appearance:none;border:none;background:transparent;color:var(--muted);font-size:13px;font-weight:700;
-      padding:5px 7px;border-radius:8px;display:flex;align-items:center;gap:6px;cursor:pointer;text-align:left;
-    }
-    .proj-empty-row{
-      display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 6px 6px 10px;
-      border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border-subtle);
-      color:var(--fg-secondary);font-size:13.5px;font-weight:600;
-    }
-    .proj-empty-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
+    .proj-group.is-empty .proj-chev{opacity:.4}
     /* 新建项目与电脑目录浏览器弹窗 */
     .sheet.proj-modal{max-width:540px;max-height:min(680px,calc(var(--modal-h,100dvh) * 0.84),calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px));gap:10px}
     .proj-modal-body{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:10px}
@@ -3416,7 +3411,7 @@ function buildMobileAppHtml() {
       .conv-tab:hover{color:var(--fg-secondary)}
       .new-proj-mini-btn:hover{background:var(--surface-hover);border-color:var(--border-strong);color:var(--fg-strong)}
       .proj-head:hover{background:var(--surface-hover);border-color:var(--border-strong)}
-      .proj-toggle:hover,.proj-empty-toggle:hover{color:var(--fg-strong)}
+      .proj-toggle:hover{color:var(--fg-strong)}
       .proj-new-btn:hover{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
       .proj-root-pill:hover,.proj-act-btn:hover,.proj-dir-item:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .proj-primary-btn:hover{filter:brightness(1.08)}
@@ -4409,6 +4404,61 @@ function buildMobileAppHtml() {
       };
     }
 
+    let selectedProjectId = '';
+    let lastHostContextSig = '';
+
+    function syncSelectedProjectFromSnapshot(snap) {
+      if (!snap || snap.ok === false) return;
+      const snapPid = String(snap.currentProjectId || '').trim();
+      const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
+      const hostSig = snapSid + '::' + snapPid;
+      const projects = Array.isArray(snap.projects) ? snap.projects : [];
+      const selectedExists = Boolean(selectedProjectId && (
+        projects.some((p) => p && p.id === selectedProjectId) ||
+        selectedProjectId === snapPid
+      ));
+      if (hostSig !== lastHostContextSig) {
+        lastHostContextSig = hostSig;
+        if (snapPid && snapPid !== 'ungrouped') {
+          selectedProjectId = snapPid;
+        } else if (!selectedExists) {
+          selectedProjectId = '';
+        }
+      } else if (!selectedProjectId && snapPid && snapPid !== 'ungrouped') {
+        selectedProjectId = snapPid;
+      } else if (selectedProjectId && !selectedExists) {
+        selectedProjectId = (snapPid && snapPid !== 'ungrouped') ? snapPid : '';
+      }
+    }
+
+    function getEffectiveSelectedProject(snap) {
+      const projects = Array.isArray(snap?.projects) ? snap.projects : [];
+      const pid = String(selectedProjectId || snap?.currentProjectId || '').trim();
+      if (!pid || pid === 'ungrouped') return { id: '', name: '' };
+      const matched = projects.find((p) => p && p.id === pid);
+      const name = String(
+        matched?.name ||
+        (pid === String(snap?.currentProjectId || '').trim() ? snap?.currentProjectName : '') ||
+        ''
+      ).trim();
+      return { id: pid, name };
+    }
+
+    function syncNewChatButtonUi(snap) {
+      const newChatLabelEl = $('new-chat-label');
+      if (newChatLabelEl) newChatLabelEl.textContent = '新建对话';
+      const eff = getEffectiveSelectedProject(snap);
+      const newChatSubEl = $('new-chat-sub');
+      if (newChatSubEl) {
+        newChatSubEl.textContent = eff.name;
+        newChatSubEl.hidden = !eff.name;
+      }
+      const newChatBtnEl = $('btn-new-chat');
+      if (newChatBtnEl) {
+        newChatBtnEl.title = eff.name ? ('在「' + eff.name + '」中新建对话') : '新建对话';
+      }
+    }
+
     function renderSnapshot(snap) {
       if (!snap || snap.ok === false) {
         $('status-dot').className = 'dot err';
@@ -4416,6 +4466,7 @@ function buildMobileAppHtml() {
         return;
       }
       latestSnap = snap;
+      syncSelectedProjectFromSnapshot(snap);
       if (snap.currentTargetId) currentTargetId = snap.currentTargetId;
       if (Array.isArray(snap.endpoints) && snap.endpoints.length) {
         pairState.endpoints = snap.endpoints;
@@ -4434,18 +4485,7 @@ function buildMobileAppHtml() {
       $('ctx-badge').textContent = snap.contextBadge || '--%';
       $('model-inline-label').textContent = snap.model || '切换模型';
       syncPermInlineUi(snap.permissionKey, snap.permissionLabel);
-      const newChatLabelEl = $('new-chat-label');
-      if (newChatLabelEl) newChatLabelEl.textContent = '新建对话';
-      const newChatSubEl = $('new-chat-sub');
-      if (newChatSubEl) {
-        const projName = String(snap.currentProjectName || '').trim();
-        newChatSubEl.textContent = projName;
-        newChatSubEl.hidden = !projName;
-      }
-      const newChatBtnEl = $('btn-new-chat');
-      if (newChatBtnEl) {
-        newChatBtnEl.title = snap.currentProjectName ? ('在「' + snap.currentProjectName + '」中新建对话') : '新建对话';
-      }
+      syncNewChatButtonUi(snap);
 
       renderQuotaDrawer(snap);
       syncSendButtonUI();
@@ -4585,7 +4625,6 @@ function buildMobileAppHtml() {
         return {};
       }
     })();
-    let emptyProjExpanded = false;
     let recentDisplayLimit = 50;
     let nextGlobalOffset = 0;
     const projOffsetMap = new Map();
@@ -4851,22 +4890,24 @@ function buildMobileAppHtml() {
           }
         }
       } else {
-        const orderedProjects = Array.from(projMap.values());
-        const nonEmptyProjects = orderedProjects.filter((p) => (p.conversationCount > 0) || (grouped.get(p.id)?.length || 0) > 0);
-        const emptyProjects = orderedProjects.filter((p) => (p.conversationCount || 0) === 0 && (grouped.get(p.id)?.length || 0) === 0 && p.id !== 'ungrouped');
+        const orderedProjects = Array.from(projMap.values()).filter((p) =>
+          p.id !== 'ungrouped' || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
+        );
+        const effProj = getEffectiveSelectedProject(snap);
 
-        if (!nonEmptyProjects.length && !emptyProjects.length) {
+        if (!orderedProjects.length) {
           html = '<div class="empty-tip" style="padding:18px 8px">暂无项目与历史对话</div>';
         } else {
-          html = nonEmptyProjects.map((p) => {
+          html = orderedProjects.map((p) => {
             const list = grouped.get(p.id) || [];
             const projTotal = Math.max(list.length, Number(p.conversationCount) || 0);
+            const isEmptyProj = projTotal === 0 && list.length === 0;
             const hasRunning = (p.runningCount > 0) || list.some((x) => x.status === 'running');
             const hasWaiting = (p.waitingCount > 0) || list.some((x) => x.status === 'waiting');
-            const collapsed = Boolean(collapsedProjMap[p.id]);
-            const isCurrentProj = Boolean(snap.currentProjectId && p.id === snap.currentProjectId);
+            const collapsed = !isEmptyProj && Boolean(collapsedProjMap[p.id]);
+            const isCurrentProj = Boolean(effProj.id && p.id === effProj.id);
             const isUngroupedProj = p.id === 'ungrouped';
-            const groupCls = 'proj-group' + (isCurrentProj ? ' is-current' : '') + (isUngroupedProj ? ' is-ungrouped' : '');
+            const groupCls = 'proj-group' + (isCurrentProj ? ' is-current' : '') + (isUngroupedProj ? ' is-ungrouped' : '') + (isEmptyProj ? ' is-empty' : '');
             const statDot = hasWaiting
               ? '<span class="proj-stat-dot waiting" title="有待确认操作"></span>'
               : (hasRunning ? '<span class="proj-stat-dot running" title="有运行中对话"></span>' : '');
@@ -4876,11 +4917,13 @@ function buildMobileAppHtml() {
             const projMoreHtml = list.length < projTotal
               ? '<button class="conv-more-btn" data-proj-more="' + esc(p.id) + '" type="button">加载该项目更多对话 (' + list.length + '/' + projTotal + ')</button>'
               : '';
-            const itemsHtml = collapsed ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + projMoreHtml + '</div>');
+            const itemsHtml = (isEmptyProj || collapsed) ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + projMoreHtml + '</div>');
+            const chevChar = isEmptyProj ? '·' : (collapsed ? '▸' : '▾');
+            const expandedAttr = isEmptyProj ? '' : (' aria-expanded="' + (collapsed ? 'false' : 'true') + '"');
             return '<div class="' + groupCls + '">' +
               '<div class="proj-head">' +
-                '<button class="proj-toggle" data-proj-toggle="' + esc(p.id) + '" type="button" aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
-                  '<span class="proj-chev">' + (collapsed ? '▸' : '▾') + '</span>' +
+                '<button class="proj-toggle" data-proj-toggle="' + esc(p.id) + '" type="button"' + expandedAttr + '>' +
+                  '<span class="proj-chev">' + chevChar + '</span>' +
                   '<span class="proj-icon">' + FOLDER_ICON_SVG + '</span>' +
                   '<span class="proj-name">' + esc(p.name) + '</span>' +
                   statDot +
@@ -4891,22 +4934,6 @@ function buildMobileAppHtml() {
               itemsHtml +
             '</div>';
           }).join('');
-
-          if (emptyProjects.length) {
-            html += '<div class="proj-empty-sec">' +
-              '<button class="proj-empty-toggle" data-empty-toggle="1" type="button" aria-expanded="' + (emptyProjExpanded ? 'true' : 'false') + '">' +
-                '<span class="proj-chev">' + (emptyProjExpanded ? '▾' : '▸') + '</span>' +
-                '<span>空项目 (' + emptyProjects.length + ')</span>' +
-              '</button>' +
-              (emptyProjExpanded ? emptyProjects.map((p) =>
-                '<div class="proj-empty-row">' +
-                  '<span class="proj-icon" style="opacity:.8">' + FOLDER_SM_SVG + '</span>' +
-                  '<span class="proj-empty-name">' + esc(p.name) + '</span>' +
-                  '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话">+</button>' +
-                '</div>'
-              ).join('') : '') +
-            '</div>';
-          }
         }
       }
 
@@ -5540,11 +5567,15 @@ function buildMobileAppHtml() {
     }
 
     async function startNewConversationInProject(projectId, projectName) {
+      const pid = (projectId && projectId !== 'ungrouped') ? String(projectId).trim() : '';
+      selectedProjectId = pid;
+      syncNewChatButtonUi(latestSnap);
+      if (latestSnap) renderConversationList(latestSnap);
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
       try {
         const payload = { action: 'new-conversation' };
-        if (projectId) payload.projectId = projectId;
+        if (pid) payload.projectId = pid;
         const r = await apiAction(payload);
         if (r?.ok) {
           showToast(projectName ? ('已在「' + projectName + '」中新建对话') : '已新建对话');
@@ -5558,6 +5589,7 @@ function buildMobileAppHtml() {
 
     function openNewChatProjectPicker() {
       const projs = (latestSnap?.projects || []).filter((p) => p && p.id && p.id !== 'ungrouped');
+      const effProj = getEffectiveSelectedProject(latestSnap);
       const opts = [
         {
           isCreateProject: true,
@@ -5568,13 +5600,13 @@ function buildMobileAppHtml() {
           projectId: p.id,
           projectName: p.name,
           label: p.name + (p.conversationCount > 0 ? (' (' + p.conversationCount + ')') : ' (空项目)'),
-          active: Boolean(latestSnap?.currentProjectId && p.id === latestSnap.currentProjectId)
+          active: Boolean(effProj.id && p.id === effProj.id)
         })),
         {
           projectId: '',
           projectName: '',
           label: '默认工作区（不指定项目）',
-          active: !latestSnap?.currentProjectId
+          active: !effProj.id
         }
       ];
       openSheet('选择项目新建对话', opts, async (opt) => {
@@ -5933,20 +5965,26 @@ function buildMobileAppHtml() {
         return;
       }
 
-      const toggleBtn = e.target?.closest?.('.proj-toggle');
+      const toggleBtn = e.target?.closest?.('.proj-toggle') || e.target?.closest?.('.proj-head')?.querySelector?.('.proj-toggle');
       if (toggleBtn) {
         const pid = toggleBtn.getAttribute('data-proj-toggle') || '';
         if (!pid) return;
-        if (collapsedProjMap[pid]) delete collapsedProjMap[pid];
-        else collapsedProjMap[pid] = true;
-        saveConvUiPrefs();
-        if (latestSnap) renderConversationList(latestSnap);
-        return;
-      }
-
-      const emptyToggleBtn = e.target?.closest?.('.proj-empty-toggle');
-      if (emptyToggleBtn) {
-        emptyProjExpanded = !emptyProjExpanded;
+        const wasSelected = getEffectiveSelectedProject(latestSnap).id === pid;
+        const clickedChev = Boolean(e.target?.closest?.('.proj-chev'));
+        const isEmptyGroup = Boolean(toggleBtn.closest?.('.proj-group')?.classList?.contains('is-empty'));
+        if (pid !== 'ungrouped') {
+          selectedProjectId = pid;
+          syncNewChatButtonUi(latestSnap);
+        }
+        if (!isEmptyGroup) {
+          if (collapsedProjMap[pid]) {
+            delete collapsedProjMap[pid];
+            saveConvUiPrefs();
+          } else if (wasSelected || clickedChev || pid === 'ungrouped') {
+            collapsedProjMap[pid] = true;
+            saveConvUiPrefs();
+          }
+        }
         if (latestSnap) renderConversationList(latestSnap);
         return;
       }
@@ -5972,6 +6010,11 @@ function buildMobileAppHtml() {
       const btn = e.target?.closest?.('.conv-item');
       const cid = btn?.getAttribute('data-cid') || btn?.dataset?.cid || '';
       if (!btn || !cid) return;
+      const matchedConv = getMergedConversations(latestSnap).find((x) => x && x.id === cid);
+      if (matchedConv?.projectId && matchedConv.projectId !== 'ungrouped') {
+        selectedProjectId = matchedConv.projectId;
+        syncNewChatButtonUi(latestSnap);
+      }
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
       showToast('正在切换会话…');
@@ -5992,9 +6035,8 @@ function buildMobileAppHtml() {
     });
     backdropEl.addEventListener('click', (e) => { if (!isDesktopLayout() && e.target === backdropEl) closeDrawer(); });
     $('btn-new-chat').addEventListener('click', async () => {
-      const pid = latestSnap?.currentProjectId || '';
-      const pname = pid ? (latestSnap?.currentProjectName || '') : '';
-      await startNewConversationInProject(pid, pname);
+      const eff = getEffectiveSelectedProject(latestSnap);
+      await startNewConversationInProject(eff.id, eff.name);
     });
     const newChatProjBtn = $('btn-new-chat-project');
     if (newChatProjBtn) {
