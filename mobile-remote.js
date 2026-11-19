@@ -4404,41 +4404,48 @@ function buildMobileAppHtml() {
       };
     }
 
-    let selectedProjectId = '';
+    let selectedProjectId = null;
     let lastHostContextSig = '';
+
+    function isNonProjectBucket(raw) {
+      const pid = String(raw || '').trim();
+      return !pid || pid === 'ungrouped' || pid === 'outside-of-project' || pid === 'standalone';
+    }
+
+    function normalizeProjectId(raw) {
+      const pid = String(raw || '').trim();
+      return isNonProjectBucket(pid) ? '' : pid;
+    }
 
     function syncSelectedProjectFromSnapshot(snap) {
       if (!snap || snap.ok === false) return;
-      const snapPid = String(snap.currentProjectId || '').trim();
+      const snapPid = normalizeProjectId(snap.currentProjectId);
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
       const hostSig = snapSid + '::' + snapPid;
       const projects = Array.isArray(snap.projects) ? snap.projects : [];
-      const selectedExists = Boolean(selectedProjectId && (
+      const selectedExists = typeof selectedProjectId === 'string' && (
+        selectedProjectId === '' ||
         projects.some((p) => p && p.id === selectedProjectId) ||
         selectedProjectId === snapPid
-      ));
+      );
       if (hostSig !== lastHostContextSig) {
         lastHostContextSig = hostSig;
-        if (snapPid && snapPid !== 'ungrouped') {
-          selectedProjectId = snapPid;
-        } else if (!selectedExists) {
-          selectedProjectId = '';
-        }
-      } else if (!selectedProjectId && snapPid && snapPid !== 'ungrouped') {
         selectedProjectId = snapPid;
-      } else if (selectedProjectId && !selectedExists) {
-        selectedProjectId = (snapPid && snapPid !== 'ungrouped') ? snapPid : '';
+      } else if (selectedProjectId === null || !selectedExists) {
+        selectedProjectId = snapPid;
       }
     }
 
     function getEffectiveSelectedProject(snap) {
       const projects = Array.isArray(snap?.projects) ? snap.projects : [];
-      const pid = String(selectedProjectId || snap?.currentProjectId || '').trim();
-      if (!pid || pid === 'ungrouped') return { id: '', name: '' };
+      const pid = selectedProjectId !== null
+        ? selectedProjectId
+        : normalizeProjectId(snap?.currentProjectId);
+      if (!pid) return { id: '', name: '' };
       const matched = projects.find((p) => p && p.id === pid);
       const name = String(
         matched?.name ||
-        (pid === String(snap?.currentProjectId || '').trim() ? snap?.currentProjectName : '') ||
+        (pid === normalizeProjectId(snap?.currentProjectId) ? snap?.currentProjectName : '') ||
         ''
       ).trim();
       return { id: pid, name };
@@ -4891,7 +4898,7 @@ function buildMobileAppHtml() {
         }
       } else {
         const orderedProjects = Array.from(projMap.values()).filter((p) =>
-          p.id !== 'ungrouped' || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
+          !isNonProjectBucket(p.id) || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
         );
         const effProj = getEffectiveSelectedProject(snap);
 
@@ -4906,7 +4913,7 @@ function buildMobileAppHtml() {
             const hasWaiting = (p.waitingCount > 0) || list.some((x) => x.status === 'waiting');
             const collapsed = !isEmptyProj && Boolean(collapsedProjMap[p.id]);
             const isCurrentProj = Boolean(effProj.id && p.id === effProj.id);
-            const isUngroupedProj = p.id === 'ungrouped';
+            const isUngroupedProj = isNonProjectBucket(p.id);
             const groupCls = 'proj-group' + (isCurrentProj ? ' is-current' : '') + (isUngroupedProj ? ' is-ungrouped' : '') + (isEmptyProj ? ' is-empty' : '');
             const statDot = hasWaiting
               ? '<span class="proj-stat-dot waiting" title="有待确认操作"></span>'
@@ -5567,7 +5574,7 @@ function buildMobileAppHtml() {
     }
 
     async function startNewConversationInProject(projectId, projectName) {
-      const pid = (projectId && projectId !== 'ungrouped') ? String(projectId).trim() : '';
+      const pid = normalizeProjectId(projectId);
       selectedProjectId = pid;
       syncNewChatButtonUi(latestSnap);
       if (latestSnap) renderConversationList(latestSnap);
@@ -5588,7 +5595,7 @@ function buildMobileAppHtml() {
     }
 
     function openNewChatProjectPicker() {
-      const projs = (latestSnap?.projects || []).filter((p) => p && p.id && p.id !== 'ungrouped');
+      const projs = (latestSnap?.projects || []).filter((p) => p && !isNonProjectBucket(p.id));
       const effProj = getEffectiveSelectedProject(latestSnap);
       const opts = [
         {
@@ -5972,15 +5979,13 @@ function buildMobileAppHtml() {
         const wasSelected = getEffectiveSelectedProject(latestSnap).id === pid;
         const clickedChev = Boolean(e.target?.closest?.('.proj-chev'));
         const isEmptyGroup = Boolean(toggleBtn.closest?.('.proj-group')?.classList?.contains('is-empty'));
-        if (pid !== 'ungrouped') {
-          selectedProjectId = pid;
-          syncNewChatButtonUi(latestSnap);
-        }
+        selectedProjectId = normalizeProjectId(pid);
+        syncNewChatButtonUi(latestSnap);
         if (!isEmptyGroup) {
           if (collapsedProjMap[pid]) {
             delete collapsedProjMap[pid];
             saveConvUiPrefs();
-          } else if (wasSelected || clickedChev || pid === 'ungrouped') {
+          } else if (wasSelected || clickedChev || isNonProjectBucket(pid)) {
             collapsedProjMap[pid] = true;
             saveConvUiPrefs();
           }
@@ -6011,9 +6016,10 @@ function buildMobileAppHtml() {
       const cid = btn?.getAttribute('data-cid') || btn?.dataset?.cid || '';
       if (!btn || !cid) return;
       const matchedConv = getMergedConversations(latestSnap).find((x) => x && x.id === cid);
-      if (matchedConv?.projectId && matchedConv.projectId !== 'ungrouped') {
-        selectedProjectId = matchedConv.projectId;
+      if (matchedConv) {
+        selectedProjectId = normalizeProjectId(matchedConv.projectId);
         syncNewChatButtonUi(latestSnap);
+        if (latestSnap) renderConversationList(latestSnap);
       }
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
