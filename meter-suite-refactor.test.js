@@ -3609,9 +3609,193 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
 });
 
 // =========================================================================
-// 需求 16: Antigravity v2.33.0+ 裸进程识别、运行时长解析与调试参数探测
+// 需求 16: 远程网页端支持跟随系统、固定浅色、固定深色三态外观切换与实时同步
 // =========================================================================
-test('需求 16: parsePsElapsedSeconds 与 inspectAntigravityHostProcess 准确识别裸进程与调试端口参数', () => {
+test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色三态外观切换与实时同步', async () => {
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-remote-theme-'));
+  const prevAppData = process.env.APPDATA;
+  const prevMeterStateDir = process.env.AG_METER_STATE_DIR;
+  const prevContextStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  try {
+    process.env.APPDATA = tmpState;
+    process.env.AG_METER_STATE_DIR = tmpState;
+    process.env.AG_CONTEXT_METER_STATE_DIR = tmpState;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const {
+      buildMobileAppHtml,
+      createRemoteHttpHandler,
+      loadOrCreateRemoteConfig
+    } = require('./mobile-remote.js');
+
+    const html = buildMobileAppHtml();
+    assert.ok(html.includes('id="ag-theme-boot"'), '应包含防首屏闪烁主题引导脚本 #ag-theme-boot');
+    assert.ok(html.includes('id="meta-theme-color"'), '应包含可动态更新的 #meta-theme-color');
+    assert.ok(html.includes('id="btn-theme"'), '顶栏应包含快捷外观模式按钮 #btn-theme');
+    assert.ok(html.includes('id="theme-seg"'), '侧边栏/抽屉底部应包含三段式外观切换器 #theme-seg');
+    assert.ok(html.includes('data-theme-mode="system"') && html.includes('data-theme-mode="light"') && html.includes('data-theme-mode="dark"'),
+      '应同时提供跟随系统、固定浅色、固定深色三个选项');
+    assert.ok(html.includes('html[data-theme="light"]') && html.includes('@media (prefers-color-scheme:light)'),
+      '样式表应同时支持 prefers-color-scheme 自动适配与 html[data-theme="light"] 强制覆盖');
+    assert.ok(/\.mode-entry-card\{[^}]*background:var\(--card\)/.test(html),
+      '连接通道引导卡片 .mode-entry-card 应使用主题变量 background:var(--card) 兼容浅色模式');
+
+    const bootMatch = html.match(/<script id="ag-theme-boot">([\s\S]*?)<\/script>/);
+    const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
+    const mainMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(bootMatch && bodyMatch && mainMatch, '应可提取主题引导脚本、Body HTML 与主脚本');
+    for (const hex of ['#fca5a5', '#bae6fd', '#fbbf24']) {
+      assert.ok(!bodyMatch[1].includes(hex) && !mainMatch[1].includes(hex),
+        `HTML 正文与交互脚本不应残留硬编码颜色 ${hex}`);
+    }
+    assert.doesNotThrow(() => new vm.Script(bootMatch[1]), '#ag-theme-boot 必须通过语法校验');
+    assert.doesNotThrow(() => new vm.Script(mainMatch[1]), '远程端主 <script> 必须通过语法校验');
+
+    // 验证 401 未授权页同样支持系统浅色模式
+    const cfg = loadOrCreateRemoteConfig({ resetToken: true });
+    const handler = createRemoteHttpHandler({ port: cfg.port, token: cfg.token });
+    let html401 = '';
+    await handler(
+      { method: 'GET', url: '/', headers: {}, socket: { remoteAddress: '127.0.0.1' } },
+      {
+        setHeader() {},
+        writeHead() {},
+        end(chunk) { if (chunk) html401 += String(chunk); }
+      }
+    );
+    assert.ok(html401.includes('@media (prefers-color-scheme:light)'), '401 引导页应适配系统浅色模式');
+
+    // 在 VM DOM 环境验证首屏引导、系统联动、三态切换与弹窗选择
+    const env = createDomEnv();
+    const metaTheme = env.doc.createElement('meta');
+    metaTheme.id = 'meta-theme-color';
+    metaTheme.setAttribute('name', 'theme-color');
+    metaTheme.setAttribute('content', '#09090b');
+    env.doc.head.appendChild(metaTheme);
+    env.doc.body.innerHTML = bodyMatch[1];
+
+    let isSystemLight = false;
+    const schemeListeners = [];
+    const mockMatchMedia = (query) => {
+      if (String(query).includes('prefers-color-scheme: light')) {
+        return {
+          get matches() { return isSystemLight; },
+          addEventListener(type, fn) { if (type === 'change') schemeListeners.push(fn); },
+          removeEventListener(type, fn) {
+            const idx = schemeListeners.indexOf(fn);
+            if (idx >= 0) schemeListeners.splice(idx, 1);
+          }
+        };
+      }
+      return { matches: true, addEventListener() {} };
+    };
+    const setSystemLight = (nextVal) => {
+      isSystemLight = Boolean(nextVal);
+      for (const fn of [...schemeListeners]) fn({ matches: isSystemLight });
+    };
+
+    env.win.matchMedia = mockMatchMedia;
+    env.sandbox.matchMedia = mockMatchMedia;
+    env.sandbox.URLSearchParams = URLSearchParams;
+    env.sandbox.history = { replaceState() {} };
+    env.sandbox.location = {
+      search: '',
+      origin: 'http://127.0.0.1:18765',
+      pathname: '/',
+      port: '18765',
+      protocol: 'http:',
+      reload() {}
+    };
+    env.sandbox.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ ok: true, title: 'Theme Test', messages: [], conversations: [], quota: {} })
+    });
+
+    vm.runInContext(bootMatch[1], env.sandbox);
+    assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'dark');
+    assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'system');
+    assert.equal(metaTheme.getAttribute('content'), '#09090b');
+
+    vm.runInContext(mainMatch[1], env.sandbox);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const segSystem = env.doc.querySelector('button[data-theme-mode="system"]');
+    const segLight = env.doc.querySelector('button[data-theme-mode="light"]');
+    const segDark = env.doc.querySelector('button[data-theme-mode="dark"]');
+    const hintEl = env.doc.getElementById('theme-mode-hint');
+    const themeBtn = env.doc.getElementById('btn-theme');
+    assert.ok(segSystem && segLight && segDark && hintEl && themeBtn, '外观切换控件应完整渲染');
+    assert.equal(segSystem.classList.contains('active'), true);
+    assert.equal(segSystem.getAttribute('aria-checked'), 'true');
+    assert.equal(hintEl.textContent, '跟随 · 深色');
+
+    // 1. 跟随系统状态下 OS 切到浅色与深色应实时同步
+    setSystemLight(true);
+    assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'light');
+    assert.equal(metaTheme.getAttribute('content'), '#f8fafc');
+    assert.equal(hintEl.textContent, '跟随 · 浅色');
+
+    setSystemLight(false);
+    assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'dark');
+    assert.equal(metaTheme.getAttribute('content'), '#09090b');
+    assert.equal(hintEl.textContent, '跟随 · 深色');
+
+    // 2. 在系统深色下切到「固定浅色」应持久化并无视系统变化
+    segLight.click();
+    assert.equal(env.localStorage.getItem('ag_remote_theme_v1'), 'light');
+    assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'light');
+    assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'light');
+    assert.equal(segLight.getAttribute('aria-checked'), 'true');
+    assert.equal(segSystem.getAttribute('aria-checked'), 'false');
+    assert.equal(hintEl.textContent, '固定浅色');
+    assert.equal(metaTheme.getAttribute('content'), '#f8fafc');
+    setSystemLight(true);
+    setSystemLight(false);
+    assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'light', '固定浅色时不应受系统变化影响');
+
+    // 3. 在系统浅色下切到「固定深色」应持久化并无视系统变化
+    setSystemLight(true);
+    segDark.click();
+    assert.equal(env.localStorage.getItem('ag_remote_theme_v1'), 'dark');
+    assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'dark');
+    assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'dark');
+    assert.equal(segDark.getAttribute('aria-checked'), 'true');
+    assert.equal(hintEl.textContent, '固定深色');
+    assert.equal(metaTheme.getAttribute('content'), '#09090b');
+
+    // 4. 点击顶栏外观按钮弹出 3 项选择面板，并切回「跟随系统」
+    themeBtn.click();
+    const sheetBackdrop = env.doc.getElementById('sheet-backdrop');
+    const sheetList = env.doc.getElementById('sheet-list');
+    assert.equal(sheetBackdrop.hidden, false, '点击顶栏外观按钮应打开外观选择面板');
+    assert.equal(env.doc.getElementById('sheet-title-text')?.textContent, '外观模式');
+    const sheetOpts = sheetList.querySelectorAll('.sheet-opt');
+    assert.equal(sheetOpts.length, 3, '外观选择面板应展示 3 个模式选项');
+    assert.equal(sheetOpts[2].classList.contains('active'), true, '当前固定深色选项应高亮');
+
+    await sheetList.onclick({ target: sheetOpts[0] });
+    assert.equal(sheetBackdrop.hidden, true, '选中后应关闭面板');
+    assert.equal(env.localStorage.getItem('ag_remote_theme_v1'), 'system');
+    assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'system');
+    assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'light', '当前系统为浅色时恢复跟随应立即呈现浅色');
+    assert.equal(hintEl.textContent, '跟随 · 浅色');
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevMeterStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevMeterStateDir;
+    if (prevContextStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevContextStateDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 17: Antigravity v2.33.0+ 裸进程识别、运行时长解析与调试参数探测
+// =========================================================================
+test('需求 17: parsePsElapsedSeconds 与 inspectAntigravityHostProcess 准确识别裸进程与调试端口参数', () => {
   const { parsePsElapsedSeconds, inspectAntigravityHostProcess } = require('./asar-engine');
 
   assert.equal(parsePsElapsedSeconds('00:08'), 8);
@@ -3651,9 +3835,142 @@ test('需求 16: parsePsElapsedSeconds 与 inspectAntigravityHostProcess 准确�
 });
 
 // =========================================================================
-// 需求 17: 远程面板多项目分组浏览、按项目新建对话、全会话状态与防缩水持久列表
+// 需求 18: 长上下文 Prompt Cache 脱落 (cache=0) 归零修真与 328K 雪崩预警联动
 // =========================================================================
-test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话、全会话状态汇总与防缩水持久列表', async () => {
+test('需求 18: meter-core 修复 cache=0 掩盖，pulse-capsule 与 renderer 识别缓存脱落及 328K 雪崩线', async () => {
+  // 1. meter-core summarize: 当新请求返回真实输入且 cacheReadTokens=0 时，严禁沿用 prevContext.cached
+  const dropSummary = core.summarize({
+    chatModel: {
+      model: 'gemini-4-carbon-medium',
+      usage: { inputTokens: 334262, cacheReadTokens: 0, outputTokens: 800 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  }, {
+    previousValidContext: { used: 330000, actual: 330000, cached: 327727, budget: 512000 }
+  });
+  assert.equal(dropSummary.cached, 0, 'hasInput 且 cacheReadTokens=0 时 cached 必须真实归零，禁止沿用 prevContext.cached');
+  assert.equal(dropSummary.uncachedInput, 334262);
+  assert.equal(dropSummary.cacheHitRate, 0);
+  assert.equal(dropSummary.input, 334262);
+
+  // 2. pulse-capsule-overlay: analyzeSteps 与 renderFooterCapsule / tooltip 缓存脱落及 328K 雪崩线联动
+  const envCap = createDomEnv();
+  envCap.sandbox.location.href = 'https://127.0.0.1:12345/';
+  envCap.win.location = envCap.sandbox.location;
+  const footerEl = envCap.doc.createElement('div');
+  footerEl.className = 'agy-composer-footer';
+  const permBtn = envCap.doc.createElement('button');
+  permBtn.setAttribute('data-testid', 'permissions-selector-trigger');
+  footerEl.appendChild(permBtn);
+  envCap.doc.body.appendChild(footerEl);
+
+  vm.runInContext(CAPSULE_SRC, envCap.sandbox);
+  const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
+  assert.equal(typeof capsApi.analyzeSteps, 'function');
+
+  const uDrop = capsApi.analyzeSteps([
+    {
+      metadata: {
+        modelUsage: { model: 'gemini-4-carbon-medium', inputTokens: '2163', cacheReadTokens: '327727', outputTokens: '500' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    },
+    {
+      metadata: {
+        modelUsage: { model: 'gemini-4-carbon-medium', inputTokens: '334262', cacheReadTokens: '0', outputTokens: '400' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    }
+  ], 'gemini-4-carbon-medium', 'Gemini 4 Carbon (Medium)', 2);
+  assert.equal(uDrop.cacheDropDetected, true);
+  assert.equal(uDrop.cacheCliffRisk, 'critical');
+  assert.equal(uDrop.cacheHitRate, 0);
+
+  capsApi.renderFooterCapsule(footerEl, uDrop);
+  const capBtn = footerEl.querySelector('[data-agy-context-capsule="1"]');
+  assert.equal(capBtn.querySelector('.agy-ctx-cache')?.getAttribute('data-cache-alert'), 'drop');
+  assert.equal(capBtn.querySelector('.agy-ctx-fill')?.getAttribute('fill'), '#ef4444');
+  assert.equal(capBtn.querySelector('.agy-ctx-cache-val')?.textContent, '0%');
+
+  const uCliff = capsApi.analyzeSteps([
+    {
+      metadata: {
+        modelUsage: { model: 'gemini-4-carbon-medium', inputTokens: '5000', cacheReadTokens: '335000', outputTokens: '500' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    }
+  ], 'gemini-4-carbon-medium', 'Gemini 4 Carbon (Medium)', 1);
+  assert.equal(uCliff.cacheDropDetected, false);
+  assert.equal(uCliff.cacheCliffRisk, 'critical');
+
+  capsApi.renderFooterCapsule(footerEl, uCliff);
+  assert.equal(capBtn.querySelector('.agy-ctx-cache')?.getAttribute('data-cache-alert'), 'cliff');
+  assert.equal(capBtn.querySelector('.agy-ctx-fill')?.getAttribute('fill'), '#f59e0b');
+  envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
+
+  // 3. meter-renderer: #key-badge 在 334K (cache=0) 显示 “缓存脱落”，在 340K / 512K (高缓存) 显示 “建议压缩”
+  const envDrop = createDomEnv();
+  vm.runInContext(RENDERER_SRC, envDrop.sandbox);
+  const pollDrop = envDrop.pendingFetches.find(f => String(f.url).includes('GetCascadeTrajectoryGeneratorMetadata'));
+  assert.ok(pollDrop, '应触发 GetCascadeTrajectoryGeneratorMetadata 请求');
+  pollDrop.resolve({
+    ok: true,
+    json: async () => ({
+      generatorMetadata: [
+        {
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Carbon (Medium)',
+            usage: { inputTokens: 2163, cacheReadTokens: 327727, outputTokens: 500 },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        },
+        {
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Carbon (Medium)',
+            usage: { inputTokens: 334262, cacheReadTokens: 0, outputTokens: 400 },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }
+      ]
+    })
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const sdDrop = envDrop.getShadow();
+  assert.equal(sdDrop.getElementById('key-badge').textContent, '缓存脱落');
+  assert.match(sdDrop.getElementById('key-takeaway').textContent, /缓存已脱落.*\/compact/);
+  envDrop.sandbox.__AGContextMeter.dispose();
+
+  const envCliff = createDomEnv();
+  vm.runInContext(RENDERER_SRC, envCliff.sandbox);
+  const pollCliff = envCliff.pendingFetches.find(f => String(f.url).includes('GetCascadeTrajectoryGeneratorMetadata'));
+  assert.ok(pollCliff);
+  pollCliff.resolve({
+    ok: true,
+    json: async () => ({
+      generatorMetadata: [
+        {
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Carbon (Medium)',
+            usage: { inputTokens: 5000, cacheReadTokens: 335000, outputTokens: 500 },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+          }
+        }
+      ]
+    })
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const sdCliff = envCliff.getShadow();
+  assert.equal(sdCliff.getElementById('key-badge').textContent, '建议压缩');
+  assert.match(sdCliff.getElementById('key-takeaway').textContent, /328K.*\/compact/);
+  envCliff.sandbox.__AGContextMeter.dispose();
+});
+
+// =========================================================================
+// 需求 19: 远程面板多项目分组浏览、按项目新建对话、全会话状态与防缩水持久列表
+// =========================================================================
+test('需求 19: 远程面板支持多项目分组浏览、按项目新建对话、全会话状态汇总与防缩水持久列表', async () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req17-remote-'));
   const stateDir = path.join(tmpRoot, 'state');
   const configDir = path.join(tmpRoot, 'config');
@@ -4271,9 +4588,9 @@ test('需求 17: 远程面板支持多项目分组浏览、按项目新建对话
 });
 
 // =========================================================================
-// 需求 18: 远程会话全量历史消息上翻加载、长回复防截断与授权模式图标动态联动
+// 需求 20: 远程会话全量历史消息上翻加载、长回复防截断与授权模式图标动态联动
 // =========================================================================
-test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断与授权模式图标动态联动', async () => {
+test('需求 20: 远程会话全量历史消息上翻加载、长回复防截断与授权模式图标动态联动', async () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req18-'));
   const stateDir = path.join(tmpRoot, 'state');
   const configDir = path.join(tmpRoot, 'config');
@@ -4825,9 +5142,9 @@ test('需求 18: 远程会话全量历史消息上翻加载、长回复防截断
 });
 
 // =========================================================================
-// 需求 19: 项目名条视觉层级、回车换行交互与浏览本机目录创建新项目
+// 需求 21: 项目名条视觉层级、回车换行交互、浏览本机目录创建新项目与三态主题共存
 // =========================================================================
-test('需求 19: 项目分组头样式层级、Enter换行按钮发送及本机目录浏览创建新项目全链路', async () => {
+test('需求 21: 项目分组头样式层级、Enter换行按钮发送、本机目录浏览建项目及三态外观共存', async () => {
   const { pathToFileURL } = require('url');
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req19-'));
   const stateDir = path.join(tmpRoot, 'state');
@@ -4915,6 +5232,11 @@ test('需求 19: 项目分组头样式层级、Enter换行按钮发送及本机�
     assert.ok(mobileCss.includes('.proj-body') && mobileCss.includes('border-left:'), '子会话容器应带缩进左导引线');
     assert.ok(html.includes('enterkeyhint="enter"'), '输入框应声明 enterkeyhint="enter" 以配合手机软键盘换行');
     assert.ok(html.includes('id="btn-new-project"') && html.includes('id="proj-modal-backdrop"'), '应包含新建项目入口与目录选择弹窗');
+    assert.ok(html.includes('id="btn-theme"') && html.includes('id="theme-seg"'), '三态外观开关按钮与底部三段选择器必须与新建项目/多项目控件并存');
+    assert.ok(cssText.includes('.proj-head{') && cssText.includes('var(--proj-head-bg)'), '项目分组条应使用主题变量 var(--proj-head-bg)');
+    assert.ok(cssText.includes('.proj-toggle{') && cssText.includes('color:var(--fg-strong)'), '项目标题文字应使用主题变量 var(--fg-strong)');
+    assert.ok(cssText.includes('.proj-path-input,.proj-field-input{') && cssText.includes('var(--input-bg)'), '目录输入框应使用主题变量 var(--input-bg)');
+    assert.ok(cssText.includes('.proj-summary-card.is-warn{') && cssText.includes('var(--warn-card-bg)'), '失败预警卡应使用主题变量 var(--warn-card-bg)');
 
     // 2. 本机目录读取、隐藏项切换、primaryPath 精确关联及非法目录名拦截
     const homeListing = remoteMod.listHostDirectories({ homeDir, configDir });
@@ -5149,11 +5471,17 @@ test('需求 19: 项目分组头样式层级、Enter换行按钮发送及本机�
     vm.runInContext(inlineScript, envUi.sandbox);
     await new Promise((r) => setTimeout(r, 40));
 
-    // 校验渲染的项目头 DOM 结构（.proj-group.is-current、.proj-icon、.proj-count、.proj-body）
+    // 校验渲染的项目头 DOM 结构（.proj-group.is-current、.proj-icon、.proj-count、.proj-body）及与三态主题切换实时联动
     const convListEl = envUi.doc.getElementById('conv-list');
     assert.ok(convListEl.querySelector('.proj-group.is-current'), '当前项目组应带有 is-current 高亮类');
     assert.ok(convListEl.querySelector('.proj-toggle .proj-icon svg'), '项目标题条应渲染文件夹 SVG 图标');
     assert.ok(convListEl.querySelector('.proj-body .conv-item'), '项目下应有带导引线的 .proj-body 包裹会话项');
+    assert.ok(envUi.doc.getElementById('btn-theme') && envUi.doc.getElementById('theme-seg'), '外观切换控件应与多项目列表共存在渲染 DOM 中');
+    envUi.doc.querySelector('#theme-seg button[data-theme-mode="light"]').click();
+    assert.equal(envUi.doc.documentElement.getAttribute('data-theme'), 'light', '切换固定浅色模式后应立即更新 html[data-theme="light"]');
+    assert.ok(convListEl.querySelector('.proj-group.is-current'), '切换主题后当前项目高亮与分组列表仍保持正常');
+    envUi.doc.querySelector('#theme-seg button[data-theme-mode="dark"]').click();
+    assert.equal(envUi.doc.documentElement.getAttribute('data-theme'), 'dark');
 
     // 校验 Enter 仅自然换行不发送，点按钮 & Cmd+Enter 才发送多行消息
     const ta = envUi.doc.getElementById('input');

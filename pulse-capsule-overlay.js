@@ -39,11 +39,11 @@
     window.__AGY_CTX_CAPSULE_ACTIVE__ = true;
     window.__AGY_CTX_CAPSULE_VERSION__ = CAPSULE_VERSION;
 
-    // 3A 冷雾莫兰迪配色 (微提 12% 饱和度，日夜双模式高辨识度)
+    // 与顶栏保持一致的常态/预警语义色板
     const MORANDI_3A = {
-        green: '#5E9E8E',  // 雾松青 (充足: 剩余 > 50% / 已用 < 50%)
-        yellow: '#C6A265', // 沙金黄 (过半: 剩余 20%~50% / 已用 50%~80%)
-        red: '#C26C77'     // 烟玫瑰 (告急: 剩余 <= 20% / 已用 >= 80%)
+        green: '#34d399',  // 回退默认绿（正常态优先读取全局主题强调色）
+        yellow: '#f59e0b', // 偏高预警 (已用 50%~80% / 剩余 20%~50%，与顶栏一致)
+        red: '#ef4444'     // 高占用告急 (已用 >= 80% / 剩余 <= 20%，与顶栏一致)
     };
 
     const COMPRESSION_MIN_DROP = 5000; // 连续快照含缓存输入下降 > 5000 tokens 判定为自动压缩
@@ -637,6 +637,7 @@
         let estInputSum = 0;
         let estOutputSum = 0;
         let prevCacheInclusiveInput = 0;
+        let maxPriorCacheRead = 0;
         let compressionDetected = false;
         let compressionBefore = 0;
         let compressionAfter = 0;
@@ -710,6 +711,9 @@
                             compressionAfter = cacheInclusiveInput;
                             compressionDrop = prevCacheInclusiveInput - cacheInclusiveInput;
                         }
+                        if (hasPreciseSnapshot) {
+                            maxPriorCacheRead = Math.max(maxPriorCacheRead, cacheReadTokens);
+                        }
                         prevCacheInclusiveInput = cacheInclusiveInput;
                         baseTokens = snapshotTotal;
                         inputTokens = inTok;
@@ -775,6 +779,13 @@
         const remainPercent = Math.max(0, 100 - usagePercent);
         const totalInputWithCache = inputTokens + cacheReadTokens + cacheCreationTokens;
         const cacheHitRate = totalInputWithCache > 0 ? (cacheReadTokens / totalInputWithCache) * 100 : 0;
+        const cacheDropDetected = Boolean(
+            hasPreciseSnapshot &&
+            totalInputWithCache >= 150000 &&
+            cacheHitRate < 25 &&
+            (maxPriorCacheRead >= 50000 || inputTokens >= 240000)
+        );
+        const cacheCliffRisk = contextUsed >= 328000 ? 'critical' : (contextUsed >= 240000 ? 'warn' : 'none');
         const avgTokPerSec = timedDurationSum > 0 ? Math.round(timedOutTokensSum / timedDurationSum) : lastTokPerSec;
 
         return {
@@ -792,6 +803,8 @@
             estimatedDelta,
             hasPreciseSnapshot,
             cacheHitRate,
+            cacheDropDetected,
+            cacheCliffRisk,
             tokPerSec: lastTokPerSec,
             avgTokPerSec,
             lastDurationSec,
@@ -1383,6 +1396,32 @@
         return getThemeAccentColor();                     // 剩余 > 50%
     }
 
+    function resolveCacheAlertState(data) {
+        if (!data || typeof data !== 'object') {
+            return { isCacheDrop: false, isCliff328k: false, isWarn240k: false };
+        }
+        const used = Number(data.contextUsed || 0);
+        const inTok = Number(data.inputTokens || 0);
+        const hit = Number(data.cacheHitRate || 0);
+        const isCacheDrop = Boolean(
+            data.hasPreciseSnapshot &&
+            (data.cacheDropDetected || (used >= 240000 && inTok >= 200000 && hit < 25))
+        );
+        return {
+            isCacheDrop,
+            isCliff328k: used >= 328000,
+            isWarn240k: used >= 240000 && used < 328000
+        };
+    }
+
+    function getEffectiveCapsuleColor(data) {
+        const usagePct = Number(data?.usagePercent || 0);
+        const alertState = resolveCacheAlertState(data);
+        if (alertState.isCacheDrop) return MORANDI_3A.red;
+        if (alertState.isCliff328k && usagePct < 85) return MORANDI_3A.yellow;
+        return getMorandi3AColor(usagePct);
+    }
+
     function getRuntimeLimitInfo(cascadeId, shortCid, ctx) {
         let rt = sessionRuntimeBudgetMap.get(cascadeId) || (shortCid ? sessionRuntimeBudgetMap.get(shortCid) : null) || null;
         if (!rt) {
@@ -1612,7 +1651,7 @@
             ? '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1)'
             : '0 4px 6px -1px rgba(0, 0, 0, 0.28), 0 2px 4px -2px rgba(0, 0, 0, 0.18)';
 
-        const barColor = getMorandi3AColor(data.usagePercent);
+        const barColor = getEffectiveCapsuleColor(data);
         const remainingTokens = Math.max(0, data.contextLimit - data.contextUsed);
         const modelTitle = resolveModelDisplayName(data.modelId, data.modelDisplayName);
 
@@ -1728,6 +1767,36 @@
             warnRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${MORANDI_3A.red};`;
             warnRow.textContent = isEn ? 'Approaching auto-compaction threshold' : '接近自动压缩阈值，建议适时归档上下文';
             nodes.push(warnRow);
+        }
+
+        const alertState = resolveCacheAlertState(data);
+        if (alertState.isCacheDrop) {
+            nodes.push(createDivider());
+            const dropRow = document.createElement('div');
+            dropRow.setAttribute('data-cache-alert-row', 'drop');
+            dropRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:500;color:${MORANDI_3A.red};line-height:1.4;`;
+            dropRow.textContent = isEn
+                ? `Cache dropped! Full prefill (${formatTokenValue(data.inputTokens)} in) causes 4-5m lag & high quota drain. Run /compact now`
+                : `缓存已脱落：全量重算 ${formatTokenValue(data.inputTokens)} 新输入，易卡顿 4~5 分钟且配额消耗剧增，建议立即 /compact`;
+            nodes.push(dropRow);
+        } else if (alertState.isCliff328k) {
+            nodes.push(createDivider());
+            const cliffRow = document.createElement('div');
+            cliffRow.setAttribute('data-cache-alert-row', 'cliff');
+            cliffRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${MORANDI_3A.red};line-height:1.4;`;
+            cliffRow.textContent = isEn
+                ? 'Past 328K cache cliff: >3m idle risks 0-cache 5m stall. Run /compact soon'
+                : '已跨过 328K 缓存雪崩线：停顿超 3 分钟易触发 0 缓存慢重算，建议尽快 /compact';
+            nodes.push(cliffRow);
+        } else if (alertState.isWarn240k && data.usagePercent < 85) {
+            nodes.push(createDivider());
+            const warn240Row = document.createElement('div');
+            warn240Row.setAttribute('data-cache-alert-row', 'recommend-compact');
+            warn240Row.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${MORANDI_3A.yellow};line-height:1.4;`;
+            warn240Row.textContent = isEn
+                ? 'Above 240K safe cache zone: /compact recommended between tasks'
+                : '已达 240K+ 长上下文区间：建议适时执行 /compact 规避缓存脱落';
+            nodes.push(warn240Row);
         }
 
         // 7. 5小时剩余额度与重置时间 (修复重置时间读取与文案拼接)
@@ -1939,7 +2008,8 @@
         capsuleBtn.__ctxUsageData = usageData;
 
         const isEn = getLangMode() === 'en';
-        const color = getMorandi3AColor(usageData.usagePercent);
+        const alertState = resolveCacheAlertState(usageData);
+        const color = getEffectiveCapsuleColor(usageData);
         const remainPct = Math.max(0, Math.min(100, 100 - usageData.usagePercent));
         const fillWidth = Math.max(2.2, (12.4 * remainPct) / 100).toFixed(1);
 
@@ -1970,7 +2040,20 @@
 
         const cacheWrap = capsuleBtn.querySelector('.agy-ctx-cache');
         if (cacheWrap) {
-            cacheWrap.title = isEn ? 'Prompt Cache Hit Rate' : 'Prompt 缓存命中率';
+            cacheWrap.setAttribute('data-cache-alert', alertState.isCacheDrop ? 'drop' : (alertState.isCliff328k ? 'cliff' : 'none'));
+            if (alertState.isCacheDrop) {
+                cacheWrap.style.color = MORANDI_3A.red;
+                cacheWrap.style.fontWeight = '600';
+                cacheWrap.style.opacity = '1';
+                cacheWrap.title = isEn
+                    ? 'Prompt Cache dropped! Full prefill causes 4-5m lag & high quota drain, run /compact now'
+                    : 'Prompt 缓存已脱落！当前全量重算未缓存输入，极易卡顿 4~5 分钟并加速消耗配额，建议立即 /compact';
+            } else {
+                cacheWrap.style.color = '';
+                cacheWrap.style.fontWeight = '';
+                cacheWrap.style.opacity = '0.88';
+                cacheWrap.title = isEn ? 'Prompt Cache Hit Rate' : 'Prompt 缓存命中率';
+            }
         }
         const cacheValSpan = capsuleBtn.querySelector('.agy-ctx-cache-val');
         if (cacheValSpan) {
@@ -2218,11 +2301,23 @@
         pollCycle();
         const onSuitePrefsChanged = () => {
             renderAllFooters();
+            try {
+                document.querySelectorAll('[data-agy-context-capsule="1"]').forEach((btn) => {
+                    const fillRect = btn.querySelector?.('.agy-ctx-fill');
+                    if (fillRect) {
+                        const nextColor = getEffectiveCapsuleColor(btn.__ctxUsageData);
+                        if (fillRect.getAttribute('fill') !== nextColor) {
+                            fillRect.setAttribute('fill', nextColor);
+                        }
+                    }
+                });
+            } catch {}
             if (activeTooltipTarget) updateTooltipContent(activeTooltipTarget);
         };
         try { window.addEventListener?.('ag-suite-prefs-changed', onSuitePrefsChanged); } catch {}
         window.__AGY_CTX_CAPSULE_API__ = {
             version: CAPSULE_VERSION,
+            analyzeSteps,
             getContextLimitForModel,
             resolveModelDisplayName,
             renderFooterCapsule,

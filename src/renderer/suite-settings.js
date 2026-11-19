@@ -1271,6 +1271,9 @@
         }
       }
     }
+    if (typeof applyHostAppearancePreferences === 'function') {
+      applyHostAppearancePreferences(uiPrefs);
+    }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
     applySuiteFeatureFlags();
@@ -1579,6 +1582,8 @@
     try { localStorage?.setItem?.('ag_theme_mode', mode); } catch {}
     applyTheme();
     syncSettingsThemePills();
+    dispatchSuitePrefsChanged();
+    void saveSuiteUiPrefs({ themeMode: mode });
   };
   el('set-theme-auto')?.addEventListener('click', () => applyThemeChoice('auto'));
   el('set-theme-light')?.addEventListener('click', () => applyThemeChoice('light'));
