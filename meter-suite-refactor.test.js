@@ -5663,6 +5663,7 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
   assert.ok(drawerBackdropRule.includes('--modal-h'), '.drawer-backdrop 应绑定 --modal-h');
   assert.ok(projModalRule.includes('var(--modal-h') && !/\b84dvh\b/.test(projModalRule), '.sheet.proj-modal 高度应锚定 --modal-h，不得因 dvh 收缩导致顶部下坠或触顶');
   assert.ok(dirListRule.includes('var(--modal-h') && !/\b34dvh\b/.test(dirListRule), '.proj-dir-list 高度应锚定 --modal-h');
+  assert.ok(cssText.includes('.proj-modal-body{') && bodyHtml.includes('id="proj-modal-body"'), '新建项目弹窗应包含可独立滚动的 #proj-modal-body');
   assert.equal(/\btransition\s*:[^;}]*transform/i.test(sheetRule), false, '.sheet 不应设置 transform transition 以免中断坐标测量');
   assert.ok(/\.proj-path-input,\.proj-field-input\{[^}]*font-size:16px/.test(cssText), '移动端路径输入框字号应 >= 16px 防 iOS 自动缩放');
   assert.ok(/\.proj-field-input\{[^}]*font-size:16px/.test(cssText), '移动端文本字段输入框字号应 >= 16px');
@@ -5754,15 +5755,26 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     env.doc.activeElement = env.doc.body;
     const modalBackdrop = env.doc.getElementById('proj-modal-backdrop');
     const modalSheet = modalBackdrop.querySelector('.sheet.proj-modal');
+    const modalBody = env.doc.getElementById('proj-modal-body');
+    modalBody.scrollTop = 0;
     const parseShiftY = () => {
       const m = String(modalSheet.style.transform || '').match(/translateY\((-?\d+(?:\.\d+)?)px\)/);
       return m ? Number(m[1]) : 0;
+    };
+    modalSheet.getBoundingClientRect = () => {
+      const dy = parseShiftY();
+      return { left: 0, right: 390, width: 390, height: 666, top: 178 + dy, bottom: 844 + dy };
+    };
+    modalBody.getBoundingClientRect = () => {
+      const dy = parseShiftY();
+      return { left: 14, right: 376, width: 362, height: 604, top: 228 + dy, bottom: 832 + dy };
     };
     const bindFocusableBox = (el, baseTop, baseBottom) => {
       el.type = el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : '');
       el.getBoundingClientRect = () => {
         const dy = modalSheet.contains(el) ? parseShiftY() : 0;
-        return { left: 14, right: 376, width: 362, height: baseBottom - baseTop, top: baseTop + dy, bottom: baseBottom + dy };
+        const scrollY = (modalBody && modalBody.contains(el)) ? (Number(modalBody.scrollTop) || 0) : 0;
+        return { left: 14, right: 376, width: 362, height: baseBottom - baseTop, top: baseTop + dy - scrollY, bottom: baseBottom + dy - scrollY };
       };
       el.focus = () => {
         const prev = env.doc.activeElement;
@@ -5787,7 +5799,7 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     const chatInput = env.doc.getElementById('input');
     bindFocusableBox(pathInput, 220, 256);
     bindFocusableBox(mkdirInput, 306, 342);
-    bindFocusableBox(nameInput, 704, 740);
+    bindFocusableBox(nameInput, 742, 778);
     bindFocusableBox(chatInput, 780, 812);
 
     vm.runInContext(mainScript, env.sandbox);
@@ -5807,6 +5819,7 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     assert.equal(env.doc.documentElement.style.getPropertyValue('--modal-h'), '844px', '软键盘弹起时 --modal-h 必须锁定满屏 844px，不得把弹窗推出顶部或露出底层聊天');
     assert.equal(env.doc.documentElement.style.getPropertyValue('--app-h'), '844px', '弹窗输入框聚焦时 --app-h 也应保持 844px 不抽缩');
     assert.equal(modalSheet.style.transform, '', '顶部路径输入框已在键盘上方，弹窗绝不能被抬高');
+    assert.equal(modalBody.scrollTop, 0);
     assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
 
     // 场景 2: 展开「＋ 新建文件夹」并聚焦 #proj-mkdir-input（[306, 342] <= 460 - 14），同样不抬高
@@ -5814,15 +5827,20 @@ test('需求 22: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     assert.equal(env.doc.getElementById('proj-mkdir-row').hidden, false);
     assert.equal(env.doc.activeElement, mkdirInput);
     assert.equal(modalSheet.style.transform, '', '高于键盘的新建文件夹输入框也不得触发多余抬高');
+    assert.equal(modalBody.scrollTop, 0);
 
-    // 场景 3: 聚焦底部被键盘遮挡的 #proj-name-input（未位移 [704, 740] > 446），按重叠量精确上移至键盘上方 14px
+    // 场景 3: 聚焦底部被键盘遮挡的 #proj-name-input（[742, 778] > 446），整体最多上移 -166px 保持弹窗顶部 >= 12px，剩余 166px 遮挡交由内部容器滚动消除
     nameInput.focus();
-    assert.equal(modalSheet.style.transform, 'translateY(-294px)', '底部项目名称输入框被遮挡时应按 (460-14)-740 = -294px 最小上移');
+    assert.equal(modalSheet.style.transform, 'translateY(-166px)', '整体上移必须受限于弹窗顶部安全界 (12 - 178 = -166px)');
+    assert.ok(modalSheet.getBoundingClientRect().top >= 12, '上移后弹窗顶部与标题不得越过可视区顶边');
+    assert.equal(modalBody.scrollTop, 166, '超出顶边上限的剩余遮挡应通过内部容器滚动精确吸收');
     assert.deepEqual([nameInput.getBoundingClientRect().top, nameInput.getBoundingClientRect().bottom], [410, 446]);
 
-    // 场景 4: 保持键盘打开（460px），点键盘栏「^」把焦点切回顶部 #proj-path-input 时应准确反算并立即归零
+    // 场景 4: 保持键盘打开（460px），点键盘栏「^」把焦点切回顶部 #proj-path-input 时应准确反算并立即归零（整体位移与内部滚动双双清零）
     pathInput.focus();
     assert.equal(modalSheet.style.transform, '', '焦点从底部切回顶部未遮挡输入框时，弹窗应立即恢复 0px 位移');
+    assert.equal(modalBody.scrollTop, 0, '切回顶部输入框后内部临时滚动应归零');
+    assert.equal(modalBody.style.paddingBottom, '', '切回顶部输入框后内部临时 paddingBottom 应清空');
     assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
 
     // 场景 5: 若残留 vv.offsetTop = 240 将顶部输入框推出可视区上沿（minTop = 252 > 220），应调用 scrollTo(0,0) 并温和下移保底可见，复位后归零；关闭弹窗彻底复位
