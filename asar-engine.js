@@ -243,6 +243,10 @@ function discoverDevToolsPorts() {
     }
   };
 
+  if (process.env.AG_CDP_PORT) {
+    pushPort(process.env.AG_CDP_PORT);
+  }
+
   try {
     const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
     if (fs.existsSync(portFile)) {

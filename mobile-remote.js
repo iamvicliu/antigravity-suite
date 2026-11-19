@@ -8,7 +8,7 @@ const http = require('http');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
-const { execFileSync, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const { getStateDir, resolveActiveCdpTarget } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const { detectProxyConfig } = require('./meter-proxy');
@@ -17,7 +17,28 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.17';
+const MOBILE_UI_VERSION = '2.1.0';
+const PING_GIF_BUFFER = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+const DEFAULT_REMOTE_DISPLAY_CONFIG = {
+  showContextPanel: true,
+  showUsagePanel: true,
+  showQuotaPill: true,
+  showChannelMeta: true,
+  showSidebar: true,
+  showThinking: true,
+  showQuickChips: true,
+  showComposerTools: true,
+  showApprovals: true
+};
+
+function sanitizeRemoteDisplayConfig(raw) {
+  const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const out = {};
+  for (const [k, defVal] of Object.entries(DEFAULT_REMOTE_DISPLAY_CONFIG)) {
+    out[k] = typeof src[k] === 'boolean' ? src[k] : defVal;
+  }
+  return out;
+}
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -201,7 +222,7 @@ function loadOrCreateRemoteConfig(options = {}) {
   const rawCh = (existing.enabledChannels && typeof existing.enabledChannels === 'object') ? existing.enabledChannels : {};
   const defaultTunnelOn = typeof existing.tunnelEnabled === 'boolean'
     ? existing.tunnelEnabled
-    : false;
+    : true;
   const tunnelEnabled = typeof rawCh.tunnel === 'boolean' ? rawCh.tunnel : defaultTunnelOn;
   const enabledChannels = {
     lan: typeof rawCh.lan === 'boolean' ? rawCh.lan : true,
@@ -214,6 +235,7 @@ function loadOrCreateRemoteConfig(options = {}) {
     ? extractCloudflareTunnelToken(existing.tunnelToken)
     : '';
   const tunnelHostname = normalizeTunnelHostname(existing.tunnelHostname || '');
+  const remoteDisplay = sanitizeRemoteDisplayConfig(existing.remoteDisplay);
 
   let changed = !loaded.ok || !existing.token || resetToken || existing.port !== port;
 
@@ -231,6 +253,7 @@ function loadOrCreateRemoteConfig(options = {}) {
     tunnelMode,
     tunnelToken,
     tunnelHostname,
+    remoteDisplay,
     updatedAt: changed ? new Date().toISOString() : (existing.updatedAt || new Date().toISOString())
   };
 
@@ -251,15 +274,83 @@ function loadOrCreateRemoteConfig(options = {}) {
 
 const DEVICE_ONLINE_TTL_MS = 15000;
 const MAX_PAIRED_DEVICES = 50;
+const MAX_CLIENT_SESSIONS = 128;
+const CLIENT_SESSION_TTL_MS = 24 * 3600 * 1000;
 let trackedDeviceToken = '';
 const pairedDevicesMap = new Map();
+const remoteClientSessions = new Map();
+let actionQueueTail = Promise.resolve();
+
+function enqueueRemoteAction(task) {
+  const next = actionQueueTail.then(task, task);
+  actionQueueTail = next.catch(() => {});
+  return next;
+}
 
 function syncTrackedDeviceToken(activeToken) {
   const clean = String(activeToken || '');
   if (clean && clean !== trackedDeviceToken) {
     pairedDevicesMap.clear();
+    remoteClientSessions.clear();
     trackedDeviceToken = clean;
   }
+}
+
+function extractRequestClientId(req, urlObj = null, body = null) {
+  const raw = String(
+    req?.headers?.['x-ag-client-id']
+    || urlObj?.searchParams?.get('clientId')
+    || body?.clientId
+    || ''
+  ).trim().slice(0, 64);
+  return /^[A-Za-z0-9._:-]{4,64}$/.test(raw) ? raw : '';
+}
+
+function getOrCreateClientSession(clientId, activeToken, now = Date.now()) {
+  const cleanId = String(clientId || '').trim();
+  if (!/^[A-Za-z0-9._:-]{4,64}$/.test(cleanId)) return null;
+  syncTrackedDeviceToken(activeToken);
+  if (remoteClientSessions.has(cleanId)) {
+    const existing = remoteClientSessions.get(cleanId);
+    existing.lastSeenAt = now;
+    return existing;
+  }
+  for (const [k, s] of Array.from(remoteClientSessions.entries())) {
+    if (!s || (now - (s.lastSeenAt || 0)) > CLIENT_SESSION_TTL_MS) {
+      remoteClientSessions.delete(k);
+    }
+  }
+  while (remoteClientSessions.size >= MAX_CLIENT_SESSIONS) {
+    let oldestKey = null;
+    let oldestSeen = Infinity;
+    for (const [k, s] of remoteClientSessions.entries()) {
+      if ((s?.lastSeenAt || 0) < oldestSeen) {
+        oldestSeen = s?.lastSeenAt || 0;
+        oldestKey = k;
+      }
+    }
+    if (!oldestKey) break;
+    remoteClientSessions.delete(oldestKey);
+  }
+  const created = {
+    clientId: cleanId,
+    conversationId: '',
+    targetId: '',
+    createdAt: now,
+    lastSeenAt: now
+  };
+  remoteClientSessions.set(cleanId, created);
+  return created;
+}
+
+function getRemoteClientSession(clientId) {
+  const cleanId = String(clientId || '').trim();
+  const s = remoteClientSessions.get(cleanId);
+  return s ? { ...s } : null;
+}
+
+function clearRemoteClientSessionsForTests() {
+  remoteClientSessions.clear();
 }
 
 function parseDeviceLabel(rawUa, rawHint) {
@@ -279,9 +370,24 @@ function recordPairedDeviceAccess(req, activeToken, now = Date.now(), activeTunn
   if (!req) return null;
   syncTrackedDeviceToken(activeToken);
   const headers = req.headers || {};
-  const headerDevId = String(headers['x-ag-device-id'] || '').trim().slice(0, 64);
-  const deviceHint = String(headers['x-ag-device-hint'] || '').trim().slice(0, 24);
+  let urlParams = null;
+  if (typeof req.url === 'string' && req.url.includes('?')) {
+    try {
+      urlParams = new URL(req.url, 'http://localhost').searchParams;
+    } catch {}
+  }
+  const queryProbe = urlParams?.get('probe') || '';
+  if (queryProbe === '1' || String(headers['x-ag-probe'] || '').trim() === '1') {
+    return null;
+  }
+
+  const rawDevId = String(headers['x-ag-device-id'] || urlParams?.get('did') || '').trim().slice(0, 64);
+  const headerDevId = /^[A-Za-z0-9._:-]{4,64}$/.test(rawDevId) ? rawDevId : '';
+  const rawFp = String(headers['x-ag-device-fp'] || urlParams?.get('fp') || '').trim().slice(0, 64);
+  const deviceFp = /^[A-Za-z0-9._x@-]{4,64}$/.test(rawFp) ? rawFp : '';
+  const deviceHint = String(headers['x-ag-device-hint'] || urlParams?.get('hint') || '').trim().slice(0, 24);
   const ua = String(headers['user-agent'] || '').trim();
+  const label = parseDeviceLabel(ua, deviceHint);
   const cleanIp = normalizeRemoteIp(req.socket?.remoteAddress || req.ip || '');
 
   // 过滤本机非浏览器健康检查或 CLI 脚本探测，避免误计为关联设备（Cloudflare 隧道透传请求除外）
@@ -290,24 +396,94 @@ function recordPairedDeviceAccess(req, activeToken, now = Date.now(), activeTunn
     return null;
   }
 
+  const localHostIps = getLocalHostIpSet();
+  const isSelfIp = Boolean(cleanIp && localHostIps.has(cleanIp));
   const fallbackId = 'ua-' + crypto.createHash('sha1').update(`${cleanIp}|${ua}`).digest('hex').slice(0, 12);
-  const deviceId = headerDevId || fallbackId;
-  let prev = pairedDevicesMap.get(deviceId) || null;
+  let finalId = headerDevId || fallbackId;
+  let prev = pairedDevicesMap.get(finalId) || null;
+  let earliestFirstSeen = prev?.firstSeenAt || now;
+  let mergedFp = deviceFp || prev?.fp || '';
+  const prevLanIp = (prev?.lastLanIp && !localHostIps.has(prev.lastLanIp)) ? prev.lastLanIp : '';
+  const prevTsIp = (prev?.lastTailscaleIp && !localHostIps.has(prev.lastTailscaleIp)) ? prev.lastTailscaleIp : '';
+  const freshLanHit = reqCh === 'lan' && !isSelfIp && isRfc1918Ipv4(cleanIp);
+  const freshTsHit = reqCh === 'tailscale' && !isSelfIp && isTailscaleCgnatIpv4(cleanIp);
+  let lastLanIp = freshLanHit ? cleanIp : prevLanIp;
+  let lastLanSeenAt = freshLanHit ? now : (prev?.lastLanSeenAt || 0);
+  let lastTailscaleIp = freshTsHit ? cleanIp : prevTsIp;
+  let lastTailscaleSeenAt = freshTsHit ? now : (prev?.lastTailscaleSeenAt || 0);
+
   if (headerDevId && pairedDevicesMap.has(fallbackId)) {
     const fallbackEntry = pairedDevicesMap.get(fallbackId);
-    if (!prev && fallbackEntry) prev = fallbackEntry;
+    if (fallbackEntry) {
+      earliestFirstSeen = Math.min(earliestFirstSeen, fallbackEntry.firstSeenAt || now);
+      if (!mergedFp && fallbackEntry.fp) mergedFp = fallbackEntry.fp;
+      if (!lastLanIp && fallbackEntry.lastLanIp && !localHostIps.has(fallbackEntry.lastLanIp)) {
+        lastLanIp = fallbackEntry.lastLanIp;
+      }
+      if ((fallbackEntry.lastLanSeenAt || 0) > lastLanSeenAt) lastLanSeenAt = fallbackEntry.lastLanSeenAt || 0;
+      if (!lastTailscaleIp && fallbackEntry.lastTailscaleIp && !localHostIps.has(fallbackEntry.lastTailscaleIp)) {
+        lastTailscaleIp = fallbackEntry.lastTailscaleIp;
+      }
+      if ((fallbackEntry.lastTailscaleSeenAt || 0) > lastTailscaleSeenAt) lastTailscaleSeenAt = fallbackEntry.lastTailscaleSeenAt || 0;
+      if (!prev) prev = fallbackEntry;
+    }
     pairedDevicesMap.delete(fallbackId);
   }
 
+  // 同一物理设备跨通道（如 Cloudflare <-> Tailscale <-> LAN）或跨源切换时自动去重合并
+  for (const [k, v] of Array.from(pairedDevicesMap.entries())) {
+    if (k === finalId || !v) continue;
+    if (v.label !== label || !ua || v.ua !== ua) continue;
+    const fpCompatible = (mergedFp && v.fp) ? (mergedFp === v.fp) : true;
+    if (!fpCompatible) continue;
+    const exactFpMatch = Boolean(mergedFp && v.fp && mergedFp === v.fp);
+    const matchesInitialNav = k.startsWith('ua-') || !headerDevId;
+    const switchedInactiveChannel = v.channel !== reqCh && (now - (v.lastSeenAt || 0)) > 2500;
+    if (!exactFpMatch && !matchesInitialNav && !switchedInactiveChannel) continue;
+
+    earliestFirstSeen = Math.min(earliestFirstSeen, v.firstSeenAt || now);
+    if (!mergedFp && v.fp) mergedFp = v.fp;
+    if (!lastLanIp && v.lastLanIp && !localHostIps.has(v.lastLanIp)) lastLanIp = v.lastLanIp;
+    if ((v.lastLanSeenAt || 0) > lastLanSeenAt) lastLanSeenAt = v.lastLanSeenAt || 0;
+    if (!lastTailscaleIp && v.lastTailscaleIp && !localHostIps.has(v.lastTailscaleIp)) lastTailscaleIp = v.lastTailscaleIp;
+    if ((v.lastTailscaleSeenAt || 0) > lastTailscaleSeenAt) lastTailscaleSeenAt = v.lastTailscaleSeenAt || 0;
+    if (!headerDevId && !k.startsWith('ua-')) {
+      finalId = k;
+      prev = v;
+    } else {
+      if (!prev) prev = v;
+      pairedDevicesMap.delete(k);
+    }
+  }
+
+  if (finalId !== fallbackId && pairedDevicesMap.has(fallbackId)) {
+    const fb = pairedDevicesMap.get(fallbackId);
+    if (fb && fb.label === label && ua && fb.ua === ua) {
+      earliestFirstSeen = Math.min(earliestFirstSeen, fb.firstSeenAt || now);
+      if (!mergedFp && fb.fp) mergedFp = fb.fp;
+      if (!lastLanIp && fb.lastLanIp && !localHostIps.has(fb.lastLanIp)) lastLanIp = fb.lastLanIp;
+      if ((fb.lastLanSeenAt || 0) > lastLanSeenAt) lastLanSeenAt = fb.lastLanSeenAt || 0;
+      if (!lastTailscaleIp && fb.lastTailscaleIp && !localHostIps.has(fb.lastTailscaleIp)) lastTailscaleIp = fb.lastTailscaleIp;
+      if ((fb.lastTailscaleSeenAt || 0) > lastTailscaleSeenAt) lastTailscaleSeenAt = fb.lastTailscaleSeenAt || 0;
+      pairedDevicesMap.delete(fallbackId);
+    }
+  }
+
   const record = {
-    id: deviceId,
-    label: parseDeviceLabel(ua, deviceHint),
+    id: finalId,
+    label,
     channel: reqCh,
     ip: cleanIp,
-    firstSeenAt: prev?.firstSeenAt || now,
+    ua,
+    fp: mergedFp,
+    lastLanIp,
+    lastLanSeenAt,
+    lastTailscaleIp,
+    lastTailscaleSeenAt,
+    firstSeenAt: earliestFirstSeen,
     lastSeenAt: now
   };
-  pairedDevicesMap.set(deviceId, record);
+  pairedDevicesMap.set(finalId, record);
 
   if (pairedDevicesMap.size > MAX_PAIRED_DEVICES) {
     let oldestKey = null;
@@ -366,6 +542,12 @@ function saveRemoteTunnelConfig(patch = {}) {
   const nextHost = patch.tunnelHostname !== undefined
     ? normalizeTunnelHostname(patch.tunnelHostname)
     : cur.tunnelHostname;
+  const rawDisplay = patch.remoteDisplay !== undefined
+    ? patch.remoteDisplay
+    : (patch.displayConfig !== undefined ? patch.displayConfig : null);
+  const nextRemoteDisplay = rawDisplay && typeof rawDisplay === 'object'
+    ? sanitizeRemoteDisplayConfig({ ...(cur.remoteDisplay || DEFAULT_REMOTE_DISPLAY_CONFIG), ...rawDisplay })
+    : sanitizeRemoteDisplayConfig(cur.remoteDisplay);
 
   const next = {
     ...cur,
@@ -374,6 +556,7 @@ function saveRemoteTunnelConfig(patch = {}) {
     tunnelMode: nextMode,
     tunnelToken: nextToken,
     tunnelHostname: nextHost,
+    remoteDisplay: nextRemoteDisplay,
     updatedAt: new Date().toISOString()
   };
 
@@ -403,6 +586,42 @@ function parseIpv4Parts(ip) {
   const parts = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
   if (parts.some((n) => n < 0 || n > 255)) return null;
   return parts;
+}
+
+function ipv4ToInt(ip) {
+  const p = parseIpv4Parts(String(ip || ''));
+  if (!p) return null;
+  return (((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3]) >>> 0;
+}
+
+function getLocalHostIpSet(netsMap = os.networkInterfaces()) {
+  const set = new Set(['127.0.0.1', '::1']);
+  for (const entries of Object.values(netsMap || {})) {
+    for (const info of entries || []) {
+      if (!info || !info.address) continue;
+      const clean = normalizeRemoteIp(info.address);
+      if (clean) set.add(clean);
+    }
+  }
+  return set;
+}
+
+function isIpInLocalPhysicalLanSubnet(ip, netsMap = os.networkInterfaces()) {
+  const targetInt = ipv4ToInt(ip);
+  if (targetInt === null) return false;
+  for (const [ifName, entries] of Object.entries(netsMap || {})) {
+    if (isVirtualBridgeIface(ifName)) continue;
+    for (const info of entries || []) {
+      if (!info || info.internal || info.family !== 'IPv4') continue;
+      if (!isRfc1918Ipv4(info.address) || !info.netmask) continue;
+      if (String(info.address) === String(ip)) continue;
+      const addrInt = ipv4ToInt(info.address);
+      const maskInt = ipv4ToInt(info.netmask);
+      if (addrInt === null || maskInt === null || maskInt === 0) continue;
+      if ((addrInt & maskInt) === (targetInt & maskInt)) return true;
+    }
+  }
+  return false;
 }
 
 function isTailscaleCgnatIpv4(ip) {
@@ -3089,14 +3308,22 @@ function warmConversationSession(sessionId, options = {}) {
 }
 
 async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
-  const expr = `(() => {
+  const serializedOpts = JSON.stringify({
+    conversationId: String(snapOptions?.conversationId || '').trim(),
+    clientId: String(snapOptions?.clientId || '').trim()
+  });
+  const expr = `(async () => {
+    const fnAsync = window.__AGEnhancer?.getMobileSnapshotAsync;
+    if (typeof fnAsync === 'function') {
+      return await fnAsync(${serializedOpts});
+    }
     const fn = window.__AGEnhancer?.getMobileSnapshot;
     if (typeof fn !== 'function') {
       return { ok: false, error: '当前窗口尚未注入增强挂件 (请确保 live-host 已连接)' };
     }
     return fn();
   })()`;
-  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr, 4500, { idempotent: true });
+  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr, 7000, { idempotent: true });
   if (!snap || typeof snap !== 'object') {
     throw new Error('未能读取窗口快照');
   }
@@ -3113,38 +3340,48 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
 }
 
 async function performActionInTarget(payload, options = {}) {
-  const act = String(payload?.action || '').trim();
-  const warmPromise = (act === 'switch-conversation' && payload?.id && String(payload.id).trim() !== 'new')
-    ? defaultHistoryManager.warmSession(String(payload.id).trim()).catch(() => null)
-    : Promise.resolve();
-  const serialized = JSON.stringify(payload || {});
-  const expr = `(async () => {
-    const fn = window.__AGEnhancer?.performMobileAction;
-    if (typeof fn !== 'function') {
-      return { ok: false, error: '当前窗口尚未注入 v1.6.0 控制接口' };
-    }
-    return await fn(${serialized});
-  })()`;
-  const actionTimeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 6000;
-  const { value: actionResult, target } = await evalInPickedTarget(payload?.targetId, expr, actionTimeoutMs, {
-    idempotent: false,
-    pickTarget: options.pickTarget,
-    evalInTarget: options.evalInTarget
+  return await enqueueRemoteAction(async () => {
+    const act = String(payload?.action || '').trim();
+    const warmId = (act === 'switch-conversation' && payload?.id && String(payload.id).trim() !== 'new' && String(payload.id).trim() !== 'follow-desktop')
+      ? String(payload.id).trim()
+      : '';
+    const warmPromise = warmId
+      ? defaultHistoryManager.warmSession(warmId).catch(() => null)
+      : Promise.resolve();
+    const serialized = JSON.stringify(payload || {});
+    const expr = `(async () => {
+      const fn = window.__AGEnhancer?.performMobileAction;
+      if (typeof fn !== 'function') {
+        return { ok: false, error: '当前窗口尚未注入 v1.6.0 控制接口' };
+      }
+      return await fn(${serialized});
+    })()`;
+    const actionTimeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 6000;
+    const { value: actionResult, target } = await evalInPickedTarget(payload?.targetId, expr, actionTimeoutMs, {
+      idempotent: false,
+      pickTarget: options.pickTarget,
+      evalInTarget: options.evalInTarget
+    });
+    const settleMs = (act === 'switch-conversation' || act === 'new-conversation')
+      ? (actionResult?.verifiedState ? 45 : 180)
+      : 80;
+    await Promise.all([new Promise((r) => setTimeout(r, settleMs)), warmPromise]);
+    const snapConvId = act === 'switch-conversation'
+      ? (payload?.id && payload.id !== 'new' && payload.id !== 'follow-desktop' ? String(payload.id) : '')
+      : (act === 'new-conversation' ? '' : (payload?.conversationId ? String(payload.conversationId) : ''));
+    const snapshot = await fetchSnapshotFromTarget(target.id, {
+      convLimit: 100,
+      conversationId: snapConvId,
+      clientId: payload?.clientId ? String(payload.clientId) : '',
+      bypassCache: act === 'send',
+      bypassCatalogCache: act === 'switch-conversation' || act === 'new-conversation'
+    }).catch(() => null);
+    return {
+      ok: Boolean(actionResult?.ok),
+      actionResult: actionResult || null,
+      snapshot
+    };
   });
-  const settleMs = (act === 'switch-conversation' || act === 'new-conversation')
-    ? (actionResult?.verifiedState ? 45 : 180)
-    : 80;
-  await Promise.all([new Promise((r) => setTimeout(r, settleMs)), warmPromise]);
-  const snapshot = await fetchSnapshotFromTarget(target.id, {
-    convLimit: 100,
-    bypassCache: act === 'send',
-    bypassCatalogCache: act === 'switch-conversation' || act === 'new-conversation'
-  }).catch(() => null);
-  return {
-    ok: Boolean(actionResult?.ok),
-    actionResult: actionResult || null,
-    snapshot
-  };
 }
 
 // ==================== 移动端极速 PWA HTML & 资源 ====================
@@ -3515,8 +3752,11 @@ function buildMobileAppHtml() {
     }
     .send-circle.ready{background:var(--accent);color:var(--send-ready-fg)}
     .send-circle.stop{background:var(--risk-bg);color:var(--red);border:1px solid rgba(248,113,113,.45)}
+    .send-circle.pending{background:var(--card2);color:var(--muted);border:1px solid var(--border);cursor:not-allowed;pointer-events:none}
     .send-circle:active{transform:scale(.94)}
-    .send-circle:disabled{opacity:.5}
+    .send-circle:disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
+    .send-circle:disabled:active{transform:none}
+    [hidden],.sheet-speed-btn[hidden],.sheet-sub-text[hidden],.sheet-back-btn[hidden]{display:none!important}
     .sheet-backdrop{
       position:fixed;top:0;left:0;right:0;height:var(--modal-h,100dvh);z-index:75;background:var(--backdrop-bg);box-shadow:0 0 0 100vmax var(--backdrop-bg);display:flex;align-items:flex-end;justify-content:center;
     }
@@ -3526,13 +3766,49 @@ function buildMobileAppHtml() {
       border-radius:18px 18px 0 0;padding:12px 14px calc(env(safe-area-inset-bottom) + 14px);box-shadow:0 240px 0 0 var(--card);
       display:flex;flex-direction:column;gap:8px;overflow:hidden;
     }
-    .sheet-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+    .sheet-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-shrink:0}
+    .sheet-title-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
+    .sheet-sub-text{font-size:11.5px;font-weight:400;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .sheet-title-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+    .sheet-back-btn{
+      appearance:none;height:28px;padding:0 9px;border-radius:8px;
+      border:1px solid var(--border-strong);background:var(--surface-subtle);color:var(--fg);
+      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:4px;cursor:pointer;flex-shrink:0;
+    }
+    .sheet-back-btn:active{background:var(--surface-hover)}
+    .sheet-speed-btn{
+      appearance:none;height:28px;padding:0 10px;border-radius:8px;
+      border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:5px;cursor:pointer;
+    }
+    .sheet-speed-btn:active{filter:brightness(1.08)}
+    .sheet-speed-btn:disabled{opacity:.65;cursor:default}
     .sheet-list{display:flex;flex-direction:column;gap:6px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+    .sheet-stage-viewport{width:100%;overflow:hidden}
+    .sheet-stage-track{display:flex;width:200%;align-items:flex-start;transition:transform .24s cubic-bezier(.22,1,.36,1);will-change:transform}
+    .sheet-stage-track.step-effort{transform:translateX(-50%)}
+    .sheet-stage-pane{width:50%;flex:0 0 50%;display:flex;flex-direction:column;gap:6px;max-height:56dvh;overflow-y:auto;padding-right:2px;-webkit-overflow-scrolling:touch}
+    .sheet-opt.sliding-out{background:rgba(56,189,248,.18);border-color:rgba(56,189,248,.55)}
     .sheet-opt{
       width:100%;text-align:left;padding:11px 12px;border-radius:11px;border:1px solid var(--border);
       background:var(--surface-subtle);color:var(--fg);font-size:14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;
     }
     .sheet-opt.active{border-color:var(--accent);background:var(--accent-bg);color:var(--fg-strong);font-weight:600}
+    .sheet-opt-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
+    .sheet-opt-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .sheet-opt-host{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .sheet-opt-right,.mode-entry-right{display:inline-flex;align-items:center;gap:7px;flex-shrink:0;margin-left:8px}
+    .mode-pill{font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;line-height:1.4}
+    .mode-pill.fast{background:rgba(52,211,153,.16);color:#10b981;border:1px solid rgba(52,211,153,.35)}
+    .mode-pill.cur{background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent-border)}
+    .lat-badge{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;padding:2px 7px;border-radius:999px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+    .lat-badge.fast{background:rgba(52,211,153,.14);color:#10b981}
+    .lat-badge.mid{background:rgba(251,191,36,.14);color:#d97706}
+    .lat-badge.slow{background:rgba(249,115,22,.16);color:#ea580c}
+    .lat-badge.err{background:rgba(248,113,113,.14);color:#ef4444}
+    .lat-badge.muted,.lat-badge.pending{background:var(--surface-subtle);color:var(--muted)}
+    .mini-spin{display:inline-block;width:11px;height:11px;border-radius:999px;border:1.5px solid var(--accent-border);border-top-color:var(--accent);animation:agspin .7s linear infinite;flex-shrink:0}
+    @keyframes agspin{to{transform:rotate(360deg)}}
     .drawer-backdrop{
       position:fixed;top:0;left:0;right:0;height:var(--modal-h,100dvh);z-index:70;background:rgba(0,0,0,0);display:flex;justify-content:flex-start;
       opacity:0;visibility:hidden;pointer-events:none;
@@ -3679,6 +3955,27 @@ function buildMobileAppHtml() {
       font-size:14.5px;font-weight:700;cursor:pointer;flex-shrink:0;
     }
     .proj-primary-btn:disabled{opacity:.5;cursor:default}
+    .drawer-sub{font-size:12px;font-weight:600;color:var(--placeholder);padding:2px 4px 0;flex-shrink:0}
+    .drawer-nav-bar{display:flex;align-items:center;gap:6px;min-height:26px;padding:2px 2px 0;flex-shrink:0}
+    .drawer-nav-bar[hidden]{display:none}
+    .drawer-back-btn{
+      appearance:none;height:26px;padding:0 9px;border-radius:8px;
+      border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:3px;cursor:pointer;flex-shrink:0;
+    }
+    .drawer-back-btn:active{background:var(--accent-bg);border-color:var(--accent-border)}
+    .drawer-proj-title{font-size:12.5px;font-weight:600;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto}
+    .proj-item{
+      width:100%;text-align:left;padding:10px 11px;border-radius:11px;border:1px solid var(--border);
+      background:var(--surface-subtle);color:var(--fg);font-size:13.5px;display:flex;align-items:center;
+      justify-content:space-between;gap:8px;cursor:pointer;transition:background-color .14s ease,border-color .14s ease;
+    }
+    .proj-item.active{border-color:var(--accent);background:var(--accent-bg);font-weight:600}
+    .proj-item-left{display:flex;align-items:center;gap:6px;min-width:0;flex:1 1 auto}
+    .proj-item-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .proj-item-right{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;color:var(--muted);font-size:13px}
+    @keyframes agconvfade{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:translateX(0)}}
+    .conv-list.anim-enter{animation:agconvfade .18s ease}
     .conv-item{
       width:100%;text-align:left;padding:9px 11px;border-radius:10px;border:1px solid transparent;
       background:var(--surface-subtle);color:var(--fg);font-size:13.5px;cursor:pointer;
@@ -3756,7 +4053,7 @@ function buildMobileAppHtml() {
     }
     /* 鼠标设备悬停交互 */
     @media (hover:hover){
-      .icon-btn:hover{background:var(--surface-hover);color:var(--fg)}
+      .icon-btn:hover,.top-panel-btn:hover{background:var(--surface-hover);color:var(--fg)}
       .quota-pill:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .mode-entry-btn:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .chip:hover{background:var(--surface-hover);border-color:var(--border-strong);color:var(--fg-secondary)}
@@ -3773,8 +4070,9 @@ function buildMobileAppHtml() {
       .proj-root-pill:hover,.proj-act-btn:hover,.proj-dir-item:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .proj-primary-btn:hover{filter:brightness(1.08)}
       .conv-more-btn:hover{background:var(--surface-hover);color:var(--fg-secondary)}
-      .conv-item:hover{background:var(--surface-hover)}
-      .conv-item.active:hover{background:var(--accent-bg)}
+      .conv-item:hover,.proj-item:hover,.usage-src-btn:hover{background:var(--surface-hover);border-color:var(--border-strong)}
+      .conv-item.active:hover,.proj-item.active:hover{background:var(--accent-bg)}
+      .drawer-back-btn:hover,.sheet-back-btn:hover{background:var(--surface-hover);color:var(--fg-strong)}
       .sheet-opt:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .sheet-opt.active:hover{background:var(--accent-bg)}
       .theme-seg-btn:not(.active):hover{color:var(--fg)}
@@ -3837,7 +4135,7 @@ function buildMobileAppHtml() {
       }
       .composer-card textarea{min-height:32px;max-height:200px;font-size:14.5px}
       .quota-drawer{
-        position:absolute;top:60px;right:24px;left:auto;width:348px;max-width:none;margin-left:0;
+        position:absolute;top:60px;right:24px;left:auto;width:368px;max-width:none;margin-left:0;
       }
       .sheet-backdrop{
         align-items:center;padding:24px;background:var(--backdrop-bg);
@@ -3854,6 +4152,44 @@ function buildMobileAppHtml() {
       .sheet-opt{padding:10px 12px;font-size:13.5px}
       .toast{top:18px}
     }
+    .topbar-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
+    .top-panel-btn{
+      appearance:none;border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      border-radius:10px;height:32px;padding:0 7px;display:inline-flex;align-items:center;gap:4px;
+      font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;cursor:pointer;flex-shrink:0;
+      transition:border-color .15s ease,background-color .15s ease,color .15s ease;
+    }
+    .top-panel-btn:active{background:var(--surface-hover)}
+    .top-panel-btn.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .top-panel-btn[hidden]{display:none!important}
+    .ctx-drawer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}
+    .ctx-stat-box{padding:7px 9px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border)}
+    .ctx-stat-lbl{font-size:11px;color:var(--muted)}
+    .ctx-stat-val{font-size:13px;font-weight:600;color:var(--fg-strong);margin-top:2px;font-variant-numeric:tabular-nums}
+    .usage-src-tabs{display:flex;gap:5px;margin-bottom:8px}
+    .usage-src-btn{
+      flex:1;appearance:none;border:1px solid var(--border);background:var(--surface-subtle);color:var(--muted);
+      border-radius:8px;padding:5px 6px;font-size:12px;font-weight:500;cursor:pointer;
+    }
+    .usage-src-btn.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg);font-weight:600}
+    .usage-kpi-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-bottom:8px}
+    .usage-bars{display:flex;align-items:flex-end;gap:3px;height:46px;padding:6px 4px 2px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border)}
+    .usage-bar-col{flex:1;min-width:4px;border-radius:3px 3px 0 0;background:var(--accent)}
+    .follow-desk-btn{
+      appearance:none;margin:0 10px 8px;padding:7px 10px;border-radius:10px;
+      border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      font-size:12.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;
+    }
+    .follow-desk-btn:active{filter:brightness(1.08)}
+    .isolated-badge{
+      display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;font-size:10.5px;font-weight:600;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);flex-shrink:0;
+    }
+    body.hide-thinking .thought-box{display:none!important}
+    body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
+    @media (max-width:430px){
+      .top-panel-btn{padding:0 6px;gap:3px;font-size:11px}
+    }
   </style>
 </head>
 <body>
@@ -3869,12 +4205,24 @@ function buildMobileAppHtml() {
         </div>
         <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
       </div>
-      <button id="btn-quota" class="quota-pill" type="button">
-        <span id="quota-main">G4 -- · C --</span>
-        <span id="ctx-badge">--%</span>
-      </button>
+      <div class="topbar-actions">
+        <button id="btn-context-panel" class="top-panel-btn" type="button" aria-label="上下文窗口面板" title="上下文窗口面板">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><circle cx="12" cy="12" r="9" opacity=".35"/><path d="M12 3a9 9 0 1 1-6.36 2.64" stroke-linecap="round"/></svg>
+          <span id="ctx-top-val">--%</span>
+        </button>
+        <button id="btn-usage-panel" class="top-panel-btn" type="button" aria-label="本机已记录用量面板" title="本机已记录用量面板">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          <span id="usage-top-val">用量</span>
+        </button>
+        <button id="btn-quota" class="quota-pill" type="button">
+          <span id="quota-main">G4 -- · C --</span>
+          <span id="ctx-badge">--%</span>
+        </button>
+      </div>
     </header>
 
+    <div id="context-drawer" class="quota-drawer top-drawer context-drawer" hidden></div>
+    <div id="usage-drawer" class="quota-drawer top-drawer usage-drawer" hidden></div>
     <div id="quota-drawer" class="quota-drawer" hidden></div>
 
     <main id="messages" class="messages">
@@ -3916,8 +4264,15 @@ function buildMobileAppHtml() {
   <div id="sheet-backdrop" class="sheet-backdrop" hidden>
     <div class="sheet">
       <div class="sheet-title">
-        <span id="sheet-title-text">选择选项</span>
-        <button id="sheet-close" class="icon-btn" style="height:28px;font-size:12px" type="button">关闭</button>
+        <button id="sheet-back-btn" class="sheet-back-btn" type="button" hidden>‹ 返回</button>
+        <div class="sheet-title-left">
+          <span id="sheet-title-text">选择选项</span>
+          <span id="sheet-sub-text" class="sheet-sub-text" hidden></span>
+        </div>
+        <div class="sheet-title-actions">
+          <button id="sheet-action-btn" class="sheet-speed-btn" type="button" hidden>⚡ 测速</button>
+          <button id="sheet-close" class="icon-btn" style="height:28px;font-size:12px" type="button">关闭</button>
+        </div>
       </div>
       <div id="sheet-list" class="sheet-list"></div>
     </div>
@@ -3973,6 +4328,7 @@ function buildMobileAppHtml() {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
       </div>
+      <button id="btn-follow-desktop" class="follow-desk-btn" type="button" hidden>🔄 同步桌面当前会话</button>
       <div class="conv-toolbar">
         <div id="conv-view-tabs" class="conv-view-tabs" role="tablist" aria-label="会话视图切换">
           <button class="conv-tab active" data-conv-view="projects" type="button" role="tab" aria-selected="true">按项目 <span id="tab-proj-count" class="tab-count"></span></button>
@@ -3982,6 +4338,7 @@ function buildMobileAppHtml() {
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v3.5"/><path d="M18 15v6"/><path d="M15 18h6"/></svg>
         </button>
       </div>
+      <div id="drawer-nav-bar" class="drawer-nav-bar" hidden><span class="drawer-sub">历史项目</span></div>
       <div id="conv-list" class="conv-list"></div>
       <div class="drawer-footer">
         <div id="theme-seg" class="theme-seg" role="radiogroup" aria-label="切换外观">
@@ -4005,8 +4362,27 @@ function buildMobileAppHtml() {
   (function(){
     const PAIR_STORAGE_KEY = 'ag_remote_pair_v1';
     const DEVICE_ID_STORAGE_KEY = 'ag_remote_device_id_v1';
+    const CLIENT_ID_SESSION_KEY = 'ag_remote_client_id_v1';
+    const CONV_ID_SESSION_KEY = 'ag_remote_conv_id_v1';
+    const TARGET_ID_SESSION_KEY = 'ag_remote_target_id_v1';
+    const USAGE_SRC_SESSION_KEY = 'ag_remote_usage_src_v1';
+    const DRAFT_SESSION_PREFIX = 'ag_remote_draft_v1:';
+    const SPEED_STORAGE_KEY = 'ag_remote_speed_v1';
+    const MANUAL_LOCK_SESSION_KEY = 'ag_remote_manual_lock_v1';
+    const urlParams = new URLSearchParams(location.search);
+    const urlToken = urlParams.get('token') || '';
+    const urlName = urlParams.get('name') || '';
+    const urlDid = String(urlParams.get('did') || '').trim();
+    const urlBcid = String(urlParams.get('bcid') || '').trim();
+    const isManualEntry = urlParams.get('manual') === '1';
+    const isAutoSwitched = urlParams.get('autosw') === '1';
+
     const deviceId = (() => {
       try {
+        if ((isAutoSwitched || isManualEntry) && /^dev-[a-z0-9_-]{6,60}$/i.test(urlDid)) {
+          localStorage.setItem(DEVICE_ID_STORAGE_KEY, urlDid);
+          return urlDid;
+        }
         let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY) || '';
         if (!id) {
           id = 'dev-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -4014,11 +4390,53 @@ function buildMobileAppHtml() {
         }
         return id;
       } catch {
+        return (isAutoSwitched || isManualEntry) && /^dev-[a-z0-9_-]{6,60}$/i.test(urlDid) ? urlDid : '';
+      }
+    })();
+
+    const clientId = (() => {
+      try {
+        if (isAutoSwitched && /^agb-[a-z0-9_-]{4,64}$/i.test(urlBcid)) {
+          sessionStorage.setItem(CLIENT_ID_SESSION_KEY, urlBcid);
+          return urlBcid;
+        }
+        let cid = sessionStorage.getItem(CLIENT_ID_SESSION_KEY) || '';
+        if (!/^agb-[a-z0-9_-]{4,64}$/i.test(cid)) {
+          cid = 'agb-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+          sessionStorage.setItem(CLIENT_ID_SESSION_KEY, cid);
+        }
+        return cid;
+      } catch {
+        return 'agb-' + Math.random().toString(36).slice(2, 10);
+      }
+    })();
+
+    const deviceFp = (() => {
+      try {
+        const scr = (typeof screen === 'object' && screen) ? screen : {};
+        const swRaw = Number(scr.width) || 0;
+        const shRaw = Number(scr.height) || 0;
+        const sw = Math.min(swRaw, shRaw);
+        const sh = Math.max(swRaw, shRaw);
+        const dpr = Math.round((Number(window.devicePixelRatio) || 1) * 100);
+        const plat = String(navigator.platform || '');
+        const cores = Number(navigator.hardwareConcurrency || 0);
+        let tz = '';
+        try { tz = String(Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch {}
+        const raw = [sw + 'x' + sh, dpr, plat, cores, tz].join('|');
+        let h = 2166136261;
+        for (let i = 0; i < raw.length; i++) {
+          h ^= raw.charCodeAt(i);
+          h = Math.imul(h, 16777619) >>> 0;
+        }
+        return 'fp-' + h.toString(16) + '-' + sw + 'x' + sh;
+      } catch {
         return '';
       }
     })();
-    function decodeEndpointsClient(raw) {
-      if (!raw) return [];
+
+    function b64UrlDecodeJson(raw) {
+      if (!raw) return null;
       try {
         let b64 = String(raw).replace(/-/g, '+').replace(/_/g, '/');
         while (b64.length % 4) b64 += '=';
@@ -4026,15 +4444,14 @@ function buildMobileAppHtml() {
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         const json = typeof TextDecoder === 'function' ? new TextDecoder().decode(bytes) : decodeURIComponent(escape(bin));
-        const list = JSON.parse(json);
-        return Array.isArray(list) ? list.filter((x) => x && typeof x.url === 'string' && /^https?:\\/\\//i.test(x.url)) : [];
+        return JSON.parse(json);
       } catch {
-        return [];
+        return null;
       }
     }
-    function encodeEndpointsClient(list) {
+    function b64UrlEncodeJson(obj) {
       try {
-        const json = JSON.stringify(Array.isArray(list) ? list : []);
+        const json = JSON.stringify(obj);
         let bin = '';
         if (typeof TextEncoder === 'function') {
           const bytes = new TextEncoder().encode(json);
@@ -4047,6 +4464,38 @@ function buildMobileAppHtml() {
         return '';
       }
     }
+    function decodeEndpointsClient(raw) {
+      const list = b64UrlDecodeJson(raw);
+      return Array.isArray(list) ? list.filter((x) => x && typeof x.url === 'string' && /^https?:\\/\\//i.test(x.url)) : [];
+    }
+    function encodeEndpointsClient(list) {
+      return b64UrlEncodeJson(Array.isArray(list) ? list : []);
+    }
+    function decodeSpeedTestClient(raw) {
+      const parsed = b64UrlDecodeJson(raw);
+      if (!parsed || typeof parsed !== 'object' || !parsed.results || typeof parsed.results !== 'object') return null;
+      return {
+        running: false,
+        testedAt: Number(parsed.testedAt) || 0,
+        results: parsed.results
+      };
+    }
+    function encodeSpeedTestClient(st) {
+      if (!st || !st.testedAt || !st.results || typeof st.results !== 'object') return '';
+      const compactResults = {};
+      for (const [k, v] of Object.entries(st.results)) {
+        if (!v || typeof v !== 'object') continue;
+        compactResults[k] = {
+          ok: Boolean(v.ok),
+          ms: Number.isFinite(v.ms) ? v.ms : null,
+          reason: String(v.reason || ''),
+          via: String(v.via || ''),
+          url: String(v.url || '')
+        };
+      }
+      return b64UrlEncodeJson({ testedAt: st.testedAt, results: compactResults });
+    }
+
     function detectKindFromOrigin(rawUrl) {
       const origin = String(rawUrl || '').toLowerCase();
       if (origin.includes('.trycloudflare.com') || origin.startsWith('https://')) return 'tunnel';
@@ -4059,6 +4508,11 @@ function buildMobileAppHtml() {
       if (kind === 'tailscale') return 'Tailscale';
       if (kind === 'bonjour') return 'Bonjour';
       return '局域网';
+    }
+    function isRawIpHost(host) {
+      const h = String(host || '').replace(/^\\[|\\]$/g, '').toLowerCase();
+      if (!h) return false;
+      return /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(h) || h.includes(':');
     }
     function loadStoredPair() {
       try {
@@ -4080,13 +4534,41 @@ function buildMobileAppHtml() {
         }));
       } catch {}
     }
+    function loadStoredSpeed() {
+      try {
+        const raw = localStorage.getItem(SPEED_STORAGE_KEY);
+        if (!raw) return null;
+        const p = JSON.parse(raw);
+        if (!p || typeof p !== 'object' || typeof p.results !== 'object') return null;
+        return { running: false, testedAt: Number(p.testedAt) || 0, results: p.results || {} };
+      } catch {
+        return null;
+      }
+    }
+    function saveStoredSpeed(st) {
+      try {
+        const compactResults = {};
+        for (const [k, v] of Object.entries(st?.results || {})) {
+          if (!v || typeof v !== 'object') continue;
+          compactResults[k] = {
+            ok: Boolean(v.ok),
+            ms: Number.isFinite(v.ms) ? v.ms : null,
+            reason: String(v.reason || ''),
+            via: String(v.via || ''),
+            url: String(v.url || ''),
+            testedAt: Number(v.testedAt) || 0
+          };
+        }
+        localStorage.setItem(SPEED_STORAGE_KEY, JSON.stringify({
+          testedAt: Number(st?.testedAt) || 0,
+          results: compactResults
+        }));
+      } catch {}
+    }
 
-    const urlParams = new URLSearchParams(location.search);
-    const urlToken = urlParams.get('token') || '';
-    const urlName = urlParams.get('name') || '';
     const urlHosts = (urlParams.get('hosts') || '').split(',').map((s) => s.trim()).filter(Boolean);
     const urlEndpoints = decodeEndpointsClient(urlParams.get('endpoints') || '');
-    const isManualEntry = urlParams.get('manual') === '1';
+    const urlSpeed = decodeSpeedTestClient(urlParams.get('spd') || '');
     const storedPair = loadStoredPair() || {};
     const pairState = {
       token: urlToken || storedPair.token || '',
@@ -4094,101 +4576,49 @@ function buildMobileAppHtml() {
       hosts: urlHosts.length ? urlHosts : (Array.isArray(storedPair.hosts) ? storedPair.hosts : []),
       endpoints: urlEndpoints.length ? urlEndpoints : (Array.isArray(storedPair.endpoints) ? storedPair.endpoints : [])
     };
-    if (urlToken || urlEndpoints.length || urlHosts.length) {
+    if (isManualEntry) {
+      try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
+    } else if (urlToken && !isAutoSwitched) {
+      try { sessionStorage.removeItem(MANUAL_LOCK_SESSION_KEY); } catch {}
+    }
+    let manualLocked = isManualEntry || (() => {
+      try { return sessionStorage.getItem(MANUAL_LOCK_SESSION_KEY) === '1'; } catch { return false; }
+    })();
+
+    const storedSpeed = loadStoredSpeed();
+    let speedTestState = (urlSpeed && urlSpeed.testedAt >= (storedSpeed?.testedAt || 0))
+      ? urlSpeed
+      : (storedSpeed || { running: false, testedAt: 0, results: {} });
+    if (urlSpeed && urlSpeed.testedAt) saveStoredSpeed(speedTestState);
+
+    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched) {
       saveStoredPair(pairState);
-      history.replaceState(null, '', location.pathname);
+      try { history.replaceState(null, '', location.pathname); } catch {}
     }
     if (location.protocol === 'https:' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
-    let apiBase = '';
-    const isIpadDesktopUa = (() => {
-      try {
-        return Number(navigator.maxTouchPoints || 0) > 1 && /Mac/i.test(String(navigator.platform || ''));
-      } catch {
-        return false;
-      }
-    })();
-    function authHeaders(extra) {
-      const h = Object.assign({}, extra || {});
-      if (pairState.token) h['X-AG-Remote-Token'] = pairState.token;
-      if (deviceId) h['X-AG-Device-Id'] = deviceId;
-      if (isIpadDesktopUa) h['X-AG-Device-Hint'] = 'iPad';
-      return h;
-    }
-    function getCandidateEndpoints() {
-      const seen = new Set();
-      const list = [];
-      const isHttpsPage = location.protocol === 'https:';
-      const add = (url, kind, priority) => {
-        const clean = String(url || '').replace(/\\/+$/, '');
-        if (!clean || seen.has(clean)) return;
-        if (isHttpsPage && clean.toLowerCase().startsWith('http://')) return;
-        seen.add(clean);
-        list.push({ url: clean, kind: kind || 'lan', priority: Number.isFinite(priority) ? priority : 100 });
-      };
-      for (const ep of (pairState.endpoints || [])) add(ep.url, ep.kind, ep.priority);
-      const portStr = location.port ? ':' + location.port : '';
-      for (const h of (pairState.hosts || [])) {
-        const hostFmt = (h.includes(':') && !h.startsWith('[')) ? ('[' + h + ']') : h;
-        const kind = h.endsWith('.local') ? 'bonjour' : (h.includes('.ts.net') || h.startsWith('100.') ? 'tailscale' : 'lan');
-        if (!isHttpsPage) {
-          add('http://' + hostFmt + (portStr || ':18765'), kind, 300);
-        }
-      }
-      add(location.origin, 'current', 999);
-      list.sort((a, b) => a.priority - b.priority);
-      return list;
-    }
-    let failoverBusy = null;
-    async function tryFailoverEndpoint() {
-      if (failoverBusy) return failoverBusy;
-      failoverBusy = (async () => {
-        const candidates = getCandidateEndpoints();
-        if (candidates.length <= 1 && !apiBase) return false;
-        const probeOne = async (ep) => {
-          const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-          const t = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, 1800) : null;
-          try {
-            const r = await fetch(ep.url + '/api/ping', {
-              headers: authHeaders(),
-              cache: 'no-store',
-              signal: ctrl ? ctrl.signal : undefined
-            });
-            if (!r.ok) return null;
-            const d = await r.json().catch(() => null);
-            return d && d.ok ? { ep, data: d } : null;
-          } catch {
-            return null;
-          } finally {
-            if (t) clearTimeout(t);
-          }
-        };
-        const probed = await Promise.all(candidates.map(probeOne));
-        const winner = probed.find(Boolean);
-        if (!winner) return false;
-        const nextBase = winner.ep.url === location.origin ? '' : winner.ep.url;
-        const changed = nextBase !== apiBase;
-        apiBase = nextBase;
-        if (Array.isArray(winner.data?.endpoints) && winner.data.endpoints.length) {
-          pairState.endpoints = winner.data.endpoints;
-          if (Array.isArray(winner.data.hosts)) pairState.hosts = winner.data.hosts;
-          saveStoredPair(pairState);
-        }
-        if (changed) {
-          const kindName = winner.ep.kind === 'tunnel' ? 'Cloudflare' : (winner.ep.kind === 'tailscale' ? 'Tailscale' : (winner.ep.kind === 'bonjour' ? 'Bonjour' : '局域网'));
-          showToast('已自动切至 ' + kindName + ' 通道');
-        }
-        return true;
-      })();
-      try {
-        return await failoverBusy;
-      } finally {
-        failoverBusy = null;
-      }
-    }
 
-    let currentTargetId = '';
+    let apiBase = '';
+    let activeSheetKind = '';
+    let activeDrawerProject = '';
+    let autoSwitchChecked = false;
+    let navigatingAway = false;
+    let currentTargetId = (() => {
+      try { return sessionStorage.getItem(TARGET_ID_SESSION_KEY) || ''; } catch { return ''; }
+    })();
+    let selectedConversationId = (() => {
+      try { return sessionStorage.getItem(CONV_ID_SESSION_KEY) || ''; } catch { return ''; }
+    })();
+    let usageSourceFilter = (() => {
+      try {
+        const s = sessionStorage.getItem(USAGE_SRC_SESSION_KEY) || 'all';
+        return (s === 'desktop' || s === 'cli' || s === 'all') ? s : 'all';
+      } catch { return 'all'; }
+    })();
+    let cachedUsageData = null;
+    let cachedContextResp = null;
+    let latestDisplayConfig = null;
     let latestSnap = null;
     let wakeLock = null;
     let wakeWanted = false;
@@ -4202,6 +4632,23 @@ function buildMobileAppHtml() {
     const msgEl = $('messages');
     let activeSnapAbort = null;
 
+    const isIpadDesktopUa = (() => {
+      try {
+        return Number(navigator.maxTouchPoints || 0) > 1 && /Mac/i.test(String(navigator.platform || ''));
+      } catch {
+        return false;
+      }
+    })();
+    function authHeaders(extra) {
+      const h = Object.assign({}, extra || {});
+      if (pairState.token) h['X-AG-Remote-Token'] = pairState.token;
+      if (clientId) h['X-AG-Client-Id'] = clientId;
+      if (deviceId) h['X-AG-Device-Id'] = deviceId;
+      if (deviceFp) h['X-AG-Device-Fp'] = deviceFp;
+      if (isIpadDesktopUa) h['X-AG-Device-Hint'] = 'iPad';
+      return h;
+    }
+
     function fetchWithTimeout(url, init, timeoutMs, externalCtrl) {
       const ms = Number(timeoutMs) > 0 ? Number(timeoutMs) : 5000;
       const ctrl = externalCtrl || (typeof AbortController === 'function' ? new AbortController() : null);
@@ -4210,6 +4657,330 @@ function buildMobileAppHtml() {
       return fetch(url, opts).finally(() => {
         if (timer) clearTimeout(timer);
       });
+    }
+
+    function nowPerfMs() {
+      return (typeof performance === 'object' && typeof performance.now === 'function') ? performance.now() : Date.now();
+    }
+
+    async function probeEndpointOnce(ep, timeoutMs) {
+      const isHttpsPage = location.protocol === 'https:';
+      const cleanUrl = String(ep?.url || '').replace(/\\/+$/, '');
+      const epIsHttp = cleanUrl.toLowerCase().startsWith('http://');
+      const effectiveTimeout = (isHttpsPage && epIsHttp) ? Math.min(600, timeoutMs) : timeoutMs;
+      const nonce = Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+      const t0 = nowPerfMs();
+      try {
+        const r = await fetchWithTimeout(cleanUrl + '/api/ping?probe=1&_n=' + encodeURIComponent(nonce) + '&_t=' + Date.now(), {
+          headers: authHeaders({ 'X-AG-Probe': '1' }),
+          cache: 'no-store'
+        }, effectiveTimeout);
+        if (r.status === 403) return { ok: false, ms: null, reason: 'disabled', data: null };
+        if (!r.ok) return { ok: false, ms: null, reason: (isHttpsPage && epIsHttp) ? 'https_restricted' : 'unreachable', data: null };
+        const d = await r.json().catch(() => null);
+        if (!d || d.ok !== true) {
+          return { ok: false, ms: null, reason: (isHttpsPage && epIsHttp) ? 'https_restricted' : 'unreachable', data: null };
+        }
+        if (d.nonce && d.nonce !== nonce) {
+          return { ok: false, ms: null, reason: 'unreachable', data: null };
+        }
+        if (d.service !== 'ag-mobile-remote' && !Array.isArray(d.endpoints) && typeof d.port !== 'number') {
+          return { ok: false, ms: null, reason: 'unreachable', data: null };
+        }
+        const ms = Math.max(1, Math.round(nowPerfMs() - t0));
+        return { ok: true, ms, reason: 'ok', data: d };
+      } catch {
+        return { ok: false, ms: null, reason: (isHttpsPage && epIsHttp) ? 'https_restricted' : 'unreachable', data: null };
+      }
+    }
+
+    async function fetchServerProbeHints(force) {
+      try {
+        const url = (apiBase || '') + '/api/probe-hints?probe=1' + (force ? '&force=1' : '') + '&_t=' + Date.now();
+        const r = await fetchWithTimeout(url, {
+          headers: authHeaders({ 'X-AG-Probe': '1' }),
+          cache: 'no-store'
+        }, 2400);
+        if (!r.ok) return null;
+        const d = await r.json().catch(() => null);
+        return (d && d.ok && d.hints && typeof d.hints === 'object') ? d.hints : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function mergeServerHintIntoProbe(res, serverHints, nowTs) {
+      const sh = (!res.ok && serverHints && typeof serverHints === 'object') ? serverHints[res.kind] : null;
+      if (sh && sh.ok && Number.isFinite(sh.ms)) {
+        return {
+          kind: res.kind,
+          url: res.url,
+          ok: true,
+          ms: sh.ms,
+          reason: 'server_hint',
+          via: 'server',
+          data: res.data || null,
+          testedAt: nowTs
+        };
+      }
+      if (sh && sh.ok === false && sh.reason === 'unreachable') {
+        return {
+          kind: res.kind,
+          url: res.url,
+          ok: false,
+          ms: null,
+          reason: 'unreachable',
+          via: 'server',
+          data: null,
+          testedAt: nowTs
+        };
+      }
+      return {
+        kind: res.kind,
+        url: res.url,
+        ok: Boolean(res.ok),
+        ms: res.ok && Number.isFinite(res.ms) ? res.ms : null,
+        reason: res.reason || (res.ok ? 'ok' : 'unreachable'),
+        via: String(res.via || ''),
+        data: res.data || null,
+        testedAt: res.testedAt || nowTs
+      };
+    }
+
+    async function probeEndpointLatency(ep, timeoutMs) {
+      const tMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 1500;
+      const p1 = await probeEndpointOnce(ep, tMs);
+      if (!p1.ok) {
+        return {
+          kind: ep.kind,
+          url: ep.url,
+          ok: false,
+          ms: null,
+          reason: p1.reason || 'unreachable',
+          data: null,
+          testedAt: Date.now()
+        };
+      }
+      let bestMs = p1.ms;
+      let latestData = p1.data;
+      if (p1.ms < 900) {
+        const p2 = await probeEndpointOnce(ep, Math.min(700, tMs));
+        if (p2.ok && Number.isFinite(p2.ms)) {
+          bestMs = Math.min(bestMs, p2.ms);
+          if (p2.data) latestData = p2.data;
+        }
+      }
+      return {
+        kind: ep.kind,
+        url: ep.url,
+        ok: true,
+        ms: bestMs,
+        reason: 'ok',
+        data: latestData,
+        testedAt: Date.now()
+      };
+    }
+
+    function pickFastestReachable(resultsMap, entries) {
+      const order = { lan: 0, tailscale: 1, bonjour: 2, tunnel: 3, loopback: 9 };
+      const list = [];
+      for (const ep of (entries || [])) {
+        if (!ep || !ep.kind) continue;
+        const r = resultsMap && resultsMap[ep.kind];
+        if (r && r.ok && Number.isFinite(r.ms)) {
+          list.push({ kind: ep.kind, url: r.url || ep.url, ms: r.ms, data: r.data || null });
+        }
+      }
+      list.sort((a, b) => (a.ms - b.ms) || ((order[a.kind] ?? 5) - (order[b.kind] ?? 5)));
+      return list;
+    }
+
+    function navigateEntryUrl(targetUrl, useReplace) {
+      if (navigatingAway) return;
+      navigatingAway = true;
+      clearTimeout(pollTimer);
+      if (useReplace && typeof location.replace === 'function') {
+        location.replace(targetUrl);
+      } else {
+        location.href = targetUrl;
+      }
+    }
+
+    let speedTestBusy = null;
+    async function runSpeedTest(opts) {
+      const o = opts || {};
+      const wantAutoSwitch = Boolean(o.autoSwitch);
+      const silent = Boolean(o.silent);
+      if (speedTestBusy) {
+        await speedTestBusy;
+        return speedTestState;
+      }
+      speedTestBusy = (async () => {
+        const entries = getEnabledModeEntries();
+        speedTestState.running = true;
+        renderModeSwitcherSheet();
+        if (!latestSnap) {
+          renderModeEntryGate(
+            isManualEntry
+              ? ('正在通过 ' + getActiveChannelLabel() + ' 连接 Mac…')
+              : '正在并发测速各可用通道，自动选择最快路线…'
+          );
+        }
+        const needServerHints = location.protocol === 'https:'
+          && entries.some((ep) => String(ep.url || '').toLowerCase().startsWith('http://'));
+        const [probed, serverHints] = await Promise.all([
+          Promise.all(entries.map((ep) => probeEndpointLatency(ep, o.timeoutMs || 1500))),
+          needServerHints ? fetchServerProbeHints(!silent) : Promise.resolve(null)
+        ]);
+        const nextResults = {};
+        let refreshedMeta = false;
+        const nowTs = Date.now();
+        for (const res of probed) {
+          if (!res || !res.kind) continue;
+          const merged = mergeServerHintIntoProbe(res, serverHints, nowTs);
+          nextResults[merged.kind] = {
+            ok: merged.ok,
+            ms: merged.ms,
+            reason: merged.reason,
+            via: merged.via,
+            url: merged.url,
+            testedAt: merged.testedAt
+          };
+          if (res.data && Array.isArray(res.data.endpoints) && res.data.endpoints.length) {
+            pairState.endpoints = res.data.endpoints;
+            if (Array.isArray(res.data.hosts)) pairState.hosts = res.data.hosts;
+            refreshedMeta = true;
+          }
+        }
+        if (refreshedMeta) saveStoredPair(pairState);
+        speedTestState = {
+          running: false,
+          testedAt: Date.now(),
+          results: nextResults
+        };
+        saveStoredSpeed(speedTestState);
+        renderModeSwitcherSheet();
+
+        const ranked = pickFastestReachable(nextResults, entries);
+        const best = ranked[0] || null;
+        if (!silent) {
+          if (best) {
+            showToast('⚡ 测速完成：' + formatKindLabel(best.kind) + ' 最快 (' + best.ms + ' ms)');
+          } else {
+            showToast('测速未连通，请检查当前网络');
+          }
+        }
+
+        const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+        const curKind = detectKindFromOrigin(curOrigin);
+        const curRes = nextResults[curKind] || null;
+
+        if (wantAutoSwitch && !manualLocked && !isAutoSwitched && best) {
+          const sameEntry = best.url === curOrigin || best.kind === curKind;
+          const significantlyFaster = !curRes || !curRes.ok
+            || (curKind === 'tunnel' && best.kind !== 'tunnel' && (!curRes.ms || best.ms < curRes.ms))
+            || (Number.isFinite(curRes.ms) && (curRes.ms - best.ms >= 15) && best.ms <= curRes.ms * 0.75);
+          if (!sameEntry && significantlyFaster) {
+            if (activeSnapAbort) {
+              try { activeSnapAbort.abort(); } catch {}
+              activeSnapAbort = null;
+            }
+            clearTimeout(pollTimer);
+            const targetUrl = buildClientEntryUrl(best.url, { autoSwitched: true });
+            navigateEntryUrl(targetUrl, true);
+            return speedTestState;
+          }
+        }
+
+        if (!latestSnap) {
+          renderModeEntryGate(
+            isManualEntry
+              ? ('正在通过 ' + getActiveChannelLabel() + ' 连接 Mac…')
+              : (best ? ('最快通道：' + formatKindLabel(best.kind) + ' (' + best.ms + ' ms)，可直接点击进入：') : '当前入口暂未连通，请点击下方已开启的连接方式直接进入：')
+          );
+        }
+        return speedTestState;
+      })();
+      try {
+        return await speedTestBusy;
+      } finally {
+        speedTestBusy = null;
+      }
+    }
+
+    let failoverBusy = null;
+    async function tryFailoverEndpoint() {
+      if (failoverBusy) return failoverBusy;
+      failoverBusy = (async () => {
+        const entries = getEnabledModeEntries();
+        const extra = [];
+        const seenUrls = new Set(entries.map((e) => e.url));
+        for (const ep of (pairState.endpoints || [])) {
+          const clean = String(ep?.url || '').replace(/\\/+$/, '');
+          if (clean && !seenUrls.has(clean)) {
+            seenUrls.add(clean);
+            extra.push({ url: clean, kind: ep.kind || detectKindFromOrigin(clean) });
+          }
+        }
+        const candidates = entries.concat(extra);
+        if (candidates.length <= 1 && !apiBase) return false;
+        const needServerHints = location.protocol === 'https:'
+          && candidates.some((ep) => String(ep.url || '').toLowerCase().startsWith('http://'));
+        const [probed, serverHints] = await Promise.all([
+          Promise.all(candidates.map((ep) => probeEndpointLatency(ep, 1600))),
+          needServerHints ? fetchServerProbeHints(true) : Promise.resolve(null)
+        ]);
+        const nextResults = Object.assign({}, speedTestState.results || {});
+        const nowTs = Date.now();
+        const mergedList = [];
+        for (const res of probed) {
+          if (!res || !res.kind) continue;
+          const merged = mergeServerHintIntoProbe(res, serverHints, nowTs);
+          mergedList.push(merged);
+          if (merged.ok || !nextResults[merged.kind]) {
+            nextResults[merged.kind] = {
+              ok: merged.ok,
+              ms: merged.ms,
+              reason: merged.reason,
+              via: merged.via,
+              url: merged.url,
+              testedAt: merged.testedAt
+            };
+          }
+        }
+        speedTestState = { running: false, testedAt: Date.now(), results: nextResults };
+        saveStoredSpeed(speedTestState);
+        renderModeSwitcherSheet();
+
+        const order = { lan: 0, tailscale: 1, bonjour: 2, tunnel: 3, loopback: 9 };
+        const winners = mergedList
+          .filter((r) => r && r.ok && Number.isFinite(r.ms))
+          .sort((a, b) => (a.ms - b.ms) || ((order[a.kind] ?? 5) - (order[b.kind] ?? 5)));
+        const winner = winners[0] || null;
+        if (!winner) return false;
+
+        if (Array.isArray(winner.data?.endpoints) && winner.data.endpoints.length) {
+          pairState.endpoints = winner.data.endpoints;
+          if (Array.isArray(winner.data.hosts)) pairState.hosts = winner.data.hosts;
+          saveStoredPair(pairState);
+        }
+        if (location.protocol === 'https:' && winner.url.toLowerCase().startsWith('http://')) {
+          navigateEntryUrl(buildClientEntryUrl(winner.url, { autoSwitched: true }), true);
+          return true;
+        }
+        const nextBase = winner.url === String(location.origin || '').replace(/\\/+$/, '') ? '' : winner.url;
+        const changed = nextBase !== apiBase;
+        apiBase = nextBase;
+        if (changed) {
+          showToast('已自动切至最快通道：' + formatKindLabel(winner.kind) + ' (' + winner.ms + ' ms)');
+        }
+        return true;
+      })();
+      try {
+        return await failoverBusy;
+      } finally {
+        failoverBusy = null;
+      }
     }
 
     function getActiveChannelLabel() {
@@ -4235,20 +5006,53 @@ function buildMobileAppHtml() {
       return Array.from(byKind.values()).sort((a, b) => (order[a.kind] ?? 5) - (order[b.kind] ?? 5));
     }
 
-    function buildClientEntryUrl(targetBaseUrl) {
+    function formatClockTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return '';
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
+    }
+
+    function formatLatencyBadge(kind) {
+      if (speedTestState.running) {
+        return { cls: 'pending', html: '<span class="mini-spin"></span><span>测速中</span>' };
+      }
+      const r = speedTestState.results ? speedTestState.results[kind] : null;
+      if (!r) return { cls: 'muted', html: '未测速' };
+      if (r.ok && Number.isFinite(r.ms)) {
+        const cls = r.ms < 80 ? 'fast' : (r.ms <= 250 ? 'mid' : 'slow');
+        return { cls, html: esc(r.ms + ' ms') };
+      }
+      if (r.reason === 'https_restricted') return { cls: 'muted', html: '需切 HTTP' };
+      if (r.reason === 'disabled') return { cls: 'err', html: '已停用' };
+      return { cls: 'err', html: '不可达' };
+    }
+
+    function buildClientEntryUrl(targetBaseUrl, opts) {
+      const o = opts || {};
       const cleanBase = String(targetBaseUrl || '').replace(/\\/+$/, '');
       const params = [];
       if (pairState.token) params.push('token=' + encodeURIComponent(pairState.token));
       if (pairState.name) params.push('name=' + encodeURIComponent(pairState.name));
+      if (deviceId) params.push('did=' + encodeURIComponent(deviceId));
+      if (o.autoSwitched && clientId) params.push('bcid=' + encodeURIComponent(clientId));
       if (pairState.hosts?.length) params.push('hosts=' + encodeURIComponent(pairState.hosts.join(',')));
       const encEps = encodeEndpointsClient(pairState.endpoints || []);
       if (encEps) params.push('endpoints=' + encodeURIComponent(encEps));
-      params.push('manual=1');
+      const encSpd = encodeSpeedTestClient(speedTestState);
+      if (encSpd) params.push('spd=' + encodeURIComponent(encSpd));
+      if (o.autoSwitched) {
+        params.push('autosw=1');
+      } else if (o.manual !== false) {
+        params.push('manual=1');
+      }
       return cleanBase + '/?' + params.join('&');
     }
 
     function enterConnectionMode(ep) {
       if (!ep || !ep.url) return;
+      manualLocked = true;
+      try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
       if (activeSnapAbort) {
         try { activeSnapAbort.abort(); } catch {}
         activeSnapAbort = null;
@@ -4265,23 +5069,30 @@ function buildMobileAppHtml() {
         void fetchSnapshot();
         return;
       }
-      location.href = buildClientEntryUrl(cleanTarget);
+      navigateEntryUrl(buildClientEntryUrl(cleanTarget, { manual: true }), false);
     }
 
     function renderModeEntryGate(statusText) {
       if (latestSnap) return;
       const entries = getEnabledModeEntries();
       const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+      const ranked = pickFastestReachable(speedTestState.results, entries);
+      const fastestKind = (entries.length > 1 && ranked.length > 0) ? ranked[0].kind : '';
       const btnsHtml = entries.map((ep, idx) => {
         let hostText = ep.url;
         try { hostText = new URL(ep.url).host; } catch {}
         const isCurrent = ep.url === curOrigin;
+        const badge = formatLatencyBadge(ep.kind);
+        const fastPill = (fastestKind && ep.kind === fastestKind) ? ' <span class="mode-pill fast">最快</span>' : '';
         return '<button class="mode-entry-btn' + (isCurrent ? ' active' : '') + '" data-mode-idx="' + idx + '" type="button">'
           + '<span class="mode-entry-left">'
-          + '<span class="mode-entry-name">' + esc(formatKindLabel(ep.kind)) + '</span>'
+          + '<span class="mode-entry-name">' + esc(formatKindLabel(ep.kind)) + fastPill + '</span>'
           + '<span class="mode-entry-host">' + esc(hostText) + '</span>'
           + '</span>'
-          + '<span class="mode-entry-tag">' + (isCurrent ? '当前入口 →' : '直接进入 →') + '</span>'
+          + '<span class="mode-entry-right">'
+          + '<span class="lat-badge ' + badge.cls + '">' + badge.html + '</span>'
+          + '<span class="mode-entry-tag">' + (isCurrent ? '当前 →' : '进入 →') + '</span>'
+          + '</span>'
           + '</button>';
       }).join('');
       msgEl.innerHTML = '<div id="mode-entry-panel" class="mode-entry-card">'
@@ -4296,22 +5107,128 @@ function buildMobileAppHtml() {
       });
     }
 
+    function configureSheetChrome(cfg) {
+      const c = cfg || {};
+      activeSheetKind = c.kind || '';
+      $('sheet-title-text').textContent = c.title || '选择选项';
+      const subEl = $('sheet-sub-text');
+      if (subEl) {
+        if (c.subText) {
+          subEl.hidden = false;
+          subEl.textContent = c.subText;
+        } else {
+          subEl.hidden = true;
+          subEl.textContent = '';
+        }
+      }
+      const backBtn = $('sheet-back-btn');
+      if (backBtn) {
+        if (typeof c.onBack === 'function') {
+          backBtn.hidden = false;
+          backBtn.onclick = (ev) => {
+            ev?.stopPropagation?.();
+            c.onBack();
+          };
+        } else {
+          backBtn.hidden = true;
+          backBtn.onclick = null;
+        }
+      }
+      const actBtn = $('sheet-action-btn');
+      if (actBtn) {
+        if (c.showSpeed) {
+          actBtn.hidden = false;
+          actBtn.disabled = Boolean(c.speedDisabled);
+          actBtn.innerHTML = c.speedHtml || '⚡ 测速';
+          actBtn.onclick = typeof c.onSpeedClick === 'function' ? c.onSpeedClick : null;
+        } else {
+          actBtn.hidden = true;
+          actBtn.disabled = false;
+          actBtn.onclick = null;
+        }
+      }
+    }
+
+    function closeSheet() {
+      activeSheetKind = '';
+      const backBtn = $('sheet-back-btn');
+      if (backBtn) {
+        backBtn.hidden = true;
+        backBtn.onclick = null;
+      }
+      const actBtn = $('sheet-action-btn');
+      if (actBtn) {
+        actBtn.hidden = true;
+        actBtn.onclick = null;
+      }
+      $('sheet-backdrop').hidden = true;
+    }
+
+    function renderModeSwitcherSheet() {
+      const backdrop = $('sheet-backdrop');
+      if (!backdrop || backdrop.hidden || activeSheetKind !== 'mode') return;
+      const entries = getEnabledModeEntries();
+      const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+      const ranked = pickFastestReachable(speedTestState.results, entries);
+      const fastestKind = (entries.length > 1 && ranked.length > 0) ? ranked[0].kind : '';
+
+      const subMsg = speedTestState.running
+        ? '⏳ 正在并发测速各通道延迟…'
+        : (speedTestState.testedAt > 0
+            ? ('最近测速 ' + formatClockTime(speedTestState.testedAt) + ' · 延迟仅供参考')
+            : '尚未测速 · 点击右侧「测速」获取延迟参考');
+
+      configureSheetChrome({
+        kind: 'mode',
+        title: '切换连接方式',
+        subText: subMsg,
+        showSpeed: true,
+        speedDisabled: Boolean(speedTestState.running),
+        speedHtml: speedTestState.running ? '<span class="mini-spin"></span><span>测速中…</span>' : '⚡ 测速',
+        onSpeedClick: (ev) => {
+          ev.stopPropagation();
+          void runSpeedTest({ autoSwitch: false, silent: false });
+        },
+        onBack: null
+      });
+
+      const listEl = $('sheet-list');
+      listEl.innerHTML = entries.map((ep, idx) => {
+        let hostText = ep.url;
+        try { hostText = new URL(ep.url).host; } catch {}
+        const isCurrent = ep.url === curOrigin;
+        const badge = formatLatencyBadge(ep.kind);
+        const pills = ((fastestKind && ep.kind === fastestKind) ? '<span class="mode-pill fast">最快</span>' : '')
+          + (isCurrent ? '<span class="mode-pill cur">当前</span>' : '');
+        return '<button class="sheet-opt' + (isCurrent ? ' active' : '') + '" data-idx="' + idx + '" type="button">'
+          + '<span class="sheet-opt-left">'
+          + '<span class="sheet-opt-top"><span>' + esc(formatKindLabel(ep.kind)) + '</span>' + pills + '</span>'
+          + '<span class="sheet-opt-host">' + esc(hostText) + '</span>'
+          + '</span>'
+          + '<span class="sheet-opt-right">'
+          + '<span class="lat-badge ' + badge.cls + '">' + badge.html + '</span>'
+          + (isCurrent ? '<span>✓</span>' : '')
+          + '</span>'
+          + '</button>';
+      }).join('');
+      listEl.onclick = (e) => {
+        const btn = e.target?.closest?.('.sheet-opt');
+        if (!btn) return;
+        const ep = entries[Number(btn.dataset.idx)];
+        closeSheet();
+        if (ep) enterConnectionMode(ep);
+      };
+    }
+
     function openModeSwitcherSheet() {
       const entries = getEnabledModeEntries();
       if (!entries.length) return;
-      const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
-      const opts = entries.map((ep) => {
-        let hostText = ep.url;
-        try { hostText = new URL(ep.url).host; } catch {}
-        return {
-          label: formatKindLabel(ep.kind) + ' · ' + hostText,
-          active: ep.url === curOrigin,
-          ep
-        };
-      });
-      openSheet('切换连接方式（已开启）', opts, async (opt) => {
-        if (opt?.ep) enterConnectionMode(opt.ep);
-      });
+      activeSheetKind = 'mode';
+      $('sheet-backdrop').hidden = false;
+      renderModeSwitcherSheet();
+      if (speedTestState.testedAt === 0 && !speedTestState.running) {
+        void runSpeedTest({ autoSwitch: false, silent: true });
+      }
     }
 
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
@@ -4706,16 +5623,22 @@ function buildMobileAppHtml() {
       schedulePoll();
     }
 
-    async function apiAction(payload) {
+    async function apiAction(payload, opts) {
       const act = String(payload?.action || '').trim();
       const isNavAction = act === 'new-conversation' || act === 'switch-conversation';
       const actionStartEpoch = ++clientSyncEpoch;
       const myNavSeq = isNavAction ? (++lastNavActionSeq) : 0;
       if (isNavAction) invalidateInflightSnapshotPolls();
+      const bodyPayload = {
+        targetId: currentTargetId || undefined,
+        conversationId: (isNavAction ? undefined : selectedConversationId) || undefined,
+        clientId: clientId || undefined,
+        ...payload
+      };
       const doPost = () => fetchWithTimeout((apiBase || '') + '/api/action', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ targetId: currentTargetId || undefined, ...payload })
+        body: JSON.stringify(bodyPayload)
       }, 8000);
       try {
         let res;
@@ -4746,7 +5669,7 @@ function buildMobileAppHtml() {
         if (!res.ok && data.ok !== false) {
           data = Object.assign({ ok: false, error: 'HTTP ' + res.status }, data);
         }
-        if (data?.snapshot && (!isNavAction || myNavSeq === lastNavActionSeq)) {
+        if (data?.snapshot && !opts?.skipAutoRender && (!isNavAction || myNavSeq === lastNavActionSeq)) {
           const snapApplied = renderSnapshot(data.snapshot, {
             reqStartEpoch: actionStartEpoch,
             advanceFloorOnApply: isNavAction
@@ -4759,6 +5682,287 @@ function buildMobileAppHtml() {
           schedulePoll();
         }
       }
+    }
+
+    function fmtNumShort(n) {
+      const v = Number(n || 0);
+      if (!Number.isFinite(v) || v <= 0) return '0';
+      if (v >= 1000000) return (v / 1000000).toFixed(v >= 10000000 ? 1 : 2).replace(/\\.0+$/, '') + 'M';
+      if (v >= 1000) return (v / 1000).toFixed(v >= 100000 ? 0 : 1).replace(/\\.0$/, '') + 'k';
+      return String(Math.round(v));
+    }
+
+    function renderMarkdownSafe(rawText) {
+      const src = String(rawText || '');
+      if (!src) return '';
+      const fence = String.fromCharCode(96).repeat(3);
+      const inlineBt = String.fromCharCode(96);
+      const parts = src.split(fence);
+      let out = '';
+      for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 1) {
+          const nlIdx = parts[i].indexOf('\\n');
+          const codeBody = nlIdx >= 0 ? parts[i].slice(nlIdx + 1) : parts[i];
+          out += '<pre><code>' + esc(codeBody) + '</code></pre>';
+        } else {
+          const segs = parts[i].split(inlineBt);
+          let lineHtml = '';
+          for (let j = 0; j < segs.length; j++) {
+            lineHtml += j % 2 === 1
+              ? ('<code>' + esc(segs[j]) + '</code>')
+              : esc(segs[j]).replace(/\\n/g, '<br>');
+          }
+          out += lineHtml;
+        }
+      }
+      return out;
+    }
+
+    function saveDraftForConv(convId, text) {
+      const key = DRAFT_SESSION_PREFIX + (convId || '__desktop__');
+      try {
+        if (text) sessionStorage.setItem(key, text);
+        else sessionStorage.removeItem(key);
+      } catch {}
+    }
+
+    function loadDraftForConv(convId) {
+      const key = DRAFT_SESSION_PREFIX + (convId || '__desktop__');
+      try { return sessionStorage.getItem(key) || ''; } catch { return ''; }
+    }
+
+    function applySelectedConversation(nextId) {
+      const oldId = selectedConversationId;
+      if (oldId !== nextId && typeof ta !== 'undefined' && ta) {
+        saveDraftForConv(oldId, ta.value || '');
+      }
+      selectedConversationId = nextId || '';
+      try {
+        if (selectedConversationId) sessionStorage.setItem(CONV_ID_SESSION_KEY, selectedConversationId);
+        else sessionStorage.removeItem(CONV_ID_SESSION_KEY);
+      } catch {}
+      if (oldId !== selectedConversationId && typeof ta !== 'undefined' && ta) {
+        ta.value = loadDraftForConv(selectedConversationId);
+        if (typeof autoGrow === 'function') autoGrow();
+      }
+    }
+
+    function getEffectiveDisplayConfig(snap) {
+      const raw = snap?.displayConfig || latestDisplayConfig || {};
+      return {
+        showContextPanel: raw.showContextPanel !== false,
+        showUsagePanel: raw.showUsagePanel !== false,
+        showQuotaPill: raw.showQuotaPill !== false,
+        showChannelMeta: raw.showChannelMeta !== false,
+        showSidebar: raw.showSidebar !== false,
+        showThinking: raw.showThinking !== false,
+        showQuickChips: raw.showQuickChips !== false,
+        showComposerTools: raw.showComposerTools !== false,
+        showApprovals: raw.showApprovals !== false
+      };
+    }
+
+    function applyRemoteDisplayConfig(snap) {
+      if (snap?.displayConfig) latestDisplayConfig = snap.displayConfig;
+      const cfg = getEffectiveDisplayConfig(snap);
+      const ctxBtn = $('btn-context-panel');
+      const usageBtn = $('btn-usage-panel');
+      const quotaBtn = $('btn-quota');
+      const subMeta = $('sub-meta');
+      const drawerBtn = $('btn-drawer');
+      const chipsEl = $('chips');
+      const dockEl = $('approval-dock');
+
+      if (ctxBtn) ctxBtn.hidden = !cfg.showContextPanel;
+      if (!cfg.showContextPanel && $('context-drawer') && !$('context-drawer').hidden) {
+        $('context-drawer').hidden = true;
+        ctxBtn?.classList.remove('active');
+      }
+      if (usageBtn) usageBtn.hidden = !cfg.showUsagePanel;
+      if (!cfg.showUsagePanel && $('usage-drawer') && !$('usage-drawer').hidden) {
+        $('usage-drawer').hidden = true;
+        usageBtn?.classList.remove('active');
+      }
+      if (quotaBtn) quotaBtn.hidden = !cfg.showQuotaPill;
+      if (!cfg.showQuotaPill && $('quota-drawer') && !$('quota-drawer').hidden) {
+        $('quota-drawer').hidden = true;
+        quotaBtn?.classList.remove('active');
+      }
+      if (subMeta) subMeta.hidden = !cfg.showChannelMeta;
+      if (drawerBtn) drawerBtn.hidden = !cfg.showSidebar;
+      if (!cfg.showSidebar && typeof closeDrawer === 'function') closeDrawer();
+      if (document.body?.classList) {
+        document.body.classList.toggle('hide-thinking', !cfg.showThinking);
+        document.body.classList.toggle('hide-composer-tools', !cfg.showComposerTools);
+      }
+      if (chipsEl) chipsEl.hidden = !cfg.showQuickChips;
+      if (dockEl && !cfg.showApprovals) dockEl.hidden = true;
+      return cfg;
+    }
+
+    function syncTopbarDrawerButtons() {
+      $('btn-context-panel')?.classList.toggle('active', Boolean($('context-drawer') && !$('context-drawer').hidden));
+      $('btn-usage-panel')?.classList.toggle('active', Boolean($('usage-drawer') && !$('usage-drawer').hidden));
+      $('btn-quota')?.classList.toggle('active', Boolean($('quota-drawer') && !$('quota-drawer').hidden));
+    }
+
+    async function fetchContextPanelData() {
+      const qs = [];
+      if (currentTargetId) qs.push('targetId=' + encodeURIComponent(currentTargetId));
+      if (selectedConversationId) qs.push('conversationId=' + encodeURIComponent(selectedConversationId));
+      const q = qs.length ? '?' + qs.join('&') : '';
+      try {
+        const res = await fetchWithTimeout((apiBase || '') + '/api/context' + q, { headers: authHeaders(), cache: 'no-store' }, 4500);
+        if (res.status === 401) { location.reload(); return null; }
+        const data = await res.json().catch(() => null);
+        if (data?.ok) cachedContextResp = data;
+        renderContextDrawer(latestSnap, cachedContextResp);
+        return data;
+      } catch {
+        return null;
+      }
+    }
+
+    async function fetchUsageData(force) {
+      const q = force ? '?force=1' : '';
+      try {
+        const res = await fetchWithTimeout((apiBase || '') + '/api/usage' + q, { headers: authHeaders(), cache: 'no-store' }, 6000);
+        if (res.status === 401) { location.reload(); return null; }
+        const json = await res.json().catch(() => null);
+        if (json?.ok && json.data) {
+          cachedUsageData = json.data;
+          if ($('usage-top-val') && cachedUsageData.summary?.totalTokens) {
+            $('usage-top-val').textContent = fmtNumShort(cachedUsageData.summary.totalTokens);
+          }
+        }
+        renderUsageDrawer(cachedUsageData);
+        return json;
+      } catch {
+        renderUsageDrawer(cachedUsageData);
+        return null;
+      }
+    }
+
+    function openTopDrawer(kind) {
+      const ctxBox = $('context-drawer');
+      const usageBox = $('usage-drawer');
+      const quotaBox = $('quota-drawer');
+      const targetBox = kind === 'context' ? ctxBox : (kind === 'usage' ? usageBox : (kind === 'quota' ? quotaBox : null));
+      const willOpen = Boolean(targetBox && targetBox.hidden);
+
+      if (ctxBox) ctxBox.hidden = true;
+      if (usageBox) usageBox.hidden = true;
+      if (quotaBox) quotaBox.hidden = true;
+
+      if (willOpen && targetBox) {
+        targetBox.hidden = false;
+        if (kind === 'context') {
+          renderContextDrawer(latestSnap, cachedContextResp);
+          void fetchContextPanelData();
+        } else if (kind === 'usage') {
+          renderUsageDrawer(cachedUsageData);
+          void fetchUsageData(false);
+        } else if (kind === 'quota' && latestSnap) {
+          renderQuotaDrawer(latestSnap);
+        }
+      }
+      syncTopbarDrawerButtons();
+    }
+
+    function renderContextDrawer(snap, ctxRes) {
+      const box = $('context-drawer');
+      if (!box || box.hidden) return;
+      const cp = ctxRes?.contextPanel || snap?.contextPanel || {};
+      const pct = typeof cp.usagePercent === 'number' ? Math.max(0, Math.min(100, cp.usagePercent)) : null;
+      const usedStr = cp.usedText || (cp.usedTokens ? fmtNumShort(cp.usedTokens) : '—');
+      const limitStr = cp.limitText || (cp.limitTokens ? fmtNumShort(cp.limitTokens) : '—');
+      const remainStr = cp.remainingText || (cp.limitTokens && cp.usedTokens != null ? fmtNumShort(Math.max(0, cp.limitTokens - cp.usedTokens)) : '—');
+      const speedStr = cp.speedText || (cp.tokPerSec != null ? cp.tokPerSec + ' tok/s' : '—');
+      const cacheStr = cp.cacheHitRate != null ? cp.cacheHitRate + '%' : '—';
+      const durStr = cp.durationText || (cp.lastDurationSec != null ? cp.lastDurationSec + 's' : '—');
+      const modelStr = cp.modelDisplayName || ctxRes?.model || snap?.model || '—';
+      const barCol = pct == null ? 'var(--accent)' : (pct >= 85 ? 'var(--red)' : (pct >= 65 ? 'var(--amber)' : 'var(--green)'));
+      const isolatedTag = snap?.isolated ? '<span class="isolated-badge">独立浏览中</span>' : '';
+
+      box.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">' +
+          '<div style="display:flex;align-items:center;gap:6px;min-width:0"><strong style="font-size:13.5px">上下文窗口面板</strong>' + isolatedTag + '</div>' +
+          '<button id="btn-refresh-context" class="icon-btn" style="height:26px;font-size:12px" type="button">↻ 刷新</button>' +
+        '</div>' +
+        '<div class="qcard">' +
+          '<div class="qhead"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ctxRes?.title || snap?.title || '当前会话') + '</span><span style="color:' + barCol + '">' + (pct != null ? pct.toFixed(1) + '%' : '--%') + '</span></div>' +
+          '<div class="qbar"><div class="qfill" style="width:' + (pct != null ? pct.toFixed(1) : 0) + '%;background:' + barCol + '"></div></div>' +
+          '<div class="qreset" style="margin-top:5px">模型：' + esc(modelStr) + '</div>' +
+        '</div>' +
+        '<div class="ctx-drawer-grid">' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">当前已用 / 上限</div><div class="ctx-stat-val">' + esc(usedStr) + ' / ' + esc(limitStr) + '</div></div>' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">剩余可用</div><div class="ctx-stat-val">' + esc(remainStr) + '</div></div>' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">输出速度 · 耗时</div><div class="ctx-stat-val">' + esc(speedStr) + ' · ' + esc(durStr) + '</div></div>' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">缓存命中率</div><div class="ctx-stat-val">' + esc(cacheStr) + '</div></div>' +
+        '</div>' +
+        (cp.sessionCostText ? '<div class="qreset" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '');
+
+      const refBtn = $('btn-refresh-context');
+      if (refBtn) refBtn.onclick = () => { void fetchContextPanelData(); };
+    }
+
+    function renderUsageDrawer(usageData) {
+      const box = $('usage-drawer');
+      if (!box || box.hidden) return;
+      const summary = usageData?.summary || latestSnap?.usageSummary || {};
+      const bySrc = usageData?.dailyMapBySource || null;
+      const allMap = usageData?.dailyMap || {};
+      const activeMap = (usageSourceFilter === 'desktop' && bySrc?.desktop)
+        ? bySrc.desktop
+        : ((usageSourceFilter === 'cli' && bySrc?.cli) ? bySrc.cli : allMap);
+      const dayKeys = Object.keys(activeMap || {}).sort().slice(-14);
+      let maxVal = 1;
+      for (const k of dayKeys) {
+        const v = Number(activeMap[k]?.totalTokens ?? activeMap[k]?.total ?? 0) || 0;
+        if (v > maxVal) maxVal = v;
+      }
+      const barsHtml = dayKeys.length
+        ? '<div class="usage-bars">' + dayKeys.map((k) => {
+            const v = Number(activeMap[k]?.totalTokens ?? activeMap[k]?.total ?? 0) || 0;
+            const h = Math.max(8, Math.round((v / maxVal) * 100));
+            return '<div class="usage-bar-col" style="height:' + h + '%" title="' + esc(k + ': ' + fmtNumShort(v)) + '"></div>';
+          }).join('') + '</div>'
+        : '<div class="qreset">点击右上角刷新同步完整日均统计</div>';
+
+      const todayStr = fmtNumShort(summary.todayTokens || 0);
+      const sevenStr = fmtNumShort(summary.sevenDayTokens || 0);
+      const thirtyStr = fmtNumShort(summary.thirtyDayTokens || 0);
+      const totalStr = fmtNumShort(summary.totalTokens || 0);
+      const costNum = Number(usageData?.referenceCost?.totalUsd ?? usageData?.costEstimate?.totalUsd ?? summary.totalCostUsd ?? 0) || 0;
+      const costStr = costNum > 0 ? '$' + costNum.toFixed(2) : '—';
+
+      box.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+          '<strong style="font-size:13.5px">本机已记录用量面板</strong>' +
+          '<button id="btn-refresh-usage" class="icon-btn" style="height:26px;font-size:12px" type="button">↻ 刷新</button>' +
+        '</div>' +
+        '<div class="usage-src-tabs">' +
+          [['all', '全部'], ['desktop', '桌面端'], ['cli', 'CLI']].map(([k, lbl]) =>
+            '<button class="usage-src-btn' + (usageSourceFilter === k ? ' active' : '') + '" data-src="' + k + '" type="button">' + lbl + '</button>'
+          ).join('') +
+        '</div>' +
+        '<div class="usage-kpi-grid">' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">今日用量</div><div class="ctx-stat-val">' + esc(todayStr) + '</div></div>' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">近 7 天 / 30 天</div><div class="ctx-stat-val">' + esc(sevenStr) + ' / ' + esc(thirtyStr) + '</div></div>' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">累计总用量</div><div class="ctx-stat-val">' + esc(totalStr) + '</div></div>' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">API 参考等值</div><div class="ctx-stat-val">' + esc(costStr) + '</div></div>' +
+        '</div>' +
+        barsHtml;
+
+      box.querySelectorAll('.usage-src-btn').forEach((btn) => {
+        btn.onclick = () => {
+          usageSourceFilter = btn.getAttribute('data-src') || 'all';
+          try { sessionStorage.setItem(USAGE_SRC_SESSION_KEY, usageSourceFilter); } catch {}
+          renderUsageDrawer(cachedUsageData);
+        };
+      });
+      const refUsage = $('btn-refresh-usage');
+      if (refUsage) refUsage.onclick = () => { void fetchUsageData(true); };
     }
 
     function renderQuotaDrawer(snap) {
@@ -4928,27 +6132,47 @@ function buildMobileAppHtml() {
       }
       latestSnap = snap;
       syncSelectedProjectFromSnapshot(snap);
-      if (snap.currentTargetId) currentTargetId = snap.currentTargetId;
+      if ($('btn-follow-desktop')) $('btn-follow-desktop').hidden = !Boolean(snap.isolated);
+      if (snap.currentTargetId) {
+        currentTargetId = snap.currentTargetId;
+        try { sessionStorage.setItem(TARGET_ID_SESSION_KEY, currentTargetId); } catch {}
+      }
       if (Array.isArray(snap.endpoints) && snap.endpoints.length) {
         pairState.endpoints = snap.endpoints;
         if (Array.isArray(snap.hosts) && snap.hosts.length) pairState.hosts = snap.hosts;
         saveStoredPair(pairState);
+        if (!manualLocked && !isAutoSwitched && !autoSwitchChecked && getEnabledModeEntries().length > 1) {
+          autoSwitchChecked = true;
+          void runSpeedTest({ autoSwitch: true, silent: true });
+        }
       }
 
+      const displayCfg = applyRemoteDisplayConfig(snap);
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
-      const chSuffix = getEnabledModeEntries().length > 1 ? ' ▾' : '';
-      $('sub-meta').textContent = getActiveChannelLabel() + chSuffix + ' · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
+      $('sub-meta').textContent = getActiveChannelLabel() + (snap.isolated ? ' · 独立视图' : '') + ' ▾ · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
       $('quota-main').textContent = 'G4 ' + gStr + ' · C ' + cStr;
       $('ctx-badge').textContent = snap.contextBadge || '--%';
+      const cp = snap.contextPanel || {};
+      const ctxPctMatch = String(snap.contextBadge || '').match(/(\\d+(?:\\.\\d+)?)%/);
+      const ctxPctNum = typeof cp.usagePercent === 'number'
+        ? Math.round(cp.usagePercent) + '%'
+        : (ctxPctMatch ? ctxPctMatch[1] + '%' : '--%');
+      if ($('ctx-top-val')) $('ctx-top-val').textContent = ctxPctNum;
+      if ($('usage-top-val')) {
+        const totTok = Number(cachedUsageData?.summary?.totalTokens || snap.usageSummary?.totalTokens || 0);
+        $('usage-top-val').textContent = totTok > 0 ? fmtNumShort(totTok) : '用量';
+      }
       $('model-inline-label').textContent = snap.model || '切换模型';
       syncPermInlineUi(snap.permissionKey, snap.permissionLabel);
       syncNewChatButtonUi(snap);
 
       renderQuotaDrawer(snap);
+      if ($('context-drawer') && !$('context-drawer').hidden) renderContextDrawer(snap, cachedContextResp);
+      if ($('usage-drawer') && !$('usage-drawer').hidden) renderUsageDrawer(cachedUsageData);
       syncSendButtonUI();
 
       // Messages (full history + upward pagination + gap backfill + scroll anchor)
@@ -4986,7 +6210,7 @@ function buildMobileAppHtml() {
       // Pending Approvals
       const approvals = Array.isArray(snap.pendingApprovals) ? snap.pendingApprovals : [];
       const dock = $('approval-dock');
-      if (!approvals.length) {
+      if (!displayCfg.showApprovals || !approvals.length) {
         dock.hidden = true;
         dock.innerHTML = '';
       } else {
@@ -5027,7 +6251,24 @@ function buildMobileAppHtml() {
         }
       }
       items.push({ cls: 'chip', text: '/compact', act: () => apiAction({ action: 'send', text: '/compact' }) });
-      items.push({ cls: 'chip', text: '展开/收起思考', act: () => apiAction({ action: 'toggle-thinking' }) });
+      items.push({
+        cls: 'chip',
+        text: '展开/收起思考',
+        act: () => {
+          const boxes = Array.from(document.querySelectorAll('#messages .thought-box'));
+          if (!boxes.length) { showToast('当前消息暂无思考过程'); return { ok: true }; }
+          const anyClosed = boxes.some((b) => !(b.open || (typeof b.hasAttribute === 'function' && b.hasAttribute('open'))));
+          boxes.forEach((b) => {
+            b.open = anyClosed;
+            if (typeof b.setAttribute === 'function' && typeof b.removeAttribute === 'function') {
+              if (anyClosed) b.setAttribute('open', '');
+              else b.removeAttribute('open');
+            }
+            hydrateThoughtDetails(b);
+          });
+          return { ok: true };
+        }
+      });
 
       const chipsSig = JSON.stringify(items.map((it) => [it.cls, it.text, it.raw || '']));
       if (chips.dataset.sig !== chipsSig) {
@@ -5038,7 +6279,7 @@ function buildMobileAppHtml() {
           b.type = 'button';
           b.className = it.cls;
           b.textContent = it.text;
-          b.onclick = async () => {
+          bindButtonClick(b, async () => {
             try {
               if (it.isSuggest) {
                 const taEl = $('input');
@@ -5059,15 +6300,32 @@ function buildMobileAppHtml() {
             } catch (e) {
               showToast(e?.message || '操作失败');
             }
-          };
+          });
           chips.appendChild(b);
         }
       }
 
-      // Drawer Conversations & Multi-Project Grouping
-      reconcileExtraConversations(snap);
-      renderConversationList(snap);
+      // Drawer Conversations & Multi-Project Grouping (with projectGroups drilldown fallback)
+      const useDrilldownDrawer = shouldUseDrilldownDrawer(snap);
+      const navBarEl = $('drawer-nav-bar');
+      const convToolbarEl = document.querySelector('.conv-toolbar');
+      if (navBarEl) navBarEl.hidden = !useDrilldownDrawer;
+      if (convToolbarEl) convToolbarEl.hidden = useDrilldownDrawer;
+      if (useDrilldownDrawer) {
+        renderDrawerProjectsAndConversations(snap);
+      } else {
+        reconcileExtraConversations(snap);
+        renderConversationList(snap);
+      }
       return true;
+    }
+
+    function shouldUseDrilldownDrawer(snap) {
+      return Boolean(
+        (!Array.isArray(snap?.projects) || !snap.projects.length) &&
+        Array.isArray(snap?.projectGroups) &&
+        snap.projectGroups.length > 0
+      );
     }
 
     const CONV_VIEW_KEY = 'ag_remote_conv_view_v1';
@@ -5407,12 +6665,119 @@ function buildMobileAppHtml() {
       }
     }
 
+    function normalizeProjectGroups(snap) {
+      const rawGroups = Array.isArray(snap?.projectGroups) ? snap.projectGroups : [];
+      if (rawGroups.length) {
+        return rawGroups.map((g, idx) => {
+          const convs = Array.isArray(g.conversations) ? g.conversations : [];
+          const name = String(g.name || '未命名项目').trim() || '未命名项目';
+          const key = String(g.key || g.id || ('proj:' + idx + ':' + name));
+          return {
+            id: String(g.id || ''),
+            key,
+            name,
+            count: Math.max(Number(g.count) || 0, convs.length),
+            isCollapsed: Boolean(g.isCollapsed),
+            active: Boolean(g.active || convs.some((c) => c.active)),
+            conversations: convs
+          };
+        });
+      }
+      const convs = Array.isArray(snap?.conversations) ? snap.conversations : [];
+      const map = new Map();
+      for (const c of convs) {
+        if (!c || !c.id) continue;
+        const pName = String(c.project || '默认项目').trim() || '默认项目';
+        if (!map.has(pName)) {
+          map.set(pName, {
+            id: '',
+            key: 'proj:' + pName,
+            name: pName,
+            count: 0,
+            isCollapsed: false,
+            active: false,
+            conversations: []
+          });
+        }
+        const g = map.get(pName);
+        g.conversations.push(c);
+        g.count = g.conversations.length;
+        if (c.active) g.active = true;
+      }
+      return Array.from(map.values());
+    }
+
+    function renderDrawerProjectsAndConversations(snap, animate) {
+      const convList = $('conv-list');
+      const navBar = $('drawer-nav-bar');
+      if (!convList) return;
+      const groups = normalizeProjectGroups(snap);
+      let selectedGroup = activeDrawerProject
+        ? groups.find((g) => g.key === activeDrawerProject || g.id === activeDrawerProject || g.name === activeDrawerProject)
+        : null;
+      if (activeDrawerProject && !selectedGroup) {
+        activeDrawerProject = '';
+      }
+
+      if (animate && convList.classList) {
+        convList.classList.remove('anim-enter');
+        try { void convList.offsetWidth; } catch {}
+        convList.classList.add('anim-enter');
+      }
+
+      if (selectedGroup) {
+        if (navBar) {
+          const navHtml = '<button id="btn-drawer-back" class="drawer-back-btn" type="button">‹ 返回项目</button>'
+            + '<span class="drawer-proj-title" title="' + esc(selectedGroup.name) + '">📁 ' + esc(selectedGroup.name) + '</span>';
+          if (navBar.dataset.lastHtml !== navHtml) {
+            navBar.innerHTML = navHtml;
+            navBar.dataset.lastHtml = navHtml;
+          }
+        }
+        const convHtml = selectedGroup.conversations.length
+          ? selectedGroup.conversations.map((c) =>
+              '<button class="conv-item' + (c.active ? ' active' : '') + '" data-cid="' + esc(c.id) + '" type="button">' + esc(c.title) + '</button>'
+            ).join('')
+          : '<div class="empty-tip" style="padding:16px 8px">该项目暂无可切换会话</div>';
+        if (convList.dataset.lastHtml !== convHtml) {
+          convList.innerHTML = convHtml;
+          convList.dataset.lastHtml = convHtml;
+        }
+        return;
+      }
+
+      if (navBar) {
+        const navHtml = '<span class="drawer-sub">项目列表 (' + groups.length + ')</span>';
+        if (navBar.dataset.lastHtml !== navHtml) {
+          navBar.innerHTML = navHtml;
+          navBar.dataset.lastHtml = navHtml;
+        }
+      }
+      const projHtml = groups.length
+        ? groups.map((g) =>
+            '<button class="proj-item' + (g.active ? ' active' : '') + '" data-proj-key="' + esc(g.key) + '" type="button">'
+            + '<span class="proj-item-left"><span>📁</span><span class="proj-item-name">' + esc(g.name) + '</span>'
+            + (g.active ? '<span class="mode-pill cur">当前</span>' : '')
+            + '</span>'
+            + '<span class="proj-item-right"><span class="lat-badge muted">' + esc(g.count) + '</span><span>›</span></span>'
+            + '</button>'
+          ).join('')
+        : '<div class="empty-tip" style="padding:16px 8px">暂无历史项目</div>';
+      if (convList.dataset.lastHtml !== projHtml) {
+        convList.innerHTML = projHtml;
+        convList.dataset.lastHtml = projHtml;
+      }
+    }
+
     async function fetchSnapshot() {
       if (snapshotInflight) return;
       snapshotInflight = true;
       const mySeq = ++snapshotSeq;
       const fetchStartEpoch = ++clientSyncEpoch;
-      const q = currentTargetId ? '?targetId=' + encodeURIComponent(currentTargetId) : '';
+      const qs = [];
+      if (currentTargetId) qs.push('targetId=' + encodeURIComponent(currentTargetId));
+      if (selectedConversationId) qs.push('conversationId=' + encodeURIComponent(selectedConversationId));
+      const q = qs.length ? '?' + qs.join('&') : '';
       const doFetch = () => {
         if (activeSnapAbort) { try { activeSnapAbort.abort(); } catch {} }
         activeSnapAbort = typeof AbortController === 'function' ? new AbortController() : null;
@@ -5459,7 +6824,7 @@ function buildMobileAppHtml() {
 
     function schedulePoll() {
       clearTimeout(pollTimer);
-      if (document.hidden) return;
+      if (document.hidden || navigatingAway) return;
       const ms = latestSnap?.busy ? 900 : 2500;
       pollTimer = setTimeout(fetchSnapshot, ms);
     }
@@ -5497,39 +6862,197 @@ function buildMobileAppHtml() {
     $('sheet-list').onclick = handleSheetListClick;
     $('sheet-list').addEventListener('click', handleSheetListClick);
     function openSheet(title, options, onSelect) {
-      $('sheet-title-text').textContent = title;
+      configureSheetChrome({
+        kind: 'generic',
+        title,
+        subText: '',
+        showSpeed: false,
+        onBack: null
+      });
       const listEl = $('sheet-list');
       activeSheetState = { options, onSelect };
       listEl.innerHTML = options.map((o, idx) =>
         '<button class="sheet-opt' + (o.active ? ' active' : '') + '" data-idx="' + idx + '" type="button">' +
         '<span>' + esc(o.label) + '</span>' + (o.active ? '<span>✓</span>' : '') + '</button>'
       ).join('');
+      listEl.onclick = handleSheetListClick;
       $('sheet-backdrop').hidden = false;
       syncViewportHeight();
     }
-    $('sheet-close').addEventListener('click', closeSheet);
-    $('sheet-backdrop').addEventListener('click', (e) => { if (e.target === $('sheet-backdrop')) closeSheet(); });
+    $('sheet-close').onclick = closeSheet;
+    $('sheet-backdrop').onclick = (e) => {
+      if (e.target === $('sheet-backdrop')) closeSheet();
+    };
+
+    const EFFORT_META = {
+      max: { label: '最高 · Max', short: 'Max', rank: 0 },
+      xhigh: { label: '超高 · XHigh', short: 'XHigh', rank: 1 },
+      high: { label: '高 · High', short: 'High', rank: 2 },
+      medium: { label: '中 · Medium', short: 'Medium', rank: 3 },
+      low: { label: '低 · Low', short: 'Low', rank: 4 }
+    };
+
+    function groupModelsByBaseId(modelOptions, currentModelLabel) {
+      const groups = [];
+      const groupMap = new Map();
+      for (const m of (modelOptions || [])) {
+        if (!m || !m.label) continue;
+        const rawLabel = String(m.label).trim();
+        const rawModelId = String(m.modelId || '').trim();
+        const idMatch = rawModelId.match(/^(.*?)-(xhigh|high|medium|low|max)$/i);
+        const lblMatch = rawLabel.match(/^(.*?)\\s*\\((XHigh|High|Medium|Low|Max)\\)\\s*$/i);
+        const effortKey = idMatch
+          ? idMatch[2].toLowerCase()
+          : (lblMatch ? lblMatch[2].toLowerCase() : '');
+        const baseModelId = idMatch
+          ? idMatch[1].toLowerCase()
+          : (rawModelId || (lblMatch ? lblMatch[1].trim() : rawLabel)).toLowerCase();
+        const baseLabel = lblMatch ? lblMatch[1].trim() : rawLabel;
+        const meta = EFFORT_META[effortKey] || { label: effortKey || rawLabel, short: effortKey || '', rank: 9 };
+        const isActive = Boolean(m.selected || rawLabel === currentModelLabel);
+
+        if (!groupMap.has(baseModelId)) {
+          const g = {
+            baseModelId,
+            baseLabel,
+            active: false,
+            hasEffortChoice: false,
+            variants: []
+          };
+          groupMap.set(baseModelId, g);
+          groups.push(g);
+        }
+        const grp = groupMap.get(baseModelId);
+        if (isActive) grp.active = true;
+        grp.variants.push({
+          label: rawLabel,
+          modelId: rawModelId,
+          effortKey,
+          effortLabel: meta.label,
+          effortShort: meta.short,
+          rank: meta.rank,
+          active: isActive
+        });
+      }
+      for (const grp of groups) {
+        grp.variants.sort((a, b) => a.rank - b.rank);
+        grp.hasEffortChoice = grp.variants.length > 1;
+      }
+      return groups;
+    }
+
+    async function applyModelSelection(opt) {
+      if (!opt) return;
+      showToast('正在切换至 ' + opt.label + '…');
+      try {
+        const r = await apiAction({ action: 'select-model', label: opt.label, modelId: opt.modelId });
+        if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
+        else showToast(r?.error || r?.actionResult?.error || '切换模型失败');
+      } catch (err) {
+        showToast(err?.message || '切换模型失败');
+      }
+    }
 
     function openModelPicker() {
-      const opts = (latestSnap?.modelOptions || []).map((m) => ({
-        label: m.label,
-        modelId: m.modelId,
-        active: Boolean(m.selected || m.label === latestSnap?.model)
-      }));
-      if (!opts.length) {
+      activeSheetState = null;
+      const groups = groupModelsByBaseId(latestSnap?.modelOptions || [], latestSnap?.model || '');
+      if (!groups.length) {
         showToast('未检测到可用模型列表');
         return;
       }
-      openSheet('切换模型', opts, async (opt) => {
-        showToast('正在切换至 ' + opt.label + '…');
-        try {
-          const r = await apiAction({ action: 'select-model', label: opt.label, modelId: opt.modelId });
-          if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
-          else showToast(r?.error || r?.actionResult?.error || '切换模型失败');
-        } catch (err) {
-          showToast(err?.message || '切换模型失败');
-        }
+      configureSheetChrome({
+        kind: 'model',
+        title: '切换模型',
+        subText: '',
+        showSpeed: false,
+        onBack: null
       });
+      const listEl = $('sheet-list');
+      const groupsHtml = groups.map((g, gIdx) => {
+        const activeVar = g.variants.find((v) => v.active);
+        const effPill = (g.hasEffortChoice && activeVar?.effortShort)
+          ? '<span class="mode-pill cur">' + esc(activeVar.effortShort) + '</span>'
+          : '';
+        const rightTag = g.hasEffortChoice
+          ? ('<span class="lat-badge muted">' + g.variants.length + ' 档 ›</span>')
+          : (g.active ? '<span>✓</span>' : '');
+        return '<button class="sheet-opt' + (g.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" type="button">'
+          + '<span class="sheet-opt-left">'
+          + '<span class="sheet-opt-top"><span>' + esc(g.baseLabel) + '</span>' + effPill + '</span>'
+          + (g.baseModelId ? ('<span class="sheet-opt-host">' + esc(g.baseModelId) + '</span>') : '')
+          + '</span>'
+          + '<span class="sheet-opt-right">' + rightTag + '</span>'
+          + '</button>';
+      }).join('');
+
+      listEl.innerHTML =
+        '<div class="sheet-stage-viewport">'
+        + '<div id="sheet-stage-track" class="sheet-stage-track">'
+        + '<div id="model-group-pane" class="sheet-stage-pane">' + groupsHtml + '</div>'
+        + '<div id="model-effort-pane" class="sheet-stage-pane"></div>'
+        + '</div>'
+        + '</div>';
+
+      const findPane = (id) => $(id) || listEl.querySelector?.('#' + id) || null;
+      listEl.onclick = async (e) => {
+        const varBtn = e.target?.closest?.('[data-variant-idx]');
+        if (varBtn) {
+          const g = groups[Number(varBtn.dataset.groupIdx)];
+          const v = g?.variants?.[Number(varBtn.dataset.variantIdx)];
+          closeSheet();
+          if (v) await applyModelSelection(v);
+          return;
+        }
+        const grpBtn = e.target?.closest?.('[data-group-idx]');
+        if (!grpBtn) return;
+        const gIdx = Number(grpBtn.dataset.groupIdx);
+        const g = groups[gIdx];
+        if (!g) return;
+        if (!g.hasEffortChoice) {
+          closeSheet();
+          await applyModelSelection(g.variants[0]);
+          return;
+        }
+        const trackEl = findPane('sheet-stage-track');
+        const groupPane = findPane('model-group-pane');
+        const effortPane = findPane('model-effort-pane');
+        if (groupPane) {
+          groupPane.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
+        }
+        grpBtn.classList?.add?.('sliding-out');
+        if (effortPane) {
+          effortPane.innerHTML = g.variants.map((v, vIdx) =>
+            '<button class="sheet-opt' + (v.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" data-variant-idx="' + vIdx + '" type="button">'
+            + '<span class="sheet-opt-left">'
+            + '<span class="sheet-opt-top"><span>' + esc(v.effortLabel) + '</span>' + (v.active ? '<span class="mode-pill cur">当前</span>' : '') + '</span>'
+            + '<span class="sheet-opt-host">' + esc(v.modelId || v.label) + '</span>'
+            + '</span>'
+            + '<span class="sheet-opt-right">' + (v.active ? '<span>✓</span>' : '') + '</span>'
+            + '</button>'
+          ).join('');
+        }
+        if (trackEl) trackEl.classList.add('step-effort');
+        configureSheetChrome({
+          kind: 'model-effort',
+          title: g.baseLabel,
+          subText: '选择思考等级 · ' + g.baseModelId,
+          showSpeed: false,
+          onBack: () => {
+            if (trackEl) trackEl.classList.remove('step-effort');
+            if (groupPane) {
+              groupPane.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
+            }
+            configureSheetChrome({
+              kind: 'model',
+              title: '切换模型',
+              subText: '',
+              showSpeed: false,
+              onBack: null
+            });
+          }
+        });
+      };
+      $('sheet-backdrop').hidden = false;
     }
 
     const PERM_ICONS = {
@@ -5750,7 +7273,7 @@ function buildMobileAppHtml() {
           : '';
         const bodyHtml = m.html
           ? '<div class="md-body">' + m.html + '</div>'
-          : '<div class="msg-plain">' + esc(m.text || '') + '</div>';
+          : '<div class="md-body">' + renderMarkdownSafe(m.text || '') + '</div>';
         return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + '" data-msg-idx="' + m.msgIndex + '">' + risk + thought + bodyHtml + '</div>';
       }).join('');
       if (snap?.busy) {
@@ -5837,8 +7360,25 @@ function buildMobileAppHtml() {
       });
     }
 
-    $('btn-model-inline').addEventListener('click', openModelPicker);
-    $('btn-perm-inline').addEventListener('click', openPermPicker);
+    function bindButtonClick(el, fn) {
+      if (!el || typeof fn !== 'function') return;
+      let lastEv = null;
+      const wrapped = (e) => {
+        if (e && e === lastEv) return;
+        lastEv = e || null;
+        if (e) {
+          Promise.resolve().then(() => { if (lastEv === e) lastEv = null; });
+        }
+        return fn(e);
+      };
+      el.onclick = wrapped;
+      if (typeof el.addEventListener === 'function') {
+        el.addEventListener('click', wrapped);
+      }
+    }
+
+    bindButtonClick($('btn-model-inline'), openModelPicker);
+    bindButtonClick($('btn-perm-inline'), openPermPicker);
 
     const THEME_STORAGE_KEY = 'ag_remote_theme_v1';
     const lightSchemeMq = typeof window.matchMedia === 'function'
@@ -6016,15 +7556,37 @@ function buildMobileAppHtml() {
       if (hasDraggedFiles(e)) e.preventDefault();
     });
 
+    if ($('btn-context-panel')) {
+      $('btn-context-panel').onclick = (e) => {
+        e.stopPropagation();
+        openTopDrawer('context');
+      };
+    }
+    if ($('btn-usage-panel')) {
+      $('btn-usage-panel').onclick = (e) => {
+        e.stopPropagation();
+        openTopDrawer('usage');
+      };
+    }
     $('btn-quota').onclick = (e) => {
       e.stopPropagation();
-      const box = $('quota-drawer');
-      box.hidden = !box.hidden;
-      if (!box.hidden && latestSnap) renderQuotaDrawer(latestSnap);
+      openTopDrawer('quota');
     };
     document.addEventListener('click', (e) => {
-      const box = $('quota-drawer');
-      if (!box.hidden && !box.contains(e.target) && e.target !== $('btn-quota')) box.hidden = true;
+      const t = e.target;
+      const pairs = [
+        ['context-drawer', 'btn-context-panel'],
+        ['usage-drawer', 'btn-usage-panel'],
+        ['quota-drawer', 'btn-quota']
+      ];
+      for (const [drawerId, btnId] of pairs) {
+        const box = $(drawerId);
+        const btn = $(btnId);
+        if (box && !box.hidden && !box.contains(t) && t !== btn && !btn?.contains?.(t)) {
+          box.hidden = true;
+        }
+      }
+      syncTopbarDrawerButtons();
     });
 
     const backdropEl = $('drawer-backdrop');
@@ -6067,6 +7629,7 @@ function buildMobileAppHtml() {
         if (pid) payload.projectId = pid;
         const r = await apiAction(payload);
         if (r?.ok) {
+          applySelectedConversation(String(r?.snapshot?.activeConversationId || r?.snapshot?.sessionId || '__new__'));
           if (mySelEpoch === selectedProjectEpoch) {
             showToast(projectName ? ('已在「' + projectName + '」中新建对话') : '已新建对话');
           }
@@ -6469,6 +8032,14 @@ function buildMobileAppHtml() {
         else syncConvTabsUi();
       });
     }
+    if ($('drawer-nav-bar')) {
+      $('drawer-nav-bar').addEventListener('click', (e) => {
+        const backBtn = e.target?.closest?.('#btn-drawer-back');
+        if (!backBtn) return;
+        activeDrawerProject = '';
+        renderDrawerProjectsAndConversations(latestSnap, true);
+      });
+    }
 
     $('conv-list').addEventListener('click', async (e) => {
       const newProjBtn = e.target?.closest?.('.proj-new-btn');
@@ -6538,6 +8109,21 @@ function buildMobileAppHtml() {
         convListEl.dataset.lastHtml = '';
       }
 
+      const projBtn = e.target?.closest?.('.proj-item');
+      if (projBtn && projBtn.dataset.projKey) {
+        const projKey = projBtn.dataset.projKey;
+        activeDrawerProject = projKey;
+        renderDrawerProjectsAndConversations(latestSnap, true);
+        const groups = normalizeProjectGroups(latestSnap);
+        const pickedGrp = groups.find((g) => g.key === projKey);
+        if (pickedGrp && pickedGrp.isCollapsed && !pickedGrp.conversations.length) {
+          try {
+            await apiAction({ action: 'expand-project', groupId: pickedGrp.id, name: pickedGrp.name });
+          } catch {}
+        }
+        return;
+      }
+
       const btn = e.target?.closest?.('.conv-item');
       const cid = btn?.getAttribute('data-cid') || btn?.dataset?.cid || '';
       if (!btn || !cid) return;
@@ -6560,7 +8146,8 @@ function buildMobileAppHtml() {
       stickBottom = true;
       showToast('正在切换会话…');
       try {
-        const r = await apiAction({ action: 'switch-conversation', id: cid });
+        applySelectedConversation(cid);
+        const r = await apiAction({ action: 'switch-conversation', id: cid, isolated: true });
         if (!r?.ok && mySwitchSelEpoch === selectedProjectEpoch) {
           showToast(r?.error || r?.actionResult?.error || '切换会话失败');
           if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
@@ -6580,6 +8167,21 @@ function buildMobileAppHtml() {
         }
       }
     });
+    if ($('btn-follow-desktop')) {
+      $('btn-follow-desktop').onclick = async () => {
+        if (!isDesktopLayout()) closeDrawer();
+        stickBottom = true;
+        showToast('正在同步桌面端当前会话…');
+        try {
+          applySelectedConversation('');
+          const r = await apiAction({ action: 'switch-conversation', id: 'follow-desktop' });
+          if (r?.ok) showToast('已同步桌面当前会话');
+          else showToast(r?.error || r?.actionResult?.error || '同步失败');
+        } catch (err) {
+          showToast(err?.message || '同步失败');
+        }
+      };
+    }
     $('btn-drawer').addEventListener('click', () => {
       if (isDesktopLayout()) {
         document.body.classList.toggle('sidebar-collapsed');
@@ -6693,16 +8295,28 @@ function buildMobileAppHtml() {
     function syncSendButtonUI() {
       const btn = $('btn-send');
       if (!btn) return;
+      if (sending) {
+        btn.disabled = true;
+        btn.className = 'send-circle pending';
+        btn.innerHTML = '<span class="mini-spin"></span>';
+        btn.setAttribute('aria-busy', 'true');
+        btn.setAttribute('aria-label', '正在处理…');
+        return;
+      }
+      btn.removeAttribute?.('aria-busy');
       const hasContent = Boolean(ta.value.trim() || uploadedNames.length);
       if (hasContent) {
+        btn.disabled = false;
         btn.className = 'send-circle ready';
         btn.innerHTML = SEND_ARROW_SVG;
         btn.setAttribute('aria-label', '发送消息');
       } else if (latestSnap?.busy) {
+        btn.disabled = false;
         btn.className = 'send-circle stop';
         btn.innerHTML = STOP_SQUARE_SVG;
         btn.setAttribute('aria-label', '停止生成');
       } else {
+        btn.disabled = true;
         btn.className = 'send-circle';
         btn.innerHTML = SEND_ARROW_SVG;
         btn.setAttribute('aria-label', '发送消息');
@@ -6713,8 +8327,16 @@ function buildMobileAppHtml() {
       ta.style.height = 'auto';
       const maxH = isDesktopLayout() ? 200 : 148;
       ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
+      saveDraftForConv(selectedConversationId, ta.value || '');
       syncSendButtonUI();
     };
+    {
+      const initDraft = loadDraftForConv(selectedConversationId);
+      if (initDraft) {
+        ta.value = initDraft;
+        autoGrow();
+      }
+    }
     ta.addEventListener('input', autoGrow);
     ta.addEventListener('focus', () => { setTimeout(syncViewportHeight, 120); });
     ta.addEventListener('blur', () => { setTimeout(syncViewportHeight, 80); });
@@ -6740,7 +8362,10 @@ function buildMobileAppHtml() {
       if (e.key !== 'Escape') return;
       if (!$('proj-modal-backdrop').hidden) { closeCreateProjectModal(); return; }
       if (!$('sheet-backdrop').hidden) { closeSheet(); return; }
-      if (!$('quota-drawer').hidden) { $('quota-drawer').hidden = true; return; }
+      if (!$('quota-drawer').hidden || ($('context-drawer') && !$('context-drawer').hidden) || ($('usage-drawer') && !$('usage-drawer').hidden)) {
+        openTopDrawer(null);
+        return;
+      }
       if (!isDesktopLayout() && backdropEl.classList.contains('open')) closeDrawer();
     });
 
@@ -6748,39 +8373,51 @@ function buildMobileAppHtml() {
       if (sending) return;
       const rawText = ta.value.trim();
       if (!rawText && !uploadedNames.length && latestSnap?.busy) {
+        sending = true;
+        syncSendButtonUI();
         try {
-          const r = await apiAction({ action: 'stop' });
+          const r = await apiAction({ action: 'stop' }, { skipAutoRender: true });
           if (r?.ok) showToast('已请求停止生成');
           else showToast(r?.error || r?.actionResult?.error || '停止失败');
+          sending = false;
+          if (r?.snapshot) renderSnapshot(r.snapshot);
         } catch (err) {
           showToast(err?.message || '停止失败');
+        } finally {
+          sending = false;
+          syncSendButtonUI();
         }
         return;
       }
       const text = rawText || (uploadedNames.length ? '请查看图片' : '');
       if (!text) return;
       sending = true;
-      $('btn-send').disabled = true;
+      syncSendButtonUI();
       try {
         stickBottom = true;
-        const r = await apiAction({ action: 'send', text });
+        const r = await apiAction({ action: 'send', text }, { skipAutoRender: true });
         if (r?.ok) {
           ta.value = '';
+          saveDraftForConv(selectedConversationId, '');
           uploadedNames = [];
           $('attach-hint').hidden = true;
-          autoGrow();
+          ta.style.height = 'auto';
+          const maxH = isDesktopLayout() ? 180 : 112;
+          ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
         } else {
           showToast(r?.error || r?.actionResult?.error || '发送失败');
         }
+        sending = false;
+        if (r?.snapshot) renderSnapshot(r.snapshot);
       } catch (err) {
         showToast(err?.message || '发送失败');
       } finally {
         sending = false;
-        $('btn-send').disabled = false;
         syncSendButtonUI();
       }
     }
-    $('btn-send').addEventListener('click', sendInput);
+    bindButtonClick($('btn-send'), sendInput);
+    syncSendButtonUI();
     ta.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
         e.preventDefault();
@@ -6791,8 +8428,25 @@ function buildMobileAppHtml() {
     renderModeEntryGate(
       isManualEntry
         ? ('正在通过 ' + getActiveChannelLabel() + ' 连接 Mac…')
-        : '正在自动连接最佳通道，也可直接点击已开启的方式立即进入：'
+        : '正在自动测试并切换至最快通道，也可直接点击下方方式进入：'
     );
+    if (isAutoSwitched) {
+      const curKind = detectKindFromOrigin(location.origin);
+      const curMs = speedTestState.results?.[curKind]?.ms;
+      showToast('⚡ 已自动切换至最快路线：' + getActiveChannelLabel() + (Number.isFinite(curMs) ? ' (' + curMs + ' ms)' : ''));
+      if (location.protocol !== 'https:') {
+        const missingAny = getEnabledModeEntries().some((ep) => {
+          const sr = speedTestState.results?.[ep.kind];
+          return !sr || sr.via === 'server' || sr.reason === 'https_restricted';
+        });
+        if (missingAny) void runSpeedTest({ autoSwitch: false, silent: true });
+      }
+    } else if (!manualLocked && getEnabledModeEntries().length > 1) {
+      autoSwitchChecked = true;
+      void runSpeedTest({ autoSwitch: true, silent: true });
+    } else if (speedTestState.testedAt === 0) {
+      void runSpeedTest({ autoSwitch: false, silent: true });
+    }
     void fetchSnapshot();
   })();
   </script>
@@ -6855,6 +8509,7 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '') {
     }
     const cleanHost = String(u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
     if (!cleanHost) return false;
+    if (u.protocol === 'https:' && cleanHost.endsWith('.trycloudflare.com')) return true;
     if (cleanHost === 'localhost' || cleanHost.endsWith('.local') || cleanHost.endsWith('.ts.net')) return true;
     return isAllowedPrivateAddress(cleanHost);
   } catch {
@@ -6863,6 +8518,20 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '') {
 }
 
 // ==================== Cloudflare Tunnel 管理 (免登录 Quick Tunnel + 自有账号 Named Tunnel) ====================
+
+function getCloudflaredInstallGuide(platform = process.platform) {
+  const commands = {
+    darwin: 'brew install cloudflared',
+    win32: 'winget install --id Cloudflare.cloudflared',
+    linux: 'mkdir -p ~/.local/bin && curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/.local/bin/cloudflared && chmod +x ~/.local/bin/cloudflared'
+  };
+  const key = commands[platform] ? platform : 'linux';
+  return {
+    platform: key,
+    command: commands[key],
+    commands
+  };
+}
 
 function resolveCloudflaredBinary() {
   const candidates = [];
@@ -7051,9 +8720,10 @@ function createCloudflareTunnelController(getPort) {
     }
     const bin = resolveCloudflaredBinary();
     if (!bin) {
+      const installGuide = getCloudflaredInstallGuide();
       state = 'error';
       publicUrl = '';
-      errorMsg = '未检测到 cloudflared（macOS 可执行 brew install cloudflared 安装）';
+      errorMsg = `未检测到 cloudflared（可执行 ${installGuide.command} 安装）`;
       return getStatus();
     }
     if (mode === 'named') {
@@ -7295,6 +8965,9 @@ function createCloudflareTunnelController(getPort) {
         errorMsg = '';
         return getStatus();
       }
+      if (!touchesTunnel && !tunnelConfigChanged) {
+        return getStatus();
+      }
       await stop();
       return await start(nextCfg);
     }
@@ -7332,13 +9005,335 @@ function acceptsGzipEncoding(rawHeader) {
   return starQ !== null && starQ > 0;
 }
 
+const PROBE_HINT_CACHE_TTL_MS = 3000;
+const LAN_RECENT_SEEN_TTL_MS = 12000;
+const probeHintCache = new Map();
+let cachedTailscaleBin = '';
+
+function execFileAsync(bin, args, timeoutMs = 1000) {
+  return new Promise((resolve) => {
+    try {
+      execFile(bin, args, {
+        timeout: timeoutMs,
+        encoding: 'utf8',
+        windowsHide: true
+      }, (err, stdout, stderr) => {
+        resolve({
+          ok: !err,
+          stdout: String(stdout || ''),
+          stderr: String(stderr || '')
+        });
+      });
+    } catch {
+      resolve({ ok: false, stdout: '', stderr: '' });
+    }
+  });
+}
+
+function parseTailscalePingOutput(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  for (const rawLine of lines) {
+    const m = rawLine.match(/pong\s+from\s+.*?\(([^)\s]+)\)\s+via\s+(\S+)\s+in\s+(?:<\s*)?([0-9.]+)(ms|s)/i);
+    if (!m) continue;
+    const peerIp = String(m[1] || '').trim();
+    const viaRaw = String(m[2] || '').trim();
+    const val = Number(m[3]);
+    const unit = String(m[4] || 'ms').toLowerCase();
+    const rawMs = unit === 's' ? val * 1000 : val;
+    const ms = Number.isFinite(rawMs) ? Math.max(1, Math.round(rawMs)) : 1;
+    const isDerp = /^DERP\b/i.test(viaRaw);
+    let viaIp = '';
+    if (!isDerp) {
+      const bracketMatch = viaRaw.match(/^\[([^\]]+)\]:\d+$/);
+      viaIp = bracketMatch ? bracketMatch[1] : viaRaw.replace(/:\d+$/, '');
+    }
+    return {
+      ok: true,
+      peerIp,
+      viaRaw,
+      viaIp,
+      viaLanIp: (!isDerp && isRfc1918Ipv4(viaIp)) ? viaIp : '',
+      isDerp,
+      ms
+    };
+  }
+  return { ok: false, peerIp: '', viaRaw: '', viaIp: '', viaLanIp: '', isDerp: false, ms: null };
+}
+
+async function pingLanIpRtt(ip, execFn = execFileAsync, netsMap = os.networkInterfaces()) {
+  if (!isRfc1918Ipv4(ip)) return null;
+  if (getLocalHostIpSet(netsMap).has(ip)) return null;
+  let args;
+  let timeoutMs = 850;
+  if (process.platform === 'win32') {
+    args = ['-n', '1', '-w', '350', ip];
+    timeoutMs = 700;
+  } else if (process.platform === 'linux') {
+    args = ['-n', '-c', '2', '-i', '0.15', '-W', '1', ip];
+    timeoutMs = 1200;
+  } else {
+    args = ['-n', '-c', '2', '-i', '0.1', '-W', '300', ip];
+    timeoutMs = 850;
+  }
+  const res = await execFn('ping', args, timeoutMs);
+  const out = `${res.stdout}\n${res.stderr}`;
+  const statsMatch = out.match(/(?:round-trip|rtt)\s+[^=]*=\s*([0-9.]+)\//i);
+  if (statsMatch) {
+    const ms = Number(statsMatch[1]);
+    if (Number.isFinite(ms)) return { ok: true, ms: Math.max(1, Math.round(ms)) };
+  }
+  const times = [];
+  for (const m of out.matchAll(/time[=<]\s*([0-9.]+)\s*ms/ig)) {
+    const v = Number(m[1]);
+    if (Number.isFinite(v)) times.push(v);
+  }
+  if (times.length) {
+    return { ok: true, ms: Math.max(1, Math.round(Math.min(...times))) };
+  }
+  return null;
+}
+
+async function probeClientPrivateReachability(req, config, opts = {}) {
+  const {
+    force = false,
+    now = Date.now(),
+    networkInterfaces: customNets,
+    execAsync: customExec,
+    skipProbes = process.env.AG_REMOTE_SKIP_PROBES === '1'
+  } = opts || {};
+  if (skipProbes) return {};
+  const netsMap = typeof customNets === 'function' ? customNets() : (customNets || os.networkInterfaces());
+  const execFn = typeof customExec === 'function' ? customExec : execFileAsync;
+  const localHostIps = getLocalHostIpSet(netsMap);
+
+  const headers = req?.headers || {};
+  let urlParams = null;
+  if (typeof req?.url === 'string' && req.url.includes('?')) {
+    try { urlParams = new URL(req.url, 'http://localhost').searchParams; } catch {}
+  }
+  const rawDevId = String(headers['x-ag-device-id'] || urlParams?.get('did') || '').trim().slice(0, 64);
+  const headerDevId = /^[A-Za-z0-9._:-]{4,64}$/.test(rawDevId) ? rawDevId : '';
+  const rawFp = String(headers['x-ag-device-fp'] || urlParams?.get('fp') || '').trim().slice(0, 64);
+  const deviceFp = /^[A-Za-z0-9._x@-]{4,64}$/.test(rawFp) ? rawFp : '';
+  const deviceHint = String(headers['x-ag-device-hint'] || urlParams?.get('hint') || '').trim().slice(0, 24);
+  const ua = String(headers['user-agent'] || '').trim();
+  const label = parseDeviceLabel(ua, deviceHint);
+  const cacheKey = headerDevId || deviceFp || ua || 'anon';
+
+  if (!force) {
+    const cached = probeHintCache.get(cacheKey);
+    if (cached && (now - cached.at) < PROBE_HINT_CACHE_TTL_MS) {
+      return cached.hints;
+    }
+  }
+
+  let rec = headerDevId ? (pairedDevicesMap.get(headerDevId) || null) : null;
+  if (!rec) {
+    let bestSeen = -1;
+    for (const v of pairedDevicesMap.values()) {
+      if (!v || v.label !== label) continue;
+      if (ua && v.ua && v.ua !== ua) continue;
+      if (deviceFp && v.fp && v.fp !== deviceFp) continue;
+      if ((v.lastSeenAt || 0) > bestSeen) {
+        bestSeen = v.lastSeenAt || 0;
+        rec = v;
+      }
+    }
+  }
+
+  const en = config?.enabledChannels || {
+    lan: true,
+    tailscale: true,
+    bonjour: true,
+    tunnel: Boolean(config?.tunnelEnabled)
+  };
+  const rawKnownLanIp = rec?.lastLanIp || '';
+  const lanSeenRecently = (now - (rec?.lastLanSeenAt || 0)) <= LAN_RECENT_SEEN_TTL_MS;
+  const knownLanIp = (rawKnownLanIp && lanSeenRecently && !localHostIps.has(rawKnownLanIp) && isIpInLocalPhysicalLanSubnet(rawKnownLanIp, netsMap))
+    ? rawKnownLanIp
+    : '';
+  const rawKnownTsIp = rec?.lastTailscaleIp || '';
+  const knownTsIp = (rawKnownTsIp && !localHostIps.has(rawKnownTsIp)) ? rawKnownTsIp : '';
+
+  const labelToOs = {
+    iPhone: 'ios',
+    iPad: 'ios',
+    Android: 'android',
+    Mac: 'macos',
+    Windows: 'windows'
+  };
+  const targetOs = labelToOs[label] || '';
+
+  const runTsProbe = async () => {
+    if (!en.tailscale && !en.lan) return { statusAvailable: false, pong: null };
+    const candidates = cachedTailscaleBin
+      ? [cachedTailscaleBin]
+      : (process.platform === 'darwin'
+          ? ['tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']
+          : ['tailscale']);
+    let workingBin = '';
+    let parsedStatus = null;
+    for (const bin of candidates) {
+      if (bin.startsWith('/') && !customExec && !fs.existsSync(bin)) continue;
+      const stRes = await execFn(bin, ['status', '--json'], 800);
+      if (stRes.stdout && stRes.stdout.trim().startsWith('{')) {
+        try {
+          parsedStatus = JSON.parse(stRes.stdout);
+          workingBin = bin;
+          if (!customExec) cachedTailscaleBin = bin;
+          break;
+        } catch {}
+      }
+    }
+    if (!workingBin || !parsedStatus || typeof parsedStatus !== 'object') {
+      return { statusAvailable: false, pong: null };
+    }
+
+    const probeIps = [];
+    if (knownTsIp && isTailscaleCgnatIpv4(knownTsIp)) {
+      probeIps.push(knownTsIp);
+    } else if (targetOs === 'ios' || targetOs === 'android') {
+      const mobilePeers = [];
+      for (const p of Object.values(parsedStatus.Peer || {})) {
+        if (!p || !p.Online) continue;
+        if (String(p.OS || '').toLowerCase() !== targetOs) continue;
+        const ip4 = Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs.find((ip) => isTailscaleCgnatIpv4(String(ip))) : '';
+        if (ip4 && !localHostIps.has(String(ip4))) mobilePeers.push(String(ip4));
+      }
+      if (mobilePeers.length === 1) {
+        probeIps.push(mobilePeers[0]);
+      }
+    }
+    if (!probeIps.length) return { statusAvailable: true, pong: null };
+
+    const pongs = await Promise.all(probeIps.map(async (ip) => {
+      const pr = await execFn(workingBin, ['ping', '--c', '1', '--timeout', '1s', ip], 1250);
+      return parseTailscalePingOutput(`${pr.stdout}\n${pr.stderr}`);
+    }));
+    const validPongs = pongs.filter((p) => p && p.ok && Number.isFinite(p.ms));
+    validPongs.sort((a, b) => a.ms - b.ms);
+    return { statusAvailable: true, pong: validPongs[0] || null };
+  };
+
+  const [tsRes, initialLanPing] = await Promise.all([
+    runTsProbe(),
+    (en.lan && knownLanIp) ? pingLanIpRtt(knownLanIp, execFn, netsMap) : Promise.resolve(null)
+  ]);
+
+  let lanPing = initialLanPing;
+  const tsPong = tsRes?.pong || null;
+  if (!lanPing?.ok && en.lan && tsPong?.ok && !tsPong.isDerp && tsPong.viaLanIp && !localHostIps.has(tsPong.viaLanIp) && isIpInLocalPhysicalLanSubnet(tsPong.viaLanIp, netsMap)) {
+    lanPing = { ok: true, ms: Math.max(2, tsPong.ms) };
+    if (rec) {
+      rec.lastLanIp = tsPong.viaLanIp;
+      rec.lastLanSeenAt = now;
+    }
+  }
+  if (tsPong?.ok && rec && isTailscaleCgnatIpv4(tsPong.peerIp) && !localHostIps.has(tsPong.peerIp)) {
+    rec.lastTailscaleIp = tsPong.peerIp;
+    rec.lastTailscaleSeenAt = now;
+  }
+
+  const hints = {};
+  if (en.tailscale) {
+    if (tsPong?.ok) {
+      hints.tailscale = { ok: true, ms: tsPong.ms, via: 'server' };
+    } else if (tsRes?.statusAvailable) {
+      hints.tailscale = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
+    }
+  }
+  if (lanPing?.ok) {
+    if (en.lan) {
+      hints.lan = { ok: true, ms: lanPing.ms, via: 'server' };
+    }
+    if (en.bonjour && detectHostIdentityMeta().bonjourHost) {
+      hints.bonjour = { ok: true, ms: lanPing.ms + 5, via: 'server' };
+    }
+  } else if (tsPong?.ok && !tsPong.viaLanIp) {
+    if (en.lan) hints.lan = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
+    if (en.bonjour) hints.bonjour = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
+  }
+
+  if (probeHintCache.size > 64) probeHintCache.clear();
+  probeHintCache.set(cacheKey, { at: now, hints });
+  return hints;
+}
+
+function extractCompactUsageSummary(usagePayload) {
+  if (!usagePayload || typeof usagePayload !== 'object') return null;
+  const sum = usagePayload.summary || {};
+  return {
+    totalTokens: Number(sum.grandTotalTokens ?? sum.totalTokens ?? 0) || 0,
+    todayTokens: Number(sum.todayTokens ?? 0) || 0,
+    monthTokens: Number(sum.monthTokens ?? 0) || 0,
+    yearTokens: Number(sum.yearTokens ?? 0) || 0,
+    planName: String(usagePayload.planStatus?.tierName || '').trim()
+  };
+}
+
 function createRemoteHttpHandler(initialConfig, options = {}) {
   const getTunnelOrigin = typeof options.getTunnelOrigin === 'function' ? options.getTunnelOrigin : () => '';
+  const fetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
+  const performAction = typeof options.performAction === 'function' ? options.performAction : performActionInTarget;
+  const getUsageData = typeof options.getUsageData === 'function'
+    ? options.getUsageData
+    : async (opts = {}) => {
+        const { collectTokenHistoryAsync } = require('./meter-collector');
+        return await collectTokenHistoryAsync(opts);
+      };
   let activeConfig = initialConfig;
   let lastMtimeMs = 0;
+  let cachedUsageData = null;
+  let cachedUsageAt = 0;
   try {
     lastMtimeMs = fs.statSync(getRemoteConfigPath()).mtimeMs;
   } catch {}
+
+  const getCachedUsageSummary = async () => {
+    const now = Date.now();
+    if (cachedUsageData && (now - cachedUsageAt) < 15000) {
+      return extractCompactUsageSummary(cachedUsageData);
+    }
+    if (typeof options.getUsageData !== 'function' && typeof options.fetchSnapshot === 'function') {
+      return null;
+    }
+    try {
+      const data = await Promise.race([
+        getUsageData({ force: false }),
+        new Promise((resolve) => setTimeout(() => resolve(null), 500))
+      ]);
+      if (data && typeof data === 'object') {
+        cachedUsageData = data;
+        cachedUsageAt = Date.now();
+        return extractCompactUsageSummary(data);
+      }
+    } catch {}
+    return cachedUsageData ? extractCompactUsageSummary(cachedUsageData) : null;
+  };
+
+  const enrichSnapshotPayload = (snap, config, activeTunnelUrl, clientId = '', fallbackUsageSummary = null) => {
+    if (!snap || snap.ok === false) return snap;
+    const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
+      enabled: Boolean(config.tunnelEnabled),
+      state: 'running',
+      publicUrl: activeTunnelUrl,
+      mode: config.tunnelMode
+    } : null, config.enabledChannels);
+    const activeConvId = snap.activeConversationId || snap.sessionId || '';
+    const out = {
+      ...snap,
+      activeConversationId: activeConvId,
+      hosts: snapInfo.hosts,
+      endpoints: snapInfo.endpoints,
+      enabledChannels: config.enabledChannels,
+      displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay)
+    };
+    if (clientId) out.clientId = clientId;
+    if (!out.usageSummary && fallbackUsageSummary) {
+      out.usageSummary = fallbackUsageSummary;
+    }
+    return out;
+  };
 
   const getActiveConfig = () => {
     try {
@@ -7406,7 +9401,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
-    const HTML_CSP = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https:; base-uri 'none'; frame-ancestors 'none'";
+    const HTML_CSP = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob: http: https:; connect-src 'self' http: https:; base-uri 'none'; frame-ancestors 'none'";
     const remoteIp = req.socket?.remoteAddress || '';
     if (!isAllowedPrivateAddress(remoteIp)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -7420,7 +9415,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id, X-AG-Device-Hint');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id, X-AG-Client-Id, X-AG-Device-Hint, X-AG-Device-Fp, X-AG-Probe');
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
     if (req.method === 'OPTIONS') {
@@ -7476,6 +9471,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       res.end(cachedSw);
       return;
     }
+    if (req.method === 'GET' && pathname === '/api/ping.gif') {
+      res.writeHead(200, {
+        'Content-Type': 'image/gif',
+        'Content-Length': String(PING_GIF_BUFFER.length),
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Timing-Allow-Origin': '*'
+      });
+      res.end(PING_GIF_BUFFER);
+      return;
+    }
 
     const fromLoopback = !remoteIp || isLoopbackIp(remoteIp);
     const clientKey = String((fromLoopback && req.headers['cf-connecting-ip']) || normalizeRemoteIp(remoteIp) || 'unknown');
@@ -7507,7 +9512,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       cookiesToSet.push(`ag_remote_token=${encodeURIComponent(config.token)}; Path=/; HttpOnly; SameSite=Lax${secureAttr}; Max-Age=31536000`);
     }
 
-    if (pathname === '/' || pathname === '/api/ping' || pathname === '/api/snapshot' || pathname === '/api/action') {
+    const isProbeReq = urlObj.searchParams.get('probe') === '1' || String(req.headers['x-ag-probe'] || '').trim() === '1';
+    if (!isProbeReq && (pathname === '/' || pathname === '/api/ping' || pathname === '/api/snapshot' || pathname === '/api/action')) {
       recordPairedDeviceAccess(req, config.token, Date.now(), activeTunnelUrl);
     }
 
@@ -7525,6 +9531,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
 
     if (req.method === 'GET' && pathname === '/api/ping') {
+      const probeNonce = String(urlObj.searchParams.get('_n') || '').trim().slice(0, 40);
       const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
         enabled: Boolean(config.tunnelEnabled),
         state: 'running',
@@ -7534,12 +9541,75 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({
         ok: true,
+        service: 'ag-mobile-remote',
+        nonce: probeNonce,
         port: config.port,
         name: snapInfo.deviceName,
         hosts: snapInfo.hosts,
         endpoints: snapInfo.endpoints,
-        enabledChannels: config.enabledChannels
+        enabledChannels: config.enabledChannels,
+        displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay)
       }));
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/probe-hints') {
+      try {
+        const forceProbe = urlObj.searchParams.get('force') === '1';
+        const hints = await probeClientPrivateReachability(req, config, { force: forceProbe });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, hints }));
+      } catch (err) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, hints: {}, error: err?.message || '' }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/usage') {
+      try {
+        const force = urlObj.searchParams.get('force') === '1';
+        const data = await getUsageData({ force });
+        if (data && typeof data === 'object') {
+          cachedUsageData = data;
+          cachedUsageAt = Date.now();
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, data: data || null }));
+      } catch (err) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取本机用量失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/context') {
+      try {
+        const clientId = extractRequestClientId(req, urlObj);
+        const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
+        const targetId = urlObj.searchParams.get('targetId') || session?.targetId || '';
+        const convId = (urlObj.searchParams.get('conversationId') || session?.conversationId || '').trim();
+        const snap = await fetchSnapshot(targetId, { conversationId: convId, clientId });
+        if (!snap || snap.ok === false) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ ok: false, error: snap?.error || '读取上下文窗口失败' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({
+          ok: true,
+          clientId,
+          conversationId: snap.activeConversationId || snap.sessionId || convId,
+          title: snap.title || '',
+          model: snap.model || '',
+          contextBadge: snap.contextBadge || '',
+          pulseText: snap.pulseText || '',
+          contextPanel: snap.contextPanel || null
+        }));
+      } catch (err) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取上下文窗口失败' }));
+      }
       return;
     }
 
@@ -7551,7 +9621,20 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         return;
       }
       try {
-        const targetId = urlObj.searchParams.get('targetId') || '';
+        const clientId = extractRequestClientId(req, urlObj);
+        const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
+        const hasExplicitTarget = urlObj.searchParams.has('targetId');
+        const hasExplicitConv = urlObj.searchParams.has('conversationId');
+        const targetId = hasExplicitTarget
+          ? (urlObj.searchParams.get('targetId') || '')
+          : (session?.targetId || '');
+        const reqConvId = hasExplicitConv
+          ? (urlObj.searchParams.get('conversationId') || '').trim()
+          : (session?.conversationId || '');
+        if (session) {
+          if (hasExplicitTarget) session.targetId = targetId;
+          if (hasExplicitConv) session.conversationId = reqConvId;
+        }
         const rawLimit = urlObj.searchParams.get('convLimit');
         const convLimit = rawLimit === 'all' || rawLimit === '0'
           ? 0
@@ -7560,22 +9643,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const msgLimit = rawMsgLimit === 'all' || rawMsgLimit === '0'
           ? 0
           : (rawMsgLimit !== null && rawMsgLimit !== '' ? Math.max(1, Number.parseInt(rawMsgLimit, 10) || 30) : 30);
-        const snap = await fetchSnapshotFromTarget(targetId, { convLimit, msgLimit });
-        let payloadOut = snap;
-        if (snap && snap.ok !== false) {
-          const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
-            enabled: Boolean(config.tunnelEnabled),
-            state: 'running',
-            publicUrl: activeTunnelUrl,
-            mode: config.tunnelMode
-          } : null, config.enabledChannels);
-          payloadOut = {
-            ...snap,
-            hosts: snapInfo.hosts,
-            endpoints: snapInfo.endpoints,
-            enabledChannels: config.enabledChannels
-          };
+        const snap = await fetchSnapshot(targetId, { conversationId: reqConvId, clientId, convLimit, msgLimit });
+        if (session && snap && snap.ok !== false) {
+          if (!session.targetId && snap.currentTargetId) session.targetId = snap.currentTargetId;
+          if (!session.conversationId && (snap.activeConversationId || snap.sessionId)) {
+            session.conversationId = String(snap.activeConversationId || snap.sessionId || '');
+          }
         }
+        const usageSummary = (snap && snap.ok !== false && !snap.usageSummary)
+          ? await getCachedUsageSummary()
+          : null;
+        const payloadOut = enrichSnapshotPayload(snap, config, activeTunnelUrl, clientId, usageSummary);
         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(payloadOut));
       } catch (err) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -7659,6 +9737,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (req.method === 'POST' && pathname === '/api/projects') {
       try {
         const payload = await readJsonBody(req);
+        const clientId = extractRequestClientId(req, urlObj, payload);
+        const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
         const createdRes = await createRemoteProject(payload, {
           ...(options.homeDir ? { homeDir: options.homeDir } : {}),
           ...(options.configDir ? { configDir: options.configDir } : {}),
@@ -7680,14 +9760,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           let actionRes = await doPerformAction({
             action: 'new-conversation',
             projectId: createdRes.project.id,
-            targetId: payload?.targetId || ''
+            targetId: payload?.targetId || '',
+            clientId,
+            conversationId: ''
           }).catch((err) => ({ ok: false, error: err?.message || '未能切换桌面端至新建项目' }));
           if (!checkNavOk(actionRes) && !createdRes.alreadyExists && !options.performAction) {
             await new Promise((r) => setTimeout(r, 350));
             actionRes = await doPerformAction({
               action: 'new-conversation',
               projectId: createdRes.project.id,
-              targetId: payload?.targetId || ''
+              targetId: payload?.targetId || '',
+              clientId,
+              conversationId: ''
             }).catch((err) => ({ ok: false, error: err?.message || '未能切换桌面端至新建项目' }));
           }
           const rawNav = (actionRes?.actionResult && typeof actionRes.actionResult === 'object')
@@ -7700,10 +9784,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             ok: navOk,
             ...(navError ? { error: navError } : {})
           };
-          snapshot = actionRes?.snapshot || await doFetchSnapshot(payload?.targetId || '', { convLimit: 100, bypassCache: true }).catch(() => null);
+          snapshot = actionRes?.snapshot || await doFetchSnapshot(payload?.targetId || '', { convLimit: 100, msgLimit: 30, bypassCache: true, clientId }).catch(() => null);
+          if (navOk && session) {
+            session.conversationId = String(snapshot?.activeConversationId || snapshot?.sessionId || '__new__');
+            if (snapshot?.currentTargetId) session.targetId = snapshot.currentTargetId;
+          }
+          if (snapshot && snapshot.ok !== false) {
+            const usageSummary = !snapshot.usageSummary ? await getCachedUsageSummary() : null;
+            snapshot = enrichSnapshotPayload(snapshot, config, activeTunnelUrl, clientId, usageSummary);
+          }
         }
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
           ...createdRes,
           navOk,
           navError,
@@ -7722,7 +9813,131 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (req.method === 'POST' && pathname === '/api/action') {
       try {
         const payload = await readJsonBody(req);
-        const result = await performActionInTarget(payload);
+        const clientId = extractRequestClientId(req, urlObj, payload);
+        const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
+        const effectiveTargetId = String(payload?.targetId || session?.targetId || '').trim();
+        const actionName = String(payload?.action || '').trim();
+
+        if (actionName === 'switch-conversation' && (clientId || payload?.isolated === true)) {
+          const nextId = String(payload?.id || '').trim();
+          if (!nextId) {
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少会话 ID' }));
+            return;
+          }
+          if (nextId === 'follow-desktop') {
+            if (session) session.conversationId = '';
+            const snap = await fetchSnapshot(effectiveTargetId, { clientId, convLimit: 100, msgLimit: 30 });
+            if (session && snap && snap.ok !== false && (snap.activeConversationId || snap.sessionId)) {
+              session.conversationId = String(snap.activeConversationId || snap.sessionId || '');
+            }
+            const usageSummary = (snap && snap.ok !== false && !snap.usageSummary) ? await getCachedUsageSummary() : null;
+            const enriched = enrichSnapshotPayload(snap, config, activeTunnelUrl, clientId, usageSummary);
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: Boolean(snap && snap.ok !== false),
+              actionResult: { ok: Boolean(snap && snap.ok !== false), id: enriched?.sessionId || '', isolated: false },
+              snapshot: enriched
+            }));
+            return;
+          }
+          if (nextId !== 'new') {
+            if (session) {
+              session.conversationId = nextId;
+              if (payload?.targetId) session.targetId = effectiveTargetId;
+            }
+            if (!options.fetchSnapshot && typeof defaultHistoryManager?.warmSession === 'function') {
+              defaultHistoryManager.warmSession(nextId).catch(() => null);
+            }
+            const snap = await fetchSnapshot(effectiveTargetId, {
+              conversationId: nextId,
+              clientId,
+              convLimit: 100,
+              msgLimit: 30,
+              bypassCatalogCache: true
+            });
+            const usageSummary = (snap && snap.ok !== false && !snap.usageSummary) ? await getCachedUsageSummary() : null;
+            const enriched = enrichSnapshotPayload(snap, config, activeTunnelUrl, clientId, usageSummary);
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: Boolean(snap && snap.ok !== false),
+              actionResult: { ok: Boolean(snap && snap.ok !== false), id: nextId, isolated: true },
+              snapshot: enriched
+            }));
+            return;
+          }
+          const newResult = await performAction({
+            ...payload,
+            clientId,
+            targetId: effectiveTargetId || undefined,
+            conversationId: '',
+            restoreDesktop: false
+          });
+          if (session) {
+            session.conversationId = String(newResult?.snapshot?.activeConversationId || newResult?.snapshot?.sessionId || '__new__');
+          }
+          if (newResult?.snapshot) {
+            const usageSummary = !newResult.snapshot.usageSummary ? await getCachedUsageSummary() : null;
+            newResult.snapshot = enrichSnapshotPayload(newResult.snapshot, config, activeTunnelUrl, clientId, usageSummary);
+          }
+          sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(newResult));
+          return;
+        }
+
+        if (actionName === 'new-conversation') {
+          const newResult = await performAction({
+            ...payload,
+            clientId,
+            targetId: effectiveTargetId || undefined,
+            conversationId: '',
+            restoreDesktop: false
+          });
+          if (session && newResult?.ok !== false) {
+            session.conversationId = String(newResult?.snapshot?.activeConversationId || newResult?.snapshot?.sessionId || '__new__');
+            if (newResult?.snapshot?.currentTargetId) session.targetId = newResult.snapshot.currentTargetId;
+          }
+          if (newResult?.snapshot) {
+            const usageSummary = !newResult.snapshot.usageSummary ? await getCachedUsageSummary() : null;
+            newResult.snapshot = enrichSnapshotPayload(newResult.snapshot, config, activeTunnelUrl, clientId, usageSummary);
+          }
+          sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(newResult));
+          return;
+        }
+
+        if (actionName === 'switch-window') {
+          const nextTargetId = String(payload?.targetId || '').trim();
+          if (session) {
+            session.targetId = nextTargetId;
+            session.conversationId = '';
+          }
+          const snap = await fetchSnapshot(nextTargetId, { clientId, convLimit: 100, msgLimit: 30 });
+          if (session && snap && snap.ok !== false && (snap.activeConversationId || snap.sessionId)) {
+            session.conversationId = String(snap.activeConversationId || snap.sessionId || '');
+          }
+          const usageSummary = (snap && snap.ok !== false && !snap.usageSummary) ? await getCachedUsageSummary() : null;
+          const enriched = enrichSnapshotPayload(snap, config, activeTunnelUrl, clientId, usageSummary);
+          sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+            ok: Boolean(snap && snap.ok !== false),
+            actionResult: { ok: Boolean(snap && snap.ok !== false), targetId: enriched?.currentTargetId || nextTargetId },
+            snapshot: enriched
+          }));
+          return;
+        }
+
+        const effectiveConvId = String(payload?.conversationId || session?.conversationId || '').trim();
+        const result = await performAction({
+          ...payload,
+          clientId,
+          targetId: effectiveTargetId || undefined,
+          conversationId: effectiveConvId || undefined
+        });
+        if (session && result?.snapshot && result.snapshot.ok !== false) {
+          const respSid = String(result.snapshot.activeConversationId || result.snapshot.sessionId || '');
+          if (respSid && respSid !== '__new__' && (effectiveConvId === '__new__' || !session.conversationId)) {
+            session.conversationId = respSid;
+          }
+        }
+        if (result?.snapshot) {
+          const usageSummary = !result.snapshot.usageSummary ? await getCachedUsageSummary() : null;
+          result.snapshot = enrichSnapshotPayload(result.snapshot, config, activeTunnelUrl, clientId, usageSummary);
+        }
         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
       } catch (err) {
         const errHeaders = { 'Content-Type': 'application/json; charset=utf-8' };
@@ -7906,6 +10121,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
   const cfg = loadOrCreateRemoteConfig({ resetToken });
   if (resetToken) {
     pairedDevicesMap.clear();
+    remoteClientSessions.clear();
     trackedDeviceToken = cfg.token;
   }
   const devSummary = getPairedDevicesSummary(cfg.token);
@@ -7950,6 +10166,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
   }
 
   const enCh = cfg.enabledChannels || { lan: true, tailscale: true, bonjour: true, tunnel: Boolean(cfg.tunnelEnabled) };
+  const cloudflaredInstall = getCloudflaredInstallGuide();
   const tunnelChannel = {
     key: 'tunnel',
     label: 'Cloudflare 隧道',
@@ -7960,6 +10177,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     state: effTunnel.state || 'stopped',
     mode: cfg.tunnelMode || 'quick',
     binaryAvailable: Boolean(effTunnel.binaryAvailable),
+    installCommand: cloudflaredInstall.command,
     hasTunnelToken: Boolean(cfg.tunnelToken),
     tunnelHostname: cfg.tunnelHostname || '',
     error: effTunnel.error || '',
@@ -8067,6 +10285,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     bonjourHost: desc.bonjourHost,
     tailscaleDnsName: desc.tailscaleDnsName,
     enabledChannels: enCh,
+    remoteDisplay: sanitizeRemoteDisplayConfig(cfg.remoteDisplay),
     tunnelEnabled: Boolean(cfg.tunnelEnabled),
     tunnelMode: cfg.tunnelMode,
     tunnelHostname: cfg.tunnelHostname || '',
@@ -8077,8 +10296,10 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       state: effTunnel.state,
       publicUrl: tunnelActiveUrl,
       error: effTunnel.error || '',
-      binaryAvailable: Boolean(effTunnel.binaryAvailable)
+      binaryAvailable: Boolean(effTunnel.binaryAvailable),
+      installCommand: cloudflaredInstall.command
     },
+    cloudflaredInstall,
     hosts: desc.hosts,
     endpoints: desc.endpoints,
     channels,
@@ -8174,11 +10395,25 @@ module.exports = {
   validateCloudflareTunnelToken,
   validateTunnelHostname,
   normalizeTunnelHostname,
+  getCloudflaredInstallGuide,
   resolveCloudflaredBinary,
   createCloudflareTunnelController,
   isAllowedPrivateAddress,
   isAllowedPrivateOrigin,
   detectRequestChannel,
+  parseTailscalePingOutput,
+  getLocalHostIpSet,
+  isIpInLocalPhysicalLanSubnet,
+  probeClientPrivateReachability,
+  clearPairedDevicesForTests: () => {
+    pairedDevicesMap.clear();
+    remoteClientSessions.clear();
+    probeHintCache.clear();
+  },
+  DEFAULT_REMOTE_DISPLAY_CONFIG,
+  sanitizeRemoteDisplayConfig,
+  getRemoteClientSession,
+  clearRemoteClientSessionsForTests,
   enumerateLocalAddresses,
   encodeEndpointsParam,
   decodeEndpointsParam,
