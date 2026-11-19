@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const zlib = require('zlib');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { execFileSync, spawn } = require('child_process');
@@ -16,7 +17,7 @@ const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
-const MOBILE_UI_VERSION = '1.9.16';
+const MOBILE_UI_VERSION = '1.9.17';
 
 // ==================== 配置与内网安全校验 ====================
 
@@ -1074,17 +1075,32 @@ function listElectronWebContentsTargets() {
   }
 }
 
-async function listAntigravityCdpTargets() {
+let cachedCdpTargets = null;
+let cachedCdpTargetsAt = 0;
+const CDP_TARGETS_CACHE_TTL_MS = 10000;
+
+function invalidateCdpTargetsCache() {
+  cachedCdpTargets = null;
+  cachedCdpTargetsAt = 0;
+}
+
+async function listAntigravityCdpTargets(options = {}) {
   const electronTargets = listElectronWebContentsTargets();
   if (electronTargets.length) {
     return electronTargets;
   }
 
+  const nowMs = Date.now();
+  if (!isCatalogTestEnv() && !options.force && Array.isArray(cachedCdpTargets) && cachedCdpTargets.length && (nowMs - cachedCdpTargetsAt < CDP_TARGETS_CACHE_TTL_MS)) {
+    return cachedCdpTargets;
+  }
+
   const { port, targets } = await resolveActiveCdpTarget({ timeoutMs: 2500 });
   if (!port) {
+    invalidateCdpTargetsCache();
     throw new Error('Antigravity 未运行或未开启远程调试端口');
   }
-  return targets
+  const mapped = targets
     .filter((p) => p && p.webSocketDebuggerUrl)
     .map((p) => ({
       id: String(p.id),
@@ -1092,6 +1108,13 @@ async function listAntigravityCdpTargets() {
       url: String(p.url || ''),
       wsUrl: String(p.webSocketDebuggerUrl)
     }));
+  if (!isCatalogTestEnv() && mapped.length) {
+    cachedCdpTargets = mapped;
+    cachedCdpTargetsAt = Date.now();
+  } else {
+    invalidateCdpTargetsCache();
+  }
+  return mapped;
 }
 
 function evalInElectronWebContents(wc, expression, timeoutMs = 4500) {
@@ -1181,8 +1204,12 @@ function evalInCdpTarget(wsUrl, expression, timeoutMs = 4500) {
   });
 }
 
-async function pickCdpTarget(requestedId) {
-  const targets = await listAntigravityCdpTargets();
+async function pickCdpTarget(requestedId, options = {}) {
+  let targets = await listAntigravityCdpTargets(options);
+  if (!targets.length) {
+    invalidateCdpTargetsCache();
+    if (!options.force) targets = await listAntigravityCdpTargets({ force: true });
+  }
   if (!targets.length) {
     throw new Error('未找到激活的 Antigravity 对话窗口');
   }
@@ -1192,6 +1219,23 @@ async function pickCdpTarget(requestedId) {
     if (found) return { target: found, windows: cleanWindows };
   }
   return { target: targets[0], windows: cleanWindows };
+}
+
+async function evalInPickedTarget(requestedId, expression, timeoutMs = 4500) {
+  let picked = await pickCdpTarget(requestedId);
+  try {
+    const value = await evalInTarget(picked.target, expression, timeoutMs);
+    return { value, target: picked.target, windows: picked.windows };
+  } catch (err) {
+    const msg = String(err?.message || '');
+    if (!/(?:CDP WebSocket 连接失败|目标窗口已关闭|未找到激活|CDP 请求超时)/.test(msg)) {
+      throw err;
+    }
+    invalidateCdpTargetsCache();
+    picked = await pickCdpTarget(requestedId, { force: true });
+    const value = await evalInTarget(picked.target, expression, timeoutMs);
+    return { value, target: picked.target, windows: picked.windows };
+  }
 }
 
 // ==================== 多项目融合目录、会话状态汇总与防缩水缓存 ====================
@@ -1404,6 +1448,84 @@ function withRaceTimeout(promise, ms, fallback = null) {
   });
 }
 
+let cachedLocalApi = null;
+let cachedLocalApiAt = 0;
+let inflightLocalApiPromise = null;
+const LOCAL_API_CACHE_TTL_MS = 15000;
+
+function invalidateSharedLocalApi() {
+  cachedLocalApi = null;
+  cachedLocalApiAt = 0;
+  inflightLocalApiPromise = null;
+}
+
+async function getSharedLocalApi() {
+  const nowMs = Date.now();
+  if (cachedLocalApi && (nowMs - cachedLocalApiAt < LOCAL_API_CACHE_TTL_MS)) {
+    return cachedLocalApi;
+  }
+  if (!inflightLocalApiPromise) {
+    inflightLocalApiPromise = (async () => {
+      let connectFn;
+      try {
+        connectFn = require('./local-api').connect;
+      } catch {
+        return null;
+      }
+      const api = await withRaceTimeout(Promise.resolve().then(() => connectFn()).catch(() => null), 1200, null);
+      if (api && typeof api.call === 'function') {
+        cachedLocalApi = api;
+        cachedLocalApiAt = Date.now();
+        return api;
+      }
+      return null;
+    })().finally(() => {
+      inflightLocalApiPromise = null;
+    });
+  }
+  return await inflightLocalApiPromise;
+}
+
+async function resolveLocalApi(options = {}) {
+  const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
+  if (customConnect) {
+    return typeof customConnect === 'function'
+      ? await withRaceTimeout(Promise.resolve().then(() => customConnect()).catch(() => null), 1200, null)
+      : customConnect;
+  }
+  if (isCatalogTestEnv()) return null;
+  return await getSharedLocalApi();
+}
+
+async function callLocalLanguageServer(method, body, timeoutMs = 1500, options = {}) {
+  const isCustom = Boolean(options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__);
+  const api = await resolveLocalApi(options);
+  if (!api || typeof api.call !== 'function') return null;
+  if (isCustom) {
+    return await withRaceTimeout(
+      Promise.resolve().then(() => api.call(method, body)).catch(() => null),
+      timeoutMs,
+      null
+    );
+  }
+  try {
+    return await withRaceTimeout(
+      Promise.resolve().then(() => api.call(method, body)),
+      timeoutMs,
+      null
+    );
+  } catch {
+    invalidateSharedLocalApi();
+    const retryApi = await getSharedLocalApi();
+    if (!retryApi || typeof retryApi.call !== 'function') return null;
+    return await withRaceTimeout(
+      Promise.resolve().then(() => retryApi.call(method, body)).catch(() => null),
+      timeoutMs,
+      null
+    );
+  }
+}
+
 function inspectSubagentRecord(cid, traj, snapConv, knownSubIds = null, knownRoots = null) {
   const id = String(cid || '').trim();
   const meta = traj?.trajectoryMetadata || {};
@@ -1517,27 +1639,41 @@ function createSessionCatalogStore() {
   async function fetchTrajectories(options = {}) {
     const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
     const nowMs = Date.now();
-    if (!customConnect && !options.bypassCache && trajCache.data && nowMs - trajCache.at < 2000) {
+    if (!customConnect && !options.bypassCache && !options.bypassCatalogCache && trajCache.data && nowMs - trajCache.at < 2000) {
       return trajCache.data;
     }
 
-    let connectFn = customConnect;
-    if (!connectFn) {
-      if (isCatalogTestEnv()) return null;
-      try {
-        connectFn = require('./local-api').connect;
-      } catch {
-        return null;
-      }
-    }
-
     try {
-      const api = typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1200, null) : connectFn;
+      const api = await resolveLocalApi(options);
       if (!api || typeof api.call !== 'function') return null;
-      const [trajRes, listProjRes] = await Promise.all([
-        withRaceTimeout(Promise.resolve().then(() => api.call('GetAllCascadeTrajectories', {})).catch(() => null), 1500, null),
-        withRaceTimeout(Promise.resolve().then(() => api.call('ListProjects', {})).catch(() => null), 1000, null)
-      ]);
+      const runBatch = async (client, allowThrow) => {
+        let trajFailed = false;
+        const [trajRes, listProjRes] = await Promise.all([
+          withRaceTimeout(
+            Promise.resolve()
+              .then(() => client.call('GetAllCascadeTrajectories', {}))
+              .catch((err) => {
+                trajFailed = true;
+                if (allowThrow) throw err;
+                return null;
+              }),
+            1500,
+            null
+          ),
+          withRaceTimeout(Promise.resolve().then(() => client.call('ListProjects', {})).catch(() => null), 1000, null)
+        ]);
+        return { trajRes, listProjRes, trajFailed };
+      };
+      let batch = await runBatch(api, !customConnect).catch(() => null);
+      if ((!batch || batch.trajFailed) && !customConnect) {
+        invalidateSharedLocalApi();
+        const retryApi = await resolveLocalApi(options);
+        if (retryApi && typeof retryApi.call === 'function') {
+          batch = await runBatch(retryApi, false).catch(() => null);
+        }
+      }
+      const trajRes = batch?.trajRes || null;
+      const listProjRes = batch?.listProjRes || null;
       const hasSummaries = Boolean(trajRes && trajRes.trajectorySummaries && typeof trajRes.trajectorySummaries === 'object');
       const data = {
         trajOk: hasSummaries,
@@ -1686,7 +1822,7 @@ function createSessionCatalogStore() {
       const viewMs = Math.max(
         parseIsoTimestampMs(t?.annotations?.lastUserViewTime),
         Number(prev?.lastViewedAt) || 0,
-        isActive ? Math.max(updatedAt, nowMs) : 0
+        isActive ? Math.max(updatedAt, 1) : 0
       );
 
       const pinned = Boolean(
@@ -1839,6 +1975,10 @@ function createSessionCatalogStore() {
 
     const currentProj = projects.find((p) => p.id === currentProjectId);
     const currentProjectName = String(snap.currentProjectName || currentProj?.name || '').trim();
+    const activeTraj = activeSessionId ? summaries[activeSessionId] : null;
+    const _activeTrajSig = activeTraj
+      ? `${activeTraj.status || ''}|${activeTraj.stepCount ?? ''}|${activeTraj.lastModifiedTime || ''}`
+      : '';
 
     return {
       ...snap,
@@ -1851,7 +1991,8 @@ function createSessionCatalogStore() {
       totalConversations: allActiveConvs.length,
       hasMoreConversations: outputConvs.length < allActiveConvs.length,
       projects,
-      conversations: outputConvs
+      conversations: outputConvs,
+      _activeTrajSig
     };
   }
 
@@ -2498,8 +2639,9 @@ function formatTrajectoryUserInput(ui) {
   return raw;
 }
 
-function extractMessagesFromTrajectorySteps(steps) {
+function extractMessagesFromTrajectorySteps(steps, options = {}) {
   if (!Array.isArray(steps) || !steps.length) return [];
+  const lazyHtml = Boolean(options?.lazyHtml);
   const messages = [];
   let pendingThoughts = [];
 
@@ -2545,7 +2687,7 @@ function extractMessagesFromTrajectorySteps(steps) {
           id: `t-a-${i}`,
           role: 'assistant',
           text: replyText,
-          html: renderSafeMarkdownToHtml(replyText),
+          html: lazyHtml ? null : renderSafeMarkdownToHtml(replyText),
           thoughtLabel: thoughtText ? '思考过程' : '',
           thoughtText,
           highRisk: false,
@@ -2557,6 +2699,26 @@ function extractMessagesFromTrajectorySteps(steps) {
   }
   flushPendingThoughtsOnly('end');
   return messages;
+}
+
+function ensureMessagesHtmlRendered(msgs, sourceList = null) {
+  if (!Array.isArray(msgs)) return [];
+  let srcById = null;
+  for (const m of msgs) {
+    if (!m || m.role !== 'assistant' || m.html !== null) continue;
+    m.html = m.text ? renderSafeMarkdownToHtml(m.text) : '';
+    if (Array.isArray(sourceList) && m.id) {
+      if (!srcById) {
+        srcById = new Map();
+        for (const tm of sourceList) {
+          if (tm && tm.id) srcById.set(tm.id, tm);
+        }
+      }
+      const src = srcById.get(m.id);
+      if (src && src.text === m.text) src.html = m.html;
+    }
+  }
+  return msgs;
 }
 
 function normMsgPrefix(text) {
@@ -2586,7 +2748,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       }
       if (options.busy && String(dm.text || '').length > String(matchTarget.text || '').length) {
         matchTarget.text = dm.text;
-        matchTarget.html = dm.html || matchTarget.html;
+        matchTarget.html = dm.html || null;
       }
       if (!matchTarget.thoughtText && dm.thoughtText) {
         matchTarget.thoughtLabel = dm.thoughtLabel || '思考过程';
@@ -2631,7 +2793,8 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
 
 function createConversationHistoryManager() {
   const cache = new Map();
-  const MAX_CACHE_ENTRIES = 12;
+  const inflightMap = new Map();
+  const MAX_CACHE_ENTRIES = 24;
 
   function touchCache(sessionId, rec) {
     if (cache.has(sessionId)) cache.delete(sessionId);
@@ -2642,7 +2805,7 @@ function createConversationHistoryManager() {
     }
   }
 
-  async function fetchTrajectoryMessages(sessionId, options = {}) {
+  async function fetchTrajectoryMessagesOnce(sessionId, options = {}) {
     const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
     let connectFn = customConnect;
     if (!connectFn) {
@@ -2658,28 +2821,59 @@ function createConversationHistoryManager() {
       if (!api || typeof api.call !== 'function') return null;
       const res = await withRaceTimeout(
         Promise.resolve().then(() => api.call('GetCascadeTrajectory', { cascadeId: sessionId })).catch(() => null),
-        2500,
+        4500,
         null
       );
       const steps = res?.trajectory?.steps;
       if (!Array.isArray(steps)) return null;
-      return extractMessagesFromTrajectorySteps(steps);
+      return extractMessagesFromTrajectorySteps(steps, { lazyHtml: true });
     } catch {
       return null;
     }
+  }
+
+  async function fetchTrajectoryMessages(sessionId, options = {}) {
+    const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
+    if (customConnect) {
+      return await fetchTrajectoryMessagesOnce(sessionId, options);
+    }
+    if (isCatalogTestEnv()) return null;
+    if (inflightMap.has(sessionId)) {
+      return await inflightMap.get(sessionId);
+    }
+    const p = (async () => {
+      try {
+        const res = await callLocalLanguageServer('GetCascadeTrajectory', { cascadeId: sessionId }, 4500, options);
+        const steps = res?.trajectory?.steps;
+        if (!Array.isArray(steps)) return null;
+        return extractMessagesFromTrajectorySteps(steps, { lazyHtml: true });
+      } catch {
+        return null;
+      } finally {
+        inflightMap.delete(sessionId);
+      }
+    })();
+    inflightMap.set(sessionId, p);
+    return await p;
   }
 
   async function resolveFullMessages(sessionId, domMessages, options = {}) {
     const sid = String(sessionId || '').trim();
     const domTail = Array.isArray(domMessages) ? domMessages : [];
     if (!sid) {
-      return domTail.map((m, idx) => ({ ...m, msgIndex: idx }));
+      return { merged: domTail.map((m, idx) => ({ ...m, msgIndex: idx })), trajMsgs: null };
     }
     const existing = cache.get(sid);
     const nowMs = Date.now();
     const ttl = options.busy ? 1000 : 3500;
+    const trajSig = String(options.trajSig || '').trim();
+    const sigMismatch = Boolean(trajSig && existing?.trajSig && existing.trajSig !== trajSig);
+    const trajHit = !options.bypassCache && existing && Array.isArray(existing.trajMsgs) && !sigMismatch && (
+      (trajSig && existing.trajSig === trajSig && !options.busy) ||
+      (nowMs - existing.at < ttl)
+    );
     let trajMsgs = null;
-    if (!options.bypassCache && existing && Array.isArray(existing.trajMsgs) && (nowMs - existing.at < ttl)) {
+    if (trajHit) {
       trajMsgs = existing.trajMsgs;
     } else {
       const fetched = await fetchTrajectoryMessages(sid, options);
@@ -2693,24 +2887,44 @@ function createConversationHistoryManager() {
     const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
     touchCache(sid, {
       trajMsgs: Array.isArray(trajMsgs) ? trajMsgs : (existing?.trajMsgs || null),
+      trajSig: trajSig || (trajHit ? (existing?.trajSig || '') : ''),
       domTail: domTail.length ? domTail : (existing?.domTail || []),
       merged,
       at: nowMs
     });
-    return merged;
+    return { merged, trajMsgs: Array.isArray(trajMsgs) ? trajMsgs : (existing?.trajMsgs || null) };
+  }
+
+  async function warmSession(sessionId, options = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid || sid === 'new') return;
+    const existing = cache.get(sid);
+    if (existing && Array.isArray(existing.trajMsgs)) return;
+    const fetched = await fetchTrajectoryMessages(sid, options);
+    if (Array.isArray(fetched) && !cache.get(sid)?.trajMsgs) {
+      touchCache(sid, {
+        trajMsgs: fetched,
+        trajSig: '',
+        domTail: [],
+        merged: [],
+        at: Date.now()
+      });
+    }
   }
 
   async function enrichMessages(snap, options = {}) {
     if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
-    const fullMsgs = await resolveFullMessages(snap.sessionId, snap.messages, {
+    const { _activeTrajSig, ...cleanSnap } = snap;
+    const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(cleanSnap.sessionId, cleanSnap.messages, {
       ...options,
-      busy: Boolean(snap.busy)
+      trajSig: _activeTrajSig || '',
+      busy: Boolean(cleanSnap.busy)
     });
     const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
-    const sliced = fullMsgs.slice(startIdx);
+    const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
     return {
-      ...snap,
+      ...cleanSnap,
       totalMessages: fullMsgs.length,
       messagesStartIndex: startIdx,
       hasEarlierMessages: startIdx > 0,
@@ -2723,7 +2937,7 @@ function createConversationHistoryManager() {
     if (!sid) return { ok: false, error: '缺少 sessionId 参数' };
     const limit = Math.max(1, Math.min(200, Number.parseInt(options.limit ?? 30, 10) || 30));
     const existing = cache.get(sid);
-    const fullMsgs = await resolveFullMessages(sid, existing?.domTail || [], options);
+    const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(sid, existing?.domTail || [], options);
     const total = fullMsgs.length;
     const hasBefore = options.before !== undefined && options.before !== null && options.before !== '';
     const rawBefore = hasBefore ? Number.parseInt(options.before, 10) : total;
@@ -2736,11 +2950,11 @@ function createConversationHistoryManager() {
       startIndex: startIdx,
       endIndex: endIdx,
       hasEarlier: startIdx > 0,
-      messages: fullMsgs.slice(startIdx, endIdx)
+      messages: ensureMessagesHtmlRendered(fullMsgs.slice(startIdx, endIdx), trajMsgs)
     };
   }
 
-  return { enrichMessages, getMessagesPage };
+  return { enrichMessages, getMessagesPage, warmSession };
 }
 
 const defaultHistoryManager = createConversationHistoryManager();
@@ -2750,7 +2964,6 @@ function getConversationMessagesPage(options = {}) {
 }
 
 async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
-  const { target, windows } = await pickCdpTarget(requestedTargetId);
   const expr = `(() => {
     const fn = window.__AGEnhancer?.getMobileSnapshot;
     if (typeof fn !== 'function') {
@@ -2758,7 +2971,7 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
     }
     return fn();
   })()`;
-  const snap = await evalInTarget(target, expr);
+  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr);
   if (!snap || typeof snap !== 'object') {
     throw new Error('未能读取窗口快照');
   }
@@ -2775,7 +2988,10 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
 }
 
 async function performActionInTarget(payload) {
-  const { target } = await pickCdpTarget(payload?.targetId);
+  const act = String(payload?.action || '').trim();
+  const warmPromise = (act === 'switch-conversation' && payload?.id && String(payload.id).trim() !== 'new')
+    ? defaultHistoryManager.warmSession(String(payload.id).trim()).catch(() => null)
+    : Promise.resolve();
   const serialized = JSON.stringify(payload || {});
   const expr = `(async () => {
     const fn = window.__AGEnhancer?.performMobileAction;
@@ -2784,13 +3000,15 @@ async function performActionInTarget(payload) {
     }
     return await fn(${serialized});
   })()`;
-  const actionResult = await evalInTarget(target, expr, 6000);
-  const act = payload?.action;
-  const settleMs = (act === 'switch-conversation' || act === 'new-conversation') ? 260 : 120;
-  await new Promise((r) => setTimeout(r, settleMs));
+  const { value: actionResult, target } = await evalInPickedTarget(payload?.targetId, expr, 6000);
+  const settleMs = (act === 'switch-conversation' || act === 'new-conversation')
+    ? (actionResult?.verifiedState ? 45 : 180)
+    : 80;
+  await Promise.all([new Promise((r) => setTimeout(r, settleMs)), warmPromise]);
   const snapshot = await fetchSnapshotFromTarget(target.id, {
     convLimit: 100,
-    bypassCache: act === 'send' || act === 'switch-conversation' || act === 'new-conversation'
+    bypassCache: act === 'send',
+    bypassCatalogCache: act === 'switch-conversation' || act === 'new-conversation'
   }).catch(() => null);
   return {
     ok: Boolean(actionResult?.ok),
@@ -3084,6 +3302,7 @@ function buildMobileAppHtml() {
     .thought-box{margin-bottom:8px;padding:6px 9px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border-subtle);font-size:12.5px;color:var(--fg-sub)}
     .thought-box summary{cursor:pointer;font-weight:600;color:var(--thought-summary);list-style:none}
     .thought-body{margin-top:6px;white-space:pre-wrap;color:var(--muted);max-height:220px;overflow-y:auto}
+    .messages.is-switching{opacity:.58;transition:opacity .12s ease}
     .empty-tip{margin:auto;text-align:center;color:var(--muted);padding:24px 12px;font-size:13px}
     .mode-entry-card{
       margin:auto;width:100%;max-width:400px;padding:16px 14px;border-radius:16px;
@@ -4285,9 +4504,21 @@ function buildMobileAppHtml() {
         void loadEarlierMessages();
       }
     });
+    msgEl.addEventListener('toggle', (e) => {
+      const target = e?.target;
+      if (target && target.classList && target.classList.contains('thought-box')) {
+        hydrateThoughtDetails(target);
+      }
+    }, true);
     msgEl.addEventListener('click', (e) => {
       if (e.target?.closest?.('#btn-load-earlier')) {
         void loadEarlierMessages();
+        return;
+      }
+      const sum = e.target?.closest?.('summary');
+      const detailsEl = sum?.parentElement;
+      if (detailsEl && detailsEl.classList?.contains?.('thought-box')) {
+        setTimeout(() => hydrateThoughtDetails(detailsEl), 0);
       }
     });
 
@@ -4338,6 +4569,11 @@ function buildMobileAppHtml() {
     function invalidateInflightSnapshotPolls() {
       snapshotSeq += 1;
       snapshotInflight = false;
+      if (activeSnapAbort) {
+        try { activeSnapAbort.abort(); } catch {}
+        activeSnapAbort = null;
+      }
+      schedulePoll();
     }
 
     async function apiAction(payload) {
@@ -4351,42 +4587,48 @@ function buildMobileAppHtml() {
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ targetId: currentTargetId || undefined, ...payload })
       }, 8000);
-      let res;
       try {
-        res = await doPost();
-        if (res.status === 403) throw new Error('channel_disabled');
-      } catch (err) {
-        if (await tryFailoverEndpoint()) {
+        let res;
+        try {
           res = await doPost();
-        } else {
-          throw err;
+          if (res.status === 403) throw new Error('channel_disabled');
+        } catch (err) {
+          if (await tryFailoverEndpoint()) {
+            res = await doPost();
+          } else {
+            throw err;
+          }
+        }
+        if (res.status === 401) {
+          location.reload();
+          return null;
+        }
+        const ctype = String(res.headers.get('content-type') || '').toLowerCase();
+        let data = null;
+        if (ctype.includes('application/json')) {
+          data = await res.json().catch(() => null);
+        }
+        if (!data) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const text = await res.text().catch(() => '');
+          throw new Error(text ? text.slice(0, 80) : '响应格式异常');
+        }
+        if (!res.ok && data.ok !== false) {
+          data = Object.assign({ ok: false, error: 'HTTP ' + res.status }, data);
+        }
+        if (data?.snapshot && (!isNavAction || myNavSeq === lastNavActionSeq)) {
+          const snapApplied = renderSnapshot(data.snapshot, {
+            reqStartEpoch: actionStartEpoch,
+            advanceFloorOnApply: isNavAction
+          });
+          if (snapApplied && isNavAction) invalidateInflightSnapshotPolls();
+        }
+        return data;
+      } finally {
+        if (isNavAction && myNavSeq === lastNavActionSeq && !snapshotInflight) {
+          schedulePoll();
         }
       }
-      if (res.status === 401) {
-        location.reload();
-        return null;
-      }
-      const ctype = String(res.headers.get('content-type') || '').toLowerCase();
-      let data = null;
-      if (ctype.includes('application/json')) {
-        data = await res.json().catch(() => null);
-      }
-      if (!data) {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const text = await res.text().catch(() => '');
-        throw new Error(text ? text.slice(0, 80) : '响应格式异常');
-      }
-      if (!res.ok && data.ok !== false) {
-        data = Object.assign({ ok: false, error: 'HTTP ' + res.status }, data);
-      }
-      if (data?.snapshot && (!isNavAction || myNavSeq === lastNavActionSeq)) {
-        const snapApplied = renderSnapshot(data.snapshot, {
-          reqStartEpoch: actionStartEpoch,
-          advanceFloorOnApply: isNavAction
-        });
-        if (snapApplied && isNavAction) invalidateInflightSnapshotPolls();
-      }
-      return data;
     }
 
     function renderQuotaDrawer(snap) {
@@ -4580,10 +4822,12 @@ function buildMobileAppHtml() {
       syncSendButtonUI();
 
       // Messages (full history + upward pagination + gap backfill + scroll anchor)
+      msgEl.classList.remove('is-switching');
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
       if (snapSid !== activeMsgSessionId) {
         activeMsgSessionId = snapSid;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         stickBottom = true;
@@ -5198,8 +5442,30 @@ function buildMobileAppHtml() {
 
     let activeMsgSessionId = null;
     const sessionMsgsByIndex = new Map();
+    const openThoughtIdxSet = new Set();
     let loadingEarlierMsgs = false;
     let backfillingMsgGaps = false;
+
+    function hydrateThoughtDetails(detailsEl) {
+      if (!detailsEl) return;
+      const idx = Number(detailsEl.getAttribute('data-thought-idx'));
+      if (!Number.isFinite(idx)) return;
+      const isOpen = Boolean(detailsEl.open || (typeof detailsEl.hasAttribute === 'function' && detailsEl.hasAttribute('open')));
+      if (isOpen) {
+        openThoughtIdxSet.add(idx);
+        if (!detailsEl.querySelector('.thought-body')) {
+          const m = sessionMsgsByIndex.get(idx);
+          if (m?.thoughtText) {
+            const bodyDiv = document.createElement('div');
+            bodyDiv.className = 'thought-body';
+            bodyDiv.textContent = m.thoughtText;
+            detailsEl.appendChild(bodyDiv);
+          }
+        }
+      } else {
+        openThoughtIdxSet.delete(idx);
+      }
+    }
 
     function getOrderedSessionMessages() {
       return Array.from(sessionMsgsByIndex.values()).sort((a, b) => (a.msgIndex - b.msgIndex));
@@ -5347,9 +5613,10 @@ function buildMobileAppHtml() {
           return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + esc(m.text) + '</div>';
         }
         const risk = m.highRisk ? '<span class="risk-tag">' + esc(m.riskText || '🛡️ 检测到高危命令，请人工核对') + '</span>' : '';
+        const isThoughtOpen = Boolean(m.thoughtText && openThoughtIdxSet.has(m.msgIndex));
         const thought = m.thoughtLabel
-          ? '<details class="thought-box"><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? ' · 展开思考' : '') + '</summary>' +
-            (m.thoughtText ? '<div class="thought-body">' + esc(m.thoughtText) + '</div>' : '') + '</details>'
+          ? '<details class="thought-box" data-thought-idx="' + m.msgIndex + '"' + (isThoughtOpen ? ' open' : '') + '><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? ' · 展开思考' : '') + '</summary>' +
+            (isThoughtOpen ? '<div class="thought-body">' + esc(m.thoughtText) + '</div>' : '') + '</details>'
           : '';
         const bodyHtml = m.html
           ? '<div class="md-body">' + m.html + '</div>'
@@ -5995,6 +6262,7 @@ function buildMobileAppHtml() {
       } finally {
         projBrowserState.submitting = false;
         syncCreateProjectSubmitUi();
+        if (myNavSeq === lastNavActionSeq && !snapshotInflight) schedulePoll();
       }
     }
 
@@ -6124,6 +6392,22 @@ function buildMobileAppHtml() {
         return;
       }
 
+      function applyOptimisticSidebarConvClick(clickedBtn) {
+        const convListEl = $('conv-list');
+        if (!convListEl || !clickedBtn) return;
+        convListEl.querySelectorAll('.conv-item').forEach((el) => {
+          if (el !== clickedBtn) el.classList.remove('active');
+        });
+        clickedBtn.classList.add('active');
+        clickedBtn.classList.remove('is-unread');
+        const effId = getEffectiveSelectedProject(latestSnap).id;
+        convListEl.querySelectorAll('.proj-group').forEach((grp) => {
+          const grpPid = grp.querySelector('.proj-toggle')?.getAttribute('data-proj-toggle') || '';
+          grp.classList.toggle('is-current', Boolean(effId && grpPid === effId));
+        });
+        convListEl.dataset.lastHtml = '';
+      }
+
       const btn = e.target?.closest?.('.conv-item');
       const cid = btn?.getAttribute('data-cid') || btn?.dataset?.cid || '';
       if (!btn || !cid) return;
@@ -6133,16 +6417,37 @@ function buildMobileAppHtml() {
         : selectedProjectEpoch;
       if (matchedConv) {
         syncNewChatButtonUi(latestSnap);
-        if (latestSnap) renderConversationList(latestSnap);
+      }
+      applyOptimisticSidebarConvClick(btn);
+      const prevSessionId = String(latestSnap?.sessionId || '');
+      const isSwitchingToOther = Boolean(cid && prevSessionId && prevSessionId !== cid);
+      const myNavSeqSnapshot = lastNavActionSeq;
+      if (isSwitchingToOther) {
+        msgEl.classList.add('is-switching');
+        if (matchedConv?.title) $('conv-title').textContent = matchedConv.title;
       }
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
       showToast('正在切换会话…');
       try {
         const r = await apiAction({ action: 'switch-conversation', id: cid });
-        if (!r?.ok && mySwitchSelEpoch === selectedProjectEpoch) showToast(r?.error || r?.actionResult?.error || '切换会话失败');
+        if (!r?.ok && mySwitchSelEpoch === selectedProjectEpoch) {
+          showToast(r?.error || r?.actionResult?.error || '切换会话失败');
+          if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
+            $('conv-title').textContent = latestSnap.title || 'Antigravity';
+          }
+        }
       } catch (err) {
-        if (mySwitchSelEpoch === selectedProjectEpoch) showToast(err?.message || '切换会话失败');
+        if (mySwitchSelEpoch === selectedProjectEpoch) {
+          showToast(err?.message || '切换会话失败');
+          if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
+            $('conv-title').textContent = latestSnap.title || 'Antigravity';
+          }
+        }
+      } finally {
+        if (lastNavActionSeq === myNavSeqSnapshot + 1) {
+          msgEl.classList.remove('is-switching');
+        }
       }
     });
     $('btn-drawer').addEventListener('click', () => {
@@ -6917,10 +7222,24 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   };
 
   const cachedHtml = buildMobileAppHtml();
+  const cachedHtmlGzip = zlib.gzipSync(Buffer.from(cachedHtml, 'utf8'), { level: 1 });
   const cachedIcon = buildMobileIconSvg();
   const cachedManifest = buildManifestJson();
   const cachedSw = buildServiceWorkerJs();
   const cached401 = buildUnauthorizedHtml();
+
+  function sendPayload(req, res, statusCode, headers, bodyStr) {
+    const raw = typeof bodyStr === 'string' ? bodyStr : String(bodyStr || '');
+    const acceptEnc = String(req?.headers?.['accept-encoding'] || '');
+    if (/\bgzip\b/i.test(acceptEnc) && Buffer.byteLength(raw, 'utf8') >= 1024) {
+      const gz = raw === cachedHtml ? cachedHtmlGzip : zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 1 });
+      res.writeHead(statusCode, { ...headers, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+      res.end(gz);
+      return;
+    }
+    res.writeHead(statusCode, headers);
+    res.end(raw);
+  }
 
   return async (req, res) => {
     const config = getActiveConfig();
@@ -7037,8 +7356,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         cookiesToSet.push(`ag_ui_ver=${MOBILE_UI_VERSION}; Path=/; SameSite=Lax${secureAttr}; Max-Age=31536000`);
       }
       if (cookiesToSet.length) res.setHeader('Set-Cookie', cookiesToSet);
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_CSP });
-      res.end(cachedHtml);
+      sendPayload(req, res, 200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': HTML_CSP }, cachedHtml);
       return;
     }
 
@@ -7098,8 +7416,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             enabledChannels: config.enabledChannels
           };
         }
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify(payloadOut));
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(payloadOut));
       } catch (err) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, error: err?.message || '读取 Antigravity 状态失败' }));
@@ -7114,8 +7431,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const rawLimit = urlObj.searchParams.get('limit') || '100';
         const limit = (rawLimit === 'all' || rawLimit === '0') ? 0 : Math.max(1, Number.parseInt(rawLimit, 10) || 100);
         const page = listCatalogConversations({ projectId, offset, limit });
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify(page));
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(page));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, error: err?.message || '读取会话列表失败' }));
@@ -7135,8 +7451,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const rawLimit = urlObj.searchParams.get('limit') || '30';
         const limit = Math.max(1, Math.min(200, Number.parseInt(rawLimit, 10) || 30));
         const page = await getConversationMessagesPage({ sessionId, before, limit });
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify(page));
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(page));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, error: err?.message || '读取会话消息失败' }));
@@ -7248,8 +7563,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       try {
         const payload = await readJsonBody(req);
         const result = await performActionInTarget(payload);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify(result));
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
       } catch (err) {
         const errHeaders = { 'Content-Type': 'application/json; charset=utf-8' };
         if (err?.status === 413) errHeaders.Connection = 'close';

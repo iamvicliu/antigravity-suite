@@ -5553,7 +5553,7 @@
     };
   }
 
-  function collectSidebarConversations(limit = 0) {
+  function collectSidebarConversations(limit = 0, preloadedStoreCatalog = null) {
     const maxItems = Number(limit) > 0 ? Number(limit) : Infinity;
     const currentId = getSessionIdFromLocation() || '';
     const rows = getOrderedSidebarConversationRows();
@@ -5577,7 +5577,7 @@
       }
     } catch {}
 
-    const storeCatalog = extractSidebarStoreCatalog();
+    const storeCatalog = preloadedStoreCatalog || extractSidebarStoreCatalog();
     const storeById = new Map(storeCatalog.conversations.map((c) => [c.id, c]));
 
     for (const row of rows) {
@@ -5685,7 +5685,7 @@
   function getMobileSnapshot() {
     const sessionId = getSessionIdFromLocation() || '';
     const storeCatalog = extractSidebarStoreCatalog();
-    const conversations = collectSidebarConversations(0);
+    const conversations = collectSidebarConversations(0, storeCatalog);
     const activeConv = conversations.find((c) => c.active);
     const busy = isAssistantBusy();
     const locProjectId = getProjectIdFromLocation();
