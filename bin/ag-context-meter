@@ -404,7 +404,9 @@ parse_etime_sec() {
 
 get_host_ps_line() {
   local ps_raw=""
-  if [ -n "${AG_MOCK_PS_OUTPUT+x}" ]; then
+  if [ -n "${AG_MOCK_PS_FILE:-}" ] && [ -f "$AG_MOCK_PS_FILE" ]; then
+    ps_raw="$(cat "$AG_MOCK_PS_FILE" 2>/dev/null || true)"
+  elif [ -n "${AG_MOCK_PS_OUTPUT+x}" ]; then
     ps_raw="$AG_MOCK_PS_OUTPUT"
   else
     ps_raw="$(ps -ax -o pid=,etime=,command= 2>/dev/null || true)"
@@ -719,6 +721,7 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
         exit 0
       fi
       mkdir -p "$LOG_DIR"
+      switched_to_bare=0
       for _ in $(seq 1 15); do
         host_line="$(get_host_ps_line)"
         if [ -z "$host_line" ]; then
@@ -726,15 +729,21 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
         fi
         read -r host_pid host_etime host_cmd <<< "$host_line"
         host_elapsed="$(parse_etime_sec "$host_etime")"
+        if ! printf '%s\n' "$host_cmd" | grep -qE -- '--remote-debugging-port(=|[[:space:]]|$)'; then
+          switched_to_bare=1
+          break
+        fi
         if is_live_host_running "$host_elapsed"; then
           exit 0
         fi
         if has_active_cdp_target && node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
-          break
+          exit 0
         fi
         sleep 2
       done
-      exit 0
+      if [ "$switched_to_bare" -eq 0 ]; then
+        exit 0
+      fi
     fi
 
     if [ "${host_elapsed:-999}" -gt 30 ]; then
