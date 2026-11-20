@@ -6336,6 +6336,7 @@ function buildMobileAppHtml() {
         activeMsgSessionId = snapSid;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
+        promptDraftState.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         stickBottom = true;
@@ -6373,7 +6374,8 @@ function buildMobileAppHtml() {
       } else if (prompts.length > 0) {
         dock.hidden = false;
         const activePrompt = prompts[0];
-        const promptSig = String(activePrompt.id || 'p0') + '|' + String(activePrompt.title || '') + '|'
+        const activePromptKey = String(activePrompt.promptKey || activePrompt.id || '');
+        const promptSig = String(snapSid || '__default__') + '::' + activePromptKey + '|' + String(activePrompt.title || '') + '|'
           + (activePrompt.options || []).map((o) => o.label).join(',') + '|'
           + (activePrompt.actions || []).map((a) => a.label).join(',');
         if (!promptDraftState.has(promptSig)) {
@@ -6444,6 +6446,7 @@ function buildMobileAppHtml() {
                 try {
                   const res = await apiAction({
                     action: 'respond-prompt',
+                    promptKey: activePromptKey,
                     promptIndex: Number(activePrompt.index) || 0,
                     selectedIndices: Array.from(draft.selected)
                   });
@@ -6469,6 +6472,7 @@ function buildMobileAppHtml() {
               try {
                 const res = await apiAction({
                   action: 'respond-prompt',
+                  promptKey: activePromptKey,
                   promptIndex: Number(activePrompt.index) || 0,
                   selectedIndices: Array.from(draft.selected),
                   otherText: activePrompt.hasOtherInput ? draft.otherText : undefined,
