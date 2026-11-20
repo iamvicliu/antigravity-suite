@@ -11376,12 +11376,14 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
     return { status, json: JSON.parse(out) };
   };
 
-  // 2a. 缺少有效会话 ID 或非法 stepIndex 必须拒绝
+  // 2a. 缺少有效会话 ID 或非法 stepIndex（含 null / '' / false / true / 负数 / 小数）必须拒绝且零 RPC 调用
   const badCid = await postAction({ action: 'send-queued-messages', conversationId: '__new__' });
   assert.equal(badCid.json.ok, false, '新建草稿态不得调用队列发送 RPC');
-  const badIdx = await postAction({ action: 'delete-queued-message', conversationId: 'conv-q1', stepIndex: -1 });
-  assert.equal(badIdx.json.ok, false, '负数 stepIndex 必须被拒绝');
-  assert.equal(rpcCalls.length, 0);
+  for (const badVal of [null, undefined, '', '   ', false, true, -1, 1.5, '2abc']) {
+    const r = await postAction({ action: 'delete-queued-message', conversationId: 'conv-q1', stepIndex: badVal });
+    assert.equal(r.json.ok, false, `非法 stepIndex (${JSON.stringify(badVal)}) 必须被拒绝`);
+  }
+  assert.equal(rpcCalls.length, 0, '任何非法参数均不得触发 DeleteQueuedUserInputStep RPC');
 
   // 2b. 正常删除单条排队消息
   const delRes = await postAction({ action: 'delete-queued-message', conversationId: 'conv-q1', stepIndex: 2 });
@@ -11398,7 +11400,59 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
   const failRes = await postAction({ action: 'send-queued-messages', conversationId: 'conv-q1' });
   assert.equal(failRes.json.ok, false, 'LanguageServer 返回 null 时必须向前端返回失败');
 
-  // 3. 远程网页端包含 #queue-dock、排队条渲染、立即发送与撤回按钮及防重锁
+  // 3. 并发乱序失效验证：invalidateSession 推进 gen 并清除 inflightMap，旧请求晚归不得覆盖新队列状态
+  const { createConversationHistoryManager } = require('./mobile-remote');
+  const histMgr = createConversationHistoryManager();
+  let resolveOldFetch;
+  let resolveNewFetch;
+  let fetchCount = 0;
+  const controlledApi = {
+    call: async (method) => {
+      if (method !== 'GetCascadeTrajectory') return null;
+      fetchCount += 1;
+      if (fetchCount === 1) {
+        return await new Promise((r) => { resolveOldFetch = r; });
+      }
+      return await new Promise((r) => { resolveNewFetch = r; });
+    }
+  };
+  const baseSnap = { ok: true, sessionId: 'conv-race-1', messages: [], busy: false, _activeTrajSig: 'sig-1' };
+  const oldPromise = histMgr.enrichMessages(baseSnap, { localApiConnect: async () => controlledApi });
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(fetchCount, 1, '旧请求应已发出并处于在途状态');
+
+  // 触发失效后再发起新刷新：必须发出第 2 次独立 RPC（不复用旧 inflight）
+  histMgr.invalidateSession('conv-race-1');
+  const newPromise = histMgr.enrichMessages(baseSnap, { localApiConnect: async () => controlledApi });
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(fetchCount, 2, 'invalidateSession 后刷新必须发起新请求而不得复用失效前的在途请求');
+
+  // 让新请求先完成（队列已清空），再让旧请求晚归（仍含旧排队项）
+  resolveNewFetch({
+    trajectory: {
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '已完成' }] } }
+      ]
+    }
+  });
+  const newSnap = await newPromise;
+  assert.equal(newSnap.queuedMessages.length, 0, '新请求应得到已清空的队列状态');
+
+  resolveOldFetch({
+    trajectory: {
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '已完成' }] } },
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '过期的旧排队消息' }] } }
+      ]
+    }
+  });
+  await oldPromise;
+
+  // 再次读取缓存：必须仍为新状态（0 条排队），绝不能被晚归的旧请求覆盖
+  const afterRaceSnap = await histMgr.enrichMessages(baseSnap, { localApiConnect: async () => controlledApi });
+  assert.equal(afterRaceSnap.queuedMessages.length, 0, '晚归的旧请求绝不得覆盖失效后已落地的新队列状态');
+
+  // 4. 远程网页端包含 #queue-dock、排队条渲染、立即发送与撤回按钮及防重锁
   const html = buildMobileAppHtml();
   assert.ok(html.includes('id="queue-dock"'), '应渲染 #queue-dock 排队消息容器');
   assert.ok(html.includes("action: 'send-queued-messages'") && html.includes("action: 'delete-queued-message'"), '前端应接入立即发送与单条撤回动作');
