@@ -9695,6 +9695,8 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     const parsedDefault = parsePlistJson(plistPath);
     assert.ok(parsedDefault.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'WatchPaths 应监听 SingletonSocket');
     assert.ok(!plistDefault.includes('SingletonLock'), 'WatchPaths 不得再包含悬空软链 SingletonLock');
+    assert.equal(parsedDefault.StartInterval, 5, 'setup-macos-cdp.sh 应写入 StartInterval=5 轻量轮询');
+    assert.equal(parsedDefault.ThrottleInterval, 5, 'setup-macos-cdp.sh 应写入 ThrottleInterval=5');
     assert.equal(parsedDefault.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, '最小 PATH 下应将解析后的真实 Node 可执行目录写入 EnvironmentVariables.PATH');
     const setupInvocations = fs.readFileSync(nvmMarkerLog, 'utf8').trim().split('\n');
     assert.ok(setupInvocations.includes(`NVM_NODE_INVOKED:${highNodeExe}`), 'setup-macos-cdp.sh 实际执行的必须是测试 nvm v26.99.0 的 node');
@@ -9750,6 +9752,8 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     const parsedA = parsePlistJson(plistPath);
     assert.ok(parsedA.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'auto-on 应将 SingletonLock 升级为 SingletonSocket');
     assert.ok(!parsedA.WatchPaths.some((w) => w.includes('SingletonLock')), 'auto-on 升级后不得残留 SingletonLock');
+    assert.equal(parsedA.StartInterval, 5, 'auto-on 升级旧 plist 应补充 StartInterval=5');
+    assert.equal(parsedA.ThrottleInterval, 5, 'auto-on 升级旧 plist 应补充 ThrottleInterval=5');
     assert.equal(parsedA.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'auto-on 应补充真实 Node 可执行目录到 EnvironmentVariables.PATH');
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
 
@@ -9933,6 +9937,42 @@ exec "${process.execPath}" "$@"
     }).trim().split('\n');
     assert.equal(path.dirname(launcherCheck[0]), realNodeBinDir, '启动器在空目录最小 PATH 下应直接命中真实 Node 目录');
     assert.match(launcherCheck[1], /^v\d+\./, '启动器在空目录最小 PATH 下必须能直接执行 node');
+
+    // 6) _auto-trigger 纯 bash 毫秒级幂等快路径：宿主未运行、已带调试端口且 live-host 存活、裸宿主运行 >30s 均须零 node 启动快速 exit 0
+    const fastPathCases = [
+      {
+        name: '宿主未运行',
+        mockPs: '  101 05:10 /Applications/Antigravity.app/Contents/Resources/bin/language_server\n',
+        mockLiveHost: '0'
+      },
+      {
+        name: '带调试端口且 live-host 已存活',
+        mockPs: '  202 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0\n',
+        mockLiveHost: '1'
+      },
+      {
+        name: '裸宿主已运行超过 30 秒',
+        mockPs: '  303 01:05 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n',
+        mockLiveHost: '0'
+      }
+    ];
+    for (const tc of fastPathCases) {
+      fs.writeFileSync(nvmMarkerLog, '', 'utf8');
+      const t0 = Date.now();
+      execFileSync('bash', [agBin, '_auto-trigger'], {
+        env: {
+          HOME: fakeHome,
+          PATH: minimalPath,
+          AG_DEFAULT_NODE_PATHS: '',
+          AG_MOCK_PS_OUTPUT: tc.mockPs,
+          AG_MOCK_LIVE_HOST_RUNNING: tc.mockLiveHost
+        },
+        encoding: 'utf8'
+      });
+      const elapsedMs = Date.now() - t0;
+      assert.equal(fs.readFileSync(nvmMarkerLog, 'utf8').trim(), '', `_auto-trigger [${tc.name}] 应命中快路径，不得启动 node`);
+      assert.ok(elapsedMs < 3000, `_auto-trigger [${tc.name}] 应毫秒级退出（实际 ${elapsedMs}ms）`);
+    }
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
