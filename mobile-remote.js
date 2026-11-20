@@ -4796,14 +4796,22 @@ function buildMobileAppHtml() {
     }
 
     let navigatingAwayTimer = null;
+    function resetNavigationGuard(resumePoll) {
+      const wasNavigating = navigatingAway;
+      navigatingAway = false;
+      clearTimeout(navigatingAwayTimer);
+      navigatingAwayTimer = null;
+      if (resumePoll && wasNavigating && !document.hidden) {
+        schedulePoll();
+      }
+    }
     function navigateEntryUrl(targetUrl, useReplace) {
       if (navigatingAway) return;
       navigatingAway = true;
       clearTimeout(pollTimer);
       clearTimeout(navigatingAwayTimer);
       navigatingAwayTimer = setTimeout(() => {
-        navigatingAway = false;
-        navigatingAwayTimer = null;
+        resetNavigationGuard(true);
       }, 6000);
       if (useReplace && typeof location.replace === 'function') {
         location.replace(targetUrl);
@@ -4813,9 +4821,7 @@ function buildMobileAppHtml() {
     }
     try {
       window.addEventListener('pageshow', () => {
-        navigatingAway = false;
-        clearTimeout(navigatingAwayTimer);
-        navigatingAwayTimer = null;
+        resetNavigationGuard(true);
       });
     } catch {}
 
@@ -8695,16 +8701,38 @@ function readPersistedTunnelStatus() {
 function resolveEmptyCloudflaredConfigPath(options = {}) {
   const plat = options.platform || process.platform;
   if (plat !== 'win32') {
-    if (fs.existsSync('/dev/null')) return '/dev/null';
+    if (fs.existsSync('/dev/null')) {
+      return { ok: true, path: '/dev/null', error: '' };
+    }
   }
   const baseDir = options.baseDir || path.dirname(getRemoteConfigPath());
-  const emptyPath = path.join(baseDir, '.cloudflared-empty.yml');
-  try {
-    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
-    if (!fs.existsSync(emptyPath)) fs.writeFileSync(emptyPath, '', 'utf8');
-    if (fs.existsSync(emptyPath) && fs.statSync(emptyPath).isFile()) return emptyPath;
-  } catch {}
-  return '';
+  const candidates = [path.join(baseDir, '.cloudflared-empty.yml')];
+  if (options.fallbackDir !== null) {
+    const fbDir = options.fallbackDir || os.tmpdir();
+    if (fbDir && fbDir !== baseDir) {
+      candidates.push(path.join(fbDir, 'ag-cloudflared-empty.yml'));
+    }
+  }
+  let lastErr = '';
+  for (const emptyPath of candidates) {
+    try {
+      const dir = path.dirname(emptyPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(emptyPath, '', 'utf8');
+      const st = fs.statSync(emptyPath);
+      if (st.isFile() && st.size === 0) {
+        return { ok: true, path: emptyPath, error: '' };
+      }
+      lastErr = `隔离配置文件非空 (size=${st.size})`;
+    } catch (err) {
+      lastErr = err?.message || String(err || 'unknown error');
+    }
+  }
+  return {
+    ok: false,
+    path: '',
+    error: `无法创建 cloudflared 隔离空配置文件（${lastErr || '写入失败'}），已中止启动以避免误读宿主机 ~/.cloudflared/config.yml`
+  };
 }
 
 function createCloudflareTunnelController(getPort) {
@@ -8805,11 +8833,16 @@ function createCloudflareTunnelController(getPort) {
     errorMsg = '';
 
     const port = Number(typeof getPort === 'function' ? getPort() : cfg.port) || DEFAULT_REMOTE_PORT;
-    const emptyConfigPath = resolveEmptyCloudflaredConfigPath();
-    const configArgs = emptyConfigPath ? ['--config', emptyConfigPath] : [];
+    const emptyCfg = resolveEmptyCloudflaredConfigPath();
+    if (!emptyCfg.ok || !emptyCfg.path) {
+      state = 'error';
+      publicUrl = '';
+      errorMsg = emptyCfg.error || '无法创建 cloudflared 隔离空配置文件，已中止启动';
+      return getStatus();
+    }
     const args = mode === 'named'
-      ? ['tunnel', ...configArgs, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
-      : ['tunnel', ...configArgs, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
+      ? ['tunnel', '--config', emptyCfg.path, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
+      : ['tunnel', '--config', emptyCfg.path, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
 
     const childEnv = { ...process.env };
     const appendNoProxy = (cur) => {

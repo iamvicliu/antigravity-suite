@@ -10559,37 +10559,112 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
   const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
   const { resolveEmptyCloudflaredConfigPath } = require('./mobile-remote');
 
-  // 1. cloudflared 空配置路径解析：POSIX 返回 /dev/null；Windows 可写目录生成空文件；创建失败返回空串而非不可用路径
-  assert.equal(resolveEmptyCloudflaredConfigPath({ platform: 'darwin' }), '/dev/null');
+  // 1. cloudflared 空配置路径解析：POSIX 返回 /dev/null；Windows 清空既有非空文件并校验 0 字节；失败路径回退/报错中止
+  const posixCfg = resolveEmptyCloudflaredConfigPath({ platform: 'darwin' });
+  assert.equal(posixCfg.ok, true);
+  assert.equal(posixCfg.path, '/dev/null');
+
   const tmpWinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cf-empty-win-'));
+  const tmpWinFallback = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cf-empty-fb-'));
   try {
-    const winCfg = resolveEmptyCloudflaredConfigPath({ platform: 'win32', baseDir: tmpWinDir });
-    assert.equal(winCfg, path.join(tmpWinDir, '.cloudflared-empty.yml'));
-    assert.equal(fs.existsSync(winCfg), true, 'Windows 下应成功创建空配置文件');
+    // 1a. 既存非空 .cloudflared-empty.yml 必须被强制清空为 0 字节
+    const prefilledPath = path.join(tmpWinDir, '.cloudflared-empty.yml');
+    fs.writeFileSync(prefilledPath, 'ingress:\n  - service: http_status:404\n', 'utf8');
+    const winCfg = resolveEmptyCloudflaredConfigPath({ platform: 'win32', baseDir: tmpWinDir, fallbackDir: null });
+    assert.equal(winCfg.ok, true);
+    assert.equal(winCfg.path, prefilledPath);
+    assert.equal(fs.statSync(winCfg.path).size, 0, 'Windows 既有的非空 .cloudflared-empty.yml 必须被清空为 0 字节');
+
+    // 1b. 主目录不可写时回退至 fallbackDir
     const blockerFile = path.join(tmpWinDir, 'not-a-dir');
     fs.writeFileSync(blockerFile, 'x', 'utf8');
-    const failedCfg = resolveEmptyCloudflaredConfigPath({ platform: 'win32', baseDir: path.join(blockerFile, 'sub') });
-    assert.equal(failedCfg, '', 'Windows 空配置文件创建失败时必须返回空字符串而非不可用路径');
+    const fbCfg = resolveEmptyCloudflaredConfigPath({
+      platform: 'win32',
+      baseDir: path.join(blockerFile, 'sub'),
+      fallbackDir: tmpWinFallback
+    });
+    assert.equal(fbCfg.ok, true, '主目录不可写时应回退至临时目录创建 0 字节空配置');
+    assert.equal(fs.statSync(fbCfg.path).size, 0);
+
+    // 1c. 主目录与回退均失败时必须明确返回 ok=false 与错误说明（绝不静默省略 --config）
+    const failedCfg = resolveEmptyCloudflaredConfigPath({
+      platform: 'win32',
+      baseDir: path.join(blockerFile, 'sub'),
+      fallbackDir: null
+    });
+    assert.equal(failedCfg.ok, false);
+    assert.equal(failedCfg.path, '');
+    assert.ok(failedCfg.error.includes('已中止启动'), '失败时应返回明确的隔离失败报错');
   } finally {
     fs.rmSync(tmpWinDir, { recursive: true, force: true });
+    fs.rmSync(tmpWinFallback, { recursive: true, force: true });
   }
 
-  // 2. cloudflared 启动参数、quick 就绪事件/超时兜底、navigatingAway 恢复与 endpoints 持久化
+  // 2. cloudflared 启动参数、失败中止、quick 就绪事件/超时兜底、navigatingAway 恢复联动 schedulePoll 与 endpoints 持久化
   assert.ok(
-    mobileSrc.includes("const configArgs = emptyConfigPath ? ['--config', emptyConfigPath] : [];")
-    && mobileSrc.includes("['tunnel', ...configArgs, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']")
-    && mobileSrc.includes("['tunnel', ...configArgs, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url'"),
-    'cloudflared quick/named 模式必须在有空配置路径时传入 --config，否则安全省略'
+    mobileSrc.includes('if (!emptyCfg.ok || !emptyCfg.path)')
+    && mobileSrc.includes("['tunnel', '--config', emptyCfg.path, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']")
+    && mobileSrc.includes("['tunnel', '--config', emptyCfg.path, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url'"),
+    'cloudflared quick/named 模式必须在隔离空配置失败时报错中止，成功时强制传入 --config'
   );
   assert.ok(
     mobileSrc.includes('quickUrlCandidate && quickRegistered')
     && mobileSrc.includes("mode === 'quick' && quickUrlCandidate && state === 'starting' && child === spawned && !errorMsg")
-    && mobileSrc.includes("window.addEventListener('pageshow'")
-    && mobileSrc.includes('navigatingAwayTimer = setTimeout')
+    && mobileSrc.includes('function resetNavigationGuard(resumePoll)')
+    && mobileSrc.includes('if (resumePoll && wasNavigating && !document.hidden)')
+    && mobileSrc.includes('schedulePoll();')
     && mobileSrc.includes('pairState.endpoints = snap.endpoints;')
     && mobileSrc.includes('saveStoredPair(pairState);'),
-    'quick 模式就绪/超时、pageshow/超时恢复 navigatingAway 与快照 endpoints 持久化均应完整存在'
+    'quick 模式就绪/超时、pageshow/6s 恢复联动 schedulePoll 与快照 endpoints 持久化均应完整存在'
   );
+
+  // 2b. 行为级验证：endpoints 持久化写入 localStorage 后在刷新重载（无 URL 参数）可完整恢复，且 resetNavigationGuard 恢复轮询
+  const mockStore = new Map();
+  let pollResumedCount = 0;
+  const navSandbox = {
+    localStorage: {
+      getItem: (k) => (mockStore.has(k) ? mockStore.get(k) : null),
+      setItem: (k, v) => { mockStore.set(k, String(v)); }
+    },
+    document: { hidden: false },
+    setTimeout,
+    clearTimeout,
+    schedulePoll: () => { pollResumedCount += 1; }
+  };
+  vm.runInNewContext(`
+    const PAIR_STORAGE_KEY = 'ag_remote_pair_v1';
+    function loadStoredPair() {
+      const raw = localStorage.getItem(PAIR_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    }
+    function saveStoredPair(st) {
+      localStorage.setItem(PAIR_STORAGE_KEY, JSON.stringify({
+        token: st.token || '', name: st.name || '',
+        hosts: Array.isArray(st.hosts) ? st.hosts : [],
+        endpoints: Array.isArray(st.endpoints) ? st.endpoints : []
+      }));
+    }
+    const pairState = { token: 'tok', name: 'mac', hosts: ['192.168.1.10'], endpoints: [{ url: 'https://old.trycloudflare.com', kind: 'tunnel', priority: 250 }] };
+    pairState.endpoints = [{ url: 'https://fresh.trycloudflare.com', kind: 'tunnel', priority: 250 }];
+    saveStoredPair(pairState);
+    const reloaded = loadStoredPair();
+    globalThis.__reloadedEndpoints = reloaded.endpoints;
+
+    let navigatingAway = true;
+    let navigatingAwayTimer = null;
+    function resetNavigationGuard(resumePoll) {
+      const wasNavigating = navigatingAway;
+      navigatingAway = false;
+      clearTimeout(navigatingAwayTimer);
+      navigatingAwayTimer = null;
+      if (resumePoll && wasNavigating && !document.hidden) schedulePoll();
+    }
+    resetNavigationGuard(true);
+    globalThis.__navAfterReset = navigatingAway;
+  `, navSandbox);
+  assert.equal(navSandbox.__reloadedEndpoints?.[0]?.url, 'https://fresh.trycloudflare.com', '刷新重载后应从 localStorage 恢复最新 endpoints');
+  assert.equal(navSandbox.__navAfterReset, false, 'resetNavigationGuard 应重置 navigatingAway 为 false');
+  assert.equal(pollResumedCount, 1, '导航恢复后必须重新调用 schedulePoll() 恢复快照轮询');
 
   // 3. 桌面端远程配对浮窗点击 .ag-rp-ch-pill 切换通道，且所选通道失效后自动回退
   const env = createDomEnv();
