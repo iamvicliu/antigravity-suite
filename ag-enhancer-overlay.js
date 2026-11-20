@@ -46,7 +46,7 @@
   let remotePopoverOpen = false;
   let remotePollTimer = null;
   let lastRemoteFetchAt = 0;
-  let remotePairState = { loading: false, tunnelBusy: false, tunnelPendingAction: '', error: '', data: null, copiedAt: 0, tunnelConfigOpen: false, tunnelPollTimer: null, draftHost: null, draftToken: '' };
+  let remotePairState = { loading: false, tunnelBusy: false, tunnelPendingAction: '', error: '', data: null, copiedAt: 0, selectedChannelKey: '', tunnelConfigOpen: false, tunnelPollTimer: null, draftHost: null, draftToken: '' };
   let fileEditorState = {
     active: false,
     fileUri: '',
@@ -1675,12 +1675,26 @@
           align-items: center;
           justify-content: space-between;
           gap: 8px;
+          width: 100%;
           padding: 5px 9px;
           border-radius: 7px;
           border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
           background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.035));
+          font-family: inherit;
           font-size: 12px;
           color: var(--ag-text-primary, #e4e4e7);
+          text-align: left;
+          cursor: pointer;
+          transition: background 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+        }
+        .ag-rp-ch-pill:hover:not([disabled]):not([data-available="false"]) {
+          border-color: var(--ag-accent-border-hover, rgba(167, 139, 250, 0.56));
+          background: var(--ag-accent-bg-hover, rgba(167, 139, 250, 0.24));
+        }
+        .ag-rp-ch-pill[data-available="false"],
+        .ag-rp-ch-pill[disabled] {
+          opacity: 0.62;
+          cursor: not-allowed;
         }
         .ag-rp-ch-pill[data-active="true"] {
           border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
@@ -1920,7 +1934,11 @@
     }
 
     const availableList = channels.filter((c) => (c.enabled !== false) && c.available && c.url);
-    const activeChannel = availableList.find((c) => c.key === 'tunnel')
+    const preferredChannel = remotePairState.selectedChannelKey
+      ? availableList.find((c) => c.key === remotePairState.selectedChannelKey)
+      : null;
+    const activeChannel = preferredChannel
+      || availableList.find((c) => c.key === 'tunnel')
       || availableList.find((c) => c.key === 'tailscale')
       || availableList.find((c) => c.key === 'lan')
       || availableList[0]
@@ -2079,10 +2097,14 @@
       const activeSummaryHtml = enabledChannels.length > 0
         ? `<div class="ag-rp-readonly-summary">${enabledChannels.map((ch) => {
             const label = tr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
+            const canSelect = Boolean((ch.enabled !== false) && ch.available && ch.url);
             const hostVal = (ch.key === 'tunnel' && !ch.available && ch.state === 'starting')
               ? (ch.displayHost || tr('正在分配公网隧道…', 'Provisioning Tunnel…'))
               : (ch.displayHost || (ch.available ? '' : tr('未连接', 'Offline')));
-            return `<span class="ag-rp-ch-pill" data-active="${ep.activeKey === ch.key ? 'true' : 'false'}"><span>${escapeHtml(label)}</span>${hostVal ? `<span class="ag-rp-ch-pill-host">${escapeHtml(hostVal)}</span>` : ''}</span>`;
+            const titleText = canSelect
+              ? tr(`点击切换为 ${label} 二维码与链接`, `Click to switch QR & link to ${label}`)
+              : tr('当前通道暂不可用', 'Channel currently unavailable');
+            return `<button type="button" class="ag-rp-ch-pill" data-ch-key="${escapeHtml(ch.key)}" data-active="${ep.activeKey === ch.key ? 'true' : 'false'}" data-available="${canSelect ? 'true' : 'false'}" title="${escapeHtml(titleText)}" ${canSelect ? '' : 'disabled'}><span>${escapeHtml(label)}</span>${hostVal ? `<span class="ag-rp-ch-pill-host">${escapeHtml(hostVal)}</span>` : ''}</button>`;
           }).join('')}</div>`
         : '';
 
@@ -2132,6 +2154,18 @@
     popover.querySelector('#ag-remote-refresh')?.addEventListener('click', (ev) => {
       ev.stopPropagation();
       void refreshRemotePairInfo(false);
+    });
+    popover.querySelectorAll('.ag-rp-ch-pill').forEach((pillBtn) => {
+      pillBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const chKey = pillBtn.getAttribute('data-ch-key') || '';
+        const canSelect = pillBtn.getAttribute('data-available') === 'true';
+        if (!chKey || !canSelect) return;
+        remotePairState.selectedChannelKey = chKey;
+        remotePairState.copiedAt = 0;
+        renderRemotePopoverContent(popover);
+        positionRemotePopover();
+      });
     });
     popover.querySelector('#ag-remote-copy')?.addEventListener('click', async (ev) => {
       ev.stopPropagation();

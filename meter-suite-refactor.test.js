@@ -10553,3 +10553,114 @@ test('需求 26: antigravity-hans-overlay 仅翻译 div.entrance-title 登录欢
     activeTimers.clear();
   }
 });
+
+test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async () => {
+  const mobileSrc = fs.readFileSync(path.join(__dirname, 'mobile-remote.js'), 'utf8');
+  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+
+  // 1. cloudflared 启动必须显式传入 --config 空配置隔离宿主机 ~/.cloudflared/config.yml
+  assert.ok(
+    mobileSrc.includes('resolveEmptyCloudflaredConfigPath()')
+    && mobileSrc.includes("'--config', emptyConfigPath, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run'")
+    && mobileSrc.includes("'--config', emptyConfigPath, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url'"),
+    'cloudflared quick/named 模式必须显式传入 --config 隔离宿主机 config.yml'
+  );
+
+  // 2. quick 模式需等待 Registered tunnel connection 再标记 running（同时保留超时兜底）
+  assert.ok(
+    mobileSrc.includes('quickUrlCandidate && quickRegistered')
+    && mobileSrc.includes("window.addEventListener('pageshow'"),
+    'quick 模式应等待隧道注册并具备 pageshow 恢复 navigatingAway 防卡死保护'
+  );
+
+  // 3. 桌面端远程配对浮窗点击 .ag-rp-ch-pill 可在多通道间切换二维码与复制链接
+  const env = createDomEnv();
+  env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
+  let copiedText = '';
+  env.sandbox.navigator.clipboard = {
+    writeText: async (text) => { copiedText = String(text || ''); }
+  };
+  const info = {
+    port: 18765,
+    token: 'tok-switch-test-123456',
+    deviceName: 'test-host',
+    pairedCount: 0,
+    onlineCount: 0,
+    pairedDevices: [],
+    channels: [
+      {
+        key: 'lan',
+        label: '局域网',
+        labelEn: 'LAN',
+        enabled: true,
+        available: true,
+        displayHost: '192.168.1.10',
+        url: 'http://192.168.1.10:18765/?token=tok-switch-test-123456',
+        qrSvg: '<svg id="qr-lan"><rect/></svg>'
+      },
+      {
+        key: 'tailscale',
+        label: 'Tailscale',
+        labelEn: 'Tailscale',
+        enabled: true,
+        available: true,
+        displayHost: 'test.ts.net',
+        url: 'http://100.64.0.2:18765/?token=tok-switch-test-123456',
+        qrSvg: '<svg id="qr-ts"><rect/></svg>'
+      },
+      {
+        key: 'tunnel',
+        label: 'Cloudflare 隧道',
+        labelEn: 'Cloudflare Tunnel',
+        enabled: true,
+        available: true,
+        state: 'running',
+        mode: 'quick',
+        displayHost: 'demo.trycloudflare.com',
+        url: 'https://demo.trycloudflare.com/?token=tok-switch-test-123456',
+        qrSvg: '<svg id="qr-tunnel"><rect/></svg>'
+      }
+    ],
+    fusedUrl: 'https://demo.trycloudflare.com/?token=tok-switch-test-123456',
+    primaryUrl: 'https://demo.trycloudflare.com/?token=tok-switch-test-123456',
+    qrSvg: '<svg id="qr-tunnel"><rect/></svg>'
+  };
+
+  env.sandbox.fetch = async (url) => {
+    if (String(url).includes('/remote-info')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, data: info }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+
+  vm.runInContext(RENDERER_SRC, env.sandbox);
+  vm.runInContext(overlaySrc, env.sandbox);
+  const enhancer = env.sandbox.__AGEnhancer;
+  const shadow = env.getShadow();
+  enhancer.toggleRemotePopover(true);
+  await new Promise((r) => setTimeout(r, 40));
+
+  const remotePop = shadow.getElementById('ag-remote-popover');
+  assert.ok(remotePop && !remotePop.hidden, '点击远程按钮应打开配对浮窗');
+  assert.ok(remotePop.innerHTML.includes('id="qr-tunnel"'), '默认应优先展示 Cloudflare 隧道二维码');
+
+  const lanPill = remotePop.querySelector('.ag-rp-ch-pill[data-ch-key="lan"]');
+  assert.ok(lanPill, '浮窗应渲染可点击的局域网通道胶囊');
+  lanPill.click();
+  await new Promise((r) => setTimeout(r, 15));
+
+  assert.equal(
+    remotePop.querySelector('.ag-rp-ch-pill[data-ch-key="lan"]')?.getAttribute('data-active'),
+    'true',
+    '点击局域网胶囊后应激活局域网通道'
+  );
+  assert.ok(
+    remotePop.innerHTML.includes('id="qr-lan"'),
+    '切换通道后二维码应即时更新为局域网二维码'
+  );
+  remotePop.querySelector('#ag-remote-copy')?.click();
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(copiedText, 'http://192.168.1.10:18765/?token=tok-switch-test-123456', '复制链接应复制当前选中通道的 URL');
+
+  enhancer.dispose?.();
+});
