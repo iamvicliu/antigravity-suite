@@ -2716,7 +2716,17 @@ function renderSafeMarkdownToHtml(rawMd) {
       if (/^https?:\/\//i.test(rawUrl)) {
         tokens.push(`<a href="${escSafeHtml(rawUrl)}" target="_blank" rel="noopener">${escSafeHtml(label)}</a>`);
       } else if (/^file:\/\//i.test(rawUrl)) {
-        tokens.push(`<code class="md-pill">${escSafeHtml(label)}</code>`);
+        const hashIdx = rawUrl.indexOf('#');
+        const uriPart = hashIdx >= 0 ? rawUrl.slice(0, hashIdx) : rawUrl;
+        const hashPart = hashIdx >= 0 ? rawUrl.slice(hashIdx + 1) : '';
+        const lineMatch = hashPart.match(/^L(\d+)/i);
+        const lineNum = lineMatch ? lineMatch[1] : '';
+        const localPath = normalizeLocalFileUriToPath(uriPart);
+        if (localPath) {
+          tokens.push(`<button type="button" class="md-file-link" data-file-path="${escSafeHtml(localPath)}"${lineNum ? ` data-file-line="${escSafeHtml(lineNum)}"` : ''}><code class="md-pill">${escSafeHtml(label)}</code></button>`);
+        } else {
+          tokens.push(`<code class="md-pill">${escSafeHtml(label)}</code>`);
+        }
       } else {
         tokens.push(escSafeHtml(label));
       }
@@ -2944,6 +2954,156 @@ function resolveSafeLocalMediaPath(rawPath, options = {}) {
     ext,
     contentType,
     forceAttachment
+  };
+}
+
+const TREE_HIDDEN_NOISE_DIRS = new Set(['.git', 'node_modules', '.next', '.nuxt', 'dist', 'build', '.cache', '__pycache__', '.venv']);
+
+function listSafeProjectTree(rawDir, options = {}) {
+  const showAll = Boolean(options.showAll);
+  const rawRoots = Array.isArray(options.allowedRoots) && options.allowedRoots.length
+    ? options.allowedRoots
+    : [os.homedir(), os.tmpdir()];
+  const realRoots = [];
+  for (const r of rawRoots) {
+    if (!r) continue;
+    try { realRoots.push(fs.realpathSync(String(r))); } catch {}
+  }
+  const candidate = normalizeLocalFileUriToPath(rawDir || '') || realRoots[0] || os.homedir();
+  if (!candidate || !path.isAbsolute(candidate)) {
+    return { ok: false, status: 400, error: '无效的目录路径' };
+  }
+  let realDir = '';
+  try {
+    realDir = fs.realpathSync(candidate);
+  } catch {
+    return { ok: false, status: 404, error: '目录不存在或无法访问' };
+  }
+  const inAllowedRoot = realRoots.some((root) => realDir === root || realDir.startsWith(root + path.sep));
+  if (!inAllowedRoot) {
+    return { ok: false, status: 403, error: '禁止浏览受限目录之外的路径' };
+  }
+  if (SENSITIVE_MEDIA_DIR_RE.test(realDir)) {
+    return { ok: false, status: 403, error: '禁止浏览敏感密钥或凭证目录' };
+  }
+  let stat;
+  try {
+    stat = fs.statSync(realDir);
+  } catch {
+    return { ok: false, status: 404, error: '目录不存在' };
+  }
+  if (!stat.isDirectory()) {
+    return { ok: false, status: 400, error: '目标不是目录' };
+  }
+
+  let dirents = [];
+  try {
+    dirents = fs.readdirSync(realDir, { withFileTypes: true });
+  } catch (err) {
+    return { ok: false, status: 403, error: err?.message || '读取目录失败' };
+  }
+
+  const entries = [];
+  for (const d of dirents) {
+    const name = String(d.name || '');
+    if (!name) continue;
+    const isDir = d.isDirectory();
+    if (isDir) {
+      if (!showAll && TREE_HIDDEN_NOISE_DIRS.has(name)) continue;
+      if (SENSITIVE_MEDIA_DIR_RE.test(path.join(realDir, name))) continue;
+    } else {
+      if (SENSITIVE_MEDIA_FILE_RE.test(name)) continue;
+    }
+    const fullPath = path.join(realDir, name);
+    let size = 0;
+    if (!isDir) {
+      try { size = fs.statSync(fullPath).size; } catch {}
+    }
+    entries.push({
+      name,
+      path: fullPath,
+      isDir,
+      size,
+      ext: isDir ? '' : path.extname(name).toLowerCase()
+    });
+  }
+  entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : (a.isDir ? -1 : 1)));
+  const parentCandidate = path.dirname(realDir);
+  const canGoUp = parentCandidate !== realDir
+    && realRoots.some((root) => parentCandidate === root || parentCandidate.startsWith(root + path.sep));
+  return {
+    ok: true,
+    dir: realDir,
+    parentDir: canGoUp ? parentCandidate : '',
+    entries: entries.slice(0, 200),
+    truncated: entries.length > 200
+  };
+}
+
+function readSafeTextFilePreview(rawPath, options = {}) {
+  const maxTextBytes = Number.isFinite(options.maxTextBytes) ? options.maxTextBytes : (512 * 1024);
+  const checked = resolveSafeLocalMediaPath(rawPath, options);
+  if (!checked.ok) return checked;
+  if (/^image\//i.test(checked.contentType)) {
+    return {
+      ok: true,
+      isImage: true,
+      isBinary: false,
+      isMarkdown: false,
+      name: checked.baseName,
+      path: checked.realPath,
+      ext: checked.ext,
+      size: checked.size
+    };
+  }
+  if (checked.size > maxTextBytes) {
+    return {
+      ok: true,
+      isImage: false,
+      isBinary: false,
+      isTooLargeForText: true,
+      name: checked.baseName,
+      path: checked.realPath,
+      ext: checked.ext,
+      size: checked.size,
+      error: `文件较大 (${Math.round(checked.size / 1024)} KB)，超过文本预览上限 (${Math.round(maxTextBytes / 1024)} KB)`
+    };
+  }
+  let buf;
+  try {
+    buf = fs.readFileSync(checked.realPath);
+  } catch (err) {
+    return { ok: false, status: 500, error: err?.message || '读取文件失败' };
+  }
+  const sampleLen = Math.min(buf.length, 4096);
+  let hasNul = false;
+  for (let i = 0; i < sampleLen; i++) {
+    if (buf[i] === 0) { hasNul = true; break; }
+  }
+  if (hasNul) {
+    return {
+      ok: true,
+      isImage: false,
+      isBinary: true,
+      isMarkdown: false,
+      name: checked.baseName,
+      path: checked.realPath,
+      ext: checked.ext,
+      size: checked.size
+    };
+  }
+  const content = buf.toString('utf8');
+  return {
+    ok: true,
+    isImage: false,
+    isBinary: false,
+    isMarkdown: checked.ext === '.md' || checked.ext === '.markdown',
+    name: checked.baseName,
+    path: checked.realPath,
+    ext: checked.ext,
+    size: checked.size,
+    lineCount: content ? content.split(/\r?\n/).length : 0,
+    content
   };
 }
 
@@ -4065,6 +4225,61 @@ function buildMobileAppHtml() {
       position:fixed;top:max(14px,env(safe-area-inset-top));right:14px;width:36px;height:36px;border-radius:999px;
       border:1px solid rgba(255,255,255,.25);background:rgba(0,0,0,.55);color:#fff;font-size:18px;cursor:pointer;
     }
+    .md-file-link{
+      appearance:none;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      border-radius:6px;padding:1px 6px;font-family:ui-monospace,Menlo,monospace;font-size:12px;cursor:pointer;
+      display:inline-flex;align-items:center;gap:3px;vertical-align:baseline;
+    }
+    .md-file-link:active{filter:brightness(1.1)}
+    .fv-backdrop{
+      position:fixed;inset:0;z-index:110;background:var(--backdrop-bg);
+      display:flex;align-items:flex-end;justify-content:center;
+      backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+    }
+    .fv-backdrop[hidden]{display:none}
+    .fv-modal{
+      width:100%;max-width:760px;height:86vh;max-height:86vh;background:var(--card);
+      border-top-left-radius:18px;border-top-right-radius:18px;border:1px solid var(--border-strong);
+      display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--sheet-shadow);
+    }
+    .fv-head{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;
+      border-bottom:1px solid var(--border);flex-shrink:0;
+    }
+    .fv-title{font-size:14px;font-weight:700;color:var(--fg-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-tabs{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+    .fv-tab{
+      appearance:none;flex:1;padding:6px 10px;border-radius:9px;border:1px solid var(--border);
+      background:var(--surface-subtle);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;
+    }
+    .fv-tab.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .fv-body{flex:1 1 auto;min-height:0;overflow:auto;padding:10px 12px;-webkit-overflow-scrolling:touch}
+    .fv-path-bar{
+      display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:11.5px;color:var(--muted);
+      font-family:ui-monospace,Menlo,monospace;word-break:break-all;
+    }
+    .fv-up-btn{
+      appearance:none;border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      border-radius:7px;padding:3px 8px;font-size:11.5px;cursor:pointer;flex-shrink:0;
+    }
+    .fv-list{display:flex;flex-direction:column;gap:4px}
+    .fv-row{
+      appearance:none;width:100%;text-align:left;padding:8px 10px;border-radius:9px;
+      border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;cursor:pointer;
+    }
+    .fv-row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-row-meta{font-size:11px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums}
+    .fv-code{
+      margin:0;padding:10px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border);
+      font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5;overflow-x:auto;white-space:pre;
+    }
+    .fv-code-line{display:block;padding:0 4px}
+    .fv-code-line.hl{background:var(--accent-bg);border-left:2px solid var(--accent)}
+    .fv-ln{display:inline-block;width:36px;color:var(--muted);user-select:none;text-align:right;margin-right:10px}
+    .fv-diff-add{color:#4ade80}
+    .fv-diff-del{color:#f87171}
+    .fv-diff-hdr{color:var(--accent-strong-fg);font-weight:600}
     .composer-card{
       background:var(--composer-bg);border:1px solid var(--composer-border);border-radius:22px;
       padding:10px 10px 8px 12px;display:flex;flex-direction:column;gap:6px;
@@ -4559,7 +4774,7 @@ function buildMobileAppHtml() {
       .icon-btn{height:28px;min-width:28px;padding:0 3px}
       .topbar-actions{gap:3px}
       .top-panel-btn{height:28px;padding:0 4px;gap:2px;font-size:10.5px;border-radius:8px}
-      #btn-usage-panel{min-width:28px;padding:0 5px}
+      #btn-usage-panel,#btn-files-panel{min-width:28px;padding:0 5px}
       .quota-pill{height:28px;padding:0 5px;font-size:10.5px;border-radius:8px}
     }
   </style>
@@ -4584,6 +4799,9 @@ function buildMobileAppHtml() {
         <button id="btn-context-panel" class="top-panel-btn" type="button" aria-label="上下文窗口面板" title="上下文窗口面板">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><circle cx="12" cy="12" r="9" opacity=".35"/><path d="M12 3a9 9 0 1 1-6.36 2.64" stroke-linecap="round"/></svg>
           <span id="ctx-top-val">--%</span>
+        </button>
+        <button id="btn-files-panel" class="top-panel-btn" type="button" aria-label="项目文件与变更验收" title="项目文件与变更验收">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </button>
         <button id="btn-usage-panel" class="top-panel-btn" type="button" aria-label="本机已记录用量面板" title="本机已记录用量面板">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -4736,6 +4954,20 @@ function buildMobileAppHtml() {
   <div id="media-lightbox" class="media-lightbox" hidden>
     <button id="media-lightbox-close" class="media-lightbox-close" type="button" aria-label="关闭预览">✕</button>
     <img id="media-lightbox-img" alt="附件预览" />
+  </div>
+  <div id="file-viewer-backdrop" class="fv-backdrop" hidden>
+    <div id="file-viewer-modal" class="fv-modal" role="dialog" aria-label="文件与项目验收">
+      <div class="fv-head">
+        <button id="fv-back-btn" class="fv-up-btn" type="button" hidden>← 返回</button>
+        <span id="fv-title" class="fv-title">项目文件与验收</span>
+        <button id="fv-close-btn" class="fv-up-btn" type="button">✕ 关闭</button>
+      </div>
+      <div id="fv-tabs" class="fv-tabs">
+        <button id="fv-tab-tree" class="fv-tab active" type="button">📁 项目文件</button>
+        <button id="fv-tab-changes" class="fv-tab" type="button">📝 变更与产物</button>
+      </div>
+      <div id="fv-body" class="fv-body"></div>
+    </div>
   </div>
 
   <script>
@@ -8192,8 +8424,217 @@ function buildMobileAppHtml() {
       const img = e.target?.closest?.('.msg-att-img');
       if (img) {
         openMediaLightbox(img.dataset.previewSrc || img.src, img.alt);
+        return;
+      }
+      const fileLink = e.target?.closest?.('.md-file-link, .msg-att-file');
+      if (fileLink && fileLink.dataset.filePath) {
+        e.preventDefault();
+        void openFilePreviewModal(fileLink.dataset.filePath, Number(fileLink.dataset.fileLine || 0));
       }
     });
+
+    const fvState = { tab: 'tree', curDir: '', viewingFile: false, returnTab: 'tree' };
+    function closeFileViewerModal() {
+      const bd = $('file-viewer-backdrop');
+      if (bd) bd.hidden = true;
+    }
+    function syncFvChrome() {
+      const tabsEl = $('fv-tabs');
+      const backBtn = $('fv-back-btn');
+      if (tabsEl) tabsEl.hidden = fvState.viewingFile;
+      if (backBtn) backBtn.hidden = !fvState.viewingFile;
+      $('fv-tab-tree')?.classList.toggle('active', fvState.tab === 'tree');
+      $('fv-tab-changes')?.classList.toggle('active', fvState.tab === 'changes');
+    }
+    function resolveCurrentProjectRootDir() {
+      const snap = latestSnap;
+      if (!snap) return '';
+      const pid = normalizeProjectId(snap.currentProjectId);
+      const projs = Array.isArray(snap.projects) ? snap.projects : [];
+      const matched = pid ? projs.find((p) => p && p.id === pid) : null;
+      return String(matched?.path || matched?.workspacePath || snap.currentProjectPath || '').trim();
+    }
+    function renderCodeWithLineNumbers(text, hlLine) {
+      const lines = String(text || '').split(/\\r?\\n/);
+      return '<pre class="fv-code">' + lines.map((ln, idx) => {
+        const n = idx + 1;
+        const isHl = hlLine > 0 && n === hlLine;
+        return '<span class="fv-code-line' + (isHl ? ' hl' : '') + '" data-ln="' + n + '"><span class="fv-ln">' + n + '</span>' + esc(ln) + '</span>';
+      }).join('\\n') + '</pre>';
+    }
+    function renderUnifiedDiffHtml(diffText) {
+      const lines = String(diffText || '').split(/\\r?\\n/);
+      return '<pre class="fv-code">' + lines.map((ln) => {
+        const cls = ln.startsWith('+') && !ln.startsWith('+++') ? ' fv-diff-add'
+          : (ln.startsWith('-') && !ln.startsWith('---') ? ' fv-diff-del'
+            : (ln.startsWith('@@') || ln.startsWith('diff ') ? ' fv-diff-hdr' : ''));
+        return '<span class="fv-code-line' + cls + '">' + esc(ln) + '</span>';
+      }).join('\\n') + '</pre>';
+    }
+    async function openFilePreviewModal(filePath, hlLine = 0) {
+      const bd = $('file-viewer-backdrop');
+      const body = $('fv-body');
+      const title = $('fv-title');
+      if (!bd || !body || !filePath) return;
+      fvState.returnTab = fvState.tab;
+      fvState.viewingFile = true;
+      bd.hidden = false;
+      syncFvChrome();
+      if (title) title.textContent = String(filePath).split('/').pop() || filePath;
+      body.innerHTML = '<div class="empty-tip">正在读取文件内容…</div>';
+      try {
+        const res = await fetchWithTimeout((apiBase || '') + '/api/file-content?path=' + encodeURIComponent(filePath), { headers: authHeaders(), cache: 'no-store' }, 6000);
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取文件失败') + '</div>';
+          return;
+        }
+        if (title) title.textContent = data.name || filePath;
+        const pathBar = '<div class="fv-path-bar">' + esc(data.path || filePath) + '</div>';
+        if (data.isImage) {
+          const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(data.path) + (pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
+          body.innerHTML = pathBar + '<img src="' + esc(mediaSrc) + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" alt="' + esc(data.name || '') + '" />';
+        } else if (data.isBinary || data.isTooLargeForText) {
+          body.innerHTML = pathBar + '<div class="empty-tip">' + esc(data.error || ('二进制文件 (' + formatFileSizeShort(data.size) + ')，暂不支持纯文本预览')) + '</div>';
+        } else if (data.isMarkdown && !hlLine) {
+          body.innerHTML = pathBar + '<div class="md-body">' + renderMarkdownSafe(data.content || '') + '</div>';
+        } else {
+          body.innerHTML = pathBar + renderCodeWithLineNumbers(data.content || '', hlLine);
+          if (hlLine > 0) {
+            const target = body.querySelector('[data-ln="' + hlLine + '"]');
+            if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
+          }
+        }
+      } catch (err) {
+        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取文件失败') + '</div>';
+      }
+    }
+    async function loadProjectTreeView(targetDir) {
+      const body = $('fv-body');
+      const title = $('fv-title');
+      if (!body) return;
+      fvState.tab = 'tree';
+      fvState.viewingFile = false;
+      syncFvChrome();
+      if (title) title.textContent = '项目文件';
+      body.innerHTML = '<div class="empty-tip">正在读取目录…</div>';
+      const dirParam = targetDir || fvState.curDir || resolveCurrentProjectRootDir();
+      try {
+        const qs = dirParam ? ('?dir=' + encodeURIComponent(dirParam)) : '';
+        const res = await fetchWithTimeout((apiBase || '') + '/api/project-tree' + qs, { headers: authHeaders(), cache: 'no-store' }, 6000);
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取目录失败') + '</div>';
+          return;
+        }
+        fvState.curDir = data.dir || '';
+        const upBtn = data.parentDir ? '<button class="fv-up-btn" id="fv-tree-up" type="button">↑ 上级</button>' : '';
+        const rows = (data.entries || []).map((ent) =>
+          '<button class="fv-row" type="button" data-is-dir="' + (ent.isDir ? '1' : '0') + '" data-path="' + esc(ent.path) + '">'
+          + '<span class="fv-row-name">' + (ent.isDir ? '📁 ' : '📄 ') + esc(ent.name) + '</span>'
+          + '<span class="fv-row-meta">' + (ent.isDir ? '›' : esc(formatFileSizeShort(ent.size))) + '</span>'
+          + '</button>'
+        ).join('');
+        body.innerHTML = '<div class="fv-path-bar">' + upBtn + '<span>' + esc(data.dir || '') + '</span></div>'
+          + '<div class="fv-list">' + (rows || '<div class="empty-tip">空目录</div>') + '</div>';
+        $('fv-tree-up')?.addEventListener('click', () => { void loadProjectTreeView(data.parentDir); });
+        body.querySelectorAll('.fv-row').forEach((row) => {
+          row.onclick = () => {
+            const p = row.dataset.path;
+            if (!p) return;
+            if (row.dataset.isDir === '1') void loadProjectTreeView(p);
+            else void openFilePreviewModal(p, 0);
+          };
+        });
+      } catch (err) {
+        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取目录失败') + '</div>';
+      }
+    }
+    async function loadSessionChangesView() {
+      const body = $('fv-body');
+      const title = $('fv-title');
+      if (!body) return;
+      fvState.tab = 'changes';
+      fvState.viewingFile = false;
+      syncFvChrome();
+      if (title) title.textContent = '本会话变更与产物';
+      body.innerHTML = '<div class="empty-tip">正在读取变更与产物…</div>';
+      const cid = String(latestSnap?.activeConversationId || latestSnap?.sessionId || selectedConversationId || '').trim();
+      try {
+        const res = await fetchWithTimeout((apiBase || '') + '/api/session-files?conversationId=' + encodeURIComponent(cid), { headers: authHeaders(), cache: 'no-store' }, 6000);
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取会话变更失败') + '</div>';
+          return;
+        }
+        const diffs = Array.isArray(data.diffs) ? data.diffs : [];
+        const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+        if (!diffs.length && !artifacts.length) {
+          body.innerHTML = '<div class="empty-tip">当前会话暂无记录的代码变更或产物，可切至「项目文件」直接浏览代码。</div>';
+          return;
+        }
+        let htmlOut = '';
+        if (artifacts.length) {
+          htmlOut += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0 6px">Artifacts 产物 (' + artifacts.length + ')</div><div class="fv-list" style="margin-bottom:12px">'
+            + artifacts.map((art, idx) =>
+              '<button class="fv-row fv-art-row" type="button" data-art-idx="' + idx + '"><span class="fv-row-name">✨ ' + esc(art.name || art.path || ('Artifact ' + (idx + 1))) + '</span><span class="fv-row-meta">查看 ›</span></button>'
+            ).join('') + '</div>';
+        }
+        if (diffs.length) {
+          htmlOut += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0 6px">Files Changed (' + diffs.length + ')</div><div class="fv-list">'
+            + diffs.map((df, idx) =>
+              '<button class="fv-row fv-diff-row" type="button" data-diff-idx="' + idx + '"><span class="fv-row-name">📝 ' + esc(df.name || df.path || ('File ' + (idx + 1))) + '</span><span class="fv-row-meta">Diff ›</span></button>'
+            ).join('') + '</div>';
+        }
+        body.innerHTML = htmlOut;
+        body.querySelectorAll('.fv-art-row').forEach((btn) => {
+          btn.onclick = () => {
+            const art = artifacts[Number(btn.dataset.artIdx)];
+            if (!art) return;
+            if (art.path) { void openFilePreviewModal(art.path, 0); return; }
+            fvState.returnTab = 'changes';
+            fvState.viewingFile = true;
+            syncFvChrome();
+            if (title) title.textContent = art.name || 'Artifact';
+            body.innerHTML = '<div class="md-body">' + renderMarkdownSafe(art.content || '') + '</div>';
+          };
+        });
+        body.querySelectorAll('.fv-diff-row').forEach((btn) => {
+          btn.onclick = () => {
+            const df = diffs[Number(btn.dataset.diffIdx)];
+            if (!df) return;
+            fvState.returnTab = 'changes';
+            fvState.viewingFile = true;
+            syncFvChrome();
+            if (title) title.textContent = df.name || df.path || 'Diff';
+            if (df.diff) {
+              body.innerHTML = '<div class="fv-path-bar">' + esc(df.path || '') + '</div>' + renderUnifiedDiffHtml(df.diff);
+            } else if (df.path) {
+              void openFilePreviewModal(df.path, 0);
+            }
+          };
+        });
+      } catch (err) {
+        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取会话变更失败') + '</div>';
+      }
+    }
+    $('btn-files-panel')?.addEventListener('click', () => {
+      const bd = $('file-viewer-backdrop');
+      if (!bd) return;
+      bd.hidden = false;
+      fvState.curDir = resolveCurrentProjectRootDir() || fvState.curDir;
+      void loadProjectTreeView(fvState.curDir);
+    });
+    $('fv-close-btn')?.addEventListener('click', closeFileViewerModal);
+    $('file-viewer-backdrop')?.addEventListener('click', (e) => {
+      if (e.target === $('file-viewer-backdrop')) closeFileViewerModal();
+    });
+    $('fv-back-btn')?.addEventListener('click', () => {
+      if (fvState.returnTab === 'changes') void loadSessionChangesView();
+      else void loadProjectTreeView(fvState.curDir);
+    });
+    $('fv-tab-tree')?.addEventListener('click', () => { void loadProjectTreeView(fvState.curDir); });
+    $('fv-tab-changes')?.addEventListener('click', () => { void loadSessionChangesView(); });
 
     function readAttachmentFile(file) {
       if ((file?.size || 0) > 15 * 1024 * 1024) {
@@ -10447,6 +10888,54 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/file-content') {
+      const rawFilePath = urlObj.searchParams.get('path') || '';
+      const preview = readSafeTextFilePreview(rawFilePath, options.mediaOptions || {});
+      res.writeHead(preview.ok ? 200 : (preview.status || 403), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(preview));
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/project-tree') {
+      const rawDir = urlObj.searchParams.get('dir') || '';
+      const showAll = urlObj.searchParams.get('showAll') === '1';
+      const tree = listSafeProjectTree(rawDir, { ...(options.mediaOptions || {}), showAll });
+      res.writeHead(tree.ok ? 200 : (tree.status || 403), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(tree));
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/session-files') {
+      const cid = String(urlObj.searchParams.get('conversationId') || '').trim();
+      const diffs = [];
+      const artifacts = [];
+      if (cid && cid !== '__new__' && cid !== 'new') {
+        const [diffRes, artRes] = await Promise.all([
+          Promise.resolve().then(() => callLsRpc('GetTrajectoryFileDiffs', { cascadeId: cid }, 4000)).catch(() => null),
+          Promise.resolve().then(() => callLsRpc('GetArtifactSnapshots', { cascadeId: cid }, 4000)).catch(() => null)
+        ]);
+        const rawDiffs = Array.isArray(diffRes?.fileDiffs) ? diffRes.fileDiffs : (Array.isArray(diffRes?.diffs) ? diffRes.diffs : []);
+        for (const d of rawDiffs) {
+          if (!d || typeof d !== 'object') continue;
+          const p = normalizeLocalFileUriToPath(d.absoluteUri || d.uri || d.path || d.filePath || '');
+          const name = p ? path.basename(p) : String(d.fileName || d.name || '');
+          const diff = String(d.unifiedDiff || d.diff || d.patch || '');
+          if (name || p || diff) diffs.push({ name: name || p, path: p, diff });
+        }
+        const rawArts = Array.isArray(artRes?.artifacts) ? artRes.artifacts : (Array.isArray(artRes?.snapshots) ? artRes.snapshots : []);
+        for (const a of rawArts) {
+          if (!a || typeof a !== 'object') continue;
+          const p = normalizeLocalFileUriToPath(a.absoluteUri || a.uri || a.path || '');
+          const name = String(a.title || a.name || (p ? path.basename(p) : '')).trim();
+          const content = String(a.content || a.markdown || '');
+          if (name || p || content) artifacts.push({ name: name || 'Artifact', path: p, content });
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, conversationId: cid, diffs, artifacts }));
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/usage') {
       try {
         const force = urlObj.searchParams.get('force') === '1';
@@ -11352,6 +11841,8 @@ module.exports = {
   extractQueuedMessagesFromTrajectorySteps,
   extractTrajectoryUserAttachments,
   resolveSafeLocalMediaPath,
+  listSafeProjectTree,
+  readSafeTextFilePreview,
   createSessionCatalogStore,
   createConversationHistoryManager,
   enrichSnapshotWithCatalog,
