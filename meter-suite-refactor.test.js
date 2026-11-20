@@ -11140,9 +11140,118 @@ test('远程端支持系统确认选择框与交互式提问卡片展示与提�
   assert.ok(
     html.includes('if (dock.dataset.promptSig !== promptSig)')
     && html.includes('if (promptSubmittingSig === promptSig) return;')
-    && html.includes("dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = true; });"),
-    '连续轮询命中相同 promptSig 时应跳过重建 DOM 以保留滚动位置与提交中禁用锁'
+    && html.includes("dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = true; });")
+    && html.includes("String(activePrompt.description || '')"),
+    '连续轮询命中相同 promptSig 时应跳过重建 DOM 以保留滚动位置与提交中禁用锁，且签名包含 description'
   );
+
+  // 9. 无中间空态、标题/选项/按钮完全相同但说明不同的连续两张提示框：实例 ID 与 description 区分 promptKey，第二张可正常提交
+  const mkSameShapeDlg = (descText, onSubmit) => {
+    const d = env.doc.createElement('div');
+    d.setAttribute('role', 'dialog');
+    d.offsetWidth = 360;
+    d.offsetHeight = 180;
+    const h = env.doc.createElement('h3');
+    h.textContent = '继续执行操作？';
+    d.appendChild(h);
+    const p = env.doc.createElement('p');
+    p.textContent = descText;
+    d.appendChild(p);
+    const b = env.doc.createElement('button');
+    b.setAttribute('type', 'submit');
+    b.textContent = 'Confirm';
+    b.offsetWidth = 80;
+    b.offsetHeight = 32;
+    b.addEventListener('click', onSubmit);
+    d.appendChild(b);
+    return d;
+  };
+  let seq1Submitted = false;
+  let seq2Submitted = false;
+  const seqDlg1 = mkSameShapeDlg('步骤 1：删除临时缓存目录', () => { seq1Submitted = true; });
+  mainEl.appendChild(seqDlg1);
+  const snapSeq1 = enhancer.getMobileSnapshot();
+  const pSeq1 = snapSeq1.pendingPrompts.find((p) => p.title === '继续执行操作？');
+  assert.ok(pSeq1 && pSeq1.description.includes('步骤 1'));
+  const seqRes1 = await enhancer.performMobileAction({ action: 'respond-prompt', promptKey: pSeq1.promptKey, actionLabel: 'Confirm' });
+  assert.equal(seqRes1.ok, true);
+  assert.equal(seq1Submitted, true);
+
+  // 直接替换为第二张同标题同按钮但说明不同的新弹窗（模拟轮询未捕获中间空态）
+  seqDlg1.hidden = true;
+  const seqDlg2 = mkSameShapeDlg('步骤 2：重启本地服务', () => { seq2Submitted = true; });
+  mainEl.appendChild(seqDlg2);
+  const snapSeq2 = enhancer.getMobileSnapshot();
+  const pSeq2 = snapSeq2.pendingPrompts.find((p) => p.title === '继续执行操作？');
+  assert.ok(pSeq2 && pSeq2.description.includes('步骤 2'));
+  assert.notEqual(pSeq2.promptKey, pSeq1.promptKey, '连续两张同标题同按钮的提示框必须拥有不同 promptKey（实例 ID + description）');
+  const seqRes2 = await enhancer.performMobileAction({ action: 'respond-prompt', promptKey: pSeq2.promptKey, actionLabel: 'Confirm' });
+  assert.equal(seqRes2.ok, true);
+  assert.equal(seq2Submitted, true, '第二张连续提示框应独立展示并成功提交');
+
+  // 10. 原生必填校验未通过时返回 ok:false 且不误触发提交；补充输入后重试成功提交
+  const reqForm = env.doc.createElement('form');
+  reqForm.offsetWidth = 360;
+  reqForm.offsetHeight = 180;
+  const reqTitle = env.doc.createElement('h3');
+  reqTitle.textContent = '填写发布原因';
+  reqForm.appendChild(reqTitle);
+  for (const [id, lblTxt] of [['rf-1', '热修复'], ['rf-2', '常规版本']]) {
+    const l = env.doc.createElement('label');
+    const r = env.doc.createElement('input');
+    r.setAttribute('type', 'radio');
+    r.type = 'radio';
+    r.setAttribute('id', id);
+    r.checked = id === 'rf-1';
+    r.addEventListener('click', () => { r.checked = true; });
+    l.appendChild(r);
+    const sp = env.doc.createElement('span');
+    sp.textContent = lblTxt;
+    l.appendChild(sp);
+    reqForm.appendChild(l);
+  }
+  const reqOther = env.doc.createElement('input');
+  reqOther.setAttribute('type', 'text');
+  reqOther.type = 'text';
+  reqOther.required = true;
+  reqOther.setAttribute('required', '');
+  reqOther.value = '';
+  reqOther.checkValidity = () => Boolean(String(reqOther.value || '').trim());
+  reqOther.validationMessage = '请填写发布原因';
+  reqForm.appendChild(reqOther);
+  let reqSubmitted = false;
+  const reqSubmitBtn = env.doc.createElement('button');
+  reqSubmitBtn.setAttribute('type', 'submit');
+  reqSubmitBtn.textContent = '提交发布';
+  reqSubmitBtn.offsetWidth = 80;
+  reqSubmitBtn.offsetHeight = 32;
+  reqSubmitBtn.addEventListener('click', () => { reqSubmitted = true; });
+  reqForm.appendChild(reqSubmitBtn);
+  mainEl.appendChild(reqForm);
+
+  const snapReq = enhancer.getMobileSnapshot();
+  const pReq = snapReq.pendingPrompts.find((p) => p.title === '填写发布原因');
+  assert.ok(pReq, '带必填自定义输入的确认卡应被采集');
+  const failReqRes = await enhancer.performMobileAction({
+    action: 'respond-prompt',
+    promptKey: pReq.promptKey,
+    selectedIndices: [0],
+    otherText: '',
+    actionLabel: '提交发布'
+  });
+  assert.equal(failReqRes.ok, false, '必填自定义输入为空时必须返回 ok=false');
+  assert.equal(reqSubmitted, false, '校验失败时不得触发提交按钮');
+
+  const okReqRes = await enhancer.performMobileAction({
+    action: 'respond-prompt',
+    promptKey: pReq.promptKey,
+    selectedIndices: [0],
+    otherText: '修复线上支付回调超时',
+    actionLabel: '提交发布'
+  });
+  assert.equal(okReqRes.ok, true, '补充必填项后重试应返回 ok=true');
+  assert.equal(reqOther.value, '修复线上支付回调超时');
+  assert.equal(reqSubmitted, true, '补充必填项后应成功完成提交');
 
   enhancer.dispose?.();
 });

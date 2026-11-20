@@ -6378,6 +6378,7 @@ function buildMobileAppHtml() {
         const activePrompt = prompts[0];
         const activePromptKey = String(activePrompt.promptKey || activePrompt.id || '');
         const promptSig = String(snapSid || '__default__') + '::' + activePromptKey + '|' + String(activePrompt.title || '') + '|'
+          + String(activePrompt.description || '') + '|'
           + (activePrompt.options || []).map((o) => o.label).join(',') + '|'
           + (activePrompt.actions || []).map((a) => a.label).join(',');
         if (!promptDraftState.has(promptSig)) {
