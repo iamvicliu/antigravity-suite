@@ -11590,7 +11590,8 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
       const { Readable } = require('stream');
       const req = Readable.from([]);
       req.method = 'GET';
-      req.url = '/api/media?path=' + encodeURIComponent(queryPath);
+      req.url = '/api/media?path=' + encodeURIComponent(queryPath)
+        + (authMode === 'query' ? ('&token=' + encodeURIComponent(mockCfg.token)) : '');
       const authHdrs = authMode === 'header'
         ? { 'x-ag-remote-token': mockCfg.token }
         : (authMode === 'cookie'
@@ -11629,6 +11630,8 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
 
     const cookieRes = await getMedia(pngPath, 'cookie');
     assert.equal(cookieRes.status, 200, '有效 Cookie 鉴权访问 /api/media 应返回 200');
+    const queryRes = await getMedia(pngPath, 'query');
+    assert.equal(queryRes.status, 200, '有效查询参数 Token 访问 /api/media 应返回 200');
 
     const svgRes = await getMedia(svgPath, 'header');
     assert.equal(svgRes.status, 200);
