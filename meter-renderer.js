@@ -2297,6 +2297,155 @@
       text-overflow:ellipsis;
       white-space:nowrap;
     }
+    .qp-pool-grid{
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      margin-bottom:6px;
+    }
+    .qp-pool-group{
+      display:flex;
+      flex-direction:column;
+      gap:4px;
+    }
+    .qp-pool-group-title{
+      font-size:11.5px;
+      font-weight:600;
+      color:var(--ag-text-muted);
+      line-height:1.35;
+    }
+    .qp-pool-group-items{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:6px;
+    }
+    .qp-pool-chip{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      min-width:0;
+      padding:6px 8px;
+      border-radius:7px;
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-muted);
+      font-size:12px;
+      font-weight:500;
+      cursor:pointer;
+      text-align:left;
+      transition:border-color .14s ease,background-color .14s ease,color .14s ease;
+    }
+    .qp-pool-chip:hover,
+    .qp-pool-chip[data-inspected="true"]{
+      border-color:var(--ag-btn-border-hover);
+      background:var(--ag-btn-hover);
+      color:var(--ag-text-primary);
+    }
+    .qp-pool-chip[data-active="true"]{
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      color:var(--ag-text-primary);
+    }
+    .qp-pool-chip[data-active="true"]:hover{
+      border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
+      background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
+    }
+    .qp-pool-chip-mark{
+      flex-shrink:0;
+      width:14px;
+      text-align:center;
+      font-size:11px;
+      font-weight:700;
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+    }
+    .qp-pool-chip[data-active="false"] .qp-pool-chip-mark{
+      color:var(--ag-text-muted);
+      font-weight:500;
+    }
+    .qp-pool-chip-label{
+      flex:1;
+      min-width:0;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .qp-pool-chip-star{
+      flex-shrink:0;
+      font-size:11px;
+      line-height:1;
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      opacity:.88;
+    }
+    .qp-info-box{
+      display:flex;
+      flex-direction:column;
+      gap:3px;
+      padding:8px 10px;
+      border-radius:8px;
+      border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-bg-subcard);
+      margin-bottom:4px;
+    }
+    .qp-info-top{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .qp-info-title-wrap{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      min-width:0;
+    }
+    .qp-info-prefix{
+      font-size:11.5px;
+      font-weight:600;
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      flex-shrink:0;
+    }
+    .qp-info-title{
+      font-size:12px;
+      font-weight:600;
+      color:var(--ag-text-primary);
+    }
+    .qp-info-rec{
+      font-size:11px;
+      font-weight:600;
+      padding:1px 5px;
+      border-radius:4px;
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      flex-shrink:0;
+    }
+    .qp-info-rec[hidden]{
+      display:none!important;
+    }
+    .qp-info-tag{
+      font-size:11px;
+      color:var(--ag-text-muted);
+      flex-shrink:0;
+    }
+    .qp-info-role{
+      font-size:11.5px;
+      color:var(--ag-text-primary);
+      line-height:1.45;
+    }
+    .qp-info-scene{
+      font-size:11.5px;
+      color:var(--ag-text-muted);
+      line-height:1.45;
+    }
+    .qp-empty-hint{
+      font-size:11.5px;
+      color:var(--ag-text-muted);
+      padding:7px 9px;
+      border-radius:6px;
+      border:1px dashed var(--ag-border-subcard);
+      background:transparent;
+    }
     .qp-editor-list{
       display:flex;
       flex-direction:column;
@@ -2314,14 +2463,14 @@
       box-sizing:border-box;
       border-radius:6px;
       border:1px solid var(--ag-border-subcard);
-      background:var(--ag-bg-subcard);
+      background:var(--ag-bg-input);
       color:var(--ag-text-primary);
       padding:5px 8px;
       font-size:12px;
       outline:none;
     }
     .qp-label-input:focus,.qp-text-input:focus,.ag-rp-input:focus{
-      border-color:rgba(16,185,129,0.55);
+      border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .qp-del-btn{
       border:1px solid var(--ag-border-subcard);
@@ -2376,8 +2525,8 @@
       cursor:not-allowed;
     }
     .ag-rp-channel[data-active="true"]{
-      border-color:rgba(16,185,129,0.45);
-      background:rgba(16,185,129,0.08);
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
     }
     .ag-rp-ch-check{
       display:inline-flex;
@@ -2467,8 +2616,8 @@
       border-radius:999px;
       font-size:10.5px;
       font-weight:500;
-      background:rgba(16,185,129,0.14);
-      color:#10b981;
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .ag-rp-install-guide[data-missing="true"] .ag-rp-install-badge{
       background:rgba(245,158,11,0.18);
@@ -2489,9 +2638,9 @@
       cursor:pointer;
     }
     .ag-rp-install-tab[data-active="true"]{
-      border-color:rgba(16,185,129,0.45);
-      background:rgba(16,185,129,0.14);
-      color:#10b981;
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       font-weight:600;
     }
     .ag-rp-install-cmd-row{
@@ -2539,9 +2688,9 @@
       cursor:pointer;
     }
     .ag-rp-btn.primary{
-      background:rgba(16,185,129,0.16);
-      border-color:rgba(16,185,129,0.45);
-      color:#10b981;
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       font-weight:600;
     }
     .ag-rp-err{
@@ -2558,8 +2707,8 @@
       width:11px;
       height:11px;
       border-radius:999px;
-      border:1.5px solid rgba(16,185,129,0.3);
-      border-top-color:#10b981;
+      border:1.5px solid var(--ag-accent-border,rgba(167,139,250,0.34));
+      border-top-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       animation:ag-spin .7s linear infinite;
       vertical-align:middle;
       margin-right:4px;
@@ -2567,6 +2716,7 @@
     @media (max-width:560px){
       #panel-settings{width:calc(100vw - 24px);}
       .settings-tabs-bar{grid-template-columns:repeat(2,1fr);}
+      .qp-pool-group-items{grid-template-columns:repeat(2,minmax(0,1fr));}
       .term-app-grid,.settings-feature-grid,.qp-row{grid-template-columns:1fr;}
     }
   </style>
@@ -3689,7 +3839,22 @@
               <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
             </div>
           </div>
-          <div class="settings-card-desc">自定义输入框上方快捷栏的按钮名称与填入内容（最多 12 条，保存后立即生效，内置「复制会话 ID」与「导出 Markdown」始终保留）。</div>
+          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。</div>
+          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置推荐池（点击开关显示 / 隐藏 · 悬停查看指令解读）</div>
+          <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置快捷按钮推荐池"></div>
+          <div id="quick-builtin-info-box" class="qp-info-box" role="region" aria-label="内置指令实时解读">
+            <div class="qp-info-top">
+              <div class="qp-info-title-wrap">
+                <span class="qp-info-prefix">💡 指令解读</span>
+                <span id="quick-info-title" class="qp-info-title">/compact 压缩</span>
+                <span id="quick-info-rec" class="qp-info-rec">★必开</span>
+              </div>
+              <span id="quick-info-tag" class="qp-info-tag">分类标签：防卡死</span>
+            </div>
+            <div id="quick-info-role" class="qp-info-role">作用：触发官方本地压缩，将冗长历史浓缩为高密度摘要。</div>
+            <div id="quick-info-scene" class="qp-info-scene">场景：上下文超过 150K~240K、响应变慢，或切换下一阶段任务前。</div>
+          </div>
+          <div id="quick-custom-section-hdr" class="settings-field-lbl" style="margin:8px 0 6px;">自定义快捷提示词</div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
             <span id="quick-prompts-status" class="qp-status" role="status"></span>
@@ -11379,6 +11544,12 @@ function renderHeatmapGrid(forceRebuild = false) {
     '输入区工具栏（模型/权限等）': 'Composer Tools (Model / Perms / Upload)',
     '待审批操作提醒横幅': 'Pending Approvals Banner',
     '快捷提示词': 'Quick Prompts',
+    '内置推荐池（点击开关显示 / 隐藏 · 悬停查看指令解读）': 'Built-in Pool (click to toggle · hover to view guide)',
+    '内置推荐池（点击开关显示 / 隐藏）': 'Built-in Pool (click to toggle)',
+    '💡 指令解读': '💡 Command Guide',
+    '自定义快捷提示词': 'Custom Quick Prompts',
+    '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" above to create one.',
+    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" for custom prompts.',
     '+ 新增': '+ Add',
     '保存快捷提示词': 'Save Quick Prompts',
     '局域网': 'LAN',
@@ -11464,11 +11635,293 @@ function renderHeatmapGrid(forceRebuild = false) {
   };
   let suiteFeatureFlags = { ...DEFAULT_SUITE_FEATURE_FLAGS };
 
-  const DEFAULT_QUICK_PROMPTS = [
-    { id: 'compact', label: '/compact 压缩', text: '/compact', title: '快速填入 /compact 压缩上下文命令' },
-    { id: 'plan', label: '/plan 规划', text: '/plan ', title: '快速填入 /plan 前缀进入规划模式' },
-    { id: 'reload', label: '重载规则', text: '重新读取 AGENTS', title: '快速填入“重新读取 AGENTS”指令' }
+  const QUICK_POOL_GROUPS = [
+    { id: 'daily', title: '🔥 日常高频与上下文', titleEn: '🔥 Daily & Context' },
+    { id: 'heavy', title: '🚀 复杂攻坚与多 Agent', titleEn: '🚀 Complex & Multi-Agent' },
+    { id: 'tools', title: '🛠️ 会话工具与规则', titleEn: '🛠️ Session Tools & Rules' }
   ];
+
+  const BUILTIN_QUICK_POOL = [
+    {
+      id: 'compact',
+      group: 'daily',
+      label: '/compact 压缩',
+      labelEn: '/compact',
+      text: '/compact',
+      rec: '★必开',
+      recEn: '★Must',
+      tag: '防卡死',
+      tagEn: 'Anti-Stall',
+      role: '触发官方本地压缩，将冗长历史浓缩为高密度摘要。',
+      roleEn: 'Triggers native compaction to summarize long conversation history.',
+      scene: '上下文超过 150K~240K、响应变慢，或切换下一阶段任务前。',
+      sceneEn: 'When context exceeds 150K-240K, slows down, or before switching sub-tasks.',
+      title: '压缩上下文（执行官方 /compact 命令），防止超 240K~300K 缓存过期卡死',
+      titleEn: 'Compact context via native /compact command',
+      defaultEnabled: true
+    },
+    {
+      id: 'plan',
+      group: 'daily',
+      label: '/plan 规划',
+      labelEn: '/plan',
+      text: '/plan ',
+      rec: '★推荐',
+      recEn: '★Rec',
+      tag: '先谋后动',
+      tagEn: 'Plan First',
+      role: '切换规划模式，强制先读代码并给出方案，确认后再动手改文件。',
+      roleEn: 'Enter planning mode to inspect code and propose a plan before editing.',
+      scene: '涉及多文件改造、架构调整，想先审阅思路再让 AI 动手时。',
+      sceneEn: 'Multi-file changes or architectural edits where you want to approve a plan first.',
+      title: '进入或切换规划模式，先出方案再动手改代码',
+      titleEn: 'Enter plan mode via /plan',
+      defaultEnabled: true
+    },
+    {
+      id: 'grill-me',
+      group: 'daily',
+      label: '/grill-me 追问对齐',
+      labelEn: '/grill-me',
+      text: '/grill-me ',
+      rec: '★推荐',
+      recEn: '★Rec',
+      tag: '需求澄清',
+      tagEn: 'Clarify',
+      role: '让 AI 像面试官一样连环追问，逐项确认模糊需求与边界条件。',
+      roleEn: 'Have the AI interview you relentlessly to clarify requirements and edge cases.',
+      scene: '只有一个大概想法、细节还没想透，怕 AI 自作主张乱写时。',
+      sceneEn: 'When your idea is still rough and you want alignment before execution.',
+      title: '让 AI 像面试一样主动追问，把模糊需求与边界全部对齐',
+      titleEn: 'Interview me to align on requirements and plan',
+      defaultEnabled: false
+    },
+    {
+      id: 'btw',
+      group: 'daily',
+      label: '/btw 插话提问',
+      labelEn: '/btw',
+      text: '/btw ',
+      rec: '',
+      recEn: '',
+      tag: '旁路问答',
+      tagEn: 'Side Q',
+      role: '开启轻量旁路问答，不打断当前主线进度也不污染主上下文。',
+      roleEn: 'Ask a quick side question without interrupting the main conversation flow.',
+      scene: '主线正在跑任务，你想顺手确认某条语法、报错或无关知识点。',
+      sceneEn: 'Quickly checking syntax or concepts without derailing the main task.',
+      title: '不打断主线上下文，临时快速旁路提问',
+      titleEn: 'Ask a quick side question without interrupting main chat',
+      defaultEnabled: false
+    },
+    {
+      id: 'learn',
+      group: 'daily',
+      label: '/learn 提炼经验',
+      labelEn: '/learn',
+      text: '/learn ',
+      rec: '',
+      recEn: '',
+      tag: '规则沉淀',
+      tagEn: 'Learn',
+      role: '复盘本轮对话中你的纠正或成功路径，沉淀为可复用的规则或 Skill。',
+      roleEn: 'Reflect on corrections or setups from this turn into reusable rules or skills.',
+      scene: '费了多轮才教会 AI 某件事，希望它下次永远直接做对时。',
+      sceneEn: 'After correcting the agent or solving a tricky setup to persist the workflow.',
+      title: '复盘本轮纠偏与踩坑，沉淀为长期规则或 Skill',
+      titleEn: 'Capture lessons learned as reusable skills or rules',
+      defaultEnabled: false
+    },
+    {
+      id: 'goal',
+      group: 'heavy',
+      label: '/goal 持续到底',
+      labelEn: '/goal',
+      text: '/goal ',
+      rec: '★推荐',
+      recEn: '★Rec',
+      tag: '长程死磕',
+      tagEn: 'Long Run',
+      role: '开启长程目标循环模式，反复校验执行直到目标彻底达成。',
+      roleEn: 'Run relentlessly toward the specified goal until every criterion is verified.',
+      scene: '全量测试修完所有报错、批量机械重构、夜间挂机跑完长任务。',
+      sceneEn: 'Fixing all failing tests, large refactors, or unattended long-horizon runs.',
+      title: '启动长程自主目标模式，持续推进直到目标彻底完成',
+      titleEn: 'Run until the specified goal is completely finished',
+      defaultEnabled: false
+    },
+    {
+      id: 'boost',
+      group: 'heavy',
+      label: '/boost 深度攻坚',
+      labelEn: '/boost',
+      text: '/boost ',
+      rec: '★推荐',
+      recEn: '★Rec',
+      tag: '单点深研',
+      tagEn: 'Deep Dive',
+      role: '调用 Boost 多智能体编排器，深度推理并从多视角严格校验。',
+      roleEn: 'Invoke the Boost multi-agent orchestrator for deep thinking and strict verification.',
+      scene: '棘手疑难 Bug 反复修不好、复杂算法或需要严密论证的核心工程。',
+      sceneEn: 'Hard bugs, intricate algorithms, or research/code needing rigorous verification.',
+      title: '调用 Boost 多模型深度推理与严格验证编排',
+      titleEn: 'Invoke Boost multi-agent orchestrator for complex tasks',
+      defaultEnabled: false
+    },
+    {
+      id: 'swarm',
+      group: 'heavy',
+      label: '/swarm 蜂群并发',
+      labelEn: '/swarm',
+      text: '/swarm ',
+      rec: '',
+      recEn: '',
+      tag: '横向分包',
+      tagEn: 'Parallel',
+      role: '主 Agent 当协调者，在共享消息板上同时派多名工人+复核员并行分工。',
+      roleEn: 'Spawn parallel workers collaborating through a shared message board.',
+      scene: '可拆成多个互不冲突的子任务并行提速（改多文件/交叉审查，极耗额度）。',
+      sceneEn: 'Independent subtasks that can run simultaneously or need peer verification (quota heavy).',
+      title: '调度多个子 Agent 并发协作拆分复杂任务',
+      titleEn: 'Spawn parallel agents collaborating on one task',
+      defaultEnabled: false
+    },
+    {
+      id: 'teamwork',
+      group: 'heavy',
+      label: '/teamwork 团队协作',
+      labelEn: '/teamwork',
+      text: '/teamwork ',
+      rec: '',
+      recEn: '',
+      tag: '军团流水',
+      tagEn: 'Pipeline',
+      role: '拉起探查→拆解→求解→批判审校→修补 5 阶段专业 Agent 团队接管项目。',
+      roleEn: 'Invoke an autonomous 5-phase team pipeline to tackle large projects end-to-end.',
+      scene: '超大型工程重构或从零搭建完整大项目，希望团队全自动一条龙交付。',
+      sceneEn: 'Large projects or greenfield builds best handled by a full autonomous team.',
+      title: '调动自治 Agent 团队接管大型复杂项目',
+      titleEn: 'Invoke autonomous agent team for large projects',
+      defaultEnabled: false
+    },
+    {
+      id: 'browser',
+      group: 'heavy',
+      label: '/browser 浏览器',
+      labelEn: '/browser',
+      text: '/browser ',
+      rec: '',
+      recEn: '',
+      tag: '网页实操',
+      tagEn: 'Web UI',
+      role: '派遣内置浏览器子 Agent 访问网页、点击填表并截取视觉状态。',
+      roleEn: 'Launch the browser subagent to navigate, click, fill forms, and inspect UI.',
+      scene: '验证 localhost 前端页面表现、检查 UI 错位或跑通网页端交互流程。',
+      sceneEn: 'Testing localhost web apps, verifying rendered UI, or interactive web flows.',
+      title: '唤醒浏览器子 Agent 执行网页操作与核验',
+      titleEn: 'Invoke browser agent for web tasks',
+      defaultEnabled: false
+    },
+    {
+      id: 'schedule',
+      group: 'heavy',
+      label: '/schedule 定时任务',
+      labelEn: '/schedule',
+      text: '/schedule ',
+      rec: '',
+      recEn: '',
+      tag: '定时巡检',
+      tagEn: 'Cron',
+      role: '创建后台 Cron 周期巡检或一次性倒计时提醒任务，到点自动唤醒。',
+      roleEn: 'Schedule a recurring cron job or a one-time delayed timer notification.',
+      scene: '每 N 分钟巡检构建/服务状态，或约定稍后自动触发某项检查。',
+      sceneEn: 'Periodic monitoring, polling builds, or setting a delayed reminder.',
+      title: '创建定时轮询或一次性定时提醒任务',
+      titleEn: 'Schedule a recurring cron or one-shot timer',
+      defaultEnabled: false
+    },
+    {
+      id: 'reload',
+      group: 'tools',
+      label: '重载规则',
+      labelEn: 'Reload Rules',
+      text: '重新读取 AGENTS',
+      rec: '★默认',
+      recEn: '★Default',
+      tag: '恢复约束',
+      tagEn: 'Rules',
+      role: '一键填入「重新读取 AGENTS」，让 AI 立刻重新加载全局行为规则。',
+      roleEn: 'Insert "Reload AGENTS" so the agent immediately re-reads ~/.codex/AGENTS.md.',
+      scene: '刚改完 AGENTS.md 配置文件，或长对话后觉得 AI 忘了约定规矩时。',
+      sceneEn: 'Right after editing AGENTS.md or when guidelines start drifting in long chats.',
+      title: '让 AI 重新读取 ~/.codex/AGENTS.md 行为规则',
+      titleEn: 'Fill reload AGENTS prompt',
+      defaultEnabled: true
+    },
+    {
+      id: 'copyid',
+      group: 'tools',
+      label: '复制会话 ID',
+      labelEn: 'Copy ID',
+      text: '',
+      rec: '★默认',
+      recEn: '★Default',
+      tag: '快速取值',
+      tagEn: 'Copy ID',
+      role: '一键提取并复制当前对话窗口的唯一会话 UUID。',
+      roleEn: 'Extract and copy the current conversation UUID to the clipboard.',
+      scene: '需要在终端定位当前会话日志，或在另一扇窗口中引用本会话时。',
+      sceneEn: 'Checking session transcript logs or referencing this conversation elsewhere.',
+      title: '一键复制当前对话窗口的会话 ID',
+      titleEn: 'Copy current conversation ID',
+      defaultEnabled: true
+    },
+    {
+      id: 'export',
+      group: 'tools',
+      label: '导出 Markdown',
+      labelEn: 'Export MD',
+      text: '',
+      rec: '★默认',
+      recEn: '★Default',
+      tag: '对话归档',
+      tagEn: 'Archive',
+      role: '将当前完整对话导出为 Markdown 保存到 ~/Downloads 并复制。',
+      roleEn: 'Export the full conversation as Markdown to ~/Downloads and copy it.',
+      scene: '重要问题排查过程归档留存、发给他人复盘或跨工具交接上下文。',
+      sceneEn: 'Archiving troubleshooting records, sharing logs, or migrating context.',
+      title: '将完整对话导出为 Markdown 保存到 ~/Downloads 并复制',
+      titleEn: 'Export conversation to Markdown in ~/Downloads and copy',
+      defaultEnabled: true
+    }
+  ];
+  const DEFAULT_QUICK_POOL_STATE = Object.fromEntries(
+    BUILTIN_QUICK_POOL.map(item => [item.id, Boolean(item.defaultEnabled)])
+  );
+
+  function sanitizeQuickPoolState(raw, fallbackState = DEFAULT_QUICK_POOL_STATE) {
+    const out = { ...DEFAULT_QUICK_POOL_STATE, ...(fallbackState && typeof fallbackState === 'object' ? fallbackState : {}) };
+    if (raw && typeof raw === 'object') {
+      for (const item of BUILTIN_QUICK_POOL) {
+        if (typeof raw[item.id] === 'boolean') {
+          out[item.id] = raw[item.id];
+        }
+      }
+    }
+    return out;
+  }
+
+  function isLegacyDefaultPromptItem(item) {
+    if (!item || typeof item !== 'object') return false;
+    const id = String(item.id || '').trim();
+    if (id !== 'compact' && id !== 'plan' && id !== 'reload') return false;
+    const poolDef = BUILTIN_QUICK_POOL.find(p => p.id === id);
+    return Boolean(
+      poolDef &&
+      String(item.text || '').trim() === String(poolDef.text || '').trim() &&
+      String(item.label || '').trim() === String(poolDef.label || '').trim()
+    );
+  }
 
   function sanitizeQuickPromptsList(raw) {
     if (!Array.isArray(raw)) return null;
@@ -11479,6 +11932,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       const label = String(item.label ?? '').trim();
       const text = String(item.text ?? '');
       if (!label || !text.trim()) continue;
+      if (isLegacyDefaultPromptItem(item)) continue;
       const rawId = String(item.id || '').trim();
       const id = rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) ? rawId : `custom-${i}`;
       out.push({
@@ -11492,12 +11946,33 @@ function renderHeatmapGrid(forceRebuild = false) {
     return out;
   }
 
+  let suiteQuickPool = (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_suite_quick_pool') : '';
+      if (raw) {
+        return sanitizeQuickPoolState(JSON.parse(raw));
+      }
+    } catch {}
+    return { ...DEFAULT_QUICK_POOL_STATE };
+  })();
+
   let suiteQuickPrompts = (() => {
     try {
       const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ag_suite_quick_prompts') : '';
       if (raw) {
-        const parsed = sanitizeQuickPromptsList(JSON.parse(raw));
-        if (parsed) return parsed;
+        const rawArr = JSON.parse(raw);
+        if (Array.isArray(rawArr)) {
+          const hasStoredPool = Boolean(localStorage?.getItem?.('ag_suite_quick_pool'));
+          if (!hasStoredPool) {
+            for (const item of rawArr) {
+              if (isLegacyDefaultPromptItem(item) && item.enabled === false) {
+                suiteQuickPool[item.id] = false;
+              }
+            }
+          }
+          const parsed = sanitizeQuickPromptsList(rawArr);
+          if (parsed && parsed.length > 0) return parsed;
+        }
       }
     } catch {}
     return null;
@@ -11691,6 +12166,10 @@ function renderHeatmapGrid(forceRebuild = false) {
         for (const k of Object.keys(DEFAULT_SUITE_FEATURE_FLAGS)) {
           if (typeof parsedFeat[k] === 'boolean') suiteFeatureFlags[k] = parsedFeat[k];
         }
+        if (!localStorage?.getItem?.('ag_suite_quick_pool')) {
+          if (typeof parsedFeat.showQuickCopyId === 'boolean') suiteQuickPool.copyid = parsedFeat.showQuickCopyId;
+          if (typeof parsedFeat.showQuickExport === 'boolean') suiteQuickPool.export = parsedFeat.showQuickExport;
+        }
       }
     }
   } catch {}
@@ -11842,6 +12321,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
       localStorage?.setItem?.('antigravityHansEnglishLabels', suiteEnhancerPrefs.englishLabels ? '1' : '0');
       localStorage?.setItem?.('ag_suite_feature_flags', JSON.stringify(suiteFeatureFlags));
+      localStorage?.setItem?.('ag_suite_quick_pool', JSON.stringify(suiteQuickPool));
       if (suiteQuickPrompts === null) {
         localStorage?.removeItem?.('ag_suite_quick_prompts');
       } else {
@@ -11865,6 +12345,7 @@ function renderHeatmapGrid(forceRebuild = false) {
             hansCode: curEntry.hansCode,
             englishLabels: Boolean(suiteEnhancerPrefs.englishLabels),
             featureFlags: { ...suiteFeatureFlags },
+            quickPool: { ...suiteQuickPool },
             quickPrompts: suiteQuickPrompts ? suiteQuickPrompts.map(item => ({ ...item })) : null
           }
         }));
@@ -12273,6 +12754,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     suiteEnhancerPrefs.locale = entry.code;
     suiteEnhancerPrefs.capsuleLang = entry.capsuleLang;
     syncEnhancerPrefControls();
+    renderQuickBuiltinPool();
+    renderQuickPromptsEditor();
     dispatchSuitePrefsChanged();
     applySuiteShadowLocale();
     try {
@@ -12543,25 +13026,186 @@ function renderHeatmapGrid(forceRebuild = false) {
           suiteFeatureFlags[k] = uiPrefs.featureFlags[k];
         }
       }
+      if (!uiPrefs.quickPool && !localStorage?.getItem?.('ag_suite_quick_pool')) {
+        if (typeof uiPrefs.featureFlags.showQuickCopyId === 'boolean') {
+          suiteQuickPool.copyid = uiPrefs.featureFlags.showQuickCopyId;
+        }
+        if (typeof uiPrefs.featureFlags.showQuickExport === 'boolean') {
+          suiteQuickPool.export = uiPrefs.featureFlags.showQuickExport;
+        }
+      }
+    }
+    if (uiPrefs.quickPool && typeof uiPrefs.quickPool === 'object') {
+      suiteQuickPool = sanitizeQuickPoolState(uiPrefs.quickPool);
     }
     if (typeof applyHostAppearancePreferences === 'function') {
       applyHostAppearancePreferences(uiPrefs);
     }
     if ('quickPrompts' in uiPrefs) {
-      suiteQuickPrompts = uiPrefs.quickPrompts === null
-        ? null
-        : sanitizeQuickPromptsList(uiPrefs.quickPrompts);
+      if (uiPrefs.quickPrompts === null) {
+        suiteQuickPrompts = null;
+      } else {
+        if (!uiPrefs.quickPool && !localStorage?.getItem?.('ag_suite_quick_pool') && Array.isArray(uiPrefs.quickPrompts)) {
+          for (const item of uiPrefs.quickPrompts) {
+            if (isLegacyDefaultPromptItem(item) && item.enabled === false) {
+              suiteQuickPool[item.id] = false;
+            }
+          }
+        }
+        const cleaned = sanitizeQuickPromptsList(uiPrefs.quickPrompts);
+        suiteQuickPrompts = cleaned && cleaned.length > 0 ? cleaned : null;
+      }
     }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
     applySuiteFeatureFlags();
+    renderQuickBuiltinPool();
     renderQuickPromptsEditor();
     renderTerminalGrid();
     applySuiteShadowLocale();
   }
 
+  function getSuiteQuickPool() {
+    return { ...suiteQuickPool };
+  }
+
+  async function setSuiteQuickPool(partialPool = {}, opts = {}) {
+    if (partialPool && typeof partialPool === 'object') {
+      suiteQuickPool = sanitizeQuickPoolState({ ...suiteQuickPool, ...partialPool });
+    }
+    renderQuickBuiltinPool();
+    dispatchSuitePrefsChanged();
+    if (!opts?.skipPersist) {
+      await saveSuiteUiPrefs({ quickPool: { ...suiteQuickPool } });
+    }
+    return getSuiteQuickPool();
+  }
+
+  async function toggleSuiteQuickPoolItem(id, opts = {}) {
+    const cleanId = String(id || '').trim();
+    if (!BUILTIN_QUICK_POOL.some(item => item.id === cleanId)) return getSuiteQuickPool();
+    return await setSuiteQuickPool({ [cleanId]: suiteQuickPool[cleanId] === false }, opts);
+  }
+
+  let inspectedQuickPoolId = 'compact';
+
+  function updateQuickBuiltinInfoBox(id) {
+    const item = BUILTIN_QUICK_POOL.find(x => x.id === id) || BUILTIN_QUICK_POOL[0];
+    if (!item) return;
+    inspectedQuickPoolId = item.id;
+    const gridEl = el('quick-builtin-pool-grid');
+    if (gridEl && typeof gridEl.querySelectorAll === 'function') {
+      const chips = gridEl.querySelectorAll('.qp-pool-chip');
+      if (chips && typeof chips[Symbol.iterator] === 'function') {
+        for (const chip of chips) {
+          chip.setAttribute?.('data-inspected', chip.getAttribute?.('data-pool-id') === item.id ? 'true' : 'false');
+        }
+      }
+    }
+    const titleEl = el('quick-info-title');
+    const recEl = el('quick-info-rec');
+    const tagEl = el('quick-info-tag');
+    const roleEl = el('quick-info-role');
+    const sceneEl = el('quick-info-scene');
+    if (titleEl) titleEl.textContent = suiteTr(item.label, item.labelEn || item.label);
+    if (recEl) {
+      const recTxt = suiteTr(item.rec || '', item.recEn || item.rec || '');
+      if (recTxt) {
+        recEl.textContent = recTxt;
+        recEl.hidden = false;
+      } else {
+        recEl.textContent = '';
+        recEl.hidden = true;
+      }
+    }
+    if (tagEl) {
+      const tagTxt = suiteTr(item.tag || '', item.tagEn || item.tag || '');
+      tagEl.textContent = tagTxt
+        ? `${suiteTr('分类标签：', 'Category: ')}${tagTxt}`
+        : '';
+    }
+    if (roleEl) {
+      const roleTxt = suiteTr(item.role || item.title, item.roleEn || item.titleEn || item.role);
+      roleEl.textContent = `${suiteTr('作用：', 'Role: ')}${roleTxt}`;
+    }
+    if (sceneEl) {
+      const sceneTxt = suiteTr(item.scene || '', item.sceneEn || item.scene || '');
+      sceneEl.textContent = `${suiteTr('场景：', 'When to use: ')}${sceneTxt}`;
+    }
+  }
+
+  function renderQuickBuiltinPool() {
+    const gridEl = el('quick-builtin-pool-grid');
+    if (!gridEl) return;
+    gridEl.replaceChildren();
+    for (const group of QUICK_POOL_GROUPS) {
+      const groupItems = BUILTIN_QUICK_POOL.filter(item => item.group === group.id);
+      if (groupItems.length === 0) continue;
+
+      const groupWrap = document.createElement('div');
+      groupWrap.className = 'qp-pool-group';
+      groupWrap.setAttribute('data-pool-group', group.id);
+
+      const groupTitle = document.createElement('div');
+      groupTitle.className = 'qp-pool-group-title';
+      groupTitle.textContent = suiteTr(group.title, group.titleEn || group.title);
+      groupWrap.appendChild(groupTitle);
+
+      const itemsGrid = document.createElement('div');
+      itemsGrid.className = 'qp-pool-group-items';
+
+      for (const item of groupItems) {
+        const active = suiteQuickPool[item.id] !== false;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = `ag-qp-pool-${item.id}`;
+        btn.className = 'qp-pool-chip';
+        btn.setAttribute('data-pool-id', item.id);
+        btn.setAttribute('data-active', active ? 'true' : 'false');
+        btn.setAttribute('data-inspected', inspectedQuickPoolId === item.id ? 'true' : 'false');
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        btn.title = suiteTr(item.title, item.titleEn || item.title);
+
+        const mark = document.createElement('span');
+        mark.className = 'qp-pool-chip-mark';
+        mark.textContent = active ? '✓' : '+';
+
+        const lbl = document.createElement('span');
+        lbl.className = 'qp-pool-chip-label';
+        lbl.textContent = suiteTr(item.label, item.labelEn || item.label);
+
+        btn.appendChild(mark);
+        btn.appendChild(lbl);
+
+        if (item.rec) {
+          const star = document.createElement('span');
+          star.className = 'qp-pool-chip-star';
+          star.textContent = '★';
+          star.setAttribute('aria-hidden', 'true');
+          btn.appendChild(star);
+        }
+
+        btn.addEventListener('mouseenter', () => {
+          updateQuickBuiltinInfoBox(item.id);
+        });
+        btn.addEventListener('focus', () => {
+          updateQuickBuiltinInfoBox(item.id);
+        });
+        btn.addEventListener('click', () => {
+          inspectedQuickPoolId = item.id;
+          void toggleSuiteQuickPoolItem(item.id);
+        });
+        itemsGrid.appendChild(btn);
+      }
+
+      groupWrap.appendChild(itemsGrid);
+      gridEl.appendChild(groupWrap);
+    }
+    updateQuickBuiltinInfoBox(inspectedQuickPoolId);
+  }
+
   function getSuiteQuickPrompts() {
-    return (suiteQuickPrompts || DEFAULT_QUICK_PROMPTS).map(item => ({ ...item }));
+    return (Array.isArray(suiteQuickPrompts) ? suiteQuickPrompts : []).map(item => ({ ...item }));
   }
 
   async function setSuiteQuickPrompts(list, opts = {}) {
@@ -12572,12 +13216,12 @@ function renderHeatmapGrid(forceRebuild = false) {
       suiteQuickPrompts = cleaned === null ? [] : cleaned;
     }
     dispatchSuitePrefsChanged();
-    renderQuickPromptsEditor();
+    if (!opts?.skipRenderEditor) renderQuickPromptsEditor();
     const statusEl = el('quick-prompts-status');
     if (statusEl) {
-      statusEl.textContent = suiteQuickPrompts === null
-        ? suiteTr('✅ 已恢复默认快捷提示词', '✅ Quick prompts reset to default')
-        : suiteTr(`✅ 已保存 ${suiteQuickPrompts.length} 条快捷提示词`, `✅ Saved ${suiteQuickPrompts.length} quick prompt(s)`);
+      statusEl.textContent = (!suiteQuickPrompts || suiteQuickPrompts.length === 0)
+        ? suiteTr('✅ 已恢复默认快捷按钮', '✅ Reset to default quick buttons')
+        : suiteTr(`✅ 已保存 ${suiteQuickPrompts.length} 条自定义提示词`, `✅ Saved ${suiteQuickPrompts.length} custom prompt(s)`);
     }
     if (!opts?.skipPersist) {
       await saveSuiteUiPrefs({
@@ -12588,18 +13232,35 @@ function renderHeatmapGrid(forceRebuild = false) {
   }
 
   async function resetSuiteQuickPrompts() {
-    return await setSuiteQuickPrompts(null);
+    suiteQuickPool = { ...DEFAULT_QUICK_POOL_STATE };
+    suiteQuickPrompts = null;
+    renderQuickBuiltinPool();
+    renderQuickPromptsEditor();
+    dispatchSuitePrefsChanged();
+    const statusEl = el('quick-prompts-status');
+    if (statusEl) {
+      statusEl.textContent = suiteTr('✅ 已恢复默认快捷按钮', '✅ Reset to default quick buttons');
+    }
+    await saveSuiteUiPrefs({
+      quickPool: { ...suiteQuickPool },
+      quickPrompts: null
+    });
+    return getSuiteQuickPrompts();
   }
 
   function appendQuickPromptEditorRow(listEl, item, idx) {
+    const emptyHint = listEl.querySelector?.('.qp-empty-hint');
+    if (emptyHint) emptyHint.remove?.();
+
     const row = document.createElement('div');
     row.className = 'qp-row';
     row.setAttribute('data-qp-idx', String(idx));
+    if (item?.id) row.setAttribute('data-qp-id', String(item.id));
 
     const labelInp = document.createElement('input');
     labelInp.type = 'text';
     labelInp.className = 'qp-label-input';
-    labelInp.placeholder = suiteTr('按钮文案 (如 /plan)', 'Button label');
+    labelInp.placeholder = suiteTr('按钮文案 (如 逐行审查)', 'Button label');
     labelInp.value = String(item?.label || '');
     labelInp.setAttribute('value', labelInp.value);
 
@@ -12617,6 +13278,12 @@ function renderHeatmapGrid(forceRebuild = false) {
     delBtn.title = suiteTr('删除此条', 'Remove');
     delBtn.addEventListener('click', () => {
       row.remove?.();
+      const remain = listEl.querySelectorAll('.qp-row')?.length || 0;
+      if (remain === 0) renderQuickPromptsEditor();
+      if (suiteQuickPrompts !== null) {
+        const collected = collectQuickPromptsFromEditor();
+        void setSuiteQuickPrompts(collected.length ? collected : null, { skipRenderEditor: remain > 0 });
+      }
     });
 
     row.appendChild(labelInp);
@@ -12629,7 +13296,17 @@ function renderHeatmapGrid(forceRebuild = false) {
     const listEl = el('quick-prompts-editor-list');
     if (!listEl) return;
     listEl.replaceChildren();
-    const items = suiteQuickPrompts !== null ? suiteQuickPrompts : DEFAULT_QUICK_PROMPTS;
+    const items = Array.isArray(suiteQuickPrompts) ? suiteQuickPrompts : [];
+    if (items.length === 0) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'qp-empty-hint';
+      emptyEl.textContent = suiteTr(
+        '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加',
+        'No custom prompts yet. Click "+ Add" above to create one.'
+      );
+      listEl.appendChild(emptyEl);
+      return;
+    }
     for (let i = 0; i < items.length; i++) {
       appendQuickPromptEditorRow(listEl, items[i], i);
     }
@@ -12640,6 +13317,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (!listEl) return [];
     const rows = Array.from(listEl.querySelectorAll('.qp-row') || []);
     const out = [];
+    const usedIds = new Set();
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const labelInp = row.querySelector('.qp-label-input');
@@ -12647,8 +13325,12 @@ function renderHeatmapGrid(forceRebuild = false) {
       const label = String(labelInp?.value || '').trim();
       const text = String(textInp?.value || '');
       if (!label || !text.trim()) continue;
+      const rawId = String(row.getAttribute?.('data-qp-id') || '').trim();
+      let id = (rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) && !usedIds.has(rawId)) ? rawId : `custom-${i}`;
+      while (usedIds.has(id)) id = `${id}-${i}`;
+      usedIds.add(id);
       out.push({
-        id: `custom-${i}`,
+        id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
         title: label.slice(0, 120)
@@ -12867,7 +13549,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       <div id="ag-rp-tunnel-form" class="ag-rp-tunnel-form">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
           <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（可选高级配置）', 'Cloudflare Fixed Domain (Optional)'))}</span>
-          <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
+          <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
         </div>
         <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('默认已启用免登录临时隧道（零配置开箱可用）；仅当需要绑定自有固定域名时才需填写下方信息。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
         <label style="display:flex;flex-direction:column;gap:4px;">
@@ -13161,6 +13843,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
     if (target === 'terminal') {
       syncEnhancerPrefControls();
+      renderQuickBuiltinPool();
       renderQuickPromptsEditor();
       void refreshTerminalsList();
     } else if (target === 'subscription') {
@@ -13596,6 +14279,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
   applySuiteFeatureFlags();
+  renderQuickBuiltinPool();
   renderQuickPromptsEditor();
   renderTerminalGrid();
   dispatchSuitePrefsChanged();
@@ -13677,6 +14361,9 @@ function renderHeatmapGrid(forceRebuild = false) {
     getQuickPrompts: () => getSuiteQuickPrompts(),
     setQuickPrompts: (list, opts) => setSuiteQuickPrompts(list, opts),
     resetQuickPrompts: () => resetSuiteQuickPrompts(),
+    getQuickPool: () => getSuiteQuickPool(),
+    setQuickPool: (partial, opts) => setSuiteQuickPool(partial, opts),
+    toggleQuickPoolItem: (id, opts) => toggleSuiteQuickPoolItem(id, opts),
     getRemoteDisplayConfig: () => getRemoteDisplayConfig(),
     setRemoteDisplayConfig: cfg => setRemoteDisplayConfig(cfg),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),

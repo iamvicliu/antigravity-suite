@@ -1,56 +1,37 @@
-# Antigravity コンテキスト・トークンビューアー
+# Antigravity Suite
 
 [简体中文](README.md) · [English](README.en.md) · **日本語** · [한국어](README.ko.md) · [Español](README.es.md)
 
-Google Antigravity 2.x のツールバーで、会話のコンテキスト使用量、モデルの応答速度、デスクトップと CLI のトークン使用量を確認できます。
+> **Google Antigravity デスクトップ版（macOS）向けの 100% ゼロ改変（Zero-Patch）拡張＆リモート操作スイート。`app.asar` や Apple 公式署名を一切変更せず、公式アップデートにも干渉しません。**
 
-## デモ
+## 主な機能
 
-https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
-
-[高画質 MP4 をダウンロード](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
-
-## 機能
-
-- **コンテキストと応答速度**. 使用量、モデルの上限、最初のトークンまでの時間（TTFT）、出力速度、生成時間を表示します。サーバーの実測値とローカルの推定値を分けて表示します。
-- **会話の詳細**. プロンプト、応答、思考、ツール、添付ファイルの内訳を確認できます。添付ファイルの推定値や読み取り範囲、取得できる画像の寸法も表示します。コンテキスト超過、レート制限、通信エラーなどを区別します。
-- **トークン履歴**. 読み取れるローカルのデスクトップと CLI の使用量を集計し、利用元で絞り込めます。日・週・月・年・累計のグラフを切り替えられます。
-- **API 参考額とサブスクリプション**. 対応する料金で入力・キャッシュ・出力の費用を推定し、算出できない使用量も表示します。地域別参考価格や実際の支払額との比較、通貨選択、人民元換算に対応します。推定額は比較用です。実際の請求はサービス提供元で確認してください。
-- **外観**. ツールバーは空き幅に合わせて縮まり、各パネルを個別に開けます。ライト・ダークテーマやヒートマップの配色を変更できます。
-- **CLI とアップデート**. インストール済みの CLI をツールバーから起動します。利用できる場合は現在の作業フォルダとプロキシを引き継ぎます。パネルで更新を確認でき、インストーラーはバックアップ、整合性検証、復元に対応します。
-
-## 表示言語
-
-5つの言語版は README の翻訳です。UI の既定言語は簡体字中国語で、アプリ内に言語切替はありません。他の言語で使うには、[AGENTS.md](AGENTS.md) に従って `src/renderer/` の表示文言を翻訳し、再ビルドしてインストールしてください。
+1. **🇨🇳 中国語／英語の即時切替（ゼロトークン思考翻訳）**：ローカル翻訳キャッシュにより思考プロセスとタイトルをトークン消費なしで翻訳。**`⚙️`** 設定パネルから再起動不要で英語 UI へ即切替可能。
+2. **📱 4ルート対応モバイル／PC リモート操作（Cloudflare トンネル標準対応・セッション分離）**：LAN / Tailscale / Bonjour / ログイン不要の Cloudflare 一時トンネル（既定で有効・独自固定ドメイン対応）で外出先からチャット・画像送信・承認操作が可能。最速ルート自動切替、上部コンテキスト／使用量ドロワー、9項目の表示切替、タブ単位の独立セッション管理に対応。
+3. **📊 コンテキスト＆デュアルウィンドウ配額モニター（240K 自動圧縮・328K 警告対応）**：右上のリングでコンテキスト消費量・52週ヒートマップ・API 換算コストを可視化し、`G4` / `C` カプセルで 5時間＆週間残量を監視。さらにアイドル時 240K 到達またはキャッシュ脱落検知で `/compact` を自動実行し長時間フリーズを防止。
+4. **⚡ 入力欄効率化スイート**：14種の内蔵おすすめコマンドプール（カテゴリ別整理・ホバー2行解説・スラッシュ選択でネイティブピル変換）＋カスタムプロンプト、送信横の **`✨ 最適化` / `↩ 元に戻す`**、`Tab` 次ステップ提案プレビュー、**`⌘1`〜`⌘9`** 会話切替、右側 **`⌘S`** 直接編集、**`>_ CLI`** 起動。
+5. **🛡️ 高リスクコマンド赤枠ブロック**：`rm -rf`、`git reset --hard`、`sudo` などの危険コマンド実行時は自動承認オンでも赤枠で強制停止し手動確認を要求。
+6. **🔄 更新自動検知 ＆ ワンクリックホットアップデート**：GitHub の新着コミットを検知すると右上の **`⚙️`** に赤バッジが点灯し、「立即更新」で再起動なしに即時反映。
 
 ---
 
-## 🤖 AI エージェント向け導入コマンド
+## 🚀 クイック導入（macOS・ゼロ改変 CDP 方式）
+
+動作要件：**macOS**、**Google Antigravity**、**Node.js `22.4.0+`**
 
 ```bash
-node cli.js install
-node cli.js status
+git clone https://github.com/iamvicliu/antigravity-suite.git ~/.local/share/antigravity-context-viewer
+cd ~/.local/share/antigravity-context-viewer
+./scripts/setup-macos-cdp.sh
 ```
 
----
+> オプション：`--no-auto`（自動起動を無効化、`ag-context-meter install-launcher` で独立起動アイコン作成可）、`--no-remote`（リモートサーバーを無効化）。Windows / Linux 環境ではデバッグポート有効化の上 `node cli.js live` で利用できます。
 
-## 🚀 クイックスタート
+### 主なコマンド
 
-- **Windows**: [`install.bat`](install.bat) / [`uninstall.bat`](uninstall.bat)
-- **macOS / Linux**: `./install.sh` / `./uninstall.sh`
-- **CLI**: `node cli.js check` / `install` / `status` / `restore`
+- `ag-context-meter status`：各モジュール状態と公式署名未改変を確認
+- `ag-context-meter remote`：4ルート QR コード・接続デバイス確認（`--tunnel on|off` / `--reset-token`）
+- `ag-context-meter live` / `restart`：実行中ウィンドウへ即時適用、または `v2.33.0+` デバッグポート付きで安全再起動
+- `ag-context-meter update` / `stop` / `auto-off`：ワンクリック更新・一時解除・自動起動無効化
 
----
-
-## 🧪 テスト実行
-
-```bash
-npm test
-```
-コンテキスト集計、ストレージ、プロキシ設定、UI 状態、購読設定をテストします。
-
----
-
-## 🤝 コミュニティ
-
-- **[LINUX DO](https://linux.do/)**: LINUX DO コミュニティを応援・支持しています。
+テスト実行は `npm run test:suite`。詳細な設定ガイド・トラブルシューティング・謝辞は **[简体中文 README](README.md)** および **[English README](README.en.md)** をご覧ください。[MIT License](LICENSE) 下で公開されています。

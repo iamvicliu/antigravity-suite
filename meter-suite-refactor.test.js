@@ -10164,3 +10164,392 @@ exit 0
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 24（主干）: 内置推荐池统一胶囊开关（含 /goal /swarm /boost 等 + 复制会话 ID / 导出 MD）+ 干净自定义提示词 + 斜杠命令原生菜单自动点选转换
+// =========================================================================
+test('需求 24: 内置推荐池统一开关、三列自定义提示词与斜杠命令自动点选原生菜单', async () => {
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const delay = Number(ms) > 500 ? Number(ms) : Math.min(Number(ms) || 0, 10);
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, delay);
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => {
+    activeTimers.delete(t);
+    clearTimeout(t);
+  };
+  env.sandbox.location = { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/cccccccc-3333-3333-3333-333333333333', origin: 'https://127.0.0.1:53892', href: 'https://127.0.0.1:53892/c/cccccccc-3333-3333-3333-333333333333' };
+  env.sandbox.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+  env.win.getSelection = env.sandbox.getSelection;
+  env.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+
+  const composerEl = env.doc.createElement('div');
+  composerEl.className = 'surface-composer';
+  const editorEl = env.doc.createElement('div');
+  editorEl.setAttribute('data-lexical-editor', 'true');
+  editorEl.setAttribute('contenteditable', 'true');
+  composerEl.appendChild(editorEl);
+  env.doc.body.appendChild(composerEl);
+
+  // 模拟 Antigravity 斜杠候选菜单：输入 /compact 后弹出 [role=option]，点击后转成 command pill
+  let slashMenuEl = null;
+  let slashOptionClicked = false;
+  env.doc.execCommand = (cmd, _ui, val) => {
+    if (cmd === 'delete') {
+      editorEl.textContent = '';
+      if (slashMenuEl) { slashMenuEl.remove?.(); slashMenuEl = null; }
+      return true;
+    }
+    if (cmd === 'insertText') {
+      editorEl.textContent = String(val || '');
+      if (String(val || '').trim().toLowerCase() === '/compact') {
+        if (slashMenuEl) slashMenuEl.remove?.();
+        slashMenuEl = env.doc.createElement('div');
+        slashMenuEl.setAttribute('role', 'listbox');
+        const optEl = env.doc.createElement('div');
+        optEl.setAttribute('role', 'option');
+        const nameSpan = env.doc.createElement('span');
+        nameSpan.textContent = 'compact';
+        const descSpan = env.doc.createElement('span');
+        descSpan.textContent = 'Compact the conversation now';
+        optEl.appendChild(nameSpan);
+        optEl.appendChild(descSpan);
+        optEl.addEventListener('click', () => {
+          slashOptionClicked = true;
+          editorEl.textContent = 'compact ';
+          editorEl.setAttribute('data-converted-slash', 'compact');
+          slashMenuEl?.remove?.();
+          slashMenuEl = null;
+        });
+        slashMenuEl.appendChild(optEl);
+        env.doc.body.appendChild(slashMenuEl);
+      }
+      return true;
+    }
+    return true;
+  };
+
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  vm.runInContext(freshEnhancerSrc, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const enhancer = env.sandbox.__AGEnhancer;
+  const shadow = env.getShadow();
+
+  try {
+    const quickBar = env.doc.getElementById('ag-quick-capsule-bar');
+    assert.ok(quickBar, '默认应挂载快捷栏');
+
+    // 1. 不搞特殊：移除旧版硬塞的 #quick-builtin-toggles-grid 与左列 .qp-enable-checkbox
+    assert.equal(shadow.getElementById('quick-builtin-toggles-grid'), null, '不应再渲染孤立的内置开关大框');
+    assert.equal(shadow.querySelector('.qp-enable-checkbox'), null, '自定义列表不得再出现左列原生复选框');
+
+    // 2. 内置推荐池应按 3 大场景分组并按推荐度排序（共 14 项，默认开启 5 项，推荐项带 ★ 星标）
+    const poolGrid = shadow.getElementById('quick-builtin-pool-grid');
+    const groups = Array.from(poolGrid?.querySelectorAll('.qp-pool-group') || []);
+    assert.equal(groups.length, 3, '内置推荐池应按 3 大场景分组渲染');
+    assert.deepEqual(
+      groups.map((g) => g.getAttribute('data-pool-group')),
+      ['daily', 'heavy', 'tools'],
+      '分组顺序应为 daily -> heavy -> tools'
+    );
+    const getGroupChipIds = (idx) => Array.from(groups[idx]?.querySelectorAll('.qp-pool-chip') || []).map((c) => c.getAttribute('data-pool-id'));
+    assert.deepEqual(getGroupChipIds(0), ['compact', 'plan', 'grill-me', 'btw', 'learn'], '日常高频组内部应按推荐程度排序');
+    assert.deepEqual(getGroupChipIds(1), ['goal', 'boost', 'swarm', 'teamwork', 'browser', 'schedule'], '复杂攻坚组内部应按推荐程度排序');
+    assert.deepEqual(getGroupChipIds(2), ['reload', 'copyid', 'export'], '会话工具组内部应排序正确');
+
+    const chips = Array.from(poolGrid?.querySelectorAll('.qp-pool-chip') || []);
+    assert.equal(chips.length, 14, '内置推荐池应包含全部 14 个内置推荐项');
+    const getChip = (id) => shadow.getElementById(`ag-qp-pool-${id}`);
+    assert.ok(getChip('compact')?.querySelector('.qp-pool-chip-star'), '/compact 应带有 ★ 推荐星标');
+    assert.ok(getChip('boost')?.querySelector('.qp-pool-chip-star'), '/boost 应带有 ★ 推荐星标');
+    assert.equal(getChip('swarm')?.querySelector('.qp-pool-chip-star'), null, '/swarm 不应带有 ★ 星标');
+
+    // 悬停或点击内置胶囊时，底部实时解读栏 #quick-builtin-info-box 应零延迟切换
+    getChip('boost')?.dispatchEvent({ type: 'mouseenter' });
+    assert.match(shadow.getElementById('quick-info-title')?.textContent || '', /\/boost/);
+    assert.equal(shadow.getElementById('quick-info-rec')?.hidden, false);
+    assert.match(shadow.getElementById('quick-info-role')?.textContent || '', /Boost/);
+    assert.match(shadow.getElementById('quick-info-scene')?.textContent || '', /Bug|算法/);
+
+    for (const onId of ['compact', 'plan', 'reload', 'copyid', 'export']) {
+      assert.equal(getChip(onId)?.getAttribute('data-active'), 'true', `内置推荐项 ${onId} 默认应激活`);
+      assert.ok(quickBar.querySelector(`#ag-qcap-${onId}`), `默认应在快捷栏显示 #ag-qcap-${onId}`);
+    }
+    for (const offId of ['goal', 'swarm', 'boost', 'teamwork', 'grill-me', 'btw', 'learn', 'browser', 'schedule']) {
+      assert.equal(getChip(offId)?.getAttribute('data-active'), 'false', `推荐池 ${offId} 默认应为未激活待选`);
+      assert.equal(quickBar.querySelector(`#ag-qcap-${offId}`), null, `默认不在快捷栏显示 #ag-qcap-${offId}`);
+    }
+
+    // 快捷栏按钮应移除原生 title 并支持方案 C 零延迟双行悬浮气泡 (#ag-quickbar-tooltip)
+    const compactBtn = quickBar.querySelector('#ag-qcap-compact');
+    assert.equal(compactBtn?.getAttribute('title'), null, '快捷栏按钮不应设置原生 title 以免遮挡双行气泡');
+    compactBtn?.dispatchEvent({ type: 'mouseenter' });
+    const qTip = env.doc.getElementById('ag-quickbar-tooltip');
+    assert.ok(qTip, '悬停快捷栏按钮应渲染 #ag-quickbar-tooltip 悬浮气泡');
+    assert.equal(qTip.hidden, false, 'mouseenter 时应立即显示 #ag-quickbar-tooltip');
+    assert.match(qTip.querySelector('.ag-qtip-title')?.textContent || '', /\/compact/);
+    assert.match(qTip.querySelector('.ag-qtip-role')?.textContent || '', /压缩/);
+    assert.match(qTip.querySelector('.ag-qtip-scene')?.textContent || '', /240K/);
+    compactBtn?.dispatchEvent({ type: 'mouseleave' });
+    assert.equal(qTip.hidden, true, 'mouseleave 时应立即隐藏 #ag-quickbar-tooltip');
+
+    // 点亮 /goal 与 /swarm，并隐藏 复制会话 ID 与 导出 Markdown，均应立即同步并持久化
+    getChip('goal')?.click();
+    getChip('swarm')?.click();
+    getChip('copyid')?.click();
+    getChip('export')?.click();
+    await new Promise(r => setTimeout(r, 25));
+
+    assert.equal(getChip('goal')?.getAttribute('data-active'), 'true');
+    assert.equal(getChip('swarm')?.getAttribute('data-active'), 'true');
+    assert.equal(getChip('copyid')?.getAttribute('data-active'), 'false');
+    assert.equal(getChip('export')?.getAttribute('data-active'), 'false');
+    assert.ok(quickBar.querySelector('#ag-qcap-goal'), '点亮 /goal 后应立即出现在快捷栏');
+    assert.ok(quickBar.querySelector('#ag-qcap-swarm'), '点亮 /swarm 后应立即出现在快捷栏');
+    assert.equal(quickBar.querySelector('#ag-qcap-copyid'), null, '关闭复制会话 ID 后应立即从快捷栏隐藏');
+    assert.equal(quickBar.querySelector('#ag-qcap-export'), null, '关闭导出 Markdown 后应立即从快捷栏隐藏');
+
+    const savedPool = JSON.parse(env.localStorage.getItem('ag_suite_quick_pool') || '{}');
+    assert.equal(savedPool.goal, true);
+    assert.equal(savedPool.swarm, true);
+    assert.equal(savedPool.copyid, false);
+    assert.equal(savedPool.export, false);
+    assert.ok(
+      env.postedSettings.some(p => p?.uiPreferences?.quickPool?.goal === true && p?.uiPreferences?.quickPool?.copyid === false),
+      '推荐池开关应透传持久化到 uiPreferences.quickPool'
+    );
+
+    // 3. 自定义区默认 0 行，点击 + 新增后渲染干净三列行，点击「恢复默认」一键还原
+    const customList = shadow.getElementById('quick-prompts-editor-list');
+    assert.equal(customList?.querySelectorAll('.qp-row').length, 0, '未添加自定义项时默认不应渲染内置项输入框行');
+    assert.ok(customList?.querySelector('.qp-empty-hint'), '空态时应展示引导提示');
+
+    shadow.getElementById('btn-add-quick-prompt')?.click();
+    const addedRows = Array.from(customList?.querySelectorAll('.qp-row') || []);
+    assert.equal(addedRows.length, 1, '点击 + 新增应插入一行自定义三列行');
+    assert.equal(customList?.querySelector('.qp-empty-hint'), null, '新增行后应移除空态提示');
+    addedRows[0].querySelector('.qp-label-input').value = '自检风格';
+    addedRows[0].querySelector('.qp-text-input').value = '请按项目规范审查本文件';
+    shadow.getElementById('btn-save-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.ok(quickBar.querySelector('#ag-qcap-prompt-0'), '保存后自定义按钮应出现在快捷栏');
+    assert.equal(quickBar.querySelector('#ag-qcap-prompt-0')?.textContent, '自检风格');
+
+    shadow.getElementById('btn-reset-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(getChip('goal')?.getAttribute('data-active'), 'false', '恢复默认应还原 /goal 为未启用');
+    assert.equal(getChip('copyid')?.getAttribute('data-active'), 'true', '恢复默认应还原 复制会话 ID 为启用');
+    assert.equal(getChip('export')?.getAttribute('data-active'), 'true', '恢复默认应还原 导出 Markdown 为启用');
+    assert.ok(quickBar.querySelector('#ag-qcap-copyid') && quickBar.querySelector('#ag-qcap-export'));
+    assert.equal(quickBar.querySelector('#ag-qcap-goal'), null);
+    assert.equal(quickBar.querySelector('#ag-qcap-prompt-0'), null, '恢复默认应清空自定义快捷按钮');
+
+    // 4. 点击 /compact 压缩应自动匹配并点选斜杠候选菜单 [role="option"] 转成原生斜杠命令
+    quickBar.querySelector('#ag-qcap-compact')?.click();
+    await new Promise(r => setTimeout(r, 80));
+    assert.equal(slashOptionClicked, true, '点击 /compact 压缩时应自动点选弹出的斜杠候选菜单项 [role="option"]');
+    assert.equal(editorEl.getAttribute('data-converted-slash'), 'compact', '应将纯文本 /compact 转换为原生斜杠命令状态');
+  } finally {
+    enhancer?.dispose?.();
+    api?.dispose?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
+  }
+});
+
+// =========================================================================
+// 需求 25: UI 主题色系一致性静态门禁与动态主题变量绑定验证
+// =========================================================================
+test('需求 25: UI 主题色系一致性静态门禁与动态主题变量绑定验证', () => {
+  const uiFiles = [
+    ['src/renderer/suite-settings.css', fs.readFileSync(path.join(ROOT, 'src/renderer/suite-settings.css'), 'utf8')],
+    ['src/renderer/suite-settings.js', fs.readFileSync(path.join(ROOT, 'src/renderer/suite-settings.js'), 'utf8')],
+    ['src/renderer/suite-settings.html', fs.readFileSync(path.join(ROOT, 'src/renderer/suite-settings.html'), 'utf8')],
+    ['ag-enhancer-overlay.js', fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8')]
+  ];
+  const forbiddenPatterns = [
+    { name: '硬编码翠绿 #10b981', re: /#10b981/i },
+    { name: '硬编码翠绿 rgba(16,185,129)', re: /16,\s*185,\s*129/ },
+    { name: '硬编码翠绿 #34d399', re: /#34d399/i },
+    { name: '硬编码深绿 #059669', re: /#059669/i },
+    { name: '硬编码天蓝 #38bdf8', re: /#38bdf8/i },
+    { name: '硬编码天蓝 rgba(56,189,248)', re: /56,\s*189,\s*248/ },
+    { name: '硬编码天蓝 rgba(2,132,199)', re: /2,\s*132,\s*199/ },
+    { name: '硬编码浅蓝 #7dd3fc', re: /#7dd3fc/i },
+    { name: '硬编码深蓝 #0369a1/#0c4a6e', re: /#(?:0369a1|0c4a6e)/i },
+    { name: '硬编码橘色 #fb923c/#c2410c', re: /#(?:fb923c|c2410c)|249,\s*115,\s*22|234,\s*88,\s*12/i }
+  ];
+  for (const [relPath, src] of uiFiles) {
+    for (const rule of forbiddenPatterns) {
+      assert.equal(rule.re.test(src), false, `${relPath} 不得硬编码非主题色（命中：${rule.name}）`);
+    }
+  }
+
+  const suiteCss = uiFiles[0][1];
+  assert.match(suiteCss, /\.qp-pool-chip\[data-active="true"\][^}]*--ag-accent-border[^}]*--ag-accent-bg/, '内置推荐池激活态必须绑定 --ag-accent-* 变量');
+  assert.match(suiteCss, /\.qp-info-box[^}]*--ag-accent-border/, '底部指令解读框必须绑定 --ag-accent-border');
+  assert.match(suiteCss, /\.qp-info-rec[^}]*--ag-accent-bg[^}]*--ag-custom-token-accent/, '推荐徽章必须绑定 --ag-accent-* 与 --ag-custom-token-accent');
+  assert.match(suiteCss, /\.qp-label-input,\.qp-text-input,\.ag-rp-input\{[^}]*background:var\(--ag-bg-input\)/, '设置面板所有输入框底色必须统一使用 --ag-bg-input');
+
+  const enhancerSrc = uiFiles[3][1];
+  assert.match(enhancerSrc, /#\$\{QUICK_BAR_TOOLTIP_ID\}\s*\{[^}]*--ag-accent-border/, '快捷栏双行悬浮气泡必须绑定 --ag-accent-border');
+  assert.match(enhancerSrc, /#\$\{QUICK_BAR_TOOLTIP_ID\}\s+\.ag-qtip-rec\s*\{[^}]*--ag-accent-bg[^}]*--ag-effective-accent/, '快捷栏气泡推荐徽章必须绑定 --ag-accent-bg 与 --ag-effective-accent');
+  assert.match(enhancerSrc, /#\$\{QUICK_BAR_ID\}\s+#\$\{NEXT_STEP_GHOST_ID\}\s+\.ag-ns-accept\s*\{[^}]*--ag-accent-border[^}]*--ag-effective-accent/, '追问建议胶囊必须绑定动态主题强调色');
+  assert.match(enhancerSrc, /#\$\{PROMPT_OPT_WRAP_ID\}\s+\.ag-prompt-opt-btn\[data-loading="true"\]\s*\{[^}]*--ag-effective-accent/, '提示词优化按钮必须绑定动态主题强调色');
+
+  // 运行时动态切换色系预设时，host 与 documentElement 必须同步刷新 --ag-accent-* 与 --ag-effective-accent
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 10));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => { activeTimers.delete(t); clearTimeout(t); };
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  try {
+    api.setHeatPreset('blue');
+    const host = env.doc.getElementById('ag-context-meter');
+    assert.equal(host.style.getPropertyValue('--ag-effective-accent'), '#60a5fa', '切换蓝色预设后 host --ag-effective-accent 应跟随为 #60a5fa');
+    assert.equal(env.doc.documentElement.style.getPropertyValue('--ag-effective-accent'), '#60a5fa', 'documentElement --ag-effective-accent 必须同步镜像供外部悬浮气泡继承');
+    assert.match(env.doc.documentElement.style.getPropertyValue('--ag-accent-bg'), /96,\s*165,\s*250/, 'documentElement --ag-accent-bg 必须同步更新 RGB');
+  } finally {
+    api?.dispose?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
+  }
+});
+
+// =========================================================================
+// 需求 26: 同步 antigravity-chinese v3.3.53 登录页欢迎标题与设置侧栏优先扫描
+// =========================================================================
+test('需求 26: antigravity-hans-overlay 仅翻译 div.entrance-title 登录欢迎标题，保留 [data-uri] 保护并优先处理设置侧栏', async () => {
+  const hansSrc = fs.readFileSync(path.join(ROOT, 'antigravity-hans-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  env.sandbox.location.pathname = '/workbench.html';
+  env.sandbox.location.href = 'file:///Applications/Antigravity.app/workbench.html';
+  env.win.location = env.sandbox.location;
+  env.win.top = env.win;
+  env.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 };
+  env.sandbox.NodeFilter = { SHOW_TEXT: 4, SHOW_ELEMENT: 1 };
+
+  const makeTextNode = (val, parentElement) => ({
+    nodeType: 3,
+    nodeValue: val,
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement
+  });
+
+  // 1. div.entrance-title 中的 Welcome to Antigravity! 应译为 欢迎使用 Antigravity！
+  const entranceDiv = env.doc.createElement('div');
+  entranceDiv.className = 'entrance-title text-3xl font-normal';
+  const entranceText = makeTextNode('Welcome to Antigravity!', entranceDiv);
+  entranceDiv.childNodes.push(entranceText);
+  env.doc.body.appendChild(entranceDiv);
+
+  // 2. 非 entrance-title 的 #project-name 与 [data-uri] 必须保留原文
+  const projectDiv = env.doc.createElement('div');
+  projectDiv.id = 'project-name';
+  projectDiv.className = 'antigravity-agent-side-panel';
+  const projectText = makeTextNode('Welcome to Antigravity!', projectDiv);
+  projectDiv.childNodes.push(projectText);
+  env.doc.body.appendChild(projectDiv);
+
+  const uriDiv = env.doc.createElement('div');
+  uriDiv.setAttribute('data-uri', 'file:///tmp/Welcome to Antigravity!');
+  uriDiv.className = 'antigravity-agent-side-panel';
+  const uriText = makeTextNode('Settings', uriDiv);
+  uriDiv.childNodes.push(uriText);
+  env.doc.body.appendChild(uriDiv);
+
+  env.doc.createTreeWalker = (rootNode, whatToShow) => {
+    const flat = [];
+    const walk = (n) => {
+      if (!n) return;
+      const children = n.childNodes || n.children || [];
+      for (const ch of children) {
+        if ((ch.nodeType === 1 && (whatToShow & 1)) || (ch.nodeType === 3 && (whatToShow & 4))) {
+          flat.push(ch);
+        }
+        walk(ch);
+      }
+    };
+    walk(rootNode);
+    let idx = 0;
+    return { nextNode: () => (idx < flat.length ? flat[idx++] : null) };
+  };
+
+  let observerCallback = null;
+  env.sandbox.MutationObserver = class {
+    constructor(cb) { observerCallback = cb; }
+    observe() {}
+    disconnect() {}
+  };
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 10));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => { activeTimers.delete(t); clearTimeout(t); };
+
+  try {
+    vm.runInContext(hansSrc, env.sandbox);
+    assert.equal(entranceText.nodeValue, '欢迎使用 Antigravity！', 'div.entrance-title 内的 Welcome to Antigravity! 应译为欢迎语');
+    assert.equal(projectText.nodeValue, 'Welcome to Antigravity!', '#project-name 中的 Welcome to Antigravity! 必须保留原文');
+    assert.equal(uriText.nodeValue, 'Settings', '[data-uri] 路径保护必须保留原文');
+
+    // 3. 验证 .settings-modal-backdrop 内 [data-testid="settings-sidebar"] 优先于普通子树被翻译
+    const writeOrder = [];
+    const makeTrackedTextNode = (val, parentElement, tag) => {
+      let cur = val;
+      return {
+        nodeType: 3,
+        get nodeValue() { return cur; },
+        set nodeValue(v) { cur = String(v); writeOrder.push(tag); },
+        get textContent() { return cur; },
+        set textContent(v) { cur = String(v); },
+        parentElement
+      };
+    };
+
+    const otherEl = env.doc.createElement('div');
+    otherEl.className = 'antigravity-agent-side-panel';
+    const otherSpan = env.doc.createElement('span');
+    const otherText = makeTrackedTextNode('Settings', otherSpan, 'other');
+    otherSpan.childNodes.push(otherText);
+    otherEl.appendChild(otherSpan);
+    env.doc.body.appendChild(otherEl);
+
+    const backdrop = env.doc.createElement('div');
+    backdrop.className = 'settings-modal-backdrop';
+    const sidebar = env.doc.createElement('div');
+    sidebar.setAttribute('data-testid', 'settings-sidebar');
+    const sidebarHeading = env.doc.createElement('h1');
+    const sidebarText = makeTrackedTextNode('Settings', sidebarHeading, 'sidebar');
+    sidebarHeading.childNodes.push(sidebarText);
+    sidebar.appendChild(sidebarHeading);
+    backdrop.appendChild(sidebar);
+    backdrop.querySelector = (sel) => (sel === '[data-testid="settings-sidebar"]' ? sidebar : null);
+    env.doc.body.appendChild(backdrop);
+
+    assert.ok(typeof observerCallback === 'function', '应注册 MutationObserver 回调');
+    observerCallback([{ type: 'childList', target: env.doc.body, addedNodes: [otherEl, backdrop] }]);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(sidebarText.nodeValue, '设置', '设置模态框侧栏应在异步 flush 中完成翻译');
+    assert.equal(otherText.nodeValue, '设置', '普通子树也应在同轮 flush 中继续完成翻译');
+    assert.deepEqual(writeOrder, ['sidebar', 'other'], 'settings-sidebar 必须优先于同批次普通子树完成翻译');
+  } finally {
+    env.win.__antigravityZhPatchCleanup?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
+  }
+});

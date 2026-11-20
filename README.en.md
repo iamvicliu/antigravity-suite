@@ -1,69 +1,84 @@
-# Antigravity Context & Token Viewer
+# Antigravity Suite
 
 [简体中文](README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
-See how much context your conversation uses, how fast the model responds, and how many tokens you have used across the desktop app and CLI, right from the Google Antigravity 2.x toolbar.
+> **100% zero-patch enhancement & remote control suite for Google Antigravity desktop (macOS) — never modifies `app.asar` or Apple code signatures, safe across official updates, and instant to toggle.**
 
-## Demo
+## Core Highlights
 
-https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
-
-[Download HD MP4](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
-
-## Features
-
-- **Context and speed**. See context usage, the model budget, time to first token (TTFT), output rate, and total generation time. Server-reported usage and local estimates are shown separately.
-- **Conversation details**. Expand usage for prompts, replies, thinking, tools, and attachments. Review attachment estimates and coverage, and image dimensions when available. The panel distinguishes context overflow, rate limits, network errors, and other common failures.
-- **Token history**. Combine readable local desktop and CLI usage or filter by source. Explore daily, weekly, monthly, yearly, and cumulative views.
-- **API cost estimates and subscriptions**. Estimate input, cache, and output costs for supported rates and see which usage could not be priced. Compare API-equivalent cost with regional reference prices or your actual subscription payment, with currency selection and CNY conversion. Estimates are for comparison. Refer to your provider for actual charges.
-- **Appearance**. Toolbar controls adapt to the available space, and each panel opens independently. Switch between light and dark themes, choose a heatmap preset, or set each color level.
-- **CLI and updates**. Launch the installed Antigravity CLI from the toolbar using the current workspace and proxy when available. Check for updates in the panel. The installer supports backups, integrity checks, and restoration.
-
-## Interface language
-
-The five README versions are documentation translations. The interface defaults to Simplified Chinese and has no in-app language selector. To use another language, follow [AGENTS.md](AGENTS.md) to translate the UI text in `src/renderer/`, rebuild, and install.
+1. **🇨🇳 Instant Chinese / English UI Toggle (Zero-Token Local Thought Translation)**
+   - Switch instantly between Simplified Chinese UI (+ zero-token local caching translation for Thinking blocks & titles) and original English right inside **`⚙️`**, without restarting.
+2. **📱 4-Channel Mobile & Desktop Remote Control (Zero-Config Cloudflare Tunnel + Multi-Session Isolation)**
+   - Scan a single QR code to chat, switch models/permissions, upload images, and approve actions over **LAN**, **Tailscale**, **Bonjour (`*.local`)**, or a **default-enabled no-login Cloudflare Quick Tunnel (`*.trycloudflare.com`)** (with custom named domain support and copy-paste `cloudflared` install guides for macOS / Windows / Linux).
+   - Automatic concurrent latency probing picks the fastest route, merges cross-channel counts per device, blocks unchecked channels with HTTP `403`, and isolates active conversations/drafts per browser tab (`X-AG-Client-Id`).
+   - Built-in mobile/remote top-bar drawers for live context window usage, local token stats, 9 configurable visibility toggles in **`⚙️` → Remote**, and **System / Light / Dark** appearance sync.
+3. **📊 Context Window, 240K Auto-Compact & Dual Quota Capsules**
+   - Live top-bar ring meter, token breakdown, 52-week heatmap, API cost comparison, and **Gemini 4 / Claude** 5-hour + weekly quota capsules (`G4` / `C`).
+   - Official clients wait until 512K tokens to compact, often causing 4–5 minute full recomputation stalls after prompt cache expires past 250K–330K; real-time bottom-capsule & popover alerts detect 0% cache drops (328K risk), while default-enabled **240K Auto-Compact** triggers `/compact` automatically when idle.
+4. **⚡ Composer Efficiency Suite & Quick Tools**
+   - **14 built-in recommended quick actions** (grouped by scenario & priority with zero-latency two-line hover tooltips) plus custom quick prompts; slash commands (`/compact`, `/plan`, `/goal`, `/swarm`, `/boost`, `/teamwork`, etc.) automatically select from the Lexical slash menu into native command pills.
+   - One-click **`✨ Optimize` / `↩ Undo`** next to Send prefers fast low-tier models with multi-model fallback; `Tab` next-step suggestions truncate cleanly in-line with full-text hover tooltips.
+   - Quick switch the top 9 conversations with **`⌘1`–`⌘9`** (or **`⌘⇧[` / `⌘⇧]`** / **`⌃Tab`**), edit right-side previews in-place with **`⌘S`**, and launch `agy` directly in your terminal (**`>_ CLI`**) with mux host support.
+5. **🛡️ Dangerous Command Red-Frame Interception**
+   - Highlights destructive shell commands (`rm -rf`, `git reset --hard`, `git clean -f`, `git push`, `sudo`, `kill -9`, `DROP/DELETE`, `op item`) with red warning frames and pauses for manual approval even when Auto-Accept is enabled.
+6. **🔄 Auto Update Check & One-Click Hot Upgrade**
+   - Automatically checks GitHub in the background; when a new version is available, **`⚙️`** shows a red dot so you can click **"立即更新" (Update Now)** and hot-reload without restarting Antigravity.
 
 ---
 
-## 🤖 Instructions for AI Agents
+## 🚀 Zero-Patch Installation (macOS)
 
-Instruct your AI: **"Read `AGENTS.md` and install the Antigravity Context & Token Viewer"**.
+Requires **macOS**, **Google Antigravity**, and **Node.js `22.4.0+`**.
 
 ```bash
-# 1. Install & hot-inject without restarting
-node cli.js install
+git clone https://github.com/iamvicliu/antigravity-suite.git ~/.local/share/antigravity-context-viewer
+cd ~/.local/share/antigravity-context-viewer
+./scripts/setup-macos-cdp.sh
+```
 
-# 2. Verify status
-node cli.js status
+> Optional flags: `--no-auto` skips installing the `LaunchAgent` auto-launcher (you can run `ag-context-meter install-launcher` to create a standalone app icon in `~/Applications`), and `--no-remote` (or `AG_DISABLE_MOBILE_REMOTE=1`) disables the remote control server.
+>
+> **Windows / Linux**: Start Antigravity with `--remote-debugging-port=9222` (or let CDP auto-detect), then run `node cli.js live` from the cloned directory (`node cli.js status` to check).
+
+Add `~/.local/bin` to your shell `PATH` if needed:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+ag-context-meter status
 ```
 
 ---
 
-## 🚀 Quick Start
+## 🛠️ Daily Commands & Uninstall
 
-### Method 1: Scripts
-- **Windows**: Run [`install.bat`](install.bat) / [`uninstall.bat`](uninstall.bat)
-- **macOS / Linux**: Run `./install.sh` / `./uninstall.sh`
+| Command | Purpose |
+| :--- | :--- |
+| `ag-context-meter status` | Verify live modules, auto-launch daemon status, and untouched official `app.asar` |
+| `ag-context-meter remote` | Print 4-channel pairing URLs, Cloudflare tunnel status, connected devices & QR code (`--tunnel on|off`, `--reset-token`, `--json`) |
+| `ag-context-meter live` | Hot-inject into the running Antigravity window (`--no-remote` to disable remote server) |
+| `ag-context-meter restart` | Safely relaunch Antigravity (`v2.33.0+`) with CDP debugging enabled and inject enhancements |
+| `ag-context-meter update` | Pull latest `main` commits and hot-reload the running window without restarting |
+| `ag-context-meter stop` | Temporarily unload enhancements for the current session |
+| `ag-context-meter auto-off` / `auto-on` | Disable or re-enable automatic CDP injection on Antigravity launch |
+| `ag-context-meter install-launcher` | Optional standalone launcher app in `~/Applications` for `--no-auto` setups |
 
-### Method 2: CLI Manager
-```bash
-node cli.js check
-node cli.js install
-node cli.js status
-node cli.js restore
-```
-
----
-
-## 🧪 Testing
-
-```bash
-npm test
-```
-Tests cover context estimates, token aggregation, storage, proxy configuration, renderer state and subscription settings.
+**Complete uninstall**: run `ag-context-meter auto-off`, then remove the LaunchAgent plist (`~/Library/LaunchAgents/com.$(id -un).ag-live-helper.plist`), `~/.local/bin/ag-context-meter`, `~/.local/share/antigravity-context-viewer`, and optionally `~/Library/Application Support/AntigravityContextMeter`.
 
 ---
 
-## 🤝 Community & Support
+## 🔒 Security Principles
 
-- **[LINUX DO](https://linux.do/)**: Endorsed by and supporting the LINUX DO community.
+- **Untouched official app**: Legacy `app.asar` / binary patching commands are gated off; enhancements mount strictly via in-memory CDP injection.
+- **Channel gates & random token**: Remote control enables private channels (`LAN` / `Tailscale` / `Bonjour`) plus the default no-login Cloudflare Quick Tunnel (toggleable anytime in **`⚙️` → Remote** or disabled via `--no-remote`). Disabled channels return HTTP `403`, every request verifies a 48-char random token (rotatable anytime), and named tunnel tokens are stored only locally (`0600`) in `remote-config.json`.
+- **Path protection**: Inline file editing enforces blocklists against system directories and credential stores (`.ssh`, `.gnupg`, `1Password`, `Antigravity.app`).
+
+---
+
+## 🧪 Testing & Credits
+
+```bash
+npm run test:suite
+```
+
+For detailed troubleshooting, 5-tab settings overview, and upstream acknowledgements, see the full **[简体中文 README](README.md)**. Licensed under the [MIT License](LICENSE).
