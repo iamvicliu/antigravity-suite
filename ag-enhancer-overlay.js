@@ -4535,12 +4535,10 @@
       const text = (trigger.textContent || '').trim();
       if (/^(?:Thinking|思考中)/i.test(text)) return true;
     }
-    const userMsgs = document.querySelectorAll('[data-testid="user-message"]');
-    if (userMsgs.length > 0) {
-      const lastUser = userMsgs[userMsgs.length - 1];
-      const assistantMds = getAssistantMarkdownRoots();
-      const lastAsst = assistantMds[assistantMds.length - 1];
-      if (!lastAsst || (lastAsst.compareDocumentPosition(lastUser) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+    const activeCid = getSessionIdFromLocation();
+    if (activeCid) {
+      const activeRow = findSidebarRowById(activeCid);
+      if (activeRow && activeRow.querySelector('.animate-spin, [data-testid*="spinner"], [aria-busy="true"]')) {
         return true;
       }
     }
@@ -8458,8 +8456,12 @@
 
       const messages = extractMessagesFromTrajectorySteps(steps, 20);
       const lastStep = steps.length ? steps[steps.length - 1] : null;
-      const busy = /RUNNING|IN_PROGRESS|ACTIVE|EXECUTING/i.test(String(trajectory.status || '')) ||
-        /RUNNING|PENDING|GENERATING/i.test(String(lastStep?.status || ''));
+      const trajStatusStr = String(trajectory.status || '').trim();
+      const isTrajTerminalIdle = /IDLE|CANCELED|CANCELLED|COMPLETED|DONE/i.test(trajStatusStr);
+      const busy = isTrajTerminalIdle
+        ? false
+        : (/RUNNING|IN_PROGRESS|ACTIVE|EXECUTING/i.test(trajStatusStr) ||
+          /RUNNING|PENDING|GENERATING/i.test(String(lastStep?.status || '')));
 
       let lastAssistantText = '';
       for (let i = messages.length - 1; i >= 0; i--) {

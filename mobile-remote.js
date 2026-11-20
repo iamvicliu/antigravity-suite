@@ -1519,12 +1519,15 @@ function normalizeTrajectoryStatus(rawStatus, termReason, options = {}) {
   ) {
     return 'waiting';
   }
+  const explicitTrajIdle = Boolean(
+    CREDIBLE_TRAJ_IDLE_STATUSES.has(s) ||
+    (r && r !== 'EXECUTOR_TERMINATION_REASON_UNSPECIFIED' && !s)
+  );
   if (
-    options.activeBusy ||
-    options.domBusy ||
     s === 'CASCADE_RUN_STATUS_RUNNING' ||
     options.subagentRunning ||
-    options.domStatus === 'running'
+    options.domBusy ||
+    (!explicitTrajIdle && (options.activeBusy || options.domStatus === 'running'))
   ) {
     return 'running';
   }
@@ -1536,10 +1539,6 @@ function normalizeTrajectoryStatus(rawStatus, termReason, options = {}) {
   ) {
     return 'error';
   }
-  const explicitTrajIdle = Boolean(
-    CREDIBLE_TRAJ_IDLE_STATUSES.has(s) ||
-    (r && r !== 'EXECUTOR_TERMINATION_REASON_UNSPECIFIED' && !s)
-  );
   if (explicitTrajIdle || options.explicitIdle) {
     return 'idle';
   }
@@ -2084,6 +2083,16 @@ function createSessionCatalogStore() {
         subagentRunning: Boolean(roll?.running),
         fallbackStatus: prev?.status
       });
+      if (
+        isActive &&
+        status === 'idle' &&
+        CREDIBLE_TRAJ_IDLE_STATUSES.has(String(t?.status || '').trim()) &&
+        !sc?.domBusy &&
+        !roll?.running &&
+        !hasPendingApprovals
+      ) {
+        snap = { ...snap, busy: false };
+      }
 
       const projectName = String(
         projectNameMap.get(projectId) ||
@@ -3292,6 +3301,19 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
       });
       continue;
     }
+    if (type === 'CORTEX_STEP_TYPE_CHECKPOINT' || /COMPACT|CONTEXT_SUMMARY/i.test(type) || step.checkpoint) {
+      flushPendingThoughtsOnly(i);
+      const lastMsg = messages[messages.length - 1];
+      if (!lastMsg || lastMsg.role !== 'system-notice') {
+        messages.push({
+          id: `t-compact-${i}`,
+          role: 'system-notice',
+          text: '✓ 上下文已完成压缩',
+          html: ''
+        });
+      }
+      continue;
+    }
     if (type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') {
       const pr = step.plannerResponse || {};
       const thought = String(pr.thinking || pr.thought || '').trim();
@@ -4305,6 +4327,7 @@ function buildMobileAppHtml() {
     .thought-step::before{content:'';position:absolute;left:-5px;top:5px;width:8px;height:8px;border-radius:999px;background:var(--thought-summary);opacity:.72}
     .thought-step-hd{font-size:11px;font-weight:600;color:var(--thought-summary);margin-bottom:2px;opacity:.85}
     .thought-step-txt{white-space:pre-wrap;word-break:break-word;color:var(--muted)}
+    .compact-done-pill{align-self:center;display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;background:var(--surface-subtle);border:1px solid var(--border-subtle);color:var(--muted);font-size:12px;margin:2px 0}
     .messages.is-switching{opacity:.58;transition:opacity .12s ease}
     .empty-tip{margin:auto;text-align:center;color:var(--muted);padding:24px 12px;font-size:13px}
     .mode-entry-card{
@@ -8435,6 +8458,9 @@ function buildMobileAppHtml() {
           (loadingEarlierMsgs ? '正在加载更早内容…' : ('↑ 加载更早的对话内容（前 ' + earliestIdx + ' 条）')) + '</button>';
       }
       html += msgs.map((m) => {
+        if (m.role === 'system-notice') {
+          return '<div class="compact-done-pill" data-msg-idx="' + m.msgIndex + '">' + esc(m.text || '✓ 上下文已完成压缩') + '</div>';
+        }
         if (m.role === 'user') {
           const atts = Array.isArray(m.attachments) ? m.attachments : [];
           let attHtml = '';
@@ -8472,6 +8498,11 @@ function buildMobileAppHtml() {
       }).join('');
       if (snap?.busy) {
         html += '<div class="busy-pill"><span class="busy-spark"></span><span>正在思考与执行…</span></div>';
+      } else if (msgs.length) {
+        const lastM = msgs[msgs.length - 1];
+        if (lastM && lastM.role === 'user' && /^\\/compact(?:\\s|$)/i.test(String(lastM.text || '').trim())) {
+          html += '<div class="compact-done-pill">✓ 上下文已完成压缩</div>';
+        }
       }
 
       if (msgEl.dataset.lastHtml !== html) {

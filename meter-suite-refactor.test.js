@@ -12612,3 +12612,102 @@ test('远程端彻底工作台化：方案 B 延迟隔离新建草稿、按需�
   }
   assert.ok(html.includes("{ action: 'new-conversation', isolated: true }"), '前端新建对话应默认走方案 B 隔离草稿模式');
 });
+
+test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)', async () => {
+  const {
+    normalizeTrajectoryStatus,
+    extractMessagesFromTrajectorySteps,
+    buildMobileAppHtml
+  } = require('./mobile-remote');
+
+  // 1. 权威轨迹 IDLE 优先于启发式 activeBusy / domStatus='running'，但保留真实 domBusy / subagentRunning / waiting
+  assert.equal(
+    normalizeTrajectoryStatus('CASCADE_RUN_STATUS_IDLE', '', { activeBusy: true, domStatus: 'running' }),
+    'idle',
+    '权威轨迹 CASCADE_RUN_STATUS_IDLE 不得被启发式 activeBusy 或 domStatus=running 覆写为 running'
+  );
+  assert.equal(
+    normalizeTrajectoryStatus('CASCADE_RUN_STATUS_CANCELED', '', { activeBusy: true }),
+    'idle'
+  );
+  assert.equal(
+    normalizeTrajectoryStatus('CASCADE_RUN_STATUS_IDLE', '', { domBusy: true }),
+    'running',
+    '侧栏存在真实加载 spinner（domBusy）时仍应判为 running'
+  );
+  assert.equal(
+    normalizeTrajectoryStatus('CASCADE_RUN_STATUS_IDLE', '', { subagentRunning: true }),
+    'running',
+    '子代理运行中时仍应判为 running'
+  );
+  assert.equal(
+    normalizeTrajectoryStatus('CASCADE_RUN_STATUS_IDLE', '', { hasPendingApprovals: true }),
+    'waiting',
+    '存在待审批时仍应判为 waiting'
+  );
+  assert.equal(
+    normalizeTrajectoryStatus('', '', { activeBusy: true }),
+    'running',
+    '轨迹状态未知时仍允许 activeBusy 兜底为 running'
+  );
+
+  // 2. 轨迹检查点步骤生成 /compact 完成提示
+  const compactMsgs = extractMessagesFromTrajectorySteps([
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '/compact' } },
+    { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { summary: 'compacted' } }
+  ]);
+  assert.equal(compactMsgs.length, 2);
+  assert.equal(compactMsgs[1].role, 'system-notice');
+  assert.equal(compactMsgs[1].text, '✓ 上下文已完成压缩');
+
+  // 3. 桌面端 isAssistantBusy() 真实 DOM 验证：/compact 排在旧回复后且无真实运行信号时必须返回 busy=false
+  const env = createDomEnv();
+  env.win.location = { pathname: '/c/cccc1111-2222-3333-4444-555555555555', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/cccc1111-2222-3333-4444-555555555555' };
+  env.sandbox.location = env.win.location;
+  env.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+  const oldReply = env.doc.createElement('div');
+  oldReply.setAttribute('data-testid', 'agent-response');
+  const oldMd = env.doc.createElement('div');
+  oldMd.setAttribute('data-markdown-root', 'true');
+  oldMd.innerText = '之前的回复';
+  oldReply.appendChild(oldMd);
+  const compactUser = env.doc.createElement('div');
+  compactUser.setAttribute('data-testid', 'user-message');
+  compactUser.innerText = '/compact';
+  oldMd.compareDocumentPosition = () => 4; // DOCUMENT_POSITION_FOLLOWING: compactUser 在 oldMd 之后
+  env.doc.body.appendChild(oldReply);
+  env.doc.body.appendChild(compactUser);
+
+  let enh = null;
+  try {
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    enh = env.sandbox.__AGEnhancer;
+
+    const snapIdle = enh.getMobileSnapshot();
+    assert.equal(snapIdle.busy, false, '/compact 完成后无停止按钮/思考触发器/spinner 时，busy 必须为 false');
+
+    // 添加正在思考触发器 → busy 立即变为 true
+    const thinkTrig = env.doc.createElement('button');
+    thinkTrig.setAttribute('data-testid', 'thinking-collapsible-trigger');
+    thinkTrig.textContent = 'Thinking...';
+    env.doc.body.appendChild(thinkTrig);
+    assert.equal(enh.getMobileSnapshot().busy, true, '存在 Thinking 触发器时 busy 应为 true');
+    thinkTrig.textContent = 'Thought for 3s';
+    assert.equal(enh.getMobileSnapshot().busy, false, 'Thinking 结束后 busy 应恢复为 false');
+  } finally {
+    enh?.dispose?.();
+    env.sandbox.__AGContextMeter?.dispose?.();
+    env.cleanup?.();
+  }
+
+  // 4. 前端 HTML 与全量 <script> 语法校验
+  const html = buildMobileAppHtml();
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-27-script-${i}.js` }));
+  }
+  assert.ok(html.includes('compact-done-pill') && html.includes('✓ 上下文已完成压缩'), '前端应包含 /compact 压缩完成提示条样式与渲染');
+});
