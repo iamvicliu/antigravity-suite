@@ -11775,18 +11775,22 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
   );
 
   // 2. 项目文件树列举、敏感文件/越界符号链接隐藏、文本/二进制/图片预览与 /api/session-files 路由安全过滤
-  const tmpProj = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proj-tree-'));
+  const tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proj-home-'));
+  const tmpProj = path.join(tmpParent, 'sub-proj');
   const tmpOutside = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proj-out-'));
   try {
     fs.mkdirSync(path.join(tmpProj, 'src'), { recursive: true });
     fs.mkdirSync(path.join(tmpProj, 'node_modules'), { recursive: true });
+    fs.mkdirSync(path.join(tmpParent, '.ssh'), { recursive: true });
+    fs.writeFileSync(path.join(tmpParent, '.ssh', 'config'), 'Host secret\n', 'utf8');
     fs.writeFileSync(path.join(tmpProj, 'src', 'index.js'), 'const a = 1;\nconsole.log(a);\n', 'utf8');
     fs.writeFileSync(path.join(tmpProj, 'README.md'), '# Demo Project\n', 'utf8');
     fs.writeFileSync(path.join(tmpProj, 'bin.dat'), Buffer.from([0x00, 0x01, 0x02, 0x03]));
     fs.writeFileSync(path.join(tmpProj, '.env'), 'SECRET=1', 'utf8');
     fs.writeFileSync(path.join(tmpOutside, 'secret-outside.txt'), 'OUTSIDE', 'utf8');
     fs.symlinkSync(path.join(tmpOutside, 'secret-outside.txt'), path.join(tmpProj, 'link-outside.txt'));
-    fs.symlinkSync(tmpOutside, path.join(tmpProj, 'link-outside-dir'));
+    fs.symlinkSync(tmpOutside, path.join(tmpProj, 'docs-out'));
+    fs.symlinkSync(path.join(tmpParent, '.ssh'), path.join(tmpProj, 'docs-ssh'));
     fs.symlinkSync(path.join(tmpProj, '.env'), path.join(tmpProj, 'link-to-env.txt'));
 
     const tree = listSafeProjectTree(tmpProj, { allowedRoots: [tmpProj] });
@@ -11824,8 +11828,17 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
       enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
     };
     const handler = createRemoteHttpHandler(mockCfg, {
-      mediaOptions: { allowedRoots: [tmpProj] },
+      mediaOptions: { allowedRoots: [tmpParent] },
       callLanguageServer: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'conv-review-1': {
+                workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + tmpProj }]
+              }
+            }
+          };
+        }
         if (method === 'GetTrajectoryFileDiffs') {
           return {
             fileDiffs: [
@@ -11838,7 +11851,8 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
               { path: '.ssh/config', unifiedDiff: '+SSH_CONFIG=LEAK' },
               { name: 'nested/.ssh/config', unifiedDiff: '+NAME_SSH=LEAK' },
               { path: 'link-outside.txt', unifiedDiff: '+REL_SYMLINK=LEAK' },
-              { fileName: 'link-outside-dir/secret-outside.txt', unifiedDiff: '+REL_DIR_SYMLINK=LEAK' },
+              { fileName: 'docs-out/secret-outside.txt', unifiedDiff: '+REL_SUBPROJ_OUT_SYMLINK=LEAK' },
+              { path: 'docs-ssh/config', unifiedDiff: '+REL_SUBPROJ_SSH_SYMLINK=LEAK' },
               { path: 'link-to-env.txt', unifiedDiff: '+REL_ENV_SYMLINK=LEAK' }
             ]
           };
@@ -11851,7 +11865,8 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
               { title: 'outside.md', path: path.join(tmpOutside, 'secret-outside.txt'), content: 'OUTSIDE' },
               { name: '../outside-artifact.md', content: 'REL_TRAVERSAL_ART' },
               { path: '.ssh/config', title: 'ssh-cfg', content: 'SSH_ART' },
-              { name: 'link-outside-dir/secret-outside.txt', content: 'REL_SYMLINK_ART' },
+              { name: 'docs-out/secret-outside.txt', content: 'REL_SUBPROJ_OUT_ART' },
+              { path: 'docs-ssh/config', title: '普通标题', content: 'REL_SUBPROJ_SSH_ART' },
               { path: 'link-to-env.txt', content: 'REL_ENV_ART' }
             ]
           };
@@ -11897,10 +11912,17 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
 
     const sessResp = await getApi('/api/session-files?conversationId=conv-review-1', true);
     assert.equal(sessResp.status, 200);
-    assert.equal(sessResp.json.diffs.length, 2, '/api/session-files 必须仅保留合法绝对/相对路径 Diff，过滤 ../、.ssh/config、相对符号链接逃逸与敏感文件');
+    assert.equal(sessResp.json.diffs.length, 2, '/api/session-files 必须仅保留合法绝对/相对路径 Diff，过滤子目录项目内指向 .ssh 或越界的普通名符号链接');
     assert.deepEqual(sessResp.json.diffs.map((d) => d.name), ['index.js', 'index.js']);
-    assert.equal(sessResp.json.artifacts.length, 1, '/api/session-files 必须过滤 ../、.ssh/config、相对符号链接逃逸与敏感凭证 Artifact');
+    assert.equal(sessResp.json.artifacts.length, 1, '/api/session-files 必须过滤子目录项目内指向 .ssh 或越界的普通名符号链接 Artifact');
     assert.equal(sessResp.json.artifacts[0].name, '验收报告.md');
+
+    const noRootResp = await getApi('/api/session-files?conversationId=conv-unknown-root', true);
+    assert.equal(noRootResp.status, 200);
+    assert.equal(noRootResp.json.diffs.length, 1, '无法确定可信会话项目基准目录时必须拒绝所有相对路径 Diff（仅放行合法绝对路径）');
+    assert.equal(noRootResp.json.diffs[0].path, path.join(tmpProj, 'src', 'index.js'));
+    assert.equal(noRootResp.json.artifacts.length, 1, '无法确定可信会话项目基准目录时必须拒绝相对路径 Artifact（仅保留无路径的普通标题产物）');
+    assert.equal(noRootResp.json.artifacts[0].name, '验收报告.md');
 
     // 4. 整页生成 <script> 语法校验 + 顶栏文件入口与弹窗 DOM 校验
     const html = buildMobileAppHtml();
@@ -11912,7 +11934,7 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
     assert.ok(html.includes('id="btn-files-panel"') && html.includes('id="file-viewer-modal"'), '应渲染顶栏文件入口与文件/验收弹窗');
     assert.ok(html.includes("'/api/file-content?path='") && html.includes("'/api/project-tree'") && html.includes("'/api/session-files?conversationId='"));
   } finally {
-    fs.rmSync(tmpProj, { recursive: true, force: true });
+    fs.rmSync(tmpParent, { recursive: true, force: true });
     fs.rmSync(tmpOutside, { recursive: true, force: true });
   }
 });

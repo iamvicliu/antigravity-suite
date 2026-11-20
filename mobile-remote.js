@@ -10947,7 +10947,33 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved))) return false;
         return realRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
       };
-      const isSafeSessionPath = (rawCandidate) => {
+      const trustedBaseDirs = [];
+      const addTrustedBaseDir = (rawDir) => {
+        const clean = normalizeLocalFileUriToPath(rawDir);
+        if (!clean || !path.isAbsolute(clean)) return;
+        try {
+          const realDir = fs.realpathSync(clean);
+          if (!isSafeResolvedTarget(realDir)) return;
+          if (!fs.statSync(realDir).isDirectory()) return;
+          if (!trustedBaseDirs.includes(realDir)) trustedBaseDirs.push(realDir);
+        } catch {}
+      };
+      if (cid && cid !== '__new__' && cid !== 'new') {
+        if (typeof options.resolveConversationProjectDirs === 'function') {
+          const customDirs = await Promise.resolve().then(() => options.resolveConversationProjectDirs(cid)).catch(() => []);
+          if (Array.isArray(customDirs)) customDirs.forEach(addTrustedBaseDir);
+        }
+        if (!trustedBaseDirs.length) {
+          const allTraj = await Promise.resolve().then(() => callLsRpc('GetAllCascadeTrajectories', {}, 2500)).catch(() => null);
+          const summaries = allTraj?.trajectorySummaries || allTraj?.trajectories || {};
+          const summary = summaries && typeof summaries === 'object' ? summaries[cid] : null;
+          const wsList = Array.isArray(summary?.workspaces) ? summary.workspaces : [];
+          for (const ws of wsList) {
+            addTrustedBaseDir(ws?.workspaceFolderAbsoluteUri || ws?.folderUri || ws?.path || '');
+          }
+        }
+      }
+      const isSafeSessionPath = (rawCandidate, isFilePathField = true) => {
         const candidate = String(rawCandidate || '').trim();
         if (!candidate) return true;
         if (candidate.includes('\0')) return false;
@@ -10962,17 +10988,22 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           return false;
         }
         if (SENSITIVE_MEDIA_DIR_RE.test(posixNorm) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(posixNorm))) return false;
-        for (const root of realRoots) {
-          const joined = path.resolve(root, candidate);
-          if (!(joined === root || joined.startsWith(root + path.sep))) return false;
+        const looksLikePath = isFilePathField || slashNorm.includes('/');
+        if (looksLikePath && !trustedBaseDirs.length) {
+          // 无法确定可信会话项目基准目录时，拒绝解析相对文件路径（fail-closed）
+          return false;
+        }
+        for (const baseDir of trustedBaseDirs) {
+          const joined = path.resolve(baseDir, candidate);
+          if (!(joined === baseDir || joined.startsWith(baseDir + path.sep))) return false;
           const resolved = resolveRealPathWithAncestors(joined);
           if (!isSafeResolvedTarget(resolved)) return false;
         }
         return true;
       };
-      const isSafeSessionEntry = (filePath, displayName) => {
-        if (!isSafeSessionPath(filePath)) return false;
-        if (!isSafeSessionPath(displayName)) return false;
+      const isSafeSessionEntry = (filePath, displayName, isDiffEntry = false) => {
+        if (filePath && !isSafeSessionPath(filePath, true)) return false;
+        if (displayName && !isSafeSessionPath(displayName, isDiffEntry)) return false;
         return true;
       };
       if (cid && cid !== '__new__' && cid !== 'new') {
@@ -10987,7 +11018,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           const rawName = String(d.fileName || d.name || '').trim();
           const name = p ? path.basename(p) : rawName;
           const diff = String(d.unifiedDiff || d.diff || d.patch || '');
-          if (!isSafeSessionEntry(p, rawName || name)) continue;
+          if (!isSafeSessionEntry(p, rawName, true)) continue;
           if (name || p || diff) diffs.push({ name: name || p, path: p, diff });
         }
         const rawArts = Array.isArray(artRes?.artifacts) ? artRes.artifacts : (Array.isArray(artRes?.snapshots) ? artRes.snapshots : []);
@@ -10997,7 +11028,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           const rawName = String(a.title || a.name || a.fileName || '').trim();
           const name = rawName || (p ? path.basename(p) : '');
           const content = String(a.content || a.markdown || '');
-          if (!isSafeSessionEntry(p, rawName || name)) continue;
+          if (!isSafeSessionEntry(p, rawName, false)) continue;
           if (name || p || content) artifacts.push({ name: name || 'Artifact', path: p, content });
         }
       }
