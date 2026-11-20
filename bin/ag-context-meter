@@ -36,6 +36,16 @@ ensure_node_in_path() {
 }
 ensure_node_in_path
 
+resolve_real_node_bin_dir() {
+  local resolved=""
+  resolved="$(node -e 'const fs = require("fs"), path = require("path"); console.log(path.dirname(fs.realpathSync(process.execPath)));' 2>/dev/null || true)"
+  if [ -n "$resolved" ] && [ -x "$resolved/node" ]; then
+    echo "$resolved"
+    return 0
+  fi
+  dirname "$(command -v node 2>/dev/null || echo /usr/bin/node)"
+}
+
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 while [ -L "$SCRIPT_PATH" ]; do
   LINK_TARGET="$(readlink "$SCRIPT_PATH")"
@@ -210,7 +220,7 @@ install_macos_launcher() {
 EOF
 
   local node_bin_dir
-  node_bin_dir="$(dirname "$(command -v node 2>/dev/null || echo /usr/bin/node)")"
+  node_bin_dir="$(resolve_real_node_bin_dir)"
   cat > "$macos_dir/launch" <<EOF
 #!/usr/bin/env bash
 export PATH="${node_bin_dir}:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"
@@ -423,7 +433,7 @@ case "$cmd" in
       echo "未找到 LaunchAgent 配置文件: $PLIST" >&2
       exit 1
     fi
-    node_bin_dir="$(dirname "$(command -v node)")"
+    node_bin_dir="$(resolve_real_node_bin_dir)"
     upgraded_msg="$(PLIST_PATH="$PLIST" SOCKET_PATH="$SOCKET_FILE" NODE_BIN_DIR="$node_bin_dir" node -e '
 const fs = require("fs");
 const p = process.env.PLIST_PATH;

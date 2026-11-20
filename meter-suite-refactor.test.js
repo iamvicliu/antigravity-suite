@@ -9652,6 +9652,7 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
   const agBin = path.join(__dirname, 'bin', 'ag-context-meter');
   const testLabel = 'com.testuser.ag-live-helper';
   const plistPath = path.join(launchAgentsDir, `${testLabel}.plist`);
+  const realNodeBinDir = path.dirname(fs.realpathSync(process.execPath));
   const parsePlistJson = (p) => JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', p], { encoding: 'utf8' }));
 
   try {
@@ -9694,7 +9695,7 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     const parsedDefault = parsePlistJson(plistPath);
     assert.ok(parsedDefault.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'WatchPaths 应监听 SingletonSocket');
     assert.ok(!plistDefault.includes('SingletonLock'), 'WatchPaths 不得再包含悬空软链 SingletonLock');
-    assert.equal(parsedDefault.EnvironmentVariables.PATH.split(':')[0], nvmNodeBin, '最小 PATH 下应确定写入测试 nvm 最高版本 node 目录');
+    assert.equal(parsedDefault.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, '最小 PATH 下应将解析后的真实 Node 可执行目录写入 EnvironmentVariables.PATH');
     const setupInvocations = fs.readFileSync(nvmMarkerLog, 'utf8').trim().split('\n');
     assert.ok(setupInvocations.includes(`NVM_NODE_INVOKED:${highNodeExe}`), 'setup-macos-cdp.sh 实际执行的必须是测试 nvm v26.99.0 的 node');
     assert.ok(!setupInvocations.includes(`NVM_NODE_INVOKED:${lowNodeExe}`), '不得误用较低版本 v22.5.0 的 node');
@@ -9703,7 +9704,7 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     // 2) setup-macos-cdp.sh --no-remote：EnvironmentVariables 同时包含 PATH 与 AG_DISABLE_MOBILE_REMOTE=1
     execFileSync('bash', [setupScript, '--no-remote'], { env: baseEnv, encoding: 'utf8' });
     const parsedNoRemote = parsePlistJson(plistPath);
-    assert.equal(parsedNoRemote.EnvironmentVariables.PATH.split(':')[0], nvmNodeBin, '--no-remote 时仍应保留测试 nvm PATH');
+    assert.equal(parsedNoRemote.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, '--no-remote 时仍应保留真实 Node 可执行目录');
     assert.equal(parsedNoRemote.EnvironmentVariables.AG_DISABLE_MOBILE_REMOTE, '1', '--no-remote 时应写入 AG_DISABLE_MOBILE_REMOTE=1');
     assert.ok(parsedNoRemote.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), '--no-remote 时应监听 SingletonSocket');
     assert.ok(!parsedNoRemote.WatchPaths.some((w) => w.includes('SingletonLock')), '--no-remote 时不得包含 SingletonLock');
@@ -9749,7 +9750,7 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     const parsedA = parsePlistJson(plistPath);
     assert.ok(parsedA.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'auto-on 应将 SingletonLock 升级为 SingletonSocket');
     assert.ok(!parsedA.WatchPaths.some((w) => w.includes('SingletonLock')), 'auto-on 升级后不得残留 SingletonLock');
-    assert.equal(parsedA.EnvironmentVariables.PATH.split(':')[0], nvmNodeBin, 'auto-on 应补充测试 nvm Node 目录到 EnvironmentVariables.PATH');
+    assert.equal(parsedA.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'auto-on 应补充真实 Node 可执行目录到 EnvironmentVariables.PATH');
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
 
     // 4b) auto-on 升级仅含 DevToolsActivePort 且已有 AG_DISABLE_MOBILE_REMOTE 的旧 plist
@@ -9783,7 +9784,7 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     const parsedB = parsePlistJson(plistPath);
     assert.ok(parsedB.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'auto-on 应为旧 plist 补齐 SingletonSocket');
     assert.equal(parsedB.EnvironmentVariables.AG_DISABLE_MOBILE_REMOTE, '1', 'auto-on 升级应保留既有 AG_DISABLE_MOBILE_REMOTE');
-    assert.equal(parsedB.EnvironmentVariables.PATH.split(':')[0], nvmNodeBin, 'auto-on 升级应在既有 EnvironmentVariables 内补充 PATH');
+    assert.equal(parsedB.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'auto-on 升级应在既有 EnvironmentVariables 内补充真实 Node 目录');
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
 
     // 4c) auto-on 升级已有含 XML 实体（&amp;）PATH 的旧 plist：不得二次转义为 &amp;amp;，原路径各目录实际值保持不变
@@ -9820,10 +9821,118 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     const parsedC = parsePlistJson(plistPath);
     assert.deepEqual(
       parsedC.EnvironmentVariables.PATH.split(':'),
-      [nvmNodeBin, '/tmp/a&b/bin', '/usr/bin', '/bin'],
+      [realNodeBinDir, '/tmp/a&b/bin', '/usr/bin', '/bin'],
       '迁移后原 PATH 中含 & 符号的目录及原有顺序必须保持完全不变'
     );
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
+    // 5) asdf/mise 项目级版本配置 shim 回归：shim 仅在含 .tool-versions 的项目目录可用；
+    //    验证 setup-macos-cdp.sh、auto-on 与 install-launcher 均将解析出的真实 Node 可执行目录写入产物，
+    //    并在无 .tool-versions、最小 PATH、无 shell 初始化的空目录中直接执行 node 成功。
+    const shimHome = path.join(tmpRoot, 'shim-home');
+    const asdfShimsDir = path.join(shimHome, '.asdf', 'shims');
+    const projectDir = path.join(tmpRoot, 'project-with-tool-versions');
+    const emptyCwd = path.join(tmpRoot, 'empty-cwd-no-config');
+    const shimPlistPath = path.join(shimHome, 'Library', 'LaunchAgents', `${testLabel}.plist`);
+    const shimMarkerLog = path.join(tmpRoot, 'asdf-shim.log');
+    fs.mkdirSync(asdfShimsDir, { recursive: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.mkdirSync(emptyCwd, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.tool-versions'), 'nodejs 24.0.0\n', 'utf8');
+    fs.writeFileSync(
+      path.join(asdfShimsDir, 'node'),
+      `#!/bin/sh
+if [ ! -f "$PWD/.tool-versions" ] || ! grep -q "nodejs 24.0.0" "$PWD/.tool-versions"; then
+  echo "No version is set for command node" >&2
+  exit 126
+fi
+echo "ASDF_SHIM_OK:$PWD" >> "${shimMarkerLog}"
+exec "${process.execPath}" "$@"
+`,
+      { mode: 0o755 }
+    );
+
+    // 先确认该 shim 在无项目配置的空目录中确实会失败
+    assert.throws(
+      () => execFileSync(path.join(asdfShimsDir, 'node'), ['-v'], { cwd: emptyCwd, env: { HOME: shimHome, PATH: minimalPath }, stdio: 'pipe' }),
+      '测试用 asdf shim 在不含 .tool-versions 的目录中应失败'
+    );
+
+    const shimEnv = {
+      HOME: shimHome,
+      PATH: `${stubBin}:${minimalPath}`,
+      AG_DEFAULT_NODE_PATHS: '',
+      AG_LIVE_LABEL: testLabel,
+      AG_METER_TEST_MODE: '1',
+      ANTIGRAVITY_AGENT: '1'
+    };
+
+    // 5a) setup-macos-cdp.sh 在项目目录内通过 shim 启动，但写入 plist 的应为真实 Node 可执行目录
+    execFileSync('bash', [setupScript], { cwd: projectDir, env: shimEnv, encoding: 'utf8' });
+    const shimLogText = fs.readFileSync(shimMarkerLog, 'utf8');
+    assert.ok(
+      shimLogText.includes(`ASDF_SHIM_OK:${projectDir}`) || shimLogText.includes(`ASDF_SHIM_OK:${fs.realpathSync(projectDir)}`),
+      'setup 阶段确实经由 asdf shim 解析'
+    );
+    const parsedShimSetup = parsePlistJson(shimPlistPath);
+    assert.equal(parsedShimSetup.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'setup 生成的 plist 应写入真实 Node 目录而非 shim 目录');
+    assert.ok(!parsedShimSetup.EnvironmentVariables.PATH.includes(asdfShimsDir), 'setup 生成的 plist PATH 不应依赖 shim 目录');
+    const setupNodeVer = execFileSync('node', ['-v'], {
+      cwd: emptyCwd,
+      env: { HOME: shimHome, PATH: parsedShimSetup.EnvironmentVariables.PATH },
+      encoding: 'utf8'
+    }).trim();
+    assert.match(setupNodeVer, /^v\d+\./, '脱离项目目录与 shell 初始化后，使用 setup plist PATH 必须能直接执行 node');
+
+    // 5b) auto-on 在项目目录内升级旧 plist 后，使用升级后的 plist PATH 脱离项目目录仍可执行 node
+    const shimLegacyPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${testLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${shimHome}/.local/bin/ag-context-meter</string>
+    <string>_auto-trigger</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WatchPaths</key>
+  <array>
+    <string>${shimHome}/Library/Application Support/Antigravity/DevToolsActivePort</string>
+    <string>${shimHome}/Library/Application Support/Antigravity/SingletonLock</string>
+  </array>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(shimPlistPath, shimLegacyPlist, 'utf8');
+    execFileSync('bash', [agBin, 'auto-on'], { cwd: projectDir, env: shimEnv, encoding: 'utf8' });
+    const parsedShimAutoOn = parsePlistJson(shimPlistPath);
+    assert.equal(parsedShimAutoOn.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'auto-on 升级后的 plist 应写入真实 Node 目录');
+    const autoOnNodeVer = execFileSync('node', ['-v'], {
+      cwd: emptyCwd,
+      env: { HOME: shimHome, PATH: parsedShimAutoOn.EnvironmentVariables.PATH },
+      encoding: 'utf8'
+    }).trim();
+    assert.match(autoOnNodeVer, /^v\d+\./, '脱离项目目录后，使用 auto-on plist PATH 必须能直接执行 node');
+
+    // 5c) install-launcher 在项目目录内生成启动器后，启动器导出的 PATH 脱离项目目录与 shell 初始化仍可直接执行真实 node
+    execFileSync('bash', [agBin, 'install-launcher'], { cwd: projectDir, env: shimEnv, encoding: 'utf8' });
+    const launcherScript = path.join(shimHome, 'Applications', 'Antigravity 增强启动器.app', 'Contents', 'MacOS', 'launch');
+    assert.ok(fs.existsSync(launcherScript), 'install-launcher 应生成 launch 脚本');
+    const launcherText = fs.readFileSync(launcherScript, 'utf8');
+    const pathLineMatch = launcherText.match(/^export PATH=".*"$/m);
+    assert.ok(pathLineMatch, 'launch 脚本应包含 export PATH 行');
+    assert.ok(pathLineMatch[0].includes(realNodeBinDir), 'launch 脚本 PATH 应包含真实 Node 可执行目录');
+    assert.ok(!pathLineMatch[0].includes(asdfShimsDir), 'launch 脚本 PATH 不应依赖 shim 目录');
+    const launcherCheck = execFileSync('bash', ['-c', `${pathLineMatch[0]}; command -v node; node -v`], {
+      cwd: emptyCwd,
+      env: { HOME: shimHome, PATH: minimalPath },
+      encoding: 'utf8'
+    }).trim().split('\n');
+    assert.equal(path.dirname(launcherCheck[0]), realNodeBinDir, '启动器在空目录最小 PATH 下应直接命中真实 Node 目录');
+    assert.match(launcherCheck[1], /^v\d+\./, '启动器在空目录最小 PATH 下必须能直接执行 node');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
