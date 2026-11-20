@@ -2884,6 +2884,33 @@ function formatTrajectoryUserInput(ui) {
   return raw;
 }
 
+function isQueuedTrajectoryUserStep(step) {
+  if (!step || typeof step !== 'object') return false;
+  if (String(step.type || '') !== 'CORTEX_STEP_TYPE_USER_INPUT') return false;
+  const st = String(step.status || '').trim().toUpperCase();
+  return st === 'CORTEX_STEP_STATUS_QUEUED'
+    || step.queued === true
+    || step.userInput?.queued === true
+    || step.metadata?.queued === true;
+}
+
+function extractQueuedMessagesFromTrajectorySteps(steps) {
+  if (!Array.isArray(steps) || !steps.length) return [];
+  const queued = [];
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (!isQueuedTrajectoryUserStep(step)) continue;
+    const text = formatTrajectoryUserInput(step.userInput);
+    if (!text) continue;
+    queued.push({
+      stepIndex: i,
+      text,
+      status: 'queued'
+    });
+  }
+  return queued;
+}
+
 function extractMessagesFromTrajectorySteps(steps, options = {}) {
   if (!Array.isArray(steps) || !steps.length) return [];
   const lazyHtml = Boolean(options?.lazyHtml);
@@ -2910,6 +2937,7 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
     if (!step || typeof step !== 'object') continue;
     const type = String(step.type || '');
     if (type === 'CORTEX_STEP_TYPE_USER_INPUT') {
+      if (isQueuedTrajectoryUserStep(step)) continue;
       const userText = formatTrajectoryUserInput(step.userInput);
       if (!userText) continue;
       flushPendingThoughtsOnly(i);
@@ -3088,16 +3116,17 @@ function createConversationHistoryManager() {
         const res = await callLocalLanguageServer('GetCascadeTrajectory', { cascadeId: sid }, 4500, options);
         const steps = res?.trajectory?.steps;
         if (!Array.isArray(steps)) {
-          return { messages: null, fetchedSig: reqSig, gen, startedAt };
+          return { messages: null, queuedMessages: null, fetchedSig: reqSig, gen, startedAt };
         }
         return {
           messages: extractMessagesFromTrajectorySteps(steps, { lazyHtml: true }),
+          queuedMessages: extractQueuedMessagesFromTrajectorySteps(steps),
           fetchedSig: reqSig,
           gen,
           startedAt
         };
       } catch {
-        return { messages: null, fetchedSig: reqSig, gen, startedAt };
+        return { messages: null, queuedMessages: null, fetchedSig: reqSig, gen, startedAt };
       } finally {
         if (inflightMap.get(inflightKey) === entry) {
           inflightMap.delete(inflightKey);
@@ -3113,7 +3142,7 @@ function createConversationHistoryManager() {
     const sid = String(sessionId || '').trim();
     const domTail = Array.isArray(domMessages) ? domMessages : [];
     if (!sid) {
-      return { merged: domTail.map((m, idx) => ({ ...m, msgIndex: idx })), trajMsgs: null };
+      return { merged: domTail.map((m, idx) => ({ ...m, msgIndex: idx })), trajMsgs: null, queuedMessages: [] };
     }
     const existing = cache.get(sid);
     const nowMs = Date.now();
@@ -3140,8 +3169,10 @@ function createConversationHistoryManager() {
       // Never extend `at` on cache hits: TTL must measure elapsed time since actual RPC fetch.
       // For unknown-signature warm entries (knownOldSig === ''), record observedSig without promoting it to trajSig.
       const nextObservedSig = knownOldSig ? '' : (observedOldSig || trajSig || '');
+      const cachedQueued = Array.isArray(existing.queuedMessages) ? existing.queuedMessages : [];
       touchCache(sid, {
         trajMsgs,
+        queuedMessages: cachedQueued,
         trajSig: knownOldSig,
         observedSig: nextObservedSig,
         domTail: domTail.length ? domTail : (existing?.domTail || []),
@@ -3149,7 +3180,7 @@ function createConversationHistoryManager() {
         at: existing.at || 0,
         gen: existing.gen || 0
       });
-      return { merged, trajMsgs };
+      return { merged, trajMsgs, queuedMessages: cachedQueued };
     }
 
     const fetchRes = await fetchTrajectoryMessages(sid, { ...options, trajSig });
@@ -3161,14 +3192,18 @@ function createConversationHistoryManager() {
       (latestExisting?.gen && latestExisting.gen > fetchRes.gen)
     );
     const fetchedMsgs = Array.isArray(fetchRes?.messages) ? fetchRes.messages : null;
+    const fetchedQueued = Array.isArray(fetchRes?.queuedMessages) ? fetchRes.queuedMessages : null;
     const trajFetchedFresh = Boolean(fetchedMsgs && fetchRes.fetchedSig === trajSig);
 
     if (isSuperseded) {
       const activeTrajMsgs = Array.isArray(latestExisting?.trajMsgs)
         ? latestExisting.trajMsgs
         : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null));
+      const activeQueued = Array.isArray(latestExisting?.queuedMessages)
+        ? latestExisting.queuedMessages
+        : (fetchedQueued || (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : []));
       const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
-      return { merged, trajMsgs: activeTrajMsgs };
+      return { merged, trajMsgs: activeTrajMsgs, queuedMessages: activeQueued };
     }
 
     const baseRec = latestExisting || existing;
@@ -3178,6 +3213,9 @@ function createConversationHistoryManager() {
     } else if (baseRec && Array.isArray(baseRec.trajMsgs)) {
       trajMsgs = baseRec.trajMsgs;
     }
+    const nextQueued = trajFetchedFresh
+      ? (fetchedQueued || [])
+      : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : []);
 
     const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
     const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');
@@ -3189,6 +3227,7 @@ function createConversationHistoryManager() {
       : (Array.isArray(baseRec?.trajMsgs) ? baseRec.trajMsgs : null);
     touchCache(sid, {
       trajMsgs: persistedTrajMsgs,
+      queuedMessages: nextQueued,
       trajSig: nextTrajSig,
       observedSig: nextObservedSig,
       domTail: domTail.length ? domTail : (baseRec?.domTail || []),
@@ -3196,7 +3235,7 @@ function createConversationHistoryManager() {
       at: nextAt,
       gen: nextGen
     });
-    return { merged, trajMsgs: persistedTrajMsgs };
+    return { merged, trajMsgs: persistedTrajMsgs, queuedMessages: nextQueued };
   }
 
   async function warmSession(sessionId, options = {}) {
@@ -3218,6 +3257,7 @@ function createConversationHistoryManager() {
     ) {
       touchCache(sid, {
         trajMsgs: fetchRes.messages,
+        queuedMessages: Array.isArray(fetchRes.queuedMessages) ? fetchRes.queuedMessages : [],
         trajSig: fetchRes.fetchedSig || '',
         observedSig: '',
         domTail: [],
@@ -3231,7 +3271,7 @@ function createConversationHistoryManager() {
   async function enrichMessages(snap, options = {}) {
     if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
     const { _activeTrajSig, ...cleanSnap } = snap;
-    const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(cleanSnap.sessionId, cleanSnap.messages, {
+    const { merged: fullMsgs, trajMsgs, queuedMessages } = await resolveFullMessages(cleanSnap.sessionId, cleanSnap.messages, {
       ...options,
       trajSig: _activeTrajSig || '',
       busy: Boolean(cleanSnap.busy)
@@ -3239,13 +3279,22 @@ function createConversationHistoryManager() {
     const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
     const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
+    const effQueued = Array.isArray(queuedMessages) && queuedMessages.length
+      ? queuedMessages
+      : (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []);
     return {
       ...cleanSnap,
       totalMessages: fullMsgs.length,
       messagesStartIndex: startIdx,
       hasEarlierMessages: startIdx > 0,
-      messages: sliced
+      messages: sliced,
+      queuedMessages: effQueued
     };
+  }
+
+  function invalidateSession(sessionId) {
+    const sid = String(sessionId || '').trim();
+    if (sid) cache.delete(sid);
   }
 
   async function getMessagesPage(options = {}) {
@@ -3295,7 +3344,7 @@ function createConversationHistoryManager() {
     };
   }
 
-  return { enrichMessages, getMessagesPage, warmSession };
+  return { enrichMessages, getMessagesPage, warmSession, invalidateSession };
 }
 
 const defaultHistoryManager = createConversationHistoryManager();
@@ -3760,6 +3809,44 @@ function buildMobileAppHtml() {
       background:var(--surface-subtle);color:var(--fg-strong);font-size:13px;font-family:inherit;outline:none;
     }
     .prompt-other-input:focus{border-color:var(--accent)}
+    .queue-dock{
+      flex-shrink:0;padding:6px 10px 4px;background:var(--approval-dock-bg);border-top:1px solid var(--border);
+      display:flex;flex-direction:column;gap:6px;
+    }
+    .queue-dock[hidden]{display:none}
+    .queue-card{
+      padding:8px 10px;border-radius:12px;background:var(--card);border:1px solid var(--border-strong);
+      display:flex;flex-direction:column;gap:6px;max-height:26vh;overflow-y:auto;
+    }
+    .queue-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .queue-title{
+      display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--fg-strong);
+    }
+    .queue-count{
+      font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:999px;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
+    }
+    .queue-send-all{
+      appearance:none;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      border-radius:8px;padding:3px 9px;font-size:11.5px;font-weight:600;cursor:pointer;flex-shrink:0;
+    }
+    .queue-send-all:disabled{opacity:.5;cursor:not-allowed}
+    .queue-list{display:flex;flex-direction:column;gap:4px}
+    .queue-item{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;
+      padding:6px 8px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border);
+    }
+    .queue-item-text{
+      flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--fg);line-height:1.35;
+      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;
+    }
+    .queue-del-btn{
+      appearance:none;border:1px solid var(--border);background:transparent;color:var(--muted);
+      border-radius:7px;width:24px;height:24px;flex-shrink:0;cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1;
+    }
+    .queue-del-btn:active{background:var(--surface-hover);color:var(--red)}
+    .queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
     .composer-dock{
       flex-shrink:0;background:transparent;padding:2px 10px 4px;
       display:flex;flex-direction:column;gap:6px;
@@ -4182,6 +4269,7 @@ function buildMobileAppHtml() {
       .md-body code{font-size:13px}
       .md-body pre code{font-size:12.5px}
       .approval-dock{padding:10px max(24px,calc(50% - 410px))}
+      .queue-dock{padding:6px max(24px,calc(50% - 410px)) 4px}
       .composer-dock{
         padding:6px max(24px,calc(50% - 410px)) 18px;gap:8px;
       }
@@ -4315,6 +4403,7 @@ function buildMobileAppHtml() {
     </main>
 
     <section id="approval-dock" class="approval-dock" hidden></section>
+    <section id="queue-dock" class="queue-dock" hidden></section>
 
     <footer class="composer-dock">
       <div id="attach-hint" class="attach-hint" hidden></div>
@@ -4707,6 +4796,7 @@ function buildMobileAppHtml() {
     let latestSnap = null;
     const promptDraftState = new Map();
     let promptSubmittingSig = '';
+    let queueActionBusy = false;
     let wakeLock = null;
     let wakeWanted = false;
     let pollTimer = null;
@@ -6532,6 +6622,79 @@ function buildMobileAppHtml() {
             }
           };
         });
+      }
+
+      // Queued Messages (排队中消息展示、立即发送与撤回删除)
+      const qDock = $('queue-dock');
+      if (qDock) {
+        const queuedList = Array.isArray(snap.queuedMessages) ? snap.queuedMessages : [];
+        if (!queuedList.length) {
+          qDock.hidden = true;
+          qDock.innerHTML = '';
+          qDock.dataset.queueSig = '';
+        } else {
+          qDock.hidden = false;
+          const qSig = String(snapSid || '') + '::' + queuedList.map((q) => String(q.stepIndex) + ':' + String(q.text || '')).join('\u001f');
+          if (qDock.dataset.queueSig !== qSig) {
+            qDock.dataset.queueSig = qSig;
+            qDock.innerHTML = '<div class="queue-card">'
+              + '<div class="queue-head">'
+              + '<span class="queue-title"><span>排队中</span><span class="queue-count">' + queuedList.length + '</span></span>'
+              + '<button class="queue-send-all" type="button"' + (queueActionBusy ? ' disabled' : '') + '>⚡ 立即发送</button>'
+              + '</div>'
+              + '<div class="queue-list">' + queuedList.map((q) =>
+                '<div class="queue-item" data-step-idx="' + esc(String(q.stepIndex)) + '">'
+                + '<span class="queue-item-text">' + esc(q.text || '') + '</span>'
+                + '<button class="queue-del-btn" type="button" title="撤回此条排队消息" aria-label="撤回此条排队消息" data-step-idx="' + esc(String(q.stepIndex)) + '"' + (queueActionBusy ? ' disabled' : '') + '>×</button>'
+                + '</div>'
+              ).join('') + '</div></div>';
+
+            const setQueueBtnsDisabled = (disabled) => {
+              qDock.querySelectorAll('.queue-send-all, .queue-del-btn').forEach((b) => { b.disabled = disabled; });
+            };
+            const sendAllBtn = qDock.querySelector('.queue-send-all');
+            if (sendAllBtn) {
+              sendAllBtn.onclick = async () => {
+                if (queueActionBusy) return;
+                queueActionBusy = true;
+                setQueueBtnsDisabled(true);
+                try {
+                  const res = await apiAction({ action: 'send-queued-messages', conversationId: String(snap.activeConversationId || snap.sessionId || '') });
+                  if (res?.ok) showToast('已立即发送排队消息');
+                  else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
+                } catch (e) {
+                  showToast(e?.message || '发送排队消息失败');
+                } finally {
+                  queueActionBusy = false;
+                  setQueueBtnsDisabled(false);
+                }
+              };
+            }
+            qDock.querySelectorAll('.queue-del-btn').forEach((delBtn) => {
+              delBtn.onclick = async () => {
+                if (queueActionBusy) return;
+                const stepIdx = Number(delBtn.dataset.stepIdx);
+                if (!Number.isInteger(stepIdx) || stepIdx < 0) return;
+                queueActionBusy = true;
+                setQueueBtnsDisabled(true);
+                try {
+                  const res = await apiAction({
+                    action: 'delete-queued-message',
+                    conversationId: String(snap.activeConversationId || snap.sessionId || ''),
+                    stepIndex: stepIdx
+                  });
+                  if (res?.ok) showToast('已撤回排队消息');
+                  else showToast(res?.error || res?.actionResult?.error || '撤回排队消息失败');
+                } catch (e) {
+                  showToast(e?.message || '撤回排队消息失败');
+                } finally {
+                  queueActionBusy = false;
+                  setQueueBtnsDisabled(false);
+                }
+              };
+            });
+          }
+        }
       }
 
       // 轻盈下一步建议 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
@@ -9649,6 +9812,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const getTunnelOrigin = typeof options.getTunnelOrigin === 'function' ? options.getTunnelOrigin : () => '';
   const fetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
   const performAction = typeof options.performAction === 'function' ? options.performAction : performActionInTarget;
+  const callLsRpc = typeof options.callLanguageServer === 'function' ? options.callLanguageServer : callLocalLanguageServer;
   const getUsageData = typeof options.getUsageData === 'function'
     ? options.getUsageData
     : async (opts = {}) => {
@@ -10191,6 +10355,45 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
         const effectiveTargetId = String(payload?.targetId || session?.targetId || '').trim();
         const actionName = String(payload?.action || '').trim();
+
+        if (actionName === 'send-queued-messages' || actionName === 'delete-queued-message') {
+          const cascadeId = String(payload?.conversationId || session?.conversationId || '').trim();
+          if (!cascadeId || cascadeId === '__new__' || cascadeId === 'new') {
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效会话 ID' }));
+            return;
+          }
+          let rpcRes = null;
+          if (actionName === 'delete-queued-message') {
+            const stepIndex = Number(payload?.stepIndex);
+            if (!Number.isInteger(stepIndex) || stepIndex < 0) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队步骤索引 stepIndex' }));
+              return;
+            }
+            rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
+          } else {
+            rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
+          }
+          if (rpcRes === null || rpcRes === false) {
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '本机 LanguageServer 队列操作调用失败或超时' }));
+            return;
+          }
+          defaultHistoryManager.invalidateSession?.(cascadeId);
+          const snap = await fetchSnapshot(effectiveTargetId, {
+            conversationId: cascadeId,
+            clientId,
+            convLimit: 100,
+            msgLimit: 30,
+            bypassCatalogCache: true
+          });
+          const usageSummary = (snap && snap.ok !== false && !snap.usageSummary) ? await getCachedUsageSummary() : null;
+          const enriched = enrichSnapshotPayload(snap, config, activeTunnelUrl, clientId, usageSummary);
+          sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+            ok: true,
+            actionResult: { ok: true, action: actionName, cascadeId },
+            snapshot: enriched
+          }));
+          return;
+        }
 
         if (actionName === 'switch-conversation' && (clientId || payload?.isolated === true)) {
           const nextId = String(payload?.id || '').trim();
@@ -10799,6 +11002,7 @@ module.exports = {
   normalizeTrajectoryStatus,
   renderSafeMarkdownToHtml,
   extractMessagesFromTrajectorySteps,
+  extractQueuedMessagesFromTrajectorySteps,
   createSessionCatalogStore,
   createConversationHistoryManager,
   enrichSnapshotWithCatalog,

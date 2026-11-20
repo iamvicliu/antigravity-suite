@@ -11301,3 +11301,106 @@ test('远程端支持系统确认选择框与交互式提问卡片展示与提�
 
   enhancer.dispose?.();
 });
+
+test('远程端网页支持排队消息队列显示、立即发送与撤回删除 (#01)', async () => {
+  const {
+    extractMessagesFromTrajectorySteps,
+    extractQueuedMessagesFromTrajectorySteps,
+    createRemoteHttpHandler,
+    buildMobileAppHtml
+  } = require('./mobile-remote');
+
+  // 1. 轨迹解析：排队消息从步骤中准确提取且不重复混入普通消息流
+  const steps = [
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '第一条已发送指令' }] } },
+    { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '正在处理第一条' } },
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '排队任务 A：跑单测' }] } },
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '排队任务 B：更新文档' }] } }
+  ];
+  const normalMsgs = extractMessagesFromTrajectorySteps(steps);
+  const queuedMsgs = extractQueuedMessagesFromTrajectorySteps(steps);
+  assert.equal(normalMsgs.length, 2, '已发送消息流不应包含 CORTEX_STEP_STATUS_QUEUED 排队消息');
+  assert.equal(queuedMsgs.length, 2, '应准确提取 2 条排队消息');
+  assert.deepEqual(queuedMsgs, [
+    { stepIndex: 2, text: '排队任务 A：跑单测', status: 'queued' },
+    { stepIndex: 3, text: '排队任务 B：更新文档', status: 'queued' }
+  ]);
+
+  // 2. HTTP /api/action 路由验证：send-queued-messages / delete-queued-message 正确透传 RPC、校验参数并处理 RPC 失败
+  const rpcCalls = [];
+  let rpcFailNext = false;
+  const mockCfg = {
+    port: 18765,
+    token: 'tok-queue-test-1234567890abcdef',
+    tunnelEnabled: false,
+    enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+  };
+  const handler = createRemoteHttpHandler(mockCfg, {
+    callLanguageServer: async (method, body) => {
+      rpcCalls.push({ method, body });
+      if (rpcFailNext) {
+        rpcFailNext = false;
+        return null;
+      }
+      return {};
+    },
+    fetchSnapshot: async (_tid, opts) => ({
+      ok: true,
+      sessionId: opts?.conversationId || 'conv-q1',
+      activeConversationId: opts?.conversationId || 'conv-q1',
+      title: '队列测试会话',
+      queuedMessages: []
+    })
+  });
+
+  const postAction = async (bodyObj) => {
+    const reqBody = JSON.stringify(bodyObj);
+    const { Readable } = require('stream');
+    const req = Readable.from([Buffer.from(reqBody, 'utf8')]);
+    req.method = 'POST';
+    req.url = '/api/action';
+    req.headers = {
+      host: '127.0.0.1:18765',
+      'content-type': 'application/json',
+      'x-ag-remote-token': mockCfg.token
+    };
+    req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let status = 200;
+    let out = '';
+    const res = {
+      setHeader() {},
+      writeHead(code) { status = code; },
+      end(chunk) { out += chunk ? String(chunk) : ''; }
+    };
+    await handler(req, res);
+    return { status, json: JSON.parse(out) };
+  };
+
+  // 2a. 缺少有效会话 ID 或非法 stepIndex 必须拒绝
+  const badCid = await postAction({ action: 'send-queued-messages', conversationId: '__new__' });
+  assert.equal(badCid.json.ok, false, '新建草稿态不得调用队列发送 RPC');
+  const badIdx = await postAction({ action: 'delete-queued-message', conversationId: 'conv-q1', stepIndex: -1 });
+  assert.equal(badIdx.json.ok, false, '负数 stepIndex 必须被拒绝');
+  assert.equal(rpcCalls.length, 0);
+
+  // 2b. 正常删除单条排队消息
+  const delRes = await postAction({ action: 'delete-queued-message', conversationId: 'conv-q1', stepIndex: 2 });
+  assert.equal(delRes.json.ok, true);
+  assert.deepEqual(rpcCalls[0], { method: 'DeleteQueuedUserInputStep', body: { cascadeId: 'conv-q1', stepIndex: 2 } });
+
+  // 2c. 正常立即发送全部排队消息
+  const sendRes = await postAction({ action: 'send-queued-messages', conversationId: 'conv-q1' });
+  assert.equal(sendRes.json.ok, true);
+  assert.deepEqual(rpcCalls[1], { method: 'SendAllQueuedMessages', body: { cascadeId: 'conv-q1' } });
+
+  // 2d. RPC 返回 null（不可达/超时）时必须返回 ok:false 而非静默成功
+  rpcFailNext = true;
+  const failRes = await postAction({ action: 'send-queued-messages', conversationId: 'conv-q1' });
+  assert.equal(failRes.json.ok, false, 'LanguageServer 返回 null 时必须向前端返回失败');
+
+  // 3. 远程网页端包含 #queue-dock、排队条渲染、立即发送与撤回按钮及防重锁
+  const html = buildMobileAppHtml();
+  assert.ok(html.includes('id="queue-dock"'), '应渲染 #queue-dock 排队消息容器');
+  assert.ok(html.includes("action: 'send-queued-messages'") && html.includes("action: 'delete-queued-message'"), '前端应接入立即发送与单条撤回动作');
+  assert.ok(html.includes('if (qDock.dataset.queueSig !== qSig)') && html.includes('if (queueActionBusy) return;'), '前端应按队列签名防闪烁重建并带操作并发锁');
+});
