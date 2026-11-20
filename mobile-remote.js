@@ -2845,6 +2845,154 @@ function renderSafeMarkdownToHtml(rawMd) {
   return out.join('');
 }
 
+const LOCAL_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
+const SENSITIVE_MEDIA_DIR_RE = /(?:^|[\\/])(?:\.ssh|\.gnupg|\.aws|\.kube|keychains)(?:[\\/]|$)/i;
+const SENSITIVE_MEDIA_FILE_RE = /^(?:\.env(?:\..+)?|id_rsa(?:\..+)?|id_ed25519(?:\..+)?|id_ecdsa(?:\..+)?|\.npmrc|\.netrc|\.pypirc|.+\.(?:pem|key|p12|pfx|jks))$/i;
+const SAFE_MEDIA_MIME_BY_EXT = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+  '.log': 'text/plain; charset=utf-8',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav'
+};
+const FORCE_DOWNLOAD_EXTS = new Set(['.html', '.htm', '.svg', '.xhtml', '.xml', '.js', '.mjs', '.cjs']);
+
+function normalizeLocalFileUriToPath(rawPath) {
+  let s = String(rawPath || '').trim();
+  if (!s) return '';
+  if (/^file:\/\//i.test(s)) {
+    try {
+      const { fileURLToPath } = require('url');
+      s = fileURLToPath(s);
+    } catch {
+      try {
+        s = decodeURIComponent(s.replace(/^file:\/\//i, ''));
+      } catch {
+        s = s.replace(/^file:\/\//i, '');
+      }
+    }
+  }
+  return s;
+}
+
+function resolveSafeLocalMediaPath(rawPath, options = {}) {
+  const maxBytes = Number.isFinite(options.maxBytes) ? options.maxBytes : LOCAL_MEDIA_MAX_BYTES;
+  const candidate = normalizeLocalFileUriToPath(rawPath);
+  if (!candidate || !path.isAbsolute(candidate)) {
+    return { ok: false, status: 400, error: '无效的本地文件路径' };
+  }
+  let realPath = '';
+  try {
+    realPath = fs.realpathSync(candidate);
+  } catch {
+    return { ok: false, status: 404, error: '文件不存在或无法读取' };
+  }
+
+  const rawRoots = Array.isArray(options.allowedRoots) && options.allowedRoots.length
+    ? options.allowedRoots
+    : [os.homedir(), os.tmpdir()];
+  const realRoots = [];
+  for (const r of rawRoots) {
+    if (!r) continue;
+    try { realRoots.push(fs.realpathSync(String(r))); } catch {}
+  }
+  const inAllowedRoot = realRoots.some((root) => realPath === root || realPath.startsWith(root + path.sep));
+  if (!inAllowedRoot) {
+    return { ok: false, status: 403, error: '禁止访问受限目录之外的文件' };
+  }
+  if (SENSITIVE_MEDIA_DIR_RE.test(realPath)) {
+    return { ok: false, status: 403, error: '禁止访问敏感密钥或凭证目录' };
+  }
+  const baseName = path.basename(realPath);
+  if (SENSITIVE_MEDIA_FILE_RE.test(baseName)) {
+    return { ok: false, status: 403, error: '禁止访问敏感环境或私钥文件' };
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(realPath);
+  } catch {
+    return { ok: false, status: 404, error: '文件不存在' };
+  }
+  if (!stat.isFile()) {
+    return { ok: false, status: 400, error: '目标不是常规文件' };
+  }
+  if (stat.size > maxBytes) {
+    return { ok: false, status: 413, error: `文件体积超过限制 (${Math.round(maxBytes / (1024 * 1024))}MB)` };
+  }
+
+  const ext = path.extname(baseName).toLowerCase();
+  const forceAttachment = FORCE_DOWNLOAD_EXTS.has(ext) || !SAFE_MEDIA_MIME_BY_EXT[ext];
+  const contentType = SAFE_MEDIA_MIME_BY_EXT[ext] || 'application/octet-stream';
+  return {
+    ok: true,
+    realPath,
+    baseName,
+    size: stat.size,
+    ext,
+    contentType,
+    forceAttachment
+  };
+}
+
+function extractTrajectoryUserAttachments(ui) {
+  if (!ui || typeof ui !== 'object') return [];
+  const attachments = [];
+  const seen = new Set();
+  const pushAtt = (att) => {
+    const key = `${att.kind}|${att.path || att.uri || att.name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    attachments.push(att);
+  };
+  if (Array.isArray(ui.media)) {
+    for (const m of ui.media) {
+      if (!m || typeof m !== 'object') continue;
+      const rawUri = String(m.uri || m.fileUri || m.path || m.absoluteUri || '').trim();
+      const localPath = normalizeLocalFileUriToPath(rawUri);
+      const mimeType = String(m.mimeType || m.mime_type || 'image/png').trim();
+      const isImg = /^image\//i.test(mimeType) || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(localPath);
+      const name = String(m.name || (localPath ? path.basename(localPath) : (isImg ? 'image.png' : 'attachment'))).trim();
+      pushAtt({
+        kind: isImg ? 'image' : 'file',
+        name,
+        mimeType,
+        path: localPath,
+        uri: rawUri
+      });
+    }
+  }
+  if (Array.isArray(ui.items)) {
+    for (const it of ui.items) {
+      const fileUri = String(it?.item?.file?.absoluteUri || '').trim();
+      if (!fileUri) continue;
+      const localPath = normalizeLocalFileUriToPath(fileUri);
+      const name = localPath ? path.basename(localPath) : decodeURIComponent(fileUri.split('/').pop() || fileUri);
+      const isImg = /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(name);
+      pushAtt({
+        kind: isImg ? 'image' : 'file',
+        name,
+        mimeType: isImg ? (SAFE_MEDIA_MIME_BY_EXT[path.extname(name).toLowerCase()] || 'image/png') : 'application/octet-stream',
+        path: localPath,
+        uri: fileUri
+      });
+    }
+  }
+  return attachments;
+}
+
 function formatTrajectoryUserInput(ui) {
   if (!ui || typeof ui !== 'object') return '';
   const pieces = [];
@@ -2939,12 +3087,14 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
     if (type === 'CORTEX_STEP_TYPE_USER_INPUT') {
       if (isQueuedTrajectoryUserStep(step)) continue;
       const userText = formatTrajectoryUserInput(step.userInput);
-      if (!userText) continue;
+      const attachments = extractTrajectoryUserAttachments(step.userInput);
+      if (!userText && !attachments.length) continue;
       flushPendingThoughtsOnly(i);
       messages.push({
         id: `t-u-${i}`,
         role: 'user',
-        text: userText
+        text: userText,
+        ...(attachments.length ? { attachments } : {})
       });
       continue;
     }
@@ -3874,10 +4024,47 @@ function buildMobileAppHtml() {
     }
     .chip.suggest{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-fg);font-weight:500}
     .attach-hint{
-      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 12px;border-radius:12px;
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border-radius:12px;
       background:var(--accent-bg);border:1px solid var(--accent-border);font-size:12.5px;color:var(--accent-strong-fg);
     }
     .attach-hint[hidden]{display:none}
+    .attach-strip{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+    .attach-strip::-webkit-scrollbar{display:none}
+    .attach-thumb-wrap{
+      position:relative;flex-shrink:0;display:inline-flex;align-items:center;gap:6px;
+      padding:3px 7px 3px 3px;border-radius:9px;background:var(--card);border:1px solid var(--border);
+    }
+    .attach-thumb{
+      width:34px;height:34px;border-radius:6px;object-fit:cover;cursor:zoom-in;display:block;flex-shrink:0;
+    }
+    .attach-file-chip{
+      flex-shrink:0;display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:8px;
+      background:var(--card);border:1px solid var(--border);color:var(--fg);font-size:11.5px;max-width:180px;
+    }
+    .attach-file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .attach-file-size{font-size:10.5px;color:var(--muted);flex-shrink:0}
+    .msg-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+    .msg-att-img{
+      max-width:180px;max-height:140px;border-radius:10px;object-fit:cover;cursor:zoom-in;
+      border:1px solid var(--border);display:block;background:var(--surface-subtle);
+    }
+    .msg-att-file{
+      appearance:none;display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;
+      border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      font-size:12px;max-width:100%;cursor:pointer;text-align:left;
+    }
+    .msg-att-file span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .media-lightbox{
+      position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.84);
+      display:flex;align-items:center;justify-content:center;padding:20px;
+      backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+    }
+    .media-lightbox[hidden]{display:none}
+    .media-lightbox img{max-width:94vw;max-height:86vh;border-radius:12px;object-fit:contain;box-shadow:0 16px 48px rgba(0,0,0,.5)}
+    .media-lightbox-close{
+      position:fixed;top:max(14px,env(safe-area-inset-top));right:14px;width:36px;height:36px;border-radius:999px;
+      border:1px solid rgba(255,255,255,.25);background:rgba(0,0,0,.55);color:#fff;font-size:18px;cursor:pointer;
+    }
     .composer-card{
       background:var(--composer-bg);border:1px solid var(--composer-border);border-radius:22px;
       padding:10px 10px 8px 12px;display:flex;flex-direction:column;gap:6px;
@@ -4425,7 +4612,7 @@ function buildMobileAppHtml() {
       <div id="chips" class="chips"></div>
       <div class="composer-card">
         <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息…"></textarea>
-        <input id="img-input" type="file" accept="image/*" multiple hidden>
+        <input id="img-input" type="file" multiple hidden>
         <div class="composer-toolbar">
           <div class="toolbar-left">
             <button id="btn-img" class="ghost-btn icon-only" type="button" title="拍照或上传图片" aria-label="上传图片">
@@ -4546,6 +4733,10 @@ function buildMobileAppHtml() {
   </div>
 
   <div id="toast" class="toast" hidden></div>
+  <div id="media-lightbox" class="media-lightbox" hidden>
+    <button id="media-lightbox-close" class="media-lightbox-close" type="button" aria-label="关闭预览">✕</button>
+    <img id="media-lightbox-img" alt="附件预览" />
+  </div>
 
   <script>
   (function(){
@@ -7736,7 +7927,18 @@ function buildMobileAppHtml() {
       }
       html += msgs.map((m) => {
         if (m.role === 'user') {
-          return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + esc(m.text) + '</div>';
+          const atts = Array.isArray(m.attachments) ? m.attachments : [];
+          let attHtml = '';
+          if (atts.length) {
+            attHtml = '<div class="msg-atts">' + atts.map((att) => {
+              if (att.kind === 'image' && att.path) {
+                const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(att.path) + (pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
+                return '<img class="msg-att-img" src="' + esc(mediaSrc) + '" alt="' + esc(att.name || '图片') + '" loading="lazy" data-preview-src="' + esc(mediaSrc) + '" />';
+              }
+              return '<button class="msg-att-file" type="button" data-file-path="' + esc(att.path || '') + '" title="' + esc(att.path || att.name || '') + '"><span>📄 ' + esc(att.name || '附件') + '</span></button>';
+            }).join('') + '</div>';
+          }
+          return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + (m.text ? ('<div>' + esc(m.text) + '</div>') : '') + attHtml + '</div>';
         }
         const risk = m.highRisk ? '<span class="risk-tag">' + esc(m.riskText || '🛡️ 检测到高危命令，请人工核对') + '</span>' : '';
         const isThoughtOpen = Boolean(m.thoughtText && openThoughtIdxSet.has(m.msgIndex));
@@ -7963,30 +8165,125 @@ function buildMobileAppHtml() {
       });
     }
 
+    let uploadedAttachments = [];
+    function formatFileSizeShort(bytes) {
+      const n = Number(bytes) || 0;
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+    function openMediaLightbox(src, alt) {
+      const lb = $('media-lightbox');
+      const img = $('media-lightbox-img');
+      if (!lb || !img || !src) return;
+      img.src = src;
+      img.alt = alt || '图片预览';
+      lb.hidden = false;
+    }
+    function closeMediaLightbox() {
+      const lb = $('media-lightbox');
+      if (lb) lb.hidden = true;
+    }
+    $('media-lightbox-close')?.addEventListener('click', closeMediaLightbox);
+    $('media-lightbox')?.addEventListener('click', (e) => {
+      if (e.target === $('media-lightbox')) closeMediaLightbox();
+    });
+    msgEl.addEventListener('click', (e) => {
+      const img = e.target?.closest?.('.msg-att-img');
+      if (img) {
+        openMediaLightbox(img.dataset.previewSrc || img.src, img.alt);
+      }
+    });
+
+    function readAttachmentFile(file) {
+      const isImg = /^image\//i.test(String(file?.type || '')) && !/svg/i.test(String(file?.type || ''));
+      if (isImg) {
+        return compressAndReadImage(file).then((res) => ({
+          ...res,
+          size: file.size || 0,
+          isImage: true,
+          previewUrl: res.base64
+        }));
+      }
+      if ((file?.size || 0) > 15 * 1024 * 1024) {
+        return Promise.reject(new Error('单个文件不能超过 15MB'));
+      }
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('读取文件失败'));
+        reader.onload = () => {
+          resolve({
+            name: file.name || ('file-' + Date.now()),
+            mimeType: file.type || 'application/octet-stream',
+            base64: String(reader.result || ''),
+            size: file.size || 0,
+            isImage: false,
+            previewUrl: ''
+          });
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function renderAttachHintStrip() {
+      const hint = $('attach-hint');
+      if (!hint) return;
+      if (!uploadedAttachments.length) {
+        hint.hidden = true;
+        hint.innerHTML = '';
+        return;
+      }
+      const stripHtml = uploadedAttachments.map((att, idx) => {
+        if (att.isImage && att.previewUrl) {
+          return '<span class="attach-thumb-wrap"><img class="attach-thumb" src="' + esc(att.previewUrl) + '" alt="' + esc(att.name) + '" data-att-idx="' + idx + '" /><span class="attach-file-name" style="max-width:96px">' + esc(att.name) + '</span></span>';
+        }
+        return '<span class="attach-file-chip"><span class="attach-file-name">📄 ' + esc(att.name) + '</span><span class="attach-file-size">' + esc(formatFileSizeShort(att.size)) + '</span></span>';
+      }).join('');
+      hint.innerHTML = '<div class="attach-strip">' + stripHtml + '</div><button type="button" class="attach-clear-btn" style="background:none;border:none;color:var(--accent-strong-fg);font-weight:700;cursor:pointer;flex-shrink:0">✕</button>';
+      hint.querySelectorAll('.attach-thumb').forEach((imgEl) => {
+        imgEl.onclick = () => {
+          const item = uploadedAttachments[Number(imgEl.dataset.attIdx)];
+          if (item?.previewUrl) openMediaLightbox(item.previewUrl, item.name);
+        };
+      });
+      hint.querySelector('.attach-clear-btn').onclick = () => {
+        uploadedNames = [];
+        uploadedAttachments = [];
+        renderAttachHintStrip();
+        syncSendButtonUI();
+      };
+      hint.hidden = false;
+    }
+
     async function uploadImageFiles(rawFiles) {
       const files = Array.from(rawFiles || []).filter(Boolean);
       if (!files.length) return;
-      showToast('正在上传 ' + files.length + ' 张图片…');
+      showToast('正在上传 ' + files.length + ' 个附件…');
+      let okCount = 0;
       for (const f of files) {
         try {
-          const payload = await compressAndReadImage(f);
-          const r = await apiAction({ action: 'upload-image', ...payload });
+          const payload = await readAttachmentFile(f);
+          const r = await apiAction({ action: 'upload-image', name: payload.name, mimeType: payload.mimeType, base64: payload.base64 });
           if (r?.ok) {
             uploadedNames.push(payload.name);
+            uploadedAttachments.push({
+              name: payload.name,
+              size: payload.size,
+              isImage: payload.isImage,
+              previewUrl: payload.previewUrl
+            });
+            okCount += 1;
           } else {
-            showToast(r?.error || r?.actionResult?.error || '传图失败');
+            showToast(r?.error || r?.actionResult?.error || '上传附件失败');
           }
         } catch (err) {
-          showToast(err?.message || '传图失败');
+          showToast(err?.message || '上传附件失败');
         }
       }
-      if (uploadedNames.length) {
-        const hint = $('attach-hint');
-        hint.innerHTML = '<span>🖼️ 已传至桌面端: ' + esc(uploadedNames.slice(-3).join('、')) + (uploadedNames.length > 3 ? ' 等' + uploadedNames.length + '张' : '') + '</span><button type="button" style="background:none;border:none;color:var(--accent-strong-fg);font-weight:700;cursor:pointer">✕</button>';
-        hint.querySelector('button').onclick = () => { uploadedNames = []; hint.hidden = true; syncSendButtonUI(); };
-        hint.hidden = false;
+      if (uploadedAttachments.length) {
+        renderAttachHintStrip();
         syncSendButtonUI();
-        showToast('✅ 图片已附带到输入框');
+        if (okCount > 0) showToast('✅ 附件已附带到输入框');
       }
     }
 
@@ -8873,7 +9170,7 @@ function buildMobileAppHtml() {
         }
         return;
       }
-      const text = rawText || (uploadedNames.length ? '请查看图片' : '');
+      const text = rawText || (uploadedNames.length ? (uploadedAttachments.some((a) => !a.isImage) ? '请查看附件' : '请查看图片') : '');
       if (!text) return;
       sending = true;
       syncSendButtonUI();
@@ -8884,7 +9181,8 @@ function buildMobileAppHtml() {
           ta.value = '';
           saveDraftForConv(selectedConversationId, '');
           uploadedNames = [];
-          $('attach-hint').hidden = true;
+          uploadedAttachments = [];
+          renderAttachHintStrip();
           ta.style.height = 'auto';
           const maxH = isDesktopLayout() ? 180 : 112;
           ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
@@ -10119,6 +10417,36 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/media') {
+      const rawMediaPath = urlObj.searchParams.get('path') || '';
+      const checked = resolveSafeLocalMediaPath(rawMediaPath, options.mediaOptions || {});
+      if (!checked.ok) {
+        res.writeHead(checked.status || 403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: checked.error }));
+        return;
+      }
+      try {
+        const buf = fs.readFileSync(checked.realPath);
+        const asciiName = checked.baseName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\\r\n]/g, '_') || 'file';
+        const utf8Name = encodeURIComponent(checked.baseName);
+        const disp = checked.forceAttachment
+          ? `attachment; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`
+          : `inline; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`;
+        res.writeHead(200, {
+          'Content-Type': checked.contentType,
+          'Content-Length': String(buf.length),
+          'Content-Disposition': disp,
+          'Cache-Control': 'private, max-age=300',
+          'X-Content-Type-Options': 'nosniff'
+        });
+        res.end(buf);
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取本地文件失败' }));
+      }
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/usage') {
       try {
         const force = urlObj.searchParams.get('force') === '1';
@@ -11022,6 +11350,8 @@ module.exports = {
   renderSafeMarkdownToHtml,
   extractMessagesFromTrajectorySteps,
   extractQueuedMessagesFromTrajectorySteps,
+  extractTrajectoryUserAttachments,
+  resolveSafeLocalMediaPath,
   createSessionCatalogStore,
   createConversationHistoryManager,
   enrichSnapshotWithCatalog,
