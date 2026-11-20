@@ -4795,16 +4795,29 @@ function buildMobileAppHtml() {
       return list;
     }
 
+    let navigatingAwayTimer = null;
     function navigateEntryUrl(targetUrl, useReplace) {
       if (navigatingAway) return;
       navigatingAway = true;
       clearTimeout(pollTimer);
+      clearTimeout(navigatingAwayTimer);
+      navigatingAwayTimer = setTimeout(() => {
+        navigatingAway = false;
+        navigatingAwayTimer = null;
+      }, 6000);
       if (useReplace && typeof location.replace === 'function') {
         location.replace(targetUrl);
       } else {
         location.href = targetUrl;
       }
     }
+    try {
+      window.addEventListener('pageshow', () => {
+        navigatingAway = false;
+        clearTimeout(navigatingAwayTimer);
+        navigatingAwayTimer = null;
+      });
+    } catch {}
 
     let speedTestBusy = null;
     async function runSpeedTest(opts) {
@@ -4991,13 +5004,18 @@ function buildMobileAppHtml() {
       const order = { tunnel: 0, lan: 1, tailscale: 2, bonjour: 3, loopback: 9 };
       const byKind = new Map();
       const sorted = [...(pairState.endpoints || [])].sort((a, b) => (Number(a?.priority) || 999) - (Number(b?.priority) || 999));
+      const curOriginClean = String(location.origin || '').replace(/\\/+$/, '');
+      const curOriginKind = detectKindFromOrigin(curOriginClean);
       for (const ep of sorted) {
         if (!ep || !ep.url) continue;
         const k = ep.kind || detectKindFromOrigin(ep.url);
-        if (k === 'loopback' && sorted.length > 1) continue;
+        if (k === 'loopback' && sorted.length > 1 && curOriginKind !== 'loopback') continue;
         if (!byKind.has(k)) {
           byKind.set(k, { url: String(ep.url).replace(/\\/+$/, ''), kind: k });
         }
+      }
+      if (curOriginKind === 'loopback' && curOriginClean && !byKind.has('loopback')) {
+        byKind.set('loopback', { url: curOriginClean, kind: 'loopback' });
       }
       if (byKind.size === 0) {
         const curKind = detectKindFromOrigin(location.origin);
@@ -5065,7 +5083,11 @@ function buildMobileAppHtml() {
         apiBase = '';
         const modeName = formatKindLabel(ep.kind);
         $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
-        renderModeEntryGate('正在通过 ' + modeName + ' 连接 Mac…');
+        if (latestSnap) {
+          showToast('已切换至 ' + modeName);
+        } else {
+          renderModeEntryGate('正在通过 ' + modeName + ' 连接 Mac…');
+        }
         void fetchSnapshot();
         return;
       }
@@ -8670,6 +8692,17 @@ function readPersistedTunnelStatus() {
   };
 }
 
+function resolveEmptyCloudflaredConfigPath() {
+  if (process.platform !== 'win32') return '/dev/null';
+  const emptyPath = path.join(path.dirname(getRemoteConfigPath()), '.cloudflared-empty.yml');
+  try {
+    const dir = path.dirname(emptyPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(emptyPath)) fs.writeFileSync(emptyPath, '', 'utf8');
+  } catch {}
+  return emptyPath;
+}
+
 function createCloudflareTunnelController(getPort) {
   let child = null;
   let state = 'stopped';
@@ -8768,9 +8801,10 @@ function createCloudflareTunnelController(getPort) {
     errorMsg = '';
 
     const port = Number(typeof getPort === 'function' ? getPort() : cfg.port) || DEFAULT_REMOTE_PORT;
+    const emptyConfigPath = resolveEmptyCloudflaredConfigPath();
     const args = mode === 'named'
-      ? ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
-      : ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
+      ? ['tunnel', '--config', emptyConfigPath, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
+      : ['tunnel', '--config', emptyConfigPath, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
 
     const childEnv = { ...process.env };
     const appendNoProxy = (cur) => {
@@ -8797,8 +8831,38 @@ function createCloudflareTunnelController(getPort) {
 
     return await new Promise((resolve) => {
       let settled = false;
+      let quickUrlCandidate = '';
+      let quickRegistered = false;
+      const markQuickRunning = (urlStr) => {
+        if (!urlStr || child !== spawned) return;
+        publicUrl = urlStr;
+        state = 'running';
+        errorMsg = '';
+        writeTunnelStateFile({
+          pid: spawned.pid,
+          mode,
+          state,
+          publicUrl,
+          error: '',
+          startedAt: Date.now()
+        });
+        clearTimeout(waitTimer);
+        settle();
+      };
       const settle = () => {
         if (settled) return;
+        if (mode === 'quick' && quickUrlCandidate && state === 'starting' && child === spawned && !errorMsg) {
+          publicUrl = quickUrlCandidate;
+          state = 'running';
+          writeTunnelStateFile({
+            pid: spawned.pid,
+            mode,
+            state,
+            publicUrl,
+            error: '',
+            startedAt: Date.now()
+          });
+        }
         settled = true;
         resolve(getStatus());
       };
@@ -8831,19 +8895,13 @@ function createCloudflareTunnelController(getPort) {
         if (mode === 'quick') {
           const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\b/i);
           if (m) {
-            publicUrl = m[0];
-            state = 'running';
-            errorMsg = '';
-            writeTunnelStateFile({
-              pid: spawned.pid,
-              mode,
-              state,
-              publicUrl,
-              error: '',
-              startedAt: Date.now()
-            });
-            clearTimeout(waitTimer);
-            settle();
+            quickUrlCandidate = m[0];
+          }
+          if (/Registered tunnel connection|Connection [0-9a-f-]+ registered/i.test(text)) {
+            quickRegistered = true;
+          }
+          if (quickUrlCandidate && quickRegistered) {
+            markQuickRunning(quickUrlCandidate);
           } else {
             const mErr = text.match(/failed to request quick Tunnel:\s*([^\r\n]+)/i);
             if (mErr) errorMsg = `Cloudflare 临时隧道连接失败: ${mErr[1].trim()}`;
