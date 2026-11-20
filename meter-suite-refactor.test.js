@@ -11938,3 +11938,89 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
     fs.rmSync(tmpOutside, { recursive: true, force: true });
   }
 });
+
+test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐与折叠时间线交互 (#26)', async () => {
+  const {
+    extractMessagesFromTrajectorySteps,
+    mergeTrajectoryAndDomMessages,
+    createConversationHistoryManager,
+    buildMobileAppHtml
+  } = require('./mobile-remote');
+
+  // 1. 轨迹按轮聚合：多步中间纯思考合并进最终回复，无空壳刷屏，不截断 1200 字
+  const longThink = '深度分析推理内容_'.repeat(200); // > 1600 chars
+  const steps = [
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '帮我查一下根因' } },
+    { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '第一步：定位入口文件' } },
+    { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '第二步：检查调用链路' } },
+    { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: longThink } },
+    { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '第四步：总结方案', response: '已定位根因并给出修复方案。' } }
+  ];
+  const trajMsgs = extractMessagesFromTrajectorySteps(steps);
+  assert.equal(trajMsgs.length, 2, '同一轮 4 步思考 + 1 步回复必须聚合为 1 问 1 答（2 条消息）');
+  assert.equal(trajMsgs[1].thoughtCount, 4, '应记录真实思考步数 4');
+  assert.equal(trajMsgs[1].thoughts.length, 4, '应保留 4 段分步思考数组');
+  assert.ok(trajMsgs[1].thoughtText.includes(longThink), '思考内容不得在 1200 字处截断');
+
+  // 2. mergeTrajectoryAndDomMessages 修复空正文 dom-tail 重复追加
+  const noisyDom = [
+    { id: 'u-0', role: 'user', text: '帮我查一下根因' },
+    { id: 'a-1', role: 'assistant', text: '', thoughtLabel: '已思考', thoughtText: '第一步' },
+    { id: 'a-2', role: 'assistant', text: '', thoughtLabel: '已思考', thoughtText: '第二步' },
+    { id: 'a-3', role: 'assistant', text: '', thoughtLabel: '已思考', thoughtText: '第三步' },
+    { id: 'a-4', role: 'assistant', text: '已定位根因并给出修复方案。', thoughtLabel: '已思考', thoughtText: '第四步' },
+    { id: 'a-5', role: 'assistant', text: '', thoughtLabel: '已思考', thoughtText: '残留空壳' }
+  ];
+  const merged = mergeTrajectoryAndDomMessages(trajMsgs, noisyDom, { busy: false });
+  assert.equal(merged.length, 2, '已完成回复尾部不得再追加任何空正文 dom-tail 思考气泡');
+  assert.equal(merged[1].text, '已定位根因并给出修复方案。');
+
+  // 3. fetchTrajectoryMessages 传 trajectoryVerbosity: 3 并在 numTotalSteps > steps.length 时分页拉齐
+  const rpcLog = [];
+  const histMgr = createConversationHistoryManager();
+  const mockConnect = async () => ({
+    call: async (method, body) => {
+      rpcLog.push({ method, body });
+      if (method === 'GetCascadeTrajectory') {
+        return {
+          numTotalSteps: 3,
+          trajectory: {
+            steps: [
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '分页测试' } },
+              { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '前半段思考' } }
+            ]
+          }
+        };
+      }
+      if (method === 'GetCascadeTrajectorySteps') {
+        return {
+          steps: [
+            { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '后半段思考', response: '分页完整回复' } }
+          ]
+        };
+      }
+      return {};
+    }
+  });
+  const fetched = await histMgr.enrichMessages({ sessionId: 'conv-paged-26', messages: [] }, { localApiConnect: mockConnect });
+  assert.equal(rpcLog[0].method, 'GetCascadeTrajectory');
+  assert.equal(rpcLog[0].body.trajectoryVerbosity, 3, 'GetCascadeTrajectory 应传入 trajectoryVerbosity: 3');
+  assert.ok(rpcLog.some((r) => r.method === 'GetCascadeTrajectorySteps' && r.body.startIndex === 2), '步数不足时应调用 GetCascadeTrajectorySteps 分页拉齐');
+  assert.equal(fetched.messages.length, 2, '分页拉齐后应归并为 1 问 1 答而非停在半截思考');
+  assert.equal(fetched.messages[1].thoughtCount, 2);
+  assert.equal(fetched.messages[1].text, '分页完整回复');
+
+  // 4. ag-enhancer-overlay.js 独立视图轨迹提取按轮聚合（源码级静态/行为验证）
+  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  assert.ok(overlaySrc.includes('flushPendingThoughts') && overlaySrc.includes('thoughtCount: thoughts.length'), 'ag-enhancer-overlay.js 应按轮聚合思考并保留 thoughtCount');
+  assert.ok(!overlaySrc.includes('thoughtText.slice(0, 1200)'), 'ag-enhancer-overlay.js 不得再对思考内容做 1200 字截断');
+
+  // 5. buildMobileAppHtml() 整页 <script> 语法校验 + 分步时间线与无正文不渲染空 .md-body
+  const html = buildMobileAppHtml();
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-26-script-${i}.js` }));
+  }
+  assert.ok(html.includes('buildThoughtBodyInnerHtml') && html.includes('thought-step-hd') && html.includes('thought-all-btn') && html.includes('is-thought-only'), '前端应包含分步时间线、全部展开按钮与纯思考紧凑样式');
+});

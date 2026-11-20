@@ -7216,6 +7216,27 @@
     const nodes = Array.from(viewport.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]'));
     const slice = nodes.slice(-Math.max(1, limit));
     const out = [];
+    let pendingThoughts = [];
+    let pendingThoughtLabel = '';
+
+    const flushPendingDomThoughts = (tag) => {
+      if (!pendingThoughts.length && !pendingThoughtLabel) return;
+      const thoughts = pendingThoughts.slice();
+      out.push({
+        id: `a-think-${tag}`,
+        role: 'assistant',
+        text: '',
+        html: '',
+        thoughtLabel: (pendingThoughtLabel || tr('思考过程', 'Thinking')).slice(0, 120),
+        thoughtText: thoughts.join('\n\n'),
+        thoughts,
+        thoughtCount: Math.max(thoughts.length, pendingThoughtLabel ? 1 : 0),
+        highRisk: false,
+        riskText: ''
+      });
+      pendingThoughts = [];
+      pendingThoughtLabel = '';
+    };
 
     for (let i = 0; i < slice.length; i++) {
       const node = slice[i];
@@ -7224,6 +7245,7 @@
         const contentNode = node.querySelector('[data-testid="user-message-content"]') || node;
         const text = cleanUserMessageText(contentNode.innerText || contentNode.textContent || '');
         if (!text) continue;
+        flushPendingDomThoughts(i);
         out.push({ id: `u-${i}`, role: 'user', text });
         continue;
       }
@@ -7258,21 +7280,35 @@
       const riskBanner = node.querySelector('.ag-risk-banner');
       const highRisk = Boolean(node.querySelector('[data-ag-risk-card="high"]') || riskBanner);
 
-      if (!replyText && !replyHtml && !thoughtLabel && !highRisk) {
+      if (!replyText && !replyHtml && !thoughtLabel && !thoughtChunks.length && !highRisk) {
         continue;
       }
+
+      if (!replyText && !replyHtml && !highRisk) {
+        if (thoughtChunks.length) pendingThoughts.push(...thoughtChunks);
+        if (thoughtLabel && !pendingThoughtLabel) pendingThoughtLabel = thoughtLabel;
+        continue;
+      }
+
+      const mergedThoughts = pendingThoughts.concat(thoughtChunks);
+      const effectiveLabel = thoughtLabel || pendingThoughtLabel || (mergedThoughts.length ? tr('思考过程', 'Thinking') : '');
+      pendingThoughts = [];
+      pendingThoughtLabel = '';
 
       out.push({
         id: `a-${i}`,
         role: 'assistant',
         text: replyText,
         html: replyHtml,
-        thoughtLabel: thoughtLabel.slice(0, 120),
-        thoughtText: thoughtChunks.join('\n\n'),
+        thoughtLabel: effectiveLabel.slice(0, 120),
+        thoughtText: mergedThoughts.join('\n\n'),
+        thoughts: mergedThoughts,
+        thoughtCount: Math.max(mergedThoughts.length, effectiveLabel ? 1 : 0),
         highRisk,
         riskText: (riskBanner?.textContent || '').trim()
       });
     }
+    flushPendingDomThoughts('end');
     return out;
   }
 
@@ -8084,6 +8120,26 @@
   function extractMessagesFromTrajectorySteps(steps, limit = 20) {
     const list = Array.isArray(steps) ? steps : [];
     const out = [];
+    let pendingThoughts = [];
+
+    const flushPendingThoughts = (idxTag) => {
+      if (!pendingThoughts.length) return;
+      const thoughts = pendingThoughts.slice();
+      out.push({
+        id: `rpc-think-${idxTag}`,
+        role: 'assistant',
+        text: '',
+        html: '',
+        thoughtLabel: tr('思考过程', 'Thinking'),
+        thoughtText: thoughts.join('\n\n'),
+        thoughts,
+        thoughtCount: thoughts.length,
+        highRisk: false,
+        riskText: ''
+      });
+      pendingThoughts = [];
+    };
+
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
       if (!s || typeof s !== 'object') continue;
@@ -8095,20 +8151,26 @@
           ''
         ).trim();
         if (text) {
+          flushPendingThoughts(i);
           out.push({ id: `rpc-u-${i}`, role: 'user', text: text.slice(0, 4000), html: '' });
         }
       } else if (s.plannerResponse) {
         const pr = s.plannerResponse;
         const text = String(pr.modifiedResponse || pr.response || '').trim();
-        const thoughtText = String(pr.thinking || '').trim();
-        if (text || thoughtText) {
+        const thoughtText = String(pr.thinking || pr.thought || '').trim();
+        if (thoughtText) pendingThoughts.push(thoughtText);
+        if (text) {
+          const thoughts = pendingThoughts.slice();
+          pendingThoughts = [];
           out.push({
             id: `rpc-a-${i}`,
             role: 'assistant',
             text: text.slice(0, 4000),
             html: '',
-            thoughtLabel: thoughtText ? tr('已思考', 'Thought') : '',
-            thoughtText: thoughtText.slice(0, 1200),
+            thoughtLabel: thoughts.length ? tr('思考过程', 'Thinking') : '',
+            thoughtText: thoughts.join('\n\n'),
+            thoughts,
+            thoughtCount: thoughts.length,
             highRisk: false,
             riskText: ''
           });
@@ -8117,6 +8179,7 @@
         const errObj = s.errorMessage.error || s.errorMessage || {};
         const errText = String(errObj.modelErrorMessage || errObj.shortError || errObj.fullError || '').trim();
         if (errText) {
+          flushPendingThoughts(i);
           out.push({
             id: `rpc-e-${i}`,
             role: 'assistant',
@@ -8124,12 +8187,15 @@
             html: '',
             thoughtLabel: '',
             thoughtText: '',
+            thoughts: [],
+            thoughtCount: 0,
             highRisk: true,
             riskText: tr('步骤异常', 'Step Error')
           });
         }
       }
     }
+    flushPendingThoughts('end');
     return out.slice(-limit);
   }
 
