@@ -12092,3 +12092,142 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   }
   assert.ok(html.includes('buildThoughtBodyInnerHtml') && html.includes('thought-step-hd') && html.includes('thought-all-btn') && html.includes('is-thought-only'), '前端应包含分步时间线、全部展开按钮与纯思考紧凑样式');
 });
+
+test('远程端彻底工作台化：方案 B 延迟隔离新建草稿、按需发送并恢复桌面原会话 (#05)', async () => {
+  const { createRemoteHttpHandler, buildMobileAppHtml } = require('./mobile-remote');
+  const mockCfg = {
+    port: 18775,
+    token: 'tok-scheme-b-test-1234567890abcdef',
+    tunnelEnabled: false,
+    enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+  };
+  const performed = [];
+  const fetched = [];
+  let failNextSend = false;
+
+  const handler = createRemoteHttpHandler(mockCfg, {
+    fetchSnapshot: async (_tid, opts = {}) => {
+      fetched.push(opts);
+      const cid = String(opts.conversationId || '');
+      return {
+        ok: true,
+        sessionId: cid || 'conv-desktop-main',
+        activeConversationId: cid || 'conv-desktop-main',
+        isolated: Boolean(cid && cid !== 'conv-desktop-main'),
+        title: cid ? `会话 ${cid}` : '桌面主会话',
+        currentProjectId: 'proj-alpha',
+        currentProjectName: 'Alpha',
+        projects: [
+          { id: 'proj-alpha', name: 'Alpha' },
+          { id: 'proj-beta', name: 'Beta App' }
+        ],
+        conversations: [],
+        messages: cid ? [{ id: 'm1', role: 'user', text: `msg in ${cid}` }] : [{ id: 'm0', role: 'user', text: 'desktop msg' }]
+      };
+    },
+    performAction: async (act) => {
+      performed.push(act);
+      if (act.action === 'send' && failNextSend) {
+        failNextSend = false;
+        return { ok: false, error: '模拟发送失败' };
+      }
+      if (act.action === 'send' && act.draftNewIsolated) {
+        return {
+          ok: true,
+          actionResult: { ok: true, createdConversationId: 'conv-beta-new-1', projectId: act.draftProjectId },
+          snapshot: {
+            ok: true,
+            sessionId: 'conv-desktop-main',
+            activeConversationId: 'conv-desktop-main',
+            messages: []
+          }
+        };
+      }
+      return { ok: true, actionResult: { ok: true }, snapshot: { ok: true, sessionId: 'conv-desktop-main', messages: [] } };
+    }
+  });
+
+  const callHttp = async (method, reqPath, bodyObj = null, clientId = 'client-scheme-b-1') => {
+    const { Readable } = require('stream');
+    const raw = bodyObj ? JSON.stringify(bodyObj) : '';
+    const req = Readable.from(raw ? [Buffer.from(raw)] : []);
+    req.method = method;
+    req.url = reqPath;
+    req.headers = {
+      host: '127.0.0.1:18775',
+      'x-ag-remote-token': mockCfg.token,
+      'x-ag-client-id': clientId,
+      ...(bodyObj ? { 'content-type': 'application/json' } : {})
+    };
+    req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let status = 200;
+    let out = '';
+    const res = {
+      setHeader() {},
+      writeHead(code) { status = code; },
+      end(chunk) { if (chunk) out += String(chunk); }
+    };
+    await handler(req, res);
+    return { status, json: JSON.parse(out) };
+  };
+
+  // 1. 隔离态新建对话（isolated: true）：完全不触发桌面端 performAction
+  const draftRes = await callHttp('POST', '/api/action', {
+    action: 'new-conversation',
+    projectId: 'proj-beta',
+    projectName: 'Beta App',
+    isolated: true
+  });
+  assert.equal(draftRes.status, 200);
+  assert.equal(draftRes.json.ok, true);
+  assert.equal(draftRes.json.actionResult.deferred, true);
+  assert.equal(draftRes.json.snapshot.isolated, true);
+  assert.equal(draftRes.json.snapshot.isNewConversation, true);
+  assert.equal(draftRes.json.snapshot.currentProjectId, 'proj-beta');
+  assert.equal(draftRes.json.snapshot.currentProjectName, 'Beta App');
+  assert.deepEqual(draftRes.json.snapshot.messages, []);
+  assert.equal(performed.length, 0, '点击新建对话（isolated: true）不得驱动桌面端跳窗');
+
+  // 2. 轮询 GET /api/snapshot 保持隔离草稿态不回跳桌面
+  const pollDraft = await callHttp('GET', '/api/snapshot');
+  assert.equal(pollDraft.json.isNewConversation, true);
+  assert.equal(pollDraft.json.isolated, true);
+  assert.equal(pollDraft.json.currentProjectId, 'proj-beta');
+  assert.equal(performed.length, 0);
+
+  // 3. 首次发送失败时保留草稿态，方便重试
+  failNextSend = true;
+  const failedSend = await callHttp('POST', '/api/action', { action: 'send', text: 'First try' });
+  assert.equal(failedSend.json.ok, false);
+  assert.equal(performed.length, 1);
+  assert.equal(performed[0].draftNewIsolated, true);
+  assert.equal(performed[0].draftProjectId, 'proj-beta');
+  assert.equal(performed[0].restoreDesktop, true);
+  const pollAfterFail = await callHttp('GET', '/api/snapshot');
+  assert.equal(pollAfterFail.json.isNewConversation, true, '发送失败时应保留隔离新建草稿态');
+
+  // 4. 重试发送成功：透传 draftProjectId + restoreDesktop，绑定新会话 ID 并切到新会话隔离快照
+  const okSend = await callHttp('POST', '/api/action', { action: 'send', text: 'Second try' });
+  assert.equal(okSend.json.ok, true);
+  assert.equal(okSend.json.snapshot.sessionId, 'conv-beta-new-1', '发送成功后应立即绑定并拉取新创建会话的快照');
+  const pollAfterSend = await callHttp('GET', '/api/snapshot');
+  assert.equal(pollAfterSend.json.sessionId, 'conv-beta-new-1', '后续轮询应停留在新会话而非回跳草稿或桌面');
+  assert.equal(pollAfterSend.json.isNewConversation, undefined);
+
+  // 5. 未发送草稿直接切回历史会话或 follow-desktop：自动清除草稿态且零桌面调用
+  const beforeSwitchCount = performed.length;
+  await callHttp('POST', '/api/action', { action: 'new-conversation', projectId: 'proj-beta', isolated: true });
+  const swHist = await callHttp('POST', '/api/action', { action: 'switch-conversation', id: 'conv-alpha-9', isolated: true });
+  assert.equal(swHist.json.snapshot.sessionId, 'conv-alpha-9');
+  assert.equal(performed.length, beforeSwitchCount, '新建草稿与切回历史会话全程零桌面窗口调用');
+
+  // 6. 前端与桌面脚本校验
+  const html = buildMobileAppHtml();
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-05-script-${i}.js` }));
+  }
+  assert.ok(html.includes("{ action: 'new-conversation', isolated: true }"), '前端新建对话应默认走方案 B 隔离草稿模式');
+  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  assert.ok(overlaySrc.includes("payload?.draftNewIsolated === true") && overlaySrc.includes('createdConversationId'), '桌面端应支持草稿首条发送后采集 createdConversationId 并在 finally 恢复原会话');
+});

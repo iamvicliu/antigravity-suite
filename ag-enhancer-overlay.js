@@ -8964,6 +8964,42 @@
     const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'respond-prompt', 'select-model', 'select-permission', 'upload-image'];
     const reqConvId = String(payload?.conversationId || '').trim();
     const prevConvId = getSessionIdFromLocation() || '';
+
+    // 方案 B：隔离态新建对话草稿在首次发送时才按需切桌面新建并发送，结束后自动恢复桌面原会话
+    if (action === 'send' && reqConvId === '__new__' && payload?.draftNewIsolated === true) {
+      const draftProjectId = String(payload?.draftProjectId || payload?.projectId || '').trim();
+      let createdConversationId = '';
+      try {
+        const navNew = await executeMobileActionCore('new-conversation', { projectId: draftProjectId });
+        if (!navNew?.ok) return navNew;
+        await new Promise((r) => setTimeout(r, 120));
+        const sendRes = await executeMobileActionCore('send', payload);
+        if (!sendRes?.ok) return sendRes;
+        // 等待新会话 ID 出现在路由中，便于远程端绑定到新对话
+        for (let i = 0; i < 6; i++) {
+          const curId = getSessionIdFromLocation() || '';
+          if (curId && curId !== prevConvId && curId !== '__new__') {
+            createdConversationId = curId;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 80));
+        }
+        return {
+          ...sendRes,
+          createdConversationId,
+          projectId: draftProjectId
+        };
+      } finally {
+        if (prevConvId && payload?.restoreDesktop !== false) {
+          const curId = getSessionIdFromLocation() || '';
+          if (curId !== prevConvId) {
+            await new Promise((r) => setTimeout(r, 120));
+            await switchToConversationInternal(prevConvId).catch(() => {});
+          }
+        }
+      }
+    }
+
     const needsSwitch = Boolean(
       scopedActions.includes(action) &&
       reqConvId &&

@@ -3961,7 +3961,11 @@ async function performActionInTarget(payload, options = {}) {
     await Promise.all([new Promise((r) => setTimeout(r, settleMs)), warmPromise]);
     const snapConvId = act === 'switch-conversation'
       ? (payload?.id && payload.id !== 'new' && payload.id !== 'follow-desktop' ? String(payload.id) : '')
-      : (act === 'new-conversation' ? '' : (payload?.conversationId ? String(payload.conversationId) : ''));
+      : (act === 'new-conversation'
+        ? ''
+        : (act === 'send' && actionResult?.createdConversationId
+          ? String(actionResult.createdConversationId)
+          : (payload?.conversationId ? String(payload.conversationId) : '')));
     const snapshot = await fetchSnapshotFromTarget(target.id, {
       convLimit: 100,
       conversationId: snapConvId,
@@ -9126,8 +9130,9 @@ function buildMobileAppHtml() {
       stickBottom = true;
       const myNavSeqSnapshot = lastNavActionSeq;
       try {
-        const payload = { action: 'new-conversation' };
+        const payload = { action: 'new-conversation', isolated: true };
         if (pid) payload.projectId = pid;
+        if (projectName) payload.projectName = projectName;
         const r = await apiAction(payload);
         const isCurrentNav = mySelEpoch === selectedProjectEpoch && lastNavActionSeq === myNavSeqSnapshot + 1;
         if (r?.ok) {
@@ -11381,7 +11386,14 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           : (session?.conversationId || '');
         if (session) {
           if (hasExplicitTarget) session.targetId = targetId;
-          if (hasExplicitConv) session.conversationId = reqConvId;
+          if (hasExplicitConv) {
+            session.conversationId = reqConvId;
+            if (reqConvId !== '__new__') {
+              session.draftNewIsolated = false;
+              session.draftProjectId = '';
+              session.draftProjectName = '';
+            }
+          }
         }
         const rawLimit = urlObj.searchParams.get('convLimit');
         const convLimit = rawLimit === 'all' || rawLimit === '0'
@@ -11391,7 +11403,33 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const msgLimit = rawMsgLimit === 'all' || rawMsgLimit === '0'
           ? 0
           : (rawMsgLimit !== null && rawMsgLimit !== '' ? Math.max(1, Number.parseInt(rawMsgLimit, 10) || 30) : 30);
-        const snap = await fetchSnapshot(targetId, { conversationId: reqConvId, clientId, convLimit, msgLimit });
+        const isIsolatedNewDraft = Boolean(session?.draftNewIsolated && reqConvId === '__new__');
+        let snap = await fetchSnapshot(targetId, { conversationId: reqConvId, clientId, convLimit, msgLimit: isIsolatedNewDraft ? 0 : msgLimit });
+        if (isIsolatedNewDraft && snap && snap.ok !== false) {
+          const draftPid = String(session.draftProjectId || '').trim();
+          const matchedProj = draftPid
+            ? ((Array.isArray(snap.projects) ? snap.projects : []).find((p) => p && String(p.id || '') === draftPid)
+              || (Array.isArray(snap.projectGroups) ? snap.projectGroups : []).find((g) => g && String(g.id || '') === draftPid))
+            : null;
+          const draftName = String(session.draftProjectName || matchedProj?.name || snap.currentProjectName || '').trim();
+          snap = {
+            ...snap,
+            isolated: true,
+            isNewConversation: true,
+            sessionId: '__new__',
+            activeConversationId: '',
+            title: '新对话',
+            currentProjectId: draftPid || snap.currentProjectId || '',
+            currentProjectName: draftName,
+            messages: [],
+            totalMessages: 0,
+            hasEarlierMessages: false,
+            pendingApprovals: [],
+            pendingPrompts: [],
+            queuedMessages: [],
+            busy: false
+          };
+        }
         if (session && snap && snap.ok !== false) {
           if (!session.targetId && snap.currentTargetId) session.targetId = snap.currentTargetId;
           if (!session.conversationId && (snap.activeConversationId || snap.sessionId)) {
@@ -11609,6 +11647,37 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           return;
         }
 
+        const clearDraftNew = (sess) => {
+          if (!sess) return;
+          sess.draftNewIsolated = false;
+          sess.draftProjectId = '';
+          sess.draftProjectName = '';
+        };
+        const buildIsolatedDraftSnapshot = (baseSnap, draftPid, draftName) => {
+          if (!baseSnap || baseSnap.ok === false) return baseSnap;
+          const matchedProj = draftPid
+            ? ((Array.isArray(baseSnap.projects) ? baseSnap.projects : []).find((p) => p && String(p.id || '') === draftPid)
+              || (Array.isArray(baseSnap.projectGroups) ? baseSnap.projectGroups : []).find((g) => g && String(g.id || '') === draftPid))
+            : null;
+          return {
+            ...baseSnap,
+            isolated: true,
+            isNewConversation: true,
+            sessionId: '__new__',
+            activeConversationId: '',
+            title: '新对话',
+            currentProjectId: draftPid || baseSnap.currentProjectId || '',
+            currentProjectName: String(draftName || matchedProj?.name || baseSnap.currentProjectName || '').trim(),
+            messages: [],
+            totalMessages: 0,
+            hasEarlierMessages: false,
+            pendingApprovals: [],
+            pendingPrompts: [],
+            queuedMessages: [],
+            busy: false
+          };
+        };
+
         if (actionName === 'switch-conversation' && (clientId || payload?.isolated === true)) {
           const nextId = String(payload?.id || '').trim();
           if (!nextId) {
@@ -11616,7 +11685,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             return;
           }
           if (nextId === 'follow-desktop') {
-            if (session) session.conversationId = '';
+            if (session) {
+              session.conversationId = '';
+              clearDraftNew(session);
+            }
             const snap = await fetchSnapshot(effectiveTargetId, { clientId, convLimit: 100, msgLimit: 30 });
             if (session && snap && snap.ok !== false && (snap.activeConversationId || snap.sessionId)) {
               session.conversationId = String(snap.activeConversationId || snap.sessionId || '');
@@ -11633,6 +11705,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           if (nextId !== 'new') {
             if (session) {
               session.conversationId = nextId;
+              clearDraftNew(session);
               if (payload?.targetId) session.targetId = effectiveTargetId;
             }
             if (!options.fetchSnapshot && typeof defaultHistoryManager?.warmSession === 'function') {
@@ -11654,6 +11727,33 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }));
             return;
           }
+          if (payload?.isolated === true) {
+            const draftPid = String(payload?.projectId || '').trim();
+            const draftName = String(payload?.projectName || '').trim();
+            if (session) {
+              session.conversationId = '__new__';
+              session.draftNewIsolated = true;
+              session.draftProjectId = draftPid;
+              session.draftProjectName = draftName;
+              if (payload?.targetId) session.targetId = effectiveTargetId;
+            }
+            const baseSnap = await fetchSnapshot(effectiveTargetId, {
+              conversationId: '__new__',
+              clientId,
+              convLimit: 100,
+              msgLimit: 0
+            });
+            const draftSnap = buildIsolatedDraftSnapshot(baseSnap, draftPid, draftName);
+            const usageSummary = (draftSnap && draftSnap.ok !== false && !draftSnap.usageSummary) ? await getCachedUsageSummary() : null;
+            const enriched = enrichSnapshotPayload(draftSnap, config, activeTunnelUrl, clientId, usageSummary);
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: Boolean(draftSnap && draftSnap.ok !== false),
+              actionResult: { ok: Boolean(draftSnap && draftSnap.ok !== false), id: '__new__', projectId: draftPid, isolated: true, deferred: true },
+              snapshot: enriched
+            }));
+            return;
+          }
+          clearDraftNew(session);
           const newResult = await performAction({
             ...payload,
             clientId,
@@ -11673,6 +11773,33 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         }
 
         if (actionName === 'new-conversation') {
+          if (payload?.isolated === true) {
+            const draftPid = String(payload?.projectId || '').trim();
+            const draftName = String(payload?.projectName || '').trim();
+            if (session) {
+              session.conversationId = '__new__';
+              session.draftNewIsolated = true;
+              session.draftProjectId = draftPid;
+              session.draftProjectName = draftName;
+              if (payload?.targetId) session.targetId = effectiveTargetId;
+            }
+            const baseSnap = await fetchSnapshot(effectiveTargetId, {
+              conversationId: '__new__',
+              clientId,
+              convLimit: 100,
+              msgLimit: 0
+            });
+            const draftSnap = buildIsolatedDraftSnapshot(baseSnap, draftPid, draftName);
+            const usageSummary = (draftSnap && draftSnap.ok !== false && !draftSnap.usageSummary) ? await getCachedUsageSummary() : null;
+            const enriched = enrichSnapshotPayload(draftSnap, config, activeTunnelUrl, clientId, usageSummary);
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: Boolean(draftSnap && draftSnap.ok !== false),
+              actionResult: { ok: Boolean(draftSnap && draftSnap.ok !== false), id: '__new__', projectId: draftPid, isolated: true, deferred: true },
+              snapshot: enriched
+            }));
+            return;
+          }
+          clearDraftNew(session);
           const newResult = await performAction({
             ...payload,
             clientId,
@@ -11697,6 +11824,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           if (session) {
             session.targetId = nextTargetId;
             session.conversationId = '';
+            clearDraftNew(session);
           }
           const snap = await fetchSnapshot(nextTargetId, { clientId, convLimit: 100, msgLimit: 30 });
           if (session && snap && snap.ok !== false && (snap.activeConversationId || snap.sessionId)) {
@@ -11713,13 +11841,44 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         }
 
         const effectiveConvId = String(payload?.conversationId || session?.conversationId || '').trim();
+        const isDeferredDraftSend = Boolean(
+          actionName === 'send' &&
+          (session?.draftNewIsolated || payload?.draftNewIsolated === true) &&
+          (!effectiveConvId || effectiveConvId === '__new__' || effectiveConvId === 'new')
+        );
+        const draftPidForSend = isDeferredDraftSend
+          ? String(session?.draftProjectId || payload?.draftProjectId || payload?.projectId || '').trim()
+          : '';
         const result = await performAction({
           ...payload,
           clientId,
           targetId: effectiveTargetId || undefined,
-          conversationId: effectiveConvId || undefined
+          conversationId: isDeferredDraftSend ? '__new__' : (effectiveConvId || undefined),
+          ...(isDeferredDraftSend ? { draftNewIsolated: true, draftProjectId: draftPidForSend, restoreDesktop: payload?.restoreDesktop !== false } : {})
         });
-        if (session && result?.snapshot && result.snapshot.ok !== false) {
+        if (isDeferredDraftSend && result?.ok !== false) {
+          const createdCid = String(
+            result?.actionResult?.createdConversationId ||
+            result?.snapshot?.activeConversationId ||
+            result?.snapshot?.sessionId ||
+            ''
+          ).trim();
+          clearDraftNew(session);
+          if (session && createdCid && createdCid !== '__new__') {
+            session.conversationId = createdCid;
+          }
+          if (createdCid && createdCid !== '__new__' && result?.snapshot?.sessionId !== createdCid) {
+            const boundSnap = await fetchSnapshot(effectiveTargetId, {
+              conversationId: createdCid,
+              clientId,
+              convLimit: 100,
+              msgLimit: 30,
+              bypassCache: true,
+              bypassCatalogCache: true
+            }).catch(() => null);
+            if (boundSnap && boundSnap.ok !== false) result.snapshot = boundSnap;
+          }
+        } else if (session && result?.snapshot && result.snapshot.ok !== false) {
           const respSid = String(result.snapshot.activeConversationId || result.snapshot.sessionId || '');
           if (respSid && respSid !== '__new__' && (effectiveConvId === '__new__' || !session.conversationId)) {
             session.conversationId = respSid;
