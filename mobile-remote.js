@@ -2847,7 +2847,7 @@ function renderSafeMarkdownToHtml(rawMd) {
 
 const LOCAL_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
 const SENSITIVE_MEDIA_DIR_RE = /(?:^|[\\/])(?:\.ssh|\.gnupg|\.aws|\.kube|keychains)(?:[\\/]|$)/i;
-const SENSITIVE_MEDIA_FILE_RE = /^(?:\.env.*|id_rsa.*|id_ed25519.*|id_ecdsa.*|\.npmrc|\.netrc|\.pypirc|.+\.(?:pem|key|p12|pfx|jks))$/i;
+const SENSITIVE_MEDIA_FILE_RE = /^(?:\.env.*|id_rsa.*|id_ed25519.*|id_ecdsa.*|\.npmrc|\.netrc|\.pypirc|.*\.(?:pem|key|p12|pfx|jks))$/i;
 const SAFE_MEDIA_MIME_BY_EXT = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -8196,6 +8196,9 @@ function buildMobileAppHtml() {
     });
 
     function readAttachmentFile(file) {
+      if ((file?.size || 0) > 15 * 1024 * 1024) {
+        return Promise.reject(new Error('单个文件不能超过 15MB'));
+      }
       const isImg = /^image\//i.test(String(file?.type || '')) && !/svg/i.test(String(file?.type || ''));
       if (isImg) {
         return compressAndReadImage(file).then((res) => ({
@@ -8204,9 +8207,6 @@ function buildMobileAppHtml() {
           isImage: true,
           previewUrl: res.base64
         }));
-      }
-      if ((file?.size || 0) > 15 * 1024 * 1024) {
-        return Promise.reject(new Error('单个文件不能超过 15MB'));
       }
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
