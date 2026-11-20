@@ -6938,6 +6938,18 @@
     return ctrl.getAttribute?.('data-state') === 'checked' || ctrl.getAttribute?.('data-selected') === 'true';
   }
 
+  const promptInstanceIdMap = new WeakMap();
+  let promptInstanceSeq = 0;
+  function getPromptInstanceId(root) {
+    if (!root || (typeof root !== 'object' && typeof root !== 'function')) return 'pinst-0';
+    let id = promptInstanceIdMap.get(root);
+    if (!id) {
+      id = `pinst-${++promptInstanceSeq}`;
+      promptInstanceIdMap.set(root, id);
+    }
+    return id;
+  }
+
   function findInteractivePromptCards() {
     const roots = [];
     const seenRoots = new Set();
@@ -7056,7 +7068,8 @@
       const description = (rawDesc && rawDesc !== title) ? rawDesc.slice(0, 240) : '';
 
       const kind = options.length >= 2 ? 'choice' : 'dialog';
-      const promptKey = `${kind}|${title}|${options.map((o) => o.label).join('\u001f')}|${actions.map((a) => a.label).join('\u001f')}`;
+      const instanceId = getPromptInstanceId(root);
+      const promptKey = `${instanceId}|${kind}|${title}|${description}|${options.map((o) => o.label).join('\u001f')}|${actions.map((a) => a.label).join('\u001f')}`;
 
       cards.push({
         index: cards.length,
@@ -8591,6 +8604,21 @@
       if (targetBtn?.el) {
         if (targetBtn.el.disabled || targetBtn.el.getAttribute?.('aria-disabled') === 'true') {
           return { ok: false, error: '目标确认按钮当前仍处于禁用状态，请先完成必选项' };
+        }
+        if (targetBtn.kind !== 'reject') {
+          const otherReq = Boolean(card.otherInput && (card.otherInput.required || card.otherInput.getAttribute?.('required') !== null));
+          if (otherReq && !String(card.otherInput.value || '').trim()) {
+            return { ok: false, error: String(card.otherInput.validationMessage || '').trim() || '请先填写必填项后再提交' };
+          }
+          if (card.otherInput && typeof card.otherInput.checkValidity === 'function' && !card.otherInput.checkValidity()) {
+            return { ok: false, error: String(card.otherInput.validationMessage || '').trim() || '输入内容未通过校验，请修改后重试' };
+          }
+          const formEl = String(card.root?.tagName || '').toUpperCase() === 'FORM'
+            ? card.root
+            : card.root?.querySelector?.('form');
+          if (formEl && typeof formEl.checkValidity === 'function' && !formEl.checkValidity()) {
+            return { ok: false, error: '表单存在未通过校验的必填项，请完善后重试' };
+          }
         }
         targetBtn.el.click();
       }
