@@ -3233,13 +3233,16 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
 
   const flushPendingThoughtsOnly = (idxTag) => {
     if (!pendingThoughts.length) return;
+    const thoughts = pendingThoughts.slice();
     messages.push({
       id: `t-think-${idxTag}`,
       role: 'assistant',
       text: '',
       html: '',
       thoughtLabel: '思考过程',
-      thoughtText: pendingThoughts.join('\n\n'),
+      thoughtText: thoughts.join('\n\n'),
+      thoughts,
+      thoughtCount: thoughts.length,
       highRisk: false,
       riskText: ''
     });
@@ -3271,7 +3274,8 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
       const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
       if (replyRaw) {
         const replyText = replyRaw;
-        const thoughtText = pendingThoughts.join('\n\n');
+        const thoughts = pendingThoughts.slice();
+        const thoughtText = thoughts.join('\n\n');
         messages.push({
           id: `t-a-${i}`,
           role: 'assistant',
@@ -3279,6 +3283,8 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
           html: lazyHtml ? null : renderSafeMarkdownToHtml(replyText),
           thoughtLabel: thoughtText ? '思考过程' : '',
           thoughtText,
+          thoughts,
+          thoughtCount: thoughts.length,
           highRisk: false,
           riskText: ''
         });
@@ -3314,8 +3320,68 @@ function normMsgPrefix(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
+function collapseConsecutiveDomThinking(domMessages) {
+  const raw = Array.isArray(domMessages) ? domMessages.filter(Boolean) : [];
+  const out = [];
+  let pendingThoughts = [];
+  let pendingLabel = '';
+  let pendingCount = 0;
+  const flush = (tag) => {
+    if (!pendingThoughts.length && !pendingLabel) return;
+    const thoughts = pendingThoughts.slice();
+    out.push({
+      id: `dom-think-${tag}`,
+      role: 'assistant',
+      text: '',
+      html: '',
+      thoughtLabel: pendingLabel || '思考过程',
+      thoughtText: thoughts.join('\n\n'),
+      thoughts,
+      thoughtCount: Math.max(thoughts.length, pendingCount, 1),
+      highRisk: false,
+      riskText: ''
+    });
+    pendingThoughts = [];
+    pendingLabel = '';
+    pendingCount = 0;
+  };
+  for (let i = 0; i < raw.length; i++) {
+    const m = raw[i];
+    if (m.role === 'user') {
+      flush(i);
+      out.push(m);
+      continue;
+    }
+    const hasBody = Boolean(normMsgPrefix(m.text) || String(m.html || '').trim() || m.highRisk);
+    const mThoughts = Array.isArray(m.thoughts) && m.thoughts.length
+      ? m.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
+      : (String(m.thoughtText || '').trim() ? [String(m.thoughtText).trim()] : []);
+    if (!hasBody) {
+      if (mThoughts.length) pendingThoughts.push(...mThoughts);
+      if (m.thoughtLabel && !pendingLabel) pendingLabel = m.thoughtLabel;
+      pendingCount += Math.max(mThoughts.length, Number(m.thoughtCount) || (m.thoughtLabel ? 1 : 0));
+      continue;
+    }
+    const mergedThoughts = pendingThoughts.concat(mThoughts);
+    const mergedCount = Math.max(mergedThoughts.length, pendingCount + (Number(m.thoughtCount) || 0), (m.thoughtLabel || pendingLabel) ? 1 : 0);
+    const mergedLabel = m.thoughtLabel || pendingLabel || (mergedThoughts.length ? '思考过程' : '');
+    pendingThoughts = [];
+    pendingLabel = '';
+    pendingCount = 0;
+    out.push({
+      ...m,
+      thoughtLabel: mergedLabel,
+      thoughtText: mergedThoughts.join('\n\n') || String(m.thoughtText || ''),
+      ...(mergedThoughts.length ? { thoughts: mergedThoughts } : {}),
+      ...(mergedCount ? { thoughtCount: mergedCount } : {})
+    });
+  }
+  flush('end');
+  return out;
+}
+
 function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
-  const domList = Array.isArray(domMessages) ? domMessages.filter(Boolean) : [];
+  const domList = collapseConsecutiveDomThinking(domMessages);
   const baseList = Array.isArray(trajMsgs) ? trajMsgs.map((m) => ({ ...m })) : [];
   if (!baseList.length) {
     return domList.map((m, idx) => ({ ...m, msgIndex: idx }));
@@ -3342,17 +3408,24 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       if (!matchTarget.thoughtText && dm.thoughtText) {
         matchTarget.thoughtLabel = dm.thoughtLabel || '思考过程';
         matchTarget.thoughtText = dm.thoughtText;
+        if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
+          matchTarget.thoughts = dm.thoughts.slice();
+          matchTarget.thoughtCount = dm.thoughts.length;
+        }
       }
     }
   }
 
   // 如果桌面 DOM 末尾刚发送/流式生成了轨迹接口尚未索引的最新消息，无损补入尾部
-  const lastBaseUserSig = (() => {
-    for (let i = baseList.length - 1; i >= 0; i--) {
-      if (baseList[i].role === 'user') return normMsgPrefix(baseList[i].text);
+  let lastBaseUserIdx = -1;
+  let lastBaseUserSig = '';
+  for (let i = baseList.length - 1; i >= 0; i--) {
+    if (baseList[i].role === 'user') {
+      lastBaseUserIdx = i;
+      lastBaseUserSig = normMsgPrefix(baseList[i].text);
+      break;
     }
-    return '';
-  })();
+  }
   let startAppendIdx = -1;
   for (let i = domList.length - 1; i >= 0; i--) {
     if (domList[i].role === 'user' && lastBaseUserSig && normMsgPrefix(domList[i].text) === lastBaseUserSig) {
@@ -3361,13 +3434,43 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     }
   }
   if (startAppendIdx >= 0) {
-    const tailBaseMsgs = baseList.slice(-4);
+    const tailBaseMsgs = baseList.slice(Math.max(0, lastBaseUserIdx + 1));
     for (let j = startAppendIdx; j < domList.length; j++) {
       const dm = domList[j];
       const dSig = normMsgPrefix(dm.text);
+      if (dm.role === 'assistant' && !dSig && !dm.highRisk) {
+        // 纯思考项（空正文）：不得向本轮已有回复或思考卡尾部追加空壳 dom-tail
+        const lastTurnAssistant = [...tailBaseMsgs].reverse().find((bm) => bm.role === 'assistant');
+        if (lastTurnAssistant) {
+          if (!lastTurnAssistant.thoughtText && dm.thoughtText) {
+            lastTurnAssistant.thoughtLabel = dm.thoughtLabel || '思考过程';
+            lastTurnAssistant.thoughtText = dm.thoughtText;
+            if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
+              lastTurnAssistant.thoughts = dm.thoughts.slice();
+              lastTurnAssistant.thoughtCount = dm.thoughts.length;
+            }
+          } else if (!normMsgPrefix(lastTurnAssistant.text) && dm.thoughtText && dm.thoughtText.length > String(lastTurnAssistant.thoughtText || '').length) {
+            lastTurnAssistant.thoughtText = dm.thoughtText;
+            if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
+              lastTurnAssistant.thoughts = dm.thoughts.slice();
+              lastTurnAssistant.thoughtCount = dm.thoughts.length;
+            }
+          }
+          continue;
+        }
+        // 本轮尚无任何 assistant 消息且正处于流式阶段才追加唯一 1 条流式思考卡
+        if (dm.thoughtLabel || dm.thoughtText) {
+          const item = { ...dm, id: `dom-tail-${j}` };
+          baseList.push(item);
+          tailBaseMsgs.push(item);
+        }
+        continue;
+      }
       const dup = tailBaseMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
       if (!dup) {
-        baseList.push({ ...dm, id: `dom-tail-${j}` });
+        const item = { ...dm, id: `dom-tail-${j}` };
+        baseList.push(item);
+        tailBaseMsgs.push(item);
       }
     }
   } else if (!lastBaseUserSig && domList.length) {
@@ -3430,14 +3533,33 @@ function createConversationHistoryManager() {
     let entry = null;
     const promise = (async () => {
       try {
-        const res = await callLocalLanguageServer('GetCascadeTrajectory', { cascadeId: sid }, 4500, options);
-        const steps = res?.trajectory?.steps;
-        if (!Array.isArray(steps)) {
+        const res = await callLocalLanguageServer('GetCascadeTrajectory', { cascadeId: sid, trajectoryVerbosity: 3 }, 4500, options);
+        const firstSteps = res?.trajectory?.steps;
+        if (!Array.isArray(firstSteps)) {
           return { messages: null, queuedMessages: null, fetchedSig: reqSig, gen, startedAt };
         }
+        const allSteps = firstSteps.slice();
+        const totalSteps = Number(res?.numTotalSteps || res?.trajectory?.numTotalSteps || 0);
+        if (totalSteps > allSteps.length && allSteps.length > 0) {
+          const PAGE_SIZE = 500;
+          const MAX_PAGES = 20;
+          for (let page = 0; page < MAX_PAGES && allSteps.length < totalSteps; page++) {
+            const startIndex = allSteps.length;
+            const endIndex = Math.min(totalSteps, startIndex + PAGE_SIZE);
+            const pageRes = await callLocalLanguageServer(
+              'GetCascadeTrajectorySteps',
+              { cascadeId: sid, startIndex, endIndex },
+              4000,
+              options
+            ).catch(() => null);
+            const chunk = Array.isArray(pageRes?.steps) ? pageRes.steps : [];
+            if (!chunk.length) break;
+            allSteps.push(...chunk);
+          }
+        }
         return {
-          messages: extractMessagesFromTrajectorySteps(steps, { lazyHtml: true }),
-          queuedMessages: extractQueuedMessagesFromTrajectorySteps(steps),
+          messages: extractMessagesFromTrajectorySteps(allSteps, { lazyHtml: true }),
+          queuedMessages: extractQueuedMessagesFromTrajectorySteps(allSteps),
           fetchedSig: reqSig,
           gen,
           startedAt
@@ -4070,9 +4192,25 @@ function buildMobileAppHtml() {
       display:block;margin-bottom:6px;padding:4px 8px;border-radius:8px;
       background:var(--risk-bg);border:1px solid rgba(239,68,68,.45);color:var(--risk-fg);font-size:12.5px;font-weight:600;
     }
-    .thought-box{margin-bottom:8px;padding:6px 9px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border-subtle);font-size:12.5px;color:var(--fg-sub)}
-    .thought-box summary{cursor:pointer;font-weight:600;color:var(--thought-summary);list-style:none}
-    .thought-body{margin-top:6px;white-space:pre-wrap;color:var(--muted);max-height:220px;overflow-y:auto}
+    .thought-box{margin-bottom:8px;padding:6px 10px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border-subtle);font-size:12.5px;color:var(--fg-sub)}
+    .msg.assistant.is-thought-only{padding:8px 10px}
+    .msg.assistant.is-thought-only .thought-box{margin-bottom:0}
+    .thought-box summary{cursor:pointer;font-weight:600;color:var(--thought-summary);list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;user-select:none}
+    .thought-box summary::-webkit-details-marker{display:none}
+    .thought-sum-left{display:inline-flex;align-items:center;gap:5px;min-width:0;flex:1 1 auto}
+    .thought-caret{display:inline-block;font-size:11px;transition:transform .16s ease;opacity:.82;flex:0 0 auto}
+    .thought-box[open] .thought-caret{transform:rotate(90deg)}
+    .thought-sum-meta{font-weight:500;font-size:11.5px;opacity:.76;white-space:nowrap}
+    .thought-box[open] .thought-cue-open{display:none}
+    .thought-box:not([open]) .thought-cue-close{display:none}
+    .thought-all-btn{appearance:none;border:1px solid var(--border-subtle);background:var(--surface-soft);color:var(--fg-sub);border-radius:6px;padding:1px 6px;font-size:11px;font-weight:500;cursor:pointer;flex:0 0 auto;line-height:1.4}
+    .thought-all-btn:hover{border-color:var(--border-accent-strong);color:var(--fg)}
+    .thought-body{margin-top:7px;white-space:pre-wrap;color:var(--muted);max-height:280px;overflow-y:auto;line-height:1.5;border-top:1px solid var(--border-subtle);padding-top:6px}
+    .thought-step{position:relative;padding:0 0 8px 12px;border-left:2px solid var(--border-subtle);margin-left:4px}
+    .thought-step:last-child{padding-bottom:0}
+    .thought-step::before{content:'';position:absolute;left:-5px;top:5px;width:8px;height:8px;border-radius:999px;background:var(--thought-summary);opacity:.72}
+    .thought-step-hd{font-size:11px;font-weight:600;color:var(--thought-summary);margin-bottom:2px;opacity:.85}
+    .thought-step-txt{white-space:pre-wrap;word-break:break-word;color:var(--muted)}
     .messages.is-switching{opacity:.58;transition:opacity .12s ease}
     .empty-tip{margin:auto;text-align:center;color:var(--muted);padding:24px 12px;font-size:13px}
     .mode-entry-card{
@@ -6211,6 +6349,18 @@ function buildMobileAppHtml() {
         void loadEarlierMessages();
         return;
       }
+      const allBtn = e.target?.closest?.('.thought-all-btn');
+      if (allBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const boxes = Array.from(msgEl.querySelectorAll('.thought-box'));
+        const shouldOpen = boxes.some((b) => !b.open);
+        for (const b of boxes) {
+          b.open = shouldOpen;
+          hydrateThoughtDetails(b);
+        }
+        return;
+      }
       const sum = e.target?.closest?.('summary');
       const detailsEl = sum?.parentElement;
       if (detailsEl && detailsEl.classList?.contains?.('thought-box')) {
@@ -8001,6 +8151,19 @@ function buildMobileAppHtml() {
     let loadingEarlierMsgs = false;
     let backfillingMsgGaps = false;
 
+    function buildThoughtBodyInnerHtml(m) {
+      if (!m) return '';
+      const steps = Array.isArray(m.thoughts) && m.thoughts.length > 1
+        ? m.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
+        : [];
+      if (steps.length > 1) {
+        return steps.map((txt, idx) => (
+          '<div class="thought-step"><div class="thought-step-hd">步骤 ' + (idx + 1) + '</div><div class="thought-step-txt">' + esc(txt) + '</div></div>'
+        )).join('');
+      }
+      return esc(m.thoughtText || '');
+    }
+
     function hydrateThoughtDetails(detailsEl) {
       if (!detailsEl) return;
       const idx = Number(detailsEl.getAttribute('data-thought-idx'));
@@ -8010,10 +8173,14 @@ function buildMobileAppHtml() {
         openThoughtIdxSet.add(idx);
         if (!detailsEl.querySelector('.thought-body')) {
           const m = sessionMsgsByIndex.get(idx);
-          if (m?.thoughtText) {
+          if (m?.thoughtText || (Array.isArray(m?.thoughts) && m.thoughts.length)) {
             const bodyDiv = document.createElement('div');
             bodyDiv.className = 'thought-body';
-            bodyDiv.textContent = m.thoughtText;
+            if (Array.isArray(m.thoughts) && m.thoughts.length > 1) {
+              bodyDiv.innerHTML = buildThoughtBodyInnerHtml(m);
+            } else {
+              bodyDiv.textContent = m.thoughtText || '';
+            }
             detailsEl.appendChild(bodyDiv);
           }
         }
@@ -8179,15 +8346,25 @@ function buildMobileAppHtml() {
           return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + (m.text ? ('<div>' + esc(m.text) + '</div>') : '') + attHtml + '</div>';
         }
         const risk = m.highRisk ? '<span class="risk-tag">' + esc(m.riskText || '🛡️ 检测到高危命令，请人工核对') + '</span>' : '';
-        const isThoughtOpen = Boolean(m.thoughtText && openThoughtIdxSet.has(m.msgIndex));
-        const thought = m.thoughtLabel
-          ? '<details class="thought-box" data-thought-idx="' + m.msgIndex + '"' + (isThoughtOpen ? ' open' : '') + '><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? ' · 展开思考' : '') + '</summary>' +
-            (isThoughtOpen ? '<div class="thought-body">' + esc(m.thoughtText) + '</div>' : '') + '</details>'
+        const hasThoughtBody = Boolean(m.thoughtText || (Array.isArray(m.thoughts) && m.thoughts.length));
+        const isThoughtOpen = Boolean(hasThoughtBody && openThoughtIdxSet.has(m.msgIndex));
+        const tCount = Math.max(Number(m.thoughtCount) || 0, Array.isArray(m.thoughts) ? m.thoughts.length : 0);
+        const stepBadge = tCount > 1 ? (' · 共 ' + tCount + ' 步') : '';
+        const thought = (m.thoughtLabel || hasThoughtBody)
+          ? '<details class="thought-box" data-thought-idx="' + m.msgIndex + '"' + (isThoughtOpen ? ' open' : '') + '><summary>' +
+              '<span class="thought-sum-left"><span class="thought-caret">▸</span><span>💡 ' + esc(m.thoughtLabel || '思考过程') + stepBadge + '</span>' +
+              (hasThoughtBody ? '<span class="thought-sum-meta"><span class="thought-cue-open">展开</span><span class="thought-cue-close">收起</span></span>' : '') +
+              '</span>' +
+              (hasThoughtBody ? '<button class="thought-all-btn" type="button" title="一键展开或收起当前会话的全部思考过程">全部</button>' : '') +
+            '</summary>' +
+            (isThoughtOpen ? '<div class="thought-body">' + buildThoughtBodyInnerHtml(m) + '</div>' : '') + '</details>'
           : '';
-        const bodyHtml = m.html
-          ? '<div class="md-body">' + m.html + '</div>'
-          : '<div class="md-body">' + renderMarkdownSafe(m.text || '') + '</div>';
-        return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + '" data-msg-idx="' + m.msgIndex + '">' + risk + thought + bodyHtml + '</div>';
+        const hasBodyText = Boolean(String(m.html || '').trim() || String(m.text || '').trim());
+        const bodyHtml = hasBodyText
+          ? (m.html ? '<div class="md-body">' + m.html + '</div>' : '<div class="md-body">' + renderMarkdownSafe(m.text || '') + '</div>')
+          : '';
+        const thoughtOnlyCls = (!hasBodyText && !m.highRisk && thought) ? ' is-thought-only' : '';
+        return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + thoughtOnlyCls + '" data-msg-idx="' + m.msgIndex + '">' + risk + thought + bodyHtml + '</div>';
       }).join('');
       if (snap?.busy) {
         html += '<div class="busy-pill"><span class="busy-spark"></span><span>正在思考与执行…</span></div>';
@@ -11941,6 +12118,8 @@ module.exports = {
   extractMessagesFromTrajectorySteps,
   extractQueuedMessagesFromTrajectorySteps,
   extractTrajectoryUserAttachments,
+  collapseConsecutiveDomThinking,
+  mergeTrajectoryAndDomMessages,
   resolveSafeLocalMediaPath,
   listSafeProjectTree,
   readSafeTextFilePreview,
