@@ -6859,8 +6859,11 @@ function buildMobileAppHtml() {
       closeSheet();
       if (opt && typeof onSelect === 'function') await onSelect(opt);
     }
-    $('sheet-list').onclick = handleSheetListClick;
-    $('sheet-list').addEventListener('click', handleSheetListClick);
+    const sheetListEl = $('sheet-list');
+    sheetListEl.onclick = handleSheetListClick;
+    if (!(typeof EventTarget === 'function' && sheetListEl instanceof EventTarget) && typeof sheetListEl.addEventListener === 'function') {
+      sheetListEl.addEventListener('click', handleSheetListClick);
+    }
     function openSheet(title, options, onSelect) {
       configureSheetChrome({
         kind: 'generic',
@@ -7362,17 +7365,23 @@ function buildMobileAppHtml() {
 
     function bindButtonClick(el, fn) {
       if (!el || typeof fn !== 'function') return;
-      let lastEv = null;
+      const seenEvents = typeof WeakSet === 'function' ? new WeakSet() : null;
+      const isNativeTarget = typeof EventTarget === 'function' && el instanceof EventTarget;
       const wrapped = (e) => {
-        if (e && e === lastEv) return;
-        lastEv = e || null;
-        if (e) {
-          Promise.resolve().then(() => { if (lastEv === e) lastEv = null; });
+        if (e && typeof e === 'object') {
+          if (seenEvents) {
+            if (seenEvents.has(e)) return;
+            seenEvents.add(e);
+          } else if (e.__agClickHandled) {
+            return;
+          } else {
+            try { e.__agClickHandled = true; } catch {}
+          }
         }
         return fn(e);
       };
       el.onclick = wrapped;
-      if (typeof el.addEventListener === 'function') {
+      if (!isNativeTarget && typeof el.addEventListener === 'function') {
         el.addEventListener('click', wrapped);
       }
     }
