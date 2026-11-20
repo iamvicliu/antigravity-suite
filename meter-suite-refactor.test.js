@@ -11452,6 +11452,53 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
   const afterRaceSnap = await histMgr.enrichMessages(baseSnap, { localApiConnect: async () => controlledApi });
   assert.equal(afterRaceSnap.queuedMessages.length, 0, '晚归的旧请求绝不得覆盖失效后已落地的新队列状态');
 
+  // 3b. 失效→旧请求先返回→新请求后返回：旧请求的返回快照不得泄漏过期队列，且最终缓存为新请求结果
+  const histMgr2 = createConversationHistoryManager();
+  let resolveOld2;
+  let resolveNew2;
+  let fetchCount2 = 0;
+  const controlledApi2 = {
+    call: async (method) => {
+      if (method !== 'GetCascadeTrajectory') return null;
+      fetchCount2 += 1;
+      if (fetchCount2 === 1) return await new Promise((r) => { resolveOld2 = r; });
+      return await new Promise((r) => { resolveNew2 = r; });
+    }
+  };
+  const snapInput2 = { ok: true, sessionId: 'conv-race-2', messages: [], busy: false, _activeTrajSig: 'sig-2' };
+  const oldP2 = histMgr2.enrichMessages(snapInput2, { localApiConnect: async () => controlledApi2 });
+  await new Promise((r) => setTimeout(r, 15));
+  histMgr2.invalidateSession('conv-race-2');
+  const newP2 = histMgr2.enrichMessages(snapInput2, { localApiConnect: async () => controlledApi2 });
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(fetchCount2, 2);
+
+  // 旧请求先返回（携带过期排队消息），此时新请求尚未返回
+  resolveOld2({
+    trajectory: {
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '失效前过期排队项' }] } }
+      ]
+    }
+  });
+  const oldSnap2 = await oldP2;
+  assert.equal(oldSnap2.queuedMessages.length, 0, '已失效的旧请求先返回时，绝不得通过回退分支将过期队列下发到快照');
+
+  // 新请求后返回（携带最新剩余 1 条排队消息）
+  resolveNew2({
+    trajectory: {
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '最新有效排队项' }] } }
+      ]
+    }
+  });
+  const newSnap2 = await newP2;
+  assert.equal(newSnap2.queuedMessages.length, 1);
+  assert.equal(newSnap2.queuedMessages[0].text, '最新有效排队项');
+  const finalCached2 = await histMgr2.enrichMessages(snapInput2, { localApiConnect: async () => controlledApi2 });
+  assert.equal(finalCached2.queuedMessages.length, 1);
+  assert.equal(finalCached2.queuedMessages[0].text, '最新有效排队项', '最终缓存必须保持新请求的队列状态');
+
   // 4. 远程网页端包含 #queue-dock、排队条渲染、立即发送与撤回按钮及防重锁
   const html = buildMobileAppHtml();
   assert.ok(html.includes('id="queue-dock"'), '应渲染 #queue-dock 排队消息容器');
