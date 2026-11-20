@@ -573,7 +573,7 @@
       font-variant-numeric:tabular-nums;
     }
     #context-tooltip[data-visible="true"]{
-      opacity:1;visibility:visible;transform:translateY(0);
+      opacity:1;visibility:visible;transform:none;
     }
     .ctx-tip-title{
       font-size:12px;line-height:1.35;font-weight:500;
@@ -603,7 +603,7 @@
       border:1px solid var(--ag-float-border);
       background:var(--ag-float-bg);color:var(--ag-text-primary);
       box-shadow:var(--ag-float-shadow);
-      transform-origin:top right;will-change:opacity,transform;
+      transform-origin:top right;
     }
     #overflow-menu[hidden]{display:none!important}
     .overflow-item{
@@ -660,7 +660,7 @@
       border:1px solid var(--ag-border-panel);border-radius:10px;
       box-shadow:var(--ag-shadow-panel);padding:12px;
       user-select:none;
-      opacity:1;transform:translateY(0);
+      opacity:1;transform:none;
       transition:opacity 170ms cubic-bezier(0.16, 1, 0.3, 1), transform 170ms cubic-bezier(0.16, 1, 0.3, 1);
       pointer-events:auto;
     }
@@ -737,7 +737,6 @@
     .badge-symbol-anim{
       display:inline-block;
       transition:opacity 0.18s cubic-bezier(0.4, 0, 0.2, 1), transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), filter 0.18s ease;
-      will-change:opacity, transform, filter;
     }
     .badge-symbol-anim.is-dissolving{
       opacity:0;
@@ -807,7 +806,7 @@
       }
       100%{
         opacity:1;
-        transform:translateY(0) scale(1);
+        transform:none;
       }
     }
     .collapsible-pane[style*="display: block"],
@@ -816,7 +815,7 @@
     #plan-custom-form:not([style*="display: none"]),
     #cost-details-pane:not([style*="display: none"]),
     .drawer-body:not([style*="display: none"]){
-      animation: agSmoothExpand 0.2s cubic-bezier(0.16,1,0.3,1) forwards;
+      animation: agSmoothExpand 0.2s cubic-bezier(0.16,1,0.3,1);
       transform-origin: top center;
     }
 
@@ -919,7 +918,6 @@
       border:1px solid var(--ag-float-border,rgba(255,255,255,0.14));
       border-radius:7px;
       box-shadow:0 16px 40px rgba(0,0,0,0.65),0 4px 12px rgba(0,0,0,0.4);
-      backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
       padding:4px;z-index:2147483647 !important;
       opacity:0;transform:translateY(-6px) scale(0.97);
       transform-origin:top center;pointer-events:none;
@@ -942,7 +940,7 @@
       border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .ag-dropdown-wrapper.is-open .ag-dropdown-menu{
-      opacity:1;transform:translateY(0) scale(1);pointer-events:auto;
+      opacity:1;transform:none;pointer-events:auto;
     }
     .ag-dropdown-item{
       display:flex;align-items:center;justify-content:space-between;gap:6px;
@@ -979,7 +977,7 @@
       transform:translateY(6px) scale(0.97);
     }
     .ag-dropdown-wrapper.is-open.open-up .ag-dropdown-menu{
-      transform:translateY(0) scale(1);
+      transform:none;
     }
     .ag-dropdown-item-right{
       display:inline-flex;align-items:center;gap:6px;margin-left:auto;padding-left:6px;flex-shrink:0;
@@ -1073,10 +1071,9 @@
       max-width:calc(100vw - 24px);max-height:calc(100vh - 54px);
       overflow:auto;overflow-anchor:none;border:1px solid var(--ag-border-panel);border-radius:10px;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);box-shadow:var(--ag-shadow-panel);padding:14px 14px 18px;
-      opacity:1;transform:translateY(0);visibility:visible;pointer-events:auto;
-      transform-origin:top right;will-change:opacity,transform;
+      opacity:1;transform:none;visibility:visible;pointer-events:auto;
+      transform-origin:top right;
       transition:opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1),visibility .16s ease;
-      contain:layout paint;
     }
     .ag-panel.ag-panel-flex{
       display:flex;flex-direction:column;overflow:hidden;padding:0;
@@ -1098,9 +1095,9 @@
     /* 视图内平滑交叉淡入淡出（避免直接 display 硬切导致内容跳闪） */
     @keyframes agFadeIn{
       from{opacity:0;transform:translateY(4px)}
-      to{opacity:1;transform:translateY(0)}
+      to{opacity:1;transform:none}
     }
-    .view-pane-fade{transition:opacity .15s ease,transform .15s ease;opacity:1;transform:translateY(0)}
+    .view-pane-fade{transition:opacity .15s ease,transform .15s ease;opacity:1;transform:none}
     .view-pane-fade.pane-hidden{opacity:0;transform:translateY(3px);display:none!important}
 
     /* 顶栏控制条（sticky 固定，防止表单或详情展开时滚出视口） */
