@@ -1,6 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:$PATH"
+export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+ensure_node_in_path() {
+  if command -v node >/dev/null 2>&1; then
+    return 0
+  fi
+  local cand nvm_dir nvm_root
+  for cand in \
+    "$HOME/.volta/bin" \
+    "$HOME/.asdf/shims" \
+    "$HOME/.local/share/mise/shims" \
+    "$HOME/.fnm/current/bin" \
+    "$HOME/Library/Application Support/fnm/aliases/default/bin"
+  do
+    if [ -x "$cand/node" ]; then
+      export PATH="$cand:$PATH"
+      return 0
+    fi
+  done
+  nvm_root="${NVM_DIR:-$HOME/.nvm}/versions/node"
+  if [ -d "$nvm_root" ]; then
+    while IFS= read -r nvm_dir; do
+      [ -n "$nvm_dir" ] || continue
+      if [ -x "$nvm_root/$nvm_dir/bin/node" ]; then
+        export PATH="$nvm_root/$nvm_dir/bin:$PATH"
+        return 0
+      fi
+    done < <(ls -1 "$nvm_root" 2>/dev/null | sort -V -r)
+  fi
+  return 0
+}
+ensure_node_in_path
 
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 while [ -L "$SCRIPT_PATH" ]; do
@@ -27,7 +58,7 @@ STATE_FILE="$HOME/Library/Application Support/AntigravityContextMeter/.live-sess
 FALLBACK_STATE_FILE="$HOME/.config/antigravity-context-meter/.live-session.json"
 LEGACY_FILE="$APP_DIR/.live-session.json"
 PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
-LOCK_FILE="$HOME/Library/Application Support/Antigravity/SingletonLock"
+SOCKET_FILE="$HOME/Library/Application Support/Antigravity/SingletonSocket"
 RELAUNCH_LOCK_FILE="/tmp/ag-context-meter-relaunch.lock"
 LOG_DIR="$HOME/Library/Logs"
 LOG_FILE="$LOG_DIR/antigravity-hans.log"
@@ -175,9 +206,11 @@ install_macos_launcher() {
 </plist>
 EOF
 
+  local node_bin_dir
+  node_bin_dir="$(dirname "$(command -v node 2>/dev/null || echo /usr/bin/node)")"
   cat > "$macos_dir/launch" <<EOF
 #!/usr/bin/env bash
-export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"
+export PATH="${node_bin_dir}:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"
 BIN="${bin_path}"
 TARGET_APP="${target_app}"
 LOG_FILE="\$HOME/Library/Logs/antigravity-hans.log"
@@ -387,18 +420,70 @@ case "$cmd" in
       echo "未找到 LaunchAgent 配置文件: $PLIST" >&2
       exit 1
     fi
-    if ! grep -q "SingletonLock" "$PLIST" 2>/dev/null; then
-      PLIST_PATH="$PLIST" LOCK_PATH="$LOCK_FILE" node -e '
+    node_bin_dir="$(dirname "$(command -v node)")"
+    upgraded_msg="$(PLIST_PATH="$PLIST" SOCKET_PATH="$SOCKET_FILE" NODE_BIN_DIR="$node_bin_dir" node -e '
 const fs = require("fs");
 const p = process.env.PLIST_PATH;
-const lock = process.env.LOCK_PATH;
+const sock = process.env.SOCKET_PATH;
+const nodeBin = process.env.NODE_BIN_DIR;
+const escXml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const stdPaths = [nodeBin, "/opt/homebrew/opt/node@22/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+const fullPath = Array.from(new Set(stdPaths.filter(Boolean))).join(":");
 let xml = fs.readFileSync(p, "utf8");
-if (!xml.includes(lock)) {
-  const next = xml.replace(/(<key>WatchPaths<\/key>\s*<array>)/, `$1\n    <string>${lock}</string>`);
-  if (next !== xml) fs.writeFileSync(p, next, "utf8");
+const notes = [];
+
+const lockPath = sock.replace(/SingletonSocket$/, "SingletonLock");
+if (xml.includes(lockPath)) {
+  if (xml.includes(sock)) {
+    xml = xml.replace(new RegExp(`[ \\t]*<string>${lockPath.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}<\\/string>\\r?\\n?`), "");
+  } else {
+    xml = xml.replace(lockPath, sock);
+  }
+  notes.push("WatchPaths 已由 SingletonLock 升级为 SingletonSocket");
+} else if (!xml.includes(sock)) {
+  const next = xml.replace(/(<key>WatchPaths<\/key>\s*<array>)/, `$1\n    <string>${escXml(sock)}</string>`);
+  if (next !== xml) {
+    xml = next;
+    notes.push("WatchPaths 已新增 SingletonSocket 监听");
+  }
 }
-'
-      echo "✅ 已升级 LaunchAgent WatchPaths 监听 (新增 SingletonLock 适配 v2.33.0+)"
+
+if (/<key>EnvironmentVariables<\/key>\s*<dict>/.test(xml)) {
+  if (/<key>EnvironmentVariables<\/key>\s*<dict>(?:(?!<\/dict>)[\s\S])*?<key>PATH<\/key>\s*<string>([^<]*)<\/string>/.test(xml)) {
+    xml = xml.replace(
+      /(<key>EnvironmentVariables<\/key>\s*<dict>(?:(?!<\/dict>)[\s\S])*?<key>PATH<\/key>\s*<string>)([^<]*)(<\/string>)/,
+      (m, pre, cur, post) => {
+        const parts = cur.split(":").filter(Boolean);
+        if (nodeBin && !parts.includes(nodeBin)) {
+          notes.push("EnvironmentVariables.PATH 已补充 Node 路径");
+          return `${pre}${escXml([nodeBin, ...parts].join(":"))}${post}`;
+        }
+        return m;
+      }
+    );
+  } else {
+    xml = xml.replace(
+      /(<key>EnvironmentVariables<\/key>\s*<dict>)/,
+      `$1\n    <key>PATH</key>\n    <string>${escXml(fullPath)}</string>`
+    );
+    notes.push("EnvironmentVariables 已补充 PATH");
+  }
+} else {
+  const envBlock = `  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${escXml(fullPath)}</string>\n  </dict>\n`;
+  const next = xml.replace(/(^[ \t]*<key>RunAtLoad<\/key>)/m, `${envBlock}$1`);
+  if (next !== xml) {
+    xml = next;
+    notes.push("已新增 EnvironmentVariables.PATH");
+  }
+}
+
+if (notes.length > 0) {
+  fs.writeFileSync(p, xml, "utf8");
+  console.log(notes.join("；"));
+}
+')"
+    if [ -n "${upgraded_msg:-}" ]; then
+      echo "✅ 已升级 LaunchAgent 配置（${upgraded_msg}）"
     fi
     uid="$(id -u)"
     launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
