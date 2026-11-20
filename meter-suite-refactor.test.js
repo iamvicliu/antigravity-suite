@@ -11027,5 +11027,122 @@ test('远程端支持系统确认选择框与交互式提问卡片展示与提�
   draftMap.set(sigS1, { selected: new Set([1]), otherText: '会话1草稿' });
   assert.equal(draftMap.has(sigS2), false, '会话 2 不得继承会话 1 的草稿');
 
+  // 6. 内嵌 radiogroup 的外层提问卡（标题/输入框/提交按钮在 radiogroup 外部）必须采集完整卡片并去重
+  const nestedCard = env.doc.createElement('div');
+  nestedCard.setAttribute('data-testid', 'ask-question-card');
+  nestedCard.offsetWidth = 360;
+  nestedCard.offsetHeight = 220;
+  const nestedTitle = env.doc.createElement('h3');
+  nestedTitle.textContent = '选择构建目标';
+  nestedCard.appendChild(nestedTitle);
+  const rg = env.doc.createElement('div');
+  rg.setAttribute('role', 'radiogroup');
+  rg.offsetWidth = 340;
+  rg.offsetHeight = 90;
+  let pickedTarget = '';
+  for (const [id, label] of [['r-mac', 'macOS ARM64'], ['r-win', 'Windows x64']]) {
+    const lbl = env.doc.createElement('label');
+    const r = env.doc.createElement('input');
+    r.setAttribute('type', 'radio');
+    r.type = 'radio';
+    r.setAttribute('id', id);
+    r.checked = false;
+    r.addEventListener('click', () => { r.checked = true; pickedTarget = label; });
+    lbl.appendChild(r);
+    const sp = env.doc.createElement('span');
+    sp.textContent = label;
+    lbl.appendChild(sp);
+    rg.appendChild(lbl);
+  }
+  nestedCard.appendChild(rg);
+  const nestedOther = env.doc.createElement('input');
+  nestedOther.setAttribute('type', 'text');
+  nestedOther.type = 'text';
+  nestedOther.value = '';
+  nestedCard.appendChild(nestedOther);
+  let nestedSubmitted = false;
+  const nestedSubmit = env.doc.createElement('button');
+  nestedSubmit.setAttribute('type', 'submit');
+  nestedSubmit.textContent = '确认构建';
+  nestedSubmit.offsetWidth = 80;
+  nestedSubmit.offsetHeight = 32;
+  nestedSubmit.addEventListener('click', () => { nestedSubmitted = true; });
+  nestedCard.appendChild(nestedSubmit);
+  mainEl.appendChild(nestedCard);
+
+  // 7. 非弹窗多选卡（选项可勾选、Submit 初始禁用，勾选任意项后启用）必须被采集并端到端提交
+  const initDisabledCard = env.doc.createElement('form');
+  initDisabledCard.offsetWidth = 360;
+  initDisabledCard.offsetHeight = 180;
+  const idTitle = env.doc.createElement('h3');
+  idTitle.textContent = '选择清理项';
+  initDisabledCard.appendChild(idTitle);
+  let idSubmitted = false;
+  const idSubmit = env.doc.createElement('button');
+  idSubmit.setAttribute('type', 'submit');
+  idSubmit.textContent = '提交清理';
+  idSubmit.disabled = true;
+  idSubmit.offsetWidth = 80;
+  idSubmit.offsetHeight = 32;
+  idSubmit.addEventListener('click', () => { if (!idSubmit.disabled) idSubmitted = true; });
+  const idBoxes = [];
+  for (const [id, label] of [['c-cache', '缓存目录'], ['c-log', '历史日志']]) {
+    const lbl = env.doc.createElement('label');
+    const c = env.doc.createElement('input');
+    c.setAttribute('type', 'checkbox');
+    c.type = 'checkbox';
+    c.setAttribute('id', id);
+    c.checked = false;
+    c.addEventListener('click', () => {
+      c.checked = !c.checked;
+      idSubmit.disabled = !idBoxes.some((b) => b.checked);
+    });
+    idBoxes.push(c);
+    lbl.appendChild(c);
+    const sp = env.doc.createElement('span');
+    sp.textContent = label;
+    lbl.appendChild(sp);
+    initDisabledCard.appendChild(lbl);
+  }
+  initDisabledCard.appendChild(idSubmit);
+  mainEl.appendChild(initDisabledCard);
+
+  const snap2 = enhancer.getMobileSnapshot();
+  const nestedFound = snap2.pendingPrompts.filter((p) => p.title === '选择构建目标');
+  assert.equal(nestedFound.length, 1, '内嵌 radiogroup 的提问卡应只采集 1 张完整外层卡并去重');
+  assert.equal(nestedFound[0].hasOtherInput, true, '外层提问卡应保留自定义输入框');
+  assert.equal(nestedFound[0].actions[0]?.label, '确认构建', '外层提问卡应保留提交按钮');
+  const nestedRes = await enhancer.performMobileAction({
+    action: 'respond-prompt',
+    promptKey: nestedFound[0].promptKey,
+    selectedIndices: [1],
+    otherText: '--release',
+    actionLabel: '确认构建'
+  });
+  assert.equal(nestedRes.ok, true);
+  assert.equal(pickedTarget, 'Windows x64');
+  assert.equal(nestedOther.value, '--release');
+  assert.equal(nestedSubmitted, true);
+
+  const initDisFound = snap2.pendingPrompts.find((p) => p.title === '选择清理项');
+  assert.ok(initDisFound, '选项可操作、提交按钮初始禁用的多选卡必须被采集');
+  const idRes = await enhancer.performMobileAction({
+    action: 'respond-prompt',
+    promptKey: initDisFound.promptKey,
+    selectedIndices: [0],
+    actionLabel: '提交清理'
+  });
+  assert.equal(idRes.ok, true, '勾选选项启用初始禁用的提交按钮后应成功提交');
+  assert.equal(idSubmit.disabled, false);
+  assert.equal(idSubmitted, true);
+
+  // 8. 连续轮询复用已挂载提示 DOM，保留滚动位置且请求未完成时阻止重复提交
+  assert.ok(
+    html.includes('if (dock.dataset.promptSig !== promptSig)')
+    && html.includes('if (promptSubmittingSig === promptSig) return;')
+    && html.includes("dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = true; });"),
+    '连续轮询命中相同 promptSig 时应跳过重建 DOM 以保留滚动位置与提交中禁用锁'
+  );
+
   enhancer.dispose?.();
 });
