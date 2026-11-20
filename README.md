@@ -1,6 +1,6 @@
 # Antigravity Suite
 
-[简体中文](README.md) · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
+**简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
 > **给 Google Antigravity 桌面端（macOS）加实用功能的小工具——100% 零改包（不修改 `app.asar` 与官方签名），不影响官方升级，随时可关。**
 
