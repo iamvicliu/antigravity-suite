@@ -3527,9 +3527,38 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       }
       const dup = currentTurnMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
       if (!dup) {
-        const item = { ...dm, id: `dom-tail-${j}` };
-        baseList.push(item);
-        currentTurnMsgs.push(item);
+        // 流式纯思考卡转正文交接：若本轮末尾是无正文纯思考卡，合并其思考到新回复并移除临时卡
+        const pendingThinkIdx = (dm.role === 'assistant' && dSig)
+          ? baseList.findIndex((bm, idx) => idx > lastBaseUserIdx && bm.role === 'assistant' && !normMsgPrefix(bm.text) && !bm.highRisk && (bm.thoughtLabel || bm.thoughtText))
+          : -1;
+        if (pendingThinkIdx >= 0) {
+          const prevThink = baseList[pendingThinkIdx];
+          const prevThoughts = Array.isArray(prevThink.thoughts) && prevThink.thoughts.length
+            ? prevThink.thoughts
+            : (prevThink.thoughtText ? [prevThink.thoughtText] : []);
+          const nextThoughts = Array.isArray(dm.thoughts) && dm.thoughts.length
+            ? dm.thoughts
+            : (dm.thoughtText ? [dm.thoughtText] : []);
+          const combinedThoughts = prevThoughts.slice();
+          for (const t of nextThoughts) {
+            if (t && !combinedThoughts.includes(t)) combinedThoughts.push(t);
+          }
+          const promoted = {
+            ...dm,
+            id: `dom-tail-${j}`,
+            thoughtLabel: dm.thoughtLabel || prevThink.thoughtLabel || (combinedThoughts.length ? '思考过程' : ''),
+            thoughtText: combinedThoughts.join('\n\n') || dm.thoughtText || prevThink.thoughtText || '',
+            ...(combinedThoughts.length ? { thoughts: combinedThoughts, thoughtCount: combinedThoughts.length } : {})
+          };
+          baseList.splice(pendingThinkIdx, 1, promoted);
+          const turnPos = currentTurnMsgs.indexOf(prevThink);
+          if (turnPos >= 0) currentTurnMsgs.splice(turnPos, 1, promoted);
+          else currentTurnMsgs.push(promoted);
+        } else {
+          const item = { ...dm, id: `dom-tail-${j}` };
+          baseList.push(item);
+          currentTurnMsgs.push(item);
+        }
       }
     }
   } else if (!lastBaseUserSig && domList.length) {

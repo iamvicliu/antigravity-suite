@@ -7294,7 +7294,7 @@
       ));
       let replyText = mdRoots.map((m) => (m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
       const replyHtml = extractSanitizedMarkdownHtml(mdRoots);
-      if (!replyText) {
+      if (!replyText && !triggers.length) {
         const cloneText = (node.innerText || '')
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
           .replace(/^Worked\s+for\s+\S+(?:\s+in\s+this\s+step)?\s*\n*/i, '')
