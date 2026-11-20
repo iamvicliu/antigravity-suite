@@ -139,6 +139,10 @@ ${REMOTE_ENV_ENTRY}  </dict>
   </array>
 ${ENV_BLOCK}  <key>RunAtLoad</key>
   <true/>
+  <key>StartInterval</key>
+  <integer>5</integer>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
   <key>WatchPaths</key>
   <array>
     <string>${PORT_FILE}</string>

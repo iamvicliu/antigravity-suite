@@ -380,6 +380,61 @@ const { resolveActiveCdpTarget } = require(process.env.APP_DIR + "/asar-engine")
   fi
 }
 
+parse_etime_sec() {
+  local raw="$1" days=0 hrs=0 mins=0 secs=0 rest
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  case "$raw" in
+    *-*) days="${raw%%-*}"; rest="${raw#*-}" ;;
+    *) rest="$raw" ;;
+  esac
+  local IFS=':'
+  local parts=()
+  read -r -a parts <<< "$rest"
+  case "${#parts[@]}" in
+    3) hrs="${parts[0]}"; mins="${parts[1]}"; secs="${parts[2]}" ;;
+    2) mins="${parts[0]}"; secs="${parts[1]}" ;;
+    1) secs="${parts[0]}" ;;
+    *) echo 9999; return 0 ;;
+  esac
+  case "${days}${hrs}${mins}${secs}" in
+    ''|*[!0-9]*) echo 9999; return 0 ;;
+  esac
+  echo $(( 10#$days * 86400 + 10#$hrs * 3600 + 10#$mins * 60 + 10#$secs ))
+}
+
+get_host_ps_line() {
+  local ps_raw=""
+  if [ -n "${AG_MOCK_PS_OUTPUT+x}" ]; then
+    ps_raw="$AG_MOCK_PS_OUTPUT"
+  else
+    ps_raw="$(ps -ax -o pid=,etime=,command= 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$ps_raw" | grep '/Contents/MacOS/Antigravity' | grep -v -E 'Antigravity Helper|language_server' | head -n 1 || true
+}
+
+is_live_host_running() {
+  if [ "${AG_MOCK_LIVE_HOST_RUNNING:-}" = "1" ]; then
+    return 0
+  fi
+  if [ "${AG_MOCK_LIVE_HOST_RUNNING:-}" = "0" ]; then
+    return 1
+  fi
+  local f pid cmdline
+  for f in "$STATE_FILE" "$FALLBACK_STATE_FILE" "$LEGACY_FILE"; do
+    if [ -f "$f" ]; then
+      pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$f" 2>/dev/null | head -n 1 || true)"
+      if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+        cmdline="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+        if echo "$cmdline" | grep -q "live-host.js"; then
+          return 0
+        fi
+      fi
+    fi
+  done
+  pgrep -f "$APP_DIR/live-host.js" >/dev/null 2>&1
+}
+
 case "$cmd" in
   start|live)
     if has_active_cdp_target; then
@@ -498,6 +553,23 @@ if (/<key>EnvironmentVariables<\/key>\s*<dict>/.test(xml)) {
   }
 }
 
+if (!/<key>StartInterval<\/key>/.test(xml)) {
+  const intervalBlock = "  <key>StartInterval</key>\n  <integer>5</integer>\n";
+  const next = xml.replace(/(^[ \t]*<key>RunAtLoad<\/key>\s*<true\/>\r?\n)/m, `$1${intervalBlock}`);
+  if (next !== xml) {
+    xml = next;
+    notes.push("已新增 StartInterval=5 轻量轮询");
+  }
+}
+if (!/<key>ThrottleInterval<\/key>/.test(xml)) {
+  const throttleBlock = "  <key>ThrottleInterval</key>\n  <integer>5</integer>\n";
+  const next = xml.replace(/(^[ \t]*<key>StartInterval<\/key>\s*<integer>\d+<\/integer>\r?\n)/m, `$1${throttleBlock}`);
+  if (next !== xml) {
+    xml = next;
+    notes.push("已新增 ThrottleInterval=5");
+  }
+}
+
 if (notes.length > 0) {
   fs.writeFileSync(p, xml, "utf8");
   console.log(notes.join("；"));
@@ -598,39 +670,46 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
     exec node "$APP_DIR/mobile-remote.js" --print-info "${@:2}"
     ;;
   _auto-trigger)
-    mkdir -p "$LOG_DIR"
-    if ! has_live_antigravity; then
+    host_line="$(get_host_ps_line)"
+    if [ -z "$host_line" ]; then
       exit 0
     fi
-    if ! has_active_cdp_target; then
-      bare_info="$(get_bare_antigravity_info || true)"
-      if [ -n "${bare_info:-}" ]; then
-        bare_pid="${bare_info%% *}"
-        bare_elapsed="${bare_info#* }"
-        if [ "${bare_elapsed:-999}" -le 20 ]; then
-          now_ts="$(date +%s)"
-          last_ts=0
-          if [ -f "$RELAUNCH_LOCK_FILE" ]; then
-            last_ts="$(cat "$RELAUNCH_LOCK_FILE" 2>/dev/null || echo 0)"
-          fi
-          case "$last_ts" in ''|*[!0-9]*) last_ts=0 ;; esac
-          if [ $((now_ts - last_ts)) -ge 20 ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $bare_pid, 启动 ${bare_elapsed}s) 未带调试端口，自动补参重拉..." >> "$LOG_FILE"
-            relaunch_antigravity_with_cdp >> "$LOG_FILE" 2>&1 || true
-            exit 0
-          fi
-        fi
-      fi
-    fi
-    for _ in $(seq 1 15); do
-      if ! has_live_antigravity; then
+    read -r host_pid host_etime host_cmd <<< "$host_line"
+    if printf '%s\n' "$host_cmd" | grep -qE -- '--remote-debugging-port(=|[[:space:]]|$)'; then
+      if is_live_host_running; then
         exit 0
       fi
-      if has_active_cdp_target && node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
-        break
-      fi
-      sleep 2
-    done
+      mkdir -p "$LOG_DIR"
+      for _ in $(seq 1 15); do
+        if [ -z "$(get_host_ps_line)" ]; then
+          exit 0
+        fi
+        if is_live_host_running; then
+          exit 0
+        fi
+        if has_active_cdp_target && node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
+          break
+        fi
+        sleep 2
+      done
+      exit 0
+    fi
+
+    bare_elapsed="$(parse_etime_sec "$host_etime")"
+    if [ "${bare_elapsed:-999}" -gt 30 ]; then
+      exit 0
+    fi
+    mkdir -p "$LOG_DIR"
+    now_ts="$(date +%s)"
+    last_ts=0
+    if [ -f "$RELAUNCH_LOCK_FILE" ]; then
+      last_ts="$(cat "$RELAUNCH_LOCK_FILE" 2>/dev/null || echo 0)"
+    fi
+    case "$last_ts" in ''|*[!0-9]*) last_ts=0 ;; esac
+    if [ $((now_ts - last_ts)) -ge 20 ]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $host_pid, 启动 ${bare_elapsed}s) 未带调试端口，自动补参重拉..." >> "$LOG_FILE"
+      relaunch_antigravity_with_cdp >> "$LOG_FILE" 2>&1 || true
+    fi
     ;;
   check)
     exec node "$APP_DIR/cli.js" check
