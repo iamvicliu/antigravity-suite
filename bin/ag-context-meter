@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+DEFAULT_NODE_PATHS="${AG_DEFAULT_NODE_PATHS-/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin}"
+if [ -n "$DEFAULT_NODE_PATHS" ]; then
+  export PATH="${DEFAULT_NODE_PATHS}:$PATH"
+fi
 
 ensure_node_in_path() {
   if command -v node >/dev/null 2>&1; then
@@ -427,21 +430,29 @@ const p = process.env.PLIST_PATH;
 const sock = process.env.SOCKET_PATH;
 const nodeBin = process.env.NODE_BIN_DIR;
 const escXml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const unescXml = (s) => String(s)
+  .replace(/&lt;/g, "<")
+  .replace(/&gt;/g, ">")
+  .replace(/&quot;/g, "\"")
+  .replace(/&apos;/g, "\x27")
+  .replace(/&amp;/g, "&");
 const stdPaths = [nodeBin, "/opt/homebrew/opt/node@22/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 const fullPath = Array.from(new Set(stdPaths.filter(Boolean))).join(":");
 let xml = fs.readFileSync(p, "utf8");
 const notes = [];
 
 const lockPath = sock.replace(/SingletonSocket$/, "SingletonLock");
-if (xml.includes(lockPath)) {
-  if (xml.includes(sock)) {
-    xml = xml.replace(new RegExp(`[ \\t]*<string>${lockPath.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}<\\/string>\\r?\\n?`), "");
+const escLockPath = escXml(lockPath);
+const escSockPath = escXml(sock);
+if (xml.includes(escLockPath)) {
+  if (xml.includes(escSockPath)) {
+    xml = xml.replace(new RegExp(`[ \\t]*<string>${escLockPath.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}<\\/string>\\r?\\n?`), "");
   } else {
-    xml = xml.replace(lockPath, sock);
+    xml = xml.replace(escLockPath, escSockPath);
   }
   notes.push("WatchPaths 已由 SingletonLock 升级为 SingletonSocket");
-} else if (!xml.includes(sock)) {
-  const next = xml.replace(/(<key>WatchPaths<\/key>\s*<array>)/, `$1\n    <string>${escXml(sock)}</string>`);
+} else if (!xml.includes(escSockPath)) {
+  const next = xml.replace(/(<key>WatchPaths<\/key>\s*<array>)/, `$1\n    <string>${escSockPath}</string>`);
   if (next !== xml) {
     xml = next;
     notes.push("WatchPaths 已新增 SingletonSocket 监听");
@@ -453,7 +464,7 @@ if (/<key>EnvironmentVariables<\/key>\s*<dict>/.test(xml)) {
     xml = xml.replace(
       /(<key>EnvironmentVariables<\/key>\s*<dict>(?:(?!<\/dict>)[\s\S])*?<key>PATH<\/key>\s*<string>)([^<]*)(<\/string>)/,
       (m, pre, cur, post) => {
-        const parts = cur.split(":").filter(Boolean);
+        const parts = unescXml(cur).split(":").filter(Boolean);
         if (nodeBin && !parts.includes(nodeBin)) {
           notes.push("EnvironmentVariables.PATH 已补充 Node 路径");
           return `${pre}${escXml([nodeBin, ...parts].join(":"))}${post}`;
