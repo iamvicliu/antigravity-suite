@@ -3294,7 +3294,13 @@ function createConversationHistoryManager() {
 
   function invalidateSession(sessionId) {
     const sid = String(sessionId || '').trim();
-    if (sid) cache.delete(sid);
+    if (!sid) return;
+    cache.delete(sid);
+    nextFetchGen(sid);
+    const prefix = `${sid}\n`;
+    for (const key of Array.from(inflightMap.keys())) {
+      if (key.startsWith(prefix)) inflightMap.delete(key);
+    }
   }
 
   async function getMessagesPage(options = {}) {
@@ -10364,8 +10370,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           }
           let rpcRes = null;
           if (actionName === 'delete-queued-message') {
-            const stepIndex = Number(payload?.stepIndex);
-            if (!Number.isInteger(stepIndex) || stepIndex < 0) {
+            const rawStep = payload?.stepIndex;
+            const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
+              || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
+            const stepIndex = isValidStep ? Number(rawStep) : -1;
+            if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队步骤索引 stepIndex' }));
               return;
             }
@@ -10383,6 +10392,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             clientId,
             convLimit: 100,
             msgLimit: 30,
+            bypassCache: true,
             bypassCatalogCache: true
           });
           const usageSummary = (snap && snap.ok !== false && !snap.usageSummary) ? await getCachedUsageSummary() : null;
