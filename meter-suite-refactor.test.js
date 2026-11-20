@@ -12002,6 +12002,21 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   assert.equal(crossTurnMerged[3].text, '');
   assert.equal(crossTurnMerged[3].thoughtText, '第二轮流式思考内容');
 
+  // 2b. 流式纯思考卡转正文交接：轨迹仅有空正文思考卡、DOM 已出最终回复时，合并思考到回复并移除临时卡
+  const streamingTraj = [
+    { id: 't-u-0', role: 'user', text: '流式交接测试' },
+    { id: 't-think-end', role: 'assistant', text: '', html: '', thoughtLabel: '思考过程', thoughtText: '流式思考阶段1', thoughts: ['流式思考阶段1'], thoughtCount: 1 }
+  ];
+  const handoverDom = [
+    { id: 'u-0', role: 'user', text: '流式交接测试' },
+    { id: 'a-1', role: 'assistant', text: '最终完整回复', thoughtLabel: '思考过程', thoughtText: '流式思考阶段2', thoughts: ['流式思考阶段2'], thoughtCount: 1 }
+  ];
+  const handoverMerged = mergeTrajectoryAndDomMessages(streamingTraj, handoverDom, { busy: false });
+  assert.equal(handoverMerged.length, 2, '流式纯思考卡转正文交接后必须移除临时纯思考卡，只保留 1 问 1 答');
+  assert.equal(handoverMerged[1].text, '最终完整回复');
+  assert.deepEqual(handoverMerged[1].thoughts, ['流式思考阶段1', '流式思考阶段2']);
+  assert.equal(handoverMerged[1].thoughtCount, 2);
+
   // 3. fetchTrajectoryMessages 传 trajectoryVerbosity: 3、支持首包 steps=[] 从 0 补取、支持 >20 页拉齐
   const rpcLog = [];
   const histMgr = createConversationHistoryManager();
