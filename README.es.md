@@ -6,12 +6,12 @@
 
 ## Funciones principales
 
-- **📱 Control remoto multicanal para móvil y escritorio (Túnel Cloudflare sin inicio de sesión por defecto y aislamiento por sesión)**：Conéctate mediante LAN, Tailscale, Bonjour o túnel temporal de Cloudflare (habilitado por defecto, compatible con dominio fijo propio). Incluye prueba automática de ruta más rápida, paneles superiores de contexto y uso local, 9 interruptores de visualización y sesiones aisladas por pestaña (`X-AG-Client-Id`).
-- **🛡️ Autocompactación a 240K y alerta en tiempo real de caída de caché (328K)**：Evita bloqueos de 4–5 minutos al expirar la caché en conversaciones largas enviando `/compact` automáticamente cuando alcanza 240K o cae la caché en reposo.
-- **⚡ Suite de productividad en el editor**：Grupo de **14 comandos recomendados integrados** (agrupados por uso, tooltip de doble línea al pasar el cursor y conversión automática a píldoras nativas) + prompts personalizados, botón **`✨ Optimizar` / `↩ Deshacer`** con respaldo multimodelo, vista previa de sugerencias `Tab`, cambio rápido de chats con **`⌘1`–`⌘9`**, edición en línea con **`⌘S`** y lanzador **`>_ CLI`**.
-- **📊 Monitor de contexto, mapa de calor de 52 semanas y cuotas duales**：Anillo superior con uso del contexto y costes API estimados, junto con cápsulas `G4` / `C` de cuota cada 5 horas y semanal para Gemini 4 y Claude.
-- **🇨🇳 Cambio instantáneo entre chino simplificado e inglés (traducción local sin tokens)**：Traduce y almacena localmente pensamientos y títulos sin consumir cuota, con cambio de idioma en vivo desde **`⚙️`**.
-- **🔄 Actualización en caliente y 🛡️ bloqueo de comandos peligrosos**：Actualización sin reiniciar desde el indicador rojo en **`⚙️`**, e interceptación con marco rojo ante comandos destructivos (`rm -rf`, `git reset --hard`, `sudo`).
+1. **🇨🇳 Cambio instantáneo entre chino simplificado e inglés (traducción local sin tokens)**: Traduce y almacena localmente pensamientos y títulos sin consumir cuota, con cambio de idioma en vivo desde **`⚙️`**.
+2. **📱 Control remoto multicanal para móvil y escritorio (Túnel Cloudflare sin inicio de sesión por defecto y aislamiento por sesión)**: Conéctate mediante LAN, Tailscale, Bonjour o túnel temporal de Cloudflare (habilitado por defecto, compatible con dominio fijo propio). Incluye prueba automática de ruta más rápida, paneles superiores de contexto y uso local, 9 interruptores de visualización y sesiones aisladas por pestaña (`X-AG-Client-Id`).
+3. **📊 Monitor de contexto, autocompactación a 240K y cuotas duales**: Anillo superior con uso del contexto, mapa de calor de 52 semanas y costes API estimados, junto con cápsulas `G4` / `C` de cuota cada 5 horas y semanal; además envía `/compact` automáticamente al alcanzar 240K o detectar caída de caché (alerta 328K) para evitar bloqueos de varios minutos.
+4. **⚡ Suite de productividad en el editor**: Grupo de **14 comandos recomendados integrados** (agrupados por uso, tooltip de doble línea al pasar el cursor y conversión automática a píldoras nativas) + prompts personalizados, botón **`✨ Optimizar` / `↩ Deshacer`** con respaldo multimodelo, vista previa de sugerencias `Tab`, cambio rápido de chats con **`⌘1`–`⌘9`**, edición en línea con **`⌘S`** y lanzador **`>_ CLI`**.
+5. **🛡️ Bloqueo con marco rojo ante comandos peligrosos**: Intercepta comandos destructivos (`rm -rf`, `git reset --hard`, `sudo`) y exige confirmación manual incluso si la aprobación automática está activada.
+6. **🔄 Detección automática y actualización en caliente con un clic**: Muestra un punto rojo en **`⚙️`** cuando hay una nueva versión en GitHub para aplicar cambios al instante sin reiniciar Antigravity.
 
 ---
 
