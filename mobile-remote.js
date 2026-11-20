@@ -3068,6 +3068,7 @@ function createConversationHistoryManager() {
   const cache = new Map();
   const inflightMap = new Map();
   const fetchGenMap = new Map();
+  const invalidatedGenMap = new Map();
   const MAX_CACHE_ENTRIES = 24;
 
   function touchCache(sessionId, rec) {
@@ -3196,12 +3197,14 @@ function createConversationHistoryManager() {
     const trajFetchedFresh = Boolean(fetchedMsgs && fetchRes.fetchedSig === trajSig);
 
     if (isSuperseded) {
+      const invGen = invalidatedGenMap.get(sid) || 0;
+      const wasInvalidated = Boolean(fetchRes && fetchRes.gen < invGen);
       const activeTrajMsgs = Array.isArray(latestExisting?.trajMsgs)
         ? latestExisting.trajMsgs
-        : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null));
+        : (wasInvalidated ? null : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null)));
       const activeQueued = Array.isArray(latestExisting?.queuedMessages)
         ? latestExisting.queuedMessages
-        : (fetchedQueued || (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : []));
+        : (wasInvalidated ? [] : (fetchedQueued || (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : [])));
       const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
       return { merged, trajMsgs: activeTrajMsgs, queuedMessages: activeQueued };
     }
@@ -3296,7 +3299,8 @@ function createConversationHistoryManager() {
     const sid = String(sessionId || '').trim();
     if (!sid) return;
     cache.delete(sid);
-    nextFetchGen(sid);
+    const invGen = nextFetchGen(sid);
+    invalidatedGenMap.set(sid, invGen);
     const prefix = `${sid}\n`;
     for (const key of Array.from(inflightMap.keys())) {
       if (key.startsWith(prefix)) inflightMap.delete(key);
