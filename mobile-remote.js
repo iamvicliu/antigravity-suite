@@ -8692,15 +8692,19 @@ function readPersistedTunnelStatus() {
   };
 }
 
-function resolveEmptyCloudflaredConfigPath() {
-  if (process.platform !== 'win32') return '/dev/null';
-  const emptyPath = path.join(path.dirname(getRemoteConfigPath()), '.cloudflared-empty.yml');
+function resolveEmptyCloudflaredConfigPath(options = {}) {
+  const plat = options.platform || process.platform;
+  if (plat !== 'win32') {
+    if (fs.existsSync('/dev/null')) return '/dev/null';
+  }
+  const baseDir = options.baseDir || path.dirname(getRemoteConfigPath());
+  const emptyPath = path.join(baseDir, '.cloudflared-empty.yml');
   try {
-    const dir = path.dirname(emptyPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
     if (!fs.existsSync(emptyPath)) fs.writeFileSync(emptyPath, '', 'utf8');
+    if (fs.existsSync(emptyPath) && fs.statSync(emptyPath).isFile()) return emptyPath;
   } catch {}
-  return emptyPath;
+  return '';
 }
 
 function createCloudflareTunnelController(getPort) {
@@ -8802,9 +8806,10 @@ function createCloudflareTunnelController(getPort) {
 
     const port = Number(typeof getPort === 'function' ? getPort() : cfg.port) || DEFAULT_REMOTE_PORT;
     const emptyConfigPath = resolveEmptyCloudflaredConfigPath();
+    const configArgs = emptyConfigPath ? ['--config', emptyConfigPath] : [];
     const args = mode === 'named'
-      ? ['tunnel', '--config', emptyConfigPath, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
-      : ['tunnel', '--config', emptyConfigPath, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
+      ? ['tunnel', ...configArgs, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
+      : ['tunnel', ...configArgs, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
 
     const childEnv = { ...process.env };
     const appendNoProxy = (cur) => {
@@ -10512,6 +10517,7 @@ module.exports = {
   recordPairedDeviceAccess,
   getPairedDevicesSummary,
   startMobileRemoteServer,
+  resolveEmptyCloudflaredConfigPath,
   buildRemoteInfo,
   printRemoteCli
 };
