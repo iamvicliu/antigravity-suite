@@ -1,6 +1,6 @@
 (() => {
   if (typeof window === 'undefined') return;
-  const PATCH_FINGERPRINT = 'app-2.33.0-20261118-r30';
+  const PATCH_FINGERPRINT = 'app-2.33.0-20261120-r31';
   const fingerprint = window.__antigravityZhPatchRequestedFingerprint || PATCH_FINGERPRINT;
   if (window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === fingerprint) return;
   const updating = window.__antigravityZhPatchInstalled === true && window.__observedDocument === document;
@@ -5198,6 +5198,7 @@
     '.part.auxiliarybar .title-label',
     // 输入框补全等弹层挂在 body 下，和 .monaco-workbench 同级
     '.monaco-workbench ~ div',
+    '.entrance-title',
     '[role="listbox"]',
     '[role="option"]'
   ].join(', ');
@@ -5344,6 +5345,9 @@
     if (!trimmed) return null;
     const testId = element.getAttribute?.('data-testid');
 
+    if (trimmed === 'Welcome to Antigravity!' && element.tagName === 'DIV' && element.classList?.contains('entrance-title')) {
+      return value.replace(trimmed, () => '欢迎使用 Antigravity！');
+    }
     if (trimmed === 'SSH Host' && element.closest?.('[data-testid="project-selector-ssh-host-trigger"]')) {
       return value.replace(trimmed, () => 'SSH 主机');
     }
@@ -5614,25 +5618,30 @@
   // 把同一轮内的多个变更批次累积到一个定时器，避免每个 MutationObserver 回调各建一个 timer。
   function createFlushScheduler(flush) {
     let timer = null;
+    let priorityNodes = [];
     let nodes = [];
     let elements = [];
     const cancel = () => {
       if (timer !== null) clearTimeout(timer);
       timer = null;
+      priorityNodes = [];
       nodes = [];
       elements = [];
     };
-    const schedule = (newNodes, newElements) => {
+    const schedule = (newNodes, newElements, newPriorityNodes = []) => {
+      for (const node of newPriorityNodes) priorityNodes.push(node);
       for (const node of newNodes) nodes.push(node);
       for (const element of newElements) elements.push(element);
       if (timer !== null) return;
       timer = setTimeout(() => {
         timer = null;
+        const batchPriorityNodes = priorityNodes;
         const batchNodes = nodes;
         const batchElements = elements;
+        priorityNodes = [];
         nodes = [];
         elements = [];
-        flush(batchNodes, batchElements);
+        flush(batchNodes, batchElements, batchPriorityNodes);
       }, 0);
     };
     return { schedule, cancel };
@@ -5991,14 +6000,19 @@
       window.removeEventListener('ag-suite-prefs-changed', onSuitePrefsChanged);
     };
 
-    flushScheduler = createFlushScheduler((batchNodes, batchElements) => {
+    flushScheduler = createFlushScheduler((batchNodes, batchElements, batchPriorityNodes = []) => {
       if (cancelled || lang !== 'zh') return;
+      // 新挂载的设置侧栏优先于待处理子树，避免打开设置时短暂闪烁英文
+      for (const node of batchPriorityNodes) {
+        if (node && node.isConnected !== false) translateNode(node);
+      }
       for (const node of batchNodes) translateNode(node);
       for (const element of batchElements) translateElement(element);
     });
 
     observer = new MutationObserver((mutations) => {
       if (lang !== 'zh') return;
+      const priorityNodesToTranslate = [];
       const nodesToTranslate = [];
       const elementsToTranslate = [];
 
@@ -6063,13 +6077,17 @@
             nodesToTranslate.push(mutation.target);
           }
           for (const node of mutation.addedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE && node.classList?.contains('settings-modal-backdrop')) {
+              const sidebar = node.querySelector?.('[data-testid="settings-sidebar"]');
+              if (sidebar) priorityNodesToTranslate.push(sidebar);
+            }
             nodesToTranslate.push(node);
           }
         }
       }
 
-      if (nodesToTranslate.length > 0 || elementsToTranslate.length > 0) {
-        flushScheduler.schedule(nodesToTranslate, elementsToTranslate);
+      if (priorityNodesToTranslate.length > 0 || nodesToTranslate.length > 0 || elementsToTranslate.length > 0) {
+        flushScheduler.schedule(nodesToTranslate, elementsToTranslate, priorityNodesToTranslate);
       }
     });
     observer.observe(document, {

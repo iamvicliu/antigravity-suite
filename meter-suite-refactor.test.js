@@ -6090,3 +6090,130 @@ test('需求 25: UI 主题色系一致性静态门禁与动态主题变量绑定
     activeTimers.clear();
   }
 });
+
+// =========================================================================
+// 需求 26: 同步 antigravity-chinese v3.3.53 登录页欢迎标题与设置侧栏优先扫描
+// =========================================================================
+test('需求 26: antigravity-hans-overlay 仅翻译 div.entrance-title 登录欢迎标题，保留 [data-uri] 保护并优先处理设置侧栏', async () => {
+  const hansSrc = fs.readFileSync(path.join(ROOT, 'antigravity-hans-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  env.sandbox.location.pathname = '/workbench.html';
+  env.sandbox.location.href = 'file:///Applications/Antigravity.app/workbench.html';
+  env.win.location = env.sandbox.location;
+  env.win.top = env.win;
+  env.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 };
+  env.sandbox.NodeFilter = { SHOW_TEXT: 4, SHOW_ELEMENT: 1 };
+
+  const makeTextNode = (val, parentElement) => ({
+    nodeType: 3,
+    nodeValue: val,
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement
+  });
+
+  // 1. div.entrance-title 中的 Welcome to Antigravity! 应译为 欢迎使用 Antigravity！
+  const entranceDiv = env.doc.createElement('div');
+  entranceDiv.className = 'entrance-title text-3xl font-normal';
+  const entranceText = makeTextNode('Welcome to Antigravity!', entranceDiv);
+  entranceDiv.childNodes.push(entranceText);
+  env.doc.body.appendChild(entranceDiv);
+
+  // 2. 非 entrance-title 的 #project-name 与 [data-uri] 必须保留原文
+  const projectDiv = env.doc.createElement('div');
+  projectDiv.id = 'project-name';
+  projectDiv.className = 'antigravity-agent-side-panel';
+  const projectText = makeTextNode('Welcome to Antigravity!', projectDiv);
+  projectDiv.childNodes.push(projectText);
+  env.doc.body.appendChild(projectDiv);
+
+  const uriDiv = env.doc.createElement('div');
+  uriDiv.setAttribute('data-uri', 'file:///tmp/Welcome to Antigravity!');
+  uriDiv.className = 'antigravity-agent-side-panel';
+  const uriText = makeTextNode('Settings', uriDiv);
+  uriDiv.childNodes.push(uriText);
+  env.doc.body.appendChild(uriDiv);
+
+  env.doc.createTreeWalker = (rootNode, whatToShow) => {
+    const flat = [];
+    const walk = (n) => {
+      if (!n) return;
+      const children = n.childNodes || n.children || [];
+      for (const ch of children) {
+        if ((ch.nodeType === 1 && (whatToShow & 1)) || (ch.nodeType === 3 && (whatToShow & 4))) {
+          flat.push(ch);
+        }
+        walk(ch);
+      }
+    };
+    walk(rootNode);
+    let idx = 0;
+    return { nextNode: () => (idx < flat.length ? flat[idx++] : null) };
+  };
+
+  let observerCallback = null;
+  env.sandbox.MutationObserver = class {
+    constructor(cb) { observerCallback = cb; }
+    observe() {}
+    disconnect() {}
+  };
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 10));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => { activeTimers.delete(t); clearTimeout(t); };
+
+  try {
+    vm.runInContext(hansSrc, env.sandbox);
+    assert.equal(entranceText.nodeValue, '欢迎使用 Antigravity！', 'div.entrance-title 内的 Welcome to Antigravity! 应译为欢迎语');
+    assert.equal(projectText.nodeValue, 'Welcome to Antigravity!', '#project-name 中的 Welcome to Antigravity! 必须保留原文');
+    assert.equal(uriText.nodeValue, 'Settings', '[data-uri] 路径保护必须保留原文');
+
+    // 3. 验证 .settings-modal-backdrop 内 [data-testid="settings-sidebar"] 优先于普通子树被翻译
+    const writeOrder = [];
+    const makeTrackedTextNode = (val, parentElement, tag) => {
+      let cur = val;
+      return {
+        nodeType: 3,
+        get nodeValue() { return cur; },
+        set nodeValue(v) { cur = String(v); writeOrder.push(tag); },
+        get textContent() { return cur; },
+        set textContent(v) { cur = String(v); },
+        parentElement
+      };
+    };
+
+    const otherEl = env.doc.createElement('div');
+    otherEl.className = 'antigravity-agent-side-panel';
+    const otherSpan = env.doc.createElement('span');
+    const otherText = makeTrackedTextNode('Settings', otherSpan, 'other');
+    otherSpan.childNodes.push(otherText);
+    otherEl.appendChild(otherSpan);
+    env.doc.body.appendChild(otherEl);
+
+    const backdrop = env.doc.createElement('div');
+    backdrop.className = 'settings-modal-backdrop';
+    const sidebar = env.doc.createElement('div');
+    sidebar.setAttribute('data-testid', 'settings-sidebar');
+    const sidebarHeading = env.doc.createElement('h1');
+    const sidebarText = makeTrackedTextNode('Settings', sidebarHeading, 'sidebar');
+    sidebarHeading.childNodes.push(sidebarText);
+    sidebar.appendChild(sidebarHeading);
+    backdrop.appendChild(sidebar);
+    backdrop.querySelector = (sel) => (sel === '[data-testid="settings-sidebar"]' ? sidebar : null);
+    env.doc.body.appendChild(backdrop);
+
+    assert.ok(typeof observerCallback === 'function', '应注册 MutationObserver 回调');
+    observerCallback([{ type: 'childList', target: env.doc.body, addedNodes: [otherEl, backdrop] }]);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(sidebarText.nodeValue, '设置', '设置模态框侧栏应在异步 flush 中完成翻译');
+    assert.equal(otherText.nodeValue, '设置', '普通子树也应在同轮 flush 中继续完成翻译');
+    assert.deepEqual(writeOrder, ['sidebar', 'other'], 'settings-sidebar 必须优先于同批次普通子树完成翻译');
+  } finally {
+    env.win.__antigravityZhPatchCleanup?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
+  }
+});
