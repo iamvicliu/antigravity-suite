@@ -2030,7 +2030,8 @@ function createSessionCatalogStore() {
     }
 
     const activeSessionId = String(snap.sessionId || '').trim();
-    const hasPendingApprovals = Array.isArray(snap.pendingApprovals) && snap.pendingApprovals.length > 0;
+    const hasPendingApprovals = (Array.isArray(snap.pendingApprovals) && snap.pendingApprovals.length > 0)
+      || (Array.isArray(snap.pendingPrompts) && snap.pendingPrompts.length > 0);
     const nowMs = Date.now();
 
     for (const id of rootIds) {
@@ -3730,6 +3731,35 @@ function buildMobileAppHtml() {
     }
     .ap-btn.approve{background:var(--ap-approve-bg);color:var(--ap-approve-fg)}
     .ap-btn.reject{background:var(--ap-reject-bg);color:var(--ap-reject-fg);border:1px solid var(--border)}
+    .ap-btn.secondary{background:var(--surface-soft);color:var(--fg-strong);border:1px solid var(--border-strong)}
+    .prompt-card{
+      padding:10px 11px;border-radius:12px;background:var(--card);border:1px solid var(--accent-border);
+      display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow-y:auto;
+    }
+    .prompt-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .prompt-title{font-size:13.5px;font-weight:700;color:var(--fg-strong);line-height:1.35}
+    .prompt-badge{
+      flex-shrink:0;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:999px;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
+    }
+    .prompt-desc{font-size:12px;color:var(--muted);line-height:1.4;white-space:pre-wrap;word-break:break-word;max-height:72px;overflow-y:auto}
+    .prompt-opts{display:flex;flex-direction:column;gap:5px}
+    .prompt-opt{
+      appearance:none;width:100%;text-align:left;padding:8px 10px;border-radius:10px;
+      border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      display:flex;align-items:center;gap:8px;font-size:13px;line-height:1.35;cursor:pointer;
+      transition:border-color .14s ease,background-color .14s ease;
+    }
+    .prompt-opt.selected{
+      border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg);font-weight:600;
+    }
+    .prompt-opt-mark{flex-shrink:0;font-size:14px;line-height:1;color:var(--accent)}
+    .prompt-opt-label{min-width:0;flex:1 1 auto;word-break:break-word}
+    .prompt-other-input{
+      width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border-strong);
+      background:var(--surface-subtle);color:var(--fg-strong);font-size:13px;font-family:inherit;outline:none;
+    }
+    .prompt-other-input:focus{border-color:var(--accent)}
     .composer-dock{
       flex-shrink:0;background:transparent;padding:2px 10px 4px;
       display:flex;flex-direction:column;gap:6px;
@@ -4675,6 +4705,7 @@ function buildMobileAppHtml() {
     let cachedContextResp = null;
     let latestDisplayConfig = null;
     let latestSnap = null;
+    const promptDraftState = new Map();
     let wakeLock = null;
     let wakeWanted = false;
     let pollTimer = null;
@@ -6330,14 +6361,138 @@ function buildMobileAppHtml() {
         void backfillMissingMsgGaps(snapSid);
       }
 
-      // Pending Approvals
+      // Pending Prompts (交互式单选/多选确认框) & Pending Approvals (按钮审批)
+      const prompts = Array.isArray(snap.pendingPrompts) ? snap.pendingPrompts : [];
       const approvals = Array.isArray(snap.pendingApprovals) ? snap.pendingApprovals : [];
       const dock = $('approval-dock');
-      if (!displayCfg.showApprovals || !approvals.length) {
+      if (!displayCfg.showApprovals || (!prompts.length && !approvals.length)) {
         dock.hidden = true;
         dock.innerHTML = '';
+        dock.dataset.promptSig = '';
+        promptDraftState.clear();
+      } else if (prompts.length > 0) {
+        dock.hidden = false;
+        const activePrompt = prompts[0];
+        const promptSig = String(activePrompt.id || 'p0') + '|' + String(activePrompt.title || '') + '|'
+          + (activePrompt.options || []).map((o) => o.label).join(',') + '|'
+          + (activePrompt.actions || []).map((a) => a.label).join(',');
+        if (!promptDraftState.has(promptSig)) {
+          const initSelected = new Set(
+            (activePrompt.options || []).filter((o) => o.selected).map((o) => Number(o.index))
+          );
+          promptDraftState.clear();
+          promptDraftState.set(promptSig, {
+            selected: initSelected,
+            otherText: String(activePrompt.otherValue || '')
+          });
+        }
+        const draft = promptDraftState.get(promptSig);
+        const focusedOther = document.activeElement && dock.contains(document.activeElement)
+          && document.activeElement.classList?.contains('prompt-other-input');
+        if (dock.dataset.promptSig !== promptSig || !focusedOther) {
+          dock.dataset.promptSig = promptSig;
+          const modeLabel = activePrompt.options?.length
+            ? (activePrompt.multiSelect ? '多选确认' : '单选确认')
+            : '系统确认';
+          const optsHtml = (activePrompt.options || []).length
+            ? ('<div class="prompt-opts">' + activePrompt.options.map((opt) => {
+                const isSel = draft.selected.has(Number(opt.index));
+                const mark = activePrompt.multiSelect ? (isSel ? '☑' : '☐') : (isSel ? '●' : '○');
+                return '<button class="prompt-opt' + (isSel ? ' selected' : '') + '" data-opt-idx="' + opt.index + '" type="button">'
+                  + '<span class="prompt-opt-mark">' + mark + '</span>'
+                  + '<span class="prompt-opt-label">' + esc(opt.label) + '</span>'
+                  + '</button>';
+              }).join('') + '</div>')
+            : '';
+          const otherHtml = activePrompt.hasOtherInput
+            ? '<input class="prompt-other-input" type="text" placeholder="' + esc(activePrompt.otherPlaceholder || '输入自定义说明或选项…') + '" value="' + esc(draft.otherText) + '" />'
+            : '';
+          const actionsList = Array.isArray(activePrompt.actions) ? activePrompt.actions : [];
+          const actsHtml = actionsList.length
+            ? ('<div class="approval-btns">' + actionsList.map((act) => {
+                const cls = act.kind === 'reject' ? 'reject' : (act.kind === 'primary' ? 'approve' : 'secondary');
+                return '<button class="ap-btn ' + cls + ' prompt-act-btn" data-act-idx="' + act.index + '" data-act-label="' + esc(act.label) + '" type="button">'
+                  + esc(act.label) + '</button>';
+              }).join('') + '</div>')
+            : '';
+          dock.innerHTML = '<div class="prompt-card">'
+            + '<div class="prompt-head"><span class="prompt-title">' + esc(activePrompt.title || '需要你的确认') + '</span>'
+            + '<span class="prompt-badge">' + esc(modeLabel) + '</span></div>'
+            + (activePrompt.description ? '<div class="prompt-desc">' + esc(activePrompt.description) + '</div>' : '')
+            + optsHtml + otherHtml + actsHtml + '</div>';
+
+          dock.querySelectorAll('.prompt-opt').forEach((optBtn) => {
+            optBtn.onclick = async () => {
+              const idx = Number(optBtn.dataset.optIdx);
+              if (!Number.isInteger(idx)) return;
+              if (activePrompt.multiSelect) {
+                if (draft.selected.has(idx)) draft.selected.delete(idx);
+                else draft.selected.add(idx);
+              } else {
+                draft.selected.clear();
+                draft.selected.add(idx);
+              }
+              dock.querySelectorAll('.prompt-opt').forEach((b) => {
+                const bIdx = Number(b.dataset.optIdx);
+                const sel = draft.selected.has(bIdx);
+                b.classList.toggle('selected', sel);
+                const mk = b.querySelector('.prompt-opt-mark');
+                if (mk) mk.textContent = activePrompt.multiSelect ? (sel ? '☑' : '☐') : (sel ? '●' : '○');
+              });
+              if (!actionsList.length && !activePrompt.multiSelect) {
+                optBtn.disabled = true;
+                try {
+                  const res = await apiAction({
+                    action: 'respond-prompt',
+                    promptIndex: Number(activePrompt.index) || 0,
+                    selectedIndices: Array.from(draft.selected)
+                  });
+                  if (res?.ok) showToast('已选择确认项');
+                  else showToast(res?.error || res?.actionResult?.error || '选择失败');
+                } catch (e) {
+                  showToast(e?.message || '选择失败');
+                } finally {
+                  optBtn.disabled = false;
+                }
+              }
+            };
+          });
+
+          const otherInp = dock.querySelector('.prompt-other-input');
+          if (otherInp) {
+            otherInp.oninput = () => { draft.otherText = String(otherInp.value || ''); };
+          }
+
+          dock.querySelectorAll('.prompt-act-btn').forEach((actBtn) => {
+            actBtn.onclick = async () => {
+              actBtn.disabled = true;
+              try {
+                const res = await apiAction({
+                  action: 'respond-prompt',
+                  promptIndex: Number(activePrompt.index) || 0,
+                  selectedIndices: Array.from(draft.selected),
+                  otherText: activePrompt.hasOtherInput ? draft.otherText : undefined,
+                  actionIndex: Number(actBtn.dataset.actIdx),
+                  actionLabel: actBtn.dataset.actLabel
+                });
+                if (res?.ok) {
+                  promptDraftState.delete(promptSig);
+                  showToast('已提交: ' + actBtn.dataset.actLabel);
+                } else {
+                  actBtn.disabled = false;
+                  showToast(res?.error || res?.actionResult?.error || '提交失败');
+                }
+              } catch (e) {
+                actBtn.disabled = false;
+                showToast(e?.message || '提交失败');
+              }
+            };
+          });
+        }
       } else {
         dock.hidden = false;
+        dock.dataset.promptSig = '';
+        promptDraftState.clear();
         const firstRisk = approvals.some((a) => a.highRisk);
         const ctx = approvals[0]?.contextText || '桌面端正在等待你的操作确认';
         dock.innerHTML = '<div class="approval-card' + (firstRisk ? ' is-risk' : '') + '">' +
