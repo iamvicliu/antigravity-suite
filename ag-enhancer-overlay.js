@@ -6970,7 +6970,7 @@
 
     const cards = [];
     for (const root of roots) {
-      if (isExcludedSuiteOrNavNode(root)) continue;
+      if (isExcludedSuiteOrNavNode(root) || !isVisiblePromptControl(root)) continue;
       const rawControls = Array.from(root.querySelectorAll(
         'input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]'
       )).filter((c) => !isExcludedSuiteOrNavNode(c) && !c.disabled && c.getAttribute?.('aria-disabled') !== 'true');
@@ -7017,10 +7017,21 @@
       }
 
       const isDialog = root.getAttribute?.('role') === 'dialog' || root.getAttribute?.('role') === 'alertdialog';
-      // 至少具备 2 个可选项，或是包含明确操作按钮的系统弹窗，才认定为需要用户确认的选择框
-      if (options.length < 2 && !(isDialog && actions.length > 0)) continue;
-      if (options.length >= 2 && actions.length === 0) {
-        // 允许无显式按钮的即时单选卡，但必须至少有选项
+      const isDedicatedPromptContainer = Boolean(
+        root.getAttribute?.('role') === 'radiogroup'
+        || String(root.tagName || '').toUpperCase() === 'FORM'
+        || root.getAttribute?.('data-testid') === 'ask-question-card'
+        || root.getAttribute?.('data-testid') === 'user-question-card'
+      );
+      const hasConfirmAction = actions.some((a) => a.kind === 'primary' || a.kind === 'reject');
+      // 严禁把普通消息内无操作按钮的 Markdown 任务清单/复选框误判为待确认选择框：
+      // 1) 系统弹窗：需至少有可见操作按钮；
+      // 2) 对话区内选择卡：至少 2 个启用选项，且（具备明确确认/取消按钮，或属于专用提问/单选容器且含可用操作/单选控件）
+      if (isDialog) {
+        if (actions.length === 0 && options.length < 2) continue;
+      } else {
+        if (options.length < 2) continue;
+        if (!hasConfirmAction && !(isDedicatedPromptContainer && !hasCheckbox)) continue;
       }
 
       const otherInput = Array.from(root.querySelectorAll('input[type="text"], input:not([type]), textarea')).find((inp) => {
@@ -7038,11 +7049,15 @@
       const rawDesc = String(descEl?.textContent || '').replace(/\s+/g, ' ').trim();
       const description = (rawDesc && rawDesc !== title) ? rawDesc.slice(0, 240) : '';
 
+      const kind = options.length >= 2 ? 'choice' : 'dialog';
+      const promptKey = `${kind}|${title}|${options.map((o) => o.label).join('\u001f')}|${actions.map((a) => a.label).join('\u001f')}`;
+
       cards.push({
         index: cards.length,
         root,
-        id: `prompt-${cards.length}`,
-        kind: options.length >= 2 ? 'choice' : 'dialog',
+        id: promptKey,
+        promptKey,
+        kind,
         title,
         description,
         multiSelect: hasCheckbox,
@@ -7061,6 +7076,7 @@
     return findInteractivePromptCards().map((card) => ({
       index: card.index,
       id: card.id,
+      promptKey: card.promptKey,
       kind: card.kind,
       title: card.title,
       description: card.description,
@@ -8512,9 +8528,31 @@
     if (action === 'respond-prompt') {
       const cards = findInteractivePromptCards();
       if (!cards.length) return { ok: false, error: '当前没有待确认选择框' };
-      const pIdx = Number.isInteger(payload?.promptIndex) ? payload.promptIndex : 0;
-      const card = cards[pIdx] || cards[0];
-      if (!card) return { ok: false, error: '目标确认选择框已消失' };
+      const reqKey = String(payload?.promptKey || payload?.promptId || '').trim();
+      const pIdx = Number.isInteger(payload?.promptIndex) ? payload.promptIndex : -1;
+      let card = null;
+      if (reqKey) {
+        card = cards.find((c) => c.promptKey === reqKey || c.id === reqKey) || null;
+        if (!card) return { ok: false, error: '目标确认选择框已消失或已变更' };
+      } else if (pIdx >= 0 && pIdx < cards.length) {
+        card = cards[pIdx];
+      } else {
+        return { ok: false, error: '目标确认选择框已消失或索引失效' };
+      }
+
+      // 在修改任何选项/输入前先原子校验目标操作按钮是否存在，防止失败时留下半成品状态
+      const reqActionLabel = String(payload?.actionLabel || '').trim();
+      const reqActionIdx = Number.isInteger(payload?.actionIndex) ? payload.actionIndex : -1;
+      let targetBtn = null;
+      if (reqActionLabel) {
+        targetBtn = card.actions.find((a) => a.label === reqActionLabel) || null;
+      }
+      if (!targetBtn && reqActionIdx >= 0 && reqActionIdx < card.actions.length) {
+        targetBtn = card.actions[reqActionIdx];
+      }
+      if ((reqActionLabel || reqActionIdx >= 0) && !targetBtn?.el) {
+        return { ok: false, error: '目标确认按钮已消失或不可用' };
+      }
 
       const desiredIndices = Array.isArray(payload?.selectedIndices)
         ? new Set(payload.selectedIndices.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 0))
@@ -8544,24 +8582,14 @@
         setNativePromptInputValue(card.otherInput, String(payload.otherText || ''));
       }
 
-      const reqActionLabel = String(payload?.actionLabel || '').trim();
-      const reqActionIdx = Number.isInteger(payload?.actionIndex) ? payload.actionIndex : -1;
-      let targetBtn = null;
-      if (reqActionLabel) {
-        targetBtn = card.actions.find((a) => a.label === reqActionLabel) || null;
-      }
-      if (!targetBtn && reqActionIdx >= 0 && reqActionIdx < card.actions.length) {
-        targetBtn = card.actions[reqActionIdx];
-      }
       if (targetBtn?.el) {
         targetBtn.el.click();
-      } else if (reqActionLabel || reqActionIdx >= 0) {
-        return { ok: false, error: '目标确认按钮已消失或不可用' };
       }
 
       return {
         ok: true,
         promptId: card.id,
+        promptKey: card.promptKey,
         actionLabel: targetBtn?.label || '',
         selectedCount: desiredIndices ? desiredIndices.size : (desiredLabels ? desiredLabels.size : 0)
       };

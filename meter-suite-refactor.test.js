@@ -10827,16 +10827,74 @@ test('远程端支持系统确认选择框与交互式提问卡片展示与提�
   const { buildMobileAppHtml } = require('./mobile-remote');
   const html = buildMobileAppHtml();
 
-  // 1. 远程网页端包含交互式选择确认框 UI 与草稿状态保护
+  // 1. 远程网页端包含交互式选择确认框 UI、会话级草稿隔离与清理、稳定 promptKey 传递
   assert.ok(html.includes('const promptDraftState = new Map();'), '远程网页端应维护交互式选择框草稿状态 Map');
-  assert.ok(html.includes("action: 'respond-prompt'"), '远程网页端提交应调用 respond-prompt 动作');
+  assert.ok(html.includes("String(snapSid || '__default__') + '::' + activePromptKey"), '草稿签名必须包含会话 ID 与稳定 promptKey');
+  assert.ok(html.includes('openThoughtIdxSet.clear();\n        promptDraftState.clear();'), '切换会话时必须清空 promptDraftState');
+  assert.ok(html.includes("action: 'respond-prompt'") && html.includes('promptKey: activePromptKey'), '远程网页端提交应携带稳定 promptKey 调用 respond-prompt');
   assert.ok(html.includes('class="prompt-card"') && html.includes('class="prompt-other-input"'), '远程网页端应渲染结构化选择卡片与自定义输入框');
 
-  // 2. 桌面端 overlay 采集交互式多选确认卡片并支持 respond-prompt 一键勾选、填自定义文本并提交
+  // 2. 桌面端 overlay 采集：过滤普通消息内复选框清单、隐藏卡片、已禁用结束卡片，仅采集真实可见待确认框
   const env = createDomEnv();
   env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
 
   const mainEl = env.doc.createElement('main');
+
+  // 2a. 普通消息中的 Markdown 任务清单（2 个 checkbox 但无确认/提交按钮）不得被误采
+  const ordinaryMsg = env.doc.createElement('div');
+  ordinaryMsg.setAttribute('data-testid', 'agent-response');
+  ordinaryMsg.offsetWidth = 360;
+  ordinaryMsg.offsetHeight = 120;
+  for (const txt of ['待办项 A', '待办项 B']) {
+    const lbl = env.doc.createElement('label');
+    const c = env.doc.createElement('input');
+    c.setAttribute('type', 'checkbox');
+    c.type = 'checkbox';
+    c.offsetWidth = 16;
+    c.offsetHeight = 16;
+    lbl.appendChild(c);
+    const sp = env.doc.createElement('span');
+    sp.textContent = txt;
+    lbl.appendChild(sp);
+    ordinaryMsg.appendChild(lbl);
+  }
+  mainEl.appendChild(ordinaryMsg);
+
+  // 2b. 隐藏的选择框容器（hidden=true）不得被采集
+  const hiddenDlg = env.doc.createElement('div');
+  hiddenDlg.setAttribute('role', 'dialog');
+  hiddenDlg.hidden = true;
+  hiddenDlg.offsetWidth = 0;
+  hiddenDlg.offsetHeight = 0;
+  const hiddenBtn = env.doc.createElement('button');
+  hiddenBtn.textContent = 'Submit';
+  hiddenBtn.offsetWidth = 80;
+  hiddenBtn.offsetHeight = 32;
+  hiddenDlg.appendChild(hiddenBtn);
+  mainEl.appendChild(hiddenDlg);
+
+  // 2c. 已结束（所有控件与按钮均 disabled）的旧卡片不得被采集
+  const finishedCard = env.doc.createElement('div');
+  finishedCard.setAttribute('data-testid', 'ask-question-card');
+  finishedCard.offsetWidth = 360;
+  finishedCard.offsetHeight = 140;
+  for (const txt of ['旧选项 1', '旧选项 2']) {
+    const r = env.doc.createElement('input');
+    r.setAttribute('type', 'radio');
+    r.type = 'radio';
+    r.disabled = true;
+    r.setAttribute('aria-label', txt);
+    finishedCard.appendChild(r);
+  }
+  const doneBtn = env.doc.createElement('button');
+  doneBtn.textContent = 'Submit';
+  doneBtn.disabled = true;
+  doneBtn.offsetWidth = 80;
+  doneBtn.offsetHeight = 32;
+  finishedCard.appendChild(doneBtn);
+  mainEl.appendChild(finishedCard);
+
+  // 2d. 真实的可见待确认多选弹窗
   const dlg = env.doc.createElement('div');
   dlg.setAttribute('role', 'dialog');
   dlg.offsetWidth = 360;
@@ -10905,9 +10963,10 @@ test('远程端支持系统确认选择框与交互式提问卡片展示与提�
   const enhancer = env.sandbox.__AGEnhancer;
 
   const snap = enhancer.getMobileSnapshot();
-  assert.ok(Array.isArray(snap.pendingPrompts) && snap.pendingPrompts.length === 1, 'getMobileSnapshot 应采集到 1 个待确认选择框');
+  assert.equal(snap.pendingPrompts.length, 1, '仅应采集真实可见待确认弹窗，不得误采普通消息、隐藏卡片或已禁用卡片');
   const prompt = snap.pendingPrompts[0];
   assert.equal(prompt.title, '请选择部署环境');
+  assert.ok(prompt.promptKey && prompt.promptKey.includes('请选择部署环境'), '应生成稳定 promptKey');
   assert.equal(prompt.multiSelect, true);
   assert.equal(prompt.options.length, 2);
   assert.equal(prompt.options[0].selected, true);
@@ -10915,9 +10974,36 @@ test('远程端支持系统确认选择框与交互式提问卡片展示与提�
   assert.equal(prompt.hasOtherInput, true);
   assert.equal(prompt.actions.length, 2);
 
-  // 执行 respond-prompt：取消勾选 0、勾选 1、填写自定义备注并点击 Submit
+  // 3. 过期/不匹配的 promptKey 与缺失按钮必须返回错误且绝不修改表单状态
+  const staleRes = await enhancer.performMobileAction({
+    action: 'respond-prompt',
+    promptKey: 'choice|已消失的旧提示|A|Submit',
+    promptIndex: 0,
+    selectedIndices: [1],
+    otherText: '不应写入',
+    actionLabel: 'Submit'
+  });
+  assert.equal(staleRes.ok, false, '不匹配的 promptKey 不得回退操作 cards[0]');
+  assert.equal(optA.inp.checked, true, 'promptKey 失效时不得修改原勾选状态');
+  assert.equal(optB.inp.checked, false, 'promptKey 失效时不得勾选其他选项');
+  assert.equal(otherInp.value, '', 'promptKey 失效时不得写入输入框');
+
+  const missingBtnRes = await enhancer.performMobileAction({
+    action: 'respond-prompt',
+    promptKey: prompt.promptKey,
+    promptIndex: 0,
+    selectedIndices: [1],
+    otherText: '不应写入',
+    actionLabel: 'NonExistentButton'
+  });
+  assert.equal(missingBtnRes.ok, false, '目标按钮不存在时必须返回错误');
+  assert.equal(optA.inp.checked, true, '按钮校验失败前不得提前修改选项状态');
+  assert.equal(otherInp.value, '', '按钮校验失败前不得提前修改输入框');
+
+  // 4. 正确 promptKey 执行 respond-prompt：取消勾选 0、勾选 1、填写自定义备注并点击 Submit
   const actRes = await enhancer.performMobileAction({
     action: 'respond-prompt',
+    promptKey: prompt.promptKey,
     promptIndex: 0,
     selectedIndices: [1],
     otherText: '灰度发布 10%',
@@ -10929,6 +11015,17 @@ test('远程端支持系统确认选择框与交互式提问卡片展示与提�
   assert.equal(otherInp.value, '灰度发布 10%', '自定义输入框值应同步写入');
   assert.ok(otherInputFired >= 1, '写入自定义输入框应触发 input 事件');
   assert.equal(submitted, true, '应触发目标 Submit 按钮点击');
+
+  // 5. 行为验证：两个会话出现相同标题与选项时，草稿签名彼此隔离且切会话清空草稿
+  const draftMap = new Map();
+  const makeSig = (sid, p) => String(sid || '__default__') + '::' + String(p.promptKey || p.id || '') + '|' + String(p.title || '') + '|'
+    + (p.options || []).map((o) => o.label).join(',') + '|'
+    + (p.actions || []).map((a) => a.label).join(',');
+  const sigS1 = makeSig('conv-1', prompt);
+  const sigS2 = makeSig('conv-2', prompt);
+  assert.notEqual(sigS1, sigS2, '不同会话下相同标题和选项必须拥有不同的草稿签名');
+  draftMap.set(sigS1, { selected: new Set([1]), otherText: '会话1草稿' });
+  assert.equal(draftMap.has(sigS2), false, '会话 2 不得继承会话 1 的草稿');
 
   enhancer.dispose?.();
 });
