@@ -8212,6 +8212,15 @@ function buildMobileAppHtml() {
     let loadingEarlierMsgs = false;
     let backfillingMsgGaps = false;
 
+    function getThoughtFallbackText(m) {
+      if (!m) return '';
+      if (m.thoughtText) return String(m.thoughtText);
+      if (Array.isArray(m.thoughts) && m.thoughts.length) {
+        return m.thoughts.map((t) => String(t || '').trim()).filter(Boolean).join('\\n\\n');
+      }
+      return '';
+    }
+
     function buildThoughtBodyInnerHtml(m) {
       if (!m) return '';
       const steps = Array.isArray(m.thoughts) && m.thoughts.length > 1
@@ -8222,7 +8231,7 @@ function buildMobileAppHtml() {
           '<div class="thought-step"><div class="thought-step-hd">步骤 ' + (idx + 1) + '</div><div class="thought-step-txt">' + esc(txt) + '</div></div>'
         )).join('');
       }
-      return esc(m.thoughtText || '');
+      return esc(getThoughtFallbackText(m));
     }
 
     function hydrateThoughtDetails(detailsEl) {
@@ -8234,13 +8243,14 @@ function buildMobileAppHtml() {
         openThoughtIdxSet.add(idx);
         if (!detailsEl.querySelector('.thought-body')) {
           const m = sessionMsgsByIndex.get(idx);
-          if (m?.thoughtText || (Array.isArray(m?.thoughts) && m.thoughts.length)) {
+          const fallbackTxt = getThoughtFallbackText(m);
+          if (fallbackTxt || (Array.isArray(m?.thoughts) && m.thoughts.length)) {
             const bodyDiv = document.createElement('div');
             bodyDiv.className = 'thought-body';
             if (Array.isArray(m.thoughts) && m.thoughts.length > 1) {
               bodyDiv.innerHTML = buildThoughtBodyInnerHtml(m);
             } else {
-              bodyDiv.textContent = m.thoughtText || '';
+              bodyDiv.textContent = fallbackTxt;
             }
             detailsEl.appendChild(bodyDiv);
           }
