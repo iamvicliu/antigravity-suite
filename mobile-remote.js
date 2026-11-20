@@ -4706,6 +4706,7 @@ function buildMobileAppHtml() {
     let latestDisplayConfig = null;
     let latestSnap = null;
     const promptDraftState = new Map();
+    let promptSubmittingSig = '';
     let wakeLock = null;
     let wakeWanted = false;
     let pollTimer = null;
@@ -6370,6 +6371,7 @@ function buildMobileAppHtml() {
         dock.hidden = true;
         dock.innerHTML = '';
         dock.dataset.promptSig = '';
+        promptSubmittingSig = '';
         promptDraftState.clear();
       } else if (prompts.length > 0) {
         dock.hidden = false;
@@ -6389,10 +6391,10 @@ function buildMobileAppHtml() {
           });
         }
         const draft = promptDraftState.get(promptSig);
-        const focusedOther = document.activeElement && dock.contains(document.activeElement)
-          && document.activeElement.classList?.contains('prompt-other-input');
-        if (dock.dataset.promptSig !== promptSig || !focusedOther) {
+        // 同一提示框在连续轮询中直接复用已挂载 DOM，保留长列表滚动位置、输入框焦点及提交中按钮禁用锁
+        if (dock.dataset.promptSig !== promptSig) {
           dock.dataset.promptSig = promptSig;
+          promptSubmittingSig = '';
           const modeLabel = activePrompt.options?.length
             ? (activePrompt.multiSelect ? '多选确认' : '单选确认')
             : '系统确认';
@@ -6468,7 +6470,9 @@ function buildMobileAppHtml() {
 
           dock.querySelectorAll('.prompt-act-btn').forEach((actBtn) => {
             actBtn.onclick = async () => {
-              actBtn.disabled = true;
+              if (promptSubmittingSig === promptSig) return;
+              promptSubmittingSig = promptSig;
+              dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = true; });
               try {
                 const res = await apiAction({
                   action: 'respond-prompt',
@@ -6483,11 +6487,13 @@ function buildMobileAppHtml() {
                   promptDraftState.delete(promptSig);
                   showToast('已提交: ' + actBtn.dataset.actLabel);
                 } else {
-                  actBtn.disabled = false;
+                  promptSubmittingSig = '';
+                  dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = false; });
                   showToast(res?.error || res?.actionResult?.error || '提交失败');
                 }
               } catch (e) {
-                actBtn.disabled = false;
+                promptSubmittingSig = '';
+                dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = false; });
                 showToast(e?.message || '提交失败');
               }
             };

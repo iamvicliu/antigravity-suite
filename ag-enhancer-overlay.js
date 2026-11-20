@@ -6954,22 +6954,25 @@
       pushRoot(dlg);
     }
 
-    // 2. 再扫描主对话区内的交互式选择卡片（radio/checkbox/radiogroup）
+    // 2. 再扫描主对话区内的交互式选择卡片（优先命中外层弹窗/提问卡/表单，避免被内层 radiogroup 截断）
     const main = document.querySelector('main') || document.body;
     if (main) {
       const choiceControls = main.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [role="radiogroup"]');
       for (const ctrl of choiceControls) {
         if (isExcludedSuiteOrNavNode(ctrl)) continue;
         if (ctrl.disabled || ctrl.getAttribute?.('aria-disabled') === 'true') continue;
-        const card = ctrl.closest?.(
-          '[role="dialog"], [role="alertdialog"], form, [data-testid="turn-cards-container"], [data-testid="agent-response"], [data-testid="ask-question-card"], [data-testid="user-question-card"], [role="radiogroup"]'
-        ) || ctrl.parentElement?.parentElement;
+        const card = ctrl.closest?.('[role="dialog"], [role="alertdialog"], [data-testid="ask-question-card"], [data-testid="user-question-card"], form')
+          || ctrl.closest?.('[data-testid="turn-cards-container"], [data-testid="agent-response"], [role="radiogroup"]')
+          || ctrl.parentElement?.parentElement;
         if (card) pushRoot(card);
       }
     }
 
+    // 去除被其他候选根容器包含的内层重复容器
+    const topRoots = roots.filter((r) => !roots.some((other) => other !== r && typeof other.contains === 'function' && other.contains(r)));
+
     const cards = [];
-    for (const root of roots) {
+    for (const root of topRoots) {
       if (isExcludedSuiteOrNavNode(root) || !isVisiblePromptControl(root)) continue;
       const rawControls = Array.from(root.querySelectorAll(
         'input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]'
@@ -6996,8 +6999,10 @@
 
       const rawButtons = Array.from(root.querySelectorAll('button')).filter((b) => {
         if (isExcludedSuiteOrNavNode(b)) return false;
-        if (b.disabled || b.getAttribute?.('aria-disabled') === 'true') return false;
         if (!isVisiblePromptControl(b)) return false;
+        const isBtnDisabled = Boolean(b.disabled || b.getAttribute?.('aria-disabled') === 'true');
+        // 若卡片内有可用选项（如待勾选后才启用的 Submit 按钮），保留初始禁用的提交/确认按钮；纯弹窗无选项时仍过滤禁用按钮
+        if (isBtnDisabled && options.length < 2) return false;
         const r = b.getAttribute?.('role');
         if (r === 'radio' || r === 'checkbox') return false;
         const lbl = String(b.textContent || '').replace(/\s+/g, ' ').trim();
@@ -7013,7 +7018,8 @@
         let kind = 'secondary';
         if (MOBILE_REJECT_RE.test(label)) kind = 'reject';
         else if (MOBILE_APPROVE_RE.test(label) || btn.getAttribute?.('type') === 'submit') kind = 'primary';
-        actions.push({ index: actions.length, el: btn, label, kind });
+        const btnDisabled = Boolean(btn.disabled || btn.getAttribute?.('aria-disabled') === 'true');
+        actions.push({ index: actions.length, el: btn, label, kind, disabled: btnDisabled });
       }
 
       const isDialog = root.getAttribute?.('role') === 'dialog' || root.getAttribute?.('role') === 'alertdialog';
@@ -8583,6 +8589,9 @@
       }
 
       if (targetBtn?.el) {
+        if (targetBtn.el.disabled || targetBtn.el.getAttribute?.('aria-disabled') === 'true') {
+          return { ok: false, error: '目标确认按钮当前仍处于禁用状态，请先完成必选项' };
+        }
         targetBtn.el.click();
       }
 
