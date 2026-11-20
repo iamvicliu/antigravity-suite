@@ -9830,6 +9830,39 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     );
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
 
+    // 4d) auto-on 升级已有但不等于 5 的 StartInterval=60 与 ThrottleInterval=30：均须更新为 5
+    const legacyNonFivePlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${testLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${fakeHome}/.local/bin/ag-context-meter</string>
+    <string>_auto-trigger</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>WatchPaths</key>
+  <array>
+    <string>${fakeHome}/Library/Application Support/Antigravity/DevToolsActivePort</string>
+    <string>${fakeHome}/Library/Application Support/Antigravity/SingletonSocket</string>
+  </array>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(plistPath, legacyNonFivePlist, 'utf8');
+    execFileSync('bash', [agBin, 'auto-on'], { env: baseEnv, encoding: 'utf8' });
+    const parsedD = parsePlistJson(plistPath);
+    assert.equal(parsedD.StartInterval, 5, 'auto-on 应将已有 StartInterval=60 更新为 5');
+    assert.equal(parsedD.ThrottleInterval, 5, 'auto-on 应将已有 ThrottleInterval=30 更新为 5');
+    execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
     // 5) asdf/mise 项目级版本配置 shim 回归：shim 仅在含 .tool-versions 的项目目录可用；
     //    验证 setup-macos-cdp.sh、auto-on 与 install-launcher 均将解析出的真实 Node 可执行目录写入产物，
     //    并在无 .tool-versions、最小 PATH、无 shell 初始化的空目录中直接执行 node 成功。
@@ -9938,22 +9971,25 @@ exec "${process.execPath}" "$@"
     assert.equal(path.dirname(launcherCheck[0]), realNodeBinDir, '启动器在空目录最小 PATH 下应直接命中真实 Node 目录');
     assert.match(launcherCheck[1], /^v\d+\./, '启动器在空目录最小 PATH 下必须能直接执行 node');
 
-    // 6) _auto-trigger 纯 bash 毫秒级幂等快路径：宿主未运行、已带调试端口且 live-host 存活、裸宿主运行 >30s 均须零 node 启动快速 exit 0
+    // 6) _auto-trigger 纯 bash 毫秒级幂等快路径：宿主未运行、已带调试端口且新 live-host 存活、裸宿主运行 >30s 均须零 node 启动快速 exit 0
     const fastPathCases = [
       {
         name: '宿主未运行',
         mockPs: '  101 05:10 /Applications/Antigravity.app/Contents/Resources/bin/language_server\n',
-        mockLiveHost: '0'
+        mockLiveHost: '0',
+        mockLiveElapsed: ''
       },
       {
-        name: '带调试端口且 live-host 已存活',
+        name: '带调试端口且新 live-host 已存活',
         mockPs: '  202 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0\n',
-        mockLiveHost: '1'
+        mockLiveHost: '1',
+        mockLiveElapsed: '5'
       },
       {
         name: '裸宿主已运行超过 30 秒',
         mockPs: '  303 01:05 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n',
-        mockLiveHost: '0'
+        mockLiveHost: '0',
+        mockLiveElapsed: ''
       }
     ];
     for (const tc of fastPathCases) {
@@ -9965,7 +10001,8 @@ exec "${process.execPath}" "$@"
           PATH: minimalPath,
           AG_DEFAULT_NODE_PATHS: '',
           AG_MOCK_PS_OUTPUT: tc.mockPs,
-          AG_MOCK_LIVE_HOST_RUNNING: tc.mockLiveHost
+          AG_MOCK_LIVE_HOST_RUNNING: tc.mockLiveHost,
+          ...(tc.mockLiveElapsed ? { AG_MOCK_LIVE_HOST_ELAPSED: tc.mockLiveElapsed } : {})
         },
         encoding: 'utf8'
       });
@@ -9973,6 +10010,84 @@ exec "${process.execPath}" "$@"
       assert.equal(fs.readFileSync(nvmMarkerLog, 'utf8').trim(), '', `_auto-trigger [${tc.name}] 应命中快路径，不得启动 node`);
       assert.ok(elapsedMs < 3000, `_auto-trigger [${tc.name}] 应毫秒级退出（实际 ${elapsedMs}ms）`);
     }
+
+    // 6d) 旧 live-host.js 仍存活（live_elapsed=120 > host_elapsed=5）但 Antigravity 已换新宿主：
+    //     不得误走快路径跳过，必须触发 cli.js live 为新宿主重新挂载
+    const mockSuiteDir = path.join(tmpRoot, 'mock-suite');
+    const mockActionLog = path.join(tmpRoot, 'mock-suite-actions.log');
+    fs.mkdirSync(mockSuiteDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(mockSuiteDir, 'asar-engine.js'),
+      `module.exports = {
+        resolveActiveCdpTarget: async () => ({ port: 59999, targets: [{ id: 't1', url: 'https://127.0.0.1:59999/' }] }),
+        inspectAntigravityHostProcess: () => ({ running: false, pid: null, hasDebugSwitch: false, elapsedSec: null })
+      };\n`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(mockSuiteDir, 'cli.js'),
+      `const fs = require('fs');
+       fs.appendFileSync(${JSON.stringify(mockActionLog)}, 'CLI_LIVE_CALLED:' + process.argv.slice(2).join(' ') + '\\n');\n`,
+      'utf8'
+    );
+    fs.writeFileSync(mockActionLog, '', 'utf8');
+    execFileSync('bash', [agBin, '_auto-trigger'], {
+      env: {
+        HOME: fakeHome,
+        PATH: minimalPath,
+        AG_DEFAULT_NODE_PATHS: '',
+        AG_SUITE_DIR: mockSuiteDir,
+        AG_MOCK_PS_OUTPUT: '  404 00:05 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0\n',
+        AG_MOCK_LIVE_HOST_RUNNING: '1',
+        AG_MOCK_LIVE_HOST_ELAPSED: '120'
+      },
+      encoding: 'utf8'
+    });
+    assert.ok(
+      fs.readFileSync(mockActionLog, 'utf8').includes('CLI_LIVE_CALLED:live'),
+      '旧 live-host.js 存活但宿主已换新（live_elapsed > host_elapsed）时必须重新触发 cli.js live'
+    );
+
+    // 7) 20 秒内再次重启（新裸宿主 PID != 上次冷却 PID）：不得被旧冷却跳过，而同 PID 在 20 秒内应保持防重入
+    const relaunchLockPath = path.join(tmpRoot, 'relaunch.lock');
+    const openLog = path.join(tmpRoot, 'open.log');
+    const stubOpen = path.join(stubBin, 'open');
+    const stubOsascript = path.join(stubBin, 'osascript');
+    fs.writeFileSync(stubOpen, `#!/usr/bin/env bash\necho "OPEN:$*" >> "${openLog}"\nexit 0\n`, { mode: 0o755 });
+    fs.writeFileSync(stubOsascript, '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    // 7a) 同 PID 4001 在 2 秒前刚触发过重拉 -> 冷却生效，不重复触发
+    fs.writeFileSync(relaunchLockPath, `${nowSec - 2} 4001\n`, 'utf8');
+    fs.writeFileSync(openLog, '', 'utf8');
+    fs.writeFileSync(mockActionLog, '', 'utf8');
+    execFileSync('bash', [agBin, '_auto-trigger'], {
+      env: {
+        HOME: fakeHome,
+        PATH: `${stubBin}:${minimalPath}`,
+        AG_DEFAULT_NODE_PATHS: '',
+        AG_SUITE_DIR: mockSuiteDir,
+        AG_RELAUNCH_LOCK_FILE: relaunchLockPath,
+        AG_MOCK_PS_OUTPUT: ' 4001 00:05 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n'
+      },
+      encoding: 'utf8'
+    });
+    assert.equal(fs.readFileSync(openLog, 'utf8').trim(), '', '20 秒内同一裸宿主 PID 不应重复重拉');
+
+    // 7b) 新裸宿主 PID 4002 在距上次重拉仅 2 秒时启动 -> 不得被旧 PID 4001 的冷却跳过，应立即补参重拉并执行 live 注入
+    execFileSync('bash', [agBin, '_auto-trigger'], {
+      env: {
+        HOME: fakeHome,
+        PATH: `${stubBin}:${minimalPath}`,
+        AG_DEFAULT_NODE_PATHS: '',
+        AG_SUITE_DIR: mockSuiteDir,
+        AG_RELAUNCH_LOCK_FILE: relaunchLockPath,
+        AG_MOCK_PS_OUTPUT: ' 4002 00:03 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n'
+      },
+      encoding: 'utf8'
+    });
+    assert.ok(fs.readFileSync(openLog, 'utf8').includes('--remote-debugging-port=0'), '20 秒内新裸宿主 PID 4002 必须立即触发补参重拉');
+    assert.ok(fs.readFileSync(mockActionLog, 'utf8').includes('CLI_LIVE_CALLED:live'), '补参重拉后必须完成 cli.js live 注入');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
