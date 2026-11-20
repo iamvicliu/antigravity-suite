@@ -3588,21 +3588,37 @@ function buildMobileAppHtml() {
       display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;
     }
     .icon-btn:active{background:var(--surface-hover);color:var(--fg-strong)}
-    .title-wrap{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
-    .title-row{display:flex;align-items:center;gap:6px;min-width:0}
-    .dot{width:7px;height:7px;border-radius:99px;background:var(--green);flex-shrink:0}
+    .title-wrap{
+      flex:1 1 auto;min-width:0;overflow:hidden;
+      display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;
+      column-gap:5px;row-gap:2px;align-items:center;
+    }
+    .title-row{display:contents}
+    .dot{grid-column:1;grid-row:1;width:7px;height:7px;border-radius:99px;background:var(--green);flex-shrink:0}
     .dot.busy{background:var(--amber);animation:pulse 1s infinite ease-in-out}
     .dot.err{background:var(--red)}
     @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
-    .conv-title{font-size:15px;font-weight:600;color:var(--fg-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em;min-width:0;flex:0 1 auto}
+    .conv-title{
+      grid-column:2;grid-row:1;min-width:0;
+      font-size:14.5px;font-weight:600;color:var(--fg-strong);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em;
+    }
+    .sub-row{
+      grid-column:1 / -1;grid-row:2;min-width:0;overflow:hidden;
+      display:flex;align-items:center;gap:5px;
+    }
     .conv-project-badge{
-      display:inline-flex;align-items:center;max-width:116px;padding:1px 7px;border-radius:999px;
-      font-size:11px;font-weight:500;line-height:1.45;letter-spacing:0;
+      display:inline-block;vertical-align:middle;max-width:128px;min-width:0;padding:1px 6px;border-radius:999px;
+      font-size:10.5px;font-weight:500;line-height:1.35;letter-spacing:0;
       background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;
     }
     .conv-project-badge[hidden]{display:none!important}
-    .sub-meta{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+    .sub-meta{
+      flex:1 1 auto;min-width:0;font-size:11.5px;color:var(--muted);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;
+      cursor:pointer;display:block;
+    }
     .sub-meta:active{color:var(--accent)}
     .quota-pill{
       appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
@@ -4092,9 +4108,11 @@ function buildMobileAppHtml() {
         padding-top:0;padding-bottom:0;
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
-      .conv-title{font-size:15.5px}
-      .conv-project-badge{max-width:200px;font-size:11.5px;padding:2px 8px}
-      .sub-meta{font-size:12px}
+      .title-wrap{grid-template-columns:auto minmax(0,1fr) auto;column-gap:7px;row-gap:1px}
+      .conv-title{grid-column:2;grid-row:1;font-size:15.5px}
+      .sub-row{display:contents}
+      .conv-project-badge{grid-column:3;grid-row:1;justify-self:end;max-width:200px;font-size:11.5px;padding:2px 8px}
+      .sub-meta{grid-column:1 / -1;grid-row:2;font-size:12px}
       .quota-pill{flex-direction:row;align-items:center;gap:8px;padding:6px 12px;font-size:12px;border-radius:10px}
       .quota-pill span:last-child{font-size:11.5px;color:var(--muted);padding-left:8px;border-left:1px solid var(--border)}
       .drawer-backdrop{
@@ -4212,9 +4230,17 @@ function buildMobileAppHtml() {
     }
     @media (max-width:430px){
       .icon-btn{height:30px;min-width:30px;padding:0 4px}
-      .conv-project-badge{max-width:88px;font-size:10.5px;padding:1px 6px}
+      .conv-project-badge{max-width:58%;font-size:10.5px;padding:1px 6px}
       .top-panel-btn{padding:0 5px;gap:3px;font-size:11px}
       .quota-pill{padding:0 6px;font-size:11px}
+    }
+    @media (max-width:360px){
+      .topbar{padding:6px 8px;gap:5px}
+      .icon-btn{height:28px;min-width:28px;padding:0 3px}
+      .topbar-actions{gap:3px}
+      .top-panel-btn{height:28px;padding:0 4px;gap:2px;font-size:10.5px;border-radius:8px}
+      #btn-usage-panel{min-width:28px;padding:0 5px}
+      .quota-pill{height:28px;padding:0 5px;font-size:10.5px;border-radius:8px}
     }
   </style>
 </head>
@@ -4228,9 +4254,11 @@ function buildMobileAppHtml() {
         <div class="title-row">
           <span id="status-dot" class="dot"></span>
           <span id="conv-title" class="conv-title">正在连接 Mac…</span>
-          <span id="conv-project-badge" class="conv-project-badge" hidden></span>
         </div>
-        <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
+        <div class="sub-row">
+          <span id="conv-project-badge" class="conv-project-badge" hidden></span>
+          <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
+        </div>
       </div>
       <div class="topbar-actions">
         <button id="btn-context-panel" class="top-panel-btn" type="button" aria-label="上下文窗口面板" title="上下文窗口面板">
