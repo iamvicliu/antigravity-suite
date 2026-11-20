@@ -3170,7 +3170,7 @@ function createConversationHistoryManager() {
       // Never extend `at` on cache hits: TTL must measure elapsed time since actual RPC fetch.
       // For unknown-signature warm entries (knownOldSig === ''), record observedSig without promoting it to trajSig.
       const nextObservedSig = knownOldSig ? '' : (observedOldSig || trajSig || '');
-      const cachedQueued = Array.isArray(existing.queuedMessages) ? existing.queuedMessages : [];
+      const cachedQueued = Array.isArray(existing.queuedMessages) ? existing.queuedMessages : null;
       touchCache(sid, {
         trajMsgs,
         queuedMessages: cachedQueued,
@@ -3216,9 +3216,14 @@ function createConversationHistoryManager() {
     } else if (baseRec && Array.isArray(baseRec.trajMsgs)) {
       trajMsgs = baseRec.trajMsgs;
     }
+    const invGenAfter = invalidatedGenMap.get(sid) || 0;
+    const isPendingInvalidation = Boolean(invGenAfter > 0);
+    if (trajFetchedFresh && invGenAfter > 0 && fetchRes.gen > invGenAfter) {
+      invalidatedGenMap.delete(sid);
+    }
     const nextQueued = trajFetchedFresh
       ? (Array.isArray(fetchedQueued) ? fetchedQueued : [])
-      : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : null);
+      : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : (isPendingInvalidation ? [] : null));
 
     const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
     const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');

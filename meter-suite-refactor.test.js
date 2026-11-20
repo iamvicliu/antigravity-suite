@@ -11504,6 +11504,26 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
   const finalCached2 = await histMgr2.enrichMessages(snapInput2, { localApiConnect: async () => controlledApi2 });
   assert.equal(finalCached2.queuedMessages.length, 0, '缓存命中权威空队列时也绝不得回退到 cleanSnap.queuedMessages');
 
+  // 3c. invalidateSession 后新请求 RPC 失败：不得恢复输入快照中的旧队列；未失效时 RPC 失败保留输入快照队列
+  const histMgr3 = createConversationHistoryManager();
+  const failApi = { call: async () => null };
+  const snapWithStale = {
+    ok: true,
+    sessionId: 'conv-fail-1',
+    messages: [],
+    busy: false,
+    _activeTrajSig: 'sig-f1',
+    queuedMessages: [{ stepIndex: 5, text: '输入快照旧队列', status: 'queued' }]
+  };
+  const uninvalidatedFail = await histMgr3.enrichMessages(snapWithStale, { localApiConnect: async () => failApi });
+  assert.equal(uninvalidatedFail.queuedMessages.length, 1, '未失效情况下 RPC 失败应保留输入快照队列');
+
+  histMgr3.invalidateSession('conv-fail-1');
+  const invFailSnap = await histMgr3.enrichMessages(snapWithStale, { localApiConnect: async () => failApi });
+  assert.equal(invFailSnap.queuedMessages.length, 0, 'invalidateSession 后 RPC 失败绝不得恢复输入快照中的旧队列');
+  const invFailCached = await histMgr3.enrichMessages(snapWithStale, { localApiConnect: async () => failApi });
+  assert.equal(invFailCached.queuedMessages.length, 0, '失效后后续缓存读取同样不得恢复旧队列');
+
   // 4. 远程网页端包含 #queue-dock、排队条渲染、立即发送与撤回按钮及防重锁
   const html = buildMobileAppHtml();
   assert.ok(html.includes('id="queue-dock"'), '应渲染 #queue-dock 排队消息容器');
