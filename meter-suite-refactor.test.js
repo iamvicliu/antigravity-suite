@@ -10557,30 +10557,49 @@ test('需求 26: antigravity-hans-overlay 仅翻译 div.entrance-title 登录欢
 test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async () => {
   const mobileSrc = fs.readFileSync(path.join(__dirname, 'mobile-remote.js'), 'utf8');
   const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  const { resolveEmptyCloudflaredConfigPath } = require('./mobile-remote');
 
-  // 1. cloudflared 启动必须显式传入 --config 空配置隔离宿主机 ~/.cloudflared/config.yml
+  // 1. cloudflared 空配置路径解析：POSIX 返回 /dev/null；Windows 可写目录生成空文件；创建失败返回空串而非不可用路径
+  assert.equal(resolveEmptyCloudflaredConfigPath({ platform: 'darwin' }), '/dev/null');
+  const tmpWinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cf-empty-win-'));
+  try {
+    const winCfg = resolveEmptyCloudflaredConfigPath({ platform: 'win32', baseDir: tmpWinDir });
+    assert.equal(winCfg, path.join(tmpWinDir, '.cloudflared-empty.yml'));
+    assert.equal(fs.existsSync(winCfg), true, 'Windows 下应成功创建空配置文件');
+    const blockerFile = path.join(tmpWinDir, 'not-a-dir');
+    fs.writeFileSync(blockerFile, 'x', 'utf8');
+    const failedCfg = resolveEmptyCloudflaredConfigPath({ platform: 'win32', baseDir: path.join(blockerFile, 'sub') });
+    assert.equal(failedCfg, '', 'Windows 空配置文件创建失败时必须返回空字符串而非不可用路径');
+  } finally {
+    fs.rmSync(tmpWinDir, { recursive: true, force: true });
+  }
+
+  // 2. cloudflared 启动参数、quick 就绪事件/超时兜底、navigatingAway 恢复与 endpoints 持久化
   assert.ok(
-    mobileSrc.includes('resolveEmptyCloudflaredConfigPath()')
-    && mobileSrc.includes("'--config', emptyConfigPath, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run'")
-    && mobileSrc.includes("'--config', emptyConfigPath, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url'"),
-    'cloudflared quick/named 模式必须显式传入 --config 隔离宿主机 config.yml'
+    mobileSrc.includes("const configArgs = emptyConfigPath ? ['--config', emptyConfigPath] : [];")
+    && mobileSrc.includes("['tunnel', ...configArgs, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']")
+    && mobileSrc.includes("['tunnel', ...configArgs, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url'"),
+    'cloudflared quick/named 模式必须在有空配置路径时传入 --config，否则安全省略'
   );
-
-  // 2. quick 模式需等待 Registered tunnel connection 再标记 running（同时保留超时兜底）
   assert.ok(
     mobileSrc.includes('quickUrlCandidate && quickRegistered')
-    && mobileSrc.includes("window.addEventListener('pageshow'"),
-    'quick 模式应等待隧道注册并具备 pageshow 恢复 navigatingAway 防卡死保护'
+    && mobileSrc.includes("mode === 'quick' && quickUrlCandidate && state === 'starting' && child === spawned && !errorMsg")
+    && mobileSrc.includes("window.addEventListener('pageshow'")
+    && mobileSrc.includes('navigatingAwayTimer = setTimeout')
+    && mobileSrc.includes('pairState.endpoints = snap.endpoints;')
+    && mobileSrc.includes('saveStoredPair(pairState);'),
+    'quick 模式就绪/超时、pageshow/超时恢复 navigatingAway 与快照 endpoints 持久化均应完整存在'
   );
 
-  // 3. 桌面端远程配对浮窗点击 .ag-rp-ch-pill 可在多通道间切换二维码与复制链接
+  // 3. 桌面端远程配对浮窗点击 .ag-rp-ch-pill 切换通道，且所选通道失效后自动回退
   const env = createDomEnv();
   env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
   let copiedText = '';
   env.sandbox.navigator.clipboard = {
     writeText: async (text) => { copiedText = String(text || ''); }
   };
-  const info = {
+  let lanAvailable = true;
+  const buildInfoPayload = () => ({
     port: 18765,
     token: 'tok-switch-test-123456',
     deviceName: 'test-host',
@@ -10593,10 +10612,10 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
         label: '局域网',
         labelEn: 'LAN',
         enabled: true,
-        available: true,
-        displayHost: '192.168.1.10',
-        url: 'http://192.168.1.10:18765/?token=tok-switch-test-123456',
-        qrSvg: '<svg id="qr-lan"><rect/></svg>'
+        available: lanAvailable,
+        displayHost: lanAvailable ? '192.168.1.10' : '',
+        url: lanAvailable ? 'http://192.168.1.10:18765/?token=tok-switch-test-123456' : '',
+        qrSvg: lanAvailable ? '<svg id="qr-lan"><rect/></svg>' : ''
       },
       {
         key: 'tailscale',
@@ -10624,11 +10643,11 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
     fusedUrl: 'https://demo.trycloudflare.com/?token=tok-switch-test-123456',
     primaryUrl: 'https://demo.trycloudflare.com/?token=tok-switch-test-123456',
     qrSvg: '<svg id="qr-tunnel"><rect/></svg>'
-  };
+  });
 
   env.sandbox.fetch = async (url) => {
     if (String(url).includes('/remote-info')) {
-      return { ok: true, status: 200, json: async () => ({ ok: true, data: info }) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, data: buildInfoPayload() }) };
     }
     return { ok: true, status: 200, json: async () => ({ ok: true }) };
   };
@@ -10644,13 +10663,16 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
   assert.ok(remotePop && !remotePop.hidden, '点击远程按钮应打开配对浮窗');
   assert.ok(remotePop.innerHTML.includes('id="qr-tunnel"'), '默认应优先展示 Cloudflare 隧道二维码');
 
-  const lanPill = remotePop.querySelector('.ag-rp-ch-pill[data-ch-key="lan"]');
+  const findPill = (key) => Array.from(remotePop.querySelectorAll('.ag-rp-ch-pill'))
+    .find((node) => node.getAttribute('data-ch-key') === key);
+
+  const lanPill = findPill('lan');
   assert.ok(lanPill, '浮窗应渲染可点击的局域网通道胶囊');
   lanPill.click();
   await new Promise((r) => setTimeout(r, 15));
 
   assert.equal(
-    remotePop.querySelector('.ag-rp-ch-pill[data-ch-key="lan"]')?.getAttribute('data-active'),
+    findPill('lan')?.getAttribute('data-active'),
     'true',
     '点击局域网胶囊后应激活局域网通道'
   );
@@ -10661,6 +10683,20 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
   remotePop.querySelector('#ag-remote-copy')?.click();
   await new Promise((r) => setTimeout(r, 15));
   assert.equal(copiedText, 'http://192.168.1.10:18765/?token=tok-switch-test-123456', '复制链接应复制当前选中通道的 URL');
+
+  // 4. 所选局域网通道失效刷新后，应自动回退至最高优先级可用通道 (Cloudflare)
+  lanAvailable = false;
+  remotePop.querySelector('#ag-remote-refresh')?.click();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(
+    findPill('tunnel')?.getAttribute('data-active'),
+    'true',
+    '所选通道失效后应自动回退激活 Cloudflare 通道'
+  );
+  assert.ok(remotePop.innerHTML.includes('id="qr-tunnel"'), '回退后二维码应恢复为 Cloudflare 二维码');
+  remotePop.querySelector('#ag-remote-copy')?.click();
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(copiedText, 'https://demo.trycloudflare.com/?token=tok-switch-test-123456', '回退后复制链接应指向回退通道 URL');
 
   enhancer.dispose?.();
 });
