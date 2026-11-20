@@ -9383,6 +9383,243 @@ test('需求 29: 融合回归——隔离会话后跨项目新建与进空项目
     compactBtnSame.click();
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(uiActions[uiActions.length - 1].conversationId, 'conv-proj-a-2', '同项目旧新建回包后后续动作仍应保持 conv-proj-a-2');
+
+    // 2d) 跨微任务去重单测：先触发 onclick(sharedEv) 后清空两轮微任务再派发同一事件，WeakSet 不得被清除从而仍只发送 1 次
+    const beforeMicrotaskCompactCount = uiActions.filter((a) => a.action === 'send' && a.text === '/compact').length;
+    const sharedClickEv = { type: 'click', target: compactBtnSame, preventDefault() {}, stopPropagation() {} };
+    const pClick = compactBtnSame.onclick(sharedClickEv);
+    await Promise.resolve();
+    await Promise.resolve();
+    compactBtnSame.dispatchEvent(sharedClickEv);
+    await pClick;
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      uiActions.filter((a) => a.action === 'send' && a.text === '/compact').length,
+      beforeMicrotaskCompactCount + 1,
+      '同一事件对象跨微任务经过 onclick 与 addEventListener 时只能执行一次'
+    );
+
+    // 2e) 真实 Headless Chrome 原生鼠标与触摸输入回归：验证真实浏览器中仅单事件路径且鼠标/触摸单击 /compact 与发送按钮精确触发 1 次 /api/action
+    const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(CHROME_BIN)) {
+      const http = require('node:http');
+      const { spawn } = require('node:child_process');
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const chromeActions = [];
+      const chromeSnap = {
+        ok: true,
+        sessionId: 'conv-chrome-r4',
+        isNewConversation: false,
+        currentProjectId: 'proj-a',
+        currentProjectName: 'Alpha Main',
+        title: 'Chrome 原生点击验证',
+        busy: false,
+        model: 'Gemini 4 Carbon (Low)',
+        modelOptions: modelOpts,
+        permissionKey: 'auto',
+        permissionLabel: '自动',
+        messages: [],
+        totalMessages: 0,
+        messagesStartIndex: 0,
+        hasEarlierMessages: false,
+        projects: projectsAB,
+        conversations: [
+          { id: 'conv-chrome-r4', projectId: 'proj-a', projectName: 'Alpha Main', title: 'Chrome 原生点击验证', active: true, status: 'idle', updatedAt: Date.now() }
+        ]
+      };
+      const chromeServer = http.createServer(remoteMod.createRemoteHttpHandler(httpCfg, {
+        homeDir,
+        configDir,
+        localApiConnect: mockConnect,
+        fetchSnapshot: async () => chromeSnap,
+        performAction: async (act) => {
+          chromeActions.push(act);
+          return { ok: true, actionResult: { ok: true }, snapshot: chromeSnap };
+        }
+      }));
+      await new Promise((resolve) => chromeServer.listen(0, '127.0.0.1', resolve));
+      const chromePort = chromeServer.address().port;
+      const chromeUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req29-chrome-'));
+      let chromeProc = null;
+      let cdpWs = null;
+      try {
+        const chromeEnv = { ...process.env };
+        if (prevHome === undefined) delete chromeEnv.HOME;
+        else chromeEnv.HOME = prevHome;
+        chromeProc = spawn(CHROME_BIN, [
+          '--headless=new',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--remote-debugging-port=0',
+          `--user-data-dir=${chromeUserDir}`,
+          'about:blank'
+        ], { stdio: ['ignore', 'pipe', 'pipe'], env: chromeEnv });
+        const browserWsUrl = await new Promise((resolve, reject) => {
+          let errOut = '';
+          const timer = setTimeout(() => reject(new Error('Chrome startup timeout: ' + errOut)), 10000);
+          chromeProc.stderr.on('data', (chunk) => {
+            errOut += String(chunk);
+            const m = errOut.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+            if (m) {
+              clearTimeout(timer);
+              resolve(m[1]);
+            }
+          });
+          chromeProc.on('exit', (code) => {
+            clearTimeout(timer);
+            reject(new Error(`Chrome exited (${code}): ${errOut}`));
+          });
+        });
+        const devOrigin = browserWsUrl.replace(/^ws:/, 'http:').replace(/\/devtools\/.*$/, '');
+        const tabMeta = await new Promise((resolve, reject) => {
+          const req = http.request(`${devOrigin}/json/new?about:blank`, { method: 'PUT' }, (res) => {
+            let body = '';
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => {
+              try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+            });
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        cdpWs = new WebSocket(tabMeta.webSocketDebuggerUrl);
+        await new Promise((resolve, reject) => {
+          cdpWs.addEventListener('open', resolve, { once: true });
+          cdpWs.addEventListener('error', reject, { once: true });
+        });
+        let cdpSeq = 0;
+        const cdpPending = new Map();
+        const rejectAllPending = (err) => {
+          for (const [, p] of cdpPending) {
+            clearTimeout(p.timer);
+            p.reject(err);
+          }
+          cdpPending.clear();
+        };
+        cdpWs.addEventListener('close', () => rejectAllPending(new Error('CDP WebSocket closed')));
+        cdpWs.addEventListener('error', () => rejectAllPending(new Error('CDP WebSocket error')));
+        cdpWs.addEventListener('message', (ev) => {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg.id && cdpPending.has(msg.id)) {
+            const p = cdpPending.get(msg.id);
+            cdpPending.delete(msg.id);
+            clearTimeout(p.timer);
+            if (msg.error) p.reject(new Error(msg.error.message || 'CDP error'));
+            else p.resolve(msg.result);
+          }
+        });
+        const cdpCall = (method, params = {}) => new Promise((resolve, reject) => {
+          const id = ++cdpSeq;
+          const timer = setTimeout(() => {
+            cdpPending.delete(id);
+            reject(new Error(`CDP timeout on ${method}`));
+          }, 8000);
+          cdpPending.set(id, { resolve, reject, timer });
+          cdpWs.send(JSON.stringify({ id, method, params }));
+        });
+        const cdpEval = async (expression) => {
+          const res = await cdpCall('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+          if (res?.exceptionDetails) {
+            throw new Error(res.exceptionDetails.exception?.description || res.exceptionDetails.text || 'CDP eval error');
+          }
+          return res?.result?.value;
+        };
+
+        await cdpCall('Page.enable');
+        await cdpCall('Runtime.enable');
+        await cdpCall('Page.bringToFront');
+        await cdpCall('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        await cdpCall('Page.navigate', { url: `http://127.0.0.1:${chromePort}/?token=${encodeURIComponent(httpCfg.token)}` });
+
+        let chipRect = null;
+        const waitStart = Date.now();
+        while (Date.now() - waitStart < 8000) {
+          chipRect = await cdpEval(`(() => {
+            const chip = Array.from(document.querySelectorAll('#chips .chip')).find((el) => (el.textContent || '').trim() === '/compact');
+            const modelBtn = document.getElementById('btn-model-inline');
+            const sheetList = document.getElementById('sheet-list');
+            if (!chip || !modelBtn || !sheetList) return null;
+            chip.scrollIntoView({ block: 'center', inline: 'center' });
+            const r = chip.getBoundingClientRect();
+            return r.width > 0 && r.height > 0
+              ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), isNativeEventTarget: chip instanceof EventTarget && modelBtn instanceof EventTarget && sheetList instanceof EventTarget }
+              : null;
+          })()`);
+          if (chipRect) break;
+          await sleep(60);
+        }
+        assert.ok(chipRect && chipRect.isNativeEventTarget, '真实 Chrome 中按钮必须识别为原生 EventTarget 且可定位 /compact 坐标');
+
+        // 桌面端原生鼠标左键单击 /compact -> 精确触发 1 次
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseMoved', x: chipRect.x, y: chipRect.y });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x: chipRect.x, y: chipRect.y, button: 'left', clickCount: 1 });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x: chipRect.x, y: chipRect.y, button: 'left', clickCount: 1 });
+        await sleep(260);
+        assert.equal(
+          chromeActions.filter((a) => a.action === 'send' && a.text === '/compact').length,
+          1,
+          '真实 Chrome 原生鼠标左键单击 /compact 只能触发 1 次 /api/action'
+        );
+
+        // 移动端原生触摸点按 /compact -> 再精确 +1 次（累计 2 次）
+        await cdpCall('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+        await cdpCall('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+        await sleep(80);
+        const touchChipPt = await cdpEval(`(() => {
+          const chip = Array.from(document.querySelectorAll('#chips .chip')).find((el) => (el.textContent || '').trim() === '/compact');
+          chip?.scrollIntoView?.({ block: 'center', inline: 'center' });
+          const r = chip?.getBoundingClientRect?.();
+          return r && r.width > 0 ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+        })()`);
+        assert.ok(touchChipPt);
+        await cdpCall('Input.dispatchTouchEvent', {
+          type: 'touchStart',
+          touchPoints: [{ x: touchChipPt.x, y: touchChipPt.y, radiusX: 4, radiusY: 4, force: 1, id: 1 }]
+        });
+        await cdpCall('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await sleep(260);
+        assert.equal(
+          chromeActions.filter((a) => a.action === 'send' && a.text === '/compact').length,
+          2,
+          '真实 Chrome 原生触摸点按 /compact 只能触发 1 次（累计 2 次）/api/action'
+        );
+
+        // 原生鼠标左键单击发送按钮 #btn-send -> 同样精确触发 1 次
+        await cdpCall('Emulation.setTouchEmulationEnabled', { enabled: false });
+        await cdpCall('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        await sleep(80);
+        const sendPt = await cdpEval(`(() => {
+          const taEl = document.getElementById('input');
+          const sendEl = document.getElementById('btn-send');
+          if (!taEl || !sendEl) return null;
+          taEl.focus();
+          taEl.value = 'native-click-once';
+          taEl.dispatchEvent(new Event('input', { bubbles: true }));
+          sendEl.scrollIntoView({ block: 'center', inline: 'center' });
+          const r = sendEl.getBoundingClientRect();
+          return (!sendEl.disabled && r.width > 0) ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+        })()`);
+        assert.ok(sendPt);
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseMoved', x: sendPt.x, y: sendPt.y });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x: sendPt.x, y: sendPt.y, button: 'left', clickCount: 1 });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sendPt.x, y: sendPt.y, button: 'left', clickCount: 1 });
+        await sleep(260);
+        assert.equal(
+          chromeActions.filter((a) => a.action === 'send' && a.text === 'native-click-once').length,
+          1,
+          '真实 Chrome 原生鼠标左键单击 #btn-send 只能触发 1 次 /api/action'
+        );
+      } finally {
+        try { cdpWs?.close(); } catch {}
+        try { chromeProc?.kill('SIGKILL'); } catch {}
+        await sleep(150);
+        chromeServer.closeAllConnections?.();
+        await new Promise((resolve) => chromeServer.close(resolve));
+        fs.rmSync(chromeUserDir, { recursive: true, force: true, maxRetries: 6, retryDelay: 120 });
+      }
+    }
   } finally {
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
