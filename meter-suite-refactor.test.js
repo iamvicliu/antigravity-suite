@@ -12221,13 +12221,242 @@ test('远程端彻底工作台化：方案 B 延迟隔离新建草稿、按需�
   assert.equal(swHist.json.snapshot.sessionId, 'conv-alpha-9');
   assert.equal(performed.length, beforeSwitchCount, '新建草稿与切回历史会话全程零桌面窗口调用');
 
-  // 6. 前端与桌面脚本校验
+  // 5b. 慢路由超时（createdConversationId 为空）：禁止回退绑定桌面旧会话，并阻止重复重试发送
+  let slowMode = false;
+  let releaseSlowSend = null;
+  let markSlowEntered = null;
+  const slowEnteredP = new Promise((r) => { markSlowEntered = r; });
+  const handlerEdge = createRemoteHttpHandler(mockCfg, {
+    fetchSnapshot: async (_tid, opts = {}) => {
+      const cid = String(opts.conversationId || '');
+      return {
+        ok: true,
+        sessionId: cid || 'conv-desktop-old',
+        activeConversationId: cid || 'conv-desktop-old',
+        isolated: Boolean(cid && cid !== 'conv-desktop-old'),
+        projects: [{ id: 'proj-beta', name: 'Beta App' }],
+        conversations: [],
+        messages: []
+      };
+    },
+    performAction: async (act) => {
+      if (slowMode) {
+        markSlowEntered?.();
+        await new Promise((r) => { releaseSlowSend = r; });
+        return {
+          ok: true,
+          actionResult: { ok: true, createdConversationId: 'conv-late-99', projectId: act.draftProjectId },
+          snapshot: { ok: true, sessionId: 'conv-desktop-old', messages: [] }
+        };
+      }
+      return {
+        ok: true,
+        actionResult: { ok: true, createdConversationId: '', projectId: act.draftProjectId },
+        snapshot: { ok: true, sessionId: 'conv-desktop-old', messages: [] }
+      };
+    }
+  });
+  const callEdge = async (method, reqPath, bodyObj = null, cid = 'client-edge-05') => {
+    const { Readable } = require('stream');
+    const raw = bodyObj ? JSON.stringify(bodyObj) : '';
+    const req = Readable.from(raw ? [Buffer.from(raw)] : []);
+    req.method = method;
+    req.url = reqPath;
+    req.headers = {
+      host: '127.0.0.1:18775',
+      'x-ag-remote-token': mockCfg.token,
+      'x-ag-client-id': cid,
+      ...(bodyObj ? { 'content-type': 'application/json' } : {})
+    };
+    req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let status = 200;
+    let out = '';
+    const res = { setHeader() {}, writeHead(c) { status = c; }, end(ch) { if (ch) out += String(ch); } };
+    await handlerEdge(req, res);
+    return { status, json: JSON.parse(out) };
+  };
+
+  await callEdge('POST', '/api/action', { action: 'new-conversation', projectId: 'proj-beta', isolated: true });
+  const timeoutSend = await callEdge('POST', '/api/action', { action: 'send', text: 'slow route msg' });
+  assert.equal(timeoutSend.json.actionResult.pendingConfirmation, true, '路由超时未确认新会话 ID 时必须标记 pendingConfirmation');
+  assert.equal(timeoutSend.json.snapshot.sessionId, '__new__', '超时不得回退绑定桌面旧会话 conv-desktop-old');
+  const dupRetry = await callEdge('POST', '/api/action', { action: 'send', text: 'slow route msg' });
+  assert.equal(dupRetry.json.ok, false);
+  assert.equal(dupRetry.json.pendingConfirmation, true, '待确认期间必须拦截重复发送');
+
+  // 5c. 并发导航保护：草稿发送尚未返回期间用户切去历史会话，发送完成后不得覆盖当前会话
+  await callEdge('POST', '/api/action', { action: 'new-conversation', projectId: 'proj-beta', isolated: true }, 'client-race-05');
+  slowMode = true;
+  const inflightSendP = callEdge('POST', '/api/action', { action: 'send', text: 'race msg' }, 'client-race-05');
+  await slowEnteredP;
+  await callEdge('POST', '/api/action', { action: 'switch-conversation', id: 'conv-user-switched', isolated: true }, 'client-race-05');
+  releaseSlowSend?.();
+  await inflightSendP;
+  const afterRaceSnap = await callEdge('GET', '/api/snapshot', null, 'client-race-05');
+  assert.equal(afterRaceSnap.json.sessionId, 'conv-user-switched', '并发切换历史会话后，迟到的草稿发送结果不得覆盖当前选中会话');
+
+  // 6. 桌面端 ag-enhancer-overlay.js 真实行为验证（无 prevConvId 恢复、发送抛错恢复、恢复失败透出）
+  const envDesk = createDomEnv();
+  const deskTimers = new Set();
+  envDesk.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { deskTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 10));
+    deskTimers.add(t);
+    return t;
+  };
+  envDesk.sandbox.clearTimeout = (t) => { deskTimers.delete(t); clearTimeout(t); };
+  const deskComposerProps = { inExistingConversation: false, cascadeId: '', isConvoLoading: false, handleSubmit: () => {} };
+  const deskRouterState = {
+    status: 'idle',
+    isLoading: false,
+    location: { pathname: '/', search: { project: 'proj-orig' } },
+    matches: [{ routeId: '/manager-layout/manager-landing-layout/', params: {}, status: 'success' }]
+  };
+  let failRouterTo = '';
+  let throwOnSend = false;
+  let autoCreatedCid = '11111111-2222-3333-4444-555555555555';
+  const deskProjBadge = envDesk.doc.createElement('div');
+  deskProjBadge.setAttribute('data-active-project-id', 'proj-orig');
+  envDesk.doc.body.appendChild(deskProjBadge);
+  const applyDeskUrl = (rawUrl) => {
+    const u = new URL(String(rawUrl), 'https://127.0.0.1');
+    const p = u.searchParams.get('project') || '';
+    envDesk.win.location.pathname = u.pathname;
+    envDesk.win.location.search = u.search;
+    deskRouterState.location = { pathname: u.pathname, search: p ? { project: p } : {} };
+    const cm = u.pathname.match(/^\/c\/([^/?#]+)/);
+    if (cm) {
+      deskRouterState.matches = [{ routeId: '/manager-layout/manager-landing-layout/c/$cascadeId', params: { cascadeId: cm[1] }, status: 'success' }];
+      deskComposerProps.inExistingConversation = true;
+      deskComposerProps.cascadeId = cm[1];
+    } else {
+      deskRouterState.matches = [{ routeId: '/manager-layout/manager-landing-layout/', params: {}, status: 'success' }];
+      deskComposerProps.inExistingConversation = false;
+      deskComposerProps.cascadeId = '';
+    }
+    if (p) deskProjBadge.setAttribute('data-active-project-id', p);
+    else deskProjBadge.removeAttribute('data-active-project-id');
+  };
+  envDesk.win.location = { pathname: '/', search: '?project=proj-orig', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/?project=proj-orig' };
+  envDesk.sandbox.location = envDesk.win.location;
+  applyDeskUrl('/?project=proj-orig');
+  const deskRouter = {
+    state: deskRouterState,
+    history: { push: (href) => { if (failRouterTo && String(href).includes(failRouterTo)) throw new Error('router restore blocked'); applyDeskUrl(href); } },
+    parseLocation: () => deskRouterState.location,
+    async navigate(opts) {
+      const to = String(opts?.to || '/');
+      const resolvedSearch = typeof opts?.search === 'function' ? opts.search(deskRouterState.location.search || {}) : opts?.search;
+      const fullTo = resolvedSearch?.project ? `${to}?project=${encodeURIComponent(resolvedSearch.project)}` : to;
+      if (failRouterTo && fullTo.includes(failRouterTo)) {
+        throw new Error('router restore blocked');
+      }
+      applyDeskUrl(fullTo);
+    }
+  };
+  const newBtn = envDesk.doc.createElement('a');
+  newBtn.setAttribute('data-testid', 'new-conversation-button');
+  newBtn.setAttribute('href', '/');
+  newBtn.__reactFiber$test = { dependencies: { firstContext: { memoizedValue: deskRouter, next: null } }, return: null };
+  envDesk.doc.body.appendChild(newBtn);
+
+  const editor = envDesk.doc.createElement('div');
+  editor.setAttribute('data-lexical-editor', 'true');
+  editor.setAttribute('contenteditable', 'true');
+  const sendBtn = envDesk.doc.createElement('button');
+  sendBtn.setAttribute('data-testid', 'send-button');
+  sendBtn.setAttribute('aria-label', 'Send');
+  const triggerDeskSend = () => {
+    if (throwOnSend) throw new Error('send button crash');
+    if (autoCreatedCid) {
+      applyDeskUrl(`/c/${autoCreatedCid}`);
+    }
+  };
+  sendBtn.onclick = triggerDeskSend;
+  sendBtn.addEventListener('click', triggerDeskSend);
+  editor.addEventListener('keydown', (e) => {
+    if (e?.key === 'Enter') triggerDeskSend();
+  });
+  const composerBox = envDesk.doc.createElement('div');
+  composerBox.className = 'surface-composer';
+  composerBox.__reactFiber$test = { memoizedProps: deskComposerProps, return: null };
+  composerBox.appendChild(editor);
+  composerBox.appendChild(sendBtn);
+  envDesk.doc.body.appendChild(composerBox);
+  envDesk.sandbox.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+  envDesk.win.getSelection = envDesk.sandbox.getSelection;
+  envDesk.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+  envDesk.doc.execCommand = (cmd, _ui, val) => {
+    if (cmd === 'insertText') { editor.textContent = String(val || ''); return true; }
+    return true;
+  };
+  envDesk.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+  let enhDesk = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDesk.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDesk.sandbox);
+    enhDesk = envDesk.sandbox.__AGEnhancer;
+
+    // 6a. prevConvId 为空（桌面原在 /?project=proj-orig）：发往 proj-beta 后自动恢复回 /?project=proj-orig
+    const resEmptyPrev = await enhDesk.performMobileAction({
+      action: 'send',
+      conversationId: '__new__',
+      draftNewIsolated: true,
+      draftProjectId: 'proj-beta',
+      text: 'hello beta',
+      _testPollTries: 2,
+      _testPollDelayMs: 0
+    });
+    assert.equal(resEmptyPrev.ok, true, JSON.stringify(resEmptyPrev));
+    assert.equal(resEmptyPrev.createdConversationId, '11111111-2222-3333-4444-555555555555');
+    assert.equal(resEmptyPrev.restoreDesktopOk, true, JSON.stringify(resEmptyPrev));
+    assert.equal(envDesk.win.location.pathname, '/', '无 prevConvId 时应恢复回桌面原新对话页');
+    assert.equal(envDesk.win.location.search, '?project=proj-orig', '无 prevConvId 时应恢复回桌面原项目');
+
+    // 6b. 有 prevConvId 且发送抛错：仍触发 finally 恢复回 prevConvId
+    const origDesktopCid = 'aaaa1111-bbbb-2222-cccc-333333333333';
+    applyDeskUrl(`/c/${origDesktopCid}`);
+    throwOnSend = true;
+    const resThrow = await enhDesk.performMobileAction({
+      action: 'send',
+      conversationId: '__new__',
+      draftNewIsolated: true,
+      draftProjectId: 'proj-beta',
+      text: 'boom',
+      _testPollTries: 1,
+      _testPollDelayMs: 0
+    });
+    throwOnSend = false;
+    assert.equal(resThrow.ok, false);
+    assert.equal(resThrow.restoreDesktopOk, true, '发送抛错后 finally 仍应成功恢复桌面原会话');
+    assert.equal(envDesk.win.location.pathname, `/c/${origDesktopCid}`);
+
+    // 6c. 恢复桌面失败时不得静默吞错：必须透出 restoreDesktopOk=false 与 restoreDesktopError
+    failRouterTo = `/c/${origDesktopCid}`;
+    const resRestoreFail = await enhDesk.performMobileAction({
+      action: 'send',
+      conversationId: '__new__',
+      draftNewIsolated: true,
+      draftProjectId: 'proj-beta',
+      text: 'ok send bad restore',
+      _testPollTries: 1,
+      _testPollDelayMs: 0
+    });
+    failRouterTo = '';
+    assert.equal(resRestoreFail.restoreDesktopOk, false, '桌面恢复失败时不得静默返回 restoreDesktopOk=true');
+    assert.ok(resRestoreFail.restoreDesktopError, '桌面恢复失败时应透出 restoreDesktopError');
+  } finally {
+    for (const t of deskTimers) clearTimeout(t);
+    enhDesk?.dispose?.();
+    envDesk.sandbox.__AGContextMeter?.dispose?.();
+    envDesk.cleanup?.();
+  }
+
+  // 7. 前端脚本校验
   const html = buildMobileAppHtml();
   const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
   for (let i = 0; i < scripts.length; i++) {
     assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-05-script-${i}.js` }));
   }
   assert.ok(html.includes("{ action: 'new-conversation', isolated: true }"), '前端新建对话应默认走方案 B 隔离草稿模式');
-  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
-  assert.ok(overlaySrc.includes("payload?.draftNewIsolated === true") && overlaySrc.includes('createdConversationId'), '桌面端应支持草稿首条发送后采集 createdConversationId 并在 finally 恢复原会话');
 });

@@ -8965,39 +8965,95 @@
     const reqConvId = String(payload?.conversationId || '').trim();
     const prevConvId = getSessionIdFromLocation() || '';
 
-    // 方案 B：隔离态新建对话草稿在首次发送时才按需切桌面新建并发送，结束后自动恢复桌面原会话
+    // 方案 B：隔离态新建对话草稿在首次发送时才按需切桌面新建并发送，结束后自动恢复桌面原会话或原新对话页
     if (action === 'send' && reqConvId === '__new__' && payload?.draftNewIsolated === true) {
       const draftProjectId = String(payload?.draftProjectId || payload?.projectId || '').trim();
+      const prevSearch = String(location?.search || '');
+      let prevProjectId = parseProjectIdFromHref(prevSearch);
+      if (!prevProjectId && typeof getActiveProjectMeta === 'function') {
+        try { prevProjectId = String(getActiveProjectMeta()?.id || '').trim(); } catch {}
+      }
       let createdConversationId = '';
+      let actionOutcome = null;
+      let actionThrown = null;
+      let restoreDesktopOk = true;
+      let restoreDesktopError = '';
       try {
         const navNew = await executeMobileActionCore('new-conversation', { projectId: draftProjectId });
-        if (!navNew?.ok) return navNew;
-        await new Promise((r) => setTimeout(r, 120));
-        const sendRes = await executeMobileActionCore('send', payload);
-        if (!sendRes?.ok) return sendRes;
-        // 等待新会话 ID 出现在路由中，便于远程端绑定到新对话
-        for (let i = 0; i < 6; i++) {
-          const curId = getSessionIdFromLocation() || '';
-          if (curId && curId !== prevConvId && curId !== '__new__') {
-            createdConversationId = curId;
-            break;
+        if (!navNew?.ok) {
+          actionOutcome = navNew || { ok: false, error: '新建对话失败' };
+        } else {
+          await new Promise((r) => setTimeout(r, 120));
+          const sendRes = await executeMobileActionCore('send', payload);
+          if (!sendRes?.ok) {
+            actionOutcome = sendRes || { ok: false, error: '发送消息失败' };
+          } else {
+            // 等待新会话 ID 出现在路由中，便于远程端绑定到新对话
+            const maxPoll = Number(payload?._testPollTries) > 0 ? Number(payload._testPollTries) : 6;
+            const pollGap = Number(payload?._testPollDelayMs) >= 0 ? Number(payload._testPollDelayMs) : 80;
+            for (let i = 0; i < maxPoll; i++) {
+              const curId = getSessionIdFromLocation() || '';
+              if (curId && curId !== prevConvId && curId !== '__new__') {
+                createdConversationId = curId;
+                break;
+              }
+              if (pollGap > 0) await new Promise((r) => setTimeout(r, pollGap));
+            }
+            actionOutcome = {
+              ...sendRes,
+              createdConversationId,
+              projectId: draftProjectId
+            };
           }
-          await new Promise((r) => setTimeout(r, 80));
         }
-        return {
-          ...sendRes,
-          createdConversationId,
-          projectId: draftProjectId
-        };
+      } catch (err) {
+        actionThrown = err;
       } finally {
-        if (prevConvId && payload?.restoreDesktop !== false) {
-          const curId = getSessionIdFromLocation() || '';
-          if (curId !== prevConvId) {
-            await new Promise((r) => setTimeout(r, 120));
-            await switchToConversationInternal(prevConvId).catch(() => {});
+        if (payload?.restoreDesktop !== false) {
+          try {
+            const curId = getSessionIdFromLocation() || '';
+            if (prevConvId) {
+              if (curId !== prevConvId) {
+                await new Promise((r) => setTimeout(r, 60));
+                let r = await executeMobileActionCore('switch-conversation', { id: prevConvId });
+                if (!r?.ok) {
+                  r = await switchToConversationInternal(prevConvId);
+                }
+                if (r && r.ok === false) {
+                  restoreDesktopOk = false;
+                  restoreDesktopError = String(r.error || '未能恢复桌面原会话');
+                }
+              }
+            } else {
+              const curPid = parseProjectIdFromHref(String(location?.search || ''));
+              if (curId || curPid !== prevProjectId) {
+                await new Promise((r) => setTimeout(r, 60));
+                const r = await executeMobileActionCore('new-conversation', { projectId: prevProjectId });
+                if (r && r.ok === false) {
+                  restoreDesktopOk = false;
+                  restoreDesktopError = String(r.error || '未能恢复桌面原新对话页');
+                }
+              }
+            }
+          } catch (restoreErr) {
+            restoreDesktopOk = false;
+            restoreDesktopError = String(restoreErr?.message || restoreErr || '恢复桌面窗口异常');
           }
         }
       }
+      if (actionThrown) {
+        return {
+          ok: false,
+          error: String(actionThrown?.message || actionThrown || '发送消息异常'),
+          restoreDesktopOk,
+          ...(restoreDesktopError ? { restoreDesktopError } : {})
+        };
+      }
+      return {
+        ...(actionOutcome || { ok: false, error: '未知错误' }),
+        restoreDesktopOk,
+        ...(restoreDesktopError ? { restoreDesktopError } : {})
+      };
     }
 
     const needsSwitch = Boolean(

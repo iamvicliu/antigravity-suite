@@ -11385,11 +11385,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ? (urlObj.searchParams.get('conversationId') || '').trim()
           : (session?.conversationId || '');
         if (session) {
-          if (hasExplicitTarget) session.targetId = targetId;
+          if (hasExplicitTarget && targetId !== session.targetId) {
+            session.targetId = targetId;
+            session.navEpoch = (session.navEpoch || 0) + 1;
+          }
           if (hasExplicitConv) {
+            if (reqConvId !== session.conversationId) {
+              session.navEpoch = (session.navEpoch || 0) + 1;
+            }
             session.conversationId = reqConvId;
             if (reqConvId !== '__new__') {
               session.draftNewIsolated = false;
+              session.draftSendPending = false;
               session.draftProjectId = '';
               session.draftProjectName = '';
             }
@@ -11647,9 +11654,13 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           return;
         }
 
+        const bumpNavEpoch = (sess) => {
+          if (sess) sess.navEpoch = (sess.navEpoch || 0) + 1;
+        };
         const clearDraftNew = (sess) => {
           if (!sess) return;
           sess.draftNewIsolated = false;
+          sess.draftSendPending = false;
           sess.draftProjectId = '';
           sess.draftProjectName = '';
         };
@@ -11688,6 +11699,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             if (session) {
               session.conversationId = '';
               clearDraftNew(session);
+              bumpNavEpoch(session);
             }
             const snap = await fetchSnapshot(effectiveTargetId, { clientId, convLimit: 100, msgLimit: 30 });
             if (session && snap && snap.ok !== false && (snap.activeConversationId || snap.sessionId)) {
@@ -11706,6 +11718,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             if (session) {
               session.conversationId = nextId;
               clearDraftNew(session);
+              bumpNavEpoch(session);
               if (payload?.targetId) session.targetId = effectiveTargetId;
             }
             if (!options.fetchSnapshot && typeof defaultHistoryManager?.warmSession === 'function') {
@@ -11733,8 +11746,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             if (session) {
               session.conversationId = '__new__';
               session.draftNewIsolated = true;
+              session.draftSendPending = false;
               session.draftProjectId = draftPid;
               session.draftProjectName = draftName;
+              bumpNavEpoch(session);
               if (payload?.targetId) session.targetId = effectiveTargetId;
             }
             const baseSnap = await fetchSnapshot(effectiveTargetId, {
@@ -11779,8 +11794,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             if (session) {
               session.conversationId = '__new__';
               session.draftNewIsolated = true;
+              session.draftSendPending = false;
               session.draftProjectId = draftPid;
               session.draftProjectName = draftName;
+              bumpNavEpoch(session);
               if (payload?.targetId) session.targetId = effectiveTargetId;
             }
             const baseSnap = await fetchSnapshot(effectiveTargetId, {
@@ -11825,6 +11842,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             session.targetId = nextTargetId;
             session.conversationId = '';
             clearDraftNew(session);
+            bumpNavEpoch(session);
           }
           const snap = await fetchSnapshot(nextTargetId, { clientId, convLimit: 100, msgLimit: 30 });
           if (session && snap && snap.ok !== false && (snap.activeConversationId || snap.sessionId)) {
@@ -11846,9 +11864,20 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           (session?.draftNewIsolated || payload?.draftNewIsolated === true) &&
           (!effectiveConvId || effectiveConvId === '__new__' || effectiveConvId === 'new')
         );
+        if (isDeferredDraftSend && session?.draftSendPending) {
+          sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+            ok: false,
+            pendingConfirmation: true,
+            error: '首条消息已提交并正在等待新会话 ID 确认，请稍候或切换会话后再试，避免重复发送'
+          }));
+          return;
+        }
         const draftPidForSend = isDeferredDraftSend
           ? String(session?.draftProjectId || payload?.draftProjectId || payload?.projectId || '').trim()
           : '';
+        const sendStartNavEpoch = session ? (session.navEpoch || 0) : 0;
+        const sendStartTargetId = session ? String(session.targetId || effectiveTargetId || '') : effectiveTargetId;
+        const sendStartConvId = session ? String(session.conversationId || '') : effectiveConvId;
         const result = await performAction({
           ...payload,
           clientId,
@@ -11857,30 +11886,48 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ...(isDeferredDraftSend ? { draftNewIsolated: true, draftProjectId: draftPidForSend, restoreDesktop: payload?.restoreDesktop !== false } : {})
         });
         if (isDeferredDraftSend && result?.ok !== false) {
-          const createdCid = String(
-            result?.actionResult?.createdConversationId ||
-            result?.snapshot?.activeConversationId ||
-            result?.snapshot?.sessionId ||
-            ''
-          ).trim();
-          clearDraftNew(session);
-          if (session && createdCid && createdCid !== '__new__') {
-            session.conversationId = createdCid;
-          }
-          if (createdCid && createdCid !== '__new__' && result?.snapshot?.sessionId !== createdCid) {
-            const boundSnap = await fetchSnapshot(effectiveTargetId, {
-              conversationId: createdCid,
-              clientId,
-              convLimit: 100,
-              msgLimit: 30,
-              bypassCache: true,
-              bypassCatalogCache: true
-            }).catch(() => null);
-            if (boundSnap && boundSnap.ok !== false) result.snapshot = boundSnap;
+          const stillSameNav = !session || (
+            (session.navEpoch || 0) === sendStartNavEpoch &&
+            String(session.targetId || effectiveTargetId || '') === sendStartTargetId &&
+            String(session.conversationId || '') === sendStartConvId &&
+            Boolean(session.draftNewIsolated)
+          );
+          const createdCid = String(result?.actionResult?.createdConversationId || '').trim();
+          if (createdCid && createdCid !== '__new__') {
+            if (stillSameNav) {
+              clearDraftNew(session);
+              if (session) session.conversationId = createdCid;
+              if (result?.snapshot?.sessionId !== createdCid) {
+                const boundSnap = await fetchSnapshot(effectiveTargetId, {
+                  conversationId: createdCid,
+                  clientId,
+                  convLimit: 100,
+                  msgLimit: 30,
+                  bypassCache: true,
+                  bypassCatalogCache: true
+                }).catch(() => null);
+                if (boundSnap && boundSnap.ok !== false) result.snapshot = boundSnap;
+              }
+            }
+          } else {
+            // 路由尚未确认新会话 ID：禁止清除草稿或回退绑定桌面旧会话，标记待确认以防重试重复发送
+            if (stillSameNav && session) {
+              session.draftSendPending = true;
+            }
+            if (result.actionResult && typeof result.actionResult === 'object') {
+              result.actionResult.pendingConfirmation = true;
+            }
+            if (stillSameNav && session) {
+              result.snapshot = buildIsolatedDraftSnapshot(
+                result.snapshot || { ok: true, projects: [], conversations: [] },
+                draftPidForSend,
+                session.draftProjectName || ''
+              );
+            }
           }
         } else if (session && result?.snapshot && result.snapshot.ok !== false) {
           const respSid = String(result.snapshot.activeConversationId || result.snapshot.sessionId || '');
-          if (respSid && respSid !== '__new__' && (effectiveConvId === '__new__' || !session.conversationId)) {
+          if (respSid && respSid !== '__new__' && (effectiveConvId === '__new__' || !session.conversationId) && !session.draftNewIsolated) {
             session.conversationId = respSid;
           }
         }
