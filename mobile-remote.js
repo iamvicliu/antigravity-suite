@@ -3229,24 +3229,49 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
   if (!Array.isArray(steps) || !steps.length) return [];
   const lazyHtml = Boolean(options?.lazyHtml);
   const messages = [];
-  let pendingThoughts = [];
+  let turnThoughts = [];
+  let turnAssistantIndices = [];
+
+  const clearEarlierTurnThoughts = () => {
+    for (const idx of turnAssistantIndices) {
+      if (messages[idx]) {
+        messages[idx].thoughtLabel = '';
+        messages[idx].thoughtText = '';
+        messages[idx].thoughts = [];
+        messages[idx].thoughtCount = 0;
+      }
+    }
+  };
 
   const flushPendingThoughtsOnly = (idxTag) => {
-    if (!pendingThoughts.length) return;
-    const thoughts = pendingThoughts.slice();
-    messages.push({
-      id: `t-think-${idxTag}`,
-      role: 'assistant',
-      text: '',
-      html: '',
-      thoughtLabel: '思考过程',
-      thoughtText: thoughts.join('\n\n'),
-      thoughts,
-      thoughtCount: thoughts.length,
-      highRisk: false,
-      riskText: ''
-    });
-    pendingThoughts = [];
+    if (!turnThoughts.length) {
+      turnAssistantIndices = [];
+      return;
+    }
+    const thoughts = turnThoughts.slice();
+    if (turnAssistantIndices.length) {
+      const lastIdx = turnAssistantIndices[turnAssistantIndices.length - 1];
+      clearEarlierTurnThoughts();
+      messages[lastIdx].thoughtLabel = '思考过程';
+      messages[lastIdx].thoughtText = thoughts.join('\n\n');
+      messages[lastIdx].thoughts = thoughts;
+      messages[lastIdx].thoughtCount = thoughts.length;
+    } else {
+      messages.push({
+        id: `t-think-${idxTag}`,
+        role: 'assistant',
+        text: '',
+        html: '',
+        thoughtLabel: '思考过程',
+        thoughtText: thoughts.join('\n\n'),
+        thoughts,
+        thoughtCount: thoughts.length,
+        highRisk: false,
+        riskText: ''
+      });
+    }
+    turnThoughts = [];
+    turnAssistantIndices = [];
   };
 
   for (let i = 0; i < steps.length; i++) {
@@ -3270,11 +3295,12 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
     if (type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') {
       const pr = step.plannerResponse || {};
       const thought = String(pr.thinking || pr.thought || '').trim();
-      if (thought) pendingThoughts.push(thought);
+      if (thought) turnThoughts.push(thought);
       const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
       if (replyRaw) {
+        clearEarlierTurnThoughts();
         const replyText = replyRaw;
-        const thoughts = pendingThoughts.slice();
+        const thoughts = turnThoughts.slice();
         const thoughtText = thoughts.join('\n\n');
         messages.push({
           id: `t-a-${i}`,
@@ -3288,7 +3314,7 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
           highRisk: false,
           riskText: ''
         });
-        pendingThoughts = [];
+        turnAssistantIndices.push(messages.length - 1);
       }
     }
   }
@@ -3323,27 +3349,53 @@ function normMsgPrefix(text) {
 function collapseConsecutiveDomThinking(domMessages) {
   const raw = Array.isArray(domMessages) ? domMessages.filter(Boolean) : [];
   const out = [];
-  let pendingThoughts = [];
-  let pendingLabel = '';
-  let pendingCount = 0;
+  let turnThoughts = [];
+  let turnLabel = '';
+  let turnCount = 0;
+  let turnAssistantIndices = [];
+
+  const clearEarlierTurnThoughts = () => {
+    for (const idx of turnAssistantIndices) {
+      if (out[idx]) {
+        out[idx].thoughtLabel = '';
+        out[idx].thoughtText = '';
+        out[idx].thoughts = [];
+        out[idx].thoughtCount = 0;
+      }
+    }
+  };
+
   const flush = (tag) => {
-    if (!pendingThoughts.length && !pendingLabel) return;
-    const thoughts = pendingThoughts.slice();
-    out.push({
-      id: `dom-think-${tag}`,
-      role: 'assistant',
-      text: '',
-      html: '',
-      thoughtLabel: pendingLabel || '思考过程',
-      thoughtText: thoughts.join('\n\n'),
-      thoughts,
-      thoughtCount: Math.max(thoughts.length, pendingCount, 1),
-      highRisk: false,
-      riskText: ''
-    });
-    pendingThoughts = [];
-    pendingLabel = '';
-    pendingCount = 0;
+    if (!turnThoughts.length && !turnLabel) {
+      turnAssistantIndices = [];
+      return;
+    }
+    const thoughts = turnThoughts.slice();
+    if (turnAssistantIndices.length) {
+      const lastIdx = turnAssistantIndices[turnAssistantIndices.length - 1];
+      clearEarlierTurnThoughts();
+      out[lastIdx].thoughtLabel = turnLabel || '思考过程';
+      out[lastIdx].thoughtText = thoughts.join('\n\n');
+      out[lastIdx].thoughts = thoughts;
+      out[lastIdx].thoughtCount = Math.max(thoughts.length, turnCount, 1);
+    } else {
+      out.push({
+        id: `dom-think-${tag}`,
+        role: 'assistant',
+        text: '',
+        html: '',
+        thoughtLabel: turnLabel || '思考过程',
+        thoughtText: thoughts.join('\n\n'),
+        thoughts,
+        thoughtCount: Math.max(thoughts.length, turnCount, 1),
+        highRisk: false,
+        riskText: ''
+      });
+    }
+    turnThoughts = [];
+    turnLabel = '';
+    turnCount = 0;
+    turnAssistantIndices = [];
   };
   for (let i = 0; i < raw.length; i++) {
     const m = raw[i];
@@ -3356,18 +3408,14 @@ function collapseConsecutiveDomThinking(domMessages) {
     const mThoughts = Array.isArray(m.thoughts) && m.thoughts.length
       ? m.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
       : (String(m.thoughtText || '').trim() ? [String(m.thoughtText).trim()] : []);
-    if (!hasBody) {
-      if (mThoughts.length) pendingThoughts.push(...mThoughts);
-      if (m.thoughtLabel && !pendingLabel) pendingLabel = m.thoughtLabel;
-      pendingCount += Math.max(mThoughts.length, Number(m.thoughtCount) || (m.thoughtLabel ? 1 : 0));
-      continue;
-    }
-    const mergedThoughts = pendingThoughts.concat(mThoughts);
-    const mergedCount = Math.max(mergedThoughts.length, pendingCount + (Number(m.thoughtCount) || 0), (m.thoughtLabel || pendingLabel) ? 1 : 0);
-    const mergedLabel = m.thoughtLabel || pendingLabel || (mergedThoughts.length ? '思考过程' : '');
-    pendingThoughts = [];
-    pendingLabel = '';
-    pendingCount = 0;
+    if (mThoughts.length) turnThoughts.push(...mThoughts);
+    if (m.thoughtLabel && !turnLabel) turnLabel = m.thoughtLabel;
+    turnCount += Math.max(mThoughts.length, Number(m.thoughtCount) || (m.thoughtLabel ? 1 : 0));
+    if (!hasBody) continue;
+    clearEarlierTurnThoughts();
+    const mergedThoughts = turnThoughts.slice();
+    const mergedCount = Math.max(mergedThoughts.length, turnCount, turnLabel ? 1 : 0);
+    const mergedLabel = turnLabel || (mergedThoughts.length ? '思考过程' : '');
     out.push({
       ...m,
       thoughtLabel: mergedLabel,
@@ -3375,6 +3423,7 @@ function collapseConsecutiveDomThinking(domMessages) {
       ...(mergedThoughts.length ? { thoughts: mergedThoughts } : {}),
       ...(mergedCount ? { thoughtCount: mergedCount } : {})
     });
+    turnAssistantIndices.push(out.length - 1);
   }
   flush('end');
   return out;
@@ -3434,13 +3483,23 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     }
   }
   if (startAppendIdx >= 0) {
-    const tailBaseMsgs = baseList.slice(Math.max(0, lastBaseUserIdx + 1));
+    let currentTurnMsgs = baseList.slice(Math.max(0, lastBaseUserIdx + 1));
     for (let j = startAppendIdx; j < domList.length; j++) {
       const dm = domList[j];
       const dSig = normMsgPrefix(dm.text);
+      if (dm.role === 'user') {
+        const dupUser = currentTurnMsgs.some((bm) => bm.role === 'user' && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
+        if (!dupUser) {
+          const item = { ...dm, id: `dom-tail-${j}` };
+          baseList.push(item);
+          // 遇到新用户消息立即重置当前轮次范围，避免后续新轮思考被挂到旧轮回复
+          currentTurnMsgs = [];
+        }
+        continue;
+      }
       if (dm.role === 'assistant' && !dSig && !dm.highRisk) {
         // 纯思考项（空正文）：不得向本轮已有回复或思考卡尾部追加空壳 dom-tail
-        const lastTurnAssistant = [...tailBaseMsgs].reverse().find((bm) => bm.role === 'assistant');
+        const lastTurnAssistant = [...currentTurnMsgs].reverse().find((bm) => bm.role === 'assistant');
         if (lastTurnAssistant) {
           if (!lastTurnAssistant.thoughtText && dm.thoughtText) {
             lastTurnAssistant.thoughtLabel = dm.thoughtLabel || '思考过程';
@@ -3458,19 +3517,19 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           }
           continue;
         }
-        // 本轮尚无任何 assistant 消息且正处于流式阶段才追加唯一 1 条流式思考卡
+        // 本轮尚无任何 assistant 消息才追加唯一 1 条流式思考卡
         if (dm.thoughtLabel || dm.thoughtText) {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          tailBaseMsgs.push(item);
+          currentTurnMsgs.push(item);
         }
         continue;
       }
-      const dup = tailBaseMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
+      const dup = currentTurnMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
       if (!dup) {
         const item = { ...dm, id: `dom-tail-${j}` };
         baseList.push(item);
-        tailBaseMsgs.push(item);
+        currentTurnMsgs.push(item);
       }
     }
   } else if (!lastBaseUserSig && domList.length) {
@@ -3540,10 +3599,10 @@ function createConversationHistoryManager() {
         }
         const allSteps = firstSteps.slice();
         const totalSteps = Number(res?.numTotalSteps || res?.trajectory?.numTotalSteps || 0);
-        if (totalSteps > allSteps.length && allSteps.length > 0) {
+        if (totalSteps > allSteps.length) {
           const PAGE_SIZE = 500;
-          const MAX_PAGES = 20;
-          for (let page = 0; page < MAX_PAGES && allSteps.length < totalSteps; page++) {
+          const maxPages = Math.max(200, Math.ceil(totalSteps / PAGE_SIZE) + 2);
+          for (let page = 0; page < maxPages && allSteps.length < totalSteps; page++) {
             const startIndex = allSteps.length;
             const endIndex = Math.min(totalSteps, startIndex + PAGE_SIZE);
             const pageRes = await callLocalLanguageServer(
@@ -3554,7 +3613,9 @@ function createConversationHistoryManager() {
             ).catch(() => null);
             const chunk = Array.isArray(pageRes?.steps) ? pageRes.steps : [];
             if (!chunk.length) break;
+            const prevLen = allSteps.length;
             allSteps.push(...chunk);
+            if (allSteps.length <= prevLen) break;
           }
         }
         return {
