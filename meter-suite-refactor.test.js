@@ -11627,6 +11627,15 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
     const envRes = await getMedia(envPath, true);
     assert.equal(envRes.status, 403, '访问 .env 文件必须返回 403');
 
+    // 2b. 完整前缀匹配拦截变体（.envrc / .env_prod / id_rsa_work / id_ed25519_deploy）
+    for (const secretName of ['.envrc', '.env_prod', 'id_rsa_work', 'id_ed25519_deploy', 'id_ecdsa_ci']) {
+      const p = path.join(tmpRoot, secretName);
+      fs.writeFileSync(p, 'TOP_SECRET', 'utf8');
+      assert.equal(resolveSafeLocalMediaPath(p, { allowedRoots: [tmpRoot] }).ok, false, `resolveSafeLocalMediaPath 必须拦截 ${secretName}`);
+      const resp = await getMedia(p, true);
+      assert.equal(resp.status, 403, `/api/media 必须对 ${secretName} 返回 403`);
+    }
+
     // 3. 轨迹附件提取与消息流携带
     const stepUi = {
       items: [
