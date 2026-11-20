@@ -10924,18 +10924,55 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (!r) continue;
         try { realRoots.push(fs.realpathSync(String(r))); } catch {}
       }
-      const isSafeSessionEntry = (filePath, displayName) => {
-        const cleanName = String(displayName || '').trim();
-        if (cleanName && SENSITIVE_MEDIA_FILE_RE.test(path.basename(cleanName))) return false;
-        if (!filePath) return true;
-        if (SENSITIVE_MEDIA_DIR_RE.test(filePath) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(filePath))) return false;
-        if (path.isAbsolute(filePath)) {
-          let resolved = path.resolve(filePath);
-          try { resolved = fs.realpathSync(filePath); } catch {}
-          if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved))) return false;
-          const inRoot = realRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
-          if (!inRoot) return false;
+      const resolveRealPathWithAncestors = (absTarget) => {
+        const normalized = path.resolve(absTarget);
+        try {
+          return fs.realpathSync(normalized);
+        } catch {
+          const tail = [];
+          let cur = normalized;
+          while (true) {
+            const parent = path.dirname(cur);
+            if (parent === cur) return normalized;
+            tail.unshift(path.basename(cur));
+            cur = parent;
+            try {
+              return path.join(fs.realpathSync(cur), ...tail);
+            } catch {}
+          }
         }
+      };
+      const isSafeResolvedTarget = (resolved) => {
+        if (!resolved || resolved.includes('\0')) return false;
+        if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved))) return false;
+        return realRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+      };
+      const isSafeSessionPath = (rawCandidate) => {
+        const candidate = String(rawCandidate || '').trim();
+        if (!candidate) return true;
+        if (candidate.includes('\0')) return false;
+        const slashNorm = candidate.replace(/\\/g, '/');
+        if (SENSITIVE_MEDIA_DIR_RE.test(slashNorm) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(slashNorm))) return false;
+        if (path.isAbsolute(candidate)) {
+          const resolved = resolveRealPathWithAncestors(candidate);
+          return isSafeResolvedTarget(resolved);
+        }
+        const posixNorm = path.posix.normalize(slashNorm);
+        if (posixNorm === '..' || posixNorm.startsWith('../') || /(?:^|\/)\.\.(?:\/|$)/.test(slashNorm)) {
+          return false;
+        }
+        if (SENSITIVE_MEDIA_DIR_RE.test(posixNorm) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(posixNorm))) return false;
+        for (const root of realRoots) {
+          const joined = path.resolve(root, candidate);
+          if (!(joined === root || joined.startsWith(root + path.sep))) return false;
+          const resolved = resolveRealPathWithAncestors(joined);
+          if (!isSafeResolvedTarget(resolved)) return false;
+        }
+        return true;
+      };
+      const isSafeSessionEntry = (filePath, displayName) => {
+        if (!isSafeSessionPath(filePath)) return false;
+        if (!isSafeSessionPath(displayName)) return false;
         return true;
       };
       if (cid && cid !== '__new__' && cid !== 'new') {
@@ -10947,18 +10984,20 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         for (const d of rawDiffs) {
           if (!d || typeof d !== 'object') continue;
           const p = normalizeLocalFileUriToPath(d.absoluteUri || d.uri || d.path || d.filePath || '');
-          const name = p ? path.basename(p) : String(d.fileName || d.name || '');
+          const rawName = String(d.fileName || d.name || '').trim();
+          const name = p ? path.basename(p) : rawName;
           const diff = String(d.unifiedDiff || d.diff || d.patch || '');
-          if (!isSafeSessionEntry(p, name)) continue;
+          if (!isSafeSessionEntry(p, rawName || name)) continue;
           if (name || p || diff) diffs.push({ name: name || p, path: p, diff });
         }
         const rawArts = Array.isArray(artRes?.artifacts) ? artRes.artifacts : (Array.isArray(artRes?.snapshots) ? artRes.snapshots : []);
         for (const a of rawArts) {
           if (!a || typeof a !== 'object') continue;
-          const p = normalizeLocalFileUriToPath(a.absoluteUri || a.uri || a.path || '');
-          const name = String(a.title || a.name || (p ? path.basename(p) : '')).trim();
+          const p = normalizeLocalFileUriToPath(a.absoluteUri || a.uri || a.path || a.filePath || '');
+          const rawName = String(a.title || a.name || a.fileName || '').trim();
+          const name = rawName || (p ? path.basename(p) : '');
           const content = String(a.content || a.markdown || '');
-          if (!isSafeSessionEntry(p, name)) continue;
+          if (!isSafeSessionEntry(p, rawName || name)) continue;
           if (name || p || content) artifacts.push({ name: name || 'Artifact', path: p, content });
         }
       }
