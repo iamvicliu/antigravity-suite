@@ -87,7 +87,7 @@ if (major < 22 || (major === 22 && minor < 4)) {
   process.exit(1);
 }
 '
-NODE_BIN_DIR="$(dirname "$(command -v node)")"
+NODE_BIN_DIR="$(node -e 'const fs = require("fs"), path = require("path"); console.log(path.dirname(fs.realpathSync(process.execPath)));' 2>/dev/null || dirname "$(command -v node)")"
 
 # 2. 配置 ~/.local/bin/ag-context-meter 软链
 chmod +x "$BIN_SRC"
