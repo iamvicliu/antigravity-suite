@@ -11962,7 +11962,20 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   assert.equal(trajMsgs[1].thoughts.length, 4, '应保留 4 段分步思考数组');
   assert.ok(trajMsgs[1].thoughtText.includes(longThink), '思考内容不得在 1200 字处截断');
 
-  // 2. mergeTrajectoryAndDomMessages 修复空正文 dom-tail 重复追加
+  // 1b. 同轮存在「思考A+中间正文、思考B+最终正文」时，全部思考归并到最终回复（每轮至多 1 个思考盒）
+  const multiReplySteps = [
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '多段回复测试' } },
+    { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '思考A', response: '中间正文说明' } },
+    { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '思考B', response: '最终结论回复' } }
+  ];
+  const multiReplyMsgs = extractMessagesFromTrajectorySteps(multiReplySteps);
+  assert.equal(multiReplyMsgs.length, 3);
+  assert.equal(multiReplyMsgs[1].thoughtLabel, '', '同轮中间正文节点不得残留独立思考盒');
+  assert.equal(multiReplyMsgs[1].thoughtCount, 0);
+  assert.equal(multiReplyMsgs[2].thoughtCount, 2, '最终回复应承载本轮全部 2 段思考');
+  assert.deepEqual(multiReplyMsgs[2].thoughts, ['思考A', '思考B']);
+
+  // 2. mergeTrajectoryAndDomMessages 修复空正文 dom-tail 重复追加 + 跨轮新用户消息重置轮次范围
   const noisyDom = [
     { id: 'u-0', role: 'user', text: '帮我查一下根因' },
     { id: 'a-1', role: 'assistant', text: '', thoughtLabel: '已思考', thoughtText: '第一步' },
@@ -11975,7 +11988,21 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   assert.equal(merged.length, 2, '已完成回复尾部不得再追加任何空正文 dom-tail 思考气泡');
   assert.equal(merged[1].text, '已定位根因并给出修复方案。');
 
-  // 3. fetchTrajectoryMessages 传 trajectoryVerbosity: 3 并在 numTotalSteps > steps.length 时分页拉齐
+  const crossTurnDom = [
+    { id: 'u-0', role: 'user', text: '帮我查一下根因' },
+    { id: 'a-1', role: 'assistant', text: '已定位根因并给出修复方案。' },
+    { id: 'u-2', role: 'user', text: '继续第二轮追问' },
+    { id: 'a-3', role: 'assistant', text: '', thoughtLabel: '思考过程', thoughtText: '第二轮流式思考内容' }
+  ];
+  const crossTurnMerged = mergeTrajectoryAndDomMessages(trajMsgs, crossTurnDom, { busy: true });
+  assert.equal(crossTurnMerged.length, 4, '跨轮追加 u2 后必须保留新轮流式思考卡 thinking2，不得被挂到旧轮 a1 或丢弃');
+  assert.equal(crossTurnMerged[2].role, 'user');
+  assert.equal(crossTurnMerged[2].text, '继续第二轮追问');
+  assert.equal(crossTurnMerged[3].role, 'assistant');
+  assert.equal(crossTurnMerged[3].text, '');
+  assert.equal(crossTurnMerged[3].thoughtText, '第二轮流式思考内容');
+
+  // 3. fetchTrajectoryMessages 传 trajectoryVerbosity: 3、支持首包 steps=[] 从 0 补取、支持 >20 页拉齐
   const rpcLog = [];
   const histMgr = createConversationHistoryManager();
   const mockConnect = async () => ({
@@ -12010,9 +12037,35 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   assert.equal(fetched.messages[1].thoughtCount, 2);
   assert.equal(fetched.messages[1].text, '分页完整回复');
 
-  // 4. ag-enhancer-overlay.js 独立视图轨迹提取按轮聚合（源码级静态/行为验证）
+  // 3b. 首包 steps=[] 且 numTotalSteps=23（每页返回 1 步，超过 20 页）也能从 0 完整拉齐
+  const emptyFirstCalls = [];
+  const fetched23 = await histMgr.enrichMessages({ sessionId: 'conv-paged-23', messages: [] }, {
+    localApiConnect: async () => ({
+      call: async (method, body) => {
+        emptyFirstCalls.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          return { numTotalSteps: 23, trajectory: { steps: [] } };
+        }
+        if (method === 'GetCascadeTrajectorySteps') {
+          const idx = Number(body.startIndex);
+          if (idx === 0) return { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '超 20 页首包空测试' } }] };
+          if (idx < 22) return { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: `思考步-${idx}` } }] };
+          if (idx === 22) return { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '最后思考', response: '第 23 步完整回复' } }] };
+          return { steps: [] };
+        }
+        return {};
+      }
+    })
+  });
+  assert.equal(emptyFirstCalls[1].method, 'GetCascadeTrajectorySteps');
+  assert.equal(emptyFirstCalls[1].body.startIndex, 0, '首包 steps=[] 且 numTotalSteps>0 时必须从索引 0 开始补取');
+  assert.equal(fetched23.messages.length, 2, '超过 20 个补充分页后也应完整拉齐并归并为 1 问 1 答');
+  assert.equal(fetched23.messages[1].thoughtCount, 22);
+  assert.equal(fetched23.messages[1].text, '第 23 步完整回复');
+
+  // 4. ag-enhancer-overlay.js 独立视图轨迹提取按轮聚合（含中间正文归并验证）
   const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
-  assert.ok(overlaySrc.includes('flushPendingThoughts') && overlaySrc.includes('thoughtCount: thoughts.length'), 'ag-enhancer-overlay.js 应按轮聚合思考并保留 thoughtCount');
+  assert.ok(overlaySrc.includes('clearEarlierTurnThoughts') && overlaySrc.includes('thoughtCount: thoughts.length'), 'ag-enhancer-overlay.js 应按轮聚合思考并清空同轮中间正文旧思考盒');
   assert.ok(!overlaySrc.includes('thoughtText.slice(0, 1200)'), 'ag-enhancer-overlay.js 不得再对思考内容做 1200 字截断');
 
   // 5. buildMobileAppHtml() 整页 <script> 语法校验 + 分步时间线与无正文不渲染空 .md-body

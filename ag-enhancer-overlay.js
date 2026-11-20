@@ -7216,26 +7216,52 @@
     const nodes = Array.from(viewport.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]'));
     const slice = nodes.slice(-Math.max(1, limit));
     const out = [];
-    let pendingThoughts = [];
-    let pendingThoughtLabel = '';
+    let turnThoughts = [];
+    let turnThoughtLabel = '';
+    let turnAssistantIndices = [];
+
+    const clearEarlierTurnThoughts = () => {
+      for (const idx of turnAssistantIndices) {
+        if (out[idx]) {
+          out[idx].thoughtLabel = '';
+          out[idx].thoughtText = '';
+          out[idx].thoughts = [];
+          out[idx].thoughtCount = 0;
+        }
+      }
+    };
 
     const flushPendingDomThoughts = (tag) => {
-      if (!pendingThoughts.length && !pendingThoughtLabel) return;
-      const thoughts = pendingThoughts.slice();
-      out.push({
-        id: `a-think-${tag}`,
-        role: 'assistant',
-        text: '',
-        html: '',
-        thoughtLabel: (pendingThoughtLabel || tr('思考过程', 'Thinking')).slice(0, 120),
-        thoughtText: thoughts.join('\n\n'),
-        thoughts,
-        thoughtCount: Math.max(thoughts.length, pendingThoughtLabel ? 1 : 0),
-        highRisk: false,
-        riskText: ''
-      });
-      pendingThoughts = [];
-      pendingThoughtLabel = '';
+      if (!turnThoughts.length && !turnThoughtLabel) {
+        turnAssistantIndices = [];
+        return;
+      }
+      if (turnAssistantIndices.length) {
+        const lastIdx = turnAssistantIndices[turnAssistantIndices.length - 1];
+        clearEarlierTurnThoughts();
+        const thoughts = turnThoughts.slice();
+        out[lastIdx].thoughtLabel = (turnThoughtLabel || tr('思考过程', 'Thinking')).slice(0, 120);
+        out[lastIdx].thoughtText = thoughts.join('\n\n');
+        out[lastIdx].thoughts = thoughts;
+        out[lastIdx].thoughtCount = Math.max(thoughts.length, turnThoughtLabel ? 1 : 0);
+      } else {
+        const thoughts = turnThoughts.slice();
+        out.push({
+          id: `a-think-${tag}`,
+          role: 'assistant',
+          text: '',
+          html: '',
+          thoughtLabel: (turnThoughtLabel || tr('思考过程', 'Thinking')).slice(0, 120),
+          thoughtText: thoughts.join('\n\n'),
+          thoughts,
+          thoughtCount: Math.max(thoughts.length, turnThoughtLabel ? 1 : 0),
+          highRisk: false,
+          riskText: ''
+        });
+      }
+      turnThoughts = [];
+      turnThoughtLabel = '';
+      turnAssistantIndices = [];
     };
 
     for (let i = 0; i < slice.length; i++) {
@@ -7284,16 +7310,16 @@
         continue;
       }
 
+      if (thoughtChunks.length) turnThoughts.push(...thoughtChunks);
+      if (thoughtLabel && !turnThoughtLabel) turnThoughtLabel = thoughtLabel;
+
       if (!replyText && !replyHtml && !highRisk) {
-        if (thoughtChunks.length) pendingThoughts.push(...thoughtChunks);
-        if (thoughtLabel && !pendingThoughtLabel) pendingThoughtLabel = thoughtLabel;
         continue;
       }
 
-      const mergedThoughts = pendingThoughts.concat(thoughtChunks);
-      const effectiveLabel = thoughtLabel || pendingThoughtLabel || (mergedThoughts.length ? tr('思考过程', 'Thinking') : '');
-      pendingThoughts = [];
-      pendingThoughtLabel = '';
+      clearEarlierTurnThoughts();
+      const mergedThoughts = turnThoughts.slice();
+      const effectiveLabel = turnThoughtLabel || (mergedThoughts.length ? tr('思考过程', 'Thinking') : '');
 
       out.push({
         id: `a-${i}`,
@@ -7307,6 +7333,7 @@
         highRisk,
         riskText: (riskBanner?.textContent || '').trim()
       });
+      turnAssistantIndices.push(out.length - 1);
     }
     flushPendingDomThoughts('end');
     return out;
@@ -8120,24 +8147,49 @@
   function extractMessagesFromTrajectorySteps(steps, limit = 20) {
     const list = Array.isArray(steps) ? steps : [];
     const out = [];
-    let pendingThoughts = [];
+    let turnThoughts = [];
+    let turnAssistantIndices = [];
+
+    const clearEarlierTurnThoughts = () => {
+      for (const idx of turnAssistantIndices) {
+        if (out[idx]) {
+          out[idx].thoughtLabel = '';
+          out[idx].thoughtText = '';
+          out[idx].thoughts = [];
+          out[idx].thoughtCount = 0;
+        }
+      }
+    };
 
     const flushPendingThoughts = (idxTag) => {
-      if (!pendingThoughts.length) return;
-      const thoughts = pendingThoughts.slice();
-      out.push({
-        id: `rpc-think-${idxTag}`,
-        role: 'assistant',
-        text: '',
-        html: '',
-        thoughtLabel: tr('思考过程', 'Thinking'),
-        thoughtText: thoughts.join('\n\n'),
-        thoughts,
-        thoughtCount: thoughts.length,
-        highRisk: false,
-        riskText: ''
-      });
-      pendingThoughts = [];
+      if (!turnThoughts.length) {
+        turnAssistantIndices = [];
+        return;
+      }
+      const thoughts = turnThoughts.slice();
+      if (turnAssistantIndices.length) {
+        const lastIdx = turnAssistantIndices[turnAssistantIndices.length - 1];
+        clearEarlierTurnThoughts();
+        out[lastIdx].thoughtLabel = tr('思考过程', 'Thinking');
+        out[lastIdx].thoughtText = thoughts.join('\n\n');
+        out[lastIdx].thoughts = thoughts;
+        out[lastIdx].thoughtCount = thoughts.length;
+      } else {
+        out.push({
+          id: `rpc-think-${idxTag}`,
+          role: 'assistant',
+          text: '',
+          html: '',
+          thoughtLabel: tr('思考过程', 'Thinking'),
+          thoughtText: thoughts.join('\n\n'),
+          thoughts,
+          thoughtCount: thoughts.length,
+          highRisk: false,
+          riskText: ''
+        });
+      }
+      turnThoughts = [];
+      turnAssistantIndices = [];
     };
 
     for (let i = 0; i < list.length; i++) {
@@ -8158,10 +8210,10 @@
         const pr = s.plannerResponse;
         const text = String(pr.modifiedResponse || pr.response || '').trim();
         const thoughtText = String(pr.thinking || pr.thought || '').trim();
-        if (thoughtText) pendingThoughts.push(thoughtText);
+        if (thoughtText) turnThoughts.push(thoughtText);
         if (text) {
-          const thoughts = pendingThoughts.slice();
-          pendingThoughts = [];
+          clearEarlierTurnThoughts();
+          const thoughts = turnThoughts.slice();
           out.push({
             id: `rpc-a-${i}`,
             role: 'assistant',
@@ -8174,6 +8226,7 @@
             highRisk: false,
             riskText: ''
           });
+          turnAssistantIndices.push(out.length - 1);
         }
       } else if (s.errorMessage) {
         const errObj = s.errorMessage.error || s.errorMessage || {};
