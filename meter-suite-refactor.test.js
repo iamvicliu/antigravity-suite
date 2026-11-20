@@ -12575,6 +12575,28 @@ test('远程端彻底工作台化：方案 B 延迟隔离新建草稿、按需�
     failRouterTo = '';
     assert.equal(resRestoreFail.restoreDesktopOk, false, '桌面恢复失败时不得静默返回 restoreDesktopOk=true');
     assert.ok(resRestoreFail.restoreDesktopError, '桌面恢复失败时应透出 restoreDesktopError');
+
+    // 6d. 桌面端并发串行化保护：同时发起草稿发送与历史会话切换，两者严格串行互不交叉覆盖
+    applyDeskUrl(`/c/${origDesktopCid}`);
+    autoCreatedCid = '22222222-3333-4444-5555-666666666666';
+    const concP1 = enhDesk.performMobileAction({
+      action: 'send',
+      conversationId: '__new__',
+      draftNewIsolated: true,
+      draftProjectId: 'proj-beta',
+      text: 'concurrent-1',
+      _testPollTries: 2,
+      _testPollDelayMs: 0
+    });
+    const concP2 = enhDesk.performMobileAction({
+      action: 'switch-conversation',
+      id: 'bbbb1111-cccc-2222-dddd-333333333333'
+    });
+    const [concR1, concR2] = await Promise.all([concP1, concP2]);
+    assert.equal(concR1.ok, true);
+    assert.equal(concR1.createdConversationId, '22222222-3333-4444-5555-666666666666', '串行化后首次草稿发送的 createdConversationId 不得被并发切换污染');
+    assert.equal(concR2.ok, true);
+    assert.equal(envDesk.win.location.pathname, '/c/bbbb1111-cccc-2222-dddd-333333333333', '串行化后后续切换不会被前一次发送的 finally 恢复覆盖');
   } finally {
     for (const t of deskTimers) clearTimeout(t);
     enhDesk?.dispose?.();

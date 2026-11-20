@@ -8957,7 +8957,15 @@
     return { ok: false, error: `未知操作: ${action}` };
   }
 
-  async function performMobileAction(payload) {
+  let mobileActionQueue = Promise.resolve();
+
+  function performMobileAction(payload) {
+    const run = mobileActionQueue.then(() => performMobileActionInner(payload));
+    mobileActionQueue = run.catch(() => {});
+    return run;
+  }
+
+  async function performMobileActionInner(payload) {
     const action = String(payload?.action || '').trim();
     if (!action) return { ok: false, error: '缺少 action 参数' };
 
