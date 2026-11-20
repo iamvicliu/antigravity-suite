@@ -12284,16 +12284,98 @@ test('远程端彻底工作台化：方案 B 延迟隔离新建草稿、按需�
   assert.equal(dupRetry.json.ok, false);
   assert.equal(dupRetry.json.pendingConfirmation, true, '待确认期间必须拦截重复发送');
 
-  // 5c. 并发导航保护：草稿发送尚未返回期间用户切去历史会话，发送完成后不得覆盖当前会话
+  // 5c. 并发导航保护 + 并发双发送防重 + 补拉快照期间切换与失败不泄漏桌面旧快照
   await callEdge('POST', '/api/action', { action: 'new-conversation', projectId: 'proj-beta', isolated: true }, 'client-race-05');
   slowMode = true;
   const inflightSendP = callEdge('POST', '/api/action', { action: 'send', text: 'race msg' }, 'client-race-05');
   await slowEnteredP;
+  // 同一草稿在途期间并发第二条 send 必须被立即拦截
+  const concurrentSecondSend = await callEdge('POST', '/api/action', { action: 'send', text: 'dup concurrent msg' }, 'client-race-05');
+  assert.equal(concurrentSecondSend.json.ok, false, '草稿发送在途期间并发第二条 send 必须被拦截');
+  assert.equal(concurrentSecondSend.json.pendingConfirmation, true);
+  // 发送期间切去历史会话：迟到响应必须清空 snapshot 并标记 staleNavigation，不得覆盖当前会话
   await callEdge('POST', '/api/action', { action: 'switch-conversation', id: 'conv-user-switched', isolated: true }, 'client-race-05');
   releaseSlowSend?.();
-  await inflightSendP;
+  const lateSendRes = await inflightSendP;
+  assert.equal(lateSendRes.json.snapshot, null, '发送期间已切走会话时，迟到响应不得携带桌面原会话 snapshot');
+  assert.equal(lateSendRes.json.staleNavigation, true);
   const afterRaceSnap = await callEdge('GET', '/api/snapshot', null, 'client-race-05');
   assert.equal(afterRaceSnap.json.sessionId, 'conv-user-switched', '并发切换历史会话后，迟到的草稿发送结果不得覆盖当前选中会话');
+
+  // 5d. 补拉新会话快照失败时严禁回退返回桌面旧会话 snapshot；补拉快照期间切走同样丢弃快照且不改写 session
+  let failBoundFetch = true;
+  let holdBoundFetch = false;
+  let releaseBoundFetch = null;
+  let markBoundFetchEntered = null;
+  const boundFetchEnteredP = new Promise((r) => { markBoundFetchEntered = r; });
+  let boundPerformCount = 0;
+  const handlerBound = createRemoteHttpHandler(mockCfg, {
+    fetchSnapshot: async (_tid, opts = {}) => {
+      const cid = String(opts.conversationId || '');
+      if (cid === 'conv-bound-fail' && failBoundFetch) {
+        return { ok: false, error: 'snapshot unavailable' };
+      }
+      if (cid === 'conv-bound-slow' && holdBoundFetch) {
+        markBoundFetchEntered?.();
+        await new Promise((r) => { releaseBoundFetch = r; });
+      }
+      return {
+        ok: true,
+        sessionId: cid || 'conv-desktop-old',
+        activeConversationId: cid || 'conv-desktop-old',
+        isolated: Boolean(cid && cid !== 'conv-desktop-old'),
+        projects: [{ id: 'proj-beta', name: 'Beta App' }],
+        conversations: [],
+        messages: []
+      };
+    },
+    performAction: async (act) => {
+      boundPerformCount += 1;
+      const cid = act.text === 'slow-fetch' ? 'conv-bound-slow' : 'conv-bound-fail';
+      return {
+        ok: true,
+        actionResult: { ok: true, createdConversationId: cid, projectId: act.draftProjectId },
+        snapshot: { ok: true, sessionId: 'conv-desktop-old', messages: [{ id: 'desk', role: 'user', text: 'desktop secret' }] }
+      };
+    }
+  });
+  const callBound = async (method, reqPath, bodyObj = null, cid = 'client-bound-05') => {
+    const { Readable } = require('stream');
+    const raw = bodyObj ? JSON.stringify(bodyObj) : '';
+    const req = Readable.from(raw ? [Buffer.from(raw)] : []);
+    req.method = method;
+    req.url = reqPath;
+    req.headers = {
+      host: '127.0.0.1:18775',
+      'x-ag-remote-token': mockCfg.token,
+      'x-ag-client-id': cid,
+      ...(bodyObj ? { 'content-type': 'application/json' } : {})
+    };
+    req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let status = 200;
+    let out = '';
+    const res = { setHeader() {}, writeHead(c) { status = c; }, end(ch) { if (ch) out += String(ch); } };
+    await handlerBound(req, res);
+    return { status, json: JSON.parse(out) };
+  };
+
+  await callBound('POST', '/api/action', { action: 'new-conversation', projectId: 'proj-beta', isolated: true });
+  const boundFailRes = await callBound('POST', '/api/action', { action: 'send', text: 'fail-fetch' });
+  assert.equal(boundFailRes.json.ok, true);
+  assert.equal(boundFailRes.json.snapshot, null, '补拉新会话快照失败时必须返回 null，严禁泄漏桌面原会话 conv-desktop-old');
+  assert.equal(boundPerformCount, 1);
+
+  await callBound('POST', '/api/action', { action: 'new-conversation', projectId: 'proj-beta', isolated: true }, 'client-bound-race');
+  holdBoundFetch = true;
+  const boundSlowSendP = callBound('POST', '/api/action', { action: 'send', text: 'slow-fetch' }, 'client-bound-race');
+  await boundFetchEnteredP;
+  await callBound('POST', '/api/action', { action: 'switch-conversation', id: 'conv-switched-mid-fetch', isolated: true }, 'client-bound-race');
+  releaseBoundFetch?.();
+  const boundSlowRes = await boundSlowSendP;
+  assert.equal(boundSlowRes.json.snapshot, null, '补拉快照期间用户切走会话时必须清空响应 snapshot');
+  assert.equal(boundSlowRes.json.staleNavigation, true);
+  const boundAfterSwitch = await callBound('GET', '/api/snapshot', null, 'client-bound-race');
+  assert.equal(boundAfterSwitch.json.sessionId, 'conv-switched-mid-fetch', '补拉快照期间切走会话后不得被新会话 ID 覆盖');
 
   // 6. 桌面端 ag-enhancer-overlay.js 真实行为验证（无 prevConvId 恢复、发送抛错恢复、恢复失败透出）
   const envDesk = createDomEnv();
