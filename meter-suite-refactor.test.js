@@ -12367,14 +12367,62 @@ test('远程端彻底工作台化：方案 B 延迟隔离新建草稿、按需�
 
   await callBound('POST', '/api/action', { action: 'new-conversation', projectId: 'proj-beta', isolated: true }, 'client-bound-race');
   holdBoundFetch = true;
+  const beforeMidFetchCount = boundPerformCount;
   const boundSlowSendP = callBound('POST', '/api/action', { action: 'send', text: 'slow-fetch' }, 'client-bound-race');
   await boundFetchEnteredP;
-  await callBound('POST', '/api/action', { action: 'switch-conversation', id: 'conv-switched-mid-fetch', isolated: true }, 'client-bound-race');
+  // 补拉快照暂停期间再次发送：必须被 draftSendInflight 拦截，桌面 performAction 仍仅调用一次
+  const midFetchDupSend = await callBound('POST', '/api/action', { action: 'send', text: 'dup-during-fetch' }, 'client-bound-race');
+  assert.equal(midFetchDupSend.json.ok, false, '补拉快照尚未完成前并发第二次发送必须被拦截');
+  assert.equal(midFetchDupSend.json.pendingConfirmation, true);
+  assert.equal(boundPerformCount, beforeMidFetchCount + 1, '补拉快照期间重复发送不得再次触发桌面 performAction');
+  holdBoundFetch = false;
   releaseBoundFetch?.();
-  const boundSlowRes = await boundSlowSendP;
-  assert.equal(boundSlowRes.json.snapshot, null, '补拉快照期间用户切走会话时必须清空响应 snapshot');
-  assert.equal(boundSlowRes.json.staleNavigation, true);
-  const boundAfterSwitch = await callBound('GET', '/api/snapshot', null, 'client-bound-race');
+  const boundSlowBindRes = await boundSlowSendP;
+  assert.equal(boundSlowBindRes.json.ok, true);
+  assert.equal(boundSlowBindRes.json.snapshot.sessionId, 'conv-bound-slow', '首次请求最终应正确绑定新会话 conv-bound-slow');
+  const boundFinalSnap = await callBound('GET', '/api/snapshot', null, 'client-bound-race');
+  assert.equal(boundFinalSnap.json.sessionId, 'conv-bound-slow');
+
+  // 补拉快照期间用户主动切走会话：清空响应 snapshot 且不覆盖当前会话
+  let releaseMidSwitch = null;
+  let markMidSwitch = null;
+  const midSwitchEnteredP = new Promise((r) => { markMidSwitch = r; });
+  const handlerMidSwitch = createRemoteHttpHandler(mockCfg, {
+    fetchSnapshot: async (_tid, opts = {}) => {
+      const cid = String(opts.conversationId || '');
+      if (cid === 'conv-bound-switch') {
+        markMidSwitch?.();
+        await new Promise((r) => { releaseMidSwitch = r; });
+      }
+      return { ok: true, sessionId: cid || 'conv-desktop-old', activeConversationId: cid || 'conv-desktop-old', projects: [], conversations: [], messages: [] };
+    },
+    performAction: async () => ({
+      ok: true,
+      actionResult: { ok: true, createdConversationId: 'conv-bound-switch' },
+      snapshot: { ok: true, sessionId: 'conv-desktop-old', messages: [] }
+    })
+  });
+  const callMidSw = async (method, reqPath, bodyObj = null) => {
+    const { Readable } = require('stream');
+    const raw = bodyObj ? JSON.stringify(bodyObj) : '';
+    const req = Readable.from(raw ? [Buffer.from(raw)] : []);
+    req.method = method; req.url = reqPath;
+    req.headers = { host: '127.0.0.1:18775', 'x-ag-remote-token': mockCfg.token, 'x-ag-client-id': 'client-mid-sw', ...(bodyObj ? { 'content-type': 'application/json' } : {}) };
+    req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let status = 200; let out = '';
+    const res = { setHeader() {}, writeHead(c) { status = c; }, end(ch) { if (ch) out += String(ch); } };
+    await handlerMidSwitch(req, res);
+    return { status, json: JSON.parse(out) };
+  };
+  await callMidSw('POST', '/api/action', { action: 'new-conversation', projectId: 'proj-beta', isolated: true });
+  const midSwSendP = callMidSw('POST', '/api/action', { action: 'send', text: 'mid-sw' });
+  await midSwitchEnteredP;
+  await callMidSw('POST', '/api/action', { action: 'switch-conversation', id: 'conv-switched-mid-fetch', isolated: true });
+  releaseMidSwitch?.();
+  const midSwRes = await midSwSendP;
+  assert.equal(midSwRes.json.snapshot, null, '补拉快照期间用户切走会话时必须清空响应 snapshot');
+  assert.equal(midSwRes.json.staleNavigation, true);
+  const boundAfterSwitch = await callMidSw('GET', '/api/snapshot');
   assert.equal(boundAfterSwitch.json.sessionId, 'conv-switched-mid-fetch', '补拉快照期间切走会话后不得被新会话 ID 覆盖');
 
   // 6. 桌面端 ag-enhancer-overlay.js 真实行为验证（无 prevConvId 恢复、发送抛错恢复、恢复失败透出）
