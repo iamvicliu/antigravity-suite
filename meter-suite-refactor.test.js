@@ -11586,14 +11586,19 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
     const handler = createRemoteHttpHandler(mockCfg, {
       mediaOptions: { allowedRoots: [tmpRoot] }
     });
-    const getMedia = async (queryPath, withAuth = true) => {
+    const getMedia = async (queryPath, authMode = 'header') => {
       const { Readable } = require('stream');
       const req = Readable.from([]);
       req.method = 'GET';
       req.url = '/api/media?path=' + encodeURIComponent(queryPath);
+      const authHdrs = authMode === 'header'
+        ? { 'x-ag-remote-token': mockCfg.token }
+        : (authMode === 'cookie'
+            ? { cookie: 'ag_remote_token=' + encodeURIComponent(mockCfg.token) }
+            : (authMode === 'invalid' ? { 'x-ag-remote-token': 'wrong-token-000' } : {}));
       req.headers = {
         host: '127.0.0.1:18765',
-        ...(withAuth ? { 'x-ag-remote-token': mockCfg.token } : {})
+        ...authHdrs
       };
       req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
       let status = 200;
@@ -11611,28 +11616,33 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
       return { status, headers, body: Buffer.concat(chunks) };
     };
 
-    const unauth = await getMedia(pngPath, false);
+    const unauth = await getMedia(pngPath, 'none');
     assert.equal(unauth.status, 401, '未鉴权请求 /api/media 必须返回 401');
+    const badAuth = await getMedia(pngPath, 'invalid');
+    assert.equal(badAuth.status, 401, '无效 Token 请求 /api/media 必须返回 401');
 
-    const pngRes = await getMedia(pngPath, true);
-    assert.equal(pngRes.status, 200, '中文文件名图片应正常返回 200 不抛 header 编码异常');
+    const pngRes = await getMedia(pngPath, 'header');
+    assert.equal(pngRes.status, 200, '有效 Header Token 访问中文文件名图片应返回 200');
     assert.equal(pngRes.headers['content-type'], 'image/png');
     assert.ok(String(pngRes.headers['content-disposition']).startsWith('inline;'));
     assert.equal(pngRes.body.length, 8);
 
-    const svgRes = await getMedia(svgPath, true);
+    const cookieRes = await getMedia(pngPath, 'cookie');
+    assert.equal(cookieRes.status, 200, '有效 Cookie 鉴权访问 /api/media 应返回 200');
+
+    const svgRes = await getMedia(svgPath, 'header');
     assert.equal(svgRes.status, 200);
     assert.ok(String(svgRes.headers['content-disposition']).startsWith('attachment;'), 'SVG 响应必须为 attachment');
 
-    const envRes = await getMedia(envPath, true);
+    const envRes = await getMedia(envPath, 'header');
     assert.equal(envRes.status, 403, '访问 .env 文件必须返回 403');
 
-    // 2b. 完整前缀匹配拦截变体（.envrc / .env_prod / id_rsa_work / id_ed25519_deploy）
-    for (const secretName of ['.envrc', '.env_prod', 'id_rsa_work', 'id_ed25519_deploy', 'id_ecdsa_ci']) {
+    // 2b. 完整前缀匹配与裸凭证扩展名拦截变体（.envrc / .env_prod / id_rsa_work / id_ed25519_deploy / .pem / .key）
+    for (const secretName of ['.envrc', '.env_prod', 'id_rsa_work', 'id_ed25519_deploy', 'id_ecdsa_ci', '.pem', '.key']) {
       const p = path.join(tmpRoot, secretName);
       fs.writeFileSync(p, 'TOP_SECRET', 'utf8');
       assert.equal(resolveSafeLocalMediaPath(p, { allowedRoots: [tmpRoot] }).ok, false, `resolveSafeLocalMediaPath 必须拦截 ${secretName}`);
-      const resp = await getMedia(p, true);
+      const resp = await getMedia(p, 'header');
       assert.equal(resp.status, 403, `/api/media 必须对 ${secretName} 返回 403`);
     }
 
@@ -11651,11 +11661,26 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
     const msgs = extractMessagesFromTrajectorySteps([{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: stepUi }]);
     assert.equal(msgs[0].attachments?.length, 2, '用户消息对象应携带 attachments');
 
-    // 4. 前端 UI 放开通用文件上传、输入区本地缩略图、消息流预览与灯箱
+    // 4. 前端 UI 放开通用文件上传、输入区本地缩略图、消息流预览、灯箱及 >15MB 图片前置拒绝
     const html = buildMobileAppHtml();
     assert.ok(html.includes('<input id="img-input" type="file" multiple hidden>'), '#img-input 应放开 image/* 限制支持通用文件');
     assert.ok(html.includes('function readAttachmentFile(file)') && html.includes('id="media-lightbox"'), '应支持通用文件读取与图片灯箱放大');
     assert.ok(html.includes('/api/media?path=') && html.includes('class="msg-att-img"') && html.includes('class="msg-att-file"'), '消息流应渲染本地图片缩略图与文件附件胶囊');
+
+    const fnStart = html.indexOf('function readAttachmentFile(file)');
+    const fnEnd = html.indexOf('function renderAttachHintStrip()');
+    assert.ok(fnStart > 0 && fnEnd > fnStart);
+    let compressCalled = false;
+    const attSandbox = {
+      compressAndReadImage: async () => { compressCalled = true; return { name: 'x.jpg', mimeType: 'image/jpeg', base64: '' }; }
+    };
+    vm.runInNewContext(html.slice(fnStart, fnEnd) + '\nglobalThis.__readAtt = readAttachmentFile;', attSandbox);
+    await assert.rejects(
+      () => attSandbox.__readAtt({ name: 'huge.png', type: 'image/png', size: 16 * 1024 * 1024 }),
+      /超过 15MB/,
+      '超过 15MB 的图片必须在进入压缩前即被拒绝'
+    );
+    assert.equal(compressCalled, false, '超限图片不得进入 compressAndReadImage');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(outsideDir, { recursive: true, force: true });
