@@ -12037,20 +12037,20 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   assert.equal(fetched.messages[1].thoughtCount, 2);
   assert.equal(fetched.messages[1].text, '分页完整回复');
 
-  // 3b. 首包 steps=[] 且 numTotalSteps=23（每页返回 1 步，超过 20 页）也能从 0 完整拉齐
+  // 3b. 首包 steps=[] 且 numTotalSteps=201（每页仅返回 1 步，共 201 页）也能从 0 完整拉齐且保留末步正文与全部思考
   const emptyFirstCalls = [];
-  const fetched23 = await histMgr.enrichMessages({ sessionId: 'conv-paged-23', messages: [] }, {
+  const fetched201 = await histMgr.enrichMessages({ sessionId: 'conv-paged-201', messages: [] }, {
     localApiConnect: async () => ({
       call: async (method, body) => {
         emptyFirstCalls.push({ method, body });
         if (method === 'GetCascadeTrajectory') {
-          return { numTotalSteps: 23, trajectory: { steps: [] } };
+          return { numTotalSteps: 201, trajectory: { steps: [] } };
         }
         if (method === 'GetCascadeTrajectorySteps') {
           const idx = Number(body.startIndex);
-          if (idx === 0) return { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '超 20 页首包空测试' } }] };
-          if (idx < 22) return { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: `思考步-${idx}` } }] };
-          if (idx === 22) return { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '最后思考', response: '第 23 步完整回复' } }] };
+          if (idx === 0) return { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '201 页首包空测试' } }] };
+          if (idx < 200) return { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: `思考步-${idx}` } }] };
+          if (idx === 200) return { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '最后思考', response: '第 201 步完整回复' } }] };
           return { steps: [] };
         }
         return {};
@@ -12059,9 +12059,9 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   });
   assert.equal(emptyFirstCalls[1].method, 'GetCascadeTrajectorySteps');
   assert.equal(emptyFirstCalls[1].body.startIndex, 0, '首包 steps=[] 且 numTotalSteps>0 时必须从索引 0 开始补取');
-  assert.equal(fetched23.messages.length, 2, '超过 20 个补充分页后也应完整拉齐并归并为 1 问 1 答');
-  assert.equal(fetched23.messages[1].thoughtCount, 22);
-  assert.equal(fetched23.messages[1].text, '第 23 步完整回复');
+  assert.equal(fetched201.messages.length, 2, '首包为空且 201 步每页 1 步时必须完整拉齐并归并为 1 问 1 答');
+  assert.equal(fetched201.messages[1].thoughtCount, 200);
+  assert.equal(fetched201.messages[1].text, '第 201 步完整回复');
 
   // 4. ag-enhancer-overlay.js 独立视图轨迹提取按轮聚合（含中间正文归并验证）
   const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');

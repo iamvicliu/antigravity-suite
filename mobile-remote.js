@@ -3601,7 +3601,7 @@ function createConversationHistoryManager() {
         const totalSteps = Number(res?.numTotalSteps || res?.trajectory?.numTotalSteps || 0);
         if (totalSteps > allSteps.length) {
           const PAGE_SIZE = 500;
-          const maxPages = Math.max(200, Math.ceil(totalSteps / PAGE_SIZE) + 2);
+          const maxPages = Math.min(totalSteps + 1, 20000);
           for (let page = 0; page < maxPages && allSteps.length < totalSteps; page++) {
             const startIndex = allSteps.length;
             const endIndex = Math.min(totalSteps, startIndex + PAGE_SIZE);
