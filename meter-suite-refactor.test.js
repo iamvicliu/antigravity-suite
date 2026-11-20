@@ -11754,3 +11754,130 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
     fs.rmSync(outsideDir, { recursive: true, force: true });
   }
 });
+
+test('远程端支持对话关联文件直点预览、变更/产物验收与项目文件树浏览 (#04)', async () => {
+  const {
+    renderSafeMarkdownToHtml,
+    listSafeProjectTree,
+    readSafeTextFilePreview,
+    createRemoteHttpHandler,
+    buildMobileAppHtml
+  } = require('./mobile-remote');
+
+  // 1. Markdown file:// 链接转为可点击的 .md-file-link（内部保留 .md-pill 兼容）并保留行号
+  const mdHtml = renderSafeMarkdownToHtml('请查看 [app.js](file:///tmp/demo/app.js#L42-L55) 的改动。');
+  assert.ok(
+    mdHtml.includes('class="md-file-link"')
+    && mdHtml.includes('<code class="md-pill">app.js</code>')
+    && mdHtml.includes('data-file-path="/tmp/demo/app.js"')
+    && mdHtml.includes('data-file-line="42"'),
+    'renderSafeMarkdownToHtml 应将 file:// 链接转为带路径与行号的可点击按钮'
+  );
+
+  // 2. 项目文件树列举、敏感文件隐藏、文本/二进制/图片预览与 /api/session-files 路由
+  const tmpProj = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proj-tree-'));
+  try {
+    fs.mkdirSync(path.join(tmpProj, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(tmpProj, 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(tmpProj, 'src', 'index.js'), 'const a = 1;\nconsole.log(a);\n', 'utf8');
+    fs.writeFileSync(path.join(tmpProj, 'README.md'), '# Demo Project\n', 'utf8');
+    fs.writeFileSync(path.join(tmpProj, 'bin.dat'), Buffer.from([0x00, 0x01, 0x02, 0x03]));
+    fs.writeFileSync(path.join(tmpProj, '.env'), 'SECRET=1', 'utf8');
+
+    const tree = listSafeProjectTree(tmpProj, { allowedRoots: [tmpProj] });
+    assert.equal(tree.ok, true);
+    const names = tree.entries.map((e) => e.name);
+    assert.ok(names.includes('src') && names.includes('README.md'), '应列出正常目录与源码文件');
+    assert.equal(names.includes('node_modules'), false, '默认应隐藏 node_modules 噪声目录');
+    assert.equal(names.includes('.env'), false, '文件树必须隐藏 .env 等敏感凭证文件');
+    assert.equal(tree.entries[0].isDir, true, '目录应排在文件之前');
+
+    const jsPrev = readSafeTextFilePreview(path.join(tmpProj, 'src', 'index.js'), { allowedRoots: [tmpProj] });
+    assert.equal(jsPrev.ok, true);
+    assert.equal(jsPrev.isBinary, false);
+    assert.equal(jsPrev.lineCount, 3);
+    assert.ok(jsPrev.content.includes('console.log(a);'));
+
+    const mdPrev = readSafeTextFilePreview(path.join(tmpProj, 'README.md'), { allowedRoots: [tmpProj] });
+    assert.equal(mdPrev.ok, true);
+    assert.equal(mdPrev.isMarkdown, true);
+
+    const binPrev = readSafeTextFilePreview(path.join(tmpProj, 'bin.dat'), { allowedRoots: [tmpProj] });
+    assert.equal(binPrev.ok, true);
+    assert.equal(binPrev.isBinary, true, '含 NUL 字节的二进制文件应标记为 isBinary');
+
+    const envPrev = readSafeTextFilePreview(path.join(tmpProj, '.env'), { allowedRoots: [tmpProj] });
+    assert.equal(envPrev.ok, false, '文件预览必须拦截 .env 敏感文件');
+
+    // 3. HTTP 路由鉴权与返回验证：/api/file-content、/api/project-tree、/api/session-files
+    const mockCfg = {
+      port: 18765,
+      token: 'tok-files-test-1234567890abcdef',
+      tunnelEnabled: false,
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    };
+    const handler = createRemoteHttpHandler(mockCfg, {
+      mediaOptions: { allowedRoots: [tmpProj] },
+      callLanguageServer: async (method) => {
+        if (method === 'GetTrajectoryFileDiffs') {
+          return { fileDiffs: [{ path: path.join(tmpProj, 'src', 'index.js'), unifiedDiff: '@@ -1 +1 @@\n-const a = 0;\n+const a = 1;' }] };
+        }
+        if (method === 'GetArtifactSnapshots') {
+          return { artifacts: [{ title: '验收报告.md', content: '# 验收通过' }] };
+        }
+        return null;
+      }
+    });
+    const getApi = async (urlPath, withAuth = true) => {
+      const { Readable } = require('stream');
+      const req = Readable.from([]);
+      req.method = 'GET';
+      req.url = urlPath;
+      req.headers = {
+        host: '127.0.0.1:18765',
+        ...(withAuth ? { 'x-ag-remote-token': mockCfg.token } : {})
+      };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let out = '';
+      const res = {
+        setHeader() {},
+        writeHead(code) { status = code; },
+        end(chunk) { if (chunk) out += String(chunk); }
+      };
+      await handler(req, res);
+      return { status, json: JSON.parse(out) };
+    };
+
+    assert.equal((await getApi('/api/project-tree?dir=' + encodeURIComponent(tmpProj), false)).status, 401, '未鉴权访问 /api/project-tree 必须返回 401');
+    assert.equal((await getApi('/api/file-content?path=' + encodeURIComponent(path.join(tmpProj, 'README.md')), false)).status, 401, '未鉴权访问 /api/file-content 必须返回 401');
+
+    const treeResp = await getApi('/api/project-tree?dir=' + encodeURIComponent(tmpProj), true);
+    assert.equal(treeResp.status, 200);
+    assert.equal(treeResp.json.ok, true);
+
+    const fileResp = await getApi('/api/file-content?path=' + encodeURIComponent(path.join(tmpProj, 'README.md')), true);
+    assert.equal(fileResp.status, 200);
+    assert.equal(fileResp.json.isMarkdown, true);
+
+    const envFileResp = await getApi('/api/file-content?path=' + encodeURIComponent(path.join(tmpProj, '.env')), true);
+    assert.equal(envFileResp.status, 403, '/api/file-content 访问 .env 必须返回 403');
+
+    const sessResp = await getApi('/api/session-files?conversationId=conv-review-1', true);
+    assert.equal(sessResp.status, 200);
+    assert.equal(sessResp.json.diffs.length, 1);
+    assert.equal(sessResp.json.artifacts.length, 1);
+
+    // 4. 整页生成 <script> 语法校验 + 顶栏文件入口与弹窗 DOM 校验
+    const html = buildMobileAppHtml();
+    const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+    assert.ok(scripts.length >= 2);
+    for (let i = 0; i < scripts.length; i++) {
+      assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-04-script-${i}.js` }));
+    }
+    assert.ok(html.includes('id="btn-files-panel"') && html.includes('id="file-viewer-modal"'), '应渲染顶栏文件入口与文件/验收弹窗');
+    assert.ok(html.includes("'/api/file-content?path='") && html.includes("'/api/project-tree'") && html.includes("'/api/session-files?conversationId='"));
+  } finally {
+    fs.rmSync(tmpProj, { recursive: true, force: true });
+  }
+});
