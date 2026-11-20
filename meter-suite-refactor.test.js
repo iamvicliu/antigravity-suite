@@ -10821,3 +10821,114 @@ test('远程会话顶栏显示所属项目名与手机端右上角紧凑布局 (
   assert.equal(badgeEl.hidden, true, '无项目名时应自动隐藏徽章');
   assert.equal(badgeEl.textContent, '');
 });
+
+test('远程端支持系统确认选择框与交互式提问卡片展示与提交 (#03)', async () => {
+  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  const { buildMobileAppHtml } = require('./mobile-remote');
+  const html = buildMobileAppHtml();
+
+  // 1. 远程网页端包含交互式选择确认框 UI 与草稿状态保护
+  assert.ok(html.includes('const promptDraftState = new Map();'), '远程网页端应维护交互式选择框草稿状态 Map');
+  assert.ok(html.includes("action: 'respond-prompt'"), '远程网页端提交应调用 respond-prompt 动作');
+  assert.ok(html.includes('class="prompt-card"') && html.includes('class="prompt-other-input"'), '远程网页端应渲染结构化选择卡片与自定义输入框');
+
+  // 2. 桌面端 overlay 采集交互式多选确认卡片并支持 respond-prompt 一键勾选、填自定义文本并提交
+  const env = createDomEnv();
+  env.win.__AGContextMeterLive = { port: 61220, token: 'tok-test' };
+
+  const mainEl = env.doc.createElement('main');
+  const dlg = env.doc.createElement('div');
+  dlg.setAttribute('role', 'dialog');
+  dlg.offsetWidth = 360;
+  dlg.offsetHeight = 220;
+
+  const titleEl = env.doc.createElement('h3');
+  titleEl.textContent = '请选择部署环境';
+  dlg.appendChild(titleEl);
+
+  const descEl = env.doc.createElement('p');
+  descEl.textContent = '支持多选并附带自定义备注';
+  dlg.appendChild(descEl);
+
+  const mkCheckboxOpt = (id, text, initialChecked) => {
+    const lbl = env.doc.createElement('label');
+    const inp = env.doc.createElement('input');
+    inp.setAttribute('type', 'checkbox');
+    inp.type = 'checkbox';
+    inp.setAttribute('id', id);
+    inp.checked = initialChecked;
+    inp.offsetWidth = 16;
+    inp.offsetHeight = 16;
+    inp.addEventListener('click', () => { inp.checked = !inp.checked; });
+    lbl.appendChild(inp);
+    const sp = env.doc.createElement('span');
+    sp.textContent = text;
+    lbl.appendChild(sp);
+    return { lbl, inp };
+  };
+
+  const optA = mkCheckboxOpt('opt-a', 'Staging 预发环境', true);
+  const optB = mkCheckboxOpt('opt-b', 'Production 生产环境', false);
+  dlg.appendChild(optA.lbl);
+  dlg.appendChild(optB.lbl);
+
+  const otherInp = env.doc.createElement('input');
+  otherInp.setAttribute('type', 'text');
+  otherInp.type = 'text';
+  otherInp.setAttribute('placeholder', '其他说明');
+  otherInp.value = '';
+  let otherInputFired = 0;
+  otherInp.addEventListener('input', () => { otherInputFired += 1; });
+  dlg.appendChild(otherInp);
+
+  let submitted = false;
+  const submitBtn = env.doc.createElement('button');
+  submitBtn.setAttribute('type', 'submit');
+  submitBtn.textContent = 'Submit';
+  submitBtn.offsetWidth = 80;
+  submitBtn.offsetHeight = 32;
+  submitBtn.addEventListener('click', () => { submitted = true; });
+  dlg.appendChild(submitBtn);
+
+  const cancelBtn = env.doc.createElement('button');
+  cancelBtn.setAttribute('type', 'button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.offsetWidth = 80;
+  cancelBtn.offsetHeight = 32;
+  dlg.appendChild(cancelBtn);
+
+  mainEl.appendChild(dlg);
+  env.doc.body.appendChild(mainEl);
+
+  vm.runInContext(RENDERER_SRC, env.sandbox);
+  vm.runInContext(overlaySrc, env.sandbox);
+  const enhancer = env.sandbox.__AGEnhancer;
+
+  const snap = enhancer.getMobileSnapshot();
+  assert.ok(Array.isArray(snap.pendingPrompts) && snap.pendingPrompts.length === 1, 'getMobileSnapshot 应采集到 1 个待确认选择框');
+  const prompt = snap.pendingPrompts[0];
+  assert.equal(prompt.title, '请选择部署环境');
+  assert.equal(prompt.multiSelect, true);
+  assert.equal(prompt.options.length, 2);
+  assert.equal(prompt.options[0].selected, true);
+  assert.equal(prompt.options[1].selected, false);
+  assert.equal(prompt.hasOtherInput, true);
+  assert.equal(prompt.actions.length, 2);
+
+  // 执行 respond-prompt：取消勾选 0、勾选 1、填写自定义备注并点击 Submit
+  const actRes = await enhancer.performMobileAction({
+    action: 'respond-prompt',
+    promptIndex: 0,
+    selectedIndices: [1],
+    otherText: '灰度发布 10%',
+    actionLabel: 'Submit'
+  });
+  assert.equal(actRes.ok, true, 'respond-prompt 应执行成功');
+  assert.equal(optA.inp.checked, false, '原勾选的选项 0 应被幂等取消勾选');
+  assert.equal(optB.inp.checked, true, '目标选项 1 应被勾选');
+  assert.equal(otherInp.value, '灰度发布 10%', '自定义输入框值应同步写入');
+  assert.ok(otherInputFired >= 1, '写入自定义输入框应触发 input 事件');
+  assert.equal(submitted, true, '应触发目标 Submit 按钮点击');
+
+  enhancer.dispose?.();
+});

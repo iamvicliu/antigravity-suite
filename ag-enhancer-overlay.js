@@ -6830,8 +6830,8 @@
 
   // ==================== 手机端极速遥控面板数据桥接 (v1.6.9) ====================
 
-  const MOBILE_APPROVE_RE = /^(?:proceed|accept(?:\s+all|\s+changes|\s+step)?|allow(?:\s+once)?|run(?:\s+command)?|approve|continue|继续|接受|全部接受|接受更改|接受此步骤|允许|允许一次|运行|批准)(?:\s+\([^)]+\))?$/i;
-  const MOBILE_REJECT_RE = /^(?:reject|deny|cancel|discard|decline|abort|拒绝|取消|丢弃|中止)(?:\s+\([^)]+\))?$/i;
+  const MOBILE_APPROVE_RE = /^(?:proceed|accept(?:\s+all|\s+changes|\s+step)?|allow(?:\s+once|\s+always|\s+all|\s+for\s+(?:this\s+)?session)?|run(?:\s+command)?|approve|confirm|submit|continue|继续|接受|全部接受|接受更改|接受此步骤|允许|允许一次|允许本次|始终允许|本会话允许|运行|批准|确认|提交)(?:\s+\([^)]+\))?$/i;
+  const MOBILE_REJECT_RE = /^(?:reject|deny|cancel|discard|decline|abort|skip|拒绝|取消|丢弃|中止|跳过)(?:\s+\([^)]+\))?$/i;
 
   function findApprovalCandidateButtons() {
     const container = document.querySelector('main') || document.body;
@@ -6856,7 +6856,7 @@
       if (!kind) continue;
 
       const cardScope = btn.closest('[data-testid="turn-cards-container"], [data-testid="agent-response"], [role="dialog"], [data-testid="tool-group-collapsible"]') || btn.parentElement?.parentElement;
-      const riskEl = cardScope ? (cardScope.matches('[data-ag-risk-card="high"]') ? cardScope : cardScope.querySelector('[data-ag-risk-card="high"]')) : null;
+      const riskEl = cardScope ? ((typeof cardScope.matches === 'function' && cardScope.matches('[data-ag-risk-card="high"]')) ? cardScope : cardScope.querySelector?.('[data-ag-risk-card="high"]')) : null;
       const riskBanner = cardScope?.querySelector('.ag-risk-banner');
       const highRisk = Boolean(riskEl || riskBanner);
       const riskText = (riskBanner?.textContent || '').trim();
@@ -6882,6 +6882,215 @@
       riskText: item.riskText,
       contextText: item.contextText
     }));
+  }
+
+  function isExcludedSuiteOrNavNode(el) {
+    if (!el || typeof el.closest !== 'function') return true;
+    return Boolean(el.closest(
+      `#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .surface-composer, [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="conversation-row-sidebar"], [data-testid="settings-sidebar"], .settings-modal-backdrop`
+    ));
+  }
+
+  function isVisiblePromptControl(el) {
+    if (!el) return false;
+    if (el.hidden || el.getAttribute?.('aria-hidden') === 'true') return false;
+    if (typeof el.offsetWidth === 'number' && typeof el.offsetHeight === 'number') {
+      if (el.offsetWidth <= 0 && el.offsetHeight <= 0) {
+        const isNativeInput = el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox');
+        if (!isNativeInput) return false;
+      }
+    }
+    return true;
+  }
+
+  function readPromptOptionLabel(ctrl, root) {
+    if (!ctrl) return '';
+    const aria = String(ctrl.getAttribute?.('aria-label') || '').trim();
+    if (aria) return aria;
+    const tag = String(ctrl.tagName || '').toUpperCase();
+    if (tag === 'INPUT') {
+      const wrapLabel = typeof ctrl.closest === 'function' ? ctrl.closest('label') : null;
+      if (wrapLabel) {
+        const txt = String(wrapLabel.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt) return txt;
+      }
+      const id = ctrl.getAttribute?.('id');
+      if (id && root && typeof root.querySelector === 'function') {
+        const lbl = root.querySelector(`label[for="${id}"]`);
+        const txt = String(lbl?.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt) return txt;
+      }
+      const sibTxt = String(ctrl.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+      if (sibTxt) return sibTxt;
+    }
+    return String(ctrl.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function isPromptControlSelected(ctrl) {
+    if (!ctrl) return false;
+    if (typeof ctrl.checked === 'boolean' && String(ctrl.tagName || '').toUpperCase() === 'INPUT') {
+      return ctrl.checked;
+    }
+    const ariaChecked = ctrl.getAttribute?.('aria-checked');
+    if (ariaChecked === 'true') return true;
+    const ariaSelected = ctrl.getAttribute?.('aria-selected');
+    if (ariaSelected === 'true') return true;
+    return ctrl.getAttribute?.('data-state') === 'checked' || ctrl.getAttribute?.('data-selected') === 'true';
+  }
+
+  function findInteractivePromptCards() {
+    const roots = [];
+    const seenRoots = new Set();
+    const pushRoot = (el) => {
+      if (!el || seenRoots.has(el) || isExcludedSuiteOrNavNode(el)) return;
+      seenRoots.add(el);
+      roots.push(el);
+    };
+
+    // 1. 先扫描系统确认弹窗 ([role="dialog"], [role="alertdialog"])
+    const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
+    for (const dlg of dialogs) {
+      if (!isVisiblePromptControl(dlg)) continue;
+      pushRoot(dlg);
+    }
+
+    // 2. 再扫描主对话区内的交互式选择卡片（radio/checkbox/radiogroup）
+    const main = document.querySelector('main') || document.body;
+    if (main) {
+      const choiceControls = main.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [role="radiogroup"]');
+      for (const ctrl of choiceControls) {
+        if (isExcludedSuiteOrNavNode(ctrl)) continue;
+        if (ctrl.disabled || ctrl.getAttribute?.('aria-disabled') === 'true') continue;
+        const card = ctrl.closest?.(
+          '[role="dialog"], [role="alertdialog"], form, [data-testid="turn-cards-container"], [data-testid="agent-response"], [data-testid="ask-question-card"], [data-testid="user-question-card"], [role="radiogroup"]'
+        ) || ctrl.parentElement?.parentElement;
+        if (card) pushRoot(card);
+      }
+    }
+
+    const cards = [];
+    for (const root of roots) {
+      if (isExcludedSuiteOrNavNode(root)) continue;
+      const rawControls = Array.from(root.querySelectorAll(
+        'input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]'
+      )).filter((c) => !isExcludedSuiteOrNavNode(c) && !c.disabled && c.getAttribute?.('aria-disabled') !== 'true');
+
+      const options = [];
+      const seenOptLabels = new Set();
+      let hasCheckbox = false;
+      for (const ctrl of rawControls) {
+        const label = readPromptOptionLabel(ctrl, root).slice(0, 160);
+        if (!label || seenOptLabels.has(label)) continue;
+        seenOptLabels.add(label);
+        const isChk = (String(ctrl.tagName || '').toUpperCase() === 'INPUT' && ctrl.type === 'checkbox')
+          || ctrl.getAttribute?.('role') === 'checkbox';
+        if (isChk) hasCheckbox = true;
+        options.push({
+          index: options.length,
+          el: ctrl,
+          label,
+          selected: isPromptControlSelected(ctrl),
+          kind: isChk ? 'checkbox' : 'radio'
+        });
+      }
+
+      const rawButtons = Array.from(root.querySelectorAll('button')).filter((b) => {
+        if (isExcludedSuiteOrNavNode(b)) return false;
+        if (b.disabled || b.getAttribute?.('aria-disabled') === 'true') return false;
+        if (!isVisiblePromptControl(b)) return false;
+        const r = b.getAttribute?.('role');
+        if (r === 'radio' || r === 'checkbox') return false;
+        const lbl = String(b.textContent || '').replace(/\s+/g, ' ').trim();
+        return Boolean(lbl && lbl.length <= 48);
+      });
+
+      const actions = [];
+      const seenBtnLabels = new Set();
+      for (const btn of rawButtons) {
+        const label = String(btn.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!label || seenBtnLabels.has(label)) continue;
+        seenBtnLabels.add(label);
+        let kind = 'secondary';
+        if (MOBILE_REJECT_RE.test(label)) kind = 'reject';
+        else if (MOBILE_APPROVE_RE.test(label) || btn.getAttribute?.('type') === 'submit') kind = 'primary';
+        actions.push({ index: actions.length, el: btn, label, kind });
+      }
+
+      const isDialog = root.getAttribute?.('role') === 'dialog' || root.getAttribute?.('role') === 'alertdialog';
+      // 至少具备 2 个可选项，或是包含明确操作按钮的系统弹窗，才认定为需要用户确认的选择框
+      if (options.length < 2 && !(isDialog && actions.length > 0)) continue;
+      if (options.length >= 2 && actions.length === 0) {
+        // 允许无显式按钮的即时单选卡，但必须至少有选项
+      }
+
+      const otherInput = Array.from(root.querySelectorAll('input[type="text"], input:not([type]), textarea')).find((inp) => {
+        if (isExcludedSuiteOrNavNode(inp)) return false;
+        if (inp.disabled || inp.readOnly) return false;
+        const t = String(inp.type || 'text').toLowerCase();
+        return t === 'text' || t === 'search' || String(inp.tagName || '').toUpperCase() === 'TEXTAREA';
+      }) || null;
+
+      const headingEl = root.querySelector('h1, h2, h3, h4, legend, [role="heading"], [data-testid="question-title"]');
+      const title = String(headingEl?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+        || (isDialog ? '系统确认' : '请选择确认项');
+
+      const descEl = root.querySelector('p, pre, code, [data-testid="question-description"]');
+      const rawDesc = String(descEl?.textContent || '').replace(/\s+/g, ' ').trim();
+      const description = (rawDesc && rawDesc !== title) ? rawDesc.slice(0, 240) : '';
+
+      cards.push({
+        index: cards.length,
+        root,
+        id: `prompt-${cards.length}`,
+        kind: options.length >= 2 ? 'choice' : 'dialog',
+        title,
+        description,
+        multiSelect: hasCheckbox,
+        options,
+        otherInput,
+        hasOtherInput: Boolean(otherInput),
+        otherPlaceholder: String(otherInput?.getAttribute?.('placeholder') || '').trim().slice(0, 80),
+        otherValue: String(otherInput?.value || ''),
+        actions
+      });
+    }
+    return cards;
+  }
+
+  function collectPendingPrompts() {
+    return findInteractivePromptCards().map((card) => ({
+      index: card.index,
+      id: card.id,
+      kind: card.kind,
+      title: card.title,
+      description: card.description,
+      multiSelect: card.multiSelect,
+      options: card.options.map(({ index, label, selected, kind }) => ({ index, label, selected, kind })),
+      hasOtherInput: card.hasOtherInput,
+      otherPlaceholder: card.otherPlaceholder,
+      otherValue: card.otherValue,
+      actions: card.actions.map(({ index, label, kind }) => ({ index, label, kind }))
+    }));
+  }
+
+  function setNativePromptInputValue(inputEl, value) {
+    if (!inputEl) return false;
+    const strVal = String(value ?? '');
+    try {
+      const proto = String(inputEl.tagName || '').toUpperCase() === 'TEXTAREA'
+        ? window.HTMLTextAreaElement?.prototype
+        : window.HTMLInputElement?.prototype;
+      const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (typeof setter === 'function') setter.call(inputEl, strVal);
+      else inputEl.value = strVal;
+    } catch {
+      inputEl.value = strVal;
+    }
+    try {
+      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch {}
+    return true;
   }
 
   function cleanUserMessageText(raw) {
@@ -7960,13 +8169,14 @@
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
     const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
     const pendingApprovals = collectPendingApprovals();
+    const pendingPrompts = collectPendingPrompts();
     const messages = collectRecentMessages(60);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
     const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model);
     const usageSummary = collectDesktopUsageSummary(sr);
 
     if (activeConv) {
-      if (pendingApprovals.length > 0) activeConv.status = 'waiting';
+      if (pendingApprovals.length > 0 || pendingPrompts.length > 0) activeConv.status = 'waiting';
       else if (busy) activeConv.status = 'running';
     }
 
@@ -8003,6 +8213,7 @@
         lastFetchedAt: quotaState.lastFetchedAt
       },
       pendingApprovals,
+      pendingPrompts,
       suggestions,
       messages,
       projects: storeCatalog.projects,
@@ -8143,6 +8354,7 @@
           sessionCostText: ''
         },
         pendingApprovals: [],
+        pendingPrompts: [],
         suggestions,
         messages,
         conversations: cloned.conversations,
@@ -8295,6 +8507,64 @@
       if (!picked) return { ok: false, error: '目标审批按钮已消失或已处理' };
       picked.btn.click();
       return { ok: true, label: picked.label, kind: picked.kind };
+    }
+
+    if (action === 'respond-prompt') {
+      const cards = findInteractivePromptCards();
+      if (!cards.length) return { ok: false, error: '当前没有待确认选择框' };
+      const pIdx = Number.isInteger(payload?.promptIndex) ? payload.promptIndex : 0;
+      const card = cards[pIdx] || cards[0];
+      if (!card) return { ok: false, error: '目标确认选择框已消失' };
+
+      const desiredIndices = Array.isArray(payload?.selectedIndices)
+        ? new Set(payload.selectedIndices.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 0))
+        : null;
+      const desiredLabels = Array.isArray(payload?.selectedLabels)
+        ? new Set(payload.selectedLabels.map((s) => String(s || '').trim()).filter(Boolean))
+        : null;
+
+      if ((desiredIndices || desiredLabels) && card.options.length > 0) {
+        for (const opt of card.options) {
+          const wantSelected = Boolean(
+            (desiredIndices && desiredIndices.has(opt.index))
+            || (desiredLabels && desiredLabels.has(opt.label))
+          );
+          const curSelected = isPromptControlSelected(opt.el);
+          if (card.multiSelect) {
+            if (wantSelected !== curSelected) {
+              opt.el.click();
+            }
+          } else if (wantSelected && !curSelected) {
+            opt.el.click();
+          }
+        }
+      }
+
+      if (payload?.otherText !== undefined && card.otherInput) {
+        setNativePromptInputValue(card.otherInput, String(payload.otherText || ''));
+      }
+
+      const reqActionLabel = String(payload?.actionLabel || '').trim();
+      const reqActionIdx = Number.isInteger(payload?.actionIndex) ? payload.actionIndex : -1;
+      let targetBtn = null;
+      if (reqActionLabel) {
+        targetBtn = card.actions.find((a) => a.label === reqActionLabel) || null;
+      }
+      if (!targetBtn && reqActionIdx >= 0 && reqActionIdx < card.actions.length) {
+        targetBtn = card.actions[reqActionIdx];
+      }
+      if (targetBtn?.el) {
+        targetBtn.el.click();
+      } else if (reqActionLabel || reqActionIdx >= 0) {
+        return { ok: false, error: '目标确认按钮已消失或不可用' };
+      }
+
+      return {
+        ok: true,
+        promptId: card.id,
+        actionLabel: targetBtn?.label || '',
+        selectedCount: desiredIndices ? desiredIndices.size : (desiredLabels ? desiredLabels.size : 0)
+      };
     }
 
     if (action === 'expand-project') {
@@ -8507,7 +8777,7 @@
     const action = String(payload?.action || '').trim();
     if (!action) return { ok: false, error: '缺少 action 参数' };
 
-    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'select-model', 'select-permission', 'upload-image'];
+    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'respond-prompt', 'select-model', 'select-permission', 'upload-image'];
     const reqConvId = String(payload?.conversationId || '').trim();
     const prevConvId = getSessionIdFromLocation() || '';
     const needsSwitch = Boolean(
