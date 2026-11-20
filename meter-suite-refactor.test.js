@@ -9644,17 +9644,33 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req30-'));
   const fakeHome = path.join(tmpRoot, 'home');
   const stubBin = path.join(tmpRoot, 'stub-bin');
+  const nvmLowBin = path.join(fakeHome, '.nvm', 'versions', 'node', 'v22.5.0', 'bin');
   const nvmNodeBin = path.join(fakeHome, '.nvm', 'versions', 'node', 'v26.99.0', 'bin');
+  const nvmMarkerLog = path.join(tmpRoot, 'nvm-node-invocations.log');
   const launchAgentsDir = path.join(fakeHome, 'Library', 'LaunchAgents');
   const setupScript = path.join(__dirname, 'scripts', 'setup-macos-cdp.sh');
   const agBin = path.join(__dirname, 'bin', 'ag-context-meter');
   const testLabel = 'com.testuser.ag-live-helper';
   const plistPath = path.join(launchAgentsDir, `${testLabel}.plist`);
+  const parsePlistJson = (p) => JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', p], { encoding: 'utf8' }));
 
   try {
+    fs.mkdirSync(nvmLowBin, { recursive: true });
     fs.mkdirSync(nvmNodeBin, { recursive: true });
     fs.mkdirSync(stubBin, { recursive: true });
-    fs.symlinkSync(process.execPath, path.join(nvmNodeBin, 'node'));
+
+    // Executable wrappers log their own path before exec'ing real node to deterministically prove nvm hit & version ordering
+    const makeNodeWrapper = (dir) => {
+      const target = path.join(dir, 'node');
+      fs.writeFileSync(
+        target,
+        `#!/bin/sh\necho "NVM_NODE_INVOKED:$0" >> "${nvmMarkerLog}"\nexec "${process.execPath}" "$@"\n`,
+        { mode: 0o755 }
+      );
+      return target;
+    };
+    const lowNodeExe = makeNodeWrapper(nvmLowBin);
+    const highNodeExe = makeNodeWrapper(nvmNodeBin);
 
     // Stub launchctl so tests never touch real macOS launchd
     const launchctlLog = path.join(tmpRoot, 'launchctl.log');
@@ -9665,41 +9681,46 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
     const baseEnv = {
       HOME: fakeHome,
       PATH: `${stubBin}:${minimalPath}`,
+      AG_DEFAULT_NODE_PATHS: '',
       AG_LIVE_LABEL: testLabel,
       AG_METER_TEST_MODE: '1',
       ANTIGRAVITY_AGENT: '1'
     };
 
-    // 1) setup-macos-cdp.sh（默认模式）：在最小 PATH 下自动发现 nvm node、写入 SingletonSocket 与 EnvironmentVariables.PATH
+    // 1) setup-macos-cdp.sh（默认模式）：绕开宿主机固定目录，确定命中测试 nvm 最高版本 node 并写入 SingletonSocket 与 EnvironmentVariables.PATH
     execFileSync('bash', [setupScript], { env: baseEnv, encoding: 'utf8' });
     assert.ok(fs.existsSync(plistPath), 'setup-macos-cdp.sh 应生成 LaunchAgent plist');
     const plistDefault = fs.readFileSync(plistPath, 'utf8');
-    assert.ok(plistDefault.includes('Antigravity/SingletonSocket</string>'), 'WatchPaths 应监听 SingletonSocket');
+    const parsedDefault = parsePlistJson(plistPath);
+    assert.ok(parsedDefault.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'WatchPaths 应监听 SingletonSocket');
     assert.ok(!plistDefault.includes('SingletonLock'), 'WatchPaths 不得再包含悬空软链 SingletonLock');
-    assert.ok(plistDefault.includes('<key>EnvironmentVariables</key>'), 'plist 应包含 EnvironmentVariables');
-    assert.ok(plistDefault.includes('<key>PATH</key>'), 'EnvironmentVariables 应包含 PATH');
-    if (!fs.existsSync('/opt/homebrew/bin/node') && !fs.existsSync('/opt/homebrew/opt/node@22/bin/node') && !fs.existsSync('/usr/local/bin/node')) {
-      assert.ok(plistDefault.includes(nvmNodeBin), '最小 PATH 下应自动发现并写入 nvm node 路径');
-    }
+    assert.equal(parsedDefault.EnvironmentVariables.PATH.split(':')[0], nvmNodeBin, '最小 PATH 下应确定写入测试 nvm 最高版本 node 目录');
+    const setupInvocations = fs.readFileSync(nvmMarkerLog, 'utf8').trim().split('\n');
+    assert.ok(setupInvocations.includes(`NVM_NODE_INVOKED:${highNodeExe}`), 'setup-macos-cdp.sh 实际执行的必须是测试 nvm v26.99.0 的 node');
+    assert.ok(!setupInvocations.includes(`NVM_NODE_INVOKED:${lowNodeExe}`), '不得误用较低版本 v22.5.0 的 node');
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
 
     // 2) setup-macos-cdp.sh --no-remote：EnvironmentVariables 同时包含 PATH 与 AG_DISABLE_MOBILE_REMOTE=1
     execFileSync('bash', [setupScript, '--no-remote'], { env: baseEnv, encoding: 'utf8' });
-    const plistNoRemote = fs.readFileSync(plistPath, 'utf8');
-    assert.ok(plistNoRemote.includes('<key>PATH</key>'), '--no-remote 时仍应保留 PATH');
-    assert.ok(plistNoRemote.includes('<key>AG_DISABLE_MOBILE_REMOTE</key>'), '--no-remote 时应写入 AG_DISABLE_MOBILE_REMOTE');
-    assert.ok(plistNoRemote.includes('Antigravity/SingletonSocket</string>'), '--no-remote 时应监听 SingletonSocket');
-    assert.ok(!plistNoRemote.includes('SingletonLock'), '--no-remote 时不得包含 SingletonLock');
+    const parsedNoRemote = parsePlistJson(plistPath);
+    assert.equal(parsedNoRemote.EnvironmentVariables.PATH.split(':')[0], nvmNodeBin, '--no-remote 时仍应保留测试 nvm PATH');
+    assert.equal(parsedNoRemote.EnvironmentVariables.AG_DISABLE_MOBILE_REMOTE, '1', '--no-remote 时应写入 AG_DISABLE_MOBILE_REMOTE=1');
+    assert.ok(parsedNoRemote.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), '--no-remote 时应监听 SingletonSocket');
+    assert.ok(!parsedNoRemote.WatchPaths.some((w) => w.includes('SingletonLock')), '--no-remote 时不得包含 SingletonLock');
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
 
-    // 3) bin/ag-context-meter 在 launchd 最小 PATH 下自动发现 nvm node 并可执行 status --json
+    // 3) bin/ag-context-meter 在 launchd 最小 PATH 且屏蔽宿主机固定目录时确定命中测试 nvm node 并输出 status JSON
+    fs.writeFileSync(nvmMarkerLog, '', 'utf8');
     const statusJsonRaw = execFileSync('bash', [agBin, 'status', '--json'], {
-      env: { HOME: fakeHome, PATH: minimalPath, AG_METER_TEST_MODE: '1' },
+      env: { HOME: fakeHome, PATH: minimalPath, AG_DEFAULT_NODE_PATHS: '', AG_METER_TEST_MODE: '1' },
       encoding: 'utf8'
     });
     const statusJson = JSON.parse(statusJsonRaw);
     assert.equal(typeof statusJson, 'object');
     assert.ok('liveWindow' in statusJson, '最小 PATH 下应能自动找到 node 并正常输出 status JSON');
+    const cliInvocations = fs.readFileSync(nvmMarkerLog, 'utf8').trim().split('\n');
+    assert.ok(cliInvocations.includes(`NVM_NODE_INVOKED:${highNodeExe}`), 'bin/ag-context-meter 实际执行的必须是测试 nvm v26.99.0 的 node');
+    assert.ok(!cliInvocations.includes(`NVM_NODE_INVOKED:${lowNodeExe}`), 'bin/ag-context-meter 不得误用较低版本 v22.5.0 的 node');
 
     // 4a) auto-on 升级含旧 SingletonLock 且缺 EnvironmentVariables 的 plist
     const legacyLockPlist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -9725,10 +9746,10 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
 `;
     fs.writeFileSync(plistPath, legacyLockPlist, 'utf8');
     execFileSync('bash', [agBin, 'auto-on'], { env: baseEnv, encoding: 'utf8' });
-    const upgradedA = fs.readFileSync(plistPath, 'utf8');
-    assert.ok(upgradedA.includes('Antigravity/SingletonSocket</string>'), 'auto-on 应将 SingletonLock 升级为 SingletonSocket');
-    assert.ok(!upgradedA.includes('SingletonLock'), 'auto-on 升级后不得残留 SingletonLock');
-    assert.ok(upgradedA.includes('<key>EnvironmentVariables</key>') && upgradedA.includes('<key>PATH</key>'), 'auto-on 应补充 EnvironmentVariables.PATH');
+    const parsedA = parsePlistJson(plistPath);
+    assert.ok(parsedA.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'auto-on 应将 SingletonLock 升级为 SingletonSocket');
+    assert.ok(!parsedA.WatchPaths.some((w) => w.includes('SingletonLock')), 'auto-on 升级后不得残留 SingletonLock');
+    assert.equal(parsedA.EnvironmentVariables.PATH.split(':')[0], nvmNodeBin, 'auto-on 应补充测试 nvm Node 目录到 EnvironmentVariables.PATH');
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
 
     // 4b) auto-on 升级仅含 DevToolsActivePort 且已有 AG_DISABLE_MOBILE_REMOTE 的旧 plist
@@ -9759,10 +9780,49 @@ test('需求 30: macOS LaunchAgent 改用 SingletonSocket、写入 EnvironmentVa
 `;
     fs.writeFileSync(plistPath, legacyNoRemotePlist, 'utf8');
     execFileSync('bash', [agBin, 'auto-on'], { env: baseEnv, encoding: 'utf8' });
-    const upgradedB = fs.readFileSync(plistPath, 'utf8');
-    assert.ok(upgradedB.includes('Antigravity/SingletonSocket</string>'), 'auto-on 应为旧 plist 补齐 SingletonSocket');
-    assert.ok(upgradedB.includes('<key>AG_DISABLE_MOBILE_REMOTE</key>'), 'auto-on 升级应保留既有 AG_DISABLE_MOBILE_REMOTE');
-    assert.ok(upgradedB.includes('<key>PATH</key>'), 'auto-on 升级应在既有 EnvironmentVariables 内补充 PATH');
+    const parsedB = parsePlistJson(plistPath);
+    assert.ok(parsedB.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'auto-on 应为旧 plist 补齐 SingletonSocket');
+    assert.equal(parsedB.EnvironmentVariables.AG_DISABLE_MOBILE_REMOTE, '1', 'auto-on 升级应保留既有 AG_DISABLE_MOBILE_REMOTE');
+    assert.equal(parsedB.EnvironmentVariables.PATH.split(':')[0], nvmNodeBin, 'auto-on 升级应在既有 EnvironmentVariables 内补充 PATH');
+    execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
+    // 4c) auto-on 升级已有含 XML 实体（&amp;）PATH 的旧 plist：不得二次转义为 &amp;amp;，原路径各目录实际值保持不变
+    const legacyEncodedPathPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${testLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${fakeHome}/.local/bin/ag-context-meter</string>
+    <string>_auto-trigger</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/tmp/a&amp;b/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WatchPaths</key>
+  <array>
+    <string>${fakeHome}/Library/Application Support/Antigravity/DevToolsActivePort</string>
+    <string>${fakeHome}/Library/Application Support/Antigravity/SingletonLock</string>
+  </array>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(plistPath, legacyEncodedPathPlist, 'utf8');
+    execFileSync('bash', [agBin, 'auto-on'], { env: baseEnv, encoding: 'utf8' });
+    const rawC = fs.readFileSync(plistPath, 'utf8');
+    assert.ok(!rawC.includes('&amp;amp;'), 'auto-on 不得对已有 XML 实体做二次转义');
+    const parsedC = parsePlistJson(plistPath);
+    assert.deepEqual(
+      parsedC.EnvironmentVariables.PATH.split(':'),
+      [nvmNodeBin, '/tmp/a&b/bin', '/usr/bin', '/bin'],
+      '迁移后原 PATH 中含 & 符号的目录及原有顺序必须保持完全不变'
+    );
     execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });

@@ -46,7 +46,10 @@ EOF
 done
 
 # 1. 检查 Node.js 运行时版本（需 >= 22.4，内置 WebSocket / fetch）
-export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+DEFAULT_NODE_PATHS="${AG_DEFAULT_NODE_PATHS-/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin}"
+if [ -n "$DEFAULT_NODE_PATHS" ]; then
+  export PATH="${DEFAULT_NODE_PATHS}:$PATH"
+fi
 if ! command -v node >/dev/null 2>&1; then
   for cand in \
     "$HOME/.volta/bin" \
@@ -103,8 +106,9 @@ fi
 # 3. 仅在开启自启时写入 LaunchAgent（传 --no-auto 时零写入系统后台自启目录）
 if [ "$ENABLE_AUTO" -eq 1 ]; then
   LAUNCHD_PATH="$(NODE_BIN_DIR="$NODE_BIN_DIR" node -e '
+const escXml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const items = [process.env.NODE_BIN_DIR, "/opt/homebrew/opt/node@22/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
-console.log(Array.from(new Set(items.filter(Boolean))).join(":"));
+console.log(escXml(Array.from(new Set(items.filter(Boolean))).join(":")));
 ')"
   REMOTE_ENV_ENTRY=""
   AUTO_ARGS=()
