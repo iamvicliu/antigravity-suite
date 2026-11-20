@@ -11465,7 +11465,14 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
       return await new Promise((r) => { resolveNew2 = r; });
     }
   };
-  const snapInput2 = { ok: true, sessionId: 'conv-race-2', messages: [], busy: false, _activeTrajSig: 'sig-2' };
+  const snapInput2 = {
+    ok: true,
+    sessionId: 'conv-race-2',
+    messages: [],
+    busy: false,
+    _activeTrajSig: 'sig-2',
+    queuedMessages: [{ stepIndex: 9, text: '输入快照自带的过期队列', status: 'queued' }]
+  };
   const oldP2 = histMgr2.enrichMessages(snapInput2, { localApiConnect: async () => controlledApi2 });
   await new Promise((r) => setTimeout(r, 15));
   histMgr2.invalidateSession('conv-race-2');
@@ -11473,7 +11480,7 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
   await new Promise((r) => setTimeout(r, 15));
   assert.equal(fetchCount2, 2);
 
-  // 旧请求先返回（携带过期排队消息），此时新请求尚未返回
+  // 旧请求先返回（携带过期排队消息），此时新请求尚未返回：不得泄漏旧 RPC 队列也不得回退到输入快照的旧队列
   resolveOld2({
     trajectory: {
       steps: [
@@ -11482,22 +11489,20 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
     }
   });
   const oldSnap2 = await oldP2;
-  assert.equal(oldSnap2.queuedMessages.length, 0, '已失效的旧请求先返回时，绝不得通过回退分支将过期队列下发到快照');
+  assert.equal(oldSnap2.queuedMessages.length, 0, '已失效的旧请求先返回时，绝不得泄漏过期队列或回退使用 cleanSnap.queuedMessages');
 
-  // 新请求后返回（携带最新剩余 1 条排队消息）
+  // 新请求后返回权威空队列：必须返回 []，绝不得回退使用输入快照携带的旧 queuedMessages
   resolveNew2({
     trajectory: {
       steps: [
-        { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '最新有效排队项' }] } }
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '全部执行完成' }] } }
       ]
     }
   });
   const newSnap2 = await newP2;
-  assert.equal(newSnap2.queuedMessages.length, 1);
-  assert.equal(newSnap2.queuedMessages[0].text, '最新有效排队项');
+  assert.equal(newSnap2.queuedMessages.length, 0, '刷新取得权威空队列 [] 时绝不得回退到 cleanSnap.queuedMessages');
   const finalCached2 = await histMgr2.enrichMessages(snapInput2, { localApiConnect: async () => controlledApi2 });
-  assert.equal(finalCached2.queuedMessages.length, 1);
-  assert.equal(finalCached2.queuedMessages[0].text, '最新有效排队项', '最终缓存必须保持新请求的队列状态');
+  assert.equal(finalCached2.queuedMessages.length, 0, '缓存命中权威空队列时也绝不得回退到 cleanSnap.queuedMessages');
 
   // 4. 远程网页端包含 #queue-dock、排队条渲染、立即发送与撤回按钮及防重锁
   const html = buildMobileAppHtml();

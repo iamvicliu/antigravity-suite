@@ -3143,7 +3143,7 @@ function createConversationHistoryManager() {
     const sid = String(sessionId || '').trim();
     const domTail = Array.isArray(domMessages) ? domMessages : [];
     if (!sid) {
-      return { merged: domTail.map((m, idx) => ({ ...m, msgIndex: idx })), trajMsgs: null, queuedMessages: [] };
+      return { merged: domTail.map((m, idx) => ({ ...m, msgIndex: idx })), trajMsgs: null, queuedMessages: null };
     }
     const existing = cache.get(sid);
     const nowMs = Date.now();
@@ -3204,7 +3204,7 @@ function createConversationHistoryManager() {
         : (wasInvalidated ? null : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null)));
       const activeQueued = Array.isArray(latestExisting?.queuedMessages)
         ? latestExisting.queuedMessages
-        : (wasInvalidated ? [] : (fetchedQueued || (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : [])));
+        : (wasInvalidated ? [] : (Array.isArray(fetchedQueued) ? fetchedQueued : (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : null)));
       const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
       return { merged, trajMsgs: activeTrajMsgs, queuedMessages: activeQueued };
     }
@@ -3217,8 +3217,8 @@ function createConversationHistoryManager() {
       trajMsgs = baseRec.trajMsgs;
     }
     const nextQueued = trajFetchedFresh
-      ? (fetchedQueued || [])
-      : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : []);
+      ? (Array.isArray(fetchedQueued) ? fetchedQueued : [])
+      : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : null);
 
     const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
     const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');
@@ -3282,7 +3282,7 @@ function createConversationHistoryManager() {
     const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
     const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
-    const effQueued = Array.isArray(queuedMessages) && queuedMessages.length
+    const effQueued = Array.isArray(queuedMessages)
       ? queuedMessages
       : (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []);
     return {
