@@ -11530,3 +11530,125 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
   assert.ok(html.includes("action: 'send-queued-messages'") && html.includes("action: 'delete-queued-message'"), '前端应接入立即发送与单条撤回动作');
   assert.ok(html.includes('if (qDock.dataset.queueSig !== qSig)') && html.includes('if (queueActionBusy) return;'), '前端应按队列签名防闪烁重建并带操作并发锁');
 });
+
+test('远程端支持通用文件与图片上传及消息流本地展示预览 (#02)', async () => {
+  const {
+    resolveSafeLocalMediaPath,
+    extractTrajectoryUserAttachments,
+    extractMessagesFromTrajectorySteps,
+    createRemoteHttpHandler,
+    buildMobileAppHtml
+  } = require('./mobile-remote');
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-media-test-'));
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-media-outside-'));
+  try {
+    const pngPath = path.join(tmpRoot, '截图测试.png');
+    const svgPath = path.join(tmpRoot, 'vector.svg');
+    const envPath = path.join(tmpRoot, '.env.local');
+    const sshDir = path.join(tmpRoot, '.ssh');
+    fs.mkdirSync(sshDir, { recursive: true });
+    const sshKeyPath = path.join(sshDir, 'config');
+    const outsideSecret = path.join(outsideDir, 'outside.txt');
+    const escapeLink = path.join(tmpRoot, 'escape-link.txt');
+
+    fs.writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    fs.writeFileSync(svgPath, '<svg><script>alert(1)</script></svg>', 'utf8');
+    fs.writeFileSync(envPath, 'SECRET=1', 'utf8');
+    fs.writeFileSync(sshKeyPath, 'Host *', 'utf8');
+    fs.writeFileSync(outsideSecret, 'nope', 'utf8');
+    fs.symlinkSync(outsideSecret, escapeLink);
+
+    // 1. resolveSafeLocalMediaPath 安全边界验证
+    const okPng = resolveSafeLocalMediaPath(pngPath, { allowedRoots: [tmpRoot] });
+    assert.equal(okPng.ok, true);
+    assert.equal(okPng.contentType, 'image/png');
+    assert.equal(okPng.forceAttachment, false);
+
+    const okFileUri = resolveSafeLocalMediaPath('file://' + encodeURI(pngPath), { allowedRoots: [tmpRoot] });
+    assert.equal(okFileUri.ok, true, '应支持 file:// URI 路径解码');
+
+    const okSvg = resolveSafeLocalMediaPath(svgPath, { allowedRoots: [tmpRoot] });
+    assert.equal(okSvg.ok, true);
+    assert.equal(okSvg.forceAttachment, true, 'SVG 必须强制 attachment 下载防止存储型 XSS');
+
+    assert.equal(resolveSafeLocalMediaPath(envPath, { allowedRoots: [tmpRoot] }).ok, false, '必须拦截 .env* 敏感文件');
+    assert.equal(resolveSafeLocalMediaPath(sshKeyPath, { allowedRoots: [tmpRoot] }).ok, false, '必须拦截 .ssh 敏感目录');
+    assert.equal(resolveSafeLocalMediaPath(escapeLink, { allowedRoots: [tmpRoot] }).ok, false, '必须通过 realpath 拦截符号链接逃逸');
+
+    // 2. GET /api/media HTTP 路由验证（含中文文件名 RFC5987 头、SVG 强制下载与未授权 401）
+    const mockCfg = {
+      port: 18765,
+      token: 'tok-media-test-1234567890abcdef',
+      tunnelEnabled: false,
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    };
+    const handler = createRemoteHttpHandler(mockCfg, {
+      mediaOptions: { allowedRoots: [tmpRoot] }
+    });
+    const getMedia = async (queryPath, withAuth = true) => {
+      const { Readable } = require('stream');
+      const req = Readable.from([]);
+      req.method = 'GET';
+      req.url = '/api/media?path=' + encodeURIComponent(queryPath);
+      req.headers = {
+        host: '127.0.0.1:18765',
+        ...(withAuth ? { 'x-ag-remote-token': mockCfg.token } : {})
+      };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let headers = {};
+      const chunks = [];
+      const res = {
+        setHeader(k, v) { headers[k.toLowerCase()] = v; },
+        writeHead(code, hdrs = {}) {
+          status = code;
+          for (const [k, v] of Object.entries(hdrs)) headers[k.toLowerCase()] = v;
+        },
+        end(chunk) { if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); }
+      };
+      await handler(req, res);
+      return { status, headers, body: Buffer.concat(chunks) };
+    };
+
+    const unauth = await getMedia(pngPath, false);
+    assert.equal(unauth.status, 401, '未鉴权请求 /api/media 必须返回 401');
+
+    const pngRes = await getMedia(pngPath, true);
+    assert.equal(pngRes.status, 200, '中文文件名图片应正常返回 200 不抛 header 编码异常');
+    assert.equal(pngRes.headers['content-type'], 'image/png');
+    assert.ok(String(pngRes.headers['content-disposition']).startsWith('inline;'));
+    assert.equal(pngRes.body.length, 8);
+
+    const svgRes = await getMedia(svgPath, true);
+    assert.equal(svgRes.status, 200);
+    assert.ok(String(svgRes.headers['content-disposition']).startsWith('attachment;'), 'SVG 响应必须为 attachment');
+
+    const envRes = await getMedia(envPath, true);
+    assert.equal(envRes.status, 403, '访问 .env 文件必须返回 403');
+
+    // 3. 轨迹附件提取与消息流携带
+    const stepUi = {
+      items: [
+        { text: '请帮我核对这张截图和报告' },
+        { item: { file: { absoluteUri: 'file://' + encodeURI(path.join(tmpRoot, 'report.md')) } } }
+      ],
+      media: [{ mimeType: 'image/png', uri: 'file://' + encodeURI(pngPath) }]
+    };
+    const atts = extractTrajectoryUserAttachments(stepUi);
+    assert.equal(atts.length, 2, '应提取图片与文件两类附件');
+    assert.equal(atts[0].kind, 'image');
+    assert.equal(atts[1].kind, 'file');
+    const msgs = extractMessagesFromTrajectorySteps([{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: stepUi }]);
+    assert.equal(msgs[0].attachments?.length, 2, '用户消息对象应携带 attachments');
+
+    // 4. 前端 UI 放开通用文件上传、输入区本地缩略图、消息流预览与灯箱
+    const html = buildMobileAppHtml();
+    assert.ok(html.includes('<input id="img-input" type="file" multiple hidden>'), '#img-input 应放开 image/* 限制支持通用文件');
+    assert.ok(html.includes('function readAttachmentFile(file)') && html.includes('id="media-lightbox"'), '应支持通用文件读取与图片灯箱放大');
+    assert.ok(html.includes('/api/media?path=') && html.includes('class="msg-att-img"') && html.includes('class="msg-att-file"'), '消息流应渲染本地图片缩略图与文件附件胶囊');
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+  }
+});
