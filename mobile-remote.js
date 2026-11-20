@@ -11397,6 +11397,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             if (reqConvId !== '__new__') {
               session.draftNewIsolated = false;
               session.draftSendPending = false;
+              session.draftSendInflight = false;
               session.draftProjectId = '';
               session.draftProjectName = '';
             }
@@ -11661,6 +11662,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           if (!sess) return;
           sess.draftNewIsolated = false;
           sess.draftSendPending = false;
+          sess.draftSendInflight = false;
           sess.draftProjectId = '';
           sess.draftProjectName = '';
         };
@@ -11747,6 +11749,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               session.conversationId = '__new__';
               session.draftNewIsolated = true;
               session.draftSendPending = false;
+              session.draftSendInflight = false;
               session.draftProjectId = draftPid;
               session.draftProjectName = draftName;
               bumpNavEpoch(session);
@@ -11795,6 +11798,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               session.conversationId = '__new__';
               session.draftNewIsolated = true;
               session.draftSendPending = false;
+              session.draftSendInflight = false;
               session.draftProjectId = draftPid;
               session.draftProjectName = draftName;
               bumpNavEpoch(session);
@@ -11864,11 +11868,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           (session?.draftNewIsolated || payload?.draftNewIsolated === true) &&
           (!effectiveConvId || effectiveConvId === '__new__' || effectiveConvId === 'new')
         );
-        if (isDeferredDraftSend && session?.draftSendPending) {
+        if (isDeferredDraftSend && (session?.draftSendInflight || session?.draftSendPending)) {
           sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
             ok: false,
             pendingConfirmation: true,
-            error: '首条消息已提交并正在等待新会话 ID 确认，请稍候或切换会话后再试，避免重复发送'
+            error: '首条消息正在发送或等待新会话 ID 确认，请稍候或切换会话后再试，避免重复发送'
           }));
           return;
         }
@@ -11878,27 +11882,49 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const sendStartNavEpoch = session ? (session.navEpoch || 0) : 0;
         const sendStartTargetId = session ? String(session.targetId || effectiveTargetId || '') : effectiveTargetId;
         const sendStartConvId = session ? String(session.conversationId || '') : effectiveConvId;
-        const result = await performAction({
-          ...payload,
-          clientId,
-          targetId: effectiveTargetId || undefined,
-          conversationId: isDeferredDraftSend ? '__new__' : (effectiveConvId || undefined),
-          ...(isDeferredDraftSend ? { draftNewIsolated: true, draftProjectId: draftPidForSend, restoreDesktop: payload?.restoreDesktop !== false } : {})
-        });
-        if (isDeferredDraftSend && result?.ok !== false) {
-          const stillSameNav = !session || (
-            (session.navEpoch || 0) === sendStartNavEpoch &&
-            String(session.targetId || effectiveTargetId || '') === sendStartTargetId &&
-            String(session.conversationId || '') === sendStartConvId &&
-            Boolean(session.draftNewIsolated)
-          );
-          const createdCid = String(result?.actionResult?.createdConversationId || '').trim();
-          if (createdCid && createdCid !== '__new__') {
-            if (stillSameNav) {
-              clearDraftNew(session);
-              if (session) session.conversationId = createdCid;
-              if (result?.snapshot?.sessionId !== createdCid) {
-                const boundSnap = await fetchSnapshot(effectiveTargetId, {
+        const isStillSameNav = () => !session || (
+          (session.navEpoch || 0) === sendStartNavEpoch &&
+          String(session.targetId || effectiveTargetId || '') === sendStartTargetId &&
+          String(session.conversationId || '') === sendStartConvId &&
+          Boolean(session.draftNewIsolated)
+        );
+        if (isDeferredDraftSend && session) {
+          session.draftSendInflight = true;
+        }
+        let result;
+        try {
+          result = await performAction({
+            ...payload,
+            clientId,
+            targetId: effectiveTargetId || undefined,
+            conversationId: isDeferredDraftSend ? '__new__' : (effectiveConvId || undefined),
+            ...(isDeferredDraftSend ? { draftNewIsolated: true, draftProjectId: draftPidForSend, restoreDesktop: payload?.restoreDesktop !== false } : {})
+          });
+        } finally {
+          if (isDeferredDraftSend && session && (session.navEpoch || 0) === sendStartNavEpoch) {
+            session.draftSendInflight = false;
+          }
+        }
+        if (isDeferredDraftSend) {
+          if (result?.ok === false) {
+            if (!isStillSameNav()) {
+              result.snapshot = null;
+              result.staleNavigation = true;
+            } else if (result.snapshot && result.snapshot.sessionId && result.snapshot.sessionId !== '__new__') {
+              result.snapshot = null;
+            }
+          } else {
+            const createdCid = String(result?.actionResult?.createdConversationId || '').trim();
+            if (!isStillSameNav()) {
+              // 发送期间用户已切换会话/窗口/草稿：丢弃旧快照防止覆盖前端当前视图
+              result.snapshot = null;
+              result.staleNavigation = true;
+            } else if (createdCid && createdCid !== '__new__') {
+              let boundSnap = (result?.snapshot && result.snapshot.ok !== false && result.snapshot.sessionId === createdCid)
+                ? result.snapshot
+                : null;
+              if (!boundSnap) {
+                const fetchedSnap = await fetchSnapshot(effectiveTargetId, {
                   conversationId: createdCid,
                   clientId,
                   convLimit: 100,
@@ -11906,23 +11932,35 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                   bypassCache: true,
                   bypassCatalogCache: true
                 }).catch(() => null);
-                if (boundSnap && boundSnap.ok !== false) result.snapshot = boundSnap;
+                if (fetchedSnap && fetchedSnap.ok !== false && fetchedSnap.sessionId === createdCid) {
+                  boundSnap = fetchedSnap;
+                }
               }
-            }
-          } else {
-            // 路由尚未确认新会话 ID：禁止清除草稿或回退绑定桌面旧会话，标记待确认以防重试重复发送
-            if (stillSameNav && session) {
-              session.draftSendPending = true;
-            }
-            if (result.actionResult && typeof result.actionResult === 'object') {
-              result.actionResult.pendingConfirmation = true;
-            }
-            if (stillSameNav && session) {
-              result.snapshot = buildIsolatedDraftSnapshot(
-                result.snapshot || { ok: true, projects: [], conversations: [] },
-                draftPidForSend,
-                session.draftProjectName || ''
-              );
+              if (!isStillSameNav()) {
+                // 补拉快照期间用户切走：不改写 session，且清空 snapshot 防止覆盖
+                result.snapshot = null;
+                result.staleNavigation = true;
+              } else {
+                clearDraftNew(session);
+                if (session) session.conversationId = createdCid;
+                // 若补拉快照失败则置空 snapshot，严禁把桌面原会话 snapshot 返回给前端
+                result.snapshot = boundSnap || null;
+              }
+            } else {
+              // 路由尚未确认新会话 ID：禁止清除草稿或回退绑定桌面旧会话，标记待确认以防重试重复发送
+              if (session) {
+                session.draftSendPending = true;
+              }
+              if (result.actionResult && typeof result.actionResult === 'object') {
+                result.actionResult.pendingConfirmation = true;
+              }
+              result.snapshot = session
+                ? buildIsolatedDraftSnapshot(
+                    result.snapshot || { ok: true, projects: [], conversations: [] },
+                    draftPidForSend,
+                    session.draftProjectName || ''
+                  )
+                : null;
             }
           }
         } else if (session && result?.snapshot && result.snapshot.ok !== false) {
