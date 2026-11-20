@@ -10088,6 +10088,78 @@ exec "${process.execPath}" "$@"
     });
     assert.ok(fs.readFileSync(openLog, 'utf8').includes('--remote-debugging-port=0'), '20 秒内新裸宿主 PID 4002 必须立即触发补参重拉');
     assert.ok(fs.readFileSync(mockActionLog, 'utf8').includes('CLI_LIVE_CALLED:live'), '补参重拉后必须完成 cli.js live 注入');
+
+    // 7c) 带调试参数但 CDP 未就绪期间，宿主重启切换为新裸进程：
+    //     注入等待循环必须及时跳出并转入补参重拉，不能空等 30 秒跨过保护窗口而永久跳过恢复
+    const dynamicPsFile = path.join(tmpRoot, 'dynamic-ps.txt');
+    const cdpFlipSuiteDir = path.join(tmpRoot, 'cdp-flip-suite');
+    const cdpFlipStateFile = path.join(tmpRoot, 'cdp-flip-state.json');
+    fs.mkdirSync(cdpFlipSuiteDir, { recursive: true });
+    fs.writeFileSync(dynamicPsFile, ' 5001 00:02 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0\n', 'utf8');
+    fs.writeFileSync(cdpFlipStateFile, JSON.stringify({ probes: 0, relaunched: false }), 'utf8');
+    fs.writeFileSync(
+      path.join(cdpFlipSuiteDir, 'asar-engine.js'),
+      `const fs = require('fs');
+      module.exports = {
+        resolveActiveCdpTarget: async () => {
+          const st = JSON.parse(fs.readFileSync(${JSON.stringify(cdpFlipStateFile)}, 'utf8'));
+          st.probes += 1;
+          if (st.probes === 1) {
+            // 首次 CDP 探测未就绪，同时模拟宿主重启切换为无调试参数的新裸进程 5002
+            fs.writeFileSync(${JSON.stringify(dynamicPsFile)}, ' 5002 00:01 /Applications/Antigravity.app/Contents/MacOS/Antigravity\\n', 'utf8');
+            fs.writeFileSync(${JSON.stringify(cdpFlipStateFile)}, JSON.stringify(st));
+            return { port: null, targets: [] };
+          }
+          fs.writeFileSync(${JSON.stringify(cdpFlipStateFile)}, JSON.stringify(st));
+          if (st.relaunched) {
+            return { port: 59998, targets: [{ id: 't2', url: 'https://127.0.0.1:59998/' }] };
+          }
+          return { port: null, targets: [] };
+        },
+        inspectAntigravityHostProcess: () => ({ running: false, pid: null, hasDebugSwitch: false, elapsedSec: null })
+      };\n`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(cdpFlipSuiteDir, 'cli.js'),
+      `const fs = require('fs');
+       fs.appendFileSync(${JSON.stringify(mockActionLog)}, 'FLIP_CLI_LIVE_OK:' + process.argv.slice(2).join(' ') + '\\n');\n`,
+      'utf8'
+    );
+    const flipStubOpen = path.join(stubBin, 'open');
+    fs.writeFileSync(
+      flipStubOpen,
+      `#!/usr/bin/env bash
+echo "OPEN:$*" >> "${openLog}"
+"${process.execPath}" -e '
+const fs = require("fs");
+const st = JSON.parse(fs.readFileSync(${JSON.stringify(cdpFlipStateFile)}, "utf8"));
+st.relaunched = true;
+fs.writeFileSync(${JSON.stringify(cdpFlipStateFile)}, JSON.stringify(st));
+'
+exit 0
+`,
+      { mode: 0o755 }
+    );
+    fs.writeFileSync(openLog, '', 'utf8');
+    fs.writeFileSync(mockActionLog, '', 'utf8');
+    const flipStart = Date.now();
+    execFileSync('bash', [agBin, '_auto-trigger'], {
+      env: {
+        HOME: fakeHome,
+        PATH: `${stubBin}:${minimalPath}`,
+        AG_DEFAULT_NODE_PATHS: '',
+        AG_SUITE_DIR: cdpFlipSuiteDir,
+        AG_RELAUNCH_LOCK_FILE: relaunchLockPath,
+        AG_MOCK_PS_FILE: dynamicPsFile,
+        AG_MOCK_LIVE_HOST_RUNNING: '0'
+      },
+      encoding: 'utf8'
+    });
+    const flipElapsedMs = Date.now() - flipStart;
+    assert.ok(flipElapsedMs < 8000, `CDP 等待期间切裸宿主应立即跳出重拉，不得空等 30 秒（实际 ${flipElapsedMs}ms）`);
+    assert.ok(fs.readFileSync(openLog, 'utf8').includes('--remote-debugging-port=0'), '跳出等待循环后必须立即补参重拉新裸宿主 5002');
+    assert.ok(fs.readFileSync(mockActionLog, 'utf8').includes('FLIP_CLI_LIVE_OK:live'), '补参重拉后必须完成 cli.js live 注入');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
