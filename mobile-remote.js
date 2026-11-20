@@ -6485,17 +6485,20 @@ function buildMobileAppHtml() {
                   actionLabel: actBtn.dataset.actLabel
                 });
                 if (res?.ok) {
-                  promptDraftState.delete(promptSig);
                   showToast('已提交: ' + actBtn.dataset.actLabel);
                 } else {
-                  promptSubmittingSig = '';
-                  dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = false; });
                   showToast(res?.error || res?.actionResult?.error || '提交失败');
                 }
               } catch (e) {
-                promptSubmittingSig = '';
-                dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = false; });
                 showToast(e?.message || '提交失败');
+              } finally {
+                // 请求结束后解除在途锁并恢复按钮可用（保留草稿直至提示框真正消失或变更，支持纯 JS 校验未通过后修改重试）
+                if (promptSubmittingSig === promptSig) {
+                  promptSubmittingSig = '';
+                }
+                if (dock.dataset.promptSig === promptSig) {
+                  dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = false; });
+                }
               }
             };
           });
