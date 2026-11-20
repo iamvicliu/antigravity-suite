@@ -11253,5 +11253,51 @@ test('远程端支持系统确认选择框与交互式提问卡片展示与提�
   assert.equal(reqOther.value, '修复线上支付回调超时');
   assert.equal(reqSubmitted, true, '补充必填项后应成功完成提交');
 
+  // 11. 纯 JS 校验阻止提交（无 required 属性）→ 轮询后仍存在且草稿保留、按钮解锁 → 修改后再次提交成功
+  assert.ok(
+    !html.includes('promptDraftState.delete(promptSig);')
+    && html.includes('if (dock.dataset.promptSig === promptSig) {\n                  dock.querySelectorAll(\'.prompt-act-btn\').forEach((b) => { b.disabled = false; });\n                }'),
+    '请求结束后应解锁操作按钮且不提前销毁草稿，直至提示框真正消失或变更'
+  );
+  const jsValDlg = env.doc.createElement('div');
+  jsValDlg.setAttribute('role', 'dialog');
+  jsValDlg.offsetWidth = 360;
+  jsValDlg.offsetHeight = 180;
+  const jsValTitle = env.doc.createElement('h3');
+  jsValTitle.textContent = '纯 JS 校验确认框';
+  jsValDlg.appendChild(jsValTitle);
+  const jsValInput = env.doc.createElement('input');
+  jsValInput.setAttribute('type', 'text');
+  jsValInput.type = 'text';
+  jsValInput.value = '';
+  jsValDlg.appendChild(jsValInput);
+  let jsValAccepted = false;
+  const jsValBtn = env.doc.createElement('button');
+  jsValBtn.setAttribute('type', 'button');
+  jsValBtn.textContent = 'Confirm';
+  jsValBtn.offsetWidth = 80;
+  jsValBtn.offsetHeight = 32;
+  jsValBtn.addEventListener('click', () => {
+    if (String(jsValInput.value || '').trim().length >= 4) {
+      jsValAccepted = true;
+      jsValDlg.hidden = true;
+    }
+  });
+  jsValDlg.appendChild(jsValBtn);
+  mainEl.appendChild(jsValDlg);
+
+  const snapJs1 = enhancer.getMobileSnapshot();
+  const pJs1 = snapJs1.pendingPrompts.find((p) => p.title === '纯 JS 校验确认框');
+  assert.ok(pJs1, '纯 JS 校验确认框应被采集');
+  await enhancer.performMobileAction({ action: 'respond-prompt', promptKey: pJs1.promptKey, otherText: 'ab', actionLabel: 'Confirm' });
+  assert.equal(jsValAccepted, false, '输入长度不足时纯 JS 校验应阻止关闭');
+  const snapJs2 = enhancer.getMobileSnapshot();
+  const pJs2 = snapJs2.pendingPrompts.find((p) => p.title === '纯 JS 校验确认框');
+  assert.ok(pJs2 && pJs2.promptKey === pJs1.promptKey, '校验未通过后轮询应仍存在同一 promptKey 提示框');
+  const retryRes = await enhancer.performMobileAction({ action: 'respond-prompt', promptKey: pJs2.promptKey, otherText: 'abcd-ok', actionLabel: 'Confirm' });
+  assert.equal(retryRes.ok, true);
+  assert.equal(jsValAccepted, true, '修改输入后再次提交应通过纯 JS 校验并关闭确认框');
+  assert.equal(enhancer.getMobileSnapshot().pendingPrompts.some((p) => p.title === '纯 JS 校验确认框'), false, '关闭后提示框应从快照中消失');
+
   enhancer.dispose?.();
 });
