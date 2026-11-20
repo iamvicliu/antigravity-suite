@@ -11786,6 +11786,7 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
     fs.writeFileSync(path.join(tmpProj, '.env'), 'SECRET=1', 'utf8');
     fs.writeFileSync(path.join(tmpOutside, 'secret-outside.txt'), 'OUTSIDE', 'utf8');
     fs.symlinkSync(path.join(tmpOutside, 'secret-outside.txt'), path.join(tmpProj, 'link-outside.txt'));
+    fs.symlinkSync(tmpOutside, path.join(tmpProj, 'link-outside-dir'));
     fs.symlinkSync(path.join(tmpProj, '.env'), path.join(tmpProj, 'link-to-env.txt'));
 
     const tree = listSafeProjectTree(tmpProj, { allowedRoots: [tmpProj] });
@@ -11829,8 +11830,16 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
           return {
             fileDiffs: [
               { path: path.join(tmpProj, 'src', 'index.js'), unifiedDiff: '@@ -1 +1 @@\n-const a = 0;\n+const a = 1;' },
+              { path: 'src/index.js', unifiedDiff: '@@ -1 +1 @@\n+valid relative' },
               { path: path.join(tmpProj, '.env'), unifiedDiff: '+SECRET=LEAK' },
-              { path: path.join(tmpOutside, 'secret-outside.txt'), unifiedDiff: '+OUTSIDE=LEAK' }
+              { path: path.join(tmpOutside, 'secret-outside.txt'), unifiedDiff: '+OUTSIDE=LEAK' },
+              { path: '../secret-outside.txt', unifiedDiff: '+REL_TRAVERSAL=LEAK' },
+              { fileName: 'src/../../etc/passwd', unifiedDiff: '+NAME_TRAVERSAL=LEAK' },
+              { path: '.ssh/config', unifiedDiff: '+SSH_CONFIG=LEAK' },
+              { name: 'nested/.ssh/config', unifiedDiff: '+NAME_SSH=LEAK' },
+              { path: 'link-outside.txt', unifiedDiff: '+REL_SYMLINK=LEAK' },
+              { fileName: 'link-outside-dir/secret-outside.txt', unifiedDiff: '+REL_DIR_SYMLINK=LEAK' },
+              { path: 'link-to-env.txt', unifiedDiff: '+REL_ENV_SYMLINK=LEAK' }
             ]
           };
         }
@@ -11839,7 +11848,11 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
             artifacts: [
               { title: '验收报告.md', content: '# 验收通过' },
               { title: 'id_rsa', path: path.join(tmpProj, '.ssh', 'id_rsa'), content: 'PRIVATE KEY' },
-              { title: 'outside.md', path: path.join(tmpOutside, 'secret-outside.txt'), content: 'OUTSIDE' }
+              { title: 'outside.md', path: path.join(tmpOutside, 'secret-outside.txt'), content: 'OUTSIDE' },
+              { name: '../outside-artifact.md', content: 'REL_TRAVERSAL_ART' },
+              { path: '.ssh/config', title: 'ssh-cfg', content: 'SSH_ART' },
+              { name: 'link-outside-dir/secret-outside.txt', content: 'REL_SYMLINK_ART' },
+              { path: 'link-to-env.txt', content: 'REL_ENV_ART' }
             ]
           };
         }
@@ -11884,9 +11897,9 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
 
     const sessResp = await getApi('/api/session-files?conversationId=conv-review-1', true);
     assert.equal(sessResp.status, 200);
-    assert.equal(sessResp.json.diffs.length, 1, '/api/session-files 必须过滤 .env 与越界根目录的 Diff');
-    assert.equal(sessResp.json.diffs[0].name, 'index.js');
-    assert.equal(sessResp.json.artifacts.length, 1, '/api/session-files 必须过滤敏感凭证与越界根目录的 Artifact');
+    assert.equal(sessResp.json.diffs.length, 2, '/api/session-files 必须仅保留合法绝对/相对路径 Diff，过滤 ../、.ssh/config、相对符号链接逃逸与敏感文件');
+    assert.deepEqual(sessResp.json.diffs.map((d) => d.name), ['index.js', 'index.js']);
+    assert.equal(sessResp.json.artifacts.length, 1, '/api/session-files 必须过滤 ../、.ssh/config、相对符号链接逃逸与敏感凭证 Artifact');
     assert.equal(sessResp.json.artifacts[0].name, '验收报告.md');
 
     // 4. 整页生成 <script> 语法校验 + 顶栏文件入口与弹窗 DOM 校验
