@@ -2847,7 +2847,7 @@ function renderSafeMarkdownToHtml(rawMd) {
 
 const LOCAL_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
 const SENSITIVE_MEDIA_DIR_RE = /(?:^|[\\/])(?:\.ssh|\.gnupg|\.aws|\.kube|keychains)(?:[\\/]|$)/i;
-const SENSITIVE_MEDIA_FILE_RE = /^(?:\.env(?:\..+)?|id_rsa(?:\..+)?|id_ed25519(?:\..+)?|id_ecdsa(?:\..+)?|\.npmrc|\.netrc|\.pypirc|.+\.(?:pem|key|p12|pfx|jks))$/i;
+const SENSITIVE_MEDIA_FILE_RE = /^(?:\.env.*|id_rsa.*|id_ed25519.*|id_ecdsa.*|\.npmrc|\.netrc|\.pypirc|.+\.(?:pem|key|p12|pfx|jks))$/i;
 const SAFE_MEDIA_MIME_BY_EXT = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
