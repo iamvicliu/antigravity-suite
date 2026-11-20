@@ -47,3 +47,12 @@ Build the renderer and run tests before reloading via `ag-context-meter live`.
    - 任何界面布局改动或新组件上线前，须先出设计草图确认；**草图自身也必须遵循项目默认紫色主色调（`#a78bfa`）而非随意选用其他色系**，防止草图配色直接误导后续实现。
 5. **Automated Gate**：
    - 每次修改 `src/renderer/` 或 `ag-enhancer-overlay.js` 后，必须确保 `meter-suite-refactor.test.js` 中的 `需求 25`（UI 主题色系一致性静态门禁）全部通过后再构建热刷新。
+
+## Documentation Sync Guardrails
+
+1. **README 与默认行为同步义务**：
+   - 凡新增、删除或变更面向用户的核心功能、默认开关状态（如 Cloudflare 隧道默认值、240K 自动压缩默认开关）、设置面板分页布局、快捷指令池或 CLI 安装/控制命令，提交前**必须**同步核查并更新 `README.md`（以及 `README.en.md`、`README.ja.md`、`README.ko.md`、`README.es.md`），严禁文档滞后或出现与默认代码行为相反的描述。
+2. **Repository Description 同步**：
+   - 重大卖点或核心定位变更时，须同步更新 `package.json` 的 `description`，并提醒或经用户确认后执行 `gh repo edit` 同步 GitHub 仓库 Description。
+3. **多语言 README 打包完整性与禁用项约束**：
+   - `scripts/package-release.js` 与 `scripts/package-release.py` 依赖根目录全部 5 份文档（`README.md`、`README.en.md`、`README.ja.md`、`README.ko.md`、`README.es.md`），**严禁删除**任意语种 README，且文档中绝不可再写入已禁用的 `node cli.js install` 或“无语言切换”等过时内容。

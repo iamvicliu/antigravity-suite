@@ -1,56 +1,37 @@
-# Visor de contexto y tokens para Antigravity
+# Antigravity Suite
 
 [简体中文](README.md) · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Español**
 
-Consulta cuánto contexto usa tu conversación, a qué velocidad responde el modelo y cuántos tokens has usado en la aplicación de escritorio y la CLI desde la barra de Google Antigravity 2.x.
+> **Suite de mejoras y control remoto 100 % sin parches (Zero-Patch) para Google Antigravity en escritorio (macOS). Nunca modifica `app.asar` ni la firma oficial de Apple, no interfiere con actualizaciones y se activa o desactiva al instante.**
 
-## Demostración
+## Funciones principales
 
-https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
-
-[Descargar MP4 en alta definición](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
-
-## Funciones
-
-- **Contexto y velocidad**. Consulta el contexto usado, el límite del modelo, el tiempo hasta el primer token (TTFT), la velocidad de salida y el tiempo total. El uso informado por el servidor se muestra por separado de las estimaciones locales.
-- **Detalles de la conversación**. Desglosa las solicitudes, respuestas, razonamiento, herramientas y adjuntos. Consulta las estimaciones de adjuntos, su cobertura y las dimensiones de imágenes cuando estén disponibles. El panel distingue desbordamientos de contexto, límites de frecuencia y errores de red.
-- **Historial de tokens**. Combina los datos locales legibles de escritorio y CLI, o filtra por origen. Explora vistas diarias, semanales, mensuales, anuales y acumuladas.
-- **Estimaciones de API y suscripción**. Estima el coste de entrada, caché y salida con las tarifas compatibles e identifica el uso sin precio. Compara el coste equivalente de API con precios regionales de referencia o con tu pago real, con selección de moneda y conversión a CNY. Las estimaciones sirven para comparar. Consulta al proveedor para conocer los cargos reales.
-- **Apariencia**. La barra se adapta al espacio disponible y los paneles se abren por separado. Puedes cambiar de tema y elegir los colores del mapa de calor.
-- **CLI y actualizaciones**. Abre la CLI instalada desde la barra usando el espacio de trabajo y el proxy cuando estén disponibles. Busca actualizaciones en el panel. El instalador admite copias de seguridad, comprobaciones de integridad y restauración.
-
-## Idioma de la interfaz
-
-Las cinco versiones del README son traducciones de la documentación. La interfaz se muestra en chino simplificado y no incluye un selector de idioma. Para usar otro idioma, sigue [AGENTS.md](AGENTS.md), traduce los textos de `src/renderer/`, vuelve a compilar e instala el resultado.
+- **📱 Control remoto multicanal para móvil y escritorio (Túnel Cloudflare sin inicio de sesión por defecto y aislamiento por sesión)**：Conéctate mediante LAN, Tailscale, Bonjour o túnel temporal de Cloudflare (habilitado por defecto, compatible con dominio fijo propio). Incluye prueba automática de ruta más rápida, paneles superiores de contexto y uso local, 9 interruptores de visualización y sesiones aisladas por pestaña (`X-AG-Client-Id`).
+- **🛡️ Autocompactación a 240K y alerta en tiempo real de caída de caché (328K)**：Evita bloqueos de 4–5 minutos al expirar la caché en conversaciones largas enviando `/compact` automáticamente cuando alcanza 240K o cae la caché en reposo.
+- **⚡ Suite de productividad en el editor**：Grupo de **14 comandos recomendados integrados** (agrupados por uso, tooltip de doble línea al pasar el cursor y conversión automática a píldoras nativas) + prompts personalizados, botón **`✨ Optimizar` / `↩ Deshacer`** con respaldo multimodelo, vista previa de sugerencias `Tab`, cambio rápido de chats con **`⌘1`–`⌘9`**, edición en línea con **`⌘S`** y lanzador **`>_ CLI`**.
+- **📊 Monitor de contexto, mapa de calor de 52 semanas y cuotas duales**：Anillo superior con uso del contexto y costes API estimados, junto con cápsulas `G4` / `C` de cuota cada 5 horas y semanal para Gemini 4 y Claude.
+- **🇨🇳 Cambio instantáneo entre chino simplificado e inglés (traducción local sin tokens)**：Traduce y almacena localmente pensamientos y títulos sin consumir cuota, con cambio de idioma en vivo desde **`⚙️`**.
+- **🔄 Actualización en caliente y 🛡️ bloqueo de comandos peligrosos**：Actualización sin reiniciar desde el indicador rojo en **`⚙️`**, e interceptación con marco rojo ante comandos destructivos (`rm -rf`, `git reset --hard`, `sudo`).
 
 ---
 
-## 🤖 Instrucciones para Agentes de IA
+## 🚀 Instalación rápida (macOS · CDP sin modificar paquete)
+
+Requisitos: **macOS**, **Google Antigravity** y **Node.js `22.4.0+`**.
 
 ```bash
-node cli.js install
-node cli.js status
+git clone https://github.com/iamvicliu/antigravity-suite.git ~/.local/share/antigravity-context-viewer
+cd ~/.local/share/antigravity-context-viewer
+./scripts/setup-macos-cdp.sh
 ```
 
----
+> Opciones: `--no-auto` omite el inicio automático (`ag-context-meter install-launcher` crea un lanzador opcional en `~/Applications`) y `--no-remote` desactiva el servidor remoto. En Windows / Linux puedes iniciar Antigravity con depuración remota y ejecutar `node cli.js live`.
 
-## 🚀 Inicio Rápido
+### Comandos diarios
 
-- **Windows**: [`install.bat`](install.bat) / [`uninstall.bat`](uninstall.bat)
-- **macOS / Linux**: `./install.sh` / `./uninstall.sh`
-- **CLI**: `node cli.js check` / `install` / `status` / `restore`
+- `ag-context-meter status`: comprueba los módulos activos y la integridad oficial de `app.asar`.
+- `ag-context-meter remote`: muestra el QR de los 4 canales y dispositivos conectados (`--tunnel on|off`, `--reset-token`).
+- `ag-context-meter live` / `restart`: inyecta al instante o reinicia con puerto CDP habilitado (`v2.33.0+`).
+- `ag-context-meter update` / `stop` / `auto-off`: actualiza en caliente, detiene la sesión actual o desactiva el arranque automático.
 
----
-
-## 🧪 Pruebas Automatizadas
-
-```bash
-npm test
-```
-Las pruebas cubren el contexto, el almacenamiento, el proxy, el estado de la interfaz y la suscripción.
-
----
-
-## 🤝 Comunidad
-
-- **[LINUX DO](https://linux.do/)**: Apoyamos activamente a la comunidad LINUX DO.
+Ejecuta `npm run test:suite` para correr las pruebas. Para la guía completa, solución de problemas y créditos de código abierto, consulta el **[README en chino simplificado](README.md)** o el **[README en inglés](README.en.md)**. Bajo licencia [MIT License](LICENSE).
