@@ -3007,23 +3007,29 @@ function listSafeProjectTree(rawDir, options = {}) {
   for (const d of dirents) {
     const name = String(d.name || '');
     if (!name) continue;
-    const isDir = d.isDirectory();
+    const fullPath = path.join(realDir, name);
+    let realTarget = fullPath;
+    let targetStat = null;
+    try {
+      realTarget = fs.realpathSync(fullPath);
+      targetStat = fs.statSync(realTarget);
+    } catch {
+      continue;
+    }
+    const targetInAllowedRoot = realRoots.some((root) => realTarget === root || realTarget.startsWith(root + path.sep));
+    if (!targetInAllowedRoot) continue;
+    if (SENSITIVE_MEDIA_DIR_RE.test(realTarget)) continue;
+    const isDir = targetStat.isDirectory();
     if (isDir) {
       if (!showAll && TREE_HIDDEN_NOISE_DIRS.has(name)) continue;
-      if (SENSITIVE_MEDIA_DIR_RE.test(path.join(realDir, name))) continue;
     } else {
-      if (SENSITIVE_MEDIA_FILE_RE.test(name)) continue;
-    }
-    const fullPath = path.join(realDir, name);
-    let size = 0;
-    if (!isDir) {
-      try { size = fs.statSync(fullPath).size; } catch {}
+      if (SENSITIVE_MEDIA_FILE_RE.test(name) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(realTarget))) continue;
     }
     entries.push({
       name,
       path: fullPath,
       isDir,
-      size,
+      size: isDir ? 0 : (targetStat.size || 0),
       ext: isDir ? '' : path.extname(name).toLowerCase()
     });
   }
@@ -10909,6 +10915,29 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       const cid = String(urlObj.searchParams.get('conversationId') || '').trim();
       const diffs = [];
       const artifacts = [];
+      const mediaOpts = options.mediaOptions || {};
+      const rawRoots = Array.isArray(mediaOpts.allowedRoots) && mediaOpts.allowedRoots.length
+        ? mediaOpts.allowedRoots
+        : [os.homedir(), os.tmpdir()];
+      const realRoots = [];
+      for (const r of rawRoots) {
+        if (!r) continue;
+        try { realRoots.push(fs.realpathSync(String(r))); } catch {}
+      }
+      const isSafeSessionEntry = (filePath, displayName) => {
+        const cleanName = String(displayName || '').trim();
+        if (cleanName && SENSITIVE_MEDIA_FILE_RE.test(path.basename(cleanName))) return false;
+        if (!filePath) return true;
+        if (SENSITIVE_MEDIA_DIR_RE.test(filePath) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(filePath))) return false;
+        if (path.isAbsolute(filePath)) {
+          let resolved = path.resolve(filePath);
+          try { resolved = fs.realpathSync(filePath); } catch {}
+          if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved))) return false;
+          const inRoot = realRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+          if (!inRoot) return false;
+        }
+        return true;
+      };
       if (cid && cid !== '__new__' && cid !== 'new') {
         const [diffRes, artRes] = await Promise.all([
           Promise.resolve().then(() => callLsRpc('GetTrajectoryFileDiffs', { cascadeId: cid }, 4000)).catch(() => null),
@@ -10920,6 +10949,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           const p = normalizeLocalFileUriToPath(d.absoluteUri || d.uri || d.path || d.filePath || '');
           const name = p ? path.basename(p) : String(d.fileName || d.name || '');
           const diff = String(d.unifiedDiff || d.diff || d.patch || '');
+          if (!isSafeSessionEntry(p, name)) continue;
           if (name || p || diff) diffs.push({ name: name || p, path: p, diff });
         }
         const rawArts = Array.isArray(artRes?.artifacts) ? artRes.artifacts : (Array.isArray(artRes?.snapshots) ? artRes.snapshots : []);
@@ -10928,6 +10958,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           const p = normalizeLocalFileUriToPath(a.absoluteUri || a.uri || a.path || '');
           const name = String(a.title || a.name || (p ? path.basename(p) : '')).trim();
           const content = String(a.content || a.markdown || '');
+          if (!isSafeSessionEntry(p, name)) continue;
           if (name || p || content) artifacts.push({ name: name || 'Artifact', path: p, content });
         }
       }
