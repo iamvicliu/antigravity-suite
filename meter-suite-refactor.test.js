@@ -11661,26 +11661,91 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
     const msgs = extractMessagesFromTrajectorySteps([{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: stepUi }]);
     assert.equal(msgs[0].attachments?.length, 2, '用户消息对象应携带 attachments');
 
-    // 4. 前端 UI 放开通用文件上传、输入区本地缩略图、消息流预览、灯箱及 >15MB 图片前置拒绝
+    // 4. 整页生成 <script> 语法校验 + 附件上传、缩略图点击、灯箱开关及 >15MB 图片前置拒绝运行验证
     const html = buildMobileAppHtml();
+    const scriptMatches = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+    assert.ok(scriptMatches.length >= 2, 'buildMobileAppHtml 应包含首屏主题脚本与主应用脚本');
+    for (let i = 0; i < scriptMatches.length; i++) {
+      assert.doesNotThrow(
+        () => new vm.Script(scriptMatches[i][1], { filename: `mobile-app-script-${i}.js` }),
+        `生成页面第 ${i} 段 <script> 必须通过完整 JS 语法解析`
+      );
+    }
     assert.ok(html.includes('<input id="img-input" type="file" multiple hidden>'), '#img-input 应放开 image/* 限制支持通用文件');
     assert.ok(html.includes('function readAttachmentFile(file)') && html.includes('id="media-lightbox"'), '应支持通用文件读取与图片灯箱放大');
     assert.ok(html.includes('/api/media?path=') && html.includes('class="msg-att-img"') && html.includes('class="msg-att-file"'), '消息流应渲染本地图片缩略图与文件附件胶囊');
 
-    const fnStart = html.indexOf('function readAttachmentFile(file)');
-    const fnEnd = html.indexOf('function renderAttachHintStrip()');
-    assert.ok(fnStart > 0 && fnEnd > fnStart);
+    const blockStart = html.indexOf('let uploadedAttachments = [];');
+    const blockEnd = html.indexOf("$('btn-img').onclick");
+    assert.ok(blockStart > 0 && blockEnd > blockStart);
     let compressCalled = false;
-    const attSandbox = {
-      compressAndReadImage: async () => { compressCalled = true; return { name: 'x.jpg', mimeType: 'image/jpeg', base64: '' }; }
+    const uploadedActions = [];
+    const lbEl = { hidden: true, addEventListener() {} };
+    const lbImgEl = { src: '', alt: '' };
+    const lbCloseEl = { _onClick: null, addEventListener(ev, fn) { if (ev === 'click') this._onClick = fn; } };
+    const hintEl = {
+      hidden: true,
+      innerHTML: '',
+      _thumbHandlers: [],
+      _clearHandler: null,
+      querySelectorAll(sel) {
+        if (sel === '.attach-thumb') {
+          const item = { dataset: { attIdx: '0' }, set onclick(fn) { hintEl._thumbHandlers.push(fn); } };
+          return [item];
+        }
+        return [];
+      },
+      querySelector(sel) {
+        if (sel === '.attach-clear-btn') return { set onclick(fn) { hintEl._clearHandler = fn; } };
+        return null;
+      }
     };
-    vm.runInNewContext(html.slice(fnStart, fnEnd) + '\nglobalThis.__readAtt = readAttachmentFile;', attSandbox);
+    const attSandbox = {
+      uploadedNames: [],
+      $: (id) => ({ 'media-lightbox': lbEl, 'media-lightbox-img': lbImgEl, 'media-lightbox-close': lbCloseEl, 'attach-hint': hintEl }[id] || null),
+      msgEl: { addEventListener() {} },
+      esc: (s) => String(s ?? ''),
+      showToast: () => {},
+      syncSendButtonUI: () => {},
+      apiAction: async (p) => { uploadedActions.push(p); return { ok: true }; },
+      compressAndReadImage: async (f) => {
+        compressCalled = true;
+        return { name: f.name, mimeType: 'image/jpeg', base64: 'data:image/jpeg;base64,AAA=' };
+      },
+      FileReader: class {
+        readAsDataURL() {
+          this.result = 'data:application/pdf;base64,JVBERi0=';
+          setTimeout(() => this.onload?.(), 0);
+        }
+      }
+    };
+    vm.runInNewContext(
+      html.slice(blockStart, blockEnd) + '\nglobalThis.__readAtt = readAttachmentFile;\nglobalThis.__upload = uploadImageFiles;',
+      attSandbox
+    );
+
+    // 4a. >15MB 图片必须在进入 compressAndReadImage 之前即被拒绝
     await assert.rejects(
       () => attSandbox.__readAtt({ name: 'huge.png', type: 'image/png', size: 16 * 1024 * 1024 }),
       /超过 15MB/,
       '超过 15MB 的图片必须在进入压缩前即被拒绝'
     );
     assert.equal(compressCalled, false, '超限图片不得进入 compressAndReadImage');
+
+    // 4b. 正常上传 1 张图片 + 1 个 PDF 文件 → 展示缩略图与文件胶囊 → 点击缩略图打开灯箱 → 点击关闭按钮关闭灯箱
+    await attSandbox.__upload([
+      { name: 'demo.png', type: 'image/png', size: 2048 },
+      { name: 'spec.pdf', type: 'application/pdf', size: 4096 }
+    ]);
+    assert.equal(compressCalled, true, '合法图片应走 compressAndReadImage');
+    assert.equal(uploadedActions.length, 2, '图片与通用文件均应触发 upload-image');
+    assert.equal(hintEl.hidden, false, '上传完成后 #attach-hint 应显示');
+    assert.ok(hintEl.innerHTML.includes('attach-thumb') && hintEl.innerHTML.includes('spec.pdf'), '附件条应同时包含图片缩略图与 PDF 文件胶囊');
+    hintEl._thumbHandlers[0]?.();
+    assert.equal(lbEl.hidden, false, '点击缩略图应打开全屏灯箱');
+    assert.equal(lbImgEl.src, 'data:image/jpeg;base64,AAA=', '灯箱图片地址应与缩略图一致');
+    lbCloseEl._onClick?.();
+    assert.equal(lbEl.hidden, true, '点击灯箱关闭按钮应关闭灯箱');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(outsideDir, { recursive: true, force: true });

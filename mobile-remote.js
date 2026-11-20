@@ -8199,7 +8199,7 @@ function buildMobileAppHtml() {
       if ((file?.size || 0) > 15 * 1024 * 1024) {
         return Promise.reject(new Error('单个文件不能超过 15MB'));
       }
-      const isImg = /^image\//i.test(String(file?.type || '')) && !/svg/i.test(String(file?.type || ''));
+      const isImg = /^image\\//i.test(String(file?.type || '')) && !/svg/i.test(String(file?.type || ''));
       if (isImg) {
         return compressAndReadImage(file).then((res) => ({
           ...res,
