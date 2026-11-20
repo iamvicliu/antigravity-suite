@@ -10775,3 +10775,49 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
 
   enhancer.dispose?.();
 });
+
+test('远程会话顶栏显示所属项目名与手机端右上角紧凑布局 (#06 #09)', async () => {
+  const { buildMobileAppHtml } = require('./mobile-remote');
+  const html = buildMobileAppHtml();
+
+  // 1. 顶栏项目名徽章 DOM 与响应式/去重 CSS 规则存在
+  assert.ok(html.includes('id="conv-project-badge"'), '顶栏 .title-row 应渲染 #conv-project-badge 项目名徽章');
+  assert.ok(html.includes('body.has-ctx-btn .quota-pill #ctx-badge{display:none}'), '手机端上下文按钮可见时应隐藏配额胶囊内重复的 #ctx-badge');
+  assert.ok(html.includes('#btn-usage-panel #usage-top-val{display:none}'), '窄屏下用量按钮应折叠文字标签为图标按钮以释放标题空间');
+  assert.ok(html.includes('syncTopbarProjectBadge(resolveConversationProjectName(snap))'), 'renderSnapshot 应同步更新顶栏项目名徽章');
+  assert.ok(html.includes("document.body.classList.toggle('has-ctx-btn', Boolean(cfg.showContextPanel))"), 'applyRemoteDisplayConfig 应联动切换 body.has-ctx-btn');
+
+  // 2. 行为级验证 resolveConversationProjectName 与 syncTopbarProjectBadge（含新建对话、直接字段、projects 查表、conversations 反查与空值隐藏）
+  const badgeEl = { textContent: '', title: '', hidden: true };
+  const sandbox = {
+    $: (id) => (id === 'conv-project-badge' ? badgeEl : null),
+    normalizeProjectId: (v) => String(v || '').trim(),
+    getEffectiveSelectedProject: () => ({ id: 'proj-new', name: 'NewTargetRepo' })
+  };
+  const fnStart = html.indexOf('function resolveConversationProjectName(snap)');
+  const fnEnd = html.indexOf('function syncNewChatButtonUi(snap)');
+  assert.ok(fnStart > 0 && fnEnd > fnStart, '应能提取 resolveConversationProjectName 与 syncTopbarProjectBadge');
+  vm.runInNewContext(html.slice(fnStart, fnEnd) + '\nglobalThis.__resolve = resolveConversationProjectName;\nglobalThis.__sync = syncTopbarProjectBadge;', sandbox);
+
+  assert.equal(sandbox.__resolve({ isNewConversation: true }), 'NewTargetRepo', '新建对话应展示目标选中项目名');
+  assert.equal(sandbox.__resolve({ currentProjectName: 'antigravity-suite' }), 'antigravity-suite', '常规会话应优先展示 currentProjectName');
+  assert.equal(
+    sandbox.__resolve({ currentProjectId: 'p2', currentProjectName: '未归属项目', projects: [{ id: 'p2', name: 'alpha-app' }] }),
+    'alpha-app',
+    'currentProjectName 为占位值时应从 projects 表解析真实项目名'
+  );
+  assert.equal(
+    sandbox.__resolve({ activeConversationId: 'c9', conversations: [{ id: 'c9', projectName: 'beta-service' }] }),
+    'beta-service',
+    '缺少顶层项目字段时应从 conversations 列表反查当前会话所属项目名'
+  );
+
+  sandbox.__sync('antigravity-suite');
+  assert.equal(badgeEl.hidden, false);
+  assert.equal(badgeEl.textContent, 'antigravity-suite');
+  assert.equal(badgeEl.title, '所属项目：antigravity-suite');
+
+  sandbox.__sync('');
+  assert.equal(badgeEl.hidden, true, '无项目名时应自动隐藏徽章');
+  assert.equal(badgeEl.textContent, '');
+});

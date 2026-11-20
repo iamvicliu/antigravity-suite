@@ -3594,7 +3594,14 @@ function buildMobileAppHtml() {
     .dot.busy{background:var(--amber);animation:pulse 1s infinite ease-in-out}
     .dot.err{background:var(--red)}
     @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
-    .conv-title{font-size:15px;font-weight:600;color:var(--fg-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em}
+    .conv-title{font-size:15px;font-weight:600;color:var(--fg-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em;min-width:0;flex:0 1 auto}
+    .conv-project-badge{
+      display:inline-flex;align-items:center;max-width:116px;padding:1px 7px;border-radius:999px;
+      font-size:11px;font-weight:500;line-height:1.45;letter-spacing:0;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;
+    }
+    .conv-project-badge[hidden]{display:none!important}
     .sub-meta{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
     .sub-meta:active{color:var(--accent)}
     .quota-pill{
@@ -4086,6 +4093,7 @@ function buildMobileAppHtml() {
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
       .conv-title{font-size:15.5px}
+      .conv-project-badge{max-width:200px;font-size:11.5px;padding:2px 8px}
       .sub-meta{font-size:12px}
       .quota-pill{flex-direction:row;align-items:center;gap:8px;padding:6px 12px;font-size:12px;border-radius:10px}
       .quota-pill span:last-child{font-size:11.5px;color:var(--muted);padding-left:8px;border-left:1px solid var(--border)}
@@ -4187,8 +4195,26 @@ function buildMobileAppHtml() {
     }
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
+    @media (max-width:767px){
+      .topbar{padding:6px 10px;gap:6px}
+      .topbar-actions{gap:4px}
+      .top-panel-btn{height:30px;border-radius:9px;padding:0 6px;gap:3px;font-size:11.5px}
+      .quota-pill{
+        height:30px;padding:0 8px;border-radius:9px;font-size:11.5px;
+        flex-direction:row;align-items:center;gap:5px;line-height:1;
+      }
+      .quota-pill span:last-child{font-size:11px;padding-left:5px;border-left:1px solid var(--border)}
+      body.has-ctx-btn .quota-pill #ctx-badge{display:none}
+    }
+    @media (max-width:560px){
+      #btn-usage-panel{min-width:30px;padding:0 7px;justify-content:center}
+      #btn-usage-panel #usage-top-val{display:none}
+    }
     @media (max-width:430px){
-      .top-panel-btn{padding:0 6px;gap:3px;font-size:11px}
+      .icon-btn{height:30px;min-width:30px;padding:0 4px}
+      .conv-project-badge{max-width:88px;font-size:10.5px;padding:1px 6px}
+      .top-panel-btn{padding:0 5px;gap:3px;font-size:11px}
+      .quota-pill{padding:0 6px;font-size:11px}
     }
   </style>
 </head>
@@ -4202,6 +4228,7 @@ function buildMobileAppHtml() {
         <div class="title-row">
           <span id="status-dot" class="dot"></span>
           <span id="conv-title" class="conv-title">正在连接 Mac…</span>
+          <span id="conv-project-badge" class="conv-project-badge" hidden></span>
         </div>
         <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
       </div>
@@ -5820,6 +5847,7 @@ function buildMobileAppHtml() {
       if (drawerBtn) drawerBtn.hidden = !cfg.showSidebar;
       if (!cfg.showSidebar && typeof closeDrawer === 'function') closeDrawer();
       if (document.body?.classList) {
+        document.body.classList.toggle('has-ctx-btn', Boolean(cfg.showContextPanel));
         document.body.classList.toggle('hide-thinking', !cfg.showThinking);
         document.body.classList.toggle('hide-composer-tools', !cfg.showComposerTools);
       }
@@ -6094,6 +6122,44 @@ function buildMobileAppHtml() {
       return { id: pid, name };
     }
 
+    function resolveConversationProjectName(snap) {
+      if (!snap || snap.ok === false) return '';
+      if (snap.isNewConversation) {
+        return getEffectiveSelectedProject(snap).name || '';
+      }
+      const projects = Array.isArray(snap.projects) ? snap.projects : [];
+      const curPid = normalizeProjectId(snap.currentProjectId);
+      const directName = String(snap.currentProjectName || '').trim();
+      if (directName && directName !== '未归属项目') return directName;
+      if (curPid) {
+        const matchedProj = projects.find((p) => p && p.id === curPid && p.name);
+        if (matchedProj?.name) return String(matchedProj.name).trim();
+      }
+      const activeCid = String(snap.activeConversationId || snap.sessionId || '').trim();
+      if (activeCid && Array.isArray(snap.conversations)) {
+        const matchedConv = snap.conversations.find((c) => c && c.id === activeCid);
+        if (matchedConv) {
+          const convProjName = String(matchedConv.projectName || '').trim();
+          if (convProjName && convProjName !== '未归属项目') return convProjName;
+          const convPid = normalizeProjectId(matchedConv.projectId);
+          if (convPid) {
+            const pByConv = projects.find((p) => p && p.id === convPid && p.name);
+            if (pByConv?.name) return String(pByConv.name).trim();
+          }
+        }
+      }
+      return directName;
+    }
+
+    function syncTopbarProjectBadge(projectName) {
+      const el = $('conv-project-badge');
+      if (!el) return;
+      const clean = String(projectName || '').trim();
+      el.textContent = clean;
+      el.title = clean ? ('所属项目：' + clean) : '';
+      el.hidden = !clean;
+    }
+
     function syncNewChatButtonUi(snap) {
       const newChatLabelEl = $('new-chat-label');
       if (newChatLabelEl) newChatLabelEl.textContent = '新建对话';
@@ -6178,6 +6244,7 @@ function buildMobileAppHtml() {
       const displayCfg = applyRemoteDisplayConfig(snap);
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
+      syncTopbarProjectBadge(resolveConversationProjectName(snap));
       $('sub-meta').textContent = getActiveChannelLabel() + (snap.isolated ? ' · 独立视图' : '') + ' ▾ · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
@@ -8180,6 +8247,7 @@ function buildMobileAppHtml() {
       if (isSwitchingToOther) {
         msgEl.classList.add('is-switching');
         if (matchedConv?.title) $('conv-title').textContent = matchedConv.title;
+        if (matchedConv) syncTopbarProjectBadge(matchedConv.projectName || '');
       }
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
@@ -8191,6 +8259,7 @@ function buildMobileAppHtml() {
           showToast(r?.error || r?.actionResult?.error || '切换会话失败');
           if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
             $('conv-title').textContent = latestSnap.title || 'Antigravity';
+            syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
           }
         }
       } catch (err) {
@@ -8198,6 +8267,7 @@ function buildMobileAppHtml() {
           showToast(err?.message || '切换会话失败');
           if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
             $('conv-title').textContent = latestSnap.title || 'Antigravity';
+            syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
           }
         }
       } finally {
