@@ -4122,7 +4122,12 @@ function buildMobileAppHtml() {
       --perm-review:#c084fc;
       --app-h:100dvh;
       --modal-h:100dvh;
+      --safe-bottom:0px;
     }
+    @media (display-mode:standalone){
+      :root{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)))}
+    }
+    body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)))}
     @media (prefers-color-scheme:light){
       :root:not([data-theme="dark"]){
         color-scheme:light;
@@ -4197,7 +4202,7 @@ function buildMobileAppHtml() {
     .app{
       display:flex;flex-direction:column;width:100%;height:100%;
       padding-top:env(safe-area-inset-top);
-      padding-bottom:max(8px,calc(env(safe-area-inset-bottom,0px) - 10px));
+      padding-bottom:calc(4px + var(--safe-bottom));
       padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
     }
     .app.kb-open{padding-bottom:4px}
@@ -4438,8 +4443,8 @@ function buildMobileAppHtml() {
     .queue-del-btn:active{background:var(--surface-hover);color:var(--red)}
     .queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
     .composer-dock{
-      flex-shrink:0;background:transparent;padding:2px 10px 4px;
-      display:flex;flex-direction:column;gap:6px;
+      flex-shrink:0;background:transparent;padding:2px 10px 2px;
+      display:flex;flex-direction:column;gap:5px;
     }
     .chips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 2px}
     .chips::-webkit-scrollbar{display:none}
@@ -4585,7 +4590,7 @@ function buildMobileAppHtml() {
     .sheet-backdrop[hidden]{display:none}
     .sheet{
       width:100%;max-width:520px;max-height:min(calc(var(--modal-h,100dvh) * 0.72),calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px));background:var(--card);border-top:1px solid var(--border-strong);
-      border-radius:18px 18px 0 0;padding:12px 14px calc(env(safe-area-inset-bottom) + 14px);box-shadow:0 240px 0 0 var(--card);
+      border-radius:18px 18px 0 0;padding:12px 14px calc(12px + var(--safe-bottom));box-shadow:0 240px 0 0 var(--card);
       display:flex;flex-direction:column;gap:8px;overflow:hidden;
     }
     .sheet-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-shrink:0}
@@ -4644,7 +4649,7 @@ function buildMobileAppHtml() {
     }
     .drawer{
       width:min(82vw,320px);height:100%;background:var(--drawer-bg);border-right:1px solid var(--border);
-      padding:calc(env(safe-area-inset-top) + 12px) 12px calc(16px + env(safe-area-inset-bottom));
+      padding:calc(env(safe-area-inset-top) + 12px) 12px calc(10px + var(--safe-bottom));
       display:flex;flex-direction:column;gap:10px;overflow:hidden;
       transform:translateX(-100%);transition:transform .24s cubic-bezier(.22,1,.36,1);
       will-change:transform;
@@ -4841,7 +4846,7 @@ function buildMobileAppHtml() {
     .perm-ico.unknown{color:var(--placeholder)}
     .drawer-brand{display:none}
     .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;display:flex;flex-direction:column;gap:6px}
-    .drawer-footer{flex-shrink:0;padding-top:8px;border-top:1px solid var(--border-subtle)}
+    .drawer-footer{flex-shrink:0;padding-top:6px;border-top:1px solid var(--border-subtle)}
     .theme-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:11px;background:var(--seg-track);border:1px solid var(--border-subtle)}
     .theme-seg-btn{
       appearance:none;border:none;background:transparent;color:var(--muted);
@@ -6143,6 +6148,13 @@ function buildMobileAppHtml() {
     $('sub-meta').onclick = openModeSwitcherSheet;
 
     const appEl = document.querySelector('.app');
+    try {
+      const isStandalonePwa = Boolean(
+        window.navigator?.standalone === true ||
+        (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches)
+      );
+      document.body?.classList?.toggle?.('is-standalone', isStandalonePwa);
+    } catch {}
 
     function getFullLayoutHeight() {
       const vvH = window.visualViewport ? window.visualViewport.height : 0;
@@ -6365,16 +6377,19 @@ function buildMobileAppHtml() {
       const openModal = getOpenModalBackdrop();
       const isComposerFocused = !openModal && activeEl === $('input');
 
+      const recentlyBlurred = (Date.now() - lastTextBlurAt) < 380;
       if (!anyTextFocused && Math.abs(curW - lastLayoutWidth) > 2) {
         lastLayoutWidth = curW;
         maxVvHeight = curH;
         lockedModalBaseH = Math.round(curH);
       } else if (!anyTextFocused && curH > maxVvHeight) {
         maxVvHeight = curH;
+      } else if (!anyTextFocused && !openModal && !recentlyBlurred && Math.abs((window.innerHeight || curH) - curH) <= 2 && curH > 0) {
+        // Safari 底部工具栏重新出现导致 innerHeight 与 visualViewport.height 同步回落时，同步收敛 maxVvHeight 避免残留底部死区
+        maxVvHeight = curH;
       }
 
       const refFullH = Math.max(maxVvHeight || 0, window.innerHeight || 0, lockedModalBaseH || 0);
-      const recentlyBlurred = (Date.now() - lastTextBlurAt) < 380;
       const kbLikelyActive = Boolean(vv && ((refFullH - curH > 60) || ((Number(vv.offsetTop) || 0) > 2)));
       const freezeModalShrink = !desktop && (anyTextFocused || kbLikelyActive || recentlyBlurred);
       if (desktop || !freezeModalShrink || curH >= lockedModalBaseH) {
