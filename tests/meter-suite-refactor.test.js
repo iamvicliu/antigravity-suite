@@ -4375,17 +4375,18 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
 
     const testEps = [
       { url: 'http://10.181.51.171:18765', kind: 'lan', priority: 0 },
+      { url: 'http://100.67.239.94:18765', kind: 'tailscale', priority: 100 },
       { url: 'https://demo-quick.trycloudflare.com', kind: 'tunnel', priority: 250 }
     ];
     const encEps = encodeEndpointsParam(testEps);
 
-    // 3a. 从公网隧道打开，自动测速发现 LAN (~5ms) 显著快于 Cloudflare (~60ms) -> 调用 location.replace 自动切到 LAN 并携带 did/autosw/spd
+    // 3a. 从较慢的明文 Tailscale 打开，自动测速发现 LAN (~4ms) 显著快于 Tailscale (~60ms) -> 调用 location.replace 自动切到 LAN 并携带 did/autosw/spd
     const autoVm = runMobileClientVm({
-      href: `https://demo-quick.trycloudflare.com/?token=${tok}&endpoints=${encEps}`,
+      href: `http://100.67.239.94:18765/?token=${tok}&endpoints=${encEps}`,
       fetchHandler: async (url) => {
         const u = String(url);
         if (u.includes('/api/ping')) {
-          const parsedU = new URL(u, 'https://demo-quick.trycloudflare.com');
+          const parsedU = new URL(u, 'http://100.67.239.94:18765');
           const nonce = parsedU.searchParams.get('_n') || '';
           const delayMs = u.includes('10.181.51.171') ? 4 : 60;
           await new Promise((r) => setTimeout(r, delayMs));
@@ -4420,7 +4421,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     });
     try {
       await new Promise((r) => setTimeout(r, 180));
-      assert.equal(autoVm.replacedUrls.length, 1, '从公网隧道打开且局域网明显更快时应自动切换到 LAN');
+      assert.equal(autoVm.replacedUrls.length, 1, '同级明文通道下局域网明显更快时应自动切换到 LAN');
       const switchedUrl = new URL(autoVm.replacedUrls[0]);
       assert.equal(switchedUrl.origin, 'http://10.181.51.171:18765');
       assert.equal(switchedUrl.searchParams.get('autosw'), '1');
@@ -4536,8 +4537,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     });
     try {
       await new Promise((r) => setTimeout(r, 180));
-      assert.equal(safariAutoVm.replacedUrls.length, 1, 'iOS Safari HTTPS 下借助 /api/probe-hints 发现更快 LAN 时应自动切换');
-      assert.equal(new URL(safariAutoVm.replacedUrls[0]).origin, 'http://10.181.51.171:18765');
+      assert.equal(safariAutoVm.replacedUrls.length, 0, 'HTTPS 安全源当前路线可达时，即使 /api/probe-hints 发现更快明文 LAN 也应遵守 #37 防降级保护不自动跳往非受信 HTTP');
     } finally {
       safariAutoVm.cleanup();
     }
@@ -16997,4 +16997,427 @@ test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置�
   } finally {
     for (const id of Array.from(activeTimers)) activeTimers.delete(id);
   }
+});
+
+test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、修复 detectKindFromOrigin 与防降级保护 (#37)', async () => {
+  const remoteMod = require('../mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+
+  // 1. 全量 <script> 语法校验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-37-script-${i}.js` }));
+  }
+
+  // 2. 前端 detectKindFromOrigin 与 shouldBlockInsecureDowngrade 行为实测
+  const fnStart = html.indexOf('function detectKindFromOrigin(rawUrl)');
+  const fnEnd = html.indexOf('function formatKindLabel(kind)');
+  assert.ok(fnStart > 0 && fnEnd > fnStart);
+  const ctx = vm.createContext({ String, Boolean });
+  vm.runInContext(
+    html.slice(fnStart, fnEnd) + '\nglobalThis.__detect = detectKindFromOrigin; globalThis.__block = shouldBlockInsecureDowngrade;',
+    ctx
+  );
+
+  assert.equal(ctx.__detect('https://mini-lamp.tailab4819.ts.net'), 'tailscale', 'https://*.ts.net 必须识别为 tailscale 而非 tunnel');
+  assert.equal(ctx.__detect('http://100.103.118.78:18765'), 'tailscale');
+  assert.equal(ctx.__detect('https://demo.trycloudflare.com'), 'tunnel');
+  assert.equal(ctx.__detect('http://mini-lamp.local:18765'), 'bonjour');
+  assert.equal(ctx.__detect('http://192.168.1.8:18765'), 'lan');
+
+  assert.equal(ctx.__block('https://mini-lamp.tailab4819.ts.net', 'http://100.103.118.78:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文 Tailscale IP');
+  assert.equal(ctx.__block('https://mini-lamp.tailab4819.ts.net', 'http://192.168.1.8:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文局域网 IP');
+  assert.equal(ctx.__block('http://localhost:18765', 'http://192.168.1.8:18765', false), true, 'localhost 安全源严禁自动降级到非受信明文 IP');
+  assert.equal(ctx.__block('http://127.0.0.1:18765', 'http://192.168.1.8:18765', false), true, '127.0.0.1 安全源严禁自动降级到非受信明文 IP');
+  assert.equal(ctx.__block('https://demo.trycloudflare.com', 'http://192.168.1.8:18765', true), true, 'standalone 独立应用严禁自动降级跳往明文地址');
+  assert.equal(ctx.__block('https://demo.trycloudflare.com', 'http://192.168.1.8:18765', false), true, '任意 HTTPS 安全源在当前路线可达时均严禁自动降级到非受信 HTTP');
+  assert.equal(ctx.__block('https://demo.trycloudflare.com', 'https://mini-lamp.tailab4819.ts.net', true), false, '允许安全源之间同级切换（HTTPS -> Tailscale HTTPS）');
+  assert.equal(ctx.__block('http://192.168.1.8:18765', 'https://mini-lamp.tailab4819.ts.net', false), false, '允许明文源升级至 HTTPS');
+  assert.equal(ctx.__block('http://100.103.118.78:18765', 'http://192.168.1.8:18765', false), false, '非 standalone 明文源之间允许按测速切换');
+
+  // 2b. runSpeedTest 与 tryFailoverEndpoint 两个自动切换入口端到端行为测试
+  const mainScript = scripts.map((m) => m[1]).find((s) => s.includes('async function runSpeedTest(opts)'));
+  assert.ok(mainScript, '应找到包含 runSpeedTest 与 tryFailoverEndpoint 的主脚本');
+  const runSwitchHarness = async ({ href, standalone = false, endpoints, latencyByUrl, failUrls = [] }) => {
+    const replacedUrls = [];
+    const timers = new Set();
+    const makeEl = (id) => ({
+      id,
+      hidden: false,
+      disabled: false,
+      value: '',
+      innerHTML: '',
+      textContent: '',
+      scrollHeight: 28,
+      scrollTop: 0,
+      clientHeight: 600,
+      offsetWidth: 300,
+      dataset: {},
+      style: {},
+      className: '',
+      children: [],
+      classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+      setAttribute() {},
+      removeAttribute() {},
+      getAttribute: () => null,
+      appendChild(c) { this.children.push(c); return c; },
+      addEventListener() {},
+      contains: () => false,
+      focus() {},
+      blur() {},
+      querySelectorAll: () => []
+    });
+    const byId = new Proxy({}, {
+      get(t, k) {
+        if (!(k in t)) t[k] = makeEl(String(k));
+        return t[k];
+      }
+    });
+    const uObj = new URL(href);
+    const locObj = {
+      get href() { return uObj.href; },
+      set href(v) { replacedUrls.push(String(v)); },
+      origin: uObj.origin,
+      protocol: uObj.protocol,
+      pathname: uObj.pathname,
+      search: uObj.search,
+      port: uObj.port,
+      replace(v) { replacedUrls.push(String(v)); }
+    };
+    const lStore = new Map();
+    const sStore = new Map();
+    const failSet = new Set(failUrls);
+    const sandbox = {
+      URL,
+      URLSearchParams,
+      Math,
+      Number,
+      String,
+      Boolean,
+      Array,
+      Object,
+      Set,
+      Map,
+      Date,
+      JSON,
+      Promise,
+      Uint8Array,
+      TextEncoder,
+      TextDecoder,
+      AbortController,
+      Intl,
+      atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+      btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+      encodeURIComponent,
+      decodeURIComponent,
+      escape: (s) => encodeURIComponent(s),
+      unescape: (s) => decodeURIComponent(s),
+      screen: { width: 1280, height: 800 },
+      devicePixelRatio: 2,
+      navigator: { platform: 'MacIntel', maxTouchPoints: 0, hardwareConcurrency: 8, standalone },
+      location: locObj,
+      history: { replaceState() {} },
+      localStorage: {
+        getItem: (k) => (lStore.has(k) ? lStore.get(k) : null),
+        setItem: (k, v) => lStore.set(k, String(v)),
+        removeItem: (k) => lStore.delete(k)
+      },
+      sessionStorage: {
+        getItem: (k) => (sStore.has(k) ? sStore.get(k) : null),
+        setItem: (k, v) => sStore.set(k, String(v)),
+        removeItem: (k) => sStore.delete(k)
+      },
+      document: {
+        hidden: false,
+        activeElement: null,
+        documentElement: { clientHeight: 800, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+        body: { style: {}, classList: { contains: () => false, toggle() {}, add() {}, remove() {} } },
+        getElementById: (id) => byId[id],
+        querySelector: () => makeEl('__q'),
+        createElement: (tag) => makeEl(tag),
+        addEventListener() {}
+      },
+      matchMedia: (q) => ({ matches: Boolean(standalone && String(q).includes('standalone')), addEventListener() {} }),
+      innerWidth: 1280,
+      innerHeight: 800,
+      visualViewport: null,
+      setTimeout: (fn, ms) => {
+        const t = setTimeout(() => { timers.delete(t); fn(); }, Math.min(Number(ms) || 0, 50));
+        if (typeof t.unref === 'function') t.unref();
+        timers.add(t);
+        return t;
+      },
+      clearTimeout: (t) => { timers.delete(t); clearTimeout(t); },
+      fetch: async (url) => {
+        const u = String(url);
+        const parsedU = new URL(u, uObj.origin);
+        const originKey = parsedU.origin;
+        if (u.includes('/api/ping')) {
+          if (failSet.has(originKey)) throw new Error('unreachable');
+          const delayMs = latencyByUrl[originKey] ?? 20;
+          await new Promise((r) => setTimeout(r, delayMs));
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              ok: true,
+              service: 'ag-mobile-remote',
+              nonce: parsedU.searchParams.get('_n') || '',
+              endpoints
+            })
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, title: 'S', busy: false, messages: [], endpoints })
+        };
+      },
+      Image: class MockImage {
+        set src(val) {
+          const parsedU = new URL(String(val), uObj.origin);
+          if (failSet.has(parsedU.origin)) {
+            setTimeout(() => { if (typeof this.onerror === 'function') this.onerror(); }, 2);
+            return;
+          }
+          const delayMs = latencyByUrl[parsedU.origin] ?? 5;
+          setTimeout(() => { if (typeof this.onload === 'function') this.onload(); }, delayMs);
+        }
+      }
+    };
+    sandbox.window = sandbox;
+    sandbox.addEventListener = () => {};
+    const cleanup = () => { for (const t of timers) clearTimeout(t); timers.clear(); };
+    const iifeTailIdx = mainScript.lastIndexOf('})();');
+    assert.ok(iifeTailIdx > 0, 'mainScript 应以 IIFE 结尾');
+    const instrumented = mainScript.slice(0, iifeTailIdx)
+      + '\nglobalThis.__testHooks = { runSpeedTest, tryFailoverEndpoint, getApiBase: () => apiBase };\n'
+      + mainScript.slice(iifeTailIdx);
+    try {
+      vm.runInNewContext(instrumented, sandbox);
+    } catch (err) {
+      cleanup();
+      throw err;
+    }
+    return {
+      replacedUrls,
+      hooks: sandbox.__testHooks,
+      cleanup
+    };
+  };
+
+  // 2b-1: runSpeedTest 在普通浏览器 HTTPS（Cloudflare 隧道）下当前路线可达时，禁止降级到更快的明文 LAN HTTP
+  const epsTunnelLan = [
+    { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
+  ];
+  const encTunnelLan = remoteMod.encodeEndpointsParam(epsTunnelLan);
+  const h1 = await runSwitchHarness({
+    href: `https://demo.trycloudflare.com/?token=tok37&endpoints=${encTunnelLan}`,
+    standalone: false,
+    endpoints: epsTunnelLan,
+    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'https://demo.trycloudflare.com': 45 }
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(h1.replacedUrls.length, 0, 'runSpeedTest：HTTPS 当前路线可达时严禁自动降级到非受信 HTTP');
+  } finally { h1.cleanup(); }
+
+  // 2b-2: runSpeedTest 在 HTTPS 源下同时存在更快的 HTTP 与更快的 Tailscale HTTPS -> 跳过 HTTP，切往安全源
+  const epsTunnelLanTsHttps = [
+    { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'https://mini-lamp.tailab4819.ts.net', kind: 'tailscale', priority: 90 },
+    { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
+  ];
+  const h2 = await runSwitchHarness({
+    href: `https://demo.trycloudflare.com/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsTunnelLanTsHttps)}`,
+    standalone: false,
+    endpoints: epsTunnelLanTsHttps,
+    latencyByUrl: {
+      'http://192.168.1.8:18765': 3,
+      'https://mini-lamp.tailab4819.ts.net': 10,
+      'https://demo.trycloudflare.com': 60
+    }
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 180));
+    assert.equal(h2.replacedUrls.length, 1, 'runSpeedTest：存在更快的安全 HTTPS 源时应跳过 HTTP 并切换至安全源');
+    assert.equal(new URL(h2.replacedUrls[0]).origin, 'https://mini-lamp.tailab4819.ts.net');
+  } finally { h2.cleanup(); }
+
+  // 2b-3: runSpeedTest 在 localhost 安全源下禁止降级到明文 LAN HTTP
+  const h3 = await runSwitchHarness({
+    href: `http://localhost:18765/?token=tok37&endpoints=${encTunnelLan}`,
+    standalone: false,
+    endpoints: epsTunnelLan,
+    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'https://demo.trycloudflare.com': 50 }
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(h3.replacedUrls.length, 0, 'runSpeedTest：localhost 安全源严禁自动降级到非受信 HTTP');
+  } finally { h3.cleanup(); }
+
+  // 2b-3b: 当前 localhost 未列入测速列表、列表内 LAN 端点失败、明文 Tailscale 端点成功时，仍不得自动降级
+  const epsLanFailTsOk = [
+    { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'http://100.103.118.78:18765', kind: 'tailscale', priority: 100 }
+  ];
+  const h3b = await runSwitchHarness({
+    href: `http://localhost:18765/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsLanFailTsOk)}`,
+    standalone: false,
+    endpoints: epsLanFailTsOk,
+    latencyByUrl: { 'http://100.103.118.78:18765': 8 },
+    failUrls: ['http://192.168.1.8:18765']
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(h3b.replacedUrls.length, 0, 'runSpeedTest：其他同 kind(lan) 端点失败不得误判当前 localhost 不可达并降级到明文 Tailscale');
+  } finally { h3b.cleanup(); }
+
+  // 2b-4: runSpeedTest 在 standalone 模式下严禁自动降级到非受信 HTTP
+  const epsTsLan = [
+    { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'http://100.103.118.78:18765', kind: 'tailscale', priority: 100 }
+  ];
+  const h4 = await runSwitchHarness({
+    href: `http://100.103.118.78:18765/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsTsLan)}`,
+    standalone: true,
+    endpoints: epsTsLan,
+    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'http://100.103.118.78:18765': 60 }
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(h4.replacedUrls.length, 0, 'runSpeedTest：standalone 独立应用严禁自动降级到非受信 HTTP');
+  } finally { h4.cleanup(); }
+
+  // 2b-5: tryFailoverEndpoint 在 HTTPS / localhost / standalone 场景均禁止切到非受信 HTTP
+  const h5 = await runSwitchHarness({
+    href: `https://demo.trycloudflare.com/?token=tok37&manual=1&endpoints=${encTunnelLan}`,
+    standalone: false,
+    endpoints: epsTunnelLan,
+    latencyByUrl: { 'http://192.168.1.8:18765': 3 },
+    failUrls: ['https://demo.trycloudflare.com']
+  });
+  try {
+    const ok5 = await h5.hooks.tryFailoverEndpoint();
+    assert.equal(ok5, false, 'tryFailoverEndpoint：HTTPS 场景仅有非受信 HTTP 可达时应拒绝降级');
+    assert.equal(h5.replacedUrls.length, 0);
+  } finally { h5.cleanup(); }
+
+  const h6 = await runSwitchHarness({
+    href: `http://localhost:18765/?token=tok37&manual=1&endpoints=${encTunnelLan}`,
+    standalone: false,
+    endpoints: epsTunnelLan,
+    latencyByUrl: { 'http://192.168.1.8:18765': 3 },
+    failUrls: ['https://demo.trycloudflare.com']
+  });
+  try {
+    const ok6 = await h6.hooks.tryFailoverEndpoint();
+    assert.equal(ok6, false, 'tryFailoverEndpoint：localhost 场景仅有非受信 HTTP 可达时应拒绝降级');
+    assert.equal(h6.hooks.getApiBase(), '', 'localhost 拒绝降级后不得改写 apiBase');
+  } finally { h6.cleanup(); }
+
+  const h7 = await runSwitchHarness({
+    href: `https://demo.trycloudflare.com/?token=tok37&manual=1&endpoints=${remoteMod.encodeEndpointsParam(epsTunnelLanTsHttps)}`,
+    standalone: true,
+    endpoints: epsTunnelLanTsHttps,
+    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'https://mini-lamp.tailab4819.ts.net': 12 },
+    failUrls: ['https://demo.trycloudflare.com']
+  });
+  try {
+    const ok7 = await h7.hooks.tryFailoverEndpoint();
+    assert.equal(ok7, true, 'tryFailoverEndpoint：standalone 下存在可用 HTTPS 安全源时应正常切往该安全源');
+    assert.equal(h7.hooks.getApiBase(), 'https://mini-lamp.tailab4819.ts.net');
+  } finally { h7.cleanup(); }
+
+  // 3. 服务端自动探测 CertDomains、托管 tailscale serve --bg 18765 与端点优先级排序
+  const calls = [];
+  const mockExecOk = (bin, args) => {
+    calls.push({ bin, args });
+    if (args[0] === 'status') {
+      return JSON.stringify({
+        Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
+        CertDomains: ['mini-lamp.tailab4819.ts.net']
+      });
+    }
+    if (args[0] === 'serve') return 'Available within your tailnet:\nhttps://mini-lamp.tailab4819.ts.net/';
+    return '';
+  };
+  const desc = remoteMod.collectFusedEndpointDescriptor(
+    18765,
+    null,
+    { lan: true, tailscale: true, bonjour: false, tunnel: false },
+    {
+      execFileSync: mockExecOk,
+      addresses: {
+        tailscale: [{ iface: 'utun4', address: '100.103.118.78', kind: 'tailscale' }],
+        lan: [{ iface: 'en0', address: '192.168.1.8', kind: 'lan' }],
+        physicalLan: [{ iface: 'en0', address: '192.168.1.8', kind: 'lan' }]
+      }
+    }
+  );
+  assert.ok(calls.some((c) => c.args[0] === 'serve' && c.args[1] === '--bg' && c.args[2] === '18765'), '开通 CertDomains 时应以安全参数数组调用 tailscale serve --bg 18765');
+  assert.equal(desc.tailscaleHttpsUrl, 'https://mini-lamp.tailab4819.ts.net');
+  const tsHttpsEp = desc.endpoints.find((e) => e.url === 'https://mini-lamp.tailab4819.ts.net');
+  const tsHttpEp = desc.endpoints.find((e) => e.url === 'http://100.103.118.78:18765');
+  assert.ok(tsHttpsEp && tsHttpEp && tsHttpsEp.priority < tsHttpEp.priority, 'Tailscale HTTPS 端点优先级应高于明文 :18765 端点');
+
+  // 3b. Origin 白名单严格收窄至本机 tailscaleDnsName：本机域名通过，其他 .ts.net 域名与空配置均拒绝
+  assert.equal(
+    remoteMod.isAllowedPrivateOrigin('https://mini-lamp.tailab4819.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    true,
+    '服务端 Origin 白名单应放行本机 tailscaleDnsName'
+  );
+  assert.equal(
+    remoteMod.isAllowedPrivateOrigin('https://other-node.tailab4819.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    false,
+    '服务端 Origin 白名单必须拒绝同 tailnet 的其他 .ts.net 域名'
+  );
+  assert.equal(
+    remoteMod.isAllowedPrivateOrigin('https://evil.other-tailnet.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    false,
+    '服务端 Origin 白名单必须拒绝任意外部 .ts.net 域名'
+  );
+  assert.equal(
+    remoteMod.isAllowedPrivateOrigin('https://mini-lamp.tailab4819.ts.net', '', ''),
+    false,
+    '未探测到本机 tailscaleDnsName 时必须拒绝所有 .ts.net 域名'
+  );
+
+  // 3c. HTTP Handler CORS 回归：本机 .ts.net Origin 获得 ACAO，其他 .ts.net Origin 被拒（无 ACAO）
+  const corsHandler = remoteMod.createRemoteHttpHandler(
+    { enabled: true, port: 18765, token: 'tok-cors-37', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    { allowedTailscaleDnsName: 'mini-lamp.tailab4819.ts.net' }
+  );
+  const runCorsReq = async (origin) => {
+    const resHeaders = {};
+    let status = 0;
+    await corsHandler(
+      { method: 'OPTIONS', url: '/api/ping', headers: { host: '127.0.0.1:18765', origin }, socket: { remoteAddress: '127.0.0.1' } },
+      {
+        setHeader(k, v) { resHeaders[String(k).toLowerCase()] = v; },
+        getHeader(k) { return resHeaders[String(k).toLowerCase()]; },
+        writeHead(code, h = {}) { status = code; for (const [k, v] of Object.entries(h)) resHeaders[String(k).toLowerCase()] = v; },
+        end() {}
+      }
+    );
+    return { status, resHeaders };
+  };
+  const selfCors = await runCorsReq('https://mini-lamp.tailab4819.ts.net');
+  assert.equal(selfCors.resHeaders['access-control-allow-origin'], 'https://mini-lamp.tailab4819.ts.net', '本机 .ts.net Origin 应下发 CORS 允许头');
+  const foreignCors = await runCorsReq('https://attacker.other-tailnet.ts.net');
+  assert.equal(foreignCors.resHeaders['access-control-allow-origin'], undefined, '非本机 .ts.net Origin 不得下发 CORS 允许头');
+
+  // 4. 未开启 CertDomains 时不调用 serve，并给出清晰 HTTPS Certificates 开启指引
+  const noCertCalls = [];
+  const noCertRes = remoteMod.ensureTailscaleServeHttps(18765, {
+    execFileSync: (bin, args) => {
+      noCertCalls.push(args);
+      return JSON.stringify({ Self: { DNSName: 'mini-lamp.tailab4819.ts.net.' }, CertDomains: [] });
+    }
+  });
+  assert.equal(noCertRes.enabled, false);
+  assert.ok(noCertRes.hint.includes('HTTPS Certificates'), '未开通 CertDomains 时应返回清晰开启提示');
+  assert.ok(!noCertCalls.some((a) => a[0] === 'serve'), '未开通 CertDomains 时不得盲目调用 tailscale serve');
 });

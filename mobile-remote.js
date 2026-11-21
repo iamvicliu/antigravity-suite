@@ -869,7 +869,8 @@ function enumerateLocalAddresses() {
 let cachedHostMeta = null;
 let cachedHostMetaAt = 0;
 
-function detectHostIdentityMeta({ force = false } = {}) {
+function detectHostIdentityMeta(options = {}) {
+  const force = Boolean(options?.force || options?.forceRefresh || typeof options?.execFileSync === 'function');
   const now = Date.now();
   if (!force && cachedHostMeta && now - cachedHostMetaAt < 45000) {
     return cachedHostMeta;
@@ -894,13 +895,16 @@ function detectHostIdentityMeta({ force = false } = {}) {
 
   let tailscaleDnsName = '';
   let tailscaleNodeName = '';
-  if (!skipProbes) {
+  let tailscaleHttpsCapable = false;
+  let tailscaleBin = '';
+  const execFn = typeof options.execFileSync === 'function' ? options.execFileSync : execFileSync;
+  if (!skipProbes || typeof options.execFileSync === 'function') {
     const tsBins = process.platform === 'darwin'
       ? ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']
       : ['tailscale'];
     for (const bin of tsBins) {
       try {
-        const out = execFileSync(bin, ['status', '--json'], {
+        const out = execFn(bin, ['status', '--json'], {
           timeout: 800,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore']
@@ -908,18 +912,82 @@ function detectHostIdentityMeta({ force = false } = {}) {
         const parsed = JSON.parse(out);
         const dns = String(parsed?.Self?.DNSName || '').trim().replace(/\.+$/, '');
         const hostName = String(parsed?.Self?.HostName || '').trim();
+        const certDomains = Array.isArray(parsed?.CertDomains)
+          ? parsed.CertDomains.map((d) => String(d || '').trim().replace(/\.+$/, '').toLowerCase()).filter(Boolean)
+          : [];
         if (dns) tailscaleDnsName = dns;
         if (dns) tailscaleNodeName = dns.split('.')[0] || hostName;
         else if (hostName) tailscaleNodeName = hostName;
+        tailscaleHttpsCapable = Boolean(tailscaleDnsName && certDomains.includes(tailscaleDnsName.toLowerCase()));
+        tailscaleBin = bin;
         break;
       } catch {}
     }
   }
 
   const deviceName = tailscaleNodeName || localHostLabel || 'antigravity-mac';
-  cachedHostMeta = { localHostLabel, bonjourHost, tailscaleDnsName, tailscaleNodeName, deviceName };
-  cachedHostMetaAt = now;
-  return cachedHostMeta;
+  const result = {
+    localHostLabel,
+    bonjourHost,
+    tailscaleDnsName,
+    tailscaleNodeName,
+    tailscaleHttpsCapable,
+    tailscaleBin,
+    deviceName
+  };
+  if (typeof options.execFileSync !== 'function') {
+    cachedHostMeta = result;
+    cachedHostMetaAt = now;
+  }
+  return result;
+}
+
+let cachedTailscaleServe = { active: false, port: 0, url: '', hint: '', checkedAt: 0 };
+
+function ensureTailscaleServeHttps(port, options = {}) {
+  const numPort = Number(port) || DEFAULT_PORT;
+  const now = Date.now();
+  const useCustomExec = typeof options.execFileSync === 'function';
+  if (!useCustomExec && !options.force && cachedTailscaleServe.port === numPort && (now - cachedTailscaleServe.checkedAt < 60000)) {
+    return {
+      enabled: Boolean(cachedTailscaleServe.active && cachedTailscaleServe.url),
+      url: cachedTailscaleServe.url,
+      hint: cachedTailscaleServe.hint
+    };
+  }
+  const meta = options.hostMeta || detectHostIdentityMeta({
+    forceRefresh: Boolean(options.force || useCustomExec),
+    execFileSync: options.execFileSync
+  });
+  if (!meta.tailscaleDnsName) {
+    const empty = { active: false, port: numPort, url: '', hint: '', checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = empty;
+    return { enabled: false, url: '', hint: '' };
+  }
+  if (!meta.tailscaleHttpsCapable) {
+    const hint = `在 Tailscale 控制台 DNS 页开启 HTTPS Certificates 后即可使用安全地址 https://${meta.tailscaleDnsName}`;
+    const res = { active: false, port: numPort, url: '', hint, checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = res;
+    return { enabled: false, url: '', hint };
+  }
+  const bin = meta.tailscaleBin || 'tailscale';
+  const execFn = useCustomExec ? options.execFileSync : execFileSync;
+  const targetUrl = `https://${meta.tailscaleDnsName}`;
+  try {
+    execFn(bin, ['serve', '--bg', String(numPort)], {
+      timeout: 3000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const okState = { active: true, port: numPort, url: targetUrl, hint: '', checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = okState;
+    return { enabled: true, url: targetUrl, hint: '' };
+  } catch {
+    const hint = `请在 Tailscale 控制台开启 HTTPS Certificates 或运行 tailscale serve --bg ${numPort}`;
+    const errState = { active: false, port: numPort, url: '', hint, checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = errState;
+    return { enabled: false, url: '', hint };
+  }
 }
 
 function encodeEndpointsParam(endpoints) {
@@ -6024,10 +6092,20 @@ function buildMobileAppHtml() {
 
     function detectKindFromOrigin(rawUrl) {
       const origin = String(rawUrl || '').toLowerCase();
-      if (origin.includes('.trycloudflare.com') || origin.startsWith('https://')) return 'tunnel';
       if (origin.includes('.ts.net') || origin.startsWith('http://100.') || origin.startsWith('https://100.')) return 'tailscale';
+      if (origin.includes('.trycloudflare.com') || origin.startsWith('https://')) return 'tunnel';
       if (origin.includes('.local:') || origin.endsWith('.local')) return 'bonjour';
       return 'lan';
+    }
+    function isTrustedSecureOrigin(rawUrl) {
+      const s = String(rawUrl || '').trim().toLowerCase();
+      if (!s) return false;
+      if (s.startsWith('https://')) return true;
+      return /^http:\\/\\/(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::\\d+)?(?:\\/|$)/i.test(s);
+    }
+    function shouldBlockInsecureDowngrade(curOrigin, targetUrl, standaloneFlag) {
+      if (isTrustedSecureOrigin(targetUrl)) return false;
+      return Boolean(standaloneFlag || isTrustedSecureOrigin(curOrigin));
     }
     function formatKindLabel(kind) {
       if (kind === 'tunnel') return 'Cloudflare 隧道';
@@ -6425,22 +6503,32 @@ function buildMobileAppHtml() {
           }
         }
 
-        const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+        const pageOrigin = String(location.origin || '').replace(/\\/+$/, '');
+        const curOrigin = String(apiBase || pageOrigin).replace(/\\/+$/, '');
         const curKind = detectKindFromOrigin(curOrigin);
-        const curRes = nextResults[curKind] || null;
+        const exactCurRes = Object.values(nextResults).find((r) => r && r.url === curOrigin) || null;
+        const kindRes = nextResults[curKind] || null;
+        const curRes = exactCurRes || (kindRes && kindRes.url === curOrigin ? kindRes : null);
+        const curReachable = Boolean((curRes && curRes.ok) || (!curRes && (isTrustedSecureOrigin(pageOrigin) || isStandalonePwa)));
+        const switchOrigin = isTrustedSecureOrigin(pageOrigin) ? pageOrigin : curOrigin;
+        const eligibleRanked = curReachable
+          ? ranked.filter((ep) => ep && !shouldBlockInsecureDowngrade(switchOrigin, ep.url, isStandalonePwa))
+          : ranked;
+        const switchBest = eligibleRanked[0] || null;
 
-        if (wantAutoSwitch && !manualLocked && !isAutoSwitched && best) {
-          const sameEntry = best.url === curOrigin || best.kind === curKind;
-          const significantlyFaster = !curRes || !curRes.ok
-            || (curKind === 'tunnel' && best.kind !== 'tunnel' && (!curRes.ms || best.ms < curRes.ms))
-            || (Number.isFinite(curRes.ms) && (curRes.ms - best.ms >= 15) && best.ms <= curRes.ms * 0.75);
-          if (!sameEntry && significantlyFaster) {
+        if (wantAutoSwitch && !manualLocked && !isAutoSwitched && switchBest) {
+          const sameEntry = switchBest.url === curOrigin || switchBest.kind === curKind;
+          const downgradeBlocked = Boolean(curReachable && shouldBlockInsecureDowngrade(switchOrigin, switchBest.url, isStandalonePwa));
+          const significantlyFaster = !curReachable
+            || (curRes && curRes.ok && curKind === 'tunnel' && switchBest.kind !== 'tunnel' && (!curRes.ms || switchBest.ms < curRes.ms))
+            || (curRes && curRes.ok && Number.isFinite(curRes.ms) && (curRes.ms - switchBest.ms >= 15) && switchBest.ms <= curRes.ms * 0.75);
+          if (!sameEntry && !downgradeBlocked && significantlyFaster) {
             if (activeSnapAbort) {
               try { activeSnapAbort.abort(); } catch {}
               activeSnapAbort = null;
             }
             clearTimeout(pollTimer);
-            const targetUrl = buildClientEntryUrl(best.url, { autoSwitched: true });
+            const targetUrl = buildClientEntryUrl(switchBest.url, { autoSwitched: true });
             navigateEntryUrl(targetUrl, true);
             return speedTestState;
           }
@@ -6507,9 +6595,15 @@ function buildMobileAppHtml() {
         renderModeSwitcherSheet();
 
         const order = { lan: 0, tailscale: 1, bonjour: 2, tunnel: 3, loopback: 9 };
+        const curOriginFail = String(location.origin || '').replace(/\\/+$/, '');
         const winners = mergedList
           .filter((r) => r && r.ok && Number.isFinite(r.ms))
-          .sort((a, b) => (a.ms - b.ms) || ((order[a.kind] ?? 5) - (order[b.kind] ?? 5)));
+          .sort((a, b) => {
+            const aBlock = shouldBlockInsecureDowngrade(curOriginFail, a.url, isStandalonePwa) ? 1 : 0;
+            const bBlock = shouldBlockInsecureDowngrade(curOriginFail, b.url, isStandalonePwa) ? 1 : 0;
+            if (aBlock !== bBlock) return aBlock - bBlock;
+            return (a.ms - b.ms) || ((order[a.kind] ?? 5) - (order[b.kind] ?? 5));
+          });
         const winner = winners[0] || null;
         if (!winner) return false;
 
@@ -6517,6 +6611,9 @@ function buildMobileAppHtml() {
           pairState.endpoints = winner.data.endpoints;
           if (Array.isArray(winner.data.hosts)) pairState.hosts = winner.data.hosts;
           saveStoredPair(pairState);
+        }
+        if (winner.url !== curOriginFail && shouldBlockInsecureDowngrade(curOriginFail, winner.url, isStandalonePwa)) {
+          return false;
         }
         if (location.protocol === 'https:' && winner.url.toLowerCase().startsWith('http://')) {
           navigateEntryUrl(buildClientEntryUrl(winner.url, { autoSwitched: true }), true);
@@ -11081,7 +11178,7 @@ function readJsonBody(req) {
   });
 }
 
-function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '') {
+function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '', allowedTailscaleDnsName = null) {
   if (!rawOrigin || typeof rawOrigin !== 'string') return false;
   try {
     const u = new URL(rawOrigin);
@@ -11095,7 +11192,14 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '') {
     const cleanHost = String(u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
     if (!cleanHost) return false;
     if (u.protocol === 'https:' && cleanHost.endsWith('.trycloudflare.com')) return true;
-    if (cleanHost === 'localhost' || cleanHost.endsWith('.local') || cleanHost.endsWith('.ts.net')) return true;
+    if (cleanHost === 'localhost' || cleanHost.endsWith('.local')) return true;
+    if (cleanHost.endsWith('.ts.net')) {
+      const detectedTsDns = allowedTailscaleDnsName !== null && allowedTailscaleDnsName !== undefined
+        ? String(allowedTailscaleDnsName)
+        : String(detectHostIdentityMeta().tailscaleDnsName || '');
+      const normalizedTsDns = detectedTsDns.replace(/\.$/, '').trim().toLowerCase();
+      return Boolean(normalizedTsDns && cleanHost === normalizedTsDns);
+    }
     return isAllowedPrivateAddress(cleanHost);
   } catch {
     return false;
@@ -12094,8 +12198,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
 
     const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
+    const allowedTsDns = options.allowedTailscaleDnsName !== undefined
+      ? options.allowedTailscaleDnsName
+      : detectHostIdentityMeta().tailscaleDnsName;
     const reqOrigin = String(req.headers.origin || '').trim();
-    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl)) {
+    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl, allowedTsDns)) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -13395,6 +13502,9 @@ function startMobileRemoteServer() {
       }
     }
     const latestCfg = loadOrCreateRemoteConfig();
+    if (!stopped && latestCfg.enabledChannels?.tailscale !== false && process.env.AG_REMOTE_SKIP_PROBES !== '1') {
+      try { ensureTailscaleServeHttps(config.port); } catch {}
+    }
     if (!stopped && latestCfg.tunnelEnabled) {
       void tunnelCtrl.start(latestCfg);
     }
@@ -13424,9 +13534,9 @@ function startMobileRemoteServer() {
   };
 }
 
-function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChannels = null) {
-  const { tailscale, lan, physicalLan } = enumerateLocalAddresses();
-  const meta = detectHostIdentityMeta();
+function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChannels = null, options = {}) {
+  const { tailscale, lan, physicalLan } = options.addresses || enumerateLocalAddresses();
+  const meta = options.hostMeta || detectHostIdentityMeta(options.execFileSync ? { execFileSync: options.execFileSync } : {});
   const primaryLan = physicalLan[0] || lan[0] || null;
   const secondaryLan = physicalLan[1] || null;
   const en = {
@@ -13435,6 +13545,17 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
     bonjour: enabledChannels?.bonjour !== false,
     tunnel: enabledChannels?.tunnel !== false
   };
+
+  let tsHttpsUrl = '';
+  let tsHttpsHint = '';
+  if (en.tailscale && meta.tailscaleDnsName) {
+    const tsServe = options.tailscaleServe || ensureTailscaleServeHttps(port, {
+      hostMeta: meta,
+      execFileSync: options.execFileSync
+    });
+    if (tsServe?.enabled && tsServe?.url) tsHttpsUrl = tsServe.url;
+    if (tsServe?.hint) tsHttpsHint = tsServe.hint;
+  }
 
   const endpoints = [];
   const seenHosts = new Set();
@@ -13453,8 +13574,19 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
 
   if (en.lan && primaryLan) addEp(primaryLan.address, 'lan', 0, primaryLan.iface);
   if (en.lan && secondaryLan) addEp(secondaryLan.address, 'lan', 50, secondaryLan.iface);
+  if (en.tailscale && tsHttpsUrl) {
+    const tsHttpsHost = meta.tailscaleDnsName;
+    seenHosts.add(`https://${tsHttpsHost}`);
+    endpoints.push({
+      url: tsHttpsUrl,
+      host: tsHttpsHost,
+      kind: 'tailscale',
+      priority: 90,
+      iface: tailscale[0]?.iface || 'utun0'
+    });
+  }
   if (en.tailscale && tailscale[0]) addEp(tailscale[0].address, 'tailscale', 100, tailscale[0].iface);
-  if (en.tailscale && tailscale.length > 0 && meta.tailscaleDnsName) {
+  if (en.tailscale && !tsHttpsUrl && tailscale.length > 0 && meta.tailscaleDnsName) {
     addEp(meta.tailscaleDnsName, 'tailscale', 150, tailscale[0]?.iface || 'utun0');
   }
   if (en.bonjour && meta.bonjourHost && primaryLan) {
@@ -13488,6 +13620,8 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
     deviceName: meta.deviceName,
     bonjourHost: meta.bonjourHost,
     tailscaleDnsName: meta.tailscaleDnsName,
+    tailscaleHttpsUrl: tsHttpsUrl,
+    tailscaleHttpsHint: tsHttpsHint,
     hosts: endpoints.map((ep) => ep.host),
     endpoints: endpoints.map(({ url, kind, priority }) => ({ url, kind, priority }))
   };
@@ -13614,11 +13748,16 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       label: 'Tailscale',
       labelEn: 'Tailscale',
       enabled: Boolean(enCh.tailscale),
-      detected: desc.tailscale.length > 0,
-      available: Boolean(enCh.tailscale && desc.tailscale.length > 0),
+      detected: desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl),
+      available: Boolean(enCh.tailscale && (desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl))),
       rawHost: tsDisplayHost,
-      displayHost: enCh.tailscale ? tsDisplayHost : (tsDisplayHost ? `已停用 · ${tsDisplayHost}` : '已停用'),
+      displayHost: enCh.tailscale
+        ? (desc.tailscaleHttpsUrl ? `HTTPS · ${desc.tailscaleDnsName}` : tsDisplayHost)
+        : (tsDisplayHost ? `已停用 · ${tsDisplayHost}` : '已停用'),
       entryHost: tsEntryHost,
+      entryBaseUrl: desc.tailscaleHttpsUrl || '',
+      httpsUrl: desc.tailscaleHttpsUrl || '',
+      httpsHint: desc.tailscaleHttpsHint || '',
       iface: desc.tailscale[0]?.iface || ''
     },
     {
@@ -13649,6 +13788,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     || channels.find((c) => c.available);
   const localBuilt = mkQrSafe('127.0.0.1');
   const localUrl = localBuilt.url;
+  const localhostUrl = mkQrSafe('localhost').url;
   const primary = pickedChannel
     ? { iface: pickedChannel.iface, address: pickedChannel.entryHost, kind: pickedChannel.key, url: pickedChannel.url, qrSvg: pickedChannel.qrSvg }
     : { iface: '', address: '', kind: 'none', url: '', qrSvg: '' };
@@ -13688,7 +13828,10 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     qrSvg: primary.qrSvg,
     tailscaleUrls,
     lanUrls,
-    localUrl
+    localUrl,
+    localhostUrl,
+    tailscaleHttpsUrl: desc.tailscaleHttpsUrl || '',
+    tailscaleHttpsHint: desc.tailscaleHttpsHint || ''
   };
 }
 
@@ -13835,5 +13978,9 @@ module.exports = {
   startMobileRemoteServer,
   resolveEmptyCloudflaredConfigPath,
   buildRemoteInfo,
+  detectHostIdentityMeta,
+  ensureTailscaleServeHttps,
+  collectFusedEndpointDescriptor,
+  isAllowedPrivateOrigin,
   printRemoteCli
 };
