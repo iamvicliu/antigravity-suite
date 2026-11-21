@@ -3441,7 +3441,8 @@ function extractTrajectoryUserAttachments(ui) {
   const attachments = [];
   const seen = new Set();
   const pushAtt = (att) => {
-    const key = `${att.kind}|${att.path || att.uri || (att.inlineUrl ? att.inlineUrl.slice(0, 64) : att.name)}`;
+    const inlineSig = att.inlineUrl ? crypto.createHash('sha1').update(att.inlineUrl).digest('hex') : '';
+    const key = `${att.kind}|${att.path || att.uri || inlineSig || att.name}`;
     if (seen.has(key)) return;
     seen.add(key);
     attachments.push(att);

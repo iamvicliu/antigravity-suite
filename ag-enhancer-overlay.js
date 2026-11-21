@@ -7529,9 +7529,8 @@
           if (!src) continue;
           const alt = String(imgEl.getAttribute?.('alt') || imgEl.alt || '').trim() || 'image.png';
           if (/^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(src) && src.length <= 512 * 1024) {
-            const key = src.slice(0, 80);
-            if (!seenAtt.has(key)) {
-              seenAtt.add(key);
+            if (!seenAtt.has(src)) {
+              seenAtt.add(src);
               domAtts.push({ kind: 'image', name: alt, inlineUrl: src });
             }
           } else if (/^file:\/\//i.test(src)) {
