@@ -7521,11 +7521,48 @@
       const testId = node.getAttribute('data-testid');
       if (testId === 'user-message') {
         const contentNode = node.querySelector('[data-testid="user-message-content"]') || node;
+        const domAtts = [];
+        const seenAtt = new Set();
+        const imgEls = Array.from(node.querySelectorAll('img'));
+        for (const imgEl of imgEls) {
+          const src = String(imgEl.getAttribute?.('src') || imgEl.src || '').trim();
+          if (!src) continue;
+          const alt = String(imgEl.getAttribute?.('alt') || imgEl.alt || '').trim() || 'image.png';
+          if (/^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(src) && src.length <= 512 * 1024) {
+            const key = src.slice(0, 80);
+            if (!seenAtt.has(key)) {
+              seenAtt.add(key);
+              domAtts.push({ kind: 'image', name: alt, inlineUrl: src });
+            }
+          } else if (/^file:\/\//i.test(src)) {
+            let localPath = src.replace(/^file:\/\//i, '');
+            try { localPath = decodeURIComponent(localPath); } catch {}
+            if (localPath && !seenAtt.has(localPath)) {
+              seenAtt.add(localPath);
+              domAtts.push({ kind: 'image', name: alt, path: localPath, uri: src });
+            }
+          }
+        }
         const userBounded = collectBoundedNodeText([contentNode], MAX_DOM_MSG_CHARS + 512, 8000);
-        const text = capText(cleanUserMessageText(userBounded.text), MAX_DOM_MSG_CHARS);
-        if (!text) continue;
+        let rawUserText = cleanUserMessageText(userBounded.text);
+        if (domAtts.length && rawUserText) {
+          const attNames = new Set(domAtts.map((a) => String(a.name || '').trim().toLowerCase()).filter(Boolean));
+          rawUserText = rawUserText
+            .split('\n')
+            .filter((line) => {
+              const t = line.trim().toLowerCase();
+              if (!t) return true;
+              if (attNames.has(t)) return false;
+              if (/^(?:image|screenshot|clipboard|paste)(?:[-_\s]?\d+)?\.(?:png|jpe?g|webp|gif)$/i.test(t)) return false;
+              return true;
+            })
+            .join('\n')
+            .trim();
+        }
+        const text = capText(rawUserText, MAX_DOM_MSG_CHARS);
+        if (!text && !domAtts.length) continue;
         flushPendingDomThoughts(i);
-        out.push({ id: `u-${i}`, role: 'user', text });
+        out.push({ id: `u-${i}`, role: 'user', text, ...(domAtts.length ? { attachments: domAtts } : {}) });
         continue;
       }
 
@@ -8433,9 +8470,35 @@
           (Array.isArray(u.items) ? u.items.map((item) => item?.text || '').filter(Boolean).join('\n') : '') ||
           ''
         ).trim();
-        if (text) {
+        const atts = [];
+        const collectRpcMedia = (arr, forceImg) => {
+          if (!Array.isArray(arr)) return;
+          for (const m of arr) {
+            if (!m || typeof m !== 'object') continue;
+            const rawUri = String(m.uri || m.fileUri || m.path || m.absoluteUri || '').trim();
+            let localPath = rawUri.startsWith('file://') ? rawUri.replace(/^file:\/\//i, '') : (rawUri.startsWith('/') ? rawUri : '');
+            if (localPath) { try { localPath = decodeURIComponent(localPath); } catch {} }
+            const mime = String(m.mimeType || m.mime_type || 'image/png').trim().toLowerCase();
+            const rawB64 = String(m.base64Data || m.base64_data || m.inlineData || m.inline_data || m.thumbnail || m.data || '').trim();
+            let inlineUrl = '';
+            if (rawB64 && rawB64.length <= 512 * 1024 && /^image\/(?:png|jpeg|jpg|webp|gif)$/i.test(mime)) {
+              inlineUrl = /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,/i.test(rawB64) ? rawB64 : `data:${mime};base64,${rawB64.replace(/\s+/g, '')}`;
+            }
+            const isImg = forceImg || Boolean(inlineUrl) || /^image\//i.test(mime) || /\.(?:png|jpe?g|webp|gif)$/i.test(localPath);
+            if (!localPath && !inlineUrl) continue;
+            atts.push({
+              kind: isImg ? 'image' : 'file',
+              name: String(m.displayName || m.name || (localPath ? localPath.split('/').pop() : 'image.png')),
+              ...(localPath ? { path: localPath } : {}),
+              ...(inlineUrl ? { inlineUrl } : {})
+            });
+          }
+        };
+        collectRpcMedia(u.media, false);
+        collectRpcMedia(u.images, true);
+        if (text || atts.length) {
           flushPendingThoughts(i);
-          out.push({ id: `rpc-u-${i}`, role: 'user', text: text.slice(0, 4000), html: '' });
+          out.push({ id: `rpc-u-${i}`, role: 'user', text: text.slice(0, 4000), html: '', ...(atts.length ? { attachments: atts } : {}) });
         }
       } else if (s.plannerResponse) {
         const pr = s.plannerResponse;
