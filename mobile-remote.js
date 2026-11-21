@@ -7480,13 +7480,10 @@ function buildMobileAppHtml() {
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
-                  const domOnlyTexts = (!isDomQueuedList && hasDomQueued)
-                    ? queuedList.filter((q) => q && q.source === 'dom' && q.text).map((q) => String(q.text))
-                    : [];
                   const res = await apiAction({
                     action: 'send-queued-messages',
                     conversationId: String(snap.activeConversationId || snap.sessionId || ''),
-                    ...(isDomQueuedList ? { source: 'dom', domIndex: 0 } : (hasDomQueued ? { hasDomQueued: true, domOnlyTexts } : {}))
+                    ...(isDomQueuedList ? { source: 'dom', sendAll: true } : (hasDomQueued ? { hasDomQueued: true } : {}))
                   });
                   if (res?.ok) showToast('已立即发送排队消息');
                   else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
@@ -11866,6 +11863,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               targetId: effectiveTargetId || undefined,
               conversationId: cascadeId,
               domIndex: Number.isInteger(Number(payload?.domIndex)) ? Number(payload.domIndex) : 0,
+              sendAll: actionName === 'send-queued-messages' ? (payload?.sendAll !== false) : undefined,
               text: String(payload?.text || '')
             });
             if (!domRes?.ok) {
@@ -11885,15 +11883,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
           } else {
             rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
-            if (payload?.hasDomQueued === true) {
-              const onlyTexts = Array.isArray(payload?.domOnlyTexts) ? payload.domOnlyTexts : [];
+            // SendAllQueuedMessages 成功即已由后端清空整条会话队列，严禁再补点桌面 DOM 按钮以免桌面延迟刷新导致重复发送；
+            // 仅当 RPC 失败或超时且存在 DOM 排队项时，才降级到桌面 send-queued-dom 全量发送（含纯附件消息）
+            if ((rpcRes === null || rpcRes === false) && payload?.hasDomQueued === true) {
               const domRes = await performAction({
                 action: 'send-queued-dom',
                 clientId,
                 targetId: effectiveTargetId || undefined,
                 conversationId: cascadeId,
-                domIndex: 0,
-                onlyTexts
+                sendAll: true
               }).catch(() => null);
               if (domRes?.ok) usedDomFallback = true;
             }

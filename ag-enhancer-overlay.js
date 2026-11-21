@@ -9176,27 +9176,23 @@
 
     if (action === 'send-queued-dom') {
       const entries = findQueuedMessagesDomEntries();
-      const onlyTexts = Array.isArray(payload?.onlyTexts)
-        ? payload.onlyTexts.map((t) => String(t || '').replace(/\s+/g, ' ').trim()).filter(Boolean)
-        : null;
-      if (!entries.length) {
-        // 混合队列在 RPC SendAllQueuedMessages 之后兜底补发时，若桌面队列已清空说明 RPC 已全部发送完成
-        if (onlyTexts) return { ok: true, source: 'dom', skipped: true };
-        return { ok: false, error: '当前没有排队中的消息' };
-      }
-      if (onlyTexts) {
-        const wanted = new Set(onlyTexts);
-        const target = entries.find((e) => wanted.has(String(e.text || '').replace(/\s+/g, ' ').trim()));
-        if (!target) return { ok: true, source: 'dom', skipped: true };
-        if (!target.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
-        target.sendBtn.click();
-        return { ok: true, source: 'dom', sentText: target.text };
+      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      if (payload?.sendAll === true) {
+        let sentCount = 0;
+        for (const entry of entries) {
+          if (entry?.sendBtn) {
+            entry.sendBtn.click();
+            sentCount += 1;
+          }
+        }
+        if (!sentCount) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+        return { ok: true, source: 'dom', sentCount };
       }
       const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
       const target = entries[reqIdx] || entries[0];
       if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
       target.sendBtn.click();
-      return { ok: true, source: 'dom' };
+      return { ok: true, source: 'dom', sentCount: 1 };
     }
 
     if (action === 'delete-queued-dom') {
