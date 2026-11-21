@@ -15309,6 +15309,7 @@ test('彻底根治 iOS 主屏幕独立应用底部 59pt 空白死区：移除 bl
   // 3a. 旧版 black-translucent 主屏幕图标（iPhone Pro 393x852，视口短切为 793，safeTop=59）：自动补偿至 852px
   const legacyRes = runViewportSim({ standalone: true, screenW: 393, screenH: 852, innerW: 393, innerH: 793, vvH: 793, safeTop: 59, focusInput: false });
   assert.equal(legacyRes.docStyles['--app-h'], '852px', '旧版 black-translucent WebClip 应将 --app-h 补偿至 852px 填平 59pt 死区');
+  assert.equal(legacyRes.docStyles['--modal-h'], '852px', '旧版 black-translucent WebClip 应同步将 --modal-h 补偿至 852px，避免侧边抽屉与弹窗底部短缺 59pt');
   assert.equal(legacyRes.bodyStyle.height, '852px');
   assert.equal(legacyRes.htmlStyle.height, '852px');
 
