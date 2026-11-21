@@ -13177,6 +13177,32 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     assert.equal(mixedMsgSnap.queuedMessages[1].source, 'dom');
     assert.equal(mixedMsgSnap.queuedMessages[1].domIndex, 1);
 
+    // 队列多重集 + 附件数跨源去重：保留同源重复文本与文本相同但附件不同的消息
+    const dupAndImgSnap = await histMgr.enrichMessages({
+      sessionId: 'ffff3333-4444-5555-6666-777777777777',
+      messages: [],
+      queuedMessages: [
+        { domIndex: 0, stepIndex: -1, source: 'dom', text: '继续', images: [] },
+        { domIndex: 1, stepIndex: -1, source: 'dom', text: '继续', images: [] },
+        { domIndex: 2, stepIndex: -1, source: 'dom', text: '继续', images: [{ src: 'data:image/png;base64,AA==' }] }
+      ]
+    }, {
+      localApiConnect: async () => ({
+        call: async () => ({
+          trajectory: {
+            steps: [
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { userResponse: '继续' } }
+            ]
+          }
+        })
+      })
+    });
+    assert.equal(dupAndImgSnap.queuedMessages.length, 3, '同源重复文本与文本相同但附件数不同的排队消息必须全部保留');
+    assert.equal(dupAndImgSnap.queuedMessages[0].stepIndex, 0);
+    assert.equal(dupAndImgSnap.queuedMessages[1].domIndex, 1);
+    assert.equal(dupAndImgSnap.queuedMessages[2].domIndex, 2);
+    assert.equal(dupAndImgSnap.queuedMessages[2].images.length, 1);
+
     // 同会话 getMobileSnapshotAsync 保留 pendingPrompts 与 queuedMessages
     const sameConvSnap = await enh.getMobileSnapshotAsync({ conversationId: 'dddd1111-2222-3333-4444-555555555555' });
     assert.equal(sameConvSnap.pendingPrompts.length, 1, '同会话快照必须保留 pendingPrompts');
@@ -13188,6 +13214,10 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     const sendQRes = await enh.performMobileAction({ action: 'send-queued-dom', domIndex: 0 });
     assert.equal(sendQRes.ok, true);
     assert.ok(clickedLog.includes('queue:send'));
+    // 混合队列 RPC 补发时 onlyTexts 不命中则跳过，不重复发送
+    const sendSkipRes = await enh.performMobileAction({ action: 'send-queued-dom', onlyTexts: ['已由RPC发出的消息'] });
+    assert.equal(sendSkipRes.ok, true);
+    assert.equal(sendSkipRes.skipped, true, 'onlyTexts 未命中桌面残余项时应安全跳过避免重复发送');
 
     // 单个附件移除仅删目标项 b.png，不误删 a.png
     const rmOneRes = await enh.performMobileAction({ action: 'remove-uploaded-attachment', name: 'b.png', index: 1 });
@@ -13212,6 +13242,56 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     assert.equal(rmDupRes.ok, true);
     assert.ok(clickedLog.includes('rm:a.png#2'), '同名附件按 index 删除应精确命中第 2 个');
     assert.ok(!clickedLog.includes('rm:a.png'), '同名附件删除第 2 个时不得误删第 1 个');
+
+    // fail-closed 验证：目标不存在、子串冲突（png 不匹配 a.png）或索引失效时返回失败，绝不误删最后一个附件
+    const clickCountBeforeFail = clickedLog.length;
+    const rmSubRes = await enh.performMobileAction({ action: 'remove-uploaded-attachment', name: 'png', index: 0 });
+    assert.equal(rmSubRes.ok, false, '子串名称不得误匹配真实附件');
+    const rmGhostRes = await enh.performMobileAction({ action: 'remove-uploaded-attachment', name: 'ghost.png', index: 99 });
+    assert.equal(rmGhostRes.ok, false, '不存在的目标附件必须返回失败');
+    const rmBadIdxRes = await enh.performMobileAction({ action: 'remove-uploaded-attachment', name: '', index: 99 });
+    assert.equal(rmBadIdxRes.ok, false, '无名称且索引越界时必须返回失败');
+    assert.equal(clickedLog.length, clickCountBeforeFail, '匹配失败或索引越界时绝不得误删任何已有附件');
+
+    // 前端单删失败回滚验证：桌面返回 ok:false 时必须恢复已乐观隐藏的附件预览
+    const stripStart = html.indexOf('function renderAttachHintStrip()');
+    const stripEnd = html.indexOf('async function uploadImageFiles(rawFiles)');
+    assert.ok(stripStart > 0 && stripEnd > stripStart);
+    const hintMock = {
+      hidden: true,
+      innerHTML: '',
+      _rmBtns: [],
+      querySelectorAll: (sel) => (sel === '.attach-item-rm' ? hintMock._rmBtns : []),
+      querySelector: () => null
+    };
+    const toasts = [];
+    const stripSandbox = {
+      $: (id) => (id === 'attach-hint' ? hintMock : null),
+      esc: (s) => String(s || ''),
+      formatFileSizeShort: (n) => `${n}B`,
+      openMediaLightbox: () => {},
+      syncSendButtonUI: () => {},
+      showToast: (m) => toasts.push(m),
+      uploadedAttachments: [
+        { name: 'a.png', size: 100, isImage: true, previewUrl: 'data:image/png;base64,AA==' },
+        { name: 'b.png', size: 200, isImage: false, previewUrl: '' }
+      ],
+      uploadedNames: ['a.png', 'b.png'],
+      apiAction: async () => ({ ok: false, error: '桌面端未找到匹配附件' }),
+      Math, Number, String, Array, Promise
+    };
+    vm.runInNewContext(
+      html.slice(stripStart, stripEnd) + '\nglobalThis.__renderStrip = renderAttachHintStrip; globalThis.__getAtts = () => uploadedAttachments.map((x) => x.name);',
+      stripSandbox
+    );
+    const rmBtn0 = { dataset: { rmIdx: '0' }, onclick: null };
+    hintMock._rmBtns = [rmBtn0];
+    stripSandbox.__renderStrip();
+    assert.equal(typeof rmBtn0.onclick, 'function');
+    rmBtn0.onclick({ stopPropagation: () => {} });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(Array.from(stripSandbox.__getAtts()), ['a.png', 'b.png'], '桌面移除失败时前端必须回滚恢复原附件列表');
+    assert.ok(toasts.some((t) => String(t).includes('桌面端未找到匹配附件')), '失败时应通过 Toast 提示用户');
 
     // 未读蓝点不触发 domBusy
     const sbItem = snap.conversations.find((c) => c.id === 'eeee1111-2222-3333-4444-555555555555');
