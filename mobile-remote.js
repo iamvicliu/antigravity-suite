@@ -11802,21 +11802,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         try { realRoots.push(fs.realpathSync(String(r))); } catch {}
       }
       const resolveRealPathWithAncestors = (absTarget) => {
-        const normalized = path.resolve(absTarget);
         try {
-          return fs.realpathSync(normalized);
+          return resolveRealPathWithFallback(absTarget);
         } catch {
-          const tail = [];
-          let cur = normalized;
-          while (true) {
-            const parent = path.dirname(cur);
-            if (parent === cur) return normalized;
-            tail.unshift(path.basename(cur));
-            cur = parent;
-            try {
-              return path.join(fs.realpathSync(cur), ...tail);
-            } catch {}
-          }
+          return '';
         }
       };
       const isSafeResolvedTarget = (resolved) => {

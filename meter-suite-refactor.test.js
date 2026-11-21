@@ -14261,6 +14261,9 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
     fs.writeFileSync(path.join(geminiCfgDir, 'oauth.json'), '{}');
     const validBrainFile = path.join(brainDir, 'plan.md');
     fs.writeFileSync(validBrainFile, '# ok');
+    const danglingLink = path.join(tmpSecRoot, 'dangling-out-link');
+    fs.symlinkSync('/nonexistent-outside-root-xyz-34', danglingLink);
+    const danglingAbsTarget = path.join(danglingLink, 'ghost.txt');
 
     const treeBlocked = remoteMod.listSafeProjectTree(onePwdDir, { allowedRoots: [tmpSecRoot] });
     assert.equal(treeBlocked.ok, false);
@@ -14301,6 +14304,8 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
             return {
               fileDiffs: [
                 { path: nestedTrickFile, unifiedDiff: '+NESTED_TRICK_SECRET' },
+                { path: danglingAbsTarget, unifiedDiff: '+DANGLING_ABS_LEAK' },
+                { path: 'dangling-out-link/ghost.txt', unifiedDiff: '+DANGLING_REL_LEAK' },
                 { path: validBrainFile, unifiedDiff: '+# ok' }
               ]
             };
@@ -14309,6 +14314,8 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
             return {
               artifacts: [
                 { title: 'vault.txt', path: nestedTrickFile, content: 'NESTED_TRICK_ART' },
+                { title: 'ghost-abs.txt', path: danglingAbsTarget, content: 'DANGLING_ABS_ART' },
+                { title: 'ghost-rel.txt', path: 'dangling-out-link/ghost.txt', content: 'DANGLING_REL_ART' },
                 { title: 'plan.md', path: validBrainFile, content: '# ok' }
               ]
             };
@@ -14329,6 +14336,9 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
     const sessJson = JSON.parse(Buffer.concat(sessRes.chunks).toString('utf8'));
     const allPaths = [...(sessJson.diffs || []), ...(sessJson.artifacts || [])].map((x) => x.path || '');
     assert.ok(!allPaths.some((p) => p.includes('1Password')), '/api/session-files 必须过滤 1Password/.gemini/antigravity/brain/ 嵌套绕过');
+    assert.ok(!allPaths.some((p) => p.includes('dangling-out-link') || p.includes('ghost.txt')), '/api/session-files 必须过滤绝对与相对路径下的悬空 Symlink diff 与 artifact');
+    assert.equal(sessJson.diffs.length, 1);
+    assert.equal(sessJson.artifacts.length, 1);
     assert.ok(allPaths.some((p) => p.endsWith('plan.md')), '/api/session-files 应保留可信根下合法 brain 生成物');
 
     const brainAllowed = remoteMod.readSafeTextFilePreview(validBrainFile, { allowedRoots: [tmpSecRoot] });
