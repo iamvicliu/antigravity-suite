@@ -6900,7 +6900,10 @@
 
     const tag = node.tagName;
     if (MD_SKIP_TAGS.has(tag)) return '';
-    if (depth > 24) return emitEscapedText(node.textContent);
+    if (depth > 24) {
+      if (budget) budget.exceeded = true;
+      return '';
+    }
 
     const cls = typeof node.className === 'string' ? node.className : '';
     if (cls.includes('katex-mathml') || (cls.includes('pointer-events-none') && cls.includes('sticky'))) {
@@ -6964,6 +6967,78 @@
     return budget.exceeded ? '' : out;
   }
 
+  function collectBoundedNodeText(roots, maxChars = 200000, maxNodes = 8000, maxDepth = 24) {
+    const list = Array.isArray(roots) ? roots : (roots ? [roots] : []);
+    if (!list.length) return { text: '', truncated: false, nodesVisited: 0 };
+    const budget = { chars: 0, maxChars, nodes: 0, maxNodes, truncated: false };
+    const rootParts = [];
+
+    const walk = (node, depth, chunks) => {
+      if (!node || budget.truncated) return;
+      budget.nodes += 1;
+      if (budget.nodes > budget.maxNodes) {
+        budget.truncated = true;
+        return;
+      }
+      const nType = node.nodeType;
+      if (nType === 3) {
+        const val = String(node.nodeValue || '');
+        if (!val) return;
+        const rem = budget.maxChars - budget.chars;
+        if (val.length > rem) {
+          if (rem > 0) chunks.push(val.slice(0, rem));
+          budget.chars = budget.maxChars;
+          budget.truncated = true;
+          return;
+        }
+        chunks.push(val);
+        budget.chars += val.length;
+        return;
+      }
+      if (nType !== 1) return;
+      if (MD_SKIP_TAGS.has(node.tagName)) return;
+      if (depth > maxDepth) {
+        budget.truncated = true;
+        return;
+      }
+      const children = node.childNodes;
+      if (children && children.length > 0) {
+        for (let i = 0; i < children.length; i++) {
+          if (budget.truncated) return;
+          walk(children[i], depth + 1, chunks);
+        }
+        return;
+      }
+      // 仅对无 childNodes 的极简桩节点兜底，仍受字符预算硬截断
+      const leafText = String(node.textContent || node.innerText || '');
+      if (!leafText) return;
+      const rem = budget.maxChars - budget.chars;
+      if (leafText.length > rem) {
+        if (rem > 0) chunks.push(leafText.slice(0, rem));
+        budget.chars = budget.maxChars;
+        budget.truncated = true;
+        return;
+      }
+      chunks.push(leafText);
+      budget.chars += leafText.length;
+    };
+
+    for (let i = 0; i < list.length; i++) {
+      if (budget.truncated) break;
+      const rootChunks = [];
+      walk(list[i], 0, rootChunks);
+      const piece = rootChunks.join('').trim();
+      if (piece) rootParts.push(piece);
+    }
+
+    const joined = rootParts.join('\n\n').trim();
+    return {
+      text: budget.truncated ? `${joined.slice(0, maxChars)}…` : joined,
+      truncated: budget.truncated,
+      nodesVisited: budget.nodes
+    };
+  }
+
   function collectRecentMessages(limit = 60) {
     const viewport = getScrollViewport() || document.querySelector('main') || document.body;
     if (!viewport) return [];
@@ -6980,8 +7055,8 @@
       const testId = node.getAttribute('data-testid');
       if (testId === 'user-message') {
         const contentNode = node.querySelector('[data-testid="user-message-content"]') || node;
-        const rawUserText = String(contentNode.textContent || contentNode.innerText || '');
-        const text = capText(cleanUserMessageText(rawUserText.slice(0, MAX_DOM_MSG_CHARS + 512)), MAX_DOM_MSG_CHARS);
+        const userBounded = collectBoundedNodeText([contentNode], MAX_DOM_MSG_CHARS + 512, 8000);
+        const text = capText(cleanUserMessageText(userBounded.text), MAX_DOM_MSG_CHARS);
         if (!text) continue;
         out.push({ id: `u-${i}`, role: 'user', text });
         continue;
@@ -7003,13 +7078,14 @@
         !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
         !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
       ));
-      const rawMdReply = mdRoots.map((m) => (m.textContent || m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
-      const overTextCap = rawMdReply.length > MAX_DOM_MSG_CHARS;
-      let replyText = capText(rawMdReply, MAX_DOM_MSG_CHARS);
-      // 超过热路径字符上限时直接跳过 HTML 序列化；遍历中亦受字符与节点双预算早停（完整长文由服务端轨迹通道渲染）
+      const mdBounded = collectBoundedNodeText(mdRoots, MAX_DOM_MSG_CHARS, 8000);
+      const overTextCap = mdBounded.truncated;
+      let replyText = mdBounded.text;
+      // 文本提取阶段已受字符与节点双预算早停；超限时直接跳过 HTML 序列化（完整长文由服务端轨迹通道渲染）
       const replyHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots, MAX_DOM_HTML_CHARS);
       if (!replyText) {
-        const cloneText = capText((node.innerText || '')
+        const fallbackBounded = collectBoundedNodeText([node], MAX_DOM_MSG_CHARS, 4000);
+        const cloneText = capText(fallbackBounded.text
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
           .replace(/^Worked\s+for\s+\S+(?:\s+in\s+this\s+step)?\s*\n*/i, '')
           .trim(), MAX_DOM_MSG_CHARS);
@@ -8166,15 +8242,26 @@
       const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
       const targetProjectId = String(matchedConv?.projectId || matchedGroup?.id || '').trim();
       const targetProjectName = String(matchedConv?.projectName || matchedGroup?.name || '').trim();
+      const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || `会话 ${reqConvId.slice(0, 8)}`;
       return {
         ...baseSnap,
         sessionId: reqConvId,
         activeConversationId: reqConvId,
         desktopSessionId: baseSnap.sessionId || '',
         isolated: true,
+        isolatedError: true,
+        historySource: 'isolated_error',
         isNewConversation: false,
         currentProjectId: targetProjectId,
         currentProjectName: targetProjectName,
+        title,
+        busy: false,
+        pendingApprovals: [],
+        suggestions: [],
+        messages: [],
+        contextBadge: '读取失败',
+        pulseText: '',
+        contextPanel: null,
         conversations: cloned.conversations,
         projectGroups: cloned.projectGroups,
         isolationWarning: err?.message || '无法独立读取该会话'
