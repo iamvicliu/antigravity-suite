@@ -14495,8 +14495,15 @@ test('彻底根治 iOS 主屏幕独立应用底部 59pt 空白死区：移除 bl
     assert.equal(bodyStyle.transform, 'translateY(12px)');
     assert.equal(appClasses.has('kb-open'), true);
 
-    // 阶段 3：收起键盘并失焦，恢复 852px 补偿与清空 transform
+    // 阶段 2b：主输入框已失焦但软键盘仍在延迟收起中（vvH 仍为 480）：不得提前跳回 793/852，保持可见视口 480px
     docMock.activeElement = null;
+    ctx.__syncVp();
+    assert.equal(docStyles['--app-h'], '480px', '失焦后键盘尚未收起前必须保持可见视口高度 480px');
+    assert.equal(bodyStyle.height, '480px');
+    assert.equal(htmlStyle.height, '');
+    assert.equal(appClasses.has('kb-open'), true);
+
+    // 阶段 3：键盘实际收起完毕（vvH 回到 793），恢复 852px 补偿与清空 transform
     winMock.visualViewport.height = 793;
     winMock.visualViewport.offsetTop = 0;
     ctx.__syncVp();
