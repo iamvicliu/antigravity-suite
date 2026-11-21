@@ -12917,4 +12917,65 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   assert.equal(bodyStyle.bottom, '0');
   assert.equal(bodyStyle.height, '', '独立 PWA 键盘收起后必须清除内联 height 恢复满屏贴底');
   assert.equal(docStyles['--app-h'], '844px');
+
+  // 3e. 独立 PWA 无键盘但 visualViewport.height < window.innerHeight（如 810 < 844）：仍取满屏 844px 贴底
+  vvState.height = 810;
+  pwaSandbox.__syncVp();
+  assert.equal(appClasses.has('kb-open'), false);
+  assert.equal(bodyStyle.bottom, '0');
+  assert.equal(bodyStyle.height, '');
+  assert.equal(docStyles['--app-h'], '844px', '独立 PWA 无键盘且 vv.height < innerHeight 时 --app-h 仍应取满屏 844px');
+  assert.equal(docStyles['--modal-h'], '844px');
+
+  // 4. 普通浏览器模式（isStandalonePwa = false）下键盘弹出、收起及弹窗锁高行为验证
+  const brBodyClasses = new Set();
+  const brAppClasses = new Set();
+  const brDocStyles = {};
+  const brBodyStyle = { height: '', bottom: '', transform: '' };
+  const brVv = { height: 740, offsetTop: 0 };
+  const brModal = { hidden: true, contains: (el) => el === modalInputEl, querySelector: () => null };
+  const brDoc = {
+    activeElement: null,
+    documentElement: {
+      clientHeight: 740,
+      style: { setProperty: (k, v) => { brDocStyles[k] = v; }, getPropertyValue: (k) => brDocStyles[k] || '' }
+    },
+    body: {
+      style: brBodyStyle,
+      classList: { toggle: (c, v) => (v ? brBodyClasses.add(c) : brBodyClasses.delete(c)), contains: (c) => brBodyClasses.has(c) }
+    },
+    querySelector: (sel) => (sel === '.app' ? { classList: { add: (c) => brAppClasses.add(c), remove: (c) => brAppClasses.delete(c), contains: (c) => brAppClasses.has(c) } } : null)
+  };
+  const brSandbox = {
+    window: { innerWidth: 390, innerHeight: 740, navigator: { standalone: false }, visualViewport: brVv, matchMedia: () => ({ matches: false }) },
+    document: brDoc,
+    $: (id) => (id === 'input' ? inputEl : (id === 'proj-modal-backdrop' ? brModal : null)),
+    msgEl: { scrollTop: 0, scrollHeight: 1200 },
+    stickBottom: true,
+    Math, Date, Number, Boolean, String
+  };
+  vm.runInNewContext(pwaCode, brSandbox);
+  assert.equal(brBodyClasses.has('is-standalone'), false);
+  brSandbox.__syncVp();
+  assert.equal(brBodyStyle.bottom, '0');
+  assert.equal(brBodyStyle.height, '100%');
+  assert.equal(brDocStyles['--modal-h'], '740px');
+  brModal.hidden = false;
+  brDoc.activeElement = modalInputEl;
+  brVv.height = 460;
+  brSandbox.__syncVp();
+  assert.equal(brDocStyles['--modal-h'], '740px', '普通浏览器弹窗弹键盘时 --modal-h 必须锁定 740px');
+  assert.equal(brAppClasses.has('kb-open'), false);
+  brModal.hidden = true;
+  brDoc.activeElement = inputEl;
+  brVv.height = 460;
+  brSandbox.__syncVp();
+  assert.equal(brAppClasses.has('kb-open'), true);
+  assert.equal(brBodyStyle.height, '460px');
+  brDoc.activeElement = null;
+  brVv.height = 740;
+  brSandbox.__syncVp();
+  assert.equal(brAppClasses.has('kb-open'), false);
+  assert.equal(brBodyStyle.bottom, '0');
+  assert.equal(brBodyStyle.height, '100%');
 });
