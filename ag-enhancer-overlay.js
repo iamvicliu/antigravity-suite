@@ -7199,21 +7199,19 @@
       .trim();
 
     const entries = [];
-    const seenTexts = new Set();
+    const seenRowEls = new Set();
     const rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'));
     const fallbackRows = rowCandidates.length ? rowCandidates : Array.from(cardRoot.children).slice(1);
 
     const inspectRow = (rowEl) => {
-      if (!rowEl || isExcludedSuiteOrNavNode(rowEl)) return;
+      if (!rowEl || seenRowEls.has(rowEl) || isExcludedSuiteOrNavNode(rowEl)) return;
+      seenRowEls.add(rowEl);
       const rawTxt = stripHeaderNoise(rowEl.textContent || '');
       const imgs = Array.from(rowEl.querySelectorAll('img')).map((img) => ({
         src: String(img.getAttribute?.('src') || img.src || '').trim(),
         alt: String(img.getAttribute?.('alt') || '').trim()
       })).filter((im) => im.src && !im.src.startsWith('data:image/svg'));
       if (!rawTxt && !imgs.length) return;
-      const key = `${rawTxt}|${imgs.length}`;
-      if (seenTexts.has(key)) return;
-      seenTexts.add(key);
       const btns = Array.from(rowEl.querySelectorAll('button')).filter((b) => !isExcludedSuiteOrNavNode(b));
       let sendBtn = btns.find((b) => /send|now|immediate|发送/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
       let deleteBtn = btns.find((b) => /delete|remove|trash|cancel|删除|撤回|移除/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
@@ -9121,7 +9119,11 @@
         if (!container) return false;
         return Boolean(container.querySelector('img') || /\.(?:png|jpe?g|webp|gif|pdf|txt|md|json|csv|zip|docx?|xlsx?|js|ts|py)/i.test(container.textContent || '') || container.getAttribute?.('data-testid')?.match(/attach|file|image|media/i));
       });
-      if (!candidates.length) return { ok: true, removed: 0 };
+      if (!candidates.length) {
+        return clearAll
+          ? { ok: true, removed: 0 }
+          : { ok: false, removed: 0, error: '桌面端当前未找到可移除的附件' };
+      }
       if (clearAll) {
         let removed = 0;
         for (let i = candidates.length - 1; i >= 0; i--) {
@@ -9129,26 +9131,41 @@
         }
         return { ok: true, removed };
       }
+      const normName = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const matchesBtnName = (b) => {
         if (!reqName) return true;
         const box = b.parentElement;
-        const imgAlt = String(box?.querySelector?.('img')?.getAttribute?.('alt') || '').toLowerCase();
-        const boxTxt = String(box?.textContent || '').toLowerCase();
-        const aria = String(b.getAttribute?.('aria-label') || '').toLowerCase();
-        return imgAlt.includes(reqName) || boxTxt.includes(reqName) || aria.includes(reqName);
+        const imgAlt = normName(box?.querySelector?.('img')?.getAttribute?.('alt'));
+        if (imgAlt && imgAlt === reqName) return true;
+        const aria = normName(b.getAttribute?.('aria-label'))
+          .replace(/^(?:remove|delete|close|clear|移除|删除|取消附件)\s*[:：-]?\s*/i, '')
+          .trim();
+        if (aria && aria === reqName) return true;
+        const boxTxt = normName(box?.textContent)
+          .replace(/[×✕]\s*$/g, '')
+          .trim();
+        if (boxTxt && boxTxt === reqName) return true;
+        return false;
       };
       let targetBtn = null;
-      // 同名多附件场景优先按 index + name 精确命中，避免误删前一个同名项
-      if (reqIdx >= 0 && reqIdx < candidates.length && matchesBtnName(candidates[reqIdx])) {
-        targetBtn = candidates[reqIdx];
+      if (reqName) {
+        // 同名多附件场景优先按 index + 精确名称命中，避免误删前一个同名项；其次按精确名称命中
+        if (reqIdx >= 0 && reqIdx < candidates.length && matchesBtnName(candidates[reqIdx])) {
+          targetBtn = candidates[reqIdx];
+        }
+        if (!targetBtn) {
+          targetBtn = candidates.find(matchesBtnName) || null;
+        }
+        if (!targetBtn) {
+          return { ok: false, removed: 0, error: '未在桌面端找到匹配的附件，已取消删除以防误删' };
+        }
+      } else {
+        if (reqIdx >= 0 && reqIdx < candidates.length) {
+          targetBtn = candidates[reqIdx];
+        } else {
+          return { ok: false, removed: 0, error: '目标附件索引已失效，已取消删除以防误删' };
+        }
       }
-      if (!targetBtn && reqName) {
-        targetBtn = candidates.find(matchesBtnName) || null;
-      }
-      if (!targetBtn && reqIdx >= 0 && reqIdx < candidates.length) {
-        targetBtn = candidates[reqIdx];
-      }
-      if (!targetBtn) targetBtn = candidates[candidates.length - 1];
       try {
         targetBtn.click();
         return { ok: true, removed: 1 };
@@ -9159,7 +9176,22 @@
 
     if (action === 'send-queued-dom') {
       const entries = findQueuedMessagesDomEntries();
-      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      const onlyTexts = Array.isArray(payload?.onlyTexts)
+        ? payload.onlyTexts.map((t) => String(t || '').replace(/\s+/g, ' ').trim()).filter(Boolean)
+        : null;
+      if (!entries.length) {
+        // 混合队列在 RPC SendAllQueuedMessages 之后兜底补发时，若桌面队列已清空说明 RPC 已全部发送完成
+        if (onlyTexts) return { ok: true, source: 'dom', skipped: true };
+        return { ok: false, error: '当前没有排队中的消息' };
+      }
+      if (onlyTexts) {
+        const wanted = new Set(onlyTexts);
+        const target = entries.find((e) => wanted.has(String(e.text || '').replace(/\s+/g, ' ').trim()));
+        if (!target) return { ok: true, source: 'dom', skipped: true };
+        if (!target.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+        target.sendBtn.click();
+        return { ok: true, source: 'dom', sentText: target.text };
+      }
       const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
       const target = entries[reqIdx] || entries[0];
       if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };

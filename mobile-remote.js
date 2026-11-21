@@ -3857,12 +3857,27 @@ function createConversationHistoryManager() {
     let effQueued;
     if (Array.isArray(queuedMessages)) {
       const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+      const getQImgCount = (q) => {
+        if (Array.isArray(q?.images)) return q.images.length;
+        if (Array.isArray(q?.attachments)) return q.attachments.length;
+        if (Array.isArray(q?.media)) return q.media.length;
+        return 0;
+      };
+      const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
+      // 同源重复文本与不同附件数的消息全部保留；跨来源（traj vs dom）按 (规范化文本 + 附件数) 多重集 1:1 去重
       const mergedQ = [...queuedMessages];
-      const seenQTexts = new Set(mergedQ.map((q) => normQText(q?.text)).filter(Boolean));
+      const trajCounts = new Map();
+      for (const tq of queuedMessages) {
+        const k = queueMatchKey(tq);
+        trajCounts.set(k, (trajCounts.get(k) || 0) + 1);
+      }
       for (const dq of domQueued) {
-        const key = normQText(dq?.text);
-        if (key && seenQTexts.has(key)) continue;
-        if (key) seenQTexts.add(key);
+        const k = queueMatchKey(dq);
+        const rem = trajCounts.get(k) || 0;
+        if (rem > 0) {
+          trajCounts.set(k, rem - 1);
+          continue;
+        }
         mergedQ.push(dq);
       }
       effQueued = mergedQ;
@@ -7465,10 +7480,13 @@ function buildMobileAppHtml() {
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
+                  const domOnlyTexts = (!isDomQueuedList && hasDomQueued)
+                    ? queuedList.filter((q) => q && q.source === 'dom' && q.text).map((q) => String(q.text))
+                    : [];
                   const res = await apiAction({
                     action: 'send-queued-messages',
                     conversationId: String(snap.activeConversationId || snap.sessionId || ''),
-                    ...(isDomQueuedList ? { source: 'dom', domIndex: 0 } : (hasDomQueued ? { hasDomQueued: true } : {}))
+                    ...(isDomQueuedList ? { source: 'dom', domIndex: 0 } : (hasDomQueued ? { hasDomQueued: true, domOnlyTexts } : {}))
                   });
                   if (res?.ok) showToast('已立即发送排队消息');
                   else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
@@ -9127,40 +9145,67 @@ function buildMobileAppHtml() {
           const idx = Number(rmBtn.dataset.rmIdx);
           if (!Number.isInteger(idx) || idx < 0 || idx >= uploadedAttachments.length) return;
           const removed = uploadedAttachments.splice(idx, 1)[0];
+          let removedNameIdx = -1;
           if (removed && uploadedNames[idx] === removed.name) {
+            removedNameIdx = idx;
             uploadedNames.splice(idx, 1);
           } else {
             const nameIdx = removed ? uploadedNames.indexOf(removed.name) : idx;
-            if (nameIdx >= 0) uploadedNames.splice(nameIdx, 1);
+            if (nameIdx >= 0) {
+              removedNameIdx = nameIdx;
+              uploadedNames.splice(nameIdx, 1);
+            }
           }
           renderAttachHintStrip();
           syncSendButtonUI();
+          const rollbackOne = (errMsg) => {
+            if (removed) {
+              uploadedAttachments.splice(Math.min(idx, uploadedAttachments.length), 0, removed);
+              if (removedNameIdx >= 0) {
+                uploadedNames.splice(Math.min(removedNameIdx, uploadedNames.length), 0, removed.name);
+              } else {
+                uploadedNames.push(removed.name);
+              }
+              renderAttachHintStrip();
+              syncSendButtonUI();
+            }
+            showToast(errMsg || '桌面端附件同步移除失败，已恢复预览');
+          };
           void apiAction({
             action: 'remove-uploaded-attachment',
             name: removed?.name || '',
             index: idx
           }, { skipAutoRender: true }).then((r) => {
-            if (r && r.ok === false) {
-              showToast(r?.error || r?.actionResult?.error || '桌面端附件同步移除失败');
+            if (!r || r.ok === false) {
+              rollbackOne(r?.error || r?.actionResult?.error || '桌面端附件同步移除失败，已恢复预览');
             }
           }).catch((err) => {
-            showToast(err?.message || '桌面端附件同步移除失败');
+            rollbackOne(err?.message || '桌面端附件同步移除失败，已恢复预览');
           });
         };
       });
       const clearBtn = hint.querySelector('.attach-clear-btn');
       if (clearBtn) {
         clearBtn.onclick = () => {
+          const prevAtts = uploadedAttachments.slice();
+          const prevNames = uploadedNames.slice();
           uploadedNames = [];
           uploadedAttachments = [];
           renderAttachHintStrip();
           syncSendButtonUI();
+          const rollbackAll = (errMsg) => {
+            uploadedAttachments = [...prevAtts, ...uploadedAttachments];
+            uploadedNames = [...prevNames, ...uploadedNames];
+            renderAttachHintStrip();
+            syncSendButtonUI();
+            showToast(errMsg || '桌面端附件清空失败，已恢复预览');
+          };
           void apiAction({ action: 'remove-uploaded-attachment', clearAll: true }, { skipAutoRender: true }).then((r) => {
-            if (r && r.ok === false) {
-              showToast(r?.error || r?.actionResult?.error || '桌面端附件清空失败');
+            if (!r || r.ok === false) {
+              rollbackAll(r?.error || r?.actionResult?.error || '桌面端附件清空失败，已恢复预览');
             }
           }).catch((err) => {
-            showToast(err?.message || '桌面端附件清空失败');
+            rollbackAll(err?.message || '桌面端附件清空失败，已恢复预览');
           });
         };
       }
@@ -11841,12 +11886,14 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           } else {
             rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
             if (payload?.hasDomQueued === true) {
+              const onlyTexts = Array.isArray(payload?.domOnlyTexts) ? payload.domOnlyTexts : [];
               const domRes = await performAction({
                 action: 'send-queued-dom',
                 clientId,
                 targetId: effectiveTargetId || undefined,
                 conversationId: cascadeId,
-                domIndex: 0
+                domIndex: 0,
+                onlyTexts
               }).catch(() => null);
               if (domRes?.ok) usedDomFallback = true;
             }
