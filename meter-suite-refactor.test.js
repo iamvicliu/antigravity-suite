@@ -12833,5 +12833,88 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   assert.ok(html.includes('classList?.toggle?.(\'is-standalone\''), '前端启动应检测 navigator.standalone / display-mode 并设置 body.is-standalone');
   assert.ok(html.includes('body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)));height:auto}'), '独立 PWA 模式应将 body 设为 height:auto 贴满 bottom:0，避免 iOS 底部 60~93px 死区');
   assert.ok(html.includes("document.body.style.height = isStandalonePwa ? '' : '100%';"), 'syncViewportHeight 在独立 PWA 模式下应清除内联 height 贴满底边');
+  assert.ok(html.includes('@supports (height:100dvh){html{height:100dvh}}'), '普通 Safari 浏览器模式下 html 应升级为 100dvh 随地址栏动态贴底');
   assert.ok(html.includes('.topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}') && html.includes('flex:1 0 100%;width:100%;gap:6px;'), '手机端顶栏功能按钮应独立成第二行，释放整行宽度给标题与项目名');
+
+  // 3. 独立 PWA 模式（navigator.standalone = true）下键盘弹出、收起与弹窗锁高行为级实测
+  const pwaStart = html.indexOf('const appEl = document.querySelector(\'.app\');');
+  const pwaEnd = html.indexOf('function scheduleViewportSyncBurst()');
+  assert.ok(pwaStart > 0 && pwaEnd > pwaStart, '应能提取 syncViewportHeight 逻辑块');
+  const bodyClasses = new Set();
+  const appClasses = new Set();
+  const docStyles = {};
+  const bodyStyle = { height: '', bottom: '', transform: '' };
+  const inputEl = { id: 'input', tagName: 'TEXTAREA' };
+  const modalInputEl = { id: 'modal-inp', tagName: 'INPUT' };
+  const modalBackdropEl = { hidden: true, contains: (el) => el === modalInputEl, querySelector: () => null };
+  const appMockEl = { classList: { add: (c) => appClasses.add(c), remove: (c) => appClasses.delete(c), contains: (c) => appClasses.has(c) } };
+  const vvState = { height: 844, offsetTop: 0 };
+  const docMock = {
+    activeElement: null,
+    documentElement: {
+      clientHeight: 844,
+      style: { setProperty: (k, v) => { docStyles[k] = v; }, getPropertyValue: (k) => docStyles[k] || '' }
+    },
+    body: {
+      style: bodyStyle,
+      classList: { toggle: (c, v) => (v ? bodyClasses.add(c) : bodyClasses.delete(c)), contains: (c) => bodyClasses.has(c) }
+    },
+    querySelector: (sel) => (sel === '.app' ? appMockEl : null)
+  };
+  const winMock = {
+    innerWidth: 390,
+    innerHeight: 844,
+    navigator: { standalone: true },
+    visualViewport: vvState,
+    matchMedia: (q) => ({ matches: q.includes('display-mode: standalone') })
+  };
+  const pwaSandbox = {
+    window: winMock,
+    document: docMock,
+    $: (id) => (id === 'input' ? inputEl : (id === 'proj-modal-backdrop' ? modalBackdropEl : null)),
+    msgEl: { scrollTop: 0, scrollHeight: 1200 },
+    stickBottom: true,
+    Math,
+    Date,
+    Number,
+    Boolean,
+    String
+  };
+  const pwaCode = html.slice(pwaStart, pwaEnd) + '\nglobalThis.__syncVp = syncViewportHeight;';
+  vm.runInNewContext(pwaCode, pwaSandbox);
+
+  // 3a. 初始全屏态：识别 is-standalone，清除 body.style.height 贴满 bottom:0，--modal-h/--app-h 满屏 844px
+  assert.equal(bodyClasses.has('is-standalone'), true, '独立 PWA 应设置 body.is-standalone');
+  pwaSandbox.__syncVp();
+  assert.equal(bodyStyle.bottom, '0');
+  assert.equal(bodyStyle.height, '', '独立 PWA 满屏态不得写回 height:100%');
+  assert.equal(docStyles['--modal-h'], '844px');
+  assert.equal(docStyles['--app-h'], '844px');
+
+  // 3b. 弹窗打开 + 软键盘弹出（844 -> 520）：--modal-h 锁定 844px 不收缩，不误触发 kb-open
+  modalBackdropEl.hidden = false;
+  docMock.activeElement = modalInputEl;
+  vvState.height = 520;
+  pwaSandbox.__syncVp();
+  assert.equal(docStyles['--modal-h'], '844px', '独立 PWA 下弹窗输入弹键盘时 --modal-h 必须保持锁定 844px');
+  assert.equal(appClasses.has('kb-open'), false);
+
+  // 3c. 关闭弹窗、聚焦主聊天输入框并弹起键盘（844 -> 520）：启用 kb-open 且 body 收缩至 520px 保证输入栏可见
+  modalBackdropEl.hidden = true;
+  docMock.activeElement = inputEl;
+  vvState.height = 520;
+  pwaSandbox.__syncVp();
+  assert.equal(appClasses.has('kb-open'), true, '独立 PWA 主输入框弹键盘时应启用 kb-open');
+  assert.equal(bodyStyle.bottom, 'auto');
+  assert.equal(bodyStyle.height, '520px');
+  assert.equal(docStyles['--app-h'], '520px');
+
+  // 3d. 键盘收起（520 -> 844）：恢复 bottom:0、清除内联 height 贴满全屏，--app-h 恢复 844px
+  docMock.activeElement = null;
+  vvState.height = 844;
+  pwaSandbox.__syncVp();
+  assert.equal(appClasses.has('kb-open'), false);
+  assert.equal(bodyStyle.bottom, '0');
+  assert.equal(bodyStyle.height, '', '独立 PWA 键盘收起后必须清除内联 height 恢复满屏贴底');
+  assert.equal(docStyles['--app-h'], '844px');
 });

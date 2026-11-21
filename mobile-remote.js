@@ -4201,6 +4201,7 @@ function buildMobileAppHtml() {
       font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
       font-size:14px;line-height:1.45;overscroll-behavior:none;
     }
+    @supports (height:100dvh){html{height:100dvh}}
     .app{
       display:flex;flex-direction:column;width:100%;height:100%;
       padding-top:env(safe-area-inset-top);
