@@ -705,7 +705,7 @@
 
       placePanel(el('panel'), 450, activeContextAnchor || el('badge'));
       placePanel(el('panel-tokens'), 730, el('badge-tokens'));
-      placePanel(el('panel-settings'), 600, el('badge-settings') || el('badge-overflow') || el('badge'));
+      placePanel(el('panel-settings'), 640, el('badge-settings') || el('badge-overflow') || el('badge'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
     } catch {}
@@ -814,6 +814,7 @@
       hideContextTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
+      el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pContext.hidden = true;
@@ -841,6 +842,7 @@
       hideContextTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
+      el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pTokens.hidden = true;
@@ -853,6 +855,7 @@
       void refreshModulesDisplay();
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
+      el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', 'false');
       pContext.hidden = true;
       pTokens.hidden = true;
       if (pSettings) pSettings.hidden = true;
@@ -1359,7 +1362,7 @@
         dtVal.style.display = 'block';
         ddVal.style.display = 'block';
         ddVal.textContent = `至 ${ps.validEndDate}${ps.isExpired ? ' · ⚠️ 权益已到期' : ' · 有效期内'}`;
-        ddVal.style.color = ps.isExpired ? '#ef4444' : 'var(--ag-text-secondary)';
+        ddVal.style.color = ps.isExpired ? 'var(--ag-text-danger,#f87171)' : 'var(--ag-text-secondary)';
       } else {
         dtVal.style.display = 'none';
         ddVal.style.display = 'none';
@@ -1509,6 +1512,7 @@
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
     }
+    el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', 'false');
     setPillActive(el('tok-view-tokens'), v === 'tokens');
     setPillActive(el('tok-view-cost'), v === 'cost');
     const costCard = el('cost-estimate-card');
@@ -1631,7 +1635,7 @@
     try {
       let res = await invokeHostBridge('/launch-cli', reqOpts, 'launchCli');
       if (res === null && !window?.contextMeterAPI?.launchCli) {
-        res = { ok: false, code: 'NO_BRIDGE', error: '本地桥接服务未连接，请执行 node cli.js install 或重启客户端' };
+        res = { ok: false, code: 'NO_BRIDGE', error: '未能连接到本地服务：请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）后重试' };
       }
 
       lastCliLaunchResult = res;
@@ -1790,7 +1794,7 @@
         return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
       }
     }
-    return { ok: false, error: '未连接到桥接服务（请重启客户端或执行 node cli.js live）' };
+    return { ok: false, error: '未能连接到本地服务：请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）后重试' };
   }
 
   async function refreshModulesDisplay() {
@@ -1865,7 +1869,7 @@
           chineseBadge.textContent = '🟢 已翻译生效';
           chineseBadge.className = 'key-pill pill-ok';
         } else if (!disk.chinese) {
-          chineseBadge.textContent = '⚠️ 磁盘未注入';
+          chineseBadge.textContent = '⚠️ 待本地同步';
           chineseBadge.className = 'key-pill pill-danger';
         } else {
           chineseBadge.textContent = '⏳ 待重启客户端生效';
@@ -1875,18 +1879,18 @@
       if (chineseStatusDesc) {
         if (!currentChineseEnabled) {
           if (isDomTranslated) {
-            chineseStatusDesc.textContent = '汉化模块已在配置中关闭；当前界面仍保留已加载的中文 DOM 缓存，需完全退出并重新打开 Antigravity 客户端以彻底恢复纯净官方原生英文。';
+            chineseStatusDesc.textContent = '汉化已关闭；当前界面仍保留着刚才的中文文本，请完全退出并重新打开 Antigravity 客户端以恢复官方原生英文界面。';
           } else {
             chineseStatusDesc.textContent = disk.chinese
-              ? '客户端汉化已关闭（磁盘已具备汉化资源与配置门禁，开启后重启即可生效）。'
-              : '客户端汉化处于未安装状态，保持官方原生英文界面。';
+              ? '客户端汉化已关闭（本地资源已就绪，开启上方开关并重启客户端即可生效）。'
+              : '客户端汉化当前未开启，保持官方原生英文界面。';
           }
         } else if (isDomTranslated) {
-          chineseStatusDesc.textContent = '汉化引擎运行中：DOM 监听器正常工作，左侧边栏与核心菜单已成功翻译。';
+          chineseStatusDesc.textContent = '汉化运行中：客户端左侧边栏与核心菜单已自动转为中文。';
         } else if (!disk.chinese) {
-          chineseStatusDesc.textContent = '配置已开启，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。';
+          chineseStatusDesc.textContent = '配置已开启，但本地尚未准备好汉化资源；请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）完成自动同步后再试。';
         } else {
-          chineseStatusDesc.textContent = '汉化代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。';
+          chineseStatusDesc.textContent = '汉化资源已就绪且开关已开启；请完全退出并重新打开 Antigravity 客户端即可生效。';
         }
       }
       if (btnToggleChineseModule) {
@@ -1896,7 +1900,7 @@
       currentProxyEnabled = Boolean(cfg.modules?.proxy?.enabled);
       if (proxyBadge) {
         if (currentProxyEnabled) {
-          proxyBadge.textContent = disk.proxy ? '🟢 直连已配置' : '⚠️ 磁盘未注入';
+          proxyBadge.textContent = disk.proxy ? '🟢 直连已配置' : '⚠️ 待重启生效';
           proxyBadge.className = disk.proxy ? 'key-pill pill-ok' : 'key-pill pill-warn';
         } else {
           proxyBadge.textContent = '⚪ 未启用';
@@ -1912,10 +1916,10 @@
       if (proxyStatusDesc) {
         if (currentProxyEnabled) {
           proxyStatusDesc.textContent = disk.proxy
-            ? `已启用本地网络直连（代理: ${cfg.modules.proxy.proxyUrl}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。`
-            : `配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。`;
+            ? `已启用本地代理直连（代理地址: ${cfg.modules.proxy.proxyUrl}）。注意：能否顺利连接模型，请在对话中发送一条消息实际验证。`
+            : `配置已开启本地代理，但客户端尚未加载生效；请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）使其加载后再试。`;
         } else {
-          proxyStatusDesc.textContent = '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。';
+          proxyStatusDesc.textContent = '未启用本地代理直连，网络请求将继续跟随系统代理或全局 TUN 设置。';
         }
       }
       if (btnToggleProxyModule) {
@@ -2003,8 +2007,8 @@
             配置格式: ${d.configValid ? '✅ 合法' : '❌ 无效'}<br>
             本地端口: ${d.proxyReachable ? '✅ 可连接' : '❌ 无法连接'}<br>
             公网连通: ${d.internetReachable ? '✅ 可访问' : '⚠️ 无法访问公网 (可能无境外连通)'}<br>
-            模型请求: 待通过真实在线会话验证 (分层标定)
-            ${d.error ? `<br><span style="color:var(--ag-danger)">⚠️ ${d.error}</span>` : ''}
+            模型请求: 需在对话中发送消息实际验证
+            ${d.error ? `<br><span style="color:var(--ag-text-danger,#f87171)">⚠️ ${d.error}</span>` : ''}
           `;
         }
       }
@@ -3509,8 +3513,8 @@
       pct = Math.min(100, Math.max(0, (d.actual / d.budget) * 100));
     }
 
-    const barColor = danger ? '#f87171' : pct != null && pct >= 90 ? '#f87171' : pct != null && pct >= 75 || stale || incomplete ? '#fbbf24' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
-    const tone = danger ? '#f87171' : stale || incomplete || d?.estimated ? '#fbbf24' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
+    const barColor = danger ? 'var(--ag-text-danger,#f87171)' : pct != null && pct >= 90 ? 'var(--ag-text-danger,#f87171)' : pct != null && pct >= 75 || stale || incomplete ? 'var(--ag-text-warn,#fbbf24)' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
+    const tone = danger ? 'var(--ag-text-danger,#f87171)' : stale || incomplete || d?.estimated ? 'var(--ag-text-warn,#fbbf24)' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
     host.style.setProperty('--tone', tone);
     host.style.setProperty('--bar-color', barColor);
 
@@ -3640,7 +3644,7 @@
           } else if (pct >= 75) {
             keyTakeaway.textContent = `⚡ 已使用 ${pct.toFixed(1)}%，剩余可用空间约 ${short(remainVal)} tokens，注意大文件或长输出。`;
           } else if (d.actual >= 328000) {
-            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已跨过 328K 缓存雪崩线）；官方要到 512K 才压缩，一旦停顿超 3 分钟将触发 4~5 分钟全量重算，建议尽快执行 /compact。${autoCompactHint}`;
+            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已超过 328K 风险线）；官方要到 512K 才压缩，一旦停顿超 3 分钟就会重新全量计算并卡顿 4~5 分钟，建议尽快执行 /compact。${autoCompactHint}`;
           } else if (d.actual >= 240000) {
             keyTakeaway.textContent = `✔ 当前用量正常（${pct.toFixed(1)}%，已达 ${short(d.actual)}），处于 240K+ 长上下文区间，提前执行 /compact 可避开 300K+ 缓存过期卡顿。${autoCompactHint}`;
           } else {
@@ -3679,7 +3683,7 @@
           const modelStr = d?.model ? `（${d.model}）` : '';
           const streamInfo = sp.streamingTps ? `，纯流式传输达 ${sp.streamingTps} tok/s` : '';
           if (sp.ttft != null && sp.ttft >= 30 && (d?.cacheDropDetected || (d?.uncachedInput || 0) >= 150000)) {
-            spTakeaway.textContent = `⚠ 本步首字延迟达 ${sp.ttft}s，系缓存脱落引发全量重算所致（输出 ${sp.tps} tok/s，总耗时 ${sp.duration}s${modelStr}），建议立即执行 /compact。`;
+            spTakeaway.textContent = `⚠ 本步首字等待达 ${sp.ttft}s，因缓存失效触发了全量重算（输出 ${sp.tps} tok/s，总耗时 ${sp.duration}s${modelStr}），建议立即执行 /compact。`;
           } else {
             spTakeaway.textContent = `✔ 输出${sp.tps >= 35 ? '流畅' : '平稳'}（${sp.tps} tok/s${streamInfo}），总耗时 ${sp.duration}s 内生成 ${fmt(sp.outputTokens)} tokens${modelStr}。`;
           }
@@ -3964,6 +3968,13 @@
       host.remove();
     }
   };
+  el('plan-summary-price-badge')?.addEventListener?.('keydown', e => {
+    if (e && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault?.();
+      el('plan-summary-price-badge')?.click?.();
+    }
+  });
+
   void restoreSettingsFromHost();
   render();
   tick();
