@@ -10697,13 +10697,17 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
   const remoteMod = require('./mobile-remote');
   const { Readable } = require('stream');
 
-  // 1. 敏感路径黑名单直接校验
+  // 1. 敏感路径黑名单直接校验（含大小写变体与生产模式 /var/folders 拦截）
   for (const p of [
     '/System/Library',
+    '/SYSTEM/Library',
     '/etc',
+    '/Etc/passwd',
     '/private/etc/hosts',
     '/Applications/Antigravity.app',
+    '/Applications/ANTIGRAVITY.APP/Contents',
     '/Users/demo/.ssh',
+    '/Users/demo/.SSH/id_ed25519',
     '/Users/demo/.gnupg/private-keys',
     '/Users/demo/.aws',
     '/Users/demo/1Password/vault',
@@ -10711,7 +10715,16 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
   ]) {
     assert.equal(remoteMod.isSensitiveHostPath(p), true, `敏感路径必须被拦截: ${p}`);
   }
+  assert.equal(remoteMod.isSensitiveHostPath('/var/folders/ab/cd/T/test', { forceProd: true }), true, '生产环境不得豁免 /var/folders');
   assert.equal(remoteMod.isSensitiveHostPath('/Users/demo/codebase/my-app'), false);
+
+  // 1b. buildMobileAppHtml() 全部内嵌 <script> 经 new vm.Script() 语法校验
+  const html32 = remoteMod.buildMobileAppHtml();
+  const scripts32 = [...html32.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts32.length >= 2);
+  for (let i = 0; i < scripts32.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts32[i][1], { filename: `mobile-app-32-script-${i}.js` }));
+  }
 
   // 2. 构造隔离的假 homeDir、外部逃逸目录 outsideDir、敏感子目录与符号链接
   const sandboxBase = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-sec32-'));
@@ -10731,13 +10744,17 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
 
   const symEscape = path.join(workDir, 'link-outside');
   const symSsh = path.join(workDir, 'link-ssh');
+  const symLoopA = path.join(workDir, 'loop-a');
+  const symLoopB = path.join(workDir, 'loop-b');
   fs.symlinkSync(outsideDir, symEscape, 'dir');
   fs.symlinkSync(sshDir, symSsh, 'dir');
+  fs.symlinkSync(symLoopB, symLoopA, 'dir');
+  fs.symlinkSync(symLoopA, symLoopB, 'dir');
 
   try {
-    // 2a. 到达根目录边界（fakeHome）时 parentPath 必须为 null，且越界访问 /etc、/、outsideDir 被拒（403）
+    // 2a. 到达根目录边界（fakeHome）时 parentPath 必须严格为空串 ''，且越界访问 /etc、/、outsideDir 被拒（403）
     const homeList = remoteMod.listHostDirectories({ homeDir: fakeHome, configDir, showHidden: true });
-    assert.equal(homeList.parentPath, null, '到达 $HOME 授权边界时不得返回 parentPath');
+    assert.strictEqual(homeList.parentPath, '', '到达 $HOME 授权边界时 parentPath 必须严格为空串');
     assert.ok(!homeList.entries.some((e) => ['.ssh', '.gemini', '1Password'].includes(e.name)), '敏感目录即使 showHidden=true 也不得出现在目录列表中');
     assert.throws(() => remoteMod.listHostDirectories({ dirPath: outsideDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
     assert.throws(() => remoteMod.listHostDirectories({ dirPath: '/etc', homeDir: fakeHome, configDir }), (err) => err.status === 403);
@@ -10745,12 +10762,14 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
     assert.throws(() => remoteMod.listHostDirectories({ dirPath: sshDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
     assert.throws(() => remoteMod.listHostDirectories({ dirPath: geminiDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
 
-    // 2b. Symlink 逃逸目录与敏感 symlink 均被列表过滤且直连/新建/注册项目全部拦截
+    // 2b. Symlink 逃逸目录、敏感 symlink 与循环符号链接（ELOOP）均被列表过滤且直连/新建/注册项目全部拦截
     const workList = remoteMod.listHostDirectories({ dirPath: workDir, homeDir: fakeHome, configDir, showHidden: true });
     assert.equal(workList.parentPath, fakeHome);
-    assert.ok(!workList.entries.some((e) => e.name === 'link-outside' || e.name === 'link-ssh'), '越界或敏感符号链接子目录不得暴露在列表中');
+    assert.ok(!workList.entries.some((e) => ['link-outside', 'link-ssh', 'loop-a', 'loop-b'].includes(e.name)), '越界、敏感或循环符号链接子目录不得暴露在列表中');
     assert.throws(() => remoteMod.listHostDirectories({ dirPath: symEscape, homeDir: fakeHome, configDir }), (err) => err.status === 403);
     assert.throws(() => remoteMod.listHostDirectories({ dirPath: symSsh, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symLoopA, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symLoopA, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
     assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symEscape, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
     assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: fakeHome, name: '.ssh' }, { homeDir: fakeHome }), (err) => err.status === 403);
     assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: outsideDir, name: 'evil' }, { homeDir: fakeHome }), (err) => err.status === 403);
@@ -10783,6 +10802,7 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
     const secHandler = remoteMod.createRemoteHttpHandler(secCfg, {
       homeDir: fakeHome,
       configDir,
+      allowDiskFallback: true,
       performAction: async () => ({ ok: true, actionResult: { ok: true } }),
       fetchSnapshot: async () => ({ ok: true, sessionId: 's-1', messages: [] })
     });
@@ -10819,6 +10839,14 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
     });
     assert.equal(crossPortRes.status, 403, '跨端口不同源 Origin + Cookie 写请求必须被 403 拦截');
 
+    // 3b-2. 同主机同端口但协议不同（https://127.0.0.1:18765 vs http://127.0.0.1:18765）+ Cookie 必须返回 403
+    const crossProtoRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'csrf-proto' }), {
+      'content-type': 'application/json',
+      origin: 'https://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(crossProtoRes.status, 403, '跨协议 Origin + Cookie 写请求必须被 403 拦截');
+
     // 3c. Origin: null + Cookie 必须返回 403
     const nullOriginRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
       'content-type': 'application/json',
@@ -10827,12 +10855,18 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
     });
     assert.equal(nullOriginRes.status, 403, 'Origin: null + Cookie 写请求必须被 403 拦截');
 
-    // 3d. Cookie 鉴权但无 Origin/Referer 且无 X-AG-Remote-Token 必须返回 403
+    // 3d. Cookie 鉴权但无 Origin（即使带同源 Referer）且无 X-AG-Remote-Token 必须返回 403
     const noOriginCookieRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
       'content-type': 'application/json',
       cookie: `ag_remote_token=${secCfg.token}`
     });
     assert.equal(noOriginCookieRes.status, 403, 'Cookie 鉴权且缺少同源 Origin 与自定义头时必须返回 403');
+    const refererOnlyCookieRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      referer: 'http://127.0.0.1:18765/',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(refererOnlyCookieRes.status, 403, 'Cookie 鉴权缺少 Origin 时不得仅凭 Referer 放行');
 
     // 3e. 合法同源 Origin + application/json + Cookie 正常通过（200）
     const okCookieRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'ok-same-origin' }), {
@@ -10843,13 +10877,26 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
     assert.equal(okCookieRes.status, 200);
     assert.equal(okCookieRes.json.ok, true);
 
-    // 3f. 合法自定义请求头 X-AG-Remote-Token + application/json 正常通过（200）
+    // 3f. 合法自定义请求头 X-AG-Remote-Token + application/json 正常通过（200），并验证合法项目注册通过
     const okHeaderRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'ok-custom-hdr' }), {
       'content-type': 'application/json',
       'x-ag-remote-token': secCfg.token
     });
     assert.equal(okHeaderRes.status, 200);
     assert.equal(okHeaderRes.json.ok, true);
+
+    const okProjRes = await sendWrite('/api/projects', JSON.stringify({
+      folderPath: path.join(workDir, 'ok-same-origin'),
+      name: 'legit-proj-32',
+      openInDesktop: false
+    }), {
+      'content-type': 'application/json',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(okProjRes.status, 200, `合法 $HOME 子目录注册项目必须成功: ${JSON.stringify(okProjRes.json)}`);
+    assert.equal(okProjRes.json.ok, true);
+    assert.equal(okProjRes.json.project?.name, 'legit-proj-32');
   } finally {
     fs.rmSync(sandboxBase, { recursive: true, force: true });
   }

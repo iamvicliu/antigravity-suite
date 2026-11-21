@@ -2303,14 +2303,23 @@ function isSensitiveHostPath(absPath, options = {}) {
   if (SENSITIVE_DIR_SEGMENTS_RE.test(normalized)) {
     return true;
   }
-  // macOS 下测试环境常将受信任临时 homeDir 建在 /var/folders 或 /private/var/folders 下，仅对显式传入的该临时根目录放行 /var 前缀检查
-  const explicitTempRoots = (Array.isArray(options.exemptTempRoots) ? options.exemptTempRoots : [])
-    .map((r) => path.resolve(String(r || '')).replace(/\\/g, '/'))
-    .filter((r) => r.startsWith('/var/folders/') || r.startsWith('/private/var/folders/'));
-  const inExemptTempRoot = explicitTempRoots.some((r) => normalized === r || normalized.startsWith(`${r}/`));
+  const normalizedLower = normalized.toLowerCase();
+  // 生产环境无条件屏蔽全部系统前缀（含 /var 与 /private/var，且大小写无关以覆盖 macOS APFS）；
+  // 仅在自动化测试环境（NODE_TEST_CONTEXT）下对 os.tmpdir() 内的隔离临时沙箱放行 /var 前缀以便单测运行
+  let inTestTmpDir = false;
+  if (!options.forceProd && (isCatalogTestEnv() || Boolean(process.env.NODE_TEST_CONTEXT))) {
+    const tmpLogical = path.resolve(os.tmpdir()).replace(/\\/g, '/').toLowerCase();
+    let tmpReal = tmpLogical;
+    try { tmpReal = fs.realpathSync(os.tmpdir()).replace(/\\/g, '/').toLowerCase(); } catch {}
+    inTestTmpDir = normalizedLower === tmpLogical
+      || normalizedLower.startsWith(`${tmpLogical}/`)
+      || normalizedLower === tmpReal
+      || normalizedLower.startsWith(`${tmpReal}/`);
+  }
   for (const prefix of SENSITIVE_SYSTEM_PREFIXES) {
-    if (inExemptTempRoot && (prefix === '/var' || prefix === '/private/var')) continue;
-    if (normalized === prefix || normalized.startsWith(`${prefix}/`)) {
+    const prefixLower = prefix.toLowerCase();
+    if (inTestTmpDir && (prefixLower === '/var' || prefixLower === '/private/var')) continue;
+    if (normalizedLower === prefixLower || normalizedLower.startsWith(`${prefixLower}/`)) {
       return true;
     }
   }
@@ -2328,19 +2337,29 @@ function resolveRealPathWithFallback(targetPath) {
   const abs = path.resolve(String(targetPath || ''));
   try {
     return fs.realpathSync(abs);
-  } catch {}
-  // 对尚未创建的目标路径向上回溯到最近的已存在祖先求真实物理路径，防止中间符号链接逃逸
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      throw Object.assign(new Error(`无法安全验证目标真实物理路径 (${err?.code || 'ERR'})`), { status: 403 });
+    }
+  }
+  // 仅当目标明确不存在（ENOENT）时向上回溯到最近已存在祖先求真实物理路径；遇到 EACCES/ELOOP 等非 ENOENT 错误或无法确认真实路径一律拒绝
   let cur = abs;
   const pending = [];
   while (true) {
     const parent = path.dirname(cur);
-    if (parent === cur) return abs;
+    if (parent === cur) {
+      throw Object.assign(new Error('无法确认目标路径的真实物理根目录，已拒绝访问'), { status: 403 });
+    }
     pending.unshift(path.basename(cur));
     cur = parent;
     try {
       const realBase = fs.realpathSync(cur);
       return path.resolve(realBase, ...pending);
-    } catch {}
+    } catch (err) {
+      if (err?.code !== 'ENOENT') {
+        throw Object.assign(new Error(`无法安全验证祖先真实物理路径 (${err?.code || 'ERR'})`), { status: 403 });
+      }
+    }
   }
 }
 
@@ -2375,25 +2394,30 @@ function assertSafeHostDirectoryPath(rawPath, options = {}) {
   if (matchedRootIdx < 0) {
     throw Object.assign(new Error('目标路径超出允许访问的宿主机根目录边界'), { status: 403 });
   }
-  const exemptTempRoots = [...logicalRoots, ...realRoots];
-  if (isSensitiveHostPath(resolvedPath, { exemptTempRoots })) {
+  if (isSensitiveHostPath(resolvedPath)) {
     throw Object.assign(new Error('禁止访问敏感系统或凭证目录'), { status: 403 });
   }
-  // 显式经 lstatSync + realpathSync 二次校验真实物理路径，阻断符号链接逃逸到授权根外或敏感目录
+  // 显式经 lstatSync 检查非 ENOENT 错误（如 EACCES/ELOOP）并经 realpathSync 二次校验真实物理路径
+  let lstat = null;
   try {
-    fs.lstatSync(resolvedPath);
-  } catch {}
+    lstat = fs.lstatSync(resolvedPath);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      throw Object.assign(new Error(`无法安全检查目标路径状态 (${err?.code || 'ERR'})`), { status: 403 });
+    }
+  }
   const realPath = resolveRealPathWithFallback(resolvedPath);
   const matchedRealIdx = realRoots.findIndex((root) => isPathWithinRoot(realPath, root));
   if (matchedRealIdx < 0) {
     throw Object.assign(new Error('检测到符号链接指向授权目录之外，已拒绝访问'), { status: 403 });
   }
-  if (isSensitiveHostPath(realPath, { exemptTempRoots })) {
+  if (isSensitiveHostPath(realPath)) {
     throw Object.assign(new Error('检测到符号链接指向敏感目录，已拒绝访问'), { status: 403 });
   }
   return {
     resolvedPath,
     realPath,
+    lstat,
     homeDir,
     realHomeDir,
     matchedRoot: logicalRoots[matchedRootIdx],
@@ -2451,10 +2475,8 @@ function listHostDirectories(options = {}) {
     homeDir,
     matchedRoot,
     matchedRealRoot,
-    logicalRoots,
     realRoots
   } = assertSafeHostDirectoryPath(options.dirPath, options);
-  const exemptTempRoots = [...logicalRoots, ...realRoots];
 
   let stat;
   try {
@@ -2525,14 +2547,14 @@ function listHostDirectories(options = {}) {
     const isHidden = name.startsWith('.');
     if (!showHidden && isHidden) continue;
     const childFull = path.join(resolvedPath, name);
-    if (isSensitiveHostPath(childFull, { exemptTempRoots })) continue;
+    if (isSensitiveHostPath(childFull)) continue;
     let isDir = false;
     try {
       if (d.isDirectory()) {
         isDir = true;
       } else if (d.isSymbolicLink()) {
         const realChild = fs.realpathSync(childFull);
-        if (!realRoots.some((r) => isPathWithinRoot(realChild, r)) || isSensitiveHostPath(realChild, { exemptTempRoots })) {
+        if (!realRoots.some((r) => isPathWithinRoot(realChild, r)) || isSensitiveHostPath(realChild)) {
           continue;
         }
         if (fs.statSync(realChild).isDirectory()) isDir = true;
@@ -2560,12 +2582,12 @@ function listHostDirectories(options = {}) {
   const entries = truncated ? allEntries.slice(0, MAX_DIR_ENTRIES) : allEntries;
 
   const parsedRoot = path.parse(resolvedPath).root;
-  const candidateParent = resolvedPath === parsedRoot ? null : path.dirname(resolvedPath);
+  const candidateParent = resolvedPath === parsedRoot ? '' : path.dirname(resolvedPath);
   const atBoundary = resolvedPath === matchedRoot
     || realPath === matchedRealRoot
     || !candidateParent
     || !isPathWithinRoot(candidateParent, matchedRoot);
-  const parentPath = atBoundary ? null : candidateParent;
+  const parentPath = atBoundary ? '' : candidateParent;
   const currentName = path.basename(resolvedPath) || resolvedPath;
   const existingProject = primaryPathMap.get(resolvedPath) || null;
   let selfIsGitRepo = false;
@@ -9668,7 +9690,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
     failedAuthMap.delete(clientKey);
 
-    // Same-Site 跨端口 CSRF 加固：所有写请求强制要求 application/json，并校验同源 Origin/Referer 或自定义 X-AG-Remote-Token 请求头
+    const isHttpsForwarded = fromLoopback && String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https';
+
+    // Same-Site 跨端口 CSRF 加固：所有写请求强制要求 application/json，并严格校验同源（协议+主机+有效端口）Origin 或自定义 X-AG-Remote-Token 请求头
     const reqMethodUpper = String(req.method || 'GET').toUpperCase();
     if (reqMethodUpper !== 'GET' && reqMethodUpper !== 'HEAD' && reqMethodUpper !== 'OPTIONS') {
       const rawCt = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
@@ -9679,45 +9703,53 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       }
       const headerToken = String(req.headers['x-ag-remote-token'] || '').trim();
       const hasValidCustomHeader = Boolean(headerToken && timingSafeTokenMatch(headerToken, config.token));
-      const reqHost = String(req.headers.host || '').trim().toLowerCase();
+      const reqProto = (isHttpsForwarded || Boolean(req.socket?.encrypted)) ? 'https:' : 'http:';
+      const reqHostHeader = String(req.headers.host || '').trim();
+      const parseOriginTuple = (rawUrl) => {
+        if (!rawUrl || String(rawUrl).toLowerCase() === 'null') return null;
+        try {
+          const u = new URL(rawUrl);
+          if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+          const effPort = u.port || (u.protocol === 'https:' ? '443' : '80');
+          return { protocol: u.protocol, hostname: u.hostname.toLowerCase(), port: effPort };
+        } catch {
+          return null;
+        }
+      };
+      const reqTuple = reqHostHeader ? parseOriginTuple(`${reqProto}//${reqHostHeader}`) : null;
+      const isSameOriginTuple = (t) => Boolean(
+        t && reqTuple && t.protocol === reqTuple.protocol && t.hostname === reqTuple.hostname && t.port === reqTuple.port
+      );
       const rawOrigin = String(req.headers.origin || '').trim();
       const rawReferer = String(req.headers.referer || '').trim();
-      const parseHeaderHost = (val) => {
-        if (!val || val.toLowerCase() === 'null') return null;
-        try { return new URL(val).host.toLowerCase(); } catch { return null; }
-      };
-      let sameOriginVerified = false;
+      let sameOriginByOrigin = false;
       if (rawOrigin) {
-        const originHost = parseHeaderHost(rawOrigin);
-        if (!originHost || (reqHost && originHost !== reqHost)) {
+        const originTuple = parseOriginTuple(rawOrigin);
+        if (!isSameOriginTuple(originTuple)) {
           if (!hasValidCustomHeader) {
             res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-            res.end(JSON.stringify({ ok: false, error: '检测到跨源或跨端口写请求，已拦截 (CSRF)' }));
+            res.end(JSON.stringify({ ok: false, error: '检测到跨协议/跨源或跨端口写请求，已拦截 (CSRF)' }));
             return;
           }
         } else {
-          sameOriginVerified = true;
+          sameOriginByOrigin = true;
         }
       } else if (rawReferer) {
-        const refHost = parseHeaderHost(rawReferer);
-        if (!refHost || (reqHost && refHost !== reqHost)) {
-          if (!hasValidCustomHeader) {
-            res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-            res.end(JSON.stringify({ ok: false, error: '检测到跨源或跨端口写请求，已拦截 (CSRF)' }));
-            return;
-          }
-        } else {
-          sameOriginVerified = true;
+        const refTuple = parseOriginTuple(rawReferer);
+        if (!isSameOriginTuple(refTuple) && !hasValidCustomHeader) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ ok: false, error: '检测到跨协议/跨源 Referer 写请求，已拦截 (CSRF)' }));
+          return;
         }
       }
-      if (fromCookie && !hasValidCustomHeader && !sameOriginVerified) {
+      // 仅凭 Cookie 鉴权的写请求必须提供严格同源 Origin（或有效自定义 X-AG-Remote-Token），禁止仅凭 Referer 放行
+      if (fromCookie && !hasValidCustomHeader && !sameOriginByOrigin) {
         res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ok: false, error: 'Cookie 鉴权写请求须提供同源 Origin 或 X-AG-Remote-Token 请求头' }));
         return;
       }
     }
 
-    const isHttpsForwarded = fromLoopback && String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https';
     const secureAttr = isHttpsForwarded ? '; Secure' : '';
     const cookiesToSet = [];
     if (fromQuery) {
