@@ -3919,7 +3919,18 @@
     "Create automation": "创建自动化任务",
     "No sign-in required. This app is ready to use.": "无需登录，可以直接使用此应用。",
     "Managed by application menu": "由应用菜单管理",
-    "Terminal: Select All": "终端：全选"
+    "Terminal: Select All": "终端：全选",
+    "Queued messages": "排队消息",
+    "Plugins in Featured": "精选插件",
+    "Clear category": "清除分类筛选",
+    "Most popular first": "按热门程度排序",
+    "Most popular matches first": "匹配结果按热门程度排序",
+    "Sign in required.": "需要登录。",
+    "Error:": "错误：",
+    "Connect to Google Workspace, including Docs, Sheets, Slides, Drive, Calendar, and Gmail.": "连接 Google Workspace，可使用文档、表格、演示文稿、云端硬盘、日历和 Gmail。",
+    "See more in Google Workspace": "在 Google Workspace 中查看更多",
+    "See less in Google Workspace": "在 Google Workspace 中收起",
+    "Agent skills, databases, and interactive viewers for scientific research.": "面向科研的智能体技能、数据库和交互式查看器。"
   },
   "patterns": [
     {
@@ -5280,11 +5291,15 @@
     },
     {
       "regex": "^Select Sidebar Item ([1-9])$",
-      "replacement": "选择侧栏第  项"
+      "replacement": "选择侧栏第 $1 项"
     },
     {
       "regex": "^Show (\\d+) More$",
-      "replacement": "再显示  项"
+      "replacement": "再显示 $1 项"
+    },
+    {
+      "regex": "^See (\\d+) more plugins$",
+      "replacement": "再查看 $1 个插件"
     }
   ]
 }
