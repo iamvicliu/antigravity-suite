@@ -2020,8 +2020,21 @@ function createSessionCatalogStore() {
       rootIds.push(cid);
     }
 
-    for (const [subId, subRec] of store.subagentStates.entries()) {
-      if (seenSubIds.has(subId) || !subRec || !subRec.rootId) continue;
+    const nowMs = Date.now();
+    const hasFreshTraj = Boolean(trajData && trajData.summaries && Object.keys(trajData.summaries).length > 0);
+    const SUBAGENT_STALE_MS = 10 * 60 * 1000;
+    for (const [subId, subRec] of Array.from(store.subagentStates.entries())) {
+      if (seenSubIds.has(subId)) continue;
+      if (!subRec || !subRec.rootId) {
+        store.subagentStates.delete(subId);
+        continue;
+      }
+      const subAgeMs = nowMs - (Number(subRec.updatedAt) || 0);
+      // 仅针对已失联的 running 僵尸子代理：若全量轨迹拉取成功但该子代理已不在列表中（且超过 15 秒），或已超 10 分钟未更新，说明子代理已结束/回收，清理僵尸缓存避免父会话永久卡在 running（保留 waiting 待审批状态）
+      if (subRec.status === 'running' && ((hasFreshTraj && subAgeMs > 15000) || subAgeMs > SUBAGENT_STALE_MS)) {
+        store.subagentStates.delete(subId);
+        continue;
+      }
       const prevRoll = subagentRollup.get(subRec.rootId) || { waiting: false, running: false, maxUpdatedAt: 0 };
       if (subRec.status === 'waiting') prevRoll.waiting = true;
       else if (subRec.status === 'running') prevRoll.running = true;
@@ -2032,7 +2045,6 @@ function createSessionCatalogStore() {
     const activeSessionId = String(snap.sessionId || '').trim();
     const hasPendingApprovals = (Array.isArray(snap.pendingApprovals) && snap.pendingApprovals.length > 0)
       || (Array.isArray(snap.pendingPrompts) && snap.pendingPrompts.length > 0);
-    const nowMs = Date.now();
 
     for (const id of rootIds) {
       const prev = store.map.get(id);
@@ -3841,8 +3853,9 @@ function createConversationHistoryManager() {
     const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
     const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
+    const domQueued = (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []).filter((q) => q && q.source === 'dom');
     const effQueued = Array.isArray(queuedMessages)
-      ? queuedMessages
+      ? (queuedMessages.length > 0 ? queuedMessages : domQueued)
       : (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []);
     return {
       ...cleanSnap,
@@ -4381,8 +4394,8 @@ function buildMobileAppHtml() {
     .ap-btn.reject{background:var(--ap-reject-bg);color:var(--ap-reject-fg);border:1px solid var(--border)}
     .ap-btn.secondary{background:var(--surface-soft);color:var(--fg-strong);border:1px solid var(--border-strong)}
     .prompt-card{
-      padding:10px 11px;border-radius:12px;background:var(--card);border:1px solid var(--accent-border);
-      display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow-y:auto;
+      padding:9px 11px;border-radius:12px;background:var(--card);border:1px solid var(--accent-border);
+      display:flex;flex-direction:column;gap:7px;max-height:min(38vh,280px);overflow-y:auto;-webkit-overflow-scrolling:touch;
     }
     .prompt-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
     .prompt-title{font-size:13.5px;font-weight:700;color:var(--fg-strong);line-height:1.35}
@@ -4415,7 +4428,7 @@ function buildMobileAppHtml() {
     .queue-dock[hidden]{display:none}
     .queue-card{
       padding:8px 10px;border-radius:12px;background:var(--card);border:1px solid var(--border-strong);
-      display:flex;flex-direction:column;gap:6px;max-height:26vh;overflow-y:auto;
+      display:flex;flex-direction:column;gap:6px;max-height:min(22vh,176px);overflow-y:auto;-webkit-overflow-scrolling:touch;
     }
     .queue-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
     .queue-title{
@@ -4435,6 +4448,8 @@ function buildMobileAppHtml() {
       display:flex;align-items:center;justify-content:space-between;gap:8px;
       padding:6px 8px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border);
     }
+    .queue-thumbs{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
+    .queue-thumb{width:24px;height:24px;border-radius:5px;object-fit:cover;border:1px solid var(--border);display:block}
     .queue-item-text{
       flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--fg);line-height:1.35;
       display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;
@@ -4458,22 +4473,32 @@ function buildMobileAppHtml() {
     }
     .chip.suggest{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-fg);font-weight:500}
     .attach-hint{
-      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border-radius:12px;
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:12px;
       background:var(--accent-bg);border:1px solid var(--accent-border);font-size:12.5px;color:var(--accent-strong-fg);
     }
     .attach-hint[hidden]{display:none}
     .attach-strip{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
     .attach-strip::-webkit-scrollbar{display:none}
     .attach-thumb-wrap{
-      position:relative;flex-shrink:0;display:inline-flex;align-items:center;gap:6px;
-      padding:3px 7px 3px 3px;border-radius:9px;background:var(--card);border:1px solid var(--border);
+      position:relative;flex-shrink:0;display:inline-flex;align-items:center;gap:5px;
+      padding:3px 5px 3px 3px;border-radius:9px;background:var(--card);border:1px solid var(--border);
     }
     .attach-thumb{
       width:34px;height:34px;border-radius:6px;object-fit:cover;cursor:zoom-in;display:block;flex-shrink:0;
     }
     .attach-file-chip{
-      flex-shrink:0;display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:8px;
-      background:var(--card);border:1px solid var(--border);color:var(--fg);font-size:11.5px;max-width:180px;
+      flex-shrink:0;display:inline-flex;align-items:center;gap:5px;padding:4px 6px 4px 8px;border-radius:8px;
+      background:var(--card);border:1px solid var(--border);color:var(--fg);font-size:11.5px;max-width:200px;
+    }
+    .attach-item-rm{
+      appearance:none;border:none;background:var(--surface-soft);color:var(--muted);
+      width:18px;height:18px;border-radius:999px;padding:0;flex-shrink:0;cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:1;font-weight:700;
+    }
+    .attach-item-rm:hover,.attach-item-rm:active{background:var(--risk-bg);color:var(--risk-fg)}
+    .attach-clear-btn{
+      appearance:none;border:1px solid var(--accent-border);background:var(--card);color:var(--accent-strong-fg);
+      border-radius:8px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;white-space:nowrap;
     }
     .attach-file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .attach-file-size{font-size:10.5px;color:var(--muted);flex-shrink:0}
@@ -7205,7 +7230,19 @@ function buildMobileAppHtml() {
       const prompts = Array.isArray(snap.pendingPrompts) ? snap.pendingPrompts : [];
       const approvals = Array.isArray(snap.pendingApprovals) ? snap.pendingApprovals : [];
       const dock = $('approval-dock');
-      if (!displayCfg.showApprovals || (!prompts.length && !approvals.length)) {
+      const curDockSid = String(dock.dataset.promptSig || '').split('::')[0];
+      const keepPromptDuringUpload = Boolean(
+        displayCfg.showApprovals &&
+        !prompts.length &&
+        !approvals.length &&
+        !dock.hidden &&
+        dock.dataset.promptSig &&
+        curDockSid === String(snapSid || '__default__') &&
+        (typeof attachmentUploadInflight === 'number' && attachmentUploadInflight > 0 || (typeof lastAttachmentUploadAt === 'number' && (Date.now() - lastAttachmentUploadAt) < 1500))
+      );
+      if (keepPromptDuringUpload) {
+        // 粘贴/上传图片期间桌面端瞬态重绘可能短暂漏检选择框，保留当前已挂载的选择框避免闪烁消失
+      } else if (!displayCfg.showApprovals || (!prompts.length && !approvals.length)) {
         dock.hidden = true;
         dock.innerHTML = '';
         dock.dataset.promptSig = '';
@@ -7382,7 +7419,8 @@ function buildMobileAppHtml() {
           qDock.dataset.queueSig = '';
         } else {
           qDock.hidden = false;
-          const qSig = String(snapSid || '') + '::' + queuedList.map((q) => String(q.stepIndex) + ':' + String(q.text || '')).join('\u001f');
+          const isDomQueuedList = queuedList.every((q) => q && q.source === 'dom');
+          const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
           if (qDock.dataset.queueSig !== qSig) {
             qDock.dataset.queueSig = qSig;
             qDock.innerHTML = '<div class="queue-card">'
@@ -7390,12 +7428,19 @@ function buildMobileAppHtml() {
               + '<span class="queue-title"><span>排队中</span><span class="queue-count">' + queuedList.length + '</span></span>'
               + '<button class="queue-send-all" type="button"' + (queueActionBusy ? ' disabled' : '') + '>⚡ 立即发送</button>'
               + '</div>'
-              + '<div class="queue-list">' + queuedList.map((q) =>
-                '<div class="queue-item" data-step-idx="' + esc(String(q.stepIndex)) + '">'
-                + '<span class="queue-item-text">' + esc(q.text || '') + '</span>'
-                + '<button class="queue-del-btn" type="button" title="撤回此条排队消息" aria-label="撤回此条排队消息" data-step-idx="' + esc(String(q.stepIndex)) + '"' + (queueActionBusy ? ' disabled' : '') + '>×</button>'
-                + '</div>'
-              ).join('') + '</div></div>';
+              + '<div class="queue-list">' + queuedList.map((q, qi) => {
+                const imgsHtml = (Array.isArray(q.images) && q.images.length)
+                  ? ('<span class="queue-thumbs">' + q.images.slice(0, 3).map((im) => '<img class="queue-thumb" src="' + esc(im.src || '') + '" alt="' + esc(im.alt || '') + '" />').join('') + '</span>')
+                  : '';
+                const stepAttr = Number.isInteger(Number(q.stepIndex)) ? Number(q.stepIndex) : -1;
+                const domAttr = Number.isInteger(Number(q.domIndex)) ? Number(q.domIndex) : qi;
+                const srcAttr = q.source === 'dom' ? 'dom' : 'traj';
+                return '<div class="queue-item" data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '">'
+                  + imgsHtml
+                  + '<span class="queue-item-text">' + esc(q.text || '') + '</span>'
+                  + '<button class="queue-del-btn" type="button" title="撤回此条排队消息" aria-label="撤回此条排队消息" data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '" data-queue-text="' + esc(String(q.text || '')) + '"' + (queueActionBusy ? ' disabled' : '') + '>×</button>'
+                  + '</div>';
+              }).join('') + '</div></div>';
 
             const setQueueBtnsDisabled = (disabled) => {
               qDock.querySelectorAll('.queue-send-all, .queue-del-btn').forEach((b) => { b.disabled = disabled; });
@@ -7407,7 +7452,11 @@ function buildMobileAppHtml() {
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
-                  const res = await apiAction({ action: 'send-queued-messages', conversationId: String(snap.activeConversationId || snap.sessionId || '') });
+                  const res = await apiAction({
+                    action: 'send-queued-messages',
+                    conversationId: String(snap.activeConversationId || snap.sessionId || ''),
+                    ...(isDomQueuedList ? { source: 'dom', domIndex: 0 } : {})
+                  });
                   if (res?.ok) showToast('已立即发送排队消息');
                   else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
                 } catch (e) {
@@ -7421,15 +7470,19 @@ function buildMobileAppHtml() {
             qDock.querySelectorAll('.queue-del-btn').forEach((delBtn) => {
               delBtn.onclick = async () => {
                 if (queueActionBusy) return;
+                const src = String(delBtn.dataset.queueSource || 'traj');
                 const stepIdx = Number(delBtn.dataset.stepIdx);
-                if (!Number.isInteger(stepIdx) || stepIdx < 0) return;
+                const domIdx = Number(delBtn.dataset.domIdx);
+                if (src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
                   const res = await apiAction({
                     action: 'delete-queued-message',
                     conversationId: String(snap.activeConversationId || snap.sessionId || ''),
-                    stepIndex: stepIdx
+                    ...(src === 'dom'
+                      ? { source: 'dom', domIndex: Number.isInteger(domIdx) ? domIdx : 0, text: String(delBtn.dataset.queueText || '') }
+                      : { stepIndex: stepIdx })
                   });
                   if (res?.ok) showToast('已撤回排队消息');
                   else showToast(res?.error || res?.actionResult?.error || '撤回排队消息失败');
@@ -8753,6 +8806,8 @@ function buildMobileAppHtml() {
     }
 
     let uploadedAttachments = [];
+    let attachmentUploadInflight = 0;
+    let lastAttachmentUploadAt = 0;
     function formatFileSizeShort(bytes) {
       const n = Number(bytes) || 0;
       if (n < 1024) return n + ' B';
@@ -9031,23 +9086,55 @@ function buildMobileAppHtml() {
       }
       const stripHtml = uploadedAttachments.map((att, idx) => {
         if (att.isImage && att.previewUrl) {
-          return '<span class="attach-thumb-wrap"><img class="attach-thumb" src="' + esc(att.previewUrl) + '" alt="' + esc(att.name) + '" data-att-idx="' + idx + '" /><span class="attach-file-name" style="max-width:96px">' + esc(att.name) + '</span></span>';
+          return '<span class="attach-thumb-wrap" data-att-idx="' + idx + '">'
+            + '<img class="attach-thumb" src="' + esc(att.previewUrl) + '" alt="' + esc(att.name) + '" data-att-idx="' + idx + '" />'
+            + '<span class="attach-file-name" style="max-width:88px">' + esc(att.name) + '</span>'
+            + '<button type="button" class="attach-item-rm" data-rm-idx="' + idx + '" title="移除此图片" aria-label="移除此图片">×</button>'
+            + '</span>';
         }
-        return '<span class="attach-file-chip"><span class="attach-file-name">📄 ' + esc(att.name) + '</span><span class="attach-file-size">' + esc(formatFileSizeShort(att.size)) + '</span></span>';
+        return '<span class="attach-file-chip" data-att-idx="' + idx + '">'
+          + '<span class="attach-file-name">📄 ' + esc(att.name) + '</span>'
+          + '<span class="attach-file-size">' + esc(formatFileSizeShort(att.size)) + '</span>'
+          + '<button type="button" class="attach-item-rm" data-rm-idx="' + idx + '" title="移除此文件" aria-label="移除此文件">×</button>'
+          + '</span>';
       }).join('');
-      hint.innerHTML = '<div class="attach-strip">' + stripHtml + '</div><button type="button" class="attach-clear-btn" style="background:none;border:none;color:var(--accent-strong-fg);font-weight:700;cursor:pointer;flex-shrink:0">✕</button>';
+      const clearAllHtml = uploadedAttachments.length >= 2
+        ? '<button type="button" class="attach-clear-btn" title="清空全部附件">清空</button>'
+        : '';
+      hint.innerHTML = '<div class="attach-strip">' + stripHtml + '</div>' + clearAllHtml;
       hint.querySelectorAll('.attach-thumb').forEach((imgEl) => {
         imgEl.onclick = () => {
           const item = uploadedAttachments[Number(imgEl.dataset.attIdx)];
           if (item?.previewUrl) openMediaLightbox(item.previewUrl, item.name);
         };
       });
-      hint.querySelector('.attach-clear-btn').onclick = () => {
-        uploadedNames = [];
-        uploadedAttachments = [];
-        renderAttachHintStrip();
-        syncSendButtonUI();
-      };
+      hint.querySelectorAll('.attach-item-rm').forEach((rmBtn) => {
+        rmBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          const idx = Number(rmBtn.dataset.rmIdx);
+          if (!Number.isInteger(idx) || idx < 0 || idx >= uploadedAttachments.length) return;
+          const removed = uploadedAttachments.splice(idx, 1)[0];
+          const nameIdx = removed ? uploadedNames.indexOf(removed.name) : idx;
+          if (nameIdx >= 0) uploadedNames.splice(nameIdx, 1);
+          renderAttachHintStrip();
+          syncSendButtonUI();
+          void apiAction({
+            action: 'remove-uploaded-attachment',
+            name: removed?.name || '',
+            index: idx
+          }, { skipAutoRender: true }).catch(() => {});
+        };
+      });
+      const clearBtn = hint.querySelector('.attach-clear-btn');
+      if (clearBtn) {
+        clearBtn.onclick = () => {
+          uploadedNames = [];
+          uploadedAttachments = [];
+          renderAttachHintStrip();
+          syncSendButtonUI();
+          void apiAction({ action: 'remove-uploaded-attachment', clearAll: true }, { skipAutoRender: true }).catch(() => {});
+        };
+      }
       hint.hidden = false;
     }
 
@@ -9056,25 +9143,33 @@ function buildMobileAppHtml() {
       if (!files.length) return;
       showToast('正在上传 ' + files.length + ' 个附件…');
       let okCount = 0;
-      for (const f of files) {
-        try {
-          const payload = await readAttachmentFile(f);
-          const r = await apiAction({ action: 'upload-image', name: payload.name, mimeType: payload.mimeType, base64: payload.base64 });
-          if (r?.ok) {
-            uploadedNames.push(payload.name);
-            uploadedAttachments.push({
-              name: payload.name,
-              size: payload.size,
-              isImage: payload.isImage,
-              previewUrl: payload.previewUrl
-            });
-            okCount += 1;
-          } else {
-            showToast(r?.error || r?.actionResult?.error || '上传附件失败');
+      attachmentUploadInflight += 1;
+      lastAttachmentUploadAt = Date.now();
+      try {
+        for (const f of files) {
+          try {
+            const payload = await readAttachmentFile(f);
+            const r = await apiAction({ action: 'upload-image', name: payload.name, mimeType: payload.mimeType, base64: payload.base64 }, { skipAutoRender: true });
+            lastAttachmentUploadAt = Date.now();
+            if (r?.ok) {
+              uploadedNames.push(payload.name);
+              uploadedAttachments.push({
+                name: payload.name,
+                size: payload.size,
+                isImage: payload.isImage,
+                previewUrl: payload.previewUrl
+              });
+              okCount += 1;
+            } else {
+              showToast(r?.error || r?.actionResult?.error || '上传附件失败');
+            }
+          } catch (err) {
+            showToast(err?.message || '上传附件失败');
           }
-        } catch (err) {
-          showToast(err?.message || '上传附件失败');
         }
+      } finally {
+        attachmentUploadInflight = Math.max(0, attachmentUploadInflight - 1);
+        lastAttachmentUploadAt = Date.now();
       }
       if (uploadedAttachments.length) {
         renderAttachHintStrip();
@@ -11686,8 +11781,25 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效会话 ID' }));
             return;
           }
+          const isDomQueueSource = payload?.source === 'dom';
           let rpcRes = null;
-          if (actionName === 'delete-queued-message') {
+          let usedDomFallback = false;
+          if (isDomQueueSource) {
+            const domAct = actionName === 'delete-queued-message' ? 'delete-queued-dom' : 'send-queued-dom';
+            const domRes = await performAction({
+              action: domAct,
+              clientId,
+              targetId: effectiveTargetId || undefined,
+              conversationId: cascadeId,
+              domIndex: Number.isInteger(Number(payload?.domIndex)) ? Number(payload.domIndex) : 0,
+              text: String(payload?.text || '')
+            });
+            if (!domRes?.ok) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domRes?.error || domRes?.actionResult?.error || '桌面端队列操作失败' }));
+              return;
+            }
+            usedDomFallback = true;
+          } else if (actionName === 'delete-queued-message') {
             const rawStep = payload?.stepIndex;
             const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
               || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
@@ -11700,7 +11812,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           } else {
             rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
           }
-          if (rpcRes === null || rpcRes === false) {
+          if (!usedDomFallback && (rpcRes === null || rpcRes === false)) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '本机 LanguageServer 队列操作调用失败或超时' }));
             return;
           }

@@ -2382,7 +2382,7 @@ test('需求 10: 功能显示开关实时隐藏/显示顶栏入口与对话区�
   const env = createDomEnv();
   const composerWrap = env.doc.createElement('div');
   const composer = env.doc.createElement('div');
-  composer.className = 'surface-composer';
+  composer.setAttribute('class', 'surface-composer');
   composerWrap.appendChild(composer);
   env.doc.body.appendChild(composerWrap);
 
@@ -12981,4 +12981,239 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   assert.equal(brAppClasses.has('kb-open'), false);
   assert.equal(brBodyStyle.bottom, '0');
   assert.equal(brBodyStyle.height, '', '普通浏览器键盘收起后必须清除内联 height 恢复满屏贴底');
+});
+
+test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附件删除及僵尸运行态清理 (Batch B)', async () => {
+  const {
+    buildMobileAppHtml,
+    createConversationHistoryManager,
+    createSessionCatalogStore
+  } = require('./mobile-remote');
+
+  // 1. 前端 HTML 全量 <script> 语法校验 + 贴图保护/单个删除/三层栈结构断言
+  const html = buildMobileAppHtml();
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-batchb-script-${i}.js` }));
+  }
+  assert.ok(html.includes('keepPromptDuringUpload'), '贴图期间应保护当前已展示的选择框不因瞬态空快照闪烁消失');
+  assert.ok(html.includes("action: 'upload-image', name: payload.name, mimeType: payload.mimeType, base64: payload.base64 }, { skipAutoRender: true }"), '上传图片应使用 skipAutoRender 避免瞬态快照抹掉选择框');
+  assert.ok(html.includes('attach-item-rm') && html.includes("action: 'remove-uploaded-attachment'"), '每个图片与文件附件应提供独立 × 删除按钮并同步桌面移除');
+  assert.ok(html.includes('queue-thumbs') && html.includes("source: 'dom'"), '排队消息栏应支持 DOM 来源排队消息与缩略图展示');
+
+  // 2. 桌面端增强器：编号权限选择卡 + DOM 排队消息采集/操作 + 单个附件移除 + 未读蓝点不误判 domBusy
+  const env = createDomEnv();
+  env.win.location = { pathname: '/c/dddd1111-2222-3333-4444-555555555555', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/dddd1111-2222-3333-4444-555555555555' };
+  env.sandbox.location = env.win.location;
+  env.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+  const mainEl = env.doc.createElement('main');
+  env.doc.body.appendChild(mainEl);
+
+  // 2a. 编号确认卡片（Allow write access to this path?）
+  const permCard = env.doc.createElement('div');
+  const permH = env.doc.createElement('h3');
+  permH.textContent = 'Allow write access to this path?';
+  permCard.appendChild(permH);
+  const permDesc = env.doc.createElement('code');
+  permDesc.textContent = '/Users/demo/workspace/notes/task-demo.md';
+  permCard.appendChild(permDesc);
+  const clickedLog = [];
+  for (const label of [
+    '1 Yes, allow this time',
+    '2 Yes, and always allow in this conversation',
+    '3 Yes, and always allow',
+    '4 No (tell the agent what to do instead)'
+  ]) {
+    const optBtn = env.doc.createElement('button');
+    optBtn.textContent = label;
+    optBtn.offsetWidth = 260;
+    optBtn.addEventListener('click', () => clickedLog.push(`opt:${label}`));
+    permCard.appendChild(optBtn);
+  }
+  const skipBtn = env.doc.createElement('button');
+  skipBtn.textContent = 'Skip';
+  skipBtn.offsetWidth = 60;
+  const submitBtn = env.doc.createElement('button');
+  submitBtn.textContent = 'Submit';
+  submitBtn.offsetWidth = 80;
+  submitBtn.addEventListener('click', () => clickedLog.push('act:Submit'));
+  permCard.appendChild(skipBtn);
+  permCard.appendChild(submitBtn);
+  mainEl.appendChild(permCard);
+
+  // 2b. 桌面 DOM Queued Messages 卡片
+  const qCard = env.doc.createElement('div');
+  const qHead = env.doc.createElement('div');
+  qHead.textContent = 'Queued Messages 1 Sends after agent finishes working';
+  qCard.appendChild(qHead);
+  const qRow = env.doc.createElement('div');
+  qRow.setAttribute('data-testid', 'queued-message-item');
+  const qImg = env.doc.createElement('img');
+  qImg.setAttribute('src', 'data:image/png;base64,iVBORw0KGgo=');
+  qImg.setAttribute('alt', 'shot.png');
+  qRow.appendChild(qImg);
+  const qTxt = env.doc.createElement('span');
+  qTxt.textContent = '另外，像#27，还有另一种卡住情况';
+  qRow.appendChild(qTxt);
+  const qSendBtn = env.doc.createElement('button');
+  qSendBtn.setAttribute('aria-label', 'Send now');
+  qSendBtn.addEventListener('click', () => clickedLog.push('queue:send'));
+  const qDelBtn = env.doc.createElement('button');
+  qDelBtn.setAttribute('aria-label', 'Delete queued message');
+  qDelBtn.addEventListener('click', () => clickedLog.push('queue:delete'));
+  qRow.appendChild(qSendBtn);
+  qRow.appendChild(qDelBtn);
+  qCard.appendChild(qRow);
+  mainEl.appendChild(qCard);
+
+  // 2c. 桌面 composer 附件芯片（2 张图，验证单删不误删其余）
+  const composerWrap = env.doc.createElement('div');
+  const composer = env.doc.createElement('div');
+  composer.setAttribute('class', 'surface-composer');
+  const chipA = env.doc.createElement('div');
+  chipA.setAttribute('data-testid', 'attachment-item');
+  const imgA = env.doc.createElement('img');
+  imgA.setAttribute('alt', 'a.png');
+  const rmA = env.doc.createElement('button');
+  rmA.setAttribute('aria-label', 'Remove a.png');
+  rmA.textContent = '×';
+  rmA.addEventListener('click', () => clickedLog.push('rm:a.png'));
+  chipA.appendChild(imgA);
+  chipA.appendChild(rmA);
+  const chipB = env.doc.createElement('div');
+  chipB.setAttribute('data-testid', 'attachment-item');
+  const imgB = env.doc.createElement('img');
+  imgB.setAttribute('alt', 'b.png');
+  const rmB = env.doc.createElement('button');
+  rmB.setAttribute('aria-label', 'Remove b.png');
+  rmB.textContent = '×';
+  rmB.addEventListener('click', () => clickedLog.push('rm:b.png'));
+  chipB.appendChild(imgB);
+  chipB.appendChild(rmB);
+  composer.appendChild(chipA);
+  composer.appendChild(chipB);
+  composerWrap.appendChild(composer);
+  mainEl.appendChild(composerWrap);
+
+  // 2d. 侧边栏带未读蓝点（非 spinner）不应判为 domBusy
+  const sbRow = env.doc.createElement('div');
+  sbRow.setAttribute('data-testid', 'conversation-row-sidebar');
+  const sbLink = env.doc.createElement('a');
+  sbLink.setAttribute('href', '/c/eeee1111-2222-3333-4444-555555555555');
+  const sbTitle = env.doc.createElement('span');
+  sbTitle.textContent = '优化思考过程展开样式';
+  sbLink.appendChild(sbTitle);
+  const unreadDot = env.doc.createElement('span');
+  unreadDot.className = 'unread-blue-dot';
+  sbRow.appendChild(sbLink);
+  sbRow.appendChild(unreadDot);
+  env.doc.body.appendChild(sbRow);
+
+  let enh = null;
+  try {
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    enh = env.sandbox.__AGEnhancer;
+
+    const snap = enh.getMobileSnapshot();
+    assert.equal(snap.pendingPrompts.length, 1, '应识别编号权限确认卡片');
+    assert.equal(snap.pendingPrompts[0].title, 'Allow write access to this path?');
+    assert.equal(snap.pendingPrompts[0].options.length, 4, '应提取 4 个编号选项');
+    assert.deepEqual(Array.from(snap.pendingPrompts[0].actions, (a) => a.label), ['Skip', 'Submit'], '操作按钮不应混入编号选项');
+
+    const respRes = await enh.performMobileAction({
+      action: 'respond-prompt',
+      promptKey: snap.pendingPrompts[0].promptKey,
+      selectedIndices: [1],
+      actionLabel: 'Submit'
+    });
+    assert.equal(respRes.ok, true);
+    assert.ok(clickedLog.includes('opt:2 Yes, and always allow in this conversation'));
+    assert.ok(clickedLog.includes('act:Submit'));
+
+    assert.equal(snap.queuedMessages.length, 1, '应从桌面 DOM 采集到排队消息');
+    assert.equal(snap.queuedMessages[0].source, 'dom');
+    assert.ok(snap.queuedMessages[0].text.includes('#27'));
+    assert.equal(snap.queuedMessages[0].images.length, 1);
+
+    // enrichMessages 在轨迹排队为空数组时必须保留 DOM 排队消息
+    const histMgr = createConversationHistoryManager();
+    const enrichedMsgSnap = await histMgr.enrichMessages({
+      sessionId: 'dddd1111-2222-3333-4444-555555555555',
+      messages: [],
+      queuedMessages: snap.queuedMessages
+    }, {
+      localApiConnect: async () => ({
+        call: async () => ({ trajectory: { steps: [] } })
+      })
+    });
+    assert.equal(enrichedMsgSnap.queuedMessages.length, 1, '轨迹 queuedMessages 为空时应保留桌面 DOM 排队消息');
+    assert.equal(enrichedMsgSnap.queuedMessages[0].source, 'dom');
+
+    const delQRes = await enh.performMobileAction({ action: 'delete-queued-dom', domIndex: 0 });
+    assert.equal(delQRes.ok, true);
+    assert.ok(clickedLog.includes('queue:delete'));
+    const sendQRes = await enh.performMobileAction({ action: 'send-queued-dom', domIndex: 0 });
+    assert.equal(sendQRes.ok, true);
+    assert.ok(clickedLog.includes('queue:send'));
+
+    // 单个附件移除仅删目标项 b.png，不误删 a.png
+    const rmOneRes = await enh.performMobileAction({ action: 'remove-uploaded-attachment', name: 'b.png', index: 1 });
+    assert.equal(rmOneRes.ok, true);
+    assert.equal(rmOneRes.removed, 1, `rmOneRes=${JSON.stringify(rmOneRes)} clickedLog=${JSON.stringify(clickedLog)}`);
+    assert.ok(clickedLog.includes('rm:b.png'), `clickedLog=${JSON.stringify(clickedLog)}`);
+    assert.ok(!clickedLog.includes('rm:a.png'), '单删 b.png 不应误删 a.png');
+
+    // 未读蓝点不触发 domBusy
+    const sbItem = snap.conversations.find((c) => c.id === 'eeee1111-2222-3333-4444-555555555555');
+    assert.equal(sbItem?.domBusy, false, '侧边栏未读蓝点不得误判为 domBusy');
+  } finally {
+    enh?.dispose?.();
+    env.sandbox.__AGContextMeter?.dispose?.();
+    env.cleanup?.();
+  }
+
+  // 3. 僵尸 subagentStates 清理与过期持久化 running 自愈
+  const tmpCatDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cat-batchb-'));
+  try {
+    const store = createSessionCatalogStore();
+    const oldTs = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    const apiWithSub = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'parent-conv-1': { summary: '优化思考过程展开样式', status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: oldTs },
+              'sub-zombie-1': { summary: '子任务', status: 'CASCADE_RUN_STATUS_RUNNING', parentConversationId: 'parent-conv-1', isSubagent: true, lastModifiedTime: oldTs }
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const r1 = await store.enrichSnapshot({ sessionId: 'other-conv', busy: false, conversations: [] }, { stateDir: tmpCatDir, localApiConnect: apiWithSub, bypassCache: true });
+    assert.equal(r1.conversations.find((c) => c.id === 'parent-conv-1')?.status, 'running', '活跃子代理存在时父会话应为 running');
+
+    // 子代理结束并从全量轨迹列表中消失 → 父会话应自动恢复 idle，不得永久卡在 running
+    const apiSubGone = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'parent-conv-1': { summary: '优化思考过程展开样式', status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: oldTs }
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const r2 = await store.enrichSnapshot({ sessionId: 'other-conv', busy: false, conversations: [] }, { stateDir: tmpCatDir, localApiConnect: apiSubGone, bypassCache: true });
+    assert.equal(r2.conversations.find((c) => c.id === 'parent-conv-1')?.status, 'idle', '子代理已从全量轨迹消失且超过宽限期时，父会话必须恢复 idle');
+  } finally {
+    fs.rmSync(tmpCatDir, { recursive: true, force: true });
+  }
 });
