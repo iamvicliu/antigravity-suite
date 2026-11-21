@@ -2021,8 +2021,7 @@ function createSessionCatalogStore() {
     }
 
     const nowMs = Date.now();
-    const hasFreshTraj = Boolean(trajData && trajData.summaries && Object.keys(trajData.summaries).length > 0);
-    const SUBAGENT_STALE_MS = 10 * 60 * 1000;
+    const trajFetchedOk = Boolean(trajData && trajData.trajOk === true);
     for (const [subId, subRec] of Array.from(store.subagentStates.entries())) {
       if (seenSubIds.has(subId)) continue;
       if (!subRec || !subRec.rootId) {
@@ -2030,8 +2029,9 @@ function createSessionCatalogStore() {
         continue;
       }
       const subAgeMs = nowMs - (Number(subRec.updatedAt) || 0);
-      // 仅针对已失联的 running 僵尸子代理：若全量轨迹拉取成功但该子代理已不在列表中（且超过 15 秒），或已超 10 分钟未更新，说明子代理已结束/回收，清理僵尸缓存避免父会话永久卡在 running（保留 waiting 待审批状态）
-      if (subRec.status === 'running' && ((hasFreshTraj && subAgeMs > 15000) || subAgeMs > SUBAGENT_STALE_MS)) {
+      // 仅在全量轨迹拉取明确成功（含成功返回空对象）且该 running 子代理已不在列表中超过 15 秒时清理僵尸缓存；
+      // 若轨迹拉取失败，无论经过多久均保留活跃状态以免误伤真实运行中的子代理（同时保留 waiting 待审批状态）
+      if (subRec.status === 'running' && trajFetchedOk && subAgeMs > 15000) {
         store.subagentStates.delete(subId);
         continue;
       }
@@ -3854,9 +3854,21 @@ function createConversationHistoryManager() {
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
     const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
     const domQueued = (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []).filter((q) => q && q.source === 'dom');
-    const effQueued = Array.isArray(queuedMessages)
-      ? (queuedMessages.length > 0 ? queuedMessages : domQueued)
-      : (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []);
+    let effQueued;
+    if (Array.isArray(queuedMessages)) {
+      const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+      const mergedQ = [...queuedMessages];
+      const seenQTexts = new Set(mergedQ.map((q) => normQText(q?.text)).filter(Boolean));
+      for (const dq of domQueued) {
+        const key = normQText(dq?.text);
+        if (key && seenQTexts.has(key)) continue;
+        if (key) seenQTexts.add(key);
+        mergedQ.push(dq);
+      }
+      effQueued = mergedQ;
+    } else {
+      effQueued = Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : [];
+    }
     return {
       ...cleanSnap,
       totalMessages: fullMsgs.length,
@@ -7419,6 +7431,7 @@ function buildMobileAppHtml() {
           qDock.dataset.queueSig = '';
         } else {
           qDock.hidden = false;
+          const hasDomQueued = queuedList.some((q) => q && q.source === 'dom');
           const isDomQueuedList = queuedList.every((q) => q && q.source === 'dom');
           const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
           if (qDock.dataset.queueSig !== qSig) {
@@ -7455,7 +7468,7 @@ function buildMobileAppHtml() {
                   const res = await apiAction({
                     action: 'send-queued-messages',
                     conversationId: String(snap.activeConversationId || snap.sessionId || ''),
-                    ...(isDomQueuedList ? { source: 'dom', domIndex: 0 } : {})
+                    ...(isDomQueuedList ? { source: 'dom', domIndex: 0 } : (hasDomQueued ? { hasDomQueued: true } : {}))
                   });
                   if (res?.ok) showToast('已立即发送排队消息');
                   else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
@@ -9114,15 +9127,25 @@ function buildMobileAppHtml() {
           const idx = Number(rmBtn.dataset.rmIdx);
           if (!Number.isInteger(idx) || idx < 0 || idx >= uploadedAttachments.length) return;
           const removed = uploadedAttachments.splice(idx, 1)[0];
-          const nameIdx = removed ? uploadedNames.indexOf(removed.name) : idx;
-          if (nameIdx >= 0) uploadedNames.splice(nameIdx, 1);
+          if (removed && uploadedNames[idx] === removed.name) {
+            uploadedNames.splice(idx, 1);
+          } else {
+            const nameIdx = removed ? uploadedNames.indexOf(removed.name) : idx;
+            if (nameIdx >= 0) uploadedNames.splice(nameIdx, 1);
+          }
           renderAttachHintStrip();
           syncSendButtonUI();
           void apiAction({
             action: 'remove-uploaded-attachment',
             name: removed?.name || '',
             index: idx
-          }, { skipAutoRender: true }).catch(() => {});
+          }, { skipAutoRender: true }).then((r) => {
+            if (r && r.ok === false) {
+              showToast(r?.error || r?.actionResult?.error || '桌面端附件同步移除失败');
+            }
+          }).catch((err) => {
+            showToast(err?.message || '桌面端附件同步移除失败');
+          });
         };
       });
       const clearBtn = hint.querySelector('.attach-clear-btn');
@@ -9132,7 +9155,13 @@ function buildMobileAppHtml() {
           uploadedAttachments = [];
           renderAttachHintStrip();
           syncSendButtonUI();
-          void apiAction({ action: 'remove-uploaded-attachment', clearAll: true }, { skipAutoRender: true }).catch(() => {});
+          void apiAction({ action: 'remove-uploaded-attachment', clearAll: true }, { skipAutoRender: true }).then((r) => {
+            if (r && r.ok === false) {
+              showToast(r?.error || r?.actionResult?.error || '桌面端附件清空失败');
+            }
+          }).catch((err) => {
+            showToast(err?.message || '桌面端附件清空失败');
+          });
         };
       }
       hint.hidden = false;
@@ -11811,6 +11840,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
           } else {
             rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
+            if (payload?.hasDomQueued === true) {
+              const domRes = await performAction({
+                action: 'send-queued-dom',
+                clientId,
+                targetId: effectiveTargetId || undefined,
+                conversationId: cascadeId,
+                domIndex: 0
+              }).catch(() => null);
+              if (domRes?.ok) usedDomFallback = true;
+            }
           }
           if (!usedDomFallback && (rpcRes === null || rpcRes === false)) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '本机 LanguageServer 队列操作调用失败或超时' }));

@@ -13138,7 +13138,7 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     assert.ok(snap.queuedMessages[0].text.includes('#27'));
     assert.equal(snap.queuedMessages[0].images.length, 1);
 
-    // enrichMessages 在轨迹排队为空数组时必须保留 DOM 排队消息
+    // enrichMessages 在轨迹排队为空数组时必须保留 DOM 排队消息；轨迹已有 A 且 DOM 新增 B 时两者均可见且去重
     const histMgr = createConversationHistoryManager();
     const enrichedMsgSnap = await histMgr.enrichMessages({
       sessionId: 'dddd1111-2222-3333-4444-555555555555',
@@ -13151,6 +13151,36 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     });
     assert.equal(enrichedMsgSnap.queuedMessages.length, 1, '轨迹 queuedMessages 为空时应保留桌面 DOM 排队消息');
     assert.equal(enrichedMsgSnap.queuedMessages[0].source, 'dom');
+
+    const mixedMsgSnap = await histMgr.enrichMessages({
+      sessionId: 'eeee2222-3333-4444-5555-666666666666',
+      messages: [],
+      queuedMessages: [
+        { domIndex: 0, stepIndex: -1, source: 'dom', text: '排队消息 A' },
+        { domIndex: 1, stepIndex: -1, source: 'dom', text: '排队消息 B' }
+      ]
+    }, {
+      localApiConnect: async () => ({
+        call: async () => ({
+          trajectory: {
+            steps: [
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { userResponse: '排队消息 A' } }
+            ]
+          }
+        })
+      })
+    });
+    assert.equal(mixedMsgSnap.queuedMessages.length, 2, '轨迹已有 A 且 DOM 新增 B 时，两条排队消息必须同时可见并去重');
+    assert.equal(mixedMsgSnap.queuedMessages[0].text, '排队消息 A');
+    assert.equal(mixedMsgSnap.queuedMessages[0].stepIndex, 0);
+    assert.equal(mixedMsgSnap.queuedMessages[1].text, '排队消息 B');
+    assert.equal(mixedMsgSnap.queuedMessages[1].source, 'dom');
+    assert.equal(mixedMsgSnap.queuedMessages[1].domIndex, 1);
+
+    // 同会话 getMobileSnapshotAsync 保留 pendingPrompts 与 queuedMessages
+    const sameConvSnap = await enh.getMobileSnapshotAsync({ conversationId: 'dddd1111-2222-3333-4444-555555555555' });
+    assert.equal(sameConvSnap.pendingPrompts.length, 1, '同会话快照必须保留 pendingPrompts');
+    assert.equal(sameConvSnap.queuedMessages.length, 1, '同会话快照必须保留 queuedMessages');
 
     const delQRes = await enh.performMobileAction({ action: 'delete-queued-dom', domIndex: 0 });
     assert.equal(delQRes.ok, true);
@@ -13166,6 +13196,23 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     assert.ok(clickedLog.includes('rm:b.png'), `clickedLog=${JSON.stringify(clickedLog)}`);
     assert.ok(!clickedLog.includes('rm:a.png'), '单删 b.png 不应误删 a.png');
 
+    // 同名附件场景：新增第 2 个同名 a.png（index=2），删除 index=2 时精确命中第 2 个而非第 1 个
+    const chipADup = env.doc.createElement('div');
+    chipADup.setAttribute('data-testid', 'attachment-item');
+    const imgADup = env.doc.createElement('img');
+    imgADup.setAttribute('alt', 'a.png');
+    const rmADup = env.doc.createElement('button');
+    rmADup.setAttribute('aria-label', 'Remove a.png');
+    rmADup.textContent = '×';
+    rmADup.addEventListener('click', () => clickedLog.push('rm:a.png#2'));
+    chipADup.appendChild(imgADup);
+    chipADup.appendChild(rmADup);
+    composer.appendChild(chipADup);
+    const rmDupRes = await enh.performMobileAction({ action: 'remove-uploaded-attachment', name: 'a.png', index: 2 });
+    assert.equal(rmDupRes.ok, true);
+    assert.ok(clickedLog.includes('rm:a.png#2'), '同名附件按 index 删除应精确命中第 2 个');
+    assert.ok(!clickedLog.includes('rm:a.png'), '同名附件删除第 2 个时不得误删第 1 个');
+
     // 未读蓝点不触发 domBusy
     const sbItem = snap.conversations.find((c) => c.id === 'eeee1111-2222-3333-4444-555555555555');
     assert.equal(sbItem?.domBusy, false, '侧边栏未读蓝点不得误判为 domBusy');
@@ -13175,18 +13222,18 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     env.cleanup?.();
   }
 
-  // 3. 僵尸 subagentStates 清理与过期持久化 running 自愈
+  // 3. 僵尸 subagentStates 清理（仅在全量轨迹成功含空对象后生效；拉取失败超 10 分钟仍保留运行态）
   const tmpCatDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cat-batchb-'));
   try {
     const store = createSessionCatalogStore();
-    const oldTs = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    const veryOldTs = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     const apiWithSub = async () => ({
       call: async (method) => {
         if (method === 'GetAllCascadeTrajectories') {
           return {
             trajectorySummaries: {
-              'parent-conv-1': { summary: '优化思考过程展开样式', status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: oldTs },
-              'sub-zombie-1': { summary: '子任务', status: 'CASCADE_RUN_STATUS_RUNNING', parentConversationId: 'parent-conv-1', isSubagent: true, lastModifiedTime: oldTs }
+              'parent-conv-1': { summary: '优化思考过程展开样式', status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: veryOldTs },
+              'sub-zombie-1': { summary: '子任务', status: 'CASCADE_RUN_STATUS_RUNNING', parentConversationId: 'parent-conv-1', isSubagent: true, lastModifiedTime: veryOldTs }
             }
           };
         }
@@ -13197,13 +13244,35 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     const r1 = await store.enrichSnapshot({ sessionId: 'other-conv', busy: false, conversations: [] }, { stateDir: tmpCatDir, localApiConnect: apiWithSub, bypassCache: true });
     assert.equal(r1.conversations.find((c) => c.id === 'parent-conv-1')?.status, 'running', '活跃子代理存在时父会话应为 running');
 
-    // 子代理结束并从全量轨迹列表中消失 → 父会话应自动恢复 idle，不得永久卡在 running
-    const apiSubGone = async () => ({
+    // 3a. 轨迹拉取失败且子代理已超 15 分钟：不得误删运行中子代理，父会话保持 running
+    const apiTrajFail = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') throw new Error('LS temporarily unavailable');
+        return {};
+      }
+    });
+    const rFail = await store.enrichSnapshot({ sessionId: 'other-conv', busy: false, conversations: [] }, { stateDir: tmpCatDir, localApiConnect: apiTrajFail, bypassCache: true });
+    assert.equal(rFail.conversations.find((c) => c.id === 'parent-conv-1')?.status, 'running', '轨迹拉取持续失败超过 10 分钟时不得误删真实运行中的子代理');
+
+    // 3b. 轨迹拉取成功返回空对象 {} → 已消失的 running 子代理必须被清理，父会话不再被假子代理拖住
+    const apiSubGoneEmpty = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return { trajectorySummaries: {} };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    await store.enrichSnapshot({ sessionId: 'other-conv', busy: false, conversations: [] }, { stateDir: tmpCatDir, localApiConnect: apiSubGoneEmpty, bypassCache: true });
+
+    // 3c. 随后父会话轨迹报 IDLE（无子代理）→ 立即恢复 idle
+    const apiParentIdle = async () => ({
       call: async (method) => {
         if (method === 'GetAllCascadeTrajectories') {
           return {
             trajectorySummaries: {
-              'parent-conv-1': { summary: '优化思考过程展开样式', status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: oldTs }
+              'parent-conv-1': { summary: '优化思考过程展开样式', status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: veryOldTs }
             }
           };
         }
@@ -13211,8 +13280,8 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
         return {};
       }
     });
-    const r2 = await store.enrichSnapshot({ sessionId: 'other-conv', busy: false, conversations: [] }, { stateDir: tmpCatDir, localApiConnect: apiSubGone, bypassCache: true });
-    assert.equal(r2.conversations.find((c) => c.id === 'parent-conv-1')?.status, 'idle', '子代理已从全量轨迹消失且超过宽限期时，父会话必须恢复 idle');
+    const r2 = await store.enrichSnapshot({ sessionId: 'other-conv', busy: false, conversations: [] }, { stateDir: tmpCatDir, localApiConnect: apiParentIdle, bypassCache: true });
+    assert.equal(r2.conversations.find((c) => c.id === 'parent-conv-1')?.status, 'idle', '全量轨迹成功（含空列表）后失联 running 子代理已清理，父会话恢复 idle');
   } finally {
     fs.rmSync(tmpCatDir, { recursive: true, force: true });
   }
