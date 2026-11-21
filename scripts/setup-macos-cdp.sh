@@ -95,8 +95,8 @@ mkdir -p "$LOCAL_BIN_DIR"
 ln -sf "$BIN_SRC" "$BIN_DEST"
 echo "✅ 已链接 CLI 命令: $BIN_DEST -> $BIN_SRC"
 
-# 若目标不在标准目录 ~/.local/share/antigravity-context-viewer，可由用户设置环境变量或创建软链以便直接定位
-STANDARD_SHARE_DIR="$HOME/.local/share/antigravity-context-viewer"
+# 若目标不在标准目录 ~/.local/share/antigravity-suite，自动创建软链以便直接定位
+STANDARD_SHARE_DIR="$HOME/.local/share/antigravity-suite"
 if [ ! -e "$STANDARD_SHARE_DIR" ]; then
   mkdir -p "$(dirname "$STANDARD_SHARE_DIR")"
   ln -s "$REPO_DIR" "$STANDARD_SHARE_DIR"

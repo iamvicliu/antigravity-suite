@@ -4,27 +4,34 @@
 
 > **100% zero-patch enhancement & remote control suite for Google Antigravity desktop (macOS) — never modifies `app.asar` or Apple code signatures, safe across official updates, and instant to toggle.**
 
+<p align="center">
+  <img src="assets/mac-preview.png" alt="Antigravity Suite macOS desktop preview" width="100%">
+</p>
+
 ## Core Highlights
 
 1. **🇨🇳 Instant Chinese / English UI Toggle (Zero-Token Local Thought Translation)**
    - Switch instantly between Simplified Chinese UI (+ zero-token local caching translation for Thinking blocks & titles) and original English right inside **`⚙️`**, without restarting.
-2. **📱 4-Channel Mobile & Desktop Remote Control (Zero-Config Cloudflare Tunnel + Multi-Session Isolation)**
-   - Scan a single QR code to chat, switch models/permissions, upload images, and approve actions over **LAN**, **Tailscale**, **Bonjour (`*.local`)**, or a **default-enabled no-login Cloudflare Quick Tunnel (`*.trycloudflare.com`)** (with custom named domain support and copy-paste `cloudflared` install guides for macOS / Windows / Linux).
-   - Automatic concurrent latency probing picks the fastest route, merges cross-channel counts per device, blocks unchecked channels with HTTP `403`, and isolates active conversations/drafts per browser tab (`X-AG-Client-Id`).
-   - Built-in mobile/remote top-bar drawers for live context window usage, local token stats, 9 configurable visibility toggles in **`⚙️` → Remote**, and **System / Light / Dark** appearance sync.
-    - Multi-project grouped session switching, **lossless full-history upward scrolling with long-reply protection**, full-session status aggregation (including subagent rollup & shrink-proof catalog persistence + permission mode icon sync), aborted stale requests + lazy thinking mounting + trajectory signature cache + **`gzip` compression**, and remote host directory browsing/project creation (strictly bounded within `$HOME` & registered workspaces with sensitive-path and symlink escape guards); composer uses `Enter` for newline and `Cmd/Ctrl + Enter` to send (with Safari IME composition protection).
-3. **📊 Context Window, 240K Auto-Compact & Dual Quota Capsules**
+2. **📱 Ultra-Fast Mobile & Desktop Remote Control (Much Faster Than Official)**
+   - **Direct local speed & lightweight PWA**: Millisecond LAN direct connection with concurrent speed probing across **LAN**, **Tailscale**, **Bonjour (`*.local`)**, and a **default no-login Cloudflare Quick Tunnel (`*.trycloudflare.com`, custom domains supported)** — bypassing sluggish official cloud relays; aborts stale fetches on switch and pairs lazy history loading with **`gzip`** compression for instant loading and smooth full-history upward scrolling.
+   - Multi-project grouped sessions, `$HOME`-bounded remote project browsing/creation (with sensitive-path and symlink guards), top-bar drawers, 9 UI visibility toggles, per-tab session isolation (`X-AG-Client-Id`), **System / Light / Dark** appearance sync, disabled-channel `403` gates, and `Cmd/Ctrl + Enter` sending with Safari IME protection.
+3. **⚡ Composer Shortcuts & Prompt Optimization**
+   - **14 built-in recommended quick actions** grouped by scenario & priority + custom prompts with **10 one-click popular templates**; slash commands resolve into native Lexical pills.
+   - **`Insert` vs `⚡Send`**: **`Insert`** stages text into the composer for pasting logs or context (default for *Fix Error*, *Do Spec*). **`⚡Send`** (marked `↵`) submits immediately (default for 8 argument-free phrases such as *Implement*, *Reply in Chinese*, *Continue*, *No explanation*, *Run It*, *Optimize*, *Why Failed*, *Revise*), guarded by draft protection and **`⌘/Ctrl + click`** inversion.
+   - One-click **`✨ Optimize` / `↩ Undo`** via fast low-latency models and context-aware **`Tab / →`** next-step ghost suggestions.
+4. **🧰 Quick Desktop Utilities**
+   - **`⌘1`–`⌘9`** (hold `⌘` for badges) or **`⌘⇧[` / `⌘⇧]`** / **`⌃Tab`** to jump between conversations, floating message navigator bar, inline **`✏️ Edit`** + **`⌘S`** file editing in preview panes, and **`>_ CLI`** one-click `agy` terminal launch. Compatible with Antigravity **`2.32.x–2.34.0`**, `SingletonSocket` fast polling, and `nvm`/`fnm`/`volta`/`asdf`/`mise` Node discovery.
+5. **📊 Context Window, 240K Auto-Compact & Dual Quota Capsules**
    - Live top-bar ring meter, token breakdown, 52-week heatmap, API cost comparison, and **Gemini 4 / Claude** 5-hour + weekly quota capsules (`G4` / `C`).
-   - Official clients wait until 512K tokens to compact, often causing 4–5 minute full recomputation stalls after prompt cache expires past 250K–330K; real-time bottom-capsule & popover alerts detect 0% cache drops (328K risk), while default-enabled **240K Auto-Compact** triggers `/compact` automatically when idle.
-4. **⚡ Composer Efficiency Suite & Quick Tools**
-   - **14 built-in recommended quick actions** (grouped by scenario & priority with zero-latency two-line hover tooltips) plus custom quick prompts with **10 one-click popular dialog templates**; slash commands (`/compact`, `/plan`, `/goal`, `/swarm`, `/boost`, `/teamwork`, etc.) automatically select from the Lexical slash menu into native command pills.
-   - **`Insert` vs `⚡Send`**: **`Insert`** places text into the composer so you can paste error logs or extra details before sending (default for *Fix Error*, *Do Spec*); **`⚡Send`** submits immediately on click (default for argument-free phrases like *Implement*, *Reply in Chinese*, *Continue*, *No explanation*, *Run It*, *Optimize*, *Why Failed*, *Revise*, marked with `↵`), backed by non-destructive **draft protection** (never overwrites existing drafts), an opt-in toggle for built-in no-arg commands (`/compact`, Reload Rules), and **`⌘/Ctrl + click`** to temporarily invert insert/send behavior.
-   - One-click **`✨ Optimize` / `↩ Undo`** next to Send prefers fast low-tier models with multi-model fallback; **`Tab / →`** next-step ghost suggestions dynamically recommend concise high-frequency follow-ups based on AI response context (including auto-detecting English replies to suggest switching back to Chinese) and truncate cleanly with full-text hover tooltips.
-   - Quick switch the top 9 conversations with **`⌘1`–`⌘9`** (or **`⌘⇧[` / `⌘⇧]`** / **`⌃Tab`**), edit right-side previews in-place with **`⌘S`**, and launch `agy` directly in your terminal (**`>_ CLI`**) with mux host support. Supports Antigravity **`2.32.x–2.34.0`** with upgraded macOS `LaunchAgent` (`SingletonSocket`, `StartInterval=5` zero-Node fast path, `nvm`/`fnm`/`volta`/`asdf`/`mise` Node discovery, and `ShipIt` update guard).
-5. **🛡️ Dangerous Command Red-Frame Interception**
+   - Official clients wait until 512K tokens to compact, often causing 4–5 minute full recomputation stalls after prompt cache expires past 250K–330K; real-time alerts catch 0% cache drops (328K risk), while default-enabled **240K Auto-Compact** triggers `/compact` automatically when idle.
+6. **🛡️ Dangerous Command Red-Frame Interception**
    - Highlights destructive shell commands (`rm -rf`, `git reset --hard`, `git clean -f`, `git push`, `sudo`, `kill -9`, `DROP/DELETE`, `op item`) with red warning frames and pauses for manual approval even when Auto-Accept is enabled.
-6. **🔄 Auto Update Check & One-Click Hot Upgrade**
+7. **🔄 Auto Update Check & One-Click Hot Upgrade**
    - Automatically checks GitHub in the background; when a new version is available, **`⚙️`** shows a red dot so you can click **"立即更新" (Update Now)** and hot-reload without restarting Antigravity.
+
+<p align="center">
+  <img src="assets/mobile-preview.jpg" alt="Mobile PWA remote control preview" width="82%">
+</p>
 
 ---
 
@@ -33,8 +40,8 @@
 Requires **macOS**, **Google Antigravity**, and **Node.js `22.4.0+`**.
 
 ```bash
-git clone https://github.com/iamvicliu/antigravity-suite.git ~/.local/share/antigravity-context-viewer
-cd ~/.local/share/antigravity-context-viewer
+git clone https://github.com/iamvicliu/antigravity-suite.git ~/.local/share/antigravity-suite
+cd ~/.local/share/antigravity-suite
 ./scripts/setup-macos-cdp.sh
 ```
 
@@ -57,7 +64,7 @@ ag-context-meter status
 | Command | Purpose |
 | :--- | :--- |
 | `ag-context-meter status` | Verify live modules, auto-launch daemon status, and untouched official `app.asar` |
-| `ag-context-meter remote` | Print 4-channel pairing URLs, Cloudflare tunnel status, connected devices & QR code (`--tunnel on|off`, `--reset-token`, `--json`) |
+| `ag-context-meter remote` | Print 4-channel pairing URLs, Cloudflare tunnel status, connected devices & QR code (`--tunnel on\|off`, `--reset-token`, `--json`) |
 | `ag-context-meter live` | Hot-inject into the running Antigravity window (`--no-remote` to disable remote server) |
 | `ag-context-meter restart` | Safely relaunch Antigravity (`v2.33.0+`) with CDP debugging enabled and inject enhancements |
 | `ag-context-meter update` | Pull latest `main` commits and hot-reload the running window without restarting |
@@ -65,7 +72,7 @@ ag-context-meter status
 | `ag-context-meter auto-off` / `auto-on` | Disable or re-enable automatic CDP injection on Antigravity launch |
 | `ag-context-meter install-launcher` | Optional standalone launcher app in `~/Applications` for `--no-auto` setups |
 
-**Complete uninstall**: run `ag-context-meter auto-off`, then remove the LaunchAgent plist (`~/Library/LaunchAgents/com.$(id -un).ag-live-helper.plist`), `~/.local/bin/ag-context-meter`, `~/.local/share/antigravity-context-viewer`, and optionally `~/Library/Application Support/AntigravityContextMeter`.
+**Complete uninstall**: run `ag-context-meter auto-off`, then remove the LaunchAgent plist (`~/Library/LaunchAgents/com.$(id -un).ag-live-helper.plist`), `~/.local/bin/ag-context-meter`, `~/.local/share/antigravity-suite` (or legacy `~/.local/share/antigravity-context-viewer`), and optionally `~/Library/Application Support/AntigravityContextMeter`.
 
 ---
 
@@ -73,7 +80,7 @@ ag-context-meter status
 
 - **Untouched official app**: Legacy `app.asar` / binary patching commands are gated off; enhancements mount strictly via in-memory CDP injection.
 - **Channel gates & random token**: Remote control enables private channels (`LAN` / `Tailscale` / `Bonjour`) plus the default no-login Cloudflare Quick Tunnel (toggleable anytime in **`⚙️` → Remote** or disabled via `--no-remote`). Disabled channels return HTTP `403`, every request verifies a 48-char random token (rotatable anytime), and named tunnel tokens are stored only locally (`0600`) in `remote-config.json`.
-- **Path protection**: Inline file editing enforces blocklists against system directories and credential stores (`.ssh`, `.gnupg`, `1Password`, `Antigravity.app`).
+- **Path protection**: Inline file editing and remote project browsing enforce `realpathSync` checks bounded within `$HOME` / registered workspaces, blocking system directories and credential stores (`.ssh`, `.gnupg`, `1Password`, `Antigravity.app`).
 
 ---
 
@@ -83,4 +90,6 @@ ag-context-meter status
 npm run test:suite
 ```
 
-For detailed troubleshooting, 5-tab settings overview, and upstream acknowledgements, see the full **[简体中文 README](README.md)**. Licensed under the [MIT License](LICENSE).
+Special thanks to core contributors **[@hubo1989](https://github.com/hubo1989)** (optimizations to QR pairing & 4-channel remote gating, default no-login Cloudflare tunnel, multi-browser session isolation, settings panel tab refinement, locale switching & `v2.32+` compatibility) and **[@Shens](https://github.com/Shens)** (optimizations to remote UX & performance including System/Light/Dark appearance & mobile/desktop adaptation, multi-project grouped sessions, lossless full-history scrolling, `$HOME`-bounded remote project creation, subagent status rollup with `gzip`, and macOS daemon / non-Homebrew Node compatibility).
+
+For detailed troubleshooting, 5-tab settings overview, and upstream project acknowledgements, see the full **[简体中文 README](README.md)**. Licensed under the [MIT License](LICENSE).
