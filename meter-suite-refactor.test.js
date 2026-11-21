@@ -13214,10 +13214,23 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     const sendQRes = await enh.performMobileAction({ action: 'send-queued-dom', domIndex: 0 });
     assert.equal(sendQRes.ok, true);
     assert.ok(clickedLog.includes('queue:send'));
-    // 混合队列 RPC 补发时 onlyTexts 不命中则跳过，不重复发送
-    const sendSkipRes = await enh.performMobileAction({ action: 'send-queued-dom', onlyTexts: ['已由RPC发出的消息'] });
-    assert.equal(sendSkipRes.ok, true);
-    assert.equal(sendSkipRes.skipped, true, 'onlyTexts 未命中桌面残余项时应安全跳过避免重复发送');
+
+    // 多条 DOM 队列项（含纯附件无文本消息）在 sendAll: true 下全部触发发送
+    const qRowImgOnly = env.doc.createElement('div');
+    qRowImgOnly.setAttribute('data-testid', 'queued-message-item');
+    const qImg2 = env.doc.createElement('img');
+    qImg2.setAttribute('src', 'data:image/png;base64,iVBORw0KGgo=');
+    qImg2.setAttribute('alt', 'only-img.png');
+    const qSendBtn2 = env.doc.createElement('button');
+    qSendBtn2.setAttribute('aria-label', 'Send now');
+    qSendBtn2.addEventListener('click', () => clickedLog.push('queue:send-img-only'));
+    qRowImgOnly.appendChild(qImg2);
+    qRowImgOnly.appendChild(qSendBtn2);
+    qCard.appendChild(qRowImgOnly);
+    const sendAllDomRes = await enh.performMobileAction({ action: 'send-queued-dom', sendAll: true });
+    assert.equal(sendAllDomRes.ok, true);
+    assert.equal(sendAllDomRes.sentCount, 2, 'sendAll:true 必须发送包括纯附件消息在内的全部 DOM 排队项');
+    assert.ok(clickedLog.includes('queue:send-img-only'), '纯附件无文本的 DOM 排队项必须能被发送');
 
     // 单个附件移除仅删目标项 b.png，不误删 a.png
     const rmOneRes = await enh.performMobileAction({ action: 'remove-uploaded-attachment', name: 'b.png', index: 1 });
@@ -13365,4 +13378,58 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
   } finally {
     fs.rmSync(tmpCatDir, { recursive: true, force: true });
   }
+
+  // 4. 混合队列 /api/action 时序验证：RPC 成功时绝不补点桌面 DOM 防延迟重复发送；RPC 失败时降级到 send-queued-dom(sendAll:true)
+  const { createRemoteHttpHandler } = require('./mobile-remote');
+  const { Readable } = require('stream');
+  let rpcShouldFail = false;
+  const domActionsCalled = [];
+  const mixCfg = {
+    port: 18765,
+    token: 'tok-mix-1234567890abcdef',
+    tunnelEnabled: false,
+    enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+  };
+  const handlerMix = createRemoteHttpHandler(mixCfg, {
+    callLanguageServer: async (method) => {
+      if (method === 'SendAllQueuedMessages') return rpcShouldFail ? null : {};
+      return {};
+    },
+    performAction: async (p) => {
+      domActionsCalled.push(p);
+      return { ok: true, actionResult: { ok: true } };
+    },
+    fetchSnapshot: async (_tid, opts) => ({
+      ok: true,
+      sessionId: opts?.conversationId || 'conv-mix-1',
+      activeConversationId: opts?.conversationId || 'conv-mix-1',
+      queuedMessages: []
+    })
+  });
+  const callMixAction = async (bodyObj) => {
+    const req = Readable.from([Buffer.from(JSON.stringify(bodyObj), 'utf8')]);
+    req.method = 'POST';
+    req.url = '/api/action';
+    req.headers = { host: '127.0.0.1:18765', 'content-type': 'application/json', 'x-ag-remote-token': mixCfg.token };
+    req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let out = '';
+    const res = {
+      setHeader: () => {},
+      writeHead: () => {},
+      end: (chunk) => { if (chunk) out += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); }
+    };
+    await handlerMix(req, res);
+    return JSON.parse(out || '{}');
+  };
+
+  const mixOkRes = await callMixAction({ action: 'send-queued-messages', conversationId: 'conv-mix-1', hasDomQueued: true });
+  assert.equal(mixOkRes.ok, true);
+  assert.equal(domActionsCalled.length, 0, 'RPC SendAllQueuedMessages 成功时绝不得再补发 send-queued-dom，避免桌面 DOM 延迟刷新导致重复发送');
+
+  rpcShouldFail = true;
+  const mixFallbackRes = await callMixAction({ action: 'send-queued-messages', conversationId: 'conv-mix-1', hasDomQueued: true });
+  assert.equal(mixFallbackRes.ok, true);
+  assert.equal(domActionsCalled.length, 1, 'RPC 失败且存在 DOM 队列时应降级触发一次 send-queued-dom');
+  assert.equal(domActionsCalled[0].action, 'send-queued-dom');
+  assert.equal(domActionsCalled[0].sendAll, true);
 });
