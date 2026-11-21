@@ -3117,9 +3117,21 @@ function renderSafeMarkdownToHtml(rawMd) {
 const LOCAL_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
 const SENSITIVE_MEDIA_DIR_RE = /(?:^|[\\/])(?:\.ssh|\.gnupg|\.aws|\.kube|keychains)(?:[\\/]|$)/i;
 const SENSITIVE_MEDIA_FILE_RE = /^(?:\.env.*|id_rsa.*|id_ed25519.*|id_ecdsa.*|\.npmrc|\.netrc|\.pypirc|.*\.(?:pem|key|p12|pfx|jks))$/i;
-function isAllowedBrainArtifactPath(absPath) {
-  const norm = String(absPath || '').replace(/\\/g, '/');
-  return /(?:^|\/)\.gemini\/antigravity\/brain(?:\/|$)/i.test(norm);
+function isAllowedBrainArtifactPath(absPath, realRoots = []) {
+  const norm = path.resolve(String(absPath || ''));
+  const candidates = Array.isArray(realRoots) && realRoots.length ? realRoots : [os.homedir()];
+  for (const r of candidates) {
+    if (!r) continue;
+    let realRoot = '';
+    try { realRoot = fs.realpathSync(String(r)); } catch { realRoot = path.resolve(String(r)); }
+    if (isSensitiveHostPath(realRoot)) continue;
+    const brainRoot = path.join(realRoot, '.gemini', 'antigravity', 'brain');
+    if (norm === brainRoot || norm.startsWith(brainRoot + path.sep)) {
+      const rel = norm.slice(brainRoot.length);
+      return !SENSITIVE_MEDIA_DIR_RE.test(rel) && !isSensitiveHostPath(path.join(realRoot, rel));
+    }
+  }
+  return false;
 }
 const SAFE_MEDIA_MIME_BY_EXT = {
   '.png': 'image/png',
@@ -3185,7 +3197,7 @@ function resolveSafeLocalMediaPath(rawPath, options = {}) {
   if (!inAllowedRoot) {
     return { ok: false, status: 403, error: '禁止访问受限目录之外的文件' };
   }
-  if (SENSITIVE_MEDIA_DIR_RE.test(realPath) || (isSensitiveHostPath(realPath) && !isAllowedBrainArtifactPath(realPath))) {
+  if (SENSITIVE_MEDIA_DIR_RE.test(realPath) || (isSensitiveHostPath(realPath) && !isAllowedBrainArtifactPath(realPath, realRoots))) {
     return { ok: false, status: 403, error: '禁止访问敏感密钥或凭证目录' };
   }
   const baseName = path.basename(realPath);
@@ -11809,7 +11821,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       };
       const isSafeResolvedTarget = (resolved) => {
         if (!resolved || resolved.includes('\0')) return false;
-        if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved)) || (isSensitiveHostPath(resolved) && !isAllowedBrainArtifactPath(resolved))) return false;
+        if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved)) || (isSensitiveHostPath(resolved) && !isAllowedBrainArtifactPath(resolved, realRoots))) return false;
         return realRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
       };
       const trustedBaseDirs = [];

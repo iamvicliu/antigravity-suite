@@ -14248,14 +14248,19 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
   const tmpSecRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-34-sec-'));
   try {
     const onePwdDir = path.join(tmpSecRoot, '1Password');
+    const nestedTrickDir = path.join(tmpSecRoot, '1Password', '.gemini', 'antigravity', 'brain');
     const geminiCfgDir = path.join(tmpSecRoot, '.gemini', 'config');
     const brainDir = path.join(tmpSecRoot, '.gemini', 'antigravity', 'brain', 'cid-1');
     fs.mkdirSync(onePwdDir, { recursive: true });
+    fs.mkdirSync(nestedTrickDir, { recursive: true });
     fs.mkdirSync(geminiCfgDir, { recursive: true });
     fs.mkdirSync(brainDir, { recursive: true });
     fs.writeFileSync(path.join(onePwdDir, 'vault.txt'), 'secret');
+    const nestedTrickFile = path.join(nestedTrickDir, 'vault.txt');
+    fs.writeFileSync(nestedTrickFile, 'nested-secret');
     fs.writeFileSync(path.join(geminiCfgDir, 'oauth.json'), '{}');
-    fs.writeFileSync(path.join(brainDir, 'plan.md'), '# ok');
+    const validBrainFile = path.join(brainDir, 'plan.md');
+    fs.writeFileSync(validBrainFile, '# ok');
 
     const treeBlocked = remoteMod.listSafeProjectTree(onePwdDir, { allowedRoots: [tmpSecRoot] });
     assert.equal(treeBlocked.ok, false);
@@ -14269,8 +14274,65 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
     assert.equal(cfgBlocked.ok, false);
     assert.equal(cfgBlocked.status, 403, '/api/file-content 必须拦截 .gemini 非 brain 凭证文件');
 
-    const brainAllowed = remoteMod.readSafeTextFilePreview(path.join(brainDir, 'plan.md'), { allowedRoots: [tmpSecRoot] });
-    assert.equal(brainAllowed.ok, true, '/api/file-content 应放行 .gemini/antigravity/brain 生成物预览');
+    // 嵌套伪造路径 1Password/.gemini/antigravity/brain/vault.txt 必须在预览、媒体读取与 /api/session-files 全部被拒绝
+    const trickPreview = remoteMod.readSafeTextFilePreview(nestedTrickFile, { allowedRoots: [tmpSecRoot] });
+    assert.equal(trickPreview.ok, false);
+    assert.equal(trickPreview.status, 403, 'file-content 必须拒绝 1Password/.gemini/antigravity/brain/ 嵌套绕过');
+
+    const trickMedia = remoteMod.resolveSafeLocalMediaPath(nestedTrickFile, { allowedRoots: [tmpSecRoot] });
+    assert.equal(trickMedia.ok, false);
+    assert.equal(trickMedia.status, 403, 'media 读取必须拒绝 1Password/.gemini/antigravity/brain/ 嵌套绕过');
+
+    const sessHandler = remoteMod.createRemoteHttpHandler(
+      { token: 'tok-34-sec', port: 18765, channels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        mediaOptions: { allowedRoots: [tmpSecRoot] },
+        callLanguageServer: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') {
+            return {
+              trajectorySummaries: {
+                'cid-trick-1': {
+                  workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + tmpSecRoot }]
+                }
+              }
+            };
+          }
+          if (method === 'GetTrajectoryFileDiffs') {
+            return {
+              fileDiffs: [
+                { path: nestedTrickFile, unifiedDiff: '+NESTED_TRICK_SECRET' },
+                { path: validBrainFile, unifiedDiff: '+# ok' }
+              ]
+            };
+          }
+          if (method === 'GetArtifactSnapshots') {
+            return {
+              artifacts: [
+                { title: 'vault.txt', path: nestedTrickFile, content: 'NESTED_TRICK_ART' },
+                { title: 'plan.md', path: validBrainFile, content: '# ok' }
+              ]
+            };
+          }
+          return null;
+        }
+      }
+    );
+    const sessRes = { statusCode: 0, chunks: [], setHeader() {}, getHeader() {}, writeHead(c) { this.statusCode = c; }, end(b) { if (b) this.chunks.push(Buffer.from(String(b))); } };
+    await sessHandler({
+      method: 'GET',
+      url: '/api/session-files?conversationId=cid-trick-1',
+      headers: { host: '127.0.0.1:18765', 'x-ag-remote-token': 'tok-34-sec' },
+      socket: { remoteAddress: '127.0.0.1' },
+      on() {}
+    }, sessRes);
+    assert.equal(sessRes.statusCode, 200);
+    const sessJson = JSON.parse(Buffer.concat(sessRes.chunks).toString('utf8'));
+    const allPaths = [...(sessJson.diffs || []), ...(sessJson.artifacts || [])].map((x) => x.path || '');
+    assert.ok(!allPaths.some((p) => p.includes('1Password')), '/api/session-files 必须过滤 1Password/.gemini/antigravity/brain/ 嵌套绕过');
+    assert.ok(allPaths.some((p) => p.endsWith('plan.md')), '/api/session-files 应保留可信根下合法 brain 生成物');
+
+    const brainAllowed = remoteMod.readSafeTextFilePreview(validBrainFile, { allowedRoots: [tmpSecRoot] });
+    assert.equal(brainAllowed.ok, true, '/api/file-content 应放行可信根下 .gemini/antigravity/brain 生成物预览');
   } finally {
     fs.rmSync(tmpSecRoot, { recursive: true, force: true });
   }
