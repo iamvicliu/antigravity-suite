@@ -1,6 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:$PATH"
+DEFAULT_NODE_PATHS="${AG_DEFAULT_NODE_PATHS-/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin}"
+if [ -n "$DEFAULT_NODE_PATHS" ]; then
+  export PATH="${DEFAULT_NODE_PATHS}:$PATH"
+fi
+
+ensure_node_in_path() {
+  if command -v node >/dev/null 2>&1; then
+    return 0
+  fi
+  local cand nvm_dir nvm_root
+  for cand in \
+    "$HOME/.volta/bin" \
+    "$HOME/.asdf/shims" \
+    "$HOME/.local/share/mise/shims" \
+    "$HOME/.fnm/current/bin" \
+    "$HOME/Library/Application Support/fnm/aliases/default/bin"
+  do
+    if [ -x "$cand/node" ]; then
+      export PATH="$cand:$PATH"
+      return 0
+    fi
+  done
+  nvm_root="${NVM_DIR:-$HOME/.nvm}/versions/node"
+  if [ -d "$nvm_root" ]; then
+    while IFS= read -r nvm_dir; do
+      [ -n "$nvm_dir" ] || continue
+      if [ -x "$nvm_root/$nvm_dir/bin/node" ]; then
+        export PATH="$nvm_root/$nvm_dir/bin:$PATH"
+        return 0
+      fi
+    done < <(ls -1 "$nvm_root" 2>/dev/null | sort -V -r)
+  fi
+  return 0
+}
+ensure_node_in_path
+
+resolve_real_node_bin_dir() {
+  local resolved=""
+  resolved="$(node -e 'const fs = require("fs"), path = require("path"); console.log(path.dirname(fs.realpathSync(process.execPath)));' 2>/dev/null || true)"
+  if [ -n "$resolved" ] && [ -x "$resolved/node" ]; then
+    echo "$resolved"
+    return 0
+  fi
+  dirname "$(command -v node 2>/dev/null || echo /usr/bin/node)"
+}
 
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 while [ -L "$SCRIPT_PATH" ]; do
@@ -27,8 +71,10 @@ STATE_FILE="$HOME/Library/Application Support/AntigravityContextMeter/.live-sess
 FALLBACK_STATE_FILE="$HOME/.config/antigravity-context-meter/.live-session.json"
 LEGACY_FILE="$APP_DIR/.live-session.json"
 PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
-LOCK_FILE="$HOME/Library/Application Support/Antigravity/SingletonLock"
-RELAUNCH_LOCK_FILE="/tmp/ag-context-meter-relaunch.lock"
+SOCKET_FILE="$HOME/Library/Application Support/Antigravity/SingletonSocket"
+RELAUNCH_LOCK_DIR="${TMPDIR:-$HOME/Library/Application Support/AntigravityContextMeter}"
+RELAUNCH_LOCK_DIR="${RELAUNCH_LOCK_DIR%/}"
+RELAUNCH_LOCK_FILE="${AG_RELAUNCH_LOCK_FILE:-${RELAUNCH_LOCK_DIR}/ag-context-meter-relaunch.lock}"
 LOG_DIR="$HOME/Library/Logs"
 LOG_FILE="$LOG_DIR/antigravity-hans.log"
 
@@ -80,8 +126,6 @@ relaunch_antigravity_with_cdp() {
     esac
   done
 
-  date +%s > "$RELAUNCH_LOCK_FILE" 2>/dev/null || true
-
   local ag_app
   ag_app="$(find_antigravity_app || true)"
   if [ -z "$ag_app" ]; then
@@ -91,6 +135,8 @@ relaunch_antigravity_with_cdp() {
   local bare_info bare_pid i
   bare_info="$(get_bare_antigravity_info || true)"
   bare_pid="${bare_info%% *}"
+  mkdir -p "$(dirname "$RELAUNCH_LOCK_FILE")" 2>/dev/null || true
+  printf '%s %s\n' "$(date +%s)" "${bare_pid:-0}" > "$RELAUNCH_LOCK_FILE" 2>/dev/null || true
   if [ -n "${bare_pid:-}" ]; then
     echo "正在优雅重启 Antigravity（补充 --remote-debugging-port=0）..."
     osascript -e 'tell application "Antigravity" to quit' >/dev/null 2>&1 || true
@@ -175,9 +221,11 @@ install_macos_launcher() {
 </plist>
 EOF
 
+  local node_bin_dir
+  node_bin_dir="$(resolve_real_node_bin_dir)"
   cat > "$macos_dir/launch" <<EOF
 #!/usr/bin/env bash
-export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"
+export PATH="${node_bin_dir}:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"
 BIN="${bin_path}"
 TARGET_APP="${target_app}"
 LOG_FILE="\$HOME/Library/Logs/antigravity-hans.log"
@@ -334,6 +382,86 @@ const { resolveActiveCdpTarget } = require(process.env.APP_DIR + "/asar-engine")
   fi
 }
 
+parse_etime_sec() {
+  local raw="$1" days=0 hrs=0 mins=0 secs=0 rest
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  case "$raw" in
+    *-*) days="${raw%%-*}"; rest="${raw#*-}" ;;
+    *) rest="$raw" ;;
+  esac
+  local IFS=':'
+  local parts=()
+  read -r -a parts <<< "$rest"
+  case "${#parts[@]}" in
+    3) hrs="${parts[0]}"; mins="${parts[1]}"; secs="${parts[2]}" ;;
+    2) mins="${parts[0]}"; secs="${parts[1]}" ;;
+    1) secs="${parts[0]}" ;;
+    *) echo 9999; return 0 ;;
+  esac
+  case "${days}${hrs}${mins}${secs}" in
+    ''|*[!0-9]*) echo 9999; return 0 ;;
+  esac
+  echo $(( 10#$days * 86400 + 10#$hrs * 3600 + 10#$mins * 60 + 10#$secs ))
+}
+
+get_host_ps_line() {
+  local ps_raw=""
+  if [ -n "${AG_MOCK_PS_FILE:-}" ] && [ -f "$AG_MOCK_PS_FILE" ]; then
+    ps_raw="$(cat "$AG_MOCK_PS_FILE" 2>/dev/null || true)"
+  elif [ -n "${AG_MOCK_PS_OUTPUT+x}" ]; then
+    ps_raw="$AG_MOCK_PS_OUTPUT"
+  else
+    ps_raw="$(ps -ax -o pid=,etime=,command= 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$ps_raw" | grep '/Contents/MacOS/Antigravity' | grep -v -E 'Antigravity Helper|language_server|--type=|--import=|--headless' | head -n 1 || true
+}
+
+is_live_host_running() {
+  local host_elapsed="${1:-}"
+  if [ "${AG_MOCK_LIVE_HOST_RUNNING:-}" = "0" ]; then
+    return 1
+  fi
+  if [ "${AG_MOCK_LIVE_HOST_RUNNING:-}" = "1" ]; then
+    if [ -n "${AG_MOCK_LIVE_HOST_ELAPSED:-}" ] && [ -n "$host_elapsed" ]; then
+      [ "$AG_MOCK_LIVE_HOST_ELAPSED" -le "$host_elapsed" ]
+      return $?
+    fi
+    return 0
+  fi
+  local f pid cmdline live_etime live_elapsed
+  for f in "$STATE_FILE" "$FALLBACK_STATE_FILE" "$LEGACY_FILE"; do
+    if [ -f "$f" ]; then
+      pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$f" 2>/dev/null | head -n 1 || true)"
+      if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+        cmdline="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+        if echo "$cmdline" | grep -q "live-host.js"; then
+          if [ -n "$host_elapsed" ]; then
+            live_etime="$(ps -p "$pid" -o etime= 2>/dev/null || true)"
+            live_elapsed="$(parse_etime_sec "$live_etime")"
+            if [ "${live_elapsed:-9999}" -gt "$host_elapsed" ]; then
+              return 1
+            fi
+          fi
+          return 0
+        fi
+      fi
+    fi
+  done
+  pid="$(pgrep -f "$APP_DIR/live-host.js" 2>/dev/null | head -n 1 || true)"
+  if [ -n "${pid:-}" ]; then
+    if [ -n "$host_elapsed" ]; then
+      live_etime="$(ps -p "$pid" -o etime= 2>/dev/null || true)"
+      live_elapsed="$(parse_etime_sec "$live_etime")"
+      if [ "${live_elapsed:-9999}" -gt "$host_elapsed" ]; then
+        return 1
+      fi
+    fi
+    return 0
+  fi
+  return 1
+}
+
 case "$cmd" in
   start|live)
     if has_active_cdp_target; then
@@ -387,18 +515,111 @@ case "$cmd" in
       echo "未找到 LaunchAgent 配置文件: $PLIST" >&2
       exit 1
     fi
-    if ! grep -q "SingletonLock" "$PLIST" 2>/dev/null; then
-      PLIST_PATH="$PLIST" LOCK_PATH="$LOCK_FILE" node -e '
+    node_bin_dir="$(resolve_real_node_bin_dir)"
+    upgraded_msg="$(PLIST_PATH="$PLIST" SOCKET_PATH="$SOCKET_FILE" NODE_BIN_DIR="$node_bin_dir" node -e '
 const fs = require("fs");
 const p = process.env.PLIST_PATH;
-const lock = process.env.LOCK_PATH;
+const sock = process.env.SOCKET_PATH;
+const nodeBin = process.env.NODE_BIN_DIR;
+const escXml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const unescXml = (s) => String(s)
+  .replace(/&lt;/g, "<")
+  .replace(/&gt;/g, ">")
+  .replace(/&quot;/g, "\"")
+  .replace(/&apos;/g, "\x27")
+  .replace(/&amp;/g, "&");
+const stdPaths = [nodeBin, "/opt/homebrew/opt/node@22/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+const fullPath = Array.from(new Set(stdPaths.filter(Boolean))).join(":");
 let xml = fs.readFileSync(p, "utf8");
-if (!xml.includes(lock)) {
-  const next = xml.replace(/(<key>WatchPaths<\/key>\s*<array>)/, `$1\n    <string>${lock}</string>`);
-  if (next !== xml) fs.writeFileSync(p, next, "utf8");
+const notes = [];
+
+const lockPath = sock.replace(/SingletonSocket$/, "SingletonLock");
+const escLockPath = escXml(lockPath);
+const escSockPath = escXml(sock);
+if (xml.includes(escLockPath)) {
+  if (xml.includes(escSockPath)) {
+    xml = xml.replace(new RegExp(`[ \\t]*<string>${escLockPath.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}<\\/string>\\r?\\n?`), "");
+  } else {
+    xml = xml.replace(escLockPath, escSockPath);
+  }
+  notes.push("WatchPaths 已由 SingletonLock 升级为 SingletonSocket");
+} else if (!xml.includes(escSockPath)) {
+  const next = xml.replace(/(<key>WatchPaths<\/key>\s*<array>)/, `$1\n    <string>${escSockPath}</string>`);
+  if (next !== xml) {
+    xml = next;
+    notes.push("WatchPaths 已新增 SingletonSocket 监听");
+  }
 }
-'
-      echo "✅ 已升级 LaunchAgent WatchPaths 监听 (新增 SingletonLock 适配 v2.33.0+)"
+
+if (/<key>EnvironmentVariables<\/key>\s*<dict>/.test(xml)) {
+  if (/<key>EnvironmentVariables<\/key>\s*<dict>(?:(?!<\/dict>)[\s\S])*?<key>PATH<\/key>\s*<string>([^<]*)<\/string>/.test(xml)) {
+    xml = xml.replace(
+      /(<key>EnvironmentVariables<\/key>\s*<dict>(?:(?!<\/dict>)[\s\S])*?<key>PATH<\/key>\s*<string>)([^<]*)(<\/string>)/,
+      (m, pre, cur, post) => {
+        const parts = unescXml(cur).split(":").filter(Boolean);
+        if (nodeBin && !parts.includes(nodeBin)) {
+          notes.push("EnvironmentVariables.PATH 已补充 Node 路径");
+          return `${pre}${escXml([nodeBin, ...parts].join(":"))}${post}`;
+        }
+        return m;
+      }
+    );
+  } else {
+    xml = xml.replace(
+      /(<key>EnvironmentVariables<\/key>\s*<dict>)/,
+      `$1\n    <key>PATH</key>\n    <string>${escXml(fullPath)}</string>`
+    );
+    notes.push("EnvironmentVariables 已补充 PATH");
+  }
+} else {
+  const envBlock = `  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${escXml(fullPath)}</string>\n  </dict>\n`;
+  const next = xml.replace(/(^[ \t]*<key>RunAtLoad<\/key>)/m, `${envBlock}$1`);
+  if (next !== xml) {
+    xml = next;
+    notes.push("已新增 EnvironmentVariables.PATH");
+  }
+}
+
+if (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.test(xml)) {
+  xml = xml.replace(/(<key>StartInterval<\/key>\s*<integer>)(\d+)(<\/integer>)/, (m, pre, val, post) => {
+    if (val !== "5") {
+      notes.push(`StartInterval 已由 ${val} 更新为 5`);
+      return `${pre}5${post}`;
+    }
+    return m;
+  });
+} else {
+  const intervalBlock = "  <key>StartInterval</key>\n  <integer>5</integer>\n";
+  const next = xml.replace(/(^[ \t]*<key>RunAtLoad<\/key>\s*<true\/>\r?\n)/m, `$1${intervalBlock}`);
+  if (next !== xml) {
+    xml = next;
+    notes.push("已新增 StartInterval=5 轻量轮询");
+  }
+}
+if (/<key>ThrottleInterval<\/key>\s*<integer>(\d+)<\/integer>/.test(xml)) {
+  xml = xml.replace(/(<key>ThrottleInterval<\/key>\s*<integer>)(\d+)(<\/integer>)/, (m, pre, val, post) => {
+    if (val !== "5") {
+      notes.push(`ThrottleInterval 已由 ${val} 更新为 5`);
+      return `${pre}5${post}`;
+    }
+    return m;
+  });
+} else {
+  const throttleBlock = "  <key>ThrottleInterval</key>\n  <integer>5</integer>\n";
+  const next = xml.replace(/(^[ \t]*<key>StartInterval<\/key>\s*<integer>\d+<\/integer>\r?\n)/m, `$1${throttleBlock}`);
+  if (next !== xml) {
+    xml = next;
+    notes.push("已新增 ThrottleInterval=5");
+  }
+}
+
+if (notes.length > 0) {
+  fs.writeFileSync(p, xml, "utf8");
+  console.log(notes.join("；"));
+}
+')"
+    if [ -n "${upgraded_msg:-}" ]; then
+      echo "✅ 已升级 LaunchAgent 配置（${upgraded_msg}）"
     fi
     uid="$(id -u)"
     launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
@@ -492,39 +713,60 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
     exec node "$APP_DIR/mobile-remote.js" --print-info "${@:2}"
     ;;
   _auto-trigger)
-    mkdir -p "$LOG_DIR"
-    if ! has_live_antigravity; then
+    host_line="$(get_host_ps_line)"
+    if [ -z "$host_line" ]; then
       exit 0
     fi
-    if ! has_active_cdp_target; then
-      bare_info="$(get_bare_antigravity_info || true)"
-      if [ -n "${bare_info:-}" ]; then
-        bare_pid="${bare_info%% *}"
-        bare_elapsed="${bare_info#* }"
-        if [ "${bare_elapsed:-999}" -le 20 ]; then
-          now_ts="$(date +%s)"
-          last_ts=0
-          if [ -f "$RELAUNCH_LOCK_FILE" ]; then
-            last_ts="$(cat "$RELAUNCH_LOCK_FILE" 2>/dev/null || echo 0)"
-          fi
-          case "$last_ts" in ''|*[!0-9]*) last_ts=0 ;; esac
-          if [ $((now_ts - last_ts)) -ge 20 ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $bare_pid, 启动 ${bare_elapsed}s) 未带调试端口，自动补参重拉..." >> "$LOG_FILE"
-            relaunch_antigravity_with_cdp >> "$LOG_FILE" 2>&1 || true
-            exit 0
-          fi
-        fi
-      fi
-    fi
-    for _ in $(seq 1 15); do
-      if ! has_live_antigravity; then
+    read -r host_pid host_etime host_cmd <<< "$host_line"
+    host_elapsed="$(parse_etime_sec "$host_etime")"
+    if printf '%s\n' "$host_cmd" | grep -qE -- '--remote-debugging-port(=|[[:space:]]|$)'; then
+      if is_live_host_running "$host_elapsed"; then
         exit 0
       fi
-      if has_active_cdp_target && node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
-        break
+      mkdir -p "$LOG_DIR"
+      switched_to_bare=0
+      for _ in $(seq 1 15); do
+        host_line="$(get_host_ps_line)"
+        if [ -z "$host_line" ]; then
+          exit 0
+        fi
+        read -r host_pid host_etime host_cmd <<< "$host_line"
+        host_elapsed="$(parse_etime_sec "$host_etime")"
+        if ! printf '%s\n' "$host_cmd" | grep -qE -- '--remote-debugging-port(=|[[:space:]]|$)'; then
+          switched_to_bare=1
+          break
+        fi
+        if is_live_host_running "$host_elapsed"; then
+          exit 0
+        fi
+        if has_active_cdp_target && node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
+          exit 0
+        fi
+        sleep 2
+      done
+      if [ "$switched_to_bare" -eq 0 ]; then
+        exit 0
       fi
-      sleep 2
-    done
+    fi
+
+    if [ "${host_elapsed:-999}" -gt 30 ]; then
+      exit 0
+    fi
+    mkdir -p "$LOG_DIR"
+    now_ts="$(date +%s)"
+    last_ts=0
+    last_pid=""
+    if [ -f "$RELAUNCH_LOCK_FILE" ]; then
+      read -r last_ts last_pid < "$RELAUNCH_LOCK_FILE" 2>/dev/null || true
+    fi
+    case "${last_ts:-}" in ''|*[!0-9]*) last_ts=0 ;; esac
+    if [ "${last_pid:-}" = "$host_pid" ] && [ $((now_ts - last_ts)) -lt 20 ]; then
+      exit 0
+    fi
+    mkdir -p "$(dirname "$RELAUNCH_LOCK_FILE")" 2>/dev/null || true
+    printf '%s %s\n' "$now_ts" "$host_pid" > "$RELAUNCH_LOCK_FILE" 2>/dev/null || true
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $host_pid, 启动 ${host_elapsed}s) 未带调试端口，自动补参重拉..." >> "$LOG_FILE"
+    relaunch_antigravity_with_cdp >> "$LOG_FILE" 2>&1 || true
     ;;
   check)
     exec node "$APP_DIR/cli.js" check

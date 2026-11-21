@@ -15,7 +15,7 @@ LABEL="${AG_LIVE_LABEL:-com.${CURRENT_USER}.ag-live-helper}"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/${LABEL}.plist"
 LOG_PATH="$HOME/Library/Logs/antigravity-hans.log"
 PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
-LOCK_FILE="$HOME/Library/Application Support/Antigravity/SingletonLock"
+SOCKET_FILE="$HOME/Library/Application Support/Antigravity/SingletonSocket"
 
 ENABLE_AUTO=1
 DISABLE_REMOTE=0
@@ -46,7 +46,36 @@ EOF
 done
 
 # 1. 检查 Node.js 运行时版本（需 >= 22.4，内置 WebSocket / fetch）
-export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+DEFAULT_NODE_PATHS="${AG_DEFAULT_NODE_PATHS-/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin}"
+if [ -n "$DEFAULT_NODE_PATHS" ]; then
+  export PATH="${DEFAULT_NODE_PATHS}:$PATH"
+fi
+if ! command -v node >/dev/null 2>&1; then
+  for cand in \
+    "$HOME/.volta/bin" \
+    "$HOME/.asdf/shims" \
+    "$HOME/.local/share/mise/shims" \
+    "$HOME/.fnm/current/bin" \
+    "$HOME/Library/Application Support/fnm/aliases/default/bin"
+  do
+    if [ -x "$cand/node" ]; then
+      export PATH="$cand:$PATH"
+      break
+    fi
+  done
+fi
+if ! command -v node >/dev/null 2>&1; then
+  NVM_NODES_DIR="${NVM_DIR:-$HOME/.nvm}/versions/node"
+  if [ -d "$NVM_NODES_DIR" ]; then
+    while IFS= read -r nvm_ver; do
+      [ -n "$nvm_ver" ] || continue
+      if [ -x "$NVM_NODES_DIR/$nvm_ver/bin/node" ]; then
+        export PATH="$NVM_NODES_DIR/$nvm_ver/bin:$PATH"
+        break
+      fi
+    done < <(ls -1 "$NVM_NODES_DIR" 2>/dev/null | sort -V -r)
+  fi
+fi
 if ! command -v node >/dev/null 2>&1; then
   echo "❌ 未检测到 node，请先安装 Node.js 22.4+（例如：brew install node@22）" >&2
   exit 1
@@ -58,6 +87,7 @@ if (major < 22 || (major === 22 && minor < 4)) {
   process.exit(1);
 }
 '
+NODE_BIN_DIR="$(node -e 'const fs = require("fs"), path = require("path"); console.log(path.dirname(fs.realpathSync(process.execPath)));' 2>/dev/null || dirname "$(command -v node)")"
 
 # 2. 配置 ~/.local/bin/ag-context-meter 软链
 chmod +x "$BIN_SRC"
@@ -75,17 +105,25 @@ fi
 
 # 3. 仅在开启自启时写入 LaunchAgent（传 --no-auto 时零写入系统后台自启目录）
 if [ "$ENABLE_AUTO" -eq 1 ]; then
-  ENV_BLOCK=""
+  LAUNCHD_PATH="$(NODE_BIN_DIR="$NODE_BIN_DIR" node -e '
+const escXml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const items = [process.env.NODE_BIN_DIR, "/opt/homebrew/opt/node@22/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+console.log(escXml(Array.from(new Set(items.filter(Boolean))).join(":")));
+')"
+  REMOTE_ENV_ENTRY=""
   AUTO_ARGS=()
   if [ "$DISABLE_REMOTE" -eq 1 ]; then
-    ENV_BLOCK="  <key>EnvironmentVariables</key>
-  <dict>
-    <key>AG_DISABLE_MOBILE_REMOTE</key>
+    REMOTE_ENV_ENTRY="    <key>AG_DISABLE_MOBILE_REMOTE</key>
     <string>1</string>
-  </dict>
 "
     AUTO_ARGS+=(--no-remote)
   fi
+  ENV_BLOCK="  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${LAUNCHD_PATH}</string>
+${REMOTE_ENV_ENTRY}  </dict>
+"
   mkdir -p "$LAUNCH_AGENTS_DIR" "$HOME/Library/Logs"
   cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -101,10 +139,14 @@ if [ "$ENABLE_AUTO" -eq 1 ]; then
   </array>
 ${ENV_BLOCK}  <key>RunAtLoad</key>
   <true/>
+  <key>StartInterval</key>
+  <integer>5</integer>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
   <key>WatchPaths</key>
   <array>
     <string>${PORT_FILE}</string>
-    <string>${LOCK_FILE}</string>
+    <string>${SOCKET_FILE}</string>
   </array>
   <key>StandardOutPath</key>
   <string>${LOG_PATH}</string>
@@ -114,7 +156,7 @@ ${ENV_BLOCK}  <key>RunAtLoad</key>
 </plist>
 EOF
   echo "✅ 已写入 LaunchAgent 配置文件: $PLIST_PATH"
-  "$BIN_DEST" auto-on "${AUTO_ARGS[@]}"
+  "$BIN_DEST" auto-on ${AUTO_ARGS[@]:+"${AUTO_ARGS[@]}"}
 else
   echo "⚪ 已跳过 LaunchAgent 后台自启守护 (--no-auto)，可随时手动运行：ag-context-meter live${DISABLE_REMOTE:+ --no-remote}"
 fi
