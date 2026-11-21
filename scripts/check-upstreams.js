@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const MANIFEST_PATH = path.resolve(__dirname, '..', 'upstreams.json');
+const MANIFEST_PATH = path.resolve(__dirname, 'upstreams.json');
 
 /**
  * 读取上游基线账本 JSON。
@@ -254,7 +254,7 @@ async function markSynced(targetRepo, rawSha, rawVersion) {
   const manifest = loadManifest();
   const entry = manifest.upstreams.find((item) => item.repo === targetRepo);
   if (!entry) {
-    throw new Error(`未在 upstreams.json 中找到上游仓库: ${targetRepo}`);
+    throw new Error(`未在 scripts/upstreams.json 中找到上游仓库: ${targetRepo}`);
   }
   let nextSha = rawSha;
   let nextVersion = rawVersion || entry.version;
@@ -281,7 +281,7 @@ function formatDateLocal(isoStr) {
 }
 
 function printHumanReport(results) {
-  console.log('🔍 参考项目上游更新巡检结果（基于 upstreams.json 基线账本）：\n');
+  console.log('🔍 参考项目上游更新巡检结果（基于 scripts/upstreams.json 基线账本）：\n');
   let updateCount = 0;
   let errorCount = 0;
 
@@ -338,7 +338,7 @@ async function main() {
 
 选项:
   --json                              输出 JSON 格式巡检结果
-  --mark-synced <repo> [sha] [ver]    更新 upstreams.json 中指定仓库的已吸收基线 (sha 可传 latest)
+  --mark-synced <repo> [sha] [ver]    更新 scripts/upstreams.json 中指定仓库的已吸收基线 (sha 可传 latest)
   -h, --help                          显示帮助信息`);
     return;
   }

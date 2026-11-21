@@ -253,9 +253,9 @@ rm -rf ~/Library/Application\ Support/AntigravityContextMeter
 - **桌面端兼容与守护自愈机制**：完整适配 Antigravity `2.32.x ～ 2.34.0` 的 `conversation-row-sidebar`、`.surface-composer`、`agent-response` 与 Lexical 命令胶囊，巡检期间不误关已展开浮窗；macOS LaunchAgent 采用 `SingletonSocket` + `StartInterval=5` 零 Node 快路径毫秒级巡检，支持 `nvm` / `fnm` / `volta` / `asdf` / `mise` 真实 Node 路径自动发现，并在 `RELAUNCH_LOCK_FILE` 写入两列 `"ts pid"` 防抖、避让 `ShipIt` 自动更新且跳过 30 秒老会话保护；一键更新前校验 `.git` 与洁净工作区再执行 `git pull --ff-only` 与热重载。
 - **文件读写安全边界**：行内编辑与远程目录浏览均通过 `realpathSync` 校验路径规范化，强制限制在 `$HOME` 与已登记工作区边界内，阻止读写 `/System`、`/usr`、`/etc`、`Antigravity.app` 及 `.ssh` / `.gnupg` / `1Password` / `.gemini` 等凭据路径，并拦截 Symlink 逃逸与悬空软链。
 - **Windows / Linux 手动使用**：`setup-macos-cdp.sh` 与 `~/Library/LaunchAgents/` 后台自启为 macOS 专属；Windows / Linux 用户安装 Node.js 22.4+ 并让 Antigravity 以远程调试端口启动后，进入仓库目录手动运行 `node cli.js live` 也可加载核心面板增强逻辑（`node cli.js status` 查看状态）。
-- **检查 6 个上游参考仓库**：可运行 `ag-context-meter upstreams` 与本地基线 [`upstreams.json`](upstreams.json) 比对。如想让 AI Agent 帮你安全合入参考项目更新，可对 Agent 说：
-  > `请运行 ag-context-meter upstreams --json，过滤掉改写 app.asar / 二进制解锁的提交，把安全可吸收的新词条、新模型价格或好用的交互移植进项目并更新 upstreams.json 基线。`
-- **内置 Agent 提速规则**：仓库附带 [`rules/fast-io-AGENTS.md`](rules/fast-io-AGENTS.md)（源自 `oil-oil/agy-fast-io`），通过只读白名单命令、同轮并读文件与合并必审命令减少 AI 工具往返耗时，可按需合并到个人全局规则中。
+- **检查 6 个上游参考仓库**：可运行 `ag-context-meter upstreams` 与本地基线 [`scripts/upstreams.json`](scripts/upstreams.json) 比对。如想让 AI Agent 帮你安全合入参考项目更新，可对 Agent 说：
+  > `请运行 ag-context-meter upstreams --json，过滤掉改写 app.asar / 二进制解锁的提交，把安全可吸收的新词条、新模型价格或好用的交互移植进项目并更新 scripts/upstreams.json 基线。`
+- **内置 Agent 提速规则**：仓库附带 [`docs/fast-io-AGENTS.md`](docs/fast-io-AGENTS.md)（源自 `oil-oil/agy-fast-io`），通过只读白名单命令、同轮并读文件与合并必审命令减少 AI 工具往返耗时，可按需合并到个人全局规则中。
 
 </details>
 
