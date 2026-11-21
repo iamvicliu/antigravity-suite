@@ -22,6 +22,7 @@ const COMMON_FILES = [
   'restore.js',
   'live-host.js',
   'mobile-remote.js',
+  'remote-web-push.js',
   'local-api.js',
   'meter-main.js',
   'meter-core.js',
