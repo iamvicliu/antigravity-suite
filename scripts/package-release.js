@@ -49,12 +49,12 @@ const COMMON_FILES = [
 ];
 
 const PLATFORMS = [
-  { name: 'windows_amd64', scripts: ['install.bat', 'uninstall.bat', 'scripts/cli-window-helper.exe'] },
-  { name: 'windows_arm64', scripts: ['install.bat', 'uninstall.bat', 'scripts/cli-window-helper.exe'] },
-  { name: 'darwin_amd64', scripts: ['install.sh', 'uninstall.sh'] },
-  { name: 'darwin_arm64', scripts: ['install.sh', 'uninstall.sh'] },
-  { name: 'linux_amd64', scripts: ['install.sh', 'uninstall.sh'] },
-  { name: 'linux_arm64', scripts: ['install.sh', 'uninstall.sh'] }
+  { name: 'windows_amd64', scripts: [{ src: 'scripts/install.bat', dest: 'install.bat' }, { src: 'scripts/uninstall.bat', dest: 'uninstall.bat' }, 'scripts/cli-window-helper.exe'] },
+  { name: 'windows_arm64', scripts: [{ src: 'scripts/install.bat', dest: 'install.bat' }, { src: 'scripts/uninstall.bat', dest: 'uninstall.bat' }, 'scripts/cli-window-helper.exe'] },
+  { name: 'darwin_amd64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }] },
+  { name: 'darwin_arm64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }] },
+  { name: 'linux_amd64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }] },
+  { name: 'linux_arm64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }] }
 ];
 
 function sha256File(filePath) {
@@ -107,18 +107,20 @@ function packagePlatform(plat, version) {
 
   try {
     const fileList = [...COMMON_FILES, ...plat.scripts];
-    for (const rel of fileList) {
-      const src = path.join(ROOT_DIR, rel);
+    for (const item of fileList) {
+      const srcRel = typeof item === 'string' ? item : item.src;
+      const destRel = typeof item === 'string' ? item : item.dest;
+      const src = path.join(ROOT_DIR, srcRel);
       if (!fs.existsSync(src)) {
-        throw new Error(`缺少必需的发布文件: ${rel}，拒绝打包！`);
+        throw new Error(`缺少必需的发布文件: ${srcRel}，拒绝打包！`);
       }
-      const dest = path.join(stagingDir, rel);
+      const dest = path.join(stagingDir, destRel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
 
-      if (rel.endsWith('.sh')) {
+      if (destRel.endsWith('.sh')) {
         let content = fs.readFileSync(src, 'utf8').replace(/\r\n/g, '\n');
         fs.writeFileSync(dest, content, { encoding: 'utf8', mode: 0o755 });
-      } else if (rel.endsWith('.bat')) {
+      } else if (destRel.endsWith('.bat')) {
         let content = fs.readFileSync(src, 'utf8').replace(/\r?\n/g, '\r\n');
         fs.writeFileSync(dest, content, { encoding: 'utf8' });
       } else {

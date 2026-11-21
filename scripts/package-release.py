@@ -45,12 +45,12 @@ COMMON_FILES = [
 ]
 
 PLATFORMS = [
-    {"name": "windows_amd64", "scripts": ["install.bat", "uninstall.bat", "scripts/cli-window-helper.exe"]},
-    {"name": "windows_arm64", "scripts": ["install.bat", "uninstall.bat", "scripts/cli-window-helper.exe"]},
-    {"name": "darwin_amd64", "scripts": ["install.sh", "uninstall.sh"]},
-    {"name": "darwin_arm64", "scripts": ["install.sh", "uninstall.sh"]},
-    {"name": "linux_amd64", "scripts": ["install.sh", "uninstall.sh"]},
-    {"name": "linux_arm64", "scripts": ["install.sh", "uninstall.sh"]},
+    {"name": "windows_amd64", "scripts": [("scripts/install.bat", "install.bat"), ("scripts/uninstall.bat", "uninstall.bat"), "scripts/cli-window-helper.exe"]},
+    {"name": "windows_arm64", "scripts": [("scripts/install.bat", "install.bat"), ("scripts/uninstall.bat", "uninstall.bat"), "scripts/cli-window-helper.exe"]},
+    {"name": "darwin_amd64", "scripts": [("scripts/install.sh", "install.sh"), ("scripts/uninstall.sh", "uninstall.sh")]},
+    {"name": "darwin_arm64", "scripts": [("scripts/install.sh", "install.sh"), ("scripts/uninstall.sh", "uninstall.sh")]},
+    {"name": "linux_amd64", "scripts": [("scripts/install.sh", "install.sh"), ("scripts/uninstall.sh", "uninstall.sh")]},
+    {"name": "linux_arm64", "scripts": [("scripts/install.sh", "install.sh"), ("scripts/uninstall.sh", "uninstall.sh")]},
 ]
 
 def ensure_windows_helper():
@@ -143,23 +143,24 @@ def build_releases():
         file_list = COMMON_FILES + plat["scripts"]
         
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for rel in file_list:
-                src_path = ROOT_DIR / rel
+            for item in file_list:
+                src_rel, dest_rel = item if isinstance(item, tuple) else (item, item)
+                src_path = ROOT_DIR / src_rel
                 if not src_path.exists():
-                    raise FileNotFoundError(f"[Packaging Error] 打包失败：缺少必需的发布文件 {rel}！拒绝生成残缺分发包。")
+                    raise FileNotFoundError(f"[Packaging Error] 打包失败：缺少必需的发布文件 {src_rel}！拒绝生成残缺分发包。")
                 
                 # Normalize line endings: CRLF for .bat, LF for .sh
-                if rel.endswith(".sh"):
+                if dest_rel.endswith(".sh"):
                     content = src_path.read_bytes().replace(b"\r\n", b"\n")
-                    zinfo = zipfile.ZipInfo(rel)
+                    zinfo = zipfile.ZipInfo(dest_rel)
                     zinfo.external_attr = 0o755 << 16  # rwxr-xr-x
                     zf.writestr(zinfo, content)
-                elif rel.endswith(".bat"):
-                    content = src_path.read_bytes()
-                    zinfo = zipfile.ZipInfo(rel)
+                elif dest_rel.endswith(".bat"):
+                    content = src_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+                    zinfo = zipfile.ZipInfo(dest_rel)
                     zf.writestr(zinfo, content)
                 else:
-                    zf.write(src_path, arcname=rel)
+                    zf.write(src_path, arcname=dest_rel)
         
         size_kb = zip_path.stat().st_size / 1024
         print(f"  + Created {zip_filename} ({size_kb:.1f} KB)")

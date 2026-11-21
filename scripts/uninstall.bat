@@ -1,8 +1,14 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+set "ROOT_DIR=%~dp0"
+if not exist "%ROOT_DIR%cli.js" (
+  if exist "%~dp0..\cli.js" (
+    for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI\"
+  )
+)
+cd /d "%ROOT_DIR%"
 
-if not exist "%~dp0cli.js" (
+if not exist "%ROOT_DIR%cli.js" (
   echo [ERROR] Please extract the zip archive completely before running uninstall.bat!
   pause
   exit /b 1
