@@ -6407,10 +6407,11 @@ function buildMobileAppHtml() {
       const refFullH = Math.max(maxVvHeight || 0, window.innerHeight || 0, lockedModalBaseH || 0);
       const kbLikelyActive = Boolean(vv && ((refFullH - curH > 60) || ((Number(vv.offsetTop) || 0) > 2)));
       const freezeModalShrink = !desktop && (anyTextFocused || kbLikelyActive || recentlyBlurred);
-      if (desktop || !freezeModalShrink || curH >= lockedModalBaseH) {
-        lockedModalBaseH = Math.round(curH);
+      const modalCandH = isStandalonePwa ? getFullLayoutHeight() : Math.round(curH || 0);
+      if (desktop || !freezeModalShrink || modalCandH >= lockedModalBaseH) {
+        lockedModalBaseH = modalCandH;
       }
-      const modalBaseH = Math.max(lockedModalBaseH || 0, Math.round(curH || 0));
+      const modalBaseH = Math.max(lockedModalBaseH || 0, modalCandH);
       document.documentElement.style.setProperty('--modal-h', modalBaseH + 'px');
 
       const baseH = Math.max(maxVvHeight || 0, window.innerHeight || 0);
