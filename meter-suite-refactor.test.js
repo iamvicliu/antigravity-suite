@@ -14725,11 +14725,14 @@ test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分�
   assert.ok(!html.includes('<span class="attach-file-name"'), '待发附件条图片与文件应移除占空间的横向文件名 span');
   assert.ok(html.includes('class="attach-file-ext"') && html.includes('class="att-ext"'), '非图片文件应展示紧凑扩展名缩略块');
 
-  // 2. extractTrajectoryUserAttachments：支持 ui.images + ui.media(inlineData/thumbnail/displayName)，严禁 image/svg+xml XSS
+  // 2. extractTrajectoryUserAttachments：支持 ui.images + ui.media(inlineData/thumbnail/displayName)，严禁 image/svg+xml XSS，且同前缀不同内容多图均保留
   const tinyPngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const samePrefixPngA = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJgggA=';
+  const samePrefixPngB = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJgggB=';
   const atts = remoteMod.extractTrajectoryUserAttachments({
     images: [
-      { base64Data: tinyPngB64, mimeType: 'image/png', displayName: 'shot.png' },
+      { base64Data: samePrefixPngA, mimeType: 'image/png', displayName: 'shot-a.png' },
+      { base64Data: samePrefixPngB, mimeType: 'image/png', displayName: 'shot-b.png' },
       { base64Data: Buffer.from('<svg onload=alert(1)>').toString('base64'), mimeType: 'image/svg+xml', name: 'evil.svg' }
     ],
     media: [
@@ -14737,11 +14740,14 @@ test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分�
       { uri: 'file:///tmp/demo/report.pdf', mimeType: 'application/pdf' }
     ]
   });
-  const imgShot = atts.find((a) => a.name === 'shot.png');
+  const imgShotA = atts.find((a) => a.name === 'shot-a.png');
+  const imgShotB = atts.find((a) => a.name === 'shot-b.png');
   const imgThumb = atts.find((a) => a.name === 'thumb.jpg');
   const evilSvg = atts.find((a) => a.name === 'evil.svg');
   const pdfFile = atts.find((a) => a.name === 'report.pdf');
-  assert.ok(imgShot?.inlineUrl?.startsWith('data:image/png;base64,'), 'ui.images base64Data 应安全解析为 inlineUrl');
+  assert.ok(imgShotA?.inlineUrl?.startsWith('data:image/png;base64,'), 'ui.images 同前缀图片 A 应保留');
+  assert.ok(imgShotB?.inlineUrl?.startsWith('data:image/png;base64,'), 'ui.images 同前缀不同内容图片 B 应保留不被误去重');
+  assert.notEqual(imgShotA.inlineUrl, imgShotB.inlineUrl);
   assert.ok(imgThumb?.inlineUrl?.startsWith('data:image/jpeg;base64,'), 'ui.media thumbnail 应安全解析为 inlineUrl');
   assert.equal(evilSvg, undefined, 'image/svg+xml 内联数据必须被安全白名单拒绝');
   assert.equal(pdfFile?.kind, 'file');
@@ -14810,9 +14816,13 @@ test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分�
   const uMsg = envDom.doc.createElement('div');
   uMsg.setAttribute('data-testid', 'user-message');
   const uImg = envDom.doc.createElement('img');
-  uImg.setAttribute('src', `data:image/png;base64,${tinyPngB64}`);
+  uImg.setAttribute('src', `data:image/png;base64,${samePrefixPngA}`);
   uImg.setAttribute('alt', 'image.png');
   uMsg.appendChild(uImg);
+  const uImg2 = envDom.doc.createElement('img');
+  uImg2.setAttribute('src', `data:image/png;base64,${samePrefixPngB}`);
+  uImg2.setAttribute('alt', 'image2.png');
+  uMsg.appendChild(uImg2);
   const uContent = envDom.doc.createElement('div');
   uContent.setAttribute('data-testid', 'user-message-content');
   uContent.textContent = 'image.png\n帮我看下这张截图';
@@ -14826,8 +14836,8 @@ test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分�
     const domSnap = enhDom.getMobileSnapshot();
     assert.equal(domSnap.messages.length, 1);
     assert.equal(domSnap.messages[0].text, '帮我看下这张截图', '应剥离混入用户正文的 image.png 文件名');
-    assert.equal(domSnap.messages[0].attachments?.length, 1, '应提取桌面 DOM 用户消息中的图片缩略图');
-    assert.ok(domSnap.messages[0].attachments[0].inlineUrl.startsWith('data:image/png;base64,'));
+    assert.equal(domSnap.messages[0].attachments?.length, 2, '同前缀不同内容的两张桌面 DOM 用户图片应全部保留');
+    assert.notEqual(domSnap.messages[0].attachments[0].inlineUrl, domSnap.messages[0].attachments[1].inlineUrl);
   } finally {
     enhDom?.dispose?.();
     envDom.sandbox.__AGContextMeter?.dispose?.();
