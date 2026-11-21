@@ -14733,7 +14733,8 @@ test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分�
     images: [
       { base64Data: samePrefixPngA, mimeType: 'image/png', displayName: 'shot-a.png' },
       { base64Data: samePrefixPngB, mimeType: 'image/png', displayName: 'shot-b.png' },
-      { base64Data: Buffer.from('<svg onload=alert(1)>').toString('base64'), mimeType: 'image/svg+xml', name: 'evil.svg' }
+      { base64Data: Buffer.from('<svg onload=alert(1)>').toString('base64'), mimeType: 'image/svg+xml', name: 'evil.svg' },
+      { base64Data: 'A'.repeat(520 * 1024), mimeType: 'image/png', name: 'huge.png' }
     ],
     media: [
       { thumbnail: `data:image/jpeg;base64,${tinyPngB64}`, displayName: 'thumb.jpg' },
@@ -14744,12 +14745,14 @@ test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分�
   const imgShotB = atts.find((a) => a.name === 'shot-b.png');
   const imgThumb = atts.find((a) => a.name === 'thumb.jpg');
   const evilSvg = atts.find((a) => a.name === 'evil.svg');
+  const hugeImg = atts.find((a) => a.name === 'huge.png');
   const pdfFile = atts.find((a) => a.name === 'report.pdf');
   assert.ok(imgShotA?.inlineUrl?.startsWith('data:image/png;base64,'), 'ui.images 同前缀图片 A 应保留');
   assert.ok(imgShotB?.inlineUrl?.startsWith('data:image/png;base64,'), 'ui.images 同前缀不同内容图片 B 应保留不被误去重');
   assert.notEqual(imgShotA.inlineUrl, imgShotB.inlineUrl);
   assert.ok(imgThumb?.inlineUrl?.startsWith('data:image/jpeg;base64,'), 'ui.media thumbnail 应安全解析为 inlineUrl');
   assert.equal(evilSvg, undefined, 'image/svg+xml 内联数据必须被安全白名单拒绝');
+  assert.equal(hugeImg, undefined, '超过 512KB 上限的内联图片必须被安全拒绝');
   assert.equal(pdfFile?.kind, 'file');
   assert.equal(pdfFile?.path, '/tmp/demo/report.pdf');
 
@@ -14807,6 +14810,29 @@ test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分�
   assert.equal(pagedSnap.queuedMessages.length, 2, '应同时提取 isQueuedMessage 步骤与 trajectory.queued_steps');
   assert.ok(pagedSnap.queuedMessages.some((q) => q.text.includes('queued via isQueuedMessage')));
   assert.ok(pagedSnap.queuedMessages.some((q) => q.text.includes('from queued_steps')));
+
+  // 3b. 分页空页有限终止验证：numTotalSteps=10 但 GetCascadeTrajectorySteps 返回空数组时仅调 1 次即安全退出不死循环
+  let emptyPageCalls = 0;
+  const emptyTermSnap = await histMgr.enrichMessages(
+    { sessionId: 'conv-empty-page-29', messages: [] },
+    {
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetCascadeTrajectory') {
+            return { numTotalSteps: 10, trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'only 1' } }] } };
+          }
+          if (method === 'GetCascadeTrajectorySteps') {
+            emptyPageCalls += 1;
+            return { steps: [] };
+          }
+          return {};
+        }
+      })
+    }
+  );
+  assert.equal(emptyPageCalls, 1, '空页响应时分页循环应立即 break 有限终止');
+  assert.equal(emptyTermSnap.messages.length, 1);
 
   // 4. 桌面 DOM collectRecentMessages：提取用户消息 <img> 附件并剥离混入正文的 image.png 卡片文字
   const envDom = createDomEnv();
