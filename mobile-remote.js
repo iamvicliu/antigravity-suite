@@ -3275,6 +3275,7 @@ function createConversationHistoryManager() {
   const fetchGenMap = new Map();
   const MAX_CACHE_ENTRIES = 24;
   const MAX_FETCH_GEN_ENTRIES = 2000;
+  let globalFetchSeq = 0;
 
   function touchCache(sessionId, rec) {
     if (cache.has(sessionId)) cache.delete(sessionId);
@@ -3286,7 +3287,8 @@ function createConversationHistoryManager() {
   }
 
   function nextFetchGen(sessionId) {
-    const next = (fetchGenMap.get(sessionId) || 0) + 1;
+    // 使用全局单调递增序号，即使某 sessionId 被 LRU 淘汰后再次请求，也绝不会复用旧代次 1，彻底防止晚归旧请求覆盖新结果
+    const next = ++globalFetchSeq;
     if (fetchGenMap.has(sessionId)) fetchGenMap.delete(sessionId);
     fetchGenMap.set(sessionId, next);
     while (fetchGenMap.size > MAX_FETCH_GEN_ENTRIES) {
@@ -4477,7 +4479,7 @@ function buildMobileAppHtml() {
       <div id="attach-hint" class="attach-hint" hidden></div>
       <div id="chips" class="chips"></div>
       <div class="composer-card">
-        <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息…"></textarea>
+        <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息… (Cmd/Ctrl + Enter 发送)"></textarea>
         <input id="img-input" type="file" accept="image/*" multiple hidden>
         <div class="composer-toolbar">
           <div class="toolbar-left">
