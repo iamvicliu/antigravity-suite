@@ -12813,3 +12813,22 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
   }
   assert.ok(html.includes('compact-done-pill') && html.includes('✓ 上下文已完成压缩'), '前端应包含 /compact 压缩完成提示条样式与渲染');
 });
+
+test('手机端底部空白区域排查与安全区留白优化 (#07)', async () => {
+  const { buildMobileAppHtml } = require('./mobile-remote');
+  const html = buildMobileAppHtml();
+
+  // 1. 全量 <script> 语法校验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-07-script-${i}.js` }));
+  }
+
+  // 2. CSS 语义安全区变量：浏览器默认 --safe-bottom:0px，仅 standalone PWA 启用有上限补偿
+  assert.ok(html.includes('--safe-bottom:0px;'), '默认浏览器模式应将 --safe-bottom 设为 0px，避免与 Safari 底部工具栏叠加留白');
+  assert.ok(html.includes('@media (display-mode:standalone)') && html.includes('body.is-standalone'), '独立 PWA 模式应通过 display-mode 与 is-standalone 启用底部安全区补偿');
+  assert.ok(html.includes('padding-bottom:calc(4px + var(--safe-bottom))'), '.app 应绑定 --safe-bottom 收紧底部留白');
+  assert.ok(html.includes('padding:calc(env(safe-area-inset-top) + 12px) 12px calc(10px + var(--safe-bottom))'), '.drawer 应绑定 --safe-bottom 消除侧边栏底部大块留白');
+  assert.ok(html.includes('classList?.toggle?.(\'is-standalone\''), '前端启动应检测 navigator.standalone / display-mode 并设置 body.is-standalone');
+});
