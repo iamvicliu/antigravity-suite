@@ -10692,3 +10692,165 @@ test('需求 27b: build-renderer 拦截源码截断标记、asar-engine 排除 h
   });
   assert.equal(helpRes.status, 0, 'cli.js help 应正常返回退出码 0');
 });
+
+test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Symlink 防逃逸与跨端口 CSRF 加固 (#32)', async () => {
+  const remoteMod = require('./mobile-remote');
+  const { Readable } = require('stream');
+
+  // 1. 敏感路径黑名单直接校验
+  for (const p of [
+    '/System/Library',
+    '/etc',
+    '/private/etc/hosts',
+    '/Applications/Antigravity.app',
+    '/Users/demo/.ssh',
+    '/Users/demo/.gnupg/private-keys',
+    '/Users/demo/.aws',
+    '/Users/demo/1Password/vault',
+    '/Users/demo/.gemini/antigravity'
+  ]) {
+    assert.equal(remoteMod.isSensitiveHostPath(p), true, `敏感路径必须被拦截: ${p}`);
+  }
+  assert.equal(remoteMod.isSensitiveHostPath('/Users/demo/codebase/my-app'), false);
+
+  // 2. 构造隔离的假 homeDir、外部逃逸目录 outsideDir、敏感子目录与符号链接
+  const sandboxBase = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-sec32-'));
+  const fakeHome = path.join(sandboxBase, 'home');
+  const outsideDir = path.join(sandboxBase, 'outside');
+  const configDir = path.join(sandboxBase, 'cfg');
+  const workDir = path.join(fakeHome, 'codebase');
+  const sshDir = path.join(fakeHome, '.ssh');
+  const geminiDir = path.join(fakeHome, '.gemini');
+  const onePassDir = path.join(fakeHome, '1Password');
+  fs.mkdirSync(workDir, { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(sshDir, { recursive: true });
+  fs.mkdirSync(geminiDir, { recursive: true });
+  fs.mkdirSync(onePassDir, { recursive: true });
+
+  const symEscape = path.join(workDir, 'link-outside');
+  const symSsh = path.join(workDir, 'link-ssh');
+  fs.symlinkSync(outsideDir, symEscape, 'dir');
+  fs.symlinkSync(sshDir, symSsh, 'dir');
+
+  try {
+    // 2a. 到达根目录边界（fakeHome）时 parentPath 必须为 null，且越界访问 /etc、/、outsideDir 被拒（403）
+    const homeList = remoteMod.listHostDirectories({ homeDir: fakeHome, configDir, showHidden: true });
+    assert.equal(homeList.parentPath, null, '到达 $HOME 授权边界时不得返回 parentPath');
+    assert.ok(!homeList.entries.some((e) => ['.ssh', '.gemini', '1Password'].includes(e.name)), '敏感目录即使 showHidden=true 也不得出现在目录列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: outsideDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: '/etc', homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: '/', homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: sshDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: geminiDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+
+    // 2b. Symlink 逃逸目录与敏感 symlink 均被列表过滤且直连/新建/注册项目全部拦截
+    const workList = remoteMod.listHostDirectories({ dirPath: workDir, homeDir: fakeHome, configDir, showHidden: true });
+    assert.equal(workList.parentPath, fakeHome);
+    assert.ok(!workList.entries.some((e) => e.name === 'link-outside' || e.name === 'link-ssh'), '越界或敏感符号链接子目录不得暴露在列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symEscape, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symSsh, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symEscape, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: fakeHome, name: '.ssh' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: outsideDir, name: 'evil' }, { homeDir: fakeHome }), (err) => err.status === 403);
+
+    // 2c. 禁止将 $HOME 本身、/、越界目录或符号链接注册为项目
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: fakeHome, name: 'home-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 400
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: '/', name: 'root-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symEscape, name: 'sym-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symSsh, name: 'ssh-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+
+    // 3. Same-Site 跨端口 CSRF 与 Content-Type 加固测试
+    const secCfg = {
+      port: 18765,
+      token: 'tok-sec32-1234567890abcdef',
+      tunnelEnabled: false,
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    };
+    const secHandler = remoteMod.createRemoteHttpHandler(secCfg, {
+      homeDir: fakeHome,
+      configDir,
+      performAction: async () => ({ ok: true, actionResult: { ok: true } }),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's-1', messages: [] })
+    });
+    const sendWrite = async (urlPath, bodyStr, headers = {}) => {
+      const req = Readable.from([Buffer.from(bodyStr, 'utf8')]);
+      req.method = 'POST';
+      req.url = urlPath;
+      req.headers = { host: '127.0.0.1:18765', ...headers };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let out = '';
+      const res = {
+        setHeader: () => {},
+        writeHead: (code) => { status = code; },
+        end: (chunk) => { if (chunk) out += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); }
+      };
+      await secHandler(req, res);
+      return { status, json: JSON.parse(out || '{}') };
+    };
+
+    // 3a. text/plain 简单请求（即使携带有效 Cookie + 同源 Origin）必须被拒（415）
+    const plainRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'bad-ct' }), {
+      'content-type': 'text/plain',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(plainRes.status, 415, '写接口必须拒绝 text/plain 简单请求');
+
+    // 3b. 同主机不同端口（Same-Site 跨端口 CSRF：127.0.0.1:3000 -> 127.0.0.1:18765）携带 Cookie 必须返回 403
+    const crossPortRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'csrf-dir' }), {
+      'content-type': 'application/json',
+      origin: 'http://127.0.0.1:3000',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(crossPortRes.status, 403, '跨端口不同源 Origin + Cookie 写请求必须被 403 拦截');
+
+    // 3c. Origin: null + Cookie 必须返回 403
+    const nullOriginRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      origin: 'null',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(nullOriginRes.status, 403, 'Origin: null + Cookie 写请求必须被 403 拦截');
+
+    // 3d. Cookie 鉴权但无 Origin/Referer 且无 X-AG-Remote-Token 必须返回 403
+    const noOriginCookieRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(noOriginCookieRes.status, 403, 'Cookie 鉴权且缺少同源 Origin 与自定义头时必须返回 403');
+
+    // 3e. 合法同源 Origin + application/json + Cookie 正常通过（200）
+    const okCookieRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'ok-same-origin' }), {
+      'content-type': 'application/json; charset=utf-8',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(okCookieRes.status, 200);
+    assert.equal(okCookieRes.json.ok, true);
+
+    // 3f. 合法自定义请求头 X-AG-Remote-Token + application/json 正常通过（200）
+    const okHeaderRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'ok-custom-hdr' }), {
+      'content-type': 'application/json',
+      'x-ag-remote-token': secCfg.token
+    });
+    assert.equal(okHeaderRes.status, 200);
+    assert.equal(okHeaderRes.json.ok, true);
+  } finally {
+    fs.rmSync(sandboxBase, { recursive: true, force: true });
+  }
+});
