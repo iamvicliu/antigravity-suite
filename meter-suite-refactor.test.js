@@ -10919,3 +10919,100 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
     fs.rmSync(sandboxBase, { recursive: true, force: true });
   }
 });
+
+test('PR #5 返修（二）：隔离视图新建页判空、裸 % 解码防崩、桌面轮询截断、IME 防误触与缓存/弹窗修复 (#33)', async () => {
+  const remoteMod = require('./mobile-remote');
+
+  // 1. 裸 % 文件 URI 解码不得抛 URIError 或导致整段历史归零
+  const pctMsgs = remoteMod.extractMessagesFromTrajectorySteps([
+    {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      userInput: {
+        items: [
+          { text: '请查看' },
+          { item: { file: { absoluteUri: 'file:///tmp/100%done.txt' } } },
+          { item: { directory: { absoluteUri: 'file:///tmp/dir%2/sub/' } } }
+        ]
+      }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: { modifiedResponse: '已查看 100%done.txt' }
+    }
+  ]);
+  assert.equal(pctMsgs.length, 2, '含裸 % 的 URI 必须安全保留原片段而不得整段历史归零');
+  assert.ok(pctMsgs[0].text.includes('@100%done.txt'));
+  assert.ok(pctMsgs[0].text.includes('@sub'));
+
+  // 2. 桌面处于新建页 `/`（isNewConversation=true）时，隔离查看历史会话必须返回 isNewConversation:false + 目标项目归属；且 DOM 轮询超大文本受安全截断保护
+  const env = createDomEnv();
+  env.win.location = { pathname: '/', search: '?project=proj-desktop', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/?project=proj-desktop' };
+  env.sandbox.location = env.win.location;
+  env.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+  const hugeUser = env.doc.createElement('div');
+  hugeUser.setAttribute('data-testid', 'user-message');
+  hugeUser.textContent = 'A'.repeat(220000);
+  env.doc.body.appendChild(hugeUser);
+
+  const histRow = env.doc.createElement('div');
+  histRow.setAttribute('data-testid', 'conversation-row-sidebar');
+  const histLink = env.doc.createElement('a');
+  histLink.setAttribute('href', '/c/aaaa1111-2222-3333-4444-555555555555');
+  histLink.textContent = '历史会话标题';
+  histRow.appendChild(histLink);
+  env.doc.body.appendChild(histRow);
+
+  let enh = null;
+  try {
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    enh = env.sandbox.__AGEnhancer;
+
+    const baseSnap = enh.getMobileSnapshot();
+    assert.equal(baseSnap.isNewConversation, true);
+    assert.equal(baseSnap.messages.length, 1);
+    assert.ok(baseSnap.messages[0].text.length <= 200005, `DOM 轮询单条文本应有安全截断上限，实际=${baseSnap.messages[0].text.length}`);
+
+    const isoSnap = await enh.getMobileSnapshotAsync({ conversationId: 'aaaa1111-2222-3333-4444-555555555555' });
+    assert.equal(isoSnap.isolated, true);
+    assert.equal(isoSnap.isNewConversation, false, '桌面停在新建页时隔离查看历史会话必须重置 isNewConversation=false');
+    assert.equal(isoSnap.sessionId, 'aaaa1111-2222-3333-4444-555555555555');
+  } finally {
+    enh?.dispose?.();
+    env.sandbox.__AGContextMeter?.dispose?.();
+    env.cleanup?.();
+  }
+
+  // 3. enrichMessages 输出 historySource（dom 降级 vs trajectory 权威），前端全量 <script> 校验 + IME 防误触 + clearScrollBodyOffset 不清 scrollTop
+  const histMgr = remoteMod.createConversationHistoryManager();
+  const domFallbackSnap = await histMgr.enrichMessages(
+    { sessionId: 'conv-dom-rec', messages: [{ role: 'user', text: 'dom msg' }] },
+    { localApiConnect: async () => { throw new Error('ls down'); } }
+  );
+  assert.equal(domFallbackSnap.historySource, 'dom');
+  const trajRecSnap = await histMgr.enrichMessages(
+    { sessionId: 'conv-dom-rec', messages: [{ role: 'user', text: 'dom msg' }] },
+    {
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async () => ({
+          trajectory: {
+            steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'traj msg' } }]
+          }
+        })
+      })
+    }
+  );
+  assert.equal(trajRecSnap.historySource, 'trajectory');
+
+  const html33 = remoteMod.buildMobileAppHtml();
+  const scripts33 = [...html33.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts33.length >= 2);
+  for (let i = 0; i < scripts33.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts33[i][1], { filename: `mobile-app-33-script-${i}.js` }));
+  }
+  assert.ok(html33.includes('function bindSafeImeEnter(') && html33.includes("compositionstart") && html33.includes('e.keyCode === 229'), '输入框必须具备 Safari 中文 IME 防误触保护');
+  assert.ok(html33.includes("activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory'"), '从 domTail 恢复全量轨迹时必须清空旧临时索引键防错序');
+  assert.ok(!html33.includes('bodyEl.scrollTop = 0;'), 'clearScrollBodyOffset 不得暴力重置 scrollTop=0 把输入框滚出视野');
+});
