@@ -17421,3 +17421,485 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   assert.ok(noCertRes.hint.includes('HTTPS Certificates'), '未开通 CertDomains 时应返回清晰开启提示');
   assert.ok(!noCertCalls.some((a) => a[0] === 'serve'), '未开通 CertDomains 时不得盲目调用 tailscale serve');
 });
+
+test('遥控网页 Web Push 消息推送与桌面 PWA 图标未读角标 (#10)', async () => {
+  const crypto = require('node:crypto');
+  const os = require('node:os');
+  const remoteMod = require('../mobile-remote');
+  const pushMod = require('../remote-web-push');
+
+  // 1. HTML 全量 <script> 与 Service Worker 脚本语法校验
+  const html = remoteMod.buildMobileAppHtml();
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-10-script-${i}.js` }));
+  }
+  const swCode = remoteMod.buildServiceWorkerJs();
+  assert.doesNotThrow(() => new vm.Script(swCode, { filename: 'sw-10.js' }));
+
+  // 2. VAPID ES256 JWT 生成与验签 + RFC 8291 (aes128gcm) 加密/解密闭环
+  const vapid = pushMod.generateVapidKeys();
+  const rawPub = pushMod.b64urlDecode(vapid.publicKey);
+  assert.equal(rawPub.length, 65);
+  assert.equal(rawPub[0], 0x04);
+
+  const sampleEndpoint = 'https://fcm.googleapis.com/fcm/send/demo-token-10';
+  const authHeader = pushMod.createVapidAuthHeader(sampleEndpoint, vapid);
+  assert.ok(authHeader.startsWith('vapid t='));
+  const jwtPart = authHeader.slice('vapid t='.length, authHeader.indexOf(', k='));
+  const [hdrB64, payB64, sigB64] = jwtPart.split('.');
+  const payJson = JSON.parse(pushMod.b64urlDecode(payB64).toString('utf8'));
+  assert.equal(payJson.aud, 'https://fcm.googleapis.com');
+  const pubKeyObj = crypto.createPublicKey({
+    key: { kty: 'EC', crv: 'P-256', x: vapid.privateKeyJwk.x, y: vapid.privateKeyJwk.y },
+    format: 'jwk'
+  });
+  assert.equal(
+    crypto.verify('sha256', Buffer.from(`${hdrB64}.${payB64}`, 'utf8'), { key: pubKeyObj, dsaEncoding: 'ieee-p1363' }, pushMod.b64urlDecode(sigB64)),
+    true,
+    'VAPID ES256 JWT 签名必须可由对应公钥验证通过'
+  );
+
+  // 模拟浏览器 PushSubscription 密钥对并验证 RFC 8291 端到端加解密
+  const uaEcdh = crypto.createECDH('prime256v1');
+  uaEcdh.generateKeys();
+  const uaAuth = crypto.randomBytes(16);
+  const validSub = {
+    endpoint: sampleEndpoint,
+    keys: {
+      p256dh: pushMod.b64urlEncode(uaEcdh.getPublicKey()),
+      auth: pushMod.b64urlEncode(uaAuth)
+    }
+  };
+  const payloadText = JSON.stringify({ type: 'completed', title: '对话已完成', completedUnreadCount: 2 });
+  const encrypted = pushMod.encryptWebPushPayload(payloadText, validSub);
+  const decrypted = pushMod.decryptWebPushPayloadForTest(encrypted.body, uaEcdh.getPrivateKey(), uaAuth);
+  assert.equal(decrypted, payloadText, 'RFC 8291 aes128gcm 加密载荷必须可被订阅私钥无损解密');
+
+  // 2b. IETF RFC 8291 Section 5 官方标准测试向量字节级比对（独立于本模块解密器证明完全符合标准）
+  const rfc8291VectorRes = pushMod.encryptWebPushPayload(
+    'When I grow up, I want to be a watermelon',
+    {
+      endpoint: 'https://push.example.net/push/rfc8291-vector',
+      keys: {
+        p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4',
+        auth: 'BTBZMqHH6r4Tts7J_aSIgg'
+      }
+    },
+    {
+      serverPrivateKey: pushMod.b64urlDecode('yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw'),
+      salt: pushMod.b64urlDecode('DGv6ra1nlYgDCS1FRnbzlw')
+    }
+  );
+  assert.equal(
+    pushMod.b64urlEncode(rfc8291VectorRes.body),
+    'DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN',
+    'RFC 8291 Section 5 官方标准测试向量密文必须逐字节完全匹配'
+  );
+
+  // 2c. 加密前 UTF-8 字节长度单记录上限边界验证 (rs=4096 -> max 4079 bytes)
+  const exactMaxPayload = 'a'.repeat(pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES);
+  const exactMaxEnc = pushMod.encryptWebPushPayload(exactMaxPayload, validSub);
+  assert.equal(pushMod.decryptWebPushPayloadForTest(exactMaxEnc.body, uaEcdh.getPrivateKey(), uaAuth), exactMaxPayload, '恰好 4079 UTF-8 字节载荷应正常加密解密');
+  assert.throws(
+    () => pushMod.encryptWebPushPayload('a'.repeat(pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES + 1), validSub),
+    RangeError,
+    '超过 4079 字节的载荷必须在加密前抛出 RangeError'
+  );
+  assert.throws(
+    () => pushMod.encryptWebPushPayload('中'.repeat(1360), validSub), // 1360 * 3 = 4080 UTF-8 bytes
+    RangeError,
+    '多字节 UTF-8 字符按字节长度超限(4080B > 4079B)必须抛出 RangeError'
+  );
+
+  // 3. 订阅校验与 SSRF 防护（含 DNS 解析私网拦截与禁止重定向）
+  assert.equal(pushMod.validatePushSubscription(validSub).ok, true);
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'http://fcm.googleapis.com/plain' }).ok, false, '拒绝明文 http:// 订阅');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://127.0.0.1:8443/push' }).ok, false, '拒绝回环地址 SSRF');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://192.168.1.10/push' }).ok, false, '拒绝内网地址 SSRF');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://100.103.118.78/push' }).ok, false, '拒绝 Tailscale 私网地址 SSRF');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://198.18.0.1/push' }).ok, false, '拒绝 198.18.0.0/15 基准测试非公网地址');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://192.0.2.1/push' }).ok, false, '拒绝 192.0.2.0/24 TEST-NET-1 非公网地址');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://[2001:db8::1]/push' }).ok, false, '拒绝 2001:db8::/32 IPv6 文档非公网地址');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://localhost/push' }).ok, false, '拒绝 localhost SSRF');
+
+  const dnsBenchRes = await pushMod.resolveSafePushEndpoint('https://bench.example.com/push', {
+    dnsLookup: async () => [{ address: '198.18.0.1', family: 4 }]
+  });
+  assert.equal(dnsBenchRes.ok, false, 'DNS 解析到 198.18.0.1 非公网基准测试地址必须被拒绝');
+  const dnsV6DocRes = await pushMod.resolveSafePushEndpoint('https://docv6.example.com/push', {
+    dnsLookup: async () => [{ address: '2001:db8::1', family: 6 }]
+  });
+  assert.equal(dnsV6DocRes.ok, false, 'DNS 解析到 2001:db8::1 IPv6 非公网地址必须被拒绝');
+
+  const dnsPrivateRes = await pushMod.resolveSafePushEndpoint('https://rebind.example.com/push', {
+    dnsLookup: async () => [{ address: '127.0.0.1', family: 4 }]
+  });
+  assert.equal(dnsPrivateRes.ok, false, '域名解析到回环地址 127.0.0.1 必须被拒绝');
+  const dnsMixedRes = await pushMod.resolveSafePushEndpoint('https://dual.example.com/push', {
+    dnsLookup: async () => [{ address: '142.250.190.10', family: 4 }, { address: '10.0.0.8', family: 4 }]
+  });
+  assert.equal(dnsMixedRes.ok, false, '域名解析结果包含任意私网地址时必须拒绝');
+  const dnsPublicRes = await pushMod.resolveSafePushEndpoint('https://fcm.googleapis.com/fcm/send/ok', {
+    dnsLookup: async () => [{ address: '142.250.190.10', family: 4 }]
+  });
+  assert.equal(dnsPublicRes.ok, true);
+  assert.equal(dnsPublicRes.resolvedAddress, '142.250.190.10');
+
+  // 4. 严格布尔口径：仅统计 status === 'idle' && completedUnread === true（排除非布尔真值与归档）
+  const sampleConvs = [
+    { id: 'c1', status: 'idle', completedUnread: true, unread: true },
+    { id: 'c2', status: 'idle', completedUnread: true, unread: true },
+    { id: 'c3', status: 'idle', completedUnread: false, unread: false },
+    { id: 'c4', status: 'running', completedUnread: true, unread: true },
+    { id: 'c5', status: 'waiting', completedUnread: true, unread: true },
+    { id: 'c6', status: 'error', completedUnread: true, unread: true },
+    { id: 'c7', status: 'idle', completedUnread: true, archived: true },
+    { id: 'c8', status: 'idle', completedUnread: 'true', unread: true },
+    { id: 'c9', status: 'idle', completedUnread: 1, unread: true }
+  ];
+  assert.equal(pushMod.computeCompletedUnreadCount(sampleConvs), 2, '未读角标严格仅计入 status===idle && completedUnread===true，排除非布尔真值与归档');
+  const fnUnreadStart = html.indexOf('function computeClientCompletedUnreadCount(convs)');
+  const fnUnreadEnd = html.indexOf('function urlBase64ToUint8Array(base64String)');
+  assert.ok(fnUnreadStart > 0 && fnUnreadEnd > fnUnreadStart);
+  const clientBadgeCalls = [];
+  const unreadDoc = { title: 'Antigravity Remote' };
+  const unreadCtx = vm.createContext({
+    Array,
+    Math,
+    Number,
+    document: unreadDoc,
+    navigator: {
+      setAppBadge: async (n) => { clientBadgeCalls.push(['set', n]); },
+      clearAppBadge: async () => { clientBadgeCalls.push(['clear', 0]); }
+    }
+  });
+  vm.runInContext(
+    html.slice(fnUnreadStart, fnUnreadEnd) + '\nglobalThis.__cnt = computeClientCompletedUnreadCount; globalThis.__syncBadge = syncAppBadgeCount;',
+    unreadCtx
+  );
+  const clientCount = unreadCtx.__cnt(sampleConvs);
+  assert.equal(clientCount, pushMod.computeCompletedUnreadCount(sampleConvs), '前端与服务端未读计数口径必须 100% 一致');
+  unreadCtx.__syncBadge(clientCount);
+  assert.deepEqual(clientBadgeCalls[0], ['set', 2], '前端未读数 > 0 时应调用 navigator.setAppBadge(2)');
+  assert.equal(unreadDoc.title, '(2) Antigravity Remote', '前端未读数 > 0 时应更新页面标题前缀');
+  unreadCtx.__syncBadge(0);
+  assert.deepEqual(clientBadgeCalls[1], ['clear', 0], '前端标记已读计数归零时应调用 navigator.clearAppBadge()');
+  assert.equal(unreadDoc.title, 'Antigravity Remote', '前端计数归零时应恢复默认页面标题');
+
+  // 4b. SW 迟到 Push 写回旧角标后，前端权威快照(0)必须不被缓存跳过、再次调用 clearAppBadge 纠正角标
+  clientBadgeCalls.push(['sw-late-set', 2]);
+  unreadCtx.__syncBadge(0);
+  assert.deepEqual(clientBadgeCalls[3], ['clear', 0], '迟到 Push 写回旧角标后，前端再次收到权威快照(0)必须重新调用 clearAppBadge 纠偏');
+
+  // 5. 状态持久化(0600 自愈 + 写入失败不静默)、状态跃迁触发、防抖去重与 410 自动淘汰失效订阅
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-push-10-'));
+  const statePath = path.join(tmpDir, 'remote-push-state.json');
+
+  // 5a. 已有宽松权限(0644)状态文件加载时自动收紧至 0600
+  const loosePath = path.join(tmpDir, 'loose-push-state.json');
+  fs.writeFileSync(loosePath, JSON.stringify({ vapid, prefs: { enabled: true }, subscriptions: [] }), { mode: 0o644 });
+  fs.chmodSync(loosePath, 0o644);
+  assert.equal(fs.statSync(loosePath).mode & 0o777, 0o644);
+  const looseMgr = pushMod.createWebPushManager({ getStateFilePath: () => loosePath });
+  assert.equal(looseMgr.getPublicInfo().publicKey, vapid.publicKey);
+  assert.equal(fs.statSync(loosePath).mode & 0o777, 0o600, '加载已有合法状态文件时也必须将权限收紧为 0600');
+
+  // 5b. 写入失败不得静默报告成功
+  const blockingFile = path.join(tmpDir, 'not-a-dir');
+  fs.writeFileSync(blockingFile, 'x');
+  const failMgr = pushMod.createWebPushManager({ getStateFilePath: () => path.join(blockingFile, 'state.json') });
+  const failAdd = failMgr.addSubscription(validSub);
+  assert.equal(failAdd.ok, false, '状态文件持久化失败时 addSubscription 不得返回 ok: true');
+  assert.equal(failAdd.statusCode, 500);
+
+  const sentReqs = [];
+  const goneSub = {
+    endpoint: 'https://updates.push.services.mozilla.com/wpush/v2/expired-sub',
+    keys: validSub.keys
+  };
+  const mgr = pushMod.createWebPushManager({
+    getStateFilePath: () => statePath,
+    debounceMs: 5000,
+    disableAutoBroadcast: true,
+    dnsLookup: async (h) => {
+      if (String(h).includes('rebind')) return [{ address: '127.0.0.1', family: 4 }];
+      return [{ address: '142.250.190.10', family: 4 }];
+    },
+    fetchImpl: async (url, init) => {
+      sentReqs.push({ url, headers: init.headers, redirect: init.redirect, body: init.body });
+      if (String(url).includes('redirect-sub')) return { ok: false, status: 302 };
+      if (String(url).includes('expired-sub')) return { ok: false, status: 410 };
+      return { ok: true, status: 201 };
+    }
+  });
+  const pubInfo = mgr.getPublicInfo();
+  assert.ok(pubInfo.publicKey.length > 40);
+  assert.equal(fs.statSync(statePath).mode & 0o777, 0o600, 'VAPID 私钥状态文件权限必须为 0600');
+  assert.equal(mgr.addSubscription(validSub, { label: 'Mac' }).ok, true);
+  assert.equal(mgr.addSubscription(goneSub, { label: 'Old' }).ok, true);
+  assert.equal(mgr.getPublicInfo().subscriptionCount, 2);
+
+  // 5c. 投递时拦截 DNS 私网解析与 302 重定向
+  const redirMgr = pushMod.createWebPushManager({
+    getStateFilePath: () => path.join(tmpDir, 'redir-state.json'),
+    dnsLookup: async (h) => (String(h).includes('rebind') ? [{ address: '127.0.0.1', family: 4 }] : [{ address: '142.250.190.10', family: 4 }]),
+    fetchImpl: async (url, init) => {
+      sentReqs.push({ url, redirect: init.redirect });
+      return { ok: false, status: 302 };
+    }
+  });
+  redirMgr.addSubscription({ endpoint: 'https://rebind.evil.example/push', keys: validSub.keys });
+  redirMgr.addSubscription({ endpoint: 'https://push.example.com/redirect-sub', keys: validSub.keys });
+  const beforeReqs = sentReqs.length;
+  const redirBroadcast = await redirMgr.broadcast({ type: 'test' });
+  assert.equal(redirBroadcast.sent, 0, 'DNS 私网解析与 302 重定向均不得投递成功');
+  assert.equal(redirBroadcast.failed, 2);
+  const redirSent = sentReqs.slice(beforeReqs);
+  assert.equal(redirSent.length, 1, 'DNS 解析为私网的订阅不得发出任何 HTTP 请求');
+  assert.equal(redirSent[0].redirect, 'manual', 'Push 请求必须显式设置 redirect: manual 禁止自动重定向');
+
+  // 首次采样仅建立基线不推送
+  const boot = mgr.observeCatalogItems([
+    { id: 's1', title: '任务一', projectName: 'proj-a', status: 'running', completedUnread: false, updatedAt: 100 },
+    { id: 's2', title: '任务二', projectName: 'proj-b', status: 'running', completedUnread: false, updatedAt: 100 }
+  ], 1000);
+  assert.equal(boot.events.length, 0);
+  assert.equal(boot.completedUnreadCount, 0);
+
+  // s1 running -> idle (completedUnread=true)，s2 running -> waiting
+  const t1 = mgr.observeCatalogItems([
+    { id: 's1', title: '任务一', projectName: 'proj-a', status: 'idle', completedUnread: true, updatedAt: 200 },
+    { id: 's2', title: '任务二', projectName: 'proj-b', status: 'waiting', completedUnread: false, updatedAt: 200 }
+  ], 2000);
+  assert.equal(t1.completedUnreadCount, 1, 'waiting 会话不得计入 completedUnreadCount');
+  assert.equal(t1.events.length, 2);
+  assert.equal(t1.events.find((e) => e.conversationId === 's1')?.type, 'completed');
+  assert.equal(t1.events.find((e) => e.conversationId === 's2')?.type, 'waiting');
+  assert.equal(t1.events.find((e) => e.conversationId === 's2')?.completedUnreadCount, 1);
+
+  // 防抖窗口内再次跃迁不重复触发
+  mgr.observeCatalogItems([
+    { id: 's1', title: '任务一', projectName: 'proj-a', status: 'running', completedUnread: false, updatedAt: 250 }
+  ], 2500);
+  const tDebounced = mgr.observeCatalogItems([
+    { id: 's1', title: '任务一', projectName: 'proj-a', status: 'idle', completedUnread: true, updatedAt: 300 }
+  ], 3000);
+  assert.equal(tDebounced.events.length, 0, '防抖窗口内同会话重复 completed 应被抑制');
+
+  // 广播触发 201 成功 + 410 自动淘汰失效订阅
+  const bRes = await mgr.broadcast(t1.events[0]);
+  assert.equal(bRes.sent, 1);
+  assert.equal(bRes.expiredRemoved, 1);
+  assert.equal(mgr.getPublicInfo().subscriptionCount, 1, '410 Gone 订阅应被自动清理');
+  assert.equal(sentReqs[sentReqs.length - 1].headers['Content-Encoding'], 'aes128gcm');
+
+  // 6. HTTP 路由集成：PNG 图标、manifest、/api/push/* 鉴权与 CSRF
+  const manifestObj = JSON.parse(remoteMod.buildManifestJson());
+  assert.ok(manifestObj.icons.some((i) => i.src === '/icon-192.png' && i.type === 'image/png'));
+  assert.ok(manifestObj.icons.some((i) => i.src === '/icon-512.png' && i.type === 'image/png'));
+  assert.ok(html.includes('href="/icon-180.png"'), 'apple-touch-icon 应指向 PNG 图标');
+
+  let polledConvs = [
+    { id: 'u1', title: '已完成1', status: 'idle', completedUnread: true, updatedAt: 500 },
+    { id: 'u2', title: '已完成2', status: 'idle', completedUnread: true, updatedAt: 501 },
+    { id: 'u3', title: '等待中', status: 'waiting', completedUnread: false, updatedAt: 502 }
+  ];
+  const handler = remoteMod.createRemoteHttpHandler(
+    { enabled: true, port: 18765, token: 'tok-push-10', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    { webPushManager: mgr, pollConversations: async () => polledConvs }
+  );
+  const runReq = async ({ method = 'GET', url, headers = {}, body = '' }) => {
+    const resHeaders = {};
+    let status = 0;
+    const chunks = [];
+    const req = {
+      method,
+      url,
+      headers: { host: '127.0.0.1:18765', ...headers },
+      socket: { remoteAddress: '127.0.0.1' },
+      on(ev, cb) {
+        if (ev === 'data' && body) cb(Buffer.from(body, 'utf8'));
+        if (ev === 'end') cb();
+      },
+      destroy() {}
+    };
+    const res = {
+      setHeader(k, v) { resHeaders[String(k).toLowerCase()] = v; },
+      getHeader(k) { return resHeaders[String(k).toLowerCase()]; },
+      writeHead(code, h = {}) { status = code; for (const [k, v] of Object.entries(h)) resHeaders[String(k).toLowerCase()] = v; },
+      end(chunk) { if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); }
+    };
+    await handler(req, res);
+    return { status, resHeaders, buf: Buffer.concat(chunks) };
+  };
+
+  for (const iconPath of ['/icon-180.png', '/icon-192.png', '/icon-512.png']) {
+    const iconRes = await runReq({ url: iconPath });
+    assert.equal(iconRes.status, 200);
+    assert.equal(iconRes.resHeaders['content-type'], 'image/png');
+    assert.deepEqual(iconRes.buf.subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), `${iconPath} 必须返回合法 PNG 头`);
+  }
+
+  const unauthPush = await runReq({ url: '/api/push/vapid-key' });
+  assert.equal(unauthPush.status, 401, '/api/push/vapid-key 必须鉴权');
+
+  const keyRes = await runReq({ url: '/api/push/vapid-key', headers: { 'x-ag-remote-token': 'tok-push-10' } });
+  assert.equal(keyRes.status, 200);
+  const keyBody = JSON.parse(keyRes.buf.toString('utf8'));
+  assert.equal(keyBody.ok, true);
+  assert.equal(keyBody.publicKey, pubInfo.publicKey);
+
+  const csrfBlocked = await runReq({
+    method: 'POST',
+    url: '/api/push/subscribe',
+    headers: { 'x-ag-remote-token': 'tok-push-10', 'content-type': 'text/plain' },
+    body: JSON.stringify({ subscription: validSub })
+  });
+  assert.equal(csrfBlocked.status, 415, '/api/push/subscribe 必须受 #32 CSRF Content-Type 保护');
+
+  const testPushRes = await runReq({
+    method: 'POST',
+    url: '/api/push/test',
+    headers: { 'x-ag-remote-token': 'tok-push-10', 'content-type': 'application/json' },
+    body: '{}'
+  });
+  assert.equal(testPushRes.status, 200);
+  const testPushJson = JSON.parse(testPushRes.buf.toString('utf8'));
+  assert.equal(testPushJson.sent, 1);
+  assert.equal(testPushJson.completedUnreadCount, 2, '未调用 /api/snapshot 直接测试推送也必须实时拉取当前 completedUnreadCount (2)');
+  const lastTestSent = sentReqs[sentReqs.length - 1];
+  const decryptedTestPayload = JSON.parse(pushMod.decryptWebPushPayloadForTest(lastTestSent.body, uaEcdh.getPrivateKey(), uaAuth));
+  assert.equal(decryptedTestPayload.completedUnreadCount, 2, '测试推送加密载荷中的 completedUnreadCount 必须与实时统计一致');
+
+  // 6b. 持久化失败在 HTTP 接口返回 500 而非 200
+  const failHandler = remoteMod.createRemoteHttpHandler(
+    { enabled: true, port: 18765, token: 'tok-push-10', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    { webPushManager: failMgr }
+  );
+  let failStatus = 0;
+  await failHandler(
+    {
+      method: 'POST',
+      url: '/api/push/subscribe',
+      headers: { host: '127.0.0.1:18765', 'x-ag-remote-token': 'tok-push-10', 'content-type': 'application/json' },
+      socket: { remoteAddress: '127.0.0.1' },
+      on(ev, cb) {
+        if (ev === 'data') cb(Buffer.from(JSON.stringify({ subscription: validSub }), 'utf8'));
+        if (ev === 'end') cb();
+      },
+      destroy() {}
+    },
+    {
+      setHeader() {},
+      getHeader() { return undefined; },
+      writeHead(code) { failStatus = code; },
+      end() {}
+    }
+  );
+  assert.equal(failStatus, 500, '持久化失败时 POST /api/push/subscribe 必须返回 HTTP 500');
+
+  // 6c. 不依赖客户端 /api/snapshot 的服务端后台观测器：全部网页关闭后仍可检测跃迁并自动投递
+  const bgSent = [];
+  const bgMgr = pushMod.createWebPushManager({
+    getStateFilePath: () => path.join(tmpDir, 'bg-push-state.json'),
+    debounceMs: 0,
+    dnsLookup: async () => [{ address: '142.250.190.10', family: 4 }],
+    fetchImpl: async (_url, init) => {
+      bgSent.push(JSON.parse(pushMod.decryptWebPushPayloadForTest(init.body, uaEcdh.getPrivateKey(), uaAuth)));
+      return { ok: true, status: 201 };
+    }
+  });
+  bgMgr.addSubscription(validSub, { label: 'BG' });
+  let bgTick = 0;
+  const bgHandler = remoteMod.createRemoteHttpHandler(
+    { enabled: true, port: 18765, token: 'tok-push-10', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    {
+      webPushManager: bgMgr,
+      pollConversations: async () => {
+        bgTick += 1;
+        if (bgTick === 1) {
+          return [{ id: 'bg1', title: '后台任务', projectName: 'proj', status: 'running', completedUnread: false, updatedAt: 100 }];
+        }
+        return [{ id: 'bg1', title: '后台任务', projectName: 'proj', status: 'idle', completedUnread: true, updatedAt: 200 }];
+      }
+    }
+  );
+  bgHandler.startPushWatcher(50);
+  try {
+    await new Promise((r) => setTimeout(r, 180));
+  } finally {
+    bgHandler.stopPushWatcher();
+  }
+  assert.ok(bgSent.length >= 1, '无任何客户端请求 /api/snapshot 时，后台观测器应自动检测 running->idle 并投递推送');
+  assert.equal(bgSent[0].type, 'completed');
+  assert.equal(bgSent[0].conversationId, 'bg1');
+  assert.equal(bgSent[0].completedUnreadCount, 1);
+
+  // 7. Service Worker push / notificationclick 事件行为实测
+  const swListeners = {};
+  const badgeCalls = [];
+  const notifCalls = [];
+  const postedMsgs = [];
+  const swSandbox = {
+    URL,
+    Date,
+    Number,
+    Math,
+    String,
+    Promise,
+    encodeURIComponent,
+    self: null
+  };
+  swSandbox.self = {
+    addEventListener(type, fn) { swListeners[type] = fn; },
+    skipWaiting() {},
+    navigator: {
+      setAppBadge: async (n) => { badgeCalls.push(['set', n]); },
+      clearAppBadge: async () => { badgeCalls.push(['clear', 0]); }
+    },
+    registration: {
+      showNotification: async (title, opts) => { notifCalls.push({ title, opts }); }
+    },
+    clients: {
+      claim: async () => {},
+      matchAll: async () => [{
+        focus: async () => {},
+        postMessage: (m) => postedMsgs.push(m)
+      }],
+      openWindow: async () => {}
+    }
+  };
+  vm.runInNewContext(swCode, swSandbox);
+  let waitP = null;
+  swListeners.push({
+    data: { json: () => ({ title: '对话已完成', body: '任务一', conversationId: 'conv-abc', completedUnreadCount: 3 }) },
+    waitUntil(p) { waitP = p; }
+  });
+  await waitP;
+  assert.deepEqual(badgeCalls[0], ['set', 3], 'SW 收到 push 载荷应通过 setAppBadge 设置已完成未读数');
+  assert.equal(notifCalls[0].title, '对话已完成');
+
+  swListeners.push({
+    data: { json: () => ({ silent: true, completedUnreadCount: 0 }) },
+    waitUntil(p) { waitP = p; }
+  });
+  await waitP;
+  assert.deepEqual(badgeCalls[1], ['clear', 0], 'completedUnreadCount 为 0 时 SW 应调用 clearAppBadge');
+  assert.equal(notifCalls.length, 1, 'silent 推送不应弹出重复系统通知');
+
+  swListeners.notificationclick({
+    notification: { close() {}, data: { conversationId: 'conv-abc', url: '/?conversationId=conv-abc' } },
+    waitUntil(p) { waitP = p; }
+  });
+  await waitP;
+  assert.deepEqual({ ...postedMsgs[0] }, { type: 'ag-push-badge-updated', completedUnreadCount: 3 }, 'SW 推送更新角标后应广播 ag-push-badge-updated 供活跃窗口纠偏');
+  assert.deepEqual({ ...postedMsgs[postedMsgs.length - 1] }, { type: 'ag-open-conversation', conversationId: 'conv-abc' }, '点击通知应聚焦已有窗口并派发会话跳转消息');
+
+  // 8. 前端代码静态守卫：确保推送设置调用 pushApiRequest(fetchWithTimeout+authHeaders) 而非未定义的 apiFetch，且不直接阻塞在 serviceWorker.ready
+  assert.ok(!html.includes('apiFetch('), '前端脚本不得调用未定义的 apiFetch');
+  assert.ok(html.includes('function pushApiRequest(') && html.includes('function resolveSwRegistration('), '应使用封装的 pushApiRequest 与非阻塞 resolveSwRegistration');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});

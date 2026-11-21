@@ -12,6 +12,11 @@ const { execFile, execFileSync, spawn } = require('child_process');
 const { getStateDir, resolveActiveCdpTarget } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const { detectProxyConfig } = require('./meter-proxy');
+const {
+  computeCompletedUnreadCount,
+  createWebPushManager,
+  buildPwaIconPng
+} = require('./remote-web-push');
 
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
@@ -4696,6 +4701,8 @@ function buildManifestJson() {
     background_color: '#09090b',
     theme_color: '#09090b',
     icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
       { src: '/icon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
     ]
   });
@@ -4705,6 +4712,84 @@ function buildServiceWorkerJs() {
   return `'use strict';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+
+function updateSwBadge(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  try {
+    if (self.navigator && typeof self.navigator.setAppBadge === 'function') {
+      if (n > 0) return self.navigator.setAppBadge(n).catch(() => {});
+      if (typeof self.navigator.clearAppBadge === 'function') {
+        return self.navigator.clearAppBadge().catch(() => {});
+      }
+      return self.navigator.setAppBadge(0).catch(() => {});
+    }
+  } catch {}
+  return Promise.resolve();
+}
+
+self.addEventListener('push', (event) => {
+  event.waitUntil((async () => {
+    let data = {};
+    try {
+      data = event.data ? event.data.json() : {};
+    } catch {
+      try {
+        data = { body: event.data ? event.data.text() : '' };
+      } catch {
+        data = {};
+      }
+    }
+    if (typeof data.completedUnreadCount === 'number' && Number.isFinite(data.completedUnreadCount)) {
+      await updateSwBadge(data.completedUnreadCount);
+      try {
+        const winList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        for (const client of winList) {
+          if (client && typeof client.postMessage === 'function') {
+            client.postMessage({ type: 'ag-push-badge-updated', completedUnreadCount: data.completedUnreadCount });
+          }
+        }
+      } catch {}
+    }
+    if (data.silent) return;
+    const title = String(data.title || 'Antigravity 远程通知');
+    const body = String(data.body || '有新的会话状态更新');
+    const tag = String(data.tag || ('ag-push-' + Date.now()));
+    const url = String(data.url || '/');
+    const conversationId = String(data.conversationId || '');
+    await self.registration.showNotification(title, {
+      body,
+      icon: '/icon-192.png',
+      badge: '/icon-180.png',
+      tag,
+      renotify: true,
+      data: { url, conversationId }
+    });
+  })());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const payload = (event.notification && event.notification.data) || {};
+  const conversationId = String(payload.conversationId || '');
+  const targetUrl = String(payload.url || (conversationId ? ('/?conversationId=' + encodeURIComponent(conversationId)) : '/'));
+  event.waitUntil((async () => {
+    const winList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of winList) {
+      try {
+        if (client && 'focus' in client) {
+          await client.focus();
+          if (conversationId && typeof client.postMessage === 'function') {
+            client.postMessage({ type: 'ag-open-conversation', conversationId });
+          }
+          return;
+        }
+      } catch {}
+    }
+    if (self.clients && typeof self.clients.openWindow === 'function') {
+      await self.clients.openWindow(targetUrl);
+    }
+  })());
+});
 `;
 }
 
@@ -4750,7 +4835,8 @@ function buildMobileAppHtml() {
   <meta id="meta-theme-color" name="theme-color" content="#09090b">
   <title>Antigravity Remote</title>
   <link rel="manifest" href="/manifest.json">
-  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
   <script id="ag-theme-boot">(function(){try{var p=localStorage.getItem('ag_remote_theme_v1');if(p!=='light'&&p!=='dark'&&p!=='system')p='system';var l=p==='light'||(p==='system'&&typeof window.matchMedia==='function'&&window.matchMedia('(prefers-color-scheme: light)').matches);var t=l?'light':'dark';var d=document.documentElement;d.setAttribute('data-theme',t);d.setAttribute('data-theme-pref',p);d.style.colorScheme=t;var m=document.getElementById('meta-theme-color');if(m)m.setAttribute('content',l?'#f8fafc':'#09090b');}catch{}})();</script>
   <style>
     :root{
@@ -5552,8 +5638,16 @@ function buildMobileAppHtml() {
     .perm-ico.unknown{color:var(--placeholder)}
     .drawer-brand{display:none}
     .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;display:flex;flex-direction:column;gap:6px}
-    .drawer-footer{flex-shrink:0;padding-top:6px;border-top:1px solid var(--border-subtle)}
-    .theme-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:11px;background:var(--seg-track);border:1px solid var(--border-subtle)}
+    .drawer-footer{flex-shrink:0;padding-top:6px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;gap:6px}
+    .theme-seg{flex:1 1 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:11px;background:var(--seg-track);border:1px solid var(--border-subtle)}
+    .push-footer-btn{
+      flex:0 0 auto;appearance:none;height:36px;min-width:36px;padding:0 10px;border-radius:11px;
+      background:var(--seg-track);border:1px solid var(--border-subtle);color:var(--muted);
+      display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:12px;cursor:pointer;
+      transition:background-color .15s ease,color .15s ease,border-color .15s ease;
+    }
+    .push-footer-btn:hover{background:var(--surface-hover);color:var(--fg)}
+    .push-footer-btn.active{color:var(--accent-fg);border-color:var(--accent-border);background:var(--accent-bg)}
     .theme-seg-btn{
       appearance:none;border:none;background:transparent;color:var(--muted);
       height:30px;padding:0;border-radius:8px;
@@ -5928,6 +6022,9 @@ function buildMobileAppHtml() {
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
           </button>
         </div>
+        <button id="btn-push-settings" class="push-footer-btn" type="button" title="消息推送与未读角标设置" aria-label="消息推送设置">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </button>
       </div>
     </div>
   </div>
@@ -6195,12 +6292,349 @@ function buildMobileAppHtml() {
       : (storedSpeed || { running: false, testedAt: 0, results: {} });
     if (urlSpeed && urlSpeed.testedAt) saveStoredSpeed(speedTestState);
 
-    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched) {
+    const urlOpenConvId = String(urlParams.get('conversationId') || '').trim();
+    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched || urlOpenConvId) {
       saveStoredPair(pairState);
       try { history.replaceState(null, '', location.pathname); } catch {}
     }
-    if (location.protocol === 'https:' && 'serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    let swRegistrationPromise = null;
+    let swLastError = '';
+    if (isTrustedSecureOrigin(location.origin) && 'serviceWorker' in navigator) {
+      swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+        swLastError = err?.message || String(err || 'register failed');
+        return null;
+      });
+      if (typeof navigator.serviceWorker.addEventListener === 'function') {
+        navigator.serviceWorker.addEventListener('message', (ev) => {
+          const msg = ev && ev.data;
+          if (msg && msg.type === 'ag-open-conversation' && msg.conversationId && typeof switchConversationById === 'function') {
+            void switchConversationById(String(msg.conversationId));
+          } else if (msg && msg.type === 'ag-push-badge-updated' && latestSnap) {
+            syncAppBadgeCount(computeClientCompletedUnreadCount(getMergedConversations(latestSnap)));
+          }
+        });
+      }
+    }
+    let pendingOpenConvId = urlOpenConvId;
+
+    function computeClientCompletedUnreadCount(convs) {
+      if (!Array.isArray(convs)) return 0;
+      let count = 0;
+      for (const c of convs) {
+        if (!c || c.archived === true) continue;
+        if (c.status === 'idle' && c.completedUnread === true) count += 1;
+      }
+      return count;
+    }
+
+    function syncAppBadgeCount(count) {
+      const n = Math.max(0, Math.floor(Number(count) || 0));
+      try {
+        if (navigator && typeof navigator.setAppBadge === 'function') {
+          if (n > 0) void navigator.setAppBadge(n).catch(() => {});
+          else if (typeof navigator.clearAppBadge === 'function') void navigator.clearAppBadge().catch(() => {});
+          else void navigator.setAppBadge(0).catch(() => {});
+        }
+      } catch {}
+      try {
+        document.title = n > 0 ? ('(' + n + ') Antigravity Remote') : 'Antigravity Remote';
+      } catch {}
+      return n;
+    }
+
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - (String(base64String || '').length % 4)) % 4);
+      const base64 = (String(base64String || '') + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = atob(base64);
+      const output = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; i++) output[i] = rawData.charCodeAt(i);
+      return output;
+    }
+
+    function pushApiRequest(apiPath, method, bodyObj) {
+      const m = String(method || 'GET').toUpperCase();
+      const extraHeaders = m !== 'GET' ? { 'Content-Type': 'application/json' } : {};
+      const opts = {
+        method: m,
+        headers: authHeaders(extraHeaders)
+      };
+      if (m !== 'GET' && bodyObj !== undefined) {
+        opts.body = JSON.stringify(bodyObj);
+      }
+      return fetchWithTimeout((apiBase || '') + apiPath, opts, 8000);
+    }
+
+    const LOCAL_NOTIFY_STORAGE_KEY = 'ag_remote_local_notify_v1';
+    function isLocalNotifyEnabled() {
+      try { return localStorage.getItem(LOCAL_NOTIFY_STORAGE_KEY) === '1'; } catch { return false; }
+    }
+    function setLocalNotifyEnabled(on) {
+      try {
+        if (on) localStorage.setItem(LOCAL_NOTIFY_STORAGE_KEY, '1');
+        else localStorage.removeItem(LOCAL_NOTIFY_STORAGE_KEY);
+      } catch {}
+    }
+
+    function showLocalSystemNotification(title, body, conversationId) {
+      try {
+        if (typeof Notification !== 'function' || Notification.permission !== 'granted') return false;
+        const n = new Notification(String(title || 'Antigravity 远程通知'), {
+          body: String(body || ''),
+          icon: '/icon-192.png',
+          tag: conversationId ? ('ag-local-' + conversationId) : ('ag-local-' + Date.now())
+        });
+        n.onclick = () => {
+          try { window.focus(); } catch {}
+          if (conversationId && typeof switchConversationById === 'function') {
+            void switchConversationById(String(conversationId));
+          }
+        };
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function waitForSwActive(reg, timeoutMs) {
+      if (!reg) return null;
+      if (reg.active && reg.active.state === 'activated') return reg;
+      const worker = reg.installing || reg.waiting || reg.active;
+      if (!worker) return reg;
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        const t = setTimeout(finish, timeoutMs || 4000);
+        const onState = () => {
+          if (worker.state === 'activated' || worker.state === 'redundant') {
+            clearTimeout(t);
+            finish();
+          }
+        };
+        if (typeof worker.addEventListener === 'function') {
+          worker.addEventListener('statechange', onState);
+        }
+        onState();
+      });
+      return reg;
+    }
+
+    async function resolveSwRegistration(allowRegister) {
+      if (!('serviceWorker' in navigator)) {
+        swLastError = '当前环境不支持 serviceWorker';
+        return null;
+      }
+      try {
+        if (swRegistrationPromise) {
+          const existing = await Promise.race([
+            swRegistrationPromise,
+            new Promise((r) => setTimeout(() => r(null), 1500))
+          ]);
+          if (existing) return allowRegister ? await waitForSwActive(existing, 4000) : existing;
+        }
+        if (typeof navigator.serviceWorker.getRegistration === 'function') {
+          const reg = await navigator.serviceWorker.getRegistration('/')
+            || await navigator.serviceWorker.getRegistration();
+          if (reg) return allowRegister ? await waitForSwActive(reg, 4000) : reg;
+        }
+        if (allowRegister && isTrustedSecureOrigin(location.origin)) {
+          swLastError = '';
+          swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+            swLastError = err?.message || String(err || 'register failed');
+            return null;
+          });
+          const reg = await Promise.race([
+            swRegistrationPromise,
+            new Promise((r) => setTimeout(() => r(null), 4000))
+          ]);
+          if (reg) return await waitForSwActive(reg, 4000);
+          const readyReg = await Promise.race([
+            navigator.serviceWorker.ready.catch(() => null),
+            new Promise((r) => setTimeout(() => r(null), 2000))
+          ]);
+          if (readyReg) return readyReg;
+        }
+      } catch (err) {
+        swLastError = err?.message || String(err || 'unknown');
+      }
+      return null;
+    }
+
+    async function getActivePushSubscription() {
+      try {
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+        const reg = await resolveSwRegistration(false);
+        if (!reg || !reg.pushManager) return null;
+        return await reg.pushManager.getSubscription();
+      } catch {
+        return null;
+      }
+    }
+
+    async function refreshPushButtonState() {
+      const btn = $('btn-push-settings');
+      if (!btn) return;
+      const sub = await getActivePushSubscription();
+      const localOn = isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
+      btn.classList.toggle('active', Boolean(sub || localOn));
+    }
+
+    async function openPushSettingsSheet() {
+      if (!isDesktopLayout()) closeDrawer();
+      const isSecure = isTrustedSecureOrigin(location.origin);
+      const isIos = /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+      const hasNotifApi = typeof window !== 'undefined' && 'Notification' in window;
+      const hasPushApi = hasNotifApi && 'PushManager' in window && 'serviceWorker' in navigator;
+      const isQuickTunnel = String(location.hostname || '').toLowerCase().endsWith('.trycloudflare.com');
+      let serverInfo = null;
+      try {
+        const res = await pushApiRequest('/api/push/vapid-key', 'GET');
+        if (res.ok) serverInfo = await res.json();
+      } catch {}
+      const sub = hasPushApi ? await getActivePushSubscription() : null;
+      const localOn = isLocalNotifyEnabled() && hasNotifApi && Notification.permission === 'granted';
+      const prefs = (serverInfo && serverInfo.prefs) || { enabled: true, notifyCompleted: true, notifyWaiting: true };
+
+      const rows = [];
+      if (!isSecure) {
+        rows.push({
+          label: '需要 HTTPS 安全上下文',
+          sub: '当前为明文 HTTP 地址，请通过 https://<机器名>.ts.net、固定域名隧道或 localhost 打开后再开启推送。',
+          disabled: true
+        });
+      } else if (isIos && !isStandalonePwa) {
+        rows.push({
+          label: 'iOS 需先「添加到主屏幕」',
+          sub: 'iOS 16.4+ 要求在 Safari 点击分享 → 添加到主屏幕，从桌面图标打开后才能开启 Web Push 与图标未读角标。',
+          disabled: true
+        });
+      } else if (!hasNotifApi) {
+        rows.push({
+          label: '当前浏览器不支持系统通知',
+          sub: '桌面未读角标与页面未读提示仍会在前台自动更新。',
+          disabled: true
+        });
+      } else if (!sub && !localOn) {
+        rows.push({
+          label: '🔔 开启本机消息推送与未读角标',
+          sub: isQuickTunnel
+            ? '提示：Quick Tunnel 随机域名变更后需重新订阅；推荐使用 Tailscale HTTPS 获得长期稳定推送。'
+            : '后台对话完成或待审批时推送通知，并同步桌面应用图标未读数。',
+          value: 'enable'
+        });
+      } else {
+        rows.push({
+          label: '🔕 关闭本机消息推送',
+          sub: sub
+            ? ('已启用 Web Push 后台推送（本机已关联 ' + (serverInfo?.subscriptionCount || 1) + ' 台设备）')
+            : '已启用本地系统通知（页面开启时即时弹出通知并同步角标）',
+          value: 'disable'
+        });
+        rows.push({
+          label: (prefs.notifyCompleted ? '✓ ' : '○ ') + '对话运行完成提醒',
+          sub: prefs.notifyCompleted ? '已开启：对话结束且有新产出时推送' : '已关闭',
+          value: 'toggle-completed'
+        });
+        rows.push({
+          label: (prefs.notifyWaiting ? '✓ ' : '○ ') + '待审批 / 等待确认提醒',
+          sub: prefs.notifyWaiting ? '已开启：触发权限或提问卡时高优推送' : '已关闭',
+          value: 'toggle-waiting'
+        });
+        rows.push({
+          label: '📤 发送测试通知',
+          sub: '立即发送一条测试通知并刷新桌面未读角标',
+          value: 'test'
+        });
+      }
+
+      openSheet('消息推送与未读角标', rows, async (item) => {
+        if (!item || !item.value || item.disabled) return;
+        if (item.value === 'enable') {
+          try {
+            const perm = await Notification.requestPermission();
+            if (perm !== 'granted') {
+              showToast('通知权限未授予，请在系统/浏览器设置中允许通知');
+              return;
+            }
+            if (!serverInfo || !serverInfo.publicKey) {
+              const retryKey = await pushApiRequest('/api/push/vapid-key', 'GET').catch(() => null);
+              if (retryKey && retryKey.ok) serverInfo = await retryKey.json().catch(() => null);
+            }
+            const reg = hasPushApi ? await resolveSwRegistration(true) : null;
+            if (!reg || !reg.pushManager || !serverInfo || !serverInfo.publicKey) {
+              setLocalNotifyEnabled(true);
+              await refreshPushButtonState();
+              const reason = swLastError || (!reg ? 'SW 未注册' : (!reg.pushManager ? '浏览器无 pushManager' : '缺少 VAPID 公钥'));
+              showLocalSystemNotification('Antigravity 通知已开启', '已启用本地系统通知（后台 Web Push 不可用：' + reason + '）', '');
+              showToast('已开启本地系统通知（Web Push：' + reason + '）');
+              return;
+            }
+            try {
+              const nextSub = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(serverInfo.publicKey)
+              });
+              const subJson = typeof nextSub.toJSON === 'function' ? nextSub.toJSON() : nextSub;
+              const saveRes = await pushApiRequest('/api/push/subscribe', 'POST', {
+                subscription: subJson,
+                origin: location.origin,
+                label: (navigator.platform || 'Device').slice(0, 40)
+              });
+              const saveData = await saveRes.json().catch(() => ({}));
+              if (!saveRes.ok || !saveData.ok) {
+                showToast('保存订阅失败：' + (saveData.error || saveRes.status));
+                return;
+              }
+              setLocalNotifyEnabled(true);
+              await refreshPushButtonState();
+              showToast('已开启消息推送与未读角标');
+            } catch (subErr) {
+              setLocalNotifyEnabled(true);
+              await refreshPushButtonState();
+              const msg = subErr?.message || '推送服务不可达';
+              showLocalSystemNotification('Antigravity 本地通知已开启', '后台推送订阅受限（' + msg + '），已自动切换本地系统通知。', '');
+              showToast('已切换本地系统通知（' + msg + '）');
+            }
+          } catch (err) {
+            showToast('开启推送失败：' + (err?.message || '未知错误'));
+          }
+          return;
+        }
+        if (item.value === 'disable') {
+          try {
+            setLocalNotifyEnabled(false);
+            if (sub) {
+              const ep = sub.endpoint;
+              await sub.unsubscribe().catch(() => {});
+              await pushApiRequest('/api/push/unsubscribe', 'POST', { endpoint: ep }).catch(() => {});
+            }
+            await refreshPushButtonState();
+            showToast('已关闭本机消息推送');
+          } catch {
+            showToast('关闭推送失败');
+          }
+          return;
+        }
+        if (item.value === 'toggle-completed' || item.value === 'toggle-waiting') {
+          const patch = item.value === 'toggle-completed'
+            ? { notifyCompleted: !prefs.notifyCompleted }
+            : { notifyWaiting: !prefs.notifyWaiting };
+          await pushApiRequest('/api/push/prefs', 'POST', patch).catch(() => {});
+          showToast('推送偏好已更新');
+          return;
+        }
+        if (item.value === 'test') {
+          if (sub) {
+            const testRes = await pushApiRequest('/api/push/test', 'POST', {}).catch(() => null);
+            const testData = testRes ? await testRes.json().catch(() => ({})) : {};
+            if (testRes && testRes.ok && testData.ok && Number(testData.sent || 0) > 0) {
+              showToast('测试推送已发送（送达 ' + testData.sent + ' 台设备）');
+              return;
+            }
+          }
+          const popped = showLocalSystemNotification('Antigravity 远程通知测试', '通知通道正常，桌面应用未读角标将随已完成未读数自动同步。', '');
+          showToast(popped ? '已弹出本地系统测试通知' : '测试通知未送达，请检查系统通知权限');
+        }
+      });
     }
 
     let apiBase = '';
@@ -8734,10 +9168,45 @@ function buildMobileAppHtml() {
     const FOLDER_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
     const FOLDER_SM_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 
+    let clientPrevConvStatus = new Map();
+    let clientNotifyBootstrapped = false;
+    function maybeTriggerLocalNotifications(convs) {
+      if (!Array.isArray(convs)) return;
+      if (!clientNotifyBootstrapped) {
+        for (const c of convs) {
+          if (c && c.id) clientPrevConvStatus.set(c.id, c.status || 'unknown');
+        }
+        clientNotifyBootstrapped = true;
+        return;
+      }
+      const canPop = isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
+      for (const c of convs) {
+        if (!c || !c.id) continue;
+        const prev = clientPrevConvStatus.get(c.id);
+        const cur = c.status || 'unknown';
+        clientPrevConvStatus.set(c.id, cur);
+        if (!canPop || !prev) continue;
+        if (prev === 'running' && cur === 'idle' && c.completedUnread === true) {
+          showLocalSystemNotification('对话已完成', (c.title || 'Antigravity 对话') + (c.projectName ? (' · ' + c.projectName) : ''), c.id);
+        } else if (prev !== 'waiting' && cur === 'waiting') {
+          showLocalSystemNotification('需要你的确认', (c.title || 'Antigravity 对话') + ' 正在等待确认或审批', c.id);
+        }
+      }
+    }
+
     function renderConversationList(snap) {
       const convList = $('conv-list');
       if (!convList || !snap) return;
       const convs = getMergedConversations(snap);
+      syncAppBadgeCount(computeClientCompletedUnreadCount(convs));
+      maybeTriggerLocalNotifications(convs);
+      if (pendingOpenConvId && convs.some((c) => c && c.id === pendingOpenConvId)) {
+        const targetOpenId = pendingOpenConvId;
+        pendingOpenConvId = '';
+        if (typeof switchConversationById === 'function') {
+          void switchConversationById(targetOpenId);
+        }
+      }
       const totalAllCount = Math.max(convs.length, Number(snap.totalConversations) || 0);
       const rawProjects = Array.isArray(snap.projects) ? snap.projects : [];
       const projMap = new Map();
@@ -9024,6 +9493,7 @@ function buildMobileAppHtml() {
       if (!btn || !activeSheetState) return;
       const idx = Number(btn.getAttribute('data-idx'));
       const opt = activeSheetState.options[idx];
+      if (!opt || opt.disabled) return;
       const onSelect = activeSheetState.onSelect;
       activeSheetState = null;
       closeSheet();
@@ -9045,8 +9515,12 @@ function buildMobileAppHtml() {
       const listEl = $('sheet-list');
       activeSheetState = { options, onSelect };
       listEl.innerHTML = options.map((o, idx) =>
-        '<button class="sheet-opt' + (o.active ? ' active' : '') + '" data-idx="' + idx + '" type="button">' +
-        '<span>' + esc(o.label) + '</span>' + (o.active ? '<span>✓</span>' : '') + '</button>'
+        '<button class="sheet-opt' + (o.active ? ' active' : '') + (o.disabled ? ' disabled' : '') + '" data-idx="' + idx + '" type="button"' + (o.disabled ? ' disabled' : '') + '>' +
+        '<span style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left">' +
+        '<span>' + esc(o.label) + '</span>' +
+        (o.sub ? '<span style="font-size:11.5px;color:var(--muted);font-weight:400;line-height:1.4">' + esc(o.sub) + '</span>' : '') +
+        '</span>' +
+        (o.active ? '<span>✓</span>' : '') + '</button>'
       ).join('');
       listEl.onclick = handleSheetListClick;
       $('sheet-backdrop').hidden = false;
@@ -9701,6 +10175,13 @@ function buildMobileAppHtml() {
         if (!mode) return;
         selectThemePref(mode);
       });
+    }
+    const pushSettingsBtnEl = $('btn-push-settings');
+    if (pushSettingsBtnEl) {
+      pushSettingsBtnEl.addEventListener('click', () => {
+        void openPushSettingsSheet();
+      });
+      void refreshPushButtonState();
     }
     if (lightSchemeMq) {
       const onSystemSchemeChange = () => {
@@ -10815,6 +11296,9 @@ function buildMobileAppHtml() {
         ? setUserSelectedProject(matchedConv.projectId, matchedConv.projectName)
         : selectedProjectEpoch;
       if (matchedConv) {
+        matchedConv.unread = false;
+        matchedConv.completedUnread = false;
+        syncAppBadgeCount(computeClientCompletedUnreadCount(getMergedConversations(latestSnap)));
         syncNewChatButtonUi(latestSnap);
       }
       applyOptimisticSidebarConvClick(btn);
@@ -10853,6 +11337,21 @@ function buildMobileAppHtml() {
         }
       }
     });
+    async function switchConversationById(cid) {
+      const targetId = String(cid || '').trim();
+      if (!targetId) return;
+      const matchedConv = getMergedConversations(latestSnap).find((x) => x && x.id === targetId);
+      if (matchedConv) {
+        matchedConv.unread = false;
+        matchedConv.completedUnread = false;
+        syncAppBadgeCount(computeClientCompletedUnreadCount(getMergedConversations(latestSnap)));
+      }
+      applySelectedConversation(targetId);
+      try {
+        await apiAction({ action: 'switch-conversation', id: targetId, isolated: true });
+      } catch {}
+    }
+
     if ($('btn-follow-desktop')) {
       $('btn-follow-desktop').onclick = async () => {
         if (!isDesktopLayout()) closeDrawer();
@@ -12069,6 +12568,63 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     return cachedUsageData ? extractCompactUsageSummary(cachedUsageData) : null;
   };
 
+  const webPushManager = options.webPushManager || createWebPushManager({
+    getStateFilePath: () => path.join(getStateDir(), 'remote-push-state.json')
+  });
+  let lastCompletedUnreadCount = 0;
+  let pushWatcherTimer = null;
+  let pushPollInFlight = false;
+
+  const refreshPushStateFromCatalog = async (force = false) => {
+    if (pushPollInFlight && !force) return lastCompletedUnreadCount;
+    pushPollInFlight = true;
+    try {
+      let convList = null;
+      if (typeof options.pollConversations === 'function') {
+        convList = await options.pollConversations({ force });
+      } else if (typeof options.fetchSnapshot === 'function') {
+        const snap = await options.fetchSnapshot({ bypassCache: force }).catch(() => null);
+        if (snap && Array.isArray(snap.conversations)) convList = snap.conversations;
+      } else {
+        const enriched = await enrichSnapshotWithCatalog({ ok: true, conversations: [] }, {
+          bypassCache: force,
+          catalogStore: options.catalogStore
+        }).catch(() => null);
+        if (enriched && Array.isArray(enriched.conversations)) convList = enriched.conversations;
+      }
+      if (Array.isArray(convList)) {
+        const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
+        lastCompletedUnreadCount = completedUnreadCount;
+      }
+    } catch {} finally {
+      pushPollInFlight = false;
+    }
+    return lastCompletedUnreadCount;
+  };
+
+  const stopPushWatcher = () => {
+    if (pushWatcherTimer) {
+      clearInterval(pushWatcherTimer);
+      pushWatcherTimer = null;
+    }
+  };
+
+  const startPushWatcher = (intervalMs = 6000) => {
+    stopPushWatcher();
+    const stepMs = Math.max(50, Number(intervalMs) || 6000);
+    pushWatcherTimer = setInterval(() => {
+      try {
+        const info = webPushManager.getPublicInfo();
+        if (!info.prefs?.enabled || info.subscriptionCount <= 0) return;
+      } catch {
+        return;
+      }
+      void refreshPushStateFromCatalog(false);
+    }, stepMs);
+    if (typeof pushWatcherTimer.unref === 'function') pushWatcherTimer.unref();
+    return pushWatcherTimer;
+  };
+
   const enrichSnapshotPayload = (snap, config, activeTunnelUrl, clientId = '', fallbackUsageSummary = null) => {
     if (!snap || snap.ok === false) return snap;
     const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
@@ -12078,9 +12634,13 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       mode: config.tunnelMode
     } : null, config.enabledChannels);
     const activeConvId = snap.activeConversationId || snap.sessionId || '';
+    const convList = Array.isArray(snap.conversations) ? snap.conversations : [];
+    const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
+    lastCompletedUnreadCount = completedUnreadCount;
     const out = {
       ...snap,
       activeConversationId: activeConvId,
+      completedUnreadCount,
       hosts: snapInfo.hosts,
       endpoints: snapInfo.endpoints,
       enabledChannels: config.enabledChannels,
@@ -12184,7 +12744,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     res.end(raw);
   }
 
-  return async (req, res) => {
+  const httpHandler = async (req, res) => {
     const config = getActiveConfig();
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -12252,13 +12812,28 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       res.end(cachedIcon);
       return;
     }
+    if (pathname === '/icon-180.png' || pathname === '/icon-192.png' || pathname === '/icon-512.png') {
+      const iconDim = pathname === '/icon-180.png' ? 180 : (pathname === '/icon-512.png' ? 512 : 192);
+      const pngBuf = buildPwaIconPng(iconDim);
+      res.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Content-Length': String(pngBuf.length),
+        'Cache-Control': 'public, max-age=86400'
+      });
+      res.end(pngBuf);
+      return;
+    }
     if (pathname === '/manifest.json') {
       res.writeHead(200, { 'Content-Type': 'application/manifest+json; charset=utf-8', 'Cache-Control': 'no-cache' });
       res.end(cachedManifest);
       return;
     }
     if (pathname === '/sw.js') {
-      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Service-Worker-Allowed': '/'
+      });
       res.end(cachedSw);
       return;
     }
@@ -12400,6 +12975,86 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         enabledChannels: config.enabledChannels,
         displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay)
       }));
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/push/vapid-key') {
+      try {
+        const info = webPushManager.getPublicInfo();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, ...info }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取推送密钥状态失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/subscribe') {
+      try {
+        const body = await readJsonBody(req);
+        const sub = body?.subscription || body;
+        const result = webPushManager.addSubscription(sub, {
+          label: body?.label || '',
+          origin: body?.origin || String(req.headers.origin || '')
+        });
+        const code = result.ok ? 200 : (result.statusCode || 400);
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '订阅请求解析失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/unsubscribe') {
+      try {
+        const body = await readJsonBody(req);
+        const result = webPushManager.removeSubscription(body?.endpoint || '');
+        const code = result.ok ? 200 : (result.statusCode || 500);
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '取消订阅失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/prefs') {
+      try {
+        const body = await readJsonBody(req);
+        const result = webPushManager.updatePrefs(body || {});
+        const code = result.ok ? 200 : (result.statusCode || 500);
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '更新推送偏好失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/test') {
+      try {
+        await readJsonBody(req);
+        const liveUnreadCount = await refreshPushStateFromCatalog(true);
+        const result = await webPushManager.broadcast({
+          type: 'test',
+          title: 'Antigravity 远程通知测试',
+          body: '推送通道正常，桌面应用未读角标将随已完成未读数自动同步。',
+          tag: 'ag-push-test',
+          url: '/',
+          completedUnreadCount: liveUnreadCount,
+          ts: Date.now()
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, completedUnreadCount: liveUnreadCount, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '发送测试推送失败' }));
+      }
       return;
     }
 
@@ -13430,6 +14085,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Not Found');
   };
+  httpHandler.pollPushState = refreshPushStateFromCatalog;
+  httpHandler.startPushWatcher = startPushWatcher;
+  httpHandler.stopPushWatcher = stopPushWatcher;
+  httpHandler.webPushManager = webPushManager;
+  return httpHandler;
 }
 
 function startMobileRemoteServer() {
@@ -13508,10 +14168,14 @@ function startMobileRemoteServer() {
     if (!stopped && latestCfg.tunnelEnabled) {
       void tunnelCtrl.start(latestCfg);
     }
+    if (!stopped && process.env.AG_REMOTE_SKIP_PROBES !== '1') {
+      handler.startPushWatcher(6000);
+    }
   });
 
   const stop = async () => {
     stopped = true;
+    handler.stopPushWatcher();
     if (ifaceTimer) clearInterval(ifaceTimer);
     for (const srv of boundServers.values()) {
       try { srv.close(); } catch {}
@@ -13943,6 +14607,8 @@ module.exports = {
   renderTerminalQr,
   renderQrSvg,
   buildMobileAppHtml,
+  buildManifestJson,
+  buildServiceWorkerJs,
   normalizeTrajectoryStatus,
   renderSafeMarkdownToHtml,
   extractMessagesFromTrajectorySteps,
