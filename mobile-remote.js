@@ -2158,6 +2158,12 @@ function createSessionCatalogStore() {
           store.subagentRoots.delete(sid);
         }
       }
+      // 极端情况下即使受保护项偏多，仍按插入顺序严格守住 MAX_SUBAGENT_IDS 容量上限
+      for (const sid of Array.from(store.subagentIds)) {
+        if (store.subagentIds.size <= MAX_SUBAGENT_IDS) break;
+        store.subagentIds.delete(sid);
+        store.subagentRoots.delete(sid);
+      }
     }
     if (store.subagentRoots.size > MAX_SUBAGENT_IDS) {
       for (const sid of Array.from(store.subagentRoots.keys())) {
@@ -5519,14 +5525,10 @@ function buildMobileAppHtml() {
       return null;
     }
 
-    function clearScrollBodyOffset(bodyEl, appliedDelta) {
+    function clearScrollBodyOffset(bodyEl) {
       if (!bodyEl) return;
+      // 仅移除临时 paddingBottom，保留 bodyEl.scrollTop 避免把用户手动滚动定位的已填输入框滚出视野
       bodyEl.style.paddingBottom = '';
-      const delta = Number(appliedDelta) || 0;
-      if (delta > 0) {
-        // 仅撤回本逻辑施加的临时滚动增量，保留用户原本手动滚动的位置（不暴力清零）
-        bodyEl.scrollTop = Math.max(0, (Number(bodyEl.scrollTop) || 0) - delta);
-      }
     }
 
     function resetModalSheetShift() {
@@ -5534,7 +5536,7 @@ function buildMobileAppHtml() {
         activeShiftedSheet.style.transform = '';
         activeShiftedSheet.style.height = '';
       }
-      clearScrollBodyOffset(activeScrolledModalBody, activeModalBodyScrollY);
+      clearScrollBodyOffset(activeScrolledModalBody);
       const openBackdrop = getOpenModalBackdrop();
       const sheetEl = openBackdrop?.querySelector?.('.sheet');
       if (sheetEl) {
@@ -5678,9 +5680,9 @@ function buildMobileAppHtml() {
       } else {
         sheetEl.style.height = '';
         activeSheetLockedHeight = 0;
-        clearScrollBodyOffset(activeScrolledModalBody, activeModalBodyScrollY);
+        clearScrollBodyOffset(activeScrolledModalBody);
         if (scrollBody && scrollBody !== activeScrolledModalBody) {
-          clearScrollBodyOffset(scrollBody, 0);
+          clearScrollBodyOffset(scrollBody);
         }
         activeScrolledModalBody = null;
         activeModalBodyScrollY = 0;

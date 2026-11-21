@@ -8100,11 +8100,12 @@ test('需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     assert.equal(modalBody.scrollTop, 166, '超出顶边上限的剩余遮挡应通过内部容器滚动精确吸收');
     assert.deepEqual([nameInput.getBoundingClientRect().top, nameInput.getBoundingClientRect().bottom], [410, 446]);
 
-    // 场景 4: 保持键盘打开（460px），点键盘栏「^」把焦点切回顶部 #proj-path-input 时应准确反算并立即归零（整体位移与内部滚动双双清零）
+    // 场景 4: 保持键盘打开（460px），点键盘栏「^」把焦点切回顶部 #proj-path-input 时应准确反算复位位移并清除临时 paddingBottom（保留 scrollTop 防把已填输入框滚出视野）
     pathInput.focus();
     assert.equal(modalSheet.style.transform, '', '焦点从底部切回顶部未遮挡输入框时，弹窗应立即恢复 0px 位移');
-    assert.equal(modalBody.scrollTop, 0, '切回顶部输入框后内部临时滚动应归零');
     assert.equal(modalBody.style.paddingBottom, '', '切回顶部输入框后内部临时 paddingBottom 应清空');
+    assert.equal(modalBody.scrollTop, 166, 'clearScrollBodyOffset 仅移除 paddingBottom 保留 scrollTop，避免把已填输入框滚出视野');
+    modalBody.scrollTop = 0;
     assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
 
     // 场景 5: 若残留 vv.offsetTop = 240（可视区 [240, 700]，安全区 [252, 686]），应调用 scrollTo(0,0) 并同时约束弹窗顶边、标题与聚焦输入框都在可视区内，底部聚焦也由内部滚动配合消除遮挡，复位后彻底归零
@@ -8126,7 +8127,20 @@ test('需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     vv.offsetTop = 0;
     vv._emit('scroll');
     assert.equal(modalSheet.style.transform, '');
-    assert.equal(modalBody.scrollTop, 0);
+    assert.equal(modalBody.style.paddingBottom, '');
+    assert.equal(modalBody.scrollTop, 166, '收起或切换焦点时保留 scrollTop 不暴力清零');
+
+    // 场景 5b (#33): 弹窗手动下滑 scrollTop=120 后聚焦底部输入框、切换输入框及收起键盘，确认输入框可见且不叠加过大偏移、不重置 scrollTop=0
+    modalBody.scrollTop = 120;
+    nameInput.focus();
+    assert.ok(nameInput.getBoundingClientRect().bottom <= 446, '手动下滑后聚焦底部输入框仍完整位于键盘上方可视区内');
+    assert.ok(modalBody.scrollTop >= 120 && modalBody.scrollTop < 300, `不得重复叠加手动 scrollTop 导致偏移过大，实际=${modalBody.scrollTop}`);
+    const scrollAfterFocus = modalBody.scrollTop;
+    vv.height = 844;
+    vv._emit('resize');
+    assert.equal(modalSheet.style.transform, '');
+    assert.equal(modalBody.style.paddingBottom, '');
+    assert.equal(modalBody.scrollTop, scrollAfterFocus, '收起键盘后保留 scrollTop，不把已填输入框滚出视野');
 
     env.doc.getElementById('proj-modal-close').click();
     assert.equal(modalBackdrop.hidden, true);
