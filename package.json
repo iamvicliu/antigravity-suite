@@ -26,8 +26,8 @@
     "pretest": "node scripts/build-renderer.js",
     "test:suite": "node --test tests/meter-core.test.js tests/meter-renderer.test.js tests/meter-storage-proxy.test.js tests/meter-subscription.test.js tests/meter-integration.test.js tests/meter-suite-refactor.test.js",
     "test": "node --test tests/meter-core.test.js tests/meter-renderer.test.js tests/meter-storage-proxy.test.js tests/meter-subscription.test.js tests/meter-integration.test.js tests/meter-suite-refactor.test.js",
-    "format": "npx prettier --write \"*.js\" \"tests/*.js\" \"*.json\" \"*.md\"",
-    "format:check": "npx prettier --check \"*.js\" \"tests/*.js\" \"*.json\" \"*.md\"",
+    "format": "npx prettier --write \"*.js\" \"tests/*.js\" \"*.json\" \"*.md\" \"docs/*.md\" \"tests/*.md\"",
+    "format:check": "npx prettier --check \"*.js\" \"tests/*.js\" \"*.json\" \"*.md\" \"docs/*.md\" \"tests/*.md\"",
     "pack": "node scripts/package-release.js",
     "package": "node scripts/package-release.js"
   },

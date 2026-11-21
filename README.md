@@ -1,6 +1,6 @@
 # Antigravity Suite
 
-**简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
+**简体中文** · [English](docs/README.en.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Español](docs/README.es.md)
 
 > **给 Google Antigravity 桌面端（macOS）加装实用增强套件——纯外挂运行，绝不修改官方安装包与系统签名，不影响官方升级，随时可关。**
 

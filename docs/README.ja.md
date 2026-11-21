@@ -1,6 +1,6 @@
 # Antigravity Suite
 
-[简体中文](README.md) · [English](README.en.md) · **日本語** · [한국어](README.ko.md) · [Español](README.es.md)
+[简体中文](../README.md) · [English](README.en.md) · **日本語** · [한국어](README.ko.md) · [Español](README.es.md)
 
 > **Google Antigravity デスクトップ版（macOS）向けの 100% ゼロ改変（Zero-Patch）拡張＆リモート操作スイート。`app.asar` や Apple 公式署名を一切変更せず、公式アップデートにも干渉しません。**
 
@@ -39,4 +39,4 @@ cd ~/.local/share/antigravity-suite
 - `ag-context-meter live` / `restart`：実行中ウィンドウへ即時適用、または `v2.33.0+` デバッグポート付きで安全再起動
 - `ag-context-meter update` / `stop` / `auto-off`：ワンクリック更新・一時解除・自動起動無効化
 
-テスト実行は `npm run test:suite`。QR ペアリング・リモート操作・周辺体験の最適化に貢献してくれた共同開発者 [@hubo1989](https://github.com/hubo1989)・[@Shens](https://github.com/Shens) に感謝します。詳細は **[简体中文 README](README.md)** および **[English README](README.en.md)** をご覧ください。[MIT License](LICENSE) 下で公開されています。
+テスト実行は `npm run test:suite`。QR ペアリング・リモート操作・周辺体験の最適化に貢献してくれた共同開発者 [@hubo1989](https://github.com/hubo1989)・[@Shens](https://github.com/Shens) に感謝します。詳細は **[简体中文 README](../README.md)** および **[English README](README.en.md)** をご覧ください。[MIT License](../LICENSE) 下で公開されています。

@@ -15130,7 +15130,7 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
   assert.ok(filteredLine.startsWith('1004 '), `应过滤全部子进程仅保留主进程 1004，实际=${filteredLine}`);
 
   // 4. 全部 5 语种 README 完整存在、同步包含 $HOME 边界与 Cmd/Ctrl + Enter 且无过时禁用命令
-  for (const name of ['README.md', 'README.en.md', 'README.ja.md', 'README.ko.md', 'README.es.md']) {
+  for (const name of ['README.md', 'docs/README.en.md', 'docs/README.ja.md', 'docs/README.ko.md', 'docs/README.es.md']) {
     const text = fs.readFileSync(path.join(__dirname, '..', name), 'utf8');
     assert.ok(text.includes('$HOME'), `${name} 应同步说明 $HOME 安全目录边界`);
     assert.ok(text.includes('Cmd/Ctrl + Enter'), `${name} 应同步说明 Cmd/Ctrl + Enter 发送快捷键`);

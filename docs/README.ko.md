@@ -1,6 +1,6 @@
 # Antigravity Suite
 
-[简体中文](README.md) · [English](README.en.md) · [日本語](README.ja.md) · **한국어** · [Español](README.es.md)
+[简体中文](../README.md) · [English](README.en.md) · [日本語](README.ja.md) · **한국어** · [Español](README.es.md)
 
 > **Google Antigravity 데스크톱(macOS)을 위한 100% 무변조(Zero-Patch) 올인원 확장 및 원격 제어 스위트입니다. `app.asar`와 Apple 공식 서명을 건드리지 않으며 공식 업데이트를 방해하지 않습니다.**
 
@@ -39,4 +39,4 @@ cd ~/.local/share/antigravity-suite
 - `ag-context-meter live` / `restart`: 현재 창 즉시 적용 또는 `v2.33.0+` 디버깅 포트 포함 재실행
 - `ag-context-meter update` / `stop` / `auto-off`: 최신 버전 핫 업데이트, 일시 중지, 자동 실행 끄기
 
-테스트는 `npm run test:suite`로 실행할 수 있습니다. QR 페어링·원격 제어 및 사용 경험 최적화에 기여한 공동 기여자 [@hubo1989](https://github.com/hubo1989) · [@Shens](https://github.com/Shens) 님께 감사드립니다. 자세한 내용은 **[简体中文 README](README.md)** 및 **[English README](README.en.md)** 를 참고하세요. [MIT License](LICENSE) 라이선스를 따릅니다.
+테스트는 `npm run test:suite`로 실행할 수 있습니다. QR 페어링·원격 제어 및 사용 경험 최적화에 기여한 공동 기여자 [@hubo1989](https://github.com/hubo1989) · [@Shens](https://github.com/Shens) 님께 감사드립니다. 자세한 내용은 **[简体中文 README](../README.md)** 및 **[English README](README.en.md)** 를 참고하세요. [MIT License](../LICENSE) 라이선스를 따릅니다.
