@@ -3486,7 +3486,7 @@ function createConversationHistoryManager() {
       totalMessages: fullMsgs.length,
       messagesStartIndex: startIdx,
       hasEarlierMessages: startIdx > 0,
-      historySource: trajMsgs ? 'trajectory' : 'dom',
+      historySource: trajMsgs ? 'trajectory' : (cleanSnap.isolatedError ? 'isolated_error' : 'dom'),
       messages: sliced
     };
   }

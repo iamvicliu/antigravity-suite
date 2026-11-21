@@ -11054,12 +11054,109 @@ test('PR #5 返修（二）：隔离视图新建页判空、裸 % 解码防崩�
     enhCap = envDomCap.sandbox.__AGEnhancer;
     const capSnap = enhCap.getMobileSnapshot();
     assert.equal(capSnap.messages.length, 1);
-    assert.equal(capSnap.messages[0].text, 'short-ok');
-    assert.equal(capSnap.messages[0].html, '', '短文本超大 DOM 树应在遍历中途触发预算早停，返回空 HTML');
+    assert.ok(capSnap.messages[0].text.startsWith('short-ok'));
+    assert.equal(capSnap.messages[0].html, '', '短文本超大 DOM 树应在文本/HTML 遍历中途触发节点预算早停，返回空 HTML');
   } finally {
     enhCap?.dispose?.();
     envDomCap.sandbox.__AGContextMeter?.dispose?.();
     envDomCap.cleanup?.();
+  }
+
+  // 4b. 深层嵌套（depth > 24）与多根节点超大文本早停：绝不回退读取深层子树 textContent，也不再读取超限后的后续根节点
+  const envDeep = createDomEnv();
+  envDeep.win.location = { pathname: '/c/deep-dom-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/deep-dom-1' };
+  envDeep.sandbox.location = envDeep.win.location;
+  envDeep.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const deepResp = envDeep.doc.createElement('div');
+  deepResp.setAttribute('data-testid', 'agent-response');
+  const deepRoot1 = envDeep.doc.createElement('div');
+  deepRoot1.setAttribute('data-markdown-root', 'true');
+  let cur = deepRoot1;
+  for (let d = 0; d < 27; d++) {
+    const child = envDeep.doc.createElement('div');
+    cur.appendChild(child);
+    cur = child;
+  }
+  let deepTextContentReads = 0;
+  Object.defineProperty(cur, 'textContent', {
+    get() {
+      deepTextContentReads += 1;
+      return 'DEEP_SECRET_SHOULD_NOT_BE_READ';
+    },
+    configurable: true
+  });
+  // 同时添加一个正常浅层文本和一个超 200K 的根节点 + 第二个不应被读取的根节点
+  const shallowP = envDeep.doc.createElement('p');
+  shallowP.childNodes.push({ nodeType: 3, nodeValue: 'A'.repeat(205000) });
+  deepRoot1.appendChild(shallowP);
+  const deepRoot2 = envDeep.doc.createElement('div');
+  deepRoot2.setAttribute('data-markdown-root', 'true');
+  let secondRootRead = 0;
+  deepRoot2.childNodes.push({
+    nodeType: 3,
+    get nodeValue() {
+      secondRootRead += 1;
+      return 'SECOND_ROOT_SHOULD_NOT_BE_READ';
+    }
+  });
+  deepResp.appendChild(deepRoot1);
+  deepResp.appendChild(deepRoot2);
+  envDeep.doc.body.appendChild(deepResp);
+  let enhDeep = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDeep.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDeep.sandbox);
+    enhDeep = envDeep.sandbox.__AGEnhancer;
+    const deepSnap = enhDeep.getMobileSnapshot();
+    assert.equal(deepSnap.messages.length, 1);
+    assert.equal(deepTextContentReads, 0, 'depth > 24 分支严禁读取整棵深层子树 textContent 绕过预算');
+    assert.equal(secondRootRead, 0, '前置根节点已触及字符/深度预算后不得继续遍历后续根节点');
+    assert.equal(deepSnap.messages[0].html, '', '触发预算早停时必须跳过 HTML 序列化');
+  } finally {
+    enhDeep?.dispose?.();
+    envDeep.sandbox.__AGContextMeter?.dispose?.();
+    envDeep.cleanup?.();
+  }
+
+  // 6. 桌面停在会话 B、独立读取会话 A 抛错时：绝不沿用会话 B 的 messages/上下文，也不会污染会话 A 历史缓存
+  const envIsoErr = createDomEnv();
+  envIsoErr.win.location = { pathname: '/c/bbbb1111-2222-3333-4444-555555555555', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/bbbb1111-2222-3333-4444-555555555555' };
+  envIsoErr.sandbox.location = envIsoErr.win.location;
+  envIsoErr.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const msgB = envIsoErr.doc.createElement('div');
+  msgB.setAttribute('data-testid', 'user-message');
+  msgB.textContent = 'SECRET_DESKTOP_B_MSG';
+  envIsoErr.doc.body.appendChild(msgB);
+  let enhIsoErr = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envIsoErr.sandbox);
+    vm.runInContext(ENHANCER_SRC, envIsoErr.sandbox);
+    enhIsoErr = envIsoErr.sandbox.__AGEnhancer;
+    const desktopBSnap = enhIsoErr.getMobileSnapshot();
+    assert.equal(desktopBSnap.sessionId, 'bbbb1111-2222-3333-4444-555555555555');
+    assert.equal(desktopBSnap.messages[0]?.text, 'SECRET_DESKTOP_B_MSG');
+
+    const isoErrSnap = await enhIsoErr.getMobileSnapshotAsync({ conversationId: 'aaaa9999-2222-3333-4444-555555555555' });
+    assert.equal(isoErrSnap.sessionId, 'aaaa9999-2222-3333-4444-555555555555');
+    assert.equal(isoErrSnap.isolated, true);
+    assert.equal(isoErrSnap.isolatedError, true);
+    assert.equal(isoErrSnap.historySource, 'isolated_error');
+    assert.equal(isoErrSnap.messages.length, 0, '独立读取会话 A 失败时绝不得继承桌面会话 B 的 messages');
+    assert.equal(isoErrSnap.contextPanel, null);
+
+    const isoErrMgr = remoteMod.createConversationHistoryManager();
+    const enrichedErr = await isoErrMgr.enrichMessages(isoErrSnap, {
+      localApiConnect: async () => { throw new Error('ls unavailable'); }
+    });
+    assert.equal(enrichedErr.messages.length, 0);
+    assert.equal(enrichedErr.historySource, 'isolated_error');
+    const cachedPageA = await isoErrMgr.getMessagesPage({ sessionId: 'aaaa9999-2222-3333-4444-555555555555', limit: 30 });
+    const joinedA = (cachedPageA.messages || []).map((m) => m.text).join('\n');
+    assert.ok(!joinedA.includes('SECRET_DESKTOP_B_MSG'), '桌面会话 B 的消息绝不得写入会话 A 的历史缓存');
+  } finally {
+    enhIsoErr?.dispose?.();
+    envIsoErr.sandbox.__AGContextMeter?.dispose?.();
+    envIsoErr.cleanup?.();
   }
 
   // 5. fetchGenMap 淘汰后单调序号隔离：旧请求在途 -> 触发 >2000 个其他会话淘汰 -> 同会话新请求先返回 -> 旧请求晚归不得覆盖新结果
