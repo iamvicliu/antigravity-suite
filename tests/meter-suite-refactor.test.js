@@ -16803,3 +16803,160 @@ test('PR #6 合并加固 (P1-3/P1-4): 队列图片对象化、混合队列残留
     envDesk.sandbox.__AGContextMeter?.dispose?.();
   }
 });
+
+test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置同步、⚡直发/✎填入切换、防吞草稿与 800ms 防连点）', async () => {
+  const remoteMod = require('../mobile-remote');
+
+  // 1) 服务端 buildRemoteQuickPrompts：空配置回落默认 6 项，自定义列表与内置推荐池去重合并
+  const defPrompts = remoteMod.buildRemoteQuickPrompts(null);
+  assert.equal(defPrompts.length, 6, '空配置应回落 6 个高频手机默认口令');
+  assert.equal(defPrompts[0].label, '继续');
+  assert.equal(defPrompts[0].autoSend, true);
+  assert.equal(defPrompts.find((p) => p.id === 'tpl-fix-err')?.autoSend, false);
+
+  const mergedPrompts = remoteMod.buildRemoteQuickPrompts({
+    quickPrompts: [
+      { id: 'c1', label: '自定义直发', text: '跑测试并汇报', autoSend: true },
+      { id: 'c2', label: '忽略空文本', text: '   ', autoSend: true },
+      { id: 'c3', label: '重复compact', text: '/compact', autoSend: true },
+      { id: 'c4', label: '自定义填入', text: '排查报错：', autoSend: false }
+    ],
+    quickPool: {
+      compact: true,
+      copyid: true,
+      export: true,
+      plan: true,
+      reload: true,
+      'grill-me': true
+    },
+    quickAutoSendBuiltin: true
+  });
+  assert.deepEqual(
+    mergedPrompts.map((p) => p.label),
+    ['自定义直发', '自定义填入', '/plan 规划', '/grill-me 追问', '重载规则'],
+    '应保留合法自定义项、过滤 /compact/copyid/export 并按顺序合入已开启的内置池词条'
+  );
+  assert.equal(mergedPrompts.find((p) => p.id === 'reload')?.autoSend, true, '支持自动直发的内置项应跟随 quickAutoSendBuiltin');
+  assert.equal(mergedPrompts.find((p) => p.id === 'plan')?.autoSend, false, '带参数斜杠指令默认不应直发');
+
+  // 2) 前端 PWA #chips DOM 交互：渲染模式切换胶囊、桌面同步口令、800ms 防连点、草稿防吞、模式即时切换
+  const mobileHtml = remoteMod.buildMobileAppHtml();
+  const scriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
+  const bodyMatch = mobileHtml.match(/<body>([\s\S]*?)<script>/);
+  assert.ok(scriptMatch && bodyMatch);
+  assert.doesNotThrow(() => new vm.Script(scriptMatch[1]));
+
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn) => {
+    const id = activeTimers.size + 1;
+    activeTimers.add(id);
+    return id;
+  };
+  env.sandbox.clearTimeout = (id) => { activeTimers.delete(id); };
+  env.win.setTimeout = env.sandbox.setTimeout;
+  env.win.clearTimeout = env.sandbox.clearTimeout;
+  env.win.innerWidth = 390;
+  env.win.innerHeight = 844;
+  env.win.location = { pathname: '/', search: '?token=tok33', protocol: 'http:', reload() {} };
+  env.win.history = { replaceState() {} };
+  env.sandbox.location = env.win.location;
+  env.sandbox.history = env.win.history;
+  env.sandbox.URLSearchParams = URLSearchParams;
+  env.doc.body.innerHTML = bodyMatch[1];
+
+  const sentActions = [];
+  const snapPayload = {
+    ok: true,
+    serverBootId: 'boot-req33',
+    serverBootAt: 9000,
+    snapSeq: 1,
+    sessionId: 'sess-req33',
+    currentProjectId: 'proj-33',
+    currentProjectName: 'Suite',
+    title: 'Quick Bar Test',
+    busy: false,
+    totalMessages: 0,
+    messagesStartIndex: 0,
+    messages: [],
+    projects: [{ id: 'proj-33', name: 'Suite', conversationCount: 1 }],
+    conversations: [{ id: 'sess-req33', projectId: 'proj-33', title: 'Quick Bar Test', active: true, status: 'idle', updatedAt: 1000 }],
+    quickPrompts: [
+      { id: 'qp-direct', label: '立即执行', text: '立即执行并校验', autoSend: true },
+      { id: 'qp-insert', label: '带参模板', text: '参考规范：', autoSend: false }
+    ]
+  };
+
+  env.sandbox.fetch = async (url, init) => {
+    const u = new URL(String(url), 'http://127.0.0.1');
+    const headers = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+    if (u.pathname === '/api/snapshot') {
+      return { ok: true, status: 200, headers, json: async () => snapPayload };
+    }
+    if (u.pathname === '/api/action') {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      sentActions.push(body);
+      return { ok: true, status: 200, headers, json: async () => ({ ok: true, actionResult: { ok: true }, snapshot: snapPayload }) };
+    }
+    return { ok: true, status: 200, headers, json: async () => ({ ok: true }) };
+  };
+
+  try {
+    vm.runInContext(scriptMatch[1], env.sandbox);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const chipsEl = env.doc.getElementById('chips');
+    const inputEl = env.doc.getElementById('input');
+    const getButtons = () => chipsEl.querySelectorAll('.chip');
+
+    const modeBtn = getButtons().find((b) => String(b.className || '').includes('chip-mode-toggle'));
+    const directBtn = getButtons().find((b) => (b.textContent || '').includes('立即执行'));
+    const insertBtn = getButtons().find((b) => (b.textContent || '').includes('带参模板'));
+    const compactBtn = getButtons().find((b) => (b.textContent || '').trim() === '/compact');
+    const thoughtBtn = getButtons().find((b) => (b.textContent || '').includes('展开/收起思考'));
+
+    assert.ok(modeBtn && (modeBtn.textContent || '').includes('⚡直发'), '默认应显示「⚡直发」模式切换胶囊');
+    assert.ok(directBtn && (directBtn.textContent || '').includes('⚡ 立即执行'), '支持直发项在直发模式下应带 ⚡ 前缀');
+    assert.ok(insertBtn && (insertBtn.textContent || '').includes('✎ 带参模板'), '带参项在直发模式下仍应显示 ✎ 前缀');
+    assert.ok(compactBtn && thoughtBtn, '原有 /compact 与 展开/收起思考 按钮必须保留');
+
+    // 2a) 空输入框连点两次直发口令：发出 1 次，第 2 次被 800ms 防连点锁拦截
+    inputEl.value = '';
+    directBtn.click();
+    directBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '800ms 内连续点击直发口令应只触发一次发送');
+    assert.equal(sentActions[0].action, 'send');
+    assert.equal(sentActions[0].text, '立即执行并校验');
+
+    // 2b) 点击填入类型口令：追加到输入框，不发网络请求
+    insertBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '非直发口令不得触发发送');
+    assert.equal(inputEl.value, '参考规范：');
+
+    // 2c) 输入框已有草稿时点直发口令：防吞草稿，自动追加填入而不发请求
+    await new Promise((r) => setTimeout(r, 820));
+    inputEl.value = '先看这段代码';
+    directBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '已有草稿时点直发口令必须降级为追加填入而非直接发送');
+    assert.equal(inputEl.value, '先看这段代码 立即执行并校验');
+
+    // 2d) 点击模式切换按钮切到「✎填入」后，口令即时重绘为 ✎ 前缀，且空输入框点击不再直发
+    inputEl.value = '';
+    modeBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    const updatedModeBtn = getButtons().find((b) => String(b.className || '').includes('chip-mode-toggle'));
+    const updatedDirectBtn = getButtons().find((b) => (b.textContent || '').includes('立即执行'));
+    assert.ok(updatedModeBtn && (updatedModeBtn.textContent || '').includes('✎填入'), '点击切换后按钮文案应即时变为「✎填入」');
+    assert.ok(updatedDirectBtn && (updatedDirectBtn.textContent || '').includes('✎ 立即执行'), '切换为填入模式后口令前缀应即时变为 ✎');
+
+    updatedDirectBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '处于 ✎填入 模式时点击口令只能填入输入框不得直发');
+    assert.equal(inputEl.value, '立即执行并校验');
+  } finally {
+    for (const id of Array.from(activeTimers)) activeTimers.delete(id);
+  }
+});
