@@ -11191,3 +11191,116 @@ test('PR #5 返修（二）：隔离视图新建页判空、裸 % 解码防崩�
   const afterStalePage = await evictMgr.getMessagesPage({ sessionId: 'sess-evict-target', limit: 30 });
   assert.equal(afterStalePage.messages[0]?.text, 'NEW_AUTHORITATIVE_MSG', 'fetchGenMap 淘汰后旧请求晚归不得覆盖同会话新结果');
 });
+
+test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回退、macOS 进程过滤/锁路径加固及 5 语种 README 同步 (#34)', async () => {
+  const zlib = require('zlib');
+  const { execFileSync } = require('child_process');
+  const remoteMod = require('./mobile-remote');
+
+  // 1. ag-enhancer-overlay.js：仅 1 处 resolvePermissionStateFromDom，且 PERMISSION_DEFAULT_LABELS 定义早于首次引用
+  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  const declMatches = overlaySrc.match(/function\s+resolvePermissionStateFromDom\s*\(/g) || [];
+  assert.equal(declMatches.length, 1, `resolvePermissionStateFromDom 应仅声明 1 次，实际=${declMatches.length}`);
+  const constDefIdx = overlaySrc.indexOf('const PERMISSION_DEFAULT_LABELS = {');
+  const firstRefIdx = overlaySrc.indexOf('PERMISSION_DEFAULT_LABELS[');
+  assert.ok(constDefIdx > 0 && firstRefIdx > constDefIdx, 'PERMISSION_DEFAULT_LABELS 必须在首次引用前声明以消除 TDZ 隐患');
+
+  // 2. mobile-remote.js：gzip 响应合并 Vary: Origin, Accept-Encoding（不覆盖 Origin），且 zlib.gzipSync 抛错安全回退明文
+  const bigMsg = 'M'.repeat(1800);
+  const handler = remoteMod.createRemoteHttpHandler(
+    { token: 'tok-34-gzip', port: 18765, channels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    {
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's-34', messages: [{ role: 'assistant', text: bigMsg }] }),
+      performAction: async () => ({ ok: true })
+    }
+  );
+  const callApi = async (extraHeaders = {}) => {
+    const resObj = {
+      statusCode: 0,
+      headers: {},
+      chunks: [],
+      setHeader(k, v) {
+        this.headers[k] = v;
+      },
+      getHeader(k) {
+        const hit = Object.keys(this.headers).find((h) => h.toLowerCase() === String(k).toLowerCase());
+        return hit ? this.headers[hit] : undefined;
+      },
+      writeHead(code, hdrs) {
+        this.statusCode = code;
+        for (const [k, v] of Object.entries(hdrs || {})) {
+          this.headers[k] = v;
+        }
+      },
+      end(chunk) {
+        if (chunk !== undefined && chunk !== null) {
+          this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'));
+        }
+      }
+    };
+    const reqObj = {
+      method: 'GET',
+      url: '/api/snapshot',
+      headers: {
+        host: '127.0.0.1:18765',
+        origin: 'http://127.0.0.1:18765',
+        'x-ag-remote-token': 'tok-34-gzip',
+        'accept-encoding': 'gzip, deflate',
+        ...extraHeaders
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      on() {}
+    };
+    await handler(reqObj, resObj);
+    return { statusCode: resObj.statusCode, headers: resObj.headers, body: Buffer.concat(resObj.chunks) };
+  };
+
+  const gzRes = await callApi();
+  assert.equal(gzRes.statusCode, 200);
+  assert.equal(gzRes.headers['Content-Encoding'], 'gzip');
+  const varyParts = String(gzRes.headers.Vary || '').split(',').map((s) => s.trim().toLowerCase());
+  assert.ok(varyParts.includes('origin') && varyParts.includes('accept-encoding'), `Vary 应同时保留 Origin 与 Accept-Encoding，实际=${gzRes.headers.Vary}`);
+  const parsedGz = JSON.parse(zlib.gunzipSync(gzRes.body).toString('utf8'));
+  assert.equal(parsedGz.sessionId, 's-34');
+
+  // 模拟 zlib.gzipSync 抛错：必须安全回退未压缩 JSON 而不 500
+  const origGzipSync = zlib.gzipSync;
+  zlib.gzipSync = () => { throw new Error('mock gzip failure'); };
+  try {
+    const fallbackRes = await callApi();
+    assert.equal(fallbackRes.statusCode, 200);
+    assert.equal(fallbackRes.headers['Content-Encoding'], undefined, 'gzipSync 异常时必须回退未压缩响应');
+    const parsedPlain = JSON.parse(fallbackRes.body.toString('utf8'));
+    assert.equal(parsedPlain.sessionId, 's-34');
+  } finally {
+    zlib.gzipSync = origGzipSync;
+  }
+
+  // 3. bin/ag-context-meter：bash -n 通过、get_host_ps_line 过滤 --type=/--import=/--headless、锁路径优先 TMPDIR
+  const cliBinPath = path.join(__dirname, 'bin', 'ag-context-meter');
+  execFileSync('bash', ['-n', cliBinPath], { stdio: 'pipe' });
+  const cliBinSrc = fs.readFileSync(cliBinPath, 'utf8');
+  assert.ok(cliBinSrc.includes('--type=|--import=|--headless'), 'get_host_ps_line 必须排除 --type=|--import=|--headless 子进程');
+  assert.ok(!cliBinSrc.includes('RELAUNCH_LOCK_FILE="${AG_RELAUNCH_LOCK_FILE:-/tmp/'), '重拉锁路径不得硬编码 /tmp');
+  assert.ok(cliBinSrc.includes('TMPDIR'), '重拉锁路径应优先使用 TMPDIR 或套件状态目录');
+
+  const mockPs = [
+    '1001 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --type=renderer',
+    '1002 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --import=/foo.mjs',
+    '1003 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --headless',
+    '1004 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=9222'
+  ].join('\n');
+  const filteredLine = execFileSync('bash', [
+    '-c',
+    'printf "%s\\n" "$AG_MOCK_PS_OUTPUT" | grep "/Contents/MacOS/Antigravity" | grep -v -E "Antigravity Helper|language_server|--type=|--import=|--headless" | head -n 1'
+  ], { env: { ...process.env, AG_MOCK_PS_OUTPUT: mockPs }, encoding: 'utf8' }).trim();
+  assert.ok(filteredLine.startsWith('1004 '), `应过滤全部子进程仅保留主进程 1004，实际=${filteredLine}`);
+
+  // 4. 全部 5 语种 README 完整存在、同步包含 $HOME 边界与 Cmd/Ctrl + Enter 且无过时禁用命令
+  for (const name of ['README.md', 'README.en.md', 'README.ja.md', 'README.ko.md', 'README.es.md']) {
+    const text = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    assert.ok(text.includes('$HOME'), `${name} 应同步说明 $HOME 安全目录边界`);
+    assert.ok(text.includes('Cmd/Ctrl + Enter'), `${name} 应同步说明 Cmd/Ctrl + Enter 发送快捷键`);
+    assert.ok(!text.includes('node cli.js install'), `${name} 不得包含已禁用的 node cli.js install`);
+  }
+});

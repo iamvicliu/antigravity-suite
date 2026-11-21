@@ -9652,15 +9652,39 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const cachedSw = buildServiceWorkerJs();
   const cached401 = buildUnauthorizedHtml();
 
+  function mergeVaryHeader(existingVary, token) {
+    const parts = String(existingVary || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!parts.some((p) => p.toLowerCase() === token.toLowerCase())) {
+      parts.push(token);
+    }
+    return parts.join(', ');
+  }
+
   function sendPayload(req, res, statusCode, headers, bodyStr) {
     const raw = typeof bodyStr === 'string' ? bodyStr : String(bodyStr || '');
+    const baseHeaders = headers && typeof headers === 'object' ? { ...headers } : {};
     if (acceptsGzipEncoding(req?.headers?.['accept-encoding']) && Buffer.byteLength(raw, 'utf8') >= 1024) {
-      const gz = raw === cachedHtml ? cachedHtmlGzip : zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 1 });
-      res.writeHead(statusCode, { ...headers, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
-      res.end(gz);
-      return;
+      try {
+        const gz = raw === cachedHtml ? cachedHtmlGzip : zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 1 });
+        const existingVaryKey = Object.keys(baseHeaders).find((k) => k.toLowerCase() === 'vary');
+        const resVary = typeof res?.getHeader === 'function' ? res.getHeader('Vary') : '';
+        const combinedVary = [
+          Array.isArray(resVary) ? resVary.join(', ') : String(resVary || ''),
+          existingVaryKey ? String(baseHeaders[existingVaryKey] || '') : ''
+        ].filter(Boolean).join(', ');
+        const mergedVary = mergeVaryHeader(combinedVary, 'Accept-Encoding');
+        if (existingVaryKey && existingVaryKey !== 'Vary') delete baseHeaders[existingVaryKey];
+        res.writeHead(statusCode, { ...baseHeaders, 'Content-Encoding': 'gzip', Vary: mergedVary });
+        res.end(gz);
+        return;
+      } catch {
+        // gzip 压缩异常时安全回退为未压缩明文响应
+      }
     }
-    res.writeHead(statusCode, headers);
+    res.writeHead(statusCode, baseHeaders);
     res.end(raw);
   }
 

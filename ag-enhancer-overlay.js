@@ -7235,6 +7235,13 @@
     return null;
   }
 
+  const PERMISSION_DEFAULT_LABELS = {
+    turbo: '无限',
+    auto: '自动',
+    default: '默认',
+    request_review: '请求审核'
+  };
+
   function resolvePermissionStateFromDom(permBtn) {
     const rawText = (permBtn?.textContent || '').replace(/\s+/g, ' ').trim();
     const presetAttr = String(permBtn?.getAttribute?.('data-perm-preset') || '').trim().toLowerCase();
@@ -7780,39 +7787,6 @@
       { key: 'default', label: '🔒 默认 (Default)' },
       { key: 'request_review', label: '👁️ 请求审核 (Review)' }
     ];
-  }
-
-  const PERMISSION_DEFAULT_LABELS = {
-    turbo: '无限',
-    auto: '自动',
-    default: '默认',
-    request_review: '请求审核'
-  };
-
-  function resolvePermissionStateFromDom(permBtn) {
-    const rawText = (permBtn?.textContent || '').replace(/\s+/g, ' ').trim();
-    const presetAttr = String(permBtn?.getAttribute?.('data-perm-preset') || '').trim().toLowerCase();
-    const aria = String(permBtn?.getAttribute?.('aria-label') || '').trim();
-    const svgEl = permBtn?.querySelector?.('svg');
-    const svgSig = String(svgEl?.innerHTML || svgEl?.querySelector?.('path')?.getAttribute?.('d') || '');
-
-    let key = '';
-    if (presetAttr === 'turbo' || presetAttr === 'auto' || presetAttr === 'default' || presetAttr === 'request_review') {
-      key = presetAttr;
-    } else {
-      const combined = `${rawText} ${aria}`.toLowerCase();
-      if (/(?:turbo|无限|unrestricted)/i.test(combined)) key = 'turbo';
-      else if (/(?:request_review|review|请求审核|请求审查|审核|审查)/i.test(combined)) key = 'request_review';
-      else if (/(?:\bauto\b|自动)/i.test(combined)) key = 'auto';
-      else if (/(?:\bdefault\b|默认)/i.test(combined)) key = 'default';
-      else if (svgSig.includes('502.92-344.77')) key = 'turbo';
-      else if (svgSig.includes('595.58-384.51')) key = 'request_review';
-      else if (svgSig.includes('252.31-100')) key = 'default';
-      else if (svgSig.includes('480-100.77')) key = 'auto';
-      else key = 'unknown';
-    }
-    const label = rawText || PERMISSION_DEFAULT_LABELS[key] || '未知';
-    return { permissionKey: key, permissionLabel: label };
   }
 
   function collectDesktopContextPanelData(sr, pulseEl, contextBadge, model) {
