@@ -6,15 +6,15 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const core = require('./meter-core');
+const core = require('../meter-core');
 const {
   loadCustomPlanSettings,
   savePluginSettings,
   getPluginSettings,
   launchCliSession
-} = require('./meter-collector');
+} = require('../meter-collector');
 
-const rendererSource = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'meter-renderer.js'), 'utf8');
 
 // ============================================================================
 // 1. 任意账号所在地区 / 订阅国家 / 币种组合测试 (非 AUD/KRW/TWD 示例，如 JPY, EUR, SGD, GBP)
@@ -230,7 +230,7 @@ test('插件 Windows 交互式 CLI 子进程环境配置恢复原生渐变彩虹
 // 7. 验证 CLI 窗口居中前置脚本与宿主边界传递
 // ============================================================================
 test('CLI 启动器具备以 Antigravity 触发窗口为基准居中、多显示器工作区裁剪与前台激活能力', () => {
-  const { windowsTerminalPlacement } = require('./meter-cli-launcher');
+  const { windowsTerminalPlacement } = require('../meter-cli-launcher');
   assert.ok(windowsTerminalPlacement.includes('PositionAndActivate'), '必须包含 PositionAndActivate 居中前台激活方法');
   assert.ok(windowsTerminalPlacement.includes('SWP_SHOWWINDOW'), '必须包含 SWP_SHOWWINDOW 标志');
   assert.ok(!windowsTerminalPlacement.includes('0x0014'), '严禁使用包含 SWP_NOACTIVATE 的 0x0014 标志导致无法前置');
@@ -243,7 +243,7 @@ test('CLI 启动器具备以 Antigravity 触发窗口为基准居中、多显示
 // 8. 验证渲染层 CLI 按钮按压即刻回弹、启动防重入与状态恢复
 // ============================================================================
 test('渲染层顶部 CLI 按钮解耦按压反馈与启动加载态，松开即刻回弹且防重入', () => {
-  const src = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'main.js'), 'utf8');
   assert.ok(src.includes('data-pressed'), '必须支持 data-pressed 即刻按压反馈');
   assert.ok(src.includes('pointerdown'), '必须监听 pointerdown 触发按压态');
   assert.ok(src.includes('pointerup'), '必须监听 pointerup 立即释放按压态');
@@ -253,7 +253,7 @@ test('渲染层顶部 CLI 按钮解耦按压反馈与启动加载态，松开即
   assert.ok(src.includes('cliLaunchBusy'), '必须包含 cliLaunchBusy 防快速重复点击');
   assert.ok(src.includes('showCliToast'), '启动失败或启动中必须提供明确可读提示');
 
-  const css = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
   assert.ok(css.includes('#badge-cli:active') || css.includes('[data-pressed="true"]'), '样式必须包含轻量按压缩放与高亮反馈');
   assert.ok(!css.includes('#badge-cli[data-busy="true"]{\n      opacity:0.65;'), '不能仅将整个按钮变灰代替启动过程');
 });
@@ -262,7 +262,7 @@ test('渲染层顶部 CLI 按钮解耦按压反馈与启动加载态，松开即
 // 9. 验证上下文解锁状态机与实际预算联动、只读检测无副作用
 // ============================================================================
 test('上下文解锁状态与真实请求预算 (983K) 联动，清除过期待重启标记且只读安全', () => {
-  const { analyzeBinary } = require('./meter-context-unlock');
+  const { analyzeBinary } = require('../meter-context-unlock');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unlock-audit-'));
   try {
     const mockFile = path.join(tmpDir, 'mock_engine.exe');
@@ -285,7 +285,7 @@ test('上下文解锁状态与真实请求预算 (983K) 联动，清除过期待
 // 10. 单元测试验证：主窗口关闭拦截判定与多路径边界（辅助窗口放行、多窗口关闭、后台运行设置尊重与退出放行）
 // ============================================================================
 test('单元测试：主窗口关闭拦截判定与多路径边界（辅助窗口放行、多窗口关闭、后台运行设置尊重与退出放行）', () => {
-  const { shouldInterceptWindowClose, setAppQuitting } = require('./meter-main');
+  const { shouldInterceptWindowClose, setAppQuitting } = require('../meter-main');
 
   const mainWin1 = { isVisible: () => true, isDestroyed: () => false };
   const mainWin2 = { isVisible: () => true, isDestroyed: () => false };
@@ -351,7 +351,7 @@ test('单元测试：主窗口关闭拦截判定与多路径边界（辅助窗�
 // 11. 单元测试验证：BaseWindow / WebContentsView 架构适配与 WebContents 严格探测
 // ============================================================================
 test('单元测试：BaseWindow / WebContentsView 架构适配与 WebContents 严格探测（PR #6 整合）', async () => {
-  const { getWindowWebContents, installContextMeter } = require('./meter-main');
+  const { getWindowWebContents, installContextMeter } = require('../meter-main');
 
   // 场景 1: 传统 BrowserWindow 具备直接 webContents
   const fakeDirectWc = { isDestroyed: () => false, getURL: () => 'https://127.0.0.1:49999/' };

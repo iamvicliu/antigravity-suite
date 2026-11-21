@@ -18,7 +18,7 @@ const {
   filterReleases,
   findReleaseAsset,
   isValidExternalUrl
-} = require('./meter-core');
+} = require('../meter-core');
 const entry = (usage, context = {}) => ({ chatModel: { usage, chatStartMetadata: { contextWindowMetadata: context } } });
 const exceeded = 'INVALID_ARGUMENT (code 400): The input token count exceeds the maximum number of tokens allowed 1048576.';
 test('cache counted once, thinking not counted twice, backend budget preserved', () => {
@@ -118,7 +118,7 @@ test('model output speed and duration calculated accurately from timeToFirstToke
 });
 
 test('inline attachments and images are fully counted and parsed instead of unknown', async () => {
-  const { scanFiles } = require('./meter-collector');
+  const { scanFiles } = require('../meter-collector');
   const zlib = require('zlib');
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(100, 0); ihdr.writeUInt32BE(80, 4);
@@ -166,7 +166,7 @@ const {
   calculateRequestApiCost,
   summarizeApiCost,
   parseUserPlanStatus
-} = require('./meter-core');
+} = require('../meter-core');
 
 test('3.8 Flash API pricing accurately matches reference fixtures: $4.575 today and $9.15 in 2027', () => {
   const req2026 = {
@@ -294,7 +294,7 @@ test('parseUserPlanStatus handles unknown or empty payload safely without throwi
   assert.equal(emptyPlan.tierName, '未知');
   assert.equal(emptyPlan.actualPricePaid, null);
 });
-const { isCompanionOrTempFile, collectTokenHistoryAsync, recordModelCalls } = require('./meter-collector');
+const { isCompanionOrTempFile, collectTokenHistoryAsync, recordModelCalls } = require('../meter-collector');
 
 test('isCompanionOrTempFile detects SQLite companion files and temporary locks', () => {
   assert.equal(isCompanionOrTempFile('session.db-wal'), true);
@@ -371,7 +371,7 @@ test('summarizeApiCost with unpriced requests returns 0% coverage and unpriced r
   assert.equal(res.unpricedReasons.missingModel, 1);
 });
 
-const { parseGeneratorCall } = require('./meter-core');
+const { parseGeneratorCall } = require('../meter-core');
 
 test('parseGeneratorCall handles modelDisplayName, responseModel and stepIndices cleanly', () => {
   const row = {
@@ -466,7 +466,7 @@ test('parseUserPlanStatus treats empty status as unidentified and handles Ultra 
 });
 
 test('recordModelCalls calibrates from partial streaming usage to final usage and preserves original date', () => {
-  const { recordModelCalls, loadPricingLedger } = require('./meter-collector');
+  const { recordModelCalls, loadPricingLedger } = require('../meter-collector');
   const fs = require('fs');
   const path = require('path');
   const os = require('os');
@@ -533,7 +533,7 @@ test('recordModelCalls calibrates from partial streaming usage to final usage an
 test('install script exposes recordCalls in preload and includes local-api in bundled additions', () => {
   const fs = require('fs');
   const path = require('path');
-  const installSrc = fs.readFileSync(path.join(__dirname, 'install.js'), 'utf8');
+  const installSrc = fs.readFileSync(path.join(__dirname, '..', 'install.js'), 'utf8');
   assert.ok(installSrc.includes('recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls)'));
   assert.ok(installSrc.includes("'local-api.js'"));
 });
@@ -664,7 +664,7 @@ test('quarantineSyntheticCalls: isolates synthetic test items into quarantine fi
     loadPricingLedger,
     savePricingLedger,
     recordModelCalls
-  } = require('./meter-collector');
+  } = require('../meter-collector');
 
   const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-quarantine-test-'));
   try {
@@ -858,7 +858,7 @@ test('plugin settings persistence: distinct country, subscriptionRegion, currenc
     loadCustomPlanSettings,
     savePluginSettings,
     getPluginSettings
-  } = require('./meter-collector');
+  } = require('../meter-collector');
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-settings-test-'));
   try {
@@ -951,7 +951,7 @@ test('CLI resolution & workspace handling: Chinese/space paths, fallback directo
     resolveCliExecutable,
     resolveCliWorkspace,
     launchCliSession
-  } = require('./meter-collector');
+  } = require('../meter-collector');
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-test-'));
   try {
@@ -1337,7 +1337,7 @@ test('collectTokenHistoryAsync 连续两次非强制调用不会卡在旧 active
     assert.equal(res2.summary.grandTotalTokens, 7800);
 
     // 4. 验证顶层 savedHeatView 与 autoCheckUpdate 的持久化与读取一致性
-    const { savePluginSettings, getPluginSettings } = require('./meter-collector');
+    const { savePluginSettings, getPluginSettings } = require('../meter-collector');
     const saveUiRes = savePluginSettings({ savedHeatView: 'monthly', autoCheckUpdate: false }, { agDir: tempDir });
     assert.equal(saveUiRes.ok, true);
     const loadedUi = getPluginSettings({ agDir: tempDir });
@@ -1348,7 +1348,7 @@ test('collectTokenHistoryAsync 连续两次非强制调用不会卡在旧 active
     assert.equal(loadedUi.uiPreferences.autoCheckUpdate, false);
 
     // 5. 验证 getDailyModelCost 分项费用 (inputCost / cacheCost / outputCost) 正确返回非零数值
-    const { getDailyModelCost, clearDailyCostCache } = require('./meter-core');
+    const { getDailyModelCost, clearDailyCostCache } = require('../meter-core');
     clearDailyCostCache();
     const dayCost = getDailyModelCost(
       { total: 3000000, input: 1000000, cache: 1000000, output: 1000000 },

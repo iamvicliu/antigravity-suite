@@ -12,7 +12,7 @@ const {
   resolveHelperExecutable,
   escapePosixArg,
   launchCliSession
-} = require('./meter-cli-launcher');
+} = require('../meter-cli-launcher');
 
 test('CLI 启动模块 1: resolveCliExecutable 探测真实环境 agy.exe', () => {
   const res = resolveCliExecutable();
@@ -32,7 +32,7 @@ test('CLI 启动模块 2: dryRun 包含完整参数与环境隔离', async () =>
 });
 
 test('CLI 启动模块 3: 源码绝对不残留同步 powershell、8000ms 阻塞与作者绝对开发路径', () => {
-  const src = fs.readFileSync(path.join(__dirname, 'meter-cli-launcher.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'meter-cli-launcher.js'), 'utf8');
   assert.equal(src.includes("spawnSync('powershell.exe'"), false, '严禁包含 spawnSync powershell');
   assert.equal(src.includes('timeout: 8000'), false, '严禁包含旧版 8000ms 同步阻塞');
   assert.equal(src.includes('D:\\AI_plugin'), false, '严禁包含作者开发机本地绝对路径');
@@ -62,7 +62,7 @@ test('CLI 启动模块 4: helper 输出诊断结构完整解析与部分成功�
 });
 
 test('CLI 启动模块 5: 隔离环境中验证 helper 部署、探测与哈希一致性（零生产依赖）', () => {
-  const canonicalHelper = path.join(__dirname, 'scripts', 'cli-window-helper.exe');
+  const canonicalHelper = path.join(__dirname, '..', 'scripts', 'cli-window-helper.exe');
   assert.ok(fs.existsSync(canonicalHelper), '唯一权威二进制 scripts/cli-window-helper.exe 必须存在');
 
   const buf = fs.readFileSync(canonicalHelper);

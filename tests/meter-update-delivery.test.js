@@ -11,16 +11,16 @@ const {
   filterReleases,
   findReleaseAsset,
   compareVersions
-} = require('./meter-core');
+} = require('../meter-core');
 
 const {
   checkUpdateAsync,
   applyUpdateAsync
-} = require('./meter-collector');
+} = require('../meter-collector');
 
 const {
   loadAsarEngine
-} = require('./asar-engine');
+} = require('../asar-engine');
 
 /**
  * 极简 zip 打包助手（纯 Node.js，无需外部依赖）
@@ -123,7 +123,7 @@ function writeStreamAsync(stream, chunk) {
 }
 
 test('交付验证 1: 发布包内容检查（确保包含解锁引擎与所有必要资源）', () => {
-  const root = path.resolve(__dirname);
+  const root = path.resolve(__dirname, '..');
   const commonFiles = [
     'cli.js',
     'install.js',

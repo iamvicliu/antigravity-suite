@@ -5,12 +5,12 @@ const path = require('node:path');
 const os = require('node:os');
 const vm = require('node:vm');
 
-const core = require('./meter-core');
-const terminals = require('./meter-terminals');
-const collector = require('./meter-collector');
-const modularInstaller = require('./modular-installer');
+const core = require('../meter-core');
+const terminals = require('../meter-terminals');
+const collector = require('../meter-collector');
+const modularInstaller = require('../modular-installer');
 
-const ROOT = __dirname;
+const ROOT = path.resolve(__dirname, '..');
 const RENDERER_SRC = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
 const ENHANCER_SRC = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
 const CAPSULE_SRC = fs.readFileSync(path.join(ROOT, 'pulse-capsule-overlay.js'), 'utf8');
@@ -1288,7 +1288,7 @@ test('需求 4b: macOS 与 Windows 主流终端探测、dryRun 启动参数构�
 // 需求 5a: CLI 启动支持免审核 (--dangerously-skip-permissions) 与默认模型 / 不选模型
 // =========================================================================
 test('需求 5a: CLI 启动支持开启免审核参数与配置默认模型/不选择模型', async () => {
-  const launcher = require('./meter-cli-launcher');
+  const launcher = require('../meter-cli-launcher');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-opts-'));
   try {
     const fakeCli = path.join(tmpDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
@@ -1764,7 +1764,7 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
     process.env.AG_CONTEXT_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     const {
       buildRemoteInfo,
       decodeEndpointsParam,
@@ -1775,7 +1775,7 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
       createRemoteHttpHandler,
       recordPairedDeviceAccess,
       getPairedDevicesSummary
-    } = require('./mobile-remote.js');
+    } = require('../mobile-remote.js');
     const info = buildRemoteInfo({ resetToken: true });
     assert.ok(info.port > 0, 'mobile-remote 应返回有效端口');
     assert.equal(info.primaryUrl, info.fusedUrl, 'primaryUrl 应等于融合配对链接 fusedUrl');
@@ -2106,7 +2106,7 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     else process.env.AG_METER_STATE_DIR = prevMeterStateDir;
     if (prevContextStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
     else process.env.AG_CONTEXT_METER_STATE_DIR = prevContextStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -2485,7 +2485,7 @@ test('需求 11: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开�
   try {
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     const {
       extractCloudflareTunnelToken,
       normalizeTunnelHostname,
@@ -2493,7 +2493,7 @@ test('需求 11: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开�
       buildFusedPairingUrl,
       buildRemoteInfo,
       isAllowedPrivateOrigin
-    } = require('./mobile-remote.js');
+    } = require('../mobile-remote.js');
 
     // 1. Token 与域名规范化提取
     assert.equal(
@@ -2620,7 +2620,7 @@ test('需求 11: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开�
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -2637,13 +2637,13 @@ test('需求 12: 局域网命名、通道复选框启停与后端 403 拦截、�
   try {
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     const {
       saveRemoteTunnelConfig,
       buildRemoteInfo,
       createRemoteHttpHandler,
       detectRequestChannel
-    } = require('./mobile-remote.js');
+    } = require('../mobile-remote.js');
 
     const remoteSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
     assert.ok(!remoteSrc.includes('此 Wi-Fi') && !ENHANCER_SRC.includes('此 Wi-Fi'), '应统一将“此 Wi-Fi”替换为“局域网”');
@@ -2778,7 +2778,7 @@ test('需求 12: 局域网命名、通道复选框启停与后端 403 拦截、�
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -2795,8 +2795,8 @@ test('需求 13: 远程浮窗整行热区勾选、CLI 多路复用器指定主�
   try {
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    const { saveRemoteTunnelConfig, buildRemoteInfo } = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    const { saveRemoteTunnelConfig, buildRemoteInfo } = require('../mobile-remote.js');
     saveRemoteTunnelConfig({ enabled: false, enabledChannels: { lan: true, tailscale: false, bonjour: true, tunnel: false } });
     const initInfo = buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
 
@@ -2856,7 +2856,7 @@ test('需求 13: 远程浮窗整行热区勾选、CLI 多路复用器指定主�
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 
@@ -3069,8 +3069,8 @@ test('需求 14: Cloudflare Token 入口、ASAR 全组件打包自注与 Antigra
   try {
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    const { saveRemoteTunnelConfig, buildRemoteInfo } = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    const { saveRemoteTunnelConfig, buildRemoteInfo } = require('../mobile-remote.js');
     saveRemoteTunnelConfig({ enabled: false, enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } });
     const initInfo = buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
 
@@ -3176,7 +3176,7 @@ test('需求 14: Cloudflare Token 入口、ASAR 全组件打包自注与 Antigra
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 
@@ -3190,9 +3190,9 @@ test('需求 14: Cloudflare Token 入口、ASAR 全组件打包自注与 Antigra
     process.env.AG_METER_STATE_DIR = tmpInstall;
     process.env.AG_METER_TEST_MODE = '1';
 
-    const { builtinAsar } = require('./asar-engine');
-    const { install } = require('./install');
-    const { ensureMeterInjected } = require('./meter-main');
+    const { builtinAsar } = require('../asar-engine');
+    const { install } = require('../install');
+    const { ensureMeterInjected } = require('../meter-main');
 
     const mockSrc = path.join(tmpInstall, 'mock-app');
     fs.mkdirSync(path.join(mockSrc, 'dist'), { recursive: true });
@@ -3346,7 +3346,7 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
   try {
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     const {
       extractCloudflareTunnelToken,
       validateCloudflareTunnelToken,
@@ -3356,7 +3356,7 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
       loadOrCreateRemoteConfig,
       createCloudflareTunnelController,
       buildRemoteInfo
-    } = require('./mobile-remote.js');
+    } = require('../mobile-remote.js');
 
     // 1. 标准 Base64 (+ / =) 与 URL-safe (- _) Token 提取和预校验
     const stdToken = Buffer.from(
@@ -3619,7 +3619,7 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -3636,12 +3636,12 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
     process.env.AG_CONTEXT_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     const {
       buildMobileAppHtml,
       createRemoteHttpHandler,
       loadOrCreateRemoteConfig
-    } = require('./mobile-remote.js');
+    } = require('../mobile-remote.js');
 
     const html = buildMobileAppHtml();
     assert.ok(html.includes('id="ag-theme-boot"'), '应包含防首屏闪烁主题引导脚本 #ag-theme-boot');
@@ -3795,7 +3795,7 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     else process.env.AG_METER_STATE_DIR = prevMeterStateDir;
     if (prevContextStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
     else process.env.AG_CONTEXT_METER_STATE_DIR = prevContextStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -3804,7 +3804,7 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
 // 需求 17: Antigravity v2.33.0+ 裸进程识别、运行时长解析与调试参数探测
 // =========================================================================
 test('需求 17: parsePsElapsedSeconds 与 inspectAntigravityHostProcess 准确识别裸进程与调试端口参数', () => {
-  const { parsePsElapsedSeconds, inspectAntigravityHostProcess } = require('./asar-engine');
+  const { parsePsElapsedSeconds, inspectAntigravityHostProcess } = require('../asar-engine');
 
   assert.equal(parsePsElapsedSeconds('00:08'), 8);
   assert.equal(parsePsElapsedSeconds('15:55'), 15 * 60 + 55);
@@ -4073,7 +4073,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
   try {
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     const {
       saveRemoteTunnelConfig,
       buildRemoteInfo,
@@ -4083,7 +4083,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
       buildMobileAppHtml,
       encodeEndpointsParam,
       parseTailscalePingOutput
-    } = require('./mobile-remote.js');
+    } = require('../mobile-remote.js');
 
     // 0. 验证 tailscale ping 输出解析（直连内网 IP / DERP 中继 / 超时）
     const directPong = parseTailscalePingOutput('pong from iphone-16-pro-max-1 (100.122.156.8) via 10.181.50.74:55970 in 55ms');
@@ -4562,7 +4562,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -4765,8 +4765,8 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
   const prevAppData = process.env.APPDATA;
   const prevStateDir = process.env.AG_METER_STATE_DIR;
   process.env.AG_METER_STATE_DIR = tmpState;
-  delete require.cache[require.resolve('./mobile-remote.js')];
-  const mr = require('./mobile-remote.js');
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const mr = require('../mobile-remote.js');
   try {
     const fakeNets = {
       en0: [{ address: '10.181.51.171', netmask: '255.255.254.0', family: 'IPv4', internal: false }],
@@ -5085,7 +5085,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -5097,7 +5097,7 @@ test('需求 21: Tab 补全 8 字截断悬停完整展示、单色 SVG 上方优
   const prevStateDir = process.env.AG_METER_STATE_DIR;
   process.env.APPDATA = tmpState;
   process.env.AG_METER_STATE_DIR = tmpState;
-  delete require.cache[require.resolve('./mobile-remote.js')];
+  delete require.cache[require.resolve('../mobile-remote.js')];
 
   const {
     buildMobileAppHtml,
@@ -5109,7 +5109,7 @@ test('需求 21: Tab 补全 8 字截断悬停完整展示、单色 SVG 上方优
     getRemoteClientSession,
     clearRemoteClientSessionsForTests,
     DEFAULT_REMOTE_DISPLAY_CONFIG
-  } = require('./mobile-remote.js');
+  } = require('../mobile-remote.js');
 
   const env = createDomEnv();
   const savedSettingsCalls = [];
@@ -5503,12 +5503,12 @@ test('需求 21: Tab 补全 8 字截断悬停完整展示、单色 SVG 上方优
     assert.equal(env.sandbox.location.pathname, `/c/${CONV_A1}`);
 
     // Cherry-pick CDP 增强校验: AG_CDP_PORT、find_antigravity_app、可选 install-launcher 且 setup-macos-cdp.sh 不默认强建
-    const asarSrc = fs.readFileSync(path.join(__dirname, "asar-engine.js"), "utf8");
+    const asarSrc = fs.readFileSync(path.join(__dirname, '..', "asar-engine.js"), "utf8");
     assert.ok(asarSrc.includes("AG_CDP_PORT"), "asar-engine 应保留 AG_CDP_PORT 环境变量探测");
-    const binSrc = fs.readFileSync(path.join(__dirname, "bin", "ag-context-meter"), "utf8");
+    const binSrc = fs.readFileSync(path.join(__dirname, '..', "bin", "ag-context-meter"), "utf8");
     assert.ok(binSrc.includes("find_antigravity_app()"), "ag-context-meter 应使用 find_antigravity_app 兼容 /Applications 与 ~/Applications");
     assert.ok(binSrc.includes("install-launcher)"), "ag-context-meter 应保留可选 install-launcher 命令");
-    const setupSrc = fs.readFileSync(path.join(__dirname, "scripts", "setup-macos-cdp.sh"), "utf8");
+    const setupSrc = fs.readFileSync(path.join(__dirname, '..', "scripts", "setup-macos-cdp.sh"), "utf8");
     assert.equal(setupSrc.includes("install-launcher"), false, "setup-macos-cdp.sh 不应默认强制创建独立启动器 .app");
 
   } finally {
@@ -5520,7 +5520,7 @@ test('需求 21: Tab 补全 8 字截断悬停完整展示、单色 SVG 上方优
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -5537,13 +5537,13 @@ test('需求 22: 远程设置默认免登录零配置可用与 cloudflared 一�
   try {
     process.env.APPDATA = tmpState;
     process.env.AG_METER_STATE_DIR = tmpState;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     const {
       loadOrCreateRemoteConfig,
       saveRemoteTunnelConfig,
       getCloudflaredInstallGuide,
       buildRemoteInfo
-    } = require('./mobile-remote.js');
+    } = require('../mobile-remote.js');
 
     // 1. 全新配置默认启用免登录零配置临时隧道（tunnelEnabled=true, tunnelMode='quick'）
     const freshCfg = loadOrCreateRemoteConfig();
@@ -5635,7 +5635,7 @@ test('需求 22: 远程设置默认免登录零配置可用与 cloudflared 一�
     else process.env.APPDATA = prevAppData;
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
@@ -5879,8 +5879,8 @@ test('PR #5 / 远程需求 24: 远程面板支持多项目分组浏览、按项�
       ]
     }));
 
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    let remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    let remoteMod = require('../mobile-remote.js');
 
     // 1. 构建 245 条非归档根会话（proj-a: 120, proj-b: 125）+ 1 条已归档 + 1 条三源同现 Subagent
     const baseMs = Date.now() - 300 * 60000;
@@ -5968,8 +5968,8 @@ test('PR #5 / 远程需求 24: 远程面板支持多项目分组浏览、按项�
     assert.equal(snap1.projects.some((p) => p.id === 'outside-of-project'), false, '空 virtual bucket outside-of-project 应排除');
 
     // 2. 模拟桌面端折叠、滚动至仅剩 1 行 + 服务重启（清除模块缓存并重建 store），验证 245 条完整保留、Subagent 持续被过滤及 /api/conversations 分页
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    remoteMod = require('../mobile-remote.js');
 
     const snapRestart = await remoteMod.enrichSnapshotWithCatalog({
       ok: true,
@@ -6030,8 +6030,8 @@ test('PR #5 / 远程需求 24: 远程面板支持多项目分组浏览、按项�
     });
     assert.equal(stInit.conversations.find((c) => c.id === 'root-sub')?.status, 'waiting');
 
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    remoteMod = require('../mobile-remote.js');
     const stFail = await remoteMod.enrichSnapshotWithCatalog({
       ok: true, sessionId: '', busy: false,
       conversations: [{ id: 'dom-unknown', title: 'No Traj Status', domBusy: false, projectId: 'proj-a' }],
@@ -6046,8 +6046,8 @@ test('PR #5 / 远程需求 24: 远程面板支持多项目分组浏览、按项�
     assert.equal(stFail.conversations.find((c) => c.id === 'root-sub')?.status, 'waiting', '请求失败时应保留 Subagent 汇总 waiting');
     assert.equal(stFail.conversations.find((c) => c.id === 'dom-unknown')?.status, 'unknown', '无历史状态且缺少轨迹数据时必须标记 unknown 而非 idle');
 
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    remoteMod = require('../mobile-remote.js');
     const stPartial = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: '', busy: false, conversations: [], projects: [] }, {
       stateDir: statusDir, configDir, bypassCache: true,
       localApiConnect: async () => ({
@@ -6775,7 +6775,7 @@ test('PR #5 / 远程需求 24: 远程面板支持多项目分组浏览、按项�
     else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
     if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
     else process.env.AG_CONFIG_DIR = prevConfigDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
@@ -6800,8 +6800,8 @@ test('PR #5 / 远程需求 25: 远程会话全量历史消息上翻加载、长�
     process.env.AG_METER_STATE_DIR = stateDir;
     process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
     process.env.AG_CONFIG_DIR = configDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    const remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    const remoteMod = require('../mobile-remote.js');
 
     // 1. 服务端 Markdown 安全渲染（表格、代码块、外链/文件胶囊与 XSS 过滤）
     const mdHtml = remoteMod.renderSafeMarkdownToHtml(
@@ -7329,7 +7329,7 @@ test('PR #5 / 远程需求 25: 远程会话全量历史消息上翻加载、长�
     else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
     if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
     else process.env.AG_CONFIG_DIR = prevConfigDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
@@ -7400,8 +7400,8 @@ test('PR #5 / 远程需求 26: 项目分组头样式层级、Enter换行按钮�
     process.env.AG_METER_STATE_DIR = stateDir;
     process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
     process.env.AG_CONFIG_DIR = configDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    const remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    const remoteMod = require('../mobile-remote.js');
 
     // 1. CSS 与 HTML 层级校验（项目头字号 > 会话项字号、桌面媒体查询同步、enterkeyhint="enter"）
     const html = remoteMod.buildMobileAppHtml();
@@ -7892,7 +7892,7 @@ test('PR #5 / 远程需求 26: 项目分组头样式层级、Enter换行按钮�
     else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
     if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
     else process.env.AG_CONFIG_DIR = prevConfigDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
@@ -7901,8 +7901,8 @@ test('PR #5 / 远程需求 26: 项目分组头样式层级、Enter换行按钮�
 // 需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高与按需位移
 // =========================================================================
 test('PR #5 / 远程需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高与按需位移', async () => {
-  delete require.cache[require.resolve('./mobile-remote.js')];
-  const remoteMod = require('./mobile-remote.js');
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const remoteMod = require('../mobile-remote.js');
   const html = remoteMod.buildMobileAppHtml();
   const cssText = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
   const bodyHtml = html.match(/<body>([\s\S]*?)<script>/)?.[1] || '';
@@ -8167,7 +8167,7 @@ test('PR #5 / 远程需求 27: 手机端弹窗输入框聚焦按相对键盘位�
   } finally {
     for (const id of activeTimers) clearTimeout(id);
     activeTimers.clear();
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
   }
 });
 
@@ -8193,8 +8193,8 @@ test('PR #5 / 远程需求 28: 远程端切换防轮询假死与中止旧请求�
     process.env.AG_METER_STATE_DIR = stateDir;
     process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
     process.env.AG_CONFIG_DIR = configDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    const remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    const remoteMod = require('../mobile-remote.js');
 
     // 1) trajSig 轨迹签名缓存命中与变更失效（超越 3500ms TTL 后只要 stepCount/lastModifiedTime/status 未变即跳过 GetCascadeTrajectory）
     let mockNow = origDateNow();
@@ -8950,7 +8950,7 @@ test('PR #5 / 远程需求 28: 远程端切换防轮询假死与中止旧请求�
     else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
     if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
     else process.env.AG_CONFIG_DIR = prevConfigDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
@@ -8983,8 +8983,8 @@ test('PR #5 / 远程需求 29: 融合回归——隔离会话后跨项目新建�
     process.env.AG_CONFIG_DIR = configDir;
     process.env.HOME = homeDir;
 
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    const remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    const remoteMod = require('../mobile-remote.js');
     const httpCfg = remoteMod.loadOrCreateRemoteConfig();
 
     const fetchedSnaps = [];
@@ -9645,7 +9645,7 @@ test('PR #5 / 远程需求 29: 融合回归——隔离会话后跨项目新建�
     else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
     if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
     else process.env.AG_CONFIG_DIR = prevConfigDir;
-    delete require.cache[require.resolve('./mobile-remote.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
@@ -9662,8 +9662,8 @@ test('需求 30 (PR #5 macOS LaunchAgent): 改用 SingletonSocket、写入 Envir
   const nvmNodeBin = path.join(fakeHome, '.nvm', 'versions', 'node', 'v26.99.0', 'bin');
   const nvmMarkerLog = path.join(tmpRoot, 'nvm-node-invocations.log');
   const launchAgentsDir = path.join(fakeHome, 'Library', 'LaunchAgents');
-  const setupScript = path.join(__dirname, 'scripts', 'setup-macos-cdp.sh');
-  const agBin = path.join(__dirname, 'bin', 'ag-context-meter');
+  const setupScript = path.join(__dirname, '..', 'scripts', 'setup-macos-cdp.sh');
+  const agBin = path.join(__dirname, '..', 'bin', 'ag-context-meter');
   const testLabel = 'com.testuser.ag-live-helper';
   const plistPath = path.join(launchAgentsDir, `${testLabel}.plist`);
   const realNodeBinDir = path.dirname(fs.realpathSync(process.execPath));
@@ -10569,9 +10569,9 @@ test('需求 26: antigravity-hans-overlay 仅翻译 div.entrance-title 登录欢
 });
 
 test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async () => {
-  const mobileSrc = fs.readFileSync(path.join(__dirname, 'mobile-remote.js'), 'utf8');
-  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
-  const { resolveEmptyCloudflaredConfigPath } = require('./mobile-remote');
+  const mobileSrc = fs.readFileSync(path.join(__dirname, '..', 'mobile-remote.js'), 'utf8');
+  const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
+  const { resolveEmptyCloudflaredConfigPath } = require('../mobile-remote');
 
   // 1. cloudflared 空配置路径解析：POSIX 返回 /dev/null；Windows 清空既有非空文件并校验 0 字节；失败路径回退/报错中止
   const posixCfg = resolveEmptyCloudflaredConfigPath({ platform: 'darwin' });
@@ -10791,7 +10791,7 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
 });
 
 test('远程会话顶栏显示所属项目名与手机端右上角紧凑布局 (#06 #09)', async () => {
-  const { buildMobileAppHtml } = require('./mobile-remote');
+  const { buildMobileAppHtml } = require('../mobile-remote');
   const html = buildMobileAppHtml();
 
   // 1. 顶栏项目名徽章 DOM 与响应式/去重 CSS 规则存在
@@ -10837,8 +10837,8 @@ test('远程会话顶栏显示所属项目名与手机端右上角紧凑布局 (
 });
 
 test('远程端支持系统确认选择框与交互式提问卡片展示与提交 (#03)', async () => {
-  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
-  const { buildMobileAppHtml } = require('./mobile-remote');
+  const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
+  const { buildMobileAppHtml } = require('../mobile-remote');
   const html = buildMobileAppHtml();
 
   // 1. 远程网页端包含交互式选择确认框 UI、会话级草稿隔离与清理、稳定 promptKey 传递
@@ -11322,7 +11322,7 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
     extractQueuedMessagesFromTrajectorySteps,
     createRemoteHttpHandler,
     buildMobileAppHtml
-  } = require('./mobile-remote');
+  } = require('../mobile-remote');
 
   // 1. 轨迹解析：排队消息从步骤中准确提取且不重复混入普通消息流
   const steps = [
@@ -11415,7 +11415,7 @@ test('远程端网页支持排队消息队列显示、立即发送与撤回删�
   assert.equal(failRes.json.ok, false, 'LanguageServer 返回 null 时必须向前端返回失败');
 
   // 3. 并发乱序失效验证：invalidateSession 推进 gen 并清除 inflightMap，旧请求晚归不得覆盖新队列状态
-  const { createConversationHistoryManager } = require('./mobile-remote');
+  const { createConversationHistoryManager } = require('../mobile-remote');
   const histMgr = createConversationHistoryManager();
   let resolveOldFetch;
   let resolveNewFetch;
@@ -11552,7 +11552,7 @@ test('远程端支持通用文件与图片上传及消息流本地展示预览 (
     extractMessagesFromTrajectorySteps,
     createRemoteHttpHandler,
     buildMobileAppHtml
-  } = require('./mobile-remote');
+  } = require('../mobile-remote');
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-media-test-'));
   const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-media-outside-'));
@@ -11776,7 +11776,7 @@ test('远程端支持对话关联文件直点预览、变更/产物验收与项�
     readSafeTextFilePreview,
     createRemoteHttpHandler,
     buildMobileAppHtml
-  } = require('./mobile-remote');
+  } = require('../mobile-remote');
 
   // 1. Markdown file:// 链接转为可点击的 .md-file-link（内部保留 .md-pill 兼容）并保留行号
   const mdHtml = renderSafeMarkdownToHtml('请查看 [app.js](file:///tmp/demo/app.js#L42-L55) 的改动。');
@@ -11959,7 +11959,7 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
     mergeTrajectoryAndDomMessages,
     createConversationHistoryManager,
     buildMobileAppHtml
-  } = require('./mobile-remote');
+  } = require('../mobile-remote');
 
   // 1. 轨迹按轮聚合：多步中间纯思考合并进最终回复，无空壳刷屏，不截断 1200 字
   const longThink = '深度分析推理内容_'.repeat(200); // > 1600 chars
@@ -12093,7 +12093,7 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   assert.equal(fetched201.messages[1].text, '第 201 步完整回复');
 
   // 4. ag-enhancer-overlay.js 独立视图轨迹提取按轮聚合（含中间正文归并验证）
-  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
   assert.ok(overlaySrc.includes('clearEarlierTurnThoughts') && overlaySrc.includes('thoughtCount: thoughts.length'), 'ag-enhancer-overlay.js 应按轮聚合思考并清空同轮中间正文旧思考盒');
   assert.ok(!overlaySrc.includes('thoughtText.slice(0, 1200)'), 'ag-enhancer-overlay.js 不得再对思考内容做 1200 字截断');
 
@@ -12108,7 +12108,7 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
 });
 
 test('远程端彻底工作台化：方案 B 延迟隔离新建草稿、按需发送并恢复桌面原会话 (#05)', async () => {
-  const { createRemoteHttpHandler, buildMobileAppHtml } = require('./mobile-remote');
+  const { createRemoteHttpHandler, buildMobileAppHtml } = require('../mobile-remote');
   const mockCfg = {
     port: 18775,
     token: 'tok-scheme-b-test-1234567890abcdef',
@@ -12632,7 +12632,7 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
     normalizeTrajectoryStatus,
     extractMessagesFromTrajectorySteps,
     buildMobileAppHtml
-  } = require('./mobile-remote');
+  } = require('../mobile-remote');
 
   // 1. 权威轨迹 IDLE 优先于启发式 activeBusy / domStatus='running'，但保留真实 domBusy / subagentRunning / waiting
   assert.equal(
@@ -12704,7 +12704,7 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
     assert.equal(snapIdle.strongDomBusy, false);
 
     // 3b. 完整链路：getMobileSnapshot() → createSessionCatalogStore().enrichSnapshot()
-    const { createSessionCatalogStore } = require('./mobile-remote');
+    const { createSessionCatalogStore } = require('../mobile-remote');
     const tmpCatalog27 = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cat27-'));
     const store27 = createSessionCatalogStore();
     const mockApi27 = async () => ({
@@ -12830,7 +12830,7 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
 });
 
 test('手机端底部空白区域排查与安全区留白优化 (#07)', async () => {
-  const { buildMobileAppHtml } = require('./mobile-remote');
+  const { buildMobileAppHtml } = require('../mobile-remote');
   const html = buildMobileAppHtml();
 
   // 1. 全量 <script> 语法校验
@@ -13002,7 +13002,7 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     buildMobileAppHtml,
     createConversationHistoryManager,
     createSessionCatalogStore
-  } = require('./mobile-remote');
+  } = require('../mobile-remote');
 
   // 1. 前端 HTML 全量 <script> 语法校验 + 贴图保护/单个删除/三层栈结构断言
   const html = buildMobileAppHtml();
@@ -13402,7 +13402,7 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
   }
 
   // 4. 混合队列 /api/action 时序验证：RPC 成功时绝不补点桌面 DOM 防延迟重复发送；RPC 失败时降级到 send-queued-dom(sendAll:true)
-  const { createRemoteHttpHandler } = require('./mobile-remote');
+  const { createRemoteHttpHandler } = require('../mobile-remote');
   const { Readable } = require('stream');
   let rpcShouldFail = false;
   const domActionsCalled = [];
@@ -13567,14 +13567,14 @@ test('需求 27: antigravity-hans-overlay 支持 2.33.1 听写与快捷键方案
 });
 
 test('需求 27b: build-renderer 拦截源码截断标记、asar-engine 排除 headless 子进程、cli 拒绝未知命令', () => {
-  const { assertNoTruncationMarker } = require('./scripts/build-renderer');
+  const { assertNoTruncationMarker } = require('../scripts/build-renderer');
   assert.doesNotThrow(() => assertNoTruncationMarker('ok.js', 'const a = 1;\n'));
   assert.throws(
     () => assertNoTruncationMarker('broken.js', 'line1\n// ... truncated for diff preview ...\nline3'),
     (err) => err && err.code === 'ERR_SOURCE_TRUNCATED'
   );
 
-  const { inspectAntigravityHostProcess } = require('./asar-engine');
+  const { inspectAntigravityHostProcess } = require('../asar-engine');
   const fakePs = [
     '101 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --type=renderer',
     '102 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --headless --disable-gpu',
@@ -14297,7 +14297,7 @@ test('需求 30: antigravity-hans-overlay 支持 v3.3.60 插件市场语境与�
   }
 
   // 6. 验证 local-api.js discoverFromHubDaemonFiles 优先选用存活 PID 对应的 daemon 凭证
-  const { discoverFromHubDaemonFiles } = require('./local-api');
+  const { discoverFromHubDaemonFiles } = require('../local-api');
   const tmpDaemonDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-daemon-pid-test-'));
   try {
     const alivePath = path.join(tmpDaemonDir, 'hub_50001.json');
@@ -14495,7 +14495,7 @@ test('需求 31: 快捷提示词 + 新增布局、编辑态防轮询覆盖、慢
 });
 
 test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Symlink 防逃逸与跨端口 CSRF 加固 (#32)', async () => {
-  const remoteMod = require('./mobile-remote');
+  const remoteMod = require('../mobile-remote');
   const { Readable } = require('stream');
 
   // 1. 敏感路径黑名单直接校验（含大小写变体与生产模式 /var/folders 拦截）
@@ -14722,7 +14722,7 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
 });
 
 test('PR #5 返修（二）：隔离视图新建页判空、裸 % 解码防崩、桌面轮询截断、IME 防误触与缓存/弹窗修复 (#33)', async () => {
-  const remoteMod = require('./mobile-remote');
+  const remoteMod = require('../mobile-remote');
 
   // 1. 裸 % 文件 URI 解码不得抛 URIError 或导致整段历史归零
   const pctMsgs = remoteMod.extractMessagesFromTrajectorySteps([
@@ -14982,10 +14982,10 @@ test('PR #5 返修（二）：隔离视图新建页判空、裸 % 解码防崩�
 test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回退、macOS 进程过滤/锁路径加固及 5 语种 README 同步 (#34)', async () => {
   const zlib = require('zlib');
   const { execFileSync } = require('child_process');
-  const remoteMod = require('./mobile-remote');
+  const remoteMod = require('../mobile-remote');
 
   // 1. ag-enhancer-overlay.js：仅 1 处 resolvePermissionStateFromDom，且 PERMISSION_DEFAULT_LABELS 定义早于首次引用
-  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
   const declMatches = overlaySrc.match(/function\s+resolvePermissionStateFromDom\s*\(/g) || [];
   assert.equal(declMatches.length, 1, `resolvePermissionStateFromDom 应仅声明 1 次，实际=${declMatches.length}`);
   const constDefIdx = overlaySrc.indexOf('const PERMISSION_DEFAULT_LABELS = {');
@@ -15110,7 +15110,7 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
   }
 
   // 3. bin/ag-context-meter：bash -n 通过、get_host_ps_line 过滤 --type=/--import=/--headless、锁路径优先 TMPDIR
-  const cliBinPath = path.join(__dirname, 'bin', 'ag-context-meter');
+  const cliBinPath = path.join(__dirname, '..', 'bin', 'ag-context-meter');
   execFileSync('bash', ['-n', cliBinPath], { stdio: 'pipe' });
   const cliBinSrc = fs.readFileSync(cliBinPath, 'utf8');
   assert.ok(cliBinSrc.includes('--type=|--import=|--headless'), 'get_host_ps_line 必须排除 --type=|--import=|--headless 子进程');
@@ -15131,7 +15131,7 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
 
   // 4. 全部 5 语种 README 完整存在、同步包含 $HOME 边界与 Cmd/Ctrl + Enter 且无过时禁用命令
   for (const name of ['README.md', 'README.en.md', 'README.ja.md', 'README.ko.md', 'README.es.md']) {
-    const text = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    const text = fs.readFileSync(path.join(__dirname, '..', name), 'utf8');
     assert.ok(text.includes('$HOME'), `${name} 应同步说明 $HOME 安全目录边界`);
     assert.ok(text.includes('Cmd/Ctrl + Enter'), `${name} 应同步说明 Cmd/Ctrl + Enter 发送快捷键`);
     assert.ok(!text.includes('node cli.js install'), `${name} 不得包含已禁用的 node cli.js install`);
@@ -15242,7 +15242,7 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
 });
 
 test('彻底根治 iOS 主屏幕独立应用底部 59pt 空白死区：移除 black-translucent 与旧图标高度补偿 (#35)', async () => {
-  const { buildMobileAppHtml } = require('./mobile-remote');
+  const { buildMobileAppHtml } = require('../mobile-remote');
   const html = buildMobileAppHtml();
 
   // 1. 治本：HTML 不再硬编码 apple-mobile-web-app-status-bar-style="black-translucent"，保留 theme-color 与 manifest
@@ -15429,7 +15429,7 @@ test('彻底根治 iOS 主屏幕独立应用底部 59pt 空白死区：移除 bl
 });
 
 test('会话列表多态状态显示升级：未读蓝色光晕圆点、待审批铃铛图标、严格运行态与已读水位推进 (#28)', async () => {
-  const remoteMod = require('./mobile-remote');
+  const remoteMod = require('../mobile-remote');
   const html = remoteMod.buildMobileAppHtml();
 
   // 1. 全量 <script> 语法校验 + CSS 定义核验
@@ -15604,7 +15604,7 @@ test('会话列表多态状态显示升级：未读蓝色光晕圆点、待审�
 });
 
 test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分页修复 (#29 #36 #31)', async () => {
-  const remoteMod = require('./mobile-remote');
+  const remoteMod = require('../mobile-remote');
   const html = remoteMod.buildMobileAppHtml();
 
   // 1. 全量 <script> 语法校验 + 极简缩略图与气泡上方排布结构核验
@@ -15869,8 +15869,8 @@ test('PR #5 合并加固：subagentStates 孤立记录超 TTL、根会话归档�
       conversations: []
     }));
 
-    delete require.cache[require.resolve('./mobile-remote.js')];
-    const remoteMod = require('./mobile-remote.js');
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    const remoteMod = require('../mobile-remote.js');
     const outSnap = await remoteMod.enrichSnapshotWithCatalog({
       ok: true,
       sessionId: 'root-fresh',
@@ -16150,7 +16150,7 @@ test('PR #6 合并加固 (P0-1/P0-2): 生产文件根 fail-closed、系统/凭�
     listSafeProjectTree,
     createRemoteHttpHandler,
     buildMobileAppHtml
-  } = require('./mobile-remote');
+  } = require('../mobile-remote');
   const { Readable } = require('stream');
 
   const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pr6-p012-'));
@@ -16347,7 +16347,7 @@ test('PR #6 合并加固 (P0-1/P0-2): 生产文件根 fail-closed、系统/凭�
 });
 
 test('PR #6 合并加固 (P0-3/P1-1/P1-2/P1-5/P1-6): :r0: label、多段描述融合、高危 Prompt 透传与共存审批、fail-closed 删附件与防误报', async () => {
-  const { buildMobileAppHtml } = require('./mobile-remote');
+  const { buildMobileAppHtml } = require('../mobile-remote');
   const html = buildMobileAppHtml();
 
   // 1. 前端 HTML 语法校验 + 高危确认卡/持久放行二次确认/高危共存/通用拖拽/防误报断言
@@ -16540,7 +16540,7 @@ test('PR #6 合并加固 (P1-3/P1-4): 队列图片对象化、混合队列残留
     extractQueuedMessagesFromTrajectorySteps,
     createRemoteHttpHandler,
     clearPairedDevicesForTests
-  } = require('./mobile-remote');
+  } = require('../mobile-remote');
   const { Readable } = require('stream');
 
   // 1. extractQueuedMessagesFromTrajectorySteps 输出 { src, alt }

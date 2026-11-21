@@ -4,21 +4,21 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { safeWriteJsonSync, safeReadJsonSync } = require('./meter-storage');
+const { safeWriteJsonSync, safeReadJsonSync } = require('../meter-storage');
 const {
   detectProxyConfig,
   applyProxyEnvironment,
   buildCliProxyEnv,
   getProxyCandidatePaths,
   DEFAULT_NO_PROXY
-} = require('./meter-proxy');
+} = require('../meter-proxy');
 const {
   loadPricingLedger,
   savePricingLedger,
   recordModelCalls,
   savePluginSettings,
   getPluginSettings
-} = require('./meter-collector');
+} = require('../meter-collector');
 
 test('safeWriteJsonSync: 正常保存、递归建目录与读回一致性', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-storage-test-'));

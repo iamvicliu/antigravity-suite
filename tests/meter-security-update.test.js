@@ -16,10 +16,10 @@ fs.mkdirSync(isolatedAppData, { recursive: true });
 process.env.APPDATA = isolatedAppData;
 process.env.AG_METER_TEST_MODE = '1';
 
-const { builtinAsar, loadAsarEngine } = require('./asar-engine');
+const { builtinAsar, loadAsarEngine } = require('../asar-engine');
 const asar = loadAsarEngine();
-const { install, tryHotInject } = require('./install');
-const { restore } = require('./restore');
+const { install, tryHotInject } = require('../install');
+const { restore } = require('../restore');
 const {
   checkUpdateAsync,
   applyUpdateAsync,
@@ -28,8 +28,8 @@ const {
   isOfficialAssetDownloadUrl,
   requestGithubUrl,
   OFFICIAL_REPO
-} = require('./meter-collector');
-const core = require('./meter-core');
+} = require('../meter-collector');
+const core = require('../meter-core');
 
 const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -173,7 +173,7 @@ test('安装安全性 1.4：当前文件包含未知补丁痕迹且哈希不匹�
     const unknownUtils = `"use strict";
 function setupNodeWrapper(env) {
 }
-require("./meter-main").installContextMeter(win);
+require("../meter-main").installContextMeter(win);
 function createWindow(url, storageManager, options) {
     void win.loadURL(url);
 }
@@ -922,7 +922,7 @@ function setupRendererHarness() {
     }
   });
 
-  const rendererSource = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'meter-renderer.js'), 'utf8');
   let first = true;
   const sandbox = {
     location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
@@ -1397,7 +1397,7 @@ test('专项复核 2：新版宿主仍含插件痕迹（严禁宿主版本意外
     const v2ResidualUtils = `"use strict";
 function setupNodeWrapper(env) {}
 function createWindow(url, storageManager, options) {
-    require("./meter-main").installContextMeter(win);
+    require("../meter-main").installContextMeter(win);
     void win.loadURL(url);
 }
 `;
@@ -1657,8 +1657,8 @@ test('三模块组合验证 10：单模块、双模块、三模块按需开启�
     const host = await createMockHostAsar(tmpDir, '2.31.2');
     fs.copyFileSync(host, targetAsar);
 
-    const { TAGS, validateSyntax } = require('./modular-installer');
-    const { loadModulesConfig, saveModulesConfig, testProxyHealth } = require('./modules-config');
+    const { TAGS, validateSyntax } = require('../modular-installer');
+    const { loadModulesConfig, saveModulesConfig, testProxyHealth } = require('../modules-config');
 
     // 1. 初始状态：仅安装上下文模块 (ContextMeter)，显式指定 pureMeterOnly
     const m1 = await install({ path: targetAsar, pureMeterOnly: true, modules: { meter: { enabled: true }, chinese: { enabled: false }, proxy: { enabled: false } } });
@@ -1832,12 +1832,12 @@ test('专项复核 13：汉化与三模块重复安装、资源缺失防护与�
     const host = await createMockHostAsar(tmpDir, '2.31.2');
     fs.copyFileSync(host, targetAsar);
 
-    const { TAGS, validateSyntax, generateChinesePreloadCode } = require('./modular-installer');
+    const { TAGS, validateSyntax, generateChinesePreloadCode } = require('../modular-installer');
 
     // 1. 静态代码审查断言：源码中绝对不残留作者本地绝对开发路径
-    const installSrc = fs.readFileSync(path.join(__dirname, 'install.js'), 'utf8');
+    const installSrc = fs.readFileSync(path.join(__dirname, '..', 'install.js'), 'utf8');
     assert.equal(installSrc.includes('D:\\AI_plugin'), false, 'install.js 严禁包含作者绝对开发路径');
-    const restoreSrc = fs.readFileSync(path.join(__dirname, 'restore.js'), 'utf8');
+    const restoreSrc = fs.readFileSync(path.join(__dirname, '..', 'restore.js'), 'utf8');
     assert.equal(restoreSrc.includes('D:\\AI_plugin'), false, 'restore.js 严禁包含作者绝对开发路径');
 
     // 2. 首次安装带汉化与代理
@@ -1879,12 +1879,12 @@ test('专项复核 14：隔离集成测试：状态机三分模型、目标定�
     const host = await createMockHostAsar(tmpDir, '2.31.2');
     fs.copyFileSync(host, targetAsar);
 
-    const { loadModulesConfig, inspectDiskModules, PROJECT_VERSION } = require('./modules-config');
-    const { handleToggleModule, handleModulesStatus } = require('./meter-main');
-    const { TAGS } = require('./modular-installer');
+    const { loadModulesConfig, inspectDiskModules, PROJECT_VERSION } = require('../modules-config');
+    const { handleToggleModule, handleModulesStatus } = require('../meter-main');
+    const { TAGS } = require('../modular-installer');
 
     // 0. 权威版本一致性断言：模块配置 PROJECT_VERSION 必须严格等于 package.json 版本
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     assert.equal(PROJECT_VERSION, pkg.version, 'PROJECT_VERSION 必须与 package.json 绝对一致');
 
     const fakeEvent = {
@@ -2010,7 +2010,7 @@ test('专项复核 15：真实 Electron/ASAR 模块加载环境验证：运行�
     });
 
     // 2. 纯 Node 环境断言：引入 modules-config 和 inspectDiskModules 前后绝对不污染 process.noAsar
-    const { inspectDiskModules, loadModulesConfig } = require('./modules-config');
+    const { inspectDiskModules, loadModulesConfig } = require('../modules-config');
     const beforeNodeNoAsar = process.noAsar;
     const diskFromNode = inspectDiskModules(targetAsar);
     assert.equal(process.noAsar, beforeNodeNoAsar, 'Node 环境下 inspectDiskModules 不得篡改 process.noAsar');
