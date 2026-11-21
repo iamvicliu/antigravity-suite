@@ -11509,11 +11509,13 @@ test('需求 31: 快捷提示词 + 新增布局、编辑态防轮询覆盖、慢
     const statusEl = shadow.getElementById('quick-prompts-status');
     assert.ok(customHdr, '必须存在紧邻编辑列表的 .qp-custom-hdr 区域头');
     assert.ok(addBtn && addBtn.parentElement === customHdr, '#btn-add-quick-prompt 必须位于 .qp-custom-hdr 内部');
+    const modeHint = shadow.getElementById('quick-custom-mode-hint');
     const tplBar = shadow.getElementById('quick-popular-templates');
     assert.ok(
       customHdr.nextElementSibling === editorList ||
+      (modeHint && tplBar && customHdr.nextElementSibling === modeHint && modeHint.nextElementSibling === tplBar && tplBar.nextElementSibling === editorList) ||
       (tplBar && customHdr.nextElementSibling === tplBar && tplBar.nextElementSibling === editorList),
-      '.qp-custom-hdr 必须位于编辑列表与模板条正上方'
+      '.qp-custom-hdr 必须位于自定义提示词说明、模板条与编辑列表正上方'
     );
     assert.equal(card?.querySelector('.settings-card-hdr #btn-add-quick-prompt'), null, '顶部 .settings-card-hdr 内不应再放 + 新增按钮');
 
@@ -12415,7 +12417,13 @@ test('需求 32: 热门口令模板条渲染 10 项、预设直发/填入、去�
   try {
     await new Promise(r => setTimeout(r, 25));
 
-    // 1. 热门口令模板条渲染 10 项且初始均为未添加 (+ 前缀)
+    // 1. 热门口令模板条渲染 10 项且初始均为未添加 (+ 前缀)，同时展示 填入 vs ⚡直发 清晰说明
+    const modeHint = shadow.getElementById('quick-custom-mode-hint');
+    assert.ok(modeHint, '自定义区必须存在 #quick-custom-mode-hint 说明行');
+    assert.match(modeHint.textContent || '', /填入：/);
+    assert.match(modeHint.textContent || '', /⚡直发：/);
+    assert.match(modeHint.textContent || '', /⌘\/Ctrl/);
+
     const tplBar = shadow.getElementById('quick-popular-templates');
     const editorList = shadow.getElementById('quick-prompts-editor-list');
     const statusEl = shadow.getElementById('quick-prompts-status');
@@ -12484,6 +12492,28 @@ test('需求 32: 热门口令模板条渲染 10 项、预设直发/填入、去�
     assert.equal(fixErrChip.getAttribute('data-added'), 'false', '删除对应自定义行后模板胶囊应恢复未添加态');
     assert.equal(fixErrChip.textContent, '+ 修复这个报错');
     assert.equal(implChip.getAttribute('data-added'), 'true', '未删除项仍保持 ✓ 已添加态');
+
+    // 4b. 验证快捷栏悬浮气泡标签对称（自定义 · ⚡直发 vs 自定义 · 填入）以及英文语言切换下 modeHint 同步翻译
+    const promptBtnDirect = env.doc.getElementById('ag-qcap-prompt-0');
+    const promptBtnInsert = env.doc.getElementById('ag-qcap-prompt-1');
+    assert.ok(promptBtnDirect && promptBtnInsert, '快捷栏应渲染自定义直发与填入按钮');
+    promptBtnDirect.dispatchEvent({ type: 'mouseenter', target: promptBtnDirect });
+    const qTipTag = env.doc.getElementById('ag-quickbar-tooltip')?.querySelector('.ag-qtip-tag');
+    assert.equal(qTipTag?.textContent, '自定义 · ⚡直发', '直发自定义按钮悬浮气泡应显示自定义 · ⚡直发标签');
+    promptBtnInsert.dispatchEvent({ type: 'mouseenter', target: promptBtnInsert });
+    assert.equal(qTipTag?.textContent, '自定义 · 填入', '填入自定义按钮悬浮气泡应显示自定义 · 填入标签');
+
+    const langSel = shadow.getElementById('set-ui-language-select');
+    assert.ok(langSel, '设置面板中应包含 #set-ui-language-select 语言下拉框');
+    langSel.value = 'en';
+    langSel.dispatchEvent({ type: 'change' });
+    await new Promise(r => setTimeout(r, 20));
+    assert.match(modeHint.textContent || '', /^Insert:/);
+    assert.match(modeHint.textContent || '', /⚡Send:/);
+    langSel.value = 'zh-CN';
+    langSel.dispatchEvent({ type: 'change' });
+    await new Promise(r => setTimeout(r, 20));
+    assert.match(modeHint.textContent || '', /^填入：/);
 
     // 5. 验证 需求 32 方案 C：computeNextStepCandidatesFromText 对 Top 10 高频短句与 328K/空对话兼容
     const emptyRes = enhancer.computeNextStepCandidatesFromText('s-empty', '', 10, 0);

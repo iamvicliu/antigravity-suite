@@ -320,6 +320,7 @@
     '⚡直发': '⚡Send',
     '填入': 'Insert',
     '自定义快捷提示词': 'Custom Quick Prompts',
+    '填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）': 'Insert: fills the composer so you can paste errors/details before sending · ⚡Send: sends immediately on click (auto-guards existing drafts; hold ⌘/Ctrl + click to invert)',
     '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" above to create one.',
     '暂无自定义快捷提示词，点击右侧「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" on the right to create one.',
     '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" for custom prompts.',

@@ -565,6 +565,12 @@
     .qp-add-btn{
       flex-shrink:0;
     }
+    .qp-custom-hint{
+      font-size:11.5px;
+      color:var(--ag-text-muted);
+      line-height:1.45;
+      margin:-2px 0 6px;
+    }
     .qp-tpl-bar{
       display:flex;
       flex-wrap:wrap;

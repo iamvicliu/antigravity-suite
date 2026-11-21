@@ -1,7 +1,7 @@
 {
   "name": "antigravity-context-viewer",
   "version": "0.8.5",
-  "description": "Google Antigravity 桌面端（macOS 零改包）全能增强与远程遥控套件：支持局域网/Tailscale/Bonjour/免登录 Cloudflare 隧道四通道多端独立遥控，内置 240K 防卡死自动压缩与缓存脱落预警、上下文与双窗口配额看板、斜杠指令推荐池、提示词一键优化、全中文秒切（零 Token 中译）及高危命令红框拦截。",
+  "description": "Google Antigravity 桌面端（macOS 零改包）全能增强与远程遥控套件：支持局域网/Tailscale/Bonjour/免登录 Cloudflare 隧道四通道、多项目分组与全量历史无损上翻遥控，内置 240K 防卡死自动压缩与 328K 缓存脱落预警、双窗口配额看板、斜杠指令推荐池、Top 10 热门口令模板（填入/直发）与幽灵补全、提示词一键优化、全中文秒切（零 Token 中译）及高危命令红框拦截。",
   "repository": {
     "type": "git",
     "url": "https://github.com/iamvicliu/antigravity-suite.git"
