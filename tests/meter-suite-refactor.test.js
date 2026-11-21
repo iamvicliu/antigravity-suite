@@ -16882,6 +16882,7 @@ test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置�
     messages: [],
     projects: [{ id: 'proj-33', name: 'Suite', conversationCount: 1 }],
     conversations: [{ id: 'sess-req33', projectId: 'proj-33', title: 'Quick Bar Test', active: true, status: 'idle', updatedAt: 1000 }],
+    suggestions: ['立即执行', '立即执行并校验', '优化一下', '优化一下'],
     quickPrompts: [
       { id: 'qp-direct', label: '立即执行', text: '立即执行并校验', autoSend: true },
       { id: 'qp-insert', label: '带参模板', text: '参考规范：', autoSend: false }
@@ -16910,13 +16911,26 @@ test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置�
     const inputEl = env.doc.getElementById('input');
     const getButtons = () => chipsEl.querySelectorAll('.chip');
 
-    const modeBtn = getButtons().find((b) => String(b.className || '').includes('chip-mode-toggle'));
-    const directBtn = getButtons().find((b) => (b.textContent || '').includes('立即执行'));
-    const insertBtn = getButtons().find((b) => (b.textContent || '').includes('带参模板'));
-    const compactBtn = getButtons().find((b) => (b.textContent || '').trim() === '/compact');
-    const thoughtBtn = getButtons().find((b) => (b.textContent || '').includes('展开/收起思考'));
+    const allBtns = getButtons();
+    const modeBtn = allBtns.find((b) => String(b.className || '').includes('chip-mode-toggle'));
+    const suggestBtns = allBtns.filter((b) => String(b.className || '').includes('suggest'));
+    const directBtns = allBtns.filter((b) => (b.textContent || '').includes('立即执行'));
+    const directBtn = directBtns[0];
+    const insertBtn = allBtns.find((b) => (b.textContent || '').includes('带参模板'));
+    const compactBtn = allBtns.find((b) => (b.textContent || '').trim() === '/compact');
+    const thoughtBtn = allBtns.find((b) => (b.textContent || '').includes('展开/收起思考'));
 
     assert.ok(modeBtn && (modeBtn.textContent || '').includes('⚡直发'), '默认应显示「⚡直发」模式切换胶囊');
+    assert.equal(directBtns.length, 1, '与快捷口令重名（label 或 text）的动态建议必须自动去重，不能并排重复渲染');
+    assert.deepEqual(
+      suggestBtns.map((b) => b.textContent),
+      ['✦ 优化一下'],
+      '不重复的有用动态建议应保留且自身去重'
+    );
+    assert.ok(
+      allBtns.indexOf(modeBtn) < allBtns.indexOf(suggestBtns[0]) && allBtns.indexOf(suggestBtns[0]) < allBtns.indexOf(directBtn),
+      '不重复的有用动态建议应保持在模式开关之后、快捷口令之前'
+    );
     assert.ok(directBtn && (directBtn.textContent || '').includes('⚡ 立即执行'), '支持直发项在直发模式下应带 ⚡ 前缀');
     assert.ok(insertBtn && (insertBtn.textContent || '').includes('✎ 带参模板'), '带参项在直发模式下仍应显示 ✎ 前缀');
     assert.ok(compactBtn && thoughtBtn, '原有 /compact 与 展开/收起思考 按钮必须保留');
@@ -16936,7 +16950,7 @@ test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置�
     assert.equal(sentActions.length, 1, '非直发口令不得触发发送');
     assert.equal(inputEl.value, '参考规范：');
 
-    // 2c) 输入框已有草稿时点直发口令：防吞草稿，自动追加填入而不发请求
+    // 2c) 输入框已有草稿时点直发口令与动态建议：均防吞草稿，自动追加填入而不发请求
     await new Promise((r) => setTimeout(r, 820));
     inputEl.value = '先看这段代码';
     directBtn.click();
@@ -16944,12 +16958,18 @@ test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置�
     assert.equal(sentActions.length, 1, '已有草稿时点直发口令必须降级为追加填入而非直接发送');
     assert.equal(inputEl.value, '先看这段代码 立即执行并校验');
 
-    // 2d) 点击模式切换按钮切到「✎填入」后，口令即时重绘为 ✎ 前缀，且空输入框点击不再直发
+    suggestBtns[0].click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '已有草稿时点动态建议同样只能追加填入而不得吞掉草稿或直发');
+    assert.equal(inputEl.value, '先看这段代码 立即执行并校验 优化一下');
+
+    // 2d) 点击模式切换按钮切到「✎填入」后，口令即时重绘为 ✎ 前缀，且空输入框点击口令或动态建议均不直发
     inputEl.value = '';
     modeBtn.click();
     await new Promise((r) => setTimeout(r, 15));
     const updatedModeBtn = getButtons().find((b) => String(b.className || '').includes('chip-mode-toggle'));
     const updatedDirectBtn = getButtons().find((b) => (b.textContent || '').includes('立即执行'));
+    const updatedSuggestBtn = getButtons().find((b) => String(b.className || '').includes('suggest'));
     assert.ok(updatedModeBtn && (updatedModeBtn.textContent || '').includes('✎填入'), '点击切换后按钮文案应即时变为「✎填入」');
     assert.ok(updatedDirectBtn && (updatedDirectBtn.textContent || '').includes('✎ 立即执行'), '切换为填入模式后口令前缀应即时变为 ✎');
 
@@ -16957,6 +16977,23 @@ test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置�
     await new Promise((r) => setTimeout(r, 15));
     assert.equal(sentActions.length, 1, '处于 ✎填入 模式时点击口令只能填入输入框不得直发');
     assert.equal(inputEl.value, '立即执行并校验');
+
+    inputEl.value = '';
+    updatedSuggestBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '处于 ✎填入 模式时点击动态建议同样只能填入而不得直发');
+    assert.equal(inputEl.value, '优化一下');
+
+    // 2e) 切回「⚡直发」模式且空输入框时，有用动态建议也可正常一键直发
+    await new Promise((r) => setTimeout(r, 820));
+    inputEl.value = '';
+    updatedModeBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    const restoredSuggestBtn = getButtons().find((b) => String(b.className || '').includes('suggest'));
+    restoredSuggestBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 2, '在 ⚡直发 模式下空输入框点击不重复的动态建议应正常一键直发');
+    assert.equal(sentActions[1].text, '优化一下');
   } finally {
     for (const id of Array.from(activeTimers)) activeTimers.delete(id);
   }

@@ -8258,19 +8258,19 @@ function buildMobileAppHtml() {
         }
       });
 
-      if (!snap?.busy) {
-        for (const s of (snap?.suggestions || [])) {
-          items.push({ cls: 'chip suggest', text: '✦ ' + s, raw: s, isSuggest: true });
-        }
-      }
-
       const quickList = (Array.isArray(snap?.quickPrompts) && snap.quickPrompts.length)
         ? snap.quickPrompts
         : DEFAULT_CLIENT_QUICK_PROMPTS;
+      const quickItems = [];
+      const quickNormSet = new Set();
       for (const qp of quickList) {
         if (!qp || !qp.label || !qp.text) continue;
+        const normText = String(qp.text).trim().toLowerCase();
+        const normLabel = String(qp.label).trim().toLowerCase();
+        if (normText) quickNormSet.add(normText);
+        if (normLabel) quickNormSet.add(normLabel);
         const isDirect = Boolean(quickDirectMode && qp.autoSend);
-        items.push({
+        quickItems.push({
           cls: isDirect ? 'chip quick-prompt direct' : 'chip quick-prompt',
           text: (isDirect ? '⚡ ' : '✎ ') + qp.label,
           raw: qp.text,
@@ -8278,6 +8278,22 @@ function buildMobileAppHtml() {
           qpAutoSend: Boolean(qp.autoSend),
           isQuickPrompt: true
         });
+      }
+
+      if (!snap?.busy) {
+        const seenSuggest = new Set();
+        for (const s of (snap?.suggestions || [])) {
+          const clean = String(s || '').trim();
+          if (!clean) continue;
+          const norm = clean.toLowerCase();
+          if (seenSuggest.has(norm) || quickNormSet.has(norm)) continue;
+          seenSuggest.add(norm);
+          items.push({ cls: 'chip suggest', text: '✦ ' + clean, raw: clean, isSuggest: true });
+        }
+      }
+
+      for (const qi of quickItems) {
+        items.push(qi);
       }
 
       items.push({ cls: 'chip', text: '/compact', act: () => apiAction({ action: 'send', text: '/compact' }) });
@@ -8313,36 +8329,29 @@ function buildMobileAppHtml() {
             b.dataset.role = 'quick-mode-toggle';
             b.setAttribute('aria-pressed', quickDirectMode ? 'true' : 'false');
             b.title = '切换快捷口令点击行为：⚡直发 / ✎填入';
+          } else if (it.isSuggest) {
+            b.dataset.role = 'quick-suggest';
+            b.title = quickDirectMode ? ('⚡ 建议直发：' + it.raw) : ('✎ 建议填入：' + it.raw);
           } else if (it.isQuickPrompt) {
             b.dataset.role = 'quick-prompt';
             b.title = (quickDirectMode && it.qpAutoSend) ? ('⚡ 直发：' + it.raw) : ('✎ 填入：' + it.raw);
           }
           bindButtonClick(b, async () => {
             try {
-              if (it.isSuggest) {
+              if (it.isSuggest || it.isQuickPrompt) {
                 const taEl = $('input');
-                if (!taEl.value.trim()) {
-                  stickBottom = true;
-                  const r = await apiAction({ action: 'send', text: it.raw });
-                  if (r?.ok) showToast('已发送建议');
-                  else showToast(r?.error || r?.actionResult?.error || '发送失败');
-                } else {
-                  taEl.value = it.raw;
-                  if (typeof autoGrow === 'function') autoGrow();
-                  taEl.focus();
-                }
-              } else if (it.isQuickPrompt) {
-                const taEl = $('input');
+                const supportsDirect = it.isSuggest ? true : Boolean(it.qpAutoSend);
+                const displayLabel = it.qpLabel || it.raw;
                 const hasAttachments = typeof uploadedNames !== 'undefined' && Array.isArray(uploadedNames) && uploadedNames.length > 0;
                 const hasDraft = Boolean(taEl && taEl.value.trim());
                 const hasDraftOrAttach = hasDraft || hasAttachments;
-                if (quickDirectMode && it.qpAutoSend && !hasDraftOrAttach) {
+                if (quickDirectMode && supportsDirect && !hasDraftOrAttach) {
                   const nowTs = Date.now();
                   if ((nowTs - lastQuickSendAt) < 800) return;
                   lastQuickSendAt = nowTs;
                   stickBottom = true;
                   const r = await apiAction({ action: 'send', text: it.raw });
-                  if (r?.ok) showToast('⚡ 已直发：' + (it.qpLabel || it.raw));
+                  if (r?.ok) showToast('⚡ 已直发：' + displayLabel);
                   else showToast(r?.error || r?.actionResult?.error || '发送失败');
                 } else {
                   if (taEl) {
@@ -8357,9 +8366,9 @@ function buildMobileAppHtml() {
                     if (typeof autoGrow === 'function') autoGrow();
                     taEl.focus();
                   }
-                  showToast((hasDraftOrAttach && quickDirectMode && it.qpAutoSend)
-                    ? ('已有草稿，已改为追加填入：' + it.qpLabel)
-                    : ('已填入：' + it.qpLabel));
+                  showToast((hasDraftOrAttach && quickDirectMode && supportsDirect)
+                    ? ('已有草稿，已改为追加填入：' + displayLabel)
+                    : ('已填入：' + displayLabel));
                 }
               } else if (it.act) {
                 const r = await it.act();
