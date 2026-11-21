@@ -14605,6 +14605,11 @@ test('会话列表多态状态显示升级：未读蓝色光晕圆点、待审�
                 status: 'CASCADE_RUN_STATUS_RUNNING',
                 lastModifiedTime: modIso,
                 annotations: { lastUserViewTime: tViewIso }
+              },
+              'conv-never-viewed': {
+                summary: '从未查看的新产出',
+                status: doneStatus,
+                lastModifiedTime: modIso
               }
             }
           };
@@ -14619,11 +14624,24 @@ test('会话列表多态状态显示升级：未读蓝色光晕圆点、待审�
     );
     const done1 = snap1.conversations.find((c) => c.id === 'conv-done-unread');
     const run1 = snap1.conversations.find((c) => c.id === 'conv-running-1');
+    const never1 = snap1.conversations.find((c) => c.id === 'conv-never-viewed');
     assert.equal(done1?.status, 'idle');
     assert.equal(done1?.unread, true, '已完成且 updatedAt > lastViewedAt 应标记为 unread=true');
     assert.equal(done1?.completedUnread, true, '已完成且未读应标记 completedUnread=true');
+    assert.equal(never1?.unread, true, 'lastViewedAt=0 且 updatedAt>0 的非当前空闲会话也应标记为 unread=true');
+    assert.equal(never1?.completedUnread, true);
+    assert.ok(ctx.__renderConv(never1, false).includes('class="conv-unread-dot"'), 'lastViewedAt=0 的未读空闲会话应展示未读蓝点');
     assert.equal(run1?.status, 'running');
     assert.equal(run1?.completedUnread, false, '仍在运行中的会话不得计入已完成未读 completedUnread');
+
+    // 查看从未查看的 conv-never-viewed 并验证重载后保持已读
+    store.markViewed('conv-never-viewed', Date.now(), { stateDir: tmpCatDir });
+    const reloadedNeverStore = remoteMod.createSessionCatalogStore();
+    const afterNeverReload = await reloadedNeverStore.enrichSnapshot(
+      { ok: true, sessionId: 'conv-other-active', conversations: [] },
+      { stateDir: tmpCatDir, bypassCatalogCache: true, localApiConnect: mkApi('CASCADE_RUN_STATUS_IDLE', tDoneIso) }
+    );
+    assert.equal(afterNeverReload.conversations.find((c) => c.id === 'conv-never-viewed')?.unread, false, 'lastViewedAt=0 会话查看并重载后应保持已读');
 
     // 点击查看 conv-done-unread，通过真实 POST /api/action switch-conversation 推进服务端已读水位并落盘
     const swHandler = remoteMod.createRemoteHttpHandler(
