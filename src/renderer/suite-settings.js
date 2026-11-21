@@ -315,6 +315,10 @@
     '内置推荐池（点击开关显示 / 隐藏 · 悬停查看指令解读）': 'Built-in Pool (click to toggle · hover to view guide)',
     '内置推荐池（点击开关显示 / 隐藏）': 'Built-in Pool (click to toggle)',
     '💡 指令解读': '💡 Command Guide',
+    '内置免参指令点击直接发送': 'Auto-send built-in no-arg commands',
+    '开启后点击 /compact 压缩、重载规则将直接发送（/plan 等带参前缀仍仅填入）；按住 ⌘/Ctrl 点击可临时反转行为': 'Auto-send /compact and Reload Rules on click (parameterized commands like /plan still insert only); hold ⌘/Ctrl + click to invert',
+    '⚡直发': '⚡Send',
+    '填入': 'Insert',
     '自定义快捷提示词': 'Custom Quick Prompts',
     '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" above to create one.',
     '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" for custom prompts.',
@@ -389,6 +393,7 @@
     autoAccept: false,
     ghostSuggest: true,
     autoCompact: true,
+    quickBuiltinAutoSend: false,
     locale: 'zh-CN',
     capsuleLang: 'zh',
     englishLabels: false
@@ -707,7 +712,8 @@
         id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: String(item.title || '').trim().slice(0, 120)
+        title: String(item.title || '').trim().slice(0, 120),
+        autoSend: Boolean(item.autoSend)
       });
       if (out.length >= 12) break;
     }
@@ -915,6 +921,10 @@
     if (lsGhost === 'true' || lsGhost === 'false') suiteEnhancerPrefs.ghostSuggest = lsGhost !== 'false';
     const lsAutoCompact = localStorage?.getItem?.('ag_suite_auto_compact');
     if (lsAutoCompact === 'true' || lsAutoCompact === 'false') suiteEnhancerPrefs.autoCompact = lsAutoCompact !== 'false';
+    const lsQuickAutoSend = localStorage?.getItem?.('ag_suite_quick_builtin_autosend');
+    if (lsQuickAutoSend === 'true' || lsQuickAutoSend === 'false') {
+      suiteEnhancerPrefs.quickBuiltinAutoSend = lsQuickAutoSend === 'true';
+    }
     const lsLocale = localStorage?.getItem?.('ag_suite_locale')
       || localStorage?.getItem?.('antigravityHansLang')
       || localStorage?.getItem?.('__agy_ctx_lang__');
@@ -1084,6 +1094,7 @@
       localStorage?.setItem?.('ag_suite_auto_accept', suiteEnhancerPrefs.autoAccept ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_ghost_suggest', suiteEnhancerPrefs.ghostSuggest ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_auto_compact', suiteEnhancerPrefs.autoCompact !== false ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_quick_builtin_autosend', suiteEnhancerPrefs.quickBuiltinAutoSend ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_locale', activeLocale);
       localStorage?.setItem?.('__agy_ctx_lang__', curEntry.capsuleLang === 'en' ? 'en' : 'zh');
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
@@ -1108,6 +1119,7 @@
             autoAccept: suiteEnhancerPrefs.autoAccept,
             ghostSuggest: suiteEnhancerPrefs.ghostSuggest,
             autoCompact: suiteEnhancerPrefs.autoCompact !== false,
+            quickBuiltinAutoSend: Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend),
             locale: activeLocale,
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
@@ -1470,10 +1482,12 @@
     const chkAuto = el('set-auto-accept');
     const chkGhost = el('set-ghost-suggest');
     const chkCompact = el('set-auto-compact');
+    const chkQuickBuiltinAutoSend = el('set-quick-builtin-autosend');
     const chkEngLbl = el('set-english-labels');
     if (chkAuto) chkAuto.checked = Boolean(suiteEnhancerPrefs.autoAccept);
     if (chkGhost) chkGhost.checked = Boolean(suiteEnhancerPrefs.ghostSuggest);
     if (chkCompact) chkCompact.checked = suiteEnhancerPrefs.autoCompact !== false;
+    if (chkQuickBuiltinAutoSend) chkQuickBuiltinAutoSend.checked = Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend);
     if (chkEngLbl) chkEngLbl.checked = Boolean(suiteEnhancerPrefs.englishLabels);
     try {
       if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
@@ -1777,6 +1791,9 @@
     if (typeof uiPrefs.autoCompact === 'boolean') {
       suiteEnhancerPrefs.autoCompact = uiPrefs.autoCompact;
     }
+    if (typeof uiPrefs.quickBuiltinAutoSend === 'boolean') {
+      suiteEnhancerPrefs.quickBuiltinAutoSend = uiPrefs.quickBuiltinAutoSend;
+    }
     const incomingLoc = uiPrefs.locale || uiPrefs.panelLanguage || uiPrefs.capsuleLang;
     if (typeof incomingLoc === 'string' && incomingLoc.trim()) {
       const entry = findSupportedLocaleEntry(incomingLoc);
@@ -1853,6 +1870,20 @@
     const cleanId = String(id || '').trim();
     if (!BUILTIN_QUICK_POOL.some(item => item.id === cleanId)) return getSuiteQuickPool();
     return await setSuiteQuickPool({ [cleanId]: suiteQuickPool[cleanId] === false }, opts);
+  }
+
+  function getSuiteQuickBuiltinAutoSend() {
+    return Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend);
+  }
+
+  async function setSuiteQuickBuiltinAutoSend(val, opts = {}) {
+    suiteEnhancerPrefs.quickBuiltinAutoSend = Boolean(val);
+    syncEnhancerPrefControls();
+    dispatchSuitePrefsChanged();
+    if (!opts?.skipPersist) {
+      await saveSuiteUiPrefs({ quickBuiltinAutoSend: suiteEnhancerPrefs.quickBuiltinAutoSend });
+    }
+    return getSuiteQuickBuiltinAutoSend();
   }
 
   let inspectedQuickPoolId = 'compact';
@@ -2002,6 +2033,8 @@
   async function resetSuiteQuickPrompts() {
     suiteQuickPool = { ...DEFAULT_QUICK_POOL_STATE };
     suiteQuickPrompts = null;
+    suiteEnhancerPrefs.quickBuiltinAutoSend = false;
+    syncEnhancerPrefControls();
     renderQuickBuiltinPool();
     renderQuickPromptsEditor();
     dispatchSuitePrefsChanged();
@@ -2011,12 +2044,13 @@
     }
     await saveSuiteUiPrefs({
       quickPool: { ...suiteQuickPool },
-      quickPrompts: null
+      quickPrompts: null,
+      quickBuiltinAutoSend: false
     });
     return getSuiteQuickPrompts();
   }
 
-  function appendQuickPromptEditorRow(listEl, item, idx) {
+  function appendQuickPromptEditorRow(listEl, item, idx, opts = {}) {
     const emptyHint = listEl.querySelector?.('.qp-empty-hint');
     if (emptyHint) emptyHint.remove?.();
 
@@ -2024,6 +2058,7 @@
     row.className = 'qp-row';
     row.setAttribute('data-qp-idx', String(idx));
     if (item?.id) row.setAttribute('data-qp-id', String(item.id));
+    if (opts?.isSaved) row.setAttribute('data-qp-saved', 'true');
 
     const labelInp = document.createElement('input');
     labelInp.type = 'text';
@@ -2038,6 +2073,29 @@
     textInp.placeholder = suiteTr('填入输入框的完整提示词…', 'Prompt text to insert…');
     textInp.value = String(item?.text || '');
     textInp.setAttribute('value', textInp.value);
+
+    const autoSendBtn = document.createElement('button');
+    autoSendBtn.type = 'button';
+    autoSendBtn.className = 'switch-pill-btn qp-autosend-btn';
+    const applyAutoSendBtnState = (on) => {
+      const active = Boolean(on);
+      autoSendBtn.setAttribute('data-auto-send', active ? 'true' : 'false');
+      autoSendBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      autoSendBtn.classList?.toggle?.('active', active);
+      autoSendBtn.textContent = active ? suiteTr('⚡直发', '⚡Send') : suiteTr('填入', 'Insert');
+      autoSendBtn.title = active
+        ? suiteTr('当前：点击快捷按钮后直接发送（按住 ⌘/Ctrl 点击可临时仅填入）', 'Current: auto-send on click (hold ⌘/Ctrl to insert only)')
+        : suiteTr('当前：点击快捷按钮仅填入输入框（按住 ⌘/Ctrl 点击可临时直发）', 'Current: insert only on click (hold ⌘/Ctrl to auto-send)');
+    };
+    applyAutoSendBtnState(Boolean(item?.autoSend));
+    autoSendBtn.addEventListener('click', () => {
+      const next = autoSendBtn.getAttribute('data-auto-send') !== 'true';
+      applyAutoSendBtnState(next);
+      if (row.getAttribute('data-qp-saved') === 'true' && labelInp.value.trim() && textInp.value.trim()) {
+        const collected = collectQuickPromptsFromEditor();
+        void setSuiteQuickPrompts(collected, { skipRenderEditor: true });
+      }
+    });
 
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
@@ -2056,6 +2114,7 @@
 
     row.appendChild(labelInp);
     row.appendChild(textInp);
+    row.appendChild(autoSendBtn);
     row.appendChild(delBtn);
     listEl.appendChild(row);
   }
@@ -2076,7 +2135,7 @@
       return;
     }
     for (let i = 0; i < items.length; i++) {
-      appendQuickPromptEditorRow(listEl, items[i], i);
+      appendQuickPromptEditorRow(listEl, items[i], i, { isSaved: true });
     }
   }
 
@@ -2090,6 +2149,7 @@
       const row = rows[i];
       const labelInp = row.querySelector('.qp-label-input');
       const textInp = row.querySelector('.qp-text-input');
+      const autoSend = row.querySelector('.qp-autosend-btn')?.getAttribute?.('data-auto-send') === 'true';
       const label = String(labelInp?.value || '').trim();
       const text = String(textInp?.value || '');
       if (!label || !text.trim()) continue;
@@ -2101,7 +2161,8 @@
         id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: label.slice(0, 120)
+        title: label.slice(0, 120),
+        autoSend
       });
       if (out.length >= 12) break;
     }
@@ -2813,7 +2874,7 @@
       if (statusEl) statusEl.textContent = suiteTr('⚠️ 最多支持 12 条自定义快捷提示词', '⚠️ Maximum 12 custom quick prompts');
       return;
     }
-    appendQuickPromptEditorRow(listEl, { label: '', text: '' }, count);
+    appendQuickPromptEditorRow(listEl, { label: '', text: '', autoSend: false }, count, { isSaved: false });
   });
 
   el('btn-save-quick-prompts')?.addEventListener('click', () => {
@@ -2978,6 +3039,10 @@
     suiteEnhancerPrefs.autoCompact = Boolean(e?.target?.checked);
     dispatchSuitePrefsChanged();
     void saveSuiteUiPrefs({ autoCompact: suiteEnhancerPrefs.autoCompact });
+  });
+
+  el('set-quick-builtin-autosend')?.addEventListener('change', e => {
+    void setSuiteQuickBuiltinAutoSend(Boolean(e?.target?.checked));
   });
 
   el('set-ui-language-select')?.addEventListener('change', e => {

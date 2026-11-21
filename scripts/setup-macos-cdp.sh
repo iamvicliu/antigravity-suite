@@ -101,6 +101,8 @@ if [ "$ENABLE_AUTO" -eq 1 ]; then
   </array>
 ${ENV_BLOCK}  <key>RunAtLoad</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
   <key>WatchPaths</key>
   <array>
     <string>${PORT_FILE}</string>

@@ -6356,3 +6356,396 @@ test('需求 27b: build-renderer 拦截源码截断标记、asar-engine 排除 h
   });
   assert.equal(helpRes.status, 0, 'cli.js help 应正常返回退出码 0');
 });
+
+// =========================================================================
+// 需求 28: 快捷提示词支持直接发送（自定义逐条开关 + 内置免参开关 + ⌘/Ctrl 临时反转 + 防吞草稿与禁用态降级）
+// =========================================================================
+test('需求 28: 快捷提示词直接发送（逐条直发开关 + 内置免参开关 + ⌘/Ctrl 临时反转 + 防吞草稿与禁用态降级）', async () => {
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+
+  async function withQuickSendEnv(fn) {
+    const env = createDomEnv();
+    const activeTimers = new Set();
+    env.sandbox.setTimeout = (cb, ms) => {
+      const delay = Number(ms) > 500 ? Number(ms) : Math.min(Number(ms) || 0, 8);
+      const t = setTimeout(() => { activeTimers.delete(t); cb(); }, delay);
+      activeTimers.add(t);
+      return t;
+    };
+    env.sandbox.clearTimeout = (t) => {
+      activeTimers.delete(t);
+      clearTimeout(t);
+    };
+    env.sandbox.location = {
+      protocol: 'https:',
+      hostname: '127.0.0.1',
+      pathname: '/c/dddddddd-4444-4444-4444-444444444444',
+      origin: 'https://127.0.0.1:53892',
+      href: 'https://127.0.0.1:53892/c/dddddddd-4444-4444-4444-444444444444'
+    };
+    env.sandbox.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+    env.win.getSelection = env.sandbox.getSelection;
+    env.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+
+    const composerEl = env.doc.createElement('div');
+    composerEl.className = 'surface-composer';
+    const editorEl = env.doc.createElement('div');
+    editorEl.setAttribute('data-lexical-editor', 'true');
+    editorEl.setAttribute('contenteditable', 'true');
+    const sendBtn = env.doc.createElement('button');
+    sendBtn.setAttribute('data-testid', 'send-button');
+    sendBtn.disabled = false;
+    let sendClicks = 0;
+    let enterDispatches = 0;
+    editorEl.addEventListener('keydown', (ev) => {
+      if (ev?.key === 'Enter') enterDispatches++;
+    });
+    sendBtn.addEventListener('click', () => { sendClicks++; });
+    composerEl.appendChild(editorEl);
+    composerEl.appendChild(sendBtn);
+    env.doc.body.appendChild(composerEl);
+
+    let slashMenuEl = null;
+    let slashOptionClicked = false;
+    env.doc.execCommand = (cmd, _ui, val) => {
+      if (cmd === 'delete') {
+        editorEl.textContent = '';
+        editorEl.removeAttribute('data-converted-slash');
+        if (slashMenuEl) { slashMenuEl.remove?.(); slashMenuEl = null; }
+        return true;
+      }
+      if (cmd === 'insertText') {
+        editorEl.textContent = String(val || '');
+        if (String(val || '').trim().toLowerCase() === '/compact') {
+          if (slashMenuEl) slashMenuEl.remove?.();
+          slashMenuEl = env.doc.createElement('div');
+          slashMenuEl.setAttribute('role', 'listbox');
+          const optEl = env.doc.createElement('div');
+          optEl.setAttribute('role', 'option');
+          const nameSpan = env.doc.createElement('span');
+          nameSpan.textContent = 'compact';
+          optEl.appendChild(nameSpan);
+          optEl.addEventListener('click', () => {
+            slashOptionClicked = true;
+            editorEl.textContent = 'compact ';
+            editorEl.setAttribute('data-converted-slash', 'compact');
+            slashMenuEl?.remove?.();
+            slashMenuEl = null;
+          });
+          slashMenuEl.appendChild(optEl);
+          env.doc.body.appendChild(slashMenuEl);
+        }
+        return true;
+      }
+      return true;
+    };
+
+    vm.runInContext(freshRendererSrc, env.sandbox);
+    vm.runInContext(freshEnhancerSrc, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    const enhancer = env.sandbox.__AGEnhancer;
+    const shadow = env.getShadow();
+    const quickBar = env.doc.getElementById('ag-quick-capsule-bar');
+
+    try {
+      await fn({
+        env,
+        api,
+        enhancer,
+        shadow,
+        quickBar,
+        editorEl,
+        sendBtn,
+        getSendClicks: () => sendClicks,
+        getEnterDispatches: () => enterDispatches,
+        getSlashOptionClicked: () => slashOptionClicked,
+        getToastText: () => quickBar?.querySelector('.ag-qcap-toast')?.textContent || ''
+      });
+    } finally {
+      enhancer?.dispose?.();
+      api?.dispose?.();
+      for (const t of activeTimers) clearTimeout(t);
+      activeTimers.clear();
+    }
+  }
+
+  // 1 & 2. 自定义提示词默认填入；切为 ⚡直发 并保存后点击直发，800ms 内防连点拦截；已保存行再次点击切回 填入 并即时持久化
+  await withQuickSendEnv(async ({ env, shadow, quickBar, editorEl, getSendClicks, getToastText }) => {
+    const chkBuiltin = shadow.getElementById('set-quick-builtin-autosend');
+    assert.ok(chkBuiltin, '设置面板必须渲染 #set-quick-builtin-autosend 开关');
+    assert.equal(chkBuiltin.checked, false, '内置免参指令直发开关默认应关闭');
+
+    shadow.getElementById('btn-add-quick-prompt')?.click();
+    const rows = Array.from(shadow.querySelectorAll('#quick-prompts-editor-list .qp-row') || []);
+    assert.equal(rows.length, 1);
+    const autoSendBtn = rows[0].querySelector('.qp-autosend-btn');
+    assert.ok(autoSendBtn, '编辑行应包含 .qp-autosend-btn 切换按钮');
+    assert.equal(autoSendBtn.getAttribute('data-auto-send'), 'false', '新建自定义提示词默认不应直发');
+    assert.equal(autoSendBtn.textContent, '填入');
+
+    rows[0].querySelector('.qp-label-input').value = '一键验收';
+    rows[0].querySelector('.qp-text-input').value = '请跑全量单测';
+    autoSendBtn.click();
+    assert.equal(autoSendBtn.getAttribute('data-auto-send'), 'true');
+    assert.equal(autoSendBtn.textContent, '⚡直发');
+
+    shadow.getElementById('btn-save-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.ok(
+      env.postedSettings.some(p => p?.uiPreferences?.quickPrompts?.[0]?.autoSend === true),
+      '保存后 uiPreferences.quickPrompts[0].autoSend 应为 true'
+    );
+
+    const customBtn = quickBar.querySelector('#ag-qcap-prompt-0');
+    assert.ok(customBtn);
+    assert.equal(customBtn.getAttribute('data-auto-send'), 'true', '直发按钮应标记 data-auto-send=true');
+    assert.equal(customBtn.textContent, '一键验收', '按钮 textContent 不得被 ↵ 角标污染');
+
+    customBtn.click();
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(editorEl.textContent, '请跑全量单测');
+    assert.equal(getSendClicks(), 1, '开启直发的自定义按钮点击应自动触发发送');
+    assert.match(getToastText(), /已直接发送/);
+
+    // 800ms 防连点窗内再次点击不应重复触发发送
+    editorEl.textContent = '';
+    customBtn.click();
+    await new Promise(r => setTimeout(r, 80));
+    assert.equal(getSendClicks(), 1, '800ms 防连点锁应阻止连续重发');
+
+    // 已保存行点击 .qp-autosend-btn 应即时持久化切回 填入
+    const savedRowBtn = shadow.querySelector('#quick-prompts-editor-list .qp-row .qp-autosend-btn');
+    assert.ok(savedRowBtn);
+    savedRowBtn.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(savedRowBtn.getAttribute('data-auto-send'), 'false');
+    assert.equal(savedRowBtn.textContent, '填入');
+    assert.equal(quickBar.querySelector('#ag-qcap-prompt-0')?.getAttribute('data-auto-send'), null);
+    assert.ok(
+      env.postedSettings.some(p => p?.uiPreferences?.quickPrompts?.[0]?.autoSend === false),
+      '已保存行切换为仅填入时应即时持久化'
+    );
+  });
+
+  // 3a & 7. 开启 #set-quick-builtin-autosend 后 /compact 直发，/plan 仍仅填入，恢复默认后复位为 false
+  await withQuickSendEnv(async ({ env, enhancer, shadow, quickBar, editorEl, getSendClicks, getSlashOptionClicked }) => {
+    const chkBuiltin = shadow.getElementById('set-quick-builtin-autosend');
+    chkBuiltin.checked = true;
+    chkBuiltin.dispatchEvent({ type: 'change' });
+    await new Promise(r => setTimeout(r, 30));
+
+    assert.equal(env.localStorage.getItem('ag_suite_quick_builtin_autosend'), 'true');
+    assert.equal(enhancer.getQuickBuiltinAutoSend(), true);
+    assert.ok(env.postedSettings.some(p => p?.uiPreferences?.quickBuiltinAutoSend === true));
+
+    const compactBtn = quickBar.querySelector('#ag-qcap-compact');
+    const reloadBtn = quickBar.querySelector('#ag-qcap-reload');
+    const planBtn = quickBar.querySelector('#ag-qcap-plan');
+    assert.equal(compactBtn?.getAttribute('data-auto-send'), 'true', '/compact 应标记直发');
+    assert.equal(reloadBtn?.getAttribute('data-auto-send'), 'true', '重载规则应标记直发');
+    assert.equal(planBtn?.getAttribute('data-auto-send'), null, '带参斜杠 /plan 绝不标记直发');
+
+    compactBtn.click();
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(getSlashOptionClicked(), true, '/compact 直发应先转为原生斜杠命令胶囊');
+    assert.equal(getSendClicks(), 1, '/compact 直发应触发发送按钮点击');
+
+    // 清空输入框后点 /plan 应仅填入而不发送
+    editorEl.textContent = '';
+    editorEl.removeAttribute('data-converted-slash');
+    planBtn.click();
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(editorEl.textContent, '/plan ');
+    assert.equal(getSendClicks(), 1, '带参前缀 /plan 点击仅填入，不得误发送');
+
+    // 恢复默认后复位
+    shadow.getElementById('btn-reset-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(chkBuiltin.checked, false, '恢复默认应同步复位 #set-quick-builtin-autosend 为 false');
+    assert.equal(enhancer.getQuickBuiltinAutoSend(), false);
+    assert.equal(quickBar.querySelector('#ag-qcap-compact')?.getAttribute('data-auto-send'), null);
+    assert.equal(quickBar.querySelector('#ag-qcap-reload')?.getAttribute('data-auto-send'), null);
+  });
+
+  // 3b. 开启内置免参直发后，点击「重载规则」也可直接发送
+  await withQuickSendEnv(async ({ shadow, quickBar, editorEl, getSendClicks }) => {
+    const chkBuiltin = shadow.getElementById('set-quick-builtin-autosend');
+    chkBuiltin.checked = true;
+    chkBuiltin.dispatchEvent({ type: 'change' });
+    await new Promise(r => setTimeout(r, 20));
+    quickBar.querySelector('#ag-qcap-reload')?.click();
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(editorEl.textContent, '重新读取 AGENTS');
+    assert.equal(getSendClicks(), 1, '开启内置直发后 重载规则 应自动触发发送');
+  });
+
+  // 4. ⌘/Ctrl + 点击临时反转行为
+  await withQuickSendEnv(async ({ api, quickBar, editorEl, getSendClicks }) => {
+    await api.setQuickPrompts([
+      { id: 'c0', label: '常规填入', text: '仅填入的文本', autoSend: false },
+      { id: 'c1', label: '默认直发', text: '本应直发的文本', autoSend: true }
+    ]);
+    await new Promise(r => setTimeout(r, 20));
+
+    const btnInsert = quickBar.querySelector('#ag-qcap-prompt-0');
+    const btnSend = quickBar.querySelector('#ag-qcap-prompt-1');
+    assert.equal(btnInsert?.getAttribute('data-auto-send'), null);
+    assert.equal(btnSend?.getAttribute('data-auto-send'), 'true');
+
+    // metaKey 临时反转：填入项直接发送
+    btnInsert.dispatchEvent({ type: 'click', metaKey: true });
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(editorEl.textContent, '仅填入的文本');
+    assert.equal(getSendClicks(), 1, '按住 ⌘ 点击仅填入项应临时触发直发');
+
+    // ctrlKey 临时反转：直发项仅填入不发送
+    editorEl.textContent = '';
+    btnSend.dispatchEvent({ type: 'click', ctrlKey: true });
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(editorEl.textContent, '本应直发的文本');
+    assert.equal(getSendClicks(), 1, '按住 Ctrl 点击直发项应临时反转为仅填入不发送');
+  });
+
+  // 5. 防吞草稿保护：已有不同草稿时跳过直发并保留原草稿；内容相同则放行发送
+  await withQuickSendEnv(async ({ api, quickBar, editorEl, getSendClicks, getToastText }) => {
+    await api.setQuickPrompts([{ id: 's0', label: '继续', text: '继续执行下一步', autoSend: true }]);
+    await new Promise(r => setTimeout(r, 20));
+
+    const btn = quickBar.querySelector('#ag-qcap-prompt-0');
+    editorEl.textContent = '写到一半的长段草稿内容';
+    btn.click();
+    await new Promise(r => setTimeout(r, 80));
+    assert.equal(editorEl.textContent, '写到一半的长段草稿内容', '检测到草稿时绝不能清空原草稿');
+    assert.equal(getSendClicks(), 0, '检测到草稿时绝不能触发发送');
+    assert.match(getToastText(), /已有草稿/);
+
+    // 当输入框草稿刚好就是该提示词本身时，放行直接发送
+    editorEl.textContent = '继续执行下一步';
+    btn.click();
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(getSendClicks(), 1, '编辑器内容与目标提示词一致时应放行直发');
+  });
+
+  // 6. 发送按钮 disabled 时安全保留填入内容且不强行发 Enter
+  await withQuickSendEnv(async ({ api, quickBar, editorEl, sendBtn, getSendClicks, getEnterDispatches, getToastText }) => {
+    await api.setQuickPrompts([{ id: 'd0', label: '总结', text: '请总结进展', autoSend: true }]);
+    await new Promise(r => setTimeout(r, 20));
+
+    sendBtn.disabled = true;
+    quickBar.querySelector('#ag-qcap-prompt-0')?.click();
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(editorEl.textContent, '请总结进展', '发送按钮禁用时应安全保留已填入文本');
+    assert.equal(getSendClicks(), 0, '禁用态不得触发发送按钮');
+    assert.equal(getEnterDispatches(), 0, '发现发送按钮处于 disabled 时绝不可强行派发 Enter');
+    assert.match(getToastText(), /发送不可用/);
+  });
+});
+
+test('需求 29: _auto-trigger 与 LaunchAgent 修复孤立 DevToolsActivePort 误判、周期内裸进程漏检与节流延迟', async () => {
+  const { execFile } = require('node:child_process');
+  const { promisify } = require('node:util');
+  const execFileAsync = promisify(execFile);
+
+  const binPath = path.join(ROOT, 'bin', 'ag-context-meter');
+  const setupPath = path.join(ROOT, 'scripts', 'setup-macos-cdp.sh');
+  const binSrc = fs.readFileSync(binPath, 'utf8');
+  const setupSrc = fs.readFileSync(setupPath, 'utf8');
+
+  // 1. 静态断言：辅助函数与不信任残留 DevToolsActivePort 文件
+  assert.match(binSrc, /has_antigravity_host_process\(\)/);
+  assert.match(binSrc, /is_shipit_running\(\)/);
+  assert.match(binSrc, /try_auto_relaunch_fresh_bare\(\)/);
+
+  const hasLiveMatch = binSrc.match(/has_live_antigravity\(\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(hasLiveMatch, '应存在 has_live_antigravity 函数');
+  assert.doesNotMatch(hasLiveMatch[0], /\$PORT_FILE/, 'has_live_antigravity 不得直接信任磁盘残留 DevToolsActivePort');
+  assert.match(hasLiveMatch[0], /has_antigravity_host_process/);
+
+  // 2. 静态断言：_auto-trigger 在 15 轮循环体内持续检测新启动的裸进程
+  const autoTriggerMatch = binSrc.match(/_auto-trigger\)[\s\S]*?\n\s*;;/);
+  assert.ok(autoTriggerMatch, '应存在 _auto-trigger) 分支');
+  const loopMatch = autoTriggerMatch[0].match(/for _ in \$\(seq 1 15\); do[\s\S]*?\n\s*done/);
+  assert.ok(loopMatch, '_auto-trigger 应包含 15 轮重试循环');
+  assert.match(loopMatch[0], /try_auto_relaunch_fresh_bare/, '_auto-trigger 应在循环体内调用 try_auto_relaunch_fresh_bare');
+
+  // 3. 静态断言：LaunchAgent 模板与 auto-on 自动升级逻辑均配置 ThrottleInterval=2
+  assert.match(binSrc, /ThrottleInterval[\s\S]{0,600}<integer>2<\/integer>/, 'auto-on 升级应写入 ThrottleInterval=2');
+  assert.match(setupSrc, /<key>ThrottleInterval<\/key>\s*<integer>2<\/integer>/, 'setup-macos-cdp.sh 应生成 ThrottleInterval=2');
+
+  if (process.platform === 'win32') return;
+
+  // 4. 隔离行为测试：使用临时 HOME 与 mock AG_SUITE_DIR 验证真实 bash _auto-trigger 路径
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-auto-trigger-req29-'));
+  try {
+    const fakeHome = path.join(tmpRoot, 'home');
+    const fakeSuite = path.join(tmpRoot, 'suite');
+    const fakeBin = path.join(tmpRoot, 'bin');
+    const agSupportDir = path.join(fakeHome, 'Library', 'Application Support', 'Antigravity');
+    fs.mkdirSync(agSupportDir, { recursive: true });
+    fs.mkdirSync(path.join(fakeHome, 'Library', 'Logs'), { recursive: true });
+    fs.mkdirSync(fakeSuite, { recursive: true });
+    fs.mkdirSync(fakeBin, { recursive: true });
+
+    // 写入孤立的 DevToolsActivePort 文件（模拟宿主崩溃/更新退出后的磁盘残留）
+    fs.writeFileSync(path.join(agSupportDir, 'DevToolsActivePort'), '65432\n/devtools/browser/fake\n', 'utf8');
+
+    // Mock pgrep，避免测试机恰好有外部 ShipIt 进程影响隔离断言
+    const fakePgrep = path.join(fakeBin, 'pgrep');
+    fs.writeFileSync(fakePgrep, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+
+    // Mock suite cli.js 与 asar-engine.js
+    fs.writeFileSync(path.join(fakeSuite, 'cli.js'), '// mock cli\n', 'utf8');
+    fs.writeFileSync(path.join(fakeSuite, 'asar-engine.js'), `
+'use strict';
+module.exports = {
+  inspectAntigravityHostProcess() {
+    if (process.env.AG_TEST_HOST_MODE === 'stale_bare') {
+      return {
+        running: true,
+        pid: 999999,
+        hasDebugSwitch: false,
+        elapsedSec: 120,
+        command: '/Applications/Antigravity.app/Contents/MacOS/Antigravity'
+      };
+    }
+    return { running: false, pid: null, hasDebugSwitch: false, elapsedSec: null, command: '' };
+  },
+  async resolveActiveCdpTarget() {
+    return { port: null, pages: [], targets: [] };
+  }
+};
+`, 'utf8');
+
+    const baseEnv = {
+      ...process.env,
+      HOME: fakeHome,
+      AG_SUITE_DIR: fakeSuite,
+      PATH: `${fakeBin}:${process.env.PATH || '/usr/bin:/bin'}`
+    };
+
+    // 用例 4a：仅存在孤立 DevToolsActivePort 且无宿主进程时，_auto-trigger 必须在 2 秒内立即退出
+    const t0 = Date.now();
+    await execFileAsync('bash', [binPath, '_auto-trigger'], {
+      env: { ...baseEnv, AG_TEST_HOST_MODE: 'none' },
+      timeout: 5000
+    });
+    const elapsedA = Date.now() - t0;
+    assert.ok(elapsedA < 2000, `孤立 DevToolsActivePort 场景应在 2s 内立即退出，实际耗时 ${elapsedA}ms`);
+
+    // 用例 4b：存在已运行 >30s 的裸进程时，写入保护跳过日志并在 2 秒内安全退出（不重拉、不空转）
+    const t1 = Date.now();
+    await execFileAsync('bash', [binPath, '_auto-trigger'], {
+      env: { ...baseEnv, AG_TEST_HOST_MODE: 'stale_bare' },
+      timeout: 5000
+    });
+    const elapsedB = Date.now() - t1;
+    assert.ok(elapsedB < 2000, `老裸进程保护跳过场景应在 2s 内退出，实际耗时 ${elapsedB}ms`);
+
+    const logContent = fs.readFileSync(path.join(fakeHome, 'Library', 'Logs', 'antigravity-hans.log'), 'utf8');
+    assert.match(logContent, /PID: 999999, 已运行 120s > 30s.*跳过自动重拉/, '应写入保护当前会话的跳过重拉日志');
+    assert.doesNotMatch(logContent, /自动补参重拉/, '不得对运行超过 30s 的老裸进程触发重拉');
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
