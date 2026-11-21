@@ -3414,12 +3414,34 @@ function readSafeTextFilePreview(rawPath, options = {}) {
   };
 }
 
+const SAFE_INLINE_IMAGE_MIME_RE = /^image\/(?:png|jpeg|jpg|webp|gif)$/i;
+const MAX_INLINE_IMAGE_DATA_URL_CHARS = 512 * 1024;
+
+function buildSafeInlineImageDataUrl(rawData, rawMimeType = 'image/png') {
+  const s = String(rawData || '').trim();
+  if (!s) return '';
+  if (/^data:/i.test(s)) {
+    const m = s.match(/^data:([^;,\s]+);base64,([A-Za-z0-9+/=\s]+)$/i);
+    if (!m) return '';
+    const mime = m[1].toLowerCase();
+    if (!SAFE_INLINE_IMAGE_MIME_RE.test(mime)) return '';
+    const b64 = m[2].replace(/\s+/g, '');
+    if (!b64 || b64.length > MAX_INLINE_IMAGE_DATA_URL_CHARS) return '';
+    return `data:${mime};base64,${b64}`;
+  }
+  const mime = String(rawMimeType || 'image/png').trim().toLowerCase();
+  if (!SAFE_INLINE_IMAGE_MIME_RE.test(mime)) return '';
+  const b64 = s.replace(/\s+/g, '');
+  if (!b64 || b64.length > MAX_INLINE_IMAGE_DATA_URL_CHARS || !/^[A-Za-z0-9+/=]+$/.test(b64)) return '';
+  return `data:${mime};base64,${b64}`;
+}
+
 function extractTrajectoryUserAttachments(ui) {
   if (!ui || typeof ui !== 'object') return [];
   const attachments = [];
   const seen = new Set();
   const pushAtt = (att) => {
-    const key = `${att.kind}|${att.path || att.uri || att.name}`;
+    const key = `${att.kind}|${att.path || att.uri || (att.inlineUrl ? att.inlineUrl.slice(0, 64) : att.name)}`;
     if (seen.has(key)) return;
     seen.add(key);
     attachments.push(att);
@@ -3430,14 +3452,38 @@ function extractTrajectoryUserAttachments(ui) {
       const rawUri = String(m.uri || m.fileUri || m.path || m.absoluteUri || '').trim();
       const localPath = normalizeLocalFileUriToPath(rawUri);
       const mimeType = String(m.mimeType || m.mime_type || 'image/png').trim();
-      const isImg = /^image\//i.test(mimeType) || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(localPath);
-      const name = String(m.name || (localPath ? path.basename(localPath) : (isImg ? 'image.png' : 'attachment'))).trim();
+      const rawInline = m.inlineData || m.inline_data || m.thumbnail || m.base64Data || m.base64_data || '';
+      const inlineUrl = buildSafeInlineImageDataUrl(rawInline, mimeType);
+      const isImg = Boolean(inlineUrl) || /^image\//i.test(mimeType) || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(localPath);
+      const name = String(m.displayName || m.name || (localPath ? path.basename(localPath) : (isImg ? 'image.png' : 'attachment'))).trim();
+      if (!localPath && !rawUri && !inlineUrl) continue;
       pushAtt({
         kind: isImg ? 'image' : 'file',
         name,
         mimeType,
         path: localPath,
-        uri: rawUri
+        uri: rawUri,
+        ...(inlineUrl ? { inlineUrl } : {})
+      });
+    }
+  }
+  if (Array.isArray(ui.images)) {
+    for (const img of ui.images) {
+      if (!img || typeof img !== 'object') continue;
+      const rawUri = String(img.uri || img.fileUri || img.path || img.absoluteUri || '').trim();
+      const localPath = normalizeLocalFileUriToPath(rawUri);
+      const mimeType = String(img.mimeType || img.mime_type || 'image/png').trim();
+      const rawInline = img.base64Data || img.base64_data || img.inlineData || img.inline_data || img.thumbnail || img.data || '';
+      const inlineUrl = buildSafeInlineImageDataUrl(rawInline, mimeType);
+      if (!localPath && !rawUri && !inlineUrl) continue;
+      const name = String(img.displayName || img.name || (localPath ? path.basename(localPath) : 'image.png')).trim();
+      pushAtt({
+        kind: 'image',
+        name,
+        mimeType,
+        path: localPath,
+        uri: rawUri,
+        ...(inlineUrl ? { inlineUrl } : {})
       });
     }
   }
@@ -3446,7 +3492,7 @@ function extractTrajectoryUserAttachments(ui) {
       const fileUri = String(it?.item?.file?.absoluteUri || '').trim();
       if (!fileUri) continue;
       const localPath = normalizeLocalFileUriToPath(fileUri);
-      const name = localPath ? path.basename(localPath) : decodeURIComponent(fileUri.split('/').pop() || fileUri);
+      const name = localPath ? path.basename(localPath) : safeDecodeURIComponent(fileUri.split('/').pop() || fileUri);
       const isImg = /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(name);
       pushAtt({
         kind: isImg ? 'image' : 'file',
@@ -3506,22 +3552,45 @@ function isQueuedTrajectoryUserStep(step) {
   return st === 'CORTEX_STEP_STATUS_QUEUED'
     || step.queued === true
     || step.userInput?.queued === true
+    || step.userInput?.isQueuedMessage === true
+    || step.userInput?.is_queued_message === true
     || step.metadata?.queued === true;
 }
 
-function extractQueuedMessagesFromTrajectorySteps(steps) {
-  if (!Array.isArray(steps) || !steps.length) return [];
+function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) {
   const queued = [];
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    if (!isQueuedTrajectoryUserStep(step)) continue;
-    const text = formatTrajectoryUserInput(step.userInput);
-    if (!text) continue;
+  const seenKey = new Set();
+  const pushQueued = (stepIndex, ui) => {
+    const text = formatTrajectoryUserInput(ui);
+    const atts = extractTrajectoryUserAttachments(ui);
+    const images = atts.filter((a) => a.kind === 'image' && (a.inlineUrl || a.path)).map((a) => a.inlineUrl || a.path);
+    if (!text && !images.length) return;
+    const key = `${stepIndex}|${text}`;
+    if (seenKey.has(key)) return;
+    seenKey.add(key);
     queued.push({
-      stepIndex: i,
+      stepIndex,
       text,
+      ...(images.length ? { images } : {}),
       status: 'queued'
     });
+  };
+  if (Array.isArray(steps) && steps.length) {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      if (!isQueuedTrajectoryUserStep(step)) continue;
+      pushQueued(i, step.userInput);
+    }
+  }
+  const extraList = Array.isArray(extraContainer?.queuedSteps)
+    ? extraContainer.queuedSteps
+    : (Array.isArray(extraContainer?.queued_steps) ? extraContainer.queued_steps : []);
+  for (let j = 0; j < extraList.length; j++) {
+    const qStep = extraList[j];
+    if (!qStep || typeof qStep !== 'object') continue;
+    const ui = qStep.userInput || qStep.user_input || qStep;
+    const idx = Number.isInteger(qStep.stepIndex) ? qStep.stepIndex : (Number.isInteger(qStep.step_index) ? qStep.step_index : (Array.isArray(steps) ? steps.length + j : j));
+    pushQueued(idx, ui);
   }
   return queued;
 }
@@ -3952,14 +4021,12 @@ function createConversationHistoryManager() {
         const allSteps = firstSteps.slice();
         const totalSteps = Number(res?.numTotalSteps || res?.trajectory?.numTotalSteps || 0);
         if (totalSteps > allSteps.length) {
-          const PAGE_SIZE = 500;
           const maxPages = Math.min(totalSteps + 1, 20000);
           for (let page = 0; page < maxPages && allSteps.length < totalSteps; page++) {
-            const startIndex = allSteps.length;
-            const endIndex = Math.min(totalSteps, startIndex + PAGE_SIZE);
+            const stepOffset = allSteps.length;
             const pageRes = await callLocalLanguageServer(
               'GetCascadeTrajectorySteps',
-              { cascadeId: sid, startIndex, endIndex },
+              { cascadeId: sid, stepOffset, trajectoryVerbosity: 3 },
               4000,
               options
             ).catch(() => null);
@@ -3972,7 +4039,7 @@ function createConversationHistoryManager() {
         }
         return {
           messages: extractMessagesFromTrajectorySteps(allSteps, { lazyHtml: true }),
-          queuedMessages: extractQueuedMessagesFromTrajectorySteps(allSteps),
+          queuedMessages: extractQueuedMessagesFromTrajectorySteps(allSteps, res?.trajectory || res),
           fetchedSig: reqSig,
           gen,
           startedAt
@@ -4792,42 +4859,48 @@ function buildMobileAppHtml() {
       background:var(--accent-bg);border:1px solid var(--accent-border);font-size:12.5px;color:var(--accent-strong-fg);
     }
     .attach-hint[hidden]{display:none}
-    .attach-strip{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+    .attach-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow-x:auto;padding:5px 2px 2px;scrollbar-width:none}
     .attach-strip::-webkit-scrollbar{display:none}
     .attach-thumb-wrap{
-      position:relative;flex-shrink:0;display:inline-flex;align-items:center;gap:5px;
-      padding:3px 5px 3px 3px;border-radius:9px;background:var(--card);border:1px solid var(--border);
+      position:relative;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;
+      width:48px;height:48px;padding:0;border-radius:10px;background:var(--card);border:1px solid var(--border);
     }
     .attach-thumb{
-      width:34px;height:34px;border-radius:6px;object-fit:cover;cursor:zoom-in;display:block;flex-shrink:0;
+      width:46px;height:46px;border-radius:9px;object-fit:cover;cursor:zoom-in;display:block;flex-shrink:0;
     }
     .attach-file-chip{
-      flex-shrink:0;display:inline-flex;align-items:center;gap:5px;padding:4px 6px 4px 8px;border-radius:8px;
-      background:var(--card);border:1px solid var(--border);color:var(--fg);font-size:11.5px;max-width:200px;
+      position:relative;flex-shrink:0;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+      width:48px;height:48px;padding:4px;border-radius:10px;
+      background:var(--card);border:1px solid var(--border);color:var(--fg);font-size:10px;
     }
+    .attach-file-icon{font-size:16px;line-height:1}
+    .attach-file-ext{font-size:9.5px;font-weight:700;letter-spacing:.02em;color:var(--muted);text-transform:uppercase;max-width:42px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .attach-item-rm{
-      appearance:none;border:none;background:var(--surface-soft);color:var(--muted);
+      position:absolute;top:-6px;right:-6px;appearance:none;border:1px solid var(--border-strong);background:var(--card);color:var(--fg);
       width:18px;height:18px;border-radius:999px;padding:0;flex-shrink:0;cursor:pointer;
       display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:1;font-weight:700;
+      box-shadow:0 2px 6px rgba(0,0,0,.22);
     }
-    .attach-item-rm:hover,.attach-item-rm:active{background:var(--risk-bg);color:var(--risk-fg)}
+    .attach-item-rm:hover,.attach-item-rm:active{background:var(--risk-bg);color:var(--risk-fg);border-color:var(--risk-fg)}
     .attach-clear-btn{
       appearance:none;border:1px solid var(--accent-border);background:var(--card);color:var(--accent-strong-fg);
       border-radius:8px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;white-space:nowrap;
     }
-    .attach-file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .attach-file-size{font-size:10.5px;color:var(--muted);flex-shrink:0}
-    .msg-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+    .msg-user-group{display:flex;flex-direction:column;align-items:flex-end;gap:6px;align-self:flex-end;max-width:86%}
+    .msg-user-group .msg.user{max-width:100%}
+    .msg-atts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+    .msg-atts.above-user{margin:0}
     .msg-att-img{
-      max-width:180px;max-height:140px;border-radius:10px;object-fit:cover;cursor:zoom-in;
+      width:84px;height:84px;max-width:140px;max-height:120px;border-radius:10px;object-fit:cover;cursor:zoom-in;
       border:1px solid var(--border);display:block;background:var(--surface-subtle);
     }
     .msg-att-file{
-      appearance:none;display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;
-      border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
-      font-size:12px;max-width:100%;cursor:pointer;text-align:left;
+      appearance:none;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+      width:54px;height:54px;padding:4px;border-radius:10px;
+      border:1px solid var(--border);background:var(--card);color:var(--fg);
+      font-size:10px;cursor:pointer;text-align:center;
     }
-    .msg-att-file span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .msg-att-file .att-ext{font-size:9.5px;font-weight:700;color:var(--muted);text-transform:uppercase;max-width:46px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .media-lightbox{
       position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.84);
       display:flex;align-items:center;justify-content:center;padding:20px;
@@ -8948,16 +9021,40 @@ function buildMobileAppHtml() {
         if (m.role === 'user') {
           const atts = Array.isArray(m.attachments) ? m.attachments : [];
           let attHtml = '';
+          let renderedImgCount = 0;
+          const getShortExt = (name) => {
+            const rawName = String(name || '').trim();
+            const dot = rawName.lastIndexOf('.');
+            if (dot > 0 && dot < rawName.length - 1) return rawName.slice(dot + 1).slice(0, 6).toUpperCase();
+            return 'FILE';
+          };
           if (atts.length) {
-            attHtml = '<div class="msg-atts">' + atts.map((att) => {
-              if (att.kind === 'image' && att.path) {
-                const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(att.path) + (pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
-                return '<img class="msg-att-img" src="' + esc(mediaSrc) + '" alt="' + esc(att.name || '图片') + '" loading="lazy" data-preview-src="' + esc(mediaSrc) + '" />';
+            const tiles = atts.map((att) => {
+              const safeInline = (typeof att.inlineUrl === 'string' && /^data:image\\/(?:png|jpeg|jpg|webp|gif);base64,/i.test(att.inlineUrl)) ? att.inlineUrl : '';
+              if (att.kind === 'image' && (safeInline || att.path)) {
+                renderedImgCount += 1;
+                const mediaSrc = safeInline || ((apiBase || '') + '/api/media?path=' + encodeURIComponent(att.path) + (pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : ''));
+                const label = att.name || '图片';
+                return '<img class="msg-att-img" src="' + esc(mediaSrc) + '" alt="' + esc(label) + '" title="' + esc(label) + '" loading="lazy" data-preview-src="' + esc(mediaSrc) + '" />';
               }
-              return '<button class="msg-att-file" type="button" data-file-path="' + esc(att.path || '') + '" title="' + esc(att.path || att.name || '') + '"><span>📄 ' + esc(att.name || '附件') + '</span></button>';
-            }).join('') + '</div>';
+              const fName = att.name || '附件';
+              const ext = getShortExt(fName);
+              return '<button class="msg-att-file" type="button" data-file-path="' + esc(att.path || '') + '" title="' + esc(att.path || fName) + '" aria-label="' + esc(fName) + '"><span class="attach-file-icon" aria-hidden="true">📄</span><span class="att-ext">' + esc(ext) + '</span></button>';
+            }).join('');
+            if (tiles) attHtml = '<div class="msg-atts above-user">' + tiles + '</div>';
           }
-          return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + (m.text ? ('<div>' + esc(m.text) + '</div>') : '') + attHtml + '</div>';
+          let userText = String(m.text || '');
+          if (renderedImgCount > 0) {
+            userText = userText
+              .replace(/\\n?\\[附带\\s*\\d+\\s*张图片\\]\\s*$/g, '')
+              .replace(/^\\[图片附件\\]$/g, '')
+              .trim();
+          }
+          if (attHtml) {
+            const bubbleHtml = userText ? ('<div class="msg user"><div>' + esc(userText) + '</div></div>') : '';
+            return '<div class="msg-user-group" data-msg-idx="' + m.msgIndex + '">' + attHtml + bubbleHtml + '</div>';
+          }
+          return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + (userText ? ('<div>' + esc(userText) + '</div>') : '') + '</div>';
         }
         const risk = m.highRisk ? '<span class="risk-tag">' + esc(m.riskText || '🛡️ 检测到高危命令，请人工核对') + '</span>' : '';
         const hasThoughtBody = Boolean(m.thoughtText || (Array.isArray(m.thoughts) && m.thoughts.length));
@@ -9478,18 +9575,25 @@ function buildMobileAppHtml() {
         hint.innerHTML = '';
         return;
       }
+      const getTileExt = (name) => {
+        const s = String(name || '').trim();
+        const dot = s.lastIndexOf('.');
+        if (dot > 0 && dot < s.length - 1) return s.slice(dot + 1).slice(0, 6).toUpperCase();
+        return 'FILE';
+      };
       const stripHtml = uploadedAttachments.map((att, idx) => {
         if (att.isImage && att.previewUrl) {
-          return '<span class="attach-thumb-wrap" data-att-idx="' + idx + '">'
-            + '<img class="attach-thumb" src="' + esc(att.previewUrl) + '" alt="' + esc(att.name) + '" data-att-idx="' + idx + '" />'
-            + '<span class="attach-file-name" style="max-width:88px">' + esc(att.name) + '</span>'
-            + '<button type="button" class="attach-item-rm" data-rm-idx="' + idx + '" title="移除此图片" aria-label="移除此图片">×</button>'
+          return '<span class="attach-thumb-wrap" data-att-idx="' + idx + '" title="' + esc(att.name) + '">'
+            + '<img class="attach-thumb" src="' + esc(att.previewUrl) + '" alt="' + esc(att.name) + '" title="' + esc(att.name) + '" data-att-idx="' + idx + '" />'
+            + '<button type="button" class="attach-item-rm" data-rm-idx="' + idx + '" title="移除 ' + esc(att.name) + '" aria-label="移除此图片">×</button>'
             + '</span>';
         }
-        return '<span class="attach-file-chip" data-att-idx="' + idx + '">'
-          + '<span class="attach-file-name">📄 ' + esc(att.name) + '</span>'
-          + '<span class="attach-file-size">' + esc(formatFileSizeShort(att.size)) + '</span>'
-          + '<button type="button" class="attach-item-rm" data-rm-idx="' + idx + '" title="移除此文件" aria-label="移除此文件">×</button>'
+        const ext = getTileExt(att.name);
+        const tip = att.size ? (att.name + ' (' + formatFileSizeShort(att.size) + ')') : att.name;
+        return '<span class="attach-file-chip" data-att-idx="' + idx + '" title="' + esc(tip) + '" aria-label="' + esc(att.name) + '">'
+          + '<span class="attach-file-icon" aria-hidden="true">📄</span>'
+          + '<span class="attach-file-ext">' + esc(ext) + '</span>'
+          + '<button type="button" class="attach-item-rm" data-rm-idx="' + idx + '" title="移除 ' + esc(att.name) + '" aria-label="移除此文件">×</button>'
           + '</span>';
       }).join('');
       const clearAllHtml = uploadedAttachments.length >= 2

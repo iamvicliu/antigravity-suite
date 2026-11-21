@@ -12061,7 +12061,7 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
   const fetched = await histMgr.enrichMessages({ sessionId: 'conv-paged-26', messages: [] }, { localApiConnect: mockConnect });
   assert.equal(rpcLog[0].method, 'GetCascadeTrajectory');
   assert.equal(rpcLog[0].body.trajectoryVerbosity, 3, 'GetCascadeTrajectory 应传入 trajectoryVerbosity: 3');
-  assert.ok(rpcLog.some((r) => r.method === 'GetCascadeTrajectorySteps' && r.body.startIndex === 2), '步数不足时应调用 GetCascadeTrajectorySteps 分页拉齐');
+  assert.ok(rpcLog.some((r) => r.method === 'GetCascadeTrajectorySteps' && r.body.stepOffset === 2 && r.body.trajectoryVerbosity === 3), '步数不足时应调用 GetCascadeTrajectorySteps(stepOffset, trajectoryVerbosity:3) 分页拉齐');
   assert.equal(fetched.messages.length, 2, '分页拉齐后应归并为 1 问 1 答而非停在半截思考');
   assert.equal(fetched.messages[1].thoughtCount, 2);
   assert.equal(fetched.messages[1].text, '分页完整回复');
@@ -12076,7 +12076,7 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
           return { numTotalSteps: 201, trajectory: { steps: [] } };
         }
         if (method === 'GetCascadeTrajectorySteps') {
-          const idx = Number(body.startIndex);
+          const idx = Number(body.stepOffset);
           if (idx === 0) return { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '201 页首包空测试' } }] };
           if (idx < 200) return { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: `思考步-${idx}` } }] };
           if (idx === 200) return { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '最后思考', response: '第 201 步完整回复' } }] };
@@ -12087,7 +12087,7 @@ test('远程端思考过程按轮聚合、去重防刷屏、轨迹分页拉齐�
     })
   });
   assert.equal(emptyFirstCalls[1].method, 'GetCascadeTrajectorySteps');
-  assert.equal(emptyFirstCalls[1].body.startIndex, 0, '首包 steps=[] 且 numTotalSteps>0 时必须从索引 0 开始补取');
+  assert.equal(emptyFirstCalls[1].body.stepOffset, 0, '首包 steps=[] 且 numTotalSteps>0 时必须从 stepOffset 0 开始补取');
   assert.equal(fetched201.messages.length, 2, '首包为空且 201 步每页 1 步时必须完整拉齐并归并为 1 问 1 答');
   assert.equal(fetched201.messages[1].thoughtCount, 200);
   assert.equal(fetched201.messages[1].text, '第 201 步完整回复');
@@ -14707,5 +14707,130 @@ test('会话列表多态状态显示升级：未读蓝色光晕圆点、待审�
     }
   } finally {
     fs.rmSync(tmpCatDir, { recursive: true, force: true });
+  }
+});
+
+test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分页修复 (#29 #36 #31)', async () => {
+  const remoteMod = require('./mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+
+  // 1. 全量 <script> 语法校验 + 极简缩略图与气泡上方排布结构核验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-29-script-${i}.js` }));
+  }
+  assert.ok(html.includes('.msg-user-group{display:flex;flex-direction:column;align-items:flex-end;'), '用户带图消息应使用右对齐垂直容器将缩略图置于文本气泡正上方');
+  assert.ok(html.includes('<div class="msg-atts above-user">'), '消息流用户图片应渲染在文本气泡正上方');
+  assert.ok(!html.includes('<span class="attach-file-name"'), '待发附件条图片与文件应移除占空间的横向文件名 span');
+  assert.ok(html.includes('class="attach-file-ext"') && html.includes('class="att-ext"'), '非图片文件应展示紧凑扩展名缩略块');
+
+  // 2. extractTrajectoryUserAttachments：支持 ui.images + ui.media(inlineData/thumbnail/displayName)，严禁 image/svg+xml XSS
+  const tinyPngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const atts = remoteMod.extractTrajectoryUserAttachments({
+    images: [
+      { base64Data: tinyPngB64, mimeType: 'image/png', displayName: 'shot.png' },
+      { base64Data: Buffer.from('<svg onload=alert(1)>').toString('base64'), mimeType: 'image/svg+xml', name: 'evil.svg' }
+    ],
+    media: [
+      { thumbnail: `data:image/jpeg;base64,${tinyPngB64}`, displayName: 'thumb.jpg' },
+      { uri: 'file:///tmp/demo/report.pdf', mimeType: 'application/pdf' }
+    ]
+  });
+  const imgShot = atts.find((a) => a.name === 'shot.png');
+  const imgThumb = atts.find((a) => a.name === 'thumb.jpg');
+  const evilSvg = atts.find((a) => a.name === 'evil.svg');
+  const pdfFile = atts.find((a) => a.name === 'report.pdf');
+  assert.ok(imgShot?.inlineUrl?.startsWith('data:image/png;base64,'), 'ui.images base64Data 应安全解析为 inlineUrl');
+  assert.ok(imgThumb?.inlineUrl?.startsWith('data:image/jpeg;base64,'), 'ui.media thumbnail 应安全解析为 inlineUrl');
+  assert.equal(evilSvg, undefined, 'image/svg+xml 内联数据必须被安全白名单拒绝');
+  assert.equal(pdfFile?.kind, 'file');
+  assert.equal(pdfFile?.path, '/tmp/demo/report.pdf');
+
+  // 3. 长会话分页参数修复（stepOffset + trajectoryVerbosity: 3）与后台队列真实协议字段（isQueuedMessage / is_queued_message / queued_steps）
+  const rpcCalls = [];
+  const histMgr = remoteMod.createConversationHistoryManager();
+  const pagedSnap = await histMgr.enrichMessages(
+    { sessionId: 'conv-paged-29', messages: [] },
+    {
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method, req) => {
+          rpcCalls.push({ method, req });
+          if (method === 'GetCascadeTrajectory') {
+            return {
+              numTotalSteps: 3,
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'first msg' } }
+                ],
+                queued_steps: [
+                  { stepIndex: 99, userInput: { userResponse: 'from queued_steps' } }
+                ]
+              }
+            };
+          }
+          if (method === 'GetCascadeTrajectorySteps') {
+            assert.equal(req.stepOffset, 1, 'GetCascadeTrajectorySteps 必须传 stepOffset');
+            assert.equal(req.trajectoryVerbosity, 3, 'GetCascadeTrajectorySteps 必须传 trajectoryVerbosity: 3');
+            assert.equal(req.startIndex, undefined, '不得再传错误的 startIndex');
+            return {
+              steps: [
+                {
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  userInput: {
+                    userResponse: 'look at this image',
+                    images: [{ base64Data: tinyPngB64, mimeType: 'image/png', name: 'tail.png' }]
+                  }
+                },
+                {
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  userInput: { userResponse: 'queued via isQueuedMessage', isQueuedMessage: true }
+                }
+              ]
+            };
+          }
+          return {};
+        }
+      })
+    }
+  );
+  assert.ok(rpcCalls.some((c) => c.method === 'GetCascadeTrajectorySteps' && c.req.stepOffset === 1 && c.req.trajectoryVerbosity === 3));
+  const tailUserMsg = pagedSnap.messages.find((m) => m.role === 'user' && m.text.includes('look at this image'));
+  assert.ok(tailUserMsg?.attachments?.some((a) => a.inlineUrl?.startsWith('data:image/png;base64,')), '分页尾步带图消息应完整提取图片缩略图');
+  assert.equal(pagedSnap.queuedMessages.length, 2, '应同时提取 isQueuedMessage 步骤与 trajectory.queued_steps');
+  assert.ok(pagedSnap.queuedMessages.some((q) => q.text.includes('queued via isQueuedMessage')));
+  assert.ok(pagedSnap.queuedMessages.some((q) => q.text.includes('from queued_steps')));
+
+  // 4. 桌面 DOM collectRecentMessages：提取用户消息 <img> 附件并剥离混入正文的 image.png 卡片文字
+  const envDom = createDomEnv();
+  envDom.win.location = { pathname: '/c/dom-img-29', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/dom-img-29' };
+  envDom.sandbox.location = envDom.win.location;
+  envDom.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const uMsg = envDom.doc.createElement('div');
+  uMsg.setAttribute('data-testid', 'user-message');
+  const uImg = envDom.doc.createElement('img');
+  uImg.setAttribute('src', `data:image/png;base64,${tinyPngB64}`);
+  uImg.setAttribute('alt', 'image.png');
+  uMsg.appendChild(uImg);
+  const uContent = envDom.doc.createElement('div');
+  uContent.setAttribute('data-testid', 'user-message-content');
+  uContent.textContent = 'image.png\n帮我看下这张截图';
+  uMsg.appendChild(uContent);
+  envDom.doc.body.appendChild(uMsg);
+  let enhDom = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDom.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDom.sandbox);
+    enhDom = envDom.sandbox.__AGEnhancer;
+    const domSnap = enhDom.getMobileSnapshot();
+    assert.equal(domSnap.messages.length, 1);
+    assert.equal(domSnap.messages[0].text, '帮我看下这张截图', '应剥离混入用户正文的 image.png 文件名');
+    assert.equal(domSnap.messages[0].attachments?.length, 1, '应提取桌面 DOM 用户消息中的图片缩略图');
+    assert.ok(domSnap.messages[0].attachments[0].inlineUrl.startsWith('data:image/png;base64,'));
+  } finally {
+    enhDom?.dispose?.();
+    envDom.sandbox.__AGContextMeter?.dispose?.();
+    envDom.cleanup?.();
   }
 });
