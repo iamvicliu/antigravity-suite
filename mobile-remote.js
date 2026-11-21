@@ -2335,14 +2335,29 @@ function isPathWithinRoot(candidatePath, rootPath) {
 
 function resolveRealPathWithFallback(targetPath) {
   const abs = path.resolve(String(targetPath || ''));
-  try {
-    return fs.realpathSync(abs);
-  } catch (err) {
-    if (err?.code !== 'ENOENT') {
-      throw Object.assign(new Error(`无法安全验证目标真实物理路径 (${err?.code || 'ERR'})`), { status: 403 });
+  const probeRealAt = (p) => {
+    let lst = null;
+    try {
+      lst = fs.lstatSync(p);
+    } catch (err) {
+      if (err?.code === 'ENOENT') return null;
+      throw Object.assign(new Error(`无法安全检查路径状态 (${err?.code || 'ERR'})`), { status: 403 });
     }
-  }
-  // 仅当目标明确不存在（ENOENT）时向上回溯到最近已存在祖先求真实物理路径；遇到 EACCES/ELOOP 等非 ENOENT 错误或无法确认真实路径一律拒绝
+    try {
+      return fs.realpathSync(p);
+    } catch (err) {
+      // 已存在的符号链接（悬空软链/循环软链/无权限目标）一律直接拒绝，绝不回溯拼接放行
+      if (lst?.isSymbolicLink()) {
+        throw Object.assign(new Error(`检测到悬空或无法解析目标的符号链接 (${err?.code || 'ERR'})，已拒绝访问`), { status: 403 });
+      }
+      throw Object.assign(new Error(`无法安全验证真实物理路径 (${err?.code || 'ERR'})`), { status: 403 });
+    }
+  };
+
+  const directReal = probeRealAt(abs);
+  if (directReal !== null) return directReal;
+
+  // 仅当目标确实不存在（lstatSync 返回 ENOENT）时，逐级向上校验祖先 lstatSync + realpathSync
   let cur = abs;
   const pending = [];
   while (true) {
@@ -2352,13 +2367,9 @@ function resolveRealPathWithFallback(targetPath) {
     }
     pending.unshift(path.basename(cur));
     cur = parent;
-    try {
-      const realBase = fs.realpathSync(cur);
-      return path.resolve(realBase, ...pending);
-    } catch (err) {
-      if (err?.code !== 'ENOENT') {
-        throw Object.assign(new Error(`无法安全验证祖先真实物理路径 (${err?.code || 'ERR'})`), { status: 403 });
-      }
+    const ancestorReal = probeRealAt(cur);
+    if (ancestorReal !== null) {
+      return path.resolve(ancestorReal, ...pending);
     }
   }
 }

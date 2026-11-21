@@ -10746,10 +10746,12 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
   const symSsh = path.join(workDir, 'link-ssh');
   const symLoopA = path.join(workDir, 'loop-a');
   const symLoopB = path.join(workDir, 'loop-b');
+  const symDangling = path.join(workDir, 'dangling-outside');
   fs.symlinkSync(outsideDir, symEscape, 'dir');
   fs.symlinkSync(sshDir, symSsh, 'dir');
   fs.symlinkSync(symLoopB, symLoopA, 'dir');
   fs.symlinkSync(symLoopA, symLoopB, 'dir');
+  fs.symlinkSync(path.join(outsideDir, 'nonexistent-target'), symDangling, 'dir');
 
   try {
     // 2a. 到达根目录边界（fakeHome）时 parentPath 必须严格为空串 ''，且越界访问 /etc、/、outsideDir 被拒（403）
@@ -10770,6 +10772,22 @@ test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Sy
     assert.throws(() => remoteMod.listHostDirectories({ dirPath: symSsh, homeDir: fakeHome, configDir }), (err) => err.status === 403);
     assert.throws(() => remoteMod.listHostDirectories({ dirPath: symLoopA, homeDir: fakeHome, configDir }), (err) => err.status === 403);
     assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symLoopA, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    // 悬空符号链接（目标本身 & 祖先节点）在浏览、新建与注册项目全链路一律 403 拒绝
+    const danglingChild = path.join(symDangling, 'nested-child');
+    assert.ok(!workList.entries.some((e) => e.name === 'dangling-outside'), '悬空符号链接不得暴露在目录列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symDangling, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: danglingChild, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symDangling, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: workDir, name: 'dangling-outside' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: danglingChild, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symDangling, name: 'dangling-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: danglingChild, name: 'dangling-child-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
     assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symEscape, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
     assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: fakeHome, name: '.ssh' }, { homeDir: fakeHome }), (err) => err.status === 403);
     assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: outsideDir, name: 'evil' }, { homeDir: fakeHome }), (err) => err.status === 403);
