@@ -46,7 +46,7 @@ Build the renderer and run tests before reloading via `ag-context-meter live`.
 4. **Mockup-First with True Theme Palette**：
    - 任何界面布局改动或新组件上线前，须先出设计草图确认；**草图自身也必须遵循项目默认紫色主色调（`#a78bfa`）而非随意选用其他色系**，防止草图配色直接误导后续实现。
 5. **Automated Gate**：
-   - 每次修改 `src/renderer/` 或 `ag-enhancer-overlay.js` 后，必须确保 `meter-suite-refactor.test.js` 中的 `需求 25`（UI 主题色系一致性静态门禁）全部通过后再构建热刷新。
+   - 每次修改 `src/renderer/` 或 `ag-enhancer-overlay.js` 后，必须确保 `tests/meter-suite-refactor.test.js` 中的 `需求 25`（UI 主题色系一致性静态门禁）全部通过后再构建热刷新。
 
 ## Documentation Sync Guardrails
 

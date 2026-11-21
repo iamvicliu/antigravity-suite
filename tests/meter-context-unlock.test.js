@@ -19,7 +19,7 @@ const {
   applyUnlock,
   restoreUnlock,
   getUnlockBackupDir
-} = require('./meter-context-unlock');
+} = require('../meter-context-unlock');
 
 /**
  * 构造一个用于端到端单测的精简合法 x86-64 PE Go 二进制 Buffer
@@ -308,7 +308,7 @@ test('状态流转细分：预算验证、已重启清除待重启标记与状�
   assert.match(resStatic.details, /未运行/);
 
   // 3. 运行中但进程路径与当前目标二进制不匹配（如另一路径的进程）：绝不能误报 verified_active
-  const { synthesizeAnalysisStatus } = require('./meter-context-unlock');
+  const { synthesizeAnalysisStatus } = require('../meter-context-unlock');
   if (typeof synthesizeAnalysisStatus === 'function') {
     const mismatchedSynth = synthesizeAnalysisStatus({
       gate3a: { status: 'patched' },
@@ -331,8 +331,8 @@ test('状态流转细分：预算验证、已重启清除待重启标记与状�
 test('runtime context unlock preserves host ASAR module resolution', () => {
   const { execFileSync } = require('node:child_process');
   const script = "const before=process.noAsar;require('./meter-context-unlock');require('./asar-engine');require('node:assert/strict').equal(process.noAsar,before)";
-  execFileSync(process.execPath, ['-e', script], { cwd: __dirname });
-  const installer=fs.readFileSync(path.join(__dirname,'install.js'),'utf8');
+  execFileSync(process.execPath, ['-e', script], { cwd: path.resolve(__dirname, '..') });
+  const installer=fs.readFileSync(path.join(__dirname, '..', 'install.js'),'utf8');
   assert.match(installer.slice(installer.indexOf('const additions = [')), /'asar-engine\.js'/);
 });
 

@@ -6,14 +6,14 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const core = require('./meter-core');
+const core = require('../meter-core');
 const {
   loadCustomPlanSettings,
   savePluginSettings,
   getPluginSettings
-} = require('./meter-collector');
+} = require('../meter-collector');
 
-const source = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', 'meter-renderer.js'), 'utf8');
 
 function session(unknown = 0) {
   return {

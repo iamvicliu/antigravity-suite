@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs'), vm = require('node:vm'), core = require('./meter-core');
-const source = fs.readFileSync(require('node:path').join(__dirname, 'meter-renderer.js'), 'utf8');
+const fs = require('node:fs'), vm = require('node:vm'), core = require('../meter-core');
+const source = fs.readFileSync(require('node:path').join(__dirname, '..', 'meter-renderer.js'), 'utf8');
 function session(unknown = 0) { return { groups: Object.fromEntries(['user','assistant','thinking','tools','summaries','system','definitions'].map(k => [k,core.empty()])), total: { chars: 100, low: 10, high: 50 }, attachmentTotal: core.empty(), attachments: unknown ? [{ name: '<img onerror=bad>', status: 'unknown', unknownParts: ['图像 token 未知'], chars: 0, source: 'user' }] : [], unknownFiles: unknown, steps: 10, userMessages: 2, assistantMessages: 3 }; }
 function harness(scanSession = session()) {
   const elements = new Map();
@@ -375,7 +375,7 @@ test('6 independent custom color slots support custom values, reset to theme def
 test('window controls overlay spacer, convPane flex-grow self-healing, and clean dispose', () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
-  assert.equal(api.version, require('./package.json').version);
+  assert.equal(api.version, require('../package.json').version);
 
   // 1. Antigravity 1.x: class contains 'top-0'
   const cluster1x = h.sandbox.document.createElement();
@@ -1508,8 +1508,8 @@ test('online update and GitHub entry points: openExternal whitelist enforcement 
 
 test('chinese i18n drawer, GitHub links and check-update buttons stay hidden while preserving DOM/JS compatibility and disabling auto update check', async () => {
   const path = require('node:path');
-  const templateHtml = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
-  const stylesCss = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  const templateHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'template.html'), 'utf8');
+  const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
 
   assert.match(templateHtml, /<div class="tech-drawer" id="chinese-i18n-drawer" hidden style="display:none">/);
   assert.match(templateHtml, /<button id="btn-github-repo-ctx"[^>]*hidden style="display:none"/);
@@ -1550,7 +1550,7 @@ test('chinese i18n drawer, GitHub links and check-update buttons stay hidden whi
 
 test('topbar badge order places 5h/week quota after tok/s so first two open context panel and third opens 5h/week popover', async () => {
   const path = require('node:path');
-  const enhancerSource = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  const enhancerSource = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
 
   const elementsById = new Map();
   const docById = new Map();
