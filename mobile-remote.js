@@ -4534,13 +4534,13 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
     }
     const fn = window.__AGEnhancer?.getMobileSnapshot;
     if (typeof fn !== 'function') {
-      return { ok: false, error: '当前窗口尚未注入增强挂件 (请确保 live-host 已连接)' };
+      return { ok: false, error: '电脑端增强组件尚未就绪，请在 Antigravity 窗口中重新开启套件或稍等 2 秒重试' };
     }
     return fn();
   })()`;
   const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr, 7000, { idempotent: true });
   if (!snap || typeof snap !== 'object') {
-    throw new Error('未能读取窗口快照');
+    throw new Error('未能读取电脑端会话画面，请确认 Antigravity 已打开');
   }
   const baseSnap = {
     ...snap,
@@ -4567,7 +4567,7 @@ async function performActionInTarget(payload, options = {}) {
     const expr = `(async () => {
       const fn = window.__AGEnhancer?.performMobileAction;
       if (typeof fn !== 'function') {
-        return { ok: false, error: '当前窗口尚未注入 v1.6.0 控制接口' };
+        return { ok: false, error: '电脑端远程控制暂未就绪，请确认 Antigravity 窗口已打开并重新加载套件' };
       }
       return await fn(${serialized});
     })()`;
@@ -4648,26 +4648,122 @@ function buildUnauthorizedHtml() {
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Antigravity 远程未授权</title>
   <style>
-    :root{color-scheme:light dark}
-    body{margin:0;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px;background:#09090b;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}
-    .card{max-width:400px;width:100%;padding:22px;border-radius:16px;background:#18181b;border:1px solid rgba(255,255,255,.12);line-height:1.6}
-    h1{margin:0 0 10px;font-size:18px}
-    p{margin:0 0 12px;color:#a1a1aa;font-size:14px}
-    code{display:block;padding:10px 12px;border-radius:10px;background:#09090b;color:#38bdf8;font-size:13px;border:1px solid rgba(56,189,248,.25)}
+    :root{color-scheme:light dark;--ease-out:cubic-bezier(.22,1,.36,1)}
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    body{
+      margin:0;min-height:100dvh;display:flex;align-items:center;justify-content:center;
+      padding:max(20px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) max(20px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left));
+      background:#09090b;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;line-height:1.5
+    }
+    .card{
+      max-width:420px;width:100%;padding:22px;border-radius:18px;background:#18181b;
+      border:1px solid rgba(255,255,255,.12);box-shadow:0 20px 56px rgba(0,0,0,.45);
+      animation:ag-auth-in .22s var(--ease-out)
+    }
+    @keyframes ag-auth-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    .icon-badge{
+      width:40px;height:40px;border-radius:12px;margin-bottom:12px;
+      display:inline-flex;align-items:center;justify-content:center;
+      background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.32);color:#7dd3fc
+    }
+    h1{margin:0 0 8px;font-size:18px;font-weight:700;text-wrap:balance}
+    p{margin:0 0 14px;color:#a1a1aa;font-size:14px;text-wrap:pretty}
+    code{
+      display:block;padding:11px 12px;border-radius:10px;background:#09090b;color:#7dd3fc;
+      font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      border:1px solid rgba(56,189,248,.28);overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch
+    }
+    .actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+    .btn{
+      appearance:none;flex:1 1 130px;min-height:40px;padding:0 14px;border-radius:10px;
+      font-size:13.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;
+      transition:transform .12s var(--ease-out),filter .15s ease,background-color .15s ease
+    }
+    .btn:active:not(:disabled){transform:scale(.975)}
+    .btn:focus-visible{outline:2px solid #38bdf8;outline-offset:2px}
+    .btn.primary{
+      border:none;background:#38bdf8;color:#082f49;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.24),0 1px 2px rgba(0,0,0,.18)
+    }
+    .btn.secondary{
+      border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#f4f4f5
+    }
+    .status{margin-top:10px;min-height:18px;font-size:12px;color:#7dd3fc}
     @media (prefers-color-scheme:light){
       body{background:#f8fafc;color:#18181b}
-      .card{background:#ffffff;border-color:rgba(15,23,42,.12);box-shadow:0 8px 28px rgba(15,23,42,.06)}
+      .card{background:#ffffff;border-color:rgba(15,23,42,.12);box-shadow:0 12px 32px rgba(15,23,42,.08)}
+      .icon-badge{background:rgba(2,132,199,.1);border-color:rgba(2,132,199,.28);color:#0369a1}
       p{color:#52525b}
-      code{background:#f1f5f9;color:#0284c7;border-color:rgba(2,132,199,.28)}
+      code{background:#f1f5f9;color:#0369a1;border-color:rgba(2,132,199,.28)}
+      .btn:focus-visible{outline-color:#0284c7}
+      .btn.primary{background:#0369a1;color:#ffffff}
+      .btn.secondary{background:#f1f5f9;border-color:rgba(15,23,42,.15);color:#18181b}
+      .status{color:#0369a1}
+    }
+    @media (prefers-reduced-motion:reduce){
+      *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
     }
   </style>
 </head>
 <body>
   <div class="card">
+    <div class="icon-badge" aria-hidden="true">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    </div>
     <h1>需要配对口令</h1>
-    <p>当前浏览器未携带有效的远程配对 Token。请在 Mac 终端运行下方命令重新扫码打开：</p>
-    <code>ag-context-meter remote</code>
+    <p>当前浏览器未携带有效的配对凭据。请在电脑终端运行下方命令后重新扫码打开：</p>
+    <code id="auth-cmd">ag-context-meter remote</code>
+    <div class="actions">
+      <button id="btn-copy-cmd" class="btn primary" type="button">复制终端命令</button>
+      <button id="btn-retry-conn" class="btn secondary" type="button">重新检测连接</button>
+    </div>
+    <div id="auth-status" class="status" role="status" aria-live="polite"></div>
   </div>
+  <script>
+  (function(){
+    var cmd = 'ag-context-meter remote';
+    var statusEl = document.getElementById('auth-status');
+    var copyBtn = document.getElementById('btn-copy-cmd');
+    var retryBtn = document.getElementById('btn-retry-conn');
+    function setStatus(txt){ if (statusEl) statusEl.textContent = txt || ''; }
+    if (copyBtn) {
+      copyBtn.onclick = function(){
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          navigator.clipboard.writeText(cmd).then(function(){
+            setStatus('已复制命令，请粘贴到电脑终端运行');
+          }, function(){
+            fallbackCopy();
+          });
+        } else {
+          fallbackCopy();
+        }
+      };
+    }
+    function fallbackCopy(){
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = cmd;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        setStatus(ok ? '已复制命令，请粘贴到电脑终端运行' : '请长按上方命令手动复制');
+      } catch (e) {
+        setStatus('请长按上方命令手动复制');
+      }
+    }
+    if (retryBtn) {
+      retryBtn.onclick = function(){
+        retryBtn.disabled = true;
+        retryBtn.textContent = '正在检测…';
+        setStatus('正在刷新页面检查连接状态…');
+        location.reload();
+      };
+    }
+  })();
+  </script>
 </body>
 </html>`;
 }
@@ -4687,17 +4783,21 @@ function buildMobileAppHtml() {
   <style>
     :root{
       color-scheme:dark;
+      --ease-out:cubic-bezier(.22,1,.36,1);
       --bg:#09090b;--topbar-bg:rgba(12,12,15,.88);--topbar-border:rgba(255,255,255,.07);
       --drawer-bg:#18181b;--sidebar-bg:#111114;--sidebar-border:rgba(255,255,255,.08);
       --card:#18181b;--card2:#27272a;--composer-bg:#16161a;--composer-border:rgba(255,255,255,.11);
       --composer-shadow:0 8px 28px rgba(0,0,0,.45);--composer-shadow-lg:0 12px 36px rgba(0,0,0,.4);
+      --surface-highlight:rgba(255,255,255,.07);
       --approval-dock-bg:rgba(24,24,27,.98);
       --surface-subtle:rgba(255,255,255,.04);--surface-soft:rgba(255,255,255,.05);--surface-hover:rgba(255,255,255,.08);
       --surface-strong:rgba(255,255,255,.07);--surface-strong-hover:rgba(255,255,255,.11);
-      --border:rgba(255,255,255,.1);--border-subtle:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.16);
-      --fg:#f4f4f5;--fg-strong:#fafafa;--fg-secondary:#e4e4e7;--fg-sub:#d4d4d8;--muted:#a1a1aa;--placeholder:#71717a;
-      --accent:#38bdf8;--accent-fg:#7dd3fc;--accent-strong-fg:#bae6fd;--accent-bg:rgba(56,189,248,.1);--accent-border:rgba(56,189,248,.32);
-      --green:#34d399;--amber:#fbbf24;--red:#f87171;--risk-fg:#fca5a5;--risk-bg:rgba(239,68,68,.14);
+      --border:rgba(255,255,255,.11);--border-subtle:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.18);
+      --fg:#f4f4f5;--fg-strong:#fafafa;--fg-secondary:#e4e4e7;--fg-sub:#d4d4d8;--muted:#a1a1aa;--placeholder:#8e8e98;
+      --accent:#38bdf8;--accent-fg:#7dd3fc;--accent-strong-fg:#bae6fd;--accent-bg:rgba(56,189,248,.11);--accent-border:rgba(56,189,248,.34);
+      --btn-primary-bg:#38bdf8;
+      --green:#34d399;--amber:#fbbf24;--red:#f87171;--risk-fg:#fca5a5;--risk-bg:rgba(239,68,68,.14);--risk-border:rgba(248,113,113,.55);
+      --diff-add:#4ade80;--diff-del:#f87171;
       --code-bg:rgba(255,255,255,.1);--pre-bg:#09090b;--qbar-bg:rgba(255,255,255,.12);--thought-summary:#93c5fd;
       --ap-approve-bg:#10b981;--ap-approve-fg:#052e16;--ap-reject-bg:#3f3f46;--ap-reject-fg:#f4f4f5;
       --user-bg:#1d4ed8;--user-fg:#f8fafc;--send-ready-fg:#082f49;
@@ -4708,6 +4808,9 @@ function buildMobileAppHtml() {
       --input-bg:rgba(9,9,11,.75);
       --proj-head-bg:rgba(255,255,255,.06);--proj-head-border:rgba(255,255,255,.09);
       --proj-count-bg:rgba(255,255,255,.09);
+      --badge-fast-bg:rgba(52,211,153,.16);--badge-fast-fg:#6ee7b7;--badge-fast-border:rgba(52,211,153,.35);
+      --badge-mid-bg:rgba(251,191,36,.15);--badge-mid-fg:#fde68a;
+      --badge-slow-bg:rgba(249,115,22,.18);--badge-slow-fg:#fdba74;
       --badge-run-bg:rgba(34,197,94,.16);--badge-run-fg:#86efac;
       --badge-wait-bg:rgba(245,158,11,.18);--badge-wait-fg:#fde68a;
       --badge-err-bg:rgba(239,68,68,.18);--badge-err-fg:#fca5a5;
@@ -4729,17 +4832,20 @@ function buildMobileAppHtml() {
         color-scheme:light;
         --bg:#f8fafc;--topbar-bg:rgba(248,250,252,.88);--topbar-border:rgba(15,23,42,.08);
         --drawer-bg:#ffffff;--sidebar-bg:#f1f5f9;--sidebar-border:rgba(15,23,42,.08);
-        --card:#ffffff;--card2:#e2e8f0;--composer-bg:#ffffff;--composer-border:rgba(15,23,42,.13);
+        --card:#ffffff;--card2:#e2e8f0;--composer-bg:#ffffff;--composer-border:rgba(15,23,42,.14);
         --composer-shadow:0 6px 24px rgba(15,23,42,.07);--composer-shadow-lg:0 10px 30px rgba(15,23,42,.08);
+        --surface-highlight:rgba(255,255,255,.85);
         --approval-dock-bg:rgba(248,250,252,.96);
-        --surface-subtle:rgba(15,23,42,.035);--surface-soft:rgba(15,23,42,.045);--surface-hover:rgba(15,23,42,.07);
+        --surface-subtle:rgba(15,23,42,.035);--surface-soft:rgba(15,23,42,.05);--surface-hover:rgba(15,23,42,.08);
         --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
-        --border:rgba(15,23,42,.1);--border-subtle:rgba(15,23,42,.07);--border-strong:rgba(15,23,42,.15);
-        --fg:#18181b;--fg-strong:#09090b;--fg-secondary:#27272a;--fg-sub:#3f3f46;--muted:#52525b;--placeholder:#71717a;
-        --accent:#0284c7;--accent-fg:#0369a1;--accent-strong-fg:#075985;--accent-bg:rgba(2,132,199,.09);--accent-border:rgba(2,132,199,.3);
-        --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);
-        --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0284c7;
-        --ap-approve-bg:#059669;--ap-approve-fg:#ffffff;--ap-reject-bg:#e4e4e7;--ap-reject-fg:#18181b;
+        --border:rgba(15,23,42,.13);--border-subtle:rgba(15,23,42,.08);--border-strong:rgba(15,23,42,.2);
+        --fg:#18181b;--fg-strong:#09090b;--fg-secondary:#27272a;--fg-sub:#3f3f46;--muted:#52525b;--placeholder:#64748b;
+        --accent:#0284c7;--accent-fg:#0369a1;--accent-strong-fg:#075985;--accent-bg:rgba(2,132,199,.09);--accent-border:rgba(2,132,199,.32);
+        --btn-primary-bg:#0369a1;
+        --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);--risk-border:rgba(220,38,38,.42);
+        --diff-add:#15803d;--diff-del:#b91c1c;
+        --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0369a1;
+        --ap-approve-bg:#047857;--ap-approve-fg:#ffffff;--ap-reject-bg:#e4e4e7;--ap-reject-fg:#18181b;
         --user-bg:#2563eb;--user-fg:#ffffff;--send-ready-fg:#ffffff;
         --toast-bg:#18181b;--toast-fg:#fafafa;--backdrop-bg:rgba(15,23,42,.36);
         --pop-shadow:0 14px 36px rgba(15,23,42,.14);--sheet-shadow:0 20px 56px rgba(15,23,42,.18);
@@ -4748,8 +4854,11 @@ function buildMobileAppHtml() {
         --input-bg:#f8fafc;
         --proj-head-bg:rgba(15,23,42,.055);--proj-head-border:rgba(15,23,42,.1);
         --proj-count-bg:rgba(15,23,42,.08);
+        --badge-fast-bg:rgba(5,150,105,.12);--badge-fast-fg:#065f46;--badge-fast-border:rgba(5,150,105,.32);
+        --badge-mid-bg:rgba(217,119,6,.13);--badge-mid-fg:#92400e;
+        --badge-slow-bg:rgba(234,88,12,.12);--badge-slow-fg:#9a3412;
         --badge-run-bg:rgba(5,150,105,.13);--badge-run-fg:#047857;
-        --badge-wait-bg:rgba(217,119,6,.14);--badge-wait-fg:#b45309;
+        --badge-wait-bg:rgba(217,119,6,.14);--badge-wait-fg:#92400e;
         --badge-err-bg:rgba(220,38,38,.13);--badge-err-fg:#b91c1c;
         --badge-unk-bg:rgba(82,82,91,.12);--badge-unk-fg:#52525b;
         --git-tag-bg:rgba(5,150,105,.13);--git-tag-fg:#047857;
@@ -4762,17 +4871,20 @@ function buildMobileAppHtml() {
       color-scheme:light;
       --bg:#f8fafc;--topbar-bg:rgba(248,250,252,.88);--topbar-border:rgba(15,23,42,.08);
       --drawer-bg:#ffffff;--sidebar-bg:#f1f5f9;--sidebar-border:rgba(15,23,42,.08);
-      --card:#ffffff;--card2:#e2e8f0;--composer-bg:#ffffff;--composer-border:rgba(15,23,42,.13);
+      --card:#ffffff;--card2:#e2e8f0;--composer-bg:#ffffff;--composer-border:rgba(15,23,42,.14);
       --composer-shadow:0 6px 24px rgba(15,23,42,.07);--composer-shadow-lg:0 10px 30px rgba(15,23,42,.08);
+      --surface-highlight:rgba(255,255,255,.85);
       --approval-dock-bg:rgba(248,250,252,.96);
-      --surface-subtle:rgba(15,23,42,.035);--surface-soft:rgba(15,23,42,.045);--surface-hover:rgba(15,23,42,.07);
+      --surface-subtle:rgba(15,23,42,.035);--surface-soft:rgba(15,23,42,.05);--surface-hover:rgba(15,23,42,.08);
       --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
-      --border:rgba(15,23,42,.1);--border-subtle:rgba(15,23,42,.07);--border-strong:rgba(15,23,42,.15);
-      --fg:#18181b;--fg-strong:#09090b;--fg-secondary:#27272a;--fg-sub:#3f3f46;--muted:#52525b;--placeholder:#71717a;
-      --accent:#0284c7;--accent-fg:#0369a1;--accent-strong-fg:#075985;--accent-bg:rgba(2,132,199,.09);--accent-border:rgba(2,132,199,.3);
-      --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);
-      --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0284c7;
-      --ap-approve-bg:#059669;--ap-approve-fg:#ffffff;--ap-reject-bg:#e4e4e7;--ap-reject-fg:#18181b;
+      --border:rgba(15,23,42,.13);--border-subtle:rgba(15,23,42,.08);--border-strong:rgba(15,23,42,.2);
+      --fg:#18181b;--fg-strong:#09090b;--fg-secondary:#27272a;--fg-sub:#3f3f46;--muted:#52525b;--placeholder:#64748b;
+      --accent:#0284c7;--accent-fg:#0369a1;--accent-strong-fg:#075985;--accent-bg:rgba(2,132,199,.09);--accent-border:rgba(2,132,199,.32);
+      --btn-primary-bg:#0369a1;
+      --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);--risk-border:rgba(220,38,38,.42);
+      --diff-add:#15803d;--diff-del:#b91c1c;
+      --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0369a1;
+      --ap-approve-bg:#047857;--ap-approve-fg:#ffffff;--ap-reject-bg:#e4e4e7;--ap-reject-fg:#18181b;
       --user-bg:#2563eb;--user-fg:#ffffff;--send-ready-fg:#ffffff;
       --toast-bg:#18181b;--toast-fg:#fafafa;--backdrop-bg:rgba(15,23,42,.36);
       --pop-shadow:0 14px 36px rgba(15,23,42,.14);--sheet-shadow:0 20px 56px rgba(15,23,42,.18);
@@ -4781,8 +4893,11 @@ function buildMobileAppHtml() {
       --input-bg:#f8fafc;
       --proj-head-bg:rgba(15,23,42,.055);--proj-head-border:rgba(15,23,42,.1);
       --proj-count-bg:rgba(15,23,42,.08);
+      --badge-fast-bg:rgba(5,150,105,.12);--badge-fast-fg:#065f46;--badge-fast-border:rgba(5,150,105,.32);
+      --badge-mid-bg:rgba(217,119,6,.13);--badge-mid-fg:#92400e;
+      --badge-slow-bg:rgba(234,88,12,.12);--badge-slow-fg:#9a3412;
       --badge-run-bg:rgba(5,150,105,.13);--badge-run-fg:#047857;
-      --badge-wait-bg:rgba(217,119,6,.14);--badge-wait-fg:#b45309;
+      --badge-wait-bg:rgba(217,119,6,.14);--badge-wait-fg:#92400e;
       --badge-err-bg:rgba(220,38,38,.13);--badge-err-fg:#b91c1c;
       --badge-unk-bg:rgba(82,82,91,.12);--badge-unk-fg:#52525b;
       --git-tag-bg:rgba(5,150,105,.13);--git-tag-fg:#047857;
@@ -4791,6 +4906,10 @@ function buildMobileAppHtml() {
       --unread-dot:#2563eb;--unread-glow:rgba(37,99,235,.2);
     }
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    button:focus-visible,[tabindex]:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .composer-card textarea:focus-visible,.prompt-other-input:focus-visible,.proj-path-input:focus-visible,.proj-field-input:focus-visible{outline:none}
+    button:not(:disabled){transition:transform .12s var(--ease-out),background-color .15s ease,border-color .15s ease,color .15s ease,opacity .15s ease}
+    button:active:not(:disabled){transform:scale(.975)}
     html{
       margin:0;padding:0;width:100%;height:100%;height:100dvh;overflow:hidden;
       background:var(--bg);color:var(--fg);overscroll-behavior:none;
@@ -4812,12 +4931,31 @@ function buildMobileAppHtml() {
       flex-shrink:0;display:flex;align-items:center;gap:8px;padding:8px 12px;
       border-bottom:1px solid var(--topbar-border);background:var(--topbar-bg);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
     }
+    .conn-banner{
+      flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
+      padding:8px 12px;background:var(--warn-card-bg);border-bottom:1px solid var(--warn-card-border);
+      color:var(--warn-card-fg);font-size:12.5px;line-height:1.4;
+    }
+    .conn-banner[hidden]{display:none}
+    .conn-banner-msg{flex:1 1 180px;min-width:0;font-weight:500}
+    .conn-banner-actions{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
+    .conn-banner-btn{
+      appearance:none;min-height:32px;padding:0 10px;border-radius:8px;font-size:12px;font-weight:600;
+      border:1px solid var(--warn-card-border);background:var(--card);color:var(--fg-strong);cursor:pointer;white-space:nowrap;
+    }
+    .conn-banner-btn.primary{background:var(--btn-primary-bg);border-color:transparent;color:var(--send-ready-fg)}
     .icon-btn{
       appearance:none;border:none;background:transparent;color:var(--muted);
       border-radius:10px;height:34px;min-width:34px;padding:0 6px;
       display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;
     }
     .icon-btn:active{background:var(--surface-hover);color:var(--fg-strong)}
+    .drawer-refresh-btn,.panel-close-btn{
+      min-height:34px;height:34px;padding:0 10px;gap:5px;font-size:12px;font-weight:600;white-space:nowrap;
+      border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg-secondary);border-radius:9px;
+    }
+    .drawer-refresh-btn.is-spinning svg{animation:agspin .7s linear infinite}
+    .drawer-refresh-btn:disabled{opacity:.65;cursor:default}
     .title-wrap{
       flex:1 1 auto;min-width:0;overflow:hidden;
       display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;
@@ -4828,6 +4966,10 @@ function buildMobileAppHtml() {
     .dot.busy{background:var(--amber);animation:pulse 1s infinite ease-in-out}
     .dot.err{background:var(--red)}
     @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
+    @keyframes ag-pop-in{from{opacity:0;transform:translateY(-6px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+    @keyframes ag-sheet-in{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes ag-toast-in{from{opacity:0;transform:translate(-50%,-8px) scale(.96)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+    @keyframes ag-shimmer{0%{opacity:.45}50%{opacity:.85}100%{opacity:.45}}
     .conv-title{
       grid-column:2;grid-row:1;min-width:0;
       font-size:14.5px;font-weight:600;color:var(--fg-strong);
@@ -4853,22 +4995,27 @@ function buildMobileAppHtml() {
     .quota-pill{
       appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
       border-radius:11px;padding:5px 10px;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;
-      flex-shrink:0;cursor:pointer;display:flex;flex-direction:column;align-items:flex-end;line-height:1.2;gap:1px;
+      flex-shrink:0;cursor:pointer;display:flex;flex-direction:column;align-items:flex-end;line-height:1.2;gap:1px;white-space:nowrap;
     }
     .quota-pill span:last-child{font-size:11.5px;color:var(--muted);font-weight:500}
     .quota-drawer{
       position:fixed;top:calc(env(safe-area-inset-top) + 52px);right:10px;left:10px;max-width:360px;margin-left:auto;
-      z-index:60;background:var(--card);border:1px solid var(--border-strong);border-radius:14px;
+      z-index:60;background:var(--card);border:1px solid var(--border-strong);border-radius:18px;
       padding:12px;box-shadow:var(--pop-shadow);
+      max-height:calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 108px);overflow-y:auto;-webkit-overflow-scrolling:touch;
     }
+    .quota-drawer:not([hidden]){animation:ag-pop-in .18s var(--ease-out)}
     .quota-drawer[hidden]{display:none}
     .qcard{padding:8px 10px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border);margin-bottom:8px}
-    .qhead{display:flex;justify-content:space-between;font-weight:600;font-size:13.5px;margin-bottom:6px}
+    .qhead{display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:600;font-size:13.5px;margin-bottom:6px;font-variant-numeric:tabular-nums}
+    .qhead>span:first-child{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .qhead>span:last-child{flex-shrink:0;white-space:nowrap}
     .qsub{margin-top:5px}
-    .qsub-row{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px}
+    .qsub-row{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;margin-bottom:3px;font-variant-numeric:tabular-nums}
+    .qsub-row>strong,.qsub-row>span:last-child{flex-shrink:0;white-space:nowrap}
     .qbar{height:5px;border-radius:99px;background:var(--qbar-bg);overflow:hidden}
     .qfill{height:100%;border-radius:99px}
-    .qreset{font-size:11.5px;color:var(--muted);margin-top:2px}
+    .qreset{font-size:11.5px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums}
     .messages{
       position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
       padding:14px 16px 12px;display:flex;flex-direction:column;gap:16px;
@@ -4878,11 +5025,11 @@ function buildMobileAppHtml() {
       align-self:flex-end;max-width:84%;padding:10px 14px;border-radius:18px 18px 4px 18px;
       background:var(--user-bg);color:var(--user-fg);
       font-size:14.5px;line-height:1.48;white-space:pre-wrap;
-      box-shadow:none;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.16),0 1px 2px rgba(0,0,0,.14);
     }
     .msg.assistant{align-self:stretch;background:transparent;border:none;padding:2px 2px}
     .msg.assistant .msg-plain{white-space:pre-wrap;font-size:14.5px;line-height:1.65;color:var(--fg-secondary)}
-    .msg.assistant.is-risk{padding:10px 12px;border-radius:14px;background:var(--risk-bg);border:1px solid rgba(248,113,113,.5)}
+    .msg.assistant.is-risk{padding:10px 12px;border-radius:14px;background:var(--risk-bg);border:1px solid var(--risk-border)}
     .busy-pill{
       display:inline-flex;align-items:center;gap:8px;align-self:flex-start;
       padding:6px 12px;border-radius:999px;background:var(--surface-subtle);border:1px solid var(--border-subtle);
@@ -4896,14 +5043,14 @@ function buildMobileAppHtml() {
     .md-body h2{font-size:17px;font-weight:700;margin:12px 0 6px;padding-bottom:3px;border-bottom:1px solid var(--topbar-border);line-height:1.35;color:var(--fg-strong)}
     .md-body h3{font-size:15.5px;font-weight:700;margin:11px 0 5px;line-height:1.38;color:var(--fg)}
     .md-body h4,.md-body h5,.md-body h6{font-size:14.5px;font-weight:600;margin:9px 0 4px;color:var(--fg-secondary)}
-    .md-body p{margin:6px 0}
+    .md-body p{margin:6px 0;text-wrap:pretty}
     .md-body ul,.md-body ol{margin:6px 0;padding-left:20px}
-    .md-body li{margin:4px 0}
+    .md-body li{margin:4px 0;text-wrap:pretty}
     .md-body li>p{margin:2px 0}
     .md-body strong,.md-body b{font-weight:700;color:var(--fg-strong)}
     .md-body em{color:var(--fg-secondary)}
     .md-body hr{border:none;border-top:1px solid var(--border);margin:10px 0}
-    .md-body a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+    .md-body a{color:var(--accent-fg);text-decoration:underline;text-underline-offset:2px}
     .md-body blockquote{margin:8px 0;padding:6px 10px;border-left:3px solid var(--accent);background:var(--accent-bg);border-radius:0 8px 8px 0;color:var(--fg-sub)}
     .md-body code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;padding:1px 5px;border-radius:5px;background:var(--code-bg);color:var(--accent-fg)}
     .md-body code.md-pill{background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg)}
@@ -4916,8 +5063,8 @@ function buildMobileAppHtml() {
     .md-body tr:last-child td{border-bottom:none}
     .md-body th:last-child,.md-body td:last-child{border-right:none}
     .risk-tag{
-      display:block;margin-bottom:6px;padding:4px 8px;border-radius:8px;
-      background:var(--risk-bg);border:1px solid rgba(239,68,68,.45);color:var(--risk-fg);font-size:12.5px;font-weight:600;
+      display:block;margin-bottom:6px;padding:5px 8px;border-radius:8px;
+      background:var(--risk-bg);border:1px solid var(--risk-border);color:var(--risk-fg);font-size:12.5px;font-weight:600;
     }
     .thought-box{margin-bottom:8px;padding:6px 10px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border-subtle);font-size:12.5px;color:var(--fg-sub)}
     .msg.assistant.is-thought-only{padding:8px 10px}
@@ -4925,13 +5072,17 @@ function buildMobileAppHtml() {
     .thought-box summary{cursor:pointer;font-weight:600;color:var(--thought-summary);list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;user-select:none}
     .thought-box summary::-webkit-details-marker{display:none}
     .thought-sum-left{display:inline-flex;align-items:center;gap:5px;min-width:0;flex:1 1 auto}
-    .thought-caret{display:inline-block;font-size:11px;transition:transform .16s ease;opacity:.82;flex:0 0 auto}
+    .thought-caret{display:inline-block;font-size:11px;transition:transform .16s var(--ease-out);opacity:.82;flex:0 0 auto}
     .thought-box[open] .thought-caret{transform:rotate(90deg)}
-    .thought-sum-meta{font-weight:500;font-size:11.5px;opacity:.76;white-space:nowrap}
+    .thought-sum-meta{font-weight:500;font-size:11.5px;opacity:.76;white-space:nowrap;font-variant-numeric:tabular-nums}
     .thought-box[open] .thought-cue-open{display:none}
     .thought-box:not([open]) .thought-cue-close{display:none}
-    .thought-all-btn{appearance:none;border:1px solid var(--border-subtle);background:var(--surface-soft);color:var(--fg-sub);border-radius:6px;padding:1px 6px;font-size:11px;font-weight:500;cursor:pointer;flex:0 0 auto;line-height:1.4}
-    .thought-all-btn:hover{border-color:var(--border-accent-strong);color:var(--fg)}
+    .thought-all-btn{
+      position:relative;appearance:none;border:1px solid var(--border-subtle);background:var(--surface-soft);color:var(--fg-sub);
+      border-radius:6px;padding:1px 6px;font-size:11px;font-weight:500;cursor:pointer;flex:0 0 auto;line-height:1.4;white-space:nowrap;
+    }
+    .thought-all-btn::after{content:'';position:absolute;inset:-8px}
+    .thought-all-btn:hover{border-color:var(--accent-border);background:var(--accent-bg);color:var(--fg-strong)}
     .thought-body{margin-top:7px;white-space:pre-wrap;color:var(--muted);max-height:280px;overflow-y:auto;line-height:1.5;border-top:1px solid var(--border-subtle);padding-top:6px}
     .thought-step{position:relative;padding:0 0 8px 12px;border-left:2px solid var(--border-subtle);margin-left:4px}
     .thought-step:last-child{padding-bottom:0}
@@ -4941,15 +5092,46 @@ function buildMobileAppHtml() {
     .compact-done-pill{align-self:center;display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;background:var(--surface-subtle);border:1px solid var(--border-subtle);color:var(--muted);font-size:12px;margin:2px 0}
     .messages.is-switching{opacity:.58;transition:opacity .12s ease}
     .empty-tip{margin:auto;text-align:center;color:var(--muted);padding:24px 12px;font-size:13px}
+    .empty-state-card{
+      margin:auto;width:100%;max-width:340px;padding:20px 16px;border-radius:14px;
+      background:var(--surface-subtle);border:1px solid var(--border-subtle);
+      display:flex;flex-direction:column;align-items:center;text-align:center;gap:8px;
+    }
+    .empty-state-card.compact{padding:16px 12px;max-width:none;border-radius:10px}
+    .empty-state-ico{
+      width:40px;height:40px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-fg);flex-shrink:0;
+    }
+    .empty-state-card.is-error .empty-state-ico{
+      background:var(--risk-bg);border-color:var(--risk-border);color:var(--risk-fg);
+    }
+    .empty-state-title{font-size:14px;font-weight:700;color:var(--fg-strong);line-height:1.35;text-wrap:balance}
+    .empty-state-desc{font-size:12.5px;color:var(--muted);line-height:1.5;text-wrap:pretty;word-break:break-word}
+    .empty-state-btn{
+      appearance:none;margin-top:4px;min-height:36px;padding:0 14px;border-radius:9px;
+      border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      font-size:12.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;
+    }
+    .empty-state-card.is-error .empty-state-btn{
+      border-color:var(--risk-border);background:var(--card);color:var(--fg-strong);
+    }
+    .ag-skel-list{display:flex;flex-direction:column;gap:8px;padding:4px 0}
+    .ag-skel-row{
+      height:36px;border-radius:9px;background:var(--surface-soft);border:1px solid var(--border-subtle);
+      position:relative;overflow:hidden;animation:ag-shimmer 1.3s ease-in-out infinite;
+    }
+    .ag-skel-row.w-lg{width:100%}
+    .ag-skel-row.w-md{width:84%}
+    .ag-skel-row.w-sm{width:68%}
     .mode-entry-card{
-      margin:auto;width:100%;max-width:400px;padding:16px 14px;border-radius:16px;
+      margin:auto;width:100%;max-width:400px;padding:14px;border-radius:18px;
       background:var(--card);border:1px solid var(--border);
       display:flex;flex-direction:column;gap:10px;
     }
-    .mode-entry-title{font-size:13px;font-weight:600;color:var(--fg-secondary);line-height:1.45}
+    .mode-entry-title{font-size:13px;font-weight:600;color:var(--fg-secondary);line-height:1.45;text-wrap:balance}
     .mode-entry-list{display:flex;flex-direction:column;gap:8px}
     .mode-entry-btn{
-      appearance:none;width:100%;padding:10px 12px;border-radius:11px;
+      appearance:none;width:100%;padding:10px 12px;border-radius:10px;
       border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
       display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;cursor:pointer;
       transition:border-color .15s ease,background-color .15s ease;
@@ -4957,43 +5139,47 @@ function buildMobileAppHtml() {
     .mode-entry-btn:active{background:var(--accent-bg);border-color:var(--accent)}
     .mode-entry-btn.active{border-color:var(--accent);background:var(--accent-bg)}
     .mode-entry-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
-    .mode-entry-name{font-size:13.5px;font-weight:600;color:var(--fg-strong)}
+    .mode-entry-name{font-size:13.5px;font-weight:600;color:var(--fg-strong);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
     .mode-entry-host{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .mode-entry-tag{font-size:11.5px;font-weight:600;color:var(--accent);flex-shrink:0;white-space:nowrap}
+    .mode-entry-tag{font-size:11.5px;font-weight:600;color:var(--accent-fg);flex-shrink:0;white-space:nowrap}
     .approval-dock{
       flex-shrink:0;padding:8px 10px;background:var(--approval-dock-bg);border-top:1px solid var(--border);
       display:flex;flex-direction:column;gap:6px;
     }
     .approval-dock[hidden]{display:none}
     .approval-card{
-      padding:8px 10px;border-radius:12px;background:var(--accent-bg);border:1px solid var(--accent-border);
-      display:flex;flex-direction:column;gap:6px;
+      padding:10px;border-radius:16px;background:var(--accent-bg);border:1px solid var(--accent-border);
+      display:flex;flex-direction:column;gap:7px;
     }
-    .approval-card.is-risk{background:var(--risk-bg);border-color:rgba(248,113,113,.8)}
-    .approval-ctx{font-size:12.5px;color:var(--fg-secondary);max-height:54px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,Menlo,monospace}
+    .approval-card.is-risk{background:var(--risk-bg);border-color:var(--risk-border)}
+    .approval-ctx{
+      font-size:12.5px;line-height:1.45;color:var(--fg-secondary);
+      display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;
+      font-family:ui-monospace,Menlo,monospace;
+    }
     .approval-btns{display:flex;gap:8px;flex-wrap:wrap}
     .ap-btn{
-      flex:1 1 110px;min-height:42px;border-radius:10px;border:none;font-size:14px;font-weight:700;cursor:pointer;
+      flex:1 1 110px;min-height:42px;border-radius:8px;border:none;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap;
     }
-    .ap-btn.approve{background:var(--ap-approve-bg);color:var(--ap-approve-fg)}
+    .ap-btn.approve{background:var(--ap-approve-bg);color:var(--ap-approve-fg);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 1px 2px rgba(0,0,0,.16)}
     .ap-btn.reject{background:var(--ap-reject-bg);color:var(--ap-reject-fg);border:1px solid var(--border)}
     .ap-btn.secondary{background:var(--surface-soft);color:var(--fg-strong);border:1px solid var(--border-strong)}
     .prompt-card{
-      padding:9px 11px;border-radius:12px;background:var(--card);border:1px solid var(--accent-border);
+      padding:10px;border-radius:16px;background:var(--card);border:1px solid var(--accent-border);
       display:flex;flex-direction:column;gap:7px;max-height:min(38vh,280px);overflow-y:auto;-webkit-overflow-scrolling:touch;
     }
-    .prompt-card.is-risk{background:var(--risk-bg);border-color:rgba(248,113,113,.85)}
-    .ap-btn.is-persistent-risk{border:1px solid rgba(248,113,113,.85);background:rgba(239,68,68,.18);color:var(--risk-fg)}
+    .prompt-card.is-risk{background:var(--risk-bg);border-color:var(--risk-border)}
+    .ap-btn.is-persistent-risk{border:1px solid var(--risk-border);background:var(--risk-bg);color:var(--risk-fg)}
     .prompt-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
-    .prompt-title{font-size:13.5px;font-weight:700;color:var(--fg-strong);line-height:1.35}
+    .prompt-title{font-size:13.5px;font-weight:700;color:var(--fg-strong);line-height:1.35;min-width:0;text-wrap:balance}
     .prompt-badge{
-      flex-shrink:0;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:999px;
+      flex-shrink:0;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:999px;white-space:nowrap;
       background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
     }
-    .prompt-desc{font-size:12px;color:var(--muted);line-height:1.4;white-space:pre-wrap;word-break:break-word;max-height:72px;overflow-y:auto}
+    .prompt-desc{font-size:12px;color:var(--muted);line-height:1.45;white-space:pre-wrap;word-break:break-word;max-height:72px;overflow-y:auto;text-wrap:pretty}
     .prompt-opts{display:flex;flex-direction:column;gap:5px}
     .prompt-opt{
-      appearance:none;width:100%;text-align:left;padding:8px 10px;border-radius:10px;
+      appearance:none;width:100%;text-align:left;padding:8px 10px;border-radius:8px;
       border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
       display:flex;align-items:center;gap:8px;font-size:13px;line-height:1.35;cursor:pointer;
       transition:border-color .14s ease,background-color .14s ease;
@@ -5001,11 +5187,11 @@ function buildMobileAppHtml() {
     .prompt-opt.selected{
       border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg);font-weight:600;
     }
-    .prompt-opt-mark{flex-shrink:0;font-size:14px;line-height:1;color:var(--accent)}
+    .prompt-opt-mark{flex-shrink:0;font-size:14px;line-height:1;color:var(--accent-fg)}
     .prompt-opt-label{min-width:0;flex:1 1 auto;word-break:break-word}
     .prompt-other-input{
-      width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border-strong);
-      background:var(--surface-subtle);color:var(--fg-strong);font-size:13px;font-family:inherit;outline:none;
+      width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border-strong);
+      background:var(--surface-subtle);color:var(--fg-strong);font-size:16px;font-family:inherit;outline:none;
     }
     .prompt-other-input:focus{border-color:var(--accent)}
     .queue-dock{
@@ -5014,26 +5200,26 @@ function buildMobileAppHtml() {
     }
     .queue-dock[hidden]{display:none}
     .queue-card{
-      padding:8px 10px;border-radius:12px;background:var(--card);border:1px solid var(--border-strong);
+      padding:10px;border-radius:16px;background:var(--card);border:1px solid var(--border-strong);
       display:flex;flex-direction:column;gap:6px;max-height:min(22vh,176px);overflow-y:auto;-webkit-overflow-scrolling:touch;
     }
     .queue-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
     .queue-title{
-      display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--fg-strong);
+      display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--fg-strong);min-width:0;
     }
     .queue-count{
-      font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:999px;
-      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
+      font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:999px;font-variant-numeric:tabular-nums;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);white-space:nowrap;
     }
     .queue-send-all{
       appearance:none;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
-      border-radius:8px;padding:3px 9px;font-size:11.5px;font-weight:600;cursor:pointer;flex-shrink:0;
+      border-radius:8px;min-height:30px;padding:3px 10px;font-size:11.5px;font-weight:600;cursor:pointer;flex-shrink:0;white-space:nowrap;
     }
     .queue-send-all:disabled{opacity:.5;cursor:not-allowed}
     .queue-list{display:flex;flex-direction:column;gap:4px}
     .queue-item{
       display:flex;align-items:center;justify-content:space-between;gap:8px;
-      padding:6px 8px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border);
+      padding:6px 8px;border-radius:8px;background:var(--surface-subtle);border:1px solid var(--border);
     }
     .queue-thumbs{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
     .queue-thumb{width:24px;height:24px;border-radius:5px;object-fit:cover;border:1px solid var(--border);display:block}
@@ -5042,25 +5228,26 @@ function buildMobileAppHtml() {
       display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;
     }
     .queue-del-btn{
-      appearance:none;border:1px solid var(--border);background:transparent;color:var(--muted);
+      position:relative;appearance:none;border:1px solid var(--border);background:transparent;color:var(--muted);
       border-radius:7px;width:24px;height:24px;flex-shrink:0;cursor:pointer;
       display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1;
     }
+    .queue-del-btn::after{content:'';position:absolute;inset:-8px}
     .queue-del-btn:active{background:var(--surface-hover);color:var(--red)}
     .queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
     .composer-dock{
       flex-shrink:0;background:transparent;padding:2px 10px 2px;
       display:flex;flex-direction:column;gap:5px;
     }
-    .chips{display:flex;align-items:center;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 2px;min-height:32px}
+    .chips{display:flex;align-items:center;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:2px;min-height:34px}
     .chips::-webkit-scrollbar{display:none}
     .chip{
-      appearance:none;flex-shrink:0;border:1px solid var(--border-subtle);background:var(--surface-subtle);color:var(--muted);
-      border-radius:999px;padding:5px 11px;font-size:12.5px;white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;gap:4px;
+      appearance:none;flex-shrink:0;border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg-sub);
+      border-radius:999px;min-height:30px;padding:5px 11px;font-size:12.5px;white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;gap:4px;
     }
-    .chip.suggest{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-fg);font-weight:500}
-    .chip.chip-mode-toggle{border-color:var(--border-strong);background:var(--surface-soft);color:var(--fg-sub);font-weight:600;padding:5px 10px}
-    .chip.chip-mode-toggle.active{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-fg)}
+    .chip.suggest{border:1px dashed var(--accent-border);background:var(--accent-bg);color:var(--accent-fg);font-weight:500}
+    .chip.chip-mode-toggle{border-color:var(--border-strong);background:var(--surface-soft);color:var(--fg-secondary);font-weight:600;padding:5px 10px}
+    .chip.chip-mode-toggle.active{border-color:var(--btn-primary-bg);background:var(--btn-primary-bg);color:var(--send-ready-fg);font-weight:700}
     .chip.quick-prompt{color:var(--fg-secondary)}
     .chip.quick-prompt.direct{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg)}
     .attach-hint{
@@ -5090,10 +5277,11 @@ function buildMobileAppHtml() {
       display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:1;font-weight:700;
       box-shadow:0 2px 6px rgba(0,0,0,.22);
     }
+    .attach-item-rm::after{content:'';position:absolute;inset:-9px}
     .attach-item-rm:hover,.attach-item-rm:active{background:var(--risk-bg);color:var(--risk-fg);border-color:var(--risk-fg)}
     .attach-clear-btn{
       appearance:none;border:1px solid var(--accent-border);background:var(--card);color:var(--accent-strong-fg);
-      border-radius:8px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;white-space:nowrap;
+      border-radius:8px;min-height:30px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;white-space:nowrap;
     }
     .msg-user-group{display:flex;flex-direction:column;align-items:flex-end;gap:6px;align-self:flex-end;max-width:86%}
     .msg-user-group .msg.user{max-width:100%}
@@ -5118,8 +5306,9 @@ function buildMobileAppHtml() {
     .media-lightbox[hidden]{display:none}
     .media-lightbox img{max-width:94vw;max-height:86vh;border-radius:12px;object-fit:contain;box-shadow:0 16px 48px rgba(0,0,0,.5)}
     .media-lightbox-close{
-      position:fixed;top:max(14px,env(safe-area-inset-top));right:14px;width:36px;height:36px;border-radius:999px;
+      position:fixed;top:max(14px,env(safe-area-inset-top));right:max(14px,env(safe-area-inset-right));width:40px;height:40px;border-radius:999px;
       border:1px solid rgba(255,255,255,.25);background:rgba(0,0,0,.55);color:#fff;font-size:18px;cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center;
     }
     .md-file-link{
       appearance:none;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
@@ -5128,25 +5317,26 @@ function buildMobileAppHtml() {
     }
     .md-file-link:active{filter:brightness(1.1)}
     .fv-backdrop{
-      position:fixed;inset:0;z-index:110;background:var(--backdrop-bg);
+      position:fixed;top:0;left:0;right:0;height:var(--modal-h,100dvh);z-index:110;background:var(--backdrop-bg);
       display:flex;align-items:flex-end;justify-content:center;
       backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
     }
     .fv-backdrop[hidden]{display:none}
     .fv-modal{
-      width:100%;max-width:760px;height:86vh;max-height:86vh;background:var(--card);
-      border-top-left-radius:18px;border-top-right-radius:18px;border:1px solid var(--border-strong);
+      width:100%;max-width:760px;height:min(86%,calc(var(--modal-h,100dvh) * 0.86));max-height:calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px);
+      background:var(--card);border-top-left-radius:18px;border-top-right-radius:18px;border:1px solid var(--border-strong);
+      padding-bottom:var(--safe-bottom);
       display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--sheet-shadow);
     }
     .fv-head{
       display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;
       border-bottom:1px solid var(--border);flex-shrink:0;
     }
-    .fv-title{font-size:14px;font-weight:700;color:var(--fg-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-title{font-size:14px;font-weight:700;color:var(--fg-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;text-wrap:balance}
     .fv-tabs{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
     .fv-tab{
-      appearance:none;flex:1;padding:6px 10px;border-radius:9px;border:1px solid var(--border);
-      background:var(--surface-subtle);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;
+      appearance:none;flex:1;min-height:34px;padding:6px 10px;border-radius:9px;border:1px solid var(--border);
+      background:var(--surface-subtle);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;
     }
     .fv-tab.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
     .fv-body{flex:1 1 auto;min-height:0;overflow:auto;padding:10px 12px;-webkit-overflow-scrolling:touch}
@@ -5155,33 +5345,34 @@ function buildMobileAppHtml() {
       font-family:ui-monospace,Menlo,monospace;word-break:break-all;
     }
     .fv-up-btn{
-      appearance:none;border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
-      border-radius:7px;padding:3px 8px;font-size:11.5px;cursor:pointer;flex-shrink:0;
+      appearance:none;min-height:34px;padding:0 10px;border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0;white-space:nowrap;
+      display:inline-flex;align-items:center;justify-content:center;gap:4px;
     }
-    .fv-list{display:flex;flex-direction:column;gap:4px}
+    .fv-list{display:flex;flex-direction:column;gap:5px}
     .fv-row{
-      appearance:none;width:100%;text-align:left;padding:8px 10px;border-radius:9px;
+      appearance:none;width:100%;text-align:left;min-height:40px;padding:8px 10px;border-radius:9px;
       border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
       display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;cursor:pointer;
     }
     .fv-row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
-    .fv-row-meta{font-size:11px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums}
+    .fv-row-meta{font-size:11px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums;white-space:nowrap}
     .fv-code{
       margin:0;padding:10px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border);
       font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5;overflow-x:auto;white-space:pre;
     }
     .fv-code-line{display:block;padding:0 4px}
     .fv-code-line.hl{background:var(--accent-bg);border-left:2px solid var(--accent)}
-    .fv-ln{display:inline-block;width:36px;color:var(--muted);user-select:none;text-align:right;margin-right:10px}
-    .fv-diff-add{color:#4ade80}
-    .fv-diff-del{color:#f87171}
+    .fv-ln{display:inline-block;width:36px;color:var(--muted);user-select:none;text-align:right;margin-right:10px;font-variant-numeric:tabular-nums}
+    .fv-diff-add{color:var(--diff-add)}
+    .fv-diff-del{color:var(--diff-del)}
     .fv-diff-hdr{color:var(--accent-strong-fg);font-weight:600}
     .composer-card{
       background:var(--composer-bg);border:1px solid var(--composer-border);border-radius:22px;
       padding:10px 10px 8px 12px;display:flex;flex-direction:column;gap:6px;
-      box-shadow:var(--composer-shadow);transition:border-color .15s ease;
+      box-shadow:var(--composer-shadow),inset 0 1px 0 var(--surface-highlight);transition:border-color .15s ease,box-shadow .15s ease;
     }
-    .composer-card:focus-within{border-color:var(--accent-border)}
+    .composer-card:focus-within{border-color:var(--accent);box-shadow:var(--composer-shadow),0 0 0 3px var(--accent-bg)}
     .composer-card textarea{
       width:100%;min-height:28px;max-height:148px;resize:none;border:none;background:transparent;
       color:var(--fg);padding:2px 4px;font-size:16px;line-height:1.42;font-family:inherit;outline:none;
@@ -5192,21 +5383,21 @@ function buildMobileAppHtml() {
     .toolbar-right{display:flex;align-items:center;gap:6px;flex-shrink:0}
     .ghost-btn{
       appearance:none;border:none;background:transparent;color:var(--muted);
-      height:32px;padding:0 7px;border-radius:999px;font-size:12.5px;font-weight:500;
-      display:inline-flex;align-items:center;gap:4px;cursor:pointer;min-width:0;max-width:100%;
+      height:36px;padding:0 8px;border-radius:999px;font-size:12.5px;font-weight:500;
+      display:inline-flex;align-items:center;gap:4px;cursor:pointer;min-width:0;max-width:100%;white-space:nowrap;
     }
     .ghost-btn:active{background:var(--surface-hover);color:var(--fg-strong)}
-    .ghost-btn.icon-only{width:32px;padding:0;justify-content:center}
+    .ghost-btn.icon-only{width:36px;padding:0;justify-content:center}
     .ghost-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .send-circle{
-      appearance:none;flex-shrink:0;width:32px;height:32px;border-radius:999px;border:none;
+      appearance:none;flex-shrink:0;width:36px;height:36px;border-radius:999px;border:none;
       background:var(--card2);color:var(--placeholder);display:inline-flex;align-items:center;justify-content:center;
-      cursor:pointer;transition:background-color .15s ease,color .15s ease,transform .1s ease;
+      cursor:pointer;transition:background-color .15s ease,color .15s ease,transform .12s var(--ease-out);
     }
-    .send-circle.ready{background:var(--accent);color:var(--send-ready-fg)}
-    .send-circle.stop{background:var(--risk-bg);color:var(--red);border:1px solid rgba(248,113,113,.45)}
+    .send-circle.ready{background:var(--btn-primary-bg);color:var(--send-ready-fg);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 1px 2px rgba(0,0,0,.16)}
+    .send-circle.stop{background:var(--risk-bg);color:var(--red);border:1px solid var(--risk-border)}
     .send-circle.pending{background:var(--card2);color:var(--muted);border:1px solid var(--border);cursor:not-allowed;pointer-events:none}
-    .send-circle:active{transform:scale(.94)}
+    .send-circle:active:not(:disabled){transform:scale(.94)}
     .send-circle:disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
     .send-circle:disabled:active{transform:none}
     [hidden],.sheet-speed-btn[hidden],.sheet-sub-text[hidden],.sheet-back-btn[hidden]{display:none!important}
@@ -5216,34 +5407,35 @@ function buildMobileAppHtml() {
     .sheet-backdrop[hidden]{display:none}
     .sheet{
       width:100%;max-width:520px;max-height:min(calc(var(--modal-h,100dvh) * 0.72),calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px));background:var(--card);border-top:1px solid var(--border-strong);
-      border-radius:18px 18px 0 0;padding:12px 14px calc(12px + var(--safe-bottom));box-shadow:0 240px 0 0 var(--card);
+      border-radius:20px 20px 0 0;padding:14px 14px calc(14px + var(--safe-bottom));box-shadow:0 240px 0 0 var(--card);
       display:flex;flex-direction:column;gap:8px;overflow:hidden;
     }
+    .sheet-backdrop:not([hidden]) .sheet,.fv-backdrop:not([hidden]) .fv-modal{animation:ag-sheet-in .22s var(--ease-out)}
     .sheet-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-shrink:0}
     .sheet-title-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
     .sheet-sub-text{font-size:11.5px;font-weight:400;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .sheet-title-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
     .sheet-back-btn{
-      appearance:none;height:28px;padding:0 9px;border-radius:8px;
+      appearance:none;min-height:34px;height:34px;padding:0 10px;border-radius:8px;
       border:1px solid var(--border-strong);background:var(--surface-subtle);color:var(--fg);
-      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:4px;cursor:pointer;flex-shrink:0;
+      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:4px;cursor:pointer;flex-shrink:0;white-space:nowrap;
     }
     .sheet-back-btn:active{background:var(--surface-hover)}
     .sheet-speed-btn{
-      appearance:none;height:28px;padding:0 10px;border-radius:8px;
+      appearance:none;min-height:34px;height:34px;padding:0 10px;border-radius:8px;
       border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
-      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:5px;cursor:pointer;
+      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;
     }
     .sheet-speed-btn:active{filter:brightness(1.08)}
     .sheet-speed-btn:disabled{opacity:.65;cursor:default}
     .sheet-list{display:flex;flex-direction:column;gap:6px;overflow-y:auto;-webkit-overflow-scrolling:touch}
     .sheet-stage-viewport{width:100%;overflow:hidden}
-    .sheet-stage-track{display:flex;width:200%;align-items:flex-start;transition:transform .24s cubic-bezier(.22,1,.36,1);will-change:transform}
+    .sheet-stage-track{display:flex;width:200%;align-items:flex-start;transition:transform .24s var(--ease-out);will-change:transform}
     .sheet-stage-track.step-effort{transform:translateX(-50%)}
     .sheet-stage-pane{width:50%;flex:0 0 50%;display:flex;flex-direction:column;gap:6px;max-height:56dvh;overflow-y:auto;padding-right:2px;-webkit-overflow-scrolling:touch}
-    .sheet-opt.sliding-out{background:rgba(56,189,248,.18);border-color:rgba(56,189,248,.55)}
+    .sheet-opt.sliding-out{background:var(--accent-bg);border-color:var(--accent-border)}
     .sheet-opt{
-      width:100%;text-align:left;padding:11px 12px;border-radius:11px;border:1px solid var(--border);
+      width:100%;text-align:left;padding:11px 12px;border-radius:10px;border:1px solid var(--border);
       background:var(--surface-subtle);color:var(--fg);font-size:14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;
     }
     .sheet-opt.active{border-color:var(--accent);background:var(--accent-bg);color:var(--fg-strong);font-weight:600}
@@ -5251,14 +5443,14 @@ function buildMobileAppHtml() {
     .sheet-opt-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
     .sheet-opt-host{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .sheet-opt-right,.mode-entry-right{display:inline-flex;align-items:center;gap:7px;flex-shrink:0;margin-left:8px}
-    .mode-pill{font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;line-height:1.4}
-    .mode-pill.fast{background:rgba(52,211,153,.16);color:#10b981;border:1px solid rgba(52,211,153,.35)}
-    .mode-pill.cur{background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent-border)}
+    .mode-pill{font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;line-height:1.4;white-space:nowrap}
+    .mode-pill.fast{background:var(--badge-fast-bg);color:var(--badge-fast-fg);border:1px solid var(--badge-fast-border)}
+    .mode-pill.cur{background:var(--accent-bg);color:var(--accent-fg);border:1px solid var(--accent-border)}
     .lat-badge{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;padding:2px 7px;border-radius:999px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
-    .lat-badge.fast{background:rgba(52,211,153,.14);color:#10b981}
-    .lat-badge.mid{background:rgba(251,191,36,.14);color:#d97706}
-    .lat-badge.slow{background:rgba(249,115,22,.16);color:#ea580c}
-    .lat-badge.err{background:rgba(248,113,113,.14);color:#ef4444}
+    .lat-badge.fast{background:var(--badge-fast-bg);color:var(--badge-fast-fg)}
+    .lat-badge.mid{background:var(--badge-mid-bg);color:var(--badge-mid-fg)}
+    .lat-badge.slow{background:var(--badge-slow-bg);color:var(--badge-slow-fg)}
+    .lat-badge.err{background:var(--badge-err-bg);color:var(--badge-err-fg)}
     .lat-badge.muted,.lat-badge.pending{background:var(--surface-subtle);color:var(--muted)}
     .mini-spin{display:inline-block;width:11px;height:11px;border-radius:999px;border:1.5px solid var(--accent-border);border-top-color:var(--accent);animation:agspin .7s linear infinite;flex-shrink:0}
     @keyframes agspin{to{transform:rotate(360deg)}}
@@ -5284,7 +5476,7 @@ function buildMobileAppHtml() {
     .drawer-backdrop.dragging .drawer{transition:none}
     .new-chat-group{display:flex;align-items:stretch;gap:6px;flex-shrink:0}
     .new-chat-btn{
-      appearance:none;flex:1 1 auto;min-width:0;min-height:44px;padding:6px 10px;border-radius:12px;
+      appearance:none;flex:1 1 auto;min-width:0;min-height:44px;padding:6px 10px;border-radius:10px;
       background:var(--surface-strong);border:1px solid var(--border);color:var(--fg-strong);
       font-size:14px;font-weight:600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;
     }
@@ -5293,7 +5485,7 @@ function buildMobileAppHtml() {
     .new-chat-sub{display:block;width:100%;max-width:100%;font-size:10.5px;font-weight:500;line-height:1.22;color:var(--muted);white-space:normal;overflow-wrap:anywhere;word-break:break-word;text-align:center}
     .new-chat-sub[hidden]{display:none}
     .new-chat-pick-btn{
-      appearance:none;width:42px;min-height:44px;flex-shrink:0;border-radius:12px;
+      appearance:none;width:42px;min-height:44px;flex-shrink:0;border-radius:10px;
       background:var(--surface-strong);border:1px solid var(--border);color:var(--fg-sub);
       display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
     }
@@ -5304,8 +5496,8 @@ function buildMobileAppHtml() {
       background:var(--seg-track);border:1px solid var(--border-subtle);
     }
     .conv-tab{
-      appearance:none;border:none;background:transparent;color:var(--muted);border-radius:7px;
-      padding:6px 8px;font-size:12px;font-weight:600;cursor:pointer;
+      appearance:none;border:none;background:transparent;color:var(--muted);border-radius:8px;
+      padding:6px 8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;
       display:inline-flex;align-items:center;justify-content:center;gap:4px;
     }
     .conv-tab.active{background:var(--accent-bg);color:var(--accent-strong-fg)}
@@ -5320,7 +5512,7 @@ function buildMobileAppHtml() {
     .proj-group{display:flex;flex-direction:column;gap:5px;margin-top:6px}
     .proj-group:first-child{margin-top:0}
     .proj-head{
-      display:flex;align-items:center;gap:4px;padding:3px 5px 3px 3px;border-radius:11px;
+      display:flex;align-items:center;gap:4px;padding:3px 5px 3px 3px;border-radius:10px;
       background:var(--proj-head-bg);border:1px solid var(--proj-head-border);
       transition:background-color .14s ease,border-color .14s ease;
     }
@@ -5332,7 +5524,7 @@ function buildMobileAppHtml() {
       padding:6px 7px;border-radius:8px;font-size:14.5px;font-weight:700;letter-spacing:-.01em;
       display:flex;align-items:center;gap:6px;cursor:pointer;text-align:left;
     }
-    .proj-icon{display:inline-flex;align-items:center;justify-content:center;color:var(--accent);flex-shrink:0}
+    .proj-icon{display:inline-flex;align-items:center;justify-content:center;color:var(--accent-fg);flex-shrink:0}
     .proj-group.is-ungrouped .proj-icon{color:var(--muted)}
     .proj-chev{font-size:11px;color:var(--muted);width:12px;flex-shrink:0;text-align:center;font-weight:700}
     .proj-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -5370,11 +5562,11 @@ function buildMobileAppHtml() {
       background:var(--input-bg);color:var(--fg);font-size:16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;
     }
     .proj-field-input{font-family:inherit;font-size:16px}
-    .proj-path-input:focus,.proj-field-input:focus{border-color:var(--accent-border)}
+    .proj-path-input:focus,.proj-field-input:focus{border-color:var(--accent)}
     .proj-act-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0}
     .proj-act-btn{
-      appearance:none;height:32px;padding:0 10px;border-radius:9px;border:1px solid var(--border);
-      background:var(--surface-soft);color:var(--fg-sub);font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:4px;
+      appearance:none;min-height:34px;height:34px;padding:0 10px;border-radius:9px;border:1px solid var(--border);
+      background:var(--surface-soft);color:var(--fg-sub);font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;
     }
     .proj-act-btn.active{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg)}
     .proj-act-btn:disabled{opacity:.42;cursor:default}
@@ -5392,34 +5584,35 @@ function buildMobileAppHtml() {
     .proj-dir-item:active{background:var(--accent-bg);border-color:var(--accent-border)}
     .proj-dir-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .proj-dir-badges{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
-    .proj-tag{font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:999px;line-height:1.4}
+    .proj-tag{font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:999px;line-height:1.4;white-space:nowrap}
     .proj-tag.git{background:var(--git-tag-bg);color:var(--git-tag-fg)}
     .proj-tag.linked{background:var(--accent-bg);color:var(--accent-fg)}
     .proj-summary-card{
       padding:8px 10px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border);
-      font-size:12px;color:var(--fg-sub);display:flex;flex-direction:column;gap:3px;flex-shrink:0;
+      font-size:12px;color:var(--fg-sub);display:flex;flex-direction:column;gap:3px;flex-shrink:0;text-wrap:pretty;
     }
     .proj-summary-card.is-warn{border-color:var(--warn-card-border);background:var(--warn-card-bg);color:var(--warn-card-fg)}
     .proj-summary-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent-fg);word-break:break-all;font-size:11.5px}
     .proj-name-row{display:flex;flex-direction:column;gap:5px;flex-shrink:0}
     .proj-name-label{font-size:12px;font-weight:600;color:var(--muted)}
     .proj-primary-btn{
-      appearance:none;width:100%;height:42px;border-radius:11px;border:none;background:var(--accent);color:var(--send-ready-fg);
+      appearance:none;width:100%;height:42px;border-radius:10px;border:none;background:var(--btn-primary-bg);color:var(--send-ready-fg);
       font-size:14.5px;font-weight:700;cursor:pointer;flex-shrink:0;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 1px 2px rgba(0,0,0,.16);
     }
     .proj-primary-btn:disabled{opacity:.5;cursor:default}
-    .drawer-sub{font-size:12px;font-weight:600;color:var(--placeholder);padding:2px 4px 0;flex-shrink:0}
-    .drawer-nav-bar{display:flex;align-items:center;gap:6px;min-height:26px;padding:2px 2px 0;flex-shrink:0}
+    .drawer-sub{font-size:12px;font-weight:600;color:var(--muted);padding:2px 4px 0;flex-shrink:0}
+    .drawer-nav-bar{display:flex;align-items:center;gap:6px;min-height:34px;padding:2px 2px 0;flex-shrink:0}
     .drawer-nav-bar[hidden]{display:none}
     .drawer-back-btn{
-      appearance:none;height:26px;padding:0 9px;border-radius:8px;
+      appearance:none;min-height:34px;height:34px;padding:0 10px;border-radius:8px;
       border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
-      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:3px;cursor:pointer;flex-shrink:0;
+      font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:3px;cursor:pointer;flex-shrink:0;white-space:nowrap;
     }
     .drawer-back-btn:active{background:var(--accent-bg);border-color:var(--accent-border)}
     .drawer-proj-title{font-size:12.5px;font-weight:600;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto}
     .proj-item{
-      width:100%;text-align:left;padding:10px 11px;border-radius:11px;border:1px solid var(--border);
+      width:100%;text-align:left;padding:10px 11px;border-radius:10px;border:1px solid var(--border);
       background:var(--surface-subtle);color:var(--fg);font-size:13.5px;display:flex;align-items:center;
       justify-content:space-between;gap:8px;cursor:pointer;transition:background-color .14s ease,border-color .14s ease;
     }
@@ -5430,7 +5623,7 @@ function buildMobileAppHtml() {
     @keyframes agconvfade{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:translateX(0)}}
     .conv-list.anim-enter{animation:agconvfade .18s ease}
     .conv-item{
-      width:100%;text-align:left;padding:9px 11px;border-radius:10px;border:1px solid transparent;
+      width:100%;text-align:left;padding:9px 11px;border-radius:8px;border:1px solid transparent;
       background:var(--surface-subtle);color:var(--fg);font-size:13.5px;cursor:pointer;
       display:flex;flex-direction:column;gap:3px;
     }
@@ -5445,7 +5638,7 @@ function buildMobileAppHtml() {
     .c-dot.unread{background:var(--accent)}
     .c-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.35}
     .c-badge{
-      flex-shrink:0;font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;line-height:1.4;
+      flex-shrink:0;font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;line-height:1.4;white-space:nowrap;
     }
     .c-badge.running{background:var(--badge-run-bg);color:var(--badge-run-fg)}
     .c-badge.waiting{background:var(--badge-wait-bg);color:var(--badge-wait-fg)}
@@ -5463,65 +5656,69 @@ function buildMobileAppHtml() {
       position:absolute;top:1px;right:1px;width:6px;height:6px;border-radius:999px;
       background:var(--unread-dot);box-shadow:0 0 0 2px var(--drawer-bg);
     }
-    .c-time{flex-shrink:0;font-size:11px;color:var(--placeholder);font-variant-numeric:tabular-nums}
+    .c-time{flex-shrink:0;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
     .c-sub{font-size:11px;color:var(--muted);padding-left:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .conv-more-btn{
-      appearance:none;width:100%;padding:8px 10px;border-radius:9px;border:1px dashed var(--border);
-      background:var(--surface-subtle);color:var(--muted);font-size:12px;cursor:pointer;margin-top:2px;
+      appearance:none;width:100%;min-height:34px;padding:8px 10px;border-radius:8px;border:1px dashed var(--border);
+      background:var(--surface-subtle);color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;cursor:pointer;margin-top:2px;
     }
     .composer-card.drag-over{border-color:var(--accent);background:var(--accent-bg)}
     .load-earlier-btn{
-      appearance:none;align-self:center;padding:6px 14px;border-radius:999px;
+      appearance:none;align-self:center;min-height:34px;padding:6px 14px;border-radius:999px;
       border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-sub);
-      font-size:12px;font-weight:500;cursor:pointer;flex-shrink:0;
+      font-size:12px;font-weight:500;font-variant-numeric:tabular-nums;cursor:pointer;flex-shrink:0;
     }
     .load-earlier-btn:disabled{opacity:.6;cursor:default}
     .perm-ico{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
     .perm-ico.turbo{color:var(--amber)}
-    .perm-ico.auto{color:var(--accent)}
+    .perm-ico.auto{color:var(--accent-fg)}
     .perm-ico.default{color:var(--muted)}
     .perm-ico.request_review{color:var(--perm-review)}
     .perm-ico.unknown{color:var(--placeholder)}
     .drawer-brand{display:none}
     .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;display:flex;flex-direction:column;gap:6px}
     .drawer-footer{flex-shrink:0;padding-top:6px;border-top:1px solid var(--border-subtle)}
-    .theme-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:11px;background:var(--seg-track);border:1px solid var(--border-subtle)}
+    .theme-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:10px;background:var(--seg-track);border:1px solid var(--border-subtle)}
     .theme-seg-btn{
       appearance:none;border:none;background:transparent;color:var(--muted);
-      height:30px;padding:0;border-radius:8px;
+      height:32px;padding:0;border-radius:8px;
       display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
-      transition:background-color .15s ease,color .15s ease,box-shadow .15s ease;
+      transition:transform .12s var(--ease-out),background-color .15s ease,color .15s ease,box-shadow .15s ease;
     }
     .theme-seg-btn.active{background:var(--seg-active-bg);color:var(--fg-strong);box-shadow:var(--seg-active-shadow)}
     .toast{
       position:fixed;top:calc(env(safe-area-inset-top) + 56px);left:50%;transform:translateX(-50%);
       z-index:80;background:var(--toast-bg);color:var(--toast-fg);padding:7px 14px;border-radius:999px;font-size:12.5px;
-      border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.3);pointer-events:none;
+      border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.3);pointer-events:none;max-width:min(90vw,460px);text-align:center;
     }
+    .toast:not([hidden]){animation:ag-toast-in .18s var(--ease-out)}
     .toast[hidden]{display:none}
     /* 细滚动条 */
-    .messages,.conv-list,.drawer,.sheet-list,.proj-modal-body,.thought-body,.md-body pre,.md-table-wrap{
+    .messages,.conv-list,.drawer,.sheet-list,.proj-modal-body,.thought-body,.md-body pre,.md-table-wrap,.fv-body,.quota-drawer{
       scrollbar-width:thin;scrollbar-color:var(--scroll-thumb) transparent;
     }
     .messages{scrollbar-gutter:stable}
-    .messages::-webkit-scrollbar,.conv-list::-webkit-scrollbar,.drawer::-webkit-scrollbar,.sheet-list::-webkit-scrollbar,.proj-modal-body::-webkit-scrollbar,.thought-body::-webkit-scrollbar,.md-body pre::-webkit-scrollbar,.md-table-wrap::-webkit-scrollbar{
+    .messages::-webkit-scrollbar,.conv-list::-webkit-scrollbar,.drawer::-webkit-scrollbar,.sheet-list::-webkit-scrollbar,.proj-modal-body::-webkit-scrollbar,.thought-body::-webkit-scrollbar,.md-body pre::-webkit-scrollbar,.md-table-wrap::-webkit-scrollbar,.fv-body::-webkit-scrollbar,.quota-drawer::-webkit-scrollbar{
       width:6px;height:6px;
     }
-    .messages::-webkit-scrollbar-thumb,.conv-list::-webkit-scrollbar-thumb,.drawer::-webkit-scrollbar-thumb,.sheet-list::-webkit-scrollbar-thumb,.proj-modal-body::-webkit-scrollbar-thumb,.thought-body::-webkit-scrollbar-thumb,.md-body pre::-webkit-scrollbar-thumb,.md-table-wrap::-webkit-scrollbar-thumb{
+    .messages::-webkit-scrollbar-thumb,.conv-list::-webkit-scrollbar-thumb,.drawer::-webkit-scrollbar-thumb,.sheet-list::-webkit-scrollbar-thumb,.proj-modal-body::-webkit-scrollbar-thumb,.thought-body::-webkit-scrollbar-thumb,.md-body pre::-webkit-scrollbar-thumb,.md-table-wrap::-webkit-scrollbar-thumb,.fv-body::-webkit-scrollbar-thumb,.quota-drawer::-webkit-scrollbar-thumb{
       background:var(--scroll-thumb);border-radius:99px;
     }
-    .messages::-webkit-scrollbar-thumb:hover,.conv-list::-webkit-scrollbar-thumb:hover,.drawer::-webkit-scrollbar-thumb:hover,.sheet-list::-webkit-scrollbar-thumb:hover,.proj-modal-body::-webkit-scrollbar-thumb:hover,.md-table-wrap::-webkit-scrollbar-thumb:hover{
+    .messages::-webkit-scrollbar-thumb:hover,.conv-list::-webkit-scrollbar-thumb:hover,.drawer::-webkit-scrollbar-thumb:hover,.sheet-list::-webkit-scrollbar-thumb:hover,.proj-modal-body::-webkit-scrollbar-thumb:hover,.md-table-wrap::-webkit-scrollbar-thumb:hover,.fv-body::-webkit-scrollbar-thumb:hover,.quota-drawer::-webkit-scrollbar-thumb:hover{
       background:var(--scroll-thumb-hover);
     }
-    .messages::-webkit-scrollbar-track,.conv-list::-webkit-scrollbar-track,.drawer::-webkit-scrollbar-track,.sheet-list::-webkit-scrollbar-track,.proj-modal-body::-webkit-scrollbar-track,.md-table-wrap::-webkit-scrollbar-track{
+    .messages::-webkit-scrollbar-track,.conv-list::-webkit-scrollbar-track,.drawer::-webkit-scrollbar-track,.sheet-list::-webkit-scrollbar-track,.proj-modal-body::-webkit-scrollbar-track,.md-table-wrap::-webkit-scrollbar-track,.fv-body::-webkit-scrollbar-track,.quota-drawer::-webkit-scrollbar-track{
       background:transparent;
     }
     /* 鼠标设备悬停交互 */
     @media (hover:hover){
-      .icon-btn:hover,.top-panel-btn:hover{background:var(--surface-hover);color:var(--fg)}
+      .icon-btn:hover,.top-panel-btn:hover,.fv-up-btn:hover,.fv-row:hover,.conn-banner-btn:hover{background:var(--surface-hover);color:var(--fg)}
+      .conn-banner-btn.primary:hover{filter:brightness(1.08)}
+      .empty-state-btn:hover{filter:brightness(1.08);border-color:var(--accent)}
       .quota-pill:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .mode-entry-btn:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .chip:hover{background:var(--surface-hover);border-color:var(--border-strong);color:var(--fg-secondary)}
+      .chip.chip-mode-toggle.active:hover{filter:brightness(1.08);color:var(--send-ready-fg)}
       .chip.suggest:hover{background:var(--accent-bg);border-color:var(--accent);color:var(--accent-strong-fg)}
       .ghost-btn:hover{background:var(--surface-hover);color:var(--fg-secondary)}
       .send-circle.ready:hover{filter:brightness(1.08)}
@@ -5550,6 +5747,7 @@ function buildMobileAppHtml() {
         padding-top:0;padding-bottom:0;
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
+      .conn-banner{padding:8px 24px}
       .title-wrap{grid-template-columns:auto minmax(0,1fr) auto;column-gap:7px;row-gap:1px}
       .conv-title{grid-column:2;grid-row:1;font-size:15.5px}
       .sub-row{display:contents}
@@ -5583,7 +5781,7 @@ function buildMobileAppHtml() {
       .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:2px}
       .proj-toggle{font-size:13.5px;padding:5px 7px}
       .conv-item{
-        padding:7px 10px;font-size:12.5px;border-radius:9px;
+        padding:7px 10px;font-size:12.5px;border-radius:8px;
         transition:background-color .14s ease,border-color .14s ease;
       }
       .messages{
@@ -5600,63 +5798,67 @@ function buildMobileAppHtml() {
       }
       .composer-card{
         border-radius:18px;padding:12px 14px 10px 16px;
-        box-shadow:var(--composer-shadow-lg);
+        box-shadow:var(--composer-shadow-lg),inset 0 1px 0 var(--surface-highlight);
       }
       .composer-card textarea{min-height:32px;max-height:200px;font-size:14.5px}
       .quota-drawer{
         position:absolute;top:60px;right:24px;left:auto;width:368px;max-width:none;margin-left:0;
+        max-height:calc(100% - 84px);
       }
       .sheet-backdrop{
         align-items:center;padding:24px;background:var(--backdrop-bg);
         backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
       }
       .sheet{
-        max-width:440px;max-height:min(560px,80vh);border-radius:16px;
+        max-width:440px;max-height:min(560px,80vh);border-radius:20px;
         border:1px solid var(--border-strong);padding:16px;
         box-shadow:var(--sheet-shadow);
       }
       .sheet.proj-modal{max-width:520px;max-height:min(680px,86vh)}
+      .fv-backdrop{align-items:center;padding:24px}
+      .fv-modal{max-height:min(760px,84vh);height:min(680px,84vh);border-radius:18px;padding-bottom:0}
       .proj-path-input{font-size:13px}
       .proj-field-input{font-size:14px}
+      .prompt-other-input{font-size:13px}
       .sheet-opt{padding:10px 12px;font-size:13.5px}
       .toast{top:18px}
     }
     .topbar-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
     .top-panel-btn{
       appearance:none;border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
-      border-radius:10px;height:32px;padding:0 7px;display:inline-flex;align-items:center;gap:4px;
-      font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;cursor:pointer;flex-shrink:0;
+      border-radius:10px;height:32px;padding:0 8px;display:inline-flex;align-items:center;gap:4px;
+      font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;cursor:pointer;flex-shrink:0;white-space:nowrap;
       transition:border-color .15s ease,background-color .15s ease,color .15s ease;
     }
     .top-panel-btn:active{background:var(--surface-hover)}
     .top-panel-btn.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
     .top-panel-btn[hidden]{display:none!important}
     .ctx-drawer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}
-    .ctx-stat-box{padding:7px 9px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border)}
+    .ctx-stat-box{padding:7px 9px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border)}
     .ctx-stat-lbl{font-size:11px;color:var(--muted)}
     .ctx-stat-val{font-size:13px;font-weight:600;color:var(--fg-strong);margin-top:2px;font-variant-numeric:tabular-nums}
     .usage-src-tabs{display:flex;gap:5px;margin-bottom:8px}
     .usage-src-btn{
-      flex:1;appearance:none;border:1px solid var(--border);background:var(--surface-subtle);color:var(--muted);
-      border-radius:8px;padding:5px 6px;font-size:12px;font-weight:500;cursor:pointer;
+      flex:1;appearance:none;min-height:30px;border:1px solid var(--border);background:var(--surface-subtle);color:var(--muted);
+      border-radius:8px;padding:5px 6px;font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap;
     }
     .usage-src-btn.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg);font-weight:600}
     .usage-kpi-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-bottom:8px}
-    .usage-bars{display:flex;align-items:flex-end;gap:3px;height:46px;padding:6px 4px 2px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border)}
+    .usage-bars{display:flex;align-items:flex-end;gap:3px;height:46px;padding:6px 4px 2px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border)}
     .usage-bar-col{flex:1;min-width:4px;border-radius:3px 3px 0 0;background:var(--accent)}
     .follow-desk-btn{
-      appearance:none;margin:0 10px 8px;padding:7px 10px;border-radius:10px;
+      appearance:none;margin:0 10px 8px;min-height:36px;padding:7px 10px;border-radius:10px;
       border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
-      font-size:12.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;
+      font-size:12.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;
     }
     .follow-desk-btn:active{filter:brightness(1.08)}
     .isolated-badge{
-      display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;font-size:10.5px;font-weight:600;
+      display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;font-size:10.5px;font-weight:600;white-space:nowrap;
       background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);flex-shrink:0;
     }
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
-    @media (max-width:767px){
+    @media (max-width:859px){
       .topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}
       .title-wrap{flex:1 1 0;min-width:0}
       .topbar-actions{
@@ -5667,29 +5869,35 @@ function buildMobileAppHtml() {
       .topbar-actions::-webkit-scrollbar{display:none}
       .topbar-actions .quota-pill{margin-left:auto}
       .quota-drawer{top:calc(env(safe-area-inset-top) + 92px)}
-      .top-panel-btn{height:28px;border-radius:8px;padding:0 7px;gap:4px;font-size:11.5px}
+      .top-panel-btn{height:32px;border-radius:8px;padding:0 8px;gap:4px;font-size:11.5px}
       .quota-pill{
-        height:28px;padding:0 8px;border-radius:8px;font-size:11.5px;
+        height:32px;padding:0 8px;border-radius:8px;font-size:11.5px;
         flex-direction:row;align-items:center;gap:5px;line-height:1;
       }
       .quota-pill span:last-child{font-size:11px;padding-left:5px;border-left:1px solid var(--border)}
       body.has-ctx-btn .quota-pill #ctx-badge{display:none}
     }
     @media (max-width:430px){
-      .icon-btn{height:30px;min-width:30px;padding:0 4px}
+      .icon-btn{height:36px;min-width:36px;padding:0 4px}
       .conv-project-badge{max-width:65%;font-size:10.5px;padding:1px 6px}
-      .top-panel-btn{padding:0 6px;gap:3px;font-size:11px}
-      .quota-pill{padding:0 7px;font-size:11px}
+      .top-panel-btn{height:32px;padding:0 7px;gap:3px;font-size:11px}
+      .quota-pill{height:32px;padding:0 7px;font-size:11px}
     }
     @media (max-width:360px){
       .topbar{padding:6px 8px;column-gap:5px;row-gap:5px}
-      .icon-btn{height:28px;min-width:28px;padding:0 3px}
+      .icon-btn{height:36px;min-width:36px;padding:0 3px}
       .topbar-actions{gap:4px;padding-top:4px}
-      .top-panel-btn{height:26px;padding:0 5px;gap:2px;font-size:10.5px;border-radius:7px}
-      #btn-usage-panel{min-width:28px;padding:0 6px;justify-content:center}
+      .top-panel-btn{height:32px;padding:0 6px;gap:2px;font-size:10.5px;border-radius:8px}
+      #btn-usage-panel{min-width:32px;padding:0 6px;justify-content:center}
       #btn-usage-panel #usage-top-val{display:none}
-      #btn-files-panel{min-width:28px;padding:0 5px}
-      .quota-pill{height:26px;padding:0 6px;font-size:10.5px;border-radius:7px}
+      #btn-files-panel{min-width:32px;padding:0 6px}
+      .quota-pill{height:32px;padding:0 6px;font-size:10.5px;border-radius:8px}
+    }
+    @supports (corner-shape:superellipse(1.25)){
+      .composer-card,.quota-drawer,.sheet,.fv-modal,.mode-entry-card,.approval-card,.prompt-card,.queue-card,.msg.user,.qcard,.ctx-stat-box,.sheet-opt,.conv-item,.proj-head,.proj-item,.ap-btn,.proj-primary-btn,.empty-state-card{corner-shape:superellipse(1.25)}
+    }
+    @media (prefers-reduced-motion:reduce){
+      *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
     }
   </style>
 </head>
@@ -5702,7 +5910,7 @@ function buildMobileAppHtml() {
       <div class="title-wrap">
         <div class="title-row">
           <span id="status-dot" class="dot"></span>
-          <span id="conv-title" class="conv-title">正在连接 Mac…</span>
+          <span id="conv-title" class="conv-title">正在连接电脑端…</span>
         </div>
         <div class="sub-row">
           <span id="conv-project-badge" class="conv-project-badge" hidden></span>
@@ -5728,6 +5936,14 @@ function buildMobileAppHtml() {
       </div>
     </header>
 
+    <div id="conn-banner" class="conn-banner" role="alert" hidden>
+      <span id="conn-banner-msg" class="conn-banner-msg">与电脑端的连接已断开，正在尝试自动重连…</span>
+      <div class="conn-banner-actions">
+        <button id="conn-retry-btn" class="conn-banner-btn primary" type="button">立即重试</button>
+        <button id="conn-switch-btn" class="conn-banner-btn" type="button">切换连接方式</button>
+      </div>
+    </div>
+
     <div id="context-drawer" class="quota-drawer top-drawer context-drawer" hidden></div>
     <div id="usage-drawer" class="quota-drawer top-drawer usage-drawer" hidden></div>
     <div id="quota-drawer" class="quota-drawer" hidden></div>
@@ -5747,7 +5963,7 @@ function buildMobileAppHtml() {
         <input id="img-input" type="file" multiple hidden>
         <div class="composer-toolbar">
           <div class="toolbar-left">
-            <button id="btn-img" class="ghost-btn icon-only" type="button" title="拍照或上传图片" aria-label="上传图片">
+            <button id="btn-img" class="ghost-btn icon-only" type="button" title="上传图片或文件" aria-label="上传图片或文件">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
             <button id="btn-model-inline" class="ghost-btn" type="button" title="切换模型">
@@ -5779,7 +5995,7 @@ function buildMobileAppHtml() {
         </div>
         <div class="sheet-title-actions">
           <button id="sheet-action-btn" class="sheet-speed-btn" type="button" hidden>⚡ 测速</button>
-          <button id="sheet-close" class="icon-btn" style="height:28px;font-size:12px" type="button">关闭</button>
+          <button id="sheet-close" class="icon-btn panel-close-btn" type="button">关闭</button>
         </div>
       </div>
       <div id="sheet-list" class="sheet-list"></div>
@@ -5790,7 +6006,7 @@ function buildMobileAppHtml() {
     <div class="sheet proj-modal" role="dialog" aria-label="新建项目">
       <div class="sheet-title">
         <span>新建项目 · 选择电脑目录</span>
-        <button id="proj-modal-close" class="icon-btn" style="height:28px;font-size:12px" type="button">关闭</button>
+        <button id="proj-modal-close" class="icon-btn panel-close-btn" type="button">关闭</button>
       </div>
       <div id="proj-modal-body" class="proj-modal-body">
         <div id="proj-roots" class="proj-roots-bar"></div>
@@ -6376,8 +6592,8 @@ function buildMobileAppHtml() {
         if (!latestSnap) {
           renderModeEntryGate(
             isManualEntry
-              ? ('正在通过 ' + getActiveChannelLabel() + ' 连接 Mac…')
-              : '正在并发测速各可用通道，自动选择最快路线…'
+              ? ('正在通过 ' + getActiveChannelLabel() + ' 连接电脑端…')
+              : '正在检测各可用通道速度，自动选择最快通道…'
           );
         }
         const needServerHints = location.protocol === 'https:'
@@ -6449,7 +6665,7 @@ function buildMobileAppHtml() {
         if (!latestSnap) {
           renderModeEntryGate(
             isManualEntry
-              ? ('正在通过 ' + getActiveChannelLabel() + ' 连接 Mac…')
+              ? ('正在通过 ' + getActiveChannelLabel() + ' 连接电脑端…')
               : (best ? ('最快通道：' + formatKindLabel(best.kind) + ' (' + best.ms + ' ms)，可直接点击进入：') : '当前入口暂未连通，请点击下方已开启的连接方式直接进入：')
           );
         }
@@ -6582,7 +6798,7 @@ function buildMobileAppHtml() {
         const cls = r.ms < 80 ? 'fast' : (r.ms <= 250 ? 'mid' : 'slow');
         return { cls, html: esc(r.ms + ' ms') };
       }
-      if (r.reason === 'https_restricted') return { cls: 'muted', html: '需切 HTTP' };
+      if (r.reason === 'https_restricted') return { cls: 'muted', html: '点击切直连' };
       if (r.reason === 'disabled') return { cls: 'err', html: '已停用' };
       return { cls: 'err', html: '不可达' };
     }
@@ -6627,7 +6843,7 @@ function buildMobileAppHtml() {
         if (latestSnap) {
           showToast('已切换至 ' + modeName);
         } else {
-          renderModeEntryGate('正在通过 ' + modeName + ' 连接 Mac…');
+          renderModeEntryGate('正在通过 ' + modeName + ' 连接电脑端…');
         }
         void fetchSnapshot();
         return;
@@ -6736,7 +6952,7 @@ function buildMobileAppHtml() {
       const fastestKind = (entries.length > 1 && ranked.length > 0) ? ranked[0].kind : '';
 
       const subMsg = speedTestState.running
-        ? '⏳ 正在并发测速各通道延迟…'
+        ? '⏳ 正在检测各通道延迟…'
         : (speedTestState.testedAt > 0
             ? ('最近测速 ' + formatClockTime(speedTestState.testedAt) + ' · 延迟仅供参考')
             : '尚未测速 · 点击右侧「测速」获取延迟参考');
@@ -7226,6 +7442,53 @@ function buildMobileAppHtml() {
         .replace(/'/g, '&#39;');
     }
 
+    const REFRESH_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>';
+    const EMPTY_CHAT_ICON_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" fill="currentColor" fill-opacity=".14"/></svg>';
+    const EMPTY_FOLDER_ICON_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="currentColor" fill-opacity=".14"/></svg>';
+    const EMPTY_CHANGES_ICON_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="currentColor" fill-opacity=".14"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>';
+    const ERROR_ALERT_ICON_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="currentColor" fill-opacity=".14"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>';
+
+    function humanizeRemoteError(rawMsg, fallbackMsg) {
+      const msg = String(rawMsg || '').trim();
+      const fb = String(fallbackMsg || '加载失败，请稍后重试');
+      if (!msg) return fb;
+      if (/channel_disabled|403|forbidden/i.test(msg)) return '当前连接通道未启用或无权访问该路径，请检查电脑端设置';
+      if (/404|ENOENT|no such file/i.test(msg)) return '找不到目标路径或文件，可能已被移动或删除';
+      if (/EACCES|permission/i.test(msg)) return '没有访问该路径的权限，请检查系统目录权限';
+      if (/aborted|AbortError|timeout|timed out/i.test(msg)) return '请求超时，可能是当前网络较慢或电脑端忙，请重试';
+      if (/Failed to fetch|NetworkError|Load failed|fetch/i.test(msg)) return '无法连接电脑端，请检查网络或切换连接方式后重试';
+      if (/^HTTP\\s*5\\d\\d/i.test(msg)) return '电脑端服务暂时异常，请稍后重试';
+      if (/^HTTP\\s*\\d+/i.test(msg)) return fb + '，请检查连接后重试';
+      return msg;
+    }
+
+    function renderPanelStateHtml(opts) {
+      const o = opts || {};
+      const icon = o.icon || (o.isError ? ERROR_ALERT_ICON_SVG : EMPTY_FOLDER_ICON_SVG);
+      const cls = 'empty-state-card' + (o.isError ? ' is-error' : '') + (o.compact ? ' compact' : '');
+      const actAttr = o.actionAttr ? (' ' + o.actionAttr) : '';
+      const actIdAttr = o.actionId ? (' id="' + esc(o.actionId) + '"') : '';
+      const btnHtml = o.actionLabel
+        ? ('<button class="empty-state-btn"' + actIdAttr + actAttr + ' type="button">' + esc(o.actionLabel) + '</button>')
+        : '';
+      return '<div class="' + cls + '">'
+        + '<div class="empty-state-ico">' + icon + '</div>'
+        + '<div class="empty-state-title">' + esc(o.title || '') + '</div>'
+        + (o.desc ? '<div class="empty-state-desc">' + esc(o.desc) + '</div>' : '')
+        + btnHtml
+        + '</div>';
+    }
+
+    function renderSkeletonRowsHtml(count) {
+      const n = Number(count) > 0 ? Number(count) : 5;
+      const widths = ['w-lg', 'w-md', 'w-sm', 'w-lg', 'w-md'];
+      let out = '<div class="ag-skel-list" aria-hidden="true">';
+      for (let i = 0; i < n; i++) {
+        out += '<div class="ag-skel-row ' + widths[i % widths.length] + '"></div>';
+      }
+      return out + '</div>';
+    }
+
     function fmtPct(frac) {
       return typeof frac === 'number' ? Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%' : '--%';
     }
@@ -7447,7 +7710,14 @@ function buildMobileAppHtml() {
       $('btn-quota')?.classList.toggle('active', Boolean($('quota-drawer') && !$('quota-drawer').hidden));
     }
 
+    let contextRefreshing = false;
+    let usageRefreshing = false;
+    let quotaRefreshing = false;
+
     async function fetchContextPanelData() {
+      if (contextRefreshing) return null;
+      contextRefreshing = true;
+      renderContextDrawer(latestSnap, cachedContextResp);
       const qs = [];
       if (currentTargetId) qs.push('targetId=' + encodeURIComponent(currentTargetId));
       if (selectedConversationId) qs.push('conversationId=' + encodeURIComponent(selectedConversationId));
@@ -7457,14 +7727,19 @@ function buildMobileAppHtml() {
         if (res.status === 401) { location.reload(); return null; }
         const data = await res.json().catch(() => null);
         if (data?.ok) cachedContextResp = data;
-        renderContextDrawer(latestSnap, cachedContextResp);
         return data;
       } catch {
         return null;
+      } finally {
+        contextRefreshing = false;
+        renderContextDrawer(latestSnap, cachedContextResp);
       }
     }
 
     async function fetchUsageData(force) {
+      if (usageRefreshing) return null;
+      usageRefreshing = true;
+      renderUsageDrawer(cachedUsageData);
       const q = force ? '?force=1' : '';
       try {
         const res = await fetchWithTimeout((apiBase || '') + '/api/usage' + q, { headers: authHeaders(), cache: 'no-store' }, 6000);
@@ -7476,11 +7751,12 @@ function buildMobileAppHtml() {
             $('usage-top-val').textContent = fmtNumShort(cachedUsageData.summary.totalTokens);
           }
         }
-        renderUsageDrawer(cachedUsageData);
         return json;
       } catch {
-        renderUsageDrawer(cachedUsageData);
         return null;
+      } finally {
+        usageRefreshing = false;
+        renderUsageDrawer(cachedUsageData);
       }
     }
 
@@ -7523,15 +7799,15 @@ function buildMobileAppHtml() {
       const durStr = cp.durationText || (cp.lastDurationSec != null ? cp.lastDurationSec + 's' : '—');
       const modelStr = cp.modelDisplayName || ctxRes?.model || snap?.model || '—';
       const barCol = pct == null ? 'var(--accent)' : (pct >= 85 ? 'var(--red)' : (pct >= 65 ? 'var(--amber)' : 'var(--green)'));
-      const isolatedTag = snap?.isolated ? '<span class="isolated-badge">独立浏览中</span>' : '';
+      const isolatedTag = snap?.isolated ? '<span class="isolated-badge" title="当前仅在本页浏览其他会话，不会改变电脑端屏幕">仅本页</span>' : '';
 
       box.innerHTML =
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">' +
-          '<div style="display:flex;align-items:center;gap:6px;min-width:0"><strong style="font-size:13.5px">上下文窗口面板</strong>' + isolatedTag + '</div>' +
-          '<button id="btn-refresh-context" class="icon-btn" style="height:26px;font-size:12px" type="button">↻ 刷新</button>' +
+          '<div style="display:flex;align-items:center;gap:6px;min-width:0"><strong style="font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">上下文窗口面板</strong>' + isolatedTag + '</div>' +
+          '<button id="btn-refresh-context" class="icon-btn drawer-refresh-btn' + (contextRefreshing ? ' is-spinning' : '') + '" type="button"' + (contextRefreshing ? ' disabled' : '') + '>' + REFRESH_ICON_SVG + '<span>' + (contextRefreshing ? '刷新中' : '刷新') + '</span></button>' +
         '</div>' +
         '<div class="qcard">' +
-          '<div class="qhead"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ctxRes?.title || snap?.title || '当前会话') + '</span><span style="color:' + barCol + '">' + (pct != null ? pct.toFixed(1) + '%' : '--%') + '</span></div>' +
+          '<div class="qhead"><span>' + esc(ctxRes?.title || snap?.title || '当前会话') + '</span><span style="color:' + barCol + '">' + (pct != null ? pct.toFixed(1) + '%' : '--%') + '</span></div>' +
           '<div class="qbar"><div class="qfill" style="width:' + (pct != null ? pct.toFixed(1) : 0) + '%;background:' + barCol + '"></div></div>' +
           '<div class="qreset" style="margin-top:5px">模型：' + esc(modelStr) + '</div>' +
         '</div>' +
@@ -7578,9 +7854,9 @@ function buildMobileAppHtml() {
       const costStr = costNum > 0 ? '$' + costNum.toFixed(2) : '—';
 
       box.innerHTML =
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-          '<strong style="font-size:13.5px">本机已记录用量面板</strong>' +
-          '<button id="btn-refresh-usage" class="icon-btn" style="height:26px;font-size:12px" type="button">↻ 刷新</button>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">' +
+          '<strong style="font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">本机已记录用量面板</strong>' +
+          '<button id="btn-refresh-usage" class="icon-btn drawer-refresh-btn' + (usageRefreshing ? ' is-spinning' : '') + '" type="button"' + (usageRefreshing ? ' disabled' : '') + '>' + REFRESH_ICON_SVG + '<span>' + (usageRefreshing ? '刷新中' : '刷新') + '</span></button>' +
         '</div>' +
         '<div class="usage-src-tabs">' +
           [['all', '全部'], ['desktop', '桌面端'], ['cli', 'CLI']].map(([k, lbl]) =>
@@ -7630,19 +7906,25 @@ function buildMobileAppHtml() {
           }).join('') + '</div>';
       };
       box.innerHTML =
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-          '<strong style="font-size:13.5px">双窗口剩余配额</strong>' +
-          '<button id="btn-refresh-quota" class="icon-btn" style="height:26px;font-size:12px" type="button">↻ 刷新</button>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">' +
+          '<strong style="font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">双窗口剩余配额</strong>' +
+          '<button id="btn-refresh-quota" class="icon-btn drawer-refresh-btn' + (quotaRefreshing ? ' is-spinning' : '') + '" type="button"' + (quotaRefreshing ? ' disabled' : '') + '>' + REFRESH_ICON_SVG + '<span>' + (quotaRefreshing ? '刷新中' : '刷新') + '</span></button>' +
         '</div>' +
         renderPool('Gemini 4 / 3.8', snap?.quota?.gemini) +
         renderPool('Claude 5.5 / GPT', snap?.quota?.claude);
       $('btn-refresh-quota').onclick = async () => {
+        if (quotaRefreshing) return;
+        quotaRefreshing = true;
+        renderQuotaDrawer(latestSnap);
         try {
           const r = await apiAction({ action: 'refresh-quota' });
           if (r?.ok) showToast('已刷新配额');
-          else showToast(r?.error || r?.actionResult?.error || '刷新配额失败');
+          else showToast(r?.error || r?.actionResult?.error || '刷新额度失败，请检查网络或稍后重试');
         } catch (e) {
-          showToast(e?.message || '刷新配额失败');
+          showToast(humanizeRemoteError(e?.message, '刷新额度失败，请检查网络或稍后重试'));
+        } finally {
+          quotaRefreshing = false;
+          renderQuotaDrawer(latestSnap);
         }
       };
     }
@@ -7760,10 +8042,23 @@ function buildMobileAppHtml() {
       }
     }
 
+    function setConnBannerVisible(visible, msg) {
+      const el = $('conn-banner');
+      if (!el) return;
+      if (visible && msg) {
+        const msgElBanner = $('conn-banner-msg');
+        if (msgElBanner) msgElBanner.textContent = msg;
+      }
+      el.hidden = !visible;
+    }
+
     function renderSnapshot(snap, opts) {
       if (!snap || snap.ok === false) {
         $('status-dot').className = 'dot err';
         $('conv-title').textContent = snap?.error || '连接异常';
+        if (latestSnap) {
+          setConnBannerVisible(true, humanizeRemoteError(snap?.error, '与电脑端的连接暂时异常，可点击重试或切换连接方式'));
+        }
         return false;
       }
       const reqEpoch = typeof opts?.reqStartEpoch === 'number' ? opts.reqStartEpoch : null;
@@ -7810,6 +8105,7 @@ function buildMobileAppHtml() {
         lastRenderedServerSnapSeq = snapSeqNum;
       }
       latestSnap = snap;
+      setConnBannerVisible(false);
       syncSelectedProjectFromSnapshot(snap);
       if ($('btn-follow-desktop')) $('btn-follow-desktop').hidden = !Boolean(snap.isolated);
       if (snap.currentTargetId) {
@@ -7830,7 +8126,7 @@ function buildMobileAppHtml() {
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
       syncTopbarProjectBadge(resolveConversationProjectName(snap));
-      $('sub-meta').textContent = getActiveChannelLabel() + (snap.isolated ? ' · 独立视图' : '') + ' ▾ · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
+      $('sub-meta').textContent = getActiveChannelLabel() + (snap.isolated ? ' · 仅本页' : '') + ' ▾ · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
@@ -8018,9 +8314,9 @@ function buildMobileAppHtml() {
                     selectedIndices: Array.from(draft.selected)
                   });
                   if (res?.ok) showToast('已选择确认项');
-                  else showToast(res?.error || res?.actionResult?.error || '选择失败');
+                  else showToast(res?.error || res?.actionResult?.error || '选择未生效，请重试或检查电脑端窗口');
                 } catch (e) {
-                  showToast(e?.message || '选择失败');
+                  showToast(humanizeRemoteError(e?.message, '选择未生效，请重试或检查电脑端窗口'));
                 } finally {
                   optBtn.disabled = false;
                 }
@@ -8057,10 +8353,10 @@ function buildMobileAppHtml() {
                 if (res?.ok) {
                   showToast('已提交: ' + actBtn.dataset.actLabel);
                 } else {
-                  showToast(res?.error || res?.actionResult?.error || '提交失败');
+                  showToast(res?.error || res?.actionResult?.error || '提交失败，请检查电脑端连接后重试');
                 }
               } catch (e) {
-                showToast(e?.message || '提交失败');
+                showToast(humanizeRemoteError(e?.message, '提交失败，请检查电脑端连接后重试'));
               } finally {
                 // 请求结束后解除在途锁并恢复按钮可用（保留草稿直至提示框真正消失或变更，支持纯 JS 校验未通过后修改重试）
                 if (promptSubmittingSig === promptSig) {
@@ -8081,11 +8377,11 @@ function buildMobileAppHtml() {
                 if (res?.ok) showToast('已触发: ' + btn.dataset.label);
                 else {
                   btn.disabled = false;
-                  showToast(res?.error || res?.actionResult?.error || '操作失败');
+                  showToast(res?.error || res?.actionResult?.error || '操作未生效，请检查电脑端状态后重试');
                 }
               } catch (e) {
                 btn.disabled = false;
-                showToast(e?.message || '操作失败');
+                showToast(humanizeRemoteError(e?.message, '操作未生效，请检查电脑端状态后重试'));
               }
             };
           });
@@ -8111,11 +8407,11 @@ function buildMobileAppHtml() {
               if (res?.ok) showToast('已触发: ' + btn.dataset.label);
               else {
                 btn.disabled = false;
-                showToast(res?.error || res?.actionResult?.error || '操作失败');
+                showToast(res?.error || res?.actionResult?.error || '操作未生效，请检查电脑端状态后重试');
               }
             } catch (e) {
               btn.disabled = false;
-              showToast(e?.message || '操作失败');
+              showToast(humanizeRemoteError(e?.message, '操作未生效，请检查电脑端状态后重试'));
             }
           };
         });
@@ -8179,11 +8475,11 @@ function buildMobileAppHtml() {
                   });
                   if (res?.ok) {
                     showToast(res?.actionResult?.hasRemainingDomQueued
-                      ? '已发送后端排队消息，桌面端仍有本地排队项请核对'
+                      ? '已发送排队中的消息，电脑端输入框内若还有未发消息请留意核对'
                       : '已立即发送排队消息');
-                  } else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
+                  } else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败，请检查电脑端连接后重试');
                 } catch (e) {
-                  showToast(e?.message || '发送排队消息失败');
+                  showToast(humanizeRemoteError(e?.message, '发送排队消息失败，请检查电脑端连接后重试'));
                 } finally {
                   queueActionBusy = false;
                   setQueueBtnsDisabled(false);
@@ -8208,9 +8504,9 @@ function buildMobileAppHtml() {
                       : { stepIndex: stepIdx })
                   });
                   if (res?.ok) showToast('已撤回排队消息');
-                  else showToast(res?.error || res?.actionResult?.error || '撤回排队消息失败');
+                  else showToast(res?.error || res?.actionResult?.error || '撤回排队消息失败，请检查电脑端连接后重试');
                 } catch (e) {
-                  showToast(e?.message || '撤回排队消息失败');
+                  showToast(humanizeRemoteError(e?.message, '撤回排队消息失败，请检查电脑端连接后重试'));
                 } finally {
                   queueActionBusy = false;
                   setQueueBtnsDisabled(false);
@@ -8221,7 +8517,7 @@ function buildMobileAppHtml() {
         }
       }
 
-      // 轻盈下一步建议 & 快捷口令 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
+      // 轻盈下一步建议 & 快捷提示词 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
       renderQuickChipsBar(snap);
 
       // Drawer Conversations & Multi-Project Grouping (with projectGroups drilldown fallback)
@@ -8253,7 +8549,7 @@ function buildMobileAppHtml() {
           try { localStorage.setItem(QUICK_DIRECT_MODE_KEY, quickDirectMode ? '1' : '0'); } catch {}
           chips.dataset.sig = '';
           renderQuickChipsBar(latestSnap || snap);
-          showToast(quickDirectMode ? '已切换为「⚡直发」模式（无参口令点击即发）' : '已切换为「✎填入」模式（点击先填进输入框）');
+          showToast(quickDirectMode ? '已切换为「⚡直发」模式（固定快捷提示词点一下立即发送）' : '已切换为「✎填入」模式（点一下先填进输入框）');
           return { ok: true };
         }
       });
@@ -8328,7 +8624,7 @@ function buildMobileAppHtml() {
           if (it.isModeToggle) {
             b.dataset.role = 'quick-mode-toggle';
             b.setAttribute('aria-pressed', quickDirectMode ? 'true' : 'false');
-            b.title = '切换快捷口令点击行为：⚡直发 / ✎填入';
+            b.title = '切换快捷提示词点击模式：⚡直发 / ✎填入';
           } else if (it.isSuggest) {
             b.dataset.role = 'quick-suggest';
             b.title = quickDirectMode ? ('⚡ 建议直发：' + it.raw) : ('✎ 建议填入：' + it.raw);
@@ -8352,7 +8648,7 @@ function buildMobileAppHtml() {
                   stickBottom = true;
                   const r = await apiAction({ action: 'send', text: it.raw });
                   if (r?.ok) showToast('⚡ 已直发：' + displayLabel);
-                  else showToast(r?.error || r?.actionResult?.error || '发送失败');
+                  else showToast(r?.error || r?.actionResult?.error || '发送失败，请检查电脑端连接或网络后重试');
                 } else {
                   if (taEl) {
                     const prev = taEl.value || '';
@@ -8372,10 +8668,10 @@ function buildMobileAppHtml() {
                 }
               } else if (it.act) {
                 const r = await it.act();
-                if (r && !r.ok) showToast(r.error || r.actionResult?.error || '操作失败');
+                if (r && !r.ok) showToast(r.error || r.actionResult?.error || '操作未生效，请检查电脑端状态后重试');
               }
             } catch (e) {
-              showToast(e?.message || '操作失败');
+              showToast(humanizeRemoteError(e?.message, '操作未生效，请检查电脑端状态后重试'));
             }
           });
           chips.appendChild(b);
@@ -8574,7 +8870,7 @@ function buildMobileAppHtml() {
         }
         if (latestSnap) renderConversationList(latestSnap);
       } catch (err) {
-        showToast(err?.message || '加载更多会话失败');
+        showToast(humanizeRemoteError(err?.message, '加载更多会话失败，请重试'));
       } finally {
         loadingMoreConvs = false;
       }
@@ -8676,7 +8972,14 @@ function buildMobileAppHtml() {
       let html = '';
       if (convViewMode === 'recent') {
         if (!convs.length && !totalAllCount) {
-          html = '<div class="empty-tip" style="padding:18px 8px">暂无历史对话</div>';
+          html = renderPanelStateHtml({
+            icon: EMPTY_CHAT_ICON_SVG,
+            compact: true,
+            title: '暂无历史对话',
+            desc: '新建一条对话即可开始使用',
+            actionLabel: '＋ 新建对话',
+            actionAttr: 'data-empty-action="new-chat"'
+          });
         } else {
           const shown = convs.slice(0, recentDisplayLimit);
           html = shown.map((c) => renderConvItemHtml(c, true)).join('');
@@ -8691,7 +8994,14 @@ function buildMobileAppHtml() {
         const effProj = getEffectiveSelectedProject(snap);
 
         if (!orderedProjects.length) {
-          html = '<div class="empty-tip" style="padding:18px 8px">暂无项目与历史对话</div>';
+          html = renderPanelStateHtml({
+            icon: EMPTY_FOLDER_ICON_SVG,
+            compact: true,
+            title: '暂无项目与对话',
+            desc: '选择电脑目录新建项目，或直接发起对话',
+            actionLabel: '新建项目',
+            actionAttr: 'data-empty-action="new-project"'
+          });
         } else {
           html = orderedProjects.map((p) => {
             const list = grouped.get(p.id) || [];
@@ -8811,7 +9121,12 @@ function buildMobileAppHtml() {
           ? selectedGroup.conversations.map((c) =>
               '<button class="conv-item' + (c.active ? ' active' : '') + '" data-cid="' + esc(c.id) + '" type="button">' + esc(c.title) + '</button>'
             ).join('')
-          : '<div class="empty-tip" style="padding:16px 8px">该项目暂无可切换会话</div>';
+          : renderPanelStateHtml({
+              icon: EMPTY_CHAT_ICON_SVG,
+              compact: true,
+              title: '该项目暂无可切换会话',
+              desc: '点击上方「新建对话」即可在该项目下开始'
+            });
         if (convList.dataset.lastHtml !== convHtml) {
           convList.innerHTML = convHtml;
           convList.dataset.lastHtml = convHtml;
@@ -8835,7 +9150,12 @@ function buildMobileAppHtml() {
             + '<span class="proj-item-right"><span class="lat-badge muted">' + esc(g.count) + '</span><span>›</span></span>'
             + '</button>'
           ).join('')
-        : '<div class="empty-tip" style="padding:16px 8px">暂无历史项目</div>';
+        : renderPanelStateHtml({
+            icon: EMPTY_FOLDER_ICON_SVG,
+            compact: true,
+            title: '暂无历史项目',
+            desc: '桌面端打开项目后会自动同步到此处'
+          });
       if (convList.dataset.lastHtml !== projHtml) {
         convList.innerHTML = projHtml;
         convList.dataset.lastHtml = projHtml;
@@ -8866,7 +9186,9 @@ function buildMobileAppHtml() {
       } catch {
         if (mySeq !== snapshotSeq) return;
         $('sub-meta').textContent = '连接中断 · 正在切换可用通道…';
-        if (!latestSnap) {
+        if (latestSnap) {
+          setConnBannerVisible(true, '与电脑端的连接已断开，正在尝试切换可用通道…');
+        } else {
           renderModeEntryGate('正在自动尝试备用通道，也可直接点击已开启的方式立即进入：');
         }
         const switched = await tryFailoverEndpoint();
@@ -8883,16 +9205,31 @@ function buildMobileAppHtml() {
         }
         $('status-dot').className = 'dot err';
         $('sub-meta').textContent = '连接中断，点击可切换连接方式';
-        if (!latestSnap) {
+        if (latestSnap) {
+          setConnBannerVisible(true, '与电脑端连接已断开，可点击重试或切换连接方式');
+        } else {
           renderModeEntryGate('当前入口暂未连通，请点击下方已开启的连接方式直接进入：');
         }
       } finally {
         if (mySeq === snapshotSeq) {
           snapshotInflight = false;
           activeSnapAbort = null;
+          const retryBtnEl = $('conn-retry-btn');
+          if (retryBtnEl) { retryBtnEl.disabled = false; retryBtnEl.textContent = '立即重试'; }
           schedulePoll();
         }
       }
+    }
+
+    if ($('conn-retry-btn')) {
+      $('conn-retry-btn').onclick = () => {
+        const retryBtnEl = $('conn-retry-btn');
+        if (retryBtnEl) { retryBtnEl.disabled = true; retryBtnEl.textContent = '重试中…'; }
+        void fetchSnapshot();
+      };
+    }
+    if ($('conn-switch-btn')) {
+      $('conn-switch-btn').onclick = openModeSwitcherSheet;
     }
 
     function schedulePoll() {
@@ -9023,9 +9360,9 @@ function buildMobileAppHtml() {
       try {
         const r = await apiAction({ action: 'select-model', label: opt.label, modelId: opt.modelId });
         if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
-        else showToast(r?.error || r?.actionResult?.error || '切换模型失败');
+        else showToast(r?.error || r?.actionResult?.error || '切换模型失败，请确认电脑端窗口在线后重试');
       } catch (err) {
-        showToast(err?.message || '切换模型失败');
+        showToast(humanizeRemoteError(err?.message, '切换模型失败，请确认电脑端窗口在线后重试'));
       }
     }
 
@@ -9347,10 +9684,17 @@ function buildMobileAppHtml() {
     function renderMessagesView(snap, opts = {}) {
       const msgs = getOrderedSessionMessages();
       if (!msgs.length && !snap?.busy) {
-        const emptyTipText = (snap?.isNewConversation && snap?.currentProjectName)
-          ? ('正在「' + esc(snap.currentProjectName) + '」下新建对话，发一句话即可开始…')
-          : ('暂无消息，发一句话' + (isDesktopLayout() ? '或在左侧切换会话' : '或在屏幕右滑切换会话'));
-        const emptyHtml = '<div class="empty-tip">' + emptyTipText + '</div>';
+        const isNewProj = Boolean(snap?.isNewConversation && snap?.currentProjectName);
+        const canOpenDrawer = !isDesktopLayout() || document.body.classList.contains('sidebar-collapsed');
+        const emptyHtml = renderPanelStateHtml({
+          icon: EMPTY_CHAT_ICON_SVG,
+          title: isNewProj ? ('在「' + snap.currentProjectName + '」开始新对话') : '暂无对话消息',
+          desc: isNewProj
+            ? '在下方输入问题、上传图片或文件，或点选快捷提示词即可开始'
+            : ('在下方输入消息即可开始' + (isDesktopLayout() ? '，或在左侧列表切换历史会话' : '，或右滑切换历史会话')),
+          actionId: (!isNewProj && canOpenDrawer) ? 'empty-open-drawer-btn' : '',
+          actionLabel: (!isNewProj && canOpenDrawer) ? '浏览历史会话' : ''
+        });
         if (msgEl.dataset.lastHtml !== emptyHtml) {
           msgEl.innerHTML = emptyHtml;
           msgEl.dataset.lastHtml = emptyHtml;
@@ -9429,7 +9773,7 @@ function buildMobileAppHtml() {
         return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + thoughtOnlyCls + '" data-msg-idx="' + m.msgIndex + '">' + risk + thought + bodyHtml + '</div>';
       }).join('');
       if (snap?.busy) {
-        html += '<div class="busy-pill"><span class="busy-spark"></span><span>正在思考与执行…</span></div>';
+        html += '<div class="busy-pill" role="status" aria-live="polite"><span class="busy-spark"></span><span>正在思考与执行…</span></div>';
       } else if (msgs.length) {
         const lastM = msgs[msgs.length - 1];
         const compactBlocked = Boolean(
@@ -9517,10 +9861,10 @@ function buildMobileAppHtml() {
             syncPermInlineUi(r.actionResult?.permissionKey || opt.key, r.actionResult?.permissionLabel || opt.label);
             showToast('已切换权限: ' + (r.actionResult?.permissionLabel || opt.label));
           } else {
-            showToast(r?.error || r?.actionResult?.error || '切换权限失败');
+            showToast(r?.error || r?.actionResult?.error || '切换权限失败，请确认电脑端窗口在线后重试');
           }
         } catch (err) {
-          showToast(err?.message || '切换权限失败');
+          showToast(humanizeRemoteError(err?.message, '切换权限失败，请确认电脑端窗口在线后重试'));
         }
       });
     }
@@ -9681,6 +10025,10 @@ function buildMobileAppHtml() {
       if (e.target === $('media-lightbox')) closeMediaLightbox();
     });
     msgEl.addEventListener('click', (e) => {
+      if (e.target?.closest?.('#empty-open-drawer-btn')) {
+        $('btn-drawer')?.click?.();
+        return;
+      }
       const img = e.target?.closest?.('.msg-att-img');
       if (img) {
         openMediaLightbox(img.dataset.previewSrc || img.src, img.alt);
@@ -9741,12 +10089,23 @@ function buildMobileAppHtml() {
       bd.hidden = false;
       syncFvChrome();
       if (title) title.textContent = String(filePath).split('/').pop() || filePath;
-      body.innerHTML = '<div class="empty-tip">正在读取文件内容…</div>';
+      body.innerHTML = renderSkeletonRowsHtml(6);
+      const showFileErr = (errMsg) => {
+        body.innerHTML = renderPanelStateHtml({
+          isError: true,
+          title: '无法读取文件内容',
+          desc: humanizeRemoteError(errMsg, '读取文件失败，请确认文件存在且处于允许访问的目录内'),
+          actionId: 'fv-file-retry',
+          actionLabel: '重试读取'
+        });
+        const retryBtn = $('fv-file-retry');
+        if (retryBtn) retryBtn.onclick = () => { void openFilePreviewModal(filePath, hlLine); };
+      };
       try {
         const res = await fetchWithTimeout((apiBase || '') + '/api/file-content?path=' + encodeURIComponent(filePath), { headers: authHeaders(), cache: 'no-store' }, 6000);
         const data = await res.json().catch(() => null);
         if (!res.ok || !data?.ok) {
-          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取文件失败') + '</div>';
+          showFileErr(data?.error || ('HTTP ' + res.status));
           return;
         }
         if (title) title.textContent = data.name || filePath;
@@ -9755,7 +10114,11 @@ function buildMobileAppHtml() {
           const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(data.path) + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
           body.innerHTML = pathBar + '<img src="' + esc(mediaSrc) + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" alt="' + esc(data.name || '') + '" />';
         } else if (data.isBinary || data.isTooLargeForText) {
-          body.innerHTML = pathBar + '<div class="empty-tip">' + esc(data.error || ('二进制文件 (' + formatFileSizeShort(data.size) + ')，暂不支持纯文本预览')) + '</div>';
+          body.innerHTML = pathBar + renderPanelStateHtml({
+            icon: EMPTY_CHANGES_ICON_SVG,
+            title: '暂不支持直接预览该文件',
+            desc: data.error || ('该文件为二进制或体积较大 (' + formatFileSizeShort(data.size) + ')，暂不支持纯文本预览')
+          });
         } else if (data.isMarkdown && !hlLine) {
           body.innerHTML = pathBar + '<div class="md-body">' + renderMarkdownSafe(data.content || '') + '</div>';
         } else {
@@ -9766,7 +10129,7 @@ function buildMobileAppHtml() {
           }
         }
       } catch (err) {
-        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取文件失败') + '</div>';
+        showFileErr(err?.message);
       }
     }
     async function loadProjectTreeView(targetDir) {
@@ -9777,14 +10140,25 @@ function buildMobileAppHtml() {
       fvState.viewingFile = false;
       syncFvChrome();
       if (title) title.textContent = '项目文件';
-      body.innerHTML = '<div class="empty-tip">正在读取目录…</div>';
+      body.innerHTML = renderSkeletonRowsHtml(6);
       const dirParam = targetDir || fvState.curDir || resolveCurrentProjectRootDir();
+      const showTreeErr = (errMsg) => {
+        body.innerHTML = renderPanelStateHtml({
+          isError: true,
+          title: '读取项目文件失败',
+          desc: humanizeRemoteError(errMsg, '无法加载项目目录，请检查电脑端连接后重试'),
+          actionId: 'fv-tree-retry',
+          actionLabel: '重试加载'
+        });
+        const retryBtn = $('fv-tree-retry');
+        if (retryBtn) retryBtn.onclick = () => { void loadProjectTreeView(targetDir); };
+      };
       try {
         const qs = dirParam ? ('?dir=' + encodeURIComponent(dirParam)) : '';
         const res = await fetchWithTimeout((apiBase || '') + '/api/project-tree' + qs, { headers: authHeaders(), cache: 'no-store' }, 6000);
         const data = await res.json().catch(() => null);
         if (!res.ok || !data?.ok) {
-          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取目录失败') + '</div>';
+          showTreeErr(data?.error || ('HTTP ' + res.status));
           return;
         }
         fvState.curDir = data.dir || '';
@@ -9795,9 +10169,18 @@ function buildMobileAppHtml() {
           + '<span class="fv-row-meta">' + (ent.isDir ? '›' : esc(formatFileSizeShort(ent.size))) + '</span>'
           + '</button>'
         ).join('');
+        const emptyDirHtml = renderPanelStateHtml({
+          icon: EMPTY_FOLDER_ICON_SVG,
+          compact: true,
+          title: '当前目录为空',
+          desc: '该文件夹下暂无文件或子目录',
+          actionId: data.parentDir ? 'fv-empty-up-btn' : '',
+          actionLabel: data.parentDir ? '返回上级目录' : ''
+        });
         body.innerHTML = '<div class="fv-path-bar">' + upBtn + '<span>' + esc(data.dir || '') + '</span></div>'
-          + '<div class="fv-list">' + (rows || '<div class="empty-tip">空目录</div>') + '</div>';
+          + '<div class="fv-list">' + (rows || emptyDirHtml) + '</div>';
         $('fv-tree-up')?.addEventListener('click', () => { void loadProjectTreeView(data.parentDir); });
+        $('fv-empty-up-btn')?.addEventListener('click', () => { void loadProjectTreeView(data.parentDir); });
         body.querySelectorAll('.fv-row').forEach((row) => {
           row.onclick = () => {
             const p = row.dataset.path;
@@ -9807,7 +10190,7 @@ function buildMobileAppHtml() {
           };
         });
       } catch (err) {
-        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取目录失败') + '</div>';
+        showTreeErr(err?.message);
       }
     }
     async function loadSessionChangesView() {
@@ -9818,32 +10201,50 @@ function buildMobileAppHtml() {
       fvState.viewingFile = false;
       syncFvChrome();
       if (title) title.textContent = '本会话变更与产物';
-      body.innerHTML = '<div class="empty-tip">正在读取变更与产物…</div>';
+      body.innerHTML = renderSkeletonRowsHtml(5);
       const cid = String(latestSnap?.activeConversationId || latestSnap?.sessionId || selectedConversationId || '').trim();
+      const showChangesErr = (errMsg) => {
+        body.innerHTML = renderPanelStateHtml({
+          isError: true,
+          title: '读取会话变更失败',
+          desc: humanizeRemoteError(errMsg, '无法读取本次对话的改动与产物，请检查电脑端连接后重试'),
+          actionId: 'fv-changes-retry',
+          actionLabel: '重试加载'
+        });
+        const retryBtn = $('fv-changes-retry');
+        if (retryBtn) retryBtn.onclick = () => { void loadSessionChangesView(); };
+      };
       try {
         const res = await fetchWithTimeout((apiBase || '') + '/api/session-files?conversationId=' + encodeURIComponent(cid), { headers: authHeaders(), cache: 'no-store' }, 6000);
         const data = await res.json().catch(() => null);
         if (!res.ok || !data?.ok) {
-          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取会话变更失败') + '</div>';
+          showChangesErr(data?.error || ('HTTP ' + res.status));
           return;
         }
         const diffs = Array.isArray(data.diffs) ? data.diffs : [];
         const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
         if (!diffs.length && !artifacts.length) {
-          body.innerHTML = '<div class="empty-tip">当前会话暂无记录的代码变更或产物，可切至「项目文件」直接浏览代码。</div>';
+          body.innerHTML = renderPanelStateHtml({
+            icon: EMPTY_CHANGES_ICON_SVG,
+            title: '当前会话暂无代码改动或产物',
+            desc: '当 AI 修改了项目文件或生成了文档产物，会自动汇总到这里',
+            actionId: 'fv-go-tree-btn',
+            actionLabel: '浏览项目文件'
+          });
+          $('fv-go-tree-btn')?.addEventListener('click', () => { void loadProjectTreeView(fvState.curDir); });
           return;
         }
         let htmlOut = '';
         if (artifacts.length) {
-          htmlOut += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0 6px">Artifacts 产物 (' + artifacts.length + ')</div><div class="fv-list" style="margin-bottom:12px">'
+          htmlOut += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0 6px">生成文档与产物 (' + artifacts.length + ')</div><div class="fv-list" style="margin-bottom:12px">'
             + artifacts.map((art, idx) =>
-              '<button class="fv-row fv-art-row" type="button" data-art-idx="' + idx + '"><span class="fv-row-name">✨ ' + esc(art.name || art.path || ('Artifact ' + (idx + 1))) + '</span><span class="fv-row-meta">查看 ›</span></button>'
+              '<button class="fv-row fv-art-row" type="button" data-art-idx="' + idx + '"><span class="fv-row-name">✨ ' + esc(art.name || art.path || ('生成产物 ' + (idx + 1))) + '</span><span class="fv-row-meta">打开 ›</span></button>'
             ).join('') + '</div>';
         }
         if (diffs.length) {
-          htmlOut += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0 6px">Files Changed (' + diffs.length + ')</div><div class="fv-list">'
+          htmlOut += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0 6px">修改的文件 (' + diffs.length + ')</div><div class="fv-list">'
             + diffs.map((df, idx) =>
-              '<button class="fv-row fv-diff-row" type="button" data-diff-idx="' + idx + '"><span class="fv-row-name">📝 ' + esc(df.name || df.path || ('File ' + (idx + 1))) + '</span><span class="fv-row-meta">Diff ›</span></button>'
+              '<button class="fv-row fv-diff-row" type="button" data-diff-idx="' + idx + '"><span class="fv-row-name">📝 ' + esc(df.name || df.path || ('文件 ' + (idx + 1))) + '</span><span class="fv-row-meta">查看改动 ›</span></button>'
             ).join('') + '</div>';
         }
         body.innerHTML = htmlOut;
@@ -9855,7 +10256,7 @@ function buildMobileAppHtml() {
             fvState.returnTab = 'changes';
             fvState.viewingFile = true;
             syncFvChrome();
-            if (title) title.textContent = art.name || 'Artifact';
+            if (title) title.textContent = art.name || '生成产物';
             body.innerHTML = '<div class="md-body">' + renderMarkdownSafe(art.content || '') + '</div>';
           };
         });
@@ -9866,7 +10267,7 @@ function buildMobileAppHtml() {
             fvState.returnTab = 'changes';
             fvState.viewingFile = true;
             syncFvChrome();
-            if (title) title.textContent = df.name || df.path || 'Diff';
+            if (title) title.textContent = df.name || df.path || '文件改动';
             if (df.diff) {
               body.innerHTML = '<div class="fv-path-bar">' + esc(df.path || '') + '</div>' + renderUnifiedDiffHtml(df.diff);
             } else if (df.path) {
@@ -9875,7 +10276,7 @@ function buildMobileAppHtml() {
           };
         });
       } catch (err) {
-        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取会话变更失败') + '</div>';
+        showChangesErr(err?.message);
       }
     }
     $('btn-files-panel')?.addEventListener('click', () => {
@@ -10213,11 +10614,11 @@ function buildMobileAppHtml() {
             showToast(projectName ? ('已在「' + projectName + '」中新建对话') : '已新建对话');
           }
         } else if (isCurrentNav) {
-          showToast(r?.error || r?.actionResult?.error || '新建对话失败');
+          showToast(r?.error || r?.actionResult?.error || '新建对话失败，请确认电脑端窗口已打开后重试');
         }
       } catch (err) {
         if (mySelEpoch === selectedProjectEpoch && lastNavActionSeq === myNavSeqSnapshot + 1) {
-          showToast(err?.message || '新建对话失败');
+          showToast(humanizeRemoteError(err?.message, '新建对话失败，请确认电脑端窗口已打开后重试'));
         }
       }
     }
@@ -10341,7 +10742,12 @@ function buildMobileAppHtml() {
       if (listEl) {
         const entries = Array.isArray(data?.entries) ? data.entries : [];
         if (!entries.length) {
-          listEl.innerHTML = '<div class="empty-tip" style="padding:18px 8px">当前目录下暂无子文件夹，可直接用当前目录创建项目，或点击上方「＋ 新建文件夹」</div>';
+          listEl.innerHTML = renderPanelStateHtml({
+            icon: EMPTY_FOLDER_ICON_SVG,
+            compact: true,
+            title: '当前目录下暂无子文件夹',
+            desc: '可直接用当前目录创建项目，或点击上方「＋ 新建文件夹」'
+          });
         } else {
           listEl.innerHTML = entries.map((d) => {
             const gitTag = d.isGitRepo ? '<span class="proj-tag git">Git</span>' : '';
@@ -10350,9 +10756,9 @@ function buildMobileAppHtml() {
               '<span class="proj-icon">' + FOLDER_SM_SVG + '</span>' +
               '<span class="proj-dir-label">' + esc(d.name) + '</span>' +
               '<span class="proj-dir-badges">' + gitTag + linkedTag + '</span>' +
-              '<span style="color:var(--placeholder);font-size:13px">›</span>' +
+              '<span style="color:var(--muted);font-size:13px">›</span>' +
             '</button>';
-          }).join('') + (data?.truncated ? '<div style="text-align:center;font-size:11.5px;color:var(--placeholder);padding:4px 0">仅显示前 300 个子目录，可输入路径精确定位</div>' : '');
+          }).join('') + (data?.truncated ? '<div style="text-align:center;font-size:11.5px;color:var(--muted);padding:4px 0">仅显示前 300 个子目录，可输入路径精确定位</div>' : '');
         }
       }
 
@@ -10364,8 +10770,8 @@ function buildMobileAppHtml() {
     async function loadHostDirListing(targetPath) {
       projBrowserState.loading = true;
       const listEl = $('proj-dir-list');
-      if (listEl && !listEl.children.length) {
-        listEl.innerHTML = '<div class="empty-tip" style="padding:18px 8px">正在读取电脑目录…</div>';
+      if (listEl && (!listEl.children.length || listEl.querySelector?.('.empty-state-card'))) {
+        listEl.innerHTML = renderSkeletonRowsHtml(5);
       }
       try {
         const params = [];
@@ -10385,10 +10791,20 @@ function buildMobileAppHtml() {
         return true;
       } catch (err) {
         projBrowserState.loading = false;
+        const readableErr = humanizeRemoteError(err?.message, '读取电脑目录失败，请检查电脑端连接后重试');
         if (listEl && !projBrowserState.currentPath) {
-          listEl.innerHTML = '<div class="empty-tip" style="padding:18px 8px">' + esc(err?.message || '读取电脑目录失败') + '</div>';
+          listEl.innerHTML = renderPanelStateHtml({
+            isError: true,
+            compact: true,
+            title: '无法读取电脑目录',
+            desc: readableErr,
+            actionId: 'proj-dir-retry',
+            actionLabel: '重新加载'
+          });
+          const retryBtn = $('proj-dir-retry');
+          if (retryBtn) retryBtn.onclick = () => { void loadHostDirListing(targetPath); };
         }
-        showToast(err?.message || '读取电脑目录失败');
+        showToast(readableErr);
         syncCreateProjectSubmitUi();
         return false;
       }
@@ -10627,6 +11043,18 @@ function buildMobileAppHtml() {
     }
 
     $('conv-list').addEventListener('click', async (e) => {
+      const emptyActBtn = e.target?.closest?.('[data-empty-action]');
+      if (emptyActBtn) {
+        const act = emptyActBtn.getAttribute('data-empty-action');
+        if (act === 'new-project') {
+          void openCreateProjectModal();
+        } else if (act === 'new-chat') {
+          const eff = getEffectiveSelectedProject(latestSnap);
+          await startNewConversationInProject(eff.id, eff.name);
+        }
+        return;
+      }
+
       const newProjBtn = e.target?.closest?.('.proj-new-btn');
       if (newProjBtn) {
         e.stopPropagation();
@@ -10736,7 +11164,7 @@ function buildMobileAppHtml() {
         applySelectedConversation(cid);
         const r = await apiAction({ action: 'switch-conversation', id: cid, isolated: true });
         if (!r?.ok && mySwitchSelEpoch === selectedProjectEpoch) {
-          showToast(r?.error || r?.actionResult?.error || '切换会话失败');
+          showToast(r?.error || r?.actionResult?.error || '切换会话失败，请检查电脑端连接或刷新重试');
           if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
             $('conv-title').textContent = latestSnap.title || 'Antigravity';
             syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
@@ -10744,7 +11172,7 @@ function buildMobileAppHtml() {
         }
       } catch (err) {
         if (mySwitchSelEpoch === selectedProjectEpoch) {
-          showToast(err?.message || '切换会话失败');
+          showToast(humanizeRemoteError(err?.message, '切换会话失败，请检查电脑端连接或刷新重试'));
           if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
             $('conv-title').textContent = latestSnap.title || 'Antigravity';
             syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
@@ -10765,9 +11193,9 @@ function buildMobileAppHtml() {
           applySelectedConversation('');
           const r = await apiAction({ action: 'switch-conversation', id: 'follow-desktop' });
           if (r?.ok) showToast('已同步桌面当前会话');
-          else showToast(r?.error || r?.actionResult?.error || '同步失败');
+          else showToast(r?.error || r?.actionResult?.error || '同步桌面会话失败，请检查连接状态后重试');
         } catch (err) {
-          showToast(err?.message || '同步失败');
+          showToast(humanizeRemoteError(err?.message, '同步桌面会话失败，请检查连接状态后重试'));
         }
       };
     }
@@ -10967,11 +11395,11 @@ function buildMobileAppHtml() {
         try {
           const r = await apiAction({ action: 'stop' }, { skipAutoRender: true });
           if (r?.ok) showToast('已请求停止生成');
-          else showToast(r?.error || r?.actionResult?.error || '停止失败');
+          else showToast(r?.error || r?.actionResult?.error || '停止生成失败，可重试或切换连接方式检查电脑端状态');
           sending = false;
           if (r?.snapshot) renderSnapshot(r.snapshot);
         } catch (err) {
-          showToast(err?.message || '停止失败');
+          showToast(humanizeRemoteError(err?.message, '停止生成失败，可重试或切换连接方式检查电脑端状态'));
         } finally {
           sending = false;
           syncSendButtonUI();
@@ -10995,12 +11423,12 @@ function buildMobileAppHtml() {
           const maxH = isDesktopLayout() ? 180 : 112;
           ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
         } else {
-          showToast(r?.error || r?.actionResult?.error || '发送失败');
+          showToast(r?.error || r?.actionResult?.error || '发送失败，请检查电脑端连接或网络后重试');
         }
         sending = false;
         if (r?.snapshot) renderSnapshot(r.snapshot);
       } catch (err) {
-        showToast(err?.message || '发送失败');
+        showToast(humanizeRemoteError(err?.message, '发送失败，请检查电脑端连接或网络后重试'));
       } finally {
         sending = false;
         syncSendButtonUI();
@@ -11012,13 +11440,13 @@ function buildMobileAppHtml() {
 
     renderModeEntryGate(
       isManualEntry
-        ? ('正在通过 ' + getActiveChannelLabel() + ' 连接 Mac…')
+        ? ('正在通过 ' + getActiveChannelLabel() + ' 连接电脑端…')
         : '正在自动测试并切换至最快通道，也可直接点击下方方式进入：'
     );
     if (isAutoSwitched) {
       const curKind = detectKindFromOrigin(location.origin);
       const curMs = speedTestState.results?.[curKind]?.ms;
-      showToast('⚡ 已自动切换至最快路线：' + getActiveChannelLabel() + (Number.isFinite(curMs) ? ' (' + curMs + ' ms)' : ''));
+      showToast('⚡ 已自动切换至最快通道：' + getActiveChannelLabel() + (Number.isFinite(curMs) ? ' (' + curMs + ' ms)' : ''));
       if (location.protocol !== 'https:') {
         const missingAny = getEnabledModeEntries().some((ep) => {
           const sr = speedTestState.results?.[ep.kind];
@@ -12170,7 +12598,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const clientKey = String((fromLoopback && req.headers['cf-connecting-ip']) || normalizeRemoteIp(remoteIp) || 'unknown');
     if (isRateLimited(clientKey)) {
       res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '60' });
-      res.end(JSON.stringify({ ok: false, error: 'Too many failed auth attempts. Retry in 60s.' }));
+      res.end(JSON.stringify({ ok: false, error: '配对口令尝试失败次数过多，请等待 60 秒后再试。' }));
       return;
     }
 
@@ -12810,7 +13238,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (actionName === 'send-queued-messages' || actionName === 'delete-queued-message') {
           const cascadeId = String(payload?.conversationId || session?.conversationId || '').trim();
           if (!cascadeId || cascadeId === '__new__' || cascadeId === 'new') {
-            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效会话 ID' }));
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '当前尚未打开有效会话，请先选择一个对话' }));
             return;
           }
           const isDomQueueSource = payload?.source === 'dom';
@@ -12828,7 +13256,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               text: String(payload?.text || '')
             });
             if (!domRes?.ok) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domRes?.error || domRes?.actionResult?.error || '桌面端队列操作失败' }));
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domRes?.error || domRes?.actionResult?.error || '电脑端队列操作未能生效，请重试' }));
               return;
             }
             usedDomFallback = true;
@@ -12838,7 +13266,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
             const stepIndex = isValidStep ? Number(rawStep) : -1;
             if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队步骤索引 stepIndex' }));
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '未能定位这条排队消息（缺少有效序号），请刷新页面后重试' }));
               return;
             }
             rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
@@ -12849,7 +13277,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
           }
           if (!usedDomFallback && (rpcRes === null || rpcRes === false)) {
-            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '本机 LanguageServer 队列操作调用失败或超时' }));
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '电脑端后台队列服务暂时无响应或超时，请稍后重试' }));
             return;
           }
           defaultHistoryManager.invalidateSession?.(cascadeId);

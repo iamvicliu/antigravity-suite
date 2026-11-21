@@ -498,6 +498,7 @@
       btn.textContent = next ? '收起 ▲' : '详情 ▼';
       btn.setAttribute?.('aria-expanded', String(next));
     }
+    el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', String(next));
     if (!next) {
       if (form && form.getAttribute?.('data-in-settings') !== 'true') form.style.display = 'none';
       closeOpenRegionDropdowns();

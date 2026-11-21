@@ -7,22 +7,22 @@
       </div>
       <div class="panel-header-actions">
         <span id="suite-ver-status" class="key-pill pill-muted" title="当前版本状态">v0.8.5</span>
-        <button id="btn-suite-apply-update" class="switch-pill-btn active" type="button" hidden title="拉取最新提交并免重启热生效">立即更新</button>
+        <button id="btn-suite-apply-update" class="switch-pill-btn active" type="button" hidden title="下载最新版本并立即生效，无需重启">立即更新</button>
         <button id="close-settings" class="panel-icon-btn" type="button" aria-label="关闭设置">×</button>
       </div>
     </div>
 
     <div id="settings-tabs-bar" class="settings-tabs-bar" role="tablist" aria-label="设置分类">
-      <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" data-settings-tab="terminal">🖥️ 终端与通用</button>
-      <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="appearance">🎨 外观与主题</button>
-      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="subscription">💎 套餐与订阅</button>
-      <button id="settings-tab-btn-remote" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="remote">📱 远程设置</button>
-      <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="system">🌐 网络与高级</button>
+      <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="settings-pane-terminal" tabindex="0" data-settings-tab="terminal">🖥️ 终端与通用</button>
+      <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-appearance" tabindex="-1" data-settings-tab="appearance">🎨 外观与主题</button>
+      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-subscription" tabindex="-1" data-settings-tab="subscription">💎 套餐与订阅</button>
+      <button id="settings-tab-btn-remote" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-remote" tabindex="-1" data-settings-tab="remote">📱 远程设置</button>
+      <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-system" tabindex="-1" data-settings-tab="system">🌐 网络与高级</button>
     </div>
 
     <div id="settings-body" class="settings-body">
       <!-- 分页 1: 终端与通用 -->
-      <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel">
+      <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-terminal">
         <div id="settings-card-features" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">功能显示开关</span>
@@ -62,8 +62,8 @@
             <span class="settings-card-title">快捷提示词</span>
             <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
           </div>
-          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可在下方「自定义快捷提示词」中自由新增。</div>
-          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置推荐池（点击开关显示 / 隐藏 · 悬停查看指令解读）</div>
+          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。</div>
+          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置快捷按钮（点击开启或关闭 · 悬停查看说明）</div>
           <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置快捷按钮推荐池"></div>
           <div id="quick-builtin-info-box" class="qp-info-box" role="region" aria-label="内置指令实时解读">
             <div class="qp-info-top">
@@ -79,8 +79,8 @@
           </div>
           <label class="settings-pref-row settings-pref-check" style="margin:6px 0 4px;">
             <div class="settings-pref-meta">
-              <span class="settings-pref-name">内置免参指令点击直接发送</span>
-              <span class="settings-pref-desc">开启后点击 /compact 压缩、重载规则将直接发送（/plan 等带参前缀仍仅填入）；按住 ⌘/Ctrl 点击可临时反转行为</span>
+              <span class="settings-pref-name">点击内置快捷指令时直接发送</span>
+              <span class="settings-pref-desc">开启后点击「/compact 压缩」或「重载规则」会直接发送（需补充参数的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换</span>
             </div>
             <input id="set-quick-builtin-autosend" type="checkbox" class="settings-checkbox" />
           </label>
@@ -89,7 +89,7 @@
             <button id="btn-add-quick-prompt" class="switch-pill-btn qp-add-btn" type="button" title="添加一条快捷提示词">+ 新增</button>
           </div>
           <div id="quick-custom-mode-hint" class="qp-custom-hint">填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）</div>
-          <div id="quick-popular-templates" class="qp-tpl-bar" role="group" aria-label="热门对话口令模板"></div>
+          <div id="quick-popular-templates" class="qp-tpl-bar" role="group" aria-label="热门模板"></div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
             <span id="quick-prompts-status" class="qp-status" role="status"></span>
@@ -118,15 +118,15 @@
           <div id="cli-launch-options-box" class="term-custom-box" data-active="true" style="gap:7px;">
             <label class="settings-pref-row settings-pref-check" style="margin:0;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">CLI 自动批准工具权限（免每次手动确认）</span>
-                <span class="settings-pref-desc">在终端启动 agy 时默认跳过权限询问（附带 --dangerously-skip-permissions）</span>
+                <span class="settings-pref-name">CLI 自动批准工具权限</span>
+                <span class="settings-pref-desc">启动命令行终端时自动批准工具调用，无需每次手动确认</span>
               </div>
               <input id="set-cli-skip-permissions" type="checkbox" class="settings-checkbox" />
             </label>
             <div class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
               <div class="settings-pref-meta">
                 <span class="settings-pref-name">CLI 默认启动模型</span>
-                <span class="settings-pref-desc">指定启动 agy 时默认使用的模型；选「不指定」则使用 CLI 默认配置</span>
+                <span class="settings-pref-desc">指定启动命令行终端时默认使用的模型；选「不指定」则跟随 CLI 默认配置</span>
               </div>
               <div class="settings-select-wrap">
                 <select id="set-cli-model-select" class="settings-select" aria-label="CLI 默认启动模型">
@@ -158,13 +158,13 @@
               </div>
             </div>
             <div id="cli-custom-model-row" class="term-custom-row" style="display:none;">
-              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入 agy 支持的模型 ID（留空则不传 --model）" />
+              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入模型 ID（留空则跟随 CLI 默认配置）" />
               <button id="btn-save-cli-model" class="unlock-btn unlock-btn-primary" type="button">保存模型</button>
             </div>
             <div id="cli-mux-host-pref-row" class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">终端连接目标（本机 / 远程服务器）</span>
-                <span class="settings-pref-desc">仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在本机或远程服务器上启动 agy</span>
+                <span class="settings-pref-name">终端连接目标（电脑端 / 远程服务器）</span>
+                <span class="settings-pref-desc">仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在当前电脑或远程服务器上启动终端</span>
               </div>
               <div class="settings-select-wrap">
                 <select id="set-cli-mux-host-select" class="settings-select" aria-label="终端连接目标">
@@ -174,7 +174,7 @@
               </div>
             </div>
             <div id="cli-custom-mux-host-row" class="term-custom-row" style="display:none;">
-              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="输入 Rex 主机名、WezTerm Domain 或 SSH 主机名（留空为本机）" />
+              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="输入远程主机名或连接标识（留空代表当前电脑）" />
               <button id="btn-save-cli-mux-host" class="unlock-btn unlock-btn-primary" type="button">保存主机</button>
             </div>
           </div>
@@ -216,8 +216,8 @@
             </label>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">长上下文防卡死自动压缩 (240K Auto-Compact)</span>
-                <span class="settings-pref-desc">官方默认到 512K 才自动压缩，但超过 250K~330K 后一旦服务端缓存过期（如停顿超 3 分钟）就会每步重算 4~5 分钟并狂耗配额。开启后，当本轮回答结束且输入框为空时，若上下文已达 240K 或发生缓存脱落，将自动发送 /compact 提前压缩</span>
+                <span class="settings-pref-name">240K 自动压缩防卡顿</span>
+                <span class="settings-pref-desc">官方默认到 512K 才压缩，对话过长后停顿易导致缓存失效、每步卡顿数分钟。开启后，上下文满 240K 或缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩</span>
               </div>
               <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
             </label>
@@ -245,7 +245,7 @@
       </div>
 
       <!-- 分页 2: 外观与主题 -->
-      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" hidden>
+      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-appearance" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">主题色系与热力图配色</span>
@@ -264,7 +264,7 @@
       </div>
 
       <!-- 分页 3: 套餐与订阅 -->
-      <div id="settings-pane-subscription" class="settings-tab-pane" role="tabpanel" hidden>
+      <div id="settings-pane-subscription" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-subscription" hidden>
         <div class="settings-card-box">
           <div id="settings-sub-summary-bar" class="settings-sub-preview-bar">
             <div style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">
@@ -295,32 +295,32 @@
       </div>
 
       <!-- 分页 4: 远程设置 -->
-      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" hidden>
+      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-remote" hidden>
         <div id="settings-card-remote-channels" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">远程通道与隧道</span>
             <div style="display:flex;align-items:center;gap:6px;">
               <button id="btn-settings-remote-refresh" class="switch-pill-btn" type="button" title="刷新远程连接通道与隧道状态">刷新状态</button>
-              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对令牌，旧链接与旧会话将失效">重置令牌</button>
+              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对口令，旧链接与已配对设备将失效">重置配对口令</button>
             </div>
           </div>
-          <div class="settings-card-desc">管理 `agy remote` 的访问通道与配对令牌重置；Cloudflare 隧道默认启用免登录临时隧道（零配置开箱可用），如需绑定自定义域名可展开配置，顶栏「远程」图标可随时扫码。</div>
+          <div class="settings-card-desc">管理手机远程访问通道与配对口令；已默认开启免登录临时公网通道（开箱即用），如需绑定自己的固定域名可展开配置，也可随时点顶部「远程」图标扫码连接。</div>
           <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
         </div>
 
         <div id="settings-card-remote-display" class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">Remote 页面显示内容</span>
-            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复 Remote 页面全部默认模块显示">恢复默认</button>
+            <span class="settings-card-title">手机远程页面显示内容</span>
+            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复手机远程页面默认显示的全部模块">恢复默认</button>
           </div>
-          <div class="settings-card-desc">按需控制手机 / 浏览器打开 `agy remote` 时可见的面板入口与功能模块，修改后立即保存并在远程页面下次同步生效。</div>
+          <div class="settings-card-desc">自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。</div>
           <div class="settings-feature-grid">
             <label class="settings-feature-item">
               <span class="settings-feature-name">顶部上下文窗口面板</span>
               <input id="set-remote-ctx-panel" type="checkbox" class="settings-checkbox" checked />
             </label>
             <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部本机已记录用量面板</span>
+              <span class="settings-feature-name">顶部桌面端已记录用量面板</span>
               <input id="set-remote-usage-panel" type="checkbox" class="settings-checkbox" checked />
             </label>
             <label class="settings-feature-item">
@@ -356,10 +356,10 @@
       </div>
 
       <!-- 分页 5: 网络与高级 -->
-      <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" hidden>
+      <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-system" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">本地代理网络直连（免开 TUN 模式）</span>
+            <span class="settings-card-title">本地代理直连（无需开启全局代理 / TUN）</span>
             <span id="settings-slot-proxy-badge"></span>
           </div>
           <div id="settings-slot-proxy"></div>
