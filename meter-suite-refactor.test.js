@@ -10553,3 +10553,142 @@ test('需求 26: antigravity-hans-overlay 仅翻译 div.entrance-title 登录欢
     activeTimers.clear();
   }
 });
+
+// =========================================================================
+// 需求 27: 同步 antigravity-chinese v3.3.55、build-renderer 截断守卫、asar-engine 进程过滤与 CLI 未知命令保护
+// =========================================================================
+test('需求 27: antigravity-hans-overlay 支持 2.33.1 听写与快捷键方案词条、commands. 上下文及 placeholder 规则', () => {
+  const hansSrc = fs.readFileSync(path.join(ROOT, 'antigravity-hans-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  env.sandbox.location.pathname = '/workbench.html';
+  env.sandbox.location.href = 'file:///Applications/Antigravity.app/workbench.html';
+  env.win.location = env.sandbox.location;
+  env.win.top = env.win;
+  env.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 };
+  env.sandbox.NodeFilter = { SHOW_TEXT: 4, SHOW_ELEMENT: 1 };
+
+  const makeTextNode = (val) => ({
+    nodeType: 3,
+    nodeValue: val,
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement: null,
+    parentNode: null
+  });
+
+  const panel = env.doc.createElement('div');
+  panel.className = 'antigravity-agent-side-panel';
+
+  // 1. 新增 exact 词条与正则
+  const exactHeading = env.doc.createElement('div');
+  const exactText = makeTextNode('Keybinding Scheme');
+  exactHeading.appendChild(exactText);
+  panel.appendChild(exactHeading);
+
+  const retryDiv = env.doc.createElement('div');
+  const retryText = makeTextNode('Retrying transcription (attempt 2)…');
+  retryDiv.appendChild(retryText);
+  panel.appendChild(retryDiv);
+
+  // 2. commands. 上下文规则（仅紧跟 <code>antigravity.</code> 后生效）
+  const pTarget = env.doc.createElement('p');
+  const pPrefix = makeTextNode('Inspect live bindings or record custom key chords filtered to ');
+  const codeEl = env.doc.createElement('code');
+  codeEl.appendChild(makeTextNode('antigravity.'));
+  const pSuffix = makeTextNode(' commands.');
+  pTarget.appendChild(pPrefix);
+  pTarget.appendChild(codeEl);
+  pTarget.appendChild(pSuffix);
+  panel.appendChild(pTarget);
+
+  const pNormal = env.doc.createElement('p');
+  const normalCmdText = makeTextNode('commands.');
+  pNormal.appendChild(normalCmdText);
+  panel.appendChild(pNormal);
+
+  // 3. 听写语言搜索框 placeholder
+  const dictationInput = env.doc.createElement('input');
+  dictationInput.setAttribute('data-testid', 'dictation-languages-search-input');
+  dictationInput.setAttribute('placeholder', 'Search languages to add (e.g. English, Spanish, 中文, yue)...');
+  panel.appendChild(dictationInput);
+
+  env.doc.body.appendChild(panel);
+
+  env.doc.createTreeWalker = (rootNode, whatToShow) => {
+    const flat = [];
+    const walk = (n) => {
+      if (!n) return;
+      const children = n.childNodes || n.children || [];
+      for (const ch of children) {
+        if ((ch.nodeType === 1 && (whatToShow & 1)) || (ch.nodeType === 3 && (whatToShow & 4))) {
+          flat.push(ch);
+        }
+        walk(ch);
+      }
+    };
+    walk(rootNode);
+    let idx = 0;
+    return { nextNode: () => (idx < flat.length ? flat[idx++] : null) };
+  };
+  env.sandbox.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+
+  try {
+    vm.runInContext(hansSrc, env.sandbox);
+    assert.equal(exactText.nodeValue, '快捷键方案');
+    assert.equal(retryText.nodeValue, '正在重试转写（第 2 次）…');
+    assert.equal(pPrefix.nodeValue.trim(), '查看现有快捷键或录制自定义组合键，列表仅显示前缀为');
+    assert.equal(pSuffix.nodeValue.trim(), '的命令。');
+    assert.equal(normalCmdText.nodeValue, 'commands.', '普通上下文中的 commands. 必须保留原文');
+    assert.equal(
+      dictationInput.getAttribute('placeholder'),
+      '搜索要添加的语言（例如 English、Spanish、中文、yue）…'
+    );
+  } finally {
+    env.win.__antigravityZhPatchCleanup?.();
+  }
+
+  // 验证两份 zh-CN.json 同步包含新增词条
+  const rootDict = JSON.parse(fs.readFileSync(path.join(ROOT, 'i18n', 'zh-CN.json'), 'utf8'));
+  const srcDict = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'i18n', 'zh-CN.json'), 'utf8'));
+  assert.equal(rootDict.exact['Dictation languages'], '听写语言');
+  assert.equal(srcDict.exact['Dictation languages'], '听写语言');
+  assert.ok(rootDict.patterns.some(p => p.regex.includes('Retrying transcription')));
+});
+
+test('需求 27b: build-renderer 拦截源码截断标记、asar-engine 排除 headless 子进程、cli 拒绝未知命令', () => {
+  const { assertNoTruncationMarker } = require('./scripts/build-renderer');
+  assert.doesNotThrow(() => assertNoTruncationMarker('ok.js', 'const a = 1;\n'));
+  assert.throws(
+    () => assertNoTruncationMarker('broken.js', 'line1\n// ... truncated for diff preview ...\nline3'),
+    (err) => err && err.code === 'ERR_SOURCE_TRUNCATED'
+  );
+
+  const { inspectAntigravityHostProcess } = require('./asar-engine');
+  const fakePs = [
+    '101 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --type=renderer',
+    '102 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --headless --disable-gpu',
+    '103 00:12 /Applications/Antigravity.app/Contents/Frameworks/chrome_crashpad_handler',
+    '104 00:45 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0'
+  ].join('\n');
+  const proc = inspectAntigravityHostProcess({ psOutput: fakePs });
+  assert.equal(proc.running, true);
+  assert.equal(proc.pid, 104, '必须跳过 --type= / --headless / crashpad，仅命中真实主进程');
+  assert.equal(proc.hasDebugSwitch, true);
+
+  const { spawnSync } = require('node:child_process');
+  const badRes = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'non-existent-subcmd-xyz'], {
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assert.equal(badRes.status, 1, '未知命令必须返回非 0 退出码，禁止隐式回落为 live/install');
+  assert.match(badRes.stderr, /未知命令/);
+
+  const helpRes = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'help'], {
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assert.equal(helpRes.status, 0, 'cli.js help 应正常返回退出码 0');
+});

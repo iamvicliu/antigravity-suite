@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
+const https = require('node:https');
+const http = require('node:http');
 const { EventEmitter } = require('node:events');
 
 // 设置隔离环境：避免 tryHotInject 探测宿主真实端口超时
@@ -24,6 +26,7 @@ const {
   resolveNodeRuntime,
   isAllowedDownloadRedirectUrl,
   isOfficialAssetDownloadUrl,
+  requestGithubUrl,
   OFFICIAL_REPO
 } = require('./meter-collector');
 const core = require('./meter-core');
@@ -2070,6 +2073,69 @@ console.log('ELECTRON_ASAR_VERIFIED_SUCCESS');
   } finally {
     if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
     else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('更新安全 4.9：requestGithubUrl 走代理隧道时必须绑定带 createConnection 的 https.Agent 实例而非 agent:false', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-proxy-agent-'));
+  const proxyCfgPath = path.join(tmpDir, 'proxy.json');
+  const connectSockets = new Set();
+
+  const proxyServer = http.createServer((_req, res) => {
+    res.writeHead(405);
+    res.end();
+  });
+  proxyServer.on('connect', (_req, socket) => {
+    connectSockets.add(socket);
+    socket.on('close', () => connectSockets.delete(socket));
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+  });
+
+  await new Promise(resolve => proxyServer.listen(0, '127.0.0.1', resolve));
+  const proxyPort = proxyServer.address().port;
+  fs.writeFileSync(proxyCfgPath, JSON.stringify({
+    enabled: true,
+    httpProxy: `http://127.0.0.1:${proxyPort}`,
+    noProxy: ''
+  }), 'utf8');
+
+  let capturedOpts = null;
+  const origHttpsRequest = https.request;
+  https.request = (opts, cb) => {
+    capturedOpts = opts;
+    const reqMock = new EventEmitter();
+    reqMock.setTimeout = () => {};
+    reqMock.destroy = () => {};
+    reqMock.end = () => {
+      const resMock = new EventEmitter();
+      resMock.statusCode = 200;
+      resMock.headers = {};
+      resMock.resume = () => {};
+      process.nextTick(() => {
+        cb(resMock);
+        resMock.emit('data', Buffer.from('{"ok":true}'));
+        resMock.emit('end');
+      });
+    };
+    return reqMock;
+  };
+
+  try {
+    const body = await requestGithubUrl('https://api.github.com/repos/test/repo/releases', {
+      proxyConfigOptions: { candidates: [proxyCfgPath] },
+      timeout: 3000
+    });
+    assert.equal(body, '{"ok":true}');
+    assert.ok(capturedOpts, '应调用 https.request');
+    assert.ok(capturedOpts.agent instanceof https.Agent, '隧道请求必须绑定 https.Agent 实例（Node 在 agent:false 时会忽略 reqOpts.createConnection）');
+    assert.equal(typeof capturedOpts.agent.createConnection, 'function', 'tunnelAgent 必须实现 createConnection');
+  } finally {
+    https.request = origHttpsRequest;
+    for (const s of connectSockets) {
+      try { s.destroy(); } catch {}
+    }
+    await new Promise(resolve => proxyServer.close(resolve));
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
