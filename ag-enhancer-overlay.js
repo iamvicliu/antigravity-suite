@@ -4761,10 +4761,25 @@
 
     if (!fullText) {
       addCandidate('先帮我梳理下当前任务并给出方案');
+      addCandidate('按这个需求做：\n');
       addCandidate('/plan ');
-      addCandidate('重新读取 AGENTS');
-      return { sig, candidates: list };
+      addCandidate('用中文回答');
+      return { sig, candidates: list.slice(0, 4) };
     }
+
+    const strippedProse = fullText
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`[^`\n]+`/g, ' ')
+      .replace(/https?:\/\/\S+/gi, ' ');
+    const latinCount = (strippedProse.match(/[A-Za-z]/g) || []).length;
+    const cjkCount = (strippedProse.match(/[\u4e00-\u9fff]/g) || []).length;
+    const nonSpaceCount = strippedProse.replace(/\s+/g, '').length;
+    const isMostlyEnglish = (
+      uiLang !== 'en' &&
+      latinCount >= 40 &&
+      cjkCount < 6 &&
+      (latinCount / Math.max(1, nonSpaceCount)) > 0.7
+    );
 
     const asksConfirm = /(?:请确认|是否确认|是否合适|确认后|是否继续|你倾向于|请选择|方案\s*[A-Z1-9]|选项\s*[A-Z1-9])/i.test(recent);
     const hasRecommend = /(?:推荐|方案\s*[A1](?!\d))/.test(recent);
@@ -4783,28 +4798,40 @@
     const hasError = hasUnnegatedError(recent);
     const hasDoneOrPushed = /(?:已提交|已推送|origin\/main|commit\s+[0-9a-f]{6,}|验证通过|全部组件显示\s*✅|PASSED)/i.test(recent);
     const mentionsCodeChange = /(?:已修改|已新增|已修复|文件修改|函数|补丁|\.(?:js|ts|tsx|py|sh|md|json)\b)/i.test(recent);
+    const isLongPlainExplanation = !mentionsCodeChange && !asksConfirm && !hasError && !hasDoneOrPushed && fullText.length >= 450;
+
+    if (isMostlyEnglish) {
+      addCandidate('用中文回答');
+    }
 
     if (asksConfirm) {
+      addCandidate('直接实现');
       if (hasRecommend) addCandidate('确认，按推荐方案执行');
-      addCandidate('确认，直接按这个方案落地');
-      addCandidate('先微调一下方案细节：');
+      addCandidate('再改一版');
     } else if (asksQuestion) {
-      addCandidate('好，就按你说的执行');
+      addCandidate('直接实现');
+      addCandidate('继续');
     }
 
     if (hasError) {
-      addCandidate('分析报错原因并直接修复');
-      addCandidate('贴一下关键报错原因并给出修复方案');
+      addCandidate('修复这个报错');
+      addCandidate('为什么不行');
     }
 
     if (mentionsCodeChange && !hasDoneOrPushed) {
-      addCandidate('运行测试验证，通过后提交并推送');
-      addCandidate('先跑一遍实测看看效果');
+      addCandidate('跑一下');
+      addCandidate('优化一下');
     }
 
     if (hasDoneOrPushed) {
-      addCandidate('检查还有没有遗漏的边界情况');
-      addCandidate('继续处理下一个问题');
+      addCandidate('优化一下');
+      addCandidate('再改一版');
+      addCandidate('继续');
+    }
+
+    if (isLongPlainExplanation) {
+      addCandidate('不要解释');
+      addCandidate('直接实现');
     }
 
     const risk = extractContextRiskState();
@@ -4816,8 +4843,9 @@
       addCandidate('/compact');
     }
 
-    addCandidate('继续下一步');
-    addCandidate('展开说说具体细节');
+    addCandidate('继续');
+    addCandidate('优化一下');
+    addCandidate('再改一版');
 
     return { sig, candidates: list.slice(0, 4) };
   }
@@ -8801,6 +8829,7 @@
     saveFileEditor,
     exitFileEditor,
     isAssistantBusy,
+    computeNextStepCandidatesFromText,
     truncateNextStepText,
     ensureNextStepGhost,
     acceptNextStepSuggestion,

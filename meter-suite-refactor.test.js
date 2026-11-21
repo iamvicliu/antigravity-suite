@@ -11509,7 +11509,12 @@ test('需求 31: 快捷提示词 + 新增布局、编辑态防轮询覆盖、慢
     const statusEl = shadow.getElementById('quick-prompts-status');
     assert.ok(customHdr, '必须存在紧邻编辑列表的 .qp-custom-hdr 区域头');
     assert.ok(addBtn && addBtn.parentElement === customHdr, '#btn-add-quick-prompt 必须位于 .qp-custom-hdr 内部');
-    assert.equal(customHdr.nextElementSibling, editorList, '.qp-custom-hdr 必须紧邻 #quick-prompts-editor-list');
+    const tplBar = shadow.getElementById('quick-popular-templates');
+    assert.ok(
+      customHdr.nextElementSibling === editorList ||
+      (tplBar && customHdr.nextElementSibling === tplBar && tplBar.nextElementSibling === editorList),
+      '.qp-custom-hdr 必须位于编辑列表与模板条正上方'
+    );
     assert.equal(card?.querySelector('.settings-card-hdr #btn-add-quick-prompt'), null, '顶部 .settings-card-hdr 内不应再放 + 新增按钮');
 
     // 2. 点击 + 新增并输入草稿后，模拟后台 15s 轮询触发 restoreSettingsFromHost()，草稿不得被冲掉
@@ -12341,5 +12346,183 @@ test('PR #5 合并加固：subagentStates 孤立记录超 TTL、根会话归档�
     assert.equal(persisted.subagentStates['sub-cap-0'], undefined, '最旧的 cap 溢出条目应优先淘汰');
   } finally {
     fs.rmSync(tmpBase, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 32: 自定义区 Top 10 热门口令模板一键添加 + 右侧 Tab/→ 幽灵补全动态短句推荐
+// =========================================================================
+test('需求 32: 热门口令模板条渲染 10 项、预设直发/填入、去重定位、增删联动与幽灵补全场景映射', async () => {
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+
+  let savedQuickPrompts = [];
+  const env = createDomEnv({
+    hostSettings: {
+      ok: true,
+      uiPreferences: {
+        quickPrompts: []
+      }
+    }
+  });
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (cb, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); cb(); }, Math.min(Number(ms) || 0, 8));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => {
+    activeTimers.delete(t);
+    clearTimeout(t);
+  };
+  env.sandbox.location = {
+    protocol: 'https:',
+    hostname: '127.0.0.1',
+    pathname: '/c/ffffffff-6666-6666-6666-666666666666',
+    origin: 'https://127.0.0.1:58365',
+    href: 'https://127.0.0.1:58365/c/ffffffff-6666-6666-6666-666666666666'
+  };
+  env.apiMocks.getSettings = () => Promise.resolve({
+    ok: true,
+    uiPreferences: {
+      quickPrompts: savedQuickPrompts.map(item => ({ ...item }))
+    }
+  });
+  env.apiMocks.saveSettings = payload => {
+    env.postedSettings.push(payload);
+    if (payload?.uiPreferences && 'quickPrompts' in payload.uiPreferences) {
+      savedQuickPrompts = Array.isArray(payload.uiPreferences.quickPrompts)
+        ? payload.uiPreferences.quickPrompts.map(item => ({ ...item }))
+        : [];
+    }
+    return Promise.resolve({ ok: true, settings: payload });
+  };
+
+  const composerEl = env.doc.createElement('div');
+  composerEl.className = 'surface-composer';
+  const editorEl = env.doc.createElement('div');
+  editorEl.setAttribute('data-lexical-editor', 'true');
+  editorEl.setAttribute('contenteditable', 'true');
+  composerEl.appendChild(editorEl);
+  env.doc.body.appendChild(composerEl);
+
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  vm.runInContext(freshEnhancerSrc, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const enhancer = env.sandbox.__AGEnhancer;
+  const shadow = env.getShadow();
+
+  try {
+    await new Promise(r => setTimeout(r, 25));
+
+    // 1. 热门口令模板条渲染 10 项且初始均为未添加 (+ 前缀)
+    const tplBar = shadow.getElementById('quick-popular-templates');
+    const editorList = shadow.getElementById('quick-prompts-editor-list');
+    const statusEl = shadow.getElementById('quick-prompts-status');
+    assert.ok(tplBar && editorList, '自定义快捷提示词区必须包含 #quick-popular-templates 模板条与编辑器列表');
+
+    const chips = Array.from(tplBar.querySelectorAll('.qp-tpl-chip') || []);
+    assert.equal(chips.length, 10, '热门口令模板条必须完整渲染 Top 10 项');
+    const expectedIds = [
+      'tpl-implement', 'tpl-zh', 'tpl-continue', 'tpl-no-explain', 'tpl-fix-err',
+      'tpl-req', 'tpl-run', 'tpl-optimize', 'tpl-why', 'tpl-revise'
+    ];
+    assert.deepEqual(chips.map(c => c.getAttribute('data-tpl-id')), expectedIds);
+    for (const c of chips) {
+      assert.equal(c.getAttribute('data-added'), 'false');
+      assert.match(c.textContent || '', /^\+ /);
+    }
+
+    // 2. 点击免参类（如直接实现）自动插入并预设 ⚡直发；点击带上下文类（修复这个报错）自动插入并预设 填入
+    const implChip = chips[0];
+    const fixErrChip = chips[4];
+    const reqChip = chips[5];
+    const runChip = chips[6];
+    implChip.click();
+    fixErrChip.click();
+    reqChip.click();
+    runChip.click();
+
+    let rows = Array.from(editorList.querySelectorAll('.qp-row') || []);
+    assert.equal(rows.length, 4, '点击 4 个不同热门模板应新增 4 条自定义行');
+    assert.equal(rows[0].querySelector('.qp-label-input')?.value, '直接实现');
+    assert.equal(rows[0].querySelector('.qp-autosend-btn')?.getAttribute('data-auto-send'), 'true', '免参口令直接实现应默认预设 ⚡直发');
+    assert.equal(rows[1].querySelector('.qp-label-input')?.value, '修复这个报错');
+    assert.equal(rows[1].querySelector('.qp-text-input')?.value, '修复这个报错：\n');
+    assert.equal(rows[1].querySelector('.qp-autosend-btn')?.getAttribute('data-auto-send'), 'false', '带上下文口令修复这个报错应默认预设 填入');
+    assert.equal(rows[2].querySelector('.qp-autosend-btn')?.getAttribute('data-auto-send'), 'false', '带上下文口令按这个需求做应默认预设 填入');
+    assert.equal(rows[3].querySelector('.qp-autosend-btn')?.getAttribute('data-auto-send'), 'true', '免参口令跑一下应默认预设 ⚡直发');
+
+    assert.equal(implChip.getAttribute('data-added'), 'true', '添加后对应模板胶囊应高亮并标 data-added=true');
+    assert.equal(implChip.textContent, '✓ 直接实现');
+    assert.equal(statusEl?.getAttribute('data-tone'), 'dirty');
+
+    // 3. 重复点击已添加模板不新增行，仅提示并聚焦定位到对应行
+    let focusedExisting = false;
+    const existingTextInp = rows[0].querySelector('.qp-text-input');
+    const origFocus = existingTextInp.focus?.bind(existingTextInp);
+    existingTextInp.focus = () => {
+      focusedExisting = true;
+      origFocus?.();
+    };
+    implChip.click();
+    rows = Array.from(editorList.querySelectorAll('.qp-row') || []);
+    assert.equal(rows.length, 4, '重复点击已添加热门模板不得重复插入');
+    assert.equal(focusedExisting, true, '重复点击已添加模板应聚焦定位到对应编辑行');
+    assert.match(statusEl?.textContent || '', /已在/);
+
+    // 4. 保存后胶囊仍保留 ✓ 状态；删除某行后对应胶囊恢复 + 状态
+    shadow.getElementById('btn-save-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(savedQuickPrompts.length, 4);
+    assert.equal(implChip.getAttribute('data-added'), 'true');
+    assert.equal(fixErrChip.getAttribute('data-added'), 'true');
+
+    rows = Array.from(editorList.querySelectorAll('.qp-row') || []);
+    rows[1].querySelector('.qp-del-btn')?.click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(fixErrChip.getAttribute('data-added'), 'false', '删除对应自定义行后模板胶囊应恢复未添加态');
+    assert.equal(fixErrChip.textContent, '+ 修复这个报错');
+    assert.equal(implChip.getAttribute('data-added'), 'true', '未删除项仍保持 ✓ 已添加态');
+
+    // 5. 验证 需求 32 方案 C：computeNextStepCandidatesFromText 对 Top 10 高频短句与 328K/空对话兼容
+    const emptyRes = enhancer.computeNextStepCandidatesFromText('s-empty', '', 10, 0);
+    assert.equal(emptyRes.candidates[0], '先帮我梳理下当前任务并给出方案', '空对话首条推荐必须保持既有兼容性');
+    assert.ok(emptyRes.candidates.includes('按这个需求做：\n'));
+    assert.ok(emptyRes.candidates.includes('用中文回答'));
+
+    const enReply = 'This implementation updates the configuration parser and ensures backward compatibility when legacy entries are loaded from disk.';
+    const enRes = enhancer.computeNextStepCandidatesFromText('s-en', enReply, 20, 1);
+    assert.equal(enRes.candidates[0], '用中文回答', '英文回复超过阈值时应高优推荐切换用中文回答');
+
+    const confirmRecRes = enhancer.computeNextStepCandidatesFromText('s-cfg', '已对比三个选项，推荐方案 A。请确认是否开始改造？', 25, 2);
+    assert.equal(confirmRecRes.candidates[0], '直接实现');
+    assert.ok(confirmRecRes.candidates.includes('确认，按推荐方案执行'));
+    assert.ok(confirmRecRes.candidates.includes('再改一版'));
+
+    const errRes = enhancer.computeNextStepCandidatesFromText('s-err', '运行单测失败：Error: Cannot read properties of undefined', 25, 3);
+    assert.deepEqual([...errRes.candidates.slice(0, 2)], ['修复这个报错', '为什么不行']);
+
+    const codeChangedRes = enhancer.computeNextStepCandidatesFromText('s-chg', '已修改 src/renderer/suite-settings.js，补充了模板条交互。', 25, 4);
+    assert.deepEqual([...codeChangedRes.candidates.slice(0, 2)], ['跑一下', '优化一下']);
+
+    const doneRes = enhancer.computeNextStepCandidatesFromText('s-done', '已验证通过并提交到 commit abcdef123，请检查。', 25, 5);
+    assert.ok(doneRes.candidates.includes('优化一下') && doneRes.candidates.includes('再改一版'));
+
+    const longExplain = '下面为你详细梳理整套架构的数据流转与模块职责设计原则。'.repeat(22);
+    const longRes = enhancer.computeNextStepCandidatesFromText('s-long', longExplain, 25, 6);
+    assert.deepEqual([...longRes.candidates.slice(0, 2)], ['不要解释', '直接实现']);
+
+    const fakeCap = env.doc.createElement('div');
+    fakeCap.setAttribute('data-agy-context-capsule', '1');
+    fakeCap.__ctxUsageData = { contextUsed: 332000 };
+    env.doc.body.appendChild(fakeCap);
+    const highRiskRes = enhancer.computeNextStepCandidatesFromText('s-risk', '已修改 app.js。', 85, 7);
+    assert.equal(highRiskRes.candidates[0], '/compact', '达到 328K 雪崩阈值时 /compact 必须继续稳居首位');
+  } finally {
+    enhancer?.dispose?.();
+    api?.dispose?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
   }
 });

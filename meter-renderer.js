@@ -2456,6 +2456,41 @@
     .qp-add-btn{
       flex-shrink:0;
     }
+    .qp-tpl-bar{
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      gap:5px;
+      margin:2px 0 8px;
+    }
+    .qp-tpl-label{
+      font-size:11px;
+      color:var(--ag-text-muted);
+      margin-right:2px;
+      user-select:none;
+    }
+    .qp-tpl-chip{
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-secondary);
+      border-radius:999px;
+      padding:2px 8px;
+      font-size:11px;
+      line-height:1.45;
+      cursor:pointer;
+      transition:border-color .14s,background-color .14s,color .14s;
+    }
+    .qp-tpl-chip:hover{
+      border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
+      background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
+      color:var(--ag-text-primary);
+    }
+    .qp-tpl-chip[data-added="true"]{
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      font-weight:500;
+    }
     .qp-editor-list{
       display:flex;
       flex-direction:column;
@@ -3913,6 +3948,7 @@
             <span id="quick-custom-section-hdr" class="settings-field-lbl">自定义快捷提示词</span>
             <button id="btn-add-quick-prompt" class="switch-pill-btn qp-add-btn" type="button" title="添加一条快捷提示词">+ 新增</button>
           </div>
+          <div id="quick-popular-templates" class="qp-tpl-bar" role="group" aria-label="热门对话口令模板"></div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
             <span id="quick-prompts-status" class="qp-status" role="status"></span>
@@ -11623,6 +11659,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" for custom prompts.',
     '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" below for custom prompts.',
     '+ 新增': '+ Add',
+    '热门对话口令模板': 'Popular Quick Prompt Templates',
+    '热门口令：': 'Popular:',
     '保存快捷提示词': 'Save Quick Prompts',
     '● 有未保存的更改，请点击右侧「保存快捷提示词」': '● Unsaved changes — click "Save Quick Prompts"',
     '✅ 已清空自定义提示词': '✅ Cleared custom quick prompts',
@@ -11973,6 +12011,20 @@ function renderHeatmapGrid(forceRebuild = false) {
   const DEFAULT_QUICK_POOL_STATE = Object.fromEntries(
     BUILTIN_QUICK_POOL.map(item => [item.id, Boolean(item.defaultEnabled)])
   );
+
+  // 自定义快捷提示词区热门对话口令模板（前 8 项免参即发预设 ⚡直发，后 2 项带上下文预设 填入）
+  const POPULAR_QUICK_PROMPT_TEMPLATES = [
+    { id: 'tpl-implement', label: '直接实现', labelEn: 'Implement', text: '直接实现', textEn: 'Implement directly', autoSend: true },
+    { id: 'tpl-zh', label: '用中文回答', labelEn: 'Reply ZH', text: '用中文回答', textEn: 'Reply in Chinese', autoSend: true },
+    { id: 'tpl-continue', label: '继续', labelEn: 'Continue', text: '继续', textEn: 'Continue', autoSend: true },
+    { id: 'tpl-no-explain', label: '不要解释', labelEn: 'No Explain', text: '不要解释', textEn: 'No explanation, just give the result', autoSend: true },
+    { id: 'tpl-fix-err', label: '修复这个报错', labelEn: 'Fix Error', text: '修复这个报错：\n', textEn: 'Fix this error:\n', autoSend: false },
+    { id: 'tpl-req', label: '按这个需求做', labelEn: 'Do Spec', text: '按这个需求做：\n', textEn: 'Implement per this requirement:\n', autoSend: false },
+    { id: 'tpl-run', label: '跑一下', labelEn: 'Run It', text: '跑一下', textEn: 'Run and verify', autoSend: true },
+    { id: 'tpl-optimize', label: '优化一下', labelEn: 'Optimize', text: '优化一下', textEn: 'Optimize this', autoSend: true },
+    { id: 'tpl-why', label: '为什么不行', labelEn: 'Why Failed', text: '为什么不行', textEn: 'Why did this fail?', autoSend: true },
+    { id: 'tpl-revise', label: '再改一版', labelEn: 'Revise', text: '再改一版', textEn: 'Revise another version', autoSend: true }
+  ];
 
   function sanitizeQuickPoolState(raw, fallbackState = DEFAULT_QUICK_POOL_STATE) {
     const out = { ...DEFAULT_QUICK_POOL_STATE, ...(fallbackState && typeof fallbackState === 'object' ? fallbackState : {}) };
@@ -13473,13 +13525,16 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (!opts?.skipRenderEditor) {
       clearQuickPromptsEditorDirty();
       renderQuickPromptsEditor();
-    } else if (!opts?.preserveDirty) {
-      for (const r of getQuickPromptEditorRows()) {
-        const l = String(r.querySelector?.('.qp-label-input')?.value || '').trim();
-        const t = String(r.querySelector?.('.qp-text-input')?.value || '').trim();
-        if (l && t) r.setAttribute?.('data-qp-saved', 'true');
+    } else {
+      if (!opts?.preserveDirty) {
+        for (const r of getQuickPromptEditorRows()) {
+          const l = String(r.querySelector?.('.qp-label-input')?.value || '').trim();
+          const t = String(r.querySelector?.('.qp-text-input')?.value || '').trim();
+          if (l && t) r.setAttribute?.('data-qp-saved', 'true');
+        }
+        clearQuickPromptsEditorDirty();
       }
-      clearQuickPromptsEditorDirty();
+      syncQuickPopularTemplatesState();
     }
     if (!opts?.skipPersist) {
       const saveRes = await saveSuiteUiPrefs({
@@ -13553,6 +13608,7 @@ function renderHeatmapGrid(forceRebuild = false) {
 
     const onFieldInput = () => {
       markQuickPromptsEditorDirty(true);
+      syncQuickPopularTemplatesState();
     };
     labelInp.addEventListener('input', onFieldInput);
     textInp.addEventListener('input', onFieldInput);
@@ -13655,6 +13711,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       } else if (remain === 0) {
         setQuickPromptsStatus('');
       }
+      if (remain > 0) syncQuickPopularTemplatesState();
     });
 
     row.appendChild(labelInp);
@@ -13665,9 +13722,119 @@ function renderHeatmapGrid(forceRebuild = false) {
     return row;
   }
 
+  function getPopularTemplateDisplay(tpl) {
+    return {
+      label: suiteTr(tpl.label, tpl.labelEn),
+      text: suiteTr(tpl.text, tpl.textEn)
+    };
+  }
+
+  function normalizeQuickPromptMatchText(raw) {
+    return String(raw || '').replace(/[\r\n]+/g, '').trim().toLowerCase();
+  }
+
+  function findMatchingQuickPromptRow(tpl) {
+    if (!tpl) return null;
+    const labelTargets = [tpl.label, tpl.labelEn].map(normalizeQuickPromptMatchText).filter(Boolean);
+    const textTargets = [tpl.text, tpl.textEn].map(normalizeQuickPromptMatchText).filter(Boolean);
+    const rows = getQuickPromptEditorRows();
+    for (const row of rows) {
+      const rl = normalizeQuickPromptMatchText(row.querySelector?.('.qp-label-input')?.value);
+      const rt = normalizeQuickPromptMatchText(row.querySelector?.('.qp-text-input')?.value);
+      if ((rl && labelTargets.includes(rl)) || (rt && textTargets.includes(rt))) {
+        return row;
+      }
+    }
+    return null;
+  }
+
+  function syncQuickPopularTemplatesState() {
+    const bar = el('quick-popular-templates');
+    if (!bar || typeof bar.querySelectorAll !== 'function') return;
+    const chips = Array.from(bar.querySelectorAll('.qp-tpl-chip') || []);
+    for (const btn of chips) {
+      const tplId = String(btn.getAttribute?.('data-tpl-id') || '').trim();
+      const tpl = POPULAR_QUICK_PROMPT_TEMPLATES.find(item => item.id === tplId);
+      if (!tpl) continue;
+      const disp = getPopularTemplateDisplay(tpl);
+      const matched = Boolean(findMatchingQuickPromptRow(tpl));
+      btn.setAttribute('data-added', matched ? 'true' : 'false');
+      btn.setAttribute('aria-pressed', matched ? 'true' : 'false');
+      btn.textContent = `${matched ? '✓' : '+'} ${disp.label}`;
+      btn.title = matched
+        ? suiteTr(`「${disp.label}」已在自定义列表中（点击定位）`, `"${disp.label}" is already in custom list (click to locate)`)
+        : suiteTr(
+            `一键添加到自定义列表：${disp.label}（${tpl.autoSend ? '默认 ⚡直发' : '默认 填入'}）`,
+            `One-click add to custom list: ${disp.label} (${tpl.autoSend ? 'default ⚡Send' : 'default Insert'})`
+          );
+    }
+  }
+
+  function renderQuickPopularTemplates() {
+    const bar = el('quick-popular-templates');
+    if (!bar) return;
+    const existingChips = Array.from(bar.querySelectorAll?.('.qp-tpl-chip') || []);
+    if (existingChips.length === POPULAR_QUICK_PROMPT_TEMPLATES.length) {
+      const prefixEl = bar.querySelector?.('.qp-tpl-label');
+      if (prefixEl) prefixEl.textContent = suiteTr('热门口令：', 'Popular:');
+      syncQuickPopularTemplatesState();
+      return;
+    }
+    bar.replaceChildren?.();
+    const prefix = document.createElement('span');
+    prefix.className = 'qp-tpl-label';
+    prefix.textContent = suiteTr('热门口令：', 'Popular:');
+    bar.appendChild(prefix);
+
+    for (const tpl of POPULAR_QUICK_PROMPT_TEMPLATES) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'qp-tpl-chip';
+      btn.setAttribute('data-tpl-id', tpl.id);
+      btn.setAttribute('data-auto-send-default', tpl.autoSend ? 'true' : 'false');
+      btn.addEventListener('click', () => {
+        const existingRow = findMatchingQuickPromptRow(tpl);
+        const disp = getPopularTemplateDisplay(tpl);
+        if (existingRow) {
+          setQuickPromptsStatus(
+            quickPromptsEditorDirty
+              ? suiteTr(`「${disp.label}」已在下方列表中（有未保存更改，请记得点击保存）`, `"${disp.label}" is already in the list (unsaved changes pending)`)
+              : suiteTr(`「${disp.label}」已在自定义列表中`, `"${disp.label}" is already in custom list`),
+            quickPromptsEditorDirty ? 'dirty' : 'ok'
+          );
+          try { existingRow.querySelector?.('.qp-text-input')?.focus?.(); } catch {}
+          try { existingRow.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' }); } catch {}
+          return;
+        }
+        const listEl = el('quick-prompts-editor-list');
+        if (!listEl) return;
+        const count = listEl.querySelectorAll('.qp-row')?.length || 0;
+        if (count >= 12) {
+          setQuickPromptsStatus(suiteTr('⚠️ 最多支持 12 条自定义快捷提示词', '⚠️ Maximum 12 custom quick prompts'), 'warn');
+          return;
+        }
+        const newRow = appendQuickPromptEditorRow(
+          listEl,
+          { id: tpl.id, label: disp.label, text: disp.text, autoSend: Boolean(tpl.autoSend) },
+          count,
+          { isSaved: false }
+        );
+        markQuickPromptsEditorDirty(true);
+        syncQuickPopularTemplatesState();
+        try { newRow?.querySelector?.('.qp-text-input')?.focus?.(); } catch {}
+        try { newRow?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' }); } catch {}
+      });
+      bar.appendChild(btn);
+    }
+    syncQuickPopularTemplatesState();
+  }
+
   function renderQuickPromptsEditor() {
     const listEl = el('quick-prompts-editor-list');
-    if (!listEl) return;
+    if (!listEl) {
+      renderQuickPopularTemplates();
+      return;
+    }
     listEl.replaceChildren();
     const items = Array.isArray(suiteQuickPrompts) ? suiteQuickPrompts : [];
     if (items.length === 0) {
@@ -13678,11 +13845,13 @@ function renderHeatmapGrid(forceRebuild = false) {
         'No custom prompts yet. Click "+ Add" on the right to create one.'
       );
       listEl.appendChild(emptyEl);
+      renderQuickPopularTemplates();
       return;
     }
     for (let i = 0; i < items.length; i++) {
       appendQuickPromptEditorRow(listEl, items[i], i, { isSaved: true });
     }
+    renderQuickPopularTemplates();
   }
 
   function collectQuickPromptsFromEditor() {
@@ -14221,6 +14390,13 @@ function renderHeatmapGrid(forceRebuild = false) {
       renderQuickBuiltinPool();
       if (!isQuickPromptsEditorActiveOrDirty()) {
         renderQuickPromptsEditor();
+      } else {
+        const tplBar = el('quick-popular-templates');
+        if (tplBar && (!tplBar.children || tplBar.children.length === 0)) {
+          renderQuickPopularTemplates();
+        } else {
+          syncQuickPopularTemplatesState();
+        }
       }
       void refreshTerminalsList();
     } else if (target === 'subscription') {
