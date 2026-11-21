@@ -1567,13 +1567,22 @@ function parseIsoTimestampMs(raw) {
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 }
 
+function safeDecodeURIComponent(raw) {
+  const s = String(raw ?? '');
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
 function decodeFileUriToPath(rawUri) {
   const s = String(rawUri || '').trim();
   if (!s) return '';
   if (!/^file:\/\//i.test(s)) return path.resolve(s);
   try {
     const u = new URL(s);
-    let p = decodeURIComponent(u.pathname || '');
+    let p = safeDecodeURIComponent(u.pathname || '');
     if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(p)) p = p.slice(1);
     return p ? path.resolve(p) : '';
   } catch {
@@ -2123,6 +2132,40 @@ function createSessionCatalogStore() {
     if (archivedTombstones.length > MAX_ARCHIVED_TOMBSTONES) {
       store.map.clear();
       for (const item of persistedAll) store.map.set(item.id, item);
+    }
+
+    // 上限淘汰 subagent 缓存：清理指向已归档根会话的状态并限制集合规模防止长驻内存膨胀
+    const MAX_SUBAGENT_STATES = 500;
+    const MAX_SUBAGENT_IDS = 2000;
+    for (const [subId, subRec] of Array.from(store.subagentStates.entries())) {
+      const rootItem = subRec?.rootId ? store.map.get(subRec.rootId) : null;
+      if (rootItem && rootItem.archived) store.subagentStates.delete(subId);
+    }
+    if (store.subagentStates.size > MAX_SUBAGENT_STATES) {
+      const sortedSubStates = Array.from(store.subagentStates.entries())
+        .sort((a, b) => (Number(b[1]?.updatedAt) || 0) - (Number(a[1]?.updatedAt) || 0));
+      store.subagentStates.clear();
+      for (const [k, v] of sortedSubStates.slice(0, MAX_SUBAGENT_STATES)) {
+        store.subagentStates.set(k, v);
+      }
+    }
+    if (store.subagentIds.size > MAX_SUBAGENT_IDS) {
+      const protectedIds = new Set([...store.subagentStates.keys(), ...seenSubIds]);
+      for (const sid of Array.from(store.subagentIds)) {
+        if (store.subagentIds.size <= MAX_SUBAGENT_IDS) break;
+        if (!protectedIds.has(sid)) {
+          store.subagentIds.delete(sid);
+          store.subagentRoots.delete(sid);
+        }
+      }
+    }
+    if (store.subagentRoots.size > MAX_SUBAGENT_IDS) {
+      for (const sid of Array.from(store.subagentRoots.keys())) {
+        if (store.subagentRoots.size <= MAX_SUBAGENT_IDS) break;
+        if (!store.subagentIds.has(sid) && !store.subagentStates.has(sid)) {
+          store.subagentRoots.delete(sid);
+        }
+      }
     }
 
     store.lastActiveSessionId = activeSessionId;
@@ -3039,11 +3082,11 @@ function formatTrajectoryUserInput(ui) {
         pieces.push(it.text);
       } else if (it.item?.file?.absoluteUri) {
         const uri = String(it.item.file.absoluteUri);
-        const base = decodeURIComponent(uri.split('/').pop() || uri);
+        const base = safeDecodeURIComponent(uri.split('/').pop() || uri);
         pieces.push(`@${base}`);
       } else if (it.item?.directory?.absoluteUri) {
         const uri = String(it.item.directory.absoluteUri);
-        const base = decodeURIComponent(uri.replace(/\/+$/, '').split('/').pop() || uri);
+        const base = safeDecodeURIComponent(uri.replace(/\/+$/, '').split('/').pop() || uri);
         pieces.push(`@${base}`);
       } else if (it.item?.slashCommand?.info?.name) {
         pieces.push(`/${it.item.slashCommand.info.name}`);
@@ -3225,6 +3268,7 @@ function createConversationHistoryManager() {
   const inflightMap = new Map();
   const fetchGenMap = new Map();
   const MAX_CACHE_ENTRIES = 24;
+  const MAX_FETCH_GEN_ENTRIES = 2000;
 
   function touchCache(sessionId, rec) {
     if (cache.has(sessionId)) cache.delete(sessionId);
@@ -3237,7 +3281,13 @@ function createConversationHistoryManager() {
 
   function nextFetchGen(sessionId) {
     const next = (fetchGenMap.get(sessionId) || 0) + 1;
+    if (fetchGenMap.has(sessionId)) fetchGenMap.delete(sessionId);
     fetchGenMap.set(sessionId, next);
+    while (fetchGenMap.size > MAX_FETCH_GEN_ENTRIES) {
+      const oldestKey = fetchGenMap.keys().next().value;
+      if (oldestKey !== undefined) fetchGenMap.delete(oldestKey);
+      else break;
+    }
     return next;
   }
 
@@ -3428,6 +3478,7 @@ function createConversationHistoryManager() {
       totalMessages: fullMsgs.length,
       messagesStartIndex: startIdx,
       hasEarlierMessages: startIdx > 0,
+      historySource: trajMsgs ? 'trajectory' : 'dom',
       messages: sliced
     };
   }
@@ -5468,10 +5519,14 @@ function buildMobileAppHtml() {
       return null;
     }
 
-    function clearScrollBodyOffset(bodyEl) {
+    function clearScrollBodyOffset(bodyEl, appliedDelta) {
       if (!bodyEl) return;
       bodyEl.style.paddingBottom = '';
-      bodyEl.scrollTop = 0;
+      const delta = Number(appliedDelta) || 0;
+      if (delta > 0) {
+        // 仅撤回本逻辑施加的临时滚动增量，保留用户原本手动滚动的位置（不暴力清零）
+        bodyEl.scrollTop = Math.max(0, (Number(bodyEl.scrollTop) || 0) - delta);
+      }
     }
 
     function resetModalSheetShift() {
@@ -5479,7 +5534,7 @@ function buildMobileAppHtml() {
         activeShiftedSheet.style.transform = '';
         activeShiftedSheet.style.height = '';
       }
-      clearScrollBodyOffset(activeScrolledModalBody);
+      clearScrollBodyOffset(activeScrolledModalBody, activeModalBodyScrollY);
       const openBackdrop = getOpenModalBackdrop();
       const sheetEl = openBackdrop?.querySelector?.('.sheet');
       if (sheetEl) {
@@ -5569,7 +5624,8 @@ function buildMobileAppHtml() {
       const scrollBody = sheetEl.querySelector('.proj-modal-body') || sheetEl.querySelector('.sheet-list') || null;
       const hasScrollBody = Boolean(scrollBody && scrollBody.contains(activeEl));
       const appliedShift = activeShiftedSheet === sheetEl ? activeModalSheetShiftY : 0;
-      const bodyScroll = hasScrollBody ? (Number(scrollBody.scrollTop) || 0) : 0;
+      // 仅补偿本逻辑自身施加的滚动增量（activeModalBodyScrollY），不得叠加用户手动下滑的 scrollTop 导致偏移过大
+      const bodyScroll = (hasScrollBody && activeScrolledModalBody === scrollBody) ? (Number(activeModalBodyScrollY) || 0) : 0;
       const sheetRect = sheetEl.getBoundingClientRect();
       const bodyRect = scrollBody && typeof scrollBody.getBoundingClientRect === 'function' ? scrollBody.getBoundingClientRect() : null;
       const rect = activeEl.getBoundingClientRect();
@@ -5613,16 +5669,18 @@ function buildMobileAppHtml() {
         }
         const maxBodyScroll = Math.max(0, Math.floor(rawTop - bodyRawTop - 4));
         const targetScroll = Math.max(0, Math.min(remainingOverlap, maxBodyScroll));
+        const prevApplied = activeScrolledModalBody === scrollBody ? (Number(activeModalBodyScrollY) || 0) : 0;
+        const userBaseScroll = Math.max(0, (Number(scrollBody.scrollTop) || 0) - prevApplied);
         scrollBody.style.paddingBottom = (targetScroll + 28) + 'px';
-        scrollBody.scrollTop = targetScroll;
+        scrollBody.scrollTop = userBaseScroll + targetScroll;
         activeScrolledModalBody = scrollBody;
         activeModalBodyScrollY = targetScroll;
       } else {
         sheetEl.style.height = '';
         activeSheetLockedHeight = 0;
-        clearScrollBodyOffset(activeScrolledModalBody);
+        clearScrollBodyOffset(activeScrolledModalBody, activeModalBodyScrollY);
         if (scrollBody && scrollBody !== activeScrolledModalBody) {
-          clearScrollBodyOffset(scrollBody);
+          clearScrollBodyOffset(scrollBody, 0);
         }
         activeScrolledModalBody = null;
         activeModalBodyScrollY = 0;
@@ -6363,13 +6421,21 @@ function buildMobileAppHtml() {
       // Messages (full history + upward pagination + gap backfill + scroll anchor)
       msgEl.classList.remove('is-switching');
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
+      const nextHistSource = snap.historySource === 'trajectory' || snap.historySource === 'dom' ? snap.historySource : '';
       if (snapSid !== activeMsgSessionId) {
         activeMsgSessionId = snapSid;
+        activeMsgHistorySource = nextHistSource;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         stickBottom = true;
+      } else if (activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory') {
+        // RPC 偶发降级 domTail（写入 0..59 临时键）后恢复全量轨迹时，清空旧临时键防止前 60 条重复错序
+        sessionMsgsByIndex.clear();
+        activeMsgHistorySource = 'trajectory';
+      } else if (nextHistSource) {
+        activeMsgHistorySource = nextHistSource;
       }
       const rawMsgs = Array.isArray(snap.messages) ? snap.messages : [];
       const totalMsgs = Number(snap.totalMessages);
@@ -7282,6 +7348,7 @@ function buildMobileAppHtml() {
     }
 
     let activeMsgSessionId = null;
+    let activeMsgHistorySource = '';
     const sessionMsgsByIndex = new Map();
     const openThoughtIdxSet = new Set();
     let loadingEarlierMsgs = false;
@@ -8184,23 +8251,29 @@ function buildMobileAppHtml() {
       row.hidden = !row.hidden;
       if (!row.hidden) $('proj-mkdir-input')?.focus?.();
     });
-    $('proj-mkdir-confirm')?.addEventListener('click', () => { void createNewSubdirInModal(); });
-    $('proj-mkdir-input')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.isComposing) {
+    function bindSafeImeEnter(el, onEnter, opts) {
+      if (!el || typeof el.addEventListener !== 'function') return;
+      let imeComposing = false;
+      el.addEventListener('compositionstart', () => { imeComposing = true; });
+      el.addEventListener('compositionend', () => { imeComposing = false; });
+      el.addEventListener('keydown', (e) => {
+        if (imeComposing || e.isComposing || e.keyCode === 229) return;
+        if (e.key !== 'Enter') return;
+        if (opts?.requireMod && !(e.metaKey || e.ctrlKey)) return;
         e.preventDefault();
-        void createNewSubdirInModal();
-      }
-    });
+        onEnter(e);
+      });
+    }
+
+    $('proj-mkdir-confirm')?.addEventListener('click', () => { void createNewSubdirInModal(); });
+    bindSafeImeEnter($('proj-mkdir-input'), () => { void createNewSubdirInModal(); });
     $('proj-path-go')?.addEventListener('click', () => {
       const val = String($('proj-path-input')?.value || '').trim();
       if (val) void loadHostDirListing(val);
     });
-    $('proj-path-input')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.isComposing) {
-        e.preventDefault();
-        const val = String($('proj-path-input')?.value || '').trim();
-        if (val) void loadHostDirListing(val);
-      }
+    bindSafeImeEnter($('proj-path-input'), () => {
+      const val = String($('proj-path-input')?.value || '').trim();
+      if (val) void loadHostDirListing(val);
     });
     $('proj-name-input')?.addEventListener('input', () => {
       const typedName = String($('proj-name-input')?.value || '').trim();
@@ -8614,12 +8687,7 @@ function buildMobileAppHtml() {
     }
     bindButtonClick($('btn-send'), sendInput);
     syncSendButtonUI();
-    ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
-        e.preventDefault();
-        void sendInput();
-      }
-    });
+    bindSafeImeEnter(ta, () => { void sendInput(); }, { requireMod: true });
 
     renderModeEntryGate(
       isManualEntry

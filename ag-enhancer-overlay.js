@@ -6935,6 +6935,10 @@
   function collectRecentMessages(limit = 60) {
     const viewport = getScrollViewport() || document.querySelector('main') || document.body;
     if (!viewport) return [];
+    const MAX_DOM_MSG_CHARS = 200000;
+    const MAX_DOM_THOUGHT_CHARS = 32000;
+    const MAX_DOM_HTML_CHARS = 260000;
+    const capText = (s, maxLen) => (s && s.length > maxLen ? `${s.slice(0, maxLen)}…` : s);
     const nodes = Array.from(viewport.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]'));
     const slice = nodes.slice(-Math.max(1, limit));
     const out = [];
@@ -6944,7 +6948,8 @@
       const testId = node.getAttribute('data-testid');
       if (testId === 'user-message') {
         const contentNode = node.querySelector('[data-testid="user-message-content"]') || node;
-        const text = cleanUserMessageText(contentNode.innerText || contentNode.textContent || '');
+        const rawUserText = String(contentNode.textContent || contentNode.innerText || '');
+        const text = capText(cleanUserMessageText(rawUserText.slice(0, MAX_DOM_MSG_CHARS + 512)), MAX_DOM_MSG_CHARS);
         if (!text) continue;
         out.push({ id: `u-${i}`, role: 'user', text });
         continue;
@@ -6957,7 +6962,7 @@
         if (trg.getAttribute('aria-expanded') === 'true') {
           const panel = trg.parentElement?.nextElementSibling;
           const zhNode = panel?.querySelector?.('[data-ag-thought-zh]') || trg.nextElementSibling;
-          const txt = (zhNode?.innerText || panel?.innerText || '').trim();
+          const txt = capText((zhNode?.innerText || panel?.innerText || '').trim(), MAX_DOM_THOUGHT_CHARS);
           if (txt) thoughtChunks.push(txt);
         }
       }
@@ -6966,13 +6971,14 @@
         !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
         !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
       ));
-      let replyText = mdRoots.map((m) => (m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
-      const replyHtml = extractSanitizedMarkdownHtml(mdRoots);
+      let replyText = capText(mdRoots.map((m) => (m.innerText || '').trim()).filter(Boolean).join('\n\n').trim(), MAX_DOM_MSG_CHARS);
+      const rawHtml = extractSanitizedMarkdownHtml(mdRoots);
+      const replyHtml = rawHtml && rawHtml.length > MAX_DOM_HTML_CHARS ? '' : rawHtml;
       if (!replyText) {
-        const cloneText = (node.innerText || '')
+        const cloneText = capText((node.innerText || '')
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
           .replace(/^Worked\s+for\s+\S+(?:\s+in\s+this\s+step)?\s*\n*/i, '')
-          .trim();
+          .trim(), MAX_DOM_MSG_CHARS);
         if (cloneText && !/^(?:Agent\s+working|Worked\s+for|Running\s+)/i.test(cloneText)) {
           replyText = cloneText;
         }
@@ -8074,6 +8080,9 @@
         : [];
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
       const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
+      const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
+      const targetProjectId = String(matchedConv?.projectId || matchedGroup?.id || trajectory?.trajectoryMetadata?.projectId || '').trim();
+      const targetProjectName = String(matchedConv?.projectName || matchedGroup?.name || '').trim();
       const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || String(trajectory.summary || '').trim() || `会话 ${reqConvId.slice(0, 8)}`;
 
       return {
@@ -8082,6 +8091,9 @@
         activeConversationId: reqConvId,
         desktopSessionId: baseSnap.sessionId || '',
         isolated: true,
+        isNewConversation: false,
+        currentProjectId: targetProjectId,
+        currentProjectName: targetProjectName,
         title,
         busy,
         model: isolatedModel,
@@ -8116,11 +8128,19 @@
       };
     } catch (err) {
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
+      const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
+      const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
+      const targetProjectId = String(matchedConv?.projectId || matchedGroup?.id || '').trim();
+      const targetProjectName = String(matchedConv?.projectName || matchedGroup?.name || '').trim();
       return {
         ...baseSnap,
+        sessionId: reqConvId,
         activeConversationId: reqConvId,
         desktopSessionId: baseSnap.sessionId || '',
         isolated: true,
+        isNewConversation: false,
+        currentProjectId: targetProjectId,
+        currentProjectName: targetProjectName,
         conversations: cloned.conversations,
         projectGroups: cloned.projectGroups,
         isolationWarning: err?.message || '无法独立读取该会话'
