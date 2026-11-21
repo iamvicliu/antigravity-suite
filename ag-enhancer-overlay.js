@@ -3334,18 +3334,54 @@
       return false;
     }
 
-    const insertRawText = (val) => {
-      const ok = document.execCommand('insertText', false, val);
-      if (!ok) {
-        try {
-          const ev = new InputEvent('beforeinput', {
-            bubbles: true,
-            cancelable: true,
-            inputType: 'insertText',
-            data: val
+    const insertTextWithFallback = async (val, lex) => {
+      const str = String(val ?? '');
+      const trimmedExpected = str.replace(/[\u200B-\u200D\uFEFF\s]+/g, '');
+      const execOk = str ? document.execCommand('insertText', false, str) : true;
+      await new Promise((r) => setTimeout(r, 25));
+      const actualClean = String(ed.textContent || '').replace(/[\u200B-\u200D\uFEFF\s]+/g, '');
+      const insertedByExec = Boolean(execOk && (!trimmedExpected || actualClean.includes(trimmedExpected.slice(0, 12))));
+      if (str && !insertedByExec) {
+        const PNode = lex?._nodes?.get?.('paragraph')?.klass;
+        const TNode = lex?._nodes?.get?.('text')?.klass;
+        const LBNode = lex?._nodes?.get?.('linebreak')?.klass;
+        if (lex && typeof lex.update === 'function' && PNode && TNode) {
+          lex.update(() => {
+            const root = lex.getEditorState()?._nodeMap?.get('root');
+            const wRoot = root?.getWritable ? root.getWritable() : root;
+            if (!wRoot || typeof wRoot.append !== 'function') return;
+            if (typeof wRoot.clear === 'function') wRoot.clear();
+            const p = new PNode();
+            str.split(/\r?\n/).forEach((ln, idx) => {
+              if (idx > 0 && LBNode) p.append(new LBNode());
+              if (ln) p.append(new TNode(ln));
+            });
+            wRoot.append(p);
+            if (typeof p.selectEnd === 'function') p.selectEnd();
           });
-          ed.dispatchEvent(ev);
-        } catch {}
+        } else {
+          try {
+            const ev = new InputEvent('beforeinput', {
+              bubbles: true,
+              cancelable: true,
+              inputType: 'insertText',
+              data: str
+            });
+            ed.dispatchEvent(ev);
+          } catch {}
+        }
+      } else if (!str && lex && typeof lex.update === 'function') {
+        const PNode = lex?._nodes?.get?.('paragraph')?.klass;
+        if (PNode) {
+          lex.update(() => {
+            const root = lex.getEditorState()?._nodeMap?.get('root');
+            const wRoot = root?.getWritable ? root.getWritable() : root;
+            if (wRoot && typeof wRoot.clear === 'function') {
+              wRoot.clear();
+              wRoot.append(new PNode());
+            }
+          });
+        }
       }
     };
 
@@ -3386,8 +3422,7 @@
         : (rawStr.match(BUILTIN_SLASH_COMMAND_RE)?.[1]?.toLowerCase() || '');
       const initialInsert = slashCmd ? `/${slashCmd}` : rawStr;
 
-      insertRawText(initialInsert);
-      await new Promise((r) => setTimeout(r, 20));
+      await insertTextWithFallback(initialInsert, lex);
 
       let convertedSlashPill = false;
       if (slashCmd) {
@@ -3413,8 +3448,7 @@
           ed.focus?.();
           document.execCommand?.('selectAll', false, null);
           document.execCommand?.('delete', false, null);
-          insertRawText(rawStr);
-          await new Promise((r) => setTimeout(r, 15));
+          await insertTextWithFallback(rawStr, lex);
         }
       }
 
@@ -3617,8 +3651,27 @@
   }
 
   function getSessionIdFromLocation() {
-    const m = location.pathname.match(/\/c\/([0-9a-fA-F-]{8,})/);
+    const pathname = String(location?.pathname || '');
+    const m = pathname.match(/\/c\/([0-9a-fA-F-]{8,})/);
     return m ? m[1] : null;
+  }
+
+  function parseProjectIdFromHref(href) {
+    const s = String(href || '');
+    const m = s.match(/[?&]project=([^&#]+)/);
+    if (!m || !m[1]) return '';
+    try { return decodeURIComponent(m[1]).trim(); } catch { return m[1].trim(); }
+  }
+
+  function getProjectIdFromLocation() {
+    try {
+      const rawSearch = String(location?.search || '').trim();
+      if (!rawSearch) return '';
+      const q = rawSearch.startsWith('?') ? rawSearch : `?${rawSearch}`;
+      return parseProjectIdFromHref(q);
+    } catch {
+      return '';
+    }
   }
 
   function extractDomFallbackMarkdown(sessionId) {
@@ -6990,7 +7043,7 @@
     let s = String(raw || '').replace(/\r\n/g, '\n').trim();
     s = s.replace(/^(?:You said|你说)\s*/i, '');
     s = s.replace(/\n+(?:just\s+now|刚刚|\d+\s*(?:second|minute|hour|day|sec|min|hr)s?\s*ago|\d+\s*[smhd]\s*ago|\d+\s*(?:秒|分钟|小时|天)前)\s*$/i, '');
-    return s.trim().slice(0, 3000);
+    return s.trim();
   }
 
   const MD_ALLOWED_TAGS = new Set([
@@ -7001,16 +7054,45 @@
   ]);
   const MD_SKIP_TAGS = new Set(['STYLE', 'SCRIPT', 'NOSCRIPT', 'SVG', 'MATH', 'ANNOTATION']);
 
-  function sanitizeMarkdownNodeToHtml(node, depth = 0) {
-    if (!node) return '';
+  function sanitizeMarkdownNodeToHtml(node, depth = 0, budget = null) {
+    if (!node || budget?.exceeded) return '';
+    if (budget) {
+      budget.nodes += 1;
+      if (budget.nodes > budget.maxNodes || budget.chars > budget.maxChars) {
+        budget.exceeded = true;
+        return '';
+      }
+    }
+    const charge = (n) => {
+      if (budget && n > 0) {
+        budget.chars += n;
+        if (budget.chars > budget.maxChars) {
+          budget.exceeded = true;
+          return false;
+        }
+      }
+      return true;
+    };
+    const emit = (s) => (charge(s ? s.length : 0) ? s : '');
+    const emitEscapedText = (raw) => {
+      const str = String(raw || '');
+      if (budget && str.length > (budget.maxChars - budget.chars)) {
+        budget.exceeded = true;
+        return '';
+      }
+      return emit(escapeHtml(str));
+    };
     if (node.nodeType === Node.TEXT_NODE) {
-      return escapeHtml(node.nodeValue || '');
+      return emitEscapedText(node.nodeValue);
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
 
     const tag = node.tagName;
     if (MD_SKIP_TAGS.has(tag)) return '';
-    if (depth > 24) return escapeHtml(node.textContent || '');
+    if (depth > 24) {
+      if (budget) budget.exceeded = true;
+      return '';
+    }
 
     const cls = typeof node.className === 'string' ? node.className : '';
     if (cls.includes('katex-mathml') || (cls.includes('pointer-events-none') && cls.includes('sticky'))) {
@@ -7018,61 +7100,141 @@
     }
     if (tag === 'BDI' && cls.includes('context-scope-mention')) {
       const txt = (node.textContent || '').trim();
-      return txt ? `<code class="md-pill">${escapeHtml(txt)}</code>` : '';
+      return txt ? emit(`<code class="md-pill">${escapeHtml(txt)}</code>`) : '';
     }
     if (tag === 'BUTTON') {
       if (cls.includes('inline-pill')) {
         const txt = (node.textContent || '').trim();
-        return txt ? `<code class="md-pill">${escapeHtml(txt)}</code>` : '';
+        return txt ? emit(`<code class="md-pill">${escapeHtml(txt)}</code>`) : '';
       }
       return '';
     }
 
-    if (tag === 'HR') return '<hr>';
-    if (tag === 'BR') return '<br>';
+    if (tag === 'HR') return emit('<hr>');
+    if (tag === 'BR') return emit('<br>');
 
     let inner = '';
     for (const child of node.childNodes) {
-      inner += sanitizeMarkdownNodeToHtml(child, depth + 1);
-      if (inner.length > 15800) break;
+      if (budget?.exceeded) return '';
+      inner += sanitizeMarkdownNodeToHtml(child, depth + 1, budget);
     }
+    if (budget?.exceeded) return '';
 
     if (tag === 'A') {
       const rawHref = node.getAttribute('href') || '';
       if (/^https?:\/\//i.test(rawHref)) {
-        return `<a href="${escapeHtml(rawHref)}" target="_blank" rel="noopener">${inner}</a>`;
+        const escHref = escapeHtml(rawHref);
+        return charge(escHref.length + 43) ? `<a href="${escHref}" target="_blank" rel="noopener">${inner}</a>` : '';
       }
       return inner;
     }
 
     if (tag === 'DIV' && cls.includes('markdown-alert')) {
-      return `<blockquote class="md-alert">${inner}</blockquote>`;
+      return charge(42) ? `<blockquote class="md-alert">${inner}</blockquote>` : '';
     }
     if (tag === 'TABLE') {
-      return `<div class="md-table-wrap"><table>${inner}</table></div>`;
+      return charge(46) ? `<div class="md-table-wrap"><table>${inner}</table></div>` : '';
     }
     if (MD_ALLOWED_TAGS.has(tag)) {
       const lower = tag.toLowerCase();
-      return `<${lower}>${inner}</${lower}>`;
+      return charge(lower.length * 2 + 5) ? `<${lower}>${inner}</${lower}>` : '';
     }
     return inner;
   }
 
-  function extractSanitizedMarkdownHtml(mdRoots) {
+  function extractSanitizedMarkdownHtml(mdRoots, maxHtmlChars = 260000, maxNodes = 8000) {
     if (!Array.isArray(mdRoots) || !mdRoots.length) return '';
+    const budget = { chars: 0, maxChars: maxHtmlChars, nodes: 0, maxNodes, exceeded: false };
     let out = '';
     for (const root of mdRoots) {
-      const piece = sanitizeMarkdownNodeToHtml(root, 0).trim();
+      if (budget.exceeded) return '';
+      const piece = sanitizeMarkdownNodeToHtml(root, 0, budget).trim();
+      if (budget.exceeded) return '';
       if (!piece) continue;
-      if (out && out.length + piece.length > 16000) break;
       out += piece;
     }
-    return out;
+    return budget.exceeded ? '' : out;
   }
 
-  function collectRecentMessages(limit = 20) {
+  function collectBoundedNodeText(roots, maxChars = 200000, maxNodes = 8000, maxDepth = 24) {
+    const list = Array.isArray(roots) ? roots : (roots ? [roots] : []);
+    if (!list.length) return { text: '', truncated: false, nodesVisited: 0 };
+    const budget = { chars: 0, maxChars, nodes: 0, maxNodes, truncated: false };
+    const rootParts = [];
+
+    const walk = (node, depth, chunks) => {
+      if (!node || budget.truncated) return;
+      budget.nodes += 1;
+      if (budget.nodes > budget.maxNodes) {
+        budget.truncated = true;
+        return;
+      }
+      const nType = node.nodeType;
+      if (nType === 3) {
+        const val = String(node.nodeValue || '');
+        if (!val) return;
+        const rem = budget.maxChars - budget.chars;
+        if (val.length > rem) {
+          if (rem > 0) chunks.push(val.slice(0, rem));
+          budget.chars = budget.maxChars;
+          budget.truncated = true;
+          return;
+        }
+        chunks.push(val);
+        budget.chars += val.length;
+        return;
+      }
+      if (nType !== 1) return;
+      if (MD_SKIP_TAGS.has(node.tagName)) return;
+      if (depth > maxDepth) {
+        budget.truncated = true;
+        return;
+      }
+      const children = node.childNodes;
+      if (children && children.length > 0) {
+        for (let i = 0; i < children.length; i++) {
+          if (budget.truncated) return;
+          walk(children[i], depth + 1, chunks);
+        }
+        return;
+      }
+      // 仅对无 childNodes 的极简桩节点兜底，仍受字符预算硬截断
+      const leafText = String(node.textContent || node.innerText || '');
+      if (!leafText) return;
+      const rem = budget.maxChars - budget.chars;
+      if (leafText.length > rem) {
+        if (rem > 0) chunks.push(leafText.slice(0, rem));
+        budget.chars = budget.maxChars;
+        budget.truncated = true;
+        return;
+      }
+      chunks.push(leafText);
+      budget.chars += leafText.length;
+    };
+
+    for (let i = 0; i < list.length; i++) {
+      if (budget.truncated) break;
+      const rootChunks = [];
+      walk(list[i], 0, rootChunks);
+      const piece = rootChunks.join('').trim();
+      if (piece) rootParts.push(piece);
+    }
+
+    const joined = rootParts.join('\n\n').trim();
+    return {
+      text: budget.truncated ? `${joined.slice(0, maxChars)}…` : joined,
+      truncated: budget.truncated,
+      nodesVisited: budget.nodes
+    };
+  }
+
+  function collectRecentMessages(limit = 60) {
     const viewport = getScrollViewport() || document.querySelector('main') || document.body;
     if (!viewport) return [];
+    const MAX_DOM_MSG_CHARS = 200000;
+    const MAX_DOM_THOUGHT_CHARS = 32000;
+    const MAX_DOM_HTML_CHARS = 260000;
+    const capText = (s, maxLen) => (s && s.length > maxLen ? `${s.slice(0, maxLen)}…` : s);
     const nodes = Array.from(viewport.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]'));
     const slice = nodes.slice(-Math.max(1, limit));
     const out = [];
@@ -7082,7 +7244,8 @@
       const testId = node.getAttribute('data-testid');
       if (testId === 'user-message') {
         const contentNode = node.querySelector('[data-testid="user-message-content"]') || node;
-        const text = cleanUserMessageText(contentNode.innerText || contentNode.textContent || '');
+        const userBounded = collectBoundedNodeText([contentNode], MAX_DOM_MSG_CHARS + 512, 8000);
+        const text = capText(cleanUserMessageText(userBounded.text), MAX_DOM_MSG_CHARS);
         if (!text) continue;
         out.push({ id: `u-${i}`, role: 'user', text });
         continue;
@@ -7095,7 +7258,7 @@
         if (trg.getAttribute('aria-expanded') === 'true') {
           const panel = trg.parentElement?.nextElementSibling;
           const zhNode = panel?.querySelector?.('[data-ag-thought-zh]') || trg.nextElementSibling;
-          const txt = (zhNode?.innerText || panel?.innerText || '').trim();
+          const txt = capText((zhNode?.innerText || panel?.innerText || '').trim(), MAX_DOM_THOUGHT_CHARS);
           if (txt) thoughtChunks.push(txt);
         }
       }
@@ -7104,13 +7267,17 @@
         !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
         !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
       ));
-      let replyText = mdRoots.map((m) => (m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
-      const replyHtml = extractSanitizedMarkdownHtml(mdRoots);
+      const mdBounded = collectBoundedNodeText(mdRoots, MAX_DOM_MSG_CHARS, 8000);
+      const overTextCap = mdBounded.truncated;
+      let replyText = mdBounded.text;
+      // 文本提取阶段已受字符与节点双预算早停；超限时直接跳过 HTML 序列化（完整长文由服务端轨迹通道渲染）
+      const replyHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots, MAX_DOM_HTML_CHARS);
       if (!replyText) {
-        const cloneText = (node.innerText || '')
+        const fallbackBounded = collectBoundedNodeText([node], MAX_DOM_MSG_CHARS, 4000);
+        const cloneText = capText(fallbackBounded.text
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
           .replace(/^Worked\s+for\s+\S+(?:\s+in\s+this\s+step)?\s*\n*/i, '')
-          .trim();
+          .trim(), MAX_DOM_MSG_CHARS);
         if (cloneText && !/^(?:Agent\s+working|Worked\s+for|Running\s+)/i.test(cloneText)) {
           replyText = cloneText;
         }
@@ -7125,15 +7292,69 @@
       out.push({
         id: `a-${i}`,
         role: 'assistant',
-        text: replyText.slice(0, 4000),
+        text: replyText,
         html: replyHtml,
         thoughtLabel: thoughtLabel.slice(0, 120),
-        thoughtText: thoughtChunks.join('\n\n').slice(0, 1200),
+        thoughtText: thoughtChunks.join('\n\n'),
         highRisk,
         riskText: (riskBanner?.textContent || '').trim()
       });
     }
     return out;
+  }
+
+  function toSafeNumber(v) {
+    if (typeof v === 'bigint') return Number(v);
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function findTanStackRouter() {
+    try {
+      const anchors = [
+        document.querySelector('[data-testid="new-conversation-button"]'),
+        document.querySelector('[data-testid="conversation-list-sidebar"]'),
+        document.querySelector('a[href^="/c/"]')
+      ].filter(Boolean);
+      for (const el of anchors) {
+        const fk = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+        let f = fk ? el[fk] : null;
+        for (let d = 0; d < 45 && f; d++) {
+          let ctx = f.dependencies?.firstContext;
+          let guard = 0;
+          while (ctx && guard++ < 20) {
+            const v = ctx.memoizedValue;
+            if (v && typeof v === 'object' && (typeof v.history?.push === 'function' || (typeof v.navigate === 'function' && typeof v.parseLocation === 'function'))) {
+              return v;
+            }
+            ctx = ctx.next;
+          }
+          f = f.return;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  function triggerNativeProjectNewChat(projectId) {
+    try {
+      const listEl = document.querySelector('[data-testid="conversation-list-sidebar"]');
+      if (!listEl) return null;
+      const fk = Object.keys(listEl).find((k) => k.startsWith('__reactFiber$'));
+      let f = fk ? listEl[fk] : null;
+      for (let d = 0; d < 6 && f; d++) {
+        const renderer = f.memoizedProps?.customHeaderRenderer;
+        if (typeof renderer === 'function') {
+          const el = renderer({ id: `header-${projectId}`, type: 'header' });
+          if (typeof el?.props?.onAddClick === 'function') {
+            el.props.onAddClick({ stopPropagation() {}, preventDefault() {} });
+            return { triggered: true, method: 'sidebar-header-action' };
+          }
+        }
+        f = f.return;
+      }
+    } catch {}
+    return null;
   }
 
   const cascadeSummaryMap = new Map();
@@ -7201,6 +7422,411 @@
       }
     } catch {}
     return null;
+  }
+
+  const PERMISSION_DEFAULT_LABELS = {
+    turbo: '无限',
+    auto: '自动',
+    default: '默认',
+    request_review: '请求审核'
+  };
+
+  function resolvePermissionStateFromDom(permBtn) {
+    const rawText = (permBtn?.textContent || '').replace(/\s+/g, ' ').trim();
+    const presetAttr = String(permBtn?.getAttribute?.('data-perm-preset') || '').trim().toLowerCase();
+    const aria = String(permBtn?.getAttribute?.('aria-label') || '').trim();
+    const svgEl = permBtn?.querySelector?.('svg');
+    const svgSig = String(svgEl?.innerHTML || svgEl?.querySelector?.('path')?.getAttribute?.('d') || '');
+
+    let key = '';
+    if (presetAttr === 'turbo' || presetAttr === 'auto' || presetAttr === 'default' || presetAttr === 'request_review') {
+      key = presetAttr;
+    } else {
+      const combined = `${rawText} ${aria}`.toLowerCase();
+      if (/(?:turbo|无限|unrestricted)/i.test(combined)) key = 'turbo';
+      else if (/(?:request_review|review|请求审核|请求审查|审核|审查)/i.test(combined)) key = 'request_review';
+      else if (/(?:\bauto\b|自动)/i.test(combined)) key = 'auto';
+      else if (/(?:\bdefault\b|默认)/i.test(combined)) key = 'default';
+      else if (svgSig.includes('502.92-344.77')) key = 'turbo';
+      else if (svgSig.includes('595.58-384.51')) key = 'request_review';
+      else if (svgSig.includes('252.31-100')) key = 'default';
+      else if (svgSig.includes('480-100.77')) key = 'auto';
+      else key = 'unknown';
+    }
+    const label = rawText || PERMISSION_DEFAULT_LABELS[key] || '未知';
+    return { permissionKey: key, permissionLabel: label };
+  }
+
+  function readDesktopAppNavigationState() {
+    const router = findTanStackRouter();
+    const hasRouter = Boolean(router && router.state);
+    const routerReady = Boolean(hasRouter && !router.state.isLoading && router.state.status !== 'pending');
+    const routePath = String(router?.state?.location?.pathname || location?.pathname || '');
+    const searchVal = router?.state?.location?.search;
+    const routeProjectId = (searchVal && typeof searchVal === 'object' && searchVal.project)
+      ? String(searchVal.project).trim()
+      : getProjectIdFromLocation();
+
+    let matchedCascadeId = '';
+    if (Array.isArray(router?.state?.matches)) {
+      for (let i = router.state.matches.length - 1; i >= 0; i--) {
+        const cid = router.state.matches[i]?.params?.cascadeId;
+        if (cid) {
+          matchedCascadeId = String(cid);
+          break;
+        }
+      }
+    }
+
+    let hasInputProps = false;
+    let inExistingConversation = false;
+    let inputCascadeId = '';
+    let isConvoLoading = false;
+    try {
+      const compHost = document.querySelector('.surface-composer') || getComposerEditor();
+      if (compHost) {
+        const fk = Object.keys(compHost).find((k) => k.startsWith('__reactFiber$'));
+        let f = fk ? compHost[fk] : null;
+        for (let i = 0; i < 16 && f; i++) {
+          const p = f.memoizedProps;
+          if (p && typeof p === 'object' && ('inExistingConversation' in p || 'handleSubmit' in p)) {
+            hasInputProps = true;
+            inExistingConversation = Boolean(p.inExistingConversation);
+            inputCascadeId = String(p.cascadeId || '');
+            isConvoLoading = Boolean(p.isConvoLoading);
+            break;
+          }
+          f = f.return;
+        }
+      }
+    } catch {}
+
+    let domSelectedProjectId = '';
+    try {
+      const selProj = document.querySelector('[data-active-project-id]')
+        || document.querySelector('[data-testid="new-convo-project-trigger"][data-project-id]')
+        || Array.from(document.querySelectorAll('[data-project-id]')).find((n) => n.getAttribute('data-selected') === 'true' || n.getAttribute('aria-pressed') === 'true');
+      if (selProj) {
+        domSelectedProjectId = String(selProj.getAttribute('data-active-project-id') || selProj.getAttribute('data-project-id') || '').trim();
+      }
+    } catch {}
+
+    let activeDomRowId = '';
+    try {
+      const rows = getOrderedSidebarConversationRows();
+      const activeRow = rows.find((r) => isSidebarRowActive(r, ''));
+      if (activeRow) activeDomRowId = extractSidebarRowId(activeRow);
+    } catch {}
+
+    return {
+      hasRouter,
+      routerReady,
+      routePath,
+      routeProjectId,
+      matchedCascadeId,
+      hasComposer: Boolean(getComposerEditor()),
+      hasInputProps,
+      inExistingConversation,
+      inputCascadeId,
+      isConvoLoading,
+      domSelectedProjectId,
+      activeDomRowId
+    };
+  }
+
+  async function waitForVerifiedNavigationState(kind, targetValue, timeoutMs = 1200) {
+    const start = Date.now();
+    let lastState = readDesktopAppNavigationState();
+    const isMatched = (st) => {
+      if (kind === 'new') {
+        const pid = String(targetValue || '').trim();
+        if (st.hasRouter || st.hasInputProps) {
+          const inputLandingOk = st.hasInputProps && st.inExistingConversation === false && !st.isConvoLoading && !st.inputCascadeId;
+          const routerLandingOk = st.hasRouter && st.routerReady && st.routePath === '/' && !st.matchedCascadeId;
+          const projectOk = !pid || st.routeProjectId === pid || st.domSelectedProjectId === pid;
+          return st.hasComposer && (inputLandingOk || routerLandingOk) && projectOk;
+        }
+        return st.hasComposer && !st.activeDomRowId && (!pid || st.domSelectedProjectId === pid);
+      }
+      if (kind === 'switch') {
+        const cid = String(targetValue || '').trim();
+        if (!cid) return false;
+        if (st.hasRouter || st.hasInputProps) {
+          const routerSwitched = st.hasRouter && st.routerReady && st.matchedCascadeId === cid;
+          const inputSwitched = st.hasInputProps && st.inExistingConversation === true && st.inputCascadeId === cid && !st.isConvoLoading;
+          return routerSwitched || inputSwitched;
+        }
+        return st.activeDomRowId === cid;
+      }
+      return false;
+    };
+
+    while (Date.now() - start <= timeoutMs) {
+      lastState = readDesktopAppNavigationState();
+      if (isMatched(lastState)) return { ok: true, state: lastState };
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    return { ok: false, state: lastState };
+  }
+
+  async function navigateSpaRoute(targetHref, options = {}) {
+    const href = String(targetHref || '/').trim() || '/';
+    const cMatch = href.match(/^\/c\/([^/?#]+)/);
+    const pId = parseProjectIdFromHref(href);
+    let method = '';
+
+    if (cMatch) {
+      const cid = cMatch[1];
+      const row = findSidebarRowById(cid);
+      const link = row?.querySelector('a[href]')
+        || document.querySelector(`a[href="/c/${escapeCssIdent(cid)}"]`)
+        || document.querySelector(`a[href*="/c/${escapeCssIdent(cid)}"]`)
+        || row;
+      if (link && typeof link.click === 'function') {
+        link.click();
+        method = 'dom-link';
+      }
+    } else if (pId) {
+      if (options.preferNativeProjectAction) {
+        const nativeRes = triggerNativeProjectNewChat(pId);
+        if (nativeRes?.triggered) method = nativeRes.method;
+      }
+      if (!method) {
+        const projLink = document.querySelector(`a[href="/?project=${escapeCssIdent(pId)}"]`)
+          || Array.from(document.querySelectorAll('a[href*="project="]')).find((a) => parseProjectIdFromHref(a.getAttribute('href')) === pId);
+        if (projLink && typeof projLink.click === 'function') {
+          projLink.click();
+          method = 'dom-link';
+        }
+      }
+    } else if (href === '/') {
+      const newBtn = document.querySelector('a[data-testid="new-conversation-button"], [data-testid="new-conversation-button"] a, [data-testid="new-conversation-button"]');
+      if (newBtn && typeof newBtn.click === 'function') {
+        newBtn.click();
+        method = 'dom-link';
+      }
+    }
+
+    if (!method) {
+      const router = findTanStackRouter();
+      if (router) {
+        try {
+          if (typeof router.history?.push === 'function') {
+            router.history.push(href);
+            method = 'router-history';
+          } else if (typeof router.navigate === 'function') {
+            if (pId) await router.navigate({ to: '/', search: { project: pId } });
+            else await router.navigate({ to: href, search: {} });
+            method = 'router-navigate';
+          }
+        } catch {}
+      }
+    }
+
+    if (!method && typeof window !== 'undefined' && typeof window.history?.pushState === 'function') {
+      try {
+        window.history.pushState({}, '', href);
+        const ev = typeof PopStateEvent === 'function' ? new PopStateEvent('popstate') : new Event('popstate');
+        window.dispatchEvent(ev);
+        method = 'popstate-dispatch';
+      } catch {}
+    }
+
+    if (!method) {
+      return { ok: false, error: '未找到可用的桌面端导航控制接口' };
+    }
+    return { ok: true, method };
+  }
+
+  function extractSidebarStoreCatalog() {
+    const projectMap = new Map();
+    const convs = [];
+    const seenConv = new Set();
+
+    const addProject = (raw) => {
+      const id = String(raw?.id || '').trim();
+      const name = String(raw?.name || raw?.label || '').trim();
+      if (!id || !name) return;
+      if (name === 'swarm/swarm_board') return;
+      const prev = projectMap.get(id);
+      if (!prev) {
+        projectMap.set(id, {
+          id,
+          name,
+          kind: String(raw?.kind || 'project'),
+          isCollapsed: Boolean(raw?.isCollapsed)
+        });
+      } else if (raw?.isCollapsed !== undefined) {
+        prev.isCollapsed = Boolean(raw.isCollapsed);
+      }
+    };
+
+    try {
+      const listEl = document.querySelector('[data-testid="conversation-list-sidebar"]');
+      if (listEl) {
+        const fk = Object.keys(listEl).find((k) => k.startsWith('__reactFiber$'));
+        let f = fk ? listEl[fk] : null;
+        const collapsedById = new Map();
+        const convGroupMap = new Map();
+
+        // 从虚拟列表 items 读取当前折叠态与会话归属映射
+        const uMc = f?.return;
+        if (Array.isArray(uMc?.memoizedProps?.items)) {
+          for (const it of uMc.memoizedProps.items) {
+            if (!it || typeof it !== 'object') continue;
+            if (it.type === 'header' && typeof it.id === 'string' && it.id.startsWith('header-')) {
+              collapsedById.set(it.id.slice(7), Boolean(it.isCollapsed));
+            } else if (it.type === 'row' && it.cascadeId && it.groupId) {
+              convGroupMap.set(String(it.cascadeId), String(it.groupId));
+            }
+          }
+        }
+
+        // 向上查找包含完整项目分组（含折叠组内全量会话）的 Hook 状态
+        let groups = null;
+        for (let d = 0; d < 16 && f; d++) {
+          let st = f.memoizedState;
+          let guard = 0;
+          while (st && guard++ < 30) {
+            const val = st.memoizedState;
+            if (Array.isArray(val) && val.length > 0 && val[0] && typeof val[0] === 'object'
+              && typeof val[0].id === 'string' && (Array.isArray(val[0].entries) || Array.isArray(val[0].conversationIds))) {
+              groups = val;
+              break;
+            }
+            st = st.next;
+          }
+          if (groups) break;
+          f = f.return;
+        }
+
+        if (Array.isArray(groups)) {
+          for (const g of groups) {
+            if (!g || typeof g !== 'object') continue;
+            const gId = String(g.id || '').trim();
+            const gName = String(g.label || '').trim();
+            if (!gId || gName === 'swarm/swarm_board') continue;
+            const entries = Array.isArray(g.entries) ? g.entries : [];
+            if ((gId === 'outside-of-project' || gId === 'standalone') && entries.length === 0) continue;
+            addProject({
+              id: gId,
+              name: gName || gId,
+              kind: g.kind || 'project',
+              isCollapsed: collapsedById.get(gId)
+            });
+            for (const entry of entries) {
+              const cid = String(entry?.cascadeId || entry?.conversation?.conversationId || '').trim();
+              if (!cid || seenConv.has(cid)) continue;
+              seenConv.add(cid);
+              const rawSummary = String(entry?.conversation?.summary || '').replace(/\s+/g, ' ').trim();
+              const cachedZh = (uiLang === 'zh' && !sidebarUserRenamedIds.has(cid)) ? sidebarZhCache.get(cid) : '';
+              const pid = String(entry?.projectId || convGroupMap.get(cid) || gId).trim();
+              convs.push({
+                id: cid,
+                projectId: pid,
+                projectName: gName || '',
+                title: (cachedZh || rawSummary || cid.slice(0, 8)).slice(0, 80),
+                timeKey: toSafeNumber(entry?.timeKey),
+                workspaceUri: String(entry?.workspaceUriStr || '')
+              });
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // DOM 项目标题栏回退与补充（兼容无 React Fiber 的环境及测试 DOM）
+    try {
+      const headers = document.querySelectorAll('[data-testid="project-header"]');
+      for (const btn of headers) {
+        const name = String(btn.getAttribute('data-project-label') || btn.textContent || '').replace(/\s+/g, ' ').trim();
+        const wrap = btn.parentElement?.parentElement || btn.parentElement;
+        const projLink = wrap?.querySelector?.('a[href*="project="]');
+        const pid = parseProjectIdFromHref(projLink?.getAttribute?.('href')) || btn.getAttribute('data-project-id') || '';
+        if (!pid || !name) continue;
+        addProject({
+          id: pid,
+          name,
+          kind: 'project',
+          isCollapsed: btn.getAttribute('aria-expanded') === 'false'
+        });
+      }
+    } catch {}
+
+    return {
+      projects: Array.from(projectMap.values()),
+      conversations: convs
+    };
+  }
+
+  function collectSidebarConversations(limit = 0, preloadedStoreCatalog = null) {
+    const maxItems = Number(limit) > 0 ? Number(limit) : Infinity;
+    const currentId = getSessionIdFromLocation() || '';
+    const rows = getOrderedSidebarConversationRows();
+    const list = [];
+    const byId = new Map();
+    const domProjectMap = new Map();
+
+    // 从当前渲染序列追踪 DOM 行所属的项目头（用于无 Fiber 时的 DOM 分组推断）
+    try {
+      const nodes = document.querySelectorAll('[data-testid="project-header"], [data-testid="conversation-row-sidebar"]');
+      let activeHeaderPid = '';
+      for (const n of nodes) {
+        if (n.getAttribute('data-testid') === 'project-header') {
+          const wrap = n.parentElement?.parentElement || n.parentElement;
+          const pLink = wrap?.querySelector?.('a[href*="project="]');
+          activeHeaderPid = parseProjectIdFromHref(pLink?.getAttribute?.('href')) || n.getAttribute('data-project-id') || '';
+        } else {
+          const cid = extractSidebarRowId(n);
+          if (cid && activeHeaderPid) domProjectMap.set(cid, activeHeaderPid);
+        }
+      }
+    } catch {}
+
+    const storeCatalog = preloadedStoreCatalog || extractSidebarStoreCatalog();
+    const storeById = new Map(storeCatalog.conversations.map((c) => [c.id, c]));
+
+    for (const row of rows) {
+      const id = extractSidebarRowId(row);
+      if (!id || byId.has(id)) continue;
+      const storeMeta = storeById.get(id);
+      const title = getSidebarRowDisplayTitle(row);
+      const active = isSidebarRowActive(row, currentId);
+      const domBusy = Boolean(row.querySelector('[data-testid="status-loading-spinner"], button[aria-label*="停止"], button[aria-label*="Stop"]'));
+      const pinned = row.getAttribute('data-pinned') === 'true';
+      const item = {
+        id,
+        title: title.slice(0, 80),
+        active,
+        projectId: storeMeta?.projectId || domProjectMap.get(id) || '',
+        projectName: storeMeta?.projectName || '',
+        domBusy,
+        pinned,
+        timeKey: toSafeNumber(storeMeta?.timeKey)
+      };
+      byId.set(id, item);
+      list.push(item);
+      if (list.length >= maxItems) break;
+    }
+
+    for (const sc of storeCatalog.conversations) {
+      if (list.length >= maxItems) break;
+      if (byId.has(sc.id)) continue;
+      const item = {
+        id: sc.id,
+        title: sc.title,
+        active: Boolean(currentId && sc.id === currentId),
+        projectId: sc.projectId || '',
+        projectName: sc.projectName || '',
+        domBusy: false,
+        pinned: false,
+        timeKey: toSafeNumber(sc.timeKey)
+      };
+      byId.set(sc.id, item);
+      list.push(item);
+    }
+
+    return list;
   }
 
   function collectSidebarProjectGroups(limit = 60) {
@@ -7326,10 +7952,6 @@
     return { projectGroups, conversations: flatConversations.slice(0, limit) };
   }
 
-  function collectSidebarConversations(limit = 25) {
-    return collectSidebarProjectGroups(limit).conversations;
-  }
-
   function getModelSelectorContext() {
     try {
       const btn = document.querySelector('[data-testid="model-selector-trigger"]');
@@ -7352,7 +7974,7 @@
       { key: 'turbo', label: '⚡ 无限 (Turbo)' },
       { key: 'auto', label: '🛡️ 自动 (Auto)' },
       { key: 'default', label: '🔒 默认 (Default)' },
-      { key: 'request_review', label: '👁️ 请求审查 (Review)' }
+      { key: 'request_review', label: '👁️ 请求审核 (Review)' }
     ];
   }
 
@@ -7533,9 +8155,16 @@
       lastCascadeSummaryFetchAt = Date.now();
       void refreshCascadeTrajectorySummaries();
     }
-    const { projectGroups, conversations } = collectSidebarProjectGroups(60);
+    const storeCatalog = extractSidebarStoreCatalog();
+    const conversations = collectSidebarConversations(0, storeCatalog);
+    const { projectGroups } = collectSidebarProjectGroups(60);
     const activeConv = conversations.find((c) => c.active);
     const busy = isAssistantBusy();
+    const locProjectId = getProjectIdFromLocation();
+    const currentProjectId = locProjectId || activeConv?.projectId || '';
+    const matchedProj = storeCatalog.projects.find((p) => p.id === currentProjectId);
+    const currentProjectName = activeConv?.projectName || matchedProj?.name || '';
+    const isNewConversation = !sessionId;
     const { sr } = getMeterHostAndShadow();
     const contextBadge = (
       sr?.getElementById('amount')?.textContent ||
@@ -7574,26 +8203,38 @@
     parsedModels.sort((a, b) => (a.familyRank - b.familyRank) || (a.effortRank - b.effortRank) || (a.origIdx - b.origIdx));
     const modelOptions = parsedModels.map(({ label, modelId, selected }) => ({ label, modelId, selected }));
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
-    const permissionLabel = (permBtn?.textContent || '').replace(/\s+/g, ' ').trim() || '未知';
+    const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
     const pendingApprovals = collectPendingApprovals();
-    const messages = collectRecentMessages(20);
+    const messages = collectRecentMessages(60);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
     const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model);
     const usageSummary = collectDesktopUsageSummary(sr);
 
+    if (activeConv) {
+      if (pendingApprovals.length > 0) activeConv.status = 'waiting';
+      else if (busy) activeConv.status = 'running';
+    }
+
+    const title = activeConv?.title
+      || (isNewConversation ? (currentProjectName ? `新建对话 · ${currentProjectName}` : '新建对话') : (document.title || 'Antigravity'));
+
     return {
       ok: true,
-      version: '1.7.4',
+      version: '1.8.0',
       timestamp: Date.now(),
       sessionId,
       activeConversationId: sessionId,
       desktopSessionId: sessionId,
       isolated: false,
-      title: activeConv?.title || document.title || 'Antigravity',
+      isNewConversation,
+      currentProjectId,
+      currentProjectName,
+      title,
       busy,
       autoAccept: autoAcceptEnabled,
       model,
       modelOptions,
+      permissionKey,
       permissionLabel,
       permissionOptions: getPermissionPresetsMeta(),
       contextBadge,
@@ -7609,6 +8250,7 @@
       pendingApprovals,
       suggestions,
       messages,
+      projects: storeCatalog.projects,
       conversations,
       projectGroups
     };
@@ -7711,6 +8353,9 @@
         : [];
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
       const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
+      const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
+      const targetProjectId = String(matchedConv?.projectId || matchedGroup?.id || trajectory?.trajectoryMetadata?.projectId || '').trim();
+      const targetProjectName = String(matchedConv?.projectName || matchedGroup?.name || '').trim();
       const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || String(trajectory.summary || '').trim() || `会话 ${reqConvId.slice(0, 8)}`;
 
       return {
@@ -7719,6 +8364,9 @@
         activeConversationId: reqConvId,
         desktopSessionId: baseSnap.sessionId || '',
         isolated: true,
+        isNewConversation: false,
+        currentProjectId: targetProjectId,
+        currentProjectName: targetProjectName,
         title,
         busy,
         model: isolatedModel,
@@ -7753,11 +8401,30 @@
       };
     } catch (err) {
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
+      const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
+      const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
+      const targetProjectId = String(matchedConv?.projectId || matchedGroup?.id || '').trim();
+      const targetProjectName = String(matchedConv?.projectName || matchedGroup?.name || '').trim();
+      const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || `会话 ${reqConvId.slice(0, 8)}`;
       return {
         ...baseSnap,
+        sessionId: reqConvId,
         activeConversationId: reqConvId,
         desktopSessionId: baseSnap.sessionId || '',
         isolated: true,
+        isolatedError: true,
+        historySource: 'isolated_error',
+        isNewConversation: false,
+        currentProjectId: targetProjectId,
+        currentProjectName: targetProjectName,
+        title,
+        busy: false,
+        pendingApprovals: [],
+        suggestions: [],
+        messages: [],
+        contextBadge: '读取失败',
+        pulseText: '',
+        contextPanel: null,
         conversations: cloned.conversations,
         projectGroups: cloned.projectGroups,
         isolationWarning: err?.message || '无法独立读取该会话'
@@ -7898,8 +8565,54 @@
       return { ok: true, groupId, name: groupName };
     }
 
+    if (action === 'new-conversation' || (action === 'switch-conversation' && String(payload?.id || '').trim() === 'new')) {
+      const projectId = String(payload?.projectId || '').trim();
+      const skipProject = !projectId || projectId === 'ungrouped' || projectId === 'outside-of-project' || projectId === 'standalone';
+      const expectedPid = skipProject ? '' : projectId;
+      const targetHref = skipProject ? '/' : `/?project=${encodeURIComponent(projectId)}`;
+      const nav = await navigateSpaRoute(targetHref, { preferNativeProjectAction: Boolean(expectedPid) });
+      if (!nav.ok) return { ok: false, error: nav.error || '新建对话导航失败' };
+      const verified = await waitForVerifiedNavigationState('new', expectedPid, 1200);
+      if (!verified.ok) {
+        return {
+          ok: false,
+          error: expectedPid ? `桌面端未进入目标项目新建对话状态: ${expectedPid}` : '桌面端未进入新建对话状态',
+          method: nav.method,
+          verifiedState: verified.state
+        };
+      }
+      return {
+        ok: true,
+        id: 'new',
+        projectId: expectedPid,
+        method: nav.method,
+        pathname: location?.pathname || '/',
+        search: location?.search || '',
+        verifiedState: verified.state
+      };
+    }
+
     if (action === 'switch-conversation') {
-      return await switchToConversationInternal(payload?.id);
+      const targetId = String(payload?.id || '').trim();
+      if (!targetId) return { ok: false, error: '缺少会话 ID' };
+      const nav = await navigateSpaRoute(`/c/${targetId}`);
+      if (!nav.ok) return { ok: false, error: nav.error || '未找到该会话的跳转入口' };
+      const verified = await waitForVerifiedNavigationState('switch', targetId, 1200);
+      if (!verified.ok) {
+        return {
+          ok: false,
+          error: `桌面端未切换至目标会话状态: ${targetId}`,
+          method: nav.method,
+          verifiedState: verified.state
+        };
+      }
+      return {
+        ok: true,
+        id: targetId,
+        method: nav.method,
+        pathname: location?.pathname || `/c/${targetId}`,
+        verifiedState: verified.state
+      };
     }
 
     if (action === 'toggle-thinking') {
@@ -7986,8 +8699,9 @@
       if (menuCtx && menuCtx.open) {
         menuCtx.setIsOpen(false);
       }
-      const nextLabel = (permBtn.textContent || '').replace(/\s+/g, ' ').trim();
-      return { ok: true, preset, permissionLabel: nextLabel };
+      const resolved = resolvePermissionStateFromDom(permBtn);
+      const nextKey = resolved.permissionKey !== 'unknown' ? resolved.permissionKey : preset;
+      return { ok: true, preset, permissionKey: nextKey, permissionLabel: resolved.permissionLabel };
     }
 
     if (action === 'upload-image') {

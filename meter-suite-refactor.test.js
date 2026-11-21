@@ -3646,8 +3646,9 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     const html = buildMobileAppHtml();
     assert.ok(html.includes('id="ag-theme-boot"'), '应包含防首屏闪烁主题引导脚本 #ag-theme-boot');
     assert.ok(html.includes('id="meta-theme-color"'), '应包含可动态更新的 #meta-theme-color');
-    assert.ok(html.includes('id="btn-theme"'), '顶栏应包含快捷外观模式按钮 #btn-theme');
-    assert.ok(html.includes('id="theme-seg"'), '侧边栏/抽屉底部应包含三段式外观切换器 #theme-seg');
+    assert.equal(html.includes('id="btn-theme"'), false, '顶栏右上角应移除 #btn-theme，统一收口到侧边栏');
+    assert.equal(html.includes('id="theme-mode-hint"'), false, '侧边栏应去除多余的外观文字提示 #theme-mode-hint');
+    assert.ok(html.includes('id="theme-seg"'), '侧边栏/抽屉底部应包含三段式纯图标外观切换器 #theme-seg');
     assert.ok(html.includes('data-theme-mode="system"') && html.includes('data-theme-mode="light"') && html.includes('data-theme-mode="dark"'),
       '应同时提供跟随系统、固定浅色、固定深色三个选项');
     assert.ok(html.includes('html[data-theme="light"]') && html.includes('@media (prefers-color-scheme:light)'),
@@ -3739,23 +3740,26 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     const segSystem = env.doc.querySelector('button[data-theme-mode="system"]');
     const segLight = env.doc.querySelector('button[data-theme-mode="light"]');
     const segDark = env.doc.querySelector('button[data-theme-mode="dark"]');
-    const hintEl = env.doc.getElementById('theme-mode-hint');
-    const themeBtn = env.doc.getElementById('btn-theme');
-    assert.ok(segSystem && segLight && segDark && hintEl && themeBtn, '外观切换控件应完整渲染');
+    assert.equal(env.doc.getElementById('btn-theme'), null, '对话顶栏不应再包含外观按钮');
+    assert.equal(env.doc.getElementById('theme-mode-hint'), null, '侧边栏底部不应包含状态文字');
+    assert.equal(env.doc.querySelector('.drawer-footer-head'), null, '侧边栏底部不应包含标题文字行');
+    assert.ok(segSystem && segLight && segDark, '侧边栏三态外观纯图标切换控件应完整渲染');
+    for (const btn of [segSystem, segLight, segDark]) {
+      assert.ok(btn.querySelector('svg'), '外观按钮应包含 SVG 图标');
+      assert.equal((btn.textContent || '').trim(), '', '外观按钮应仅保留图标，不附带文字');
+      assert.ok((btn.getAttribute('aria-label') || '').length > 0, '纯图标外观按钮应保留无障碍标签');
+    }
     assert.equal(segSystem.classList.contains('active'), true);
     assert.equal(segSystem.getAttribute('aria-checked'), 'true');
-    assert.equal(hintEl.textContent, '跟随 · 深色');
 
     // 1. 跟随系统状态下 OS 切到浅色与深色应实时同步
     setSystemLight(true);
     assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'light');
     assert.equal(metaTheme.getAttribute('content'), '#f8fafc');
-    assert.equal(hintEl.textContent, '跟随 · 浅色');
 
     setSystemLight(false);
     assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'dark');
     assert.equal(metaTheme.getAttribute('content'), '#09090b');
-    assert.equal(hintEl.textContent, '跟随 · 深色');
 
     // 2. 在系统深色下切到「固定浅色」应持久化并无视系统变化
     segLight.click();
@@ -3764,7 +3768,6 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'light');
     assert.equal(segLight.getAttribute('aria-checked'), 'true');
     assert.equal(segSystem.getAttribute('aria-checked'), 'false');
-    assert.equal(hintEl.textContent, '固定浅色');
     assert.equal(metaTheme.getAttribute('content'), '#f8fafc');
     setSystemLight(true);
     setSystemLight(false);
@@ -3777,25 +3780,14 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'dark');
     assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'dark');
     assert.equal(segDark.getAttribute('aria-checked'), 'true');
-    assert.equal(hintEl.textContent, '固定深色');
     assert.equal(metaTheme.getAttribute('content'), '#09090b');
 
-    // 4. 点击顶栏外观按钮弹出 3 项选择面板，并切回「跟随系统」
-    themeBtn.click();
-    const sheetBackdrop = env.doc.getElementById('sheet-backdrop');
-    const sheetList = env.doc.getElementById('sheet-list');
-    assert.equal(sheetBackdrop.hidden, false, '点击顶栏外观按钮应打开外观选择面板');
-    assert.equal(env.doc.getElementById('sheet-title-text')?.textContent, '外观模式');
-    const sheetOpts = sheetList.querySelectorAll('.sheet-opt');
-    assert.equal(sheetOpts.length, 3, '外观选择面板应展示 3 个模式选项');
-    assert.equal(sheetOpts[2].classList.contains('active'), true, '当前固定深色选项应高亮');
-
-    await sheetList.onclick({ target: sheetOpts[0] });
-    assert.equal(sheetBackdrop.hidden, true, '选中后应关闭面板');
+    // 4. 在系统浅色下点击「跟随系统」图标切回系统联动，应立即呈现浅色
+    segSystem.click();
     assert.equal(env.localStorage.getItem('ag_remote_theme_v1'), 'system');
     assert.equal(env.doc.documentElement.getAttribute('data-theme-pref'), 'system');
+    assert.equal(segSystem.getAttribute('aria-checked'), 'true');
     assert.equal(env.doc.documentElement.getAttribute('data-theme'), 'light', '当前系统为浅色时恢复跟随应立即呈现浅色');
-    assert.equal(hintEl.textContent, '跟随 · 浅色');
   } finally {
     if (prevAppData === undefined) delete process.env.APPDATA;
     else process.env.APPDATA = prevAppData;
@@ -5830,7 +5822,4365 @@ test('需求 23: 提示词优化轻量快速模型优先、429/500/空响应自�
 });
 
 // =========================================================================
-// 需求 24: 内置推荐池统一胶囊开关（含 /goal /swarm /boost 等 + 复制会话 ID / 导出 MD）+ 干净自定义提示词 + 斜杠命令原生菜单自动点选转换
+// 需求 24: 远程面板多项目分组浏览、按项目新建对话、全会话状态与防缩水持久列表
+// =========================================================================
+test('PR #5 / 远程需求 24: 远程面板支持多项目分组浏览、按项目新建对话、全会话状态汇总与防缩水持久列表', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req17-remote-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const configDir = path.join(tmpRoot, 'config');
+  const projDir = path.join(configDir, 'projects');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(projDir, { recursive: true });
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+
+    fs.writeFileSync(path.join(projDir, 'proj-a.json'), JSON.stringify({
+      id: 'proj-a',
+      name: 'Alpha App',
+      projectResources: { resources: [{ folderUri: 'file:///tmp/ws-alpha' }] }
+    }));
+    fs.writeFileSync(path.join(projDir, 'proj-b.json'), JSON.stringify({
+      id: 'proj-b',
+      name: 'Beta Service',
+      projectResources: { resources: [{ folderUri: 'file:///tmp/ws-beta' }] }
+    }));
+    fs.writeFileSync(path.join(projDir, 'proj-empty.json'), JSON.stringify({
+      id: 'proj-empty',
+      name: 'EmptyProj',
+      projectResources: { resources: [{ folderUri: 'file:///tmp/ws-empty' }] }
+    }));
+    fs.writeFileSync(path.join(projDir, 'default-cli-project.json'), JSON.stringify({
+      id: 'default-cli-project',
+      name: 'CLI Project',
+      projectResources: {}
+    }));
+    fs.writeFileSync(path.join(projDir, 'proj-sidecar.json'), JSON.stringify({
+      id: 'proj-sidecar',
+      name: 'swarm/swarm_board',
+      sidecar: true
+    }));
+
+    // 预埋污染的 Subagent 到持久化缓存文件，验证三源统一排除与清库能力
+    const catalogFile = path.join(stateDir, 'remote-session-catalog.json');
+    fs.writeFileSync(catalogFile, JSON.stringify({
+      version: 1,
+      updatedAt: Date.now() - 60000,
+      conversations: [
+        { id: 'subagent-child-1', title: 'Stale Cached Subagent', projectId: 'proj-b', projectName: 'Beta Service', archived: false, updatedAt: Date.now() - 1000 }
+      ]
+    }));
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    let remoteMod = require('./mobile-remote.js');
+
+    // 1. 构建 245 条非归档根会话（proj-a: 120, proj-b: 125）+ 1 条已归档 + 1 条三源同现 Subagent
+    const baseMs = Date.now() - 300 * 60000;
+    const traj245 = {};
+    for (let i = 1; i <= 245; i++) {
+      const cid = `conv-root-${String(i).padStart(3, '0')}`;
+      const pid = i <= 120 ? 'proj-a' : 'proj-b';
+      let status = 'CASCADE_RUN_STATUS_IDLE';
+      let termReason = 'EXECUTOR_TERMINATION_REASON_NO_TOOL_CALL';
+      if (i === 1) status = 'CASCADE_RUN_STATUS_RUNNING';
+      if (i === 2) status = 'CASCADE_RUN_STATUS_WAITING_FOR_USER';
+      if (i === 3) termReason = 'EXECUTOR_TERMINATION_REASON_ERROR';
+      if (i === 240) status = 'CASCADE_RUN_STATUS_RUNNING';
+      traj245[cid] = {
+        summary: `Task ${i}`,
+        status,
+        latestExecutorTerminationReason: termReason,
+        lastModifiedTime: new Date(baseMs + (246 - i) * 60000).toISOString(),
+        trajectoryMetadata: { projectId: pid, rootConversationId: cid },
+        annotations: {
+          title: `任务 ${String(i).padStart(3, '0')}`,
+          lastUserViewTime: new Date(baseMs + 5000).toISOString()
+        }
+      };
+    }
+    traj245['conv-archived-1'] = {
+      summary: 'Archived Conversation',
+      status: 'CASCADE_RUN_STATUS_IDLE',
+      lastModifiedTime: new Date(baseMs + 1000).toISOString(),
+      trajectoryMetadata: { projectId: 'proj-a', rootConversationId: 'conv-archived-1' },
+      annotations: { title: '已归档会话', archived: true }
+    };
+    traj245['subagent-child-1'] = {
+      summary: 'Subagent Worker',
+      status: 'CASCADE_RUN_STATUS_WAITING_FOR_USER',
+      lastModifiedTime: new Date(baseMs + 250 * 60000).toISOString(),
+      trajectoryMetadata: {
+        projectId: 'proj-b',
+        rootConversationId: 'conv-root-004',
+        parentConversationId: 'conv-root-004'
+      }
+    };
+
+    const snap1 = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-root-001',
+      busy: true,
+      pendingApprovals: [],
+      conversations: [
+        { id: 'conv-root-001', title: '任务 001', active: true, projectId: 'proj-a' },
+        { id: 'subagent-child-1', title: 'Subagent Worker', domBusy: true, projectId: 'proj-b', parentConversationId: 'conv-root-004' }
+      ],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      convLimit: 100,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: traj245 };
+          if (method === 'ListProjects') return { projectIds: ['proj-a', 'proj-b', 'proj-empty', 'default-cli-project', 'outside-of-project', 'proj-sidecar'] };
+          return {};
+        }
+      })
+    });
+
+    assert.equal(snap1.totalConversations, 245, '超过 200 条的非归档根会话应全量统计且不被截断');
+    assert.equal(snap1.hasMoreConversations, true, '首屏仅下发分窗时应标明 hasMoreConversations=true');
+    assert.equal(snap1.conversations.some((c) => c.id === 'subagent-child-1'), false, '三源同现的 Subagent 不得出现在会话列表');
+    assert.equal(snap1.conversations.some((c) => c.id === 'conv-archived-1'), false, '已归档会话不得出现在活跃列表');
+
+    const persistedCatalog = JSON.parse(fs.readFileSync(catalogFile, 'utf8'));
+    assert.equal(persistedCatalog.conversations.filter((c) => !c.archived).length, 245, '磁盘持久化目录应保留全部 245 条非归档对话');
+    assert.equal(persistedCatalog.conversations.some((c) => c.id === 'subagent-child-1'), false, '已有缓存中的 Subagent 条目应被彻底清理');
+    assert.ok(persistedCatalog.subagentIds.includes('subagent-child-1'), '已识别的 Subagent ID 应记录以防复现');
+
+    const c4 = snap1.conversations.find((c) => c.id === 'conv-root-004');
+    assert.equal(c4?.status, 'waiting', 'IDLE 根会话旗下 Subagent 处于待确认时应向上汇总为 waiting');
+    assert.equal(snap1.projects.some((p) => p.id === 'proj-sidecar' || p.name === 'swarm/swarm_board'), false);
+    assert.equal(snap1.projects.find((p) => p.id === 'proj-a')?.conversationCount, 120);
+    assert.equal(snap1.projects.find((p) => p.id === 'proj-b')?.conversationCount, 125);
+    assert.ok(snap1.projects.find((p) => p.id === 'proj-empty')?.isEmpty);
+    assert.ok(snap1.projects.find((p) => p.id === 'default-cli-project')?.isEmpty, '有效的空 default-cli-project 应保留');
+    assert.equal(snap1.projects.some((p) => p.id === 'outside-of-project'), false, '空 virtual bucket outside-of-project 应排除');
+
+    // 2. 模拟桌面端折叠、滚动至仅剩 1 行 + 服务重启（清除模块缓存并重建 store），验证 245 条完整保留、Subagent 持续被过滤及 /api/conversations 分页
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    remoteMod = require('./mobile-remote.js');
+
+    const snapRestart = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-root-001',
+      busy: false,
+      conversations: [
+        { id: 'conv-root-001', title: '任务 001', active: true, projectId: 'proj-a' },
+        { id: 'subagent-child-1', title: 'Injected Subagent From Snapshot', domBusy: true, projectId: 'proj-b' }
+      ],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      convLimit: 100,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') {
+            return { trajectorySummaries: { 'conv-root-001': traj245['conv-root-001'] } };
+          }
+          return {};
+        }
+      })
+    });
+    assert.equal(snapRestart.totalConversations, 245, '服务重启且桌面端折叠仅余 1 条后，全量 245 条对话仍完好保留');
+    assert.equal(snapRestart.conversations.some((c) => c.id === 'subagent-child-1'), false, '重启后仅由快照回流的已知 Subagent 仍被过滤');
+    assert.ok(snapRestart.projects.find((p) => p.id === 'default-cli-project')?.isEmpty, '重启后空的 default-cli-project 仍保留');
+
+    const page1 = remoteMod.listCatalogConversations({ stateDir, offset: 0, limit: 150 });
+    const page2 = remoteMod.listCatalogConversations({ stateDir, offset: 150, limit: 150 });
+    assert.equal(page1.total, 245);
+    assert.equal(page1.conversations.length, 150);
+    assert.equal(page1.hasMore, true);
+    assert.equal(page2.conversations.length, 95);
+    assert.equal(page2.hasMore, false);
+    assert.equal(page2.conversations[page2.conversations.length - 1]?.id, 'conv-root-245', '第 245 条历史对话应可通过分页准确读出');
+    assert.equal(page1.conversations.find((c) => c.id === 'conv-root-002')?.status, 'waiting', '重启+轨迹缺项后后台 waiting 状态不得被抹成 idle');
+    assert.equal(page1.conversations.find((c) => c.id === 'conv-root-003')?.status, 'error', '重启+轨迹缺项后后台 error 状态不得被抹成 idle');
+    assert.equal(page1.conversations.find((c) => c.id === 'conv-root-004')?.status, 'running', '重启后快照回流 Subagent domBusy=true 应汇总为 running 而非 idle');
+    assert.equal(page1.conversations.find((c) => c.id === 'conv-root-005')?.status, 'idle', '明确 IDLE 会话保持 idle');
+    assert.equal(page2.conversations.find((c) => c.id === 'conv-root-240')?.status, 'running', '重启+轨迹缺项后后台 running 状态不得被抹成 idle');
+
+    // 2b. 回归验证：区分「缺少状态数据」与「明确空闲」（无状态返回 unknown；轨迹缺项、请求失败及重启后保留后台与 Subagent 汇总态）
+    assert.equal(remoteMod.normalizeTrajectoryStatus(undefined, undefined, {}), 'unknown');
+    assert.equal(remoteMod.normalizeTrajectoryStatus('CASCADE_RUN_STATUS_IDLE', '', {}), 'idle');
+    const statusDir = path.join(tmpRoot, 'status-state');
+    fs.mkdirSync(statusDir, { recursive: true });
+    const baseStTraj = {
+      'bg-wait': { status: 'CASCADE_RUN_STATUS_WAITING_FOR_USER', trajectoryMetadata: { projectId: 'proj-a' } },
+      'bg-err': { status: 'CASCADE_RUN_STATUS_IDLE', latestExecutorTerminationReason: 'EXECUTOR_TERMINATION_REASON_ERROR', trajectoryMetadata: { projectId: 'proj-a' } },
+      'bg-run': { status: 'CASCADE_RUN_STATUS_RUNNING', trajectoryMetadata: { projectId: 'proj-a' } },
+      'root-sub': { status: 'CASCADE_RUN_STATUS_IDLE', trajectoryMetadata: { projectId: 'proj-a', rootConversationId: 'root-sub' } },
+      'child-wait': { status: 'CASCADE_RUN_STATUS_WAITING_FOR_USER', trajectoryMetadata: { projectId: 'proj-a', parentConversationId: 'root-sub', rootConversationId: 'root-sub' } }
+    };
+    const stInit = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'bg-run', busy: false, conversations: [], projects: [] }, {
+      stateDir: statusDir, configDir, bypassCache: true,
+      localApiConnect: async () => ({ call: async (m) => m === 'GetAllCascadeTrajectories' ? { trajectorySummaries: baseStTraj } : {} })
+    });
+    assert.equal(stInit.conversations.find((c) => c.id === 'root-sub')?.status, 'waiting');
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    remoteMod = require('./mobile-remote.js');
+    const stFail = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true, sessionId: '', busy: false,
+      conversations: [{ id: 'dom-unknown', title: 'No Traj Status', domBusy: false, projectId: 'proj-a' }],
+      projects: []
+    }, {
+      stateDir: statusDir, configDir, bypassCache: true,
+      localApiConnect: async () => { throw new Error('LS unavailable'); }
+    });
+    assert.equal(stFail.conversations.find((c) => c.id === 'bg-wait')?.status, 'waiting', '请求失败时应保留最近可信 waiting');
+    assert.equal(stFail.conversations.find((c) => c.id === 'bg-err')?.status, 'error', '请求失败时应保留最近可信 error');
+    assert.equal(stFail.conversations.find((c) => c.id === 'bg-run')?.status, 'running', '请求失败时应保留最近可信 running');
+    assert.equal(stFail.conversations.find((c) => c.id === 'root-sub')?.status, 'waiting', '请求失败时应保留 Subagent 汇总 waiting');
+    assert.equal(stFail.conversations.find((c) => c.id === 'dom-unknown')?.status, 'unknown', '无历史状态且缺少轨迹数据时必须标记 unknown 而非 idle');
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    remoteMod = require('./mobile-remote.js');
+    const stPartial = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: '', busy: false, conversations: [], projects: [] }, {
+      stateDir: statusDir, configDir, bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (m) => m === 'GetAllCascadeTrajectories'
+          ? { trajectorySummaries: { 'root-sub': baseStTraj['root-sub'] } }
+          : {}
+      })
+    });
+    assert.equal(stPartial.conversations.find((c) => c.id === 'bg-wait')?.status, 'waiting');
+    assert.equal(stPartial.conversations.find((c) => c.id === 'bg-err')?.status, 'error');
+    assert.equal(stPartial.conversations.find((c) => c.id === 'root-sub')?.status, 'waiting', '子代理缺项时即使根轨迹报 IDLE 仍应保留持久化的 Subagent 汇总 waiting');
+    assert.equal(stPartial.conversations.find((c) => c.id === 'dom-unknown')?.status, 'unknown');
+
+    const stRecovered = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: '', busy: false, conversations: [], projects: [] }, {
+      stateDir: statusDir, configDir, bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (m) => m === 'GetAllCascadeTrajectories' ? {
+          trajectorySummaries: {
+            'root-sub': baseStTraj['root-sub'],
+            'child-wait': { ...baseStTraj['child-wait'], status: 'CASCADE_RUN_STATUS_IDLE' },
+            'dom-unknown': { status: 'CASCADE_RUN_STATUS_IDLE', trajectoryMetadata: { projectId: 'proj-a' } }
+          }
+        } : {}
+      })
+    });
+    assert.equal(stRecovered.conversations.find((c) => c.id === 'root-sub')?.status, 'idle', '子代理明确返回 IDLE 后根会话应恢复 idle');
+    assert.equal(stRecovered.conversations.find((c) => c.id === 'dom-unknown')?.status, 'idle', '轨迹明确返回 IDLE 后应从 unknown 转为 idle');
+
+    // 验证 HTTP GET /api/conversations 端点可用性
+    const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+    const httpHandler = remoteMod.createRemoteHttpHandler(httpCfg);
+    const apiConvRes = await new Promise((resolve) => {
+      const chunks = [];
+      httpHandler({
+        method: 'GET',
+        url: `/api/conversations?offset=150&limit=100&token=${encodeURIComponent(httpCfg.token)}`,
+        headers: { host: `127.0.0.1:${httpCfg.port}` },
+        socket: { remoteAddress: '127.0.0.1' }
+      }, {
+        setHeader() {},
+        writeHead(status) { this.status = status; },
+        end(body) { resolve({ status: this.status, json: JSON.parse(String(body || '{}')) }); }
+      });
+    });
+    assert.equal(apiConvRes.status, 200);
+    assert.equal(apiConvRes.json.conversations.length, 95);
+
+    // 3. 验证 ag-enhancer-overlay.js：仅改 URL 而应用状态未切换必须失败；真实 Router + AgentInputBox 状态与首条消息归属项目验证
+    const envFake = createDomEnv();
+    envFake.sandbox.setTimeout = setTimeout;
+    envFake.sandbox.clearTimeout = clearTimeout;
+    envFake.win.location = { pathname: '/c/conv-root-001', search: '' };
+    envFake.win.history = {
+      pushState(_st, _t, url) {
+        const u = new URL(String(url), 'https://127.0.0.1');
+        envFake.win.location.pathname = u.pathname;
+        envFake.win.location.search = u.search;
+      }
+    };
+    envFake.sandbox.location = envFake.win.location;
+    envFake.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+    vm.runInContext(RENDERER_SRC, envFake.sandbox);
+    vm.runInContext(ENHANCER_SRC, envFake.sandbox);
+    const enhFake = envFake.sandbox.__AGEnhancer;
+
+    const fakeNew = await enhFake.performMobileAction({ action: 'new-conversation', projectId: 'proj-b' });
+    const fakeSwitch = await enhFake.performMobileAction({ action: 'switch-conversation', id: 'conv-root-245' });
+    assert.equal(fakeNew.ok, false, '仅改动 URL 而无桌面端应用状态切换时 new-conversation 必须返回失败');
+    assert.equal(fakeSwitch.ok, false, '仅改动 URL 而无桌面端应用状态切换时 switch-conversation 必须返回失败');
+    enhFake.dispose?.();
+    envFake.sandbox.__AGContextMeter?.dispose?.();
+
+    // 构建真实 Antigravity TanStack Router + sidebar customHeaderRenderer + AgentInputBox 集成环境
+    const createdByFirstMsg = [];
+    const envReal = createDomEnv();
+    envReal.sandbox.setTimeout = setTimeout;
+    envReal.sandbox.clearTimeout = clearTimeout;
+    envReal.win.location = { pathname: '/c/conv-root-001', search: '?project=proj-a' };
+    envReal.sandbox.location = envReal.win.location;
+    envReal.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+    envReal.doc.execCommand = () => false;
+    envReal.win.getSelection = () => null;
+    envReal.sandbox.getSelection = envReal.win.getSelection;
+
+    const routerState = {
+      status: 'idle',
+      isLoading: false,
+      location: { pathname: '/c/conv-root-001', search: { project: 'proj-a' } },
+      matches: [{ routeId: '/manager-layout/manager-landing-layout/c/$cascadeId', params: { cascadeId: 'conv-root-001' }, status: 'success' }]
+    };
+    const composerProps = {
+      inExistingConversation: true,
+      cascadeId: 'conv-root-001',
+      isConvoLoading: false,
+      handleSubmit: () => {}
+    };
+    function applyRouterUrl(nextHref) {
+      const u = new URL(String(nextHref), 'https://127.0.0.1');
+      const pid = u.searchParams.get('project') || '';
+      envReal.win.location.pathname = u.pathname;
+      envReal.win.location.search = u.search;
+      routerState.location = { pathname: u.pathname, search: pid ? { project: pid } : {} };
+      const cm = u.pathname.match(/^\/c\/([^/?#]+)/);
+      if (cm) {
+        routerState.matches = [{ routeId: '/manager-layout/manager-landing-layout/c/$cascadeId', params: { cascadeId: cm[1] }, status: 'success' }];
+        composerProps.inExistingConversation = true;
+        composerProps.cascadeId = cm[1];
+      } else {
+        routerState.matches = [{ routeId: '/manager-layout/manager-landing-layout/', params: {}, status: 'success' }];
+        composerProps.inExistingConversation = false;
+        composerProps.cascadeId = '';
+      }
+      if (pid) projBadge.setAttribute('data-active-project-id', pid);
+      else projBadge.removeAttribute('data-active-project-id');
+    }
+
+    const fakeRouter = {
+      state: routerState,
+      history: { push: (href) => applyRouterUrl(href) },
+      parseLocation: () => routerState.location,
+      navigate: async ({ to, search }) => applyRouterUrl(search?.project ? `${to}?project=${encodeURIComponent(search.project)}` : to)
+    };
+
+    const projBadge = envReal.doc.createElement('div');
+    projBadge.setAttribute('data-active-project-id', 'proj-a');
+    envReal.doc.body.appendChild(projBadge);
+
+    const newConvoBtn = envReal.doc.createElement('a');
+    newConvoBtn.setAttribute('data-testid', 'new-conversation-button');
+    newConvoBtn.setAttribute('href', '/');
+    newConvoBtn.__reactFiber$test = {
+      dependencies: { firstContext: { memoizedValue: fakeRouter, next: null } },
+      return: null
+    };
+    envReal.doc.body.appendChild(newConvoBtn);
+
+    const sidebarList = envReal.doc.createElement('div');
+    sidebarList.setAttribute('data-testid', 'conversation-list-sidebar');
+    sidebarList.__reactFiber$test = {
+      return: {
+        memoizedProps: {
+          customHeaderRenderer: (item) => {
+            const pid = String(item?.id || '').replace(/^header-/, '');
+            if (!['proj-a', 'proj-b', 'proj-empty', 'default-cli-project'].includes(pid)) return null;
+            return {
+              props: {
+                onAddClick: () => applyRouterUrl(`/?project=${encodeURIComponent(pid)}`)
+              }
+            };
+          }
+        },
+        return: null
+      }
+    };
+    envReal.doc.body.appendChild(sidebarList);
+
+    const compSurface = envReal.doc.createElement('div');
+    compSurface.className = 'surface-composer';
+    compSurface.__reactFiber$test = { memoizedProps: composerProps, return: null };
+    const editorEl = envReal.doc.createElement('div');
+    editorEl.setAttribute('data-lexical-editor', 'true');
+    const lexRootChildren = [];
+    const fakeLexRoot = {
+      clear() { lexRootChildren.length = 0; editorEl.textContent = ''; },
+      append(node) { lexRootChildren.push(node); editorEl.textContent = node._txt || ''; }
+    };
+    editorEl.__lexicalEditor = {
+      _nodes: new Map([
+        ['paragraph', { klass: class { constructor() { this._txt = ''; } append(ch) { this._txt += ch?._v || ''; } } }],
+        ['text', { klass: class { constructor(v) { this._v = v; } } }]
+      ]),
+      update(fn) { fn(); },
+      getEditorState() { return { _nodeMap: new Map([['root', fakeLexRoot]]) }; }
+    };
+    const sendBtn = envReal.doc.createElement('button');
+    sendBtn.setAttribute('data-testid', 'send-button');
+    sendBtn.addEventListener('click', () => {
+      const targetProj = routerState.location.search?.project || projBadge.getAttribute('data-active-project-id') || '';
+      const newCid = `created-${targetProj}-${createdByFirstMsg.length + 1}`;
+      createdByFirstMsg.push({ id: newCid, projectId: targetProj, text: editorEl.textContent || '' });
+      applyRouterUrl(`/c/${newCid}?project=${encodeURIComponent(targetProj)}`);
+    });
+    compSurface.appendChild(editorEl);
+    compSurface.appendChild(sendBtn);
+    envReal.doc.body.appendChild(compSurface);
+
+    vm.runInContext(RENDERER_SRC, envReal.sandbox);
+    vm.runInContext(ENHANCER_SRC, envReal.sandbox);
+    const enhReal = envReal.sandbox.__AGEnhancer;
+
+    // 场景 A: 当前项目快速新建 + 发首条消息确认归属 proj-a
+    const resNewA = await enhReal.performMobileAction({ action: 'new-conversation', projectId: 'proj-a' });
+    assert.equal(resNewA.ok, true);
+    assert.equal(resNewA.verifiedState.inExistingConversation, false);
+    assert.equal(resNewA.verifiedState.routeProjectId, 'proj-a');
+    await enhReal.performMobileAction({ action: 'send', text: 'Alpha first prompt' });
+    assert.equal(createdByFirstMsg[0]?.text, 'Alpha first prompt', 'execCommand 返回 false 时应通过 Lexical _nodes 回退写入编辑器正文');
+    assert.equal(createdByFirstMsg[0]?.projectId, 'proj-a');
+    assert.equal(composerProps.inExistingConversation, true);
+
+    // 场景 B: 指定项目新建 (proj-b) + 发首条消息确认归属 proj-b
+    const resNewB = await enhReal.performMobileAction({ action: 'new-conversation', projectId: 'proj-b' });
+    assert.equal(resNewB.ok, true);
+    assert.equal(resNewB.method, 'sidebar-header-action');
+    assert.equal(resNewB.verifiedState.routeProjectId, 'proj-b');
+    await enhReal.performMobileAction({ action: 'send', text: 'Beta first prompt' });
+    assert.equal(createdByFirstMsg[1]?.projectId, 'proj-b');
+
+    // 场景 C: 空项目新建 (proj-empty) + 发首条消息确认归属 proj-empty
+    const resNewEmpty = await enhReal.performMobileAction({ action: 'new-conversation', projectId: 'proj-empty' });
+    assert.equal(resNewEmpty.ok, true);
+    assert.equal(resNewEmpty.method, 'sidebar-header-action');
+    assert.equal(resNewEmpty.verifiedState.routeProjectId, 'proj-empty');
+    await enhReal.performMobileAction({ action: 'send', text: 'Empty project prompt' });
+    assert.equal(createdByFirstMsg[2]?.projectId, 'proj-empty');
+
+    // 场景 D: 切换至被折叠/滚出视口的第 245 条旧对话并校验真实 Router + AgentInputBox 应用状态
+    const resSwitch245 = await enhReal.performMobileAction({ action: 'switch-conversation', id: 'conv-root-245' });
+    assert.equal(resSwitch245.ok, true);
+    assert.equal(resSwitch245.method, 'router-history');
+    assert.equal(resSwitch245.verifiedState.matchedCascadeId, 'conv-root-245');
+    assert.equal(resSwitch245.verifiedState.inExistingConversation, true);
+    assert.equal(resSwitch245.verifiedState.inputCascadeId, 'conv-root-245');
+
+    // 4. 验证远程网页 UI：空 default-cli-project 双入口进入真实桌面归属、全量分页及分页缓存持续更新/移除
+    const refreshLiveTestSnap = async () => remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: composerProps.inExistingConversation ? (composerProps.cascadeId || '') : '',
+      currentProjectId: routerState.location.search?.project || '',
+      isNewConversation: !composerProps.inExistingConversation,
+      busy: false,
+      conversations: [],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      convLimit: 100,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: traj245 };
+          if (method === 'ListProjects') return { projectIds: ['proj-a', 'proj-b', 'proj-empty', 'default-cli-project', 'outside-of-project', 'proj-sidecar'] };
+          return {};
+        }
+      })
+    });
+
+    const mobileHtml = remoteMod.buildMobileAppHtml();
+    const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(inlineScriptMatch, 'buildMobileAppHtml 应包含内联 <script>');
+    assert.doesNotThrow(() => new vm.Script(inlineScriptMatch[1]), '内联 <script> 必须通过语法校验');
+
+    const envUi = createDomEnv();
+    const bodyMatch = mobileHtml.match(/<body>([\s\S]*?)<script>/);
+    envUi.doc.body.innerHTML = bodyMatch[1];
+
+    const dispatchedActions = [];
+    let currentUiSnap = snapRestart;
+    envUi.win.innerWidth = 1200;
+    envUi.win.innerHeight = 800;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: '?token=testtok', protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/conversations') {
+        const pid = u.searchParams.get('projectId') || '';
+        const offset = Number(u.searchParams.get('offset') || '0');
+        const limit = Number(u.searchParams.get('limit') || '150');
+        return {
+          ok: true,
+          status: 200,
+          headers: jsonHeaders,
+          json: async () => remoteMod.listCatalogConversations({ stateDir, projectId: pid, offset, limit })
+        };
+      }
+      if (u.pathname === '/api/action') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        dispatchedActions.push(body);
+        const actionResult = await enhReal.performMobileAction(body);
+        currentUiSnap = await refreshLiveTestSnap();
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: Boolean(actionResult?.ok), actionResult, snapshot: currentUiSnap }) };
+      }
+      if (u.pathname === '/api/snapshot') {
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => currentUiSnap };
+      }
+      return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(inlineScriptMatch[1], envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    const convListEl = envUi.doc.getElementById('conv-list');
+    // 4a. 验证无「空项目」折叠栏、所有空项目直接平铺展示、点击空项目选中后联动顶部 #new-chat-sub 与 #btn-new-chat
+    assert.equal(convListEl.querySelector('.proj-empty-toggle'), null, '侧边栏不应存在空项目折叠开关');
+    assert.equal(convListEl.querySelector('.proj-empty-sec'), null, '侧边栏不应单独隔离空项目区块');
+    const emptyProjToggle = convListEl.querySelector('button[data-proj-toggle="proj-empty"]');
+    assert.ok(emptyProjToggle, '空项目 EmptyProj 应直接作为普通项目头展示在列表中');
+    const cliProjToggle = convListEl.querySelector('button[data-proj-toggle="default-cli-project"]');
+    assert.ok(cliProjToggle, '空 CLI Project 应无需展开折叠即可直接点中');
+
+    // 先点选 EmptyProj 验证同步，再点选 CLI Project 并点击顶部「新建对话」确认不会串到别的项目
+    emptyProjToggle.click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'EmptyProj', '点中空项目后顶部新建对话副标题应即时切换为该项目名');
+    cliProjToggle.click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'CLI Project', '点中 CLI Project 后顶部新建对话副标题应联动为 CLI Project');
+    const curGroupsAfterClick = convListEl.querySelectorAll('.is-current');
+    assert.equal(curGroupsAfterClick.length, 1, '侧边栏同时只应有一个高亮项目');
+    assert.equal((curGroupsAfterClick[0].querySelector('.proj-name')?.textContent || '').trim(), 'CLI Project', '点中的空项目应获得 is-current 高亮');
+
+    // 点击顶部 #btn-new-chat，确认严格向刚点中的 CLI Project 发起新建会话而不串项目
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(composerProps.inExistingConversation, false);
+    assert.equal(routerState.location.search?.project, 'default-cli-project', '点击空项目后再点顶部新建对话必须进入该项目路由');
+    assert.equal(projBadge.getAttribute('data-active-project-id'), 'default-cli-project');
+    await enhReal.performMobileAction({ action: 'send', text: 'CLI web sidebar prompt' });
+    assert.equal(createdByFirstMsg[createdByFirstMsg.length - 1]?.projectId, 'default-cli-project', '从侧边栏选中 CLI 项目新建后首条消息应归属 default-cli-project');
+
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const cliSheetOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes('CLI Project'));
+    assert.ok(cliSheetOpt, '顶部新建项目下拉选择器应包含 CLI Project');
+    cliSheetOpt.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(composerProps.inExistingConversation, false);
+    assert.equal(routerState.location.search?.project, 'default-cli-project', '通过下拉选择器应进入 default-cli-project 新建状态');
+    await enhReal.performMobileAction({ action: 'send', text: 'CLI dropdown prompt' });
+    assert.equal(createdByFirstMsg[createdByFirstMsg.length - 1]?.projectId, 'default-cli-project');
+
+    assert.ok(convListEl.innerHTML.includes('加载该项目更多对话'), '当单项目历史超过首屏预览时应显示项目分页按钮');
+    const projAMore = convListEl.querySelector('button[data-proj-more="proj-a"]');
+    assert.ok(projAMore);
+    projAMore.click();
+    await new Promise((r) => setTimeout(r, 40));
+    const projAToggle = convListEl.querySelector('button[data-proj-toggle="proj-a"]');
+    assert.ok((projAToggle.textContent || '').includes('120'), '分页加载后 Alpha App 应显示 120 条对话');
+
+    // 4b. 切换到「最近活跃」并通过分页加载全部 245 条历史后点击最老一条
+    const recentTab = envUi.doc.getElementById('conv-view-tabs').querySelector('button[data-conv-view="recent"]');
+    recentTab.click();
+    await new Promise((r) => setTimeout(r, 20));
+    for (let step = 0; step < 3; step++) {
+      const moreBtn = convListEl.querySelector('button[data-conv-more="1"]');
+      if (!moreBtn) break;
+      moreBtn.click();
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    assert.equal(convListEl.querySelectorAll('.conv-item').length, 245, '通过分页应能在「最近活跃」中完整呈现全部 245 条非归档对话');
+    const oldestBtn = convListEl.querySelector('button[data-cid="conv-root-245"]');
+    assert.ok(oldestBtn, '应能访问最末尾的第 245 条历史对话');
+    oldestBtn.click();
+    await new Promise((r) => setTimeout(r, 30));
+    const lastSw = dispatchedActions[dispatchedActions.length - 1];
+    assert.equal(lastSw?.action, 'switch-conversation');
+    assert.equal(lastSw?.id, 'conv-root-245');
+    assert.equal(lastSw?.isolated, true);
+    assert.ok(typeof lastSw?.clientId === 'string' && lastSw.clientId.length > 0);
+
+    // 4c. 回归验证分页缓存 extraConvMap 持续同步与清理：状态变化、查看清未读、归档与晚识别 Subagent 移除
+    const btn240Init = convListEl.querySelector('button[data-cid="conv-root-240"]');
+    assert.ok(btn240Init?.classList.contains('is-unread'), '分页项 #240 初始应带未读标记');
+    assert.ok((btn240Init?.textContent || '').includes('运行中'), '分页项 #240 初始应显示运行中状态');
+    btn240Init.click();
+    await new Promise((r) => setTimeout(r, 40));
+    convListEl.querySelector('button[data-cid="conv-root-001"]').click();
+    await new Promise((r) => setTimeout(r, 40));
+    const btn240AfterView = convListEl.querySelector('button[data-cid="conv-root-240"]');
+    assert.equal(btn240AfterView?.classList.contains('is-unread'), false, '查看分页项 #240 并切走后，未读标记应持续保持清除');
+
+    traj245['conv-root-240'].status = 'CASCADE_RUN_STATUS_IDLE';
+    traj245['conv-root-241'].annotations.archived = true;
+    traj245['conv-root-242'].trajectoryMetadata = {
+      projectId: 'proj-b',
+      rootConversationId: 'conv-root-004',
+      parentConversationId: 'conv-root-004'
+    };
+    currentUiSnap = await refreshLiveTestSnap();
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 60));
+
+    const btn240Synced = convListEl.querySelector('button[data-cid="conv-root-240"]');
+    assert.ok(btn240Synced);
+    assert.equal((btn240Synced.textContent || '').includes('运行中'), false, '分页项 #240 后台完成后状态应同步更新');
+    assert.equal(btn240Synced.classList.contains('is-unread'), false, '分页项 #240 未读标记应保持已读');
+    assert.equal(convListEl.querySelector('button[data-cid="conv-root-241"]'), null, '已归档的分页项 #241 应从前端缓存与列表移除');
+    assert.equal(convListEl.querySelector('button[data-cid="conv-root-242"]'), null, '后续识别出的 Subagent #242 应从前端缓存与列表移除');
+    assert.equal(convListEl.querySelectorAll('.conv-item').length, 243, '清理归档与 Subagent 后总数应精确缩减至 243 条');
+
+    // 4d. 回归验证：从项目 A 下拉选「默认工作区」以及切到无项目/ungrouped 会话后，均应清除旧项目高亮与顶部项目名，轮询不回跳且新建对话不携带旧项目 ID
+    const projTab = envUi.doc.getElementById('conv-view-tabs').querySelector('button[data-conv-view="projects"]');
+    projTab.click();
+    await new Promise((r) => setTimeout(r, 20));
+    convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
+
+    // 1) 通过下拉选择器选择「默认工作区（不指定项目）」
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const defaultWsOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt')
+      .find((b) => (b.textContent || '').includes('默认工作区'));
+    assert.ok(defaultWsOpt, '项目选择器应包含默认工作区选项');
+    defaultWsOpt.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '选择默认工作区后顶部项目副标题应隐藏');
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), '');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '选择默认工作区后不得高亮任何具体项目');
+    // 模拟滞后轮询仍返回旧宿主上下文或当前无项目快照
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '后台轮询后默认工作区状态不得回退至旧项目');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0);
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 40));
+    const actDefaultNew = dispatchedActions[dispatchedActions.length - 1];
+    assert.equal(actDefaultNew?.action, 'new-conversation');
+    assert.equal(actDefaultNew?.projectId, undefined, '选中默认工作区后点击顶部新建对话不得携带旧项目 ID');
+
+    // 2) 方案 A：从已选中项目 A 时，电脑端切至 ungrouped/其他项目不反向覆盖手机选中的 A；手机主动点选 ungrouped 会话后立即清零并保持
+    convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
+    const ungroupedConv = { id: 'conv-ungrouped-test', projectId: 'ungrouped', projectName: '未归属项目', title: '无项目历史对话', active: true, status: 'idle', updatedAt: Date.now() };
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: 'conv-ungrouped-test', isNewConversation: false, currentProjectId: 'ungrouped', currentProjectName: '', conversations: [ungroupedConv, ...(currentUiSnap.conversations || [])] };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 1, '方案 A：电脑端后台切至 ungrouped 时不得反向覆盖手机已选中的项目 A');
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
+    const ungroupedBtn = convListEl.querySelector('button[data-cid="conv-ungrouped-test"]');
+    assert.ok(ungroupedBtn, '应在未归属项目组下渲染无项目历史对话');
+    ungroupedBtn.click();
+    await new Promise((r) => setTimeout(r, 40));
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: 'conv-root-001', currentProjectId: 'proj-a', currentProjectName: 'Alpha App' };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '手机主动点击 ungrouped 会话后必须清零，且电脑切回 A 不得反向覆写');
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true);
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 40));
+    const actAfterUngrouped = dispatchedActions[dispatchedActions.length - 1];
+    assert.equal(actAfterUngrouped?.action, 'new-conversation');
+    assert.equal(actAfterUngrouped?.projectId, undefined, '切换到 ungrouped 会话后点击顶部新建对话不得携带旧项目 ID');
+
+    // 3) 从已选中项目 A 切换到 outside-of-project 独立对话后，同样必须清除旧项目选中态且新建对话不携带 projectId
+    convListEl.querySelector('button[data-proj-toggle="proj-a"]').click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Alpha App');
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 1);
+    const standaloneConv = { id: 'conv-outside-test', projectId: 'outside-of-project', projectName: '独立对话', title: '独立工作区对话', active: false, status: 'idle', updatedAt: Date.now() };
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: 'conv-root-001', isNewConversation: false, currentProjectId: 'proj-a', currentProjectName: 'Alpha App', conversations: [standaloneConv, ...(currentUiSnap.conversations || [])] };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 50));
+    const standaloneBtn = convListEl.querySelector('button[data-cid="conv-outside-test"]');
+    assert.ok(standaloneBtn, '应在独立对话分组下渲染 outside-of-project 会话');
+    standaloneBtn.click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '点击 outside-of-project 独立对话并轮询后应清除旧项目高亮');
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '点击 outside-of-project 独立对话后顶部副标题应清空隐藏');
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 40));
+    const actAfterStandalone = dispatchedActions[dispatchedActions.length - 1];
+    assert.equal(actAfterStandalone?.action, 'new-conversation');
+    assert.equal(actAfterStandalone?.projectId, undefined, '切换到 outside-of-project 会话后点击顶部新建对话不得携带旧项目 ID');
+
+    // 4e. 方案 A 并发与边界回归：手机点选 C 后，无论延迟 B 回包、旧轮询、电脑端自行 A/B/ungrouped 往返均保持 C；仅该项目消失时兜底清零
+    const assertProjectHeldC = async (expectedId, expectedName) => {
+      const cur = convListEl.querySelectorAll('.is-current');
+      assert.equal(cur.length, 1);
+      assert.equal((cur[0].querySelector('.proj-name')?.textContent || '').trim(), expectedName);
+      assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, false);
+      assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), expectedName);
+      envUi.doc.getElementById('btn-new-chat-project').click();
+      const activeOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((o) => o.classList.contains('active'));
+      assert.ok(activeOpt && (activeOpt.textContent || '').includes(expectedName), `下拉高亮应保持 ${expectedName}`);
+      envUi.doc.getElementById('sheet-close').click();
+      envUi.doc.getElementById('btn-new-chat').click();
+      await new Promise((r) => setTimeout(r, 40));
+      const act = dispatchedActions[dispatchedActions.length - 1];
+      assert.equal(act?.action, 'new-conversation');
+      assert.equal(act?.projectId, expectedId, `新建请求必须保持目标项目 ${expectedId}`);
+    };
+    let deferredGate = null;
+    let deferredSnapGate = null;
+    let gateInlineSnap = true;
+    const baseUiFetch = envUi.sandbox.fetch;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      if (u.pathname === '/api/snapshot' && deferredSnapGate) {
+        const g = deferredSnapGate; deferredSnapGate = null;
+        const res = await baseUiFetch(url, init);
+        const captured = await res.json();
+        await g.promise;
+        return { ...res, json: async () => captured };
+      }
+      if (u.pathname === '/api/action' && deferredGate) {
+        const g = deferredGate; const inline = gateInlineSnap; deferredGate = null;
+        const res = await baseUiFetch(url, init);
+        await g.promise;
+        if (!inline) { const body = await res.json(); return { ...res, json: async () => ({ ok: body.ok, actionResult: body.actionResult }) }; }
+        return res;
+      }
+      return baseUiFetch(url, init);
+    };
+    const mkGate = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+
+    // Case 1: A 旧轮询在途 -> 发起切换 B -> 点选 C -> B 内联返回 -> A 旧轮询迟到 -> 电脑端依次切 A -> B -> ungrouped -> B，手机始终保持 C
+    const projBConv = (currentUiSnap.conversations || []).find((c) => c && c.projectId === 'proj-b');
+    assert.ok(projBConv);
+    convListEl.querySelector('button[data-cid="conv-root-001"]').click();
+    await new Promise((r) => setTimeout(r, 40));
+    deferredSnapGate = mkGate(); const snapGateA = deferredSnapGate;
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 15));
+    gateInlineSnap = true; deferredGate = mkGate(); const gate1 = deferredGate;
+    convListEl.querySelector(`button[data-cid="${projBConv.id}"]`).click();
+    await new Promise((r) => setTimeout(r, 15));
+    convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
+    gate1.resolve();
+    await new Promise((r) => setTimeout(r, 50));
+    snapGateA.resolve();
+    await new Promise((r) => setTimeout(r, 30));
+    for (const [sid, pid, pname] of [['conv-root-001', 'proj-a', 'Alpha App'], [projBConv.id, 'proj-b', 'Beta Core'], ['conv-ungrouped-test', 'ungrouped', ''], [projBConv.id, 'proj-b', 'Beta Core']]) {
+      currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: sid, isNewConversation: false, currentProjectId: pid, currentProjectName: pname };
+      envUi.win.dispatchEvent({ type: 'pageshow' });
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    await assertProjectHeldC('default-cli-project', 'CLI Project');
+
+    // Case 2: 宿主在 B -> 重复发起无内联快照的新建 B -> 手机改点选 EmptyProj -> 电脑切 A 再切 B，仍保持 EmptyProj；当 EmptyProj 被删除/归档时兜底清零
+    gateInlineSnap = false; deferredGate = mkGate(); const gate2 = deferredGate;
+    convListEl.querySelector('button[data-new-proj="proj-b"]').click();
+    await new Promise((r) => setTimeout(r, 15));
+    convListEl.querySelector('button[data-proj-toggle="proj-empty"]').click();
+    gate2.resolve();
+    await new Promise((r) => setTimeout(r, 40));
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: 'conv-root-001', isNewConversation: false, currentProjectId: 'proj-a', currentProjectName: 'Alpha App' };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    currentUiSnap = { ...currentUiSnap, snapSeq: undefined, sessionId: '', isNewConversation: true, currentProjectId: 'proj-b', currentProjectName: 'Beta Core' };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    await assertProjectHeldC('proj-empty', 'EmptyProj');
+
+    // 当当前选中的 proj-empty 从 projects 中消失（删除/归档）时，自动清零而非悬空指向不存在项目
+    currentUiSnap = {
+      ...currentUiSnap,
+      snapSeq: undefined,
+      sessionId: '',
+      isNewConversation: true,
+      currentProjectId: 'proj-b',
+      currentProjectName: 'Beta Core',
+      projects: (currentUiSnap.projects || []).filter((p) => p && p.id !== 'proj-empty')
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(convListEl.querySelectorAll('.is-current').length, 0, '选中项目从宿主删除/归档后应自动清零高亮');
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, true, '选中项目失效后顶部项目副标题应清空隐藏');
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(dispatchedActions[dispatchedActions.length - 1]?.projectId, undefined);
+
+    // Case 3: 旧实例导航在途 -> 新实例快照已渲染 -> 旧实例导航回包迟到 + 晚起飞旧实例非导航回包 + 未见过更老实例回包，均不得污染视图或选中态
+    const baseBootAt = Math.max(Number(currentUiSnap.serverBootAt) || 0, Date.now() * 1000);
+    const oldProjectsC3 = [
+      { id: 'proj-a', name: 'Alpha App', conversationCount: 120 },
+      { id: 'proj-b', name: 'Beta Core', conversationCount: 125 },
+      { id: 'default-cli-project', name: 'CLI Project', conversationCount: 0 }
+    ];
+    const oldProjectsMissingCliC3 = oldProjectsC3.filter((p) => p.id !== 'default-cli-project');
+    currentUiSnap = {
+      ...currentUiSnap,
+      serverBootId: 'boot-old-case3',
+      serverBootAt: baseBootAt + 1000,
+      snapSeq: 50,
+      sessionId: 'conv-root-001',
+      isNewConversation: false,
+      title: '旧实例初始标题',
+      messages: [{ role: 'assistant', text: '旧实例初始内容' }],
+      totalMessages: 1,
+      currentProjectId: 'proj-a',
+      currentProjectName: 'Alpha App',
+      projects: oldProjectsC3
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '旧实例初始标题');
+
+    let nextNavOverrideSnap = null;
+    let nextNonNavOverrideResp = null;
+    const prevCase3Fetch = envUi.sandbox.fetch;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      if (u.pathname === '/api/action' && nextNonNavOverrideResp) {
+        const respBody = nextNonNavOverrideResp;
+        nextNonNavOverrideResp = null;
+        const body = JSON.parse(String(init?.body || '{}'));
+        dispatchedActions.push(body);
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') },
+          json: async () => respBody
+        };
+      }
+      const res = await prevCase3Fetch(url, init);
+      if (u.pathname === '/api/action' && nextNavOverrideSnap) {
+        const staleSnap = nextNavOverrideSnap;
+        nextNavOverrideSnap = null;
+        const origJson = await res.json();
+        return { ...res, json: async () => ({ ...origJson, snapshot: staleSnap }) };
+      }
+      return res;
+    };
+
+    convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
+    gateInlineSnap = true;
+    deferredGate = mkGate();
+    const gateOldNav = deferredGate;
+    nextNavOverrideSnap = {
+      ...currentUiSnap,
+      serverBootId: 'boot-old-case3',
+      serverBootAt: baseBootAt + 1000,
+      snapSeq: 51,
+      sessionId: projBConv.id,
+      isNewConversation: false,
+      title: '旧实例迟到脏标题',
+      messages: [{ role: 'assistant', text: '旧实例迟到脏消息' }],
+      totalMessages: 1,
+      currentProjectId: 'proj-b',
+      currentProjectName: 'Beta Core',
+      projects: oldProjectsMissingCliC3
+    };
+    convListEl.querySelector(`button[data-cid="${projBConv.id}"]`).click();
+    await new Promise((r) => setTimeout(r, 15));
+
+    // 在旧实例导航在途期间，手机再次点选 CLI Project，随后新实例上线并下发 snapSeq: 1 的快照
+    convListEl.querySelector('button[data-proj-toggle="default-cli-project"]').click();
+    currentUiSnap = {
+      ...currentUiSnap,
+      serverBootId: 'boot-new-case3',
+      serverBootAt: baseBootAt + 2000,
+      snapSeq: 1,
+      sessionId: 'conv-root-001',
+      isNewConversation: false,
+      title: '新实例最新标题',
+      messages: [{ role: 'assistant', text: '新实例最新回复' }],
+      totalMessages: 1,
+      currentProjectId: 'proj-b',
+      currentProjectName: 'Beta Core',
+      projects: oldProjectsC3
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '新实例最新标题', '新实例重启后的 snapSeq:1 快照应成功渲染');
+    assert.ok((envUi.doc.getElementById('messages')?.textContent || '').includes('新实例最新回复'));
+
+    // 放行旧实例在途导航回包（同一旧 bootId 的 snapSeq: 51）
+    gateOldNav.resolve();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '新实例最新标题', '旧实例迟到导航回包不得覆盖新实例标题');
+    const msgsAfterLateNav = envUi.doc.getElementById('messages')?.textContent || '';
+    assert.ok(msgsAfterLateNav.includes('新实例最新回复'), '旧实例迟到导航回包后应保持新实例消息');
+    assert.equal(msgsAfterLateNav.includes('旧实例迟到脏消息'), false, '旧实例迟到导航回包消息不得污染视图');
+
+    // 再发一个晚起飞的非导航动作（拥有更新的 reqStartEpoch），但错误路由回已淘汰旧实例 boot-old-case3 的更高 snapSeq:52
+    nextNonNavOverrideResp = {
+      ok: true,
+      actionResult: { ok: true },
+      snapshot: {
+        ...currentUiSnap,
+        serverBootId: 'boot-old-case3',
+        serverBootAt: baseBootAt + 1000,
+        snapSeq: 52,
+        sessionId: projBConv.id,
+        isNewConversation: false,
+        title: '旧实例晚起飞脏标题',
+        messages: [{ role: 'assistant', text: '旧实例晚起飞脏消息' }],
+        totalMessages: 1,
+        currentProjectId: 'proj-b',
+        currentProjectName: 'Beta Core',
+        projects: oldProjectsMissingCliC3
+      }
+    };
+    const compactChip = envUi.doc.getElementById('chips').querySelectorAll('.chip').find((b) => (b.textContent || '').trim() === '/compact');
+    assert.ok(compactChip, '快捷操作条应包含「/compact」按钮');
+    compactChip.click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(nextNonNavOverrideResp, null, '晚起飞非导航动作必须实际触发 /api/action 并消耗拦截回包');
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '新实例最新标题', '已淘汰旧实例即使带有更高 reqStartEpoch 也不得回退标题');
+    assert.equal((envUi.doc.getElementById('messages')?.textContent || '').includes('旧实例晚起飞脏消息'), false);
+
+    // 未曾渲染过的更早实例 boot-ancient-0（serverBootAt 更早）轮询回包同样必须被拒绝
+    currentUiSnap = {
+      ...currentUiSnap,
+      serverBootId: 'boot-ancient-0',
+      serverBootAt: baseBootAt + 500,
+      snapSeq: 999,
+      sessionId: projBConv.id,
+      isNewConversation: false,
+      title: '未见过老实例脏标题',
+      messages: [{ role: 'assistant', text: '未见过老实例脏消息' }],
+      totalMessages: 1,
+      projects: oldProjectsMissingCliC3
+    };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, '新实例最新标题', 'serverBootAt 更早的未知旧实例轮询不得回退视图');
+    assert.equal((envUi.doc.getElementById('messages')?.textContent || '').includes('未见过老实例脏消息'), false);
+
+    await assertProjectHeldC('default-cli-project', 'CLI Project');
+
+    enhReal.dispose?.();
+    envReal.sandbox.__AGContextMeter?.dispose?.();
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 25: 远程会话全量历史消息上翻加载、长回复防截断与授权模式图标动态联动
+// =========================================================================
+test('PR #5 / 远程需求 25: 远程会话全量历史消息上翻加载、长回复防截断与授权模式图标动态联动', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req18-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const configDir = path.join(tmpRoot, 'config');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(path.join(configDir, 'projects'), { recursive: true });
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+
+    // 1. 服务端 Markdown 安全渲染（表格、代码块、外链/文件胶囊与 XSS 过滤）
+    const mdHtml = remoteMod.renderSafeMarkdownToHtml(
+      '## 架构汇总\n\n| 模块 | 状态 |\n| --- | --- |\n| history | OK |\n\n```js\nconst x = "<script>alert(1)</script>";\n```\n\n参考 [doc](file:///tmp/a.md)、[官网](https://example.com) 与 [xss](javascript:alert(1)) <script>evil()</script>'
+    );
+    assert.ok(mdHtml.includes('<h2>架构汇总</h2>'));
+    assert.ok(mdHtml.includes('<div class="md-table-wrap"><table>'));
+    assert.ok(mdHtml.includes('<pre><code>const x = &quot;&lt;script&gt;'));
+    assert.ok(mdHtml.includes('<code class="md-pill">doc</code>'));
+    assert.ok(mdHtml.includes('href="https://example.com"'));
+    assert.equal(mdHtml.includes('javascript:'), false, '禁止渲染 javascript: 危险协议');
+    assert.equal(mdHtml.includes('<script>evil'), false, '原始 script 标签必须转义不得透传');
+
+    // 2. 75 轮 (150 条消息 / >500 步含工具调用、@文件、思考与 12000 字长回复) 轨迹完整提取 + 桌面 DOM 虚拟化仅剩 3 条 + 失败保底
+    const steps150 = [];
+    const longBody = '长文报告头部。' + '详细分析内容段落。'.repeat(1200) + '长文结尾标记_END';
+    for (let t = 0; t < 75; t++) {
+      steps150.push({
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        userInput: {
+          items: t === 0
+            ? [{ text: '首轮原始指令' }, { item: { file: { absoluteUri: 'file:///tmp/spec.md' } } }]
+            : [{ text: `用户问题 #${t}` }]
+        }
+      });
+      steps150.push({ type: 'CORTEX_STEP_TYPE_RUN_COMMAND', runCommand: { command: 'ls' } });
+      steps150.push({
+        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+        plannerResponse: { thinking: `思考步骤 #${t}`, response: '' }
+      });
+      steps150.push({
+        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+        plannerResponse: {
+          response: t === 74 ? longBody : `助手回复 #${t}`
+        }
+      });
+    }
+    const sid = 'sess-long-150';
+    let failTraj = false;
+    const mockConnect = async () => ({
+      call: async (method) => {
+        if (method === 'GetCascadeTrajectory') {
+          if (failTraj) throw new Error('LS busy');
+          return { trajectory: { steps: steps150 } };
+        }
+        if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+        return {};
+      }
+    });
+
+    const tail3DomMsgs = [
+      { id: 'u-dom-1', role: 'user', text: '用户问题 #73' },
+      { id: 'a-dom-1', role: 'assistant', text: '助手回复 #73', highRisk: true, riskText: '🛡️ 含高危命令' },
+      { id: 'u-dom-2', role: 'user', text: '用户问题 #74' },
+      { id: 'a-dom-2', role: 'assistant', text: longBody }
+    ];
+
+    const snapFull = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: sid,
+      busy: false,
+      messages: tail3DomMsgs,
+      conversations: [],
+      projects: []
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+
+    assert.equal(snapFull.totalMessages, 150, '桌面 DOM 仅剩 3~4 条时应从轨迹恢复全部 150 条消息');
+    assert.equal(snapFull.messagesStartIndex, 120);
+    assert.equal(snapFull.hasEarlierMessages, true);
+    assert.equal(snapFull.messages.length, 30);
+    const lastMsg = snapFull.messages[snapFull.messages.length - 1];
+    assert.ok(lastMsg.text.includes('长文结尾标记_END') && lastMsg.text.length > 10000, '长回复不得被 4000 字截断');
+    assert.equal(snapFull.messages.find((m) => m.text === '助手回复 #73')?.highRisk, true, 'DOM 高危标记应无损并入轨迹消息');
+
+    // 轨迹接口临时失败时保留缓存的 150 条全量历史，不得缩水成 4 条 DOM 消息
+    failTraj = true;
+    const snapOnFail = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: sid,
+      busy: false,
+      messages: tail3DomMsgs,
+      conversations: [],
+      projects: []
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+    assert.equal(snapOnFail.totalMessages, 150, '轨迹请求失败时应保留已缓存的 150 条消息不缩水');
+    failTraj = false;
+
+    // HTTP /api/messages 缺 sessionId 校验返回 400
+    const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+    const httpHandler = remoteMod.createRemoteHttpHandler(httpCfg);
+    const missingSidRes = await new Promise((resolve) => {
+      httpHandler({
+        method: 'GET',
+        url: `/api/messages?token=${encodeURIComponent(httpCfg.token)}`,
+        headers: { host: `127.0.0.1:${httpCfg.port}` },
+        socket: { remoteAddress: '127.0.0.1' }
+      }, {
+        setHeader() {},
+        writeHead(status) { this.status = status; },
+        end(body) { resolve({ status: this.status, json: JSON.parse(String(body || '{}')) }); }
+      });
+    });
+    assert.equal(missingSidRes.status, 400);
+
+    // 3. 验证 ag-enhancer-overlay.js：>120000 字长用户消息/回复 DOM 不截断 + 轨迹与 DOM 回退双路径全文保留 + 授权模式（含窄侧栏纯图标 SVG）精准识别
+    const ultraUserDom = '超长用户DOM消息_' + 'U'.repeat(135000) + '_DOM_USER_135K_END';
+    const ultraReplyDom = '超长助手DOM回复_' + 'A'.repeat(135000) + '_DOM_REPLY_135K_END';
+    const ultraUserTraj = '超长用户轨迹消息_' + 'Q'.repeat(135000) + '_TRAJ_USER_135K_END';
+    const ultraReplyTraj = '超长助手轨迹回复_' + 'R'.repeat(135000) + '_TRAJ_REPLY_135K_END';
+
+    const trajUltraSnap = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'sess-ultra-traj-135k',
+      busy: false,
+      messages: [],
+      conversations: [],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      msgLimit: 10,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => method === 'GetCascadeTrajectory'
+          ? {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: ultraUserTraj }] } },
+                  { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: ultraReplyTraj } }
+                ]
+              }
+            }
+          : {}
+      })
+    });
+    assert.equal(trajUltraSnap.messages.length, 2);
+    assert.ok(trajUltraSnap.messages[0].text.length > 135000 && trajUltraSnap.messages[0].text.endsWith('TRAJ_USER_135K_END'), '轨迹路径用户消息 >120000 字不得截断');
+    assert.ok(trajUltraSnap.messages[1].text.length > 135000 && trajUltraSnap.messages[1].text.endsWith('TRAJ_REPLY_135K_END'), '轨迹路径助手回复 >120000 字不得截断');
+    assert.ok(trajUltraSnap.messages[1].html.includes('TRAJ_REPLY_135K_END'), '轨迹路径助手 HTML >120000 字不得截断');
+    const ultraPage = await remoteMod.getConversationMessagesPage({
+      sessionId: 'sess-ultra-traj-135k',
+      before: 2,
+      limit: 10
+    });
+    assert.ok(ultraPage.messages[0].text.endsWith('TRAJ_USER_135K_END'));
+    assert.ok(ultraPage.messages[1].text.endsWith('TRAJ_REPLY_135K_END'));
+
+    const envEnh = createDomEnv();
+    envEnh.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9, DOCUMENT_POSITION_FOLLOWING: 4 };
+    envEnh.win.location = { pathname: '/c/enh-perm-test', search: '' };
+    envEnh.sandbox.location = envEnh.win.location;
+    envEnh.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+    const scrollVp = envEnh.doc.createElement('div');
+    scrollVp.setAttribute('data-testid', 'chat-scroll-container');
+    const longUserEl = envEnh.doc.createElement('div');
+    longUserEl.setAttribute('data-testid', 'user-message');
+    const longUserContent = envEnh.doc.createElement('div');
+    longUserContent.setAttribute('data-testid', 'user-message-content');
+    longUserContent.textContent = ultraUserDom;
+    longUserEl.appendChild(longUserContent);
+    scrollVp.appendChild(longUserEl);
+
+    const longAgentEl = envEnh.doc.createElement('div');
+    longAgentEl.setAttribute('data-testid', 'agent-response');
+    const longMdEl = envEnh.doc.createElement('div');
+    longMdEl.setAttribute('data-markdown-root', '');
+    longMdEl.compareDocumentPosition = () => 2;
+    longMdEl.innerHTML = `<p>${ultraReplyDom}</p>`;
+    if (longMdEl.children[0]?.childNodes?.[0]) {
+      longMdEl.children[0].childNodes[0].nodeValue = ultraReplyDom;
+    }
+    longAgentEl.appendChild(longMdEl);
+    scrollVp.appendChild(longAgentEl);
+    envEnh.doc.body.appendChild(scrollVp);
+
+    const permTrigger = envEnh.doc.createElement('button');
+    permTrigger.setAttribute('data-testid', 'permissions-selector-trigger');
+    permTrigger.textContent = '请求审核';
+    envEnh.doc.body.appendChild(permTrigger);
+
+    vm.runInContext(RENDERER_SRC, envEnh.sandbox);
+    vm.runInContext(ENHANCER_SRC, envEnh.sandbox);
+    const enhApi = envEnh.sandbox.__AGEnhancer;
+
+    const snapEnhReview = enhApi.getMobileSnapshot();
+    assert.equal(snapEnhReview.permissionKey, 'request_review');
+    assert.equal(snapEnhReview.messages.length, 2);
+    assert.ok(snapEnhReview.messages[0]?.text?.endsWith('DOM_USER_135K_END') && snapEnhReview.messages[0].text.length > 135000, 'DOM 用户消息超过 120000 字时不应截断');
+    assert.ok(snapEnhReview.messages[1]?.text?.endsWith('DOM_REPLY_135K_END') && snapEnhReview.messages[1].text.length > 135000, 'DOM 回复超过 120000 字时不应截断');
+    assert.ok(snapEnhReview.messages[1]?.html?.includes('DOM_REPLY_135K_END'), 'DOM 回复 HTML 超过 120000 字时不应截断');
+
+    const domFallbackUltraSnap = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'sess-dom-fallback-135k',
+      busy: false,
+      messages: snapEnhReview.messages,
+      conversations: [],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      msgLimit: 10,
+      bypassCache: true,
+      localApiConnect: async () => null
+    });
+    assert.equal(domFallbackUltraSnap.messages.length, 2);
+    assert.ok(domFallbackUltraSnap.messages[0].text.endsWith('DOM_USER_135K_END') && domFallbackUltraSnap.messages[0].text.length > 135000, '无轨迹连接 DOM 回退路径用户消息 >120000 字应完整保留');
+    assert.ok(domFallbackUltraSnap.messages[1].text.endsWith('DOM_REPLY_135K_END') && domFallbackUltraSnap.messages[1].text.length > 135000, '无轨迹连接 DOM 回退路径助手回复 >120000 字应完整保留');
+    assert.ok(domFallbackUltraSnap.messages[1].html.includes('DOM_REPLY_135K_END'), '无轨迹连接 DOM 回退路径 HTML >120000 字应完整保留');
+
+    // 窄屏下按钮文字隐藏、仅余原生 SVG 路径时仍能精确识别 4 种模式
+    permTrigger.textContent = '';
+    for (const [expectedKey, pathD] of [
+      ['turbo', 'M502.92-344.77q9.38'],
+      ['auto', 'M480-100.77Q350.23'],
+      ['default', 'M252.31-100q-29.92'],
+      ['request_review', 'M595.58-384.51q47.5']
+    ]) {
+      permTrigger.innerHTML = `<svg viewBox="0 -960 960 960"><path d="${pathD}"></path></svg>`;
+      assert.equal(enhApi.getMobileSnapshot().permissionKey, expectedKey, `纯图标 SVG 应识别为 ${expectedKey}`);
+    }
+    enhApi.dispose?.();
+    envEnh.sandbox.__AGContextMeter?.dispose?.();
+
+    // 4. 验证远程网页 UI：向上翻页加载全部 150+2 条历史、无间隙新消息合并及 4 种授权模式图标动态变化
+    const mobileHtml = remoteMod.buildMobileAppHtml();
+    const inlineScript = mobileHtml.match(/<script>([\s\S]*?)<\/script>/)[1];
+    assert.doesNotThrow(() => new vm.Script(inlineScript));
+
+    const envUi = createDomEnv();
+    envUi.doc.body.innerHTML = mobileHtml.match(/<body>([\s\S]*?)<script>/)[1];
+    let liveSnapState = {
+      ...snapFull,
+      permissionKey: 'turbo',
+      permissionLabel: '无限',
+      permissionOptions: [
+        { key: 'turbo', label: '⚡ 无限 (Turbo)' },
+        { key: 'auto', label: '🛡️ 自动 (Auto)' },
+        { key: 'default', label: '🔒 默认 (Default)' },
+        { key: 'request_review', label: '👁️ 请求审核 (Review)' }
+      ]
+    };
+
+    let delayNextMessagesGate = null;
+    envUi.win.innerWidth = 414;
+    envUi.win.innerHeight = 840;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: '?token=testtok', protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/snapshot') {
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => liveSnapState };
+      }
+      if (u.pathname === '/api/messages') {
+        if (delayNextMessagesGate) {
+          const gate = delayNextMessagesGate;
+          delayNextMessagesGate = null;
+          await gate.promise;
+        }
+        const page = await remoteMod.getConversationMessagesPage({
+          sessionId: u.searchParams.get('sessionId') || sid,
+          before: u.searchParams.get('before'),
+          limit: Number(u.searchParams.get('limit') || '30'),
+          localApiConnect: mockConnect
+        });
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => page };
+      }
+      if (u.pathname === '/api/action') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (body.action === 'select-permission') {
+          const labels = { turbo: '无限', auto: '自动', default: '默认', request_review: '请求审核' };
+          liveSnapState = { ...liveSnapState, permissionKey: body.preset, permissionLabel: labels[body.preset] || body.preset };
+          return {
+            ok: true,
+            status: 200,
+            headers: jsonHeaders,
+            json: async () => ({ ok: true, actionResult: { ok: true, preset: body.preset, permissionKey: body.preset, permissionLabel: labels[body.preset] }, snapshot: liveSnapState })
+          };
+        }
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true, snapshot: liveSnapState }) };
+      }
+      return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
+    };
+
+    const msgContainer = envUi.doc.getElementById('messages');
+    // 为 #messages 挂载贴近真实 Flex 纵向排版的非均匀尺寸与动态视口几何计算器
+    (function attachVerticalLayout(container) {
+      const VIEWPORT_TOP = 54;
+      const CLIENT_H = 400;
+      const PAD_TOP = 14;
+      const PAD_BOT = 12;
+      const GAP = 16;
+      let scrollTopVal = 0;
+      let scrollHeightVal = CLIENT_H;
+
+      container.clientHeight = CLIENT_H;
+      container.getBoundingClientRect = () => ({
+        top: VIEWPORT_TOP,
+        left: 0,
+        width: 380,
+        right: 380,
+        height: CLIENT_H,
+        bottom: VIEWPORT_TOP + CLIENT_H
+      });
+      Object.defineProperty(container, 'scrollHeight', {
+        configurable: true,
+        get() { return scrollHeightVal; },
+        set(v) { scrollHeightVal = Number(v) || CLIENT_H; }
+      });
+      Object.defineProperty(container, 'scrollTop', {
+        configurable: true,
+        get() { return scrollTopVal; },
+        set(v) {
+          const maxScroll = Math.max(0, scrollHeightVal - CLIENT_H);
+          const n = Number(v) || 0;
+          scrollTopVal = Math.max(0, Math.min(maxScroll, n));
+        }
+      });
+
+      const innerHtmlDesc = Object.getOwnPropertyDescriptor(container, 'innerHTML');
+      Object.defineProperty(container, 'innerHTML', {
+        configurable: true,
+        get() { return innerHtmlDesc.get.call(container); },
+        set(htmlStr) {
+          innerHtmlDesc.set.call(container, htmlStr);
+          let y = PAD_TOP;
+          for (const ch of container.children) {
+            let h = 32;
+            if (ch.id === 'btn-load-earlier') {
+              h = 34;
+            } else if (ch.classList?.contains('msg')) {
+              const idx = Number(ch.getAttribute('data-msg-idx'));
+              h = 56 + ((Number.isFinite(idx) ? idx : 0) % 4) * 22;
+            }
+            ch.offsetTop = y;
+            ch.offsetHeight = h;
+            ch.getBoundingClientRect = () => {
+              const top = VIEWPORT_TOP + (ch.offsetTop - scrollTopVal);
+              return { top, left: 0, width: 380, right: 380, height: h, bottom: top + h };
+            };
+            y += h + GAP;
+          }
+          scrollHeightVal = container.children.length
+            ? Math.max(CLIENT_H, y - GAP + PAD_BOT)
+            : CLIENT_H;
+        }
+      });
+    })(msgContainer);
+
+    vm.runInContext(inlineScript, envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    assert.ok(msgContainer.querySelector('#btn-load-earlier'), '存在更早消息时顶部应渲染加载更早按钮');
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 30);
+
+    const getViewportOffset = (idx) => {
+      const node = msgContainer.querySelector(`[data-msg-idx="${idx}"]`);
+      assert.ok(node, `消息 #${idx} 节点应存在`);
+      return node.getBoundingClientRect().top - msgContainer.getBoundingClientRect().top;
+    };
+
+    // 场景 1（向上分页）：向上滚到停在 #124（视口偏移 -18px），加载前 30 条 [90..119] 后阅读位置应精准锁在 #124 (-18px)
+    const el124Before = msgContainer.querySelector('[data-msg-idx="124"]');
+    const oldTop124 = el124Before.offsetTop;
+    msgContainer.scrollTop = oldTop124 + 18;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    const scrollBeforePage = msgContainer.scrollTop;
+    assert.equal(getViewportOffset(124), -18);
+
+    msgContainer.querySelector('#btn-load-earlier').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 60);
+    const newTop124 = msgContainer.querySelector('[data-msg-idx="124"]').offsetTop;
+    const insertedAbove124 = newTop124 - oldTop124;
+    assert.ok(insertedAbove124 > 2000, '顶部插入 30 条后 #124 应真实下移超过 2000px');
+    assert.equal(msgContainer.scrollTop, scrollBeforePage + insertedAbove124, '上翻分页应精确补偿上方新增高度');
+    assert.equal(getViewportOffset(124), -18, '上翻分页后可见锚点 #124 视口偏移应丝毫不差保持 -18px');
+
+    // 底部新增 2 条消息使尾窗滑动为 [122..151]，已加载的 [90..121] 应无间隙衔接，且不拉动上方阅读锚点
+    steps150.push(
+      { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '新增用户问题 #75' }] } },
+      { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '新增助手回复 #75' } }
+    );
+    liveSnapState = await remoteMod.enrichSnapshotWithCatalog({
+      ...liveSnapState,
+      messages: [
+        ...tail3DomMsgs,
+        { id: 'u-new', role: 'user', text: '新增用户问题 #75' },
+        { id: 'a-new', role: 'assistant', text: '新增助手回复 #75' }
+      ]
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 62, '底部滑动窗口更新后已加载历史 [90..121] 不得出现断层');
+    assert.equal(getViewportOffset(124), -18, '尾部追加消息时不主动打断上方阅读位置');
+
+    // 场景 2（缺口位于视口下方）：停在上方历史 #105（视口偏移 +14px），底部突发新增 40 条产生下方空洞 [152..161] 并回填
+    const el105Before = msgContainer.querySelector('[data-msg-idx="105"]');
+    msgContainer.scrollTop = el105Before.offsetTop - 14;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    const scrollBeforeGapBelow = msgContainer.scrollTop;
+    const scrollHBeforeGapBelow = msgContainer.scrollHeight;
+    assert.equal(getViewportOffset(105), 14);
+
+    for (let k = 76; k < 96; k++) {
+      steps150.push(
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: `新增空洞用户 #${k}` }] } },
+        { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: `新增空洞回复 #${k}` } }
+      );
+    }
+    liveSnapState = await remoteMod.enrichSnapshotWithCatalog({
+      ...liveSnapState,
+      messages: [
+        { id: 'u-jump-last', role: 'user', text: '新增空洞用户 #95' },
+        { id: 'a-jump-last', role: 'assistant', text: '新增空洞回复 #95' }
+      ]
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+    assert.equal(liveSnapState.totalMessages, 192);
+    assert.equal(liveSnapState.messagesStartIndex, 162);
+
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 80));
+    const afterGapMsgs = msgContainer.querySelectorAll('.msg');
+    assert.equal(afterGapMsgs.length, 102, '突发新增 40 条产生索引空洞 [152..161] 后应自动回填补齐 [90..191] 共 102 条连续消息');
+    for (let i = 0; i < afterGapMsgs.length; i++) {
+      assert.equal(Number(afterGapMsgs[i].getAttribute('data-msg-idx')), 90 + i, `消息索引第 ${i} 项应严格连续为 ${90 + i}`);
+    }
+    assert.ok((msgContainer.textContent || '').includes('新增空洞用户 #76'), '空洞区间内第 152 条消息必须完整补回');
+    assert.ok((msgContainer.textContent || '').includes('新增空洞回复 #80'), '空洞区间内第 161 条消息必须完整补回');
+    assert.ok(msgContainer.scrollHeight > scrollHBeforeGapBelow + 3000, '下方补齐 40 条后总滚动高度应显著增加');
+    assert.equal(msgContainer.scrollTop, scrollBeforeGapBelow, '缺口位于视口下方时不得把下方新增高度累加到 scrollTop');
+    assert.equal(getViewportOffset(105), 14, '缺口位于视口下方回填后，原可见锚点 #105 视口偏移应纹丝不动保持 14px');
+
+    // 场景 3（缺口位于视口上方）：延迟空洞拉取，用户停留在下方 #210（+22px），待上方空洞 [192..201] 插入后锚点保持 +22px
+    let resolveGapAboveGate;
+    delayNextMessagesGate = {
+      promise: new Promise((resolve) => { resolveGapAboveGate = resolve; })
+    };
+    for (let k = 96; k < 116; k++) {
+      steps150.push(
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: `二次跳跃用户 #${k}` }] } },
+        { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: `二次跳跃回复 #${k}` } }
+      );
+    }
+    liveSnapState = await remoteMod.enrichSnapshotWithCatalog({
+      ...liveSnapState,
+      messages: [
+        { id: 'u-jump2-last', role: 'user', text: '二次跳跃用户 #115' },
+        { id: 'a-jump2-last', role: 'assistant', text: '二次跳跃回复 #115' }
+      ]
+    }, { stateDir, configDir, msgLimit: 30, bypassCache: true, localApiConnect: mockConnect });
+    assert.equal(liveSnapState.totalMessages, 232);
+    assert.equal(liveSnapState.messagesStartIndex, 202);
+
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+
+    // 用户滚动到下方尾窗的 #210（距底远超 80px），使空洞 [192..201] 恰好位于当前视口上方
+    const el210Before = msgContainer.querySelector('[data-msg-idx="210"]');
+    const oldTop210 = el210Before.offsetTop;
+    msgContainer.scrollTop = oldTop210 - 22;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    const scrollBeforeGapAbove = msgContainer.scrollTop;
+    assert.equal(getViewportOffset(210), 22);
+
+    resolveGapAboveGate();
+    await new Promise((r) => setTimeout(r, 80));
+    const afterGap2Msgs = msgContainer.querySelectorAll('.msg');
+    assert.equal(afterGap2Msgs.length, 142, '上方空洞 [192..201] 回填完成后应拥有 [90..231] 共 142 条连续消息');
+    for (let i = 0; i < afterGap2Msgs.length; i++) {
+      assert.equal(Number(afterGap2Msgs[i].getAttribute('data-msg-idx')), 90 + i);
+    }
+    const newTop210 = msgContainer.querySelector('[data-msg-idx="210"]').offsetTop;
+    const insertedAbove210 = newTop210 - oldTop210;
+    assert.ok(insertedAbove210 > 800, '视口上方插入 [192..201] 后 #210 的 offsetTop 应下移超过 800px');
+    assert.equal(msgContainer.scrollTop, scrollBeforeGapAbove + insertedAbove210, '缺口位于视口上方回填时应精准下移 scrollTop');
+    assert.equal(getViewportOffset(210), 22, '缺口位于视口上方回填后，#210 视口偏移仍严格保持 22px');
+
+    // 继续上翻直至第 0 条（首轮原始指令 @spec.md）完整呈现，且顶部按钮自动消失后锚点仍不跳动
+    for (let step = 0; step < 5; step++) {
+      const earlierBtn = msgContainer.querySelector('#btn-load-earlier');
+      if (!earlierBtn) break;
+      earlierBtn.click();
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    assert.equal(msgContainer.querySelectorAll('.msg').length, 232, '连续上翻应能读到从第 0 条至今全部 232 条对话内容');
+    assert.ok((msgContainer.textContent || '').includes('首轮原始指令 @spec.md'), '第 0 条首轮消息及 @文件引用应完整可读');
+    assert.equal(msgContainer.querySelector('#btn-load-earlier'), null, '翻到首条后顶部加载按钮应自动消失');
+
+    // 验证 4 种授权模式图标随选择与快照实时切换（绝不固定在 Turbo 闪电图标）
+    const permIconEl = envUi.doc.getElementById('perm-inline-icon');
+    const seenSvgs = new Map();
+    for (const [mode, expectedText] of [
+      ['turbo', '无限'],
+      ['auto', '自动'],
+      ['default', '默认'],
+      ['request_review', '请求审核']
+    ]) {
+      envUi.doc.getElementById('btn-perm-inline').click();
+      const targetOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes(expectedText));
+      assert.ok(targetOpt, `权限弹窗应包含 ${expectedText}`);
+      targetOpt.click();
+      await new Promise((r) => setTimeout(r, 40));
+      assert.equal(permIconEl.getAttribute('data-perm-mode'), mode, `切换到 ${expectedText} 后图标模式应变为 ${mode}`);
+      assert.ok(permIconEl.classList.contains(mode));
+      seenSvgs.set(mode, permIconEl.innerHTML);
+    }
+    assert.equal(new Set(seenSvgs.values()).size, 4, '4 种授权模式必须渲染 4 个各不相同的图标 SVG');
+    envUi.doc.getElementById('btn-perm-inline').click();
+    const activeOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt').find((b) => b.classList.contains('active'));
+    assert.ok((activeOpt?.textContent || '').includes('请求审核'), '权限弹窗应精确高亮当前 请求审核 模式');
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 26: 项目名条视觉层级、回车换行交互、浏览本机目录创建新项目与三态主题共存
+// =========================================================================
+test('PR #5 / 远程需求 26: 项目分组头样式层级、Enter换行按钮发送、本机目录浏览建项目及三态外观共存', async () => {
+  const { pathToFileURL } = require('url');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req19-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const homeDir = path.join(tmpRoot, 'home');
+  const configDir = path.join(homeDir, '.gemini', 'config');
+  const projectsDir = path.join(configDir, 'projects');
+  const codebaseDir = path.join(homeDir, 'codebase');
+  const sharedDir = path.join(homeDir, 'shared');
+  const sharedResDir = path.join(sharedDir, '_shared_res');
+  const repoADir = path.join(codebaseDir, 'repo-a');
+  const plainBDir = path.join(codebaseDir, 'plain-b');
+  const existingRepoDir = path.join(codebaseDir, 'repo-existing');
+  const dupOwnerDir = path.join(homeDir, 'other', 'plain-b-owner');
+  const hiddenDir = path.join(codebaseDir, '.hidden-dir');
+
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(projectsDir, { recursive: true });
+  fs.mkdirSync(path.join(repoADir, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(repoADir, '.git', 'HEAD'), 'ref: refs/heads/develop\n', 'utf8');
+  fs.mkdirSync(plainBDir, { recursive: true });
+  fs.mkdirSync(existingRepoDir, { recursive: true });
+  fs.mkdirSync(sharedResDir, { recursive: true });
+  fs.mkdirSync(dupOwnerDir, { recursive: true });
+  fs.mkdirSync(hiddenDir, { recursive: true });
+  fs.writeFileSync(path.join(codebaseDir, 'note.txt'), 'not a folder', 'utf8');
+
+  // 预设两个已有项目：一个将 ~/shared/_shared_res 作为辅资源 [1]（不应误标 _shared_res），一个占用名称 plain-b
+  const existingProjId = '11111111-1111-4111-8111-111111111111';
+  fs.writeFileSync(path.join(projectsDir, `${existingProjId}.json`), JSON.stringify({
+    id: existingProjId,
+    name: 'repo-existing',
+    projectResources: {
+      resources: [
+        { folderUri: pathToFileURL(existingRepoDir).href },
+        { folderUri: pathToFileURL(sharedResDir).href }
+      ]
+    },
+    settings: {},
+    isWorkspaceOnly: false
+  }), 'utf8');
+
+  const dupNameProjId = '22222222-2222-4222-8222-222222222222';
+  fs.writeFileSync(path.join(projectsDir, `${dupNameProjId}.json`), JSON.stringify({
+    id: dupNameProjId,
+    name: 'plain-b',
+    projectResources: {
+      resources: [{ folderUri: pathToFileURL(dupOwnerDir).href }]
+    },
+    settings: {},
+    isWorkspaceOnly: false
+  }), 'utf8');
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+
+    // 1. CSS 与 HTML 层级校验（项目头字号 > 会话项字号、桌面媒体查询同步、enterkeyhint="enter"）
+    const html = remoteMod.buildMobileAppHtml();
+    const cssText = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
+    const inlineScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
+    assert.doesNotThrow(() => new vm.Script(inlineScript));
+
+    const mobileCss = cssText.split('@media (min-width:860px)')[0];
+    const desktopCss = cssText.split('@media (min-width:860px)')[1] || '';
+    const parseFontPx = (chunk, sel) => {
+      const m = chunk.match(new RegExp(`\\${sel}\\{[^}]*?font-size:([0-9.]+)px`));
+      return m ? Number(m[1]) : 0;
+    };
+    const mobProjFs = parseFontPx(mobileCss, '.proj-toggle');
+    const mobConvFs = parseFontPx(mobileCss, '.conv-item');
+    const deskProjFs = parseFontPx(desktopCss, '.proj-toggle');
+    const deskConvFs = parseFontPx(desktopCss, '.conv-item');
+    assert.ok(mobProjFs > mobConvFs && mobProjFs >= 14, `移动端项目头字号 (${mobProjFs}px) 应显著大于会话项 (${mobConvFs}px)`);
+    assert.ok(deskProjFs > deskConvFs && deskProjFs >= 13.5, `桌面端项目头字号 (${deskProjFs}px) 应大于会话项 (${deskConvFs}px)`);
+    assert.ok(mobileCss.includes('.proj-group.is-current .proj-head'), '应包含当前活跃项目高亮样式');
+    assert.ok(mobileCss.includes('.proj-body') && mobileCss.includes('border-left:'), '子会话容器应带缩进左导引线');
+    assert.ok(html.includes('enterkeyhint="enter"'), '输入框应声明 enterkeyhint="enter" 以配合手机软键盘换行');
+    assert.ok(html.includes('id="btn-new-project"') && html.includes('id="proj-modal-backdrop"'), '应包含新建项目入口与目录选择弹窗');
+    assert.ok(cssText.includes('.new-proj-mini-btn{') && cssText.includes('width:34px;height:34px;padding:0'), '新建项目按钮应采用 34×34 紧凑纯图标样式以免挤压左侧栏');
+    assert.equal(html.includes('id="btn-theme"'), false, '对话右上角外观按钮应已移除');
+    assert.ok(html.includes('id="theme-seg"'), '侧边栏底部纯图标三态选择器必须与新建项目/多项目控件并存');
+    const mobSubFs = parseFontPx(mobileCss, '.new-chat-sub');
+    const deskSubFs = parseFontPx(desktopCss, '.new-chat-sub');
+    assert.ok(mobSubFs > 0 && mobSubFs <= 11, `移动端新建对话下排项目名字号 (${mobSubFs}px) 应为极小字 <= 11px`);
+    assert.ok(deskSubFs > 0 && deskSubFs <= 10.5, `桌面端新建对话下排项目名字号 (${deskSubFs}px) 应为极小字 <= 10.5px`);
+    const newChatSubRule = (mobileCss.match(/\.new-chat-sub\{[^}]*\}/) || [''])[0];
+    assert.ok(
+      newChatSubRule.includes('white-space:normal') && newChatSubRule.includes('overflow-wrap:anywhere'),
+      '新建对话下排项目名应允许自动换行完整显示'
+    );
+    assert.equal(newChatSubRule.includes('text-overflow:ellipsis'), false, '#new-chat-sub 不得省略截断长项目名');
+    assert.ok(cssText.includes('.proj-head{') && cssText.includes('var(--proj-head-bg)'), '项目分组条应使用主题变量 var(--proj-head-bg)');
+    assert.ok(cssText.includes('.proj-toggle{') && cssText.includes('color:var(--fg-strong)'), '项目标题文字应使用主题变量 var(--fg-strong)');
+    assert.ok(cssText.includes('.proj-path-input,.proj-field-input{') && cssText.includes('var(--input-bg)'), '目录输入框应使用主题变量 var(--input-bg)');
+    assert.ok(cssText.includes('.proj-summary-card.is-warn{') && cssText.includes('var(--warn-card-bg)'), '失败预警卡应使用主题变量 var(--warn-card-bg)');
+
+    // 2. 本机目录读取、隐藏项切换、primaryPath 精确关联及非法目录名拦截
+    const homeListing = remoteMod.listHostDirectories({ homeDir, configDir });
+    assert.equal(homeListing.path, path.resolve(homeDir));
+    assert.ok(homeListing.roots.some((r) => r.path === path.resolve(homeDir) && r.label.includes('~')));
+    assert.ok(homeListing.roots.some((r) => r.path === path.resolve(codebaseDir) && r.label === 'codebase'));
+    assert.ok(homeListing.roots.some((r) => r.path === path.resolve(sharedDir) && r.label === 'shared'));
+
+    const codebaseDefault = remoteMod.listHostDirectories({ dirPath: codebaseDir, homeDir, configDir });
+    const cbNames = codebaseDefault.entries.map((e) => e.name);
+    assert.equal(cbNames.includes('note.txt'), false, '目录浏览不得列出普通文件');
+    assert.equal(cbNames.includes('.hidden-dir'), false, '默认不列出点开头隐藏目录');
+    const repoAEntry = codebaseDefault.entries.find((e) => e.name === 'repo-a');
+    assert.equal(repoAEntry?.isGitRepo, true, '包含 .git 的目录应识别为 Git 仓库');
+    assert.equal(repoAEntry?.existingProjectId, '', '未创建项目的目录不得误关联');
+    const exEntry = codebaseDefault.entries.find((e) => e.name === 'repo-existing');
+    assert.equal(exEntry?.existingProjectId, existingProjId, '已有主目录项目应准确标出');
+
+    const sharedListing = remoteMod.listHostDirectories({ dirPath: sharedDir, homeDir, configDir });
+    const sharedResEntry = sharedListing.entries.find((e) => e.name === '_shared_res');
+    assert.equal(sharedResEntry?.existingProjectId, '', '仅作辅资源 resources[1] 出现的共享目录不得被误判成已有主项目');
+
+    const plainBListing = remoteMod.listHostDirectories({ dirPath: plainBDir, homeDir, configDir });
+    assert.equal(plainBListing.suggestedName, 'plain-b (2)', '同名冲突目录应自动建议递增项目名 plain-b (2)');
+
+    const codebaseWithHidden = remoteMod.listHostDirectories({ dirPath: codebaseDir, showHidden: true, homeDir, configDir });
+    assert.ok(codebaseWithHidden.entries.some((e) => e.name === '.hidden-dir'), 'showHidden=true 时应显示隐藏目录');
+
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: path.join(codebaseDir, 'note.txt'), homeDir, configDir }), /不是文件夹/);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: path.join(codebaseDir, 'missing-dir'), homeDir, configDir }), /不存在/);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: codebaseDir, name: '../escape' }, { homeDir }), /非法/);
+
+    // 3. HTTP Handler (/api/fs/dirs, /api/fs/mkdir, /api/projects) + Mock Language Server 全链路
+    const rpcCalls = [];
+    const mockConnect = async () => ({
+      call: async (method, body) => {
+        rpcCalls.push({ method, body });
+        if (method === 'ResolveFolder') {
+          const p = decodeURIComponent(new URL(body.folderUri).pathname);
+          return fs.existsSync(path.join(p, '.git'))
+            ? { resourceType: 'FOLDER_TYPE_GIT_FOLDER', vcsType: 'VCS_TYPE_GIT' }
+            : { resourceType: 'FOLDER_TYPE_LOCAL_FOLDER', vcsType: 'VCS_TYPE_UNSPECIFIED' };
+        }
+        if (method === 'GetRepoInfos') {
+          return {
+            repos: [{
+              branches: [
+                { name: 'develop', isCurrentBranch: true },
+                { name: 'main', isCurrentBranch: false }
+              ]
+            }]
+          };
+        }
+        if (method === 'CreateProject') {
+          const proj = body.project;
+          fs.writeFileSync(path.join(projectsDir, `${proj.id}.json`), JSON.stringify(proj, null, 2), 'utf8');
+          return { project: proj };
+        }
+        if (method === 'ReadProject') {
+          const pFile = path.join(projectsDir, `${body.id}.json`);
+          if (fs.existsSync(pFile)) {
+            return { project: JSON.parse(fs.readFileSync(pFile, 'utf8')) };
+          }
+        }
+        return {};
+      }
+    });
+
+    const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+    let currentProjIdState = existingProjId;
+    let failNextNavError = '';
+    const navCalls = [];
+    const buildDynamicSnap = () => {
+      const { metaMap } = (() => {
+        const files = fs.readdirSync(projectsDir).filter((f) => f.endsWith('.json'));
+        const list = files
+          .map((f) => JSON.parse(fs.readFileSync(path.join(projectsDir, f), 'utf8')))
+          .filter((p) => !p.archived);
+        return { metaMap: list };
+      })();
+      const projectsList = metaMap.map((p) => ({
+        id: p.id,
+        name: p.name,
+        conversationCount: p.id === existingProjId ? 1 : 0,
+        runningCount: 0,
+        waitingCount: 0,
+        unreadCount: 0,
+        isEmpty: p.id !== existingProjId,
+        active: p.id === currentProjIdState
+      }));
+      const curP = projectsList.find((x) => x.id === currentProjIdState);
+      return {
+        ok: true,
+        sessionId: currentProjIdState === existingProjId ? 'conv-existing-1' : '',
+        isNewConversation: currentProjIdState !== existingProjId,
+        currentProjectId: currentProjIdState,
+        currentProjectName: curP?.name || '',
+        title: currentProjIdState === existingProjId ? '既有会话' : `新建对话 · ${curP?.name || ''}`,
+        busy: false,
+        model: 'Claude Opus 4.6',
+        permissionKey: 'auto',
+        permissionLabel: '自动',
+        messages: currentProjIdState === existingProjId ? [{ id: 'm1', msgIndex: 0, role: 'user', text: 'hi' }] : [],
+        totalMessages: currentProjIdState === existingProjId ? 1 : 0,
+        messagesStartIndex: 0,
+        hasEarlierMessages: false,
+        projects: projectsList,
+        conversations: [
+          {
+            id: 'conv-existing-1',
+            projectId: existingProjId,
+            projectName: 'repo-existing',
+            title: '既有项目会话',
+            active: currentProjIdState === existingProjId,
+            status: 'idle',
+            updatedAt: Date.now()
+          }
+        ]
+      };
+    };
+
+    const handler = remoteMod.createRemoteHttpHandler(httpCfg, {
+      homeDir,
+      configDir,
+      localApiConnect: mockConnect,
+      performAction: async (act) => {
+        navCalls.push(act);
+        if (failNextNavError) {
+          return {
+            ok: false,
+            actionResult: { ok: false, error: failNextNavError },
+            snapshot: buildDynamicSnap()
+          };
+        }
+        if (act.action === 'new-conversation' && act.projectId) {
+          currentProjIdState = act.projectId;
+        }
+        return { ok: true, actionResult: { ok: true, projectId: act.projectId || '' }, snapshot: buildDynamicSnap() };
+      },
+      fetchSnapshot: async () => buildDynamicSnap()
+    });
+
+    const invokeHttp = (method, reqPath, bodyObj = null) => new Promise((resolve) => {
+      const req = new (require('events').EventEmitter)();
+      req.method = method;
+      req.url = reqPath;
+      req.headers = {
+        host: `127.0.0.1:${httpCfg.port}`,
+        'x-ag-remote-token': httpCfg.token,
+        ...(bodyObj ? { 'content-type': 'application/json' } : {})
+      };
+      req.socket = { remoteAddress: '127.0.0.1' };
+      const res = {
+        status: 200,
+        headers: {},
+        setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
+        writeHead(st, hdrs) {
+          this.status = st;
+          if (hdrs) Object.assign(this.headers, hdrs);
+        },
+        end(buf) {
+          const text = String(buf || '');
+          let json = null;
+          try { json = JSON.parse(text); } catch {}
+          resolve({ status: this.status, headers: this.headers, text, json });
+        }
+      };
+      void handler(req, res);
+      if (bodyObj !== null) {
+        req.emit('data', Buffer.from(JSON.stringify(bodyObj)));
+        req.complete = true;
+        req.emit('end');
+      }
+    });
+
+    // 验证 /api/fs/mkdir 与非法路径拦截
+    const mkdirRes = await invokeHttp('POST', '/api/fs/mkdir', { parentPath: codebaseDir, name: 'brand-new-dir' });
+    assert.equal(mkdirRes.status, 200);
+    assert.equal(mkdirRes.json.ok, true);
+    assert.ok(fs.existsSync(path.join(codebaseDir, 'brand-new-dir')));
+
+    const badMkdirRes = await invokeHttp('POST', '/api/fs/mkdir', { parentPath: codebaseDir, name: '../bad' });
+    assert.equal(badMkdirRes.status, 400);
+
+    // 4. 验证前端 UI：项目标题渲染、Enter 仅换行不发送、点击按钮 & Cmd+Enter 发送、从弹窗创建项目与入口跳转
+    const sentActions = [];
+    const envUi = createDomEnv();
+    envUi.doc.body.innerHTML = html.match(/<body>([\s\S]*?)<script>/)[1];
+    envUi.win.innerWidth = 414;
+    envUi.win.innerHeight = 840;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const method = String(init?.method || 'GET').toUpperCase();
+      if (u.pathname === '/api/snapshot') {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : '') },
+          json: async () => buildDynamicSnap()
+        };
+      }
+      if (u.pathname === '/api/action') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        sentActions.push(body);
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : '') },
+          json: async () => ({ ok: true, actionResult: { ok: true }, snapshot: buildDynamicSnap() })
+        };
+      }
+      if (u.pathname === '/api/fs/dirs' || u.pathname === '/api/fs/mkdir' || u.pathname === '/api/projects') {
+        const bodyObj = init?.body ? JSON.parse(String(init.body)) : null;
+        const r = await invokeHttp(method, u.pathname + u.search, bodyObj);
+        return {
+          ok: r.status >= 200 && r.status < 300,
+          status: r.status,
+          headers: { get: () => 'application/json' },
+          json: async () => r.json
+        };
+      }
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(inlineScript, envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // 校验渲染的项目头 DOM 结构（.proj-group.is-current、.proj-icon、.proj-count、.proj-body）及与三态主题切换实时联动
+    const convListEl = envUi.doc.getElementById('conv-list');
+    assert.ok(convListEl.querySelector('.proj-group.is-current'), '当前项目组应带有 is-current 高亮类');
+    assert.ok(convListEl.querySelector('.proj-toggle .proj-icon svg'), '项目标题条应渲染文件夹 SVG 图标');
+    assert.ok(convListEl.querySelector('.proj-body .conv-item'), '项目下应有带导引线的 .proj-body 包裹会话项');
+    assert.equal(envUi.doc.getElementById('btn-theme'), null, '右上角顶栏不应渲染独立外观切换按钮');
+    assert.ok(envUi.doc.getElementById('theme-seg'), '侧边栏底部三段外观图标控件应与多项目列表共存在渲染 DOM 中');
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'repo-existing', '新建对话下排小字应完整展示初始活跃项目名');
+    const recentTabEl = envUi.doc.querySelector('#conv-view-tabs button[data-conv-view="recent"]');
+    const recentTabTxt = (recentTabEl?.textContent || '').trim();
+    assert.ok(recentTabTxt.startsWith('活跃') && !recentTabTxt.includes('最近活跃'), `顶部标签应简写为「活跃」，实际: ${recentTabTxt}`);
+    const newProjBtnDom = envUi.doc.getElementById('btn-new-project');
+    assert.ok(newProjBtnDom && newProjBtnDom.querySelector('svg'), '侧边栏新建项目按钮应渲染文件夹加号 SVG 图标');
+    assert.equal((newProjBtnDom.textContent || '').trim(), '', '侧边栏新建项目按钮应为紧凑纯图标形态，不附带占空间的文字');
+    assert.equal(newProjBtnDom.getAttribute('aria-label'), '新建项目');
+    envUi.doc.querySelector('#theme-seg button[data-theme-mode="light"]').click();
+    assert.equal(envUi.doc.documentElement.getAttribute('data-theme'), 'light', '切换固定浅色模式后应立即更新 html[data-theme="light"]');
+    assert.ok(convListEl.querySelector('.proj-group.is-current'), '切换主题后当前项目高亮与分组列表仍保持正常');
+    envUi.doc.querySelector('#theme-seg button[data-theme-mode="dark"]').click();
+    assert.equal(envUi.doc.documentElement.getAttribute('data-theme'), 'dark');
+
+    // 校验 Enter 仅自然换行不发送，点按钮 & Cmd+Enter 才发送多行消息
+    const ta = envUi.doc.getElementById('input');
+    const sendBtn = envUi.doc.getElementById('btn-send');
+    assert.equal(ta.getAttribute('enterkeyhint'), 'enter');
+    assert.equal(ta.getAttribute('placeholder'), '发消息… (Cmd/Ctrl + Enter 发送)', '聊天输入框占位提示应标明 Cmd/Ctrl + Enter 发送');
+    ta.value = '第一行内容';
+    const plainEnterEv = { type: 'keydown', key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, isComposing: false };
+    const allowNativeNewline = ta.dispatchEvent(plainEnterEv);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(allowNativeNewline, true, '普通 Enter 不得被 preventDefault() 拦截');
+    assert.equal(plainEnterEv._prevented, undefined, '普通 Enter 应保留默认换行行为');
+    assert.equal(sentActions.filter((a) => a.action === 'send').length, 0, '按回车换行后绝不能直接发送消息');
+
+    ta.value = '第一行内容\n第二行内容';
+    ta.dispatchEvent({ type: 'input' });
+    assert.ok(sendBtn.classList.contains('ready'));
+    sendBtn.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(sentActions.filter((a) => a.action === 'send').length, 1, '点击发送按钮应触发发送');
+    assert.equal(sentActions[0].text, '第一行内容\n第二行内容', '多行换行内容应完整发送');
+
+    ta.value = '第三行\n第四行';
+    const cmdEnterEv = { type: 'keydown', key: 'Enter', metaKey: true, ctrlKey: false, shiftKey: false, isComposing: false };
+    ta.dispatchEvent(cmdEnterEv);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(cmdEnterEv._prevented, true, '桌面端 Cmd+Enter 快捷键应拦截默认换行并发送');
+    assert.equal(sentActions.filter((a) => a.action === 'send').length, 2);
+    assert.equal(sentActions[1].text, '第三行\n第四行');
+
+    // 验证「选择项目新建对话」下拉菜单中也提供「新建项目（选择电脑目录）…」入口
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const pickerCreateOpt = envUi.doc.getElementById('sheet-list').querySelectorAll('.sheet-opt')
+      .find((b) => (b.textContent || '').includes('新建项目（选择电脑目录）'));
+    assert.ok(pickerCreateOpt, '项目下拉列表应包含新建项目选项');
+    envUi.doc.getElementById('sheet-close').click();
+
+    // 验证侧边栏「＋ 新建项目」按钮打开目录浏览器 -> 进入 codebase -> 进入 repo-a -> 创建并进入对话
+    const modalBackdrop = envUi.doc.getElementById('proj-modal-backdrop');
+    assert.equal(modalBackdrop.hidden, true);
+    envUi.doc.getElementById('btn-new-project').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(modalBackdrop.hidden, false, '点击＋新建项目应弹出电脑目录浏览器');
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, '', '打开新建项目弹窗时项目名称必须默认留空，不得预填主目录名');
+    assert.equal(envUi.doc.getElementById('proj-create-submit').disabled, true, '未填写项目名称前提交按钮应处于禁用状态');
+
+    const codebaseRootBtn = envUi.doc.getElementById('proj-roots').querySelectorAll('.proj-root-pill')
+      .find((b) => (b.textContent || '') === 'codebase');
+    assert.ok(codebaseRootBtn, '目录弹窗应渲染快捷根目录 codebase');
+    codebaseRootBtn.click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    const repoAItem = envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
+      .find((b) => (b.textContent || '').includes('repo-a'));
+    assert.ok(repoAItem && (repoAItem.textContent || '').includes('Git'), 'codebase 下应列出带 Git 标记的 repo-a');
+    repoAItem.click();
+    await new Promise((r) => setTimeout(r, 40));
+
+    assert.equal(envUi.doc.getElementById('proj-path-input').value, path.resolve(repoADir));
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, '', '切换目录后项目名称仍应保持留空，由用户自行填写');
+    assert.equal(envUi.doc.getElementById('proj-create-submit').disabled, true, '选好目录但未填项目名时提交按钮仍应禁用');
+
+    // 用户手填名称后按钮解锁，再切换/回到目录也应保留已填名称不被覆盖
+    envUi.doc.getElementById('proj-name-input').value = 'repo-a';
+    envUi.doc.getElementById('proj-name-input').dispatchEvent({ type: 'input' });
+    assert.equal(envUi.doc.getElementById('proj-create-submit').disabled, false, '填写项目名称后创建按钮应解锁');
+    envUi.doc.getElementById('proj-up-btn').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
+      .find((b) => (b.textContent || '').includes('repo-a')).click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, 'repo-a', '已填项目名称后更新目录不得清空或覆盖用户填写的名称');
+
+    envUi.doc.getElementById('proj-create-submit').click();
+    await new Promise((r) => setTimeout(r, 220));
+    assert.equal(modalBackdrop.hidden, true, '创建项目完成后应自动关闭弹窗');
+
+    const createRpc = rpcCalls.find((c) => c.method === 'CreateProject');
+    assert.ok(createRpc, '应调用 Language Server CreateProject 创建项目');
+    assert.equal(createRpc.body.project.name, 'repo-a');
+    assert.equal(createRpc.body.project.projectResources.resources[0].gitFolder.folderUri, pathToFileURL(path.resolve(repoADir)).href);
+    assert.equal(createRpc.body.project.projectResources.resources[0].gitFolder.defaultBranch, 'main');
+    assert.equal(currentProjIdState, createRpc.body.project.id, '创建后应导航并切换当前项目至新建的 repo-a');
+    assert.ok(navCalls.some((c) => c.action === 'new-conversation' && c.projectId === createRpc.body.project.id));
+    assert.equal((envUi.doc.getElementById('new-chat-label')?.textContent || '').trim(), '新建对话', '主标题应固定保持「新建对话」');
+    assert.equal(envUi.doc.getElementById('new-chat-sub')?.hidden, false, '有活跃项目时第二行极小字 #new-chat-sub 应显示');
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'repo-a', '新建对话按钮下一行极小字应联动显示刚创建的新项目名');
+
+    // 验证创建成功但桌面端导航失败时：不误关弹窗也不误报成功，且支持直接重试进入已有项目
+    failNextNavError = '桌面端路由正忙';
+    envUi.doc.getElementById('btn-new-project').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, '', '重新打开新建项目弹窗时应清空上次输入，保持留空');
+    envUi.doc.getElementById('proj-roots').querySelectorAll('.proj-root-pill')
+      .find((b) => (b.textContent || '') === 'codebase').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
+      .find((b) => (b.textContent || '').includes('brand-new-dir')).click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('proj-name-input').value, '', '浏览到新目录时项目名称仍应留空');
+    envUi.doc.getElementById('proj-name-input').value = 'brand-new-dir';
+    envUi.doc.getElementById('proj-name-input').dispatchEvent({ type: 'input' });
+
+    const createRpcBeforeNavFail = rpcCalls.filter((c) => c.method === 'CreateProject').length;
+    envUi.doc.getElementById('proj-create-submit').click();
+    await new Promise((r) => setTimeout(r, 80));
+
+    const brandNewCreateRpcs = rpcCalls.filter((c) => c.method === 'CreateProject');
+    assert.equal(brandNewCreateRpcs.length, createRpcBeforeNavFail + 1, '首次创建时应调用一次 CreateProject');
+    const brandNewProjId = brandNewCreateRpcs[brandNewCreateRpcs.length - 1].body.project.id;
+    assert.equal(modalBackdrop.hidden, false, '导航失败时弹窗必须保持打开以便用户看到提示并重试');
+    assert.ok((envUi.doc.getElementById('toast').textContent || '').includes('项目「brand-new-dir」已创建，但未成功进入对话'), 'Toast 应明确告知项目已创建但未进入对话');
+    assert.ok((envUi.doc.getElementById('toast').textContent || '').includes('桌面端路由正忙'));
+    assert.ok((envUi.doc.getElementById('proj-selected-summary').textContent || '').includes('已创建，但未成功进入新对话'));
+    assert.equal(envUi.doc.getElementById('proj-create-submit').textContent, '重试进入已有项目「brand-new-dir」');
+    assert.equal(convListEl.querySelector('.proj-empty-toggle'), null, '不得渲染空项目折叠控件');
+    assert.equal(convListEl.querySelector('.proj-empty-sec'), null, '新建空项目应直接展示在项目列表中');
+    const brandNewToggleBtn = convListEl.querySelector(`button[data-proj-toggle="${brandNewProjId}"]`);
+    assert.ok(brandNewToggleBtn, '新建的空项目无需展开折叠即可直接看见并点击');
+    brandNewToggleBtn.click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'brand-new-dir', '点中新建空项目后顶部新建对话应联动为 brand-new-dir');
+    const curProjGroups = convListEl.querySelectorAll('.is-current');
+    assert.equal(curProjGroups.length, 1, '侧边栏高亮项目应切换为唯一的新建空项目');
+    assert.equal((curProjGroups[0].querySelector('.proj-name')?.textContent || '').trim(), 'brand-new-dir');
+    assert.ok((convListEl.textContent || '').includes('brand-new-dir'), '侧边栏项目列表应已同步刷新显示新建项目');
+    assert.ok(convListEl.querySelector(`.proj-new-btn[data-new-proj="${brandNewProjId}"]`), '侧边栏也应提供该已有项目的新建对话重连入口');
+    assert.notEqual(currentProjIdState, brandNewProjId);
+
+    failNextNavError = '';
+    envUi.doc.getElementById('proj-create-submit').click();
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(rpcCalls.filter((c) => c.method === 'CreateProject').length, createRpcBeforeNavFail + 1, '重试进入已有项目时不得重复调用 CreateProject');
+    assert.equal(modalBackdrop.hidden, true, '重试进入成功后应自动关闭弹窗');
+    assert.equal(currentProjIdState, brandNewProjId, '重试后桌面端应成功进入该已有项目的新建对话');
+    assert.ok(navCalls.filter((c) => c.action === 'new-conversation' && c.projectId === brandNewProjId).length >= 2);
+    assert.ok((envUi.doc.getElementById('toast').textContent || '').includes('已进入项目「brand-new-dir」'));
+
+    // 验证空项目名拦截、重名拦截、已有主目录项目直接进入复用与 archived:true 项目排除
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: plainBDir, name: '   ' }, { homeDir, configDir, localApiConnect: mockConnect }),
+      /请输入项目名称/
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: plainBDir, name: 'repo-a' }, { homeDir, configDir, localApiConnect: mockConnect }),
+      /同名项目「repo-a」已存在/
+    );
+    const reuseRes = await remoteMod.createRemoteProject({ folderPath: existingRepoDir, name: 'repo-existing' }, { homeDir, configDir, localApiConnect: mockConnect });
+    assert.equal(reuseRes.alreadyExists, true);
+    assert.equal(reuseRes.project.id, existingProjId);
+
+    const archivedProjId = '33333333-3333-4333-8333-333333333333';
+    const archivedDir = path.join(codebaseDir, 'archived-repo');
+    fs.mkdirSync(archivedDir, { recursive: true });
+    fs.writeFileSync(path.join(projectsDir, `${archivedProjId}.json`), JSON.stringify({
+      id: archivedProjId,
+      name: 'archived-repo',
+      archived: true,
+      projectResources: { resources: [{ folderUri: pathToFileURL(archivedDir).href }] }
+    }), 'utf8');
+    const cbAfterArchive = remoteMod.listHostDirectories({ dirPath: codebaseDir, homeDir, configDir });
+    const archivedDirEntry = cbAfterArchive.entries.find((e) => e.name === 'archived-repo');
+    assert.equal(archivedDirEntry?.existingProjectId, '', '已归档项目不得继续在目录中标记为已关联项目');
+    const snapAfterArchive = await remoteMod.enrichSnapshotWithCatalog(
+      { ok: true, sessionId: 'conv-existing-1', projects: [{ id: archivedProjId, name: 'archived-repo' }], conversations: [] },
+      { stateDir, configDir, bypassCache: true }
+    );
+    assert.equal(snapAfterArchive.projects.some((p) => p.id === archivedProjId), false, 'archived:true 的项目不得出现在活跃项目列表中');
+
+    // 验证长项目名（56 字符）在 #new-chat-sub 中完整保留、不被 JS 截断
+    const longProjectName = 'antigravity-enterprise-multi-workspace-long-project-name';
+    envUi.doc.getElementById('btn-new-project').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-roots').querySelectorAll('.proj-root-pill')
+      .find((b) => (b.textContent || '') === 'codebase').click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-dir-list').querySelectorAll('.proj-dir-item')
+      .find((b) => (b.textContent || '').includes('plain-b')).click();
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('proj-name-input').value = longProjectName;
+    envUi.doc.getElementById('proj-name-input').dispatchEvent({ type: 'input' });
+    envUi.doc.getElementById('proj-create-submit').click();
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(
+      (envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(),
+      longProjectName,
+      '#new-chat-sub 应完整展示超长项目名称而不得截取'
+    );
+  } finally {
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高与按需位移
+// =========================================================================
+test('PR #5 / 远程需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高与按需位移', async () => {
+  delete require.cache[require.resolve('./mobile-remote.js')];
+  const remoteMod = require('./mobile-remote.js');
+  const html = remoteMod.buildMobileAppHtml();
+  const cssText = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
+  const bodyHtml = html.match(/<body>([\s\S]*?)<script>/)?.[1] || '';
+  const inlineScripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+  const mainScript = inlineScripts[inlineScripts.length - 1]?.[1] || '';
+  assert.ok(cssText && bodyHtml && mainScript, 'HTML 应包含样式、主体与控制脚本');
+
+  // 1. CSS 布局与字号隔离校验：遮罩使用 --modal-h、移动端输入框 >=16px 防放大、桌面端恢复 13/14px
+  const sheetBackdropRule = cssText.match(/\.sheet-backdrop\{[^}]+\}/)?.[0] || '';
+  const drawerBackdropRule = cssText.match(/\.drawer-backdrop\{[^}]+\}/)?.[0] || '';
+  const sheetRule = cssText.match(/\.sheet\{[^}]+\}/)?.[0] || '';
+  const projModalRule = cssText.match(/\.sheet\.proj-modal\{[^}]+\}/)?.[0] || '';
+  const dirListRule = cssText.match(/\.proj-dir-list\{[^}]+\}/)?.[0] || '';
+  const desktopMediaBlock = cssText.slice(cssText.indexOf('@media (min-width:860px)'));
+  assert.ok(sheetBackdropRule.includes('--modal-h'), '.sheet-backdrop 应绑定 --modal-h 而非 --app-h');
+  assert.equal(sheetBackdropRule.includes('--app-h'), false, '.sheet-backdrop 不得再绑定会随键盘收缩的 --app-h');
+  assert.ok(drawerBackdropRule.includes('--modal-h'), '.drawer-backdrop 应绑定 --modal-h');
+  assert.ok(projModalRule.includes('var(--modal-h') && !/\b84dvh\b/.test(projModalRule), '.sheet.proj-modal 高度应锚定 --modal-h，不得因 dvh 收缩导致顶部下坠或触顶');
+  assert.ok(dirListRule.includes('var(--modal-h') && !/\b34dvh\b/.test(dirListRule), '.proj-dir-list 高度应锚定 --modal-h');
+  assert.ok(cssText.includes('.proj-modal-body{') && bodyHtml.includes('id="proj-modal-body"'), '新建项目弹窗应包含可独立滚动的 #proj-modal-body');
+  assert.equal(/\btransition\s*:[^;}]*transform/i.test(sheetRule), false, '.sheet 不应设置 transform transition 以免中断坐标测量');
+  assert.ok(/\.proj-path-input,\.proj-field-input\{[^}]*font-size:16px/.test(cssText), '移动端路径输入框字号应 >= 16px 防 iOS 自动缩放');
+  assert.ok(/\.proj-field-input\{[^}]*font-size:16px/.test(cssText), '移动端文本字段输入框字号应 >= 16px');
+  assert.ok(desktopMediaBlock.includes('.proj-path-input{font-size:13px}'), '桌面端应恢复 13px 路径输入框字号');
+  assert.ok(desktopMediaBlock.includes('.proj-field-input{font-size:14px}'), '桌面端应恢复 14px 字段输入框字号');
+
+  // 2. 构建 390x844 手机视口 + 可交互 visualViewport 测试环境
+  const activeTimers = new Set();
+  const env = createDomEnv();
+  try {
+    env.doc.body.innerHTML = bodyHtml;
+    env.win.innerWidth = 390;
+    env.win.innerHeight = 844;
+    env.win.AbortController = AbortController;
+    env.win.location = { pathname: '/', search: '?token=testtok', protocol: 'http:', origin: 'http://127.0.0.1:18765', reload() {} };
+    env.win.history = { replaceState() {} };
+
+    const scrollToCalls = [];
+    env.win.scrollTo = (x, y) => { scrollToCalls.push([x, y]); };
+    env.sandbox.scrollTo = env.win.scrollTo;
+
+    const vvListeners = new Map();
+    const vv = {
+      width: 390,
+      height: 844,
+      offsetTop: 0,
+      addEventListener(type, fn) {
+        if (!vvListeners.has(type)) vvListeners.set(type, []);
+        vvListeners.get(type).push(fn);
+      },
+      removeEventListener(type, fn) {
+        const list = vvListeners.get(type);
+        if (!list) return;
+        const i = list.indexOf(fn);
+        if (i >= 0) list.splice(i, 1);
+      },
+      _emit(type) {
+        for (const fn of [...(vvListeners.get(type) || [])]) fn({ type, target: vv });
+      }
+    };
+    env.win.visualViewport = vv;
+    env.sandbox.visualViewport = vv;
+    env.sandbox.location = env.win.location;
+    env.sandbox.history = env.win.history;
+    env.sandbox.AbortController = AbortController;
+    env.sandbox.URLSearchParams = URLSearchParams;
+    env.sandbox.setTimeout = (fn, ms) => {
+      const id = setTimeout(() => {
+        activeTimers.delete(id);
+        fn();
+      }, ms);
+      activeTimers.add(id);
+      return id;
+    };
+    env.sandbox.clearTimeout = (id) => {
+      activeTimers.delete(id);
+      clearTimeout(id);
+    };
+    env.sandbox.fetch = async (url) => {
+      const u = new URL(String(url), 'http://127.0.0.1:18765');
+      const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/fs/dirs') {
+        return {
+          ok: true,
+          status: 200,
+          headers: jsonHeaders,
+          json: async () => ({
+            ok: true,
+            path: '/Users/demo',
+            parentPath: '/Users',
+            currentName: 'demo',
+            suggestedName: 'demo',
+            roots: [{ label: '主目录 (~)', path: '/Users/demo' }],
+            entries: [{ name: 'codebase', path: '/Users/demo/codebase', isGitRepo: false }]
+          })
+        };
+      }
+      if (u.pathname === '/api/snapshot') {
+        return {
+          ok: true,
+          status: 200,
+          headers: jsonHeaders,
+          json: async () => ({ ok: true, sessionId: 's1', projects: [], conversations: [], messages: [] })
+        };
+      }
+      return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
+    };
+
+    env.doc.activeElement = env.doc.body;
+    const modalBackdrop = env.doc.getElementById('proj-modal-backdrop');
+    const modalSheet = modalBackdrop.querySelector('.sheet.proj-modal');
+    const titleEl = modalSheet.querySelector('.sheet-title');
+    const modalBody = env.doc.getElementById('proj-modal-body');
+    modalBody.scrollTop = 0;
+    const parseShiftY = () => {
+      const m = String(modalSheet.style.transform || '').match(/translateY\((-?\d+(?:\.\d+)?)px\)/);
+      return m ? Number(m[1]) : 0;
+    };
+    modalSheet.getBoundingClientRect = () => {
+      const dy = parseShiftY();
+      return { left: 0, right: 390, width: 390, height: 666, top: 178 + dy, bottom: 844 + dy };
+    };
+    titleEl.getBoundingClientRect = () => {
+      const dy = parseShiftY();
+      return { left: 14, right: 376, width: 362, height: 28, top: 191 + dy, bottom: 219 + dy };
+    };
+    modalBody.getBoundingClientRect = () => {
+      const dy = parseShiftY();
+      return { left: 14, right: 376, width: 362, height: 604, top: 228 + dy, bottom: 832 + dy };
+    };
+    const bindFocusableBox = (el, baseTop, baseBottom) => {
+      el.type = el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : '');
+      el.getBoundingClientRect = () => {
+        const dy = modalSheet.contains(el) ? parseShiftY() : 0;
+        const scrollY = (modalBody && modalBody.contains(el)) ? (Number(modalBody.scrollTop) || 0) : 0;
+        return { left: 14, right: 376, width: 362, height: baseBottom - baseTop, top: baseTop + dy - scrollY, bottom: baseBottom + dy - scrollY };
+      };
+      el.focus = () => {
+        const prev = env.doc.activeElement;
+        if (prev === el) return;
+        if (prev && prev !== env.doc.body) {
+          env.doc.activeElement = env.doc.body;
+          env.doc.dispatchEvent({ type: 'focusout', target: prev });
+        }
+        env.doc.activeElement = el;
+        env.doc.dispatchEvent({ type: 'focusin', target: el });
+      };
+      el.blur = () => {
+        if (env.doc.activeElement !== el) return;
+        env.doc.activeElement = env.doc.body;
+        env.doc.dispatchEvent({ type: 'focusout', target: el });
+      };
+    };
+
+    const pathInput = env.doc.getElementById('proj-path-input');
+    const mkdirInput = env.doc.getElementById('proj-mkdir-input');
+    const nameInput = env.doc.getElementById('proj-name-input');
+    const chatInput = env.doc.getElementById('input');
+    bindFocusableBox(pathInput, 220, 256);
+    bindFocusableBox(mkdirInput, 306, 342);
+    bindFocusableBox(nameInput, 742, 778);
+    bindFocusableBox(chatInput, 780, 812);
+
+    vm.runInContext(mainScript, env.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // 打开新建项目弹窗
+    env.doc.getElementById('btn-new-project').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(modalBackdrop.hidden, false);
+
+    // 场景 1: 聚焦顶部 #proj-path-input（位于 [220, 256]，高于 460px 键盘顶边），即使 innerHeight 与 vv.height 同缩至 460，也禁止任何抬高
+    pathInput.focus();
+    vv.height = 460;
+    env.win.innerHeight = 460;
+    vv._emit('resize');
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(env.doc.documentElement.style.getPropertyValue('--modal-h'), '844px', '软键盘弹起时 --modal-h 必须锁定满屏 844px，不得把弹窗推出顶部或露出底层聊天');
+    assert.equal(env.doc.documentElement.style.getPropertyValue('--app-h'), '844px', '弹窗输入框聚焦时 --app-h 也应保持 844px 不抽缩');
+    assert.equal(modalSheet.style.transform, '', '顶部路径输入框已在键盘上方，弹窗绝不能被抬高');
+    assert.equal(modalBody.scrollTop, 0);
+    assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
+
+    // 场景 2: 展开「＋ 新建文件夹」并聚焦 #proj-mkdir-input（[306, 342] <= 460 - 14），同样不抬高
+    env.doc.getElementById('proj-mkdir-toggle').click();
+    assert.equal(env.doc.getElementById('proj-mkdir-row').hidden, false);
+    assert.equal(env.doc.activeElement, mkdirInput);
+    assert.equal(modalSheet.style.transform, '', '高于键盘的新建文件夹输入框也不得触发多余抬高');
+    assert.equal(modalBody.scrollTop, 0);
+
+    // 场景 3: 聚焦底部被键盘遮挡的 #proj-name-input（[742, 778] > 446），整体最多上移 -166px 保持弹窗顶部 >= 12px，剩余 166px 遮挡交由内部容器滚动消除
+    nameInput.focus();
+    assert.equal(modalSheet.style.transform, 'translateY(-166px)', '整体上移必须受限于弹窗顶部安全界 (12 - 178 = -166px)');
+    assert.ok(modalSheet.getBoundingClientRect().top >= 12, '上移后弹窗顶部与标题不得越过可视区顶边');
+    assert.equal(modalBody.scrollTop, 166, '超出顶边上限的剩余遮挡应通过内部容器滚动精确吸收');
+    assert.deepEqual([nameInput.getBoundingClientRect().top, nameInput.getBoundingClientRect().bottom], [410, 446]);
+
+    // 场景 4: 保持键盘打开（460px），点键盘栏「^」把焦点切回顶部 #proj-path-input 时应准确反算复位位移并清除临时 paddingBottom（保留 scrollTop 防把已填输入框滚出视野）
+    pathInput.focus();
+    assert.equal(modalSheet.style.transform, '', '焦点从底部切回顶部未遮挡输入框时，弹窗应立即恢复 0px 位移');
+    assert.equal(modalBody.style.paddingBottom, '', '切回顶部输入框后内部临时 paddingBottom 应清空');
+    assert.equal(modalBody.scrollTop, 166, 'clearScrollBodyOffset 仅移除 paddingBottom 保留 scrollTop，避免把已填输入框滚出视野');
+    modalBody.scrollTop = 0;
+    assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
+
+    // 场景 5: 若残留 vv.offsetTop = 240（可视区 [240, 700]，安全区 [252, 686]），应调用 scrollTo(0,0) 并同时约束弹窗顶边、标题与聚焦输入框都在可视区内，底部聚焦也由内部滚动配合消除遮挡，复位后彻底归零
+    vv.offsetTop = 240;
+    vv._emit('scroll');
+    assert.ok(scrollToCalls.some(([x, y]) => x === 0 && y === 0), '检测到 vv.offsetTop > 0 时应尝试 reset scroll');
+    assert.equal(modalSheet.style.transform, 'translateY(74px)', '正 vv.offsetTop 下应将弹窗顶边补偿至 vvTop + 12 (252px)');
+    assert.ok(modalSheet.getBoundingClientRect().top >= 252, '弹窗顶边必须位于 vvTop + 12 之上可见区域内');
+    assert.ok(titleEl.getBoundingClientRect().top >= 252 && titleEl.getBoundingClientRect().bottom <= 686, '弹窗标题必须完整位于可视区内');
+    assert.ok(pathInput.getBoundingClientRect().top >= 252 && pathInput.getBoundingClientRect().bottom <= 686, '聚焦路径输入框必须完整位于可视区内');
+
+    nameInput.focus();
+    assert.equal(modalSheet.style.transform, 'translateY(74px)');
+    assert.ok(modalSheet.getBoundingClientRect().top >= 252 && titleEl.getBoundingClientRect().bottom <= 686, '正 offsetTop 下聚焦底部框时弹窗顶边与标题仍保持在可视区内');
+    assert.equal(modalBody.scrollTop, 166, '底部输入框超出可视区底边部分应由内部滚动吸收');
+    assert.ok(nameInput.getBoundingClientRect().top >= titleEl.getBoundingClientRect().bottom && nameInput.getBoundingClientRect().bottom <= 686, '底部输入框应处于标题下方且位于可视区内');
+
+    pathInput.focus();
+    vv.offsetTop = 0;
+    vv._emit('scroll');
+    assert.equal(modalSheet.style.transform, '');
+    assert.equal(modalBody.style.paddingBottom, '');
+    assert.equal(modalBody.scrollTop, 166, '收起或切换焦点时保留 scrollTop 不暴力清零');
+
+    // 场景 5b (#33): 弹窗手动下滑 scrollTop=120 后聚焦底部输入框、切换输入框及收起键盘，确认输入框可见且不叠加过大偏移、不重置 scrollTop=0
+    modalBody.scrollTop = 120;
+    nameInput.focus();
+    assert.ok(nameInput.getBoundingClientRect().bottom <= 446, '手动下滑后聚焦底部输入框仍完整位于键盘上方可视区内');
+    assert.ok(modalBody.scrollTop >= 120 && modalBody.scrollTop < 300, `不得重复叠加手动 scrollTop 导致偏移过大，实际=${modalBody.scrollTop}`);
+    const scrollAfterFocus = modalBody.scrollTop;
+    vv.height = 844;
+    vv._emit('resize');
+    assert.equal(modalSheet.style.transform, '');
+    assert.equal(modalBody.style.paddingBottom, '');
+    assert.equal(modalBody.scrollTop, scrollAfterFocus, '收起键盘后保留 scrollTop，不把已填输入框滚出视野');
+
+    env.doc.getElementById('proj-modal-close').click();
+    assert.equal(modalBackdrop.hidden, true);
+    assert.equal(env.doc.activeElement, env.doc.body);
+    assert.equal(modalSheet.style.transform, '');
+
+    // 场景 6: 键盘收回后聚焦主聊天输入框 #input 并重新弹出键盘，确认底部聊天框 kb-open 收缩行为零回归
+    vv.height = 844;
+    env.win.innerHeight = 844;
+    vv._emit('resize');
+    chatInput.focus();
+    vv.height = 460;
+    vv._emit('resize');
+    const appEl = env.doc.querySelector('.app');
+    assert.equal(appEl.classList.contains('kb-open'), true, '无弹窗时聚焦聊天输入框仍应启用 kb-open');
+    assert.equal(env.doc.body.style.height, '460px');
+
+    chatInput.blur();
+    vv.height = 844;
+    vv._emit('resize');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(appEl.classList.contains('kb-open'), false);
+    assert.equal(env.doc.body.style.height, '100%');
+  } finally {
+    for (const id of activeTimers) clearTimeout(id);
+    activeTimers.clear();
+    delete require.cache[require.resolve('./mobile-remote.js')];
+  }
+});
+
+// =========================================================================
+// 需求 28: 远程端切换防轮询假死与中止旧请求、折叠思考惰性挂载、轨迹签名缓存及 gzip 压缩
+// =========================================================================
+test('PR #5 / 远程需求 28: 远程端切换防轮询假死与中止旧请求、折叠思考惰性挂载、轨迹签名缓存及 gzip 压缩', async () => {
+  const zlib = require('zlib');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req23-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const configDir = path.join(tmpRoot, 'config');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(path.join(configDir, 'projects'), { recursive: true });
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+  const origDateNow = Date.now;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+
+    // 1) trajSig 轨迹签名缓存命中与变更失效（超越 3500ms TTL 后只要 stepCount/lastModifiedTime/status 未变即跳过 GetCascadeTrajectory）
+    let mockNow = origDateNow();
+    Date.now = () => mockNow;
+    let trajRpcCount = 0;
+    let trajStepCount = 40;
+    let trajModTime = '2026-11-19T10:00:00Z';
+    let failSigTraj = false;
+    const steps40 = [];
+    for (let i = 0; i < 20; i++) {
+      steps40.push({ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: `问题 ${i}` }] } });
+      steps40.push({ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: `思考 ${i}`, response: `回复 **#${i}**` } });
+    }
+    const sigMockConnect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-sig-1': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: trajStepCount,
+                lastModifiedTime: trajModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          trajRpcCount += 1;
+          if (failSigTraj) throw new Error('LS temporarily unavailable');
+          return { trajectory: { steps: steps40 } };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+
+    const baseSnapReq = () => ({
+      ok: true,
+      sessionId: 'sess-sig-1',
+      busy: false,
+      messages: [],
+      conversations: [],
+      projects: []
+    });
+    const snapSig1 = await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 1);
+    assert.equal(snapSig1.totalMessages, 40);
+    assert.equal(snapSig1.messages.length, 6);
+    assert.ok(snapSig1.messages.every((m) => m.role !== 'assistant' || (typeof m.html === 'string' && m.html.includes('<strong>'))), '返回给客户端的最后 6 条消息必须渲染好 Markdown HTML');
+    assert.equal(Object.prototype.hasOwnProperty.call(snapSig1, '_activeTrajSig'), false, '内部 _activeTrajSig 不得泄漏到对外快照中');
+
+    // 时间推进 12s（远超 3500ms TTL），因签名一致应零 RPC 命中缓存
+    mockNow += 12000;
+    const snapSig2 = await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 1, '签名一致时超 TTL 仍应命中缓存，不得重拉 GetCascadeTrajectory');
+    assert.equal(snapSig2.messages.length, 6);
+
+    // 轨迹摘要步数变更后签名失效，应触发重新拉取
+    trajStepCount = 42;
+    trajModTime = '2026-11-19T10:00:15Z';
+    mockNow += 500;
+    await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 2, 'trajSig 变更后必须失效并重新拉取轨迹');
+
+    // 显式 bypassCache: true 必须强制绕过缓存
+    await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: true, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 3, 'bypassCache:true 应强制重新拉取轨迹');
+
+    // 签名变化 -> 拉取失败 -> 服务恢复：失败时绝不能将新 trajSig 绑定到旧轨迹，恢复后空闲会话必须重拉新内容
+    steps40.push({ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '新追加问题' }] } });
+    steps40.push({ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '回复 **#new44**' } });
+    trajStepCount = 44;
+    trajModTime = '2026-11-19T10:00:30Z';
+    failSigTraj = true;
+    mockNow += 500;
+    const snapFailFallback = await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 4);
+    assert.equal(snapFailFallback.totalMessages, 40, '拉取失败时应安全降级返回旧缓存的 40 条历史');
+    assert.equal(snapFailFallback.messages.some((m) => String(m.text || '').includes('#new44')), false);
+
+    // 服务恢复后签名保持 stepCount=44 不变（空闲状态）且 bypassCache=false，此时之前保留的旧签名与新签名仍不匹配，必须立即重拉！
+    failSigTraj = false;
+    mockNow += 1000;
+    const snapRecovered = await remoteMod.enrichSnapshotWithCatalog(baseSnapReq(), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: sigMockConnect
+    });
+    assert.equal(trajRpcCount, 5, '服务恢复后即使签名未再变且超过任意周期，也必须重拉此前失败未能更新的轨迹');
+    assert.equal(snapRecovered.totalMessages, 42);
+    assert.ok(snapRecovered.messages.some((m) => String(m.text || '').includes('#new44')), '恢复后必须展示最新回复');
+
+    // 1b) 回归测试：预热(warmSession) → 持续 2500ms 轮询 → 实际拉取 TTL 到期与签名变化失效
+    let warm1Rpc = 0;
+    let warm1StepCount = 10;
+    let warm1ModTime = '2026-11-19T10:05:00Z';
+    let warm1ReplyText = '回复 **#warm1-init**';
+    const warm1Connect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-warm-poll-1': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: warm1StepCount,
+                lastModifiedTime: warm1ModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          warm1Rpc += 1;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '预热测试1' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: warm1ReplyText } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const makeWarmSnap = (sid) => ({
+      ok: true,
+      sessionId: sid,
+      busy: false,
+      messages: [],
+      conversations: [],
+      projects: []
+    });
+
+    await remoteMod.warmConversationSession('sess-warm-poll-1', { localApiConnect: warm1Connect });
+    assert.equal(warm1Rpc, 1, 'warmConversationSession 应执行一次预热拉取');
+
+    // 第 1 次 2500ms 轮询（距预热 +500ms < 3500ms）：应命中预热缓存，不得延长 at，且不能将空签名升级为已验证 S1
+    mockNow += 500;
+    const warm1Poll1 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 1);
+    assert.ok(warm1Poll1.messages.some((m) => String(m.text || '').includes('#warm1-init')));
+
+    // 后端更新内容但摘要步数仍暂持 S1；连续 2500ms 轮询到 +3000ms (< 3500ms) 仍命中，绝不得把 at 滑动延长到 +3000
+    warm1ReplyText = '回复 **#warm1-ttl-refetched**';
+    mockNow += 2500;
+    await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 1, '距实际预热 3000ms < 3500ms 内命中缓存');
+
+    // 再推进 2500ms（距上次轮询仅 2500ms，但距实际预热拉取已 5500ms >= 3500ms）：TTL 必须到期并重拉最新轨迹！
+    mockNow += 2500;
+    const warm1Poll3 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 2, '连续 2500ms 轮询不得滑动刷新 at，超时后必须基于实际拉取时间过期重拉');
+    assert.ok(warm1Poll3.messages.some((m) => String(m.text || '').includes('#warm1-ttl-refetched')));
+
+    // 确认第 2 次真实拉取已将 S1 绑定为已验证签名，后续 S1 空闲轮询零 RPC，直到签名变更 S2 立刻重拉
+    mockNow += 2500;
+    await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 2, '签名 S1 验证锁定后空闲轮询应零 RPC');
+
+    warm1StepCount = 12;
+    warm1ModTime = '2026-11-19T10:05:25Z';
+    warm1ReplyText = '回复 **#warm1-sig-S2**';
+    mockNow += 2500;
+    const warm1Poll5 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm1Connect
+    });
+    assert.equal(warm1Rpc, 3, '预热周期后摘要签名推进到 S2 必须立刻重拉并展示最新内容');
+    assert.ok(warm1Poll5.messages.some((m) => String(m.text || '').includes('#warm1-sig-S2')));
+
+    // 预热子场景 B：3500ms TTL 窗口内首次轮询记录 observedSig=S1，下一次 2500ms 轮询前签名推进到 S2（总计 < 3500ms）也必须立刻重拉
+    let warm2Rpc = 0;
+    let warm2StepCount = 20;
+    let warm2ModTime = '2026-11-19T10:06:00Z';
+    let warm2ReplyText = '回复 **#warm2-v1**';
+    const warm2Connect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-warm-poll-2': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: warm2StepCount,
+                lastModifiedTime: warm2ModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          warm2Rpc += 1;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '预热测试2' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: warm2ReplyText } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    await remoteMod.warmConversationSession('sess-warm-poll-2', { localApiConnect: warm2Connect });
+    mockNow += 400;
+    const warm2Poll1 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm2Connect
+    });
+    assert.equal(warm2Rpc, 1);
+    assert.ok(warm2Poll1.messages.some((m) => String(m.text || '').includes('#warm2-v1')));
+
+    // 仅过 1200ms（总计 1600ms < 3500ms），摘要由 S1 推进到 S2，observedSig 不一致必须立刻失效重拉
+    warm2StepCount = 22;
+    warm2ModTime = '2026-11-19T10:06:05Z';
+    warm2ReplyText = '回复 **#warm2-v2**';
+    mockNow += 1200;
+    const warm2Poll2 = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-warm-poll-2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: warm2Connect
+    });
+    assert.equal(warm2Rpc, 2, '预热 TTL 窗口内观测签名从 S1 变为 S2 必须立刻重拉');
+    assert.ok(warm2Poll2.messages.some((m) => String(m.text || '').includes('#warm2-v2')));
+
+    // 1c) 回归测试：localApiConnect 真实走 inflightMap 并发去重 & “S1 拉取未完成 → 摘要推进 S2 → 旧请求返回” 跨签名隔离与代际保护
+    const createDeferred = () => {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      return { promise, resolve };
+    };
+    const waitUntil = async (pred) => {
+      for (let i = 0; i < 60; i++) {
+        if (pred()) return;
+        await new Promise((r) => setImmediate(r));
+      }
+      throw new Error('waitUntil timed out');
+    };
+
+    // 先确认同签名并发请求通过 localApiConnect 实际进入 inflightMap 去重（只发 1 次 RPC）
+    let dedupRpcCount = 0;
+    const sameSigGate = createDeferred();
+    const dedupConnect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-inflight-dedup': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: 8,
+                lastModifiedTime: '2026-11-19T10:08:00Z'
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          dedupRpcCount += 1;
+          await sameSigGate.promise;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '并发去重问题' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '回复 **#dedup-ok**' } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const dedupP1 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-inflight-dedup'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: dedupConnect
+    });
+    const dedupP2 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-inflight-dedup'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: dedupConnect
+    });
+    await waitUntil(() => dedupRpcCount === 1);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(dedupRpcCount, 1, 'localApiConnect 同签名并发请求必须走 inflightMap 去重');
+    sameSigGate.resolve();
+    const [dedupR1, dedupR2] = await Promise.all([dedupP1, dedupP2]);
+    assert.equal(dedupRpcCount, 1);
+    assert.ok(dedupR1.messages.some((m) => String(m.text || '').includes('#dedup-ok')));
+    assert.ok(dedupR2.messages.some((m) => String(m.text || '').includes('#dedup-ok')));
+
+    // 竞争顺序 1：S1 在途 → 摘要推进 S2 并发起 S2（不得复用 S1 in-flight）→ S1 先返回 → S2 后返回 → 后续 S2 轮询绝不命中 S1
+    let race1Rpc = 0;
+    let race1StepCount = 10;
+    let race1ModTime = '2026-11-19T10:10:00Z';
+    const race1GateS1 = createDeferred();
+    const race1GateS2 = createDeferred();
+    const race1Connect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-race-order1': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: race1StepCount,
+                lastModifiedTime: race1ModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          race1Rpc += 1;
+          const idx = race1Rpc;
+          const reply = idx === 1 ? await race1GateS1.promise : await race1GateS2.promise;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '竞态问题1' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: reply } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const req1S1 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race1Connect
+    });
+    await waitUntil(() => race1Rpc === 1);
+    race1StepCount = 12;
+    race1ModTime = '2026-11-19T10:10:15Z';
+    mockNow += 200;
+    const req1S2 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race1Connect
+    });
+    await waitUntil(() => race1Rpc === 2);
+
+    race1GateS1.resolve('回复 **#race1-S1-stale**');
+    await req1S1;
+    race1GateS2.resolve('回复 **#race1-S2-fresh**');
+    const res1S2 = await req1S2;
+    assert.ok(res1S2.messages.some((m) => String(m.text || '').includes('#race1-S2-fresh')), 'S2 请求必须拿到新轨迹内容');
+
+    mockNow += 15000;
+    const poll1After = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order1'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race1Connect
+    });
+    assert.equal(race1Rpc, 2, '稳定态 S2 应命中最新缓存，不再重拉');
+    assert.ok(poll1After.messages.some((m) => String(m.text || '').includes('#race1-S2-fresh')));
+    assert.equal(poll1After.messages.some((m) => String(m.text || '').includes('#race1-S1-stale')), false);
+
+    // 竞争顺序 2：S1 在途 → 摘要推进 S2 并发起 S2 → S2 先返回写入缓存 → 慢速 S1 后返回（绝不得覆盖 S2 缓存）
+    let race2Rpc = 0;
+    let race2StepCount = 10;
+    let race2ModTime = '2026-11-19T10:12:00Z';
+    const race2GateS1 = createDeferred();
+    const race2GateS2 = createDeferred();
+    const race2Connect = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'sess-race-order2': {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                stepCount: race2StepCount,
+                lastModifiedTime: race2ModTime
+              }
+            }
+          };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          race2Rpc += 1;
+          const idx = race2Rpc;
+          const reply = idx === 1 ? await race2GateS1.promise : await race2GateS2.promise;
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '竞态问题2' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: reply } }
+              ]
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+    const req2S1 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race2Connect
+    });
+    await waitUntil(() => race2Rpc === 1);
+    race2StepCount = 14;
+    race2ModTime = '2026-11-19T10:12:15Z';
+    mockNow += 200;
+    const req2S2 = remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race2Connect
+    });
+    await waitUntil(() => race2Rpc === 2);
+
+    race2GateS2.resolve('回复 **#race2-S2-fresh**');
+    const res2S2 = await req2S2;
+    assert.ok(res2S2.messages.some((m) => String(m.text || '').includes('#race2-S2-fresh')));
+    race2GateS1.resolve('回复 **#race2-S1-stale**');
+    await req2S1;
+
+    mockNow += 15000;
+    const poll2After = await remoteMod.enrichSnapshotWithCatalog(makeWarmSnap('sess-race-order2'), {
+      stateDir, configDir, msgLimit: 6, bypassCache: false, localApiConnect: race2Connect
+    });
+    assert.equal(race2Rpc, 2, '迟到的 S1 返回后绝不得覆盖 S2 缓存');
+    assert.ok(poll2After.messages.some((m) => String(m.text || '').includes('#race2-S2-fresh')));
+    assert.equal(poll2After.messages.some((m) => String(m.text || '').includes('#race2-S1-stale')), false);
+    Date.now = origDateNow;
+
+    // 2) HTTP gzip 压缩、Accept-Encoding q=0 质量值协商与 Cookie 版本号 1.9.17 验证
+    assert.equal(remoteMod.acceptsGzipEncoding('gzip, deflate, br'), true);
+    assert.equal(remoteMod.acceptsGzipEncoding('gzip;q=0.5'), true);
+    assert.equal(remoteMod.acceptsGzipEncoding('deflate, *;q=0.8'), true);
+    assert.equal(remoteMod.acceptsGzipEncoding('gzip;q=0'), false);
+    assert.equal(remoteMod.acceptsGzipEncoding('br, gzip; q=0.0, *;q=1'), false);
+    assert.equal(remoteMod.acceptsGzipEncoding('identity;q=1, *;q=0'), false);
+
+    const cfg = remoteMod.loadOrCreateRemoteConfig();
+    const handler = remoteMod.createRemoteHttpHandler(cfg);
+    const invokeHttp = (method, urlPath, headers = {}) => new Promise((resolve) => {
+      const resHeaders = {};
+      let setCookie = null;
+      handler({
+        method,
+        url: `${urlPath}${urlPath.includes('?') ? '&' : '?'}token=${encodeURIComponent(cfg.token)}`,
+        headers: { host: `127.0.0.1:${cfg.port}`, ...headers },
+        socket: { remoteAddress: '127.0.0.1' }
+      }, {
+        setHeader(k, v) { if (String(k).toLowerCase() === 'set-cookie') setCookie = v; resHeaders[k] = v; },
+        writeHead(status, h = {}) { this.status = status; Object.assign(resHeaders, h); },
+        end(body) { resolve({ status: this.status, headers: resHeaders, setCookie, body }); }
+      });
+    });
+
+    const htmlPlainRes = await invokeHttp('GET', '/');
+    assert.equal(htmlPlainRes.status, 200);
+    assert.ok(String(htmlPlainRes.setCookie || '').includes('ag_ui_ver=2.1.0'), '根目录响应应下发最新版本号 2.1.0');
+
+    for (const rejectHeader of ['gzip;q=0', 'br, gzip; q=0.0, *;q=1', 'identity;q=1, *;q=0']) {
+      const rejectedGzRes = await invokeHttp('GET', '/', { 'accept-encoding': rejectHeader });
+      assert.equal(rejectedGzRes.status, 200);
+      assert.equal(rejectedGzRes.headers['Content-Encoding'], undefined, `${rejectHeader} 禁止 gzip 时不得返回 Content-Encoding: gzip`);
+      assert.equal(typeof rejectedGzRes.body, 'string');
+      assert.ok(rejectedGzRes.body.includes('<!DOCTYPE html>'));
+    }
+
+    const htmlGzipRes = await invokeHttp('GET', '/', { 'accept-encoding': 'gzip, deflate' });
+    assert.equal(htmlGzipRes.status, 200);
+    assert.equal(htmlGzipRes.headers['Content-Encoding'], 'gzip');
+    assert.ok(Buffer.isBuffer(htmlGzipRes.body));
+    const gunzippedHtml = zlib.gunzipSync(htmlGzipRes.body).toString('utf8');
+    assert.ok(gunzippedHtml.includes('id="conv-list"') && gunzippedHtml.includes('openThoughtIdxSet'));
+
+    // 2b) evalInPickedTarget / performActionInTarget 非幂等副作用动作超时不得重放（send / new-conversation）
+    for (const sideEffectPayload of [
+      { action: 'send', text: 'do-not-replay-send' },
+      { action: 'new-conversation', projectId: 'proj-a' }
+    ]) {
+      let pickCount = 0;
+      const executedExprs = [];
+      const hangingWcTarget = {
+        id: 'wc-timeout-1',
+        title: 'Antigravity',
+        wc: {
+          isDestroyed: () => false,
+          executeJavaScript: (expr) => {
+            executedExprs.push(expr);
+            return new Promise(() => {});
+          }
+        }
+      };
+      await assert.rejects(
+        () => remoteMod.performActionInTarget(sideEffectPayload, {
+          timeoutMs: 40,
+          pickTarget: async () => {
+            pickCount += 1;
+            return { target: hangingWcTarget, windows: [{ id: 'wc-timeout-1', title: 'Antigravity' }] };
+          }
+        }),
+        /页面执行超时/
+      );
+      assert.equal(pickCount, 1, `${sideEffectPayload.action} 超时后不得重选窗口重试`);
+      assert.equal(executedExprs.length, 1, `${sideEffectPayload.action} 在动作已派发但响应超时时绝不能重复执行`);
+
+      // 模拟 evalInCdpTarget 抛出 CDP 请求超时（未注入 wc 的 WebSocket 超时场景）同样禁止重放
+      let cdpPickCount = 0;
+      let cdpEvalCount = 0;
+      await assert.rejects(
+        () => remoteMod.performActionInTarget(sideEffectPayload, {
+          pickTarget: async () => {
+            cdpPickCount += 1;
+            return { target: { id: 'cdp-1', title: 'Antigravity' }, windows: [{ id: 'cdp-1', title: 'Antigravity' }] };
+          },
+          evalInTarget: async () => {
+            cdpEvalCount += 1;
+            const err = new Error('CDP 请求超时');
+            err.cdpDispatched = true;
+            throw err;
+          }
+        }),
+        /CDP 请求超时/
+      );
+      assert.equal(cdpPickCount, 1);
+      assert.equal(cdpEvalCount, 1, `${sideEffectPayload.action} 在 CDP 请求超时后不得二次重放`);
+    }
+
+    // 对比验证：若是派发前连接失败（cdpDispatched === false），则允许重选新目标执行一次
+    let preErrPickCount = 0;
+    let preErrExecCount = 0;
+    const preErrRes = await remoteMod.performActionInTarget({ action: 'send', text: 'retry-only-on-pre-dispatch' }, {
+      pickTarget: async (_id, opts = {}) => {
+        preErrPickCount += 1;
+        return {
+          target: { id: opts.force ? 'cdp-fresh' : 'cdp-stale', title: 'Antigravity' },
+          windows: [{ id: 'cdp-fresh', title: 'Antigravity' }]
+        };
+      },
+      evalInTarget: async (target, expr) => {
+        if (target.id === 'cdp-stale') {
+          const err = new Error('CDP WebSocket 连接失败');
+          err.cdpDispatched = false;
+          throw err;
+        }
+        preErrExecCount += 1;
+        if (expr.includes('getMobileSnapshot')) {
+          return { ok: true, sessionId: 's1', messages: [], projects: [], conversations: [] };
+        }
+        return { ok: true };
+      }
+    }).catch((err) => {
+      // fetchSnapshotFromTarget 内部走默认 pickCdpTarget 在测试环境无 DevTools 会返回 null snapshot，actionResult 仍为 ok:true
+      return { unexpectedErr: err };
+    });
+    assert.equal(preErrRes.ok, true);
+    assert.equal(preErrPickCount, 2, '派发前连接失败应触发强制重选新目标');
+    assert.equal(preErrExecCount, 1, '重选后应精确执行一次目标动作');
+
+    // 3) 客户端轮询保活/旧请求 Abort、折叠 <details> 惰性挂载、以及侧栏原地 class 乐观切换
+    const mobileHtml = remoteMod.buildMobileAppHtml();
+    const scriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
+    const bodyMatch = mobileHtml.match(/<body>([\s\S]*?)<script>/);
+    assert.ok(scriptMatch && bodyMatch);
+    assert.doesNotThrow(() => new vm.Script(scriptMatch[1]));
+
+    const env = createDomEnv();
+    env.doc.body.innerHTML = bodyMatch[1];
+    env.win.innerWidth = 390;
+    env.win.innerHeight = 844;
+    env.win.location = { pathname: '/', search: '?token=tok23', protocol: 'http:', reload() {} };
+    env.win.history = { replaceState() {} };
+    env.sandbox.location = env.win.location;
+    env.sandbox.history = env.win.history;
+    env.sandbox.URLSearchParams = URLSearchParams;
+
+    let abortCreated = [];
+    class TrackedAbortController extends AbortController {
+      constructor() {
+        super();
+        abortCreated.push(this);
+      }
+    }
+    env.win.AbortController = TrackedAbortController;
+    env.sandbox.AbortController = TrackedAbortController;
+
+    let timerSeq = 1;
+    const activeTimerMap = new Map();
+    env.sandbox.setTimeout = (fn, ms) => {
+      const id = timerSeq++;
+      activeTimerMap.set(id, { fn, ms });
+      return id;
+    };
+    env.sandbox.clearTimeout = (id) => {
+      activeTimerMap.delete(id);
+    };
+    env.win.setTimeout = env.sandbox.setTimeout;
+    env.win.clearTimeout = env.sandbox.clearTimeout;
+
+    const projAlphaBeta = [
+      { id: 'proj-a', name: 'Alpha', conversationCount: 1 },
+      { id: 'proj-b', name: 'Beta', conversationCount: 1 }
+    ];
+    const convsAB = [
+      { id: 'sess-alpha', projectId: 'proj-a', projectName: 'Alpha', title: 'Alpha Title', active: true, status: 'idle', unread: false, updatedAt: 2000 },
+      { id: 'sess-beta', projectId: 'proj-b', projectName: 'Beta', title: 'Beta Title', active: false, status: 'idle', unread: true, updatedAt: 1000 }
+    ];
+    const alphaSnap = {
+      ok: true,
+      serverBootId: 'boot-req23',
+      serverBootAt: 5000,
+      snapSeq: 1,
+      sessionId: 'sess-alpha',
+      isNewConversation: false,
+      currentProjectId: 'proj-a',
+      currentProjectName: 'Alpha',
+      title: 'Alpha Title',
+      busy: false,
+      totalMessages: 1,
+      messagesStartIndex: 0,
+      messages: [{
+        msgIndex: 0,
+        role: 'assistant',
+        text: '正文简短回复',
+        html: '<p>正文简短回复</p>',
+        thoughtLabel: '思考 5 秒',
+        thoughtText: 'LAZY_THOUGHT_PAYLOAD_200KB'
+      }],
+      projects: projAlphaBeta,
+      conversations: convsAB
+    };
+
+    let holdNextSnap = null;
+    let nextActionMode = 'ok';
+    env.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const headers = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/snapshot') {
+        if (holdNextSnap) {
+          const g = holdNextSnap;
+          holdNextSnap = null;
+          await g.promise;
+        }
+        return { ok: true, status: 200, headers, json: async () => alphaSnap };
+      }
+      if (u.pathname === '/api/action') {
+        if (nextActionMode === 'fail') {
+          return { ok: true, status: 200, headers, json: async () => ({ ok: false, error: 'nav fail' }) };
+        }
+        const betaSnap = {
+          ...alphaSnap,
+          snapSeq: (Number(alphaSnap.snapSeq) || 1) + 1,
+          sessionId: 'sess-beta',
+          currentProjectId: 'proj-b',
+          currentProjectName: 'Beta',
+          title: 'Beta Title',
+          messages: [{
+            msgIndex: 0,
+            role: 'assistant',
+            text: 'Beta 正文回复',
+            html: '<p>Beta 正文回复</p>',
+            thoughtLabel: 'Beta 思考',
+            thoughtText: 'BETA_LAZY_THOUGHT'
+          }]
+        };
+        return { ok: true, status: 200, headers, json: async () => ({ ok: true, actionResult: { ok: true }, snapshot: betaSnap }) };
+      }
+      return { ok: true, status: 200, headers, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(scriptMatch[1], env.sandbox);
+    await new Promise((r) => setTimeout(r, 30));
+
+    // 3a) 折叠态 <details class="thought-box"> 不得预挂载 .thought-body，展开时惰性填充并跨同会话刷新保持打开
+    const msgEl = env.doc.getElementById('messages');
+    const thoughtDetails = msgEl.querySelector('.thought-box');
+    assert.ok(thoughtDetails, '应渲染思考折叠容器');
+    assert.equal(msgEl.querySelector('.thought-body'), null, '默认折叠态不得预挂载大量思考文本节点');
+    assert.equal(msgEl.innerHTML.includes('LAZY_THOUGHT_PAYLOAD_200KB'), false);
+
+    thoughtDetails.open = true;
+    msgEl.dispatchEvent({ type: 'toggle', target: thoughtDetails });
+    const hydratedBody = thoughtDetails.querySelector('.thought-body');
+    assert.ok(hydratedBody && (hydratedBody.textContent || '').includes('LAZY_THOUGHT_PAYLOAD_200KB'), '展开 <details> 时应立即按需挂载完整思考内容');
+
+    // 同会话再次刷新（触发 <details> 若重建应保留 open 与 .thought-body）
+    const snapTimerEntry = Array.from(activeTimerMap.values()).find((t) => t.ms === 2500 || t.ms === 900);
+    assert.ok(snapTimerEntry, '初次加载后必须调度后台轮询定时器');
+    alphaSnap.snapSeq = 2;
+    alphaSnap.messages[0].text = '正文更新内容';
+    alphaSnap.messages[0].html = '<p>正文更新内容</p>';
+    await snapTimerEntry.fn();
+    assert.ok(msgEl.querySelector('.thought-box')?.hasAttribute?.('open') || msgEl.querySelector('.thought-box')?.open, '同会话重绘应保留已展开思考块状态');
+    assert.ok((msgEl.querySelector('.thought-body')?.textContent || '').includes('LAZY_THOUGHT_PAYLOAD_200KB'));
+
+    // 经「展开/收起思考」chip 本地切换时，同样必须同步 openThoughtIdxSet 并按需填充 .thought-body
+    const thoughtToggleChip = env.doc.getElementById('chips').querySelectorAll('.chip').find((b) => (b.textContent || '').includes('展开/收起思考'));
+    assert.ok(thoughtToggleChip, '快捷操作条应包含「展开/收起思考」按钮');
+    thoughtToggleChip.click();
+    alphaSnap.snapSeq = 3;
+    alphaSnap.messages[0].text = '正文二次更新';
+    alphaSnap.messages[0].html = '<p>正文二次更新</p>';
+    await snapTimerEntry.fn();
+    assert.equal(msgEl.querySelector('.thought-body'), null, '点击收起思考后重绘不得继续挂载 .thought-body');
+    thoughtToggleChip.click();
+    const chipExpandedBody = msgEl.querySelector('.thought-box')?.querySelector?.('.thought-body');
+    assert.ok(chipExpandedBody && (chipExpandedBody.textContent || '').includes('LAZY_THOUGHT_PAYLOAD_200KB'), '再次点击展开/收起思考应同步挂载完整思考正文');
+
+    // 3b) 启动一个在途 /api/snapshot，然后点击 sess-beta 验证：
+    //     - 旧 /api/snapshot 的 AbortController 被立即 abort()
+    //     - 侧栏按钮采用原地 class 切换（节点引用同一实例，不重刷 innerHTML）
+    //     - 消息区进入 .is-switching 且标题乐观切至 Beta Title
+    //     - 即便切换失败也回滚标题、撤除 .is-switching，且后台 2500ms 轮询器仍存活未被扼杀！
+    let resolveHeldSnap;
+    holdNextSnap = { promise: new Promise((r) => { resolveHeldSnap = r; }) };
+    const latestTimerFn = Array.from(activeTimerMap.values()).find((t) => t.ms === 2500 || t.ms === 900)?.fn;
+    assert.ok(latestTimerFn);
+    const inflightPollPromise = latestTimerFn();
+    await new Promise((r) => setTimeout(r, 10));
+    const snapAbortCtrl = abortCreated[abortCreated.length - 1];
+    assert.equal(snapAbortCtrl.signal.aborted, false);
+
+    const convListEl = env.doc.getElementById('conv-list');
+    const betaBtnBefore = convListEl.querySelector('button[data-cid="sess-beta"]');
+    assert.ok(betaBtnBefore);
+    nextActionMode = 'fail';
+    betaBtnBefore.click();
+
+    // 同步阶段验证乐观交互与旧请求 abort
+    assert.equal(snapAbortCtrl.signal.aborted, true, '点击切换对话必须立刻 abort 在途 /api/snapshot');
+    assert.equal(convListEl.querySelector('button[data-cid="sess-beta"]'), betaBtnBefore, '点击会话项不得同步销毁重建整棵 #conv-list DOM');
+    assert.equal(betaBtnBefore.classList.contains('active'), true);
+    assert.equal(betaBtnBefore.classList.contains('is-unread'), false);
+    assert.equal(msgEl.classList.contains('is-switching'), true, '切换途中消息区应添加 is-switching 视觉反馈');
+    assert.equal(env.doc.getElementById('conv-title')?.textContent, 'Beta Title');
+
+    resolveHeldSnap();
+    await inflightPollPromise;
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(msgEl.classList.contains('is-switching'), false, '切换失败后必须撤除 is-switching');
+    assert.equal(env.doc.getElementById('conv-title')?.textContent, 'Alpha Title', '切换失败后标题应恢复原会话');
+    assert.ok(Array.from(activeTimerMap.values()).some((t) => t.ms === 2500 || t.ms === 900), '即使中途中止旧轮询且切换失败，后台轮询定时器也必须继续存活');
+
+    // 3c) 正常切换至 sess-beta 成功后，openThoughtIdxSet 清理，轮询定时器继续保持调度
+    nextActionMode = 'ok';
+    convListEl.querySelector('button[data-cid="sess-beta"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(env.doc.getElementById('conv-title')?.textContent, 'Beta Title');
+    assert.equal(msgEl.classList.contains('is-switching'), false);
+    assert.equal(msgEl.querySelector('.thought-body'), null, '切入新会话后默认折叠，不预先注入新会话隐藏思考 DOM');
+    assert.ok(Array.from(activeTimerMap.values()).some((t) => t.ms === 2500 || t.ms === 900), '切换会话完成后后台轮询定时器必须保持激活');
+  } finally {
+    Date.now = origDateNow;
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 29: 融合回归——隔离会话后跨项目新建与进空项目、项目/模型选择器交替打开互不串扰
+// =========================================================================
+test('PR #5 / 远程需求 29: 融合回归——隔离会话后跨项目新建与进空项目、项目/模型选择器交替打开互不串扰', async () => {
+  const { pathToFileURL } = require('url');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req29-'));
+  const stateDir = path.join(tmpRoot, 'state');
+  const homeDir = path.join(tmpRoot, 'home');
+  const configDir = path.join(homeDir, '.gemini', 'config');
+  const projectsDir = path.join(configDir, 'projects');
+  const emptyDir = path.join(homeDir, 'codebase', 'empty-proj-r2');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(projectsDir, { recursive: true });
+  fs.mkdirSync(emptyDir, { recursive: true });
+
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevConfigDir = process.env.AG_CONFIG_DIR;
+  const prevHome = process.env.HOME;
+
+  try {
+    process.env.APPDATA = stateDir;
+    process.env.AG_METER_STATE_DIR = stateDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = stateDir;
+    process.env.AG_CONFIG_DIR = configDir;
+    process.env.HOME = homeDir;
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+    const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+
+    const fetchedSnaps = [];
+    const performedActs = [];
+    const mockConnect = async () => ({
+      rpc: async (method, body) => {
+        if (method === 'GetProjects') {
+          const files = fs.readdirSync(projectsDir).filter((f) => f.endsWith('.json'));
+          return {
+            projects: files.map((f) => ({
+              project: JSON.parse(fs.readFileSync(path.join(projectsDir, f), 'utf8'))
+            }))
+          };
+        }
+        if (method === 'CreateProject') {
+          const proj = body.project;
+          fs.writeFileSync(path.join(projectsDir, `${proj.id}.json`), JSON.stringify(proj, null, 2), 'utf8');
+          return { project: proj };
+        }
+        if (method === 'ReadProject') {
+          const pFile = path.join(projectsDir, `${body.id}.json`);
+          if (fs.existsSync(pFile)) return { project: JSON.parse(fs.readFileSync(pFile, 'utf8')) };
+        }
+        return {};
+      }
+    });
+
+    const handler = remoteMod.createRemoteHttpHandler(httpCfg, {
+      homeDir,
+      configDir,
+      localApiConnect: mockConnect,
+      fetchSnapshot: async (tid, opts = {}) => {
+        fetchedSnaps.push({ tid, opts });
+        const cid = String(opts.conversationId || '');
+        if (cid === '__new__') {
+          return { ok: true, isNewConversation: true, sessionId: '', currentProjectId: 'proj-b-empty', currentProjectName: 'Empty Beta', projects: [], conversations: [] };
+        }
+        return {
+          ok: true,
+          isNewConversation: false,
+          sessionId: cid || 'conv-desktop',
+          activeConversationId: cid || 'conv-desktop',
+          isolated: cid === 'conv-proj-a-1',
+          currentProjectId: cid === 'conv-proj-a-1' ? 'proj-a' : 'proj-b-empty',
+          projects: [],
+          conversations: []
+        };
+      },
+      performAction: async (act) => {
+        performedActs.push(act);
+        return {
+          ok: true,
+          actionResult: { ok: true, projectId: act.projectId || '' },
+          snapshot: {
+            ok: true,
+            isNewConversation: true,
+            sessionId: '',
+            currentProjectId: act.projectId || '',
+            currentProjectName: act.projectId === 'proj-b-empty' ? 'Empty Beta' : 'Empty Proj R2',
+            projects: [],
+            conversations: []
+          }
+        };
+      }
+    });
+
+    const invokeHttp = (method, reqPath, bodyObj = null, extraHeaders = {}) => new Promise((resolve) => {
+      const req = new (require('events').EventEmitter)();
+      req.method = method;
+      req.url = reqPath;
+      req.headers = {
+        host: `127.0.0.1:${httpCfg.port}`,
+        'x-ag-remote-token': httpCfg.token,
+        'x-ag-client-id': 'client-r2-cross',
+        ...(bodyObj ? { 'content-type': 'application/json' } : {}),
+        ...extraHeaders
+      };
+      req.socket = { remoteAddress: '127.0.0.1' };
+      const res = {
+        status: 200,
+        headers: {},
+        setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
+        writeHead(st, hdrs) {
+          this.status = st;
+          if (hdrs) Object.assign(this.headers, hdrs);
+        },
+        end(buf) {
+          const text = String(buf || '');
+          let json = null;
+          try { json = JSON.parse(text); } catch {}
+          resolve({ status: this.status, headers: this.headers, text, json });
+        }
+      };
+      void handler(req, res);
+      if (bodyObj !== null) {
+        req.emit('data', Buffer.from(JSON.stringify(bodyObj)));
+        req.complete = true;
+        req.emit('end');
+      } else {
+        req.complete = true;
+        req.emit('end');
+      }
+    });
+
+    // 1a) 服务端：隔离切到 Project A 的会话后，跨项目在空项目 B 新建对话不得携带旧 conversationId
+    const isoSwRes = await invokeHttp('POST', '/api/action', {
+      action: 'switch-conversation',
+      id: 'conv-proj-a-1',
+      isolated: true
+    });
+    assert.equal(isoSwRes.status, 200);
+    assert.equal(isoSwRes.json.ok, true);
+    await invokeHttp('GET', '/api/snapshot');
+    assert.equal(fetchedSnaps[fetchedSnaps.length - 1].opts.conversationId, 'conv-proj-a-1');
+
+    const crossNewRes = await invokeHttp('POST', '/api/action', {
+      action: 'new-conversation',
+      projectId: 'proj-b-empty'
+    });
+    assert.equal(crossNewRes.status, 200);
+    assert.equal(crossNewRes.json.ok, true);
+    const crossNewAct = performedActs[performedActs.length - 1];
+    assert.equal(crossNewAct.action, 'new-conversation');
+    assert.equal(crossNewAct.projectId, 'proj-b-empty');
+    assert.equal(crossNewAct.conversationId, '', '跨项目新建对话不得继承旧隔离会话 ID');
+
+    await invokeHttp('GET', '/api/snapshot');
+    assert.equal(fetchedSnaps[fetchedSnaps.length - 1].opts.conversationId, '__new__', '新建对话后轮询应绑定 __new__ 而非回跳旧隔离会话');
+
+    // 1b) 服务端：再次切回隔离会话后，经 /api/projects 新建并进入空项目不得被旧隔离会话劫持
+    await invokeHttp('POST', '/api/action', { action: 'switch-conversation', id: 'conv-proj-a-1', isolated: true });
+    const createEmptyRes = await invokeHttp('POST', '/api/projects', {
+      name: 'Empty Proj R2',
+      folderPath: emptyDir
+    });
+    assert.equal(createEmptyRes.status, 200);
+    assert.equal(createEmptyRes.json.ok, true);
+    assert.equal(createEmptyRes.json.navOk, true);
+    const projNavAct = performedActs[performedActs.length - 1];
+    assert.equal(projNavAct.action, 'new-conversation');
+    assert.equal(projNavAct.projectId, createEmptyRes.json.project.id);
+    assert.equal(projNavAct.clientId, 'client-r2-cross');
+    assert.equal(projNavAct.conversationId, '', '创建空项目进入新对话时不得携带旧隔离会话 ID');
+
+    await invokeHttp('GET', '/api/snapshot');
+    assert.equal(fetchedSnaps[fetchedSnaps.length - 1].opts.conversationId, '__new__');
+
+    // 2) 前端 UI：隔离会话切走后进入空项目新建对话 + 项目选择器与两档模型选择器交替打开互不串扰
+    const html = remoteMod.buildMobileAppHtml();
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
+    assert.ok(scriptMatch && bodyMatch);
+
+    const attachDatasetProxy = (root) => {
+      if (!root) return;
+      const syncNode = (n) => {
+        if (!n || typeof n.getAttribute !== 'function') return;
+        for (const attr of ['data-idx', 'data-group-idx', 'data-variant-idx', 'data-proj-key', 'data-cid', 'data-proj-toggle']) {
+          const val = n.getAttribute(attr);
+          if (val !== null) {
+            const camel = attr.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
+            n.dataset[camel] = val;
+          }
+        }
+        for (const ch of (n.children || [])) syncNode(ch);
+      };
+      syncNode(root);
+    };
+
+    const envUi = createDomEnv();
+    envUi.doc.body.innerHTML = bodyMatch[1];
+    envUi.win.innerWidth = 390;
+    envUi.win.innerHeight = 844;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+
+    const projectsAB = [
+      { id: 'proj-a', name: 'Alpha Main', path: pathToFileURL(path.join(homeDir, 'codebase', 'alpha')).href, conversationCount: 1, runningCount: 0, waitingCount: 0, unreadCount: 0, isEmpty: false, active: true },
+      { id: 'proj-b-empty', name: 'Empty Beta', path: pathToFileURL(emptyDir).href, conversationCount: 0, runningCount: 0, waitingCount: 0, unreadCount: 0, isEmpty: true, active: false }
+    ];
+    const modelOpts = [
+      { label: 'Gemini 4 Carbon (High)', modelId: 'MODEL_CARBON-high', selected: false },
+      { label: 'Gemini 4 Carbon (Medium)', modelId: 'MODEL_CARBON-medium', selected: false },
+      { label: 'Gemini 4 Carbon (Low)', modelId: 'MODEL_CARBON-low', selected: true },
+      { label: 'Claude Opus 4.6', modelId: 'MODEL_OPUS', selected: false }
+    ];
+    let currentUiState = {
+      sessionId: 'conv-proj-a-0',
+      isNewConversation: false,
+      currentProjectId: 'proj-a',
+      currentProjectName: 'Alpha Main',
+      title: 'Alpha 会话 0',
+      isolated: false
+    };
+    const uiSnap = () => ({
+      ok: true,
+      sessionId: currentUiState.sessionId,
+      isNewConversation: currentUiState.isNewConversation,
+      currentProjectId: currentUiState.currentProjectId,
+      currentProjectName: currentUiState.currentProjectName,
+      title: currentUiState.title,
+      isolated: currentUiState.isolated,
+      busy: false,
+      model: 'Gemini 4 Carbon (Low)',
+      modelOptions: modelOpts,
+      permissionKey: 'auto',
+      permissionLabel: '自动',
+      messages: [],
+      totalMessages: 0,
+      messagesStartIndex: 0,
+      hasEarlierMessages: false,
+      projects: projectsAB,
+      conversations: [
+        { id: 'conv-proj-a-1', projectId: 'proj-a', projectName: 'Alpha Main', title: 'Alpha 隔离目标', active: currentUiState.sessionId === 'conv-proj-a-1', status: 'idle', updatedAt: Date.now() },
+        { id: 'conv-proj-a-2', projectId: 'proj-a', projectName: 'Alpha Main', title: 'Alpha 目标二', active: currentUiState.sessionId === 'conv-proj-a-2', status: 'idle', updatedAt: Date.now() - 500 }
+      ]
+    });
+
+    const uiActions = [];
+    const uiSnapUrls = [];
+    let holdNextNewConv = null;
+    envUi.sandbox.fetch = async (url, init) => {
+      const u = new URL(String(url), 'http://127.0.0.1');
+      const headers = { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/snapshot') {
+        uiSnapUrls.push(u.pathname + u.search);
+        return { ok: true, status: 200, headers, json: async () => uiSnap() };
+      }
+      if (u.pathname === '/api/action') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        uiActions.push(body);
+        if (body.action === 'new-conversation' && holdNextNewConv) {
+          const gate = holdNextNewConv;
+          holdNextNewConv = null;
+          await gate.promise;
+          return {
+            ok: true,
+            status: 200,
+            headers,
+            json: async () => ({
+              ok: true,
+              actionResult: { ok: true },
+              snapshot: {
+                ...uiSnap(),
+                sessionId: '',
+                activeConversationId: '__new__',
+                isNewConversation: true,
+                currentProjectId: body.projectId || '',
+                currentProjectName: body.projectId === 'proj-b-empty' ? 'Empty Beta' : 'Alpha Main',
+                title: '过期新建响应标题'
+              }
+            })
+          };
+        }
+        if (body.action === 'switch-conversation') {
+          currentUiState = {
+            sessionId: body.id,
+            isNewConversation: false,
+            currentProjectId: 'proj-a',
+            currentProjectName: 'Alpha Main',
+            title: body.id === 'conv-proj-a-2' ? 'Alpha 目标二' : 'Alpha 隔离目标',
+            isolated: true
+          };
+        } else if (body.action === 'new-conversation') {
+          currentUiState = {
+            sessionId: '',
+            isNewConversation: true,
+            currentProjectId: body.projectId || '',
+            currentProjectName: body.projectId === 'proj-b-empty' ? 'Empty Beta' : 'Alpha Main',
+            title: '新对话',
+            isolated: true
+          };
+        }
+        return { ok: true, status: 200, headers, json: async () => ({ ok: true, actionResult: { ok: true, model: body.label || '' }, snapshot: uiSnap() }) };
+      }
+      return { ok: true, status: 200, headers, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(scriptMatch[1], envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // 2a) 点击会话进入隔离状态 -> 再点选空项目并在顶栏新建对话
+    const convListEl = envUi.doc.getElementById('conv-list');
+    convListEl.querySelector('button[data-cid="conv-proj-a-1"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    const lastSwAct = uiActions[uiActions.length - 1];
+    assert.equal(lastSwAct.action, 'switch-conversation');
+    assert.equal(lastSwAct.id, 'conv-proj-a-1');
+    assert.equal(lastSwAct.isolated, true);
+
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(uiSnapUrls[uiSnapUrls.length - 1].includes('conversationId=conv-proj-a-1'));
+
+    convListEl.querySelector('button[data-proj-toggle="proj-b-empty"]').click();
+    assert.equal((envUi.doc.getElementById('new-chat-sub')?.textContent || '').trim(), 'Empty Beta');
+    envUi.doc.getElementById('btn-new-chat').click();
+    await new Promise((r) => setTimeout(r, 30));
+    const newInEmptyAct = uiActions[uiActions.length - 1];
+    assert.equal(newInEmptyAct.action, 'new-conversation');
+    assert.equal(newInEmptyAct.projectId, 'proj-b-empty');
+    assert.equal(newInEmptyAct.conversationId, undefined, '点击新建对话时前端不得附带旧 selectedConversationId');
+
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(uiSnapUrls[uiSnapUrls.length - 1].includes('conversationId=__new__'), '新建进入空项目后轮询应附带 conversationId=__new__');
+
+    // 2b) 交替打开项目选择器与两档模型选择器并点击，验证事件与 activeSheetState 互不串扰
+    const sheetList = envUi.doc.getElementById('sheet-list');
+    const countActions = (act) => uiActions.filter((a) => a.action === act).length;
+
+    // Step A: 打开项目选择器再关闭
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    assert.ok(sheetList.querySelectorAll('.sheet-opt').some((b) => (b.textContent || '').includes('Empty Beta')));
+    envUi.doc.getElementById('sheet-close').onclick();
+
+    // Step B: 打开两档模型选择器 -> 先 dispatchEvent 再 onclick 点击多档模型（仅触发 1 次 select-model，不触发 new-conversation）
+    const baseNewCnt = countActions('new-conversation');
+    const baseModelCnt = countActions('select-model');
+    envUi.doc.getElementById('btn-model-inline').onclick();
+    attachDatasetProxy(sheetList);
+    const groupBtns = sheetList.querySelectorAll('[data-group-idx]');
+    assert.equal(groupBtns.length, 2);
+    sheetList.dispatchEvent({ type: 'click', target: groupBtns[0] });
+    sheetList.onclick({ target: groupBtns[0] });
+    attachDatasetProxy(sheetList);
+    assert.ok(envUi.doc.getElementById('sheet-stage-track')?.classList?.contains('step-effort'));
+    const variantBtns = sheetList.querySelectorAll('[data-variant-idx]');
+    assert.equal(variantBtns.length, 3);
+    sheetList.dispatchEvent({ type: 'click', target: variantBtns[0] });
+    await sheetList.onclick({ target: variantBtns[0] });
+    assert.equal(countActions('select-model'), baseModelCnt + 1, '切换模型分档后应精确发送 1 次 select-model');
+    assert.equal(countActions('new-conversation'), baseNewCnt, 'activeSheetState 清空后不得误触项目选择回调');
+    assert.equal(uiActions[uiActions.length - 1].label, 'Gemini 4 Carbon (High)');
+
+    // Step C: 立即再次打开项目选择器并选择 Empty Beta（验证 openSheet 恢复了 listEl.onclick = handleSheetListClick，且不走旧模型闭包）
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const emptyProjOpt1 = sheetList.querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes('Empty Beta'));
+    assert.ok(emptyProjOpt1);
+    emptyProjOpt1.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(countActions('new-conversation'), baseNewCnt + 1, '关闭模型弹窗后重新打开项目选择器必须正常新建项目会话');
+    assert.equal(countActions('select-model'), baseModelCnt + 1);
+    assert.equal(uiActions[uiActions.length - 1].projectId, 'proj-b-empty');
+
+    // Step C2: 再打开一次项目选择器，直接调用 restored listEl.onclick 确认 .onclick 路径同样已从模型闭包复原
+    envUi.doc.getElementById('btn-new-chat-project').click();
+    const emptyProjOpt2 = sheetList.querySelectorAll('.sheet-opt').find((b) => (b.textContent || '').includes('Empty Beta'));
+    await sheetList.onclick({ target: emptyProjOpt2 });
+    assert.equal(countActions('new-conversation'), baseNewCnt + 2);
+    assert.equal(countActions('select-model'), baseModelCnt + 1);
+
+    // Step D: 立即再次打开模型选择器并点击单档模型 Claude Opus 4.6
+    envUi.doc.getElementById('btn-model-inline').onclick();
+    attachDatasetProxy(sheetList);
+    const groupBtns2 = sheetList.querySelectorAll('[data-group-idx]');
+    await sheetList.onclick({ target: groupBtns2[1] });
+    assert.equal(countActions('select-model'), baseModelCnt + 2);
+    assert.equal(countActions('new-conversation'), baseNewCnt + 2);
+    assert.equal(uiActions[uiActions.length - 1].label, 'Claude Opus 4.6');
+
+    // 2c) 乱序竞态回归：新建请求挂起 → 切换至另一会话 → 旧新建响应迟到返回
+    // 2c-1) 跨项目场景：挂起 Empty Beta 新建对话 → 切换至 Alpha conv-proj-a-1 → 放行旧新建响应
+    let resolveCrossRaceNew;
+    holdNextNewConv = { promise: new Promise((r) => { resolveCrossRaceNew = r; }) };
+    convListEl.querySelector('button[data-new-proj="proj-b-empty"]').click();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(typeof resolveCrossRaceNew, 'function', '跨项目新建请求应已进入挂起态');
+
+    convListEl.querySelector('button[data-cid="conv-proj-a-1"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, 'Alpha 隔离目标');
+
+    resolveCrossRaceNew();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, 'Alpha 隔离目标', '迟到旧新建响应不得回退跨项目已切入会话标题');
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(uiSnapUrls[uiSnapUrls.length - 1].includes('conversationId=conv-proj-a-1'), '跨项目旧新建回包后轮询仍应保持最后切换目标 conv-proj-a-1');
+    const compactBtnCross = envUi.doc.getElementById('chips').querySelectorAll('.chip').find((b) => (b.textContent || '').trim() === '/compact');
+    assert.ok(compactBtnCross);
+    compactBtnCross.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(uiActions[uiActions.length - 1].conversationId, 'conv-proj-a-1', '跨项目旧新建回包后非导航动作仍应携带最后导航会话 ID');
+
+    // 2c-2) 同项目场景：在 Alpha 内挂起新建对话 → 立即切至同项目 conv-proj-a-2 → 放行旧新建响应
+    let resolveSameProjRaceNew;
+    holdNextNewConv = { promise: new Promise((r) => { resolveSameProjRaceNew = r; }) };
+    convListEl.querySelector('button[data-new-proj="proj-a"]').click();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(typeof resolveSameProjRaceNew, 'function', '同项目新建请求应已进入挂起态');
+
+    convListEl.querySelector('button[data-cid="conv-proj-a-2"]').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, 'Alpha 目标二');
+
+    resolveSameProjRaceNew();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-title')?.textContent, 'Alpha 目标二', '同项目内迟到旧新建响应不得回退后续切换标题');
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(uiSnapUrls[uiSnapUrls.length - 1].includes('conversationId=conv-proj-a-2'), '同项目旧新建回包后轮询仍应保持 conv-proj-a-2');
+    const compactBtnSame = envUi.doc.getElementById('chips').querySelectorAll('.chip').find((b) => (b.textContent || '').trim() === '/compact');
+    assert.ok(compactBtnSame);
+    compactBtnSame.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(uiActions[uiActions.length - 1].conversationId, 'conv-proj-a-2', '同项目旧新建回包后后续动作仍应保持 conv-proj-a-2');
+
+    // 2d) 跨微任务去重单测：先触发 onclick(sharedEv) 后清空两轮微任务再派发同一事件，WeakSet 不得被清除从而仍只发送 1 次
+    const beforeMicrotaskCompactCount = uiActions.filter((a) => a.action === 'send' && a.text === '/compact').length;
+    const sharedClickEv = { type: 'click', target: compactBtnSame, preventDefault() {}, stopPropagation() {} };
+    const pClick = compactBtnSame.onclick(sharedClickEv);
+    await Promise.resolve();
+    await Promise.resolve();
+    compactBtnSame.dispatchEvent(sharedClickEv);
+    await pClick;
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      uiActions.filter((a) => a.action === 'send' && a.text === '/compact').length,
+      beforeMicrotaskCompactCount + 1,
+      '同一事件对象跨微任务经过 onclick 与 addEventListener 时只能执行一次'
+    );
+
+    // 2e) 真实 Headless Chrome 原生鼠标与触摸输入回归：验证真实浏览器中仅单事件路径且鼠标/触摸单击 /compact 与发送按钮精确触发 1 次 /api/action
+    const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(CHROME_BIN)) {
+      const http = require('node:http');
+      const { spawn } = require('node:child_process');
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const chromeActions = [];
+      const chromeSnap = {
+        ok: true,
+        sessionId: 'conv-chrome-r4',
+        isNewConversation: false,
+        currentProjectId: 'proj-a',
+        currentProjectName: 'Alpha Main',
+        title: 'Chrome 原生点击验证',
+        busy: false,
+        model: 'Gemini 4 Carbon (Low)',
+        modelOptions: modelOpts,
+        permissionKey: 'auto',
+        permissionLabel: '自动',
+        messages: [],
+        totalMessages: 0,
+        messagesStartIndex: 0,
+        hasEarlierMessages: false,
+        projects: projectsAB,
+        conversations: [
+          { id: 'conv-chrome-r4', projectId: 'proj-a', projectName: 'Alpha Main', title: 'Chrome 原生点击验证', active: true, status: 'idle', updatedAt: Date.now() }
+        ]
+      };
+      const chromeServer = http.createServer(remoteMod.createRemoteHttpHandler(httpCfg, {
+        homeDir,
+        configDir,
+        localApiConnect: mockConnect,
+        fetchSnapshot: async () => chromeSnap,
+        performAction: async (act) => {
+          chromeActions.push(act);
+          return { ok: true, actionResult: { ok: true }, snapshot: chromeSnap };
+        }
+      }));
+      await new Promise((resolve) => chromeServer.listen(0, '127.0.0.1', resolve));
+      const chromePort = chromeServer.address().port;
+      const chromeUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req29-chrome-'));
+      let chromeProc = null;
+      let cdpWs = null;
+      try {
+        const chromeEnv = { ...process.env };
+        if (prevHome === undefined) delete chromeEnv.HOME;
+        else chromeEnv.HOME = prevHome;
+        chromeProc = spawn(CHROME_BIN, [
+          '--headless=new',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--remote-debugging-port=0',
+          `--user-data-dir=${chromeUserDir}`,
+          'about:blank'
+        ], { stdio: ['ignore', 'pipe', 'pipe'], env: chromeEnv });
+        const browserWsUrl = await new Promise((resolve, reject) => {
+          let errOut = '';
+          const timer = setTimeout(() => reject(new Error('Chrome startup timeout: ' + errOut)), 10000);
+          chromeProc.stderr.on('data', (chunk) => {
+            errOut += String(chunk);
+            const m = errOut.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+            if (m) {
+              clearTimeout(timer);
+              resolve(m[1]);
+            }
+          });
+          chromeProc.on('exit', (code) => {
+            clearTimeout(timer);
+            reject(new Error(`Chrome exited (${code}): ${errOut}`));
+          });
+        });
+        const devOrigin = browserWsUrl.replace(/^ws:/, 'http:').replace(/\/devtools\/.*$/, '');
+        const tabMeta = await new Promise((resolve, reject) => {
+          const req = http.request(`${devOrigin}/json/new?about:blank`, { method: 'PUT' }, (res) => {
+            let body = '';
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => {
+              try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+            });
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        cdpWs = new WebSocket(tabMeta.webSocketDebuggerUrl);
+        await new Promise((resolve, reject) => {
+          cdpWs.addEventListener('open', resolve, { once: true });
+          cdpWs.addEventListener('error', reject, { once: true });
+        });
+        let cdpSeq = 0;
+        const cdpPending = new Map();
+        const rejectAllPending = (err) => {
+          for (const [, p] of cdpPending) {
+            clearTimeout(p.timer);
+            p.reject(err);
+          }
+          cdpPending.clear();
+        };
+        cdpWs.addEventListener('close', () => rejectAllPending(new Error('CDP WebSocket closed')));
+        cdpWs.addEventListener('error', () => rejectAllPending(new Error('CDP WebSocket error')));
+        cdpWs.addEventListener('message', (ev) => {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg.id && cdpPending.has(msg.id)) {
+            const p = cdpPending.get(msg.id);
+            cdpPending.delete(msg.id);
+            clearTimeout(p.timer);
+            if (msg.error) p.reject(new Error(msg.error.message || 'CDP error'));
+            else p.resolve(msg.result);
+          }
+        });
+        const cdpCall = (method, params = {}) => new Promise((resolve, reject) => {
+          const id = ++cdpSeq;
+          const timer = setTimeout(() => {
+            cdpPending.delete(id);
+            reject(new Error(`CDP timeout on ${method}`));
+          }, 8000);
+          cdpPending.set(id, { resolve, reject, timer });
+          cdpWs.send(JSON.stringify({ id, method, params }));
+        });
+        const cdpEval = async (expression) => {
+          const res = await cdpCall('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+          if (res?.exceptionDetails) {
+            throw new Error(res.exceptionDetails.exception?.description || res.exceptionDetails.text || 'CDP eval error');
+          }
+          return res?.result?.value;
+        };
+
+        await cdpCall('Page.enable');
+        await cdpCall('Runtime.enable');
+        await cdpCall('Page.bringToFront');
+        await cdpCall('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        await cdpCall('Page.navigate', { url: `http://127.0.0.1:${chromePort}/?token=${encodeURIComponent(httpCfg.token)}` });
+
+        let chipRect = null;
+        const waitStart = Date.now();
+        while (Date.now() - waitStart < 8000) {
+          chipRect = await cdpEval(`(() => {
+            const chip = Array.from(document.querySelectorAll('#chips .chip')).find((el) => (el.textContent || '').trim() === '/compact');
+            const modelBtn = document.getElementById('btn-model-inline');
+            const sheetList = document.getElementById('sheet-list');
+            if (!chip || !modelBtn || !sheetList) return null;
+            chip.scrollIntoView({ block: 'center', inline: 'center' });
+            const r = chip.getBoundingClientRect();
+            return r.width > 0 && r.height > 0
+              ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), isNativeEventTarget: chip instanceof EventTarget && modelBtn instanceof EventTarget && sheetList instanceof EventTarget }
+              : null;
+          })()`);
+          if (chipRect) break;
+          await sleep(60);
+        }
+        assert.ok(chipRect && chipRect.isNativeEventTarget, '真实 Chrome 中按钮必须识别为原生 EventTarget 且可定位 /compact 坐标');
+
+        // 桌面端原生鼠标左键单击 /compact -> 精确触发 1 次
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseMoved', x: chipRect.x, y: chipRect.y });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x: chipRect.x, y: chipRect.y, button: 'left', clickCount: 1 });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x: chipRect.x, y: chipRect.y, button: 'left', clickCount: 1 });
+        await sleep(260);
+        assert.equal(
+          chromeActions.filter((a) => a.action === 'send' && a.text === '/compact').length,
+          1,
+          '真实 Chrome 原生鼠标左键单击 /compact 只能触发 1 次 /api/action'
+        );
+
+        // 移动端原生触摸点按 /compact -> 再精确 +1 次（累计 2 次）
+        await cdpCall('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+        await cdpCall('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+        await sleep(80);
+        const touchChipPt = await cdpEval(`(() => {
+          const chip = Array.from(document.querySelectorAll('#chips .chip')).find((el) => (el.textContent || '').trim() === '/compact');
+          chip?.scrollIntoView?.({ block: 'center', inline: 'center' });
+          const r = chip?.getBoundingClientRect?.();
+          return r && r.width > 0 ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+        })()`);
+        assert.ok(touchChipPt);
+        await cdpCall('Input.dispatchTouchEvent', {
+          type: 'touchStart',
+          touchPoints: [{ x: touchChipPt.x, y: touchChipPt.y, radiusX: 4, radiusY: 4, force: 1, id: 1 }]
+        });
+        await cdpCall('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await sleep(260);
+        assert.equal(
+          chromeActions.filter((a) => a.action === 'send' && a.text === '/compact').length,
+          2,
+          '真实 Chrome 原生触摸点按 /compact 只能触发 1 次（累计 2 次）/api/action'
+        );
+
+        // 原生鼠标左键单击发送按钮 #btn-send -> 同样精确触发 1 次
+        await cdpCall('Emulation.setTouchEmulationEnabled', { enabled: false });
+        await cdpCall('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+        await sleep(80);
+        const sendPt = await cdpEval(`(() => {
+          const taEl = document.getElementById('input');
+          const sendEl = document.getElementById('btn-send');
+          if (!taEl || !sendEl) return null;
+          taEl.focus();
+          taEl.value = 'native-click-once';
+          taEl.dispatchEvent(new Event('input', { bubbles: true }));
+          sendEl.scrollIntoView({ block: 'center', inline: 'center' });
+          const r = sendEl.getBoundingClientRect();
+          return (!sendEl.disabled && r.width > 0) ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+        })()`);
+        assert.ok(sendPt);
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseMoved', x: sendPt.x, y: sendPt.y });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x: sendPt.x, y: sendPt.y, button: 'left', clickCount: 1 });
+        await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sendPt.x, y: sendPt.y, button: 'left', clickCount: 1 });
+        await sleep(260);
+        assert.equal(
+          chromeActions.filter((a) => a.action === 'send' && a.text === 'native-click-once').length,
+          1,
+          '真实 Chrome 原生鼠标左键单击 #btn-send 只能触发 1 次 /api/action'
+        );
+      } finally {
+        try { cdpWs?.close(); } catch {}
+        try { chromeProc?.kill('SIGKILL'); } catch {}
+        await sleep(150);
+        chromeServer.closeAllConnections?.();
+        await new Promise((resolve) => chromeServer.close(resolve));
+        fs.rmSync(chromeUserDir, { recursive: true, force: true, maxRetries: 6, retryDelay: 120 });
+      }
+    }
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevConfigDir === undefined) delete process.env.AG_CONFIG_DIR;
+    else process.env.AG_CONFIG_DIR = prevConfigDir;
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 30: macOS LaunchAgent 监听 SingletonSocket 与非 Homebrew Node PATH 自动发现
+// =========================================================================
+test('需求 30 (PR #5 macOS LaunchAgent): 改用 SingletonSocket、写入 EnvironmentVariables.PATH 并兼容最小 PATH 发现 nvm Node', { skip: process.platform !== 'darwin' }, () => {
+  const { execFileSync } = require('node:child_process');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req30-'));
+  const fakeHome = path.join(tmpRoot, 'home');
+  const stubBin = path.join(tmpRoot, 'stub-bin');
+  const nvmLowBin = path.join(fakeHome, '.nvm', 'versions', 'node', 'v22.5.0', 'bin');
+  const nvmNodeBin = path.join(fakeHome, '.nvm', 'versions', 'node', 'v26.99.0', 'bin');
+  const nvmMarkerLog = path.join(tmpRoot, 'nvm-node-invocations.log');
+  const launchAgentsDir = path.join(fakeHome, 'Library', 'LaunchAgents');
+  const setupScript = path.join(__dirname, 'scripts', 'setup-macos-cdp.sh');
+  const agBin = path.join(__dirname, 'bin', 'ag-context-meter');
+  const testLabel = 'com.testuser.ag-live-helper';
+  const plistPath = path.join(launchAgentsDir, `${testLabel}.plist`);
+  const realNodeBinDir = path.dirname(fs.realpathSync(process.execPath));
+  const parsePlistJson = (p) => JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', p], { encoding: 'utf8' }));
+
+  try {
+    fs.mkdirSync(nvmLowBin, { recursive: true });
+    fs.mkdirSync(nvmNodeBin, { recursive: true });
+    fs.mkdirSync(stubBin, { recursive: true });
+
+    // Executable wrappers log their own path before exec'ing real node to deterministically prove nvm hit & version ordering
+    const makeNodeWrapper = (dir) => {
+      const target = path.join(dir, 'node');
+      fs.writeFileSync(
+        target,
+        `#!/bin/sh\necho "NVM_NODE_INVOKED:$0" >> "${nvmMarkerLog}"\nexec "${process.execPath}" "$@"\n`,
+        { mode: 0o755 }
+      );
+      return target;
+    };
+    const lowNodeExe = makeNodeWrapper(nvmLowBin);
+    const highNodeExe = makeNodeWrapper(nvmNodeBin);
+
+    // Stub launchctl so tests never touch real macOS launchd
+    const launchctlLog = path.join(tmpRoot, 'launchctl.log');
+    const stubLaunchctl = path.join(stubBin, 'launchctl');
+    fs.writeFileSync(stubLaunchctl, `#!/usr/bin/env bash\necho "$*" >> "${launchctlLog}"\nexit 0\n`, { mode: 0o755 });
+
+    const minimalPath = '/usr/bin:/bin:/usr/sbin:/sbin';
+    const baseEnv = {
+      HOME: fakeHome,
+      PATH: `${stubBin}:${minimalPath}`,
+      AG_DEFAULT_NODE_PATHS: '',
+      AG_LIVE_LABEL: testLabel,
+      AG_METER_TEST_MODE: '1',
+      ANTIGRAVITY_AGENT: '1'
+    };
+
+    // 1) setup-macos-cdp.sh（默认模式）：绕开宿主机固定目录，确定命中测试 nvm 最高版本 node 并写入 SingletonSocket 与 EnvironmentVariables.PATH
+    execFileSync('bash', [setupScript], { env: baseEnv, encoding: 'utf8' });
+    assert.ok(fs.existsSync(plistPath), 'setup-macos-cdp.sh 应生成 LaunchAgent plist');
+    const plistDefault = fs.readFileSync(plistPath, 'utf8');
+    const parsedDefault = parsePlistJson(plistPath);
+    assert.ok(parsedDefault.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'WatchPaths 应监听 SingletonSocket');
+    assert.ok(!plistDefault.includes('SingletonLock'), 'WatchPaths 不得再包含悬空软链 SingletonLock');
+    assert.equal(parsedDefault.StartInterval, 5, 'setup-macos-cdp.sh 应写入 StartInterval=5 轻量轮询');
+    assert.equal(parsedDefault.ThrottleInterval, 5, 'setup-macos-cdp.sh 应写入 ThrottleInterval=5');
+    assert.equal(parsedDefault.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, '最小 PATH 下应将解析后的真实 Node 可执行目录写入 EnvironmentVariables.PATH');
+    const setupInvocations = fs.readFileSync(nvmMarkerLog, 'utf8').trim().split('\n');
+    assert.ok(setupInvocations.includes(`NVM_NODE_INVOKED:${highNodeExe}`), 'setup-macos-cdp.sh 实际执行的必须是测试 nvm v26.99.0 的 node');
+    assert.ok(!setupInvocations.includes(`NVM_NODE_INVOKED:${lowNodeExe}`), '不得误用较低版本 v22.5.0 的 node');
+    execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
+    // 2) setup-macos-cdp.sh --no-remote：EnvironmentVariables 同时包含 PATH 与 AG_DISABLE_MOBILE_REMOTE=1
+    execFileSync('bash', [setupScript, '--no-remote'], { env: baseEnv, encoding: 'utf8' });
+    const parsedNoRemote = parsePlistJson(plistPath);
+    assert.equal(parsedNoRemote.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, '--no-remote 时仍应保留真实 Node 可执行目录');
+    assert.equal(parsedNoRemote.EnvironmentVariables.AG_DISABLE_MOBILE_REMOTE, '1', '--no-remote 时应写入 AG_DISABLE_MOBILE_REMOTE=1');
+    assert.ok(parsedNoRemote.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), '--no-remote 时应监听 SingletonSocket');
+    assert.ok(!parsedNoRemote.WatchPaths.some((w) => w.includes('SingletonLock')), '--no-remote 时不得包含 SingletonLock');
+    execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
+    // 3) bin/ag-context-meter 在 launchd 最小 PATH 且屏蔽宿主机固定目录时确定命中测试 nvm node 并输出 status JSON
+    fs.writeFileSync(nvmMarkerLog, '', 'utf8');
+    const statusJsonRaw = execFileSync('bash', [agBin, 'status', '--json'], {
+      env: { HOME: fakeHome, PATH: minimalPath, AG_DEFAULT_NODE_PATHS: '', AG_METER_TEST_MODE: '1' },
+      encoding: 'utf8'
+    });
+    const statusJson = JSON.parse(statusJsonRaw);
+    assert.equal(typeof statusJson, 'object');
+    assert.ok('liveWindow' in statusJson, '最小 PATH 下应能自动找到 node 并正常输出 status JSON');
+    const cliInvocations = fs.readFileSync(nvmMarkerLog, 'utf8').trim().split('\n');
+    assert.ok(cliInvocations.includes(`NVM_NODE_INVOKED:${highNodeExe}`), 'bin/ag-context-meter 实际执行的必须是测试 nvm v26.99.0 的 node');
+    assert.ok(!cliInvocations.includes(`NVM_NODE_INVOKED:${lowNodeExe}`), 'bin/ag-context-meter 不得误用较低版本 v22.5.0 的 node');
+
+    // 4a) auto-on 升级含旧 SingletonLock 且缺 EnvironmentVariables 的 plist
+    const legacyLockPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${testLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${fakeHome}/.local/bin/ag-context-meter</string>
+    <string>_auto-trigger</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WatchPaths</key>
+  <array>
+    <string>${fakeHome}/Library/Application Support/Antigravity/DevToolsActivePort</string>
+    <string>${fakeHome}/Library/Application Support/Antigravity/SingletonLock</string>
+  </array>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(plistPath, legacyLockPlist, 'utf8');
+    execFileSync('bash', [agBin, 'auto-on'], { env: baseEnv, encoding: 'utf8' });
+    const parsedA = parsePlistJson(plistPath);
+    assert.ok(parsedA.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'auto-on 应将 SingletonLock 升级为 SingletonSocket');
+    assert.ok(!parsedA.WatchPaths.some((w) => w.includes('SingletonLock')), 'auto-on 升级后不得残留 SingletonLock');
+    assert.equal(parsedA.StartInterval, 5, 'auto-on 升级旧 plist 应补充 StartInterval=5');
+    assert.equal(parsedA.ThrottleInterval, 5, 'auto-on 升级旧 plist 应补充 ThrottleInterval=5');
+    assert.equal(parsedA.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'auto-on 应补充真实 Node 可执行目录到 EnvironmentVariables.PATH');
+    execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
+    // 4b) auto-on 升级仅含 DevToolsActivePort 且已有 AG_DISABLE_MOBILE_REMOTE 的旧 plist
+    const legacyNoRemotePlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${testLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${fakeHome}/.local/bin/ag-context-meter</string>
+    <string>_auto-trigger</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AG_DISABLE_MOBILE_REMOTE</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WatchPaths</key>
+  <array>
+    <string>${fakeHome}/Library/Application Support/Antigravity/DevToolsActivePort</string>
+  </array>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(plistPath, legacyNoRemotePlist, 'utf8');
+    execFileSync('bash', [agBin, 'auto-on'], { env: baseEnv, encoding: 'utf8' });
+    const parsedB = parsePlistJson(plistPath);
+    assert.ok(parsedB.WatchPaths.some((w) => w.endsWith('/Antigravity/SingletonSocket')), 'auto-on 应为旧 plist 补齐 SingletonSocket');
+    assert.equal(parsedB.EnvironmentVariables.AG_DISABLE_MOBILE_REMOTE, '1', 'auto-on 升级应保留既有 AG_DISABLE_MOBILE_REMOTE');
+    assert.equal(parsedB.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'auto-on 升级应在既有 EnvironmentVariables 内补充真实 Node 目录');
+    execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
+    // 4c) auto-on 升级已有含 XML 实体（&amp;）PATH 的旧 plist：不得二次转义为 &amp;amp;，原路径各目录实际值保持不变
+    const legacyEncodedPathPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${testLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${fakeHome}/.local/bin/ag-context-meter</string>
+    <string>_auto-trigger</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/tmp/a&amp;b/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WatchPaths</key>
+  <array>
+    <string>${fakeHome}/Library/Application Support/Antigravity/DevToolsActivePort</string>
+    <string>${fakeHome}/Library/Application Support/Antigravity/SingletonLock</string>
+  </array>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(plistPath, legacyEncodedPathPlist, 'utf8');
+    execFileSync('bash', [agBin, 'auto-on'], { env: baseEnv, encoding: 'utf8' });
+    const rawC = fs.readFileSync(plistPath, 'utf8');
+    assert.ok(!rawC.includes('&amp;amp;'), 'auto-on 不得对已有 XML 实体做二次转义');
+    const parsedC = parsePlistJson(plistPath);
+    assert.deepEqual(
+      parsedC.EnvironmentVariables.PATH.split(':'),
+      [realNodeBinDir, '/tmp/a&b/bin', '/usr/bin', '/bin'],
+      '迁移后原 PATH 中含 & 符号的目录及原有顺序必须保持完全不变'
+    );
+    execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
+    // 4d) auto-on 升级已有但不等于 5 的 StartInterval=60 与 ThrottleInterval=30：均须更新为 5
+    const legacyNonFivePlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${testLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${fakeHome}/.local/bin/ag-context-meter</string>
+    <string>_auto-trigger</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>WatchPaths</key>
+  <array>
+    <string>${fakeHome}/Library/Application Support/Antigravity/DevToolsActivePort</string>
+    <string>${fakeHome}/Library/Application Support/Antigravity/SingletonSocket</string>
+  </array>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(plistPath, legacyNonFivePlist, 'utf8');
+    execFileSync('bash', [agBin, 'auto-on'], { env: baseEnv, encoding: 'utf8' });
+    const parsedD = parsePlistJson(plistPath);
+    assert.equal(parsedD.StartInterval, 5, 'auto-on 应将已有 StartInterval=60 更新为 5');
+    assert.equal(parsedD.ThrottleInterval, 5, 'auto-on 应将已有 ThrottleInterval=30 更新为 5');
+    execFileSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
+
+    // 5) asdf/mise 项目级版本配置 shim 回归：shim 仅在含 .tool-versions 的项目目录可用；
+    //    验证 setup-macos-cdp.sh、auto-on 与 install-launcher 均将解析出的真实 Node 可执行目录写入产物，
+    //    并在无 .tool-versions、最小 PATH、无 shell 初始化的空目录中直接执行 node 成功。
+    const shimHome = path.join(tmpRoot, 'shim-home');
+    const asdfShimsDir = path.join(shimHome, '.asdf', 'shims');
+    const projectDir = path.join(tmpRoot, 'project-with-tool-versions');
+    const emptyCwd = path.join(tmpRoot, 'empty-cwd-no-config');
+    const shimPlistPath = path.join(shimHome, 'Library', 'LaunchAgents', `${testLabel}.plist`);
+    const shimMarkerLog = path.join(tmpRoot, 'asdf-shim.log');
+    fs.mkdirSync(asdfShimsDir, { recursive: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.mkdirSync(emptyCwd, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.tool-versions'), 'nodejs 24.0.0\n', 'utf8');
+    fs.writeFileSync(
+      path.join(asdfShimsDir, 'node'),
+      `#!/bin/sh
+if [ ! -f "$PWD/.tool-versions" ] || ! grep -q "nodejs 24.0.0" "$PWD/.tool-versions"; then
+  echo "No version is set for command node" >&2
+  exit 126
+fi
+echo "ASDF_SHIM_OK:$PWD" >> "${shimMarkerLog}"
+exec "${process.execPath}" "$@"
+`,
+      { mode: 0o755 }
+    );
+
+    // 先确认该 shim 在无项目配置的空目录中确实会失败
+    assert.throws(
+      () => execFileSync(path.join(asdfShimsDir, 'node'), ['-v'], { cwd: emptyCwd, env: { HOME: shimHome, PATH: minimalPath }, stdio: 'pipe' }),
+      '测试用 asdf shim 在不含 .tool-versions 的目录中应失败'
+    );
+
+    const shimEnv = {
+      HOME: shimHome,
+      PATH: `${stubBin}:${minimalPath}`,
+      AG_DEFAULT_NODE_PATHS: '',
+      AG_LIVE_LABEL: testLabel,
+      AG_METER_TEST_MODE: '1',
+      ANTIGRAVITY_AGENT: '1'
+    };
+
+    // 5a) setup-macos-cdp.sh 在项目目录内通过 shim 启动，但写入 plist 的应为真实 Node 可执行目录
+    execFileSync('bash', [setupScript], { cwd: projectDir, env: shimEnv, encoding: 'utf8' });
+    const shimLogText = fs.readFileSync(shimMarkerLog, 'utf8');
+    assert.ok(
+      shimLogText.includes(`ASDF_SHIM_OK:${projectDir}`) || shimLogText.includes(`ASDF_SHIM_OK:${fs.realpathSync(projectDir)}`),
+      'setup 阶段确实经由 asdf shim 解析'
+    );
+    const parsedShimSetup = parsePlistJson(shimPlistPath);
+    assert.equal(parsedShimSetup.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'setup 生成的 plist 应写入真实 Node 目录而非 shim 目录');
+    assert.ok(!parsedShimSetup.EnvironmentVariables.PATH.includes(asdfShimsDir), 'setup 生成的 plist PATH 不应依赖 shim 目录');
+    const setupNodeVer = execFileSync('node', ['-v'], {
+      cwd: emptyCwd,
+      env: { HOME: shimHome, PATH: parsedShimSetup.EnvironmentVariables.PATH },
+      encoding: 'utf8'
+    }).trim();
+    assert.match(setupNodeVer, /^v\d+\./, '脱离项目目录与 shell 初始化后，使用 setup plist PATH 必须能直接执行 node');
+
+    // 5b) auto-on 在项目目录内升级旧 plist 后，使用升级后的 plist PATH 脱离项目目录仍可执行 node
+    const shimLegacyPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${testLabel}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${shimHome}/.local/bin/ag-context-meter</string>
+    <string>_auto-trigger</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WatchPaths</key>
+  <array>
+    <string>${shimHome}/Library/Application Support/Antigravity/DevToolsActivePort</string>
+    <string>${shimHome}/Library/Application Support/Antigravity/SingletonLock</string>
+  </array>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(shimPlistPath, shimLegacyPlist, 'utf8');
+    execFileSync('bash', [agBin, 'auto-on'], { cwd: projectDir, env: shimEnv, encoding: 'utf8' });
+    const parsedShimAutoOn = parsePlistJson(shimPlistPath);
+    assert.equal(parsedShimAutoOn.EnvironmentVariables.PATH.split(':')[0], realNodeBinDir, 'auto-on 升级后的 plist 应写入真实 Node 目录');
+    const autoOnNodeVer = execFileSync('node', ['-v'], {
+      cwd: emptyCwd,
+      env: { HOME: shimHome, PATH: parsedShimAutoOn.EnvironmentVariables.PATH },
+      encoding: 'utf8'
+    }).trim();
+    assert.match(autoOnNodeVer, /^v\d+\./, '脱离项目目录后，使用 auto-on plist PATH 必须能直接执行 node');
+
+    // 5c) install-launcher 在项目目录内生成启动器后，启动器导出的 PATH 脱离项目目录与 shell 初始化仍可直接执行真实 node
+    execFileSync('bash', [agBin, 'install-launcher'], { cwd: projectDir, env: shimEnv, encoding: 'utf8' });
+    const launcherScript = path.join(shimHome, 'Applications', 'Antigravity 增强启动器.app', 'Contents', 'MacOS', 'launch');
+    assert.ok(fs.existsSync(launcherScript), 'install-launcher 应生成 launch 脚本');
+    const launcherText = fs.readFileSync(launcherScript, 'utf8');
+    const pathLineMatch = launcherText.match(/^export PATH=".*"$/m);
+    assert.ok(pathLineMatch, 'launch 脚本应包含 export PATH 行');
+    assert.ok(pathLineMatch[0].includes(realNodeBinDir), 'launch 脚本 PATH 应包含真实 Node 可执行目录');
+    assert.ok(!pathLineMatch[0].includes(asdfShimsDir), 'launch 脚本 PATH 不应依赖 shim 目录');
+    const launcherCheck = execFileSync('bash', ['-c', `${pathLineMatch[0]}; command -v node; node -v`], {
+      cwd: emptyCwd,
+      env: { HOME: shimHome, PATH: minimalPath },
+      encoding: 'utf8'
+    }).trim().split('\n');
+    assert.equal(path.dirname(launcherCheck[0]), realNodeBinDir, '启动器在空目录最小 PATH 下应直接命中真实 Node 目录');
+    assert.match(launcherCheck[1], /^v\d+\./, '启动器在空目录最小 PATH 下必须能直接执行 node');
+
+    // 6) _auto-trigger 纯 bash 毫秒级幂等快路径：宿主未运行、已带调试端口且新 live-host 存活、裸宿主运行 >30s 均须零 node 启动快速 exit 0
+    const fastPathCases = [
+      {
+        name: '宿主未运行',
+        mockPs: '  101 05:10 /Applications/Antigravity.app/Contents/Resources/bin/language_server\n',
+        mockLiveHost: '0',
+        mockLiveElapsed: ''
+      },
+      {
+        name: '带调试端口且新 live-host 已存活',
+        mockPs: '  202 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0\n',
+        mockLiveHost: '1',
+        mockLiveElapsed: '5'
+      },
+      {
+        name: '裸宿主已运行超过 30 秒',
+        mockPs: '  303 01:05 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n',
+        mockLiveHost: '0',
+        mockLiveElapsed: ''
+      }
+    ];
+    for (const tc of fastPathCases) {
+      fs.writeFileSync(nvmMarkerLog, '', 'utf8');
+      const t0 = Date.now();
+      execFileSync('bash', [agBin, '_auto-trigger'], {
+        env: {
+          HOME: fakeHome,
+          PATH: minimalPath,
+          AG_DEFAULT_NODE_PATHS: '',
+          AG_MOCK_PS_OUTPUT: tc.mockPs,
+          AG_MOCK_LIVE_HOST_RUNNING: tc.mockLiveHost,
+          ...(tc.mockLiveElapsed ? { AG_MOCK_LIVE_HOST_ELAPSED: tc.mockLiveElapsed } : {})
+        },
+        encoding: 'utf8'
+      });
+      const elapsedMs = Date.now() - t0;
+      assert.equal(fs.readFileSync(nvmMarkerLog, 'utf8').trim(), '', `_auto-trigger [${tc.name}] 应命中快路径，不得启动 node`);
+      assert.ok(elapsedMs < 3000, `_auto-trigger [${tc.name}] 应毫秒级退出（实际 ${elapsedMs}ms）`);
+    }
+
+    // 6d) 旧 live-host.js 仍存活（live_elapsed=120 > host_elapsed=5）但 Antigravity 已换新宿主：
+    //     不得误走快路径跳过，必须触发 cli.js live 为新宿主重新挂载
+    const mockSuiteDir = path.join(tmpRoot, 'mock-suite');
+    const mockActionLog = path.join(tmpRoot, 'mock-suite-actions.log');
+    fs.mkdirSync(mockSuiteDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(mockSuiteDir, 'asar-engine.js'),
+      `module.exports = {
+        resolveActiveCdpTarget: async () => ({ port: 59999, targets: [{ id: 't1', url: 'https://127.0.0.1:59999/' }] }),
+        inspectAntigravityHostProcess: () => ({ running: false, pid: null, hasDebugSwitch: false, elapsedSec: null })
+      };\n`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(mockSuiteDir, 'cli.js'),
+      `const fs = require('fs');
+       fs.appendFileSync(${JSON.stringify(mockActionLog)}, 'CLI_LIVE_CALLED:' + process.argv.slice(2).join(' ') + '\\n');\n`,
+      'utf8'
+    );
+    fs.writeFileSync(mockActionLog, '', 'utf8');
+    execFileSync('bash', [agBin, '_auto-trigger'], {
+      env: {
+        HOME: fakeHome,
+        PATH: minimalPath,
+        AG_DEFAULT_NODE_PATHS: '',
+        AG_SUITE_DIR: mockSuiteDir,
+        AG_MOCK_PS_OUTPUT: '  404 00:05 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0\n',
+        AG_MOCK_LIVE_HOST_RUNNING: '1',
+        AG_MOCK_LIVE_HOST_ELAPSED: '120'
+      },
+      encoding: 'utf8'
+    });
+    assert.ok(
+      fs.readFileSync(mockActionLog, 'utf8').includes('CLI_LIVE_CALLED:live'),
+      '旧 live-host.js 存活但宿主已换新（live_elapsed > host_elapsed）时必须重新触发 cli.js live'
+    );
+
+    // 7) 20 秒内再次重启（新裸宿主 PID != 上次冷却 PID）：不得被旧冷却跳过，而同 PID 在 20 秒内应保持防重入
+    const relaunchLockPath = path.join(tmpRoot, 'relaunch.lock');
+    const openLog = path.join(tmpRoot, 'open.log');
+    const stubOpen = path.join(stubBin, 'open');
+    const stubOsascript = path.join(stubBin, 'osascript');
+    fs.writeFileSync(stubOpen, `#!/usr/bin/env bash\necho "OPEN:$*" >> "${openLog}"\nexit 0\n`, { mode: 0o755 });
+    fs.writeFileSync(stubOsascript, '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    // 7a) 同 PID 4001 在 2 秒前刚触发过重拉 -> 冷却生效，不重复触发
+    fs.writeFileSync(relaunchLockPath, `${nowSec - 2} 4001\n`, 'utf8');
+    fs.writeFileSync(openLog, '', 'utf8');
+    fs.writeFileSync(mockActionLog, '', 'utf8');
+    execFileSync('bash', [agBin, '_auto-trigger'], {
+      env: {
+        HOME: fakeHome,
+        PATH: `${stubBin}:${minimalPath}`,
+        AG_DEFAULT_NODE_PATHS: '',
+        AG_SUITE_DIR: mockSuiteDir,
+        AG_RELAUNCH_LOCK_FILE: relaunchLockPath,
+        AG_MOCK_PS_OUTPUT: ' 4001 00:05 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n'
+      },
+      encoding: 'utf8'
+    });
+    assert.equal(fs.readFileSync(openLog, 'utf8').trim(), '', '20 秒内同一裸宿主 PID 不应重复重拉');
+
+    // 7b) 新裸宿主 PID 4002 在距上次重拉仅 2 秒时启动 -> 不得被旧 PID 4001 的冷却跳过，应立即补参重拉并执行 live 注入
+    execFileSync('bash', [agBin, '_auto-trigger'], {
+      env: {
+        HOME: fakeHome,
+        PATH: `${stubBin}:${minimalPath}`,
+        AG_DEFAULT_NODE_PATHS: '',
+        AG_SUITE_DIR: mockSuiteDir,
+        AG_RELAUNCH_LOCK_FILE: relaunchLockPath,
+        AG_MOCK_PS_OUTPUT: ' 4002 00:03 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n'
+      },
+      encoding: 'utf8'
+    });
+    assert.ok(fs.readFileSync(openLog, 'utf8').includes('--remote-debugging-port=0'), '20 秒内新裸宿主 PID 4002 必须立即触发补参重拉');
+    assert.ok(fs.readFileSync(mockActionLog, 'utf8').includes('CLI_LIVE_CALLED:live'), '补参重拉后必须完成 cli.js live 注入');
+
+    // 7c) 带调试参数但 CDP 未就绪期间，宿主重启切换为新裸进程：
+    //     注入等待循环必须及时跳出并转入补参重拉，不能空等 30 秒跨过保护窗口而永久跳过恢复
+    const dynamicPsFile = path.join(tmpRoot, 'dynamic-ps.txt');
+    const cdpFlipSuiteDir = path.join(tmpRoot, 'cdp-flip-suite');
+    const cdpFlipStateFile = path.join(tmpRoot, 'cdp-flip-state.json');
+    fs.mkdirSync(cdpFlipSuiteDir, { recursive: true });
+    fs.writeFileSync(dynamicPsFile, ' 5001 00:02 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0\n', 'utf8');
+    fs.writeFileSync(cdpFlipStateFile, JSON.stringify({ probes: 0, relaunched: false }), 'utf8');
+    fs.writeFileSync(
+      path.join(cdpFlipSuiteDir, 'asar-engine.js'),
+      `const fs = require('fs');
+      module.exports = {
+        resolveActiveCdpTarget: async () => {
+          const st = JSON.parse(fs.readFileSync(${JSON.stringify(cdpFlipStateFile)}, 'utf8'));
+          st.probes += 1;
+          if (st.probes === 1) {
+            // 首次 CDP 探测未就绪，同时模拟宿主重启切换为无调试参数的新裸进程 5002
+            fs.writeFileSync(${JSON.stringify(dynamicPsFile)}, ' 5002 00:01 /Applications/Antigravity.app/Contents/MacOS/Antigravity\\n', 'utf8');
+            fs.writeFileSync(${JSON.stringify(cdpFlipStateFile)}, JSON.stringify(st));
+            return { port: null, targets: [] };
+          }
+          fs.writeFileSync(${JSON.stringify(cdpFlipStateFile)}, JSON.stringify(st));
+          if (st.relaunched) {
+            return { port: 59998, targets: [{ id: 't2', url: 'https://127.0.0.1:59998/' }] };
+          }
+          return { port: null, targets: [] };
+        },
+        inspectAntigravityHostProcess: () => ({ running: false, pid: null, hasDebugSwitch: false, elapsedSec: null })
+      };\n`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(cdpFlipSuiteDir, 'cli.js'),
+      `const fs = require('fs');
+       fs.appendFileSync(${JSON.stringify(mockActionLog)}, 'FLIP_CLI_LIVE_OK:' + process.argv.slice(2).join(' ') + '\\n');\n`,
+      'utf8'
+    );
+    const flipStubOpen = path.join(stubBin, 'open');
+    fs.writeFileSync(
+      flipStubOpen,
+      `#!/usr/bin/env bash
+echo "OPEN:$*" >> "${openLog}"
+"${process.execPath}" -e '
+const fs = require("fs");
+const st = JSON.parse(fs.readFileSync(${JSON.stringify(cdpFlipStateFile)}, "utf8"));
+st.relaunched = true;
+fs.writeFileSync(${JSON.stringify(cdpFlipStateFile)}, JSON.stringify(st));
+'
+exit 0
+`,
+      { mode: 0o755 }
+    );
+    fs.writeFileSync(openLog, '', 'utf8');
+    fs.writeFileSync(mockActionLog, '', 'utf8');
+    const flipStart = Date.now();
+    execFileSync('bash', [agBin, '_auto-trigger'], {
+      env: {
+        HOME: fakeHome,
+        PATH: `${stubBin}:${minimalPath}`,
+        AG_DEFAULT_NODE_PATHS: '',
+        AG_SUITE_DIR: cdpFlipSuiteDir,
+        AG_RELAUNCH_LOCK_FILE: relaunchLockPath,
+        AG_MOCK_PS_FILE: dynamicPsFile,
+        AG_MOCK_LIVE_HOST_RUNNING: '0'
+      },
+      encoding: 'utf8'
+    });
+    const flipElapsedMs = Date.now() - flipStart;
+    assert.ok(flipElapsedMs < 8000, `CDP 等待期间切裸宿主应立即跳出重拉，不得空等 30 秒（实际 ${flipElapsedMs}ms）`);
+    assert.ok(fs.readFileSync(openLog, 'utf8').includes('--remote-debugging-port=0'), '跳出等待循环后必须立即补参重拉新裸宿主 5002');
+    assert.ok(fs.readFileSync(mockActionLog, 'utf8').includes('FLIP_CLI_LIVE_OK:live'), '补参重拉后必须完成 cli.js live 注入');
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 需求 24（主干）: 内置推荐池统一胶囊开关（含 /goal /swarm /boost 等 + 复制会话 ID / 导出 MD）+ 干净自定义提示词 + 斜杠命令原生菜单自动点选转换
 // =========================================================================
 test('需求 24: 内置推荐池统一开关、三列自定义提示词与斜杠命令自动点选原生菜单', async () => {
   const env = createDomEnv();
@@ -6669,9 +11019,9 @@ test('需求 29: _auto-trigger 与 LaunchAgent 修复孤立 DevToolsActivePort �
   assert.ok(loopMatch, '_auto-trigger 应包含 15 轮重试循环');
   assert.match(loopMatch[0], /try_auto_relaunch_fresh_bare/, '_auto-trigger 应在循环体内调用 try_auto_relaunch_fresh_bare');
 
-  // 3. 静态断言：LaunchAgent 模板与 auto-on 自动升级逻辑均配置 ThrottleInterval=2
-  assert.match(binSrc, /ThrottleInterval[\s\S]{0,600}<integer>2<\/integer>/, 'auto-on 升级应写入 ThrottleInterval=2');
-  assert.match(setupSrc, /<key>ThrottleInterval<\/key>\s*<integer>2<\/integer>/, 'setup-macos-cdp.sh 应生成 ThrottleInterval=2');
+  // 3. 静态断言：LaunchAgent 模板与 auto-on 自动升级逻辑均配置 StartInterval=5 与 ThrottleInterval=5
+  assert.match(binSrc, /ThrottleInterval[\s\S]{0,600}<integer>5<\/integer>/, 'auto-on 升级应写入 ThrottleInterval=5');
+  assert.match(setupSrc, /<key>StartInterval<\/key>\s*<integer>5<\/integer>[\s\S]{0,120}<key>ThrottleInterval<\/key>\s*<integer>5<\/integer>/, 'setup-macos-cdp.sh 应生成 StartInterval=5 与 ThrottleInterval=5');
 
   if (process.platform === 'win32') return;
 
@@ -6682,6 +11032,8 @@ test('需求 29: _auto-trigger 与 LaunchAgent 修复孤立 DevToolsActivePort �
     const fakeSuite = path.join(tmpRoot, 'suite');
     const fakeBin = path.join(tmpRoot, 'bin');
     const agSupportDir = path.join(fakeHome, 'Library', 'Application Support', 'Antigravity');
+    const lockFile29 = path.join(tmpRoot, 'relaunch-req29.lock');
+    const openLog29 = path.join(tmpRoot, 'open-req29.log');
     fs.mkdirSync(agSupportDir, { recursive: true });
     fs.mkdirSync(path.join(fakeHome, 'Library', 'Logs'), { recursive: true });
     fs.mkdirSync(fakeSuite, { recursive: true });
@@ -6690,9 +11042,30 @@ test('需求 29: _auto-trigger 与 LaunchAgent 修复孤立 DevToolsActivePort �
     // 写入孤立的 DevToolsActivePort 文件（模拟宿主崩溃/更新退出后的磁盘残留）
     fs.writeFileSync(path.join(agSupportDir, 'DevToolsActivePort'), '65432\n/devtools/browser/fake\n', 'utf8');
 
-    // Mock pgrep，避免测试机恰好有外部 ShipIt 进程影响隔离断言
+    // Mock pgrep（默认无 ShipIt），支持通过 AG_MOCK_SHIPIT_COUNT_FILE 模拟 ShipIt 升级中避让并在完成时退出
     const fakePgrep = path.join(fakeBin, 'pgrep');
-    fs.writeFileSync(fakePgrep, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    fs.writeFileSync(
+      fakePgrep,
+      `#!/bin/sh
+if [ -n "\${AG_MOCK_SHIPIT_COUNT_FILE:-}" ]; then
+  cnt=0
+  [ -f "$AG_MOCK_SHIPIT_COUNT_FILE" ] && cnt=$(cat "$AG_MOCK_SHIPIT_COUNT_FILE" 2>/dev/null || echo 0)
+  cnt=$((cnt + 1))
+  echo "$cnt" > "$AG_MOCK_SHIPIT_COUNT_FILE"
+  if [ "$cnt" -eq 2 ] && [ -n "\${AG_MOCK_PS_FILE:-}" ]; then
+    printf '%s' "\${AG_MOCK_SHIPIT_DONE_PS:-}" > "$AG_MOCK_PS_FILE"
+  fi
+  if [ "$cnt" -le 2 ]; then
+    exit 0
+  fi
+  exit 1
+fi
+exit 1
+`,
+      { mode: 0o755 }
+    );
+    fs.writeFileSync(path.join(fakeBin, 'open'), `#!/bin/sh\necho "OPEN:$*" >> "${openLog29}"\nexit 0\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(fakeBin, 'osascript'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
     // Mock suite cli.js 与 asar-engine.js
     fs.writeFileSync(path.join(fakeSuite, 'cli.js'), '// mock cli\n', 'utf8');
@@ -6721,13 +11094,14 @@ module.exports = {
       ...process.env,
       HOME: fakeHome,
       AG_SUITE_DIR: fakeSuite,
+      AG_RELAUNCH_LOCK_FILE: lockFile29,
       PATH: `${fakeBin}:${process.env.PATH || '/usr/bin:/bin'}`
     };
 
     // 用例 4a：仅存在孤立 DevToolsActivePort 且无宿主进程时，_auto-trigger 必须在 2 秒内立即退出
     const t0 = Date.now();
     await execFileAsync('bash', [binPath, '_auto-trigger'], {
-      env: { ...baseEnv, AG_TEST_HOST_MODE: 'none' },
+      env: { ...baseEnv, AG_TEST_HOST_MODE: 'none', AG_MOCK_PS_OUTPUT: '' },
       timeout: 5000
     });
     const elapsedA = Date.now() - t0;
@@ -6736,7 +11110,11 @@ module.exports = {
     // 用例 4b：存在已运行 >30s 的裸进程时，写入保护跳过日志并在 2 秒内安全退出（不重拉、不空转）
     const t1 = Date.now();
     await execFileAsync('bash', [binPath, '_auto-trigger'], {
-      env: { ...baseEnv, AG_TEST_HOST_MODE: 'stale_bare' },
+      env: {
+        ...baseEnv,
+        AG_TEST_HOST_MODE: 'stale_bare',
+        AG_MOCK_PS_OUTPUT: ' 999999 02:00 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n'
+      },
       timeout: 5000
     });
     const elapsedB = Date.now() - t1;
@@ -6745,6 +11123,24 @@ module.exports = {
     const logContent = fs.readFileSync(path.join(fakeHome, 'Library', 'Logs', 'antigravity-hans.log'), 'utf8');
     assert.match(logContent, /PID: 999999, 已运行 120s > 30s.*跳过自动重拉/, '应写入保护当前会话的跳过重拉日志');
     assert.doesNotMatch(logContent, /自动补参重拉/, '不得对运行超过 30s 的老裸进程触发重拉');
+
+    // 用例 4c：ShipIt 正在升级（pgrep 返回 0）+ 刚启动 3s 的裸进程 -> _auto-trigger 避让不触发重拉
+    const psFile4c = path.join(tmpRoot, 'ps-4c.txt');
+    const shipitCntFile = path.join(tmpRoot, 'shipit-count.txt');
+    fs.writeFileSync(psFile4c, ' 999888 00:03 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n', 'utf8');
+    fs.writeFileSync(openLog29, '', 'utf8');
+    await execFileAsync('bash', [binPath, '_auto-trigger'], {
+      env: {
+        ...baseEnv,
+        AG_MOCK_PS_FILE: psFile4c,
+        AG_MOCK_SHIPIT_COUNT_FILE: shipitCntFile,
+        AG_MOCK_SHIPIT_DONE_PS: ''
+      },
+      timeout: 8000
+    });
+    assert.equal(fs.readFileSync(openLog29, 'utf8').trim(), '', 'ShipIt 运行期间不得对刚启动 3s 的裸进程触发补参重拉');
+    const logAfter4c = fs.readFileSync(path.join(fakeHome, 'Library', 'Logs', 'antigravity-hans.log'), 'utf8');
+    assert.doesNotMatch(logAfter4c, /999888.*自动补参重拉/, 'ShipIt 避让期不得写入 999888 重拉日志');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -7194,5 +11590,756 @@ test('需求 31: 快捷提示词 + 新增布局、编辑态防轮询覆盖、慢
     api?.dispose?.();
     for (const t of activeTimers) clearTimeout(t);
     activeTimers.clear();
+  }
+});
+
+test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Symlink 防逃逸与跨端口 CSRF 加固 (#32)', async () => {
+  const remoteMod = require('./mobile-remote');
+  const { Readable } = require('stream');
+
+  // 1. 敏感路径黑名单直接校验（含大小写变体与生产模式 /var/folders 拦截）
+  for (const p of [
+    '/System/Library',
+    '/SYSTEM/Library',
+    '/etc',
+    '/Etc/passwd',
+    '/private/etc/hosts',
+    '/Applications/Antigravity.app',
+    '/Applications/ANTIGRAVITY.APP/Contents',
+    '/Users/demo/.ssh',
+    '/Users/demo/.SSH/id_ed25519',
+    '/Users/demo/.gnupg/private-keys',
+    '/Users/demo/.aws',
+    '/Users/demo/1Password/vault',
+    '/Users/demo/.gemini/antigravity'
+  ]) {
+    assert.equal(remoteMod.isSensitiveHostPath(p), true, `敏感路径必须被拦截: ${p}`);
+  }
+  assert.equal(remoteMod.isSensitiveHostPath('/var/folders/ab/cd/T/test', { forceProd: true }), true, '生产环境不得豁免 /var/folders');
+  assert.equal(remoteMod.isSensitiveHostPath('/Users/demo/codebase/my-app'), false);
+
+  // 1b. buildMobileAppHtml() 全部内嵌 <script> 经 new vm.Script() 语法校验
+  const html32 = remoteMod.buildMobileAppHtml();
+  const scripts32 = [...html32.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts32.length >= 2);
+  for (let i = 0; i < scripts32.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts32[i][1], { filename: `mobile-app-32-script-${i}.js` }));
+  }
+
+  // 2. 构造隔离的假 homeDir、外部逃逸目录 outsideDir、敏感子目录与符号链接
+  const sandboxBase = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-sec32-'));
+  const fakeHome = path.join(sandboxBase, 'home');
+  const outsideDir = path.join(sandboxBase, 'outside');
+  const configDir = path.join(sandboxBase, 'cfg');
+  const workDir = path.join(fakeHome, 'codebase');
+  const sshDir = path.join(fakeHome, '.ssh');
+  const geminiDir = path.join(fakeHome, '.gemini');
+  const onePassDir = path.join(fakeHome, '1Password');
+  fs.mkdirSync(workDir, { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(sshDir, { recursive: true });
+  fs.mkdirSync(geminiDir, { recursive: true });
+  fs.mkdirSync(onePassDir, { recursive: true });
+
+  const symEscape = path.join(workDir, 'link-outside');
+  const symSsh = path.join(workDir, 'link-ssh');
+  const symLoopA = path.join(workDir, 'loop-a');
+  const symLoopB = path.join(workDir, 'loop-b');
+  const symDangling = path.join(workDir, 'dangling-outside');
+  fs.symlinkSync(outsideDir, symEscape, 'dir');
+  fs.symlinkSync(sshDir, symSsh, 'dir');
+  fs.symlinkSync(symLoopB, symLoopA, 'dir');
+  fs.symlinkSync(symLoopA, symLoopB, 'dir');
+  fs.symlinkSync(path.join(outsideDir, 'nonexistent-target'), symDangling, 'dir');
+
+  try {
+    // 2a. 到达根目录边界（fakeHome）时 parentPath 必须严格为空串 ''，且越界访问 /etc、/、outsideDir 被拒（403）
+    const homeList = remoteMod.listHostDirectories({ homeDir: fakeHome, configDir, showHidden: true });
+    assert.strictEqual(homeList.parentPath, '', '到达 $HOME 授权边界时 parentPath 必须严格为空串');
+    assert.ok(!homeList.entries.some((e) => ['.ssh', '.gemini', '1Password'].includes(e.name)), '敏感目录即使 showHidden=true 也不得出现在目录列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: outsideDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: '/etc', homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: '/', homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: sshDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: geminiDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+
+    // 2b. Symlink 逃逸目录、敏感 symlink 与循环符号链接（ELOOP）均被列表过滤且直连/新建/注册项目全部拦截
+    const workList = remoteMod.listHostDirectories({ dirPath: workDir, homeDir: fakeHome, configDir, showHidden: true });
+    assert.equal(workList.parentPath, fakeHome);
+    assert.ok(!workList.entries.some((e) => ['link-outside', 'link-ssh', 'loop-a', 'loop-b'].includes(e.name)), '越界、敏感或循环符号链接子目录不得暴露在列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symEscape, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symSsh, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symLoopA, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symLoopA, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    // 悬空符号链接（目标本身 & 祖先节点）在浏览、新建与注册项目全链路一律 403 拒绝
+    const danglingChild = path.join(symDangling, 'nested-child');
+    assert.ok(!workList.entries.some((e) => e.name === 'dangling-outside'), '悬空符号链接不得暴露在目录列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symDangling, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: danglingChild, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symDangling, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: workDir, name: 'dangling-outside' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: danglingChild, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symDangling, name: 'dangling-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: danglingChild, name: 'dangling-child-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symEscape, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: fakeHome, name: '.ssh' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: outsideDir, name: 'evil' }, { homeDir: fakeHome }), (err) => err.status === 403);
+
+    // 2c. 禁止将 $HOME 本身、/、越界目录或符号链接注册为项目
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: fakeHome, name: 'home-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 400
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: '/', name: 'root-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symEscape, name: 'sym-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symSsh, name: 'ssh-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+
+    // 3. Same-Site 跨端口 CSRF 与 Content-Type 加固测试
+    const secCfg = {
+      port: 18765,
+      token: 'tok-sec32-1234567890abcdef',
+      tunnelEnabled: false,
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    };
+    const secHandler = remoteMod.createRemoteHttpHandler(secCfg, {
+      homeDir: fakeHome,
+      configDir,
+      allowDiskFallback: true,
+      performAction: async () => ({ ok: true, actionResult: { ok: true } }),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's-1', messages: [] })
+    });
+    const sendWrite = async (urlPath, bodyStr, headers = {}) => {
+      const req = Readable.from([Buffer.from(bodyStr, 'utf8')]);
+      req.method = 'POST';
+      req.url = urlPath;
+      req.headers = { host: '127.0.0.1:18765', ...headers };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let out = '';
+      const res = {
+        setHeader: () => {},
+        writeHead: (code) => { status = code; },
+        end: (chunk) => { if (chunk) out += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); }
+      };
+      await secHandler(req, res);
+      return { status, json: JSON.parse(out || '{}') };
+    };
+
+    // 3a. text/plain 简单请求（即使携带有效 Cookie + 同源 Origin）必须被拒（415）
+    const plainRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'bad-ct' }), {
+      'content-type': 'text/plain',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(plainRes.status, 415, '写接口必须拒绝 text/plain 简单请求');
+
+    // 3b. 同主机不同端口（Same-Site 跨端口 CSRF：127.0.0.1:3000 -> 127.0.0.1:18765）携带 Cookie 必须返回 403
+    const crossPortRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'csrf-dir' }), {
+      'content-type': 'application/json',
+      origin: 'http://127.0.0.1:3000',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(crossPortRes.status, 403, '跨端口不同源 Origin + Cookie 写请求必须被 403 拦截');
+
+    // 3b-2. 同主机同端口但协议不同（https://127.0.0.1:18765 vs http://127.0.0.1:18765）+ Cookie 必须返回 403
+    const crossProtoRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'csrf-proto' }), {
+      'content-type': 'application/json',
+      origin: 'https://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(crossProtoRes.status, 403, '跨协议 Origin + Cookie 写请求必须被 403 拦截');
+
+    // 3c. Origin: null + Cookie 必须返回 403
+    const nullOriginRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      origin: 'null',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(nullOriginRes.status, 403, 'Origin: null + Cookie 写请求必须被 403 拦截');
+
+    // 3d. Cookie 鉴权但无 Origin（即使带同源 Referer）且无 X-AG-Remote-Token 必须返回 403
+    const noOriginCookieRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(noOriginCookieRes.status, 403, 'Cookie 鉴权且缺少同源 Origin 与自定义头时必须返回 403');
+    const refererOnlyCookieRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      referer: 'http://127.0.0.1:18765/',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(refererOnlyCookieRes.status, 403, 'Cookie 鉴权缺少 Origin 时不得仅凭 Referer 放行');
+
+    // 3e. 合法同源 Origin + application/json + Cookie 正常通过（200）
+    const okCookieRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'ok-same-origin' }), {
+      'content-type': 'application/json; charset=utf-8',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(okCookieRes.status, 200);
+    assert.equal(okCookieRes.json.ok, true);
+
+    // 3f. 合法自定义请求头 X-AG-Remote-Token + application/json 正常通过（200），并验证合法项目注册通过
+    const okHeaderRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'ok-custom-hdr' }), {
+      'content-type': 'application/json',
+      'x-ag-remote-token': secCfg.token
+    });
+    assert.equal(okHeaderRes.status, 200);
+    assert.equal(okHeaderRes.json.ok, true);
+
+    const okProjRes = await sendWrite('/api/projects', JSON.stringify({
+      folderPath: path.join(workDir, 'ok-same-origin'),
+      name: 'legit-proj-32',
+      openInDesktop: false
+    }), {
+      'content-type': 'application/json',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(okProjRes.status, 200, `合法 $HOME 子目录注册项目必须成功: ${JSON.stringify(okProjRes.json)}`);
+    assert.equal(okProjRes.json.ok, true);
+    assert.equal(okProjRes.json.project?.name, 'legit-proj-32');
+  } finally {
+    fs.rmSync(sandboxBase, { recursive: true, force: true });
+  }
+});
+
+test('PR #5 返修（二）：隔离视图新建页判空、裸 % 解码防崩、桌面轮询截断、IME 防误触与缓存/弹窗修复 (#33)', async () => {
+  const remoteMod = require('./mobile-remote');
+
+  // 1. 裸 % 文件 URI 解码不得抛 URIError 或导致整段历史归零
+  const pctMsgs = remoteMod.extractMessagesFromTrajectorySteps([
+    {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      userInput: {
+        items: [
+          { text: '请查看' },
+          { item: { file: { absoluteUri: 'file:///tmp/100%done.txt' } } },
+          { item: { directory: { absoluteUri: 'file:///tmp/dir%2/sub/' } } }
+        ]
+      }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: { modifiedResponse: '已查看 100%done.txt' }
+    }
+  ]);
+  assert.equal(pctMsgs.length, 2, '含裸 % 的 URI 必须安全保留原片段而不得整段历史归零');
+  assert.ok(pctMsgs[0].text.includes('@100%done.txt'));
+  assert.ok(pctMsgs[0].text.includes('@sub'));
+
+  // 2. 桌面处于新建页 `/`（isNewConversation=true）时，隔离查看历史会话必须返回 isNewConversation:false + 目标项目归属；且 DOM 轮询超大文本受安全截断保护
+  const env = createDomEnv();
+  env.win.location = { pathname: '/', search: '?project=proj-desktop', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/?project=proj-desktop' };
+  env.sandbox.location = env.win.location;
+  env.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+  const hugeUser = env.doc.createElement('div');
+  hugeUser.setAttribute('data-testid', 'user-message');
+  hugeUser.textContent = 'A'.repeat(220000);
+  env.doc.body.appendChild(hugeUser);
+
+  const histRow = env.doc.createElement('div');
+  histRow.setAttribute('data-testid', 'conversation-row-sidebar');
+  const histLink = env.doc.createElement('a');
+  histLink.setAttribute('href', '/c/aaaa1111-2222-3333-4444-555555555555');
+  histLink.textContent = '历史会话标题';
+  histRow.appendChild(histLink);
+  env.doc.body.appendChild(histRow);
+
+  let enh = null;
+  try {
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    enh = env.sandbox.__AGEnhancer;
+
+    const baseSnap = enh.getMobileSnapshot();
+    assert.equal(baseSnap.isNewConversation, true);
+    assert.equal(baseSnap.messages.length, 1);
+    assert.ok(baseSnap.messages[0].text.length <= 200005, `DOM 轮询单条文本应有安全截断上限，实际=${baseSnap.messages[0].text.length}`);
+
+    const isoSnap = await enh.getMobileSnapshotAsync({ conversationId: 'aaaa1111-2222-3333-4444-555555555555' });
+    assert.equal(isoSnap.isolated, true);
+    assert.equal(isoSnap.isNewConversation, false, '桌面停在新建页时隔离查看历史会话必须重置 isNewConversation=false');
+    assert.equal(isoSnap.sessionId, 'aaaa1111-2222-3333-4444-555555555555');
+  } finally {
+    enh?.dispose?.();
+    env.sandbox.__AGContextMeter?.dispose?.();
+    env.cleanup?.();
+  }
+
+  // 3. enrichMessages 输出 historySource（dom 降级 vs trajectory 权威），前端全量 <script> 校验 + IME 防误触 + clearScrollBodyOffset 不清 scrollTop
+  const histMgr = remoteMod.createConversationHistoryManager();
+  const domFallbackSnap = await histMgr.enrichMessages(
+    { sessionId: 'conv-dom-rec', messages: [{ role: 'user', text: 'dom msg' }] },
+    { localApiConnect: async () => { throw new Error('ls down'); } }
+  );
+  assert.equal(domFallbackSnap.historySource, 'dom');
+  const trajRecSnap = await histMgr.enrichMessages(
+    { sessionId: 'conv-dom-rec', messages: [{ role: 'user', text: 'dom msg' }] },
+    {
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async () => ({
+          trajectory: {
+            steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'traj msg' } }]
+          }
+        })
+      })
+    }
+  );
+  assert.equal(trajRecSnap.historySource, 'trajectory');
+
+  const html33 = remoteMod.buildMobileAppHtml();
+  const scripts33 = [...html33.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts33.length >= 2);
+  for (let i = 0; i < scripts33.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts33[i][1], { filename: `mobile-app-33-script-${i}.js` }));
+  }
+  assert.ok(html33.includes('placeholder="发消息… (Cmd/Ctrl + Enter 发送)"'), '主输入框占位提示必须明确标注 Cmd/Ctrl + Enter 发送');
+  assert.ok(html33.includes('function bindSafeImeEnter(') && html33.includes("compositionstart") && html33.includes('e.keyCode === 229'), '输入框必须具备 Safari 中文 IME 防误触保护');
+  assert.ok(html33.includes("activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory'"), '从 domTail 恢复全量轨迹时必须清空旧临时索引键防错序');
+  assert.ok(!html33.includes('bodyEl.scrollTop = 0;'), 'clearScrollBodyOffset 不得暴力重置 scrollTop=0 把输入框滚出视野');
+
+  // 4. 短文本但超大 DOM 节点树（9000 个 span）在 extractSanitizedMarkdownHtml 遍历中途触发节点预算早停（返回空 html 而保留文本）
+  const envDomCap = createDomEnv();
+  envDomCap.win.location = { pathname: '/c/cap-dom-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/cap-dom-1' };
+  envDomCap.sandbox.location = envDomCap.win.location;
+  envDomCap.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const respNode = envDomCap.doc.createElement('div');
+  respNode.setAttribute('data-testid', 'agent-response');
+  const mdRoot = envDomCap.doc.createElement('div');
+  mdRoot.setAttribute('data-markdown-root', 'true');
+  for (let i = 0; i < 8200; i++) {
+    const sp = envDomCap.doc.createElement('span');
+    if (i === 0) sp.textContent = 'short-ok';
+    mdRoot.appendChild(sp);
+  }
+  respNode.appendChild(mdRoot);
+  envDomCap.doc.body.appendChild(respNode);
+  let enhCap = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDomCap.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDomCap.sandbox);
+    enhCap = envDomCap.sandbox.__AGEnhancer;
+    const capSnap = enhCap.getMobileSnapshot();
+    assert.equal(capSnap.messages.length, 1);
+    assert.ok(capSnap.messages[0].text.startsWith('short-ok'));
+    assert.equal(capSnap.messages[0].html, '', '短文本超大 DOM 树应在文本/HTML 遍历中途触发节点预算早停，返回空 HTML');
+  } finally {
+    enhCap?.dispose?.();
+    envDomCap.sandbox.__AGContextMeter?.dispose?.();
+    envDomCap.cleanup?.();
+  }
+
+  // 4b. 深层嵌套（depth > 24）与多根节点超大文本早停：绝不回退读取深层子树 textContent，也不再读取超限后的后续根节点
+  const envDeep = createDomEnv();
+  envDeep.win.location = { pathname: '/c/deep-dom-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/deep-dom-1' };
+  envDeep.sandbox.location = envDeep.win.location;
+  envDeep.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const deepResp = envDeep.doc.createElement('div');
+  deepResp.setAttribute('data-testid', 'agent-response');
+  const deepRoot1 = envDeep.doc.createElement('div');
+  deepRoot1.setAttribute('data-markdown-root', 'true');
+  let cur = deepRoot1;
+  for (let d = 0; d < 27; d++) {
+    const child = envDeep.doc.createElement('div');
+    cur.appendChild(child);
+    cur = child;
+  }
+  let deepTextContentReads = 0;
+  Object.defineProperty(cur, 'textContent', {
+    get() {
+      deepTextContentReads += 1;
+      return 'DEEP_SECRET_SHOULD_NOT_BE_READ';
+    },
+    configurable: true
+  });
+  // 同时添加一个正常浅层文本和一个超 200K 的根节点 + 第二个不应被读取的根节点
+  const shallowP = envDeep.doc.createElement('p');
+  shallowP.childNodes.push({ nodeType: 3, nodeValue: 'A'.repeat(205000) });
+  deepRoot1.appendChild(shallowP);
+  const deepRoot2 = envDeep.doc.createElement('div');
+  deepRoot2.setAttribute('data-markdown-root', 'true');
+  let secondRootRead = 0;
+  deepRoot2.childNodes.push({
+    nodeType: 3,
+    get nodeValue() {
+      secondRootRead += 1;
+      return 'SECOND_ROOT_SHOULD_NOT_BE_READ';
+    }
+  });
+  deepResp.appendChild(deepRoot1);
+  deepResp.appendChild(deepRoot2);
+  envDeep.doc.body.appendChild(deepResp);
+  let enhDeep = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDeep.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDeep.sandbox);
+    enhDeep = envDeep.sandbox.__AGEnhancer;
+    const deepSnap = enhDeep.getMobileSnapshot();
+    assert.equal(deepSnap.messages.length, 1);
+    assert.equal(deepTextContentReads, 0, 'depth > 24 分支严禁读取整棵深层子树 textContent 绕过预算');
+    assert.equal(secondRootRead, 0, '前置根节点已触及字符/深度预算后不得继续遍历后续根节点');
+    assert.equal(deepSnap.messages[0].html, '', '触发预算早停时必须跳过 HTML 序列化');
+  } finally {
+    enhDeep?.dispose?.();
+    envDeep.sandbox.__AGContextMeter?.dispose?.();
+    envDeep.cleanup?.();
+  }
+
+  // 6. 桌面停在会话 B、独立读取会话 A 抛错时：绝不沿用会话 B 的 messages/上下文，也不会污染会话 A 历史缓存
+  const envIsoErr = createDomEnv();
+  envIsoErr.win.location = { pathname: '/c/bbbb1111-2222-3333-4444-555555555555', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/bbbb1111-2222-3333-4444-555555555555' };
+  envIsoErr.sandbox.location = envIsoErr.win.location;
+  envIsoErr.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const msgB = envIsoErr.doc.createElement('div');
+  msgB.setAttribute('data-testid', 'user-message');
+  msgB.textContent = 'SECRET_DESKTOP_B_MSG';
+  envIsoErr.doc.body.appendChild(msgB);
+  let enhIsoErr = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envIsoErr.sandbox);
+    vm.runInContext(ENHANCER_SRC, envIsoErr.sandbox);
+    enhIsoErr = envIsoErr.sandbox.__AGEnhancer;
+    const desktopBSnap = enhIsoErr.getMobileSnapshot();
+    assert.equal(desktopBSnap.sessionId, 'bbbb1111-2222-3333-4444-555555555555');
+    assert.equal(desktopBSnap.messages[0]?.text, 'SECRET_DESKTOP_B_MSG');
+
+    const isoErrSnap = await enhIsoErr.getMobileSnapshotAsync({ conversationId: 'aaaa9999-2222-3333-4444-555555555555' });
+    assert.equal(isoErrSnap.sessionId, 'aaaa9999-2222-3333-4444-555555555555');
+    assert.equal(isoErrSnap.isolated, true);
+    assert.equal(isoErrSnap.isolatedError, true);
+    assert.equal(isoErrSnap.historySource, 'isolated_error');
+    assert.equal(isoErrSnap.messages.length, 0, '独立读取会话 A 失败时绝不得继承桌面会话 B 的 messages');
+    assert.equal(isoErrSnap.contextPanel, null);
+
+    const isoErrMgr = remoteMod.createConversationHistoryManager();
+    const enrichedErr = await isoErrMgr.enrichMessages(isoErrSnap, {
+      localApiConnect: async () => { throw new Error('ls unavailable'); }
+    });
+    assert.equal(enrichedErr.messages.length, 0);
+    assert.equal(enrichedErr.historySource, 'isolated_error');
+    const cachedPageA = await isoErrMgr.getMessagesPage({ sessionId: 'aaaa9999-2222-3333-4444-555555555555', limit: 30 });
+    const joinedA = (cachedPageA.messages || []).map((m) => m.text).join('\n');
+    assert.ok(!joinedA.includes('SECRET_DESKTOP_B_MSG'), '桌面会话 B 的消息绝不得写入会话 A 的历史缓存');
+  } finally {
+    enhIsoErr?.dispose?.();
+    envIsoErr.sandbox.__AGContextMeter?.dispose?.();
+    envIsoErr.cleanup?.();
+  }
+
+  // 5. fetchGenMap 淘汰后单调序号隔离：旧请求在途 -> 触发 >2000 个其他会话淘汰 -> 同会话新请求先返回 -> 旧请求晚归不得覆盖新结果
+  const evictMgr = remoteMod.createConversationHistoryManager();
+  let resolveOldEvict;
+  const oldEvictPromise = evictMgr.enrichMessages(
+    { sessionId: 'sess-evict-target', messages: [], _activeTrajSig: 'sig-old' },
+    {
+      localApiConnect: async () => ({
+        call: async () => await new Promise((r) => { resolveOldEvict = r; })
+      })
+    }
+  );
+  await new Promise((r) => setTimeout(r, 10));
+  const fastApi = async () => ({ call: async () => ({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'other' } }] } }) });
+  for (let i = 0; i < 2005; i++) {
+    await evictMgr.enrichMessages({ sessionId: `sess-filler-${i}`, messages: [], _activeTrajSig: `s-${i}` }, { localApiConnect: fastApi });
+  }
+  const newEvictSnap = await evictMgr.enrichMessages(
+    { sessionId: 'sess-evict-target', messages: [], _activeTrajSig: 'sig-new' },
+    {
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async () => ({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'NEW_AUTHORITATIVE_MSG' } }] } })
+      })
+    }
+  );
+  assert.equal(newEvictSnap.messages[0]?.text, 'NEW_AUTHORITATIVE_MSG');
+  // 让最早发起的旧请求晚归：绝不得覆盖已缓存的新结果
+  resolveOldEvict({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'OLD_STALE_MSG' } }] } });
+  await oldEvictPromise;
+  const afterStalePage = await evictMgr.getMessagesPage({ sessionId: 'sess-evict-target', limit: 30 });
+  assert.equal(afterStalePage.messages[0]?.text, 'NEW_AUTHORITATIVE_MSG', 'fetchGenMap 淘汰后旧请求晚归不得覆盖同会话新结果');
+});
+
+test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回退、macOS 进程过滤/锁路径加固及 5 语种 README 同步 (#34)', async () => {
+  const zlib = require('zlib');
+  const { execFileSync } = require('child_process');
+  const remoteMod = require('./mobile-remote');
+
+  // 1. ag-enhancer-overlay.js：仅 1 处 resolvePermissionStateFromDom，且 PERMISSION_DEFAULT_LABELS 定义早于首次引用
+  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  const declMatches = overlaySrc.match(/function\s+resolvePermissionStateFromDom\s*\(/g) || [];
+  assert.equal(declMatches.length, 1, `resolvePermissionStateFromDom 应仅声明 1 次，实际=${declMatches.length}`);
+  const constDefIdx = overlaySrc.indexOf('const PERMISSION_DEFAULT_LABELS = {');
+  const firstRefIdx = overlaySrc.indexOf('PERMISSION_DEFAULT_LABELS[');
+  assert.ok(constDefIdx > 0 && firstRefIdx > constDefIdx, 'PERMISSION_DEFAULT_LABELS 必须在首次引用前声明以消除 TDZ 隐患');
+
+  // 2. mobile-remote.js：gzip 响应合并 Vary: Origin, Accept-Encoding（不覆盖 Origin），且 zlib.gzipSync 抛错安全回退明文
+  const bigMsg = 'M'.repeat(1800);
+  const handler = remoteMod.createRemoteHttpHandler(
+    { token: 'tok-34-gzip', port: 18765, channels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    {
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's-34', messages: [{ role: 'assistant', text: bigMsg }] }),
+      performAction: async () => ({ ok: true })
+    }
+  );
+  const callApi = async (extraHeaders = {}) => {
+    const resObj = {
+      statusCode: 0,
+      headers: {},
+      chunks: [],
+      setHeader(k, v) {
+        this.headers[k] = v;
+      },
+      getHeader(k) {
+        const hit = Object.keys(this.headers).find((h) => h.toLowerCase() === String(k).toLowerCase());
+        return hit ? this.headers[hit] : undefined;
+      },
+      writeHead(code, hdrs) {
+        this.statusCode = code;
+        for (const [k, v] of Object.entries(hdrs || {})) {
+          this.headers[k] = v;
+        }
+      },
+      end(chunk) {
+        if (chunk !== undefined && chunk !== null) {
+          this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'));
+        }
+      }
+    };
+    const reqObj = {
+      method: 'GET',
+      url: '/api/snapshot',
+      headers: {
+        host: '127.0.0.1:18765',
+        origin: 'http://127.0.0.1:18765',
+        'x-ag-remote-token': 'tok-34-gzip',
+        'accept-encoding': 'gzip, deflate',
+        ...extraHeaders
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      on() {}
+    };
+    await handler(reqObj, resObj);
+    return { statusCode: resObj.statusCode, headers: resObj.headers, body: Buffer.concat(resObj.chunks) };
+  };
+
+  const gzRes = await callApi();
+  assert.equal(gzRes.statusCode, 200);
+  assert.equal(gzRes.headers['Content-Encoding'], 'gzip');
+  const varyParts = String(gzRes.headers.Vary || '').split(',').map((s) => s.trim().toLowerCase());
+  assert.ok(varyParts.includes('origin') && varyParts.includes('accept-encoding'), `Vary 应同时保留 Origin 与 Accept-Encoding，实际=${gzRes.headers.Vary}`);
+  const parsedGz = JSON.parse(zlib.gunzipSync(gzRes.body).toString('utf8'));
+  assert.equal(parsedGz.sessionId, 's-34');
+
+  // 模拟创建 handler 前 zlib.gzipSync 抛错：必须仍能创建 handler，且 HTML 与 API 均安全回退未压缩响应
+  const origGzipSync = zlib.gzipSync;
+  zlib.gzipSync = () => { throw new Error('mock gzip failure'); };
+  try {
+    const fallbackHandler = remoteMod.createRemoteHttpHandler(
+      { token: 'tok-34-gzip', port: 18765, channels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        fetchSnapshot: async () => ({ ok: true, sessionId: 's-34', messages: [{ role: 'assistant', text: bigMsg }] }),
+        performAction: async () => ({ ok: true })
+      }
+    );
+    const callFallback = async (urlPath) => {
+      const resObj = {
+        statusCode: 0,
+        headers: {},
+        chunks: [],
+        setHeader(k, v) { this.headers[k] = v; },
+        getHeader(k) {
+          const hit = Object.keys(this.headers).find((h) => h.toLowerCase() === String(k).toLowerCase());
+          return hit ? this.headers[hit] : undefined;
+        },
+        writeHead(code, hdrs) {
+          this.statusCode = code;
+          for (const [k, v] of Object.entries(hdrs || {})) this.headers[k] = v;
+        },
+        end(chunk) {
+          if (chunk !== undefined && chunk !== null) {
+            this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'));
+          }
+        }
+      };
+      await fallbackHandler({
+        method: 'GET',
+        url: urlPath,
+        headers: {
+          host: '127.0.0.1:18765',
+          origin: 'http://127.0.0.1:18765',
+          'x-ag-remote-token': 'tok-34-gzip',
+          'accept-encoding': 'gzip, deflate'
+        },
+        socket: { remoteAddress: '127.0.0.1' },
+        on() {}
+      }, resObj);
+      return { statusCode: resObj.statusCode, headers: resObj.headers, body: Buffer.concat(resObj.chunks) };
+    };
+    const htmlFallbackRes = await callFallback('/?token=tok-34-gzip');
+    assert.equal(htmlFallbackRes.statusCode, 200);
+    assert.equal(htmlFallbackRes.headers['Content-Encoding'], undefined, '预压缩失败时 HTML 响应必须回退明文');
+    assert.ok(/<!doctype html>/i.test(htmlFallbackRes.body.toString('utf8')), 'HTML 明文回退内容必须完整');
+
+    const apiFallbackRes = await callFallback('/api/snapshot');
+    assert.equal(apiFallbackRes.statusCode, 200);
+    assert.equal(apiFallbackRes.headers['Content-Encoding'], undefined, 'gzipSync 异常时 API 响应必须回退未压缩响应');
+    const parsedPlain = JSON.parse(apiFallbackRes.body.toString('utf8'));
+    assert.equal(parsedPlain.sessionId, 's-34');
+  } finally {
+    zlib.gzipSync = origGzipSync;
+  }
+
+  // 3. bin/ag-context-meter：bash -n 通过、get_host_ps_line 过滤 --type=/--import=/--headless、锁路径优先 TMPDIR
+  const cliBinPath = path.join(__dirname, 'bin', 'ag-context-meter');
+  execFileSync('bash', ['-n', cliBinPath], { stdio: 'pipe' });
+  const cliBinSrc = fs.readFileSync(cliBinPath, 'utf8');
+  assert.ok(cliBinSrc.includes('--type=|--import=|--headless'), 'get_host_ps_line 必须排除 --type=|--import=|--headless 子进程');
+  assert.ok(!cliBinSrc.includes('RELAUNCH_LOCK_FILE="${AG_RELAUNCH_LOCK_FILE:-/tmp/'), '重拉锁路径不得硬编码 /tmp');
+  assert.ok(cliBinSrc.includes('TMPDIR'), '重拉锁路径应优先使用 TMPDIR 或套件状态目录');
+
+  const mockPs = [
+    '1001 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --type=renderer',
+    '1002 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --import=/foo.mjs',
+    '1003 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --headless',
+    '1004 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=9222'
+  ].join('\n');
+  const filteredLine = execFileSync('bash', [
+    '-c',
+    'printf "%s\\n" "$AG_MOCK_PS_OUTPUT" | grep "/Contents/MacOS/Antigravity" | grep -v -E "Antigravity Helper|language_server|--type=|--import=|--headless" | head -n 1'
+  ], { env: { ...process.env, AG_MOCK_PS_OUTPUT: mockPs }, encoding: 'utf8' }).trim();
+  assert.ok(filteredLine.startsWith('1004 '), `应过滤全部子进程仅保留主进程 1004，实际=${filteredLine}`);
+
+  // 4. 全部 5 语种 README 完整存在、同步包含 $HOME 边界与 Cmd/Ctrl + Enter 且无过时禁用命令
+  for (const name of ['README.md', 'README.en.md', 'README.ja.md', 'README.ko.md', 'README.es.md']) {
+    const text = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    assert.ok(text.includes('$HOME'), `${name} 应同步说明 $HOME 安全目录边界`);
+    assert.ok(text.includes('Cmd/Ctrl + Enter'), `${name} 应同步说明 Cmd/Ctrl + Enter 发送快捷键`);
+    assert.ok(!text.includes('node cli.js install'), `${name} 不得包含已禁用的 node cli.js install`);
+  }
+});
+
+test('PR #5 合并加固：subagentStates 孤立记录超 TTL、根会话归档或超限后自动清理', async () => {
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-subagent-ttl-'));
+  const stateDir = path.join(tmpBase, 'state');
+  const configDir = path.join(tmpBase, 'cfg');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+
+  try {
+    const nowMs = Date.now();
+    const extraStates = {};
+    for (let i = 0; i < 203; i++) {
+      extraStates[`sub-cap-${i}`] = {
+        rootId: 'root-fresh',
+        status: 'waiting',
+        updatedAt: nowMs - 20000 - (203 - i) * 10
+      };
+    }
+    extraStates['sub-expired'] = {
+      rootId: 'root-expired-only',
+      status: 'running',
+      updatedAt: nowMs - 10 * 60 * 1000
+    };
+    extraStates['sub-archived-root'] = {
+      rootId: 'root-archived',
+      status: 'waiting',
+      updatedAt: nowMs - 1000
+    };
+    extraStates['sub-fresh'] = {
+      rootId: 'root-fresh',
+      status: 'waiting',
+      updatedAt: nowMs - 5000
+    };
+
+    const catalogPath = path.join(stateDir, 'remote-session-catalog.json');
+    fs.writeFileSync(catalogPath, JSON.stringify({
+      version: 2,
+      updatedAt: nowMs - 1000,
+      subagentIds: Object.keys(extraStates),
+      subagentRoots: Object.fromEntries(Object.entries(extraStates).map(([k, v]) => [k, v.rootId])),
+      subagentStates: extraStates,
+      conversations: []
+    }));
+
+    delete require.cache[require.resolve('./mobile-remote.js')];
+    const remoteMod = require('./mobile-remote.js');
+    const outSnap = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'root-fresh',
+      busy: false,
+      pendingApprovals: [],
+      conversations: [],
+      projects: []
+    }, {
+      stateDir,
+      configDir,
+      bypassCache: true,
+      subagentStateTtlMs: 5 * 60 * 1000,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') {
+            return {
+              trajectorySummaries: {
+                'root-expired-only': {
+                  summary: 'Root Without Active Subagent',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  lastModifiedTime: new Date(nowMs - 60000).toISOString(),
+                  trajectoryMetadata: { projectId: 'proj-ttl', rootConversationId: 'root-expired-only' }
+                },
+                'root-archived': {
+                  summary: 'Archived Root',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  lastModifiedTime: new Date(nowMs - 60000).toISOString(),
+                  trajectoryMetadata: { projectId: 'proj-ttl', rootConversationId: 'root-archived' },
+                  annotations: { archived: true }
+                },
+                'root-fresh': {
+                  summary: 'Fresh Waiting Root',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  lastModifiedTime: new Date(nowMs - 5000).toISOString(),
+                  trajectoryMetadata: { projectId: 'proj-ttl', rootConversationId: 'root-fresh' }
+                }
+              }
+            };
+          }
+          if (method === 'ListProjects') return { projectIds: ['proj-ttl'] };
+          return {};
+        }
+      })
+    });
+
+    const convExpired = (outSnap.conversations || []).find((c) => c.id === 'root-expired-only');
+    const convFresh = (outSnap.conversations || []).find((c) => c.id === 'root-fresh');
+    assert.ok(convExpired && convFresh, '活跃与非归档根会话均应出现在目录中');
+    assert.equal(convExpired.status, 'idle', '超过 subagentStateTtlMs 的孤立子会话不得继续将空闲根会话标为 running');
+    assert.equal(convFresh.status, 'waiting', 'TTL 内未归档根会话的孤立子会话仍应正常汇总 waiting 状态');
+
+    const persisted = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    assert.equal(persisted.subagentStates['sub-expired'], undefined, '超过 TTL 的孤立 subagentStates 必须被清理');
+    assert.equal(persisted.subagentStates['sub-archived-root'], undefined, '根会话已归档的孤立 subagentStates 必须被清理');
+    assert.ok(persisted.subagentStates['sub-fresh'], 'TTL 内的最新孤立子会话应保留');
+    assert.equal(Object.keys(persisted.subagentStates).length, 200, 'subagentStates 超出 200 条上限时应按 updatedAt 淘汰最旧记录');
+    assert.equal(persisted.subagentStates['sub-cap-0'], undefined, '最旧的 cap 溢出条目应优先淘汰');
+  } finally {
+    fs.rmSync(tmpBase, { recursive: true, force: true });
   }
 });
