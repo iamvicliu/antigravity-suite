@@ -6885,14 +6885,22 @@
       return true;
     };
     const emit = (s) => (charge(s ? s.length : 0) ? s : '');
+    const emitEscapedText = (raw) => {
+      const str = String(raw || '');
+      if (budget && str.length > (budget.maxChars - budget.chars)) {
+        budget.exceeded = true;
+        return '';
+      }
+      return emit(escapeHtml(str));
+    };
     if (node.nodeType === Node.TEXT_NODE) {
-      return emit(escapeHtml(node.nodeValue || ''));
+      return emitEscapedText(node.nodeValue);
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
 
     const tag = node.tagName;
     if (MD_SKIP_TAGS.has(tag)) return '';
-    if (depth > 24) return emit(escapeHtml(node.textContent || ''));
+    if (depth > 24) return emitEscapedText(node.textContent);
 
     const cls = typeof node.className === 'string' ? node.className : '';
     if (cls.includes('katex-mathml') || (cls.includes('pointer-events-none') && cls.includes('sticky'))) {
