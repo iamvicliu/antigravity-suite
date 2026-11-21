@@ -4437,7 +4437,8 @@
       autoCompactState.idleSince = 0;
     }
 
-    const busy = isAssistantBusy();
+    const busySignal = detectAssistantBusySignal();
+    const busy = Boolean(busySignal);
     if (busy) {
       if (autoCompactState.inFlightSession !== sessionId) {
         autoCompactState.armedForSession = true;
@@ -4522,27 +4523,31 @@
     ));
   }
 
-  function isAssistantBusy() {
-    if (Date.now() - lastUserSubmitAt < 2500) return true;
+  function detectAssistantBusySignal() {
     const cancelBtn =
       document.querySelector('.surface-composer [data-testid="input-cancel-button"]') ||
       document.querySelector('[data-testid="input-cancel-button"]');
     if (cancelBtn && cancelBtn.offsetWidth > 0 && !cancelBtn.disabled) {
-      return true;
+      return 'cancel-btn';
     }
     const thinkingTriggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
     for (const trigger of thinkingTriggers) {
       const text = (trigger.textContent || '').trim();
-      if (/^(?:Thinking|思考中)/i.test(text)) return true;
+      if (/^(?:Thinking|思考中)/i.test(text)) return 'thinking';
     }
     const activeCid = getSessionIdFromLocation();
     if (activeCid) {
       const activeRow = findSidebarRowById(activeCid);
       if (activeRow && activeRow.querySelector('.animate-spin, [data-testid*="spinner"], [aria-busy="true"]')) {
-        return true;
+        return 'spinner';
       }
     }
-    return false;
+    if (Date.now() - lastUserSubmitAt < 2500) return 'recent-submit';
+    return '';
+  }
+
+  function isAssistantBusy() {
+    return Boolean(detectAssistantBusySignal());
   }
 
   function truncateNextStepText(text, maxChars = 8) {
@@ -8275,7 +8280,8 @@
     const conversations = collectSidebarConversations(0, storeCatalog);
     const { projectGroups } = collectSidebarProjectGroups(60);
     const activeConv = conversations.find((c) => c.active);
-    const busy = isAssistantBusy();
+    const busySignal = detectAssistantBusySignal();
+    const busy = Boolean(busySignal);
     const locProjectId = getProjectIdFromLocation();
     const currentProjectId = locProjectId || activeConv?.projectId || '';
     const matchedProj = storeCatalog.projects.find((p) => p.id === currentProjectId);
@@ -8348,6 +8354,8 @@
       currentProjectName,
       title,
       busy,
+      busySignal,
+      strongDomBusy: busySignal === 'cancel-btn' || busySignal === 'thinking' || busySignal === 'spinner' || busySignal === 'recent-submit',
       autoAccept: autoAcceptEnabled,
       model,
       modelOptions,

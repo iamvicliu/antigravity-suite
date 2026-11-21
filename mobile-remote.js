@@ -1527,6 +1527,7 @@ function normalizeTrajectoryStatus(rawStatus, termReason, options = {}) {
     s === 'CASCADE_RUN_STATUS_RUNNING' ||
     options.subagentRunning ||
     options.domBusy ||
+    options.strongDomBusy ||
     (!explicitTrajIdle && (options.activeBusy || options.domStatus === 'running'))
   ) {
     return 'running';
@@ -2074,9 +2075,11 @@ function createSessionCatalogStore() {
           : (t?.annotations?.pinned !== undefined ? t.annotations.pinned : prev?.pinned)
       );
 
+      const hasStrongActiveDomBusy = Boolean(isActive && (snap.strongDomBusy || snap.busySignal));
       const status = normalizeTrajectoryStatus(t?.status, t?.latestExecutorTerminationReason, {
         hasPendingApprovals: isActive && hasPendingApprovals,
         activeBusy: isActive && Boolean(snap.busy),
+        strongDomBusy: hasStrongActiveDomBusy,
         domBusy: Boolean(sc?.domBusy),
         domStatus: sc?.status,
         subagentWaiting: Boolean(roll?.waiting),
@@ -2087,6 +2090,7 @@ function createSessionCatalogStore() {
         isActive &&
         status === 'idle' &&
         CREDIBLE_TRAJ_IDLE_STATUSES.has(String(t?.status || '').trim()) &&
+        !hasStrongActiveDomBusy &&
         !sc?.domBusy &&
         !roll?.running &&
         !hasPendingApprovals
