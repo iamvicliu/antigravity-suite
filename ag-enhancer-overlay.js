@@ -6981,6 +6981,26 @@
           || ctrl.parentElement?.parentElement;
         if (card) pushRoot(card);
       }
+      // 2b. 扫描官方编号确认选择卡片（如 "Allow write access to this path?"：含 1..N 编号选项行 + Submit/Skip 等按钮）
+      const submitBtns = main.querySelectorAll('button');
+      for (const btn of submitBtns) {
+        if (isExcludedSuiteOrNavNode(btn) || !isVisiblePromptControl(btn)) continue;
+        const btnLabel = String(btn.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!btnLabel || btnLabel.length > 28 || !/^(?:submit|confirm|allow|approve|skip|提交|确认|允许|跳过)(?:\s*[↵↩])?$/i.test(btnLabel)) continue;
+        let cur = btn.parentElement;
+        for (let depth = 0; cur && cur !== main && cur !== document.body && depth < 6; depth++, cur = cur.parentElement) {
+          if (isExcludedSuiteOrNavNode(cur)) break;
+          const numberedRows = Array.from(cur.querySelectorAll('button, [role="option"], [role="menuitem"], [tabindex]')).filter((el) => {
+            if (el === btn || isExcludedSuiteOrNavNode(el) || !isVisiblePromptControl(el)) return false;
+            const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+            return /^[1-9]\s+\S/.test(txt) && txt.length <= 160;
+          });
+          if (numberedRows.length >= 2) {
+            pushRoot(cur);
+            break;
+          }
+        }
+      }
     }
 
     // 去除被其他候选根容器包含的内层重复容器
@@ -6995,6 +7015,7 @@
 
       const options = [];
       const seenOptLabels = new Set();
+      const optionElSet = new Set();
       let hasCheckbox = false;
       for (const ctrl of rawControls) {
         const label = readPromptOptionLabel(ctrl, root).slice(0, 160);
@@ -7003,6 +7024,7 @@
         const isChk = (String(ctrl.tagName || '').toUpperCase() === 'INPUT' && ctrl.type === 'checkbox')
           || ctrl.getAttribute?.('role') === 'checkbox';
         if (isChk) hasCheckbox = true;
+        optionElSet.add(ctrl);
         options.push({
           index: options.length,
           el: ctrl,
@@ -7012,8 +7034,37 @@
         });
       }
 
+      // 若未找到标准 radio/checkbox，回退提取编号选项行（1 Yes... / 2 Yes... / 3 ...）
+      if (options.length < 2) {
+        const numberedCandidates = Array.from(root.querySelectorAll('button, [role="option"], [role="menuitem"], [tabindex]')).filter((el) => {
+          if (isExcludedSuiteOrNavNode(el) || !isVisiblePromptControl(el)) return false;
+          if (el.disabled || el.getAttribute?.('aria-disabled') === 'true') return false;
+          const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+          return /^[1-9]\s+\S/.test(txt) && txt.length <= 160;
+        });
+        if (numberedCandidates.length >= 2) {
+          for (const el of numberedCandidates) {
+            const label = String(el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+            if (!label || seenOptLabels.has(label)) continue;
+            seenOptLabels.add(label);
+            optionElSet.add(el);
+            const selected = isPromptControlSelected(el)
+              || el.getAttribute?.('aria-selected') === 'true'
+              || el.getAttribute?.('data-selected') === 'true'
+              || el.getAttribute?.('data-active') === 'true';
+            options.push({
+              index: options.length,
+              el,
+              label,
+              selected,
+              kind: 'radio'
+            });
+          }
+        }
+      }
+
       const rawButtons = Array.from(root.querySelectorAll('button')).filter((b) => {
-        if (isExcludedSuiteOrNavNode(b)) return false;
+        if (optionElSet.has(b) || isExcludedSuiteOrNavNode(b)) return false;
         if (!isVisiblePromptControl(b)) return false;
         const isBtnDisabled = Boolean(b.disabled || b.getAttribute?.('aria-disabled') === 'true');
         // 若卡片内有可用选项（如待勾选后才启用的 Submit 按钮），保留初始禁用的提交/确认按钮；纯弹窗无选项时仍过滤禁用按钮
@@ -7108,6 +7159,94 @@
       otherPlaceholder: card.otherPlaceholder,
       otherValue: card.otherValue,
       actions: card.actions.map(({ index, label, kind }) => ({ index, label, kind }))
+    }));
+  }
+
+  function findQueuedMessagesDomEntries() {
+    const main = document.querySelector('main') || document.body;
+    if (!main) return [];
+    const headerNodes = Array.from(main.querySelectorAll('[data-testid*="queue" i], div, span, p, h3, h4')).filter((el) => {
+      if (isExcludedSuiteOrNavNode(el) || !isVisiblePromptControl(el)) return false;
+      const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!txt || txt.length > 80) return false;
+      return /^(?:Queued Messages|排队消息)\b/i.test(txt);
+    });
+    if (!headerNodes.length) return [];
+    let cardRoot = null;
+    for (const h of headerNodes) {
+      let cur = h;
+      for (let depth = 0; cur && cur !== main && cur !== document.body && depth < 5; depth++, cur = cur.parentElement) {
+        if (isExcludedSuiteOrNavNode(cur)) break;
+        const fullTxt = String(cur.textContent || '').replace(/\s+/g, ' ').trim();
+        if (fullTxt.length > 20 && fullTxt.length < 4000 && cur.querySelectorAll('button').length >= 1) {
+          cardRoot = cur;
+          // 优先取包含多行或发送/删除按钮的最近卡片容器
+          const hasActionBtns = Array.from(cur.querySelectorAll('button')).some((b) => {
+            const meta = `${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`;
+            return /send|delete|remove|trash|queue|发送|删除|撤回/i.test(meta);
+          });
+          if (hasActionBtns) break;
+        }
+      }
+      if (cardRoot) break;
+    }
+    if (!cardRoot) return [];
+
+    const stripHeaderNoise = (raw) => String(raw || '')
+      .replace(/\s+/g, ' ')
+      .replace(/^Queued Messages\s*\d*\s*(?:Sends after agent finishes working)?/i, '')
+      .replace(/^排队消息\s*\d*\s*(?:将在代理完成后发送)?/, '')
+      .trim();
+
+    const entries = [];
+    const seenTexts = new Set();
+    const rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'));
+    const fallbackRows = rowCandidates.length ? rowCandidates : Array.from(cardRoot.children).slice(1);
+
+    const inspectRow = (rowEl) => {
+      if (!rowEl || isExcludedSuiteOrNavNode(rowEl)) return;
+      const rawTxt = stripHeaderNoise(rowEl.textContent || '');
+      const imgs = Array.from(rowEl.querySelectorAll('img')).map((img) => ({
+        src: String(img.getAttribute?.('src') || img.src || '').trim(),
+        alt: String(img.getAttribute?.('alt') || '').trim()
+      })).filter((im) => im.src && !im.src.startsWith('data:image/svg'));
+      if (!rawTxt && !imgs.length) return;
+      const key = `${rawTxt}|${imgs.length}`;
+      if (seenTexts.has(key)) return;
+      seenTexts.add(key);
+      const btns = Array.from(rowEl.querySelectorAll('button')).filter((b) => !isExcludedSuiteOrNavNode(b));
+      let sendBtn = btns.find((b) => /send|now|immediate|发送/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
+      let deleteBtn = btns.find((b) => /delete|remove|trash|cancel|删除|撤回|移除/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
+      if (!sendBtn && btns.length >= 2) sendBtn = btns[0];
+      if (!deleteBtn && btns.length >= 1) deleteBtn = btns[btns.length - 1];
+      entries.push({
+        domIndex: entries.length,
+        stepIndex: -1,
+        source: 'dom',
+        text: rawTxt || (imgs.length ? `[图片 ×${imgs.length}]` : ''),
+        images: imgs.slice(0, 6),
+        status: 'QUEUED',
+        sendBtn,
+        deleteBtn
+      });
+    };
+
+    for (const r of fallbackRows) inspectRow(r);
+    if (!entries.length) {
+      const wholeTxt = stripHeaderNoise(cardRoot.textContent || '');
+      if (wholeTxt) inspectRow(cardRoot);
+    }
+    return entries;
+  }
+
+  function collectQueuedMessagesFromDom() {
+    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, source, text, images, status }) => ({
+      domIndex,
+      stepIndex,
+      source,
+      text,
+      images,
+      status
     }));
   }
 
@@ -8328,6 +8467,7 @@
     const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
     const pendingApprovals = collectPendingApprovals();
     const pendingPrompts = collectPendingPrompts();
+    const queuedMessages = collectQueuedMessagesFromDom();
     const messages = collectRecentMessages(60);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
     const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model);
@@ -8374,6 +8514,7 @@
       },
       pendingApprovals,
       pendingPrompts,
+      queuedMessages,
       suggestions,
       messages,
       projects: storeCatalog.projects,
@@ -8964,6 +9105,76 @@
       return { ok: true, name: file.name, size: file.size };
     }
 
+    if (action === 'remove-uploaded-attachment') {
+      const clearAll = payload?.clearAll === true;
+      const reqName = String(payload?.name || '').trim().toLowerCase();
+      const reqIdx = Number.isInteger(payload?.index) ? payload.index : -1;
+      const composerScope = document.querySelector('.surface-composer')?.parentElement || document.querySelector('.surface-composer') || document.body;
+      const isSuiteOverlayNode = (el) => Boolean(el?.closest?.(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, [data-agy-hans-ui], [data-agy-context-capsule]`));
+      const candidates = Array.from(composerScope.querySelectorAll('button')).filter((btn) => {
+        if (isSuiteOverlayNode(btn)) return false;
+        const meta = `${btn.getAttribute?.('aria-label') || ''} ${btn.getAttribute?.('title') || ''} ${btn.textContent || ''}`.trim();
+        const isRemoveBtn = /^(?:×|✕|x)$/i.test(meta) || /remove|delete|close|clear|移除|删除|取消附件/i.test(meta);
+        if (!isRemoveBtn) return false;
+        const container = btn.parentElement;
+        if (!container) return false;
+        return Boolean(container.querySelector('img') || /\.(?:png|jpe?g|webp|gif|pdf|txt|md|json|csv|zip|docx?|xlsx?|js|ts|py)/i.test(container.textContent || '') || container.getAttribute?.('data-testid')?.match(/attach|file|image|media/i));
+      });
+      if (!candidates.length) return { ok: true, removed: 0 };
+      if (clearAll) {
+        let removed = 0;
+        for (let i = candidates.length - 1; i >= 0; i--) {
+          try { candidates[i].click(); removed += 1; } catch {}
+        }
+        return { ok: true, removed };
+      }
+      let targetBtn = null;
+      if (reqName) {
+        targetBtn = candidates.find((b) => {
+          const box = b.parentElement;
+          const imgAlt = String(box?.querySelector?.('img')?.getAttribute?.('alt') || '').toLowerCase();
+          const boxTxt = String(box?.textContent || '').toLowerCase();
+          const aria = String(b.getAttribute?.('aria-label') || '').toLowerCase();
+          return imgAlt.includes(reqName) || boxTxt.includes(reqName) || aria.includes(reqName);
+        }) || null;
+      }
+      if (!targetBtn && reqIdx >= 0 && reqIdx < candidates.length) {
+        targetBtn = candidates[reqIdx];
+      }
+      if (!targetBtn) targetBtn = candidates[candidates.length - 1];
+      try {
+        targetBtn.click();
+        return { ok: true, removed: 1 };
+      } catch (err) {
+        return { ok: false, error: err?.message || '移除桌面端附件失败' };
+      }
+    }
+
+    if (action === 'send-queued-dom') {
+      const entries = findQueuedMessagesDomEntries();
+      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
+      const target = entries[reqIdx] || entries[0];
+      if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+      target.sendBtn.click();
+      return { ok: true, source: 'dom' };
+    }
+
+    if (action === 'delete-queued-dom') {
+      const entries = findQueuedMessagesDomEntries();
+      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : -1;
+      const reqText = String(payload?.text || '').trim();
+      let target = (reqIdx >= 0 && reqIdx < entries.length) ? entries[reqIdx] : null;
+      if (!target && reqText) {
+        target = entries.find((e) => e.text === reqText || e.text.includes(reqText)) || null;
+      }
+      if (!target) target = entries[0];
+      if (!target?.deleteBtn) return { ok: false, error: '未找到桌面端排队消息删除按钮' };
+      target.deleteBtn.click();
+      return { ok: true, source: 'dom' };
+    }
+
     return { ok: false, error: `未知操作: ${action}` };
   }
 
@@ -8979,7 +9190,7 @@
     const action = String(payload?.action || '').trim();
     if (!action) return { ok: false, error: '缺少 action 参数' };
 
-    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'respond-prompt', 'select-model', 'select-permission', 'upload-image'];
+    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'respond-prompt', 'select-model', 'select-permission', 'upload-image', 'remove-uploaded-attachment', 'send-queued-dom', 'delete-queued-dom'];
     const reqConvId = String(payload?.conversationId || '').trim();
     const prevConvId = getSessionIdFromLocation() || '';
 
