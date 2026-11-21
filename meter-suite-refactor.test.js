@@ -12687,15 +12687,75 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
 
     const snapIdle = enh.getMobileSnapshot();
     assert.equal(snapIdle.busy, false, '/compact 完成后无停止按钮/思考触发器/spinner 时，busy 必须为 false');
+    assert.equal(snapIdle.strongDomBusy, false);
 
-    // 添加正在思考触发器 → busy 立即变为 true
-    const thinkTrig = env.doc.createElement('button');
-    thinkTrig.setAttribute('data-testid', 'thinking-collapsible-trigger');
-    thinkTrig.textContent = 'Thinking...';
-    env.doc.body.appendChild(thinkTrig);
-    assert.equal(enh.getMobileSnapshot().busy, true, '存在 Thinking 触发器时 busy 应为 true');
-    thinkTrig.textContent = 'Thought for 3s';
-    assert.equal(enh.getMobileSnapshot().busy, false, 'Thinking 结束后 busy 应恢复为 false');
+    // 3b. 完整链路：getMobileSnapshot() → createSessionCatalogStore().enrichSnapshot()
+    const { createSessionCatalogStore } = require('./mobile-remote');
+    const tmpCatalog27 = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cat27-'));
+    const store27 = createSessionCatalogStore({ catalogPath: path.join(tmpCatalog27, 'catalog.json') });
+    const mockApi27 = async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'cccc1111-2222-3333-4444-555555555555': {
+                summary: '流式与压缩状态测试',
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                lastModifiedTime: new Date().toISOString()
+              }
+            }
+          };
+        }
+        if (method === 'ListProjects') return { projectIds: [] };
+        return {};
+      }
+    });
+
+    try {
+      // 场景 A：提交超过 2.5s 后，轨迹尚在 IDLE 且无侧栏 spinner，但停止按钮有效 → 真实流式生成，必须保持 running & busy=true
+      const cancelBtn = env.doc.createElement('button');
+      cancelBtn.setAttribute('data-testid', 'input-cancel-button');
+      cancelBtn.offsetWidth = 28;
+      cancelBtn.disabled = false;
+      env.doc.body.appendChild(cancelBtn);
+      const snapCancel = enh.getMobileSnapshot();
+      assert.equal(snapCancel.busy, true);
+      assert.equal(snapCancel.busySignal, 'cancel-btn');
+      assert.equal(snapCancel.strongDomBusy, true);
+      const enrCancel = await store27.enrichSnapshot(snapCancel, { localApiConnect: mockApi27, bypassCache: true });
+      assert.equal(enrCancel.busy, true, '有效停止按钮存在时，即使轨迹滞后为 IDLE 也不得误清 busy');
+      assert.equal(enrCancel.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'running');
+      cancelBtn.disabled = true;
+
+      // 场景 B：停止按钮失效但 Thinking 触发器仍活跃（轨迹滞后为 IDLE）→ 仍保持 running & busy=true
+      const thinkTrig = env.doc.createElement('button');
+      thinkTrig.setAttribute('data-testid', 'thinking-collapsible-trigger');
+      thinkTrig.textContent = 'Thinking...';
+      env.doc.body.appendChild(thinkTrig);
+      const snapThink = enh.getMobileSnapshot();
+      assert.equal(snapThink.busy, true);
+      assert.equal(snapThink.busySignal, 'thinking');
+      assert.equal(snapThink.strongDomBusy, true);
+      const enrThink = await store27.enrichSnapshot(snapThink, { localApiConnect: mockApi27, bypassCache: true });
+      assert.equal(enrThink.busy, true, 'Thinking 触发器活跃时不得被滞后 IDLE 误判为空闲');
+      assert.equal(enrThink.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'running');
+
+      // 场景 C：生成完成（Thinking 变为 Thought for 3s，停止按钮禁用）→ 转回 idle & busy=false
+      thinkTrig.textContent = 'Thought for 3s';
+      const snapDone = enh.getMobileSnapshot();
+      assert.equal(snapDone.busy, false);
+      assert.equal(snapDone.strongDomBusy, false);
+      const enrDone = await store27.enrichSnapshot(snapDone, { localApiConnect: mockApi27, bypassCache: true });
+      assert.equal(enrDone.busy, false);
+      assert.equal(enrDone.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'idle');
+
+      // 场景 D：遗留启发式 busy=true 但无 strongDomBusy 且轨迹为 IDLE → enrichSnapshot 修正为 idle & busy=false
+      const enrHeuristic = await store27.enrichSnapshot({ ...snapDone, busy: true, strongDomBusy: false, busySignal: '' }, { localApiConnect: mockApi27, bypassCache: true });
+      assert.equal(enrHeuristic.busy, false, '无强 DOM 运行信号且轨迹明确 IDLE 时，enrichSnapshot 必须清除残留假忙');
+      assert.equal(enrHeuristic.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'idle');
+    } finally {
+      fs.rmSync(tmpCatalog27, { recursive: true, force: true });
+    }
   } finally {
     enh?.dispose?.();
     env.sandbox.__AGContextMeter?.dispose?.();
