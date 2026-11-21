@@ -6971,8 +6971,11 @@
         !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
         !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
       ));
-      let replyText = capText(mdRoots.map((m) => (m.innerText || '').trim()).filter(Boolean).join('\n\n').trim(), MAX_DOM_MSG_CHARS);
-      const rawHtml = extractSanitizedMarkdownHtml(mdRoots);
+      const rawMdReply = mdRoots.map((m) => (m.textContent || m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
+      const overTextCap = rawMdReply.length > MAX_DOM_MSG_CHARS;
+      let replyText = capText(rawMdReply, MAX_DOM_MSG_CHARS);
+      // 超过热路径字符上限时直接跳过整段 HTML 序列化（完整长文由服务端轨迹通道渲染）
+      const rawHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots);
       const replyHtml = rawHtml && rawHtml.length > MAX_DOM_HTML_CHARS ? '' : rawHtml;
       if (!replyText) {
         const cloneText = capText((node.innerText || '')
