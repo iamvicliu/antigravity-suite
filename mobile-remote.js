@@ -7083,8 +7083,9 @@ function buildMobileAppHtml() {
 
       const refFullH = Math.max(maxVvHeight || 0, window.innerHeight || 0, lockedModalBaseH || 0);
       const kbLikelyActive = Boolean(vv && ((refFullH - curH > 60) || ((Number(vv.offsetTop) || 0) > 2)));
+      const legacyFullH = computeLegacyStandaloneFullHeight(curH, kbLikelyActive);
       const freezeModalShrink = !desktop && (anyTextFocused || kbLikelyActive || recentlyBlurred);
-      const modalCandH = isStandalonePwa ? getFullLayoutHeight() : Math.round(curH || 0);
+      const modalCandH = isStandalonePwa ? Math.max(getFullLayoutHeight(), legacyFullH) : Math.round(curH || 0);
       if (desktop || !freezeModalShrink || modalCandH >= lockedModalBaseH) {
         lockedModalBaseH = modalCandH;
       }
@@ -7102,7 +7103,6 @@ function buildMobileAppHtml() {
         document.body.style.transform = top ? 'translateY(' + top + 'px)' : '';
         appEl?.classList.add('kb-open');
       } else {
-        const legacyFullH = computeLegacyStandaloneFullHeight(curH, kbLikelyActive);
         if (legacyFullH > 0) {
           // 填平旧版 black-translucent WebClip 底部被裁掉的 59pt 死区
           document.documentElement.style.height = legacyFullH + 'px';
