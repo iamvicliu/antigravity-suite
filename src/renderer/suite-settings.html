@@ -80,6 +80,13 @@
             <div id="quick-info-role" class="qp-info-role">作用：触发官方本地压缩，将冗长历史浓缩为高密度摘要。</div>
             <div id="quick-info-scene" class="qp-info-scene">场景：上下文超过 150K~240K、响应变慢，或切换下一阶段任务前。</div>
           </div>
+          <label class="settings-pref-row settings-pref-check" style="margin:6px 0 4px;">
+            <div class="settings-pref-meta">
+              <span class="settings-pref-name">内置免参指令点击直接发送</span>
+              <span class="settings-pref-desc">开启后点击 /compact 压缩、重载规则将直接发送（/plan 等带参前缀仍仅填入）；按住 ⌘/Ctrl 点击可临时反转行为</span>
+            </div>
+            <input id="set-quick-builtin-autosend" type="checkbox" class="settings-checkbox" />
+          </label>
           <div id="quick-custom-section-hdr" class="settings-field-lbl" style="margin:8px 0 6px;">自定义快捷提示词</div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">

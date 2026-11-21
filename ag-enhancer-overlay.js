@@ -75,6 +75,9 @@
   let autoAcceptEnabled = false;
   let ghostSuggestEnabled = true;
   let autoCompactEnabled = true;
+  let quickBuiltinAutoSendEnabled = false;
+  let quickAutoSendInFlight = false;
+  let quickAutoSendLockUntil = 0;
   let uiLang = 'zh';
   const DEFAULT_FEATURE_FLAGS = {
     showTopbarTokens: true,
@@ -94,6 +97,7 @@
       labelEn: '/compact',
       slash: 'compact',
       text: '/compact',
+      supportsAutoSend: true,
       rec: '★必开',
       recEn: '★Must',
       tag: '防卡死',
@@ -303,6 +307,7 @@
       labelEn: 'Reload Rules',
       slash: '',
       text: '重新读取 AGENTS',
+      supportsAutoSend: true,
       rec: '★默认',
       recEn: '★Default',
       tag: '恢复约束',
@@ -402,7 +407,8 @@
         id,
         label: label.slice(0, 40),
         text: text.slice(0, 2000),
-        title: String(item.title || '').trim().slice(0, 120)
+        title: String(item.title || '').trim().slice(0, 120),
+        autoSend: Boolean(item.autoSend)
       });
       if (out.length >= 20) break;
     }
@@ -440,6 +446,16 @@
         const rawCompact = localStorage.getItem('ag_suite_auto_compact');
         if (rawCompact === 'true' || rawCompact === 'false') {
           autoCompactEnabled = rawCompact !== 'false';
+        }
+      }
+    } catch {}
+    try {
+      if (detail && typeof detail.quickBuiltinAutoSend === 'boolean') {
+        quickBuiltinAutoSendEnabled = detail.quickBuiltinAutoSend;
+      } else if (typeof localStorage !== 'undefined') {
+        const rawQuickSend = localStorage.getItem('ag_suite_quick_builtin_autosend');
+        if (rawQuickSend === 'true' || rawQuickSend === 'false') {
+          quickBuiltinAutoSendEnabled = rawQuickSend === 'true';
         }
       }
     } catch {}
@@ -2600,6 +2616,14 @@
           border-color: var(--ag-accent-border-hover, rgba(167, 139, 250, 0.56));
           color: var(--ag-effective-accent, #a78bfa);
         }
+        #${QUICK_BAR_ID} .ag-qcap-btn[data-auto-send="true"]::after {
+          content: '↵';
+          font-size: 10.5px;
+          font-weight: 600;
+          opacity: 0.78;
+          color: var(--ag-effective-accent, #a78bfa);
+          margin-left: 1px;
+        }
         #${QUICK_BAR_ID} .ag-qcap-btn[data-risk="warn"] {
           border-color: rgba(245, 158, 11, 0.55);
           background: rgba(245, 158, 11, 0.14);
@@ -2628,6 +2652,9 @@
         #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-btn[data-active="true"]:hover {
           background: var(--ag-accent-bg-hover, rgba(124, 58, 237, 0.18));
           border-color: var(--ag-accent-border-hover, rgba(124, 58, 237, 0.48));
+          color: var(--ag-effective-accent, #7c3aed);
+        }
+        #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-btn[data-auto-send="true"]::after {
           color: var(--ag-effective-accent, #7c3aed);
         }
         #${QUICK_BAR_ID}[data-ag-theme="light"] .ag-qcap-btn[data-risk="warn"] {
@@ -3410,6 +3437,163 @@
     }
   }
 
+  function getComposerDraftText() {
+    const ed = getComposerEditor() || document.querySelector('[contenteditable="true"]');
+    if (!ed) return '';
+    const txt = String(ed.innerText || ed.textContent || '').replace(/\u200B/g, '').trim();
+    if (txt) return txt;
+    const hasInlineChip = Boolean(
+      ed.getAttribute?.('data-converted-slash') ||
+      ed.querySelector?.('[data-uri], [data-converted-slash], [data-lexical-decorator="true"]')
+    );
+    return hasInlineChip ? '__inline_chip__' : '';
+  }
+
+  function isDraftSameAsQuickTarget(draft, fillText, slash) {
+    if (!draft) return true;
+    const normDraft = String(draft).trim();
+    const normTarget = String(fillText || '').trim();
+    if (normDraft === normTarget) return true;
+    if (slash) {
+      const s = String(slash).trim().toLowerCase();
+      if (normDraft.toLowerCase() === s || normDraft.toLowerCase() === `/${s}`) return true;
+      const ed = getComposerEditor() || document.querySelector('[contenteditable="true"]');
+      if (ed && String(ed.getAttribute?.('data-converted-slash') || '').toLowerCase() === s) {
+        if (normDraft === '__inline_chip__' || normDraft.toLowerCase() === s) return true;
+      }
+    }
+    return false;
+  }
+
+  function findComposerSendButton() {
+    return (
+      document.querySelector('.surface-composer [data-testid="send-button"]') ||
+      document.querySelector('.surface-composer .agy-send-button') ||
+      document.querySelector('.surface-composer button[aria-label*="Send"], .surface-composer button[aria-label*="发送"]')
+    );
+  }
+
+  function isComposerSendButtonDisabled(btn) {
+    if (!btn) return true;
+    return Boolean(btn.disabled || btn.getAttribute?.('aria-disabled') === 'true');
+  }
+
+  async function submitCurrentComposer(opts = {}) {
+    const allowEnterFallback = opts.allowEnterFallback !== false;
+    const allowEnterOnDisabled = Boolean(opts.allowEnterOnDisabled);
+    const checkBusyOnEnter = opts.checkBusyOnEnter !== false;
+    let sendBtn = null;
+    for (let i = 0; i < 8; i++) {
+      await new Promise((r) => setTimeout(r, 35));
+      sendBtn = findComposerSendButton();
+      if (sendBtn && !isComposerSendButtonDisabled(sendBtn)) break;
+    }
+    if (sendBtn && !isComposerSendButtonDisabled(sendBtn)) {
+      sendBtn.click();
+      lastUserSubmitAt = Date.now();
+      hideNextStepGhost();
+      return { ok: true, method: 'button' };
+    }
+    if (sendBtn && isComposerSendButtonDisabled(sendBtn) && !allowEnterOnDisabled) {
+      return { ok: false, reason: 'send_disabled', error: '当前发送按钮不可用' };
+    }
+    if (!allowEnterFallback) {
+      return { ok: false, reason: 'no_send_button', error: '未找到发送按钮' };
+    }
+    if (checkBusyOnEnter && isAssistantBusy()) {
+      return { ok: false, reason: 'assistant_busy', error: '智能体正在响应中' };
+    }
+    const ed = getComposerEditor();
+    if (ed) {
+      ed.focus?.();
+      const evOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+      if (typeof KeyboardEvent === 'function') {
+        ed.dispatchEvent(new KeyboardEvent('keydown', evOpts));
+        ed.dispatchEvent(new KeyboardEvent('keyup', evOpts));
+      } else {
+        ed.dispatchEvent({ type: 'keydown', ...evOpts });
+        ed.dispatchEvent({ type: 'keyup', ...evOpts });
+      }
+      lastUserSubmitAt = Date.now();
+      hideNextStepGhost();
+      return { ok: true, method: 'enter' };
+    }
+    return { ok: false, reason: 'no_composer', error: '未找到发送按钮或输入框' };
+  }
+
+  function showQuickFillSuccessToast({ id, slash, label, fillRes }) {
+    if (id === 'compact') {
+      showQuickToast(
+        fillRes === 'slash_pill'
+          ? tr('已生成 /compact 命令胶囊，按回车即可执行', 'Ready: /compact command pill, press Enter to run')
+          : tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run')
+      );
+    } else if (slash) {
+      showQuickToast(
+        fillRes === 'slash_pill'
+          ? tr(`已生成 /${slash} 命令胶囊，输入需求后发送`, `Ready: /${slash} command pill, enter your prompt`)
+          : tr(`已填入 /${slash} ，请输入需求后发送`, `Inserted /${slash} , enter your prompt`)
+      );
+    } else if (id === 'reload') {
+      showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
+    } else {
+      showQuickToast(tr(`已填入「${label}」`, `Inserted "${label}"`));
+    }
+  }
+
+  async function runQuickPromptAction({ fillText, slash = '', label = '', id = '', defaultAutoSend = false, event = null }) {
+    const invert = Boolean(event && (event.metaKey || event.ctrlKey));
+    const shouldAutoSend = invert ? !Boolean(defaultAutoSend) : Boolean(defaultAutoSend);
+    if (!shouldAutoSend) {
+      const fillRes = await fillComposerText(fillText, slash ? { slashCommand: slash } : {});
+      if (!fillRes) return false;
+      showQuickFillSuccessToast({ id, slash, label, fillRes });
+      return true;
+    }
+
+    if (quickAutoSendInFlight || Date.now() < quickAutoSendLockUntil) {
+      return false;
+    }
+
+    const draft = getComposerDraftText();
+    if (draft && !isDraftSameAsQuickTarget(draft, fillText, slash)) {
+      showQuickToast(
+        tr(
+          '⚠️ 输入框已有草稿，为防覆盖已跳过直发（清空后重试，或 ⌘/Ctrl+点击仅填入）',
+          '⚠️ Draft detected in composer; skipped auto-send to avoid overwriting'
+        ),
+        3600
+      );
+      return false;
+    }
+
+    quickAutoSendInFlight = true;
+    quickAutoSendLockUntil = Date.now() + 800;
+    try {
+      const fillRes = await fillComposerText(fillText, slash ? { slashCommand: slash } : {});
+      if (!fillRes) return false;
+      const sendRes = await submitCurrentComposer();
+      if (sendRes?.ok) {
+        if (id === 'compact') {
+          showQuickToast(tr('⚡ 已直接发送 /compact 压缩', '⚡ Sent /compact'));
+        } else {
+          showQuickToast(tr(`⚡ 已直接发送「${label}」`, `⚡ Sent "${label}"`));
+        }
+        return true;
+      }
+      showQuickToast(
+        tr(
+          `已填入「${label}」（当前发送不可用，请手动回车）`,
+          `Inserted "${label}" (send unavailable, press Enter)`
+        ),
+        3200
+      );
+      return false;
+    } finally {
+      quickAutoSendInFlight = false;
+    }
+  }
+
   async function copyToClipboard(text) {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       try {
@@ -4087,37 +4271,30 @@
       }
 
       const fillText = String(item.text || '');
+      const itemAutoSend = Boolean(item.supportsAutoSend && quickBuiltinAutoSendEnabled);
+      const roleDesc = itemAutoSend
+        ? `${role}${tr(' · ⚡ 点击直接发送（按住 ⌘/Ctrl 仅填入）', ' · ⚡ Auto-send on click (⌘/Ctrl to insert)')}`
+        : `${role}${tr('（按住 ⌘/Ctrl 点击可直接发送）', ' (hold ⌘/Ctrl + click to send)')}`;
+      const actTitle = itemAutoSend ? `${title}${tr(' · ⚡ 点击直接发送', ' · ⚡ Auto-send')}` : title;
       actions.push({
         id: btnId,
         poolId: item.id,
         label,
         rec,
         tag,
-        role,
+        role: roleDesc,
         scene,
-        title,
+        title: actTitle,
         fillText,
-        onClick: async () => {
-          const fillRes = await fillComposerText(fillText, item.slash ? { slashCommand: item.slash } : {});
-          if (!fillRes) return;
-          if (item.id === 'compact') {
-            showQuickToast(
-              fillRes === 'slash_pill'
-                ? tr('已生成 /compact 命令胶囊，按回车即可执行', 'Ready: /compact command pill, press Enter to run')
-                : tr('已填入 /compact，按回车即可执行', 'Inserted /compact, press Enter to run')
-            );
-          } else if (item.slash) {
-            showQuickToast(
-              fillRes === 'slash_pill'
-                ? tr(`已生成 /${item.slash} 命令胶囊，输入需求后发送`, `Ready: /${item.slash} command pill, enter your prompt`)
-                : tr(`已填入 /${item.slash} ，请输入需求后发送`, `Inserted /${item.slash} , enter your prompt`)
-            );
-          } else if (item.id === 'reload') {
-            showQuickToast(tr('已填入重载规则指令，按回车即可发送', 'Inserted reload rules prompt, press Enter'));
-          } else {
-            showQuickToast(tr(`已填入「${label}」`, `Inserted "${label}"`));
-          }
-        }
+        autoSend: itemAutoSend,
+        onClick: async (ev) => runQuickPromptAction({
+          fillText,
+          slash: item.slash || '',
+          label,
+          id: item.id,
+          defaultAutoSend: itemAutoSend,
+          event: ev
+        })
       });
     }
 
@@ -4126,21 +4303,31 @@
       if (!item) return;
       const fillText = String(item.text || '');
       const label = item.label;
+      const itemAutoSend = Boolean(item.autoSend);
+      const customPrefix = itemAutoSend ? tr('点击直接发送：', 'Auto-send: ') : tr('点击填入：', 'Insert: ');
       actions.push({
         id: `ag-qcap-prompt-${idx}`,
         isCustom: true,
         label,
         rec: '',
-        tag: tr('自定义快捷提示词', 'Custom Prompt'),
-        role: tr('点击一键填入预设提示词到输入框', 'Click to insert preset prompt into composer'),
+        tag: itemAutoSend ? tr('自定义 · ⚡直发', 'Custom · ⚡Send') : tr('自定义快捷提示词', 'Custom Prompt'),
+        role: itemAutoSend
+          ? tr('点击直接发送预设提示词（按住 ⌘/Ctrl 点击仅填入）', 'Click to send preset prompt directly (hold ⌘/Ctrl to insert only)')
+          : tr('点击一键填入预设提示词到输入框（按住 ⌘/Ctrl 点击直接发送）', 'Click to insert preset prompt (hold ⌘/Ctrl + click to send directly)'),
         scene: truncateNextStepText(fillText, 64),
-        title: item.title || tr(`点击填入：${fillText}`, `Insert: ${fillText}`),
+        title: item.title
+          ? (itemAutoSend ? `${item.title}${tr(' · ⚡ 点击直接发送', ' · ⚡ Auto-send')}` : item.title)
+          : `${customPrefix}${fillText}`,
         fillText,
-        onClick: async () => {
-          if (await fillComposerText(fillText)) {
-            showQuickToast(tr(`已填入「${label}」`, `Inserted "${label}"`));
-          }
-        }
+        autoSend: itemAutoSend,
+        onClick: async (ev) => runQuickPromptAction({
+          fillText,
+          slash: '',
+          label,
+          id: item.id || `prompt-${idx}`,
+          defaultAutoSend: itemAutoSend,
+          event: ev
+        })
       });
     });
 
@@ -4151,6 +4338,8 @@
     btn.__agQuickAct = act;
     btn.setAttribute('data-ag-tooltip', act.title || '');
     btn.setAttribute('aria-label', act.title ? `${act.label} - ${act.title}` : act.label);
+    if (act.autoSend) btn.setAttribute('data-auto-send', 'true');
+    else btn.removeAttribute('data-auto-send');
     if (btn.hasAttribute?.('title')) btn.removeAttribute('title');
   }
 
@@ -4159,7 +4348,7 @@
     const actions = getQuickBarActions();
     const sig = JSON.stringify({
       lang: uiLang,
-      items: actions.map((a) => [a.id, a.label, a.title, a.fillText || '', a.rec || '', a.tag || '', a.role || '', a.scene || ''])
+      items: actions.map((a) => [a.id, a.label, a.title, a.fillText || '', a.rec || '', a.tag || '', a.role || '', a.scene || '', Boolean(a.autoSend)])
     });
     const rightSlot = bar.querySelector(`#${QUICK_RIGHT_SLOT_ID}`);
     if (bar.dataset.promptsSig === sig) {
@@ -4197,9 +4386,9 @@
       btn.addEventListener('blur', () => {
         hideQuickBarTooltip();
       });
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
         hideQuickBarTooltip();
-        return btn.__agQuickAct?.onClick?.();
+        return btn.__agQuickAct?.onClick?.(e);
       });
       if (rightSlot && rightSlot.parentElement === bar) {
         bar.insertBefore(btn, rightSlot);
@@ -7644,32 +7833,7 @@
       if (!text) return { ok: false, error: '发送内容不能为空' };
       const filled = await fillComposerText(text);
       if (!filled) return { ok: false, error: '未能填入输入框' };
-      let sendBtn = null;
-      for (let i = 0; i < 8; i++) {
-        await new Promise((r) => setTimeout(r, 35));
-        sendBtn =
-          document.querySelector('.surface-composer [data-testid="send-button"]') ||
-          document.querySelector('.surface-composer .agy-send-button') ||
-          document.querySelector('.surface-composer button[aria-label*="Send"], .surface-composer button[aria-label*="发送"]');
-        if (sendBtn && !sendBtn.disabled) break;
-      }
-      if (sendBtn && !sendBtn.disabled) {
-        sendBtn.click();
-        lastUserSubmitAt = Date.now();
-        hideNextStepGhost();
-        return { ok: true, method: 'button' };
-      }
-      const ed = getComposerEditor();
-      if (ed) {
-        ed.focus();
-        const evOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-        ed.dispatchEvent(new KeyboardEvent('keydown', evOpts));
-        ed.dispatchEvent(new KeyboardEvent('keyup', evOpts));
-        lastUserSubmitAt = Date.now();
-        hideNextStepGhost();
-        return { ok: true, method: 'enter' };
-      }
-      return { ok: false, error: '未找到发送按钮或输入框' };
+      return await submitCurrentComposer({ allowEnterOnDisabled: true, checkBusyOnEnter: false });
     }
 
     if (action === 'fill') {
@@ -7963,6 +8127,13 @@
       autoCompactEnabled = Boolean(val);
       try { localStorage.setItem('ag_suite_auto_compact', autoCompactEnabled ? 'true' : 'false'); } catch {}
       if (!autoCompactEnabled) autoCompactState.idleSince = 0;
+    },
+    getQuickBuiltinAutoSend: () => quickBuiltinAutoSendEnabled,
+    setQuickBuiltinAutoSend: (val) => {
+      quickBuiltinAutoSendEnabled = Boolean(val);
+      try { localStorage.setItem('ag_suite_quick_builtin_autosend', quickBuiltinAutoSendEnabled ? 'true' : 'false'); } catch {}
+      const bar = document.getElementById(QUICK_BAR_ID);
+      if (bar) syncQuickBarActionButtons(bar);
     },
     runAutoCompactTick,
     getFeatureFlags: () => ({ ...featureFlags }),

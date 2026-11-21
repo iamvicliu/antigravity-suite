@@ -3902,6 +3902,8 @@
     getQuickPool: () => getSuiteQuickPool(),
     setQuickPool: (partial, opts) => setSuiteQuickPool(partial, opts),
     toggleQuickPoolItem: (id, opts) => toggleSuiteQuickPoolItem(id, opts),
+    getQuickBuiltinAutoSend: () => getSuiteQuickBuiltinAutoSend(),
+    setQuickBuiltinAutoSend: (val, opts) => setSuiteQuickBuiltinAutoSend(val, opts),
     getRemoteDisplayConfig: () => getRemoteDisplayConfig(),
     setRemoteDisplayConfig: cfg => setRemoteDisplayConfig(cfg),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),

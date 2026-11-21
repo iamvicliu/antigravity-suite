@@ -58,6 +58,18 @@ if (info.running && !info.hasDebugSwitch && info.pid) {
 ' 2>/dev/null || true
 }
 
+has_antigravity_host_process() {
+  APP_DIR="$APP_DIR" node -e '
+const { inspectAntigravityHostProcess } = require(process.env.APP_DIR + "/asar-engine");
+const info = inspectAntigravityHostProcess();
+process.exit(info && info.running ? 0 : 1);
+' >/dev/null 2>&1
+}
+
+is_shipit_running() {
+  pgrep -x ShipIt >/dev/null 2>&1
+}
+
 find_antigravity_app() {
   if [ -d "/Applications/Antigravity.app" ]; then
     echo "/Applications/Antigravity.app"
@@ -108,6 +120,7 @@ relaunch_antigravity_with_cdp() {
       echo "❌ 等待原 Antigravity 进程 (PID: $bare_pid) 退出超时，请手动按 ⌘Q 退出后再试。" >&2
       return 1
     fi
+    sleep 0.3
   else
     echo "正在带调试端口启动 Antigravity..."
   fi
@@ -223,13 +236,50 @@ EOF
 }
 
 has_live_antigravity() {
-  if [ -r "$PORT_FILE" ] || has_active_cdp_target; then
-    return 0
-  fi
-  if [ -n "$(get_bare_antigravity_info || true)" ]; then
+  if has_antigravity_host_process || has_active_cdp_target; then
     return 0
   fi
   return 1
+}
+
+try_auto_relaunch_fresh_bare() {
+  if has_active_cdp_target; then
+    return 0
+  fi
+
+  local bare_info bare_pid bare_elapsed now_ts last_ts
+  bare_info="$(get_bare_antigravity_info || true)"
+  if [ -z "${bare_info:-}" ]; then
+    return 0
+  fi
+
+  bare_pid="${bare_info%% *}"
+  bare_elapsed="${bare_info#* }"
+  case "$bare_elapsed" in ''|*[!0-9]*) bare_elapsed=999 ;; esac
+
+  if [ "$bare_elapsed" -gt 30 ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $bare_pid, 已运行 ${bare_elapsed}s > 30s) 未带调试端口，为保护当前会话跳过自动重拉。" >> "$LOG_FILE"
+    return 11
+  fi
+
+  if is_shipit_running; then
+    return 12
+  fi
+
+  now_ts="$(date +%s)"
+  last_ts=0
+  if [ -f "$RELAUNCH_LOCK_FILE" ]; then
+    last_ts="$(cat "$RELAUNCH_LOCK_FILE" 2>/dev/null || echo 0)"
+  fi
+  case "$last_ts" in ''|*[!0-9]*) last_ts=0 ;; esac
+  if [ $((now_ts - last_ts)) -lt 20 ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $bare_pid) 处于 20s 重拉防抖冷却期，本次跳过自动重拉。" >> "$LOG_FILE"
+    return 11
+  fi
+
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $bare_pid, 启动 ${bare_elapsed}s) 未带调试端口，自动补参重拉..." >> "$LOG_FILE"
+  relaunch_antigravity_with_cdp >> "$LOG_FILE" 2>&1 || true
+  return 10
 }
 
 stop_live() {
@@ -400,6 +450,21 @@ if (!xml.includes(lock)) {
 '
       echo "✅ 已升级 LaunchAgent WatchPaths 监听 (新增 SingletonLock 适配 v2.33.0+)"
     fi
+    if ! grep -q "ThrottleInterval" "$PLIST" 2>/dev/null; then
+      PLIST_PATH="$PLIST" node -e '
+const fs = require("fs");
+const p = process.env.PLIST_PATH;
+let xml = fs.readFileSync(p, "utf8");
+if (!xml.includes("<key>ThrottleInterval</key>")) {
+  const idx = xml.lastIndexOf("</dict>");
+  if (idx !== -1) {
+    const next = xml.slice(0, idx) + "  <key>ThrottleInterval</key>\n  <integer>2</integer>\n" + xml.slice(idx);
+    fs.writeFileSync(p, next, "utf8");
+  }
+}
+'
+      echo "✅ 已升级 LaunchAgent ThrottleInterval=2（缩短升级重启触发延迟）"
+    fi
     uid="$(id -u)"
     launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
     launchctl bootstrap "gui/$uid" "$PLIST"
@@ -493,34 +558,23 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
     ;;
   _auto-trigger)
     mkdir -p "$LOG_DIR"
-    if ! has_live_antigravity; then
+    if ! has_live_antigravity && ! is_shipit_running; then
       exit 0
-    fi
-    if ! has_active_cdp_target; then
-      bare_info="$(get_bare_antigravity_info || true)"
-      if [ -n "${bare_info:-}" ]; then
-        bare_pid="${bare_info%% *}"
-        bare_elapsed="${bare_info#* }"
-        if [ "${bare_elapsed:-999}" -le 20 ]; then
-          now_ts="$(date +%s)"
-          last_ts=0
-          if [ -f "$RELAUNCH_LOCK_FILE" ]; then
-            last_ts="$(cat "$RELAUNCH_LOCK_FILE" 2>/dev/null || echo 0)"
-          fi
-          case "$last_ts" in ''|*[!0-9]*) last_ts=0 ;; esac
-          if [ $((now_ts - last_ts)) -ge 20 ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $bare_pid, 启动 ${bare_elapsed}s) 未带调试端口，自动补参重拉..." >> "$LOG_FILE"
-            relaunch_antigravity_with_cdp >> "$LOG_FILE" 2>&1 || true
-            exit 0
-          fi
-        fi
-      fi
     fi
     for _ in $(seq 1 15); do
       if ! has_live_antigravity; then
+        if is_shipit_running; then
+          sleep 2
+          continue
+        fi
         exit 0
       fi
-      if has_active_cdp_target && node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
+      relaunch_rc=0
+      try_auto_relaunch_fresh_bare || relaunch_rc=$?
+      if [ "$relaunch_rc" -eq 10 ] || [ "$relaunch_rc" -eq 11 ]; then
+        exit 0
+      fi
+      if [ "$relaunch_rc" -eq 0 ] && has_active_cdp_target && node "$APP_DIR/cli.js" live >> "$LOG_FILE" 2>&1; then
         break
       fi
       sleep 2
