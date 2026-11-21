@@ -6763,7 +6763,7 @@ function buildMobileAppHtml() {
       document.documentElement.style.setProperty('--modal-h', modalBaseH + 'px');
 
       const baseH = Math.max(maxVvHeight || 0, window.innerHeight || 0);
-      const kbOpenForComposer = Boolean(!desktop && !openModal && isComposerFocused && vv && (baseH - curH > 100));
+      const kbOpenForComposer = Boolean(!desktop && !openModal && vv && (baseH - curH > 100) && (isComposerFocused || !anyTextFocused));
       if (kbOpenForComposer) {
         const top = vv.offsetTop || 0;
         document.documentElement.style.height = '';
