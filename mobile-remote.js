@@ -4383,7 +4383,6 @@ function buildMobileAppHtml() {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta id="meta-theme-color" name="theme-color" content="#09090b">
   <title>Antigravity Remote</title>
   <link rel="manifest" href="/manifest.json">
@@ -6479,6 +6478,39 @@ function buildMobileAppHtml() {
       document.body?.classList?.toggle?.('is-standalone', isStandalonePwa);
     } catch {}
 
+    function getLogicalScreenHeight() {
+      const scr = typeof window !== 'undefined' ? window.screen : null;
+      const sw = Number(scr && scr.width) || 0;
+      const sh = Number(scr && scr.height) || 0;
+      if (!sw || !sh) return 0;
+      const isLandscape = (window.innerWidth || 0) > (window.innerHeight || 0);
+      return isLandscape ? Math.min(sw, sh) : Math.max(sw, sh);
+    }
+
+    function measureSafeAreaInsetTop() {
+      try {
+        if (!appEl || typeof window.getComputedStyle !== 'function') return 0;
+        return parseFloat(window.getComputedStyle(appEl).paddingTop) || 0;
+      } catch {
+        return 0;
+      }
+    }
+
+    function computeLegacyStandaloneFullHeight(curH, kbOpen) {
+      if (!isStandalonePwa || kbOpen) return 0;
+      const safeTop = measureSafeAreaInsetTop();
+      if (!(safeTop > 20)) return 0;
+      const screenH = getLogicalScreenHeight();
+      const winH = Number(window.innerHeight || curH || 0);
+      if (!(screenH > winH)) return 0;
+      const diff = screenH - winH;
+      // 兼容旧版已固化 black-translucent 的 iOS 桌面图标：视口短缺约等于顶部状态栏高度（误差 <= 8px）时补偿至真实屏幕高度
+      if (Math.abs(diff - safeTop) <= 8) {
+        return Math.round(screenH);
+      }
+      return 0;
+    }
+
     function getFullLayoutHeight() {
       const vvH = window.visualViewport ? window.visualViewport.height : 0;
       const winH = window.innerHeight || 0;
@@ -6734,19 +6766,30 @@ function buildMobileAppHtml() {
       const kbOpenForComposer = Boolean(!desktop && !openModal && isComposerFocused && vv && (baseH - curH > 100));
       if (kbOpenForComposer) {
         const top = vv.offsetTop || 0;
+        document.documentElement.style.height = '';
         document.body.style.bottom = 'auto';
         document.body.style.height = Math.round(curH) + 'px';
         document.documentElement.style.setProperty('--app-h', Math.round(curH) + 'px');
         document.body.style.transform = top ? 'translateY(' + top + 'px)' : '';
         appEl?.classList.add('kb-open');
       } else {
-        document.body.style.bottom = '0';
-        // 普通浏览器与 iOS 独立 PWA 在无键盘及键盘收起时均清除内联 height，让 position:fixed;inset:0;height:auto 严格贴满物理底边
-        document.body.style.height = '';
-        const appHeightPx = (!desktop && openModal && (anyTextFocused || kbLikelyActive || recentlyBlurred))
-          ? modalBaseH
-          : getFullLayoutHeight();
-        document.documentElement.style.setProperty('--app-h', appHeightPx + 'px');
+        const legacyFullH = computeLegacyStandaloneFullHeight(curH, kbLikelyActive);
+        if (legacyFullH > 0) {
+          // 填平旧版 black-translucent WebClip 底部被裁掉的 59pt 死区
+          document.documentElement.style.height = legacyFullH + 'px';
+          document.body.style.bottom = 'auto';
+          document.body.style.height = legacyFullH + 'px';
+          document.documentElement.style.setProperty('--app-h', legacyFullH + 'px');
+        } else {
+          document.documentElement.style.height = '';
+          document.body.style.bottom = '0';
+          // 普通浏览器与新版 iOS 独立 PWA 在无键盘及键盘收起时均清除内联 height，让 position:fixed;inset:0;height:auto 严格贴满物理底边
+          document.body.style.height = '';
+          const appHeightPx = (!desktop && openModal && (anyTextFocused || kbLikelyActive || recentlyBlurred))
+            ? modalBaseH
+            : getFullLayoutHeight();
+          document.documentElement.style.setProperty('--app-h', appHeightPx + 'px');
+        }
         document.body.style.transform = '';
         appEl?.classList.remove('kb-open');
       }
