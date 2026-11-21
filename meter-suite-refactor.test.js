@@ -6749,3 +6749,282 @@ module.exports = {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 30: 同步 antigravity-chinese v3.3.60 与 agy-context-dashboard v0.9.7 守护进程 PID 校验
+// =========================================================================
+test('需求 30: antigravity-hans-overlay 支持 v3.3.60 插件市场语境与官方简介 Fiber 校验，local-api 优先存活 PID', () => {
+  const hansSrc = fs.readFileSync(path.join(ROOT, 'antigravity-hans-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  env.sandbox.location.pathname = '/workbench.html';
+  env.sandbox.location.href = 'file:///Applications/Antigravity.app/workbench.html';
+  env.win.location = env.sandbox.location;
+  env.win.top = env.win;
+  env.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 };
+  env.sandbox.NodeFilter = { SHOW_TEXT: 4, SHOW_ELEMENT: 1 };
+
+  const makeTextNode = (val) => ({
+    nodeType: 3,
+    nodeValue: val,
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement: null,
+    parentNode: null
+  });
+
+  const panel = env.doc.createElement('div');
+  panel.className = 'antigravity-agent-side-panel';
+
+  // 1. v3.3.60 精确词条、空格修正与正则
+  const addTextDiv = (text) => {
+    const div = env.doc.createElement('div');
+    const tn = makeTextNode(text);
+    div.appendChild(tn);
+    panel.appendChild(div);
+    return tn;
+  };
+  const queuedText = addTextDiv('Queued messages');
+  const clearCatText = addTextDiv('Clear category');
+  const seeMoreGwText = addTextDiv('See more in Google Workspace');
+  const seeLessGwText = addTextDiv('See less in Google Workspace');
+  const seeMorePluginsText = addTextDiv('See 5 more plugins');
+
+  // 2. 插件市场 Science 语境翻译与普通容器保护
+  const normalScienceText = addTextDiv('Science');
+  const catOpt = env.doc.createElement('div');
+  catOpt.setAttribute('data-testid', 'marketplace-category-option-science');
+  const catOptText = makeTextNode('Science');
+  catOpt.appendChild(catOptText);
+  panel.appendChild(catOpt);
+
+  const marketplace = env.doc.createElement('div');
+  marketplace.setAttribute('data-testid', 'customizations-marketplace');
+  const scienceSection = env.doc.createElement('section');
+  scienceSection.setAttribute('aria-label', 'Science');
+  const hdrWrap = env.doc.createElement('div');
+  const scienceH2 = env.doc.createElement('h2');
+  const scienceH2Text = makeTextNode('Science');
+  scienceH2.appendChild(scienceH2Text);
+  hdrWrap.appendChild(scienceH2);
+  scienceSection.appendChild(hdrWrap);
+  const seeMoreSciBtn = env.doc.createElement('button');
+  const seeMoreSciBtnText = makeTextNode('See more in Science');
+  seeMoreSciBtn.appendChild(seeMoreSciBtnText);
+  scienceSection.appendChild(seeMoreSciBtn);
+  marketplace.appendChild(scienceSection);
+  panel.appendChild(marketplace);
+
+  // 3. featured-carousel 属性与官方/未核验插件简介验证
+  const fullCanvaDesc = 'Create, edit, review, resize, and brand-check Canva designs with the Canva MCP server.';
+  const expectedCanvaZh = '通过 Canva MCP 服务器创建、编辑、审查和调整设计尺寸，并检查设计是否符合品牌规范。';
+
+  // 3a. 合法官方卡片（含搜索高亮拆分节点）
+  const officialCard = env.doc.createElement('div');
+  officialCard.setAttribute('data-testid', 'customization-card');
+  officialCard.setAttribute('data-card-name', 'Canva');
+  const officialDesc = env.doc.createElement('div');
+  officialDesc.className = 'text-sm text-muted-foreground truncate';
+  const descTn1 = makeTextNode('Create, edit, review, resize, and brand-check Canva ');
+  const hlSpan = env.doc.createElement('span');
+  hlSpan.className = 'font-semibold text-foreground';
+  const descTn2 = makeTextNode('designs');
+  hlSpan.appendChild(descTn2);
+  const descTn3 = makeTextNode(' with the Canva MCP server.');
+  officialDesc.appendChild(descTn1);
+  officialDesc.appendChild(hlSpan);
+  officialDesc.appendChild(descTn3);
+  officialCard.appendChild(officialDesc);
+  marketplace.appendChild(officialCard);
+
+  const cardRoot = { tag: 3, return: null, stateNode: null };
+  cardRoot.stateNode = { current: cardRoot };
+  const cardOwner = {
+    return: cardRoot,
+    key: 'canva',
+    memoizedProps: {
+      name: 'Canva',
+      description: fullCanvaDesc,
+      to: '/customizations/plugins/$pluginId',
+      search: { marketplace: 'antigravity-plugins-partners', id: 'antigravity-plugins-partners/plugin/canva' }
+    }
+  };
+  const cardContainerFiber = { return: cardOwner, stateNode: officialCard };
+  officialDesc.__reactFiber$test = {
+    return: cardContainerFiber,
+    stateNode: officialDesc,
+    memoizedProps: { children: { props: { text: fullCanvaDesc } } }
+  };
+
+  // 3b. 未核验用户自定义插件卡片（无合法 React Fiber，即使文案相同也不得翻译）
+  const fakeCard = env.doc.createElement('div');
+  fakeCard.setAttribute('data-testid', 'customization-card');
+  fakeCard.setAttribute('data-card-name', 'CustomCanvaClone');
+  const fakeDesc = env.doc.createElement('div');
+  fakeDesc.className = 'text-sm text-muted-foreground truncate';
+  const fakeDescText = makeTextNode(fullCanvaDesc);
+  fakeDesc.appendChild(fakeDescText);
+  fakeCard.appendChild(fakeDesc);
+  marketplace.appendChild(fakeCard);
+
+  // 3c. featured-carousel 卡片、member-tile 及操作按钮
+  const featuredCarousel = env.doc.createElement('div');
+  featuredCarousel.setAttribute('data-testid', 'featured-carousel');
+  const tabPanel = env.doc.createElement('div');
+  tabPanel.setAttribute('role', 'tabpanel');
+  const featuredDesc = env.doc.createElement('p');
+  featuredDesc.className = 'text-muted-foreground line-clamp-3';
+  featuredDesc.setAttribute('title', fullCanvaDesc);
+  const featuredDescText = makeTextNode(fullCanvaDesc);
+  featuredDesc.appendChild(featuredDescText);
+  tabPanel.appendChild(featuredDesc);
+  featuredCarousel.appendChild(tabPanel);
+
+  const fRoot = { tag: 3, return: null, stateNode: null };
+  fRoot.stateNode = { current: fRoot };
+  const fMemberFiber = {
+    return: fRoot,
+    memoizedProps: {
+      member: {
+        description: fullCanvaDesc,
+        item: {
+          kind: { case: 'plugin' },
+          marketplace: 'antigravity-plugins-partners',
+          id: 'antigravity-plugins-partners/plugin/canva',
+          description: fullCanvaDesc
+        }
+      }
+    }
+  };
+  featuredDesc.__reactFiber$test = {
+    return: { return: fMemberFiber },
+    stateNode: featuredDesc,
+    memoizedProps: { children: fullCanvaDesc, title: fullCanvaDesc }
+  };
+
+  const memberTile = env.doc.createElement('div');
+  memberTile.setAttribute('data-testid', 'featured-carousel-member-tile');
+  memberTile.setAttribute('data-member-name', 'Build');
+  memberTile.setAttribute('title', 'Build');
+  memberTile.setAttribute('aria-label', 'Build, Installed');
+  featuredCarousel.appendChild(memberTile);
+
+  const addingBtn = env.doc.createElement('button');
+  addingBtn.setAttribute('aria-label', 'Adding Figma');
+  featuredCarousel.appendChild(addingBtn);
+  panel.appendChild(featuredCarousel);
+
+  // 4. third-party-tools-disclaimer 与 changed-files-card-review 放行翻译
+  const pluginDetail = env.doc.createElement('div');
+  pluginDetail.setAttribute('data-testid', 'plugin-detail');
+  const disclaimerP = env.doc.createElement('p');
+  disclaimerP.className = 'text-muted-foreground leading-relaxed';
+  disclaimerP.setAttribute('data-testid', 'third-party-tools-disclaimer');
+  const disclaimerText = makeTextNode('Sign in required.');
+  disclaimerP.appendChild(disclaimerText);
+  pluginDetail.appendChild(disclaimerP);
+  panel.appendChild(pluginDetail);
+
+  const agentResp = env.doc.createElement('div');
+  agentResp.setAttribute('data-testid', 'agent-response');
+  const reviewBadge = env.doc.createElement('span');
+  reviewBadge.setAttribute('data-testid', 'changed-files-card-review');
+  const reviewText = makeTextNode('Review');
+  reviewBadge.appendChild(reviewText);
+  agentResp.appendChild(reviewBadge);
+  panel.appendChild(agentResp);
+
+  env.doc.body.appendChild(panel);
+  env.doc.createTreeWalker = (rootNode, whatToShow) => {
+    const flat = [];
+    const walk = (n) => {
+      if (!n) return;
+      const children = n.childNodes || n.children || [];
+      for (const ch of children) {
+        if ((ch.nodeType === 1 && (whatToShow & 1)) || (ch.nodeType === 3 && (whatToShow & 4))) {
+          flat.push(ch);
+        }
+        walk(ch);
+      }
+    };
+    walk(rootNode);
+    let idx = 0;
+    return { nextNode: () => (idx < flat.length ? flat[idx++] : null) };
+  };
+  env.sandbox.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+
+  try {
+    vm.runInContext(hansSrc, env.sandbox);
+    assert.equal(queuedText.nodeValue, '排队消息');
+    assert.equal(clearCatText.nodeValue, '清除分类筛选');
+    assert.equal(seeMoreGwText.nodeValue, '在 Google Workspace 中查看更多');
+    assert.equal(seeLessGwText.nodeValue, '在 Google Workspace 中收起');
+    assert.equal(seeMorePluginsText.nodeValue, '再查看 5 个插件');
+
+    assert.equal(normalScienceText.nodeValue, 'Science', '非市场语境的 Science 必须保留原文');
+    assert.equal(catOptText.nodeValue, '科研');
+    assert.equal(scienceSection.getAttribute('aria-label'), '科研');
+    assert.equal(scienceH2Text.nodeValue, '科研');
+    assert.equal(seeMoreSciBtnText.nodeValue, '在科研中查看更多');
+
+    assert.equal(descTn1.nodeValue, expectedCanvaZh, '合法官方插件卡片（含高亮拆分）应翻译为中文');
+    assert.equal(descTn2.nodeValue, '');
+    assert.equal(descTn3.nodeValue, '');
+    assert.equal(fakeDescText.nodeValue, fullCanvaDesc, '未通过 React Fiber 校验的自定义插件卡片必须保持英文原文');
+
+    assert.equal(featuredDescText.nodeValue, expectedCanvaZh);
+    assert.equal(featuredDesc.getAttribute('title'), expectedCanvaZh, '已校验 featured 简介的 title 属性应同步翻译');
+    assert.equal(memberTile.getAttribute('title'), 'Build', 'member-tile 的 title 必须保持原型名不被翻译');
+    assert.equal(memberTile.getAttribute('aria-label'), 'Build，已安装');
+    assert.equal(addingBtn.getAttribute('aria-label'), '正在添加 Figma');
+
+    assert.equal(disclaimerText.nodeValue, '需要登录。', 'third-party-tools-disclaimer 应放行翻译');
+    assert.equal(reviewText.nodeValue, '审核', 'changed-files-card-review 应放行翻译');
+  } finally {
+    env.win.__antigravityZhPatchCleanup?.();
+  }
+
+  // 5. 验证两份 zh-CN.json 同步且修复后的占位符正则完整
+  for (const rel of [['i18n', 'zh-CN.json'], ['src', 'i18n', 'zh-CN.json']]) {
+    const dict = JSON.parse(fs.readFileSync(path.join(ROOT, ...rel), 'utf8'));
+    assert.equal(dict.exact['Queued messages'], '排队消息');
+    assert.equal(dict.exact['See more in Google Workspace'], '在 Google Workspace 中查看更多');
+    assert.equal(dict.exact['See less in Google Workspace'], '在 Google Workspace 中收起');
+    assert.equal(
+      dict.patterns.find(p => p.regex === '^Select Sidebar Item ([1-9])$')?.replacement,
+      '选择侧栏第 $1 项'
+    );
+    assert.equal(
+      dict.patterns.find(p => p.regex === '^Show (\\d+) More$')?.replacement,
+      '再显示 $1 项'
+    );
+    assert.equal(
+      dict.patterns.find(p => p.regex === '^See (\\d+) more plugins$')?.replacement,
+      '再查看 $1 个插件'
+    );
+  }
+
+  // 6. 验证 local-api.js discoverFromHubDaemonFiles 优先选用存活 PID 对应的 daemon 凭证
+  const { discoverFromHubDaemonFiles } = require('./local-api');
+  const tmpDaemonDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-daemon-pid-test-'));
+  try {
+    const alivePath = path.join(tmpDaemonDir, 'hub_50001.json');
+    const deadPath = path.join(tmpDaemonDir, 'daemon_50002.json');
+    fs.writeFileSync(alivePath, JSON.stringify({ pid: 1001, httpsPort: 50001, csrfToken: 'tok-alive' }), 'utf8');
+    fs.writeFileSync(deadPath, JSON.stringify({ pid: 2002, httpsPort: 50002, csrfToken: 'tok-dead' }), 'utf8');
+    const nowSec = Date.now() / 1000;
+    fs.utimesSync(alivePath, nowSec - 60, nowSec - 60);
+    fs.utimesSync(deadPath, nowSec, nowSec);
+
+    const discovered = discoverFromHubDaemonFiles({
+      daemonDirs: [tmpDaemonDir],
+      isPidAlive: (pid) => pid === 1001
+    });
+    assert.ok(discovered, '应从隔离 daemon 目录发现语言服务凭证');
+    assert.equal(discovered.origin, 'https://127.0.0.1:50001', '存活 PID 凭证即使 mtime 更早也必须优先于已退出进程');
+  } finally {
+    fs.rmSync(tmpDaemonDir, { recursive: true, force: true });
+  }
+});
