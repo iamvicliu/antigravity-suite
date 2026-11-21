@@ -4126,10 +4126,8 @@ function buildMobileAppHtml() {
     }
     @media (display-mode:standalone){
       :root{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)))}
-      html{height:100dvh}
-      body{height:auto}
     }
-    body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)));height:auto}
+    body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)))}
     @media (prefers-color-scheme:light){
       :root:not([data-theme="dark"]){
         color-scheme:light;
@@ -4195,13 +4193,16 @@ function buildMobileAppHtml() {
       --perm-review:#7c3aed;
     }
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-    html,body{
-      margin:0;padding:0;width:100%;height:100%;position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;
+    html{
+      margin:0;padding:0;width:100%;height:100%;height:100dvh;overflow:hidden;
+      background:var(--bg);color:var(--fg);overscroll-behavior:none;
+    }
+    body{
+      margin:0;padding:0;width:100%;position:fixed;inset:0;height:auto;overflow:hidden;
       background:var(--bg);color:var(--fg);touch-action:manipulation;
       font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
       font-size:14px;line-height:1.45;overscroll-behavior:none;
     }
-    @supports (height:100dvh){html{height:100dvh}}
     .app{
       display:flex;flex-direction:column;width:100%;height:100%;
       padding-top:env(safe-area-inset-top);
@@ -6425,8 +6426,8 @@ function buildMobileAppHtml() {
         appEl?.classList.add('kb-open');
       } else {
         document.body.style.bottom = '0';
-        // iOS 桌面独立 PWA 下清除内联 height 让 position:fixed;top:0;bottom:0 贴满物理底边，避免 60~93px 死区
-        document.body.style.height = isStandalonePwa ? '' : '100%';
+        // 普通浏览器与 iOS 独立 PWA 在无键盘及键盘收起时均清除内联 height，让 position:fixed;inset:0;height:auto 严格贴满物理底边
+        document.body.style.height = '';
         const appHeightPx = (!desktop && openModal && (anyTextFocused || kbLikelyActive || recentlyBlurred))
           ? modalBaseH
           : getFullLayoutHeight();
