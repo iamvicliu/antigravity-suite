@@ -1,6 +1,6 @@
 # Antigravity Suite
 
-[简体中文](README.md) · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Español**
+[简体中文](../README.md) · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Español**
 
 > **Suite de mejoras y control remoto 100 % sin parches (Zero-Patch) para Google Antigravity en escritorio (macOS). Nunca modifica `app.asar` ni la firma oficial de Apple, no interfiere con actualizaciones y se activa o desactiva al instante.**
 
@@ -39,4 +39,4 @@ cd ~/.local/share/antigravity-suite
 - `ag-context-meter live` / `restart`: inyecta al instante o reinicia con puerto CDP habilitado (`v2.33.0+`).
 - `ag-context-meter update` / `stop` / `auto-off`: actualiza en caliente, detiene la sesión actual o desactiva el arranque automático.
 
-Ejecuta `npm run test:suite` para correr las pruebas. Agradecimiento especial a los colaboradores [@hubo1989](https://github.com/hubo1989) y [@Shens](https://github.com/Shens) por sus optimizaciones en el emparejamiento QR, el control remoto y la experiencia de uso. Para más detalles, consulta el **[README en chino simplificado](README.md)** o el **[README en inglés](README.en.md)**. Bajo licencia [MIT License](LICENSE).
+Ejecuta `npm run test:suite` para correr las pruebas. Agradecimiento especial a los colaboradores [@hubo1989](https://github.com/hubo1989) y [@Shens](https://github.com/Shens) por sus optimizaciones en el emparejamiento QR, el control remoto y la experiencia de uso. Para más detalles, consulta el **[README en chino simplificado](../README.md)** o el **[README en inglés](README.en.md)**. Bajo licencia [MIT License](../LICENSE).

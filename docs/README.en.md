@@ -1,11 +1,11 @@
 # Antigravity Suite
 
-[简体中文](README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
+[简体中文](../README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
 > **100% zero-patch enhancement & remote control suite for Google Antigravity desktop (macOS) — never modifies `app.asar` or Apple code signatures, safe across official updates, and instant to toggle.**
 
 <p align="center">
-  <img src="assets/mac-preview.png" alt="Antigravity Suite macOS desktop preview" width="100%">
+  <img src="../assets/mac-preview.png" alt="Antigravity Suite macOS desktop preview" width="100%">
 </p>
 
 ## Core Highlights
@@ -30,7 +30,7 @@
    - Automatically checks GitHub in the background; when a new version is available, **`⚙️`** shows a red dot so you can click **"立即更新" (Update Now)** and hot-reload without restarting Antigravity.
 
 <p align="center">
-  <img src="assets/mobile-preview.jpg" alt="Mobile PWA remote control preview" width="82%">
+  <img src="../assets/mobile-preview.jpg" alt="Mobile PWA remote control preview" width="82%">
 </p>
 
 ---
@@ -92,4 +92,4 @@ npm run test:suite
 
 Special thanks to core contributors **[@hubo1989](https://github.com/hubo1989)** (optimizations to QR pairing & 4-channel remote gating, default no-login Cloudflare tunnel, multi-browser session isolation, settings panel tab refinement, locale switching & `v2.32+` compatibility) and **[@Shens](https://github.com/Shens)** (optimizations to remote UX & performance including iOS PWA viewport fixes, System/Light/Dark appearance & mobile/desktop adaptation, multi-project grouped sessions, lossless full-history scrolling, queued messages, file/diff previews, interactive prompt cards, `$HOME`-bounded remote project creation, subagent status rollup with `gzip`, and macOS daemon / non-Homebrew Node compatibility).
 
-For detailed troubleshooting, 5-tab settings overview, and upstream project acknowledgements, see the full **[简体中文 README](README.md)**. Licensed under the [MIT License](LICENSE).
+For detailed troubleshooting, 5-tab settings overview, and upstream project acknowledgements, see the full **[简体中文 README](../README.md)**. Licensed under the [MIT License](../LICENSE).
