@@ -565,6 +565,41 @@
     .qp-add-btn{
       flex-shrink:0;
     }
+    .qp-tpl-bar{
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      gap:5px;
+      margin:2px 0 8px;
+    }
+    .qp-tpl-label{
+      font-size:11px;
+      color:var(--ag-text-muted);
+      margin-right:2px;
+      user-select:none;
+    }
+    .qp-tpl-chip{
+      border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-subcard);
+      color:var(--ag-text-secondary);
+      border-radius:999px;
+      padding:2px 8px;
+      font-size:11px;
+      line-height:1.45;
+      cursor:pointer;
+      transition:border-color .14s,background-color .14s,color .14s;
+    }
+    .qp-tpl-chip:hover{
+      border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
+      background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
+      color:var(--ag-text-primary);
+    }
+    .qp-tpl-chip[data-added="true"]{
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      font-weight:500;
+    }
     .qp-editor-list{
       display:flex;
       flex-direction:column;
