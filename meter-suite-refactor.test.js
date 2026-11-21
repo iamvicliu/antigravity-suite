@@ -14534,3 +14534,113 @@ test('彻底根治 iOS 主屏幕独立应用底部 59pt 空白死区：移除 bl
     assert.equal(docStyles['--app-h'], '393px');
   }
 });
+
+test('会话列表多态状态显示升级：未读蓝色光晕圆点、待审批铃铛图标、严格运行态与已读水位推进 (#28)', async () => {
+  const remoteMod = require('./mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+
+  // 1. 全量 <script> 语法校验 + CSS 定义核验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-28-script-${i}.js` }));
+  }
+  assert.ok(html.includes('.conv-unread-dot{') && html.includes('var(--unread-dot)') && html.includes('var(--unread-glow)'));
+  assert.ok(html.includes('.conv-bell-indicator{') && html.includes('.conv-bell-dot{'));
+
+  // 2. 在 VM 中提取并实测 renderConvItemHtml 五态渲染语义与优先级
+  const startIdx = html.indexOf('function formatRelTime(ts)');
+  const endIdx = html.indexOf('const FOLDER_ICON_SVG');
+  assert.ok(startIdx > 0 && endIdx > startIdx);
+  const escFn = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const ctx = vm.createContext({ Date, Math, Number, Boolean, String, esc: escFn });
+  vm.runInContext(html.slice(startIdx, endIdx) + '\nglobalThis.__renderConv = renderConvItemHtml;', ctx);
+  const now = Date.now();
+
+  // 2a. 已完成且有新产出（idle + unread）：行尾展示蓝色光晕圆点，严禁显示「运行中」
+  const unreadHtml = ctx.__renderConv({ id: 'c-unread', title: '完成任务', status: 'idle', unread: true, updatedAt: now - 7 * 60000 }, false);
+  assert.ok(unreadHtml.includes('class="conv-unread-dot"'), '已完成未读会话应在行尾展示蓝色光晕圆点');
+  assert.ok(unreadHtml.includes('is-unread'));
+  assert.ok(!unreadHtml.includes('运行中'), '已完成未读会话严禁误显示运行中');
+
+  // 2b. 待用户选择/审批（waiting）：行尾展示带提醒圆点的铃铛图标（优先级高于 unread）
+  const waitHtml = ctx.__renderConv({ id: 'c-wait', title: '等待审批', status: 'waiting', unread: true, updatedAt: now - 5 * 60000 }, false);
+  assert.ok(waitHtml.includes('class="conv-bell-indicator"') && waitHtml.includes('class="conv-bell-dot"'), '待确认/审批会话应在行尾展示铃铛提醒图标');
+  assert.ok(!waitHtml.includes('class="conv-unread-dot"'), 'waiting 强提醒优先级应高于未读蓝点');
+
+  // 2c. 运行中（running）：严格显示运行中徽章
+  const runHtml = ctx.__renderConv({ id: 'c-run', title: '进行中', status: 'running', statusLabel: '运行中', unread: true, updatedAt: now - 60000 }, false);
+  assert.ok(runHtml.includes('class="c-badge running"') && runHtml.includes('运行中'));
+  assert.ok(!runHtml.includes('class="conv-unread-dot"'), '运行中会话不得显示已完成未读蓝点');
+
+  // 2d. 空闲已读（idle + !unread）：仅展示克制相对时间，无蓝点无铃铛无徽章
+  const readHtml = ctx.__renderConv({ id: 'c-read', title: '已读任务', status: 'idle', unread: false, updatedAt: now - 7 * 60000 }, false);
+  assert.ok(readHtml.includes('<span class="c-time">7m</span>'));
+  assert.ok(!readHtml.includes('conv-unread-dot') && !readHtml.includes('conv-bell-indicator') && !readHtml.includes('c-badge'));
+
+  // 2e. 异常态（error）：展示独立异常徽章
+  const errHtml = ctx.__renderConv({ id: 'c-err', title: '报错任务', status: 'error', statusLabel: '异常', unread: false, updatedAt: now - 10 * 60000 }, false);
+  assert.ok(errHtml.includes('class="c-badge error"') && errHtml.includes('异常'));
+
+  // 3. 服务端 createSessionCatalogStore：running 不算未读、idle + updatedAt > lastViewedAt 为未读、markViewed 推进水位后消退、新更新再点亮
+  const tmpCatDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-28-cat-'));
+  try {
+    const store = remoteMod.createSessionCatalogStore();
+    const baseMs = Date.now() - 60000;
+    const tDoneIso = new Date(baseMs + 20000).toISOString();
+    const tViewIso = new Date(baseMs).toISOString();
+    const mkApi = (doneStatus, modIso) => async () => ({
+      call: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return {
+            trajectorySummaries: {
+              'conv-done-unread': {
+                summary: '已完成未读',
+                status: doneStatus,
+                lastModifiedTime: modIso,
+                annotations: { lastUserViewTime: tViewIso }
+              },
+              'conv-running-1': {
+                summary: '后台运行中',
+                status: 'CASCADE_RUN_STATUS_RUNNING',
+                lastModifiedTime: modIso,
+                annotations: { lastUserViewTime: tViewIso }
+              }
+            }
+          };
+        }
+        return {};
+      }
+    });
+
+    const snap1 = await store.enrichSnapshot(
+      { ok: true, sessionId: 'conv-other-active', conversations: [] },
+      { stateDir: tmpCatDir, bypassCatalogCache: true, localApiConnect: mkApi('CASCADE_RUN_STATUS_IDLE', tDoneIso) }
+    );
+    const done1 = snap1.conversations.find((c) => c.id === 'conv-done-unread');
+    const run1 = snap1.conversations.find((c) => c.id === 'conv-running-1');
+    assert.equal(done1?.status, 'idle');
+    assert.equal(done1?.unread, true, '已完成且 updatedAt > lastViewedAt 应标记为 unread=true');
+    assert.equal(done1?.completedUnread, true, '已完成且未读应标记 completedUnread=true');
+    assert.equal(run1?.status, 'running');
+    assert.equal(run1?.completedUnread, false, '仍在运行中的会话不得计入已完成未读 completedUnread');
+
+    // 点击查看 conv-done-unread，推进服务端已读水位
+    const marked = store.markViewed('conv-done-unread', baseMs + 25000, { stateDir: tmpCatDir });
+    assert.equal(marked, true);
+    const listedAfterView = await store.listConversations({ stateDir: tmpCatDir, activeSessionId: 'conv-other-active' });
+    const done2 = listedAfterView.conversations.find((c) => c.id === 'conv-done-unread');
+    assert.equal(done2?.unread, false, 'markViewed 推进已读水位后 unread 必须消退为 false');
+
+    // 之后有新产出更新 updatedAt > lastViewedAt，应重新点亮 unread
+    const laterIso = new Date(baseMs + 40000).toISOString();
+    const snap3 = await store.enrichSnapshot(
+      { ok: true, sessionId: 'conv-other-active', conversations: [] },
+      { stateDir: tmpCatDir, bypassCatalogCache: true, localApiConnect: mkApi('CASCADE_RUN_STATUS_IDLE', laterIso) }
+    );
+    const done3 = snap3.conversations.find((c) => c.id === 'conv-done-unread');
+    assert.equal(done3?.unread, true, '已读会话收到新产出后应重新置 unread=true');
+  } finally {
+    fs.rmSync(tmpCatDir, { recursive: true, force: true });
+  }
+});
