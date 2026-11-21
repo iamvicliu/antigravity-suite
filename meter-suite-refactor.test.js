@@ -14484,8 +14484,16 @@ test('彻底根治 iOS 主屏幕独立应用底部 59pt 空白死区：移除 bl
     assert.equal(bodyStyle.height, '852px');
     assert.equal(bodyStyle.transform, '');
 
-    // 阶段 2：聚焦输入框 + 键盘弹起
+    // 阶段 1b：键盘弹起动画中途（793 -> 713，差值 80px 落在 60~100px 区间）：必须平滑跟随 713px 无高度缺口
     docMock.activeElement = inputEl;
+    winMock.visualViewport.height = 713;
+    winMock.visualViewport.offsetTop = 0;
+    ctx.__syncVp();
+    assert.equal(docStyles['--app-h'], '713px', '键盘动画中途（差值 80px）必须立即跟随可见视口 713px');
+    assert.equal(bodyStyle.height, '713px');
+    assert.equal(htmlStyle.height, '');
+
+    // 阶段 2：键盘完全展开（480px + offsetTop）
     winMock.visualViewport.height = 480;
     winMock.visualViewport.offsetTop = 12;
     ctx.__syncVp();
