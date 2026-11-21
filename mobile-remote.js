@@ -9646,7 +9646,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   };
 
   const cachedHtml = buildMobileAppHtml();
-  const cachedHtmlGzip = zlib.gzipSync(Buffer.from(cachedHtml, 'utf8'), { level: 1 });
+  let cachedHtmlGzip = null;
+  try {
+    cachedHtmlGzip = zlib.gzipSync(Buffer.from(cachedHtml, 'utf8'), { level: 1 });
+  } catch {
+    cachedHtmlGzip = null;
+  }
   const cachedIcon = buildMobileIconSvg();
   const cachedManifest = buildManifestJson();
   const cachedSw = buildServiceWorkerJs();
@@ -9668,7 +9673,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const baseHeaders = headers && typeof headers === 'object' ? { ...headers } : {};
     if (acceptsGzipEncoding(req?.headers?.['accept-encoding']) && Buffer.byteLength(raw, 'utf8') >= 1024) {
       try {
-        const gz = raw === cachedHtml ? cachedHtmlGzip : zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 1 });
+        const gz = (raw === cachedHtml && cachedHtmlGzip) ? cachedHtmlGzip : zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 1 });
         const existingVaryKey = Object.keys(baseHeaders).find((k) => k.toLowerCase() === 'vary');
         const resVary = typeof res?.getHeader === 'function' ? res.getHeader('Vary') : '';
         const combinedVary = [

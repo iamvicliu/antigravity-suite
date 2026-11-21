@@ -11263,14 +11263,60 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
   const parsedGz = JSON.parse(zlib.gunzipSync(gzRes.body).toString('utf8'));
   assert.equal(parsedGz.sessionId, 's-34');
 
-  // 模拟 zlib.gzipSync 抛错：必须安全回退未压缩 JSON 而不 500
+  // 模拟创建 handler 前 zlib.gzipSync 抛错：必须仍能创建 handler，且 HTML 与 API 均安全回退未压缩响应
   const origGzipSync = zlib.gzipSync;
   zlib.gzipSync = () => { throw new Error('mock gzip failure'); };
   try {
-    const fallbackRes = await callApi();
-    assert.equal(fallbackRes.statusCode, 200);
-    assert.equal(fallbackRes.headers['Content-Encoding'], undefined, 'gzipSync 异常时必须回退未压缩响应');
-    const parsedPlain = JSON.parse(fallbackRes.body.toString('utf8'));
+    const fallbackHandler = remoteMod.createRemoteHttpHandler(
+      { token: 'tok-34-gzip', port: 18765, channels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        fetchSnapshot: async () => ({ ok: true, sessionId: 's-34', messages: [{ role: 'assistant', text: bigMsg }] }),
+        performAction: async () => ({ ok: true })
+      }
+    );
+    const callFallback = async (urlPath) => {
+      const resObj = {
+        statusCode: 0,
+        headers: {},
+        chunks: [],
+        setHeader(k, v) { this.headers[k] = v; },
+        getHeader(k) {
+          const hit = Object.keys(this.headers).find((h) => h.toLowerCase() === String(k).toLowerCase());
+          return hit ? this.headers[hit] : undefined;
+        },
+        writeHead(code, hdrs) {
+          this.statusCode = code;
+          for (const [k, v] of Object.entries(hdrs || {})) this.headers[k] = v;
+        },
+        end(chunk) {
+          if (chunk !== undefined && chunk !== null) {
+            this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'));
+          }
+        }
+      };
+      await fallbackHandler({
+        method: 'GET',
+        url: urlPath,
+        headers: {
+          host: '127.0.0.1:18765',
+          origin: 'http://127.0.0.1:18765',
+          'x-ag-remote-token': 'tok-34-gzip',
+          'accept-encoding': 'gzip, deflate'
+        },
+        socket: { remoteAddress: '127.0.0.1' },
+        on() {}
+      }, resObj);
+      return { statusCode: resObj.statusCode, headers: resObj.headers, body: Buffer.concat(resObj.chunks) };
+    };
+    const htmlFallbackRes = await callFallback('/?token=tok-34-gzip');
+    assert.equal(htmlFallbackRes.statusCode, 200);
+    assert.equal(htmlFallbackRes.headers['Content-Encoding'], undefined, '预压缩失败时 HTML 响应必须回退明文');
+    assert.ok(/<!doctype html>/i.test(htmlFallbackRes.body.toString('utf8')), 'HTML 明文回退内容必须完整');
+
+    const apiFallbackRes = await callFallback('/api/snapshot');
+    assert.equal(apiFallbackRes.statusCode, 200);
+    assert.equal(apiFallbackRes.headers['Content-Encoding'], undefined, 'gzipSync 异常时 API 响应必须回退未压缩响应');
+    const parsedPlain = JSON.parse(apiFallbackRes.body.toString('utf8'));
     assert.equal(parsedPlain.sessionId, 's-34');
   } finally {
     zlib.gzipSync = origGzipSync;
