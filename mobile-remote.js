@@ -1519,12 +1519,16 @@ function normalizeTrajectoryStatus(rawStatus, termReason, options = {}) {
   ) {
     return 'waiting';
   }
+  const explicitTrajIdle = Boolean(
+    CREDIBLE_TRAJ_IDLE_STATUSES.has(s) ||
+    (r && r !== 'EXECUTOR_TERMINATION_REASON_UNSPECIFIED' && !s)
+  );
   if (
-    options.activeBusy ||
-    options.domBusy ||
     s === 'CASCADE_RUN_STATUS_RUNNING' ||
     options.subagentRunning ||
-    options.domStatus === 'running'
+    options.domBusy ||
+    options.strongDomBusy ||
+    (!explicitTrajIdle && (options.activeBusy || options.domStatus === 'running'))
   ) {
     return 'running';
   }
@@ -1536,10 +1540,6 @@ function normalizeTrajectoryStatus(rawStatus, termReason, options = {}) {
   ) {
     return 'error';
   }
-  const explicitTrajIdle = Boolean(
-    CREDIBLE_TRAJ_IDLE_STATUSES.has(s) ||
-    (r && r !== 'EXECUTOR_TERMINATION_REASON_UNSPECIFIED' && !s)
-  );
   if (explicitTrajIdle || options.explicitIdle) {
     return 'idle';
   }
@@ -1866,8 +1866,9 @@ function createSessionCatalogStore() {
         continue;
       }
       const isActive = Boolean((activeSessionId && c.id === activeSessionId) || snapConvMap?.get(c.id)?.active);
-      const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
       const itemStatus = (CREDIBLE_STATUS_VALUES.has(c.status) || c.status === 'unknown') ? c.status : 'unknown';
+      const unread = Boolean(!isActive && c.updatedAt > 0 && (c.updatedAt > (Number(c.lastViewedAt) || 0)));
+      const completedUnread = Boolean(unread && itemStatus === 'idle');
       items.push({
         id: c.id,
         title: c.title,
@@ -1877,6 +1878,7 @@ function createSessionCatalogStore() {
         status: itemStatus,
         statusLabel: statusToLabel(itemStatus),
         unread,
+        completedUnread,
         pinned: Boolean(c.pinned),
         updatedAt: c.updatedAt
       });
@@ -2033,6 +2035,7 @@ function createSessionCatalogStore() {
     const subagentStateTtlMs = Number(options?.subagentStateTtlMs) > 0
       ? Number(options.subagentStateTtlMs)
       : 2 * 60 * 60 * 1000;
+    const trajFetchedOk = Boolean(trajData && trajData.trajOk === true);
 
     for (const [subId, subRec] of Array.from(store.subagentStates.entries())) {
       if (seenSubIds.has(subId)) continue;
@@ -2044,7 +2047,11 @@ function createSessionCatalogStore() {
       const rootCached = store.map.get(subRec.rootId);
       const rootArchived = rootTraj?.annotations?.archived === true || rootCached?.archived === true;
       const updatedMs = Number(subRec.updatedAt) || 0;
-      if (rootArchived || (updatedMs > 0 && (nowMs - updatedMs) > subagentStateTtlMs)) {
+      const subAgeMs = nowMs - updatedMs;
+      // 仅在全量轨迹拉取明确成功（含成功返回空对象）且该 running 子代理已不在列表中超过 15 秒时清理僵尸缓存；
+      // 同时也按根会话归档或全局 TTL 上限清理陈旧记录，若轨迹拉取失败则保留非过期 waiting/running 状态以免误伤
+      const shouldPruneRunning = subRec.status === 'running' && trajFetchedOk && subAgeMs > 15000;
+      if (rootArchived || (updatedMs > 0 && subAgeMs > subagentStateTtlMs) || shouldPruneRunning) {
         store.subagentStates.delete(subId);
         continue;
       }
@@ -2065,7 +2072,8 @@ function createSessionCatalogStore() {
     }
 
     const activeSessionId = String(snap.sessionId || '').trim();
-    const hasPendingApprovals = Array.isArray(snap.pendingApprovals) && snap.pendingApprovals.length > 0;
+    const hasPendingApprovals = (Array.isArray(snap.pendingApprovals) && snap.pendingApprovals.length > 0)
+      || (Array.isArray(snap.pendingPrompts) && snap.pendingPrompts.length > 0);
 
     for (const id of rootIds) {
       const prev = store.map.get(id);
@@ -2108,15 +2116,28 @@ function createSessionCatalogStore() {
           : (t?.annotations?.pinned !== undefined ? t.annotations.pinned : prev?.pinned)
       );
 
+      const hasStrongActiveDomBusy = Boolean(isActive && (snap.strongDomBusy || snap.busySignal));
       const status = normalizeTrajectoryStatus(t?.status, t?.latestExecutorTerminationReason, {
         hasPendingApprovals: isActive && hasPendingApprovals,
         activeBusy: isActive && Boolean(snap.busy),
+        strongDomBusy: hasStrongActiveDomBusy,
         domBusy: Boolean(sc?.domBusy),
         domStatus: sc?.status,
         subagentWaiting: Boolean(roll?.waiting),
         subagentRunning: Boolean(roll?.running),
         fallbackStatus: prev?.status
       });
+      if (
+        isActive &&
+        status === 'idle' &&
+        CREDIBLE_TRAJ_IDLE_STATUSES.has(String(t?.status || '').trim()) &&
+        !hasStrongActiveDomBusy &&
+        !sc?.domBusy &&
+        !roll?.running &&
+        !hasPendingApprovals
+      ) {
+        snap = { ...snap, busy: false };
+      }
 
       const projectName = String(
         projectNameMap.get(projectId) ||
@@ -2225,23 +2246,30 @@ function createSessionCatalogStore() {
     const currentProjectId = String(snap.currentProjectId || activeConvObj?.projectId || '').trim();
     const projectStats = new Map();
 
-    const ensureProjBucket = (pid, name, seedLastActiveAt = 0) => {
+    const ensureProjBucket = (pid, name, seedLastActiveAt = 0, rawPath = '') => {
+      const candidatePath = String(rawPath || projectsMeta.get(pid)?.primaryPath || '').trim();
+      const safePath = candidatePath && !isSensitiveHostPath(candidatePath) ? candidatePath : '';
       if (!projectStats.has(pid)) {
         projectStats.set(pid, {
           id: pid,
           name: name || pid,
+          ...(safePath ? { path: safePath, workspacePath: safePath } : {}),
           conversationCount: 0,
           runningCount: 0,
           waitingCount: 0,
           unreadCount: 0,
           lastActiveAt: Number(seedLastActiveAt) || 0
         });
+      } else if (safePath && !projectStats.get(pid).path) {
+        projectStats.get(pid).path = safePath;
+        projectStats.get(pid).workspacePath = safePath;
       }
       return projectStats.get(pid);
     };
 
     for (const [pid, name] of projectNameMap.entries()) {
-      ensureProjBucket(pid, name, projectsMeta.get(pid)?.mtimeMs || 0);
+      const metaObj = projectsMeta.get(pid);
+      ensureProjBucket(pid, name, metaObj?.mtimeMs || 0, metaObj?.primaryPath || '');
     }
 
     for (const c of allActiveConvs) {
@@ -2293,6 +2321,8 @@ function createSessionCatalogStore() {
 
     const currentProj = projects.find((p) => p.id === currentProjectId);
     const currentProjectName = String(snap.currentProjectName || currentProj?.name || '').trim();
+    const rawCurrentPath = String(snap.currentProjectPath || currentProj?.path || '').trim();
+    const currentProjectPath = rawCurrentPath && !isSensitiveHostPath(rawCurrentPath) ? rawCurrentPath : '';
     const activeTraj = activeSessionId ? summaries[activeSessionId] : null;
     const _activeTrajSig = activeTraj
       ? `${activeTraj.status || ''}|${activeTraj.stepCount ?? ''}|${activeTraj.lastModifiedTime || ''}`
@@ -2305,6 +2335,7 @@ function createSessionCatalogStore() {
       snapSeq: ++remoteServerSnapSeq,
       currentProjectId,
       currentProjectName,
+      ...(currentProjectPath ? { currentProjectPath } : {}),
       catalogRevision,
       totalConversations: allActiveConvs.length,
       hasMoreConversations: outputConvs.length < allActiveConvs.length,
@@ -2342,7 +2373,31 @@ function createSessionCatalogStore() {
     trajCache.at = 0;
   }
 
-  return { enrichSnapshot, listConversations, invalidateProjectsCache };
+  function markViewed(sessionId, viewedAtMs = Date.now(), options = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid || sid === '__new__' || sid === 'new' || sid === 'follow-desktop') return false;
+    const store = getStickyStoreForDir(options.dataDir || options.stateDir);
+    const item = store.map.get(sid);
+    if (!item) return false;
+    const nextViewMs = Math.max(Number(item.lastViewedAt) || 0, Number(item.updatedAt) || 0, Number(viewedAtMs) || Date.now());
+    if (nextViewMs <= (Number(item.lastViewedAt) || 0)) return false;
+    item.lastViewedAt = nextViewMs;
+    store.map.set(sid, item);
+    store.lastSig = '';
+    try {
+      safeWriteJsonSync(store.filePath, {
+        version: 2,
+        updatedAt: Date.now(),
+        subagentIds: Array.from(store.subagentIds).sort(),
+        subagentRoots: Object.fromEntries(store.subagentRoots),
+        subagentStates: Object.fromEntries(store.subagentStates),
+        conversations: Array.from(store.map.values())
+      });
+    } catch {}
+    return true;
+  }
+
+  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -2369,7 +2424,7 @@ const SENSITIVE_SYSTEM_PREFIXES = [
   '/private/var',
   '/Applications/Antigravity.app'
 ];
-const SENSITIVE_DIR_SEGMENTS_RE = /(?:^|\/)(?:\.ssh|\.gnupg|\.aws|1Password|\.gemini|\.kube|\.docker|\.npmrc|\.netrc)(?:\/|$)/i;
+const SENSITIVE_DIR_SEGMENTS_RE = /(?:^|\/)(?:\.ssh|\.gnupg|\.aws|1Password|\.gemini|\.kube|\.docker|\.npmrc|\.netrc|keychains|\.claude|\.codex|\.gcloud|\.azure|\.password-store)(?:\/|$)/i;
 
 function isSensitiveHostPath(absPath, options = {}) {
   const normalized = path.resolve(String(absPath || '')).replace(/\\/g, '/');
@@ -2378,6 +2433,20 @@ function isSensitiveHostPath(absPath, options = {}) {
     return true;
   }
   const normalizedLower = normalized.toLowerCase();
+  const homeBase = String(options.homeDir || os.homedir() || '').trim();
+  if (homeBase) {
+    const homeNorm = path.resolve(homeBase).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    let homeReal = homeNorm;
+    try { homeReal = fs.realpathSync(homeBase).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(); } catch {}
+    for (const h of (homeReal && homeReal !== homeNorm ? [homeNorm, homeReal] : [homeNorm])) {
+      for (const sub of ['/library', '/.config/op', '/.config/gh', '/.config/gcloud', '/.config/hub']) {
+        const sensitiveHomePrefix = `${h}${sub}`;
+        if (normalizedLower === sensitiveHomePrefix || normalizedLower.startsWith(`${sensitiveHomePrefix}/`)) {
+          return true;
+        }
+      }
+    }
+  }
   // 生产环境无条件屏蔽全部系统前缀（含 /var 与 /private/var，且大小写无关以覆盖 macOS APFS）；
   // 仅在自动化测试环境（NODE_TEST_CONTEXT）下对 os.tmpdir() 内的隔离临时沙箱放行 /var 前缀以便单测运行
   let inTestTmpDir = false;
@@ -2974,7 +3043,17 @@ function renderSafeMarkdownToHtml(rawMd) {
       if (/^https?:\/\//i.test(rawUrl)) {
         tokens.push(`<a href="${escSafeHtml(rawUrl)}" target="_blank" rel="noopener">${escSafeHtml(label)}</a>`);
       } else if (/^file:\/\//i.test(rawUrl)) {
-        tokens.push(`<code class="md-pill">${escSafeHtml(label)}</code>`);
+        const hashIdx = rawUrl.indexOf('#');
+        const uriPart = hashIdx >= 0 ? rawUrl.slice(0, hashIdx) : rawUrl;
+        const hashPart = hashIdx >= 0 ? rawUrl.slice(hashIdx + 1) : '';
+        const lineMatch = hashPart.match(/^L(\d+)/i);
+        const lineNum = lineMatch ? lineMatch[1] : '';
+        const localPath = normalizeLocalFileUriToPath(uriPart);
+        if (localPath) {
+          tokens.push(`<button type="button" class="md-file-link" data-file-path="${escSafeHtml(localPath)}"${lineNum ? ` data-file-line="${escSafeHtml(lineNum)}"` : ''}><code class="md-pill">${escSafeHtml(label)}</code></button>`);
+        } else {
+          tokens.push(`<code class="md-pill">${escSafeHtml(label)}</code>`);
+        }
       } else {
         tokens.push(escSafeHtml(label));
       }
@@ -3103,6 +3182,428 @@ function renderSafeMarkdownToHtml(rawMd) {
   return out.join('');
 }
 
+const LOCAL_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
+const SENSITIVE_MEDIA_DIR_RE = /(?:^|[\\/])(?:\.ssh|\.gnupg|\.aws|1Password|\.kube|\.docker|keychains|\.claude|\.codex|\.gcloud|\.azure|\.password-store)(?:[\\/]|$)/i;
+const SENSITIVE_MEDIA_FILE_RE = /^(?:\.env.*|id_rsa.*|id_ed25519.*|id_ecdsa.*|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.zsh_history|\.bash_history|\.sh_history|\.python_history|\.node_repl_history|\.mysql_history|\.psql_history|credentials\.json|token\.json|auth\.json|.*\.(?:pem|key|p12|pfx|jks|kdbx|ovpn))$/i;
+
+function resolveProductionMediaAllowedRoots(options = {}) {
+  const roots = [];
+  const pushDir = (rawDir) => {
+    const clean = String(rawDir || '').trim();
+    if (!clean) return;
+    let real = '';
+    try {
+      real = fs.realpathSync(clean);
+      if (!fs.statSync(real).isDirectory()) return;
+    } catch {
+      return;
+    }
+    if (!roots.includes(real)) roots.push(real);
+  };
+
+  try {
+    const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
+    for (const proj of metaMap.values()) {
+      for (const wp of (Array.isArray(proj?.workspacePaths) ? proj.workspacePaths : [])) {
+        if (!wp || isSensitiveHostPath(wp, options)) continue;
+        pushDir(wp);
+      }
+    }
+  } catch {}
+
+  const homeBase = String(options.homeDir || os.homedir() || '').trim();
+  if (homeBase) {
+    pushDir(path.join(homeBase, '.gemini', 'antigravity', 'brain'));
+  }
+  return roots;
+}
+
+function resolveMediaAllowedRoots(options = {}) {
+  let rawRoots = null;
+  if (typeof options.getAllowedRoots === 'function') {
+    const res = options.getAllowedRoots();
+    rawRoots = Array.isArray(res) ? res : [];
+  } else if (Array.isArray(options.allowedRoots) && (options.allowedRoots.length > 0 || options.strictProdRoots)) {
+    rawRoots = options.allowedRoots;
+  } else if (options.strictProdRoots === true || (!isCatalogTestEnv() && !process.env.NODE_TEST_CONTEXT)) {
+    rawRoots = resolveProductionMediaAllowedRoots(options);
+  } else {
+    rawRoots = [os.homedir(), os.tmpdir()];
+  }
+  const realRoots = [];
+  for (const r of rawRoots) {
+    if (!r) continue;
+    try {
+      const rp = fs.realpathSync(String(r));
+      if (!realRoots.includes(rp)) realRoots.push(rp);
+    } catch {}
+  }
+  return realRoots;
+}
+
+function isAllowedBrainArtifactPath(absPath, realRoots = [], options = {}) {
+  const norm = path.resolve(String(absPath || ''));
+  const homeBase = String(options.homeDir || os.homedir() || '').trim();
+  let homeReal = '';
+  if (homeBase) {
+    try { homeReal = fs.realpathSync(homeBase); } catch { homeReal = path.resolve(homeBase); }
+  }
+  const homeBrainRoot = homeReal ? path.join(homeReal, '.gemini', 'antigravity', 'brain') : '';
+  const candidates = Array.isArray(realRoots) && realRoots.length ? realRoots : (homeReal ? [homeReal] : []);
+  for (const r of candidates) {
+    if (!r) continue;
+    let realRoot = '';
+    try { realRoot = fs.realpathSync(String(r)); } catch { realRoot = path.resolve(String(r)); }
+    if (homeBrainRoot && realRoot === homeBrainRoot && (norm === homeBrainRoot || norm.startsWith(homeBrainRoot + path.sep))) {
+      const rel = norm.slice(homeBrainRoot.length);
+      return !SENSITIVE_MEDIA_DIR_RE.test(rel) && !isSensitiveHostPath(path.join(homeReal, rel), options);
+    }
+    if (isSensitiveHostPath(realRoot, options)) continue;
+    const brainRoot = path.join(realRoot, '.gemini', 'antigravity', 'brain');
+    if (norm === brainRoot || norm.startsWith(brainRoot + path.sep)) {
+      const rel = norm.slice(brainRoot.length);
+      return !SENSITIVE_MEDIA_DIR_RE.test(rel) && !isSensitiveHostPath(path.join(realRoot, rel), options);
+    }
+  }
+  return false;
+}
+const SAFE_MEDIA_MIME_BY_EXT = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+  '.log': 'text/plain; charset=utf-8',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav'
+};
+const FORCE_DOWNLOAD_EXTS = new Set(['.html', '.htm', '.svg', '.xhtml', '.xml', '.js', '.mjs', '.cjs', '.pdf']);
+
+function normalizeLocalFileUriToPath(rawPath) {
+  let s = String(rawPath || '').trim();
+  if (!s) return '';
+  if (/^file:\/\//i.test(s)) {
+    try {
+      const { fileURLToPath } = require('url');
+      s = fileURLToPath(s);
+    } catch {
+      try {
+        s = decodeURIComponent(s.replace(/^file:\/\//i, ''));
+      } catch {
+        s = s.replace(/^file:\/\//i, '');
+      }
+    }
+  }
+  return s;
+}
+
+function resolveSafeLocalMediaPath(rawPath, options = {}) {
+  const maxBytes = Number.isFinite(options.maxBytes) ? options.maxBytes : LOCAL_MEDIA_MAX_BYTES;
+  const candidate = normalizeLocalFileUriToPath(rawPath);
+  if (!candidate || !path.isAbsolute(candidate)) {
+    return { ok: false, status: 400, error: '无效的本地文件路径' };
+  }
+  let realPath = '';
+  try {
+    realPath = fs.realpathSync(candidate);
+  } catch {
+    return { ok: false, status: 404, error: '文件不存在或无法读取' };
+  }
+
+  const realRoots = resolveMediaAllowedRoots(options);
+  const inAllowedRoot = realRoots.some((root) => realPath === root || realPath.startsWith(root + path.sep));
+  if (!inAllowedRoot) {
+    return { ok: false, status: 403, error: '禁止访问受限目录之外的文件' };
+  }
+  if (SENSITIVE_MEDIA_DIR_RE.test(realPath) || (isSensitiveHostPath(realPath, options) && !isAllowedBrainArtifactPath(realPath, realRoots, options))) {
+    return { ok: false, status: 403, error: '禁止访问敏感密钥或凭证目录' };
+  }
+  const baseName = path.basename(realPath);
+  if (SENSITIVE_MEDIA_FILE_RE.test(baseName)) {
+    return { ok: false, status: 403, error: '禁止访问敏感环境或私钥文件' };
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(realPath);
+  } catch {
+    return { ok: false, status: 404, error: '文件不存在' };
+  }
+  if (!stat.isFile()) {
+    return { ok: false, status: 400, error: '目标不是常规文件' };
+  }
+  if (stat.size > maxBytes) {
+    return { ok: false, status: 413, error: `文件体积超过限制 (${Math.round(maxBytes / (1024 * 1024))}MB)` };
+  }
+
+  const ext = path.extname(baseName).toLowerCase();
+  const forceAttachment = FORCE_DOWNLOAD_EXTS.has(ext) || !SAFE_MEDIA_MIME_BY_EXT[ext];
+  const contentType = SAFE_MEDIA_MIME_BY_EXT[ext] || 'application/octet-stream';
+  return {
+    ok: true,
+    realPath,
+    baseName,
+    size: stat.size,
+    ext,
+    contentType,
+    forceAttachment
+  };
+}
+
+const TREE_HIDDEN_NOISE_DIRS = new Set(['.git', 'node_modules', '.next', '.nuxt', 'dist', 'build', '.cache', '__pycache__', '.venv']);
+
+function listSafeProjectTree(rawDir, options = {}) {
+  const showAll = Boolean(options.showAll);
+  const realRoots = resolveMediaAllowedRoots(options);
+  if (!realRoots.length) {
+    return { ok: false, status: 403, error: '当前暂无已注册项目工作区，已禁止默认浏览系统主目录' };
+  }
+  const candidate = normalizeLocalFileUriToPath(rawDir || '') || realRoots[0];
+  if (!candidate || !path.isAbsolute(candidate)) {
+    return { ok: false, status: 400, error: '无效的目录路径' };
+  }
+  let realDir = '';
+  try {
+    realDir = fs.realpathSync(candidate);
+  } catch {
+    return { ok: false, status: 404, error: '目录不存在或无法访问' };
+  }
+  const inAllowedRoot = realRoots.some((root) => realDir === root || realDir.startsWith(root + path.sep));
+  if (!inAllowedRoot) {
+    return { ok: false, status: 403, error: '禁止浏览受限目录之外的路径' };
+  }
+  if (SENSITIVE_MEDIA_DIR_RE.test(realDir) || isSensitiveHostPath(realDir, options)) {
+    return { ok: false, status: 403, error: '禁止浏览敏感密钥或凭证目录' };
+  }
+  let stat;
+  try {
+    stat = fs.statSync(realDir);
+  } catch {
+    return { ok: false, status: 404, error: '目录不存在' };
+  }
+  if (!stat.isDirectory()) {
+    return { ok: false, status: 400, error: '目标不是目录' };
+  }
+
+  let dirents = [];
+  try {
+    dirents = fs.readdirSync(realDir, { withFileTypes: true });
+  } catch (err) {
+    return { ok: false, status: 403, error: err?.message || '读取目录失败' };
+  }
+
+  const entries = [];
+  for (const d of dirents) {
+    const name = String(d.name || '');
+    if (!name) continue;
+    const fullPath = path.join(realDir, name);
+    let realTarget = fullPath;
+    let targetStat = null;
+    try {
+      realTarget = fs.realpathSync(fullPath);
+      targetStat = fs.statSync(realTarget);
+    } catch {
+      continue;
+    }
+    const targetInAllowedRoot = realRoots.some((root) => realTarget === root || realTarget.startsWith(root + path.sep));
+    if (!targetInAllowedRoot) continue;
+    if (SENSITIVE_MEDIA_DIR_RE.test(realTarget) || isSensitiveHostPath(realTarget, options)) continue;
+    const isDir = targetStat.isDirectory();
+    if (isDir) {
+      if (!showAll && TREE_HIDDEN_NOISE_DIRS.has(name)) continue;
+    } else {
+      if (SENSITIVE_MEDIA_FILE_RE.test(name) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(realTarget))) continue;
+    }
+    entries.push({
+      name,
+      path: fullPath,
+      isDir,
+      size: isDir ? 0 : (targetStat.size || 0),
+      ext: isDir ? '' : path.extname(name).toLowerCase()
+    });
+  }
+  entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : (a.isDir ? -1 : 1)));
+  const parentCandidate = path.dirname(realDir);
+  const canGoUp = parentCandidate !== realDir
+    && realRoots.some((root) => parentCandidate === root || parentCandidate.startsWith(root + path.sep));
+  return {
+    ok: true,
+    dir: realDir,
+    parentDir: canGoUp ? parentCandidate : '',
+    entries: entries.slice(0, 200),
+    truncated: entries.length > 200
+  };
+}
+
+function readSafeTextFilePreview(rawPath, options = {}) {
+  const maxTextBytes = Number.isFinite(options.maxTextBytes) ? options.maxTextBytes : (512 * 1024);
+  const checked = resolveSafeLocalMediaPath(rawPath, options);
+  if (!checked.ok) return checked;
+  if (/^image\//i.test(checked.contentType)) {
+    return {
+      ok: true,
+      isImage: true,
+      isBinary: false,
+      isMarkdown: false,
+      name: checked.baseName,
+      path: checked.realPath,
+      ext: checked.ext,
+      size: checked.size
+    };
+  }
+  if (checked.size > maxTextBytes) {
+    return {
+      ok: true,
+      isImage: false,
+      isBinary: false,
+      isTooLargeForText: true,
+      name: checked.baseName,
+      path: checked.realPath,
+      ext: checked.ext,
+      size: checked.size,
+      error: `文件较大 (${Math.round(checked.size / 1024)} KB)，超过文本预览上限 (${Math.round(maxTextBytes / 1024)} KB)`
+    };
+  }
+  let buf;
+  try {
+    buf = fs.readFileSync(checked.realPath);
+  } catch (err) {
+    return { ok: false, status: 500, error: err?.message || '读取文件失败' };
+  }
+  const sampleLen = Math.min(buf.length, 4096);
+  let hasNul = false;
+  for (let i = 0; i < sampleLen; i++) {
+    if (buf[i] === 0) { hasNul = true; break; }
+  }
+  if (hasNul) {
+    return {
+      ok: true,
+      isImage: false,
+      isBinary: true,
+      isMarkdown: false,
+      name: checked.baseName,
+      path: checked.realPath,
+      ext: checked.ext,
+      size: checked.size
+    };
+  }
+  const content = buf.toString('utf8');
+  return {
+    ok: true,
+    isImage: false,
+    isBinary: false,
+    isMarkdown: checked.ext === '.md' || checked.ext === '.markdown',
+    name: checked.baseName,
+    path: checked.realPath,
+    ext: checked.ext,
+    size: checked.size,
+    lineCount: content ? content.split(/\r?\n/).length : 0,
+    content
+  };
+}
+
+const SAFE_INLINE_IMAGE_MIME_RE = /^image\/(?:png|jpeg|jpg|webp|gif)$/i;
+const MAX_INLINE_IMAGE_DATA_URL_CHARS = 512 * 1024;
+
+function buildSafeInlineImageDataUrl(rawData, rawMimeType = 'image/png') {
+  const s = String(rawData || '').trim();
+  if (!s) return '';
+  if (/^data:/i.test(s)) {
+    const m = s.match(/^data:([^;,\s]+);base64,([A-Za-z0-9+/=\s]+)$/i);
+    if (!m) return '';
+    const mime = m[1].toLowerCase();
+    if (!SAFE_INLINE_IMAGE_MIME_RE.test(mime)) return '';
+    const b64 = m[2].replace(/\s+/g, '');
+    if (!b64 || b64.length > MAX_INLINE_IMAGE_DATA_URL_CHARS) return '';
+    return `data:${mime};base64,${b64}`;
+  }
+  const mime = String(rawMimeType || 'image/png').trim().toLowerCase();
+  if (!SAFE_INLINE_IMAGE_MIME_RE.test(mime)) return '';
+  const b64 = s.replace(/\s+/g, '');
+  if (!b64 || b64.length > MAX_INLINE_IMAGE_DATA_URL_CHARS || !/^[A-Za-z0-9+/=]+$/.test(b64)) return '';
+  return `data:${mime};base64,${b64}`;
+}
+
+function extractTrajectoryUserAttachments(ui) {
+  if (!ui || typeof ui !== 'object') return [];
+  const attachments = [];
+  const seen = new Set();
+  const pushAtt = (att) => {
+    const inlineSig = att.inlineUrl ? crypto.createHash('sha1').update(att.inlineUrl).digest('hex') : '';
+    const key = `${att.kind}|${att.path || att.uri || inlineSig || att.name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    attachments.push(att);
+  };
+  if (Array.isArray(ui.media)) {
+    for (const m of ui.media) {
+      if (!m || typeof m !== 'object') continue;
+      const rawUri = String(m.uri || m.fileUri || m.path || m.absoluteUri || '').trim();
+      const localPath = normalizeLocalFileUriToPath(rawUri);
+      const mimeType = String(m.mimeType || m.mime_type || 'image/png').trim();
+      const rawInline = m.inlineData || m.inline_data || m.thumbnail || m.base64Data || m.base64_data || '';
+      const inlineUrl = buildSafeInlineImageDataUrl(rawInline, mimeType);
+      const isImg = Boolean(inlineUrl) || /^image\//i.test(mimeType) || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(localPath);
+      const name = String(m.displayName || m.name || (localPath ? path.basename(localPath) : (isImg ? 'image.png' : 'attachment'))).trim();
+      if (!localPath && !rawUri && !inlineUrl) continue;
+      pushAtt({
+        kind: isImg ? 'image' : 'file',
+        name,
+        mimeType,
+        path: localPath,
+        uri: rawUri,
+        ...(inlineUrl ? { inlineUrl } : {})
+      });
+    }
+  }
+  if (Array.isArray(ui.images)) {
+    for (const img of ui.images) {
+      if (!img || typeof img !== 'object') continue;
+      const rawUri = String(img.uri || img.fileUri || img.path || img.absoluteUri || '').trim();
+      const localPath = normalizeLocalFileUriToPath(rawUri);
+      const mimeType = String(img.mimeType || img.mime_type || 'image/png').trim();
+      const rawInline = img.base64Data || img.base64_data || img.inlineData || img.inline_data || img.thumbnail || img.data || '';
+      const inlineUrl = buildSafeInlineImageDataUrl(rawInline, mimeType);
+      if (!localPath && !rawUri && !inlineUrl) continue;
+      const name = String(img.displayName || img.name || (localPath ? path.basename(localPath) : 'image.png')).trim();
+      pushAtt({
+        kind: 'image',
+        name,
+        mimeType,
+        path: localPath,
+        uri: rawUri,
+        ...(inlineUrl ? { inlineUrl } : {})
+      });
+    }
+  }
+  if (Array.isArray(ui.items)) {
+    for (const it of ui.items) {
+      const fileUri = String(it?.item?.file?.absoluteUri || '').trim();
+      if (!fileUri) continue;
+      const localPath = normalizeLocalFileUriToPath(fileUri);
+      const name = localPath ? path.basename(localPath) : safeDecodeURIComponent(fileUri.split('/').pop() || fileUri);
+      const isImg = /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(name);
+      pushAtt({
+        kind: isImg ? 'image' : 'file',
+        name,
+        mimeType: isImg ? (SAFE_MEDIA_MIME_BY_EXT[path.extname(name).toLowerCase()] || 'image/png') : 'application/octet-stream',
+        path: localPath,
+        uri: fileUri
+      });
+    }
+  }
+  return attachments;
+}
+
 function formatTrajectoryUserInput(ui) {
   if (!ui || typeof ui !== 'object') return '';
   const pieces = [];
@@ -3142,25 +3643,108 @@ function formatTrajectoryUserInput(ui) {
   return raw;
 }
 
+function isQueuedTrajectoryUserStep(step) {
+  if (!step || typeof step !== 'object') return false;
+  if (String(step.type || '') !== 'CORTEX_STEP_TYPE_USER_INPUT') return false;
+  const st = String(step.status || '').trim().toUpperCase();
+  return st === 'CORTEX_STEP_STATUS_QUEUED'
+    || step.queued === true
+    || step.userInput?.queued === true
+    || step.userInput?.isQueuedMessage === true
+    || step.userInput?.is_queued_message === true
+    || step.metadata?.queued === true;
+}
+
+function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) {
+  const queued = [];
+  const seenKey = new Set();
+  const pushQueued = (stepIndex, ui) => {
+    const text = formatTrajectoryUserInput(ui);
+    const atts = extractTrajectoryUserAttachments(ui);
+    const images = atts
+      .filter((a) => a.kind === 'image' && (a.inlineUrl || a.path))
+      .map((a) => ({
+        src: a.inlineUrl || `/api/media?path=${encodeURIComponent(a.path)}`,
+        alt: a.name || (a.path ? path.basename(a.path) : '图片')
+      }));
+    if (!text && !images.length) return;
+    const key = `${stepIndex}|${text}`;
+    if (seenKey.has(key)) return;
+    seenKey.add(key);
+    queued.push({
+      stepIndex,
+      text,
+      ...(images.length ? { images } : {}),
+      status: 'queued'
+    });
+  };
+  if (Array.isArray(steps) && steps.length) {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      if (!isQueuedTrajectoryUserStep(step)) continue;
+      pushQueued(i, step.userInput);
+    }
+  }
+  const extraList = Array.isArray(extraContainer?.queuedSteps)
+    ? extraContainer.queuedSteps
+    : (Array.isArray(extraContainer?.queued_steps) ? extraContainer.queued_steps : []);
+  for (let j = 0; j < extraList.length; j++) {
+    const qStep = extraList[j];
+    if (!qStep || typeof qStep !== 'object') continue;
+    const ui = qStep.userInput || qStep.user_input || qStep;
+    const idx = Number.isInteger(qStep.stepIndex) ? qStep.stepIndex : (Number.isInteger(qStep.step_index) ? qStep.step_index : (Array.isArray(steps) ? steps.length + j : j));
+    pushQueued(idx, ui);
+  }
+  return queued;
+}
+
 function extractMessagesFromTrajectorySteps(steps, options = {}) {
   if (!Array.isArray(steps) || !steps.length) return [];
   const lazyHtml = Boolean(options?.lazyHtml);
   const messages = [];
-  let pendingThoughts = [];
+  let turnThoughts = [];
+  let turnAssistantIndices = [];
+
+  const clearEarlierTurnThoughts = () => {
+    for (const idx of turnAssistantIndices) {
+      if (messages[idx]) {
+        messages[idx].thoughtLabel = '';
+        messages[idx].thoughtText = '';
+        messages[idx].thoughts = [];
+        messages[idx].thoughtCount = 0;
+      }
+    }
+  };
 
   const flushPendingThoughtsOnly = (idxTag) => {
-    if (!pendingThoughts.length) return;
-    messages.push({
-      id: `t-think-${idxTag}`,
-      role: 'assistant',
-      text: '',
-      html: '',
-      thoughtLabel: '思考过程',
-      thoughtText: pendingThoughts.join('\n\n'),
-      highRisk: false,
-      riskText: ''
-    });
-    pendingThoughts = [];
+    if (!turnThoughts.length) {
+      turnAssistantIndices = [];
+      return;
+    }
+    const thoughts = turnThoughts.slice();
+    if (turnAssistantIndices.length) {
+      const lastIdx = turnAssistantIndices[turnAssistantIndices.length - 1];
+      clearEarlierTurnThoughts();
+      messages[lastIdx].thoughtLabel = '思考过程';
+      messages[lastIdx].thoughtText = thoughts.join('\n\n');
+      messages[lastIdx].thoughts = thoughts;
+      messages[lastIdx].thoughtCount = thoughts.length;
+    } else {
+      messages.push({
+        id: `t-think-${idxTag}`,
+        role: 'assistant',
+        text: '',
+        html: '',
+        thoughtLabel: '思考过程',
+        thoughtText: thoughts.join('\n\n'),
+        thoughts,
+        thoughtCount: thoughts.length,
+        highRisk: false,
+        riskText: ''
+      });
+    }
+    turnThoughts = [];
+    turnAssistantIndices = [];
   };
 
   for (let i = 0; i < steps.length; i++) {
@@ -3168,24 +3752,42 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
     if (!step || typeof step !== 'object') continue;
     const type = String(step.type || '');
     if (type === 'CORTEX_STEP_TYPE_USER_INPUT') {
+      if (isQueuedTrajectoryUserStep(step)) continue;
       const userText = formatTrajectoryUserInput(step.userInput);
-      if (!userText) continue;
+      const attachments = extractTrajectoryUserAttachments(step.userInput);
+      if (!userText && !attachments.length) continue;
       flushPendingThoughtsOnly(i);
       messages.push({
         id: `t-u-${i}`,
         role: 'user',
-        text: userText
+        text: userText,
+        ...(attachments.length ? { attachments } : {})
       });
+      continue;
+    }
+    if (type === 'CORTEX_STEP_TYPE_CHECKPOINT' || /COMPACT|CONTEXT_SUMMARY/i.test(type) || step.checkpoint) {
+      flushPendingThoughtsOnly(i);
+      const lastMsg = messages[messages.length - 1];
+      if (!lastMsg || lastMsg.role !== 'system-notice') {
+        messages.push({
+          id: `t-compact-${i}`,
+          role: 'system-notice',
+          text: '✓ 上下文已完成压缩',
+          html: ''
+        });
+      }
       continue;
     }
     if (type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') {
       const pr = step.plannerResponse || {};
       const thought = String(pr.thinking || pr.thought || '').trim();
-      if (thought) pendingThoughts.push(thought);
+      if (thought) turnThoughts.push(thought);
       const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
       if (replyRaw) {
+        clearEarlierTurnThoughts();
         const replyText = replyRaw;
-        const thoughtText = pendingThoughts.join('\n\n');
+        const thoughts = turnThoughts.slice();
+        const thoughtText = thoughts.join('\n\n');
         messages.push({
           id: `t-a-${i}`,
           role: 'assistant',
@@ -3193,10 +3795,12 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
           html: lazyHtml ? null : renderSafeMarkdownToHtml(replyText),
           thoughtLabel: thoughtText ? '思考过程' : '',
           thoughtText,
+          thoughts,
+          thoughtCount: thoughts.length,
           highRisk: false,
           riskText: ''
         });
-        pendingThoughts = [];
+        turnAssistantIndices.push(messages.length - 1);
       }
     }
   }
@@ -3228,8 +3832,91 @@ function normMsgPrefix(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
+function collapseConsecutiveDomThinking(domMessages) {
+  const raw = Array.isArray(domMessages) ? domMessages.filter(Boolean) : [];
+  const out = [];
+  let turnThoughts = [];
+  let turnLabel = '';
+  let turnCount = 0;
+  let turnAssistantIndices = [];
+
+  const clearEarlierTurnThoughts = () => {
+    for (const idx of turnAssistantIndices) {
+      if (out[idx]) {
+        out[idx].thoughtLabel = '';
+        out[idx].thoughtText = '';
+        out[idx].thoughts = [];
+        out[idx].thoughtCount = 0;
+      }
+    }
+  };
+
+  const flush = (tag) => {
+    if (!turnThoughts.length && !turnLabel) {
+      turnAssistantIndices = [];
+      return;
+    }
+    const thoughts = turnThoughts.slice();
+    if (turnAssistantIndices.length) {
+      const lastIdx = turnAssistantIndices[turnAssistantIndices.length - 1];
+      clearEarlierTurnThoughts();
+      out[lastIdx].thoughtLabel = turnLabel || '思考过程';
+      out[lastIdx].thoughtText = thoughts.join('\n\n');
+      out[lastIdx].thoughts = thoughts;
+      out[lastIdx].thoughtCount = Math.max(thoughts.length, turnCount, 1);
+    } else {
+      out.push({
+        id: `dom-think-${tag}`,
+        role: 'assistant',
+        text: '',
+        html: '',
+        thoughtLabel: turnLabel || '思考过程',
+        thoughtText: thoughts.join('\n\n'),
+        thoughts,
+        thoughtCount: Math.max(thoughts.length, turnCount, 1),
+        highRisk: false,
+        riskText: ''
+      });
+    }
+    turnThoughts = [];
+    turnLabel = '';
+    turnCount = 0;
+    turnAssistantIndices = [];
+  };
+  for (let i = 0; i < raw.length; i++) {
+    const m = raw[i];
+    if (m.role === 'user') {
+      flush(i);
+      out.push(m);
+      continue;
+    }
+    const hasBody = Boolean(normMsgPrefix(m.text) || String(m.html || '').trim() || m.highRisk);
+    const mThoughts = Array.isArray(m.thoughts) && m.thoughts.length
+      ? m.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
+      : (String(m.thoughtText || '').trim() ? [String(m.thoughtText).trim()] : []);
+    if (mThoughts.length) turnThoughts.push(...mThoughts);
+    if (m.thoughtLabel && !turnLabel) turnLabel = m.thoughtLabel;
+    turnCount += Math.max(mThoughts.length, Number(m.thoughtCount) || (m.thoughtLabel ? 1 : 0));
+    if (!hasBody) continue;
+    clearEarlierTurnThoughts();
+    const mergedThoughts = turnThoughts.slice();
+    const mergedCount = Math.max(mergedThoughts.length, turnCount, turnLabel ? 1 : 0);
+    const mergedLabel = turnLabel || (mergedThoughts.length ? '思考过程' : '');
+    out.push({
+      ...m,
+      thoughtLabel: mergedLabel,
+      thoughtText: mergedThoughts.join('\n\n') || String(m.thoughtText || ''),
+      ...(mergedThoughts.length ? { thoughts: mergedThoughts } : {}),
+      ...(mergedCount ? { thoughtCount: mergedCount } : {})
+    });
+    turnAssistantIndices.push(out.length - 1);
+  }
+  flush('end');
+  return out;
+}
+
 function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
-  const domList = Array.isArray(domMessages) ? domMessages.filter(Boolean) : [];
+  const domList = collapseConsecutiveDomThinking(domMessages);
   const baseList = Array.isArray(trajMsgs) ? trajMsgs.map((m) => ({ ...m })) : [];
   if (!baseList.length) {
     return domList.map((m, idx) => ({ ...m, msgIndex: idx }));
@@ -3256,17 +3943,24 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       if (!matchTarget.thoughtText && dm.thoughtText) {
         matchTarget.thoughtLabel = dm.thoughtLabel || '思考过程';
         matchTarget.thoughtText = dm.thoughtText;
+        if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
+          matchTarget.thoughts = dm.thoughts.slice();
+          matchTarget.thoughtCount = dm.thoughts.length;
+        }
       }
     }
   }
 
   // 如果桌面 DOM 末尾刚发送/流式生成了轨迹接口尚未索引的最新消息，无损补入尾部
-  const lastBaseUserSig = (() => {
-    for (let i = baseList.length - 1; i >= 0; i--) {
-      if (baseList[i].role === 'user') return normMsgPrefix(baseList[i].text);
+  let lastBaseUserIdx = -1;
+  let lastBaseUserSig = '';
+  for (let i = baseList.length - 1; i >= 0; i--) {
+    if (baseList[i].role === 'user') {
+      lastBaseUserIdx = i;
+      lastBaseUserSig = normMsgPrefix(baseList[i].text);
+      break;
     }
-    return '';
-  })();
+  }
   let startAppendIdx = -1;
   for (let i = domList.length - 1; i >= 0; i--) {
     if (domList[i].role === 'user' && lastBaseUserSig && normMsgPrefix(domList[i].text) === lastBaseUserSig) {
@@ -3275,13 +3969,82 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     }
   }
   if (startAppendIdx >= 0) {
-    const tailBaseMsgs = baseList.slice(-4);
+    let currentTurnMsgs = baseList.slice(Math.max(0, lastBaseUserIdx + 1));
     for (let j = startAppendIdx; j < domList.length; j++) {
       const dm = domList[j];
       const dSig = normMsgPrefix(dm.text);
-      const dup = tailBaseMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
+      if (dm.role === 'user') {
+        const dupUser = currentTurnMsgs.some((bm) => bm.role === 'user' && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
+        if (!dupUser) {
+          const item = { ...dm, id: `dom-tail-${j}` };
+          baseList.push(item);
+          // 遇到新用户消息立即重置当前轮次范围，避免后续新轮思考被挂到旧轮回复
+          currentTurnMsgs = [];
+        }
+        continue;
+      }
+      if (dm.role === 'assistant' && !dSig && !dm.highRisk) {
+        // 纯思考项（空正文）：不得向本轮已有回复或思考卡尾部追加空壳 dom-tail
+        const lastTurnAssistant = [...currentTurnMsgs].reverse().find((bm) => bm.role === 'assistant');
+        if (lastTurnAssistant) {
+          if (!lastTurnAssistant.thoughtText && dm.thoughtText) {
+            lastTurnAssistant.thoughtLabel = dm.thoughtLabel || '思考过程';
+            lastTurnAssistant.thoughtText = dm.thoughtText;
+            if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
+              lastTurnAssistant.thoughts = dm.thoughts.slice();
+              lastTurnAssistant.thoughtCount = dm.thoughts.length;
+            }
+          } else if (!normMsgPrefix(lastTurnAssistant.text) && dm.thoughtText && dm.thoughtText.length > String(lastTurnAssistant.thoughtText || '').length) {
+            lastTurnAssistant.thoughtText = dm.thoughtText;
+            if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
+              lastTurnAssistant.thoughts = dm.thoughts.slice();
+              lastTurnAssistant.thoughtCount = dm.thoughts.length;
+            }
+          }
+          continue;
+        }
+        // 本轮尚无任何 assistant 消息才追加唯一 1 条流式思考卡
+        if (dm.thoughtLabel || dm.thoughtText) {
+          const item = { ...dm, id: `dom-tail-${j}` };
+          baseList.push(item);
+          currentTurnMsgs.push(item);
+        }
+        continue;
+      }
+      const dup = currentTurnMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
       if (!dup) {
-        baseList.push({ ...dm, id: `dom-tail-${j}` });
+        // 流式纯思考卡转正文交接：若本轮末尾是无正文纯思考卡，合并其思考到新回复并移除临时卡
+        const pendingThinkIdx = (dm.role === 'assistant' && dSig)
+          ? baseList.findIndex((bm, idx) => idx > lastBaseUserIdx && bm.role === 'assistant' && !normMsgPrefix(bm.text) && !bm.highRisk && (bm.thoughtLabel || bm.thoughtText))
+          : -1;
+        if (pendingThinkIdx >= 0) {
+          const prevThink = baseList[pendingThinkIdx];
+          const prevThoughts = Array.isArray(prevThink.thoughts) && prevThink.thoughts.length
+            ? prevThink.thoughts
+            : (prevThink.thoughtText ? [prevThink.thoughtText] : []);
+          const nextThoughts = Array.isArray(dm.thoughts) && dm.thoughts.length
+            ? dm.thoughts
+            : (dm.thoughtText ? [dm.thoughtText] : []);
+          const combinedThoughts = prevThoughts.slice();
+          for (const t of nextThoughts) {
+            if (t && !combinedThoughts.includes(t)) combinedThoughts.push(t);
+          }
+          const promoted = {
+            ...dm,
+            id: `dom-tail-${j}`,
+            thoughtLabel: dm.thoughtLabel || prevThink.thoughtLabel || (combinedThoughts.length ? '思考过程' : ''),
+            thoughtText: combinedThoughts.join('\n\n') || dm.thoughtText || prevThink.thoughtText || '',
+            ...(combinedThoughts.length ? { thoughts: combinedThoughts, thoughtCount: combinedThoughts.length } : {})
+          };
+          baseList.splice(pendingThinkIdx, 1, promoted);
+          const turnPos = currentTurnMsgs.indexOf(prevThink);
+          if (turnPos >= 0) currentTurnMsgs.splice(turnPos, 1, promoted);
+          else currentTurnMsgs.push(promoted);
+        } else {
+          const item = { ...dm, id: `dom-tail-${j}` };
+          baseList.push(item);
+          currentTurnMsgs.push(item);
+        }
       }
     }
   } else if (!lastBaseUserSig && domList.length) {
@@ -3298,6 +4061,7 @@ function createConversationHistoryManager() {
   const cache = new Map();
   const inflightMap = new Map();
   const fetchGenMap = new Map();
+  const invalidatedGenMap = new Map();
   const MAX_CACHE_ENTRIES = 24;
   const MAX_FETCH_GEN_ENTRIES = 2000;
   let globalFetchSeq = 0;
@@ -3352,19 +4116,39 @@ function createConversationHistoryManager() {
     let entry = null;
     const promise = (async () => {
       try {
-        const res = await callLocalLanguageServer('GetCascadeTrajectory', { cascadeId: sid }, 4500, options);
-        const steps = res?.trajectory?.steps;
-        if (!Array.isArray(steps)) {
-          return { messages: null, fetchedSig: reqSig, gen, startedAt };
+        const res = await callLocalLanguageServer('GetCascadeTrajectory', { cascadeId: sid, trajectoryVerbosity: 3 }, 4500, options);
+        const firstSteps = res?.trajectory?.steps;
+        if (!Array.isArray(firstSteps)) {
+          return { messages: null, queuedMessages: null, fetchedSig: reqSig, gen, startedAt };
+        }
+        const allSteps = firstSteps.slice();
+        const totalSteps = Number(res?.numTotalSteps || res?.trajectory?.numTotalSteps || 0);
+        if (totalSteps > allSteps.length) {
+          const maxPages = Math.min(totalSteps + 1, 20000);
+          for (let page = 0; page < maxPages && allSteps.length < totalSteps; page++) {
+            const stepOffset = allSteps.length;
+            const pageRes = await callLocalLanguageServer(
+              'GetCascadeTrajectorySteps',
+              { cascadeId: sid, stepOffset, trajectoryVerbosity: 3 },
+              4000,
+              options
+            ).catch(() => null);
+            const chunk = Array.isArray(pageRes?.steps) ? pageRes.steps : [];
+            if (!chunk.length) break;
+            const prevLen = allSteps.length;
+            allSteps.push(...chunk);
+            if (allSteps.length <= prevLen) break;
+          }
         }
         return {
-          messages: extractMessagesFromTrajectorySteps(steps, { lazyHtml: true }),
+          messages: extractMessagesFromTrajectorySteps(allSteps, { lazyHtml: true }),
+          queuedMessages: extractQueuedMessagesFromTrajectorySteps(allSteps, res?.trajectory || res),
           fetchedSig: reqSig,
           gen,
           startedAt
         };
       } catch {
-        return { messages: null, fetchedSig: reqSig, gen, startedAt };
+        return { messages: null, queuedMessages: null, fetchedSig: reqSig, gen, startedAt };
       } finally {
         if (inflightMap.get(inflightKey) === entry) {
           inflightMap.delete(inflightKey);
@@ -3380,7 +4164,7 @@ function createConversationHistoryManager() {
     const sid = String(sessionId || '').trim();
     const domTail = Array.isArray(domMessages) ? domMessages : [];
     if (!sid) {
-      return { merged: domTail.map((m, idx) => ({ ...m, msgIndex: idx })), trajMsgs: null };
+      return { merged: domTail.map((m, idx) => ({ ...m, msgIndex: idx })), trajMsgs: null, queuedMessages: null };
     }
     const existing = cache.get(sid);
     const nowMs = Date.now();
@@ -3407,8 +4191,10 @@ function createConversationHistoryManager() {
       // Never extend `at` on cache hits: TTL must measure elapsed time since actual RPC fetch.
       // For unknown-signature warm entries (knownOldSig === ''), record observedSig without promoting it to trajSig.
       const nextObservedSig = knownOldSig ? '' : (observedOldSig || trajSig || '');
+      const cachedQueued = Array.isArray(existing.queuedMessages) ? existing.queuedMessages : null;
       touchCache(sid, {
         trajMsgs,
+        queuedMessages: cachedQueued,
         trajSig: knownOldSig,
         observedSig: nextObservedSig,
         domTail: domTail.length ? domTail : (existing?.domTail || []),
@@ -3416,7 +4202,7 @@ function createConversationHistoryManager() {
         at: existing.at || 0,
         gen: existing.gen || 0
       });
-      return { merged, trajMsgs };
+      return { merged, trajMsgs, queuedMessages: cachedQueued };
     }
 
     const fetchRes = await fetchTrajectoryMessages(sid, { ...options, trajSig });
@@ -3428,14 +4214,20 @@ function createConversationHistoryManager() {
       (latestExisting?.gen && latestExisting.gen > fetchRes.gen)
     );
     const fetchedMsgs = Array.isArray(fetchRes?.messages) ? fetchRes.messages : null;
+    const fetchedQueued = Array.isArray(fetchRes?.queuedMessages) ? fetchRes.queuedMessages : null;
     const trajFetchedFresh = Boolean(fetchedMsgs && fetchRes.fetchedSig === trajSig);
 
     if (isSuperseded) {
+      const invGen = invalidatedGenMap.get(sid) || 0;
+      const wasInvalidated = Boolean(fetchRes && fetchRes.gen < invGen);
       const activeTrajMsgs = Array.isArray(latestExisting?.trajMsgs)
         ? latestExisting.trajMsgs
-        : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null));
+        : (wasInvalidated ? null : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null)));
+      const activeQueued = Array.isArray(latestExisting?.queuedMessages)
+        ? latestExisting.queuedMessages
+        : (wasInvalidated ? [] : (Array.isArray(fetchedQueued) ? fetchedQueued : (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : null)));
       const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
-      return { merged, trajMsgs: activeTrajMsgs };
+      return { merged, trajMsgs: activeTrajMsgs, queuedMessages: activeQueued };
     }
 
     const baseRec = latestExisting || existing;
@@ -3445,6 +4237,14 @@ function createConversationHistoryManager() {
     } else if (baseRec && Array.isArray(baseRec.trajMsgs)) {
       trajMsgs = baseRec.trajMsgs;
     }
+    const invGenAfter = invalidatedGenMap.get(sid) || 0;
+    const isPendingInvalidation = Boolean(invGenAfter > 0);
+    if (trajFetchedFresh && invGenAfter > 0 && fetchRes.gen > invGenAfter) {
+      invalidatedGenMap.delete(sid);
+    }
+    const nextQueued = trajFetchedFresh
+      ? (Array.isArray(fetchedQueued) ? fetchedQueued : [])
+      : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : (isPendingInvalidation ? [] : null));
 
     const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
     const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');
@@ -3456,6 +4256,7 @@ function createConversationHistoryManager() {
       : (Array.isArray(baseRec?.trajMsgs) ? baseRec.trajMsgs : null);
     touchCache(sid, {
       trajMsgs: persistedTrajMsgs,
+      queuedMessages: nextQueued,
       trajSig: nextTrajSig,
       observedSig: nextObservedSig,
       domTail: domTail.length ? domTail : (baseRec?.domTail || []),
@@ -3463,7 +4264,7 @@ function createConversationHistoryManager() {
       at: nextAt,
       gen: nextGen
     });
-    return { merged, trajMsgs: persistedTrajMsgs };
+    return { merged, trajMsgs: persistedTrajMsgs, queuedMessages: nextQueued };
   }
 
   async function warmSession(sessionId, options = {}) {
@@ -3485,6 +4286,7 @@ function createConversationHistoryManager() {
     ) {
       touchCache(sid, {
         trajMsgs: fetchRes.messages,
+        queuedMessages: Array.isArray(fetchRes.queuedMessages) ? fetchRes.queuedMessages : [],
         trajSig: fetchRes.fetchedSig || '',
         observedSig: '',
         domTail: [],
@@ -3498,7 +4300,7 @@ function createConversationHistoryManager() {
   async function enrichMessages(snap, options = {}) {
     if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
     const { _activeTrajSig, ...cleanSnap } = snap;
-    const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(cleanSnap.sessionId, cleanSnap.messages, {
+    const { merged: fullMsgs, trajMsgs, queuedMessages } = await resolveFullMessages(cleanSnap.sessionId, cleanSnap.messages, {
       ...options,
       trajSig: _activeTrajSig || '',
       busy: Boolean(cleanSnap.busy)
@@ -3506,14 +4308,58 @@ function createConversationHistoryManager() {
     const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
     const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
+    const domQueued = (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []).filter((q) => q && q.source === 'dom');
+    let effQueued;
+    if (Array.isArray(queuedMessages)) {
+      const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+      const getQImgCount = (q) => {
+        if (Array.isArray(q?.images)) return q.images.length;
+        if (Array.isArray(q?.attachments)) return q.attachments.length;
+        if (Array.isArray(q?.media)) return q.media.length;
+        return 0;
+      };
+      const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
+      // 同源重复文本与不同附件数的消息全部保留；跨来源（traj vs dom）按 (规范化文本 + 附件数) 多重集 1:1 去重
+      const mergedQ = [...queuedMessages];
+      const trajCounts = new Map();
+      for (const tq of queuedMessages) {
+        const k = queueMatchKey(tq);
+        trajCounts.set(k, (trajCounts.get(k) || 0) + 1);
+      }
+      for (const dq of domQueued) {
+        const k = queueMatchKey(dq);
+        const rem = trajCounts.get(k) || 0;
+        if (rem > 0) {
+          trajCounts.set(k, rem - 1);
+          continue;
+        }
+        mergedQ.push(dq);
+      }
+      effQueued = mergedQ;
+    } else {
+      effQueued = Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : [];
+    }
     return {
       ...cleanSnap,
       totalMessages: fullMsgs.length,
       messagesStartIndex: startIdx,
       hasEarlierMessages: startIdx > 0,
       historySource: trajMsgs ? 'trajectory' : (cleanSnap.isolatedError ? 'isolated_error' : 'dom'),
-      messages: sliced
+      messages: sliced,
+      queuedMessages: effQueued
     };
+  }
+
+  function invalidateSession(sessionId) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return;
+    cache.delete(sid);
+    const invGen = nextFetchGen(sid);
+    invalidatedGenMap.set(sid, invGen);
+    const prefix = `${sid}\n`;
+    for (const key of Array.from(inflightMap.keys())) {
+      if (key.startsWith(prefix)) inflightMap.delete(key);
+    }
   }
 
   async function getMessagesPage(options = {}) {
@@ -3563,7 +4409,7 @@ function createConversationHistoryManager() {
     };
   }
 
-  return { enrichMessages, getMessagesPage, warmSession };
+  return { enrichMessages, getMessagesPage, warmSession, invalidateSession };
 }
 
 const defaultHistoryManager = createConversationHistoryManager();
@@ -3637,7 +4483,11 @@ async function performActionInTarget(payload, options = {}) {
     await Promise.all([new Promise((r) => setTimeout(r, settleMs)), warmPromise]);
     const snapConvId = act === 'switch-conversation'
       ? (payload?.id && payload.id !== 'new' && payload.id !== 'follow-desktop' ? String(payload.id) : '')
-      : (act === 'new-conversation' ? '' : (payload?.conversationId ? String(payload.conversationId) : ''));
+      : (act === 'new-conversation'
+        ? ''
+        : (act === 'send' && actionResult?.createdConversationId
+          ? String(actionResult.createdConversationId)
+          : (payload?.conversationId ? String(payload.conversationId) : '')));
     const snapshot = await fetchSnapshotFromTarget(target.id, {
       convLimit: 100,
       conversationId: snapConvId,
@@ -3729,7 +4579,6 @@ function buildMobileAppHtml() {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta id="meta-theme-color" name="theme-color" content="#09090b">
   <title>Antigravity Remote</title>
   <link rel="manifest" href="/manifest.json">
@@ -3766,9 +4615,15 @@ function buildMobileAppHtml() {
       --git-tag-bg:rgba(52,211,153,.15);--git-tag-fg:#6ee7b7;
       --warn-card-bg:rgba(245,158,11,.12);--warn-card-border:rgba(245,158,11,.55);--warn-card-fg:#fde68a;
       --perm-review:#c084fc;
+      --unread-dot:#3b82f6;--unread-glow:rgba(59,130,246,.24);
       --app-h:100dvh;
       --modal-h:100dvh;
+      --safe-bottom:0px;
     }
+    @media (display-mode:standalone){
+      :root{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)))}
+    }
+    body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)))}
     @media (prefers-color-scheme:light){
       :root:not([data-theme="dark"]){
         color-scheme:light;
@@ -3800,6 +4655,7 @@ function buildMobileAppHtml() {
         --git-tag-bg:rgba(5,150,105,.13);--git-tag-fg:#047857;
         --warn-card-bg:rgba(245,158,11,.12);--warn-card-border:rgba(217,119,6,.5);--warn-card-fg:#92400e;
         --perm-review:#7c3aed;
+        --unread-dot:#2563eb;--unread-glow:rgba(37,99,235,.2);
       }
     }
     html[data-theme="light"]{
@@ -3832,10 +4688,15 @@ function buildMobileAppHtml() {
       --git-tag-bg:rgba(5,150,105,.13);--git-tag-fg:#047857;
       --warn-card-bg:rgba(245,158,11,.12);--warn-card-border:rgba(217,119,6,.5);--warn-card-fg:#92400e;
       --perm-review:#7c3aed;
+      --unread-dot:#2563eb;--unread-glow:rgba(37,99,235,.2);
     }
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-    html,body{
-      margin:0;padding:0;width:100%;height:100%;position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;
+    html{
+      margin:0;padding:0;width:100%;height:100%;height:100dvh;overflow:hidden;
+      background:var(--bg);color:var(--fg);overscroll-behavior:none;
+    }
+    body{
+      margin:0;padding:0;width:100%;position:fixed;inset:0;height:auto;overflow:hidden;
       background:var(--bg);color:var(--fg);touch-action:manipulation;
       font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
       font-size:14px;line-height:1.45;overscroll-behavior:none;
@@ -3843,7 +4704,7 @@ function buildMobileAppHtml() {
     .app{
       display:flex;flex-direction:column;width:100%;height:100%;
       padding-top:env(safe-area-inset-top);
-      padding-bottom:max(8px,calc(env(safe-area-inset-bottom,0px) - 10px));
+      padding-bottom:calc(4px + var(--safe-bottom));
       padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
     }
     .app.kb-open{padding-bottom:4px}
@@ -3857,14 +4718,37 @@ function buildMobileAppHtml() {
       display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;
     }
     .icon-btn:active{background:var(--surface-hover);color:var(--fg-strong)}
-    .title-wrap{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
-    .title-row{display:flex;align-items:center;gap:6px;min-width:0}
-    .dot{width:7px;height:7px;border-radius:99px;background:var(--green);flex-shrink:0}
+    .title-wrap{
+      flex:1 1 auto;min-width:0;overflow:hidden;
+      display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;
+      column-gap:5px;row-gap:2px;align-items:center;
+    }
+    .title-row{display:contents}
+    .dot{grid-column:1;grid-row:1;width:7px;height:7px;border-radius:99px;background:var(--green);flex-shrink:0}
     .dot.busy{background:var(--amber);animation:pulse 1s infinite ease-in-out}
     .dot.err{background:var(--red)}
     @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
-    .conv-title{font-size:15px;font-weight:600;color:var(--fg-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em}
-    .sub-meta{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+    .conv-title{
+      grid-column:2;grid-row:1;min-width:0;
+      font-size:14.5px;font-weight:600;color:var(--fg-strong);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em;
+    }
+    .sub-row{
+      grid-column:1 / -1;grid-row:2;min-width:0;overflow:hidden;
+      display:flex;align-items:center;gap:5px;
+    }
+    .conv-project-badge{
+      display:inline-block;vertical-align:middle;max-width:128px;min-width:0;padding:1px 6px;border-radius:999px;
+      font-size:10.5px;font-weight:500;line-height:1.35;letter-spacing:0;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;
+    }
+    .conv-project-badge[hidden]{display:none!important}
+    .sub-meta{
+      flex:1 1 auto;min-width:0;font-size:11.5px;color:var(--muted);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;
+      cursor:pointer;display:block;
+    }
     .sub-meta:active{color:var(--accent)}
     .quota-pill{
       appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
@@ -3935,9 +4819,26 @@ function buildMobileAppHtml() {
       display:block;margin-bottom:6px;padding:4px 8px;border-radius:8px;
       background:var(--risk-bg);border:1px solid rgba(239,68,68,.45);color:var(--risk-fg);font-size:12.5px;font-weight:600;
     }
-    .thought-box{margin-bottom:8px;padding:6px 9px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border-subtle);font-size:12.5px;color:var(--fg-sub)}
-    .thought-box summary{cursor:pointer;font-weight:600;color:var(--thought-summary);list-style:none}
-    .thought-body{margin-top:6px;white-space:pre-wrap;color:var(--muted);max-height:220px;overflow-y:auto}
+    .thought-box{margin-bottom:8px;padding:6px 10px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border-subtle);font-size:12.5px;color:var(--fg-sub)}
+    .msg.assistant.is-thought-only{padding:8px 10px}
+    .msg.assistant.is-thought-only .thought-box{margin-bottom:0}
+    .thought-box summary{cursor:pointer;font-weight:600;color:var(--thought-summary);list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;user-select:none}
+    .thought-box summary::-webkit-details-marker{display:none}
+    .thought-sum-left{display:inline-flex;align-items:center;gap:5px;min-width:0;flex:1 1 auto}
+    .thought-caret{display:inline-block;font-size:11px;transition:transform .16s ease;opacity:.82;flex:0 0 auto}
+    .thought-box[open] .thought-caret{transform:rotate(90deg)}
+    .thought-sum-meta{font-weight:500;font-size:11.5px;opacity:.76;white-space:nowrap}
+    .thought-box[open] .thought-cue-open{display:none}
+    .thought-box:not([open]) .thought-cue-close{display:none}
+    .thought-all-btn{appearance:none;border:1px solid var(--border-subtle);background:var(--surface-soft);color:var(--fg-sub);border-radius:6px;padding:1px 6px;font-size:11px;font-weight:500;cursor:pointer;flex:0 0 auto;line-height:1.4}
+    .thought-all-btn:hover{border-color:var(--border-accent-strong);color:var(--fg)}
+    .thought-body{margin-top:7px;white-space:pre-wrap;color:var(--muted);max-height:280px;overflow-y:auto;line-height:1.5;border-top:1px solid var(--border-subtle);padding-top:6px}
+    .thought-step{position:relative;padding:0 0 8px 12px;border-left:2px solid var(--border-subtle);margin-left:4px}
+    .thought-step:last-child{padding-bottom:0}
+    .thought-step::before{content:'';position:absolute;left:-5px;top:5px;width:8px;height:8px;border-radius:999px;background:var(--thought-summary);opacity:.72}
+    .thought-step-hd{font-size:11px;font-weight:600;color:var(--thought-summary);margin-bottom:2px;opacity:.85}
+    .thought-step-txt{white-space:pre-wrap;word-break:break-word;color:var(--muted)}
+    .compact-done-pill{align-self:center;display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;background:var(--surface-subtle);border:1px solid var(--border-subtle);color:var(--muted);font-size:12px;margin:2px 0}
     .messages.is-switching{opacity:.58;transition:opacity .12s ease}
     .empty-tip{margin:auto;text-align:center;color:var(--muted);padding:24px 12px;font-size:13px}
     .mode-entry-card{
@@ -3976,9 +4877,80 @@ function buildMobileAppHtml() {
     }
     .ap-btn.approve{background:var(--ap-approve-bg);color:var(--ap-approve-fg)}
     .ap-btn.reject{background:var(--ap-reject-bg);color:var(--ap-reject-fg);border:1px solid var(--border)}
-    .composer-dock{
-      flex-shrink:0;background:transparent;padding:2px 10px 4px;
+    .ap-btn.secondary{background:var(--surface-soft);color:var(--fg-strong);border:1px solid var(--border-strong)}
+    .prompt-card{
+      padding:9px 11px;border-radius:12px;background:var(--card);border:1px solid var(--accent-border);
+      display:flex;flex-direction:column;gap:7px;max-height:min(38vh,280px);overflow-y:auto;-webkit-overflow-scrolling:touch;
+    }
+    .prompt-card.is-risk{background:var(--risk-bg);border-color:rgba(248,113,113,.85)}
+    .ap-btn.is-persistent-risk{border:1px solid rgba(248,113,113,.85);background:rgba(239,68,68,.18);color:var(--risk-fg)}
+    .prompt-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .prompt-title{font-size:13.5px;font-weight:700;color:var(--fg-strong);line-height:1.35}
+    .prompt-badge{
+      flex-shrink:0;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:999px;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
+    }
+    .prompt-desc{font-size:12px;color:var(--muted);line-height:1.4;white-space:pre-wrap;word-break:break-word;max-height:72px;overflow-y:auto}
+    .prompt-opts{display:flex;flex-direction:column;gap:5px}
+    .prompt-opt{
+      appearance:none;width:100%;text-align:left;padding:8px 10px;border-radius:10px;
+      border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      display:flex;align-items:center;gap:8px;font-size:13px;line-height:1.35;cursor:pointer;
+      transition:border-color .14s ease,background-color .14s ease;
+    }
+    .prompt-opt.selected{
+      border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg);font-weight:600;
+    }
+    .prompt-opt-mark{flex-shrink:0;font-size:14px;line-height:1;color:var(--accent)}
+    .prompt-opt-label{min-width:0;flex:1 1 auto;word-break:break-word}
+    .prompt-other-input{
+      width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border-strong);
+      background:var(--surface-subtle);color:var(--fg-strong);font-size:13px;font-family:inherit;outline:none;
+    }
+    .prompt-other-input:focus{border-color:var(--accent)}
+    .queue-dock{
+      flex-shrink:0;padding:6px 10px 4px;background:var(--approval-dock-bg);border-top:1px solid var(--border);
       display:flex;flex-direction:column;gap:6px;
+    }
+    .queue-dock[hidden]{display:none}
+    .queue-card{
+      padding:8px 10px;border-radius:12px;background:var(--card);border:1px solid var(--border-strong);
+      display:flex;flex-direction:column;gap:6px;max-height:min(22vh,176px);overflow-y:auto;-webkit-overflow-scrolling:touch;
+    }
+    .queue-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .queue-title{
+      display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--fg-strong);
+    }
+    .queue-count{
+      font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:999px;
+      background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg);
+    }
+    .queue-send-all{
+      appearance:none;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      border-radius:8px;padding:3px 9px;font-size:11.5px;font-weight:600;cursor:pointer;flex-shrink:0;
+    }
+    .queue-send-all:disabled{opacity:.5;cursor:not-allowed}
+    .queue-list{display:flex;flex-direction:column;gap:4px}
+    .queue-item{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;
+      padding:6px 8px;border-radius:9px;background:var(--surface-subtle);border:1px solid var(--border);
+    }
+    .queue-thumbs{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
+    .queue-thumb{width:24px;height:24px;border-radius:5px;object-fit:cover;border:1px solid var(--border);display:block}
+    .queue-item-text{
+      flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--fg);line-height:1.35;
+      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;
+    }
+    .queue-del-btn{
+      appearance:none;border:1px solid var(--border);background:transparent;color:var(--muted);
+      border-radius:7px;width:24px;height:24px;flex-shrink:0;cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1;
+    }
+    .queue-del-btn:active{background:var(--surface-hover);color:var(--red)}
+    .queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
+    .composer-dock{
+      flex-shrink:0;background:transparent;padding:2px 10px 2px;
+      display:flex;flex-direction:column;gap:5px;
     }
     .chips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 2px}
     .chips::-webkit-scrollbar{display:none}
@@ -3988,10 +4960,118 @@ function buildMobileAppHtml() {
     }
     .chip.suggest{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-fg);font-weight:500}
     .attach-hint{
-      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 12px;border-radius:12px;
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:12px;
       background:var(--accent-bg);border:1px solid var(--accent-border);font-size:12.5px;color:var(--accent-strong-fg);
     }
     .attach-hint[hidden]{display:none}
+    .attach-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow-x:auto;padding:5px 2px 2px;scrollbar-width:none}
+    .attach-strip::-webkit-scrollbar{display:none}
+    .attach-thumb-wrap{
+      position:relative;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;
+      width:48px;height:48px;padding:0;border-radius:10px;background:var(--card);border:1px solid var(--border);
+    }
+    .attach-thumb{
+      width:46px;height:46px;border-radius:9px;object-fit:cover;cursor:zoom-in;display:block;flex-shrink:0;
+    }
+    .attach-file-chip{
+      position:relative;flex-shrink:0;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+      width:48px;height:48px;padding:4px;border-radius:10px;
+      background:var(--card);border:1px solid var(--border);color:var(--fg);font-size:10px;
+    }
+    .attach-file-icon{font-size:16px;line-height:1}
+    .attach-file-ext{font-size:9.5px;font-weight:700;letter-spacing:.02em;color:var(--muted);text-transform:uppercase;max-width:42px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .attach-item-rm{
+      position:absolute;top:-6px;right:-6px;appearance:none;border:1px solid var(--border-strong);background:var(--card);color:var(--fg);
+      width:18px;height:18px;border-radius:999px;padding:0;flex-shrink:0;cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:1;font-weight:700;
+      box-shadow:0 2px 6px rgba(0,0,0,.22);
+    }
+    .attach-item-rm:hover,.attach-item-rm:active{background:var(--risk-bg);color:var(--risk-fg);border-color:var(--risk-fg)}
+    .attach-clear-btn{
+      appearance:none;border:1px solid var(--accent-border);background:var(--card);color:var(--accent-strong-fg);
+      border-radius:8px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;white-space:nowrap;
+    }
+    .msg-user-group{display:flex;flex-direction:column;align-items:flex-end;gap:6px;align-self:flex-end;max-width:86%}
+    .msg-user-group .msg.user{max-width:100%}
+    .msg-atts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+    .msg-atts.above-user{margin:0}
+    .msg-att-img{
+      width:84px;height:84px;max-width:140px;max-height:120px;border-radius:10px;object-fit:cover;cursor:zoom-in;
+      border:1px solid var(--border);display:block;background:var(--surface-subtle);
+    }
+    .msg-att-file{
+      appearance:none;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+      width:54px;height:54px;padding:4px;border-radius:10px;
+      border:1px solid var(--border);background:var(--card);color:var(--fg);
+      font-size:10px;cursor:pointer;text-align:center;
+    }
+    .msg-att-file .att-ext{font-size:9.5px;font-weight:700;color:var(--muted);text-transform:uppercase;max-width:46px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .media-lightbox{
+      position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.84);
+      display:flex;align-items:center;justify-content:center;padding:20px;
+      backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+    }
+    .media-lightbox[hidden]{display:none}
+    .media-lightbox img{max-width:94vw;max-height:86vh;border-radius:12px;object-fit:contain;box-shadow:0 16px 48px rgba(0,0,0,.5)}
+    .media-lightbox-close{
+      position:fixed;top:max(14px,env(safe-area-inset-top));right:14px;width:36px;height:36px;border-radius:999px;
+      border:1px solid rgba(255,255,255,.25);background:rgba(0,0,0,.55);color:#fff;font-size:18px;cursor:pointer;
+    }
+    .md-file-link{
+      appearance:none;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      border-radius:6px;padding:1px 6px;font-family:ui-monospace,Menlo,monospace;font-size:12px;cursor:pointer;
+      display:inline-flex;align-items:center;gap:3px;vertical-align:baseline;
+    }
+    .md-file-link:active{filter:brightness(1.1)}
+    .fv-backdrop{
+      position:fixed;inset:0;z-index:110;background:var(--backdrop-bg);
+      display:flex;align-items:flex-end;justify-content:center;
+      backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+    }
+    .fv-backdrop[hidden]{display:none}
+    .fv-modal{
+      width:100%;max-width:760px;height:86vh;max-height:86vh;background:var(--card);
+      border-top-left-radius:18px;border-top-right-radius:18px;border:1px solid var(--border-strong);
+      display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--sheet-shadow);
+    }
+    .fv-head{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;
+      border-bottom:1px solid var(--border);flex-shrink:0;
+    }
+    .fv-title{font-size:14px;font-weight:700;color:var(--fg-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-tabs{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+    .fv-tab{
+      appearance:none;flex:1;padding:6px 10px;border-radius:9px;border:1px solid var(--border);
+      background:var(--surface-subtle);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;
+    }
+    .fv-tab.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .fv-body{flex:1 1 auto;min-height:0;overflow:auto;padding:10px 12px;-webkit-overflow-scrolling:touch}
+    .fv-path-bar{
+      display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:11.5px;color:var(--muted);
+      font-family:ui-monospace,Menlo,monospace;word-break:break-all;
+    }
+    .fv-up-btn{
+      appearance:none;border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      border-radius:7px;padding:3px 8px;font-size:11.5px;cursor:pointer;flex-shrink:0;
+    }
+    .fv-list{display:flex;flex-direction:column;gap:4px}
+    .fv-row{
+      appearance:none;width:100%;text-align:left;padding:8px 10px;border-radius:9px;
+      border:1px solid var(--border);background:var(--surface-subtle);color:var(--fg);
+      display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;cursor:pointer;
+    }
+    .fv-row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-row-meta{font-size:11px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums}
+    .fv-code{
+      margin:0;padding:10px;border-radius:10px;background:var(--surface-subtle);border:1px solid var(--border);
+      font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5;overflow-x:auto;white-space:pre;
+    }
+    .fv-code-line{display:block;padding:0 4px}
+    .fv-code-line.hl{background:var(--accent-bg);border-left:2px solid var(--accent)}
+    .fv-ln{display:inline-block;width:36px;color:var(--muted);user-select:none;text-align:right;margin-right:10px}
+    .fv-diff-add{color:#4ade80}
+    .fv-diff-del{color:#f87171}
+    .fv-diff-hdr{color:var(--accent-strong-fg);font-weight:600}
     .composer-card{
       background:var(--composer-bg);border:1px solid var(--composer-border);border-radius:22px;
       padding:10px 10px 8px 12px;display:flex;flex-direction:column;gap:6px;
@@ -4032,7 +5112,7 @@ function buildMobileAppHtml() {
     .sheet-backdrop[hidden]{display:none}
     .sheet{
       width:100%;max-width:520px;max-height:min(calc(var(--modal-h,100dvh) * 0.72),calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px));background:var(--card);border-top:1px solid var(--border-strong);
-      border-radius:18px 18px 0 0;padding:12px 14px calc(env(safe-area-inset-bottom) + 14px);box-shadow:0 240px 0 0 var(--card);
+      border-radius:18px 18px 0 0;padding:12px 14px calc(12px + var(--safe-bottom));box-shadow:0 240px 0 0 var(--card);
       display:flex;flex-direction:column;gap:8px;overflow:hidden;
     }
     .sheet-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-shrink:0}
@@ -4091,7 +5171,7 @@ function buildMobileAppHtml() {
     }
     .drawer{
       width:min(82vw,320px);height:100%;background:var(--drawer-bg);border-right:1px solid var(--border);
-      padding:calc(env(safe-area-inset-top) + 12px) 12px calc(16px + env(safe-area-inset-bottom));
+      padding:calc(env(safe-area-inset-top) + 12px) 12px calc(10px + var(--safe-bottom));
       display:flex;flex-direction:column;gap:10px;overflow:hidden;
       transform:translateX(-100%);transition:transform .24s cubic-bezier(.22,1,.36,1);
       will-change:transform;
@@ -4267,6 +5347,18 @@ function buildMobileAppHtml() {
     .c-badge.waiting{background:var(--badge-wait-bg);color:var(--badge-wait-fg)}
     .c-badge.error{background:var(--badge-err-bg);color:var(--badge-err-fg)}
     .c-badge.unknown{background:var(--badge-unk-bg);color:var(--badge-unk-fg)}
+    .conv-unread-dot{
+      width:8px;height:8px;border-radius:999px;flex-shrink:0;display:inline-block;
+      background:var(--unread-dot);box-shadow:0 0 0 4px var(--unread-glow);margin:0 3px;
+    }
+    .conv-bell-indicator{
+      position:relative;display:inline-flex;align-items:center;justify-content:center;
+      width:20px;height:20px;flex-shrink:0;color:var(--fg-secondary);
+    }
+    .conv-bell-dot{
+      position:absolute;top:1px;right:1px;width:6px;height:6px;border-radius:999px;
+      background:var(--unread-dot);box-shadow:0 0 0 2px var(--drawer-bg);
+    }
     .c-time{flex-shrink:0;font-size:11px;color:var(--placeholder);font-variant-numeric:tabular-nums}
     .c-sub{font-size:11px;color:var(--muted);padding-left:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .conv-more-btn{
@@ -4288,7 +5380,7 @@ function buildMobileAppHtml() {
     .perm-ico.unknown{color:var(--placeholder)}
     .drawer-brand{display:none}
     .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;display:flex;flex-direction:column;gap:6px}
-    .drawer-footer{flex-shrink:0;padding-top:8px;border-top:1px solid var(--border-subtle)}
+    .drawer-footer{flex-shrink:0;padding-top:6px;border-top:1px solid var(--border-subtle)}
     .theme-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:11px;background:var(--seg-track);border:1px solid var(--border-subtle)}
     .theme-seg-btn{
       appearance:none;border:none;background:transparent;color:var(--muted);
@@ -4354,8 +5446,11 @@ function buildMobileAppHtml() {
         padding-top:0;padding-bottom:0;
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
-      .conv-title{font-size:15.5px}
-      .sub-meta{font-size:12px}
+      .title-wrap{grid-template-columns:auto minmax(0,1fr) auto;column-gap:7px;row-gap:1px}
+      .conv-title{grid-column:2;grid-row:1;font-size:15.5px}
+      .sub-row{display:contents}
+      .conv-project-badge{grid-column:3;grid-row:1;justify-self:end;max-width:200px;font-size:11.5px;padding:2px 8px}
+      .sub-meta{grid-column:1 / -1;grid-row:2;font-size:12px}
       .quota-pill{flex-direction:row;align-items:center;gap:8px;padding:6px 12px;font-size:12px;border-radius:10px}
       .quota-pill span:last-child{font-size:11.5px;color:var(--muted);padding-left:8px;border-left:1px solid var(--border)}
       .drawer-backdrop{
@@ -4395,6 +5490,7 @@ function buildMobileAppHtml() {
       .md-body code{font-size:13px}
       .md-body pre code{font-size:12.5px}
       .approval-dock{padding:10px max(24px,calc(50% - 410px))}
+      .queue-dock{padding:6px max(24px,calc(50% - 410px)) 4px}
       .composer-dock{
         padding:6px max(24px,calc(50% - 410px)) 18px;gap:8px;
       }
@@ -4456,8 +5552,40 @@ function buildMobileAppHtml() {
     }
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
+    @media (max-width:767px){
+      .topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}
+      .title-wrap{flex:1 1 0;min-width:0}
+      .topbar-actions{
+        flex:1 0 100%;width:100%;gap:6px;
+        padding-top:5px;border-top:1px solid var(--topbar-border);
+        overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
+      }
+      .topbar-actions::-webkit-scrollbar{display:none}
+      .topbar-actions .quota-pill{margin-left:auto}
+      .quota-drawer{top:calc(env(safe-area-inset-top) + 92px)}
+      .top-panel-btn{height:28px;border-radius:8px;padding:0 7px;gap:4px;font-size:11.5px}
+      .quota-pill{
+        height:28px;padding:0 8px;border-radius:8px;font-size:11.5px;
+        flex-direction:row;align-items:center;gap:5px;line-height:1;
+      }
+      .quota-pill span:last-child{font-size:11px;padding-left:5px;border-left:1px solid var(--border)}
+      body.has-ctx-btn .quota-pill #ctx-badge{display:none}
+    }
     @media (max-width:430px){
+      .icon-btn{height:30px;min-width:30px;padding:0 4px}
+      .conv-project-badge{max-width:65%;font-size:10.5px;padding:1px 6px}
       .top-panel-btn{padding:0 6px;gap:3px;font-size:11px}
+      .quota-pill{padding:0 7px;font-size:11px}
+    }
+    @media (max-width:360px){
+      .topbar{padding:6px 8px;column-gap:5px;row-gap:5px}
+      .icon-btn{height:28px;min-width:28px;padding:0 3px}
+      .topbar-actions{gap:4px;padding-top:4px}
+      .top-panel-btn{height:26px;padding:0 5px;gap:2px;font-size:10.5px;border-radius:7px}
+      #btn-usage-panel{min-width:28px;padding:0 6px;justify-content:center}
+      #btn-usage-panel #usage-top-val{display:none}
+      #btn-files-panel{min-width:28px;padding:0 5px}
+      .quota-pill{height:26px;padding:0 6px;font-size:10.5px;border-radius:7px}
     }
   </style>
 </head>
@@ -4472,12 +5600,18 @@ function buildMobileAppHtml() {
           <span id="status-dot" class="dot"></span>
           <span id="conv-title" class="conv-title">正在连接 Mac…</span>
         </div>
-        <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
+        <div class="sub-row">
+          <span id="conv-project-badge" class="conv-project-badge" hidden></span>
+          <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
+        </div>
       </div>
       <div class="topbar-actions">
         <button id="btn-context-panel" class="top-panel-btn" type="button" aria-label="上下文窗口面板" title="上下文窗口面板">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><circle cx="12" cy="12" r="9" opacity=".35"/><path d="M12 3a9 9 0 1 1-6.36 2.64" stroke-linecap="round"/></svg>
           <span id="ctx-top-val">--%</span>
+        </button>
+        <button id="btn-files-panel" class="top-panel-btn" type="button" aria-label="项目文件与变更验收" title="项目文件与变更验收">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </button>
         <button id="btn-usage-panel" class="top-panel-btn" type="button" aria-label="本机已记录用量面板" title="本机已记录用量面板">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -4499,13 +5633,14 @@ function buildMobileAppHtml() {
     </main>
 
     <section id="approval-dock" class="approval-dock" hidden></section>
+    <section id="queue-dock" class="queue-dock" hidden></section>
 
     <footer class="composer-dock">
       <div id="attach-hint" class="attach-hint" hidden></div>
       <div id="chips" class="chips"></div>
       <div class="composer-card">
         <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息… (Cmd/Ctrl + Enter 发送)"></textarea>
-        <input id="img-input" type="file" accept="image/*" multiple hidden>
+        <input id="img-input" type="file" multiple hidden>
         <div class="composer-toolbar">
           <div class="toolbar-left">
             <button id="btn-img" class="ghost-btn icon-only" type="button" title="拍照或上传图片" aria-label="上传图片">
@@ -4626,6 +5761,24 @@ function buildMobileAppHtml() {
   </div>
 
   <div id="toast" class="toast" hidden></div>
+  <div id="media-lightbox" class="media-lightbox" hidden>
+    <button id="media-lightbox-close" class="media-lightbox-close" type="button" aria-label="关闭预览">✕</button>
+    <img id="media-lightbox-img" alt="附件预览" />
+  </div>
+  <div id="file-viewer-backdrop" class="fv-backdrop" hidden>
+    <div id="file-viewer-modal" class="fv-modal" role="dialog" aria-label="文件与项目验收">
+      <div class="fv-head">
+        <button id="fv-back-btn" class="fv-up-btn" type="button" hidden>← 返回</button>
+        <span id="fv-title" class="fv-title">项目文件与验收</span>
+        <button id="fv-close-btn" class="fv-up-btn" type="button">✕ 关闭</button>
+      </div>
+      <div id="fv-tabs" class="fv-tabs">
+        <button id="fv-tab-tree" class="fv-tab active" type="button">📁 项目文件</button>
+        <button id="fv-tab-changes" class="fv-tab" type="button">📝 变更与产物</button>
+      </div>
+      <div id="fv-body" class="fv-body"></div>
+    </div>
+  </div>
 
   <script>
   (function(){
@@ -4889,6 +6042,9 @@ function buildMobileAppHtml() {
     let cachedContextResp = null;
     let latestDisplayConfig = null;
     let latestSnap = null;
+    const promptDraftState = new Map();
+    let promptSubmittingSig = '';
+    let queueActionBusy = false;
     let wakeLock = null;
     let wakeWanted = false;
     let pollTimer = null;
@@ -5064,16 +6220,35 @@ function buildMobileAppHtml() {
       return list;
     }
 
+    let navigatingAwayTimer = null;
+    function resetNavigationGuard(resumePoll) {
+      const wasNavigating = navigatingAway;
+      navigatingAway = false;
+      clearTimeout(navigatingAwayTimer);
+      navigatingAwayTimer = null;
+      if (resumePoll && wasNavigating && !document.hidden) {
+        schedulePoll();
+      }
+    }
     function navigateEntryUrl(targetUrl, useReplace) {
       if (navigatingAway) return;
       navigatingAway = true;
       clearTimeout(pollTimer);
+      clearTimeout(navigatingAwayTimer);
+      navigatingAwayTimer = setTimeout(() => {
+        resetNavigationGuard(true);
+      }, 6000);
       if (useReplace && typeof location.replace === 'function') {
         location.replace(targetUrl);
       } else {
         location.href = targetUrl;
       }
     }
+    try {
+      window.addEventListener('pageshow', () => {
+        resetNavigationGuard(true);
+      });
+    } catch {}
 
     let speedTestBusy = null;
     async function runSpeedTest(opts) {
@@ -5260,13 +6435,18 @@ function buildMobileAppHtml() {
       const order = { tunnel: 0, lan: 1, tailscale: 2, bonjour: 3, loopback: 9 };
       const byKind = new Map();
       const sorted = [...(pairState.endpoints || [])].sort((a, b) => (Number(a?.priority) || 999) - (Number(b?.priority) || 999));
+      const curOriginClean = String(location.origin || '').replace(/\\/+$/, '');
+      const curOriginKind = detectKindFromOrigin(curOriginClean);
       for (const ep of sorted) {
         if (!ep || !ep.url) continue;
         const k = ep.kind || detectKindFromOrigin(ep.url);
-        if (k === 'loopback' && sorted.length > 1) continue;
+        if (k === 'loopback' && sorted.length > 1 && curOriginKind !== 'loopback') continue;
         if (!byKind.has(k)) {
           byKind.set(k, { url: String(ep.url).replace(/\\/+$/, ''), kind: k });
         }
+      }
+      if (curOriginKind === 'loopback' && curOriginClean && !byKind.has('loopback')) {
+        byKind.set('loopback', { url: curOriginClean, kind: 'loopback' });
       }
       if (byKind.size === 0) {
         const curKind = detectKindFromOrigin(location.origin);
@@ -5334,7 +6514,11 @@ function buildMobileAppHtml() {
         apiBase = '';
         const modeName = formatKindLabel(ep.kind);
         $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
-        renderModeEntryGate('正在通过 ' + modeName + ' 连接 Mac…');
+        if (latestSnap) {
+          showToast('已切换至 ' + modeName);
+        } else {
+          renderModeEntryGate('正在通过 ' + modeName + ' 连接 Mac…');
+        }
         void fetchSnapshot();
         return;
       }
@@ -5504,10 +6688,56 @@ function buildMobileAppHtml() {
     $('sub-meta').onclick = openModeSwitcherSheet;
 
     const appEl = document.querySelector('.app');
+    let isStandalonePwa = false;
+    try {
+      isStandalonePwa = Boolean(
+        window.navigator?.standalone === true ||
+        (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches)
+      );
+      document.body?.classList?.toggle?.('is-standalone', isStandalonePwa);
+    } catch {}
+
+    function getLogicalScreenHeight() {
+      const scr = typeof window !== 'undefined' ? window.screen : null;
+      const sw = Number(scr && scr.width) || 0;
+      const sh = Number(scr && scr.height) || 0;
+      if (!sw || !sh) return 0;
+      const isLandscape = (window.innerWidth || 0) > (window.innerHeight || 0);
+      return isLandscape ? Math.min(sw, sh) : Math.max(sw, sh);
+    }
+
+    function measureSafeAreaInsetTop() {
+      try {
+        if (!appEl || typeof window.getComputedStyle !== 'function') return 0;
+        return parseFloat(window.getComputedStyle(appEl).paddingTop) || 0;
+      } catch {
+        return 0;
+      }
+    }
+
+    function computeLegacyStandaloneFullHeight(curH, kbOpen) {
+      if (!isStandalonePwa || kbOpen) return 0;
+      const safeTop = measureSafeAreaInsetTop();
+      if (!(safeTop > 20)) return 0;
+      const screenH = getLogicalScreenHeight();
+      const winH = Number(window.innerHeight || curH || 0);
+      if (!(screenH > winH)) return 0;
+      const diff = screenH - winH;
+      // 兼容旧版已固化 black-translucent 的 iOS 桌面图标：视口短缺约等于顶部状态栏高度（误差 <= 8px）时补偿至真实屏幕高度
+      if (Math.abs(diff - safeTop) <= 8) {
+        return Math.round(screenH);
+      }
+      return 0;
+    }
 
     function getFullLayoutHeight() {
       const vvH = window.visualViewport ? window.visualViewport.height : 0;
-      return Math.round(vvH || window.innerHeight || document.documentElement?.clientHeight || 0);
+      const winH = window.innerHeight || 0;
+      const docH = document.documentElement?.clientHeight || 0;
+      if (isStandalonePwa) {
+        return Math.round(Math.max(vvH, winH, docH));
+      }
+      return Math.round(vvH || winH || docH);
     }
 
     let maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -5729,40 +6959,56 @@ function buildMobileAppHtml() {
       const openModal = getOpenModalBackdrop();
       const isComposerFocused = !openModal && activeEl === $('input');
 
+      const recentlyBlurred = (Date.now() - lastTextBlurAt) < 380;
       if (!anyTextFocused && Math.abs(curW - lastLayoutWidth) > 2) {
         lastLayoutWidth = curW;
         maxVvHeight = curH;
         lockedModalBaseH = Math.round(curH);
       } else if (!anyTextFocused && curH > maxVvHeight) {
         maxVvHeight = curH;
+      } else if (!anyTextFocused && !openModal && !recentlyBlurred && Math.abs((window.innerHeight || curH) - curH) <= 2 && curH > 0) {
+        // Safari 底部工具栏重新出现导致 innerHeight 与 visualViewport.height 同步回落时，同步收敛 maxVvHeight 避免残留底部死区
+        maxVvHeight = curH;
       }
 
       const refFullH = Math.max(maxVvHeight || 0, window.innerHeight || 0, lockedModalBaseH || 0);
-      const recentlyBlurred = (Date.now() - lastTextBlurAt) < 380;
       const kbLikelyActive = Boolean(vv && ((refFullH - curH > 60) || ((Number(vv.offsetTop) || 0) > 2)));
       const freezeModalShrink = !desktop && (anyTextFocused || kbLikelyActive || recentlyBlurred);
-      if (desktop || !freezeModalShrink || curH >= lockedModalBaseH) {
-        lockedModalBaseH = Math.round(curH);
+      const modalCandH = isStandalonePwa ? getFullLayoutHeight() : Math.round(curH || 0);
+      if (desktop || !freezeModalShrink || modalCandH >= lockedModalBaseH) {
+        lockedModalBaseH = modalCandH;
       }
-      const modalBaseH = Math.max(lockedModalBaseH || 0, Math.round(curH || 0));
+      const modalBaseH = Math.max(lockedModalBaseH || 0, modalCandH);
       document.documentElement.style.setProperty('--modal-h', modalBaseH + 'px');
 
       const baseH = Math.max(maxVvHeight || 0, window.innerHeight || 0);
-      const kbOpenForComposer = Boolean(!desktop && !openModal && isComposerFocused && vv && (baseH - curH > 100));
+      const kbOpenForComposer = Boolean(!desktop && !openModal && vv && (baseH - curH > 60) && (isComposerFocused || !anyTextFocused));
       if (kbOpenForComposer) {
         const top = vv.offsetTop || 0;
+        document.documentElement.style.height = '';
         document.body.style.bottom = 'auto';
         document.body.style.height = Math.round(curH) + 'px';
         document.documentElement.style.setProperty('--app-h', Math.round(curH) + 'px');
         document.body.style.transform = top ? 'translateY(' + top + 'px)' : '';
         appEl?.classList.add('kb-open');
       } else {
-        document.body.style.bottom = '0';
-        document.body.style.height = '100%';
-        const appHeightPx = (!desktop && openModal && (anyTextFocused || kbLikelyActive || recentlyBlurred))
-          ? modalBaseH
-          : getFullLayoutHeight();
-        document.documentElement.style.setProperty('--app-h', appHeightPx + 'px');
+        const legacyFullH = computeLegacyStandaloneFullHeight(curH, kbLikelyActive);
+        if (legacyFullH > 0) {
+          // 填平旧版 black-translucent WebClip 底部被裁掉的 59pt 死区
+          document.documentElement.style.height = legacyFullH + 'px';
+          document.body.style.bottom = 'auto';
+          document.body.style.height = legacyFullH + 'px';
+          document.documentElement.style.setProperty('--app-h', legacyFullH + 'px');
+        } else {
+          document.documentElement.style.height = '';
+          document.body.style.bottom = '0';
+          // 普通浏览器与新版 iOS 独立 PWA 在无键盘及键盘收起时均清除内联 height，让 position:fixed;inset:0;height:auto 严格贴满物理底边
+          document.body.style.height = '';
+          const appHeightPx = (!desktop && openModal && (anyTextFocused || kbLikelyActive || recentlyBlurred))
+            ? modalBaseH
+            : getFullLayoutHeight();
+          document.documentElement.style.setProperty('--app-h', appHeightPx + 'px');
+        }
         document.body.style.transform = '';
         appEl?.classList.remove('kb-open');
       }
@@ -5832,6 +7078,18 @@ function buildMobileAppHtml() {
     msgEl.addEventListener('click', (e) => {
       if (e.target?.closest?.('#btn-load-earlier')) {
         void loadEarlierMessages();
+        return;
+      }
+      const allBtn = e.target?.closest?.('.thought-all-btn');
+      if (allBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const boxes = Array.from(msgEl.querySelectorAll('.thought-box'));
+        const shouldOpen = boxes.some((b) => !b.open);
+        for (const b of boxes) {
+          b.open = shouldOpen;
+          hydrateThoughtDetails(b);
+        }
         return;
       }
       const sum = e.target?.closest?.('summary');
@@ -6064,6 +7322,7 @@ function buildMobileAppHtml() {
       if (drawerBtn) drawerBtn.hidden = !cfg.showSidebar;
       if (!cfg.showSidebar && typeof closeDrawer === 'function') closeDrawer();
       if (document.body?.classList) {
+        document.body.classList.toggle('has-ctx-btn', Boolean(cfg.showContextPanel));
         document.body.classList.toggle('hide-thinking', !cfg.showThinking);
         document.body.classList.toggle('hide-composer-tools', !cfg.showComposerTools);
       }
@@ -6338,6 +7597,44 @@ function buildMobileAppHtml() {
       return { id: pid, name };
     }
 
+    function resolveConversationProjectName(snap) {
+      if (!snap || snap.ok === false) return '';
+      if (snap.isNewConversation) {
+        return getEffectiveSelectedProject(snap).name || '';
+      }
+      const projects = Array.isArray(snap.projects) ? snap.projects : [];
+      const curPid = normalizeProjectId(snap.currentProjectId);
+      const directName = String(snap.currentProjectName || '').trim();
+      if (directName && directName !== '未归属项目') return directName;
+      if (curPid) {
+        const matchedProj = projects.find((p) => p && p.id === curPid && p.name);
+        if (matchedProj?.name) return String(matchedProj.name).trim();
+      }
+      const activeCid = String(snap.activeConversationId || snap.sessionId || '').trim();
+      if (activeCid && Array.isArray(snap.conversations)) {
+        const matchedConv = snap.conversations.find((c) => c && c.id === activeCid);
+        if (matchedConv) {
+          const convProjName = String(matchedConv.projectName || '').trim();
+          if (convProjName && convProjName !== '未归属项目') return convProjName;
+          const convPid = normalizeProjectId(matchedConv.projectId);
+          if (convPid) {
+            const pByConv = projects.find((p) => p && p.id === convPid && p.name);
+            if (pByConv?.name) return String(pByConv.name).trim();
+          }
+        }
+      }
+      return directName;
+    }
+
+    function syncTopbarProjectBadge(projectName) {
+      const el = $('conv-project-badge');
+      if (!el) return;
+      const clean = String(projectName || '').trim();
+      el.textContent = clean;
+      el.title = clean ? ('所属项目：' + clean) : '';
+      el.hidden = !clean;
+    }
+
     function syncNewChatButtonUi(snap) {
       const newChatLabelEl = $('new-chat-label');
       if (newChatLabelEl) newChatLabelEl.textContent = '新建对话';
@@ -6422,6 +7719,7 @@ function buildMobileAppHtml() {
       const displayCfg = applyRemoteDisplayConfig(snap);
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
+      syncTopbarProjectBadge(resolveConversationProjectName(snap));
       $('sub-meta').textContent = getActiveChannelLabel() + (snap.isolated ? ' · 独立视图' : '') + ' ▾ · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
@@ -6456,6 +7754,7 @@ function buildMobileAppHtml() {
         activeMsgHistorySource = nextHistSource;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
+        promptDraftState.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         stickBottom = true;
@@ -6487,14 +7786,204 @@ function buildMobileAppHtml() {
         void backfillMissingMsgGaps(snapSid);
       }
 
-      // Pending Approvals
+      // Pending Prompts (交互式单选/多选确认框) & Pending Approvals (按钮审批)
+      const prompts = Array.isArray(snap.pendingPrompts) ? snap.pendingPrompts : [];
       const approvals = Array.isArray(snap.pendingApprovals) ? snap.pendingApprovals : [];
       const dock = $('approval-dock');
-      if (!displayCfg.showApprovals || !approvals.length) {
+      const curDockSid = String(dock.dataset.promptSig || '').split('::')[0];
+      const keepPromptDuringUpload = Boolean(
+        displayCfg.showApprovals &&
+        !prompts.length &&
+        !approvals.length &&
+        !dock.hidden &&
+        dock.dataset.promptSig &&
+        curDockSid === String(snapSid || '__default__') &&
+        (typeof attachmentUploadInflight === 'number' && attachmentUploadInflight > 0 || (typeof lastAttachmentUploadAt === 'number' && (Date.now() - lastAttachmentUploadAt) < 1500))
+      );
+      if (keepPromptDuringUpload) {
+        // 粘贴/上传图片期间桌面端瞬态重绘可能短暂漏检选择框，保留当前已挂载的选择框避免闪烁消失
+      } else if (!displayCfg.showApprovals || (!prompts.length && !approvals.length)) {
         dock.hidden = true;
         dock.innerHTML = '';
+        dock.dataset.promptSig = '';
+        promptSubmittingSig = '';
+        promptDraftState.clear();
+      } else if (prompts.length > 0) {
+        dock.hidden = false;
+        const activePrompt = prompts[0];
+        const activePromptKey = String(activePrompt.promptKey || activePrompt.id || '');
+        const highRiskApprovals = approvals.filter((a) => a && a.highRisk);
+        const isPromptRisk = Boolean(activePrompt.highRisk);
+        const promptSig = String(snapSid || '__default__') + '::' + activePromptKey + '|' + String(activePrompt.title || '') + '|'
+          + String(activePrompt.description || '') + '|'
+          + (activePrompt.options || []).map((o) => o.label).join(',') + '|'
+          + (activePrompt.actions || []).map((a) => a.label + (a.isPersistentAllow ? ':pa' : '')).join(',')
+          + '|' + (isPromptRisk ? ('risk:' + String(activePrompt.riskText || '')) : '')
+          + '|' + highRiskApprovals.map((a) => String(a.index) + ':' + String(a.label || '')).join(',');
+        if (!promptDraftState.has(promptSig)) {
+          const initSelected = new Set(
+            (activePrompt.options || []).filter((o) => o.selected).map((o) => Number(o.index))
+          );
+          promptDraftState.clear();
+          promptDraftState.set(promptSig, {
+            selected: initSelected,
+            otherText: String(activePrompt.otherValue || '')
+          });
+        }
+        const draft = promptDraftState.get(promptSig);
+        // 同一提示框在连续轮询中直接复用已挂载 DOM，保留长列表滚动位置、输入框焦点及提交中按钮禁用锁
+        if (dock.dataset.promptSig !== promptSig) {
+          dock.dataset.promptSig = promptSig;
+          promptSubmittingSig = '';
+          const modeLabel = activePrompt.options?.length
+            ? (activePrompt.multiSelect ? '多选确认' : '单选确认')
+            : '系统确认';
+          const optsHtml = (activePrompt.options || []).length
+            ? ('<div class="prompt-opts">' + activePrompt.options.map((opt) => {
+                const isSel = draft.selected.has(Number(opt.index));
+                const mark = activePrompt.multiSelect ? (isSel ? '☑' : '☐') : (isSel ? '●' : '○');
+                return '<button class="prompt-opt' + (isSel ? ' selected' : '') + '" data-opt-idx="' + opt.index + '" type="button">'
+                  + '<span class="prompt-opt-mark">' + mark + '</span>'
+                  + '<span class="prompt-opt-label">' + esc(opt.label) + '</span>'
+                  + '</button>';
+              }).join('') + '</div>')
+            : '';
+          const otherHtml = activePrompt.hasOtherInput
+            ? '<input class="prompt-other-input" type="text" placeholder="' + esc(activePrompt.otherPlaceholder || '输入自定义说明或选项…') + '" value="' + esc(draft.otherText) + '" />'
+            : '';
+          const actionsList = Array.isArray(activePrompt.actions) ? activePrompt.actions : [];
+          const actsHtml = actionsList.length
+            ? ('<div class="approval-btns">' + actionsList.map((act) => {
+                const isPersistRisk = Boolean(act.isPersistentAllow && isPromptRisk);
+                const cls = (act.kind === 'reject' ? 'reject' : (act.kind === 'primary' ? 'approve' : 'secondary')) + (isPersistRisk ? ' is-persistent-risk' : '');
+                return '<button class="ap-btn ' + cls + ' prompt-act-btn" data-act-idx="' + act.index + '" data-act-label="' + esc(act.label) + '"'
+                  + (isPersistRisk ? ' data-persistent-risk="1"' : '') + ' type="button">'
+                  + esc(act.label) + '</button>';
+              }).join('') + '</div>')
+            : '';
+          const riskTagHtml = isPromptRisk
+            ? ('<div class="risk-tag">' + esc(activePrompt.riskText || '🛡️ 检测到高危操作，请人工核对') + '</div>')
+            : '';
+          const coexistRiskHtml = highRiskApprovals.length
+            ? ('<div class="approval-card is-risk" style="margin-top:6px">'
+              + '<div style="font-size:12px;font-weight:700;color:var(--risk-fg)">' + esc(highRiskApprovals[0].riskText || '🛡️ 高危操作确认') + '</div>'
+              + '<div class="approval-ctx">' + esc(highRiskApprovals[0].contextText || '桌面端存在高危操作等待你的确认') + '</div>'
+              + '<div class="approval-btns">' + approvals.map((a) =>
+                  '<button class="ap-btn ' + (a.kind === 'reject' ? 'reject' : 'approve') + ' ap-coexist-btn" data-idx="' + a.index + '" data-label="' + esc(a.label) + '" type="button">'
+                  + (a.kind === 'reject' ? '❌ ' : '✅ ') + esc(a.label) + '</button>'
+                ).join('') + '</div></div>')
+            : '';
+          dock.innerHTML = (isPromptRisk ? '<div class="prompt-card is-risk">' : '<div class="prompt-card">')
+            + '<div class="prompt-head"><span class="prompt-title">' + esc(activePrompt.title || '需要你的确认') + '</span>'
+            + '<span class="prompt-badge">' + esc(modeLabel) + '</span></div>'
+            + riskTagHtml
+            + (activePrompt.description ? '<div class="prompt-desc">' + esc(activePrompt.description) + '</div>' : '')
+            + optsHtml + otherHtml + actsHtml + '</div>' + coexistRiskHtml;
+
+          dock.querySelectorAll('.prompt-opt').forEach((optBtn) => {
+            optBtn.onclick = async () => {
+              const idx = Number(optBtn.dataset.optIdx);
+              if (!Number.isInteger(idx)) return;
+              if (activePrompt.multiSelect) {
+                if (draft.selected.has(idx)) draft.selected.delete(idx);
+                else draft.selected.add(idx);
+              } else {
+                draft.selected.clear();
+                draft.selected.add(idx);
+              }
+              dock.querySelectorAll('.prompt-opt').forEach((b) => {
+                const bIdx = Number(b.dataset.optIdx);
+                const sel = draft.selected.has(bIdx);
+                b.classList.toggle('selected', sel);
+                const mk = b.querySelector('.prompt-opt-mark');
+                if (mk) mk.textContent = activePrompt.multiSelect ? (sel ? '☑' : '☐') : (sel ? '●' : '○');
+              });
+              if (!actionsList.length && !activePrompt.multiSelect) {
+                optBtn.disabled = true;
+                try {
+                  const res = await apiAction({
+                    action: 'respond-prompt',
+                    promptKey: activePromptKey,
+                    promptIndex: Number(activePrompt.index) || 0,
+                    selectedIndices: Array.from(draft.selected)
+                  });
+                  if (res?.ok) showToast('已选择确认项');
+                  else showToast(res?.error || res?.actionResult?.error || '选择失败');
+                } catch (e) {
+                  showToast(e?.message || '选择失败');
+                } finally {
+                  optBtn.disabled = false;
+                }
+              }
+            };
+          });
+
+          const otherInp = dock.querySelector('.prompt-other-input');
+          if (otherInp) {
+            otherInp.oninput = () => { draft.otherText = String(otherInp.value || ''); };
+          }
+
+          dock.querySelectorAll('.prompt-act-btn').forEach((actBtn) => {
+            actBtn.onclick = async () => {
+              if (promptSubmittingSig === promptSig) return;
+              if (actBtn.dataset.persistentRisk === '1' && actBtn.dataset.confirmArmed !== '1') {
+                actBtn.dataset.confirmArmed = '1';
+                actBtn.textContent = '⚠️ 再次点击确认: ' + (actBtn.dataset.actLabel || '');
+                showToast('高危持久放行：请再次点击确认');
+                return;
+              }
+              promptSubmittingSig = promptSig;
+              dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = true; });
+              try {
+                const res = await apiAction({
+                  action: 'respond-prompt',
+                  promptKey: activePromptKey,
+                  promptIndex: Number(activePrompt.index) || 0,
+                  selectedIndices: Array.from(draft.selected),
+                  otherText: activePrompt.hasOtherInput ? draft.otherText : undefined,
+                  actionIndex: Number(actBtn.dataset.actIdx),
+                  actionLabel: actBtn.dataset.actLabel
+                });
+                if (res?.ok) {
+                  showToast('已提交: ' + actBtn.dataset.actLabel);
+                } else {
+                  showToast(res?.error || res?.actionResult?.error || '提交失败');
+                }
+              } catch (e) {
+                showToast(e?.message || '提交失败');
+              } finally {
+                // 请求结束后解除在途锁并恢复按钮可用（保留草稿直至提示框真正消失或变更，支持纯 JS 校验未通过后修改重试）
+                if (promptSubmittingSig === promptSig) {
+                  promptSubmittingSig = '';
+                }
+                if (dock.dataset.promptSig === promptSig) {
+                  dock.querySelectorAll('.prompt-act-btn').forEach((b) => { b.disabled = false; });
+                }
+              }
+            };
+          });
+
+          dock.querySelectorAll('.ap-coexist-btn').forEach((btn) => {
+            btn.onclick = async () => {
+              btn.disabled = true;
+              try {
+                const res = await apiAction({ action: 'click-approval', index: Number(btn.dataset.idx), label: btn.dataset.label });
+                if (res?.ok) showToast('已触发: ' + btn.dataset.label);
+                else {
+                  btn.disabled = false;
+                  showToast(res?.error || res?.actionResult?.error || '操作失败');
+                }
+              } catch (e) {
+                btn.disabled = false;
+                showToast(e?.message || '操作失败');
+              }
+            };
+          });
+        }
       } else {
         dock.hidden = false;
+        dock.dataset.promptSig = '';
+        promptDraftState.clear();
         const firstRisk = approvals.some((a) => a.highRisk);
         const ctx = approvals[0]?.contextText || '桌面端正在等待你的操作确认';
         dock.innerHTML = '<div class="approval-card' + (firstRisk ? ' is-risk' : '') + '">' +
@@ -6520,6 +8009,106 @@ function buildMobileAppHtml() {
             }
           };
         });
+      }
+
+      // Queued Messages (排队中消息展示、立即发送与撤回删除)
+      const qDock = $('queue-dock');
+      if (qDock) {
+        const queuedList = Array.isArray(snap.queuedMessages) ? snap.queuedMessages : [];
+        if (!queuedList.length) {
+          qDock.hidden = true;
+          qDock.innerHTML = '';
+          qDock.dataset.queueSig = '';
+        } else {
+          qDock.hidden = false;
+          const hasDomQueued = queuedList.some((q) => q && q.source === 'dom');
+          const isDomQueuedList = queuedList.every((q) => q && q.source === 'dom');
+          const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
+          if (qDock.dataset.queueSig !== qSig) {
+            qDock.dataset.queueSig = qSig;
+            qDock.innerHTML = '<div class="queue-card">'
+              + '<div class="queue-head">'
+              + '<span class="queue-title"><span>排队中</span><span class="queue-count">' + queuedList.length + '</span></span>'
+              + '<button class="queue-send-all" type="button"' + (queueActionBusy ? ' disabled' : '') + '>⚡ 立即发送</button>'
+              + '</div>'
+              + '<div class="queue-list">' + queuedList.map((q, qi) => {
+                const imgsHtml = (Array.isArray(q.images) && q.images.length)
+                  ? ('<span class="queue-thumbs">' + q.images.slice(0, 3).map((im) => {
+                      const rawSrc = typeof im === 'string' ? im : String(im?.src || '');
+                      const qSrc = rawSrc.startsWith('/api/media?')
+                        ? ((apiBase || '') + rawSrc + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : ''))
+                        : rawSrc;
+                      const qAlt = typeof im === 'string' ? '' : String(im?.alt || '');
+                      return '<img class="queue-thumb" src="' + esc(qSrc) + '" alt="' + esc(qAlt) + '" />';
+                    }).join('') + '</span>')
+                  : '';
+                const stepAttr = Number.isInteger(Number(q.stepIndex)) ? Number(q.stepIndex) : -1;
+                const domAttr = Number.isInteger(Number(q.domIndex)) ? Number(q.domIndex) : qi;
+                const srcAttr = q.source === 'dom' ? 'dom' : 'traj';
+                return '<div class="queue-item" data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '">'
+                  + imgsHtml
+                  + '<span class="queue-item-text">' + esc(q.text || '') + '</span>'
+                  + '<button class="queue-del-btn" type="button" title="撤回此条排队消息" aria-label="撤回此条排队消息" data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '" data-queue-text="' + esc(String(q.text || '')) + '"' + (queueActionBusy ? ' disabled' : '') + '>×</button>'
+                  + '</div>';
+              }).join('') + '</div></div>';
+
+            const setQueueBtnsDisabled = (disabled) => {
+              qDock.querySelectorAll('.queue-send-all, .queue-del-btn').forEach((b) => { b.disabled = disabled; });
+            };
+            const sendAllBtn = qDock.querySelector('.queue-send-all');
+            if (sendAllBtn) {
+              sendAllBtn.onclick = async () => {
+                if (queueActionBusy) return;
+                queueActionBusy = true;
+                setQueueBtnsDisabled(true);
+                try {
+                  const res = await apiAction({
+                    action: 'send-queued-messages',
+                    conversationId: String(snap.activeConversationId || snap.sessionId || ''),
+                    ...(isDomQueuedList ? { source: 'dom', sendAll: true } : (hasDomQueued ? { hasDomQueued: true } : {}))
+                  });
+                  if (res?.ok) {
+                    showToast(res?.actionResult?.hasRemainingDomQueued
+                      ? '已发送后端排队消息，桌面端仍有本地排队项请核对'
+                      : '已立即发送排队消息');
+                  } else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
+                } catch (e) {
+                  showToast(e?.message || '发送排队消息失败');
+                } finally {
+                  queueActionBusy = false;
+                  setQueueBtnsDisabled(false);
+                }
+              };
+            }
+            qDock.querySelectorAll('.queue-del-btn').forEach((delBtn) => {
+              delBtn.onclick = async () => {
+                if (queueActionBusy) return;
+                const src = String(delBtn.dataset.queueSource || 'traj');
+                const stepIdx = Number(delBtn.dataset.stepIdx);
+                const domIdx = Number(delBtn.dataset.domIdx);
+                if (src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
+                queueActionBusy = true;
+                setQueueBtnsDisabled(true);
+                try {
+                  const res = await apiAction({
+                    action: 'delete-queued-message',
+                    conversationId: String(snap.activeConversationId || snap.sessionId || ''),
+                    ...(src === 'dom'
+                      ? { source: 'dom', domIndex: Number.isInteger(domIdx) ? domIdx : 0, text: String(delBtn.dataset.queueText || '') }
+                      : { stepIndex: stepIdx })
+                  });
+                  if (res?.ok) showToast('已撤回排队消息');
+                  else showToast(res?.error || res?.actionResult?.error || '撤回排队消息失败');
+                } catch (e) {
+                  showToast(e?.message || '撤回排队消息失败');
+                } finally {
+                  queueActionBusy = false;
+                  setQueueBtnsDisabled(false);
+                }
+              };
+            });
+          }
+        }
       }
 
       // 轻盈下一步建议 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
@@ -6819,14 +8408,24 @@ function buildMobileAppHtml() {
       return '<span class="c-dot"></span>';
     }
 
+    const BELL_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+
     function renderConvItemHtml(c, showProjectName) {
+      const isUnreadCompleted = Boolean((c.completedUnread ?? c.unread) && c.status !== 'running' && c.status !== 'waiting' && c.status !== 'error' && c.status !== 'unknown');
       const cls = 'conv-item' + (c.active ? ' active' : '') + (c.unread ? ' is-unread' : '');
       const titleText = (c.pinned ? '📌 ' : '') + String(c.title || c.id || '');
       let badgeHtml = '';
-      if (c.status === 'waiting') badgeHtml = '<span class="c-badge waiting">' + esc(c.statusLabel || '待确认') + '</span>';
-      else if (c.status === 'running') badgeHtml = '<span class="c-badge running">' + esc(c.statusLabel || '运行中') + '</span>';
-      else if (c.status === 'error') badgeHtml = '<span class="c-badge error">' + esc(c.statusLabel || '异常') + '</span>';
-      else if (c.status === 'unknown') badgeHtml = '<span class="c-badge unknown">' + esc(c.statusLabel || '未知') + '</span>';
+      if (c.status === 'waiting') {
+        badgeHtml = '<span class="conv-bell-indicator" title="' + esc(c.statusLabel || '待确认 / 待审批') + '" aria-label="待用户确认或审批">' + BELL_ICON_SVG + '<i class="conv-bell-dot"></i></span>';
+      } else if (c.status === 'running') {
+        badgeHtml = '<span class="c-badge running">' + esc(c.statusLabel || '运行中') + '</span>';
+      } else if (c.status === 'error') {
+        badgeHtml = '<span class="c-badge error">' + esc(c.statusLabel || '异常') + '</span>';
+      } else if (c.status === 'unknown') {
+        badgeHtml = '<span class="c-badge unknown">' + esc(c.statusLabel || '未知') + '</span>';
+      } else if (isUnreadCompleted) {
+        badgeHtml = '<span class="conv-unread-dot" title="已完成 · 有新产出" aria-label="未读新产出"></span>';
+      }
       const rel = formatRelTime(c.updatedAt);
       const rightMeta = badgeHtml || (rel ? '<span class="c-time">' + esc(rel) + '</span>' : '');
       let subHtml = '';
@@ -7383,6 +8982,28 @@ function buildMobileAppHtml() {
     let loadingEarlierMsgs = false;
     let backfillingMsgGaps = false;
 
+    function getThoughtFallbackText(m) {
+      if (!m) return '';
+      if (m.thoughtText) return String(m.thoughtText);
+      if (Array.isArray(m.thoughts) && m.thoughts.length) {
+        return m.thoughts.map((t) => String(t || '').trim()).filter(Boolean).join('\\n\\n');
+      }
+      return '';
+    }
+
+    function buildThoughtBodyInnerHtml(m) {
+      if (!m) return '';
+      const steps = Array.isArray(m.thoughts) && m.thoughts.length > 1
+        ? m.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
+        : [];
+      if (steps.length > 1) {
+        return steps.map((txt, idx) => (
+          '<div class="thought-step"><div class="thought-step-hd">步骤 ' + (idx + 1) + '</div><div class="thought-step-txt">' + esc(txt) + '</div></div>'
+        )).join('');
+      }
+      return esc(getThoughtFallbackText(m));
+    }
+
     function hydrateThoughtDetails(detailsEl) {
       if (!detailsEl) return;
       const idx = Number(detailsEl.getAttribute('data-thought-idx'));
@@ -7392,10 +9013,15 @@ function buildMobileAppHtml() {
         openThoughtIdxSet.add(idx);
         if (!detailsEl.querySelector('.thought-body')) {
           const m = sessionMsgsByIndex.get(idx);
-          if (m?.thoughtText) {
+          const fallbackTxt = getThoughtFallbackText(m);
+          if (fallbackTxt || (Array.isArray(m?.thoughts) && m.thoughts.length)) {
             const bodyDiv = document.createElement('div');
             bodyDiv.className = 'thought-body';
-            bodyDiv.textContent = m.thoughtText;
+            if (Array.isArray(m.thoughts) && m.thoughts.length > 1) {
+              bodyDiv.innerHTML = buildThoughtBodyInnerHtml(m);
+            } else {
+              bodyDiv.textContent = fallbackTxt;
+            }
             detailsEl.appendChild(bodyDiv);
           }
         }
@@ -7546,22 +9172,83 @@ function buildMobileAppHtml() {
           (loadingEarlierMsgs ? '正在加载更早内容…' : ('↑ 加载更早的对话内容（前 ' + earliestIdx + ' 条）')) + '</button>';
       }
       html += msgs.map((m) => {
+        if (m.role === 'system-notice') {
+          return '<div class="compact-done-pill" data-msg-idx="' + m.msgIndex + '">' + esc(m.text || '✓ 上下文已完成压缩') + '</div>';
+        }
         if (m.role === 'user') {
-          return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + esc(m.text) + '</div>';
+          const atts = Array.isArray(m.attachments) ? m.attachments : [];
+          let attHtml = '';
+          let renderedImgCount = 0;
+          const getShortExt = (name) => {
+            const rawName = String(name || '').trim();
+            const dot = rawName.lastIndexOf('.');
+            if (dot > 0 && dot < rawName.length - 1) return rawName.slice(dot + 1).slice(0, 6).toUpperCase();
+            return 'FILE';
+          };
+          if (atts.length) {
+            const tiles = atts.map((att) => {
+              const safeInline = (typeof att.inlineUrl === 'string' && /^data:image\\/(?:png|jpeg|jpg|webp|gif);base64,/i.test(att.inlineUrl)) ? att.inlineUrl : '';
+              if (att.kind === 'image' && (safeInline || att.path)) {
+                renderedImgCount += 1;
+                const mediaSrc = safeInline || ((apiBase || '') + '/api/media?path=' + encodeURIComponent(att.path) + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : ''));
+                const label = att.name || '图片';
+                return '<img class="msg-att-img" src="' + esc(mediaSrc) + '" alt="' + esc(label) + '" title="' + esc(label) + '" loading="lazy" data-preview-src="' + esc(mediaSrc) + '" />';
+              }
+              const fName = att.name || '附件';
+              const ext = getShortExt(fName);
+              return '<button class="msg-att-file" type="button" data-file-path="' + esc(att.path || '') + '" title="' + esc(att.path || fName) + '" aria-label="' + esc(fName) + '"><span class="attach-file-icon" aria-hidden="true">📄</span><span class="att-ext">' + esc(ext) + '</span></button>';
+            }).join('');
+            if (tiles) attHtml = '<div class="msg-atts above-user">' + tiles + '</div>';
+          }
+          let userText = String(m.text || '');
+          if (renderedImgCount > 0) {
+            userText = userText
+              .replace(/\\n?\\[附带\\s*\\d+\\s*张图片\\]\\s*$/g, '')
+              .replace(/^\\[图片附件\\]$/g, '')
+              .trim();
+          }
+          if (attHtml) {
+            const bubbleHtml = userText ? ('<div class="msg user"><div>' + esc(userText) + '</div></div>') : '';
+            return '<div class="msg-user-group" data-msg-idx="' + m.msgIndex + '">' + attHtml + bubbleHtml + '</div>';
+          }
+          return '<div class="msg user" data-msg-idx="' + m.msgIndex + '">' + (userText ? ('<div>' + esc(userText) + '</div>') : '') + '</div>';
         }
         const risk = m.highRisk ? '<span class="risk-tag">' + esc(m.riskText || '🛡️ 检测到高危命令，请人工核对') + '</span>' : '';
-        const isThoughtOpen = Boolean(m.thoughtText && openThoughtIdxSet.has(m.msgIndex));
-        const thought = m.thoughtLabel
-          ? '<details class="thought-box" data-thought-idx="' + m.msgIndex + '"' + (isThoughtOpen ? ' open' : '') + '><summary>💡 ' + esc(m.thoughtLabel) + (m.thoughtText ? ' · 展开思考' : '') + '</summary>' +
-            (isThoughtOpen ? '<div class="thought-body">' + esc(m.thoughtText) + '</div>' : '') + '</details>'
+        const hasThoughtBody = Boolean(m.thoughtText || (Array.isArray(m.thoughts) && m.thoughts.length));
+        const isThoughtOpen = Boolean(hasThoughtBody && openThoughtIdxSet.has(m.msgIndex));
+        const tCount = Math.max(Number(m.thoughtCount) || 0, Array.isArray(m.thoughts) ? m.thoughts.length : 0);
+        const stepBadge = tCount > 1 ? (' · 共 ' + tCount + ' 步') : '';
+        const thought = (m.thoughtLabel || hasThoughtBody)
+          ? '<details class="thought-box" data-thought-idx="' + m.msgIndex + '"' + (isThoughtOpen ? ' open' : '') + '><summary>' +
+              '<span class="thought-sum-left"><span class="thought-caret">▸</span><span>💡 ' + esc(m.thoughtLabel || '思考过程') + stepBadge + '</span>' +
+              (hasThoughtBody ? '<span class="thought-sum-meta"><span class="thought-cue-open">展开</span><span class="thought-cue-close">收起</span></span>' : '') +
+              '</span>' +
+              (hasThoughtBody ? '<button class="thought-all-btn" type="button" title="一键展开或收起当前会话的全部思考过程">全部</button>' : '') +
+            '</summary>' +
+            (isThoughtOpen ? '<div class="thought-body">' + buildThoughtBodyInnerHtml(m) + '</div>' : '') + '</details>'
           : '';
-        const bodyHtml = m.html
-          ? '<div class="md-body">' + m.html + '</div>'
-          : '<div class="md-body">' + renderMarkdownSafe(m.text || '') + '</div>';
-        return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + '" data-msg-idx="' + m.msgIndex + '">' + risk + thought + bodyHtml + '</div>';
+        const hasBodyText = Boolean(String(m.html || '').trim() || String(m.text || '').trim());
+        const bodyHtml = hasBodyText
+          ? (m.html ? '<div class="md-body">' + m.html + '</div>' : '<div class="md-body">' + renderMarkdownSafe(m.text || '') + '</div>')
+          : '';
+        const thoughtOnlyCls = (!hasBodyText && !m.highRisk && thought) ? ' is-thought-only' : '';
+        return '<div class="msg assistant' + (m.highRisk ? ' is-risk' : '') + thoughtOnlyCls + '" data-msg-idx="' + m.msgIndex + '">' + risk + thought + bodyHtml + '</div>';
       }).join('');
       if (snap?.busy) {
         html += '<div class="busy-pill"><span class="busy-spark"></span><span>正在思考与执行…</span></div>';
+      } else if (msgs.length) {
+        const lastM = msgs[msgs.length - 1];
+        const compactBlocked = Boolean(
+          snap?.ok === false
+          || snap?.error
+          || snap?.lastError
+          || snap?.status === 'error'
+          || (Array.isArray(snap?.pendingApprovals) && snap.pendingApprovals.length)
+          || (Array.isArray(snap?.pendingPrompts) && snap.pendingPrompts.length)
+        );
+        if (!compactBlocked && lastM && lastM.role === 'user' && /^\\/compact(?:\\s|$)/i.test(String(lastM.text || '').trim())) {
+          html += '<div class="compact-done-pill">✓ 上下文已完成压缩</div>';
+        }
       }
 
       if (msgEl.dataset.lastHtml !== html) {
@@ -7774,30 +9461,435 @@ function buildMobileAppHtml() {
       });
     }
 
+    let uploadedAttachments = [];
+    let attachmentUploadInflight = 0;
+    let lastAttachmentUploadAt = 0;
+    function formatFileSizeShort(bytes) {
+      const n = Number(bytes) || 0;
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+    function openMediaLightbox(src, alt) {
+      const lb = $('media-lightbox');
+      const img = $('media-lightbox-img');
+      if (!lb || !img || !src) return;
+      img.src = src;
+      img.alt = alt || '图片预览';
+      lb.hidden = false;
+    }
+    function closeMediaLightbox() {
+      const lb = $('media-lightbox');
+      if (lb) lb.hidden = true;
+    }
+    $('media-lightbox-close')?.addEventListener('click', closeMediaLightbox);
+    $('media-lightbox')?.addEventListener('click', (e) => {
+      if (e.target === $('media-lightbox')) closeMediaLightbox();
+    });
+    msgEl.addEventListener('click', (e) => {
+      const img = e.target?.closest?.('.msg-att-img');
+      if (img) {
+        openMediaLightbox(img.dataset.previewSrc || img.src, img.alt);
+        return;
+      }
+      const fileLink = e.target?.closest?.('.md-file-link, .msg-att-file');
+      if (fileLink && fileLink.dataset.filePath) {
+        e.preventDefault();
+        void openFilePreviewModal(fileLink.dataset.filePath, Number(fileLink.dataset.fileLine || 0));
+      }
+    });
+
+    const fvState = { tab: 'tree', curDir: '', viewingFile: false, returnTab: 'tree' };
+    function closeFileViewerModal() {
+      const bd = $('file-viewer-backdrop');
+      if (bd) bd.hidden = true;
+    }
+    function syncFvChrome() {
+      const tabsEl = $('fv-tabs');
+      const backBtn = $('fv-back-btn');
+      if (tabsEl) tabsEl.hidden = fvState.viewingFile;
+      if (backBtn) backBtn.hidden = !fvState.viewingFile;
+      $('fv-tab-tree')?.classList.toggle('active', fvState.tab === 'tree');
+      $('fv-tab-changes')?.classList.toggle('active', fvState.tab === 'changes');
+    }
+    function resolveCurrentProjectRootDir() {
+      const snap = latestSnap;
+      if (!snap) return '';
+      const pid = normalizeProjectId(snap.currentProjectId);
+      const projs = Array.isArray(snap.projects) ? snap.projects : [];
+      const matched = pid ? projs.find((p) => p && p.id === pid) : null;
+      return String(matched?.path || matched?.workspacePath || snap.currentProjectPath || '').trim();
+    }
+    function renderCodeWithLineNumbers(text, hlLine) {
+      const lines = String(text || '').split(/\\r?\\n/);
+      return '<pre class="fv-code">' + lines.map((ln, idx) => {
+        const n = idx + 1;
+        const isHl = hlLine > 0 && n === hlLine;
+        return '<span class="fv-code-line' + (isHl ? ' hl' : '') + '" data-ln="' + n + '"><span class="fv-ln">' + n + '</span>' + esc(ln) + '</span>';
+      }).join('\\n') + '</pre>';
+    }
+    function renderUnifiedDiffHtml(diffText) {
+      const lines = String(diffText || '').split(/\\r?\\n/);
+      return '<pre class="fv-code">' + lines.map((ln) => {
+        const cls = ln.startsWith('+') && !ln.startsWith('+++') ? ' fv-diff-add'
+          : (ln.startsWith('-') && !ln.startsWith('---') ? ' fv-diff-del'
+            : (ln.startsWith('@@') || ln.startsWith('diff ') ? ' fv-diff-hdr' : ''));
+        return '<span class="fv-code-line' + cls + '">' + esc(ln) + '</span>';
+      }).join('\\n') + '</pre>';
+    }
+    async function openFilePreviewModal(filePath, hlLine = 0) {
+      const bd = $('file-viewer-backdrop');
+      const body = $('fv-body');
+      const title = $('fv-title');
+      if (!bd || !body || !filePath) return;
+      fvState.returnTab = fvState.tab;
+      fvState.viewingFile = true;
+      bd.hidden = false;
+      syncFvChrome();
+      if (title) title.textContent = String(filePath).split('/').pop() || filePath;
+      body.innerHTML = '<div class="empty-tip">正在读取文件内容…</div>';
+      try {
+        const res = await fetchWithTimeout((apiBase || '') + '/api/file-content?path=' + encodeURIComponent(filePath), { headers: authHeaders(), cache: 'no-store' }, 6000);
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取文件失败') + '</div>';
+          return;
+        }
+        if (title) title.textContent = data.name || filePath;
+        const pathBar = '<div class="fv-path-bar">' + esc(data.path || filePath) + '</div>';
+        if (data.isImage) {
+          const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(data.path) + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
+          body.innerHTML = pathBar + '<img src="' + esc(mediaSrc) + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" alt="' + esc(data.name || '') + '" />';
+        } else if (data.isBinary || data.isTooLargeForText) {
+          body.innerHTML = pathBar + '<div class="empty-tip">' + esc(data.error || ('二进制文件 (' + formatFileSizeShort(data.size) + ')，暂不支持纯文本预览')) + '</div>';
+        } else if (data.isMarkdown && !hlLine) {
+          body.innerHTML = pathBar + '<div class="md-body">' + renderMarkdownSafe(data.content || '') + '</div>';
+        } else {
+          body.innerHTML = pathBar + renderCodeWithLineNumbers(data.content || '', hlLine);
+          if (hlLine > 0) {
+            const target = body.querySelector('[data-ln="' + hlLine + '"]');
+            if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
+          }
+        }
+      } catch (err) {
+        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取文件失败') + '</div>';
+      }
+    }
+    async function loadProjectTreeView(targetDir) {
+      const body = $('fv-body');
+      const title = $('fv-title');
+      if (!body) return;
+      fvState.tab = 'tree';
+      fvState.viewingFile = false;
+      syncFvChrome();
+      if (title) title.textContent = '项目文件';
+      body.innerHTML = '<div class="empty-tip">正在读取目录…</div>';
+      const dirParam = targetDir || fvState.curDir || resolveCurrentProjectRootDir();
+      try {
+        const qs = dirParam ? ('?dir=' + encodeURIComponent(dirParam)) : '';
+        const res = await fetchWithTimeout((apiBase || '') + '/api/project-tree' + qs, { headers: authHeaders(), cache: 'no-store' }, 6000);
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取目录失败') + '</div>';
+          return;
+        }
+        fvState.curDir = data.dir || '';
+        const upBtn = data.parentDir ? '<button class="fv-up-btn" id="fv-tree-up" type="button">↑ 上级</button>' : '';
+        const rows = (data.entries || []).map((ent) =>
+          '<button class="fv-row" type="button" data-is-dir="' + (ent.isDir ? '1' : '0') + '" data-path="' + esc(ent.path) + '">'
+          + '<span class="fv-row-name">' + (ent.isDir ? '📁 ' : '📄 ') + esc(ent.name) + '</span>'
+          + '<span class="fv-row-meta">' + (ent.isDir ? '›' : esc(formatFileSizeShort(ent.size))) + '</span>'
+          + '</button>'
+        ).join('');
+        body.innerHTML = '<div class="fv-path-bar">' + upBtn + '<span>' + esc(data.dir || '') + '</span></div>'
+          + '<div class="fv-list">' + (rows || '<div class="empty-tip">空目录</div>') + '</div>';
+        $('fv-tree-up')?.addEventListener('click', () => { void loadProjectTreeView(data.parentDir); });
+        body.querySelectorAll('.fv-row').forEach((row) => {
+          row.onclick = () => {
+            const p = row.dataset.path;
+            if (!p) return;
+            if (row.dataset.isDir === '1') void loadProjectTreeView(p);
+            else void openFilePreviewModal(p, 0);
+          };
+        });
+      } catch (err) {
+        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取目录失败') + '</div>';
+      }
+    }
+    async function loadSessionChangesView() {
+      const body = $('fv-body');
+      const title = $('fv-title');
+      if (!body) return;
+      fvState.tab = 'changes';
+      fvState.viewingFile = false;
+      syncFvChrome();
+      if (title) title.textContent = '本会话变更与产物';
+      body.innerHTML = '<div class="empty-tip">正在读取变更与产物…</div>';
+      const cid = String(latestSnap?.activeConversationId || latestSnap?.sessionId || selectedConversationId || '').trim();
+      try {
+        const res = await fetchWithTimeout((apiBase || '') + '/api/session-files?conversationId=' + encodeURIComponent(cid), { headers: authHeaders(), cache: 'no-store' }, 6000);
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          body.innerHTML = '<div class="empty-tip">' + esc(data?.error || '读取会话变更失败') + '</div>';
+          return;
+        }
+        const diffs = Array.isArray(data.diffs) ? data.diffs : [];
+        const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+        if (!diffs.length && !artifacts.length) {
+          body.innerHTML = '<div class="empty-tip">当前会话暂无记录的代码变更或产物，可切至「项目文件」直接浏览代码。</div>';
+          return;
+        }
+        let htmlOut = '';
+        if (artifacts.length) {
+          htmlOut += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0 6px">Artifacts 产物 (' + artifacts.length + ')</div><div class="fv-list" style="margin-bottom:12px">'
+            + artifacts.map((art, idx) =>
+              '<button class="fv-row fv-art-row" type="button" data-art-idx="' + idx + '"><span class="fv-row-name">✨ ' + esc(art.name || art.path || ('Artifact ' + (idx + 1))) + '</span><span class="fv-row-meta">查看 ›</span></button>'
+            ).join('') + '</div>';
+        }
+        if (diffs.length) {
+          htmlOut += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:4px 0 6px">Files Changed (' + diffs.length + ')</div><div class="fv-list">'
+            + diffs.map((df, idx) =>
+              '<button class="fv-row fv-diff-row" type="button" data-diff-idx="' + idx + '"><span class="fv-row-name">📝 ' + esc(df.name || df.path || ('File ' + (idx + 1))) + '</span><span class="fv-row-meta">Diff ›</span></button>'
+            ).join('') + '</div>';
+        }
+        body.innerHTML = htmlOut;
+        body.querySelectorAll('.fv-art-row').forEach((btn) => {
+          btn.onclick = () => {
+            const art = artifacts[Number(btn.dataset.artIdx)];
+            if (!art) return;
+            if (art.path) { void openFilePreviewModal(art.path, 0); return; }
+            fvState.returnTab = 'changes';
+            fvState.viewingFile = true;
+            syncFvChrome();
+            if (title) title.textContent = art.name || 'Artifact';
+            body.innerHTML = '<div class="md-body">' + renderMarkdownSafe(art.content || '') + '</div>';
+          };
+        });
+        body.querySelectorAll('.fv-diff-row').forEach((btn) => {
+          btn.onclick = () => {
+            const df = diffs[Number(btn.dataset.diffIdx)];
+            if (!df) return;
+            fvState.returnTab = 'changes';
+            fvState.viewingFile = true;
+            syncFvChrome();
+            if (title) title.textContent = df.name || df.path || 'Diff';
+            if (df.diff) {
+              body.innerHTML = '<div class="fv-path-bar">' + esc(df.path || '') + '</div>' + renderUnifiedDiffHtml(df.diff);
+            } else if (df.path) {
+              void openFilePreviewModal(df.path, 0);
+            }
+          };
+        });
+      } catch (err) {
+        body.innerHTML = '<div class="empty-tip">' + esc(err?.message || '读取会话变更失败') + '</div>';
+      }
+    }
+    $('btn-files-panel')?.addEventListener('click', () => {
+      const bd = $('file-viewer-backdrop');
+      if (!bd) return;
+      bd.hidden = false;
+      fvState.curDir = resolveCurrentProjectRootDir() || fvState.curDir;
+      void loadProjectTreeView(fvState.curDir);
+    });
+    $('fv-close-btn')?.addEventListener('click', closeFileViewerModal);
+    $('file-viewer-backdrop')?.addEventListener('click', (e) => {
+      if (e.target === $('file-viewer-backdrop')) closeFileViewerModal();
+    });
+    $('fv-back-btn')?.addEventListener('click', () => {
+      if (fvState.returnTab === 'changes') void loadSessionChangesView();
+      else void loadProjectTreeView(fvState.curDir);
+    });
+    $('fv-tab-tree')?.addEventListener('click', () => { void loadProjectTreeView(fvState.curDir); });
+    $('fv-tab-changes')?.addEventListener('click', () => { void loadSessionChangesView(); });
+
+    function readAttachmentFile(file) {
+      if ((file?.size || 0) > 15 * 1024 * 1024) {
+        return Promise.reject(new Error('单个文件不能超过 15MB'));
+      }
+      const isImg = /^image\\//i.test(String(file?.type || '')) && !/svg/i.test(String(file?.type || ''));
+      if (isImg) {
+        return compressAndReadImage(file).then((res) => ({
+          ...res,
+          size: file.size || 0,
+          isImage: true,
+          previewUrl: res.base64
+        }));
+      }
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('读取文件失败'));
+        reader.onload = () => {
+          resolve({
+            name: file.name || ('file-' + Date.now()),
+            mimeType: file.type || 'application/octet-stream',
+            base64: String(reader.result || ''),
+            size: file.size || 0,
+            isImage: false,
+            previewUrl: ''
+          });
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function renderAttachHintStrip() {
+      const hint = $('attach-hint');
+      if (!hint) return;
+      if (!uploadedAttachments.length) {
+        hint.hidden = true;
+        hint.innerHTML = '';
+        return;
+      }
+      const getTileExt = (name) => {
+        const s = String(name || '').trim();
+        const dot = s.lastIndexOf('.');
+        if (dot > 0 && dot < s.length - 1) return s.slice(dot + 1).slice(0, 6).toUpperCase();
+        return 'FILE';
+      };
+      const stripHtml = uploadedAttachments.map((att, idx) => {
+        if (att.isImage && att.previewUrl) {
+          return '<span class="attach-thumb-wrap" data-att-idx="' + idx + '" title="' + esc(att.name) + '">'
+            + '<img class="attach-thumb" src="' + esc(att.previewUrl) + '" alt="' + esc(att.name) + '" title="' + esc(att.name) + '" data-att-idx="' + idx + '" />'
+            + '<button type="button" class="attach-item-rm" data-rm-idx="' + idx + '" title="移除 ' + esc(att.name) + '" aria-label="移除此图片">×</button>'
+            + '</span>';
+        }
+        const ext = getTileExt(att.name);
+        const tip = att.size ? (att.name + ' (' + formatFileSizeShort(att.size) + ')') : att.name;
+        return '<span class="attach-file-chip" data-att-idx="' + idx + '" title="' + esc(tip) + '" aria-label="' + esc(att.name) + '">'
+          + '<span class="attach-file-icon" aria-hidden="true">📄</span>'
+          + '<span class="attach-file-ext">' + esc(ext) + '</span>'
+          + '<button type="button" class="attach-item-rm" data-rm-idx="' + idx + '" title="移除 ' + esc(att.name) + '" aria-label="移除此文件">×</button>'
+          + '</span>';
+      }).join('');
+      const clearAllHtml = uploadedAttachments.length >= 2
+        ? '<button type="button" class="attach-clear-btn" title="清空全部附件">清空</button>'
+        : '';
+      hint.innerHTML = '<div class="attach-strip">' + stripHtml + '</div>' + clearAllHtml;
+      const enqueueAttachSync = (taskFn) => {
+        const hostObj = typeof globalThis !== 'undefined' ? globalThis : {};
+        const base = hostObj.__agAttachDelQ && typeof hostObj.__agAttachDelQ.then === 'function'
+          ? hostObj.__agAttachDelQ
+          : Promise.resolve();
+        const next = base.then(taskFn);
+        hostObj.__agAttachDelQ = next.catch(() => {});
+        return next;
+      };
+      hint.querySelectorAll('.attach-thumb').forEach((imgEl) => {
+        imgEl.onclick = () => {
+          const item = uploadedAttachments[Number(imgEl.dataset.attIdx)];
+          if (item?.previewUrl) openMediaLightbox(item.previewUrl, item.name);
+        };
+      });
+      hint.querySelectorAll('.attach-item-rm').forEach((rmBtn) => {
+        rmBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          const idx = Number(rmBtn.dataset.rmIdx);
+          if (!Number.isInteger(idx) || idx < 0 || idx >= uploadedAttachments.length) return;
+          const removed = uploadedAttachments.splice(idx, 1)[0];
+          let removedNameIdx = -1;
+          if (removed && uploadedNames[idx] === removed.name) {
+            removedNameIdx = idx;
+            uploadedNames.splice(idx, 1);
+          } else {
+            const nameIdx = removed ? uploadedNames.indexOf(removed.name) : idx;
+            if (nameIdx >= 0) {
+              removedNameIdx = nameIdx;
+              uploadedNames.splice(nameIdx, 1);
+            }
+          }
+          renderAttachHintStrip();
+          syncSendButtonUI();
+          const rollbackOne = (errMsg) => {
+            if (removed) {
+              uploadedAttachments.splice(Math.min(idx, uploadedAttachments.length), 0, removed);
+              if (removedNameIdx >= 0) {
+                uploadedNames.splice(Math.min(removedNameIdx, uploadedNames.length), 0, removed.name);
+              } else {
+                uploadedNames.push(removed.name);
+              }
+              renderAttachHintStrip();
+              syncSendButtonUI();
+            }
+            showToast(errMsg || '桌面端附件同步移除失败，已恢复预览');
+          };
+          void enqueueAttachSync(() => apiAction({
+            action: 'remove-uploaded-attachment',
+            name: removed?.name || '',
+            index: idx
+          }, { skipAutoRender: true }).then((r) => {
+            if (!r || r.ok === false) {
+              rollbackOne(r?.error || r?.actionResult?.error || '桌面端附件同步移除失败，已恢复预览');
+            }
+          }).catch((err) => {
+            rollbackOne(err?.message || '桌面端附件同步移除失败，已恢复预览');
+          }));
+        };
+      });
+      const clearBtn = hint.querySelector('.attach-clear-btn');
+      if (clearBtn) {
+        clearBtn.onclick = () => {
+          const prevAtts = uploadedAttachments.slice();
+          const prevNames = uploadedNames.slice();
+          uploadedNames = [];
+          uploadedAttachments = [];
+          renderAttachHintStrip();
+          syncSendButtonUI();
+          const rollbackAll = (errMsg) => {
+            uploadedAttachments = [...prevAtts, ...uploadedAttachments];
+            uploadedNames = [...prevNames, ...uploadedNames];
+            renderAttachHintStrip();
+            syncSendButtonUI();
+            showToast(errMsg || '桌面端附件清空失败，已恢复预览');
+          };
+          void enqueueAttachSync(() => apiAction({ action: 'remove-uploaded-attachment', clearAll: true }, { skipAutoRender: true }).then((r) => {
+            if (!r || r.ok === false) {
+              rollbackAll(r?.error || r?.actionResult?.error || '桌面端附件清空失败，已恢复预览');
+            }
+          }).catch((err) => {
+            rollbackAll(err?.message || '桌面端附件清空失败，已恢复预览');
+          }));
+        };
+      }
+      hint.hidden = false;
+    }
+
     async function uploadImageFiles(rawFiles) {
       const files = Array.from(rawFiles || []).filter(Boolean);
       if (!files.length) return;
-      showToast('正在上传 ' + files.length + ' 张图片…');
-      for (const f of files) {
-        try {
-          const payload = await compressAndReadImage(f);
-          const r = await apiAction({ action: 'upload-image', ...payload });
-          if (r?.ok) {
-            uploadedNames.push(payload.name);
-          } else {
-            showToast(r?.error || r?.actionResult?.error || '传图失败');
+      showToast('正在上传 ' + files.length + ' 个附件…');
+      let okCount = 0;
+      attachmentUploadInflight += 1;
+      lastAttachmentUploadAt = Date.now();
+      try {
+        for (const f of files) {
+          try {
+            const payload = await readAttachmentFile(f);
+            const r = await apiAction({ action: 'upload-image', name: payload.name, mimeType: payload.mimeType, base64: payload.base64 }, { skipAutoRender: true });
+            lastAttachmentUploadAt = Date.now();
+            if (r?.ok) {
+              uploadedNames.push(payload.name);
+              uploadedAttachments.push({
+                name: payload.name,
+                size: payload.size,
+                isImage: payload.isImage,
+                previewUrl: payload.previewUrl
+              });
+              okCount += 1;
+            } else {
+              showToast(r?.error || r?.actionResult?.error || '上传附件失败');
+            }
+          } catch (err) {
+            showToast(err?.message || '上传附件失败');
           }
-        } catch (err) {
-          showToast(err?.message || '传图失败');
         }
+      } finally {
+        attachmentUploadInflight = Math.max(0, attachmentUploadInflight - 1);
+        lastAttachmentUploadAt = Date.now();
       }
-      if (uploadedNames.length) {
-        const hint = $('attach-hint');
-        hint.innerHTML = '<span>🖼️ 已传至桌面端: ' + esc(uploadedNames.slice(-3).join('、')) + (uploadedNames.length > 3 ? ' 等' + uploadedNames.length + '张' : '') + '</span><button type="button" style="background:none;border:none;color:var(--accent-strong-fg);font-weight:700;cursor:pointer">✕</button>';
-        hint.querySelector('button').onclick = () => { uploadedNames = []; hint.hidden = true; syncSendButtonUI(); };
-        hint.hidden = false;
+      if (uploadedAttachments.length) {
+        renderAttachHintStrip();
         syncSendButtonUI();
-        showToast('✅ 图片已附带到输入框');
+        if (okCount > 0) showToast('✅ 附件已附带到输入框');
       }
     }
 
@@ -7833,8 +9925,8 @@ function buildMobileAppHtml() {
         if (!hasDraggedFiles(e)) return;
         e.preventDefault();
         e.stopPropagation();
-        const imgFiles = Array.from(e.dataTransfer?.files || []).filter((f) => String(f.type || '').startsWith('image/'));
-        if (imgFiles.length) void uploadImageFiles(imgFiles);
+        const droppedFiles = Array.from(e.dataTransfer?.files || []).filter(Boolean);
+        if (droppedFiles.length) void uploadImageFiles(droppedFiles);
       });
     }
     document.addEventListener('dragover', (e) => {
@@ -7916,8 +10008,9 @@ function buildMobileAppHtml() {
       stickBottom = true;
       const myNavSeqSnapshot = lastNavActionSeq;
       try {
-        const payload = { action: 'new-conversation' };
+        const payload = { action: 'new-conversation', isolated: true };
         if (pid) payload.projectId = pid;
+        if (projectName) payload.projectName = projectName;
         const r = await apiAction(payload);
         const isCurrentNav = mySelEpoch === selectedProjectEpoch && lastNavActionSeq === myNavSeqSnapshot + 1;
         if (r?.ok) {
@@ -8399,6 +10492,7 @@ function buildMobileAppHtml() {
         });
         clickedBtn.classList.add('active');
         clickedBtn.classList.remove('is-unread');
+        clickedBtn.querySelector?.('.conv-unread-dot')?.remove?.();
         const effId = getEffectiveSelectedProject(latestSnap).id;
         convListEl.querySelectorAll('.proj-group').forEach((grp) => {
           const grpPid = grp.querySelector('.proj-toggle')?.getAttribute('data-proj-toggle') || '';
@@ -8439,6 +10533,7 @@ function buildMobileAppHtml() {
       if (isSwitchingToOther) {
         msgEl.classList.add('is-switching');
         if (matchedConv?.title) $('conv-title').textContent = matchedConv.title;
+        if (matchedConv) syncTopbarProjectBadge(matchedConv.projectName || '');
       }
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
@@ -8450,6 +10545,7 @@ function buildMobileAppHtml() {
           showToast(r?.error || r?.actionResult?.error || '切换会话失败');
           if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
             $('conv-title').textContent = latestSnap.title || 'Antigravity';
+            syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
           }
         }
       } catch (err) {
@@ -8457,6 +10553,7 @@ function buildMobileAppHtml() {
           showToast(err?.message || '切换会话失败');
           if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
             $('conv-title').textContent = latestSnap.title || 'Antigravity';
+            syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
           }
         }
       } finally {
@@ -8687,7 +10784,7 @@ function buildMobileAppHtml() {
         }
         return;
       }
-      const text = rawText || (uploadedNames.length ? '请查看图片' : '');
+      const text = rawText || (uploadedNames.length ? (uploadedAttachments.some((a) => !a.isImage) ? '请查看附件' : '请查看图片') : '');
       if (!text) return;
       sending = true;
       syncSendButtonUI();
@@ -8698,7 +10795,8 @@ function buildMobileAppHtml() {
           ta.value = '';
           saveDraftForConv(selectedConversationId, '');
           uploadedNames = [];
-          $('attach-hint').hidden = true;
+          uploadedAttachments = [];
+          renderAttachHintStrip();
           ta.style.height = 'auto';
           const maxH = isDesktopLayout() ? 180 : 112;
           ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
@@ -8952,6 +11050,43 @@ function readPersistedTunnelStatus() {
   };
 }
 
+function resolveEmptyCloudflaredConfigPath(options = {}) {
+  const plat = options.platform || process.platform;
+  if (plat !== 'win32') {
+    if (fs.existsSync('/dev/null')) {
+      return { ok: true, path: '/dev/null', error: '' };
+    }
+  }
+  const baseDir = options.baseDir || path.dirname(getRemoteConfigPath());
+  const candidates = [path.join(baseDir, '.cloudflared-empty.yml')];
+  if (options.fallbackDir !== null) {
+    const fbDir = options.fallbackDir || os.tmpdir();
+    if (fbDir && fbDir !== baseDir) {
+      candidates.push(path.join(fbDir, 'ag-cloudflared-empty.yml'));
+    }
+  }
+  let lastErr = '';
+  for (const emptyPath of candidates) {
+    try {
+      const dir = path.dirname(emptyPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(emptyPath, '', 'utf8');
+      const st = fs.statSync(emptyPath);
+      if (st.isFile() && st.size === 0) {
+        return { ok: true, path: emptyPath, error: '' };
+      }
+      lastErr = `隔离配置文件非空 (size=${st.size})`;
+    } catch (err) {
+      lastErr = err?.message || String(err || 'unknown error');
+    }
+  }
+  return {
+    ok: false,
+    path: '',
+    error: `无法创建 cloudflared 隔离空配置文件（${lastErr || '写入失败'}），已中止启动以避免误读宿主机 ~/.cloudflared/config.yml`
+  };
+}
+
 function createCloudflareTunnelController(getPort) {
   let child = null;
   let state = 'stopped';
@@ -9050,9 +11185,16 @@ function createCloudflareTunnelController(getPort) {
     errorMsg = '';
 
     const port = Number(typeof getPort === 'function' ? getPort() : cfg.port) || DEFAULT_REMOTE_PORT;
+    const emptyCfg = resolveEmptyCloudflaredConfigPath();
+    if (!emptyCfg.ok || !emptyCfg.path) {
+      state = 'error';
+      publicUrl = '';
+      errorMsg = emptyCfg.error || '无法创建 cloudflared 隔离空配置文件，已中止启动';
+      return getStatus();
+    }
     const args = mode === 'named'
-      ? ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
-      : ['tunnel', '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
+      ? ['tunnel', '--config', emptyCfg.path, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', 'run']
+      : ['tunnel', '--config', emptyCfg.path, '--no-autoupdate', '--edge-ip-version', '4', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`];
 
     const childEnv = { ...process.env };
     const appendNoProxy = (cur) => {
@@ -9079,8 +11221,38 @@ function createCloudflareTunnelController(getPort) {
 
     return await new Promise((resolve) => {
       let settled = false;
+      let quickUrlCandidate = '';
+      let quickRegistered = false;
+      const markQuickRunning = (urlStr) => {
+        if (!urlStr || child !== spawned) return;
+        publicUrl = urlStr;
+        state = 'running';
+        errorMsg = '';
+        writeTunnelStateFile({
+          pid: spawned.pid,
+          mode,
+          state,
+          publicUrl,
+          error: '',
+          startedAt: Date.now()
+        });
+        clearTimeout(waitTimer);
+        settle();
+      };
       const settle = () => {
         if (settled) return;
+        if (mode === 'quick' && quickUrlCandidate && state === 'starting' && child === spawned && !errorMsg) {
+          publicUrl = quickUrlCandidate;
+          state = 'running';
+          writeTunnelStateFile({
+            pid: spawned.pid,
+            mode,
+            state,
+            publicUrl,
+            error: '',
+            startedAt: Date.now()
+          });
+        }
         settled = true;
         resolve(getStatus());
       };
@@ -9113,19 +11285,13 @@ function createCloudflareTunnelController(getPort) {
         if (mode === 'quick') {
           const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\b/i);
           if (m) {
-            publicUrl = m[0];
-            state = 'running';
-            errorMsg = '';
-            writeTunnelStateFile({
-              pid: spawned.pid,
-              mode,
-              state,
-              publicUrl,
-              error: '',
-              startedAt: Date.now()
-            });
-            clearTimeout(waitTimer);
-            settle();
+            quickUrlCandidate = m[0];
+          }
+          if (/Registered tunnel connection|Connection [0-9a-f-]+ registered/i.test(text)) {
+            quickRegistered = true;
+          }
+          if (quickUrlCandidate && quickRegistered) {
+            markQuickRunning(quickUrlCandidate);
           } else {
             const mErr = text.match(/failed to request quick Tunnel:\s*([^\r\n]+)/i);
             if (mErr) errorMsg = `Cloudflare 临时隧道连接失败: ${mErr[1].trim()}`;
@@ -9568,6 +11734,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const getTunnelOrigin = typeof options.getTunnelOrigin === 'function' ? options.getTunnelOrigin : () => '';
   const fetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
   const performAction = typeof options.performAction === 'function' ? options.performAction : performActionInTarget;
+  const callLsRpc = typeof options.callLanguageServer === 'function' ? options.callLanguageServer : callLocalLanguageServer;
   const getUsageData = typeof options.getUsageData === 'function'
     ? options.getUsageData
     : async (opts = {}) => {
@@ -9947,6 +12114,162 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/media') {
+      const rawMediaPath = urlObj.searchParams.get('path') || '';
+      const checked = resolveSafeLocalMediaPath(rawMediaPath, options.mediaOptions || {});
+      if (!checked.ok) {
+        res.writeHead(checked.status || 403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: checked.error }));
+        return;
+      }
+      try {
+        const buf = fs.readFileSync(checked.realPath);
+        const asciiName = checked.baseName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\\r\n]/g, '_') || 'file';
+        const utf8Name = encodeURIComponent(checked.baseName);
+        const disp = checked.forceAttachment
+          ? `attachment; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`
+          : `inline; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`;
+        res.writeHead(200, {
+          'Content-Type': checked.contentType,
+          'Content-Length': String(buf.length),
+          'Content-Disposition': disp,
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+          'Cache-Control': 'private, max-age=300',
+          'X-Content-Type-Options': 'nosniff'
+        });
+        res.end(buf);
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取本地文件失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/file-content') {
+      const rawFilePath = urlObj.searchParams.get('path') || '';
+      const preview = readSafeTextFilePreview(rawFilePath, options.mediaOptions || {});
+      res.writeHead(preview.ok ? 200 : (preview.status || 403), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(preview));
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/project-tree') {
+      const rawDir = urlObj.searchParams.get('dir') || '';
+      const showAll = urlObj.searchParams.get('showAll') === '1';
+      const tree = listSafeProjectTree(rawDir, { ...(options.mediaOptions || {}), showAll });
+      res.writeHead(tree.ok ? 200 : (tree.status || 403), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(tree));
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/session-files') {
+      const cid = String(urlObj.searchParams.get('conversationId') || '').trim();
+      const diffs = [];
+      const artifacts = [];
+      const mediaOpts = options.mediaOptions || {};
+      const realRoots = resolveMediaAllowedRoots(mediaOpts);
+      const resolveRealPathWithAncestors = (absTarget) => {
+        try {
+          return resolveRealPathWithFallback(absTarget);
+        } catch {
+          return '';
+        }
+      };
+      const isSafeResolvedTarget = (resolved) => {
+        if (!resolved || resolved.includes('\0') || !realRoots.length) return false;
+        if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved)) || (isSensitiveHostPath(resolved, mediaOpts) && !isAllowedBrainArtifactPath(resolved, realRoots, mediaOpts))) return false;
+        return realRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+      };
+      const trustedBaseDirs = [];
+      const addTrustedBaseDir = (rawDir) => {
+        const clean = normalizeLocalFileUriToPath(rawDir);
+        if (!clean || !path.isAbsolute(clean)) return;
+        try {
+          const realDir = fs.realpathSync(clean);
+          if (!isSafeResolvedTarget(realDir)) return;
+          if (!fs.statSync(realDir).isDirectory()) return;
+          if (!trustedBaseDirs.includes(realDir)) trustedBaseDirs.push(realDir);
+        } catch {}
+      };
+      if (cid && cid !== '__new__' && cid !== 'new') {
+        if (typeof options.resolveConversationProjectDirs === 'function') {
+          const customDirs = await Promise.resolve().then(() => options.resolveConversationProjectDirs(cid)).catch(() => []);
+          if (Array.isArray(customDirs)) customDirs.forEach(addTrustedBaseDir);
+        }
+        if (!trustedBaseDirs.length) {
+          const allTraj = await Promise.resolve().then(() => callLsRpc('GetAllCascadeTrajectories', {}, 2500)).catch(() => null);
+          const summaries = allTraj?.trajectorySummaries || allTraj?.trajectories || {};
+          const summary = summaries && typeof summaries === 'object' ? summaries[cid] : null;
+          const wsList = Array.isArray(summary?.workspaces) ? summary.workspaces : [];
+          for (const ws of wsList) {
+            addTrustedBaseDir(ws?.workspaceFolderAbsoluteUri || ws?.folderUri || ws?.path || '');
+          }
+        }
+      }
+      const isSafeSessionPath = (rawCandidate, isFilePathField = true) => {
+        const candidate = String(rawCandidate || '').trim();
+        if (!candidate) return true;
+        if (candidate.includes('\0')) return false;
+        const slashNorm = candidate.replace(/\\/g, '/');
+        if (SENSITIVE_MEDIA_DIR_RE.test(slashNorm) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(slashNorm))) return false;
+        if (path.isAbsolute(candidate)) {
+          const resolved = resolveRealPathWithAncestors(candidate);
+          return isSafeResolvedTarget(resolved);
+        }
+        const posixNorm = path.posix.normalize(slashNorm);
+        if (posixNorm === '..' || posixNorm.startsWith('../') || /(?:^|\/)\.\.(?:\/|$)/.test(slashNorm)) {
+          return false;
+        }
+        if (SENSITIVE_MEDIA_DIR_RE.test(posixNorm) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(posixNorm))) return false;
+        const looksLikePath = isFilePathField || slashNorm.includes('/');
+        if (looksLikePath && !trustedBaseDirs.length) {
+          // 无法确定可信会话项目基准目录时，拒绝解析相对文件路径（fail-closed）
+          return false;
+        }
+        for (const baseDir of trustedBaseDirs) {
+          const joined = path.resolve(baseDir, candidate);
+          if (!(joined === baseDir || joined.startsWith(baseDir + path.sep))) return false;
+          const resolved = resolveRealPathWithAncestors(joined);
+          if (!isSafeResolvedTarget(resolved)) return false;
+        }
+        return true;
+      };
+      const isSafeSessionEntry = (filePath, displayName, isDiffEntry = false) => {
+        if (filePath && !isSafeSessionPath(filePath, true)) return false;
+        if (displayName && !isSafeSessionPath(displayName, isDiffEntry)) return false;
+        return true;
+      };
+      if (cid && cid !== '__new__' && cid !== 'new') {
+        const [diffRes, artRes] = await Promise.all([
+          Promise.resolve().then(() => callLsRpc('GetTrajectoryFileDiffs', { cascadeId: cid }, 4000)).catch(() => null),
+          Promise.resolve().then(() => callLsRpc('GetArtifactSnapshots', { cascadeId: cid }, 4000)).catch(() => null)
+        ]);
+        const rawDiffs = Array.isArray(diffRes?.fileDiffs) ? diffRes.fileDiffs : (Array.isArray(diffRes?.diffs) ? diffRes.diffs : []);
+        for (const d of rawDiffs) {
+          if (!d || typeof d !== 'object') continue;
+          const p = normalizeLocalFileUriToPath(d.absoluteUri || d.uri || d.path || d.filePath || '');
+          const rawName = String(d.fileName || d.name || '').trim();
+          const name = p ? path.basename(p) : rawName;
+          const diff = String(d.unifiedDiff || d.diff || d.patch || '');
+          if (!isSafeSessionEntry(p, rawName, true)) continue;
+          if (name || p || diff) diffs.push({ name: name || p, path: p, diff });
+        }
+        const rawArts = Array.isArray(artRes?.artifacts) ? artRes.artifacts : (Array.isArray(artRes?.snapshots) ? artRes.snapshots : []);
+        for (const a of rawArts) {
+          if (!a || typeof a !== 'object') continue;
+          const p = normalizeLocalFileUriToPath(a.absoluteUri || a.uri || a.path || a.filePath || '');
+          const rawName = String(a.title || a.name || a.fileName || '').trim();
+          const name = rawName || (p ? path.basename(p) : '');
+          const content = String(a.content || a.markdown || '');
+          if (!isSafeSessionEntry(p, rawName, false)) continue;
+          if (name || p || content) artifacts.push({ name: name || 'Artifact', path: p, content });
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, conversationId: cid, diffs, artifacts }));
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/usage') {
       try {
         const force = urlObj.searchParams.get('force') === '1';
@@ -10013,8 +12336,25 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ? (urlObj.searchParams.get('conversationId') || '').trim()
           : (session?.conversationId || '');
         if (session) {
-          if (hasExplicitTarget) session.targetId = targetId;
-          if (hasExplicitConv) session.conversationId = reqConvId;
+          if (hasExplicitTarget && targetId !== session.targetId) {
+            session.targetId = targetId;
+            session.navEpoch = (session.navEpoch || 0) + 1;
+          }
+          if (hasExplicitConv) {
+            if (reqConvId !== session.conversationId) {
+              session.navEpoch = (session.navEpoch || 0) + 1;
+            }
+            session.conversationId = reqConvId;
+            if (reqConvId !== '__new__') {
+              session.draftNewIsolated = false;
+              session.draftSendPending = false;
+              session.draftSendPendingAt = 0;
+              session.draftSendInflight = false;
+              session.draftProjectId = '';
+              session.draftProjectName = '';
+              session.draftPendingUploads = [];
+            }
+          }
         }
         const rawLimit = urlObj.searchParams.get('convLimit');
         const convLimit = rawLimit === 'all' || rawLimit === '0'
@@ -10024,7 +12364,77 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const msgLimit = rawMsgLimit === 'all' || rawMsgLimit === '0'
           ? 0
           : (rawMsgLimit !== null && rawMsgLimit !== '' ? Math.max(1, Number.parseInt(rawMsgLimit, 10) || 30) : 30);
-        const snap = await fetchSnapshot(targetId, { conversationId: reqConvId, clientId, convLimit, msgLimit });
+        const isIsolatedNewDraft = Boolean(session?.draftNewIsolated && reqConvId === '__new__');
+        let snap = await fetchSnapshot(targetId, { conversationId: reqConvId, clientId, convLimit, msgLimit: isIsolatedNewDraft ? 0 : msgLimit });
+        if (isIsolatedNewDraft && snap && snap.ok !== false) {
+          const draftPid = String(session.draftProjectId || '').trim();
+          let reconciledId = '';
+          if (session.draftSendPending && !session.draftSendInflight) {
+            const pendingAt = Number(session.draftSendPendingAt) || 0;
+            const convList = Array.isArray(snap.conversations) ? snap.conversations : [];
+            const candidates = convList.filter((c) => {
+              if (!c || !c.id || c.id === '__new__' || c.id === 'new') return false;
+              if (draftPid && String(c.projectId || '').trim() !== draftPid) return false;
+              const ts = Number(c.updatedAt || c.lastModifiedMs || (c.lastModifiedTime ? Date.parse(c.lastModifiedTime) : 0)) || 0;
+              return pendingAt > 0 && ts >= (pendingAt - 3000);
+            });
+            if (candidates.length > 0) {
+              candidates.sort((a, b) => {
+                const ta = Number(a.updatedAt || a.lastModifiedMs || (a.lastModifiedTime ? Date.parse(a.lastModifiedTime) : 0)) || 0;
+                const tb = Number(b.updatedAt || b.lastModifiedMs || (b.lastModifiedTime ? Date.parse(b.lastModifiedTime) : 0)) || 0;
+                return tb - ta;
+              });
+              reconciledId = String(candidates[0].id || '').trim();
+            } else if (pendingAt > 0 && (Date.now() - pendingAt) >= 15000) {
+              session.draftSendPending = false;
+              session.draftSendPendingAt = 0;
+            }
+          }
+          if (reconciledId) {
+            session.draftNewIsolated = false;
+            session.draftSendPending = false;
+            session.draftSendPendingAt = 0;
+            session.draftSendInflight = false;
+            session.draftProjectId = '';
+            session.draftProjectName = '';
+            session.draftPendingUploads = [];
+            session.conversationId = reconciledId;
+            const boundSnap = await fetchSnapshot(targetId, {
+              conversationId: reconciledId,
+              clientId,
+              convLimit,
+              msgLimit,
+              bypassCache: true,
+              bypassCatalogCache: true
+            }).catch(() => null);
+            snap = (boundSnap && boundSnap.ok !== false)
+              ? boundSnap
+              : { ...snap, isolated: false, isNewConversation: false, sessionId: reconciledId, activeConversationId: reconciledId };
+          } else {
+            const matchedProj = draftPid
+              ? ((Array.isArray(snap.projects) ? snap.projects : []).find((p) => p && String(p.id || '') === draftPid)
+                || (Array.isArray(snap.projectGroups) ? snap.projectGroups : []).find((g) => g && String(g.id || '') === draftPid))
+              : null;
+            const draftName = String(session.draftProjectName || matchedProj?.name || snap.currentProjectName || '').trim();
+            snap = {
+              ...snap,
+              isolated: true,
+              isNewConversation: true,
+              sessionId: '__new__',
+              activeConversationId: '',
+              title: '新对话',
+              currentProjectId: draftPid || snap.currentProjectId || '',
+              currentProjectName: draftName,
+              messages: [],
+              totalMessages: 0,
+              hasEarlierMessages: false,
+              pendingApprovals: [],
+              pendingPrompts: [],
+              queuedMessages: [],
+              busy: false
+            };
+          }
+        }
         if (session && snap && snap.ok !== false) {
           if (!session.targetId && snap.currentTargetId) session.targetId = snap.currentTargetId;
           if (!session.conversationId && (snap.activeConversationId || snap.sessionId)) {
@@ -10202,6 +12612,120 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const effectiveTargetId = String(payload?.targetId || session?.targetId || '').trim();
         const actionName = String(payload?.action || '').trim();
 
+        if (actionName === 'send-queued-messages' || actionName === 'delete-queued-message') {
+          const cascadeId = String(payload?.conversationId || session?.conversationId || '').trim();
+          if (!cascadeId || cascadeId === '__new__' || cascadeId === 'new') {
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效会话 ID' }));
+            return;
+          }
+          const isDomQueueSource = payload?.source === 'dom';
+          let rpcRes = null;
+          let usedDomFallback = false;
+          if (isDomQueueSource) {
+            const domAct = actionName === 'delete-queued-message' ? 'delete-queued-dom' : 'send-queued-dom';
+            const domRes = await performAction({
+              action: domAct,
+              clientId,
+              targetId: effectiveTargetId || undefined,
+              conversationId: cascadeId,
+              domIndex: Number.isInteger(Number(payload?.domIndex)) ? Number(payload.domIndex) : 0,
+              sendAll: actionName === 'send-queued-messages' ? (payload?.sendAll !== false) : undefined,
+              text: String(payload?.text || '')
+            });
+            if (!domRes?.ok) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domRes?.error || domRes?.actionResult?.error || '桌面端队列操作失败' }));
+              return;
+            }
+            usedDomFallback = true;
+          } else if (actionName === 'delete-queued-message') {
+            const rawStep = payload?.stepIndex;
+            const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
+              || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
+            const stepIndex = isValidStep ? Number(rawStep) : -1;
+            if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队步骤索引 stepIndex' }));
+              return;
+            }
+            rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
+          } else {
+            // 轨迹/混合队列统一由 LanguageServer SendAllQueuedMessages RPC 执行；
+            // 若 RPC 成功或超时（可能已在后端执行但响应超时），均严禁自动补点桌面 DOM 按钮以杜绝重复发送；
+            // 仅纯 DOM 队列（isDomQueueSource === true，未调用 RPC）才走 send-queued-dom(sendAll:true)
+            rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
+          }
+          if (!usedDomFallback && (rpcRes === null || rpcRes === false)) {
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '本机 LanguageServer 队列操作调用失败或超时' }));
+            return;
+          }
+          defaultHistoryManager.invalidateSession?.(cascadeId);
+          const snap = await fetchSnapshot(effectiveTargetId, {
+            conversationId: cascadeId,
+            clientId,
+            convLimit: 100,
+            msgLimit: 30,
+            bypassCache: true,
+            bypassCatalogCache: true
+          });
+          const usageSummary = (snap && snap.ok !== false && !snap.usageSummary) ? await getCachedUsageSummary() : null;
+          const enriched = enrichSnapshotPayload(snap, config, activeTunnelUrl, clientId, usageSummary);
+          const hasRemainingDomQueued = Boolean(
+            actionName === 'send-queued-messages' &&
+            payload?.hasDomQueued === true &&
+            !usedDomFallback &&
+            Array.isArray(snap?.queuedMessages) &&
+            snap.queuedMessages.some((q) => q && q.source === 'dom')
+          );
+          sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+            ok: true,
+            actionResult: {
+              ok: true,
+              action: actionName,
+              cascadeId,
+              ...(hasRemainingDomQueued ? { hasRemainingDomQueued: true } : {})
+            },
+            snapshot: enriched
+          }));
+          return;
+        }
+
+        const bumpNavEpoch = (sess) => {
+          if (sess) sess.navEpoch = (sess.navEpoch || 0) + 1;
+        };
+        const clearDraftNew = (sess) => {
+          if (!sess) return;
+          sess.draftNewIsolated = false;
+          sess.draftSendPending = false;
+          sess.draftSendPendingAt = 0;
+          sess.draftSendInflight = false;
+          sess.draftProjectId = '';
+          sess.draftProjectName = '';
+          sess.draftPendingUploads = [];
+        };
+        const buildIsolatedDraftSnapshot = (baseSnap, draftPid, draftName) => {
+          if (!baseSnap || baseSnap.ok === false) return baseSnap;
+          const matchedProj = draftPid
+            ? ((Array.isArray(baseSnap.projects) ? baseSnap.projects : []).find((p) => p && String(p.id || '') === draftPid)
+              || (Array.isArray(baseSnap.projectGroups) ? baseSnap.projectGroups : []).find((g) => g && String(g.id || '') === draftPid))
+            : null;
+          return {
+            ...baseSnap,
+            isolated: true,
+            isNewConversation: true,
+            sessionId: '__new__',
+            activeConversationId: '',
+            title: '新对话',
+            currentProjectId: draftPid || baseSnap.currentProjectId || '',
+            currentProjectName: String(draftName || matchedProj?.name || baseSnap.currentProjectName || '').trim(),
+            messages: [],
+            totalMessages: 0,
+            hasEarlierMessages: false,
+            pendingApprovals: [],
+            pendingPrompts: [],
+            queuedMessages: [],
+            busy: false
+          };
+        };
+
         if (actionName === 'switch-conversation' && (clientId || payload?.isolated === true)) {
           const nextId = String(payload?.id || '').trim();
           if (!nextId) {
@@ -10209,7 +12733,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             return;
           }
           if (nextId === 'follow-desktop') {
-            if (session) session.conversationId = '';
+            if (session) {
+              session.conversationId = '';
+              clearDraftNew(session);
+              bumpNavEpoch(session);
+            }
             const snap = await fetchSnapshot(effectiveTargetId, { clientId, convLimit: 100, msgLimit: 30 });
             if (session && snap && snap.ok !== false && (snap.activeConversationId || snap.sessionId)) {
               session.conversationId = String(snap.activeConversationId || snap.sessionId || '');
@@ -10226,8 +12754,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           if (nextId !== 'new') {
             if (session) {
               session.conversationId = nextId;
+              clearDraftNew(session);
+              bumpNavEpoch(session);
               if (payload?.targetId) session.targetId = effectiveTargetId;
             }
+            const activeCatStore = options.catalogStore || defaultCatalogStore;
+            activeCatStore.markViewed(nextId, Date.now(), options.catalogOptions || {});
             if (!options.fetchSnapshot && typeof defaultHistoryManager?.warmSession === 'function') {
               defaultHistoryManager.warmSession(nextId).catch(() => null);
             }
@@ -10247,6 +12779,38 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }));
             return;
           }
+          if (payload?.isolated === true) {
+            const draftPid = String(payload?.projectId || '').trim();
+            const draftName = String(payload?.projectName || '').trim();
+            if (session) {
+              session.conversationId = '__new__';
+              session.draftNewIsolated = true;
+              session.draftSendPending = false;
+              session.draftSendPendingAt = 0;
+              session.draftSendInflight = false;
+              session.draftProjectId = draftPid;
+              session.draftProjectName = draftName;
+              session.draftPendingUploads = [];
+              bumpNavEpoch(session);
+              if (payload?.targetId) session.targetId = effectiveTargetId;
+            }
+            const baseSnap = await fetchSnapshot(effectiveTargetId, {
+              conversationId: '__new__',
+              clientId,
+              convLimit: 100,
+              msgLimit: 0
+            });
+            const draftSnap = buildIsolatedDraftSnapshot(baseSnap, draftPid, draftName);
+            const usageSummary = (draftSnap && draftSnap.ok !== false && !draftSnap.usageSummary) ? await getCachedUsageSummary() : null;
+            const enriched = enrichSnapshotPayload(draftSnap, config, activeTunnelUrl, clientId, usageSummary);
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: Boolean(draftSnap && draftSnap.ok !== false),
+              actionResult: { ok: Boolean(draftSnap && draftSnap.ok !== false), id: '__new__', projectId: draftPid, isolated: true, deferred: true },
+              snapshot: enriched
+            }));
+            return;
+          }
+          clearDraftNew(session);
           const newResult = await performAction({
             ...payload,
             clientId,
@@ -10266,6 +12830,38 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         }
 
         if (actionName === 'new-conversation') {
+          if (payload?.isolated === true) {
+            const draftPid = String(payload?.projectId || '').trim();
+            const draftName = String(payload?.projectName || '').trim();
+            if (session) {
+              session.conversationId = '__new__';
+              session.draftNewIsolated = true;
+              session.draftSendPending = false;
+              session.draftSendPendingAt = 0;
+              session.draftSendInflight = false;
+              session.draftProjectId = draftPid;
+              session.draftProjectName = draftName;
+              session.draftPendingUploads = [];
+              bumpNavEpoch(session);
+              if (payload?.targetId) session.targetId = effectiveTargetId;
+            }
+            const baseSnap = await fetchSnapshot(effectiveTargetId, {
+              conversationId: '__new__',
+              clientId,
+              convLimit: 100,
+              msgLimit: 0
+            });
+            const draftSnap = buildIsolatedDraftSnapshot(baseSnap, draftPid, draftName);
+            const usageSummary = (draftSnap && draftSnap.ok !== false && !draftSnap.usageSummary) ? await getCachedUsageSummary() : null;
+            const enriched = enrichSnapshotPayload(draftSnap, config, activeTunnelUrl, clientId, usageSummary);
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: Boolean(draftSnap && draftSnap.ok !== false),
+              actionResult: { ok: Boolean(draftSnap && draftSnap.ok !== false), id: '__new__', projectId: draftPid, isolated: true, deferred: true },
+              snapshot: enriched
+            }));
+            return;
+          }
+          clearDraftNew(session);
           const newResult = await performAction({
             ...payload,
             clientId,
@@ -10290,6 +12886,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           if (session) {
             session.targetId = nextTargetId;
             session.conversationId = '';
+            clearDraftNew(session);
+            bumpNavEpoch(session);
           }
           const snap = await fetchSnapshot(nextTargetId, { clientId, convLimit: 100, msgLimit: 30 });
           if (session && snap && snap.ok !== false && (snap.activeConversationId || snap.sessionId)) {
@@ -10306,16 +12904,211 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         }
 
         const effectiveConvId = String(payload?.conversationId || session?.conversationId || '').trim();
-        const result = await performAction({
-          ...payload,
-          clientId,
-          targetId: effectiveTargetId || undefined,
-          conversationId: effectiveConvId || undefined
-        });
-        if (session && result?.snapshot && result.snapshot.ok !== false) {
-          const respSid = String(result.snapshot.activeConversationId || result.snapshot.sessionId || '');
-          if (respSid && respSid !== '__new__' && (effectiveConvId === '__new__' || !session.conversationId)) {
-            session.conversationId = respSid;
+        const isIsolatedDraftMediaAction = Boolean(
+          (actionName === 'upload-image' || actionName === 'remove-uploaded-attachment') &&
+          session?.draftNewIsolated &&
+          (!effectiveConvId || effectiveConvId === '__new__' || effectiveConvId === 'new')
+        );
+        if (isIsolatedDraftMediaAction) {
+          if (!Array.isArray(session.draftPendingUploads)) {
+            session.draftPendingUploads = [];
+          }
+          if (actionName === 'upload-image') {
+            const rawB64 = String(payload?.base64 || '').trim();
+            if (!rawB64) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                error: '缺少附件数据'
+              }));
+              return;
+            }
+            if (session.draftPendingUploads.length >= 10) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                error: '草稿最多可附带 10 个待发附件'
+              }));
+              return;
+            }
+            const attName = String(payload?.name || `draft-${Date.now()}`).trim();
+            const attMime = String(payload?.mimeType || 'application/octet-stream').trim();
+            session.draftPendingUploads.push({
+              name: attName,
+              mimeType: attMime,
+              base64: rawB64
+            });
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: true,
+              deferredDraftUpload: true,
+              actionResult: {
+                ok: true,
+                deferred: true,
+                name: attName,
+                pendingCount: session.draftPendingUploads.length
+              }
+            }));
+            return;
+          }
+          if (payload?.clearAll === true) {
+            const removed = session.draftPendingUploads.length;
+            session.draftPendingUploads = [];
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: true,
+              deferredDraftUpload: true,
+              actionResult: { ok: true, deferred: true, removed }
+            }));
+            return;
+          }
+          const reqName = String(payload?.name || '').trim().toLowerCase();
+          const reqIdx = Number.isInteger(payload?.index) ? payload.index : -1;
+          let rmIdx = -1;
+          if (reqName) {
+            if (reqIdx >= 0 && reqIdx < session.draftPendingUploads.length && String(session.draftPendingUploads[reqIdx]?.name || '').trim().toLowerCase() === reqName) {
+              rmIdx = reqIdx;
+            } else {
+              rmIdx = session.draftPendingUploads.findIndex((x) => String(x?.name || '').trim().toLowerCase() === reqName);
+            }
+          } else if (reqIdx >= 0 && reqIdx < session.draftPendingUploads.length) {
+            rmIdx = reqIdx;
+          }
+          if (rmIdx < 0) {
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: false,
+              error: '草稿中未找到指定附件'
+            }));
+            return;
+          }
+          session.draftPendingUploads.splice(rmIdx, 1);
+          sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+            ok: true,
+            deferredDraftUpload: true,
+            actionResult: { ok: true, deferred: true, removed: 1, pendingCount: session.draftPendingUploads.length }
+          }));
+          return;
+        }
+        const isDeferredDraftSend = Boolean(
+          actionName === 'send' &&
+          (session?.draftNewIsolated || payload?.draftNewIsolated === true) &&
+          (!effectiveConvId || effectiveConvId === '__new__' || effectiveConvId === 'new')
+        );
+        if (
+          isDeferredDraftSend &&
+          session?.draftSendPending &&
+          !session.draftSendInflight &&
+          Number(session.draftSendPendingAt) > 0 &&
+          (Date.now() - Number(session.draftSendPendingAt)) >= 15000
+        ) {
+          session.draftSendPending = false;
+          session.draftSendPendingAt = 0;
+        }
+        if (isDeferredDraftSend && (session?.draftSendInflight || session?.draftSendPending)) {
+          sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+            ok: false,
+            pendingConfirmation: true,
+            error: '首条消息正在发送或等待新会话 ID 确认，请稍候或切换会话后再试，避免重复发送'
+          }));
+          return;
+        }
+        const draftPidForSend = isDeferredDraftSend
+          ? String(session?.draftProjectId || payload?.draftProjectId || payload?.projectId || '').trim()
+          : '';
+        const draftUploadsForSend = (isDeferredDraftSend && Array.isArray(session?.draftPendingUploads) && session.draftPendingUploads.length)
+          ? session.draftPendingUploads.slice()
+          : [];
+        const sendStartNavEpoch = session ? (session.navEpoch || 0) : 0;
+        const sendStartTargetId = session ? String(session.targetId || effectiveTargetId || '') : effectiveTargetId;
+        const sendStartConvId = session ? String(session.conversationId || '') : effectiveConvId;
+        const isStillSameNav = () => !session || (
+          (session.navEpoch || 0) === sendStartNavEpoch &&
+          String(session.targetId || effectiveTargetId || '') === sendStartTargetId &&
+          String(session.conversationId || '') === sendStartConvId &&
+          Boolean(session.draftNewIsolated)
+        );
+        if (isDeferredDraftSend && session) {
+          session.draftSendInflight = true;
+        }
+        let result;
+        try {
+          result = await performAction({
+            ...payload,
+            clientId,
+            targetId: effectiveTargetId || undefined,
+            conversationId: isDeferredDraftSend ? '__new__' : (effectiveConvId || undefined),
+            ...(isDeferredDraftSend ? {
+              draftNewIsolated: true,
+              draftProjectId: draftPidForSend,
+              restoreDesktop: payload?.restoreDesktop !== false,
+              ...(draftUploadsForSend.length ? { draftPendingUploads: draftUploadsForSend } : {})
+            } : {})
+          });
+          if (isDeferredDraftSend) {
+            if (result?.ok === false) {
+              if (!isStillSameNav()) {
+                result.snapshot = null;
+                result.staleNavigation = true;
+              } else if (result.snapshot && result.snapshot.sessionId && result.snapshot.sessionId !== '__new__') {
+                result.snapshot = null;
+              }
+            } else {
+              const createdCid = String(result?.actionResult?.createdConversationId || '').trim();
+              if (!isStillSameNav()) {
+                // 发送期间用户已切换会话/窗口/草稿：丢弃旧快照防止覆盖前端当前视图
+                result.snapshot = null;
+                result.staleNavigation = true;
+              } else if (createdCid && createdCid !== '__new__') {
+                let boundSnap = (result?.snapshot && result.snapshot.ok !== false && result.snapshot.sessionId === createdCid)
+                  ? result.snapshot
+                  : null;
+                if (!boundSnap) {
+                  const fetchedSnap = await fetchSnapshot(effectiveTargetId, {
+                    conversationId: createdCid,
+                    clientId,
+                    convLimit: 100,
+                    msgLimit: 30,
+                    bypassCache: true,
+                    bypassCatalogCache: true
+                  }).catch(() => null);
+                  if (fetchedSnap && fetchedSnap.ok !== false && fetchedSnap.sessionId === createdCid) {
+                    boundSnap = fetchedSnap;
+                  }
+                }
+                if (!isStillSameNav()) {
+                  // 补拉快照期间用户切走：不改写 session，且清空 snapshot 防止覆盖
+                  result.snapshot = null;
+                  result.staleNavigation = true;
+                } else {
+                  clearDraftNew(session);
+                  if (session) session.conversationId = createdCid;
+                  // 若补拉快照失败则置空 snapshot，严禁把桌面原会话 snapshot 返回给前端
+                  result.snapshot = boundSnap || null;
+                }
+              } else {
+                // 路由尚未确认新会话 ID：禁止清除草稿或回退绑定桌面旧会话，标记待确认以防重试重复发送
+                if (session) {
+                  session.draftPendingUploads = [];
+                  session.draftSendPending = true;
+                  session.draftSendPendingAt = Date.now();
+                }
+                if (result.actionResult && typeof result.actionResult === 'object') {
+                  result.actionResult.pendingConfirmation = true;
+                }
+                result.snapshot = session
+                  ? buildIsolatedDraftSnapshot(
+                      result.snapshot || { ok: true, projects: [], conversations: [] },
+                      draftPidForSend,
+                      session.draftProjectName || ''
+                    )
+                  : null;
+              }
+            }
+          } else if (session && result?.snapshot && result.snapshot.ok !== false) {
+            const respSid = String(result.snapshot.activeConversationId || result.snapshot.sessionId || '');
+            if (respSid && respSid !== '__new__' && (effectiveConvId === '__new__' || !session.conversationId) && !session.draftNewIsolated) {
+              session.conversationId = respSid;
+            }
+          }
+        } finally {
+          if (isDeferredDraftSend && session && (session.navEpoch || 0) === sendStartNavEpoch) {
+            session.draftSendInflight = false;
           }
         }
         if (result?.snapshot) {
@@ -10342,7 +13135,11 @@ function startMobileRemoteServer() {
   const config = loadOrCreateRemoteConfig();
   const tunnelCtrl = createCloudflareTunnelController(() => config.port);
   const handler = createRemoteHttpHandler(config, {
-    getTunnelOrigin: () => tunnelCtrl.getStatus().publicUrl || ''
+    getTunnelOrigin: () => tunnelCtrl.getStatus().publicUrl || '',
+    mediaOptions: {
+      strictProdRoots: true,
+      getAllowedRoots: () => resolveProductionMediaAllowedRoots()
+    }
   });
   const boundServers = new Map();
   let ifaceTimer = null;
@@ -10809,6 +13606,15 @@ module.exports = {
   normalizeTrajectoryStatus,
   renderSafeMarkdownToHtml,
   extractMessagesFromTrajectorySteps,
+  extractQueuedMessagesFromTrajectorySteps,
+  extractTrajectoryUserAttachments,
+  collapseConsecutiveDomThinking,
+  mergeTrajectoryAndDomMessages,
+  resolveProductionMediaAllowedRoots,
+  resolveMediaAllowedRoots,
+  resolveSafeLocalMediaPath,
+  listSafeProjectTree,
+  readSafeTextFilePreview,
   createSessionCatalogStore,
   createConversationHistoryManager,
   enrichSnapshotWithCatalog,
@@ -10830,6 +13636,7 @@ module.exports = {
   recordPairedDeviceAccess,
   getPairedDevicesSummary,
   startMobileRemoteServer,
+  resolveEmptyCloudflaredConfigPath,
   buildRemoteInfo,
   printRemoteCli
 };

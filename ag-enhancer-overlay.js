@@ -46,7 +46,7 @@
   let remotePopoverOpen = false;
   let remotePollTimer = null;
   let lastRemoteFetchAt = 0;
-  let remotePairState = { loading: false, tunnelBusy: false, tunnelPendingAction: '', error: '', data: null, copiedAt: 0, tunnelConfigOpen: false, tunnelPollTimer: null, draftHost: null, draftToken: '' };
+  let remotePairState = { loading: false, tunnelBusy: false, tunnelPendingAction: '', error: '', data: null, copiedAt: 0, selectedChannelKey: '', tunnelConfigOpen: false, tunnelPollTimer: null, draftHost: null, draftToken: '' };
   let fileEditorState = {
     active: false,
     fileUri: '',
@@ -1691,12 +1691,26 @@
           align-items: center;
           justify-content: space-between;
           gap: 8px;
+          width: 100%;
           padding: 5px 9px;
           border-radius: 7px;
           border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
           background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.035));
+          font-family: inherit;
           font-size: 12px;
           color: var(--ag-text-primary, #e4e4e7);
+          text-align: left;
+          cursor: pointer;
+          transition: background 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+        }
+        .ag-rp-ch-pill:hover:not([disabled]):not([data-available="false"]) {
+          border-color: var(--ag-accent-border-hover, rgba(167, 139, 250, 0.56));
+          background: var(--ag-accent-bg-hover, rgba(167, 139, 250, 0.24));
+        }
+        .ag-rp-ch-pill[data-available="false"],
+        .ag-rp-ch-pill[disabled] {
+          opacity: 0.62;
+          cursor: not-allowed;
         }
         .ag-rp-ch-pill[data-active="true"] {
           border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
@@ -1936,7 +1950,11 @@
     }
 
     const availableList = channels.filter((c) => (c.enabled !== false) && c.available && c.url);
-    const activeChannel = availableList.find((c) => c.key === 'tunnel')
+    const preferredChannel = remotePairState.selectedChannelKey
+      ? availableList.find((c) => c.key === remotePairState.selectedChannelKey)
+      : null;
+    const activeChannel = preferredChannel
+      || availableList.find((c) => c.key === 'tunnel')
       || availableList.find((c) => c.key === 'tailscale')
       || availableList.find((c) => c.key === 'lan')
       || availableList[0]
@@ -2095,10 +2113,14 @@
       const activeSummaryHtml = enabledChannels.length > 0
         ? `<div class="ag-rp-readonly-summary">${enabledChannels.map((ch) => {
             const label = tr(ch.label || ch.key, ch.labelEn || ch.label || ch.key);
+            const canSelect = Boolean((ch.enabled !== false) && ch.available && ch.url);
             const hostVal = (ch.key === 'tunnel' && !ch.available && ch.state === 'starting')
               ? (ch.displayHost || tr('正在分配公网隧道…', 'Provisioning Tunnel…'))
               : (ch.displayHost || (ch.available ? '' : tr('未连接', 'Offline')));
-            return `<span class="ag-rp-ch-pill" data-active="${ep.activeKey === ch.key ? 'true' : 'false'}"><span>${escapeHtml(label)}</span>${hostVal ? `<span class="ag-rp-ch-pill-host">${escapeHtml(hostVal)}</span>` : ''}</span>`;
+            const titleText = canSelect
+              ? tr(`点击切换为 ${label} 二维码与链接`, `Click to switch QR & link to ${label}`)
+              : tr('当前通道暂不可用', 'Channel currently unavailable');
+            return `<button type="button" class="ag-rp-ch-pill" data-ch-key="${escapeHtml(ch.key)}" data-active="${ep.activeKey === ch.key ? 'true' : 'false'}" data-available="${canSelect ? 'true' : 'false'}" title="${escapeHtml(titleText)}" ${canSelect ? '' : 'disabled'}><span>${escapeHtml(label)}</span>${hostVal ? `<span class="ag-rp-ch-pill-host">${escapeHtml(hostVal)}</span>` : ''}</button>`;
           }).join('')}</div>`
         : '';
 
@@ -2148,6 +2170,18 @@
     popover.querySelector('#ag-remote-refresh')?.addEventListener('click', (ev) => {
       ev.stopPropagation();
       void refreshRemotePairInfo(false);
+    });
+    popover.querySelectorAll('.ag-rp-ch-pill').forEach((pillBtn) => {
+      pillBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const chKey = pillBtn.getAttribute('data-ch-key') || '';
+        const canSelect = pillBtn.getAttribute('data-available') === 'true';
+        if (!chKey || !canSelect) return;
+        remotePairState.selectedChannelKey = chKey;
+        remotePairState.copiedAt = 0;
+        renderRemotePopoverContent(popover);
+        positionRemotePopover();
+      });
     });
     popover.querySelector('#ag-remote-copy')?.addEventListener('click', async (ev) => {
       ev.stopPropagation();
@@ -3767,6 +3801,8 @@
     return hits;
   }
 
+  const highRiskScanMemo = new WeakMap();
+
   function scanHighRiskCommands() {
     if (disposed) return 0;
     const viewport = document.querySelector('[data-testid="autoscroll-viewport"]');
@@ -3783,11 +3819,23 @@
       if (!text) continue;
       if (el.tagName === 'CODE' && text.length > 220) continue;
 
-      const hits = detectHighRiskLabels(text);
-      if (!hits.length) continue;
-
       const isInlineCode = el.tagName === 'CODE';
       const card = isInlineCode ? el : (el.closest('[data-testid="turn-cards-container"]') || el);
+      const memoSig = `${text.length}:${text.slice(0, 48)}:${text.slice(-32)}|${theme}`;
+      const memo = highRiskScanMemo.get(el);
+      if (memo && memo.sig === memoSig) {
+        if (!memo.marked || card.getAttribute('data-ag-risk-card') === 'high') {
+          if (memo.marked) markedCount++;
+          continue;
+        }
+      }
+
+      const hits = detectHighRiskLabels(text);
+      if (!hits.length) {
+        highRiskScanMemo.set(el, { sig: memoSig, marked: false });
+        continue;
+      }
+
       const summary = hits.slice(0, 3).join('、');
 
       if (card.getAttribute('data-ag-risk-card') !== 'high') {
@@ -3817,6 +3865,7 @@
           banner.setAttribute('data-ag-theme', theme);
         }
       }
+      highRiskScanMemo.set(el, { sig: memoSig, marked: true });
       markedCount++;
     }
     return markedCount;
@@ -4592,7 +4641,8 @@
       autoCompactState.idleSince = 0;
     }
 
-    const busy = isAssistantBusy();
+    const busySignal = detectAssistantBusySignal();
+    const busy = Boolean(busySignal);
     if (busy) {
       if (autoCompactState.inFlightSession !== sessionId) {
         autoCompactState.armedForSession = true;
@@ -4677,29 +4727,31 @@
     ));
   }
 
-  function isAssistantBusy() {
-    if (Date.now() - lastUserSubmitAt < 2500) return true;
+  function detectAssistantBusySignal() {
     const cancelBtn =
       document.querySelector('.surface-composer [data-testid="input-cancel-button"]') ||
       document.querySelector('[data-testid="input-cancel-button"]');
     if (cancelBtn && cancelBtn.offsetWidth > 0 && !cancelBtn.disabled) {
-      return true;
+      return 'cancel-btn';
     }
     const thinkingTriggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
     for (const trigger of thinkingTriggers) {
       const text = (trigger.textContent || '').trim();
-      if (/^(?:Thinking|思考中)/i.test(text)) return true;
+      if (/^(?:Thinking|思考中)/i.test(text)) return 'thinking';
     }
-    const userMsgs = document.querySelectorAll('[data-testid="user-message"]');
-    if (userMsgs.length > 0) {
-      const lastUser = userMsgs[userMsgs.length - 1];
-      const assistantMds = getAssistantMarkdownRoots();
-      const lastAsst = assistantMds[assistantMds.length - 1];
-      if (!lastAsst || (lastAsst.compareDocumentPosition(lastUser) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-        return true;
+    const activeCid = getSessionIdFromLocation();
+    if (activeCid) {
+      const activeRow = findSidebarRowById(activeCid);
+      if (activeRow && activeRow.querySelector('.animate-spin, [data-testid*="spinner"], [aria-busy="true"]')) {
+        return 'spinner';
       }
     }
-    return false;
+    if (Date.now() - lastUserSubmitAt < 2500) return 'recent-submit';
+    return '';
+  }
+
+  function isAssistantBusy() {
+    return Boolean(detectAssistantBusySignal());
   }
 
   function truncateNextStepText(text, maxChars = 8) {
@@ -7013,8 +7065,8 @@
 
   // ==================== 手机端极速遥控面板数据桥接 (v1.6.9) ====================
 
-  const MOBILE_APPROVE_RE = /^(?:proceed|accept(?:\s+all|\s+changes|\s+step)?|allow(?:\s+once)?|run(?:\s+command)?|approve|continue|继续|接受|全部接受|接受更改|接受此步骤|允许|允许一次|运行|批准)(?:\s+\([^)]+\))?$/i;
-  const MOBILE_REJECT_RE = /^(?:reject|deny|cancel|discard|decline|abort|拒绝|取消|丢弃|中止)(?:\s+\([^)]+\))?$/i;
+  const MOBILE_APPROVE_RE = /^(?:proceed|accept(?:\s+all|\s+changes|\s+step)?|allow(?:\s+once|\s+always|\s+all|\s+for\s+(?:this\s+)?session)?|run(?:\s+command)?|approve|confirm|submit|continue|继续|接受|全部接受|接受更改|接受此步骤|允许|允许一次|允许本次|始终允许|本会话允许|运行|批准|确认|提交)(?:\s+\([^)]+\))?$/i;
+  const MOBILE_REJECT_RE = /^(?:reject|deny|cancel|discard|decline|abort|skip|拒绝|取消|丢弃|中止|跳过)(?:\s+\([^)]+\))?$/i;
 
   function findApprovalCandidateButtons() {
     const container = document.querySelector('main') || document.body;
@@ -7039,7 +7091,7 @@
       if (!kind) continue;
 
       const cardScope = btn.closest('[data-testid="turn-cards-container"], [data-testid="agent-response"], [role="dialog"], [data-testid="tool-group-collapsible"]') || btn.parentElement?.parentElement;
-      const riskEl = cardScope ? (cardScope.matches('[data-ag-risk-card="high"]') ? cardScope : cardScope.querySelector('[data-ag-risk-card="high"]')) : null;
+      const riskEl = cardScope ? ((typeof cardScope.matches === 'function' && cardScope.matches('[data-ag-risk-card="high"]')) ? cardScope : cardScope.querySelector?.('[data-ag-risk-card="high"]')) : null;
       const riskBanner = cardScope?.querySelector('.ag-risk-banner');
       const highRisk = Boolean(riskEl || riskBanner);
       const riskText = (riskBanner?.textContent || '').trim();
@@ -7065,6 +7117,405 @@
       riskText: item.riskText,
       contextText: item.contextText
     }));
+  }
+
+  function isExcludedSuiteOrNavNode(el) {
+    if (!el || typeof el.closest !== 'function') return true;
+    return Boolean(el.closest(
+      `#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .surface-composer, [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="conversation-row-sidebar"], [data-testid="settings-sidebar"], .settings-modal-backdrop`
+    ));
+  }
+
+  function isVisiblePromptControl(el) {
+    if (!el) return false;
+    if (el.hidden || el.getAttribute?.('aria-hidden') === 'true') return false;
+    if (typeof el.offsetWidth === 'number' && typeof el.offsetHeight === 'number') {
+      if (el.offsetWidth <= 0 && el.offsetHeight <= 0) {
+        const isNativeInput = el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox');
+        if (!isNativeInput) return false;
+      }
+    }
+    return true;
+  }
+
+  function readPromptOptionLabel(ctrl, root) {
+    if (!ctrl) return '';
+    const aria = String(ctrl.getAttribute?.('aria-label') || '').trim();
+    if (aria) return aria;
+    const tag = String(ctrl.tagName || '').toUpperCase();
+    if (tag === 'INPUT') {
+      const wrapLabel = typeof ctrl.closest === 'function' ? ctrl.closest('label') : null;
+      if (wrapLabel) {
+        const txt = String(wrapLabel.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt) return txt;
+      }
+      const id = ctrl.getAttribute?.('id');
+      if (id && root && typeof root.querySelectorAll === 'function') {
+        const labels = Array.from(root.querySelectorAll('label[for]'));
+        const lbl = labels.find((candidate) => candidate.getAttribute?.('for') === id) || null;
+        const txt = String(lbl?.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt) return txt;
+      }
+      const sibTxt = String(ctrl.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+      if (sibTxt) return sibTxt;
+    }
+    return String(ctrl.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function isPromptControlSelected(ctrl) {
+    if (!ctrl) return false;
+    if (typeof ctrl.checked === 'boolean' && String(ctrl.tagName || '').toUpperCase() === 'INPUT') {
+      return ctrl.checked;
+    }
+    const ariaChecked = ctrl.getAttribute?.('aria-checked');
+    if (ariaChecked === 'true') return true;
+    const ariaSelected = ctrl.getAttribute?.('aria-selected');
+    if (ariaSelected === 'true') return true;
+    return ctrl.getAttribute?.('data-state') === 'checked' || ctrl.getAttribute?.('data-selected') === 'true';
+  }
+
+  const PERSISTENT_ALLOW_LABEL_RE = /^(?:allow\s+(?:always|all|for\s+(?:this\s+)?session)|accept\s+all|始终允许|本会话允许|全部接受)(?:\s|$|\()/i;
+
+  function findInteractivePromptCards() {
+    const roots = [];
+    const seenRoots = new Set();
+    const pushRoot = (el) => {
+      if (!el || seenRoots.has(el) || isExcludedSuiteOrNavNode(el)) return;
+      seenRoots.add(el);
+      roots.push(el);
+    };
+
+    // 1. 先扫描系统确认弹窗 ([role="dialog"], [role="alertdialog"])
+    const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
+    for (const dlg of dialogs) {
+      if (!isVisiblePromptControl(dlg)) continue;
+      pushRoot(dlg);
+    }
+
+    // 2. 再扫描主对话区内的交互式选择卡片（优先命中外层弹窗/提问卡/表单，避免被内层 radiogroup 截断）
+    const main = document.querySelector('main') || document.body;
+    if (main) {
+      const choiceControls = main.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [role="radiogroup"]');
+      for (const ctrl of choiceControls) {
+        if (isExcludedSuiteOrNavNode(ctrl)) continue;
+        if (ctrl.disabled || ctrl.getAttribute?.('aria-disabled') === 'true') continue;
+        const card = ctrl.closest?.('[role="dialog"], [role="alertdialog"], [data-testid="ask-question-card"], [data-testid="user-question-card"], form')
+          || ctrl.closest?.('[data-testid="turn-cards-container"], [data-testid="agent-response"], [role="radiogroup"]')
+          || ctrl.parentElement?.parentElement;
+        if (card) pushRoot(card);
+      }
+      // 2b. 扫描官方编号确认选择卡片（如 "Allow write access to this path?"：含 1..N 编号选项行 + Submit/Skip 等按钮）
+      const submitBtns = main.querySelectorAll('button');
+      for (const btn of submitBtns) {
+        if (isExcludedSuiteOrNavNode(btn) || !isVisiblePromptControl(btn)) continue;
+        const btnLabel = String(btn.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!btnLabel || btnLabel.length > 28 || !/^(?:submit|confirm|allow|approve|skip|提交|确认|允许|跳过)(?:\s*[↵↩])?$/i.test(btnLabel)) continue;
+        let cur = btn.parentElement;
+        for (let depth = 0; cur && cur !== main && cur !== document.body && depth < 6; depth++, cur = cur.parentElement) {
+          if (isExcludedSuiteOrNavNode(cur)) break;
+          const numberedRows = Array.from(cur.querySelectorAll('button, [role="option"], [role="menuitem"], [tabindex]')).filter((el) => {
+            if (el === btn || isExcludedSuiteOrNavNode(el) || !isVisiblePromptControl(el)) return false;
+            const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+            return /^[1-9]\s+\S/.test(txt) && txt.length <= 160;
+          });
+          if (numberedRows.length >= 2) {
+            pushRoot(cur);
+            break;
+          }
+        }
+      }
+    }
+
+    // 去除被其他候选根容器包含的内层重复容器
+    const topRoots = roots.filter((r) => !roots.some((other) => other !== r && typeof other.contains === 'function' && other.contains(r)));
+
+    const cards = [];
+    for (const root of topRoots) {
+      if (isExcludedSuiteOrNavNode(root) || !isVisiblePromptControl(root)) continue;
+      const rawControls = Array.from(root.querySelectorAll(
+        'input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]'
+      )).filter((c) => !isExcludedSuiteOrNavNode(c) && !c.disabled && c.getAttribute?.('aria-disabled') !== 'true');
+
+      const options = [];
+      const seenOptLabels = new Set();
+      const optionElSet = new Set();
+      let hasCheckbox = false;
+      for (const ctrl of rawControls) {
+        const label = readPromptOptionLabel(ctrl, root).slice(0, 160);
+        if (!label || seenOptLabels.has(label)) continue;
+        seenOptLabels.add(label);
+        const isChk = (String(ctrl.tagName || '').toUpperCase() === 'INPUT' && ctrl.type === 'checkbox')
+          || ctrl.getAttribute?.('role') === 'checkbox';
+        if (isChk) hasCheckbox = true;
+        optionElSet.add(ctrl);
+        options.push({
+          index: options.length,
+          el: ctrl,
+          label,
+          selected: isPromptControlSelected(ctrl),
+          kind: isChk ? 'checkbox' : 'radio'
+        });
+      }
+
+      // 若未找到标准 radio/checkbox，回退提取编号选项行（1 Yes... / 2 Yes... / 3 ...）
+      if (options.length < 2) {
+        const numberedCandidates = Array.from(root.querySelectorAll('button, [role="option"], [role="menuitem"], [tabindex]')).filter((el) => {
+          if (isExcludedSuiteOrNavNode(el) || !isVisiblePromptControl(el)) return false;
+          if (el.disabled || el.getAttribute?.('aria-disabled') === 'true') return false;
+          const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+          return /^[1-9]\s+\S/.test(txt) && txt.length <= 160;
+        });
+        if (numberedCandidates.length >= 2) {
+          for (const el of numberedCandidates) {
+            const label = String(el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+            if (!label || seenOptLabels.has(label)) continue;
+            seenOptLabels.add(label);
+            optionElSet.add(el);
+            const selected = isPromptControlSelected(el)
+              || el.getAttribute?.('aria-selected') === 'true'
+              || el.getAttribute?.('data-selected') === 'true'
+              || el.getAttribute?.('data-active') === 'true';
+            options.push({
+              index: options.length,
+              el,
+              label,
+              selected,
+              kind: 'radio'
+            });
+          }
+        }
+      }
+
+      const rawButtons = Array.from(root.querySelectorAll('button')).filter((b) => {
+        if (optionElSet.has(b) || isExcludedSuiteOrNavNode(b)) return false;
+        if (!isVisiblePromptControl(b)) return false;
+        const isBtnDisabled = Boolean(b.disabled || b.getAttribute?.('aria-disabled') === 'true');
+        // 若卡片内有可用选项（如待勾选后才启用的 Submit 按钮），保留初始禁用的提交/确认按钮；纯弹窗无选项时仍过滤禁用按钮
+        if (isBtnDisabled && options.length < 2) return false;
+        const r = b.getAttribute?.('role');
+        if (r === 'radio' || r === 'checkbox') return false;
+        const lbl = String(b.textContent || '').replace(/\s+/g, ' ').trim();
+        return Boolean(lbl && lbl.length <= 48);
+      });
+
+      const actions = [];
+      const seenBtnLabels = new Set();
+      for (const btn of rawButtons) {
+        const label = String(btn.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!label || seenBtnLabels.has(label)) continue;
+        seenBtnLabels.add(label);
+        let kind = 'secondary';
+        if (MOBILE_REJECT_RE.test(label)) kind = 'reject';
+        else if (MOBILE_APPROVE_RE.test(label) || btn.getAttribute?.('type') === 'submit') kind = 'primary';
+        const btnDisabled = Boolean(btn.disabled || btn.getAttribute?.('aria-disabled') === 'true');
+        const isPersistentAllow = kind === 'primary' && PERSISTENT_ALLOW_LABEL_RE.test(label);
+        actions.push({ index: actions.length, el: btn, label, kind, disabled: btnDisabled, isPersistentAllow });
+      }
+
+      const isDialog = root.getAttribute?.('role') === 'dialog' || root.getAttribute?.('role') === 'alertdialog';
+      const isDedicatedPromptContainer = Boolean(
+        root.getAttribute?.('role') === 'radiogroup'
+        || String(root.tagName || '').toUpperCase() === 'FORM'
+        || root.getAttribute?.('data-testid') === 'ask-question-card'
+        || root.getAttribute?.('data-testid') === 'user-question-card'
+      );
+      const hasConfirmAction = actions.some((a) => a.kind === 'primary' || a.kind === 'reject');
+      // 严禁把普通消息内无操作按钮的 Markdown 任务清单/复选框误判为待确认选择框：
+      // 1) 系统弹窗：需至少有可见操作按钮；
+      // 2) 对话区内选择卡：至少 2 个启用选项，且（具备明确确认/取消按钮，或属于专用提问/单选容器且含可用操作/单选控件）
+      if (isDialog) {
+        if (actions.length === 0 && options.length < 2) continue;
+      } else {
+        if (options.length < 2) continue;
+        if (!hasConfirmAction && !(isDedicatedPromptContainer && !hasCheckbox)) continue;
+      }
+
+      const otherInput = Array.from(root.querySelectorAll('input[type="text"], input:not([type]), textarea')).find((inp) => {
+        if (isExcludedSuiteOrNavNode(inp)) return false;
+        if (inp.disabled || inp.readOnly) return false;
+        const t = String(inp.type || 'text').toLowerCase();
+        return t === 'text' || t === 'search' || String(inp.tagName || '').toUpperCase() === 'TEXTAREA';
+      }) || null;
+
+      const headingEl = root.querySelector('h1, h2, h3, h4, legend, [role="heading"], [data-testid="question-title"]');
+      const title = String(headingEl?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+        || (isDialog ? '系统确认' : '请选择确认项');
+
+      const descParts = [];
+      const seenDesc = new Set([title]);
+      const descNodes = Array.from(root.querySelectorAll('p, pre, code, [data-testid="question-description"]'));
+      for (const dNode of descNodes) {
+        if (dNode.closest?.('button, label, [role="option"], [role="menuitem"], .ag-risk-banner')) continue;
+        if (dNode.tagName === 'CODE' && dNode.closest?.('pre')) continue;
+        const txt = String(dNode.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!txt || seenDesc.has(txt)) continue;
+        seenDesc.add(txt);
+        descParts.push(txt);
+      }
+      const description = descParts.join('\n').slice(0, 480);
+
+      const codeTexts = Array.from(root.querySelectorAll('pre, code')).map((c) => String(c.textContent || '').trim()).filter(Boolean);
+      const riskScanText = [title, description, ...codeTexts].filter(Boolean).join('\n');
+      const riskHits = detectHighRiskLabels(riskScanText);
+      const domRiskBanner = root.querySelector?.('.ag-risk-banner') || root.closest?.('[data-testid="turn-cards-container"]')?.querySelector?.('.ag-risk-banner');
+      const hasDomRiskCard = Boolean(
+        root.getAttribute?.('data-ag-risk-card') === 'high'
+        || root.closest?.('[data-ag-risk-card="high"]')
+        || root.querySelector?.('[data-ag-risk-card="high"], .ag-risk-banner')
+      );
+      const highRisk = Boolean(hasDomRiskCard || riskHits.length > 0);
+      const riskText = String(domRiskBanner?.textContent || '').trim()
+        || (riskHits.length ? `🛡️ 高危命令预警：检测到 ${riskHits.slice(0, 3).join('、')}，请人工核对` : (hasDomRiskCard ? '🛡️ 高危操作确认，请人工核对' : ''));
+
+      const kind = options.length >= 2 ? 'choice' : 'dialog';
+      const promptKey = `p${cards.length}|${kind}|${title}|${description}|${options.map((o) => o.label).join('\u001f')}|${actions.map((a) => a.label).join('\u001f')}`;
+
+      cards.push({
+        index: cards.length,
+        root,
+        id: promptKey,
+        promptKey,
+        kind,
+        title,
+        description,
+        highRisk,
+        riskText,
+        multiSelect: hasCheckbox,
+        options,
+        otherInput,
+        hasOtherInput: Boolean(otherInput),
+        otherPlaceholder: String(otherInput?.getAttribute?.('placeholder') || '').trim().slice(0, 80),
+        otherValue: String(otherInput?.value || ''),
+        actions
+      });
+    }
+    return cards;
+  }
+
+  function collectPendingPrompts() {
+    return findInteractivePromptCards().map((card) => ({
+      index: card.index,
+      id: card.id,
+      promptKey: card.promptKey,
+      kind: card.kind,
+      title: card.title,
+      description: card.description,
+      highRisk: Boolean(card.highRisk),
+      riskText: String(card.riskText || ''),
+      multiSelect: card.multiSelect,
+      options: card.options.map(({ index, label, selected, kind }) => ({ index, label, selected, kind })),
+      hasOtherInput: card.hasOtherInput,
+      otherPlaceholder: card.otherPlaceholder,
+      otherValue: card.otherValue,
+      actions: card.actions.map(({ index, label, kind, isPersistentAllow }) => ({ index, label, kind, isPersistentAllow: Boolean(isPersistentAllow) }))
+    }));
+  }
+
+  function findQueuedMessagesDomEntries() {
+    const main = document.querySelector('main') || document.body;
+    if (!main) return [];
+    const headerNodes = Array.from(main.querySelectorAll('[data-testid*="queue" i], div, span, p, h3, h4')).filter((el) => {
+      if (isExcludedSuiteOrNavNode(el) || !isVisiblePromptControl(el)) return false;
+      if (el.closest?.('[data-testid="agent-response"], [data-testid="user-message"], [data-markdown-root]')) return false;
+      const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!txt || txt.length > 80) return false;
+      return /^(?:Queued Messages|排队消息)\b/i.test(txt);
+    });
+    if (!headerNodes.length) return [];
+    let cardRoot = null;
+    for (const h of headerNodes) {
+      let cur = h;
+      for (let depth = 0; cur && cur !== main && cur !== document.body && depth < 5; depth++, cur = cur.parentElement) {
+        if (isExcludedSuiteOrNavNode(cur)) break;
+        const fullTxt = String(cur.textContent || '').replace(/\s+/g, ' ').trim();
+        if (fullTxt.length > 20 && fullTxt.length < 4000 && cur.querySelectorAll('button').length >= 1) {
+          cardRoot = cur;
+          // 优先取包含多行或发送/删除按钮的最近卡片容器
+          const hasActionBtns = Array.from(cur.querySelectorAll('button')).some((b) => {
+            const meta = `${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`;
+            return /send|delete|remove|trash|queue|发送|删除|撤回/i.test(meta);
+          });
+          if (hasActionBtns) break;
+        }
+      }
+      if (cardRoot) break;
+    }
+    if (!cardRoot) return [];
+
+    const stripHeaderNoise = (raw) => String(raw || '')
+      .replace(/\s+/g, ' ')
+      .replace(/^Queued Messages\s*\d*\s*(?:Sends after agent finishes working)?/i, '')
+      .replace(/^排队消息\s*\d*\s*(?:将在代理完成后发送)?/, '')
+      .trim();
+
+    const entries = [];
+    const seenRowEls = new Set();
+    const rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'));
+    const fallbackRows = rowCandidates.length ? rowCandidates : Array.from(cardRoot.children).slice(1);
+
+    const inspectRow = (rowEl) => {
+      if (!rowEl || seenRowEls.has(rowEl) || isExcludedSuiteOrNavNode(rowEl)) return;
+      seenRowEls.add(rowEl);
+      const rawTxt = stripHeaderNoise(rowEl.textContent || '');
+      const imgs = Array.from(rowEl.querySelectorAll('img')).map((img) => ({
+        src: String(img.getAttribute?.('src') || img.src || '').trim(),
+        alt: String(img.getAttribute?.('alt') || '').trim()
+      })).filter((im) => im.src && !im.src.startsWith('data:image/svg'));
+      if (!rawTxt && !imgs.length) return;
+      const btns = Array.from(rowEl.querySelectorAll('button')).filter((b) => !isExcludedSuiteOrNavNode(b));
+      let sendBtn = btns.find((b) => /send|now|immediate|发送/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
+      let deleteBtn = btns.find((b) => /delete|remove|trash|cancel|删除|撤回|移除/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
+      if (!sendBtn && btns.length >= 2) sendBtn = btns[0];
+      if (!deleteBtn && btns.length >= 1) deleteBtn = btns[btns.length - 1];
+      entries.push({
+        domIndex: entries.length,
+        stepIndex: -1,
+        source: 'dom',
+        text: rawTxt || (imgs.length ? `[图片 ×${imgs.length}]` : ''),
+        images: imgs.slice(0, 6),
+        status: 'QUEUED',
+        sendBtn,
+        deleteBtn
+      });
+    };
+
+    for (const r of fallbackRows) inspectRow(r);
+    if (!entries.length) {
+      const wholeTxt = stripHeaderNoise(cardRoot.textContent || '');
+      if (wholeTxt) inspectRow(cardRoot);
+    }
+    return entries;
+  }
+
+  function collectQueuedMessagesFromDom() {
+    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, source, text, images, status }) => ({
+      domIndex,
+      stepIndex,
+      source,
+      text,
+      images,
+      status
+    }));
+  }
+
+  function setNativePromptInputValue(inputEl, value) {
+    if (!inputEl) return false;
+    const strVal = String(value ?? '');
+    try {
+      const proto = String(inputEl.tagName || '').toUpperCase() === 'TEXTAREA'
+        ? window.HTMLTextAreaElement?.prototype
+        : window.HTMLInputElement?.prototype;
+      const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (typeof setter === 'function') setter.call(inputEl, strVal);
+      else inputEl.value = strVal;
+    } catch {
+      inputEl.value = strVal;
+    }
+    try {
+      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch {}
+    return true;
   }
 
   function cleanUserMessageText(raw) {
@@ -7266,16 +7717,100 @@
     const nodes = Array.from(viewport.querySelectorAll('[data-testid="user-message"], [data-testid="agent-response"]'));
     const slice = nodes.slice(-Math.max(1, limit));
     const out = [];
+    let turnThoughts = [];
+    let turnThoughtLabel = '';
+    let turnAssistantIndices = [];
+
+    const clearEarlierTurnThoughts = () => {
+      for (const idx of turnAssistantIndices) {
+        if (out[idx]) {
+          out[idx].thoughtLabel = '';
+          out[idx].thoughtText = '';
+          out[idx].thoughts = [];
+          out[idx].thoughtCount = 0;
+        }
+      }
+    };
+
+    const flushPendingDomThoughts = (tag) => {
+      if (!turnThoughts.length && !turnThoughtLabel) {
+        turnAssistantIndices = [];
+        return;
+      }
+      if (turnAssistantIndices.length) {
+        const lastIdx = turnAssistantIndices[turnAssistantIndices.length - 1];
+        clearEarlierTurnThoughts();
+        const thoughts = turnThoughts.slice();
+        out[lastIdx].thoughtLabel = (turnThoughtLabel || tr('思考过程', 'Thinking')).slice(0, 120);
+        out[lastIdx].thoughtText = thoughts.join('\n\n');
+        out[lastIdx].thoughts = thoughts;
+        out[lastIdx].thoughtCount = Math.max(thoughts.length, turnThoughtLabel ? 1 : 0);
+      } else {
+        const thoughts = turnThoughts.slice();
+        out.push({
+          id: `a-think-${tag}`,
+          role: 'assistant',
+          text: '',
+          html: '',
+          thoughtLabel: (turnThoughtLabel || tr('思考过程', 'Thinking')).slice(0, 120),
+          thoughtText: thoughts.join('\n\n'),
+          thoughts,
+          thoughtCount: Math.max(thoughts.length, turnThoughtLabel ? 1 : 0),
+          highRisk: false,
+          riskText: ''
+        });
+      }
+      turnThoughts = [];
+      turnThoughtLabel = '';
+      turnAssistantIndices = [];
+    };
 
     for (let i = 0; i < slice.length; i++) {
       const node = slice[i];
       const testId = node.getAttribute('data-testid');
       if (testId === 'user-message') {
         const contentNode = node.querySelector('[data-testid="user-message-content"]') || node;
+        const domAtts = [];
+        const seenAtt = new Set();
+        const imgEls = Array.from(node.querySelectorAll('img'));
+        for (const imgEl of imgEls) {
+          const src = String(imgEl.getAttribute?.('src') || imgEl.src || '').trim();
+          if (!src) continue;
+          const alt = String(imgEl.getAttribute?.('alt') || imgEl.alt || '').trim() || 'image.png';
+          if (/^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(src) && src.length <= 512 * 1024) {
+            if (!seenAtt.has(src)) {
+              seenAtt.add(src);
+              domAtts.push({ kind: 'image', name: alt, inlineUrl: src });
+            }
+          } else if (/^file:\/\//i.test(src)) {
+            let localPath = src.replace(/^file:\/\//i, '');
+            try { localPath = decodeURIComponent(localPath); } catch {}
+            if (localPath && !seenAtt.has(localPath)) {
+              seenAtt.add(localPath);
+              domAtts.push({ kind: 'image', name: alt, path: localPath, uri: src });
+            }
+          }
+        }
         const userBounded = collectBoundedNodeText([contentNode], MAX_DOM_MSG_CHARS + 512, 8000);
-        const text = capText(cleanUserMessageText(userBounded.text), MAX_DOM_MSG_CHARS);
-        if (!text) continue;
-        out.push({ id: `u-${i}`, role: 'user', text });
+        let rawUserText = cleanUserMessageText(userBounded.text);
+        if (domAtts.length && rawUserText) {
+          const attNames = new Set(domAtts.map((a) => String(a.name || '').trim().toLowerCase()).filter(Boolean));
+          rawUserText = rawUserText
+            .split('\n')
+            .filter((line) => {
+              const t = line.trim().toLowerCase();
+              if (!t) return true;
+              if (attNames.has(t)) return false;
+              if (/^(?:image|screenshot|clipboard|paste)(?:[-_\s]?\d+)?\.(?:png|jpe?g|webp|gif)$/i.test(t)) return false;
+              return true;
+            })
+            .join('\n')
+            .trim();
+        }
+        const text = capText(rawUserText, MAX_DOM_MSG_CHARS);
+        if (!text && !domAtts.length) continue;
+        flushPendingDomThoughts(i);
+        out.push({ id: `u-${i}`, role: 'user', text, ...(domAtts.length ? { attachments: domAtts } : {}) });
         continue;
       }
 
@@ -7300,7 +7835,7 @@
       let replyText = mdBounded.text;
       // 文本提取阶段已受字符与节点双预算早停；超限时直接跳过 HTML 序列化（完整长文由服务端轨迹通道渲染）
       const replyHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots, MAX_DOM_HTML_CHARS);
-      if (!replyText) {
+      if (!replyText && !triggers.length) {
         const fallbackBounded = collectBoundedNodeText([node], MAX_DOM_MSG_CHARS, 4000);
         const cloneText = capText(fallbackBounded.text
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
@@ -7313,21 +7848,36 @@
       const riskBanner = node.querySelector('.ag-risk-banner');
       const highRisk = Boolean(node.querySelector('[data-ag-risk-card="high"]') || riskBanner);
 
-      if (!replyText && !replyHtml && !thoughtLabel && !highRisk) {
+      if (!replyText && !replyHtml && !thoughtLabel && !thoughtChunks.length && !highRisk) {
         continue;
       }
+
+      if (thoughtChunks.length) turnThoughts.push(...thoughtChunks);
+      if (thoughtLabel && !turnThoughtLabel) turnThoughtLabel = thoughtLabel;
+
+      if (!replyText && !replyHtml && !highRisk) {
+        continue;
+      }
+
+      clearEarlierTurnThoughts();
+      const mergedThoughts = turnThoughts.slice();
+      const effectiveLabel = turnThoughtLabel || (mergedThoughts.length ? tr('思考过程', 'Thinking') : '');
 
       out.push({
         id: `a-${i}`,
         role: 'assistant',
         text: replyText,
         html: replyHtml,
-        thoughtLabel: thoughtLabel.slice(0, 120),
-        thoughtText: thoughtChunks.join('\n\n'),
+        thoughtLabel: effectiveLabel.slice(0, 120),
+        thoughtText: mergedThoughts.join('\n\n'),
+        thoughts: mergedThoughts,
+        thoughtCount: Math.max(mergedThoughts.length, effectiveLabel ? 1 : 0),
         highRisk,
         riskText: (riskBanner?.textContent || '').trim()
       });
+      turnAssistantIndices.push(out.length - 1);
     }
+    flushPendingDomThoughts('end');
     return out;
   }
 
@@ -8113,6 +8663,51 @@
   function extractMessagesFromTrajectorySteps(steps, limit = 20) {
     const list = Array.isArray(steps) ? steps : [];
     const out = [];
+    let turnThoughts = [];
+    let turnAssistantIndices = [];
+
+    const clearEarlierTurnThoughts = () => {
+      for (const idx of turnAssistantIndices) {
+        if (out[idx]) {
+          out[idx].thoughtLabel = '';
+          out[idx].thoughtText = '';
+          out[idx].thoughts = [];
+          out[idx].thoughtCount = 0;
+        }
+      }
+    };
+
+    const flushPendingThoughts = (idxTag) => {
+      if (!turnThoughts.length) {
+        turnAssistantIndices = [];
+        return;
+      }
+      const thoughts = turnThoughts.slice();
+      if (turnAssistantIndices.length) {
+        const lastIdx = turnAssistantIndices[turnAssistantIndices.length - 1];
+        clearEarlierTurnThoughts();
+        out[lastIdx].thoughtLabel = tr('思考过程', 'Thinking');
+        out[lastIdx].thoughtText = thoughts.join('\n\n');
+        out[lastIdx].thoughts = thoughts;
+        out[lastIdx].thoughtCount = thoughts.length;
+      } else {
+        out.push({
+          id: `rpc-think-${idxTag}`,
+          role: 'assistant',
+          text: '',
+          html: '',
+          thoughtLabel: tr('思考过程', 'Thinking'),
+          thoughtText: thoughts.join('\n\n'),
+          thoughts,
+          thoughtCount: thoughts.length,
+          highRisk: false,
+          riskText: ''
+        });
+      }
+      turnThoughts = [];
+      turnAssistantIndices = [];
+    };
+
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
       if (!s || typeof s !== 'object') continue;
@@ -8123,29 +8718,63 @@
           (Array.isArray(u.items) ? u.items.map((item) => item?.text || '').filter(Boolean).join('\n') : '') ||
           ''
         ).trim();
-        if (text) {
-          out.push({ id: `rpc-u-${i}`, role: 'user', text: text.slice(0, 4000), html: '' });
+        const atts = [];
+        const collectRpcMedia = (arr, forceImg) => {
+          if (!Array.isArray(arr)) return;
+          for (const m of arr) {
+            if (!m || typeof m !== 'object') continue;
+            const rawUri = String(m.uri || m.fileUri || m.path || m.absoluteUri || '').trim();
+            let localPath = rawUri.startsWith('file://') ? rawUri.replace(/^file:\/\//i, '') : (rawUri.startsWith('/') ? rawUri : '');
+            if (localPath) { try { localPath = decodeURIComponent(localPath); } catch {} }
+            const mime = String(m.mimeType || m.mime_type || 'image/png').trim().toLowerCase();
+            const rawB64 = String(m.base64Data || m.base64_data || m.inlineData || m.inline_data || m.thumbnail || m.data || '').trim();
+            let inlineUrl = '';
+            if (rawB64 && rawB64.length <= 512 * 1024 && /^image\/(?:png|jpeg|jpg|webp|gif)$/i.test(mime)) {
+              inlineUrl = /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,/i.test(rawB64) ? rawB64 : `data:${mime};base64,${rawB64.replace(/\s+/g, '')}`;
+            }
+            const isImg = forceImg || Boolean(inlineUrl) || /^image\//i.test(mime) || /\.(?:png|jpe?g|webp|gif)$/i.test(localPath);
+            if (!localPath && !inlineUrl) continue;
+            atts.push({
+              kind: isImg ? 'image' : 'file',
+              name: String(m.displayName || m.name || (localPath ? localPath.split('/').pop() : 'image.png')),
+              ...(localPath ? { path: localPath } : {}),
+              ...(inlineUrl ? { inlineUrl } : {})
+            });
+          }
+        };
+        collectRpcMedia(u.media, false);
+        collectRpcMedia(u.images, true);
+        if (text || atts.length) {
+          flushPendingThoughts(i);
+          out.push({ id: `rpc-u-${i}`, role: 'user', text: text.slice(0, 4000), html: '', ...(atts.length ? { attachments: atts } : {}) });
         }
       } else if (s.plannerResponse) {
         const pr = s.plannerResponse;
         const text = String(pr.modifiedResponse || pr.response || '').trim();
-        const thoughtText = String(pr.thinking || '').trim();
-        if (text || thoughtText) {
+        const thoughtText = String(pr.thinking || pr.thought || '').trim();
+        if (thoughtText) turnThoughts.push(thoughtText);
+        if (text) {
+          clearEarlierTurnThoughts();
+          const thoughts = turnThoughts.slice();
           out.push({
             id: `rpc-a-${i}`,
             role: 'assistant',
             text: text.slice(0, 4000),
             html: '',
-            thoughtLabel: thoughtText ? tr('已思考', 'Thought') : '',
-            thoughtText: thoughtText.slice(0, 1200),
+            thoughtLabel: thoughts.length ? tr('思考过程', 'Thinking') : '',
+            thoughtText: thoughts.join('\n\n'),
+            thoughts,
+            thoughtCount: thoughts.length,
             highRisk: false,
             riskText: ''
           });
+          turnAssistantIndices.push(out.length - 1);
         }
       } else if (s.errorMessage) {
         const errObj = s.errorMessage.error || s.errorMessage || {};
         const errText = String(errObj.modelErrorMessage || errObj.shortError || errObj.fullError || '').trim();
         if (errText) {
+          flushPendingThoughts(i);
           out.push({
             id: `rpc-e-${i}`,
             role: 'assistant',
@@ -8153,12 +8782,15 @@
             html: '',
             thoughtLabel: '',
             thoughtText: '',
+            thoughts: [],
+            thoughtCount: 0,
             highRisk: true,
             riskText: tr('步骤异常', 'Step Error')
           });
         }
       }
     }
+    flushPendingThoughts('end');
     return out.slice(-limit);
   }
 
@@ -8187,7 +8819,8 @@
     const conversations = collectSidebarConversations(0, storeCatalog);
     const { projectGroups } = collectSidebarProjectGroups(60);
     const activeConv = conversations.find((c) => c.active);
-    const busy = isAssistantBusy();
+    const busySignal = detectAssistantBusySignal();
+    const busy = Boolean(busySignal);
     const locProjectId = getProjectIdFromLocation();
     const currentProjectId = locProjectId || activeConv?.projectId || '';
     const matchedProj = storeCatalog.projects.find((p) => p.id === currentProjectId);
@@ -8233,13 +8866,15 @@
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
     const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
     const pendingApprovals = collectPendingApprovals();
+    const pendingPrompts = collectPendingPrompts();
+    const queuedMessages = collectQueuedMessagesFromDom();
     const messages = collectRecentMessages(60);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
     const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model);
     const usageSummary = collectDesktopUsageSummary(sr);
 
     if (activeConv) {
-      if (pendingApprovals.length > 0) activeConv.status = 'waiting';
+      if (pendingApprovals.length > 0 || pendingPrompts.length > 0) activeConv.status = 'waiting';
       else if (busy) activeConv.status = 'running';
     }
 
@@ -8259,6 +8894,8 @@
       currentProjectName,
       title,
       busy,
+      busySignal,
+      strongDomBusy: busySignal === 'cancel-btn' || busySignal === 'thinking' || busySignal === 'spinner' || busySignal === 'recent-submit',
       autoAccept: autoAcceptEnabled,
       model,
       modelOptions,
@@ -8276,6 +8913,8 @@
         lastFetchedAt: quotaState.lastFetchedAt
       },
       pendingApprovals,
+      pendingPrompts,
+      queuedMessages,
       suggestions,
       messages,
       projects: storeCatalog.projects,
@@ -8366,8 +9005,12 @@
 
       const messages = extractMessagesFromTrajectorySteps(steps, 20);
       const lastStep = steps.length ? steps[steps.length - 1] : null;
-      const busy = /RUNNING|IN_PROGRESS|ACTIVE|EXECUTING/i.test(String(trajectory.status || '')) ||
-        /RUNNING|PENDING|GENERATING/i.test(String(lastStep?.status || ''));
+      const trajStatusStr = String(trajectory.status || '').trim();
+      const isTrajTerminalIdle = /IDLE|CANCELED|CANCELLED|COMPLETED|DONE/i.test(trajStatusStr);
+      const busy = isTrajTerminalIdle
+        ? false
+        : (/RUNNING|IN_PROGRESS|ACTIVE|EXECUTING/i.test(trajStatusStr) ||
+          /RUNNING|PENDING|GENERATING/i.test(String(lastStep?.status || '')));
 
       let lastAssistantText = '';
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -8421,7 +9064,9 @@
           roundCostText: '',
           sessionCostText: ''
         },
-        pendingApprovals: [],
+        pendingApprovals: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingApprovals || []) : [],
+        pendingPrompts: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingPrompts || []) : [],
+        queuedMessages: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.queuedMessages || []) : [],
         suggestions,
         messages,
         conversations: cloned.conversations,
@@ -8568,6 +9213,94 @@
       if (!picked) return { ok: false, error: '目标审批按钮已消失或已处理' };
       picked.btn.click();
       return { ok: true, label: picked.label, kind: picked.kind };
+    }
+
+    if (action === 'respond-prompt') {
+      const cards = findInteractivePromptCards();
+      if (!cards.length) return { ok: false, error: '当前没有待确认选择框' };
+      const reqKey = String(payload?.promptKey || payload?.promptId || '').trim();
+      const pIdx = Number.isInteger(payload?.promptIndex) ? payload.promptIndex : -1;
+      let card = null;
+      if (reqKey) {
+        card = cards.find((c) => c.promptKey === reqKey || c.id === reqKey) || null;
+        if (!card) return { ok: false, error: '目标确认选择框已消失或已变更' };
+      } else if (pIdx >= 0 && pIdx < cards.length) {
+        card = cards[pIdx];
+      } else {
+        return { ok: false, error: '目标确认选择框已消失或索引失效' };
+      }
+
+      // 在修改任何选项/输入前先原子校验目标操作按钮是否存在，防止失败时留下半成品状态
+      const reqActionLabel = String(payload?.actionLabel || '').trim();
+      const reqActionIdx = Number.isInteger(payload?.actionIndex) ? payload.actionIndex : -1;
+      let targetBtn = null;
+      if (reqActionLabel) {
+        targetBtn = card.actions.find((a) => a.label === reqActionLabel) || null;
+      }
+      if (!targetBtn && reqActionIdx >= 0 && reqActionIdx < card.actions.length) {
+        targetBtn = card.actions[reqActionIdx];
+      }
+      if ((reqActionLabel || reqActionIdx >= 0) && !targetBtn?.el) {
+        return { ok: false, error: '目标确认按钮已消失或不可用' };
+      }
+
+      const desiredIndices = Array.isArray(payload?.selectedIndices)
+        ? new Set(payload.selectedIndices.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 0))
+        : null;
+      const desiredLabels = Array.isArray(payload?.selectedLabels)
+        ? new Set(payload.selectedLabels.map((s) => String(s || '').trim()).filter(Boolean))
+        : null;
+
+      if ((desiredIndices || desiredLabels) && card.options.length > 0) {
+        for (const opt of card.options) {
+          const wantSelected = Boolean(
+            (desiredIndices && desiredIndices.has(opt.index))
+            || (desiredLabels && desiredLabels.has(opt.label))
+          );
+          const curSelected = isPromptControlSelected(opt.el);
+          if (card.multiSelect) {
+            if (wantSelected !== curSelected) {
+              opt.el.click();
+            }
+          } else if (wantSelected && !curSelected) {
+            opt.el.click();
+          }
+        }
+      }
+
+      if (payload?.otherText !== undefined && card.otherInput) {
+        setNativePromptInputValue(card.otherInput, String(payload.otherText || ''));
+      }
+
+      if (targetBtn?.el) {
+        if (targetBtn.el.disabled || targetBtn.el.getAttribute?.('aria-disabled') === 'true') {
+          return { ok: false, error: '目标确认按钮当前仍处于禁用状态，请先完成必选项' };
+        }
+        if (targetBtn.kind !== 'reject') {
+          const otherReq = Boolean(card.otherInput && (card.otherInput.required || card.otherInput.getAttribute?.('required') !== null));
+          if (otherReq && !String(card.otherInput.value || '').trim()) {
+            return { ok: false, error: String(card.otherInput.validationMessage || '').trim() || '请先填写必填项后再提交' };
+          }
+          if (card.otherInput && typeof card.otherInput.checkValidity === 'function' && !card.otherInput.checkValidity()) {
+            return { ok: false, error: String(card.otherInput.validationMessage || '').trim() || '输入内容未通过校验，请修改后重试' };
+          }
+          const formEl = String(card.root?.tagName || '').toUpperCase() === 'FORM'
+            ? card.root
+            : card.root?.querySelector?.('form');
+          if (formEl && typeof formEl.checkValidity === 'function' && !formEl.checkValidity()) {
+            return { ok: false, error: '表单存在未通过校验的必填项，请完善后重试' };
+          }
+        }
+        targetBtn.el.click();
+      }
+
+      return {
+        ok: true,
+        promptId: card.id,
+        promptKey: card.promptKey,
+        actionLabel: targetBtn?.label || '',
+        selectedCount: desiredIndices ? desiredIndices.size : (desiredLabels ? desiredLabels.size : 0)
+      };
     }
 
     if (action === 'expand-project') {
@@ -8773,16 +9506,253 @@
       return { ok: true, name: file.name, size: file.size };
     }
 
+    if (action === 'remove-uploaded-attachment') {
+      const clearAll = payload?.clearAll === true;
+      const reqName = String(payload?.name || '').trim().toLowerCase();
+      const reqIdx = Number.isInteger(payload?.index) ? payload.index : -1;
+      const composerEl = document.querySelector('.surface-composer');
+      if (!composerEl) {
+        return { ok: false, removed: 0, error: '未找到桌面端输入区域，已取消删除以防误删' };
+      }
+      const composerScope = composerEl.parentElement || composerEl;
+      const isSuiteOverlayNode = (el) => Boolean(el?.closest?.(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, [data-agy-hans-ui], [data-agy-context-capsule]`));
+      const candidates = Array.from(composerScope.querySelectorAll('button')).filter((btn) => {
+        if (isSuiteOverlayNode(btn)) return false;
+        const meta = `${btn.getAttribute?.('aria-label') || ''} ${btn.getAttribute?.('title') || ''} ${btn.textContent || ''}`.trim();
+        const isRemoveBtn = /^(?:×|✕|x)$/i.test(meta) || /remove|delete|close|clear|移除|删除|取消附件/i.test(meta);
+        if (!isRemoveBtn) return false;
+        const container = btn.parentElement;
+        if (!container) return false;
+        return Boolean(container.querySelector('img') || /\.(?:png|jpe?g|webp|gif|pdf|txt|md|json|csv|zip|docx?|xlsx?|js|ts|py)/i.test(container.textContent || '') || container.getAttribute?.('data-testid')?.match(/attach|file|image|media/i));
+      });
+      if (!candidates.length) {
+        return clearAll
+          ? { ok: true, removed: 0 }
+          : { ok: false, removed: 0, error: '桌面端当前未找到可移除的附件' };
+      }
+      if (clearAll) {
+        let removed = 0;
+        for (let i = candidates.length - 1; i >= 0; i--) {
+          try { candidates[i].click(); removed += 1; } catch {}
+        }
+        return { ok: true, removed };
+      }
+      const normName = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const matchesBtnName = (b) => {
+        if (!reqName) return true;
+        const box = b.parentElement;
+        const imgAlt = normName(box?.querySelector?.('img')?.getAttribute?.('alt'));
+        if (imgAlt && imgAlt === reqName) return true;
+        const aria = normName(b.getAttribute?.('aria-label'))
+          .replace(/^(?:remove|delete|close|clear|移除|删除|取消附件)\s*[:：-]?\s*/i, '')
+          .trim();
+        if (aria && aria === reqName) return true;
+        const boxTxt = normName(box?.textContent)
+          .replace(/[×✕]\s*$/g, '')
+          .trim();
+        if (boxTxt && boxTxt === reqName) return true;
+        return false;
+      };
+      let targetBtn = null;
+      if (reqName) {
+        // 同名多附件场景优先按 index + 精确名称命中，避免误删前一个同名项；其次按精确名称命中
+        if (reqIdx >= 0 && reqIdx < candidates.length && matchesBtnName(candidates[reqIdx])) {
+          targetBtn = candidates[reqIdx];
+        }
+        if (!targetBtn) {
+          targetBtn = candidates.find(matchesBtnName) || null;
+        }
+        if (!targetBtn) {
+          return { ok: false, removed: 0, error: '未在桌面端找到匹配的附件，已取消删除以防误删' };
+        }
+      } else {
+        if (reqIdx >= 0 && reqIdx < candidates.length) {
+          targetBtn = candidates[reqIdx];
+        } else {
+          return { ok: false, removed: 0, error: '目标附件索引已失效，已取消删除以防误删' };
+        }
+      }
+      try {
+        targetBtn.click();
+        return { ok: true, removed: 1 };
+      } catch (err) {
+        return { ok: false, error: err?.message || '移除桌面端附件失败' };
+      }
+    }
+
+    if (action === 'send-queued-dom') {
+      const entries = findQueuedMessagesDomEntries();
+      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      if (payload?.sendAll === true) {
+        let sentCount = 0;
+        for (const entry of entries) {
+          if (entry?.sendBtn) {
+            entry.sendBtn.click();
+            sentCount += 1;
+          }
+        }
+        if (!sentCount) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+        return { ok: true, source: 'dom', sentCount };
+      }
+      const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
+      const target = entries[reqIdx] || entries[0];
+      if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+      target.sendBtn.click();
+      return { ok: true, source: 'dom', sentCount: 1 };
+    }
+
+    if (action === 'delete-queued-dom') {
+      const entries = findQueuedMessagesDomEntries();
+      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : -1;
+      const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+      const reqText = normText(payload?.text);
+      let target = null;
+      if (reqText) {
+        if (reqIdx >= 0 && reqIdx < entries.length && normText(entries[reqIdx].text) === reqText) {
+          target = entries[reqIdx];
+        } else {
+          target = entries.find((e) => normText(e.text) === reqText) || null;
+        }
+      } else if (reqIdx >= 0 && reqIdx < entries.length) {
+        target = entries[reqIdx];
+      }
+      if (!target) {
+        return { ok: false, error: '目标排队消息已变化或不存在，已取消删除以防误删' };
+      }
+      if (!target.deleteBtn) return { ok: false, error: '未找到桌面端排队消息删除按钮' };
+      target.deleteBtn.click();
+      return { ok: true, source: 'dom' };
+    }
+
     return { ok: false, error: `未知操作: ${action}` };
   }
 
-  async function performMobileAction(payload) {
+  let mobileActionQueue = Promise.resolve();
+
+  function performMobileAction(payload) {
+    const run = mobileActionQueue.then(() => performMobileActionInner(payload));
+    mobileActionQueue = run.catch(() => {});
+    return run;
+  }
+
+  async function performMobileActionInner(payload) {
     const action = String(payload?.action || '').trim();
     if (!action) return { ok: false, error: '缺少 action 参数' };
 
-    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'select-model', 'select-permission', 'upload-image'];
+    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'respond-prompt', 'select-model', 'select-permission', 'upload-image', 'remove-uploaded-attachment', 'send-queued-dom', 'delete-queued-dom'];
     const reqConvId = String(payload?.conversationId || '').trim();
     const prevConvId = getSessionIdFromLocation() || '';
+
+    // 方案 B：隔离态新建对话草稿在首次发送时才按需切桌面新建并发送，结束后自动恢复桌面原会话或原新对话页
+    if (action === 'send' && reqConvId === '__new__' && payload?.draftNewIsolated === true) {
+      const draftProjectId = String(payload?.draftProjectId || payload?.projectId || '').trim();
+      const prevSearch = String(location?.search || '');
+      let prevProjectId = parseProjectIdFromHref(prevSearch);
+      if (!prevProjectId && typeof getActiveProjectMeta === 'function') {
+        try { prevProjectId = String(getActiveProjectMeta()?.id || '').trim(); } catch {}
+      }
+      let createdConversationId = '';
+      let actionOutcome = null;
+      let actionThrown = null;
+      let restoreDesktopOk = true;
+      let restoreDesktopError = '';
+      try {
+        const navNew = await executeMobileActionCore('new-conversation', { projectId: draftProjectId });
+        if (!navNew?.ok) {
+          actionOutcome = navNew || { ok: false, error: '新建对话失败' };
+        } else {
+          await new Promise((r) => setTimeout(r, 120));
+          const pendingUploads = Array.isArray(payload?.draftPendingUploads) ? payload.draftPendingUploads : [];
+          let uploadFailedOutcome = null;
+          if (pendingUploads.length > 0) {
+            for (const att of pendingUploads) {
+              const upRes = await executeMobileActionCore('upload-image', att);
+              if (!upRes?.ok) {
+                uploadFailedOutcome = upRes || { ok: false, error: '草稿附件注入失败' };
+                break;
+              }
+            }
+            if (!uploadFailedOutcome) {
+              await new Promise((r) => setTimeout(r, 60));
+            }
+          }
+          if (uploadFailedOutcome) {
+            actionOutcome = uploadFailedOutcome;
+          } else {
+            const sendRes = await executeMobileActionCore('send', payload);
+            if (!sendRes?.ok) {
+              actionOutcome = sendRes || { ok: false, error: '发送消息失败' };
+            } else {
+              // 等待新会话 ID 出现在路由中，便于远程端绑定到新对话
+              const maxPoll = Number(payload?._testPollTries) > 0 ? Number(payload._testPollTries) : 15;
+              const pollGap = Number(payload?._testPollDelayMs) >= 0 ? Number(payload._testPollDelayMs) : 100;
+              for (let i = 0; i < maxPoll; i++) {
+                const curId = getSessionIdFromLocation() || '';
+                if (curId && curId !== prevConvId && curId !== '__new__') {
+                  createdConversationId = curId;
+                  break;
+                }
+                if (pollGap > 0) await new Promise((r) => setTimeout(r, pollGap));
+              }
+              actionOutcome = {
+                ...sendRes,
+                createdConversationId,
+                projectId: draftProjectId
+              };
+            }
+          }
+        }
+      } catch (err) {
+        actionThrown = err;
+      } finally {
+        if (payload?.restoreDesktop !== false) {
+          try {
+            const curId = getSessionIdFromLocation() || '';
+            if (prevConvId) {
+              if (curId !== prevConvId) {
+                await new Promise((r) => setTimeout(r, 60));
+                let r = await executeMobileActionCore('switch-conversation', { id: prevConvId });
+                if (!r?.ok) {
+                  r = await switchToConversationInternal(prevConvId);
+                }
+                if (r && r.ok === false) {
+                  restoreDesktopOk = false;
+                  restoreDesktopError = String(r.error || '未能恢复桌面原会话');
+                }
+              }
+            } else {
+              const curPid = parseProjectIdFromHref(String(location?.search || ''));
+              if (curId || curPid !== prevProjectId) {
+                await new Promise((r) => setTimeout(r, 60));
+                const r = await executeMobileActionCore('new-conversation', { projectId: prevProjectId });
+                if (r && r.ok === false) {
+                  restoreDesktopOk = false;
+                  restoreDesktopError = String(r.error || '未能恢复桌面原新对话页');
+                }
+              }
+            }
+          } catch (restoreErr) {
+            restoreDesktopOk = false;
+            restoreDesktopError = String(restoreErr?.message || restoreErr || '恢复桌面窗口异常');
+          }
+        }
+      }
+      if (actionThrown) {
+        return {
+          ok: false,
+          error: String(actionThrown?.message || actionThrown || '发送消息异常'),
+          restoreDesktopOk,
+          ...(restoreDesktopError ? { restoreDesktopError } : {})
+        };
+      }
+      return {
+        ...(actionOutcome || { ok: false, error: '未知错误' }),
+        restoreDesktopOk,
+        ...(restoreDesktopError ? { restoreDesktopError } : {})
+      };
+    }
+
     const needsSwitch = Boolean(
       scopedActions.includes(action) &&
       reqConvId &&
