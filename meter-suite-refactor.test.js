@@ -14869,4 +14869,66 @@ test('带图消息缩略图、极简附件展示与后台队列协议/轨迹分�
     envDom.sandbox.__AGContextMeter?.dispose?.();
     envDom.cleanup?.();
   }
+
+  // 5. 待发条 renderAttachHintStrip：多附件（2 图 + 1 文件）极简缩略块渲染、逐项删除指定文件/图片、索引重排与删空清空验证
+  const stripStart = html.indexOf('function renderAttachHintStrip()');
+  const stripEnd = html.indexOf('async function uploadImageFiles(');
+  assert.ok(stripStart > 0 && stripEnd > stripStart);
+  const stripFnSrc = html.slice(stripStart, stripEnd);
+  const hintState = { hidden: true, innerHTML: '', rmHandlers: [] };
+  const escFn = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const stripCtx = vm.createContext({
+    uploadedAttachments: [
+      { name: 'a.png', isImage: true, previewUrl: `data:image/png;base64,${tinyPngB64}`, size: 120 },
+      { name: 'spec.pdf', isImage: false, previewUrl: '', size: 4096 },
+      { name: 'b.png', isImage: true, previewUrl: `data:image/png;base64,${tinyPngB64}`, size: 130 }
+    ],
+    uploadedNames: ['a.png', 'spec.pdf', 'b.png'],
+    $: (id) => (id === 'attach-hint' ? {
+      get hidden() { return hintState.hidden; },
+      set hidden(v) { hintState.hidden = v; },
+      get innerHTML() { return hintState.innerHTML; },
+      set innerHTML(v) { hintState.innerHTML = v; },
+      querySelectorAll(sel) {
+        if (sel === '.attach-item-rm') {
+          const matches = [...hintState.innerHTML.matchAll(/data-rm-idx="(\d+)"/g)];
+          hintState.rmHandlers = matches.map((m) => ({ dataset: { rmIdx: m[1] }, onclick: null }));
+          return hintState.rmHandlers;
+        }
+        return [];
+      },
+      querySelector() { return null; }
+    } : null),
+    esc: escFn,
+    formatFileSizeShort: (n) => `${n}B`,
+    openMediaLightbox: () => {},
+    syncSendButtonUI: () => {},
+    apiAction: async () => ({ ok: true }),
+    showToast: () => {},
+    Number,
+    Array,
+    String
+  });
+  vm.runInContext(stripFnSrc + '\nglobalThis.__renderStrip = renderAttachHintStrip;', stripCtx);
+  stripCtx.__renderStrip();
+  assert.equal(hintState.hidden, false);
+  assert.ok(hintState.innerHTML.includes('>PDF<') && !hintState.innerHTML.includes('attach-file-name'), '非图片文件应展示紧凑 PDF 扩展名缩略块且无横向文件名 span');
+  assert.equal(hintState.rmHandlers.length, 3);
+
+  // 删除中间文件 spec.pdf（idx=1）：剩余 [a.png, b.png]，索引重排为 0, 1
+  hintState.rmHandlers[1].onclick({ stopPropagation() {} });
+  assert.deepEqual(stripCtx.uploadedAttachments.map((x) => x.name), ['a.png', 'b.png']);
+  assert.deepEqual(stripCtx.uploadedNames, ['a.png', 'b.png']);
+  assert.deepEqual(hintState.rmHandlers.map((h) => h.dataset.rmIdx), ['0', '1']);
+
+  // 删除第一张图片 a.png（idx=0）：剩余 [b.png]，索引重排为 0
+  hintState.rmHandlers[0].onclick({ stopPropagation() {} });
+  assert.deepEqual(stripCtx.uploadedAttachments.map((x) => x.name), ['b.png']);
+  assert.deepEqual(hintState.rmHandlers.map((h) => h.dataset.rmIdx), ['0']);
+
+  // 删除最后一项 b.png（idx=0）：待发条自动隐藏并清空
+  hintState.rmHandlers[0].onclick({ stopPropagation() {} });
+  assert.equal(stripCtx.uploadedAttachments.length, 0);
+  assert.equal(hintState.hidden, true);
+  assert.equal(hintState.innerHTML, '');
 });
