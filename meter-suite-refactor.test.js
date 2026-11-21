@@ -12692,7 +12692,7 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
     // 3b. 完整链路：getMobileSnapshot() → createSessionCatalogStore().enrichSnapshot()
     const { createSessionCatalogStore } = require('./mobile-remote');
     const tmpCatalog27 = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cat27-'));
-    const store27 = createSessionCatalogStore({ catalogPath: path.join(tmpCatalog27, 'catalog.json') });
+    const store27 = createSessionCatalogStore();
     const mockApi27 = async () => ({
       call: async (method) => {
         if (method === 'GetAllCascadeTrajectories') {
@@ -12710,6 +12710,7 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
         return {};
       }
     });
+    const stateOpts27 = { stateDir: tmpCatalog27, localApiConnect: mockApi27, bypassCache: true };
 
     try {
       // 场景 A：提交超过 2.5s 后，轨迹尚在 IDLE 且无侧栏 spinner，但停止按钮有效 → 真实流式生成，必须保持 running & busy=true
@@ -12722,7 +12723,7 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
       assert.equal(snapCancel.busy, true);
       assert.equal(snapCancel.busySignal, 'cancel-btn');
       assert.equal(snapCancel.strongDomBusy, true);
-      const enrCancel = await store27.enrichSnapshot(snapCancel, { localApiConnect: mockApi27, bypassCache: true });
+      const enrCancel = await store27.enrichSnapshot(snapCancel, stateOpts27);
       assert.equal(enrCancel.busy, true, '有效停止按钮存在时，即使轨迹滞后为 IDLE 也不得误清 busy');
       assert.equal(enrCancel.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'running');
       cancelBtn.disabled = true;
@@ -12736,7 +12737,7 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
       assert.equal(snapThink.busy, true);
       assert.equal(snapThink.busySignal, 'thinking');
       assert.equal(snapThink.strongDomBusy, true);
-      const enrThink = await store27.enrichSnapshot(snapThink, { localApiConnect: mockApi27, bypassCache: true });
+      const enrThink = await store27.enrichSnapshot(snapThink, stateOpts27);
       assert.equal(enrThink.busy, true, 'Thinking 触发器活跃时不得被滞后 IDLE 误判为空闲');
       assert.equal(enrThink.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'running');
 
@@ -12745,12 +12746,12 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
       const snapDone = enh.getMobileSnapshot();
       assert.equal(snapDone.busy, false);
       assert.equal(snapDone.strongDomBusy, false);
-      const enrDone = await store27.enrichSnapshot(snapDone, { localApiConnect: mockApi27, bypassCache: true });
+      const enrDone = await store27.enrichSnapshot(snapDone, stateOpts27);
       assert.equal(enrDone.busy, false);
       assert.equal(enrDone.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'idle');
 
       // 场景 D：遗留启发式 busy=true 但无 strongDomBusy 且轨迹为 IDLE → enrichSnapshot 修正为 idle & busy=false
-      const enrHeuristic = await store27.enrichSnapshot({ ...snapDone, busy: true, strongDomBusy: false, busySignal: '' }, { localApiConnect: mockApi27, bypassCache: true });
+      const enrHeuristic = await store27.enrichSnapshot({ ...snapDone, busy: true, strongDomBusy: false, busySignal: '' }, stateOpts27);
       assert.equal(enrHeuristic.busy, false, '无强 DOM 运行信号且轨迹明确 IDLE 时，enrichSnapshot 必须清除残留假忙');
       assert.equal(enrHeuristic.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'idle');
 
@@ -12779,19 +12780,19 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
           return {};
         }
       });
-      const enrSub = await store27.enrichSnapshot({ ...snapDone, busy: true, strongDomBusy: false, busySignal: '' }, { localApiConnect: mockApiSub27, bypassCache: true });
+      const enrSub = await store27.enrichSnapshot({ ...snapDone, busy: true, strongDomBusy: false, busySignal: '' }, { stateDir: tmpCatalog27, localApiConnect: mockApiSub27, bypassCache: true });
       assert.equal(enrSub.busy, true, '子代理运行中时即使主轨迹 IDLE 且无强 DOM 信号也不得误清 busy');
       assert.equal(enrSub.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'running');
 
       // 场景 F：真实待审批（分别覆盖强 DOM 信号存在与不存在）→ 均保持 waiting，不被误改为 idle 或 running
       const enrWaitNoDom = await store27.enrichSnapshot(
         { ...snapDone, busy: false, strongDomBusy: false, busySignal: '', pendingApprovals: [{ id: 'ap-1', label: 'Run' }] },
-        { localApiConnect: mockApi27, bypassCache: true }
+        stateOpts27
       );
       assert.equal(enrWaitNoDom.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'waiting', '无强 DOM 信号但存在待审批时必须保持 waiting');
       const enrWaitWithDom = await store27.enrichSnapshot(
         { ...snapDone, busy: true, strongDomBusy: true, busySignal: 'cancel-btn', pendingApprovals: [{ id: 'ap-1', label: 'Run' }] },
-        { localApiConnect: mockApi27, bypassCache: true }
+        stateOpts27
       );
       assert.equal(enrWaitWithDom.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'waiting', '存在强 DOM 信号且存在待审批时仍必须保持 waiting，不得误改为 running');
       assert.equal(enrWaitWithDom.busy, true);
