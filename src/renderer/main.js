@@ -981,9 +981,10 @@
   // 兼容老调用声明
   let isRestoringSettings = false;
 
-  // 异步时序保护：用户主动修改序列号与恢复请求版本号
+  // 异步时序保护：用户主动修改序列号、恢复请求版本号与在途保存计数
   let userActionSeq = 0;
   let restoreRequestSeq = 0;
+  let suitePrefsSaveInFlight = 0;
 
   /* @INSERT_DROPDOWN_MODULE */
   function renderPlanSummaryPriceBadge(targetSymbol, targetNum, targetCycle, targetCnyText, options = {}) {
@@ -2987,7 +2988,7 @@
   }
 
   async function restoreSettingsFromHost() {
-    if (state.disposed) return;
+    if (state.disposed || suitePrefsSaveInFlight > 0) return;
     const thisSeq = ++restoreRequestSeq;
     const startActionSeq = userActionSeq;
     try {
@@ -3000,8 +3001,8 @@
         settingsRes = window.__AGContextMeterSettings;
       }
 
-      // 若在网络等待期间有更新的恢复请求完成或用户发生了最新主动修改，丢弃旧回包！
-      if (thisSeq < restoreRequestSeq || userActionSeq > startActionSeq) {
+      // 若在网络等待期间有更新的恢复请求完成、用户发生了主动修改或仍有设置在途保存，丢弃旧回包！
+      if (thisSeq < restoreRequestSeq || userActionSeq > startActionSeq || suitePrefsSaveInFlight > 0) {
         return;
       }
 
@@ -3014,8 +3015,15 @@
         autoCheckUpdate = false;
         const chk = el('check-auto-update');
         if (chk) chk.checked = false;
+        if (settingsRes.uiPreferences && typeof settingsRes.uiPreferences === 'object' && typeof window !== 'undefined') {
+          window.__AGContextMeterSettings = {
+            ...(window.__AGContextMeterSettings || {}),
+            ok: true,
+            uiPreferences: { ...settingsRes.uiPreferences }
+          };
+        }
         if (typeof applyHostUiPreferences === 'function' && settingsRes.uiPreferences) {
-          applyHostUiPreferences(settingsRes.uiPreferences);
+          applyHostUiPreferences(settingsRes.uiPreferences, { fromPoll: true });
         }
       }
 
