@@ -1,12 +1,10 @@
 'use strict';
 const fs = require('fs');
-const http = require('http');
 const path = require('path');
-const { getStateDir } = require('./asar-engine');
-function getJson(url) { return new Promise((resolve, reject) => http.get(url, response => { let body = ''; response.on('data', chunk => body += chunk); response.on('end', () => { try { resolve(JSON.parse(body)); } catch (error) { reject(error); } }); }).on('error', reject)); }
+const { getStateDir, resolveActiveCdpTarget } = require('./asar-engine');
 async function main() {
-  const port = Number(fs.readFileSync(path.join(process.env.APPDATA, 'Antigravity', 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0]);
-  const pages = (await getJson(`http://127.0.0.1:${port}/json/list`)).filter(page => page.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(page.url));
+  const cdp = await resolveActiveCdpTarget({ timeoutMs: 2500 });
+  const pages = Array.isArray(cdp.targets) ? cdp.targets : [];
   if (pages.length !== 1) throw new Error('Expected exactly one Antigravity page');
   const ws = new WebSocket(pages[0].webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { ws.addEventListener('open', resolve, { once: true }); ws.addEventListener('error', reject, { once: true }); });

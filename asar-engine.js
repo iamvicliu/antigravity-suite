@@ -382,9 +382,9 @@ function inspectAntigravityHostProcess(options = {}) {
     const etime = m[2];
     const cmd = m[3].trim();
     if (!Number.isInteger(pid) || pid <= 0) continue;
-    // 只匹配真正的主进程可执行文件，排除 Helper、language_server 与其他进程
+    // 只匹配真正的主进程可执行文件，排除 Helper、language_server、crashpad 及无头/渲染子进程
     if (!/\/Contents\/MacOS\/Antigravity(?:\s|$)/.test(cmd)) continue;
-    if (/Antigravity Helper|language_server/.test(cmd)) continue;
+    if (/Antigravity Helper|language_server|chrome_crashpad_handler|--type=|--import=|--headless(?:\s|=|$)/i.test(cmd)) continue;
     return {
       running: true,
       pid,

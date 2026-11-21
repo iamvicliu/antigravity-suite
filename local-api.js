@@ -71,7 +71,10 @@ async function connect() {
     if (!page) throw new Error('Antigravity window not found');
     const origin = new URL(page.url).origin;
     const html = await request(origin + '/');
-    const token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+    const configMatch = html.match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s);
+    if (!configMatch) throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
+    const token = JSON.parse(configMatch[1]).csrfToken;
+    if (!token) throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
     return { origin, page, call: async (method, body) => JSON.parse(await request(`${origin}/exa.language_server_pb.LanguageServerService/${method}`, body, token)) };
   } catch (err) {
     const fallback = discoverFromHubDaemonFiles();

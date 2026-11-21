@@ -1567,13 +1567,22 @@ function parseIsoTimestampMs(raw) {
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 }
 
+function safeDecodeURIComponent(raw) {
+  const s = String(raw ?? '');
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
 function decodeFileUriToPath(rawUri) {
   const s = String(rawUri || '').trim();
   if (!s) return '';
   if (!/^file:\/\//i.test(s)) return path.resolve(s);
   try {
     const u = new URL(s);
-    let p = decodeURIComponent(u.pathname || '');
+    let p = safeDecodeURIComponent(u.pathname || '');
     if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(p)) p = p.slice(1);
     return p ? path.resolve(p) : '';
   } catch {
@@ -2151,6 +2160,46 @@ function createSessionCatalogStore() {
       for (const item of persistedAll) store.map.set(item.id, item);
     }
 
+    // 上限淘汰 subagent 缓存：清理指向已归档根会话的状态并限制集合规模防止长驻内存膨胀
+    const MAX_SUBAGENT_STATES = 500;
+    const MAX_SUBAGENT_IDS = 2000;
+    for (const [subId, subRec] of Array.from(store.subagentStates.entries())) {
+      const rootItem = subRec?.rootId ? store.map.get(subRec.rootId) : null;
+      if (rootItem && rootItem.archived) store.subagentStates.delete(subId);
+    }
+    if (store.subagentStates.size > MAX_SUBAGENT_STATES) {
+      const sortedSubStates = Array.from(store.subagentStates.entries())
+        .sort((a, b) => (Number(b[1]?.updatedAt) || 0) - (Number(a[1]?.updatedAt) || 0));
+      store.subagentStates.clear();
+      for (const [k, v] of sortedSubStates.slice(0, MAX_SUBAGENT_STATES)) {
+        store.subagentStates.set(k, v);
+      }
+    }
+    if (store.subagentIds.size > MAX_SUBAGENT_IDS) {
+      const protectedIds = new Set([...store.subagentStates.keys(), ...seenSubIds]);
+      for (const sid of Array.from(store.subagentIds)) {
+        if (store.subagentIds.size <= MAX_SUBAGENT_IDS) break;
+        if (!protectedIds.has(sid)) {
+          store.subagentIds.delete(sid);
+          store.subagentRoots.delete(sid);
+        }
+      }
+      // 极端情况下即使受保护项偏多，仍按插入顺序严格守住 MAX_SUBAGENT_IDS 容量上限
+      for (const sid of Array.from(store.subagentIds)) {
+        if (store.subagentIds.size <= MAX_SUBAGENT_IDS) break;
+        store.subagentIds.delete(sid);
+        store.subagentRoots.delete(sid);
+      }
+    }
+    if (store.subagentRoots.size > MAX_SUBAGENT_IDS) {
+      for (const sid of Array.from(store.subagentRoots.keys())) {
+        if (store.subagentRoots.size <= MAX_SUBAGENT_IDS) break;
+        if (!store.subagentIds.has(sid) && !store.subagentStates.has(sid)) {
+          store.subagentRoots.delete(sid);
+        }
+      }
+    }
+
     store.lastActiveSessionId = activeSessionId;
     const { items: allActiveConvs, catalogRevision } = buildActiveCatalogItems(store, activeSessionId, snapConvMap);
     store.catalogRevision = catalogRevision;
@@ -2310,6 +2359,160 @@ function listCatalogConversations(options = {}) {
 
 // ==================== 宿主机目录浏览、新建子目录与远程创建项目 ====================
 
+const SENSITIVE_SYSTEM_PREFIXES = [
+  '/System',
+  '/usr',
+  '/bin',
+  '/sbin',
+  '/etc',
+  '/var',
+  '/private/etc',
+  '/private/var',
+  '/Applications/Antigravity.app'
+];
+const SENSITIVE_DIR_SEGMENTS_RE = /(?:^|\/)(?:\.ssh|\.gnupg|\.aws|1Password|\.gemini|\.kube|\.docker|\.npmrc|\.netrc)(?:\/|$)/i;
+
+function isSensitiveHostPath(absPath, options = {}) {
+  const normalized = path.resolve(String(absPath || '')).replace(/\\/g, '/');
+  if (!normalized) return true;
+  if (SENSITIVE_DIR_SEGMENTS_RE.test(normalized)) {
+    return true;
+  }
+  const normalizedLower = normalized.toLowerCase();
+  // 生产环境无条件屏蔽全部系统前缀（含 /var 与 /private/var，且大小写无关以覆盖 macOS APFS）；
+  // 仅在自动化测试环境（NODE_TEST_CONTEXT）下对 os.tmpdir() 内的隔离临时沙箱放行 /var 前缀以便单测运行
+  let inTestTmpDir = false;
+  if (!options.forceProd && (isCatalogTestEnv() || Boolean(process.env.NODE_TEST_CONTEXT))) {
+    const tmpLogical = path.resolve(os.tmpdir()).replace(/\\/g, '/').toLowerCase();
+    let tmpReal = tmpLogical;
+    try { tmpReal = fs.realpathSync(os.tmpdir()).replace(/\\/g, '/').toLowerCase(); } catch {}
+    inTestTmpDir = normalizedLower === tmpLogical
+      || normalizedLower.startsWith(`${tmpLogical}/`)
+      || normalizedLower === tmpReal
+      || normalizedLower.startsWith(`${tmpReal}/`);
+  }
+  for (const prefix of SENSITIVE_SYSTEM_PREFIXES) {
+    const prefixLower = prefix.toLowerCase();
+    if (inTestTmpDir && (prefixLower === '/var' || prefixLower === '/private/var')) continue;
+    if (normalizedLower === prefixLower || normalizedLower.startsWith(`${prefixLower}/`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isPathWithinRoot(candidatePath, rootPath) {
+  const cand = path.resolve(String(candidatePath || ''));
+  const root = path.resolve(String(rootPath || ''));
+  const rel = path.relative(root, cand);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function resolveRealPathWithFallback(targetPath) {
+  const abs = path.resolve(String(targetPath || ''));
+  const probeRealAt = (p) => {
+    let lst = null;
+    try {
+      lst = fs.lstatSync(p);
+    } catch (err) {
+      if (err?.code === 'ENOENT') return null;
+      throw Object.assign(new Error(`无法安全检查路径状态 (${err?.code || 'ERR'})`), { status: 403 });
+    }
+    try {
+      return fs.realpathSync(p);
+    } catch (err) {
+      // 已存在的符号链接（悬空软链/循环软链/无权限目标）一律直接拒绝，绝不回溯拼接放行
+      if (lst?.isSymbolicLink()) {
+        throw Object.assign(new Error(`检测到悬空或无法解析目标的符号链接 (${err?.code || 'ERR'})，已拒绝访问`), { status: 403 });
+      }
+      throw Object.assign(new Error(`无法安全验证真实物理路径 (${err?.code || 'ERR'})`), { status: 403 });
+    }
+  };
+
+  const directReal = probeRealAt(abs);
+  if (directReal !== null) return directReal;
+
+  // 仅当目标确实不存在（lstatSync 返回 ENOENT）时，逐级向上校验祖先 lstatSync + realpathSync
+  let cur = abs;
+  const pending = [];
+  while (true) {
+    const parent = path.dirname(cur);
+    if (parent === cur) {
+      throw Object.assign(new Error('无法确认目标路径的真实物理根目录，已拒绝访问'), { status: 403 });
+    }
+    pending.unshift(path.basename(cur));
+    cur = parent;
+    const ancestorReal = probeRealAt(cur);
+    if (ancestorReal !== null) {
+      return path.resolve(ancestorReal, ...pending);
+    }
+  }
+}
+
+function resolveAllowedHostRoots(options = {}) {
+  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
+  const rawRoots = Array.isArray(options.allowedRoots) && options.allowedRoots.length > 0
+    ? options.allowedRoots
+    : [homeDir];
+  const logicalRoots = [];
+  const realRoots = [];
+  const seen = new Set();
+  for (const r of rawRoots) {
+    const s = String(r || '').trim();
+    if (!s) continue;
+    const abs = path.resolve(s);
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    logicalRoots.push(abs);
+    realRoots.push(resolveRealPathWithFallback(abs));
+  }
+  if (!logicalRoots.length) {
+    logicalRoots.push(homeDir);
+    realRoots.push(resolveRealPathWithFallback(homeDir));
+  }
+  return { homeDir, realHomeDir: resolveRealPathWithFallback(homeDir), logicalRoots, realRoots };
+}
+
+function assertSafeHostDirectoryPath(rawPath, options = {}) {
+  const { homeDir, realHomeDir, logicalRoots, realRoots } = resolveAllowedHostRoots(options);
+  const resolvedPath = resolveHostPathInput(rawPath, homeDir);
+  const matchedRootIdx = logicalRoots.findIndex((root) => isPathWithinRoot(resolvedPath, root));
+  if (matchedRootIdx < 0) {
+    throw Object.assign(new Error('目标路径超出允许访问的宿主机根目录边界'), { status: 403 });
+  }
+  if (isSensitiveHostPath(resolvedPath)) {
+    throw Object.assign(new Error('禁止访问敏感系统或凭证目录'), { status: 403 });
+  }
+  // 显式经 lstatSync 检查非 ENOENT 错误（如 EACCES/ELOOP）并经 realpathSync 二次校验真实物理路径
+  let lstat = null;
+  try {
+    lstat = fs.lstatSync(resolvedPath);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      throw Object.assign(new Error(`无法安全检查目标路径状态 (${err?.code || 'ERR'})`), { status: 403 });
+    }
+  }
+  const realPath = resolveRealPathWithFallback(resolvedPath);
+  const matchedRealIdx = realRoots.findIndex((root) => isPathWithinRoot(realPath, root));
+  if (matchedRealIdx < 0) {
+    throw Object.assign(new Error('检测到符号链接指向授权目录之外，已拒绝访问'), { status: 403 });
+  }
+  if (isSensitiveHostPath(realPath)) {
+    throw Object.assign(new Error('检测到符号链接指向敏感目录，已拒绝访问'), { status: 403 });
+  }
+  return {
+    resolvedPath,
+    realPath,
+    lstat,
+    homeDir,
+    realHomeDir,
+    matchedRoot: logicalRoots[matchedRootIdx],
+    matchedRealRoot: realRoots[matchedRealIdx],
+    logicalRoots,
+    realRoots
+  };
+}
+
 function resolveHostPathInput(rawPath, homeDir = os.homedir()) {
   const baseHome = path.resolve(String(homeDir || os.homedir()));
   const raw = String(rawPath ?? '').trim();
@@ -2351,13 +2554,19 @@ function buildUniqueSuggestedProjectName(baseName, existingNamesSet, matchedExis
 }
 
 function listHostDirectories(options = {}) {
-  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
   const showHidden = Boolean(options.showHidden);
-  const resolvedPath = resolveHostPathInput(options.dirPath, homeDir);
+  const {
+    resolvedPath,
+    realPath,
+    homeDir,
+    matchedRoot,
+    matchedRealRoot,
+    realRoots
+  } = assertSafeHostDirectoryPath(options.dirPath, options);
 
   let stat;
   try {
-    stat = fs.statSync(resolvedPath);
+    stat = fs.statSync(realPath);
   } catch (err) {
     if (err?.code === 'EACCES' || err?.code === 'EPERM') {
       throw Object.assign(new Error('无权限读取该目录'), { status: 403 });
@@ -2370,7 +2579,7 @@ function listHostDirectories(options = {}) {
 
   let dirents;
   try {
-    dirents = fs.readdirSync(resolvedPath, { withFileTypes: true });
+    dirents = fs.readdirSync(realPath, { withFileTypes: true });
   } catch (err) {
     if (err?.code === 'EACCES' || err?.code === 'EPERM') {
       throw Object.assign(new Error('无权限列出该目录内容'), { status: 403 });
@@ -2424,10 +2633,18 @@ function listHostDirectories(options = {}) {
     const isHidden = name.startsWith('.');
     if (!showHidden && isHidden) continue;
     const childFull = path.join(resolvedPath, name);
+    if (isSensitiveHostPath(childFull)) continue;
     let isDir = false;
     try {
-      if (d.isDirectory()) isDir = true;
-      else if (d.isSymbolicLink() && fs.statSync(childFull).isDirectory()) isDir = true;
+      if (d.isDirectory()) {
+        isDir = true;
+      } else if (d.isSymbolicLink()) {
+        const realChild = fs.realpathSync(childFull);
+        if (!realRoots.some((r) => isPathWithinRoot(realChild, r)) || isSensitiveHostPath(realChild)) {
+          continue;
+        }
+        if (fs.statSync(realChild).isDirectory()) isDir = true;
+      }
     } catch {}
     if (!isDir) continue;
     const linked = primaryPathMap.get(childFull) || null;
@@ -2451,7 +2668,12 @@ function listHostDirectories(options = {}) {
   const entries = truncated ? allEntries.slice(0, MAX_DIR_ENTRIES) : allEntries;
 
   const parsedRoot = path.parse(resolvedPath).root;
-  const parentPath = resolvedPath === parsedRoot ? null : path.dirname(resolvedPath);
+  const candidateParent = resolvedPath === parsedRoot ? '' : path.dirname(resolvedPath);
+  const atBoundary = resolvedPath === matchedRoot
+    || realPath === matchedRealRoot
+    || !candidateParent
+    || !isPathWithinRoot(candidateParent, matchedRoot);
+  const parentPath = atBoundary ? '' : candidateParent;
   const currentName = path.basename(resolvedPath) || resolvedPath;
   const existingProject = primaryPathMap.get(resolvedPath) || null;
   let selfIsGitRepo = false;
@@ -2476,15 +2698,14 @@ function listHostDirectories(options = {}) {
 }
 
 function createHostSubdirectory(payload = {}, options = {}) {
-  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
   const rawParent = String(payload?.parentPath || '').trim();
   if (!rawParent) {
     throw Object.assign(new Error('缺少父目录路径'), { status: 400 });
   }
-  const resolvedParent = resolveHostPathInput(rawParent, homeDir);
+  const { resolvedPath: resolvedParent, realPath: realParent } = assertSafeHostDirectoryPath(rawParent, options);
   let parentStat;
   try {
-    parentStat = fs.statSync(resolvedParent);
+    parentStat = fs.statSync(realParent);
   } catch (err) {
     if (err?.code === 'EACCES' || err?.code === 'EPERM') {
       throw Object.assign(new Error('无权限访问父目录'), { status: 403 });
@@ -2501,8 +2722,13 @@ function createHostSubdirectory(payload = {}, options = {}) {
   }
 
   const targetPath = path.join(resolvedParent, rawName);
-  if (fs.existsSync(targetPath)) {
-    const st = fs.statSync(targetPath);
+  const { realPath: realTargetPath } = assertSafeHostDirectoryPath(targetPath, options);
+  let existingLstat = null;
+  try {
+    existingLstat = fs.lstatSync(targetPath);
+  } catch {}
+  if (existingLstat) {
+    const st = fs.statSync(realTargetPath);
     if (!st.isDirectory()) {
       throw Object.assign(new Error('同名文件已存在且不是文件夹'), { status: 400 });
     }
@@ -2521,19 +2747,27 @@ function createHostSubdirectory(payload = {}, options = {}) {
 }
 
 async function createRemoteProject(payload = {}, options = {}) {
-  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
   const rawFolder = String(payload?.folderPath || '').trim();
   if (!rawFolder) {
     throw Object.assign(new Error('请选择项目文件夹路径'), { status: 400 });
   }
-  const resolvedPath = resolveHostPathInput(rawFolder, homeDir);
-  if (resolvedPath === path.parse(resolvedPath).root) {
-    throw Object.assign(new Error('不支持直接以系统根目录作为项目'), { status: 400 });
+  const {
+    resolvedPath,
+    realPath,
+    homeDir,
+    realHomeDir
+  } = assertSafeHostDirectoryPath(rawFolder, options);
+  if (
+    resolvedPath === path.parse(resolvedPath).root ||
+    resolvedPath === homeDir ||
+    realPath === realHomeDir
+  ) {
+    throw Object.assign(new Error('不支持直接以用户主目录或系统根目录作为项目，请选择具体项目子目录'), { status: 400 });
   }
 
   let dirStat;
   try {
-    dirStat = fs.statSync(resolvedPath);
+    dirStat = fs.statSync(realPath);
   } catch (err) {
     if (err?.code === 'EACCES' || err?.code === 'EPERM') {
       throw Object.assign(new Error('无权限访问所选文件夹'), { status: 403 });
@@ -2883,6 +3117,10 @@ function renderSafeMarkdownToHtml(rawMd) {
 const LOCAL_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
 const SENSITIVE_MEDIA_DIR_RE = /(?:^|[\\/])(?:\.ssh|\.gnupg|\.aws|\.kube|keychains)(?:[\\/]|$)/i;
 const SENSITIVE_MEDIA_FILE_RE = /^(?:\.env.*|id_rsa.*|id_ed25519.*|id_ecdsa.*|\.npmrc|\.netrc|\.pypirc|.*\.(?:pem|key|p12|pfx|jks))$/i;
+function isAllowedBrainArtifactPath(absPath) {
+  const norm = String(absPath || '').replace(/\\/g, '/');
+  return /(?:^|\/)\.gemini\/antigravity\/brain(?:\/|$)/i.test(norm);
+}
 const SAFE_MEDIA_MIME_BY_EXT = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -2947,7 +3185,7 @@ function resolveSafeLocalMediaPath(rawPath, options = {}) {
   if (!inAllowedRoot) {
     return { ok: false, status: 403, error: '禁止访问受限目录之外的文件' };
   }
-  if (SENSITIVE_MEDIA_DIR_RE.test(realPath)) {
+  if (SENSITIVE_MEDIA_DIR_RE.test(realPath) || (isSensitiveHostPath(realPath) && !isAllowedBrainArtifactPath(realPath))) {
     return { ok: false, status: 403, error: '禁止访问敏感密钥或凭证目录' };
   }
   const baseName = path.basename(realPath);
@@ -3008,7 +3246,7 @@ function listSafeProjectTree(rawDir, options = {}) {
   if (!inAllowedRoot) {
     return { ok: false, status: 403, error: '禁止浏览受限目录之外的路径' };
   }
-  if (SENSITIVE_MEDIA_DIR_RE.test(realDir)) {
+  if (SENSITIVE_MEDIA_DIR_RE.test(realDir) || isSensitiveHostPath(realDir)) {
     return { ok: false, status: 403, error: '禁止浏览敏感密钥或凭证目录' };
   }
   let stat;
@@ -3043,7 +3281,7 @@ function listSafeProjectTree(rawDir, options = {}) {
     }
     const targetInAllowedRoot = realRoots.some((root) => realTarget === root || realTarget.startsWith(root + path.sep));
     if (!targetInAllowedRoot) continue;
-    if (SENSITIVE_MEDIA_DIR_RE.test(realTarget)) continue;
+    if (SENSITIVE_MEDIA_DIR_RE.test(realTarget) || isSensitiveHostPath(realTarget)) continue;
     const isDir = targetStat.isDirectory();
     if (isDir) {
       if (!showAll && TREE_HIDDEN_NOISE_DIRS.has(name)) continue;
@@ -3194,11 +3432,11 @@ function formatTrajectoryUserInput(ui) {
         pieces.push(it.text);
       } else if (it.item?.file?.absoluteUri) {
         const uri = String(it.item.file.absoluteUri);
-        const base = decodeURIComponent(uri.split('/').pop() || uri);
+        const base = safeDecodeURIComponent(uri.split('/').pop() || uri);
         pieces.push(`@${base}`);
       } else if (it.item?.directory?.absoluteUri) {
         const uri = String(it.item.directory.absoluteUri);
-        const base = decodeURIComponent(uri.replace(/\/+$/, '').split('/').pop() || uri);
+        const base = safeDecodeURIComponent(uri.replace(/\/+$/, '').split('/').pop() || uri);
         pieces.push(`@${base}`);
       } else if (it.item?.slashCommand?.info?.name) {
         pieces.push(`/${it.item.slashCommand.info.name}`);
@@ -3615,6 +3853,8 @@ function createConversationHistoryManager() {
   const fetchGenMap = new Map();
   const invalidatedGenMap = new Map();
   const MAX_CACHE_ENTRIES = 24;
+  const MAX_FETCH_GEN_ENTRIES = 2000;
+  let globalFetchSeq = 0;
 
   function touchCache(sessionId, rec) {
     if (cache.has(sessionId)) cache.delete(sessionId);
@@ -3626,8 +3866,15 @@ function createConversationHistoryManager() {
   }
 
   function nextFetchGen(sessionId) {
-    const next = (fetchGenMap.get(sessionId) || 0) + 1;
+    // 使用全局单调递增序号，即使某 sessionId 被 LRU 淘汰后再次请求，也绝不会复用旧代次 1，彻底防止晚归旧请求覆盖新结果
+    const next = ++globalFetchSeq;
+    if (fetchGenMap.has(sessionId)) fetchGenMap.delete(sessionId);
     fetchGenMap.set(sessionId, next);
+    while (fetchGenMap.size > MAX_FETCH_GEN_ENTRIES) {
+      const oldestKey = fetchGenMap.keys().next().value;
+      if (oldestKey !== undefined) fetchGenMap.delete(oldestKey);
+      else break;
+    }
     return next;
   }
 
@@ -3889,6 +4136,7 @@ function createConversationHistoryManager() {
       totalMessages: fullMsgs.length,
       messagesStartIndex: startIdx,
       hasEarlierMessages: startIdx > 0,
+      historySource: trajMsgs ? 'trajectory' : (cleanSnap.isolatedError ? 'isolated_error' : 'dom'),
       messages: sliced,
       queuedMessages: effQueued
     };
@@ -5161,7 +5409,7 @@ function buildMobileAppHtml() {
       <div id="attach-hint" class="attach-hint" hidden></div>
       <div id="chips" class="chips"></div>
       <div class="composer-card">
-        <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息…"></textarea>
+        <textarea id="input" rows="1" enterkeyhint="enter" placeholder="发消息… (Cmd/Ctrl + Enter 发送)"></textarea>
         <input id="img-input" type="file" multiple hidden>
         <div class="composer-toolbar">
           <div class="toolbar-left">
@@ -6273,8 +6521,8 @@ function buildMobileAppHtml() {
 
     function clearScrollBodyOffset(bodyEl) {
       if (!bodyEl) return;
+      // 仅移除临时 paddingBottom，保留 bodyEl.scrollTop 避免把用户手动滚动定位的已填输入框滚出视野
       bodyEl.style.paddingBottom = '';
-      bodyEl.scrollTop = 0;
     }
 
     function resetModalSheetShift() {
@@ -6372,7 +6620,8 @@ function buildMobileAppHtml() {
       const scrollBody = sheetEl.querySelector('.proj-modal-body') || sheetEl.querySelector('.sheet-list') || null;
       const hasScrollBody = Boolean(scrollBody && scrollBody.contains(activeEl));
       const appliedShift = activeShiftedSheet === sheetEl ? activeModalSheetShiftY : 0;
-      const bodyScroll = hasScrollBody ? (Number(scrollBody.scrollTop) || 0) : 0;
+      // 仅补偿本逻辑自身施加的滚动增量（activeModalBodyScrollY），不得叠加用户手动下滑的 scrollTop 导致偏移过大
+      const bodyScroll = (hasScrollBody && activeScrolledModalBody === scrollBody) ? (Number(activeModalBodyScrollY) || 0) : 0;
       const sheetRect = sheetEl.getBoundingClientRect();
       const bodyRect = scrollBody && typeof scrollBody.getBoundingClientRect === 'function' ? scrollBody.getBoundingClientRect() : null;
       const rect = activeEl.getBoundingClientRect();
@@ -6416,8 +6665,10 @@ function buildMobileAppHtml() {
         }
         const maxBodyScroll = Math.max(0, Math.floor(rawTop - bodyRawTop - 4));
         const targetScroll = Math.max(0, Math.min(remainingOverlap, maxBodyScroll));
+        const prevApplied = activeScrolledModalBody === scrollBody ? (Number(activeModalBodyScrollY) || 0) : 0;
+        const userBaseScroll = Math.max(0, (Number(scrollBody.scrollTop) || 0) - prevApplied);
         scrollBody.style.paddingBottom = (targetScroll + 28) + 'px';
-        scrollBody.scrollTop = targetScroll;
+        scrollBody.scrollTop = userBaseScroll + targetScroll;
         activeScrolledModalBody = scrollBody;
         activeModalBodyScrollY = targetScroll;
       } else {
@@ -7223,14 +7474,22 @@ function buildMobileAppHtml() {
       // Messages (full history + upward pagination + gap backfill + scroll anchor)
       msgEl.classList.remove('is-switching');
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
+      const nextHistSource = snap.historySource === 'trajectory' || snap.historySource === 'dom' ? snap.historySource : '';
       if (snapSid !== activeMsgSessionId) {
         activeMsgSessionId = snapSid;
+        activeMsgHistorySource = nextHistSource;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
         promptDraftState.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         stickBottom = true;
+      } else if (activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory') {
+        // RPC 偶发降级 domTail（写入 0..59 临时键）后恢复全量轨迹时，清空旧临时键防止前 60 条重复错序
+        sessionMsgsByIndex.clear();
+        activeMsgHistorySource = 'trajectory';
+      } else if (nextHistSource) {
+        activeMsgHistorySource = nextHistSource;
       }
       const rawMsgs = Array.isArray(snap.messages) ? snap.messages : [];
       const totalMsgs = Number(snap.totalMessages);
@@ -8381,6 +8640,7 @@ function buildMobileAppHtml() {
     }
 
     let activeMsgSessionId = null;
+    let activeMsgHistorySource = '';
     const sessionMsgsByIndex = new Map();
     const openThoughtIdxSet = new Set();
     let loadingEarlierMsgs = false;
@@ -9729,23 +9989,29 @@ function buildMobileAppHtml() {
       row.hidden = !row.hidden;
       if (!row.hidden) $('proj-mkdir-input')?.focus?.();
     });
-    $('proj-mkdir-confirm')?.addEventListener('click', () => { void createNewSubdirInModal(); });
-    $('proj-mkdir-input')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.isComposing) {
+    function bindSafeImeEnter(el, onEnter, opts) {
+      if (!el || typeof el.addEventListener !== 'function') return;
+      let imeComposing = false;
+      el.addEventListener('compositionstart', () => { imeComposing = true; });
+      el.addEventListener('compositionend', () => { imeComposing = false; });
+      el.addEventListener('keydown', (e) => {
+        if (imeComposing || e.isComposing || e.keyCode === 229) return;
+        if (e.key !== 'Enter') return;
+        if (opts?.requireMod && !(e.metaKey || e.ctrlKey)) return;
         e.preventDefault();
-        void createNewSubdirInModal();
-      }
-    });
+        onEnter(e);
+      });
+    }
+
+    $('proj-mkdir-confirm')?.addEventListener('click', () => { void createNewSubdirInModal(); });
+    bindSafeImeEnter($('proj-mkdir-input'), () => { void createNewSubdirInModal(); });
     $('proj-path-go')?.addEventListener('click', () => {
       const val = String($('proj-path-input')?.value || '').trim();
       if (val) void loadHostDirListing(val);
     });
-    $('proj-path-input')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.isComposing) {
-        e.preventDefault();
-        const val = String($('proj-path-input')?.value || '').trim();
-        if (val) void loadHostDirListing(val);
-      }
+    bindSafeImeEnter($('proj-path-input'), () => {
+      const val = String($('proj-path-input')?.value || '').trim();
+      if (val) void loadHostDirListing(val);
     });
     $('proj-name-input')?.addEventListener('input', () => {
       const typedName = String($('proj-name-input')?.value || '').trim();
@@ -10163,12 +10429,7 @@ function buildMobileAppHtml() {
     }
     bindButtonClick($('btn-send'), sendInput);
     syncSendButtonUI();
-    ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
-        e.preventDefault();
-        void sendInput();
-      }
-    });
+    bindSafeImeEnter(ta, () => { void sendInput(); }, { requireMod: true });
 
     renderModeEntryGate(
       isManualEntry
@@ -11192,21 +11453,50 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   };
 
   const cachedHtml = buildMobileAppHtml();
-  const cachedHtmlGzip = zlib.gzipSync(Buffer.from(cachedHtml, 'utf8'), { level: 1 });
+  let cachedHtmlGzip = null;
+  try {
+    cachedHtmlGzip = zlib.gzipSync(Buffer.from(cachedHtml, 'utf8'), { level: 1 });
+  } catch {
+    cachedHtmlGzip = null;
+  }
   const cachedIcon = buildMobileIconSvg();
   const cachedManifest = buildManifestJson();
   const cachedSw = buildServiceWorkerJs();
   const cached401 = buildUnauthorizedHtml();
 
+  function mergeVaryHeader(existingVary, token) {
+    const parts = String(existingVary || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!parts.some((p) => p.toLowerCase() === token.toLowerCase())) {
+      parts.push(token);
+    }
+    return parts.join(', ');
+  }
+
   function sendPayload(req, res, statusCode, headers, bodyStr) {
     const raw = typeof bodyStr === 'string' ? bodyStr : String(bodyStr || '');
+    const baseHeaders = headers && typeof headers === 'object' ? { ...headers } : {};
     if (acceptsGzipEncoding(req?.headers?.['accept-encoding']) && Buffer.byteLength(raw, 'utf8') >= 1024) {
-      const gz = raw === cachedHtml ? cachedHtmlGzip : zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 1 });
-      res.writeHead(statusCode, { ...headers, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
-      res.end(gz);
-      return;
+      try {
+        const gz = (raw === cachedHtml && cachedHtmlGzip) ? cachedHtmlGzip : zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 1 });
+        const existingVaryKey = Object.keys(baseHeaders).find((k) => k.toLowerCase() === 'vary');
+        const resVary = typeof res?.getHeader === 'function' ? res.getHeader('Vary') : '';
+        const combinedVary = [
+          Array.isArray(resVary) ? resVary.join(', ') : String(resVary || ''),
+          existingVaryKey ? String(baseHeaders[existingVaryKey] || '') : ''
+        ].filter(Boolean).join(', ');
+        const mergedVary = mergeVaryHeader(combinedVary, 'Accept-Encoding');
+        if (existingVaryKey && existingVaryKey !== 'Vary') delete baseHeaders[existingVaryKey];
+        res.writeHead(statusCode, { ...baseHeaders, 'Content-Encoding': 'gzip', Vary: mergedVary });
+        res.end(gz);
+        return;
+      } catch {
+        // gzip 压缩异常时安全回退为未压缩明文响应
+      }
     }
-    res.writeHead(statusCode, headers);
+    res.writeHead(statusCode, baseHeaders);
     res.end(raw);
   }
 
@@ -11320,6 +11610,65 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     failedAuthMap.delete(clientKey);
 
     const isHttpsForwarded = fromLoopback && String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https';
+
+    // Same-Site 跨端口 CSRF 加固：所有写请求强制要求 application/json，并严格校验同源（协议+主机+有效端口）Origin 或自定义 X-AG-Remote-Token 请求头
+    const reqMethodUpper = String(req.method || 'GET').toUpperCase();
+    if (reqMethodUpper !== 'GET' && reqMethodUpper !== 'HEAD' && reqMethodUpper !== 'OPTIONS') {
+      const rawCt = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (rawCt !== 'application/json') {
+        res.writeHead(415, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: '写接口仅接受 Content-Type: application/json 请求' }));
+        return;
+      }
+      const headerToken = String(req.headers['x-ag-remote-token'] || '').trim();
+      const hasValidCustomHeader = Boolean(headerToken && timingSafeTokenMatch(headerToken, config.token));
+      const reqProto = (isHttpsForwarded || Boolean(req.socket?.encrypted)) ? 'https:' : 'http:';
+      const reqHostHeader = String(req.headers.host || '').trim();
+      const parseOriginTuple = (rawUrl) => {
+        if (!rawUrl || String(rawUrl).toLowerCase() === 'null') return null;
+        try {
+          const u = new URL(rawUrl);
+          if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+          const effPort = u.port || (u.protocol === 'https:' ? '443' : '80');
+          return { protocol: u.protocol, hostname: u.hostname.toLowerCase(), port: effPort };
+        } catch {
+          return null;
+        }
+      };
+      const reqTuple = reqHostHeader ? parseOriginTuple(`${reqProto}//${reqHostHeader}`) : null;
+      const isSameOriginTuple = (t) => Boolean(
+        t && reqTuple && t.protocol === reqTuple.protocol && t.hostname === reqTuple.hostname && t.port === reqTuple.port
+      );
+      const rawOrigin = String(req.headers.origin || '').trim();
+      const rawReferer = String(req.headers.referer || '').trim();
+      let sameOriginByOrigin = false;
+      if (rawOrigin) {
+        const originTuple = parseOriginTuple(rawOrigin);
+        if (!isSameOriginTuple(originTuple)) {
+          if (!hasValidCustomHeader) {
+            res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ ok: false, error: '检测到跨协议/跨源或跨端口写请求，已拦截 (CSRF)' }));
+            return;
+          }
+        } else {
+          sameOriginByOrigin = true;
+        }
+      } else if (rawReferer) {
+        const refTuple = parseOriginTuple(rawReferer);
+        if (!isSameOriginTuple(refTuple) && !hasValidCustomHeader) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ ok: false, error: '检测到跨协议/跨源 Referer 写请求，已拦截 (CSRF)' }));
+          return;
+        }
+      }
+      // 仅凭 Cookie 鉴权的写请求必须提供严格同源 Origin（或有效自定义 X-AG-Remote-Token），禁止仅凭 Referer 放行
+      if (fromCookie && !hasValidCustomHeader && !sameOriginByOrigin) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'Cookie 鉴权写请求须提供同源 Origin 或 X-AG-Remote-Token 请求头' }));
+        return;
+      }
+    }
+
     const secureAttr = isHttpsForwarded ? '; Secure' : '';
     const cookiesToSet = [];
     if (fromQuery) {
@@ -11460,7 +11809,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       };
       const isSafeResolvedTarget = (resolved) => {
         if (!resolved || resolved.includes('\0')) return false;
-        if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved))) return false;
+        if (SENSITIVE_MEDIA_DIR_RE.test(resolved) || SENSITIVE_MEDIA_FILE_RE.test(path.basename(resolved)) || (isSensitiveHostPath(resolved) && !isAllowedBrainArtifactPath(resolved))) return false;
         return realRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
       };
       const trustedBaseDirs = [];
@@ -11734,6 +12083,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           dirPath,
           showHidden,
           ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
           ...(options.configDir ? { configDir: options.configDir } : {})
         });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -11749,7 +12099,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       try {
         const payload = await readJsonBody(req);
         const result = createHostSubdirectory(payload, {
-          ...(options.homeDir ? { homeDir: options.homeDir } : {})
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {})
         });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(result));
@@ -11769,6 +12120,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
         const createdRes = await createRemoteProject(payload, {
           ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
           ...(options.configDir ? { configDir: options.configDir } : {}),
           ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
           ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
@@ -12728,6 +13080,9 @@ module.exports = {
   listCatalogConversations,
   getConversationMessagesPage,
   warmConversationSession,
+  isSensitiveHostPath,
+  resolveAllowedHostRoots,
+  assertSafeHostDirectoryPath,
   listHostDirectories,
   createHostSubdirectory,
   createRemoteProject,

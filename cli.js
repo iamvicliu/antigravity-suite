@@ -478,6 +478,11 @@ async function main() {
       process.exitCode = res.status;
     }
   } else {
+    const isHelp = cmd === 'help';
+    if (!isHelp) {
+      console.error(`❌ 未知命令: ${cmd}`);
+      process.exitCode = 1;
+    }
     console.log(`用法 (100% 零改包模式):
   node cli.js live [--no-remote]            免改盘 CDP 热挂载到当前运行窗口（默认命令；加 --no-remote 关闭手机远程监听）
   node cli.js update [--no-remote]          从 GitHub 拉取最新代码并自动热刷新当前窗口
