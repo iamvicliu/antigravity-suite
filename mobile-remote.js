@@ -1866,8 +1866,9 @@ function createSessionCatalogStore() {
         continue;
       }
       const isActive = Boolean((activeSessionId && c.id === activeSessionId) || snapConvMap?.get(c.id)?.active);
-      const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
       const itemStatus = (CREDIBLE_STATUS_VALUES.has(c.status) || c.status === 'unknown') ? c.status : 'unknown';
+      const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
+      const completedUnread = Boolean(unread && itemStatus === 'idle');
       items.push({
         id: c.id,
         title: c.title,
@@ -1877,6 +1878,7 @@ function createSessionCatalogStore() {
         status: itemStatus,
         statusLabel: statusToLabel(itemStatus),
         unread,
+        completedUnread,
         pinned: Boolean(c.pinned),
         updatedAt: c.updatedAt
       });
@@ -2343,7 +2345,31 @@ function createSessionCatalogStore() {
     trajCache.at = 0;
   }
 
-  return { enrichSnapshot, listConversations, invalidateProjectsCache };
+  function markViewed(sessionId, viewedAtMs = Date.now(), options = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid || sid === '__new__' || sid === 'new' || sid === 'follow-desktop') return false;
+    const store = getStickyStoreForDir(options.dataDir || options.stateDir);
+    const item = store.map.get(sid);
+    if (!item) return false;
+    const nextViewMs = Math.max(Number(item.lastViewedAt) || 0, Number(item.updatedAt) || 0, Number(viewedAtMs) || Date.now());
+    if (nextViewMs <= (Number(item.lastViewedAt) || 0)) return false;
+    item.lastViewedAt = nextViewMs;
+    store.map.set(sid, item);
+    store.lastSig = '';
+    try {
+      safeWriteJsonSync(store.filePath, {
+        version: 2,
+        updatedAt: Date.now(),
+        subagentIds: Array.from(store.subagentIds).sort(),
+        subagentRoots: Object.fromEntries(store.subagentRoots),
+        subagentStates: Object.fromEntries(store.subagentStates),
+        conversations: Array.from(store.map.values())
+      });
+    } catch {}
+    return true;
+  }
+
+  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -4419,6 +4445,7 @@ function buildMobileAppHtml() {
       --git-tag-bg:rgba(52,211,153,.15);--git-tag-fg:#6ee7b7;
       --warn-card-bg:rgba(245,158,11,.12);--warn-card-border:rgba(245,158,11,.55);--warn-card-fg:#fde68a;
       --perm-review:#c084fc;
+      --unread-dot:#3b82f6;--unread-glow:rgba(59,130,246,.24);
       --app-h:100dvh;
       --modal-h:100dvh;
       --safe-bottom:0px;
@@ -4458,6 +4485,7 @@ function buildMobileAppHtml() {
         --git-tag-bg:rgba(5,150,105,.13);--git-tag-fg:#047857;
         --warn-card-bg:rgba(245,158,11,.12);--warn-card-border:rgba(217,119,6,.5);--warn-card-fg:#92400e;
         --perm-review:#7c3aed;
+        --unread-dot:#2563eb;--unread-glow:rgba(37,99,235,.2);
       }
     }
     html[data-theme="light"]{
@@ -4490,6 +4518,7 @@ function buildMobileAppHtml() {
       --git-tag-bg:rgba(5,150,105,.13);--git-tag-fg:#047857;
       --warn-card-bg:rgba(245,158,11,.12);--warn-card-border:rgba(217,119,6,.5);--warn-card-fg:#92400e;
       --perm-review:#7c3aed;
+      --unread-dot:#2563eb;--unread-glow:rgba(37,99,235,.2);
     }
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     html{
@@ -5140,6 +5169,18 @@ function buildMobileAppHtml() {
     .c-badge.waiting{background:var(--badge-wait-bg);color:var(--badge-wait-fg)}
     .c-badge.error{background:var(--badge-err-bg);color:var(--badge-err-fg)}
     .c-badge.unknown{background:var(--badge-unk-bg);color:var(--badge-unk-fg)}
+    .conv-unread-dot{
+      width:8px;height:8px;border-radius:999px;flex-shrink:0;display:inline-block;
+      background:var(--unread-dot);box-shadow:0 0 0 4px var(--unread-glow);margin:0 3px;
+    }
+    .conv-bell-indicator{
+      position:relative;display:inline-flex;align-items:center;justify-content:center;
+      width:20px;height:20px;flex-shrink:0;color:var(--fg-secondary);
+    }
+    .conv-bell-dot{
+      position:absolute;top:1px;right:1px;width:6px;height:6px;border-radius:999px;
+      background:var(--unread-dot);box-shadow:0 0 0 2px var(--drawer-bg);
+    }
     .c-time{flex-shrink:0;font-size:11px;color:var(--placeholder);font-variant-numeric:tabular-nums}
     .c-sub{font-size:11px;color:var(--muted);padding-left:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .conv-more-btn{
@@ -8137,14 +8178,24 @@ function buildMobileAppHtml() {
       return '<span class="c-dot"></span>';
     }
 
+    const BELL_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+
     function renderConvItemHtml(c, showProjectName) {
+      const isUnreadCompleted = Boolean((c.completedUnread ?? c.unread) && c.status !== 'running' && c.status !== 'waiting' && c.status !== 'error' && c.status !== 'unknown');
       const cls = 'conv-item' + (c.active ? ' active' : '') + (c.unread ? ' is-unread' : '');
       const titleText = (c.pinned ? '📌 ' : '') + String(c.title || c.id || '');
       let badgeHtml = '';
-      if (c.status === 'waiting') badgeHtml = '<span class="c-badge waiting">' + esc(c.statusLabel || '待确认') + '</span>';
-      else if (c.status === 'running') badgeHtml = '<span class="c-badge running">' + esc(c.statusLabel || '运行中') + '</span>';
-      else if (c.status === 'error') badgeHtml = '<span class="c-badge error">' + esc(c.statusLabel || '异常') + '</span>';
-      else if (c.status === 'unknown') badgeHtml = '<span class="c-badge unknown">' + esc(c.statusLabel || '未知') + '</span>';
+      if (c.status === 'waiting') {
+        badgeHtml = '<span class="conv-bell-indicator" title="' + esc(c.statusLabel || '待确认 / 待审批') + '" aria-label="待用户确认或审批">' + BELL_ICON_SVG + '<i class="conv-bell-dot"></i></span>';
+      } else if (c.status === 'running') {
+        badgeHtml = '<span class="c-badge running">' + esc(c.statusLabel || '运行中') + '</span>';
+      } else if (c.status === 'error') {
+        badgeHtml = '<span class="c-badge error">' + esc(c.statusLabel || '异常') + '</span>';
+      } else if (c.status === 'unknown') {
+        badgeHtml = '<span class="c-badge unknown">' + esc(c.statusLabel || '未知') + '</span>';
+      } else if (isUnreadCompleted) {
+        badgeHtml = '<span class="conv-unread-dot" title="已完成 · 有新产出" aria-label="未读新产出"></span>';
+      }
       const rel = formatRelTime(c.updatedAt);
       const rightMeta = badgeHtml || (rel ? '<span class="c-time">' + esc(rel) + '</span>' : '');
       let subHtml = '';
@@ -10163,6 +10214,7 @@ function buildMobileAppHtml() {
         });
         clickedBtn.classList.add('active');
         clickedBtn.classList.remove('is-unread');
+        clickedBtn.querySelector?.('.conv-unread-dot')?.remove?.();
         const effId = getEffectiveSelectedProject(latestSnap).id;
         convListEl.querySelectorAll('.proj-group').forEach((grp) => {
           const grpPid = grp.querySelector('.proj-toggle')?.getAttribute('data-proj-toggle') || '';
@@ -12374,6 +12426,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               bumpNavEpoch(session);
               if (payload?.targetId) session.targetId = effectiveTargetId;
             }
+            defaultCatalogStore.markViewed(nextId, Date.now(), options.catalogOptions || {});
             if (!options.fetchSnapshot && typeof defaultHistoryManager?.warmSession === 'function') {
               defaultHistoryManager.warmSession(nextId).catch(() => null);
             }
