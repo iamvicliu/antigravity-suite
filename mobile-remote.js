@@ -2284,6 +2284,125 @@ function listCatalogConversations(options = {}) {
 
 // ==================== 宿主机目录浏览、新建子目录与远程创建项目 ====================
 
+const SENSITIVE_SYSTEM_PREFIXES = [
+  '/System',
+  '/usr',
+  '/bin',
+  '/sbin',
+  '/etc',
+  '/var',
+  '/private/etc',
+  '/private/var',
+  '/Applications/Antigravity.app'
+];
+const SENSITIVE_DIR_SEGMENTS_RE = /(?:^|\/)(?:\.ssh|\.gnupg|\.aws|1Password|\.gemini|\.kube|\.docker|\.npmrc|\.netrc)(?:\/|$)/i;
+
+function isSensitiveHostPath(absPath, options = {}) {
+  const normalized = path.resolve(String(absPath || '')).replace(/\\/g, '/');
+  if (!normalized) return true;
+  if (SENSITIVE_DIR_SEGMENTS_RE.test(normalized)) {
+    return true;
+  }
+  // macOS 下测试环境常将受信任临时 homeDir 建在 /var/folders 或 /private/var/folders 下，仅对显式传入的该临时根目录放行 /var 前缀检查
+  const explicitTempRoots = (Array.isArray(options.exemptTempRoots) ? options.exemptTempRoots : [])
+    .map((r) => path.resolve(String(r || '')).replace(/\\/g, '/'))
+    .filter((r) => r.startsWith('/var/folders/') || r.startsWith('/private/var/folders/'));
+  const inExemptTempRoot = explicitTempRoots.some((r) => normalized === r || normalized.startsWith(`${r}/`));
+  for (const prefix of SENSITIVE_SYSTEM_PREFIXES) {
+    if (inExemptTempRoot && (prefix === '/var' || prefix === '/private/var')) continue;
+    if (normalized === prefix || normalized.startsWith(`${prefix}/`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isPathWithinRoot(candidatePath, rootPath) {
+  const cand = path.resolve(String(candidatePath || ''));
+  const root = path.resolve(String(rootPath || ''));
+  const rel = path.relative(root, cand);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function resolveRealPathWithFallback(targetPath) {
+  const abs = path.resolve(String(targetPath || ''));
+  try {
+    return fs.realpathSync(abs);
+  } catch {}
+  // 对尚未创建的目标路径向上回溯到最近的已存在祖先求真实物理路径，防止中间符号链接逃逸
+  let cur = abs;
+  const pending = [];
+  while (true) {
+    const parent = path.dirname(cur);
+    if (parent === cur) return abs;
+    pending.unshift(path.basename(cur));
+    cur = parent;
+    try {
+      const realBase = fs.realpathSync(cur);
+      return path.resolve(realBase, ...pending);
+    } catch {}
+  }
+}
+
+function resolveAllowedHostRoots(options = {}) {
+  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
+  const rawRoots = Array.isArray(options.allowedRoots) && options.allowedRoots.length > 0
+    ? options.allowedRoots
+    : [homeDir];
+  const logicalRoots = [];
+  const realRoots = [];
+  const seen = new Set();
+  for (const r of rawRoots) {
+    const s = String(r || '').trim();
+    if (!s) continue;
+    const abs = path.resolve(s);
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    logicalRoots.push(abs);
+    realRoots.push(resolveRealPathWithFallback(abs));
+  }
+  if (!logicalRoots.length) {
+    logicalRoots.push(homeDir);
+    realRoots.push(resolveRealPathWithFallback(homeDir));
+  }
+  return { homeDir, realHomeDir: resolveRealPathWithFallback(homeDir), logicalRoots, realRoots };
+}
+
+function assertSafeHostDirectoryPath(rawPath, options = {}) {
+  const { homeDir, realHomeDir, logicalRoots, realRoots } = resolveAllowedHostRoots(options);
+  const resolvedPath = resolveHostPathInput(rawPath, homeDir);
+  const matchedRootIdx = logicalRoots.findIndex((root) => isPathWithinRoot(resolvedPath, root));
+  if (matchedRootIdx < 0) {
+    throw Object.assign(new Error('目标路径超出允许访问的宿主机根目录边界'), { status: 403 });
+  }
+  const exemptTempRoots = [...logicalRoots, ...realRoots];
+  if (isSensitiveHostPath(resolvedPath, { exemptTempRoots })) {
+    throw Object.assign(new Error('禁止访问敏感系统或凭证目录'), { status: 403 });
+  }
+  // 显式经 lstatSync + realpathSync 二次校验真实物理路径，阻断符号链接逃逸到授权根外或敏感目录
+  try {
+    fs.lstatSync(resolvedPath);
+  } catch {}
+  const realPath = resolveRealPathWithFallback(resolvedPath);
+  const matchedRealIdx = realRoots.findIndex((root) => isPathWithinRoot(realPath, root));
+  if (matchedRealIdx < 0) {
+    throw Object.assign(new Error('检测到符号链接指向授权目录之外，已拒绝访问'), { status: 403 });
+  }
+  if (isSensitiveHostPath(realPath, { exemptTempRoots })) {
+    throw Object.assign(new Error('检测到符号链接指向敏感目录，已拒绝访问'), { status: 403 });
+  }
+  return {
+    resolvedPath,
+    realPath,
+    homeDir,
+    realHomeDir,
+    matchedRoot: logicalRoots[matchedRootIdx],
+    matchedRealRoot: realRoots[matchedRealIdx],
+    logicalRoots,
+    realRoots
+  };
+}
+
 function resolveHostPathInput(rawPath, homeDir = os.homedir()) {
   const baseHome = path.resolve(String(homeDir || os.homedir()));
   const raw = String(rawPath ?? '').trim();
@@ -2325,13 +2444,21 @@ function buildUniqueSuggestedProjectName(baseName, existingNamesSet, matchedExis
 }
 
 function listHostDirectories(options = {}) {
-  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
   const showHidden = Boolean(options.showHidden);
-  const resolvedPath = resolveHostPathInput(options.dirPath, homeDir);
+  const {
+    resolvedPath,
+    realPath,
+    homeDir,
+    matchedRoot,
+    matchedRealRoot,
+    logicalRoots,
+    realRoots
+  } = assertSafeHostDirectoryPath(options.dirPath, options);
+  const exemptTempRoots = [...logicalRoots, ...realRoots];
 
   let stat;
   try {
-    stat = fs.statSync(resolvedPath);
+    stat = fs.statSync(realPath);
   } catch (err) {
     if (err?.code === 'EACCES' || err?.code === 'EPERM') {
       throw Object.assign(new Error('无权限读取该目录'), { status: 403 });
@@ -2344,7 +2471,7 @@ function listHostDirectories(options = {}) {
 
   let dirents;
   try {
-    dirents = fs.readdirSync(resolvedPath, { withFileTypes: true });
+    dirents = fs.readdirSync(realPath, { withFileTypes: true });
   } catch (err) {
     if (err?.code === 'EACCES' || err?.code === 'EPERM') {
       throw Object.assign(new Error('无权限列出该目录内容'), { status: 403 });
@@ -2398,10 +2525,18 @@ function listHostDirectories(options = {}) {
     const isHidden = name.startsWith('.');
     if (!showHidden && isHidden) continue;
     const childFull = path.join(resolvedPath, name);
+    if (isSensitiveHostPath(childFull, { exemptTempRoots })) continue;
     let isDir = false;
     try {
-      if (d.isDirectory()) isDir = true;
-      else if (d.isSymbolicLink() && fs.statSync(childFull).isDirectory()) isDir = true;
+      if (d.isDirectory()) {
+        isDir = true;
+      } else if (d.isSymbolicLink()) {
+        const realChild = fs.realpathSync(childFull);
+        if (!realRoots.some((r) => isPathWithinRoot(realChild, r)) || isSensitiveHostPath(realChild, { exemptTempRoots })) {
+          continue;
+        }
+        if (fs.statSync(realChild).isDirectory()) isDir = true;
+      }
     } catch {}
     if (!isDir) continue;
     const linked = primaryPathMap.get(childFull) || null;
@@ -2425,7 +2560,12 @@ function listHostDirectories(options = {}) {
   const entries = truncated ? allEntries.slice(0, MAX_DIR_ENTRIES) : allEntries;
 
   const parsedRoot = path.parse(resolvedPath).root;
-  const parentPath = resolvedPath === parsedRoot ? null : path.dirname(resolvedPath);
+  const candidateParent = resolvedPath === parsedRoot ? null : path.dirname(resolvedPath);
+  const atBoundary = resolvedPath === matchedRoot
+    || realPath === matchedRealRoot
+    || !candidateParent
+    || !isPathWithinRoot(candidateParent, matchedRoot);
+  const parentPath = atBoundary ? null : candidateParent;
   const currentName = path.basename(resolvedPath) || resolvedPath;
   const existingProject = primaryPathMap.get(resolvedPath) || null;
   let selfIsGitRepo = false;
@@ -2450,15 +2590,14 @@ function listHostDirectories(options = {}) {
 }
 
 function createHostSubdirectory(payload = {}, options = {}) {
-  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
   const rawParent = String(payload?.parentPath || '').trim();
   if (!rawParent) {
     throw Object.assign(new Error('缺少父目录路径'), { status: 400 });
   }
-  const resolvedParent = resolveHostPathInput(rawParent, homeDir);
+  const { resolvedPath: resolvedParent, realPath: realParent } = assertSafeHostDirectoryPath(rawParent, options);
   let parentStat;
   try {
-    parentStat = fs.statSync(resolvedParent);
+    parentStat = fs.statSync(realParent);
   } catch (err) {
     if (err?.code === 'EACCES' || err?.code === 'EPERM') {
       throw Object.assign(new Error('无权限访问父目录'), { status: 403 });
@@ -2475,8 +2614,13 @@ function createHostSubdirectory(payload = {}, options = {}) {
   }
 
   const targetPath = path.join(resolvedParent, rawName);
-  if (fs.existsSync(targetPath)) {
-    const st = fs.statSync(targetPath);
+  const { realPath: realTargetPath } = assertSafeHostDirectoryPath(targetPath, options);
+  let existingLstat = null;
+  try {
+    existingLstat = fs.lstatSync(targetPath);
+  } catch {}
+  if (existingLstat) {
+    const st = fs.statSync(realTargetPath);
     if (!st.isDirectory()) {
       throw Object.assign(new Error('同名文件已存在且不是文件夹'), { status: 400 });
     }
@@ -2495,19 +2639,27 @@ function createHostSubdirectory(payload = {}, options = {}) {
 }
 
 async function createRemoteProject(payload = {}, options = {}) {
-  const homeDir = path.resolve(String(options.homeDir || os.homedir()));
   const rawFolder = String(payload?.folderPath || '').trim();
   if (!rawFolder) {
     throw Object.assign(new Error('请选择项目文件夹路径'), { status: 400 });
   }
-  const resolvedPath = resolveHostPathInput(rawFolder, homeDir);
-  if (resolvedPath === path.parse(resolvedPath).root) {
-    throw Object.assign(new Error('不支持直接以系统根目录作为项目'), { status: 400 });
+  const {
+    resolvedPath,
+    realPath,
+    homeDir,
+    realHomeDir
+  } = assertSafeHostDirectoryPath(rawFolder, options);
+  if (
+    resolvedPath === path.parse(resolvedPath).root ||
+    resolvedPath === homeDir ||
+    realPath === realHomeDir
+  ) {
+    throw Object.assign(new Error('不支持直接以用户主目录或系统根目录作为项目，请选择具体项目子目录'), { status: 400 });
   }
 
   let dirStat;
   try {
-    dirStat = fs.statSync(resolvedPath);
+    dirStat = fs.statSync(realPath);
   } catch (err) {
     if (err?.code === 'EACCES' || err?.code === 'EPERM') {
       throw Object.assign(new Error('无权限访问所选文件夹'), { status: 403 });
@@ -9516,6 +9668,55 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
     failedAuthMap.delete(clientKey);
 
+    // Same-Site 跨端口 CSRF 加固：所有写请求强制要求 application/json，并校验同源 Origin/Referer 或自定义 X-AG-Remote-Token 请求头
+    const reqMethodUpper = String(req.method || 'GET').toUpperCase();
+    if (reqMethodUpper !== 'GET' && reqMethodUpper !== 'HEAD' && reqMethodUpper !== 'OPTIONS') {
+      const rawCt = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (rawCt !== 'application/json') {
+        res.writeHead(415, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: '写接口仅接受 Content-Type: application/json 请求' }));
+        return;
+      }
+      const headerToken = String(req.headers['x-ag-remote-token'] || '').trim();
+      const hasValidCustomHeader = Boolean(headerToken && timingSafeTokenMatch(headerToken, config.token));
+      const reqHost = String(req.headers.host || '').trim().toLowerCase();
+      const rawOrigin = String(req.headers.origin || '').trim();
+      const rawReferer = String(req.headers.referer || '').trim();
+      const parseHeaderHost = (val) => {
+        if (!val || val.toLowerCase() === 'null') return null;
+        try { return new URL(val).host.toLowerCase(); } catch { return null; }
+      };
+      let sameOriginVerified = false;
+      if (rawOrigin) {
+        const originHost = parseHeaderHost(rawOrigin);
+        if (!originHost || (reqHost && originHost !== reqHost)) {
+          if (!hasValidCustomHeader) {
+            res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ ok: false, error: '检测到跨源或跨端口写请求，已拦截 (CSRF)' }));
+            return;
+          }
+        } else {
+          sameOriginVerified = true;
+        }
+      } else if (rawReferer) {
+        const refHost = parseHeaderHost(rawReferer);
+        if (!refHost || (reqHost && refHost !== reqHost)) {
+          if (!hasValidCustomHeader) {
+            res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ ok: false, error: '检测到跨源或跨端口写请求，已拦截 (CSRF)' }));
+            return;
+          }
+        } else {
+          sameOriginVerified = true;
+        }
+      }
+      if (fromCookie && !hasValidCustomHeader && !sameOriginVerified) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: 'Cookie 鉴权写请求须提供同源 Origin 或 X-AG-Remote-Token 请求头' }));
+        return;
+      }
+    }
+
     const isHttpsForwarded = fromLoopback && String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https';
     const secureAttr = isHttpsForwarded ? '; Secure' : '';
     const cookiesToSet = [];
@@ -9717,6 +9918,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           dirPath,
           showHidden,
           ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
           ...(options.configDir ? { configDir: options.configDir } : {})
         });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -9732,7 +9934,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       try {
         const payload = await readJsonBody(req);
         const result = createHostSubdirectory(payload, {
-          ...(options.homeDir ? { homeDir: options.homeDir } : {})
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {})
         });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(result));
@@ -9752,6 +9955,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
         const createdRes = await createRemoteProject(payload, {
           ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
           ...(options.configDir ? { configDir: options.configDir } : {}),
           ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
           ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
@@ -10442,6 +10646,9 @@ module.exports = {
   listCatalogConversations,
   getConversationMessagesPage,
   warmConversationSession,
+  isSensitiveHostPath,
+  resolveAllowedHostRoots,
+  assertSafeHostDirectoryPath,
   listHostDirectories,
   createHostSubdirectory,
   createRemoteProject,
