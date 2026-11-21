@@ -40,6 +40,106 @@ function sanitizeRemoteDisplayConfig(raw) {
   return out;
 }
 
+const DEFAULT_REMOTE_QUICK_PROMPTS = [
+  { id: 'tpl-continue', label: '继续', text: '继续', autoSend: true },
+  { id: 'tpl-zh', label: '用中文回答', text: '用中文回答', autoSend: true },
+  { id: 'tpl-run', label: '跑一下', text: '跑一下', autoSend: true },
+  { id: 'tpl-implement', label: '直接实现', text: '直接实现', autoSend: true },
+  { id: 'tpl-fix-err', label: '修复这个报错', text: '修复这个报错：\n', autoSend: false },
+  { id: 'tpl-optimize', label: '优化一下', text: '优化一下', autoSend: true }
+];
+
+const REMOTE_BUILTIN_POOL_DEFS = [
+  { id: 'plan', label: '/plan 规划', text: '/plan ', supportsAutoSend: false },
+  { id: 'grill-me', label: '/grill-me 追问', text: '/grill-me ', supportsAutoSend: false },
+  { id: 'btw', label: '/btw 旁路提问', text: '/btw ', supportsAutoSend: false },
+  { id: 'learn', label: '/learn 沉淀', text: '/learn ', supportsAutoSend: false },
+  { id: 'goal', label: '/goal 持续到底', text: '/goal ', supportsAutoSend: false },
+  { id: 'boost', label: '/boost 深度攻坚', text: '/boost ', supportsAutoSend: false },
+  { id: 'swarm', label: '/swarm 蜂群', text: '/swarm ', supportsAutoSend: false },
+  { id: 'teamwork', label: '/teamwork 团队', text: '/teamwork ', supportsAutoSend: false },
+  { id: 'browser', label: '/browser 浏览器', text: '/browser ', supportsAutoSend: false },
+  { id: 'schedule', label: '/schedule 定时', text: '/schedule ', supportsAutoSend: false },
+  { id: 'reload', label: '重载规则', text: '重新读取 AGENTS', supportsAutoSend: true }
+];
+
+function buildRemoteQuickPrompts(uiPrefs = null) {
+  const rawList = uiPrefs && Array.isArray(uiPrefs.quickPrompts) ? uiPrefs.quickPrompts : null;
+  const baseList = [];
+  const seenText = new Set();
+  if (rawList) {
+    for (let i = 0; i < rawList.length; i++) {
+      const item = rawList[i];
+      if (!item || typeof item !== 'object') continue;
+      const label = String(item.label ?? '').trim();
+      const text = String(item.text ?? '');
+      if (!label || !text.trim()) continue;
+      const trimmed = text.trim();
+      if (trimmed === '/compact' || seenText.has(trimmed)) continue;
+      seenText.add(trimmed);
+      const rawId = String(item.id || '').trim();
+      baseList.push({
+        id: rawId && /^[a-zA-Z0-9_-]{1,32}$/.test(rawId) ? rawId : `custom-${i}`,
+        label: label.slice(0, 24),
+        text: text.slice(0, 2000),
+        autoSend: Boolean(item.autoSend)
+      });
+      if (baseList.length >= 16) break;
+    }
+  }
+  if (!baseList.length) {
+    for (const def of DEFAULT_REMOTE_QUICK_PROMPTS) {
+      const trimmed = def.text.trim();
+      if (!seenText.has(trimmed)) {
+        seenText.add(trimmed);
+        baseList.push({ ...def });
+      }
+    }
+  }
+
+  const poolObj = uiPrefs && uiPrefs.quickPool && typeof uiPrefs.quickPool === 'object' ? uiPrefs.quickPool : null;
+  if (poolObj && baseList.length < 16) {
+    const autoSendBuiltin = uiPrefs.quickAutoSendBuiltin !== false;
+    for (const p of REMOTE_BUILTIN_POOL_DEFS) {
+      if (baseList.length >= 16) break;
+      if (poolObj[p.id] !== true) continue;
+      const trimmed = p.text.trim();
+      if (seenText.has(trimmed)) continue;
+      seenText.add(trimmed);
+      baseList.push({
+        id: p.id,
+        label: p.label,
+        text: p.text,
+        autoSend: Boolean(p.supportsAutoSend && autoSendBuiltin)
+      });
+    }
+  }
+  return baseList.slice(0, 16);
+}
+
+let cachedRemoteQuickPrompts = null;
+let cachedRemoteQuickPromptsAt = 0;
+
+function resolveCachedRemoteQuickPrompts() {
+  const now = Date.now();
+  if (cachedRemoteQuickPrompts && (now - cachedRemoteQuickPromptsAt) < 2000) {
+    return cachedRemoteQuickPrompts;
+  }
+  let next = DEFAULT_REMOTE_QUICK_PROMPTS;
+  try {
+    const collector = require('./meter-collector');
+    const res = collector && typeof collector.getPluginSettings === 'function'
+      ? collector.getPluginSettings()
+      : null;
+    next = buildRemoteQuickPrompts(res?.uiPreferences || null);
+  } catch {
+    next = DEFAULT_REMOTE_QUICK_PROMPTS;
+  }
+  cachedRemoteQuickPrompts = next;
+  cachedRemoteQuickPromptsAt = now;
+  return next;
+}
+
 // ==================== 配置与内网安全校验 ====================
 
 function getRemoteConfigPath() {
@@ -4952,13 +5052,17 @@ function buildMobileAppHtml() {
       flex-shrink:0;background:transparent;padding:2px 10px 2px;
       display:flex;flex-direction:column;gap:5px;
     }
-    .chips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 2px}
+    .chips{display:flex;align-items:center;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 2px;min-height:32px}
     .chips::-webkit-scrollbar{display:none}
     .chip{
       appearance:none;flex-shrink:0;border:1px solid var(--border-subtle);background:var(--surface-subtle);color:var(--muted);
-      border-radius:999px;padding:5px 11px;font-size:12.5px;white-space:nowrap;cursor:pointer;
+      border-radius:999px;padding:5px 11px;font-size:12.5px;white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;gap:4px;
     }
     .chip.suggest{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-fg);font-weight:500}
+    .chip.chip-mode-toggle{border-color:var(--border-strong);background:var(--surface-soft);color:var(--fg-sub);font-weight:600;padding:5px 10px}
+    .chip.chip-mode-toggle.active{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-fg)}
+    .chip.quick-prompt{color:var(--fg-secondary)}
+    .chip.quick-prompt.direct{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg)}
     .attach-hint{
       display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:12px;
       background:var(--accent-bg);border:1px solid var(--accent-border);font-size:12.5px;color:var(--accent-strong-fg);
@@ -6042,6 +6146,12 @@ function buildMobileAppHtml() {
     let cachedContextResp = null;
     let latestDisplayConfig = null;
     let latestSnap = null;
+    const QUICK_DIRECT_MODE_KEY = 'ag_remote_quick_direct_v1';
+    const DEFAULT_CLIENT_QUICK_PROMPTS = ${JSON.stringify(DEFAULT_REMOTE_QUICK_PROMPTS).replace(/</g, '\\u003c')};
+    let quickDirectMode = (() => {
+      try { return localStorage.getItem(QUICK_DIRECT_MODE_KEY) !== '0'; } catch { return true; }
+    })();
+    let lastQuickSendAt = 0;
     const promptDraftState = new Map();
     let promptSubmittingSig = '';
     let queueActionBusy = false;
@@ -8111,14 +8221,65 @@ function buildMobileAppHtml() {
         }
       }
 
-      // 轻盈下一步建议 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
+      // 轻盈下一步建议 & 快捷口令 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
+      renderQuickChipsBar(snap);
+
+      // Drawer Conversations & Multi-Project Grouping (with projectGroups drilldown fallback)
+      const useDrilldownDrawer = shouldUseDrilldownDrawer(snap);
+      const navBarEl = $('drawer-nav-bar');
+      const convToolbarEl = document.querySelector('.conv-toolbar');
+      if (navBarEl) navBarEl.hidden = !useDrilldownDrawer;
+      if (convToolbarEl) convToolbarEl.hidden = useDrilldownDrawer;
+      if (useDrilldownDrawer) {
+        renderDrawerProjectsAndConversations(snap);
+      } else {
+        reconcileExtraConversations(snap);
+        renderConversationList(snap);
+      }
+      return true;
+    }
+
+    function renderQuickChipsBar(snap) {
       const chips = $('chips');
+      if (!chips) return;
       const items = [];
-      if (!snap.busy) {
-        for (const s of (snap.suggestions || [])) {
+      items.push({
+        cls: 'chip chip-mode-toggle' + (quickDirectMode ? ' active' : ''),
+        text: quickDirectMode ? '⚡直发' : '✎填入',
+        raw: quickDirectMode ? 'direct' : 'insert',
+        isModeToggle: true,
+        act: () => {
+          quickDirectMode = !quickDirectMode;
+          try { localStorage.setItem(QUICK_DIRECT_MODE_KEY, quickDirectMode ? '1' : '0'); } catch {}
+          chips.dataset.sig = '';
+          renderQuickChipsBar(latestSnap || snap);
+          showToast(quickDirectMode ? '已切换为「⚡直发」模式（无参口令点击即发）' : '已切换为「✎填入」模式（点击先填进输入框）');
+          return { ok: true };
+        }
+      });
+
+      if (!snap?.busy) {
+        for (const s of (snap?.suggestions || [])) {
           items.push({ cls: 'chip suggest', text: '✦ ' + s, raw: s, isSuggest: true });
         }
       }
+
+      const quickList = (Array.isArray(snap?.quickPrompts) && snap.quickPrompts.length)
+        ? snap.quickPrompts
+        : DEFAULT_CLIENT_QUICK_PROMPTS;
+      for (const qp of quickList) {
+        if (!qp || !qp.label || !qp.text) continue;
+        const isDirect = Boolean(quickDirectMode && qp.autoSend);
+        items.push({
+          cls: isDirect ? 'chip quick-prompt direct' : 'chip quick-prompt',
+          text: (isDirect ? '⚡ ' : '✎ ') + qp.label,
+          raw: qp.text,
+          qpLabel: qp.label,
+          qpAutoSend: Boolean(qp.autoSend),
+          isQuickPrompt: true
+        });
+      }
+
       items.push({ cls: 'chip', text: '/compact', act: () => apiAction({ action: 'send', text: '/compact' }) });
       items.push({
         cls: 'chip',
@@ -8139,7 +8300,7 @@ function buildMobileAppHtml() {
         }
       });
 
-      const chipsSig = JSON.stringify(items.map((it) => [it.cls, it.text, it.raw || '']));
+      const chipsSig = JSON.stringify([quickDirectMode, items.map((it) => [it.cls, it.text, it.raw || ''])]);
       if (chips.dataset.sig !== chipsSig) {
         chips.dataset.sig = chipsSig;
         chips.innerHTML = '';
@@ -8148,6 +8309,14 @@ function buildMobileAppHtml() {
           b.type = 'button';
           b.className = it.cls;
           b.textContent = it.text;
+          if (it.isModeToggle) {
+            b.dataset.role = 'quick-mode-toggle';
+            b.setAttribute('aria-pressed', quickDirectMode ? 'true' : 'false');
+            b.title = '切换快捷口令点击行为：⚡直发 / ✎填入';
+          } else if (it.isQuickPrompt) {
+            b.dataset.role = 'quick-prompt';
+            b.title = (quickDirectMode && it.qpAutoSend) ? ('⚡ 直发：' + it.raw) : ('✎ 填入：' + it.raw);
+          }
           bindButtonClick(b, async () => {
             try {
               if (it.isSuggest) {
@@ -8162,6 +8331,36 @@ function buildMobileAppHtml() {
                   if (typeof autoGrow === 'function') autoGrow();
                   taEl.focus();
                 }
+              } else if (it.isQuickPrompt) {
+                const taEl = $('input');
+                const hasAttachments = typeof uploadedNames !== 'undefined' && Array.isArray(uploadedNames) && uploadedNames.length > 0;
+                const hasDraft = Boolean(taEl && taEl.value.trim());
+                const hasDraftOrAttach = hasDraft || hasAttachments;
+                if (quickDirectMode && it.qpAutoSend && !hasDraftOrAttach) {
+                  const nowTs = Date.now();
+                  if ((nowTs - lastQuickSendAt) < 800) return;
+                  lastQuickSendAt = nowTs;
+                  stickBottom = true;
+                  const r = await apiAction({ action: 'send', text: it.raw });
+                  if (r?.ok) showToast('⚡ 已直发：' + (it.qpLabel || it.raw));
+                  else showToast(r?.error || r?.actionResult?.error || '发送失败');
+                } else {
+                  if (taEl) {
+                    const prev = taEl.value || '';
+                    const insertText = String(it.raw || '');
+                    if (!prev.trim()) {
+                      taEl.value = insertText;
+                    } else {
+                      const sep = /[\\s\\n]$/.test(prev) ? '' : ' ';
+                      taEl.value = prev + sep + insertText;
+                    }
+                    if (typeof autoGrow === 'function') autoGrow();
+                    taEl.focus();
+                  }
+                  showToast((hasDraftOrAttach && quickDirectMode && it.qpAutoSend)
+                    ? ('已有草稿，已改为追加填入：' + it.qpLabel)
+                    : ('已填入：' + it.qpLabel));
+                }
               } else if (it.act) {
                 const r = await it.act();
                 if (r && !r.ok) showToast(r.error || r.actionResult?.error || '操作失败');
@@ -8173,20 +8372,6 @@ function buildMobileAppHtml() {
           chips.appendChild(b);
         }
       }
-
-      // Drawer Conversations & Multi-Project Grouping (with projectGroups drilldown fallback)
-      const useDrilldownDrawer = shouldUseDrilldownDrawer(snap);
-      const navBarEl = $('drawer-nav-bar');
-      const convToolbarEl = document.querySelector('.conv-toolbar');
-      if (navBarEl) navBarEl.hidden = !useDrilldownDrawer;
-      if (convToolbarEl) convToolbarEl.hidden = useDrilldownDrawer;
-      if (useDrilldownDrawer) {
-        renderDrawerProjectsAndConversations(snap);
-      } else {
-        reconcileExtraConversations(snap);
-        renderConversationList(snap);
-      }
-      return true;
     }
 
     function shouldUseDrilldownDrawer(snap) {
@@ -11786,7 +11971,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       hosts: snapInfo.hosts,
       endpoints: snapInfo.endpoints,
       enabledChannels: config.enabledChannels,
-      displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay)
+      displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay),
+      quickPrompts: Array.isArray(snap.quickPrompts) ? snap.quickPrompts : resolveCachedRemoteQuickPrompts()
     };
     if (clientId) out.clientId = clientId;
     if (!out.usageSummary && fallbackUsageSummary) {
@@ -13593,6 +13779,8 @@ module.exports = {
   },
   DEFAULT_REMOTE_DISPLAY_CONFIG,
   sanitizeRemoteDisplayConfig,
+  DEFAULT_REMOTE_QUICK_PROMPTS,
+  buildRemoteQuickPrompts,
   getRemoteClientSession,
   clearRemoteClientSessionsForTests,
   enumerateLocalAddresses,
