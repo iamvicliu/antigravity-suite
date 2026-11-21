@@ -1989,7 +1989,7 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
     enhancer.toggleRemotePopover(false);
 
     const mobileHtml = buildMobileAppHtml();
-    assert.ok(mobileHtml.includes('height:100%;position:fixed;top:0;left:0;right:0;bottom:0'), '手机端页面应使用 bottom:0 贴底全高布局');
+    assert.ok(mobileHtml.includes('position:fixed;inset:0;height:auto'), '手机端页面 body 应使用 position:fixed;inset:0;height:auto 贴底全高布局');
     assert.ok(!/window\.screen\?\.(height|width)/.test(mobileHtml), '手机端不应使用 window.screen 高度放大视口，避免截断底部工具栏');
     assert.ok(mobileHtml.includes('X-AG-Device-Id'), '手机端应上报 X-AG-Device-Id 以精确追踪关联设备');
     const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
@@ -8149,7 +8149,7 @@ test('需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     vv._emit('resize');
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(appEl.classList.contains('kb-open'), false);
-    assert.equal(env.doc.body.style.height, '100%');
+    assert.equal(env.doc.body.style.height, '');
   } finally {
     for (const id of activeTimers) clearTimeout(id);
     activeTimers.clear();
@@ -12832,9 +12832,9 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   assert.ok(html.includes('padding-bottom:calc(4px + var(--safe-bottom))'), '.app 应绑定 --safe-bottom 收紧底部留白');
   assert.ok(html.includes('padding:calc(env(safe-area-inset-top) + 12px) 12px calc(10px + var(--safe-bottom))'), '.drawer 应绑定 --safe-bottom 消除侧边栏底部大块留白');
   assert.ok(html.includes('classList?.toggle?.(\'is-standalone\''), '前端启动应检测 navigator.standalone / display-mode 并设置 body.is-standalone');
-  assert.ok(html.includes('body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)));height:auto}'), '独立 PWA 模式应将 body 设为 height:auto 贴满 bottom:0，避免 iOS 底部 60~93px 死区');
-  assert.ok(html.includes("document.body.style.height = isStandalonePwa ? '' : '100%';"), 'syncViewportHeight 在独立 PWA 模式下应清除内联 height 贴满底边');
-  assert.ok(html.includes('@supports (height:100dvh){html{height:100dvh}}'), '普通 Safari 浏览器模式下 html 应升级为 100dvh 随地址栏动态贴底');
+  assert.ok(html.includes('position:fixed;inset:0;height:auto;overflow:hidden'), '通用 body 应使用 position:fixed;inset:0;height:auto 贴满底边，避免 Safari 与独立 PWA 底部死区');
+  assert.ok(html.includes("document.body.style.height = '';"), 'syncViewportHeight 在无键盘及键盘收起时应统一清除内联 height');
+  assert.ok(html.includes('height:100%;height:100dvh;overflow:hidden'), 'html 应设置 height:100%;height:100dvh 随浏览器工具栏动态贴底');
   assert.ok(html.includes('.topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}') && html.includes('flex:1 0 100%;width:100%;gap:6px;'), '手机端顶栏功能按钮应独立成第二行，释放整行宽度给标题与项目名');
 
   // 3. 独立 PWA 模式（navigator.standalone = true）下键盘弹出、收起与弹窗锁高行为级实测
@@ -12959,7 +12959,7 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   assert.equal(brBodyClasses.has('is-standalone'), false);
   brSandbox.__syncVp();
   assert.equal(brBodyStyle.bottom, '0');
-  assert.equal(brBodyStyle.height, '100%');
+  assert.equal(brBodyStyle.height, '', '普通浏览器无键盘时应清除内联 height 贴满底边');
   assert.equal(brDocStyles['--modal-h'], '740px');
   brModal.hidden = false;
   brDoc.activeElement = modalInputEl;
@@ -12967,16 +12967,18 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   brSandbox.__syncVp();
   assert.equal(brDocStyles['--modal-h'], '740px', '普通浏览器弹窗弹键盘时 --modal-h 必须锁定 740px');
   assert.equal(brAppClasses.has('kb-open'), false);
+  assert.equal(brBodyStyle.height, '');
   brModal.hidden = true;
   brDoc.activeElement = inputEl;
   brVv.height = 460;
   brSandbox.__syncVp();
   assert.equal(brAppClasses.has('kb-open'), true);
+  assert.equal(brBodyStyle.bottom, 'auto');
   assert.equal(brBodyStyle.height, '460px');
   brDoc.activeElement = null;
   brVv.height = 740;
   brSandbox.__syncVp();
   assert.equal(brAppClasses.has('kb-open'), false);
   assert.equal(brBodyStyle.bottom, '0');
-  assert.equal(brBodyStyle.height, '100%');
+  assert.equal(brBodyStyle.height, '', '普通浏览器键盘收起后必须清除内联 height 恢复满屏贴底');
 });
