@@ -9199,13 +9199,22 @@
       const entries = findQueuedMessagesDomEntries();
       if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
       const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : -1;
-      const reqText = String(payload?.text || '').trim();
-      let target = (reqIdx >= 0 && reqIdx < entries.length) ? entries[reqIdx] : null;
-      if (!target && reqText) {
-        target = entries.find((e) => e.text === reqText || e.text.includes(reqText)) || null;
+      const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+      const reqText = normText(payload?.text);
+      let target = null;
+      if (reqText) {
+        if (reqIdx >= 0 && reqIdx < entries.length && normText(entries[reqIdx].text) === reqText) {
+          target = entries[reqIdx];
+        } else {
+          target = entries.find((e) => normText(e.text) === reqText) || null;
+        }
+      } else if (reqIdx >= 0 && reqIdx < entries.length) {
+        target = entries[reqIdx];
       }
-      if (!target) target = entries[0];
-      if (!target?.deleteBtn) return { ok: false, error: '未找到桌面端排队消息删除按钮' };
+      if (!target) {
+        return { ok: false, error: '目标排队消息已变化或不存在，已取消删除以防误删' };
+      }
+      if (!target.deleteBtn) return { ok: false, error: '未找到桌面端排队消息删除按钮' };
       target.deleteBtn.click();
       return { ok: true, source: 'dom' };
     }
