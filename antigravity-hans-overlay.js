@@ -1,6 +1,6 @@
 (() => {
   if (typeof window === 'undefined') return;
-  const PATCH_FINGERPRINT = 'app-2.33.1-20261121-r32';
+  const PATCH_FINGERPRINT = 'app-2.34.0-20261121-r33';
   const fingerprint = window.__antigravityZhPatchRequestedFingerprint || PATCH_FINGERPRINT;
   if (window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === fingerprint) return;
   const updating = window.__antigravityZhPatchInstalled === true && window.__observedDocument === document;
@@ -4159,6 +4159,90 @@
     const low = k.toLowerCase();
     if (!lowerPhrases.has(low)) lowerPhrases.set(low, v);
   }
+
+  // v3.3.56–v3.3.57 (Antigravity 2.34.0) 沙箱/权限/编排器/输入框/侧栏/快捷键精确词条：仅写入 O(1) 精确查找表
+  const desktop234ExactPhrases = [
+    ["Enable terminal sandbox","启用终端沙箱"],
+    ["Terminal command auto execution","终端命令自动执行"],
+    ["File writes","文件写入"],
+    ["Commands outside sandbox","沙箱外命令"],
+    ["File access rules","文件访问规则"],
+    ["Network access rules","网络访问规则"],
+    ["Enable sandbox mode","启用沙箱模式"],
+    ["Security preset","安全预设"],
+    ["Add note","添加备注"],
+    ["In chat","在会话中查看"],
+    ["Answered:","已回答："],
+    ["Replaced by newer request","已被新请求替代"],
+    ["Expired · Action not taken","已过期 · 未执行操作"],
+    ["Ask to retry","请求重试"],
+    ["Select one or more options","请选择一项或多项"],
+    ["Runtime permission","运行时权限"],
+    ["Permission approval scope","权限批准范围"],
+    ["Tell the agent what to do instead...","告诉智能体改做什么…"],
+    ["Deny with note","拒绝并附上备注"],
+    ["Open System Settings ↗","打开系统设置 ↗"],
+    ["Reopen ↗","重新打开 ↗"],
+    ["Screen locked: agents can't use this Mac until you unlock it","屏幕已锁定。请解锁 Mac 后再由智能体操作。"],
+    ["This plugin is currently stopped. Events and stdout streams will appear here once started.","此插件已停止。启动后，此处会显示事件和标准输出。"],
+    ["Start Plugin","启动插件"],
+    ["Filter plugins","筛选插件"],
+    ["Category","类别"],
+    ["Plugins Options","插件选项"],
+    ["Input Box","输入框"],
+    ["Enter to send","按 Enter 发送"],
+    ["Choose which key sends a message in the chat composer.","选择在对话输入框中发送消息的快捷键。"],
+    ["Press Cmd+Enter to send, Enter for a new line.","按 Cmd+Enter 发送，按 Enter 换行。"],
+    ["Press Ctrl+Enter to send, Enter for a new line.","按 Ctrl+Enter 发送，按 Enter 换行。"],
+    ["Press Enter to send, Shift+Enter for a new line.","按 Enter 发送，按 Shift+Enter 换行。"],
+    ["Command setup script","命令初始化脚本"],
+    ["Default workspace VCS","默认工作区版本控制系统"],
+    ["Default Cog repository","默认 Cog 仓库"],
+    ["Default Cog branch / ref","默认 Cog 分支或引用"],
+    ["Sync JJ worktrees to head","将 JJ 工作树同步到最新修订"],
+    ["Setup script","初始化脚本"],
+    ["Orchestrator Settings","编排器设置"],
+    ["Choose the models Orchestrator uses. A larger, smarter orchestrator model with a faster, cheaper executor gives high quality for fewer tokens.","选择编排器使用的模型。搭配能力更强的编排模型与速度更快、成本更低的执行模型，可以用更少的 Token 获得高质量结果。"],
+    ["Orchestrator Model","编排模型"],
+    ["Plans the work, makes design decisions, and reviews the result. Pick a top-tier model. You can also pick one per conversation from the Orchestrator row in the model menu.","负责规划工作、作出设计决策并审查结果。请选择能力较强的模型。也可在模型菜单的 Orchestrator 一栏中为当前会话单独选择。"],
+    ["Executor Model","执行模型"],
+    ["Carries out the plan: searches, edits, builds, and tests. Pick a faster, cheaper model.","按计划执行搜索、编辑、构建和测试。请选择速度更快、成本更低的模型。"],
+    ["New conversation button","新建会话按钮"],
+    ["Signing out…","正在退出登录…"],
+    ["Describe your changes","描述你的更改"],
+    ["Describe your changes, or leave empty to auto-generate","描述你的更改，或留空以自动生成"],
+    ["Reply","回复"],
+    ["Telemetry is turned off for your account.","你的账号已关闭遥测。"],
+    ["Unsent draft","未发送的草稿"],
+    ["Messages now send immediately. Configure in","消息现在会立即发送。可在以下位置配置"],
+    ["Instead of queueing, try asking the agent to do something after the current task.","你可以让智能体在当前任务结束后执行下一项工作。"],
+    ["Thinking effort","推理强度"],
+    ["Controls how much time and quota the model spends reasoning before responding. Higher effort improves accuracy on hard problems, at the cost of slower responses and higher quota use.","控制模型在回复前用于推理的时间和额度。提高推理强度有助于更准确地处理难题，同时也会增加响应时间和额度消耗。"],
+    ["Edits the conversation title","编辑会话标题"],
+    ["Manual Order","手动排序"],
+    ["Show 5","显示 5 项"],
+    ["Show 10","显示 10 项"],
+    ["Customize Sidebar","自定义侧栏"],
+    ["Idle Conversations","空闲会话"],
+    ["Only applies when grouped by status","仅在按状态分组时适用"],
+    ["Show Automation Conversations","显示自动化会话"],
+    ["Show Plugin Conversations","显示插件会话"],
+    ["Any time","不限时间"],
+    ["Filter and Sort","筛选和排序"],
+    ["Last Activity","上次活动"],
+    ["Needs Input","等待输入"],
+    ["Failed to create automation.","创建自动化任务失败。"],
+    ["New automation","新建自动化任务"],
+    ["Create automation","创建自动化任务"],
+    ["No sign-in required. This app is ready to use.","无需登录，可以直接使用此应用。"],
+    ["Managed by application menu","由应用菜单管理"],
+    ["Terminal: Select All","终端：全选"]
+  ];
+  for (const [k, v] of desktop234ExactPhrases) {
+    if (!phrases.has(k)) phrases.set(k, v);
+    const low = k.toLowerCase();
+    if (!lowerPhrases.has(low)) lowerPhrases.set(low, v);
+  }
   {
     const canonicalZhToEn = [
       ['新增', 'New'],
@@ -4728,6 +4812,8 @@
     [new RegExp("^(https?://\\S+) wants to connect to a serial port$", "i"), "$1 请求连接串口"],
     [new RegExp("^Version (\\d+\\.\\d+\\.\\d+(?:[-+][A-Za-z0-9.-]+)?)$", "i"), "版本 $1"],
     [new RegExp("^(\\d+) MCP servers? failed to start$", "i"), "$1 个 MCP 服务器启动失败"],
+    [new RegExp("^Select Sidebar Item ([1-9])$"), "选择侧栏第 $1 项"],
+    [new RegExp("^Show (\\d+) More$"), "再显示 $1 项"],
   ];
 
   const patternsPost = [
@@ -5052,6 +5138,37 @@
     return isPullRequestLink(el) && Boolean(el.closest?.('.text-compact.gap-1\\.5') || el.hasAttribute?.('data-item-id'));
   }
 
+  function isProjectDeletionDetails(el) {
+    return Boolean(
+      el?.classList?.contains('flex-1') &&
+      el.parentElement?.querySelector?.(':scope > .shrink-0 > [data-testid="delete-project-button"]')
+    );
+  }
+
+  function isProjectDeletionDescription(el) {
+    const wrapper = el?.parentElement;
+    return Boolean(
+      el?.tagName === 'SPAN' &&
+      wrapper?.classList?.contains('whitespace-pre-wrap') &&
+      isProjectDeletionDetails(wrapper.parentElement)
+    );
+  }
+
+  const MCP_APP_STATUS_LABELS = {
+    'mcp-app-pane-loading': ['Loading', '正在加载'],
+    'mcp-app-pane-error': ['Could not load', '无法加载'],
+    'mcp-app-view-error': ['Could not load the app view:', '无法加载应用视图：']
+  };
+
+  function getMcpAppStatusLabel(el) {
+    const testId = el?.getAttribute?.('data-testid');
+    if (testId && Array.isArray(MCP_APP_STATUS_LABELS[testId])) return MCP_APP_STATUS_LABELS[testId];
+    if (el?.classList?.contains('shimmer-text-content') && el.closest?.('[data-testid="mcp-app-pane-loading"]')) {
+      return MCP_APP_STATUS_LABELS['mcp-app-pane-loading'];
+    }
+    return null;
+  }
+
   function shouldSkipSubtree(node) {
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     if (!element) return false;
@@ -5062,9 +5179,10 @@
     // 协调员欢迎语中的项目名由用户提供，即使与词条同名也不翻译。
     if (element.closest('[data-testid="coordinator-welcome"] strong')) return true;
 
-    // 删除说明中的项目名称是用户数据，即使与词条同名也不能翻译。
+    // 删除说明中的项目/自动化名称是用户数据，即使与词条同名也不能翻译。
     const strong = element.closest('strong');
-    if (strong && (projectDeletionParts(strong.parentElement)?.name === strong ||
+    if (strong && ((!strong.previousElementSibling && isProjectDeletionDescription(strong.parentElement)) ||
+        projectDeletionParts(strong.parentElement)?.name === strong ||
         automationManagedParts(strong.parentElement)?.name === strong)) return true;
 
     // 设置页和自定义项页的列表名称均为用户数据，描述和按钮仍可翻译。
@@ -5078,8 +5196,14 @@
       return true;
     }
 
+    // MCP App 状态节点仅允许前缀容器自身的首文本节点参与翻译，子元素中的应用名与诊断信息保持原文
+    if (element.closest('[data-testid="mcp-app-pane-loading"], [data-testid="mcp-app-pane-error"], [data-testid="mcp-app-view-error"]') &&
+        !getMcpAppStatusLabel(element)) {
+      return true;
+    }
+
     // 这些界面节点显示用户自定义名称或资源，而不是固定控件文案。
-    if (element.closest('[data-testid="file-title-name"], [data-testid="branch-pill-label"], [data-testid="branch-repo-label"], [data-testid="automation-name"], [data-testid="webview-download-filename"], [data-testid="side-question-tab-header-name"], [data-testid="subagent-tab-header-title"], [data-testid="project-selector-item"] span[title], [data-testid="branch-option"] span[title], [data-testid="project-selector-github-repo-item"], [data-testid="resource-link"]')) {
+    if (element.closest('[data-testid="file-title-name"], [data-testid="branch-pill-label"], [data-testid="branch-repo-label"], [data-testid="automation-name"], [data-testid="webview-download-filename"], [data-testid="side-question-tab-header-name"], [data-testid="subagent-tab-header-title"], [data-testid="project-selector-item"] span[title], [data-testid="branch-option"] span[title], [data-testid="project-selector-github-repo-item"], [data-testid="resource-link"], [data-testid="image-strip-tile"], [data-testid="image-strip-viewer-caption"], [data-testid="image-strip-viewer-thumbnail"], [data-testid="model-selector-orchestrator-model"]')) {
       return true;
     }
 
@@ -5147,7 +5271,7 @@
     if (agentResponse) {
       if (node.nodeType === Node.ELEMENT_NODE && element === agentResponse) return false;
       if (element.closest('[data-markdown-root]')) return true;
-      const isInteractive = element.closest('button, [role="button"], [class*="action"], [class*="button-container"], [data-testid="cleared-step-notice"], .files-changed-header, [data-testid="thinking-collapsible-trigger"], [data-testid="worked-for-collapsible"], [data-testid="tool-group-collapsible"], [data-testid="changed-files-card-header"], [data-testid="cascade-system-message-toolbar"]');
+      const isInteractive = element.closest('button, [role="button"], [class*="action"], [class*="button-container"], [data-testid="cleared-step-notice"], .files-changed-header, [data-testid="thinking-collapsible-trigger"], [data-testid="worked-for-collapsible"], [data-testid="tool-group-collapsible"], [data-testid="changed-files-card-header"], [data-testid="cascade-system-message-toolbar"], [data-testid="inline-card-expiry"], [data-testid="mcp-app-pane-loading"], [data-testid="mcp-app-pane-error"], [data-testid="mcp-app-view-error"]');
       if (!isInteractive) return true;
     }
 
@@ -5346,6 +5470,13 @@
     if (!trimmed) return null;
     const testId = element.getAttribute?.('data-testid');
 
+    if (trimmed.endsWith(' left') && element.closest?.('[data-testid="inline-card-expiry"]')) {
+      const remaining = trimmed.match(/^(\d+)([ms]) left$/);
+      if (remaining) return value.replace(trimmed, () => `剩余 ${remaining[1]} ${remaining[2] === 'm' ? '分钟' : '秒'}`);
+    }
+    if (trimmed === 'Delete project' && element.tagName === 'SPAN' && isProjectDeletionDetails(element.parentElement?.parentElement)) {
+      return value.replace(trimmed, () => '删除项目');
+    }
     if (trimmed === 'Welcome to Antigravity!' && element.tagName === 'DIV' && element.classList?.contains('entrance-title')) {
       return value.replace(trimmed, () => '欢迎使用 Antigravity！');
     }
@@ -5530,6 +5661,18 @@
     return null;
   }
 
+  function translateScopedAriaLabel(element, attr, value) {
+    if (attr !== 'aria-label' || !value) return null;
+    const trimmed = value.trim();
+    if (trimmed.startsWith('Reset ') && trimmed.endsWith(' to default') &&
+        element.closest?.('[data-testid^="shortcut-row-"]')) {
+      const action = trimmed.slice('Reset '.length, -' to default'.length);
+      const actionZh = matchExactPhrase(action);
+      if (actionZh) return value.replace(trimmed, () => '将' + actionZh + '恢复为默认设置');
+    }
+    return null;
+  }
+
   function translateElement(element) {
     if (shouldSkip(element)) return;
     if (!isInAntigravityContainer(element)) return;
@@ -5542,14 +5685,16 @@
       const tracked = originals.attrs.get(element)?.get(attr);
       if (tracked && tracked.zh === value) {
         if (tracked.orig && tracked.orig !== value) {
-          const retranslated = translateScopedPlaceholder(element, attr, tracked.orig) ??
+          const retranslated = translateScopedAriaLabel(element, attr, tracked.orig) ??
+            translateScopedPlaceholder(element, attr, tracked.orig) ??
             translateScopedNavigation(element, tracked.orig) ??
             (attr === 'aria-label' ? translateAriaLabel(tracked.orig) : null) ?? translate(tracked.orig);
           if (retranslated && retranslated !== value) writeAttr(element, attr, retranslated);
         }
         continue;
       }
-      const translated = translateScopedPlaceholder(element, attr, value) ??
+      const translated = translateScopedAriaLabel(element, attr, value) ??
+        translateScopedPlaceholder(element, attr, value) ??
         translateScopedNavigation(element, value) ??
         (attr === 'aria-label' ? translateAriaLabel(value) : null) ?? translate(value);
       if (translated !== value) writeAttr(element, attr, translated);
@@ -5562,6 +5707,12 @@
     const tracked = originals.texts.get(node);
     if (tracked && tracked.zh === value) {
       if (tracked.orig && tracked.orig !== value) {
+        const mcpTracked = node.parentElement ? getMcpAppStatusLabel(node.parentElement) : null;
+        if (mcpTracked) {
+          if (node !== node.parentElement.firstChild) return tracked.orig;
+          const t = tracked.orig.trim();
+          return t === mcpTracked[0] ? tracked.orig.replace(t, () => mcpTracked[1]) : tracked.orig;
+        }
         const scopedRetranslated = node.parentElement
           ? (translateScopedControlText(node.parentElement, tracked.orig) ?? translateScopedNavigation(node.parentElement, tracked.orig))
           : null;
@@ -5569,6 +5720,12 @@
         if (retranslated && retranslated !== value) return retranslated;
       }
       return value;
+    }
+    const mcpStatus = node.parentElement ? getMcpAppStatusLabel(node.parentElement) : null;
+    if (mcpStatus) {
+      if (node !== node.parentElement.firstChild) return value;
+      const t = value.trim();
+      return t === mcpStatus[0] ? value.replace(t, () => mcpStatus[1]) : value;
     }
     if (value.trim() === 'Type' && node.parentElement?.closest('[data-testid="plan-command-fyi-alert"]')) {
       return value.replace('Type', '输入');
