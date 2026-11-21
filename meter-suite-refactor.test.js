@@ -7701,7 +7701,7 @@ test('需求 26: 项目分组头样式层级、Enter换行按钮发送、本机�
     const ta = envUi.doc.getElementById('input');
     const sendBtn = envUi.doc.getElementById('btn-send');
     assert.equal(ta.getAttribute('enterkeyhint'), 'enter');
-    assert.equal(ta.getAttribute('placeholder'), '发消息…', '聊天输入框占位提示应精简为单行短句');
+    assert.equal(ta.getAttribute('placeholder'), '发消息… (Cmd/Ctrl + Enter 发送)', '聊天输入框占位提示应标明 Cmd/Ctrl + Enter 发送');
     ta.value = '第一行内容';
     const plainEnterEv = { type: 'keydown', key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, isComposing: false };
     const allowNativeNewline = ta.dispatchEvent(plainEnterEv);
@@ -11026,7 +11026,71 @@ test('PR #5 返修（二）：隔离视图新建页判空、裸 % 解码防崩�
   for (let i = 0; i < scripts33.length; i++) {
     assert.doesNotThrow(() => new vm.Script(scripts33[i][1], { filename: `mobile-app-33-script-${i}.js` }));
   }
+  assert.ok(html33.includes('placeholder="发消息… (Cmd/Ctrl + Enter 发送)"'), '主输入框占位提示必须明确标注 Cmd/Ctrl + Enter 发送');
   assert.ok(html33.includes('function bindSafeImeEnter(') && html33.includes("compositionstart") && html33.includes('e.keyCode === 229'), '输入框必须具备 Safari 中文 IME 防误触保护');
   assert.ok(html33.includes("activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory'"), '从 domTail 恢复全量轨迹时必须清空旧临时索引键防错序');
   assert.ok(!html33.includes('bodyEl.scrollTop = 0;'), 'clearScrollBodyOffset 不得暴力重置 scrollTop=0 把输入框滚出视野');
+
+  // 4. 短文本但超大 DOM 节点树（9000 个 span）在 extractSanitizedMarkdownHtml 遍历中途触发节点预算早停（返回空 html 而保留文本）
+  const envDomCap = createDomEnv();
+  envDomCap.win.location = { pathname: '/c/cap-dom-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/cap-dom-1' };
+  envDomCap.sandbox.location = envDomCap.win.location;
+  envDomCap.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const respNode = envDomCap.doc.createElement('div');
+  respNode.setAttribute('data-testid', 'agent-response');
+  const mdRoot = envDomCap.doc.createElement('div');
+  mdRoot.setAttribute('data-markdown-root', 'true');
+  for (let i = 0; i < 8200; i++) {
+    const sp = envDomCap.doc.createElement('span');
+    if (i === 0) sp.textContent = 'short-ok';
+    mdRoot.appendChild(sp);
+  }
+  respNode.appendChild(mdRoot);
+  envDomCap.doc.body.appendChild(respNode);
+  let enhCap = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDomCap.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDomCap.sandbox);
+    enhCap = envDomCap.sandbox.__AGEnhancer;
+    const capSnap = enhCap.getMobileSnapshot();
+    assert.equal(capSnap.messages.length, 1);
+    assert.equal(capSnap.messages[0].text, 'short-ok');
+    assert.equal(capSnap.messages[0].html, '', '短文本超大 DOM 树应在遍历中途触发预算早停，返回空 HTML');
+  } finally {
+    enhCap?.dispose?.();
+    envDomCap.sandbox.__AGContextMeter?.dispose?.();
+    envDomCap.cleanup?.();
+  }
+
+  // 5. fetchGenMap 淘汰后单调序号隔离：旧请求在途 -> 触发 >2000 个其他会话淘汰 -> 同会话新请求先返回 -> 旧请求晚归不得覆盖新结果
+  const evictMgr = remoteMod.createConversationHistoryManager();
+  let resolveOldEvict;
+  const oldEvictPromise = evictMgr.enrichMessages(
+    { sessionId: 'sess-evict-target', messages: [], _activeTrajSig: 'sig-old' },
+    {
+      localApiConnect: async () => ({
+        call: async () => await new Promise((r) => { resolveOldEvict = r; })
+      })
+    }
+  );
+  await new Promise((r) => setTimeout(r, 10));
+  const fastApi = async () => ({ call: async () => ({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'other' } }] } }) });
+  for (let i = 0; i < 2005; i++) {
+    await evictMgr.enrichMessages({ sessionId: `sess-filler-${i}`, messages: [], _activeTrajSig: `s-${i}` }, { localApiConnect: fastApi });
+  }
+  const newEvictSnap = await evictMgr.enrichMessages(
+    { sessionId: 'sess-evict-target', messages: [], _activeTrajSig: 'sig-new' },
+    {
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async () => ({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'NEW_AUTHORITATIVE_MSG' } }] } })
+      })
+    }
+  );
+  assert.equal(newEvictSnap.messages[0]?.text, 'NEW_AUTHORITATIVE_MSG');
+  // 让最早发起的旧请求晚归：绝不得覆盖已缓存的新结果
+  resolveOldEvict({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'OLD_STALE_MSG' } }] } });
+  await oldEvictPromise;
+  const afterStalePage = await evictMgr.getMessagesPage({ sessionId: 'sess-evict-target', limit: 30 });
+  assert.equal(afterStalePage.messages[0]?.text, 'NEW_AUTHORITATIVE_MSG', 'fetchGenMap 淘汰后旧请求晚归不得覆盖同会话新结果');
 });

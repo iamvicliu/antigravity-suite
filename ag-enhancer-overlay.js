@@ -6865,16 +6865,34 @@
   ]);
   const MD_SKIP_TAGS = new Set(['STYLE', 'SCRIPT', 'NOSCRIPT', 'SVG', 'MATH', 'ANNOTATION']);
 
-  function sanitizeMarkdownNodeToHtml(node, depth = 0) {
-    if (!node) return '';
+  function sanitizeMarkdownNodeToHtml(node, depth = 0, budget = null) {
+    if (!node || budget?.exceeded) return '';
+    if (budget) {
+      budget.nodes += 1;
+      if (budget.nodes > budget.maxNodes || budget.chars > budget.maxChars) {
+        budget.exceeded = true;
+        return '';
+      }
+    }
+    const charge = (n) => {
+      if (budget && n > 0) {
+        budget.chars += n;
+        if (budget.chars > budget.maxChars) {
+          budget.exceeded = true;
+          return false;
+        }
+      }
+      return true;
+    };
+    const emit = (s) => (charge(s ? s.length : 0) ? s : '');
     if (node.nodeType === Node.TEXT_NODE) {
-      return escapeHtml(node.nodeValue || '');
+      return emit(escapeHtml(node.nodeValue || ''));
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
 
     const tag = node.tagName;
     if (MD_SKIP_TAGS.has(tag)) return '';
-    if (depth > 24) return escapeHtml(node.textContent || '');
+    if (depth > 24) return emit(escapeHtml(node.textContent || ''));
 
     const cls = typeof node.className === 'string' ? node.className : '';
     if (cls.includes('katex-mathml') || (cls.includes('pointer-events-none') && cls.includes('sticky'))) {
@@ -6882,54 +6900,60 @@
     }
     if (tag === 'BDI' && cls.includes('context-scope-mention')) {
       const txt = (node.textContent || '').trim();
-      return txt ? `<code class="md-pill">${escapeHtml(txt)}</code>` : '';
+      return txt ? emit(`<code class="md-pill">${escapeHtml(txt)}</code>`) : '';
     }
     if (tag === 'BUTTON') {
       if (cls.includes('inline-pill')) {
         const txt = (node.textContent || '').trim();
-        return txt ? `<code class="md-pill">${escapeHtml(txt)}</code>` : '';
+        return txt ? emit(`<code class="md-pill">${escapeHtml(txt)}</code>`) : '';
       }
       return '';
     }
 
-    if (tag === 'HR') return '<hr>';
-    if (tag === 'BR') return '<br>';
+    if (tag === 'HR') return emit('<hr>');
+    if (tag === 'BR') return emit('<br>');
 
     let inner = '';
     for (const child of node.childNodes) {
-      inner += sanitizeMarkdownNodeToHtml(child, depth + 1);
+      if (budget?.exceeded) return '';
+      inner += sanitizeMarkdownNodeToHtml(child, depth + 1, budget);
     }
+    if (budget?.exceeded) return '';
 
     if (tag === 'A') {
       const rawHref = node.getAttribute('href') || '';
       if (/^https?:\/\//i.test(rawHref)) {
-        return `<a href="${escapeHtml(rawHref)}" target="_blank" rel="noopener">${inner}</a>`;
+        const escHref = escapeHtml(rawHref);
+        return charge(escHref.length + 43) ? `<a href="${escHref}" target="_blank" rel="noopener">${inner}</a>` : '';
       }
       return inner;
     }
 
     if (tag === 'DIV' && cls.includes('markdown-alert')) {
-      return `<blockquote class="md-alert">${inner}</blockquote>`;
+      return charge(42) ? `<blockquote class="md-alert">${inner}</blockquote>` : '';
     }
     if (tag === 'TABLE') {
-      return `<div class="md-table-wrap"><table>${inner}</table></div>`;
+      return charge(46) ? `<div class="md-table-wrap"><table>${inner}</table></div>` : '';
     }
     if (MD_ALLOWED_TAGS.has(tag)) {
       const lower = tag.toLowerCase();
-      return `<${lower}>${inner}</${lower}>`;
+      return charge(lower.length * 2 + 5) ? `<${lower}>${inner}</${lower}>` : '';
     }
     return inner;
   }
 
-  function extractSanitizedMarkdownHtml(mdRoots) {
+  function extractSanitizedMarkdownHtml(mdRoots, maxHtmlChars = 260000, maxNodes = 8000) {
     if (!Array.isArray(mdRoots) || !mdRoots.length) return '';
+    const budget = { chars: 0, maxChars: maxHtmlChars, nodes: 0, maxNodes, exceeded: false };
     let out = '';
     for (const root of mdRoots) {
-      const piece = sanitizeMarkdownNodeToHtml(root, 0).trim();
+      if (budget.exceeded) return '';
+      const piece = sanitizeMarkdownNodeToHtml(root, 0, budget).trim();
+      if (budget.exceeded) return '';
       if (!piece) continue;
       out += piece;
     }
-    return out;
+    return budget.exceeded ? '' : out;
   }
 
   function collectRecentMessages(limit = 60) {
@@ -6974,9 +6998,8 @@
       const rawMdReply = mdRoots.map((m) => (m.textContent || m.innerText || '').trim()).filter(Boolean).join('\n\n').trim();
       const overTextCap = rawMdReply.length > MAX_DOM_MSG_CHARS;
       let replyText = capText(rawMdReply, MAX_DOM_MSG_CHARS);
-      // 超过热路径字符上限时直接跳过整段 HTML 序列化（完整长文由服务端轨迹通道渲染）
-      const rawHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots);
-      const replyHtml = rawHtml && rawHtml.length > MAX_DOM_HTML_CHARS ? '' : rawHtml;
+      // 超过热路径字符上限时直接跳过 HTML 序列化；遍历中亦受字符与节点双预算早停（完整长文由服务端轨迹通道渲染）
+      const replyHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots, MAX_DOM_HTML_CHARS);
       if (!replyText) {
         const cloneText = capText((node.innerText || '')
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
