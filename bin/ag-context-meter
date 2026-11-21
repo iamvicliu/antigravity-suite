@@ -60,6 +60,8 @@ if [ -n "${AG_SUITE_DIR:-}" ] && [ -f "$AG_SUITE_DIR/cli.js" ]; then
   APP_DIR="$AG_SUITE_DIR"
 elif [ -f "$DEFAULT_APP_DIR/cli.js" ]; then
   APP_DIR="$DEFAULT_APP_DIR"
+elif [ -f "$HOME/.local/share/antigravity-suite/cli.js" ]; then
+  APP_DIR="$HOME/.local/share/antigravity-suite"
 else
   APP_DIR="$HOME/.local/share/antigravity-context-viewer"
 fi
