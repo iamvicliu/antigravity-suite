@@ -14347,3 +14347,90 @@ test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回
     fs.rmSync(tmpSecRoot, { recursive: true, force: true });
   }
 });
+
+test('彻底根治 iOS 主屏幕独立应用底部 59pt 空白死区：移除 black-translucent 与旧图标高度补偿 (#35)', async () => {
+  const { buildMobileAppHtml } = require('./mobile-remote');
+  const html = buildMobileAppHtml();
+
+  // 1. 治本：HTML 不再硬编码 apple-mobile-web-app-status-bar-style="black-translucent"，保留 theme-color 与 manifest
+  assert.ok(!html.includes('apple-mobile-web-app-status-bar-style'), '必须移除导致 59pt 视口短缺的 apple-mobile-web-app-status-bar-style meta');
+  assert.ok(html.includes('name="theme-color"') && html.includes('rel="manifest"'), '应保留动态 theme-color 与 manifest.json');
+
+  // 2. 全量 <script> 语法校验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-35-script-${i}.js` }));
+  }
+
+  // 3. 行为级实测 syncViewportHeight：旧版 black-translucent WebClip 补偿 vs 软键盘弹起 vs 普通 Safari
+  const pwaStart = html.indexOf("const appEl = document.querySelector('.app');");
+  const pwaEnd = html.indexOf('function scheduleViewportSyncBurst()');
+  assert.ok(pwaStart > 0 && pwaEnd > pwaStart);
+  const snippet = html.slice(pwaStart, pwaEnd);
+
+  const runViewportSim = ({ standalone, screenW, screenH, innerW, innerH, vvH, safeTop, focusInput }) => {
+    const docStyles = {};
+    const htmlStyle = { height: '', setProperty: (k, v) => { docStyles[k] = v; }, getPropertyValue: (k) => docStyles[k] || '' };
+    const bodyStyle = { height: '', bottom: '', transform: '' };
+    const appClasses = new Set();
+    const inputEl = { id: 'input', tagName: 'TEXTAREA' };
+    const appMockEl = { classList: { add: (c) => appClasses.add(c), remove: (c) => appClasses.delete(c), contains: (c) => appClasses.has(c) } };
+    const docMock = {
+      activeElement: focusInput ? inputEl : null,
+      documentElement: { clientHeight: innerH, style: htmlStyle },
+      body: { style: bodyStyle, classList: { toggle() {} } },
+      querySelector: (sel) => (sel === '.app' ? appMockEl : null)
+    };
+    const winMock = {
+      innerWidth: innerW,
+      innerHeight: innerH,
+      screen: { width: screenW, height: screenH },
+      navigator: { standalone },
+      visualViewport: { height: vvH, offsetTop: 0 },
+      matchMedia: (q) => ({ matches: String(q || '').includes('display-mode: standalone') ? standalone : false }),
+      getComputedStyle: () => ({ paddingTop: `${safeTop}px` })
+    };
+    const ctx = vm.createContext({
+      window: winMock,
+      document: docMock,
+      Date,
+      Math,
+      Number,
+      parseFloat,
+      $: (id) => (id === 'input' ? inputEl : null),
+      isDesktopLayout: () => false,
+      isTextEntryElement: (el) => el === inputEl,
+      getOpenModalBackdrop: () => null,
+      syncModalKeyboardOffset: () => {},
+      msgEl: { scrollTop: 0, scrollHeight: 0 },
+      stickBottom: false,
+      lastTextBlurAt: 0,
+      lastLayoutWidth: innerW,
+      lockedModalBaseH: innerH
+    });
+    vm.runInContext(`${snippet}\nsyncViewportHeight();`, ctx);
+    return { docStyles, htmlStyle, bodyStyle, appClasses };
+  };
+
+  // 3a. 旧版 black-translucent 主屏幕图标（iPhone Pro 393x852，视口短切为 793，safeTop=59）：自动补偿至 852px
+  const legacyRes = runViewportSim({ standalone: true, screenW: 393, screenH: 852, innerW: 393, innerH: 793, vvH: 793, safeTop: 59, focusInput: false });
+  assert.equal(legacyRes.docStyles['--app-h'], '852px', '旧版 black-translucent WebClip 应将 --app-h 补偿至 852px 填平 59pt 死区');
+  assert.equal(legacyRes.bodyStyle.height, '852px');
+  assert.equal(legacyRes.htmlStyle.height, '852px');
+
+  // 3b. 同机软键盘弹出（vvH=480，聚焦输入框）：立即让位给 480px，不得残留 852px 挡住输入框
+  const kbRes = runViewportSim({ standalone: true, screenW: 393, screenH: 852, innerW: 393, innerH: 793, vvH: 480, safeTop: 59, focusInput: true });
+  assert.equal(kbRes.docStyles['--app-h'], '480px', '软键盘弹起时必须切换回 visualViewport 高度 480px');
+  assert.equal(kbRes.bodyStyle.height, '480px');
+  assert.equal(kbRes.htmlStyle.height, '');
+
+  // 3c. 普通 Safari 浏览器（非 standalone）：即使存在地址栏差值也绝不触发旧图标拉高补偿
+  const safariRes = runViewportSim({ standalone: false, screenW: 393, screenH: 852, innerW: 393, innerH: 793, vvH: 793, safeTop: 59, focusInput: false });
+  assert.equal(safariRes.bodyStyle.height, '', '普通 Safari 浏览器不得触发 standalone 高度补偿');
+  assert.equal(safariRes.docStyles['--app-h'], '793px');
+
+  // 3d. 新版已移除 black-translucent 的主屏幕图标（safeTop=0, innerH=793）：不触发旧图标补偿，走自然 inset:0
+  const newIconRes = runViewportSim({ standalone: true, screenW: 393, screenH: 852, innerW: 393, innerH: 793, vvH: 793, safeTop: 0, focusInput: false });
+  assert.equal(newIconRes.bodyStyle.height, '', '新版独立图标原生锚定物理底边，不覆盖内联 height');
+});
