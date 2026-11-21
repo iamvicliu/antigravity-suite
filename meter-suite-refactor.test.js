@@ -12753,6 +12753,48 @@ test('修复 /compact 压缩完成后远程端永久卡在运行中的 Bug (#27)
       const enrHeuristic = await store27.enrichSnapshot({ ...snapDone, busy: true, strongDomBusy: false, busySignal: '' }, { localApiConnect: mockApi27, bypassCache: true });
       assert.equal(enrHeuristic.busy, false, '无强 DOM 运行信号且轨迹明确 IDLE 时，enrichSnapshot 必须清除残留假忙');
       assert.equal(enrHeuristic.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'idle');
+
+      // 场景 E：子代理运行中 + 主会话轨迹 IDLE + 无强 DOM 信号 → 仍显示 running 且不误清 busy
+      const mockApiSub27 = async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') {
+            return {
+              trajectorySummaries: {
+                'cccc1111-2222-3333-4444-555555555555': {
+                  summary: '含子代理的主会话',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  lastModifiedTime: new Date().toISOString()
+                },
+                'sub-child-27': {
+                  summary: '子代理任务',
+                  status: 'CASCADE_RUN_STATUS_RUNNING',
+                  parentConversationId: 'cccc1111-2222-3333-4444-555555555555',
+                  isSubagent: true,
+                  lastModifiedTime: new Date().toISOString()
+                }
+              }
+            };
+          }
+          if (method === 'ListProjects') return { projectIds: [] };
+          return {};
+        }
+      });
+      const enrSub = await store27.enrichSnapshot({ ...snapDone, busy: true, strongDomBusy: false, busySignal: '' }, { localApiConnect: mockApiSub27, bypassCache: true });
+      assert.equal(enrSub.busy, true, '子代理运行中时即使主轨迹 IDLE 且无强 DOM 信号也不得误清 busy');
+      assert.equal(enrSub.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'running');
+
+      // 场景 F：真实待审批（分别覆盖强 DOM 信号存在与不存在）→ 均保持 waiting，不被误改为 idle 或 running
+      const enrWaitNoDom = await store27.enrichSnapshot(
+        { ...snapDone, busy: false, strongDomBusy: false, busySignal: '', pendingApprovals: [{ id: 'ap-1', label: 'Run' }] },
+        { localApiConnect: mockApi27, bypassCache: true }
+      );
+      assert.equal(enrWaitNoDom.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'waiting', '无强 DOM 信号但存在待审批时必须保持 waiting');
+      const enrWaitWithDom = await store27.enrichSnapshot(
+        { ...snapDone, busy: true, strongDomBusy: true, busySignal: 'cancel-btn', pendingApprovals: [{ id: 'ap-1', label: 'Run' }] },
+        { localApiConnect: mockApi27, bypassCache: true }
+      );
+      assert.equal(enrWaitWithDom.conversations.find((c) => c.id === 'cccc1111-2222-3333-4444-555555555555')?.status, 'waiting', '存在强 DOM 信号且存在待审批时仍必须保持 waiting，不得误改为 running');
+      assert.equal(enrWaitWithDom.busy, true);
     } finally {
       fs.rmSync(tmpCatalog27, { recursive: true, force: true });
     }
