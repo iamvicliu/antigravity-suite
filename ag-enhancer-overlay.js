@@ -4363,7 +4363,7 @@
         isCustom: true,
         label,
         rec: '',
-        tag: itemAutoSend ? tr('自定义 · ⚡直发', 'Custom · ⚡Send') : tr('自定义快捷提示词', 'Custom Prompt'),
+        tag: itemAutoSend ? tr('自定义 · ⚡直发', 'Custom · ⚡Send') : tr('自定义 · 填入', 'Custom · Insert'),
         role: itemAutoSend
           ? tr('点击直接发送预设提示词（按住 ⌘/Ctrl 点击仅填入）', 'Click to send preset prompt directly (hold ⌘/Ctrl to insert only)')
           : tr('点击一键填入预设提示词到输入框（按住 ⌘/Ctrl 点击直接发送）', 'Click to insert preset prompt (hold ⌘/Ctrl + click to send directly)'),

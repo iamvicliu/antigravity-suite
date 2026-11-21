@@ -7,9 +7,9 @@
 装好后，你的 Antigravity 会多出下面 **6 样实用功能**：
 
 1. **🇨🇳 全中文界面 + 思考过程自动中译（零 Token）**：装好即变中文，英文思考过程与会话标题本地自动翻译并缓存，不消耗任何模型额度，可在 `⚙️` 里免重启秒切中英。
-2. **📱 手机/电脑远程控制（四通道 + 默认免登录 Cloudflare 隧道 + 多端隔离）**：扫码即可跨网聊、传图、批命令；支持 `局域网` / `Tailscale` / `Bonjour` / **默认启用的免登录 `Cloudflare 隧道`**（4G/5G 零配置开箱可用，也支持自有固定域名），多浏览器各自独立查看会话互不串扰，并与桌面端同步深浅外观与主题色。
+2. **📱 手机/电脑远程控制（四通道 + 默认免登录 Cloudflare 隧道 + 多端隔离）**：扫码即可跨网聊、传图、批命令；支持 `局域网` / `Tailscale` / `Bonjour` / **默认启用的免登录 `Cloudflare 隧道`**（4G/5G 零配置开箱可用，也支持自有固定域名），支持**多项目分组切换与全量历史消息无损上翻**、多浏览器独立查看会话互不串扰，并与桌面端同步深浅外观与主题色。
 3. **📊 上下文看板、240K 防卡死压缩 & 双窗口配额**：右上角圆环直接看当前上下文容量、每日与 52 周热力图及参考成本；`G4` / `C` 胶囊实时盯紧 Gemini 4 与 Claude/GPT 的 5 小时与每周额度；官方 512K 才压缩极易引发 4～5 分钟卡顿重算，套件默认在 240K 或缓存归零脱落时自动触发 `/compact` 并实时预警。
-4. **⚡ 输入框效率套件 & 顺手小工具**：内置 **14 项快捷指令推荐池**（点击 `/compact`、`/plan`、`/goal` 等自动转原生命令胶囊，悬停弹出双行解读）+ 自定义提示词与 **10 条热门对话口令模板一键添加**（免参口令默认直发，支持逐条切换、`⌘/Ctrl + 点击` 临时反转与防吞草稿保护）、发送区 **`✨ 优化` / `↩ 撤回`**、`Tab / →` 场景化下一步短句推荐，以及 **`⌘1`～`⌘9`** 切对话、右侧预览 **`⌘S`** 原地编辑与右上角 `>_ CLI`。
+4. **⚡ 输入框效率套件 & 顺手小工具**：内置 **14 项快捷指令推荐池**（点击 `/compact`、`/plan`、`/goal` 等自动转原生命令胶囊，悬停弹出双行解读）+ 自定义提示词与 **10 条热门对话口令模板一键添加**（区分 **`填入`** 仅放进输入框待补充 与 **`⚡直发`** 一键发出，支持 `⌘/Ctrl + 点击` 临时反转与防吞草稿保护）、发送区 **`✨ 优化` / `↩ 撤回`**、`Tab / →` 场景化下一步短句推荐，以及 **`⌘1`～`⌘9`** 切对话、右侧预览 **`⌘S`** 原地编辑与右上角 `>_ CLI`。
 5. **🛡️ 危险命令红框拦截**：AI 准备运行 `rm -rf`、`git reset --hard`、`sudo` 等高危命令时自动亮红框强拦截，就算开启了自动确认，也必须你亲手点击放行。
 6. **🔄 自动检测更新 & 一键升级**：后台自动对比 GitHub 最新版本，有新版时右上角 `⚙️` 会亮小红点，点一下 **「立即更新」**，免重启立刻热生效。
 
@@ -133,7 +133,8 @@ ag-context-meter status
 **远程端 `v2.0.0` 新能力**：
 - **顶部上下文窗口 & 本机用量抽屉**：远程页面顶栏新增上下文占用与本机累计用量入口，可随时查看当前窗口 Token 构成与互斥配额抽屉。
 - **9 项页面内容可配置**：在 **`⚙️` → `📱 远程设置`** →「Remote 页面显示内容」中，可按需开启/隐藏顶部上下文面板、本机已记录用量面板、模型配额胶囊、通道连接元信息、左侧会话抽屉、AI 思考折叠区、底部快捷建议、输入区工具栏（模型/权限）以及待审批横幅。
-- **多项目分组会话 & 远程本机目录建项目**：侧栏按项目分组浏览、切换与按项目新建会话；支持在 `$HOME` 及已登记工作区安全边界内浏览宿主机目录并新建/登记项目（自动拦截系统敏感路径、凭证目录及 Symlink 越界）。
+- **多项目分组会话、全量历史无损上翻 & 远程目录建项目**：侧栏按项目分组浏览、切换与按项目新建会话，支持**全量历史消息无损上翻加载与长回复防截断**；支持在 `$HOME` 及已登记工作区安全边界内浏览宿主机目录并新建/登记项目（自动拦截系统敏感路径、凭证目录及 Symlink 越界）。
+- **全会话状态汇总 & 远程性能提速**：后台自动汇总主会话与 Subagent 运行/等待状态并维护防缩水持久列表（`remote-session-catalog.json`）及授权模式图标实时联动；切会话时自动中止旧请求防轮询假死，长会话采用折叠思考惰性挂载、轨迹签名缓存与 `gzip` 响应压缩。
 - **多浏览器 / 多标签页会话隔离**：每个远程浏览器标签使用独立会话标识（`X-AG-Client-Id`），同时开多个浏览器各自切会话、留草稿或筛用量互不串扰（仅发送/执行审批等状态改变操作会通过桌面端安全串行队列执行）。
 - **输入快捷键与 IME 防误触**：远程输入框默认 `Enter` 换行、`Cmd/Ctrl + Enter` 发送，并针对 macOS Safari 中文输入法补齐 `composition` 选词防误触保护。
 - **三态外观跟随 & 主题同步**：远程端支持跟随系统 / 浅色 / 深色三态外观，强调色与桌面端动态主题保持一致。
@@ -159,12 +160,14 @@ ag-context-meter status
 
 ### 4. ⚡ 输入框效率套件 & 🛡️ 危险命令红框拦截
 
-- **内置 14 项快捷指令推荐池 & 自定义提示词**：
-  - 在 **`⚙️` → `终端与通用` →「快捷提示词」** 中，内置 14 项高频工作流指令（如 `/compact`、`/plan`、`/grill-me`、`/btw`、`/learn`、`/goal`、`/boost`、`/swarm`、`/teamwork`、`/browser`、`/schedule`、重载规则、复制会话 ID、导出 Markdown）统一作为推荐池开关（不可删除，点击即控制显隐），并按 **`🔥 日常高频与上下文`**、**`🚀 复杂攻坚与多 Agent`**、**`🛠️ 会话工具与规则`** 分组及推荐星级（`★必开` / `★推荐`）排列；悬停任意选项，下方**实时解读框**立即展示该指令的「作用」与「场景」。你也可以开启 **「内置免参指令点击直接发送」**（仅作用于 `/compact` 与重载规则，`/plan` 等带参斜杠前缀仍仅填入），或在下方自定义区使用 **10 条热门对话口令模板一键添加**（如 `直接实现`、`用中文回答`、`继续`、`不要解释`、`跑一下`、`优化一下`、`为什么不行`、`再改一版` 默认预设 **`⚡直发`**，`修复这个报错`、`按这个需求做` 默认预设 **`填入`**），亦可在列表右侧直接点 **「+ 新增」** 自由添加并为每条独立切换 **`填入` / `⚡直发`**。
-  - 输入框上方快捷栏同步按分组和推荐优先度显示按钮（开启直发的按钮右上角/末尾附带克制的主题色 `↵` 标记），鼠标悬停**零延迟弹出双行解读气泡**（`/compact` 还会动态标注 240K 自动压缩状态与当前上下文风险）；按住 **`⌘/Ctrl + 点击`** 可临时反转本次点击的“填入 / 直发”行为；内置**防吞草稿保护**（输入框已有不同草稿时跳过直发防止清空误发）、**800ms 防连点锁**与**发送按钮禁用态降级**；点击 `/compact`、`/plan`、`/goal` 等斜杠指令时，会自动激活并点选客户端内置的斜杠命令菜单，直接转换成原生命令胶囊（不再只是纯文本）。
+- **内置 14 项快捷指令推荐池 & 热门口令一键添加**：
+  - 在 **`⚙️` → `终端与通用` →「快捷提示词」** 中，内置 14 项高频工作流指令（如 `/compact`、`/plan`、`/grill-me`、`/btw`、`/learn`、`/goal`、`/boost`、`/swarm`、`/teamwork`、`/browser`、`/schedule`、重载规则、复制会话 ID、导出 Markdown）统一作为推荐池开关（不可删除，点击即控制显隐），并按 **`🔥 日常高频与上下文`**、**`🚀 复杂攻坚与多 Agent`**、**`🛠️ 会话工具与规则`** 分组及推荐星级（`★必开` / `★推荐`）排列；悬停任意选项，下方**实时解读框**立即展示该指令的「作用」与「场景」。
+  - 下方自定义区自带 **10 条热门对话口令模板** 一键添加到编辑列表（也支持右侧点 **`+ 新增`** 自由编写）：
+    - **`填入` vs `⚡直发` 区别**：**`填入`** 只把文字放进输入框，方便你接着粘贴报错日志或补充细节后再手动发送（`修复这个报错`、`按这个需求做` 默认预设 **`填入`**）；**`⚡直发`** 点一下就直接帮你发出去（`直接实现`、`用中文回答`、`继续`、`不要解释`、`跑一下`、`优化一下`、`为什么不行`、`再改一版` 等 8 条免参口令默认预设 **`⚡直发`**，按钮末尾会带克制的主题色 `↵` 标记，上方也可勾选「内置免参指令点击直接发送」让 `/compact` 与重载规则同步生效）。
+  - **多重防误发保护**：按住 **`⌘/Ctrl + 点击`** 可临时反转本次“填入 / 直发”行为；开启直发的按钮在**输入框已有草稿**时会自动退回防吞保护跳过直发，并内置 **800ms 防连点锁** 与**发送按钮禁用态降级**；悬浮任意快捷按钮零延迟弹出双行解读气泡（标签清晰区分 **`自定义 · 填入`** / **`自定义 · ⚡直发`**）；点击 `/compact`、`/plan`、`/goal` 等斜杠指令时自动转换成原生命令胶囊。
 - **提示词一键优化（`✨ 优化` / `↩ 撤回`）**：发送区旁新增提示词润色按钮。点击 **`✨ 优化`** 时会优先按低延迟、轻量与剩余配额筛选可用快模型（并支持多模型自动回退），把口语化描述一键整理为结构化提示词；优化完成后保留 **`↩ 撤回`** 按钮与提示，直到你主动编辑、发送或点击撤回还原原文。
-- **`Tab` 下一步建议截断 & 悬停预览**：AI 回复完、输入框空着时，会自动推荐 2～4 句下一步追问；超长建议在快捷行自动截断为 `8` 字保持整洁，鼠标悬停即浮现完整全文，按 **`Tab` 或 `→`** 直接填入，**`↓`/`↑`** 切换，**`Esc`** 隐藏。
-- **适配 Antigravity `2.32.x` / `2.33.0+` 与 CDP 无感自愈**：完整兼容新版对话侧栏（`conversation-row-sidebar`）、输入框栏（`.surface-composer`）与回复节点结构（`agent-response`），巡检期间不误关已展开浮窗；针对 `2.33.0+` 默认关闭调试端口的情况，随软件自启守护会在安全时机自动检测并无感重拉补开调试端口（支持 `AG_CDP_PORT` 与 `/Applications` / `~/Applications` 自动寻址），若启用 `--no-auto` 无守护模式，也可运行 `ag-context-meter install-launcher` 生成独立启动器图标。
+- **`Tab / →` 动态幽灵补全推荐**：AI 回复完、输入框空着时，右侧会自动浮现最应景的 **2～4 句高频短句**（AI 回复英文时自动高优推荐 **`用中文回答`**，给方案推 **`直接实现`**，报错推 **`修复这个报错`** / **`为什么不行`**，改完代码未运行推 **`跑一下`**，长篇解释推 **`不要解释`**，交付后推 **`优化一下`** / **`再改一版`**，328K 高危时自动将 `/compact` 置顶）；超长文本自动截断为 `8` 字，鼠标悬停查看全文，按 **`Tab` 或 `→`** 填入、**`↓`/`↑`** 切换、**`Esc`** 隐藏。
+- **适配 Antigravity `2.32.x ～ 2.34.0` 与 CDP 无感自愈**：完整兼容新版对话侧栏（`conversation-row-sidebar`）、输入框栏（`.surface-composer`）与回复节点结构（`agent-response`），巡检期间不误关已展开浮窗；macOS LaunchAgent 已升级为 **`SingletonSocket` + `StartInterval=5` 零 Node 毫秒级巡检**，支持 **`nvm` / `fnm` / `volta` / `asdf` / `mise`** 等非 Homebrew Node 自动发现，内置 **`ShipIt` 自动升级避让** 与 **30 秒老会话保护**；若启用 `--no-auto` 无守护模式，也可运行 `ag-context-meter install-launcher` 生成独立启动器图标。
 - **快捷键极速切换对话**：按 **`⌘1`～`⌘9`** 直接切换到左侧列表第 1～9 个对话（按住 **`⌘`** 键不松时，左侧前 9 个对话右侧会自动浮现序号提示；已避开 `⌘⇧3/4/5` 系统截图键）；按 **`⌘⇧[`** / **`⌘⇧]`**（或 **`⌃Tab`** / **`⌃⇧Tab`**）可循环切换到上一个 / 下一个对话。
 - **右侧预览直接改文件**：查看右侧 `.md` 方案或代码时，顶栏点 **`✏️ 编辑`** 即可原地修改，按 **`⌘S`** 直接保存回本地硬盘，点 **`↩️ 完成`** 退出并刷新预览。
 - **一键开本地终端 (`>_ CLI`)**：自动探测 Terminal、iTerm2、Ghostty、Warp、Kitty、WezTerm、cmux 等终端，支持配置默认启动模型、Rex / WezTerm / tmux 远程主机 (`muxHost`) 及 `--dangerously-skip-permissions` 免询问开关（日常建议保持关闭，仅测试或隔离目录按需开启）。
@@ -225,7 +228,7 @@ rm -rf ~/Library/Application\ Support/AntigravityContextMeter
 
 | 遇到的情况 | 先做什么 |
 | :--- | :--- |
-| **装完右上角没出现 `📱远程` 和 `⚙️`** | 1. 终端跑一次 `ag-context-meter status`；<br>2. 若提示 `v2.33.0+` 未开启调试端口，按 `⌘Q` 退出重开（随软件自启会自动补参），或在**外部终端**运行 `ag-context-meter restart`；<br>3. 再跑一次 `ag-context-meter live`。 |
+| **装完右上角没出现 `📱远程` 和 `⚙️`** | 1. 终端跑一次 `ag-context-meter status`；<br>2. 若提示 `v2.33.0+` / `2.34.0` 未开启调试端口，按 `⌘Q` 退出重开（随软件自启会自动补参），或在**外部终端**运行 `ag-context-meter restart`；<br>3. 若从旧版升级仍用旧自启配置（如 `nvm` / `fnm` 环境），运行一次 `ag-context-meter auto-on` 自动迁至 `SingletonSocket` + 真实 Node `PATH` 后再跑 `ag-context-meter live`。 |
 | **终端提示 `ag-context-meter: command not found`** | 说明 `~/.local/bin` 还没加进终端 `PATH`，运行：<br>`echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc` |
 | **手机扫码打不开页面** | 1. 打开 **`⚙️` → `📱 远程设置`**，确认对应连接通道处于勾选启用状态（未勾选的通道会被后端拒绝并返回 `403`）；<br>2. 看手机和电脑是否在**同一个 Wi-Fi**（走 Tailscale 则确认同账号已连接），不在同网段时确认 **Cloudflare 隧道** 已开启（缺 `cloudflared` 可直接按设置页引导一键安装）；<br>3. 若本地连接仍受阻，检查系统防火墙是否放行 `18765` 端口或点开顶栏延迟入口切换其他通道。 |
 | **固定域名扫码停在 `/#/NoAuth` 或报错** | `*.cloudflareaccess.com` 是 Cloudflare Zero Trust 登录门户，不是隧道转发域名。若无自有域名请切换回 **「免登录临时隧道」**（等待 3～8 秒分配 `*.trycloudflare.com`）；若有托管在 Cloudflare 的自有域名，请在 Zero Trust → Networks → Tunnels → 对应隧道 → **Public Hostname** 新增子域名指向 `http://127.0.0.1:18765` 后再填入该子域名。 |
@@ -240,13 +243,13 @@ rm -rf ~/Library/Application\ Support/AntigravityContextMeter
 
 1. **绝不修改官方软件**：不解包、不改写 `Antigravity.app` 内的 `app.asar`，保留苹果原装签名。
 2. **四通道显式门禁 + 口令隔离**：远程控制内置 `局域网` / `Tailscale` / `Bonjour` 私网通道，并默认启用免登录 **Cloudflare 临时隧道（HTTPS）** 以便外网开箱可用；**你可以随时在 `⚙️` → `📱 远程设置` 一键关闭 Cloudflare 隧道（仅保留私网），或启动时传入 `--no-remote` 完全关闭远程端口**。所有未勾选通道都会在后端被直接拒绝（`403`）；每次请求与配对链接均校验 48 位随机口令（支持一键「重置令牌」踢出全部旧设备），固定隧道 Token 仅写入权限为 `0600` 的本机 `remote-config.json`（接口绝不回显明文，亦支持通过 `TUNNEL_TOKEN` 环境变量传入）。
-3. **翻译与设置保存在本地**：翻译缓存与配置仅存于本机 `~/Library/Application Support/AntigravityContextMeter/`；文件编辑器通过黑名单禁止访问常见系统目录与密钥目录（重要项目仍建议搭配 Git 使用）。
+3. **翻译与设置保存在本地**：翻译缓存与配置仅存于本机 `~/Library/Application Support/AntigravityContextMeter/`；文件编辑器与远程目录浏览均严格校验路径规范化（`realpathSync`）并限制在 `$HOME` / 已登记工作区安全边界内，通过黑名单阻止访问系统目录与常见密钥凭据路径（重要项目仍建议搭配 Git 使用）。
 
 <details>
 <summary>🔧 展开查看：进阶与安全实现细节（监听端口、响应头、Windows/Linux 用法与上游同步）</summary>
 
 - **远程服务监听与安全响应头**：默认启用 IPv4/IPv6 双栈 `[::]:18765` 监听并按四通道（`lan` / `tailscale` / `bonjour` / `tunnel`）识别请求来源与强制门禁拦截（未启用通道返回 `403`）；私网入口严格校验本机回环或 RFC1918/CGNAT 来源并核验 `Origin`；页面下发 `Content-Security-Policy` 与 `X-Content-Type-Options: nosniff`，设备标识结合 `X-AG-Device-Hint` 与 `X-AG-Client-Id` 同时实现跨通道同设备合并与多浏览器页面会话隔离。
-- **更新实现细节**：右上角 `⚙️` 一键更新与 `ag-context-meter update` 仅在安装目录具备 `.git` 且工作区无未提交修改时，通过 `git pull --ff-only` 更新后热重载目标窗口；文件行内编辑通过前缀黑名单阻止读写 `/System`、`/usr`、`/etc`、`Antigravity.app` 及 `.ssh` / `.gnupg` / `1Password` 等凭据路径。
+- **更新与自启安全细节**：右上角 `⚙️` 一键更新与 `ag-context-meter update` 仅在安装目录具备 `.git` 且工作区无未提交修改时，通过 `git pull --ff-only` 更新后热重载目标窗口；macOS LaunchAgent 使用 `SingletonSocket` + `StartInterval=5` 零 Node 快路径巡检并在 `RELAUNCH_LOCK_FILE` 写入两列 `"ts pid"` 防抖与跳过老会话，避免打断 `ShipIt` 更新。文件行内编辑与远程目录浏览阻止读写 `/System`、`/usr`、`/etc`、`Antigravity.app` 及 `.ssh` / `.gnupg` / `1Password` / `.gemini` 等凭据路径，并拦截 Symlink 逃逸与悬空软链。
 - **Windows / Linux 手动使用**：`setup-macos-cdp.sh` 与 `~/Library/LaunchAgents/` 后台自启为 macOS 专属；Windows / Linux 用户安装 Node.js 22.4+ 并让 Antigravity 以远程调试端口启动后，进入仓库目录手动运行 `node cli.js live` 也可加载核心面板增强逻辑（`node cli.js status` 查看状态）。
 - **检查 6 个上游参考仓库**：可运行 `ag-context-meter upstreams` 与本地基线 [`upstreams.json`](upstreams.json) 比对。如想让 AI Agent 帮你安全合入参考项目更新，可对 Agent 说：
   > `请运行 ag-context-meter upstreams --json，过滤掉改写 app.asar / 二进制解锁的提交，把安全可吸收的新词条、新模型价格或好用的交互移植进项目并更新 upstreams.json 基线。`
@@ -260,11 +263,11 @@ rm -rf ~/Library/Application\ Support/AntigravityContextMeter
 
 | 参考项目 | 作者 / 贡献者 | 参考与吸收内容 |
 | :--- | :--- | :--- |
-| **[elviscjn-cjn/antigravity-context-viewer](https://github.com/elviscjn-cjn/antigravity-context-viewer)** | [@elviscjn-cjn](https://github.com/elviscjn-cjn)、[@Jia131313](https://github.com/Jia131313)、[@Azreal2021](https://github.com/Azreal2021)、[@MoiraToki](https://github.com/MoiraToki)、[@nocoo](https://github.com/nocoo) | 基础框架、顶部上下文圆环看板 (`v0.8.6`)、Token 分类统计与 52 周热力图、API 费用估算、5h+Weekly 双窗口配额与 `0%` 修复 |
+| **[elviscjn-cjn/antigravity-context-viewer](https://github.com/elviscjn-cjn/antigravity-context-viewer)** | [@elviscjn-cjn](https://github.com/elviscjn-cjn)、[@Jia131313](https://github.com/Jia131313)、[@Azreal2021](https://github.com/Azreal2021)、[@MoiraToki](https://github.com/MoiraToki)、[@nocoo](https://github.com/nocoo) | 基础框架、顶部上下文圆环看板 (`v0.8.9`)、Token 分类统计与 52 周热力图、API 费用估算、5h+Weekly 双窗口配额与 `0%` 修复 |
 | **[akelabs/antigravity-pulse](https://github.com/akelabs/antigravity-pulse)** | [@akelabs](https://github.com/akelabs) | 输入框底部能量条 (`v1.3.2`)：输出速率、缓存命中与 5 小时窗口倒计时 |
 | **[n2ns/antigravity-panel](https://github.com/n2ns/antigravity-panel)** | [@n2ns](https://github.com/n2ns) | 模型额度监控 (`v2.8.5`)、Auto-Accept 安全自动确认与 Brain 缓存体积监控思路 |
-| **[yiheng8023/antigravity-chinese](https://github.com/yiheng8023/antigravity-chinese)** | [@yiheng8023](https://github.com/yiheng8023) | 适配 Antigravity `2.32+ / 2.33.0` (`v3.3.52`) 的中文界面精确词条与安全动态正则规则 |
-| **[wycocoyu/agy-context-dashboard](https://github.com/wycocoyu/agy-context-dashboard)** | [@wycocoyu](https://github.com/wycocoyu) | 轻量状态栏排布与指标展示思路 (`v0.8.16`，已整合去重) |
+| **[yiheng8023/antigravity-chinese](https://github.com/yiheng8023/antigravity-chinese)** | [@yiheng8023](https://github.com/yiheng8023) | 适配 Antigravity `2.32+ ～ 2.34.0` (`v3.3.60`) 的中文界面精确词条与安全动态正则规则 |
+| **[wycocoyu/agy-context-dashboard](https://github.com/wycocoyu/agy-context-dashboard)** | [@wycocoyu](https://github.com/wycocoyu) | 轻量状态栏排布与 `local-api` 优先存活 PID 凭证校验思路 (`v0.9.7`，已整合去重) |
 | **[oil-oil/agy-fast-io](https://github.com/oil-oil/agy-fast-io)** | [@oil-oil](https://github.com/oil-oil) | 桌面端 Fast IO 提速规则 (`v0.2.1`)：免审白名单命令、同轮并读与回合压缩规范 |
 
 ---

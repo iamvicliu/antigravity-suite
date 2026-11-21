@@ -2456,6 +2456,12 @@
     .qp-add-btn{
       flex-shrink:0;
     }
+    .qp-custom-hint{
+      font-size:11.5px;
+      color:var(--ag-text-muted);
+      line-height:1.45;
+      margin:-2px 0 6px;
+    }
     .qp-tpl-bar{
       display:flex;
       flex-wrap:wrap;
@@ -3948,6 +3954,7 @@
             <span id="quick-custom-section-hdr" class="settings-field-lbl">自定义快捷提示词</span>
             <button id="btn-add-quick-prompt" class="switch-pill-btn qp-add-btn" type="button" title="添加一条快捷提示词">+ 新增</button>
           </div>
+          <div id="quick-custom-mode-hint" class="qp-custom-hint">填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）</div>
           <div id="quick-popular-templates" class="qp-tpl-bar" role="group" aria-label="热门对话口令模板"></div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
@@ -11654,6 +11661,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     '⚡直发': '⚡Send',
     '填入': 'Insert',
     '自定义快捷提示词': 'Custom Quick Prompts',
+    '填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）': 'Insert: fills the composer so you can paste errors/details before sending · ⚡Send: sends immediately on click (auto-guards existing drafts; hold ⌘/Ctrl + click to invert)',
     '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" above to create one.',
     '暂无自定义快捷提示词，点击右侧「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" on the right to create one.',
     '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" for custom prompts.',
