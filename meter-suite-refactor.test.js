@@ -14625,21 +14625,68 @@ test('会话列表多态状态显示升级：未读蓝色光晕圆点、待审�
     assert.equal(run1?.status, 'running');
     assert.equal(run1?.completedUnread, false, '仍在运行中的会话不得计入已完成未读 completedUnread');
 
-    // 点击查看 conv-done-unread，推进服务端已读水位
-    const marked = store.markViewed('conv-done-unread', baseMs + 25000, { stateDir: tmpCatDir });
-    assert.equal(marked, true);
-    const listedAfterView = await store.listConversations({ stateDir: tmpCatDir, activeSessionId: 'conv-other-active' });
-    const done2 = listedAfterView.conversations.find((c) => c.id === 'conv-done-unread');
-    assert.equal(done2?.unread, false, 'markViewed 推进已读水位后 unread 必须消退为 false');
+    // 点击查看 conv-done-unread，通过真实 POST /api/action switch-conversation 推进服务端已读水位并落盘
+    const swHandler = remoteMod.createRemoteHttpHandler(
+      { token: 'tok-28-sw', port: 18765, channels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        catalogStore: store,
+        catalogOptions: { stateDir: tmpCatDir },
+        fetchSnapshot: async (_tid, opts) => await store.enrichSnapshot(
+          { ok: true, sessionId: opts?.conversationId || 'conv-other-active', conversations: [] },
+          { stateDir: tmpCatDir, bypassCatalogCache: true, localApiConnect: mkApi('CASCADE_RUN_STATUS_IDLE', tDoneIso) }
+        ),
+        performAction: async () => ({ ok: true })
+      }
+    );
+    const bodyStr = JSON.stringify({ action: 'switch-conversation', id: 'conv-done-unread', isolated: true });
+    const swRes = { statusCode: 0, chunks: [], setHeader() {}, getHeader() {}, writeHead(c) { this.statusCode = c; }, end(b) { if (b) this.chunks.push(Buffer.from(String(b))); } };
+    const swReq = {
+      method: 'POST',
+      url: '/api/action',
+      headers: {
+        host: '127.0.0.1:18765',
+        origin: 'http://127.0.0.1:18765',
+        'content-type': 'application/json',
+        'x-ag-remote-token': 'tok-28-sw',
+        'x-ag-client-id': 'cli-28'
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      on(ev, cb) {
+        if (ev === 'data') cb(Buffer.from(bodyStr));
+        if (ev === 'end') cb();
+      }
+    };
+    await swHandler(swReq, swRes);
+    assert.equal(swRes.statusCode, 200);
 
-    // 之后有新产出更新 updatedAt > lastViewedAt，应重新点亮 unread
-    const laterIso = new Date(baseMs + 40000).toISOString();
-    const snap3 = await store.enrichSnapshot(
+    // 模拟进程重启/重新加载持久化 catalog 文件：新建全新 store 实例，且远端仍返回旧 lastUserViewTime，水位不得回退
+    const reloadedStore = remoteMod.createSessionCatalogStore();
+    const afterReloadSnap = await reloadedStore.enrichSnapshot(
       { ok: true, sessionId: 'conv-other-active', conversations: [] },
-      { stateDir: tmpCatDir, bypassCatalogCache: true, localApiConnect: mkApi('CASCADE_RUN_STATUS_IDLE', laterIso) }
+      { stateDir: tmpCatDir, bypassCatalogCache: true, localApiConnect: mkApi('CASCADE_RUN_STATUS_IDLE', tDoneIso) }
+    );
+    const done2 = afterReloadSnap.conversations.find((c) => c.id === 'conv-done-unread');
+    assert.equal(done2?.unread, false, 'switch-conversation 推进并落盘后，重载 store 与连续轮询不得回退未读');
+
+    // 查看后 1–3000ms 内（+500ms）出现新产出，必须立即重新点亮 unread / completedUnread
+    const soonIso = new Date(Date.now() + 500).toISOString();
+    const snap3 = await reloadedStore.enrichSnapshot(
+      { ok: true, sessionId: 'conv-other-active', conversations: [] },
+      { stateDir: tmpCatDir, bypassCatalogCache: true, localApiConnect: mkApi('CASCADE_RUN_STATUS_IDLE', soonIso) }
     );
     const done3 = snap3.conversations.find((c) => c.id === 'conv-done-unread');
-    assert.equal(done3?.unread, true, '已读会话收到新产出后应重新置 unread=true');
+    assert.equal(done3?.unread, true, '查看后 500ms 内出现新产出（updatedAt > lastViewedAt）应立即重新置 unread=true');
+    assert.equal(done3?.completedUnread, true);
+
+    // 4. 窄屏长标题 + 深浅两色主题变量防溢出与遮挡核验
+    assert.ok(html.includes('--unread-dot:#3b82f6;--unread-glow:rgba(59,130,246,.24);'), '深色主题应定义未读蓝点与光晕变量');
+    assert.ok(html.includes('--unread-dot:#2563eb;--unread-glow:rgba(37,99,235,.2);'), '浅色主题应定义高对比未读蓝点与光晕变量');
+    assert.ok(html.includes('.c-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.35}'), '长标题必须启用 min-width:0 + ellipsis 防挤出/遮挡行尾图标');
+    const longTitle = '这是一个非常非常非常非常长会在手机窄屏上发生截断的会话标题测试'.repeat(3);
+    for (const st of ['waiting', 'running', 'error', 'idle']) {
+      const rowHtml = ctx.__renderConv({ id: `c-long-${st}`, title: longTitle, status: st, statusLabel: st, unread: st === 'idle', updatedAt: now - 60000 }, false);
+      assert.ok(rowHtml.includes('<div class="c-row">') && rowHtml.includes('<span class="c-title">'), `状态 ${st} 长标题行结构应保持 c-row + c-title 弹性截断`);
+    }
   } finally {
     fs.rmSync(tmpCatDir, { recursive: true, force: true });
   }

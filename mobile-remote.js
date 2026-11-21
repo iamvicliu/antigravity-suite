@@ -1867,7 +1867,7 @@ function createSessionCatalogStore() {
       }
       const isActive = Boolean((activeSessionId && c.id === activeSessionId) || snapConvMap?.get(c.id)?.active);
       const itemStatus = (CREDIBLE_STATUS_VALUES.has(c.status) || c.status === 'unknown') ? c.status : 'unknown';
-      const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt - c.lastViewedAt > 3000));
+      const unread = Boolean(!isActive && c.updatedAt > 0 && c.lastViewedAt > 0 && (c.updatedAt > c.lastViewedAt));
       const completedUnread = Boolean(unread && itemStatus === 'idle');
       items.push({
         id: c.id,
@@ -12426,7 +12426,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               bumpNavEpoch(session);
               if (payload?.targetId) session.targetId = effectiveTargetId;
             }
-            defaultCatalogStore.markViewed(nextId, Date.now(), options.catalogOptions || {});
+            const activeCatStore = options.catalogStore || defaultCatalogStore;
+            activeCatStore.markViewed(nextId, Date.now(), options.catalogOptions || {});
             if (!options.fetchSnapshot && typeof defaultHistoryManager?.warmSession === 'function') {
               defaultHistoryManager.warmSession(nextId).catch(() => null);
             }
