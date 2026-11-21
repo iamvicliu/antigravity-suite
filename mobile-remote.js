@@ -11882,19 +11882,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
             rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
           } else {
+            // 轨迹/混合队列统一由 LanguageServer SendAllQueuedMessages RPC 执行；
+            // 若 RPC 成功或超时（可能已在后端执行但响应超时），均严禁自动补点桌面 DOM 按钮以杜绝重复发送；
+            // 仅纯 DOM 队列（isDomQueueSource === true，未调用 RPC）才走 send-queued-dom(sendAll:true)
             rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
-            // SendAllQueuedMessages 成功即已由后端清空整条会话队列，严禁再补点桌面 DOM 按钮以免桌面延迟刷新导致重复发送；
-            // 仅当 RPC 失败或超时且存在 DOM 排队项时，才降级到桌面 send-queued-dom 全量发送（含纯附件消息）
-            if ((rpcRes === null || rpcRes === false) && payload?.hasDomQueued === true) {
-              const domRes = await performAction({
-                action: 'send-queued-dom',
-                clientId,
-                targetId: effectiveTargetId || undefined,
-                conversationId: cascadeId,
-                sendAll: true
-              }).catch(() => null);
-              if (domRes?.ok) usedDomFallback = true;
-            }
           }
           if (!usedDomFallback && (rpcRes === null || rpcRes === false)) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '本机 LanguageServer 队列操作调用失败或超时' }));

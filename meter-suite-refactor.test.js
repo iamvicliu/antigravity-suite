@@ -13208,9 +13208,17 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
     assert.equal(sameConvSnap.pendingPrompts.length, 1, '同会话快照必须保留 pendingPrompts');
     assert.equal(sameConvSnap.queuedMessages.length, 1, '同会话快照必须保留 queuedMessages');
 
-    const delQRes = await enh.performMobileAction({ action: 'delete-queued-dom', domIndex: 0 });
+    const delQRes = await enh.performMobileAction({ action: 'delete-queued-dom', domIndex: 0, text: '另外，像#27，还有另一种卡住情况' });
     assert.equal(delQRes.ok, true);
     assert.ok(clickedLog.includes('queue:delete'));
+
+    // delete-queued-dom fail-closed：队列变化后文本不匹配或索引越界时返回失败，绝不回退误删 entries[0]
+    const delCountBefore = clickedLog.filter((x) => x === 'queue:delete').length;
+    const delStaleTextRes = await enh.performMobileAction({ action: 'delete-queued-dom', domIndex: 0, text: '已消失的旧排队消息' });
+    assert.equal(delStaleTextRes.ok, false, '目标文本已变化时不得误删 entries[0]');
+    const delBadIdxRes = await enh.performMobileAction({ action: 'delete-queued-dom', domIndex: 99, text: '' });
+    assert.equal(delBadIdxRes.ok, false, '索引越界且无文本时不得误删 entries[0]');
+    assert.equal(clickedLog.filter((x) => x === 'queue:delete').length, delCountBefore, '校验失败时绝不得触发任何删除点击');
     const sendQRes = await enh.performMobileAction({ action: 'send-queued-dom', domIndex: 0 });
     assert.equal(sendQRes.ok, true);
     assert.ok(clickedLog.includes('queue:send'));
@@ -13426,10 +13434,16 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
   assert.equal(mixOkRes.ok, true);
   assert.equal(domActionsCalled.length, 0, 'RPC SendAllQueuedMessages 成功时绝不得再补发 send-queued-dom，避免桌面 DOM 延迟刷新导致重复发送');
 
+  // RPC 超时/返回 null（可能已在后端执行）：同样严禁盲目补点桌面 DOM，返回失败让用户核对后再试
   rpcShouldFail = true;
-  const mixFallbackRes = await callMixAction({ action: 'send-queued-messages', conversationId: 'conv-mix-1', hasDomQueued: true });
-  assert.equal(mixFallbackRes.ok, true);
-  assert.equal(domActionsCalled.length, 1, 'RPC 失败且存在 DOM 队列时应降级触发一次 send-queued-dom');
+  const mixTimeoutRes = await callMixAction({ action: 'send-queued-messages', conversationId: 'conv-mix-1', hasDomQueued: true });
+  assert.equal(mixTimeoutRes.ok, false, 'RPC 超时/失败时应 fail-closed 返回失败，防止后端已执行而桌面未刷新导致重复提交');
+  assert.equal(domActionsCalled.length, 0, 'RPC 超时/失败后绝不得盲目补点桌面 DOM');
+
+  // 纯 DOM 队列（未调用 RPC）才走 send-queued-dom(sendAll:true)
+  const pureDomRes = await callMixAction({ action: 'send-queued-messages', conversationId: 'conv-mix-1', source: 'dom', sendAll: true });
+  assert.equal(pureDomRes.ok, true);
+  assert.equal(domActionsCalled.length, 1);
   assert.equal(domActionsCalled[0].action, 'send-queued-dom');
   assert.equal(domActionsCalled[0].sendAll, true);
 });
