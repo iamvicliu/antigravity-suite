@@ -8658,8 +8658,9 @@
           roundCostText: '',
           sessionCostText: ''
         },
-        pendingApprovals: [],
-        pendingPrompts: [],
+        pendingApprovals: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingApprovals || []) : [],
+        pendingPrompts: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingPrompts || []) : [],
+        queuedMessages: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.queuedMessages || []) : [],
         suggestions,
         messages,
         conversations: cloned.conversations,
@@ -9128,15 +9129,21 @@
         }
         return { ok: true, removed };
       }
+      const matchesBtnName = (b) => {
+        if (!reqName) return true;
+        const box = b.parentElement;
+        const imgAlt = String(box?.querySelector?.('img')?.getAttribute?.('alt') || '').toLowerCase();
+        const boxTxt = String(box?.textContent || '').toLowerCase();
+        const aria = String(b.getAttribute?.('aria-label') || '').toLowerCase();
+        return imgAlt.includes(reqName) || boxTxt.includes(reqName) || aria.includes(reqName);
+      };
       let targetBtn = null;
-      if (reqName) {
-        targetBtn = candidates.find((b) => {
-          const box = b.parentElement;
-          const imgAlt = String(box?.querySelector?.('img')?.getAttribute?.('alt') || '').toLowerCase();
-          const boxTxt = String(box?.textContent || '').toLowerCase();
-          const aria = String(b.getAttribute?.('aria-label') || '').toLowerCase();
-          return imgAlt.includes(reqName) || boxTxt.includes(reqName) || aria.includes(reqName);
-        }) || null;
+      // 同名多附件场景优先按 index + name 精确命中，避免误删前一个同名项
+      if (reqIdx >= 0 && reqIdx < candidates.length && matchesBtnName(candidates[reqIdx])) {
+        targetBtn = candidates[reqIdx];
+      }
+      if (!targetBtn && reqName) {
+        targetBtn = candidates.find(matchesBtnName) || null;
       }
       if (!targetBtn && reqIdx >= 0 && reqIdx < candidates.length) {
         targetBtn = candidates[reqIdx];
