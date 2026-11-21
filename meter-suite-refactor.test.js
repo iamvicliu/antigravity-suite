@@ -7028,3 +7028,171 @@ test('需求 30: antigravity-hans-overlay 支持 v3.3.60 插件市场语境与�
     fs.rmSync(tmpDaemonDir, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// 需求 31: 快捷提示词「+ 新增」就近布局、轮询编辑态防覆盖、竞态丢包及保存校验报错
+// =========================================================================
+test('需求 31: 快捷提示词 + 新增布局、编辑态防轮询覆盖、慢回包竞态防护与保存失败提示', async () => {
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+
+  const serverPrompt1 = { id: 'custom-0', label: '继续', text: '继续', title: '继续', autoSend: true };
+  let serverQuickPrompts = [serverPrompt1];
+  let customGetSettings = null;
+  let customSaveSettings = null;
+
+  const env = createDomEnv({
+    hostSettings: {
+      ok: true,
+      uiPreferences: {
+        quickPrompts: [serverPrompt1]
+      }
+    }
+  });
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (cb, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); cb(); }, Math.min(Number(ms) || 0, 8));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => {
+    activeTimers.delete(t);
+    clearTimeout(t);
+  };
+  env.sandbox.location = {
+    protocol: 'https:',
+    hostname: '127.0.0.1',
+    pathname: '/c/eeeeeeee-5555-5555-5555-555555555555',
+    origin: 'https://127.0.0.1:58365',
+    href: 'https://127.0.0.1:58365/c/eeeeeeee-5555-5555-5555-555555555555'
+  };
+
+  env.apiMocks.getSettings = () => {
+    if (typeof customGetSettings === 'function') return customGetSettings();
+    return Promise.resolve({
+      ok: true,
+      uiPreferences: {
+        quickPrompts: serverQuickPrompts.map(item => ({ ...item }))
+      }
+    });
+  };
+  env.apiMocks.saveSettings = payload => {
+    env.postedSettings.push(payload);
+    if (typeof customSaveSettings === 'function') return customSaveSettings(payload);
+    if (payload?.uiPreferences && 'quickPrompts' in payload.uiPreferences) {
+      serverQuickPrompts = Array.isArray(payload.uiPreferences.quickPrompts)
+        ? payload.uiPreferences.quickPrompts.map(item => ({ ...item }))
+        : [];
+    }
+    return Promise.resolve({ ok: true, settings: payload });
+  };
+
+  const composerEl = env.doc.createElement('div');
+  composerEl.className = 'surface-composer';
+  const editorEl = env.doc.createElement('div');
+  editorEl.setAttribute('data-lexical-editor', 'true');
+  editorEl.setAttribute('contenteditable', 'true');
+  composerEl.appendChild(editorEl);
+  env.doc.body.appendChild(composerEl);
+
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  vm.runInContext(freshEnhancerSrc, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const enhancer = env.sandbox.__AGEnhancer;
+  const shadow = env.getShadow();
+  const quickBar = env.doc.getElementById('ag-quick-capsule-bar');
+
+  try {
+    await new Promise(r => setTimeout(r, 25));
+
+    // 1. 验证 #btn-add-quick-prompt 位于 .qp-custom-hdr 内紧邻 #quick-prompts-editor-list，而非卡片顶栏
+    const card = shadow.getElementById('settings-card-quick-prompts');
+    const customHdr = card?.querySelector('.qp-custom-hdr');
+    const addBtn = shadow.getElementById('btn-add-quick-prompt');
+    const editorList = shadow.getElementById('quick-prompts-editor-list');
+    const statusEl = shadow.getElementById('quick-prompts-status');
+    assert.ok(customHdr, '必须存在紧邻编辑列表的 .qp-custom-hdr 区域头');
+    assert.ok(addBtn && addBtn.parentElement === customHdr, '#btn-add-quick-prompt 必须位于 .qp-custom-hdr 内部');
+    assert.equal(customHdr.nextElementSibling, editorList, '.qp-custom-hdr 必须紧邻 #quick-prompts-editor-list');
+    assert.equal(card?.querySelector('.settings-card-hdr #btn-add-quick-prompt'), null, '顶部 .settings-card-hdr 内不应再放 + 新增按钮');
+
+    // 2. 点击 + 新增并输入草稿后，模拟后台 15s 轮询触发 restoreSettingsFromHost()，草稿不得被冲掉
+    addBtn.click();
+    let rows = Array.from(editorList.querySelectorAll('.qp-row') || []);
+    assert.equal(rows.length, 2, '点击 + 新增后应在已保存 1 条下方新增第 2 行草稿');
+    rows[1].querySelector('.qp-label-input').value = '你看着办';
+    rows[1].querySelector('.qp-text-input').value = '你看着办';
+    rows[1].querySelector('.qp-text-input').dispatchEvent({ type: 'input' });
+    assert.match(statusEl?.textContent || '', /未保存的更改/);
+
+    // 连续触发 2 次后台设置同步（返回旧的 1 条）
+    await api.restoreSettingsFromHost();
+    await api.restoreSettingsFromHost();
+
+    rows = Array.from(editorList.querySelectorAll('.qp-row') || []);
+    assert.equal(rows.length, 2, '后台轮询同步绝不能删除用户正在编辑的未保存草稿行');
+    assert.equal(rows[1].querySelector('.qp-label-input')?.value, '你看着办', '草稿按钮文案必须完整保留');
+    assert.equal(rows[1].querySelector('.qp-text-input')?.value, '你看着办', '草稿提示词文本必须完整保留');
+
+    // 3. 慢 /get-settings 飞行期间点击保存第 2 条，延迟回包旧的 1 条必须被拦截丢弃
+    let resolveSlowPoll = null;
+    customGetSettings = () => new Promise(resolve => {
+      resolveSlowPoll = resolve;
+    });
+    const slowPollPromise = api.restoreSettingsFromHost();
+    assert.ok(typeof resolveSlowPoll === 'function', '慢 /get-settings 请求应处于在途等待状态');
+
+    shadow.getElementById('btn-save-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 25));
+
+    // 慢回包此刻才迟到返回旧的 1 条
+    customGetSettings = null;
+    resolveSlowPoll({
+      ok: true,
+      uiPreferences: {
+        quickPrompts: [serverPrompt1]
+      }
+    });
+    await slowPollPromise;
+    await new Promise(r => setTimeout(r, 25));
+
+    rows = Array.from(editorList.querySelectorAll('.qp-row') || []);
+    assert.equal(rows.length, 2, '过期慢回包不得覆盖刚保存的 2 条自定义提示词');
+    const savedInStorage = JSON.parse(env.localStorage.getItem('ag_suite_quick_prompts') || '[]');
+    assert.equal(savedInStorage.length, 2, 'localStorage 中应稳定保留 2 条自定义提示词');
+    assert.equal(savedInStorage[1]?.label, '你看着办');
+    assert.ok(quickBar.querySelector('#ag-qcap-prompt-0') && quickBar.querySelector('#ag-qcap-prompt-1'), '快捷操作栏必须同时渲染两条自定义按钮');
+    assert.equal(quickBar.querySelector('#ag-qcap-prompt-1')?.textContent, '你看着办');
+
+    // 4. 半填行点击保存必须阻止静默丢弃并显示警告，同时保留用户输入
+    addBtn.click();
+    rows = Array.from(editorList.querySelectorAll('.qp-row') || []);
+    assert.equal(rows.length, 3);
+    rows[2].querySelector('.qp-label-input').value = '只填标题';
+    rows[2].querySelector('.qp-text-input').value = '';
+    const postCountBeforeWarn = env.postedSettings.length;
+    shadow.getElementById('btn-save-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(env.postedSettings.length, postCountBeforeWarn, '存在半填行时不应发起保存请求');
+    assert.equal(statusEl?.getAttribute('data-tone'), 'warn', '半填行校验失败状态应标记 data-tone=warn');
+    assert.match(statusEl?.textContent || '', /第 3 行请同时填写/);
+    rows = Array.from(editorList.querySelectorAll('.qp-row') || []);
+    assert.equal(rows[2].querySelector('.qp-label-input')?.value, '只填标题', '半填行输入内容不应被静默清空');
+
+    // 5. 补全第 3 行后模拟持久化失败 { ok: false, error: 'disk full' }，必须显式报错且不假报已保存
+    rows[2].querySelector('.qp-text-input').value = '补全提示词正文';
+    customSaveSettings = () => Promise.resolve({ ok: false, error: 'disk full' });
+    shadow.getElementById('btn-save-quick-prompts')?.click();
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal(statusEl?.getAttribute('data-tone'), 'warn', '写入失败时状态栏应标记 data-tone=warn');
+    assert.match(statusEl?.textContent || '', /写入配置失败.*disk full/);
+    assert.equal(/✅\s*已保存/.test(statusEl?.textContent || ''), false, '写入失败时严禁假报 ✅ 已保存');
+  } finally {
+    customGetSettings = null;
+    customSaveSettings = null;
+    enhancer?.dispose?.();
+    api?.dispose?.();
+    for (const t of activeTimers) clearTimeout(t);
+    activeTimers.clear();
+  }
+});
