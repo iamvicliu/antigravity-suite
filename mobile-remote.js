@@ -4126,8 +4126,10 @@ function buildMobileAppHtml() {
     }
     @media (display-mode:standalone){
       :root{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)))}
+      html{height:100dvh}
+      body{height:auto}
     }
-    body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)))}
+    body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)));height:auto}
     @media (prefers-color-scheme:light){
       :root:not([data-theme="dark"]){
         color-scheme:light;
@@ -5019,33 +5021,39 @@ function buildMobileAppHtml() {
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
     @media (max-width:767px){
-      .topbar{padding:6px 10px;gap:6px}
-      .topbar-actions{gap:4px}
-      .top-panel-btn{height:30px;border-radius:9px;padding:0 6px;gap:3px;font-size:11.5px}
+      .topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}
+      .title-wrap{flex:1 1 0;min-width:0}
+      .topbar-actions{
+        flex:1 0 100%;width:100%;gap:6px;
+        padding-top:5px;border-top:1px solid var(--topbar-border);
+        overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
+      }
+      .topbar-actions::-webkit-scrollbar{display:none}
+      .topbar-actions .quota-pill{margin-left:auto}
+      .quota-drawer{top:calc(env(safe-area-inset-top) + 92px)}
+      .top-panel-btn{height:28px;border-radius:8px;padding:0 7px;gap:4px;font-size:11.5px}
       .quota-pill{
-        height:30px;padding:0 8px;border-radius:9px;font-size:11.5px;
+        height:28px;padding:0 8px;border-radius:8px;font-size:11.5px;
         flex-direction:row;align-items:center;gap:5px;line-height:1;
       }
       .quota-pill span:last-child{font-size:11px;padding-left:5px;border-left:1px solid var(--border)}
       body.has-ctx-btn .quota-pill #ctx-badge{display:none}
     }
-    @media (max-width:560px){
-      #btn-usage-panel{min-width:30px;padding:0 7px;justify-content:center}
-      #btn-usage-panel #usage-top-val{display:none}
-    }
     @media (max-width:430px){
       .icon-btn{height:30px;min-width:30px;padding:0 4px}
-      .conv-project-badge{max-width:58%;font-size:10.5px;padding:1px 6px}
-      .top-panel-btn{padding:0 5px;gap:3px;font-size:11px}
-      .quota-pill{padding:0 6px;font-size:11px}
+      .conv-project-badge{max-width:65%;font-size:10.5px;padding:1px 6px}
+      .top-panel-btn{padding:0 6px;gap:3px;font-size:11px}
+      .quota-pill{padding:0 7px;font-size:11px}
     }
     @media (max-width:360px){
-      .topbar{padding:6px 8px;gap:5px}
+      .topbar{padding:6px 8px;column-gap:5px;row-gap:5px}
       .icon-btn{height:28px;min-width:28px;padding:0 3px}
-      .topbar-actions{gap:3px}
-      .top-panel-btn{height:28px;padding:0 4px;gap:2px;font-size:10.5px;border-radius:8px}
-      #btn-usage-panel,#btn-files-panel{min-width:28px;padding:0 5px}
-      .quota-pill{height:28px;padding:0 5px;font-size:10.5px;border-radius:8px}
+      .topbar-actions{gap:4px;padding-top:4px}
+      .top-panel-btn{height:26px;padding:0 5px;gap:2px;font-size:10.5px;border-radius:7px}
+      #btn-usage-panel{min-width:28px;padding:0 6px;justify-content:center}
+      #btn-usage-panel #usage-top-val{display:none}
+      #btn-files-panel{min-width:28px;padding:0 5px}
+      .quota-pill{height:26px;padding:0 6px;font-size:10.5px;border-radius:7px}
     }
   </style>
 </head>
@@ -6148,8 +6156,9 @@ function buildMobileAppHtml() {
     $('sub-meta').onclick = openModeSwitcherSheet;
 
     const appEl = document.querySelector('.app');
+    let isStandalonePwa = false;
     try {
-      const isStandalonePwa = Boolean(
+      isStandalonePwa = Boolean(
         window.navigator?.standalone === true ||
         (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches)
       );
@@ -6158,7 +6167,12 @@ function buildMobileAppHtml() {
 
     function getFullLayoutHeight() {
       const vvH = window.visualViewport ? window.visualViewport.height : 0;
-      return Math.round(vvH || window.innerHeight || document.documentElement?.clientHeight || 0);
+      const winH = window.innerHeight || 0;
+      const docH = document.documentElement?.clientHeight || 0;
+      if (isStandalonePwa) {
+        return Math.round(Math.max(vvH, winH, docH));
+      }
+      return Math.round(vvH || winH || docH);
     }
 
     let maxVvHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -6409,7 +6423,8 @@ function buildMobileAppHtml() {
         appEl?.classList.add('kb-open');
       } else {
         document.body.style.bottom = '0';
-        document.body.style.height = '100%';
+        // iOS 桌面独立 PWA 下清除内联 height 让 position:fixed;top:0;bottom:0 贴满物理底边，避免 60~93px 死区
+        document.body.style.height = isStandalonePwa ? '' : '100%';
         const appHeightPx = (!desktop && openModal && (anyTextFocused || kbLikelyActive || recentlyBlurred))
           ? modalBaseH
           : getFullLayoutHeight();

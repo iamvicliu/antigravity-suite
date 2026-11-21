@@ -12831,4 +12831,7 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   assert.ok(html.includes('padding-bottom:calc(4px + var(--safe-bottom))'), '.app 应绑定 --safe-bottom 收紧底部留白');
   assert.ok(html.includes('padding:calc(env(safe-area-inset-top) + 12px) 12px calc(10px + var(--safe-bottom))'), '.drawer 应绑定 --safe-bottom 消除侧边栏底部大块留白');
   assert.ok(html.includes('classList?.toggle?.(\'is-standalone\''), '前端启动应检测 navigator.standalone / display-mode 并设置 body.is-standalone');
+  assert.ok(html.includes('body.is-standalone{--safe-bottom:min(20px,max(0px,calc(env(safe-area-inset-bottom,0px) - 14px)));height:auto}'), '独立 PWA 模式应将 body 设为 height:auto 贴满 bottom:0，避免 iOS 底部 60~93px 死区');
+  assert.ok(html.includes("document.body.style.height = isStandalonePwa ? '' : '100%';"), 'syncViewportHeight 在独立 PWA 模式下应清除内联 height 贴满底边');
+  assert.ok(html.includes('.topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}') && html.includes('flex:1 0 100%;width:100%;gap:6px;'), '手机端顶栏功能按钮应独立成第二行，释放整行宽度给标题与项目名');
 });
