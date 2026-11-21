@@ -72,7 +72,9 @@ FALLBACK_STATE_FILE="$HOME/.config/antigravity-context-meter/.live-session.json"
 LEGACY_FILE="$APP_DIR/.live-session.json"
 PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
 SOCKET_FILE="$HOME/Library/Application Support/Antigravity/SingletonSocket"
-RELAUNCH_LOCK_FILE="${AG_RELAUNCH_LOCK_FILE:-/tmp/ag-context-meter-relaunch.lock}"
+RELAUNCH_LOCK_DIR="${TMPDIR:-$HOME/Library/Application Support/AntigravityContextMeter}"
+RELAUNCH_LOCK_DIR="${RELAUNCH_LOCK_DIR%/}"
+RELAUNCH_LOCK_FILE="${AG_RELAUNCH_LOCK_FILE:-${RELAUNCH_LOCK_DIR}/ag-context-meter-relaunch.lock}"
 LOG_DIR="$HOME/Library/Logs"
 LOG_FILE="$LOG_DIR/antigravity-hans.log"
 
@@ -133,6 +135,7 @@ relaunch_antigravity_with_cdp() {
   local bare_info bare_pid i
   bare_info="$(get_bare_antigravity_info || true)"
   bare_pid="${bare_info%% *}"
+  mkdir -p "$(dirname "$RELAUNCH_LOCK_FILE")" 2>/dev/null || true
   printf '%s %s\n' "$(date +%s)" "${bare_pid:-0}" > "$RELAUNCH_LOCK_FILE" 2>/dev/null || true
   if [ -n "${bare_pid:-}" ]; then
     echo "正在优雅重启 Antigravity（补充 --remote-debugging-port=0）..."
@@ -411,7 +414,7 @@ get_host_ps_line() {
   else
     ps_raw="$(ps -ax -o pid=,etime=,command= 2>/dev/null || true)"
   fi
-  printf '%s\n' "$ps_raw" | grep '/Contents/MacOS/Antigravity' | grep -v -E 'Antigravity Helper|language_server' | head -n 1 || true
+  printf '%s\n' "$ps_raw" | grep '/Contents/MacOS/Antigravity' | grep -v -E 'Antigravity Helper|language_server|--type=|--import=|--headless' | head -n 1 || true
 }
 
 is_live_host_running() {
@@ -760,6 +763,7 @@ console.log(remoteDisabled ? "手机远程操作：⚪ 已通过 --no-remote / A
     if [ "${last_pid:-}" = "$host_pid" ] && [ $((now_ts - last_ts)) -lt 20 ]; then
       exit 0
     fi
+    mkdir -p "$(dirname "$RELAUNCH_LOCK_FILE")" 2>/dev/null || true
     printf '%s %s\n' "$now_ts" "$host_pid" > "$RELAUNCH_LOCK_FILE" 2>/dev/null || true
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [_auto-trigger] 检测到 Antigravity (PID: $host_pid, 启动 ${host_elapsed}s) 未带调试端口，自动补参重拉..." >> "$LOG_FILE"
     relaunch_antigravity_with_cdp >> "$LOG_FILE" 2>&1 || true

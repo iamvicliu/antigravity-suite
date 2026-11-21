@@ -7701,7 +7701,7 @@ test('需求 26: 项目分组头样式层级、Enter换行按钮发送、本机�
     const ta = envUi.doc.getElementById('input');
     const sendBtn = envUi.doc.getElementById('btn-send');
     assert.equal(ta.getAttribute('enterkeyhint'), 'enter');
-    assert.equal(ta.getAttribute('placeholder'), '发消息…', '聊天输入框占位提示应精简为单行短句');
+    assert.equal(ta.getAttribute('placeholder'), '发消息… (Cmd/Ctrl + Enter 发送)', '聊天输入框占位提示应标明 Cmd/Ctrl + Enter 发送');
     ta.value = '第一行内容';
     const plainEnterEv = { type: 'keydown', key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, isComposing: false };
     const allowNativeNewline = ta.dispatchEvent(plainEnterEv);
@@ -8100,11 +8100,12 @@ test('需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     assert.equal(modalBody.scrollTop, 166, '超出顶边上限的剩余遮挡应通过内部容器滚动精确吸收');
     assert.deepEqual([nameInput.getBoundingClientRect().top, nameInput.getBoundingClientRect().bottom], [410, 446]);
 
-    // 场景 4: 保持键盘打开（460px），点键盘栏「^」把焦点切回顶部 #proj-path-input 时应准确反算并立即归零（整体位移与内部滚动双双清零）
+    // 场景 4: 保持键盘打开（460px），点键盘栏「^」把焦点切回顶部 #proj-path-input 时应准确反算复位位移并清除临时 paddingBottom（保留 scrollTop 防把已填输入框滚出视野）
     pathInput.focus();
     assert.equal(modalSheet.style.transform, '', '焦点从底部切回顶部未遮挡输入框时，弹窗应立即恢复 0px 位移');
-    assert.equal(modalBody.scrollTop, 0, '切回顶部输入框后内部临时滚动应归零');
     assert.equal(modalBody.style.paddingBottom, '', '切回顶部输入框后内部临时 paddingBottom 应清空');
+    assert.equal(modalBody.scrollTop, 166, 'clearScrollBodyOffset 仅移除 paddingBottom 保留 scrollTop，避免把已填输入框滚出视野');
+    modalBody.scrollTop = 0;
     assert.deepEqual([pathInput.getBoundingClientRect().top, pathInput.getBoundingClientRect().bottom], [220, 256]);
 
     // 场景 5: 若残留 vv.offsetTop = 240（可视区 [240, 700]，安全区 [252, 686]），应调用 scrollTo(0,0) 并同时约束弹窗顶边、标题与聚焦输入框都在可视区内，底部聚焦也由内部滚动配合消除遮挡，复位后彻底归零
@@ -8126,7 +8127,20 @@ test('需求 27: 手机端弹窗输入框聚焦按相对键盘位置防误抬高
     vv.offsetTop = 0;
     vv._emit('scroll');
     assert.equal(modalSheet.style.transform, '');
-    assert.equal(modalBody.scrollTop, 0);
+    assert.equal(modalBody.style.paddingBottom, '');
+    assert.equal(modalBody.scrollTop, 166, '收起或切换焦点时保留 scrollTop 不暴力清零');
+
+    // 场景 5b (#33): 弹窗手动下滑 scrollTop=120 后聚焦底部输入框、切换输入框及收起键盘，确认输入框可见且不叠加过大偏移、不重置 scrollTop=0
+    modalBody.scrollTop = 120;
+    nameInput.focus();
+    assert.ok(nameInput.getBoundingClientRect().bottom <= 446, '手动下滑后聚焦底部输入框仍完整位于键盘上方可视区内');
+    assert.ok(modalBody.scrollTop >= 120 && modalBody.scrollTop < 300, `不得重复叠加手动 scrollTop 导致偏移过大，实际=${modalBody.scrollTop}`);
+    const scrollAfterFocus = modalBody.scrollTop;
+    vv.height = 844;
+    vv._emit('resize');
+    assert.equal(modalSheet.style.transform, '');
+    assert.equal(modalBody.style.paddingBottom, '');
+    assert.equal(modalBody.scrollTop, scrollAfterFocus, '收起键盘后保留 scrollTop，不把已填输入框滚出视野');
 
     env.doc.getElementById('proj-modal-close').click();
     assert.equal(modalBackdrop.hidden, true);
@@ -13446,4 +13460,818 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
   assert.equal(domActionsCalled.length, 1);
   assert.equal(domActionsCalled[0].action, 'send-queued-dom');
   assert.equal(domActionsCalled[0].sendAll, true);
+});
+
+// =========================================================================
+// 需求 27: 同步 antigravity-chinese v3.3.55、build-renderer 截断守卫、asar-engine 进程过滤与 CLI 未知命令保护
+// =========================================================================
+test('需求 27: antigravity-hans-overlay 支持 2.33.1 听写与快捷键方案词条、commands. 上下文及 placeholder 规则', () => {
+  const hansSrc = fs.readFileSync(path.join(ROOT, 'antigravity-hans-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  env.sandbox.location.pathname = '/workbench.html';
+  env.sandbox.location.href = 'file:///Applications/Antigravity.app/workbench.html';
+  env.win.location = env.sandbox.location;
+  env.win.top = env.win;
+  env.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 };
+  env.sandbox.NodeFilter = { SHOW_TEXT: 4, SHOW_ELEMENT: 1 };
+
+  const makeTextNode = (val) => ({
+    nodeType: 3,
+    nodeValue: val,
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement: null,
+    parentNode: null
+  });
+
+  const panel = env.doc.createElement('div');
+  panel.className = 'antigravity-agent-side-panel';
+
+  // 1. 新增 exact 词条与正则
+  const exactHeading = env.doc.createElement('div');
+  const exactText = makeTextNode('Keybinding Scheme');
+  exactHeading.appendChild(exactText);
+  panel.appendChild(exactHeading);
+
+  const retryDiv = env.doc.createElement('div');
+  const retryText = makeTextNode('Retrying transcription (attempt 2)…');
+  retryDiv.appendChild(retryText);
+  panel.appendChild(retryDiv);
+
+  // 2. commands. 上下文规则（仅紧跟 <code>antigravity.</code> 后生效）
+  const pTarget = env.doc.createElement('p');
+  const pPrefix = makeTextNode('Inspect live bindings or record custom key chords filtered to ');
+  const codeEl = env.doc.createElement('code');
+  codeEl.appendChild(makeTextNode('antigravity.'));
+  const pSuffix = makeTextNode(' commands.');
+  pTarget.appendChild(pPrefix);
+  pTarget.appendChild(codeEl);
+  pTarget.appendChild(pSuffix);
+  panel.appendChild(pTarget);
+
+  const pNormal = env.doc.createElement('p');
+  const normalCmdText = makeTextNode('commands.');
+  pNormal.appendChild(normalCmdText);
+  panel.appendChild(pNormal);
+
+  // 3. 听写语言搜索框 placeholder
+  const dictationInput = env.doc.createElement('input');
+  dictationInput.setAttribute('data-testid', 'dictation-languages-search-input');
+  dictationInput.setAttribute('placeholder', 'Search languages to add (e.g. English, Spanish, 中文, yue)...');
+  panel.appendChild(dictationInput);
+
+  env.doc.body.appendChild(panel);
+
+  env.doc.createTreeWalker = (rootNode, whatToShow) => {
+    const flat = [];
+    const walk = (n) => {
+      if (!n) return;
+      const children = n.childNodes || n.children || [];
+      for (const ch of children) {
+        if ((ch.nodeType === 1 && (whatToShow & 1)) || (ch.nodeType === 3 && (whatToShow & 4))) {
+          flat.push(ch);
+        }
+        walk(ch);
+      }
+    };
+    walk(rootNode);
+    let idx = 0;
+    return { nextNode: () => (idx < flat.length ? flat[idx++] : null) };
+  };
+  env.sandbox.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+
+  try {
+    vm.runInContext(hansSrc, env.sandbox);
+    assert.equal(exactText.nodeValue, '快捷键方案');
+    assert.equal(retryText.nodeValue, '正在重试转写（第 2 次）…');
+    assert.equal(pPrefix.nodeValue.trim(), '查看现有快捷键或录制自定义组合键，列表仅显示前缀为');
+    assert.equal(pSuffix.nodeValue.trim(), '的命令。');
+    assert.equal(normalCmdText.nodeValue, 'commands.', '普通上下文中的 commands. 必须保留原文');
+    assert.equal(
+      dictationInput.getAttribute('placeholder'),
+      '搜索要添加的语言（例如 English、Spanish、中文、yue）…'
+    );
+  } finally {
+    env.win.__antigravityZhPatchCleanup?.();
+  }
+
+  // 验证两份 zh-CN.json 同步包含新增词条
+  const rootDict = JSON.parse(fs.readFileSync(path.join(ROOT, 'i18n', 'zh-CN.json'), 'utf8'));
+  const srcDict = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'i18n', 'zh-CN.json'), 'utf8'));
+  assert.equal(rootDict.exact['Dictation languages'], '听写语言');
+  assert.equal(srcDict.exact['Dictation languages'], '听写语言');
+  assert.ok(rootDict.patterns.some(p => p.regex.includes('Retrying transcription')));
+});
+
+test('需求 27b: build-renderer 拦截源码截断标记、asar-engine 排除 headless 子进程、cli 拒绝未知命令', () => {
+  const { assertNoTruncationMarker } = require('./scripts/build-renderer');
+  assert.doesNotThrow(() => assertNoTruncationMarker('ok.js', 'const a = 1;\n'));
+  assert.throws(
+    () => assertNoTruncationMarker('broken.js', 'line1\n// ... truncated for diff preview ...\nline3'),
+    (err) => err && err.code === 'ERR_SOURCE_TRUNCATED'
+  );
+
+  const { inspectAntigravityHostProcess } = require('./asar-engine');
+  const fakePs = [
+    '101 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --type=renderer',
+    '102 00:12 /Applications/Antigravity.app/Contents/MacOS/Antigravity --headless --disable-gpu',
+    '103 00:12 /Applications/Antigravity.app/Contents/Frameworks/chrome_crashpad_handler',
+    '104 00:45 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0'
+  ].join('\n');
+  const proc = inspectAntigravityHostProcess({ psOutput: fakePs });
+  assert.equal(proc.running, true);
+  assert.equal(proc.pid, 104, '必须跳过 --type= / --headless / crashpad，仅命中真实主进程');
+  assert.equal(proc.hasDebugSwitch, true);
+
+  const { spawnSync } = require('node:child_process');
+  const badRes = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'non-existent-subcmd-xyz'], {
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assert.equal(badRes.status, 1, '未知命令必须返回非 0 退出码，禁止隐式回落为 live/install');
+  assert.match(badRes.stderr, /未知命令/);
+
+  const helpRes = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'help'], {
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assert.equal(helpRes.status, 0, 'cli.js help 应正常返回退出码 0');
+});
+
+test('PR #5 安全返修：宿主机目录根边界、敏感路径黑名单、Symlink 防逃逸与跨端口 CSRF 加固 (#32)', async () => {
+  const remoteMod = require('./mobile-remote');
+  const { Readable } = require('stream');
+
+  // 1. 敏感路径黑名单直接校验（含大小写变体与生产模式 /var/folders 拦截）
+  for (const p of [
+    '/System/Library',
+    '/SYSTEM/Library',
+    '/etc',
+    '/Etc/passwd',
+    '/private/etc/hosts',
+    '/Applications/Antigravity.app',
+    '/Applications/ANTIGRAVITY.APP/Contents',
+    '/Users/demo/.ssh',
+    '/Users/demo/.SSH/id_ed25519',
+    '/Users/demo/.gnupg/private-keys',
+    '/Users/demo/.aws',
+    '/Users/demo/1Password/vault',
+    '/Users/demo/.gemini/antigravity'
+  ]) {
+    assert.equal(remoteMod.isSensitiveHostPath(p), true, `敏感路径必须被拦截: ${p}`);
+  }
+  assert.equal(remoteMod.isSensitiveHostPath('/var/folders/ab/cd/T/test', { forceProd: true }), true, '生产环境不得豁免 /var/folders');
+  assert.equal(remoteMod.isSensitiveHostPath('/Users/demo/codebase/my-app'), false);
+
+  // 1b. buildMobileAppHtml() 全部内嵌 <script> 经 new vm.Script() 语法校验
+  const html32 = remoteMod.buildMobileAppHtml();
+  const scripts32 = [...html32.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts32.length >= 2);
+  for (let i = 0; i < scripts32.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts32[i][1], { filename: `mobile-app-32-script-${i}.js` }));
+  }
+
+  // 2. 构造隔离的假 homeDir、外部逃逸目录 outsideDir、敏感子目录与符号链接
+  const sandboxBase = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-sec32-'));
+  const fakeHome = path.join(sandboxBase, 'home');
+  const outsideDir = path.join(sandboxBase, 'outside');
+  const configDir = path.join(sandboxBase, 'cfg');
+  const workDir = path.join(fakeHome, 'codebase');
+  const sshDir = path.join(fakeHome, '.ssh');
+  const geminiDir = path.join(fakeHome, '.gemini');
+  const onePassDir = path.join(fakeHome, '1Password');
+  fs.mkdirSync(workDir, { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(sshDir, { recursive: true });
+  fs.mkdirSync(geminiDir, { recursive: true });
+  fs.mkdirSync(onePassDir, { recursive: true });
+
+  const symEscape = path.join(workDir, 'link-outside');
+  const symSsh = path.join(workDir, 'link-ssh');
+  const symLoopA = path.join(workDir, 'loop-a');
+  const symLoopB = path.join(workDir, 'loop-b');
+  const symDangling = path.join(workDir, 'dangling-outside');
+  fs.symlinkSync(outsideDir, symEscape, 'dir');
+  fs.symlinkSync(sshDir, symSsh, 'dir');
+  fs.symlinkSync(symLoopB, symLoopA, 'dir');
+  fs.symlinkSync(symLoopA, symLoopB, 'dir');
+  fs.symlinkSync(path.join(outsideDir, 'nonexistent-target'), symDangling, 'dir');
+
+  try {
+    // 2a. 到达根目录边界（fakeHome）时 parentPath 必须严格为空串 ''，且越界访问 /etc、/、outsideDir 被拒（403）
+    const homeList = remoteMod.listHostDirectories({ homeDir: fakeHome, configDir, showHidden: true });
+    assert.strictEqual(homeList.parentPath, '', '到达 $HOME 授权边界时 parentPath 必须严格为空串');
+    assert.ok(!homeList.entries.some((e) => ['.ssh', '.gemini', '1Password'].includes(e.name)), '敏感目录即使 showHidden=true 也不得出现在目录列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: outsideDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: '/etc', homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: '/', homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: sshDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: geminiDir, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+
+    // 2b. Symlink 逃逸目录、敏感 symlink 与循环符号链接（ELOOP）均被列表过滤且直连/新建/注册项目全部拦截
+    const workList = remoteMod.listHostDirectories({ dirPath: workDir, homeDir: fakeHome, configDir, showHidden: true });
+    assert.equal(workList.parentPath, fakeHome);
+    assert.ok(!workList.entries.some((e) => ['link-outside', 'link-ssh', 'loop-a', 'loop-b'].includes(e.name)), '越界、敏感或循环符号链接子目录不得暴露在列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symEscape, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symSsh, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symLoopA, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symLoopA, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    // 悬空符号链接（目标本身 & 祖先节点）在浏览、新建与注册项目全链路一律 403 拒绝
+    const danglingChild = path.join(symDangling, 'nested-child');
+    assert.ok(!workList.entries.some((e) => e.name === 'dangling-outside'), '悬空符号链接不得暴露在目录列表中');
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: symDangling, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.listHostDirectories({ dirPath: danglingChild, homeDir: fakeHome, configDir }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symDangling, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: workDir, name: 'dangling-outside' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: danglingChild, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symDangling, name: 'dangling-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: danglingChild, name: 'dangling-child-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: symEscape, name: 'sub' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: fakeHome, name: '.ssh' }, { homeDir: fakeHome }), (err) => err.status === 403);
+    assert.throws(() => remoteMod.createHostSubdirectory({ parentPath: outsideDir, name: 'evil' }, { homeDir: fakeHome }), (err) => err.status === 403);
+
+    // 2c. 禁止将 $HOME 本身、/、越界目录或符号链接注册为项目
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: fakeHome, name: 'home-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 400
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: '/', name: 'root-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symEscape, name: 'sym-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+    await assert.rejects(
+      () => remoteMod.createRemoteProject({ folderPath: symSsh, name: 'ssh-proj' }, { homeDir: fakeHome, configDir }),
+      (err) => err.status === 403
+    );
+
+    // 3. Same-Site 跨端口 CSRF 与 Content-Type 加固测试
+    const secCfg = {
+      port: 18765,
+      token: 'tok-sec32-1234567890abcdef',
+      tunnelEnabled: false,
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    };
+    const secHandler = remoteMod.createRemoteHttpHandler(secCfg, {
+      homeDir: fakeHome,
+      configDir,
+      allowDiskFallback: true,
+      performAction: async () => ({ ok: true, actionResult: { ok: true } }),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's-1', messages: [] })
+    });
+    const sendWrite = async (urlPath, bodyStr, headers = {}) => {
+      const req = Readable.from([Buffer.from(bodyStr, 'utf8')]);
+      req.method = 'POST';
+      req.url = urlPath;
+      req.headers = { host: '127.0.0.1:18765', ...headers };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let out = '';
+      const res = {
+        setHeader: () => {},
+        writeHead: (code) => { status = code; },
+        end: (chunk) => { if (chunk) out += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); }
+      };
+      await secHandler(req, res);
+      return { status, json: JSON.parse(out || '{}') };
+    };
+
+    // 3a. text/plain 简单请求（即使携带有效 Cookie + 同源 Origin）必须被拒（415）
+    const plainRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'bad-ct' }), {
+      'content-type': 'text/plain',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(plainRes.status, 415, '写接口必须拒绝 text/plain 简单请求');
+
+    // 3b. 同主机不同端口（Same-Site 跨端口 CSRF：127.0.0.1:3000 -> 127.0.0.1:18765）携带 Cookie 必须返回 403
+    const crossPortRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'csrf-dir' }), {
+      'content-type': 'application/json',
+      origin: 'http://127.0.0.1:3000',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(crossPortRes.status, 403, '跨端口不同源 Origin + Cookie 写请求必须被 403 拦截');
+
+    // 3b-2. 同主机同端口但协议不同（https://127.0.0.1:18765 vs http://127.0.0.1:18765）+ Cookie 必须返回 403
+    const crossProtoRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'csrf-proto' }), {
+      'content-type': 'application/json',
+      origin: 'https://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(crossProtoRes.status, 403, '跨协议 Origin + Cookie 写请求必须被 403 拦截');
+
+    // 3c. Origin: null + Cookie 必须返回 403
+    const nullOriginRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      origin: 'null',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(nullOriginRes.status, 403, 'Origin: null + Cookie 写请求必须被 403 拦截');
+
+    // 3d. Cookie 鉴权但无 Origin（即使带同源 Referer）且无 X-AG-Remote-Token 必须返回 403
+    const noOriginCookieRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(noOriginCookieRes.status, 403, 'Cookie 鉴权且缺少同源 Origin 与自定义头时必须返回 403');
+    const refererOnlyCookieRes = await sendWrite('/api/action', JSON.stringify({ action: 'stop' }), {
+      'content-type': 'application/json',
+      referer: 'http://127.0.0.1:18765/',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(refererOnlyCookieRes.status, 403, 'Cookie 鉴权缺少 Origin 时不得仅凭 Referer 放行');
+
+    // 3e. 合法同源 Origin + application/json + Cookie 正常通过（200）
+    const okCookieRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'ok-same-origin' }), {
+      'content-type': 'application/json; charset=utf-8',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(okCookieRes.status, 200);
+    assert.equal(okCookieRes.json.ok, true);
+
+    // 3f. 合法自定义请求头 X-AG-Remote-Token + application/json 正常通过（200），并验证合法项目注册通过
+    const okHeaderRes = await sendWrite('/api/fs/mkdir', JSON.stringify({ parentPath: workDir, name: 'ok-custom-hdr' }), {
+      'content-type': 'application/json',
+      'x-ag-remote-token': secCfg.token
+    });
+    assert.equal(okHeaderRes.status, 200);
+    assert.equal(okHeaderRes.json.ok, true);
+
+    const okProjRes = await sendWrite('/api/projects', JSON.stringify({
+      folderPath: path.join(workDir, 'ok-same-origin'),
+      name: 'legit-proj-32',
+      openInDesktop: false
+    }), {
+      'content-type': 'application/json',
+      origin: 'http://127.0.0.1:18765',
+      cookie: `ag_remote_token=${secCfg.token}`
+    });
+    assert.equal(okProjRes.status, 200, `合法 $HOME 子目录注册项目必须成功: ${JSON.stringify(okProjRes.json)}`);
+    assert.equal(okProjRes.json.ok, true);
+    assert.equal(okProjRes.json.project?.name, 'legit-proj-32');
+  } finally {
+    fs.rmSync(sandboxBase, { recursive: true, force: true });
+  }
+});
+
+test('PR #5 返修（二）：隔离视图新建页判空、裸 % 解码防崩、桌面轮询截断、IME 防误触与缓存/弹窗修复 (#33)', async () => {
+  const remoteMod = require('./mobile-remote');
+
+  // 1. 裸 % 文件 URI 解码不得抛 URIError 或导致整段历史归零
+  const pctMsgs = remoteMod.extractMessagesFromTrajectorySteps([
+    {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      userInput: {
+        items: [
+          { text: '请查看' },
+          { item: { file: { absoluteUri: 'file:///tmp/100%done.txt' } } },
+          { item: { directory: { absoluteUri: 'file:///tmp/dir%2/sub/' } } }
+        ]
+      }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: { modifiedResponse: '已查看 100%done.txt' }
+    }
+  ]);
+  assert.equal(pctMsgs.length, 2, '含裸 % 的 URI 必须安全保留原片段而不得整段历史归零');
+  assert.ok(pctMsgs[0].text.includes('@100%done.txt'));
+  assert.ok(pctMsgs[0].text.includes('@sub'));
+
+  // 2. 桌面处于新建页 `/`（isNewConversation=true）时，隔离查看历史会话必须返回 isNewConversation:false + 目标项目归属；且 DOM 轮询超大文本受安全截断保护
+  const env = createDomEnv();
+  env.win.location = { pathname: '/', search: '?project=proj-desktop', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/?project=proj-desktop' };
+  env.sandbox.location = env.win.location;
+  env.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+  const hugeUser = env.doc.createElement('div');
+  hugeUser.setAttribute('data-testid', 'user-message');
+  hugeUser.textContent = 'A'.repeat(220000);
+  env.doc.body.appendChild(hugeUser);
+
+  const histRow = env.doc.createElement('div');
+  histRow.setAttribute('data-testid', 'conversation-row-sidebar');
+  const histLink = env.doc.createElement('a');
+  histLink.setAttribute('href', '/c/aaaa1111-2222-3333-4444-555555555555');
+  histLink.textContent = '历史会话标题';
+  histRow.appendChild(histLink);
+  env.doc.body.appendChild(histRow);
+
+  let enh = null;
+  try {
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    enh = env.sandbox.__AGEnhancer;
+
+    const baseSnap = enh.getMobileSnapshot();
+    assert.equal(baseSnap.isNewConversation, true);
+    assert.equal(baseSnap.messages.length, 1);
+    assert.ok(baseSnap.messages[0].text.length <= 200005, `DOM 轮询单条文本应有安全截断上限，实际=${baseSnap.messages[0].text.length}`);
+
+    const isoSnap = await enh.getMobileSnapshotAsync({ conversationId: 'aaaa1111-2222-3333-4444-555555555555' });
+    assert.equal(isoSnap.isolated, true);
+    assert.equal(isoSnap.isNewConversation, false, '桌面停在新建页时隔离查看历史会话必须重置 isNewConversation=false');
+    assert.equal(isoSnap.sessionId, 'aaaa1111-2222-3333-4444-555555555555');
+  } finally {
+    enh?.dispose?.();
+    env.sandbox.__AGContextMeter?.dispose?.();
+    env.cleanup?.();
+  }
+
+  // 3. enrichMessages 输出 historySource（dom 降级 vs trajectory 权威），前端全量 <script> 校验 + IME 防误触 + clearScrollBodyOffset 不清 scrollTop
+  const histMgr = remoteMod.createConversationHistoryManager();
+  const domFallbackSnap = await histMgr.enrichMessages(
+    { sessionId: 'conv-dom-rec', messages: [{ role: 'user', text: 'dom msg' }] },
+    { localApiConnect: async () => { throw new Error('ls down'); } }
+  );
+  assert.equal(domFallbackSnap.historySource, 'dom');
+  const trajRecSnap = await histMgr.enrichMessages(
+    { sessionId: 'conv-dom-rec', messages: [{ role: 'user', text: 'dom msg' }] },
+    {
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async () => ({
+          trajectory: {
+            steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'traj msg' } }]
+          }
+        })
+      })
+    }
+  );
+  assert.equal(trajRecSnap.historySource, 'trajectory');
+
+  const html33 = remoteMod.buildMobileAppHtml();
+  const scripts33 = [...html33.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts33.length >= 2);
+  for (let i = 0; i < scripts33.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts33[i][1], { filename: `mobile-app-33-script-${i}.js` }));
+  }
+  assert.ok(html33.includes('placeholder="发消息… (Cmd/Ctrl + Enter 发送)"'), '主输入框占位提示必须明确标注 Cmd/Ctrl + Enter 发送');
+  assert.ok(html33.includes('function bindSafeImeEnter(') && html33.includes("compositionstart") && html33.includes('e.keyCode === 229'), '输入框必须具备 Safari 中文 IME 防误触保护');
+  assert.ok(html33.includes("activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory'"), '从 domTail 恢复全量轨迹时必须清空旧临时索引键防错序');
+  assert.ok(!html33.includes('bodyEl.scrollTop = 0;'), 'clearScrollBodyOffset 不得暴力重置 scrollTop=0 把输入框滚出视野');
+
+  // 4. 短文本但超大 DOM 节点树（9000 个 span）在 extractSanitizedMarkdownHtml 遍历中途触发节点预算早停（返回空 html 而保留文本）
+  const envDomCap = createDomEnv();
+  envDomCap.win.location = { pathname: '/c/cap-dom-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/cap-dom-1' };
+  envDomCap.sandbox.location = envDomCap.win.location;
+  envDomCap.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const respNode = envDomCap.doc.createElement('div');
+  respNode.setAttribute('data-testid', 'agent-response');
+  const mdRoot = envDomCap.doc.createElement('div');
+  mdRoot.setAttribute('data-markdown-root', 'true');
+  for (let i = 0; i < 8200; i++) {
+    const sp = envDomCap.doc.createElement('span');
+    if (i === 0) sp.textContent = 'short-ok';
+    mdRoot.appendChild(sp);
+  }
+  respNode.appendChild(mdRoot);
+  envDomCap.doc.body.appendChild(respNode);
+  let enhCap = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDomCap.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDomCap.sandbox);
+    enhCap = envDomCap.sandbox.__AGEnhancer;
+    const capSnap = enhCap.getMobileSnapshot();
+    assert.equal(capSnap.messages.length, 1);
+    assert.ok(capSnap.messages[0].text.startsWith('short-ok'));
+    assert.equal(capSnap.messages[0].html, '', '短文本超大 DOM 树应在文本/HTML 遍历中途触发节点预算早停，返回空 HTML');
+  } finally {
+    enhCap?.dispose?.();
+    envDomCap.sandbox.__AGContextMeter?.dispose?.();
+    envDomCap.cleanup?.();
+  }
+
+  // 4b. 深层嵌套（depth > 24）与多根节点超大文本早停：绝不回退读取深层子树 textContent，也不再读取超限后的后续根节点
+  const envDeep = createDomEnv();
+  envDeep.win.location = { pathname: '/c/deep-dom-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/deep-dom-1' };
+  envDeep.sandbox.location = envDeep.win.location;
+  envDeep.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const deepResp = envDeep.doc.createElement('div');
+  deepResp.setAttribute('data-testid', 'agent-response');
+  const deepRoot1 = envDeep.doc.createElement('div');
+  deepRoot1.setAttribute('data-markdown-root', 'true');
+  let cur = deepRoot1;
+  for (let d = 0; d < 27; d++) {
+    const child = envDeep.doc.createElement('div');
+    cur.appendChild(child);
+    cur = child;
+  }
+  let deepTextContentReads = 0;
+  Object.defineProperty(cur, 'textContent', {
+    get() {
+      deepTextContentReads += 1;
+      return 'DEEP_SECRET_SHOULD_NOT_BE_READ';
+    },
+    configurable: true
+  });
+  // 同时添加一个正常浅层文本和一个超 200K 的根节点 + 第二个不应被读取的根节点
+  const shallowP = envDeep.doc.createElement('p');
+  shallowP.childNodes.push({ nodeType: 3, nodeValue: 'A'.repeat(205000) });
+  deepRoot1.appendChild(shallowP);
+  const deepRoot2 = envDeep.doc.createElement('div');
+  deepRoot2.setAttribute('data-markdown-root', 'true');
+  let secondRootRead = 0;
+  deepRoot2.childNodes.push({
+    nodeType: 3,
+    get nodeValue() {
+      secondRootRead += 1;
+      return 'SECOND_ROOT_SHOULD_NOT_BE_READ';
+    }
+  });
+  deepResp.appendChild(deepRoot1);
+  deepResp.appendChild(deepRoot2);
+  envDeep.doc.body.appendChild(deepResp);
+  let enhDeep = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDeep.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDeep.sandbox);
+    enhDeep = envDeep.sandbox.__AGEnhancer;
+    const deepSnap = enhDeep.getMobileSnapshot();
+    assert.equal(deepSnap.messages.length, 1);
+    assert.equal(deepTextContentReads, 0, 'depth > 24 分支严禁读取整棵深层子树 textContent 绕过预算');
+    assert.equal(secondRootRead, 0, '前置根节点已触及字符/深度预算后不得继续遍历后续根节点');
+    assert.equal(deepSnap.messages[0].html, '', '触发预算早停时必须跳过 HTML 序列化');
+  } finally {
+    enhDeep?.dispose?.();
+    envDeep.sandbox.__AGContextMeter?.dispose?.();
+    envDeep.cleanup?.();
+  }
+
+  // 6. 桌面停在会话 B、独立读取会话 A 抛错时：绝不沿用会话 B 的 messages/上下文，也不会污染会话 A 历史缓存
+  const envIsoErr = createDomEnv();
+  envIsoErr.win.location = { pathname: '/c/bbbb1111-2222-3333-4444-555555555555', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/bbbb1111-2222-3333-4444-555555555555' };
+  envIsoErr.sandbox.location = envIsoErr.win.location;
+  envIsoErr.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const msgB = envIsoErr.doc.createElement('div');
+  msgB.setAttribute('data-testid', 'user-message');
+  msgB.textContent = 'SECRET_DESKTOP_B_MSG';
+  envIsoErr.doc.body.appendChild(msgB);
+  let enhIsoErr = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envIsoErr.sandbox);
+    vm.runInContext(ENHANCER_SRC, envIsoErr.sandbox);
+    enhIsoErr = envIsoErr.sandbox.__AGEnhancer;
+    const desktopBSnap = enhIsoErr.getMobileSnapshot();
+    assert.equal(desktopBSnap.sessionId, 'bbbb1111-2222-3333-4444-555555555555');
+    assert.equal(desktopBSnap.messages[0]?.text, 'SECRET_DESKTOP_B_MSG');
+
+    const isoErrSnap = await enhIsoErr.getMobileSnapshotAsync({ conversationId: 'aaaa9999-2222-3333-4444-555555555555' });
+    assert.equal(isoErrSnap.sessionId, 'aaaa9999-2222-3333-4444-555555555555');
+    assert.equal(isoErrSnap.isolated, true);
+    assert.equal(isoErrSnap.isolatedError, true);
+    assert.equal(isoErrSnap.historySource, 'isolated_error');
+    assert.equal(isoErrSnap.messages.length, 0, '独立读取会话 A 失败时绝不得继承桌面会话 B 的 messages');
+    assert.equal(isoErrSnap.contextPanel, null);
+
+    const isoErrMgr = remoteMod.createConversationHistoryManager();
+    const enrichedErr = await isoErrMgr.enrichMessages(isoErrSnap, {
+      localApiConnect: async () => { throw new Error('ls unavailable'); }
+    });
+    assert.equal(enrichedErr.messages.length, 0);
+    assert.equal(enrichedErr.historySource, 'isolated_error');
+    const cachedPageA = await isoErrMgr.getMessagesPage({ sessionId: 'aaaa9999-2222-3333-4444-555555555555', limit: 30 });
+    const joinedA = (cachedPageA.messages || []).map((m) => m.text).join('\n');
+    assert.ok(!joinedA.includes('SECRET_DESKTOP_B_MSG'), '桌面会话 B 的消息绝不得写入会话 A 的历史缓存');
+  } finally {
+    enhIsoErr?.dispose?.();
+    envIsoErr.sandbox.__AGContextMeter?.dispose?.();
+    envIsoErr.cleanup?.();
+  }
+
+  // 5. fetchGenMap 淘汰后单调序号隔离：旧请求在途 -> 触发 >2000 个其他会话淘汰 -> 同会话新请求先返回 -> 旧请求晚归不得覆盖新结果
+  const evictMgr = remoteMod.createConversationHistoryManager();
+  let resolveOldEvict;
+  const oldEvictPromise = evictMgr.enrichMessages(
+    { sessionId: 'sess-evict-target', messages: [], _activeTrajSig: 'sig-old' },
+    {
+      localApiConnect: async () => ({
+        call: async () => await new Promise((r) => { resolveOldEvict = r; })
+      })
+    }
+  );
+  await new Promise((r) => setTimeout(r, 10));
+  const fastApi = async () => ({ call: async () => ({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'other' } }] } }) });
+  for (let i = 0; i < 2005; i++) {
+    await evictMgr.enrichMessages({ sessionId: `sess-filler-${i}`, messages: [], _activeTrajSig: `s-${i}` }, { localApiConnect: fastApi });
+  }
+  const newEvictSnap = await evictMgr.enrichMessages(
+    { sessionId: 'sess-evict-target', messages: [], _activeTrajSig: 'sig-new' },
+    {
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async () => ({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'NEW_AUTHORITATIVE_MSG' } }] } })
+      })
+    }
+  );
+  assert.equal(newEvictSnap.messages[0]?.text, 'NEW_AUTHORITATIVE_MSG');
+  // 让最早发起的旧请求晚归：绝不得覆盖已缓存的新结果
+  resolveOldEvict({ trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'OLD_STALE_MSG' } }] } });
+  await oldEvictPromise;
+  const afterStalePage = await evictMgr.getMessagesPage({ sessionId: 'sess-evict-target', limit: 30 });
+  assert.equal(afterStalePage.messages[0]?.text, 'NEW_AUTHORITATIVE_MSG', 'fetchGenMap 淘汰后旧请求晚归不得覆盖同会话新结果');
+});
+
+test('PR #5 返修（三）：消除重复函数与 TDZ、Gzip Vary 合并与回退、macOS 进程过滤/锁路径加固及 5 语种 README 同步 (#34)', async () => {
+  const zlib = require('zlib');
+  const { execFileSync } = require('child_process');
+  const remoteMod = require('./mobile-remote');
+
+  // 1. ag-enhancer-overlay.js：仅 1 处 resolvePermissionStateFromDom，且 PERMISSION_DEFAULT_LABELS 定义早于首次引用
+  const overlaySrc = fs.readFileSync(path.join(__dirname, 'ag-enhancer-overlay.js'), 'utf8');
+  const declMatches = overlaySrc.match(/function\s+resolvePermissionStateFromDom\s*\(/g) || [];
+  assert.equal(declMatches.length, 1, `resolvePermissionStateFromDom 应仅声明 1 次，实际=${declMatches.length}`);
+  const constDefIdx = overlaySrc.indexOf('const PERMISSION_DEFAULT_LABELS = {');
+  const firstRefIdx = overlaySrc.indexOf('PERMISSION_DEFAULT_LABELS[');
+  assert.ok(constDefIdx > 0 && firstRefIdx > constDefIdx, 'PERMISSION_DEFAULT_LABELS 必须在首次引用前声明以消除 TDZ 隐患');
+
+  // 2. mobile-remote.js：gzip 响应合并 Vary: Origin, Accept-Encoding（不覆盖 Origin），且 zlib.gzipSync 抛错安全回退明文
+  const bigMsg = 'M'.repeat(1800);
+  const handler = remoteMod.createRemoteHttpHandler(
+    { token: 'tok-34-gzip', port: 18765, channels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    {
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's-34', messages: [{ role: 'assistant', text: bigMsg }] }),
+      performAction: async () => ({ ok: true })
+    }
+  );
+  const callApi = async (extraHeaders = {}) => {
+    const resObj = {
+      statusCode: 0,
+      headers: {},
+      chunks: [],
+      setHeader(k, v) {
+        this.headers[k] = v;
+      },
+      getHeader(k) {
+        const hit = Object.keys(this.headers).find((h) => h.toLowerCase() === String(k).toLowerCase());
+        return hit ? this.headers[hit] : undefined;
+      },
+      writeHead(code, hdrs) {
+        this.statusCode = code;
+        for (const [k, v] of Object.entries(hdrs || {})) {
+          this.headers[k] = v;
+        }
+      },
+      end(chunk) {
+        if (chunk !== undefined && chunk !== null) {
+          this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'));
+        }
+      }
+    };
+    const reqObj = {
+      method: 'GET',
+      url: '/api/snapshot',
+      headers: {
+        host: '127.0.0.1:18765',
+        origin: 'http://127.0.0.1:18765',
+        'x-ag-remote-token': 'tok-34-gzip',
+        'accept-encoding': 'gzip, deflate',
+        ...extraHeaders
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      on() {}
+    };
+    await handler(reqObj, resObj);
+    return { statusCode: resObj.statusCode, headers: resObj.headers, body: Buffer.concat(resObj.chunks) };
+  };
+
+  const gzRes = await callApi();
+  assert.equal(gzRes.statusCode, 200);
+  assert.equal(gzRes.headers['Content-Encoding'], 'gzip');
+  const varyParts = String(gzRes.headers.Vary || '').split(',').map((s) => s.trim().toLowerCase());
+  assert.ok(varyParts.includes('origin') && varyParts.includes('accept-encoding'), `Vary 应同时保留 Origin 与 Accept-Encoding，实际=${gzRes.headers.Vary}`);
+  const parsedGz = JSON.parse(zlib.gunzipSync(gzRes.body).toString('utf8'));
+  assert.equal(parsedGz.sessionId, 's-34');
+
+  // 模拟创建 handler 前 zlib.gzipSync 抛错：必须仍能创建 handler，且 HTML 与 API 均安全回退未压缩响应
+  const origGzipSync = zlib.gzipSync;
+  zlib.gzipSync = () => { throw new Error('mock gzip failure'); };
+  try {
+    const fallbackHandler = remoteMod.createRemoteHttpHandler(
+      { token: 'tok-34-gzip', port: 18765, channels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        fetchSnapshot: async () => ({ ok: true, sessionId: 's-34', messages: [{ role: 'assistant', text: bigMsg }] }),
+        performAction: async () => ({ ok: true })
+      }
+    );
+    const callFallback = async (urlPath) => {
+      const resObj = {
+        statusCode: 0,
+        headers: {},
+        chunks: [],
+        setHeader(k, v) { this.headers[k] = v; },
+        getHeader(k) {
+          const hit = Object.keys(this.headers).find((h) => h.toLowerCase() === String(k).toLowerCase());
+          return hit ? this.headers[hit] : undefined;
+        },
+        writeHead(code, hdrs) {
+          this.statusCode = code;
+          for (const [k, v] of Object.entries(hdrs || {})) this.headers[k] = v;
+        },
+        end(chunk) {
+          if (chunk !== undefined && chunk !== null) {
+            this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'));
+          }
+        }
+      };
+      await fallbackHandler({
+        method: 'GET',
+        url: urlPath,
+        headers: {
+          host: '127.0.0.1:18765',
+          origin: 'http://127.0.0.1:18765',
+          'x-ag-remote-token': 'tok-34-gzip',
+          'accept-encoding': 'gzip, deflate'
+        },
+        socket: { remoteAddress: '127.0.0.1' },
+        on() {}
+      }, resObj);
+      return { statusCode: resObj.statusCode, headers: resObj.headers, body: Buffer.concat(resObj.chunks) };
+    };
+    const htmlFallbackRes = await callFallback('/?token=tok-34-gzip');
+    assert.equal(htmlFallbackRes.statusCode, 200);
+    assert.equal(htmlFallbackRes.headers['Content-Encoding'], undefined, '预压缩失败时 HTML 响应必须回退明文');
+    assert.ok(/<!doctype html>/i.test(htmlFallbackRes.body.toString('utf8')), 'HTML 明文回退内容必须完整');
+
+    const apiFallbackRes = await callFallback('/api/snapshot');
+    assert.equal(apiFallbackRes.statusCode, 200);
+    assert.equal(apiFallbackRes.headers['Content-Encoding'], undefined, 'gzipSync 异常时 API 响应必须回退未压缩响应');
+    const parsedPlain = JSON.parse(apiFallbackRes.body.toString('utf8'));
+    assert.equal(parsedPlain.sessionId, 's-34');
+  } finally {
+    zlib.gzipSync = origGzipSync;
+  }
+
+  // 3. bin/ag-context-meter：bash -n 通过、get_host_ps_line 过滤 --type=/--import=/--headless、锁路径优先 TMPDIR
+  const cliBinPath = path.join(__dirname, 'bin', 'ag-context-meter');
+  execFileSync('bash', ['-n', cliBinPath], { stdio: 'pipe' });
+  const cliBinSrc = fs.readFileSync(cliBinPath, 'utf8');
+  assert.ok(cliBinSrc.includes('--type=|--import=|--headless'), 'get_host_ps_line 必须排除 --type=|--import=|--headless 子进程');
+  assert.ok(!cliBinSrc.includes('RELAUNCH_LOCK_FILE="${AG_RELAUNCH_LOCK_FILE:-/tmp/'), '重拉锁路径不得硬编码 /tmp');
+  assert.ok(cliBinSrc.includes('TMPDIR'), '重拉锁路径应优先使用 TMPDIR 或套件状态目录');
+
+  const mockPs = [
+    '1001 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --type=renderer',
+    '1002 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --import=/foo.mjs',
+    '1003 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --headless',
+    '1004 00:10 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=9222'
+  ].join('\n');
+  const filteredLine = execFileSync('bash', [
+    '-c',
+    'printf "%s\\n" "$AG_MOCK_PS_OUTPUT" | grep "/Contents/MacOS/Antigravity" | grep -v -E "Antigravity Helper|language_server|--type=|--import=|--headless" | head -n 1'
+  ], { env: { ...process.env, AG_MOCK_PS_OUTPUT: mockPs }, encoding: 'utf8' }).trim();
+  assert.ok(filteredLine.startsWith('1004 '), `应过滤全部子进程仅保留主进程 1004，实际=${filteredLine}`);
+
+  // 4. 全部 5 语种 README 完整存在、同步包含 $HOME 边界与 Cmd/Ctrl + Enter 且无过时禁用命令
+  for (const name of ['README.md', 'README.en.md', 'README.ja.md', 'README.ko.md', 'README.es.md']) {
+    const text = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    assert.ok(text.includes('$HOME'), `${name} 应同步说明 $HOME 安全目录边界`);
+    assert.ok(text.includes('Cmd/Ctrl + Enter'), `${name} 应同步说明 Cmd/Ctrl + Enter 发送快捷键`);
+    assert.ok(!text.includes('node cli.js install'), `${name} 不得包含已禁用的 node cli.js install`);
+  }
+
+  // 5. #04 文件路由统一复用 [#32] 的 isSensitiveHostPath 安全边界（拦截 1Password/.docker/.gemini 配置，放行 brain 生成物）
+  const tmpSecRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-34-sec-'));
+  try {
+    const onePwdDir = path.join(tmpSecRoot, '1Password');
+    const geminiCfgDir = path.join(tmpSecRoot, '.gemini', 'config');
+    const brainDir = path.join(tmpSecRoot, '.gemini', 'antigravity', 'brain', 'cid-1');
+    fs.mkdirSync(onePwdDir, { recursive: true });
+    fs.mkdirSync(geminiCfgDir, { recursive: true });
+    fs.mkdirSync(brainDir, { recursive: true });
+    fs.writeFileSync(path.join(onePwdDir, 'vault.txt'), 'secret');
+    fs.writeFileSync(path.join(geminiCfgDir, 'oauth.json'), '{}');
+    fs.writeFileSync(path.join(brainDir, 'plan.md'), '# ok');
+
+    const treeBlocked = remoteMod.listSafeProjectTree(onePwdDir, { allowedRoots: [tmpSecRoot] });
+    assert.equal(treeBlocked.ok, false);
+    assert.equal(treeBlocked.status, 403, '/api/project-tree 必须复用 #32 敏感路径拦截 1Password');
+
+    const rootTree = remoteMod.listSafeProjectTree(tmpSecRoot, { allowedRoots: [tmpSecRoot], showAll: true });
+    assert.equal(rootTree.ok, true);
+    assert.ok(!rootTree.entries.some((e) => e.name === '1Password' || e.name === '.gemini'), '/api/project-tree 列表必须隐藏 1Password 与 .gemini');
+
+    const cfgBlocked = remoteMod.readSafeTextFilePreview(path.join(geminiCfgDir, 'oauth.json'), { allowedRoots: [tmpSecRoot] });
+    assert.equal(cfgBlocked.ok, false);
+    assert.equal(cfgBlocked.status, 403, '/api/file-content 必须拦截 .gemini 非 brain 凭证文件');
+
+    const brainAllowed = remoteMod.readSafeTextFilePreview(path.join(brainDir, 'plan.md'), { allowedRoots: [tmpSecRoot] });
+    assert.equal(brainAllowed.ok, true, '/api/file-content 应放行 .gemini/antigravity/brain 生成物预览');
+  } finally {
+    fs.rmSync(tmpSecRoot, { recursive: true, force: true });
+  }
 });

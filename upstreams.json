@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-20T10:08:19.612Z",
+  "updatedAt": "2026-11-21T10:09:00.647Z",
   "upstreams": [
     {
       "repo": "elviscjn-cjn/antigravity-context-viewer",
       "branch": "main",
-      "absorbedSha": "47c4140fcb92ceb2e271a450a9622b8de6b486c4",
-      "version": "v0.8.6",
+      "absorbedSha": "838211fea3d305c72f3fe5f0c6ec340a644d481a",
+      "version": "v0.8.9",
       "role": "基础框架、顶部上下文圆环看板、Token 分类统计、52 周热力图与 API 折算费用",
       "mergeStrategy": "定向提取新模型上下文配额、API 价格表与前端渲染修复，禁止合入 app.asar 改盘与解锁逻辑",
       "localTargets": [
@@ -53,8 +53,8 @@
     {
       "repo": "yiheng8023/antigravity-chinese",
       "branch": "main",
-      "absorbedSha": "ae0bac6c344fa0d46fe17b76a829776cc5436578",
-      "version": "v3.3.53",
+      "absorbedSha": "5d53934a2d2a55a0212001ed99c82ecdc6a0b296",
+      "version": "v3.3.57",
       "role": "适配 Antigravity 2.32.1 的精确词条与安全动态正则规则",
       "mergeStrategy": "增量提取新增精确词条与安全正则并去重合并，保留本地 [data-uri] 路径保护等跳过规则后更新补丁指纹",
       "localTargets": [
@@ -69,8 +69,8 @@
     {
       "repo": "wycocoyu/agy-context-dashboard",
       "branch": "main",
-      "absorbedSha": "3314e48f4a8e947892d1a5ef8a48574dd5259cfc",
-      "version": "v0.8.16",
+      "absorbedSha": "aa22c39fa765b5700c6da7699b132732c259f85b",
+      "version": "v0.9.5",
       "role": "轻量级状态栏信息排布与指标展示参考",
       "mergeStrategy": "审阅展示指标与视觉细节，按需合并到顶部/底部状态条并避免重复展示",
       "localTargets": [
