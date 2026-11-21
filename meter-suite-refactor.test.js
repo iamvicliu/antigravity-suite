@@ -14433,4 +14433,89 @@ test('彻底根治 iOS 主屏幕独立应用底部 59pt 空白死区：移除 bl
   // 3d. 新版已移除 black-translucent 的主屏幕图标（safeTop=0, innerH=793）：不触发旧图标补偿，走自然 inset:0
   const newIconRes = runViewportSim({ standalone: true, screenW: 393, screenH: 852, innerW: 393, innerH: 793, vvH: 793, safeTop: 0, focusInput: false });
   assert.equal(newIconRes.bodyStyle.height, '', '新版独立图标原生锚定物理底边，不覆盖内联 height');
+
+  // 3e. 同一页面状态转换：旧图标补偿(852px) -> 键盘弹起(480px + translateY) -> 键盘收起(恢复 852px) -> 旋转横屏(safeTop=0, 恢复 393px/bottom:0)
+  {
+    const docStyles = {};
+    const htmlStyle = { height: '', setProperty: (k, v) => { docStyles[k] = v; }, getPropertyValue: (k) => docStyles[k] || '' };
+    const bodyStyle = { height: '', bottom: '', transform: '' };
+    const appClasses = new Set();
+    const inputEl = { id: 'input', tagName: 'TEXTAREA' };
+    const appMockEl = { classList: { add: (c) => appClasses.add(c), remove: (c) => appClasses.delete(c), contains: (c) => appClasses.has(c) } };
+    let curSafeTop = 59;
+    const winMock = {
+      innerWidth: 393,
+      innerHeight: 793,
+      screen: { width: 393, height: 852 },
+      navigator: { standalone: true },
+      visualViewport: { height: 793, offsetTop: 0 },
+      matchMedia: (q) => ({ matches: String(q || '').includes('display-mode: standalone') }),
+      getComputedStyle: () => ({ paddingTop: `${curSafeTop}px` })
+    };
+    const docMock = {
+      activeElement: null,
+      documentElement: { clientHeight: 793, style: htmlStyle },
+      body: { style: bodyStyle, classList: { toggle() {} } },
+      querySelector: (sel) => (sel === '.app' ? appMockEl : null)
+    };
+    const ctx = vm.createContext({
+      window: winMock,
+      document: docMock,
+      Date,
+      Math,
+      Number,
+      parseFloat,
+      $: (id) => (id === 'input' ? inputEl : null),
+      isDesktopLayout: () => false,
+      isTextEntryElement: (el) => el === inputEl,
+      getOpenModalBackdrop: () => null,
+      syncModalKeyboardOffset: () => {},
+      msgEl: { scrollTop: 0, scrollHeight: 0 },
+      stickBottom: false,
+      lastTextBlurAt: 0,
+      lastLayoutWidth: 393,
+      lockedModalBaseH: 793
+    });
+    vm.runInContext(`${snippet}\nglobalThis.__syncVp = syncViewportHeight;`, ctx);
+
+    // 阶段 1：旧图标竖屏初始补偿
+    ctx.__syncVp();
+    assert.equal(docStyles['--app-h'], '852px');
+    assert.equal(bodyStyle.height, '852px');
+    assert.equal(bodyStyle.transform, '');
+
+    // 阶段 2：聚焦输入框 + 键盘弹起
+    docMock.activeElement = inputEl;
+    winMock.visualViewport.height = 480;
+    winMock.visualViewport.offsetTop = 12;
+    ctx.__syncVp();
+    assert.equal(docStyles['--app-h'], '480px');
+    assert.equal(bodyStyle.height, '480px');
+    assert.equal(htmlStyle.height, '');
+    assert.equal(bodyStyle.transform, 'translateY(12px)');
+    assert.equal(appClasses.has('kb-open'), true);
+
+    // 阶段 3：收起键盘并失焦，恢复 852px 补偿与清空 transform
+    docMock.activeElement = null;
+    winMock.visualViewport.height = 793;
+    winMock.visualViewport.offsetTop = 0;
+    ctx.__syncVp();
+    assert.equal(docStyles['--app-h'], '852px');
+    assert.equal(bodyStyle.height, '852px');
+    assert.equal(htmlStyle.height, '852px');
+    assert.equal(bodyStyle.transform, '');
+    assert.equal(appClasses.has('kb-open'), false);
+
+    // 阶段 4：旋转横屏（852x393, safeTop=0），退出补偿恢复 inset:0 / bottom:0
+    winMock.innerWidth = 852;
+    winMock.innerHeight = 393;
+    winMock.visualViewport.height = 393;
+    docMock.documentElement.clientHeight = 393;
+    curSafeTop = 0;
+    ctx.__syncVp();
+    assert.equal(htmlStyle.height, '');
+    assert.equal(bodyStyle.height, '');
+    assert.equal(bodyStyle.bottom, '0');
+    assert.equal(docStyles['--app-h'], '393px');
+  }
 });
