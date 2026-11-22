@@ -9682,9 +9682,21 @@
   async function executeMobileActionCore(action, payload) {
     if (action === 'send') {
       const text = String(payload?.text || '').trim();
-      if (!text) return { ok: false, error: '发送内容不能为空' };
-      const filled = await fillComposerText(text);
-      if (!filled) return { ok: false, error: '未能填入输入框' };
+      const pendingUploads = Array.isArray(payload?.pendingUploads) ? payload.pendingUploads : [];
+      if (!text && !pendingUploads.length) return { ok: false, error: '发送内容不能为空' };
+      if (pendingUploads.length > 0) {
+        for (const att of pendingUploads) {
+          const upRes = await injectUploadedFileToDesktopComposer(att?.name, att?.mimeType, att?.base64);
+          if (!upRes?.ok) {
+            return { ok: false, error: upRes?.error || '恢复附件注入桌面输入框失败，已取消发送' };
+          }
+        }
+        await new Promise((r) => setTimeout(r, 60));
+      }
+      if (text) {
+        const filled = await fillComposerText(text);
+        if (!filled) return { ok: false, error: '未能填入输入框' };
+      }
       return await submitCurrentComposer({ allowEnterOnDisabled: true, checkBusyOnEnter: false });
     }
 
@@ -10236,6 +10248,43 @@
           };
         })
         .filter((att) => Boolean(att.previewUrl || att.name));
+      const isBgSwitch = payload?._isBackgroundSwitch === true;
+      const inlineRestoreList = rawAtts
+        .map((att, idx) => {
+          const inlineB64 = String(att?.inlineData || (String(att?.previewUrl || '').startsWith('data:') ? att.previewUrl : '')).trim();
+          if (!/^data:([^;,\s]+);base64,[A-Za-z0-9+/=\s]+$/i.test(inlineB64)) return null;
+          return {
+            name: String(att?.name || `image-${idx + 1}.png`).trim(),
+            mimeType: String(att?.mimeType || 'image/png').trim(),
+            base64: inlineB64
+          };
+        });
+      const allInlineRecoverable = rawAtts.length > 0 && !inlineRestoreList.some((x) => !x);
+      if (isBgSwitch) {
+        if (!allInlineRecoverable) {
+          return {
+            ok: false,
+            mediaRecoveryUnavailable: true,
+            error: '后台会话切回桌面原会话会清空临时输入区附件，当前无法无损提取完整附件数据，已取消撤回以避免丢失附件'
+          };
+        }
+        const clickBtn = target.editBtn || target.deleteBtn;
+        if (!clickBtn) return { ok: false, error: '未找到桌面端排队消息编辑/删除按钮' };
+        clickBtn.click();
+        return {
+          ok: true,
+          source: 'dom',
+          editedText: cleanText,
+          editedAttachments: inlineRestoreList.map((item) => ({
+            name: item.name,
+            mimeType: item.mimeType,
+            size: 0,
+            isImage: /^image\//i.test(item.mimeType),
+            previewUrl: /^image\//i.test(item.mimeType) ? item.base64 : ''
+          })),
+          stageableAttachments: inlineRestoreList
+        };
+      }
       if (target.editBtn) {
         if (!editedAttachments.length) {
           return { ok: false, mediaRecoveryUnavailable: true, error: '该排队消息包含媒体附件，但未能获取可恢复的附件元数据，已取消撤回以避免丢失附件' };
@@ -10250,17 +10299,7 @@
         };
       }
       if (!target.deleteBtn) return { ok: false, error: '未找到桌面端排队消息编辑/删除按钮' };
-      const inlineRestoreList = rawAtts
-        .map((att, idx) => {
-          const inlineB64 = String(att?.inlineData || (String(att?.previewUrl || '').startsWith('data:') ? att.previewUrl : '')).trim();
-          if (!/^data:([^;,\s]+);base64,[A-Za-z0-9+/=\s]+$/i.test(inlineB64)) return null;
-          return {
-            name: String(att?.name || `image-${idx + 1}.png`).trim(),
-            mimeType: String(att?.mimeType || 'image/png').trim(),
-            base64: inlineB64
-          };
-        });
-      if (!rawAtts.length || inlineRestoreList.some((x) => !x)) {
+      if (!allInlineRecoverable) {
         return { ok: false, mediaRecoveryUnavailable: true, error: '该排队消息包含媒体附件且无原生编辑按钮，无法完整恢复附件数据，已取消撤回以避免丢失附件' };
       }
       const restoredMeta = [];
@@ -10445,7 +10484,7 @@
     await new Promise((r) => setTimeout(r, 150));
 
     try {
-      return await executeMobileActionCore(action, payload);
+      return await executeMobileActionCore(action, { ...payload, _isBackgroundSwitch: true });
     } finally {
       if (prevConvId && prevConvId !== reqConvId && payload?.restoreDesktop !== false) {
         await new Promise((r) => setTimeout(r, 120));
