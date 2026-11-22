@@ -3901,7 +3901,14 @@ function extractRawMediaEntriesFromUserInput(ui) {
   const entries = [];
   const seen = new Set();
   const pushRaw = (entry) => {
-    const key = `${entry.kind}|${entry.localPath || entry.rawUri || (entry.inlineRaw ? `inline:${entry.inlineRaw.slice(0, 48)}` : '') || (entry.hasThumbnailOnly ? 'thumb' : entry.name)}`;
+    const inlineHash = entry.inlineRaw
+      ? crypto.createHash('sha256').update(entry.inlineRaw).digest('hex')
+      : '';
+    const identity = entry.localPath
+      || entry.rawUri
+      || (inlineHash ? `inline:${inlineHash}|${entry.name || ''}` : '')
+      || (entry.hasThumbnailOnly ? `thumb:${entry.name || ''}` : (entry.name || ''));
+    const key = `${entry.kind}|${identity}`;
     if (seen.has(key)) return;
     seen.add(key);
     entries.push(entry);
@@ -5297,6 +5304,7 @@ function createConversationHistoryManager() {
     warmSession,
     invalidateSession,
     getCachedUserConfig,
+    fetchPendingAgentMessages,
     resolvePendingMessageForEdit
   };
 }
@@ -9824,7 +9832,7 @@ function buildMobileAppHtml() {
                 setQueueBtnsDisabled(true);
                 try {
                   const res = await apiAction(buildQueueItemPayload(editBtn, { action: 'edit-queued-message' }));
-                  if (res?.ok) {
+                  if (res?.ok || res?.attachmentsPreserved) {
                     const restoredAtts = Array.isArray(res?.actionResult?.editedAttachments)
                       ? res.actionResult.editedAttachments
                       : [];
@@ -9859,9 +9867,13 @@ function buildMobileAppHtml() {
                       ta.focus();
                     }
                     syncSendButtonUI();
-                    showToast(restoredAtts.length
-                      ? ('已撤回至输入区（含 ' + restoredAtts.length + ' 个附件），修改后重新发送')
-                      : '已撤回至输入框，修改后重新发送');
+                    if (!res?.ok && res?.attachmentsPreserved) {
+                      showToast(res?.error || '原排队消息状态待确认，已保留恢复的文本与附件');
+                    } else {
+                      showToast(restoredAtts.length
+                        ? ('已撤回至输入区（含 ' + restoredAtts.length + ' 个附件），修改后重新发送')
+                        : '已撤回至输入框，修改后重新发送');
+                    }
                   } else showToast(res?.error || res?.actionResult?.error || '编辑排队消息失败');
                 } catch (e) {
                   showToast(e?.message || '编辑排队消息失败');
@@ -13854,6 +13866,60 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let cachedUsageAt = 0;
   const dispatchedQueueDeletes = new Map();
   const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
+  const stagedEditUploadsByKey = new Map();
+  const STAGED_EDIT_UPLOADS_TTL_MS = 30 * 60 * 1000;
+  const makeStagedUploadKey = (cidClient, convId) => `${String(cidClient || '__default__').trim() || '__default__'}::${String(convId || '').trim()}`;
+  const pruneStagedEditUploads = () => {
+    const now = Date.now();
+    for (const [k, rec] of stagedEditUploadsByKey.entries()) {
+      if (!rec || (now - rec.at) > STAGED_EDIT_UPLOADS_TTL_MS || !Array.isArray(rec.items) || !rec.items.length) {
+        stagedEditUploadsByKey.delete(k);
+      }
+    }
+  };
+  const getStagedEditUploads = (key) => {
+    pruneStagedEditUploads();
+    const rec = stagedEditUploadsByKey.get(key);
+    return rec && Array.isArray(rec.items) ? rec.items.slice() : [];
+  };
+  const appendStagedEditUploads = (key, items) => {
+    if (!key || !Array.isArray(items) || !items.length) return;
+    pruneStagedEditUploads();
+    const existing = stagedEditUploadsByKey.get(key)?.items || [];
+    const next = existing.concat(items).slice(-10);
+    if (stagedEditUploadsByKey.size >= 100 && !stagedEditUploadsByKey.has(key)) {
+      const oldest = stagedEditUploadsByKey.keys().next().value;
+      if (oldest !== undefined) stagedEditUploadsByKey.delete(oldest);
+    }
+    stagedEditUploadsByKey.set(key, { at: Date.now(), items: next });
+  };
+  const removeStagedEditUpload = (key, opts = {}) => {
+    pruneStagedEditUploads();
+    const rec = stagedEditUploadsByKey.get(key);
+    if (!rec || !Array.isArray(rec.items) || !rec.items.length) return 0;
+    if (opts.clearAll === true) {
+      const n = rec.items.length;
+      stagedEditUploadsByKey.delete(key);
+      return n;
+    }
+    const reqName = String(opts.name || '').trim().toLowerCase();
+    const reqIdx = Number.isInteger(opts.index) ? opts.index : -1;
+    let rmIdx = -1;
+    if (reqName) {
+      if (reqIdx >= 0 && reqIdx < rec.items.length && String(rec.items[reqIdx]?.name || '').trim().toLowerCase() === reqName) {
+        rmIdx = reqIdx;
+      } else {
+        rmIdx = rec.items.findIndex((x) => String(x?.name || '').trim().toLowerCase() === reqName);
+      }
+    } else if (reqIdx >= 0 && reqIdx < rec.items.length) {
+      rmIdx = reqIdx;
+    }
+    if (rmIdx < 0) return 0;
+    rec.items.splice(rmIdx, 1);
+    rec.at = Date.now();
+    if (!rec.items.length) stagedEditUploadsByKey.delete(key);
+    return 1;
+  };
   const markDispatchedQueueDelete = (key, text = '') => {
     const now = Date.now();
     for (const [k, v] of dispatchedQueueDeletes.entries()) {
@@ -14919,52 +14985,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           const stripMediaMarkerForMatch = (s) => String(s || '')
             .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
             .trim();
-          const rollbackRestoredDesktopAttachments = async (uploadedList) => {
-            if (!Array.isArray(uploadedList) || !uploadedList.length) return;
-            for (let ri = uploadedList.length - 1; ri >= 0; ri -= 1) {
-              const u = uploadedList[ri];
-              await performAction({
-                action: 'remove-uploaded-attachment',
-                clientId,
-                targetId: effectiveTargetId || undefined,
-                conversationId: cascadeId,
-                name: u.name
-              }).catch(() => null);
-            }
-          };
-          const restoreAttachmentsToDesktopBeforeDelete = async (attachmentsToRestore) => {
-            if (!Array.isArray(attachmentsToRestore) || !attachmentsToRestore.length) {
-              return { ok: false, uploaded: [], error: '缺少可恢复的附件数据' };
-            }
-            const uploaded = [];
-            for (const att of attachmentsToRestore) {
-              let upRes = null;
-              try {
-                upRes = await performAction({
-                  action: 'upload-image',
-                  clientId,
-                  targetId: effectiveTargetId || undefined,
-                  conversationId: cascadeId,
-                  name: att.name,
-                  mimeType: att.mimeType,
-                  base64: att.base64
-                });
-              } catch (err) {
-                upRes = { ok: false, error: err?.message || '上传附件到桌面端失败' };
-              }
-              if (!upRes || upRes.ok === false || upRes.actionResult?.ok === false) {
-                await rollbackRestoredDesktopAttachments(uploaded);
-                return {
-                  ok: false,
-                  uploaded: [],
-                  error: upRes?.error || upRes?.actionResult?.error || '恢复附件至桌面输入区失败，已取消删除原排队消息'
-                };
-              }
-              uploaded.push(att);
-            }
-            return { ok: true, uploaded };
-          };
-          const restoreMediaAndDeleteQueued = async ({ rawUi, fallbackText, deleteMethod, deleteBody, dispatchKey }) => {
+          const stageKey = makeStagedUploadKey(clientId, cascadeId);
+          const restoreMediaAndDeleteQueued = async ({ rawUi, fallbackText, deleteMethod, deleteBody, dispatchKey, verifyOriginalStillQueued }) => {
             const rawEntries = extractRawMediaEntriesFromUserInput(rawUi);
             const mat = materializeQueuedAttachmentsForEdit(rawEntries, options.mediaOptions || {});
             if (!mat.ok || !mat.attachments.length) {
@@ -14977,38 +14999,81 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 }
               };
             }
-            const restored = await restoreAttachmentsToDesktopBeforeDelete(mat.attachments);
-            if (!restored.ok) {
-              return {
-                ok: false,
-                errorPayload: {
-                  ok: false,
-                  mediaRecoveryUnavailable: true,
-                  error: restored.error || '恢复附件至桌面输入区失败，已取消撤回以避免丢失附件'
-                }
-              };
-            }
-            const delOutcome = await callLsRpc(deleteMethod, deleteBody, rpcTimeoutMs);
-            if (delOutcome === null || delOutcome === false) {
-              await rollbackRestoredDesktopAttachments(restored.uploaded);
-              return {
-                ok: false,
-                errorPayload: {
-                  ok: false,
-                  error: '本机 LanguageServer 队列删除调用失败或超时，已回滚恢复附件并保留原排队消息'
-                }
-              };
-            }
-            if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
-            editedText = stripDisplayMediaSuffixFromQueuedText(fallbackText, true);
-            editedAttachments = mat.attachments.map(({ name, mimeType, size, isImage, previewUrl }) => ({
+            const cleanRestoredText = stripDisplayMediaSuffixFromQueuedText(fallbackText, true);
+            const clientAttsMeta = mat.attachments.map(({ name, mimeType, size, isImage, previewUrl }) => ({
               name,
               mimeType,
               size,
               isImage,
               previewUrl
             }));
-            return { ok: true, rpcRes: delOutcome };
+            const stageableItems = mat.attachments.map(({ name, mimeType, base64, size, isImage, previewUrl }) => ({
+              name,
+              mimeType,
+              base64,
+              size,
+              isImage,
+              previewUrl
+            }));
+            const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+            if (delOutcome.ok) {
+              appendStagedEditUploads(stageKey, stageableItems);
+              if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+              editedText = cleanRestoredText;
+              editedAttachments = clientAttsMeta;
+              return { ok: true, rpcRes: delOutcome.result };
+            }
+            if (delOutcome.confirmedNotExecuted) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: delOutcome.error || '删除原排队消息被服务端拒绝，已保留原排队项'
+                }
+              };
+            }
+            // 删除结果未知（超时/断连/null）：绝不盲目丢弃已恢复附件；核验原排队项真实状态后再决策
+            const stillQueued = typeof verifyOriginalStillQueued === 'function'
+              ? await verifyOriginalStillQueued().catch(() => null)
+              : null;
+            if (stillQueued === false) {
+              appendStagedEditUploads(stageKey, stageableItems);
+              if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+              editedText = cleanRestoredText;
+              editedAttachments = clientAttsMeta;
+              return { ok: true, verifiedAfterUnknownDelete: true, rpcRes: { verifiedDeleted: true } };
+            }
+            if (stillQueued === true) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: delOutcome.error || '删除原排队消息响应超时，经核验原项仍在队列中，请重试'
+                }
+              };
+            }
+            // 核验亦不可得：保留暂存附件并回传前端，绝不因盲目回滚造成附件丢失
+            appendStagedEditUploads(stageKey, stageableItems);
+            editedText = cleanRestoredText;
+            editedAttachments = clientAttsMeta;
+            return {
+              ok: false,
+              errorPayload: {
+                ok: false,
+                outcomeUnknown: true,
+                attachmentsPreserved: true,
+                error: '删除原排队消息响应超时且无法确认原项状态，已保留恢复的文本与附件以避免丢失',
+                actionResult: {
+                  ok: false,
+                  outcomeUnknown: true,
+                  attachmentsPreserved: true,
+                  action: actionName,
+                  cascadeId,
+                  editedText: cleanRestoredText,
+                  editedAttachments: clientAttsMeta
+                }
+              }
+            };
           };
           const runQueuedDomFallback = async (domAct, sendAllFlag, overrides = {}) => {
             const rawIdx = overrides.domIndex !== undefined ? overrides.domIndex : payload?.domIndex;
@@ -15048,6 +15113,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
             if (Array.isArray(domRes?.actionResult?.editedAttachments)) {
               editedAttachments = domRes.actionResult.editedAttachments;
+            }
+            if (Array.isArray(domRes?.actionResult?.stageableAttachments) && domRes.actionResult.stageableAttachments.length) {
+              appendStagedEditUploads(stageKey, domRes.actionResult.stageableAttachments);
             }
             usedDomFallback = true;
             return true;
@@ -15156,7 +15224,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                   fallbackText: baseEditText,
                   deleteMethod: 'DeleteAgentMessage',
                   deleteBody: { messageId, recipient: cascadeId },
-                  dispatchKey
+                  dispatchKey,
+                  verifyOriginalStillQueued: async () => {
+                    historyManager.invalidateSession?.(cascadeId);
+                    const freshList = await historyManager.fetchPendingAgentMessages?.(cascadeId, {
+                      localApiConnect: options.localApiConnect,
+                      fetchPendingAgentMessages: options.fetchPendingAgentMessages,
+                      bypassCache: true
+                    }).catch(() => null);
+                    if (!Array.isArray(freshList)) return null;
+                    return freshList.some((item) => item && String(item.messageId || item.id || '').trim() === messageId);
+                  }
                 });
                 if (!recovered.ok) {
                   sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recovered.errorPayload));
@@ -15266,7 +15344,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 fallbackText: baseEditText,
                 deleteMethod: 'DeleteQueuedUserInputStep',
                 deleteBody: { cascadeId, stepIndex },
-                dispatchKey
+                dispatchKey,
+                verifyOriginalStillQueued: async () => {
+                  const recheck = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
+                  const recheckSteps = recheck.ok ? recheck.result?.trajectory?.steps : null;
+                  if (!recheck.ok || !Array.isArray(recheckSteps)) return null;
+                  const recheckContainer = recheck.result?.trajectory || recheck.result;
+                  const recheckQList = extractQueuedMessagesFromTrajectorySteps(recheckSteps, recheckContainer);
+                  if (recheckQList.some((q) => q && q.stepIndex === stepIndex)) return true;
+                  return isQueuedTrajectoryUserStep(recheckSteps[stepIndex]);
+                }
               });
               if (!recovered.ok) {
                 sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recovered.errorPayload));
@@ -15727,6 +15814,34 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           }));
           return;
         }
+        const existingConvStageKey = (effectiveConvId && effectiveConvId !== '__new__' && effectiveConvId !== 'new')
+          ? makeStagedUploadKey(clientId, effectiveConvId)
+          : '';
+        if (actionName === 'remove-uploaded-attachment' && existingConvStageKey) {
+          const stagedList = getStagedEditUploads(existingConvStageKey);
+          if (stagedList.length > 0) {
+            const removedStaged = removeStagedEditUpload(existingConvStageKey, {
+              clearAll: payload?.clearAll === true,
+              name: payload?.name,
+              index: payload?.index
+            });
+            if (removedStaged > 0) {
+              if (payload?.clearAll === true) {
+                await performAction({
+                  ...payload,
+                  clientId,
+                  targetId: effectiveTargetId || undefined,
+                  conversationId: effectiveConvId
+                }).catch(() => null);
+              }
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: true,
+                actionResult: { ok: true, staged: true, removed: removedStaged }
+              }));
+              return;
+            }
+          }
+        }
         const isDeferredDraftSend = Boolean(
           actionName === 'send' &&
           (session?.draftNewIsolated || payload?.draftNewIsolated === true) &&
@@ -15756,6 +15871,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const draftUploadsForSend = (isDeferredDraftSend && Array.isArray(session?.draftPendingUploads) && session.draftPendingUploads.length)
           ? session.draftPendingUploads.slice()
           : [];
+        const stagedUploadsForSend = (!isDeferredDraftSend && actionName === 'send' && existingConvStageKey)
+          ? getStagedEditUploads(existingConvStageKey)
+          : [];
         const sendStartNavEpoch = session ? (session.navEpoch || 0) : 0;
         const sendStartTargetId = session ? String(session.targetId || effectiveTargetId || '') : effectiveTargetId;
         const sendStartConvId = session ? String(session.conversationId || '') : effectiveConvId;
@@ -15780,9 +15898,14 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               draftProjectId: draftPidForSend,
               restoreDesktop: payload?.restoreDesktop !== false,
               ...(draftUploadsForSend.length ? { draftPendingUploads: draftUploadsForSend } : {})
-            } : {})
+            } : (stagedUploadsForSend.length ? {
+              pendingUploads: stagedUploadsForSend.map(({ name, mimeType, base64 }) => ({ name, mimeType, base64 }))
+            } : {}))
           });
           if (actionName === 'send' && result?.ok !== false) {
+            if (existingConvStageKey && stagedUploadsForSend.length) {
+              stagedEditUploadsByKey.delete(existingConvStageKey);
+            }
             const sentSid = String(
               result?.snapshot?.activeConversationId ||
               result?.snapshot?.sessionId ||

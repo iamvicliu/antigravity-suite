@@ -19004,9 +19004,12 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   const diskImgPath = path.join(tmpMediaDir, 'disk-queued.png');
   fs.writeFileSync(diskImgPath, Buffer.from(tinyPngB64, 'base64'));
   const mediaOpsLog = [];
-  let mediaUploadFail = false;
-  let deleteAgentFail = false;
-  let editCaseScenario = 'full'; // 'full' | 'thumb_only' | 'missing_file' | 'unknown_500_words' | 'method_mismatch_dep'
+  let deleteAgentMode = 'ok'; // 'ok' | 'applied_then_null' | 'timeout_still_queued' | 'timeout_verify_fail' | 'rejected_404'
+  let fetchPendingFail = false;
+  let editCaseScenario = 'full'; // 'full' | 'thumb_only' | 'missing_file' | 'unknown_500_words' | 'method_mismatch_dep' | 'plain_500_words'
+  const sharedImgPrefix = Buffer.alloc(64, 0x89);
+  const samePrefixPngA = Buffer.concat([sharedImgPrefix, Buffer.from('IMG-PAYLOAD-ALPHA-111')]).toString('base64');
+  const samePrefixPngB = Buffer.concat([sharedImgPrefix, Buffer.from('IMG-PAYLOAD-BETA-222')]).toString('base64');
   let pendingEditFixture = [
     {
       id: 'pm-media-ok',
@@ -19016,6 +19019,31 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
         userInput: {
           items: [{ text: '带图撤回编辑说明' }],
           media: [{ mimeType: 'image/png', inlineData: tinyPngB64, displayName: 'inline-shot.png' }]
+        }
+      }
+    },
+    {
+      id: 'pm-media-same-prefix-2',
+      deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+      step: {
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        userInput: {
+          items: [{ text: '同前缀双图排队' }],
+          media: [
+            { mimeType: 'image/png', inlineData: samePrefixPngA, displayName: 'dup-prefix-1.png' },
+            { mimeType: 'image/png', inlineData: samePrefixPngB, displayName: 'dup-prefix-2.png' }
+          ]
+        }
+      }
+    },
+    {
+      id: 'pm-media-applied-lost',
+      deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+      step: {
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        userInput: {
+          items: [{ text: '删除已生效但响应丢失' }],
+          media: [{ mimeType: 'image/png', inlineData: samePrefixPngA, displayName: 'applied-lost.png' }]
         }
       }
     },
@@ -19050,10 +19078,28 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   }, {
     historyManager: r3HistoryMgr,
     mediaOptions: { allowedRoots: [tmpMediaDir] },
-    fetchPendingAgentMessages: async () => pendingEditFixture.map((m) => ({ ...m, ui: m.step.userInput, hasMedia: true })),
+    fetchPendingAgentMessages: async () => {
+      if (fetchPendingFail) return null;
+      return pendingEditFixture.map((m) => ({ ...m, ui: m.step.userInput, hasMedia: true }));
+    },
     callLanguageServer: async (method, body) => {
       mediaOpsLog.push({ kind: 'rpc', method, body });
-      if (method === 'DeleteAgentMessage' && deleteAgentFail) return null;
+      if (method === 'DeleteAgentMessage') {
+        if (deleteAgentMode === 'applied_then_null') {
+          pendingEditFixture = pendingEditFixture.filter((m) => m.id !== body.messageId);
+          return null;
+        }
+        if (deleteAgentMode === 'timeout_still_queued') {
+          return null;
+        }
+        if (deleteAgentMode === 'timeout_verify_fail') {
+          fetchPendingFail = true;
+          return null;
+        }
+        if (deleteAgentMode === 'rejected_404') {
+          throw new Error('HTTP 404: {"code":"not_found","message":"message not found"}');
+        }
+      }
       if (method === 'GetCascadeTrajectory') {
         if (editCaseScenario === 'missing_file') {
           return {
@@ -19113,10 +19159,13 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
       return { ok: true };
     },
     performAction: async (p) => {
-      mediaOpsLog.push({ kind: 'dom', action: p.action, name: p.name, sendAll: p.sendAll });
-      if (p.action === 'upload-image' && mediaUploadFail) {
-        return { ok: false, error: '桌面输入区文件上传失败' };
-      }
+      mediaOpsLog.push({
+        kind: 'dom',
+        action: p.action,
+        name: p.name,
+        sendAll: p.sendAll,
+        pendingUploads: Array.isArray(p.pendingUploads) ? p.pendingUploads.map((u) => u.name) : []
+      });
       return { ok: true, actionResult: { ok: true, name: p.name } };
     },
     fetchSnapshot: async (_t, opts) => ({
@@ -19138,11 +19187,11 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     return JSON.parse(out);
   };
   try {
-    // 9a. messageId 含内联图片编辑：先 upload-image 恢复附件再 DeleteAgentMessage，剥除展示后缀并下发 editedAttachments
-    const beforeMediaEditOk = mediaOpsLog.length;
+    // 9a. messageId 含内联图片编辑：物化并暂存后删除原项，剥除展示后缀、下发 editedAttachments，并在后续 send 时原子透传 pendingUploads
     const rMediaEditOk = await postR3Act({
       action: 'edit-queued-message',
       conversationId: 'conv-r3',
+      clientId: 'cli-r3-a',
       messageId: 'pm-media-ok',
       hasMedia: true,
       text: '带图撤回编辑说明\n[附带 1 张图片]'
@@ -19152,37 +19201,57 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     assert.equal(rMediaEditOk.actionResult.editedAttachments?.length, 1);
     assert.equal(rMediaEditOk.actionResult.editedAttachments[0].name, 'inline-shot.png');
     assert.ok(rMediaEditOk.actionResult.editedAttachments[0].previewUrl.startsWith('data:image/png;base64,'));
-    const okOpsSlice = mediaOpsLog.slice(beforeMediaEditOk);
-    const upIdx = okOpsSlice.findIndex((o) => o.kind === 'dom' && o.action === 'upload-image');
-    const delIdx = okOpsSlice.findIndex((o) => o.kind === 'rpc' && o.method === 'DeleteAgentMessage');
-    assert.ok(upIdx >= 0 && delIdx > upIdx, '必须先上传恢复附件成功，再执行 DeleteAgentMessage');
+    const beforeResendA = mediaOpsLog.length;
+    const rResendA = await postR3Act({
+      action: 'send',
+      conversationId: 'conv-r3',
+      clientId: 'cli-r3-a',
+      text: '修改后的文本'
+    });
+    assert.equal(rResendA.ok, true);
+    assert.deepEqual(mediaOpsLog[beforeResendA].pendingUploads, ['inline-shot.png'], '再次发送必须透传完整暂存附件');
 
-    // 9b. traj stepIndex 读取安全磁盘文件并先上传恢复、仅图片项 returning editedText === ""
-    const beforeTrajDiskEdit = mediaOpsLog.length;
+    // 9a-2. 同 64 字节前缀、不同内容的双附件去重回归（严禁按 slice(0,48) 误碰撞丢弃第二张）
+    const rSamePrefixDual = await postR3Act({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r3',
+      clientId: 'cli-r3-prefix',
+      messageId: 'pm-media-same-prefix-2',
+      hasMedia: true,
+      text: '同前缀双图排队\n[附带 2 张图片]'
+    });
+    assert.equal(rSamePrefixDual.ok, true);
+    assert.equal(rSamePrefixDual.actionResult.editedAttachments?.length, 2, '同前缀不同内容的双附件均必须完整保留');
+    assert.deepEqual(
+      rSamePrefixDual.actionResult.editedAttachments.map((a) => a.name),
+      ['dup-prefix-1.png', 'dup-prefix-2.png']
+    );
+    const beforePrefixSend = mediaOpsLog.length;
+    await postR3Act({ action: 'send', conversationId: 'conv-r3', clientId: 'cli-r3-prefix', text: '重发双图' });
+    assert.deepEqual(mediaOpsLog[beforePrefixSend].pendingUploads, ['dup-prefix-1.png', 'dup-prefix-2.png']);
+
+    // 9b. traj stepIndex 读取安全磁盘文件并暂存、仅图片项 returning editedText === ""
     const rTrajDiskEdit = await postR3Act({
       action: 'edit-queued-message',
       conversationId: 'conv-r3',
+      clientId: 'cli-r3-disk',
       stepIndex: 0
     });
     assert.equal(rTrajDiskEdit.ok, true);
     assert.equal(rTrajDiskEdit.actionResult.editedText, '带盘文件媒体排队');
     assert.equal(rTrajDiskEdit.actionResult.editedAttachments?.[0]?.name, 'disk-queued.png');
-    const trajDiskSlice = mediaOpsLog.slice(beforeTrajDiskEdit);
-    assert.ok(
-      trajDiskSlice.findIndex((o) => o.action === 'upload-image') < trajDiskSlice.findIndex((o) => o.method === 'DeleteQueuedUserInputStep'),
-      '轨迹步编辑也必须先恢复上传再删除排队步'
-    );
 
     const rTrajImgOnly = await postR3Act({
       action: 'edit-queued-message',
       conversationId: 'conv-r3',
+      clientId: 'cli-r3-imgonly',
       stepIndex: 1
     });
     assert.equal(rTrajImgOnly.ok, true);
     assert.equal(rTrajImgOnly.actionResult.editedText, '', '纯图片排队项撤回编辑时 editedText 应为空串而非 [图片附件]');
     assert.equal(rTrajImgOnly.actionResult.editedAttachments?.[0]?.name, 'only-img.png');
 
-    // 9c. 各种恢复能力不足场景：thumbnail-only / 缺失文件 / 上传失败 / 删除失败均严禁残留删项
+    // 9c. 恢复能力不足场景：thumbnail-only / 缺失文件均严禁提前删项
     const beforeInsufficient = mediaOpsLog.length;
     const rThumbFail = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', messageId: 'pm-media-thumb-only', hasMedia: true });
     assert.equal(rThumbFail.ok, false);
@@ -19195,21 +19264,207 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     assert.equal(rTrajMissingFail.ok, false);
     assert.equal(rTrajMissingFail.mediaRecoveryUnavailable, true);
     editCaseScenario = 'full';
-    mediaUploadFail = true;
-    const rUploadFail = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', messageId: 'pm-media-ok', hasMedia: true });
-    assert.equal(rUploadFail.ok, false);
-    assert.equal(rUploadFail.mediaRecoveryUnavailable, true);
-    mediaUploadFail = false;
     const insuffSlice = mediaOpsLog.slice(beforeInsufficient);
     assert.equal(insuffSlice.filter((o) => o.method === 'DeleteAgentMessage' || o.method === 'DeleteQueuedUserInputStep').length, 0, '任何恢复失败场景均绝不得提前删除原排队项');
 
-    // 若上传成功但 DeleteAgentMessage 失败，应回滚已上传附件并返回失败
-    deleteAgentFail = true;
-    const beforeRollback = mediaOpsLog.length;
-    const rDeleteRollback = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', messageId: 'pm-media-ok', hasMedia: true });
-    assert.equal(rDeleteRollback.ok, false);
-    assert.ok(mediaOpsLog.slice(beforeRollback).some((o) => o.kind === 'dom' && o.action === 'remove-uploaded-attachment'), 'DeleteAgentMessage 失败时应回滚预上传附件');
-    deleteAgentFail = false;
+    // 9c-2. 删除 RPC 失败分类与结果未知核验：
+    // (1) 删除已在服务端生效但响应丢失(返回 null) → 核验确认原项已消失，绝不回滚丢弃附件，直接恢复成功并保留附件供重发
+    deleteAgentMode = 'applied_then_null';
+    const rAppliedLost = await postR3Act({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r3',
+      clientId: 'cli-applied-lost',
+      messageId: 'pm-media-applied-lost',
+      hasMedia: true
+    });
+    assert.equal(rAppliedLost.ok, true, '删除已生效但响应丢失时，经核验原项已消失应返回成功并保留恢复附件');
+    assert.equal(rAppliedLost.actionResult.editedAttachments?.[0]?.name, 'applied-lost.png');
+    const beforeLostResend = mediaOpsLog.length;
+    await postR3Act({ action: 'send', conversationId: 'conv-r3', clientId: 'cli-applied-lost', text: '丢失响应后重发' });
+    assert.deepEqual(mediaOpsLog[beforeLostResend].pendingUploads, ['applied-lost.png']);
+
+    // (2) 删除响应超时且核验亦不可得 → 严禁丢弃附件，返回 outcomeUnknown + attachmentsPreserved 并保留暂存附件
+    deleteAgentMode = 'timeout_verify_fail';
+    const rVerifyFail = await postR3Act({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r3',
+      clientId: 'cli-verify-fail',
+      messageId: 'pm-media-ok',
+      hasMedia: true
+    });
+    fetchPendingFail = false;
+    assert.equal(rVerifyFail.ok, false);
+    assert.equal(rVerifyFail.outcomeUnknown, true);
+    assert.equal(rVerifyFail.attachmentsPreserved, true, '核验失败时绝不得丢弃已恢复附件');
+    assert.equal(rVerifyFail.actionResult.editedAttachments?.[0]?.name, 'inline-shot.png');
+    const beforePreservedSend = mediaOpsLog.length;
+    await postR3Act({ action: 'send', conversationId: 'conv-r3', clientId: 'cli-verify-fail', text: '保底重发' });
+    assert.deepEqual(mediaOpsLog[beforePreservedSend].pendingUploads, ['inline-shot.png']);
+
+    // (3) 明确拒绝(HTTP 404) 或 超时但核验原项仍在 → 不暂存附件
+    deleteAgentMode = 'rejected_404';
+    const rRej404 = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', clientId: 'cli-rej-404', messageId: 'pm-media-ok', hasMedia: true });
+    assert.equal(rRej404.ok, false);
+    assert.notEqual(rRej404.attachmentsPreserved, true);
+    deleteAgentMode = 'timeout_still_queued';
+    const rStillQueued = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', clientId: 'cli-still-q', messageId: 'pm-media-ok', hasMedia: true });
+    assert.equal(rStillQueued.ok, false);
+    assert.notEqual(rStillQueued.attachmentsPreserved, true);
+    const beforeStillSend = mediaOpsLog.length;
+    await postR3Act({ action: 'send', conversationId: 'conv-r3', clientId: 'cli-still-q', text: '无暂存' });
+    assert.deepEqual(mediaOpsLog[beforeStillSend].pendingUploads, []);
+    deleteAgentMode = 'ok';
+
+    // 9c-3. 真实后台/隔离会话完整链路（挂载真实 ag-enhancer-overlay.js VM，模拟桌面切换卸载清空 composer 临时附件态）：
+    // 验证：桌面在 /c/desktop-orig → 远端编辑后台会话 bg-conv-40 的同前缀双图排队项 → 桌面保持/切回原会话并清空临时文件态 →
+    // 远端点击重发 → overlay 切至 /c/bg-conv-40、在挂载态原子注入全部 2 个附件并提交 → 自动切回 /c/desktop-orig！
+    const envBg = createDomEnv();
+    envBg.sandbox.setTimeout = (fn) => setTimeout(fn, 0);
+    envBg.sandbox.clearTimeout = (t) => clearTimeout(t);
+    envBg.sandbox.atob = atob;
+    envBg.sandbox.File = File;
+    envBg.sandbox.DataTransfer = class {
+      constructor() {
+        this.files = [];
+        this.items = { add: (f) => { this.files.push(f); } };
+      }
+    };
+    const origConvUuid = '11111111-1111-4111-8111-111111111111';
+    const bgConvUuid = '22222222-2222-4222-8222-222222222222';
+    const otherConvUuid = '33333333-3333-4333-8333-333333333333';
+    envBg.sandbox.location.pathname = `/c/${origConvUuid}`;
+    let mountedComposerFiles = [];
+    const submittedRecords = [];
+    const bgComposer = envBg.doc.createElement('div');
+    bgComposer.className = 'surface-composer';
+    const bgFileInp = envBg.doc.createElement('input');
+    bgFileInp.setAttribute('type', 'file');
+    bgFileInp.addEventListener('change', () => {
+      for (const f of Array.from(bgFileInp.files || [])) {
+        mountedComposerFiles.push({ name: f.name, size: f.size, type: f.type });
+      }
+    });
+    const bgEditor = envBg.doc.createElement('div');
+    bgEditor.setAttribute('contenteditable', 'true');
+    bgEditor.setAttribute('role', 'textbox');
+    envBg.doc.execCommand = (cmd, _ui, val) => {
+      if (cmd === 'insertText') {
+        bgEditor.textContent = String(val || '');
+        return true;
+      }
+      return true;
+    };
+    const bgSendBtn = envBg.doc.createElement('button');
+    bgSendBtn.setAttribute('data-testid', 'input-send-button');
+    bgSendBtn.setAttribute('aria-label', 'Send');
+    bgSendBtn.addEventListener('click', () => {
+      submittedRecords.push({
+        pathname: envBg.sandbox.location.pathname,
+        text: bgEditor.textContent || '',
+        files: mountedComposerFiles.slice()
+      });
+      mountedComposerFiles = [];
+    });
+    bgComposer.appendChild(bgFileInp);
+    bgComposer.appendChild(bgEditor);
+    bgComposer.appendChild(bgSendBtn);
+    envBg.doc.body.appendChild(bgComposer);
+    // 模拟真实 Antigravity React 路由切换：每次切换会话时卸载并清空 composer 临时文件态
+    envBg.sandbox.window.history = {
+      pushState: (_s, _t, url) => {
+        const nextPath = String(url || '');
+        if (nextPath !== envBg.sandbox.location.pathname) {
+          envBg.sandbox.location.pathname = nextPath;
+          mountedComposerFiles = [];
+        }
+      }
+    };
+    envBg.sandbox.history = envBg.sandbox.window.history;
+    vm.runInContext(overlaySrc, envBg.sandbox);
+    try {
+      const bgEnh = envBg.sandbox.__AGEnhancer;
+      const bgHandler = createRemoteHttpHandler({
+        port: 18767,
+        token: 'tok-bg-real',
+        enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+      }, {
+        historyManager: createConversationHistoryManager(),
+        fetchPendingAgentMessages: async () => [
+          {
+            id: 'pm-bg-dual',
+            deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+            ui: {
+              items: [{ text: '后台会话双图消息' }],
+              media: [
+                { mimeType: 'image/png', inlineData: samePrefixPngA, displayName: 'bg-a.png' },
+                { mimeType: 'image/png', inlineData: samePrefixPngB, displayName: 'bg-b.png' }
+              ]
+            },
+            hasMedia: true
+          }
+        ],
+        callLanguageServer: async () => ({ ok: true }),
+        performAction: async (p) => {
+          const actionResult = await bgEnh.performMobileAction(p);
+          return {
+            ok: Boolean(actionResult?.ok),
+            actionResult,
+            snapshot: { ok: true, sessionId: p.conversationId || bgConvUuid, title: 'BG', queuedMessages: [] }
+          };
+        },
+        fetchSnapshot: async (_t, opts) => ({
+          ok: true,
+          sessionId: opts?.conversationId || bgConvUuid,
+          title: 'BG',
+          queuedMessages: []
+        })
+      });
+      const postBg = async (bodyObj) => {
+        const { Readable } = require('stream');
+        const req = Readable.from([Buffer.from(JSON.stringify(bodyObj), 'utf8')]);
+        req.method = 'POST';
+        req.url = '/api/action';
+        req.headers = { host: '127.0.0.1:18767', 'content-type': 'application/json', 'x-ag-remote-token': 'tok-bg-real' };
+        req.socket = { remoteAddress: '127.0.0.1' };
+        let out = '';
+        await bgHandler(req, { setHeader() {}, writeHead() {}, end(c) { if (c) out += String(c); } });
+        return JSON.parse(out);
+      };
+      const rBgEdit = await postBg({
+        action: 'edit-queued-message',
+        conversationId: bgConvUuid,
+        clientId: 'cli-bg-real',
+        messageId: 'pm-bg-dual',
+        hasMedia: true
+      });
+      assert.equal(rBgEdit.ok, true);
+      assert.equal(rBgEdit.actionResult.editedAttachments?.length, 2);
+      assert.equal(envBg.sandbox.location.pathname, `/c/${origConvUuid}`, '后台编辑不应打断原桌面会话');
+
+      // 模拟期间桌面切换到其他会话再切回，临时输入区文件态被彻底清空
+      envBg.sandbox.window.history.pushState(null, '', `/c/${otherConvUuid}`);
+      envBg.sandbox.window.history.pushState(null, '', `/c/${origConvUuid}`);
+      assert.equal(mountedComposerFiles.length, 0);
+
+      // 远端重新发送编辑后的文本
+      const rBgSend = await postBg({
+        action: 'send',
+        conversationId: bgConvUuid,
+        clientId: 'cli-bg-real',
+        text: '后台编辑后重发'
+      });
+      assert.equal(rBgSend.ok, true);
+      assert.equal(submittedRecords.length, 1);
+      assert.equal(submittedRecords[0].pathname, `/c/${bgConvUuid}`, '提交必须在目标后台会话路由内完成');
+      assert.deepEqual(
+        submittedRecords[0].files.map((f) => f.name),
+        ['bg-a.png', 'bg-b.png'],
+        '即使原桌面会话切换卸载了 composer，再次发送时全部 2 个恢复附件必须完整注入并随消息提交'
+      );
+      assert.equal(envBg.sandbox.location.pathname, `/c/${origConvUuid}`, '发送完成后桌面端必须自动切回原桌面会话');
+    } finally {
+      envBg.sandbox.__AGEnhancer?.dispose?.();
+    }
 
     // 9d. 前端 #queue-dock 点击编辑含附件与纯图片项时，同步回填 #attach-hint 与 #btn-send
     const dockVmQueue = [
