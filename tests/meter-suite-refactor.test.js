@@ -12872,7 +12872,11 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   assert.ok(html.includes('position:fixed;inset:0;height:auto;overflow:hidden'), '通用 body 应使用 position:fixed;inset:0;height:auto 贴满底边，避免 Safari 与独立 PWA 底部死区');
   assert.ok(html.includes("document.body.style.height = '';"), 'syncViewportHeight 在无键盘及键盘收起时应统一清除内联 height');
   assert.ok(html.includes('height:100%;height:100dvh;overflow:hidden'), 'html 应设置 height:100%;height:100dvh 随浏览器工具栏动态贴底');
-  assert.ok(html.includes('.topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}') && html.includes('flex:1 0 100%;width:100%;gap:6px;'), '手机端顶栏功能按钮应独立成第二行，释放整行宽度给标题与项目名');
+  assert.ok(
+    html.includes('.topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto auto;')
+    && html.includes('grid-column:1 / -1;grid-row:3;width:100%;gap:6px;'),
+    '手机端顶栏功能按钮应独立成底栏整行，释放整行宽度给标题与项目名'
+  );
 
   // 3. 独立 PWA 模式（navigator.standalone = true）下键盘弹出、收起与弹窗锁高行为级实测
   const pwaStart = html.indexOf('const appEl = document.querySelector(\'.app\');');
@@ -24128,6 +24132,14 @@ test('扫码选路优先级、顶栏独立通道胶囊、SW Error 1033 容灾壳
   assert.equal(closeSheetDefs.length, 1, 'closeSheet 在手机端脚本中只能保留 1 份完整定义');
   assert.ok(html.includes('id="btn-channel-pill"'), '顶栏必须渲染独立的 #btn-channel-pill 通道状态按钮');
   assert.ok(html.includes('.channel-pill{'), 'CSS 必须定义 .channel-pill 样式');
+  const desktopMediaCss = html.slice(html.indexOf('@media (min-width:860px)'), html.indexOf('.topbar-actions{'));
+  const mobileMediaCss = html.slice(html.indexOf('@media (max-width:859px)'), html.indexOf('@media (max-width:430px)'));
+  assert.ok(desktopMediaCss.includes('.channel-pill{display:none}'), '桌面宽屏左下角已有切换按钮，顶栏不应再显示 .channel-pill');
+  assert.ok(
+    mobileMediaCss.includes('.toast{top:calc(env(safe-area-inset-top) + 98px)}')
+    && mobileMediaCss.includes('.sub-row{grid-column:2 / -1;grid-row:2}'),
+    '手机窄屏顶栏应采用 3 列 Grid 铺满状态副标题，并将 Toast 下移至双行顶栏下方避免遮挡用量与配额'
+  );
 
   // 2. 手机端 DOM 交互：空 snap 不弹空配额壳、点击 #btn-channel-pill 关闭顶栏抽屉并开切通道、closeSheet 复位、跨协议切直连不带 spd=
   const replacedUrls = [];
@@ -24181,6 +24193,7 @@ test('扫码选路优先级、顶栏独立通道胶囊、SW Error 1033 容灾壳
 
   const epsHttpsToHttp = [
     { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'https://mac.tail-demo.ts.net', kind: 'tailscale', priority: 90 },
     { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
   ];
   const encEpsHttpsToHttp = remoteMod.encodeEndpointsParam(epsHttpsToHttp);
@@ -24272,6 +24285,11 @@ test('扫码选路优先级、顶栏独立通道胶囊、SW Error 1033 容灾壳
     assert.equal(byId['sheet-action-btn'].hidden, false);
     assert.ok(byId['sheet-list'].innerHTML.includes('临时域名'), '切换连接方式弹窗应对 .trycloudflare.com 标注「临时域名」标签');
     assert.ok(byId['sheet-list'].innerHTML.includes('sheet-foot-note') && byId['sheet-list'].innerHTML.includes('一次性'), '切换连接方式弹窗应展示一次性临时域名提示');
+    const modeHtml = byId['sheet-list'].innerHTML;
+    const tsRowIdx = modeHtml.indexOf('mac.tail-demo.ts.net');
+    const lanRowIdx = modeHtml.indexOf('192.168.1.8:18765');
+    const tunnelRowIdx = modeHtml.indexOf('demo.trycloudflare.com');
+    assert.ok(tsRowIdx > 0 && lanRowIdx > tsRowIdx && tunnelRowIdx > lanRowIdx, '弹窗通道列表顺序应为 Tailscale HTTPS > 局域网 > 临时域名');
 
     // 关闭 mode sheet 后应完全清空状态、隐藏 #sheet-action-btn 并恢复 sheet-list 默认点击处理器
     domSandbox.__uxHooks.closeSheet();
@@ -24444,6 +24462,108 @@ test('扫码选路优先级、顶栏独立通道胶囊、SW Error 1033 容灾壳
     );
     assert.equal(hintsPingFailed.tailscale?.ok, false);
     assert.equal(hintsPingFailed.tailscale?.reason, 'unreachable', '实际 ping 失败时应准确返回 unreachable');
+
+    // 回环 tailscale serve 反代带 x-forwarded-for 应提取手机 Tailscale IP 并完成探测
+    let proxyPingedIp = '';
+    const hintsProxyXff = await remoteMod.probeClientPrivateReachability(
+      {
+        headers: {
+          host: 'mac.tail-demo.ts.net',
+          'x-forwarded-for': '100.64.0.18, 127.0.0.1',
+          'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148'
+        },
+        socket: { remoteAddress: '127.0.0.1' },
+        url: '/api/probe-hints?probe=1'
+      },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: () => ({
+          en0: [
+            { address: '192.168.68.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' },
+            { address: '240e:123:456:789:abcd::5', family: 'IPv6', internal: false }
+          ]
+        }),
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return { ok: true, stdout: JSON.stringify({ Peer: {} }), stderr: '' };
+          }
+          if (args[0] === 'ping') {
+            proxyPingedIp = args[args.length - 1];
+            return { ok: true, stdout: 'pong from iphone (100.64.0.18) via 192.168.68.33:41641 in 9ms', stderr: '' };
+          }
+          return { ok: false, stdout: '', stderr: '' };
+        }
+      }
+    );
+    assert.equal(proxyPingedIp, '100.64.0.18', '应从 Tailscale Serve 回环反代 X-Forwarded-For 提取手机 Tailscale IP');
+    assert.equal(hintsProxyXff.tailscale?.ok, true);
+    assert.equal(hintsProxyXff.lan?.ok, true);
+
+    // 多台在线 iOS 仅 1 台 Active: true + 同 /64 IPv6 直连 -> 精确命中活跃设备并回填 LAN/Bonjour 延迟
+    let activePingedIp = '';
+    const v6Nets = () => ({
+      en0: [
+        { address: '192.168.68.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' },
+        { address: '240e:123:456:789:abcd::5', family: 'IPv6', internal: false }
+      ]
+    });
+    const hintsActiveSameV6 = await remoteMod.probeClientPrivateReachability(
+      { headers: { 'x-ag-device-id': 'dev-ios-v6-same', 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148' }, url: '/api/probe-hints?probe=1' },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: v6Nets,
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return {
+              ok: true,
+              stdout: JSON.stringify({
+                Peer: {
+                  p1: { Online: true, Active: false, OS: 'ios', TailscaleIPs: ['100.64.0.21'] },
+                  p2: { Online: true, Active: true, OS: 'ios', TailscaleIPs: ['100.64.0.22'] }
+                }
+              }),
+              stderr: ''
+            };
+          }
+          if (args[0] === 'ping') {
+            activePingedIp = args[args.length - 1];
+            return { ok: true, stdout: 'pong from iphone (100.64.0.22) via [240e:123:456:789::12]:41641 in 7ms', stderr: '' };
+          }
+          return { ok: false, stdout: '', stderr: '' };
+        }
+      }
+    );
+    assert.equal(activePingedIp, '100.64.0.22', '多台在线 iOS 且唯一 Active: true 时应精确命中活跃设备');
+    assert.equal(hintsActiveSameV6.tailscale?.ms, 7);
+    assert.equal(hintsActiveSameV6.lan?.ok, true, '同 /64 前缀 IPv6 局域网直连应回填 LAN 延迟');
+    assert.equal(hintsActiveSameV6.lan?.ms, 7);
+    if (remoteMod.detectHostIdentityMeta?.().bonjourHost) {
+      assert.equal(hintsActiveSameV6.bonjour?.ok, true, '同 /64 IPv6 直连在存在 Bonjour 主机名时应一并回填 Bonjour 延迟');
+    }
+
+    // 不同 /64 前缀公网 IPv6 直连 -> Tailscale 可达，但不得误判为局域网可达
+    const hintsDiffV6 = await remoteMod.probeClientPrivateReachability(
+      { headers: { 'x-ag-device-id': 'dev-ios-v6-diff', 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148' }, url: '/api/probe-hints?probe=1' },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: v6Nets,
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return {
+              ok: true,
+              stdout: JSON.stringify({ Peer: { p1: { Online: true, Active: true, OS: 'ios', TailscaleIPs: ['100.64.0.23'] } } }),
+              stderr: ''
+            };
+          }
+          return { ok: true, stdout: 'pong from iphone (100.64.0.23) via [240e:999:111:222::8]:41641 in 25ms', stderr: '' };
+        }
+      }
+    );
+    assert.equal(hintsDiffV6.tailscale?.ok, true);
+    assert.equal(hintsDiffV6.lan?.ok, false, '不同 /64 前缀的公网 IPv6 直连不得误判为局域网直连');
   } finally {
     remoteMod.clearPairedDevicesForTests();
     if (prevAppData === undefined) delete process.env.APPDATA;

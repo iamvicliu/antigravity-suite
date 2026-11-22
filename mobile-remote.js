@@ -502,6 +502,7 @@ function recordPairedDeviceAccess(req, activeToken, now = Date.now(), activeTunn
   }
 
   const localHostIps = getLocalHostIpSet();
+  const tsProxyIp = extractTailscaleProxyClientIp(req, reqCh, localHostIps);
   const isSelfIp = Boolean(cleanIp && localHostIps.has(cleanIp));
   const fallbackId = 'ua-' + crypto.createHash('sha1').update(`${cleanIp}|${ua}`).digest('hex').slice(0, 12);
   let finalId = headerDevId || fallbackId;
@@ -511,10 +512,10 @@ function recordPairedDeviceAccess(req, activeToken, now = Date.now(), activeTunn
   const prevLanIp = (prev?.lastLanIp && !localHostIps.has(prev.lastLanIp)) ? prev.lastLanIp : '';
   const prevTsIp = (prev?.lastTailscaleIp && !localHostIps.has(prev.lastTailscaleIp)) ? prev.lastTailscaleIp : '';
   const freshLanHit = reqCh === 'lan' && !isSelfIp && isRfc1918Ipv4(cleanIp);
-  const freshTsHit = reqCh === 'tailscale' && !isSelfIp && isTailscaleCgnatIpv4(cleanIp);
+  const freshTsHit = Boolean(tsProxyIp) || (reqCh === 'tailscale' && !isSelfIp && isTailscaleCgnatIpv4(cleanIp));
   let lastLanIp = freshLanHit ? cleanIp : prevLanIp;
   let lastLanSeenAt = freshLanHit ? now : (prev?.lastLanSeenAt || 0);
-  let lastTailscaleIp = freshTsHit ? cleanIp : prevTsIp;
+  let lastTailscaleIp = tsProxyIp || (freshTsHit ? cleanIp : prevTsIp);
   let lastTailscaleSeenAt = freshTsHit ? now : (prev?.lastTailscaleSeenAt || 0);
 
   if (headerDevId && pairedDevicesMap.has(fallbackId)) {
@@ -727,6 +728,91 @@ function isIpInLocalPhysicalLanSubnet(ip, netsMap = os.networkInterfaces()) {
     }
   }
   return false;
+}
+
+function expandIpv6Hextets(rawIp) {
+  let clean = String(rawIp || '').trim();
+  if (!clean) return null;
+  if (clean.startsWith('[') && clean.endsWith(']')) clean = clean.slice(1, -1);
+  const zoneIdx = clean.indexOf('%');
+  if (zoneIdx >= 0) clean = clean.slice(0, zoneIdx);
+  if (!clean || clean.includes('.') || !/^[0-9a-fA-F:]+$/.test(clean)) return null;
+  const parts = clean.split('::');
+  if (parts.length > 2) return null;
+  let hextets = [];
+  if (parts.length === 2) {
+    const left = parts[0] ? parts[0].split(':') : [];
+    const right = parts[1] ? parts[1].split(':') : [];
+    if (left.some((s) => !s || s.length > 4) || right.some((s) => !s || s.length > 4)) return null;
+    const missing = 8 - (left.length + right.length);
+    if (missing < 1) return null;
+    hextets = [...left, ...new Array(missing).fill('0'), ...right];
+  } else {
+    const segs = clean.split(':');
+    if (segs.length !== 8 || segs.some((s) => !s || s.length > 4)) return null;
+    hextets = segs;
+  }
+  const nums = [];
+  for (const h of hextets) {
+    const v = parseInt(h, 16);
+    if (!Number.isFinite(v) || v < 0 || v > 0xffff) return null;
+    nums.push(v);
+  }
+  return nums.length === 8 ? nums : null;
+}
+
+function isIpv6InLocalPhysicalLanPrefix(ip, netsMap = os.networkInterfaces()) {
+  const target = expandIpv6Hextets(ip);
+  if (!target) return false;
+  if (target.slice(0, 7).every((x) => x === 0) && target[7] <= 1) return false;
+  if ((target[0] & 0xffc0) === 0xfe80) return true;
+  for (const [ifName, entries] of Object.entries(netsMap || {})) {
+    if (isVirtualBridgeIface(ifName)) continue;
+    for (const info of entries || []) {
+      const fam = String(info?.family || '').toUpperCase();
+      if (!info || info.internal || (fam !== 'IPV6' && info.family !== 6)) continue;
+      const selfH = expandIpv6Hextets(info.address);
+      if (!selfH) continue;
+      if ((selfH[0] & 0xffc0) === 0xfe80) continue;
+      if (selfH.every((v, idx) => v === target[idx])) continue;
+      if (
+        selfH[0] === target[0]
+        && selfH[1] === target[1]
+        && selfH[2] === target[2]
+        && selfH[3] === target[3]
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function extractTailscaleProxyClientIp(req, reqCh, localHostIps = new Set()) {
+  if (reqCh !== 'tailscale' || !req) return '';
+  const headers = req.headers || {};
+  const sockIp = normalizeRemoteIp(req.socket?.remoteAddress || req.ip || '');
+  if (!sockIp || !isLoopbackIp(sockIp)) return '';
+  const xffRaw = Array.isArray(headers['x-forwarded-for'])
+    ? headers['x-forwarded-for'].join(',')
+    : String(headers['x-forwarded-for'] || '');
+  const xriRaw = Array.isArray(headers['x-real-ip'])
+    ? headers['x-real-ip'].join(',')
+    : String(headers['x-real-ip'] || '');
+  const candidates = [];
+  for (const rawPart of xffRaw.split(',')) {
+    if (rawPart && rawPart.trim()) candidates.push(rawPart.trim());
+  }
+  for (const rawPart of xriRaw.split(',')) {
+    if (rawPart && rawPart.trim()) candidates.push(rawPart.trim());
+  }
+  for (const rawIp of candidates) {
+    const clean = normalizeRemoteIp(rawIp);
+    if (clean && isTailscaleCgnatIpv4(clean) && !localHostIps.has(clean)) {
+      return clean;
+    }
+  }
+  return '';
 }
 
 function isTailscaleCgnatIpv4(ip) {
@@ -7018,6 +7104,7 @@ function buildMobileAppHtml() {
         padding-top:0;padding-bottom:0;
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
+      .channel-pill{display:none}
       .conn-banner{padding:8px 24px}
       .title-wrap{grid-template-columns:auto minmax(0,1fr);column-gap:7px;row-gap:1px}
       .conv-title{grid-column:2;grid-row:1;font-size:15.5px}
@@ -7129,16 +7216,21 @@ function buildMobileAppHtml() {
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
     @media (max-width:859px){
-      .topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}
-      .title-wrap{flex:1 1 0;min-width:0}
+      .topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto auto;align-items:center;padding:6px 10px 7px;column-gap:6px;row-gap:4px}
+      #btn-drawer{grid-column:1;grid-row:1 / span 2;align-self:center}
+      .title-wrap{display:contents}
+      .title-row{grid-column:2;grid-row:1;display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden}
+      #btn-channel-pill{grid-column:3;grid-row:1;justify-self:end}
+      .sub-row{grid-column:2 / -1;grid-row:2}
       .topbar-actions{
-        flex:1 0 100%;width:100%;gap:6px;
+        grid-column:1 / -1;grid-row:3;width:100%;gap:6px;
         padding-top:5px;border-top:1px solid var(--topbar-border);
         overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
       }
       .topbar-actions::-webkit-scrollbar{display:none}
       .topbar-actions .quota-pill{margin-left:auto}
       .quota-drawer{top:calc(env(safe-area-inset-top) + 92px)}
+      .toast{top:calc(env(safe-area-inset-top) + 98px)}
       .top-panel-btn{height:32px;border-radius:8px;padding:0 8px;gap:4px;font-size:11.5px}
       .quota-pill{
         height:32px;padding:0 8px;border-radius:8px;font-size:11.5px;
@@ -7149,8 +7241,8 @@ function buildMobileAppHtml() {
     }
     @media (max-width:430px){
       .icon-btn{height:36px;min-width:36px;padding:0 4px}
-      .conv-project-badge{max-width:65%;font-size:10.5px;padding:1px 6px}
-      .channel-pill{height:32px;padding:0 8px;gap:5px;font-size:11px}
+      .conv-project-badge{max-width:46%;font-size:10.5px;padding:1px 6px}
+      .channel-pill{height:28px;padding:0 8px;gap:4px;font-size:11px}
       .top-panel-btn{height:32px;padding:0 7px;gap:3px;font-size:11px}
       .quota-pill{height:32px;padding:0 7px;font-size:11px}
     }
@@ -8448,8 +8540,20 @@ function buildMobileAppHtml() {
       return formatKindLabel(detectKindFromOrigin(apiBase || location.origin || ''));
     }
 
+    function rankModeEntry(ep) {
+      const k = String(ep?.kind || '');
+      const u = String(ep?.url || '').toLowerCase();
+      if (k === 'tunnel' && !u.includes('.trycloudflare.com')) return 0;
+      if (k === 'tailscale' && u.startsWith('https://')) return 1;
+      if (k === 'lan') return 2;
+      if (k === 'tailscale') return 3;
+      if (k === 'bonjour') return 4;
+      if (k === 'tunnel') return 5;
+      if (k === 'loopback') return 9;
+      return 6;
+    }
+
     function getEnabledModeEntries() {
-      const order = { tunnel: 0, lan: 1, tailscale: 2, bonjour: 3, loopback: 9 };
       const byKind = new Map();
       const sorted = [...(pairState.endpoints || [])].sort((a, b) => (Number(a?.priority) || 999) - (Number(b?.priority) || 999));
       const curOriginClean = String(location.origin || '').replace(/\\/+$/, '');
@@ -8469,7 +8573,7 @@ function buildMobileAppHtml() {
         const curKind = detectKindFromOrigin(location.origin);
         byKind.set(curKind, { url: String(location.origin || '').replace(/\\/+$/, ''), kind: curKind });
       }
-      return Array.from(byKind.values()).sort((a, b) => (order[a.kind] ?? 5) - (order[b.kind] ?? 5));
+      return Array.from(byKind.values()).sort((a, b) => rankModeEntry(a) - rankModeEntry(b));
     }
 
     function formatClockTime(ts) {
@@ -14335,13 +14439,15 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
     bonjour: true,
     tunnel: Boolean(config?.tunnelEnabled)
   };
+  const reqCh = detectRequestChannel(req);
+  const reqTsIp = extractTailscaleProxyClientIp(req, reqCh, localHostIps);
   const rawKnownLanIp = rec?.lastLanIp || '';
   const lanSeenRecently = (now - (rec?.lastLanSeenAt || 0)) <= LAN_RECENT_SEEN_TTL_MS;
   const knownLanIp = (rawKnownLanIp && lanSeenRecently && !localHostIps.has(rawKnownLanIp) && isIpInLocalPhysicalLanSubnet(rawKnownLanIp, netsMap))
     ? rawKnownLanIp
     : '';
   const rawKnownTsIp = rec?.lastTailscaleIp || '';
-  const knownTsIp = (rawKnownTsIp && !localHostIps.has(rawKnownTsIp)) ? rawKnownTsIp : '';
+  const knownTsIp = reqTsIp || ((rawKnownTsIp && !localHostIps.has(rawKnownTsIp)) ? rawKnownTsIp : '');
 
   const labelToOs = {
     iPhone: 'ios',
@@ -14386,10 +14492,17 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
         if (!p || !p.Online) continue;
         if (String(p.OS || '').toLowerCase() !== targetOs) continue;
         const ip4 = Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs.find((ip) => isTailscaleCgnatIpv4(String(ip))) : '';
-        if (ip4 && !localHostIps.has(String(ip4))) mobilePeers.push(String(ip4));
+        if (ip4 && !localHostIps.has(String(ip4))) {
+          mobilePeers.push({ ip: String(ip4), active: Boolean(p.Active) });
+        }
       }
       if (mobilePeers.length === 1) {
-        probeIps.push(mobilePeers[0]);
+        probeIps.push(mobilePeers[0].ip);
+      } else if (mobilePeers.length > 1) {
+        const activePeers = mobilePeers.filter((x) => x.active);
+        if (activePeers.length === 1) {
+          probeIps.push(activePeers[0].ip);
+        }
       }
     }
     if (!probeIps.length) return { statusAvailable: true, attempted: false, pong: null };
@@ -14410,12 +14523,21 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
 
   let lanPing = initialLanPing;
   const tsPong = tsRes?.pong || null;
+  const viaSameLanIpv6 = Boolean(
+    tsPong?.ok
+    && !tsPong.isDerp
+    && !tsPong.viaLanIp
+    && tsPong.viaIp
+    && isIpv6InLocalPhysicalLanPrefix(tsPong.viaIp, netsMap)
+  );
   if (!lanPing?.ok && en.lan && tsPong?.ok && !tsPong.isDerp && tsPong.viaLanIp && !localHostIps.has(tsPong.viaLanIp) && isIpInLocalPhysicalLanSubnet(tsPong.viaLanIp, netsMap)) {
     lanPing = { ok: true, ms: Math.max(2, tsPong.ms) };
     if (rec) {
       rec.lastLanIp = tsPong.viaLanIp;
       rec.lastLanSeenAt = now;
     }
+  } else if (!lanPing?.ok && en.lan && viaSameLanIpv6) {
+    lanPing = { ok: true, ms: Math.max(2, tsPong.ms) };
   }
   if (tsPong?.ok && rec && isTailscaleCgnatIpv4(tsPong.peerIp) && !localHostIps.has(tsPong.peerIp)) {
     rec.lastTailscaleIp = tsPong.peerIp;
@@ -14437,7 +14559,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
     if (en.bonjour && detectHostIdentityMeta().bonjourHost) {
       hints.bonjour = { ok: true, ms: lanPing.ms + 5, via: 'server' };
     }
-  } else if (tsPong?.ok && !tsPong.viaLanIp) {
+  } else if (tsPong?.ok && !tsPong.viaLanIp && !viaSameLanIpv6) {
     if (en.lan) hints.lan = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
     if (en.bonjour) hints.bonjour = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
   }
