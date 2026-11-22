@@ -18019,8 +18019,62 @@ test('底栏视觉层级分隔 (#39) 与顶栏信息降噪及项目名双端正�
     const subText = byId['sub-meta'].textContent;
     assert.equal(subText, '42.0 tok/s · 120k/840k (14.3%)', '正常态 #sub-meta 仅保留核心实时指标');
     assert.ok(!subText.includes('Tailscale') && !subText.includes('独立视图') && !subText.includes('▾'), '正常态 #sub-meta 不得出现冗余通道名或「独立视图」');
-    assert.equal(bodyCls.has('has-upper-dock'), true, '队列显示时 body 应标记 has-upper-dock 以维持栈顶单线');
+    assert.equal(bodyCls.has('has-upper-dock'), true, '仅队列可见时 body 应标记 has-upper-dock');
+    assert.equal(bodyCls.has('has-approval-dock'), false, '仅队列可见时不应标记 has-approval-dock');
+
+    // 4种 dock 组合与相互切换验证（仅队列 -> 队列+审批 -> 仅审批 -> 无上层 dock -> 仅审批 -> 队列+审批）
+    const snapBase = {
+      ok: true,
+      sessionId: 'conv-39',
+      title: '测试标题',
+      currentProjectId: 'p1',
+      currentProjectName: 'antigravity-suite',
+      pulseText: '42.0 tok/s',
+      messages: [],
+      projects: [{ id: 'p1', name: 'antigravity-suite' }],
+      conversations: [{ id: 'conv-39', title: '测试标题', projectId: 'p1', projectName: 'antigravity-suite', status: 'idle' }],
+      pendingPrompts: []
+    };
+    sandbox.__test3945.renderSnapshot({
+      ...snapBase,
+      queuedMessages: [{ source: 'traj', stepIndex: 1, text: '排队一条' }],
+      pendingApprovals: [{ index: 0, label: '允许', kind: 'approve', contextText: 'run cmd' }]
+    });
+    assert.equal(byId['approval-dock'].hidden, false);
+    assert.equal(byId['queue-dock'].hidden, false);
+    assert.equal(bodyCls.has('has-approval-dock'), true, '两者同时可见时审批区位于最顶层，has-approval-dock 应为 true');
+    assert.equal(bodyCls.has('has-upper-dock'), true, '两者同时可见时 has-upper-dock 应为 true');
+
+    sandbox.__test3945.renderSnapshot({
+      ...snapBase,
+      queuedMessages: [],
+      pendingApprovals: [{ index: 0, label: '允许', kind: 'approve', contextText: 'run cmd' }]
+    });
+    assert.equal(byId['approval-dock'].hidden, false);
+    assert.equal(byId['queue-dock'].hidden, true);
+    assert.equal(bodyCls.has('has-approval-dock'), true, '仅审批可见时 has-approval-dock 应为 true');
+    assert.equal(bodyCls.has('has-upper-dock'), true, '仅审批可见时 has-upper-dock 应为 true');
+
+    sandbox.__test3945.renderSnapshot({
+      ...snapBase,
+      queuedMessages: [],
+      pendingApprovals: []
+    });
+    assert.equal(byId['approval-dock'].hidden, true);
+    assert.equal(byId['queue-dock'].hidden, true);
+    assert.equal(bodyCls.has('has-approval-dock'), false, '无上层 dock 时 has-approval-dock 应为 false');
+    assert.equal(bodyCls.has('has-upper-dock'), false, '无上层 dock 时 has-upper-dock 应为 false（主线回到 composer-dock）');
+
+    // 再从无上层 dock 切回 仅审批 -> 队列+审批 -> 仅队列
+    sandbox.__test3945.renderSnapshot({
+      ...snapBase,
+      queuedMessages: [{ source: 'traj', stepIndex: 2, text: '排队二' }],
+      pendingApprovals: []
+    });
+    assert.equal(byId['approval-dock'].hidden, true);
+    assert.equal(byId['queue-dock'].hidden, false);
     assert.equal(bodyCls.has('has-approval-dock'), false);
+    assert.equal(bodyCls.has('has-upper-dock'), true);
 
     // 点击侧栏底部 #btn-mode-switcher 可打开通道切换面板
     byId['sheet-backdrop'].hidden = true;
