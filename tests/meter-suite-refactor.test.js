@@ -20245,6 +20245,29 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     envCollapsed.doc.body.appendChild(colMain);
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8'), envCollapsed.sandbox);
     try {
+      // 展开前校验：queued-messages-expand-button 绝不可被误当成消息行截断 Fiber 队列，必须完整采集两条不同 messageId
+      const preExpandSnap = envCollapsed.sandbox.__AGEnhancer.getMobileSnapshot();
+      assert.equal(expandClickedCount, 0, '采集折叠态快照时不得触发点击展开');
+      assert.equal(preExpandSnap.queuedMessages.length, 2, '展开前折叠卡片必须完整采集全部 2 条 Fiber 排队消息');
+      assert.deepEqual(
+        Array.from(preExpandSnap.queuedMessages, (q) => q.messageId),
+        ['pm-col-1', 'pm-col-2'],
+        '展开前必须采集到两个不同的 messageId'
+      );
+      // 流式接口不可用且轨迹无排队项时，远程快照 enrichMessages 必须完整保留这两条折叠态 Fiber 队列消息
+      const colHistoryMgr = createConversationHistoryManager();
+      const enrichedCollapsedSnap = await colHistoryMgr.enrichMessages(preExpandSnap, {
+        localApiConnect: async () => ({
+          call: async () => ({ trajectory: { steps: [] } }),
+          callStreamFirstFrame: async () => { throw new Error('stream unavailable'); }
+        })
+      });
+      assert.deepEqual(
+        Array.from(enrichedCollapsedSnap.queuedMessages || [], (q) => q.messageId),
+        ['pm-col-1', 'pm-col-2'],
+        '流式接口不可用且轨迹无排队项时，远程快照仍须保留全部两条折叠态排队消息'
+      );
+
       const colHandler = createRemoteHttpHandler({
         port: 18769,
         token: 'tok-r6-col',
