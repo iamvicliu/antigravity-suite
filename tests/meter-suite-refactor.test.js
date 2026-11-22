@@ -20783,6 +20783,265 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     assert.equal(r12ShiftMedia.attachmentsPreserved, true);
     assert.equal(r12ShiftMedia.actionResult.editedText, '目标带图项');
     assert.equal(r12ShiftMedia.actionResult.editedAttachments.length, 1);
+
+    // 18. 单条发送 stepIndex 重试身份核验回归：索引被其他项占用绝不误删 + 原目标前移后仅重试删除绝不重发
+    const singleSendOps = [];
+    let singleSendPhase = 'initial_delete_fail';
+    const singleSendHandler = createRemoteHttpHandler({
+      port: 18778,
+      token: 'tok-r13-send-shift',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r13-send', activeConversationId: 'conv-r13-send', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        singleSendOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          if (singleSendPhase === 'initial_delete_fail') {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '前序项' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } }
+                ]
+              }
+            };
+          }
+          if (singleSendPhase === 'occupied_by_other') {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '其他未发送新项' }] } }
+                ]
+              }
+            };
+          }
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } }
+              ]
+            }
+          };
+        }
+        if (method === 'SendUserCascadeMessage') return { ok: true };
+        if (method === 'DeleteQueuedUserInputStep') {
+          if (singleSendPhase === 'initial_delete_fail') return null; // 首次删除失败，进入 partialSuccess
+          return { ok: true };
+        }
+        return { ok: true };
+      }
+    });
+    const postSingleShift = makeMockActionPoster(singleSendHandler, 'tok-r13-send-shift', 'cli-r13-send');
+    const r13FirstPartial = await postSingleShift({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r13-send',
+      stepIndex: 2,
+      text: '目标发送项'
+    });
+    assert.equal(r13FirstPartial.ok, false);
+    assert.equal(r13FirstPartial.partialSuccess, true, '首次发成功删失败应返回 partialSuccess');
+    assert.equal(singleSendOps.filter((o) => o.method === 'SendUserCascadeMessage').length, 1);
+
+    // 18a. 索引 2 被“其他未发送新项”占用：按旧 stepIndex:2 重试必须因身份失配返回 outcomeUnknown，0 删 0 发
+    singleSendPhase = 'occupied_by_other';
+    const beforeOccupied = singleSendOps.length;
+    const r13Occupied = await postSingleShift({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r13-send',
+      stepIndex: 2,
+      text: '目标发送项'
+    });
+    assert.equal(r13Occupied.ok, false);
+    assert.equal(r13Occupied.outcomeUnknown, true, '索引被其他项占用时必须 fail-closed 返回 outcomeUnknown');
+    assert.equal(
+      singleSendOps.slice(beforeOccupied).filter((o) => o.method === 'DeleteQueuedUserInputStep' || o.method === 'SendUserCascadeMessage').length,
+      0,
+      '索引被其他项占用时绝不得误删其他项，也不得重复发送'
+    );
+
+    // 18b. 原目标前移到 stepIndex:1 后重试：命中内容指纹 dispatchKey，0 次重复发送，仅删除新索引 stepIndex:1
+    singleSendPhase = 'shifted_to_1';
+    const beforeShiftedRetry = singleSendOps.length;
+    const r13ShiftedRetry = await postSingleShift({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r13-send',
+      stepIndex: 1,
+      text: '目标发送项'
+    });
+    assert.equal(r13ShiftedRetry.ok, true);
+    assert.equal(r13ShiftedRetry.actionResult.deduplicatedRetry, true, '前移后的原目标重试必须识别为去重删队列而非重发');
+    assert.equal(
+      singleSendOps.slice(beforeShiftedRetry).filter((o) => o.method === 'SendUserCascadeMessage').length,
+      0,
+      '原目标前移后重试绝不可再次调用 SendUserCascadeMessage'
+    );
+    const delOp = singleSendOps.slice(beforeShiftedRetry).find((o) => o.method === 'DeleteQueuedUserInputStep');
+    assert.equal(delOp?.body?.stepIndex, 1, '必须仅删除前移后的真实索引 stepIndex:1');
+
+    // 19. 编辑恢复跨索引前移重试端到端去重回归（step:2 未知 → 前移至 step:1 重试成功）：附件仅 1 份、文本不重复追加、保留用户修改
+    let crossIdxPhase = 'unknown_shift';
+    const crossIdxSentUploads = [];
+    const crossIdxTargetStep = {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      status: 'CORTEX_STEP_STATUS_QUEUED',
+      userInput: {
+        items: [{ text: '跨索引恢复项' }],
+        media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+      }
+    };
+    let crossTrajCalls = 0;
+    const crossIdxHandler = createRemoteHttpHandler({
+      port: 18779,
+      token: 'tok-r13-cross',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r13-cross', activeConversationId: 'conv-r13-cross', busy: true, messages: [] }),
+      performAction: async (act) => {
+        if (act.action === 'send') {
+          crossIdxSentUploads.push((act.pendingUploads || []).map((u) => u.name));
+          return { ok: true, snapshot: { ok: true, sessionId: 'conv-r13-cross', messages: [] } };
+        }
+        return { ok: true };
+      },
+      callLanguageServer: async (method) => {
+        if (method === 'DeleteQueuedUserInputStep') {
+          return crossIdxPhase === 'unknown_shift' ? null : { ok: true };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          crossTrajCalls += 1;
+          if (crossTrajCalls === 1) {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '前序项' }] } },
+                  crossIdxTargetStep
+                ]
+              }
+            };
+          }
+          // 前序项并发删除后，目标项前移到 stepIndex: 1
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                crossIdxTargetStep
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postCrossIdx = makeMockActionPoster(crossIdxHandler, 'tok-r13-cross', 'cli-r13-cross');
+    const r13EditStep2Unknown = await postCrossIdx({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r13-cross',
+      stepIndex: 2,
+      hasMedia: true,
+      text: '跨索引恢复项'
+    });
+    assert.equal(r13EditStep2Unknown.ok, false);
+    assert.equal(r13EditStep2Unknown.outcomeUnknown, true);
+    assert.equal(r13EditStep2Unknown.attachmentsPreserved, true);
+    assert.ok(r13EditStep2Unknown.actionResult.recoveryKey, '必须返回跨索引稳定的 recoveryKey');
+
+    crossIdxPhase = 'retry_ok';
+    const r13EditStep1Ok = await postCrossIdx({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r13-cross',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '跨索引恢复项'
+    });
+    assert.equal(r13EditStep1Ok.ok, true);
+    assert.equal(
+      r13EditStep1Ok.actionResult.recoveryKey,
+      r13EditStep2Unknown.actionResult.recoveryKey,
+      '前移至 stepIndex:1 后必须复用同一 recoveryKey'
+    );
+
+    // 前端按 step:2 → 用户修改 → step:1 重试：验证前端文本不重复、保留用户修改、附件仅 1 份
+    const freshHtmlR13 = buildMobileAppHtml({ port: 18780, token: 'tok-r13-ui', enabledChannels: { lan: true } });
+    const qStart13 = freshHtmlR13.indexOf('const qDock = $(\'queue-dock\');');
+    const qEnd13 = freshHtmlR13.indexOf("qDock.querySelectorAll('.queue-del-btn')", qStart13);
+    const aStart13 = freshHtmlR13.indexOf('function renderAttachHintStrip()');
+    const aEnd13 = freshHtmlR13.indexOf('async function uploadImageFiles(rawFiles)', aStart13);
+    const sStart13 = freshHtmlR13.indexOf('function syncSendButtonUI()');
+    const sEnd13 = freshHtmlR13.indexOf('const autoGrow = () =>', sStart13);
+    const ta13 = mkSimpleEl('msg-input');
+    const qDock13 = mkSimpleEl('queue-dock');
+    const btnSend13 = mkSimpleEl('btn-send');
+    const hint13 = mkSimpleEl('attach-hint');
+    const btnStep2 = mkQueueBtn({ stepIndex: 2, source: 'traj', text: '跨索引恢复项', hasMedia: true }, 0);
+    const btnStep1 = mkQueueBtn({ stepIndex: 1, source: 'traj', text: '跨索引恢复项', hasMedia: true }, 0);
+    qDock13._sendAllBtn = mkSimpleEl('send-all');
+    qDock13._editBtns = [btnStep2, btnStep1];
+    const map13 = new Map([['attach-hint', hint13], ['btn-send', btnSend13], ['queue-dock', qDock13]]);
+    const uiResps13 = [r13EditStep2Unknown, r13EditStep1Ok];
+    let uiPtr13 = 0;
+    const sb13 = {
+      $: (id) => map13.get(id) || null,
+      ta: ta13,
+      latestSnap: { busy: false },
+      selectedConversationId: 'conv-r13-cross',
+      queueActionBusy: false,
+      sending: false,
+      apiBase: '',
+      pairState: { token: '' },
+      STOP_SQUARE_SVG: 'stop',
+      SEND_ARROW_SVG: 'send',
+      uploadedNames: [],
+      uploadedAttachments: [],
+      restoredQueueEditTextKeys: new Set(),
+      saveDraftForConv() {},
+      isDesktopLayout: () => false,
+      openMediaLightbox() {},
+      formatFileSizeShort: (n) => `${n}B`,
+      showToast() {},
+      esc: (s) => String(s ?? ''),
+      apiAction: async () => uiResps13[uiPtr13++],
+      __vmQueued: [
+        { stepIndex: 2, source: 'traj', text: '跨索引恢复项', images: [], hasMedia: true },
+        { stepIndex: 1, source: 'traj', text: '跨索引恢复项', images: [], hasMedia: true }
+      ]
+    };
+    vm.runInNewContext([
+      freshHtmlR13.slice(aStart13, aEnd13),
+      freshHtmlR13.slice(sStart13, sEnd13),
+      'const displayCfg = { showQueue: true };',
+      'const snapSid = "conv-r13-cross";',
+      'const snap = { sessionId: "conv-r13-cross", activeConversationId: "conv-r13-cross", queuedMessages: globalThis.__vmQueued };',
+      freshHtmlR13.slice(qStart13, qEnd13),
+      '}}}\n'
+    ].join('\n'), sb13);
+    await btnStep2.onclick();
+    assert.equal(ta13.value, '跨索引恢复项');
+    assert.equal(sb13.uploadedAttachments.length, 1);
+    ta13.value = '跨索引恢复项（用户补充修改）';
+    await btnStep1.onclick();
+    assert.equal(ta13.value, '跨索引恢复项（用户补充修改）', '跨索引前移重试成功必须保留用户修改且不重复追加文本');
+    assert.equal(sb13.uploadedAttachments.length, 1, '前端跨索引前移重试必须仅保留 1 份附件');
+
+    // 服务端重发验证：跨索引前移重试后，服务端暂存仅携带 1 份附件
+    const r13Resend = await postCrossIdx({
+      action: 'send',
+      conversationId: 'conv-r13-cross',
+      text: '跨索引恢复项（用户补充修改）'
+    });
+    assert.equal(r13Resend.ok, true);
+    assert.deepEqual(crossIdxSentUploads, [['disk-queued.png']], '服务端跨索引前移重试后重发必须仅携带 1 份附件');
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }
