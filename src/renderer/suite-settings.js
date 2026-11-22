@@ -1,7 +1,9 @@
   // =========================================================================
   // 模块 5: 统一设置面板、配置项无损迁移、终端与 CLI 启动、多语言注册表
   // =========================================================================
-  let activeSettingsTab = 'terminal';
+  const SETTINGS_TAB_ORDER = ['appearance', 'remote', 'chat', 'network', 'subscription'];
+  const SETTINGS_TAB_ALIASES = { terminal: 'network', system: 'network' };
+  let activeSettingsTab = 'appearance';
   let suiteConfigTransplanted = false;
   let suiteDropdownsEnhanced = false;
   let uiLangDropdown = null;
@@ -10,6 +12,34 @@
 
   const SUITE_EN_UI_DICT = {
     'Antigravity Suite 统一设置': 'Antigravity Suite Settings',
+    '套件统一设置': 'Suite Settings',
+    '关闭设置': 'Close Settings',
+    '设置分类': 'Settings Categories',
+    '🌐 语言与外观': '🌐 Language & Appearance',
+    '📱 远程设置': '📱 Remote',
+    '⚡ 对话与效率': '⚡ Chat & Efficiency',
+    '🧰 终端与网络': '🧰 Terminal & Network',
+    '📊 套餐与订阅': '📊 Plan & Subscription',
+    '语言与明暗外观': 'Language & Appearance',
+    '桌面功能显示开关': 'Desktop Feature Toggles',
+    '对话自动化与安全策略': 'Chat Automation & Safety',
+    '自定义强调色与顶栏分项配色': 'Custom Accent & Topbar Colors',
+    'macOS Dock 未读与状态提醒': 'macOS Dock Unread & Status Alerts',
+    '测试提醒': 'Test Alert',
+    '在 Dock 图标上短暂预览角标与状态胶囊效果': 'Preview badge and status capsule briefly on the Dock icon',
+    '前往开启权限': 'Grant Access',
+    '打开 macOS 系统设置，开启「辅助功能」权限以显示 Dock 图标提醒': 'Open macOS System Settings and enable Accessibility permission to show Dock icon alerts',
+    '正在检查 macOS Dock 图标提醒状态…': 'Checking macOS Dock icon alert status…',
+    '启用 macOS Dock 图标提醒': 'Enable macOS Dock Icon Alerts',
+    '不修改官方程序；后台有新回复、待审批或高危拦截时即时提醒，关闭后即彻底停用、不占后台资源': 'Does not modify the official app; alerts immediately on background replies, pending approvals, or high-risk blocks, and uses zero resources when disabled',
+    '提醒样式': 'Alert Style',
+    '带状态胶囊可在图标下方直观区分生成中、新回复与待审批；仅显示角标只在右上角显示数字（有待审批时优先显示待审批数）': 'Status capsule shows Working, Unread, and Approve states below the icon; badge-only shows the corner count (approvals take priority)',
+    '带状态胶囊（推荐）': 'Status Capsule (Recommended)',
+    '仅显示角标': 'Badge Only',
+    '用蓝 / 红区分未读与待审批': 'Use Blue for Unread & Red for Approvals',
+    '待审批与高危拦截用红色优先提醒，普通新回复用蓝色；关闭后全部显示为红色': 'Approvals and high-risk blocks highlight in red with priority, while normal unread replies use blue; when off, all alerts show in red',
+    '切回窗口自动清除普通未读': 'Auto-Clear Normal Unread on Focus',
+    '切回 Antigravity 窗口即自动清除普通新回复提醒；待审批与高危红标会保留，直到你处理完成': 'Automatically clears normal unread alerts when returning to Antigravity; red approval and high-risk alerts stay until resolved',
     '🖥️ 终端与通用': '🖥️ Terminal & General',
     '🎨 外观与主题': '🎨 Appearance & Theme',
     '💎 套餐与订阅': '💎 Plan & Subscription',
@@ -120,7 +150,7 @@
     '终端连接目标（本机 / 远程服务器）': 'Terminal Target Host (Local / Remote)',
     '终端连接目标': 'Terminal Target Host',
     '仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在本机或远程服务器上启动 agy': 'Applies to Rex, WezTerm, or tmux: choose Local or a remote server to launch agy',
-    '本机（当前电脑）': 'Local (This Mac)',
+    '本机（当前电脑）': 'Local (This Computer)',
     '自定义远程主机名…': 'Custom Remote Host…',
     '面板深浅外观': 'Appearance Theme',
     '设置所有插件浮窗与设置面板的明暗配色': 'Configure light/dark appearance for all popovers and settings panels',
@@ -129,10 +159,8 @@
     '自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截': 'Auto-click safe Proceed / Accept buttons while blocking high-risk commands',
     '输入框智能追问建议 (Tab / →)': 'Smart Follow-up Suggestions (Tab / →)',
     '回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入': 'Show follow-up prompt suggestions in composer after responses (Tab or → to fill)',
-    '长上下文防卡死自动压缩 (240K Auto-Compact)': 'Auto-Compact Long Context (240K Anti-Stall)',
-    '官方默认到 512K 才自动压缩，但超过 250K~330K 后一旦服务端缓存过期（如停顿超 3 分钟）就会每步重算 4~5 分钟并狂耗配额。开启后，当本轮回答结束且输入框为空时，若上下文已达 240K 或发生缓存脱落，将自动发送 /compact 提前压缩': 'Client waits until 512K to auto-compact, risking 4-5m 0-cache stalls above 250K. When enabled, auto-sends /compact after a reply finishes if context reaches 240K or cache drops',
     '插件与客户端语言': 'Plugin & Client Language',
-    '同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言': 'Switch client UI localization, panels, and context capsule language together',
+    '同时切换主界面、设置面板、Dock 提醒及浮窗的显示语言': 'Switch main interface, settings, Dock alerts, and popovers together',
     '模式与档位名保留英文': 'Keep Mode & Effort Names in English',
     '中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名': 'Keep original English names (Default / Auto / Turbo / Effort) under Chinese UI',
     '主题色系与热力图配色': 'Theme Palette & Heatmap Colors',
@@ -241,7 +269,6 @@
     '剩余可用': 'Remaining',
     '⚡ 最新生成速度与耗时': '⚡ Output Speed & Latency',
     '待生成': 'Idle',
-    '输出速度': 'Speed',
     '生成耗时': 'Duration',
     '首字延迟': 'TTFT',
     '本次输出': 'Tokens',
@@ -269,7 +296,6 @@
     '年度使用': 'This Year',
     '本年': 'Year',
     '全年': 'Year',
-    '读取中...': 'Loading...',
     'Token 活动': 'Token Activity',
     '每天': 'Daily',
     '每周': 'Weekly',
@@ -296,35 +322,29 @@
     '拉取最新提交并免重启热生效': 'Pull latest commits and hot-reload without restart',
     '打开 Antigravity Suite 统一设置面板': 'Open Antigravity Suite Settings',
     '发现新版本，点击打开设置一键更新': 'Update available — click to open Settings and update',
-    '📱 远程设置': '📱 Remote',
     '远程通道与隧道': 'Remote Channels & Tunnel',
     '刷新状态': 'Refresh',
     '重置令牌': 'Reset Token',
     'Remote 页面显示内容': 'Remote Page Visibility',
     '恢复默认': 'Reset Default',
     '顶部上下文窗口面板': 'Topbar Context Window Panel',
-    '顶部本机已记录用量面板': 'Topbar Local Usage Panel',
+    '顶部：历史用量统计面板': 'Topbar: Usage History Panel',
     '顶部模型配额胶囊': 'Topbar Model Quota Pill',
-    '顶部通道连接状态副标题': 'Topbar Channel Meta Subtitle',
-    '左侧会话与窗口抽屉': 'Conversation & Window Drawer',
+    '顶部：当前连接方式提示': 'Topbar: Connection Status Hint',
+    '左侧会话列表栏': 'Left Conversation Sidebar',
     'AI 思考过程折叠区': 'Collapsible Thinking Process',
     '底部快捷操作与下一步建议': 'Bottom Quick Chips & Suggestions',
     '输入区工具栏（模型/权限等）': 'Composer Tools (Model / Perms / Upload)',
     '待审批操作提醒横幅': 'Pending Approvals Banner',
     '快捷提示词': 'Quick Prompts',
-    '内置推荐池（点击开关显示 / 隐藏 · 悬停查看指令解读）': 'Built-in Pool (click to toggle · hover to view guide)',
-    '内置推荐池（点击开关显示 / 隐藏）': 'Built-in Pool (click to toggle)',
+    '内置常用指令': 'Built-in commands',
     '💡 指令解读': '💡 Command Guide',
-    '内置免参指令点击直接发送': 'Auto-send built-in no-arg commands',
-    '开启后点击 /compact 压缩、重载规则将直接发送（/plan 等带参前缀仍仅填入）；按住 ⌘/Ctrl 点击可临时反转行为': 'Auto-send /compact and Reload Rules on click (parameterized commands like /plan still insert only); hold ⌘/Ctrl + click to invert',
     '⚡直发': '⚡Send',
     '填入': 'Insert',
     '自定义快捷提示词': 'Custom Quick Prompts',
-    '填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）': 'Insert: fills the composer so you can paste errors/details before sending · ⚡Send: sends immediately on click (auto-guards existing drafts; hold ⌘/Ctrl + click to invert)',
+    '填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时切换）': 'Insert: fills the composer so you can paste errors/details before sending · ⚡Send: sends immediately on click (auto-guards existing drafts; hold ⌘/Ctrl + click to toggle)',
     '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" above to create one.',
     '暂无自定义快捷提示词，点击右侧「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" on the right to create one.',
-    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" for custom prompts.',
-    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" below for custom prompts.',
     '+ 新增': '+ Add',
     '热门对话口令模板': 'Popular Quick Prompt Templates',
     '热门口令：': 'Popular:',
@@ -342,28 +362,28 @@
     '前往 Cloudflare 获取 Token →': 'Get Token on Cloudflare →',
     '保存并启用': 'Save & Enable',
     '改用免登录临时隧道': 'Use Quick Tunnel',
-    '取消': 'Cancel',
     '下载最新版本并立即生效，无需重启': 'Download the latest release and apply immediately without restart',
     '内置快捷按钮（点击开启或关闭 · 悬停查看说明）': 'Built-in Quick Buttons (click to toggle · hover for guide)',
-    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" below for custom prompts.',
+    '从内置常用指令中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Pick from built-in commands to display above the composer (click to toggle, non-deletable), or add your own under "Custom Quick Prompts" below.',
     '点击内置快捷指令时直接发送': 'Send built-in quick commands immediately',
-    '开启后点击「/compact 压缩」或「重载规则」会直接发送（需补充参数的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换': 'Send /compact and Reload Rules immediately on click (commands needing arguments still insert only); hold ⌘/Ctrl + click to toggle',
-    'CLI 自动批准工具权限': 'Auto-Approve CLI Tool Permissions',
-    '启动命令行终端时自动批准工具调用，无需每次手动确认': 'Automatically approve tool calls when launching CLI without manual prompts',
+    '开启后点击「/compact 压缩」或「重载规则」会直接发送（需要补充内容的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换': 'Send /compact and Reload Rules immediately on click (commands needing extra input still insert only); hold ⌘/Ctrl + click to toggle',
+    'CLI 自动批准工具权限（免确认）': 'Auto-Approve CLI Tool Permissions (Skip Prompts)',
+    '在命令行启动时自动放行文件修改与命令执行，不再逐次弹窗确认；仅建议在受信任项目开启': 'Automatically allow file edits and command runs without prompts when launching CLI; recommended only for trusted projects',
     '指定启动命令行终端时默认使用的模型；选「不指定」则跟随 CLI 默认配置': 'Select the default model for CLI launch, or choose Unspecified to follow CLI defaults',
-    '输入模型 ID（留空则跟随 CLI 默认配置）': 'Enter model ID (leave blank for CLI default)',
+    '自定义模型名称（留空则跟随默认配置）': 'Custom Model Name (leave blank for default)',
+    '例如：gemini-3.8-flash-high': 'e.g. gemini-3.8-flash-high',
     '终端连接目标（电脑端 / 远程服务器）': 'Terminal Target (Desktop / Remote Server)',
     '仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在当前电脑或远程服务器上启动终端': 'Applies to Rex, WezTerm, or tmux: launch terminal on this desktop or a remote server',
-    '输入远程主机名或连接标识（留空代表当前电脑）': 'Enter remote host or domain (leave blank for this computer)',
+    '远程主机名称（留空则在当前电脑运行）': 'Remote Host Name (leave blank to run locally)',
+    '例如：my-server 或 SSH 主机名': 'e.g. my-server or SSH host',
     '240K 自动压缩防卡顿': '240K Auto-Compact Anti-Stall',
-    '官方默认到 512K 才压缩，对话过长后停顿易导致缓存失效、每步卡顿数分钟。开启后，上下文满 240K 或缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩': 'Official default waits until 512K, risking cache expiry and multi-minute stalls after pauses. Auto-sends /compact after replies when context reaches 240K or cache drops',
+    '官方默认满 512K 才整理，对话过长后稍作停顿就容易卡顿数分钟。开启后，上下文满 240K 或发生缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩历史': 'Official default waits until 512K to organize context, risking multi-minute stalls after pauses. Auto-sends /compact after replies when context reaches 240K or cache drops',
     '重置配对口令': 'Reset Pairing Passcode',
     '重新生成配对口令，旧链接与已配对设备将失效': 'Regenerate pairing passcode (invalidates old links & paired devices)',
-    '管理手机远程访问通道与配对口令；已默认开启免登录临时公网通道（开箱即用），如需绑定自己的固定域名可展开配置，也可随时点顶部「远程」图标扫码连接。': 'Manage mobile remote channels & pairing passcode. Zero-config public tunnel is enabled by default; expand to bind a custom domain or scan QR from the topbar Remote icon.',
+    '默认已开启免登录公网通道，点顶部「远程」图标即可用手机扫码连接。如需绑定自己的固定域名，可在下方展开配置。': 'Zero-login public tunnel is enabled by default — click the topbar Remote icon to scan QR and connect. Expand below to bind a custom fixed domain.',
     '手机远程页面显示内容': 'Mobile Remote Page Visibility',
     '恢复手机远程页面默认显示的全部模块': 'Restore default visible modules on mobile remote page',
     '自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。': 'Customize modules shown on the mobile/browser remote page; changes save and apply immediately.',
-    '顶部桌面端已记录用量面板': 'Topbar Desktop Usage Panel',
     '本地代理直连（无需开启全局代理 / TUN）': 'Local Proxy Direct Connect (No Global Proxy / TUN)',
     '🌐 本地代理直连（无需开启全局代理 / TUN）': '🌐 Local Proxy Direct Connect (No Global Proxy / TUN)',
     '不走代理的地址（本机地址默认直连）：': 'Bypass Proxy Addresses (Localhost Direct):',
@@ -374,15 +394,34 @@
     '注：此处按公开 API 单价折算同等用量，仅供价值参考。包月订阅或活动赠送与按量付费不同，差额不代表实际省下的现金；缓存读取按 1 折估算，不含缓存存储费；同一上下文在多轮中会重复计入缓存读取，总量不代表实际输入字数。': 'Note: Converted at public API rates for value reference only. Subscriptions/promos differ from pay-as-you-go; difference is not cash saved. Cache reads use 10% rate (excl. cache storage) and may count shared context across turns.',
     '说明：每日统计按基础费率估算（未单独拆分长上下文阶梯价），实际金额可能略高；若有逐次请求记录则优先按实计算。': 'Note: Daily estimates use base-tier rates without long-context tiering (actuals may be slightly higher); per-request logs use exact pricing when available.',
     '创建后台定时巡检或一次性倒计时提醒任务，到点自动唤醒。': 'Schedule a background periodic check or one-time timer reminder.',
-    '一键提取并复制当前对话窗口的会话 ID。': 'Extract and copy the current conversation ID to the clipboard.'
+    '一键提取并复制当前对话窗口的会话 ID。': 'Extract and copy the current conversation ID to the clipboard.',
+    '刷新远程连接通道与隧道状态': 'Refresh remote channels and tunnel status',
+    '恢复默认快捷提示词': 'Reset to default quick prompts',
+    '内置指令实时解读': 'Built-in command guide',
+    '添加一条快捷提示词': 'Add a custom quick prompt',
+    '重新扫描本机已安装的终端程序': 'Rescan locally installed terminal apps',
+    '输入或选择可执行程序路径（如 /Applications/Ghostty.app 或 C:\\Program Files\\Git\\git-bash.exe）': 'Enter or browse executable path (e.g. /Applications/Ghostty.app or C:\\Program Files\\Git\\git-bash.exe)',
+    '在当前项目目录尝试打开所选终端以验证路径与权限': 'Try launching the selected terminal in the current project directory',
+    'GitHub 仓库有新提交': 'New commits available on GitHub',
+    '当前为手动安装版，暂不支持在线一键更新，如需更新请前往项目页下载新版覆盖安装': 'Manual installation does not support one-click updates; download the latest release from the project page to update',
+    '当前版本与仓库同步': 'Current version is up to date',
+    '已完成热更新': 'Updated and applied immediately',
+    '更新未完成（当前版本与配置不受影响），请检查网络或代理后重试': 'Update incomplete (your current version and settings are safe); check your network or proxy and try again',
+    '暂时无法连接更新服务器，请检查网络或代理设置后重试': 'Unable to reach the update server; check your network or proxy and try again'
   };
 
   function translateSuiteDynamicFragmentEn(fragment) {
     return String(fragment || '')
+      .replace(/Terminal\s*\(系统终端\)/g, 'Terminal (System)')
+      .replace(/CMD\s*\(命令提示符\)/g, 'CMD (Command Prompt)')
+      .replace(/WSL\s*\(Linux 子系统\)/g, 'WSL (Linux Subsystem)')
+      .replace(/tmux\s*\(多路复用器\)/g, 'tmux (Multiplexer)')
+      .replace(/原生居中控制台/g, 'Native Centered Console')
       .replace(/自动默认\s*\(([^)]+)\)/g, 'Auto Default ($1)')
       .replace(/自定义程序路径/g, 'Custom Path')
       .replace(/未设置路径/g, 'No path set')
       .replace(/系统默认/g, 'System Default')
+      .replace(/默认目录/g, 'Default Folder')
       .replace(/模型:\s*默认/g, 'Model: Default')
       .replace(/模型:/g, 'Model:')
       .replace(/主机:\s*本机/g, 'Host: Local')
@@ -395,8 +434,8 @@
     [/^当前使用：([\s\S]+)$/, (_, rest) => `Active: ${translateSuiteDynamicFragmentEn(rest)}`],
     [/^当前套餐：([\s\S]+)$/, (_, rest) => `Current Plan: ${rest}`],
     [/^首次使用：([\s\S]+)$/, (_, rest) => `First used: ${rest}`],
-    [/^✅ 测试启动成功：([\s\S]+)$/, (_, rest) => `✅ Test launch succeeded: ${rest}`],
-    [/^✖ 测试启动失败：([\s\S]+)$/, (_, rest) => `✖ Test launch failed: ${rest}`],
+    [/^✅ 测试启动成功：([\s\S]+)$/, (_, rest) => `✅ Test launch succeeded: ${translateSuiteDynamicFragmentEn(rest)}`],
+    [/^✖ 测试启动失败：([\s\S]+)$/, (_, rest) => `✖ Test launch failed: ${translateSuiteDynamicFragmentEn(rest)}`],
     [/^(\d[\d,]*) 会话实时累加$/, '$1 sessions tracked'],
     [/^日均约 ([\s\S]+)$/, 'Daily avg ~$1'],
     [/^(\d[\d,]*) 天活动记录$/, '$1 active days'],
@@ -411,8 +450,20 @@
     [/^v([^\s(]+)\s*·\s*已是最新$/i, 'v$1 · Up to date'],
     [/^🔔 有新更新 \(\+(\d+)\s*·\s*([0-9a-f]+)\)$/i, '🔔 +$1 update(s) ($2)'],
     [/^✅ 已更新至 v([^\s(]+)\s*\(([0-9a-f]+)\)$/i, '✅ Updated to v$1 ($2)'],
-    [/^v([^\s(]+)\s*\(非 Git 安装\)$/i, 'v$1 (Non-Git)'],
-    [/^✖ 更新失败：([\s\S]+)$/, '✖ Update failed: $1']
+    [/^v([^\s(]+)\s*[（(]手动安装版[）)]$/i, 'v$1 (Manual Install)'],
+    [/^当前提交[：:]\s*([\s\S]+)$/, 'Current commit: $1'],
+    [/^最新提交[：:]\s*([\s\S]+)$/, 'Latest commit: $1'],
+    [/^暂时无法检查更新[：:]\s*([\s\S]+)$/, (_, d) => `Unable to check updates: ${/[\u4e00-\u9fff]/.test(d) ? 'check network or proxy and retry' : d}`],
+    [/^远端检查失败[：:]\s*([\s\S]+)$/, (_, d) => `Remote check failed: ${/[\u4e00-\u9fff]/.test(d) ? 'check network or proxy and retry' : d}`],
+    [/^✖ 更新失败：([\s\S]+)$/, (_, reason) => {
+      const clean = String(reason || '').trim();
+      if (!clean || /[\u4e00-\u9fff]/.test(clean)) {
+        if (/手动安装/.test(clean)) return '✖ Update failed: manual installation requires manual update';
+        if (/本地.*修改|未提交/.test(clean)) return '✖ Update failed: local changes detected, auto-update paused';
+        return '✖ Update failed: check network or proxy and retry';
+      }
+      return `✖ Update failed: ${clean}`;
+    }]
   ];
 
   const SUITE_SUPPORTED_LOCALES = [
@@ -435,6 +486,10 @@
     ghostSuggest: true,
     autoCompact: true,
     quickBuiltinAutoSend: false,
+    dockBadgeEnabled: true,
+    dockBadgeStyle: 'capsule',
+    dockBadgeColorTier: true,
+    dockBadgeAutoClear: true,
     locale: 'zh-CN',
     capsuleLang: 'zh',
     englishLabels: false
@@ -1096,6 +1151,22 @@
     if (lsQuickAutoSend === 'true' || lsQuickAutoSend === 'false') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = lsQuickAutoSend === 'true';
     }
+    const lsDockEnabled = localStorage?.getItem?.('ag_suite_dock_badge_enabled');
+    if (lsDockEnabled === 'true' || lsDockEnabled === 'false') {
+      suiteEnhancerPrefs.dockBadgeEnabled = lsDockEnabled !== 'false';
+    }
+    const lsDockStyle = localStorage?.getItem?.('ag_suite_dock_badge_style');
+    if (lsDockStyle === 'capsule' || lsDockStyle === 'badge') {
+      suiteEnhancerPrefs.dockBadgeStyle = lsDockStyle;
+    }
+    const lsDockColorTier = localStorage?.getItem?.('ag_suite_dock_badge_color_tier');
+    if (lsDockColorTier === 'true' || lsDockColorTier === 'false') {
+      suiteEnhancerPrefs.dockBadgeColorTier = lsDockColorTier !== 'false';
+    }
+    const lsDockAutoClear = localStorage?.getItem?.('ag_suite_dock_badge_autoclear');
+    if (lsDockAutoClear === 'true' || lsDockAutoClear === 'false') {
+      suiteEnhancerPrefs.dockBadgeAutoClear = lsDockAutoClear !== 'false';
+    }
     const lsLocale = localStorage?.getItem?.('ag_suite_locale')
       || localStorage?.getItem?.('antigravityHansLang')
       || localStorage?.getItem?.('__agy_ctx_lang__');
@@ -1153,7 +1224,7 @@
       return node;
     };
 
-    // 1. 外观与主题配置移入「外观与主题」分页，并移除原面板内的调色抽屉
+    // 1. 外观与配色移入「🌐 语言与外观」分页，并移除原面板内的调色抽屉
     const tokColorsBody = moveTo('token-color-drawer-body', 'settings-slot-heatmap-colors');
     if (tokColorsBody) tokColorsBody.style.display = 'block';
     const mBg = el('token-drawer-mirror-bg');
@@ -1201,7 +1272,7 @@
       }
     });
 
-    // 3. 网络代理移入「网络与高级」分页，并移除 #panel 内原有抽屉
+    // 3. 网络代理移入「🧰 终端与网络」分页，并移除 #panel 内原有抽屉
     moveTo('proxy-badge', 'settings-slot-proxy-badge');
     const proxyBody = moveTo('proxy-drawer-body', 'settings-slot-proxy');
     if (proxyBody) proxyBody.style.display = 'block';
@@ -1266,6 +1337,10 @@
       localStorage?.setItem?.('ag_suite_ghost_suggest', suiteEnhancerPrefs.ghostSuggest ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_auto_compact', suiteEnhancerPrefs.autoCompact !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_quick_builtin_autosend', suiteEnhancerPrefs.quickBuiltinAutoSend ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_dock_badge_enabled', suiteEnhancerPrefs.dockBadgeEnabled !== false ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_dock_badge_style', suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule');
+      localStorage?.setItem?.('ag_suite_dock_badge_color_tier', suiteEnhancerPrefs.dockBadgeColorTier !== false ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_dock_badge_autoclear', suiteEnhancerPrefs.dockBadgeAutoClear !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_locale', activeLocale);
       localStorage?.setItem?.('__agy_ctx_lang__', curEntry.capsuleLang === 'en' ? 'en' : 'zh');
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
@@ -1291,6 +1366,10 @@
             ghostSuggest: suiteEnhancerPrefs.ghostSuggest,
             autoCompact: suiteEnhancerPrefs.autoCompact !== false,
             quickBuiltinAutoSend: Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend),
+            dockBadgeEnabled: suiteEnhancerPrefs.dockBadgeEnabled !== false,
+            dockBadgeStyle: suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule',
+            dockBadgeColorTier: suiteEnhancerPrefs.dockBadgeColorTier !== false,
+            dockBadgeAutoClear: suiteEnhancerPrefs.dockBadgeAutoClear !== false,
             locale: activeLocale,
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
@@ -1649,6 +1728,292 @@
     return { ...suiteFeatureFlags };
   }
 
+  let dockBadgeStatusState = {
+    lastRes: null,
+    overrideZh: '',
+    overrideEn: '',
+    overrideTone: '',
+    overrideAxHidden: true
+  };
+
+  function normalizeDockBadgeStyle(raw) {
+    return String(raw || '').trim().toLowerCase() === 'badge' ? 'badge' : 'capsule';
+  }
+
+  function isMacDockPlatformHint() {
+    if (suiteTerminalState.platform && suiteTerminalState.platform !== 'darwin') return false;
+    try {
+      const p = String(navigator?.platform || navigator?.userAgent || '');
+      if (p && (/win/i.test(p) || (/linux/i.test(p) && !/mac|darwin/i.test(p)))) return false;
+    } catch {}
+    return true;
+  }
+
+  function setDockBadgeStatusNote(zhText, enText, tone = '', openAxHidden = true) {
+    dockBadgeStatusState.overrideZh = zhText || '';
+    dockBadgeStatusState.overrideEn = enText || zhText || '';
+    dockBadgeStatusState.overrideTone = tone || '';
+    dockBadgeStatusState.overrideAxHidden = Boolean(openAxHidden);
+    const noteEl = el('dock-badge-status-note');
+    if (noteEl) {
+      noteEl.textContent = suiteTr(dockBadgeStatusState.overrideZh, dockBadgeStatusState.overrideEn);
+      if (tone) noteEl.setAttribute('data-tone', tone);
+      else noteEl.removeAttribute('data-tone');
+    }
+    const openAxBtn = el('btn-dock-open-ax');
+    if (openAxBtn) {
+      const hideAx = Boolean(openAxHidden);
+      openAxBtn.hidden = hideAx;
+      if (hideAx) openAxBtn.setAttribute?.('hidden', '');
+      else openAxBtn.removeAttribute?.('hidden');
+    }
+  }
+
+  function renderDockBadgeStatusPayload(res) {
+    dockBadgeStatusState.lastRes = res || null;
+    const enabled = suiteEnhancerPrefs.dockBadgeEnabled !== false;
+    const st = (res && typeof res === 'object')
+      ? ((res.status && typeof res.status === 'object') ? res.status : ((res.data && typeof res.data === 'object') ? res.data : res))
+      : null;
+
+    if (!st || res?.ok === false) {
+      if (!isMacDockPlatformHint()) {
+        setDockBadgeStatusNote(
+          '当前电脑不是 macOS：Dock 图标提醒仅在 Mac 上可用，其他系统已自动跳过',
+          'Not running on macOS: Dock icon alerts are only available on Mac and are safely skipped here',
+          '',
+          true
+        );
+        return;
+      }
+      if (!enabled) {
+        setDockBadgeStatusNote(
+          '已关闭 macOS Dock 图标提醒，相关后台组件已完全停用',
+          'macOS Dock icon alerts are disabled; background helper is stopped',
+          '',
+          true
+        );
+        return;
+      }
+      const hasBridge = typeof window !== 'undefined' && (Boolean(window.__AGContextMeterLive?.port) || typeof window.contextMeterAPI?.dockBadgeStatus === 'function');
+      if (!hasBridge) {
+        setDockBadgeStatusNote(
+          'macOS Dock 提醒已开启，连接 Antigravity 后即可实时生效与预览',
+          'macOS Dock alerts are enabled and will activate once connected to Antigravity',
+          '',
+          true
+        );
+        return;
+      }
+      const errCode = String(st?.errorCode || res?.errorCode || '').trim().toUpperCase();
+      if (errCode === 'NOT_READY') {
+        setDockBadgeStatusNote(
+          '当前后台服务尚未开启 Dock 图标提醒，请完全退出并重新打开 Antigravity 后重试',
+          'Dock icon alerts are not ready in the background helper yet. Quit and reopen Antigravity and retry.',
+          'warn',
+          true
+        );
+      } else {
+        setDockBadgeStatusNote(
+          '暂未获取到 macOS Dock 图标提醒状态，请完全退出并重新打开 Antigravity 后重试',
+          'Unable to get macOS Dock alert status yet. Quit and reopen Antigravity and retry.',
+          res?.error ? 'warn' : '',
+          true
+        );
+      }
+      return;
+    }
+
+    const plat = String(st.platform || res.platform || '').trim().toLowerCase();
+    const supported = typeof st.supported === 'boolean'
+      ? st.supported
+      : (typeof res.supported === 'boolean' ? res.supported : (plat ? plat === 'darwin' : isMacDockPlatformHint()));
+    if (!supported) {
+      setDockBadgeStatusNote(
+        '当前电脑不是 macOS：Dock 图标提醒仅在 Mac 上可用，其他系统已自动跳过',
+        'Not running on macOS: Dock icon alerts are only available on Mac and are safely skipped here',
+        '',
+        true
+      );
+      return;
+    }
+
+    const effEnabled = typeof st.enabled === 'boolean' ? st.enabled : enabled;
+    if (!effEnabled) {
+      setDockBadgeStatusNote(
+        '已关闭 macOS Dock 图标提醒，相关后台组件已完全停用',
+        'macOS Dock icon alerts are disabled; background helper is stopped',
+        '',
+        true
+      );
+      return;
+    }
+
+    if (st.compiling === true || st.state === 'compiling' || st.status === 'compiling') {
+      setDockBadgeStatusNote(
+        '正在首次准备 macOS Dock 提醒组件（约需数秒，完成后自动生效）…',
+        'Preparing native macOS Dock alert helper for first use (takes a few seconds)…',
+        '',
+        true
+      );
+      return;
+    }
+
+    const compileErrCode = String(st.compileErrorCode || '').trim().toUpperCase();
+    const compileErr = String(st.compileError || st.error || '').trim();
+    if (st.swiftcAvailable === false || compileErrCode === 'NO_SWIFTC') {
+      setDockBadgeStatusNote(
+        '需要先安装 Apple 命令行工具：请在「终端」运行 xcode-select --install，完成后重启 Antigravity 即可生效',
+        'Apple Command Line Tools are required: run xcode-select --install in Terminal, then restart Antigravity',
+        'warn',
+        true
+      );
+      return;
+    }
+    if (compileErrCode || compileErr) {
+      const compileCodeMap = {
+        MISSING_SOURCE: [
+          'Dock 提醒组件文件缺失，请重新安装或更新 Antigravity Suite 后重试',
+          'Dock alert component files are missing. Reinstall or update Antigravity Suite and retry.'
+        ],
+        READ_SOURCE_FAILED: [
+          '无法读取 Dock 提醒组件文件，请检查安装目录权限后重试',
+          'Unable to read Dock alert component files. Check installation folder permissions and retry.'
+        ],
+        COMPILE_FAILED: [
+          'Dock 提醒组件准备失败，请确认 Xcode 命令行工具正常后重启 Antigravity 重试',
+          'Failed to prepare the Dock alert helper. Verify Xcode Command Line Tools are working and restart Antigravity.'
+        ],
+        SPAWN_FAILED: [
+          'Dock 提醒组件启动失败，请完全退出并重新打开 Antigravity 后重试',
+          'Failed to start the Dock alert helper. Quit and reopen Antigravity and try again.'
+        ]
+      };
+      const pair = compileCodeMap[compileErrCode] || [
+        compileErr || 'macOS Dock 图标提醒暂时无法启动，请完全退出并重新打开 Antigravity 后重试',
+        'macOS Dock alerts failed to start. Quit and reopen Antigravity and try again.'
+      ];
+      setDockBadgeStatusNote(pair[0], pair[1], 'error', true);
+      return;
+    }
+
+    if (st.axTrusted === false) {
+      setDockBadgeStatusNote(
+        '需要开启「辅助功能」权限才能在 Dock 图标上显示提醒，请点击右上角「前往开启权限」并勾选放行',
+        'Accessibility permission is required to show alerts on the Dock icon. Click "Grant Access" above to enable it.',
+        'warn',
+        false
+      );
+      return;
+    }
+
+    if (st.axTrusted === true && st.dockFound === false) {
+      setDockBadgeStatusNote(
+        '已获得辅助功能权限，但暂未在底部 Dock 栏找到 Antigravity 图标（请确认程序图标在 Dock 中可见）',
+        'Accessibility permission granted, waiting to locate the Antigravity icon in your Dock',
+        '',
+        true
+      );
+      return;
+    }
+
+    if (st.axTrusted === true && st.dockFound === true) {
+      setDockBadgeStatusNote(
+        'macOS Dock 图标提醒已就绪：后台有新回复、待审批或高危拦截时会即时提醒',
+        'macOS Dock icon alerts are ready: alerts immediately on background replies, approvals, and high-risk blocks',
+        'ok',
+        true
+      );
+      return;
+    }
+
+    setDockBadgeStatusNote(
+      'macOS Dock 图标提醒已开启，正在检查权限与图标位置…',
+      'macOS Dock icon alerts are enabled; checking permissions and Dock icon status…',
+      '',
+      true
+    );
+  }
+
+  function renderDockBadgeStatusNote() {
+    if (dockBadgeStatusState.lastRes !== null) {
+      renderDockBadgeStatusPayload(dockBadgeStatusState.lastRes);
+      return;
+    }
+    if (dockBadgeStatusState.overrideZh) {
+      const noteEl = el('dock-badge-status-note');
+      if (noteEl) {
+        noteEl.textContent = suiteTr(dockBadgeStatusState.overrideZh, dockBadgeStatusState.overrideEn);
+      }
+    }
+  }
+
+  function syncDockBadgeControls() {
+    const enabled = suiteEnhancerPrefs.dockBadgeEnabled !== false;
+    const style = normalizeDockBadgeStyle(suiteEnhancerPrefs.dockBadgeStyle);
+    const colorTier = suiteEnhancerPrefs.dockBadgeColorTier !== false;
+    const autoClear = suiteEnhancerPrefs.dockBadgeAutoClear !== false;
+
+    const chkEnabled = el('set-dock-badge-enabled');
+    const btnCapsule = el('set-dock-style-capsule');
+    const btnBadge = el('set-dock-style-badge');
+    const chkColorTier = el('set-dock-badge-color-tier');
+    const chkAutoClear = el('set-dock-badge-autoclear');
+    const btnTest = el('btn-test-dock-badge');
+
+    if (chkEnabled) chkEnabled.checked = enabled;
+    setPillActive(btnCapsule, style === 'capsule');
+    setPillActive(btnBadge, style === 'badge');
+    if (btnCapsule) btnCapsule.setAttribute('aria-pressed', String(style === 'capsule'));
+    if (btnBadge) btnBadge.setAttribute('aria-pressed', String(style === 'badge'));
+    if (chkColorTier) chkColorTier.checked = colorTier;
+    if (chkAutoClear) chkAutoClear.checked = autoClear;
+
+    const supported = dockBadgeStatusState.lastRes?.supported === false
+      ? false
+      : (dockBadgeStatusState.lastRes?.status?.supported === false ? false : isMacDockPlatformHint());
+    if (btnTest) btnTest.disabled = !enabled || !supported;
+  }
+
+  let dockBadgeCompilePollTimer = null;
+
+  async function refreshDockBadgeStatus() {
+    if (dockBadgeCompilePollTimer) {
+      clearTimeout(dockBadgeCompilePollTimer);
+      dockBadgeCompilePollTimer = null;
+    }
+    const hasLivePort = typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port);
+    const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.dockBadgeStatus === 'function';
+    if (!hasLivePort && !hasIpc) {
+      renderDockBadgeStatusPayload(null);
+      syncDockBadgeControls();
+      return null;
+    }
+    try {
+      const res = await invokeHostBridge('/dock-badge-status', {}, 'dockBadgeStatus');
+      renderDockBadgeStatusPayload(res);
+      syncDockBadgeControls();
+      const st = (res && typeof res === 'object')
+        ? ((res.status && typeof res.status === 'object') ? res.status : ((res.data && typeof res.data === 'object') ? res.data : res))
+        : null;
+      const panelEl = el('panel-settings');
+      if (st?.compiling === true && panelEl && !panelEl.hidden && !(typeof state !== 'undefined' && state?.disposed)) {
+        dockBadgeCompilePollTimer = setTimeout(() => {
+          dockBadgeCompilePollTimer = null;
+          const curPanel = el('panel-settings');
+          if (curPanel && !curPanel.hidden && !(typeof state !== 'undefined' && state?.disposed)) {
+            void refreshDockBadgeStatus();
+          }
+        }, 2000);
+      }
+      return res || null;
+    } catch {
+      renderDockBadgeStatusPayload(null);
+      syncDockBadgeControls();
+      return null;
+    }
+  }
+
   function syncEnhancerPrefControls() {
     const chkAuto = el('set-auto-accept');
     const chkGhost = el('set-ghost-suggest');
@@ -1670,6 +2035,7 @@
     syncLanguageDropdownOptions();
     syncCliOptionControls();
     syncSettingsThemePills();
+    syncDockBadgeControls();
   }
 
   function getSupportedLocales() {
@@ -1709,6 +2075,7 @@
     syncEnhancerPrefControls();
     renderQuickBuiltinPool();
     renderQuickPromptsEditor();
+    renderDockBadgeStatusNote();
     dispatchSuitePrefsChanged();
     applySuiteShadowLocale();
     try {
@@ -1786,7 +2153,7 @@
       const payload = { uiPreferences: partialPrefs };
       return await invokeHostBridge('/save-settings', payload, 'saveSettings');
     } catch (err) {
-      return { ok: false, error: err?.message || String(err) };
+      return { ok: false, error: '', errorDetail: err?.message || String(err) };
     } finally {
       if (typeof suitePrefsSaveInFlight === 'number' && suitePrefsSaveInFlight > 0) {
         --suitePrefsSaveInFlight;
@@ -1991,6 +2358,28 @@
     if (typeof uiPrefs.quickBuiltinAutoSend === 'boolean') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = uiPrefs.quickBuiltinAutoSend;
     }
+    if (typeof uiPrefs.dockBadgeEnabled === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeEnabled = uiPrefs.dockBadgeEnabled;
+    } else if (uiPrefs.dockBadge && typeof uiPrefs.dockBadge.enabled === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeEnabled = uiPrefs.dockBadge.enabled;
+    }
+    if (typeof uiPrefs.dockBadgeStyle === 'string') {
+      const ds = uiPrefs.dockBadgeStyle.trim().toLowerCase();
+      if (ds === 'capsule' || ds === 'badge') suiteEnhancerPrefs.dockBadgeStyle = ds;
+    } else if (uiPrefs.dockBadge && typeof uiPrefs.dockBadge.style === 'string') {
+      const ds = uiPrefs.dockBadge.style.trim().toLowerCase();
+      if (ds === 'capsule' || ds === 'badge') suiteEnhancerPrefs.dockBadgeStyle = ds;
+    }
+    if (typeof uiPrefs.dockBadgeColorTier === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeColorTier = uiPrefs.dockBadgeColorTier;
+    } else if (uiPrefs.dockBadge && typeof uiPrefs.dockBadge.colorTier === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeColorTier = uiPrefs.dockBadge.colorTier;
+    }
+    if (typeof uiPrefs.dockBadgeAutoClear === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeAutoClear = uiPrefs.dockBadgeAutoClear;
+    } else if (uiPrefs.dockBadge && typeof uiPrefs.dockBadge.autoClear === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeAutoClear = uiPrefs.dockBadge.autoClear;
+    }
     const incomingLoc = uiPrefs.locale || uiPrefs.panelLanguage || uiPrefs.capsuleLang;
     if (typeof incomingLoc === 'string' && incomingLoc.trim()) {
       const entry = findSupportedLocaleEntry(incomingLoc);
@@ -2044,6 +2433,7 @@
     }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
+    syncDockBadgeControls();
     applySuiteFeatureFlags();
     renderQuickBuiltinPool();
     if (!editingQuickPrompts) {
@@ -2242,8 +2632,13 @@
         quickPrompts: suiteQuickPrompts === null ? (opts?.isReset ? null : []) : suiteQuickPrompts.map(item => ({ ...item }))
       });
       if (saveRes && saveRes.ok === false) {
+        const detail = String(saveRes.error || '').trim();
+        const hasCjk = /[\u4e00-\u9fff]/.test(detail);
         setQuickPromptsStatus(
-          suiteTr(`⚠️ 写入配置失败：${saveRes.error || '请确认 Antigravity 本地服务运行正常后点击保存重试'}`, `⚠️ Failed to write settings: ${saveRes.error || 'ensure the local service is running and click Save to retry'}`),
+          suiteTr(
+            `⚠️ 写入配置失败，你编辑的内容仍保留在页面中，请确认 Antigravity 正常运行后重试${detail ? `（${detail}）` : ''}`,
+            `⚠️ Failed to write settings — your edits remain on this page; ensure Antigravity is running and retry${detail && !hasCjk ? ` (${detail})` : ''}`
+          ),
           'warn'
         );
         return getSuiteQuickPrompts();
@@ -2716,7 +3111,7 @@
       return;
     }
     if (!data) {
-      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('未能连接到本地服务：请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）后点击「刷新状态」', 'Unable to connect to local service: restart Antigravity (or run ag-context-meter live), then click Refresh'))}</div>`;
+      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('暂未连接到手机远程服务：请确认 Antigravity 正常运行（或重启客户端）后点击「刷新状态」', 'Not connected to mobile remote service yet: ensure Antigravity is running (or restart the app), then click Refresh'))}</div>`;
       return;
     }
 
@@ -2753,7 +3148,7 @@
             : (isRunning
                 ? (ch.displayHost || modeHint)
                 : (ch.binaryAvailable === false
-                    ? suiteTr('尚未安装 cloudflared（复制下方安装命令执行即可）', 'cloudflared not found (see install command below)')
+                    ? suiteTr('尚未安装公网通道组件（cloudflared），复制下方命令安装即可启用', 'Public tunnel component (cloudflared) not installed — copy the command below to install')
                     : suiteTr('免登录零配置 · 点击启用', 'Zero-Config · Click to enable')));
         return `
           <div id="ag-rp-tunnel-toggle" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tunnel" data-active="${activeKey === 'tunnel' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
@@ -2828,8 +3223,8 @@
         <div class="ag-rp-install-hdr">
           <span class="ag-rp-install-title">
             <span>${escapeSuiteHtml(missingCloudflared
-              ? suiteTr('安装 cloudflared（公网扫码访问所需组件）', 'Install cloudflared (Required for Public Remote Tunnel)')
-              : suiteTr('cloudflared 安装命令引导', 'cloudflared Install Command'))}</span>
+              ? suiteTr('安装公网通道组件 cloudflared（手机扫码远程访问所需）', 'Install public tunnel component cloudflared (Required for Mobile QR Remote Access)')
+              : suiteTr('公网通道组件 cloudflared 安装命令', 'Public Tunnel Component (cloudflared) Install Command'))}</span>
             <span class="ag-rp-install-badge">${escapeSuiteHtml(missingCloudflared
               ? suiteTr('未检测到', 'Not Found')
               : suiteTr('✓ 本机已安装', '✓ Installed'))}</span>
@@ -2997,18 +3392,18 @@
       if (res && res.disabled) {
         remoteSettingsState.data = null;
         remoteSettingsState.error = suiteTr(
-          '手机远程功能当前已被启动参数（--no-remote）或环境变量关闭；如需使用，请移除该参数后重启服务',
-          'Mobile remote is disabled via --no-remote or environment variable; remove it and restart to enable'
+          '手机远程功能当前已被启动配置关闭；如需使用，请移除禁用设置后重启 Antigravity',
+          'Mobile remote is currently disabled by launch settings; remove the disable option and restart Antigravity to enable it'
         );
       } else if (res && res.ok && res.data) {
         remoteSettingsState.data = res.data;
         syncRemoteDisplayCheckboxes(res.data.remoteDisplay);
         broadcastRemoteStateChanged(res.data);
       } else {
-        remoteSettingsState.error = suiteTr('未能连接到本地服务：请确认 Antigravity 客户端已开启（或运行 ag-context-meter live），然后点击「刷新状态」重试', 'Unable to connect to local service: ensure Antigravity is running (or run ag-context-meter live), then click Refresh');
+        remoteSettingsState.error = suiteTr('暂未连接到手机远程服务：请确认 Antigravity 正常运行（或重启客户端），然后点击「刷新状态」重试', 'Not connected to mobile remote service yet: ensure Antigravity is running (or restart the app), then click Refresh');
       }
-    } catch (err) {
-      remoteSettingsState.error = err?.message || suiteTr('读取手机远程状态失败，请点击「刷新状态」重试', 'Failed to load remote status; click Refresh to retry');
+    } catch {
+      remoteSettingsState.error = suiteTr('读取手机远程状态失败，请点击「刷新状态」重试', 'Failed to load remote status; click Refresh to retry');
     } finally {
       remoteSettingsState.loading = false;
       renderRemoteSettingsChannels();
@@ -3044,13 +3439,18 @@
           }
         }
       } else {
-        remoteSettingsState.error = res?.error || suiteTr('保存手机远程设置失败，请检查网络或配置后重试', 'Failed to save remote channel settings; check configuration and retry');
+        const rawErr = String(res?.error || '').trim();
+        const hasCjk = /[\u4e00-\u9fff]/.test(rawErr);
+        remoteSettingsState.error = suiteTr(
+          rawErr || '保存手机远程设置失败，请检查网络或配置后重试',
+          (rawErr && !hasCjk) ? rawErr : 'Failed to save remote channel settings; check configuration and retry'
+        );
         if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
           remoteSettingsState.tunnelConfigOpen = true;
         }
       }
-    } catch (err) {
-      remoteSettingsState.error = err?.message || suiteTr('保存手机远程设置失败，请稍后点击「刷新状态」重试', 'Failed to save remote settings; refresh and try again later');
+    } catch {
+      remoteSettingsState.error = suiteTr('保存手机远程设置失败，请稍后点击「刷新状态」重试', 'Failed to save remote settings; refresh and try again later');
       if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
         remoteSettingsState.tunnelConfigOpen = true;
       }
@@ -3072,11 +3472,12 @@
     return await configureRemoteSettings({ remoteDisplay: next });
   }
 
-  function switchSuiteSettingsTab(tabName = 'terminal') {
-    const valid = ['terminal', 'appearance', 'subscription', 'remote', 'system'];
-    const target = valid.includes(tabName) ? tabName : 'terminal';
+  function switchSuiteSettingsTab(tabName = 'appearance') {
+    const raw = String(tabName || 'appearance').trim().toLowerCase();
+    const mapped = SETTINGS_TAB_ALIASES[raw] || raw;
+    const target = SETTINGS_TAB_ORDER.includes(mapped) ? mapped : 'appearance';
     activeSettingsTab = target;
-    for (const key of valid) {
+    for (const key of SETTINGS_TAB_ORDER) {
       const btn = el(`settings-tab-btn-${key}`);
       const pane = el(`settings-pane-${key}`);
       const isCur = key === target;
@@ -3087,7 +3488,16 @@
       }
       if (pane) pane.hidden = !isCur;
     }
-    if (target === 'terminal') {
+    if (target === 'appearance') {
+      syncEnhancerPrefControls();
+      applySuiteFeatureFlags();
+      syncDockBadgeControls();
+      void refreshDockBadgeStatus();
+    } else if (target === 'remote') {
+      renderRemoteSettingsChannels();
+      syncRemoteDisplayCheckboxes();
+      void loadRemoteSettingsInfo(false);
+    } else if (target === 'chat') {
       syncEnhancerPrefControls();
       renderQuickBuiltinPool();
       if (!isQuickPromptsEditorActiveOrDirty()) {
@@ -3100,18 +3510,14 @@
           syncQuickPopularTemplatesState();
         }
       }
+    } else if (target === 'network') {
       void refreshTerminalsList();
+      void refreshModulesDisplay();
     } else if (target === 'subscription') {
       syncSettingsSubPreview();
       if (typeof syncPlanCustomFormFields === 'function' && isRealShadowDomTree()) {
         syncPlanCustomFormFields(ANTIGRAVITY_TOKEN_DATA.planStatus, { enhance: true });
       }
-    } else if (target === 'remote') {
-      renderRemoteSettingsChannels();
-      syncRemoteDisplayCheckboxes();
-      void loadRemoteSettingsInfo(false);
-    } else if (target === 'system') {
-      void refreshModulesDisplay();
     }
     positionFloatingPanels();
   }
@@ -3153,8 +3559,8 @@
     } else if (info.isGitRepo === false) {
       if (verEl) {
         verEl.setAttribute('data-state', 'muted');
-        verEl.textContent = `v${ver} (非 Git 安装)`;
-        verEl.title = '当前目录非 Git 仓库，请通过 git clone 安装以支持一键更新';
+        verEl.textContent = `v${ver}（手动安装版）`;
+        verEl.title = '当前为手动安装版，暂不支持在线一键更新，如需更新请前往项目页下载新版覆盖安装';
       }
       if (applyBtn) applyBtn.hidden = true;
       if (settingsBtn) {
@@ -3166,7 +3572,7 @@
         verEl.setAttribute('data-state', info.fetchError ? 'muted' : 'ok');
         verEl.textContent = sha ? `v${ver} (${sha} · 已是最新)` : `v${ver} · 已是最新`;
         verEl.title = info.fetchError
-          ? `远端检查失败: ${info.fetchError}`
+          ? `暂时无法检查更新：${info.fetchError}`
           : (info.localSubject ? `当前提交: ${info.localSubject}` : '当前版本与仓库同步');
       }
       if (applyBtn) applyBtn.hidden = true;
@@ -3238,10 +3644,13 @@
         applySuiteShadowLocale();
         return res;
       }
-      const errMsg = res?.error || '未能拉取仓库更新';
+      const errMsg = res?.noGitRepo
+        ? '手动安装版暂不支持一键更新'
+        : (res?.dirty ? '检测到本地修改，已暂停自动更新' : (res?.error || '请检查网络或代理后重试'));
       if (verEl) {
         verEl.setAttribute('data-state', 'muted');
         verEl.textContent = `✖ 更新失败：${errMsg}`;
+        verEl.title = '更新未完成（当前版本与配置不受影响），请检查网络或代理后重试';
       }
       if (applyBtn) {
         applyBtn.disabled = false;
@@ -3249,10 +3658,11 @@
       }
       applySuiteShadowLocale();
       return res || null;
-    } catch (e) {
+    } catch {
       if (verEl) {
         verEl.setAttribute('data-state', 'muted');
-        verEl.textContent = `✖ 更新失败：${e?.message || e}`;
+        verEl.textContent = '✖ 更新失败：请检查网络或代理后重试';
+        verEl.title = '更新未完成（当前版本与配置不受影响），请检查网络或代理后重试';
       }
       if (applyBtn) {
         applyBtn.disabled = false;
@@ -3276,10 +3686,12 @@
 
   function toggleSuiteSettings(tabName) {
     const pSettings = el('panel-settings');
-    if (pSettings && !pSettings.hidden && (!tabName || tabName === activeSettingsTab)) {
+    const raw = String(tabName || '').trim().toLowerCase();
+    const resolvedTab = raw ? (SETTINGS_TAB_ALIASES[raw] || raw) : '';
+    if (pSettings && !pSettings.hidden && (!resolvedTab || resolvedTab === activeSettingsTab)) {
       showPanel('none');
     } else {
-      openSuiteSettings(tabName || activeSettingsTab);
+      openSuiteSettings(resolvedTab || activeSettingsTab);
     }
   }
 
@@ -3287,7 +3699,7 @@
   el('overflow-settings-btn')?.addEventListener('click', () => openSuiteSettings());
   el('close-settings')?.addEventListener('click', () => showPanel('none'));
 
-  ['terminal', 'appearance', 'subscription', 'remote', 'system'].forEach(tab => {
+  SETTINGS_TAB_ORDER.forEach(tab => {
     el(`settings-tab-btn-${tab}`)?.addEventListener('click', () => switchSuiteSettingsTab(tab));
   });
 
@@ -3365,6 +3777,7 @@
           if (activeSettingsTab === 'remote' && remoteSettingsState.data) {
             renderRemoteSettingsChannels();
           }
+          renderDockBadgeStatusNote();
           applySuiteShadowLocale();
         }
       });
@@ -3379,7 +3792,12 @@
     const statusEl = el('term-config-status');
     try {
       if (!window?.contextMeterAPI?.pickTerminalPath && !window?.__AGContextMeterLive?.port) {
-        if (statusEl) statusEl.textContent = '⚠️ 当前页面不支持弹窗选文件，请在左侧输入框粘贴终端程序路径后点击「保存路径」';
+        if (statusEl) {
+          statusEl.textContent = suiteTr(
+            '⚠️ 当前页面暂不支持弹窗选文件，请在左侧输入框粘贴终端程序路径后点击「保存路径」',
+            '⚠️ File picker is unavailable here — paste the terminal path on the left and click "Save Path"'
+          );
+        }
         return;
       }
       const res = await invokeHostBridge('/pick-terminal-path', {}, 'pickTerminalPath');
@@ -3389,10 +3807,18 @@
         await setSuiteTerminalSettings('custom', res.path);
         await refreshTerminalsList();
       } else if (res && res.ok === false && statusEl) {
-        statusEl.textContent = `✖ 选择失败：${res.error || '请直接手动输入终端路径后点击「保存路径」'}`;
+        statusEl.textContent = suiteTr(
+          '✖ 未能完成选择，请直接手动输入终端路径后点击「保存路径」',
+          '✖ Could not select terminal app — enter the path manually and click "Save Path"'
+        );
       }
-    } catch (e) {
-      if (statusEl) statusEl.textContent = `✖ 打开文件选择器失败（${e?.message || e}），请直接手动输入终端路径后点击「保存路径」`;
+    } catch {
+      if (statusEl) {
+        statusEl.textContent = suiteTr(
+          '✖ 无法打开文件选择器，请直接手动输入终端路径后点击「保存路径」',
+          '✖ Unable to open file picker — enter the terminal path manually and click "Save Path"'
+        );
+      }
     }
   });
 
@@ -3440,22 +3866,50 @@
 
   el('btn-test-terminal')?.addEventListener('click', async () => {
     const statusEl = el('term-config-status');
-    if (statusEl) statusEl.textContent = '⏳ 正在尝试打开所选终端…';
-    const cliCfg = getSuiteCliSettings();
-    const res = await triggerLaunchCli({
-      terminalApp: suiteTerminalState.terminalApp,
-      customTerminalPath: el('input-custom-term-path')?.value?.trim() || suiteTerminalState.customTerminalPath,
-      muxHost: suiteTerminalState.cliMuxHost || '',
-      skipPermissions: cliCfg.skipPermissions,
-      model: cliCfg.model,
-      noModel: cliCfg.noModel,
-      testOnly: true
-    });
-    if (statusEl) {
-      const hostSuffix = res?.muxHost ? ` · 主机: ${res.muxHost}` : '';
-      statusEl.textContent = res?.ok
-        ? `✅ 测试启动成功：${res.terminal || suiteTerminalState.terminalApp} (${res.cwd || '默认目录'}${hostSuffix})`
-        : `✖ 测试启动失败：${res?.error || '请确认所选终端已安装，或切换为「自定义程序路径」手动指定后再试'}`;
+    if (statusEl) statusEl.textContent = suiteTr('⏳ 正在尝试打开所选终端…', '⏳ Launching selected terminal…');
+    try {
+      const cliCfg = getSuiteCliSettings();
+      const res = await triggerLaunchCli({
+        terminalApp: suiteTerminalState.terminalApp,
+        customTerminalPath: el('input-custom-term-path')?.value?.trim() || suiteTerminalState.customTerminalPath,
+        muxHost: suiteTerminalState.cliMuxHost || '',
+        skipPermissions: cliCfg.skipPermissions,
+        model: cliCfg.model,
+        noModel: cliCfg.noModel,
+        testOnly: true
+      });
+      if (statusEl) {
+        if (res?.ok) {
+          const rawTerm = String(res.terminal || suiteTerminalState.terminalApp || '');
+          const termDisp = suiteTr(rawTerm, translateSuiteDynamicFragmentEn(rawTerm));
+          const cwdDisp = res.cwd || suiteTr('默认目录', 'Default Folder');
+          const hostSuffix = res?.muxHost ? suiteTr(` · 主机: ${res.muxHost}`, ` · Host: ${res.muxHost}`) : '';
+          statusEl.textContent = suiteTr(
+            `✅ 测试启动成功：${termDisp} (${cwdDisp}${hostSuffix})`,
+            `✅ Test launch succeeded: ${termDisp} (${cwdDisp}${hostSuffix})`
+          );
+        } else {
+          const rawErr = String(res?.error || '').trim();
+          const hasCjk = /[\u4e00-\u9fff]/.test(rawErr);
+          const zhFallback = res?.code === 'NO_BRIDGE'
+            ? '未连接到 Antigravity 后台助手，请完全退出并重新打开客户端后再试'
+            : (rawErr || '请确认所选终端已安装，或切换为「自定义程序路径」手动指定后再试');
+          const enFallback = res?.code === 'NO_BRIDGE'
+            ? 'Not connected to the background helper; quit and reopen Antigravity and retry'
+            : ((rawErr && !hasCjk) ? rawErr : 'confirm the selected terminal is installed, or choose "Custom Path" and retry');
+          statusEl.textContent = suiteTr(
+            `✖ 测试启动失败：${zhFallback}`,
+            `✖ Test launch failed: ${enFallback}`
+          );
+        }
+      }
+    } catch {
+      if (statusEl) {
+        statusEl.textContent = suiteTr(
+          '✖ 测试启动失败：请确认所选终端已安装，或切换为「自定义程序路径」手动指定后再试',
+          '✖ Test launch failed: confirm the selected terminal is installed, or choose "Custom Path" and retry'
+        );
+      }
     }
   });
 
@@ -3503,6 +3957,181 @@
     dispatchSuitePrefsChanged();
     try { window.__antigravityZhSetEnglishLabels?.(suiteEnhancerPrefs.englishLabels, true); } catch {}
     void saveSuiteUiPrefs({ englishLabels: suiteEnhancerPrefs.englishLabels });
+  });
+
+  el('set-dock-badge-enabled')?.addEventListener('change', async e => {
+    suiteEnhancerPrefs.dockBadgeEnabled = Boolean(e?.target?.checked);
+    syncDockBadgeControls();
+    dispatchSuitePrefsChanged();
+    await saveSuiteUiPrefs({ dockBadgeEnabled: suiteEnhancerPrefs.dockBadgeEnabled });
+    void refreshDockBadgeStatus();
+  });
+
+  const applyDockBadgeStyleChoice = async (style) => {
+    suiteEnhancerPrefs.dockBadgeStyle = normalizeDockBadgeStyle(style);
+    syncDockBadgeControls();
+    dispatchSuitePrefsChanged();
+    await saveSuiteUiPrefs({ dockBadgeStyle: suiteEnhancerPrefs.dockBadgeStyle });
+    void refreshDockBadgeStatus();
+  };
+  el('set-dock-style-capsule')?.addEventListener('click', () => { void applyDockBadgeStyleChoice('capsule'); });
+  el('set-dock-style-badge')?.addEventListener('click', () => { void applyDockBadgeStyleChoice('badge'); });
+
+  el('set-dock-badge-color-tier')?.addEventListener('change', async e => {
+    suiteEnhancerPrefs.dockBadgeColorTier = Boolean(e?.target?.checked);
+    syncDockBadgeControls();
+    dispatchSuitePrefsChanged();
+    await saveSuiteUiPrefs({ dockBadgeColorTier: suiteEnhancerPrefs.dockBadgeColorTier });
+    void refreshDockBadgeStatus();
+  });
+
+  el('set-dock-badge-autoclear')?.addEventListener('change', async e => {
+    suiteEnhancerPrefs.dockBadgeAutoClear = Boolean(e?.target?.checked);
+    syncDockBadgeControls();
+    dispatchSuitePrefsChanged();
+    await saveSuiteUiPrefs({ dockBadgeAutoClear: suiteEnhancerPrefs.dockBadgeAutoClear });
+    void refreshDockBadgeStatus();
+  });
+
+  el('btn-test-dock-badge')?.addEventListener('click', async () => {
+    const hasBridge = typeof window !== 'undefined' && (Boolean(window.__AGContextMeterLive?.port) || typeof window.contextMeterAPI?.dockBadgeTest === 'function');
+    if (!hasBridge) {
+      setDockBadgeStatusNote(
+        '尚未连接到 Antigravity 后台助手，请完全退出并重新打开 Antigravity 后重试',
+        'Not connected to the Antigravity background helper yet. Quit and reopen Antigravity, then try again.',
+        'warn',
+        true
+      );
+      return;
+    }
+    const testBtn = el('btn-test-dock-badge');
+    if (testBtn) testBtn.disabled = true;
+    setDockBadgeStatusNote(
+      '正在向 macOS Dock 发送 5 秒预览提醒…',
+      'Sending 5-second preview alert to macOS Dock…',
+      '',
+      true
+    );
+    try {
+      const res = await invokeHostBridge('/dock-badge-test', {
+        style: normalizeDockBadgeStyle(suiteEnhancerPrefs.dockBadgeStyle),
+        colorTier: suiteEnhancerPrefs.dockBadgeColorTier !== false,
+        locale: suiteEnhancerPrefs.locale || 'zh-CN'
+      }, 'dockBadgeTest');
+      if (res && res.ok) {
+        if (res.status?.axTrusted === false) {
+          setDockBadgeStatusNote(
+            '已发送预览请求，但尚未开启「辅助功能」权限，暂时无法显示在 Dock 图标上 — 请点击右上角「前往开启权限」并勾选放行',
+            'Preview requested, but Accessibility permission is needed to show it on the Dock icon — click "Grant Access" above to enable it.',
+            'warn',
+            false
+          );
+        } else {
+          const curStyle = normalizeDockBadgeStyle(res.status?.style || suiteEnhancerPrefs.dockBadgeStyle);
+          if (curStyle === 'badge') {
+            setDockBadgeStatusNote(
+              '已发送 5 秒预览提醒（模拟 2 条待审批），请查看底部 Dock 中 Antigravity 图标右上角的红色角标（5 秒后自动恢复）',
+              '5-second preview alert sent (simulating 2 pending approvals) — check the red badge at the top-right of the Antigravity Dock icon (clears automatically in 5s)',
+              'ok',
+              true
+            );
+          } else {
+            setDockBadgeStatusNote(
+              '已发送 5 秒预览提醒（模拟 2 条待审批、3 条新回复），请查看底部 Dock 中的 Antigravity 图标（5 秒后自动恢复）',
+              '5-second preview alert sent (simulating 2 pending approvals & 3 unread replies) — check the Antigravity Dock icon (clears automatically in 5s)',
+              'ok',
+              true
+            );
+          }
+        }
+      } else {
+        const axNeed = res?.axTrusted === false || res?.status?.axTrusted === false;
+        const errCode = String(res?.errorCode || '').trim().toUpperCase();
+        const errCodeMap = {
+          UNSUPPORTED: [
+            '当前电脑不是 macOS，无法使用 Dock 图标提醒',
+            'Dock icon alerts are only available on macOS.'
+          ],
+          DISABLED: [
+            '请先打开「启用 macOS Dock 图标提醒」开关后再试',
+            'Please turn on "Enable macOS Dock Icon Alerts" first and try again.'
+          ],
+          STOPPED: [
+            'Dock 提醒服务已停止，请完全退出并重新打开 Antigravity 后重试',
+            'Dock alert service has stopped. Quit and reopen Antigravity, then try again.'
+          ],
+          NOT_READY: [
+            '当前后台服务尚未开启 Dock 图标提醒，请完全退出并重新打开 Antigravity 后重试',
+            'Dock icon alerts are not ready in the background helper yet. Quit and reopen Antigravity and retry.'
+          ],
+          HELPER_START_FAILED: [
+            'Dock 提醒组件启动失败，请根据上方状态提示检查权限或命令行工具后重试',
+            'Failed to start the Dock alert helper. Check permissions or Command Line Tools per the status above and retry.'
+          ]
+        };
+        if (axNeed) {
+          setDockBadgeStatusNote(
+            '需要开启「辅助功能」权限才能在 Dock 图标上显示提醒，请点击右上角「前往开启权限」并勾选放行',
+            'Accessibility permission is required to show alerts on the Dock icon. Click "Grant Access" above and retry.',
+            'warn',
+            false
+          );
+        } else {
+          const pair = errCodeMap[errCode] || [
+            '未能触发 Dock 预览提醒，请确认开关已开启且辅助功能权限正常后重试',
+            'Unable to trigger Dock preview alert; verify alerts are enabled and Accessibility permission is granted.'
+          ];
+          setDockBadgeStatusNote(pair[0], pair[1], 'error', true);
+        }
+      }
+    } catch {
+      setDockBadgeStatusNote(
+        '发送预览提醒失败，请确认 Antigravity 正常运行后重试',
+        'Failed to send Dock preview alert. Ensure Antigravity is running and try again.',
+        'error',
+        true
+      );
+    } finally {
+      syncDockBadgeControls();
+    }
+  });
+
+  el('btn-dock-open-ax')?.addEventListener('click', async () => {
+    const hasBridge = typeof window !== 'undefined' && (Boolean(window.__AGContextMeterLive?.port) || typeof window.contextMeterAPI?.dockBadgeOpenAx === 'function');
+    if (!hasBridge) {
+      setDockBadgeStatusNote(
+        '请手动打开「系统设置 → 隐私与安全性 → 辅助功能」，在列表中开启 Antigravity（若是用终端启动则开启对应终端）的权限',
+        'Open System Settings → Privacy & Security → Accessibility manually and enable permission for Antigravity (or your terminal if launched from terminal).',
+        'warn',
+        false
+      );
+      return;
+    }
+    try {
+      const res = await invokeHostBridge('/dock-badge-open-ax', {}, 'dockBadgeOpenAx');
+      if (res && res.ok) {
+        setDockBadgeStatusNote(
+          '已打开「系统设置 → 隐私与安全性 → 辅助功能」，请在列表中开启 Antigravity（若是用终端启动则开启对应终端）的权限，几秒后自动生效',
+          'Opened System Settings → Privacy & Security → Accessibility. Enable permission for Antigravity (or your terminal if launched from terminal); it takes effect in a few seconds.',
+          'warn',
+          false
+        );
+      } else {
+        setDockBadgeStatusNote(
+          '未能自动打开系统设置，请手动前往「系统设置 → 隐私与安全性 → 辅助功能」，开启 Antigravity（或对应终端）的权限',
+          'Could not open System Settings automatically. Manually open System Settings → Privacy & Security → Accessibility and enable permission for Antigravity.',
+          'warn',
+          false
+        );
+      }
+    } catch {
+      setDockBadgeStatusNote(
+        '无法打开系统设置，请手动前往「系统设置 → 隐私与安全性 → 辅助功能」，开启 Antigravity（或对应终端）的权限',
+        'Unable to open System Settings. Manually open System Settings → Privacy & Security → Accessibility and enable permission for Antigravity.',
+        'warn',
+        false
+      );
+    }
   });
 
   [
@@ -3560,6 +4189,7 @@
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
   applySuiteFeatureFlags();
+  syncDockBadgeControls();
   renderQuickBuiltinPool();
   renderQuickPromptsEditor();
   renderTerminalGrid();
@@ -3570,4 +4200,5 @@
   }
   if (isRealShadowDomTree() && typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
     void checkSuiteRepoUpdate({ fetchRemote: true });
+    void refreshDockBadgeStatus();
   }

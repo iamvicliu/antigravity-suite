@@ -24,6 +24,7 @@ const {
 const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const { startMobileRemoteServer, buildRemoteInfo, saveRemoteTunnelConfig } = require('./mobile-remote');
+const { createMacosDockBadgeManager } = require('./macos-dock-badge');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
 const MAX_RECORD_CALLS = 500; // 单批次最大记录数
@@ -58,7 +59,11 @@ const ALLOWED_ROUTES = [
   '/remote-info',
   '/remote-tunnel',
   '/suite-version-check',
-  '/suite-apply-update'
+  '/suite-apply-update',
+  '/dock-state',
+  '/dock-badge-status',
+  '/dock-badge-test',
+  '/dock-badge-open-ax'
 ];
 
 function readSuitePackageVersion() {
@@ -118,7 +123,8 @@ function checkSuiteRepoVersion(options = {}) {
       hasUpdate: false,
       latestSubject: '',
       latestRelativeTime: '',
-      fetchError: ''
+      fetchError: '',
+      fetchErrorDetail: ''
     };
   }
 
@@ -129,11 +135,13 @@ function checkSuiteRepoVersion(options = {}) {
   const { remote, branch, ref } = resolveSuiteGitTarget();
 
   let fetchError = '';
+  let fetchErrorDetail = '';
   if (fetchRemote) {
     try {
       runSuiteGitSync(['fetch', '--quiet', remote, branch], 8000);
     } catch (e) {
-      fetchError = String(e?.stderr || e?.message || '检查远端更新失败').trim().split(/\r?\n/)[0].slice(0, 120);
+      fetchError = '暂时无法连接更新服务器，请检查网络或代理设置后重试';
+      fetchErrorDetail = String(e?.stderr || e?.message || '检查远端更新失败').trim().split(/\r?\n/)[0].slice(0, 200);
     }
   }
 
@@ -163,19 +171,20 @@ function checkSuiteRepoVersion(options = {}) {
     hasUpdate: behindCount > 0,
     latestSubject,
     latestRelativeTime,
-    fetchError
+    fetchError,
+    fetchErrorDetail
   };
 }
 
 function applySuiteRepoUpdate() {
   const version = readSuitePackageVersion();
   if (!fs.existsSync(path.join(__dirname, '.git'))) {
-    return { ok: false, noGitRepo: true, version, error: '当前安装目录非 Git 仓库，请通过 git clone 安装后使用在线更新' };
+    return { ok: false, noGitRepo: true, version, error: '当前为手动安装版，暂不支持在线一键更新，请前往项目页下载新版覆盖安装' };
   }
   try {
     const dirty = runSuiteGitSync(['status', '--porcelain', '--untracked-files=no'], 3000);
     if (dirty) {
-      return { ok: false, dirty: true, version, error: '本地有未提交修改，为保护本地改动已取消自动拉取' };
+      return { ok: false, dirty: true, version, error: '检测到本地文件有自定义修改，为防止覆盖你的改动，已暂停自动更新（原有配置不受影响）' };
     }
     const { remote, branch } = resolveSuiteGitTarget();
     const beforeSha = runSuiteGitSync(['rev-parse', '--short', 'HEAD'], 2500);
@@ -194,8 +203,13 @@ function applySuiteRepoUpdate() {
       localSubject
     };
   } catch (e) {
-    const msg = String(e?.stderr || e?.message || '拉取更新失败').trim().split(/\r?\n/)[0];
-    return { ok: false, version, error: msg || '拉取更新失败' };
+    const detail = String(e?.stderr || e?.message || '拉取更新失败').trim().split(/\r?\n/)[0].slice(0, 200);
+    return {
+      ok: false,
+      version,
+      error: '更新未完成（当前版本和数据不受影响），请检查网络或代理后重试',
+      errorDetail: detail || '拉取更新失败'
+    };
   }
 }
 
@@ -450,7 +464,11 @@ function collectBrainStats() {
   try {
     entries = fs.readdirSync(brainDir, { withFileTypes: true });
   } catch (e) {
-    return { ok: false, error: e.message || '读取缓存目录失败' };
+    return {
+      ok: false,
+      error: '无法读取本地会话缓存，请检查文件夹权限后重试',
+      errorDetail: String(e?.message || e || '').trim().slice(0, 200)
+    };
   }
   let totalBytes = 0;
   const sessions = [];
@@ -479,6 +497,79 @@ function collectBrainStats() {
   };
 }
 
+function validateDockStatePayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, error: 'Dock 状态请求体必须为 JSON 对象' };
+  }
+  if (typeof payload.windowId !== 'string') {
+    return { ok: false, error: '缺少有效的 windowId 字符串' };
+  }
+  const windowId = payload.windowId.trim();
+  if (!windowId || windowId.length > 128 || /[\x00-\x1f\x7f]/.test(windowId)) {
+    return { ok: false, error: 'windowId 格式不合法' };
+  }
+  if (payload.offline !== undefined && typeof payload.offline !== 'boolean') {
+    return { ok: false, error: 'offline 字段必须为布尔值' };
+  }
+  if (payload.offline === true) {
+    return { ok: true, data: { windowId, offline: true } };
+  }
+  const unreadRaw = payload.unreadCount !== undefined ? payload.unreadCount : payload.unread;
+  if (unreadRaw !== undefined && (typeof unreadRaw !== 'number' || !Number.isFinite(unreadRaw) || unreadRaw < 0)) {
+    return { ok: false, error: 'unreadCount 必须为非负有限数字' };
+  }
+  let unreadIds;
+  if (payload.unreadIds !== undefined) {
+    if (!Array.isArray(payload.unreadIds)) {
+      return { ok: false, error: 'unreadIds 必须为数组' };
+    }
+    if (payload.unreadIds.length > 200) {
+      return { ok: false, error: 'unreadIds 最多支持 200 项' };
+    }
+    const dedup = new Set();
+    for (const rawItem of payload.unreadIds) {
+      if (typeof rawItem !== 'string') {
+        return { ok: false, error: 'unreadIds 每项必须为非空字符串' };
+      }
+      const id = rawItem.trim();
+      if (!id || id.length > 128 || /[\x00-\x1f\x7f]/.test(id)) {
+        return { ok: false, error: 'unreadIds 存在不合法的会话 ID' };
+      }
+      dedup.add(id);
+    }
+    unreadIds = Array.from(dedup);
+  }
+  const approvalRaw = payload.approvalCount !== undefined ? payload.approvalCount : payload.approval;
+  if (approvalRaw !== undefined && (typeof approvalRaw !== 'number' || !Number.isFinite(approvalRaw) || approvalRaw < 0)) {
+    return { ok: false, error: 'approvalCount 必须为非负有限数字' };
+  }
+  if (payload.highRisk !== undefined && typeof payload.highRisk !== 'boolean') {
+    return { ok: false, error: 'highRisk 字段必须为布尔值' };
+  }
+  if (payload.running !== undefined && typeof payload.running !== 'boolean') {
+    return { ok: false, error: 'running 字段必须为布尔值' };
+  }
+  if (payload.locale !== undefined && (typeof payload.locale !== 'string' || payload.locale.trim().length > 32)) {
+    return { ok: false, error: 'locale 字段必须为长度不超过 32 的字符串' };
+  }
+  const data = {
+    windowId,
+    offline: false,
+    unreadCount: unreadRaw ?? 0,
+    approvalCount: approvalRaw ?? 0,
+    highRisk: Boolean(payload.highRisk),
+    running: Boolean(payload.running),
+    locale: typeof payload.locale === 'string' && payload.locale.trim() ? payload.locale.trim() : 'zh-CN'
+  };
+  if (unreadIds !== undefined) {
+    data.unreadIds = unreadIds;
+  }
+  return {
+    ok: true,
+    data
+  };
+}
+
 async function startEmbeddedLiveBridge(options = {}) {
   let currentOrigin = String(
     options.origin ||
@@ -502,6 +593,18 @@ async function startEmbeddedLiveBridge(options = {}) {
   const stamp = options.stampPath || path.join(getStateDir(), '.live-session.json');
   const writeStamp = options.writeStamp !== false;
   let remoteHandle = null;
+  let dockBadge = null;
+  if (options.disableDockBadge !== true) {
+    try {
+      const initialUiPrefs = getPluginSettings()?.uiPreferences || {};
+      dockBadge = createMacosDockBadgeManager({
+        uiPreferences: initialUiPrefs,
+        ...(options.dockBadgeOptions && typeof options.dockBadgeOptions === 'object' ? options.dockBadgeOptions : {})
+      });
+    } catch (e) {
+      console.error('Dock badge manager startup skipped:', e?.message || e);
+    }
+  }
   let serverPort = 0;
 
   const persistStamp = () => {
@@ -577,6 +680,9 @@ async function startEmbeddedLiveBridge(options = {}) {
         }
         if (req.url === '/save-settings') {
           const result = savePluginSettings(request);
+          if (result?.uiPreferences) {
+            dockBadge?.applyPreferences?.(result.uiPreferences);
+          }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
@@ -892,7 +998,7 @@ async function startEmbeddedLiveBridge(options = {}) {
         if (req.url === '/remote-info') {
           if (mobileRemoteDisabled) {
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ ok: false, disabled: true, error: '已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用手机远程监听' }));
+            res.end(JSON.stringify({ ok: false, disabled: true, error: '手机远程功能当前已被启动配置关闭；如需使用，请移除禁用项后重启 Antigravity' }));
             return;
           }
           const tunnelStatus = remoteHandle?.ensureTunnelRunning
@@ -909,7 +1015,7 @@ async function startEmbeddedLiveBridge(options = {}) {
         if (req.url === '/remote-tunnel') {
           res.setHeader('Content-Type', 'application/json');
           if (mobileRemoteDisabled) {
-            res.end(JSON.stringify({ ok: false, disabled: true, error: '已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用手机远程监听' }));
+            res.end(JSON.stringify({ ok: false, disabled: true, error: '手机远程功能当前已被启动配置关闭；如需使用，请移除禁用项后重启 Antigravity' }));
             return;
           }
           if (!remoteHandle?.configureTunnel) {
@@ -927,7 +1033,7 @@ async function startEmbeddedLiveBridge(options = {}) {
               res.end(JSON.stringify({ ok: true, data: buildRemoteInfo({ resetToken: false }) }));
               return;
             }
-            res.end(JSON.stringify({ ok: false, error: '远程服务尚未就绪' }));
+            res.end(JSON.stringify({ ok: false, error: '手机远程服务正在启动中，请稍等几秒后点击「刷新状态」重试' }));
             return;
           }
           await remoteHandle.configureTunnel(request || {});
@@ -965,6 +1071,79 @@ async function startEmbeddedLiveBridge(options = {}) {
           }
           return;
         }
+        if (req.url === '/dock-state') {
+          const check = validateDockStatePayload(request);
+          if (!check.ok) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: check.error }));
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          if (!dockBadge) {
+            res.end(JSON.stringify({ ok: true, disabled: true }));
+            return;
+          }
+          const result = dockBadge.updateWindowState(check.data);
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/dock-badge-status') {
+          if (!request || typeof request !== 'object' || Array.isArray(request)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: '请求体必须为 JSON 对象' }));
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          if (!dockBadge) {
+            res.end(JSON.stringify({ ok: true, supported: process.platform === 'darwin', disabled: true, enabled: false }));
+            return;
+          }
+          res.end(JSON.stringify(dockBadge.getStatus()));
+          return;
+        }
+        if (req.url === '/dock-badge-test') {
+          if (!request || typeof request !== 'object' || Array.isArray(request)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: '请求体必须为 JSON 对象' }));
+            return;
+          }
+          if (request.durationMs !== undefined && (typeof request.durationMs !== 'number' || !Number.isFinite(request.durationMs) || request.durationMs <= 0)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'durationMs 必须为正数' }));
+            return;
+          }
+          if (request.locale !== undefined && (typeof request.locale !== 'string' || request.locale.trim().length > 32)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'locale 必须为长度不超过 32 的字符串' }));
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          if (!dockBadge) {
+            res.end(JSON.stringify({ ok: false, disabled: true, errorCode: 'NOT_READY', error: '当前后台服务尚未开启 Dock 图标提醒模块，请完全退出并重新打开 Antigravity 后重试' }));
+            return;
+          }
+          const result = await dockBadge.triggerTestPreview({
+            durationMs: request.durationMs,
+            locale: request.locale
+          });
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.url === '/dock-badge-open-ax') {
+          if (!request || typeof request !== 'object' || Array.isArray(request)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: '请求体必须为 JSON 对象' }));
+            return;
+          }
+          res.setHeader('Content-Type', 'application/json');
+          if (!dockBadge) {
+            res.end(JSON.stringify({ ok: false, disabled: true, errorCode: 'NOT_READY', error: '当前后台服务尚未开启 Dock 图标提醒模块，请完全退出并重新打开 Antigravity 后重试' }));
+            return;
+          }
+          const result = await dockBadge.openAccessibilitySettings();
+          res.end(JSON.stringify(result));
+          return;
+        }
         let scanOrigin = resolveOrigin();
         if (!scanOrigin) {
           const a = await connect();
@@ -975,7 +1154,15 @@ async function startEmbeddedLiveBridge(options = {}) {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ ok: true, data }));
       }
-      catch (e) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: false, error: e.message })); }
+      catch (e) {
+        console.error('[live-host] request error:', e);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          ok: false,
+          error: '本地服务处理失败（已有数据不受影响），请稍后重试或重启 Antigravity',
+          errorDetail: String(e?.message || e || '')
+        }));
+      }
     });
   });
 
@@ -1017,6 +1204,8 @@ async function startEmbeddedLiveBridge(options = {}) {
   const stop = async (opts = {}) => {
     const rh = remoteHandle;
     remoteHandle = null;
+    const db = dockBadge;
+    dockBadge = null;
     if (writeStamp && !opts.preserveStamp) {
       try {
         if (fs.existsSync(stamp)) {
@@ -1029,6 +1218,7 @@ async function startEmbeddedLiveBridge(options = {}) {
     }
     try { server.close(); } catch {}
     try { await rh?.stop?.(); } catch {}
+    try { await db?.stop?.(); } catch {}
   };
 
   return {

@@ -102,6 +102,8 @@ async function ensureLiveBridgeIfNeeded(options = {}) {
   const backendModules = [
     'live-host.js',
     'mobile-remote.js',
+    'macos-dock-badge.js',
+    'scripts/macos-dock-overlay.swift',
     'local-api.js',
     'meter-collector.js',
     'meter-cli-launcher.js',

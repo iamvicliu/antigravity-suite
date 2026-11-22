@@ -507,11 +507,16 @@
         };
     }
 
-    // 获取当前页面同源 CSRF Token (支持 __APP_CONFIG__ 与网络嗅探回退)
+    // 获取当前页面同源 CSRF Token (支持 __APP_CONFIG__、v2.34+ agy_session_csrf_token 与网络嗅探回退)
     function getCsrfToken() {
         try {
-            if (window.__APP_CONFIG__ && window.__APP_CONFIG__.csrfToken) {
-                return window.__APP_CONFIG__.csrfToken;
+            const direct = window.__APP_CONFIG__ && window.__APP_CONFIG__.csrfToken;
+            if (direct) {
+                return direct;
+            }
+            const ls = localStorage.getItem('agy_session_csrf_token');
+            if (ls) {
+                return String(ls).trim();
             }
         } catch (e) {}
         return sniffedCsrfToken || '';
@@ -2343,7 +2348,7 @@
             ) {
                 return true;
             }
-            if (Boolean(window.__APP_CONFIG__ && window.__APP_CONFIG__.csrfToken)) {
+            if (Boolean((window.__APP_CONFIG__ && window.__APP_CONFIG__.csrfToken) || localStorage.getItem('agy_session_csrf_token'))) {
                 return true;
             }
             if (
