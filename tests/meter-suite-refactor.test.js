@@ -23149,48 +23149,60 @@ test('消除 UTF-8 跨分片截断、isolated Markdown 合并、多段历史轮�
   assert.equal(noAnchorThinkMerged.length, 4);
   assert.equal(noAnchorThinkMerged[1].text, histReplyA, '无用户锚点回退即使 u2 后仅有纯思考卡，也绝不能跨过 u2 覆写历史 A');
 
-  // 3h. DOM 已出现新用户轮次 u2 而轨迹尚停留在 [u1, ...] 时，Pass 1 与 Pass 2 均不得凭全局 busy 改写旧轮历史正文
-  const domAheadMultiMerged = mergeTrajectoryAndDomMessages(
-    [
-      { id: 't-u-1', role: 'user', text: '第一轮提问' },
-      { id: 't-a-1', role: 'assistant', text: '第一段。' },
-      { id: 't-a-2', role: 'assistant', text: '第二段历史正文' }
-    ],
-    [
-      { id: 'u-1', role: 'user', text: '第一轮提问' },
-      { id: 'a-1', role: 'assistant', text: '第一段。第二段历史正文，旧轮异常增量' },
-      { id: 'u-2', role: 'user', text: '第二轮新消息' },
-      { id: 'a-2', role: 'assistant', text: '第二轮正在流式回复中' }
-    ],
-    { busy: true }
-  );
-  assert.equal(domAheadMultiMerged[1].text, '第一段。', 'DOM 已进入新轮 u2 时轨迹第一段应保持原样');
-  assert.equal(domAheadMultiMerged[2].text, '第二段历史正文', 'DOM 已进入新轮 u2 时 Pass 2 不得凭全局 busy 覆写旧轮第二段');
-  assert.ok(
-    domAheadMultiMerged.some((m) => m.role === 'user' && m.text === '第二轮新消息'),
-    'DOM 新用户轮次 u2 应完整补入尾部'
-  );
-  assert.ok(
-    domAheadMultiMerged.some((m) => m.role === 'assistant' && m.text === '第二轮正在流式回复中'),
-    'DOM 新用户轮次下的流式新回复应完整保留'
-  );
+  // 3h. DOM 已出现新用户轮次 u2 而轨迹尚停留在 [u1, ...] 时，Pass 1 与 Pass 2 均保持历史正文原样、对已覆盖的 A+增量 / A+B+增量 去重（不追加重复气泡）并各保留一次新用户与新回复
+  for (const busyFlag of [true, false]) {
+    const domAheadMultiMerged = mergeTrajectoryAndDomMessages(
+      [
+        { id: 't-u-1', role: 'user', text: '第一轮提问' },
+        { id: 't-a-1', role: 'assistant', text: '第一段。' },
+        { id: 't-a-2', role: 'assistant', text: '第二段历史正文' }
+      ],
+      [
+        { id: 'u-1', role: 'user', text: '第一轮提问' },
+        { id: 'a-1', role: 'assistant', text: '第一段。第二段历史正文，旧轮异常增量', thoughtText: '旧轮聚合思考' },
+        { id: 'u-2', role: 'user', text: '第二轮新消息' },
+        { id: 'a-2', role: 'assistant', text: '第二轮正在流式回复中' }
+      ],
+      { busy: busyFlag }
+    );
+    assert.deepEqual(
+      domAheadMultiMerged.map((m) => ({ role: m.role, text: m.text })),
+      [
+        { role: 'user', text: '第一轮提问' },
+        { role: 'assistant', text: '第一段。' },
+        { role: 'assistant', text: '第二段历史正文' },
+        { role: 'user', text: '第二轮新消息' },
+        { role: 'assistant', text: '第二轮正在流式回复中' }
+      ],
+      `busy=${busyFlag} 时多段旧轮 A+B+增量 必须去重且保持 A/B 原文，同时完整保留新用户与新回复各一次`
+    );
+    assert.equal(domAheadMultiMerged[2].thoughtText, '旧轮聚合思考', `busy=${busyFlag} 时已覆盖旧轮容器应仅合并思考元数据`);
 
-  const domAheadSingleMerged = mergeTrajectoryAndDomMessages(
-    [
-      { id: 't-u-1', role: 'user', text: '第一轮提问' },
-      { id: 't-a-1', role: 'assistant', text: '第一轮已定稿回复' }
-    ],
-    [
-      { id: 'u-1', role: 'user', text: '第一轮提问' },
-      { id: 'a-1', role: 'assistant', text: '第一轮已定稿回复，旧轮不应覆写' },
-      { id: 'u-2', role: 'user', text: '第二轮新问题' },
-      { id: 'a-2', role: 'assistant', text: '第二轮新回复' }
-    ],
-    { busy: true }
-  );
-  assert.equal(domAheadSingleMerged[1].text, '第一轮已定稿回复', 'DOM 已存在后续用户轮 u2 时单条历史回复必须保持原样');
-  assert.equal(domAheadSingleMerged[domAheadSingleMerged.length - 2].text, '第二轮新问题');
-  assert.equal(domAheadSingleMerged[domAheadSingleMerged.length - 1].text, '第二轮新回复');
+    const domAheadSingleMerged = mergeTrajectoryAndDomMessages(
+      [
+        { id: 't-u-1', role: 'user', text: '第一轮提问' },
+        { id: 't-a-1', role: 'assistant', text: '第一轮已定稿回复' }
+      ],
+      [
+        { id: 'u-1', role: 'user', text: '第一轮提问' },
+        { id: 'a-1', role: 'assistant', text: '第一轮已定稿回复，旧轮不应覆写', thoughtText: '旧轮单段思考' },
+        { id: 'u-2', role: 'user', text: '第二轮新问题' },
+        { id: 'a-2', role: 'assistant', text: '第二轮新回复' }
+      ],
+      { busy: busyFlag }
+    );
+    assert.deepEqual(
+      domAheadSingleMerged.map((m) => ({ role: m.role, text: m.text })),
+      [
+        { role: 'user', text: '第一轮提问' },
+        { role: 'assistant', text: '第一轮已定稿回复' },
+        { role: 'user', text: '第二轮新问题' },
+        { role: 'assistant', text: '第二轮新回复' }
+      ],
+      `busy=${busyFlag} 时单段旧轮 A+增量 必须去重且保持原文，同时完整保留新用户与新回复各一次`
+    );
+    assert.equal(domAheadSingleMerged[1].thoughtText, '旧轮单段思考', `busy=${busyFlag} 时单段旧轮应仅合并思考元数据`);
+  }
 
   // 4. ag-enhancer-overlay.js collectRecentMessages 过滤步骤进度子树并保留同容器/普通无 markdown-root 正文
   const envStep = createDomEnv();

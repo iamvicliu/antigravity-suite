@@ -4747,6 +4747,7 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
   if (longer.startsWith(shorter) && (
     shorter.length >= 10 ||
     (options.busy && shorter.length >= 4) ||
+    (options.allowCoveredPrefix && dClean.startsWith(tClean) && tClean.length >= 4) ||
     (shorter.length >= 6 && (shorter.length / longer.length) >= 0.6)
   )) {
     return 2;
@@ -4922,7 +4923,7 @@ function buildCompactDomIndex(rawText) {
   return { raw, compact, rawStartOffsets };
 }
 
-function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, allowBusyTail = false) {
+function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, allowBusyTail = false, allowCoveredTail = false) {
   if (!Array.isArray(baseEntries) || baseEntries.length < 2) return null;
   const textEntries = baseEntries.filter((entry) => {
     const item = entry?.item;
@@ -4954,13 +4955,15 @@ function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, all
     return { matched, target: matched[matched.length - 1], streamingTailText: '' };
   }
   const lastEntry = textEntries[textEntries.length - 1];
-  if (allowBusyTail && matched.length >= 2 && matched[matched.length - 1] === lastEntry && pos < dClean.length) {
+  if ((allowBusyTail || allowCoveredTail) && matched.length >= 2 && matched[matched.length - 1] === lastEntry && pos < dClean.length) {
     const bkLast = stripTrailingEllipsis(
       baseOverwrittenByDom?.has(lastEntry.item) ? compactDomKey(lastEntry.item.text) : compactBaseKey(lastEntry.item.text)
     );
     if (bkLast.length >= 4 || pos >= 4) {
       const rawSliceStart = rawStartOffsets[lastStartPos];
-      const streamingTailText = Number.isInteger(rawSliceStart) ? raw.slice(rawSliceStart).trim() : '';
+      const streamingTailText = allowBusyTail && Number.isInteger(rawSliceStart)
+        ? raw.slice(rawSliceStart).trim()
+        : '';
       return { matched, target: lastEntry, streamingTailText };
     }
   }
@@ -5014,7 +5017,7 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
       const baseAsEntries = bAsst.map((item) => ({ item }));
       for (const dm of dAsst) {
         if (isMarkdownSourcedIncoming(dm, options)) continue;
-        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, isActiveTail)) {
+        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, isActiveTail, true)) {
           return 1;
         }
       }
@@ -5185,6 +5188,16 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     if (!domIndices.length || !baseIndices.length) return;
     const allowBusyOverwrite = Boolean(options.busy && poolOpts.isActiveTailTurn);
     const minStreamableBaseIdx = Number.isInteger(poolOpts.minStreamableBaseIdx) ? poolOpts.minStreamableBaseIdx : 0;
+    let lastTextBiInPool = -1;
+    for (let idx = baseIndices.length - 1; idx >= 0; idx--) {
+      const bi = baseIndices[idx];
+      const item = baseList[bi];
+      const hasTextKey = item && (baseOverwrittenByDom.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text));
+      if (hasTextKey) {
+        lastTextBiInPool = bi;
+        break;
+      }
+    }
     let lastStreamableBi = -1;
     for (let idx = baseIndices.length - 1; idx >= 0; idx--) {
       const bi = baseIndices[idx];
@@ -5212,6 +5225,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
             const matchTarget = baseList[bi];
             const tier = classifyAssistantMatch(matchTarget.text, dm.text, {
               busy: allowBusyOverwrite && bi === lastStreamableBi,
+              allowCoveredPrefix: Boolean(poolOpts.singleTurn && !poolOpts.isActiveTailTurn && !domIsMd && bi === lastTextBiInPool),
               baseIsDom: baseOverwrittenByDom.has(matchTarget),
               domIsMarkdown: domIsMd
             });
@@ -5258,7 +5272,13 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           if (consumedDomIndices.has(di)) continue;
           const dm = domList[di];
           if (isMarkdownSourcedIncoming(dm, options)) continue;
-          const hit = matchConcatenatedTurnDom(dm.text, concatPool, baseOverwrittenByDom, canBusyConcat);
+          const hit = matchConcatenatedTurnDom(
+            dm.text,
+            concatPool,
+            baseOverwrittenByDom,
+            canBusyConcat,
+            canBusyConcat || Boolean(poolOpts.singleTurn)
+          );
           if (hit) {
             consumedDomIndices.add(di);
             applyConcatenatedTurnHit(hit, dm);
@@ -5400,7 +5420,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           (e) => e.fromBase && e.item?.role === 'assistant' && Boolean(normMsgPrefix(e.item.text))
         );
         if (baseAsstEntries.length >= 2) {
-          const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, allowPass2Busy);
+          const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, allowPass2Busy, true);
           if (concatHit) {
             applyConcatenatedTurnHit(concatHit, dm);
             continue;
@@ -5422,6 +5442,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
             const allowEntryBusy = allowPass2Busy && (!entry.fromBase || lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn);
             return classifyAssistantMatch(entry.item.text, dm.text, {
               busy: allowEntryBusy,
+              allowCoveredPrefix: Boolean(!isDomActiveTailTurn && entry.fromBase && !dmIsMd && (lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn)),
               exactOnly,
               baseIsDom,
               domIsMarkdown: dmIsMd
