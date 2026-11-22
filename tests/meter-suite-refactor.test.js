@@ -22101,9 +22101,21 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
   assert.equal(normPlainMatchText('| 字段 | 说明 |\n| :--- | ---: |\n| `id` | 唯一键 |\n---\n\\*单独星号 与 \\# 转义'), '字段 说明 id 唯一键 *单独星号 与 # 转义');
   assert.equal(
     normPlainMatchText('使用 \\*通配符\\* 和 \\# 标记'),
-    normPlainMatchText('使用 *通配符* 和 # 标记'),
-    'Markdown 反斜杠转义与 DOM 渲染纯文本必须对称对齐'
+    '使用 *通配符* 和 # 标记',
+    'Markdown 反斜杠转义应还原为字面符号且不再被后续强调/标题剥离'
   );
+  const escSymMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '输出转义字符' },
+      { id: 't-a-1', role: 'assistant', text: '使用 \\*通配符\\* 和 \\# 标记' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '输出转义字符' },
+      { id: 'a-1', role: 'assistant', text: '使用 *通配符* 和 # 标记' }
+    ],
+    { busy: false }
+  );
+  assert.equal(escSymMerged.length, 2, 'Markdown 反斜杠转义与 DOM 渲染纯文本必须对称去重');
 
   // 2. 前 32 字含各类 Markdown 语法 + 多块无空格 DOM 拼接（collectBoundedNodeText 实况）：只保留服务端渲染版，0 个 dom-tail
   const mdCases = [
@@ -22165,11 +22177,11 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
   assert.equal(equalBusy[1].text, streamTraj[1].text, '同等纯文本长度时不得覆盖轨迹原文与 .md-file-link HTML');
   assert.ok(equalBusy[1].html.includes('md-file-link'));
 
-  // 4. 长文头部失配（如 DOM 含代码语言头 / Callout 标签）通过全包含与中尾部多切片去重；仅末尾礼貌用语相同的两条长回复不得误合并
+  // 4. 长文头部单侧多出 UI 装饰（如 DOM 含 Alert/语言/Copy 标签）通过 Tier 1 全包含去重；仅末尾礼貌用语相同的两条长回复不得误合并
   const bodyCore = '第一步检查连接配置，第二步校验工作区路径白名单，第三步执行全量回归测试并验证服务端日志输出完全正常，第四步热刷新确认界面渲染正确。';
   const longTraj = [
     { id: 't-u-0', role: 'user', text: '给个长文报告' },
-    { id: 't-a-1', role: 'assistant', text: `**完整报告**\n\n\`\`\`javascript\nconst checked = true;\n\`\`\`\n\n${bodyCore}` }
+    { id: 't-a-1', role: 'assistant', text: `> [!IMPORTANT]\n\n\`\`\`javascript\nconst checked = true;\n\`\`\`\n\n${bodyCore}` }
   ];
   const longHeadMismatchDom = [
     { id: 'u-0', role: 'user', text: '给个长文报告' },
@@ -22513,4 +22525,96 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
   assert.equal(pass2MetaMerged[1].highRisk, true);
   assert.equal(pass2MetaMerged[1].riskText, '危险操作');
   assert.deepEqual(pass2MetaMerged[1].thoughts, ['思考1', '思考2']);
+
+  // 16. 保护代码字面量（行内代码、围栏代码块与 DOM 纯文本非对称对齐，const s = "**x**"; 不与 const s = "x"; 碰撞）
+  assert.equal(normPlainMatchText('`const s = "**x**";`'), 'const s = "**x**";');
+  assert.equal(normPlainMatchText('```js\nconst s = "**x**";\n```'), 'const s = "**x**";');
+  assert.notEqual(normPlainMatchText('`const s = "**x**";`'), normPlainMatchText('`const s = "x";`'));
+  assert.equal(normPlainMatchText('`const s = "**x**";` 和 **重点**'), 'const s = "**x**"; 和 重点');
+
+  const inlineCodeLitMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '示例字符串常量' },
+      { id: 't-a-1', role: 'assistant', text: '`const s = "**x**";`' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '示例字符串常量' },
+      { id: 'a-1', role: 'assistant', text: 'const s = "**x**";' },
+      { id: 'a-2', role: 'assistant', text: 'const s = "x";' }
+    ],
+    { busy: false }
+  );
+  assert.equal(inlineCodeLitMerged.length, 3, '行内代码字面量 const s = "**x**"; 与 DOM 对齐去重后不得吞并 const s = "x";');
+  assert.equal(inlineCodeLitMerged[1].text, '`const s = "**x**";`');
+  assert.equal(inlineCodeLitMerged[2].text, 'const s = "x";');
+
+  const fencedCodeLitMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '围栏代码字面量' },
+      { id: 't-a-1', role: 'assistant', text: '```js\nconst s = "**x**";\n```' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '围栏代码字面量' },
+      { id: 'a-1', role: 'assistant', text: 'const s = "**x**";' },
+      { id: 'a-2', role: 'assistant', text: 'const s = "x";' }
+    ],
+    { busy: false }
+  );
+  assert.equal(fencedCodeLitMerged.length, 3, '围栏代码块 const s = "**x**"; 与 DOM 对齐去重后亦必须保留 const s = "x";');
+  assert.equal(fencedCodeLitMerged[1].text, '```js\nconst s = "**x**";\n```');
+  assert.equal(fencedCodeLitMerged[2].text, 'const s = "x";');
+
+  const domCodeLitMerged = mergeTrajectoryAndDomMessages(
+    [{ id: 't-u-0', role: 'user', text: '仅 DOM 两条代码字面量' }],
+    [
+      { id: 'u-0', role: 'user', text: '仅 DOM 两条代码字面量' },
+      { id: 'a-1', role: 'assistant', text: 'const s = "**x**";' },
+      { id: 'a-2', role: 'assistant', text: 'const s = "x";' }
+    ],
+    { busy: false }
+  );
+  assert.equal(domCodeLitMerged.length, 3, 'DOM 侧纯文本不做强调剥离，两条代码回复均须保留');
+
+  // 17. 收紧 Tier 1：双边存在实质不同前缀（部署成功 vs 部署失败）+ 共享超长尾部时不得误合并
+  const sharedObserveS = '请保留当前日志并继续观察系统运行状态。'.repeat(3);
+  const deployOk = `部署成功。${sharedObserveS}`;
+  const deployFail = `部署失败。${sharedObserveS}`;
+  const deployMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '汇报部署状态' },
+      { id: 't-a-1', role: 'assistant', text: deployOk }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '汇报部署状态' },
+      { id: 'a-1', role: 'assistant', text: deployFail }
+    ],
+    { busy: false }
+  );
+  assert.equal(deployMerged.length, 3, '双方头部存在实质不同前缀（部署成功 vs 部署失败）时不得因共享长尾误合并');
+  assert.equal(deployMerged[1].text, deployOk);
+  assert.equal(deployMerged[2].text, deployFail);
+
+  // 18. 修正锚点评分：历史跨度不得压倒回复匹配证据（滑动窗口反例应返回全部 10 条）
+  const slideEvidenceTraj = [
+    { id: 't-u-0', role: 'user', text: '继续' },
+    { id: 't-a-0', role: 'assistant', text: '甲结果' },
+    { id: 't-u-1', role: 'user', text: '继续' },
+    { id: 't-a-1', role: 'assistant', text: '乙结果' },
+    { id: 't-u-2', role: 'user', text: '继续' },
+    { id: 't-a-2', role: 'assistant', text: '丙结果' }
+  ];
+  const slideEvidenceDom = [
+    { id: 'd-u-2', role: 'user', text: '继续' },
+    { id: 'd-a-2', role: 'assistant', text: '丙结果' },
+    { id: 'd-u-3', role: 'user', text: '继续' },
+    { id: 'd-a-3', role: 'assistant', text: '丁结果' },
+    { id: 'd-u-4', role: 'user', text: '继续' },
+    { id: 'd-a-4', role: 'assistant', text: '戊结果' }
+  ];
+  const slideEvidenceMerged = mergeTrajectoryAndDomMessages(slideEvidenceTraj, slideEvidenceDom, { busy: false });
+  assert.equal(slideEvidenceMerged.length, 10, '回复匹配证据必须严格优先于重复提问的历史跨度，应返回全部 10 条');
+  assert.deepEqual(
+    slideEvidenceMerged.map((m) => m.text),
+    ['继续', '甲结果', '继续', '乙结果', '继续', '丙结果', '继续', '丁结果', '继续', '戊结果']
+  );
 });

@@ -4526,10 +4526,9 @@ function normMsgPrefix(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
-function stripTablePipesAndDelims(text) {
+function stripTablePipesAndDelims(text, frozen, sentinel) {
   const TABLE_DELIM_RE = /^[ \t]*\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*:?-{3,}:?[ \t]*\|?[ \t]*$/;
   const SINGLE_COL_TABLE_DELIM_RE = /^[ \t]*\|[ \t]*:?-{3,}:?[ \t]*\|[ \t]*$/;
-  const HAS_UNESCAPED_PIPE_RE = /(?:^|[^\\])(?:\\\\)*\|/;
   const lines = String(text || '').split('\n');
   const isDelim = new Array(lines.length).fill(false);
   const isTableRow = new Array(lines.length).fill(false);
@@ -4537,21 +4536,34 @@ function stripTablePipesAndDelims(text) {
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (!TABLE_DELIM_RE.test(line) && !SINGLE_COL_TABLE_DELIM_RE.test(line)) continue;
-    if (!HAS_UNESCAPED_PIPE_RE.test(lines[i - 1])) continue;
+    if (!lines[i - 1].includes('|')) continue;
     isDelim[i] = true;
     isTableRow[i - 1] = true;
     for (let j = i + 1; j < lines.length; j++) {
       const row = lines[j];
-      if (!row.trim() || !HAS_UNESCAPED_PIPE_RE.test(row)) break;
+      if (!row.trim() || !row.includes('|')) break;
       isTableRow[j] = true;
     }
   }
+
+  const placeholderRe = (Array.isArray(frozen) && sentinel)
+    ? new RegExp(`${sentinel}(\\d+)${sentinel}`, 'g')
+    : null;
 
   for (let i = 0; i < lines.length; i++) {
     if (isDelim[i]) {
       lines[i] = '';
     } else if (isTableRow[i]) {
-      lines[i] = lines[i].replace(/(\\\\)|\\(\|)|\|/g, (m, dbl, esc) => (dbl ? dbl : (esc ? '\\|' : ' ')));
+      lines[i] = lines[i].replace(/\|/g, ' ');
+      if (placeholderRe) {
+        lines[i].replace(placeholderRe, (_m, idxStr) => {
+          const idx = Number(idxStr);
+          if (typeof frozen[idx] === 'string') {
+            frozen[idx] = frozen[idx].replace(/\\\|/g, '|');
+          }
+          return '';
+        });
+      }
     }
   }
   return lines.join('\n');
@@ -4562,13 +4574,67 @@ function normPlainMatchText(text) {
     .replace(/\r\n?/g, '\n')
     .replace(/[\u200b-\u200d\ufeff]/g, '');
   if (!s.trim()) return '';
-  s = s.replace(/^[ \t]*(?:`{3,}|~{3,})[^\n]*$/gm, '');
+
+  let sentinel = '\u0000';
+  while (s.includes(sentinel)) sentinel += '\u0001';
+  const frozen = [];
+  const freeze = (val) => {
+    const idx = frozen.length;
+    frozen.push(String(val));
+    return `${sentinel}${idx}${sentinel}`;
+  };
+
+  // 1. 冻结围栏代码块正文（支持流式未闭合围栏），避免内部被后续 Markdown 正则破坏
+  const rawLines = s.split('\n');
+  const fenceOut = [];
+  let inFence = null;
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    if (!inFence) {
+      const fm = line.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+      if (fm && (fm[1][0] !== '`' || !fm[2].includes('`'))) {
+        inFence = { ch: fm[1][0], len: fm[1].length, body: [] };
+        continue;
+      }
+      fenceOut.push(line);
+    } else {
+      const cm = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+      if (cm && cm[1][0] === inFence.ch && cm[1].length >= inFence.len) {
+        fenceOut.push(freeze(inFence.body.join('\n')));
+        inFence = null;
+      } else {
+        inFence.body.push(line);
+      }
+    }
+  }
+  if (inFence) {
+    fenceOut.push(freeze(inFence.body.join('\n')));
+  }
+  s = fenceOut.join('\n');
+
+  // 2. 冻结行内代码正文（兼容多反引号与文末流式未闭合反引号）
+  s = s.replace(/(?<![`\\])(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (_m, _ticks, inner) => {
+    let code = inner;
+    if (code.length >= 2 && code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) {
+      code = code.slice(1, -1);
+    }
+    return freeze(code);
+  });
+  s = s.replace(/(?<![`\\])(`+)(?!`)([^`\n]*)$/, (_m, _ticks, inner) => freeze(inner));
+
+  // 3. 剥离引用链接定义与引用/GitHub Alert 前缀
   s = s.replace(/^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$/gm, '');
   for (let i = 0; i < 2; i++) {
     s = s.replace(/^[ \t]*(?:>[ \t]*)+(?:\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*)?/gim, '');
   }
-  s = stripTablePipesAndDelims(s);
-  s = s.replace(/\\([\\`*_{}[\]()#+\-.!>|~$])/g, '$1');
+
+  // 4. 冻结 Markdown 反斜杠转义字符，防止还原后被链接/标题/强调规则误改写
+  s = s.replace(/\\([\\`*_{}[\]()#+\-.!>|~$])/g, (_m, ch) => freeze(ch));
+
+  // 5. 仅对确认 GFM 表格块剥离列竖线与对齐分隔行，保留代码/非表格竖线
+  s = stripTablePipesAndDelims(s, frozen, sentinel);
+
+  // 6. 仅对非冻结 Markdown 骨架执行常规语法剥离
   for (let i = 0; i < 3; i++) {
     const next = s.replace(
       /!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\((?:<[^>\n]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:"[^"]*"|'[^']*'))?\)/g,
@@ -4584,7 +4650,6 @@ function normPlainMatchText(text) {
   s = s.replace(/^[ \t]*#{1,6}[ \t]+/gm, '').replace(/[ \t]+#+[ \t]*$/gm, '');
   s = s.replace(/^[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '');
   s = s.replace(/^[ \t]*\[[ xX]\][ \t]+/gm, '');
-  s = s.replace(/`+/g, '');
   s = s.replace(/(^|[^\\\w)\]])\*\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*\*(?=$|[^\\\w(\[])/g, '$1$2');
   for (let i = 0; i < 2; i++) {
     s = s.replace(/(^|[^\\\w)\]])\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*(?=$|[^\\\w(\[])/g, '$1$2');
@@ -4602,7 +4667,19 @@ function normPlainMatchText(text) {
   for (let i = 0; i < 2; i++) {
     s = s.replace(/(^|[^\w])_(?!\s)((?:[^_\n]*?[^\s_])|[^_\s])_(?=$|[^\w])/g, '$1$2');
   }
+
+  // 7. 还原全部冻结代码与转义文本并折叠空白
+  const restoreRe = new RegExp(`${sentinel}(\\d+)${sentinel}`, 'g');
+  s = s.replace(restoreRe, (_m, idxStr) => frozen[Number(idxStr)] ?? '');
   return s.replace(/\s+/g, ' ').trim();
+}
+
+function normDomPlainText(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u200b-\u200d\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function stripUserMediaMarkers(text) {
@@ -4612,7 +4689,12 @@ function stripUserMediaMarkers(text) {
     .trim();
 }
 
-function compactMatchKey(text, options = {}) {
+function compactDomKey(text, options = {}) {
+  const raw = options.stripUserMediaSuffix ? stripUserMediaMarkers(text) : String(text || '');
+  return normDomPlainText(raw).replace(/\s+/g, '').toLowerCase();
+}
+
+function compactBaseKey(text, options = {}) {
   const raw = options.stripUserMediaSuffix ? stripUserMediaMarkers(text) : String(text || '');
   const compact = normPlainMatchText(raw).replace(/\s+/g, '').toLowerCase();
   if (compact) return compact;
@@ -4624,8 +4706,8 @@ function stripTrailingEllipsis(s) {
 }
 
 function classifyAssistantMatch(baseText, domText, options = {}) {
-  const tKey = compactMatchKey(baseText);
-  const dKey = compactMatchKey(domText);
+  const tKey = options.baseIsDom ? compactDomKey(baseText) : compactBaseKey(baseText);
+  const dKey = compactDomKey(domText);
   if (!tKey || !dKey) return 0;
 
   const tClean = stripTrailingEllipsis(tKey);
@@ -4647,50 +4729,13 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
     return 2;
   }
 
+  // Tier 1 仅允许单侧头部多出 UI 装饰（如 Alert/Copy 标签），另一侧头部精确零差异且尾部零失配
   if (shorter.length >= 24) {
-    const probeLen = shorter.length >= 48 ? 24 : 20;
-    const maxStart = shorter.length - probeLen;
-    const candidateStarts = Array.from(new Set([
-      0,
-      Math.floor(maxStart * 0.5),
-      maxStart
-    ]));
-    for (const seedStart of candidateStarts) {
-      const probe = shorter.slice(seedStart, seedStart + probeLen);
-      let searchFrom = 0;
-      for (let occ = 0; occ < 3; occ++) {
-        const hitPos = longer.indexOf(probe, searchFrom);
-        if (hitPos < 0) break;
-        searchFrom = hitPos + 1;
-        let startI = seedStart;
-        let startJ = hitPos;
-        while (startI > 0 && startJ > 0 && shorter[startI - 1] === longer[startJ - 1]) {
-          startI--;
-          startJ--;
-        }
-        let endI = seedStart + probeLen;
-        let endJ = hitPos + probeLen;
-        while (endI < shorter.length && endJ < longer.length && shorter[endI] === longer[endJ]) {
-          endI++;
-          endJ++;
-        }
-        const matchLen = endI - startI;
-        const headMin = Math.min(startI, startJ);
-        const headMax = Math.max(startI, startJ);
-        const tailMin = Math.min(shorter.length - endI, longer.length - endJ);
-        const tailMax = Math.max(shorter.length - endI, longer.length - endJ);
-        const shorterRatio = matchLen / shorter.length;
-        const longerRatio = matchLen / longer.length;
-        if (
-          matchLen >= 24 &&
-          shorterRatio >= 0.8 &&
-          headMin <= 12 &&
-          headMax <= 48 &&
-          tailMin === 0 &&
-          (Boolean(options.busy) || longerRatio >= 0.65 || tailMax <= 32)
-        ) {
-          return 1;
-        }
+    const hitPos = longer.indexOf(shorter);
+    if (hitPos > 0 && hitPos <= 48) {
+      const tailAfter = longer.length - (hitPos + shorter.length);
+      if (Boolean(options.busy) || (shorter.length / longer.length) >= 0.65 || tailAfter <= 32) {
+        return 1;
       }
     }
   }
@@ -4705,24 +4750,30 @@ function hasUserAttachmentOrMediaMarker(msg) {
   return /\[(?:附带\s*\d+\s*张图片|图片附件|图片\s*×\d+)\]/.test(String(msg.text || ''));
 }
 
-function isSameUserMessage(baseMsg, domMsg) {
+function isSameUserMessage(baseMsg, domMsg, options = {}) {
   if (!baseMsg || !domMsg) return false;
   const bStripped = stripUserMediaMarkers(baseMsg.text);
   const dStripped = stripUserMediaMarkers(domMsg.text);
-  const bKey = compactMatchKey(bStripped);
-  const dKey = compactMatchKey(dStripped);
-  if (bKey && dKey) {
-    if (bKey === dKey) return true;
+  const bRawKey = compactDomKey(bStripped);
+  const bMdKey = options.baseIsDom ? bRawKey : compactBaseKey(bStripped);
+  const dKey = compactDomKey(dStripped);
+  if ((bRawKey || bMdKey) && dKey) {
+    if (bRawKey === dKey || (!options.baseIsDom && bMdKey === dKey)) return true;
     const domRawTrimmed = String(domMsg.text || '').trim();
     if (domRawTrimmed.endsWith('…') || dStripped.endsWith('…')) {
       const dClean = stripTrailingEllipsis(dKey);
-      if (dClean.length >= 200 && bKey.length > dClean.length && bKey.startsWith(dClean)) {
+      if (
+        dClean.length >= 200 && (
+          (bRawKey.length > dClean.length && bRawKey.startsWith(dClean)) ||
+          (!options.baseIsDom && bMdKey.length > dClean.length && bMdKey.startsWith(dClean))
+        )
+      ) {
         return true;
       }
     }
     return false;
   }
-  if (!bKey && !dKey) {
+  if (!bRawKey && !bMdKey && !dKey) {
     return hasUserAttachmentOrMediaMarker(baseMsg) && hasUserAttachmentOrMediaMarker(domMsg);
   }
   return false;
@@ -4824,13 +4875,13 @@ function findUserAnchorStartIdx(baseList, domList, options = {}) {
   const K = domUserIndices.length;
   if (!M || !K) return -1;
 
-  const getTurnAssistants = (list, userIndices, pos) => {
+  const getTurnAssistants = (list, userIndices, pos, isDom) => {
     const start = userIndices[pos] + 1;
     const end = pos + 1 < userIndices.length ? userIndices[pos + 1] : list.length;
     const items = [];
     for (let i = start; i < end; i++) {
       const m = list[i];
-      if (m && m.role === 'assistant' && compactMatchKey(m.text)) {
+      if (m && m.role === 'assistant' && (isDom ? compactDomKey(m.text) : compactBaseKey(m.text))) {
         items.push(m);
       }
     }
@@ -4838,8 +4889,8 @@ function findUserAnchorStartIdx(baseList, domList, options = {}) {
   };
 
   const scoreTurnAssistants = (baseTurnPos, domTurnPos) => {
-    const bAsst = getTurnAssistants(baseList, baseUserIndices, baseTurnPos);
-    const dAsst = getTurnAssistants(domList, domUserIndices, domTurnPos);
+    const bAsst = getTurnAssistants(baseList, baseUserIndices, baseTurnPos, false);
+    const dAsst = getTurnAssistants(domList, domUserIndices, domTurnPos, true);
     if (!bAsst.length || !dAsst.length) return 0;
     for (const bm of bAsst) {
       for (const dm of dAsst) {
@@ -4869,17 +4920,22 @@ function findUserAnchorStartIdx(baseList, domList, options = {}) {
     }
     if (!allPrevMatch) continue;
     const userSpan = p + 1;
-    let assistantScore = 0;
+    let matchedAssistants = 0;
+    let mismatchedAssistants = 0;
     for (let offset = 0; offset <= p; offset++) {
-      assistantScore += scoreTurnAssistants(M - 1 - offset, p - offset);
+      const score = scoreTurnAssistants(M - 1 - offset, p - offset);
+      if (score > 0) matchedAssistants += 1;
+      else if (score < 0) mismatchedAssistants += 1;
     }
-    const totalScore = assistantScore + userSpan * 2;
-    candidates.push({ p, domIdx, userSpan, totalScore });
+    const netScore = matchedAssistants - mismatchedAssistants;
+    candidates.push({ p, domIdx, userSpan, matchedAssistants, mismatchedAssistants, netScore });
   }
 
   if (candidates.length) {
     candidates.sort((a, b) => (
-      (b.totalScore - a.totalScore) ||
+      (b.netScore - a.netScore) ||
+      (a.mismatchedAssistants - b.mismatchedAssistants) ||
+      (b.matchedAssistants - a.matchedAssistants) ||
       (b.userSpan - a.userSpan) ||
       (b.p - a.p)
     ));
@@ -4901,6 +4957,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       trajHasAuthoritativeThoughts.add(m);
     }
   }
+  const baseOverwrittenByDom = new WeakSet();
 
   const mergeDomMetaIntoTarget = (target, src) => {
     if (!target || !src || target === src) return;
@@ -4974,7 +5031,11 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         let bestTier = 0;
         for (const bi of baseDesc) {
           if (consumedBaseIndices.has(bi)) continue;
-          const tier = classifyAssistantMatch(baseList[bi].text, dm.text, { busy: Boolean(options.busy) });
+          const matchTarget = baseList[bi];
+          const tier = classifyAssistantMatch(matchTarget.text, dm.text, {
+            busy: Boolean(options.busy),
+            baseIsDom: baseOverwrittenByDom.has(matchTarget)
+          });
           if (tier >= minTier && tier > bestTier) {
             bestTier = tier;
             bestBi = bi;
@@ -4985,9 +5046,13 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           consumedDomIndices.add(di);
           consumedBaseIndices.add(bestBi);
           const matchTarget = baseList[bestBi];
-          if (options.busy && compactMatchKey(dm.text).length > compactMatchKey(matchTarget.text).length) {
+          const targetKeyLen = baseOverwrittenByDom.has(matchTarget)
+            ? compactDomKey(matchTarget.text).length
+            : compactBaseKey(matchTarget.text).length;
+          if (options.busy && compactDomKey(dm.text).length > targetKeyLen) {
             matchTarget.text = dm.text;
             matchTarget.html = dm.html || null;
+            baseOverwrittenByDom.add(matchTarget);
           }
           mergeDomMetaIntoTarget(matchTarget, dm);
         }
@@ -4999,8 +5064,13 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       const dm = domList[di];
       for (const bi of baseDesc) {
         if (!consumedBaseIndices.has(bi)) continue;
-        if (classifyAssistantMatch(baseList[bi].text, dm.text, { busy: Boolean(options.busy), exactOnly: true }) >= 3) {
-          mergeDomMetaIntoTarget(baseList[bi], dm);
+        const matchTarget = baseList[bi];
+        if (classifyAssistantMatch(matchTarget.text, dm.text, {
+          busy: Boolean(options.busy),
+          exactOnly: true,
+          baseIsDom: baseOverwrittenByDom.has(matchTarget)
+        }) >= 3) {
+          mergeDomMetaIntoTarget(matchTarget, dm);
           consumedDomIndices.add(di);
           break;
         }
@@ -5044,7 +5114,10 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       const dm = domList[j];
       const dHasText = Boolean(normMsgPrefix(dm.text));
       if (dm.role === 'user') {
-        const dupUser = currentTurnEntries.some((entry) => entry.item.role === 'user' && isSameUserMessage(entry.item, dm));
+        const dupUser = currentTurnEntries.some((entry) => (
+          entry.item.role === 'user' &&
+          isSameUserMessage(entry.item, dm, { baseIsDom: !entry.fromBase || baseOverwrittenByDom.has(entry.item) })
+        ));
         if (!dupUser) {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
@@ -5081,7 +5154,12 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         ? currentTurnEntries.find((entry) => {
             if (entry.item.role !== dm.role) return false;
             const exactOnly = !entry.fromBase || consumedBaseIndices.has(entry.baseIdx);
-            return classifyAssistantMatch(entry.item.text, dm.text, { busy: Boolean(options.busy), exactOnly }) > 0;
+            const baseIsDom = !entry.fromBase || baseOverwrittenByDom.has(entry.item);
+            return classifyAssistantMatch(entry.item.text, dm.text, {
+              busy: Boolean(options.busy),
+              exactOnly,
+              baseIsDom
+            }) > 0;
           })
         : null;
       if (dupEntry) {
