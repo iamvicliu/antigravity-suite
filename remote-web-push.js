@@ -79,10 +79,13 @@ function isBlockedPushHost(hostname) {
     if (isAllZeroPrefix && g[5] === 0 && g[6] === 0 && (g[7] === 0 || g[7] === 1)) return true; // ::/128, ::1/128
     if (isAllZeroPrefix && (g[5] === 0xffff || g[5] === 0)) return true;       // ::ffff:0:0/96 & IPv4-compatible
     if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0) return true; // 64:ff9b::/96 NAT64
+    if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0x0001) return true;     // 64:ff9b:1::/48 Local-Use NAT64
     if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true; // 100::/64 Discard-Only
+    if (g[0] === 0x2001 && g[1] === 0x0000) return true;                       // 2001::/32 Teredo
     if (g[0] === 0x2001 && g[1] === 0x0db8) return true;                       // 2001:db8::/32 Documentation
     if (g[0] === 0x2001 && g[1] === 0x0002 && g[2] === 0) return true;         // 2001:2::/48 Benchmarking
     if (g[0] === 0x2001 && g[1] === 0x0010) return true;                       // 2001:10::/28 ORCHID
+    if (g[0] === 0x2002) return true;                                          // 2002::/16 6to4
     if ((g[0] & 0xfe00) === 0xfc00) return true;                               // fc00::/7 Unique Local
     if ((g[0] & 0xffc0) === 0xfe80) return true;                               // fe80::/10 Link-Local
     if ((g[0] & 0xffc0) === 0xfec0) return true;                               // fec0::/10 Site-Local (deprecated)
@@ -101,6 +104,9 @@ async function resolveSafePushEndpoint(endpoint, options = {}) {
   }
   if (parsed.protocol !== 'https:') {
     return { ok: false, error: 'Web Push 订阅 endpoint 必须为 https:// 地址' };
+  }
+  if (parsed.port && parsed.port !== '443') {
+    return { ok: false, error: 'Web Push 订阅 endpoint 仅允许标准 443 HTTPS 端口' };
   }
   if (parsed.username || parsed.password || isBlockedPushHost(parsed.hostname)) {
     return { ok: false, error: '订阅 endpoint 主机不受允许' };
@@ -137,18 +143,29 @@ async function resolveSafePushEndpoint(endpoint, options = {}) {
 
 function postEncryptedPushPinned(parsedUrl, resolvedAddress, resolvedFamily, headers, body, timeoutMs = 8000) {
   return new Promise((resolve) => {
+    const effectiveTimeout = Math.max(500, Number(timeoutMs) || 8000);
     let settled = false;
+    let req = null;
+    let resRef = null;
+    const wallTimer = setTimeout(() => {
+      try { req?.destroy(new Error('Web Push request timeout')); } catch {}
+      finish({ ok: false, status: 0, expired: false, error: 'Web Push request timeout' });
+    }, effectiveTimeout);
+    if (typeof wallTimer.unref === 'function') wallTimer.unref();
     const finish = (val) => {
       if (settled) return;
       settled = true;
+      clearTimeout(wallTimer);
+      try { resRef?.destroy?.(); } catch {}
       resolve(val);
     };
-    const req = https.request({
+    req = https.request({
       protocol: parsedUrl.protocol,
       hostname: parsedUrl.hostname,
       port: parsedUrl.port ? Number(parsedUrl.port) : 443,
       path: `${parsedUrl.pathname || '/'}${parsedUrl.search || ''}`,
       method: 'POST',
+      agent: false,
       servername: parsedUrl.hostname,
       headers: {
         ...headers,
@@ -161,14 +178,23 @@ function postEncryptedPushPinned(parsedUrl, resolvedAddress, resolvedFamily, hea
           cb(null, resolvedAddress, resolvedFamily);
         }
       },
-      timeout: timeoutMs
+      timeout: effectiveTimeout
     }, (res) => {
-      res.resume();
+      resRef = res;
       const status = Number(res.statusCode || 0);
       if (status >= 300 && status < 400) {
+        res.destroy();
         finish({ ok: false, status, expired: false, error: `Web Push 拒绝重定向响应 (HTTP ${status})` });
         return;
       }
+      let respBytes = 0;
+      res.on('data', (chunk) => {
+        respBytes += chunk.length;
+        if (respBytes > 65536) {
+          res.destroy();
+        }
+      });
+      res.on('error', () => {});
       const ok = status >= 200 && status < 300;
       const expired = status === 404 || status === 410;
       finish({ ok, status, expired });
@@ -182,6 +208,12 @@ function postEncryptedPushPinned(parsedUrl, resolvedAddress, resolvedFamily, hea
     req.end(body);
   });
 }
+
+const p256ValidationEcdh = (() => {
+  const e = crypto.createECDH('prime256v1');
+  e.generateKeys();
+  return e;
+})();
 
 function validatePushSubscription(sub) {
   if (!sub || typeof sub !== 'object') {
@@ -200,6 +232,9 @@ function validatePushSubscription(sub) {
   if (parsed.protocol !== 'https:') {
     return { ok: false, error: 'Web Push 订阅 endpoint 必须为 https:// 地址' };
   }
+  if (parsed.port && parsed.port !== '443') {
+    return { ok: false, error: 'Web Push 订阅 endpoint 仅允许标准 443 HTTPS 端口' };
+  }
   if (parsed.username || parsed.password || isBlockedPushHost(parsed.hostname)) {
     return { ok: false, error: '订阅 endpoint 主机不受允许' };
   }
@@ -209,6 +244,11 @@ function validatePushSubscription(sub) {
   const authBuf = b64urlDecode(authRaw);
   if (p256dhBuf.length !== 65 || p256dhBuf[0] !== 0x04) {
     return { ok: false, error: '订阅 keys.p256dh 必须为 65 字节未压缩 P-256 公钥' };
+  }
+  try {
+    p256ValidationEcdh.computeSecret(p256dhBuf);
+  } catch {
+    return { ok: false, error: '订阅 keys.p256dh 不是合法的 P-256 椭圆曲线公钥点' };
   }
   if (authBuf.length !== 16) {
     return { ok: false, error: '订阅 keys.auth 必须为 16 字节密钥' };
@@ -430,7 +470,7 @@ function createWebPushManager(options = {}) {
   function persistState(state) {
     const fp = getStateFilePath();
     fs.mkdirSync(path.dirname(fp), { recursive: true });
-    const tmp = `${fp}.${process.pid}.${Date.now()}.tmp`;
+    const tmp = `${fp}.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}.tmp`;
     try {
       fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
       ensureOwnerOnlyMode(tmp);
@@ -529,19 +569,25 @@ function createWebPushManager(options = {}) {
     if (!safeTarget.ok) {
       return { ok: false, status: 0, expired: false, error: safeTarget.error };
     }
-    const st = loadState();
-    const jsonStr = JSON.stringify(payloadObj || {});
-    const { body } = encryptWebPushPayload(jsonStr, sub);
-    const authHeader = createVapidAuthHeader(sub.endpoint, st.vapid, {
-      ttlSeconds: sendOpts.ttlSeconds || 3600
-    });
-    const reqHeaders = {
-      Authorization: authHeader,
-      'Content-Encoding': 'aes128gcm',
-      'Content-Type': 'application/octet-stream',
-      TTL: String(sendOpts.ttlSeconds || 3600),
-      Urgency: payloadObj?.type === 'waiting' ? 'high' : 'normal'
-    };
+    let body;
+    let reqHeaders;
+    try {
+      const st = loadState();
+      const jsonStr = JSON.stringify(payloadObj || {});
+      body = encryptWebPushPayload(jsonStr, sub).body;
+      const authHeader = createVapidAuthHeader(sub.endpoint, st.vapid, {
+        ttlSeconds: sendOpts.ttlSeconds || 3600
+      });
+      reqHeaders = {
+        Authorization: authHeader,
+        'Content-Encoding': 'aes128gcm',
+        'Content-Type': 'application/octet-stream',
+        TTL: String(sendOpts.ttlSeconds || 3600),
+        Urgency: payloadObj?.type === 'waiting' ? 'high' : 'normal'
+      };
+    } catch (err) {
+      return { ok: false, status: 0, expired: false, error: err?.message || 'encrypt_failed' };
+    }
 
     if (!customFetchImpl) {
       return postEncryptedPushPinned(
@@ -661,7 +707,11 @@ function createWebPushManager(options = {}) {
     }
 
     for (const id of prevStatusMap.keys()) {
-      if (!activeIds.has(id)) prevStatusMap.delete(id);
+      if (!activeIds.has(id)) {
+        prevStatusMap.delete(id);
+        lastEventSentAt.delete(`completed:${id}`);
+        lastEventSentAt.delete(`waiting:${id}`);
+      }
     }
 
     if (events.length > 0 && st.subscriptions.length > 0 && !options.disableAutoBroadcast) {

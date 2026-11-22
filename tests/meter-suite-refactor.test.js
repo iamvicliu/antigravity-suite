@@ -23879,3 +23879,137 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// PR #8 合并加固 (P0-1~P0-5 / P1) 与跨分支语义防护回归验证
+// =========================================================================
+test('PR #8 合并加固 (P0-1~P0-5 / P1): Tailscale Serve 护栏、Web Push 曲线点与异常隔离、流式压缩上限、mediaSig 与 Dock 切会话防护', async () => {
+  const crypto = require('node:crypto');
+  const remoteMod = require('../mobile-remote');
+  const pushMod = require('../remote-web-push');
+
+  // 1. P0-1 & P0-2: ensureTailscaleServeHttps 支持空端口回退、443 占用保护与 readOnly 无副作用
+  const tsCalls = [];
+  const conflictRes = remoteMod.ensureTailscaleServeHttps(0, {
+    execFileSync: (_bin, args) => {
+      tsCalls.push(args);
+      if (args[0] === 'status') {
+        return JSON.stringify({
+          Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
+          CertDomains: ['mini-lamp.tailab4819.ts.net']
+        });
+      }
+      if (args[0] === 'serve' && args[1] === 'status') {
+        return JSON.stringify({
+          Web: { 'mini-lamp.tailab4819.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } }
+        });
+      }
+      return '';
+    }
+  });
+  assert.equal(conflictRes.enabled, false, '443 已被其他端口占用时不得覆盖');
+  assert.equal(conflictRes.conflict, true);
+  assert.ok(!tsCalls.some((a) => a[0] === 'serve' && a[1] === '--bg'), '检测到其他服务占用 443 时绝不能执行 tailscale serve --bg');
+
+  const readOnlyCalls = [];
+  const roRes = remoteMod.ensureTailscaleServeHttps(0, {
+    readOnly: true,
+    execFileSync: (_bin, args) => {
+      readOnlyCalls.push(args);
+      if (args[0] === 'status') {
+        return JSON.stringify({
+          Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
+          CertDomains: ['mini-lamp.tailab4819.ts.net']
+        });
+      }
+      if (args[0] === 'serve' && args[1] === 'status') {
+        return JSON.stringify({ Web: {} });
+      }
+      return '';
+    }
+  });
+  assert.equal(roRes.enabled, false);
+  assert.ok(!readOnlyCalls.some((a) => a[0] === 'serve' && a[1] === '--bg'), 'readOnly 探测模式绝不能写入 tailscale serve');
+
+  // 2. P0-3 & P1: validatePushSubscription 拒绝非法 P-256 点与非 443 端口；单条坏订阅不拖垮全局广播
+  const zeroPoint = Buffer.concat([Buffer.from([0x04]), Buffer.alloc(64, 0)]).toString('base64url');
+  const validAuth = crypto.randomBytes(16).toString('base64url');
+  const invalidCurveCheck = pushMod.validatePushSubscription({
+    endpoint: 'https://fcm.googleapis.com/fcm/send/invalid-curve',
+    keys: { p256dh: zeroPoint, auth: validAuth }
+  });
+  assert.equal(invalidCurveCheck.ok, false, '必须拒绝非法的全零 P-256 公钥点');
+
+  const ecdhOk = crypto.createECDH('prime256v1');
+  ecdhOk.generateKeys();
+  const validPub = ecdhOk.getPublicKey(null, 'uncompressed').toString('base64url');
+  const badPortCheck = pushMod.validatePushSubscription({
+    endpoint: 'https://fcm.googleapis.com:8443/fcm/send/non-443',
+    keys: { p256dh: validPub, auth: validAuth }
+  });
+  assert.equal(badPortCheck.ok, false, '必须拒绝非标准 443 HTTPS 端口的 Push 订阅');
+
+  const tmpPushDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-push-p03-'));
+  try {
+    const stateFile = path.join(tmpPushDir, 'push-state.json');
+    const initMgr = pushMod.createWebPushManager({ getStateFilePath: () => stateFile });
+    const vapidInfo = initMgr.getPublicInfo();
+    // 人工注入一条损坏公钥的陈旧持久化订阅 + 一条健康订阅
+    fs.writeFileSync(stateFile, JSON.stringify({
+      vapid: JSON.parse(fs.readFileSync(stateFile, 'utf8')).vapid,
+      prefs: { enabled: true, notifyCompleted: true, notifyWaiting: true },
+      subscriptions: [
+        { endpoint: 'https://fcm.googleapis.com/fcm/send/bad-sub', keys: { p256dh: zeroPoint, auth: validAuth }, createdAt: 1 },
+        { endpoint: 'https://fcm.googleapis.com/fcm/send/good-sub', keys: { p256dh: validPub, auth: validAuth }, createdAt: 2 }
+      ]
+    }), { mode: 0o600 });
+
+    const deliveredEndpoints = [];
+    const mixMgr = pushMod.createWebPushManager({
+      getStateFilePath: () => stateFile,
+      dnsLookup: async () => [{ address: '142.250.190.10', family: 4 }],
+      fetchImpl: async (ep) => {
+        deliveredEndpoints.push(ep);
+        return { ok: true, status: 201 };
+      }
+    });
+    assert.equal(mixMgr.getPublicInfo().publicKey, vapidInfo.publicKey);
+    const mixRes = await mixMgr.broadcast({ type: 'completed', title: '测试隔离', body: 'ok' });
+    assert.equal(mixRes.sent, 1, 'loadState 剔除非法曲线点订阅后，健康订阅仍正常广播成功');
+    assert.equal(mixRes.failed, 0);
+    assert.deepEqual(deliveredEndpoints, ['https://fcm.googleapis.com/fcm/send/good-sub']);
+
+    // 再测试加密阶段抛 RangeError (>4079B) 时 sendToSubscription 安全捕获而不 reject broadcast
+    const bigRes = await mixMgr.broadcast({ type: 'completed', title: '超限载荷', body: 'a'.repeat(5000) });
+    assert.equal(bigRes.ok, false);
+    assert.equal(bigRes.failed, 1);
+    assert.ok(bigRes.results?.[0]?.res?.error);
+  } finally {
+    fs.rmSync(tmpPushDir, { recursive: true, force: true });
+  }
+
+  // 3. P0-4 & P1: local-api 流式首帧含压缩膨胀上限与按位 EndStream 判定
+  const localApiSrc = fs.readFileSync(path.join(ROOT, 'local-api.js'), 'utf8');
+  assert.ok(localApiSrc.includes('maxOutputLength'), 'local-api.js gunzipSync 必须限制 maxOutputLength 防止压缩炸弹');
+  assert.ok(localApiSrc.includes('(flags & 2) !== 0'), 'local-api.js 必须按位识别 EndStream 帧 (flags & 2)');
+
+  // 4. P0-5: buildQueuedStepMediaSig 必须区分两个同名 (image.png) 但路径或内容不同的附件
+  const sigA = remoteMod.buildQueuedStepMediaSig({
+    media: [{ fileUri: 'file:///tmp/dir-a/image.png', mimeType: 'image/png' }]
+  });
+  const sigB = remoteMod.buildQueuedStepMediaSig({
+    media: [{ fileUri: 'file:///tmp/dir-b/image.png', mimeType: 'image/png' }]
+  });
+  const sigInline1 = remoteMod.buildQueuedStepMediaSig({
+    images: [{ displayName: 'image.png', inlineData: 'AAAA' }]
+  });
+  const sigInline2 = remoteMod.buildQueuedStepMediaSig({
+    images: [{ displayName: 'image.png', inlineData: 'BBBB' }]
+  });
+  assert.notEqual(sigA, sigB, 'buildQueuedStepMediaSig 必须区分不同路径的同名文件');
+  assert.notEqual(sigInline1, sigInline2, 'buildQueuedStepMediaSig 必须区分不同内容的内联同名图片');
+
+  // 5. P1-1: ag-enhancer-overlay.js 远程后台切会话期间保护 Dock 未读追踪不被误重置
+  const freshEnhancer = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  assert.ok(freshEnhancer.includes('mobileBgSwitchDepth'), 'ag-enhancer-overlay.js 应使用 mobileBgSwitchDepth 保护后台切会话期间的 Dock 未读追踪');
+});
