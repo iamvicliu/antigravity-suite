@@ -4077,12 +4077,21 @@ function isQueuedTrajectoryUserStep(step) {
     || step.metadata?.queued === true;
 }
 
+function buildQueuedStepMediaSig(uiObj) {
+  return extractRawMediaEntriesFromUserInput(uiObj)
+    .map((e) => String(e?.dedupKey || e?.uri || e?.name || '').trim())
+    .filter(Boolean)
+    .sort()
+    .join('|');
+}
+
 function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) {
   const queued = [];
   const seenKey = new Set();
   const pushQueued = (stepIndex, ui) => {
     const text = formatTrajectoryUserInput(ui);
     const atts = extractTrajectoryUserAttachments(ui);
+    const mediaSig = buildQueuedStepMediaSig(ui);
     const images = atts
       .filter((a) => a.kind === 'image' && (a.inlineUrl || a.path))
       .map((a) => ({
@@ -4090,7 +4099,7 @@ function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) 
         alt: a.name || (a.path ? path.basename(a.path) : '图片')
       }));
     if (!text && !images.length) return;
-    const key = `${stepIndex}|${text}`;
+    const key = `${stepIndex}|${text}|${mediaSig}`;
     if (seenKey.has(key)) return;
     seenKey.add(key);
     queued.push({
@@ -4098,6 +4107,7 @@ function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) 
       text,
       ...(images.length ? { images } : {}),
       ...(atts.length > 0 ? { hasMedia: true } : {}),
+      ...(mediaSig ? { mediaSig } : {}),
       status: 'queued'
     });
   };
@@ -15088,11 +15098,6 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             uiObj?.client_message_id ||
             ''
           ).trim();
-          const buildQueuedStepMediaSig = (uiObj) => extractRawMediaEntriesFromUserInput(uiObj)
-            .map((e) => String(e?.dedupKey || e?.uri || e?.name || '').trim())
-            .filter(Boolean)
-            .sort()
-            .join('|');
           const hasStepIdentityContinuity = (prevMeta, curMeta) => {
             if (!prevMeta || !curMeta) return false;
             if (Number(curMeta.sameFpCount || 0) !== 1 || Number(prevMeta.preSameFpCount || 0) !== 1) return false;
@@ -15101,11 +15106,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             if (curMeta.stepIndex < prevMeta.originalStepIndex && curMeta.totalSteps >= prevMeta.preTotalSteps) return false;
             const prevTok = String(prevMeta.stepIdentityToken || '').trim();
             const curTok = String(curMeta.stepIdentityToken || '').trim();
-            if (prevTok || curTok) {
-              return Boolean(prevTok && curTok && prevTok === curTok);
-            }
-            // 无步骤级唯一标识时：仅当前序项删除导致左移（索引减小且总步数减少）才具备连续性证据；同索引同长度无法区分队列替换
-            return curMeta.stepIndex < prevMeta.originalStepIndex && curMeta.totalSteps < prevMeta.preTotalSteps;
+            // 必须具备可验证的步骤级唯一身份标识且严格一致，才能证明身份连续性；无稳定标识时仅凭索引/步数减小无法排除队列替换，一律拒绝
+            return Boolean(prevTok && curTok && prevTok === curTok);
           };
           const verifyStepIndexTargetIdentity = (targetUi, matchedQ, reqPayload) => {
             const rawReqText = typeof reqPayload?.text === 'string' ? reqPayload.text : '';
@@ -15791,12 +15793,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               if (dText) itemText = dText;
               itemHasMedia = itemHasMedia || extractTrajectoryUserAttachments(targetUi).length > 0;
             }
-            const liveTextNorm = stripDisplayMediaSuffixFromQueuedText(itemText, true).replace(/\s+/g, ' ').trim();
-            if (reqTextNorm && liveTextNorm && reqTextNorm !== liveTextNorm) {
+            const sendIdCheck = verifyStepIndexTargetIdentity(targetUi, matchedQ, payload);
+            if (!sendIdCheck.ok) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                 ok: false,
                 outcomeUnknown: true,
-                error: '目标排队步骤内容已变化（索引可能已被其他消息占用），已取消操作以防误删或重复发送'
+                error: sendIdCheck.error
               }));
               return;
             }
