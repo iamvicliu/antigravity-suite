@@ -19741,7 +19741,20 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     attachDomNodes.set('attach-hint', mockHint);
     attachDomNodes.set('btn-send', mockBtnSend);
     attachDomNodes.set('queue-dock', mockQDock);
-    const editUiResponses = [rMediaEditOk, rTrajImgOnly];
+    const rUnknownPreservedMock = {
+      ok: false,
+      outcomeUnknown: true,
+      attachmentsPreserved: true,
+      error: '删除原排队消息响应超时且无法确认原项状态，已保留恢复的文本与附件以避免丢失',
+      actionResult: {
+        ok: false,
+        outcomeUnknown: true,
+        attachmentsPreserved: true,
+        editedText: '带图撤回编辑说明',
+        editedAttachments: [{ name: 'inline-shot.png', mimeType: 'image/png', size: 128, isImage: true, previewUrl: inlinePngUrl }]
+      }
+    };
+    const editUiResponses = [rMediaEditOk, rTrajImgOnly, rUnknownPreservedMock, rMediaEditOk];
     let editRespPtr = 0;
     const queueEditSandbox = {
       $: (id) => attachDomNodes.get(id) || null,
@@ -19756,6 +19769,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
       SEND_ARROW_SVG: 'send',
       uploadedNames: [],
       uploadedAttachments: [],
+      restoredQueueEditTextKeys: new Set(),
       saveDraftForConv() {},
       isDesktopLayout: () => false,
       openMediaLightbox() {},
@@ -19786,6 +19800,23 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     await vmEditBtns[1].onclick();
     assert.equal(mockTa.value, '', '纯图片撤回编辑时输入框不得被填充 [图片附件]');
     assert.equal(mockBtnSend.disabled, false, '恢复图片附件后即使输入框无文字发送按钮也必须启用');
+
+    // 前端“删除与核验结果未知 → 用户期间修改文本 → 重试成功”回归：文本与附件均只恢复一次，且保留用户编辑
+    mockTa.value = '';
+    queueEditSandbox.uploadedNames.length = 0;
+    queueEditSandbox.uploadedAttachments.length = 0;
+    await vmEditBtns[0].onclick();
+    assert.equal(mockTa.value, '带图撤回编辑说明', '首次结果未知时应先恢复一次文本');
+    assert.equal(queueEditSandbox.uploadedAttachments.length, 1, '首次结果未知时应先恢复一份附件');
+    mockTa.value = '带图撤回编辑说明（用户期间补充修改）';
+    await vmEditBtns[0].onclick();
+    assert.equal(
+      mockTa.value,
+      '带图撤回编辑说明（用户期间补充修改）',
+      '重试成功时绝不可再次追加重复文本，必须完整保留用户期间编辑'
+    );
+    assert.equal(queueEditSandbox.uploadedAttachments.length, 1, '重试成功时前端附件栏也必须只保留 1 份附件');
+    assert.deepEqual(queueEditSandbox.uploadedNames, ['inline-shot.png']);
 
     // 9e. classifyLanguageServerRpcError 严禁仅因错误正文出现 not_found / deprecated 便误判 HTTP 500 为已确认未执行
     assert.equal(
