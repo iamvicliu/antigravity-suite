@@ -4526,6 +4526,147 @@ function normMsgPrefix(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
+function normPlainMatchText(text) {
+  let s = String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u200b-\u200d\ufeff]/g, '');
+  if (!s.trim()) return '';
+  s = s.replace(/^[ \t]*(?:`{3,}|~{3,})[^\n]*$/gm, '');
+  s = s.replace(/^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$/gm, '');
+  s = s.replace(/\\([\\`*_{}[\]()#+\-.!>|~$])/g, '$1');
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(
+      /!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\((?:<[^>\n]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:"[^"]*"|'[^']*'))?\)/g,
+      '$1'
+    );
+    if (next === s) break;
+    s = next;
+  }
+  s = s.replace(/(?<![\w$])!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\[[^\]\n]*\]/g, '$1');
+  s = s.replace(/<(https?:\/\/[^>\s]+|file:\/\/[^>\s]+|mailto:[^>\s]+)>/gi, '$1');
+  s = s.replace(/<br\s*\/?>/gi, ' ');
+  s = s.replace(/^[ \t]*(?:={3,}|-{3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*$/gm, '');
+  s = s.replace(/^[ \t]*\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*:?-{3,}:?[ \t]*\|?[ \t]*$/gm, '');
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/^[ \t]*(?:>[ \t]*)+(?:\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*)?/gim, '');
+  }
+  s = s.replace(/^[ \t]*#{1,6}[ \t]+/gm, '').replace(/[ \t]+#+[ \t]*$/gm, '');
+  s = s.replace(/^[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '');
+  s = s.replace(/^[ \t]*\[[ xX]\][ \t]+/gm, '');
+  s = s.replace(/\|/g, ' ');
+  s = s.replace(/`+/g, '').replace(/\*\*/g, '').replace(/~~/g, '');
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/(^|[^\w])__([^_\n]+?)__(?=$|[^\w])/g, '$1$2');
+  }
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/(^|[^*\n])\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*(?!\*)/g, '$1$2');
+  }
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/(^|[^\w])_(?!\s)((?:[^_\n]*?[^\s_])|[^_\s])_(?=$|[^\w])/g, '$1$2');
+  }
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function stripUserMediaMarkers(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
+    .trim();
+}
+
+function compactMatchKey(text, options = {}) {
+  const raw = options.stripUserMediaSuffix ? stripUserMediaMarkers(text) : String(text || '');
+  const compact = normPlainMatchText(raw).replace(/\s+/g, '').toLowerCase();
+  if (compact) return compact;
+  return raw.replace(/\s+/g, '').toLowerCase();
+}
+
+function stripTrailingEllipsis(s) {
+  return String(s || '').replace(/(?:\.{3,}|…+)$/g, '');
+}
+
+function classifyAssistantMatch(baseText, domText, options = {}) {
+  const tKey = compactMatchKey(baseText);
+  const dKey = compactMatchKey(domText);
+  if (!tKey || !dKey) return 0;
+
+  const tClean = stripTrailingEllipsis(tKey);
+  const dClean = stripTrailingEllipsis(dKey);
+  if (!tClean || !dClean) return 0;
+
+  if (tKey === dKey || (tClean === dClean && Math.min(tClean.length, dClean.length) >= 8)) {
+    return 3;
+  }
+  if (options.exactOnly) return 0;
+
+  const minLen = Math.min(tClean.length, dClean.length);
+  const maxLen = Math.max(tClean.length, dClean.length);
+  const prefixLen = Math.min(32, minLen);
+  const prefixMatch = prefixLen > 0 && tClean.slice(0, prefixLen) === dClean.slice(0, prefixLen);
+  if (prefixMatch && (
+    minLen >= 10 ||
+    (options.busy && minLen >= 4) ||
+    (minLen >= 6 && (minLen / maxLen) >= 0.6)
+  )) {
+    return 2;
+  }
+
+  const shorter = tClean.length <= dClean.length ? tClean : dClean;
+  const longer = tClean.length <= dClean.length ? dClean : tClean;
+  if (shorter.length >= 20 && longer.includes(shorter)) {
+    return 1;
+  }
+  if (shorter.length >= 40) {
+    const probeLen = shorter.length < 72 ? 24 : 28;
+    const maxStart = shorter.length - probeLen;
+    if (maxStart >= 16) {
+      const starts = [
+        Math.floor(maxStart * 0.25),
+        Math.floor(maxStart * 0.6),
+        maxStart
+      ];
+      const hits = [];
+      for (const st of starts) {
+        const probe = shorter.slice(st, st + probeLen);
+        const pos = longer.indexOf(probe);
+        if (pos >= 0) hits.push({ st, pos });
+      }
+      for (let a = 0; a < hits.length; a++) {
+        for (let b = a + 1; b < hits.length; b++) {
+          if (hits[b].st - hits[a].st >= 8 && hits[b].pos > hits[a].pos) {
+            return 1;
+          }
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+function hasUserAttachmentOrMediaMarker(msg) {
+  if (!msg || typeof msg !== 'object') return false;
+  if (Array.isArray(msg.attachments) && msg.attachments.length > 0) return true;
+  if (Array.isArray(msg.images) && msg.images.length > 0) return true;
+  if (msg.hasMedia) return true;
+  return /\[(?:附带\s*\d+\s*张图片|图片附件|图片\s*×\d+)\]/.test(String(msg.text || ''));
+}
+
+function isSameUserMessage(baseMsg, domMsg) {
+  if (!baseMsg || !domMsg) return false;
+  const bStripped = stripUserMediaMarkers(baseMsg.text);
+  const dStripped = stripUserMediaMarkers(domMsg.text);
+  const bKey = compactMatchKey(bStripped);
+  const dKey = compactMatchKey(dStripped);
+  if (bKey && dKey) {
+    if (bKey === dKey) return true;
+    return classifyAssistantMatch(bStripped, dStripped, { busy: false }) > 0;
+  }
+  if (!bKey && !dKey) {
+    return hasUserAttachmentOrMediaMarker(baseMsg) && hasUserAttachmentOrMediaMarker(domMsg);
+  }
+  return false;
+}
+
 function collapseConsecutiveDomThinking(domMessages) {
   const raw = Array.isArray(domMessages) ? domMessages.filter(Boolean) : [];
   const out = [];
@@ -4616,78 +4757,138 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     return domList.map((m, idx) => ({ ...m, msgIndex: idx }));
   }
 
-  for (const dm of domList) {
-    if (dm.role !== 'assistant') continue;
-    const dSig = normMsgPrefix(dm.text);
-    const matchTarget = baseList
-      .slice(-8)
-      .reverse()
-      .find((tm) => tm.role === 'assistant' && dSig && normMsgPrefix(tm.text) && (
-        normMsgPrefix(tm.text).startsWith(dSig.slice(0, 32)) || dSig.startsWith(normMsgPrefix(tm.text).slice(0, 32))
-      ));
-    if (matchTarget) {
-      if (dm.highRisk) {
-        matchTarget.highRisk = true;
-        matchTarget.riskText = dm.riskText || matchTarget.riskText || '';
-      }
-      if (options.busy && String(dm.text || '').length > String(matchTarget.text || '').length) {
-        matchTarget.text = dm.text;
-        matchTarget.html = dm.html || null;
-      }
-      if (!matchTarget.thoughtText && dm.thoughtText) {
-        matchTarget.thoughtLabel = dm.thoughtLabel || '思考过程';
-        matchTarget.thoughtText = dm.thoughtText;
-        if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
-          matchTarget.thoughts = dm.thoughts.slice();
-          matchTarget.thoughtCount = dm.thoughts.length;
-        }
+  const attachThoughtsIfMissing = (target, src) => {
+    if (!target.thoughtText && src.thoughtText) {
+      target.thoughtLabel = src.thoughtLabel || '思考过程';
+      target.thoughtText = src.thoughtText;
+      if (Array.isArray(src.thoughts) && src.thoughts.length) {
+        target.thoughts = src.thoughts.slice();
+        target.thoughtCount = src.thoughts.length;
       }
     }
-  }
+  };
 
-  // 如果桌面 DOM 末尾刚发送/流式生成了轨迹接口尚未索引的最新消息，无损补入尾部
+  // 先定位轨迹最后一条用户消息及其在桌面 DOM 中的锚点位置，隔离历史轮与当前轮
   let lastBaseUserIdx = -1;
-  let lastBaseUserSig = '';
   for (let i = baseList.length - 1; i >= 0; i--) {
     if (baseList[i].role === 'user') {
       lastBaseUserIdx = i;
-      lastBaseUserSig = normMsgPrefix(baseList[i].text);
       break;
     }
   }
   let startAppendIdx = -1;
-  for (let i = domList.length - 1; i >= 0; i--) {
-    if (domList[i].role === 'user' && lastBaseUserSig && normMsgPrefix(domList[i].text) === lastBaseUserSig) {
-      startAppendIdx = i + 1;
-      break;
+  if (lastBaseUserIdx >= 0) {
+    const anchorUser = baseList[lastBaseUserIdx];
+    for (let i = domList.length - 1; i >= 0; i--) {
+      if (domList[i].role === 'user' && isSameUserMessage(anchorUser, domList[i])) {
+        startAppendIdx = i + 1;
+        break;
+      }
     }
   }
+
+  let currentDomTurnEnd = domList.length;
   if (startAppendIdx >= 0) {
-    let currentTurnMsgs = baseList.slice(Math.max(0, lastBaseUserIdx + 1));
     for (let j = startAppendIdx; j < domList.length; j++) {
+      if (domList[j].role === 'user') {
+        currentDomTurnEnd = j;
+        break;
+      }
+    }
+  }
+
+  const consumedDomIndices = new Set();
+  const consumedBaseIndices = new Set();
+
+  const matchAndMergePool = (domIndices, baseIndices) => {
+    if (!domIndices.length || !baseIndices.length) return;
+    const domDesc = domIndices.slice().reverse();
+    const baseDesc = baseIndices.slice().reverse();
+    for (const minTier of [3, 2, 1]) {
+      for (const di of domDesc) {
+        if (consumedDomIndices.has(di)) continue;
+        const dm = domList[di];
+        let bestBi = -1;
+        let bestTier = 0;
+        for (const bi of baseDesc) {
+          if (consumedBaseIndices.has(bi)) continue;
+          const tier = classifyAssistantMatch(baseList[bi].text, dm.text, { busy: Boolean(options.busy) });
+          if (tier >= minTier && tier > bestTier) {
+            bestTier = tier;
+            bestBi = bi;
+            if (tier === 3) break;
+          }
+        }
+        if (bestBi >= 0) {
+          consumedDomIndices.add(di);
+          consumedBaseIndices.add(bestBi);
+          const matchTarget = baseList[bestBi];
+          if (dm.highRisk) {
+            matchTarget.highRisk = true;
+            matchTarget.riskText = dm.riskText || matchTarget.riskText || '';
+          }
+          if (options.busy && compactMatchKey(dm.text).length > compactMatchKey(matchTarget.text).length) {
+            matchTarget.text = dm.text;
+            matchTarget.html = dm.html || null;
+          }
+          attachThoughtsIfMissing(matchTarget, dm);
+        }
+      }
+    }
+  };
+
+  const collectAssistantIndices = (list, from, to) => {
+    const ids = [];
+    for (let i = Math.max(0, from); i <= Math.min(list.length - 1, to); i++) {
+      if (list[i]?.role === 'assistant') ids.push(i);
+    }
+    return ids;
+  };
+
+  if (startAppendIdx >= 0) {
+    matchAndMergePool(
+      collectAssistantIndices(domList, 0, startAppendIdx - 2),
+      collectAssistantIndices(baseList, Math.max(0, lastBaseUserIdx - 12), lastBaseUserIdx - 1)
+    );
+    matchAndMergePool(
+      collectAssistantIndices(domList, startAppendIdx, currentDomTurnEnd - 1),
+      collectAssistantIndices(baseList, lastBaseUserIdx + 1, baseList.length - 1)
+    );
+  } else {
+    matchAndMergePool(
+      collectAssistantIndices(domList, 0, domList.length - 1),
+      collectAssistantIndices(baseList, Math.max(0, baseList.length - 12), baseList.length - 1)
+    );
+  }
+
+  // 如果桌面 DOM 末尾刚发送/流式生成了轨迹接口尚未索引的最新消息，无损补入尾部
+  if (startAppendIdx >= 0) {
+    let currentTurnStartIdx = lastBaseUserIdx;
+    let currentTurnEntries = [];
+    for (let k = Math.max(0, lastBaseUserIdx + 1); k < baseList.length; k++) {
+      currentTurnEntries.push({ item: baseList[k], baseIdx: k });
+    }
+    for (let j = startAppendIdx; j < domList.length; j++) {
+      if (consumedDomIndices.has(j)) continue;
       const dm = domList[j];
-      const dSig = normMsgPrefix(dm.text);
+      const dHasText = Boolean(normMsgPrefix(dm.text));
       if (dm.role === 'user') {
-        const dupUser = currentTurnMsgs.some((bm) => bm.role === 'user' && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
+        const dupUser = currentTurnEntries.some((entry) => entry.item.role === 'user' && isSameUserMessage(entry.item, dm));
         if (!dupUser) {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
           // 遇到新用户消息立即重置当前轮次范围，避免后续新轮思考被挂到旧轮回复
-          currentTurnMsgs = [];
+          currentTurnStartIdx = baseList.length - 1;
+          currentTurnEntries = [];
         }
         continue;
       }
-      if (dm.role === 'assistant' && !dSig && !dm.highRisk) {
+      if (dm.role === 'assistant' && !dHasText && !dm.highRisk) {
         // 纯思考项（空正文）：不得向本轮已有回复或思考卡尾部追加空壳 dom-tail
-        const lastTurnAssistant = [...currentTurnMsgs].reverse().find((bm) => bm.role === 'assistant');
+        const lastTurnAssistant = [...currentTurnEntries].reverse().map((e) => e.item).find((bm) => bm.role === 'assistant');
         if (lastTurnAssistant) {
           if (!lastTurnAssistant.thoughtText && dm.thoughtText) {
-            lastTurnAssistant.thoughtLabel = dm.thoughtLabel || '思考过程';
-            lastTurnAssistant.thoughtText = dm.thoughtText;
-            if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
-              lastTurnAssistant.thoughts = dm.thoughts.slice();
-              lastTurnAssistant.thoughtCount = dm.thoughts.length;
-            }
+            attachThoughtsIfMissing(lastTurnAssistant, dm);
           } else if (!normMsgPrefix(lastTurnAssistant.text) && dm.thoughtText && dm.thoughtText.length > String(lastTurnAssistant.thoughtText || '').length) {
             lastTurnAssistant.thoughtText = dm.thoughtText;
             if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
@@ -4701,15 +4902,21 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         if (dm.thoughtLabel || dm.thoughtText) {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          currentTurnMsgs.push(item);
+          currentTurnEntries.push({ item, baseIdx: baseList.length - 1 });
         }
         continue;
       }
-      const dup = currentTurnMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
+      const dup = dHasText
+        ? currentTurnEntries.some((entry) => {
+            if (entry.item.role !== dm.role) return false;
+            const exactOnly = consumedBaseIndices.has(entry.baseIdx);
+            return classifyAssistantMatch(entry.item.text, dm.text, { busy: Boolean(options.busy), exactOnly }) > 0;
+          })
+        : false;
       if (!dup) {
         // 流式纯思考卡转正文交接：若本轮末尾是无正文纯思考卡，合并其思考到新回复并移除临时卡
-        const pendingThinkIdx = (dm.role === 'assistant' && dSig)
-          ? baseList.findIndex((bm, idx) => idx > lastBaseUserIdx && bm.role === 'assistant' && !normMsgPrefix(bm.text) && !bm.highRisk && (bm.thoughtLabel || bm.thoughtText))
+        const pendingThinkIdx = (dm.role === 'assistant' && dHasText)
+          ? baseList.findIndex((bm, idx) => idx > currentTurnStartIdx && bm.role === 'assistant' && !normMsgPrefix(bm.text) && !bm.highRisk && (bm.thoughtLabel || bm.thoughtText))
           : -1;
         if (pendingThinkIdx >= 0) {
           const prevThink = baseList[pendingThinkIdx];
@@ -4731,17 +4938,17 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
             ...(combinedThoughts.length ? { thoughts: combinedThoughts, thoughtCount: combinedThoughts.length } : {})
           };
           baseList.splice(pendingThinkIdx, 1, promoted);
-          const turnPos = currentTurnMsgs.indexOf(prevThink);
-          if (turnPos >= 0) currentTurnMsgs.splice(turnPos, 1, promoted);
-          else currentTurnMsgs.push(promoted);
+          const turnPos = currentTurnEntries.findIndex((e) => e.baseIdx === pendingThinkIdx || e.item === prevThink);
+          if (turnPos >= 0) currentTurnEntries.splice(turnPos, 1, { item: promoted, baseIdx: pendingThinkIdx });
+          else currentTurnEntries.push({ item: promoted, baseIdx: pendingThinkIdx });
         } else {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          currentTurnMsgs.push(item);
+          currentTurnEntries.push({ item, baseIdx: baseList.length - 1 });
         }
       }
     }
-  } else if (!lastBaseUserSig && domList.length) {
+  } else if (lastBaseUserIdx < 0 && domList.length) {
     for (let j = 0; j < domList.length; j++) {
       const dm = domList[j];
       if (dm.role === 'user') baseList.push({ ...dm, id: `dom-tail-${j}` });
@@ -16959,6 +17166,7 @@ module.exports = {
   classifyLanguageServerRpcError,
   mergeUniqueQueuedLists,
   collapseConsecutiveDomThinking,
+  normPlainMatchText,
   mergeTrajectoryAndDomMessages,
   resolveProductionMediaAllowedRoots,
   resolveMediaAllowedRoots,
