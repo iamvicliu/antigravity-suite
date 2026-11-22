@@ -22731,3 +22731,310 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
   );
   assert.equal(pureChromeMerged.length, 2, '纯 UI 装饰前缀（Copy）且尾部零失配时仍正常去重');
 });
+
+test('消除 UTF-8 跨分片截断、isolated Markdown 合并、多段历史轮次及步骤容器导致的重复回复 (#47 续)', async () => {
+  const http = require('node:http');
+  const localApi = require('../local-api');
+  const {
+    mergeTrajectoryAndDomMessages,
+    createConversationHistoryManager
+  } = require('../mobile-remote');
+
+  // 1. local-api.js UTF-8 多字节跨分片缓冲拼接测试（不再按单包解码产生 \uFFFD）
+  const targetText = '旧对话会立刻恢复单份显示';
+  const utf8Payload = Buffer.from(JSON.stringify({ text: targetText }), 'utf8');
+  const liBytes = Buffer.from('立', 'utf8');
+  const splitAt = utf8Payload.indexOf(liBytes) + 1;
+  assert.ok(splitAt > 1 && splitAt < utf8Payload.length - 1, '应精确定位在“立”字 UTF-8 第 1/2 字节之间');
+  const chunkSrv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.write(utf8Payload.subarray(0, splitAt));
+      setTimeout(() => {
+        res.end(utf8Payload.subarray(splitAt));
+      }, 10);
+    });
+  });
+  await new Promise((r) => chunkSrv.listen(0, '127.0.0.1', r));
+  chunkSrv.unref?.();
+  try {
+    const port = chunkSrv.address().port;
+    const rawRes = await localApi.request(`http://127.0.0.1:${port}/GetCascadeTrajectory`, { cascadeId: 'c1' }, 'csrf-ok');
+    assert.ok(!rawRes.includes('\uFFFD'), 'Buffer 整包解码绝不得出现 UTF-8 替换字符 \\uFFFD');
+    assert.equal(JSON.parse(rawRes).text, targetText);
+  } finally {
+    await new Promise((r) => chunkSrv.close(r));
+  }
+
+  // 2. isolated: true / rpc-* 原始 Markdown 副本匹配去重
+  const richUser = '请查看 [todo.md](file:///Users/a/todo.md) 的 `P0` 事项';
+  const richMd = '### 结论\n\n> [!NOTE]\n> 已确认 **核心问题**，见 `mobile-remote.js` 与 [todo.md](file:///Users/a/todo.md#L10)。';
+  const isoFlagMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: richUser },
+      { id: 't-a-1', role: 'assistant', text: richMd }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: richUser },
+      { id: 'a-1', role: 'assistant', text: richMd }
+    ],
+    { busy: false, isolated: true }
+  );
+  assert.equal(isoFlagMerged.length, 2, 'isolated: true 携带原始 Markdown 副本时必须完全去重，不得生成 dom-tail-*');
+
+  const rpcIdMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: richUser },
+      { id: 't-a-1', role: 'assistant', text: richMd }
+    ],
+    [
+      { id: 'rpc-u-0', role: 'user', text: richUser },
+      { id: 'rpc-a-1', role: 'assistant', text: richMd }
+    ],
+    { busy: false }
+  );
+  assert.equal(rpcIdMerged.length, 2, '即便未显式传 isolated，rpc-* ID 亦应自动识别为 Markdown 源并完全去重');
+
+  // 2b. 4000 字整串切片在 Markdown 链接/强调正中央被截断时的匹配
+  const longPadding = '中文说明段落内容，'.repeat(443);
+  const longTrajUser = `${longPadding}见 [readme](file:///very/long/path/to/docs/README.md) 详情`;
+  const longRpcUser = longTrajUser.slice(0, 4000);
+  const longTrajReply = `${longPadding}结果见 [readme](file:///very/long/path/to/docs/README.md#L120) **完成**`;
+  const longRpcReply = longTrajReply.slice(0, 4000);
+  assert.ok(longTrajUser.length > 4000 && longTrajReply.length > 4000);
+  assert.ok(!longRpcUser.includes('README.md') && !longRpcReply.includes('README.md'), '4000 字切片应恰好在 Markdown 链接中间截断');
+  const longRpcMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: longTrajUser },
+      { id: 't-a-1', role: 'assistant', text: longTrajReply }
+    ],
+    [
+      { id: 'rpc-u-0', role: 'user', text: longRpcUser },
+      { id: 'rpc-a-1', role: 'assistant', text: longRpcReply }
+    ],
+    { busy: false, isolated: true }
+  );
+  assert.equal(longRpcMerged.length, 2, '4000 字截断恰好落在 Markdown 链接内部时，isolated/rpc 通道仍应精准判重');
+
+  // 2c. createConversationHistoryManager 持久化 domTailIsolated：后续 getMessagesPage 不传 isolated 仍不重复
+  const histMgr = createConversationHistoryManager();
+  const isoSnapInput = {
+    ok: true,
+    sessionId: 'iso-persist-conv',
+    isolated: true,
+    busy: false,
+    messages: [
+      { id: 'rpc-u-0', role: 'user', text: richUser },
+      { id: 'rpc-a-1', role: 'assistant', text: richMd }
+    ]
+  };
+  const mockLocalApiConnect = async () => ({
+    call: async (method) => {
+      if (method === 'GetCascadeTrajectory') {
+        return {
+          trajectory: {
+            steps: [
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: richUser }] } },
+              { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: richMd } }
+            ]
+          },
+          numTotalSteps: 2
+        };
+      }
+      return {};
+    },
+    callStreamFirstFrame: async () => null
+  });
+  const enrichedIso = await histMgr.enrichMessages(isoSnapInput, { localApiConnect: mockLocalApiConnect });
+  assert.equal(enrichedIso.totalMessages, 2, 'enrichMessages 隔离会话应去重返回 2 条');
+  const pageRes = await histMgr.getMessagesPage({
+    sessionId: 'iso-persist-conv',
+    bypassCache: true,
+    localApiConnect: mockLocalApiConnect
+  });
+  assert.equal(pageRes.totalMessages, 2, 'getMessagesPage 重合并缓存的 domTail 时应继承 domTailIsolated，不产生重复');
+  assert.ok(!pageRes.messages.some((m) => String(m.id || '').startsWith('dom-tail-')));
+
+  // 2d. rpc-e-* 瞬态重试错误若本轮已有/后续有正常回复应跳过；仅报错轮应保留
+  const supersededErrMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '执行任务' },
+      { id: 't-a-3', role: 'assistant', text: '**最终执行成功**，见 [log](file:///tmp/log.txt)。' }
+    ],
+    [
+      { id: 'rpc-u-0', role: 'user', text: '执行任务' },
+      { id: 'rpc-e-1', role: 'assistant', text: 'API error (attempt 1)', highRisk: true, riskText: '步骤异常' },
+      { id: 'rpc-a-3', role: 'assistant', text: '**最终执行成功**，见 [log](file:///tmp/log.txt)。' }
+    ],
+    { busy: false, isolated: true }
+  );
+  assert.equal(supersededErrMerged.length, 2, '已被正常回复替代的 rpc-e-* 重试报错不得追加成 dom-tail-*');
+
+  const onlyErrMerged = mergeTrajectoryAndDomMessages(
+    [{ id: 't-u-0', role: 'user', text: '执行任务' }],
+    [
+      { id: 'rpc-u-0', role: 'user', text: '执行任务' },
+      { id: 'rpc-e-1', role: 'assistant', text: 'API error (final failure)', highRisk: true, riskText: '步骤异常' }
+    ],
+    { busy: false, isolated: true }
+  );
+  assert.equal(onlyErrMerged.length, 2, '仅存在 rpc-e-* 失败而无成功回复时仍应保留错误提示');
+  assert.equal(onlyErrMerged[1].id, 'dom-tail-1');
+
+  // 2e. isolated: true 双向 Markdown 对称比较（代码字面量 "**x**" vs "x" 不碰撞，2100 字用户消息加后缀不误锚定，中间态后置 fatal rpc-e-* 不吞并）
+  const isoCodeNoCollide = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '比较两条代码' },
+      { id: 't-a-1', role: 'assistant', text: 'const s = "**x**";' }
+    ],
+    [
+      { id: 'rpc-u-0', role: 'user', text: '比较两条代码' },
+      { id: 'rpc-a-1', role: 'assistant', text: 'const s = "**x**";' },
+      { id: 'rpc-a-2', role: 'assistant', text: 'const s = "x";' }
+    ],
+    { busy: false, isolated: true }
+  );
+  assert.equal(isoCodeNoCollide.length, 3, 'isolated Markdown 双边比较时 const s = "**x**"; 与 const s = "x"; 不得碰撞吞并');
+
+  const u2100A = '请核查这段超长提示词的锚点对齐逻辑。'.repeat(117); // 2106 chars (< 3900)
+  const u2100B = `${u2100A}，并补充测试`;
+  assert.ok(u2100A.length >= 2000 && u2100A.length < 3900);
+  const isoUser2100NoMisanchor = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: u2100A },
+      { id: 't-a-1', role: 'assistant', text: '收到。' }
+    ],
+    [
+      { id: 'rpc-u-0', role: 'user', text: u2100A },
+      { id: 'rpc-a-1', role: 'assistant', text: '收到。' },
+      { id: 'rpc-u-2', role: 'user', text: u2100B },
+      { id: 'rpc-a-3', role: 'assistant', text: '收到。' }
+    ],
+    { busy: false, isolated: true }
+  );
+  assert.equal(isoUser2100NoMisanchor.length, 4, '2100 字用户消息加后缀不得触发 4000 字 RPC 截断前缀误锚定');
+
+  const postReplyFatalErrMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '分步执行' },
+      { id: 't-a-1', role: 'assistant', text: '第一阶段已完成。' }
+    ],
+    [
+      { id: 'rpc-u-0', role: 'user', text: '分步执行' },
+      { id: 'rpc-a-1', role: 'assistant', text: '第一阶段已完成。' },
+      { id: 'rpc-e-2', role: 'assistant', text: 'Fatal step error after intermediate reply', highRisk: true, riskText: '步骤异常' }
+    ],
+    { busy: false, isolated: true }
+  );
+  assert.equal(postReplyFatalErrMerged.length, 3, '中间回复之后才发生的 rpc-e-* 终态错误必须保留，不得被旧回复吞并');
+  assert.equal(postReplyFatalErrMerged[2].id, 'dom-tail-2');
+
+  // 3. 历史轮次多段回复 + 桌面单容器拼接防误覆盖与防吞并
+  const r1Hist = '已完成第一阶段排查，见 `a.js` 文件。';
+  const r2Hist = '中间轮询摘要已提交。';
+  const r3Hist = '已完成第二阶段回归验证（190/190 通过）。';
+  const domConcatHist = '已完成第一阶段排查，见 a.js 文件。已完成第二阶段回归验证（190/190 通过）。';
+  const histMultiMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '开始修复' },
+      { id: 't-a-1', role: 'assistant', text: r1Hist },
+      { id: 't-a-2', role: 'assistant', text: r2Hist },
+      { id: 't-a-3', role: 'assistant', text: r3Hist },
+      { id: 't-u-4', role: 'user', text: '第二轮继续检查' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '开始修复' },
+      { id: 'a-1', role: 'assistant', text: domConcatHist },
+      { id: 'u-2', role: 'user', text: '第二轮继续检查' }
+    ],
+    { busy: true }
+  );
+  assert.equal(histMultiMerged.length, 5, '第二轮 busy=true 时历史第一轮 3 条分段回复不得重复或丢失');
+  assert.equal(histMultiMerged[1].text, r1Hist, '已结束的历史轮次首条回复绝不得被桌面整轮拼接大块正文覆盖');
+  assert.equal(histMultiMerged[2].text, r2Hist);
+  assert.equal(histMultiMerged[3].text, r3Hist);
+
+  // 3b. 首段仅 2 字短回复 + 长回复在桌面 DOM 单容器拼接去重
+  const shortStartMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '确认执行' },
+      { id: 't-a-1', role: 'assistant', text: '好的' },
+      { id: 't-a-2', role: 'assistant', text: '已完成全部修改并通过全部自检工作。' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '确认执行' },
+      { id: 'a-1', role: 'assistant', text: '好的已完成全部修改并通过全部自检工作。' }
+    ],
+    { busy: false }
+  );
+  assert.equal(shortStartMerged.length, 3, '2 字短回复开头的单轮多段聚合 DOM 容器仍应准确判重不重复');
+
+  // 3c. 负向安全保护：前缀相同但续接完全不同内容不得误吞
+  for (const busyFlag of [false, true]) {
+    const negConcatMerged = mergeTrajectoryAndDomMessages(
+      [
+        { id: 't-u-0', role: 'user', text: '检查方案' },
+        { id: 't-a-1', role: 'assistant', text: '建议删除A' },
+        { id: 't-a-2', role: 'assistant', text: '建议删除B' }
+      ],
+      [
+        { id: 'u-0', role: 'user', text: '检查方案' },
+        { id: 'a-1', role: 'assistant', text: '建议删除A但是保留C' }
+      ],
+      { busy: busyFlag }
+    );
+    assert.equal(negConcatMerged.length, 4, `busy=${busyFlag} 时不同结论“建议删除A但是保留C”绝不得被多段拼接匹配误吞`);
+  }
+
+  // 3d. 流式态单回复末轮仍正常以更长 DOM 正文刷新
+  const activeStreamMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '开始执行' },
+      { id: 't-a-1', role: 'assistant', text: '好的，已收到\n\n正在检查' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '开始执行' },
+      { id: 'a-1', role: 'assistant', text: '好的，已收到正在检查并执行全量测试' }
+    ],
+    { busy: true }
+  );
+  assert.equal(activeStreamMerged.length, 2, '活跃末轮流式单回复应保持 2 条');
+  assert.equal(activeStreamMerged[1].text, '好的，已收到正在检查并执行全量测试', '活跃末轮流式单回复应以更长 DOM 文本更新');
+
+  // 4. ag-enhancer-overlay.js collectRecentMessages 过滤纯步骤进度列表节点，保留普通无 markdown-root 回退
+  const envStep = createDomEnv();
+  envStep.win.location = { pathname: '/c/step-prog-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/step-prog-1' };
+  envStep.sandbox.location = envStep.win.location;
+  envStep.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+  const stepOnlyResp = envStep.doc.createElement('div');
+  stepOnlyResp.setAttribute('data-testid', 'agent-response');
+  const stepListDiv = envStep.doc.createElement('div');
+  stepListDiv.setAttribute('data-step-list', 'true');
+  const workedBtn = envStep.doc.createElement('button');
+  workedBtn.setAttribute('data-testid', 'worked-for-collapsible');
+  workedBtn.textContent = 'Inspect live DOM 3m 19s';
+  stepListDiv.appendChild(workedBtn);
+  stepOnlyResp.appendChild(stepListDiv);
+  envStep.doc.body.appendChild(stepOnlyResp);
+  let enhStep = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envStep.sandbox);
+    vm.runInContext(ENHANCER_SRC, envStep.sandbox);
+    enhStep = envStep.sandbox.__AGEnhancer;
+    const stepOnlySnap = enhStep.getMobileSnapshot();
+    assert.equal(stepOnlySnap.messages.length, 0, '仅含 data-step-list/worked-for-collapsible 的运行进度节点不得回退成伪助手回复');
+
+    const plainResp = envStep.doc.createElement('div');
+    plainResp.setAttribute('data-testid', 'agent-response');
+    plainResp.textContent = 'Fallback plain reply';
+    envStep.doc.body.appendChild(plainResp);
+    const plainSnap = enhStep.getMobileSnapshot();
+    assert.equal(plainSnap.messages.length, 1, '不含步骤进度标记的普通纯文本 agent-response 仍应保留回退采集');
+    assert.equal(plainSnap.messages[0].text, 'Fallback plain reply');
+  } finally {
+    enhStep?.dispose?.();
+    envStep.sandbox.__AGContextMeter?.dispose?.();
+    envStep.cleanup?.();
+  }
+});

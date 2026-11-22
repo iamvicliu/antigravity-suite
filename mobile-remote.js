@@ -4712,9 +4712,25 @@ const DOM_UI_CHROME_TOKEN = '(?:'
   + ')';
 const DOM_UI_CHROME_PREFIX_RE = new RegExp(`^(?:${DOM_UI_CHROME_TOKEN}[:：·•\\-|]*)+$`);
 
+function isMarkdownSourcedIncoming(msg, options = {}) {
+  if (options.isolated || options.domIsMarkdown) return true;
+  const id = String(msg?.id || '');
+  return /^rpc-(?:u|a|e|think)-/.test(id);
+}
+
 function classifyAssistantMatch(baseText, domText, options = {}) {
-  const tKey = options.baseIsDom ? compactDomKey(baseText) : compactBaseKey(baseText);
-  const dKey = compactDomKey(domText);
+  if (options.domIsMarkdown && !options.baseIsDom) {
+    const rawBase = String(baseText || '').trim();
+    const rawDom = String(domText || '').trim();
+    if (rawBase && rawDom) {
+      if (rawBase === rawDom) return 3;
+      if (!options.exactOnly && String(domText || '').length >= 3900 && rawDom.length >= 3900 && rawBase.length > rawDom.length && rawBase.startsWith(rawDom)) {
+        return 3;
+      }
+    }
+  }
+  const tKey = (options.baseIsDom || options.domIsMarkdown) ? compactDomKey(baseText) : compactBaseKey(baseText);
+  const dKey = (options.baseIsDom && options.domIsMarkdown) ? compactBaseKey(domText) : compactDomKey(domText);
   if (!tKey || !dKey) return 0;
 
   const tClean = stripTrailingEllipsis(tKey);
@@ -4737,7 +4753,7 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
   }
 
   // Tier 1 仅允许可识别的桌面 UI 装饰前缀（如 Alert/语言/Copy 标签）包裹完整轨迹正文，且非流式态尾部必须零失配
-  if (!options.baseIsDom && tClean.length >= 24 && dClean.length > tClean.length) {
+  if (!options.baseIsDom && !options.domIsMarkdown && tClean.length >= 24 && dClean.length > tClean.length) {
     const hitPos = dClean.indexOf(tClean);
     if (hitPos > 0 && hitPos <= 48) {
       const uiPrefix = dClean.slice(0, hitPos);
@@ -4764,12 +4780,28 @@ function isSameUserMessage(baseMsg, domMsg, options = {}) {
   const dStripped = stripUserMediaMarkers(domMsg.text);
   const bRawKey = compactDomKey(bStripped);
   const bMdKey = options.baseIsDom ? bRawKey : compactBaseKey(bStripped);
-  const dKey = compactDomKey(dStripped);
-  if ((bRawKey || bMdKey) && dKey) {
-    if (bRawKey === dKey || (!options.baseIsDom && bMdKey === dKey)) return true;
+  const dRawKey = compactDomKey(dStripped);
+  const dMdKey = options.domIsMarkdown ? compactBaseKey(dStripped) : dRawKey;
+  if ((bRawKey || bMdKey) && (dRawKey || dMdKey)) {
+    if (
+      bRawKey === dRawKey ||
+      (!options.baseIsDom && !options.domIsMarkdown && bMdKey && bMdKey === dRawKey) ||
+      (options.baseIsDom && options.domIsMarkdown && dMdKey && bRawKey === dMdKey)
+    ) {
+      return true;
+    }
+    if (
+      options.domIsMarkdown &&
+      String(domMsg.text || '').length >= 3900 &&
+      dStripped.length >= 3900 &&
+      bStripped.length > dStripped.length &&
+      bStripped.startsWith(dStripped)
+    ) {
+      return true;
+    }
     const domRawTrimmed = String(domMsg.text || '').trim();
     if (domRawTrimmed.endsWith('…') || dStripped.endsWith('…')) {
-      const dClean = stripTrailingEllipsis(dKey);
+      const dClean = stripTrailingEllipsis(dRawKey);
       if (
         dClean.length >= 200 && (
           (bRawKey.length > dClean.length && bRawKey.startsWith(dClean)) ||
@@ -4781,7 +4813,7 @@ function isSameUserMessage(baseMsg, domMsg, options = {}) {
     }
     return false;
   }
-  if (!bRawKey && !bMdKey && !dKey) {
+  if (!bRawKey && !bMdKey && !dRawKey && !dMdKey) {
     return hasUserAttachmentOrMediaMarker(baseMsg) && hasUserAttachmentOrMediaMarker(domMsg);
   }
   return false;
@@ -4870,6 +4902,46 @@ function collapseConsecutiveDomThinking(domMessages) {
   return out;
 }
 
+function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, allowBusyTail = false) {
+  if (!Array.isArray(baseEntries) || baseEntries.length < 2) return null;
+  const textEntries = baseEntries.filter((entry) => {
+    const item = entry?.item;
+    if (!item || item.role !== 'assistant') return false;
+    const bk = stripTrailingEllipsis(
+      baseOverwrittenByDom?.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text)
+    );
+    return Boolean(bk);
+  });
+  if (textEntries.length < 2) return null;
+  const dClean = stripTrailingEllipsis(compactDomKey(dmText));
+  if (!dClean) return null;
+  let pos = 0;
+  const matched = [];
+  for (const entry of textEntries) {
+    const item = entry.item;
+    const bk = stripTrailingEllipsis(
+      baseOverwrittenByDom?.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text)
+    );
+    if (bk && dClean.startsWith(bk, pos)) {
+      pos += bk.length;
+      matched.push(entry);
+    }
+  }
+  if (matched.length >= 2 && pos === dClean.length) {
+    return { matched, target: matched[matched.length - 1] };
+  }
+  const lastEntry = textEntries[textEntries.length - 1];
+  if (allowBusyTail && matched.length >= 2 && matched[matched.length - 1] === lastEntry && pos < dClean.length) {
+    const bkLast = stripTrailingEllipsis(
+      baseOverwrittenByDom?.has(lastEntry.item) ? compactDomKey(lastEntry.item.text) : compactBaseKey(lastEntry.item.text)
+    );
+    if (bkLast.length >= 4) {
+      return { matched, target: lastEntry };
+    }
+  }
+  return null;
+}
+
 function findUserAnchorAlignment(baseList, domList, options = {}) {
   const baseUserIndices = [];
   for (let i = 0; i < baseList.length; i++) {
@@ -4889,9 +4961,11 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
     const items = [];
     for (let i = start; i < end; i++) {
       const m = list[i];
-      if (m && m.role === 'assistant' && (isDom ? compactDomKey(m.text) : compactBaseKey(m.text))) {
-        items.push(m);
-      }
+      if (!m || m.role !== 'assistant') continue;
+      const hasKey = isDom
+        ? compactDomKey(m.text)
+        : (options.isolated ? compactDomKey(m.text) : compactBaseKey(m.text));
+      if (hasKey) items.push(m);
     }
     return items;
   };
@@ -4902,7 +4976,19 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
     if (!bAsst.length || !dAsst.length) return 0;
     for (const bm of bAsst) {
       for (const dm of dAsst) {
-        if (classifyAssistantMatch(bm.text, dm.text, { busy: Boolean(options.busy) }) > 0) {
+        if (classifyAssistantMatch(bm.text, dm.text, {
+          busy: Boolean(options.busy),
+          domIsMarkdown: isMarkdownSourcedIncoming(dm, options)
+        }) > 0) {
+          return 1;
+        }
+      }
+    }
+    if (bAsst.length >= 2) {
+      const baseAsEntries = bAsst.map((item) => ({ item }));
+      for (const dm of dAsst) {
+        if (isMarkdownSourcedIncoming(dm, options)) continue;
+        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, false)) {
           return 1;
         }
       }
@@ -4923,12 +5009,14 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
 
   for (let p = 0; p < K; p++) {
     const domIdx = domUserIndices[p];
-    if (!isSameUserMessage(anchorUser, domList[domIdx])) continue;
+    const domU = domList[domIdx];
+    if (!isSameUserMessage(anchorUser, domU, { domIsMarkdown: isMarkdownSourcedIncoming(domU, options) })) continue;
     fallbackP = p;
     if (p > M - 1) continue;
     let allPrevMatch = true;
     for (let offset = 1; offset <= p; offset++) {
-      if (!isSameUserMessage(baseList[baseUserIndices[M - 1 - offset]], domList[domUserIndices[p - offset]])) {
+      const prevDomU = domList[domUserIndices[p - offset]];
+      if (!isSameUserMessage(baseList[baseUserIndices[M - 1 - offset]], prevDomU, { domIsMarkdown: isMarkdownSourcedIncoming(prevDomU, options) })) {
         allPrevMatch = false;
         break;
       }
@@ -4967,7 +5055,8 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
     for (let offset = 0; offset <= fallbackP && offset <= M - 1; offset++) {
       const bPos = M - 1 - offset;
       const dPos = fallbackP - offset;
-      if (!isSameUserMessage(baseList[baseUserIndices[bPos]], domList[domUserIndices[dPos]])) break;
+      const dUser = domList[domUserIndices[dPos]];
+      if (!isSameUserMessage(baseList[baseUserIndices[bPos]], dUser, { domIsMarkdown: isMarkdownSourcedIncoming(dUser, options) })) break;
       alignedTurnPairs.unshift(makeTurnPair(bPos, dPos));
     }
     return { startAppendIdx: domUserIndices[fallbackP] + 1, alignedTurnPairs };
@@ -5043,56 +5132,101 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
   const consumedDomIndices = new Set();
   const consumedBaseIndices = new Set();
 
-  const matchAndMergePool = (domIndices, baseIndices) => {
+  const matchAndMergePool = (domIndices, baseIndices, poolOpts = {}) => {
     if (!domIndices.length || !baseIndices.length) return;
+    const allowBusyOverwrite = Boolean(options.busy && poolOpts.isActiveTailTurn);
+    const lastBaseIdxInPool = baseIndices[baseIndices.length - 1];
+    let lastStreamableBi = lastBaseIdxInPool;
+    for (let idx = baseIndices.length - 1; idx >= 0; idx--) {
+      const bi = baseIndices[idx];
+      const item = baseList[bi];
+      const hasTextKey = item && (baseOverwrittenByDom.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text));
+      if (hasTextKey) {
+        lastStreamableBi = bi;
+        break;
+      }
+    }
     const domDesc = domIndices.slice().reverse();
     const baseDesc = baseIndices.slice().reverse();
-    for (const minTier of [3, 2, 1]) {
-      for (const di of domDesc) {
-        if (consumedDomIndices.has(di)) continue;
-        const dm = domList[di];
-        let bestBi = -1;
-        let bestTier = 0;
-        for (const bi of baseDesc) {
-          if (consumedBaseIndices.has(bi)) continue;
-          const matchTarget = baseList[bi];
-          const tier = classifyAssistantMatch(matchTarget.text, dm.text, {
-            busy: Boolean(options.busy),
-            baseIsDom: baseOverwrittenByDom.has(matchTarget)
-          });
-          if (tier >= minTier && tier > bestTier) {
-            bestTier = tier;
-            bestBi = bi;
-            if (tier === 3) break;
+
+    const runTierPass = (tiers) => {
+      for (const minTier of tiers) {
+        for (const di of domDesc) {
+          if (consumedDomIndices.has(di)) continue;
+          const dm = domList[di];
+          const domIsMd = isMarkdownSourcedIncoming(dm, options);
+          let bestBi = -1;
+          let bestTier = 0;
+          for (const bi of baseDesc) {
+            if (consumedBaseIndices.has(bi)) continue;
+            const matchTarget = baseList[bi];
+            const tier = classifyAssistantMatch(matchTarget.text, dm.text, {
+              busy: allowBusyOverwrite && bi === lastStreamableBi,
+              baseIsDom: baseOverwrittenByDom.has(matchTarget),
+              domIsMarkdown: domIsMd
+            });
+            if (tier >= minTier && tier > bestTier) {
+              bestTier = tier;
+              bestBi = bi;
+              if (tier === 3) break;
+            }
+          }
+          if (bestBi >= 0) {
+            consumedDomIndices.add(di);
+            consumedBaseIndices.add(bestBi);
+            const matchTarget = baseList[bestBi];
+            const targetIsDom = baseOverwrittenByDom.has(matchTarget);
+            const targetKeyLen = (targetIsDom || domIsMd)
+              ? compactDomKey(matchTarget.text).length
+              : compactBaseKey(matchTarget.text).length;
+            const domKeyLen = (targetIsDom && domIsMd)
+              ? compactBaseKey(dm.text).length
+              : compactDomKey(dm.text).length;
+            if (allowBusyOverwrite && bestBi === lastStreamableBi && domKeyLen > targetKeyLen) {
+              matchTarget.text = dm.text;
+              matchTarget.html = dm.html || null;
+              if (!domIsMd) baseOverwrittenByDom.add(matchTarget);
+            }
+            mergeDomMetaIntoTarget(matchTarget, dm);
           }
         }
-        if (bestBi >= 0) {
+      }
+    };
+
+    // 1. 精确 1-to-1 匹配
+    runTierPass([3]);
+
+    // 2. 桌面单轮多段聚合容器识别：防止将整轮拼合纯文本误当作单条回复或覆盖历史首条
+    if (baseIndices.length >= 2) {
+      const baseEntriesInPool = baseIndices.map((bi) => ({ item: baseList[bi], baseIdx: bi }));
+      for (const di of domIndices) {
+        if (consumedDomIndices.has(di)) continue;
+        const dm = domList[di];
+        if (isMarkdownSourcedIncoming(dm, options)) continue;
+        const hit = matchConcatenatedTurnDom(dm.text, baseEntriesInPool, baseOverwrittenByDom, allowBusyOverwrite);
+        if (hit) {
           consumedDomIndices.add(di);
-          consumedBaseIndices.add(bestBi);
-          const matchTarget = baseList[bestBi];
-          const targetKeyLen = baseOverwrittenByDom.has(matchTarget)
-            ? compactDomKey(matchTarget.text).length
-            : compactBaseKey(matchTarget.text).length;
-          if (options.busy && compactDomKey(dm.text).length > targetKeyLen) {
-            matchTarget.text = dm.text;
-            matchTarget.html = dm.html || null;
-            baseOverwrittenByDom.add(matchTarget);
-          }
-          mergeDomMetaIntoTarget(matchTarget, dm);
+          mergeDomMetaIntoTarget(hit.target.item, dm);
         }
       }
     }
+
+    // 3. Tier 2/1 前缀续写与 UI 装饰包含匹配
+    runTierPass([2, 1]);
+
     // 扫尾聚合：同池内未消费的重复 DOM 节点若与已消费基准项精确同文，合并其 highRisk/riskText/thoughts 后跳过
     for (const di of domIndices) {
       if (consumedDomIndices.has(di)) continue;
       const dm = domList[di];
+      const domIsMd = isMarkdownSourcedIncoming(dm, options);
       for (const bi of baseDesc) {
         if (!consumedBaseIndices.has(bi)) continue;
         const matchTarget = baseList[bi];
         if (classifyAssistantMatch(matchTarget.text, dm.text, {
-          busy: Boolean(options.busy),
+          busy: allowBusyOverwrite,
           exactOnly: true,
-          baseIsDom: baseOverwrittenByDom.has(matchTarget)
+          baseIsDom: baseOverwrittenByDom.has(matchTarget),
+          domIsMarkdown: domIsMd
         }) >= 3) {
           mergeDomMetaIntoTarget(matchTarget, dm);
           consumedDomIndices.add(di);
@@ -5112,15 +5246,18 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
 
   if (startAppendIdx >= 0) {
     for (const pair of anchor.alignedTurnPairs) {
+      const isActiveTailTurn = pair.baseTurnEnd === baseList.length - 1 && pair.domTurnEnd === domList.length - 1;
       matchAndMergePool(
         collectAssistantIndices(domList, pair.domTurnStart, pair.domTurnEnd),
-        collectAssistantIndices(baseList, pair.baseTurnStart, pair.baseTurnEnd)
+        collectAssistantIndices(baseList, pair.baseTurnStart, pair.baseTurnEnd),
+        { isActiveTailTurn }
       );
     }
   } else {
     matchAndMergePool(
       collectAssistantIndices(domList, 0, domList.length - 1),
-      collectAssistantIndices(baseList, Math.max(0, baseList.length - 12), baseList.length - 1)
+      collectAssistantIndices(baseList, Math.max(0, baseList.length - 12), baseList.length - 1),
+      { isActiveTailTurn: true }
     );
   }
 
@@ -5134,11 +5271,15 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     for (let j = startAppendIdx; j < domList.length; j++) {
       if (consumedDomIndices.has(j)) continue;
       const dm = domList[j];
+      const dmIsMd = isMarkdownSourcedIncoming(dm, options);
       const dHasText = Boolean(normMsgPrefix(dm.text));
       if (dm.role === 'user') {
         const dupUser = currentTurnEntries.some((entry) => (
           entry.item.role === 'user' &&
-          isSameUserMessage(entry.item, dm, { baseIsDom: !entry.fromBase || baseOverwrittenByDom.has(entry.item) })
+          isSameUserMessage(entry.item, dm, {
+            baseIsDom: !entry.fromBase || baseOverwrittenByDom.has(entry.item),
+            domIsMarkdown: dmIsMd
+          })
         ));
         if (!dupUser) {
           const item = { ...dm, id: `dom-tail-${j}` };
@@ -5148,6 +5289,19 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           currentTurnEntries = [];
         }
         continue;
+      }
+      if (dm.role === 'assistant' && /^rpc-e-/.test(String(dm.id || ''))) {
+        let hasLaterDomReply = false;
+        for (let k = j + 1; k < domList.length && domList[k]?.role !== 'user'; k++) {
+          const nxt = domList[k];
+          if (nxt && nxt.role === 'assistant' && !nxt.highRisk && !/^rpc-e-/.test(String(nxt.id || '')) && Boolean(normMsgPrefix(nxt.text))) {
+            hasLaterDomReply = true;
+            break;
+          }
+        }
+        if (hasLaterDomReply) {
+          continue;
+        }
       }
       if (dm.role === 'assistant' && !dHasText && !dm.highRisk) {
         // 纯思考项（空正文）：不得向本轮已有回复或思考卡尾部追加空壳 dom-tail
@@ -5172,15 +5326,36 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         }
         continue;
       }
+      if (dm.role === 'assistant' && dHasText && !dmIsMd) {
+        const baseAsstEntries = currentTurnEntries.filter(
+          (e) => e.fromBase && e.item?.role === 'assistant' && Boolean(normMsgPrefix(e.item.text))
+        );
+        if (baseAsstEntries.length >= 2) {
+          const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, Boolean(options.busy));
+          if (concatHit) {
+            mergeDomMetaIntoTarget(concatHit.target.item, dm);
+            continue;
+          }
+        }
+      }
+      const lastBaseTextIdxInTurn = dHasText
+        ? currentTurnEntries.reduce((acc, e) => (
+            (e.fromBase && e.item?.role === 'assistant' && Boolean(normMsgPrefix(e.item.text)))
+              ? Math.max(acc, e.baseIdx)
+              : acc
+          ), -1)
+        : -1;
       const dupEntry = dHasText
         ? currentTurnEntries.find((entry) => {
             if (entry.item.role !== dm.role) return false;
             const exactOnly = !entry.fromBase || consumedBaseIndices.has(entry.baseIdx);
             const baseIsDom = !entry.fromBase || baseOverwrittenByDom.has(entry.item);
+            const allowEntryBusy = Boolean(options.busy) && (!entry.fromBase || lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn);
             return classifyAssistantMatch(entry.item.text, dm.text, {
-              busy: Boolean(options.busy),
+              busy: allowEntryBusy,
               exactOnly,
-              baseIsDom
+              baseIsDom,
+              domIsMarkdown: dmIsMd
             }) > 0;
           })
         : null;
@@ -5592,7 +5767,10 @@ function createConversationHistoryManager() {
 
     if (trajHit) {
       const trajMsgs = existing.trajMsgs;
-      const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
+      const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, {
+        busy: Boolean(options.busy),
+        isolated: Boolean(options.isolated)
+      });
       // Never extend `at` on cache hits: TTL must measure elapsed time since actual RPC fetch.
       // For unknown-signature warm entries (knownOldSig === ''), record observedSig without promoting it to trajSig.
       const nextObservedSig = knownOldSig ? '' : (observedOldSig || trajSig || '');
@@ -5603,6 +5781,7 @@ function createConversationHistoryManager() {
         trajSig: knownOldSig,
         observedSig: nextObservedSig,
         domTail: domTail.length ? domTail : (existing?.domTail || []),
+        domTailIsolated: domTail.length ? Boolean(options.isolated) : Boolean(existing?.domTailIsolated),
         merged,
         at: existing.at || 0,
         gen: existing.gen || 0
@@ -5631,7 +5810,10 @@ function createConversationHistoryManager() {
       const activeQueued = Array.isArray(latestExisting?.queuedMessages)
         ? latestExisting.queuedMessages
         : (wasInvalidated ? [] : (Array.isArray(fetchedQueued) ? fetchedQueued : (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : null)));
-      const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
+      const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, {
+        busy: Boolean(options.busy),
+        isolated: Boolean(options.isolated)
+      });
       return { merged, trajMsgs: activeTrajMsgs, queuedMessages: activeQueued };
     }
 
@@ -5651,7 +5833,10 @@ function createConversationHistoryManager() {
       ? (Array.isArray(fetchedQueued) ? fetchedQueued : [])
       : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : (isPendingInvalidation ? [] : null));
 
-    const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
+    const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, {
+      busy: Boolean(options.busy),
+      isolated: Boolean(options.isolated)
+    });
     const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');
     const nextObservedSig = trajFetchedFresh ? '' : String(baseRec?.observedSig || '');
     const nextAt = trajFetchedFresh ? fetchRes.startedAt : (baseRec?.at || 0);
@@ -5665,6 +5850,7 @@ function createConversationHistoryManager() {
       trajSig: nextTrajSig,
       observedSig: nextObservedSig,
       domTail: domTail.length ? domTail : (baseRec?.domTail || []),
+      domTailIsolated: domTail.length ? Boolean(options.isolated) : Boolean(baseRec?.domTailIsolated),
       merged,
       at: nextAt,
       gen: nextGen
@@ -5695,6 +5881,7 @@ function createConversationHistoryManager() {
         trajSig: fetchRes.fetchedSig || '',
         observedSig: '',
         domTail: [],
+        domTailIsolated: false,
         merged: [],
         at: fetchRes.startedAt,
         gen: fetchRes.gen
@@ -5710,7 +5897,8 @@ function createConversationHistoryManager() {
       resolveFullMessages(sid, cleanSnap.messages, {
         ...options,
         trajSig: _activeTrajSig || '',
-        busy: Boolean(cleanSnap.busy)
+        busy: Boolean(cleanSnap.busy),
+        isolated: Boolean(cleanSnap.isolated)
       }),
       (!cleanSnap.isNewConversation && !cleanSnap.isolatedError)
         ? fetchPendingAgentMessages(sid, options).catch(() => null)
@@ -5795,7 +5983,10 @@ function createConversationHistoryManager() {
       };
     }
 
-    const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(sid, existing?.domTail || [], options);
+    const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(sid, existing?.domTail || [], {
+      ...options,
+      isolated: Boolean(options.isolated || existing?.domTailIsolated)
+    });
     const total = fullMsgs.length;
     const rawBefore = hasBefore ? Number.parseInt(options.before, 10) : total;
     const endIdx = Math.max(0, Math.min(total, Number.isFinite(rawBefore) ? rawBefore : total));

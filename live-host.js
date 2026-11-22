@@ -533,11 +533,12 @@ async function startEmbeddedLiveBridge(options = {}) {
       res.writeHead(204); res.end(); return;
     }
     if (req.method !== 'POST' || !ALLOWED_ROUTES.includes(req.url) || req.headers['x-ag-context-token'] !== secret) { res.writeHead(403); res.end(); return; }
-    let body = '';
+    const chunks = [];
     let bodyLength = 0;
     let exceeded = false;
     req.on('data', chunk => {
-      bodyLength += chunk.length;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bodyLength += buf.length;
       if (bodyLength > MAX_BODY_BYTES) {
         exceeded = true;
         res.writeHead(413, { 'Content-Type': 'application/json' });
@@ -545,11 +546,12 @@ async function startEmbeddedLiveBridge(options = {}) {
         req.destroy();
         return;
       }
-      body += chunk;
+      chunks.push(buf);
     });
     req.on('end', async () => {
       if (exceeded) return;
       try {
+        const body = Buffer.concat(chunks).toString('utf8');
         const request = JSON.parse(body || '{}');
         if (req.url === '/record-calls') {
           const calls = Array.isArray(request.calls) ? request.calls : [];
