@@ -21214,6 +21214,254 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
       0,
       '编辑与撤回身份失配时 DeleteQueuedUserInputStep 调用次数必须严格为 0'
     );
+
+    // 22. stepIndex 纯媒体项前移、原索引被 B 占用时的编辑与撤回拦截回归（纯图占位文本剥离为空后绝不可跳过核验）
+    const pureMediaOps = [];
+    const pureMediaOccHandler = createRemoteHttpHandler({
+      port: 18784,
+      token: 'tok-r15-puremedia',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r15-pm', activeConversationId: 'conv-r15-pm', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        pureMediaOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                {
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  status: 'CORTEX_STEP_STATUS_QUEUED',
+                  userInput: {
+                    items: [],
+                    media: [{ mimeType: 'image/png', uri: `file://${pngPathB}`, thumbnail: '' }]
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postPureMediaOcc = makeMockActionPoster(pureMediaOccHandler, 'tok-r15-puremedia', 'cli-r15-pm');
+    // 22a. 纯图片 A（仅带占位文本 [图片附件] / hasMedia: true，无匹配 mediaSig）在原索引被纯图片 B 占用时：编辑与撤回均拒绝且 0 删除
+    const r15PmEditNoSig = await postPureMediaOcc({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r15-pm',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '[图片附件]'
+    });
+    assert.equal(r15PmEditNoSig.ok, false);
+    assert.equal(r15PmEditNoSig.outcomeUnknown, true, '纯图片项缺少匹配媒体身份时编辑必须拒绝');
+    const r15PmDelNoSig = await postPureMediaOcc({
+      action: 'delete-queued-message',
+      conversationId: 'conv-r15-pm',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '[图片附件]'
+    });
+    assert.equal(r15PmDelNoSig.ok, false);
+    assert.equal(r15PmDelNoSig.outcomeUnknown, true, '纯图片项缺少匹配媒体身份时撤回必须拒绝');
+    // 22b. 纯图片 A 携带 A 的 mediaSig，原索引已被纯图片 B 占用：编辑与撤回均因 mediaSig 失配拒绝且 0 删除
+    const r15PmEditWrongSig = await postPureMediaOcc({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r15-pm',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '[图片附件]',
+      mediaSig: `uri:file://${diskImgPath}`
+    });
+    assert.equal(r15PmEditWrongSig.ok, false);
+    assert.equal(r15PmEditWrongSig.outcomeUnknown, true);
+    const r15PmDelWrongSig = await postPureMediaOcc({
+      action: 'delete-queued-message',
+      conversationId: 'conv-r15-pm',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '[图片附件]',
+      mediaSig: `uri:file://${diskImgPath}`
+    });
+    assert.equal(r15PmDelWrongSig.ok, false);
+    assert.equal(r15PmDelWrongSig.outcomeUnknown, true);
+    assert.equal(
+      pureMediaOps.filter((o) => o.method === 'DeleteQueuedUserInputStep').length,
+      0,
+      '纯图片 A 前移、原索引被 B 占用时，编辑和撤回均不得删除 B'
+    );
+
+    // 23. 单条发送跨时间队列替换身份连续性回归：A 发送且实际删除但响应丢失后，新入队同内容 B 绝不可被误删
+    const replaceSendOps = [];
+    let replaceSendPhase = 'a_initial';
+    const replaceSendHandler = createRemoteHttpHandler({
+      port: 18785,
+      token: 'tok-r15-replace-send',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r15-rs', activeConversationId: 'conv-r15-rs', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        replaceSendOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          if (replaceSendPhase === 'a_initial') {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { id: 'step-a-1', type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '跨时间同文消息' }] } }
+                ]
+              }
+            };
+          }
+          // A 已实际删除，队列被新入队的同内容独立消息 B 替换（同索引但新步骤身份 / 或总步数增长）
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                { id: 'step-b-2', type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '跨时间同文消息' }] } }
+              ]
+            }
+          };
+        }
+        if (method === 'SendUserCascadeMessage') return { ok: true };
+        if (method === 'DeleteQueuedUserInputStep') return null; // 响应丢失
+        return { ok: true };
+      }
+    });
+    const postReplaceSend = makeMockActionPoster(replaceSendHandler, 'tok-r15-replace-send', 'cli-r15-rs');
+    const r15SendA = await postReplaceSend({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r15-rs',
+      stepIndex: 1,
+      text: '跨时间同文消息'
+    });
+    assert.equal(r15SendA.ok, false);
+    assert.equal(r15SendA.partialSuccess, true);
+
+    replaceSendPhase = 'b_replaced';
+    const beforeSendB = replaceSendOps.length;
+    const r15SendB = await postReplaceSend({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r15-rs',
+      stepIndex: 1,
+      text: '跨时间同文消息'
+    });
+    assert.equal(r15SendB.ok, false);
+    assert.equal(r15SendB.outcomeUnknown, true, '队列被同内容新消息 B 替换时缺乏身份连续性证据，必须拒绝');
+    assert.equal(
+      replaceSendOps.slice(beforeSendB).filter((o) => o.method === 'DeleteQueuedUserInputStep' || o.method === 'SendUserCascadeMessage').length,
+      0,
+      '新入队同内容 B 绝不可命中旧记录被仅删除而未发送'
+    );
+
+    // 24. A 实际已删除但核验不可得（_pendingRetry: true），再编辑同文同图独立 B：B 被安全阻止（0 删除），A 暂存附件完好保留
+    const pendingColOps = [];
+    const pendingColSent = [];
+    let pendingColPhase = 'a_unknown';
+    let pendingColTrajCalls = 0;
+    const pendingColHandler = createRemoteHttpHandler({
+      port: 18786,
+      token: 'tok-r15-pending-col',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r15-pc', activeConversationId: 'conv-r15-pc', busy: true, messages: [] }),
+      performAction: async (act) => {
+        if (act.action === 'send') {
+          pendingColSent.push((act.pendingUploads || []).map((u) => u.name));
+          return { ok: true, snapshot: { ok: true, sessionId: 'conv-r15-pc', messages: [] } };
+        }
+        return { ok: true };
+      },
+      callLanguageServer: async (method, body) => {
+        pendingColOps.push({ method, body });
+        if (method === 'DeleteQueuedUserInputStep') {
+          return pendingColPhase === 'a_unknown' ? null : { ok: true };
+        }
+        if (method === 'GetCascadeTrajectory') {
+          pendingColTrajCalls += 1;
+          if (pendingColPhase === 'a_unknown') {
+            if (pendingColTrajCalls === 1) {
+              return {
+                trajectory: {
+                  steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                    {
+                      id: 'step-edit-a',
+                      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                      status: 'CORTEX_STEP_STATUS_QUEUED',
+                      userInput: {
+                        items: [{ text: '未知后编辑同文同图B' }],
+                        media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+                      }
+                    }
+                  ]
+                }
+              };
+            }
+            return null; // 核验不可得
+          }
+          // 独立消息 B（新步骤 ID，同文同图）
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                {
+                  id: 'step-edit-b',
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  status: 'CORTEX_STEP_STATUS_QUEUED',
+                  userInput: {
+                    items: [{ text: '未知后编辑同文同图B' }],
+                    media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postPendingCol = makeMockActionPoster(pendingColHandler, 'tok-r15-pending-col', 'cli-r15-pc');
+    const r15EditA = await postPendingCol({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r15-pc',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '未知后编辑同文同图B'
+    });
+    assert.equal(r15EditA.ok, false);
+    assert.equal(r15EditA.outcomeUnknown, true);
+    assert.equal(r15EditA.attachmentsPreserved, true);
+
+    pendingColPhase = 'b_independent';
+    const beforeEditB = pendingColOps.length;
+    const r15EditB = await postPendingCol({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r15-pc',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '未知后编辑同文同图B'
+    });
+    assert.equal(r15EditB.ok, false);
+    assert.equal(r15EditB.outcomeUnknown, true, '存在未确认撤回暂存批次且无法确认 B 为原项重试时，必须在删除 B 前安全阻止');
+    assert.equal(
+      pendingColOps.slice(beforeEditB).filter((o) => o.method === 'DeleteQueuedUserInputStep').length,
+      0,
+      '安全阻止 B 时绝不得删除 B'
+    );
+    const r15SendAOnly = await postPendingCol({ action: 'send', conversationId: 'conv-r15-pc', text: '发出保留的A' });
+    assert.equal(r15SendAOnly.ok, true);
+    assert.deepEqual(pendingColSent, [['disk-queued.png']], 'A 已暂存的恢复附件必须完整保留');
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }

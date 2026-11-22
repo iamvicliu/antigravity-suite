@@ -9757,8 +9757,9 @@ function buildMobileAppHtml() {
                 const msgIdAttr = String(q.messageId || q.id || '').trim();
                 const srcAttr = q.source === 'dom' ? 'dom' : (q.source === 'agent_state' ? 'agent_state' : (q.source === 'optimistic' ? 'optimistic' : 'traj'));
                 const hasMediaAttr = (q.hasMedia || (Array.isArray(q.images) && q.images.length > 0)) ? '1' : '';
+                const mediaSigAttr = String(q.mediaSig || (Array.isArray(q.images) ? q.images.map((im) => (typeof im === 'string' ? im : String(im?.alt || im?.src || ''))).filter(Boolean).sort().join('|') : '')).trim();
                 const itemBtnDisabled = (queueActionBusy || srcAttr === 'optimistic') ? ' disabled' : '';
-                const dataAttrs = 'data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '" data-msg-id="' + esc(msgIdAttr) + '" data-queue-text="' + esc(String(q.text || '')) + '" data-has-media="' + esc(hasMediaAttr) + '"';
+                const dataAttrs = 'data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '" data-msg-id="' + esc(msgIdAttr) + '" data-queue-text="' + esc(String(q.text || '')) + '" data-has-media="' + esc(hasMediaAttr) + '" data-media-sig="' + esc(mediaSigAttr) + '"';
                 return '<div class="queue-item" ' + dataAttrs + '>'
                   + imgsHtml
                   + '<span class="queue-item-text">' + esc(q.text || '') + '</span>'
@@ -9782,11 +9783,13 @@ function buildMobileAppHtml() {
               const domIdx = Number(el.dataset.domIdx);
               const text = String(el.dataset.queueText || '');
               const hasMedia = el.dataset.hasMedia === '1';
+              const mediaSig = String(el.dataset.mediaSig || '').trim();
               return {
                 conversationId: String(snap.activeConversationId || snap.sessionId || ''),
                 ...(msgId ? { messageId: msgId } : {}),
                 ...(text ? { text } : {}),
                 ...(hasMedia ? { hasMedia: true } : {}),
+                ...(mediaSig ? { mediaSig } : {}),
                 ...(src === 'dom' ? {
                   source: 'dom',
                   domIndex: Number.isInteger(domIdx) ? domIdx : 0,
@@ -13940,6 +13943,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     pruneStagedEditUploads();
     const sourceKey = String(opts?.sourceKey || '').trim();
     const pendingRetry = opts?.pendingRetry === true;
+    const pendingRetryMeta = (pendingRetry && opts?.pendingRetryMeta && typeof opts.pendingRetryMeta === 'object')
+      ? { ...opts.pendingRetryMeta }
+      : null;
     const existingRaw = stagedEditUploadsByKey.get(key)?.items || [];
     // 仅覆盖同一 sourceKey 下尚未确认删除的暂存重试批次（_pendingRetry === true）；已确认删除的独立批次绝不被同文同图新编辑覆盖
     const existing = sourceKey
@@ -13949,7 +13955,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       ...item,
       _stagingId: String(nextStagedUploadId++),
       ...(sourceKey ? { _sourceKey: sourceKey } : {}),
-      ...(pendingRetry ? { _pendingRetry: true } : {})
+      ...(pendingRetry ? { _pendingRetry: true } : {}),
+      ...(pendingRetryMeta ? { _pendingRetryMeta: pendingRetryMeta } : {})
     }));
     const next = existing.concat(taggedItems);
     if (stagedEditUploadsByKey.size >= 100 && !stagedEditUploadsByKey.has(key)) {
@@ -15066,17 +15073,80 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           const stripMediaMarkerForMatch = (s) => String(s || '')
             .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
             .trim();
+          const extractQueuedStepIdentityToken = (stepObj, uiObj) => String(
+            stepObj?.id ||
+            stepObj?.stepId ||
+            stepObj?.step_id ||
+            stepObj?.messageId ||
+            stepObj?.message_id ||
+            stepObj?.metadata?.createdAt ||
+            stepObj?.metadata?.created_at ||
+            stepObj?.createdAt ||
+            stepObj?.created_at ||
+            uiObj?.id ||
+            uiObj?.clientMessageId ||
+            uiObj?.client_message_id ||
+            ''
+          ).trim();
+          const buildQueuedStepMediaSig = (uiObj) => extractRawMediaEntriesFromUserInput(uiObj)
+            .map((e) => String(e?.dedupKey || e?.uri || e?.name || '').trim())
+            .filter(Boolean)
+            .sort()
+            .join('|');
+          const hasStepIdentityContinuity = (prevMeta, curMeta) => {
+            if (!prevMeta || !curMeta) return false;
+            if (Number(curMeta.sameFpCount || 0) !== 1 || Number(prevMeta.preSameFpCount || 0) !== 1) return false;
+            if (curMeta.stepIndex > prevMeta.originalStepIndex) return false;
+            if (curMeta.totalSteps > prevMeta.preTotalSteps) return false;
+            if (curMeta.stepIndex < prevMeta.originalStepIndex && curMeta.totalSteps >= prevMeta.preTotalSteps) return false;
+            const prevTok = String(prevMeta.stepIdentityToken || '').trim();
+            const curTok = String(curMeta.stepIdentityToken || '').trim();
+            if (prevTok || curTok) {
+              return Boolean(prevTok && curTok && prevTok === curTok);
+            }
+            // 无步骤级唯一标识时：仅当前序项删除导致左移（索引减小且总步数减少）才具备连续性证据；同索引同长度无法区分队列替换
+            return curMeta.stepIndex < prevMeta.originalStepIndex && curMeta.totalSteps < prevMeta.preTotalSteps;
+          };
+          const verifyStepIndexTargetIdentity = (targetUi, matchedQ, reqPayload) => {
+            const rawReqText = typeof reqPayload?.text === 'string' ? reqPayload.text : '';
+            const reqMediaSig = String(reqPayload?.mediaSig || '').trim();
+            const hasClientIdentityHint = Boolean(rawReqText.trim() || reqPayload?.hasMedia === true || reqMediaSig);
+            if (!hasClientIdentityHint) return { ok: true };
+            const reqExpectsMedia = Boolean(reqPayload?.hasMedia === true || hasMediaMarkerText(rawReqText) || reqMediaSig);
+            const reqTextNorm = stripDisplayMediaSuffixFromQueuedText(rawReqText, reqExpectsMedia).replace(/\s+/g, ' ').trim();
+            const liveRawMedia = extractRawMediaEntriesFromUserInput(targetUi);
+            const liveRawText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || '');
+            const liveHasMedia = Boolean(
+              matchedQ?.hasMedia ||
+              (Array.isArray(matchedQ?.images) && matchedQ.images.length > 0) ||
+              liveRawMedia.length > 0 ||
+              hasMediaMarkerText(liveRawText)
+            );
+            const liveTextNorm = stripDisplayMediaSuffixFromQueuedText(liveRawText, liveHasMedia).replace(/\s+/g, ' ').trim();
+            if (reqTextNorm !== liveTextNorm || reqExpectsMedia !== liveHasMedia) {
+              return {
+                ok: false,
+                error: '目标排队步骤内容或媒体形态已变化（索引已被其他消息占用），已取消操作以防误删'
+              };
+            }
+            if (!reqTextNorm && !liveTextNorm && reqExpectsMedia && liveHasMedia) {
+              const liveMediaSig = buildQueuedStepMediaSig(targetUi);
+              if (!reqMediaSig || !liveMediaSig || reqMediaSig !== liveMediaSig) {
+                return {
+                  ok: false,
+                  error: '纯媒体排队项缺少匹配的媒体身份标识（索引可能已被其他媒体项占用），已取消操作以防误删'
+                };
+              }
+            }
+            return { ok: true };
+          };
           const buildQueuedStepFingerprint = (uiObj, fallbackTxt = '') => {
             const rawEntries = extractRawMediaEntriesFromUserInput(uiObj);
             const normTxt = stripDisplayMediaSuffixFromQueuedText(
               uiObj ? formatTrajectoryUserInput(uiObj) : String(fallbackTxt || ''),
               rawEntries.length > 0
             ).replace(/\s+/g, ' ').trim();
-            const mediaSig = rawEntries
-              .map((e) => String(e?.dedupKey || e?.uri || e?.name || '').trim())
-              .filter(Boolean)
-              .sort()
-              .join('|');
+            const mediaSig = buildQueuedStepMediaSig(uiObj);
             return `${normTxt}||${mediaSig}`;
           };
           const collectQueuedStepFingerprints = (stepsArr, containerObj) => {
@@ -15104,7 +15174,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             return fps;
           };
           const stageKey = makeStagedUploadKey(clientId, cascadeId);
-          const restoreMediaAndDeleteQueued = async ({ rawUi, fallbackText, deleteMethod, deleteBody, dispatchKey, sourceKey: explicitSourceKey, verifyOriginalStillQueued }) => {
+          const restoreMediaAndDeleteQueued = async ({ rawUi, fallbackText, deleteMethod, deleteBody, dispatchKey, sourceKey: explicitSourceKey, pendingRetryMeta, checkPendingCollision, verifyOriginalStillQueued }) => {
             const rawEntries = extractRawMediaEntriesFromUserInput(rawUi);
             const mat = materializeQueuedAttachmentsForEdit(rawEntries, options.mediaOptions || {});
             if (!mat.ok || !mat.attachments.length) {
@@ -15119,7 +15189,21 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
             const sourceKey = String(explicitSourceKey || dispatchKey || '').trim();
             if (sourceKey) recoveryKey = sourceKey;
-            const existingOtherCount = getStagedEditUploads(stageKey).filter((x) => !(sourceKey && String(x?._sourceKey || '') === sourceKey && x?._pendingRetry === true)).length;
+            const currentStagedList = getStagedEditUploads(stageKey);
+            const existingPendingForSource = sourceKey
+              ? currentStagedList.find((x) => String(x?._sourceKey || '') === sourceKey && x?._pendingRetry === true)
+              : null;
+            if (existingPendingForSource && typeof checkPendingCollision === 'function' && !checkPendingCollision(existingPendingForSource._pendingRetryMeta || null)) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '当前会话存在同内容未确认撤回的暂存批次，无法确认本次编辑是否为原项重试，已取消删除以防覆盖已保留内容'
+                }
+              };
+            }
+            const existingOtherCount = currentStagedList.filter((x) => !(sourceKey && String(x?._sourceKey || '') === sourceKey && x?._pendingRetry === true)).length;
             if (existingOtherCount + mat.attachments.length > MAX_STAGED_EDIT_UPLOADS_PER_CONV) {
               return {
                 ok: false,
@@ -15183,8 +15267,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 }
               };
             }
-            // 核验亦不可得：保留暂存附件并回传前端（标记 pendingRetry: true 供后续重试复用覆盖，已确认删除的独立批次不互相覆盖）
-            appendStagedEditUploads(stageKey, stageableItems, { sourceKey, pendingRetry: true });
+            // 核验亦不可得：保留暂存附件并回传前端（标记 pendingRetry: true 与连续性元数据供后续重试复用覆盖，已确认删除的独立批次不互相覆盖）
+            appendStagedEditUploads(stageKey, stageableItems, { sourceKey, pendingRetry: true, pendingRetryMeta });
             editedText = cleanRestoredText;
             editedAttachments = clientAttsMeta;
             return {
@@ -15489,8 +15573,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队标识 messageId 或 stepIndex' }));
               return;
             }
-            const reqDelTextNorm = stripDisplayMediaSuffixFromQueuedText(editedText, true).replace(/\s+/g, ' ').trim();
-            if (reqDelTextNorm) {
+            const hasDelIdentityHint = Boolean(
+              (typeof payload?.text === 'string' && payload.text.trim()) ||
+              payload?.hasMedia === true ||
+              String(payload?.mediaSig || '').trim()
+            );
+            if (hasDelIdentityHint) {
               const trajOutcome = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
               const trajSteps = trajOutcome.ok ? trajOutcome.result?.trajectory?.steps : null;
               if (!trajOutcome.ok || !Array.isArray(trajSteps)) {
@@ -15517,13 +15605,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 return;
               }
               const targetUi = directQueuedStep?.userInput || directExtraStep?.userInput || directExtraStep?.user_input || directExtraStep || null;
-              const liveDelText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || '');
-              const liveDelTextNorm = stripDisplayMediaSuffixFromQueuedText(liveDelText, true).replace(/\s+/g, ' ').trim();
-              if (liveDelTextNorm && reqDelTextNorm !== liveDelTextNorm) {
+              const idCheck = verifyStepIndexTargetIdentity(targetUi, matchedQ, payload);
+              if (!idCheck.ok) {
                 sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                   ok: false,
                   outcomeUnknown: true,
-                  error: '目标排队步骤内容已变化（索引已被其他消息占用），已取消撤回以防误删'
+                  error: idCheck.error
                 }));
                 return;
               }
@@ -15566,18 +15653,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               }));
               return;
             }
+            const targetStepObj = directQueuedStep || directExtraStep || null;
             const targetUi = directQueuedStep?.userInput || directExtraStep?.userInput || directExtraStep?.user_input || directExtraStep || null;
-            const baseEditText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || editedText || '');
-            const reqEditTextNorm = stripDisplayMediaSuffixFromQueuedText(editedText, true).replace(/\s+/g, ' ').trim();
-            const liveEditTextNorm = stripDisplayMediaSuffixFromQueuedText(baseEditText, true).replace(/\s+/g, ' ').trim();
-            if (reqEditTextNorm && liveEditTextNorm && reqEditTextNorm !== liveEditTextNorm) {
+            const idCheck = verifyStepIndexTargetIdentity(targetUi, matchedQ, payload);
+            if (!idCheck.ok) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                 ok: false,
                 outcomeUnknown: true,
-                error: '目标排队步骤内容已变化（索引已被其他消息占用），已取消编辑以防误删'
+                error: idCheck.error
               }));
               return;
             }
+            const baseEditText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || editedText || '');
             const rawEntriesFromStep = extractRawMediaEntriesFromUserInput(targetUi);
             const itemHasMedia = Boolean(
               payload?.hasMedia ||
@@ -15590,6 +15677,13 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             const stableStepRecoveryKey = `${cascadeId}::stepfp:${targetStepFp}`;
             const preDeleteFps = collectQueuedStepFingerprints(trajSteps, trajContainer);
             const preDeleteSameFpCount = preDeleteFps.filter((x) => x.fp === targetStepFp).length;
+            const editStepIdentityToken = extractQueuedStepIdentityToken(targetStepObj, targetUi);
+            const editContinuityMeta = {
+              originalStepIndex: stepIndex,
+              preSameFpCount: Math.max(1, preDeleteSameFpCount),
+              preTotalSteps: trajSteps.length,
+              stepIdentityToken: editStepIdentityToken
+            };
             const verifyStepStillQueued = async () => {
               const recheck = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
               const recheckSteps = recheck.ok ? recheck.result?.trajectory?.steps : null;
@@ -15613,6 +15707,13 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 deleteBody: { cascadeId, stepIndex },
                 dispatchKey,
                 sourceKey: stableStepRecoveryKey,
+                pendingRetryMeta: editContinuityMeta,
+                checkPendingCollision: (prevMeta) => hasStepIdentityContinuity(prevMeta, {
+                  stepIndex,
+                  sameFpCount: preDeleteSameFpCount,
+                  totalSteps: trajSteps.length,
+                  stepIdentityToken: editStepIdentityToken
+                }),
                 verifyOriginalStillQueued: verifyStepStillQueued
               });
               if (!recovered.ok) {
@@ -15699,19 +15800,26 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               }));
               return;
             }
+            const targetStepObj = directQueuedStep || directExtraStep || null;
             const stepFp = buildQueuedStepFingerprint(targetUi, itemText);
             const liveFpsForSend = collectQueuedStepFingerprints(trajSteps, trajContainer);
             const liveSameFpCount = liveFpsForSend.filter((x) => x.fp === stepFp).length;
+            const sendStepIdentityToken = extractQueuedStepIdentityToken(targetStepObj, targetUi);
             const dispatchKey = `${cascadeId}::stepfp:${stepFp}`;
             const existingDispatchedRec = getDispatchedQueueDelete(dispatchKey);
             if (existingDispatchedRec) {
-              // 若队列中存在多条相同内容消息（或首次发送时存在同内容副本），无法跨索引唯一区分哪条是已发送待删的 A 还是独立的 B → 停止删除防止误删未发送项
-              const isUniquelyIdentifiable = liveSameFpCount === 1 && Number(existingDispatchedRec.preSameFpCount || 1) === 1;
-              if (!isUniquelyIdentifiable) {
+              // 仅在具备原目标身份连续性证据时才允许仅重试删除；否则（多条同文、或原项已删新入队同内容 B 替换）一律停止删除防止误删未发送项
+              const continuous = hasStepIdentityContinuity(existingDispatchedRec, {
+                stepIndex,
+                sameFpCount: liveSameFpCount,
+                totalSteps: trajSteps.length,
+                stepIdentityToken: sendStepIdentityToken
+              });
+              if (!continuous) {
                 sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                   ok: false,
                   outcomeUnknown: true,
-                  error: '队列中存在多条相同内容排队消息且此前有未确认移除项，无法唯一区分目标，已停止操作以防误删或重复发送'
+                  error: '无法确认当前排队项与此前已发送待删项为同一消息（可能存在同内容新消息或并发变更），已停止操作以防误删或重复发送'
                 }));
                 return;
               }
@@ -15726,7 +15834,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               hasMedia: itemHasMedia,
               deleteMethod: 'DeleteQueuedUserInputStep',
               deleteBody: { cascadeId, stepIndex },
-              dispatchMeta: { originalStepIndex: stepIndex, preSameFpCount: Math.max(1, liveSameFpCount) }
+              dispatchMeta: {
+                originalStepIndex: stepIndex,
+                preSameFpCount: Math.max(1, liveSameFpCount),
+                preTotalSteps: trajSteps.length,
+                stepIdentityToken: sendStepIdentityToken
+              }
             });
             if (outcome.partialSuccess) {
               await respondPartialSendDeleteFailure({ stepIndex }, outcome.error);
