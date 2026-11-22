@@ -8191,7 +8191,7 @@
     return budget.exceeded ? '' : out;
   }
 
-  function collectBoundedNodeText(roots, maxChars = 200000, maxNodes = 8000, maxDepth = 24) {
+  function collectBoundedNodeText(roots, maxChars = 200000, maxNodes = 8000, maxDepth = 24, shouldSkipNode = null) {
     const list = Array.isArray(roots) ? roots : (roots ? [roots] : []);
     if (!list.length) return { text: '', truncated: false, nodesVisited: 0 };
     const budget = { chars: 0, maxChars, nodes: 0, maxNodes, truncated: false };
@@ -8221,6 +8221,7 @@
       }
       if (nType !== 1) return;
       if (MD_SKIP_TAGS.has(node.tagName)) return;
+      if (typeof shouldSkipNode === 'function' && shouldSkipNode(node)) return;
       if (depth > maxDepth) {
         budget.truncated = true;
         return;
@@ -8391,9 +8392,13 @@
       let replyText = mdBounded.text;
       // 文本提取阶段已受字符与节点双预算早停；超限时直接跳过 HTML 序列化（完整长文由服务端轨迹通道渲染）
       const replyHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots, MAX_DOM_HTML_CHARS);
-      const isStepProgressOnly = Boolean(node.querySelector('[data-step-list="true"], [data-testid="worked-for-collapsible"]'));
-      if (!replyText && !triggers.length && !isStepProgressOnly) {
-        const fallbackBounded = collectBoundedNodeText([node], MAX_DOM_MSG_CHARS, 4000);
+      const isStepProgressNode = (el) => {
+        if (!el || el.nodeType !== 1 || typeof el.getAttribute !== 'function') return false;
+        return el.getAttribute('data-step-list') === 'true'
+          || el.getAttribute('data-testid') === 'worked-for-collapsible';
+      };
+      if (!replyText && !triggers.length) {
+        const fallbackBounded = collectBoundedNodeText([node], MAX_DOM_MSG_CHARS, 4000, 24, isStepProgressNode);
         const cloneText = capText(fallbackBounded.text
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
           .replace(/^Worked\s+for\s+\S+(?:\s+in\s+this\s+step)?\s*\n*/i, '')

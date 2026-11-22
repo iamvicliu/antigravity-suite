@@ -23101,7 +23101,98 @@ test('消除 UTF-8 跨分片截断、isolated Markdown 合并、多段历史轮�
   assert.equal(concatExactBusyMerged.length, 3);
   assert.equal(concatExactBusyMerged[2].text, segB, '无新增正文时不应覆盖末段原始 Markdown');
 
-  // 4. ag-enhancer-overlay.js collectRecentMessages 过滤纯步骤进度列表节点，保留普通无 markdown-root 回退
+  // 3g. 无锚点回退保护：轨迹为 [u1, A, u2]（含多段与纯思考兜底）且 DOM 无用户锚点仅为 [A+新增] 时，绝不得覆写 u2 之前的历史回复 A/B
+  const histReplyA = '历史第一轮定稿正文，说明连接与权限检查步骤。';
+  const noAnchorSingleMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '第一轮问题' },
+      { id: 't-a-1', role: 'assistant', text: histReplyA },
+      { id: 't-u-2', role: 'user', text: '第二轮新追问' }
+    ],
+    [
+      { id: 'a-1', role: 'assistant', text: `${histReplyA}后续误拼接的实时增量` }
+    ],
+    { busy: true }
+  );
+  assert.equal(noAnchorSingleMerged.length, 3, '无用户锚点回退时 [u1, A, u2] 不应追加多余气泡');
+  assert.equal(noAnchorSingleMerged[1].text, histReplyA, '无用户锚点回退不得把 u2 之前的历史回复 A 当作可续写末段');
+
+  const histSegB = '第二段完整结果说明。';
+  const noAnchorMultiMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '第一轮问题' },
+      { id: 't-a-1', role: 'assistant', text: '第一段简报。' },
+      { id: 't-a-2', role: 'assistant', text: histSegB },
+      { id: 't-u-2', role: 'user', text: '第二轮新追问' }
+    ],
+    [
+      { id: 'a-1', role: 'assistant', text: `第一段简报。${histSegB}异常后续文本` }
+    ],
+    { busy: true }
+  );
+  assert.equal(noAnchorMultiMerged.length, 4);
+  assert.equal(noAnchorMultiMerged[1].text, '第一段简报。');
+  assert.equal(noAnchorMultiMerged[2].text, histSegB, '无用户锚点回退不得把 u2 之前的多段历史回复当成流式尾部覆写');
+
+  const noAnchorThinkMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '第一轮问题' },
+      { id: 't-a-1', role: 'assistant', text: histReplyA },
+      { id: 't-u-2', role: 'user', text: '第二轮新追问' },
+      { id: 't-think-end', role: 'assistant', text: '', thoughtLabel: '思考中', thoughtText: '正在排查第二轮' }
+    ],
+    [
+      { id: 'a-1', role: 'assistant', text: `${histReplyA}后续异常新增文本` }
+    ],
+    { busy: true }
+  );
+  assert.equal(noAnchorThinkMerged.length, 4);
+  assert.equal(noAnchorThinkMerged[1].text, histReplyA, '无用户锚点回退即使 u2 后仅有纯思考卡，也绝不能跨过 u2 覆写历史 A');
+
+  // 3h. DOM 已出现新用户轮次 u2 而轨迹尚停留在 [u1, ...] 时，Pass 1 与 Pass 2 均不得凭全局 busy 改写旧轮历史正文
+  const domAheadMultiMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '第一轮提问' },
+      { id: 't-a-1', role: 'assistant', text: '第一段。' },
+      { id: 't-a-2', role: 'assistant', text: '第二段历史正文' }
+    ],
+    [
+      { id: 'u-1', role: 'user', text: '第一轮提问' },
+      { id: 'a-1', role: 'assistant', text: '第一段。第二段历史正文，旧轮异常增量' },
+      { id: 'u-2', role: 'user', text: '第二轮新消息' },
+      { id: 'a-2', role: 'assistant', text: '第二轮正在流式回复中' }
+    ],
+    { busy: true }
+  );
+  assert.equal(domAheadMultiMerged[1].text, '第一段。', 'DOM 已进入新轮 u2 时轨迹第一段应保持原样');
+  assert.equal(domAheadMultiMerged[2].text, '第二段历史正文', 'DOM 已进入新轮 u2 时 Pass 2 不得凭全局 busy 覆写旧轮第二段');
+  assert.ok(
+    domAheadMultiMerged.some((m) => m.role === 'user' && m.text === '第二轮新消息'),
+    'DOM 新用户轮次 u2 应完整补入尾部'
+  );
+  assert.ok(
+    domAheadMultiMerged.some((m) => m.role === 'assistant' && m.text === '第二轮正在流式回复中'),
+    'DOM 新用户轮次下的流式新回复应完整保留'
+  );
+
+  const domAheadSingleMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '第一轮提问' },
+      { id: 't-a-1', role: 'assistant', text: '第一轮已定稿回复' }
+    ],
+    [
+      { id: 'u-1', role: 'user', text: '第一轮提问' },
+      { id: 'a-1', role: 'assistant', text: '第一轮已定稿回复，旧轮不应覆写' },
+      { id: 'u-2', role: 'user', text: '第二轮新问题' },
+      { id: 'a-2', role: 'assistant', text: '第二轮新回复' }
+    ],
+    { busy: true }
+  );
+  assert.equal(domAheadSingleMerged[1].text, '第一轮已定稿回复', 'DOM 已存在后续用户轮 u2 时单条历史回复必须保持原样');
+  assert.equal(domAheadSingleMerged[domAheadSingleMerged.length - 2].text, '第二轮新问题');
+  assert.equal(domAheadSingleMerged[domAheadSingleMerged.length - 1].text, '第二轮新回复');
+
+  // 4. ag-enhancer-overlay.js collectRecentMessages 过滤步骤进度子树并保留同容器/普通无 markdown-root 正文
   const envStep = createDomEnv();
   envStep.win.location = { pathname: '/c/step-prog-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/step-prog-1' };
   envStep.sandbox.location = envStep.win.location;
@@ -23123,6 +23214,27 @@ test('消除 UTF-8 跨分片截断、isolated Markdown 合并、多段历史轮�
     enhStep = envStep.sandbox.__AGEnhancer;
     const stepOnlySnap = enhStep.getMobileSnapshot();
     assert.equal(stepOnlySnap.messages.length, 0, '仅含 data-step-list/worked-for-collapsible 的运行进度节点不得回退成伪助手回复');
+
+    const mixedResp = envStep.doc.createElement('div');
+    mixedResp.setAttribute('data-testid', 'agent-response');
+    const mixedStepList = envStep.doc.createElement('div');
+    mixedStepList.setAttribute('data-step-list', 'true');
+    const mixedWorkedBtn = envStep.doc.createElement('button');
+    mixedWorkedBtn.setAttribute('data-testid', 'worked-for-collapsible');
+    mixedWorkedBtn.textContent = 'Inspect live DOM 3m 19s';
+    const mixedStepSub = envStep.doc.createElement('div');
+    mixedStepSub.textContent = 'Running npm test...';
+    mixedStepList.appendChild(mixedWorkedBtn);
+    mixedStepList.appendChild(mixedStepSub);
+    const mixedReplyDiv = envStep.doc.createElement('div');
+    mixedReplyDiv.textContent = '真实纯文本回复正文';
+    mixedResp.appendChild(mixedStepList);
+    mixedResp.appendChild(mixedReplyDiv);
+    envStep.doc.body.appendChild(mixedResp);
+    const mixedSnap = enhStep.getMobileSnapshot();
+    assert.equal(mixedSnap.messages.length, 1, '步骤列表与真实纯文本回复共处无 markdown-root 容器时必须过滤进度子树并保留正文');
+    assert.equal(mixedSnap.messages[0].text, '真实纯文本回复正文');
+    mixedResp.remove();
 
     const plainResp = envStep.doc.createElement('div');
     plainResp.setAttribute('data-testid', 'agent-response');
