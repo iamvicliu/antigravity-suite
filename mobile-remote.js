@@ -12,6 +12,11 @@ const { execFile, execFileSync, spawn } = require('child_process');
 const { getStateDir, resolveActiveCdpTarget } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const { detectProxyConfig } = require('./meter-proxy');
+const {
+  computeCompletedUnreadCount,
+  createWebPushManager,
+  buildPwaIconPng
+} = require('./remote-web-push');
 
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
@@ -869,7 +874,8 @@ function enumerateLocalAddresses() {
 let cachedHostMeta = null;
 let cachedHostMetaAt = 0;
 
-function detectHostIdentityMeta({ force = false } = {}) {
+function detectHostIdentityMeta(options = {}) {
+  const force = Boolean(options?.force || options?.forceRefresh || typeof options?.execFileSync === 'function');
   const now = Date.now();
   if (!force && cachedHostMeta && now - cachedHostMetaAt < 45000) {
     return cachedHostMeta;
@@ -894,13 +900,16 @@ function detectHostIdentityMeta({ force = false } = {}) {
 
   let tailscaleDnsName = '';
   let tailscaleNodeName = '';
-  if (!skipProbes) {
+  let tailscaleHttpsCapable = false;
+  let tailscaleBin = '';
+  const execFn = typeof options.execFileSync === 'function' ? options.execFileSync : execFileSync;
+  if (!skipProbes || typeof options.execFileSync === 'function') {
     const tsBins = process.platform === 'darwin'
       ? ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']
       : ['tailscale'];
     for (const bin of tsBins) {
       try {
-        const out = execFileSync(bin, ['status', '--json'], {
+        const out = execFn(bin, ['status', '--json'], {
           timeout: 800,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore']
@@ -908,18 +917,82 @@ function detectHostIdentityMeta({ force = false } = {}) {
         const parsed = JSON.parse(out);
         const dns = String(parsed?.Self?.DNSName || '').trim().replace(/\.+$/, '');
         const hostName = String(parsed?.Self?.HostName || '').trim();
+        const certDomains = Array.isArray(parsed?.CertDomains)
+          ? parsed.CertDomains.map((d) => String(d || '').trim().replace(/\.+$/, '').toLowerCase()).filter(Boolean)
+          : [];
         if (dns) tailscaleDnsName = dns;
         if (dns) tailscaleNodeName = dns.split('.')[0] || hostName;
         else if (hostName) tailscaleNodeName = hostName;
+        tailscaleHttpsCapable = Boolean(tailscaleDnsName && certDomains.includes(tailscaleDnsName.toLowerCase()));
+        tailscaleBin = bin;
         break;
       } catch {}
     }
   }
 
   const deviceName = tailscaleNodeName || localHostLabel || 'antigravity-mac';
-  cachedHostMeta = { localHostLabel, bonjourHost, tailscaleDnsName, tailscaleNodeName, deviceName };
-  cachedHostMetaAt = now;
-  return cachedHostMeta;
+  const result = {
+    localHostLabel,
+    bonjourHost,
+    tailscaleDnsName,
+    tailscaleNodeName,
+    tailscaleHttpsCapable,
+    tailscaleBin,
+    deviceName
+  };
+  if (typeof options.execFileSync !== 'function') {
+    cachedHostMeta = result;
+    cachedHostMetaAt = now;
+  }
+  return result;
+}
+
+let cachedTailscaleServe = { active: false, port: 0, url: '', hint: '', checkedAt: 0 };
+
+function ensureTailscaleServeHttps(port, options = {}) {
+  const numPort = Number(port) || DEFAULT_PORT;
+  const now = Date.now();
+  const useCustomExec = typeof options.execFileSync === 'function';
+  if (!useCustomExec && !options.force && cachedTailscaleServe.port === numPort && (now - cachedTailscaleServe.checkedAt < 60000)) {
+    return {
+      enabled: Boolean(cachedTailscaleServe.active && cachedTailscaleServe.url),
+      url: cachedTailscaleServe.url,
+      hint: cachedTailscaleServe.hint
+    };
+  }
+  const meta = options.hostMeta || detectHostIdentityMeta({
+    forceRefresh: Boolean(options.force || useCustomExec),
+    execFileSync: options.execFileSync
+  });
+  if (!meta.tailscaleDnsName) {
+    const empty = { active: false, port: numPort, url: '', hint: '', checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = empty;
+    return { enabled: false, url: '', hint: '' };
+  }
+  if (!meta.tailscaleHttpsCapable) {
+    const hint = `在 Tailscale 控制台 DNS 页开启 HTTPS Certificates 后即可使用安全地址 https://${meta.tailscaleDnsName}`;
+    const res = { active: false, port: numPort, url: '', hint, checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = res;
+    return { enabled: false, url: '', hint };
+  }
+  const bin = meta.tailscaleBin || 'tailscale';
+  const execFn = useCustomExec ? options.execFileSync : execFileSync;
+  const targetUrl = `https://${meta.tailscaleDnsName}`;
+  try {
+    execFn(bin, ['serve', '--bg', String(numPort)], {
+      timeout: 3000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const okState = { active: true, port: numPort, url: targetUrl, hint: '', checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = okState;
+    return { enabled: true, url: targetUrl, hint: '' };
+  } catch {
+    const hint = `请在 Tailscale 控制台开启 HTTPS Certificates 或运行 tailscale serve --bg ${numPort}`;
+    const errState = { active: false, port: numPort, url: '', hint, checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = errState;
+    return { enabled: false, url: '', hint };
+  }
 }
 
 function encodeEndpointsParam(endpoints) {
@@ -1848,6 +1921,113 @@ async function resolveLocalApi(options = {}) {
   }
   if (isCatalogTestEnv()) return null;
   return await getSharedLocalApi();
+}
+
+function classifyLanguageServerRpcError(err, method = '') {
+  const msg = String(err?.message || err || '').trim();
+  const code = String(err?.code || '').toUpperCase();
+  const isTimeoutOrNet = /timeout|timed?\s*out|abort|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up/i.test(msg)
+    || ['ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'ABORT_ERR'].includes(code);
+  if (isTimeoutOrNet) {
+    return {
+      ok: false,
+      kind: 'timeout',
+      confirmedNotExecuted: false,
+      error: msg || `${method || 'RPC'} 调用超时`
+    };
+  }
+  if (err?.confirmedNotExecuted === true) {
+    return {
+      ok: false,
+      kind: 'confirmed_not_executed',
+      confirmedNotExecuted: true,
+      error: msg || `${method || 'RPC'} 已确认未执行`
+    };
+  }
+  const httpMatch = msg.match(/^HTTP\s+(\d{3})\s*:\s*([\s\S]*)$/i);
+  const httpStatus = Number(err?.status || err?.statusCode || (httpMatch ? httpMatch[1] : 0)) || 0;
+  const rawBody = String(err?.responseText || (httpMatch ? httpMatch[2] : '') || '').trim();
+  let parsedBody = (err?.rpcError && typeof err.rpcError === 'object') ? err.rpcError : null;
+  if (!parsedBody && rawBody.startsWith('{') && rawBody.endsWith('}')) {
+    try {
+      const obj = JSON.parse(rawBody);
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        parsedBody = obj;
+      }
+    } catch {}
+  }
+  const structCode = String(parsedBody?.code || err?.connectCode || '').trim().toLowerCase();
+  const structMessage = String(parsedBody?.message || '').trim().toLowerCase();
+  const isGatewayErrorStatus = httpStatus === 502 || httpStatus === 503 || httpStatus === 504;
+  const EXPLICIT_HTTP_REJECT_STATUSES = new Set([400, 404, 405, 409, 412, 422, 501]);
+  const EXPLICIT_CONNECT_REJECT_CODES = new Set([
+    'unimplemented',
+    'invalid_argument',
+    'not_found',
+    'failed_precondition',
+    'permission_denied',
+    'unauthenticated'
+  ]);
+  const isExactVerifiedDeprecated = Boolean(
+    parsedBody &&
+    (!method || method === 'SendAllQueuedMessages') &&
+    (structCode === 'unknown' || structCode === 'unimplemented') &&
+    structMessage === 'deprecated'
+  );
+  const isConfirmedRejected = Boolean(
+    EXPLICIT_HTTP_REJECT_STATUSES.has(httpStatus) ||
+    (!isGatewayErrorStatus && EXPLICIT_CONNECT_REJECT_CODES.has(structCode)) ||
+    isExactVerifiedDeprecated
+  );
+  return {
+    ok: false,
+    kind: isConfirmedRejected ? 'confirmed_not_executed' : 'error_unknown',
+    confirmedNotExecuted: isConfirmedRejected,
+    error: msg || `${method || 'RPC'} 调用失败`
+  };
+}
+
+async function runRpcCallDetailed(invoker, method, body, timeoutMs = 4500) {
+  const TIMEOUT_SENTINEL = Symbol('rpc_timeout');
+  let timer = null;
+  try {
+    const res = await Promise.race([
+      Promise.resolve().then(() => invoker(method, body)),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(TIMEOUT_SENTINEL), Math.max(50, Number(timeoutMs) || 4500));
+        timer.unref?.();
+      })
+    ]);
+    if (res === TIMEOUT_SENTINEL) {
+      return { ok: false, kind: 'timeout', confirmedNotExecuted: false, error: `${method} 响应超时，结果未知` };
+    }
+    if (res === null || res === false) {
+      return { ok: false, kind: 'empty', confirmedNotExecuted: false, error: `${method} 返回空结果，状态未知` };
+    }
+    return { ok: true, kind: 'ok', result: res };
+  } catch (err) {
+    return classifyLanguageServerRpcError(err, method);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function callLocalLanguageServerDetailed(method, body, timeoutMs = 1500, options = {}) {
+  const isCustom = Boolean(options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__);
+  const api = await resolveLocalApi(options);
+  if (!api || typeof api.call !== 'function') {
+    return { ok: false, kind: 'unavailable', confirmedNotExecuted: true, error: 'LanguageServer 未连接' };
+  }
+  const firstOutcome = await runRpcCallDetailed((m, b) => api.call(m, b), method, body, timeoutMs);
+  if (firstOutcome.ok || isCustom || options?.idempotent !== true || firstOutcome.kind !== 'error_unknown') {
+    return firstOutcome;
+  }
+  invalidateSharedLocalApi();
+  const retryApi = await getSharedLocalApi();
+  if (!retryApi || typeof retryApi.call !== 'function') {
+    return firstOutcome;
+  }
+  return await runRpcCallDetailed((m, b) => retryApi.call(m, b), method, body, timeoutMs);
 }
 
 async function callLocalLanguageServer(method, body, timeoutMs = 1500, options = {}) {
@@ -3704,6 +3884,148 @@ function extractTrajectoryUserAttachments(ui) {
   return attachments;
 }
 
+function stripDisplayMediaSuffixFromQueuedText(rawText, hasMedia = true) {
+  const s = String(rawText || '');
+  if (!hasMedia) return s;
+  const trimmed = s.replace(/\r\n?/g, '\n').trim();
+  if (/^(?:\[图片附件\]|\[图片\s*×\d+\])$/.test(trimmed)) return '';
+  return s
+    .replace(/\r\n?/g, '\n')
+    .replace(/(?:\n+)?\[附带\s*\d+\s*张图片\]\s*$/g, '')
+    .replace(/(?:\n+)?\[图片\s*×\d+\]\s*$/g, '')
+    .trim();
+}
+
+function extractRawMediaEntriesFromUserInput(ui) {
+  if (!ui || typeof ui !== 'object') return [];
+  const entries = [];
+  const seen = new Set();
+  const pushRaw = (entry) => {
+    const inlineHash = entry.inlineRaw
+      ? crypto.createHash('sha256').update(entry.inlineRaw).digest('hex')
+      : '';
+    const identity = entry.localPath
+      || entry.rawUri
+      || (inlineHash ? `inline:${inlineHash}|${entry.name || ''}` : '')
+      || (entry.hasThumbnailOnly ? `thumb:${entry.name || ''}` : (entry.name || ''));
+    const key = `${entry.kind}|${identity}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push(entry);
+  };
+  const inspectMediaObj = (m, forceImage = false) => {
+    if (!m || typeof m !== 'object') return;
+    const rawUri = String(m.uri || m.fileUri || m.path || m.absoluteUri || '').trim();
+    const localPath = normalizeLocalFileUriToPath(rawUri);
+    const mimeType = String(m.mimeType || m.mime_type || 'image/png').trim() || 'image/png';
+    const inlineRaw = String(m.inlineData || m.inline_data || m.base64Data || m.base64_data || m.data || '').trim();
+    const hasThumbnailOnly = !inlineRaw && Boolean(String(m.thumbnail || '').trim());
+    const isImage = forceImage || /^image\//i.test(mimeType) || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(localPath || String(m.displayName || m.name || ''));
+    const name = String(m.displayName || m.name || (localPath ? path.basename(localPath) : (isImage ? 'image.png' : 'attachment'))).trim();
+    if (!localPath && !rawUri && !inlineRaw && !hasThumbnailOnly) return;
+    pushRaw({
+      kind: isImage ? 'image' : 'file',
+      name,
+      mimeType,
+      localPath,
+      rawUri,
+      inlineRaw,
+      hasThumbnailOnly,
+      isImage
+    });
+  };
+  if (Array.isArray(ui.media)) {
+    for (const m of ui.media) inspectMediaObj(m, false);
+  }
+  if (Array.isArray(ui.images)) {
+    for (const img of ui.images) inspectMediaObj(img, true);
+  }
+  if (Array.isArray(ui.items)) {
+    for (const it of ui.items) {
+      const fileUri = String(it?.item?.file?.absoluteUri || '').trim();
+      if (!fileUri) continue;
+      const localPath = normalizeLocalFileUriToPath(fileUri);
+      const name = localPath ? path.basename(localPath) : safeDecodeURIComponent(fileUri.split('/').pop() || fileUri);
+      const ext = path.extname(name).toLowerCase();
+      const isImage = /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(name);
+      const mimeType = SAFE_MEDIA_MIME_BY_EXT[ext] || (isImage ? 'image/png' : 'application/octet-stream');
+      pushRaw({
+        kind: isImage ? 'image' : 'file',
+        name,
+        mimeType,
+        localPath,
+        rawUri: fileUri,
+        inlineRaw: '',
+        hasThumbnailOnly: false,
+        isImage
+      });
+    }
+  }
+  return entries;
+}
+
+function materializeQueuedAttachmentsForEdit(rawEntries, mediaOptions = {}) {
+  const list = Array.isArray(rawEntries) ? rawEntries : [];
+  if (!list.length) {
+    return { ok: false, attachments: [], error: '未能获取排队消息的原始附件来源' };
+  }
+  const out = [];
+  for (const item of list) {
+    let resolvedBuf = null;
+    let resolvedMime = String(item?.mimeType || 'image/png').split(';')[0].trim() || 'image/png';
+    let resolvedName = String(item?.name || 'attachment').trim() || 'attachment';
+    if (item?.localPath) {
+      const checked = resolveSafeLocalMediaPath(item.localPath, mediaOptions);
+      if (checked.ok) {
+        try {
+          resolvedBuf = fs.readFileSync(checked.realPath);
+          resolvedName = checked.baseName || resolvedName;
+          const cleanContentMime = String(checked.contentType || '').split(';')[0].trim();
+          if (cleanContentMime && cleanContentMime !== 'application/octet-stream') {
+            resolvedMime = cleanContentMime;
+          }
+        } catch {
+          resolvedBuf = null;
+        }
+      }
+    }
+    if (!resolvedBuf && item?.inlineRaw) {
+      const dataMatch = item.inlineRaw.match(/^data:([^;,\s]+);base64,([\s\S]+)$/i);
+      const cleanB64 = (dataMatch ? dataMatch[2] : item.inlineRaw).replace(/\s+/g, '');
+      if (cleanB64 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+        try {
+          const decoded = Buffer.from(cleanB64, 'base64');
+          const maxBytes = Number.isFinite(mediaOptions.maxBytes) ? mediaOptions.maxBytes : LOCAL_MEDIA_MAX_BYTES;
+          if (decoded.length > 0 && decoded.length <= maxBytes) {
+            resolvedBuf = decoded;
+            if (dataMatch?.[1]) resolvedMime = dataMatch[1].toLowerCase();
+          }
+        } catch {}
+      }
+    }
+    if (!resolvedBuf) {
+      return {
+        ok: false,
+        attachments: [],
+        error: item?.hasThumbnailOnly
+          ? '排队媒体仅含缩略图且原始本地文件不可访问，已取消撤回以避免丢失原图'
+          : '无法读取原始排队附件内容，已取消撤回以避免丢失附件'
+      };
+    }
+    const isImage = Boolean(item?.isImage || /^image\//i.test(resolvedMime));
+    const dataUrl = `data:${resolvedMime};base64,${resolvedBuf.toString('base64')}`;
+    out.push({
+      name: resolvedName,
+      mimeType: resolvedMime,
+      base64: dataUrl,
+      size: resolvedBuf.length,
+      isImage,
+      previewUrl: isImage ? dataUrl : ''
+    });
+  }
+  return { ok: true, attachments: out };
+}
+
 function formatTrajectoryUserInput(ui) {
   if (!ui || typeof ui !== 'object') return '';
   const pieces = [];
@@ -3755,12 +4077,21 @@ function isQueuedTrajectoryUserStep(step) {
     || step.metadata?.queued === true;
 }
 
+function buildQueuedStepMediaSig(uiObj) {
+  return extractRawMediaEntriesFromUserInput(uiObj)
+    .map((e) => String(e?.dedupKey || e?.uri || e?.name || '').trim())
+    .filter(Boolean)
+    .sort()
+    .join('|');
+}
+
 function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) {
   const queued = [];
   const seenKey = new Set();
   const pushQueued = (stepIndex, ui) => {
     const text = formatTrajectoryUserInput(ui);
     const atts = extractTrajectoryUserAttachments(ui);
+    const mediaSig = buildQueuedStepMediaSig(ui);
     const images = atts
       .filter((a) => a.kind === 'image' && (a.inlineUrl || a.path))
       .map((a) => ({
@@ -3768,13 +4099,15 @@ function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) 
         alt: a.name || (a.path ? path.basename(a.path) : '图片')
       }));
     if (!text && !images.length) return;
-    const key = `${stepIndex}|${text}`;
+    const key = `${stepIndex}|${text}|${mediaSig}`;
     if (seenKey.has(key)) return;
     seenKey.add(key);
     queued.push({
       stepIndex,
       text,
       ...(images.length ? { images } : {}),
+      ...(atts.length > 0 ? { hasMedia: true } : {}),
+      ...(mediaSig ? { mediaSig } : {}),
       status: 'queued'
     });
   };
@@ -3796,6 +4129,267 @@ function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) 
     pushQueued(idx, ui);
   }
   return queued;
+}
+
+function decodeProtoVarint(buf, offset) {
+  let val = 0;
+  let mult = 1;
+  let pos = offset;
+  while (pos < buf.length) {
+    const b = buf[pos++];
+    val += (b & 0x7f) * mult;
+    if ((b & 0x80) === 0) return [val, pos];
+    mult *= 128;
+    if (pos - offset > 10) return null;
+  }
+  return null;
+}
+
+function parseProtoFields(buf) {
+  if (!Buffer.isBuffer(buf) || !buf.length) return [];
+  const fields = [];
+  let pos = 0;
+  while (pos < buf.length) {
+    const tagRes = decodeProtoVarint(buf, pos);
+    if (!tagRes) return null;
+    const [tag, p1] = tagRes;
+    const no = Math.floor(tag / 8);
+    const wt = tag & 7;
+    if (no <= 0) return null;
+    pos = p1;
+    if (wt === 0) {
+      const valRes = decodeProtoVarint(buf, pos);
+      if (!valRes) return null;
+      fields.push({ no, wt, val: valRes[0] });
+      pos = valRes[1];
+    } else if (wt === 1) {
+      if (pos + 8 > buf.length) return null;
+      fields.push({ no, wt, val: buf.subarray(pos, pos + 8) });
+      pos += 8;
+    } else if (wt === 2) {
+      const lenRes = decodeProtoVarint(buf, pos);
+      if (!lenRes) return null;
+      const [len, p2] = lenRes;
+      if (len < 0 || p2 + len > buf.length) return null;
+      fields.push({ no, wt, val: buf.subarray(p2, p2 + len) });
+      pos = p2 + len;
+    } else if (wt === 5) {
+      if (pos + 4 > buf.length) return null;
+      fields.push({ no, wt, val: buf.subarray(pos, pos + 4) });
+      pos += 4;
+    } else {
+      return null;
+    }
+  }
+  return fields;
+}
+
+function decodePendingAgentStepPayload(rawStepPayload) {
+  let buf = null;
+  if (Buffer.isBuffer(rawStepPayload)) {
+    buf = rawStepPayload;
+  } else if (rawStepPayload instanceof Uint8Array) {
+    buf = Buffer.from(rawStepPayload.buffer, rawStepPayload.byteOffset, rawStepPayload.byteLength);
+  } else if (typeof rawStepPayload === 'string') {
+    const clean = rawStepPayload.trim();
+    if (!clean || !/^[A-Za-z0-9+/=_-]+$/.test(clean)) return null;
+    buf = Buffer.from(clean, 'base64');
+  } else {
+    return null;
+  }
+  if (!buf || !buf.length) return null;
+  const stepFields = parseProtoFields(buf);
+  if (!stepFields || !stepFields.length) return null;
+  const userInputField = stepFields.find((f) => f.no === 19 && f.wt === 2);
+  if (!userInputField) return { isUserInput: false, ui: null };
+  const uiFields = parseProtoFields(userInputField.val);
+  if (!uiFields) return { isUserInput: false, ui: null };
+  const items = [];
+  const media = [];
+  let query = '';
+  let userResponse = '';
+  for (const f of uiFields) {
+    if (f.wt !== 2) continue;
+    if (f.no === 1 && !query) {
+      query = f.val.toString('utf8');
+    } else if (f.no === 2 && !userResponse) {
+      userResponse = f.val.toString('utf8');
+    } else if (f.no === 3) {
+      const itemFields = parseProtoFields(f.val);
+      const txtField = itemFields?.find((x) => x.no === 1 && x.wt === 2);
+      if (txtField) {
+        items.push({ text: txtField.val.toString('utf8') });
+      }
+    } else if (f.no === 9) {
+      const mFields = parseProtoFields(f.val);
+      if (!mFields) continue;
+      const mimeType = mFields.find((x) => x.no === 1 && x.wt === 2)?.val.toString('utf8') || 'image/png';
+      const inlineBuf = mFields.find((x) => x.no === 2 && x.wt === 2)?.val || null;
+      const uri = mFields.find((x) => x.no === 5 && x.wt === 2)?.val.toString('utf8') || '';
+      const thumbBuf = mFields.find((x) => x.no === 6 && x.wt === 2)?.val || null;
+      const displayName = mFields.find((x) => x.no === 9 && x.wt === 2)?.val.toString('utf8') || '';
+      media.push({
+        mimeType,
+        ...(inlineBuf?.length ? { inlineData: inlineBuf.toString('base64') } : {}),
+        ...(uri ? { uri } : {}),
+        ...(thumbBuf?.length ? { thumbnail: thumbBuf.toString('base64') } : {}),
+        ...(displayName ? { displayName } : {})
+      });
+    }
+  }
+  if (!items.length && query) {
+    items.push({ text: query });
+  }
+  return {
+    isUserInput: true,
+    ui: {
+      items,
+      ...(userResponse ? { userResponse } : {}),
+      ...(media.length ? { media } : {})
+    }
+  };
+}
+
+function hasExplicitPendingAgentMessagesUpdate(stateUpdate) {
+  if (!stateUpdate || typeof stateUpdate !== 'object') return false;
+  const u = (stateUpdate.update && typeof stateUpdate.update === 'object') ? stateUpdate.update : null;
+  const hasField = (obj) => Boolean(
+    obj && (
+      (obj.pendingAgentMessagesUpdate && typeof obj.pendingAgentMessagesUpdate === 'object') ||
+      (obj.pending_agent_messages_update && typeof obj.pending_agent_messages_update === 'object') ||
+      Array.isArray(obj.pendingAgentMessages) ||
+      Array.isArray(obj.pending_agent_messages)
+    )
+  );
+  return hasField(u) || hasField(stateUpdate);
+}
+
+function extractPendingAgentMessagesFromUpdate(stateUpdate, options = {}) {
+  if (!stateUpdate || typeof stateUpdate !== 'object') return [];
+  const rawList =
+    stateUpdate?.update?.pendingAgentMessagesUpdate?.pendingAgentMessages ||
+    stateUpdate?.update?.pendingAgentMessagesUpdate?.pending_agent_messages ||
+    stateUpdate?.update?.pending_agent_messages_update?.pendingAgentMessages ||
+    stateUpdate?.update?.pending_agent_messages_update?.pending_agent_messages ||
+    stateUpdate?.pendingAgentMessagesUpdate?.pendingAgentMessages ||
+    stateUpdate?.pending_agent_messages_update?.pending_agent_messages ||
+    stateUpdate?.update?.pendingAgentMessages ||
+    stateUpdate?.update?.pending_agent_messages ||
+    stateUpdate?.pendingAgentMessages ||
+    stateUpdate?.pending_agent_messages ||
+    [];
+  if (!Array.isArray(rawList) || !rawList.length) return [];
+
+  const onRawRecord = typeof options?.onRawRecord === 'function' ? options.onRawRecord : null;
+  const out = [];
+  const seenIds = new Set();
+  for (let i = 0; i < rawList.length; i++) {
+    const msg = rawList[i];
+    if (!msg || typeof msg !== 'object') continue;
+    if (msg.hideFromUser === true || msg.hide_from_user === true) continue;
+    const ds = msg.deliveryStrategy ?? msg.delivery_strategy;
+    if (ds === 1 || ds === '1' || ds === 'NEXT_INVOCATION' || ds === 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION') {
+      continue;
+    }
+    const messageId = String(msg.id || msg.messageId || msg.message_id || '').trim();
+    const topType = String(msg.type || '').trim();
+    if (topType.startsWith('CORTEX_STEP_TYPE_') && topType !== 'CORTEX_STEP_TYPE_USER_INPUT') {
+      continue;
+    }
+    if (msg.payload && typeof msg.payload === 'object' && typeof msg.payload.case === 'string' && msg.payload.case !== 'stepPayload') {
+      continue;
+    }
+    const rawStepPayload = msg.stepPayload ?? msg.step_payload ?? (msg.payload?.case === 'stepPayload' ? msg.payload.value : null);
+    let ui = null;
+    if (typeof rawStepPayload === 'string' || Buffer.isBuffer(rawStepPayload) || rawStepPayload instanceof Uint8Array) {
+      const decoded = decodePendingAgentStepPayload(rawStepPayload);
+      if (decoded && decoded.isUserInput === false) continue;
+      ui = decoded?.ui || null;
+    }
+    if (!ui) {
+      const stepObj = (rawStepPayload && typeof rawStepPayload === 'object' && !Buffer.isBuffer(rawStepPayload) && !(rawStepPayload instanceof Uint8Array))
+        ? rawStepPayload
+        : (msg.step && typeof msg.step === 'object' ? msg.step : null);
+      if (stepObj) {
+        const stType = String(stepObj.type || stepObj.stepType || stepObj.step_type || msg.stepType || msg.step_type || '').trim();
+        if (stType && stType !== 'CORTEX_STEP_TYPE_USER_INPUT' && !/^user_?input$/i.test(stType)) {
+          continue;
+        }
+        const stCase = String(stepObj.case || stepObj.stepCase || stepObj.step_case || stepObj.step?.case || '').trim();
+        if (stCase && !/^user_?input$/i.test(stCase)) {
+          continue;
+        }
+        const hasExplicitUserInput = Boolean(stepObj.userInput || stepObj.user_input || (Array.isArray(stepObj.items) && stepObj.items.length));
+        const nonUserStepKeys = [
+          'plannerResponse', 'planner_response', 'runCommand', 'run_command', 'commandStatus', 'command_status',
+          'codeAction', 'code_action', 'checkpoint', 'viewFile', 'view_file', 'grepSearch', 'grep_search',
+          'findByName', 'find_by_name', 'listDirectory', 'list_directory', 'notifyUser', 'notify_user',
+          'taskBoundary', 'task_boundary', 'errorMessage', 'error_message'
+        ];
+        if (!hasExplicitUserInput && nonUserStepKeys.some((k) => stepObj[k] != null)) {
+          continue;
+        }
+      }
+      ui =
+        msg.step?.userInput ||
+        msg.step?.user_input ||
+        (rawStepPayload && typeof rawStepPayload === 'object' ? (rawStepPayload.userInput || rawStepPayload.user_input) : null) ||
+        msg.userInput ||
+        msg.user_input ||
+        msg.step ||
+        (rawStepPayload && typeof rawStepPayload === 'object' ? rawStepPayload : null) ||
+        msg;
+    }
+    let text = formatTrajectoryUserInput(ui);
+    if (!text) {
+      text = String(msg.text || msg.content || ui?.text || '').replace(/\r\n?/g, '\n').trim();
+    }
+    const atts = extractTrajectoryUserAttachments(ui);
+    const images = atts
+      .filter((a) => a.kind === 'image' && (a.inlineUrl || a.path))
+      .map((a) => ({
+        src: a.inlineUrl || `/api/media?path=${encodeURIComponent(a.path)}`,
+        alt: a.name || (a.path ? path.basename(a.path) : '图片')
+      }));
+    if (!images.length && Array.isArray(ui?.media)) {
+      for (const m of ui.media) {
+        const inlineUrl = buildSafeInlineImageDataUrl(m?.inlineData || m?.thumbnail || m?.data || '', m?.mimeType || 'image/png');
+        const p = normalizeLocalFileUriToPath(m?.uri || m?.url || '');
+        if (inlineUrl || p) {
+          images.push({
+            src: inlineUrl || `/api/media?path=${encodeURIComponent(p)}`,
+            alt: String(m?.displayName || m?.name || '图片')
+          });
+        }
+      }
+    }
+    const hasMedia = images.length > 0 || (Array.isArray(ui?.media) && ui.media.length > 0) || atts.length > 0;
+    if (!text && !images.length) continue;
+    if (messageId) {
+      if (seenIds.has(messageId)) continue;
+      seenIds.add(messageId);
+      if (onRawRecord) {
+        try {
+          onRawRecord({
+            messageId,
+            text,
+            ui,
+            hasMedia
+          });
+        } catch {}
+      }
+    }
+    out.push({
+      ...(messageId ? { id: messageId, messageId } : {}),
+      stepIndex: -1,
+      source: 'agent_state',
+      text,
+      ...(images.length ? { images } : {}),
+      ...(hasMedia ? { hasMedia: true } : {}),
+      status: 'queued'
+    });
+  }
+  return out;
 }
 
 function extractMessagesFromTrajectorySteps(steps, options = {}) {
@@ -4157,14 +4751,234 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
   return baseList.map((m, idx) => ({ ...m, msgIndex: idx }));
 }
 
+function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
+  if (!Array.isArray(baseList)) return [];
+  if (!Array.isArray(incomingList) || !incomingList.length) return baseList;
+  const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const getQImgCount = (q) => {
+    if (Array.isArray(q?.images)) return q.images.length;
+    if (Array.isArray(q?.attachments)) return q.attachments.length;
+    if (Array.isArray(q?.media)) return q.media.length;
+    return 0;
+  };
+  const getStableId = (q) => String(q?.messageId || '').trim();
+  const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
+
+  const idMap = new Map();
+  for (let i = 0; i < baseList.length; i++) {
+    const bid = getStableId(baseList[i]);
+    if (bid && !idMap.has(bid)) {
+      idMap.set(bid, { item: baseList[i], idx: i });
+    }
+  }
+
+  // 第一轮：优先按稳定 messageId 精确匹配并消耗对应基准项，防止同行额外无 ID/异 ID 项误用其文本配额
+  const matchedBaseIndices = new Set();
+  const handledIncomingIndices = new Set();
+  for (let i = 0; i < incomingList.length; i++) {
+    const iq = incomingList[i];
+    if (!iq || typeof iq !== 'object') {
+      handledIncomingIndices.add(i);
+      continue;
+    }
+    const iqId = getStableId(iq);
+    if (iqId && idMap.has(iqId)) {
+      const hit = idMap.get(iqId);
+      matchedBaseIndices.add(hit.idx);
+      handledIncomingIndices.add(i);
+      if (mergeMeta && Number.isInteger(iq.domIndex)) {
+        hit.item.domIndex = iq.domIndex;
+      }
+    }
+  }
+
+  const unmatchedAnyByKey = new Map();
+  const unmatchedIdlessByKey = new Map();
+  for (let i = 0; i < baseList.length; i++) {
+    if (matchedBaseIndices.has(i)) continue;
+    const bq = baseList[i];
+    if (!bq || typeof bq !== 'object') continue;
+    const k = queueMatchKey(bq);
+    if (!unmatchedAnyByKey.has(k)) unmatchedAnyByKey.set(k, []);
+    unmatchedAnyByKey.get(k).push({ item: bq, idx: i });
+    if (!getStableId(bq)) {
+      if (!unmatchedIdlessByKey.has(k)) unmatchedIdlessByKey.set(k, []);
+      unmatchedIdlessByKey.get(k).push({ item: bq, idx: i });
+    }
+  }
+
+  const takeFirstUnmatched = (poolMap, k) => {
+    const bucket = poolMap.get(k);
+    if (!bucket || !bucket.length) return null;
+    while (bucket.length) {
+      const cand = bucket.shift();
+      if (!matchedBaseIndices.has(cand.idx)) {
+        matchedBaseIndices.add(cand.idx);
+        return cand;
+      }
+    }
+    return null;
+  };
+
+  for (let i = 0; i < incomingList.length; i++) {
+    if (handledIncomingIndices.has(i)) continue;
+    const iq = incomingList[i];
+    const iqId = getStableId(iq);
+    if (iqId && idMap.has(iqId)) {
+      const hit = idMap.get(iqId);
+      if (mergeMeta && Number.isInteger(iq.domIndex) && !Number.isInteger(hit.item.domIndex)) {
+        hit.item.domIndex = iq.domIndex;
+      }
+      continue;
+    }
+    const k = queueMatchKey(iq);
+    if (iqId) {
+      // 携带非空稳定 ID 时，绝不能因文本/图数相同而吞并另一个已有不同稳定 ID 的项；仅可绑定无 ID 项（如 traj 与 Fiber）
+      const idlessHit = takeFirstUnmatched(unmatchedIdlessByKey, k);
+      if (idlessHit) {
+        if (mergeMeta && Number.isInteger(iq.domIndex)) {
+          idlessHit.item.domIndex = iq.domIndex;
+        }
+        idlessHit.item.messageId = iqId;
+        if (!idlessHit.item.id) idlessHit.item.id = iqId;
+        idMap.set(iqId, { item: idlessHit.item, idx: idlessHit.idx });
+        continue;
+      }
+      baseList.push(iq);
+      idMap.set(iqId, { item: iq, idx: baseList.length - 1 });
+      continue;
+    }
+    const anyHit = takeFirstUnmatched(unmatchedAnyByKey, k);
+    if (anyHit) {
+      if (mergeMeta && Number.isInteger(iq.domIndex) && !Number.isInteger(anyHit.item.domIndex)) {
+        anyHit.item.domIndex = iq.domIndex;
+      }
+      continue;
+    }
+    baseList.push(iq);
+  }
+  return baseList;
+}
+
 function createConversationHistoryManager() {
   const cache = new Map();
+  const pendingMsgCache = new Map();
+  const pendingRawUiCache = new Map();
+  const lastUserConfigMap = new Map();
   const inflightMap = new Map();
   const fetchGenMap = new Map();
   const invalidatedGenMap = new Map();
+  const pendingFetchGenMap = new Map();
+  const pendingInvalidatedGenMap = new Map();
   const MAX_CACHE_ENTRIES = 24;
   const MAX_FETCH_GEN_ENTRIES = 2000;
   let globalFetchSeq = 0;
+  let globalPendingSeq = 0;
+
+  function nextPendingGen(sessionId) {
+    const next = ++globalPendingSeq;
+    if (pendingFetchGenMap.has(sessionId)) pendingFetchGenMap.delete(sessionId);
+    pendingFetchGenMap.set(sessionId, next);
+    while (pendingFetchGenMap.size > MAX_FETCH_GEN_ENTRIES) {
+      const oldestKey = pendingFetchGenMap.keys().next().value;
+      if (oldestKey !== undefined) pendingFetchGenMap.delete(oldestKey);
+      else break;
+    }
+    return next;
+  }
+
+  function getCachedUserConfig(sessionId) {
+    const sid = String(sessionId || '').trim();
+    return sid ? (lastUserConfigMap.get(sid) || null) : null;
+  }
+
+  async function fetchPendingAgentMessages(sessionId, options = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid || sid === '__new__' || sid === 'new') return null;
+    if (typeof options.fetchPendingAgentMessages === 'function') {
+      return await options.fetchPendingAgentMessages(sid, options);
+    }
+    const nowMs = Date.now();
+    const cached = pendingMsgCache.get(sid);
+    if (!options.bypassCache && cached && (nowMs - cached.at) < 450) {
+      return cached.list;
+    }
+    const reqGen = nextPendingGen(sid);
+    const api = await resolveLocalApi(options);
+    if (!api || typeof api.callStreamFirstFrame !== 'function') return null;
+    try {
+      const firstFrame = await api.callStreamFirstFrame(
+        'StreamAgentStateUpdates',
+        {
+          conversationId: sid,
+          subscriberId: `ag-remote-q-${nowMs}`,
+          initialStepsPageBounds: { startIndex: 0, endIndexExclusive: 0 },
+          initialGeneratorMetadatasPageBounds: { startIndex: 0, endIndexExclusive: 0 },
+          initialExecutorMetadatasPageBounds: { startIndex: 0, endIndexExclusive: 0 }
+        },
+        1200
+      );
+      if (!firstFrame || typeof firstFrame !== 'object') return null;
+      if (!hasExplicitPendingAgentMessagesUpdate(firstFrame)) return null;
+      const latestPendingGen = pendingFetchGenMap.get(sid) || 0;
+      const invPendingGen = pendingInvalidatedGenMap.get(sid) || 0;
+      const currentCached = pendingMsgCache.get(sid);
+      if (
+        reqGen < latestPendingGen ||
+        reqGen <= invPendingGen ||
+        (currentCached && (currentCached.gen || 0) > reqGen)
+      ) {
+        return (currentCached && (currentCached.gen || 0) > reqGen && Array.isArray(currentCached.list))
+          ? currentCached.list
+          : null;
+      }
+      const rawMap = new Map();
+      const list = extractPendingAgentMessagesFromUpdate(firstFrame, {
+        onRawRecord: (rec) => {
+          if (rec?.messageId) rawMap.set(rec.messageId, rec);
+        }
+      });
+      if (invPendingGen > 0 && reqGen > invPendingGen) {
+        pendingInvalidatedGenMap.delete(sid);
+      }
+      if (pendingMsgCache.size >= MAX_CACHE_ENTRIES && !pendingMsgCache.has(sid)) {
+        const oldest = pendingMsgCache.keys().next().value;
+        if (oldest !== undefined) pendingMsgCache.delete(oldest);
+      }
+      if (pendingRawUiCache.size >= MAX_CACHE_ENTRIES && !pendingRawUiCache.has(sid)) {
+        const oldestRaw = pendingRawUiCache.keys().next().value;
+        if (oldestRaw !== undefined) pendingRawUiCache.delete(oldestRaw);
+      }
+      pendingMsgCache.set(sid, { list, at: Date.now(), gen: reqGen });
+      pendingRawUiCache.set(sid, rawMap);
+      return list;
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolvePendingMessageForEdit(sessionId, messageId, options = {}) {
+    const sid = String(sessionId || '').trim();
+    const mid = String(messageId || '').trim();
+    if (!sid || !mid) return null;
+    const cachedRaw = pendingRawUiCache.get(sid)?.get(mid);
+    if (cachedRaw) return cachedRaw;
+    const list = await fetchPendingAgentMessages(sid, { ...options, bypassCache: true }).catch(() => null);
+    const afterFetchRaw = pendingRawUiCache.get(sid)?.get(mid);
+    if (afterFetchRaw) return afterFetchRaw;
+    if (Array.isArray(list)) {
+      const hit = list.find((item) => item && (String(item.messageId || item.id || '').trim() === mid));
+      if (hit) {
+        return {
+          messageId: mid,
+          text: String(hit.text || ''),
+          ui: hit.ui || ((Array.isArray(hit.media) || Array.isArray(hit.images) || Array.isArray(hit.items)) ? hit : null),
+          hasMedia: Boolean(hit.hasMedia || (Array.isArray(hit.media) && hit.media.length) || (Array.isArray(hit.images) && hit.images.length))
+        };
+      }
+    }
+    return null;
+  }
 
   function touchCache(sessionId, rec) {
     if (cache.has(sessionId)) cache.delete(sessionId);
@@ -4238,6 +5052,17 @@ function createConversationHistoryManager() {
             const prevLen = allSteps.length;
             allSteps.push(...chunk);
             if (allSteps.length <= prevLen) break;
+          }
+        }
+        for (let i = allSteps.length - 1; i >= 0; i--) {
+          const uiCfg = allSteps[i]?.userInput?.userConfig || allSteps[i]?.userInput?.lastUserConfig;
+          if (uiCfg && typeof uiCfg === 'object') {
+            if (lastUserConfigMap.size >= MAX_CACHE_ENTRIES && !lastUserConfigMap.has(sid)) {
+              const oldest = lastUserConfigMap.keys().next().value;
+              if (oldest !== undefined) lastUserConfigMap.delete(oldest);
+            }
+            lastUserConfigMap.set(sid, uiCfg);
+            break;
           }
         }
         return {
@@ -4449,41 +5274,34 @@ function createConversationHistoryManager() {
   async function enrichMessages(snap, options = {}) {
     if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
     const { _activeTrajSig, ...cleanSnap } = snap;
-    const { merged: fullMsgs, trajMsgs, queuedMessages } = await resolveFullMessages(cleanSnap.sessionId, cleanSnap.messages, {
-      ...options,
-      trajSig: _activeTrajSig || '',
-      busy: Boolean(cleanSnap.busy)
-    });
+    const sid = String(cleanSnap.sessionId || '').trim();
+    const [{ merged: fullMsgs, trajMsgs, queuedMessages }, pendingAgentQueued] = await Promise.all([
+      resolveFullMessages(sid, cleanSnap.messages, {
+        ...options,
+        trajSig: _activeTrajSig || '',
+        busy: Boolean(cleanSnap.busy)
+      }),
+      (!cleanSnap.isNewConversation && !cleanSnap.isolatedError)
+        ? fetchPendingAgentMessages(sid, options).catch(() => null)
+        : Promise.resolve(null)
+    ]);
     const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
     const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
     const domQueued = (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []).filter((q) => q && q.source === 'dom');
     let effQueued;
-    if (Array.isArray(queuedMessages)) {
-      const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
-      const getQImgCount = (q) => {
-        if (Array.isArray(q?.images)) return q.images.length;
-        if (Array.isArray(q?.attachments)) return q.attachments.length;
-        if (Array.isArray(q?.media)) return q.media.length;
-        return 0;
-      };
-      const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
-      // 同源重复文本与不同附件数的消息全部保留；跨来源（traj vs dom）按 (规范化文本 + 附件数) 多重集 1:1 去重
+    if (Array.isArray(pendingAgentQueued)) {
+      const mergedQ = [...pendingAgentQueued];
+      if (Array.isArray(queuedMessages) && queuedMessages.length) {
+        mergeUniqueQueuedLists(mergedQ, queuedMessages, false);
+      }
+      if (domQueued.length) {
+        mergeUniqueQueuedLists(mergedQ, domQueued, true);
+      }
+      effQueued = mergedQ;
+    } else if (Array.isArray(queuedMessages)) {
       const mergedQ = [...queuedMessages];
-      const trajCounts = new Map();
-      for (const tq of queuedMessages) {
-        const k = queueMatchKey(tq);
-        trajCounts.set(k, (trajCounts.get(k) || 0) + 1);
-      }
-      for (const dq of domQueued) {
-        const k = queueMatchKey(dq);
-        const rem = trajCounts.get(k) || 0;
-        if (rem > 0) {
-          trajCounts.set(k, rem - 1);
-          continue;
-        }
-        mergedQ.push(dq);
-      }
+      mergeUniqueQueuedLists(mergedQ, domQueued, true);
       effQueued = mergedQ;
     } else {
       effQueued = Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : [];
@@ -4503,6 +5321,10 @@ function createConversationHistoryManager() {
     const sid = String(sessionId || '').trim();
     if (!sid) return;
     cache.delete(sid);
+    pendingMsgCache.delete(sid);
+    pendingRawUiCache.delete(sid);
+    const invPendingGen = nextPendingGen(sid);
+    pendingInvalidatedGenMap.set(sid, invPendingGen);
     const invGen = nextFetchGen(sid);
     invalidatedGenMap.set(sid, invGen);
     const prefix = `${sid}\n`;
@@ -4558,7 +5380,15 @@ function createConversationHistoryManager() {
     };
   }
 
-  return { enrichMessages, getMessagesPage, warmSession, invalidateSession };
+  return {
+    enrichMessages,
+    getMessagesPage,
+    warmSession,
+    invalidateSession,
+    getCachedUserConfig,
+    fetchPendingAgentMessages,
+    resolvePendingMessageForEdit
+  };
 }
 
 const defaultHistoryManager = createConversationHistoryManager();
@@ -4637,6 +5467,9 @@ async function performActionInTarget(payload, options = {}) {
         : (act === 'send' && actionResult?.createdConversationId
           ? String(actionResult.createdConversationId)
           : (payload?.conversationId ? String(payload.conversationId) : '')));
+    if (act === 'send' && snapConvId && snapConvId !== '__new__') {
+      defaultHistoryManager.invalidateSession?.(snapConvId);
+    }
     const snapshot = await fetchSnapshotFromTarget(target.id, {
       convLimit: 100,
       conversationId: snapConvId,
@@ -4677,6 +5510,8 @@ function buildManifestJson() {
     background_color: '#09090b',
     theme_color: '#09090b',
     icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
       { src: '/icon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
     ]
   });
@@ -4686,6 +5521,84 @@ function buildServiceWorkerJs() {
   return `'use strict';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+
+function updateSwBadge(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  try {
+    if (self.navigator && typeof self.navigator.setAppBadge === 'function') {
+      if (n > 0) return self.navigator.setAppBadge(n).catch(() => {});
+      if (typeof self.navigator.clearAppBadge === 'function') {
+        return self.navigator.clearAppBadge().catch(() => {});
+      }
+      return self.navigator.setAppBadge(0).catch(() => {});
+    }
+  } catch {}
+  return Promise.resolve();
+}
+
+self.addEventListener('push', (event) => {
+  event.waitUntil((async () => {
+    let data = {};
+    try {
+      data = event.data ? event.data.json() : {};
+    } catch {
+      try {
+        data = { body: event.data ? event.data.text() : '' };
+      } catch {
+        data = {};
+      }
+    }
+    if (typeof data.completedUnreadCount === 'number' && Number.isFinite(data.completedUnreadCount)) {
+      await updateSwBadge(data.completedUnreadCount);
+      try {
+        const winList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        for (const client of winList) {
+          if (client && typeof client.postMessage === 'function') {
+            client.postMessage({ type: 'ag-push-badge-updated', completedUnreadCount: data.completedUnreadCount });
+          }
+        }
+      } catch {}
+    }
+    if (data.silent) return;
+    const title = String(data.title || 'Antigravity 远程通知');
+    const body = String(data.body || '有新的会话状态更新');
+    const tag = String(data.tag || ('ag-push-' + Date.now()));
+    const url = String(data.url || '/');
+    const conversationId = String(data.conversationId || '');
+    await self.registration.showNotification(title, {
+      body,
+      icon: '/icon-192.png',
+      badge: '/icon-180.png',
+      tag,
+      renotify: true,
+      data: { url, conversationId }
+    });
+  })());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const payload = (event.notification && event.notification.data) || {};
+  const conversationId = String(payload.conversationId || '');
+  const targetUrl = String(payload.url || (conversationId ? ('/?conversationId=' + encodeURIComponent(conversationId)) : '/'));
+  event.waitUntil((async () => {
+    const winList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of winList) {
+      try {
+        if (client && 'focus' in client) {
+          await client.focus();
+          if (conversationId && typeof client.postMessage === 'function') {
+            client.postMessage({ type: 'ag-open-conversation', conversationId });
+          }
+          return;
+        }
+      } catch {}
+    }
+    if (self.clients && typeof self.clients.openWindow === 'function') {
+      await self.clients.openWindow(targetUrl);
+    }
+  })());
+});
 `;
 }
 
@@ -4827,7 +5740,8 @@ function buildMobileAppHtml() {
   <meta id="meta-theme-color" name="theme-color" content="#09090b">
   <title>Antigravity Remote</title>
   <link rel="manifest" href="/manifest.json">
-  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
   <script id="ag-theme-boot">(function(){try{var p=localStorage.getItem('ag_remote_theme_v1');if(p!=='light'&&p!=='dark'&&p!=='system')p='system';var l=p==='light'||(p==='system'&&typeof window.matchMedia==='function'&&window.matchMedia('(prefers-color-scheme: light)').matches);var t=l?'light':'dark';var d=document.documentElement;d.setAttribute('data-theme',t);d.setAttribute('data-theme-pref',p);d.style.colorScheme=t;var m=document.getElementById('meta-theme-color');if(m)m.setAttribute('content',l?'#f8fafc':'#09090b');}catch{}})();</script>
   <style>
     :root{
@@ -4839,6 +5753,7 @@ function buildMobileAppHtml() {
       --composer-shadow:0 8px 28px rgba(0,0,0,.45);--composer-shadow-lg:0 12px 36px rgba(0,0,0,.4);
       --surface-highlight:rgba(255,255,255,.07);
       --approval-dock-bg:rgba(24,24,27,.98);
+      --dock-bg:rgba(16,16,20,.94);--dock-shadow:0 -6px 18px rgba(0,0,0,.38);
       --surface-subtle:rgba(255,255,255,.04);--surface-soft:rgba(255,255,255,.05);--surface-hover:rgba(255,255,255,.08);
       --surface-strong:rgba(255,255,255,.07);--surface-strong-hover:rgba(255,255,255,.11);
       --border:rgba(255,255,255,.11);--border-subtle:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.18);
@@ -4885,6 +5800,7 @@ function buildMobileAppHtml() {
         --composer-shadow:0 6px 24px rgba(15,23,42,.07);--composer-shadow-lg:0 10px 30px rgba(15,23,42,.08);
         --surface-highlight:rgba(255,255,255,.85);
         --approval-dock-bg:rgba(248,250,252,.96);
+        --dock-bg:rgba(241,245,249,.95);--dock-shadow:0 -6px 16px rgba(15,23,42,.08);
         --surface-subtle:rgba(15,23,42,.035);--surface-soft:rgba(15,23,42,.05);--surface-hover:rgba(15,23,42,.08);
         --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
         --border:rgba(15,23,42,.13);--border-subtle:rgba(15,23,42,.08);--border-strong:rgba(15,23,42,.2);
@@ -4924,6 +5840,7 @@ function buildMobileAppHtml() {
       --composer-shadow:0 6px 24px rgba(15,23,42,.07);--composer-shadow-lg:0 10px 30px rgba(15,23,42,.08);
       --surface-highlight:rgba(255,255,255,.85);
       --approval-dock-bg:rgba(248,250,252,.96);
+      --dock-bg:rgba(241,245,249,.95);--dock-shadow:0 -6px 16px rgba(15,23,42,.08);
       --surface-subtle:rgba(15,23,42,.035);--surface-soft:rgba(15,23,42,.05);--surface-hover:rgba(15,23,42,.08);
       --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
       --border:rgba(15,23,42,.13);--border-subtle:rgba(15,23,42,.08);--border-strong:rgba(15,23,42,.2);
@@ -5276,18 +6193,28 @@ function buildMobileAppHtml() {
       flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--fg);line-height:1.35;
       display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;
     }
-    .queue-del-btn{
+    .queue-actions{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
+    .queue-op-btn,.queue-del-btn{
       position:relative;appearance:none;border:1px solid var(--border);background:transparent;color:var(--muted);
       border-radius:7px;width:24px;height:24px;flex-shrink:0;cursor:pointer;
-      display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1;
+      display:inline-flex;align-items:center;justify-content:center;font-size:12.5px;line-height:1;
     }
+    .queue-op-btn:hover{background:var(--surface-hover);color:var(--fg-strong)}
+    .queue-op-btn.send:active{background:var(--accent-bg);color:var(--accent-strong-fg);border-color:var(--accent-border)}
     .queue-del-btn::after{content:'';position:absolute;inset:-8px}
     .queue-del-btn:active{background:var(--surface-hover);color:var(--red)}
-    .queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
+    .queue-op-btn:disabled,.queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
     .composer-dock{
-      flex-shrink:0;background:transparent;padding:2px 10px 2px;
-      display:flex;flex-direction:column;gap:5px;
+      flex-shrink:0;background:var(--dock-bg);border-top:1px solid var(--border);
+      box-shadow:var(--dock-shadow);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+      padding:2px 10px 2px;display:flex;flex-direction:column;gap:5px;
     }
+    body.has-upper-dock .composer-dock{
+      border-top-color:var(--border-subtle);box-shadow:none;
+    }
+    .approval-dock:not([hidden]){box-shadow:var(--dock-shadow)}
+    body.has-approval-dock .queue-dock:not([hidden]){border-top-color:var(--border-subtle);box-shadow:none}
+    body:not(.has-approval-dock) .queue-dock:not([hidden]){box-shadow:var(--dock-shadow)}
     .chips{display:flex;align-items:center;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:2px;min-height:34px}
     .chips::-webkit-scrollbar{display:none}
     .chip{
@@ -5726,8 +6653,16 @@ function buildMobileAppHtml() {
     .perm-ico.unknown{color:var(--placeholder)}
     .drawer-brand{display:none}
     .conv-list{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;display:flex;flex-direction:column;gap:6px}
-    .drawer-footer{flex-shrink:0;padding-top:6px;border-top:1px solid var(--border-subtle)}
-    .theme-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:10px;background:var(--seg-track);border:1px solid var(--border-subtle)}
+    .drawer-footer{flex-shrink:0;padding-top:6px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;gap:6px}
+    .theme-seg{flex:1 1 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;border-radius:10px;background:var(--seg-track);border:1px solid var(--border-subtle)}
+    .push-footer-btn{
+      flex:0 0 auto;appearance:none;height:36px;min-width:36px;padding:0 10px;border-radius:10px;
+      background:var(--seg-track);border:1px solid var(--border-subtle);color:var(--muted);
+      display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:12px;cursor:pointer;
+      transition:background-color .15s ease,color .15s ease,border-color .15s ease;
+    }
+    .push-footer-btn:hover{background:var(--surface-hover);color:var(--fg)}
+    .push-footer-btn.active{color:var(--accent-fg);border-color:var(--accent-border);background:var(--accent-bg)}
     .theme-seg-btn{
       appearance:none;border:none;background:transparent;color:var(--muted);
       height:32px;padding:0;border-radius:8px;
@@ -5797,11 +6732,10 @@ function buildMobileAppHtml() {
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
       .conn-banner{padding:8px 24px}
-      .title-wrap{grid-template-columns:auto minmax(0,1fr) auto;column-gap:7px;row-gap:1px}
+      .title-wrap{grid-template-columns:auto minmax(0,1fr);column-gap:7px;row-gap:1px}
       .conv-title{grid-column:2;grid-row:1;font-size:15.5px}
-      .sub-row{display:contents}
-      .conv-project-badge{grid-column:3;grid-row:1;justify-self:end;max-width:200px;font-size:11.5px;padding:2px 8px}
-      .sub-meta{grid-column:1 / -1;grid-row:2;font-size:12px}
+      .conv-project-badge{max-width:260px;font-size:11.5px;padding:1px 8px}
+      .sub-meta{font-size:12px}
       .quota-pill{flex-direction:row;align-items:center;gap:8px;padding:6px 12px;font-size:12px;border-radius:10px}
       .quota-pill span:last-child{font-size:11.5px;color:var(--muted);padding-left:8px;border-left:1px solid var(--border)}
       .drawer-backdrop{
@@ -6125,6 +7059,12 @@ function buildMobileAppHtml() {
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
           </button>
         </div>
+        <button id="btn-mode-switcher" class="push-footer-btn" type="button" title="切换连接通道与测速" aria-label="切换连接通道">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+        </button>
+        <button id="btn-push-settings" class="push-footer-btn" type="button" title="消息推送与未读角标设置" aria-label="消息推送设置">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </button>
       </div>
     </div>
   </div>
@@ -6289,10 +7229,20 @@ function buildMobileAppHtml() {
 
     function detectKindFromOrigin(rawUrl) {
       const origin = String(rawUrl || '').toLowerCase();
-      if (origin.includes('.trycloudflare.com') || origin.startsWith('https://')) return 'tunnel';
       if (origin.includes('.ts.net') || origin.startsWith('http://100.') || origin.startsWith('https://100.')) return 'tailscale';
+      if (origin.includes('.trycloudflare.com') || origin.startsWith('https://')) return 'tunnel';
       if (origin.includes('.local:') || origin.endsWith('.local')) return 'bonjour';
       return 'lan';
+    }
+    function isTrustedSecureOrigin(rawUrl) {
+      const s = String(rawUrl || '').trim().toLowerCase();
+      if (!s) return false;
+      if (s.startsWith('https://')) return true;
+      return /^http:\\/\\/(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::\\d+)?(?:\\/|$)/i.test(s);
+    }
+    function shouldBlockInsecureDowngrade(curOrigin, targetUrl, standaloneFlag) {
+      if (isTrustedSecureOrigin(targetUrl)) return false;
+      return Boolean(standaloneFlag || isTrustedSecureOrigin(curOrigin));
     }
     function formatKindLabel(kind) {
       if (kind === 'tunnel') return 'Cloudflare 隧道';
@@ -6382,12 +7332,349 @@ function buildMobileAppHtml() {
       : (storedSpeed || { running: false, testedAt: 0, results: {} });
     if (urlSpeed && urlSpeed.testedAt) saveStoredSpeed(speedTestState);
 
-    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched) {
+    const urlOpenConvId = String(urlParams.get('conversationId') || '').trim();
+    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched || urlOpenConvId) {
       saveStoredPair(pairState);
       try { history.replaceState(null, '', location.pathname); } catch {}
     }
-    if (location.protocol === 'https:' && 'serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    let swRegistrationPromise = null;
+    let swLastError = '';
+    if (isTrustedSecureOrigin(location.origin) && 'serviceWorker' in navigator) {
+      swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+        swLastError = err?.message || String(err || 'register failed');
+        return null;
+      });
+      if (typeof navigator.serviceWorker.addEventListener === 'function') {
+        navigator.serviceWorker.addEventListener('message', (ev) => {
+          const msg = ev && ev.data;
+          if (msg && msg.type === 'ag-open-conversation' && msg.conversationId && typeof switchConversationById === 'function') {
+            void switchConversationById(String(msg.conversationId));
+          } else if (msg && msg.type === 'ag-push-badge-updated' && latestSnap) {
+            syncAppBadgeCount(computeClientCompletedUnreadCount(getMergedConversations(latestSnap)));
+          }
+        });
+      }
+    }
+    let pendingOpenConvId = urlOpenConvId;
+
+    function computeClientCompletedUnreadCount(convs) {
+      if (!Array.isArray(convs)) return 0;
+      let count = 0;
+      for (const c of convs) {
+        if (!c || c.archived === true) continue;
+        if (c.status === 'idle' && c.completedUnread === true) count += 1;
+      }
+      return count;
+    }
+
+    function syncAppBadgeCount(count) {
+      const n = Math.max(0, Math.floor(Number(count) || 0));
+      try {
+        if (navigator && typeof navigator.setAppBadge === 'function') {
+          if (n > 0) void navigator.setAppBadge(n).catch(() => {});
+          else if (typeof navigator.clearAppBadge === 'function') void navigator.clearAppBadge().catch(() => {});
+          else void navigator.setAppBadge(0).catch(() => {});
+        }
+      } catch {}
+      try {
+        document.title = n > 0 ? ('(' + n + ') Antigravity Remote') : 'Antigravity Remote';
+      } catch {}
+      return n;
+    }
+
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - (String(base64String || '').length % 4)) % 4);
+      const base64 = (String(base64String || '') + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = atob(base64);
+      const output = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; i++) output[i] = rawData.charCodeAt(i);
+      return output;
+    }
+
+    function pushApiRequest(apiPath, method, bodyObj) {
+      const m = String(method || 'GET').toUpperCase();
+      const extraHeaders = m !== 'GET' ? { 'Content-Type': 'application/json' } : {};
+      const opts = {
+        method: m,
+        headers: authHeaders(extraHeaders)
+      };
+      if (m !== 'GET' && bodyObj !== undefined) {
+        opts.body = JSON.stringify(bodyObj);
+      }
+      return fetchWithTimeout((apiBase || '') + apiPath, opts, 8000);
+    }
+
+    const LOCAL_NOTIFY_STORAGE_KEY = 'ag_remote_local_notify_v1';
+    function isLocalNotifyEnabled() {
+      try { return localStorage.getItem(LOCAL_NOTIFY_STORAGE_KEY) === '1'; } catch { return false; }
+    }
+    function setLocalNotifyEnabled(on) {
+      try {
+        if (on) localStorage.setItem(LOCAL_NOTIFY_STORAGE_KEY, '1');
+        else localStorage.removeItem(LOCAL_NOTIFY_STORAGE_KEY);
+      } catch {}
+    }
+
+    function showLocalSystemNotification(title, body, conversationId) {
+      try {
+        if (typeof Notification !== 'function' || Notification.permission !== 'granted') return false;
+        const n = new Notification(String(title || 'Antigravity 远程通知'), {
+          body: String(body || ''),
+          icon: '/icon-192.png',
+          tag: conversationId ? ('ag-local-' + conversationId) : ('ag-local-' + Date.now())
+        });
+        n.onclick = () => {
+          try { window.focus(); } catch {}
+          if (conversationId && typeof switchConversationById === 'function') {
+            void switchConversationById(String(conversationId));
+          }
+        };
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function waitForSwActive(reg, timeoutMs) {
+      if (!reg) return null;
+      if (reg.active && reg.active.state === 'activated') return reg;
+      const worker = reg.installing || reg.waiting || reg.active;
+      if (!worker) return reg;
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        const t = setTimeout(finish, timeoutMs || 4000);
+        const onState = () => {
+          if (worker.state === 'activated' || worker.state === 'redundant') {
+            clearTimeout(t);
+            finish();
+          }
+        };
+        if (typeof worker.addEventListener === 'function') {
+          worker.addEventListener('statechange', onState);
+        }
+        onState();
+      });
+      return reg;
+    }
+
+    async function resolveSwRegistration(allowRegister) {
+      if (!('serviceWorker' in navigator)) {
+        swLastError = '当前环境不支持 serviceWorker';
+        return null;
+      }
+      try {
+        if (swRegistrationPromise) {
+          const existing = await Promise.race([
+            swRegistrationPromise,
+            new Promise((r) => setTimeout(() => r(null), 1500))
+          ]);
+          if (existing) return allowRegister ? await waitForSwActive(existing, 4000) : existing;
+        }
+        if (typeof navigator.serviceWorker.getRegistration === 'function') {
+          const reg = await navigator.serviceWorker.getRegistration('/')
+            || await navigator.serviceWorker.getRegistration();
+          if (reg) return allowRegister ? await waitForSwActive(reg, 4000) : reg;
+        }
+        if (allowRegister && isTrustedSecureOrigin(location.origin)) {
+          swLastError = '';
+          swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+            swLastError = err?.message || String(err || 'register failed');
+            return null;
+          });
+          const reg = await Promise.race([
+            swRegistrationPromise,
+            new Promise((r) => setTimeout(() => r(null), 4000))
+          ]);
+          if (reg) return await waitForSwActive(reg, 4000);
+          const readyReg = await Promise.race([
+            navigator.serviceWorker.ready.catch(() => null),
+            new Promise((r) => setTimeout(() => r(null), 2000))
+          ]);
+          if (readyReg) return readyReg;
+        }
+      } catch (err) {
+        swLastError = err?.message || String(err || 'unknown');
+      }
+      return null;
+    }
+
+    async function getActivePushSubscription() {
+      try {
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+        const reg = await resolveSwRegistration(false);
+        if (!reg || !reg.pushManager) return null;
+        return await reg.pushManager.getSubscription();
+      } catch {
+        return null;
+      }
+    }
+
+    async function refreshPushButtonState() {
+      const btn = $('btn-push-settings');
+      if (!btn) return;
+      const sub = await getActivePushSubscription();
+      const localOn = isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
+      btn.classList.toggle('active', Boolean(sub || localOn));
+    }
+
+    async function openPushSettingsSheet() {
+      if (!isDesktopLayout()) closeDrawer();
+      const isSecure = isTrustedSecureOrigin(location.origin);
+      const isIos = /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+      const hasNotifApi = typeof window !== 'undefined' && 'Notification' in window;
+      const hasPushApi = hasNotifApi && 'PushManager' in window && 'serviceWorker' in navigator;
+      const isQuickTunnel = String(location.hostname || '').toLowerCase().endsWith('.trycloudflare.com');
+      let serverInfo = null;
+      try {
+        const res = await pushApiRequest('/api/push/vapid-key', 'GET');
+        if (res.ok) serverInfo = await res.json();
+      } catch {}
+      const sub = hasPushApi ? await getActivePushSubscription() : null;
+      const localOn = isLocalNotifyEnabled() && hasNotifApi && Notification.permission === 'granted';
+      const prefs = (serverInfo && serverInfo.prefs) || { enabled: true, notifyCompleted: true, notifyWaiting: true };
+
+      const rows = [];
+      if (!isSecure) {
+        rows.push({
+          label: '需要 HTTPS 安全上下文',
+          sub: '当前为明文 HTTP 地址，请通过 https://<机器名>.ts.net、固定域名隧道或 localhost 打开后再开启推送。',
+          disabled: true
+        });
+      } else if (isIos && !isStandalonePwa) {
+        rows.push({
+          label: 'iOS 需先「添加到主屏幕」',
+          sub: 'iOS 16.4+ 要求在 Safari 点击分享 → 添加到主屏幕，从桌面图标打开后才能开启 Web Push 与图标未读角标。',
+          disabled: true
+        });
+      } else if (!hasNotifApi) {
+        rows.push({
+          label: '当前浏览器不支持系统通知',
+          sub: '桌面未读角标与页面未读提示仍会在前台自动更新。',
+          disabled: true
+        });
+      } else if (!sub && !localOn) {
+        rows.push({
+          label: '🔔 开启本机消息推送与未读角标',
+          sub: isQuickTunnel
+            ? '提示：Quick Tunnel 随机域名变更后需重新订阅；推荐使用 Tailscale HTTPS 获得长期稳定推送。'
+            : '后台对话完成或待审批时推送通知，并同步桌面应用图标未读数。',
+          value: 'enable'
+        });
+      } else {
+        rows.push({
+          label: '🔕 关闭本机消息推送',
+          sub: sub
+            ? ('已启用 Web Push 后台推送（本机已关联 ' + (serverInfo?.subscriptionCount || 1) + ' 台设备）')
+            : '已启用本地系统通知（页面开启时即时弹出通知并同步角标）',
+          value: 'disable'
+        });
+        rows.push({
+          label: (prefs.notifyCompleted ? '✓ ' : '○ ') + '对话运行完成提醒',
+          sub: prefs.notifyCompleted ? '已开启：对话结束且有新产出时推送' : '已关闭',
+          value: 'toggle-completed'
+        });
+        rows.push({
+          label: (prefs.notifyWaiting ? '✓ ' : '○ ') + '待审批 / 等待确认提醒',
+          sub: prefs.notifyWaiting ? '已开启：触发权限或提问卡时高优推送' : '已关闭',
+          value: 'toggle-waiting'
+        });
+        rows.push({
+          label: '📤 发送测试通知',
+          sub: '立即发送一条测试通知并刷新桌面未读角标',
+          value: 'test'
+        });
+      }
+
+      openSheet('消息推送与未读角标', rows, async (item) => {
+        if (!item || !item.value || item.disabled) return;
+        if (item.value === 'enable') {
+          try {
+            const perm = await Notification.requestPermission();
+            if (perm !== 'granted') {
+              showToast('通知权限未授予，请在系统/浏览器设置中允许通知');
+              return;
+            }
+            if (!serverInfo || !serverInfo.publicKey) {
+              const retryKey = await pushApiRequest('/api/push/vapid-key', 'GET').catch(() => null);
+              if (retryKey && retryKey.ok) serverInfo = await retryKey.json().catch(() => null);
+            }
+            const reg = hasPushApi ? await resolveSwRegistration(true) : null;
+            if (!reg || !reg.pushManager || !serverInfo || !serverInfo.publicKey) {
+              setLocalNotifyEnabled(true);
+              await refreshPushButtonState();
+              const reason = swLastError || (!reg ? 'SW 未注册' : (!reg.pushManager ? '浏览器无 pushManager' : '缺少 VAPID 公钥'));
+              showLocalSystemNotification('Antigravity 通知已开启', '已启用本地系统通知（后台 Web Push 不可用：' + reason + '）', '');
+              showToast('已开启本地系统通知（Web Push：' + reason + '）');
+              return;
+            }
+            try {
+              const nextSub = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(serverInfo.publicKey)
+              });
+              const subJson = typeof nextSub.toJSON === 'function' ? nextSub.toJSON() : nextSub;
+              const saveRes = await pushApiRequest('/api/push/subscribe', 'POST', {
+                subscription: subJson,
+                origin: location.origin,
+                label: (navigator.platform || 'Device').slice(0, 40)
+              });
+              const saveData = await saveRes.json().catch(() => ({}));
+              if (!saveRes.ok || !saveData.ok) {
+                showToast('保存订阅失败：' + (saveData.error || saveRes.status));
+                return;
+              }
+              setLocalNotifyEnabled(true);
+              await refreshPushButtonState();
+              showToast('已开启消息推送与未读角标');
+            } catch (subErr) {
+              setLocalNotifyEnabled(true);
+              await refreshPushButtonState();
+              const msg = subErr?.message || '推送服务不可达';
+              showLocalSystemNotification('Antigravity 本地通知已开启', '后台推送订阅受限（' + msg + '），已自动切换本地系统通知。', '');
+              showToast('已切换本地系统通知（' + msg + '）');
+            }
+          } catch (err) {
+            showToast('开启推送失败：' + (err?.message || '未知错误'));
+          }
+          return;
+        }
+        if (item.value === 'disable') {
+          try {
+            setLocalNotifyEnabled(false);
+            if (sub) {
+              const ep = sub.endpoint;
+              await sub.unsubscribe().catch(() => {});
+              await pushApiRequest('/api/push/unsubscribe', 'POST', { endpoint: ep }).catch(() => {});
+            }
+            await refreshPushButtonState();
+            showToast('已关闭本机消息推送');
+          } catch {
+            showToast('关闭推送失败');
+          }
+          return;
+        }
+        if (item.value === 'toggle-completed' || item.value === 'toggle-waiting') {
+          const patch = item.value === 'toggle-completed'
+            ? { notifyCompleted: !prefs.notifyCompleted }
+            : { notifyWaiting: !prefs.notifyWaiting };
+          await pushApiRequest('/api/push/prefs', 'POST', patch).catch(() => {});
+          showToast('推送偏好已更新');
+          return;
+        }
+        if (item.value === 'test') {
+          if (sub) {
+            const testRes = await pushApiRequest('/api/push/test', 'POST', {}).catch(() => null);
+            const testData = testRes ? await testRes.json().catch(() => ({})) : {};
+            if (testRes && testRes.ok && testData.ok && Number(testData.sent || 0) > 0) {
+              showToast('测试推送已发送（送达 ' + testData.sent + ' 台设备）');
+              return;
+            }
+          }
+          const popped = showLocalSystemNotification('Antigravity 远程通知测试', '通知通道正常，桌面应用未读角标将随已完成未读数自动同步。', '');
+          showToast(popped ? '已弹出本地系统测试通知' : '测试通知未送达，请检查系统通知权限');
+        }
+      });
     }
 
     let apiBase = '';
@@ -6690,22 +7977,32 @@ function buildMobileAppHtml() {
           }
         }
 
-        const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+        const pageOrigin = String(location.origin || '').replace(/\\/+$/, '');
+        const curOrigin = String(apiBase || pageOrigin).replace(/\\/+$/, '');
         const curKind = detectKindFromOrigin(curOrigin);
-        const curRes = nextResults[curKind] || null;
+        const exactCurRes = Object.values(nextResults).find((r) => r && r.url === curOrigin) || null;
+        const kindRes = nextResults[curKind] || null;
+        const curRes = exactCurRes || (kindRes && kindRes.url === curOrigin ? kindRes : null);
+        const curReachable = Boolean((curRes && curRes.ok) || (!curRes && (isTrustedSecureOrigin(pageOrigin) || isStandalonePwa)));
+        const switchOrigin = isTrustedSecureOrigin(pageOrigin) ? pageOrigin : curOrigin;
+        const eligibleRanked = curReachable
+          ? ranked.filter((ep) => ep && !shouldBlockInsecureDowngrade(switchOrigin, ep.url, isStandalonePwa))
+          : ranked;
+        const switchBest = eligibleRanked[0] || null;
 
-        if (wantAutoSwitch && !manualLocked && !isAutoSwitched && best) {
-          const sameEntry = best.url === curOrigin || best.kind === curKind;
-          const significantlyFaster = !curRes || !curRes.ok
-            || (curKind === 'tunnel' && best.kind !== 'tunnel' && (!curRes.ms || best.ms < curRes.ms))
-            || (Number.isFinite(curRes.ms) && (curRes.ms - best.ms >= 15) && best.ms <= curRes.ms * 0.75);
-          if (!sameEntry && significantlyFaster) {
+        if (wantAutoSwitch && !manualLocked && !isAutoSwitched && switchBest) {
+          const sameEntry = switchBest.url === curOrigin || switchBest.kind === curKind;
+          const downgradeBlocked = Boolean(curReachable && shouldBlockInsecureDowngrade(switchOrigin, switchBest.url, isStandalonePwa));
+          const significantlyFaster = !curReachable
+            || (curRes && curRes.ok && curKind === 'tunnel' && switchBest.kind !== 'tunnel' && (!curRes.ms || switchBest.ms < curRes.ms))
+            || (curRes && curRes.ok && Number.isFinite(curRes.ms) && (curRes.ms - switchBest.ms >= 15) && switchBest.ms <= curRes.ms * 0.75);
+          if (!sameEntry && !downgradeBlocked && significantlyFaster) {
             if (activeSnapAbort) {
               try { activeSnapAbort.abort(); } catch {}
               activeSnapAbort = null;
             }
             clearTimeout(pollTimer);
-            const targetUrl = buildClientEntryUrl(best.url, { autoSwitched: true });
+            const targetUrl = buildClientEntryUrl(switchBest.url, { autoSwitched: true });
             navigateEntryUrl(targetUrl, true);
             return speedTestState;
           }
@@ -6772,9 +8069,15 @@ function buildMobileAppHtml() {
         renderModeSwitcherSheet();
 
         const order = { lan: 0, tailscale: 1, bonjour: 2, tunnel: 3, loopback: 9 };
+        const curOriginFail = String(location.origin || '').replace(/\\/+$/, '');
         const winners = mergedList
           .filter((r) => r && r.ok && Number.isFinite(r.ms))
-          .sort((a, b) => (a.ms - b.ms) || ((order[a.kind] ?? 5) - (order[b.kind] ?? 5)));
+          .sort((a, b) => {
+            const aBlock = shouldBlockInsecureDowngrade(curOriginFail, a.url, isStandalonePwa) ? 1 : 0;
+            const bBlock = shouldBlockInsecureDowngrade(curOriginFail, b.url, isStandalonePwa) ? 1 : 0;
+            if (aBlock !== bBlock) return aBlock - bBlock;
+            return (a.ms - b.ms) || ((order[a.kind] ?? 5) - (order[b.kind] ?? 5));
+          });
         const winner = winners[0] || null;
         if (!winner) return false;
 
@@ -6782,6 +8085,9 @@ function buildMobileAppHtml() {
           pairState.endpoints = winner.data.endpoints;
           if (Array.isArray(winner.data.hosts)) pairState.hosts = winner.data.hosts;
           saveStoredPair(pairState);
+        }
+        if (winner.url !== curOriginFail && shouldBlockInsecureDowngrade(curOriginFail, winner.url, isStandalonePwa)) {
+          return false;
         }
         if (location.protocol === 'https:' && winner.url.toLowerCase().startsWith('http://')) {
           navigateEntryUrl(buildClientEntryUrl(winner.url, { autoSwitched: true }), true);
@@ -7061,6 +8367,12 @@ function buildMobileAppHtml() {
 
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
     $('sub-meta').onclick = openModeSwitcherSheet;
+    if ($('btn-mode-switcher')) {
+      $('btn-mode-switcher').addEventListener('click', () => {
+        if (!isDesktopLayout()) closeDrawer();
+        openModeSwitcherSheet();
+      });
+    }
 
     const appEl = document.querySelector('.app');
     let isStandalonePwa = false;
@@ -8175,7 +9487,7 @@ function buildMobileAppHtml() {
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
       syncTopbarProjectBadge(resolveConversationProjectName(snap));
-      $('sub-meta').textContent = getActiveChannelLabel() + (snap.isolated ? ' · 仅本页' : '') + ' ▾ · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
+      $('sub-meta').textContent = snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已就绪'));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
@@ -8466,7 +9778,7 @@ function buildMobileAppHtml() {
         });
       }
 
-      // Queued Messages (排队中消息展示、立即发送与撤回删除)
+      // Queued Messages (排队中消息展示、立即发送、编辑回填与撤回删除)
       const qDock = $('queue-dock');
       if (qDock) {
         const queuedList = Array.isArray(snap.queuedMessages) ? snap.queuedMessages : [];
@@ -8478,13 +9790,15 @@ function buildMobileAppHtml() {
           qDock.hidden = false;
           const hasDomQueued = queuedList.some((q) => q && q.source === 'dom');
           const isDomQueuedList = queuedList.every((q) => q && q.source === 'dom');
-          const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
+          const hasOnlyOptimistic = queuedList.every((q) => q && q.source === 'optimistic');
+          const agentMsgIds = queuedList.map((q) => String(q?.messageId || q?.id || '').trim()).filter(Boolean);
+          const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.messageId || q.id || '') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
           if (qDock.dataset.queueSig !== qSig) {
             qDock.dataset.queueSig = qSig;
             qDock.innerHTML = '<div class="queue-card">'
               + '<div class="queue-head">'
               + '<span class="queue-title"><span>排队中</span><span class="queue-count">' + queuedList.length + '</span></span>'
-              + '<button class="queue-send-all" type="button"' + (queueActionBusy ? ' disabled' : '') + '>⚡ 立即发送</button>'
+              + '<button class="queue-send-all" type="button"' + ((queueActionBusy || hasOnlyOptimistic) ? ' disabled' : '') + '>⚡ 立即发送</button>'
               + '</div>'
               + '<div class="queue-list">' + queuedList.map((q, qi) => {
                 const imgsHtml = (Array.isArray(q.images) && q.images.length)
@@ -8499,27 +9813,63 @@ function buildMobileAppHtml() {
                   : '';
                 const stepAttr = Number.isInteger(Number(q.stepIndex)) ? Number(q.stepIndex) : -1;
                 const domAttr = Number.isInteger(Number(q.domIndex)) ? Number(q.domIndex) : qi;
-                const srcAttr = q.source === 'dom' ? 'dom' : 'traj';
-                return '<div class="queue-item" data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '">'
+                const msgIdAttr = String(q.messageId || q.id || '').trim();
+                const srcAttr = q.source === 'dom' ? 'dom' : (q.source === 'agent_state' ? 'agent_state' : (q.source === 'optimistic' ? 'optimistic' : 'traj'));
+                const hasMediaAttr = (q.hasMedia || (Array.isArray(q.images) && q.images.length > 0)) ? '1' : '';
+                const mediaSigAttr = String(q.mediaSig || (Array.isArray(q.images) ? q.images.map((im) => (typeof im === 'string' ? im : String(im?.alt || im?.src || ''))).filter(Boolean).sort().join('|') : '')).trim();
+                const itemBtnDisabled = (queueActionBusy || srcAttr === 'optimistic') ? ' disabled' : '';
+                const dataAttrs = 'data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '" data-msg-id="' + esc(msgIdAttr) + '" data-queue-text="' + esc(String(q.text || '')) + '" data-has-media="' + esc(hasMediaAttr) + '" data-media-sig="' + esc(mediaSigAttr) + '"';
+                return '<div class="queue-item" ' + dataAttrs + '>'
                   + imgsHtml
                   + '<span class="queue-item-text">' + esc(q.text || '') + '</span>'
-                  + '<button class="queue-del-btn" type="button" title="撤回此条排队消息" aria-label="撤回此条排队消息" data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '" data-queue-text="' + esc(String(q.text || '')) + '"' + (queueActionBusy ? ' disabled' : '') + '>×</button>'
-                  + '</div>';
+                  + '<span class="queue-actions">'
+                  + '<button class="queue-op-btn send queue-item-send" type="button" title="立即发送" aria-label="立即发送" ' + dataAttrs + itemBtnDisabled + '>→</button>'
+                  + '<button class="queue-op-btn edit queue-item-edit" type="button" title="编辑此条排队消息" aria-label="编辑此条排队消息" ' + dataAttrs + itemBtnDisabled + '>✎</button>'
+                  + '<button class="queue-del-btn" type="button" title="撤回此条排队消息" aria-label="撤回此条排队消息" ' + dataAttrs + itemBtnDisabled + '>×</button>'
+                  + '</span></div>';
               }).join('') + '</div></div>';
 
             const setQueueBtnsDisabled = (disabled) => {
-              qDock.querySelectorAll('.queue-send-all, .queue-del-btn').forEach((b) => { b.disabled = disabled; });
+              qDock.querySelectorAll('.queue-send-all').forEach((b) => { b.disabled = disabled || hasOnlyOptimistic; });
+              qDock.querySelectorAll('.queue-op-btn, .queue-del-btn').forEach((b) => {
+                b.disabled = disabled || b.dataset.queueSource === 'optimistic';
+              });
+            };
+            const buildQueueItemPayload = (el, extra = {}) => {
+              const src = String(el.dataset.queueSource || 'traj');
+              const msgId = String(el.dataset.msgId || '').trim();
+              const stepIdx = Number(el.dataset.stepIdx);
+              const domIdx = Number(el.dataset.domIdx);
+              const text = String(el.dataset.queueText || '');
+              const hasMedia = el.dataset.hasMedia === '1';
+              const mediaSig = String(el.dataset.mediaSig || '').trim();
+              return {
+                conversationId: String(snap.activeConversationId || snap.sessionId || ''),
+                ...(msgId ? { messageId: msgId } : {}),
+                ...(text ? { text } : {}),
+                ...(hasMedia ? { hasMedia: true } : {}),
+                ...(mediaSig ? { mediaSig } : {}),
+                ...(src === 'dom' ? {
+                  source: 'dom',
+                  domIndex: Number.isInteger(domIdx) ? domIdx : 0,
+                  ...(isDomQueuedList ? { expectedQueueCount: queuedList.length } : {})
+                } : {}),
+                ...(src !== 'dom' && Number.isInteger(stepIdx) && stepIdx >= 0 ? { stepIndex: stepIdx } : {}),
+                ...extra
+              };
             };
             const sendAllBtn = qDock.querySelector('.queue-send-all');
             if (sendAllBtn) {
               sendAllBtn.onclick = async () => {
                 if (queueActionBusy) return;
+                if (hasOnlyOptimistic) return;
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
                   const res = await apiAction({
                     action: 'send-queued-messages',
                     conversationId: String(snap.activeConversationId || snap.sessionId || ''),
+                    ...(agentMsgIds.length ? { messageIds: agentMsgIds } : {}),
                     ...(isDomQueuedList ? { source: 'dom', sendAll: true } : (hasDomQueued ? { hasDomQueued: true } : {}))
                   });
                   if (res?.ok) {
@@ -8535,23 +9885,128 @@ function buildMobileAppHtml() {
                 }
               };
             }
+            qDock.querySelectorAll('.queue-item-send').forEach((sendOneBtn) => {
+              sendOneBtn.onclick = async () => {
+                if (queueActionBusy) return;
+                if (String(sendOneBtn.dataset.queueSource || '') === 'optimistic') return;
+                queueActionBusy = true;
+                setQueueBtnsDisabled(true);
+                try {
+                  const reqBody = buildQueueItemPayload(sendOneBtn, { action: 'send-queued-messages', sendAll: false });
+                  const res = await apiAction(reqBody);
+                  if (res?.ok) showToast('已立即发送此条排队消息');
+                  else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
+                } catch (e) {
+                  showToast(e?.message || '发送排队消息失败');
+                } finally {
+                  queueActionBusy = false;
+                  setQueueBtnsDisabled(false);
+                }
+              };
+            });
+            qDock.querySelectorAll('.queue-item-edit').forEach((editBtn) => {
+              editBtn.onclick = async () => {
+                if (queueActionBusy) return;
+                const src = String(editBtn.dataset.queueSource || 'traj');
+                if (src === 'optimistic') return;
+                const qText = String(editBtn.dataset.queueText || '');
+                const msgId = String(editBtn.dataset.msgId || '').trim();
+                const stepIdx = Number(editBtn.dataset.stepIdx);
+                if (!msgId && src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
+                queueActionBusy = true;
+                setQueueBtnsDisabled(true);
+                try {
+                  const res = await apiAction(buildQueueItemPayload(editBtn, { action: 'edit-queued-message' }));
+                  if (res?.ok || res?.attachmentsPreserved || res?.textPreserved) {
+                    const restoredAtts = Array.isArray(res?.actionResult?.editedAttachments)
+                      ? res.actionResult.editedAttachments
+                      : [];
+                    const isPendingRetryRestore = Boolean(!res?.ok && (res?.attachmentsPreserved || res?.textPreserved));
+                    const serverRecoveryKey = String(res?.actionResult?.recoveryKey || '').trim();
+                    const restoreSourceKey = msgId
+                      ? ('msg:' + msgId)
+                      : (serverRecoveryKey || (Number.isInteger(stepIdx) && stepIdx >= 0 ? ('step:' + stepIdx) : ''));
+                    if (restoreSourceKey && restoredAtts.length) {
+                      for (let ri = uploadedAttachments.length - 1; ri >= 0; ri -= 1) {
+                        if (
+                          uploadedAttachments[ri] &&
+                          uploadedAttachments[ri]._sourceKey === restoreSourceKey &&
+                          uploadedAttachments[ri]._pendingRetry === true
+                        ) {
+                          uploadedAttachments.splice(ri, 1);
+                          uploadedNames.splice(ri, 1);
+                        }
+                      }
+                    }
+                    for (const att of restoredAtts) {
+                      if (!att || typeof att !== 'object') continue;
+                      const rawPrev = String(att.previewUrl || '');
+                      const safePrev = rawPrev.startsWith('/api/media?')
+                        ? ((apiBase || '') + rawPrev + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : ''))
+                        : rawPrev;
+                      const attName = String(att.name || (att.isImage ? 'image.png' : 'attachment'));
+                      uploadedNames.push(attName);
+                      uploadedAttachments.push({
+                        name: attName,
+                        size: Number(att.size) || 0,
+                        isImage: Boolean(att.isImage),
+                        previewUrl: safePrev,
+                        ...(restoreSourceKey ? { _sourceKey: restoreSourceKey } : {}),
+                        ...(isPendingRetryRestore ? { _pendingRetry: true } : {})
+                      });
+                    }
+                    if (restoredAtts.length) {
+                      renderAttachHintStrip();
+                    }
+                    const hasServerText = Boolean(res?.actionResult && typeof res.actionResult.editedText === 'string');
+                    const fillVal = hasServerText ? res.actionResult.editedText : qText;
+                    const textRestoreKey = restoreSourceKey ? ((selectedConversationId || '') + '::' + restoreSourceKey) : '';
+                    const alreadyRestoredText = Boolean(textRestoreKey && restoredQueueEditTextKeys.has(textRestoreKey));
+                    if (fillVal && !alreadyRestoredText) {
+                      ta.value = ta.value.trim() ? (ta.value.trimEnd() + '\\n' + fillVal) : fillVal;
+                      saveDraftForConv(selectedConversationId, ta.value);
+                      ta.style.height = 'auto';
+                      const maxH = isDesktopLayout() ? 180 : 112;
+                      ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
+                      ta.focus();
+                      if (textRestoreKey && !res?.ok && (res?.attachmentsPreserved || res?.textPreserved)) {
+                        restoredQueueEditTextKeys.add(textRestoreKey);
+                      }
+                    } else if (restoredAtts.length || alreadyRestoredText) {
+                      ta.focus();
+                    }
+                    if (textRestoreKey && res?.ok) {
+                      restoredQueueEditTextKeys.delete(textRestoreKey);
+                    }
+                    syncSendButtonUI();
+                    if (!res?.ok && (res?.attachmentsPreserved || res?.textPreserved)) {
+                      showToast(res?.error || '原排队消息状态待确认，已保留恢复的文本与附件');
+                    } else {
+                      showToast(restoredAtts.length
+                        ? ('已撤回至输入区（含 ' + restoredAtts.length + ' 个附件），修改后重新发送')
+                        : '已撤回至输入框，修改后重新发送');
+                    }
+                  } else showToast(res?.error || res?.actionResult?.error || '编辑排队消息失败');
+                } catch (e) {
+                  showToast(e?.message || '编辑排队消息失败');
+                } finally {
+                  queueActionBusy = false;
+                  setQueueBtnsDisabled(false);
+                }
+              };
+            });
             qDock.querySelectorAll('.queue-del-btn').forEach((delBtn) => {
               delBtn.onclick = async () => {
                 if (queueActionBusy) return;
                 const src = String(delBtn.dataset.queueSource || 'traj');
+                if (src === 'optimistic') return;
                 const stepIdx = Number(delBtn.dataset.stepIdx);
-                const domIdx = Number(delBtn.dataset.domIdx);
-                if (src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
+                const msgId = String(delBtn.dataset.msgId || '').trim();
+                if (!msgId && src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
-                  const res = await apiAction({
-                    action: 'delete-queued-message',
-                    conversationId: String(snap.activeConversationId || snap.sessionId || ''),
-                    ...(src === 'dom'
-                      ? { source: 'dom', domIndex: Number.isInteger(domIdx) ? domIdx : 0, text: String(delBtn.dataset.queueText || '') }
-                      : { stepIndex: stepIdx })
-                  });
+                  const res = await apiAction(buildQueueItemPayload(delBtn, { action: 'delete-queued-message' }));
                   if (res?.ok) showToast('已撤回排队消息');
                   else showToast(res?.error || res?.actionResult?.error || '撤回排队消息失败，请检查电脑端连接后重试');
                 } catch (e) {
@@ -8565,6 +10020,9 @@ function buildMobileAppHtml() {
           }
         }
       }
+
+      // 同步上层停靠区栈顶单线状态（避免 approval-dock / queue-dock / composer-dock 叠加多层分隔线与阴影）
+      if (typeof syncUpperDockStackState === 'function') syncUpperDockStackState();
 
       // 轻盈下一步建议 & 快捷提示词 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
       renderQuickChipsBar(snap);
@@ -8582,6 +10040,17 @@ function buildMobileAppHtml() {
         renderConversationList(snap);
       }
       return true;
+    }
+
+    function syncUpperDockStackState() {
+      const apEl = $('approval-dock');
+      const qEl = $('queue-dock');
+      const apVisible = Boolean(apEl && !apEl.hidden);
+      const qVisible = Boolean(qEl && !qEl.hidden);
+      try {
+        document.body?.classList?.toggle?.('has-approval-dock', apVisible);
+        document.body?.classList?.toggle?.('has-upper-dock', apVisible || qVisible);
+      } catch {}
     }
 
     function renderQuickChipsBar(snap) {
@@ -8982,10 +10451,45 @@ function buildMobileAppHtml() {
     const FOLDER_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
     const FOLDER_SM_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 
+    let clientPrevConvStatus = new Map();
+    let clientNotifyBootstrapped = false;
+    function maybeTriggerLocalNotifications(convs) {
+      if (!Array.isArray(convs)) return;
+      if (!clientNotifyBootstrapped) {
+        for (const c of convs) {
+          if (c && c.id) clientPrevConvStatus.set(c.id, c.status || 'unknown');
+        }
+        clientNotifyBootstrapped = true;
+        return;
+      }
+      const canPop = isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
+      for (const c of convs) {
+        if (!c || !c.id) continue;
+        const prev = clientPrevConvStatus.get(c.id);
+        const cur = c.status || 'unknown';
+        clientPrevConvStatus.set(c.id, cur);
+        if (!canPop || !prev) continue;
+        if (prev === 'running' && cur === 'idle' && c.completedUnread === true) {
+          showLocalSystemNotification('对话已完成', (c.title || 'Antigravity 对话') + (c.projectName ? (' · ' + c.projectName) : ''), c.id);
+        } else if (prev !== 'waiting' && cur === 'waiting') {
+          showLocalSystemNotification('需要你的确认', (c.title || 'Antigravity 对话') + ' 正在等待确认或审批', c.id);
+        }
+      }
+    }
+
     function renderConversationList(snap) {
       const convList = $('conv-list');
       if (!convList || !snap) return;
       const convs = getMergedConversations(snap);
+      syncAppBadgeCount(computeClientCompletedUnreadCount(convs));
+      maybeTriggerLocalNotifications(convs);
+      if (pendingOpenConvId && convs.some((c) => c && c.id === pendingOpenConvId)) {
+        const targetOpenId = pendingOpenConvId;
+        pendingOpenConvId = '';
+        if (typeof switchConversationById === 'function') {
+          void switchConversationById(targetOpenId);
+        }
+      }
       const totalAllCount = Math.max(convs.length, Number(snap.totalConversations) || 0);
       const rawProjects = Array.isArray(snap.projects) ? snap.projects : [];
       const projMap = new Map();
@@ -9313,6 +10817,7 @@ function buildMobileAppHtml() {
       if (!btn || !activeSheetState) return;
       const idx = Number(btn.getAttribute('data-idx'));
       const opt = activeSheetState.options[idx];
+      if (!opt || opt.disabled) return;
       const onSelect = activeSheetState.onSelect;
       activeSheetState = null;
       closeSheet();
@@ -9334,8 +10839,12 @@ function buildMobileAppHtml() {
       const listEl = $('sheet-list');
       activeSheetState = { options, onSelect };
       listEl.innerHTML = options.map((o, idx) =>
-        '<button class="sheet-opt' + (o.active ? ' active' : '') + '" data-idx="' + idx + '" type="button">' +
-        '<span>' + esc(o.label) + '</span>' + (o.active ? '<span>✓</span>' : '') + '</button>'
+        '<button class="sheet-opt' + (o.active ? ' active' : '') + (o.disabled ? ' disabled' : '') + '" data-idx="' + idx + '" type="button"' + (o.disabled ? ' disabled' : '') + '>' +
+        '<span style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left">' +
+        '<span>' + esc(o.label) + '</span>' +
+        (o.sub ? '<span style="font-size:11.5px;color:var(--muted);font-weight:400;line-height:1.4">' + esc(o.sub) + '</span>' : '') +
+        '</span>' +
+        (o.active ? '<span>✓</span>' : '') + '</button>'
       ).join('');
       listEl.onclick = handleSheetListClick;
       $('sheet-backdrop').hidden = false;
@@ -9998,6 +11507,13 @@ function buildMobileAppHtml() {
         selectThemePref(mode);
       });
     }
+    const pushSettingsBtnEl = $('btn-push-settings');
+    if (pushSettingsBtnEl) {
+      pushSettingsBtnEl.addEventListener('click', () => {
+        void openPushSettingsSheet();
+      });
+      void refreshPushButtonState();
+    }
     if (lightSchemeMq) {
       const onSystemSchemeChange = () => {
         if (activeThemePref === 'system') applyTheme('system', false);
@@ -10049,6 +11565,7 @@ function buildMobileAppHtml() {
     }
 
     let uploadedAttachments = [];
+    const restoredQueueEditTextKeys = new Set();
     let attachmentUploadInflight = 0;
     let lastAttachmentUploadAt = 0;
     function formatFileSizeShort(bytes) {
@@ -11195,6 +12712,9 @@ function buildMobileAppHtml() {
         ? setUserSelectedProject(matchedConv.projectId, matchedConv.projectName)
         : selectedProjectEpoch;
       if (matchedConv) {
+        matchedConv.unread = false;
+        matchedConv.completedUnread = false;
+        syncAppBadgeCount(computeClientCompletedUnreadCount(getMergedConversations(latestSnap)));
         syncNewChatButtonUi(latestSnap);
       }
       applyOptimisticSidebarConvClick(btn);
@@ -11233,6 +12753,21 @@ function buildMobileAppHtml() {
         }
       }
     });
+    async function switchConversationById(cid) {
+      const targetId = String(cid || '').trim();
+      if (!targetId) return;
+      const matchedConv = getMergedConversations(latestSnap).find((x) => x && x.id === targetId);
+      if (matchedConv) {
+        matchedConv.unread = false;
+        matchedConv.completedUnread = false;
+        syncAppBadgeCount(computeClientCompletedUnreadCount(getMergedConversations(latestSnap)));
+      }
+      applySelectedConversation(targetId);
+      try {
+        await apiAction({ action: 'switch-conversation', id: targetId, isolated: true });
+      } catch {}
+    }
+
     if ($('btn-follow-desktop')) {
       $('btn-follow-desktop').onclick = async () => {
         if (!isDesktopLayout()) closeDrawer();
@@ -11461,6 +12996,7 @@ function buildMobileAppHtml() {
       syncSendButtonUI();
       try {
         stickBottom = true;
+        const wasBusyWhenSent = Boolean(latestSnap?.busy);
         const r = await apiAction({ action: 'send', text }, { skipAutoRender: true });
         if (r?.ok) {
           ta.value = '';
@@ -11471,11 +13007,21 @@ function buildMobileAppHtml() {
           ta.style.height = 'auto';
           const maxH = isDesktopLayout() ? 180 : 112;
           ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
+          if (wasBusyWhenSent) {
+            const snapToRender = (r?.snapshot && r.snapshot.ok !== false) ? r.snapshot : latestSnap;
+            if (snapToRender && (!Array.isArray(snapToRender.queuedMessages) || !snapToRender.queuedMessages.some((q) => String(q?.text || '').trim() === text.trim()))) {
+              const curQ = Array.isArray(snapToRender.queuedMessages) ? snapToRender.queuedMessages.slice() : [];
+              curQ.push({ source: 'optimistic', stepIndex: -1, text, status: 'queued' });
+              snapToRender.queuedMessages = curQ;
+            }
+            if (snapToRender) renderSnapshot(snapToRender);
+            setTimeout(() => { void fetchSnapshot(); }, 250);
+          }
         } else {
           showToast(r?.error || r?.actionResult?.error || '发送失败，请检查电脑端连接或网络后重试');
         }
         sending = false;
-        if (r?.snapshot) renderSnapshot(r.snapshot);
+        if (r?.snapshot && !(wasBusyWhenSent && r?.ok)) renderSnapshot(r.snapshot);
       } catch (err) {
         showToast(humanizeRemoteError(err?.message, '发送失败，请检查电脑端连接或网络后重试'));
       } finally {
@@ -11558,7 +13104,7 @@ function readJsonBody(req) {
   });
 }
 
-function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '') {
+function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '', allowedTailscaleDnsName = null) {
   if (!rawOrigin || typeof rawOrigin !== 'string') return false;
   try {
     const u = new URL(rawOrigin);
@@ -11572,7 +13118,14 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '') {
     const cleanHost = String(u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
     if (!cleanHost) return false;
     if (u.protocol === 'https:' && cleanHost.endsWith('.trycloudflare.com')) return true;
-    if (cleanHost === 'localhost' || cleanHost.endsWith('.local') || cleanHost.endsWith('.ts.net')) return true;
+    if (cleanHost === 'localhost' || cleanHost.endsWith('.local')) return true;
+    if (cleanHost.endsWith('.ts.net')) {
+      const detectedTsDns = allowedTailscaleDnsName !== null && allowedTailscaleDnsName !== undefined
+        ? String(allowedTailscaleDnsName)
+        : String(detectHostIdentityMeta().tailscaleDnsName || '');
+      const normalizedTsDns = detectedTsDns.replace(/\.$/, '').trim().toLowerCase();
+      return Boolean(normalizedTsDns && cleanHost === normalizedTsDns);
+    }
     return isAllowedPrivateAddress(cleanHost);
   } catch {
     return false;
@@ -12406,6 +13959,14 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const fetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
   const performAction = typeof options.performAction === 'function' ? options.performAction : performActionInTarget;
   const callLsRpc = typeof options.callLanguageServer === 'function' ? options.callLanguageServer : callLocalLanguageServer;
+  const historyManager = options.historyManager || defaultHistoryManager;
+  const rpcTimeoutMs = Number(options.rpcTimeoutMs) > 0 ? Number(options.rpcTimeoutMs) : 4500;
+  const callLsRpcDetailed = async (method, body, timeoutMs = rpcTimeoutMs, callOpts = {}) => {
+    if (typeof options.callLanguageServer === 'function') {
+      return await runRpcCallDetailed((m, b) => options.callLanguageServer(m, b), method, body, timeoutMs);
+    }
+    return await callLocalLanguageServerDetailed(method, body, timeoutMs, callOpts);
+  };
   const getUsageData = typeof options.getUsageData === 'function'
     ? options.getUsageData
     : async (opts = {}) => {
@@ -12416,6 +13977,115 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let lastMtimeMs = 0;
   let cachedUsageData = null;
   let cachedUsageAt = 0;
+  const dispatchedQueueDeletes = new Map();
+  const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
+  const stagedEditUploadsByKey = new Map();
+  let nextStagedUploadId = 1;
+  const STAGED_EDIT_UPLOADS_TTL_MS = 30 * 60 * 1000;
+  const MAX_STAGED_EDIT_UPLOADS_PER_CONV = 10;
+  const makeStagedUploadKey = (cidClient, convId) => `${String(cidClient || '__default__').trim() || '__default__'}::${String(convId || '').trim()}`;
+  const pruneStagedEditUploads = () => {
+    const now = Date.now();
+    for (const [k, rec] of stagedEditUploadsByKey.entries()) {
+      if (!rec || (now - rec.at) > STAGED_EDIT_UPLOADS_TTL_MS || !Array.isArray(rec.items) || !rec.items.length) {
+        stagedEditUploadsByKey.delete(k);
+      }
+    }
+  };
+  const getStagedEditUploads = (key) => {
+    pruneStagedEditUploads();
+    const rec = stagedEditUploadsByKey.get(key);
+    return rec && Array.isArray(rec.items) ? rec.items.slice() : [];
+  };
+  const appendStagedEditUploads = (key, items, opts = {}) => {
+    if (!key || !Array.isArray(items) || !items.length) return;
+    pruneStagedEditUploads();
+    const sourceKey = String(opts?.sourceKey || '').trim();
+    const pendingRetry = opts?.pendingRetry === true;
+    const pendingRetryMeta = (pendingRetry && opts?.pendingRetryMeta && typeof opts.pendingRetryMeta === 'object')
+      ? { ...opts.pendingRetryMeta }
+      : null;
+    const existingRaw = stagedEditUploadsByKey.get(key)?.items || [];
+    // 仅覆盖同一 sourceKey 下尚未确认删除的暂存重试批次（_pendingRetry === true）；已确认删除的独立批次绝不被同文同图新编辑覆盖
+    const existing = sourceKey
+      ? existingRaw.filter((x) => !(String(x?._sourceKey || '') === sourceKey && x?._pendingRetry === true))
+      : existingRaw;
+    const taggedItems = items.map((item) => ({
+      ...item,
+      _stagingId: String(nextStagedUploadId++),
+      ...(sourceKey ? { _sourceKey: sourceKey } : {}),
+      ...(pendingRetry ? { _pendingRetry: true } : {}),
+      ...(pendingRetryMeta ? { _pendingRetryMeta: pendingRetryMeta } : {})
+    }));
+    const next = existing.concat(taggedItems);
+    if (stagedEditUploadsByKey.size >= 100 && !stagedEditUploadsByKey.has(key)) {
+      const oldest = stagedEditUploadsByKey.keys().next().value;
+      if (oldest !== undefined) stagedEditUploadsByKey.delete(oldest);
+    }
+    stagedEditUploadsByKey.set(key, { at: Date.now(), items: next });
+  };
+  const consumeStagedEditUploads = (key, stagingIds) => {
+    if (!key || !Array.isArray(stagingIds) || !stagingIds.length) return 0;
+    pruneStagedEditUploads();
+    const rec = stagedEditUploadsByKey.get(key);
+    if (!rec || !Array.isArray(rec.items) || !rec.items.length) return 0;
+    const idSet = new Set(stagingIds.map((id) => String(id || '')).filter(Boolean));
+    if (!idSet.size) return 0;
+    const before = rec.items.length;
+    rec.items = rec.items.filter((x) => !idSet.has(String(x?._stagingId || '')));
+    const removed = before - rec.items.length;
+    if (!rec.items.length) stagedEditUploadsByKey.delete(key);
+    else rec.at = Date.now();
+    return removed;
+  };
+  const removeStagedEditUpload = (key, opts = {}) => {
+    pruneStagedEditUploads();
+    const rec = stagedEditUploadsByKey.get(key);
+    if (!rec || !Array.isArray(rec.items) || !rec.items.length) return 0;
+    if (opts.clearAll === true) {
+      const n = rec.items.length;
+      stagedEditUploadsByKey.delete(key);
+      return n;
+    }
+    const reqName = String(opts.name || '').trim().toLowerCase();
+    const reqIdx = Number.isInteger(opts.index) ? opts.index : -1;
+    let rmIdx = -1;
+    if (reqName) {
+      if (reqIdx >= 0 && reqIdx < rec.items.length && String(rec.items[reqIdx]?.name || '').trim().toLowerCase() === reqName) {
+        rmIdx = reqIdx;
+      } else {
+        rmIdx = rec.items.findIndex((x) => String(x?.name || '').trim().toLowerCase() === reqName);
+      }
+    } else if (reqIdx >= 0 && reqIdx < rec.items.length) {
+      rmIdx = reqIdx;
+    }
+    if (rmIdx < 0) return 0;
+    rec.items.splice(rmIdx, 1);
+    rec.at = Date.now();
+    if (!rec.items.length) stagedEditUploadsByKey.delete(key);
+    return 1;
+  };
+  const markDispatchedQueueDelete = (key, text = '', meta = {}) => {
+    const now = Date.now();
+    for (const [k, v] of dispatchedQueueDeletes.entries()) {
+      if (!v || (now - v.at) > DISPATCHED_QUEUE_TTL_MS) dispatchedQueueDeletes.delete(k);
+    }
+    if (dispatchedQueueDeletes.size >= 500 && !dispatchedQueueDeletes.has(key)) {
+      const oldest = dispatchedQueueDeletes.keys().next().value;
+      if (oldest !== undefined) dispatchedQueueDeletes.delete(oldest);
+    }
+    dispatchedQueueDeletes.set(key, { at: now, text, ...(meta && typeof meta === 'object' ? meta : {}) });
+  };
+  const getDispatchedQueueDelete = (key) => {
+    const rec = dispatchedQueueDeletes.get(key);
+    if (!rec) return null;
+    if ((Date.now() - rec.at) > DISPATCHED_QUEUE_TTL_MS) {
+      dispatchedQueueDeletes.delete(key);
+      return null;
+    }
+    return rec;
+  };
+  const hasDispatchedQueueDelete = (key) => Boolean(getDispatchedQueueDelete(key));
   try {
     lastMtimeMs = fs.statSync(getRemoteConfigPath()).mtimeMs;
   } catch {}
@@ -12442,6 +14112,63 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     return cachedUsageData ? extractCompactUsageSummary(cachedUsageData) : null;
   };
 
+  const webPushManager = options.webPushManager || createWebPushManager({
+    getStateFilePath: () => path.join(getStateDir(), 'remote-push-state.json')
+  });
+  let lastCompletedUnreadCount = 0;
+  let pushWatcherTimer = null;
+  let pushPollInFlight = false;
+
+  const refreshPushStateFromCatalog = async (force = false) => {
+    if (pushPollInFlight && !force) return lastCompletedUnreadCount;
+    pushPollInFlight = true;
+    try {
+      let convList = null;
+      if (typeof options.pollConversations === 'function') {
+        convList = await options.pollConversations({ force });
+      } else if (typeof options.fetchSnapshot === 'function') {
+        const snap = await options.fetchSnapshot({ bypassCache: force }).catch(() => null);
+        if (snap && Array.isArray(snap.conversations)) convList = snap.conversations;
+      } else {
+        const enriched = await enrichSnapshotWithCatalog({ ok: true, conversations: [] }, {
+          bypassCache: force,
+          catalogStore: options.catalogStore
+        }).catch(() => null);
+        if (enriched && Array.isArray(enriched.conversations)) convList = enriched.conversations;
+      }
+      if (Array.isArray(convList)) {
+        const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
+        lastCompletedUnreadCount = completedUnreadCount;
+      }
+    } catch {} finally {
+      pushPollInFlight = false;
+    }
+    return lastCompletedUnreadCount;
+  };
+
+  const stopPushWatcher = () => {
+    if (pushWatcherTimer) {
+      clearInterval(pushWatcherTimer);
+      pushWatcherTimer = null;
+    }
+  };
+
+  const startPushWatcher = (intervalMs = 6000) => {
+    stopPushWatcher();
+    const stepMs = Math.max(50, Number(intervalMs) || 6000);
+    pushWatcherTimer = setInterval(() => {
+      try {
+        const info = webPushManager.getPublicInfo();
+        if (!info.prefs?.enabled || info.subscriptionCount <= 0) return;
+      } catch {
+        return;
+      }
+      void refreshPushStateFromCatalog(false);
+    }, stepMs);
+    if (typeof pushWatcherTimer.unref === 'function') pushWatcherTimer.unref();
+    return pushWatcherTimer;
+  };
+
   const enrichSnapshotPayload = (snap, config, activeTunnelUrl, clientId = '', fallbackUsageSummary = null) => {
     if (!snap || snap.ok === false) return snap;
     const snapInfo = collectFusedEndpointDescriptor(config.port, activeTunnelUrl ? {
@@ -12451,9 +14178,13 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       mode: config.tunnelMode
     } : null, config.enabledChannels);
     const activeConvId = snap.activeConversationId || snap.sessionId || '';
+    const convList = Array.isArray(snap.conversations) ? snap.conversations : [];
+    const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
+    lastCompletedUnreadCount = completedUnreadCount;
     const out = {
       ...snap,
       activeConversationId: activeConvId,
+      completedUnreadCount,
       hosts: snapInfo.hosts,
       endpoints: snapInfo.endpoints,
       enabledChannels: config.enabledChannels,
@@ -12557,7 +14288,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     res.end(raw);
   }
 
-  return async (req, res) => {
+  const httpHandler = async (req, res) => {
     const config = getActiveConfig();
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -12571,8 +14302,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
 
     const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
+    const allowedTsDns = options.allowedTailscaleDnsName !== undefined
+      ? options.allowedTailscaleDnsName
+      : detectHostIdentityMeta().tailscaleDnsName;
     const reqOrigin = String(req.headers.origin || '').trim();
-    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl)) {
+    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl, allowedTsDns)) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -12622,13 +14356,28 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       res.end(cachedIcon);
       return;
     }
+    if (pathname === '/icon-180.png' || pathname === '/icon-192.png' || pathname === '/icon-512.png') {
+      const iconDim = pathname === '/icon-180.png' ? 180 : (pathname === '/icon-512.png' ? 512 : 192);
+      const pngBuf = buildPwaIconPng(iconDim);
+      res.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Content-Length': String(pngBuf.length),
+        'Cache-Control': 'public, max-age=86400'
+      });
+      res.end(pngBuf);
+      return;
+    }
     if (pathname === '/manifest.json') {
       res.writeHead(200, { 'Content-Type': 'application/manifest+json; charset=utf-8', 'Cache-Control': 'no-cache' });
       res.end(cachedManifest);
       return;
     }
     if (pathname === '/sw.js') {
-      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Service-Worker-Allowed': '/'
+      });
       res.end(cachedSw);
       return;
     }
@@ -12770,6 +14519,86 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         enabledChannels: config.enabledChannels,
         displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay)
       }));
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/push/vapid-key') {
+      try {
+        const info = webPushManager.getPublicInfo();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, ...info }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取推送密钥状态失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/subscribe') {
+      try {
+        const body = await readJsonBody(req);
+        const sub = body?.subscription || body;
+        const result = webPushManager.addSubscription(sub, {
+          label: body?.label || '',
+          origin: body?.origin || String(req.headers.origin || '')
+        });
+        const code = result.ok ? 200 : (result.statusCode || 400);
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '订阅请求解析失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/unsubscribe') {
+      try {
+        const body = await readJsonBody(req);
+        const result = webPushManager.removeSubscription(body?.endpoint || '');
+        const code = result.ok ? 200 : (result.statusCode || 500);
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '取消订阅失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/prefs') {
+      try {
+        const body = await readJsonBody(req);
+        const result = webPushManager.updatePrefs(body || {});
+        const code = result.ok ? 200 : (result.statusCode || 500);
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '更新推送偏好失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/test') {
+      try {
+        await readJsonBody(req);
+        const liveUnreadCount = await refreshPushStateFromCatalog(true);
+        const result = await webPushManager.broadcast({
+          type: 'test',
+          title: 'Antigravity 远程通知测试',
+          body: '推送通道正常，桌面应用未读角标将随已完成未读数自动同步。',
+          tag: 'ag-push-test',
+          url: '/',
+          completedUnreadCount: liveUnreadCount,
+          ts: Date.now()
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, completedUnreadCount: liveUnreadCount, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '发送测试推送失败' }));
+      }
       return;
     }
 
@@ -13284,46 +15113,834 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const effectiveTargetId = String(payload?.targetId || session?.targetId || '').trim();
         const actionName = String(payload?.action || '').trim();
 
-        if (actionName === 'send-queued-messages' || actionName === 'delete-queued-message') {
+        if (actionName === 'send-queued-messages' || actionName === 'delete-queued-message' || actionName === 'edit-queued-message') {
           const cascadeId = String(payload?.conversationId || session?.conversationId || '').trim();
           if (!cascadeId || cascadeId === '__new__' || cascadeId === 'new') {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '当前尚未打开有效会话，请先选择一个对话' }));
             return;
           }
-          const isDomQueueSource = payload?.source === 'dom';
+          const messageId = String(payload?.messageId || '').trim();
+          const messageIds = Array.isArray(payload?.messageIds) ? payload.messageIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+          const isDomQueueSource = payload?.source === 'dom' && !messageId;
           let rpcRes = null;
           let usedDomFallback = false;
-          if (isDomQueueSource) {
-            const domAct = actionName === 'delete-queued-message' ? 'delete-queued-dom' : 'send-queued-dom';
-            const domRes = await performAction({
-              action: domAct,
-              clientId,
-              targetId: effectiveTargetId || undefined,
-              conversationId: cascadeId,
-              domIndex: Number.isInteger(Number(payload?.domIndex)) ? Number(payload.domIndex) : 0,
-              sendAll: actionName === 'send-queued-messages' ? (payload?.sendAll !== false) : undefined,
-              text: String(payload?.text || '')
-            });
+          let deduplicatedRetry = false;
+          let editedText = String(payload?.text || '');
+          let editedAttachments = [];
+          let recoveryKey = '';
+          const hasMediaMarkerText = (s) => /\[(?:附带\s*\d+\s*张图片|图片附件|图片\s*×\d+)\]/.test(String(s || ''));
+          const stripMediaMarkerForMatch = (s) => String(s || '')
+            .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
+            .trim();
+          const extractQueuedStepIdentityToken = (stepObj, uiObj) => String(
+            stepObj?.id ||
+            stepObj?.stepId ||
+            stepObj?.step_id ||
+            stepObj?.messageId ||
+            stepObj?.message_id ||
+            uiObj?.id ||
+            uiObj?.clientMessageId ||
+            uiObj?.client_message_id ||
+            ''
+          ).trim();
+          const hasStepIdentityContinuity = (prevMeta, curMeta) => {
+            if (!prevMeta || !curMeta) return false;
+            const prevTok = String(prevMeta.stepIdentityToken || '').trim();
+            const curTok = String(curMeta.stepIdentityToken || '').trim();
+            // 必须具备可验证的协议级步骤唯一 ID 且前后严格一致；一旦步骤 ID 匹配，即使轨迹追加了无关步骤（总步数增长或索引变化）也允许安全重试，无 ID 或 ID 变化一律拒绝
+            return Boolean(prevTok && curTok && prevTok === curTok);
+          };
+          const verifyStepIndexTargetIdentity = (targetUi, matchedQ, reqPayload) => {
+            const rawReqText = typeof reqPayload?.text === 'string' ? reqPayload.text : '';
+            const reqMediaSig = String(reqPayload?.mediaSig || '').trim();
+            const hasClientIdentityHint = Boolean(rawReqText.trim() || reqPayload?.hasMedia === true || reqMediaSig);
+            if (!hasClientIdentityHint) return { ok: true };
+            const reqExpectsMedia = Boolean(reqPayload?.hasMedia === true || hasMediaMarkerText(rawReqText) || reqMediaSig);
+            const reqTextNorm = stripDisplayMediaSuffixFromQueuedText(rawReqText, reqExpectsMedia).replace(/\s+/g, ' ').trim();
+            const liveRawMedia = extractRawMediaEntriesFromUserInput(targetUi);
+            const liveRawText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || '');
+            const liveHasMedia = Boolean(
+              matchedQ?.hasMedia ||
+              (Array.isArray(matchedQ?.images) && matchedQ.images.length > 0) ||
+              liveRawMedia.length > 0 ||
+              hasMediaMarkerText(liveRawText)
+            );
+            const liveTextNorm = stripDisplayMediaSuffixFromQueuedText(liveRawText, liveHasMedia).replace(/\s+/g, ' ').trim();
+            if (reqTextNorm !== liveTextNorm || reqExpectsMedia !== liveHasMedia) {
+              return {
+                ok: false,
+                error: '目标排队步骤内容或媒体形态已变化（索引已被其他消息占用），已取消操作以防误删'
+              };
+            }
+            if (reqExpectsMedia && liveHasMedia) {
+              const liveMediaSig = buildQueuedStepMediaSig(targetUi);
+              if (reqMediaSig) {
+                if (!liveMediaSig || reqMediaSig !== liveMediaSig) {
+                  return {
+                    ok: false,
+                    error: '目标排队步骤的媒体附件签名已变化（索引已被同文异附件消息占用），已取消操作以防误删'
+                  };
+                }
+              } else if (!reqTextNorm && !liveTextNorm) {
+                return {
+                  ok: false,
+                  error: '纯媒体排队项缺少匹配的媒体身份标识（索引可能已被其他媒体项占用），已取消操作以防误删'
+                };
+              }
+            }
+            return { ok: true };
+          };
+          const buildQueuedStepFingerprint = (uiObj, fallbackTxt = '') => {
+            const rawEntries = extractRawMediaEntriesFromUserInput(uiObj);
+            const normTxt = stripDisplayMediaSuffixFromQueuedText(
+              uiObj ? formatTrajectoryUserInput(uiObj) : String(fallbackTxt || ''),
+              rawEntries.length > 0
+            ).replace(/\s+/g, ' ').trim();
+            const mediaSig = buildQueuedStepMediaSig(uiObj);
+            return `${normTxt}||${mediaSig}`;
+          };
+          const collectQueuedStepFingerprints = (stepsArr, containerObj) => {
+            const fps = [];
+            const seenStepIdx = new Set();
+            const extraArr = Array.isArray(containerObj?.queuedSteps)
+              ? containerObj.queuedSteps
+              : (Array.isArray(containerObj?.queued_steps) ? containerObj.queued_steps : []);
+            for (const qs of extraArr) {
+              if (!qs || typeof qs !== 'object') continue;
+              const idxNum = Number(qs.stepIndex ?? qs.step_index);
+              if (Number.isInteger(idxNum) && idxNum >= 0) seenStepIdx.add(idxNum);
+              const uiObj = qs.userInput || qs.user_input || qs;
+              fps.push({ stepIndex: Number.isInteger(idxNum) ? idxNum : -1, fp: buildQueuedStepFingerprint(uiObj, '') });
+            }
+            if (Array.isArray(stepsArr)) {
+              for (let si = 0; si < stepsArr.length; si += 1) {
+                if (seenStepIdx.has(si)) continue;
+                const st = stepsArr[si];
+                if (isQueuedTrajectoryUserStep(st)) {
+                  fps.push({ stepIndex: si, fp: buildQueuedStepFingerprint(st?.userInput || st?.user_input || null, '') });
+                }
+              }
+            }
+            return fps;
+          };
+          const stageKey = makeStagedUploadKey(clientId, cascadeId);
+          const restoreMediaAndDeleteQueued = async ({ rawUi, fallbackText, deleteMethod, deleteBody, dispatchKey, sourceKey: explicitSourceKey, pendingRetryMeta, checkPendingCollision, verifyOriginalStillQueued }) => {
+            const rawEntries = extractRawMediaEntriesFromUserInput(rawUi);
+            const mat = materializeQueuedAttachmentsForEdit(rawEntries, options.mediaOptions || {});
+            if (!mat.ok || !mat.attachments.length) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  mediaRecoveryUnavailable: true,
+                  error: mat.error || '该排队消息包含媒体附件，当前无法完整恢复附件数据，已取消撤回以避免丢失附件'
+                }
+              };
+            }
+            const sourceKey = String(explicitSourceKey || dispatchKey || '').trim();
+            if (sourceKey) recoveryKey = sourceKey;
+            const currentStagedList = getStagedEditUploads(stageKey);
+            const existingPendingForSource = sourceKey
+              ? currentStagedList.find((x) => String(x?._sourceKey || '') === sourceKey && x?._pendingRetry === true)
+              : null;
+            if (existingPendingForSource && typeof checkPendingCollision === 'function' && !checkPendingCollision(existingPendingForSource._pendingRetryMeta || null)) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '当前会话存在同内容未确认撤回的暂存批次，无法确认本次编辑是否为原项重试，已取消删除以防覆盖已保留内容'
+                }
+              };
+            }
+            const existingOtherCount = currentStagedList.filter((x) => !(sourceKey && String(x?._sourceKey || '') === sourceKey && x?._pendingRetry === true)).length;
+            if (existingOtherCount + mat.attachments.length > MAX_STAGED_EDIT_UPLOADS_PER_CONV) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  mediaRecoveryUnavailable: true,
+                  error: `当前会话待重发暂存附件将超过上限（${MAX_STAGED_EDIT_UPLOADS_PER_CONV} 个），已取消撤回以避免丢失早期附件；请先发送或移除部分附件`
+                }
+              };
+            }
+            const cleanRestoredText = stripDisplayMediaSuffixFromQueuedText(fallbackText, true);
+            const clientAttsMeta = mat.attachments.map(({ name, mimeType, size, isImage, previewUrl }) => ({
+              name,
+              mimeType,
+              size,
+              isImage,
+              previewUrl
+            }));
+            const stageableItems = mat.attachments.map(({ name, mimeType, base64, size, isImage, previewUrl }) => ({
+              name,
+              mimeType,
+              base64,
+              size,
+              isImage,
+              previewUrl
+            }));
+            const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+            if (delOutcome.ok) {
+              appendStagedEditUploads(stageKey, stageableItems, { sourceKey });
+              if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+              editedText = cleanRestoredText;
+              editedAttachments = clientAttsMeta;
+              return { ok: true, rpcRes: delOutcome.result };
+            }
+            if (delOutcome.confirmedNotExecuted) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: delOutcome.error || '删除原排队消息被服务端拒绝，已保留原排队项'
+                }
+              };
+            }
+            // 删除结果未知（超时/断连/null）：绝不盲目丢弃已恢复附件；核验原排队项真实状态后再决策
+            const stillQueued = typeof verifyOriginalStillQueued === 'function'
+              ? await verifyOriginalStillQueued().catch(() => null)
+              : null;
+            if (stillQueued === false) {
+              appendStagedEditUploads(stageKey, stageableItems, { sourceKey });
+              if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+              editedText = cleanRestoredText;
+              editedAttachments = clientAttsMeta;
+              return { ok: true, verifiedAfterUnknownDelete: true, rpcRes: { verifiedDeleted: true } };
+            }
+            if (stillQueued === true) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: delOutcome.error || '删除原排队消息响应超时，经核验原项仍在队列中，请重试'
+                }
+              };
+            }
+            // 核验亦不可得：保留暂存附件并回传前端（标记 pendingRetry: true 与连续性元数据供后续重试复用覆盖，已确认删除的独立批次不互相覆盖）
+            appendStagedEditUploads(stageKey, stageableItems, { sourceKey, pendingRetry: true, pendingRetryMeta });
+            editedText = cleanRestoredText;
+            editedAttachments = clientAttsMeta;
+            return {
+              ok: false,
+              errorPayload: {
+                ok: false,
+                outcomeUnknown: true,
+                attachmentsPreserved: true,
+                textPreserved: true,
+                error: '删除原排队消息响应超时且无法确认原项状态，已保留恢复的文本与附件以避免丢失',
+                actionResult: {
+                  ok: false,
+                  outcomeUnknown: true,
+                  attachmentsPreserved: true,
+                  textPreserved: true,
+                  action: actionName,
+                  cascadeId,
+                  ...(sourceKey ? { recoveryKey: sourceKey } : {}),
+                  editedText: cleanRestoredText,
+                  editedAttachments: clientAttsMeta
+                }
+              }
+            };
+          };
+          const deleteQueuedTextForEdit = async ({ text, deleteMethod, deleteBody, dispatchKey, sourceKey: explicitSourceKey, verifyOriginalStillQueued }) => {
+            const restoredText = String(text || '');
+            const recKey = String(explicitSourceKey || dispatchKey || '').trim();
+            if (recKey) recoveryKey = recKey;
+            const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+            if (delOutcome.ok) {
+              if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+              editedText = restoredText;
+              return { ok: true, rpcRes: delOutcome.result };
+            }
+            if (delOutcome.confirmedNotExecuted) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: delOutcome.error || '删除原排队消息被服务端拒绝，已保留原排队项'
+                }
+              };
+            }
+            const stillQueued = typeof verifyOriginalStillQueued === 'function'
+              ? await verifyOriginalStillQueued().catch(() => null)
+              : null;
+            if (stillQueued === false) {
+              if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+              editedText = restoredText;
+              return { ok: true, verifiedAfterUnknownDelete: true, rpcRes: { verifiedDeleted: true } };
+            }
+            if (stillQueued === true) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: delOutcome.error || '删除原排队消息响应超时，经核验原项仍在队列中，请重试'
+                }
+              };
+            }
+            editedText = restoredText;
+            return {
+              ok: false,
+              errorPayload: {
+                ok: false,
+                outcomeUnknown: true,
+                textPreserved: true,
+                error: '删除原排队消息响应超时且无法确认原项状态，已保留恢复的文本以避免丢失',
+                actionResult: {
+                  ok: false,
+                  outcomeUnknown: true,
+                  textPreserved: true,
+                  action: actionName,
+                  cascadeId,
+                  ...(recKey ? { recoveryKey: recKey } : {}),
+                  editedText: restoredText
+                }
+              }
+            };
+          };
+          const runQueuedDomFallback = async (domAct, sendAllFlag, overrides = {}) => {
+            const rawIdx = overrides.domIndex !== undefined ? overrides.domIndex : payload?.domIndex;
+            const hasExplicitIdx = rawIdx !== undefined && rawIdx !== null && rawIdx !== '' && Number.isInteger(Number(rawIdx));
+            const resolvedDomIdx = hasExplicitIdx ? Number(rawIdx) : undefined;
+            const rawExpCount = overrides.expectedQueueCount !== undefined ? overrides.expectedQueueCount : payload?.expectedQueueCount;
+            const hasExpCount = rawExpCount !== undefined && rawExpCount !== null && rawExpCount !== '' && Number.isInteger(Number(rawExpCount)) && Number(rawExpCount) > 0;
+            const resolvedText = overrides.text !== undefined ? String(overrides.text) : editedText;
+            let domRes = null;
+            try {
+              domRes = await performAction({
+                action: domAct,
+                clientId,
+                targetId: effectiveTargetId || undefined,
+                conversationId: cascadeId,
+                ...(messageId ? { messageId } : {}),
+                ...(resolvedDomIdx !== undefined && resolvedDomIdx >= 0 ? { domIndex: resolvedDomIdx } : {}),
+                ...(hasExpCount ? { expectedQueueCount: Number(rawExpCount) } : {}),
+                ...(payload?.hasMedia ? { hasMedia: true } : {}),
+                sendAll: sendAllFlag,
+                text: resolvedText
+              });
+            } catch (domErr) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domErr?.message || '桌面端队列操作失败' }));
+              return false;
+            }
             if (!domRes?.ok) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domRes?.error || domRes?.actionResult?.error || '电脑端队列操作未能生效，请重试' }));
-              return;
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                ...(domRes?.mediaRecoveryUnavailable || domRes?.actionResult?.mediaRecoveryUnavailable ? { mediaRecoveryUnavailable: true } : {}),
+                error: domRes?.error || domRes?.actionResult?.error || '电脑端队列操作未能生效，请重试'
+              }));
+              return false;
+            }
+            if (typeof domRes?.actionResult?.editedText === 'string') {
+              editedText = domRes.actionResult.editedText;
+            }
+            if (Array.isArray(domRes?.actionResult?.editedAttachments)) {
+              editedAttachments = domRes.actionResult.editedAttachments;
+            }
+            if (Array.isArray(domRes?.actionResult?.stageableAttachments) && domRes.actionResult.stageableAttachments.length) {
+              const domSourceKey = messageId ? `${cascadeId}::msg:${messageId}` : '';
+              appendStagedEditUploads(stageKey, domRes.actionResult.stageableAttachments, domSourceKey ? { sourceKey: domSourceKey } : {});
             }
             usedDomFallback = true;
+            return true;
+          };
+          const respondPartialSendDeleteFailure = async (extraIds = {}, errMsg = '') => {
+            defaultHistoryManager.invalidateSession?.(cascadeId);
+            const partialSnap = await fetchSnapshot(effectiveTargetId, {
+              conversationId: cascadeId,
+              clientId,
+              convLimit: 100,
+              msgLimit: 30,
+              bypassCache: true,
+              bypassCatalogCache: true
+            }).catch(() => null);
+            const usageSummary = (partialSnap && partialSnap.ok !== false && !partialSnap.usageSummary) ? await getCachedUsageSummary() : null;
+            const enrichedPartial = enrichSnapshotPayload(partialSnap, config, activeTunnelUrl, clientId, usageSummary);
+            const finalErr = errMsg || '消息已立即发送，但移除原排队项失败；再次点击将仅重试移除而不重复发送';
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: false,
+              partialSuccess: true,
+              sent: true,
+              deleteFailed: true,
+              error: finalErr,
+              actionResult: {
+                ok: false,
+                partialSuccess: true,
+                sent: true,
+                deleteFailed: true,
+                action: actionName,
+                cascadeId,
+                ...extraIds
+              },
+              snapshot: enrichedPartial
+            }));
+          };
+          const sendSingleQueuedWithCheckedDelete = async ({ dispatchKey, text, hasMedia, deleteMethod, deleteBody, dispatchMeta }) => {
+            if (hasDispatchedQueueDelete(dispatchKey)) {
+              const delRetryOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+              if (!delRetryOutcome.ok) {
+                return {
+                  ok: false,
+                  partialSuccess: true,
+                  error: delRetryOutcome.error || '消息此前已发送，重试移除原排队项仍失败；请稍后再试，不会重复发送'
+                };
+              }
+              dispatchedQueueDeletes.delete(dispatchKey);
+              return { ok: true, rpcRes: delRetryOutcome.result, deduplicatedRetry: true };
+            }
+            if (hasMedia || !String(text || '').trim()) {
+              return { ok: false, needsDomFallback: true };
+            }
+            const cascadeConfig = defaultHistoryManager.getCachedUserConfig?.(cascadeId) || null;
+            const sendOutcome = await callLsRpcDetailed(
+              'SendUserCascadeMessage',
+              {
+                cascadeId,
+                items: [{ text: String(text) }],
+                deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION',
+                ...(cascadeConfig ? { cascadeConfig } : {})
+              },
+              rpcTimeoutMs
+            );
+            if (!sendOutcome.ok) {
+              return {
+                ok: false,
+                sendFailed: true,
+                confirmedNotExecuted: Boolean(sendOutcome.confirmedNotExecuted),
+                error: sendOutcome.error || '立即发送排队消息失败'
+              };
+            }
+            const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+            if (!delOutcome.ok) {
+              markDispatchedQueueDelete(dispatchKey, String(text), dispatchMeta);
+              return {
+                ok: false,
+                partialSuccess: true,
+                error: delOutcome.error || '消息已立即发送，但移除原排队项失败；再次点击将仅重试移除而不重复发送'
+              };
+            }
+            dispatchedQueueDeletes.delete(dispatchKey);
+            return { ok: true, rpcRes: sendOutcome.result, deduplicatedRetry: false };
+          };
+          if (messageId) {
+            const dispatchKey = `${cascadeId}::msg:${messageId}`;
+            if (actionName === 'delete-queued-message') {
+              rpcRes = await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, rpcTimeoutMs);
+              if (rpcRes !== null && rpcRes !== false) {
+                dispatchedQueueDeletes.delete(dispatchKey);
+              }
+            } else if (actionName === 'edit-queued-message') {
+              const pendingRec = await historyManager.resolvePendingMessageForEdit(cascadeId, messageId, {
+                localApiConnect: options.localApiConnect,
+                fetchPendingAgentMessages: options.fetchPendingAgentMessages
+              }).catch(() => null);
+              const rawEntriesFromRec = pendingRec?.ui ? extractRawMediaEntriesFromUserInput(pendingRec.ui) : [];
+              const baseEditText = String(pendingRec?.text || editedText || '');
+              const itemHasMedia = Boolean(
+                payload?.hasMedia ||
+                pendingRec?.hasMedia ||
+                rawEntriesFromRec.length > 0 ||
+                hasMediaMarkerText(baseEditText)
+              );
+              const verifyMsgStillQueued = async () => {
+                historyManager.invalidateSession?.(cascadeId);
+                const freshList = await historyManager.fetchPendingAgentMessages?.(cascadeId, {
+                  localApiConnect: options.localApiConnect,
+                  fetchPendingAgentMessages: options.fetchPendingAgentMessages,
+                  bypassCache: true
+                }).catch(() => null);
+                if (!Array.isArray(freshList)) return null;
+                return freshList.some((item) => item && String(item.messageId || item.id || '').trim() === messageId);
+              };
+              if (itemHasMedia) {
+                const recovered = await restoreMediaAndDeleteQueued({
+                  rawUi: pendingRec?.ui || null,
+                  fallbackText: baseEditText,
+                  deleteMethod: 'DeleteAgentMessage',
+                  deleteBody: { messageId, recipient: cascadeId },
+                  dispatchKey,
+                  verifyOriginalStillQueued: verifyMsgStillQueued
+                });
+                if (!recovered.ok) {
+                  sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recovered.errorPayload));
+                  return;
+                }
+                rpcRes = recovered.rpcRes;
+              } else {
+                const recoveredText = await deleteQueuedTextForEdit({
+                  text: baseEditText,
+                  deleteMethod: 'DeleteAgentMessage',
+                  deleteBody: { messageId, recipient: cascadeId },
+                  dispatchKey,
+                  verifyOriginalStillQueued: verifyMsgStillQueued
+                });
+                if (!recoveredText.ok) {
+                  sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recoveredText.errorPayload));
+                  return;
+                }
+                rpcRes = recoveredText.rpcRes;
+              }
+            } else {
+              const outcome = await sendSingleQueuedWithCheckedDelete({
+                dispatchKey,
+                text: editedText,
+                hasMedia: Boolean(payload?.hasMedia),
+                deleteMethod: 'DeleteAgentMessage',
+                deleteBody: { messageId, recipient: cascadeId }
+              });
+              if (outcome.partialSuccess) {
+                await respondPartialSendDeleteFailure({ messageId }, outcome.error);
+                return;
+              }
+              if (outcome.ok) {
+                rpcRes = outcome.rpcRes;
+                deduplicatedRetry = Boolean(outcome.deduplicatedRetry);
+              } else if (outcome.needsDomFallback || outcome.confirmedNotExecuted) {
+                const okDom = await runQueuedDomFallback('send-queued-dom', false);
+                if (!okDom) return;
+              } else {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '立即发送请求超时或结果未知，已阻止自动补发以避免重复发送，请核对后再试'
+                }));
+                return;
+              }
+            }
+          } else if (isDomQueueSource) {
+            const domAct = actionName === 'delete-queued-message'
+              ? 'delete-queued-dom'
+              : (actionName === 'edit-queued-message' ? 'edit-queued-dom' : 'send-queued-dom');
+            const okDom = await runQueuedDomFallback(domAct, actionName === 'send-queued-messages' ? (payload?.sendAll !== false) : undefined);
+            if (!okDom) return;
           } else if (actionName === 'delete-queued-message') {
             const rawStep = payload?.stepIndex;
             const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
               || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
             const stepIndex = isValidStep ? Number(rawStep) : -1;
             if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '未能定位这条排队消息（缺少有效序号），请刷新页面后重试' }));
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队标识 messageId 或 stepIndex' }));
               return;
             }
-            rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
+            const hasDelIdentityHint = Boolean(
+              (typeof payload?.text === 'string' && payload.text.trim()) ||
+              payload?.hasMedia === true ||
+              String(payload?.mediaSig || '').trim()
+            );
+            if (hasDelIdentityHint) {
+              const trajOutcome = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
+              const trajSteps = trajOutcome.ok ? trajOutcome.result?.trajectory?.steps : null;
+              if (!trajOutcome.ok || !Array.isArray(trajSteps)) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '无法验证目标排队步骤状态，已取消撤回以防误删'
+                }));
+                return;
+              }
+              const trajContainer = trajOutcome.result?.trajectory || trajOutcome.result;
+              const qList = extractQueuedMessagesFromTrajectorySteps(trajSteps, trajContainer);
+              const matchedQ = qList.find((q) => q && q.stepIndex === stepIndex) || null;
+              const extraList = Array.isArray(trajContainer?.queuedSteps)
+                ? trajContainer.queuedSteps
+                : (Array.isArray(trajContainer?.queued_steps) ? trajContainer.queued_steps : []);
+              const directExtraStep = extraList.find((qs) => qs && Number(qs.stepIndex ?? qs.step_index) === stepIndex) || null;
+              const directQueuedStep = isQueuedTrajectoryUserStep(trajSteps[stepIndex]) ? trajSteps[stepIndex] : null;
+              if (!matchedQ && !directQueuedStep && !directExtraStep) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  error: '目标步骤已不在排队中，已取消撤回'
+                }));
+                return;
+              }
+              const targetUi = directQueuedStep?.userInput || directExtraStep?.userInput || directExtraStep?.user_input || directExtraStep || null;
+              const idCheck = verifyStepIndexTargetIdentity(targetUi, matchedQ, payload);
+              if (!idCheck.ok) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: idCheck.error
+                }));
+                return;
+              }
+            }
+            rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, rpcTimeoutMs);
+            if (rpcRes !== null && rpcRes !== false) {
+              dispatchedQueueDeletes.delete(`${cascadeId}::step:${stepIndex}`);
+            }
+          } else if (actionName === 'edit-queued-message') {
+            const rawStep = payload?.stepIndex;
+            const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
+              || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
+            const stepIndex = isValidStep ? Number(rawStep) : -1;
+            if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队标识 messageId 或 stepIndex' }));
+              return;
+            }
+            const dispatchKey = `${cascadeId}::step:${stepIndex}`;
+            const trajOutcome = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
+            const trajSteps = trajOutcome.ok ? trajOutcome.result?.trajectory?.steps : null;
+            if (!trajOutcome.ok || !Array.isArray(trajSteps)) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                error: '无法验证目标排队步骤状态，已取消编辑以防误删'
+              }));
+              return;
+            }
+            const trajContainer = trajOutcome.result?.trajectory || trajOutcome.result;
+            const qList = extractQueuedMessagesFromTrajectorySteps(trajSteps, trajContainer);
+            const matchedQ = qList.find((q) => q && q.stepIndex === stepIndex) || null;
+            const extraList = Array.isArray(trajContainer?.queuedSteps)
+              ? trajContainer.queuedSteps
+              : (Array.isArray(trajContainer?.queued_steps) ? trajContainer.queued_steps : []);
+            const directExtraStep = extraList.find((qs) => qs && Number(qs.stepIndex ?? qs.step_index) === stepIndex) || null;
+            const directQueuedStep = isQueuedTrajectoryUserStep(trajSteps[stepIndex]) ? trajSteps[stepIndex] : null;
+            if (!matchedQ && !directQueuedStep && !directExtraStep) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                error: '目标步骤已不在排队中，已取消编辑'
+              }));
+              return;
+            }
+            const targetStepObj = directQueuedStep || directExtraStep || null;
+            const targetUi = directQueuedStep?.userInput || directExtraStep?.userInput || directExtraStep?.user_input || directExtraStep || null;
+            const idCheck = verifyStepIndexTargetIdentity(targetUi, matchedQ, payload);
+            if (!idCheck.ok) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: idCheck.error
+              }));
+              return;
+            }
+            const baseEditText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || editedText || '');
+            const rawEntriesFromStep = extractRawMediaEntriesFromUserInput(targetUi);
+            const itemHasMedia = Boolean(
+              payload?.hasMedia ||
+              matchedQ?.hasMedia ||
+              (Array.isArray(matchedQ?.images) && matchedQ.images.length > 0) ||
+              rawEntriesFromStep.length > 0 ||
+              hasMediaMarkerText(baseEditText)
+            );
+            const targetStepFp = buildQueuedStepFingerprint(targetUi, baseEditText);
+            const stableStepRecoveryKey = `${cascadeId}::stepfp:${targetStepFp}`;
+            const preDeleteFps = collectQueuedStepFingerprints(trajSteps, trajContainer);
+            const preDeleteSameFpCount = preDeleteFps.filter((x) => x.fp === targetStepFp).length;
+            const editStepIdentityToken = extractQueuedStepIdentityToken(targetStepObj, targetUi);
+            const editContinuityMeta = {
+              originalStepIndex: stepIndex,
+              preSameFpCount: Math.max(1, preDeleteSameFpCount),
+              preTotalSteps: trajSteps.length,
+              stepIdentityToken: editStepIdentityToken
+            };
+            const verifyStepStillQueued = async () => {
+              const recheck = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
+              const recheckSteps = recheck.ok ? recheck.result?.trajectory?.steps : null;
+              if (!recheck.ok || !Array.isArray(recheckSteps)) return null;
+              const recheckContainer = recheck.result?.trajectory || recheck.result;
+              const postDeleteFps = collectQueuedStepFingerprints(recheckSteps, recheckContainer);
+              const matchingPost = postDeleteFps.filter((x) => x.fp === targetStepFp);
+              if (matchingPost.length === 0) return false;
+              const stillAtSameIndex = matchingPost.some((x) => x.stepIndex === stepIndex);
+              if (stillAtSameIndex && matchingPost.length >= Math.max(1, preDeleteSameFpCount)) {
+                return true;
+              }
+              // 仍有同内容排队项存在（例如前序步骤并发删除导致原项前移，或存在同文副本无法唯一定位）→ 无法确认已删，返回未知以保留文本/附件
+              return null;
+            };
+            if (itemHasMedia) {
+              const recovered = await restoreMediaAndDeleteQueued({
+                rawUi: targetUi,
+                fallbackText: baseEditText,
+                deleteMethod: 'DeleteQueuedUserInputStep',
+                deleteBody: { cascadeId, stepIndex },
+                dispatchKey,
+                sourceKey: stableStepRecoveryKey,
+                pendingRetryMeta: editContinuityMeta,
+                checkPendingCollision: (prevMeta) => hasStepIdentityContinuity(prevMeta, {
+                  stepIndex,
+                  sameFpCount: preDeleteSameFpCount,
+                  totalSteps: trajSteps.length,
+                  stepIdentityToken: editStepIdentityToken
+                }),
+                verifyOriginalStillQueued: verifyStepStillQueued
+              });
+              if (!recovered.ok) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recovered.errorPayload));
+                return;
+              }
+              rpcRes = recovered.rpcRes;
+            } else {
+              const recoveredText = await deleteQueuedTextForEdit({
+                text: baseEditText || editedText,
+                deleteMethod: 'DeleteQueuedUserInputStep',
+                deleteBody: { cascadeId, stepIndex },
+                dispatchKey,
+                sourceKey: stableStepRecoveryKey,
+                verifyOriginalStillQueued: verifyStepStillQueued
+              });
+              if (!recoveredText.ok) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recoveredText.errorPayload));
+                return;
+              }
+              rpcRes = recoveredText.rpcRes;
+            }
+          } else if (actionName === 'send-queued-messages' && payload?.sendAll === false) {
+            const rawStep = payload?.stepIndex;
+            const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
+              || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
+            const stepIndex = isValidStep ? Number(rawStep) : -1;
+            if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队标识 messageId 或 stepIndex' }));
+              return;
+            }
+            const reqTextNorm = stripDisplayMediaSuffixFromQueuedText(editedText, true).replace(/\s+/g, ' ').trim();
+            let itemText = editedText.trim();
+            let itemHasMedia = Boolean(payload?.hasMedia);
+            let verifiedDomIdx = (payload?.domIndex !== undefined && payload?.domIndex !== null && payload?.domIndex !== '' && Number.isInteger(Number(payload.domIndex)))
+              ? Number(payload.domIndex)
+              : undefined;
+            let expectedQueueCount = 0;
+            // 无论首次发送还是部分成功重试，均先拉取最新轨迹核验目标步骤真实身份，防止索引被其他项占用误删或前移后重复发送
+            const trajOutcome = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
+            const trajSteps = trajOutcome.ok ? trajOutcome.result?.trajectory?.steps : null;
+            if (!trajOutcome.ok || !Array.isArray(trajSteps)) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: '无法验证目标排队步骤状态，已取消操作以防误删或重复发送'
+              }));
+              return;
+            }
+            const trajContainer = trajOutcome.result?.trajectory || trajOutcome.result;
+            const qList = extractQueuedMessagesFromTrajectorySteps(trajSteps, trajContainer);
+            const qPos = qList.findIndex((q) => q && q.stepIndex === stepIndex);
+            const matchedQ = qPos >= 0 ? qList[qPos] : null;
+            const extraList = Array.isArray(trajContainer?.queuedSteps)
+              ? trajContainer.queuedSteps
+              : (Array.isArray(trajContainer?.queued_steps) ? trajContainer.queued_steps : []);
+            const directExtraStep = extraList.find((qs) => qs && Number(qs.stepIndex ?? qs.step_index) === stepIndex) || null;
+            const directQueuedStep = isQueuedTrajectoryUserStep(trajSteps[stepIndex]) ? trajSteps[stepIndex] : null;
+            if (!matchedQ && !directQueuedStep && !directExtraStep) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                error: '目标步骤已不在排队中，已取消发送以防重复发送'
+              }));
+              return;
+            }
+            const targetUi = directQueuedStep?.userInput || directExtraStep?.userInput || directExtraStep?.user_input || directExtraStep || null;
+            if (matchedQ) {
+              const qText = String(matchedQ.text || '').trim();
+              if (qText) itemText = qText;
+              itemHasMedia = itemHasMedia || Boolean(matchedQ.hasMedia) || (Array.isArray(matchedQ.images) && matchedQ.images.length > 0);
+              if (verifiedDomIdx === undefined && qPos >= 0) verifiedDomIdx = qPos;
+              if (qPos >= 0) expectedQueueCount = qList.length;
+            } else if (targetUi) {
+              const dText = formatTrajectoryUserInput(targetUi);
+              if (dText) itemText = dText;
+              itemHasMedia = itemHasMedia || extractTrajectoryUserAttachments(targetUi).length > 0;
+            }
+            const sendIdCheck = verifyStepIndexTargetIdentity(targetUi, matchedQ, payload);
+            if (!sendIdCheck.ok) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: sendIdCheck.error
+              }));
+              return;
+            }
+            const targetStepObj = directQueuedStep || directExtraStep || null;
+            const stepFp = buildQueuedStepFingerprint(targetUi, itemText);
+            const liveFpsForSend = collectQueuedStepFingerprints(trajSteps, trajContainer);
+            const liveSameFpCount = liveFpsForSend.filter((x) => x.fp === stepFp).length;
+            const sendStepIdentityToken = extractQueuedStepIdentityToken(targetStepObj, targetUi);
+            const dispatchKey = `${cascadeId}::stepfp:${stepFp}`;
+            const existingDispatchedRec = getDispatchedQueueDelete(dispatchKey);
+            if (existingDispatchedRec) {
+              // 仅在具备原目标身份连续性证据时才允许仅重试删除；否则（多条同文、或原项已删新入队同内容 B 替换）一律停止删除防止误删未发送项
+              const continuous = hasStepIdentityContinuity(existingDispatchedRec, {
+                stepIndex,
+                sameFpCount: liveSameFpCount,
+                totalSteps: trajSteps.length,
+                stepIdentityToken: sendStepIdentityToken
+              });
+              if (!continuous) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '无法确认当前排队项与此前已发送待删项为同一消息（可能存在同内容新消息或并发变更），已停止操作以防误删或重复发送'
+                }));
+                return;
+              }
+            }
+            if (!itemText && !itemHasMedia && !existingDispatchedRec) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '未找到指定排队步骤或内容为空' }));
+              return;
+            }
+            const outcome = await sendSingleQueuedWithCheckedDelete({
+              dispatchKey,
+              text: itemText,
+              hasMedia: itemHasMedia,
+              deleteMethod: 'DeleteQueuedUserInputStep',
+              deleteBody: { cascadeId, stepIndex },
+              dispatchMeta: {
+                originalStepIndex: stepIndex,
+                preSameFpCount: Math.max(1, liveSameFpCount),
+                preTotalSteps: trajSteps.length,
+                stepIdentityToken: sendStepIdentityToken
+              }
+            });
+            if (outcome.partialSuccess) {
+              await respondPartialSendDeleteFailure({ stepIndex }, outcome.error);
+              return;
+            }
+            if (outcome.ok) {
+              rpcRes = outcome.rpcRes;
+              deduplicatedRetry = Boolean(outcome.deduplicatedRetry);
+            } else if (outcome.needsDomFallback || outcome.confirmedNotExecuted) {
+              const coreText = stripMediaMarkerForMatch(itemText);
+              if (verifiedDomIdx === undefined && !coreText) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  error: '无法确认目标媒体排队项的桌面映射，已取消发送以防误发'
+                }));
+                return;
+              }
+              const okDom = await runQueuedDomFallback('send-queued-dom', false, {
+                ...(verifiedDomIdx !== undefined ? { domIndex: verifiedDomIdx } : {}),
+                ...(expectedQueueCount > 0 ? { expectedQueueCount } : {}),
+                text: coreText || itemText
+              });
+              if (!okDom) return;
+            } else {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: '立即发送请求超时或结果未知，已阻止自动补发以避免重复发送，请核对后再试'
+              }));
+              return;
+            }
           } else {
-            // 轨迹/混合队列统一由 LanguageServer SendAllQueuedMessages RPC 执行；
-            // 若 RPC 成功或超时（可能已在后端执行但响应超时），均严禁自动补点桌面 DOM 按钮以杜绝重复发送；
-            // 仅纯 DOM 队列（isDomQueueSource === true，未调用 RPC）才走 send-queued-dom(sendAll:true)
-            rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
+            // 全部立即发送：优先保留 SendAllQueuedMessages 契约；
+            // 仅当服务端明确返回 confirmedNotExecuted（如 Antigravity 2.0 报 deprecated/unimplemented）且携带 agent_state messageIds 时，才允许回退桌面端全发；
+            // 若返回 null/超时/未知错误，必须 fail-closed 严禁补发！
+            const sendAllOutcome = await callLsRpcDetailed('SendAllQueuedMessages', { cascadeId }, rpcTimeoutMs);
+            if (sendAllOutcome.ok) {
+              rpcRes = sendAllOutcome.result;
+            } else if (sendAllOutcome.confirmedNotExecuted && messageIds.length > 0) {
+              const okDom = await runQueuedDomFallback('send-queued-dom', true);
+              if (!okDom) return;
+            } else {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                ...(sendAllOutcome.confirmedNotExecuted ? {} : { outcomeUnknown: true }),
+                error: sendAllOutcome.confirmedNotExecuted
+                  ? (sendAllOutcome.error || '本机 LanguageServer 队列操作失败')
+                  : '本机 LanguageServer 队列操作调用超时或结果未知，已阻止自动补发以避免重复发送'
+              }));
+              return;
+            }
           }
           if (!usedDomFallback && (rpcRes === null || rpcRes === false)) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '电脑端后台队列服务暂时无响应或超时，请稍后重试' }));
@@ -13353,6 +15970,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               ok: true,
               action: actionName,
               cascadeId,
+              ...(deduplicatedRetry ? { deduplicatedRetry: true } : {}),
+              ...(actionName === 'edit-queued-message' && recoveryKey ? { recoveryKey } : {}),
+              ...(actionName === 'edit-queued-message' ? { editedText } : {}),
+              ...(actionName === 'edit-queued-message' && editedAttachments.length ? { editedAttachments } : {}),
               ...(hasRemainingDomQueued ? { hasRemainingDomQueued: true } : {})
             },
             snapshot: enriched
@@ -13657,6 +16278,34 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           }));
           return;
         }
+        const existingConvStageKey = (effectiveConvId && effectiveConvId !== '__new__' && effectiveConvId !== 'new')
+          ? makeStagedUploadKey(clientId, effectiveConvId)
+          : '';
+        if (actionName === 'remove-uploaded-attachment' && existingConvStageKey) {
+          const stagedList = getStagedEditUploads(existingConvStageKey);
+          if (stagedList.length > 0) {
+            const removedStaged = removeStagedEditUpload(existingConvStageKey, {
+              clearAll: payload?.clearAll === true,
+              name: payload?.name,
+              index: payload?.index
+            });
+            if (removedStaged > 0) {
+              if (payload?.clearAll === true) {
+                await performAction({
+                  ...payload,
+                  clientId,
+                  targetId: effectiveTargetId || undefined,
+                  conversationId: effectiveConvId
+                }).catch(() => null);
+              }
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: true,
+                actionResult: { ok: true, staged: true, removed: removedStaged }
+              }));
+              return;
+            }
+          }
+        }
         const isDeferredDraftSend = Boolean(
           actionName === 'send' &&
           (session?.draftNewIsolated || payload?.draftNewIsolated === true) &&
@@ -13686,6 +16335,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const draftUploadsForSend = (isDeferredDraftSend && Array.isArray(session?.draftPendingUploads) && session.draftPendingUploads.length)
           ? session.draftPendingUploads.slice()
           : [];
+        const stagedUploadsForSend = (!isDeferredDraftSend && actionName === 'send' && existingConvStageKey)
+          ? getStagedEditUploads(existingConvStageKey)
+          : [];
         const sendStartNavEpoch = session ? (session.navEpoch || 0) : 0;
         const sendStartTargetId = session ? String(session.targetId || effectiveTargetId || '') : effectiveTargetId;
         const sendStartConvId = session ? String(session.conversationId || '') : effectiveConvId;
@@ -13710,8 +16362,28 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               draftProjectId: draftPidForSend,
               restoreDesktop: payload?.restoreDesktop !== false,
               ...(draftUploadsForSend.length ? { draftPendingUploads: draftUploadsForSend } : {})
-            } : {})
+            } : (stagedUploadsForSend.length ? {
+              pendingUploads: stagedUploadsForSend.map(({ name, mimeType, base64 }) => ({ name, mimeType, base64 }))
+            } : {}))
           });
+          if (actionName === 'send' && result?.ok !== false) {
+            if (existingConvStageKey && stagedUploadsForSend.length) {
+              consumeStagedEditUploads(
+                existingConvStageKey,
+                stagedUploadsForSend.map((x) => x?._stagingId).filter(Boolean)
+              );
+            }
+            const sentSid = String(
+              result?.snapshot?.activeConversationId ||
+              result?.snapshot?.sessionId ||
+              result?.actionResult?.createdConversationId ||
+              effectiveConvId ||
+              ''
+            ).trim();
+            if (sentSid && sentSid !== '__new__' && sentSid !== 'new') {
+              defaultHistoryManager.invalidateSession?.(sentSid);
+            }
+          }
           if (isDeferredDraftSend) {
             if (result?.ok === false) {
               if (!isStillSameNav()) {
@@ -13800,6 +16472,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Not Found');
   };
+  httpHandler.pollPushState = refreshPushStateFromCatalog;
+  httpHandler.startPushWatcher = startPushWatcher;
+  httpHandler.stopPushWatcher = stopPushWatcher;
+  httpHandler.webPushManager = webPushManager;
+  return httpHandler;
 }
 
 function startMobileRemoteServer() {
@@ -13872,13 +16549,20 @@ function startMobileRemoteServer() {
       }
     }
     const latestCfg = loadOrCreateRemoteConfig();
+    if (!stopped && latestCfg.enabledChannels?.tailscale !== false && process.env.AG_REMOTE_SKIP_PROBES !== '1') {
+      try { ensureTailscaleServeHttps(config.port); } catch {}
+    }
     if (!stopped && latestCfg.tunnelEnabled) {
       void tunnelCtrl.start(latestCfg);
+    }
+    if (!stopped && process.env.AG_REMOTE_SKIP_PROBES !== '1') {
+      handler.startPushWatcher(6000);
     }
   });
 
   const stop = async () => {
     stopped = true;
+    handler.stopPushWatcher();
     if (ifaceTimer) clearInterval(ifaceTimer);
     for (const srv of boundServers.values()) {
       try { srv.close(); } catch {}
@@ -13901,9 +16585,9 @@ function startMobileRemoteServer() {
   };
 }
 
-function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChannels = null) {
-  const { tailscale, lan, physicalLan } = enumerateLocalAddresses();
-  const meta = detectHostIdentityMeta();
+function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChannels = null, options = {}) {
+  const { tailscale, lan, physicalLan } = options.addresses || enumerateLocalAddresses();
+  const meta = options.hostMeta || detectHostIdentityMeta(options.execFileSync ? { execFileSync: options.execFileSync } : {});
   const primaryLan = physicalLan[0] || lan[0] || null;
   const secondaryLan = physicalLan[1] || null;
   const en = {
@@ -13912,6 +16596,17 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
     bonjour: enabledChannels?.bonjour !== false,
     tunnel: enabledChannels?.tunnel !== false
   };
+
+  let tsHttpsUrl = '';
+  let tsHttpsHint = '';
+  if (en.tailscale && meta.tailscaleDnsName) {
+    const tsServe = options.tailscaleServe || ensureTailscaleServeHttps(port, {
+      hostMeta: meta,
+      execFileSync: options.execFileSync
+    });
+    if (tsServe?.enabled && tsServe?.url) tsHttpsUrl = tsServe.url;
+    if (tsServe?.hint) tsHttpsHint = tsServe.hint;
+  }
 
   const endpoints = [];
   const seenHosts = new Set();
@@ -13930,8 +16625,19 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
 
   if (en.lan && primaryLan) addEp(primaryLan.address, 'lan', 0, primaryLan.iface);
   if (en.lan && secondaryLan) addEp(secondaryLan.address, 'lan', 50, secondaryLan.iface);
+  if (en.tailscale && tsHttpsUrl) {
+    const tsHttpsHost = meta.tailscaleDnsName;
+    seenHosts.add(`https://${tsHttpsHost}`);
+    endpoints.push({
+      url: tsHttpsUrl,
+      host: tsHttpsHost,
+      kind: 'tailscale',
+      priority: 90,
+      iface: tailscale[0]?.iface || 'utun0'
+    });
+  }
   if (en.tailscale && tailscale[0]) addEp(tailscale[0].address, 'tailscale', 100, tailscale[0].iface);
-  if (en.tailscale && tailscale.length > 0 && meta.tailscaleDnsName) {
+  if (en.tailscale && !tsHttpsUrl && tailscale.length > 0 && meta.tailscaleDnsName) {
     addEp(meta.tailscaleDnsName, 'tailscale', 150, tailscale[0]?.iface || 'utun0');
   }
   if (en.bonjour && meta.bonjourHost && primaryLan) {
@@ -13965,6 +16671,8 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
     deviceName: meta.deviceName,
     bonjourHost: meta.bonjourHost,
     tailscaleDnsName: meta.tailscaleDnsName,
+    tailscaleHttpsUrl: tsHttpsUrl,
+    tailscaleHttpsHint: tsHttpsHint,
     hosts: endpoints.map((ep) => ep.host),
     endpoints: endpoints.map(({ url, kind, priority }) => ({ url, kind, priority }))
   };
@@ -14091,11 +16799,16 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       label: 'Tailscale',
       labelEn: 'Tailscale',
       enabled: Boolean(enCh.tailscale),
-      detected: desc.tailscale.length > 0,
-      available: Boolean(enCh.tailscale && desc.tailscale.length > 0),
+      detected: desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl),
+      available: Boolean(enCh.tailscale && (desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl))),
       rawHost: tsDisplayHost,
-      displayHost: enCh.tailscale ? tsDisplayHost : (tsDisplayHost ? `已停用 · ${tsDisplayHost}` : '已停用'),
+      displayHost: enCh.tailscale
+        ? (desc.tailscaleHttpsUrl ? `HTTPS · ${desc.tailscaleDnsName}` : tsDisplayHost)
+        : (tsDisplayHost ? `已停用 · ${tsDisplayHost}` : '已停用'),
       entryHost: tsEntryHost,
+      entryBaseUrl: desc.tailscaleHttpsUrl || '',
+      httpsUrl: desc.tailscaleHttpsUrl || '',
+      httpsHint: desc.tailscaleHttpsHint || '',
       iface: desc.tailscale[0]?.iface || ''
     },
     {
@@ -14126,6 +16839,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     || channels.find((c) => c.available);
   const localBuilt = mkQrSafe('127.0.0.1');
   const localUrl = localBuilt.url;
+  const localhostUrl = mkQrSafe('localhost').url;
   const primary = pickedChannel
     ? { iface: pickedChannel.iface, address: pickedChannel.entryHost, kind: pickedChannel.key, url: pickedChannel.url, qrSvg: pickedChannel.qrSvg }
     : { iface: '', address: '', kind: 'none', url: '', qrSvg: '' };
@@ -14165,7 +16879,10 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     qrSvg: primary.qrSvg,
     tailscaleUrls,
     lanUrls,
-    localUrl
+    localUrl,
+    localhostUrl,
+    tailscaleHttpsUrl: desc.tailscaleHttpsUrl || '',
+    tailscaleHttpsHint: desc.tailscaleHttpsHint || ''
   };
 }
 
@@ -14277,11 +16994,19 @@ module.exports = {
   renderTerminalQr,
   renderQrSvg,
   buildMobileAppHtml,
+  buildManifestJson,
+  buildServiceWorkerJs,
   normalizeTrajectoryStatus,
   renderSafeMarkdownToHtml,
   extractMessagesFromTrajectorySteps,
   extractQueuedMessagesFromTrajectorySteps,
+  extractPendingAgentMessagesFromUpdate,
   extractTrajectoryUserAttachments,
+  extractRawMediaEntriesFromUserInput,
+  materializeQueuedAttachmentsForEdit,
+  stripDisplayMediaSuffixFromQueuedText,
+  classifyLanguageServerRpcError,
+  mergeUniqueQueuedLists,
   collapseConsecutiveDomThinking,
   mergeTrajectoryAndDomMessages,
   resolveProductionMediaAllowedRoots,
@@ -14312,5 +17037,9 @@ module.exports = {
   startMobileRemoteServer,
   resolveEmptyCloudflaredConfigPath,
   buildRemoteInfo,
+  detectHostIdentityMeta,
+  ensureTailscaleServeHttps,
+  collectFusedEndpointDescriptor,
+  isAllowedPrivateOrigin,
   printRemoteCli
 };

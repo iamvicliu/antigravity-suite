@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
 const { resolveActiveCdpTarget } = require('./asar-engine');
 function request(url, body, token) {
   return new Promise((resolve, reject) => {
@@ -12,6 +13,80 @@ function request(url, body, token) {
       response.on('end', () => response.statusCode === 200 ? resolve(text) : reject(new Error(`HTTP ${response.statusCode}: ${text.slice(0, 200)}`)));
     });
     req.setTimeout(20000, () => req.destroy(new Error('Local API timeout'))); req.on('error', reject); req.end(body ? JSON.stringify(body) : undefined);
+  });
+}
+
+function requestConnectStreamFirstFrame(baseOrigin, method, body, token, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let req = null;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { req?.destroy?.(); } catch {}
+      resolve(val);
+    };
+    const timer = setTimeout(() => finish(null), Math.max(200, Number(timeoutMs) || 1500));
+    if (typeof timer.unref === 'function') timer.unref();
+    try {
+      const targetUrl = `${String(baseOrigin || '').replace(/\/+$/, '')}/exa.language_server_pb.LanguageServerService/${method}`;
+      const payloadBuf = Buffer.from(JSON.stringify(body || {}), 'utf8');
+      const frame = Buffer.alloc(5 + payloadBuf.length);
+      frame[0] = 0;
+      frame.writeUInt32BE(payloadBuf.length, 1);
+      payloadBuf.copy(frame, 5);
+      const clientMod = targetUrl.startsWith('https:') ? https : http;
+      req = clientMod.request(targetUrl, {
+        rejectUnauthorized: false,
+        agent: false,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/connect+json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': String(token || '')
+        }
+      }, (res) => {
+        if (res.statusCode && res.statusCode !== 200) {
+          res.resume();
+          finish(null);
+          return;
+        }
+        let buf = Buffer.alloc(0);
+        res.on('data', (chunk) => {
+          if (settled) return;
+          buf = Buffer.concat([buf, chunk]);
+          while (buf.length >= 5) {
+            const flags = buf[0];
+            const len = buf.readUInt32BE(1);
+            if (len > 32 * 1024 * 1024) {
+              finish(null);
+              return;
+            }
+            if (buf.length < 5 + len) break;
+            const rawBody = buf.subarray(5, 5 + len);
+            buf = buf.subarray(5 + len);
+            if (flags === 2) {
+              finish(null);
+              return;
+            }
+            try {
+              const decoded = (flags & 1) ? zlib.gunzipSync(rawBody) : rawBody;
+              finish(JSON.parse(decoded.toString('utf8')));
+            } catch {
+              finish(null);
+            }
+            return;
+          }
+        });
+        res.on('end', () => finish(null));
+        res.on('error', () => finish(null));
+      });
+      req.on('error', () => finish(null));
+      req.end(frame);
+    } catch {
+      finish(null);
+    }
   });
 }
 /**
@@ -76,9 +151,12 @@ function discoverFromHubDaemonFiles(options = {}) {
   for (const item of candidates) {
     return {
       origin: item.origin,
+      csrfToken: item.csrfToken,
       page: null,
       call: async (method, body) =>
-        JSON.parse(await request(`${item.origin}/exa.language_server_pb.LanguageServerService/${method}`, body, item.csrfToken))
+        JSON.parse(await request(`${item.origin}/exa.language_server_pb.LanguageServerService/${method}`, body, item.csrfToken)),
+      callStreamFirstFrame: (method, body, timeoutMs = 1500) =>
+        requestConnectStreamFirstFrame(item.origin, method, body, item.csrfToken, timeoutMs)
     };
   }
   return null;
@@ -100,7 +178,14 @@ async function connect() {
     if (!configMatch) throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
     const token = String(JSON.parse(configMatch[1])?.csrfToken || '').trim();
     if (!token) throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
-    return { origin, page, call: async (method, body) => JSON.parse(await request(`${origin}/exa.language_server_pb.LanguageServerService/${method}`, body, token)) };
+    return {
+      origin,
+      csrfToken: token,
+      page,
+      call: async (method, body) => JSON.parse(await request(`${origin}/exa.language_server_pb.LanguageServerService/${method}`, body, token)),
+      callStreamFirstFrame: (method, body, timeoutMs = 1500) =>
+        requestConnectStreamFirstFrame(origin, method, body, token, timeoutMs)
+    };
   } catch (err) {
     primaryErr = err;
   }
@@ -113,4 +198,4 @@ async function connect() {
   }
   throw primaryErr;
 }
-module.exports = { connect, discoverFromHubDaemonFiles };
+module.exports = { connect, discoverFromHubDaemonFiles, requestConnectStreamFirstFrame };
