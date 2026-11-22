@@ -4647,7 +4647,7 @@ function normPlainMatchText(text) {
   s = s.replace(/<(https?:\/\/[^>\s]+|file:\/\/[^>\s]+|mailto:[^>\s]+)>/gi, '$1');
   s = s.replace(/<br\s*\/?>/gi, ' ');
   s = s.replace(/^[ \t]*(?:={3,}|-{3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*$/gm, '');
-  s = s.replace(/^[ \t]*#{1,6}[ \t]+/gm, '').replace(/[ \t]+#+[ \t]*$/gm, '');
+  s = s.replace(/^[ \t]*#{1,6}[ \t]+([^\n]*?)(?:[ \t]+#+)?[ \t]*$/gm, '$1');
   s = s.replace(/^[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '');
   s = s.replace(/^[ \t]*\[[ xX]\][ \t]+/gm, '');
   s = s.replace(/(^|[^\\\w)\]])\*\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*\*(?=$|[^\\\w(\[])/g, '$1$2');
@@ -4705,6 +4705,13 @@ function stripTrailingEllipsis(s) {
   return String(s || '').replace(/(?:\.{3,}|…+)$/g, '');
 }
 
+const DOM_UI_CHROME_TOKEN = '(?:'
+  + '(?:(?:javascript|typescript|python|bash|shell|zsh|sh|json|yaml|yml|html|css|scss|less|sql|golang|go|rust|java|cpp|c\\+\\+|csharp|c#|ruby|php|swift|kotlin|markdown|md|xml|toml|ini|diff|plaintext|text|txt|jsx|tsx|js|ts|py|rb|rs|cs)?(?:copycode|copied|copy|复制代码|已复制|复制))'
+  + '|(?:important|warning|caution|note|tip)'
+  + '|(?:重要提示|提示信息|注意事项|警告提示)'
+  + ')';
+const DOM_UI_CHROME_PREFIX_RE = new RegExp(`^(?:${DOM_UI_CHROME_TOKEN}[:：·•\\-|]*)+$`);
+
 function classifyAssistantMatch(baseText, domText, options = {}) {
   const tKey = options.baseIsDom ? compactDomKey(baseText) : compactBaseKey(baseText);
   const dKey = compactDomKey(domText);
@@ -4729,12 +4736,13 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
     return 2;
   }
 
-  // Tier 1 仅允许单侧头部多出 UI 装饰（如 Alert/Copy 标签），另一侧头部精确零差异且尾部零失配
-  if (shorter.length >= 24) {
-    const hitPos = longer.indexOf(shorter);
+  // Tier 1 仅允许可识别的桌面 UI 装饰前缀（如 Alert/语言/Copy 标签）包裹完整轨迹正文，且非流式态尾部必须零失配
+  if (!options.baseIsDom && tClean.length >= 24 && dClean.length > tClean.length) {
+    const hitPos = dClean.indexOf(tClean);
     if (hitPos > 0 && hitPos <= 48) {
-      const tailAfter = longer.length - (hitPos + shorter.length);
-      if (Boolean(options.busy) || (shorter.length / longer.length) >= 0.65 || tailAfter <= 32) {
+      const uiPrefix = dClean.slice(0, hitPos);
+      const tailAfter = dClean.length - (hitPos + tClean.length);
+      if (DOM_UI_CHROME_PREFIX_RE.test(uiPrefix) && (Boolean(options.busy) || tailAfter === 0)) {
         return 1;
       }
     }
@@ -4862,7 +4870,7 @@ function collapseConsecutiveDomThinking(domMessages) {
   return out;
 }
 
-function findUserAnchorStartIdx(baseList, domList, options = {}) {
+function findUserAnchorAlignment(baseList, domList, options = {}) {
   const baseUserIndices = [];
   for (let i = 0; i < baseList.length; i++) {
     if (baseList[i]?.role === 'user') baseUserIndices.push(i);
@@ -4873,7 +4881,7 @@ function findUserAnchorStartIdx(baseList, domList, options = {}) {
   }
   const M = baseUserIndices.length;
   const K = domUserIndices.length;
-  if (!M || !K) return -1;
+  if (!M || !K) return { startAppendIdx: -1, alignedTurnPairs: [] };
 
   const getTurnAssistants = (list, userIndices, pos, isDom) => {
     const start = userIndices[pos] + 1;
@@ -4902,14 +4910,21 @@ function findUserAnchorStartIdx(baseList, domList, options = {}) {
     return -1;
   };
 
+  const makeTurnPair = (bPos, dPos) => ({
+    baseTurnStart: baseUserIndices[bPos] + 1,
+    baseTurnEnd: (bPos + 1 < M ? baseUserIndices[bPos + 1] : baseList.length) - 1,
+    domTurnStart: domUserIndices[dPos] + 1,
+    domTurnEnd: (dPos + 1 < K ? domUserIndices[dPos + 1] : domList.length) - 1
+  });
+
   const anchorUser = baseList[baseUserIndices[M - 1]];
   const candidates = [];
-  let fallbackIdx = -1;
+  let fallbackP = -1;
 
   for (let p = 0; p < K; p++) {
     const domIdx = domUserIndices[p];
     if (!isSameUserMessage(anchorUser, domList[domIdx])) continue;
-    fallbackIdx = domIdx;
+    fallbackP = p;
     if (p > M - 1) continue;
     let allPrevMatch = true;
     for (let offset = 1; offset <= p; offset++) {
@@ -4939,9 +4954,25 @@ function findUserAnchorStartIdx(baseList, domList, options = {}) {
       (b.userSpan - a.userSpan) ||
       (b.p - a.p)
     ));
-    return candidates[0].domIdx + 1;
+    const best = candidates[0];
+    const alignedTurnPairs = [];
+    for (let offset = best.p; offset >= 0; offset--) {
+      alignedTurnPairs.push(makeTurnPair(M - 1 - offset, best.p - offset));
+    }
+    return { startAppendIdx: best.domIdx + 1, alignedTurnPairs };
   }
-  return fallbackIdx >= 0 ? fallbackIdx + 1 : -1;
+
+  if (fallbackP >= 0) {
+    const alignedTurnPairs = [];
+    for (let offset = 0; offset <= fallbackP && offset <= M - 1; offset++) {
+      const bPos = M - 1 - offset;
+      const dPos = fallbackP - offset;
+      if (!isSameUserMessage(baseList[baseUserIndices[bPos]], domList[domUserIndices[dPos]])) break;
+      alignedTurnPairs.unshift(makeTurnPair(bPos, dPos));
+    }
+    return { startAppendIdx: domUserIndices[fallbackP] + 1, alignedTurnPairs };
+  }
+  return { startAppendIdx: -1, alignedTurnPairs: [] };
 }
 
 function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
@@ -5004,17 +5035,10 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       break;
     }
   }
-  const startAppendIdx = lastBaseUserIdx >= 0 ? findUserAnchorStartIdx(baseList, domList, options) : -1;
-
-  let currentDomTurnEnd = domList.length;
-  if (startAppendIdx >= 0) {
-    for (let j = startAppendIdx; j < domList.length; j++) {
-      if (domList[j].role === 'user') {
-        currentDomTurnEnd = j;
-        break;
-      }
-    }
-  }
+  const anchor = lastBaseUserIdx >= 0
+    ? findUserAnchorAlignment(baseList, domList, options)
+    : { startAppendIdx: -1, alignedTurnPairs: [] };
+  const startAppendIdx = anchor.startAppendIdx;
 
   const consumedDomIndices = new Set();
   const consumedBaseIndices = new Set();
@@ -5087,14 +5111,12 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
   };
 
   if (startAppendIdx >= 0) {
-    matchAndMergePool(
-      collectAssistantIndices(domList, 0, startAppendIdx - 2),
-      collectAssistantIndices(baseList, Math.max(0, lastBaseUserIdx - 12), lastBaseUserIdx - 1)
-    );
-    matchAndMergePool(
-      collectAssistantIndices(domList, startAppendIdx, currentDomTurnEnd - 1),
-      collectAssistantIndices(baseList, lastBaseUserIdx + 1, baseList.length - 1)
-    );
+    for (const pair of anchor.alignedTurnPairs) {
+      matchAndMergePool(
+        collectAssistantIndices(domList, pair.domTurnStart, pair.domTurnEnd),
+        collectAssistantIndices(baseList, pair.baseTurnStart, pair.baseTurnEnd)
+      );
+    }
   } else {
     matchAndMergePool(
       collectAssistantIndices(domList, 0, domList.length - 1),

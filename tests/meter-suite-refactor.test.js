@@ -22617,4 +22617,117 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
     slideEvidenceMerged.map((m) => m.text),
     ['继续', '甲结果', '继续', '乙结果', '继续', '丙结果', '继续', '丁结果', '继续', '戊结果']
   );
+
+  // 19. 限定 ATX 标题尾部 # 剥离范围：非标题行末的 # 不得误删
+  assert.equal(normPlainMatchText('请输出 #'), '请输出 #');
+  assert.equal(normPlainMatchText('C# 教程 #'), 'C# 教程 #');
+  assert.equal(normPlainMatchText('#notheading ###'), '#notheading ###');
+  assert.equal(normPlainMatchText('### 标题 ###'), '标题');
+  const hashTailMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '输出符号' },
+      { id: 't-a-1', role: 'assistant', text: '请输出 #' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '输出符号' },
+      { id: 'a-1', role: 'assistant', text: '请输出 #' }
+    ],
+    { busy: false }
+  );
+  assert.equal(hashTailMerged.length, 2, '非标题行末 # 应精确匹配去重返回 2 条');
+
+  // 20. Pass 1 历史匹配池按对齐的用户轮次严格隔离，防跨轮思考与风险信息串轮
+  const sameHistReply = '这是一段长度超过二十四个字符的相同历史回复正文用于测试轮次隔离。';
+  assert.ok(sameHistReply.length >= 24);
+  const isolatedHistTraj = [
+    { id: 't-u-1', role: 'user', text: '第一轮问题' },
+    { id: 't-a-1', role: 'assistant', text: sameHistReply },
+    { id: 't-u-2', role: 'user', text: '第二轮问题' },
+    { id: 't-a-2', role: 'assistant', text: sameHistReply },
+    { id: 't-u-3', role: 'user', text: '第三轮问题' }
+  ];
+  const isolatedHistDom = [
+    { id: 'd-u-1', role: 'user', text: '第一轮问题' },
+    {
+      id: 'd-a-1',
+      role: 'assistant',
+      text: sameHistReply,
+      thoughtLabel: '已思考',
+      thoughtText: '第一轮思考',
+      highRisk: true,
+      riskText: '第一轮高危'
+    },
+    { id: 'd-u-2', role: 'user', text: '第二轮问题' },
+    {
+      id: 'd-a-2',
+      role: 'assistant',
+      text: `Copy\n${sameHistReply}`,
+      thoughtLabel: '已思考',
+      thoughtText: '第二轮思考',
+      highRisk: false
+    },
+    { id: 'd-u-3', role: 'user', text: '第三轮问题' }
+  ];
+  const isolatedHistMerged = mergeTrajectoryAndDomMessages(isolatedHistTraj, isolatedHistDom, { busy: false });
+  assert.equal(isolatedHistMerged.length, 5, '历史轮次隔离后应保留 5 条消息且不重复追加');
+  assert.equal(isolatedHistMerged[1].thoughtText, '第一轮思考');
+  assert.equal(isolatedHistMerged[1].highRisk, true);
+  assert.equal(isolatedHistMerged[1].riskText, '第一轮高危');
+  assert.equal(isolatedHistMerged[3].thoughtText, '第二轮思考');
+  assert.equal(Boolean(isolatedHistMerged[3].highRisk), false);
+  assert.equal(isolatedHistMerged[3].riskText || '', '');
+
+  // 21. 收紧 Tier 1 为可识别 UI 装饰前缀白名单且非流式态尾部零失配
+  const advReply = '建议立即删除备份目录以及全部历史快照以释放磁盘空间。';
+  const negPrefixMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '是否删除快照' },
+      { id: 't-a-1', role: 'assistant', text: advReply }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '是否删除快照' },
+      { id: 'a-1', role: 'assistant', text: `不${advReply}` }
+    ],
+    { busy: false }
+  );
+  assert.equal(negPrefixMerged.length, 3, 'busy=false 时否定前缀“不+R”不得被 Tier 1 误判重');
+
+  const negTrajMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '是否删除快照' },
+      { id: 't-a-1', role: 'assistant', text: `不${advReply}` }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '是否删除快照' },
+      { id: 'a-1', role: 'assistant', text: advReply }
+    ],
+    { busy: false }
+  );
+  assert.equal(negTrajMerged.length, 3, '轨迹为“不+R”且 DOM 为“R”时亦不得误判重');
+
+  const corrTailMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '确认操作建议' },
+      { id: 't-a-1', role: 'assistant', text: advReply }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '确认操作建议' },
+      { id: 'a-1', role: 'assistant', text: `Copy\n${advReply}更正：请保留全部历史快照。` }
+    ],
+    { busy: false }
+  );
+  assert.equal(corrTailMerged.length, 3, 'busy=false 时携带额外实质更正尾文不得被 Tier 1 误吞');
+
+  const pureChromeMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '确认操作建议' },
+      { id: 't-a-1', role: 'assistant', text: advReply }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '确认操作建议' },
+      { id: 'a-1', role: 'assistant', text: `Copy\n${advReply}` }
+    ],
+    { busy: false }
+  );
+  assert.equal(pureChromeMerged.length, 2, '纯 UI 装饰前缀（Copy）且尾部零失配时仍正常去重');
 });
