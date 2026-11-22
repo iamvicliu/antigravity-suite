@@ -20493,6 +20493,183 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     const r10Resend = await postEmptyPending({ action: 'send', conversationId: 'conv-r10-b', text: '重发确认已删项' });
     assert.equal(r10Resend.ok, true);
     assert.deepEqual(emptyPendingSentUploads, [['disk-queued.png']]);
+
+    // 16. 纯文本编辑 messageId 与 stepIndex 两条路径：删除结果未知后的核验确认与未知保留回归
+    // 16a. messageId 纯文本：删除实际成功但响应丢失 → 核验显式空 pending 确认已删除并回填 editedText
+    let txtMsgMode = 'deleted';
+    let txtMsgStreamCalls = 0;
+    const txtMsgHandler = createRemoteHttpHandler({
+      port: 18773,
+      token: 'tok-r11-txtmsg',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r11-msg', activeConversationId: 'conv-r11-msg', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method) => (method === 'DeleteAgentMessage' ? null : { ok: true }),
+      localApiConnect: async () => ({
+        call: async () => ({ ok: true }),
+        callStreamFirstFrame: async () => {
+          txtMsgStreamCalls += 1;
+          if (txtMsgStreamCalls % 2 === 1) {
+            return {
+              update: {
+                pendingAgentMessagesUpdate: {
+                  pendingAgentMessages: [{
+                    id: 'pm-r11-txt',
+                    deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+                    step: { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '纯文本msg撤回内容' }] } }
+                  }]
+                }
+              }
+            };
+          }
+          if (txtMsgMode === 'deleted') {
+            return { update: { pendingAgentMessagesUpdate: {} } };
+          }
+          throw new Error('verify stream unavailable');
+        }
+      })
+    });
+    const postTxtMsg = makeMockActionPoster(txtMsgHandler, 'tok-r11-txtmsg', 'cli-r11-msg');
+    const r11MsgDeleted = await postTxtMsg({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r11-msg',
+      messageId: 'pm-r11-txt',
+      text: '纯文本msg撤回内容'
+    });
+    assert.equal(r11MsgDeleted.ok, true, 'messageId 纯文本删除响应丢失但核验确认已删时必须返回 ok 并回填文本');
+    assert.equal(r11MsgDeleted.actionResult.editedText, '纯文本msg撤回内容');
+
+    // 16b. messageId 纯文本：删除与核验结果均未知 → 返回 outcomeUnknown + textPreserved + editedText
+    txtMsgMode = 'unknown';
+    const r11MsgUnknown = await postTxtMsg({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r11-msg',
+      messageId: 'pm-r11-txt',
+      text: '纯文本msg撤回内容'
+    });
+    assert.equal(r11MsgUnknown.ok, false);
+    assert.equal(r11MsgUnknown.outcomeUnknown, true);
+    assert.equal(r11MsgUnknown.textPreserved, true);
+    assert.equal(r11MsgUnknown.actionResult.editedText, '纯文本msg撤回内容');
+
+    // 16c & 16d. stepIndex 纯文本：删除实际成功但响应丢失 / 删除与核验结果均未知
+    let txtStepMode = 'deleted';
+    let txtStepTrajCalls = 0;
+    const txtStepHandler = createRemoteHttpHandler({
+      port: 18774,
+      token: 'tok-r11-txtstep',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r11-step', activeConversationId: 'conv-r11-step', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method) => {
+        if (method === 'DeleteQueuedUserInputStep') return null;
+        if (method === 'GetCascadeTrajectory') {
+          txtStepTrajCalls += 1;
+          if (txtStepTrajCalls % 2 === 1) {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '纯文本step撤回内容' }] } }
+                ]
+              }
+            };
+          }
+          if (txtStepMode === 'deleted') {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } }
+                ]
+              }
+            };
+          }
+          return null; // 核验轨迹不可得
+        }
+        return { ok: true };
+      }
+    });
+    const postTxtStep = makeMockActionPoster(txtStepHandler, 'tok-r11-txtstep', 'cli-r11-step');
+    const r11StepDeleted = await postTxtStep({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r11-step',
+      stepIndex: 1,
+      text: '纯文本step撤回内容'
+    });
+    assert.equal(r11StepDeleted.ok, true, 'stepIndex 纯文本删除响应丢失但核验已不在队列时必须返回 ok 并回填文本');
+    assert.equal(r11StepDeleted.actionResult.editedText, '纯文本step撤回内容');
+
+    txtStepMode = 'unknown';
+    const r11StepUnknown = await postTxtStep({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r11-step',
+      stepIndex: 1,
+      text: '纯文本step撤回内容'
+    });
+    assert.equal(r11StepUnknown.ok, false);
+    assert.equal(r11StepUnknown.outcomeUnknown, true);
+    assert.equal(r11StepUnknown.textPreserved, true);
+    assert.equal(r11StepUnknown.actionResult.editedText, '纯文本step撤回内容');
+
+    // 16e. 前端纯文本 textPreserved 回填 + 用户修改 + 重试成功不重复追加验证
+    const freshHtmlR11 = buildMobileAppHtml({ port: 18775, token: 'tok-r11-ui', enabledChannels: { lan: true } });
+    const qStart11 = freshHtmlR11.indexOf('const qDock = $(\'queue-dock\');');
+    const qEnd11 = freshHtmlR11.indexOf("qDock.querySelectorAll('.queue-del-btn')", qStart11);
+    const aStart11 = freshHtmlR11.indexOf('function renderAttachHintStrip()');
+    const aEnd11 = freshHtmlR11.indexOf('async function uploadImageFiles(rawFiles)', aStart11);
+    const sStart11 = freshHtmlR11.indexOf('function syncSendButtonUI()');
+    const sEnd11 = freshHtmlR11.indexOf('const autoGrow = () =>', sStart11);
+    const ta11 = mkSimpleEl('msg-input');
+    const qDock11 = mkSimpleEl('queue-dock');
+    const btnSend11 = mkSimpleEl('btn-send');
+    const hint11 = mkSimpleEl('attach-hint');
+    const btn11 = mkQueueBtn({ messageId: 'pm-r11-txt', stepIndex: -1, source: 'agent_state', text: '纯文本msg撤回内容', hasMedia: false }, 0);
+    qDock11._sendAllBtn = mkSimpleEl('send-all');
+    qDock11._editBtns = [btn11];
+    const map11 = new Map([['attach-hint', hint11], ['btn-send', btnSend11], ['queue-dock', qDock11]]);
+    const uiResps11 = [r11MsgUnknown, r11MsgDeleted];
+    let uiPtr11 = 0;
+    const sb11 = {
+      $: (id) => map11.get(id) || null,
+      ta: ta11,
+      latestSnap: { busy: false },
+      selectedConversationId: 'conv-r11-msg',
+      queueActionBusy: false,
+      sending: false,
+      apiBase: '',
+      pairState: { token: '' },
+      STOP_SQUARE_SVG: 'stop',
+      SEND_ARROW_SVG: 'send',
+      uploadedNames: [],
+      uploadedAttachments: [],
+      restoredQueueEditTextKeys: new Set(),
+      saveDraftForConv() {},
+      isDesktopLayout: () => false,
+      openMediaLightbox() {},
+      formatFileSizeShort: (n) => `${n}B`,
+      showToast() {},
+      esc: (s) => String(s ?? ''),
+      apiAction: async () => uiResps11[uiPtr11++],
+      __vmQueued: [{ messageId: 'pm-r11-txt', stepIndex: -1, source: 'agent_state', text: '纯文本msg撤回内容', images: [] }]
+    };
+    vm.runInNewContext([
+      freshHtmlR11.slice(aStart11, aEnd11),
+      freshHtmlR11.slice(sStart11, sEnd11),
+      'const displayCfg = { showQueue: true };',
+      'const snapSid = "conv-r11-msg";',
+      'const snap = { sessionId: "conv-r11-msg", activeConversationId: "conv-r11-msg", queuedMessages: globalThis.__vmQueued };',
+      freshHtmlR11.slice(qStart11, qEnd11),
+      '}}}\n'
+    ].join('\n'), sb11);
+    await btn11.onclick();
+    assert.equal(ta11.value, '纯文本msg撤回内容', '纯文本 textPreserved 首次未知应自动回填可恢复文本');
+    ta11.value = '纯文本msg撤回内容（已由用户改写）';
+    await btn11.onclick();
+    assert.equal(ta11.value, '纯文本msg撤回内容（已由用户改写）', '重试成功后不得重复追加文本，也不得覆盖用户修改');
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }

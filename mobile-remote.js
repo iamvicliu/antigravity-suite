@@ -9855,7 +9855,7 @@ function buildMobileAppHtml() {
                 setQueueBtnsDisabled(true);
                 try {
                   const res = await apiAction(buildQueueItemPayload(editBtn, { action: 'edit-queued-message' }));
-                  if (res?.ok || res?.attachmentsPreserved) {
+                  if (res?.ok || res?.attachmentsPreserved || res?.textPreserved) {
                     const restoredAtts = Array.isArray(res?.actionResult?.editedAttachments)
                       ? res.actionResult.editedAttachments
                       : [];
@@ -9900,7 +9900,7 @@ function buildMobileAppHtml() {
                       const maxH = isDesktopLayout() ? 180 : 112;
                       ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
                       ta.focus();
-                      if (textRestoreKey && !res?.ok && res?.attachmentsPreserved) {
+                      if (textRestoreKey && !res?.ok && (res?.attachmentsPreserved || res?.textPreserved)) {
                         restoredQueueEditTextKeys.add(textRestoreKey);
                       }
                     } else if (restoredAtts.length || alreadyRestoredText) {
@@ -9910,7 +9910,7 @@ function buildMobileAppHtml() {
                       restoredQueueEditTextKeys.delete(textRestoreKey);
                     }
                     syncSendButtonUI();
-                    if (!res?.ok && res?.attachmentsPreserved) {
+                    if (!res?.ok && (res?.attachmentsPreserved || res?.textPreserved)) {
                       showToast(res?.error || '原排队消息状态待确认，已保留恢复的文本与附件');
                     } else {
                       showToast(restoredAtts.length
@@ -15143,15 +15143,70 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 ok: false,
                 outcomeUnknown: true,
                 attachmentsPreserved: true,
+                textPreserved: true,
                 error: '删除原排队消息响应超时且无法确认原项状态，已保留恢复的文本与附件以避免丢失',
                 actionResult: {
                   ok: false,
                   outcomeUnknown: true,
                   attachmentsPreserved: true,
+                  textPreserved: true,
                   action: actionName,
                   cascadeId,
                   editedText: cleanRestoredText,
                   editedAttachments: clientAttsMeta
+                }
+              }
+            };
+          };
+          const deleteQueuedTextForEdit = async ({ text, deleteMethod, deleteBody, dispatchKey, verifyOriginalStillQueued }) => {
+            const restoredText = String(text || '');
+            const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+            if (delOutcome.ok) {
+              if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+              editedText = restoredText;
+              return { ok: true, rpcRes: delOutcome.result };
+            }
+            if (delOutcome.confirmedNotExecuted) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: delOutcome.error || '删除原排队消息被服务端拒绝，已保留原排队项'
+                }
+              };
+            }
+            const stillQueued = typeof verifyOriginalStillQueued === 'function'
+              ? await verifyOriginalStillQueued().catch(() => null)
+              : null;
+            if (stillQueued === false) {
+              if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+              editedText = restoredText;
+              return { ok: true, verifiedAfterUnknownDelete: true, rpcRes: { verifiedDeleted: true } };
+            }
+            if (stillQueued === true) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: delOutcome.error || '删除原排队消息响应超时，经核验原项仍在队列中，请重试'
+                }
+              };
+            }
+            editedText = restoredText;
+            return {
+              ok: false,
+              errorPayload: {
+                ok: false,
+                outcomeUnknown: true,
+                textPreserved: true,
+                error: '删除原排队消息响应超时且无法确认原项状态，已保留恢复的文本以避免丢失',
+                actionResult: {
+                  ok: false,
+                  outcomeUnknown: true,
+                  textPreserved: true,
+                  action: actionName,
+                  cascadeId,
+                  editedText: restoredText
                 }
               }
             };
@@ -15300,6 +15355,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 rawEntriesFromRec.length > 0 ||
                 hasMediaMarkerText(baseEditText)
               );
+              const verifyMsgStillQueued = async () => {
+                historyManager.invalidateSession?.(cascadeId);
+                const freshList = await historyManager.fetchPendingAgentMessages?.(cascadeId, {
+                  localApiConnect: options.localApiConnect,
+                  fetchPendingAgentMessages: options.fetchPendingAgentMessages,
+                  bypassCache: true
+                }).catch(() => null);
+                if (!Array.isArray(freshList)) return null;
+                return freshList.some((item) => item && String(item.messageId || item.id || '').trim() === messageId);
+              };
               if (itemHasMedia) {
                 const recovered = await restoreMediaAndDeleteQueued({
                   rawUi: pendingRec?.ui || null,
@@ -15307,16 +15372,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                   deleteMethod: 'DeleteAgentMessage',
                   deleteBody: { messageId, recipient: cascadeId },
                   dispatchKey,
-                  verifyOriginalStillQueued: async () => {
-                    historyManager.invalidateSession?.(cascadeId);
-                    const freshList = await historyManager.fetchPendingAgentMessages?.(cascadeId, {
-                      localApiConnect: options.localApiConnect,
-                      fetchPendingAgentMessages: options.fetchPendingAgentMessages,
-                      bypassCache: true
-                    }).catch(() => null);
-                    if (!Array.isArray(freshList)) return null;
-                    return freshList.some((item) => item && String(item.messageId || item.id || '').trim() === messageId);
-                  }
+                  verifyOriginalStillQueued: verifyMsgStillQueued
                 });
                 if (!recovered.ok) {
                   sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recovered.errorPayload));
@@ -15324,11 +15380,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 }
                 rpcRes = recovered.rpcRes;
               } else {
-                editedText = baseEditText;
-                rpcRes = await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, rpcTimeoutMs);
-                if (rpcRes !== null && rpcRes !== false) {
-                  dispatchedQueueDeletes.delete(dispatchKey);
+                const recoveredText = await deleteQueuedTextForEdit({
+                  text: baseEditText,
+                  deleteMethod: 'DeleteAgentMessage',
+                  deleteBody: { messageId, recipient: cascadeId },
+                  dispatchKey,
+                  verifyOriginalStillQueued: verifyMsgStillQueued
+                });
+                if (!recoveredText.ok) {
+                  sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recoveredText.errorPayload));
+                  return;
                 }
+                rpcRes = recoveredText.rpcRes;
               }
             } else {
               const outcome = await sendSingleQueuedWithCheckedDelete({
@@ -15420,6 +15483,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               rawEntriesFromStep.length > 0 ||
               hasMediaMarkerText(baseEditText)
             );
+            const verifyStepStillQueued = async () => {
+              const recheck = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
+              const recheckSteps = recheck.ok ? recheck.result?.trajectory?.steps : null;
+              if (!recheck.ok || !Array.isArray(recheckSteps)) return null;
+              const recheckContainer = recheck.result?.trajectory || recheck.result;
+              const recheckQList = extractQueuedMessagesFromTrajectorySteps(recheckSteps, recheckContainer);
+              if (recheckQList.some((q) => q && q.stepIndex === stepIndex)) return true;
+              return isQueuedTrajectoryUserStep(recheckSteps[stepIndex]);
+            };
             if (itemHasMedia) {
               const recovered = await restoreMediaAndDeleteQueued({
                 rawUi: targetUi,
@@ -15427,15 +15499,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 deleteMethod: 'DeleteQueuedUserInputStep',
                 deleteBody: { cascadeId, stepIndex },
                 dispatchKey,
-                verifyOriginalStillQueued: async () => {
-                  const recheck = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
-                  const recheckSteps = recheck.ok ? recheck.result?.trajectory?.steps : null;
-                  if (!recheck.ok || !Array.isArray(recheckSteps)) return null;
-                  const recheckContainer = recheck.result?.trajectory || recheck.result;
-                  const recheckQList = extractQueuedMessagesFromTrajectorySteps(recheckSteps, recheckContainer);
-                  if (recheckQList.some((q) => q && q.stepIndex === stepIndex)) return true;
-                  return isQueuedTrajectoryUserStep(recheckSteps[stepIndex]);
-                }
+                verifyOriginalStillQueued: verifyStepStillQueued
               });
               if (!recovered.ok) {
                 sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recovered.errorPayload));
@@ -15443,11 +15507,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               }
               rpcRes = recovered.rpcRes;
             } else {
-              if (baseEditText) editedText = baseEditText;
-              rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, rpcTimeoutMs);
-              if (rpcRes !== null && rpcRes !== false) {
-                dispatchedQueueDeletes.delete(dispatchKey);
+              const recoveredText = await deleteQueuedTextForEdit({
+                text: baseEditText || editedText,
+                deleteMethod: 'DeleteQueuedUserInputStep',
+                deleteBody: { cascadeId, stepIndex },
+                dispatchKey,
+                verifyOriginalStillQueued: verifyStepStillQueued
+              });
+              if (!recoveredText.ok) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recoveredText.errorPayload));
+                return;
               }
+              rpcRes = recoveredText.rpcRes;
             }
           } else if (actionName === 'send-queued-messages' && payload?.sendAll === false) {
             const rawStep = payload?.stepIndex;
