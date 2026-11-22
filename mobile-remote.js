@@ -15089,10 +15089,6 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             stepObj?.step_id ||
             stepObj?.messageId ||
             stepObj?.message_id ||
-            stepObj?.metadata?.createdAt ||
-            stepObj?.metadata?.created_at ||
-            stepObj?.createdAt ||
-            stepObj?.created_at ||
             uiObj?.id ||
             uiObj?.clientMessageId ||
             uiObj?.client_message_id ||
@@ -15131,9 +15127,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 error: '目标排队步骤内容或媒体形态已变化（索引已被其他消息占用），已取消操作以防误删'
               };
             }
-            if (!reqTextNorm && !liveTextNorm && reqExpectsMedia && liveHasMedia) {
+            if (reqExpectsMedia && liveHasMedia) {
               const liveMediaSig = buildQueuedStepMediaSig(targetUi);
-              if (!reqMediaSig || !liveMediaSig || reqMediaSig !== liveMediaSig) {
+              if (reqMediaSig) {
+                if (!liveMediaSig || reqMediaSig !== liveMediaSig) {
+                  return {
+                    ok: false,
+                    error: '目标排队步骤的媒体附件签名已变化（索引已被同文异附件消息占用），已取消操作以防误删'
+                  };
+                }
+              } else if (!reqTextNorm && !liveTextNorm) {
                 return {
                   ok: false,
                   error: '纯媒体排队项缺少匹配的媒体身份标识（索引可能已被其他媒体项占用），已取消操作以防误删'
