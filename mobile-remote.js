@@ -3848,6 +3848,7 @@ function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) 
       stepIndex,
       text,
       ...(images.length ? { images } : {}),
+      ...(atts.length > 0 ? { hasMedia: true } : {}),
       status: 'queued'
     });
   };
@@ -12952,6 +12953,28 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let lastMtimeMs = 0;
   let cachedUsageData = null;
   let cachedUsageAt = 0;
+  const dispatchedQueueDeletes = new Map();
+  const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
+  const markDispatchedQueueDelete = (key, text = '') => {
+    const now = Date.now();
+    for (const [k, v] of dispatchedQueueDeletes.entries()) {
+      if (!v || (now - v.at) > DISPATCHED_QUEUE_TTL_MS) dispatchedQueueDeletes.delete(k);
+    }
+    if (dispatchedQueueDeletes.size >= 500 && !dispatchedQueueDeletes.has(key)) {
+      const oldest = dispatchedQueueDeletes.keys().next().value;
+      if (oldest !== undefined) dispatchedQueueDeletes.delete(oldest);
+    }
+    dispatchedQueueDeletes.set(key, { at: now, text });
+  };
+  const hasDispatchedQueueDelete = (key) => {
+    const rec = dispatchedQueueDeletes.get(key);
+    if (!rec) return false;
+    if ((Date.now() - rec.at) > DISPATCHED_QUEUE_TTL_MS) {
+      dispatchedQueueDeletes.delete(key);
+      return false;
+    }
+    return true;
+  };
   try {
     lastMtimeMs = fs.statSync(getRemoteConfigPath()).mtimeMs;
   } catch {}
@@ -13990,18 +14013,25 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           const isDomQueueSource = payload?.source === 'dom' && !messageId;
           let rpcRes = null;
           let usedDomFallback = false;
+          let deduplicatedRetry = false;
           let editedText = String(payload?.text || '');
           const runQueuedDomFallback = async (domAct, sendAllFlag) => {
-            const domRes = await performAction({
-              action: domAct,
-              clientId,
-              targetId: effectiveTargetId || undefined,
-              conversationId: cascadeId,
-              ...(messageId ? { messageId } : {}),
-              domIndex: Number.isInteger(Number(payload?.domIndex)) ? Number(payload.domIndex) : 0,
-              sendAll: sendAllFlag,
-              text: editedText
-            });
+            let domRes = null;
+            try {
+              domRes = await performAction({
+                action: domAct,
+                clientId,
+                targetId: effectiveTargetId || undefined,
+                conversationId: cascadeId,
+                ...(messageId ? { messageId } : {}),
+                domIndex: Number.isInteger(Number(payload?.domIndex)) ? Number(payload.domIndex) : 0,
+                sendAll: sendAllFlag,
+                text: editedText
+              });
+            } catch (domErr) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domErr?.message || '桌面端队列操作失败' }));
+              return false;
+            }
             if (!domRes?.ok) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domRes?.error || domRes?.actionResult?.error || '桌面端队列操作失败' }));
               return false;
@@ -14010,27 +14040,123 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             usedDomFallback = true;
             return true;
           };
+          const respondPartialSendDeleteFailure = async (extraIds = {}, errMsg = '') => {
+            defaultHistoryManager.invalidateSession?.(cascadeId);
+            const partialSnap = await fetchSnapshot(effectiveTargetId, {
+              conversationId: cascadeId,
+              clientId,
+              convLimit: 100,
+              msgLimit: 30,
+              bypassCache: true,
+              bypassCatalogCache: true
+            }).catch(() => null);
+            const usageSummary = (partialSnap && partialSnap.ok !== false && !partialSnap.usageSummary) ? await getCachedUsageSummary() : null;
+            const enrichedPartial = enrichSnapshotPayload(partialSnap, config, activeTunnelUrl, clientId, usageSummary);
+            const finalErr = errMsg || '消息已立即发送，但移除原排队项失败；再次点击将仅重试移除而不重复发送';
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: false,
+              partialSuccess: true,
+              sent: true,
+              deleteFailed: true,
+              error: finalErr,
+              actionResult: {
+                ok: false,
+                partialSuccess: true,
+                sent: true,
+                deleteFailed: true,
+                action: actionName,
+                cascadeId,
+                ...extraIds
+              },
+              snapshot: enrichedPartial
+            }));
+          };
+          const sendSingleQueuedWithCheckedDelete = async ({ dispatchKey, text, hasMedia, deleteMethod, deleteBody }) => {
+            if (hasDispatchedQueueDelete(dispatchKey)) {
+              let delRetryRes = null;
+              let delRetryErr = '';
+              try {
+                delRetryRes = await callLsRpc(deleteMethod, deleteBody, 4500);
+              } catch (err) {
+                delRetryErr = err?.message || `${deleteMethod} 调用失败`;
+                delRetryRes = null;
+              }
+              if (delRetryRes === null || delRetryRes === false) {
+                return {
+                  ok: false,
+                  partialSuccess: true,
+                  error: delRetryErr || '消息此前已发送，重试移除原排队项仍失败；请稍后再试，不会重复发送'
+                };
+              }
+              dispatchedQueueDeletes.delete(dispatchKey);
+              return { ok: true, rpcRes: delRetryRes, deduplicatedRetry: true };
+            }
+            if (hasMedia || !String(text || '').trim()) {
+              return { ok: false, needsDomFallback: true };
+            }
+            const cascadeConfig = defaultHistoryManager.getCachedUserConfig?.(cascadeId) || null;
+            let sendRes = null;
+            let sendErr = '';
+            try {
+              sendRes = await callLsRpc(
+                'SendUserCascadeMessage',
+                {
+                  cascadeId,
+                  items: [{ text: String(text) }],
+                  deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION',
+                  ...(cascadeConfig ? { cascadeConfig } : {})
+                },
+                4500
+              );
+            } catch (err) {
+              sendErr = err?.message || 'SendUserCascadeMessage 调用失败';
+              sendRes = null;
+            }
+            if (sendRes === null || sendRes === false) {
+              return { ok: false, sendFailed: true, error: sendErr || '立即发送排队消息失败' };
+            }
+            let delRes = null;
+            let delErr = '';
+            try {
+              delRes = await callLsRpc(deleteMethod, deleteBody, 4500);
+            } catch (err) {
+              delErr = err?.message || `${deleteMethod} 调用失败`;
+              delRes = null;
+            }
+            if (delRes === null || delRes === false) {
+              markDispatchedQueueDelete(dispatchKey, String(text));
+              return {
+                ok: false,
+                partialSuccess: true,
+                error: delErr || '消息已立即发送，但移除原排队项失败；再次点击将仅重试移除而不重复发送'
+              };
+            }
+            dispatchedQueueDeletes.delete(dispatchKey);
+            return { ok: true, rpcRes: sendRes, deduplicatedRetry: false };
+          };
           if (messageId) {
+            const dispatchKey = `${cascadeId}::msg:${messageId}`;
             if (actionName === 'delete-queued-message' || actionName === 'edit-queued-message') {
               rpcRes = await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, 4500);
-            } else {
-              if (!payload?.hasMedia && editedText.trim()) {
-                const cascadeConfig = defaultHistoryManager.getCachedUserConfig?.(cascadeId) || null;
-                rpcRes = await callLsRpc(
-                  'SendUserCascadeMessage',
-                  {
-                    cascadeId,
-                    items: [{ text: editedText }],
-                    deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION',
-                    ...(cascadeConfig ? { cascadeConfig } : {})
-                  },
-                  4500
-                );
-                if (rpcRes !== null && rpcRes !== false) {
-                  await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, 4500).catch(() => null);
-                }
+              if (rpcRes !== null && rpcRes !== false) {
+                dispatchedQueueDeletes.delete(dispatchKey);
               }
-              if (rpcRes === null || rpcRes === false) {
+            } else {
+              const outcome = await sendSingleQueuedWithCheckedDelete({
+                dispatchKey,
+                text: editedText,
+                hasMedia: Boolean(payload?.hasMedia),
+                deleteMethod: 'DeleteAgentMessage',
+                deleteBody: { messageId, recipient: cascadeId }
+              });
+              if (outcome.partialSuccess) {
+                await respondPartialSendDeleteFailure({ messageId }, outcome.error);
+                return;
+              }
+              if (outcome.ok) {
+                rpcRes = outcome.rpcRes;
+                deduplicatedRetry = Boolean(outcome.deduplicatedRetry);
+              } else {
                 const okDom = await runQueuedDomFallback('send-queued-dom', false);
                 if (!okDom) return;
               }
@@ -14051,6 +14177,63 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               return;
             }
             rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
+            if (rpcRes !== null && rpcRes !== false) {
+              dispatchedQueueDeletes.delete(`${cascadeId}::step:${stepIndex}`);
+            }
+          } else if (actionName === 'send-queued-messages' && payload?.sendAll === false) {
+            const rawStep = payload?.stepIndex;
+            const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
+              || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
+            const stepIndex = isValidStep ? Number(rawStep) : -1;
+            if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队标识 messageId 或 stepIndex' }));
+              return;
+            }
+            const dispatchKey = `${cascadeId}::step:${stepIndex}`;
+            let itemText = editedText.trim();
+            let itemHasMedia = Boolean(payload?.hasMedia);
+            if (!itemText && !hasDispatchedQueueDelete(dispatchKey)) {
+              try {
+                const trajRes = await callLsRpc('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, 4000);
+                const trajSteps = trajRes?.trajectory?.steps;
+                const qList = extractQueuedMessagesFromTrajectorySteps(trajSteps, trajRes?.trajectory || trajRes);
+                const matchedQ = qList.find((q) => q && q.stepIndex === stepIndex);
+                if (matchedQ) {
+                  itemText = String(matchedQ.text || '').trim();
+                  itemHasMedia = itemHasMedia || Boolean(matchedQ.hasMedia) || (Array.isArray(matchedQ.images) && matchedQ.images.length > 0);
+                } else if (Array.isArray(trajSteps) && isQueuedTrajectoryUserStep(trajSteps[stepIndex])) {
+                  const st = trajSteps[stepIndex];
+                  const ui = st.userInput || st.user_input || st;
+                  itemText = formatTrajectoryUserInput(ui);
+                  itemHasMedia = itemHasMedia || extractTrajectoryUserAttachments(ui).length > 0;
+                }
+              } catch {}
+            }
+            if (!itemText && !itemHasMedia && !hasDispatchedQueueDelete(dispatchKey)) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '未找到指定排队步骤或内容为空' }));
+              return;
+            }
+            const outcome = await sendSingleQueuedWithCheckedDelete({
+              dispatchKey,
+              text: itemText,
+              hasMedia: itemHasMedia,
+              deleteMethod: 'DeleteQueuedUserInputStep',
+              deleteBody: { cascadeId, stepIndex }
+            });
+            if (outcome.partialSuccess) {
+              await respondPartialSendDeleteFailure({ stepIndex }, outcome.error);
+              return;
+            }
+            if (outcome.ok) {
+              rpcRes = outcome.rpcRes;
+              deduplicatedRetry = Boolean(outcome.deduplicatedRetry);
+            } else if (outcome.needsDomFallback || typeof options.performAction === 'function' || !isCatalogTestEnv()) {
+              const okDom = await runQueuedDomFallback('send-queued-dom', false);
+              if (!okDom) return;
+            } else {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: outcome.error || '立即发送排队消息失败' }));
+              return;
+            }
           } else {
             // 全部立即发送：优先保留 SendAllQueuedMessages 契约；
             // 当 Antigravity 2.0 废弃 SendAllQueuedMessages（返回 null/false）且携带 agent_state messageIds 时，回退桌面端全发
@@ -14088,6 +14271,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               ok: true,
               action: actionName,
               cascadeId,
+              ...(deduplicatedRetry ? { deduplicatedRetry: true } : {}),
               ...(actionName === 'edit-queued-message' ? { editedText } : {}),
               ...(hasRemainingDomQueued ? { hasRemainingDomQueued: true } : {})
             },

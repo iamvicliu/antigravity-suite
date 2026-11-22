@@ -9197,7 +9197,9 @@
         currentProjectName: targetProjectName,
         title,
         busy: false,
-        pendingApprovals: [],
+        pendingApprovals: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingApprovals || []) : [],
+        pendingPrompts: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingPrompts || []) : [],
+        queuedMessages: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.queuedMessages || []) : [],
         suggestions: [],
         messages: [],
         contextBadge: '读取失败',
@@ -9701,9 +9703,15 @@
       }
       const reqMsgId = String(payload?.messageId || '').trim();
       const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
-      const target = (reqMsgId && entries.find((e) => e.messageId && e.messageId === reqMsgId))
-        || entries[reqIdx]
-        || entries[0];
+      let target = null;
+      if (reqMsgId) {
+        target = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
+        if (!target) {
+          return { ok: false, error: '目标排队消息已变化或不存在，已取消发送以防误发' };
+        }
+      } else {
+        target = entries[reqIdx] || entries[0];
+      }
       if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
       target.sendBtn.click();
       return { ok: true, source: 'dom', sentCount: 1 };
@@ -9716,10 +9724,17 @@
       const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
       const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
       const reqText = normText(payload?.text);
-      const target = (reqMsgId && entries.find((e) => e.messageId && e.messageId === reqMsgId))
-        || (reqText && entries.find((e) => normText(e.text) === reqText))
-        || entries[reqIdx]
-        || entries[0];
+      let target = null;
+      if (reqMsgId) {
+        target = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
+        if (!target) {
+          return { ok: false, error: '目标排队消息已变化或不存在，已取消编辑以防误操作' };
+        }
+      } else {
+        target = (reqText && entries.find((e) => normText(e.text) === reqText))
+          || entries[reqIdx]
+          || entries[0];
+      }
       if (!target) return { ok: false, error: '未找到目标排队消息' };
       if (target.editBtn) {
         target.editBtn.click();
@@ -9740,17 +9755,17 @@
       let target = null;
       if (reqMsgId) {
         target = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
-      }
-      if (!target) {
-        if (reqText) {
-          if (reqIdx >= 0 && reqIdx < entries.length && normText(entries[reqIdx].text) === reqText) {
-            target = entries[reqIdx];
-          } else {
-            target = entries.find((e) => normText(e.text) === reqText) || null;
-          }
-        } else if (reqIdx >= 0 && reqIdx < entries.length) {
-          target = entries[reqIdx];
+        if (!target) {
+          return { ok: false, error: '目标排队消息已变化或不存在，已取消删除以防误删' };
         }
+      } else if (reqText) {
+        if (reqIdx >= 0 && reqIdx < entries.length && normText(entries[reqIdx].text) === reqText) {
+          target = entries[reqIdx];
+        } else {
+          target = entries.find((e) => normText(e.text) === reqText) || null;
+        }
+      } else if (reqIdx >= 0 && reqIdx < entries.length) {
+        target = entries[reqIdx];
       }
       if (!target) {
         return { ok: false, error: '目标排队消息已变化或不存在，已取消删除以防误删' };
