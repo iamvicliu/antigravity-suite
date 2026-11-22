@@ -23,6 +23,7 @@ const COMMON_FILES = [
   'live-host.js',
   'mobile-remote.js',
   'macos-dock-badge.js',
+  'remote-web-push.js',
   'local-api.js',
   'meter-main.js',
   'meter-core.js',
