@@ -5619,8 +5619,181 @@ function buildManifestJson() {
 
 function buildServiceWorkerJs() {
   return `'use strict';
+const RECOVERY_CACHE = 'ag-remote-recovery-v1';
+const RECOVERY_META_KEY = '/__ag_recovery_meta__';
+
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+
+function escHtmlSw(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeRecoveryPayload(raw) {
+  const src = (raw && typeof raw === 'object') ? raw : {};
+  const list = Array.isArray(src.endpoints) ? src.endpoints : [];
+  const cleanEps = [];
+  for (const ep of list) {
+    if (!ep || typeof ep.url !== 'string' || !/^https?:\\/\\//i.test(ep.url)) continue;
+    cleanEps.push({
+      url: String(ep.url).replace(/\\/+$/, ''),
+      kind: String(ep.kind || 'lan'),
+      priority: Number.isFinite(Number(ep.priority)) ? Number(ep.priority) : 100
+    });
+  }
+  return {
+    endpoints: cleanEps,
+    encodedEndpoints: typeof src.encodedEndpoints === 'string' ? src.encodedEndpoints : '',
+    token: typeof src.token === 'string' ? src.token : '',
+    name: typeof src.name === 'string' ? src.name : ''
+  };
+}
+
+async function readRecoveryMeta() {
+  try {
+    if (!self.caches) return null;
+    const cache = await self.caches.open(RECOVERY_CACHE);
+    const res = await cache.match(RECOVERY_META_KEY);
+    if (!res) return null;
+    const data = await res.json().catch(() => null);
+    return sanitizeRecoveryPayload(data);
+  } catch {
+    return null;
+  }
+}
+
+function sortRecoveryEndpoints(endpoints, currentOrigin) {
+  const rankKind = (ep) => {
+    const u = String(ep?.url || '').toLowerCase();
+    const k = String(ep?.kind || 'lan');
+    if (k === 'tailscale' && u.startsWith('https://')) return 0;
+    if (u.startsWith('https://') && k !== 'tunnel') return 1;
+    if (k === 'lan') return 2;
+    if (k === 'tailscale') return 3;
+    if (k === 'bonjour') return 4;
+    if (k === 'tunnel') return 5;
+    return 8;
+  };
+  const curClean = String(currentOrigin || '').replace(/\\/+$/, '');
+  return [...(endpoints || [])]
+    .filter((ep) => ep && ep.url && ep.url !== curClean && String(ep.kind || '') !== 'loopback')
+    .sort((a, b) => (rankKind(a) - rankKind(b)) || ((Number(a.priority) || 999) - (Number(b.priority) || 999)));
+}
+
+function kindTitleSw(ep) {
+  const k = String(ep?.kind || '');
+  const u = String(ep?.url || '').toLowerCase();
+  if (k === 'tailscale') return u.startsWith('https://') ? 'Tailscale HTTPS' : 'Tailscale 直连';
+  if (k === 'tunnel') return 'Cloudflare 隧道';
+  if (k === 'bonjour') return 'Bonjour (mDNS)';
+  return '局域网直连';
+}
+
+function buildRecoveryShellHtml(meta, statusCode) {
+  const curOrigin = String(self.location?.origin || '').replace(/\\/+$/, '');
+  const candidates = sortRecoveryEndpoints(meta?.endpoints || [], curOrigin);
+  const safeStatus = Number(statusCode) || 0;
+  const is1033 = safeStatus === 530;
+  const reasonText = is1033
+    ? '当前免登录 Cloudflare 临时隧道域名已失效（Error 1033）。临时域名是一次性的，电脑热更新、live 重载、重启软件或休眠断网后旧网址会永久作废并换新域名；可点击下方备用通道直连，或回电脑端「远程」重新扫码（长期使用推荐 Tailscale HTTPS 或固定域名）。'
+    : '当前远程地址暂时无法连接到电脑端。';
+  const btnsHtml = candidates.length > 0
+    ? candidates.map((ep, idx) => {
+        let hostText = ep.url;
+        try { hostText = new URL(ep.url).host; } catch {}
+        return '<button class="ep-btn" data-idx="' + idx + '" type="button">'
+          + '<span class="ep-left"><span class="ep-name">' + escHtmlSw(kindTitleSw(ep)) + '</span>'
+          + '<span class="ep-host">' + escHtmlSw(hostText) + '</span></span>'
+          + '<span class="ep-go">切过去 →</span></button>';
+      }).join('')
+    : '<div class="empty-tip">暂未缓存其他备用通道，请在电脑端 Antigravity 右上角「远程」重新扫码打开。</div>';
+  const inlineData = JSON.stringify({
+    candidates: candidates.map((c) => c.url),
+    token: String(meta?.token || ''),
+    name: String(meta?.name || ''),
+    encodedEndpoints: String(meta?.encodedEndpoints || '')
+  }).replace(/</g, '\\\\u003c');
+
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+    + '<title>通道已中断 · 切换可用连接</title><style>'
+    + ':root{color-scheme:light dark}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}'
+    + 'body{margin:0;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px;background:#09090b;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;line-height:1.5}'
+    + '.card{width:100%;max-width:420px;padding:22px 18px;border-radius:18px;background:#111114;border:1px solid rgba(255,255,255,.12)}'
+    + 'h1{margin:0 0 8px;font-size:17px;font-weight:700}p{margin:0 0 14px;font-size:13.5px;color:#a1a1aa}'
+    + '.list{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}'
+    + '.ep-btn{appearance:none;width:100%;padding:11px 12px;border-radius:12px;border:1px solid rgba(56,189,248,.35);background:rgba(56,189,248,.1);color:#f4f4f5;display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;cursor:pointer}'
+    + '.ep-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}'
+    + '.ep-name{font-size:14px;font-weight:600}.ep-host{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#a1a1aa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    + '.ep-go{font-size:12px;font-weight:600;color:#7dd3fc;flex-shrink:0}'
+    + '.reload-btn{appearance:none;width:100%;min-height:40px;border-radius:10px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#f4f4f5;font-size:13.5px;font-weight:600;cursor:pointer}'
+    + '.empty-tip{padding:12px;border-radius:10px;background:rgba(255,255,255,.04);font-size:13px;color:#a1a1aa}'
+    + '.hint{margin-top:12px;font-size:12px;color:#71717a;text-align:center}'
+    + '@media (prefers-color-scheme:light){body{background:#f8fafc;color:#18181b}.card{background:#fff;border-color:rgba(15,23,42,.12)}p,.ep-host,.empty-tip,.hint{color:#52525b}.ep-btn{background:rgba(2,132,199,.08);color:#09090b;border-color:rgba(2,132,199,.35)}.ep-go{color:#0369a1}.reload-btn{background:#f1f5f9;border-color:rgba(15,23,42,.15);color:#18181b}}'
+    + '</style></head><body><div class="card">'
+    + '<h1>远程通道暂时无法连接</h1>'
+    + '<p>' + escHtmlSw(reasonText) + '</p>'
+    + '<div class="list" id="ep-list">' + btnsHtml + '</div>'
+    + '<button class="reload-btn" id="btn-reload" type="button">重新加载当前页</button>'
+    + '<div class="hint">如仍无法连接，请在电脑端重新扫码或点击「远程设置」刷新</div>'
+    + '</div><script>(function(){var d=' + inlineData + ';'
+    + 'var bs=document.querySelectorAll(".ep-btn");'
+    + 'for(var i=0;i<bs.length;i++){bs[i].onclick=function(){var u=d.candidates[Number(this.getAttribute("data-idx"))];if(!u)return;'
+    + 'var ps=["manual=1"];if(d.token)ps.push("token="+encodeURIComponent(d.token));'
+    + 'if(d.name)ps.push("name="+encodeURIComponent(d.name));'
+    + 'if(d.encodedEndpoints)ps.push("endpoints="+encodeURIComponent(d.encodedEndpoints));'
+    + 'location.replace(u+"/?"+ps.join("&"));};}'
+    + 'var rb=document.getElementById("btn-reload");if(rb)rb.onclick=function(){location.reload();};'
+    + '})();<' + '/script></body></html>';
+}
+
+self.addEventListener('message', (event) => {
+  const msg = event && event.data;
+  if (!msg || msg.type !== 'ag-cache-endpoints') return;
+  const payload = sanitizeRecoveryPayload(msg);
+  if (!payload.endpoints.length || !self.caches) return;
+  event.waitUntil(
+    self.caches.open(RECOVERY_CACHE)
+      .then((cache) => cache.put(
+        RECOVERY_META_KEY,
+        new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } })
+      ))
+      .catch(() => {})
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event && event.request;
+  if (!req || req.mode !== 'navigate' || req.method !== 'GET') return;
+  try {
+    const reqUrl = new URL(req.url);
+    if (reqUrl.origin !== self.location.origin) return;
+  } catch {
+    return;
+  }
+  event.respondWith((async () => {
+    let statusCode = 0;
+    try {
+      const res = await fetch(req);
+      if (res && ![502, 503, 504, 530].includes(res.status)) {
+        return res;
+      }
+      statusCode = res ? res.status : 503;
+    } catch {
+      statusCode = 0;
+    }
+    const meta = await readRecoveryMeta();
+    return new Response(buildRecoveryShellHtml(meta, statusCode), {
+      status: 503,
+      headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }
+    });
+  })());
+});
 
 function updateSwBadge(count) {
   const n = Math.max(0, Math.floor(Number(count) || 0));
@@ -6058,6 +6231,17 @@ function buildMobileAppHtml() {
       cursor:pointer;display:block;
     }
     .sub-meta:active{color:var(--accent)}
+    .channel-pill{
+      appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
+      border-radius:999px;height:32px;padding:0 10px;display:inline-flex;align-items:center;gap:6px;
+      font-size:11.5px;font-weight:600;white-space:nowrap;flex-shrink:0;cursor:pointer;
+      transition:border-color .15s ease,background-color .15s ease,color .15s ease;
+    }
+    .channel-pill:active{background:var(--surface-hover)}
+    .channel-pill .ch-dot{width:7px;height:7px;border-radius:999px;background:var(--green);flex-shrink:0}
+    .channel-pill.is-connecting .ch-dot{background:var(--amber);animation:pulse 1s infinite ease-in-out}
+    .channel-pill.is-offline{border-color:var(--risk-border);background:var(--risk-bg);color:var(--risk-fg)}
+    .channel-pill.is-offline .ch-dot{background:var(--red)}
     .quota-pill{
       appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
       border-radius:11px;padding:5px 10px;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;
@@ -6522,6 +6706,8 @@ function buildMobileAppHtml() {
     .mode-pill{font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;line-height:1.4;white-space:nowrap}
     .mode-pill.fast{background:var(--badge-fast-bg);color:var(--badge-fast-fg);border:1px solid var(--badge-fast-border)}
     .mode-pill.cur{background:var(--accent-bg);color:var(--accent-fg);border:1px solid var(--accent-border)}
+    .mode-pill.warn{background:var(--badge-mid-bg);color:var(--badge-mid-fg);border:1px solid rgba(217,119,6,.32)}
+    .sheet-foot-note{margin-top:6px;padding:8px 10px;border-radius:10px;border:1px solid rgba(217,119,6,.28);background:var(--badge-mid-bg);color:var(--muted);font-size:11.5px;line-height:1.45}
     .lat-badge{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;padding:2px 7px;border-radius:999px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
     .lat-badge.fast{background:var(--badge-fast-bg);color:var(--badge-fast-fg)}
     .lat-badge.mid{background:var(--badge-mid-bg);color:var(--badge-mid-fg)}
@@ -6796,7 +6982,8 @@ function buildMobileAppHtml() {
     }
     /* 鼠标设备悬停交互 */
     @media (hover:hover){
-      .icon-btn:hover,.top-panel-btn:hover,.fv-up-btn:hover,.fv-row:hover,.conn-banner-btn:hover{background:var(--surface-hover);color:var(--fg)}
+      .icon-btn:hover,.top-panel-btn:hover,.fv-up-btn:hover,.fv-row:hover,.conn-banner-btn:hover,.channel-pill:hover{background:var(--surface-hover);color:var(--fg)}
+      .channel-pill.is-offline:hover{filter:brightness(1.06);color:var(--risk-fg)}
       .conn-banner-btn.primary:hover{filter:brightness(1.08)}
       .empty-state-btn:hover{filter:brightness(1.08);border-color:var(--accent)}
       .quota-pill:hover{background:var(--surface-hover);border-color:var(--border-strong)}
@@ -6963,12 +7150,14 @@ function buildMobileAppHtml() {
     @media (max-width:430px){
       .icon-btn{height:36px;min-width:36px;padding:0 4px}
       .conv-project-badge{max-width:65%;font-size:10.5px;padding:1px 6px}
+      .channel-pill{height:32px;padding:0 8px;gap:5px;font-size:11px}
       .top-panel-btn{height:32px;padding:0 7px;gap:3px;font-size:11px}
       .quota-pill{height:32px;padding:0 7px;font-size:11px}
     }
     @media (max-width:360px){
       .topbar{padding:6px 8px;column-gap:5px;row-gap:5px}
       .icon-btn{height:36px;min-width:36px;padding:0 3px}
+      .channel-pill{height:30px;padding:0 7px;gap:4px;font-size:10.5px}
       .topbar-actions{gap:4px;padding-top:4px}
       .top-panel-btn{height:32px;padding:0 6px;gap:2px;font-size:10.5px;border-radius:8px}
       #btn-usage-panel{min-width:32px;padding:0 6px;justify-content:center}
@@ -7000,6 +7189,10 @@ function buildMobileAppHtml() {
           <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
         </div>
       </div>
+      <button id="btn-channel-pill" class="channel-pill is-connecting" type="button" aria-label="切换连接方式" title="切换连接方式">
+        <span id="channel-pill-dot" class="ch-dot"></span>
+        <span id="channel-pill-label">连接中</span>
+      </button>
       <div class="topbar-actions">
         <button id="btn-context-panel" class="top-panel-btn" type="button" aria-label="上下文窗口面板" title="上下文窗口面板">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><circle cx="12" cy="12" r="9" opacity=".35"/><path d="M12 3a9 9 0 1 1-6.36 2.64" stroke-linecap="round"/></svg>
@@ -7365,6 +7558,31 @@ function buildMobileAppHtml() {
         return null;
       }
     }
+    let swRegistrationPromise = null;
+    let swLastError = '';
+    function syncEndpointsToServiceWorker(st) {
+      try {
+        const src = st || (typeof pairState === 'object' ? pairState : null);
+        if (!src || !Array.isArray(src.endpoints) || !src.endpoints.length) return;
+        if (typeof navigator === 'undefined' || !('serviceWorker' in navigator) || !navigator.serviceWorker) return;
+        const msg = {
+          type: 'ag-cache-endpoints',
+          endpoints: src.endpoints,
+          encodedEndpoints: encodeEndpointsClient(src.endpoints),
+          token: src.token || '',
+          name: src.name || ''
+        };
+        if (navigator.serviceWorker.controller && typeof navigator.serviceWorker.controller.postMessage === 'function') {
+          navigator.serviceWorker.controller.postMessage(msg);
+        }
+        if (swRegistrationPromise && typeof swRegistrationPromise.then === 'function') {
+          swRegistrationPromise.then((reg) => {
+            const target = reg?.active || navigator.serviceWorker?.controller || null;
+            if (target && typeof target.postMessage === 'function') target.postMessage(msg);
+          }).catch(() => {});
+        }
+      } catch {}
+    }
     function saveStoredPair(st) {
       try {
         localStorage.setItem(PAIR_STORAGE_KEY, JSON.stringify({
@@ -7374,6 +7592,7 @@ function buildMobileAppHtml() {
           endpoints: Array.isArray(st.endpoints) ? st.endpoints : []
         }));
       } catch {}
+      syncEndpointsToServiceWorker(st);
     }
     function loadStoredSpeed() {
       try {
@@ -7437,10 +7656,11 @@ function buildMobileAppHtml() {
       saveStoredPair(pairState);
       try { history.replaceState(null, '', location.pathname); } catch {}
     }
-    let swRegistrationPromise = null;
-    let swLastError = '';
     if (isTrustedSecureOrigin(location.origin) && 'serviceWorker' in navigator) {
-      swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+      swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).then((reg) => {
+        if (reg) syncEndpointsToServiceWorker(pairState);
+        return reg;
+      }).catch((err) => {
         swLastError = err?.message || String(err || 'register failed');
         return null;
       });
@@ -7794,6 +8014,7 @@ function buildMobileAppHtml() {
 
     let apiBase = '';
     let activeSheetKind = '';
+    let activeSheetState = null;
     let activeDrawerProject = '';
     let autoSwitchChecked = false;
     let navigatingAway = false;
@@ -8284,8 +8505,10 @@ function buildMobileAppHtml() {
       if (pairState.hosts?.length) params.push('hosts=' + encodeURIComponent(pairState.hosts.join(',')));
       const encEps = encodeEndpointsClient(pairState.endpoints || []);
       if (encEps) params.push('endpoints=' + encodeURIComponent(encEps));
-      const encSpd = encodeSpeedTestClient(speedTestState);
-      if (encSpd) params.push('spd=' + encodeURIComponent(encSpd));
+      if (!o.omitSpeed) {
+        const encSpd = encodeSpeedTestClient(speedTestState);
+        if (encSpd) params.push('spd=' + encodeURIComponent(encSpd));
+      }
       if (o.autoSwitched) {
         params.push('autosw=1');
       } else if (o.manual !== false) {
@@ -8310,6 +8533,7 @@ function buildMobileAppHtml() {
         apiBase = '';
         const modeName = formatKindLabel(ep.kind);
         $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
+        syncChannelPillUi('connecting');
         if (latestSnap) {
           showToast('已切换至 ' + modeName);
         } else {
@@ -8318,7 +8542,8 @@ function buildMobileAppHtml() {
         void fetchSnapshot();
         return;
       }
-      navigateEntryUrl(buildClientEntryUrl(cleanTarget, { manual: true }), false);
+      const isCrossProtocolDowngrade = location.protocol === 'https:' && cleanTarget.toLowerCase().startsWith('http://');
+      navigateEntryUrl(buildClientEntryUrl(cleanTarget, { manual: true, omitSpeed: isCrossProtocolDowngrade }), false);
     }
 
     function renderModeEntryGate(statusText) {
@@ -8400,6 +8625,7 @@ function buildMobileAppHtml() {
 
     function closeSheet() {
       activeSheetKind = '';
+      activeSheetState = null;
       const backBtn = $('sheet-back-btn');
       if (backBtn) {
         backBtn.hidden = true;
@@ -8408,9 +8634,20 @@ function buildMobileAppHtml() {
       const actBtn = $('sheet-action-btn');
       if (actBtn) {
         actBtn.hidden = true;
+        actBtn.disabled = false;
         actBtn.onclick = null;
       }
-      $('sheet-backdrop').hidden = true;
+      const listEl = $('sheet-list');
+      if (listEl && typeof handleSheetListClick === 'function') {
+        listEl.onclick = handleSheetListClick;
+      }
+      const backdrop = $('sheet-backdrop');
+      if (backdrop && backdrop.contains(document.activeElement)) {
+        try { document.activeElement.blur(); } catch {}
+      }
+      if (backdrop) backdrop.hidden = true;
+      if (typeof resetModalSheetShift === 'function') resetModalSheetShift();
+      if (typeof syncViewportHeight === 'function') syncViewportHeight();
     }
 
     function renderModeSwitcherSheet() {
@@ -8442,13 +8679,17 @@ function buildMobileAppHtml() {
       });
 
       const listEl = $('sheet-list');
-      listEl.innerHTML = entries.map((ep, idx) => {
+      let hasQuickTunnel = false;
+      const rowsHtml = entries.map((ep, idx) => {
         let hostText = ep.url;
         try { hostText = new URL(ep.url).host; } catch {}
         const isCurrent = ep.url === curOrigin;
+        const isQuickTunnelEp = ep.kind === 'tunnel' && String(hostText || '').toLowerCase().endsWith('.trycloudflare.com');
+        if (isQuickTunnelEp) hasQuickTunnel = true;
         const badge = formatLatencyBadge(ep.kind);
         const pills = ((fastestKind && ep.kind === fastestKind) ? '<span class="mode-pill fast">最快</span>' : '')
-          + (isCurrent ? '<span class="mode-pill cur">当前</span>' : '');
+          + (isCurrent ? '<span class="mode-pill cur">当前</span>' : '')
+          + (isQuickTunnelEp ? '<span class="mode-pill warn">临时域名</span>' : '');
         return '<button class="sheet-opt' + (isCurrent ? ' active' : '') + '" data-idx="' + idx + '" type="button">'
           + '<span class="sheet-opt-left">'
           + '<span class="sheet-opt-top"><span>' + esc(formatKindLabel(ep.kind)) + '</span>' + pills + '</span>'
@@ -8460,6 +8701,10 @@ function buildMobileAppHtml() {
           + '</span>'
           + '</button>';
       }).join('');
+      const footNoteHtml = hasQuickTunnel
+        ? '<div class="sheet-foot-note">提示：.trycloudflare.com 为免登录一次性临时域名，电脑热更新、重启或休眠断网后旧网址会永久失效并换新；长期使用建议优先选 Tailscale HTTPS、局域网或自定义固定域名。</div>'
+        : '';
+      listEl.innerHTML = rowsHtml + footNoteHtml;
       listEl.onclick = (e) => {
         const btn = e.target?.closest?.('.sheet-opt');
         if (!btn) return;
@@ -8469,7 +8714,58 @@ function buildMobileAppHtml() {
       };
     }
 
+    function formatShortChannelLabel(rawUrl) {
+      const u = String(rawUrl || '').trim().toLowerCase();
+      const k = detectKindFromOrigin(u);
+      if (k === 'tailscale') return u.startsWith('https://') ? 'TS HTTPS' : 'Tailscale';
+      if (k === 'tunnel') return '隧道';
+      if (k === 'bonjour') return 'Bonjour';
+      return '局域网';
+    }
+
+    function syncChannelPillUi(state) {
+      const btn = $('btn-channel-pill');
+      const lbl = $('channel-pill-label');
+      if (!btn || !lbl) return;
+      const st = state || (latestSnap ? 'online' : 'connecting');
+      btn.classList?.toggle?.('is-offline', st === 'offline');
+      btn.classList?.toggle?.('is-connecting', st === 'connecting');
+      const curOrigin = apiBase || location.origin || '';
+      if (st === 'offline') {
+        lbl.textContent = '切通道';
+        btn.title = '连接已断开，点击切换连接方式';
+        btn.setAttribute?.('aria-label', '连接已断开，点击切换连接方式');
+      } else if (st === 'connecting') {
+        lbl.textContent = '连接中';
+        btn.title = '正在连接，点击切换连接方式 (' + formatKindLabel(detectKindFromOrigin(curOrigin)) + ')';
+        btn.setAttribute?.('aria-label', '切换连接方式');
+      } else {
+        const shortName = formatShortChannelLabel(curOrigin);
+        lbl.textContent = shortName;
+        btn.title = '当前通道：' + formatKindLabel(detectKindFromOrigin(curOrigin)) + '，点击切换';
+        btn.setAttribute?.('aria-label', '当前通道：' + shortName + '，点击切换');
+      }
+    }
+
+    function pickDirectFallbackHintEndpoint() {
+      const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+      const entries = getEnabledModeEntries().filter((ep) => ep && ep.url && ep.url !== curOrigin);
+      if (!entries.length) return null;
+      const rank = (ep) => {
+        const u = String(ep.url || '').toLowerCase();
+        if (ep.kind === 'tailscale' && u.startsWith('https://')) return 0;
+        if (ep.kind === 'lan') return 1;
+        if (ep.kind === 'tailscale') return 2;
+        if (ep.kind === 'bonjour') return 3;
+        return 9;
+      };
+      entries.sort((a, b) => rank(a) - rank(b));
+      const best = entries[0];
+      return best && best.kind !== 'tunnel' ? best : null;
+    }
+
     function openModeSwitcherSheet() {
+      closeTopDrawers();
       const entries = getEnabledModeEntries();
       if (!entries.length) return;
       activeSheetKind = 'mode';
@@ -8482,6 +8778,13 @@ function buildMobileAppHtml() {
 
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
     $('sub-meta').onclick = openModeSwitcherSheet;
+    syncChannelPillUi('connecting');
+    if ($('btn-channel-pill')) {
+      $('btn-channel-pill').onclick = () => {
+        closeTopDrawers();
+        openModeSwitcherSheet();
+      };
+    }
     if ($('btn-mode-switcher')) {
       $('btn-mode-switcher').addEventListener('click', () => {
         if (!isDesktopLayout()) closeDrawer();
@@ -9236,6 +9539,38 @@ function buildMobileAppHtml() {
       }
     }
 
+    function closeTopDrawers() {
+      const ctxBox = $('context-drawer');
+      const usageBox = $('usage-drawer');
+      const quotaBox = $('quota-drawer');
+      if (ctxBox) ctxBox.hidden = true;
+      if (usageBox) usageBox.hidden = true;
+      if (quotaBox) quotaBox.hidden = true;
+      syncTopbarDrawerButtons();
+    }
+
+    function positionTopDrawer(targetBox) {
+      if (!targetBox || !targetBox.style) return;
+      try {
+        const topbarEl = document.querySelector?.('.topbar');
+        const bannerEl = $('conn-banner');
+        let maxBottom = 0;
+        if (topbarEl && typeof topbarEl.getBoundingClientRect === 'function') {
+          const r = topbarEl.getBoundingClientRect();
+          if (r && Number.isFinite(r.bottom) && r.bottom > maxBottom) maxBottom = r.bottom;
+        }
+        if (bannerEl && !bannerEl.hidden && typeof bannerEl.getBoundingClientRect === 'function') {
+          const rb = bannerEl.getBoundingClientRect();
+          if (rb && Number.isFinite(rb.bottom) && rb.bottom > maxBottom) maxBottom = rb.bottom;
+        }
+        if (maxBottom > 0) {
+          targetBox.style.top = Math.round(maxBottom + 6) + 'px';
+        } else {
+          targetBox.style.top = '';
+        }
+      } catch {}
+    }
+
     function openTopDrawer(kind) {
       const ctxBox = $('context-drawer');
       const usageBox = $('usage-drawer');
@@ -9243,12 +9578,19 @@ function buildMobileAppHtml() {
       const targetBox = kind === 'context' ? ctxBox : (kind === 'usage' ? usageBox : (kind === 'quota' ? quotaBox : null));
       const willOpen = Boolean(targetBox && targetBox.hidden);
 
+      if (kind === 'quota' && willOpen && !latestSnap) {
+        closeTopDrawers();
+        showToast('正在连接电脑端，暂未获取配额');
+        return;
+      }
+
       if (ctxBox) ctxBox.hidden = true;
       if (usageBox) usageBox.hidden = true;
       if (quotaBox) quotaBox.hidden = true;
 
       if (willOpen && targetBox) {
         targetBox.hidden = false;
+        positionTopDrawer(targetBox);
         if (kind === 'context') {
           renderContextDrawer(latestSnap, cachedContextResp);
           void fetchContextPanelData();
@@ -9531,6 +9873,7 @@ function buildMobileAppHtml() {
     function renderSnapshot(snap, opts) {
       if (!snap || snap.ok === false) {
         $('status-dot').className = 'dot err';
+        syncChannelPillUi('offline');
         $('conv-title').textContent = snap?.error || '连接异常';
         if (latestSnap) {
           setConnBannerVisible(true, humanizeRemoteError(snap?.error, '与电脑端的连接暂时异常，可点击重试或切换连接方式'));
@@ -9582,6 +9925,7 @@ function buildMobileAppHtml() {
       }
       latestSnap = snap;
       setConnBannerVisible(false);
+      syncChannelPillUi('online');
       syncSelectedProjectFromSnapshot(snap);
       if ($('btn-follow-desktop')) $('btn-follow-desktop').hidden = !Boolean(snap.isolated);
       if (snap.currentTargetId) {
@@ -10853,6 +11197,7 @@ function buildMobileAppHtml() {
         if (mySeq === snapshotSeq) renderSnapshot(data, { reqStartEpoch: fetchStartEpoch });
       } catch {
         if (mySeq !== snapshotSeq) return;
+        syncChannelPillUi('connecting');
         $('sub-meta').textContent = '连接中断 · 正在切换可用通道…';
         if (latestSnap) {
           setConnBannerVisible(true, '与电脑端的连接已断开，正在尝试切换可用通道…');
@@ -10860,7 +11205,7 @@ function buildMobileAppHtml() {
           renderModeEntryGate('正在自动尝试备用通道，也可直接点击已开启的方式立即进入：');
         }
         const switched = await tryFailoverEndpoint();
-        if (switched) {
+        if (switched && !navigatingAway) {
           try {
             const retryRes = await doFetch();
             if (retryRes.status === 401) { location.reload(); return; }
@@ -10871,10 +11216,21 @@ function buildMobileAppHtml() {
             return;
           } catch {}
         }
+        if (navigatingAway) return;
         $('status-dot').className = 'dot err';
+        syncChannelPillUi('offline');
         $('sub-meta').textContent = '连接中断，点击可切换连接方式';
+        const fallbackHintEp = pickDirectFallbackHintEndpoint();
+        const isCurrentQuickTunnel = String(apiBase || location.origin || '').toLowerCase().includes('.trycloudflare.com');
         if (latestSnap) {
-          setConnBannerVisible(true, '与电脑端连接已断开，可点击重试或切换连接方式');
+          const bannerHint = isCurrentQuickTunnel
+            ? (fallbackHintEp
+                ? ('当前临时隧道域名可能已随电脑热更新/重启/休眠失效，建议点击右侧「切换连接方式」切往 ' + formatKindLabel(fallbackHintEp.kind) + '，或回电脑端重新扫码')
+                : '当前临时隧道域名为一次性地址，电脑热更新/重启/休眠后旧网址会失效，请回电脑端「远程」重新扫码获取新地址')
+            : (fallbackHintEp
+                ? ('当前通道 (' + getActiveChannelLabel() + ') 已断开，建议点击右侧「切换连接方式」切往 ' + formatKindLabel(fallbackHintEp.kind))
+                : '与电脑端连接已断开，可点击重试或切换连接方式');
+          setConnBannerVisible(true, bannerHint);
         } else {
           renderModeEntryGate('当前入口暂未连通，请点击下方已开启的连接方式直接进入：');
         }
@@ -10897,7 +11253,10 @@ function buildMobileAppHtml() {
       };
     }
     if ($('conn-switch-btn')) {
-      $('conn-switch-btn').onclick = openModeSwitcherSheet;
+      $('conn-switch-btn').onclick = () => {
+        closeTopDrawers();
+        openModeSwitcherSheet();
+      };
     }
 
     function schedulePoll() {
@@ -10916,17 +11275,6 @@ function buildMobileAppHtml() {
     });
     window.addEventListener('pageshow', () => { void fetchSnapshot(); });
 
-    function closeSheet() {
-      const backdrop = $('sheet-backdrop');
-      if (backdrop && backdrop.contains(document.activeElement)) {
-        try { document.activeElement.blur(); } catch {}
-      }
-      if (backdrop) backdrop.hidden = true;
-      resetModalSheetShift();
-      syncViewportHeight();
-    }
-
-    let activeSheetState = null;
     async function handleSheetListClick(e) {
       const btn = e?.target?.closest?.('.sheet-opt');
       if (!btn || !activeSheetState) return;
@@ -13167,7 +13515,10 @@ function buildMobileAppHtml() {
     } else if (!manualLocked && getEnabledModeEntries().length > 1) {
       autoSwitchChecked = true;
       void runSpeedTest({ autoSwitch: true, silent: true });
-    } else if (speedTestState.testedAt === 0) {
+    } else if (speedTestState.testedAt === 0 || (location.protocol !== 'https:' && getEnabledModeEntries().some((ep) => {
+      const sr = speedTestState.results?.[ep.kind];
+      return !sr || sr.via === 'server' || sr.reason === 'https_restricted';
+    }))) {
       void runSpeedTest({ autoSwitch: false, silent: true });
     }
     void fetchSnapshot();
@@ -13433,7 +13784,36 @@ function createCloudflareTunnelController(getPort) {
   let errorMsg = '';
   let mode = 'quick';
   let killEscalationTimer = null;
+  let autoRetryTimer = null;
+  let consecutiveFailures = 0;
   let lastAutoRetryAt = 0;
+
+  const clearAutoRetryTimer = () => {
+    if (autoRetryTimer) {
+      clearTimeout(autoRetryTimer);
+      autoRetryTimer = null;
+    }
+  };
+
+  const scheduleAutoRetry = () => {
+    clearAutoRetryTimer();
+    if (process.env.AG_REMOTE_SKIP_PROBES === '1' || state === 'stopped') return;
+    const cfgNow = loadOrCreateRemoteConfig();
+    if (!cfgNow.tunnelEnabled) return;
+    if (/(?:Token 无效|请先填写有效|未检测到 cloudflared|隔离空配置文件)/i.test(errorMsg || '')) return;
+    if (consecutiveFailures >= 5) return;
+    const delay = Math.min(30000, 3000 * Math.pow(2, consecutiveFailures));
+    consecutiveFailures += 1;
+    autoRetryTimer = setTimeout(() => {
+      autoRetryTimer = null;
+      if (state !== 'error') return;
+      const curCfg = loadOrCreateRemoteConfig();
+      if (!curCfg.tunnelEnabled) return;
+      lastAutoRetryAt = Date.now();
+      void start(curCfg);
+    }, delay);
+    autoRetryTimer.unref?.();
+  };
 
   const getStatus = () => {
     const cfg = loadOrCreateRemoteConfig();
@@ -13449,6 +13829,8 @@ function createCloudflareTunnelController(getPort) {
   };
 
   const stop = async () => {
+    clearAutoRetryTimer();
+    consecutiveFailures = 0;
     if (killEscalationTimer) {
       clearTimeout(killEscalationTimer);
       killEscalationTimer = null;
@@ -13480,6 +13862,7 @@ function createCloudflareTunnelController(getPort) {
   };
 
   const start = async (overrideCfg = null) => {
+    clearAutoRetryTimer();
     let cfg = overrideCfg || loadOrCreateRemoteConfig();
     mode = cfg.tunnelMode === 'named' ? 'named' : 'quick';
     if (!cfg.tunnelEnabled) {
@@ -13567,6 +13950,7 @@ function createCloudflareTunnelController(getPort) {
         publicUrl = urlStr;
         state = 'running';
         errorMsg = '';
+        consecutiveFailures = 0;
         writeTunnelStateFile({
           pid: spawned.pid,
           mode,
@@ -13583,6 +13967,7 @@ function createCloudflareTunnelController(getPort) {
         if (mode === 'quick' && quickUrlCandidate && state === 'starting' && child === spawned && !errorMsg) {
           publicUrl = quickUrlCandidate;
           state = 'running';
+          consecutiveFailures = 0;
           writeTunnelStateFile({
             pid: spawned.pid,
             mode,
@@ -13640,6 +14025,7 @@ function createCloudflareTunnelController(getPort) {
             publicUrl = cfg.tunnelHostname;
             state = 'running';
             errorMsg = '';
+            consecutiveFailures = 0;
             writeTunnelStateFile({
               pid: spawned.pid,
               mode,
@@ -13662,18 +14048,21 @@ function createCloudflareTunnelController(getPort) {
       spawned.once('error', (err) => {
         if (child !== spawned) return;
         child = null;
+        const wasStopped = state === 'stopped';
         state = 'error';
         publicUrl = '';
         errorMsg = err?.message || '启动 cloudflared 失败';
         removeTunnelStateFile();
         clearTimeout(waitTimer);
         settle();
+        if (!wasStopped) scheduleAutoRetry();
       });
 
       spawned.once('exit', (code) => {
         if (child !== spawned) return;
         child = null;
-        if (state !== 'stopped') {
+        const wasStopped = state === 'stopped';
+        if (!wasStopped) {
           state = 'error';
           publicUrl = '';
           if (!errorMsg) {
@@ -13685,6 +14074,7 @@ function createCloudflareTunnelController(getPort) {
         removeTunnelStateFile();
         clearTimeout(waitTimer);
         settle();
+        if (!wasStopped) scheduleAutoRetry();
       });
     });
   };
@@ -13963,7 +14353,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
   const targetOs = labelToOs[label] || '';
 
   const runTsProbe = async () => {
-    if (!en.tailscale && !en.lan) return { statusAvailable: false, pong: null };
+    if (!en.tailscale && !en.lan) return { statusAvailable: false, attempted: false, pong: null };
     const candidates = cachedTailscaleBin
       ? [cachedTailscaleBin]
       : (process.platform === 'darwin'
@@ -13984,7 +14374,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
       }
     }
     if (!workingBin || !parsedStatus || typeof parsedStatus !== 'object') {
-      return { statusAvailable: false, pong: null };
+      return { statusAvailable: false, attempted: false, pong: null };
     }
 
     const probeIps = [];
@@ -14002,7 +14392,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
         probeIps.push(mobilePeers[0]);
       }
     }
-    if (!probeIps.length) return { statusAvailable: true, pong: null };
+    if (!probeIps.length) return { statusAvailable: true, attempted: false, pong: null };
 
     const pongs = await Promise.all(probeIps.map(async (ip) => {
       const pr = await execFn(workingBin, ['ping', '--c', '1', '--timeout', '1s', ip], 1250);
@@ -14010,7 +14400,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
     }));
     const validPongs = pongs.filter((p) => p && p.ok && Number.isFinite(p.ms));
     validPongs.sort((a, b) => a.ms - b.ms);
-    return { statusAvailable: true, pong: validPongs[0] || null };
+    return { statusAvailable: true, attempted: true, pong: validPongs[0] || null };
   };
 
   const [tsRes, initialLanPing] = await Promise.all([
@@ -14036,7 +14426,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
   if (en.tailscale) {
     if (tsPong?.ok) {
       hints.tailscale = { ok: true, ms: tsPong.ms, via: 'server' };
-    } else if (tsRes?.statusAvailable) {
+    } else if (tsRes?.statusAvailable && tsRes?.attempted) {
       hints.tailscale = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
     }
   }
@@ -16885,7 +17275,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     try {
       return { url: full, qrSvg: renderQrSvg(full) };
     } catch {
-      const compactEps = (desc.endpoints || []).filter((e) => e.kind === 'tunnel' || e.priority === 0 || e.priority === 100);
+      const compactEps = (desc.endpoints || []).filter((e) => e.kind === 'tunnel' || e.priority === 0 || e.priority === 90 || e.priority === 100);
       const compact = buildFusedPairingUrl({
         entryBaseUrl,
         entryHost,
@@ -16958,9 +17348,15 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
   const tailscaleUrls = enCh.tailscale ? desc.tailscale.map((x) => ({ ...x, ...mkQrSafe(x.address) })) : [];
   const lanUrls = enCh.lan ? desc.lan.map((x) => ({ ...x, ...mkQrSafe(x.address) })) : [];
 
-  const pickedChannel = channels.find((c) => c.key === 'tunnel' && c.available)
-    || channels.find((c) => c.key === 'tailscale' && c.available)
+  const isTailscaleHttpsCh = (c) => Boolean(
+    c && c.key === 'tailscale' && c.available
+    && (c.httpsUrl || (c.entryBaseUrl && String(c.entryBaseUrl).startsWith('https://')) || String(c.url || '').startsWith('https://'))
+  );
+  const pickedChannel = channels.find((c) => c.key === 'tunnel' && c.available && c.mode === 'named')
+    || channels.find((c) => isTailscaleHttpsCh(c))
     || channels.find((c) => c.key === 'lan' && c.available)
+    || channels.find((c) => c.key === 'tailscale' && c.available)
+    || channels.find((c) => c.key === 'tunnel' && c.available)
     || channels.find((c) => c.available);
   const localBuilt = mkQrSafe('127.0.0.1');
   const localUrl = localBuilt.url;
