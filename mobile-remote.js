@@ -13868,6 +13868,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
   const stagedEditUploadsByKey = new Map();
   const STAGED_EDIT_UPLOADS_TTL_MS = 30 * 60 * 1000;
+  const MAX_STAGED_EDIT_UPLOADS_PER_CONV = 10;
   const makeStagedUploadKey = (cidClient, convId) => `${String(cidClient || '__default__').trim() || '__default__'}::${String(convId || '').trim()}`;
   const pruneStagedEditUploads = () => {
     const now = Date.now();
@@ -13886,7 +13887,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (!key || !Array.isArray(items) || !items.length) return;
     pruneStagedEditUploads();
     const existing = stagedEditUploadsByKey.get(key)?.items || [];
-    const next = existing.concat(items).slice(-10);
+    const next = existing.concat(items);
     if (stagedEditUploadsByKey.size >= 100 && !stagedEditUploadsByKey.has(key)) {
       const oldest = stagedEditUploadsByKey.keys().next().value;
       if (oldest !== undefined) stagedEditUploadsByKey.delete(oldest);
@@ -14996,6 +14997,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                   ok: false,
                   mediaRecoveryUnavailable: true,
                   error: mat.error || '该排队消息包含媒体附件，当前无法完整恢复附件数据，已取消撤回以避免丢失附件'
+                }
+              };
+            }
+            const existingStagedCount = getStagedEditUploads(stageKey).length;
+            if (existingStagedCount + mat.attachments.length > MAX_STAGED_EDIT_UPLOADS_PER_CONV) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  mediaRecoveryUnavailable: true,
+                  error: `当前会话待重发暂存附件将超过上限（${MAX_STAGED_EDIT_UPLOADS_PER_CONV} 个），已取消撤回以避免丢失早期附件；请先发送或移除部分附件`
                 }
               };
             }

@@ -9679,25 +9679,64 @@
     return { ok: false, error: '未在侧边栏找到该会话' };
   }
 
+  function findComposerAttachmentRemoveButtons() {
+    const composerEl = document.querySelector('.surface-composer');
+    if (!composerEl) return [];
+    const composerScope = composerEl.parentElement || composerEl;
+    const isSuiteOverlayNode = (el) => Boolean(el?.closest?.(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, [data-agy-hans-ui], [data-agy-context-capsule]`));
+    return Array.from(composerScope.querySelectorAll('button')).filter((btn) => {
+      if (isSuiteOverlayNode(btn)) return false;
+      const meta = `${btn.getAttribute?.('aria-label') || ''} ${btn.getAttribute?.('title') || ''} ${btn.textContent || ''}`.trim();
+      const isRemoveBtn = /^(?:×|✕|x)$/i.test(meta) || /remove|delete|close|clear|移除|删除|取消附件/i.test(meta);
+      if (!isRemoveBtn) return false;
+      const container = btn.parentElement;
+      if (!container) return false;
+      return Boolean(container.querySelector('img') || /\.(?:png|jpe?g|webp|gif|pdf|txt|md|json|csv|zip|docx?|xlsx?|js|ts|py)/i.test(container.textContent || '') || container.getAttribute?.('data-testid')?.match(/attach|file|image|media/i));
+    });
+  }
+
   async function executeMobileActionCore(action, payload) {
     if (action === 'send') {
       const text = String(payload?.text || '').trim();
       const pendingUploads = Array.isArray(payload?.pendingUploads) ? payload.pendingUploads : [];
       if (!text && !pendingUploads.length) return { ok: false, error: '发送内容不能为空' };
-      if (pendingUploads.length > 0) {
-        for (const att of pendingUploads) {
-          const upRes = await injectUploadedFileToDesktopComposer(att?.name, att?.mimeType, att?.base64);
-          if (!upRes?.ok) {
-            return { ok: false, error: upRes?.error || '恢复附件注入桌面输入框失败，已取消发送' };
+      const beforeRemoveBtns = pendingUploads.length > 0 ? new Set(findComposerAttachmentRemoveButtons()) : null;
+      let injectedCount = 0;
+      const rollbackNewlyInjected = () => {
+        if (!beforeRemoveBtns || injectedCount <= 0) return;
+        const newlyAdded = findComposerAttachmentRemoveButtons().filter((b) => !beforeRemoveBtns.has(b));
+        for (let i = newlyAdded.length - 1; i >= 0; i -= 1) {
+          try { newlyAdded[i].click(); } catch {}
+        }
+      };
+      try {
+        if (pendingUploads.length > 0) {
+          for (const att of pendingUploads) {
+            const upRes = await injectUploadedFileToDesktopComposer(att?.name, att?.mimeType, att?.base64);
+            if (!upRes?.ok) {
+              rollbackNewlyInjected();
+              return { ok: false, error: upRes?.error || '恢复附件注入桌面输入框失败，已回滚本次已注入附件并取消发送' };
+            }
+            injectedCount += 1;
+          }
+          await new Promise((r) => setTimeout(r, 60));
+        }
+        if (text) {
+          const filled = await fillComposerText(text);
+          if (!filled) {
+            rollbackNewlyInjected();
+            return { ok: false, error: '未能填入输入框' };
           }
         }
-        await new Promise((r) => setTimeout(r, 60));
+        const submitRes = await submitCurrentComposer({ allowEnterOnDisabled: true, checkBusyOnEnter: false });
+        if (!submitRes?.ok) {
+          rollbackNewlyInjected();
+        }
+        return submitRes;
+      } catch (err) {
+        rollbackNewlyInjected();
+        throw err;
       }
-      if (text) {
-        const filled = await fillComposerText(text);
-        if (!filled) return { ok: false, error: '未能填入输入框' };
-      }
-      return await submitCurrentComposer({ allowEnterOnDisabled: true, checkBusyOnEnter: false });
     }
 
     if (action === 'fill') {
@@ -10050,17 +10089,7 @@
       if (!composerEl) {
         return { ok: false, removed: 0, error: '未找到桌面端输入区域，已取消删除以防误删' };
       }
-      const composerScope = composerEl.parentElement || composerEl;
-      const isSuiteOverlayNode = (el) => Boolean(el?.closest?.(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, [data-agy-hans-ui], [data-agy-context-capsule]`));
-      const candidates = Array.from(composerScope.querySelectorAll('button')).filter((btn) => {
-        if (isSuiteOverlayNode(btn)) return false;
-        const meta = `${btn.getAttribute?.('aria-label') || ''} ${btn.getAttribute?.('title') || ''} ${btn.textContent || ''}`.trim();
-        const isRemoveBtn = /^(?:×|✕|x)$/i.test(meta) || /remove|delete|close|clear|移除|删除|取消附件/i.test(meta);
-        if (!isRemoveBtn) return false;
-        const container = btn.parentElement;
-        if (!container) return false;
-        return Boolean(container.querySelector('img') || /\.(?:png|jpe?g|webp|gif|pdf|txt|md|json|csv|zip|docx?|xlsx?|js|ts|py)/i.test(container.textContent || '') || container.getAttribute?.('data-testid')?.match(/attach|file|image|media/i));
-      });
+      const candidates = findComposerAttachmentRemoveButtons();
       if (!candidates.length) {
         return clearAll
           ? { ok: true, removed: 0 }
