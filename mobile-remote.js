@@ -15483,14 +15483,60 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               rawEntriesFromStep.length > 0 ||
               hasMediaMarkerText(baseEditText)
             );
+            const buildQueuedStepFingerprint = (uiObj, fallbackTxt = '') => {
+              const rawEntries = extractRawMediaEntriesFromUserInput(uiObj);
+              const normTxt = stripDisplayMediaSuffixFromQueuedText(
+                uiObj ? formatTrajectoryUserInput(uiObj) : String(fallbackTxt || ''),
+                rawEntries.length > 0
+              ).replace(/\s+/g, ' ').trim();
+              const mediaSig = rawEntries
+                .map((e) => String(e?.dedupKey || e?.uri || e?.name || '').trim())
+                .filter(Boolean)
+                .sort()
+                .join('|');
+              return `${normTxt}||${mediaSig}`;
+            };
+            const collectQueuedStepFingerprints = (stepsArr, containerObj) => {
+              const fps = [];
+              const seenStepIdx = new Set();
+              const extraArr = Array.isArray(containerObj?.queuedSteps)
+                ? containerObj.queuedSteps
+                : (Array.isArray(containerObj?.queued_steps) ? containerObj.queued_steps : []);
+              for (const qs of extraArr) {
+                if (!qs || typeof qs !== 'object') continue;
+                const idxNum = Number(qs.stepIndex ?? qs.step_index);
+                if (Number.isInteger(idxNum) && idxNum >= 0) seenStepIdx.add(idxNum);
+                const uiObj = qs.userInput || qs.user_input || qs;
+                fps.push({ stepIndex: Number.isInteger(idxNum) ? idxNum : -1, fp: buildQueuedStepFingerprint(uiObj, '') });
+              }
+              if (Array.isArray(stepsArr)) {
+                for (let si = 0; si < stepsArr.length; si += 1) {
+                  if (seenStepIdx.has(si)) continue;
+                  const st = stepsArr[si];
+                  if (isQueuedTrajectoryUserStep(st)) {
+                    fps.push({ stepIndex: si, fp: buildQueuedStepFingerprint(st?.userInput || st?.user_input || null, '') });
+                  }
+                }
+              }
+              return fps;
+            };
+            const targetStepFp = buildQueuedStepFingerprint(targetUi, baseEditText);
+            const preDeleteFps = collectQueuedStepFingerprints(trajSteps, trajContainer);
+            const preDeleteSameFpCount = preDeleteFps.filter((x) => x.fp === targetStepFp).length;
             const verifyStepStillQueued = async () => {
               const recheck = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
               const recheckSteps = recheck.ok ? recheck.result?.trajectory?.steps : null;
               if (!recheck.ok || !Array.isArray(recheckSteps)) return null;
               const recheckContainer = recheck.result?.trajectory || recheck.result;
-              const recheckQList = extractQueuedMessagesFromTrajectorySteps(recheckSteps, recheckContainer);
-              if (recheckQList.some((q) => q && q.stepIndex === stepIndex)) return true;
-              return isQueuedTrajectoryUserStep(recheckSteps[stepIndex]);
+              const postDeleteFps = collectQueuedStepFingerprints(recheckSteps, recheckContainer);
+              const matchingPost = postDeleteFps.filter((x) => x.fp === targetStepFp);
+              if (matchingPost.length === 0) return false;
+              const stillAtSameIndex = matchingPost.some((x) => x.stepIndex === stepIndex);
+              if (stillAtSameIndex && matchingPost.length >= Math.max(1, preDeleteSameFpCount)) {
+                return true;
+              }
+              // 仍有同内容排队项存在（例如前序步骤并发删除导致原项前移，或存在同文副本无法唯一定位）→ 无法确认已删，返回未知以保留文本/附件
+              return null;
             };
             if (itemHasMedia) {
               const recovered = await restoreMediaAndDeleteQueued({
