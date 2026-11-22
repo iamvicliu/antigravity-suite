@@ -9702,15 +9702,55 @@
         return { ok: true, source: 'dom', sentCount };
       }
       const reqMsgId = String(payload?.messageId || '').trim();
-      const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
+      const expQueueCount = Number(payload?.expectedQueueCount);
+      if (!reqMsgId && Number.isInteger(expQueueCount) && expQueueCount > 0 && entries.length !== expQueueCount) {
+        return { ok: false, error: '桌面排队数量已变化，已取消发送以防索引移位误发' };
+      }
+      const hasReqIdx = Number.isInteger(payload?.domIndex);
+      const reqIdx = hasReqIdx ? payload.domIndex : -1;
+      const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+      const stripMediaSuffix = (s) => normText(s)
+        .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
+        .trim();
+      const reqText = normText(payload?.text);
+      const reqTextCore = stripMediaSuffix(reqText);
+      const matchesEntryText = (entry) => {
+        const et = normText(entry?.text);
+        if (!reqText) return true;
+        if (et === reqText) return true;
+        const etCore = stripMediaSuffix(et);
+        if (reqTextCore) return Boolean(etCore && etCore === reqTextCore);
+        return !etCore && Array.isArray(entry?.images) && entry.images.length > 0;
+      };
       let target = null;
       if (reqMsgId) {
         target = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
         if (!target) {
           return { ok: false, error: '目标排队消息已变化或不存在，已取消发送以防误发' };
         }
-      } else {
-        target = entries[reqIdx] || entries[0];
+      } else if (hasReqIdx) {
+        if (reqIdx >= 0 && reqIdx < entries.length && matchesEntryText(entries[reqIdx])) {
+          target = entries[reqIdx];
+        } else if (reqTextCore) {
+          const textMatches = entries.filter((e) => {
+            const et = normText(e?.text);
+            const etCore = stripMediaSuffix(et);
+            return et === reqText || (etCore && etCore === reqTextCore);
+          });
+          if (textMatches.length === 1) target = textMatches[0];
+        }
+      } else if (reqTextCore) {
+        const textMatches = entries.filter((e) => {
+          const et = normText(e?.text);
+          const etCore = stripMediaSuffix(et);
+          return et === reqText || (etCore && etCore === reqTextCore);
+        });
+        if (textMatches.length === 1) target = textMatches[0];
+      } else if (entries.length === 1 && !reqText) {
+        target = entries[0];
+      }
+      if (!target) {
+        return { ok: false, error: '目标排队消息已变化、不唯一或无法确认映射，已取消发送以防误发' };
       }
       if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
       target.sendBtn.click();

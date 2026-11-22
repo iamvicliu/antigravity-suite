@@ -18273,6 +18273,20 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     assert.equal(delRes.ok, true);
     assert.equal(row1.counts.del, 1);
 
+    // 无 messageId 且无 domIndex / text 的多行队列 send-queued-dom 必须拒绝以防误点首条；越界 domIndex 同样拒绝
+    const ambSend = await enhancer.performMobileAction({ action: 'send-queued-dom', sendAll: false });
+    const oobSend = await enhancer.performMobileAction({ action: 'send-queued-dom', domIndex: 99, sendAll: false });
+    assert.equal(ambSend.ok, false, '多条队列缺少明确目标时 send-queued-dom 必须停止');
+    assert.equal(oobSend.ok, false, '越界 domIndex 时 send-queued-dom 必须停止，不得回退点击 entries[0]');
+    assert.equal(row1.counts.send, 1);
+    assert.equal(row2.counts.send, 0);
+
+    // 无 messageId 仅按唯一文本匹配发送第二条，绝不误点第一条
+    const byTextSend2 = await enhancer.performMobileAction({ action: 'send-queued-dom', text: '第二条排队消息：后续检查', sendAll: false });
+    assert.equal(byTextSend2.ok, true, '无 messageId 时应支持按目标文本精准发送第二条');
+    assert.equal(row1.counts.send, 1, '不得误点击第一条');
+    assert.equal(row2.counts.send, 1, '应精确点击第二条发送按钮');
+
     // 无 messageId 旧调用保留兼容
     const legacyDel = await enhancer.performMobileAction({ action: 'delete-queued-dom', domIndex: 1 });
     assert.equal(legacyDel.ok, true, '无 messageId 旧调用应继续兼容 domIndex');
@@ -18357,6 +18371,24 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   assert.equal(pbExtracted[0].images?.length, 1);
   assert.equal(pbExtracted[0].hasMedia, true);
 
+  // 对象回退路径同样必须过滤明确标识为非 userInput 的步骤（即使携带 text/content 也不得展示）
+  const nonUserObjFiltered = extractPendingAgentMessagesFromUpdate({
+    update: {
+      pendingAgentMessagesUpdate: {
+        pendingAgentMessages: [
+          { id: 'nu-1', step: { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', text: '非userInput文本1' }, content: '内部内容1' },
+          { id: 'nu-2', stepPayload: { case: 'plannerResponse', text: '非userInput文本2' } },
+          { id: 'nu-3', step: { plannerResponse: { response: '模型回复' }, text: '非userInput文本3' } },
+          { id: 'nu-4', payload: { case: 'controlSignal', value: { text: '控制信号' } } },
+          { id: 'u-ok', step: { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '合法对象用户排队消息' }] } } }
+        ]
+      }
+    }
+  });
+  assert.equal(nonUserObjFiltered.length, 1, '对象回退路径必须过滤明确非 userInput 步骤，不得泄漏其文本');
+  assert.equal(nonUserObjFiltered[0].messageId, 'u-ok');
+  assert.equal(nonUserObjFiltered[0].text, '合法对象用户排队消息');
+
   try {
     const firstFrame = await requestConnectStreamFirstFrame(
       `http://127.0.0.1:${streamPort}`,
@@ -18407,6 +18439,88 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
       }
     );
     assert.equal(streamCallCount, 2, 'invalidateSession 必须立即失效 pendingMsgCache');
+
+    // 4b. pendingMsgCache 请求代次并发防覆盖测试：
+    // 场景 A：旧请求晚于 invalidateSession 及新请求完成，绝不把旧列表写回并覆盖新缓存
+    const raceHistMgr = createConversationHistoryManager();
+    let resolveRaceOld = null;
+    let resolveRaceNew = null;
+    let raceCallIdx = 0;
+    const raceConnect = async () => ({
+      call: async () => ({ trajectory: { steps: [] } }),
+      callStreamFirstFrame: () => {
+        raceCallIdx += 1;
+        const n = raceCallIdx;
+        if (n === 1) return new Promise((r) => { resolveRaceOld = r; });
+        if (n === 2) return new Promise((r) => { resolveRaceNew = r; });
+        return Promise.resolve({ update: { pendingAgentMessagesUpdate: { pendingAgentMessages: [] } } });
+      }
+    });
+    const oldP = raceHistMgr.enrichMessages(
+      { ok: true, sessionId: 'race-q-conv', isolated: true, busy: true, messages: [], queuedMessages: [] },
+      { localApiConnect: raceConnect }
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(raceCallIdx, 1);
+
+    raceHistMgr.invalidateSession('race-q-conv');
+    const newP = raceHistMgr.enrichMessages(
+      { ok: true, sessionId: 'race-q-conv', isolated: true, busy: true, messages: [], queuedMessages: [] },
+      { localApiConnect: raceConnect }
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(raceCallIdx, 2);
+
+    resolveRaceNew({
+      update: { pendingAgentMessagesUpdate: { pendingAgentMessages: [{ id: 'new-q', step: { items: [{ text: '新队列消息' }] } }] } }
+    });
+    const newSnap = await newP;
+    assert.equal(newSnap.queuedMessages.length, 1);
+    assert.equal(newSnap.queuedMessages[0].text, '新队列消息');
+
+    // 旧请求晚归
+    resolveRaceOld({
+      update: { pendingAgentMessagesUpdate: { pendingAgentMessages: [{ id: 'old-q', step: { items: [{ text: '旧队列消息' }] } }] } }
+    });
+    await oldP;
+
+    // 紧接着 450ms 内读缓存（raceCallIdx 不得增加），缓存必须仍是「新队列消息」
+    const cachedCheckSnap = await raceHistMgr.enrichMessages(
+      { ok: true, sessionId: 'race-q-conv', isolated: true, busy: true, messages: [], queuedMessages: [] },
+      { localApiConnect: raceConnect }
+    );
+    assert.equal(raceCallIdx, 2, '450ms TTL 内应命中缓存');
+    assert.equal(cachedCheckSnap.queuedMessages[0]?.text, '新队列消息', '晚归旧请求绝不得覆盖新 pendingMsgCache');
+
+    // 场景 B：旧请求在 invalidateSession 之后、任何新请求之前晚归，也绝不能复活旧缓存
+    let race2CallIdx = 0;
+    let resolveRace2Old = null;
+    const race2Connect = async () => ({
+      call: async () => ({ trajectory: { steps: [] } }),
+      callStreamFirstFrame: () => {
+        race2CallIdx += 1;
+        if (race2CallIdx === 1) return new Promise((r) => { resolveRace2Old = r; });
+        return Promise.resolve({
+          update: { pendingAgentMessagesUpdate: { pendingAgentMessages: [{ id: 'fresh-2', step: { items: [{ text: '失效后重拉新值' }] } }] } }
+        });
+      }
+    });
+    const race2OldP = raceHistMgr.enrichMessages(
+      { ok: true, sessionId: 'race-q-conv-2', isolated: true, busy: true, messages: [], queuedMessages: [] },
+      { localApiConnect: race2Connect }
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    raceHistMgr.invalidateSession('race-q-conv-2');
+    resolveRace2Old({
+      update: { pendingAgentMessagesUpdate: { pendingAgentMessages: [{ id: 'stale-2', step: { items: [{ text: '失效前旧值' }] } }] } }
+    });
+    await race2OldP;
+    const afterLateOldSnap = await raceHistMgr.enrichMessages(
+      { ok: true, sessionId: 'race-q-conv-2', isolated: true, busy: true, messages: [], queuedMessages: [] },
+      { localApiConnect: race2Connect }
+    );
+    assert.equal(race2CallIdx, 2, '失效前启动的晚归请求不得写入 pendingMsgCache 阻塞后续重拉');
+    assert.equal(afterLateOldSnap.queuedMessages[0]?.text, '失效后重拉新值');
   } finally {
     streamSrv.close();
   }
@@ -18414,24 +18528,46 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     streamSrv.close();
   }
 
-  // 5. POST /api/action 支持 DeleteAgentMessage({ messageId, recipient }) / 单条轨迹 stepIndex 发送 / 部分成功可恢复防重发
+  // 5. POST /api/action 支持 DeleteAgentMessage / 轨迹 stepIndex 状态核验与媒体精准映射 / 部分成功防重发 / RPC 超时 fail-closed
   const rpcCalls = [];
   const domFallbackCalls = [];
-  let failSendAllRpc = false;
+  let sendAllMode = 'ok'; // 'ok' | 'deprecated' | 'timeout_hang' | 'null'
+  let sendSingleMode = 'ok'; // 'ok' | 'timeout_err' | 'unimplemented'
   let deleteMode = 'ok'; // 'ok' | 'null' | 'throw'
+  let trajScenario = 'text_queue'; // 'text_queue' | 'two_media_queue'
   const handler = createRemoteHttpHandler({
     port: 18765,
     token: 'tok-40-http',
     enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
   }, {
+    rpcTimeoutMs: 60,
     callLanguageServer: async (method, body) => {
       rpcCalls.push({ method, body });
-      if (method === 'SendAllQueuedMessages' && failSendAllRpc) return null;
+      if (method === 'SendAllQueuedMessages') {
+        if (sendAllMode === 'deprecated') throw new Error('HTTP 500: {"code":"unknown","message":"deprecated"}');
+        if (sendAllMode === 'timeout_hang') return await new Promise(() => {}); // 永不返回，模拟后端已执行但响应超时
+        if (sendAllMode === 'null') return null;
+      }
+      if (method === 'SendUserCascadeMessage') {
+        if (sendSingleMode === 'timeout_err') throw new Error('Local API timeout');
+        if (sendSingleMode === 'unimplemented') throw new Error('HTTP 501: unimplemented');
+      }
       if (method === 'DeleteAgentMessage') {
         if (deleteMode === 'null') return null;
         if (deleteMode === 'throw') throw new Error('delete rpc failed');
       }
       if (method === 'GetCascadeTrajectory') {
+        if (trajScenario === 'two_media_queue') {
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '已完成首轮' }] } },
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '媒体排队第一条' }], media: [{ mimeType: 'image/png', inlineData: tinyPngB64 }] } },
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '媒体排队第二条' }], media: [{ mimeType: 'image/png', inlineData: tinyPngB64 }] } }
+              ]
+            }
+          };
+        }
         return {
           trajectory: {
             steps: [
@@ -18495,11 +18631,74 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   });
   assert.deepEqual(trajSliceCalls[2], { method: 'DeleteQueuedUserInputStep', body: { cascadeId: 'iso-conv-40', stepIndex: 2 } });
 
-  // 非排队（已完成）stepIndex 不得误触发重发或 SendAllQueuedMessages
+  // 非排队（已完成）stepIndex 即使携带非空 text 也必须强制查 GetCascadeTrajectory 验证并拒绝（零发送、零删除）
   const beforeDoneStep = rpcCalls.length;
-  const rDoneStep = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', stepIndex: 0, sendAll: false });
-  assert.equal(rDoneStep.ok, false);
-  assert.equal(rpcCalls.slice(beforeDoneStep).filter((c) => c.method === 'SendUserCascadeMessage' || c.method === 'SendAllQueuedMessages').length, 0);
+  const rDoneStepWithText = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', stepIndex: 0, text: '伪造已完成步骤文本', sendAll: false });
+  assert.equal(rDoneStepWithText.ok, false, '已完成 stepIndex 即使携带非空 text 也绝不得重新发送');
+  const doneStepCalls = rpcCalls.slice(beforeDoneStep);
+  assert.equal(doneStepCalls.filter((c) => c.method === 'GetCascadeTrajectory').length, 1, '携带非空 text 也必须查询轨迹核验步骤状态');
+  assert.equal(doneStepCalls.filter((c) => c.method === 'SendUserCascadeMessage' || c.method === 'DeleteQueuedUserInputStep' || c.method === 'SendAllQueuedMessages').length, 0, '已完成步骤必须零发送、零删除');
+
+  // 5b-2. 两条媒体队列中仅发送第二条（无 messageId / 无 domIndex）：精确映射 domIndex=1 + 核心文本，绝不误发第一条
+  trajScenario = 'two_media_queue';
+  const beforeMedia2 = domFallbackCalls.length;
+  const rTrajMedia2 = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', stepIndex: 2, sendAll: false });
+  assert.equal(rTrajMedia2.ok, true);
+  assert.equal(domFallbackCalls.length, beforeMedia2 + 1);
+  assert.equal(domFallbackCalls[beforeMedia2].action, 'send-queued-dom');
+  assert.equal(domFallbackCalls[beforeMedia2].domIndex, 1, '两条队列中第二条必须精确映射 domIndex=1 而非默认 0');
+  assert.equal(domFallbackCalls[beforeMedia2].text, '媒体排队第二条');
+  assert.equal(domFallbackCalls[beforeMedia2].sendAll, false);
+  trajScenario = 'text_queue';
+
+  // 并用真实 overlay DOM 环境验证该 payload 仅点击第二条媒体按钮，第一条点击数为 0
+  const envMedia2 = createDomEnv();
+  const cardM2 = envMedia2.doc.createElement('div');
+  cardM2.setAttribute('data-testid', 'queued-messages-card');
+  const hdrM2 = envMedia2.doc.createElement('span');
+  hdrM2.textContent = '排队消息 2';
+  cardM2.appendChild(hdrM2);
+  let m1SendClicks = 0;
+  let m2SendClicks = 0;
+  const makeMediaDomRow = (lbl, onSend) => {
+    const r = envMedia2.doc.createElement('div');
+    const sp = envMedia2.doc.createElement('span');
+    sp.textContent = lbl;
+    const dec = envMedia2.doc.createElement('div');
+    dec.setAttribute('data-testid', 'queued-decorators');
+    const bS = envMedia2.doc.createElement('button');
+    bS.setAttribute('aria-label', '立即发送');
+    bS.addEventListener('click', onSend);
+    dec.appendChild(bS);
+    r.appendChild(sp);
+    r.appendChild(dec);
+    return r;
+  };
+  cardM2.appendChild(makeMediaDomRow('媒体排队第一条', () => { m1SendClicks += 1; }));
+  cardM2.appendChild(makeMediaDomRow('媒体排队第二条', () => { m2SendClicks += 1; }));
+  envMedia2.doc.body.appendChild(cardM2);
+  vm.runInContext(overlaySrc, envMedia2.sandbox);
+  try {
+    const domResM2 = await envMedia2.sandbox.__AGEnhancer.performMobileAction({
+      ...domFallbackCalls[beforeMedia2],
+      conversationId: ''
+    });
+    assert.equal(domResM2.ok, true, domResM2.error || 'send-queued-dom 应精准命中第二条媒体消息');
+    assert.equal(m1SendClicks, 0, '两条队列发送第二条媒体消息时绝不得误触第一条');
+    assert.equal(m2SendClicks, 1, '两条队列发送第二条媒体消息时必须仅点击第二条');
+
+    // 若桌面排队条数已变化（如 expectedQueueCount=3 与 DOM 2 条不一致），必须拒绝防移位误发
+    const shiftedRes = await envMedia2.sandbox.__AGEnhancer.performMobileAction({
+      ...domFallbackCalls[beforeMedia2],
+      expectedQueueCount: 3,
+      conversationId: ''
+    });
+    assert.equal(shiftedRes.ok, false, '桌面排队总数变化时必须阻止按旧相对索引发送');
+    assert.equal(m1SendClicks, 0);
+    assert.equal(m2SendClicks, 1);
+  } finally {
+    envMedia2.sandbox.__AGEnhancer?.dispose?.();
+  }
 
   // 5c. 单条发送后 DeleteAgentMessage 失败（null 与异常）必须可恢复报错且重试绝不重发
   deleteMode = 'null';
@@ -18525,20 +18724,49 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   assert.equal(rpcCalls.slice(beforePartial).filter((c) => c.method === 'SendUserCascadeMessage').length, 1, '恢复全过程 SendUserCascadeMessage 仅允许调用 1 次');
 
   // 含图片附件的单条立即发送应回退桌面原生 onSendNow 保留媒体附件
+  const domMediaBefore = domFallbackCalls.length;
   const rSendMedia = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-media', text: '带图排队', hasMedia: true, sendAll: false });
   assert.equal(rSendMedia.ok, true);
-  assert.equal(domFallbackCalls.length, 1);
-  assert.equal(domFallbackCalls[0].action, 'send-queued-dom');
-  assert.equal(domFallbackCalls[0].messageId, 'pm-media');
-  assert.equal(domFallbackCalls[0].sendAll, false);
+  assert.equal(domFallbackCalls.length, domMediaBefore + 1);
+  assert.equal(domFallbackCalls[domMediaBefore].action, 'send-queued-dom');
+  assert.equal(domFallbackCalls[domMediaBefore].messageId, 'pm-media');
+  assert.equal(domFallbackCalls[domMediaBefore].sendAll, false);
 
-  // SendAllQueuedMessages 被 Antigravity 2.0 废弃返回 null 时，若携带 messageIds 应回退桌面全发
-  failSendAllRpc = true;
+  // 5d. RPC 失败分类：超时/结果未知时绝不自动补点 DOM（防重复发送）；仅明确 confirmedNotExecuted（如 deprecated/unimplemented）才允许回退
+  const domBeforeUnknown = domFallbackCalls.length;
+  sendSingleMode = 'timeout_err';
+  const rSingleTimeout = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-timeout-1', text: '超时不重发', sendAll: false });
+  assert.equal(rSingleTimeout.ok, false, '单条 SendUserCascadeMessage 超时后结果未知必须 fail-closed');
+  assert.equal(rSingleTimeout.outcomeUnknown, true);
+  assert.equal(domFallbackCalls.length, domBeforeUnknown, '单条发送超时后绝不得自动补点 send-queued-dom 造成重复发送');
+
+  sendSingleMode = 'unimplemented';
+  const rSingleConfirmedReject = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-unimpl-1', text: '未实现回退', sendAll: false });
+  assert.equal(rSingleConfirmedReject.ok, true, '明确 HTTP 501 unimplemented 确认未执行时可安全回退桌面 DOM');
+  assert.equal(domFallbackCalls.length, domBeforeUnknown + 1);
+  sendSingleMode = 'ok';
+
+  // 全量发送：后端已执行但响应超时（永不响应触发 rpcTimeoutMs 超时）或返回 null 时，即使携带 messageIds 也绝不补点 DOM
+  const domBeforeAllTimeout = domFallbackCalls.length;
+  sendAllMode = 'timeout_hang';
+  const rSendAllTimeout = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageIds: ['pm-1', 'pm-2'] });
+  assert.equal(rSendAllTimeout.ok, false, 'SendAllQueuedMessages 响应超时（可能后端已执行）必须 fail-closed 严禁补发');
+  assert.equal(rSendAllTimeout.outcomeUnknown, true);
+  assert.equal(domFallbackCalls.length, domBeforeAllTimeout, 'SendAllQueuedMessages 超时后绝不得触发第二次发送');
+
+  sendAllMode = 'null';
+  const rSendAllNull = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageIds: ['pm-1', 'pm-2'] });
+  assert.equal(rSendAllNull.ok, false);
+  assert.equal(domFallbackCalls.length, domBeforeAllTimeout, 'SendAllQueuedMessages 返回 null 时绝不得自动补点 DOM');
+
+  // 仅当服务端明确返回 deprecated（confirmedNotExecuted）且携带 messageIds 时，回退桌面全发
+  sendAllMode = 'deprecated';
   const rSendAllFallback = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageIds: ['pm-1', 'pm-2'] });
   assert.equal(rSendAllFallback.ok, true);
-  assert.equal(domFallbackCalls.length, 2);
-  assert.equal(domFallbackCalls[1].action, 'send-queued-dom');
-  assert.equal(domFallbackCalls[1].sendAll, true);
+  assert.equal(domFallbackCalls.length, domBeforeAllTimeout + 1);
+  assert.equal(domFallbackCalls[domBeforeAllTimeout].action, 'send-queued-dom');
+  assert.equal(domFallbackCalls[domBeforeAllTimeout].sendAll, true);
+  sendAllMode = 'ok';
 
   const editCallIdx = rpcCalls.length;
   const rEdit = await postAct({ action: 'edit-queued-message', conversationId: 'iso-conv-40', messageId: 'pm-1', text: '后台排队第一条' });
