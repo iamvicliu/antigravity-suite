@@ -17866,3 +17866,79 @@ test('需求 38: macOS Dock 未读与状态胶囊（优化版方案3默认+纯�
     for (const id of Array.from(timersExisting)) clearTimeout(id);
   }
 });
+
+// =========================================================================
+// 需求 39: Antigravity v2.34.0 CSRF 迁移兼容（localStorage 与 daemon JSON 回退）
+// =========================================================================
+test('需求 39: v2.34.0 __APP_CONFIG__.csrfToken 为空时回退 agy_session_csrf_token 与 daemon JSON', async () => {
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  const freshCapsuleSrc = fs.readFileSync(path.join(ROOT, 'pulse-capsule-overlay.js'), 'utf8');
+
+  // 1. 前端 meter-renderer 轮询：__APP_CONFIG__.csrfToken 为空时读取 agy_session_csrf_token 并恢复上下文百分比
+  const env = createDomEnv({
+    initialStorage: { agy_session_csrf_token: 'v234-ls-csrf-token-12345' }
+  });
+  env.sandbox.__APP_CONFIG__ = { csrfToken: '' };
+  env.win.__APP_CONFIG__ = env.sandbox.__APP_CONFIG__;
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  await new Promise(r => setImmediate(r));
+  const pollReq = env.pendingFetches.find(f => String(f.url).includes('GetCascadeTrajectoryGeneratorMetadata'));
+  assert.ok(pollReq, '__APP_CONFIG__.csrfToken 为空时仍应读取 agy_session_csrf_token 并发起 GetCascadeTrajectoryGeneratorMetadata');
+  assert.equal(pollReq.opts?.headers?.['x-codeium-csrf-token'], 'v234-ls-csrf-token-12345');
+
+  pollReq.resolve({
+    ok: true,
+    json: async () => ({
+      generatorMetadata: [{
+        chatModel: {
+          modelDisplayName: 'Gemini 4 Neon (High)',
+          usage: { inputTokens: 7000, cacheReadTokens: 242000, outputTokens: 1200 },
+          chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+        }
+      }]
+    })
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const snap = env.sandbox.__AGContextMeter.snapshot();
+  assert.equal(snap.requestError, '');
+  assert.ok(snap.latest && snap.latest.actual > 240000, '回退 CSRF 后应成功解析上下文占用');
+  assert.ok((env.getShadow().getElementById('amount')?.textContent || '').includes('%'), '顶栏应显示真实上下文百分比');
+  env.sandbox.__AGContextMeter.dispose?.();
+
+  // 2. ag-enhancer-overlay 与 pulse-capsule-overlay 源码均含 agy_session_csrf_token 回退
+  assert.ok(freshEnhancerSrc.includes('agy_session_csrf_token'), 'ag-enhancer-overlay.js 应兼容 agy_session_csrf_token');
+  assert.ok(freshCapsuleSrc.includes('agy_session_csrf_token'), 'pulse-capsule-overlay.js 应兼容 agy_session_csrf_token');
+
+  // 3. 后端 meter-collector.js：HTML 内 __APP_CONFIG__.csrfToken 为空时回退 daemon JSON（同端口且存活 PID 优先）
+  const tmpDaemon = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-daemon-csrf-'));
+  try {
+    fs.writeFileSync(path.join(tmpDaemon, 'hub_59999.json'), JSON.stringify({
+      pid: 999999,
+      httpsPort: 51420,
+      httpPort: 51421,
+      csrfToken: 'dead-pid-token'
+    }));
+    fs.writeFileSync(path.join(tmpDaemon, 'hub_51421.json'), JSON.stringify({
+      pid: 4863,
+      httpsPort: 51420,
+      httpPort: 51421,
+      csrfToken: 'alive-port-51420-token'
+    }));
+    fs.writeFileSync(path.join(tmpDaemon, 'hub_60000.json'), JSON.stringify({
+      pid: 4864,
+      httpsPort: 60000,
+      httpPort: 60001,
+      csrfToken: 'alive-other-port-token'
+    }));
+    const emptyHtml = '<html><script>window.__APP_CONFIG__ = {"csrfToken":""};</script></html>';
+    const resolved = collector.resolveOriginCsrfToken('https://127.0.0.1:51420', emptyHtml, {
+      daemonDirs: [tmpDaemon],
+      isPidAlive: (pid) => pid === 4863 || pid === 4864
+    });
+    assert.equal(resolved, 'alive-port-51420-token', 'HTML csrfToken 为空时应准确匹配同端口存活 daemon JSON 的 csrfToken');
+  } finally {
+    fs.rmSync(tmpDaemon, { recursive: true, force: true });
+  }
+});
