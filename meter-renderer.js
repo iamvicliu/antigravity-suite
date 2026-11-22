@@ -11707,8 +11707,10 @@ function positionHeatPopover(anchorX, anchorY) {
 
   async function requestPoll(generation, id) {
     state.requestBusy = true;
+    const startedAt = Date.now();
     const controller = new AbortController(); state.controllers.add(controller);
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeoutMs = state.count > 0 ? 12000 : 25000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const csrf = resolveSessionCsrfToken(); if (!csrf) throw new Error('后台尚未就绪');
       const offset = Math.max(0, state.count - 3);
@@ -11772,7 +11774,11 @@ function positionHeatPopover(anchorX, anchorY) {
         state.latest = latestVal;
       }
       state.requestAt = Date.now(); state.requestError = '';
-    } catch (e) { if (generation === state.generation && !state.disposed) state.requestError = e.name === 'AbortError' ? '读取超时' : e.message; }
+    } catch (e) {
+      if (generation === state.generation && !state.disposed && !(state.requestAt > startedAt && state.latest)) {
+        state.requestError = e.name === 'AbortError' ? '读取超时' : e.message;
+      }
+    }
     finally { clearTimeout(timeout); state.controllers.delete(controller); if (generation === state.generation && !state.disposed) { state.requestBusy = false; state.requestNext = Date.now() + (document.hidden ? 15000 : 3000); render(); } }
   }
 
@@ -11790,11 +11796,25 @@ function positionHeatPopover(anchorX, anchorY) {
       if (generation !== state.generation || state.disposed) return;
       if (!result?.ok) throw new Error(result?.error || '扫描未返回有效结果');
       state.scan = result.data; state.scanError = '';
-      if (result.data.scannedAt >= state.requestAt && result.data.latest) { state.latest = result.data.latest; state.requestAt = result.data.scannedAt; }
+      const genCount = Number(result.data.generatorCount);
+      if (Number.isFinite(genCount) && genCount > state.count) {
+        state.count = genCount;
+      }
+      if (result.data.scannedAt >= state.requestAt && result.data.latest) {
+        state.latest = result.data.latest;
+        state.requestAt = result.data.scannedAt;
+        state.requestError = '';
+      }
       state.latest = withStepError(state.latest);
       renderFiles(result.data.session);
     } catch (e) { if (generation === state.generation && !state.disposed) state.scanError = e.message; }
-    finally { if (generation === state.generation && !state.disposed) { state.scanBusy = false; state.scanNext = Date.now() + (document.hidden ? 60000 : 20000); render(); } }
+    finally {
+      if (generation === state.generation && !state.disposed) {
+        state.scanBusy = false;
+        state.scanNext = Date.now() + (document.hidden ? 60000 : (state.scanError && !state.scan ? 4000 : 20000));
+        render();
+      }
+    }
   }
 
   let lastHistorySync = 0;
