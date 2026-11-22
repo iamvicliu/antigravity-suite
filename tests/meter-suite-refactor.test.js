@@ -17903,3 +17903,130 @@ test('遥控网页 Web Push 消息推送与桌面 PWA 图标未读角标 (#10)',
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
+
+test('底栏视觉层级分隔 (#39) 与顶栏信息降噪及项目名双端正下方左对齐 (#45)', async () => {
+  const { buildMobileAppHtml } = require('../mobile-remote');
+  const html = buildMobileAppHtml();
+
+  // 1. 全量 <script> 语法校验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-39-45-script-${i}.js` }));
+  }
+
+  // 2. #39 CSS 变量与栈顶单线去重验证
+  assert.ok(html.includes('--dock-bg:') && html.includes('--dock-shadow:'), '深浅色主题均应定义 --dock-bg 与 --dock-shadow');
+  assert.ok(/\.composer-dock\{[^}]*background:var\(--dock-bg\);border-top:1px solid var\(--border\);\s*box-shadow:var\(--dock-shadow\)/.test(html), '.composer-dock 应具备底色微差、顶部分隔线与柔和上投阴影');
+  assert.ok(html.includes('body.has-upper-dock .composer-dock{'), '上层停靠区展示时 .composer-dock 应弱化边框与阴影避免叠出双线');
+  assert.ok(html.includes('body.has-approval-dock .queue-dock:not([hidden])'), '审批区与队列区同时展示时仅栈顶保留主分隔线与阴影');
+
+  // 3. #45 宽屏项目名不再右飘至 grid-column: 3，侧栏底部新增通道切换入口
+  const desktopMediaStart = html.indexOf('@media (min-width:860px)');
+  assert.ok(desktopMediaStart > 0);
+  const desktopCss = html.slice(desktopMediaStart, html.indexOf('.topbar-actions{'));
+  assert.ok(!desktopCss.includes('grid-column:3;grid-row:1;justify-self:end'), '桌面宽屏不得再将 .conv-project-badge 右飘至第三列');
+  assert.ok(html.includes('id="btn-mode-switcher"'), '左侧边栏底部应包含低频通道切换入口 #btn-mode-switcher');
+
+  // 4. 运行态行为验证：#sub-meta 正常连接态去除通道文字与「独立视图」、且栈顶单线类切换正确
+  const mainScript = scripts.map((m) => m[1]).find((s) => s.includes('function renderSnapshot('));
+  assert.ok(mainScript);
+  const bodyCls = new Set();
+  const makeEl = (id) => ({
+    id,
+    hidden: true,
+    disabled: false,
+    value: '',
+    innerHTML: '',
+    textContent: '',
+    scrollHeight: 28,
+    scrollTop: 0,
+    clientHeight: 600,
+    offsetWidth: 300,
+    dataset: {},
+    style: { setProperty() {} },
+    className: '',
+    children: [],
+    classList: {
+      add: (...xs) => xs.forEach((x) => bodyCls.add(x)),
+      remove: (...xs) => xs.forEach((x) => bodyCls.delete(x)),
+      toggle: (x, force) => (force === undefined ? (bodyCls.has(x) ? bodyCls.delete(x) : bodyCls.add(x)) : (force ? bodyCls.add(x) : bodyCls.delete(x))),
+      contains: (x) => bodyCls.has(x)
+    },
+    setAttribute() {},
+    removeAttribute() {},
+    getAttribute: () => null,
+    appendChild(c) { this.children.push(c); return c; },
+    addEventListener(ev, fn) { if (ev === 'click') this.onclick = fn; },
+    contains: () => false,
+    focus() {},
+    blur() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  });
+  const byId = new Proxy({}, { get: (t, k) => (t[k] || (t[k] = makeEl(String(k)))) });
+  byId['sub-meta'].hidden = false;
+  const timers = new Set();
+  const sandbox = {
+    URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+    Uint8Array, TextEncoder, TextDecoder, AbortController, Intl,
+    atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+    btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+    encodeURIComponent, decodeURIComponent,
+    screen: { width: 1280, height: 800 },
+    devicePixelRatio: 2,
+    navigator: { platform: 'MacIntel', maxTouchPoints: 0, hardwareConcurrency: 8 },
+    location: { origin: 'https://mini-lamp.tailab4819.ts.net', protocol: 'https:', hostname: 'mini-lamp.tailab4819.ts.net', pathname: '/', search: '', port: '', href: 'https://mini-lamp.tailab4819.ts.net/' },
+    history: { replaceState() {} },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    document: {
+      hidden: false, activeElement: null,
+      documentElement: { clientHeight: 800, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+      body: { style: {}, classList: byId.__body.classList },
+      getElementById: (id) => byId[id],
+      querySelector: () => makeEl('__q'),
+      createElement: (tag) => makeEl(tag),
+      addEventListener() {}
+    },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    innerWidth: 1280, innerHeight: 800, visualViewport: null,
+    setTimeout: (fn, ms) => { const t = setTimeout(fn, Math.min(Number(ms) || 0, 50)); if (t.unref) t.unref(); timers.add(t); return t; },
+    clearTimeout: (t) => clearTimeout(t),
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })
+  };
+  sandbox.window = sandbox;
+  sandbox.addEventListener = () => {};
+  const tailIdx = mainScript.lastIndexOf('})();');
+  const hooked = mainScript.slice(0, tailIdx) + '\nglobalThis.__test3945 = { renderSnapshot, openModeSwitcherSheet };\n' + mainScript.slice(tailIdx);
+  try {
+    vm.runInNewContext(hooked, sandbox);
+    sandbox.__test3945.renderSnapshot({
+      ok: true,
+      sessionId: 'conv-39',
+      title: '测试标题',
+      currentProjectId: 'p1',
+      currentProjectName: 'antigravity-suite',
+      isolated: true,
+      pulseText: '42.0 tok/s · 120k/840k (14.3%)',
+      messages: [],
+      projects: [{ id: 'p1', name: 'antigravity-suite' }],
+      conversations: [{ id: 'conv-39', title: '测试标题', projectId: 'p1', projectName: 'antigravity-suite', status: 'idle' }],
+      queuedMessages: [{ source: 'traj', stepIndex: 1, text: '排队一条' }],
+      pendingApprovals: [],
+      pendingPrompts: []
+    });
+    const subText = byId['sub-meta'].textContent;
+    assert.equal(subText, '42.0 tok/s · 120k/840k (14.3%)', '正常态 #sub-meta 仅保留核心实时指标');
+    assert.ok(!subText.includes('Tailscale') && !subText.includes('独立视图') && !subText.includes('▾'), '正常态 #sub-meta 不得出现冗余通道名或「独立视图」');
+    assert.equal(bodyCls.has('has-upper-dock'), true, '队列显示时 body 应标记 has-upper-dock 以维持栈顶单线');
+    assert.equal(bodyCls.has('has-approval-dock'), false);
+
+    // 点击侧栏底部 #btn-mode-switcher 可打开通道切换面板
+    byId['sheet-backdrop'].hidden = true;
+    byId['btn-mode-switcher'].onclick();
+    assert.equal(byId['sheet-backdrop'].hidden, false, '点击 #btn-mode-switcher 应打开通道切换弹窗');
+  } finally {
+    for (const t of timers) clearTimeout(t);
+  }
+});
