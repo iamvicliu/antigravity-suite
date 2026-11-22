@@ -19466,6 +19466,204 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
       envBg.sandbox.__AGEnhancer?.dispose?.();
     }
 
+    // 9c-4. 同一客户端同一会话累计撤回超过 10 个附件：删前拦截拒绝且 0 次 DeleteAgentMessage，早期已暂存附件零丢弃
+    const beforeCap = mediaOpsLog.length;
+    for (let k = 0; k < 4; k += 1) {
+      const rBatch = await postR3Act({
+        action: 'edit-queued-message',
+        conversationId: 'conv-cap-10',
+        clientId: 'cli-cap-10',
+        messageId: 'pm-media-same-prefix-2',
+        hasMedia: true
+      });
+      assert.equal(rBatch.ok, true);
+    }
+    const rNinth = await postR3Act({
+      action: 'edit-queued-message',
+      conversationId: 'conv-cap-10',
+      clientId: 'cli-cap-10',
+      messageId: 'pm-media-ok',
+      hasMedia: true
+    });
+    assert.equal(rNinth.ok, true, '累计 9 个附件应在上限内成功暂存');
+    const beforeOverCapRpc = mediaOpsLog.length;
+    const rOverCap = await postR3Act({
+      action: 'edit-queued-message',
+      conversationId: 'conv-cap-10',
+      clientId: 'cli-cap-10',
+      messageId: 'pm-media-same-prefix-2',
+      hasMedia: true
+    });
+    assert.equal(rOverCap.ok, false, '累计 9 + 2 = 11 超过上限 10 必须拒绝');
+    assert.equal(rOverCap.mediaRecoveryUnavailable, true);
+    assert.equal(
+      mediaOpsLog.slice(beforeOverCapRpc).filter((o) => o.method === 'DeleteAgentMessage').length,
+      0,
+      '超限时绝不得先删除原排队消息'
+    );
+    const beforeCapSend = mediaOpsLog.length;
+    const rCapSend = await postR3Act({ action: 'send', conversationId: 'conv-cap-10', clientId: 'cli-cap-10', text: '发送全部9个附件' });
+    assert.equal(rCapSend.ok, true);
+    assert.equal(mediaOpsLog[beforeCapSend].pendingUploads.length, 9, '早期暂存的 9 个附件必须全部保留，绝不得静默截断');
+
+    // 9c-5. 同会话发送失败重试保护：注入后填文失败必须精确回滚本次新注入附件并保留桌面原有附件，重试后不重复、不丢失
+    const envRetry = createDomEnv();
+    envRetry.sandbox.setTimeout = (fn) => setTimeout(fn, 0);
+    envRetry.sandbox.clearTimeout = (t) => clearTimeout(t);
+    envRetry.sandbox.atob = atob;
+    envRetry.sandbox.File = File;
+    envRetry.sandbox.DataTransfer = class {
+      constructor() {
+        this.files = [];
+        this.items = { add: (f) => { this.files.push(f); } };
+      }
+    };
+    const sameConvUuid = '44444444-4444-4444-8444-444444444444';
+    envRetry.sandbox.location.pathname = `/c/${sameConvUuid}`;
+    const retryComposer = envRetry.doc.createElement('div');
+    retryComposer.className = 'surface-composer';
+    const retryChipsHost = envRetry.doc.createElement('div');
+    const retryMountedFiles = [];
+    const appendAttachmentChip = (fileName) => {
+      const rec = { name: fileName };
+      retryMountedFiles.push(rec);
+      const chip = envRetry.doc.createElement('div');
+      chip.setAttribute('data-testid', 'attach-chip');
+      const lbl = envRetry.doc.createElement('span');
+      lbl.textContent = fileName;
+      const rmBtn = envRetry.doc.createElement('button');
+      rmBtn.setAttribute('aria-label', `移除 ${fileName}`);
+      rmBtn.textContent = '×';
+      rmBtn.addEventListener('click', () => {
+        const idx = retryMountedFiles.indexOf(rec);
+        if (idx >= 0) retryMountedFiles.splice(idx, 1);
+        chip.remove();
+      });
+      chip.appendChild(lbl);
+      chip.appendChild(rmBtn);
+      retryChipsHost.appendChild(chip);
+    };
+    // 桌面端原本已有的手动附件（必须被完整保留）
+    appendAttachmentChip('desktop-orig.png');
+    const retryFileInp = envRetry.doc.createElement('input');
+    retryFileInp.setAttribute('type', 'file');
+    retryFileInp.addEventListener('change', () => {
+      for (const f of Array.from(retryFileInp.files || [])) {
+        appendAttachmentChip(f.name);
+      }
+    });
+    const retryEditor = envRetry.doc.createElement('div');
+    retryEditor.setAttribute('role', 'textbox');
+    envRetry.doc.execCommand = (cmd, _ui, val) => {
+      if (cmd === 'insertText') {
+        retryEditor.textContent = String(val || '');
+        return true;
+      }
+      return true;
+    };
+    const retrySubmitted = [];
+    const retrySendBtn = envRetry.doc.createElement('button');
+    retrySendBtn.setAttribute('data-testid', 'input-send-button');
+    retrySendBtn.setAttribute('aria-label', 'Send');
+    retrySendBtn.addEventListener('click', () => {
+      retrySubmitted.push({
+        text: retryEditor.textContent || '',
+        files: retryMountedFiles.map((f) => f.name)
+      });
+      retryMountedFiles.length = 0;
+    });
+    retryComposer.appendChild(retryChipsHost);
+    retryComposer.appendChild(retryFileInp);
+    retryComposer.appendChild(retryEditor);
+    retryComposer.appendChild(retrySendBtn);
+    envRetry.doc.body.appendChild(retryComposer);
+    vm.runInContext(overlaySrc, envRetry.sandbox);
+    try {
+      const retryEnh = envRetry.sandbox.__AGEnhancer;
+      const retryHandler = createRemoteHttpHandler({
+        port: 18768,
+        token: 'tok-retry-real',
+        enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+      }, {
+        historyManager: createConversationHistoryManager(),
+        fetchPendingAgentMessages: async () => [
+          {
+            id: 'pm-retry-dual',
+            deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+            ui: {
+              items: [{ text: '失败重试双图' }],
+              media: [
+                { mimeType: 'image/png', inlineData: samePrefixPngA, displayName: 'retry-a.png' },
+                { mimeType: 'image/png', inlineData: samePrefixPngB, displayName: 'retry-b.png' }
+              ]
+            },
+            hasMedia: true
+          }
+        ],
+        callLanguageServer: async () => ({ ok: true }),
+        performAction: async (p) => {
+          const actionResult = await retryEnh.performMobileAction(p);
+          return {
+            ok: Boolean(actionResult?.ok),
+            actionResult,
+            snapshot: { ok: true, sessionId: sameConvUuid, title: 'Retry', queuedMessages: [] }
+          };
+        },
+        fetchSnapshot: async () => ({ ok: true, sessionId: sameConvUuid, title: 'Retry', queuedMessages: [] })
+      });
+      const postRetry = async (bodyObj) => {
+        const { Readable } = require('stream');
+        const req = Readable.from([Buffer.from(JSON.stringify(bodyObj), 'utf8')]);
+        req.method = 'POST';
+        req.url = '/api/action';
+        req.headers = { host: '127.0.0.1:18768', 'content-type': 'application/json', 'x-ag-remote-token': 'tok-retry-real' };
+        req.socket = { remoteAddress: '127.0.0.1' };
+        let out = '';
+        await retryHandler(req, { setHeader() {}, writeHead() {}, end(c) { if (c) out += String(c); } });
+        return JSON.parse(out);
+      };
+      const rRetryEdit = await postRetry({
+        action: 'edit-queued-message',
+        conversationId: sameConvUuid,
+        clientId: 'cli-retry-real',
+        messageId: 'pm-retry-dual',
+        hasMedia: true
+      });
+      assert.equal(rRetryEdit.ok, true);
+
+      // 首次发送：两张图注入后填文失败 → 必须精确回滚本次新注入的 retry-a/retry-b，保留桌面原有的 desktop-orig.png
+      const rFailSend = await postRetry({
+        action: 'send',
+        conversationId: sameConvUuid,
+        clientId: 'cli-retry-real',
+        text: '首次填文失败'
+      });
+      assert.equal(rFailSend.ok, false);
+      assert.deepEqual(
+        retryMountedFiles.map((f) => f.name),
+        ['desktop-orig.png'],
+        '发送失败回滚后必须清除本次新注入附件并完整保留桌面原有附件'
+      );
+
+      // 第二次重试发送成功：不重复、不丢失且保留桌面原有附件
+      retryEditor.setAttribute('contenteditable', 'true');
+      const rOkRetrySend = await postRetry({
+        action: 'send',
+        conversationId: sameConvUuid,
+        clientId: 'cli-retry-real',
+        text: '重试发送成功'
+      });
+      assert.equal(rOkRetrySend.ok, true);
+      assert.equal(retrySubmitted.length, 1);
+      assert.deepEqual(
+        retrySubmitted[0].files,
+        ['desktop-orig.png', 'retry-a.png', 'retry-b.png'],
+        '重试发送后附件必须完整、不重复且保留桌面原有附件'
+      );
+    } finally {
+      envRetry.sandbox.__AGEnhancer?.dispose?.();
+    }
+
     // 9d. 前端 #queue-dock 点击编辑含附件与纯图片项时，同步回填 #attach-hint 与 #btn-send
     const dockVmQueue = [
       { messageId: 'pm-media-ok', stepIndex: -1, source: 'agent_state', text: '带图撤回编辑说明\n[附带 1 张图片]', images: [{ src: inlinePngUrl, alt: 'inline-shot.png' }], hasMedia: true },
