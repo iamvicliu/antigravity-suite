@@ -4240,13 +4240,33 @@ function decodePendingAgentStepPayload(rawStepPayload) {
   };
 }
 
+function hasExplicitPendingAgentMessagesUpdate(stateUpdate) {
+  if (!stateUpdate || typeof stateUpdate !== 'object') return false;
+  const u = (stateUpdate.update && typeof stateUpdate.update === 'object') ? stateUpdate.update : null;
+  const hasField = (obj) => Boolean(
+    obj && (
+      (obj.pendingAgentMessagesUpdate && typeof obj.pendingAgentMessagesUpdate === 'object') ||
+      (obj.pending_agent_messages_update && typeof obj.pending_agent_messages_update === 'object') ||
+      Array.isArray(obj.pendingAgentMessages) ||
+      Array.isArray(obj.pending_agent_messages)
+    )
+  );
+  return hasField(u) || hasField(stateUpdate);
+}
+
 function extractPendingAgentMessagesFromUpdate(stateUpdate, options = {}) {
   if (!stateUpdate || typeof stateUpdate !== 'object') return [];
   const rawList =
     stateUpdate?.update?.pendingAgentMessagesUpdate?.pendingAgentMessages ||
+    stateUpdate?.update?.pendingAgentMessagesUpdate?.pending_agent_messages ||
+    stateUpdate?.update?.pending_agent_messages_update?.pendingAgentMessages ||
+    stateUpdate?.update?.pending_agent_messages_update?.pending_agent_messages ||
     stateUpdate?.pendingAgentMessagesUpdate?.pendingAgentMessages ||
+    stateUpdate?.pending_agent_messages_update?.pending_agent_messages ||
     stateUpdate?.update?.pendingAgentMessages ||
+    stateUpdate?.update?.pending_agent_messages ||
     stateUpdate?.pendingAgentMessages ||
+    stateUpdate?.pending_agent_messages ||
     [];
   if (!Array.isArray(rawList) || !rawList.length) return [];
 
@@ -4889,6 +4909,7 @@ function createConversationHistoryManager() {
         1200
       );
       if (!firstFrame || typeof firstFrame !== 'object') return null;
+      if (!hasExplicitPendingAgentMessagesUpdate(firstFrame)) return null;
       const latestPendingGen = pendingFetchGenMap.get(sid) || 0;
       const invPendingGen = pendingInvalidatedGenMap.get(sid) || 0;
       const currentCached = pendingMsgCache.get(sid);
