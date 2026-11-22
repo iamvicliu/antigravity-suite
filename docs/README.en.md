@@ -16,28 +16,33 @@
 2. **📱 Ultra-Fast Mobile & Desktop Remote Control (Much Faster Than Official)**
    - **Direct local speed & lightweight PWA**: Millisecond **LAN** (same Wi-Fi or wired network) direct connection with concurrent probing across **LAN**, **Tailscale** (auto-manages `tailscale serve` HTTPS `https://<host>.ts.net` when certificates are enabled, eliminating PWA "Not Secure" warnings and blocking plain-HTTP downgrades), **Bonjour (`*.local`)**, and a **default no-login Cloudflare Quick Tunnel (`*.trycloudflare.com`, custom domains supported)** — bypassing sluggish official cloud relays; configurable anytime in **`⚙️` → `📱 Remote`**. Switching chats cancels only unfinished page fetches (never interrupting running AI tasks), pairing lazy loading with **`gzip`** compression for smooth full-history upward scrolling.
    - **Full-featured mobile/browser workspace**: Multi-project grouped sessions with unread/approval badges, zero-dependency **Web Push notifications** (completion & approval-waiting events with local notification fallback) and **PWA app icon unread badge** (strictly counting completed-unread conversations), `$HOME`-bounded remote project creation, project file browser & diffs/artifacts preview, a **single-row scrollable quick-prompts bar** synced with desktop (**`⚡Send / ✎Insert`** toggle & draft guard), queued-message management (send now / edit / withdraw), generic file & image uploads, interactive approval cards (double confirmation for high-risk commands), top-bar drawers, 9 visibility toggles, independent per-tab browsing, **System / Light / Dark** theme sync, and `Cmd/Ctrl + Enter` sending with Safari IME protection.
-3. **⚡ Composer Shortcuts & Prompt Optimization**
+
+   <p align="center">
+     <img src="../assets/mobile-preview.jpg" alt="Mobile PWA remote control preview" width="82%">
+   </p>
+
+3. **🔔 macOS Dock Unread & Status Alerts (Red/Blue Badges + Status Capsule, Zero-Patch)**
+   - **Know at a glance while working elsewhere**: Never modifies `Antigravity.app` or Apple signatures. Automatically mirrors sidebar unread dots across windows (with ID deduplication) onto the Dock icon as **blue/red tiered corner counters** + a **frosted Status Capsule (`Working` / `Unread` / `Approve` / `High Risk` or `3新·2批` mixed view)**, or switch to **Badge Only** in **`⚙️` → `🌐 Language & Appearance`**.
+   - **Smart follow & auto-clear**: Optically centered with CoreText glyph bounds and follows Dock hover magnification seamlessly; returning to the window auto-clears normal unread alerts while keeping red approval badges until resolved. On first use, click **Grant Access** for macOS Accessibility permission (requires Xcode Command Line Tools to compile once) and click **Test Alert** to preview.
+
+   <p align="center">
+     <img src="../assets/dock-preview.jpg" alt="macOS Dock zero-patch unread badge and frosted status capsule preview" width="84%">
+   </p>
+
+4. **⚡ Composer Shortcuts & Prompt Optimization**
    - **14 built-in recommended quick actions** grouped by scenario & priority (under **`⚙️` → `⚡ Chat & Efficiency`**) + custom prompts with **10 one-click popular templates**; slash commands turn into native command pills.
    - **`Insert` vs `⚡Send`**: **`Insert`** stages text into the composer for pasting logs or context (default for *Fix Error*, *Do Spec*). **`⚡Send`** (marked `↵`) submits immediately (default for 8 argument-free phrases such as *Implement*, *Reply in Chinese*, *Continue*, *No explanation*, *Run It*, *Optimize*, *Why Failed*, *Revise*), guarded by draft protection and **`⌘/Ctrl + click`** inversion.
    - One-click **`✨ Optimize` / `↩ Undo`** via fast low-latency models and context-aware **`Tab / →`** next-step ghost suggestions.
-4. **🧰 Quick Desktop Utilities**
-   - **macOS Dock Unread & Status Alerts** (**`⚙️` → `🌐 Language & Appearance`**, enabled by default): Zero-patch native transparent overlay showing live status in **`Status Capsule (Recommended)`** (*Working* / *Unread* / *Approve* / *High Risk*) or **`Badge Only`** (blue/red tiered corner numbers); returning to the window auto-clears normal unread alerts while keeping red approval badges until resolved. On first setup, click **Grant Access** to grant macOS Accessibility permission (requires Xcode Command Line Tools for automatic compilation) and click **Test Alert** to preview.
+5. **🧰 Quick Desktop Utilities**
    - **`⌘1`–`⌘9`** (hold `⌘` for badges) or **`⌘⇧[` / `⌘⇧]`** / **`⌃Tab`** to jump between conversations, floating message navigator bar, inline **`Edit`** + **`⌘S`** file editing in preview panes (click **`Done`** to refresh preview).
    - **`>_ CLI`** one-click Antigravity CLI (`agy`) launcher supporting `Terminal`, `iTerm2`, `Ghostty`, `Warp`, `Alacritty`, `Kitty`, `WezTerm`, `Rex`, `tmux`, and custom paths, plus **HTTP / SOCKS5 local proxy direct connect without global TUN** (**`⚙️` → `🧰 Terminal & Network`**). Compatible with Antigravity **`2.32.x–2.34.0`** and `nvm`/`fnm`/`volta`/`asdf`/`mise` Node managers.
-5. **📊 Context Window, 240K Auto-Compact & Dual Quota Capsules**
+6. **📊 Context Window, 240K Auto-Compact & Dual Quota Capsules**
    - Live top-bar ring meter, token breakdown, 52-week heatmap, API cost comparison, and **Gemini 4 / Claude** 5-hour + weekly quota capsules (`G4` / `C`). Configure subscription tiers, billing region/currency, and custom paid amounts in **`⚙️` → `📊 Plan & Subscription`**.
    - Official clients wait until 512K tokens to compact, often causing 4–5 minute full recomputation stalls after prompt cache expires past 250K–330K; real-time alerts catch 0% cache drops (328K risk), while default-enabled **240K Auto-Compact** triggers `/compact` automatically when idle (configurable in **`⚙️` → `⚡ Chat & Efficiency`**).
-6. **🛡️ Dangerous Command Red-Frame Interception**
+7. **🛡️ Dangerous Command Red-Frame Interception**
    - Highlights destructive shell commands (`rm -rf`, `git reset --hard`, `git clean -f`, `git push`, `sudo`, `kill -9`, `DROP/DELETE`, `op item`) with red warning frames and pauses for manual approval even when Safe Auto-Accept is enabled in **`⚙️` → `⚡ Chat & Efficiency`**.
-7. **🔄 Auto Update Check & One-Click Hot Upgrade**
+8. **🔄 Auto Update Check & One-Click Hot Upgrade**
    - Automatically checks GitHub in the background; when a new version is available, **`⚙️`** shows a red dot so you can click **Update Now** to download and apply immediately without restarting Antigravity.
-
-<p align="center">
-  <img src="../assets/mobile-preview.jpg" alt="Mobile PWA remote control preview" width="82%">
-</p>
-<p align="center">
-  <img src="../assets/dock-preview.jpg" alt="macOS Dock zero-patch unread badge and frosted status capsule preview" width="82%">
-</p>
 
 ---
 

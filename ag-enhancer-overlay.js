@@ -7489,6 +7489,9 @@
   }
 
   function updateDockUnreadTracker(now = Date.now(), opts = null) {
+    if (mobileBgSwitchDepth > 0 && !opts?.forceDuringBgSwitch) {
+      return dockStateTracker;
+    }
     const curNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
     const activeCid = (opts && typeof opts.activeCid === 'string')
       ? opts.activeCid
@@ -10806,11 +10809,19 @@
       if (!allInlineRecoverable) {
         return { ok: false, mediaRecoveryUnavailable: true, error: '该排队消息包含媒体附件且无原生编辑按钮，无法完整恢复附件数据，已取消撤回以避免丢失附件' };
       }
+      const beforeRemoveBtns = new Set(findComposerAttachmentRemoveButtons());
+      const rollbackEditInjected = () => {
+        const newlyAdded = findComposerAttachmentRemoveButtons().filter((b) => !beforeRemoveBtns.has(b));
+        for (const btn of newlyAdded) {
+          try { btn.click(); } catch {}
+        }
+      };
       const restoredMeta = [];
       for (let i = 0; i < inlineRestoreList.length; i += 1) {
         const item = inlineRestoreList[i];
         const upRes = await injectUploadedFileToDesktopComposer(item.name, item.mimeType, item.base64);
         if (!upRes?.ok) {
+          rollbackEditInjected();
           return {
             ok: false,
             mediaRecoveryUnavailable: true,
@@ -10848,6 +10859,7 @@
   }
 
   let mobileActionQueue = Promise.resolve();
+  let mobileBgSwitchDepth = 0;
 
   function performMobileAction(payload) {
     const run = mobileActionQueue.then(() => performMobileActionInner(payload));
@@ -10865,6 +10877,7 @@
 
     // 方案 B：隔离态新建对话草稿在首次发送时才按需切桌面新建并发送，结束后自动恢复桌面原会话或原新对话页
     if (action === 'send' && reqConvId === '__new__' && payload?.draftNewIsolated === true) {
+      mobileBgSwitchDepth += 1;
       const draftProjectId = String(payload?.draftProjectId || payload?.projectId || '').trim();
       const prevSearch = String(location?.search || '');
       let prevProjectId = parseProjectIdFromHref(prevSearch);
@@ -10956,6 +10969,7 @@
             restoreDesktopError = String(restoreErr?.message || restoreErr || '恢复桌面窗口异常');
           }
         }
+        mobileBgSwitchDepth = Math.max(0, mobileBgSwitchDepth - 1);
       }
       if (actionThrown) {
         return {
@@ -10983,16 +10997,21 @@
       return await executeMobileActionCore(action, payload);
     }
 
-    const sw = await switchToConversationInternal(reqConvId);
-    if (!sw?.ok) return sw;
-    await new Promise((r) => setTimeout(r, 150));
-
+    mobileBgSwitchDepth += 1;
     try {
+      const sw = await switchToConversationInternal(reqConvId);
+      if (!sw?.ok) return sw;
+      await new Promise((r) => setTimeout(r, 150));
+
       return await executeMobileActionCore(action, { ...payload, _isBackgroundSwitch: true });
     } finally {
-      if (prevConvId && prevConvId !== reqConvId && payload?.restoreDesktop !== false) {
-        await new Promise((r) => setTimeout(r, 120));
-        await switchToConversationInternal(prevConvId).catch(() => {});
+      try {
+        if (prevConvId && prevConvId !== reqConvId && payload?.restoreDesktop !== false) {
+          await new Promise((r) => setTimeout(r, 120));
+          await switchToConversationInternal(prevConvId).catch(() => {});
+        }
+      } finally {
+        mobileBgSwitchDepth = Math.max(0, mobileBgSwitchDepth - 1);
       }
     }
   }

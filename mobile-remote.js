@@ -947,17 +947,95 @@ function detectHostIdentityMeta(options = {}) {
   return result;
 }
 
-let cachedTailscaleServe = { active: false, port: 0, url: '', hint: '', checkedAt: 0 };
+let cachedTailscaleServe = { active: false, port: 0, url: '', hint: '', createdByUs: false, checkedAt: 0 };
+
+function inspectTailscaleServe443Target(rawJson, numPort) {
+  if (!rawJson || typeof rawJson !== 'string') {
+    return { parsed: false, occupiedBySelf: false, occupiedByOther: false, existingProxy: '' };
+  }
+  let obj;
+  try {
+    obj = JSON.parse(rawJson);
+  } catch {
+    return { parsed: false, occupiedBySelf: false, occupiedByOther: false, existingProxy: '' };
+  }
+  if (!obj || typeof obj !== 'object') {
+    return { parsed: false, occupiedBySelf: false, occupiedByOther: false, existingProxy: '' };
+  }
+  const webMap = (obj.Web && typeof obj.Web === 'object') ? obj.Web : {};
+  const matchesSelfPort = (proxyStr) => {
+    const s = String(proxyStr || '').trim();
+    if (!s) return false;
+    return new RegExp(`^https?://(?:127\\.0\\.0\\.1|localhost|\\[::1\\]):${numPort}(?:/|$)`, 'i').test(s);
+  };
+  let occupiedBySelf = false;
+  let existingProxy = '';
+  for (const [hostPort, cfg] of Object.entries(webMap)) {
+    if (!/:443$/i.test(hostPort) && hostPort !== '443') continue;
+    const handlers = cfg?.Handlers;
+    if (!handlers || typeof handlers !== 'object') continue;
+    for (const [mountPath, handlerObj] of Object.entries(handlers)) {
+      const proxyTarget = String(handlerObj?.Proxy || handlerObj?.proxy || '').trim();
+      if (!proxyTarget) continue;
+      if (mountPath === '/' || mountPath === '') {
+        if (matchesSelfPort(proxyTarget)) occupiedBySelf = true;
+        else if (!existingProxy) existingProxy = proxyTarget;
+      }
+    }
+  }
+  const tcp443 = obj.TCP?.['443'];
+  if (!occupiedBySelf && !existingProxy && tcp443 && tcp443.TCPForward) {
+    const fwd = String(tcp443.TCPForward || '').trim();
+    if (fwd) {
+      if (fwd.endsWith(`:${numPort}`)) occupiedBySelf = true;
+      else existingProxy = fwd;
+    }
+  }
+  return {
+    parsed: true,
+    occupiedBySelf,
+    occupiedByOther: Boolean(existingProxy && !occupiedBySelf),
+    existingProxy
+  };
+}
+
+function cleanupTailscaleServeHttps(port, options = {}) {
+  const numPort = Number(port) || DEFAULT_REMOTE_PORT;
+  const bin = String(options.tailscaleBin || detectHostIdentityMeta().tailscaleBin || 'tailscale');
+  const execFn = typeof options.execFileSync === 'function' ? options.execFileSync : execFileSync;
+  try {
+    const statusRaw = execFn(bin, ['serve', 'status', '--json'], {
+      timeout: 1500,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const inspected = inspectTailscaleServe443Target(statusRaw, numPort);
+    if (!inspected.parsed || !inspected.occupiedBySelf) return false;
+    execFn(bin, ['serve', '--https=443', 'off'], {
+      timeout: 2000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    if (cachedTailscaleServe.port === numPort) {
+      cachedTailscaleServe = { active: false, port: 0, url: '', hint: '', createdByUs: false, checkedAt: 0 };
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function ensureTailscaleServeHttps(port, options = {}) {
-  const numPort = Number(port) || DEFAULT_PORT;
+  const numPort = Number(port) || DEFAULT_REMOTE_PORT;
   const now = Date.now();
   const useCustomExec = typeof options.execFileSync === 'function';
+  const readOnly = options.readOnly === true;
   if (!useCustomExec && !options.force && cachedTailscaleServe.port === numPort && (now - cachedTailscaleServe.checkedAt < 60000)) {
     return {
       enabled: Boolean(cachedTailscaleServe.active && cachedTailscaleServe.url),
       url: cachedTailscaleServe.url,
-      hint: cachedTailscaleServe.hint
+      hint: cachedTailscaleServe.hint,
+      createdByUs: Boolean(cachedTailscaleServe.createdByUs)
     };
   }
   const meta = options.hostMeta || detectHostIdentityMeta({
@@ -965,33 +1043,56 @@ function ensureTailscaleServeHttps(port, options = {}) {
     execFileSync: options.execFileSync
   });
   if (!meta.tailscaleDnsName) {
-    const empty = { active: false, port: numPort, url: '', hint: '', checkedAt: now };
+    const empty = { active: false, port: numPort, url: '', hint: '', createdByUs: false, checkedAt: now };
     if (!useCustomExec) cachedTailscaleServe = empty;
-    return { enabled: false, url: '', hint: '' };
+    return { enabled: false, url: '', hint: '', createdByUs: false };
   }
   if (!meta.tailscaleHttpsCapable) {
     const hint = `在 Tailscale 控制台 DNS 页开启 HTTPS Certificates 后即可使用安全地址 https://${meta.tailscaleDnsName}`;
-    const res = { active: false, port: numPort, url: '', hint, checkedAt: now };
+    const res = { active: false, port: numPort, url: '', hint, createdByUs: false, checkedAt: now };
     if (!useCustomExec) cachedTailscaleServe = res;
-    return { enabled: false, url: '', hint };
+    return { enabled: false, url: '', hint, createdByUs: false };
   }
   const bin = meta.tailscaleBin || 'tailscale';
   const execFn = useCustomExec ? options.execFileSync : execFileSync;
   const targetUrl = `https://${meta.tailscaleDnsName}`;
+  let inspected = { parsed: false, occupiedBySelf: false, occupiedByOther: false, existingProxy: '' };
+  try {
+    const statusRaw = execFn(bin, ['serve', 'status', '--json'], {
+      timeout: 2000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    inspected = inspectTailscaleServe443Target(statusRaw, numPort);
+  } catch {}
+  if (inspected.parsed && inspected.occupiedBySelf) {
+    const selfState = { active: true, port: numPort, url: targetUrl, hint: '', createdByUs: false, checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = selfState;
+    return { enabled: true, url: targetUrl, hint: '', createdByUs: false, alreadyConfigured: true };
+  }
+  if (inspected.parsed && inspected.occupiedByOther) {
+    const hint = `检测到 Tailscale HTTPS 443 端口已被其他服务 (${inspected.existingProxy}) 占用，为避免覆盖现有服务已跳过自动托管`;
+    const conflictState = { active: false, port: numPort, url: '', hint, createdByUs: false, checkedAt: now };
+    if (!useCustomExec) cachedTailscaleServe = conflictState;
+    return { enabled: false, url: '', hint, createdByUs: false, conflict: true };
+  }
+  if (readOnly) {
+    return { enabled: false, url: '', hint: '', createdByUs: false };
+  }
   try {
     execFn(bin, ['serve', '--bg', String(numPort)], {
       timeout: 3000,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe']
     });
-    const okState = { active: true, port: numPort, url: targetUrl, hint: '', checkedAt: now };
+    const okState = { active: true, port: numPort, url: targetUrl, hint: '', createdByUs: true, checkedAt: now };
     if (!useCustomExec) cachedTailscaleServe = okState;
-    return { enabled: true, url: targetUrl, hint: '' };
+    return { enabled: true, url: targetUrl, hint: '', createdByUs: true };
   } catch {
     const hint = `请在 Tailscale 控制台开启 HTTPS Certificates 或运行 tailscale serve --bg ${numPort}`;
-    const errState = { active: false, port: numPort, url: '', hint, checkedAt: now };
+    const errState = { active: false, port: numPort, url: '', hint, createdByUs: false, checkedAt: now };
     if (!useCustomExec) cachedTailscaleServe = errState;
-    return { enabled: false, url: '', hint };
+    return { enabled: false, url: '', hint, createdByUs: false };
   }
 }
 
@@ -1867,7 +1968,6 @@ function withRaceTimeout(promise, ms, fallback = null) {
     Promise.resolve(promise),
     new Promise((resolve) => {
       timer = setTimeout(() => resolve(fallback), ms);
-      timer.unref?.();
     })
   ]).finally(() => {
     if (timer) clearTimeout(timer);
@@ -1995,7 +2095,6 @@ async function runRpcCallDetailed(invoker, method, body, timeoutMs = 4500) {
       Promise.resolve().then(() => invoker(method, body)),
       new Promise((resolve) => {
         timer = setTimeout(() => resolve(TIMEOUT_SENTINEL), Math.max(50, Number(timeoutMs) || 4500));
-        timer.unref?.();
       })
     ]);
     if (res === TIMEOUT_SENTINEL) {
@@ -3911,7 +4010,7 @@ function extractRawMediaEntriesFromUserInput(ui) {
     const key = `${entry.kind}|${identity}`;
     if (seen.has(key)) return;
     seen.add(key);
-    entries.push(entry);
+    entries.push({ ...entry, dedupKey: key });
   };
   const inspectMediaObj = (m, forceImage = false) => {
     if (!m || typeof m !== 'object') return;
@@ -4079,7 +4178,7 @@ function isQueuedTrajectoryUserStep(step) {
 
 function buildQueuedStepMediaSig(uiObj) {
   return extractRawMediaEntriesFromUserInput(uiObj)
-    .map((e) => String(e?.dedupKey || e?.uri || e?.name || '').trim())
+    .map((e) => String(e?.dedupKey || e?.localPath || e?.rawUri || e?.name || '').trim())
     .filter(Boolean)
     .sort()
     .join('|');
@@ -4170,7 +4269,7 @@ function parseProtoFields(buf) {
       const lenRes = decodeProtoVarint(buf, pos);
       if (!lenRes) return null;
       const [len, p2] = lenRes;
-      if (len < 0 || p2 + len > buf.length) return null;
+      if (len < 0 || !Number.isSafeInteger(len) || p2 + len > buf.length) return null;
       fields.push({ no, wt, val: buf.subarray(p2, p2 + len) });
       pos = p2 + len;
     } else if (wt === 5) {
@@ -4193,7 +4292,8 @@ function decodePendingAgentStepPayload(rawStepPayload) {
   } else if (typeof rawStepPayload === 'string') {
     const clean = rawStepPayload.trim();
     if (!clean || !/^[A-Za-z0-9+/=_-]+$/.test(clean)) return null;
-    buf = Buffer.from(clean, 'base64');
+    const normalized = clean.replace(/-/g, '+').replace(/_/g, '/');
+    buf = Buffer.from(normalized, 'base64');
   } else {
     return null;
   }
@@ -7510,10 +7610,12 @@ function buildMobileAppHtml() {
       }
     }
 
+    let cachedHasActiveWebPush = false;
     async function refreshPushButtonState() {
       const btn = $('btn-push-settings');
-      if (!btn) return;
       const sub = await getActivePushSubscription();
+      cachedHasActiveWebPush = Boolean(sub);
+      if (!btn) return;
       const localOn = isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
       btn.classList.toggle('active', Boolean(sub || localOn));
     }
@@ -7621,10 +7723,14 @@ function buildMobileAppHtml() {
               });
               const saveData = await saveRes.json().catch(() => ({}));
               if (!saveRes.ok || !saveData.ok) {
+                await nextSub.unsubscribe().catch(() => {});
+                cachedHasActiveWebPush = false;
+                await refreshPushButtonState();
                 showToast('保存订阅失败：' + (saveData.error || saveRes.status));
                 return;
               }
-              setLocalNotifyEnabled(true);
+              cachedHasActiveWebPush = true;
+              setLocalNotifyEnabled(false);
               await refreshPushButtonState();
               showToast('已开启消息推送与未读角标');
             } catch (subErr) {
@@ -7642,6 +7748,7 @@ function buildMobileAppHtml() {
         if (item.value === 'disable') {
           try {
             setLocalNotifyEnabled(false);
+            cachedHasActiveWebPush = false;
             if (sub) {
               const ep = sub.endpoint;
               await sub.unsubscribe().catch(() => {});
@@ -7658,8 +7765,16 @@ function buildMobileAppHtml() {
           const patch = item.value === 'toggle-completed'
             ? { notifyCompleted: !prefs.notifyCompleted }
             : { notifyWaiting: !prefs.notifyWaiting };
-          await pushApiRequest('/api/push/prefs', 'POST', patch).catch(() => {});
-          showToast('推送偏好已更新');
+          try {
+            const prefRes = await pushApiRequest('/api/push/prefs', 'POST', patch);
+            if (!prefRes.ok) {
+              showToast('更新推送偏好失败（HTTP ' + prefRes.status + '）');
+              return;
+            }
+            showToast('推送偏好已更新');
+          } catch {
+            showToast('更新推送偏好失败，请检查网络连接');
+          }
           return;
         }
         if (item.value === 'test') {
@@ -10462,7 +10577,7 @@ function buildMobileAppHtml() {
         clientNotifyBootstrapped = true;
         return;
       }
-      const canPop = isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
+      const canPop = !cachedHasActiveWebPush && isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
       for (const c of convs) {
         if (!c || !c.id) continue;
         const prev = clientPrevConvStatus.get(c.id);
@@ -14176,7 +14291,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       state: 'running',
       publicUrl: activeTunnelUrl,
       mode: config.tunnelMode
-    } : null, config.enabledChannels);
+    } : null, config.enabledChannels, { readOnly: true });
     const activeConvId = snap.activeConversationId || snap.sessionId || '';
     const convList = Array.isArray(snap.conversations) ? snap.conversations : [];
     const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
@@ -14506,7 +14621,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         state: 'running',
         publicUrl: activeTunnelUrl,
         mode: config.tunnelMode
-      } : null, config.enabledChannels);
+      } : null, config.enabledChannels, { readOnly: true });
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({
         ok: true,
@@ -15446,7 +15561,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             return true;
           };
           const respondPartialSendDeleteFailure = async (extraIds = {}, errMsg = '') => {
-            defaultHistoryManager.invalidateSession?.(cascadeId);
+            historyManager.invalidateSession?.(cascadeId);
             const partialSnap = await fetchSnapshot(effectiveTargetId, {
               conversationId: cascadeId,
               clientId,
@@ -15492,7 +15607,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             if (hasMedia || !String(text || '').trim()) {
               return { ok: false, needsDomFallback: true };
             }
-            const cascadeConfig = defaultHistoryManager.getCachedUserConfig?.(cascadeId) || null;
+            const cascadeConfig = historyManager.getCachedUserConfig?.(cascadeId) || null;
             const sendOutcome = await callLsRpcDetailed(
               'SendUserCascadeMessage',
               {
@@ -15946,7 +16061,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '电脑端后台队列服务暂时无响应或超时，请稍后重试' }));
             return;
           }
-          defaultHistoryManager.invalidateSession?.(cascadeId);
+          historyManager.invalidateSession?.(cascadeId);
           const snap = await fetchSnapshot(effectiveTargetId, {
             conversationId: cascadeId,
             clientId,
@@ -16053,8 +16168,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
             const activeCatStore = options.catalogStore || defaultCatalogStore;
             activeCatStore.markViewed(nextId, Date.now(), options.catalogOptions || {});
-            if (!options.fetchSnapshot && typeof defaultHistoryManager?.warmSession === 'function') {
-              defaultHistoryManager.warmSession(nextId).catch(() => null);
+            if (!options.fetchSnapshot && typeof historyManager?.warmSession === 'function') {
+              historyManager.warmSession(nextId).catch(() => null);
             }
             const snap = await fetchSnapshot(effectiveTargetId, {
               conversationId: nextId,
@@ -16381,7 +16496,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               ''
             ).trim();
             if (sentSid && sentSid !== '__new__' && sentSid !== 'new') {
-              defaultHistoryManager.invalidateSession?.(sentSid);
+              historyManager.invalidateSession?.(sentSid);
             }
           }
           if (isDeferredDraftSend) {
@@ -16493,6 +16608,7 @@ function startMobileRemoteServer() {
   const boundServers = new Map();
   let ifaceTimer = null;
   let stopped = false;
+  let managedTailscaleServePort = 0;
 
   const tryBindAddress = (ip) => {
     if (stopped || boundServers.has(ip)) return Promise.resolve(false);
@@ -16550,7 +16666,10 @@ function startMobileRemoteServer() {
     }
     const latestCfg = loadOrCreateRemoteConfig();
     if (!stopped && latestCfg.enabledChannels?.tailscale !== false && process.env.AG_REMOTE_SKIP_PROBES !== '1') {
-      try { ensureTailscaleServeHttps(config.port); } catch {}
+      try {
+        const tsServeRes = ensureTailscaleServeHttps(config.port);
+        if (tsServeRes?.createdByUs) managedTailscaleServePort = config.port;
+      } catch {}
     }
     if (!stopped && latestCfg.tunnelEnabled) {
       void tunnelCtrl.start(latestCfg);
@@ -16568,6 +16687,11 @@ function startMobileRemoteServer() {
       try { srv.close(); } catch {}
     }
     boundServers.clear();
+    if (managedTailscaleServePort > 0) {
+      const cleanupPort = managedTailscaleServePort;
+      managedTailscaleServePort = 0;
+      try { cleanupTailscaleServeHttps(cleanupPort); } catch {}
+    }
     await tunnelCtrl.stop();
   };
 
@@ -16602,7 +16726,8 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
   if (en.tailscale && meta.tailscaleDnsName) {
     const tsServe = options.tailscaleServe || ensureTailscaleServeHttps(port, {
       hostMeta: meta,
-      execFileSync: options.execFileSync
+      execFileSync: options.execFileSync,
+      readOnly: options.readOnly === true
     });
     if (tsServe?.enabled && tsServe?.url) tsHttpsUrl = tsServe.url;
     if (tsServe?.hint) tsHttpsHint = tsServe.hint;
@@ -16699,7 +16824,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       }
     : persisted;
 
-  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel, cfg.enabledChannels);
+  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel, cfg.enabledChannels, { readOnly: true });
 
   const mkFused = (entryHost, entryBaseUrl = '') => buildFusedPairingUrl({
     entryBaseUrl,
@@ -17003,6 +17128,7 @@ module.exports = {
   extractPendingAgentMessagesFromUpdate,
   extractTrajectoryUserAttachments,
   extractRawMediaEntriesFromUserInput,
+  buildQueuedStepMediaSig,
   materializeQueuedAttachmentsForEdit,
   stripDisplayMediaSuffixFromQueuedText,
   classifyLanguageServerRpcError,
@@ -17039,6 +17165,7 @@ module.exports = {
   buildRemoteInfo,
   detectHostIdentityMeta,
   ensureTailscaleServeHttps,
+  cleanupTailscaleServeHttps,
   collectFusedEndpointDescriptor,
   isAllowedPrivateOrigin,
   printRemoteCli
