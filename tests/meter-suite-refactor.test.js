@@ -1926,7 +1926,7 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
 
     remotePop.querySelector('#ag-remote-copy')?.click();
     await new Promise(r => setTimeout(r, 10));
-    assert.ok(copiedUrl.includes('100.64.0.2:18765') && copiedUrl.includes('&endpoints='), '复制链接应使用优先级最高通道作引导地址并保留多端点融合参数');
+    assert.ok(copiedUrl.includes('192.168.1.2:18765') && copiedUrl.includes('&endpoints='), '复制链接应使用优先级最高通道作引导地址并保留多端点融合参数');
 
     api.openSettings('terminal');
     assert.equal(remotePop.hidden, true, '打开设置面板时应互斥关闭遥控浮窗');
@@ -10755,10 +10755,28 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
 
   const remotePop = shadow.getElementById('ag-remote-popover');
   assert.ok(remotePop && !remotePop.hidden, '点击远程按钮应打开配对浮窗');
-  assert.ok(remotePop.innerHTML.includes('id="qr-tunnel"'), '默认应优先展示 Cloudflare 隧道二维码');
+  assert.ok(remotePop.innerHTML.includes('id="qr-lan"'), '默认应优先展示局域网二维码');
 
   const findPill = (key) => Array.from(remotePop.querySelectorAll('.ag-rp-ch-pill'))
     .find((node) => node.getAttribute('data-ch-key') === key);
+
+  const tunnelPill = findPill('tunnel');
+  assert.ok(tunnelPill, '浮窗应渲染可点击的 Cloudflare 隧道胶囊');
+  tunnelPill.click();
+  await new Promise((r) => setTimeout(r, 15));
+
+  assert.equal(
+    findPill('tunnel')?.getAttribute('data-active'),
+    'true',
+    '点击隧道胶囊后应激活 Cloudflare 隧道通道'
+  );
+  assert.ok(
+    remotePop.innerHTML.includes('id="qr-tunnel"'),
+    '切换通道后二维码应即时更新为隧道二维码'
+  );
+  remotePop.querySelector('#ag-remote-copy')?.click();
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(copiedText, 'https://demo.trycloudflare.com/?token=tok-switch-test-123456', '复制链接应复制当前选中隧道通道的 URL');
 
   const lanPill = findPill('lan');
   assert.ok(lanPill, '浮窗应渲染可点击的局域网通道胶囊');
@@ -10778,19 +10796,19 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
   await new Promise((r) => setTimeout(r, 15));
   assert.equal(copiedText, 'http://192.168.1.10:18765/?token=tok-switch-test-123456', '复制链接应复制当前选中通道的 URL');
 
-  // 4. 所选局域网通道失效刷新后，应自动回退至最高优先级可用通道 (Cloudflare)
+  // 4. 所选局域网通道失效刷新后，应自动回退至次高优先级可用通道 (Tailscale > Quick Tunnel)
   lanAvailable = false;
   remotePop.querySelector('#ag-remote-refresh')?.click();
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(
-    findPill('tunnel')?.getAttribute('data-active'),
+    findPill('tailscale')?.getAttribute('data-active'),
     'true',
-    '所选通道失效后应自动回退激活 Cloudflare 通道'
+    '所选局域网通道失效后应自动回退激活次高优先级可用通道 Tailscale'
   );
-  assert.ok(remotePop.innerHTML.includes('id="qr-tunnel"'), '回退后二维码应恢复为 Cloudflare 二维码');
+  assert.ok(remotePop.innerHTML.includes('id="qr-ts"'), '回退后二维码应恢复为 Tailscale 二维码');
   remotePop.querySelector('#ag-remote-copy')?.click();
   await new Promise((r) => setTimeout(r, 15));
-  assert.equal(copiedText, 'https://demo.trycloudflare.com/?token=tok-switch-test-123456', '回退后复制链接应指向回退通道 URL');
+  assert.equal(copiedText, 'http://100.64.0.2:18765/?token=tok-switch-test-123456', '回退后复制链接应指向回退通道 URL');
 
   enhancer.dispose?.();
 });
@@ -24089,4 +24107,511 @@ test('PR #8 合并加固 (P0-1~P0-5 / P1): Tailscale Serve 护栏、Web Push 曲
   // 5. P1-1: ag-enhancer-overlay.js 远程后台切会话期间保护 Dock 未读追踪不被误重置
   const freshEnhancer = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
   assert.ok(freshEnhancer.includes('mobileBgSwitchDepth'), 'ag-enhancer-overlay.js 应使用 mobileBgSwitchDepth 保护后台切会话期间的 Dock 未读追踪');
+});
+
+// =========================================================================
+// 扫码默认选路、手机顶栏显式通道胶囊、SW 1033 容灾与 Tailscale 探测修复
+// =========================================================================
+test('扫码选路优先级、顶栏独立通道胶囊、SW Error 1033 容灾壳与 Tailscale 探测误报修复', async () => {
+  const remoteMod = require('../mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+
+  // 1. HTML 结构、唯一 closeSheet 定义、全量 <script> 语法校验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `remote-ux-script-${i}.js` }));
+  }
+  const mainScript = scripts.map((m) => m[1]).find((s) => s.includes('function renderModeSwitcherSheet('));
+  assert.ok(mainScript, '应找到手机端主脚本');
+  const closeSheetDefs = mainScript.match(/function\s+closeSheet\s*\(/g) || [];
+  assert.equal(closeSheetDefs.length, 1, 'closeSheet 在手机端脚本中只能保留 1 份完整定义');
+  assert.ok(html.includes('id="btn-channel-pill"'), '顶栏必须渲染独立的 #btn-channel-pill 通道状态按钮');
+  assert.ok(html.includes('.channel-pill{'), 'CSS 必须定义 .channel-pill 样式');
+
+  // 2. 手机端 DOM 交互：空 snap 不弹空配额壳、点击 #btn-channel-pill 关闭顶栏抽屉并开切通道、closeSheet 复位、跨协议切直连不带 spd=
+  const replacedUrls = [];
+  const timers = new Set();
+  const makeClassList = (initial = []) => {
+    const set = new Set(initial);
+    return {
+      add: (...xs) => xs.forEach((x) => set.add(x)),
+      remove: (...xs) => xs.forEach((x) => set.delete(x)),
+      toggle: (x, force) => (force === undefined ? (set.has(x) ? (set.delete(x), false) : (set.add(x), true)) : (force ? (set.add(x), true) : (set.delete(x), false))),
+      contains: (x) => set.has(x)
+    };
+  };
+  const makeEl = (id) => ({
+    id,
+    hidden: false,
+    disabled: false,
+    value: '',
+    innerHTML: '',
+    textContent: '',
+    title: '',
+    scrollHeight: 28,
+    scrollTop: 0,
+    clientHeight: 600,
+    offsetWidth: 300,
+    dataset: {},
+    style: { setProperty() {} },
+    className: '',
+    classList: makeClassList(),
+    children: [],
+    setAttribute() {},
+    removeAttribute() {},
+    getAttribute: () => null,
+    appendChild(c) { this.children.push(c); return c; },
+    addEventListener(ev, fn) { if (ev === 'click') this['on' + ev] = fn; },
+    click() { if (typeof this.onclick === 'function') this.onclick({ target: this, stopPropagation() {} }); },
+    contains: () => false,
+    focus() {},
+    blur() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  });
+  const byId = new Proxy({}, { get: (t, k) => (t[k] || (t[k] = makeEl(String(k)))) });
+  byId['quota-drawer'].hidden = true;
+  byId['context-drawer'].hidden = true;
+  byId['usage-drawer'].hidden = true;
+  byId['sheet-backdrop'].hidden = true;
+  byId['proj-modal-backdrop'].hidden = true;
+  byId['conn-banner'].hidden = true;
+  byId['toast'].hidden = true;
+
+  const epsHttpsToHttp = [
+    { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
+  ];
+  const encEpsHttpsToHttp = remoteMod.encodeEndpointsParam(epsHttpsToHttp);
+  const encSpdDirty = Buffer.from(JSON.stringify({
+    testedAt: Date.now(),
+    results: { lan: { ok: false, ms: null, reason: 'https_restricted', url: 'http://192.168.1.8:18765' } }
+  }), 'utf8').toString('base64url');
+  const startHref = `https://demo.trycloudflare.com/?token=tok-ux&endpoints=${encEpsHttpsToHttp}&spd=${encSpdDirty}`;
+  const startUrl = new URL(startHref);
+  const locObj = {
+    get href() { return startUrl.href; },
+    set href(v) { replacedUrls.push(String(v)); },
+    origin: startUrl.origin,
+    protocol: startUrl.protocol,
+    hostname: startUrl.hostname,
+    pathname: startUrl.pathname,
+    search: startUrl.search,
+    port: startUrl.port,
+    replace(v) { replacedUrls.push(String(v)); }
+  };
+  const lStore = new Map();
+  const sStore = new Map();
+  const domSandbox = {
+    URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+    Uint8Array, TextEncoder, TextDecoder, AbortController, Intl,
+    atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+    btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+    encodeURIComponent, decodeURIComponent,
+    screen: { width: 390, height: 844 },
+    devicePixelRatio: 3,
+    navigator: { platform: 'iPhone', maxTouchPoints: 5, hardwareConcurrency: 6 },
+    location: locObj,
+    history: { replaceState() {} },
+    localStorage: {
+      getItem: (k) => (lStore.has(k) ? lStore.get(k) : null),
+      setItem: (k, v) => lStore.set(k, String(v)),
+      removeItem: (k) => lStore.delete(k)
+    },
+    sessionStorage: {
+      getItem: (k) => (sStore.has(k) ? sStore.get(k) : null),
+      setItem: (k, v) => sStore.set(k, String(v)),
+      removeItem: (k) => sStore.delete(k)
+    },
+    document: {
+      hidden: false,
+      activeElement: null,
+      documentElement: { clientHeight: 844, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+      body: { style: {}, classList: makeClassList() },
+      getElementById: (id) => byId[id],
+      querySelector: () => makeEl('__q'),
+      createElement: (tag) => makeEl(tag),
+      addEventListener() {}
+    },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    innerWidth: 390,
+    innerHeight: 844,
+    visualViewport: null,
+    setTimeout: (fn, ms) => {
+      const t = setTimeout(() => { timers.delete(t); fn(); }, Math.min(Number(ms) || 0, 20));
+      if (typeof t.unref === 'function') t.unref();
+      timers.add(t);
+      return t;
+    },
+    clearTimeout: (t) => { timers.delete(t); clearTimeout(t); },
+    fetch: async () => ({ ok: false, status: 503, json: async () => ({ ok: false }) })
+  };
+  domSandbox.window = domSandbox;
+  domSandbox.addEventListener = () => {};
+  const tailIdx = mainScript.lastIndexOf('})();');
+  const hookedScript = mainScript.slice(0, tailIdx)
+    + '\nglobalThis.__uxHooks = { openTopDrawer, openSheet, closeSheet, enterConnectionMode, getActiveSheetKind: () => activeSheetKind };\n'
+    + mainScript.slice(tailIdx);
+  try {
+    vm.runInNewContext(hookedScript, domSandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // latestSnap 为空时点配额按钮不能打开空配额抽屉
+    byId['btn-quota'].onclick({ stopPropagation() {} });
+    assert.equal(byId['quota-drawer'].hidden, true, 'latestSnap 为空时点击 #btn-quota 不应弹出空配额抽屉');
+    assert.ok(byId['toast'].textContent.includes('配额'), '应通过 toast 告知暂未获取配额');
+
+    // 先打开上下文抽屉，再点顶栏右侧 #btn-channel-pill -> 抽屉关闭 + 切换连接方式弹窗打开
+    byId['context-drawer'].hidden = false;
+    byId['btn-channel-pill'].onclick({ stopPropagation() {} });
+    assert.equal(byId['context-drawer'].hidden, true, '点击 #btn-channel-pill 应互斥关闭已打开的顶栏抽屉');
+    assert.equal(byId['sheet-backdrop'].hidden, false, '点击 #btn-channel-pill 应打开切换连接方式弹窗');
+    assert.equal(byId['sheet-title-text'].textContent, '切换连接方式');
+    assert.equal(domSandbox.__uxHooks.getActiveSheetKind(), 'mode');
+    assert.equal(byId['sheet-action-btn'].hidden, false);
+    assert.ok(byId['sheet-list'].innerHTML.includes('临时域名'), '切换连接方式弹窗应对 .trycloudflare.com 标注「临时域名」标签');
+    assert.ok(byId['sheet-list'].innerHTML.includes('sheet-foot-note') && byId['sheet-list'].innerHTML.includes('一次性'), '切换连接方式弹窗应展示一次性临时域名提示');
+
+    // 关闭 mode sheet 后应完全清空状态、隐藏 #sheet-action-btn 并恢复 sheet-list 默认点击处理器
+    domSandbox.__uxHooks.closeSheet();
+    assert.equal(byId['sheet-backdrop'].hidden, true);
+    assert.equal(byId['sheet-action-btn'].hidden, true);
+    assert.equal(byId['sheet-action-btn'].onclick, null);
+    assert.equal(domSandbox.__uxHooks.getActiveSheetKind(), '');
+
+    // 打开普通 sheet，点击第 0 项仍能正常回调
+    let genericPicked = null;
+    domSandbox.__uxHooks.openSheet('普通选项', [{ label: '项A', val: 'alpha' }], (opt) => { genericPicked = opt; });
+    assert.equal(byId['sheet-backdrop'].hidden, false);
+    const fakeOptBtn = { getAttribute: (name) => (name === 'data-idx' ? '0' : null) };
+    await byId['sheet-list'].onclick({ target: { closest: () => fakeOptBtn } });
+    assert.equal(genericPicked?.val, 'alpha', '关闭 mode sheet 后普通 sheet 选项点击回调应恢复正常');
+
+    // 跨协议从 https:// 手动切向 http:// 时不得携带脏 spd= 参数
+    domSandbox.__uxHooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(replacedUrls.length, 1);
+    const navTarget = new URL(replacedUrls[0]);
+    assert.equal(navTarget.origin, 'http://192.168.1.8:18765');
+    assert.equal(navTarget.searchParams.get('manual'), '1');
+    assert.equal(navTarget.searchParams.get('spd'), null, '从 HTTPS 手动切往 HTTP 时不得将受限测速参数 ?spd= 带入明文页面');
+  } finally {
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+  }
+
+  // 3. Service Worker：语法合法、包含 Error 1033 (530) 容灾壳，且能在 530 时返回带备选直连通道的恢复页
+  const swCode = remoteMod.buildServiceWorkerJs();
+  assert.doesNotThrow(() => new vm.Script(swCode, { filename: 'sw-1033-recovery.js' }));
+  assert.ok(swCode.includes('ag-cache-endpoints') && swCode.includes('530'), 'Service Worker 应监听 ag-cache-endpoints 并处理 530 (Error 1033)');
+  const swListeners = {};
+  const cacheStore = new Map();
+  class MockSwResponse {
+    constructor(body, init = {}) {
+      this._body = String(body ?? '');
+      this.status = init.status ?? 200;
+      this.headers = init.headers || {};
+    }
+    async text() { return this._body; }
+    async json() { return JSON.parse(this._body); }
+  }
+  const swSandbox = {
+    URL,
+    JSON,
+    Number,
+    String,
+    Array,
+    Response: MockSwResponse,
+    fetch: async () => new MockSwResponse('Error 1033', { status: 530 }),
+    self: null
+  };
+  swSandbox.self = {
+    location: { origin: 'https://dead-tunnel.trycloudflare.com' },
+    skipWaiting: () => Promise.resolve(),
+    clients: { claim: () => Promise.resolve(), matchAll: async () => [] },
+    caches: {
+      open: async () => ({
+        put: async (k, v) => { cacheStore.set(k, v); },
+        match: async (k) => cacheStore.get(k) || null
+      })
+    },
+    addEventListener: (type, fn) => {
+      if (!swListeners[type]) swListeners[type] = [];
+      swListeners[type].push(fn);
+    }
+  };
+  vm.runInNewContext(swCode, swSandbox);
+  assert.ok(Array.isArray(swListeners.fetch) && swListeners.fetch.length >= 1, 'SW 应注册 fetch 拦截器');
+  assert.ok(Array.isArray(swListeners.message) && swListeners.message.length >= 1, 'SW 应注册 message 监听以接收缓存端点');
+
+  const swTasks = [];
+  for (const fn of swListeners.message) {
+    fn({
+      data: {
+        type: 'ag-cache-endpoints',
+        token: 'sw-secret-tok-demo',
+        name: 'dev-mac',
+        encodedEndpoints: 'encoded-demo',
+        endpoints: [
+          { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+          { url: 'https://dev-mac.tail-demo.ts.net', kind: 'tailscale', priority: 90 },
+          { url: 'https://dead-tunnel.trycloudflare.com', kind: 'tunnel', priority: 250 }
+        ]
+      },
+      waitUntil: (p) => swTasks.push(p)
+    });
+  }
+  await Promise.all(swTasks);
+
+  let interceptedPromise = null;
+  for (const fn of swListeners.fetch) {
+    fn({
+      request: { mode: 'navigate', method: 'GET', url: 'https://dead-tunnel.trycloudflare.com/' },
+      respondWith: (p) => { interceptedPromise = p; }
+    });
+  }
+  assert.ok(interceptedPromise, 'SW 应对同源 navigate 请求调用 respondWith');
+  const recoveryRes = await interceptedPromise;
+  assert.equal(recoveryRes.status, 503);
+  const recoveryHtml = await recoveryRes.text();
+  assert.ok(
+    recoveryHtml.includes('Error 1033') && recoveryHtml.includes('一次性') && recoveryHtml.includes('重新扫码'),
+    '容灾页应清晰告知 Cloudflare 临时隧道已过期及一次性失效原因与重新扫码指引'
+  );
+  assert.ok(recoveryHtml.includes('dev-mac.tail-demo.ts.net') && recoveryHtml.includes('192.168.1.8:18765'), '容灾页应展示可用的 Tailscale HTTPS 与局域网备用通道');
+  assert.ok(!recoveryHtml.includes('dead-tunnel.trycloudflare.com'), '容灾页按钮列表不应重复渲染当前失效入口');
+  const visibleListHtml = recoveryHtml.slice(recoveryHtml.indexOf('id="ep-list"'), recoveryHtml.indexOf('<script>'));
+  assert.ok(!visibleListHtml.includes('sw-secret-tok-demo'), '容灾页可见按钮 DOM 不应明文暴露配对 token');
+
+  // 4. probeClientPrivateReachability：多台在线 iOS 未执行 tailscale ping 时不得误标红字 unreachable
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevSkipProbes = process.env.AG_REMOTE_SKIP_PROBES;
+  const tmpTsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ts-probe-fix-'));
+  try {
+    process.env.APPDATA = tmpTsDir;
+    process.env.AG_METER_STATE_DIR = tmpTsDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = tmpTsDir;
+    delete process.env.AG_REMOTE_SKIP_PROBES;
+    remoteMod.clearPairedDevicesForTests();
+    const cfgObj = { enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } };
+
+    // 多台在线 iOS 设备 -> probeIps 为空，未执行 tailscale ping -> hints.tailscale 必须为 undefined
+    const hintsMultiIos = await remoteMod.probeClientPrivateReachability(
+      { headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148' }, url: '/api/probe-hints?probe=1' },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: () => ({ en0: [{ address: '192.168.68.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' }] }),
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return {
+              ok: true,
+              stdout: JSON.stringify({
+                Peer: {
+                  p1: { Online: true, OS: 'ios', TailscaleIPs: ['100.64.0.10'] },
+                  p2: { Online: true, OS: 'ios', TailscaleIPs: ['100.64.0.11'] }
+                }
+              }),
+              stderr: ''
+            };
+          }
+          throw new Error('不应在多台 iOS 未确定目标时触发 ping');
+        }
+      }
+    );
+    assert.equal(hintsMultiIos.tailscale, undefined, '未实际执行 tailscale ping 时绝不能误标 Tailscale 不可达');
+
+    // 单台在线 iOS 且 tailscale ping 确实失败 -> 正常返回 unreachable
+    const hintsPingFailed = await remoteMod.probeClientPrivateReachability(
+      { headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148' }, url: '/api/probe-hints?probe=1' },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: () => ({ en0: [{ address: '192.168.68.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' }] }),
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return {
+              ok: true,
+              stdout: JSON.stringify({ Peer: { p1: { Online: true, OS: 'ios', TailscaleIPs: ['100.64.0.10'] } } }),
+              stderr: ''
+            };
+          }
+          return { ok: false, stdout: '', stderr: 'timed out' };
+        }
+      }
+    );
+    assert.equal(hintsPingFailed.tailscale?.ok, false);
+    assert.equal(hintsPingFailed.tailscale?.reason, 'unreachable', '实际 ping 失败时应准确返回 unreachable');
+  } finally {
+    remoteMod.clearPairedDevicesForTests();
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevSkipProbes === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+    else process.env.AG_REMOTE_SKIP_PROBES = prevSkipProbes;
+    fs.rmSync(tmpTsDir, { recursive: true, force: true });
+  }
+
+  // 5. mkQrSafe 降级保留 priority===90 + 三端统一 6 级默认优先级 + localStorage 持久化 + tailscaleHttpsHint 渲染
+  const remoteJsSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+  assert.ok(remoteJsSrc.includes('e.priority === 90'), 'mkQrSafe 超长降级过滤必须保留 priority === 90 (Tailscale HTTPS)');
+  const overlaySrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  const settingsSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/suite-settings.js'), 'utf8');
+  assert.ok(overlaySrc.includes('ag-remote-selected-channel-v1'), '桌面扫码浮窗应持久化所选通道至 localStorage');
+  assert.ok(settingsSrc.includes('ag-rp-ts-hint') && RENDERER_SRC.includes('ag-rp-ts-hint'), '设置页与打包渲染产物均应渲染 tailscaleHttpsHint');
+  assert.ok(settingsSrc.includes('ag-rp-quick-tunnel-hint') && RENDERER_SRC.includes('ag-rp-quick-tunnel-hint'), '设置页与打包渲染产物均应渲染免登录临时隧道一次性域名提示');
+
+  const priorityEnv = createDomEnv();
+  const priorityCases = [
+    {
+      name: '固定域名 Named Tunnel 最优先',
+      tunnelMode: 'named',
+      hasNamed: true,
+      hasTsHttps: true,
+      hasLan: true,
+      hasTsHttp: true,
+      hasQuick: false,
+      expectedKey: 'tunnel'
+    },
+    {
+      name: '其次 Tailscale HTTPS',
+      tunnelMode: 'quick',
+      hasNamed: false,
+      hasTsHttps: true,
+      hasLan: true,
+      hasTsHttp: true,
+      hasQuick: true,
+      expectedKey: 'tailscale'
+    },
+    {
+      name: '其次局域网 LAN',
+      tunnelMode: 'quick',
+      hasNamed: false,
+      hasTsHttps: false,
+      hasLan: true,
+      hasTsHttp: true,
+      hasQuick: true,
+      expectedKey: 'lan'
+    },
+    {
+      name: '其次 Tailscale HTTP',
+      tunnelMode: 'quick',
+      hasNamed: false,
+      hasTsHttps: false,
+      hasLan: false,
+      hasTsHttp: true,
+      hasQuick: true,
+      expectedKey: 'tailscale'
+    },
+    {
+      name: '最后 Cloudflare Quick Tunnel',
+      tunnelMode: 'quick',
+      hasNamed: false,
+      hasTsHttps: false,
+      hasLan: false,
+      hasTsHttp: false,
+      hasQuick: true,
+      expectedKey: 'tunnel'
+    }
+  ];
+  let curCaseIdx = 0;
+  const makeCasePayload = (c) => ({
+    port: 18765,
+    token: 'tok-priority-demo',
+    deviceName: 'mac',
+    tailscaleHttpsUrl: c.hasTsHttps ? 'https://mac.tail-demo.ts.net' : '',
+    tailscaleHttpsHint: !c.hasTsHttps ? '请在 Tailscale 控制台开启 HTTPS Certificates' : '',
+    channels: [
+      {
+        key: 'lan', label: '局域网', labelEn: 'LAN', enabled: true, available: c.hasLan,
+        displayHost: c.hasLan ? '192.168.1.8' : '', url: c.hasLan ? 'http://192.168.1.8:18765/?token=tok-priority-demo' : '', qrSvg: '<svg id="p-lan"><rect/></svg>'
+      },
+      {
+        key: 'tailscale', label: 'Tailscale', labelEn: 'Tailscale', enabled: true, available: c.hasTsHttps || c.hasTsHttp,
+        httpsUrl: c.hasTsHttps ? 'https://mac.tail-demo.ts.net' : '',
+        httpsHint: !c.hasTsHttps ? '请在 Tailscale 控制台开启 HTTPS Certificates' : '',
+        displayHost: c.hasTsHttps ? 'HTTPS · mac.tail-demo.ts.net' : '100.64.0.2',
+        url: c.hasTsHttps ? 'https://mac.tail-demo.ts.net/?token=tok-priority-demo' : (c.hasTsHttp ? 'http://100.64.0.2:18765/?token=tok-priority-demo' : ''),
+        qrSvg: '<svg id="p-ts"><rect/></svg>'
+      },
+      {
+        key: 'tunnel', label: 'Cloudflare 隧道', labelEn: 'Cloudflare Tunnel', enabled: true, available: c.hasNamed || c.hasQuick,
+        state: 'running', mode: c.tunnelMode,
+        displayHost: c.hasNamed ? 'ag.example.com' : 'quick.trycloudflare.com',
+        url: c.hasNamed ? 'https://ag.example.com/?token=tok-priority-demo' : (c.hasQuick ? 'https://quick.trycloudflare.com/?token=tok-priority-demo' : ''),
+        qrSvg: '<svg id="p-tunnel"><rect/></svg>'
+      }
+    ]
+  });
+
+  priorityEnv.win.__AGContextMeterLive = { port: 61220, token: 'tok-priority-demo' };
+  priorityEnv.sandbox.fetch = async (url) => {
+    if (String(url).includes('/remote-info')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, data: makeCasePayload(priorityCases[curCaseIdx]) }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  vm.runInContext(RENDERER_SRC, priorityEnv.sandbox);
+  vm.runInContext(overlaySrc, priorityEnv.sandbox);
+  const pEnhancer = priorityEnv.sandbox.__AGEnhancer;
+  const pShadow = priorityEnv.getShadow();
+
+  for (let i = 0; i < priorityCases.length; i++) {
+    curCaseIdx = i;
+    pEnhancer.toggleRemotePopover(true);
+    await new Promise((r) => setTimeout(r, 30));
+    const pop = pShadow.getElementById('ag-remote-popover');
+    const pills = Array.from(pop.querySelectorAll('.ag-rp-ch-pill'));
+    const activePill = pills.find((p) => p.getAttribute('data-active') === 'true');
+    assert.equal(activePill?.getAttribute('data-ch-key'), priorityCases[i].expectedKey, priorityCases[i].name);
+    if (!priorityCases[i].hasTsHttps) {
+      assert.ok(pop.innerHTML.includes('HTTPS Certificates'), '未启用 Tailscale HTTPS 时桌面浮窗应渲染引导提示');
+    } else {
+      assert.equal(pop.querySelector('#ag-rp-ts-hint'), null, '已启用 Tailscale HTTPS 时应隐藏未开通提示');
+    }
+    if (priorityCases[i].expectedKey === 'tunnel' && priorityCases[i].tunnelMode === 'quick') {
+      const qHint = pop.querySelector('#ag-rp-quick-tunnel-hint');
+      assert.ok(qHint && qHint.textContent.includes('一次性') && qHint.textContent.includes('热更新'), '桌面浮窗选中免登录临时隧道时应提示一次性域名会因热更新/重启/休眠失效');
+    } else {
+      assert.equal(pop.querySelector('#ag-rp-quick-tunnel-hint'), null, '非免登录临时隧道激活时桌面浮窗不应误显示临时域名警告');
+    }
+    pEnhancer.toggleRemotePopover(false);
+  }
+
+  // 点击切换为 Quick Tunnel 并写入 localStorage，重新加载新实例仍保持记住选中
+  curCaseIdx = 1; // hasTsHttps + hasLan + hasQuick
+  pEnhancer.toggleRemotePopover(true);
+  await new Promise((r) => setTimeout(r, 30));
+  const quickPill = Array.from(pShadow.getElementById('ag-remote-popover').querySelectorAll('.ag-rp-ch-pill'))
+    .find((p) => p.getAttribute('data-ch-key') === 'tunnel');
+  quickPill.click();
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(priorityEnv.localStorage.getItem('ag-remote-selected-channel-v1'), 'tunnel', '切换胶囊应持久化至 localStorage');
+  assert.ok(pShadow.getElementById('ag-remote-popover').querySelector('#ag-rp-quick-tunnel-hint'), '手动切回免登录临时隧道后桌面浮窗应立即展示一次性域名提示');
+  pEnhancer.dispose?.();
+
+  // 新实例复用同一 localStorage，验证打开浮窗仍默认选中 tunnel
+  const persistEnv = createDomEnv();
+  persistEnv.localStorage.setItem('ag-remote-selected-channel-v1', 'tunnel');
+  persistEnv.win.__AGContextMeterLive = { port: 61220, token: 'tok-priority-demo' };
+  persistEnv.sandbox.fetch = async (url) => {
+    if (String(url).includes('/remote-info')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, data: makeCasePayload(priorityCases[1]) }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  vm.runInContext(RENDERER_SRC, persistEnv.sandbox);
+  vm.runInContext(overlaySrc, persistEnv.sandbox);
+  const persistEnhancer = persistEnv.sandbox.__AGEnhancer;
+  persistEnhancer.toggleRemotePopover(true);
+  await new Promise((r) => setTimeout(r, 30));
+  const persistActive = Array.from(persistEnv.getShadow().getElementById('ag-remote-popover').querySelectorAll('.ag-rp-ch-pill'))
+    .find((p) => p.getAttribute('data-active') === 'true');
+  assert.equal(persistActive?.getAttribute('data-ch-key'), 'tunnel', '重开新实例后应记住上次选中的可用通道');
+  persistEnhancer.dispose?.();
 });

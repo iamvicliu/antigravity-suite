@@ -3164,6 +3164,16 @@
       color:var(--ag-text-danger,#f87171);
       font-size:11.5px;
     }
+    .ag-rp-hint{
+      margin-top:8px;
+      padding:6px 8px;
+      border-radius:6px;
+      background:var(--ag-bg-subcard,rgba(255,255,255,0.04));
+      border:1px solid var(--ag-border-subcard,rgba(255,255,255,0.1));
+      color:var(--ag-text-muted,#a1a1aa);
+      font-size:11.5px;
+      line-height:1.45;
+    }
     @keyframes ag-spin{
       from{transform:rotate(0deg);}
       to{transform:rotate(360deg);}
@@ -14936,13 +14946,20 @@ function positionHeatPopover(anchorX, anchorY) {
 
     const channels = resolveRemoteChannelsForSettings(data);
     const availableList = channels.filter(c => (c.enabled !== false) && c.available);
-    const activeChannel = availableList.find(c => c.key === 'tunnel')
-      || availableList.find(c => c.key === 'tailscale')
+    const isTsHttpsCh = c => Boolean(
+      c && c.key === 'tailscale' && c.available
+      && (c.httpsUrl || (c.entryBaseUrl && String(c.entryBaseUrl).startsWith('https://')) || String(c.url || '').startsWith('https://'))
+    );
+    const activeChannel = availableList.find(c => c.key === 'tunnel' && c.available && c.mode === 'named')
+      || availableList.find(c => isTsHttpsCh(c))
       || availableList.find(c => c.key === 'lan')
+      || availableList.find(c => c.key === 'tailscale')
+      || availableList.find(c => c.key === 'tunnel')
       || availableList[0]
       || null;
     const activeKey = activeChannel?.key || 'none';
     const tunnelCh = channels.find(c => c.key === 'tunnel') || null;
+    const tailscaleCh = channels.find(c => c.key === 'tailscale') || null;
     const busyAny = Boolean(remoteSettingsState.loading || remoteSettingsState.busy);
     const switchingTunnelMode = Boolean(
       remoteSettingsState.busy &&
@@ -15010,7 +15027,7 @@ function positionHeatPopover(anchorX, anchorY) {
           <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（可选高级配置）', 'Cloudflare Fixed Domain (Optional)'))}</span>
           <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
         </div>
-        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('已默认开启免登录公网访问，无需注册即可使用；只有需要绑定自己的固定域名时才需填写下方内容。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
+        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('免登录临时隧道无需注册即可使用，但域名为一次性地址（电脑热更新、重启或休眠断网后会作废换新）。如需永久固定网址，请在下方绑定自己的 Cloudflare 固定域名。', 'Quick Tunnel works without login, but its URL is one-time and expires after live reload, restart, or sleep. Bind your own Cloudflare fixed domain below for a permanent URL.'))}</div>
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span>${escapeSuiteHtml(suiteTr('自定义域名（例: ag.example.com）', 'Custom Hostname (e.g. ag.example.com)'))}</span>
           <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="ag.example.com" value="${escapeSuiteHtml(tunnelHostDraft)}" />
@@ -15065,10 +15082,33 @@ function positionHeatPopover(anchorX, anchorY) {
       </div>
     `;
 
+    const tsHttpsHintText = (
+      tailscaleCh
+      && tailscaleCh.enabled !== false
+      && !tailscaleCh.httpsUrl
+      && !data?.tailscaleHttpsUrl
+    )
+      ? String(tailscaleCh.httpsHint || data?.tailscaleHttpsHint || '').trim()
+      : '';
+    const tsHintHtml = tsHttpsHintText
+      ? `<div id="ag-rp-ts-hint" class="ag-rp-hint">${escapeSuiteHtml(tsHttpsHintText)}</div>`
+      : '';
+    const showQuickTunnelHint = Boolean(
+      tunnelCh
+      && tunnelCh.mode !== 'named'
+      && (tunnelCh.enabled || tunnelCh.state === 'running' || tunnelCh.state === 'starting')
+    );
+    const quickTunnelHintHtml = showQuickTunnelHint
+      ? `<div id="ag-rp-quick-tunnel-hint" class="ag-rp-hint">${escapeSuiteHtml(suiteTr(
+        '提示：免登录临时隧道域名是一次性的，电脑执行热更新、live 重载、重启软件或休眠断网后，旧域名会永久失效并更换新域名（手机旧页会出现 Error 1033）。如需固定网址，建议优先开启 Tailscale HTTPS，或点击上方「免登录零配置 ▾」绑定自己的固定域名。',
+        'Note: Quick Tunnel uses a one-time URL that permanently expires after live reload, restart, or sleep (old mobile links will show Error 1033). For a permanent URL, enable Tailscale HTTPS or click "Zero-Config ▾" above to bind your fixed domain.'
+      ))}</div>`
+      : '';
+
     const errMsg = tunnelCh?.error || remoteSettingsState.error || '';
     const errHtml = errMsg ? `<div class="ag-rp-err">${escapeSuiteHtml(errMsg)}</div>` : '';
 
-    root.innerHTML = `${channelsHtml}${formHtml}${installGuideHtml}${errHtml}`;
+    root.innerHTML = `${channelsHtml}${tsHintHtml}${quickTunnelHintHtml}${formHtml}${installGuideHtml}${errHtml}`;
 
     channels.filter(c => c.key !== 'tunnel').forEach(ch => {
       const btn = root.querySelector(`#ag-rp-toggle-${ch.key}`);
