@@ -41,10 +41,11 @@
 
     // 与顶栏保持一致的常态/预警语义色板
     const MORANDI_3A = {
-        green: '#34d399',  // 回退默认绿（正常态优先读取全局主题强调色）
+        green: '#a78bfa',  // 回退默认主题紫（正常态优先读取全局主题强调色，浅色回退 #7c3aed）
         yellow: '#f59e0b', // 偏高预警 (已用 50%~80% / 剩余 20%~50%，与顶栏一致)
         red: '#ef4444'     // 高占用告急 (已用 >= 80% / 剩余 <= 20%，与顶栏一致)
     };
+    const CAPSULE_STYLE_ID = '__agy_ctx_capsule_style__';
 
     const COMPRESSION_MIN_DROP = 5000; // 连续快照含缓存输入下降 > 5000 tokens 判定为自动压缩
     const DEFAULT_LIMIT = 256000;      // 基础保底压缩上限 256k
@@ -1365,8 +1366,67 @@
         return null;
     }
 
-    // 读取当前主套件实时生效的主题强调色，仅当主宿主不可用时回退 3A 雾松青
-    function getThemeAccentColor() {
+    // 注入跑道胶囊统一样式（流式防抽搐 tabular-nums + 平滑填充 + 焦点环 + 减弱动效兼容）
+    function ensureCapsuleStyle() {
+        try {
+            if (typeof document === 'undefined' || !document.head) return;
+            if (document.getElementById(CAPSULE_STYLE_ID)) return;
+            const styleEl = document.createElement('style');
+            styleEl.id = CAPSULE_STYLE_ID;
+            styleEl.textContent = `
+                [data-agy-context-capsule="1"] {
+                    font-variant-numeric: tabular-nums;
+                    font-feature-settings: "tnum" 1;
+                    transition: background-color 0.16s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1), transform 0.12s cubic-bezier(0.22, 1, 0.36, 1);
+                }
+                [data-agy-context-capsule="1"]:active:not(:disabled) {
+                    transform: scale(0.975) translateY(0.5px);
+                }
+                [data-agy-context-capsule="1"]:focus-visible {
+                    outline: 2px solid var(--ag-effective-accent, #a78bfa);
+                    outline-offset: 2px;
+                }
+                [data-agy-context-capsule="1"][data-ag-theme="light"]:focus-visible {
+                    outline-color: var(--ag-effective-accent, #7c3aed);
+                }
+                [data-agy-context-capsule="1"] .agy-ctx-speed-val {
+                    display: inline-block;
+                    min-width: 7ch;
+                    text-align: right;
+                }
+                [data-agy-context-capsule="1"] .agy-ctx-occ-val,
+                [data-agy-context-capsule="1"] .agy-ctx-cache-val {
+                    display: inline-block;
+                    min-width: 4.5ch;
+                    text-align: right;
+                }
+                [data-agy-context-capsule="1"] .agy-ctx-fill {
+                    transition: width 0.25s cubic-bezier(0.22, 1, 0.36, 1), fill 0.2s ease;
+                }
+                #${'__agy_ctx_capsule_tooltip__'} {
+                    border-radius: 10px;
+                }
+                @supports (corner-shape: superellipse(1.25)) {
+                    #${'__agy_ctx_capsule_tooltip__'} {
+                        corner-shape: superellipse(1.25);
+                    }
+                }
+                @media (prefers-reduced-motion: reduce) {
+                    [data-agy-context-capsule="1"],
+                    [data-agy-context-capsule="1"] .agy-ctx-fill,
+                    #${'__agy_ctx_capsule_tooltip__'} {
+                        animation: none !important;
+                        transition: none !important;
+                        transform: none !important;
+                    }
+                }
+            `;
+            document.head.appendChild(styleEl);
+        } catch (e) {}
+    }
+
+    // 读取当前主套件实时生效的主题强调色，仅当主宿主不可用时按深浅主题回退主题紫
+    function getThemeAccentColor(refEl) {
         try {
             const readVar = (el, name) => {
                 if (!el) return '';
@@ -1386,14 +1446,14 @@
             const fromRoot = readVar(rootEl, '--ag-effective-accent') || readVar(rootEl, '--ag-token-accent-default');
             if (fromRoot) return fromRoot;
         } catch (e) {}
-        return MORANDI_3A.green;
+        return isLightMode(refEl) ? '#7c3aed' : '#a78bfa';
     }
 
     // 获取胶囊颜色：正常态 (<50%) 跟随当前主题色，偏高/告急时亮起语义预警色
-    function getMorandi3AColor(usagePercent) {
+    function getMorandi3AColor(usagePercent, refEl) {
         if (usagePercent >= 80) return MORANDI_3A.red;    // 剩余 <= 20%
         if (usagePercent >= 50) return MORANDI_3A.yellow; // 剩余 20%~50%
-        return getThemeAccentColor();                     // 剩余 > 50%
+        return getThemeAccentColor(refEl);                // 剩余 > 50%
     }
 
     function resolveCacheAlertState(data) {
@@ -1414,12 +1474,12 @@
         };
     }
 
-    function getEffectiveCapsuleColor(data) {
+    function getEffectiveCapsuleColor(data, refEl) {
         const usagePct = Number(data?.usagePercent || 0);
         const alertState = resolveCacheAlertState(data);
         if (alertState.isCacheDrop) return MORANDI_3A.red;
         if (alertState.isCliff328k && usagePct < 85) return MORANDI_3A.yellow;
-        return getMorandi3AColor(usagePct);
+        return getMorandi3AColor(usagePct, refEl);
     }
 
     function getRuntimeLimitInfo(cascadeId, shortCid, ctx) {
@@ -1566,26 +1626,29 @@
         return usage;
     }
 
-    // 创建或获取全局唯一的悬浮面板 (对齐官方 Turbo 下拉弹窗的 rounded-md / shadow-md / 字体粗细与色彩体系)
+    // 创建或获取全局唯一的悬浮面板 (对齐官方 Turbo 下拉弹窗与外层 10px 圆角体系)
     function ensureTooltipEl() {
+        ensureCapsuleStyle();
         if (tooltipEl && document.body.contains(tooltipEl)) return tooltipEl;
         tooltipEl = document.createElement('div');
         tooltipEl.id = '__agy_ctx_capsule_tooltip__';
-        tooltipEl.className = 'notranslate bg-popover text-popover-foreground border border-border rounded-md shadow-md';
+        tooltipEl.className = 'notranslate bg-popover text-popover-foreground border border-border';
         tooltipEl.setAttribute('translate', 'no');
         tooltipEl.style.cssText = [
             'position: fixed',
             'z-index: 99995',
             'pointer-events: none',
             'opacity: 0',
-            'transition: opacity 0.12s ease',
-            'padding: 8px 12px',
-            'border-radius: 6px',
+            'transform: translateY(3px)',
+            'transition: opacity 0.14s cubic-bezier(0.22, 1, 0.36, 1), transform 0.14s cubic-bezier(0.22, 1, 0.36, 1)',
+            'padding: 9px 12px',
+            'border-radius: 10px',
             'font-family: inherit',
             'font-size: 12.5px',
             'font-weight: 400',
             'line-height: 1.5',
             'font-variant-numeric: tabular-nums',
+            'font-feature-settings: "tnum" 1',
             'min-width: 256px',
             'max-width: 336px'
         ].join(';');
@@ -1636,22 +1699,23 @@
         const isEn = lang === 'en';
         const light = isLightMode(capsuleBtn);
 
-        // 对齐官方 Turbo 下拉菜单 (Radix Popover + Tailwind shadow-md) 的白天/黑夜双模式参数
+        // 对齐官方 Turbo 下拉菜单与日夜双模式高对比告警文字色
         const bgColor = light ? '#FFFFFF' : '#18181B';
         const fgColor = light ? '#18181B' : '#E4E4E7';
         const mutedColor = light ? '#52525B' : '#A1A1AA';
         const borderColor = light ? '#E4E4E7' : '#27272A';
         const trackColor = light ? '#F4F4F5' : '#27272A';
+        const warnTextColor = light ? '#b45309' : MORANDI_3A.yellow;
+        const dangerTextColor = light ? '#dc2626' : MORANDI_3A.red;
 
         el.style.backgroundColor = bgColor;
         el.style.color = fgColor;
         el.style.border = `1px solid ${borderColor}`;
-        // 官方 Tailwind shadow-md 标准参数 (日间 0.1/0.1 轻柔阴影，夜间匹配官方暗色浮层边框阴影)
         el.style.boxShadow = light
-            ? '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1)'
-            : '0 4px 6px -1px rgba(0, 0, 0, 0.28), 0 2px 4px -2px rgba(0, 0, 0, 0.18)';
+            ? 'inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 4px 14px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05)'
+            : 'inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 8px 24px rgba(0, 0, 0, 0.38), 0 2px 6px rgba(0, 0, 0, 0.22)';
 
-        const barColor = getEffectiveCapsuleColor(data);
+        const barColor = getEffectiveCapsuleColor(data, capsuleBtn);
         const remainingTokens = Math.max(0, data.contextLimit - data.contextUsed);
         const modelTitle = resolveModelDisplayName(data.modelId, data.modelDisplayName);
 
@@ -1663,12 +1727,12 @@
         };
         const createStandardRow = (labelText, valueText) => {
             const row = document.createElement('div');
-            row.style.cssText = 'display:flex;justify-content:space-between;gap:12px;padding:1px 0;';
+            row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:1px 0;min-width:0;';
             const left = document.createElement('span');
-            left.style.cssText = `color:${mutedColor};font-weight:400;`;
+            left.style.cssText = `color:${mutedColor};font-weight:400;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
             left.textContent = labelText;
             const right = document.createElement('span');
-            right.style.cssText = `color:${fgColor};font-weight:400;`;
+            right.style.cssText = `color:${fgColor};font-weight:400;flex-shrink:0;white-space:nowrap;`;
             right.textContent = valueText;
             row.appendChild(left);
             row.appendChild(right);
@@ -1677,12 +1741,12 @@
 
         // 1. 顶部标题：模型名称 (font-weight: 500) + 已用百分比 (无任何表情符号或圆点)
         const headerRow = document.createElement('div');
-        headerRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;';
+        headerRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;min-width:0;';
         const titleSpan = document.createElement('span');
-        titleSpan.style.cssText = `font-weight:500;color:${fgColor};`;
+        titleSpan.style.cssText = `font-weight:500;color:${fgColor};min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
         titleSpan.textContent = String(modelTitle || '');
         const pctSpan = document.createElement('span');
-        pctSpan.style.cssText = `font-weight:400;color:${mutedColor};`;
+        pctSpan.style.cssText = `font-weight:400;color:${mutedColor};flex-shrink:0;white-space:nowrap;`;
         pctSpan.textContent = `${data.usagePercent.toFixed(1)}% ${isEn ? 'used' : '已用'}`;
         headerRow.appendChild(titleSpan);
         headerRow.appendChild(pctSpan);
@@ -1707,7 +1771,7 @@
             `${remainingTokens.toLocaleString()} (${data.remainPercent.toFixed(1)}%)`
         ));
 
-        // 4. 输出生成速度 & Prompt 缓存命中率 & Token 拆解 (去掉所有表情图标)
+        // 4. 输出生成速度 & 上下文缓存命中率 & Token 拆解 (去掉所有表情图标)
         if (data.hasPreciseSnapshot) {
             nodes.push(createDivider());
             if (data.tokPerSec > 0) {
@@ -1718,28 +1782,31 @@
                 ));
             }
             nodes.push(createStandardRow(
-                isEn ? 'Prompt Cache Hit' : 'Prompt 缓存命中率',
+                isEn ? 'Context Cache Hit' : '上下文缓存命中率',
                 `${data.cacheHitRate.toFixed(1)}%`
             ));
             const breakdownRow = document.createElement('div');
-            breakdownRow.style.cssText = `display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;color:${mutedColor};font-weight:400;`;
+            breakdownRow.style.cssText = `display:flex;align-items:center;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;color:${mutedColor};font-weight:400;min-width:0;`;
             const bdLeft = document.createElement('span');
+            bdLeft.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
             bdLeft.textContent = `${isEn ? 'Cache' : '缓存'}: ${formatTokenValue(data.cacheReadTokens)} · ${isEn ? 'Input' : '新入'}: ${formatTokenValue(data.inputTokens)}`;
             const bdRight = document.createElement('span');
+            bdRight.style.cssText = 'flex-shrink:0;white-space:nowrap;';
             bdRight.textContent = `${isEn ? 'Output' : '输出'}: ${formatTokenValue(data.outputTokens)}`;
             breakdownRow.appendChild(bdLeft);
             breakdownRow.appendChild(bdRight);
             nodes.push(breakdownRow);
         }
 
-        // 5. 快照后实时估算增量
+        // 5. 本轮新增估算
         if (data.estimatedDelta > 0) {
             const deltaRow = document.createElement('div');
-            deltaRow.style.cssText = `display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;color:${mutedColor};font-weight:400;`;
+            deltaRow.style.cssText = `display:flex;align-items:center;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;color:${mutedColor};font-weight:400;min-width:0;`;
             const deltaLeft = document.createElement('span');
-            deltaLeft.textContent = isEn ? 'Estimated Delta' : '实时估算增量';
+            deltaLeft.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            deltaLeft.textContent = isEn ? 'Estimated Delta' : '本轮新增估算';
             const deltaRight = document.createElement('span');
-            deltaRight.style.cssText = `color:${fgColor};`;
+            deltaRight.style.cssText = `color:${fgColor};flex-shrink:0;white-space:nowrap;`;
             deltaRight.textContent = `+${data.estimatedDelta.toLocaleString()}`;
             deltaRow.appendChild(deltaLeft);
             deltaRow.appendChild(deltaRight);
@@ -1751,12 +1818,12 @@
             const dropPct = data.compressionBefore > 0 ? ((data.compressionDrop / data.compressionBefore) * 100).toFixed(1) : '0';
             nodes.push(createDivider());
             const compRow = document.createElement('div');
-            compRow.style.cssText = 'display:flex;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;font-weight:400;';
+            compRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:1px 0;font-size:12px;font-weight:400;min-width:0;';
             const compLeft = document.createElement('span');
-            compLeft.style.cssText = `color:${mutedColor};`;
+            compLeft.style.cssText = `color:${mutedColor};min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
             compLeft.textContent = isEn ? 'Auto-compressed' : '已触发自动压缩';
             const compRight = document.createElement('span');
-            compRight.style.cssText = `color:${fgColor};`;
+            compRight.style.cssText = `color:${fgColor};flex-shrink:0;white-space:nowrap;`;
             compRight.textContent = `${formatTokenValue(data.compressionBefore)} → ${formatTokenValue(data.compressionAfter)} (-${dropPct}%)`;
             compRow.appendChild(compLeft);
             compRow.appendChild(compRight);
@@ -1764,8 +1831,8 @@
         } else if (data.usagePercent >= 85) {
             nodes.push(createDivider());
             const warnRow = document.createElement('div');
-            warnRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${MORANDI_3A.red};`;
-            warnRow.textContent = isEn ? 'Approaching auto-compaction threshold' : '接近自动压缩阈值，建议适时归档上下文';
+            warnRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${dangerTextColor};line-height:1.4;`;
+            warnRow.textContent = isEn ? 'Approaching auto-compaction limit — send /compact soon' : '接近自动压缩线，建议尽快发 /compact 压缩前文';
             nodes.push(warnRow);
         }
 
@@ -1774,28 +1841,28 @@
             nodes.push(createDivider());
             const dropRow = document.createElement('div');
             dropRow.setAttribute('data-cache-alert-row', 'drop');
-            dropRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:500;color:${MORANDI_3A.red};line-height:1.4;`;
+            dropRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:500;color:${dangerTextColor};line-height:1.4;`;
             dropRow.textContent = isEn
-                ? `Cache dropped! Full prefill (${formatTokenValue(data.inputTokens)} in) causes 4-5m lag & high quota drain. Run /compact now`
-                : `缓存已脱落：全量重算 ${formatTokenValue(data.inputTokens)} 新输入，易卡顿 4~5 分钟且配额消耗剧增，建议立即 /compact`;
+                ? `Cache expired: needs to re-read ${formatTokenValue(data.inputTokens)} history, may stall 4-5m. Run /compact now`
+                : `缓存已失效：需要重读 ${formatTokenValue(data.inputTokens)} 前文，可能卡顿 4~5 分钟，建议立即发 /compact 压缩`;
             nodes.push(dropRow);
         } else if (alertState.isCliff328k) {
             nodes.push(createDivider());
             const cliffRow = document.createElement('div');
             cliffRow.setAttribute('data-cache-alert-row', 'cliff');
-            cliffRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${MORANDI_3A.red};line-height:1.4;`;
+            cliffRow.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${dangerTextColor};line-height:1.4;`;
             cliffRow.textContent = isEn
-                ? 'Past 328K cache cliff: >3m idle risks 0-cache 5m stall. Run /compact soon'
-                : '已跨过 328K 缓存雪崩线：停顿超 3 分钟易触发 0 缓存慢重算，建议尽快 /compact';
+                ? 'Above 328K: pausing >3m risks cache expiration & slowdowns. Run /compact soon'
+                : '已超 328K：停顿超 3 分钟容易缓存失效变慢，建议尽快发 /compact 压缩';
             nodes.push(cliffRow);
         } else if (alertState.isWarn240k && data.usagePercent < 85) {
             nodes.push(createDivider());
             const warn240Row = document.createElement('div');
             warn240Row.setAttribute('data-cache-alert-row', 'recommend-compact');
-            warn240Row.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${MORANDI_3A.yellow};line-height:1.4;`;
+            warn240Row.style.cssText = `padding:1px 0;font-size:12px;font-weight:400;color:${warnTextColor};line-height:1.4;`;
             warn240Row.textContent = isEn
-                ? 'Above 240K safe cache zone: /compact recommended between tasks'
-                : '已达 240K+ 长上下文区间：建议适时执行 /compact 规避缓存脱落';
+                ? 'Above 240K: consider running /compact between tasks to keep cache active'
+                : '已超 240K：建议适时发 /compact 压缩前文，防止缓存失效变慢';
             nodes.push(warn240Row);
         }
 
@@ -1812,7 +1879,7 @@
 
         // 8. 底部栏：步数统计（语言配置统一移至套件设置面板）
         const footerRow = document.createElement('div');
-        footerRow.style.cssText = `border-top:1px solid ${borderColor};margin-top:6px;padding-top:5px;font-size:12px;color:${mutedColor};font-weight:400;display:flex;justify-content:space-between;gap:12px;`;
+        footerRow.style.cssText = `border-top:1px solid ${borderColor};margin-top:6px;padding-top:5px;font-size:12px;color:${mutedColor};font-weight:400;display:flex;justify-content:space-between;gap:12px;min-width:0;`;
         const stepsSpan = document.createElement('span');
         stepsSpan.textContent = `${isEn ? 'Steps' : '步数'}: ${data.stepCount || 0}`;
         footerRow.appendChild(stepsSpan);
@@ -1836,12 +1903,14 @@
         el.style.left = Math.round(left) + 'px';
         el.style.top = Math.round(top) + 'px';
         el.style.opacity = '1';
+        el.style.transform = 'translateY(0)';
     }
 
     function hideTooltip() {
         activeTooltipTarget = null;
         if (tooltipEl) {
             tooltipEl.style.opacity = '0';
+            tooltipEl.style.transform = 'translateY(3px)';
         }
     }
 
@@ -1860,7 +1929,7 @@
 
         const speedWrap = document.createElement('span');
         speedWrap.className = 'agy-ctx-speed';
-        speedWrap.style.cssText = 'display:inline-flex;align-items:center;gap:2.5px;margin-right:3px;opacity:0.85;';
+        speedWrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-right:4px;opacity:0.85;';
 
         const boltSvg = createSvgEl('svg', { width: 10, height: 12, viewBox: '0 0 12 14', fill: 'currentColor' });
         boltSvg.style.cssText = 'display:block;opacity:0.8;';
@@ -1884,7 +1953,7 @@
             fill: 'none', stroke: 'currentColor', 'stroke-width': 1.3, 'stroke-opacity': 0.5
         }));
         trackSvg.appendChild(createSvgEl('rect', {
-            class: 'agy-ctx-fill', x: 2.8, y: 3.4, width: 12.4, height: 5.2, rx: 2.6, fill: getThemeAccentColor()
+            class: 'agy-ctx-fill', x: 2.8, y: 3.4, width: 12.4, height: 5.2, rx: 2.6, fill: getThemeAccentColor(capsuleBtn)
         }));
 
         const labelSpan = document.createElement('span');
@@ -1896,8 +1965,8 @@
 
         const occWrap = document.createElement('span');
         occWrap.className = 'agy-ctx-occ';
-        occWrap.style.cssText = 'display:inline-flex;align-items:center;gap:2.5px;opacity:0.92;';
-        occWrap.title = isEn ? 'Context Window Occupancy' : '上下文窗口占用率';
+        occWrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;opacity:0.92;';
+        occWrap.setAttribute('aria-label', isEn ? 'Context Window Occupancy' : '上下文窗口占用率');
 
         const occIcon = createSvgEl('svg', {
             class: 'agy-ctx-occ-icon shrink-0', width: 11, height: 11, viewBox: '0 0 16 16',
@@ -1917,8 +1986,8 @@
 
         const cacheWrap = document.createElement('span');
         cacheWrap.className = 'agy-ctx-cache';
-        cacheWrap.style.cssText = 'display:inline-flex;align-items:center;gap:2.5px;opacity:0.88;';
-        cacheWrap.title = isEn ? 'Prompt Cache Hit Rate' : 'Prompt 缓存命中率';
+        cacheWrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;opacity:0.88;';
+        cacheWrap.setAttribute('aria-label', isEn ? 'Context Cache Hit Rate' : '上下文缓存命中率');
 
         const cacheIcon = createSvgEl('svg', {
             class: 'agy-ctx-cache-icon shrink-0', width: 11, height: 11, viewBox: '0 0 16 16',
@@ -1946,6 +2015,7 @@
     // 在单个 .agy-composer-footer 内创建或更新 3A 莫兰迪跑道胶囊
     function renderFooterCapsule(footerEl, usageData) {
         if (!footerEl) return;
+        ensureCapsuleStyle();
         let capsuleBtn = footerEl.querySelector('[data-agy-context-capsule="1"]');
         const permBtn = footerEl.querySelector('button[data-testid="permissions-selector-trigger"]');
 
@@ -1954,8 +2024,9 @@
             capsuleBtn.type = 'button';
             capsuleBtn.setAttribute('data-agy-context-capsule', '1');
             capsuleBtn.setAttribute('translate', 'no');
-            capsuleBtn.className = 'notranslate flex cursor-pointer items-center h-7 gap-1.5 rounded-full px-2 text-xs text-secondary-foreground select-none outline-none hover:bg-secondary transition-colors shrink-0 whitespace-nowrap';
+            capsuleBtn.className = 'notranslate flex cursor-pointer items-center h-7 gap-1.5 rounded-full px-2 text-xs text-secondary-foreground select-none hover:bg-secondary transition-colors shrink-0 whitespace-nowrap';
             capsuleBtn.style.fontVariantNumeric = 'tabular-nums';
+            capsuleBtn.style.fontFeatureSettings = '"tnum" 1';
 
             populateCapsuleButtonDom(capsuleBtn);
 
@@ -2008,8 +2079,11 @@
         capsuleBtn.__ctxUsageData = usageData;
 
         const isEn = getLangMode() === 'en';
+        const light = isLightMode(capsuleBtn);
+        capsuleBtn.setAttribute('data-ag-theme', light ? 'light' : 'dark');
+        const dangerTextColor = light ? '#dc2626' : MORANDI_3A.red;
         const alertState = resolveCacheAlertState(usageData);
-        const color = getEffectiveCapsuleColor(usageData);
+        const color = getEffectiveCapsuleColor(usageData, capsuleBtn);
         const remainPct = Math.max(0, Math.min(100, 100 - usageData.usagePercent));
         const fillWidth = Math.max(2.2, (12.4 * remainPct) / 100).toFixed(1);
 
@@ -2031,7 +2105,8 @@
 
         const occWrap = capsuleBtn.querySelector('.agy-ctx-occ');
         if (occWrap) {
-            occWrap.title = isEn ? 'Context Window Occupancy' : '上下文窗口占用率';
+            occWrap.setAttribute('aria-label', isEn ? 'Context Window Occupancy' : '上下文窗口占用率');
+            if (occWrap.hasAttribute?.('title')) occWrap.removeAttribute('title');
         }
         const occValSpan = capsuleBtn.querySelector('.agy-ctx-occ-val');
         if (occValSpan && occValSpan.textContent !== pctStr) {
@@ -2041,18 +2116,19 @@
         const cacheWrap = capsuleBtn.querySelector('.agy-ctx-cache');
         if (cacheWrap) {
             cacheWrap.setAttribute('data-cache-alert', alertState.isCacheDrop ? 'drop' : (alertState.isCliff328k ? 'cliff' : 'none'));
+            if (cacheWrap.hasAttribute?.('title')) cacheWrap.removeAttribute('title');
             if (alertState.isCacheDrop) {
-                cacheWrap.style.color = MORANDI_3A.red;
+                cacheWrap.style.color = dangerTextColor;
                 cacheWrap.style.fontWeight = '600';
                 cacheWrap.style.opacity = '1';
-                cacheWrap.title = isEn
-                    ? 'Prompt Cache dropped! Full prefill causes 4-5m lag & high quota drain, run /compact now'
-                    : 'Prompt 缓存已脱落！当前全量重算未缓存输入，极易卡顿 4~5 分钟并加速消耗配额，建议立即 /compact';
+                cacheWrap.setAttribute('aria-label', isEn
+                    ? 'Context cache expired! Re-reading full history causes 4-5m lag & extra quota drain. Run /compact now'
+                    : '上下文缓存已失效！需要重读全部前文，可能卡顿 4~5 分钟并加速消耗额度，建议立即发 /compact 压缩');
             } else {
                 cacheWrap.style.color = '';
                 cacheWrap.style.fontWeight = '';
                 cacheWrap.style.opacity = '0.88';
-                cacheWrap.title = isEn ? 'Prompt Cache Hit Rate' : 'Prompt 缓存命中率';
+                cacheWrap.setAttribute('aria-label', isEn ? 'Context Cache Hit Rate' : '上下文缓存命中率');
             }
         }
         const cacheValSpan = capsuleBtn.querySelector('.agy-ctx-cache-val');
@@ -2305,7 +2381,7 @@
                 document.querySelectorAll('[data-agy-context-capsule="1"]').forEach((btn) => {
                     const fillRect = btn.querySelector?.('.agy-ctx-fill');
                     if (fillRect) {
-                        const nextColor = getEffectiveCapsuleColor(btn.__ctxUsageData);
+                        const nextColor = getEffectiveCapsuleColor(btn.__ctxUsageData, btn);
                         if (fillRect.getAttribute('fill') !== nextColor) {
                             fillRect.setAttribute('fill', nextColor);
                         }
@@ -2341,6 +2417,7 @@
             try {
                 document.querySelectorAll("[data-agy-context-capsule=\"1\"]").forEach(el => el.remove());
                 document.getElementById("__agy_ctx_capsule_tooltip__")?.remove();
+                document.getElementById(CAPSULE_STYLE_ID)?.remove();
             } catch {}
             try { delete window.__AGY_CTX_CAPSULE_API__; } catch {}
             window.__AGY_CTX_CAPSULE_ACTIVE__ = false;

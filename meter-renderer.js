@@ -138,6 +138,11 @@
       --ag-select-option-bg:#222226;
       --ag-select-option-fg:#ececef;
 
+      --ag-ease-out:cubic-bezier(0.16,1,0.3,1);
+      --ag-inset-highlight:inset 0 1px 0 rgba(255,255,255,0.06);
+      --ag-text-danger:#f87171;
+      --ag-text-warn:#fbbf24;
+
       color-scheme:dark;
       color:var(--ag-text-primary);
     }
@@ -239,6 +244,10 @@
       --ag-select-option-bg:#ffffff;
       --ag-select-option-fg:#18181b;
 
+      --ag-inset-highlight:inset 0 1px 0 rgba(255,255,255,0.65);
+      --ag-text-danger:#dc2626;
+      --ag-text-warn:#b45309;
+
       color-scheme:light;
       color:var(--ag-text-primary);
     }
@@ -254,7 +263,10 @@
     ::-webkit-scrollbar-thumb{background:var(--ag-scrollbar-thumb);border-radius:3px}
     ::-webkit-scrollbar-thumb:hover{background:var(--ag-scrollbar-hover)}
     button{font:inherit;color:inherit;cursor:pointer;background:none;border:0;padding:0}
-    button:focus-visible{outline:1.5px solid var(--ag-toolbar-border-focus);outline-offset:1px}
+    :is(button,[tabindex="0"],summary,select,input[type="checkbox"]):focus-visible{
+      outline:2px solid var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      outline-offset:1px;
+    }
 
     /* Basic Unit: 原生工具栏级别精密小单元 */
     .ag-unit{
@@ -263,7 +275,7 @@
       background:var(--ag-toolbar-bg);color:var(--ag-toolbar-fg);
       white-space:nowrap;font-variant-numeric:tabular-nums;
       font-size:12px;font-weight:500;letter-spacing:0;gap:4px;
-      transition:background-color .14s ease,color .14s ease,border-color .14s ease,opacity .14s ease;
+      transition:background-color .14s var(--ag-ease-out),color .14s ease,border-color .14s ease,opacity .14s ease,transform .08s ease;
       flex-shrink:0;
     }
     .ag-unit:hover,.ag-unit:focus-visible,.ag-unit[aria-expanded="true"]{
@@ -272,6 +284,7 @@
     }
     .ag-unit:active{
       background:var(--ag-toolbar-bg-active);
+      transform:scale(0.975) translateY(0.5px);
     }
 
     /* 单元 1: 上下文小圆环按钮（按内容自适应，圆环+百分比共存） */
@@ -332,7 +345,9 @@
     }
     #badge-quota[data-quota-state="available"] .quota-ring-fill{ stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)); }
     :host([data-theme="light"]) .quota-ring-fill,
-    :host([data-theme="light"]) #badge-quota[data-quota-state="available"] .quota-ring-fill{ stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed)); }
+    :host([data-panel-tone="light"]) .quota-ring-fill,
+    :host([data-theme="light"]) #badge-quota[data-quota-state="available"] .quota-ring-fill,
+    :host([data-panel-tone="light"]) #badge-quota[data-quota-state="available"] .quota-ring-fill{ stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed)); }
     #badge-quota[data-quota-state="low"] .quota-ring-fill{ stroke:#f59e0b; }
     #badge-quota[data-quota-state="exhausted"] .quota-ring-fill{ stroke:#ef4444; }
     #badge-quota[data-quota-state="no_permission"] .quota-ring-fill{ stroke:#a855f7; }
@@ -345,12 +360,15 @@
       white-space:nowrap;
       min-width:34px;text-align:center;
     }
-    #badge-quota[data-quota-state="exhausted"] .quota-badge-val{ color:#f87171; }
+    #badge-quota[data-quota-state="exhausted"] .quota-badge-val{ color:var(--ag-text-danger,#f87171); }
     #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#fb923c; }
     #badge-quota[data-quota-state="no_permission"] .quota-badge-val{ color:#c084fc; }
-    :host([data-theme="light"]) #badge-quota[data-quota-state="exhausted"] .quota-badge-val{ color:#dc2626; }
-    :host([data-theme="light"]) #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#ea580c; }
-    :host([data-theme="light"]) #badge-quota[data-quota-state="no_permission"] .quota-badge-val{ color:#7e22ce; }
+    :host([data-theme="light"]) #badge-quota[data-quota-state="exhausted"] .quota-badge-val,
+    :host([data-panel-tone="light"]) #badge-quota[data-quota-state="exhausted"] .quota-badge-val{ color:var(--ag-text-danger,#dc2626); }
+    :host([data-theme="light"]) #badge-quota[data-quota-state="error"] .quota-badge-val,
+    :host([data-panel-tone="light"]) #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#ea580c; }
+    :host([data-theme="light"]) #badge-quota[data-quota-state="no_permission"] .quota-badge-val,
+    :host([data-panel-tone="light"]) #badge-quota[data-quota-state="no_permission"] .quota-badge-val{ color:#7e22ce; }
     .quota-badge-tag{
       font-size:11px;font-weight:500;padding:0 5px;border-radius:4px;
       background:rgba(127,127,127,0.16);color:var(--ag-text-secondary);
@@ -461,8 +479,8 @@
     }
     #badge-cli:active,
     #badge-cli[data-pressed="true"]{
-      transform: scale(0.92);
-      background: rgba(127, 127, 127, 0.16);
+      transform: scale(0.96);
+      background: var(--ag-toolbar-bg-active);
     }
     #badge-cli[data-busy="true"]{
       cursor: wait;
@@ -486,7 +504,7 @@
 
     /* CLI 启动状态提示浮层 */
     #cli-launch-toast{
-      position:fixed;top:38px;right:140px;z-index:2147483650;
+      position:fixed;top:38px;right:140px;z-index:2147483647;
       max-width:360px;padding:7px 11px;border-radius:8px;
       border:1px solid var(--ag-float-border);
       background:var(--ag-float-bg);color:var(--ag-text-primary);
@@ -496,10 +514,11 @@
     #cli-launch-toast[hidden]{display:none!important}
     #cli-launch-toast[data-tone="error"]{
       border-color:rgba(239,68,68,0.45);
-      color:#f87171;
+      color:var(--ag-text-danger,#f87171);
     }
-    :host([data-theme="light"]) #cli-launch-toast[data-tone="error"]{
-      color:#dc2626;
+    :host([data-theme="light"]) #cli-launch-toast[data-tone="error"],
+    :host([data-panel-tone="light"]) #cli-launch-toast[data-tone="error"]{
+      color:var(--ag-text-danger,#dc2626);
     }
 
     /* 单元 4B: 统一设置按钮 */
@@ -562,7 +581,7 @@
 
     /* 上下文悬停信息气泡（严格还原参考图三层结构） */
     #context-tooltip{
-      position:fixed;top:0;left:0;z-index:2147483600;
+      position:fixed;top:0;left:0;z-index:2147483647;
       min-width:166px;max-width:268px;padding:9px 13px;
       border-radius:10px;border:1px solid var(--ag-float-border);
       background:var(--ag-float-bg);color:var(--ag-text-primary);
@@ -599,7 +618,7 @@
     #overflow-menu{
       box-sizing:border-box;
       position:fixed;top:36px;right:12px;z-index:2147483645;
-      width:220px;padding:6px;border-radius:10px;
+      width:220px;padding:4px;border-radius:12px;
       border:1px solid var(--ag-float-border);
       background:var(--ag-float-bg);color:var(--ag-text-primary);
       box-shadow:var(--ag-float-shadow);
@@ -608,14 +627,17 @@
     #overflow-menu[hidden]{display:none!important}
     .overflow-item{
       width:100%;display:flex;align-items:center;justify-content:space-between;
-      padding:7px 9px;border-radius:7px;font-size:12px;color:var(--ag-text-secondary);
-      text-align:left;transition:background-color .12s ease,color .12s ease;
+      padding:7px 9px;border-radius:8px;font-size:12px;color:var(--ag-text-secondary);
+      text-align:left;transition:background-color .12s ease,color .12s ease,transform .08s ease;
     }
     .overflow-item:hover,.overflow-item:focus-visible{
       background:var(--ag-toolbar-bg-hover);color:var(--ag-text-primary);
     }
-    .overflow-item-label{display:flex;align-items:center;gap:6px;font-weight:500}
-    .overflow-item-val{font-weight:600;font-variant-numeric:tabular-nums;color:var(--ag-text-primary)}
+    .overflow-item:active{
+      transform:scale(0.985) translateY(0.5px);
+    }
+    .overflow-item-label{display:flex;align-items:center;gap:6px;font-weight:500;min-width:0}
+    .overflow-item-val{font-weight:600;font-variant-numeric:tabular-nums;color:var(--ag-text-primary);flex-shrink:0}
 
     /* 详情二级抽屉折叠交互 */
     .tech-drawer{margin-top:10px;border-top:1px solid var(--ag-border-subtle);padding-top:9px}
@@ -623,45 +645,49 @@
       width:100%;display:flex;justify-content:space-between;align-items:center;
       background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
       border-radius:7px;padding:7px 11px;color:var(--ag-text-secondary);font-size:12.5px;font-weight:500;
-      cursor:pointer;transition:background-color .15s ease,border-color .15s ease,color .15s ease;
+      cursor:pointer;transition:background-color .15s ease,border-color .15s ease,color .15s ease,transform .08s ease;
     }
     .drawer-trigger:hover{background:var(--ag-bg-card-hover);color:var(--ag-text-primary);border-color:var(--ag-border-card)}
-    .drawer-trigger-left{display:flex;align-items:center;gap:6px}
-    .drawer-arrow{font-size:11.5px;color:var(--ag-text-muted);font-weight:600}
+    .drawer-trigger:active{transform:scale(0.99) translateY(0.5px)}
+    .drawer-trigger-left{display:flex;align-items:center;gap:6px;min-width:0}
+    .drawer-arrow{font-size:11.5px;color:var(--ag-text-muted);font-weight:600;white-space:nowrap;flex-shrink:0}
     .drawer-body{margin-top:9px}
 
     /* 自定义颜色设置网格与自定义颜色选取器面板 */
-    .color-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:6px}
+    .color-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:6px}
     .color-item{
       display:flex;align-items:center;justify-content:space-between;gap:6px;
-      padding:6px 8px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      padding:6px 8px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);min-width:0;
     }
-    .color-item-lbl{font-size:12px;color:var(--ag-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .color-item-lbl{font-size:12px;color:var(--ag-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
     .color-item-ctrls{display:flex;align-items:center;gap:4px;flex-shrink:0}
     .color-picker{display:none!important}
     .color-swatch-btn{
       width:20px;height:20px;padding:0;border:1px solid var(--ag-border-card);
       border-radius:4px;background:var(--swatch-color,#7748cf);cursor:pointer;
       display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
-      box-shadow:inset 0 0 0 1px rgba(0,0,0,0.18);transition:border-color .12s ease;
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,0.18);transition:border-color .12s ease,transform .08s ease;
     }
     .color-swatch-btn:hover{border-color:var(--ag-text-primary)}
+    .color-swatch-btn:active{transform:scale(0.94)}
     .color-reset-btn{
-      font-size:11.5px;padding:2px 7px;border-radius:4px;
+      font-size:11.5px;padding:2px 7px;border-radius:4px;white-space:nowrap;
       border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-muted);
+      transition:background-color .12s ease,color .12s ease,transform .08s ease;
     }
     .color-reset-btn:hover{color:var(--ag-text-primary);background:var(--ag-btn-hover)}
+    .color-reset-btn:active{transform:scale(0.975) translateY(0.5px)}
     .color-reset-btn[data-mode="auto"]{opacity:0.55}
 
     /* 自定义颜色选取器悬浮面板（参考样式：吸管 + 预设圆点 + SV主色区 + 色相条 + HEX/RGB/HSL三行） */
     #color-picker-popover{
-      position:fixed;z-index:2147483640;width:304px;max-height:calc(100vh - 48px);overflow-y:auto;
+      position:fixed;z-index:2147483646;width:304px;max-height:calc(100vh - 48px);overflow-y:auto;
       background:var(--ag-bg-panel);color:var(--ag-text-primary);
       border:1px solid var(--ag-border-panel);border-radius:10px;
       box-shadow:var(--ag-shadow-panel);padding:12px;
       user-select:none;
       opacity:1;transform:none;
-      transition:opacity 170ms cubic-bezier(0.16, 1, 0.3, 1), transform 170ms cubic-bezier(0.16, 1, 0.3, 1);
+      transition:opacity 170ms var(--ag-ease-out), transform 170ms var(--ag-ease-out);
       pointer-events:auto;
     }
     #color-picker-popover[hidden]{display:none!important}
@@ -686,9 +712,11 @@
     }
     .switch-pill-btn{
       border:0;background:transparent;color:var(--ag-text-muted);font-size:12px;font-weight:500;
-      padding:3px 9px;border-radius:4px;cursor:pointer;transition:background-color .12s,color .12s;
+      padding:3px 9px;border-radius:4px;cursor:pointer;white-space:nowrap;
+      transition:background-color .12s ease,color .12s ease,transform .08s ease;
     }
     .switch-pill-btn:hover{color:var(--ag-text-primary)}
+    .switch-pill-btn:active:not(:disabled){transform:scale(0.975) translateY(0.5px)}
     .switch-pill-btn.active{
       background:var(--ag-unified-bg);color:var(--ag-text-primary);font-weight:600;
       box-shadow:0 1px 3px rgba(0,0,0,0.18);
@@ -696,17 +724,20 @@
     .plan-summary-price-badge{
       display:inline-flex;align-items:center;gap:4px;
       padding:3px 10px;border-radius:999px;
-      font-size:11.5px;font-weight:600;white-space:nowrap;
+      font-size:11.5px;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums;
       cursor:pointer;flex-shrink:0;user-select:none;
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
       border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
-      transition:background 0.2s cubic-bezier(0.16,1,0.3,1), border-color 0.2s cubic-bezier(0.16,1,0.3,1);
+      transition:background 0.2s var(--ag-ease-out), border-color 0.2s var(--ag-ease-out), transform 0.08s ease;
     }
     .plan-summary-price-badge:hover{
       background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
       border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+    }
+    .plan-summary-price-badge:active{
+      transform:scale(0.975) translateY(0.5px);
     }
     .plan-summary-price-badge.is-animating{
       border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
@@ -762,7 +793,7 @@
       padding:8px 12px;margin-bottom:10px;font-size:12.5px;
     }
     .plan-summary-badge{
-      display:inline-flex;align-items:center;gap:6px;font-weight:600;
+      display:inline-flex;align-items:center;gap:6px;font-weight:600;min-width:0;
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default));
     }
     .plan-detail-dl{
@@ -785,12 +816,13 @@
       min-width:0;
       color:var(--ag-text-primary);
       font-size:12.5px;
+      font-variant-numeric:tabular-nums;
       line-height:1.5;
       overflow-wrap:break-word;
     }
     @media (max-width: 600px) {
       .plan-detail-dl{
-        grid-template-columns:1fr;
+        grid-template-columns:minmax(0,1fr);
         gap:3px 0;
       }
       .plan-detail-dl dt{
@@ -822,13 +854,13 @@
     /* 适度调和、略亮半度但温润自然的药丸编辑按钮 */
     .plan-edit-pill-btn{
       display:inline-flex;align-items:center;gap:5px;
-      padding:4px 12px;border-radius:6px;
+      padding:4px 12px;border-radius:6px;white-space:nowrap;
       font-size:12px;font-weight:500;
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
       border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));
       cursor:pointer;user-select:none;
-      transition:background-color 0.16s ease,border-color 0.16s ease,color 0.16s ease;
+      transition:background-color 0.16s ease,border-color 0.16s ease,color 0.16s ease,transform 0.08s ease;
     }
     .plan-edit-pill-btn:hover{
       background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
@@ -837,13 +869,16 @@
     }
     .plan-edit-pill-btn:active{
       background:var(--ag-accent-bg-hover,rgba(167,139,250,0.28));
+      transform:scale(0.975) translateY(0.5px);
     }
-    :host([data-theme="light"]) .plan-edit-pill-btn{
+    :host([data-theme="light"]) .plan-edit-pill-btn,
+    :host([data-panel-tone="light"]) .plan-edit-pill-btn{
       background:var(--ag-accent-bg,rgba(124,58,237,0.10));
       border-color:var(--ag-accent-border,rgba(124,58,237,0.28));
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));
     }
-    :host([data-theme="light"]) .plan-edit-pill-btn:hover{
+    :host([data-theme="light"]) .plan-edit-pill-btn:hover,
+    :host([data-panel-tone="light"]) .plan-edit-pill-btn:hover{
       background:var(--ag-accent-bg-hover,rgba(124,58,237,0.16));
       border-color:var(--ag-accent-border-hover,rgba(124,58,237,0.44));
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));
@@ -862,7 +897,7 @@
       border:1px solid var(--ag-border-subcard);
       border-radius:5px;
       cursor:pointer;user-select:none;
-      transition:background .15s cubic-bezier(0.16,1,0.3,1),border-color .15s cubic-bezier(0.16,1,0.3,1),box-shadow .15s cubic-bezier(0.16,1,0.3,1);
+      transition:background .15s var(--ag-ease-out),border-color .15s var(--ag-ease-out),box-shadow .15s var(--ag-ease-out);
     }
     #plan-custom-form input:not([type="checkbox"]):not([type="radio"]),
     #plan-custom-form select,
@@ -870,7 +905,7 @@
       height:28px;
       min-height:28px;
       padding:0 8px !important;
-      font-size:11px;
+      font-size:11.5px;
       line-height:26px;
       border-radius:5px !important;
       box-sizing:border-box;
@@ -881,14 +916,18 @@
       align-items:center;
     }
     #plan-custom-form input:not([type="checkbox"]):not([type="radio"]):focus,
-    .unlock-input:focus{
+    #plan-custom-form input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+    .unlock-input:focus,
+    .unlock-input:focus-visible{
       border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)) !important;
+      box-shadow:0 0 0 2px var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
     }
     .ag-dropdown-trigger:hover{
       background:rgba(255,255,255,0.08);
       border-color:rgba(255,255,255,0.22);
     }
-    :host([data-theme="light"]) .ag-dropdown-trigger:hover{
+    :host([data-theme="light"]) .ag-dropdown-trigger:hover,
+    :host([data-panel-tone="light"]) .ag-dropdown-trigger:hover{
       background:rgba(0,0,0,0.05);
       border-color:rgba(0,0,0,0.22);
     }
@@ -900,7 +939,7 @@
     .ag-dropdown-arrow{
       width:10px;height:10px;display:flex;align-items:center;justify-content:center;
       flex-shrink:0;opacity:0.65;
-      transition:transform 0.2s cubic-bezier(0.16,1,0.3,1),opacity 0.2s ease;
+      transition:transform 0.2s var(--ag-ease-out),opacity 0.2s ease;
     }
     .ag-dropdown-wrapper.is-open .ag-dropdown-arrow{
       transform:rotate(180deg);opacity:1;
@@ -916,12 +955,12 @@
       max-height:240px;overflow-y:auto;overflow-anchor:none;
       background:var(--ag-unified-bg,#1e1e24);
       border:1px solid var(--ag-float-border,rgba(255,255,255,0.14));
-      border-radius:7px;
-      box-shadow:0 16px 40px rgba(0,0,0,0.65),0 4px 12px rgba(0,0,0,0.4);
+      border-radius:10px;
+      box-shadow:var(--ag-shadow-panel);
       padding:4px;z-index:2147483647 !important;
       opacity:0;transform:translateY(-6px) scale(0.97);
       transform-origin:top center;pointer-events:none;
-      transition:opacity 0.16s cubic-bezier(0.16,1,0.3,1),transform 0.16s cubic-bezier(0.16,1,0.3,1);
+      transition:opacity 0.16s var(--ag-ease-out),transform 0.16s var(--ag-ease-out);
     }
     .ag-dropdown-search-wrap{
       position:sticky;top:-4px;margin:-4px -4px 4px -4px;padding:6px;
@@ -936,15 +975,17 @@
       border-radius:4px;padding:5px 8px;font-size:12.5px;
       color:var(--ag-text-primary);outline:none;
     }
-    .ag-dropdown-search-input:focus{
+    .ag-dropdown-search-input:focus,
+    .ag-dropdown-search-input:focus-visible{
       border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      box-shadow:0 0 0 2px var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
     }
     .ag-dropdown-wrapper.is-open .ag-dropdown-menu{
       opacity:1;transform:none;pointer-events:auto;
     }
     .ag-dropdown-item{
       display:flex;align-items:center;justify-content:space-between;gap:6px;
-      padding:6px 9px;border-radius:5px;
+      padding:6px 9px;border-radius:6px;
       font-size:12.5px;color:var(--ag-text-secondary);
       cursor:pointer;user-select:none;
       transition:background 0.12s ease,color 0.12s ease;
@@ -952,7 +993,8 @@
     .ag-dropdown-item:hover{
       background:rgba(255,255,255,0.08);color:var(--ag-text-primary);
     }
-    :host([data-theme="light"]) .ag-dropdown-item:hover{
+    :host([data-theme="light"]) .ag-dropdown-item:hover,
+    :host([data-panel-tone="light"]) .ag-dropdown-item:hover{
       background:rgba(0,0,0,0.05);color:var(--ag-text-primary);
     }
     .ag-dropdown-item.is-selected{
@@ -960,7 +1002,7 @@
       font-weight:600;background:var(--ag-accent-bg,rgba(167,139,250,0.12));
     }
     .ag-dropdown-item-check{
-      font-size:10px;opacity:0;color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      font-size:11px;opacity:0;color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .ag-dropdown-item.is-selected .ag-dropdown-item-check{
       opacity:1;
@@ -968,7 +1010,8 @@
     .ag-dropdown-item.is-keyboard-focus{
       background:rgba(255,255,255,0.12);outline:1px solid var(--ag-accent-border-hover,rgba(167,139,250,0.4));
     }
-    :host([data-theme="light"]) .ag-dropdown-item.is-keyboard-focus{
+    :host([data-theme="light"]) .ag-dropdown-item.is-keyboard-focus,
+    :host([data-panel-tone="light"]) .ag-dropdown-item.is-keyboard-focus{
       background:rgba(0,0,0,0.08);outline:1px solid var(--ag-accent-border-hover,rgba(124,58,237,0.4));
     }
     .ag-dropdown-wrapper.open-up .ag-dropdown-menu{
@@ -1001,28 +1044,32 @@
       transition:opacity 0.18s ease;
     }
     .round-cost-bar{
-      display:flex;align-items:center;justify-content:space-between;gap:8px;
+      display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;
       background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;
-      padding:6px 10px;margin:6px 0 8px;font-size:12.5px;
+      padding:6px 10px;margin:6px 0 8px;font-size:12.5px;font-variant-numeric:tabular-nums;
     }
+    #cost-estimate-card{font-variant-numeric:tabular-nums}
     .cp-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
-    .cp-title{font-size:12.5px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px}
+    .cp-title{font-size:12.5px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px;min-width:0}
     .cp-target-lbl{font-size:11px;font-weight:400;color:var(--ag-text-muted)}
     .cp-toolbar{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:9px}
     .cp-eyedropper-btn{
-      display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;
+      display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;white-space:nowrap;
       border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-primary);
       font-size:11.5px;font-weight:500;cursor:pointer;flex-shrink:0;
+      transition:background-color .12s ease,border-color .12s ease,transform .08s ease;
     }
     .cp-eyedropper-btn:hover{background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    .cp-eyedropper-btn:active{transform:scale(0.975) translateY(0.5px)}
     .cp-presets{display:flex;align-items:center;gap:5px}
     .cp-preset-dot{
       width:16px;height:16px;border-radius:50%;border:1.5px solid rgba(255,255,255,0.22);
       cursor:pointer;padding:0;transition:transform .12s ease;
     }
-    :host([data-theme="light"]) .cp-preset-dot{border-color:rgba(0,0,0,0.18)}
+    :host([data-theme="light"]) .cp-preset-dot,
+    :host([data-panel-tone="light"]) .cp-preset-dot{border-color:rgba(0,0,0,0.18)}
     .cp-preset-dot:hover{transform:scale(1.16)}
-    .cp-stage{display:grid;grid-template-columns:16px 1fr;gap:8px;margin-bottom:8px}
+    .cp-stage{display:grid;grid-template-columns:16px minmax(0,1fr);gap:8px;margin-bottom:8px}
     .cp-side-preview{border-radius:6px;border:1px solid var(--ag-border-card);background:#652ab7}
     .cp-sv-area{
       position:relative;height:132px;border-radius:7px;overflow:hidden;cursor:crosshair;
@@ -1047,9 +1094,14 @@
     }
     .cp-rows{display:flex;flex-direction:column;gap:6px}
     .cp-row{
-      display:grid;grid-template-columns:36px 1fr 24px;align-items:center;gap:6px;
+      display:grid;grid-template-columns:36px minmax(0,1fr) 24px;align-items:center;gap:6px;
       background:var(--ag-bg-subcard);border:1px solid var(--ag-border-card);
       border-radius:6px;padding:4px 7px;
+      transition:border-color .14s ease,box-shadow .14s ease;
+    }
+    .cp-row:focus-within{
+      border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      box-shadow:0 0 0 2px var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
     }
     .cp-fmt-lbl{font-size:11px;font-weight:600;color:var(--ag-text-muted)}
     .cp-fmt-input{
@@ -1058,10 +1110,12 @@
       outline:none;padding:1px 2px;
     }
     .cp-copy-btn{
-      border:0;background:transparent;color:var(--ag-text-muted);cursor:pointer;
+      border:0;background:transparent;color:var(--ag-text-muted);cursor:pointer;white-space:nowrap;
       font-size:11.5px;padding:2px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;
+      transition:background-color .12s ease,color .12s ease,transform .08s ease;
     }
     .cp-copy-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
+    .cp-copy-btn:active{transform:scale(0.95)}
     .cp-footer{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:7px;border-top:1px solid var(--ag-border-subtle)}
 
     /* 弹出面板：上下文 (#panel) 与 Token 用量一览 (#panel-tokens) 独立面板 */
@@ -1069,11 +1123,13 @@
       box-sizing:border-box;
       position:fixed;top:38px;left:auto;right:16px;z-index:2147483645;
       max-width:calc(100vw - 24px);max-height:calc(100vh - 54px);
-      overflow:auto;overflow-anchor:none;border:1px solid var(--ag-border-panel);border-radius:10px;
-      background:var(--ag-bg-panel);color:var(--ag-text-primary);box-shadow:var(--ag-shadow-panel);padding:14px 14px 18px;
+      overflow:auto;overflow-anchor:none;border:1px solid var(--ag-border-panel);border-radius:14px;
+      background:var(--ag-bg-panel);color:var(--ag-text-primary);
+      box-shadow:var(--ag-shadow-panel),var(--ag-inset-highlight);
+      padding:12px 14px 16px;
       opacity:1;transform:none;visibility:visible;pointer-events:auto;
       transform-origin:top right;
-      transition:opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1),visibility .16s ease;
+      transition:opacity .16s var(--ag-ease-out),transform .16s var(--ag-ease-out),visibility .16s ease;
     }
     .ag-panel.ag-panel-flex{
       display:flex;flex-direction:column;overflow:hidden;padding:0;
@@ -1088,7 +1144,7 @@
     }
     #panel{width:500px;max-width:calc(100vw - 24px)}
     #panel-quota{width:500px;max-width:calc(100vw - 24px)}
-    #panel-tokens{width:730px;transition:width .22s cubic-bezier(0.16,1,0.3,1),max-width .22s cubic-bezier(0.16,1,0.3,1),opacity .16s cubic-bezier(0.16,1,0.3,1),transform .16s cubic-bezier(0.16,1,0.3,1)}
+    #panel-tokens{width:730px;transition:width .22s var(--ag-ease-out),max-width .22s var(--ag-ease-out),opacity .16s var(--ag-ease-out),transform .16s var(--ag-ease-out)}
     #panel-tokens.cost-compact-view{width:400px!important;max-width:calc(100vw - 24px)}
     .ag-panel[hidden]{display:block!important;opacity:0;transform:translateY(-6px);visibility:hidden;pointer-events:none}
 
@@ -1102,21 +1158,23 @@
 
     /* 顶栏控制条（sticky 固定，防止表单或详情展开时滚出视口） */
     .panel-header-bar{
-      position:sticky;top:-14px;background:var(--ag-bg-panel);z-index:20;
-      margin-top:-14px;padding-top:14px;
+      position:sticky;top:-12px;background:var(--ag-bg-panel);z-index:20;
+      margin-top:-12px;padding-top:12px;
       display:flex;justify-content:space-between;align-items:center;
       border-bottom:1px solid var(--ag-border-subtle);padding-bottom:9px;margin-bottom:11px
     }
-    .panel-title{display:flex;align-items:center;gap:5px}
+    .panel-title{display:flex;align-items:center;gap:5px;min-width:0}
     .panel-title-tokens{color:var(--ag-custom-token-accent,var(--ag-token-accent-default))}
-    .panel-header-actions{display:flex;align-items:center;gap:4px}
+    .panel-header-actions{display:flex;align-items:center;gap:4px;flex-shrink:0}
 
     .panel-icon-btn{
       background:none;border:0;color:var(--ag-text-muted);font-size:12px;line-height:1;
-      padding:4px 7px;border-radius:6px;cursor:pointer;transition:background-color .14s ease,color .14s ease;
+      padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;
+      transition:background-color .14s ease,color .14s ease,transform .08s ease;
       display:inline-flex;align-items:center;justify-content:center;gap:3px;
     }
     .panel-icon-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
+    .panel-icon-btn:active{transform:scale(0.95)}
     #close,#close-tokens,#close-quota{font-size:16px;padding:2px 7px}
 
     /* 模型额度看板面板 (#panel-quota) */
@@ -1128,10 +1186,12 @@
       opacity:1;visibility:visible;
       transition:opacity .18s ease,visibility .18s ease;
     }
-    :host([data-theme="light"]) .quota-refresh-feedback{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28))}
+    :host([data-theme="light"]) .quota-refresh-feedback,
+    :host([data-panel-tone="light"]) .quota-refresh-feedback{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28))}
     .quota-refresh-feedback[hidden]{display:inline-flex!important;opacity:0;visibility:hidden;pointer-events:none}
-    .quota-refresh-btn{gap:4px;font-size:12px;padding:4px 9px;border:1px solid var(--ag-btn-border);border-radius:6px;background:var(--ag-btn-bg);color:var(--ag-text-secondary);transition:background .15s ease,border-color .15s ease,color .15s ease}
+    .quota-refresh-btn{gap:4px;font-size:12px;padding:4px 9px;white-space:nowrap;border:1px solid var(--ag-btn-border);border-radius:6px;background:var(--ag-btn-bg);color:var(--ag-text-secondary);transition:background .15s ease,border-color .15s ease,color .15s ease,transform .08s ease}
     .quota-refresh-btn:not(:disabled):hover{color:var(--ag-text-primary);background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    .quota-refresh-btn:not(:disabled):active{transform:scale(0.975) translateY(0.5px)}
     .quota-refresh-btn[disabled]{cursor:progress;color:var(--ag-text-primary);background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
     .quota-refresh-icon{display:inline-block;transform-origin:center}
     @media (max-width:440px){.quota-refresh-feedback[hidden]{display:none!important}}
@@ -1166,14 +1226,15 @@
     .quota-cur-alert[data-kind="notice"]{background:var(--ag-accent-bg);border-color:var(--ag-accent-border)}
     .quota-buckets-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
     .quota-bucket-row{display:flex;flex-direction:column;gap:4px}
-    .quota-bucket-meta{display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:6px}
-    .quota-bucket-name{color:var(--ag-text-secondary);font-weight:500}
-    .quota-bucket-val{font-weight:600;font-variant-numeric:tabular-nums;color:var(--ag-text-primary);text-align:right}
+    .quota-bucket-meta{display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:6px;min-width:0}
+    .quota-bucket-name{color:var(--ag-text-secondary);font-weight:500;min-width:0}
+    .quota-bucket-val{font-weight:600;font-variant-numeric:tabular-nums;color:var(--ag-text-primary);text-align:right;flex-shrink:0}
     .quota-pct-num{display:inline-block;min-width:34px;text-align:right;font-variant-numeric:tabular-nums}
     .quota-bucket-est{font-size:11.5px;color:var(--ag-text-muted);line-height:1.4;font-variant-numeric:tabular-nums}
     .quota-bar-track{position:relative;width:100%;height:5px;border-radius:3px;background:var(--ag-track-bg);overflow:hidden}
     .quota-bar-fill{width:100%;height:100%;border-radius:3px;background:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));transform-origin:left center;transform:scaleX(var(--quota-scale,0));transition:transform .22s cubic-bezier(0.22,1,0.36,1),background-color .18s ease;will-change:transform}
-    :host([data-theme="light"]) .quota-bar-fill{background:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
+    :host([data-theme="light"]) .quota-bar-fill,
+    :host([data-panel-tone="light"]) .quota-bar-fill{background:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
     .quota-bar-fill[data-status="low"]{background:#f59e0b}
     .quota-bar-fill[data-status="exhausted"]{background:#ef4444}
     .quota-bar-fill[data-status="no_permission"]{background:#a855f7}
@@ -1190,13 +1251,16 @@
     .quota-bar-charge-stage[data-status="exhausted"]{
       --quota-charge-bg:linear-gradient(90deg,rgba(239,68,68,0.92) 0%,#f87171 62%,#fecaca 100%);
     }
-    :host([data-theme="light"]) .quota-bar-charge-stage{
+    :host([data-theme="light"]) .quota-bar-charge-stage,
+    :host([data-panel-tone="light"]) .quota-bar-charge-stage{
       --quota-charge-bg:linear-gradient(90deg,var(--ag-accent-border-hover,rgba(124,58,237,0.75)) 0%,var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed)) 68%,rgba(255,255,255,0.85) 100%);
     }
-    :host([data-theme="light"]) .quota-bar-charge-stage[data-status="low"]{
+    :host([data-theme="light"]) .quota-bar-charge-stage[data-status="low"],
+    :host([data-panel-tone="light"]) .quota-bar-charge-stage[data-status="low"]{
       --quota-charge-bg:linear-gradient(90deg,rgba(217,119,6,0.94) 0%,#fbbf24 68%,#fef3c7 100%);
     }
-    :host([data-theme="light"]) .quota-bar-charge-stage[data-status="exhausted"]{
+    :host([data-theme="light"]) .quota-bar-charge-stage[data-status="exhausted"],
+    :host([data-panel-tone="light"]) .quota-bar-charge-stage[data-status="exhausted"]{
       --quota-charge-bg:linear-gradient(90deg,rgba(220,38,38,0.94) 0%,#f87171 68%,#fee2e2 100%);
     }
     .quota-bar-charge-fill{
@@ -1233,16 +1297,18 @@
     .quota-pools-list{display:flex;flex-direction:column;gap:8px}
     .quota-pool-card{
       background:var(--ag-bg-card);border:1px solid var(--ag-border-card);
-      border-radius:8px;padding:10px 12px;cursor:pointer;transition:border-color .14s ease,background-color .14s ease;
+      border-radius:8px;padding:10px 12px;cursor:pointer;transition:border-color .14s ease,background-color .14s ease,transform .08s ease;
     }
     .quota-pool-card:hover{border-color:var(--ag-btn-border-hover)}
+    .quota-pool-card:active{transform:scale(0.99) translateY(0.5px)}
     .quota-pool-card[data-active-current="true"]{border-color:var(--ag-accent-border)}
     .quota-pool-card[data-browsing="true"]{box-shadow:inset 0 0 0 1px var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
-    .quota-pool-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px}
-    .quota-pool-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);line-height:1.35}
+    .quota-pool-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;min-width:0}
+    .quota-pool-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);line-height:1.35;min-width:0;text-wrap:balance}
     .quota-pool-tags{display:flex;align-items:center;gap:4px;flex-shrink:0;flex-wrap:wrap}
-    .quota-current-tag{font-size:11px;padding:1px 6px;border-radius:9px;background:var(--ag-accent-bg,rgba(167,139,250,0.14));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));font-weight:600}
-    :host([data-theme="light"]) .quota-current-tag{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28))}
+    .quota-current-tag{font-size:11px;padding:1px 6px;border-radius:9px;background:var(--ag-accent-bg,rgba(167,139,250,0.14));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));font-weight:600;white-space:nowrap}
+    :host([data-theme="light"]) .quota-current-tag,
+    :host([data-panel-tone="light"]) .quota-current-tag{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28))}
     .quota-models-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;padding-top:6px;border-top:1px solid var(--ag-border-subcard)}
     .quota-model-chip{
       display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:5px;
@@ -1252,61 +1318,67 @@
     .quota-chip-efforts{font-size:11px;color:var(--ag-text-muted)}
     .quota-chip-notice{font-size:11px;padding:0 4px;border-radius:3px;background:var(--ag-accent-bg,rgba(167,139,250,0.14));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
     .quota-chip-noperm{font-size:11px;padding:0 4px;border-radius:3px;background:rgba(168,85,247,0.15);color:#c084fc}
-    .quota-basis-note{margin-top:10px;padding-top:8px;border-top:1px solid var(--ag-border-subtle);font-size:12px;color:var(--ag-text-muted);line-height:1.5}
-    .quota-usage-tip{margin-top:6px;padding:7px 9px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);font-size:12px;color:var(--ag-text-secondary);line-height:1.5}
+    .quota-basis-note{margin-top:10px;padding-top:8px;border-top:1px solid var(--ag-border-subtle);font-size:12px;color:var(--ag-text-muted);line-height:1.5;text-wrap:pretty}
+    .quota-usage-tip{margin-top:6px;padding:7px 9px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);font-size:12px;color:var(--ag-text-secondary);line-height:1.5;text-wrap:pretty}
 
-    h3{margin:0;font-size:14px;font-weight:600;color:var(--ag-text-primary)}
-    h4{margin:12px 0 5px;font-size:12.5px;font-weight:600;color:var(--ag-text-secondary)}
+    h3{margin:0;font-size:14px;font-weight:600;color:var(--ag-text-primary);text-wrap:balance}
+    h4{margin:12px 0 5px;font-size:12.5px;font-weight:600;color:var(--ag-text-secondary);text-wrap:balance}
     p{margin:5px 0;color:var(--ag-text-muted)}
-    .drawer-body dl{display:grid;grid-template-columns:1fr auto;gap:5px;margin:0}
+    .drawer-body dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px;margin:0}
     .drawer-body dt{color:var(--ag-text-muted)}
     .drawer-body dd{margin:0;text-align:right;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow-wrap:anywhere;max-width:270px}
 
     #key-summary{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:6px 0 10px}
-    .key-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
-    .key-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:5px}
-    .key-pill{font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:10px;border:1px solid transparent}
+    .key-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;gap:8px;min-width:0}
+    .key-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:5px;min-width:0;text-wrap:balance}
+    .key-pill{font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:10px;border:1px solid transparent;white-space:nowrap;flex-shrink:0}
     .pill-good, .pill-ok{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));background:var(--ag-accent-bg,rgba(167,139,250,0.14));border-color:var(--ag-accent-border,rgba(167,139,250,0.34))}
-    :host([data-theme="light"]) .pill-good, :host([data-theme="light"]) .pill-ok{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28))}
+    :host([data-theme="light"]) .pill-good, :host([data-theme="light"]) .pill-ok,
+    :host([data-panel-tone="light"]) .pill-good, :host([data-panel-tone="light"]) .pill-ok{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28))}
     .pill-info{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));background:var(--ag-accent-bg,rgba(167,139,250,0.12));border-color:var(--ag-accent-border,rgba(167,139,250,0.28))}
-    :host([data-theme="light"]) .pill-info{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.26))}
-    .pill-warn{color:#fbbf24;background:rgba(251,191,36,0.12);border-color:rgba(251,191,36,0.28)}
-    :host([data-theme="light"]) .pill-warn{color:#d97706;background:rgba(217,119,6,0.09);border-color:rgba(217,119,6,0.26)}
-    .pill-danger{color:#f87171;background:rgba(248,113,113,0.12);border-color:rgba(248,113,113,0.28)}
-    :host([data-theme="light"]) .pill-danger{color:#dc2626;background:rgba(220,38,38,0.09);border-color:rgba(220,38,38,0.26)}
+    :host([data-theme="light"]) .pill-info,
+    :host([data-panel-tone="light"]) .pill-info{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.26))}
+    .pill-warn{color:var(--ag-text-warn,#fbbf24);background:rgba(251,191,36,0.12);border-color:rgba(251,191,36,0.28)}
+    :host([data-theme="light"]) .pill-warn,
+    :host([data-panel-tone="light"]) .pill-warn{color:var(--ag-text-warn,#b45309);background:rgba(217,119,6,0.09);border-color:rgba(217,119,6,0.26)}
+    .pill-danger{color:var(--ag-text-danger,#f87171);background:rgba(248,113,113,0.12);border-color:rgba(248,113,113,0.28)}
+    :host([data-theme="light"]) .pill-danger,
+    :host([data-panel-tone="light"]) .pill-danger{color:var(--ag-text-danger,#dc2626);background:rgba(220,38,38,0.09);border-color:rgba(220,38,38,0.26)}
     .pill-muted{color:var(--ag-pill-muted-text);background:var(--ag-pill-muted-bg);border-color:var(--ag-pill-muted-border)}
 
     .key-bar-track{width:100%;height:6px;background:var(--ag-custom-ring-track,var(--ag-track-bg));border-radius:3px;overflow:hidden;margin-bottom:9px}
-    .key-bar-fill{height:100%;width:0%;border-radius:3px;background:var(--ag-custom-ring-used,var(--bar-color,#69c0ff));transition:width .24s ease,background-color .2s ease}
+    .key-bar-fill{height:100%;width:0%;border-radius:3px;background:var(--ag-custom-ring-used,var(--bar-color,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))));transition:width .24s ease,background-color .2s ease}
     :host([data-occupancy="warn"]) .key-bar-fill{background:var(--ag-ring-warn)}
     :host([data-occupancy="danger"]) .key-bar-fill{background:var(--ag-ring-danger)}
-    .key-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;margin-bottom:7px}
-    .key-stat{background:var(--ag-bg-subcard);padding:7px 5px;border-radius:6px;border:1px solid var(--ag-border-subcard)}
+    .key-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;text-align:center;margin-bottom:7px}
+    .key-stat{background:var(--ag-bg-subcard);padding:7px 5px;border-radius:6px;border:1px solid var(--ag-border-subcard);min-width:0}
     .key-stat-label{font-size:11.5px;color:var(--ag-text-muted);margin-bottom:2px}
     .key-stat-val{font-size:13.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     #key-used{color:var(--ag-custom-context-text,var(--ag-text-primary))}
-    .key-takeaway{font-size:12px;color:var(--ag-text-secondary);padding-top:6px;border-top:1px solid var(--ag-border-subcard);line-height:1.5}
+    .key-takeaway{font-size:12px;color:var(--ag-text-secondary);padding-top:6px;border-top:1px solid var(--ag-border-subcard);line-height:1.5;text-wrap:pretty}
 
     #status{padding:7px 10px;border:0;border-left:2.5px solid var(--tone,#666);border-radius:4px;background:var(--ag-bg-status);color:var(--ag-text-status);font-weight:500;font-size:12px}
     #model{overflow-wrap:anywhere;font-size:12px;color:var(--ag-text-muted)}
-    #note,#coverage,#updated{font-size:11.5px;color:var(--ag-text-muted)}
-    #refresh{border:1px solid var(--ag-btn-border);border-radius:6px;background:var(--ag-btn-bg);color:var(--ag-btn-text);padding:4px 10px;margin-top:8px;transition:background-color .14s ease,border-color .14s ease}
+    #note,#coverage,#updated{font-size:11.5px;color:var(--ag-text-muted);text-wrap:pretty}
+    #refresh{border:1px solid var(--ag-btn-border);border-radius:6px;background:var(--ag-btn-bg);color:var(--ag-btn-text);padding:4px 10px;margin-top:8px;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease,transform .08s ease}
     #refresh:hover:not(:disabled){background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    #refresh:active:not(:disabled){transform:scale(0.975) translateY(0.5px)}
 
     #files{max-height:220px;overflow:auto}
     .file{padding:7px 0;border-top:1px solid var(--ag-border-subtle)}
     .file-name{overflow-wrap:anywhere;color:var(--ag-text-primary)}
     .file-detail{color:var(--ag-text-muted);font-size:12px}
-    .file-unknown{color:#e6b865;font-size:12px}
-    :host([data-theme="light"]) .file-unknown{color:#b45309}
-    #v{color:var(--ag-text-muted);font-size:11px;font-weight:400;margin-left:6px}
+    .file-unknown{color:var(--ag-text-warn,#fbbf24);font-size:12px}
+    :host([data-theme="light"]) .file-unknown,
+    :host([data-panel-tone="light"]) .file-unknown{color:var(--ag-text-warn,#b45309)}
+    #v{color:var(--ag-text-muted);font-size:11px;font-weight:400;margin-left:6px;font-variant-numeric:tabular-nums}
 
     /* 全局 Token 用量一览 */
     #view-tokens{display:flex;flex-direction:column;gap:10px}
-    .token-stat-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-    .t-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:3px;transition:background-color .14s ease}
+    .token-stat-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+    .t-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:3px;min-width:0;transition:background-color .14s ease}
     .t-card:hover{background:var(--ag-bg-card-hover)}
-    .t-card-lbl{font-size:12px;color:var(--ag-text-muted);display:flex;justify-content:space-between}
+    .t-card-lbl{font-size:12px;color:var(--ag-text-muted);display:flex;justify-content:space-between;gap:4px;min-width:0}
     .t-card-val{font-size:17px;font-weight:600;color:var(--ag-text-primary);letter-spacing:0;font-variant-numeric:tabular-nums}
     #t-total-val{color:var(--ag-custom-token-total,var(--ag-text-primary))}
     #t-today-val{color:var(--ag-text-primary)}
@@ -1315,8 +1387,8 @@
 
     .heatmap-section{background:var(--ag-heat-bg);border:1px solid var(--ag-border-card);border-radius:10px;padding:12px}
     .heat-header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-    .heat-header-left{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-    .heat-title{font-size:13px;font-weight:600;color:var(--ag-text-primary)}
+    .heat-header-left{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+    .heat-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);text-wrap:balance}
     .first-use-badge{
       font-size:11px;font-weight:500;color:var(--ag-text-secondary);
       background:var(--ag-bg-subcard);border:1px solid var(--ag-border-card);
@@ -1325,9 +1397,11 @@
     .heat-win-nav{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
     .heat-nav-btn{
       border:1px solid var(--ag-btn-border);background:var(--ag-btn-bg);color:var(--ag-text-secondary);
-      border-radius:4px;padding:1px 6px;font-size:11px;line-height:1.25;cursor:pointer;
+      border-radius:4px;padding:1px 6px;font-size:11px;line-height:1.25;cursor:pointer;white-space:nowrap;
+      transition:background-color .12s ease,color .12s ease,transform .08s ease;
     }
     .heat-nav-btn:hover:not(:disabled){background:var(--ag-btn-hover);color:var(--ag-text-primary)}
+    .heat-nav-btn:active:not(:disabled){transform:scale(0.94)}
     .heat-nav-btn:disabled{opacity:0.35;cursor:default}
     .heat-tabs{
       position:relative;display:inline-flex;align-items:center;
@@ -1348,14 +1422,15 @@
     .unlock-panel-content{padding:4px 0 2px;display:flex;flex-direction:column;gap:8px}
     .unlock-status-row{display:flex;justify-content:space-between;align-items:flex-start;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
     .unlock-label{font-size:12px;font-weight:600;color:var(--ag-text-primary);margin-bottom:2px}
-    .unlock-desc{font-size:12px;color:var(--ag-text-secondary);line-height:1.45}
+    .unlock-desc{font-size:12px;color:var(--ag-text-secondary);line-height:1.45;text-wrap:pretty}
     .unlock-notice{background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
     .unlock-notice-title{font-size:12px;font-weight:600;color:var(--ag-text-primary);margin-bottom:4px}
-    .unlock-notice-list{margin:0;padding-left:14px;font-size:12px;color:var(--ag-text-secondary);line-height:1.55}
+    .unlock-notice-list{margin:0;padding-left:14px;font-size:12px;color:var(--ag-text-secondary);line-height:1.55;text-wrap:pretty}
     .unlock-notice-list li{margin-bottom:2px}
     .unlock-notice-list strong{color:var(--ag-text-primary)}
     .unlock-actions-row{display:flex;gap:8px;align-items:center;margin-top:2px}
-    .unlock-btn{display:inline-flex;align-items:center;justify-content:center;padding:5px 12px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s ease}
+    .unlock-btn{display:inline-flex;align-items:center;justify-content:center;padding:5px 12px;border-radius:6px;font-size:12px;font-weight:500;white-space:nowrap;cursor:pointer;transition:background-color .15s var(--ag-ease-out),border-color .15s var(--ag-ease-out),color .15s ease,transform .08s ease}
+    .unlock-btn:active:not(:disabled){transform:scale(0.975) translateY(0.5px)}
     .unlock-btn:disabled{opacity:0.5;cursor:not-allowed}
     .unlock-btn-primary{background:var(--ag-accent-bg,rgba(167,139,250,0.14));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34))}
     .unlock-btn-primary:hover:not(:disabled){background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56))}
@@ -1363,19 +1438,21 @@
     .unlock-btn-secondary:hover:not(:disabled){background:var(--ag-bg-card-hover)}
     .unlock-result-box{border-radius:6px;padding:7px 10px;font-size:12px;line-height:1.45}
     .unlock-result-box.result-success{background:var(--ag-accent-bg,rgba(167,139,250,0.14));border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
-    :host([data-theme="light"]) .unlock-result-box.result-success{background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
-    .unlock-result-box.result-error{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444}
-    .unlock-meta-dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:12px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;margin:2px 0}
+    :host([data-theme="light"]) .unlock-result-box.result-success,
+    :host([data-panel-tone="light"]) .unlock-result-box.result-success{background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
+    .unlock-result-box.result-error{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:var(--ag-text-danger,#f87171)}
+    .unlock-meta-dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px;font-size:12px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px;margin:2px 0}
     .unlock-meta-dl dt{color:var(--ag-text-muted);font-weight:500}
     .unlock-meta-dl dd{margin:0;color:var(--ag-text-secondary);word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
     .unlock-credit-bar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:12px;color:var(--ag-text-muted);border-top:1px solid var(--ag-border-subtle);padding-top:8px;margin-top:4px}
-    .unlock-credit-left{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
-    .unlock-author-link{color:var(--ag-link);text-decoration:underline;text-underline-offset:2px;font-weight:600;cursor:pointer;padding:1px 4px;border-radius:4px;transition:all .15s ease;display:inline-flex;align-items:center}
+    .unlock-credit-left{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+    .unlock-author-link{color:var(--ag-link);text-decoration:underline;text-underline-offset:2px;font-weight:600;cursor:pointer;padding:1px 4px;border-radius:4px;transition:background-color .15s ease,color .15s ease;display:inline-flex;align-items:center}
     .unlock-author-link:hover{color:var(--ag-link);background:var(--ag-accent-bg)}
     .unlock-author-link:focus-visible{outline:2px solid var(--ag-link);background:var(--ag-accent-bg-hover)}
-    .unlock-copy-link-btn{background:transparent;border:1px solid var(--ag-border-subcard);color:var(--ag-text-muted);border-radius:4px;font-size:11.5px;padding:2px 7px;cursor:pointer;transition:all .15s ease}
+    .unlock-copy-link-btn{background:transparent;border:1px solid var(--ag-border-subcard);color:var(--ag-text-muted);border-radius:4px;font-size:11.5px;padding:2px 7px;white-space:nowrap;cursor:pointer;transition:background-color .15s ease,border-color .15s ease,color .15s ease,transform .08s ease}
     .unlock-copy-link-btn:hover{color:var(--ag-text-primary);border-color:var(--ag-text-muted);background:var(--ag-bg-card-hover)}
-    .unlock-copy-link-btn:focus-visible{outline:1px solid var(--ag-link)}
+    .unlock-copy-link-btn:active{transform:scale(0.975) translateY(0.5px)}
+    .unlock-copy-link-btn:focus-visible{outline:2px solid var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));outline-offset:1px}
     .unlock-link-toast{margin-top:4px;font-size:11.5px;padding:4px 8px;border-radius:4px;background:var(--ag-accent-bg);color:var(--ag-text-primary);border:1px solid var(--ag-accent-border);line-height:1.45;animation:agSmoothExpand 0.15s ease}
     .unlock-adapter-note{font-size:11.5px;color:var(--ag-text-muted)}
 
@@ -1386,11 +1463,11 @@
       position:relative;z-index:1;border:0;background:transparent;
       color:var(--ag-text-muted);font-size:12px;font-weight:500;
       padding:3px 10px;border-radius:9999px;cursor:pointer;
-      transition:color .14s ease;outline:none;white-space:nowrap;
+      transition:color .14s ease;white-space:nowrap;
     }
     .heat-tab-btn:hover{color:var(--ag-text-primary)}
     .heat-tab-btn.active{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));font-weight:600}
-    .heat-tab-btn:focus-visible{box-shadow:0 0 0 1.5px var(--ag-token-accent-default,#a78bfa)}
+    .heat-tab-btn:focus-visible{outline:2px solid var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));outline-offset:1px}
 
     .heat-scroll-box{overflow-x:auto;overflow-y:hidden;padding:6px 6px 4px 6px}
     .heat-grid-cols{display:flex;gap:3px}
@@ -1417,8 +1494,17 @@
     .heat-month-grid{display:grid;width:100%;height:100%;align-content:center;justify-content:center}
     .heat-month-cell{display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;transition:outline .12s ease}
     .heat-month-cell:hover{z-index:5;outline:1.5px solid var(--ag-heat-outline,#fff)}
-    .heat-month-cell-num{font-size:11px;font-weight:500;color:rgba(255,255,255,0.92);text-shadow:0 1px 2px rgba(0,0,0,0.65);pointer-events:none}
-    :host([data-theme="light"]) .heat-month-cell-num{color:#18181b;text-shadow:none}
+    .heat-month-cell-num{font-size:11px;font-weight:500;font-variant-numeric:tabular-nums;color:rgba(255,255,255,0.92);text-shadow:0 1px 2px rgba(0,0,0,0.65);pointer-events:none}
+    :host([data-theme="light"]) .heat-month-cell.lvl-0 .heat-month-cell-num,
+    :host([data-theme="light"]) .heat-month-cell.lvl-1 .heat-month-cell-num,
+    :host([data-panel-tone="light"]) .heat-month-cell.lvl-0 .heat-month-cell-num,
+    :host([data-panel-tone="light"]) .heat-month-cell.lvl-1 .heat-month-cell-num{color:#18181b;text-shadow:none}
+    :host([data-theme="light"]) .heat-month-cell.lvl-2 .heat-month-cell-num,
+    :host([data-theme="light"]) .heat-month-cell.lvl-3 .heat-month-cell-num,
+    :host([data-theme="light"]) .heat-month-cell.lvl-4 .heat-month-cell-num,
+    :host([data-panel-tone="light"]) .heat-month-cell.lvl-2 .heat-month-cell-num,
+    :host([data-panel-tone="light"]) .heat-month-cell.lvl-3 .heat-month-cell-num,
+    :host([data-panel-tone="light"]) .heat-month-cell.lvl-4 .heat-month-cell-num{color:#ffffff;text-shadow:0 1px 2px rgba(0,0,0,0.45)}
 
     #h-yearly-box{display:none;height:105px;width:100%;box-sizing:border-box;align-items:center;justify-content:center}
     .heat-yearly-svg{width:100%;height:105px;display:block;overflow:visible}
@@ -1444,13 +1530,13 @@
     .update-btn{position:relative}
     .update-badge-dot{
       position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;
-      background:#ef4444;box-shadow:0 0 0 1.5px var(--ag-bg-panel);
+      background:var(--ag-ring-danger,#ef4444);box-shadow:0 0 0 1.5px var(--ag-bg-panel);
     }
     .update-popover{
       position:fixed;top:80px;right:24px;width:290px;max-width:calc(100vw - 28px);
       background:var(--ag-unified-bg,#1e1e24);border:1px solid var(--ag-float-border,rgba(255,255,255,0.18));
-      border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,0.55),0 2px 8px rgba(0,0,0,0.3);
-      padding:12px 14px;z-index:2147483647;
+      border-radius:10px;box-shadow:var(--ag-float-shadow);
+      padding:12px 14px;z-index:2147483646;
       animation:agSmoothExpand 0.2s cubic-bezier(0.16,1,0.3,1);
     }
     .update-pop-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;border-bottom:1px solid var(--ag-border-subcard);padding-bottom:5px}
@@ -1460,11 +1546,12 @@
     .heat-preset-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin:6px 0 8px}
     .heat-preset-group{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
     .heat-preset-btn{
-      display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:6px;
+      display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:6px;white-space:nowrap;
       border:1px solid var(--ag-border-card);background:var(--ag-bg-subcard);color:var(--ag-text-secondary);
-      font-size:12px;cursor:pointer;transition:border-color .12s ease,color .12s ease;
+      font-size:12px;cursor:pointer;transition:border-color .12s ease,color .12s ease,transform .08s ease;
     }
     .heat-preset-btn:hover{color:var(--ag-text-primary);border-color:var(--ag-btn-border-hover)}
+    .heat-preset-btn:active{transform:scale(0.975) translateY(0.5px)}
     .heat-preset-btn[data-active="true"]{
       color:var(--ag-text-primary);border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default));
       font-weight:600;
@@ -1500,16 +1587,16 @@
       display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:6px;
     }
     .heat-lvl-item{
-      display:flex;align-items:center;justify-content:space-between;gap:4px;
+      display:flex;align-items:center;justify-content:space-between;gap:4px;min-width:0;
       padding:5px 7px;border-radius:6px;
       background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
     }
     .heat-lvl-lbl{
-      font-size:11.5px;color:var(--ag-text-secondary);font-weight:500;
+      font-size:11.5px;color:var(--ag-text-secondary);font-weight:500;min-width:0;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     }
 
-    .heat-popover{position:fixed;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);border-radius:8px;padding:8px 12px;box-shadow:var(--ag-pop-shadow);z-index:2147483600;opacity:0;transform:translate(-50%,-100%) translateY(-6px);transition:opacity .12s ease}
+    .heat-popover{position:fixed;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);border-radius:8px;padding:8px 12px;box-shadow:var(--ag-pop-shadow);z-index:2147483647;opacity:0;transform:translate(-50%,-100%) translateY(-6px);transition:opacity .12s ease;font-variant-numeric:tabular-nums}
     .pop-date{font-size:12px;color:var(--ag-pop-muted)}
     .pop-val{font-size:14px;font-weight:600;color:var(--ag-pop-text);margin:2px 0 4px}
     .pop-det{font-size:11.5px;color:var(--ag-pop-sub);margin-top:2px;display:flex;gap:12px;align-items:flex-start}
@@ -1530,32 +1617,36 @@
     .ctx-card-drawer-body{padding-top:6px}
     .ctx-model-group-hdr.is-history-hdr{margin-top:4px;border-top:1px solid var(--ag-border-subtle);padding-top:6px;opacity:0.88}
     .ctx-product-row-history-tag{font-size:11px;padding:0 5px;border-radius:4px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-muted);flex-shrink:0}
-    .ctx-mini-link-btn{background:none;border:0;color:var(--ag-link,#38bdf8);font-size:11.5px;padding:2px 4px;cursor:pointer;white-space:nowrap;text-decoration:underline;text-underline-offset:2px}
+    .ctx-mini-link-btn{background:none;border:0;color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));font-size:11.5px;padding:2px 4px;cursor:pointer;white-space:nowrap;text-decoration:underline;text-underline-offset:2px}
     .ctx-mini-link-btn[hidden]{display:none!important}
     .ag-dropdown-group-title{display:flex;align-items:center;gap:6px;padding:5px 8px 3px;font-size:11.5px;font-weight:600;color:var(--ag-text-muted);letter-spacing:0;cursor:default;user-select:none;border-top:1px solid var(--ag-border-subtle);margin-top:3px}
     .ag-dropdown-group-title:first-child{border-top:0;margin-top:0}
     .ag-vendor-dot{width:7px;height:7px;border-radius:999px;display:inline-block;flex-shrink:0;background:var(--ag-text-muted)}
     .ag-dropdown-badge{font-size:11px;padding:0 5px;border-radius:9px;background:var(--ag-accent-bg,rgba(167,139,250,0.14));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));border:1px solid var(--ag-accent-border,rgba(167,139,250,0.34));margin-left:4px;flex-shrink:0}
 
-    .ctx-tabs-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:7px;padding:3px;margin-bottom:9px;box-sizing:border-box;width:100%}
-    .ctx-tab-btn{display:flex;align-items:center;justify-content:center;min-width:0;border:1px solid transparent;background:transparent;color:var(--ag-text-muted);font-size:12.5px;font-weight:500;padding:6px 4px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background-color .15s ease,color .15s ease,border-color .15s ease}
-    .ctx-tab-btn:hover{color:var(--ag-text-primary);background:rgba(255,255,255,0.05)}
-    .ctx-tab-btn:active{background:rgba(255,255,255,0.08)}
-    .ctx-tab-btn:focus-visible{outline:2px solid var(--primary,#38bdf8);outline-offset:1px}
+    .ctx-tabs-bar{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:10px;padding:4px;margin-bottom:9px;box-sizing:border-box;width:100%}
+    .ctx-tab-btn{display:flex;align-items:center;justify-content:center;min-width:0;border:1px solid transparent;background:transparent;color:var(--ag-text-muted);font-size:12.5px;font-weight:500;padding:6px 4px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background-color .15s var(--ag-ease-out),color .15s ease,border-color .15s ease,transform .08s ease}
+    .ctx-tab-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
+    .ctx-tab-btn:active{background:var(--ag-toolbar-bg-active);transform:scale(0.975) translateY(0.5px)}
+    .ctx-tab-btn:focus-visible{outline:2px solid var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));outline-offset:1px}
     .ctx-tab-btn.active{background:var(--ag-unified-bg);color:var(--ag-text-primary);font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,0.28);border:1px solid var(--ag-border-card)}
-    :host([data-theme="light"]) .ctx-tab-btn.active{box-shadow:0 1px 3px rgba(0,0,0,0.12);border-color:rgba(0,0,0,0.12)}
+    :host([data-theme="light"]) .ctx-tab-btn.active,
+    :host([data-panel-tone="light"]) .ctx-tab-btn.active{box-shadow:0 1px 3px rgba(0,0,0,0.12);border-color:rgba(0,0,0,0.12)}
 
     .ctx-lang-top-segmented{display:inline-flex;align-items:center;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:2px;gap:2px;flex-shrink:0;vertical-align:middle;margin-right:2px}
-    .ctx-lang-top-segmented .ctx-seg-btn{border:1px solid transparent;background:transparent;color:var(--ag-text-muted);font-size:11.5px;font-weight:500;padding:2px 7px;border-radius:4px;cursor:pointer;line-height:16px;transition:all .15s ease}
-    .ctx-lang-top-segmented .ctx-seg-btn:hover{color:var(--ag-text-primary);background:rgba(255,255,255,0.05)}
-    .ctx-lang-top-segmented .ctx-seg-btn:focus-visible{outline:1.5px solid var(--primary,#38bdf8);outline-offset:1px}
+    .ctx-lang-top-segmented .ctx-seg-btn{border:1px solid transparent;background:transparent;color:var(--ag-text-muted);font-size:11.5px;font-weight:500;padding:2px 7px;border-radius:4px;cursor:pointer;line-height:16px;white-space:nowrap;transition:background-color .15s ease,border-color .15s ease,color .15s ease,transform .08s ease}
+    .ctx-lang-top-segmented .ctx-seg-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
+    .ctx-lang-top-segmented .ctx-seg-btn:active{transform:scale(0.975) translateY(0.5px)}
+    .ctx-lang-top-segmented .ctx-seg-btn:focus-visible{outline:2px solid var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));outline-offset:1px}
     .ctx-lang-top-segmented .ctx-seg-btn.active{background:var(--ag-unified-bg);color:var(--ag-text-primary);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,0.2);border:1px solid var(--ag-border-card)}
 
     .ag-modal-overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;animation:agFadeIn .15s ease-out}
+    :host([data-theme="light"]) .ag-modal-overlay,
+    :host([data-panel-tone="light"]) .ag-modal-overlay{background:rgba(0,0,0,0.35)}
     .ag-modal-overlay[hidden]{display:none !important}
-    .ag-modal-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:10px;padding:16px 18px;max-width:340px;width:100%;box-shadow:0 16px 40px rgba(0,0,0,0.6),0 2px 10px rgba(0,0,0,0.3);display:flex;flex-direction:column;gap:12px}
-    .ag-modal-title{font-size:14px;font-weight:600;color:var(--ag-text-primary)}
-    .ag-modal-body{font-size:12.5px;line-height:1.55;color:var(--ag-text-secondary)}
+    .ag-modal-card{background:var(--ag-bg-panel);border:1px solid var(--ag-border-panel);border-radius:10px;padding:16px 18px;max-width:340px;width:100%;box-shadow:var(--ag-shadow-panel),var(--ag-inset-highlight);display:flex;flex-direction:column;gap:12px}
+    .ag-modal-title{font-size:14px;font-weight:600;color:var(--ag-text-primary);text-wrap:balance}
+    .ag-modal-body{font-size:12.5px;line-height:1.55;color:var(--ag-text-secondary);text-wrap:pretty}
     .ag-modal-feedback{font-size:12px;line-height:1.45;padding:6px 8px;border-radius:5px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary)}
     .ag-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
     .ctx-brand-feedback{font-size:12px;margin-top:6px;padding:5px 8px;border-radius:5px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary)}
@@ -1567,8 +1658,9 @@
     .ctx-compact-title{font-size:12.5px;font-weight:600;color:var(--ag-text-primary)}
     .ctx-compact-meta{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px;color:var(--ag-text-secondary)}
     .ctx-compact-meta strong{color:var(--ag-text-primary);font-weight:600}
-    .ctx-compact-link-btn{background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:6px;padding:4px 10px;font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap;flex-shrink:0}
+    .ctx-compact-link-btn{background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:6px;padding:4px 10px;font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:background-color .14s ease,border-color .14s ease,transform .08s ease}
     .ctx-compact-link-btn:hover{background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    .ctx-compact-link-btn:active{transform:scale(0.975) translateY(0.5px)}
 
     /* 模型设置页：全局状态条 */
     .ctx-status-bar{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:8px 10px;margin-bottom:8px;display:flex;flex-direction:column;gap:6px}
@@ -1576,18 +1668,19 @@
     .ctx-status-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
     .ctx-client-status-text{font-size:12px;font-weight:600;color:var(--ag-text-primary)}
     .ctx-restart-btn[hidden],.ctx-restart-confirm[hidden],.ctx-manual-restart-note[hidden],.ctx-restart-feedback[hidden],.ctx-status-subnote[hidden]{display:none!important}
-    .ctx-status-subnote{font-size:11.5px;color:#eab308;line-height:1.45}
+    .ctx-status-subnote{font-size:11.5px;color:var(--ag-text-warn,#fbbf24);line-height:1.45}
     .ctx-manual-restart-note{font-size:11.5px;color:var(--ag-text-secondary);background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:5px;padding:6px 8px;line-height:1.45}
     .ctx-restart-confirm{background:rgba(234,179,8,0.09);border:1px solid rgba(234,179,8,0.3);border-radius:6px;padding:7px 9px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
     .ctx-restart-confirm-text{font-size:12px;color:var(--ag-text-primary);line-height:1.45;flex:1;min-width:170px}
     .ctx-restart-confirm-actions{display:flex;gap:6px;align-items:center}
-    .ctx-restart-feedback{font-size:11.5px;color:var(--ag-link,#38bdf8);line-height:1.45}
+    .ctx-restart-feedback{font-size:11.5px;color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));line-height:1.45}
 
     /* 模式选择器（统一设置 vs 按模型分别设置） */
-    .ctx-scope-selector-wrap{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:5px;margin-bottom:8px}
-    .ctx-scope-mode-toggle{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-    .ctx-mode-tab-btn{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:2px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 9px;cursor:pointer;color:var(--ag-text-secondary);transition:all .15s ease}
+    .ctx-scope-selector-wrap{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:10px;padding:4px;margin-bottom:8px}
+    .ctx-scope-mode-toggle{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+    .ctx-mode-tab-btn{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:2px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 9px;cursor:pointer;color:var(--ag-text-secondary);min-width:0;transition:background-color .15s ease,border-color .15s ease,color .15s ease,transform .08s ease}
     .ctx-mode-tab-btn:hover{background:var(--ag-btn-hover);color:var(--ag-text-primary)}
+    .ctx-mode-tab-btn:active{transform:scale(0.985) translateY(0.5px)}
     .ctx-mode-tab-btn.is-active{background:var(--ag-accent-bg,rgba(167,139,250,0.14));border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));color:var(--ag-text-primary)}
     .ctx-mode-tab-title{font-size:12px;font-weight:600;color:var(--ag-text-primary)}
     .ctx-mode-tab-desc{font-size:11.5px;color:var(--ag-text-muted);line-height:1.45}
@@ -1600,14 +1693,16 @@
     .ctx-product-row:hover{background:var(--ag-btn-hover);color:var(--ag-text-primary)}
     .ctx-product-row.is-active{background:var(--ag-accent-bg,rgba(167,139,250,0.14));border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));color:var(--ag-text-primary);font-weight:600}
     .ctx-product-row.is-unavailable{opacity:0.65}
-    .ctx-product-row-unavailable-tag{font-size:11px;padding:0 5px;border-radius:4px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);color:#f87171;flex-shrink:0}
-    :host([data-theme="light"]) .ctx-product-row-unavailable-tag{color:#dc2626}
-    .ctx-product-row-notice-tag{font-size:11px;padding:0 5px;border-radius:4px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);color:#fbbf24;flex-shrink:0}
-    :host([data-theme="light"]) .ctx-product-row-notice-tag{color:#d97706}
+    .ctx-product-row-unavailable-tag{font-size:11px;padding:0 5px;border-radius:4px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);color:var(--ag-text-danger,#f87171);flex-shrink:0}
+    :host([data-theme="light"]) .ctx-product-row-unavailable-tag,
+    :host([data-panel-tone="light"]) .ctx-product-row-unavailable-tag{color:var(--ag-text-danger,#dc2626)}
+    .ctx-product-row-notice-tag{font-size:11px;padding:0 5px;border-radius:4px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);color:var(--ag-text-warn,#fbbf24);flex-shrink:0}
+    :host([data-theme="light"]) .ctx-product-row-notice-tag,
+    :host([data-panel-tone="light"]) .ctx-product-row-notice-tag{color:var(--ag-text-warn,#b45309)}
     .ctx-product-row-left{display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden}
     .ctx-product-row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .ctx-product-row-right{display:flex;align-items:center;gap:5px;flex-shrink:0;font-size:11.5px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
-    .ctx-product-row-val.is-conflict{color:#fbbf24;font-weight:600}
+    .ctx-product-row-val.is-conflict{color:var(--ag-text-warn,#fbbf24);font-weight:600}
 
     /* 模型列表 / 下拉 / 卡片小额度圆环芯片 */
     .ctx-model-quota-chip{display:inline-flex;align-items:center;gap:4px;padding:1.5px 7px 1.5px 5px;border-radius:999px;background:rgba(127,127,127,0.10);border:1px solid rgba(127,127,127,0.18);font-size:11px;font-weight:600;line-height:15px;font-variant-numeric:tabular-nums;color:var(--ag-text-secondary);white-space:nowrap;flex-shrink:0;transition:border-color .18s ease,background-color .18s ease,color .18s ease}
@@ -1618,9 +1713,9 @@
     .ctx-quota-ring-fill{stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));transition:stroke-dashoffset .24s cubic-bezier(0.22,1,0.36,1),stroke .18s ease,opacity .15s ease}
     .ctx-model-quota-chip[data-quota-state="available"]{background:var(--ag-accent-bg,rgba(167,139,250,0.14));border-color:var(--ag-accent-border,rgba(167,139,250,0.34));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
     .ctx-model-quota-chip[data-quota-state="available"] .ctx-quota-ring-fill{stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
-    .ctx-model-quota-chip[data-quota-state="low"]{background:rgba(245,158,11,0.11);border-color:rgba(245,158,11,0.32);color:#fbbf24}
+    .ctx-model-quota-chip[data-quota-state="low"]{background:rgba(245,158,11,0.11);border-color:rgba(245,158,11,0.32);color:var(--ag-text-warn,#fbbf24)}
     .ctx-model-quota-chip[data-quota-state="low"] .ctx-quota-ring-fill{stroke:#f59e0b}
-    .ctx-model-quota-chip[data-quota-state="exhausted"]{background:rgba(239,68,68,0.11);border-color:rgba(239,68,68,0.32);color:#f87171}
+    .ctx-model-quota-chip[data-quota-state="exhausted"]{background:rgba(239,68,68,0.11);border-color:rgba(239,68,68,0.32);color:var(--ag-text-danger,#f87171)}
     .ctx-model-quota-chip[data-quota-state="exhausted"] .ctx-quota-ring-fill{stroke:#ef4444}
     .ctx-model-quota-chip[data-quota-state="no_permission"]{background:rgba(168,85,247,0.11);border-color:rgba(168,85,247,0.30);color:#c084fc}
     .ctx-model-quota-chip[data-quota-state="no_permission"] .ctx-quota-ring-fill{stroke:#a855f7}
@@ -1630,14 +1725,22 @@
     .ctx-model-quota-chip[data-quota-state="error"] .ctx-quota-ring-fill{stroke:#f97316}
     .ctx-model-quota-chip[data-quota-state="unknown"]{background:rgba(127,127,127,0.08);border-color:rgba(127,127,127,0.20);color:var(--ag-text-muted)}
     .ctx-model-quota-chip[data-quota-state="unknown"] .ctx-quota-ring-fill{stroke:var(--ag-text-muted);opacity:0.65}
-    :host([data-theme="light"]) .ctx-quota-ring-fill{stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
-    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="available"]{background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
-    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="available"] .ctx-quota-ring-fill{stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
-    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="low"]{color:#b45309}
-    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="exhausted"]{color:#dc2626}
-    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="no_permission"]{color:#7e22ce}
-    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="stale"]{color:#a16207}
-    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="error"]{color:#ea580c}
+    :host([data-theme="light"]) .ctx-quota-ring-fill,
+    :host([data-panel-tone="light"]) .ctx-quota-ring-fill{stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="available"],
+    :host([data-panel-tone="light"]) .ctx-model-quota-chip[data-quota-state="available"]{background:var(--ag-accent-bg,rgba(124,58,237,0.10));border-color:var(--ag-accent-border,rgba(124,58,237,0.28));color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="available"] .ctx-quota-ring-fill,
+    :host([data-panel-tone="light"]) .ctx-model-quota-chip[data-quota-state="available"] .ctx-quota-ring-fill{stroke:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="low"],
+    :host([data-panel-tone="light"]) .ctx-model-quota-chip[data-quota-state="low"]{color:var(--ag-text-warn,#b45309)}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="exhausted"],
+    :host([data-panel-tone="light"]) .ctx-model-quota-chip[data-quota-state="exhausted"]{color:var(--ag-text-danger,#dc2626)}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="no_permission"],
+    :host([data-panel-tone="light"]) .ctx-model-quota-chip[data-quota-state="no_permission"]{color:#7e22ce}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="stale"],
+    :host([data-panel-tone="light"]) .ctx-model-quota-chip[data-quota-state="stale"]{color:#a16207}
+    :host([data-theme="light"]) .ctx-model-quota-chip[data-quota-state="error"],
+    :host([data-panel-tone="light"]) .ctx-model-quota-chip[data-quota-state="error"]{color:#ea580c}
     .ctx-card-vendor-left{display:inline-flex;align-items:center;gap:6px;min-width:0}
     .ctx-card-quota-slot{display:inline-flex;align-items:center;margin-left:auto;flex-shrink:0}
     .ctx-card-quota-slot[hidden]{display:none!important}
@@ -1646,21 +1749,22 @@
     .ctx-detail-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin-bottom:8px;display:flex;flex-direction:column;gap:8px}
     .ctx-conflict-banner{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.34);border-radius:6px;padding:7px 9px;display:flex;flex-direction:column;gap:5px}
     .ctx-conflict-banner[hidden]{display:none!important}
-    .ctx-conflict-title{font-size:12px;font-weight:600;color:#f59e0b}
+    .ctx-conflict-title{font-size:12px;font-weight:600;color:var(--ag-text-warn,#fbbf24)}
     .ctx-conflict-rows{display:flex;flex-direction:column;gap:4px}
-    .ctx-conflict-row{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--ag-text-primary)}
-    .ctx-conflict-btn{background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;padding:2px 8px;font-size:11.5px;cursor:pointer}
+    .ctx-conflict-row{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--ag-text-primary);min-width:0}
+    .ctx-conflict-btn{background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:4px;padding:2px 8px;font-size:11.5px;white-space:nowrap;cursor:pointer;transition:background-color .12s ease,border-color .12s ease,transform .08s ease}
     .ctx-conflict-btn:hover{background:var(--ag-btn-hover);border-color:var(--ag-btn-border-hover)}
+    .ctx-conflict-btn:active{transform:scale(0.975) translateY(0.5px)}
 
-    .ctx-card-top{display:flex;flex-direction:column;gap:3px}
+    .ctx-card-top{display:flex;flex-direction:column;gap:3px;min-width:0}
     .ctx-card-vendor-row{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11.5px;color:var(--ag-text-muted)}
-    .ctx-card-product-name{font-size:14.5px;font-weight:600;color:var(--ag-text-primary);line-height:1.3;overflow-wrap:anywhere;word-break:break-word}
+    .ctx-card-product-name{font-size:14.5px;font-weight:600;color:var(--ag-text-primary);line-height:1.3;overflow-wrap:anywhere;word-break:break-word;text-wrap:balance}
     .ctx-card-efforts-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--ag-text-secondary)}
-    .ctx-card-session-effort{font-weight:600;color:var(--ag-link,#38bdf8)}
+    .ctx-card-session-effort{font-weight:600;color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)))}
     .ctx-card-session-effort[hidden]{display:none!important}
 
     /* 精简主界面三项高亮网格 */
-    .ctx-summary-highlight-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
+    .ctx-summary-highlight-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:8px 10px}
     .ctx-summary-item{display:flex;flex-direction:column;gap:2px;min-width:0}
     .ctx-summary-item-length{grid-column:1 / -1;border-top:1px solid var(--ag-border-subtle);padding-top:6px;margin-top:2px}
     .ctx-summary-label{font-size:11.5px;font-weight:500;color:var(--ag-text-muted)}
@@ -1671,38 +1775,41 @@
     .ctx-card-metrics{display:flex;flex-direction:column;gap:5px}
     .ctx-metric-row{display:grid;grid-template-columns:64px minmax(0,1fr) auto;align-items:start;gap:6px 8px;padding:6px 9px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-left-width:3px;border-radius:5px;font-size:12px}
     .ctx-metric-saved{border-left-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
-    .ctx-metric-request{border-left-color:var(--ag-custom-speed,var(--ag-speed-default,#38bdf8))}
+    .ctx-metric-request{border-left-color:var(--ag-custom-speed,var(--ag-speed-default,#b8b8c0))}
     .ctx-metric-client{border-left-color:var(--ag-text-muted)}
-    .ctx-metric-observed{border-left-color:var(--ag-custom-speed,var(--ag-speed-default,#38bdf8))}
+    .ctx-metric-observed{border-left-color:var(--ag-custom-speed,var(--ag-speed-default,#b8b8c0))}
     .ctx-metric-convo{border-left-color:var(--ag-text-muted)}
     .ctx-metric-diagnosis{border-left-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
     .ctx-metric-diagnosis-val{font-size:12px;font-weight:500;line-height:1.45}
     .ctx-metric-diagnosis-val.is-confirmed{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
-    :host([data-theme="light"]) .ctx-metric-diagnosis{border-left-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
-    :host([data-theme="light"]) .ctx-metric-diagnosis-val.is-confirmed{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
-    .ctx-metric-diagnosis-val.is-mismatch{color:#ef4444}
+    :host([data-theme="light"]) .ctx-metric-diagnosis,
+    :host([data-panel-tone="light"]) .ctx-metric-diagnosis{border-left-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
+    :host([data-theme="light"]) .ctx-metric-diagnosis-val.is-confirmed,
+    :host([data-panel-tone="light"]) .ctx-metric-diagnosis-val.is-confirmed{color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed))}
+    .ctx-metric-diagnosis-val.is-mismatch{color:var(--ag-text-danger,#f87171)}
     .ctx-metric-diagnosis-val.is-dispatched_pending_confirm,
-    .ctx-metric-diagnosis-val.is-saved_pending_dispatch{color:#f59e0b}
+    .ctx-metric-diagnosis-val.is-saved_pending_dispatch{color:var(--ag-text-warn,#fbbf24)}
     .ctx-metric-label{font-size:12px;color:var(--ag-text-muted);font-weight:500;padding-top:1px}
     .ctx-metric-value{font-size:12px;font-weight:600;color:var(--ag-text-primary);display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
     .ctx-metric-value-col{display:flex;flex-direction:column;gap:3px;min-width:0}
     .ctx-metric-side{font-size:11.5px;color:var(--ag-text-muted);white-space:nowrap;padding-top:2px}
     .ctx-metric-pre-restart{font-size:11.5px;color:var(--ag-text-muted);opacity:0.85}
     .ctx-metric-pre-restart[hidden],.ctx-metric-service-limit[hidden],.ctx-card-hints[hidden],.ctx-reset-notice[hidden]{display:none!important}
-    .ctx-metric-service-limit{font-size:11.5px;color:#f59e0b;font-weight:500}
+    .ctx-metric-service-limit{font-size:11.5px;color:var(--ag-text-warn,#fbbf24);font-weight:500}
     .ctx-speed-effort-lines{display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums}
-    .ctx-inline-link-btn{background:none;border:0;padding:0;color:var(--ag-link,#38bdf8);font-size:12px;font-weight:500;cursor:pointer;text-align:left;align-self:flex-start}
+    .ctx-inline-link-btn{background:none;border:0;padding:0;color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));font-size:12px;font-weight:500;cursor:pointer;text-align:left;align-self:flex-start}
     .ctx-inline-link-btn:hover{text-decoration:underline}
     .ctx-card-hints{display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--ag-border-subtle);padding-top:6px;font-size:12px;color:var(--ag-text-secondary);line-height:1.45}
-    .ctx-card-hint-item{padding:5px 8px;background:var(--ag-bg-subcard);border-radius:4px;border-left:2px solid var(--ag-ring-warn,#f59e0b)}
+    .ctx-card-hint-item{padding:6px 9px;background:var(--ag-bg-subcard);border-radius:6px;border:1px solid var(--ag-border-subcard)}
 
     /* 设置操作区 */
     .ctx-adjust-box{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:10px 11px;display:flex;flex-direction:column;gap:7px}
     .ctx-small-label{font-size:12px;color:var(--ag-text-muted)}
     .ctx-model-select{background:var(--ag-bg-card);color:var(--ag-text-primary);border:1px solid var(--ag-border-subcard);border-radius:5px;padding:4px 7px;font-size:12px;width:100%;outline:none}
     .ctx-preset-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
-    .ctx-preset-btn{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 9px;cursor:pointer;transition:all .15s ease;color:var(--ag-text-primary)}
+    .ctx-preset-btn{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 9px;cursor:pointer;transition:background-color .15s ease,border-color .15s ease,color .15s ease,transform .08s ease;color:var(--ag-text-primary)}
     .ctx-preset-btn:hover:not(:disabled){background:var(--ag-bg-card-hover);border-color:var(--ag-text-muted)}
+    .ctx-preset-btn:active:not(:disabled){transform:scale(0.975) translateY(0.5px)}
     .ctx-preset-btn.active{border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));background:var(--ag-accent-bg,rgba(167,139,250,0.14))}
     .ctx-preset-btn:disabled,.ctx-preset-btn.is-disabled{opacity:0.48;cursor:not-allowed;border-style:dashed}
     .ctx-preset-title{font-size:12px;font-weight:600;color:var(--ag-text-primary)}
@@ -1721,53 +1828,56 @@
     .ctx-unified-proj{display:flex;flex-direction:column;gap:3px;border-top:1px solid var(--ag-border-subtle);padding-top:5px;font-size:11.5px}
     .ctx-unified-proj-title{font-weight:600;color:var(--ag-text-primary);margin-bottom:1px}
     .ctx-unified-proj-row{display:flex;justify-content:space-between;gap:8px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums}
-    .ctx-unified-proj-row.is-clamped strong{color:#f59e0b}
+    .ctx-unified-proj-row.is-clamped strong{color:var(--ag-text-warn,#fbbf24)}
     .ctx-custom-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:1px}
     .ctx-custom-input-wrap{display:flex;align-items:center;flex:1;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:0 8px}
-    .ctx-custom-input-wrap:focus-within{border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))}
+    .ctx-custom-input-wrap:focus-within{border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));box-shadow:0 0 0 2px var(--ag-accent-bg-hover,rgba(167,139,250,0.24))}
     .ctx-custom-input{flex:1;min-width:0;background:transparent;border:none;color:var(--ag-text-primary);font-size:12px;padding:6px 0;outline:none;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
     .ctx-input-unit{font-size:11.5px;color:var(--ag-text-muted);margin-left:4px}
     .ctx-validation-msg{font-size:11.5px;color:var(--ag-text-secondary);line-height:1.45}
-    .ctx-validation-msg.is-error{color:#f87171;font-weight:500}
-    .ctx-validation-msg.is-warn{color:#fbbf24}
+    .ctx-validation-msg.is-error{color:var(--ag-text-danger,#f87171);font-weight:500}
+    .ctx-validation-msg.is-warn{color:var(--ag-text-warn,#fbbf24)}
     .ctx-pref-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:2px}
-    .ctx-text-action-btn{background:none;border:0;color:var(--ag-text-muted);font-size:12px;padding:4px 6px;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+    .ctx-text-action-btn{background:none;border:0;color:var(--ag-text-muted);font-size:12px;padding:4px 6px;white-space:nowrap;cursor:pointer;text-decoration:underline;text-underline-offset:2px;transition:color .12s ease,transform .08s ease}
     .ctx-text-action-btn:hover{color:var(--ag-text-primary)}
-    .ctx-reset-notice{font-size:11.5px;color:#fbbf24;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.24);border-radius:6px;padding:6px 9px;line-height:1.45}
-    .ctx-plain-help{font-size:11.5px;color:var(--ag-text-muted);line-height:1.45;border-top:1px solid var(--ag-border-subtle);padding-top:6px}
+    .ctx-text-action-btn:active{transform:scale(0.975)}
+    .ctx-reset-notice{font-size:11.5px;color:var(--ag-text-warn,#fbbf24);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.24);border-radius:6px;padding:6px 9px;line-height:1.45}
+    .ctx-plain-help{font-size:11.5px;color:var(--ag-text-muted);line-height:1.45;border-top:1px solid var(--ag-border-subtle);padding-top:6px;text-wrap:pretty}
     .ctx-detail-ol{padding-left:16px}
 
     /* 速度对比分页与 SVG 图表 */
     .ctx-speed-toolbar{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin-bottom:8px}
     .ctx-segmented{display:inline-flex;align-items:center;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:2px;gap:2px}
-    .ctx-seg-btn{border:0;background:transparent;color:var(--ag-text-muted);font-size:11.5px;font-weight:500;padding:3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap}
-    .ctx-seg-btn:hover{color:var(--ag-text-primary)}
+    .ctx-seg-btn{border:0;background:transparent;color:var(--ag-text-muted);font-size:11.5px;font-weight:500;padding:3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;transition:background-color .12s ease,color .12s ease,transform .08s ease}
+    .ctx-seg-btn:hover{color:var(--ag-text-primary);background:var(--ag-toolbar-bg-hover)}
+    .ctx-seg-btn:active{transform:scale(0.975)}
     .ctx-seg-btn.active{background:var(--ag-unified-bg);color:var(--ag-text-primary);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,0.2)}
     .ctx-chart-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:9px 10px;margin-bottom:8px;display:flex;flex-direction:column;gap:7px}
     .ctx-chart-header{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
-    .ctx-chart-title{font-size:12.5px;font-weight:600;color:var(--ag-text-primary)}
+    .ctx-chart-title{font-size:12.5px;font-weight:600;color:var(--ag-text-primary);text-wrap:balance}
     .ctx-speed-dropdown{min-width:170px;max-width:250px;flex:1}
     .ctx-svg-wrap{width:100%;overflow:hidden}
     .ctx-speed-svg{display:block;width:100%;height:auto;font-family:inherit}
     .ctx-chart-tooltip{position:absolute;z-index:30;pointer-events:none;background:var(--ag-pop-bg);border:1px solid var(--ag-pop-border);border-radius:6px;padding:6px 9px;box-shadow:var(--ag-pop-shadow);font-size:11.5px;color:var(--ag-pop-text);line-height:1.45;max-width:220px}
     .ctx-chart-tooltip[hidden]{display:none!important}
-    .ctx-chart-note{font-size:11.5px;color:var(--ag-text-muted);line-height:1.45}
+    .ctx-chart-note{font-size:11.5px;color:var(--ag-text-muted);line-height:1.45;text-wrap:pretty}
     .ctx-speed-empty{font-size:12px;color:var(--ag-text-muted);text-align:center;padding:18px 8px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px}
     .ctx-speed-empty[hidden],.ctx-svg-wrap[hidden]{display:none!important}
-    .ctx-active-test-note{font-size:11.5px;color:var(--ag-text-muted);background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 9px;line-height:1.45}
+    .ctx-active-test-note{font-size:11.5px;color:var(--ag-text-muted);background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 9px;line-height:1.45;text-wrap:pretty}
 
     /* 设置视图 */
     .ctx-settings-header{display:flex;align-items:center;gap:8px;padding-bottom:8px;margin-bottom:4px;border-bottom:1px solid var(--ag-border-subtle)}
-    .ctx-back-btn{background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:6px;padding:4px 10px;font-size:12px;font-weight:500;cursor:pointer}
+    .ctx-back-btn{background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:6px;padding:4px 10px;font-size:12px;font-weight:500;white-space:nowrap;cursor:pointer;transition:background-color .12s ease,transform .08s ease}
     .ctx-back-btn:hover{background:var(--ag-btn-hover)}
+    .ctx-back-btn:active{transform:scale(0.975) translateY(0.5px)}
     .ctx-settings-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .ctx-settings-card{background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:10px 11px;margin-bottom:8px;display:flex;flex-direction:column;gap:7px}
     .ctx-settings-card-hdr{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
-    .ctx-settings-card-title{font-size:13px;font-weight:600;color:var(--ag-text-primary)}
-    .ctx-settings-card-desc{font-size:12px;color:var(--ag-text-muted);line-height:1.5}
+    .ctx-settings-card-title{font-size:13px;font-weight:600;color:var(--ag-text-primary);text-wrap:balance}
+    .ctx-settings-card-desc{font-size:12px;color:var(--ag-text-muted);line-height:1.5;text-wrap:pretty}
     .ctx-lang-segmented{display:flex;width:100%;box-sizing:border-box}
     .ctx-lang-segmented .ctx-seg-btn{flex:1 1 0;min-width:0;text-align:center;padding:5px 8px;font-size:12px}
-    .ctx-client-lang-note{font-size:11.5px;color:var(--ag-text-muted);background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:6px 8px;margin-top:8px;line-height:1.5}
+    .ctx-client-lang-note{font-size:11.5px;color:var(--ag-text-muted);background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:6px 8px;margin-top:8px;line-height:1.5;text-wrap:pretty}
     .ctx-pref-actions{flex-wrap:wrap}
     .ctx-preset-btn{min-width:0}
     .ctx-preset-sub{overflow-wrap:anywhere}
@@ -1778,7 +1888,7 @@
     .unlock-result-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px}
     .unlock-result-actions[hidden],.ctx-enhance-confirm[hidden],.ctx-preset-preview-box[hidden]{display:none!important}
     .ctx-result-manual-note{font-size:11.5px;color:var(--ag-text-secondary);line-height:1.45;margin-top:4px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:5px;padding:5px 8px}
-    .ctx-selector-hint{font-size:11.5px;color:var(--ag-text-muted);line-height:1.45;margin-top:4px}
+    .ctx-selector-hint{font-size:11.5px;color:var(--ag-text-muted);line-height:1.45;margin-top:4px;text-wrap:pretty}
 
     .ctx-settings-card-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:2px}
     .ctx-enhance-status-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:2px 0}
@@ -1787,8 +1897,9 @@
     .ctx-enhance-stat-val{font-size:12px;font-weight:600;color:var(--ag-text-primary);overflow-wrap:anywhere}
 
     .ctx-tier-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
-    .ctx-tier-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:6px 4px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-secondary);cursor:pointer;text-align:center;min-width:0;transition:all .14s ease}
+    .ctx-tier-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:6px 4px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-secondary);cursor:pointer;text-align:center;min-width:0;transition:background-color .14s ease,border-color .14s ease,color .14s ease,transform .08s ease}
     .ctx-tier-btn:hover{background:var(--ag-bg-card-hover);color:var(--ag-text-primary);border-color:var(--ag-btn-border-hover)}
+    .ctx-tier-btn:active{transform:scale(0.975) translateY(0.5px)}
     .ctx-tier-btn.active{background:var(--ag-accent-bg,rgba(167,139,250,0.14));border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));color:var(--ag-text-primary);font-weight:600}
     .ctx-tier-num{font-size:12px;font-weight:600;line-height:1.2}
     .ctx-tier-name{font-size:11.5px;line-height:1.35;overflow-wrap:anywhere}
@@ -1798,7 +1909,7 @@
     .ctx-tier-matrix-row{display:grid;grid-template-columns:48px minmax(0,1fr);gap:6px;align-items:start}
     .ctx-tier-matrix-k{font-weight:600;color:var(--ag-text-muted);white-space:nowrap}
     .ctx-tier-matrix-v{color:var(--ag-text-secondary);overflow-wrap:anywhere}
-    .ctx-tier-note-warn{font-size:11.5px;color:var(--ag-text-muted);background:rgba(234,179,8,0.07);border:1px solid rgba(234,179,8,0.22);border-radius:5px;padding:6px 9px;line-height:1.45}
+    .ctx-tier-note-warn{font-size:11.5px;color:var(--ag-text-muted);background:rgba(234,179,8,0.07);border:1px solid rgba(234,179,8,0.22);border-radius:5px;padding:6px 9px;line-height:1.45;text-wrap:pretty}
 
     .ctx-toggle-row{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;padding:7px 9px;cursor:pointer}
     .ctx-toggle-row-text{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
@@ -1814,15 +1925,16 @@
 
     .ctx-enhance-confirm{background:rgba(234,179,8,0.09);border:1px solid rgba(234,179,8,0.32);border-radius:6px;padding:7px 9px;display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:1.45;color:var(--ag-text-primary)}
     .ctx-enhance-confirm-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
-    .unlock-btn-danger{background:rgba(239,68,68,0.12);color:#f87171;border:1px solid rgba(239,68,68,0.35)}
+    .unlock-btn-danger{background:rgba(239,68,68,0.12);color:var(--ag-text-danger,#f87171);border:1px solid rgba(239,68,68,0.35)}
     .unlock-btn-danger:hover:not(:disabled){background:rgba(239,68,68,0.2)}
-    :host([data-theme="light"]) .unlock-btn-danger{color:#dc2626}
+    :host([data-theme="light"]) .unlock-btn-danger,
+    :host([data-panel-tone="light"]) .unlock-btn-danger{color:var(--ag-text-danger,#dc2626)}
 
     @media (max-width:440px){
-      .ctx-preset-grid{grid-template-columns:1fr}
+      .ctx-preset-grid{grid-template-columns:minmax(0,1fr)}
       .ctx-tier-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
-      .ctx-enhance-status-grid{grid-template-columns:1fr}
-      .color-grid{grid-template-columns:1fr}
+      .ctx-enhance-status-grid{grid-template-columns:minmax(0,1fr)}
+      .color-grid{grid-template-columns:minmax(0,1fr)}
     }
     @media (prefers-reduced-motion: reduce){
       *,.ag-unit,.ring-fill,.quota-ring-fill,.ctx-quota-ring-fill,.ctx-model-quota-chip,.quota-bar-fill,.quota-bar-charge-stage,.quota-bar-charge-fill,.quota-bar-charge-sheen,.quota-refresh-icon,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill{
@@ -1857,14 +1969,16 @@
     .ag-subtier-compact-trigger:hover{
       background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
       border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
-      color:#ffffff;
+      color:var(--ag-text-primary);
     }
-    :host([data-theme="light"]) .ag-subtier-compact-trigger{
+    :host([data-theme="light"]) .ag-subtier-compact-trigger,
+    :host([data-panel-tone="light"]) .ag-subtier-compact-trigger{
       background:var(--ag-accent-bg,rgba(124,58,237,0.10));
       border-color:var(--ag-accent-border,rgba(124,58,237,0.28));
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));
     }
-    :host([data-theme="light"]) .ag-subtier-compact-trigger:hover{
+    :host([data-theme="light"]) .ag-subtier-compact-trigger:hover,
+    :host([data-panel-tone="light"]) .ag-subtier-compact-trigger:hover{
       background:var(--ag-accent-bg-hover,rgba(124,58,237,0.18));
       border-color:var(--ag-accent-border-hover,rgba(124,58,237,0.48));
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#7c3aed));
@@ -1878,6 +1992,12 @@
       display:flex;
       flex-wrap:wrap;
       gap:4px;
+    }
+
+    @supports (corner-shape: superellipse(1.25)){
+      .ag-panel,.ag-modal-card,#overflow-menu,.ag-dropdown-menu,#color-picker-popover,.update-popover,.heat-popover,#context-tooltip,#cli-launch-toast,.settings-card-box,.heatmap-section,.t-card,#key-summary,#speed-summary,.quota-current-card,.quota-pool-card,.ctx-detail-card,.ctx-adjust-box,.ctx-chart-card,.ctx-settings-card{
+        corner-shape:superellipse(1.25);
+      }
     }
 
     /* antigravity-suite 本地化裁剪覆盖（保留上游 DOM/JS 结构以便后续平滑同步上游版本） */
@@ -1920,16 +2040,18 @@
     #suite-ver-status{
       font-size:12px;
       font-weight:500;
+      font-variant-numeric:tabular-nums;
       white-space:nowrap;
       cursor:pointer;
     }
     #suite-ver-status[data-state="update"]{
-      color:#f59e0b;
+      color:var(--ag-text-warn,#fbbf24);
       background:rgba(245,158,11,0.14);
       border-color:rgba(245,158,11,0.38);
     }
-    :host([data-theme="light"]) #suite-ver-status[data-state="update"]{
-      color:#b45309;
+    :host([data-theme="light"]) #suite-ver-status[data-state="update"],
+    :host([data-panel-tone="light"]) #suite-ver-status[data-state="update"]{
+      color:var(--ag-text-warn,#b45309);
       background:#fef3c7;
       border-color:#fcd34d;
     }
@@ -1938,7 +2060,8 @@
       background:var(--ag-bg-subcard);
       border-color:var(--ag-border-subcard);
     }
-    :host([data-theme="light"]) #suite-ver-status[data-state="ok"]{
+    :host([data-theme="light"]) #suite-ver-status[data-state="ok"],
+    :host([data-panel-tone="light"]) #suite-ver-status[data-state="ok"]{
       color:var(--ag-text-secondary);
       background:var(--ag-bg-subcard);
       border-color:var(--ag-border-subcard);
@@ -1958,8 +2081,8 @@
       gap:4px;
       background:var(--ag-bg-subcard);
       border:1px solid var(--ag-border-subcard);
-      border-radius:8px;
-      padding:3px;
+      border-radius:10px;
+      padding:4px;
       margin-bottom:10px;
     }
     .settings-tab-btn{
@@ -1974,11 +2097,14 @@
       white-space:nowrap;
       overflow:hidden;
       text-overflow:ellipsis;
-      transition:background-color .15s ease,color .15s ease,border-color .15s ease;
+      transition:background-color .15s var(--ag-ease-out,cubic-bezier(0.16,1,0.3,1)),color .15s ease,border-color .15s ease,transform .08s ease;
     }
     .settings-tab-btn:hover{
       color:var(--ag-text-primary);
       background:var(--ag-toolbar-bg-hover);
+    }
+    .settings-tab-btn:active{
+      transform:scale(0.975) translateY(0.5px);
     }
     .settings-tab-btn.active{
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
@@ -2018,17 +2144,20 @@
       align-items:center;
       gap:6px;
       flex-wrap:wrap;
+      min-width:0;
     }
     .settings-card-title{
       font-size:14px;
       font-weight:600;
       line-height:1.3;
       color:var(--ag-text-primary);
+      text-wrap:balance;
     }
     .settings-card-desc{
       font-size:12px;
       color:var(--ag-text-muted);
       line-height:1.55;
+      text-wrap:pretty;
     }
     .term-app-grid{
       display:grid;
@@ -2050,6 +2179,9 @@
     .term-option-card:hover{
       border-color:var(--ag-btn-border-hover);
       background:var(--ag-btn-hover);
+    }
+    .term-option-card:active{
+      transform:scale(0.985) translateY(0.5px);
     }
     .term-option-card[data-selected="true"]{
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
@@ -2086,7 +2218,8 @@
       background:var(--ag-bg-subcard);
       border-color:var(--ag-border-subcard);
     }
-    :host([data-theme="light"]) .term-option-badge[data-installed="true"]{
+    :host([data-theme="light"]) .term-option-badge[data-installed="true"],
+    :host([data-panel-tone="light"]) .term-option-badge[data-installed="true"]{
       color:var(--ag-text-secondary);
       background:var(--ag-bg-subcard);
       border-color:var(--ag-border-subcard);
@@ -2138,8 +2271,10 @@
       border-radius:6px;
       outline:none;
     }
-    .settings-input:focus{
+    .settings-input:focus,
+    .settings-input:focus-visible{
       border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      box-shadow:0 0 0 2px var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
     }
     .settings-card-footer{
       display:flex;
@@ -2192,13 +2327,48 @@
       font-size:12px;
       color:var(--ag-text-muted);
       line-height:1.5;
+      text-wrap:pretty;
     }
     .settings-checkbox{
-      width:15px;
-      height:15px;
-      accent-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      -webkit-appearance:none;
+      appearance:none;
+      position:relative;
+      width:32px;
+      height:18px;
+      margin:0;
+      border-radius:999px;
+      border:1px solid var(--ag-btn-border);
+      background:var(--ag-track-bg,rgba(255,255,255,0.14));
       cursor:pointer;
       flex-shrink:0;
+      vertical-align:middle;
+      transition:background-color .18s var(--ag-ease-out,cubic-bezier(0.16,1,0.3,1)),border-color .18s ease;
+    }
+    .settings-checkbox::after{
+      content:"";
+      position:absolute;
+      top:1px;
+      left:1px;
+      width:14px;
+      height:14px;
+      border-radius:999px;
+      background:#ffffff;
+      box-shadow:0 1px 2px rgba(0,0,0,0.28);
+      transition:transform .18s var(--ag-ease-out,cubic-bezier(0.16,1,0.3,1));
+    }
+    .settings-checkbox:hover:not(:disabled){
+      border-color:var(--ag-btn-border-hover);
+    }
+    .settings-checkbox:checked{
+      background:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+    }
+    .settings-checkbox:checked::after{
+      transform:translateX(14px);
+    }
+    .settings-checkbox:disabled{
+      opacity:.5;
+      cursor:not-allowed;
     }
     .settings-select-wrap{
       min-width:195px;
@@ -2286,6 +2456,9 @@
       border-color:var(--ag-btn-border-hover);
       background:var(--ag-btn-hover);
     }
+    .settings-feature-item:active{
+      transform:scale(0.985) translateY(0.5px);
+    }
     .settings-feature-name{
       font-size:12.5px;
       font-weight:500;
@@ -2330,7 +2503,10 @@
       font-weight:500;
       cursor:pointer;
       text-align:left;
-      transition:border-color .14s ease,background-color .14s ease,color .14s ease;
+      transition:border-color .14s ease,background-color .14s ease,color .14s ease,transform .08s ease;
+    }
+    .qp-pool-chip:active{
+      transform:scale(0.975) translateY(0.5px);
     }
     .qp-pool-chip:hover,
     .qp-pool-chip[data-inspected="true"]{
@@ -2429,11 +2605,13 @@
       font-size:11.5px;
       color:var(--ag-text-primary);
       line-height:1.45;
+      text-wrap:pretty;
     }
     .qp-info-scene{
       font-size:11.5px;
       color:var(--ag-text-muted);
       line-height:1.45;
+      text-wrap:pretty;
     }
     .qp-empty-hint{
       font-size:11.5px;
@@ -2455,11 +2633,13 @@
     }
     .qp-add-btn{
       flex-shrink:0;
+      white-space:nowrap;
     }
     .qp-custom-hint{
       font-size:11.5px;
       color:var(--ag-text-muted);
       line-height:1.45;
+      text-wrap:pretty;
       margin:-2px 0 6px;
     }
     .qp-tpl-bar{
@@ -2470,7 +2650,7 @@
       margin:2px 0 8px;
     }
     .qp-tpl-label{
-      font-size:11px;
+      font-size:11.5px;
       color:var(--ag-text-muted);
       margin-right:2px;
       user-select:none;
@@ -2481,15 +2661,19 @@
       color:var(--ag-text-secondary);
       border-radius:999px;
       padding:2px 8px;
-      font-size:11px;
+      font-size:11.5px;
       line-height:1.45;
+      white-space:nowrap;
       cursor:pointer;
-      transition:border-color .14s,background-color .14s,color .14s;
+      transition:border-color .14s,background-color .14s,color .14s,transform .08s ease;
     }
     .qp-tpl-chip:hover{
       border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
       background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
       color:var(--ag-text-primary);
+    }
+    .qp-tpl-chip:active{
+      transform:scale(0.975) translateY(0.5px);
     }
     .qp-tpl-chip[data-added="true"]{
       border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
@@ -2505,7 +2689,7 @@
     }
     .qp-row{
       display:grid;
-      grid-template-columns:minmax(92px,124px) 1fr auto auto;
+      grid-template-columns:minmax(92px,124px) minmax(0,1fr) auto auto;
       gap:6px;
       align-items:center;
     }
@@ -2524,11 +2708,14 @@
       justify-content:center;
       white-space:nowrap;
       cursor:pointer;
-      transition:background-color .14s,border-color .14s,color .14s;
+      transition:background-color .14s,border-color .14s,color .14s,transform .08s ease;
     }
     .qp-autosend-btn:hover{
       color:var(--ag-text-primary);
       border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+    }
+    .qp-autosend-btn:active{
+      transform:scale(0.975) translateY(0.5px);
     }
     .qp-autosend-btn[data-auto-send="true"]{
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
@@ -2547,8 +2734,10 @@
       font-size:12px;
       outline:none;
     }
-    .qp-label-input:focus,.qp-text-input:focus,.ag-rp-input:focus{
+    .qp-label-input:focus,.qp-text-input:focus,.ag-rp-input:focus,
+    .qp-label-input:focus-visible,.qp-text-input:focus-visible,.ag-rp-input:focus-visible{
       border-color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      box-shadow:0 0 0 2px var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
     }
     .qp-del-btn{
       border:1px solid var(--ag-border-subcard);
@@ -2563,11 +2752,15 @@
       display:inline-flex;
       align-items:center;
       justify-content:center;
+      transition:border-color .14s,color .14s,background-color .14s,transform .08s ease;
     }
     .qp-del-btn:hover{
       border-color:rgba(248,113,113,0.45);
-      color:#f87171;
+      color:var(--ag-text-danger,#f87171);
       background:rgba(248,113,113,0.08);
+    }
+    .qp-del-btn:active{
+      transform:scale(0.95);
     }
     .qp-footer{
       display:flex;
@@ -2579,20 +2772,64 @@
       font-size:11.5px;
       color:var(--ag-text-muted);
       min-height:16px;
+      min-width:0;
     }
     .qp-status[data-tone="dirty"]{
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       font-weight:500;
     }
     .qp-status[data-tone="warn"]{
-      color:#f87171;
+      color:var(--ag-text-danger,#f87171);
       font-weight:500;
+    }
+    .term-action-btn{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:5px;
+      height:28px;
+      padding:0 12px;
+      border-radius:6px;
+      border:1px solid var(--ag-btn-border);
+      background:var(--ag-btn-bg);
+      color:var(--ag-text-primary);
+      font-size:12px;
+      font-weight:500;
+      white-space:nowrap;
+      cursor:pointer;
+      flex-shrink:0;
+      transition:background-color .14s var(--ag-ease-out,cubic-bezier(0.16,1,0.3,1)),border-color .14s var(--ag-ease-out,cubic-bezier(0.16,1,0.3,1)),color .14s ease,transform .08s ease;
+    }
+    .term-action-btn:hover:not(:disabled){
+      background:var(--ag-btn-hover);
+      border-color:var(--ag-btn-border-hover);
+    }
+    .term-action-btn:active:not(:disabled){
+      transform:scale(0.975) translateY(0.5px);
+    }
+    .term-action-btn:disabled{
+      opacity:.52;
+      cursor:not-allowed;
     }
     #btn-save-quick-prompts[data-dirty="true"]{
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
       border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       font-weight:600;
+    }
+    #btn-save-quick-prompts[data-dirty="true"]:hover:not(:disabled){
+      background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
+      border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
+    }
+    .settings-remote-channels-root{
+      min-height:168px;
+    }
+    #btn-settings-remote-refresh{
+      min-width:68px;
+      white-space:nowrap;
+    }
+    #ag-remote-reset,#btn-reset-feature-toggles,#btn-reset-quick-prompts,#btn-refresh-terminals,#btn-test-terminal,#btn-toggle-heat-advanced,#btn-reset-remote-display{
+      white-space:nowrap;
     }
     .ag-rp-channels{
       display:flex;
@@ -2646,12 +2883,17 @@
       border-radius:6px;
       padding:3px 8px;
       font-size:11px;
+      white-space:nowrap;
       cursor:pointer;
       flex-shrink:0;
+      transition:color .14s ease,background-color .14s ease,transform .08s ease;
     }
     .ag-rp-ch-cfg:hover{
       color:var(--ag-text-primary);
       background:var(--ag-toolbar-bg-hover);
+    }
+    .ag-rp-ch-cfg:active{
+      transform:scale(0.975) translateY(0.5px);
     }
     .ag-rp-tunnel-form{
       display:flex;
@@ -2706,14 +2948,14 @@
       align-items:center;
       padding:1px 6px;
       border-radius:999px;
-      font-size:10.5px;
+      font-size:11px;
       font-weight:500;
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
     }
     .ag-rp-install-guide[data-missing="true"] .ag-rp-install-badge{
       background:rgba(245,158,11,0.18);
-      color:#d97706;
+      color:var(--ag-text-warn,#fbbf24);
     }
     .ag-rp-install-tabs{
       display:inline-flex;
@@ -2726,8 +2968,13 @@
       color:var(--ag-text-secondary);
       border-radius:5px;
       padding:2px 7px;
-      font-size:10.5px;
+      font-size:11px;
+      white-space:nowrap;
       cursor:pointer;
+      transition:border-color .14s ease,background-color .14s ease,color .14s ease,transform .08s ease;
+    }
+    .ag-rp-install-tab:active{
+      transform:scale(0.975) translateY(0.5px);
     }
     .ag-rp-install-tab[data-active="true"]{
       border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
@@ -2771,13 +3018,29 @@
       flex-wrap:wrap;
     }
     .ag-rp-btn{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
       border:1px solid var(--ag-border-subcard);
       background:var(--ag-bg-subcard);
       color:var(--ag-text-primary);
       border-radius:6px;
       padding:5px 10px;
       font-size:11.5px;
+      white-space:nowrap;
       cursor:pointer;
+      transition:border-color .14s ease,background-color .14s ease,color .14s ease,transform .08s ease;
+    }
+    .ag-rp-btn:hover:not(:disabled){
+      background:var(--ag-btn-hover);
+      border-color:var(--ag-btn-border-hover);
+    }
+    .ag-rp-btn:active:not(:disabled){
+      transform:scale(0.975) translateY(0.5px);
+    }
+    .ag-rp-btn:disabled{
+      opacity:.52;
+      cursor:not-allowed;
     }
     .ag-rp-btn.primary{
       background:var(--ag-accent-bg,rgba(167,139,250,0.14));
@@ -2785,14 +3048,22 @@
       color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
       font-weight:600;
     }
+    .ag-rp-btn.primary:hover:not(:disabled){
+      background:var(--ag-accent-bg-hover,rgba(167,139,250,0.24));
+      border-color:var(--ag-accent-border-hover,rgba(167,139,250,0.56));
+    }
     .ag-rp-err{
       margin-top:8px;
       padding:6px 8px;
       border-radius:6px;
       background:rgba(248,113,113,0.12);
       border:1px solid rgba(248,113,113,0.35);
-      color:#f87171;
+      color:var(--ag-text-danger,#f87171);
       font-size:11.5px;
+    }
+    @keyframes ag-spin{
+      from{transform:rotate(0deg);}
+      to{transform:rotate(360deg);}
     }
     .ag-rp-spin{
       display:inline-block;
@@ -2807,9 +3078,17 @@
     }
     @media (max-width:560px){
       #panel-settings{width:calc(100vw - 24px);}
-      .settings-tabs-bar{grid-template-columns:repeat(2,1fr);}
+      .settings-tabs-bar{grid-template-columns:repeat(2,minmax(0,1fr));}
       .qp-pool-group-items{grid-template-columns:repeat(2,minmax(0,1fr));}
-      .term-app-grid,.settings-feature-grid,.qp-row{grid-template-columns:1fr;}
+      .term-app-grid,.settings-feature-grid,.qp-row{grid-template-columns:minmax(0,1fr);}
+    }
+    @media (prefers-reduced-motion: reduce){
+      .settings-tab-btn,.term-option-card,.settings-feature-item,.qp-pool-chip,.qp-tpl-chip,.qp-autosend-btn,.qp-del-btn,.term-action-btn,.settings-checkbox,.settings-checkbox::after,.ag-rp-btn,.ag-rp-ch-cfg,.ag-rp-install-tab{
+        transition:none!important;
+      }
+      .ag-rp-spin{
+        animation:none!important;
+      }
     }
   </style>
 
@@ -2929,7 +3208,7 @@
           <span class="key-title">最新生成速度与耗时</span>
           <span id="speed-badge" class="key-pill pill-muted">待生成</span>
         </div>
-        <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
+        <div class="key-stats" style="grid-template-columns:repeat(4,minmax(0,1fr));">
           <div class="key-stat">
             <div class="key-stat-label">输出速度</div>
             <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—</div>
@@ -2955,7 +3234,7 @@
         <button id="btn-toggle-chinese" class="drawer-trigger" aria-expanded="false" type="button">
           <span class="drawer-trigger-left">
             <span>🇨🇳 客户端界面汉化（桌面客户端）</span>
-            <span id="chinese-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
+            <span id="chinese-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:11px;">读取中…</span>
           </span>
           <span id="chinese-drawer-arrow" class="drawer-arrow">▼ 展开</span>
         </button>
@@ -2980,12 +3259,12 @@
         </div>
       </div>
 
-      <!-- 二级交互折叠区: 免 TUN 网络直连 (AntigravityProxyNoTun) -->
+      <!-- 二级交互折叠区: 本地代理直连 (无需开启全局代理 / TUN) -->
       <div class="tech-drawer" id="proxy-notun-drawer">
         <button id="btn-toggle-proxy" class="drawer-trigger" aria-expanded="false" type="button">
           <span class="drawer-trigger-left">
-            <span>🌐 免 TUN 网络直连（本地代理）</span>
-            <span id="proxy-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">读取中…</span>
+            <span>🌐 本地代理直连（无需开启全局代理 / TUN）</span>
+            <span id="proxy-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:11px;">读取中…</span>
           </span>
           <span id="proxy-drawer-arrow" class="drawer-arrow">▼ 展开</span>
         </button>
@@ -2998,20 +3277,20 @@
               </div>
             </div>
             <div style="display:flex;flex-direction:column;gap:8px;margin:8px 0;">
-              <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
+              <label style="font-size:11.5px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
                 <span>本地代理地址（支持 HTTP / SOCKS5，如 http://127.0.0.1:7897）：</span>
-                <input id="input-proxy-url" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="http://127.0.0.1:7897" />
+                <input id="input-proxy-url" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11.5px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="http://127.0.0.1:7897" />
               </label>
-              <label style="font-size:11px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
-                <span>不走代理的地址（本地回环默认直连）：</span>
-                <input id="input-proxy-bypass" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="localhost,127.0.0.1,::1,<local>" />
+              <label style="font-size:11.5px;color:var(--ag-text-secondary);display:flex;flex-direction:column;gap:4px;">
+                <span>不走代理的地址（本机地址默认直连）：</span>
+                <input id="input-proxy-bypass" type="text" class="unlock-input" style="height:28px;padding:0 8px;font-size:11.5px;box-sizing:border-box;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-primary);border-radius:5px;" value="localhost,127.0.0.1,::1,<local>" />
               </label>
             </div>
             <div class="unlock-actions" style="display:flex;gap:8px;">
               <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button">🔍 测试代理连接</button>
               <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button">开启代理直连</button>
             </div>
-            <div id="proxy-test-result" style="font-size:11px;margin-top:6px;display:none;color:var(--ag-text-secondary);"></div>
+            <div id="proxy-test-result" style="font-size:11.5px;margin-top:6px;display:none;color:var(--ag-text-secondary);"></div>
           </div>
         </div>
       </div>
@@ -3067,7 +3346,7 @@
             <div class="color-item">
               <span class="color-item-lbl">测速徽章文字</span>
               <div class="color-item-ctrls">
-                <input id="color-speedText" class="color-picker" type="color" value="#38bdf8" aria-label="测速徽章文字颜色" />
+                <input id="color-speedText" class="color-picker" type="color" value="#b8b8c0" aria-label="测速徽章文字颜色" />
                 <button id="swatch-speedText" class="color-swatch-btn" type="button" data-color-slot="speedText" data-color-label="测速徽章文字" title="点击打开颜色选取器"></button>
                 <button id="reset-speedText" class="color-reset-btn" type="button" data-mode="auto">跟随主题</button>
               </div>
@@ -3082,28 +3361,28 @@
             </div>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:7px">
-            <span style="font-size:10.5px;color:var(--ag-text-muted)">注：高占用与超限告警色独立保留，不被常态颜色覆盖。</span>
+            <span style="font-size:11px;color:var(--ag-text-muted)">注：高占用与超限告警色独立保留，不被常态颜色覆盖。</span>
             <button id="reset-all-colors" class="color-reset-btn" type="button">全部恢复跟随主题</button>
           </div>
         </div>
       </div>
 
-      <!-- 二级交互折叠区 2: 底层技术参数与附件审计 -->
+      <!-- 二级交互折叠区 2: 底层统计与附件检查 -->
       <div class="tech-drawer">
         <button id="btn-toggle-details" class="drawer-trigger" aria-expanded="false" type="button">
           <span class="drawer-trigger-left">
-            <span>底层技术参数与附件审计</span>
+            <span>底层统计与附件检查</span>
           </span>
           <span id="drawer-arrow" class="drawer-arrow">▼ 点击展开明细</span>
         </button>
         <div id="drawer-body" class="drawer-body" style="display:none;">
           <p id="status">正在核对请求和附件…</p><p id="model"></p>
           <h4>最近一次模型请求</h4>
-          <dl><dt>请求状态</dt><dd id="request-status">—</dd><dt>模型返回输入＋输出</dt><dd id="actual">—</dd><dt>客户端估算（可能漏附件）</dt><dd id="estimate">—</dd><dt>客户端预算字段</dt><dd id="budget">—</dd><dt>该次报错的服务端限制</dt><dd id="service-limit">—</dd><dt>相对客户端预算</dt><dd id="percent">—</dd></dl>
+          <dl><dt>请求状态</dt><dd id="request-status">—</dd><dt>模型返回输入＋输出</dt><dd id="actual">—</dd><dt>本地估算（可能未计入附件）</dt><dd id="estimate">—</dd><dt>客户端预算上限</dt><dd id="budget">—</dd><dt>该次报错的服务端限制</dt><dd id="service-limit">—</dd><dt>相对客户端预算</dt><dd id="percent">—</dd></dl>
           <h4>整个会话累计内容 · 本地估算</h4>
           <dl><dt>可读取文本 token 估算</dt><dd id="session-total">扫描中…</dd><dt>实际读取文字字符数</dt><dd id="characters">—</dd><dt>用户消息</dt><dd id="user">—</dd><dt>模型回复</dt><dd id="assistant">—</dd><dt>可见思考内容</dt><dd id="thinking">—</dd><dt>工具调用与工具输出</dt><dd id="tools">—</dd><dt>历史压缩摘要</dt><dd id="summaries">—</dd><dt>当前系统提示与工具定义</dt><dd id="system">—</dd><dt>上传／输出附件文本</dt><dd id="attachment-total">—</dd><dt>历史步骤完整性</dt><dd id="steps">—</dd></dl>
           <p id="coverage"></p><h4>附件逐项检查</h4><div id="files"></div><button id="refresh" type="button">重新扫描整段会话与附件</button>
-          <p id="note">会话累计包括可读取的全部归档历史；已压缩内容仍计入累计。它不等于当前实际发送给模型的上下文，不能用累计值除以 1M 判断剩余空间。附件原文与工具读出的文本可能在历史中分别出现，各按一次出现计入。尚未发送的草稿与待上传附件不在归档内，暂未计入；新上传可能使下一次请求明显增长。<br><br>本地 token 区间是文本启发式估算，不是 Gemini 分词结果，也不是严格上下界。图像、音视频、加密文件、不可访问文件和未解析部分会明确列为未知。未知内容不按零处理；只有服务端返回的用量才标为实际统计。此功能不向外部发送文件，不执行宏或公式。</p>
+          <p id="note">会话累计包含当前可读取的全部历史记录（含已压缩内容），不等同于每次实际发给模型的长度，也不能直接用累计值除以 1M 判断剩余容量。附件原文与工具读取出的内容可能在记录中分别计入一次；尚未发送的草稿和待上传文件暂未计入，新上传文件会使下次请求明显增大。<br><br>本地数值仅按字数粗略推算，并非模型官方精确分词；图片、音视频、加密或不可读文件会单独标为「未知」而非按零计。只有模型服务端返回的统计才属于实际用量；所有扫描均在本机完成，不会向外部上传文件，也不会执行文件中的宏或公式。</p>
           <p id="updated"></p>
         </div>
       </div>
@@ -3132,7 +3411,7 @@
     <div id="view-tokens">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">
         <div class="source-switch-bar">
-          <span style="font-size:10.5px;color:var(--ag-text-muted);padding:0 4px">来源:</span>
+          <span style="font-size:11px;color:var(--ag-text-muted);padding:0 4px">来源:</span>
           <button id="src-tab-all" class="switch-pill-btn active" type="button">全部</button>
           <button id="src-tab-desktop" class="switch-pill-btn" type="button">桌面端</button>
           <button id="src-tab-cli" class="switch-pill-btn" type="button">CLI</button>
@@ -3160,9 +3439,9 @@
           <div id="summary-subtier-menu" class="ag-dropdown-menu ag-subtier-compact-menu"></div>
         </div>
         <!-- 黄框位置：实时联动的订阅费与汇率胶囊 -->
-        <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)">
+        <div id="plan-summary-price-badge" class="plan-summary-price-badge" role="button" tabindex="0" aria-expanded="false" aria-controls="plan-detail-card" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)">
           <span id="plan-summary-price-val">$19.99/月</span>
-          <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
+          <span id="plan-summary-price-cny" style="font-size:11px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
         </div>
         <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 6px;flex-shrink:0">详情 ▼</button>
       </div>
@@ -3172,9 +3451,9 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
           <div style="display:flex;align-items:center;gap:6px">
             <span style="font-size:11.5px;font-weight:600;color:var(--ag-text-primary)">AI 订阅与额度详情</span>
-            <span id="plan-save-feedback" style="font-size:10px;color:var(--ag-text-muted);display:none"></span>
+            <span id="plan-save-feedback" style="font-size:11px;color:var(--ag-text-muted);display:none"></span>
           </div>
-          <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:10.5px" title="收回 AI Pro 详情面板">详情收回 ▲</button>
+          <button id="btn-plan-detail-collapse-top" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px" title="收回 AI Pro 详情面板">详情收回 ▲</button>
         </div>
         <dl class="plan-detail-dl">
           <dt>当前套餐：</dt>
@@ -3196,7 +3475,7 @@
               </div>
               <div id="direct-subtier-menu" class="ag-dropdown-menu"></div>
             </div>
-            <span id="p-det-subtier-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">自定义</span>
+            <span id="p-det-subtier-tag" class="key-pill pill-muted" style="font-size:11px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">自定义</span>
           </dd>
           <dt id="p-dt-subtier-specs" style="display:none">子档权益规格：</dt>
           <dd id="p-det-subtier-specs" style="display:none;font-size:11px;color:var(--ag-text-secondary);line-height:1.5">—</dd>
@@ -3234,7 +3513,7 @@
               </div>
               <div id="direct-country-menu" class="ag-dropdown-menu"></div>
             </div>
-            <span id="p-det-country-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">已保存</span>
+            <span id="p-det-country-tag" class="key-pill pill-muted" style="font-size:11px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">已保存</span>
           </dd>
           <dt>订阅国家：</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
@@ -3248,7 +3527,7 @@
               </div>
               <div id="direct-region-menu" class="ag-dropdown-menu"></div>
             </div>
-            <span id="p-det-region-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">自定义</span>
+            <span id="p-det-region-tag" class="key-pill pill-muted" style="font-size:11px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">自定义</span>
           </dd>
           <dt>订阅币种：</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
@@ -3281,20 +3560,20 @@
               </div>
               <div id="direct-currency-menu" class="ag-dropdown-menu"></div>
             </div>
-            <span id="p-det-currency-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">已保存</span>
+            <span id="p-det-currency-tag" class="key-pill pill-muted" style="font-size:11px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">已保存</span>
           </dd>
           <dt>获取方式：</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span id="p-det-acq">正常付费订阅</span>
-            <span id="p-det-acq-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none">活动权益</span>
+            <span id="p-det-acq-tag" class="key-pill pill-muted" style="font-size:11px;padding:1px 4px;display:none">活动权益</span>
           </dd>
           <dt>计费周期与价格：</dt>
           <dd style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span id="p-det-price">地区参考价 $19.99/月</span>
-            <span id="p-det-price-tag" class="key-pill pill-muted" style="font-size:9.5px;padding:1px 4px;display:none">地区参考价</span>
+            <span id="p-det-price-tag" class="key-pill pill-muted" style="font-size:11px;padding:1px 4px;display:none">地区参考价</span>
             <div id="price-mode-switch-group" style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
-              <button id="btn-mode-preset" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px" title="跟随当前订阅国家的官方定价动态联动">跟随参考价</button>
-              <button id="btn-mode-custom" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px" title="手动指定用户真实实付金额（含0元/折扣等）">自定义实付</button>
+              <button id="btn-mode-preset" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:11px" title="跟随当前订阅国家的官方定价动态联动">跟随参考价</button>
+              <button id="btn-mode-custom" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:11px" title="手动指定用户真实实付金额（含0元/折扣等）">自定义实付</button>
             </div>
           </dd>
           <dt id="p-dt-validity" style="display:none">权益有效期：</dt>
@@ -3320,13 +3599,13 @@
 
         <!-- 就地行内自定义编辑表单 -->
         <div id="plan-custom-form" style="display:none;margin-top:8px;padding:10px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px">
-          <div style="font-size:11px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)">
+          <div style="font-size:11.5px;font-weight:600;margin-bottom:6px;color:var(--ag-text-primary)">
             自定义实付金额与订阅备注
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+          <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;margin-bottom:6px">
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅渠道 / 优惠来源</label>
-              <select id="select-custom-acq" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+              <label style="font-size:11.5px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅渠道 / 优惠来源</label>
+              <select id="select-custom-acq" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                 <option value="normal_paid">正常付费订阅</option>
                 <option value="student_offer">学生认证优惠</option>
                 <option value="pixel_bundle">Google Pixel 设备赠送</option>
@@ -3340,22 +3619,22 @@
               </select>
             </div>
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">自定义活动 / 合作方名称</label>
-              <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+              <label style="font-size:11.5px;color:var(--ag-text-muted);display:block;margin-bottom:2px">自定义活动 / 合作方名称</label>
+              <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
           </div>
           <div style="margin-bottom:6px">
-            <label style="font-size:10.5px;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <label style="font-size:11.5px;color:var(--ag-text-primary);display:flex;align-items:center;gap:6px;cursor:pointer">
               <input id="check-zero-extra" type="checkbox">
               <span>免费获取（0 元实付，如赠送 / 试用）</span>
             </label>
           </div>
           <div style="margin-bottom:6px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
-              <label style="font-size:10px;color:var(--ag-text-muted)">预设订阅国家与汇率 (可选快捷套用)</label>
-              <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
+              <label style="font-size:11.5px;color:var(--ag-text-muted)">预设订阅国家与汇率 (可选快捷套用)</label>
+              <span id="region-cny-preview" style="font-size:11px;color:var(--ag-text-secondary)"></span>
             </div>
-            <select id="select-custom-region-preset" style="width:100%;height:28px;font-size:11px;padding:0 8px;margin-bottom:4px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+            <select id="select-custom-region-preset" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;margin-bottom:4px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
               <option value="">-- 选择预设地区 (自动填入价格与汇率) --</option>
               <option value="US">🇺🇸 美国 (US) · $19.99/月 (折合 ≈ ¥134.3)</option>
               <option value="KR">🇰🇷 韩国 (KR) · ₩29,000/月 (折合 ≈ ¥147.9)</option>
@@ -3377,19 +3656,19 @@
               <option value="custom">✎ 自定义输入地区</option>
             </select>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-bottom:6px">
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">账号所在地区 (仅本地记录)</label>
-              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" title="仅作为本地显示记录，不修改实际 Google 账号" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+              <label style="font-size:11.5px;color:var(--ag-text-muted);display:block;margin-bottom:2px">账号所在地区 (仅本地记录)</label>
+              <input id="input-custom-country" type="text" placeholder="例如：美国 (US)" title="仅作为本地显示记录，不修改实际 Google 账号" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅国家 (购买/结算地区)</label>
-              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" title="实际购买或支付订阅所在的国家或地区" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+              <label style="font-size:11.5px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅国家 (购买/结算地区)</label>
+              <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚" title="实际购买或支付订阅所在的国家或地区" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅币种与实付金额</label>
+              <label style="font-size:11.5px;color:var(--ag-text-muted);display:block;margin-bottom:2px">订阅币种与实付金额</label>
               <div style="display:flex;gap:4px">
-                <select id="select-custom-currency" title="订阅计价/结算币种" style="height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+                <select id="select-custom-currency" title="订阅计价/结算币种" style="height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                   <option value="USD">USD</option>
                   <option value="KRW">KRW</option>
                   <option value="HKD">HKD</option>
@@ -3408,14 +3687,14 @@
                   <option value="AUD">AUD</option>
                   <option value="MYR">MYR</option>
                 </select>
-                <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+                <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
               </div>
             </div>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-bottom:6px">
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">计费周期</label>
-              <select id="select-custom-cycle" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+              <label style="font-size:11.5px;color:var(--ag-text-muted);display:block;margin-bottom:2px">计费周期</label>
+              <select id="select-custom-cycle" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
                 <option value="月付">月付</option>
                 <option value="年付">年付</option>
                 <option value="免费/赠送">免费 / 促销赠送</option>
@@ -3424,16 +3703,16 @@
               </select>
             </div>
             <div>
-              <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">权益到期日</label>
-              <input id="input-valid-end" type="date" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+              <label style="font-size:11.5px;color:var(--ag-text-muted);display:block;margin-bottom:2px">权益到期日</label>
+              <input id="input-valid-end" type="date" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
             </div>
           </div>
           <div style="margin-bottom:6px">
-            <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px">备注说明（选填）</label>
-            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;height:28px;font-size:11px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
+            <label style="font-size:11.5px;color:var(--ag-text-muted);display:block;margin-bottom:2px">备注说明（选填）</label>
+            <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车" style="width:100%;height:28px;font-size:11.5px;padding:0 8px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:5px;color:var(--ag-text-primary)">
           </div>
           <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
-            <button id="btn-custom-plan-clear" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px;color:#ef4444">清除自定义</button>
+            <button id="btn-custom-plan-clear" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px;color:var(--ag-text-danger,#f87171)">清除自定义</button>
             <button id="btn-custom-plan-cancel" class="switch-pill-btn" type="button" style="padding:2px 8px;font-size:11px">取消</button>
             <button id="btn-custom-plan-save" class="switch-pill-btn active" type="button" style="padding:2px 10px;font-size:11px">保存</button>
           </div>
@@ -3447,14 +3726,14 @@
           <!-- 1. 标题与范围标签 -->
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
             <span id="cost-card-title" style="font-size:12.5px;font-weight:600;color:var(--ag-text-primary)">💰 本期 API 参考金额</span>
-            <span id="cost-period-tag" class="key-pill pill-muted" style="font-size:10px">本月自然月</span>
+            <span id="cost-period-tag" class="key-pill pill-muted" style="font-size:11px">本月自然月</span>
           </div>
           <!-- 2. 来源与时间短行 -->
           <div id="cost-scope-desc" style="font-size:11px;color:var(--ag-text-muted);margin-bottom:6px">全部来源 · 2026-11 自然月</div>
           <!-- 3. 主要参考金额及常驻“非实付”标识 -->
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
             <div id="cost-grand-val" style="font-size:22px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.5px">约 $0.00</div>
-            <span id="cost-non-paid-badge" class="key-pill pill-muted" style="font-size:10px;padding:1px 6px">API折算 · 非实付</span>
+            <span id="cost-non-paid-badge" class="key-pill pill-muted" style="font-size:11px;padding:1px 6px">API折算 · 非实付</span>
           </div>
           <!-- 4. 一行参考模型/情景假设 -->
           <div id="cost-grand-sub" style="font-size:11px;color:var(--ag-text-secondary);margin-bottom:6px;line-height:1.35">统一按 Gemini 3.8 Flash 估算</div>
@@ -3466,11 +3745,11 @@
               <span id="cost-sub-compare-note" style="display:none">公开参考价 $19.99/月</span>
               <span id="cost-sub-spend-lbl" style="display:none">本人同期实际支出</span>
             </div>
-            <button id="btn-cost-fill-sub" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px" title="设置当前账号订阅来源与实付金额">补充</button>
+            <button id="btn-cost-fill-sub" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:11px" title="设置当前账号订阅来源与实付金额">补充</button>
           </div>
           <!-- 6. 展开详情入口 -->
           <div id="cost-expand-bar" style="display:flex;justify-content:flex-end">
-            <button id="btn-cost-details-toggle" class="switch-pill-btn" type="button" style="padding:2px 10px;font-size:10.5px">展开详情 ▼</button>
+            <button id="btn-cost-details-toggle" class="switch-pill-btn" type="button" style="padding:2px 10px;font-size:11px">展开详情 ▼</button>
           </div>
         </div>
 
@@ -3480,59 +3759,59 @@
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
             <span style="font-size:11px;color:var(--ag-text-muted)">统计范围:</span>
             <div style="display:flex;align-items:center;gap:4px">
-              <button id="cost-btn-scope-period" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10.5px">本期</button>
-              <button id="cost-btn-scope-all" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10.5px">全量历史</button>
-              <span id="cost-coverage-pill" class="key-pill pill-muted" style="font-size:10.5px">100% 折算覆盖</span>
+              <button id="cost-btn-scope-period" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:11px">本期</button>
+              <button id="cost-btn-scope-all" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:11px">全量历史</button>
+              <span id="cost-coverage-pill" class="key-pill pill-muted" style="font-size:11px">100% 折算覆盖</span>
             </div>
           </div>
 
           <!-- 估值模式快捷切换（中性“参考模型估算”） -->
           <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--ag-border-subcard)">
-            <span style="font-size:10.5px;color:var(--ag-text-muted)">估值模式:</span>
+            <span style="font-size:11px;color:var(--ag-text-muted)">估值模式:</span>
             <div class="source-switch-bar">
-              <button id="cost-btn-mode-ref" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:10px">参考模型估算</button>
-              <button id="cost-btn-mode-hybrid" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px">混合模式</button>
-              <button id="cost-btn-mode-identified" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:10px">仅已识别模型</button>
+              <button id="cost-btn-mode-ref" class="switch-pill-btn active" type="button" style="padding:1px 6px;font-size:11px">参考模型估算</button>
+              <button id="cost-btn-mode-hybrid" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:11px">混合模式</button>
+              <button id="cost-btn-mode-identified" class="switch-pill-btn" type="button" style="padding:1px 6px;font-size:11px">仅已识别模型</button>
             </div>
           </div>
 
           <!-- 用量与参考差额指标条（注明包含缓存读取） -->
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 8px;background:var(--ag-bg-subcard);border-radius:6px;margin-bottom:8px">
             <span id="cost-usage-summary" style="font-size:11px;font-weight:600;color:var(--ag-text-primary)">累计处理 Token: -- (含 -- 缓存读取)</span>
-            <span id="cost-diff-summary" style="font-size:10.5px;color:var(--ag-text-muted)">参考差额约 +$0.00 (API折算 - 实际支出)</span>
+            <span id="cost-diff-summary" style="font-size:11px;color:var(--ag-text-muted)">参考差额约 +$0.00 (API折算 - 实际支出)</span>
           </div>
 
           <!-- 分类单价与公式明细卡片（输入、缓存读取、输出） -->
-          <div id="ref-cost-breakdown-cards" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+          <div id="ref-cost-breakdown-cards" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-bottom:8px">
             <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">输入 Token ($0.75/M)</div>
+              <div style="font-size:11px;color:var(--ag-text-muted)">输入 Token ($0.75/M)</div>
               <div id="ref-cost-input-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-              <div id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+              <div id="ref-cost-input-tok" style="font-size:11px;color:var(--ag-text-muted)">0 tok</div>
             </div>
             <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">缓存读取 ($0.075/M 优惠)</div>
+              <div style="font-size:11px;color:var(--ag-text-muted)">缓存读取 ($0.075/M 优惠)</div>
               <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-              <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+              <div id="ref-cost-cache-tok" style="font-size:11px;color:var(--ag-text-muted)">0 tok</div>
             </div>
             <div class="t-card" style="padding:6px">
-              <div style="font-size:10px;color:var(--ag-text-muted)">输出 Token ($3.75/M)</div>
+              <div style="font-size:11px;color:var(--ag-text-muted)">输出 Token ($3.75/M)</div>
               <div id="ref-cost-output-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-              <div id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+              <div id="ref-cost-output-tok" style="font-size:11px;color:var(--ag-text-muted)">0 tok</div>
             </div>
           </div>
 
           <!-- 详细分析与未计价原因 -->
-          <div id="cost-breakdown-info" style="font-size:10.5px;color:var(--ag-text-secondary);line-height:1.4;padding-top:6px;border-top:1px solid var(--ag-border-subcard)">
+          <div id="cost-breakdown-info" style="font-size:11px;color:var(--ag-text-secondary);line-height:1.4;padding-top:6px;border-top:1px solid var(--ag-border-subcard)">
             正在分析请求模型与计价覆盖率…
           </div>
 
-          <div style="font-size:10px;color:var(--ag-text-muted);line-height:1.4;margin-top:8px">
-            注：此折算反映按公开零售价调用同等资源之费用，包月订阅/活动赠送与 API 零售非同类计费模式，该差额不等于真实节省现金；缓存读取按 10% 优惠计价；不含缓存存储费与搜索落地费用。缓存可在多次请求中重复读取相同上下文，该总量不代表独立文本量或用户输入字数。
+          <div style="font-size:11px;color:var(--ag-text-muted);line-height:1.4;margin-top:8px">
+            注：此处按公开 API 单价折算同等用量，仅供价值参考。包月订阅或活动赠送与按量付费不同，差额不代表实际省下的现金；缓存读取按 1 折估算，不含缓存存储费；同一上下文在多轮中会重复计入缓存读取，总量不代表实际输入字数。
           </div>
 
           <!-- 底部收起详情按钮 -->
           <div style="display:flex;justify-content:center;margin-top:10px">
-            <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button" style="padding:2px 14px;font-size:10.5px">收起详情 ▴</button>
+            <button id="btn-cost-details-collapse" class="switch-pill-btn" type="button" style="padding:2px 14px;font-size:11px">收起详情 ▴</button>
           </div>
         </div>
 
@@ -3551,7 +3830,7 @@
         <div class="token-stat-cards" id="token-stat-cards">
           <div class="t-card">
             <div class="t-card-lbl"><span>累计处理 Token</span><span style="color:var(--ag-text-muted)">总计</span></div>
-            <div style="font-size:9.5px;color:var(--ag-text-muted);margin:-2px 0 4px">含缓存读取</div>
+            <div style="font-size:11px;color:var(--ag-text-muted);margin:-2px 0 4px">含缓存读取</div>
             <div class="t-card-val" id="t-total-val">--</div>
             <div class="t-card-sub" id="t-total-sub">读取中...</div>
             <div class="t-card-cost" id="t-total-cost">≈ $0.00 (¥0.00) · 日均 $0.00</div>
@@ -3631,7 +3910,7 @@
           </div>
         </div>
         <div class="heat-cost-disclaimer">
-          注：按日聚合按基础档估算，未拆分长上下文分档，结果偏下限。有逐请求记录时优先精确入账。
+          说明：每日统计按基础费率估算（未单独拆分长上下文阶梯价），实际金额可能略高；若有逐次请求记录则优先按实计算。
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--ag-text-muted);flex-wrap:wrap;gap:6px">
           <span>点击或悬浮格子查看当日详细 Token 构成</span>
@@ -3833,7 +4112,7 @@
       </details>
     </div>
     <div class="cp-footer">
-      <span id="cp-status-msg" style="font-size:10.5px;color:var(--ag-text-muted)">支持直接输入或粘贴 HEX 色值</span>
+      <span id="cp-status-msg" style="font-size:11px;color:var(--ag-text-muted)">支持直接输入或粘贴 HEX 色值</span>
       <button id="cp-reset-slot" class="color-reset-btn" type="button">跟随主题</button>
     </div>
   </div>
@@ -3855,7 +4134,7 @@
       <button id="btn-update-later" class="switch-pill-btn" type="button">稍后</button>
       <button id="btn-apply-update" class="switch-pill-btn active" type="button">立即更新</button>
     </div>
-    <div id="up-pop-status" style="display:none;font-size:10.5px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
+    <div id="up-pop-status" style="display:none;font-size:11px;color:var(--ag-text-muted);margin-top:6px;text-align:center"></div>
   </div>
 
   <!-- 热力图浮动 Tooltip -->
@@ -3873,22 +4152,22 @@
       </div>
       <div class="panel-header-actions">
         <span id="suite-ver-status" class="key-pill pill-muted" title="当前版本状态">v0.8.5</span>
-        <button id="btn-suite-apply-update" class="switch-pill-btn active" type="button" hidden title="拉取最新提交并免重启热生效">立即更新</button>
+        <button id="btn-suite-apply-update" class="switch-pill-btn active" type="button" hidden title="下载最新版本并立即生效，无需重启">立即更新</button>
         <button id="close-settings" class="panel-icon-btn" type="button" aria-label="关闭设置">×</button>
       </div>
     </div>
 
     <div id="settings-tabs-bar" class="settings-tabs-bar" role="tablist" aria-label="设置分类">
-      <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" data-settings-tab="terminal">🖥️ 终端与通用</button>
-      <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="appearance">🎨 外观与主题</button>
-      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="subscription">💎 套餐与订阅</button>
-      <button id="settings-tab-btn-remote" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="remote">📱 远程设置</button>
-      <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" data-settings-tab="system">🌐 网络与高级</button>
+      <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="settings-pane-terminal" tabindex="0" data-settings-tab="terminal">🖥️ 终端与通用</button>
+      <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-appearance" tabindex="-1" data-settings-tab="appearance">🎨 外观与主题</button>
+      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-subscription" tabindex="-1" data-settings-tab="subscription">💎 套餐与订阅</button>
+      <button id="settings-tab-btn-remote" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-remote" tabindex="-1" data-settings-tab="remote">📱 远程设置</button>
+      <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-system" tabindex="-1" data-settings-tab="system">🌐 网络与高级</button>
     </div>
 
     <div id="settings-body" class="settings-body">
       <!-- 分页 1: 终端与通用 -->
-      <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel">
+      <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-terminal">
         <div id="settings-card-features" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">功能显示开关</span>
@@ -3928,8 +4207,8 @@
             <span class="settings-card-title">快捷提示词</span>
             <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
           </div>
-          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可在下方「自定义快捷提示词」中自由新增。</div>
-          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置推荐池（点击开关显示 / 隐藏 · 悬停查看指令解读）</div>
+          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。</div>
+          <div class="settings-field-lbl" style="margin:2px 0 6px;">内置快捷按钮（点击开启或关闭 · 悬停查看说明）</div>
           <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置快捷按钮推荐池"></div>
           <div id="quick-builtin-info-box" class="qp-info-box" role="region" aria-label="内置指令实时解读">
             <div class="qp-info-top">
@@ -3945,8 +4224,8 @@
           </div>
           <label class="settings-pref-row settings-pref-check" style="margin:6px 0 4px;">
             <div class="settings-pref-meta">
-              <span class="settings-pref-name">内置免参指令点击直接发送</span>
-              <span class="settings-pref-desc">开启后点击 /compact 压缩、重载规则将直接发送（/plan 等带参前缀仍仅填入）；按住 ⌘/Ctrl 点击可临时反转行为</span>
+              <span class="settings-pref-name">点击内置快捷指令时直接发送</span>
+              <span class="settings-pref-desc">开启后点击「/compact 压缩」或「重载规则」会直接发送（需补充参数的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换</span>
             </div>
             <input id="set-quick-builtin-autosend" type="checkbox" class="settings-checkbox" />
           </label>
@@ -3955,7 +4234,7 @@
             <button id="btn-add-quick-prompt" class="switch-pill-btn qp-add-btn" type="button" title="添加一条快捷提示词">+ 新增</button>
           </div>
           <div id="quick-custom-mode-hint" class="qp-custom-hint">填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）</div>
-          <div id="quick-popular-templates" class="qp-tpl-bar" role="group" aria-label="热门对话口令模板"></div>
+          <div id="quick-popular-templates" class="qp-tpl-bar" role="group" aria-label="热门模板"></div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
             <span id="quick-prompts-status" class="qp-status" role="status"></span>
@@ -3984,15 +4263,15 @@
           <div id="cli-launch-options-box" class="term-custom-box" data-active="true" style="gap:7px;">
             <label class="settings-pref-row settings-pref-check" style="margin:0;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">CLI 自动批准工具权限（免每次手动确认）</span>
-                <span class="settings-pref-desc">在终端启动 agy 时默认跳过权限询问（附带 --dangerously-skip-permissions）</span>
+                <span class="settings-pref-name">CLI 自动批准工具权限</span>
+                <span class="settings-pref-desc">启动命令行终端时自动批准工具调用，无需每次手动确认</span>
               </div>
               <input id="set-cli-skip-permissions" type="checkbox" class="settings-checkbox" />
             </label>
             <div class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
               <div class="settings-pref-meta">
                 <span class="settings-pref-name">CLI 默认启动模型</span>
-                <span class="settings-pref-desc">指定启动 agy 时默认使用的模型；选「不指定」则使用 CLI 默认配置</span>
+                <span class="settings-pref-desc">指定启动命令行终端时默认使用的模型；选「不指定」则跟随 CLI 默认配置</span>
               </div>
               <div class="settings-select-wrap">
                 <select id="set-cli-model-select" class="settings-select" aria-label="CLI 默认启动模型">
@@ -4024,13 +4303,13 @@
               </div>
             </div>
             <div id="cli-custom-model-row" class="term-custom-row" style="display:none;">
-              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入 agy 支持的模型 ID（留空则不传 --model）" />
+              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入模型 ID（留空则跟随 CLI 默认配置）" />
               <button id="btn-save-cli-model" class="unlock-btn unlock-btn-primary" type="button">保存模型</button>
             </div>
             <div id="cli-mux-host-pref-row" class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">终端连接目标（本机 / 远程服务器）</span>
-                <span class="settings-pref-desc">仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在本机或远程服务器上启动 agy</span>
+                <span class="settings-pref-name">终端连接目标（电脑端 / 远程服务器）</span>
+                <span class="settings-pref-desc">仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在当前电脑或远程服务器上启动终端</span>
               </div>
               <div class="settings-select-wrap">
                 <select id="set-cli-mux-host-select" class="settings-select" aria-label="终端连接目标">
@@ -4040,7 +4319,7 @@
               </div>
             </div>
             <div id="cli-custom-mux-host-row" class="term-custom-row" style="display:none;">
-              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="输入 Rex 主机名、WezTerm Domain 或 SSH 主机名（留空为本机）" />
+              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="输入远程主机名或连接标识（留空代表当前电脑）" />
               <button id="btn-save-cli-mux-host" class="unlock-btn unlock-btn-primary" type="button">保存主机</button>
             </div>
           </div>
@@ -4082,8 +4361,8 @@
             </label>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">长上下文防卡死自动压缩 (240K Auto-Compact)</span>
-                <span class="settings-pref-desc">官方默认到 512K 才自动压缩，但超过 250K~330K 后一旦服务端缓存过期（如停顿超 3 分钟）就会每步重算 4~5 分钟并狂耗配额。开启后，当本轮回答结束且输入框为空时，若上下文已达 240K 或发生缓存脱落，将自动发送 /compact 提前压缩</span>
+                <span class="settings-pref-name">240K 自动压缩防卡顿</span>
+                <span class="settings-pref-desc">官方默认到 512K 才压缩，对话过长后停顿易导致缓存失效、每步卡顿数分钟。开启后，上下文满 240K 或缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩</span>
               </div>
               <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
             </label>
@@ -4111,7 +4390,7 @@
       </div>
 
       <!-- 分页 2: 外观与主题 -->
-      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" hidden>
+      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-appearance" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">主题色系与热力图配色</span>
@@ -4130,7 +4409,7 @@
       </div>
 
       <!-- 分页 3: 套餐与订阅 -->
-      <div id="settings-pane-subscription" class="settings-tab-pane" role="tabpanel" hidden>
+      <div id="settings-pane-subscription" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-subscription" hidden>
         <div class="settings-card-box">
           <div id="settings-sub-summary-bar" class="settings-sub-preview-bar">
             <div style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">
@@ -4161,32 +4440,32 @@
       </div>
 
       <!-- 分页 4: 远程设置 -->
-      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" hidden>
+      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-remote" hidden>
         <div id="settings-card-remote-channels" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">远程通道与隧道</span>
             <div style="display:flex;align-items:center;gap:6px;">
               <button id="btn-settings-remote-refresh" class="switch-pill-btn" type="button" title="刷新远程连接通道与隧道状态">刷新状态</button>
-              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对令牌，旧链接与旧会话将失效">重置令牌</button>
+              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对口令，旧链接与已配对设备将失效">重置配对口令</button>
             </div>
           </div>
-          <div class="settings-card-desc">管理 \`agy remote\` 的访问通道与配对令牌重置；Cloudflare 隧道默认启用免登录临时隧道（零配置开箱可用），如需绑定自定义域名可展开配置，顶栏「远程」图标可随时扫码。</div>
+          <div class="settings-card-desc">管理手机远程访问通道与配对口令；已默认开启免登录临时公网通道（开箱即用），如需绑定自己的固定域名可展开配置，也可随时点顶部「远程」图标扫码连接。</div>
           <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
         </div>
 
         <div id="settings-card-remote-display" class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">Remote 页面显示内容</span>
-            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复 Remote 页面全部默认模块显示">恢复默认</button>
+            <span class="settings-card-title">手机远程页面显示内容</span>
+            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复手机远程页面默认显示的全部模块">恢复默认</button>
           </div>
-          <div class="settings-card-desc">按需控制手机 / 浏览器打开 \`agy remote\` 时可见的面板入口与功能模块，修改后立即保存并在远程页面下次同步生效。</div>
+          <div class="settings-card-desc">自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。</div>
           <div class="settings-feature-grid">
             <label class="settings-feature-item">
               <span class="settings-feature-name">顶部上下文窗口面板</span>
               <input id="set-remote-ctx-panel" type="checkbox" class="settings-checkbox" checked />
             </label>
             <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部本机已记录用量面板</span>
+              <span class="settings-feature-name">顶部桌面端已记录用量面板</span>
               <input id="set-remote-usage-panel" type="checkbox" class="settings-checkbox" checked />
             </label>
             <label class="settings-feature-item">
@@ -4222,10 +4501,10 @@
       </div>
 
       <!-- 分页 5: 网络与高级 -->
-      <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" hidden>
+      <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-system" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">本地代理网络直连（免开 TUN 模式）</span>
+            <span class="settings-card-title">本地代理直连（无需开启全局代理 / TUN）</span>
             <span id="settings-slot-proxy-badge"></span>
           </div>
           <div id="settings-slot-proxy"></div>
@@ -5929,7 +6208,7 @@
 
       placePanel(el('panel'), 450, activeContextAnchor || el('badge'));
       placePanel(el('panel-tokens'), 730, el('badge-tokens'));
-      placePanel(el('panel-settings'), 600, el('badge-settings') || el('badge-overflow') || el('badge'));
+      placePanel(el('panel-settings'), 640, el('badge-settings') || el('badge-overflow') || el('badge'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
     } catch {}
@@ -6038,6 +6317,7 @@
       hideContextTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
+      el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pContext.hidden = true;
@@ -6065,6 +6345,7 @@
       hideContextTooltip();
       closeColorPicker();
       setPlanDetailExpanded(false, { skipReposition: true });
+      el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', 'false');
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pTokens.hidden = true;
@@ -6077,6 +6358,7 @@
       void refreshModulesDisplay();
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
+      el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', 'false');
       pContext.hidden = true;
       pTokens.hidden = true;
       if (pSettings) pSettings.hidden = true;
@@ -6710,6 +6992,7 @@ function closeAllDropdowns(exceptWrap = null) {
       btn.textContent = next ? '收起 ▲' : '详情 ▼';
       btn.setAttribute?.('aria-expanded', String(next));
     }
+    el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', String(next));
     if (!next) {
       if (form && form.getAttribute?.('data-in-settings') !== 'true') form.style.display = 'none';
       closeOpenRegionDropdowns();
@@ -8106,7 +8389,7 @@ function closeAllDropdowns(exceptWrap = null) {
         dtVal.style.display = 'block';
         ddVal.style.display = 'block';
         ddVal.textContent = `至 ${ps.validEndDate}${ps.isExpired ? ' · ⚠️ 权益已到期' : ' · 有效期内'}`;
-        ddVal.style.color = ps.isExpired ? '#ef4444' : 'var(--ag-text-secondary)';
+        ddVal.style.color = ps.isExpired ? 'var(--ag-text-danger,#f87171)' : 'var(--ag-text-secondary)';
       } else {
         dtVal.style.display = 'none';
         ddVal.style.display = 'none';
@@ -8256,6 +8539,7 @@ function closeAllDropdowns(exceptWrap = null) {
     } else {
       setPlanDetailExpanded(false, { skipReposition: true });
     }
+    el('plan-summary-price-badge')?.setAttribute?.('aria-expanded', 'false');
     setPillActive(el('tok-view-tokens'), v === 'tokens');
     setPillActive(el('tok-view-cost'), v === 'cost');
     const costCard = el('cost-estimate-card');
@@ -8378,7 +8662,7 @@ function closeAllDropdowns(exceptWrap = null) {
     try {
       let res = await invokeHostBridge('/launch-cli', reqOpts, 'launchCli');
       if (res === null && !window?.contextMeterAPI?.launchCli) {
-        res = { ok: false, code: 'NO_BRIDGE', error: '本地桥接服务未连接，请执行 node cli.js install 或重启客户端' };
+        res = { ok: false, code: 'NO_BRIDGE', error: '未能连接到本地服务：请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）后重试' };
       }
 
       lastCliLaunchResult = res;
@@ -8537,7 +8821,7 @@ function closeAllDropdowns(exceptWrap = null) {
         return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
       }
     }
-    return { ok: false, error: '未连接到桥接服务（请重启客户端或执行 node cli.js live）' };
+    return { ok: false, error: '未能连接到本地服务：请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）后重试' };
   }
 
   async function refreshModulesDisplay() {
@@ -8612,7 +8896,7 @@ function closeAllDropdowns(exceptWrap = null) {
           chineseBadge.textContent = '🟢 已翻译生效';
           chineseBadge.className = 'key-pill pill-ok';
         } else if (!disk.chinese) {
-          chineseBadge.textContent = '⚠️ 磁盘未注入';
+          chineseBadge.textContent = '⚠️ 待本地同步';
           chineseBadge.className = 'key-pill pill-danger';
         } else {
           chineseBadge.textContent = '⏳ 待重启客户端生效';
@@ -8622,18 +8906,18 @@ function closeAllDropdowns(exceptWrap = null) {
       if (chineseStatusDesc) {
         if (!currentChineseEnabled) {
           if (isDomTranslated) {
-            chineseStatusDesc.textContent = '汉化模块已在配置中关闭；当前界面仍保留已加载的中文 DOM 缓存，需完全退出并重新打开 Antigravity 客户端以彻底恢复纯净官方原生英文。';
+            chineseStatusDesc.textContent = '汉化已关闭；当前界面仍保留着刚才的中文文本，请完全退出并重新打开 Antigravity 客户端以恢复官方原生英文界面。';
           } else {
             chineseStatusDesc.textContent = disk.chinese
-              ? '客户端汉化已关闭（磁盘已具备汉化资源与配置门禁，开启后重启即可生效）。'
-              : '客户端汉化处于未安装状态，保持官方原生英文界面。';
+              ? '客户端汉化已关闭（本地资源已就绪，开启上方开关并重启客户端即可生效）。'
+              : '客户端汉化当前未开启，保持官方原生英文界面。';
           }
         } else if (isDomTranslated) {
-          chineseStatusDesc.textContent = '汉化引擎运行中：DOM 监听器正常工作，左侧边栏与核心菜单已成功翻译。';
+          chineseStatusDesc.textContent = '汉化运行中：客户端左侧边栏与核心菜单已自动转为中文。';
         } else if (!disk.chinese) {
-          chineseStatusDesc.textContent = '配置已开启，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。';
+          chineseStatusDesc.textContent = '配置已开启，但本地尚未准备好汉化资源；请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）完成自动同步后再试。';
         } else {
-          chineseStatusDesc.textContent = '汉化代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。';
+          chineseStatusDesc.textContent = '汉化资源已就绪且开关已开启；请完全退出并重新打开 Antigravity 客户端即可生效。';
         }
       }
       if (btnToggleChineseModule) {
@@ -8643,7 +8927,7 @@ function closeAllDropdowns(exceptWrap = null) {
       currentProxyEnabled = Boolean(cfg.modules?.proxy?.enabled);
       if (proxyBadge) {
         if (currentProxyEnabled) {
-          proxyBadge.textContent = disk.proxy ? '🟢 直连已配置' : '⚠️ 磁盘未注入';
+          proxyBadge.textContent = disk.proxy ? '🟢 直连已配置' : '⚠️ 待重启生效';
           proxyBadge.className = disk.proxy ? 'key-pill pill-ok' : 'key-pill pill-warn';
         } else {
           proxyBadge.textContent = '⚪ 未启用';
@@ -8659,10 +8943,10 @@ function closeAllDropdowns(exceptWrap = null) {
       if (proxyStatusDesc) {
         if (currentProxyEnabled) {
           proxyStatusDesc.textContent = disk.proxy
-            ? `已启用本地网络直连（代理: ${cfg.modules.proxy.proxyUrl}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。`
-            : `配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。`;
+            ? `已启用本地代理直连（代理地址: ${cfg.modules.proxy.proxyUrl}）。注意：能否顺利连接模型，请在对话中发送一条消息实际验证。`
+            : `配置已开启本地代理，但客户端尚未加载生效；请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）使其加载后再试。`;
         } else {
-          proxyStatusDesc.textContent = '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。';
+          proxyStatusDesc.textContent = '未启用本地代理直连，网络请求将继续跟随系统代理或全局 TUN 设置。';
         }
       }
       if (btnToggleProxyModule) {
@@ -8750,8 +9034,8 @@ function closeAllDropdowns(exceptWrap = null) {
             配置格式: ${d.configValid ? '✅ 合法' : '❌ 无效'}<br>
             本地端口: ${d.proxyReachable ? '✅ 可连接' : '❌ 无法连接'}<br>
             公网连通: ${d.internetReachable ? '✅ 可访问' : '⚠️ 无法访问公网 (可能无境外连通)'}<br>
-            模型请求: 待通过真实在线会话验证 (分层标定)
-            ${d.error ? `<br><span style="color:var(--ag-danger)">⚠️ ${d.error}</span>` : ''}
+            模型请求: 需在对话中发送消息实际验证
+            ${d.error ? `<br><span style="color:var(--ag-text-danger,#f87171)">⚠️ ${d.error}</span>` : ''}
           `;
         }
       }
@@ -10108,7 +10392,24 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
-function renderHeatmapGrid(forceRebuild = false) {
+function positionHeatPopover(anchorX, anchorY) {
+    if (!heatPop) return;
+    const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+    const popRect = typeof heatPop.getBoundingClientRect === 'function' ? heatPop.getBoundingClientRect() : null;
+    const popW = (popRect && popRect.width > 0) ? popRect.width : 190;
+    const popH = (popRect && popRect.height > 0) ? popRect.height : 74;
+    const margin = 10;
+    const halfW = popW / 2;
+    const clampedX = Math.max(halfW + margin, Math.min(vw - halfW - margin, Number(anchorX) || 0));
+    const minY = popH + margin + 6;
+    const clampedY = Math.max(minY, Math.min(vh - margin, Number(anchorY) || 0));
+    heatPop.style.left = `${Math.round(clampedX)}px`;
+    heatPop.style.top = `${Math.round(clampedY)}px`;
+    heatPop.style.opacity = '1';
+  }
+
+  function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
     if (!colsBox || !monthsBox) return;
@@ -10172,9 +10473,7 @@ function renderHeatmapGrid(forceRebuild = false) {
             heatPopDet.style.display = 'none';
           }
           const r = cell.getBoundingClientRect();
-          heatPop.style.left = `${r.left + r.width / 2}px`;
-          heatPop.style.top = `${r.top - 6}px`;
-          heatPop.style.opacity = '1';
+          positionHeatPopover(r.left + r.width / 2, r.top - 6);
         };
 
         cell.addEventListener('mouseenter', showPop);
@@ -10250,9 +10549,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         heatPopDet.innerHTML = `<span>周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
-        heatPop.style.left = `${r.left + r.width / 2}px`;
-        heatPop.style.top = `${r.top - 6}px`;
-        heatPop.style.opacity = '1';
+        positionHeatPopover(r.left + r.width / 2, r.top - 6);
       };
 
       col.addEventListener('mouseenter', showPop);
@@ -10362,9 +10659,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
       heatPopDet.innerHTML = `<span>截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
       heatPopDet.style.display = 'block';
-      heatPop.style.left = `${e.clientX}px`;
-      heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 12)) - 6}px`;
-      heatPop.style.opacity = '1';
+      positionHeatPopover(e.clientX, r.top + (height - (pt.val / max) * (height - 12)) - 6);
     };
     cvs.onmouseleave = hidePopover;
 
@@ -10504,9 +10799,7 @@ function renderHeatmapGrid(forceRebuild = false) {
           heatPopDet.style.display = 'none';
         }
         const r = cell.getBoundingClientRect();
-        heatPop.style.left = `${r.left + r.width / 2}px`;
-        heatPop.style.top = `${r.top - 6}px`;
-        heatPop.style.opacity = '1';
+        positionHeatPopover(r.left + r.width / 2, r.top - 6);
       };
 
       cell.addEventListener('mouseenter', showPop);
@@ -10616,7 +10909,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       circle.setAttribute('cy', String(cy));
       circle.setAttribute('r', String(radius));
       circle.setAttribute('fill', fillCol);
-      circle.setAttribute('stroke', item.isFuture ? 'rgba(255,255,255,0.18)' : (item.monthIndex === peakMonthIndex ? 'var(--ag-text-primary)' : 'rgba(255,255,255,0.08)'));
+      circle.setAttribute('stroke', item.isFuture ? 'var(--ag-btn-border)' : (item.monthIndex === peakMonthIndex ? 'var(--ag-text-primary)' : 'var(--ag-border-subtle)'));
       circle.setAttribute('stroke-width', item.monthIndex === peakMonthIndex ? '2' : '1');
 
       if (item.isFuture) {
@@ -10672,9 +10965,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         heatPopDet.style.display = 'block';
 
         const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
-        heatPop.style.left = `${r.left + (r.width || 0) / 2}px`;
-        heatPop.style.top = `${r.top - 6}px`;
-        heatPop.style.opacity = '1';
+        positionHeatPopover(r.left + (r.width || 0) / 2, r.top - 6);
       };
 
       g.addEventListener('mouseenter', showPop);
@@ -11013,8 +11304,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       pct = Math.min(100, Math.max(0, (d.actual / d.budget) * 100));
     }
 
-    const barColor = danger ? '#f87171' : pct != null && pct >= 90 ? '#f87171' : pct != null && pct >= 75 || stale || incomplete ? '#fbbf24' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
-    const tone = danger ? '#f87171' : stale || incomplete || d?.estimated ? '#fbbf24' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
+    const barColor = danger ? 'var(--ag-text-danger,#f87171)' : pct != null && pct >= 90 ? 'var(--ag-text-danger,#f87171)' : pct != null && pct >= 75 || stale || incomplete ? 'var(--ag-text-warn,#fbbf24)' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
+    const tone = danger ? 'var(--ag-text-danger,#f87171)' : stale || incomplete || d?.estimated ? 'var(--ag-text-warn,#fbbf24)' : 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))';
     host.style.setProperty('--tone', tone);
     host.style.setProperty('--bar-color', barColor);
 
@@ -11144,7 +11435,7 @@ function renderHeatmapGrid(forceRebuild = false) {
           } else if (pct >= 75) {
             keyTakeaway.textContent = `⚡ 已使用 ${pct.toFixed(1)}%，剩余可用空间约 ${short(remainVal)} tokens，注意大文件或长输出。`;
           } else if (d.actual >= 328000) {
-            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已跨过 328K 缓存雪崩线）；官方要到 512K 才压缩，一旦停顿超 3 分钟将触发 4~5 分钟全量重算，建议尽快执行 /compact。${autoCompactHint}`;
+            keyTakeaway.textContent = `⚡ 当前已达 ${short(d.actual)}（${pct.toFixed(1)}%，已超过 328K 风险线）；官方要到 512K 才压缩，一旦停顿超 3 分钟就会重新全量计算并卡顿 4~5 分钟，建议尽快执行 /compact。${autoCompactHint}`;
           } else if (d.actual >= 240000) {
             keyTakeaway.textContent = `✔ 当前用量正常（${pct.toFixed(1)}%，已达 ${short(d.actual)}），处于 240K+ 长上下文区间，提前执行 /compact 可避开 300K+ 缓存过期卡顿。${autoCompactHint}`;
           } else {
@@ -11183,7 +11474,7 @@ function renderHeatmapGrid(forceRebuild = false) {
           const modelStr = d?.model ? `（${d.model}）` : '';
           const streamInfo = sp.streamingTps ? `，纯流式传输达 ${sp.streamingTps} tok/s` : '';
           if (sp.ttft != null && sp.ttft >= 30 && (d?.cacheDropDetected || (d?.uncachedInput || 0) >= 150000)) {
-            spTakeaway.textContent = `⚠ 本步首字延迟达 ${sp.ttft}s，系缓存脱落引发全量重算所致（输出 ${sp.tps} tok/s，总耗时 ${sp.duration}s${modelStr}），建议立即执行 /compact。`;
+            spTakeaway.textContent = `⚠ 本步首字等待达 ${sp.ttft}s，因缓存失效触发了全量重算（输出 ${sp.tps} tok/s，总耗时 ${sp.duration}s${modelStr}），建议立即执行 /compact。`;
           } else {
             spTakeaway.textContent = `✔ 输出${sp.tps >= 35 ? '流畅' : '平稳'}（${sp.tps} tok/s${streamInfo}），总耗时 ${sp.duration}s 内生成 ${fmt(sp.outputTokens)} tokens${modelStr}。`;
           }
@@ -11669,6 +11960,8 @@ function renderHeatmapGrid(forceRebuild = false) {
     '+ 新增': '+ Add',
     '热门对话口令模板': 'Popular Quick Prompt Templates',
     '热门口令：': 'Popular:',
+    '热门模板': 'Popular Templates',
+    '热门模板：': 'Popular:',
     '保存快捷提示词': 'Save Quick Prompts',
     '● 有未保存的更改，请点击右侧「保存快捷提示词」': '● Unsaved changes — click "Save Quick Prompts"',
     '✅ 已清空自定义提示词': '✅ Cleared custom quick prompts',
@@ -11681,7 +11974,39 @@ function renderHeatmapGrid(forceRebuild = false) {
     '前往 Cloudflare 获取 Token →': 'Get Token on Cloudflare →',
     '保存并启用': 'Save & Enable',
     '改用免登录临时隧道': 'Use Quick Tunnel',
-    '取消': 'Cancel'
+    '取消': 'Cancel',
+    '下载最新版本并立即生效，无需重启': 'Download the latest release and apply immediately without restart',
+    '内置快捷按钮（点击开启或关闭 · 悬停查看说明）': 'Built-in Quick Buttons (click to toggle · hover for guide)',
+    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" below for custom prompts.',
+    '点击内置快捷指令时直接发送': 'Send built-in quick commands immediately',
+    '开启后点击「/compact 压缩」或「重载规则」会直接发送（需补充参数的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换': 'Send /compact and Reload Rules immediately on click (commands needing arguments still insert only); hold ⌘/Ctrl + click to toggle',
+    'CLI 自动批准工具权限': 'Auto-Approve CLI Tool Permissions',
+    '启动命令行终端时自动批准工具调用，无需每次手动确认': 'Automatically approve tool calls when launching CLI without manual prompts',
+    '指定启动命令行终端时默认使用的模型；选「不指定」则跟随 CLI 默认配置': 'Select the default model for CLI launch, or choose Unspecified to follow CLI defaults',
+    '输入模型 ID（留空则跟随 CLI 默认配置）': 'Enter model ID (leave blank for CLI default)',
+    '终端连接目标（电脑端 / 远程服务器）': 'Terminal Target (Desktop / Remote Server)',
+    '仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在当前电脑或远程服务器上启动终端': 'Applies to Rex, WezTerm, or tmux: launch terminal on this desktop or a remote server',
+    '输入远程主机名或连接标识（留空代表当前电脑）': 'Enter remote host or domain (leave blank for this computer)',
+    '240K 自动压缩防卡顿': '240K Auto-Compact Anti-Stall',
+    '官方默认到 512K 才压缩，对话过长后停顿易导致缓存失效、每步卡顿数分钟。开启后，上下文满 240K 或缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩': 'Official default waits until 512K, risking cache expiry and multi-minute stalls after pauses. Auto-sends /compact after replies when context reaches 240K or cache drops',
+    '重置配对口令': 'Reset Pairing Passcode',
+    '重新生成配对口令，旧链接与已配对设备将失效': 'Regenerate pairing passcode (invalidates old links & paired devices)',
+    '管理手机远程访问通道与配对口令；已默认开启免登录临时公网通道（开箱即用），如需绑定自己的固定域名可展开配置，也可随时点顶部「远程」图标扫码连接。': 'Manage mobile remote channels & pairing passcode. Zero-config public tunnel is enabled by default; expand to bind a custom domain or scan QR from the topbar Remote icon.',
+    '手机远程页面显示内容': 'Mobile Remote Page Visibility',
+    '恢复手机远程页面默认显示的全部模块': 'Restore default visible modules on mobile remote page',
+    '自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。': 'Customize modules shown on the mobile/browser remote page; changes save and apply immediately.',
+    '顶部桌面端已记录用量面板': 'Topbar Desktop Usage Panel',
+    '本地代理直连（无需开启全局代理 / TUN）': 'Local Proxy Direct Connect (No Global Proxy / TUN)',
+    '🌐 本地代理直连（无需开启全局代理 / TUN）': '🌐 Local Proxy Direct Connect (No Global Proxy / TUN)',
+    '不走代理的地址（本机地址默认直连）：': 'Bypass Proxy Addresses (Localhost Direct):',
+    '底层统计与附件检查': 'Technical Details & Attachments',
+    '本地估算（可能未计入附件）': 'Local Estimate (excl. attachments)',
+    '客户端预算上限': 'Client Budget Limit',
+    '附件逐项检查': 'Attachment Audit',
+    '注：此处按公开 API 单价折算同等用量，仅供价值参考。包月订阅或活动赠送与按量付费不同，差额不代表实际省下的现金；缓存读取按 1 折估算，不含缓存存储费；同一上下文在多轮中会重复计入缓存读取，总量不代表实际输入字数。': 'Note: Converted at public API rates for value reference only. Subscriptions/promos differ from pay-as-you-go; difference is not cash saved. Cache reads use 10% rate (excl. cache storage) and may count shared context across turns.',
+    '说明：每日统计按基础费率估算（未单独拆分长上下文阶梯价），实际金额可能略高；若有逐次请求记录则优先按实计算。': 'Note: Daily estimates use base-tier rates without long-context tiering (actuals may be slightly higher); per-request logs use exact pricing when available.',
+    '创建后台定时巡检或一次性倒计时提醒任务，到点自动唤醒。': 'Schedule a background periodic check or one-time timer reminder.',
+    '一键提取并复制当前对话窗口的会话 ID。': 'Extract and copy the current conversation ID to the clipboard.'
   };
 
   function translateSuiteDynamicFragmentEn(fragment) {
@@ -11953,7 +12278,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       recEn: '',
       tag: '定时巡检',
       tagEn: 'Cron',
-      role: '创建后台 Cron 周期巡检或一次性倒计时提醒任务，到点自动唤醒。',
+      role: '创建后台定时巡检或一次性倒计时提醒任务，到点自动唤醒。',
       roleEn: 'Schedule a recurring cron job or a one-time delayed timer notification.',
       scene: '每 N 分钟巡检构建/服务状态，或约定稍后自动触发某项检查。',
       sceneEn: 'Periodic monitoring, polling builds, or setting a delayed reminder.',
@@ -11989,7 +12314,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       recEn: '★Default',
       tag: '快速取值',
       tagEn: 'Copy ID',
-      role: '一键提取并复制当前对话窗口的唯一会话 UUID。',
+      role: '一键提取并复制当前对话窗口的会话 ID。',
       roleEn: 'Extract and copy the current conversation UUID to the clipboard.',
       scene: '需要在终端定位当前会话日志，或在另一扇窗口中引用本会话时。',
       sceneEn: 'Checking session transcript logs or referencing this conversation elsewhere.',
@@ -13550,7 +13875,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       });
       if (saveRes && saveRes.ok === false) {
         setQuickPromptsStatus(
-          suiteTr(`⚠️ 写入配置失败：${saveRes.error || '请重试'}`, `⚠️ Failed to persist: ${saveRes.error || 'please retry'}`),
+          suiteTr(`⚠️ 写入配置失败：${saveRes.error || '请确认 Antigravity 本地服务运行正常后点击保存重试'}`, `⚠️ Failed to write settings: ${saveRes.error || 'ensure the local service is running and click Save to retry'}`),
           'warn'
         );
         return getSuiteQuickPrompts();
@@ -13784,14 +14109,14 @@ function renderHeatmapGrid(forceRebuild = false) {
     const existingChips = Array.from(bar.querySelectorAll?.('.qp-tpl-chip') || []);
     if (existingChips.length === POPULAR_QUICK_PROMPT_TEMPLATES.length) {
       const prefixEl = bar.querySelector?.('.qp-tpl-label');
-      if (prefixEl) prefixEl.textContent = suiteTr('热门口令：', 'Popular:');
+      if (prefixEl) prefixEl.textContent = suiteTr('热门模板：', 'Popular:');
       syncQuickPopularTemplatesState();
       return;
     }
     bar.replaceChildren?.();
     const prefix = document.createElement('span');
     prefix.className = 'qp-tpl-label';
-    prefix.textContent = suiteTr('热门口令：', 'Popular:');
+    prefix.textContent = suiteTr('热门模板：', 'Popular:');
     bar.appendChild(prefix);
 
     for (const tpl of POPULAR_QUICK_PROMPT_TEMPLATES) {
@@ -14023,7 +14348,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       return;
     }
     if (!data) {
-      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('未能连接到本地远程桥接服务', 'Failed to connect to local remote bridge'))}</div>`;
+      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('未能连接到本地服务：请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）后点击「刷新状态」', 'Unable to connect to local service: restart Antigravity (or run ag-context-meter live), then click Refresh'))}</div>`;
       return;
     }
 
@@ -14060,7 +14385,7 @@ function renderHeatmapGrid(forceRebuild = false) {
             : (isRunning
                 ? (ch.displayHost || modeHint)
                 : (ch.binaryAvailable === false
-                    ? suiteTr('缺少 cloudflared（见下方一键安装命令）', 'cloudflared not found (see install guide below)')
+                    ? suiteTr('尚未安装 cloudflared（复制下方安装命令执行即可）', 'cloudflared not found (see install command below)')
                     : suiteTr('免登录零配置 · 点击启用', 'Zero-Config · Click to enable')));
         return `
           <div id="ag-rp-tunnel-toggle" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tunnel" data-active="${activeKey === 'tunnel' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
@@ -14103,7 +14428,7 @@ function renderHeatmapGrid(forceRebuild = false) {
           <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（可选高级配置）', 'Cloudflare Fixed Domain (Optional)'))}</span>
           <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
         </div>
-        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('默认已启用免登录临时隧道（零配置开箱可用）；仅当需要绑定自有固定域名时才需填写下方信息。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
+        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('已默认开启免登录公网访问，无需注册即可使用；只有需要绑定自己的固定域名时才需填写下方内容。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span>${escapeSuiteHtml(suiteTr('自定义域名（例: ag.example.com）', 'Custom Hostname (e.g. ag.example.com)'))}</span>
           <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="ag.example.com" value="${escapeSuiteHtml(tunnelHostDraft)}" />
@@ -14135,7 +14460,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         <div class="ag-rp-install-hdr">
           <span class="ag-rp-install-title">
             <span>${escapeSuiteHtml(missingCloudflared
-              ? suiteTr('安装 cloudflared（免登录零配置隧道依赖）', 'Install cloudflared (Required for Zero-Config Tunnel)')
+              ? suiteTr('安装 cloudflared（公网扫码访问所需组件）', 'Install cloudflared (Required for Public Remote Tunnel)')
               : suiteTr('cloudflared 安装命令引导', 'cloudflared Install Command'))}</span>
             <span class="ag-rp-install-badge">${escapeSuiteHtml(missingCloudflared
               ? suiteTr('未检测到', 'Not Found')
@@ -14149,7 +14474,7 @@ function renderHeatmapGrid(forceRebuild = false) {
         </div>
         <div class="ag-rp-install-foot">
           <span>${escapeSuiteHtml(missingCloudflared
-            ? suiteTr('在终端粘贴运行上方命令完成安装后，点击右侧重新检测即可零配置启用公网隧道。', 'Run the command above in Terminal, then click Re-check to enable zero-config public tunnel.')
+            ? suiteTr('打开终端粘贴运行上方命令安装完成后，点击右侧「重新检测」即可立即使用公网访问。', 'Run the command above in Terminal, then click Re-check to enable zero-config public access.')
             : suiteTr('无需注册或登录 Cloudflare 账号；在新设备部署时可一键复制上方命令安装。', 'No Cloudflare account required; copy the command above when setting up on a new machine.'))}</span>
           ${missingCloudflared
             ? `<button id="ag-rp-cf-recheck" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeSuiteHtml(suiteTr('↻ 重新检测', '↻ Re-check'))}</button>`
@@ -14304,18 +14629,18 @@ function renderHeatmapGrid(forceRebuild = false) {
       if (res && res.disabled) {
         remoteSettingsState.data = null;
         remoteSettingsState.error = suiteTr(
-          '当前已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用远程监听',
-          'Remote server disabled via --no-remote / AG_DISABLE_MOBILE_REMOTE=1'
+          '手机远程功能当前已被启动参数（--no-remote）或环境变量关闭；如需使用，请移除该参数后重启服务',
+          'Mobile remote is disabled via --no-remote or environment variable; remove it and restart to enable'
         );
       } else if (res && res.ok && res.data) {
         remoteSettingsState.data = res.data;
         syncRemoteDisplayCheckboxes(res.data.remoteDisplay);
         broadcastRemoteStateChanged(res.data);
       } else {
-        remoteSettingsState.error = suiteTr('请确认 Antigravity 桥接服务正在运行', 'Ensure Antigravity local bridge service is running');
+        remoteSettingsState.error = suiteTr('未能连接到本地服务：请确认 Antigravity 客户端已开启（或运行 ag-context-meter live），然后点击「刷新状态」重试', 'Unable to connect to local service: ensure Antigravity is running (or run ag-context-meter live), then click Refresh');
       }
     } catch (err) {
-      remoteSettingsState.error = err?.message || suiteTr('获取远程设置状态失败', 'Failed to fetch remote settings');
+      remoteSettingsState.error = err?.message || suiteTr('读取手机远程状态失败，请点击「刷新状态」重试', 'Failed to load remote status; click Refresh to retry');
     } finally {
       remoteSettingsState.loading = false;
       renderRemoteSettingsChannels();
@@ -14351,13 +14676,13 @@ function renderHeatmapGrid(forceRebuild = false) {
           }
         }
       } else {
-        remoteSettingsState.error = res?.error || suiteTr('更新远程通道配置失败', 'Failed to update remote settings');
+        remoteSettingsState.error = res?.error || suiteTr('保存手机远程设置失败，请检查网络或配置后重试', 'Failed to save remote channel settings; check configuration and retry');
         if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
           remoteSettingsState.tunnelConfigOpen = true;
         }
       }
     } catch (err) {
-      remoteSettingsState.error = err?.message || suiteTr('更新远程配置失败', 'Failed to update remote settings');
+      remoteSettingsState.error = err?.message || suiteTr('保存手机远程设置失败，请稍后点击「刷新状态」重试', 'Failed to save remote settings; refresh and try again later');
       if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
         remoteSettingsState.tunnelConfigOpen = true;
       }
@@ -14390,6 +14715,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       if (btn) {
         setPillActive(btn, isCur);
         btn.setAttribute('aria-selected', String(isCur));
+        btn.setAttribute('tabindex', isCur ? '0' : '-1');
       }
       if (pane) pane.hidden = !isCur;
     }
@@ -14685,7 +15011,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     const statusEl = el('term-config-status');
     try {
       if (!window?.contextMeterAPI?.pickTerminalPath && !window?.__AGContextMeterLive?.port) {
-        if (statusEl) statusEl.textContent = '⚠️ 当前环境不支持文件对话框，请直接粘贴终端路径后保存';
+        if (statusEl) statusEl.textContent = '⚠️ 当前页面不支持弹窗选文件，请在左侧输入框粘贴终端程序路径后点击「保存路径」';
         return;
       }
       const res = await invokeHostBridge('/pick-terminal-path', {}, 'pickTerminalPath');
@@ -14695,10 +15021,10 @@ function renderHeatmapGrid(forceRebuild = false) {
         await setSuiteTerminalSettings('custom', res.path);
         await refreshTerminalsList();
       } else if (res && res.ok === false && statusEl) {
-        statusEl.textContent = `✖ 选择失败：${res.error || '未知错误'}`;
+        statusEl.textContent = `✖ 选择失败：${res.error || '请直接手动输入终端路径后点击「保存路径」'}`;
       }
     } catch (e) {
-      if (statusEl) statusEl.textContent = `✖ 打开选择器异常：${e?.message || e}`;
+      if (statusEl) statusEl.textContent = `✖ 打开文件选择器失败（${e?.message || e}），请直接手动输入终端路径后点击「保存路径」`;
     }
   });
 
@@ -14761,7 +15087,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       const hostSuffix = res?.muxHost ? ` · 主机: ${res.muxHost}` : '';
       statusEl.textContent = res?.ok
         ? `✅ 测试启动成功：${res.terminal || suiteTerminalState.terminalApp} (${res.cwd || '默认目录'}${hostSuffix})`
-        : `✖ 测试启动失败：${res?.error || '请检查终端安装状态或路径'}`;
+        : `✖ 测试启动失败：${res?.error || '请确认所选终端已安装，或切换为「自定义程序路径」手动指定后再试'}`;
     }
   });
 
@@ -15005,6 +15331,13 @@ function renderHeatmapGrid(forceRebuild = false) {
       host.remove();
     }
   };
+  el('plan-summary-price-badge')?.addEventListener?.('keydown', e => {
+    if (e && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault?.();
+      el('plan-summary-price-badge')?.click?.();
+    }
+  });
+
   void restoreSettingsFromHost();
   render();
   tick();

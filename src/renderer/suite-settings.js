@@ -328,6 +328,8 @@
     '+ 新增': '+ Add',
     '热门对话口令模板': 'Popular Quick Prompt Templates',
     '热门口令：': 'Popular:',
+    '热门模板': 'Popular Templates',
+    '热门模板：': 'Popular:',
     '保存快捷提示词': 'Save Quick Prompts',
     '● 有未保存的更改，请点击右侧「保存快捷提示词」': '● Unsaved changes — click "Save Quick Prompts"',
     '✅ 已清空自定义提示词': '✅ Cleared custom quick prompts',
@@ -340,7 +342,39 @@
     '前往 Cloudflare 获取 Token →': 'Get Token on Cloudflare →',
     '保存并启用': 'Save & Enable',
     '改用免登录临时隧道': 'Use Quick Tunnel',
-    '取消': 'Cancel'
+    '取消': 'Cancel',
+    '下载最新版本并立即生效，无需重启': 'Download the latest release and apply immediately without restart',
+    '内置快捷按钮（点击开启或关闭 · 悬停查看说明）': 'Built-in Quick Buttons (click to toggle · hover for guide)',
+    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" below for custom prompts.',
+    '点击内置快捷指令时直接发送': 'Send built-in quick commands immediately',
+    '开启后点击「/compact 压缩」或「重载规则」会直接发送（需补充参数的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换': 'Send /compact and Reload Rules immediately on click (commands needing arguments still insert only); hold ⌘/Ctrl + click to toggle',
+    'CLI 自动批准工具权限': 'Auto-Approve CLI Tool Permissions',
+    '启动命令行终端时自动批准工具调用，无需每次手动确认': 'Automatically approve tool calls when launching CLI without manual prompts',
+    '指定启动命令行终端时默认使用的模型；选「不指定」则跟随 CLI 默认配置': 'Select the default model for CLI launch, or choose Unspecified to follow CLI defaults',
+    '输入模型 ID（留空则跟随 CLI 默认配置）': 'Enter model ID (leave blank for CLI default)',
+    '终端连接目标（电脑端 / 远程服务器）': 'Terminal Target (Desktop / Remote Server)',
+    '仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在当前电脑或远程服务器上启动终端': 'Applies to Rex, WezTerm, or tmux: launch terminal on this desktop or a remote server',
+    '输入远程主机名或连接标识（留空代表当前电脑）': 'Enter remote host or domain (leave blank for this computer)',
+    '240K 自动压缩防卡顿': '240K Auto-Compact Anti-Stall',
+    '官方默认到 512K 才压缩，对话过长后停顿易导致缓存失效、每步卡顿数分钟。开启后，上下文满 240K 或缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩': 'Official default waits until 512K, risking cache expiry and multi-minute stalls after pauses. Auto-sends /compact after replies when context reaches 240K or cache drops',
+    '重置配对口令': 'Reset Pairing Passcode',
+    '重新生成配对口令，旧链接与已配对设备将失效': 'Regenerate pairing passcode (invalidates old links & paired devices)',
+    '管理手机远程访问通道与配对口令；已默认开启免登录临时公网通道（开箱即用），如需绑定自己的固定域名可展开配置，也可随时点顶部「远程」图标扫码连接。': 'Manage mobile remote channels & pairing passcode. Zero-config public tunnel is enabled by default; expand to bind a custom domain or scan QR from the topbar Remote icon.',
+    '手机远程页面显示内容': 'Mobile Remote Page Visibility',
+    '恢复手机远程页面默认显示的全部模块': 'Restore default visible modules on mobile remote page',
+    '自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。': 'Customize modules shown on the mobile/browser remote page; changes save and apply immediately.',
+    '顶部桌面端已记录用量面板': 'Topbar Desktop Usage Panel',
+    '本地代理直连（无需开启全局代理 / TUN）': 'Local Proxy Direct Connect (No Global Proxy / TUN)',
+    '🌐 本地代理直连（无需开启全局代理 / TUN）': '🌐 Local Proxy Direct Connect (No Global Proxy / TUN)',
+    '不走代理的地址（本机地址默认直连）：': 'Bypass Proxy Addresses (Localhost Direct):',
+    '底层统计与附件检查': 'Technical Details & Attachments',
+    '本地估算（可能未计入附件）': 'Local Estimate (excl. attachments)',
+    '客户端预算上限': 'Client Budget Limit',
+    '附件逐项检查': 'Attachment Audit',
+    '注：此处按公开 API 单价折算同等用量，仅供价值参考。包月订阅或活动赠送与按量付费不同，差额不代表实际省下的现金；缓存读取按 1 折估算，不含缓存存储费；同一上下文在多轮中会重复计入缓存读取，总量不代表实际输入字数。': 'Note: Converted at public API rates for value reference only. Subscriptions/promos differ from pay-as-you-go; difference is not cash saved. Cache reads use 10% rate (excl. cache storage) and may count shared context across turns.',
+    '说明：每日统计按基础费率估算（未单独拆分长上下文阶梯价），实际金额可能略高；若有逐次请求记录则优先按实计算。': 'Note: Daily estimates use base-tier rates without long-context tiering (actuals may be slightly higher); per-request logs use exact pricing when available.',
+    '创建后台定时巡检或一次性倒计时提醒任务，到点自动唤醒。': 'Schedule a background periodic check or one-time timer reminder.',
+    '一键提取并复制当前对话窗口的会话 ID。': 'Extract and copy the current conversation ID to the clipboard.'
   };
 
   function translateSuiteDynamicFragmentEn(fragment) {
@@ -612,7 +646,7 @@
       recEn: '',
       tag: '定时巡检',
       tagEn: 'Cron',
-      role: '创建后台 Cron 周期巡检或一次性倒计时提醒任务，到点自动唤醒。',
+      role: '创建后台定时巡检或一次性倒计时提醒任务，到点自动唤醒。',
       roleEn: 'Schedule a recurring cron job or a one-time delayed timer notification.',
       scene: '每 N 分钟巡检构建/服务状态，或约定稍后自动触发某项检查。',
       sceneEn: 'Periodic monitoring, polling builds, or setting a delayed reminder.',
@@ -648,7 +682,7 @@
       recEn: '★Default',
       tag: '快速取值',
       tagEn: 'Copy ID',
-      role: '一键提取并复制当前对话窗口的唯一会话 UUID。',
+      role: '一键提取并复制当前对话窗口的会话 ID。',
       roleEn: 'Extract and copy the current conversation UUID to the clipboard.',
       scene: '需要在终端定位当前会话日志，或在另一扇窗口中引用本会话时。',
       sceneEn: 'Checking session transcript logs or referencing this conversation elsewhere.',
@@ -2209,7 +2243,7 @@
       });
       if (saveRes && saveRes.ok === false) {
         setQuickPromptsStatus(
-          suiteTr(`⚠️ 写入配置失败：${saveRes.error || '请重试'}`, `⚠️ Failed to persist: ${saveRes.error || 'please retry'}`),
+          suiteTr(`⚠️ 写入配置失败：${saveRes.error || '请确认 Antigravity 本地服务运行正常后点击保存重试'}`, `⚠️ Failed to write settings: ${saveRes.error || 'ensure the local service is running and click Save to retry'}`),
           'warn'
         );
         return getSuiteQuickPrompts();
@@ -2443,14 +2477,14 @@
     const existingChips = Array.from(bar.querySelectorAll?.('.qp-tpl-chip') || []);
     if (existingChips.length === POPULAR_QUICK_PROMPT_TEMPLATES.length) {
       const prefixEl = bar.querySelector?.('.qp-tpl-label');
-      if (prefixEl) prefixEl.textContent = suiteTr('热门口令：', 'Popular:');
+      if (prefixEl) prefixEl.textContent = suiteTr('热门模板：', 'Popular:');
       syncQuickPopularTemplatesState();
       return;
     }
     bar.replaceChildren?.();
     const prefix = document.createElement('span');
     prefix.className = 'qp-tpl-label';
-    prefix.textContent = suiteTr('热门口令：', 'Popular:');
+    prefix.textContent = suiteTr('热门模板：', 'Popular:');
     bar.appendChild(prefix);
 
     for (const tpl of POPULAR_QUICK_PROMPT_TEMPLATES) {
@@ -2682,7 +2716,7 @@
       return;
     }
     if (!data) {
-      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('未能连接到本地远程桥接服务', 'Failed to connect to local remote bridge'))}</div>`;
+      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('未能连接到本地服务：请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）后点击「刷新状态」', 'Unable to connect to local service: restart Antigravity (or run ag-context-meter live), then click Refresh'))}</div>`;
       return;
     }
 
@@ -2719,7 +2753,7 @@
             : (isRunning
                 ? (ch.displayHost || modeHint)
                 : (ch.binaryAvailable === false
-                    ? suiteTr('缺少 cloudflared（见下方一键安装命令）', 'cloudflared not found (see install guide below)')
+                    ? suiteTr('尚未安装 cloudflared（复制下方安装命令执行即可）', 'cloudflared not found (see install command below)')
                     : suiteTr('免登录零配置 · 点击启用', 'Zero-Config · Click to enable')));
         return `
           <div id="ag-rp-tunnel-toggle" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tunnel" data-active="${activeKey === 'tunnel' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
@@ -2762,7 +2796,7 @@
           <span>${escapeSuiteHtml(suiteTr('Cloudflare 固定域名（可选高级配置）', 'Cloudflare Fixed Domain (Optional)'))}</span>
           <a id="ag-rp-cf-get-token" href="https://one.dash.cloudflare.com/?to=/:account/networks/tunnels" target="_blank" rel="noopener noreferrer" style="color:var(--ag-link,var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa)));text-decoration:none;font-weight:500;">${escapeSuiteHtml(suiteTr('前往 Cloudflare 获取 Token →', 'Get Token on Cloudflare →'))}</a>
         </div>
-        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('默认已启用免登录临时隧道（零配置开箱可用）；仅当需要绑定自有固定域名时才需填写下方信息。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
+        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('已默认开启免登录公网访问，无需注册即可使用；只有需要绑定自己的固定域名时才需填写下方内容。', 'Quick Tunnel (zero-config, no login) is enabled by default. Only fill below if you want a custom fixed domain.'))}</div>
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span>${escapeSuiteHtml(suiteTr('自定义域名（例: ag.example.com）', 'Custom Hostname (e.g. ag.example.com)'))}</span>
           <input id="ag-rp-cf-host" class="ag-rp-input" type="text" placeholder="ag.example.com" value="${escapeSuiteHtml(tunnelHostDraft)}" />
@@ -2794,7 +2828,7 @@
         <div class="ag-rp-install-hdr">
           <span class="ag-rp-install-title">
             <span>${escapeSuiteHtml(missingCloudflared
-              ? suiteTr('安装 cloudflared（免登录零配置隧道依赖）', 'Install cloudflared (Required for Zero-Config Tunnel)')
+              ? suiteTr('安装 cloudflared（公网扫码访问所需组件）', 'Install cloudflared (Required for Public Remote Tunnel)')
               : suiteTr('cloudflared 安装命令引导', 'cloudflared Install Command'))}</span>
             <span class="ag-rp-install-badge">${escapeSuiteHtml(missingCloudflared
               ? suiteTr('未检测到', 'Not Found')
@@ -2808,7 +2842,7 @@
         </div>
         <div class="ag-rp-install-foot">
           <span>${escapeSuiteHtml(missingCloudflared
-            ? suiteTr('在终端粘贴运行上方命令完成安装后，点击右侧重新检测即可零配置启用公网隧道。', 'Run the command above in Terminal, then click Re-check to enable zero-config public tunnel.')
+            ? suiteTr('打开终端粘贴运行上方命令安装完成后，点击右侧「重新检测」即可立即使用公网访问。', 'Run the command above in Terminal, then click Re-check to enable zero-config public access.')
             : suiteTr('无需注册或登录 Cloudflare 账号；在新设备部署时可一键复制上方命令安装。', 'No Cloudflare account required; copy the command above when setting up on a new machine.'))}</span>
           ${missingCloudflared
             ? `<button id="ag-rp-cf-recheck" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeSuiteHtml(suiteTr('↻ 重新检测', '↻ Re-check'))}</button>`
@@ -2963,18 +2997,18 @@
       if (res && res.disabled) {
         remoteSettingsState.data = null;
         remoteSettingsState.error = suiteTr(
-          '当前已通过 --no-remote / AG_DISABLE_MOBILE_REMOTE=1 禁用远程监听',
-          'Remote server disabled via --no-remote / AG_DISABLE_MOBILE_REMOTE=1'
+          '手机远程功能当前已被启动参数（--no-remote）或环境变量关闭；如需使用，请移除该参数后重启服务',
+          'Mobile remote is disabled via --no-remote or environment variable; remove it and restart to enable'
         );
       } else if (res && res.ok && res.data) {
         remoteSettingsState.data = res.data;
         syncRemoteDisplayCheckboxes(res.data.remoteDisplay);
         broadcastRemoteStateChanged(res.data);
       } else {
-        remoteSettingsState.error = suiteTr('请确认 Antigravity 桥接服务正在运行', 'Ensure Antigravity local bridge service is running');
+        remoteSettingsState.error = suiteTr('未能连接到本地服务：请确认 Antigravity 客户端已开启（或运行 ag-context-meter live），然后点击「刷新状态」重试', 'Unable to connect to local service: ensure Antigravity is running (or run ag-context-meter live), then click Refresh');
       }
     } catch (err) {
-      remoteSettingsState.error = err?.message || suiteTr('获取远程设置状态失败', 'Failed to fetch remote settings');
+      remoteSettingsState.error = err?.message || suiteTr('读取手机远程状态失败，请点击「刷新状态」重试', 'Failed to load remote status; click Refresh to retry');
     } finally {
       remoteSettingsState.loading = false;
       renderRemoteSettingsChannels();
@@ -3010,13 +3044,13 @@
           }
         }
       } else {
-        remoteSettingsState.error = res?.error || suiteTr('更新远程通道配置失败', 'Failed to update remote settings');
+        remoteSettingsState.error = res?.error || suiteTr('保存手机远程设置失败，请检查网络或配置后重试', 'Failed to save remote channel settings; check configuration and retry');
         if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
           remoteSettingsState.tunnelConfigOpen = true;
         }
       }
     } catch (err) {
-      remoteSettingsState.error = err?.message || suiteTr('更新远程配置失败', 'Failed to update remote settings');
+      remoteSettingsState.error = err?.message || suiteTr('保存手机远程设置失败，请稍后点击「刷新状态」重试', 'Failed to save remote settings; refresh and try again later');
       if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
         remoteSettingsState.tunnelConfigOpen = true;
       }
@@ -3049,6 +3083,7 @@
       if (btn) {
         setPillActive(btn, isCur);
         btn.setAttribute('aria-selected', String(isCur));
+        btn.setAttribute('tabindex', isCur ? '0' : '-1');
       }
       if (pane) pane.hidden = !isCur;
     }
@@ -3344,7 +3379,7 @@
     const statusEl = el('term-config-status');
     try {
       if (!window?.contextMeterAPI?.pickTerminalPath && !window?.__AGContextMeterLive?.port) {
-        if (statusEl) statusEl.textContent = '⚠️ 当前环境不支持文件对话框，请直接粘贴终端路径后保存';
+        if (statusEl) statusEl.textContent = '⚠️ 当前页面不支持弹窗选文件，请在左侧输入框粘贴终端程序路径后点击「保存路径」';
         return;
       }
       const res = await invokeHostBridge('/pick-terminal-path', {}, 'pickTerminalPath');
@@ -3354,10 +3389,10 @@
         await setSuiteTerminalSettings('custom', res.path);
         await refreshTerminalsList();
       } else if (res && res.ok === false && statusEl) {
-        statusEl.textContent = `✖ 选择失败：${res.error || '未知错误'}`;
+        statusEl.textContent = `✖ 选择失败：${res.error || '请直接手动输入终端路径后点击「保存路径」'}`;
       }
     } catch (e) {
-      if (statusEl) statusEl.textContent = `✖ 打开选择器异常：${e?.message || e}`;
+      if (statusEl) statusEl.textContent = `✖ 打开文件选择器失败（${e?.message || e}），请直接手动输入终端路径后点击「保存路径」`;
     }
   });
 
@@ -3420,7 +3455,7 @@
       const hostSuffix = res?.muxHost ? ` · 主机: ${res.muxHost}` : '';
       statusEl.textContent = res?.ok
         ? `✅ 测试启动成功：${res.terminal || suiteTerminalState.terminalApp} (${res.cwd || '默认目录'}${hostSuffix})`
-        : `✖ 测试启动失败：${res?.error || '请检查终端安装状态或路径'}`;
+        : `✖ 测试启动失败：${res?.error || '请确认所选终端已安装，或切换为「自定义程序路径」手动指定后再试'}`;
     }
   });
 

@@ -1,3 +1,20 @@
+  function positionHeatPopover(anchorX, anchorY) {
+    if (!heatPop) return;
+    const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+    const popRect = typeof heatPop.getBoundingClientRect === 'function' ? heatPop.getBoundingClientRect() : null;
+    const popW = (popRect && popRect.width > 0) ? popRect.width : 190;
+    const popH = (popRect && popRect.height > 0) ? popRect.height : 74;
+    const margin = 10;
+    const halfW = popW / 2;
+    const clampedX = Math.max(halfW + margin, Math.min(vw - halfW - margin, Number(anchorX) || 0));
+    const minY = popH + margin + 6;
+    const clampedY = Math.max(minY, Math.min(vh - margin, Number(anchorY) || 0));
+    heatPop.style.left = `${Math.round(clampedX)}px`;
+    heatPop.style.top = `${Math.round(clampedY)}px`;
+    heatPop.style.opacity = '1';
+  }
+
   function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
@@ -62,9 +79,7 @@
             heatPopDet.style.display = 'none';
           }
           const r = cell.getBoundingClientRect();
-          heatPop.style.left = `${r.left + r.width / 2}px`;
-          heatPop.style.top = `${r.top - 6}px`;
-          heatPop.style.opacity = '1';
+          positionHeatPopover(r.left + r.width / 2, r.top - 6);
         };
 
         cell.addEventListener('mouseenter', showPop);
@@ -140,9 +155,7 @@
         heatPopDet.innerHTML = `<span>周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
-        heatPop.style.left = `${r.left + r.width / 2}px`;
-        heatPop.style.top = `${r.top - 6}px`;
-        heatPop.style.opacity = '1';
+        positionHeatPopover(r.left + r.width / 2, r.top - 6);
       };
 
       col.addEventListener('mouseenter', showPop);
@@ -252,9 +265,7 @@
       heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
       heatPopDet.innerHTML = `<span>截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
       heatPopDet.style.display = 'block';
-      heatPop.style.left = `${e.clientX}px`;
-      heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 12)) - 6}px`;
-      heatPop.style.opacity = '1';
+      positionHeatPopover(e.clientX, r.top + (height - (pt.val / max) * (height - 12)) - 6);
     };
     cvs.onmouseleave = hidePopover;
 
@@ -394,9 +405,7 @@
           heatPopDet.style.display = 'none';
         }
         const r = cell.getBoundingClientRect();
-        heatPop.style.left = `${r.left + r.width / 2}px`;
-        heatPop.style.top = `${r.top - 6}px`;
-        heatPop.style.opacity = '1';
+        positionHeatPopover(r.left + r.width / 2, r.top - 6);
       };
 
       cell.addEventListener('mouseenter', showPop);
@@ -506,7 +515,7 @@
       circle.setAttribute('cy', String(cy));
       circle.setAttribute('r', String(radius));
       circle.setAttribute('fill', fillCol);
-      circle.setAttribute('stroke', item.isFuture ? 'rgba(255,255,255,0.18)' : (item.monthIndex === peakMonthIndex ? 'var(--ag-text-primary)' : 'rgba(255,255,255,0.08)'));
+      circle.setAttribute('stroke', item.isFuture ? 'var(--ag-btn-border)' : (item.monthIndex === peakMonthIndex ? 'var(--ag-text-primary)' : 'var(--ag-border-subtle)'));
       circle.setAttribute('stroke-width', item.monthIndex === peakMonthIndex ? '2' : '1');
 
       if (item.isFuture) {
@@ -562,9 +571,7 @@
         heatPopDet.style.display = 'block';
 
         const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
-        heatPop.style.left = `${r.left + (r.width || 0) / 2}px`;
-        heatPop.style.top = `${r.top - 6}px`;
-        heatPop.style.opacity = '1';
+        positionHeatPopover(r.left + (r.width || 0) / 2, r.top - 6);
       };
 
       g.addEventListener('mouseenter', showPop);
