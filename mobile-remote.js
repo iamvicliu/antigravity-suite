@@ -9859,13 +9859,18 @@ function buildMobileAppHtml() {
                     const restoredAtts = Array.isArray(res?.actionResult?.editedAttachments)
                       ? res.actionResult.editedAttachments
                       : [];
+                    const isPendingRetryRestore = Boolean(!res?.ok && (res?.attachmentsPreserved || res?.textPreserved));
                     const serverRecoveryKey = String(res?.actionResult?.recoveryKey || '').trim();
                     const restoreSourceKey = msgId
                       ? ('msg:' + msgId)
                       : (serverRecoveryKey || (Number.isInteger(stepIdx) && stepIdx >= 0 ? ('step:' + stepIdx) : ''));
                     if (restoreSourceKey && restoredAtts.length) {
                       for (let ri = uploadedAttachments.length - 1; ri >= 0; ri -= 1) {
-                        if (uploadedAttachments[ri] && uploadedAttachments[ri]._sourceKey === restoreSourceKey) {
+                        if (
+                          uploadedAttachments[ri] &&
+                          uploadedAttachments[ri]._sourceKey === restoreSourceKey &&
+                          uploadedAttachments[ri]._pendingRetry === true
+                        ) {
                           uploadedAttachments.splice(ri, 1);
                           uploadedNames.splice(ri, 1);
                         }
@@ -9884,7 +9889,8 @@ function buildMobileAppHtml() {
                         size: Number(att.size) || 0,
                         isImage: Boolean(att.isImage),
                         previewUrl: safePrev,
-                        ...(restoreSourceKey ? { _sourceKey: restoreSourceKey } : {})
+                        ...(restoreSourceKey ? { _sourceKey: restoreSourceKey } : {}),
+                        ...(isPendingRetryRestore ? { _pendingRetry: true } : {})
                       });
                     }
                     if (restoredAtts.length) {
@@ -13933,14 +13939,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (!key || !Array.isArray(items) || !items.length) return;
     pruneStagedEditUploads();
     const sourceKey = String(opts?.sourceKey || '').trim();
+    const pendingRetry = opts?.pendingRetry === true;
     const existingRaw = stagedEditUploadsByKey.get(key)?.items || [];
+    // 仅覆盖同一 sourceKey 下尚未确认删除的暂存重试批次（_pendingRetry === true）；已确认删除的独立批次绝不被同文同图新编辑覆盖
     const existing = sourceKey
-      ? existingRaw.filter((x) => String(x?._sourceKey || '') !== sourceKey)
+      ? existingRaw.filter((x) => !(String(x?._sourceKey || '') === sourceKey && x?._pendingRetry === true))
       : existingRaw;
     const taggedItems = items.map((item) => ({
       ...item,
       _stagingId: String(nextStagedUploadId++),
-      ...(sourceKey ? { _sourceKey: sourceKey } : {})
+      ...(sourceKey ? { _sourceKey: sourceKey } : {}),
+      ...(pendingRetry ? { _pendingRetry: true } : {})
     }));
     const next = existing.concat(taggedItems);
     if (stagedEditUploadsByKey.size >= 100 && !stagedEditUploadsByKey.has(key)) {
@@ -13990,7 +13999,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (!rec.items.length) stagedEditUploadsByKey.delete(key);
     return 1;
   };
-  const markDispatchedQueueDelete = (key, text = '') => {
+  const markDispatchedQueueDelete = (key, text = '', meta = {}) => {
     const now = Date.now();
     for (const [k, v] of dispatchedQueueDeletes.entries()) {
       if (!v || (now - v.at) > DISPATCHED_QUEUE_TTL_MS) dispatchedQueueDeletes.delete(k);
@@ -13999,17 +14008,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       const oldest = dispatchedQueueDeletes.keys().next().value;
       if (oldest !== undefined) dispatchedQueueDeletes.delete(oldest);
     }
-    dispatchedQueueDeletes.set(key, { at: now, text });
+    dispatchedQueueDeletes.set(key, { at: now, text, ...(meta && typeof meta === 'object' ? meta : {}) });
   };
-  const hasDispatchedQueueDelete = (key) => {
+  const getDispatchedQueueDelete = (key) => {
     const rec = dispatchedQueueDeletes.get(key);
-    if (!rec) return false;
+    if (!rec) return null;
     if ((Date.now() - rec.at) > DISPATCHED_QUEUE_TTL_MS) {
       dispatchedQueueDeletes.delete(key);
-      return false;
+      return null;
     }
-    return true;
+    return rec;
   };
+  const hasDispatchedQueueDelete = (key) => Boolean(getDispatchedQueueDelete(key));
   try {
     lastMtimeMs = fs.statSync(getRemoteConfigPath()).mtimeMs;
   } catch {}
@@ -15109,7 +15119,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
             const sourceKey = String(explicitSourceKey || dispatchKey || '').trim();
             if (sourceKey) recoveryKey = sourceKey;
-            const existingOtherCount = getStagedEditUploads(stageKey).filter((x) => !sourceKey || String(x?._sourceKey || '') !== sourceKey).length;
+            const existingOtherCount = getStagedEditUploads(stageKey).filter((x) => !(sourceKey && String(x?._sourceKey || '') === sourceKey && x?._pendingRetry === true)).length;
             if (existingOtherCount + mat.attachments.length > MAX_STAGED_EDIT_UPLOADS_PER_CONV) {
               return {
                 ok: false,
@@ -15173,8 +15183,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 }
               };
             }
-            // 核验亦不可得：保留暂存附件并回传前端，绝不因盲目回滚造成附件丢失
-            appendStagedEditUploads(stageKey, stageableItems, { sourceKey });
+            // 核验亦不可得：保留暂存附件并回传前端（标记 pendingRetry: true 供后续重试复用覆盖，已确认删除的独立批次不互相覆盖）
+            appendStagedEditUploads(stageKey, stageableItems, { sourceKey, pendingRetry: true });
             editedText = cleanRestoredText;
             editedAttachments = clientAttsMeta;
             return {
@@ -15332,7 +15342,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               snapshot: enrichedPartial
             }));
           };
-          const sendSingleQueuedWithCheckedDelete = async ({ dispatchKey, text, hasMedia, deleteMethod, deleteBody }) => {
+          const sendSingleQueuedWithCheckedDelete = async ({ dispatchKey, text, hasMedia, deleteMethod, deleteBody, dispatchMeta }) => {
             if (hasDispatchedQueueDelete(dispatchKey)) {
               const delRetryOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
               if (!delRetryOutcome.ok) {
@@ -15369,7 +15379,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
             const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
             if (!delOutcome.ok) {
-              markDispatchedQueueDelete(dispatchKey, String(text));
+              markDispatchedQueueDelete(dispatchKey, String(text), dispatchMeta);
               return {
                 ok: false,
                 partialSuccess: true,
@@ -15479,6 +15489,45 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队标识 messageId 或 stepIndex' }));
               return;
             }
+            const reqDelTextNorm = stripDisplayMediaSuffixFromQueuedText(editedText, true).replace(/\s+/g, ' ').trim();
+            if (reqDelTextNorm) {
+              const trajOutcome = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
+              const trajSteps = trajOutcome.ok ? trajOutcome.result?.trajectory?.steps : null;
+              if (!trajOutcome.ok || !Array.isArray(trajSteps)) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '无法验证目标排队步骤状态，已取消撤回以防误删'
+                }));
+                return;
+              }
+              const trajContainer = trajOutcome.result?.trajectory || trajOutcome.result;
+              const qList = extractQueuedMessagesFromTrajectorySteps(trajSteps, trajContainer);
+              const matchedQ = qList.find((q) => q && q.stepIndex === stepIndex) || null;
+              const extraList = Array.isArray(trajContainer?.queuedSteps)
+                ? trajContainer.queuedSteps
+                : (Array.isArray(trajContainer?.queued_steps) ? trajContainer.queued_steps : []);
+              const directExtraStep = extraList.find((qs) => qs && Number(qs.stepIndex ?? qs.step_index) === stepIndex) || null;
+              const directQueuedStep = isQueuedTrajectoryUserStep(trajSteps[stepIndex]) ? trajSteps[stepIndex] : null;
+              if (!matchedQ && !directQueuedStep && !directExtraStep) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  error: '目标步骤已不在排队中，已取消撤回'
+                }));
+                return;
+              }
+              const targetUi = directQueuedStep?.userInput || directExtraStep?.userInput || directExtraStep?.user_input || directExtraStep || null;
+              const liveDelText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || '');
+              const liveDelTextNorm = stripDisplayMediaSuffixFromQueuedText(liveDelText, true).replace(/\s+/g, ' ').trim();
+              if (liveDelTextNorm && reqDelTextNorm !== liveDelTextNorm) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '目标排队步骤内容已变化（索引已被其他消息占用），已取消撤回以防误删'
+                }));
+                return;
+              }
+            }
             rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, rpcTimeoutMs);
             if (rpcRes !== null && rpcRes !== false) {
               dispatchedQueueDeletes.delete(`${cascadeId}::step:${stepIndex}`);
@@ -15519,6 +15568,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
             const targetUi = directQueuedStep?.userInput || directExtraStep?.userInput || directExtraStep?.user_input || directExtraStep || null;
             const baseEditText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || editedText || '');
+            const reqEditTextNorm = stripDisplayMediaSuffixFromQueuedText(editedText, true).replace(/\s+/g, ' ').trim();
+            const liveEditTextNorm = stripDisplayMediaSuffixFromQueuedText(baseEditText, true).replace(/\s+/g, ' ').trim();
+            if (reqEditTextNorm && liveEditTextNorm && reqEditTextNorm !== liveEditTextNorm) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: '目标排队步骤内容已变化（索引已被其他消息占用），已取消编辑以防误删'
+              }));
+              return;
+            }
             const rawEntriesFromStep = extractRawMediaEntriesFromUserInput(targetUi);
             const itemHasMedia = Boolean(
               payload?.hasMedia ||
@@ -15641,8 +15700,23 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               return;
             }
             const stepFp = buildQueuedStepFingerprint(targetUi, itemText);
+            const liveFpsForSend = collectQueuedStepFingerprints(trajSteps, trajContainer);
+            const liveSameFpCount = liveFpsForSend.filter((x) => x.fp === stepFp).length;
             const dispatchKey = `${cascadeId}::stepfp:${stepFp}`;
-            if (!itemText && !itemHasMedia && !hasDispatchedQueueDelete(dispatchKey)) {
+            const existingDispatchedRec = getDispatchedQueueDelete(dispatchKey);
+            if (existingDispatchedRec) {
+              // 若队列中存在多条相同内容消息（或首次发送时存在同内容副本），无法跨索引唯一区分哪条是已发送待删的 A 还是独立的 B → 停止删除防止误删未发送项
+              const isUniquelyIdentifiable = liveSameFpCount === 1 && Number(existingDispatchedRec.preSameFpCount || 1) === 1;
+              if (!isUniquelyIdentifiable) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '队列中存在多条相同内容排队消息且此前有未确认移除项，无法唯一区分目标，已停止操作以防误删或重复发送'
+                }));
+                return;
+              }
+            }
+            if (!itemText && !itemHasMedia && !existingDispatchedRec) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '未找到指定排队步骤或内容为空' }));
               return;
             }
@@ -15651,7 +15725,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               text: itemText,
               hasMedia: itemHasMedia,
               deleteMethod: 'DeleteQueuedUserInputStep',
-              deleteBody: { cascadeId, stepIndex }
+              deleteBody: { cascadeId, stepIndex },
+              dispatchMeta: { originalStepIndex: stepIndex, preSameFpCount: Math.max(1, liveSameFpCount) }
             });
             if (outcome.partialSuccess) {
               await respondPartialSendDeleteFailure({ stepIndex }, outcome.error);

@@ -21042,6 +21042,178 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     });
     assert.equal(r13Resend.ok, true);
     assert.deepEqual(crossIdxSentUploads, [['disk-queued.png']], '服务端跨索引前移重试后重发必须仅携带 1 份附件');
+
+    // 20. 同文同附件双消息身份碰撞防护回归
+    // 20a. 两条同文排队项 [step 1, step 2]：A(step 1) 发送成功删失败后，对 B(step 2) 发送绝不可误入“仅删除”分支误删 B
+    const dupSendOps = [];
+    const dupSendHandler = createRemoteHttpHandler({
+      port: 18781,
+      token: 'tok-r14-dupsend',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r14-dup', activeConversationId: 'conv-r14-dup', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        dupSendOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '完全相同的消息' }] } },
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '完全相同的消息' }] } }
+              ]
+            }
+          };
+        }
+        if (method === 'SendUserCascadeMessage') return { ok: true };
+        if (method === 'DeleteQueuedUserInputStep') return null;
+        return { ok: true };
+      }
+    });
+    const postDupSend = makeMockActionPoster(dupSendHandler, 'tok-r14-dupsend', 'cli-r14-dup');
+    const r14SendA = await postDupSend({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r14-dup',
+      stepIndex: 1,
+      text: '完全相同的消息'
+    });
+    assert.equal(r14SendA.ok, false);
+    assert.equal(r14SendA.partialSuccess, true);
+    const beforeDupB = dupSendOps.length;
+    const r14SendB = await postDupSend({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r14-dup',
+      stepIndex: 2,
+      text: '完全相同的消息'
+    });
+    assert.equal(r14SendB.ok, false);
+    assert.equal(r14SendB.outcomeUnknown, true, '存在多条同文排队项且此前有未确认移除项时，无法唯一区分目标必须停止删除');
+    assert.equal(
+      dupSendOps.slice(beforeDupB).filter((o) => o.method === 'DeleteQueuedUserInputStep' || o.method === 'SendUserCascadeMessage').length,
+      0,
+      '无法唯一定位时对 B 的调用不得触发任何删除或发送'
+    );
+
+    // 20b. 连续编辑两条同文同附件排队项：已确认删除的首条暂存附件绝不可被第二条覆盖，最终重发携带全部 2 份附件
+    const dupEditSentUploads = [];
+    const identicalMediaStep = {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      status: 'CORTEX_STEP_STATUS_QUEUED',
+      userInput: {
+        items: [{ text: '同文同图独立消息' }],
+        media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+      }
+    };
+    const dupEditHandler = createRemoteHttpHandler({
+      port: 18782,
+      token: 'tok-r14-dupedit',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r14-ed', activeConversationId: 'conv-r14-ed', busy: true, messages: [] }),
+      performAction: async (act) => {
+        if (act.action === 'send') {
+          dupEditSentUploads.push((act.pendingUploads || []).map((u) => u.name));
+          return { ok: true, snapshot: { ok: true, sessionId: 'conv-r14-ed', messages: [] } };
+        }
+        return { ok: true };
+      },
+      callLanguageServer: async (method) => {
+        if (method === 'GetCascadeTrajectory') {
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                identicalMediaStep,
+                identicalMediaStep
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postDupEdit = makeMockActionPoster(dupEditHandler, 'tok-r14-dupedit', 'cli-r14-ed');
+    const r14Ed1 = await postDupEdit({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r14-ed',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '同文同图独立消息'
+    });
+    assert.equal(r14Ed1.ok, true);
+    const r14Ed2 = await postDupEdit({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r14-ed',
+      stepIndex: 2,
+      hasMedia: true,
+      text: '同文同图独立消息'
+    });
+    assert.equal(r14Ed2.ok, true);
+    const r14EdSend = await postDupEdit({
+      action: 'send',
+      conversationId: 'conv-r14-ed',
+      text: '合并发送两条同文同图消息'
+    });
+    assert.equal(r14EdSend.ok, true);
+    assert.deepEqual(
+      dupEditSentUploads,
+      [['disk-queued.png', 'disk-queued.png']],
+      '连续编辑两条同文同附件独立消息时，第二条绝不可覆盖第一条已确认删除的暂存附件'
+    );
+
+    // 21. stepIndex 编辑与撤回原目标身份失配拦截回归：索引被其他消息占用时，删除 RPC 调用必须为 0
+    const mismatchOps = [];
+    const mismatchHandler = createRemoteHttpHandler({
+      port: 18783,
+      token: 'tok-r14-mismatch',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r14-mm', activeConversationId: 'conv-r14-mm', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        mismatchOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '已被另一条消息占用' }] } }
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postMismatch = makeMockActionPoster(mismatchHandler, 'tok-r14-mismatch', 'cli-r14-mm');
+    const r14EditMismatch = await postMismatch({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r14-mm',
+      stepIndex: 1,
+      text: '原待编辑的目标消息'
+    });
+    assert.equal(r14EditMismatch.ok, false);
+    assert.equal(r14EditMismatch.outcomeUnknown, true, 'stepIndex 编辑发现索引已被其他消息占用时必须拒绝');
+    const r14DelMismatch = await postMismatch({
+      action: 'delete-queued-message',
+      conversationId: 'conv-r14-mm',
+      stepIndex: 1,
+      text: '原待撤回的目标消息'
+    });
+    assert.equal(r14DelMismatch.ok, false);
+    assert.equal(r14DelMismatch.outcomeUnknown, true, 'stepIndex 撤回发现索引已被其他消息占用时必须拒绝');
+    assert.equal(
+      mismatchOps.filter((o) => o.method === 'DeleteQueuedUserInputStep').length,
+      0,
+      '编辑与撤回身份失配时 DeleteQueuedUserInputStep 调用次数必须严格为 0'
+    );
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }
