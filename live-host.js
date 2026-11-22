@@ -23,7 +23,7 @@ const {
 } = require('./meter-collector');
 const { getStateDir } = require('./asar-engine');
 const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
-const { startMobileRemoteServer, buildRemoteInfo, saveRemoteTunnelConfig } = require('./mobile-remote');
+const { startMobileRemoteServer, buildRemoteInfo, saveRemoteTunnelConfig, validateTailscaleCustomHost } = require('./mobile-remote');
 const { createMacosDockBadgeManager } = require('./macos-dock-badge');
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB 传输体积上限
@@ -1026,6 +1026,7 @@ async function startEmbeddedLiveBridge(options = {}) {
               || request.tunnelMode !== undefined
               || request.tunnelHostname !== undefined
               || request.tunnelToken !== undefined
+              || request.tailscaleCustomHost !== undefined
               || request.enabledChannels !== undefined
             );
             if (hasDisplayPatch && !touchesTunnelOrCh) {
@@ -1033,14 +1034,25 @@ async function startEmbeddedLiveBridge(options = {}) {
               res.end(JSON.stringify({ ok: true, data: buildRemoteInfo({ resetToken: false }) }));
               return;
             }
+            if (request?.tailscaleCustomHost !== undefined && String(request.tailscaleCustomHost || '').trim()) {
+              const tsCheck = validateTailscaleCustomHost(request.tailscaleCustomHost);
+              if (!tsCheck.ok) {
+                res.end(JSON.stringify({ ok: false, error: tsCheck.error }));
+                return;
+              }
+            }
             res.end(JSON.stringify({ ok: false, error: '手机远程服务正在启动中，请稍等几秒后点击「刷新状态」重试' }));
             return;
           }
-          await remoteHandle.configureTunnel(request || {});
+          const cfgResult = await remoteHandle.configureTunnel(request || {});
           const info = buildRemoteInfo({
             resetToken: false,
             tunnelStatus: remoteHandle.getTunnelStatus()
           });
+          if (cfgResult && cfgResult.validationError) {
+            res.end(JSON.stringify({ ok: false, error: cfgResult.validationError, data: info }));
+            return;
+          }
           res.end(JSON.stringify({ ok: true, data: info }));
           return;
         }
