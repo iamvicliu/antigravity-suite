@@ -14923,7 +14923,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       state: 'running',
       publicUrl: activeTunnelUrl,
       mode: config.tunnelMode
-    } : null, config.enabledChannels, { readOnly: true });
+    } : null, config.enabledChannels, {
+      readOnly: true,
+      tailscaleCustomHost: config.tailscaleCustomHost
+    });
     const activeConvId = snap.activeConversationId || snap.sessionId || '';
     const convList = Array.isArray(snap.conversations) ? snap.conversations : [];
     const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
@@ -15254,7 +15257,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         state: 'running',
         publicUrl: activeTunnelUrl,
         mode: config.tunnelMode
-      } : null, config.enabledChannels, { readOnly: true });
+      } : null, config.enabledChannels, {
+        readOnly: true,
+        tailscaleCustomHost: config.tailscaleCustomHost
+      });
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({
         ok: true,
