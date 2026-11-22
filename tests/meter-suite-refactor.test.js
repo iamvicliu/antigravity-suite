@@ -21785,6 +21785,146 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     await delBtn16.onclick();
     assert.equal(capturedPayloads16[1].mediaSig, extractedPureImgQueue[0].mediaSig, '前端撤回请求必须透传一致的 mediaSig');
     assert.equal(posOps.filter((o) => o.method === 'DeleteQueuedUserInputStep').length, 2, '合法纯图片撤回必须通过校验并完成删除');
+
+    // 28. 带文字媒体项同文异附件占位回归：同文但不同附件占据原索引时，发送、编辑、撤回均 0 副作用
+    const sameTxtDiffAttOps = [];
+    let sameTxtDiffAttDomClicks = 0;
+    const sameTxtDiffAttHandler = createRemoteHttpHandler({
+      port: 18791,
+      token: 'tok-r17-diffatt',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r17-da', activeConversationId: 'conv-r17-da', busy: true, messages: [] }),
+      performAction: async () => { sameTxtDiffAttDomClicks += 1; return { ok: true }; },
+      callLanguageServer: async (method, body) => {
+        sameTxtDiffAttOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                {
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  status: 'CORTEX_STEP_STATUS_QUEUED',
+                  userInput: {
+                    items: [{ text: '同文异附件说明' }],
+                    media: [{ mimeType: 'image/png', uri: `file://${pngPathB}`, thumbnail: '' }]
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postDiffAtt = makeMockActionPoster(sameTxtDiffAttHandler, 'tok-r17-diffatt', 'cli-r17-da');
+    const origAttSig = `uri:file://${diskImgPath}`;
+    const r17SendDiff = await postDiffAtt({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r17-da',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '同文异附件说明',
+      mediaSig: origAttSig
+    });
+    const r17EditDiff = await postDiffAtt({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r17-da',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '同文异附件说明',
+      mediaSig: origAttSig
+    });
+    const r17DelDiff = await postDiffAtt({
+      action: 'delete-queued-message',
+      conversationId: 'conv-r17-da',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '同文异附件说明',
+      mediaSig: origAttSig
+    });
+    assert.equal(r17SendDiff.ok, false);
+    assert.equal(r17SendDiff.outcomeUnknown, true);
+    assert.equal(r17EditDiff.ok, false);
+    assert.equal(r17EditDiff.outcomeUnknown, true);
+    assert.equal(r17DelDiff.ok, false);
+    assert.equal(r17DelDiff.outcomeUnknown, true);
+    assert.equal(sameTxtDiffAttDomClicks, 0, '同文异附件失配时不得触发任何 DOM 点击');
+    assert.equal(
+      sameTxtDiffAttOps.filter((o) => o.method === 'SendUserCascadeMessage' || o.method === 'DeleteQueuedUserInputStep').length,
+      0,
+      '同文异附件占据原索引时，发送、编辑、撤回均必须 0 副作用'
+    );
+
+    // 29. 同时间戳、同内容独立消息替换回归：createdAt 不得作为步骤级唯一 ID 放行仅删除
+    const sameTsOps = [];
+    let sameTsPhase = 'a';
+    const sameTsHandler = createRemoteHttpHandler({
+      port: 18792,
+      token: 'tok-r17-samets',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r17-ts', activeConversationId: 'conv-r17-ts', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        sameTsOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          if (sameTsPhase === 'a') {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  {
+                    createdAt: '2026-11-22T10:00:00Z',
+                    metadata: { createdAt: '2026-11-22T10:00:00Z' },
+                    type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                    status: 'CORTEX_STEP_STATUS_QUEUED',
+                    userInput: { items: [{ text: '同时间戳同内容' }] }
+                  }
+                ]
+              }
+            };
+          }
+          // 同时间戳、同内容的独立新消息 B 替换 A
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                {
+                  createdAt: '2026-11-22T10:00:00Z',
+                  metadata: { createdAt: '2026-11-22T10:00:00Z' },
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  status: 'CORTEX_STEP_STATUS_QUEUED',
+                  userInput: { items: [{ text: '同时间戳同内容' }] }
+                }
+              ]
+            }
+          };
+        }
+        if (method === 'SendUserCascadeMessage') return { ok: true };
+        if (method === 'DeleteQueuedUserInputStep') return null;
+        return { ok: true };
+      }
+    });
+    const postSameTs = makeMockActionPoster(sameTsHandler, 'tok-r17-samets', 'cli-r17-ts');
+    const r17TsA = await postSameTs({ action: 'send-queued-messages', sendAll: false, conversationId: 'conv-r17-ts', stepIndex: 1, text: '同时间戳同内容' });
+    assert.equal(r17TsA.ok, false);
+    assert.equal(r17TsA.partialSuccess, true);
+    sameTsPhase = 'b';
+    const beforeTsB = sameTsOps.length;
+    const r17TsB = await postSameTs({ action: 'send-queued-messages', sendAll: false, conversationId: 'conv-r17-ts', stepIndex: 1, text: '同时间戳同内容' });
+    assert.equal(r17TsB.ok, false);
+    assert.equal(r17TsB.outcomeUnknown, true, '仅靠 createdAt 时间戳不能证明步骤唯一身份，同时间戳独立替换必须拒绝');
+    assert.equal(
+      sameTsOps.slice(beforeTsB).filter((o) => o.method === 'DeleteQueuedUserInputStep' || o.method === 'SendUserCascadeMessage').length,
+      0,
+      '同时间戳同内容独立消息替换后绝不得误删 B'
+    );
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }
