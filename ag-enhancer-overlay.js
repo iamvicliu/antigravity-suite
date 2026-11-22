@@ -7427,14 +7427,37 @@
           const stepItems = Array.isArray(step.items) ? step.items : [];
           const text = stepItems.map((it) => String(it?.text || '')).join('').trim()
             || String(step.text || item?.text || '').trim();
-          const rawMedia = Array.isArray(step.media) ? step.media : [];
-          const imgs = rawMedia
-            .map((m) => ({
-              src: String(m?.uri || m?.url || m?.thumbnail || '').trim(),
-              alt: String(m?.displayName || m?.mimeType || '图片').trim()
-            }))
-            .filter((im) => im.src && !im.src.startsWith('data:image/svg'));
-          return { msgId, text, images: imgs, idx };
+          const rawMedia = Array.isArray(step.media)
+            ? step.media
+            : (Array.isArray(step.images)
+              ? step.images
+              : (Array.isArray(item?.media) ? item.media : []));
+          const attachments = rawMedia.map((m) => {
+            const mimeType = String(m?.mimeType || m?.mime_type || 'image/png').trim() || 'image/png';
+            const rawInline = String(m?.inlineData || m?.inline_data || m?.base64Data || m?.base64_data || m?.data || '').trim();
+            const inlineData = rawInline
+              ? (/^data:/i.test(rawInline) ? rawInline : `data:${mimeType};base64,${rawInline}`)
+              : '';
+            const thumbSrc = String(m?.uri || m?.url || m?.thumbnail || '').trim();
+            const previewUrl = (thumbSrc && !thumbSrc.startsWith('data:image/svg')) ? thumbSrc : inlineData;
+            const name = String(m?.displayName || m?.name || (/^image\//i.test(mimeType) ? 'image.png' : 'attachment')).trim();
+            const isImage = /^image\//i.test(mimeType) || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(name) || Boolean(previewUrl);
+            return {
+              name,
+              mimeType,
+              size: Number(m?.size || 0),
+              isImage,
+              previewUrl,
+              inlineData
+            };
+          }).filter((att) => att.previewUrl || att.inlineData || att.name);
+          const imgs = attachments
+            .filter((att) => att.isImage && att.previewUrl && !att.previewUrl.startsWith('data:image/svg'))
+            .map((att) => ({
+              src: att.previewUrl,
+              alt: att.name || '图片'
+            }));
+          return { msgId, text, images: imgs, attachments, idx };
         });
       }
     } catch {}
@@ -7549,15 +7572,31 @@
       const fiberRec = fiberItems[entries.length] || fiberItems[rowIdx] || null;
       const finalText = rawTxt || fiberRec?.text || '';
       const finalImgs = imgs.length ? imgs : (fiberRec?.images || []);
-      if (!finalText && !finalImgs.length) return;
+      const domAttachments = imgs.map((im, imIdx) => {
+        const mimeMatch = im.src.match(/^data:([^;,\s]+);base64,/i);
+        return {
+          name: im.alt || `image-${imIdx + 1}.png`,
+          mimeType: mimeMatch ? mimeMatch[1].toLowerCase() : 'image/png',
+          size: 0,
+          isImage: true,
+          previewUrl: im.src,
+          inlineData: mimeMatch ? im.src : ''
+        };
+      });
+      const finalAttachments = (Array.isArray(fiberRec?.attachments) && fiberRec.attachments.length)
+        ? fiberRec.attachments
+        : domAttachments;
+      if (!finalText && !finalImgs.length && !finalAttachments.length) return;
       const { sendBtn, editBtn, deleteBtn } = pickDecoratorBtns(rowEl);
       entries.push({
         domIndex: entries.length,
         stepIndex: -1,
         messageId: fiberRec?.msgId || '',
         source: 'dom',
-        text: finalText || (finalImgs.length ? `[图片 ×${finalImgs.length}]` : ''),
+        text: finalText || ((finalImgs.length || finalAttachments.length) ? `[图片 ×${finalImgs.length || finalAttachments.length}]` : ''),
         images: finalImgs.slice(0, 6),
+        attachments: finalAttachments.slice(0, 10),
+        hasMedia: Boolean(finalImgs.length || finalAttachments.length),
         status: 'QUEUED',
         hasEdit: Boolean(editBtn),
         sendBtn,
@@ -7569,13 +7608,17 @@
     fallbackRows.forEach((r, idx) => inspectRow(r, idx));
     if (!entries.length && fiberItems.length) {
       fiberItems.forEach((fi, idx) => {
+        const atts = Array.isArray(fi.attachments) ? fi.attachments.slice(0, 10) : [];
+        const imgs = (fi.images || []).slice(0, 6);
         entries.push({
           domIndex: idx,
           stepIndex: -1,
           messageId: fi.msgId || '',
           source: 'dom',
-          text: fi.text || (fi.images?.length ? `[图片 ×${fi.images.length}]` : ''),
-          images: (fi.images || []).slice(0, 6),
+          text: fi.text || ((imgs.length || atts.length) ? `[图片 ×${imgs.length || atts.length}]` : ''),
+          images: imgs,
+          attachments: atts,
+          hasMedia: Boolean(imgs.length || atts.length),
           status: 'QUEUED',
           hasEdit: false,
           sendBtn: null,
@@ -7591,13 +7634,14 @@
   }
 
   function collectQueuedMessagesFromDom() {
-    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, messageId, source, text, images, status, hasEdit }) => ({
+    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, messageId, source, text, images, hasMedia, status, hasEdit }) => ({
       domIndex,
       stepIndex,
       ...(messageId ? { messageId } : {}),
       source,
       text,
       images,
+      ...(hasMedia ? { hasMedia: true } : {}),
       status,
       ...(hasEdit ? { hasEdit: true } : {})
     }));
@@ -9572,12 +9616,14 @@
       return { ok: true, preset, permissionKey: nextKey, permissionLabel: resolved.permissionLabel };
     }
 
-    if (action === 'upload-image') {
-      const rawB64 = String(payload?.base64 || '').trim();
-      if (!rawB64) return { ok: false, error: '缺少图片数据' };
-      const cleanB64 = rawB64.replace(/^data:[^;]+;base64,/, '');
-      const mimeType = String(payload?.mimeType || 'image/jpeg').trim() || 'image/jpeg';
-      const fileName = String(payload?.name || `mobile-${Date.now()}.jpg`).trim();
+    async function injectUploadedFileToDesktopComposer(fileName, mimeType, rawB64) {
+      const rawStr = String(rawB64 || '').trim();
+      if (!rawStr) return { ok: false, error: '缺少附件数据' };
+      const dataUrlMatch = rawStr.match(/^data:([^;,\s]+);base64,([\s\S]+)$/i);
+      const cleanB64 = (dataUrlMatch ? dataUrlMatch[2] : rawStr.replace(/^data:[^;]+;base64,/, '')).replace(/\s+/g, '');
+      if (!cleanB64) return { ok: false, error: '缺少附件数据' };
+      const resolvedMime = String(dataUrlMatch?.[1] || mimeType || 'image/jpeg').trim() || 'image/jpeg';
+      const resolvedName = String(fileName || `mobile-${Date.now()}.jpg`).trim();
 
       let bytes;
       try {
@@ -9594,7 +9640,7 @@
         document.querySelector('input[type="file"]');
       if (!inp) return { ok: false, error: '未找到桌面端文件上传控件' };
 
-      const file = new File([bytes], fileName, { type: mimeType });
+      const file = new File([bytes], resolvedName, { type: resolvedMime });
       const dt = new DataTransfer();
       dt.items.add(file);
       try {
@@ -9610,7 +9656,17 @@
         inp.dispatchEvent(new Event('change', { bubbles: true }));
       }
       await new Promise((r) => setTimeout(r, 90));
-      return { ok: true, name: file.name, size: file.size };
+      return { ok: true, name: file.name, mimeType: resolvedMime, size: file.size };
+    }
+
+    if (action === 'upload-image') {
+      const rawB64 = String(payload?.base64 || '').trim();
+      if (!rawB64) return { ok: false, error: '缺少图片数据' };
+      return await injectUploadedFileToDesktopComposer(
+        String(payload?.name || `mobile-${Date.now()}.jpg`).trim(),
+        String(payload?.mimeType || 'image/jpeg').trim() || 'image/jpeg',
+        rawB64
+      );
     }
 
     if (action === 'remove-uploaded-attachment') {
@@ -9687,6 +9743,67 @@
       }
     }
 
+    const normQueuedText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    const stripQueuedMediaSuffix = (s) => normQueuedText(s)
+      .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
+      .trim();
+
+    const resolveStrictQueuedDomTarget = (entries, reqPayload, actionVerb) => {
+      if (!Array.isArray(entries) || !entries.length) {
+        return { ok: false, error: '当前没有排队中的消息' };
+      }
+      const reqMsgId = String(reqPayload?.messageId || '').trim();
+      if (reqMsgId) {
+        const matched = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
+        if (!matched) {
+          return { ok: false, error: `目标排队消息已变化或不存在，已取消${actionVerb}以防误操作` };
+        }
+        return { ok: true, target: matched };
+      }
+      const expQueueCount = Number(reqPayload?.expectedQueueCount);
+      if (Number.isInteger(expQueueCount) && expQueueCount > 0 && entries.length !== expQueueCount) {
+        return { ok: false, error: `桌面排队数量已变化，已取消${actionVerb}以防索引移位误操作` };
+      }
+      const hasReqIdx = Number.isInteger(reqPayload?.domIndex);
+      const reqIdx = hasReqIdx ? reqPayload.domIndex : -1;
+      const reqText = normQueuedText(reqPayload?.text);
+      const reqTextCore = stripQueuedMediaSuffix(reqText);
+      const matchesEntryText = (entry) => {
+        const et = normQueuedText(entry?.text);
+        if (!reqText) return true;
+        if (et === reqText) return true;
+        const etCore = stripQueuedMediaSuffix(et);
+        if (reqTextCore) return Boolean(etCore && etCore === reqTextCore);
+        return !etCore && ((Array.isArray(entry?.images) && entry.images.length > 0) || Boolean(entry?.hasMedia) || /\[(?:图片附件|图片\s*×\d+)\]/.test(et));
+      };
+      if (hasReqIdx) {
+        if (reqIdx < 0 || reqIdx >= entries.length) {
+          return { ok: false, error: `目标排队索引越界，已取消${actionVerb}以防误操作` };
+        }
+        const indexedTarget = entries[reqIdx];
+        if (reqText && !matchesEntryText(indexedTarget)) {
+          return { ok: false, error: `目标排队消息文本已变化，已取消${actionVerb}以防误操作` };
+        }
+        return { ok: true, target: indexedTarget };
+      }
+      if (reqText) {
+        const textMatches = entries.filter((e) => matchesEntryText(e));
+        if (textMatches.length === 1) {
+          return { ok: true, target: textMatches[0] };
+        }
+        return {
+          ok: false,
+          error: textMatches.length > 1
+            ? `存在多条相同文本排队消息，无法确认唯一目标，已取消${actionVerb}`
+            : `目标排队消息文本未匹配，已取消${actionVerb}以防误操作`
+        };
+      }
+      if (entries.length === 1) {
+        return { ok: true, target: entries[0] };
+      }
+      return { ok: false, error: `多条排队消息缺少唯一目标标识，已取消${actionVerb}以防误操作` };
+    };
+
     if (action === 'send-queued-dom') {
       const entries = findQueuedMessagesDomEntries();
       if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
@@ -9701,57 +9818,9 @@
         if (!sentCount) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
         return { ok: true, source: 'dom', sentCount };
       }
-      const reqMsgId = String(payload?.messageId || '').trim();
-      const expQueueCount = Number(payload?.expectedQueueCount);
-      if (!reqMsgId && Number.isInteger(expQueueCount) && expQueueCount > 0 && entries.length !== expQueueCount) {
-        return { ok: false, error: '桌面排队数量已变化，已取消发送以防索引移位误发' };
-      }
-      const hasReqIdx = Number.isInteger(payload?.domIndex);
-      const reqIdx = hasReqIdx ? payload.domIndex : -1;
-      const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-      const stripMediaSuffix = (s) => normText(s)
-        .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
-        .trim();
-      const reqText = normText(payload?.text);
-      const reqTextCore = stripMediaSuffix(reqText);
-      const matchesEntryText = (entry) => {
-        const et = normText(entry?.text);
-        if (!reqText) return true;
-        if (et === reqText) return true;
-        const etCore = stripMediaSuffix(et);
-        if (reqTextCore) return Boolean(etCore && etCore === reqTextCore);
-        return !etCore && Array.isArray(entry?.images) && entry.images.length > 0;
-      };
-      let target = null;
-      if (reqMsgId) {
-        target = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
-        if (!target) {
-          return { ok: false, error: '目标排队消息已变化或不存在，已取消发送以防误发' };
-        }
-      } else if (hasReqIdx) {
-        if (reqIdx >= 0 && reqIdx < entries.length && matchesEntryText(entries[reqIdx])) {
-          target = entries[reqIdx];
-        } else if (reqTextCore) {
-          const textMatches = entries.filter((e) => {
-            const et = normText(e?.text);
-            const etCore = stripMediaSuffix(et);
-            return et === reqText || (etCore && etCore === reqTextCore);
-          });
-          if (textMatches.length === 1) target = textMatches[0];
-        }
-      } else if (reqTextCore) {
-        const textMatches = entries.filter((e) => {
-          const et = normText(e?.text);
-          const etCore = stripMediaSuffix(et);
-          return et === reqText || (etCore && etCore === reqTextCore);
-        });
-        if (textMatches.length === 1) target = textMatches[0];
-      } else if (entries.length === 1 && !reqText) {
-        target = entries[0];
-      }
-      if (!target) {
-        return { ok: false, error: '目标排队消息已变化、不唯一或无法确认映射，已取消发送以防误发' };
-      }
+      const resolved = resolveStrictQueuedDomTarget(entries, payload, '发送');
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      const target = resolved.target;
       if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
       target.sendBtn.click();
       return { ok: true, source: 'dom', sentCount: 1 };
@@ -9759,57 +9828,113 @@
 
     if (action === 'edit-queued-dom') {
       const entries = findQueuedMessagesDomEntries();
-      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
-      const reqMsgId = String(payload?.messageId || '').trim();
-      const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
-      const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-      const reqText = normText(payload?.text);
-      let target = null;
-      if (reqMsgId) {
-        target = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
-        if (!target) {
-          return { ok: false, error: '目标排队消息已变化或不存在，已取消编辑以防误操作' };
+      const resolved = resolveStrictQueuedDomTarget(entries, payload, '编辑');
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      const target = resolved.target;
+      const rawAtts = (Array.isArray(target.attachments) && target.attachments.length)
+        ? target.attachments
+        : (Array.isArray(target.images) ? target.images.map((im, idx) => {
+            const srcStr = String(im?.src || '').trim();
+            const m = srcStr.match(/^data:([^;,\s]+);base64,/i);
+            return {
+              name: String(im?.alt || `image-${idx + 1}.png`).trim(),
+              mimeType: m ? m[1].toLowerCase() : 'image/png',
+              size: 0,
+              isImage: true,
+              previewUrl: srcStr,
+              inlineData: m ? srcStr : ''
+            };
+          }) : []);
+      const hasMedia = Boolean(
+        payload?.hasMedia ||
+        target.hasMedia ||
+        rawAtts.length > 0 ||
+        /\[(?:附带\s*\d+\s*张图片|图片附件|图片\s*×\d+)\]/.test(String(target.text || ''))
+      );
+      const cleanText = hasMedia ? stripQueuedMediaSuffix(target.text || '') : String(target.text || '');
+      if (!hasMedia) {
+        if (target.editBtn) {
+          target.editBtn.click();
+          return { ok: true, source: 'dom', nativeEditRestored: true, editedText: cleanText };
         }
-      } else {
-        target = (reqText && entries.find((e) => normText(e.text) === reqText))
-          || entries[reqIdx]
-          || entries[0];
+        if (!target.deleteBtn) return { ok: false, error: '未找到桌面端排队消息编辑/删除按钮' };
+        target.deleteBtn.click();
+        return { ok: true, source: 'dom', editedText: cleanText };
       }
-      if (!target) return { ok: false, error: '未找到目标排队消息' };
+      const editedAttachments = rawAtts
+        .map((att, idx) => {
+          const rawPrev = String(att?.previewUrl || att?.inlineData || '').trim();
+          const safePrev = /^blob:/i.test(rawPrev) ? '' : rawPrev;
+          const mimeType = String(att?.mimeType || 'image/png').trim() || 'image/png';
+          return {
+            name: String(att?.name || `image-${idx + 1}.png`).trim(),
+            mimeType,
+            size: Number(att?.size || 0),
+            isImage: att?.isImage !== false,
+            previewUrl: safePrev
+          };
+        })
+        .filter((att) => Boolean(att.previewUrl || att.name));
       if (target.editBtn) {
+        if (!editedAttachments.length) {
+          return { ok: false, mediaRecoveryUnavailable: true, error: '该排队消息包含媒体附件，但未能获取可恢复的附件元数据，已取消撤回以避免丢失附件' };
+        }
         target.editBtn.click();
-        return { ok: true, source: 'dom', editedText: target.text || '' };
+        return {
+          ok: true,
+          source: 'dom',
+          nativeEditRestored: true,
+          editedText: cleanText,
+          editedAttachments
+        };
       }
       if (!target.deleteBtn) return { ok: false, error: '未找到桌面端排队消息编辑/删除按钮' };
+      const inlineRestoreList = rawAtts
+        .map((att, idx) => {
+          const inlineB64 = String(att?.inlineData || (String(att?.previewUrl || '').startsWith('data:') ? att.previewUrl : '')).trim();
+          if (!/^data:([^;,\s]+);base64,[A-Za-z0-9+/=\s]+$/i.test(inlineB64)) return null;
+          return {
+            name: String(att?.name || `image-${idx + 1}.png`).trim(),
+            mimeType: String(att?.mimeType || 'image/png').trim(),
+            base64: inlineB64
+          };
+        });
+      if (!rawAtts.length || inlineRestoreList.some((x) => !x)) {
+        return { ok: false, mediaRecoveryUnavailable: true, error: '该排队消息包含媒体附件且无原生编辑按钮，无法完整恢复附件数据，已取消撤回以避免丢失附件' };
+      }
+      const restoredMeta = [];
+      for (let i = 0; i < inlineRestoreList.length; i += 1) {
+        const item = inlineRestoreList[i];
+        const upRes = await injectUploadedFileToDesktopComposer(item.name, item.mimeType, item.base64);
+        if (!upRes?.ok) {
+          return {
+            ok: false,
+            mediaRecoveryUnavailable: true,
+            error: upRes?.error || '恢复附件至桌面端输入框失败，已取消删除原排队消息'
+          };
+        }
+        restoredMeta.push({
+          name: upRes.name || item.name,
+          mimeType: upRes.mimeType || item.mimeType,
+          size: Number(upRes.size || 0),
+          isImage: /^image\//i.test(upRes.mimeType || item.mimeType),
+          previewUrl: item.base64
+        });
+      }
       target.deleteBtn.click();
-      return { ok: true, source: 'dom', editedText: target.text || '' };
+      return {
+        ok: true,
+        source: 'dom',
+        editedText: cleanText,
+        editedAttachments: restoredMeta
+      };
     }
 
     if (action === 'delete-queued-dom') {
       const entries = findQueuedMessagesDomEntries();
-      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
-      const reqMsgId = String(payload?.messageId || '').trim();
-      const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : -1;
-      const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-      const reqText = normText(payload?.text);
-      let target = null;
-      if (reqMsgId) {
-        target = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
-        if (!target) {
-          return { ok: false, error: '目标排队消息已变化或不存在，已取消删除以防误删' };
-        }
-      } else if (reqText) {
-        if (reqIdx >= 0 && reqIdx < entries.length && normText(entries[reqIdx].text) === reqText) {
-          target = entries[reqIdx];
-        } else {
-          target = entries.find((e) => normText(e.text) === reqText) || null;
-        }
-      } else if (reqIdx >= 0 && reqIdx < entries.length) {
-        target = entries[reqIdx];
-      }
-      if (!target) {
-        return { ok: false, error: '目标排队消息已变化或不存在，已取消删除以防误删' };
-      }
+      const resolved = resolveStrictQueuedDomTarget(entries, payload, '删除');
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      const target = resolved.target;
       if (!target.deleteBtn) return { ok: false, error: '未找到桌面端排队消息删除按钮' };
       target.deleteBtn.click();
       return { ok: true, source: 'dom' };

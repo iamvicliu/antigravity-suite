@@ -18787,4 +18787,694 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   assert.ok(html.includes('queue-item-send') && html.includes('queue-item-edit') && html.includes('queue-del-btn'));
   assert.ok(html.includes("source: 'optimistic'"), 'busy 态发消息后应即时写入乐观排队回显');
   assert.ok(html.includes("srcAttr === 'optimistic'") && html.includes('hasOnlyOptimistic'), 'optimistic 排队项应渲染为禁用态直到同步真实 messageId');
+
+  // === r3 四项返工回归验证 ===
+  const {
+    classifyLanguageServerRpcError,
+    mergeUniqueQueuedLists
+  } = require('../mobile-remote');
+
+  // 7. edit-queued-dom 严格目标确认：文本失配、索引越界、数量变化、无索引多条同文均必须 0 点击停止
+  const envStrictEdit = createDomEnv();
+  envStrictEdit.sandbox.atob = atob;
+  envStrictEdit.sandbox.File = File;
+  envStrictEdit.sandbox.DataTransfer = class {
+    constructor() {
+      this.files = [];
+      this.items = { add: (f) => { this.files.push(f); } };
+    }
+  };
+  const strictCard = envStrictEdit.doc.createElement('div');
+  strictCard.setAttribute('data-testid', 'queued-messages-card');
+  const strictHdr = envStrictEdit.doc.createElement('span');
+  strictHdr.textContent = '排队消息 2';
+  strictCard.appendChild(strictHdr);
+  const rowCounts = [
+    { send: 0, edit: 0, del: 0 },
+    { send: 0, edit: 0, del: 0 }
+  ];
+  const makeStrictRow = (textLabel, idx, options = {}) => {
+    const row = envStrictEdit.doc.createElement('div');
+    const sp = envStrictEdit.doc.createElement('span');
+    sp.textContent = textLabel;
+    row.appendChild(sp);
+    if (options.imgSrc) {
+      const img = envStrictEdit.doc.createElement('img');
+      img.setAttribute('src', options.imgSrc);
+      img.setAttribute('alt', options.imgAlt || 'shot.png');
+      row.appendChild(img);
+    }
+    const dec = envStrictEdit.doc.createElement('div');
+    dec.setAttribute('data-testid', 'queued-decorators');
+    const bSend = envStrictEdit.doc.createElement('button');
+    bSend.setAttribute('aria-label', '立即发送');
+    bSend.addEventListener('click', () => { rowCounts[idx].send += 1; });
+    dec.appendChild(bSend);
+    if (options.hasEditBtn !== false) {
+      const bEdit = envStrictEdit.doc.createElement('button');
+      bEdit.setAttribute('aria-label', '编辑');
+      bEdit.addEventListener('click', () => { rowCounts[idx].edit += 1; });
+      dec.appendChild(bEdit);
+    }
+    const bDel = envStrictEdit.doc.createElement('button');
+    bDel.setAttribute('aria-label', '删除');
+    bDel.addEventListener('click', () => { rowCounts[idx].del += 1; });
+    dec.appendChild(bDel);
+    row.appendChild(dec);
+    return row;
+  };
+  strictCard.appendChild(makeStrictRow('重复同文排队消息', 0));
+  strictCard.appendChild(makeStrictRow('重复同文排队消息', 1));
+  envStrictEdit.doc.body.appendChild(strictCard);
+  vm.runInContext(overlaySrc, envStrictEdit.sandbox);
+  try {
+    const strictEnh = envStrictEdit.sandbox.__AGEnhancer;
+    const rEditTextMismatch = await strictEnh.performMobileAction({
+      action: 'edit-queued-dom',
+      domIndex: 0,
+      text: '完全不匹配的文本',
+      conversationId: ''
+    });
+    assert.equal(rEditTextMismatch.ok, false, 'edit-queued-dom 文本失配必须停止');
+    const rEditOob = await strictEnh.performMobileAction({
+      action: 'edit-queued-dom',
+      domIndex: 99,
+      text: '重复同文排队消息',
+      conversationId: ''
+    });
+    assert.equal(rEditOob.ok, false, 'edit-queued-dom 索引越界即使文本存在也必须停止，绝不回退 entries[0]');
+    const rEditDupNoIdx = await strictEnh.performMobileAction({
+      action: 'edit-queued-dom',
+      text: '重复同文排队消息',
+      conversationId: ''
+    });
+    assert.equal(rEditDupNoIdx.ok, false, 'edit-queued-dom 无 domIndex 面对多条同文消息必须停止');
+    const rEditCountShift = await strictEnh.performMobileAction({
+      action: 'edit-queued-dom',
+      domIndex: 0,
+      text: '重复同文排队消息',
+      expectedQueueCount: 3,
+      conversationId: ''
+    });
+    assert.equal(rEditCountShift.ok, false, 'edit-queued-dom 队列总数变化时必须停止');
+    assert.deepEqual(rowCounts, [{ send: 0, edit: 0, del: 0 }, { send: 0, edit: 0, del: 0 }], '所有失配/越界/同文歧义场景均必须 0 点击');
+
+    // 精确给出无歧义索引 + 数量时，只点击对应第 2 行
+    const rEditValidIdx = await strictEnh.performMobileAction({
+      action: 'edit-queued-dom',
+      domIndex: 1,
+      text: '重复同文排队消息',
+      expectedQueueCount: 2,
+      conversationId: ''
+    });
+    assert.equal(rEditValidIdx.ok, true);
+    assert.equal(rowCounts[0].edit + rowCounts[0].del, 0);
+    assert.equal(rowCounts[1].edit, 1);
+  } finally {
+    envStrictEdit.sandbox.__AGEnhancer?.dispose?.();
+  }
+
+  // 8. DOM 媒体 edit-queued-dom 恢复与“恢复能力不足禁止先删”回归
+  const envDomMediaEdit = createDomEnv();
+  envDomMediaEdit.sandbox.setTimeout = (fn) => setTimeout(fn, 0);
+  envDomMediaEdit.sandbox.clearTimeout = (t) => clearTimeout(t);
+  envDomMediaEdit.sandbox.atob = atob;
+  envDomMediaEdit.sandbox.File = File;
+  envDomMediaEdit.sandbox.DataTransfer = class {
+    constructor() {
+      this.files = [];
+      this.items = { add: (f) => { this.files.push(f); } };
+    }
+  };
+  const dmCard = envDomMediaEdit.doc.createElement('div');
+  dmCard.setAttribute('data-testid', 'queued-messages-card');
+  const dmHdr = envDomMediaEdit.doc.createElement('span');
+  dmHdr.textContent = '排队消息 3';
+  dmCard.appendChild(dmHdr);
+  let dm0Edit = 0; let dm0Del = 0;
+  let dm1Del = 0; let dm2Del = 0;
+  const composerEl = envDomMediaEdit.doc.createElement('div');
+  composerEl.className = 'surface-composer';
+  const fileInp = envDomMediaEdit.doc.createElement('input');
+  fileInp.setAttribute('type', 'file');
+  const composerUploaded = [];
+  fileInp.addEventListener('change', () => {
+    for (const f of Array.from(fileInp.files || [])) composerUploaded.push(f.name);
+  });
+  composerEl.appendChild(fileInp);
+  envDomMediaEdit.doc.body.appendChild(composerEl);
+  const inlinePngUrl = `data:image/png;base64,${tinyPngB64}`;
+  const mkDomMediaRow = (txt, imgSrc, imgAlt, withEdit, onE, onD) => {
+    const row = envDomMediaEdit.doc.createElement('div');
+    const sp = envDomMediaEdit.doc.createElement('span');
+    sp.textContent = txt;
+    row.appendChild(sp);
+    if (imgSrc) {
+      const img = envDomMediaEdit.doc.createElement('img');
+      img.setAttribute('src', imgSrc);
+      img.setAttribute('alt', imgAlt);
+      row.appendChild(img);
+    }
+    const dec = envDomMediaEdit.doc.createElement('div');
+    dec.setAttribute('data-testid', 'queued-decorators');
+    if (withEdit) {
+      const bE = envDomMediaEdit.doc.createElement('button');
+      bE.setAttribute('aria-label', '编辑');
+      bE.addEventListener('click', onE);
+      dec.appendChild(bE);
+    }
+    const bD = envDomMediaEdit.doc.createElement('button');
+    bD.setAttribute('aria-label', '删除');
+    bD.addEventListener('click', onD);
+    dec.appendChild(bD);
+    row.appendChild(dec);
+    return row;
+  };
+  dmCard.appendChild(mkDomMediaRow('带原生编辑图', inlinePngUrl, 'native.png', true, () => { dm0Edit += 1; }, () => { dm0Del += 1; }));
+  dmCard.appendChild(mkDomMediaRow('仅删无内联图', 'blob:http://localhost/unrecoverable', 'blob.png', false, () => {}, () => { dm1Del += 1; }));
+  dmCard.appendChild(mkDomMediaRow('仅删有内联图', inlinePngUrl, 'recovered-inline.png', false, () => {}, () => { dm2Del += 1; }));
+  envDomMediaEdit.doc.body.appendChild(dmCard);
+  vm.runInContext(overlaySrc, envDomMediaEdit.sandbox);
+  try {
+    const dmEnh = envDomMediaEdit.sandbox.__AGEnhancer;
+    const rNativeMedia = await dmEnh.performMobileAction({
+      action: 'edit-queued-dom',
+      domIndex: 0,
+      text: '带原生编辑图',
+      expectedQueueCount: 3,
+      conversationId: ''
+    });
+    assert.equal(rNativeMedia.ok, true);
+    assert.equal(dm0Edit, 1);
+    assert.equal(dm0Del, 0);
+    assert.equal(rNativeMedia.editedAttachments?.length, 1);
+    assert.equal(rNativeMedia.editedAttachments[0].name, 'native.png');
+
+    // 无 editBtn 且图像为不可恢复的 blob: URL → 必须拒绝且 0 次点击 deleteBtn
+    const rUnrecoverable = await dmEnh.performMobileAction({
+      action: 'edit-queued-dom',
+      domIndex: 1,
+      text: '仅删无内联图',
+      expectedQueueCount: 3,
+      conversationId: ''
+    });
+    assert.equal(rUnrecoverable.ok, false, '无原生 editBtn 且媒体不可恢复时绝不得点击 deleteBtn');
+    assert.equal(rUnrecoverable.mediaRecoveryUnavailable, true);
+    assert.equal(dm1Del, 0, '恢复能力不足时必须零删除点击');
+
+    // 无 editBtn 但拥有完整 inline base64 且存在文件输入控件 → 先注入桌面输入框，再点击 deleteBtn，并返回 editedAttachments
+    const rRecoveredDelete = await dmEnh.performMobileAction({
+      action: 'edit-queued-dom',
+      domIndex: 2,
+      text: '仅删有内联图',
+      expectedQueueCount: 3,
+      conversationId: ''
+    });
+    assert.equal(rRecoveredDelete.ok, true);
+    assert.equal(dm2Del, 1);
+    assert.deepEqual(composerUploaded, ['recovered-inline.png']);
+    assert.equal(rRecoveredDelete.editedAttachments?.length, 1);
+    assert.equal(rRecoveredDelete.editedAttachments[0].name, 'recovered-inline.png');
+  } finally {
+    envDomMediaEdit.sandbox.__AGEnhancer?.dispose?.();
+  }
+
+  // 9. RPC 媒体编辑恢复 + 恢复能力不足禁删 + classifyLanguageServerRpcError 严格结构化解析
+  const tmpMediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-q-edit-media-'));
+  const diskImgPath = path.join(tmpMediaDir, 'disk-queued.png');
+  fs.writeFileSync(diskImgPath, Buffer.from(tinyPngB64, 'base64'));
+  const mediaOpsLog = [];
+  let mediaUploadFail = false;
+  let deleteAgentFail = false;
+  let editCaseScenario = 'full'; // 'full' | 'thumb_only' | 'missing_file' | 'unknown_500_words' | 'method_mismatch_dep'
+  let pendingEditFixture = [
+    {
+      id: 'pm-media-ok',
+      deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+      step: {
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        userInput: {
+          items: [{ text: '带图撤回编辑说明' }],
+          media: [{ mimeType: 'image/png', inlineData: tinyPngB64, displayName: 'inline-shot.png' }]
+        }
+      }
+    },
+    {
+      id: 'pm-media-thumb-only',
+      deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+      step: {
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        userInput: {
+          items: [{ text: '只有缩略图不可删' }],
+          media: [{ mimeType: 'image/png', thumbnail: tinyPngB64, displayName: 'only-thumb.png' }]
+        }
+      }
+    },
+    {
+      id: 'pm-media-missing-disk',
+      deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+      step: {
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        userInput: {
+          items: [{ text: '缺失磁盘文件不可删' }],
+          media: [{ mimeType: 'image/png', uri: `file://${path.join(tmpMediaDir, 'does-not-exist.png')}` }]
+        }
+      }
+    }
+  ];
+  const r3HistoryMgr = createConversationHistoryManager();
+  const r3Handler = createRemoteHttpHandler({
+    port: 18766,
+    token: 'tok-r3-media',
+    enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+  }, {
+    historyManager: r3HistoryMgr,
+    mediaOptions: { allowedRoots: [tmpMediaDir] },
+    fetchPendingAgentMessages: async () => pendingEditFixture.map((m) => ({ ...m, ui: m.step.userInput, hasMedia: true })),
+    callLanguageServer: async (method, body) => {
+      mediaOpsLog.push({ kind: 'rpc', method, body });
+      if (method === 'DeleteAgentMessage' && deleteAgentFail) return null;
+      if (method === 'GetCascadeTrajectory') {
+        if (editCaseScenario === 'missing_file') {
+          return {
+            trajectory: {
+              steps: [
+                {
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  status: 'CORTEX_STEP_STATUS_QUEUED',
+                  userInput: {
+                    items: [{ text: '磁盘文件已丢失' }],
+                    media: [{ mimeType: 'image/png', uri: `file://${path.join(tmpMediaDir, 'missing.png')}` }]
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          trajectory: {
+            steps: [
+              {
+                type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                status: 'CORTEX_STEP_STATUS_QUEUED',
+                userInput: {
+                  items: [{ text: '带盘文件媒体排队' }],
+                  media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}` }]
+                }
+              },
+              {
+                type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                status: 'CORTEX_STEP_STATUS_QUEUED',
+                userInput: {
+                  items: [],
+                  media: [{ mimeType: 'image/png', inlineData: tinyPngB64, displayName: 'only-img.png' }]
+                }
+              }
+            ]
+          }
+        };
+      }
+      if (method === 'SendUserCascadeMessage') {
+        if (editCaseScenario === 'unknown_500_words') {
+          throw new Error('HTTP 500: {"code":"internal","message":"not_found after execution deprecated"}');
+        }
+        if (editCaseScenario === 'method_mismatch_dep') {
+          throw new Error('HTTP 500: {"code":"unknown","message":"deprecated"}');
+        }
+      }
+      if (method === 'SendAllQueuedMessages') {
+        if (editCaseScenario === 'unknown_500_words') {
+          throw new Error('HTTP 500: {"code":"unknown","message":"failed deprecated post-check not_found"}');
+        }
+        if (editCaseScenario === 'plain_500_words') {
+          throw new Error('HTTP 500: gateway timeout near deprecated invalid_argument endpoint');
+        }
+      }
+      return { ok: true };
+    },
+    performAction: async (p) => {
+      mediaOpsLog.push({ kind: 'dom', action: p.action, name: p.name, sendAll: p.sendAll });
+      if (p.action === 'upload-image' && mediaUploadFail) {
+        return { ok: false, error: '桌面输入区文件上传失败' };
+      }
+      return { ok: true, actionResult: { ok: true, name: p.name } };
+    },
+    fetchSnapshot: async (_t, opts) => ({
+      ok: true,
+      sessionId: opts?.conversationId || 'conv-r3',
+      title: 'R3',
+      queuedMessages: []
+    })
+  });
+  const postR3Act = async (bodyObj) => {
+    const { Readable } = require('stream');
+    const req = Readable.from([Buffer.from(JSON.stringify(bodyObj), 'utf8')]);
+    req.method = 'POST';
+    req.url = '/api/action';
+    req.headers = { host: '127.0.0.1:18766', 'content-type': 'application/json', 'x-ag-remote-token': 'tok-r3-media' };
+    req.socket = { remoteAddress: '127.0.0.1' };
+    let out = '';
+    await r3Handler(req, { setHeader() {}, writeHead() {}, end(c) { if (c) out += String(c); } });
+    return JSON.parse(out);
+  };
+  try {
+    // 9a. messageId 含内联图片编辑：先 upload-image 恢复附件再 DeleteAgentMessage，剥除展示后缀并下发 editedAttachments
+    const beforeMediaEditOk = mediaOpsLog.length;
+    const rMediaEditOk = await postR3Act({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r3',
+      messageId: 'pm-media-ok',
+      hasMedia: true,
+      text: '带图撤回编辑说明\n[附带 1 张图片]'
+    });
+    assert.equal(rMediaEditOk.ok, true);
+    assert.equal(rMediaEditOk.actionResult.editedText, '带图撤回编辑说明', '应剥除合成媒体尾标还原原始编辑文本');
+    assert.equal(rMediaEditOk.actionResult.editedAttachments?.length, 1);
+    assert.equal(rMediaEditOk.actionResult.editedAttachments[0].name, 'inline-shot.png');
+    assert.ok(rMediaEditOk.actionResult.editedAttachments[0].previewUrl.startsWith('data:image/png;base64,'));
+    const okOpsSlice = mediaOpsLog.slice(beforeMediaEditOk);
+    const upIdx = okOpsSlice.findIndex((o) => o.kind === 'dom' && o.action === 'upload-image');
+    const delIdx = okOpsSlice.findIndex((o) => o.kind === 'rpc' && o.method === 'DeleteAgentMessage');
+    assert.ok(upIdx >= 0 && delIdx > upIdx, '必须先上传恢复附件成功，再执行 DeleteAgentMessage');
+
+    // 9b. traj stepIndex 读取安全磁盘文件并先上传恢复、仅图片项 returning editedText === ""
+    const beforeTrajDiskEdit = mediaOpsLog.length;
+    const rTrajDiskEdit = await postR3Act({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r3',
+      stepIndex: 0
+    });
+    assert.equal(rTrajDiskEdit.ok, true);
+    assert.equal(rTrajDiskEdit.actionResult.editedText, '带盘文件媒体排队');
+    assert.equal(rTrajDiskEdit.actionResult.editedAttachments?.[0]?.name, 'disk-queued.png');
+    const trajDiskSlice = mediaOpsLog.slice(beforeTrajDiskEdit);
+    assert.ok(
+      trajDiskSlice.findIndex((o) => o.action === 'upload-image') < trajDiskSlice.findIndex((o) => o.method === 'DeleteQueuedUserInputStep'),
+      '轨迹步编辑也必须先恢复上传再删除排队步'
+    );
+
+    const rTrajImgOnly = await postR3Act({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r3',
+      stepIndex: 1
+    });
+    assert.equal(rTrajImgOnly.ok, true);
+    assert.equal(rTrajImgOnly.actionResult.editedText, '', '纯图片排队项撤回编辑时 editedText 应为空串而非 [图片附件]');
+    assert.equal(rTrajImgOnly.actionResult.editedAttachments?.[0]?.name, 'only-img.png');
+
+    // 9c. 各种恢复能力不足场景：thumbnail-only / 缺失文件 / 上传失败 / 删除失败均严禁残留删项
+    const beforeInsufficient = mediaOpsLog.length;
+    const rThumbFail = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', messageId: 'pm-media-thumb-only', hasMedia: true });
+    assert.equal(rThumbFail.ok, false);
+    assert.equal(rThumbFail.mediaRecoveryUnavailable, true);
+    const rMissingDiskFail = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', messageId: 'pm-media-missing-disk', hasMedia: true });
+    assert.equal(rMissingDiskFail.ok, false);
+    assert.equal(rMissingDiskFail.mediaRecoveryUnavailable, true);
+    editCaseScenario = 'missing_file';
+    const rTrajMissingFail = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', stepIndex: 0 });
+    assert.equal(rTrajMissingFail.ok, false);
+    assert.equal(rTrajMissingFail.mediaRecoveryUnavailable, true);
+    editCaseScenario = 'full';
+    mediaUploadFail = true;
+    const rUploadFail = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', messageId: 'pm-media-ok', hasMedia: true });
+    assert.equal(rUploadFail.ok, false);
+    assert.equal(rUploadFail.mediaRecoveryUnavailable, true);
+    mediaUploadFail = false;
+    const insuffSlice = mediaOpsLog.slice(beforeInsufficient);
+    assert.equal(insuffSlice.filter((o) => o.method === 'DeleteAgentMessage' || o.method === 'DeleteQueuedUserInputStep').length, 0, '任何恢复失败场景均绝不得提前删除原排队项');
+
+    // 若上传成功但 DeleteAgentMessage 失败，应回滚已上传附件并返回失败
+    deleteAgentFail = true;
+    const beforeRollback = mediaOpsLog.length;
+    const rDeleteRollback = await postR3Act({ action: 'edit-queued-message', conversationId: 'conv-r3', messageId: 'pm-media-ok', hasMedia: true });
+    assert.equal(rDeleteRollback.ok, false);
+    assert.ok(mediaOpsLog.slice(beforeRollback).some((o) => o.kind === 'dom' && o.action === 'remove-uploaded-attachment'), 'DeleteAgentMessage 失败时应回滚预上传附件');
+    deleteAgentFail = false;
+
+    // 9d. 前端 #queue-dock 点击编辑含附件与纯图片项时，同步回填 #attach-hint 与 #btn-send
+    const dockVmQueue = [
+      { messageId: 'pm-media-ok', stepIndex: -1, source: 'agent_state', text: '带图撤回编辑说明\n[附带 1 张图片]', images: [{ src: inlinePngUrl, alt: 'inline-shot.png' }], hasMedia: true },
+      { messageId: 'q-img-only', stepIndex: 1, source: 'traj', text: '[图片附件]', images: [{ src: inlinePngUrl, alt: 'only-img.png' }], hasMedia: true }
+    ];
+    const qRenderStart = html.indexOf('const qDock = $(\'queue-dock\');');
+    const qRenderEnd = html.indexOf("qDock.querySelectorAll('.queue-del-btn')", qRenderStart);
+    const attStripStart = html.indexOf('function renderAttachHintStrip()');
+    const attStripEnd = html.indexOf('async function uploadImageFiles(rawFiles)', attStripStart);
+    const syncSendStart = html.indexOf('function syncSendButtonUI()');
+    const syncSendEnd = html.indexOf('const autoGrow = () =>', syncSendStart);
+    assert.ok(qRenderStart > 0 && qRenderEnd > qRenderStart && attStripStart > 0 && attStripEnd > attStripStart && syncSendStart > 0 && syncSendEnd > syncSendStart);
+    const attachDomNodes = new Map();
+    const mkSimpleEl = (idName = '') => {
+      let htmlVal = '';
+      const el = {
+        id: idName,
+        hidden: true,
+        disabled: false,
+        value: '',
+        className: '',
+        style: {},
+        scrollHeight: 36,
+        dataset: {},
+        attrs: {},
+        setAttribute(k, v) { this.attrs[k] = String(v); },
+        removeAttribute(k) { delete this.attrs[k]; },
+        focus() {},
+        get innerHTML() { return htmlVal; },
+        set innerHTML(v) { htmlVal = String(v || ''); },
+        querySelector(sel) {
+          if (sel === '.queue-send-all') return el._sendAllBtn || null;
+          return null;
+        },
+        querySelectorAll(sel) {
+          if (sel === '.queue-item-edit') return el._editBtns || [];
+          return [];
+        }
+      };
+      return el;
+    };
+    const mockHint = mkSimpleEl('attach-hint');
+    const mockBtnSend = mkSimpleEl('btn-send');
+    const mockTa = mkSimpleEl('msg-input');
+    const mockQDock = mkSimpleEl('queue-dock');
+    const mkQueueBtn = (q, qi) => ({
+      dataset: {
+        queueSource: q.source,
+        msgId: q.messageId || '',
+        stepIdx: String(q.stepIndex ?? -1),
+        domIdx: String(qi),
+        queueText: q.text || '',
+        hasMedia: q.hasMedia ? '1' : ''
+      },
+      disabled: false,
+      onclick: null
+    });
+    const vmEditBtns = dockVmQueue.map((q, qi) => mkQueueBtn(q, qi));
+    mockQDock._sendAllBtn = mkSimpleEl('send-all');
+    mockQDock._editBtns = vmEditBtns;
+    attachDomNodes.set('attach-hint', mockHint);
+    attachDomNodes.set('btn-send', mockBtnSend);
+    attachDomNodes.set('queue-dock', mockQDock);
+    const editUiResponses = [rMediaEditOk, rTrajImgOnly];
+    let editRespPtr = 0;
+    const queueEditSandbox = {
+      $: (id) => attachDomNodes.get(id) || null,
+      ta: mockTa,
+      latestSnap: { busy: false },
+      selectedConversationId: 'conv-r3',
+      queueActionBusy: false,
+      sending: false,
+      apiBase: '',
+      pairState: { token: '' },
+      STOP_SQUARE_SVG: 'stop',
+      SEND_ARROW_SVG: 'send',
+      uploadedNames: [],
+      uploadedAttachments: [],
+      saveDraftForConv() {},
+      isDesktopLayout: () => false,
+      openMediaLightbox() {},
+      formatFileSizeShort: (n) => `${n}B`,
+      showToast() {},
+      esc: (s) => String(s ?? ''),
+      apiAction: async () => editUiResponses[editRespPtr++]
+    };
+    const snippet = [
+      html.slice(attStripStart, attStripEnd),
+      html.slice(syncSendStart, syncSendEnd),
+      'const displayCfg = { showQueue: true };',
+      'const snapSid = "conv-r3";',
+      'const snap = { sessionId: "conv-r3", activeConversationId: "conv-r3", queuedMessages: globalThis.__vmQueued };',
+      html.slice(qRenderStart, qRenderEnd),
+      '}}}\n'
+    ].join('\n');
+    queueEditSandbox.__vmQueued = dockVmQueue;
+    vm.runInNewContext(snippet, queueEditSandbox);
+    await vmEditBtns[0].onclick();
+    assert.equal(mockTa.value, '带图撤回编辑说明');
+    assert.equal(mockHint.hidden, false, '含附件撤回后必须显示 #attach-hint');
+    assert.ok(mockHint.innerHTML.includes('attach-thumb') && mockHint.innerHTML.includes('inline-shot.png'), '必须渲染恢复后的图片缩略图与文件名');
+    assert.equal(mockBtnSend.disabled, false);
+
+    // 清空文本测试仅图片排队项撤回（editedText === '' 绝不回退填入 '[图片附件]'）
+    mockTa.value = '';
+    await vmEditBtns[1].onclick();
+    assert.equal(mockTa.value, '', '纯图片撤回编辑时输入框不得被填充 [图片附件]');
+    assert.equal(mockBtnSend.disabled, false, '恢复图片附件后即使输入框无文字发送按钮也必须启用');
+
+    // 9e. classifyLanguageServerRpcError 严禁仅因错误正文出现 not_found / deprecated 便误判 HTTP 500 为已确认未执行
+    assert.equal(
+      classifyLanguageServerRpcError(new Error('HTTP 500: {"code":"internal","message":"not_found after write"}'), 'SendUserCascadeMessage').confirmedNotExecuted,
+      false,
+      'HTTP 500 + internal + message 含 not_found 不得判定为确认未执行'
+    );
+    assert.equal(
+      classifyLanguageServerRpcError(new Error('HTTP 500: {"code":"unknown","message":"deprecated feature warning"}'), 'SendAllQueuedMessages').confirmedNotExecuted,
+      false,
+      'message 非精确 deprecated 时不得匹配精确废弃豁免'
+    );
+    assert.equal(
+      classifyLanguageServerRpcError(new Error('HTTP 500: upstream gateway error deprecated not_found')).confirmedNotExecuted,
+      false,
+      '非结构化纯文本 HTTP 500 含关键词不得判定未执行'
+    );
+    assert.equal(
+      classifyLanguageServerRpcError(new Error('HTTP 500: {"code":"unknown","message":"deprecated"}'), 'SendUserCascadeMessage').confirmedNotExecuted,
+      false,
+      'SendAllQueuedMessages 之外的接口报 {"code":"unknown","message":"deprecated"} 不得判定为精确已验证废弃'
+    );
+    assert.equal(
+      classifyLanguageServerRpcError(new Error('HTTP 500: {"code":"unknown","message":"deprecated"}'), 'SendAllQueuedMessages').confirmedNotExecuted,
+      true
+    );
+    assert.equal(
+      classifyLanguageServerRpcError(new Error('HTTP 404: {"code":"not_found","message":"missing cascade"}'), 'SendUserCascadeMessage').confirmedNotExecuted,
+      true
+    );
+    assert.equal(
+      classifyLanguageServerRpcError(new Error('HTTP 501: unimplemented'), 'SendUserCascadeMessage').confirmedNotExecuted,
+      true
+    );
+
+    // 端到端 HTTP 验证：未知 HTTP 500 正文包含 not_found/deprecated 时绝不触发 DOM 补发
+    const domBefore500Words = mediaOpsLog.filter((o) => o.kind === 'dom').length;
+    editCaseScenario = 'unknown_500_words';
+    const rSingle500Words = await postR3Act({
+      action: 'send-queued-messages',
+      conversationId: 'conv-r3',
+      messageId: 'pm-500-word',
+      text: '绝不误补发',
+      sendAll: false
+    });
+    assert.equal(rSingle500Words.ok, false);
+    assert.equal(rSingle500Words.outcomeUnknown, true);
+    const rAll500Words = await postR3Act({
+      action: 'send-queued-messages',
+      conversationId: 'conv-r3',
+      messageIds: ['pm-500-word']
+    });
+    assert.equal(rAll500Words.ok, false);
+    assert.equal(rAll500Words.outcomeUnknown, true);
+    editCaseScenario = 'plain_500_words';
+    const rAllPlain500 = await postR3Act({
+      action: 'send-queued-messages',
+      conversationId: 'conv-r3',
+      messageIds: ['pm-500-word']
+    });
+    assert.equal(rAllPlain500.ok, false);
+    assert.equal(rAllPlain500.outcomeUnknown, true);
+    editCaseScenario = 'method_mismatch_dep';
+    const rSingleMethodDep = await postR3Act({
+      action: 'send-queued-messages',
+      conversationId: 'conv-r3',
+      messageId: 'pm-method-dep',
+      text: '绝不误补发2',
+      sendAll: false
+    });
+    assert.equal(rSingleMethodDep.ok, false);
+    assert.equal(rSingleMethodDep.outcomeUnknown, true);
+    assert.equal(mediaOpsLog.filter((o) => o.kind === 'dom').length, domBefore500Words, '未知 HTTP 500 含关键词与方法不匹配均不得触发任何 DOM 补发');
+
+    // 10. mergeUniqueQueuedLists 优先按稳定 ID 区分同文消息 + 原无 ID 多重集兼容 + enrichMessages 端到端验证
+    // 10a. 后端有 A('同文')，DOM 有同文 A 与 B('同文') → 两者皆保留（绝不遗漏 B）
+    const baseAB = [{ messageId: 'id-A', source: 'agent_state', text: '同一句话', images: [] }];
+    mergeUniqueQueuedLists(baseAB, [
+      { messageId: 'id-A', source: 'dom', domIndex: 0, text: '同一句话', images: [] },
+      { messageId: 'id-B', source: 'dom', domIndex: 1, text: '同一句话', images: [] }
+    ], true);
+    assert.equal(baseAB.length, 2, '后端 A + DOM 同文 A/B 必须保留 B');
+    assert.equal(baseAB[0].domIndex, 0);
+    assert.equal(baseAB[1].messageId, 'id-B');
+    assert.equal(baseAB[1].domIndex, 1);
+
+    // 10b. 乱序验证：后端 A('同文')，DOM 为 [无ID('同文'), A('同文')] → A 消耗自身配额，无ID项保留共 2 条
+    const baseRev = [{ messageId: 'id-A', source: 'agent_state', text: '同一句话', images: [] }];
+    mergeUniqueQueuedLists(baseRev, [
+      { source: 'dom', domIndex: 0, text: '同一句话', images: [] },
+      { messageId: 'id-A', source: 'dom', domIndex: 1, text: '同一句话', images: [] }
+    ], true);
+    assert.equal(baseRev.length, 2, 'DOM 无 ID 同文排在前面时也绝不能抢占 A 的文本计数');
+    assert.equal(baseRev[0].domIndex, 1);
+
+    // 10c. 后端 A('同文') vs DOM 仅不同稳定 ID B('同文') → 按 ID 区分两者均保留
+    const baseDiffId = [{ messageId: 'id-A', source: 'agent_state', text: '同一句话', images: [] }];
+    mergeUniqueQueuedLists(baseDiffId, [
+      { messageId: 'id-B', source: 'dom', domIndex: 0, text: '同一句话', images: [] }
+    ], true);
+    assert.equal(baseDiffId.length, 2, '不同非空 messageId 绝不能按文本互相吞并');
+
+    // 10d. 原无 ID 多重集兼容：[同文, 同文] + [同文, 同文] = 2；[同文] + [同文, 同文] = 2
+    const baseMultiSame = [
+      { stepIndex: 1, source: 'traj', text: '无ID同文', images: [] },
+      { stepIndex: 2, source: 'traj', text: '无ID同文', images: [] }
+    ];
+    mergeUniqueQueuedLists(baseMultiSame, [
+      { source: 'dom', domIndex: 0, text: '无ID同文', images: [] },
+      { source: 'dom', domIndex: 1, text: '无ID同文', images: [] }
+    ], true);
+    assert.equal(baseMultiSame.length, 2, '相同条数无 ID 重复文本应正确 1 对 1 去重');
+    assert.equal(baseMultiSame[0].domIndex, 0);
+    assert.equal(baseMultiSame[1].domIndex, 1);
+
+    const baseMultiExtra = [{ stepIndex: 1, source: 'traj', text: '无ID同文', images: [] }];
+    mergeUniqueQueuedLists(baseMultiExtra, [
+      { source: 'dom', domIndex: 0, text: '无ID同文', images: [] },
+      { source: 'dom', domIndex: 1, text: '无ID同文', images: [] }
+    ], true);
+    assert.equal(baseMultiExtra.length, 2, 'DOM 多出一条同文无 ID 消息时应保留多出的一条');
+
+    // 10e. enrichMessages 端到端验证：StreamAgentStateUpdates 返回 A，DOM 返回同文 A 与 B
+    const mergedEndSnap = await r3HistoryMgr.enrichMessages(
+      {
+        ok: true,
+        sessionId: 'conv-merge-ab',
+        isolated: true,
+        busy: true,
+        messages: [],
+        queuedMessages: [
+          { messageId: 'pm-A', source: 'dom', domIndex: 0, text: '端到端同文', images: [] },
+          { messageId: 'pm-B', source: 'dom', domIndex: 1, text: '端到端同文', images: [] }
+        ]
+      },
+      {
+        localApiConnect: async () => ({
+          call: async () => ({ trajectory: { steps: [] } }),
+          callStreamFirstFrame: async () => ({
+            update: {
+              pendingAgentMessagesUpdate: {
+                pendingAgentMessages: [
+                  { id: 'pm-A', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE', step: { items: [{ text: '端到端同文' }] } }
+                ]
+              }
+            }
+          })
+        })
+      }
+    );
+    assert.equal(mergedEndSnap.queuedMessages.length, 2);
+    assert.deepEqual(
+      mergedEndSnap.queuedMessages.map((x) => ({ id: x.messageId, domIndex: x.domIndex })),
+      [{ id: 'pm-A', domIndex: 0 }, { id: 'pm-B', domIndex: 1 }]
+    );
+  } finally {
+    fs.rmSync(tmpMediaDir, { recursive: true, force: true });
+  }
 });

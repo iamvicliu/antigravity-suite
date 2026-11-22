@@ -1924,18 +1924,64 @@ async function resolveLocalApi(options = {}) {
 }
 
 function classifyLanguageServerRpcError(err, method = '') {
-  const msg = String(err?.message || err || '');
+  const msg = String(err?.message || err || '').trim();
   const code = String(err?.code || '').toUpperCase();
   const isTimeoutOrNet = /timeout|timed?\s*out|abort|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up/i.test(msg)
     || ['ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'ABORT_ERR'].includes(code);
-  const isConfirmedRejected = !isTimeoutOrNet && (
-    err?.confirmedNotExecuted === true
-    || /HTTP\s+(?:400|404|409|412|422|501)\b/i.test(msg)
-    || /\b(?:deprecated|unimplemented|invalid_argument|not_found|failed_precondition)\b/i.test(msg)
+  if (isTimeoutOrNet) {
+    return {
+      ok: false,
+      kind: 'timeout',
+      confirmedNotExecuted: false,
+      error: msg || `${method || 'RPC'} 调用超时`
+    };
+  }
+  if (err?.confirmedNotExecuted === true) {
+    return {
+      ok: false,
+      kind: 'confirmed_not_executed',
+      confirmedNotExecuted: true,
+      error: msg || `${method || 'RPC'} 已确认未执行`
+    };
+  }
+  const httpMatch = msg.match(/^HTTP\s+(\d{3})\s*:\s*([\s\S]*)$/i);
+  const httpStatus = Number(err?.status || err?.statusCode || (httpMatch ? httpMatch[1] : 0)) || 0;
+  const rawBody = String(err?.responseText || (httpMatch ? httpMatch[2] : '') || '').trim();
+  let parsedBody = (err?.rpcError && typeof err.rpcError === 'object') ? err.rpcError : null;
+  if (!parsedBody && rawBody.startsWith('{') && rawBody.endsWith('}')) {
+    try {
+      const obj = JSON.parse(rawBody);
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        parsedBody = obj;
+      }
+    } catch {}
+  }
+  const structCode = String(parsedBody?.code || err?.connectCode || '').trim().toLowerCase();
+  const structMessage = String(parsedBody?.message || '').trim().toLowerCase();
+  const isGatewayErrorStatus = httpStatus === 502 || httpStatus === 503 || httpStatus === 504;
+  const EXPLICIT_HTTP_REJECT_STATUSES = new Set([400, 404, 405, 409, 412, 422, 501]);
+  const EXPLICIT_CONNECT_REJECT_CODES = new Set([
+    'unimplemented',
+    'invalid_argument',
+    'not_found',
+    'failed_precondition',
+    'permission_denied',
+    'unauthenticated'
+  ]);
+  const isExactVerifiedDeprecated = Boolean(
+    parsedBody &&
+    (!method || method === 'SendAllQueuedMessages') &&
+    (structCode === 'unknown' || structCode === 'unimplemented') &&
+    structMessage === 'deprecated'
+  );
+  const isConfirmedRejected = Boolean(
+    EXPLICIT_HTTP_REJECT_STATUSES.has(httpStatus) ||
+    (!isGatewayErrorStatus && EXPLICIT_CONNECT_REJECT_CODES.has(structCode)) ||
+    isExactVerifiedDeprecated
   );
   return {
     ok: false,
-    kind: isTimeoutOrNet ? 'timeout' : (isConfirmedRejected ? 'confirmed_not_executed' : 'error_unknown'),
+    kind: isConfirmedRejected ? 'confirmed_not_executed' : 'error_unknown',
     confirmedNotExecuted: isConfirmedRejected,
     error: msg || `${method || 'RPC'} 调用失败`
   };
@@ -3838,6 +3884,141 @@ function extractTrajectoryUserAttachments(ui) {
   return attachments;
 }
 
+function stripDisplayMediaSuffixFromQueuedText(rawText, hasMedia = true) {
+  const s = String(rawText || '');
+  if (!hasMedia) return s;
+  const trimmed = s.replace(/\r\n?/g, '\n').trim();
+  if (/^(?:\[图片附件\]|\[图片\s*×\d+\])$/.test(trimmed)) return '';
+  return s
+    .replace(/\r\n?/g, '\n')
+    .replace(/(?:\n+)?\[附带\s*\d+\s*张图片\]\s*$/g, '')
+    .replace(/(?:\n+)?\[图片\s*×\d+\]\s*$/g, '')
+    .trim();
+}
+
+function extractRawMediaEntriesFromUserInput(ui) {
+  if (!ui || typeof ui !== 'object') return [];
+  const entries = [];
+  const seen = new Set();
+  const pushRaw = (entry) => {
+    const key = `${entry.kind}|${entry.localPath || entry.rawUri || (entry.inlineRaw ? `inline:${entry.inlineRaw.slice(0, 48)}` : '') || (entry.hasThumbnailOnly ? 'thumb' : entry.name)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push(entry);
+  };
+  const inspectMediaObj = (m, forceImage = false) => {
+    if (!m || typeof m !== 'object') return;
+    const rawUri = String(m.uri || m.fileUri || m.path || m.absoluteUri || '').trim();
+    const localPath = normalizeLocalFileUriToPath(rawUri);
+    const mimeType = String(m.mimeType || m.mime_type || 'image/png').trim() || 'image/png';
+    const inlineRaw = String(m.inlineData || m.inline_data || m.base64Data || m.base64_data || m.data || '').trim();
+    const hasThumbnailOnly = !inlineRaw && Boolean(String(m.thumbnail || '').trim());
+    const isImage = forceImage || /^image\//i.test(mimeType) || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(localPath || String(m.displayName || m.name || ''));
+    const name = String(m.displayName || m.name || (localPath ? path.basename(localPath) : (isImage ? 'image.png' : 'attachment'))).trim();
+    if (!localPath && !rawUri && !inlineRaw && !hasThumbnailOnly) return;
+    pushRaw({
+      kind: isImage ? 'image' : 'file',
+      name,
+      mimeType,
+      localPath,
+      rawUri,
+      inlineRaw,
+      hasThumbnailOnly,
+      isImage
+    });
+  };
+  if (Array.isArray(ui.media)) {
+    for (const m of ui.media) inspectMediaObj(m, false);
+  }
+  if (Array.isArray(ui.images)) {
+    for (const img of ui.images) inspectMediaObj(img, true);
+  }
+  if (Array.isArray(ui.items)) {
+    for (const it of ui.items) {
+      const fileUri = String(it?.item?.file?.absoluteUri || '').trim();
+      if (!fileUri) continue;
+      const localPath = normalizeLocalFileUriToPath(fileUri);
+      const name = localPath ? path.basename(localPath) : safeDecodeURIComponent(fileUri.split('/').pop() || fileUri);
+      const ext = path.extname(name).toLowerCase();
+      const isImage = /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(name);
+      const mimeType = SAFE_MEDIA_MIME_BY_EXT[ext] || (isImage ? 'image/png' : 'application/octet-stream');
+      pushRaw({
+        kind: isImage ? 'image' : 'file',
+        name,
+        mimeType,
+        localPath,
+        rawUri: fileUri,
+        inlineRaw: '',
+        hasThumbnailOnly: false,
+        isImage
+      });
+    }
+  }
+  return entries;
+}
+
+function materializeQueuedAttachmentsForEdit(rawEntries, mediaOptions = {}) {
+  const list = Array.isArray(rawEntries) ? rawEntries : [];
+  if (!list.length) {
+    return { ok: false, attachments: [], error: '未能获取排队消息的原始附件来源' };
+  }
+  const out = [];
+  for (const item of list) {
+    let resolvedBuf = null;
+    let resolvedMime = String(item?.mimeType || 'image/png').split(';')[0].trim() || 'image/png';
+    let resolvedName = String(item?.name || 'attachment').trim() || 'attachment';
+    if (item?.localPath) {
+      const checked = resolveSafeLocalMediaPath(item.localPath, mediaOptions);
+      if (checked.ok) {
+        try {
+          resolvedBuf = fs.readFileSync(checked.realPath);
+          resolvedName = checked.baseName || resolvedName;
+          const cleanContentMime = String(checked.contentType || '').split(';')[0].trim();
+          if (cleanContentMime && cleanContentMime !== 'application/octet-stream') {
+            resolvedMime = cleanContentMime;
+          }
+        } catch {
+          resolvedBuf = null;
+        }
+      }
+    }
+    if (!resolvedBuf && item?.inlineRaw) {
+      const dataMatch = item.inlineRaw.match(/^data:([^;,\s]+);base64,([\s\S]+)$/i);
+      const cleanB64 = (dataMatch ? dataMatch[2] : item.inlineRaw).replace(/\s+/g, '');
+      if (cleanB64 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+        try {
+          const decoded = Buffer.from(cleanB64, 'base64');
+          const maxBytes = Number.isFinite(mediaOptions.maxBytes) ? mediaOptions.maxBytes : LOCAL_MEDIA_MAX_BYTES;
+          if (decoded.length > 0 && decoded.length <= maxBytes) {
+            resolvedBuf = decoded;
+            if (dataMatch?.[1]) resolvedMime = dataMatch[1].toLowerCase();
+          }
+        } catch {}
+      }
+    }
+    if (!resolvedBuf) {
+      return {
+        ok: false,
+        attachments: [],
+        error: item?.hasThumbnailOnly
+          ? '排队媒体仅含缩略图且原始本地文件不可访问，已取消撤回以避免丢失原图'
+          : '无法读取原始排队附件内容，已取消撤回以避免丢失附件'
+      };
+    }
+    const isImage = Boolean(item?.isImage || /^image\//i.test(resolvedMime));
+    const dataUrl = `data:${resolvedMime};base64,${resolvedBuf.toString('base64')}`;
+    out.push({
+      name: resolvedName,
+      mimeType: resolvedMime,
+      base64: dataUrl,
+      size: resolvedBuf.length,
+      isImage,
+      previewUrl: isImage ? dataUrl : ''
+    });
+  }
+  return { ok: true, attachments: out };
+}
+
 function formatTrajectoryUserInput(ui) {
   if (!ui || typeof ui !== 'object') return '';
   const pieces = [];
@@ -4052,7 +4233,7 @@ function decodePendingAgentStepPayload(rawStepPayload) {
   };
 }
 
-function extractPendingAgentMessagesFromUpdate(stateUpdate) {
+function extractPendingAgentMessagesFromUpdate(stateUpdate, options = {}) {
   if (!stateUpdate || typeof stateUpdate !== 'object') return [];
   const rawList =
     stateUpdate?.update?.pendingAgentMessagesUpdate?.pendingAgentMessages ||
@@ -4062,6 +4243,7 @@ function extractPendingAgentMessagesFromUpdate(stateUpdate) {
     [];
   if (!Array.isArray(rawList) || !rawList.length) return [];
 
+  const onRawRecord = typeof options?.onRawRecord === 'function' ? options.onRawRecord : null;
   const out = [];
   const seenIds = new Set();
   for (let i = 0; i < rawList.length; i++) {
@@ -4149,6 +4331,16 @@ function extractPendingAgentMessagesFromUpdate(stateUpdate) {
     if (messageId) {
       if (seenIds.has(messageId)) continue;
       seenIds.add(messageId);
+      if (onRawRecord) {
+        try {
+          onRawRecord({
+            messageId,
+            text,
+            ui,
+            hasMedia
+          });
+        } catch {}
+      }
     }
     out.push({
       ...(messageId ? { id: messageId, messageId } : {}),
@@ -4522,9 +4714,119 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
   return baseList.map((m, idx) => ({ ...m, msgIndex: idx }));
 }
 
+function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
+  if (!Array.isArray(baseList)) return [];
+  if (!Array.isArray(incomingList) || !incomingList.length) return baseList;
+  const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const getQImgCount = (q) => {
+    if (Array.isArray(q?.images)) return q.images.length;
+    if (Array.isArray(q?.attachments)) return q.attachments.length;
+    if (Array.isArray(q?.media)) return q.media.length;
+    return 0;
+  };
+  const getStableId = (q) => String(q?.messageId || '').trim();
+  const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
+
+  const idMap = new Map();
+  for (let i = 0; i < baseList.length; i++) {
+    const bid = getStableId(baseList[i]);
+    if (bid && !idMap.has(bid)) {
+      idMap.set(bid, { item: baseList[i], idx: i });
+    }
+  }
+
+  // 第一轮：优先按稳定 messageId 精确匹配并消耗对应基准项，防止同行额外无 ID/异 ID 项误用其文本配额
+  const matchedBaseIndices = new Set();
+  const handledIncomingIndices = new Set();
+  for (let i = 0; i < incomingList.length; i++) {
+    const iq = incomingList[i];
+    if (!iq || typeof iq !== 'object') {
+      handledIncomingIndices.add(i);
+      continue;
+    }
+    const iqId = getStableId(iq);
+    if (iqId && idMap.has(iqId)) {
+      const hit = idMap.get(iqId);
+      matchedBaseIndices.add(hit.idx);
+      handledIncomingIndices.add(i);
+      if (mergeMeta && Number.isInteger(iq.domIndex)) {
+        hit.item.domIndex = iq.domIndex;
+      }
+    }
+  }
+
+  const unmatchedAnyByKey = new Map();
+  const unmatchedIdlessByKey = new Map();
+  for (let i = 0; i < baseList.length; i++) {
+    if (matchedBaseIndices.has(i)) continue;
+    const bq = baseList[i];
+    if (!bq || typeof bq !== 'object') continue;
+    const k = queueMatchKey(bq);
+    if (!unmatchedAnyByKey.has(k)) unmatchedAnyByKey.set(k, []);
+    unmatchedAnyByKey.get(k).push({ item: bq, idx: i });
+    if (!getStableId(bq)) {
+      if (!unmatchedIdlessByKey.has(k)) unmatchedIdlessByKey.set(k, []);
+      unmatchedIdlessByKey.get(k).push({ item: bq, idx: i });
+    }
+  }
+
+  const takeFirstUnmatched = (poolMap, k) => {
+    const bucket = poolMap.get(k);
+    if (!bucket || !bucket.length) return null;
+    while (bucket.length) {
+      const cand = bucket.shift();
+      if (!matchedBaseIndices.has(cand.idx)) {
+        matchedBaseIndices.add(cand.idx);
+        return cand;
+      }
+    }
+    return null;
+  };
+
+  for (let i = 0; i < incomingList.length; i++) {
+    if (handledIncomingIndices.has(i)) continue;
+    const iq = incomingList[i];
+    const iqId = getStableId(iq);
+    if (iqId && idMap.has(iqId)) {
+      const hit = idMap.get(iqId);
+      if (mergeMeta && Number.isInteger(iq.domIndex) && !Number.isInteger(hit.item.domIndex)) {
+        hit.item.domIndex = iq.domIndex;
+      }
+      continue;
+    }
+    const k = queueMatchKey(iq);
+    if (iqId) {
+      // 携带非空稳定 ID 时，绝不能因文本/图数相同而吞并另一个已有不同稳定 ID 的项；仅可绑定无 ID 项（如 traj 与 Fiber）
+      const idlessHit = takeFirstUnmatched(unmatchedIdlessByKey, k);
+      if (idlessHit) {
+        if (mergeMeta && Number.isInteger(iq.domIndex)) {
+          idlessHit.item.domIndex = iq.domIndex;
+        }
+        idlessHit.item.messageId = iqId;
+        if (!idlessHit.item.id) idlessHit.item.id = iqId;
+        idMap.set(iqId, { item: idlessHit.item, idx: idlessHit.idx });
+        continue;
+      }
+      baseList.push(iq);
+      idMap.set(iqId, { item: iq, idx: baseList.length - 1 });
+      continue;
+    }
+    const anyHit = takeFirstUnmatched(unmatchedAnyByKey, k);
+    if (anyHit) {
+      if (mergeMeta && Number.isInteger(iq.domIndex) && !Number.isInteger(anyHit.item.domIndex)) {
+        anyHit.item.domIndex = iq.domIndex;
+      }
+      continue;
+    }
+    baseList.push(iq);
+  }
+  return baseList;
+}
+
 function createConversationHistoryManager() {
   const cache = new Map();
   const pendingMsgCache = new Map();
+  const pendingRawUiCache = new Map();
   const lastUserConfigMap = new Map();
   const inflightMap = new Map();
   const fetchGenMap = new Map();
@@ -4590,7 +4892,12 @@ function createConversationHistoryManager() {
       ) {
         return Array.isArray(currentCached?.list) ? currentCached.list : [];
       }
-      const list = extractPendingAgentMessagesFromUpdate(firstFrame);
+      const rawMap = new Map();
+      const list = extractPendingAgentMessagesFromUpdate(firstFrame, {
+        onRawRecord: (rec) => {
+          if (rec?.messageId) rawMap.set(rec.messageId, rec);
+        }
+      });
       if (invPendingGen > 0 && reqGen > invPendingGen) {
         pendingInvalidatedGenMap.delete(sid);
       }
@@ -4598,11 +4905,39 @@ function createConversationHistoryManager() {
         const oldest = pendingMsgCache.keys().next().value;
         if (oldest !== undefined) pendingMsgCache.delete(oldest);
       }
+      if (pendingRawUiCache.size >= MAX_CACHE_ENTRIES && !pendingRawUiCache.has(sid)) {
+        const oldestRaw = pendingRawUiCache.keys().next().value;
+        if (oldestRaw !== undefined) pendingRawUiCache.delete(oldestRaw);
+      }
       pendingMsgCache.set(sid, { list, at: Date.now(), gen: reqGen });
+      pendingRawUiCache.set(sid, rawMap);
       return list;
     } catch {
       return null;
     }
+  }
+
+  async function resolvePendingMessageForEdit(sessionId, messageId, options = {}) {
+    const sid = String(sessionId || '').trim();
+    const mid = String(messageId || '').trim();
+    if (!sid || !mid) return null;
+    const cachedRaw = pendingRawUiCache.get(sid)?.get(mid);
+    if (cachedRaw) return cachedRaw;
+    const list = await fetchPendingAgentMessages(sid, { ...options, bypassCache: true }).catch(() => null);
+    const afterFetchRaw = pendingRawUiCache.get(sid)?.get(mid);
+    if (afterFetchRaw) return afterFetchRaw;
+    if (Array.isArray(list)) {
+      const hit = list.find((item) => item && (String(item.messageId || item.id || '').trim() === mid));
+      if (hit) {
+        return {
+          messageId: mid,
+          text: String(hit.text || ''),
+          ui: hit.ui || ((Array.isArray(hit.media) || Array.isArray(hit.images) || Array.isArray(hit.items)) ? hit : null),
+          hasMedia: Boolean(hit.hasMedia || (Array.isArray(hit.media) && hit.media.length) || (Array.isArray(hit.images) && hit.images.length))
+        };
+      }
+    }
+    return null;
   }
 
   function touchCache(sessionId, rec) {
@@ -4865,52 +5200,19 @@ function createConversationHistoryManager() {
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
     const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
     const domQueued = (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []).filter((q) => q && q.source === 'dom');
-    const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
-    const getQImgCount = (q) => {
-      if (Array.isArray(q?.images)) return q.images.length;
-      if (Array.isArray(q?.attachments)) return q.attachments.length;
-      if (Array.isArray(q?.media)) return q.media.length;
-      return 0;
-    };
-    const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
-    const mergeUniqueSourceList = (baseList, incomingList, mergeMeta = false) => {
-      const counts = new Map();
-      for (const bq of baseList) {
-        const k = queueMatchKey(bq);
-        counts.set(k, (counts.get(k) || 0) + 1);
-      }
-      const idMap = new Map();
-      for (const bq of baseList) {
-        if (bq?.messageId) idMap.set(String(bq.messageId), bq);
-      }
-      for (const iq of incomingList) {
-        const iqId = String(iq?.messageId || '');
-        if (iqId && idMap.has(iqId)) {
-          if (mergeMeta && Number.isInteger(iq.domIndex)) idMap.get(iqId).domIndex = iq.domIndex;
-          continue;
-        }
-        const k = queueMatchKey(iq);
-        const rem = counts.get(k) || 0;
-        if (rem > 0) {
-          counts.set(k, rem - 1);
-          continue;
-        }
-        baseList.push(iq);
-      }
-    };
     let effQueued;
     if (Array.isArray(pendingAgentQueued)) {
       const mergedQ = [...pendingAgentQueued];
       if (Array.isArray(queuedMessages) && queuedMessages.length) {
-        mergeUniqueSourceList(mergedQ, queuedMessages, false);
+        mergeUniqueQueuedLists(mergedQ, queuedMessages, false);
       }
       if (domQueued.length) {
-        mergeUniqueSourceList(mergedQ, domQueued, true);
+        mergeUniqueQueuedLists(mergedQ, domQueued, true);
       }
       effQueued = mergedQ;
     } else if (Array.isArray(queuedMessages)) {
       const mergedQ = [...queuedMessages];
-      mergeUniqueSourceList(mergedQ, domQueued, true);
+      mergeUniqueQueuedLists(mergedQ, domQueued, true);
       effQueued = mergedQ;
     } else {
       effQueued = Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : [];
@@ -4931,6 +5233,7 @@ function createConversationHistoryManager() {
     if (!sid) return;
     cache.delete(sid);
     pendingMsgCache.delete(sid);
+    pendingRawUiCache.delete(sid);
     const invPendingGen = nextPendingGen(sid);
     pendingInvalidatedGenMap.set(sid, invPendingGen);
     const invGen = nextFetchGen(sid);
@@ -4988,7 +5291,14 @@ function createConversationHistoryManager() {
     };
   }
 
-  return { enrichMessages, getMessagesPage, warmSession, invalidateSession, getCachedUserConfig };
+  return {
+    enrichMessages,
+    getMessagesPage,
+    warmSession,
+    invalidateSession,
+    getCachedUserConfig,
+    resolvePendingMessageForEdit
+  };
 }
 
 const defaultHistoryManager = createConversationHistoryManager();
@@ -9150,7 +9460,11 @@ function buildMobileAppHtml() {
                 ...(msgId ? { messageId: msgId } : {}),
                 ...(text ? { text } : {}),
                 ...(hasMedia ? { hasMedia: true } : {}),
-                ...(src === 'dom' ? { source: 'dom', domIndex: Number.isInteger(domIdx) ? domIdx : 0 } : {}),
+                ...(src === 'dom' ? {
+                  source: 'dom',
+                  domIndex: Number.isInteger(domIdx) ? domIdx : 0,
+                  ...(isDomQueuedList ? { expectedQueueCount: queuedList.length } : {})
+                } : {}),
                 ...(src !== 'dom' && Number.isInteger(stepIdx) && stepIdx >= 0 ? { stepIndex: stepIdx } : {}),
                 ...extra
               };
@@ -9215,7 +9529,29 @@ function buildMobileAppHtml() {
                 try {
                   const res = await apiAction(buildQueueItemPayload(editBtn, { action: 'edit-queued-message' }));
                   if (res?.ok) {
-                    const fillVal = String(res?.actionResult?.editedText || qText || '');
+                    const restoredAtts = Array.isArray(res?.actionResult?.editedAttachments)
+                      ? res.actionResult.editedAttachments
+                      : [];
+                    for (const att of restoredAtts) {
+                      if (!att || typeof att !== 'object') continue;
+                      const rawPrev = String(att.previewUrl || '');
+                      const safePrev = rawPrev.startsWith('/api/media?')
+                        ? ((apiBase || '') + rawPrev + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : ''))
+                        : rawPrev;
+                      const attName = String(att.name || (att.isImage ? 'image.png' : 'attachment'));
+                      uploadedNames.push(attName);
+                      uploadedAttachments.push({
+                        name: attName,
+                        size: Number(att.size) || 0,
+                        isImage: Boolean(att.isImage),
+                        previewUrl: safePrev
+                      });
+                    }
+                    if (restoredAtts.length) {
+                      renderAttachHintStrip();
+                    }
+                    const hasServerText = Boolean(res?.actionResult && typeof res.actionResult.editedText === 'string');
+                    const fillVal = hasServerText ? res.actionResult.editedText : qText;
                     if (fillVal) {
                       ta.value = ta.value.trim() ? (ta.value.trimEnd() + '\\n' + fillVal) : fillVal;
                       saveDraftForConv(selectedConversationId, ta.value);
@@ -9223,8 +9559,13 @@ function buildMobileAppHtml() {
                       const maxH = isDesktopLayout() ? 180 : 112;
                       ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
                       ta.focus();
+                    } else if (restoredAtts.length) {
+                      ta.focus();
                     }
-                    showToast('已撤回至输入框，修改后重新发送');
+                    syncSendButtonUI();
+                    showToast(restoredAtts.length
+                      ? ('已撤回至输入区（含 ' + restoredAtts.length + ' 个附件），修改后重新发送')
+                      : '已撤回至输入框，修改后重新发送');
                   } else showToast(res?.error || res?.actionResult?.error || '编辑排队消息失败');
                 } catch (e) {
                   showToast(e?.message || '编辑排队消息失败');
@@ -13065,6 +13406,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const fetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
   const performAction = typeof options.performAction === 'function' ? options.performAction : performActionInTarget;
   const callLsRpc = typeof options.callLanguageServer === 'function' ? options.callLanguageServer : callLocalLanguageServer;
+  const historyManager = options.historyManager || defaultHistoryManager;
   const rpcTimeoutMs = Number(options.rpcTimeoutMs) > 0 ? Number(options.rpcTimeoutMs) : 4500;
   const callLsRpcDetailed = async (method, body, timeoutMs = rpcTimeoutMs, callOpts = {}) => {
     if (typeof options.callLanguageServer === 'function') {
@@ -14144,13 +14486,108 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           let usedDomFallback = false;
           let deduplicatedRetry = false;
           let editedText = String(payload?.text || '');
+          let editedAttachments = [];
+          const hasMediaMarkerText = (s) => /\[(?:附带\s*\d+\s*张图片|图片附件|图片\s*×\d+)\]/.test(String(s || ''));
           const stripMediaMarkerForMatch = (s) => String(s || '')
             .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
             .trim();
+          const rollbackRestoredDesktopAttachments = async (uploadedList) => {
+            if (!Array.isArray(uploadedList) || !uploadedList.length) return;
+            for (let ri = uploadedList.length - 1; ri >= 0; ri -= 1) {
+              const u = uploadedList[ri];
+              await performAction({
+                action: 'remove-uploaded-attachment',
+                clientId,
+                targetId: effectiveTargetId || undefined,
+                conversationId: cascadeId,
+                name: u.name
+              }).catch(() => null);
+            }
+          };
+          const restoreAttachmentsToDesktopBeforeDelete = async (attachmentsToRestore) => {
+            if (!Array.isArray(attachmentsToRestore) || !attachmentsToRestore.length) {
+              return { ok: false, uploaded: [], error: '缺少可恢复的附件数据' };
+            }
+            const uploaded = [];
+            for (const att of attachmentsToRestore) {
+              let upRes = null;
+              try {
+                upRes = await performAction({
+                  action: 'upload-image',
+                  clientId,
+                  targetId: effectiveTargetId || undefined,
+                  conversationId: cascadeId,
+                  name: att.name,
+                  mimeType: att.mimeType,
+                  base64: att.base64
+                });
+              } catch (err) {
+                upRes = { ok: false, error: err?.message || '上传附件到桌面端失败' };
+              }
+              if (!upRes || upRes.ok === false || upRes.actionResult?.ok === false) {
+                await rollbackRestoredDesktopAttachments(uploaded);
+                return {
+                  ok: false,
+                  uploaded: [],
+                  error: upRes?.error || upRes?.actionResult?.error || '恢复附件至桌面输入区失败，已取消删除原排队消息'
+                };
+              }
+              uploaded.push(att);
+            }
+            return { ok: true, uploaded };
+          };
+          const restoreMediaAndDeleteQueued = async ({ rawUi, fallbackText, deleteMethod, deleteBody, dispatchKey }) => {
+            const rawEntries = extractRawMediaEntriesFromUserInput(rawUi);
+            const mat = materializeQueuedAttachmentsForEdit(rawEntries, options.mediaOptions || {});
+            if (!mat.ok || !mat.attachments.length) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  mediaRecoveryUnavailable: true,
+                  error: mat.error || '该排队消息包含媒体附件，当前无法完整恢复附件数据，已取消撤回以避免丢失附件'
+                }
+              };
+            }
+            const restored = await restoreAttachmentsToDesktopBeforeDelete(mat.attachments);
+            if (!restored.ok) {
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  mediaRecoveryUnavailable: true,
+                  error: restored.error || '恢复附件至桌面输入区失败，已取消撤回以避免丢失附件'
+                }
+              };
+            }
+            const delOutcome = await callLsRpc(deleteMethod, deleteBody, rpcTimeoutMs);
+            if (delOutcome === null || delOutcome === false) {
+              await rollbackRestoredDesktopAttachments(restored.uploaded);
+              return {
+                ok: false,
+                errorPayload: {
+                  ok: false,
+                  error: '本机 LanguageServer 队列删除调用失败或超时，已回滚恢复附件并保留原排队消息'
+                }
+              };
+            }
+            if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
+            editedText = stripDisplayMediaSuffixFromQueuedText(fallbackText, true);
+            editedAttachments = mat.attachments.map(({ name, mimeType, size, isImage, previewUrl }) => ({
+              name,
+              mimeType,
+              size,
+              isImage,
+              previewUrl
+            }));
+            return { ok: true, rpcRes: delOutcome };
+          };
           const runQueuedDomFallback = async (domAct, sendAllFlag, overrides = {}) => {
             const rawIdx = overrides.domIndex !== undefined ? overrides.domIndex : payload?.domIndex;
             const hasExplicitIdx = rawIdx !== undefined && rawIdx !== null && rawIdx !== '' && Number.isInteger(Number(rawIdx));
             const resolvedDomIdx = hasExplicitIdx ? Number(rawIdx) : undefined;
+            const rawExpCount = overrides.expectedQueueCount !== undefined ? overrides.expectedQueueCount : payload?.expectedQueueCount;
+            const hasExpCount = rawExpCount !== undefined && rawExpCount !== null && rawExpCount !== '' && Number.isInteger(Number(rawExpCount)) && Number(rawExpCount) > 0;
             const resolvedText = overrides.text !== undefined ? String(overrides.text) : editedText;
             let domRes = null;
             try {
@@ -14161,9 +14598,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 conversationId: cascadeId,
                 ...(messageId ? { messageId } : {}),
                 ...(resolvedDomIdx !== undefined && resolvedDomIdx >= 0 ? { domIndex: resolvedDomIdx } : {}),
-                ...(Number.isInteger(Number(overrides.expectedQueueCount)) && Number(overrides.expectedQueueCount) > 0
-                  ? { expectedQueueCount: Number(overrides.expectedQueueCount) }
-                  : {}),
+                ...(hasExpCount ? { expectedQueueCount: Number(rawExpCount) } : {}),
+                ...(payload?.hasMedia ? { hasMedia: true } : {}),
                 sendAll: sendAllFlag,
                 text: resolvedText
               });
@@ -14172,10 +14608,19 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               return false;
             }
             if (!domRes?.ok) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domRes?.error || domRes?.actionResult?.error || '桌面端队列操作失败' }));
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                ...(domRes?.mediaRecoveryUnavailable || domRes?.actionResult?.mediaRecoveryUnavailable ? { mediaRecoveryUnavailable: true } : {}),
+                error: domRes?.error || domRes?.actionResult?.error || '桌面端队列操作失败'
+              }));
               return false;
             }
-            if (domRes?.actionResult?.editedText) editedText = String(domRes.actionResult.editedText);
+            if (typeof domRes?.actionResult?.editedText === 'string') {
+              editedText = domRes.actionResult.editedText;
+            }
+            if (Array.isArray(domRes?.actionResult?.editedAttachments)) {
+              editedAttachments = domRes.actionResult.editedAttachments;
+            }
             usedDomFallback = true;
             return true;
           };
@@ -14259,10 +14704,43 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           };
           if (messageId) {
             const dispatchKey = `${cascadeId}::msg:${messageId}`;
-            if (actionName === 'delete-queued-message' || actionName === 'edit-queued-message') {
+            if (actionName === 'delete-queued-message') {
               rpcRes = await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, rpcTimeoutMs);
               if (rpcRes !== null && rpcRes !== false) {
                 dispatchedQueueDeletes.delete(dispatchKey);
+              }
+            } else if (actionName === 'edit-queued-message') {
+              const pendingRec = await historyManager.resolvePendingMessageForEdit(cascadeId, messageId, {
+                localApiConnect: options.localApiConnect,
+                fetchPendingAgentMessages: options.fetchPendingAgentMessages
+              }).catch(() => null);
+              const rawEntriesFromRec = pendingRec?.ui ? extractRawMediaEntriesFromUserInput(pendingRec.ui) : [];
+              const baseEditText = String(pendingRec?.text || editedText || '');
+              const itemHasMedia = Boolean(
+                payload?.hasMedia ||
+                pendingRec?.hasMedia ||
+                rawEntriesFromRec.length > 0 ||
+                hasMediaMarkerText(baseEditText)
+              );
+              if (itemHasMedia) {
+                const recovered = await restoreMediaAndDeleteQueued({
+                  rawUi: pendingRec?.ui || null,
+                  fallbackText: baseEditText,
+                  deleteMethod: 'DeleteAgentMessage',
+                  deleteBody: { messageId, recipient: cascadeId },
+                  dispatchKey
+                });
+                if (!recovered.ok) {
+                  sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recovered.errorPayload));
+                  return;
+                }
+                rpcRes = recovered.rpcRes;
+              } else {
+                editedText = baseEditText;
+                rpcRes = await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, rpcTimeoutMs);
+                if (rpcRes !== null && rpcRes !== false) {
+                  dispatchedQueueDeletes.delete(dispatchKey);
+                }
               }
             } else {
               const outcome = await sendSingleQueuedWithCheckedDelete({
@@ -14297,7 +14775,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               : (actionName === 'edit-queued-message' ? 'edit-queued-dom' : 'send-queued-dom');
             const okDom = await runQueuedDomFallback(domAct, actionName === 'send-queued-messages' ? (payload?.sendAll !== false) : undefined);
             if (!okDom) return;
-          } else if (actionName === 'delete-queued-message' || actionName === 'edit-queued-message') {
+          } else if (actionName === 'delete-queued-message') {
             const rawStep = payload?.stepIndex;
             const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
               || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
@@ -14309,6 +14787,70 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, rpcTimeoutMs);
             if (rpcRes !== null && rpcRes !== false) {
               dispatchedQueueDeletes.delete(`${cascadeId}::step:${stepIndex}`);
+            }
+          } else if (actionName === 'edit-queued-message') {
+            const rawStep = payload?.stepIndex;
+            const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
+              || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
+            const stepIndex = isValidStep ? Number(rawStep) : -1;
+            if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队标识 messageId 或 stepIndex' }));
+              return;
+            }
+            const dispatchKey = `${cascadeId}::step:${stepIndex}`;
+            const trajOutcome = await callLsRpcDetailed('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 3 }, rpcTimeoutMs, { idempotent: true });
+            const trajSteps = trajOutcome.ok ? trajOutcome.result?.trajectory?.steps : null;
+            if (!trajOutcome.ok || !Array.isArray(trajSteps)) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                error: '无法验证目标排队步骤状态，已取消编辑以防误删'
+              }));
+              return;
+            }
+            const trajContainer = trajOutcome.result?.trajectory || trajOutcome.result;
+            const qList = extractQueuedMessagesFromTrajectorySteps(trajSteps, trajContainer);
+            const matchedQ = qList.find((q) => q && q.stepIndex === stepIndex) || null;
+            const extraList = Array.isArray(trajContainer?.queuedSteps)
+              ? trajContainer.queuedSteps
+              : (Array.isArray(trajContainer?.queued_steps) ? trajContainer.queued_steps : []);
+            const directExtraStep = extraList.find((qs) => qs && Number(qs.stepIndex ?? qs.step_index) === stepIndex) || null;
+            const directQueuedStep = isQueuedTrajectoryUserStep(trajSteps[stepIndex]) ? trajSteps[stepIndex] : null;
+            if (!matchedQ && !directQueuedStep && !directExtraStep) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                error: '目标步骤已不在排队中，已取消编辑'
+              }));
+              return;
+            }
+            const targetUi = directQueuedStep?.userInput || directExtraStep?.userInput || directExtraStep?.user_input || directExtraStep || null;
+            const baseEditText = targetUi ? formatTrajectoryUserInput(targetUi) : String(matchedQ?.text || editedText || '');
+            const rawEntriesFromStep = extractRawMediaEntriesFromUserInput(targetUi);
+            const itemHasMedia = Boolean(
+              payload?.hasMedia ||
+              matchedQ?.hasMedia ||
+              (Array.isArray(matchedQ?.images) && matchedQ.images.length > 0) ||
+              rawEntriesFromStep.length > 0 ||
+              hasMediaMarkerText(baseEditText)
+            );
+            if (itemHasMedia) {
+              const recovered = await restoreMediaAndDeleteQueued({
+                rawUi: targetUi,
+                fallbackText: baseEditText,
+                deleteMethod: 'DeleteQueuedUserInputStep',
+                deleteBody: { cascadeId, stepIndex },
+                dispatchKey
+              });
+              if (!recovered.ok) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(recovered.errorPayload));
+                return;
+              }
+              rpcRes = recovered.rpcRes;
+            } else {
+              if (baseEditText) editedText = baseEditText;
+              rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, rpcTimeoutMs);
+              if (rpcRes !== null && rpcRes !== false) {
+                dispatchedQueueDeletes.delete(dispatchKey);
+              }
             }
           } else if (actionName === 'send-queued-messages' && payload?.sendAll === false) {
             const rawStep = payload?.stepIndex;
@@ -14452,6 +14994,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               cascadeId,
               ...(deduplicatedRetry ? { deduplicatedRetry: true } : {}),
               ...(actionName === 'edit-queued-message' ? { editedText } : {}),
+              ...(actionName === 'edit-queued-message' && editedAttachments.length ? { editedAttachments } : {}),
               ...(hasRemainingDomQueued ? { hasRemainingDomQueued: true } : {})
             },
             snapshot: enriched
@@ -15441,6 +15984,11 @@ module.exports = {
   extractQueuedMessagesFromTrajectorySteps,
   extractPendingAgentMessagesFromUpdate,
   extractTrajectoryUserAttachments,
+  extractRawMediaEntriesFromUserInput,
+  materializeQueuedAttachmentsForEdit,
+  stripDisplayMediaSuffixFromQueuedText,
+  classifyLanguageServerRpcError,
+  mergeUniqueQueuedLists,
   collapseConsecutiveDomThinking,
   mergeTrajectoryAndDomMessages,
   resolveProductionMediaAllowedRoots,
