@@ -9836,6 +9836,17 @@ function buildMobileAppHtml() {
                     const restoredAtts = Array.isArray(res?.actionResult?.editedAttachments)
                       ? res.actionResult.editedAttachments
                       : [];
+                    const restoreSourceKey = msgId
+                      ? ('msg:' + msgId)
+                      : (Number.isInteger(stepIdx) && stepIdx >= 0 ? ('step:' + stepIdx) : '');
+                    if (restoreSourceKey && restoredAtts.length) {
+                      for (let ri = uploadedAttachments.length - 1; ri >= 0; ri -= 1) {
+                        if (uploadedAttachments[ri] && uploadedAttachments[ri]._sourceKey === restoreSourceKey) {
+                          uploadedAttachments.splice(ri, 1);
+                          uploadedNames.splice(ri, 1);
+                        }
+                      }
+                    }
                     for (const att of restoredAtts) {
                       if (!att || typeof att !== 'object') continue;
                       const rawPrev = String(att.previewUrl || '');
@@ -9848,7 +9859,8 @@ function buildMobileAppHtml() {
                         name: attName,
                         size: Number(att.size) || 0,
                         isImage: Boolean(att.isImage),
-                        previewUrl: safePrev
+                        previewUrl: safePrev,
+                        ...(restoreSourceKey ? { _sourceKey: restoreSourceKey } : {})
                       });
                     }
                     if (restoredAtts.length) {
@@ -13867,6 +13879,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const dispatchedQueueDeletes = new Map();
   const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
   const stagedEditUploadsByKey = new Map();
+  let nextStagedUploadId = 1;
   const STAGED_EDIT_UPLOADS_TTL_MS = 30 * 60 * 1000;
   const MAX_STAGED_EDIT_UPLOADS_PER_CONV = 10;
   const makeStagedUploadKey = (cidClient, convId) => `${String(cidClient || '__default__').trim() || '__default__'}::${String(convId || '').trim()}`;
@@ -13883,16 +13896,39 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const rec = stagedEditUploadsByKey.get(key);
     return rec && Array.isArray(rec.items) ? rec.items.slice() : [];
   };
-  const appendStagedEditUploads = (key, items) => {
+  const appendStagedEditUploads = (key, items, opts = {}) => {
     if (!key || !Array.isArray(items) || !items.length) return;
     pruneStagedEditUploads();
-    const existing = stagedEditUploadsByKey.get(key)?.items || [];
-    const next = existing.concat(items);
+    const sourceKey = String(opts?.sourceKey || '').trim();
+    const existingRaw = stagedEditUploadsByKey.get(key)?.items || [];
+    const existing = sourceKey
+      ? existingRaw.filter((x) => String(x?._sourceKey || '') !== sourceKey)
+      : existingRaw;
+    const taggedItems = items.map((item) => ({
+      ...item,
+      _stagingId: String(nextStagedUploadId++),
+      ...(sourceKey ? { _sourceKey: sourceKey } : {})
+    }));
+    const next = existing.concat(taggedItems);
     if (stagedEditUploadsByKey.size >= 100 && !stagedEditUploadsByKey.has(key)) {
       const oldest = stagedEditUploadsByKey.keys().next().value;
       if (oldest !== undefined) stagedEditUploadsByKey.delete(oldest);
     }
     stagedEditUploadsByKey.set(key, { at: Date.now(), items: next });
+  };
+  const consumeStagedEditUploads = (key, stagingIds) => {
+    if (!key || !Array.isArray(stagingIds) || !stagingIds.length) return 0;
+    pruneStagedEditUploads();
+    const rec = stagedEditUploadsByKey.get(key);
+    if (!rec || !Array.isArray(rec.items) || !rec.items.length) return 0;
+    const idSet = new Set(stagingIds.map((id) => String(id || '')).filter(Boolean));
+    if (!idSet.size) return 0;
+    const before = rec.items.length;
+    rec.items = rec.items.filter((x) => !idSet.has(String(x?._stagingId || '')));
+    const removed = before - rec.items.length;
+    if (!rec.items.length) stagedEditUploadsByKey.delete(key);
+    else rec.at = Date.now();
+    return removed;
   };
   const removeStagedEditUpload = (key, opts = {}) => {
     pruneStagedEditUploads();
@@ -15000,8 +15036,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 }
               };
             }
-            const existingStagedCount = getStagedEditUploads(stageKey).length;
-            if (existingStagedCount + mat.attachments.length > MAX_STAGED_EDIT_UPLOADS_PER_CONV) {
+            const sourceKey = String(dispatchKey || '').trim();
+            const existingOtherCount = getStagedEditUploads(stageKey).filter((x) => !sourceKey || String(x?._sourceKey || '') !== sourceKey).length;
+            if (existingOtherCount + mat.attachments.length > MAX_STAGED_EDIT_UPLOADS_PER_CONV) {
               return {
                 ok: false,
                 errorPayload: {
@@ -15029,7 +15066,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }));
             const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
             if (delOutcome.ok) {
-              appendStagedEditUploads(stageKey, stageableItems);
+              appendStagedEditUploads(stageKey, stageableItems, { sourceKey });
               if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
               editedText = cleanRestoredText;
               editedAttachments = clientAttsMeta;
@@ -15049,7 +15086,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               ? await verifyOriginalStillQueued().catch(() => null)
               : null;
             if (stillQueued === false) {
-              appendStagedEditUploads(stageKey, stageableItems);
+              appendStagedEditUploads(stageKey, stageableItems, { sourceKey });
               if (dispatchKey) dispatchedQueueDeletes.delete(dispatchKey);
               editedText = cleanRestoredText;
               editedAttachments = clientAttsMeta;
@@ -15065,7 +15102,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               };
             }
             // 核验亦不可得：保留暂存附件并回传前端，绝不因盲目回滚造成附件丢失
-            appendStagedEditUploads(stageKey, stageableItems);
+            appendStagedEditUploads(stageKey, stageableItems, { sourceKey });
             editedText = cleanRestoredText;
             editedAttachments = clientAttsMeta;
             return {
@@ -15127,7 +15164,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               editedAttachments = domRes.actionResult.editedAttachments;
             }
             if (Array.isArray(domRes?.actionResult?.stageableAttachments) && domRes.actionResult.stageableAttachments.length) {
-              appendStagedEditUploads(stageKey, domRes.actionResult.stageableAttachments);
+              const domSourceKey = messageId ? `${cascadeId}::msg:${messageId}` : '';
+              appendStagedEditUploads(stageKey, domRes.actionResult.stageableAttachments, domSourceKey ? { sourceKey: domSourceKey } : {});
             }
             usedDomFallback = true;
             return true;
@@ -15916,7 +15954,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           });
           if (actionName === 'send' && result?.ok !== false) {
             if (existingConvStageKey && stagedUploadsForSend.length) {
-              stagedEditUploadsByKey.delete(existingConvStageKey);
+              consumeStagedEditUploads(
+                existingConvStageKey,
+                stagedUploadsForSend.map((x) => x?._stagingId).filter(Boolean)
+              );
             }
             const sentSid = String(
               result?.snapshot?.activeConversationId ||
