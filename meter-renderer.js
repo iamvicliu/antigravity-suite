@@ -12855,6 +12855,8 @@ function positionHeatPopover(anchorX, anchorY) {
     tunnelConfigOpen: false,
     draftHost: null,
     draftToken: '',
+    tsConfigOpen: false,
+    draftTsHost: null,
     installPlatform: '',
     installCopiedAt: 0,
     installCopyTimer: null,
@@ -14866,8 +14868,9 @@ function positionHeatPopover(anchorX, anchorY) {
             label: 'Tailscale',
             labelEn: 'Tailscale',
             enabled: data.enabledChannels?.tailscale !== false,
-            available: (data.enabledChannels?.tailscale !== false) && tsList.length > 0,
-            displayHost: data.tailscaleDnsName || rawHost(tsList[0]?.url)
+            available: (data.enabledChannels?.tailscale !== false) && (tsList.length > 0 || Boolean(data.tailscaleCustomHost)),
+            displayHost: data.tailscaleDnsName || data.tailscaleCustomHost || rawHost(tsList[0]?.url),
+            customHost: data.tailscaleCustomHost || ''
           },
           {
             key: 'bonjour',
@@ -14997,6 +15000,24 @@ function positionHeatPopover(anchorX, anchorY) {
           </div>
         `;
       }
+      if (ch.key === 'tailscale') {
+        const checked = ch.enabled !== false;
+        const customTsHost = String(ch.customHost ?? data?.tailscaleCustomHost ?? '').trim();
+        const tsCfgLabel = customTsHost ? suiteTr('已自定义 ▾', 'Custom · ▾') : suiteTr('自定义节点 ▾', 'Custom ▾');
+        const addrHint = checked
+          ? (ch.displayHost || (ch.available ? '' : suiteTr('当前网络不可用', 'Unavailable')))
+          : suiteTr('已停用 · 点击重新启用', 'Disabled · Click to enable');
+        return `
+          <div id="ag-rp-toggle-tailscale" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tailscale" data-active="${activeKey === 'tailscale' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
+            <span class="ag-rp-ch-check">
+              <span aria-hidden="true">${checked ? '☑' : '☐'}</span>
+              <span class="ag-rp-ch-name">${escapeSuiteHtml(label)}</span>
+              <span class="ag-rp-ch-addr">${escapeSuiteHtml(addrHint)}</span>
+            </span>
+            <button id="ag-rp-ts-cfg-btn" class="ag-rp-ch-cfg" type="button" title="${escapeSuiteHtml(suiteTr('填写 Loon 等代理内置 Tailscale 节点地址（IP 或 .ts.net 域名）', 'Configure custom Tailscale host for proxy built-in Tailscale'))}">${escapeSuiteHtml(tsCfgLabel)}</button>
+          </div>
+        `;
+      }
       const checked = ch.enabled !== false;
       const addrHint = checked
         ? (ch.displayHost || (ch.available ? '' : suiteTr('当前网络不可用', 'Unavailable')))
@@ -15011,6 +15032,28 @@ function positionHeatPopover(anchorX, anchorY) {
         </button>
       `;
     }).join('')}</div>`;
+
+    const customTsHostSaved = String(tailscaleCh?.customHost ?? data?.tailscaleCustomHost ?? '').trim();
+    const tsHostDraft = remoteSettingsState.draftTsHost !== null
+      ? remoteSettingsState.draftTsHost
+      : customTsHostSaved;
+    const tsFormHtml = remoteSettingsState.tsConfigOpen ? `
+      <div id="ag-rp-ts-form" class="ag-rp-tunnel-form">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+          <span>${escapeSuiteHtml(suiteTr('自定义 Tailscale 节点（代理内置 Tailscale 用）', 'Custom Tailscale Node (Proxy Built-in)'))}</span>
+        </div>
+        <div class="ag-rp-tunnel-sub">${escapeSuiteHtml(suiteTr('仅用 Loon 等代理内置 Tailscale（未开独立版客户端）时，可填写本机在 Tailscale 中的地址，并确保代理已开启允许入站。', 'When using proxy built-in Tailscale (e.g. Loon without standalone Tailscale), enter this device’s Tailscale host and enable inbound connections in the proxy.'))}</div>
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span>${escapeSuiteHtml(suiteTr('Tailscale IP 或 MagicDNS 域名（例: 100.x.y.z 或 node.tailxxxx.ts.net）', 'Tailscale IP or MagicDNS Host (e.g. 100.x.y.z or node.tailxxxx.ts.net)'))}</span>
+          <input id="ag-rp-ts-host" class="ag-rp-input" type="text" placeholder="my-mac.tailxxxx.ts.net" value="${escapeSuiteHtml(tsHostDraft)}" />
+        </label>
+        <div class="ag-rp-form-actions">
+          <button id="ag-rp-ts-save" class="ag-rp-btn primary" type="button" ${busyAny ? 'disabled' : ''}>${escapeSuiteHtml(suiteTr('保存', 'Save'))}</button>
+          ${customTsHostSaved ? `<button id="ag-rp-ts-clear" class="ag-rp-btn" type="button" ${busyAny ? 'disabled' : ''}>${escapeSuiteHtml(suiteTr('清除', 'Clear'))}</button>` : ''}
+          <button id="ag-rp-ts-cancel" class="ag-rp-btn" type="button">${escapeSuiteHtml(suiteTr('取消', 'Cancel'))}</button>
+        </div>
+      </div>
+    ` : '';
 
     const tunnelHostDraft = remoteSettingsState.draftHost !== null
       ? remoteSettingsState.draftHost
@@ -15108,9 +15151,9 @@ function positionHeatPopover(anchorX, anchorY) {
     const errMsg = tunnelCh?.error || remoteSettingsState.error || '';
     const errHtml = errMsg ? `<div class="ag-rp-err">${escapeSuiteHtml(errMsg)}</div>` : '';
 
-    root.innerHTML = `${channelsHtml}${tsHintHtml}${quickTunnelHintHtml}${formHtml}${installGuideHtml}${errHtml}`;
+    root.innerHTML = `${channelsHtml}${tsHintHtml}${quickTunnelHintHtml}${tsFormHtml}${formHtml}${installGuideHtml}${errHtml}`;
 
-    channels.filter(c => c.key !== 'tunnel').forEach(ch => {
+    channels.filter(c => c.key !== 'tunnel' && c.key !== 'tailscale').forEach(ch => {
       const btn = root.querySelector(`#ag-rp-toggle-${ch.key}`);
       btn?.addEventListener('click', ev => {
         ev.stopPropagation();
@@ -15118,6 +15161,56 @@ function positionHeatPopover(anchorX, anchorY) {
         const nextOn = ch.enabled === false;
         void configureRemoteSettings({ enabledChannels: { [ch.key]: nextOn } });
       });
+    });
+
+    const tsToggleRow = root.querySelector('#ag-rp-toggle-tailscale');
+    const tsCfgBtn = root.querySelector('#ag-rp-ts-cfg-btn');
+    tsCfgBtn?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.tsConfigOpen = !remoteSettingsState.tsConfigOpen;
+      remoteSettingsState.error = '';
+      renderRemoteSettingsChannels();
+    });
+    const onTsRowToggle = ev => {
+      if (ev.target && tsCfgBtn && (ev.target === tsCfgBtn || tsCfgBtn.contains?.(ev.target))) return;
+      ev.stopPropagation();
+      if (remoteSettingsState.busy) return;
+      const nextOn = tailscaleCh?.enabled === false;
+      void configureRemoteSettings({ enabledChannels: { tailscale: nextOn } });
+    };
+    tsToggleRow?.addEventListener('click', onTsRowToggle);
+    tsToggleRow?.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        onTsRowToggle(ev);
+      }
+    });
+
+    const tsHostInput = root.querySelector('#ag-rp-ts-host');
+    tsHostInput?.addEventListener('input', ev => {
+      remoteSettingsState.draftTsHost = String(ev?.target?.value ?? tsHostInput.value ?? '');
+    });
+    root.querySelector('#ag-rp-ts-save')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const rawHost = String(tsHostInput?.value ?? remoteSettingsState.draftTsHost ?? '').trim();
+      remoteSettingsState.draftTsHost = rawHost;
+      if (!rawHost) {
+        void configureRemoteSettings({ tailscaleCustomHost: '' });
+        return;
+      }
+      void configureRemoteSettings({ tailscaleCustomHost: rawHost, enabledChannels: { tailscale: true } });
+    });
+    root.querySelector('#ag-rp-ts-clear')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.draftTsHost = '';
+      void configureRemoteSettings({ tailscaleCustomHost: '' });
+    });
+    root.querySelector('#ag-rp-ts-cancel')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      remoteSettingsState.tsConfigOpen = false;
+      remoteSettingsState.draftTsHost = null;
+      remoteSettingsState.error = '';
+      renderRemoteSettingsChannels();
     });
 
     const toggleRow = root.querySelector('#ag-rp-tunnel-toggle');
@@ -15297,6 +15390,10 @@ function positionHeatPopover(anchorX, anchorY) {
             remoteSettingsState.tunnelConfigOpen = true;
           }
         }
+        if (payload.tailscaleCustomHost !== undefined) {
+          remoteSettingsState.tsConfigOpen = false;
+          remoteSettingsState.draftTsHost = null;
+        }
       } else {
         const rawErr = String(res?.error || '').trim();
         const hasCjk = /[\u4e00-\u9fff]/.test(rawErr);
@@ -15307,11 +15404,17 @@ function positionHeatPopover(anchorX, anchorY) {
         if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
           remoteSettingsState.tunnelConfigOpen = true;
         }
+        if (payload.tailscaleCustomHost !== undefined) {
+          remoteSettingsState.tsConfigOpen = true;
+        }
       }
     } catch {
       remoteSettingsState.error = suiteTr('保存手机远程设置失败，请稍后点击「刷新状态」重试', 'Failed to save remote settings; refresh and try again later');
       if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
         remoteSettingsState.tunnelConfigOpen = true;
+      }
+      if (payload.tailscaleCustomHost !== undefined) {
+        remoteSettingsState.tsConfigOpen = true;
       }
     } finally {
       remoteSettingsState.busy = false;

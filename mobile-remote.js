@@ -310,6 +310,95 @@ function normalizeTunnelHostname(raw) {
   return res.ok ? res.origin : '';
 }
 
+function validateTailscaleCustomHost(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return { ok: true, host: '', error: '' };
+  if (/[\s\x00-\x1f\x7f]/.test(text)) {
+    return {
+      ok: false,
+      host: '',
+      error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+    };
+  }
+  let cleanHost = '';
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      const u = new URL(text);
+      if (u.username || u.password || u.search || u.hash || (u.pathname && u.pathname !== '/')) {
+        return {
+          ok: false,
+          host: '',
+          error: 'Tailscale 节点地址仅填写 IP 或域名（无需附带路径或参数）'
+        };
+      }
+      cleanHost = String(u.hostname || '').replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase();
+    } catch {
+      return {
+        ok: false,
+        host: '',
+        error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+      };
+    }
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) || /[\/?#\\@]/.test(text)) {
+    return {
+      ok: false,
+      host: '',
+      error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+    };
+  } else {
+    const bracketMatch = text.match(/^\[([0-9a-fA-F:]+)\](?::(\d{1,5}))?$/);
+    if (bracketMatch) {
+      if (bracketMatch[2]) {
+        const portNum = Number(bracketMatch[2]);
+        if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+          return {
+            ok: false,
+            host: '',
+            error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+          };
+        }
+      }
+      cleanHost = bracketMatch[1].toLowerCase();
+    } else {
+      const singlePortMatch = text.match(/^([^:]+):(\d{1,5})$/);
+      if (singlePortMatch) {
+        const portNum = Number(singlePortMatch[2]);
+        if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+          return {
+            ok: false,
+            host: '',
+            error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+          };
+        }
+        cleanHost = singlePortMatch[1].replace(/\.+$/, '').toLowerCase();
+      } else {
+        cleanHost = text.replace(/\.+$/, '').toLowerCase();
+      }
+    }
+  }
+
+  const isCgnatV4 = isTailscaleCgnatIpv4(cleanHost);
+  const v6Hextets = cleanHost.includes(':') ? expandIpv6Hextets(cleanHost) : null;
+  const isTsUlaV6 = Boolean(
+    v6Hextets && v6Hextets[0] === 0xfd7a && v6Hextets[1] === 0x115c && v6Hextets[2] === 0xa1e0
+  );
+  const isTsMagicDns = cleanHost.length <= 253
+    && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net$/i.test(cleanHost);
+  if (!isCgnatV4 && !isTsUlaV6 && !isTsMagicDns) {
+    return {
+      ok: false,
+      host: '',
+      error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+    };
+  }
+  return { ok: true, host: cleanHost, error: '' };
+}
+
+function normalizeTailscaleCustomHost(raw) {
+  const res = validateTailscaleCustomHost(raw);
+  return res.ok ? res.host : '';
+}
+
 function loadOrCreateRemoteConfig(options = {}) {
   const { resetToken = false } = options;
   const cfgPath = getRemoteConfigPath();
@@ -340,6 +429,7 @@ function loadOrCreateRemoteConfig(options = {}) {
     ? extractCloudflareTunnelToken(existing.tunnelToken)
     : '';
   const tunnelHostname = normalizeTunnelHostname(existing.tunnelHostname || '');
+  const tailscaleCustomHost = normalizeTailscaleCustomHost(existing.tailscaleCustomHost || '');
   const remoteDisplay = sanitizeRemoteDisplayConfig(existing.remoteDisplay);
 
   let changed = !loaded.ok || !existing.token || resetToken || existing.port !== port;
@@ -358,6 +448,7 @@ function loadOrCreateRemoteConfig(options = {}) {
     tunnelMode,
     tunnelToken,
     tunnelHostname,
+    tailscaleCustomHost,
     remoteDisplay,
     updatedAt: changed ? new Date().toISOString() : (existing.updatedAt || new Date().toISOString())
   };
@@ -648,6 +739,9 @@ function saveRemoteTunnelConfig(patch = {}) {
   const nextHost = patch.tunnelHostname !== undefined
     ? normalizeTunnelHostname(patch.tunnelHostname)
     : cur.tunnelHostname;
+  const nextTailscaleCustomHost = patch.tailscaleCustomHost !== undefined
+    ? normalizeTailscaleCustomHost(patch.tailscaleCustomHost)
+    : normalizeTailscaleCustomHost(cur.tailscaleCustomHost || '');
   const rawDisplay = patch.remoteDisplay !== undefined
     ? patch.remoteDisplay
     : (patch.displayConfig !== undefined ? patch.displayConfig : null);
@@ -662,6 +756,7 @@ function saveRemoteTunnelConfig(patch = {}) {
     tunnelMode: nextMode,
     tunnelToken: nextToken,
     tunnelHostname: nextHost,
+    tailscaleCustomHost: nextTailscaleCustomHost,
     remoteDisplay: nextRemoteDisplay,
     updatedAt: new Date().toISOString()
   };
@@ -988,6 +1083,8 @@ function detectHostIdentityMeta(options = {}) {
   let tailscaleNodeName = '';
   let tailscaleHttpsCapable = false;
   let tailscaleBin = '';
+  let tailscaleRunning = false;
+  let tailscaleBackendState = '';
   const execFn = typeof options.execFileSync === 'function' ? options.execFileSync : execFileSync;
   if (!skipProbes || typeof options.execFileSync === 'function') {
     const tsBins = process.platform === 'darwin'
@@ -1001,16 +1098,22 @@ function detectHostIdentityMeta(options = {}) {
           stdio: ['ignore', 'pipe', 'ignore']
         });
         const parsed = JSON.parse(out);
-        const dns = String(parsed?.Self?.DNSName || '').trim().replace(/\.+$/, '');
-        const hostName = String(parsed?.Self?.HostName || '').trim();
-        const certDomains = Array.isArray(parsed?.CertDomains)
-          ? parsed.CertDomains.map((d) => String(d || '').trim().replace(/\.+$/, '').toLowerCase()).filter(Boolean)
-          : [];
-        if (dns) tailscaleDnsName = dns;
-        if (dns) tailscaleNodeName = dns.split('.')[0] || hostName;
-        else if (hostName) tailscaleNodeName = hostName;
-        tailscaleHttpsCapable = Boolean(tailscaleDnsName && certDomains.includes(tailscaleDnsName.toLowerCase()));
+        tailscaleBackendState = String(parsed?.BackendState || '').trim();
+        const selfOnline = parsed?.Self?.Online;
+        const isRunning = (!tailscaleBackendState || tailscaleBackendState === 'Running') && selfOnline !== false;
         tailscaleBin = bin;
+        if (isRunning) {
+          const dns = String(parsed?.Self?.DNSName || '').trim().replace(/\.+$/, '');
+          const hostName = String(parsed?.Self?.HostName || '').trim();
+          const certDomains = Array.isArray(parsed?.CertDomains)
+            ? parsed.CertDomains.map((d) => String(d || '').trim().replace(/\.+$/, '').toLowerCase()).filter(Boolean)
+            : [];
+          if (dns) tailscaleDnsName = dns;
+          if (dns) tailscaleNodeName = dns.split('.')[0] || hostName;
+          else if (hostName) tailscaleNodeName = hostName;
+          tailscaleHttpsCapable = Boolean(tailscaleDnsName && certDomains.includes(tailscaleDnsName.toLowerCase()));
+          tailscaleRunning = true;
+        }
         break;
       } catch {}
     }
@@ -1023,6 +1126,8 @@ function detectHostIdentityMeta(options = {}) {
     tailscaleDnsName,
     tailscaleNodeName,
     tailscaleHttpsCapable,
+    tailscaleRunning,
+    tailscaleBackendState,
     tailscaleBin,
     deviceName
   };
@@ -1128,7 +1233,7 @@ function ensureTailscaleServeHttps(port, options = {}) {
     forceRefresh: Boolean(options.force || useCustomExec),
     execFileSync: options.execFileSync
   });
-  if (!meta.tailscaleDnsName) {
+  if (!meta.tailscaleDnsName || meta.tailscaleRunning === false) {
     const empty = { active: false, port: numPort, url: '', hint: '', createdByUs: false, checkedAt: now };
     if (!useCustomExec) cachedTailscaleServe = empty;
     return { enabled: false, url: '', hint: '', createdByUs: false };
@@ -13690,11 +13795,16 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '', allowedTailscaleDns
     if (u.protocol === 'https:' && cleanHost.endsWith('.trycloudflare.com')) return true;
     if (cleanHost === 'localhost' || cleanHost.endsWith('.local')) return true;
     if (cleanHost.endsWith('.ts.net')) {
-      const detectedTsDns = allowedTailscaleDnsName !== null && allowedTailscaleDnsName !== undefined
-        ? String(allowedTailscaleDnsName)
-        : String(detectHostIdentityMeta().tailscaleDnsName || '');
-      const normalizedTsDns = detectedTsDns.replace(/\.$/, '').trim().toLowerCase();
-      return Boolean(normalizedTsDns && cleanHost === normalizedTsDns);
+      const rawAllowed = (allowedTailscaleDnsName !== null && allowedTailscaleDnsName !== undefined)
+        ? allowedTailscaleDnsName
+        : detectHostIdentityMeta().tailscaleDnsName;
+      const candidateList = Array.isArray(rawAllowed) ? rawAllowed : [rawAllowed];
+      const normalizedSet = new Set(
+        candidateList
+          .map((item) => String(item || '').replace(/\.+$/, '').trim().toLowerCase())
+          .filter(Boolean)
+      );
+      return normalizedSet.has(cleanHost);
     }
     return isAllowedPrivateAddress(cleanHost);
   } catch {
@@ -14200,6 +14310,12 @@ function createCloudflareTunnelController(getPort) {
     getStatus,
     ensureRunning,
     configure: async (patch = {}) => {
+      if (patch.tailscaleCustomHost !== undefined && String(patch.tailscaleCustomHost || '').trim()) {
+        const tsCheck = validateTailscaleCustomHost(patch.tailscaleCustomHost);
+        if (!tsCheck.ok) {
+          return { ...getStatus(), validationError: tsCheck.error };
+        }
+      }
       const prevCfg = loadOrCreateRemoteConfig();
       const patchCh = (patch.enabledChannels && typeof patch.enabledChannels === 'object') ? patch.enabledChannels : {};
       const nextTunnelEnabled = patch.enabled !== undefined
@@ -14480,6 +14596,10 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
       }
     }
     if (!workingBin || !parsedStatus || typeof parsedStatus !== 'object') {
+      return { statusAvailable: false, attempted: false, pong: null };
+    }
+    const tsBackendState = String(parsedStatus.BackendState || '').trim();
+    if ((tsBackendState && tsBackendState !== 'Running') || parsedStatus.Self?.Online === false) {
       return { statusAvailable: false, attempted: false, pong: null };
     }
 
@@ -14931,7 +15051,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
     const allowedTsDns = options.allowedTailscaleDnsName !== undefined
       ? options.allowedTailscaleDnsName
-      : detectHostIdentityMeta().tailscaleDnsName;
+      : [detectHostIdentityMeta().tailscaleDnsName, config.tailscaleCustomHost]
+          .filter((h) => String(h || '').trim().toLowerCase().endsWith('.ts.net'));
     const reqOrigin = String(req.headers.origin || '').trim();
     if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl, allowedTsDns)) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
@@ -17235,7 +17356,7 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
 
   let tsHttpsUrl = '';
   let tsHttpsHint = '';
-  if (en.tailscale && meta.tailscaleDnsName) {
+  if (en.tailscale && meta.tailscaleDnsName && meta.tailscaleRunning !== false) {
     const tsServe = options.tailscaleServe || ensureTailscaleServeHttps(port, {
       hostMeta: meta,
       execFileSync: options.execFileSync,
@@ -17243,6 +17364,17 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
     });
     if (tsServe?.enabled && tsServe?.url) tsHttpsUrl = tsServe.url;
     if (tsServe?.hint) tsHttpsHint = tsServe.hint;
+  }
+
+  const customTsHost = normalizeTailscaleCustomHost(options.tailscaleCustomHost || '');
+  const effectiveTailscale = [...tailscale];
+  if (
+    en.tailscale
+    && customTsHost
+    && !effectiveTailscale.some((x) => String(x?.address || '').toLowerCase() === customTsHost)
+    && (!tsHttpsUrl || String(meta.tailscaleDnsName || '').toLowerCase() !== customTsHost)
+  ) {
+    effectiveTailscale.push({ iface: 'custom', address: customTsHost, kind: 'tailscale', custom: true });
   }
 
   const endpoints = [];
@@ -17270,10 +17402,11 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
       host: tsHttpsHost,
       kind: 'tailscale',
       priority: 90,
-      iface: tailscale[0]?.iface || 'utun0'
+      iface: effectiveTailscale[0]?.iface || 'utun0'
     });
   }
-  if (en.tailscale && tailscale[0]) addEp(tailscale[0].address, 'tailscale', 100, tailscale[0].iface);
+  if (en.tailscale && effectiveTailscale[0]) addEp(effectiveTailscale[0].address, 'tailscale', 100, effectiveTailscale[0].iface);
+  if (en.tailscale && customTsHost) addEp(customTsHost, 'tailscale', 105, 'custom');
   if (en.tailscale && !tsHttpsUrl && tailscale.length > 0 && meta.tailscaleDnsName) {
     addEp(meta.tailscaleDnsName, 'tailscale', 150, tailscale[0]?.iface || 'utun0');
   }
@@ -17302,12 +17435,13 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
   }
 
   return {
-    tailscale,
+    tailscale: effectiveTailscale,
     lan,
     primaryLan,
     deviceName: meta.deviceName,
     bonjourHost: meta.bonjourHost,
     tailscaleDnsName: meta.tailscaleDnsName,
+    tailscaleCustomHost: customTsHost,
     tailscaleHttpsUrl: tsHttpsUrl,
     tailscaleHttpsHint: tsHttpsHint,
     hosts: endpoints.map((ep) => ep.host),
@@ -17336,7 +17470,10 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       }
     : persisted;
 
-  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel, cfg.enabledChannels, { readOnly: true });
+  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel, cfg.enabledChannels, {
+    readOnly: true,
+    tailscaleCustomHost: cfg.tailscaleCustomHost
+  });
 
   const mkFused = (entryHost, entryBaseUrl = '') => buildFusedPairingUrl({
     entryBaseUrl,
@@ -17348,10 +17485,10 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     endpoints: desc.endpoints
   });
 
-  const tsEntryHost = desc.tailscale[0]?.address || desc.tailscaleDnsName || '';
+  const tsEntryHost = desc.tailscale[0]?.address || desc.tailscaleDnsName || desc.tailscaleCustomHost || '';
   const tsDisplayHost = (desc.tailscale.length > 0 && desc.tailscaleDnsName)
     ? desc.tailscaleDnsName
-    : (desc.tailscale[0]?.address || '');
+    : (desc.tailscale[0]?.address || desc.tailscaleCustomHost || '');
   const lanEntryHost = desc.primaryLan?.address || '';
   const bonjourEntryHost = (desc.bonjourHost && desc.primaryLan) ? desc.bonjourHost : '';
 
@@ -17436,8 +17573,8 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       label: 'Tailscale',
       labelEn: 'Tailscale',
       enabled: Boolean(enCh.tailscale),
-      detected: desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl),
-      available: Boolean(enCh.tailscale && (desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl))),
+      detected: desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl) || Boolean(desc.tailscaleCustomHost),
+      available: Boolean(enCh.tailscale && (desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl) || Boolean(desc.tailscaleCustomHost))),
       rawHost: tsDisplayHost,
       displayHost: enCh.tailscale
         ? (desc.tailscaleHttpsUrl ? `HTTPS · ${desc.tailscaleDnsName}` : tsDisplayHost)
@@ -17446,6 +17583,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       entryBaseUrl: desc.tailscaleHttpsUrl || '',
       httpsUrl: desc.tailscaleHttpsUrl || '',
       httpsHint: desc.tailscaleHttpsHint || '',
+      customHost: cfg.tailscaleCustomHost || '',
       iface: desc.tailscale[0]?.iface || ''
     },
     {
@@ -17494,6 +17632,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     deviceName: desc.deviceName,
     bonjourHost: desc.bonjourHost,
     tailscaleDnsName: desc.tailscaleDnsName,
+    tailscaleCustomHost: cfg.tailscaleCustomHost || '',
     enabledChannels: enCh,
     remoteDisplay: sanitizeRemoteDisplayConfig(cfg.remoteDisplay),
     tunnelEnabled: Boolean(cfg.tunnelEnabled),
@@ -17608,6 +17747,8 @@ module.exports = {
   validateCloudflareTunnelToken,
   validateTunnelHostname,
   normalizeTunnelHostname,
+  validateTailscaleCustomHost,
+  normalizeTailscaleCustomHost,
   getCloudflaredInstallGuide,
   resolveCloudflaredBinary,
   createCloudflareTunnelController,

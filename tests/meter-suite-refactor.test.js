@@ -24735,3 +24735,257 @@ test('扫码选路优先级、顶栏独立通道胶囊、SW Error 1033 容灾壳
   assert.equal(persistActive?.getAttribute('data-ch-key'), 'tunnel', '重开新实例后应记住上次选中的可用通道');
   persistEnhancer.dispose?.();
 });
+
+test('Tailscale 离线防误报 + 自定义 Tailscale 节点支持（Loon 内置节点场景）', async () => {
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ts-custom-'));
+  process.env.AG_METER_STATE_DIR = tmpState;
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const mr = require('../mobile-remote.js');
+
+  try {
+    // 1. detectHostIdentityMeta: BackendState=Stopped 或 Self.Online=false 均判为离线，且不调用 tailscale serve
+    const stoppedServeCalls = [];
+    const stoppedMeta = mr.detectHostIdentityMeta({
+      execFileSync: () => JSON.stringify({
+        BackendState: 'Stopped',
+        Self: { DNSName: 'offline-mac.tailnet123.ts.net.', HostName: 'offline-mac', Online: false },
+        CertDomains: ['offline-mac.tailnet123.ts.net']
+      })
+    });
+    assert.equal(stoppedMeta.tailscaleRunning, false, 'BackendState=Stopped 时 tailscaleRunning 必须为 false');
+    assert.equal(stoppedMeta.tailscaleDnsName, '', '独立版离线时不得回填缓存的 DNSName');
+    assert.equal(stoppedMeta.tailscaleHttpsCapable, false, '独立版离线时不得标记为 HTTPS 可用');
+    const serveResStopped = mr.ensureTailscaleServeHttps(18765, {
+      hostMeta: stoppedMeta,
+      execFileSync: (_bin, args) => {
+        stoppedServeCalls.push(args);
+        return '';
+      }
+    });
+    assert.equal(serveResStopped.enabled, false);
+    assert.equal(stoppedServeCalls.length, 0, '独立版离线时 ensureTailscaleServeHttps 不得调用 serve 命令');
+
+    const offlineSelfMeta = mr.detectHostIdentityMeta({
+      execFileSync: () => JSON.stringify({
+        BackendState: 'Running',
+        Self: { DNSName: 'offline-mac.tailnet123.ts.net.', HostName: 'offline-mac', Online: false },
+        CertDomains: ['offline-mac.tailnet123.ts.net']
+      })
+    });
+    assert.equal(offlineSelfMeta.tailscaleRunning, false);
+    assert.equal(offlineSelfMeta.tailscaleDnsName, '');
+
+    // 向后兼容：省略 BackendState 与 Self.Online 时仍识别为运行中
+    const compatMeta = mr.detectHostIdentityMeta({
+      execFileSync: () => JSON.stringify({
+        Self: { DNSName: 'compat-mac.tailnet123.ts.net.', HostName: 'compat-mac' },
+        CertDomains: ['compat-mac.tailnet123.ts.net']
+      })
+    });
+    assert.equal(compatMeta.tailscaleRunning, true);
+    assert.equal(compatMeta.tailscaleDnsName, 'compat-mac.tailnet123.ts.net');
+
+    // 2. validateTailscaleCustomHost / normalizeTailscaleCustomHost 严格校验
+    assert.deepEqual(mr.validateTailscaleCustomHost(''), { ok: true, host: '', error: '' });
+    assert.equal(mr.normalizeTailscaleCustomHost('100.88.12.34'), '100.88.12.34');
+    assert.equal(mr.normalizeTailscaleCustomHost('http://Custom-Proxy.TailNet123.ts.net:18765'), 'custom-proxy.tailnet123.ts.net');
+    assert.equal(mr.normalizeTailscaleCustomHost('demo-proxy.tailnet123.ts.net:18765'), 'demo-proxy.tailnet123.ts.net');
+    assert.equal(mr.normalizeTailscaleCustomHost('fd7a:115c:a1e0::1234:5678'), 'fd7a:115c:a1e0::1234:5678');
+    assert.equal(mr.normalizeTailscaleCustomHost('[fd7a:115c:a1e0::1]:18765'), 'fd7a:115c:a1e0::1');
+
+    for (const badHost of [
+      'example.com',
+      '192.168.1.10',
+      '100.63.255.254',
+      '100.128.0.1',
+      '.ts.net',
+      'custom.ts.net/evil',
+      'custom.ts.net?x=1',
+      'custom.ts.net\nline2',
+      'fd7a:115c:a1e0::gggg'
+    ]) {
+      const check = mr.validateTailscaleCustomHost(badHost);
+      assert.equal(check.ok, false, `非法 Tailscale 地址应被拒绝: ${badHost}`);
+      assert.equal(mr.normalizeTailscaleCustomHost(badHost), '');
+    }
+
+    // 3. 配置持久化 + collectFusedEndpointDescriptor + buildRemoteInfo + CORS Origin 白名单
+    const saved = mr.saveRemoteTunnelConfig({
+      enabledChannels: { lan: true, tailscale: true, bonjour: false, tunnel: false },
+      tailscaleCustomHost: 'http://custom-proxy.tailnet123.ts.net:18765'
+    });
+    assert.equal(saved.tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
+
+    const desc = mr.collectFusedEndpointDescriptor(
+      18765,
+      null,
+      { lan: true, tailscale: true, bonjour: false, tunnel: false },
+      {
+        readOnly: true,
+        hostMeta: stoppedMeta,
+        tailscaleCustomHost: saved.tailscaleCustomHost,
+        addresses: {
+          tailscale: [],
+          lan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }],
+          physicalLan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }]
+        }
+      }
+    );
+    assert.equal(desc.tailscaleHttpsUrl, '');
+    assert.equal(desc.tailscaleDnsName, '');
+    assert.equal(desc.tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
+    assert.ok(
+      desc.endpoints.some((e) => e.kind === 'tailscale' && e.url === 'http://custom-proxy.tailnet123.ts.net:18765'),
+      '独立版离线且填写自定义节点时应生成 custom Tailscale 端点'
+    );
+    assert.ok(
+      !desc.endpoints.some((e) => e.url.includes('offline-mac')),
+      '端点列表不得包含已停用的独立版 Tailscale 域名'
+    );
+
+    const prevSkipProbes = process.env.AG_REMOTE_SKIP_PROBES;
+    process.env.AG_REMOTE_SKIP_PROBES = '1';
+    try {
+      const remoteInfo = mr.buildRemoteInfo();
+      assert.equal(remoteInfo.tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
+      const tsCh = remoteInfo.channels.find((c) => c.key === 'tailscale');
+      assert.ok(tsCh && tsCh.available, '设置 tailscaleCustomHost 后 Tailscale 通道应标记为可用');
+      assert.equal(tsCh.displayHost, 'custom-proxy.tailnet123.ts.net');
+      assert.equal(tsCh.customHost, 'custom-proxy.tailnet123.ts.net');
+      assert.ok(tsCh.url.startsWith('http://custom-proxy.tailnet123.ts.net:'));
+    } finally {
+      if (prevSkipProbes === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+      else process.env.AG_REMOTE_SKIP_PROBES = prevSkipProbes;
+    }
+
+    assert.equal(
+      mr.isAllowedPrivateOrigin('http://custom-proxy.tailnet123.ts.net:18765', '', ['custom-proxy.tailnet123.ts.net']),
+      true,
+      'isAllowedPrivateOrigin 应放行白名单数组中的自定义 .ts.net 域名'
+    );
+    assert.equal(
+      mr.isAllowedPrivateOrigin('http://other-proxy.tailnet123.ts.net:18765', '', ['custom-proxy.tailnet123.ts.net']),
+      false,
+      'isAllowedPrivateOrigin 仍须拒绝白名单之外的其他 .ts.net 域名'
+    );
+
+    // HTTP Handler CORS 对自定义 .ts.net Origin 放行且拒绝其他 .ts.net Origin
+    const cfgHandler = mr.createRemoteHttpHandler({
+      enabled: true,
+      port: 18765,
+      token: 'tok-custom-ts-origin-test',
+      tailscaleCustomHost: 'custom-proxy.tailnet123.ts.net',
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    });
+    const runOpts = async (origin) => {
+      const hdrs = {};
+      await cfgHandler(
+        { method: 'OPTIONS', url: '/api/ping', headers: { host: '127.0.0.1:18765', origin }, socket: { remoteAddress: '127.0.0.1' } },
+        {
+          setHeader(k, v) { hdrs[String(k).toLowerCase()] = v; },
+          getHeader(k) { return hdrs[String(k).toLowerCase()]; },
+          writeHead(_c, h = {}) { for (const [k, v] of Object.entries(h)) hdrs[String(k).toLowerCase()] = v; },
+          end() {}
+        }
+      );
+      return hdrs;
+    };
+    const okHdrs = await runOpts('http://custom-proxy.tailnet123.ts.net:18765');
+    assert.equal(okHdrs['access-control-allow-origin'], 'http://custom-proxy.tailnet123.ts.net:18765');
+    const badHdrs = await runOpts('http://stranger.tailnet123.ts.net:18765');
+    assert.equal(badHdrs['access-control-allow-origin'], undefined);
+
+    // 4. probeClientPrivateReachability: BackendState=Stopped 时早退，不误标 tailscale unreachable
+    mr.clearPairedDevicesForTests();
+    const probeCmds = [];
+    const stoppedHints = await mr.probeClientPrivateReachability(
+      {
+        url: '/api/probe-hints?probe=1',
+        headers: { 'user-agent': 'Mozilla/5.0 (iPhone)', 'x-ag-device-id': 'dev-stopped-ts-1' }
+      },
+      { enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: true } },
+      {
+        force: true,
+        skipProbes: false,
+        execAsync: async (bin, args) => {
+          probeCmds.push([bin, ...args]);
+          if (args.includes('status')) {
+            return {
+              ok: true,
+              stdout: JSON.stringify({
+                BackendState: 'Stopped',
+                Self: { Online: false },
+                Peer: { p1: { Online: true, OS: 'ios', TailscaleIPs: ['100.88.1.2'] } }
+              }),
+              stderr: ''
+            };
+          }
+          return { ok: false, stdout: '', stderr: '' };
+        }
+      }
+    );
+    assert.equal(probeCmds.some((c) => c.includes('ping')), false, 'BackendState=Stopped 时不得执行注定失败的 tailscale ping');
+    assert.equal(stoppedHints.tailscale, undefined, 'BackendState=Stopped 时不得误标 tailscale 不可达');
+
+    // 5. configure 提交非法 tailscaleCustomHost 应返回 validationError 且不改变隧道配置
+    const ctrl = mr.createCloudflareTunnelController({ getPort: () => 18765 });
+    const badCfgRes = await ctrl.configure({ tailscaleCustomHost: '192.168.1.88' });
+    assert.ok(badCfgRes.validationError && badCfgRes.validationError.includes('Tailscale'));
+    assert.equal(mr.loadOrCreateRemoteConfig().tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
+
+    // 6. 设置页 UI: 点击 #ag-rp-ts-cfg-btn 展开表单并保存/清除自定义节点
+    const uiEnv = createDomEnv();
+    uiEnv.win.__AGContextMeterLive = { port: 61222, token: 'tok-ui-ts-test' };
+    const uiPosts = [];
+    const prevUiSkip = process.env.AG_REMOTE_SKIP_PROBES;
+    process.env.AG_REMOTE_SKIP_PROBES = '1';
+    let uiData = mr.buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
+    uiEnv.sandbox.fetch = async (url, init) => {
+      const sUrl = String(url || '');
+      if (sUrl.includes('/remote-info')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, data: uiData }) };
+      }
+      if (sUrl.includes('/remote-tunnel')) {
+        const body = JSON.parse(init?.body || '{}');
+        uiPosts.push(body);
+        mr.saveRemoteTunnelConfig(body);
+        uiData = mr.buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
+        return { ok: true, status: 200, json: async () => ({ ok: true, data: uiData }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+    const RENDERER_PATH = path.join(__dirname, '..', 'meter-renderer.js');
+    const ENHANCER_PATH = path.join(__dirname, '..', 'ag-enhancer-overlay.js');
+    vm.runInContext(fs.readFileSync(RENDERER_PATH, 'utf8'), uiEnv.sandbox);
+    const uiApi = uiEnv.sandbox.__AGContextMeter;
+    vm.runInContext(fs.readFileSync(ENHANCER_PATH, 'utf8'), uiEnv.sandbox);
+    const uiEnh = uiEnv.sandbox.__AGEnhancer;
+    const uiPane = uiEnv.getShadow().getElementById('settings-pane-remote');
+    uiApi.openSettings('remote');
+    await new Promise((r) => setTimeout(r, 30));
+    uiPane.querySelector('#ag-rp-ts-cfg-btn')?.click();
+    const tsInput = uiPane.querySelector('#ag-rp-ts-host');
+    assert.ok(tsInput, '点击自定义节点按钮后应展开 #ag-rp-ts-form 表单');
+    tsInput.value = 'new-proxy.tailnet123.ts.net';
+    uiPane.querySelector('#ag-rp-ts-save')?.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(uiPosts.at(-1), { tailscaleCustomHost: 'new-proxy.tailnet123.ts.net', enabledChannels: { tailscale: true } });
+    assert.equal(uiPane.querySelector('#ag-rp-ts-form'), null, '保存成功后应自动收起表单');
+    assert.ok(uiPane.querySelector('#ag-rp-toggle-tailscale')?.textContent.includes('new-proxy.tailnet123.ts.net'), '保存后设置页应显示自定义节点地址');
+    uiPane.querySelector('#ag-rp-ts-cfg-btn')?.click();
+    uiPane.querySelector('#ag-rp-ts-clear')?.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(uiPosts.at(-1), { tailscaleCustomHost: '' });
+    assert.equal(mr.loadOrCreateRemoteConfig().tailscaleCustomHost, '');
+    if (prevUiSkip === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+    else process.env.AG_REMOTE_SKIP_PROBES = prevUiSkip;
+    uiEnh.dispose?.();
+    uiApi.dispose?.();
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
