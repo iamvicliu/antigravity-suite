@@ -4999,10 +4999,11 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
     const bAsst = getTurnAssistants(baseList, baseUserIndices, baseTurnPos, false);
     const dAsst = getTurnAssistants(domList, domUserIndices, domTurnPos, true);
     if (!bAsst.length || !dAsst.length) return 0;
+    const isActiveTail = Boolean(options.busy && baseTurnPos === M - 1 && domTurnPos === K - 1);
     for (const bm of bAsst) {
       for (const dm of dAsst) {
         if (classifyAssistantMatch(bm.text, dm.text, {
-          busy: Boolean(options.busy),
+          busy: isActiveTail,
           domIsMarkdown: isMarkdownSourcedIncoming(dm, options)
         }) > 0) {
           return 1;
@@ -5013,7 +5014,7 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
       const baseAsEntries = bAsst.map((item) => ({ item }));
       for (const dm of dAsst) {
         if (isMarkdownSourcedIncoming(dm, options)) continue;
-        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, Boolean(options.busy && baseTurnPos === M - 1 && domTurnPos === K - 1))) {
+        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, isActiveTail)) {
           return 1;
         }
       }
@@ -5165,6 +5166,13 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       break;
     }
   }
+  let lastDomUserIdx = -1;
+  for (let i = domList.length - 1; i >= 0; i--) {
+    if (domList[i]?.role === 'user') {
+      lastDomUserIdx = i;
+      break;
+    }
+  }
   const anchor = lastBaseUserIdx >= 0
     ? findUserAnchorAlignment(baseList, domList, options)
     : { startAppendIdx: -1, alignedTurnPairs: [] };
@@ -5176,10 +5184,11 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
   const matchAndMergePool = (domIndices, baseIndices, poolOpts = {}) => {
     if (!domIndices.length || !baseIndices.length) return;
     const allowBusyOverwrite = Boolean(options.busy && poolOpts.isActiveTailTurn);
-    const lastBaseIdxInPool = baseIndices[baseIndices.length - 1];
-    let lastStreamableBi = lastBaseIdxInPool;
+    const minStreamableBaseIdx = Number.isInteger(poolOpts.minStreamableBaseIdx) ? poolOpts.minStreamableBaseIdx : 0;
+    let lastStreamableBi = -1;
     for (let idx = baseIndices.length - 1; idx >= 0; idx--) {
       const bi = baseIndices[idx];
+      if (bi < minStreamableBaseIdx) break;
       const item = baseList[bi];
       const hasTextKey = item && (baseOverwrittenByDom.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text));
       if (hasTextKey) {
@@ -5240,14 +5249,20 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     // 2. 桌面单轮多段聚合容器识别：防止将整轮拼合纯文本误当作单条回复或覆盖历史首条
     if (baseIndices.length >= 2) {
       const baseEntriesInPool = baseIndices.map((bi) => ({ item: baseList[bi], baseIdx: bi }));
-      for (const di of domIndices) {
-        if (consumedDomIndices.has(di)) continue;
-        const dm = domList[di];
-        if (isMarkdownSourcedIncoming(dm, options)) continue;
-        const hit = matchConcatenatedTurnDom(dm.text, baseEntriesInPool, baseOverwrittenByDom, allowBusyOverwrite);
-        if (hit) {
-          consumedDomIndices.add(di);
-          applyConcatenatedTurnHit(hit, dm);
+      const concatPool = poolOpts.singleTurn
+        ? baseEntriesInPool
+        : baseEntriesInPool.filter((e) => e.baseIdx >= minStreamableBaseIdx);
+      const canBusyConcat = allowBusyOverwrite && lastStreamableBi >= minStreamableBaseIdx;
+      if (concatPool.length >= 2) {
+        for (const di of domIndices) {
+          if (consumedDomIndices.has(di)) continue;
+          const dm = domList[di];
+          if (isMarkdownSourcedIncoming(dm, options)) continue;
+          const hit = matchConcatenatedTurnDom(dm.text, concatPool, baseOverwrittenByDom, canBusyConcat);
+          if (hit) {
+            consumedDomIndices.add(di);
+            applyConcatenatedTurnHit(hit, dm);
+          }
         }
       }
     }
@@ -5264,7 +5279,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         if (!consumedBaseIndices.has(bi)) continue;
         const matchTarget = baseList[bi];
         if (classifyAssistantMatch(matchTarget.text, dm.text, {
-          busy: allowBusyOverwrite,
+          busy: allowBusyOverwrite && bi === lastStreamableBi,
           exactOnly: true,
           baseIsDom: baseOverwrittenByDom.has(matchTarget),
           domIsMarkdown: domIsMd
@@ -5287,18 +5302,24 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
 
   if (startAppendIdx >= 0) {
     for (const pair of anchor.alignedTurnPairs) {
-      const isActiveTailTurn = pair.baseTurnEnd === baseList.length - 1 && pair.domTurnEnd === domList.length - 1;
+      const isActiveTailTurn =
+        pair.baseTurnStart > lastBaseUserIdx &&
+        pair.baseTurnEnd === baseList.length - 1 &&
+        pair.domTurnStart > lastDomUserIdx &&
+        pair.domTurnEnd === domList.length - 1;
       matchAndMergePool(
         collectAssistantIndices(domList, pair.domTurnStart, pair.domTurnEnd),
         collectAssistantIndices(baseList, pair.baseTurnStart, pair.baseTurnEnd),
-        { isActiveTailTurn }
+        { isActiveTailTurn, minStreamableBaseIdx: lastBaseUserIdx + 1, singleTurn: true }
       );
     }
   } else {
+    const hasTrailingBaseAssistants = lastBaseUserIdx < baseList.length - 1;
+    const isActiveTailTurn = lastDomUserIdx < 0 && hasTrailingBaseAssistants;
     matchAndMergePool(
       collectAssistantIndices(domList, 0, domList.length - 1),
       collectAssistantIndices(baseList, Math.max(0, baseList.length - 12), baseList.length - 1),
-      { isActiveTailTurn: true }
+      { isActiveTailTurn, minStreamableBaseIdx: lastBaseUserIdx + 1, singleTurn: false }
     );
   }
 
@@ -5372,12 +5393,14 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         }
         continue;
       }
+      const isDomActiveTailTurn = j > lastDomUserIdx;
+      const allowPass2Busy = Boolean(options.busy && isDomActiveTailTurn);
       if (dm.role === 'assistant' && dHasText && !dmIsMd) {
         const baseAsstEntries = currentTurnEntries.filter(
           (e) => e.fromBase && e.item?.role === 'assistant' && Boolean(normMsgPrefix(e.item.text))
         );
         if (baseAsstEntries.length >= 2) {
-          const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, Boolean(options.busy));
+          const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, allowPass2Busy);
           if (concatHit) {
             applyConcatenatedTurnHit(concatHit, dm);
             continue;
@@ -5396,7 +5419,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
             if (entry.item.role !== dm.role) return false;
             const exactOnly = !entry.fromBase || consumedBaseIndices.has(entry.baseIdx);
             const baseIsDom = !entry.fromMarkdown || baseOverwrittenByDom.has(entry.item);
-            const allowEntryBusy = Boolean(options.busy) && (!entry.fromBase || lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn);
+            const allowEntryBusy = allowPass2Busy && (!entry.fromBase || lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn);
             return classifyAssistantMatch(entry.item.text, dm.text, {
               busy: allowEntryBusy,
               exactOnly,
