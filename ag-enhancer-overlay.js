@@ -80,6 +80,8 @@
   let quickAutoSendLockUntil = 0;
   let quickAutoSendLockTimer = null;
   let uiLang = 'zh';
+  let dockBadgeEnabled = true;
+  let dockBadgeAutoClear = true;
   const DEFAULT_FEATURE_FLAGS = {
     showTopbarTokens: true,
     showTopbarCli: true,
@@ -461,6 +463,22 @@
       }
     } catch {}
     try {
+      if (detail && typeof detail.dockBadgeEnabled === 'boolean') {
+        dockBadgeEnabled = detail.dockBadgeEnabled;
+      } else if (typeof localStorage !== 'undefined') {
+        const rawDockEnabled = localStorage.getItem('ag_suite_dock_badge_enabled');
+        dockBadgeEnabled = rawDockEnabled !== 'false';
+      }
+    } catch {}
+    try {
+      if (detail && typeof detail.dockBadgeAutoClear === 'boolean') {
+        dockBadgeAutoClear = detail.dockBadgeAutoClear;
+      } else if (typeof localStorage !== 'undefined') {
+        const rawDockAutoClear = localStorage.getItem('ag_suite_dock_badge_autoclear');
+        dockBadgeAutoClear = rawDockAutoClear !== 'false';
+      }
+    } catch {}
+    try {
       if (detail && detail.featureFlags && typeof detail.featureFlags === 'object') {
         for (const k of Object.keys(DEFAULT_FEATURE_FLAGS)) {
           if (typeof detail.featureFlags[k] === 'boolean') {
@@ -746,6 +764,41 @@
       if (window.matchMedia?.('(prefers-color-scheme: light)')?.matches) return 'light';
     } catch {}
     return 'dark';
+  }
+
+  // 解析直接画在宿主原生画布上的嵌入式挂件应遵循的真实宿主键底明暗，避免独立切换插件面板深浅时文字隐身
+  function resolveSurfaceTheme(host) {
+    try {
+      const themeMode = host?.getAttribute?.('data-theme-mode');
+      const hostAttr = host?.getAttribute?.('data-host-theme');
+      if ((themeMode === 'light' || themeMode === 'dark') && (hostAttr === 'light' || hostAttr === 'dark')) {
+        return hostAttr;
+      }
+      const doc = document.documentElement;
+      const body = document.body;
+      const docAttr = doc?.getAttribute?.('data-theme');
+      if (docAttr === 'light' || body?.classList?.contains('theme-light') || body?.classList?.contains('light') || doc?.classList?.contains('light') || body?.classList?.contains('vscode-light')) return 'light';
+      if (docAttr === 'dark' || body?.classList?.contains('theme-dark') || body?.classList?.contains('dark') || doc?.classList?.contains('dark') || body?.classList?.contains('vscode-dark')) return 'dark';
+      if (doc?.style?.colorScheme === 'light') return 'light';
+      if (doc?.style?.colorScheme === 'dark') return 'dark';
+      if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+        for (const el of [body, doc].filter(Boolean)) {
+          const cs = window.getComputedStyle(el);
+          const raw = cs?.backgroundColor?.trim();
+          if (raw && raw !== 'transparent') {
+            const m = raw.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+%?))?/i);
+            if (m) {
+              const alpha = m[4] !== undefined ? (m[4].endsWith('%') ? Number(m[4].slice(0, -1)) / 100 : Number(m[4])) : 1;
+              if (Number.isNaN(alpha) || alpha > 0.01) {
+                const lum = (0.299 * Number(m[1]) + 0.587 * Number(m[2]) + 0.114 * Number(m[3])) / 255;
+                return lum > 0.55 ? 'light' : 'dark';
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+    return resolveHostTheme(host);
   }
 
   // 解析剩余百分比对应的视觉颜色：>=50% 跟随当前主题色，20%~50% 琥珀黄，<20% 红
@@ -4118,7 +4171,7 @@
     const viewport = document.querySelector('[data-testid="autoscroll-viewport"]');
     if (!viewport) return 0;
     const { host } = getMeterHostAndShadow();
-    const theme = resolveHostTheme(host);
+    const theme = resolveSurfaceTheme(host);
     const targets = viewport.querySelectorAll('pre, code, [data-testid="tool-group-collapsible"]');
     let markedCount = 0;
 
@@ -4375,7 +4428,7 @@
     if (disposed || featureFlags.showChatNav === false) return;
     ensureDocStyle();
     const { host } = getMeterHostAndShadow();
-    const theme = resolveHostTheme(host);
+    const theme = resolveSurfaceTheme(host);
     const vp = getScrollViewport();
     const mountRoot = vp?.closest?.('.agy-sheet')
       || (typeof document.querySelector === 'function' ? document.querySelector('.agy-sheet') : null)
@@ -4850,7 +4903,7 @@
     if (!composer || !composer.parentElement) return;
 
     const { host } = getMeterHostAndShadow();
-    const theme = resolveHostTheme(host);
+    const theme = resolveSurfaceTheme(host);
 
     let bar = document.getElementById(QUICK_BAR_ID);
     if (!bar) {
@@ -5297,7 +5350,7 @@
 
     ensureDocStyle();
     const { host } = getMeterHostAndShadow();
-    const theme = resolveHostTheme(host);
+    const theme = resolveSurfaceTheme(host);
     let ghost = document.getElementById(NEXT_STEP_GHOST_ID);
     if (!ghost) {
       ghost = document.createElement('div');
@@ -5550,7 +5603,7 @@
     const undoBtn = document.getElementById(PROMPT_OPT_UNDO_ID);
     const wrap = document.getElementById(PROMPT_OPT_WRAP_ID);
     const { host } = getMeterHostAndShadow();
-    const theme = resolveHostTheme(host);
+    const theme = resolveSurfaceTheme(host);
     if (wrap && wrap.getAttribute('data-ag-theme') !== theme) {
       wrap.setAttribute('data-ag-theme', theme);
     }
@@ -5598,7 +5651,7 @@
     if (!footer) return;
 
     const { host } = getMeterHostAndShadow();
-    const theme = resolveHostTheme(host);
+    const theme = resolveSurfaceTheme(host);
     const mountParent = footer.parentElement || composer;
 
     let wrap = document.getElementById(PROMPT_OPT_WRAP_ID);
@@ -6713,7 +6766,7 @@
       if (!curCtx || curCtx.fileUri !== ctx.fileUri || !curCtx.bodyContainer) return;
 
       const { host } = getMeterHostAndShadow();
-      const theme = resolveHostTheme(host);
+      const theme = resolveSurfaceTheme(host);
 
       hideNativeViewerChildren(curCtx.bodyContainer);
 
@@ -6801,7 +6854,7 @@
       return;
     }
     const { host } = getMeterHostAndShadow();
-    const theme = resolveHostTheme(host);
+    const theme = resolveSurfaceTheme(host);
     let controls = document.getElementById(FILE_EDITOR_CONTROLS_ID);
     if (!controls) {
       controls = document.createElement('div');
@@ -7292,10 +7345,360 @@
     }
   }
 
+  // ==================== macOS Dock 未读与待审批状态采集 ====================
+
+  const DOCK_IDLE_STABLE_MS = 1200;
+  const DOCK_HEARTBEAT_MS = 5000;
+  const dockStateTracker = {
+    windowId: 'win-' + Math.random().toString(36).slice(2, 10),
+    lastTrackedCid: '',
+    armed: false,
+    armedCid: '',
+    idleSince: null,
+    activeUnreadCount: 0,
+    activeUnreadCid: '',
+    bgBusyIds: new Set(),
+    bgCompletedUnreadIds: new Set(),
+    domUnreadIds: new Set(),
+    unreadIds: [],
+    unreadCount: 0,
+    approvalCount: 0,
+    highRisk: false,
+    running: false,
+    lastFocused: true,
+    lastSentSig: '',
+    lastSentAt: 0
+  };
+
+  function recomputeDockUnreadSummary() {
+    const unionUnread = new Set([
+      ...dockStateTracker.domUnreadIds,
+      ...dockStateTracker.bgCompletedUnreadIds
+    ]);
+    if (dockStateTracker.activeUnreadCid) {
+      unionUnread.add(dockStateTracker.activeUnreadCid);
+    }
+    dockStateTracker.unreadIds = Array.from(unionUnread).slice(0, 200);
+    dockStateTracker.unreadCount = unionUnread.size;
+    dockStateTracker.activeUnreadCount = dockStateTracker.activeUnreadCid ? 1 : 0;
+  }
+
+  function isWindowActiveFocused() {
+    try {
+      if (typeof document === 'undefined') return true;
+      const notHidden = !document.hidden;
+      if (typeof document.hasFocus === 'function') {
+        return Boolean(document.hasFocus()) && notHidden;
+      }
+      return notHidden;
+    } catch {
+      return true;
+    }
+  }
+
+  function resolveApprovalCardScope(item) {
+    if (!item || typeof item !== 'object') return null;
+    if (item.cardScope) return item.cardScope;
+    if (item.cardKey) return item.cardKey;
+    if (item.cardId) return item.cardId;
+    const btn = item.btn;
+    if (!btn || typeof btn !== 'object') return null;
+    if (typeof btn.closest === 'function') {
+      const hit = btn.closest('[role="dialog"], [role="alertdialog"], [data-testid="tool-group-collapsible"], [data-testid="turn-cards-container"], [data-testid="agent-response"]');
+      if (hit) return hit;
+    }
+    const p1 = btn.parentElement || null;
+    if (p1 && p1 !== document.body && p1 !== document.documentElement && p1.tagName !== 'MAIN') {
+      return p1;
+    }
+    return null;
+  }
+
+  function countDistinctPendingApprovals(approvals, prompts) {
+    const approvalList = Array.isArray(approvals) ? approvals.filter(Boolean) : [];
+    const promptList = Array.isArray(prompts) ? prompts.filter(Boolean) : [];
+
+    const grouped = new Map();
+    const ungrouped = [];
+    for (const item of approvalList) {
+      const scope = resolveApprovalCardScope(item);
+      if (scope) {
+        let bucket = grouped.get(scope);
+        if (!bucket) {
+          bucket = [];
+          grouped.set(scope, bucket);
+        }
+        bucket.push(item);
+      } else {
+        ungrouped.push(item);
+      }
+    }
+
+    // 同一确认卡片上的「Allow + Reject」等多按钮只计 1 个待审批；无卡片归属时优先统计 approve，只有 reject 时保底计 1
+    let buttonApprovalCount = grouped.size;
+    if (ungrouped.length > 0) {
+      const approveCount = ungrouped.filter((item) => item?.kind === 'approve').length;
+      buttonApprovalCount += approveCount > 0 ? approveCount : 1;
+    }
+
+    const promptCount = promptList.length;
+    const highRisk = approvalList.some((a) => Boolean(a?.highRisk))
+      || promptList.some((p) => Boolean(p?.highRisk));
+
+    return {
+      approvalCount: buttonApprovalCount + promptCount,
+      highRisk
+    };
+  }
+
+  function reportDockOffline() {
+    dockStateTracker.lastSentSig = 'offline';
+    void postToLiveHost('/dock-state', {
+      windowId: dockStateTracker.windowId,
+      offline: true
+    });
+  }
+
+  function reportDockStateIfNeeded(force = false, now = Date.now()) {
+    if (disposed || !dockBadgeEnabled) return false;
+    const curNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const unreadIds = Array.isArray(dockStateTracker.unreadIds)
+      ? dockStateTracker.unreadIds.slice(0, 200)
+      : [];
+    const payload = {
+      windowId: dockStateTracker.windowId,
+      unreadCount: dockStateTracker.unreadCount,
+      unreadIds,
+      approvalCount: dockStateTracker.approvalCount,
+      highRisk: dockStateTracker.highRisk,
+      running: dockStateTracker.running,
+      locale: uiLang === 'en' ? 'en' : 'zh-CN'
+    };
+    const sig = `${payload.unreadCount}|${unreadIds.join(',')}|${payload.approvalCount}|${payload.highRisk ? 1 : 0}|${payload.running ? 1 : 0}|${payload.locale}`;
+    const changed = sig !== dockStateTracker.lastSentSig;
+    const heartbeatDue = (curNow - dockStateTracker.lastSentAt) >= DOCK_HEARTBEAT_MS;
+    if (!force && !changed && !heartbeatDue) return false;
+    dockStateTracker.lastSentSig = sig;
+    dockStateTracker.lastSentAt = curNow;
+    void postToLiveHost('/dock-state', payload);
+    return true;
+  }
+
+  function updateDockUnreadTracker(now = Date.now(), opts = null) {
+    const curNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const activeCid = (opts && typeof opts.activeCid === 'string')
+      ? opts.activeCid
+      : (getSessionIdFromLocation() || '');
+    const activeBusy = (opts && typeof opts.activeBusy === 'boolean')
+      ? opts.activeBusy
+      : Boolean(detectAssistantBusySignal());
+    const focused = (opts && typeof opts.focused === 'boolean')
+      ? opts.focused
+      : isWindowActiveFocused();
+
+    const wasFocused = dockStateTracker.lastFocused;
+    dockStateTracker.lastFocused = focused;
+
+    // 切会话时清空旧会话的忙闲武装，避免跨对话串扰
+    if (activeCid !== dockStateTracker.lastTrackedCid) {
+      dockStateTracker.lastTrackedCid = activeCid;
+      dockStateTracker.armed = false;
+      dockStateTracker.armedCid = '';
+      dockStateTracker.idleSince = null;
+      if (focused && activeCid) {
+        dockStateTracker.domUnreadIds.delete(activeCid);
+        dockStateTracker.bgCompletedUnreadIds.delete(activeCid);
+        if (dockBadgeAutoClear !== false && dockStateTracker.activeUnreadCid === activeCid) {
+          dockStateTracker.activeUnreadCid = '';
+        }
+      }
+    }
+
+    // 当前活跃对话由忙转闲，稳定满 1200ms 后计入未读（仅在窗口失焦/隐藏时）
+    if (activeBusy) {
+      dockStateTracker.armed = true;
+      dockStateTracker.armedCid = activeCid;
+      dockStateTracker.idleSince = null;
+    } else if (dockStateTracker.armed && dockStateTracker.armedCid === activeCid) {
+      if (dockStateTracker.idleSince === null) {
+        dockStateTracker.idleSince = curNow;
+      } else if (curNow - dockStateTracker.idleSince >= DOCK_IDLE_STABLE_MS) {
+        dockStateTracker.armed = false;
+        dockStateTracker.armedCid = '';
+        dockStateTracker.idleSince = null;
+        if (!focused) {
+          dockStateTracker.activeUnreadCid = activeCid || '__active__';
+        }
+      }
+    }
+
+    // 侧边栏后台并发对话与原生蓝点未读：仅当存在侧边栏 DOM 行（或测试显式注入）时对比更新，防止侧栏折叠误清零
+    const sidebarConvs = (opts && Array.isArray(opts.sidebarConversations))
+      ? opts.sidebarConversations
+      : (getOrderedSidebarConversationRows().length > 0 ? collectSidebarConversations(60) : null);
+
+    if (Array.isArray(sidebarConvs)) {
+      const nextBgBusyIds = new Set();
+      const nextDomUnreadIds = new Set();
+      for (const conv of sidebarConvs) {
+        const cid = String(conv?.id || '').trim();
+        if (!cid) continue;
+        const isFocusedActive = Boolean(focused && activeCid && cid === activeCid);
+        if (!isFocusedActive && conv.domUnread === true) {
+          nextDomUnreadIds.add(cid);
+        }
+        if (activeCid && cid === activeCid) {
+          if (focused || conv.domUnread === false) {
+            dockStateTracker.bgCompletedUnreadIds.delete(cid);
+          }
+          continue;
+        }
+        if (conv.domBusy) {
+          nextBgBusyIds.add(cid);
+          dockStateTracker.bgCompletedUnreadIds.delete(cid);
+        } else {
+          if (conv.domUnread === false) {
+            dockStateTracker.bgCompletedUnreadIds.delete(cid);
+          }
+          if (dockStateTracker.bgBusyIds.has(cid)) {
+            dockStateTracker.bgCompletedUnreadIds.add(cid);
+          }
+        }
+      }
+      dockStateTracker.bgBusyIds = nextBgBusyIds;
+      dockStateTracker.domUnreadIds = nextDomUnreadIds;
+    }
+
+    // 从后台切回聚焦时自动清除普通未读，保留待审批与高危告警以及其余后台未读
+    if (focused && !wasFocused && dockBadgeAutoClear !== false) {
+      dockStateTracker.activeUnreadCid = '';
+      if (activeCid) {
+        dockStateTracker.domUnreadIds.delete(activeCid);
+        dockStateTracker.bgCompletedUnreadIds.delete(activeCid);
+      }
+    }
+
+    const approvals = (opts && Array.isArray(opts.approvals))
+      ? opts.approvals
+      : findApprovalCandidateButtons();
+    const prompts = (opts && Array.isArray(opts.prompts))
+      ? opts.prompts
+      : findInteractivePromptCards();
+    const approvalSummary = countDistinctPendingApprovals(approvals, prompts);
+
+    dockStateTracker.approvalCount = approvalSummary.approvalCount;
+    dockStateTracker.highRisk = approvalSummary.highRisk;
+    recomputeDockUnreadSummary();
+    dockStateTracker.running = Boolean(activeBusy || dockStateTracker.bgBusyIds.size > 0);
+    return dockStateTracker;
+  }
+
+  function handleDockWindowFocusChange(forceClear = false) {
+    if (disposed) return false;
+    const focused = isWindowActiveFocused();
+    dockStateTracker.lastFocused = Boolean(focused || forceClear);
+    if (!(focused || forceClear) || dockBadgeAutoClear === false) {
+      return false;
+    }
+    const curCid = getSessionIdFromLocation() || dockStateTracker.lastTrackedCid || '';
+    let changed = false;
+    if (dockStateTracker.activeUnreadCid) {
+      dockStateTracker.activeUnreadCid = '';
+      changed = true;
+    }
+    if (curCid && dockStateTracker.domUnreadIds.delete(curCid)) {
+      changed = true;
+    }
+    if (curCid && dockStateTracker.bgCompletedUnreadIds.delete(curCid)) {
+      changed = true;
+    }
+    if (changed) {
+      recomputeDockUnreadSummary();
+      reportDockStateIfNeeded(true);
+    }
+    return changed;
+  }
+
+  function onWindowFocusForDock() {
+    if (disposed) return;
+    const notHidden = (typeof document === 'undefined') ? true : !document.hidden;
+    handleDockWindowFocusChange(notHidden);
+  }
+
+  function onVisibilityChangeForDock() {
+    if (disposed) return;
+    handleDockWindowFocusChange(false);
+  }
+
+  function onWindowBeforeUnloadForDock() {
+    if (disposed) return;
+    reportDockOffline();
+  }
+
+  function getDockStateSnapshot() {
+    return {
+      windowId: dockStateTracker.windowId,
+      enabled: dockBadgeEnabled,
+      autoClear: dockBadgeAutoClear,
+      unreadCount: dockStateTracker.unreadCount,
+      activeUnreadCount: dockStateTracker.activeUnreadCount,
+      domUnreadIds: Array.from(dockStateTracker.domUnreadIds),
+      bgCompletedUnreadIds: Array.from(dockStateTracker.bgCompletedUnreadIds),
+      unreadIds: [...dockStateTracker.unreadIds],
+      bgBusyIds: Array.from(dockStateTracker.bgBusyIds),
+      approvalCount: dockStateTracker.approvalCount,
+      highRisk: dockStateTracker.highRisk,
+      running: dockStateTracker.running,
+      locale: uiLang === 'en' ? 'en' : 'zh-CN',
+      activeCid: dockStateTracker.lastTrackedCid,
+      armed: dockStateTracker.armed,
+      armedCid: dockStateTracker.armedCid,
+      idleSince: dockStateTracker.idleSince ?? 0,
+      focused: dockStateTracker.lastFocused,
+      lastSentSig: dockStateTracker.lastSentSig,
+      lastSentAt: dockStateTracker.lastSentAt
+    };
+  }
+
+  function tickDockStateForTest(opts = {}) {
+    if (disposed) return getDockStateSnapshot();
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    if (typeof options.enabled === 'boolean') dockBadgeEnabled = options.enabled;
+    if (typeof options.dockBadgeEnabled === 'boolean') dockBadgeEnabled = options.dockBadgeEnabled;
+    if (typeof options.autoClear === 'boolean') dockBadgeAutoClear = options.autoClear;
+    if (typeof options.dockBadgeAutoClear === 'boolean') dockBadgeAutoClear = options.dockBadgeAutoClear;
+    const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+    if (dockBadgeEnabled) {
+      updateDockUnreadTracker(now, options);
+      if (options.triggerFocus) {
+        handleDockWindowFocusChange(true);
+      } else {
+        reportDockStateIfNeeded(Boolean(options.forceReport), now);
+      }
+    }
+    return getDockStateSnapshot();
+  }
+
   function onSuitePrefsChanged(ev) {
     const prevLang = uiLang;
+    const prevDockEnabled = dockBadgeEnabled;
+    const prevDockAutoClear = dockBadgeAutoClear;
     syncSuitePrefsFromStorage(ev?.detail || null);
     if (!autoCompactEnabled) autoCompactState.idleSince = 0;
+    if (!dockBadgeEnabled) {
+      if (prevDockEnabled || dockStateTracker.lastSentSig !== 'offline') {
+        reportDockOffline();
+      }
+    } else if (!prevDockEnabled) {
+      dockStateTracker.lastSentSig = '';
+      dockStateTracker.lastSentAt = 0;
+      updateDockUnreadTracker(Date.now());
+      reportDockStateIfNeeded(true);
+    } else if (!prevDockAutoClear && dockBadgeAutoClear && isWindowActiveFocused()) {
+      handleDockWindowFocusChange(false);
+    } else if (prevLang !== uiLang) {
+      reportDockStateIfNeeded(false);
+    }
     applyEnhancerFeatureVisibility();
     if (!ghostSuggestEnabled) hideNextStepGhost();
     else ensureNextStepGhost();
@@ -7305,7 +7708,15 @@
       if (quickBar) syncQuickBarActionButtons(quickBar);
     }
     updateQuickBarLanguage();
+    if (featureFlags.showChatNav !== false) ensureChatNavFloat();
     updateChatNavLanguage();
+    syncPromptOptimizerUI();
+    scanHighRiskCommands();
+    renderFileEditorControls(getFileViewerContext());
+    const { host } = getMeterHostAndShadow();
+    const panelTheme = resolveHostTheme(host);
+    document.getElementById(QUICK_BAR_TOOLTIP_ID)?.setAttribute('data-ag-theme', panelTheme);
+    document.getElementById(NEXT_STEP_TOOLTIP_ID)?.setAttribute('data-ag-theme', panelTheme);
     updateAutoAcceptBtn();
     updateRemoteBtnLanguage();
     renderQuotaUI();
@@ -7328,6 +7739,9 @@
   document.addEventListener('compositionend', onDocCompositionEnd, true);
   window.addEventListener('blur', onWindowBlur);
   window.addEventListener('resize', onWindowResize);
+  window.addEventListener('focus', onWindowFocusForDock);
+  document.addEventListener('visibilitychange', onVisibilityChangeForDock);
+  window.addEventListener('beforeunload', onWindowBeforeUnloadForDock);
 
   let lastQuotaFetchAt = 0;
   function tickEnhancer() {
@@ -7337,6 +7751,10 @@
     ensureNextStepGhost();
     ensureFileViewerEditor();
     scanHighRiskCommands();
+    if (dockBadgeEnabled) {
+      updateDockUnreadTracker(Date.now());
+      reportDockStateIfNeeded(false);
+    }
     renderQuotaUI();
     guardExpandedThinkingBlocks();
     localizeThinkingShells();
@@ -7361,6 +7779,7 @@
     disposed = true;
     clearInterval(enhancerTimer);
     clearRemotePollTimer();
+    reportDockOffline();
     if (toastTimer) clearTimeout(toastTimer);
     if (quickAutoSendLockTimer) {
       clearTimeout(quickAutoSendLockTimer);
@@ -7396,6 +7815,9 @@
     document.removeEventListener('compositionend', onDocCompositionEnd, true);
     window.removeEventListener('blur', onWindowBlur);
     window.removeEventListener('resize', onWindowResize);
+    window.removeEventListener('focus', onWindowFocusForDock);
+    document.removeEventListener('visibilitychange', onVisibilityChangeForDock);
+    window.removeEventListener('beforeunload', onWindowBeforeUnloadForDock);
     syncCmdModifierState(false);
     hideNextStepGhost();
     hideQuickBarTooltip();
@@ -8732,6 +9154,7 @@
       const title = getSidebarRowDisplayTitle(row);
       const active = isSidebarRowActive(row, currentId);
       const domBusy = Boolean(row.querySelector('[data-testid="status-loading-spinner"], button[aria-label*="停止"], button[aria-label*="Stop"]'));
+      const domUnread = Boolean(row.querySelector('[data-testid="status-unread-dot"]'));
       const pinned = row.getAttribute('data-pinned') === 'true';
       const item = {
         id,
@@ -8740,6 +9163,7 @@
         projectId: storeMeta?.projectId || domProjectMap.get(id) || '',
         projectName: storeMeta?.projectName || '',
         domBusy,
+        domUnread,
         pinned,
         timeKey: toSafeNumber(storeMeta?.timeKey)
       };
@@ -8758,6 +9182,7 @@
         projectId: sc.projectId || '',
         projectName: sc.projectName || '',
         domBusy: false,
+        domUnread: false,
         pinned: false,
         timeKey: toSafeNumber(sc.timeKey)
       };
@@ -10221,6 +10646,9 @@
     syncSidebarShortcutBadges,
     switchConversationByIndex: switchSidebarConversationByIndex,
     cycleConversation: cycleSidebarConversation,
+    countDistinctPendingApprovals,
+    getDockStateSnapshot,
+    tickDockStateForTest,
     dispose
   };
 

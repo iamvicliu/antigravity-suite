@@ -19,9 +19,9 @@
       --ag-ring-warn:#f59e0b;
       --ag-ring-danger:#ef4444;
 
-      --ag-context-text-default:#ececef;
-      --ag-speed-default:#b8b8c0;
-      --ag-token-total-default:#b8b8c0;
+      --ag-context-text-default:var(--foreground,#ececef);
+      --ag-speed-default:var(--secondary-foreground,#b8b8c0);
+      --ag-token-total-default:var(--secondary-foreground,#b8b8c0);
       --ag-token-accent-default:#a78bfa;
       --ag-accent-bg:rgba(167,139,250,0.14);
       --ag-accent-bg-hover:rgba(167,139,250,0.24);
@@ -202,6 +202,32 @@
 
       color-scheme:light;
       color:var(--ag-text-primary);
+    }
+
+    /* 顶栏透明控件按宿主实际标题栏明暗自适应，防止面板独立设深/浅时顶栏文字隐身 */
+    :host([data-host-theme="light"]){
+      --ag-toolbar-fg:#52525b;
+      --ag-toolbar-fg-hover:#18181b;
+      --ag-toolbar-bg-hover:rgba(0,0,0,0.06);
+      --ag-toolbar-bg-active:rgba(0,0,0,0.10);
+      --ag-toolbar-border-focus:rgba(0,0,0,0.35);
+      --ag-divider:rgba(0,0,0,0.08);
+      --ag-ring-track-default:rgba(0,0,0,0.18);
+      --ag-context-text-default:#18181b;
+      --ag-speed-default:#52525b;
+      --ag-token-total-default:#52525b;
+    }
+    :host([data-host-theme="dark"]){
+      --ag-toolbar-fg:#b8b8c0;
+      --ag-toolbar-fg-hover:#ececef;
+      --ag-toolbar-bg-hover:rgba(255,255,255,0.08);
+      --ag-toolbar-bg-active:rgba(255,255,255,0.12);
+      --ag-toolbar-border-focus:rgba(128,128,128,0.45);
+      --ag-divider:rgba(255,255,255,0.08);
+      --ag-ring-track-default:rgba(255,255,255,0.20);
+      --ag-context-text-default:#ececef;
+      --ag-speed-default:#b8b8c0;
+      --ag-token-total-default:#b8b8c0;
     }
 
     *{box-sizing:border-box}
@@ -552,7 +578,7 @@
     }
     .ctx-tip-pct{
       font-size:13px;line-height:1.38;font-weight:600;
-      color:var(--ag-custom-context-text,var(--ag-context-text-default));
+      color:var(--ag-custom-context-text,var(--ag-text-primary));
     }
     :host([data-occupancy="warn"]) .ctx-tip-pct{
       color:var(--ag-ring-warn);

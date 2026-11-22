@@ -67,9 +67,9 @@
       --ag-ring-warn:#f59e0b;
       --ag-ring-danger:#ef4444;
 
-      --ag-context-text-default:#ececef;
-      --ag-speed-default:#b8b8c0;
-      --ag-token-total-default:#b8b8c0;
+      --ag-context-text-default:var(--foreground,#ececef);
+      --ag-speed-default:var(--secondary-foreground,#b8b8c0);
+      --ag-token-total-default:var(--secondary-foreground,#b8b8c0);
       --ag-token-accent-default:#a78bfa;
       --ag-accent-bg:rgba(167,139,250,0.14);
       --ag-accent-bg-hover:rgba(167,139,250,0.24);
@@ -250,6 +250,32 @@
 
       color-scheme:light;
       color:var(--ag-text-primary);
+    }
+
+    /* 顶栏透明控件按宿主实际标题栏明暗自适应，防止面板独立设深/浅时顶栏文字隐身 */
+    :host([data-host-theme="light"]){
+      --ag-toolbar-fg:#52525b;
+      --ag-toolbar-fg-hover:#18181b;
+      --ag-toolbar-bg-hover:rgba(0,0,0,0.06);
+      --ag-toolbar-bg-active:rgba(0,0,0,0.10);
+      --ag-toolbar-border-focus:rgba(0,0,0,0.35);
+      --ag-divider:rgba(0,0,0,0.08);
+      --ag-ring-track-default:rgba(0,0,0,0.18);
+      --ag-context-text-default:#18181b;
+      --ag-speed-default:#52525b;
+      --ag-token-total-default:#52525b;
+    }
+    :host([data-host-theme="dark"]){
+      --ag-toolbar-fg:#b8b8c0;
+      --ag-toolbar-fg-hover:#ececef;
+      --ag-toolbar-bg-hover:rgba(255,255,255,0.08);
+      --ag-toolbar-bg-active:rgba(255,255,255,0.12);
+      --ag-toolbar-border-focus:rgba(128,128,128,0.45);
+      --ag-divider:rgba(255,255,255,0.08);
+      --ag-ring-track-default:rgba(255,255,255,0.20);
+      --ag-context-text-default:#ececef;
+      --ag-speed-default:#b8b8c0;
+      --ag-token-total-default:#b8b8c0;
     }
 
     *{box-sizing:border-box}
@@ -600,7 +626,7 @@
     }
     .ctx-tip-pct{
       font-size:13px;line-height:1.38;font-weight:600;
-      color:var(--ag-custom-context-text,var(--ag-context-text-default));
+      color:var(--ag-custom-context-text,var(--ag-text-primary));
     }
     :host([data-occupancy="warn"]) .ctx-tip-pct{
       color:var(--ag-ring-warn);
@@ -2139,6 +2165,83 @@
       justify-content:space-between;
       gap:8px;
     }
+    .settings-card-hdr-actions{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      flex-shrink:0;
+      flex-wrap:wrap;
+    }
+    #btn-test-dock-badge,#btn-dock-open-ax{
+      white-space:nowrap;
+    }
+    #btn-dock-open-ax[hidden]{
+      display:none!important;
+    }
+    #dock-badge-status-note{
+      flex:none;
+      white-space:normal;
+      overflow:visible;
+      text-overflow:clip;
+      padding:7px 10px;
+      border-radius:7px;
+      background:var(--ag-bg-subcard);
+      border:1px solid var(--ag-border-subcard);
+      color:var(--ag-text-secondary);
+      font-size:12px;
+      line-height:1.5;
+      text-wrap:pretty;
+    }
+    #dock-badge-status-note[data-tone="ok"]{
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+      color:var(--ag-text-primary);
+    }
+    #dock-badge-status-note[data-tone="warn"]{
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-ring-warn,#f59e0b);
+      color:var(--ag-text-warn,#fbbf24);
+    }
+    #dock-badge-status-note[data-tone="error"]{
+      background:var(--ag-bg-subcard);
+      border-color:var(--ag-ring-danger,#ef4444);
+      color:var(--ag-text-danger,#f87171);
+    }
+    .settings-advanced-details{
+      margin-top:4px;
+      border-top:1px solid var(--ag-border-subtle);
+      padding-top:8px;
+    }
+    .settings-advanced-details > summary{
+      font-size:12px;
+      font-weight:500;
+      color:var(--ag-text-secondary);
+      cursor:pointer;
+      user-select:none;
+      list-style:none;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:6px 8px;
+      border-radius:6px;
+      background:var(--ag-bg-subcard);
+      border:1px solid var(--ag-border-subcard);
+      transition:background-color .14s ease,color .14s ease,border-color .14s ease;
+    }
+    .settings-advanced-details > summary::-webkit-details-marker{
+      display:none;
+    }
+    .settings-advanced-details > summary:hover{
+      color:var(--ag-text-primary);
+      background:var(--ag-toolbar-bg-hover);
+      border-color:var(--ag-btn-border-hover);
+    }
+    .settings-advanced-details[open] > summary{
+      margin-bottom:8px;
+      color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+      background:var(--ag-accent-bg,rgba(167,139,250,0.14));
+      border-color:var(--ag-accent-border,rgba(167,139,250,0.34));
+    }
     .settings-card-title-wrap{
       display:inline-flex;
       align-items:center;
@@ -3083,7 +3186,7 @@
       .term-app-grid,.settings-feature-grid,.qp-row{grid-template-columns:minmax(0,1fr);}
     }
     @media (prefers-reduced-motion: reduce){
-      .settings-tab-btn,.term-option-card,.settings-feature-item,.qp-pool-chip,.qp-tpl-chip,.qp-autosend-btn,.qp-del-btn,.term-action-btn,.settings-checkbox,.settings-checkbox::after,.ag-rp-btn,.ag-rp-ch-cfg,.ag-rp-install-tab{
+      .settings-tab-btn,.term-option-card,.settings-feature-item,.qp-pool-chip,.qp-tpl-chip,.qp-autosend-btn,.qp-del-btn,.term-action-btn,.settings-checkbox,.settings-checkbox::after,.ag-rp-btn,.ag-rp-ch-cfg,.ag-rp-install-tab,.settings-advanced-details > summary{
         transition:none!important;
       }
       .ag-rp-spin{
@@ -4143,7 +4246,7 @@
     <div class="pop-val" id="heat-pop-val">2.47亿 个 Token</div>
     <div class="pop-det" id="heat-pop-det"></div>
   </div>
-<!-- 弹出式面板 3: Antigravity Suite 统一设置面板 (#panel-settings, 600px) -->
+<!-- 弹出式面板 3: Antigravity Suite 统一设置面板 (#panel-settings, 640px) -->
   <section id="panel-settings" class="ag-panel" hidden aria-label="套件统一设置">
     <div class="panel-header-bar">
       <div class="panel-title">
@@ -4158,19 +4261,101 @@
     </div>
 
     <div id="settings-tabs-bar" class="settings-tabs-bar" role="tablist" aria-label="设置分类">
-      <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="settings-pane-terminal" tabindex="0" data-settings-tab="terminal">🖥️ 终端与通用</button>
-      <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-appearance" tabindex="-1" data-settings-tab="appearance">🎨 外观与主题</button>
-      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-subscription" tabindex="-1" data-settings-tab="subscription">💎 套餐与订阅</button>
+      <button id="settings-tab-btn-appearance" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="settings-pane-appearance" tabindex="0" data-settings-tab="appearance">🌐 语言与外观</button>
       <button id="settings-tab-btn-remote" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-remote" tabindex="-1" data-settings-tab="remote">📱 远程设置</button>
-      <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-system" tabindex="-1" data-settings-tab="system">🌐 网络与高级</button>
+      <button id="settings-tab-btn-chat" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-chat" tabindex="-1" data-settings-tab="chat">⚡ 对话与效率</button>
+      <button id="settings-tab-btn-network" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-network" tabindex="-1" data-settings-tab="network">🧰 终端与网络</button>
+      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-subscription" tabindex="-1" data-settings-tab="subscription">📊 套餐与订阅</button>
     </div>
 
     <div id="settings-body" class="settings-body">
-      <!-- 分页 1: 终端与通用 -->
-      <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-terminal">
+      <!-- 分页 1: 语言与外观 -->
+      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-appearance">
+        <div id="settings-card-lang-appearance" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">语言与明暗外观</span>
+          </div>
+          <div class="settings-pref-list">
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">插件与客户端语言</span>
+                <span class="settings-pref-desc">同时切换主界面、设置面板、Dock 提醒及浮窗的显示语言</span>
+              </div>
+              <div class="settings-select-wrap">
+                <select id="set-ui-language-select" class="settings-select" aria-label="插件与客户端语言">
+                  <option value="zh-CN">简体中文 · Simplified Chinese</option>
+                  <option value="en">English · 英文原版</option>
+                </select>
+              </div>
+            </div>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">模式与档位名保留英文</span>
+                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名</span>
+              </div>
+              <input id="set-english-labels" type="checkbox" class="settings-checkbox" />
+            </label>
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">面板深浅外观</span>
+                <span class="settings-pref-desc">设置所有插件浮窗与设置面板的明暗配色</span>
+              </div>
+              <div class="source-switch-bar">
+                <button id="set-theme-auto" class="switch-pill-btn active" type="button">跟随客户端</button>
+                <button id="set-theme-light" class="switch-pill-btn" type="button">浅色</button>
+                <button id="set-theme-dark" class="switch-pill-btn" type="button">深色</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="settings-card-dock-badge" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">macOS Dock 未读与状态提醒</span>
+            <div class="settings-card-hdr-actions">
+              <button id="btn-test-dock-badge" class="switch-pill-btn" type="button" title="在 Dock 图标上短暂预览角标与状态胶囊效果">测试提醒</button>
+              <button id="btn-dock-open-ax" class="switch-pill-btn" type="button" hidden title="打开 macOS 系统设置，开启「辅助功能」权限以显示 Dock 图标提醒">前往开启权限</button>
+            </div>
+          </div>
+          <div id="dock-badge-status-note" class="settings-status-note">正在检查 macOS Dock 图标提醒状态…</div>
+          <div class="settings-pref-list">
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">启用 macOS Dock 图标提醒</span>
+                <span class="settings-pref-desc">不修改官方程序；后台有新回复、待审批或高危拦截时即时提醒，关闭后即彻底停用、不占后台资源</span>
+              </div>
+              <input id="set-dock-badge-enabled" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">提醒样式</span>
+                <span class="settings-pref-desc">带状态胶囊可在图标下方直观区分生成中、新回复与待审批；仅显示角标只在右上角显示数字（有待审批时优先显示待审批数）</span>
+              </div>
+              <div class="source-switch-bar" role="group" aria-label="提醒样式">
+                <button id="set-dock-style-capsule" class="switch-pill-btn active" type="button">带状态胶囊（推荐）</button>
+                <button id="set-dock-style-badge" class="switch-pill-btn" type="button">仅显示角标</button>
+              </div>
+            </div>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">用蓝 / 红区分未读与待审批</span>
+                <span class="settings-pref-desc">待审批与高危拦截用红色优先提醒，普通新回复用蓝色；关闭后全部显示为红色</span>
+              </div>
+              <input id="set-dock-badge-color-tier" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">切回窗口自动清除普通未读</span>
+                <span class="settings-pref-desc">切回 Antigravity 窗口即自动清除普通新回复提醒；待审批与高危红标会保留，直到你处理完成</span>
+              </div>
+              <input id="set-dock-badge-autoclear" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+
         <div id="settings-card-features" class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">功能显示开关</span>
+            <span class="settings-card-title">桌面功能显示开关</span>
             <button id="btn-reset-feature-toggles" class="switch-pill-btn" type="button" title="恢复显示全部顶栏入口与对话区挂件">全部恢复显示</button>
           </div>
           <div class="settings-card-desc">按需开启或隐藏顶栏入口与对话区挂件，点击立即生效。</div>
@@ -4202,14 +4387,91 @@
           </div>
         </div>
 
+        <div class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">主题色系与热力图配色</span>
+            <button id="btn-toggle-heat-advanced" class="switch-pill-btn" type="button">高级色阶微调 ▼</button>
+          </div>
+          <div class="settings-card-desc">切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。</div>
+          <div id="settings-slot-heatmap-colors"></div>
+          <details id="settings-meter-colors-details" class="settings-advanced-details">
+            <summary>自定义强调色与顶栏分项配色</summary>
+            <div id="settings-slot-meter-colors"></div>
+          </details>
+        </div>
+      </div>
+
+      <!-- 分页 2: 远程设置 -->
+      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-remote" hidden>
+        <div id="settings-card-remote-channels" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">远程通道与隧道</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button id="btn-settings-remote-refresh" class="switch-pill-btn" type="button" title="刷新远程连接通道与隧道状态">刷新状态</button>
+              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对口令，旧链接与已配对设备将失效">重置配对口令</button>
+            </div>
+          </div>
+          <div class="settings-card-desc">默认已开启免登录公网通道，点顶部「远程」图标即可用手机扫码连接。如需绑定自己的固定域名，可在下方展开配置。</div>
+          <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
+        </div>
+
+        <div id="settings-card-remote-display" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">手机远程页面显示内容</span>
+            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复手机远程页面默认显示的全部模块">恢复默认</button>
+          </div>
+          <div class="settings-card-desc">自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。</div>
+          <div class="settings-feature-grid">
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部上下文窗口面板</span>
+              <input id="set-remote-ctx-panel" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：历史用量统计面板</span>
+              <input id="set-remote-usage-panel" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部模型配额胶囊</span>
+              <input id="set-remote-quota-pill" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：当前连接方式提示</span>
+              <input id="set-remote-channel-meta" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">左侧会话列表栏</span>
+              <input id="set-remote-sidebar" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">AI 思考过程折叠区</span>
+              <input id="set-remote-thinking" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">底部快捷操作与下一步建议</span>
+              <input id="set-remote-quick-chips" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">输入区工具栏（模型/权限等）</span>
+              <input id="set-remote-composer-tools" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">待审批操作提醒横幅</span>
+              <input id="set-remote-approvals" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分页 3: 对话与效率 -->
+      <div id="settings-pane-chat" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-chat" hidden>
         <div id="settings-card-quick-prompts" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">快捷提示词</span>
             <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
           </div>
-          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。</div>
+          <div class="settings-card-desc">从内置常用指令中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。</div>
           <div class="settings-field-lbl" style="margin:2px 0 6px;">内置快捷按钮（点击开启或关闭 · 悬停查看说明）</div>
-          <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置快捷按钮推荐池"></div>
+          <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置常用指令"></div>
           <div id="quick-builtin-info-box" class="qp-info-box" role="region" aria-label="内置指令实时解读">
             <div class="qp-info-top">
               <div class="qp-info-title-wrap">
@@ -4225,7 +4487,7 @@
           <label class="settings-pref-row settings-pref-check" style="margin:6px 0 4px;">
             <div class="settings-pref-meta">
               <span class="settings-pref-name">点击内置快捷指令时直接发送</span>
-              <span class="settings-pref-desc">开启后点击「/compact 压缩」或「重载规则」会直接发送（需补充参数的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换</span>
+              <span class="settings-pref-desc">开启后点击「/compact 压缩」或「重载规则」会直接发送（需要补充内容的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换</span>
             </div>
             <input id="set-quick-builtin-autosend" type="checkbox" class="settings-checkbox" />
           </label>
@@ -4233,7 +4495,7 @@
             <span id="quick-custom-section-hdr" class="settings-field-lbl">自定义快捷提示词</span>
             <button id="btn-add-quick-prompt" class="switch-pill-btn qp-add-btn" type="button" title="添加一条快捷提示词">+ 新增</button>
           </div>
-          <div id="quick-custom-mode-hint" class="qp-custom-hint">填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）</div>
+          <div id="quick-custom-mode-hint" class="qp-custom-hint">填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时切换）</div>
           <div id="quick-popular-templates" class="qp-tpl-bar" role="group" aria-label="热门模板"></div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
@@ -4242,6 +4504,38 @@
           </div>
         </div>
 
+        <div id="settings-card-chat-policy" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">对话自动化与安全策略</span>
+          </div>
+          <div class="settings-pref-list">
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">自动确认安全操作 (Auto-Accept)</span>
+                <span class="settings-pref-desc">自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截</span>
+              </div>
+              <input id="set-auto-accept" type="checkbox" class="settings-checkbox" />
+            </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">输入框智能追问建议 (Tab / →)</span>
+                <span class="settings-pref-desc">回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入</span>
+              </div>
+              <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">240K 自动压缩防卡顿</span>
+                <span class="settings-pref-desc">官方默认满 512K 才整理，对话过长后稍作停顿就容易卡顿数分钟。开启后，上下文满 240K 或发生缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩历史</span>
+              </div>
+              <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分页 4: 终端与网络 -->
+      <div id="settings-pane-network" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-network" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
             <div class="settings-card-title-wrap">
@@ -4263,8 +4557,8 @@
           <div id="cli-launch-options-box" class="term-custom-box" data-active="true" style="gap:7px;">
             <label class="settings-pref-row settings-pref-check" style="margin:0;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">CLI 自动批准工具权限</span>
-                <span class="settings-pref-desc">启动命令行终端时自动批准工具调用，无需每次手动确认</span>
+                <span class="settings-pref-name">CLI 自动批准工具权限（免确认）</span>
+                <span class="settings-pref-desc">在命令行启动时自动放行文件修改与命令执行，不再逐次弹窗确认；仅建议在受信任项目开启</span>
               </div>
               <input id="set-cli-skip-permissions" type="checkbox" class="settings-checkbox" />
             </label>
@@ -4303,7 +4597,8 @@
               </div>
             </div>
             <div id="cli-custom-model-row" class="term-custom-row" style="display:none;">
-              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入模型 ID（留空则跟随 CLI 默认配置）" />
+              <label for="input-cli-custom-model" class="settings-field-lbl" style="flex:0 0 100%;">自定义模型名称（留空则跟随默认配置）</label>
+              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="例如：gemini-3.8-flash-high" />
               <button id="btn-save-cli-model" class="unlock-btn unlock-btn-primary" type="button">保存模型</button>
             </div>
             <div id="cli-mux-host-pref-row" class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
@@ -4319,7 +4614,8 @@
               </div>
             </div>
             <div id="cli-custom-mux-host-row" class="term-custom-row" style="display:none;">
-              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="输入远程主机名或连接标识（留空代表当前电脑）" />
+              <label for="input-cli-mux-host" class="settings-field-lbl" style="flex:0 0 100%;">远程主机名称（留空则在当前电脑运行）</label>
+              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="例如：my-server 或 SSH 主机名" />
               <button id="btn-save-cli-mux-host" class="unlock-btn unlock-btn-primary" type="button">保存主机</button>
             </div>
           </div>
@@ -4331,84 +4627,14 @@
 
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">界面与对话增强偏好</span>
+            <span class="settings-card-title">本地代理直连（无需开启全局代理 / TUN）</span>
+            <span id="settings-slot-proxy-badge"></span>
           </div>
-          <div class="settings-pref-list">
-            <div class="settings-pref-row">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">面板深浅外观</span>
-                <span class="settings-pref-desc">设置所有插件浮窗与设置面板的明暗配色</span>
-              </div>
-              <div class="source-switch-bar">
-                <button id="set-theme-auto" class="switch-pill-btn active" type="button">跟随客户端</button>
-                <button id="set-theme-light" class="switch-pill-btn" type="button">浅色</button>
-                <button id="set-theme-dark" class="switch-pill-btn" type="button">深色</button>
-              </div>
-            </div>
-            <label class="settings-pref-row settings-pref-check">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">自动确认安全操作 (Auto-Accept)</span>
-                <span class="settings-pref-desc">自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截</span>
-              </div>
-              <input id="set-auto-accept" type="checkbox" class="settings-checkbox" />
-            </label>
-            <label class="settings-pref-row settings-pref-check">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">输入框智能追问建议 (Tab / →)</span>
-                <span class="settings-pref-desc">回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入</span>
-              </div>
-              <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-pref-row settings-pref-check">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">240K 自动压缩防卡顿</span>
-                <span class="settings-pref-desc">官方默认到 512K 才压缩，对话过长后停顿易导致缓存失效、每步卡顿数分钟。开启后，上下文满 240K 或缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩</span>
-              </div>
-              <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <div class="settings-pref-row">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">插件与客户端语言</span>
-                <span class="settings-pref-desc">同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言</span>
-              </div>
-              <div class="settings-select-wrap">
-                <select id="set-ui-language-select" class="settings-select" aria-label="插件与客户端语言">
-                  <option value="zh-CN">简体中文 · Simplified Chinese</option>
-                  <option value="en">English · 英文原版</option>
-                </select>
-              </div>
-            </div>
-            <label class="settings-pref-row settings-pref-check">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">模式与档位名保留英文</span>
-                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名</span>
-              </div>
-              <input id="set-english-labels" type="checkbox" class="settings-checkbox" />
-            </label>
-          </div>
+          <div id="settings-slot-proxy"></div>
         </div>
       </div>
 
-      <!-- 分页 2: 外观与主题 -->
-      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-appearance" hidden>
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">主题色系与热力图配色</span>
-            <button id="btn-toggle-heat-advanced" class="switch-pill-btn" type="button">高级色阶微调 ▼</button>
-          </div>
-          <div class="settings-card-desc">切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。</div>
-          <div id="settings-slot-heatmap-colors"></div>
-        </div>
-
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">全局强调色与顶部栏分项配色</span>
-          </div>
-          <div id="settings-slot-meter-colors"></div>
-        </div>
-      </div>
-
-      <!-- 分页 3: 套餐与订阅 -->
+      <!-- 分页 5: 套餐与订阅 -->
       <div id="settings-pane-subscription" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-subscription" hidden>
         <div class="settings-card-box">
           <div id="settings-sub-summary-bar" class="settings-sub-preview-bar">
@@ -4436,78 +4662,6 @@
           </dl>
 
           <div id="settings-slot-custom-plan-form"></div>
-        </div>
-      </div>
-
-      <!-- 分页 4: 远程设置 -->
-      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-remote" hidden>
-        <div id="settings-card-remote-channels" class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">远程通道与隧道</span>
-            <div style="display:flex;align-items:center;gap:6px;">
-              <button id="btn-settings-remote-refresh" class="switch-pill-btn" type="button" title="刷新远程连接通道与隧道状态">刷新状态</button>
-              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对口令，旧链接与已配对设备将失效">重置配对口令</button>
-            </div>
-          </div>
-          <div class="settings-card-desc">管理手机远程访问通道与配对口令；已默认开启免登录临时公网通道（开箱即用），如需绑定自己的固定域名可展开配置，也可随时点顶部「远程」图标扫码连接。</div>
-          <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
-        </div>
-
-        <div id="settings-card-remote-display" class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">手机远程页面显示内容</span>
-            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复手机远程页面默认显示的全部模块">恢复默认</button>
-          </div>
-          <div class="settings-card-desc">自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。</div>
-          <div class="settings-feature-grid">
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部上下文窗口面板</span>
-              <input id="set-remote-ctx-panel" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部桌面端已记录用量面板</span>
-              <input id="set-remote-usage-panel" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部模型配额胶囊</span>
-              <input id="set-remote-quota-pill" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部通道连接状态副标题</span>
-              <input id="set-remote-channel-meta" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">左侧会话与窗口抽屉</span>
-              <input id="set-remote-sidebar" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">AI 思考过程折叠区</span>
-              <input id="set-remote-thinking" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">底部快捷操作与下一步建议</span>
-              <input id="set-remote-quick-chips" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">输入区工具栏（模型/权限等）</span>
-              <input id="set-remote-composer-tools" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">待审批操作提醒横幅</span>
-              <input id="set-remote-approvals" type="checkbox" class="settings-checkbox" checked />
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <!-- 分页 5: 网络与高级 -->
-      <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-system" hidden>
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">本地代理直连（无需开启全局代理 / TUN）</span>
-            <span id="settings-slot-proxy-badge"></span>
-          </div>
-          <div id="settings-slot-proxy"></div>
         </div>
       </div>
     </div>
@@ -4881,15 +5035,20 @@
     try {
       const body = document.body;
       const doc = document.documentElement;
-      if (body?.classList?.contains('theme-light') || body?.classList?.contains('light') || doc?.classList?.contains('light') || body?.classList?.contains('vscode-light')) return 'light';
-      if (body?.classList?.contains('theme-dark') || body?.classList?.contains('dark') || doc?.classList?.contains('dark') || body?.classList?.contains('vscode-dark')) return 'dark';
+      const docAttr = doc?.getAttribute?.('data-theme');
+      if (docAttr === 'light' || body?.classList?.contains('theme-light') || body?.classList?.contains('light') || doc?.classList?.contains('light') || body?.classList?.contains('vscode-light')) return 'light';
+      if (docAttr === 'dark' || body?.classList?.contains('theme-dark') || body?.classList?.contains('dark') || doc?.classList?.contains('dark') || body?.classList?.contains('vscode-dark')) return 'dark';
       if (doc?.style?.colorScheme === 'light') return 'light';
       if (doc?.style?.colorScheme === 'dark') return 'dark';
-      if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function' && (body || doc)) {
-        const cs = window.getComputedStyle(body || doc);
-        const bgVar = cs.getPropertyValue('--background') || cs.backgroundColor;
-        const lum = parseRgbLuminance(bgVar);
-        if (lum != null) return lum > 0.55 ? 'light' : 'dark';
+      if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+        for (const el of [body, doc].filter(Boolean)) {
+          const cs = window.getComputedStyle(el);
+          for (const raw of [cs?.getPropertyValue?.('--background')?.trim(), cs?.backgroundColor?.trim()]) {
+            if (!raw) continue;
+            const lum = parseRgbLuminance(raw);
+            if (lum != null) return lum > 0.55 ? 'light' : 'dark';
+          }
+        }
       }
       if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
         if (window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
@@ -5157,7 +5316,10 @@
 
   function applyTheme() {
     const activeTheme = resolveTheme();
+    const hostTheme = getSystemTheme();
     host.setAttribute('data-theme', activeTheme);
+    host.setAttribute('data-host-theme', hostTheme);
+    host.setAttribute('data-theme-mode', currentThemeMode);
     const hostBg = getHostZeroLevelBg(activeTheme === 'light');
     host.style.setProperty('--ag-host-bg', hostBg);
     const btns = [el('theme-toggle'), el('theme-toggle-tokens')].filter(Boolean);
@@ -5217,7 +5379,13 @@
   try {
     if (typeof MutationObserver !== 'undefined' && document.body) {
       themeObserver = new MutationObserver(() => {
-        if (currentThemeMode === 'auto') applyTheme();
+        const prevTheme = host.getAttribute('data-theme');
+        const prevHostTheme = host.getAttribute('data-host-theme');
+        applyTheme();
+        if ((host.getAttribute('data-theme') !== prevTheme || host.getAttribute('data-host-theme') !== prevHostTheme)
+          && typeof dispatchSuitePrefsChanged === 'function') {
+          dispatchSuitePrefsChanged();
+        }
       });
       themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
       if (document.documentElement) {
@@ -11633,7 +11801,9 @@ function positionHeatPopover(anchorX, anchorY) {
 // =========================================================================
   // 模块 5: 统一设置面板、配置项无损迁移、终端与 CLI 启动、多语言注册表
   // =========================================================================
-  let activeSettingsTab = 'terminal';
+  const SETTINGS_TAB_ORDER = ['appearance', 'remote', 'chat', 'network', 'subscription'];
+  const SETTINGS_TAB_ALIASES = { terminal: 'network', system: 'network' };
+  let activeSettingsTab = 'appearance';
   let suiteConfigTransplanted = false;
   let suiteDropdownsEnhanced = false;
   let uiLangDropdown = null;
@@ -11642,6 +11812,34 @@ function positionHeatPopover(anchorX, anchorY) {
 
   const SUITE_EN_UI_DICT = {
     'Antigravity Suite 统一设置': 'Antigravity Suite Settings',
+    '套件统一设置': 'Suite Settings',
+    '关闭设置': 'Close Settings',
+    '设置分类': 'Settings Categories',
+    '🌐 语言与外观': '🌐 Language & Appearance',
+    '📱 远程设置': '📱 Remote',
+    '⚡ 对话与效率': '⚡ Chat & Efficiency',
+    '🧰 终端与网络': '🧰 Terminal & Network',
+    '📊 套餐与订阅': '📊 Plan & Subscription',
+    '语言与明暗外观': 'Language & Appearance',
+    '桌面功能显示开关': 'Desktop Feature Toggles',
+    '对话自动化与安全策略': 'Chat Automation & Safety',
+    '自定义强调色与顶栏分项配色': 'Custom Accent & Topbar Colors',
+    'macOS Dock 未读与状态提醒': 'macOS Dock Unread & Status Alerts',
+    '测试提醒': 'Test Alert',
+    '在 Dock 图标上短暂预览角标与状态胶囊效果': 'Preview badge and status capsule briefly on the Dock icon',
+    '前往开启权限': 'Grant Access',
+    '打开 macOS 系统设置，开启「辅助功能」权限以显示 Dock 图标提醒': 'Open macOS System Settings and enable Accessibility permission to show Dock icon alerts',
+    '正在检查 macOS Dock 图标提醒状态…': 'Checking macOS Dock icon alert status…',
+    '启用 macOS Dock 图标提醒': 'Enable macOS Dock Icon Alerts',
+    '不修改官方程序；后台有新回复、待审批或高危拦截时即时提醒，关闭后即彻底停用、不占后台资源': 'Does not modify the official app; alerts immediately on background replies, pending approvals, or high-risk blocks, and uses zero resources when disabled',
+    '提醒样式': 'Alert Style',
+    '带状态胶囊可在图标下方直观区分生成中、新回复与待审批；仅显示角标只在右上角显示数字（有待审批时优先显示待审批数）': 'Status capsule shows Working, Unread, and Approve states below the icon; badge-only shows the corner count (approvals take priority)',
+    '带状态胶囊（推荐）': 'Status Capsule (Recommended)',
+    '仅显示角标': 'Badge Only',
+    '用蓝 / 红区分未读与待审批': 'Use Blue for Unread & Red for Approvals',
+    '待审批与高危拦截用红色优先提醒，普通新回复用蓝色；关闭后全部显示为红色': 'Approvals and high-risk blocks highlight in red with priority, while normal unread replies use blue; when off, all alerts show in red',
+    '切回窗口自动清除普通未读': 'Auto-Clear Normal Unread on Focus',
+    '切回 Antigravity 窗口即自动清除普通新回复提醒；待审批与高危红标会保留，直到你处理完成': 'Automatically clears normal unread alerts when returning to Antigravity; red approval and high-risk alerts stay until resolved',
     '🖥️ 终端与通用': '🖥️ Terminal & General',
     '🎨 外观与主题': '🎨 Appearance & Theme',
     '💎 套餐与订阅': '💎 Plan & Subscription',
@@ -11752,7 +11950,7 @@ function positionHeatPopover(anchorX, anchorY) {
     '终端连接目标（本机 / 远程服务器）': 'Terminal Target Host (Local / Remote)',
     '终端连接目标': 'Terminal Target Host',
     '仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在本机或远程服务器上启动 agy': 'Applies to Rex, WezTerm, or tmux: choose Local or a remote server to launch agy',
-    '本机（当前电脑）': 'Local (This Mac)',
+    '本机（当前电脑）': 'Local (This Computer)',
     '自定义远程主机名…': 'Custom Remote Host…',
     '面板深浅外观': 'Appearance Theme',
     '设置所有插件浮窗与设置面板的明暗配色': 'Configure light/dark appearance for all popovers and settings panels',
@@ -11761,10 +11959,8 @@ function positionHeatPopover(anchorX, anchorY) {
     '自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截': 'Auto-click safe Proceed / Accept buttons while blocking high-risk commands',
     '输入框智能追问建议 (Tab / →)': 'Smart Follow-up Suggestions (Tab / →)',
     '回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入': 'Show follow-up prompt suggestions in composer after responses (Tab or → to fill)',
-    '长上下文防卡死自动压缩 (240K Auto-Compact)': 'Auto-Compact Long Context (240K Anti-Stall)',
-    '官方默认到 512K 才自动压缩，但超过 250K~330K 后一旦服务端缓存过期（如停顿超 3 分钟）就会每步重算 4~5 分钟并狂耗配额。开启后，当本轮回答结束且输入框为空时，若上下文已达 240K 或发生缓存脱落，将自动发送 /compact 提前压缩': 'Client waits until 512K to auto-compact, risking 4-5m 0-cache stalls above 250K. When enabled, auto-sends /compact after a reply finishes if context reaches 240K or cache drops',
     '插件与客户端语言': 'Plugin & Client Language',
-    '同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言': 'Switch client UI localization, panels, and context capsule language together',
+    '同时切换主界面、设置面板、Dock 提醒及浮窗的显示语言': 'Switch main interface, settings, Dock alerts, and popovers together',
     '模式与档位名保留英文': 'Keep Mode & Effort Names in English',
     '中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名': 'Keep original English names (Default / Auto / Turbo / Effort) under Chinese UI',
     '主题色系与热力图配色': 'Theme Palette & Heatmap Colors',
@@ -11873,7 +12069,6 @@ function positionHeatPopover(anchorX, anchorY) {
     '剩余可用': 'Remaining',
     '⚡ 最新生成速度与耗时': '⚡ Output Speed & Latency',
     '待生成': 'Idle',
-    '输出速度': 'Speed',
     '生成耗时': 'Duration',
     '首字延迟': 'TTFT',
     '本次输出': 'Tokens',
@@ -11901,7 +12096,6 @@ function positionHeatPopover(anchorX, anchorY) {
     '年度使用': 'This Year',
     '本年': 'Year',
     '全年': 'Year',
-    '读取中...': 'Loading...',
     'Token 活动': 'Token Activity',
     '每天': 'Daily',
     '每周': 'Weekly',
@@ -11928,35 +12122,29 @@ function positionHeatPopover(anchorX, anchorY) {
     '拉取最新提交并免重启热生效': 'Pull latest commits and hot-reload without restart',
     '打开 Antigravity Suite 统一设置面板': 'Open Antigravity Suite Settings',
     '发现新版本，点击打开设置一键更新': 'Update available — click to open Settings and update',
-    '📱 远程设置': '📱 Remote',
     '远程通道与隧道': 'Remote Channels & Tunnel',
     '刷新状态': 'Refresh',
     '重置令牌': 'Reset Token',
     'Remote 页面显示内容': 'Remote Page Visibility',
     '恢复默认': 'Reset Default',
     '顶部上下文窗口面板': 'Topbar Context Window Panel',
-    '顶部本机已记录用量面板': 'Topbar Local Usage Panel',
+    '顶部：历史用量统计面板': 'Topbar: Usage History Panel',
     '顶部模型配额胶囊': 'Topbar Model Quota Pill',
-    '顶部通道连接状态副标题': 'Topbar Channel Meta Subtitle',
-    '左侧会话与窗口抽屉': 'Conversation & Window Drawer',
+    '顶部：当前连接方式提示': 'Topbar: Connection Status Hint',
+    '左侧会话列表栏': 'Left Conversation Sidebar',
     'AI 思考过程折叠区': 'Collapsible Thinking Process',
     '底部快捷操作与下一步建议': 'Bottom Quick Chips & Suggestions',
     '输入区工具栏（模型/权限等）': 'Composer Tools (Model / Perms / Upload)',
     '待审批操作提醒横幅': 'Pending Approvals Banner',
     '快捷提示词': 'Quick Prompts',
-    '内置推荐池（点击开关显示 / 隐藏 · 悬停查看指令解读）': 'Built-in Pool (click to toggle · hover to view guide)',
-    '内置推荐池（点击开关显示 / 隐藏）': 'Built-in Pool (click to toggle)',
+    '内置常用指令': 'Built-in commands',
     '💡 指令解读': '💡 Command Guide',
-    '内置免参指令点击直接发送': 'Auto-send built-in no-arg commands',
-    '开启后点击 /compact 压缩、重载规则将直接发送（/plan 等带参前缀仍仅填入）；按住 ⌘/Ctrl 点击可临时反转行为': 'Auto-send /compact and Reload Rules on click (parameterized commands like /plan still insert only); hold ⌘/Ctrl + click to invert',
     '⚡直发': '⚡Send',
     '填入': 'Insert',
     '自定义快捷提示词': 'Custom Quick Prompts',
-    '填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）': 'Insert: fills the composer so you can paste errors/details before sending · ⚡Send: sends immediately on click (auto-guards existing drafts; hold ⌘/Ctrl + click to invert)',
+    '填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时切换）': 'Insert: fills the composer so you can paste errors/details before sending · ⚡Send: sends immediately on click (auto-guards existing drafts; hold ⌘/Ctrl + click to toggle)',
     '暂无自定义快捷提示词，点击右上角「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" above to create one.',
     '暂无自定义快捷提示词，点击右侧「+ 新增」可自由添加': 'No custom prompts yet. Click "+ Add" on the right to create one.',
-    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可点击「+ 新增」添加自定义提示词。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" for custom prompts.',
-    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即开关，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" below for custom prompts.',
     '+ 新增': '+ Add',
     '热门对话口令模板': 'Popular Quick Prompt Templates',
     '热门口令：': 'Popular:',
@@ -11974,28 +12162,28 @@ function positionHeatPopover(anchorX, anchorY) {
     '前往 Cloudflare 获取 Token →': 'Get Token on Cloudflare →',
     '保存并启用': 'Save & Enable',
     '改用免登录临时隧道': 'Use Quick Tunnel',
-    '取消': 'Cancel',
     '下载最新版本并立即生效，无需重启': 'Download the latest release and apply immediately without restart',
     '内置快捷按钮（点击开启或关闭 · 悬停查看说明）': 'Built-in Quick Buttons (click to toggle · hover for guide)',
-    '从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Click items in the built-in pool to toggle composer quick bar buttons (non-deletable); use "+ Add" below for custom prompts.',
+    '从内置常用指令中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。': 'Pick from built-in commands to display above the composer (click to toggle, non-deletable), or add your own under "Custom Quick Prompts" below.',
     '点击内置快捷指令时直接发送': 'Send built-in quick commands immediately',
-    '开启后点击「/compact 压缩」或「重载规则」会直接发送（需补充参数的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换': 'Send /compact and Reload Rules immediately on click (commands needing arguments still insert only); hold ⌘/Ctrl + click to toggle',
-    'CLI 自动批准工具权限': 'Auto-Approve CLI Tool Permissions',
-    '启动命令行终端时自动批准工具调用，无需每次手动确认': 'Automatically approve tool calls when launching CLI without manual prompts',
+    '开启后点击「/compact 压缩」或「重载规则」会直接发送（需要补充内容的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换': 'Send /compact and Reload Rules immediately on click (commands needing extra input still insert only); hold ⌘/Ctrl + click to toggle',
+    'CLI 自动批准工具权限（免确认）': 'Auto-Approve CLI Tool Permissions (Skip Prompts)',
+    '在命令行启动时自动放行文件修改与命令执行，不再逐次弹窗确认；仅建议在受信任项目开启': 'Automatically allow file edits and command runs without prompts when launching CLI; recommended only for trusted projects',
     '指定启动命令行终端时默认使用的模型；选「不指定」则跟随 CLI 默认配置': 'Select the default model for CLI launch, or choose Unspecified to follow CLI defaults',
-    '输入模型 ID（留空则跟随 CLI 默认配置）': 'Enter model ID (leave blank for CLI default)',
+    '自定义模型名称（留空则跟随默认配置）': 'Custom Model Name (leave blank for default)',
+    '例如：gemini-3.8-flash-high': 'e.g. gemini-3.8-flash-high',
     '终端连接目标（电脑端 / 远程服务器）': 'Terminal Target (Desktop / Remote Server)',
     '仅在使用 Rex、WezTerm 或 tmux 时生效：可选择在当前电脑或远程服务器上启动终端': 'Applies to Rex, WezTerm, or tmux: launch terminal on this desktop or a remote server',
-    '输入远程主机名或连接标识（留空代表当前电脑）': 'Enter remote host or domain (leave blank for this computer)',
+    '远程主机名称（留空则在当前电脑运行）': 'Remote Host Name (leave blank to run locally)',
+    '例如：my-server 或 SSH 主机名': 'e.g. my-server or SSH host',
     '240K 自动压缩防卡顿': '240K Auto-Compact Anti-Stall',
-    '官方默认到 512K 才压缩，对话过长后停顿易导致缓存失效、每步卡顿数分钟。开启后，上下文满 240K 或缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩': 'Official default waits until 512K, risking cache expiry and multi-minute stalls after pauses. Auto-sends /compact after replies when context reaches 240K or cache drops',
+    '官方默认满 512K 才整理，对话过长后稍作停顿就容易卡顿数分钟。开启后，上下文满 240K 或发生缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩历史': 'Official default waits until 512K to organize context, risking multi-minute stalls after pauses. Auto-sends /compact after replies when context reaches 240K or cache drops',
     '重置配对口令': 'Reset Pairing Passcode',
     '重新生成配对口令，旧链接与已配对设备将失效': 'Regenerate pairing passcode (invalidates old links & paired devices)',
-    '管理手机远程访问通道与配对口令；已默认开启免登录临时公网通道（开箱即用），如需绑定自己的固定域名可展开配置，也可随时点顶部「远程」图标扫码连接。': 'Manage mobile remote channels & pairing passcode. Zero-config public tunnel is enabled by default; expand to bind a custom domain or scan QR from the topbar Remote icon.',
+    '默认已开启免登录公网通道，点顶部「远程」图标即可用手机扫码连接。如需绑定自己的固定域名，可在下方展开配置。': 'Zero-login public tunnel is enabled by default — click the topbar Remote icon to scan QR and connect. Expand below to bind a custom fixed domain.',
     '手机远程页面显示内容': 'Mobile Remote Page Visibility',
     '恢复手机远程页面默认显示的全部模块': 'Restore default visible modules on mobile remote page',
     '自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。': 'Customize modules shown on the mobile/browser remote page; changes save and apply immediately.',
-    '顶部桌面端已记录用量面板': 'Topbar Desktop Usage Panel',
     '本地代理直连（无需开启全局代理 / TUN）': 'Local Proxy Direct Connect (No Global Proxy / TUN)',
     '🌐 本地代理直连（无需开启全局代理 / TUN）': '🌐 Local Proxy Direct Connect (No Global Proxy / TUN)',
     '不走代理的地址（本机地址默认直连）：': 'Bypass Proxy Addresses (Localhost Direct):',
@@ -12006,15 +12194,34 @@ function positionHeatPopover(anchorX, anchorY) {
     '注：此处按公开 API 单价折算同等用量，仅供价值参考。包月订阅或活动赠送与按量付费不同，差额不代表实际省下的现金；缓存读取按 1 折估算，不含缓存存储费；同一上下文在多轮中会重复计入缓存读取，总量不代表实际输入字数。': 'Note: Converted at public API rates for value reference only. Subscriptions/promos differ from pay-as-you-go; difference is not cash saved. Cache reads use 10% rate (excl. cache storage) and may count shared context across turns.',
     '说明：每日统计按基础费率估算（未单独拆分长上下文阶梯价），实际金额可能略高；若有逐次请求记录则优先按实计算。': 'Note: Daily estimates use base-tier rates without long-context tiering (actuals may be slightly higher); per-request logs use exact pricing when available.',
     '创建后台定时巡检或一次性倒计时提醒任务，到点自动唤醒。': 'Schedule a background periodic check or one-time timer reminder.',
-    '一键提取并复制当前对话窗口的会话 ID。': 'Extract and copy the current conversation ID to the clipboard.'
+    '一键提取并复制当前对话窗口的会话 ID。': 'Extract and copy the current conversation ID to the clipboard.',
+    '刷新远程连接通道与隧道状态': 'Refresh remote channels and tunnel status',
+    '恢复默认快捷提示词': 'Reset to default quick prompts',
+    '内置指令实时解读': 'Built-in command guide',
+    '添加一条快捷提示词': 'Add a custom quick prompt',
+    '重新扫描本机已安装的终端程序': 'Rescan locally installed terminal apps',
+    '输入或选择可执行程序路径（如 /Applications/Ghostty.app 或 C:\\Program Files\\Git\\git-bash.exe）': 'Enter or browse executable path (e.g. /Applications/Ghostty.app or C:\\Program Files\\Git\\git-bash.exe)',
+    '在当前项目目录尝试打开所选终端以验证路径与权限': 'Try launching the selected terminal in the current project directory',
+    'GitHub 仓库有新提交': 'New commits available on GitHub',
+    '当前为手动安装版，暂不支持在线一键更新，如需更新请前往项目页下载新版覆盖安装': 'Manual installation does not support one-click updates; download the latest release from the project page to update',
+    '当前版本与仓库同步': 'Current version is up to date',
+    '已完成热更新': 'Updated and applied immediately',
+    '更新未完成（当前版本与配置不受影响），请检查网络或代理后重试': 'Update incomplete (your current version and settings are safe); check your network or proxy and try again',
+    '暂时无法连接更新服务器，请检查网络或代理设置后重试': 'Unable to reach the update server; check your network or proxy and try again'
   };
 
   function translateSuiteDynamicFragmentEn(fragment) {
     return String(fragment || '')
+      .replace(/Terminal\s*\(系统终端\)/g, 'Terminal (System)')
+      .replace(/CMD\s*\(命令提示符\)/g, 'CMD (Command Prompt)')
+      .replace(/WSL\s*\(Linux 子系统\)/g, 'WSL (Linux Subsystem)')
+      .replace(/tmux\s*\(多路复用器\)/g, 'tmux (Multiplexer)')
+      .replace(/原生居中控制台/g, 'Native Centered Console')
       .replace(/自动默认\s*\(([^)]+)\)/g, 'Auto Default ($1)')
       .replace(/自定义程序路径/g, 'Custom Path')
       .replace(/未设置路径/g, 'No path set')
       .replace(/系统默认/g, 'System Default')
+      .replace(/默认目录/g, 'Default Folder')
       .replace(/模型:\s*默认/g, 'Model: Default')
       .replace(/模型:/g, 'Model:')
       .replace(/主机:\s*本机/g, 'Host: Local')
@@ -12027,8 +12234,8 @@ function positionHeatPopover(anchorX, anchorY) {
     [/^当前使用：([\s\S]+)$/, (_, rest) => `Active: ${translateSuiteDynamicFragmentEn(rest)}`],
     [/^当前套餐：([\s\S]+)$/, (_, rest) => `Current Plan: ${rest}`],
     [/^首次使用：([\s\S]+)$/, (_, rest) => `First used: ${rest}`],
-    [/^✅ 测试启动成功：([\s\S]+)$/, (_, rest) => `✅ Test launch succeeded: ${rest}`],
-    [/^✖ 测试启动失败：([\s\S]+)$/, (_, rest) => `✖ Test launch failed: ${rest}`],
+    [/^✅ 测试启动成功：([\s\S]+)$/, (_, rest) => `✅ Test launch succeeded: ${translateSuiteDynamicFragmentEn(rest)}`],
+    [/^✖ 测试启动失败：([\s\S]+)$/, (_, rest) => `✖ Test launch failed: ${translateSuiteDynamicFragmentEn(rest)}`],
     [/^(\d[\d,]*) 会话实时累加$/, '$1 sessions tracked'],
     [/^日均约 ([\s\S]+)$/, 'Daily avg ~$1'],
     [/^(\d[\d,]*) 天活动记录$/, '$1 active days'],
@@ -12043,8 +12250,20 @@ function positionHeatPopover(anchorX, anchorY) {
     [/^v([^\s(]+)\s*·\s*已是最新$/i, 'v$1 · Up to date'],
     [/^🔔 有新更新 \(\+(\d+)\s*·\s*([0-9a-f]+)\)$/i, '🔔 +$1 update(s) ($2)'],
     [/^✅ 已更新至 v([^\s(]+)\s*\(([0-9a-f]+)\)$/i, '✅ Updated to v$1 ($2)'],
-    [/^v([^\s(]+)\s*\(非 Git 安装\)$/i, 'v$1 (Non-Git)'],
-    [/^✖ 更新失败：([\s\S]+)$/, '✖ Update failed: $1']
+    [/^v([^\s(]+)\s*[（(]手动安装版[）)]$/i, 'v$1 (Manual Install)'],
+    [/^当前提交[：:]\s*([\s\S]+)$/, 'Current commit: $1'],
+    [/^最新提交[：:]\s*([\s\S]+)$/, 'Latest commit: $1'],
+    [/^暂时无法检查更新[：:]\s*([\s\S]+)$/, (_, d) => `Unable to check updates: ${/[\u4e00-\u9fff]/.test(d) ? 'check network or proxy and retry' : d}`],
+    [/^远端检查失败[：:]\s*([\s\S]+)$/, (_, d) => `Remote check failed: ${/[\u4e00-\u9fff]/.test(d) ? 'check network or proxy and retry' : d}`],
+    [/^✖ 更新失败：([\s\S]+)$/, (_, reason) => {
+      const clean = String(reason || '').trim();
+      if (!clean || /[\u4e00-\u9fff]/.test(clean)) {
+        if (/手动安装/.test(clean)) return '✖ Update failed: manual installation requires manual update';
+        if (/本地.*修改|未提交/.test(clean)) return '✖ Update failed: local changes detected, auto-update paused';
+        return '✖ Update failed: check network or proxy and retry';
+      }
+      return `✖ Update failed: ${clean}`;
+    }]
   ];
 
   const SUITE_SUPPORTED_LOCALES = [
@@ -12067,6 +12286,10 @@ function positionHeatPopover(anchorX, anchorY) {
     ghostSuggest: true,
     autoCompact: true,
     quickBuiltinAutoSend: false,
+    dockBadgeEnabled: true,
+    dockBadgeStyle: 'capsule',
+    dockBadgeColorTier: true,
+    dockBadgeAutoClear: true,
     locale: 'zh-CN',
     capsuleLang: 'zh',
     englishLabels: false
@@ -12728,6 +12951,22 @@ function positionHeatPopover(anchorX, anchorY) {
     if (lsQuickAutoSend === 'true' || lsQuickAutoSend === 'false') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = lsQuickAutoSend === 'true';
     }
+    const lsDockEnabled = localStorage?.getItem?.('ag_suite_dock_badge_enabled');
+    if (lsDockEnabled === 'true' || lsDockEnabled === 'false') {
+      suiteEnhancerPrefs.dockBadgeEnabled = lsDockEnabled !== 'false';
+    }
+    const lsDockStyle = localStorage?.getItem?.('ag_suite_dock_badge_style');
+    if (lsDockStyle === 'capsule' || lsDockStyle === 'badge') {
+      suiteEnhancerPrefs.dockBadgeStyle = lsDockStyle;
+    }
+    const lsDockColorTier = localStorage?.getItem?.('ag_suite_dock_badge_color_tier');
+    if (lsDockColorTier === 'true' || lsDockColorTier === 'false') {
+      suiteEnhancerPrefs.dockBadgeColorTier = lsDockColorTier !== 'false';
+    }
+    const lsDockAutoClear = localStorage?.getItem?.('ag_suite_dock_badge_autoclear');
+    if (lsDockAutoClear === 'true' || lsDockAutoClear === 'false') {
+      suiteEnhancerPrefs.dockBadgeAutoClear = lsDockAutoClear !== 'false';
+    }
     const lsLocale = localStorage?.getItem?.('ag_suite_locale')
       || localStorage?.getItem?.('antigravityHansLang')
       || localStorage?.getItem?.('__agy_ctx_lang__');
@@ -12785,7 +13024,7 @@ function positionHeatPopover(anchorX, anchorY) {
       return node;
     };
 
-    // 1. 外观与主题配置移入「外观与主题」分页，并移除原面板内的调色抽屉
+    // 1. 外观与配色移入「🌐 语言与外观」分页，并移除原面板内的调色抽屉
     const tokColorsBody = moveTo('token-color-drawer-body', 'settings-slot-heatmap-colors');
     if (tokColorsBody) tokColorsBody.style.display = 'block';
     const mBg = el('token-drawer-mirror-bg');
@@ -12833,7 +13072,7 @@ function positionHeatPopover(anchorX, anchorY) {
       }
     });
 
-    // 3. 网络代理移入「网络与高级」分页，并移除 #panel 内原有抽屉
+    // 3. 网络代理移入「🧰 终端与网络」分页，并移除 #panel 内原有抽屉
     moveTo('proxy-badge', 'settings-slot-proxy-badge');
     const proxyBody = moveTo('proxy-drawer-body', 'settings-slot-proxy');
     if (proxyBody) proxyBody.style.display = 'block';
@@ -12898,6 +13137,10 @@ function positionHeatPopover(anchorX, anchorY) {
       localStorage?.setItem?.('ag_suite_ghost_suggest', suiteEnhancerPrefs.ghostSuggest ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_auto_compact', suiteEnhancerPrefs.autoCompact !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_quick_builtin_autosend', suiteEnhancerPrefs.quickBuiltinAutoSend ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_dock_badge_enabled', suiteEnhancerPrefs.dockBadgeEnabled !== false ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_dock_badge_style', suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule');
+      localStorage?.setItem?.('ag_suite_dock_badge_color_tier', suiteEnhancerPrefs.dockBadgeColorTier !== false ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_dock_badge_autoclear', suiteEnhancerPrefs.dockBadgeAutoClear !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_locale', activeLocale);
       localStorage?.setItem?.('__agy_ctx_lang__', curEntry.capsuleLang === 'en' ? 'en' : 'zh');
       localStorage?.setItem?.('antigravityHansLang', hansLangVal);
@@ -12923,6 +13166,10 @@ function positionHeatPopover(anchorX, anchorY) {
             ghostSuggest: suiteEnhancerPrefs.ghostSuggest,
             autoCompact: suiteEnhancerPrefs.autoCompact !== false,
             quickBuiltinAutoSend: Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend),
+            dockBadgeEnabled: suiteEnhancerPrefs.dockBadgeEnabled !== false,
+            dockBadgeStyle: suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule',
+            dockBadgeColorTier: suiteEnhancerPrefs.dockBadgeColorTier !== false,
+            dockBadgeAutoClear: suiteEnhancerPrefs.dockBadgeAutoClear !== false,
             locale: activeLocale,
             capsuleLang: curEntry.capsuleLang,
             hansCode: curEntry.hansCode,
@@ -13281,6 +13528,292 @@ function positionHeatPopover(anchorX, anchorY) {
     return { ...suiteFeatureFlags };
   }
 
+  let dockBadgeStatusState = {
+    lastRes: null,
+    overrideZh: '',
+    overrideEn: '',
+    overrideTone: '',
+    overrideAxHidden: true
+  };
+
+  function normalizeDockBadgeStyle(raw) {
+    return String(raw || '').trim().toLowerCase() === 'badge' ? 'badge' : 'capsule';
+  }
+
+  function isMacDockPlatformHint() {
+    if (suiteTerminalState.platform && suiteTerminalState.platform !== 'darwin') return false;
+    try {
+      const p = String(navigator?.platform || navigator?.userAgent || '');
+      if (p && (/win/i.test(p) || (/linux/i.test(p) && !/mac|darwin/i.test(p)))) return false;
+    } catch {}
+    return true;
+  }
+
+  function setDockBadgeStatusNote(zhText, enText, tone = '', openAxHidden = true) {
+    dockBadgeStatusState.overrideZh = zhText || '';
+    dockBadgeStatusState.overrideEn = enText || zhText || '';
+    dockBadgeStatusState.overrideTone = tone || '';
+    dockBadgeStatusState.overrideAxHidden = Boolean(openAxHidden);
+    const noteEl = el('dock-badge-status-note');
+    if (noteEl) {
+      noteEl.textContent = suiteTr(dockBadgeStatusState.overrideZh, dockBadgeStatusState.overrideEn);
+      if (tone) noteEl.setAttribute('data-tone', tone);
+      else noteEl.removeAttribute('data-tone');
+    }
+    const openAxBtn = el('btn-dock-open-ax');
+    if (openAxBtn) {
+      const hideAx = Boolean(openAxHidden);
+      openAxBtn.hidden = hideAx;
+      if (hideAx) openAxBtn.setAttribute?.('hidden', '');
+      else openAxBtn.removeAttribute?.('hidden');
+    }
+  }
+
+  function renderDockBadgeStatusPayload(res) {
+    dockBadgeStatusState.lastRes = res || null;
+    const enabled = suiteEnhancerPrefs.dockBadgeEnabled !== false;
+    const st = (res && typeof res === 'object')
+      ? ((res.status && typeof res.status === 'object') ? res.status : ((res.data && typeof res.data === 'object') ? res.data : res))
+      : null;
+
+    if (!st || res?.ok === false) {
+      if (!isMacDockPlatformHint()) {
+        setDockBadgeStatusNote(
+          '当前电脑不是 macOS：Dock 图标提醒仅在 Mac 上可用，其他系统已自动跳过',
+          'Not running on macOS: Dock icon alerts are only available on Mac and are safely skipped here',
+          '',
+          true
+        );
+        return;
+      }
+      if (!enabled) {
+        setDockBadgeStatusNote(
+          '已关闭 macOS Dock 图标提醒，相关后台组件已完全停用',
+          'macOS Dock icon alerts are disabled; background helper is stopped',
+          '',
+          true
+        );
+        return;
+      }
+      const hasBridge = typeof window !== 'undefined' && (Boolean(window.__AGContextMeterLive?.port) || typeof window.contextMeterAPI?.dockBadgeStatus === 'function');
+      if (!hasBridge) {
+        setDockBadgeStatusNote(
+          'macOS Dock 提醒已开启，连接 Antigravity 后即可实时生效与预览',
+          'macOS Dock alerts are enabled and will activate once connected to Antigravity',
+          '',
+          true
+        );
+        return;
+      }
+      const errCode = String(st?.errorCode || res?.errorCode || '').trim().toUpperCase();
+      if (errCode === 'NOT_READY') {
+        setDockBadgeStatusNote(
+          '当前后台服务尚未开启 Dock 图标提醒，请完全退出并重新打开 Antigravity 后重试',
+          'Dock icon alerts are not ready in the background helper yet. Quit and reopen Antigravity and retry.',
+          'warn',
+          true
+        );
+      } else {
+        setDockBadgeStatusNote(
+          '暂未获取到 macOS Dock 图标提醒状态，请完全退出并重新打开 Antigravity 后重试',
+          'Unable to get macOS Dock alert status yet. Quit and reopen Antigravity and retry.',
+          res?.error ? 'warn' : '',
+          true
+        );
+      }
+      return;
+    }
+
+    const plat = String(st.platform || res.platform || '').trim().toLowerCase();
+    const supported = typeof st.supported === 'boolean'
+      ? st.supported
+      : (typeof res.supported === 'boolean' ? res.supported : (plat ? plat === 'darwin' : isMacDockPlatformHint()));
+    if (!supported) {
+      setDockBadgeStatusNote(
+        '当前电脑不是 macOS：Dock 图标提醒仅在 Mac 上可用，其他系统已自动跳过',
+        'Not running on macOS: Dock icon alerts are only available on Mac and are safely skipped here',
+        '',
+        true
+      );
+      return;
+    }
+
+    const effEnabled = typeof st.enabled === 'boolean' ? st.enabled : enabled;
+    if (!effEnabled) {
+      setDockBadgeStatusNote(
+        '已关闭 macOS Dock 图标提醒，相关后台组件已完全停用',
+        'macOS Dock icon alerts are disabled; background helper is stopped',
+        '',
+        true
+      );
+      return;
+    }
+
+    if (st.compiling === true || st.state === 'compiling' || st.status === 'compiling') {
+      setDockBadgeStatusNote(
+        '正在首次准备 macOS Dock 提醒组件（约需数秒，完成后自动生效）…',
+        'Preparing native macOS Dock alert helper for first use (takes a few seconds)…',
+        '',
+        true
+      );
+      return;
+    }
+
+    const compileErrCode = String(st.compileErrorCode || '').trim().toUpperCase();
+    const compileErr = String(st.compileError || st.error || '').trim();
+    if (st.swiftcAvailable === false || compileErrCode === 'NO_SWIFTC') {
+      setDockBadgeStatusNote(
+        '需要先安装 Apple 命令行工具：请在「终端」运行 xcode-select --install，完成后重启 Antigravity 即可生效',
+        'Apple Command Line Tools are required: run xcode-select --install in Terminal, then restart Antigravity',
+        'warn',
+        true
+      );
+      return;
+    }
+    if (compileErrCode || compileErr) {
+      const compileCodeMap = {
+        MISSING_SOURCE: [
+          'Dock 提醒组件文件缺失，请重新安装或更新 Antigravity Suite 后重试',
+          'Dock alert component files are missing. Reinstall or update Antigravity Suite and retry.'
+        ],
+        READ_SOURCE_FAILED: [
+          '无法读取 Dock 提醒组件文件，请检查安装目录权限后重试',
+          'Unable to read Dock alert component files. Check installation folder permissions and retry.'
+        ],
+        COMPILE_FAILED: [
+          'Dock 提醒组件准备失败，请确认 Xcode 命令行工具正常后重启 Antigravity 重试',
+          'Failed to prepare the Dock alert helper. Verify Xcode Command Line Tools are working and restart Antigravity.'
+        ],
+        SPAWN_FAILED: [
+          'Dock 提醒组件启动失败，请完全退出并重新打开 Antigravity 后重试',
+          'Failed to start the Dock alert helper. Quit and reopen Antigravity and try again.'
+        ]
+      };
+      const pair = compileCodeMap[compileErrCode] || [
+        compileErr || 'macOS Dock 图标提醒暂时无法启动，请完全退出并重新打开 Antigravity 后重试',
+        'macOS Dock alerts failed to start. Quit and reopen Antigravity and try again.'
+      ];
+      setDockBadgeStatusNote(pair[0], pair[1], 'error', true);
+      return;
+    }
+
+    if (st.axTrusted === false) {
+      setDockBadgeStatusNote(
+        '需要开启「辅助功能」权限才能在 Dock 图标上显示提醒，请点击右上角「前往开启权限」并勾选放行',
+        'Accessibility permission is required to show alerts on the Dock icon. Click "Grant Access" above to enable it.',
+        'warn',
+        false
+      );
+      return;
+    }
+
+    if (st.axTrusted === true && st.dockFound === false) {
+      setDockBadgeStatusNote(
+        '已获得辅助功能权限，但暂未在底部 Dock 栏找到 Antigravity 图标（请确认程序图标在 Dock 中可见）',
+        'Accessibility permission granted, waiting to locate the Antigravity icon in your Dock',
+        '',
+        true
+      );
+      return;
+    }
+
+    if (st.axTrusted === true && st.dockFound === true) {
+      setDockBadgeStatusNote(
+        'macOS Dock 图标提醒已就绪：后台有新回复、待审批或高危拦截时会即时提醒',
+        'macOS Dock icon alerts are ready: alerts immediately on background replies, approvals, and high-risk blocks',
+        'ok',
+        true
+      );
+      return;
+    }
+
+    setDockBadgeStatusNote(
+      'macOS Dock 图标提醒已开启，正在检查权限与图标位置…',
+      'macOS Dock icon alerts are enabled; checking permissions and Dock icon status…',
+      '',
+      true
+    );
+  }
+
+  function renderDockBadgeStatusNote() {
+    if (dockBadgeStatusState.lastRes !== null) {
+      renderDockBadgeStatusPayload(dockBadgeStatusState.lastRes);
+      return;
+    }
+    if (dockBadgeStatusState.overrideZh) {
+      const noteEl = el('dock-badge-status-note');
+      if (noteEl) {
+        noteEl.textContent = suiteTr(dockBadgeStatusState.overrideZh, dockBadgeStatusState.overrideEn);
+      }
+    }
+  }
+
+  function syncDockBadgeControls() {
+    const enabled = suiteEnhancerPrefs.dockBadgeEnabled !== false;
+    const style = normalizeDockBadgeStyle(suiteEnhancerPrefs.dockBadgeStyle);
+    const colorTier = suiteEnhancerPrefs.dockBadgeColorTier !== false;
+    const autoClear = suiteEnhancerPrefs.dockBadgeAutoClear !== false;
+
+    const chkEnabled = el('set-dock-badge-enabled');
+    const btnCapsule = el('set-dock-style-capsule');
+    const btnBadge = el('set-dock-style-badge');
+    const chkColorTier = el('set-dock-badge-color-tier');
+    const chkAutoClear = el('set-dock-badge-autoclear');
+    const btnTest = el('btn-test-dock-badge');
+
+    if (chkEnabled) chkEnabled.checked = enabled;
+    setPillActive(btnCapsule, style === 'capsule');
+    setPillActive(btnBadge, style === 'badge');
+    if (btnCapsule) btnCapsule.setAttribute('aria-pressed', String(style === 'capsule'));
+    if (btnBadge) btnBadge.setAttribute('aria-pressed', String(style === 'badge'));
+    if (chkColorTier) chkColorTier.checked = colorTier;
+    if (chkAutoClear) chkAutoClear.checked = autoClear;
+
+    const supported = dockBadgeStatusState.lastRes?.supported === false
+      ? false
+      : (dockBadgeStatusState.lastRes?.status?.supported === false ? false : isMacDockPlatformHint());
+    if (btnTest) btnTest.disabled = !enabled || !supported;
+  }
+
+  let dockBadgeCompilePollTimer = null;
+
+  async function refreshDockBadgeStatus() {
+    if (dockBadgeCompilePollTimer) {
+      clearTimeout(dockBadgeCompilePollTimer);
+      dockBadgeCompilePollTimer = null;
+    }
+    const hasLivePort = typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port);
+    const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.dockBadgeStatus === 'function';
+    if (!hasLivePort && !hasIpc) {
+      renderDockBadgeStatusPayload(null);
+      syncDockBadgeControls();
+      return null;
+    }
+    try {
+      const res = await invokeHostBridge('/dock-badge-status', {}, 'dockBadgeStatus');
+      renderDockBadgeStatusPayload(res);
+      syncDockBadgeControls();
+      const st = (res && typeof res === 'object')
+        ? ((res.status && typeof res.status === 'object') ? res.status : ((res.data && typeof res.data === 'object') ? res.data : res))
+        : null;
+      const panelEl = el('panel-settings');
+      if (st?.compiling === true && panelEl && !panelEl.hidden && !(typeof state !== 'undefined' && state?.disposed)) {
+        dockBadgeCompilePollTimer = setTimeout(() => {
+          dockBadgeCompilePollTimer = null;
+          const curPanel = el('panel-settings');
+          if (curPanel && !curPanel.hidden && !(typeof state !== 'undefined' && state?.disposed)) {
+            void refreshDockBadgeStatus();
+          }
+        }, 2000);
+      }
+      return res || null;
+    } catch {
+      renderDockBadgeStatusPayload(null);
+      syncDockBadgeControls();
+      return null;
+    }
+  }
+
   function syncEnhancerPrefControls() {
     const chkAuto = el('set-auto-accept');
     const chkGhost = el('set-ghost-suggest');
@@ -13302,6 +13835,7 @@ function positionHeatPopover(anchorX, anchorY) {
     syncLanguageDropdownOptions();
     syncCliOptionControls();
     syncSettingsThemePills();
+    syncDockBadgeControls();
   }
 
   function getSupportedLocales() {
@@ -13341,6 +13875,7 @@ function positionHeatPopover(anchorX, anchorY) {
     syncEnhancerPrefControls();
     renderQuickBuiltinPool();
     renderQuickPromptsEditor();
+    renderDockBadgeStatusNote();
     dispatchSuitePrefsChanged();
     applySuiteShadowLocale();
     try {
@@ -13418,7 +13953,7 @@ function positionHeatPopover(anchorX, anchorY) {
       const payload = { uiPreferences: partialPrefs };
       return await invokeHostBridge('/save-settings', payload, 'saveSettings');
     } catch (err) {
-      return { ok: false, error: err?.message || String(err) };
+      return { ok: false, error: '', errorDetail: err?.message || String(err) };
     } finally {
       if (typeof suitePrefsSaveInFlight === 'number' && suitePrefsSaveInFlight > 0) {
         --suitePrefsSaveInFlight;
@@ -13623,6 +14158,28 @@ function positionHeatPopover(anchorX, anchorY) {
     if (typeof uiPrefs.quickBuiltinAutoSend === 'boolean') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = uiPrefs.quickBuiltinAutoSend;
     }
+    if (typeof uiPrefs.dockBadgeEnabled === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeEnabled = uiPrefs.dockBadgeEnabled;
+    } else if (uiPrefs.dockBadge && typeof uiPrefs.dockBadge.enabled === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeEnabled = uiPrefs.dockBadge.enabled;
+    }
+    if (typeof uiPrefs.dockBadgeStyle === 'string') {
+      const ds = uiPrefs.dockBadgeStyle.trim().toLowerCase();
+      if (ds === 'capsule' || ds === 'badge') suiteEnhancerPrefs.dockBadgeStyle = ds;
+    } else if (uiPrefs.dockBadge && typeof uiPrefs.dockBadge.style === 'string') {
+      const ds = uiPrefs.dockBadge.style.trim().toLowerCase();
+      if (ds === 'capsule' || ds === 'badge') suiteEnhancerPrefs.dockBadgeStyle = ds;
+    }
+    if (typeof uiPrefs.dockBadgeColorTier === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeColorTier = uiPrefs.dockBadgeColorTier;
+    } else if (uiPrefs.dockBadge && typeof uiPrefs.dockBadge.colorTier === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeColorTier = uiPrefs.dockBadge.colorTier;
+    }
+    if (typeof uiPrefs.dockBadgeAutoClear === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeAutoClear = uiPrefs.dockBadgeAutoClear;
+    } else if (uiPrefs.dockBadge && typeof uiPrefs.dockBadge.autoClear === 'boolean') {
+      suiteEnhancerPrefs.dockBadgeAutoClear = uiPrefs.dockBadge.autoClear;
+    }
     const incomingLoc = uiPrefs.locale || uiPrefs.panelLanguage || uiPrefs.capsuleLang;
     if (typeof incomingLoc === 'string' && incomingLoc.trim()) {
       const entry = findSupportedLocaleEntry(incomingLoc);
@@ -13676,6 +14233,7 @@ function positionHeatPopover(anchorX, anchorY) {
     }
     dispatchSuitePrefsChanged();
     syncEnhancerPrefControls();
+    syncDockBadgeControls();
     applySuiteFeatureFlags();
     renderQuickBuiltinPool();
     if (!editingQuickPrompts) {
@@ -13874,8 +14432,13 @@ function positionHeatPopover(anchorX, anchorY) {
         quickPrompts: suiteQuickPrompts === null ? (opts?.isReset ? null : []) : suiteQuickPrompts.map(item => ({ ...item }))
       });
       if (saveRes && saveRes.ok === false) {
+        const detail = String(saveRes.error || '').trim();
+        const hasCjk = /[\u4e00-\u9fff]/.test(detail);
         setQuickPromptsStatus(
-          suiteTr(`⚠️ 写入配置失败：${saveRes.error || '请确认 Antigravity 本地服务运行正常后点击保存重试'}`, `⚠️ Failed to write settings: ${saveRes.error || 'ensure the local service is running and click Save to retry'}`),
+          suiteTr(
+            `⚠️ 写入配置失败，你编辑的内容仍保留在页面中，请确认 Antigravity 正常运行后重试${detail ? `（${detail}）` : ''}`,
+            `⚠️ Failed to write settings — your edits remain on this page; ensure Antigravity is running and retry${detail && !hasCjk ? ` (${detail})` : ''}`
+          ),
           'warn'
         );
         return getSuiteQuickPrompts();
@@ -14348,7 +14911,7 @@ function positionHeatPopover(anchorX, anchorY) {
       return;
     }
     if (!data) {
-      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('未能连接到本地服务：请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）后点击「刷新状态」', 'Unable to connect to local service: restart Antigravity (or run ag-context-meter live), then click Refresh'))}</div>`;
+      root.innerHTML = `<div class="ag-rp-err">${escapeSuiteHtml(remoteSettingsState.error || suiteTr('暂未连接到手机远程服务：请确认 Antigravity 正常运行（或重启客户端）后点击「刷新状态」', 'Not connected to mobile remote service yet: ensure Antigravity is running (or restart the app), then click Refresh'))}</div>`;
       return;
     }
 
@@ -14385,7 +14948,7 @@ function positionHeatPopover(anchorX, anchorY) {
             : (isRunning
                 ? (ch.displayHost || modeHint)
                 : (ch.binaryAvailable === false
-                    ? suiteTr('尚未安装 cloudflared（复制下方安装命令执行即可）', 'cloudflared not found (see install command below)')
+                    ? suiteTr('尚未安装公网通道组件（cloudflared），复制下方命令安装即可启用', 'Public tunnel component (cloudflared) not installed — copy the command below to install')
                     : suiteTr('免登录零配置 · 点击启用', 'Zero-Config · Click to enable')));
         return `
           <div id="ag-rp-tunnel-toggle" class="ag-rp-channel ag-rp-check" role="checkbox" tabindex="0" aria-checked="${checked ? 'true' : 'false'}" data-ch="tunnel" data-active="${activeKey === 'tunnel' ? 'true' : 'false'}" data-disabled="${busyAny ? 'true' : 'false'}">
@@ -14460,8 +15023,8 @@ function positionHeatPopover(anchorX, anchorY) {
         <div class="ag-rp-install-hdr">
           <span class="ag-rp-install-title">
             <span>${escapeSuiteHtml(missingCloudflared
-              ? suiteTr('安装 cloudflared（公网扫码访问所需组件）', 'Install cloudflared (Required for Public Remote Tunnel)')
-              : suiteTr('cloudflared 安装命令引导', 'cloudflared Install Command'))}</span>
+              ? suiteTr('安装公网通道组件 cloudflared（手机扫码远程访问所需）', 'Install public tunnel component cloudflared (Required for Mobile QR Remote Access)')
+              : suiteTr('公网通道组件 cloudflared 安装命令', 'Public Tunnel Component (cloudflared) Install Command'))}</span>
             <span class="ag-rp-install-badge">${escapeSuiteHtml(missingCloudflared
               ? suiteTr('未检测到', 'Not Found')
               : suiteTr('✓ 本机已安装', '✓ Installed'))}</span>
@@ -14629,18 +15192,18 @@ function positionHeatPopover(anchorX, anchorY) {
       if (res && res.disabled) {
         remoteSettingsState.data = null;
         remoteSettingsState.error = suiteTr(
-          '手机远程功能当前已被启动参数（--no-remote）或环境变量关闭；如需使用，请移除该参数后重启服务',
-          'Mobile remote is disabled via --no-remote or environment variable; remove it and restart to enable'
+          '手机远程功能当前已被启动配置关闭；如需使用，请移除禁用设置后重启 Antigravity',
+          'Mobile remote is currently disabled by launch settings; remove the disable option and restart Antigravity to enable it'
         );
       } else if (res && res.ok && res.data) {
         remoteSettingsState.data = res.data;
         syncRemoteDisplayCheckboxes(res.data.remoteDisplay);
         broadcastRemoteStateChanged(res.data);
       } else {
-        remoteSettingsState.error = suiteTr('未能连接到本地服务：请确认 Antigravity 客户端已开启（或运行 ag-context-meter live），然后点击「刷新状态」重试', 'Unable to connect to local service: ensure Antigravity is running (or run ag-context-meter live), then click Refresh');
+        remoteSettingsState.error = suiteTr('暂未连接到手机远程服务：请确认 Antigravity 正常运行（或重启客户端），然后点击「刷新状态」重试', 'Not connected to mobile remote service yet: ensure Antigravity is running (or restart the app), then click Refresh');
       }
-    } catch (err) {
-      remoteSettingsState.error = err?.message || suiteTr('读取手机远程状态失败，请点击「刷新状态」重试', 'Failed to load remote status; click Refresh to retry');
+    } catch {
+      remoteSettingsState.error = suiteTr('读取手机远程状态失败，请点击「刷新状态」重试', 'Failed to load remote status; click Refresh to retry');
     } finally {
       remoteSettingsState.loading = false;
       renderRemoteSettingsChannels();
@@ -14676,13 +15239,18 @@ function positionHeatPopover(anchorX, anchorY) {
           }
         }
       } else {
-        remoteSettingsState.error = res?.error || suiteTr('保存手机远程设置失败，请检查网络或配置后重试', 'Failed to save remote channel settings; check configuration and retry');
+        const rawErr = String(res?.error || '').trim();
+        const hasCjk = /[\u4e00-\u9fff]/.test(rawErr);
+        remoteSettingsState.error = suiteTr(
+          rawErr || '保存手机远程设置失败，请检查网络或配置后重试',
+          (rawErr && !hasCjk) ? rawErr : 'Failed to save remote channel settings; check configuration and retry'
+        );
         if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
           remoteSettingsState.tunnelConfigOpen = true;
         }
       }
-    } catch (err) {
-      remoteSettingsState.error = err?.message || suiteTr('保存手机远程设置失败，请稍后点击「刷新状态」重试', 'Failed to save remote settings; refresh and try again later');
+    } catch {
+      remoteSettingsState.error = suiteTr('保存手机远程设置失败，请稍后点击「刷新状态」重试', 'Failed to save remote settings; refresh and try again later');
       if (payload.tunnelMode === 'named' || payload.tunnelMode === 'quick') {
         remoteSettingsState.tunnelConfigOpen = true;
       }
@@ -14704,11 +15272,12 @@ function positionHeatPopover(anchorX, anchorY) {
     return await configureRemoteSettings({ remoteDisplay: next });
   }
 
-  function switchSuiteSettingsTab(tabName = 'terminal') {
-    const valid = ['terminal', 'appearance', 'subscription', 'remote', 'system'];
-    const target = valid.includes(tabName) ? tabName : 'terminal';
+  function switchSuiteSettingsTab(tabName = 'appearance') {
+    const raw = String(tabName || 'appearance').trim().toLowerCase();
+    const mapped = SETTINGS_TAB_ALIASES[raw] || raw;
+    const target = SETTINGS_TAB_ORDER.includes(mapped) ? mapped : 'appearance';
     activeSettingsTab = target;
-    for (const key of valid) {
+    for (const key of SETTINGS_TAB_ORDER) {
       const btn = el(`settings-tab-btn-${key}`);
       const pane = el(`settings-pane-${key}`);
       const isCur = key === target;
@@ -14719,7 +15288,16 @@ function positionHeatPopover(anchorX, anchorY) {
       }
       if (pane) pane.hidden = !isCur;
     }
-    if (target === 'terminal') {
+    if (target === 'appearance') {
+      syncEnhancerPrefControls();
+      applySuiteFeatureFlags();
+      syncDockBadgeControls();
+      void refreshDockBadgeStatus();
+    } else if (target === 'remote') {
+      renderRemoteSettingsChannels();
+      syncRemoteDisplayCheckboxes();
+      void loadRemoteSettingsInfo(false);
+    } else if (target === 'chat') {
       syncEnhancerPrefControls();
       renderQuickBuiltinPool();
       if (!isQuickPromptsEditorActiveOrDirty()) {
@@ -14732,18 +15310,14 @@ function positionHeatPopover(anchorX, anchorY) {
           syncQuickPopularTemplatesState();
         }
       }
+    } else if (target === 'network') {
       void refreshTerminalsList();
+      void refreshModulesDisplay();
     } else if (target === 'subscription') {
       syncSettingsSubPreview();
       if (typeof syncPlanCustomFormFields === 'function' && isRealShadowDomTree()) {
         syncPlanCustomFormFields(ANTIGRAVITY_TOKEN_DATA.planStatus, { enhance: true });
       }
-    } else if (target === 'remote') {
-      renderRemoteSettingsChannels();
-      syncRemoteDisplayCheckboxes();
-      void loadRemoteSettingsInfo(false);
-    } else if (target === 'system') {
-      void refreshModulesDisplay();
     }
     positionFloatingPanels();
   }
@@ -14785,8 +15359,8 @@ function positionHeatPopover(anchorX, anchorY) {
     } else if (info.isGitRepo === false) {
       if (verEl) {
         verEl.setAttribute('data-state', 'muted');
-        verEl.textContent = `v${ver} (非 Git 安装)`;
-        verEl.title = '当前目录非 Git 仓库，请通过 git clone 安装以支持一键更新';
+        verEl.textContent = `v${ver}（手动安装版）`;
+        verEl.title = '当前为手动安装版，暂不支持在线一键更新，如需更新请前往项目页下载新版覆盖安装';
       }
       if (applyBtn) applyBtn.hidden = true;
       if (settingsBtn) {
@@ -14798,7 +15372,7 @@ function positionHeatPopover(anchorX, anchorY) {
         verEl.setAttribute('data-state', info.fetchError ? 'muted' : 'ok');
         verEl.textContent = sha ? `v${ver} (${sha} · 已是最新)` : `v${ver} · 已是最新`;
         verEl.title = info.fetchError
-          ? `远端检查失败: ${info.fetchError}`
+          ? `暂时无法检查更新：${info.fetchError}`
           : (info.localSubject ? `当前提交: ${info.localSubject}` : '当前版本与仓库同步');
       }
       if (applyBtn) applyBtn.hidden = true;
@@ -14870,10 +15444,13 @@ function positionHeatPopover(anchorX, anchorY) {
         applySuiteShadowLocale();
         return res;
       }
-      const errMsg = res?.error || '未能拉取仓库更新';
+      const errMsg = res?.noGitRepo
+        ? '手动安装版暂不支持一键更新'
+        : (res?.dirty ? '检测到本地修改，已暂停自动更新' : (res?.error || '请检查网络或代理后重试'));
       if (verEl) {
         verEl.setAttribute('data-state', 'muted');
         verEl.textContent = `✖ 更新失败：${errMsg}`;
+        verEl.title = '更新未完成（当前版本与配置不受影响），请检查网络或代理后重试';
       }
       if (applyBtn) {
         applyBtn.disabled = false;
@@ -14881,10 +15458,11 @@ function positionHeatPopover(anchorX, anchorY) {
       }
       applySuiteShadowLocale();
       return res || null;
-    } catch (e) {
+    } catch {
       if (verEl) {
         verEl.setAttribute('data-state', 'muted');
-        verEl.textContent = `✖ 更新失败：${e?.message || e}`;
+        verEl.textContent = '✖ 更新失败：请检查网络或代理后重试';
+        verEl.title = '更新未完成（当前版本与配置不受影响），请检查网络或代理后重试';
       }
       if (applyBtn) {
         applyBtn.disabled = false;
@@ -14908,10 +15486,12 @@ function positionHeatPopover(anchorX, anchorY) {
 
   function toggleSuiteSettings(tabName) {
     const pSettings = el('panel-settings');
-    if (pSettings && !pSettings.hidden && (!tabName || tabName === activeSettingsTab)) {
+    const raw = String(tabName || '').trim().toLowerCase();
+    const resolvedTab = raw ? (SETTINGS_TAB_ALIASES[raw] || raw) : '';
+    if (pSettings && !pSettings.hidden && (!resolvedTab || resolvedTab === activeSettingsTab)) {
       showPanel('none');
     } else {
-      openSuiteSettings(tabName || activeSettingsTab);
+      openSuiteSettings(resolvedTab || activeSettingsTab);
     }
   }
 
@@ -14919,7 +15499,7 @@ function positionHeatPopover(anchorX, anchorY) {
   el('overflow-settings-btn')?.addEventListener('click', () => openSuiteSettings());
   el('close-settings')?.addEventListener('click', () => showPanel('none'));
 
-  ['terminal', 'appearance', 'subscription', 'remote', 'system'].forEach(tab => {
+  SETTINGS_TAB_ORDER.forEach(tab => {
     el(`settings-tab-btn-${tab}`)?.addEventListener('click', () => switchSuiteSettingsTab(tab));
   });
 
@@ -14997,6 +15577,7 @@ function positionHeatPopover(anchorX, anchorY) {
           if (activeSettingsTab === 'remote' && remoteSettingsState.data) {
             renderRemoteSettingsChannels();
           }
+          renderDockBadgeStatusNote();
           applySuiteShadowLocale();
         }
       });
@@ -15011,7 +15592,12 @@ function positionHeatPopover(anchorX, anchorY) {
     const statusEl = el('term-config-status');
     try {
       if (!window?.contextMeterAPI?.pickTerminalPath && !window?.__AGContextMeterLive?.port) {
-        if (statusEl) statusEl.textContent = '⚠️ 当前页面不支持弹窗选文件，请在左侧输入框粘贴终端程序路径后点击「保存路径」';
+        if (statusEl) {
+          statusEl.textContent = suiteTr(
+            '⚠️ 当前页面暂不支持弹窗选文件，请在左侧输入框粘贴终端程序路径后点击「保存路径」',
+            '⚠️ File picker is unavailable here — paste the terminal path on the left and click "Save Path"'
+          );
+        }
         return;
       }
       const res = await invokeHostBridge('/pick-terminal-path', {}, 'pickTerminalPath');
@@ -15021,10 +15607,18 @@ function positionHeatPopover(anchorX, anchorY) {
         await setSuiteTerminalSettings('custom', res.path);
         await refreshTerminalsList();
       } else if (res && res.ok === false && statusEl) {
-        statusEl.textContent = `✖ 选择失败：${res.error || '请直接手动输入终端路径后点击「保存路径」'}`;
+        statusEl.textContent = suiteTr(
+          '✖ 未能完成选择，请直接手动输入终端路径后点击「保存路径」',
+          '✖ Could not select terminal app — enter the path manually and click "Save Path"'
+        );
       }
-    } catch (e) {
-      if (statusEl) statusEl.textContent = `✖ 打开文件选择器失败（${e?.message || e}），请直接手动输入终端路径后点击「保存路径」`;
+    } catch {
+      if (statusEl) {
+        statusEl.textContent = suiteTr(
+          '✖ 无法打开文件选择器，请直接手动输入终端路径后点击「保存路径」',
+          '✖ Unable to open file picker — enter the terminal path manually and click "Save Path"'
+        );
+      }
     }
   });
 
@@ -15072,22 +15666,50 @@ function positionHeatPopover(anchorX, anchorY) {
 
   el('btn-test-terminal')?.addEventListener('click', async () => {
     const statusEl = el('term-config-status');
-    if (statusEl) statusEl.textContent = '⏳ 正在尝试打开所选终端…';
-    const cliCfg = getSuiteCliSettings();
-    const res = await triggerLaunchCli({
-      terminalApp: suiteTerminalState.terminalApp,
-      customTerminalPath: el('input-custom-term-path')?.value?.trim() || suiteTerminalState.customTerminalPath,
-      muxHost: suiteTerminalState.cliMuxHost || '',
-      skipPermissions: cliCfg.skipPermissions,
-      model: cliCfg.model,
-      noModel: cliCfg.noModel,
-      testOnly: true
-    });
-    if (statusEl) {
-      const hostSuffix = res?.muxHost ? ` · 主机: ${res.muxHost}` : '';
-      statusEl.textContent = res?.ok
-        ? `✅ 测试启动成功：${res.terminal || suiteTerminalState.terminalApp} (${res.cwd || '默认目录'}${hostSuffix})`
-        : `✖ 测试启动失败：${res?.error || '请确认所选终端已安装，或切换为「自定义程序路径」手动指定后再试'}`;
+    if (statusEl) statusEl.textContent = suiteTr('⏳ 正在尝试打开所选终端…', '⏳ Launching selected terminal…');
+    try {
+      const cliCfg = getSuiteCliSettings();
+      const res = await triggerLaunchCli({
+        terminalApp: suiteTerminalState.terminalApp,
+        customTerminalPath: el('input-custom-term-path')?.value?.trim() || suiteTerminalState.customTerminalPath,
+        muxHost: suiteTerminalState.cliMuxHost || '',
+        skipPermissions: cliCfg.skipPermissions,
+        model: cliCfg.model,
+        noModel: cliCfg.noModel,
+        testOnly: true
+      });
+      if (statusEl) {
+        if (res?.ok) {
+          const rawTerm = String(res.terminal || suiteTerminalState.terminalApp || '');
+          const termDisp = suiteTr(rawTerm, translateSuiteDynamicFragmentEn(rawTerm));
+          const cwdDisp = res.cwd || suiteTr('默认目录', 'Default Folder');
+          const hostSuffix = res?.muxHost ? suiteTr(` · 主机: ${res.muxHost}`, ` · Host: ${res.muxHost}`) : '';
+          statusEl.textContent = suiteTr(
+            `✅ 测试启动成功：${termDisp} (${cwdDisp}${hostSuffix})`,
+            `✅ Test launch succeeded: ${termDisp} (${cwdDisp}${hostSuffix})`
+          );
+        } else {
+          const rawErr = String(res?.error || '').trim();
+          const hasCjk = /[\u4e00-\u9fff]/.test(rawErr);
+          const zhFallback = res?.code === 'NO_BRIDGE'
+            ? '未连接到 Antigravity 后台助手，请完全退出并重新打开客户端后再试'
+            : (rawErr || '请确认所选终端已安装，或切换为「自定义程序路径」手动指定后再试');
+          const enFallback = res?.code === 'NO_BRIDGE'
+            ? 'Not connected to the background helper; quit and reopen Antigravity and retry'
+            : ((rawErr && !hasCjk) ? rawErr : 'confirm the selected terminal is installed, or choose "Custom Path" and retry');
+          statusEl.textContent = suiteTr(
+            `✖ 测试启动失败：${zhFallback}`,
+            `✖ Test launch failed: ${enFallback}`
+          );
+        }
+      }
+    } catch {
+      if (statusEl) {
+        statusEl.textContent = suiteTr(
+          '✖ 测试启动失败：请确认所选终端已安装，或切换为「自定义程序路径」手动指定后再试',
+          '✖ Test launch failed: confirm the selected terminal is installed, or choose "Custom Path" and retry'
+        );
+      }
     }
   });
 
@@ -15135,6 +15757,181 @@ function positionHeatPopover(anchorX, anchorY) {
     dispatchSuitePrefsChanged();
     try { window.__antigravityZhSetEnglishLabels?.(suiteEnhancerPrefs.englishLabels, true); } catch {}
     void saveSuiteUiPrefs({ englishLabels: suiteEnhancerPrefs.englishLabels });
+  });
+
+  el('set-dock-badge-enabled')?.addEventListener('change', async e => {
+    suiteEnhancerPrefs.dockBadgeEnabled = Boolean(e?.target?.checked);
+    syncDockBadgeControls();
+    dispatchSuitePrefsChanged();
+    await saveSuiteUiPrefs({ dockBadgeEnabled: suiteEnhancerPrefs.dockBadgeEnabled });
+    void refreshDockBadgeStatus();
+  });
+
+  const applyDockBadgeStyleChoice = async (style) => {
+    suiteEnhancerPrefs.dockBadgeStyle = normalizeDockBadgeStyle(style);
+    syncDockBadgeControls();
+    dispatchSuitePrefsChanged();
+    await saveSuiteUiPrefs({ dockBadgeStyle: suiteEnhancerPrefs.dockBadgeStyle });
+    void refreshDockBadgeStatus();
+  };
+  el('set-dock-style-capsule')?.addEventListener('click', () => { void applyDockBadgeStyleChoice('capsule'); });
+  el('set-dock-style-badge')?.addEventListener('click', () => { void applyDockBadgeStyleChoice('badge'); });
+
+  el('set-dock-badge-color-tier')?.addEventListener('change', async e => {
+    suiteEnhancerPrefs.dockBadgeColorTier = Boolean(e?.target?.checked);
+    syncDockBadgeControls();
+    dispatchSuitePrefsChanged();
+    await saveSuiteUiPrefs({ dockBadgeColorTier: suiteEnhancerPrefs.dockBadgeColorTier });
+    void refreshDockBadgeStatus();
+  });
+
+  el('set-dock-badge-autoclear')?.addEventListener('change', async e => {
+    suiteEnhancerPrefs.dockBadgeAutoClear = Boolean(e?.target?.checked);
+    syncDockBadgeControls();
+    dispatchSuitePrefsChanged();
+    await saveSuiteUiPrefs({ dockBadgeAutoClear: suiteEnhancerPrefs.dockBadgeAutoClear });
+    void refreshDockBadgeStatus();
+  });
+
+  el('btn-test-dock-badge')?.addEventListener('click', async () => {
+    const hasBridge = typeof window !== 'undefined' && (Boolean(window.__AGContextMeterLive?.port) || typeof window.contextMeterAPI?.dockBadgeTest === 'function');
+    if (!hasBridge) {
+      setDockBadgeStatusNote(
+        '尚未连接到 Antigravity 后台助手，请完全退出并重新打开 Antigravity 后重试',
+        'Not connected to the Antigravity background helper yet. Quit and reopen Antigravity, then try again.',
+        'warn',
+        true
+      );
+      return;
+    }
+    const testBtn = el('btn-test-dock-badge');
+    if (testBtn) testBtn.disabled = true;
+    setDockBadgeStatusNote(
+      '正在向 macOS Dock 发送 5 秒预览提醒…',
+      'Sending 5-second preview alert to macOS Dock…',
+      '',
+      true
+    );
+    try {
+      const res = await invokeHostBridge('/dock-badge-test', {
+        style: normalizeDockBadgeStyle(suiteEnhancerPrefs.dockBadgeStyle),
+        colorTier: suiteEnhancerPrefs.dockBadgeColorTier !== false,
+        locale: suiteEnhancerPrefs.locale || 'zh-CN'
+      }, 'dockBadgeTest');
+      if (res && res.ok) {
+        if (res.status?.axTrusted === false) {
+          setDockBadgeStatusNote(
+            '已发送预览请求，但尚未开启「辅助功能」权限，暂时无法显示在 Dock 图标上 — 请点击右上角「前往开启权限」并勾选放行',
+            'Preview requested, but Accessibility permission is needed to show it on the Dock icon — click "Grant Access" above to enable it.',
+            'warn',
+            false
+          );
+        } else {
+          const curStyle = normalizeDockBadgeStyle(res.status?.style || suiteEnhancerPrefs.dockBadgeStyle);
+          if (curStyle === 'badge') {
+            setDockBadgeStatusNote(
+              '已发送 5 秒预览提醒（模拟 2 条待审批），请查看底部 Dock 中 Antigravity 图标右上角的红色角标（5 秒后自动恢复）',
+              '5-second preview alert sent (simulating 2 pending approvals) — check the red badge at the top-right of the Antigravity Dock icon (clears automatically in 5s)',
+              'ok',
+              true
+            );
+          } else {
+            setDockBadgeStatusNote(
+              '已发送 5 秒预览提醒（模拟 2 条待审批、3 条新回复），请查看底部 Dock 中的 Antigravity 图标（5 秒后自动恢复）',
+              '5-second preview alert sent (simulating 2 pending approvals & 3 unread replies) — check the Antigravity Dock icon (clears automatically in 5s)',
+              'ok',
+              true
+            );
+          }
+        }
+      } else {
+        const axNeed = res?.axTrusted === false || res?.status?.axTrusted === false;
+        const errCode = String(res?.errorCode || '').trim().toUpperCase();
+        const errCodeMap = {
+          UNSUPPORTED: [
+            '当前电脑不是 macOS，无法使用 Dock 图标提醒',
+            'Dock icon alerts are only available on macOS.'
+          ],
+          DISABLED: [
+            '请先打开「启用 macOS Dock 图标提醒」开关后再试',
+            'Please turn on "Enable macOS Dock Icon Alerts" first and try again.'
+          ],
+          STOPPED: [
+            'Dock 提醒服务已停止，请完全退出并重新打开 Antigravity 后重试',
+            'Dock alert service has stopped. Quit and reopen Antigravity, then try again.'
+          ],
+          NOT_READY: [
+            '当前后台服务尚未开启 Dock 图标提醒，请完全退出并重新打开 Antigravity 后重试',
+            'Dock icon alerts are not ready in the background helper yet. Quit and reopen Antigravity and retry.'
+          ],
+          HELPER_START_FAILED: [
+            'Dock 提醒组件启动失败，请根据上方状态提示检查权限或命令行工具后重试',
+            'Failed to start the Dock alert helper. Check permissions or Command Line Tools per the status above and retry.'
+          ]
+        };
+        if (axNeed) {
+          setDockBadgeStatusNote(
+            '需要开启「辅助功能」权限才能在 Dock 图标上显示提醒，请点击右上角「前往开启权限」并勾选放行',
+            'Accessibility permission is required to show alerts on the Dock icon. Click "Grant Access" above and retry.',
+            'warn',
+            false
+          );
+        } else {
+          const pair = errCodeMap[errCode] || [
+            '未能触发 Dock 预览提醒，请确认开关已开启且辅助功能权限正常后重试',
+            'Unable to trigger Dock preview alert; verify alerts are enabled and Accessibility permission is granted.'
+          ];
+          setDockBadgeStatusNote(pair[0], pair[1], 'error', true);
+        }
+      }
+    } catch {
+      setDockBadgeStatusNote(
+        '发送预览提醒失败，请确认 Antigravity 正常运行后重试',
+        'Failed to send Dock preview alert. Ensure Antigravity is running and try again.',
+        'error',
+        true
+      );
+    } finally {
+      syncDockBadgeControls();
+    }
+  });
+
+  el('btn-dock-open-ax')?.addEventListener('click', async () => {
+    const hasBridge = typeof window !== 'undefined' && (Boolean(window.__AGContextMeterLive?.port) || typeof window.contextMeterAPI?.dockBadgeOpenAx === 'function');
+    if (!hasBridge) {
+      setDockBadgeStatusNote(
+        '请手动打开「系统设置 → 隐私与安全性 → 辅助功能」，在列表中开启 Antigravity（若是用终端启动则开启对应终端）的权限',
+        'Open System Settings → Privacy & Security → Accessibility manually and enable permission for Antigravity (or your terminal if launched from terminal).',
+        'warn',
+        false
+      );
+      return;
+    }
+    try {
+      const res = await invokeHostBridge('/dock-badge-open-ax', {}, 'dockBadgeOpenAx');
+      if (res && res.ok) {
+        setDockBadgeStatusNote(
+          '已打开「系统设置 → 隐私与安全性 → 辅助功能」，请在列表中开启 Antigravity（若是用终端启动则开启对应终端）的权限，几秒后自动生效',
+          'Opened System Settings → Privacy & Security → Accessibility. Enable permission for Antigravity (or your terminal if launched from terminal); it takes effect in a few seconds.',
+          'warn',
+          false
+        );
+      } else {
+        setDockBadgeStatusNote(
+          '未能自动打开系统设置，请手动前往「系统设置 → 隐私与安全性 → 辅助功能」，开启 Antigravity（或对应终端）的权限',
+          'Could not open System Settings automatically. Manually open System Settings → Privacy & Security → Accessibility and enable permission for Antigravity.',
+          'warn',
+          false
+        );
+      }
+    } catch {
+      setDockBadgeStatusNote(
+        '无法打开系统设置，请手动前往「系统设置 → 隐私与安全性 → 辅助功能」，开启 Antigravity（或对应终端）的权限',
+        'Unable to open System Settings. Manually open System Settings → Privacy & Security → Accessibility and enable permission for Antigravity.',
+        'warn',
+        false
+      );
+    }
   });
 
   [
@@ -15192,6 +15989,7 @@ function positionHeatPopover(anchorX, anchorY) {
   transplantConfigControlsOnce();
   syncEnhancerPrefControls();
   applySuiteFeatureFlags();
+  syncDockBadgeControls();
   renderQuickBuiltinPool();
   renderQuickPromptsEditor();
   renderTerminalGrid();
@@ -15202,6 +16000,7 @@ function positionHeatPopover(anchorX, anchorY) {
   }
   if (isRealShadowDomTree() && typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
     void checkSuiteRepoUpdate({ fetchRemote: true });
+    void refreshDockBadgeStatus();
   }
   globalThis.__AGContextMeter = {
     version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.2',

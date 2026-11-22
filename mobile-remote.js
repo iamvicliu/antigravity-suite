@@ -4305,66 +4305,115 @@ function createConversationHistoryManager() {
       return { merged, trajMsgs, queuedMessages: cachedQueued };
     }
 
-    const fetchRes = await fetchTrajectoryMessages(sid, { ...options, trajSig });
-    const latestExisting = cache.get(sid);
-    const latestGen = fetchGenMap.get(sid) || 0;
-    const isSuperseded = Boolean(
-      !fetchRes ||
-      fetchRes.gen < latestGen ||
-      (latestExisting?.gen && latestExisting.gen > fetchRes.gen)
-    );
-    const fetchedMsgs = Array.isArray(fetchRes?.messages) ? fetchRes.messages : null;
-    const fetchedQueued = Array.isArray(fetchRes?.queuedMessages) ? fetchRes.queuedMessages : null;
-    const trajFetchedFresh = Boolean(fetchedMsgs && fetchRes.fetchedSig === trajSig);
+    const commitFetchResult = (fetchRes) => {
+      const latestExisting = cache.get(sid);
+      const latestGen = fetchGenMap.get(sid) || 0;
+      const isSuperseded = Boolean(
+        !fetchRes ||
+        fetchRes.gen < latestGen ||
+        (latestExisting?.gen && latestExisting.gen > fetchRes.gen)
+      );
+      const fetchedMsgs = Array.isArray(fetchRes?.messages) ? fetchRes.messages : null;
+      const fetchedQueued = Array.isArray(fetchRes?.queuedMessages) ? fetchRes.queuedMessages : null;
+      const trajFetchedFresh = Boolean(fetchedMsgs && fetchRes.fetchedSig === trajSig);
 
-    if (isSuperseded) {
-      const invGen = invalidatedGenMap.get(sid) || 0;
-      const wasInvalidated = Boolean(fetchRes && fetchRes.gen < invGen);
-      const activeTrajMsgs = Array.isArray(latestExisting?.trajMsgs)
-        ? latestExisting.trajMsgs
-        : (wasInvalidated ? null : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null)));
-      const activeQueued = Array.isArray(latestExisting?.queuedMessages)
-        ? latestExisting.queuedMessages
-        : (wasInvalidated ? [] : (Array.isArray(fetchedQueued) ? fetchedQueued : (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : null)));
-      const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
-      return { merged, trajMsgs: activeTrajMsgs, queuedMessages: activeQueued };
+      if (isSuperseded) {
+        const invGen = invalidatedGenMap.get(sid) || 0;
+        const wasInvalidated = Boolean(fetchRes && fetchRes.gen < invGen);
+        const activeTrajMsgs = Array.isArray(latestExisting?.trajMsgs)
+          ? latestExisting.trajMsgs
+          : (wasInvalidated ? null : (fetchedMsgs || (Array.isArray(existing?.trajMsgs) ? existing.trajMsgs : null)));
+        const activeQueued = Array.isArray(latestExisting?.queuedMessages)
+          ? latestExisting.queuedMessages
+          : (wasInvalidated ? [] : (Array.isArray(fetchedQueued) ? fetchedQueued : (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : null)));
+        const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
+        return { merged, trajMsgs: activeTrajMsgs, queuedMessages: activeQueued };
+      }
+
+      const baseRec = latestExisting || existing;
+      let trajMsgs = null;
+      if (trajFetchedFresh) {
+        trajMsgs = fetchedMsgs;
+      } else if (baseRec && Array.isArray(baseRec.trajMsgs)) {
+        trajMsgs = baseRec.trajMsgs;
+      }
+      const invGenAfter = invalidatedGenMap.get(sid) || 0;
+      const isPendingInvalidation = Boolean(invGenAfter > 0);
+      if (trajFetchedFresh && invGenAfter > 0 && fetchRes.gen > invGenAfter) {
+        invalidatedGenMap.delete(sid);
+      }
+      const nextQueued = trajFetchedFresh
+        ? (Array.isArray(fetchedQueued) ? fetchedQueued : [])
+        : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : (isPendingInvalidation ? [] : null));
+
+      const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
+      const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');
+      const nextObservedSig = trajFetchedFresh ? '' : String(baseRec?.observedSig || '');
+      const nextAt = trajFetchedFresh ? fetchRes.startedAt : (baseRec?.at || 0);
+      const nextGen = trajFetchedFresh ? fetchRes.gen : (baseRec?.gen || 0);
+      const persistedTrajMsgs = Array.isArray(trajMsgs)
+        ? trajMsgs
+        : (Array.isArray(baseRec?.trajMsgs) ? baseRec.trajMsgs : null);
+      touchCache(sid, {
+        trajMsgs: persistedTrajMsgs,
+        queuedMessages: nextQueued,
+        trajSig: nextTrajSig,
+        observedSig: nextObservedSig,
+        domTail: domTail.length ? domTail : (baseRec?.domTail || []),
+        merged,
+        at: nextAt,
+        gen: nextGen
+      });
+      return { merged, trajMsgs: persistedTrajMsgs, queuedMessages: nextQueued };
+    };
+
+    const fetchPromise = fetchTrajectoryMessages(sid, { ...options, trajSig })
+      .then((fetchRes) => commitFetchResult(fetchRes));
+    // 防止软预算超时提前返回后，后台拉取偶发异常变成 unhandledRejection
+    fetchPromise.catch(() => {});
+
+    const explicitSoftWait = Number(options.softWaitMs);
+    let softWaitMs = 0;
+    if (Number.isFinite(explicitSoftWait) && explicitSoftWait > 0) {
+      softWaitMs = explicitSoftWait;
+    } else if (
+      !isCatalogTestEnv() &&
+      !options.localApiConnect &&
+      !globalThis.__AG_REMOTE_TEST_API__ &&
+      !options.bypassCache
+    ) {
+      if (Array.isArray(existing?.trajMsgs)) {
+        softWaitMs = 600;
+      } else if (domTail.length > 0) {
+        softWaitMs = 1200;
+      }
     }
 
-    const baseRec = latestExisting || existing;
-    let trajMsgs = null;
-    if (trajFetchedFresh) {
-      trajMsgs = fetchedMsgs;
-    } else if (baseRec && Array.isArray(baseRec.trajMsgs)) {
-      trajMsgs = baseRec.trajMsgs;
+    if (!(softWaitMs > 0)) {
+      return await fetchPromise;
     }
-    const invGenAfter = invalidatedGenMap.get(sid) || 0;
-    const isPendingInvalidation = Boolean(invGenAfter > 0);
-    if (trajFetchedFresh && invGenAfter > 0 && fetchRes.gen > invGenAfter) {
-      invalidatedGenMap.delete(sid);
-    }
-    const nextQueued = trajFetchedFresh
-      ? (Array.isArray(fetchedQueued) ? fetchedQueued : [])
-      : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : (isPendingInvalidation ? [] : null));
 
-    const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
-    const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');
-    const nextObservedSig = trajFetchedFresh ? '' : String(baseRec?.observedSig || '');
-    const nextAt = trajFetchedFresh ? fetchRes.startedAt : (baseRec?.at || 0);
-    const nextGen = trajFetchedFresh ? fetchRes.gen : (baseRec?.gen || 0);
-    const persistedTrajMsgs = Array.isArray(trajMsgs)
-      ? trajMsgs
-      : (Array.isArray(baseRec?.trajMsgs) ? baseRec.trajMsgs : null);
-    touchCache(sid, {
-      trajMsgs: persistedTrajMsgs,
-      queuedMessages: nextQueued,
-      trajSig: nextTrajSig,
-      observedSig: nextObservedSig,
-      domTail: domTail.length ? domTail : (baseRec?.domTail || []),
-      merged,
-      at: nextAt,
-      gen: nextGen
+    const SOFT_TIMEOUT = Symbol('soft-timeout');
+    let softTimer = null;
+    const timeoutPromise = new Promise((resolve) => {
+      softTimer = setTimeout(() => resolve(SOFT_TIMEOUT), softWaitMs);
+      softTimer.unref?.();
     });
-    return { merged, trajMsgs: persistedTrajMsgs, queuedMessages: nextQueued };
+    try {
+      const raceRes = await Promise.race([fetchPromise, timeoutPromise]);
+      if (raceRes !== SOFT_TIMEOUT) {
+        return raceRes;
+      }
+    } finally {
+      if (softTimer) clearTimeout(softTimer);
+    }
+
+    // 软预算超时后立刻用现有缓存与最新 DOM 尾消息拼装返回，避免阻塞局域网首屏或轮询；后台完成后自动回填缓存
+    const latestFallbackRec = cache.get(sid) || existing;
+    const fallbackTrajMsgs = Array.isArray(latestFallbackRec?.trajMsgs) ? latestFallbackRec.trajMsgs : null;
+    const fallbackQueued = Array.isArray(latestFallbackRec?.queuedMessages) ? latestFallbackRec.queuedMessages : null;
+    const merged = mergeTrajectoryAndDomMessages(fallbackTrajMsgs, domTail, { busy: Boolean(options.busy) });
+    return { merged, trajMsgs: fallbackTrajMsgs, queuedMessages: fallbackQueued };
   }
 
   async function warmSession(sessionId, options = {}) {
@@ -9174,7 +9223,7 @@ function buildMobileAppHtml() {
       const doFetch = () => {
         if (activeSnapAbort) { try { activeSnapAbort.abort(); } catch {} }
         activeSnapAbort = typeof AbortController === 'function' ? new AbortController() : null;
-        return fetchWithTimeout((apiBase || '') + '/api/snapshot' + q, { headers: authHeaders(), cache: 'no-store' }, latestSnap ? 4500 : 2200, activeSnapAbort);
+        return fetchWithTimeout((apiBase || '') + '/api/snapshot' + q, { headers: authHeaders(), cache: 'no-store' }, latestSnap ? 5000 : 6500, activeSnapAbort);
       };
       try {
         let res = await doFetch();
