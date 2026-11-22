@@ -24870,13 +24870,15 @@ test('Tailscale 离线防误报 + 自定义 Tailscale 节点支持（Loon 内置
       'isAllowedPrivateOrigin 仍须拒绝白名单之外的其他 .ts.net 域名'
     );
 
-    // HTTP Handler CORS 对自定义 .ts.net Origin 放行且拒绝其他 .ts.net Origin
+    // HTTP Handler CORS 对自定义 .ts.net Origin 放行且拒绝其他 .ts.net Origin，且 /api/ping 与 /api/snapshot 透传自定义节点
     const cfgHandler = mr.createRemoteHttpHandler({
       enabled: true,
       port: 18765,
-      token: 'tok-custom-ts-origin-test',
+      token: saved.token,
       tailscaleCustomHost: 'custom-proxy.tailnet123.ts.net',
       enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    }, {
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's1', conversations: [] })
     });
     const runOpts = async (origin) => {
       const hdrs = {};
@@ -24895,6 +24897,31 @@ test('Tailscale 离线防误报 + 自定义 Tailscale 节点支持（Loon 内置
     assert.equal(okHdrs['access-control-allow-origin'], 'http://custom-proxy.tailnet123.ts.net:18765');
     const badHdrs = await runOpts('http://stranger.tailnet123.ts.net:18765');
     assert.equal(badHdrs['access-control-allow-origin'], undefined);
+
+    const callJsonGet = async (reqUrl) => {
+      let bodyStr = '';
+      let status = 0;
+      const hdrs = {};
+      await cfgHandler(
+        { method: 'GET', url: reqUrl, headers: { host: '127.0.0.1:18765' }, socket: { remoteAddress: '127.0.0.1' } },
+        {
+          setHeader(k, v) { hdrs[String(k).toLowerCase()] = v; },
+          getHeader(k) { return hdrs[String(k).toLowerCase()]; },
+          writeHead(c, h = {}) { status = c; for (const [k, v] of Object.entries(h)) hdrs[String(k).toLowerCase()] = v; },
+          end(chunk) { if (chunk) bodyStr += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); }
+        }
+      );
+      return { status, json: JSON.parse(bodyStr) };
+    };
+    const pingRes = await callJsonGet(`/api/ping?probe=1&token=${encodeURIComponent(saved.token)}`);
+    assert.equal(pingRes.status, 200);
+    assert.ok(pingRes.json.hosts.includes('custom-proxy.tailnet123.ts.net'), '/api/ping 返回 hosts 应透传自定义 Tailscale 节点');
+    assert.ok(pingRes.json.endpoints.some((e) => e.kind === 'tailscale' && e.url === 'http://custom-proxy.tailnet123.ts.net:18765'), '/api/ping 返回 endpoints 应包含自定义 Tailscale 端点');
+
+    const snapRes = await callJsonGet(`/api/snapshot?token=${encodeURIComponent(saved.token)}`);
+    assert.equal(snapRes.status, 200);
+    assert.ok(snapRes.json.hosts.includes('custom-proxy.tailnet123.ts.net'), '/api/snapshot 返回 hosts 应透传自定义 Tailscale 节点');
+    assert.ok(snapRes.json.endpoints.some((e) => e.kind === 'tailscale' && e.url === 'http://custom-proxy.tailnet123.ts.net:18765'), '/api/snapshot 返回 endpoints 应包含自定义 Tailscale 端点');
 
     // 4. probeClientPrivateReachability: BackendState=Stopped 时早退，不误标 tailscale unreachable
     mr.clearPairedDevicesForTests();
