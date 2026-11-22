@@ -22078,3 +22078,194 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }
 });
+
+test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#47)', () => {
+  const {
+    normPlainMatchText,
+    extractMessagesFromTrajectorySteps,
+    mergeTrajectoryAndDomMessages
+  } = require('../mobile-remote');
+
+  // 1. normPlainMatchText 全量语法剥离与边界保留（不误伤 snake_case、算术乘号与数组下标）
+  assert.equal(normPlainMatchText('### 排查结论 ###'), '排查结论');
+  assert.equal(normPlainMatchText('**加粗** 与 __双下划线__ 和 *斜体* 及 _单下划线_'), '加粗 与 双下划线 和 斜体 及 单下划线');
+  assert.equal(normPlainMatchText('保留 snake_case_var 与 a * b 乘号和 arr[i][j] 下标'), '保留 snake_case_var 与 a * b 乘号和 arr[i][j] 下标');
+  assert.equal(normPlainMatchText('检查 `mobile-remote.js` 的 `normPlainMatchText`'), '检查 mobile-remote.js 的 normPlainMatchText');
+  assert.equal(normPlainMatchText('```js\nconst ok = true;\n```\n~~~sh\necho hi\n~~~'), 'const ok = true; echo hi');
+  assert.equal(
+    normPlainMatchText('见 [[#47] 源码](file:///Users/a/b(1).md#L10 "desc") 与 [![封面](img.png)](https://example.com) 及 [文档][ref1]\n[ref1]: https://ref.example.com'),
+    '见 [#47] 源码 与 封面 及 文档'
+  );
+  assert.equal(normPlainMatchText('访问 <https://example.com/a> 或 <mailto:a@b.com><br/>继续'), '访问 https://example.com/a 或 mailto:a@b.com 继续');
+  assert.equal(normPlainMatchText('> [!IMPORTANT]\n> > 嵌套引用与列表\n> - 第一项\n1. [x] 已完成\n- [ ] 待办'), '嵌套引用与列表 第一项 已完成 待办');
+  assert.equal(normPlainMatchText('| 字段 | 说明 |\n| :--- | ---: |\n| `id` | 唯一键 |\n---\n\\*单独星号 与 \\# 转义'), '字段 说明 id 唯一键 *单独星号 与 # 转义');
+  assert.equal(
+    normPlainMatchText('使用 \\*通配符\\* 和 \\# 标记'),
+    normPlainMatchText('使用 *通配符* 和 # 标记'),
+    'Markdown 反斜杠转义与 DOM 渲染纯文本必须对称对齐'
+  );
+
+  // 2. 前 32 字含各类 Markdown 语法 + 多块无空格 DOM 拼接（collectBoundedNodeText 实况）：只保留服务端渲染版，0 个 dom-tail
+  const mdCases = [
+    {
+      md: '**已根治** [mobile-remote.js](file:///Users/shenslu/codebase/antigravity-suite/mobile-remote.js#L4525) 中的去重逻辑。',
+      dom: '已根治 mobile-remote.js 中的去重逻辑。'
+    },
+    {
+      md: '`mergeTrajectoryAndDomMessages` 现已对齐纯文本指纹并跳过已消费节点。',
+      dom: 'mergeTrajectoryAndDomMessages 现已对齐纯文本指纹并跳过已消费节点。'
+    },
+    {
+      md: '### 根因定位\n\n第一点是 **原始 Markdown** 与 DOM 纯文本硬比对失配。',
+      dom: '根因定位第一点是 原始 Markdown 与 DOM 纯文本硬比对失配。'
+    },
+    {
+      md: '> [!NOTE]\n> 请查看 [TODO.md](file:///Users/shenslu/codebase/antigravity-suite/TODO.md) 并确认结果。',
+      dom: '请查看 TODO.md 并确认结果。'
+    }
+  ];
+  for (const tc of mdCases) {
+    const traj = extractMessagesFromTrajectorySteps([
+      { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '请排查重复回复问题' } },
+      { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { thinking: '先核对消息合并函数', response: tc.md } }
+    ]);
+    const dom = [
+      { id: 'u-0', role: 'user', text: '请排查重复回复问题' },
+      { id: 'a-1', role: 'assistant', text: tc.dom, thoughtLabel: '已思考', thoughtText: '先核对消息合并函数' }
+    ];
+    const merged = mergeTrajectoryAndDomMessages(traj, dom, { busy: false });
+    assert.equal(merged.length, 2, `Markdown 场景不得生成重复 dom-tail: ${tc.md}`);
+    assert.ok(!merged.some((m) => String(m.id || '').startsWith('dom-tail-')), '不应追加 dom-tail 副本');
+    assert.equal(merged[1].text, tc.md);
+    assert.ok(merged[1].html, '应保留服务端 renderSafeMarkdownToHtml 渲染结果');
+  }
+
+  // 3. 流式阶段短轨迹 + 长 DOM（双向匹配）：busy=true 时更新为更长文本且不产生 dom-tail；同等纯文本长度时不覆盖服务端 HTML
+  const streamTraj = extractMessagesFromTrajectorySteps([
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '流式输出测试' } },
+    { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '**正在分析** [mobile-remote.js](file:///Users/a/mobile-remote.js)' } }
+  ]);
+  const streamLongDom = [
+    { id: 'u-0', role: 'user', text: '流式输出测试' },
+    { id: 'a-1', role: 'assistant', text: '正在分析 mobile-remote.js 的三处匹配分支，马上给出补丁。' }
+  ];
+  const streamMergedBusy = mergeTrajectoryAndDomMessages(streamTraj, streamLongDom, { busy: true });
+  assert.equal(streamMergedBusy.length, 2, 'busy=true 流式短轨迹 + 长 DOM 不得产生重复气泡');
+  assert.equal(streamMergedBusy[1].text, streamLongDom[1].text);
+
+  const streamMergedIdle = mergeTrajectoryAndDomMessages(streamTraj, streamLongDom, { busy: false });
+  assert.equal(streamMergedIdle.length, 2, 'busy=false 双向匹配亦不得产生 dom-tail 重复气泡');
+  assert.equal(streamMergedIdle[1].text, streamTraj[1].text);
+
+  const equalPlainDom = [
+    { id: 'u-0', role: 'user', text: '流式输出测试' },
+    { id: 'a-1', role: 'assistant', text: '正在分析 mobile-remote.js' }
+  ];
+  const equalBusy = mergeTrajectoryAndDomMessages(streamTraj, equalPlainDom, { busy: true });
+  assert.equal(equalBusy[1].text, streamTraj[1].text, '同等纯文本长度时不得覆盖轨迹原文与 .md-file-link HTML');
+  assert.ok(equalBusy[1].html.includes('md-file-link'));
+
+  // 4. 长文头部失配（如 DOM 含代码语言头 / Callout 标签）通过全包含与中尾部多切片去重；仅末尾礼貌用语相同的两条长回复不得误合并
+  const bodyCore = '第一步检查连接配置，第二步校验工作区路径白名单，第三步执行全量回归测试并验证服务端日志输出完全正常，第四步热刷新确认界面渲染正确。';
+  const longTraj = [
+    { id: 't-u-0', role: 'user', text: '给个长文报告' },
+    { id: 't-a-1', role: 'assistant', text: `**完整报告**\n\n\`\`\`javascript\nconst checked = true;\n\`\`\`\n\n${bodyCore}` }
+  ];
+  const longHeadMismatchDom = [
+    { id: 'u-0', role: 'user', text: '给个长文报告' },
+    { id: 'a-1', role: 'assistant', text: `Important 提示信息\njavascriptCopy\nconst checked = true;\n${bodyCore}` }
+  ];
+  const longDeduped = mergeTrajectoryAndDomMessages(longTraj, longHeadMismatchDom, { busy: false });
+  assert.equal(longDeduped.length, 2, '头部多出语言标签/Copy/Alert 时应通过中尾部多切片兜底去重');
+
+  const politeEnding = '如有任何问题请随时告诉我，我可以继续协助您排查。';
+  const twoDifferentLongReplies = [
+    { id: 'u-0', role: 'user', text: '对比两个完全不同的长回复' },
+    {
+      id: 'a-1',
+      role: 'assistant',
+      text: `第一份说明专门分析网络端口绑定、Tailscale HTTPS 证书签发流程以及防火墙策略核查细节。${politeEnding}`
+    },
+    {
+      id: 'a-2',
+      role: 'assistant',
+      text: `第二份说明聚焦前端消息虚拟滚动性能优化、附件缓存清理策略以及快捷键冲突处理方案。${politeEnding}`
+    }
+  ];
+  const diffTraj = [
+    { id: 't-u-0', role: 'user', text: '对比两个完全不同的长回复' },
+    twoDifferentLongReplies[1]
+  ];
+  const diffMerged = mergeTrajectoryAndDomMessages(diffTraj, twoDifferentLongReplies, { busy: false });
+  assert.equal(diffMerged.length, 3, '仅共享相同礼貌结束语的两条不同长回复不得误合并');
+
+  // 5. 同轮短首条 + 长次条：Tier 3 精确优先 + 消费标记，不吞第二条且能拦截同文重复节点
+  const multiAssistantTraj = [
+    { id: 't-u-0', role: 'user', text: '一步步处理' },
+    { id: 't-a-1', role: 'assistant', text: '好的' }
+  ];
+  const multiAssistantDom = [
+    { id: 'u-0', role: 'user', text: '一步步处理' },
+    { id: 'a-1', role: 'assistant', text: '好的' },
+    { id: 'a-2', role: 'assistant', text: '好的，接下来我开始检查代码并定位具体行号与边界条件。' },
+    { id: 'a-3', role: 'assistant', text: '好的' }
+  ];
+  const multiMerged = mergeTrajectoryAndDomMessages(multiAssistantTraj, multiAssistantDom, { busy: false });
+  assert.equal(multiMerged.length, 3, '应保留第二条长回复并精确过滤重复的“好的”节点');
+  assert.equal(multiMerged[1].text, '好的');
+  assert.equal(multiMerged[2].text, '好的，接下来我开始检查代码并定位具体行号与边界条件。');
+
+  // 6. 跨轮隔离：DOM 出现新提问 u2 且新回复与旧轮回复同文时，Pass 1 不得跨轮误消费
+  const crossTraj = [
+    { id: 't-u-0', role: 'user', text: '第一轮提问' },
+    { id: 't-a-1', role: 'assistant', text: '收到，已完成。' }
+  ];
+  const crossDom = [
+    { id: 'u-0', role: 'user', text: '第一轮提问' },
+    { id: 'a-1', role: 'assistant', text: '收到，已完成。' },
+    { id: 'u-2', role: 'user', text: '第二轮提问' },
+    { id: 'a-3', role: 'assistant', text: '收到，已完成。' }
+  ];
+  const crossMerged = mergeTrajectoryAndDomMessages(crossTraj, crossDom, { busy: false });
+  assert.equal(crossMerged.length, 4, '新轮同文回复不得被旧轮 Pass 1 误消费，应完整保留 4 条消息');
+  assert.equal(crossMerged[2].text, '第二轮提问');
+  assert.equal(crossMerged[3].text, '收到，已完成。');
+
+  // 7. 用户锚点含 Markdown 与图片尾标 / 纯图占位：锚点精准对齐，不重复旧回复且新消息正常追尾
+  const mdUserTraj = [
+    { id: 't-u-0', role: 'user', text: '请看 `mobile-remote.js` 的 **关键点**\n[附带 1 张图片]' },
+    { id: 't-a-1', role: 'assistant', text: '**确认收到**，正在核对图片细节。' }
+  ];
+  const mdUserDom = [
+    { id: 'u-0', role: 'user', text: '请看 mobile-remote.js 的 关键点' },
+    { id: 'a-1', role: 'assistant', text: '确认收到，正在核对图片细节。' },
+    { id: 'a-2', role: 'assistant', text: '补充说明：已修复所有边界问题。' }
+  ];
+  const mdUserMerged = mergeTrajectoryAndDomMessages(mdUserTraj, mdUserDom, { busy: false });
+  assert.equal(mdUserMerged.length, 3, '含 Markdown 与图片尾标的用户锚点应精准对齐并只追加真正的新回复');
+  assert.equal(mdUserMerged[1].text, '**确认收到**，正在核对图片细节。');
+  assert.equal(mdUserMerged[2].text, '补充说明：已修复所有边界问题。');
+
+  const pureImgTraj = [
+    { id: 't-u-0', role: 'user', text: '[图片附件]', attachments: [{ kind: 'image', name: 'shot.png', path: '/tmp/shot.png' }] },
+    { id: 't-a-1', role: 'assistant', text: '`已识别` 截图中的报错堆栈。' }
+  ];
+  const pureImgDom = [
+    { id: 'u-0', role: 'user', text: '', attachments: [{ kind: 'image', name: 'shot.png', path: '/tmp/shot.png' }] },
+    { id: 'a-1', role: 'assistant', text: '已识别 截图中的报错堆栈。' }
+  ];
+  const pureImgMerged = mergeTrajectoryAndDomMessages(pureImgTraj, pureImgDom, { busy: false });
+  assert.equal(pureImgMerged.length, 2, '纯图用户消息锚点亦须对齐且不重复追加回复');
+
+  // 8. 纯符号正文（如 "---"）不得被误判为空壳纯思考卡
+  const hrTraj = [
+    { id: 't-u-0', role: 'user', text: '输出分隔符' },
+    { id: 't-a-1', role: 'assistant', text: '---' }
+  ];
+  const hrDom = [
+    { id: 'u-0', role: 'user', text: '输出分隔符' },
+    { id: 'a-1', role: 'assistant', text: '---' }
+  ];
+  const hrMerged = mergeTrajectoryAndDomMessages(hrTraj, hrDom, { busy: false });
+  assert.equal(hrMerged.length, 2, '纯符号正文 "---" 应正常匹配去重且不被当作空壳思考卡');
+});
