@@ -22268,4 +22268,110 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
   ];
   const hrMerged = mergeTrajectoryAndDomMessages(hrTraj, hrDom, { busy: false });
   assert.equal(hrMerged.length, 2, '纯符号正文 "---" 应正常匹配去重且不被当作空壳思考卡');
+
+  // 9. 代码有效运算符保护（| / || / ** / ~~ 与表格竖线及单元格 \| 隔离）
+  assert.equal(normPlainMatchText('const x = a | b;'), 'const x = a | b;');
+  assert.equal(normPlainMatchText('const x = a || b;'), 'const x = a || b;');
+  assert.notEqual(normPlainMatchText('const x = a | b;'), normPlainMatchText('const x = a || b;'));
+  assert.equal(normPlainMatchText('const y = a ** b; const z = 2**3;'), 'const y = a ** b; const z = 2**3;');
+  assert.equal(normPlainMatchText('def f(**kwargs): return ~~val'), 'def f(**kwargs): return ~~val');
+  assert.equal(normPlainMatchText('**加粗** 与 ~~删除线~~'), '加粗 与 删除线');
+  assert.equal(normPlainMatchText('**正在流式输出'), '正在流式输出');
+  assert.equal(
+    normPlainMatchText('| 表达式 | 结果 |\n| --- | --- |\n| `a \\| b` | 位或 |'),
+    '表达式 结果 a | b 位或',
+    '标准 GFM 表格应剥离列竖线并保留单元格转义竖线'
+  );
+
+  const bitTraj = [
+    { id: 't-u-0', role: 'user', text: '位运算写法' },
+    { id: 't-a-1', role: 'assistant', text: 'const x = a | b;' }
+  ];
+  const bitDom = [
+    { id: 'u-0', role: 'user', text: '位运算写法' },
+    { id: 'a-1', role: 'assistant', text: 'const x = a | b;' },
+    { id: 'a-2', role: 'assistant', text: 'const x = a || b;' }
+  ];
+  const bitMerged = mergeTrajectoryAndDomMessages(bitTraj, bitDom, { busy: false });
+  assert.equal(bitMerged.length, 3, 'const x = a | b; 与 const x = a || b; 两条真实代码回复必须全部保留');
+  assert.equal(bitMerged[1].text, 'const x = a | b;');
+  assert.equal(bitMerged[2].text, 'const x = a || b;');
+
+  const bitUserOnlyMerged = mergeTrajectoryAndDomMessages(
+    [{ id: 't-u-0', role: 'user', text: '对比两个位运算符' }],
+    [
+      { id: 'u-0', role: 'user', text: '对比两个位运算符' },
+      { id: 'a-1', role: 'assistant', text: '`const x = a | b;`' },
+      { id: 'a-2', role: 'assistant', text: '`const x = a || b;`' }
+    ],
+    { busy: false }
+  );
+  assert.equal(bitUserOnlyMerged.length, 3, '轨迹仅含用户消息时 DOM 中的两条代码回复亦必须全部保留');
+
+  // 10. 用户锚点防宽松前缀错配（U2 在 U1 后追加内容时绝不错误锚定 U2；超长截断 … 仍可锚定）
+  const anchorBypassTraj = [
+    { id: 't-u-0', role: 'user', text: '请检查消息合并逻辑是否正确' },
+    { id: 't-a-1', role: 'assistant', text: '收到，已完成。' }
+  ];
+  const anchorBypassDom = [
+    { id: 'u-0', role: 'user', text: '请检查消息合并逻辑是否正确' },
+    { id: 'a-1', role: 'assistant', text: '收到，已完成。' },
+    { id: 'u-2', role: 'user', text: '请检查消息合并逻辑是否正确，并补充测试' },
+    { id: 'a-3', role: 'assistant', text: '收到，已完成。' }
+  ];
+  const anchorBypassMerged = mergeTrajectoryAndDomMessages(anchorBypassTraj, anchorBypassDom, { busy: false });
+  assert.equal(anchorBypassMerged.length, 4, 'U2 在 U1 后追加内容时不得错配为 U1 锚点，四条消息必须全部保留');
+  assert.equal(anchorBypassMerged[0].text, '请检查消息合并逻辑是否正确');
+  assert.equal(anchorBypassMerged[1].text, '收到，已完成。');
+  assert.equal(anchorBypassMerged[2].text, '请检查消息合并逻辑是否正确，并补充测试');
+  assert.equal(anchorBypassMerged[3].text, '收到，已完成。');
+
+  const longUserBody = '一二三四五六七八九十'.repeat(25); // 250 字符
+  const truncUserMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: longUserBody },
+      { id: 't-a-1', role: 'assistant', text: '**已处理**超长提问。' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: `${longUserBody.slice(0, 210)}…` },
+      { id: 'a-1', role: 'assistant', text: '已处理超长提问。' },
+      { id: 'a-2', role: 'assistant', text: '附加一条真正的新回复。' }
+    ],
+    { busy: false }
+  );
+  assert.equal(truncUserMerged.length, 3, '超长用户消息被 DOM 截断带 … 时仍可准确锚定');
+  assert.equal(truncUserMerged[2].text, '附加一条真正的新回复。');
+
+  // 11. 修正中尾探针仅凭共享长尾部判重：60 字符文本前 20 字不同、后 40 字相同且探针唯一时不得误吞
+  const sharedTail40 = '随后返回标准结果数据供上游消费节点最终完成持久化存储与状态同步更新全部收尾操作。';
+  const replyR1 = `模块甲初始化端口配置并校验前置连接参数，${sharedTail40}`;
+  const replyR2 = `模块乙加载本地缓存索引并同步增量文件树，${sharedTail40}`;
+  assert.equal(replyR1.length, 60);
+  assert.equal(replyR2.length, 60);
+
+  const tailUserOnlyMerged = mergeTrajectoryAndDomMessages(
+    [{ id: 't-u-0', role: 'user', text: '分别汇报模块甲和模块乙' }],
+    [
+      { id: 'u-0', role: 'user', text: '分别汇报模块甲和模块乙' },
+      { id: 'a-1', role: 'assistant', text: replyR1 },
+      { id: 'a-2', role: 'assistant', text: replyR2 }
+    ],
+    { busy: false }
+  );
+  assert.equal(tailUserOnlyMerged.length, 3, '轨迹仅含用户消息时，Pass 2 不得因共享 40 字尾部吞掉第二条回复');
+  assert.equal(tailUserOnlyMerged[1].text, replyR1);
+  assert.equal(tailUserOnlyMerged[2].text, replyR2);
+
+  const tailWithBaseMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '分别汇报模块甲和模块乙' },
+      { id: 't-a-1', role: 'assistant', text: replyR1 }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '分别汇报模块甲和模块乙' },
+      { id: 'a-2', role: 'assistant', text: replyR2 }
+    ],
+    { busy: false }
+  );
+  assert.equal(tailWithBaseMerged.length, 3, '前 20 字不同的两段 60 字文本在 Pass 1/Pass 2 均不得误合并');
 });

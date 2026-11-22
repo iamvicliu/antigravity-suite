@@ -4526,6 +4526,37 @@ function normMsgPrefix(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
+function stripTablePipesAndDelims(text) {
+  const TABLE_DELIM_RE = /^[ \t]*\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*:?-{3,}:?[ \t]*\|?[ \t]*$/;
+  const SINGLE_COL_TABLE_DELIM_RE = /^[ \t]*\|[ \t]*:?-{3,}:?[ \t]*\|[ \t]*$/;
+  const HAS_UNESCAPED_PIPE_RE = /(?:^|[^\\])(?:\\\\)*\|/;
+  const lines = String(text || '').split('\n');
+  const isDelim = new Array(lines.length).fill(false);
+  const isTableRow = new Array(lines.length).fill(false);
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!TABLE_DELIM_RE.test(line) && !SINGLE_COL_TABLE_DELIM_RE.test(line)) continue;
+    if (!HAS_UNESCAPED_PIPE_RE.test(lines[i - 1])) continue;
+    isDelim[i] = true;
+    isTableRow[i - 1] = true;
+    for (let j = i + 1; j < lines.length; j++) {
+      const row = lines[j];
+      if (!row.trim() || !HAS_UNESCAPED_PIPE_RE.test(row)) break;
+      isTableRow[j] = true;
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    if (isDelim[i]) {
+      lines[i] = '';
+    } else if (isTableRow[i]) {
+      lines[i] = lines[i].replace(/(\\\\)|\\(\|)|\|/g, (m, dbl, esc) => (dbl ? dbl : (esc ? '\\|' : ' ')));
+    }
+  }
+  return lines.join('\n');
+}
+
 function normPlainMatchText(text) {
   let s = String(text || '')
     .replace(/\r\n?/g, '\n')
@@ -4533,6 +4564,10 @@ function normPlainMatchText(text) {
   if (!s.trim()) return '';
   s = s.replace(/^[ \t]*(?:`{3,}|~{3,})[^\n]*$/gm, '');
   s = s.replace(/^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$/gm, '');
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/^[ \t]*(?:>[ \t]*)+(?:\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*)?/gim, '');
+  }
+  s = stripTablePipesAndDelims(s);
   s = s.replace(/\\([\\`*_{}[\]()#+\-.!>|~$])/g, '$1');
   for (let i = 0; i < 3; i++) {
     const next = s.replace(
@@ -4546,15 +4581,18 @@ function normPlainMatchText(text) {
   s = s.replace(/<(https?:\/\/[^>\s]+|file:\/\/[^>\s]+|mailto:[^>\s]+)>/gi, '$1');
   s = s.replace(/<br\s*\/?>/gi, ' ');
   s = s.replace(/^[ \t]*(?:={3,}|-{3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*$/gm, '');
-  s = s.replace(/^[ \t]*\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*:?-{3,}:?[ \t]*\|?[ \t]*$/gm, '');
-  for (let i = 0; i < 2; i++) {
-    s = s.replace(/^[ \t]*(?:>[ \t]*)+(?:\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*)?/gim, '');
-  }
   s = s.replace(/^[ \t]*#{1,6}[ \t]+/gm, '').replace(/[ \t]+#+[ \t]*$/gm, '');
   s = s.replace(/^[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '');
   s = s.replace(/^[ \t]*\[[ xX]\][ \t]+/gm, '');
-  s = s.replace(/\|/g, ' ');
-  s = s.replace(/`+/g, '').replace(/\*\*/g, '').replace(/~~/g, '');
+  s = s.replace(/`+/g, '');
+  s = s.replace(/\*\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*\*/g, '$1');
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*/g, '$1');
+  }
+  s = s.replace(/(^|[ \t])\*\*(?=[^\s*][^*\n]*$)/gm, '$1');
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/~~(?!\s)((?:[^~\n]*?[^\s~])|[^~\s])~~/g, '$1');
+  }
   for (let i = 0; i < 2; i++) {
     s = s.replace(/(^|[^\w])__([^_\n]+?)__(?=$|[^\w])/g, '$1$2');
   }
@@ -4613,29 +4651,49 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
 
   const shorter = tClean.length <= dClean.length ? tClean : dClean;
   const longer = tClean.length <= dClean.length ? dClean : tClean;
-  if (shorter.length >= 20 && longer.includes(shorter)) {
-    return 1;
-  }
-  if (shorter.length >= 40) {
-    const probeLen = shorter.length < 72 ? 24 : 28;
+  if (shorter.length >= 24) {
+    const probeLen = shorter.length >= 48 ? 24 : 20;
     const maxStart = shorter.length - probeLen;
-    if (maxStart >= 16) {
-      const starts = [
-        Math.floor(maxStart * 0.25),
-        Math.floor(maxStart * 0.6),
-        maxStart
-      ];
-      const hits = [];
-      for (const st of starts) {
-        const probe = shorter.slice(st, st + probeLen);
-        const pos = longer.indexOf(probe);
-        if (pos >= 0) hits.push({ st, pos });
-      }
-      for (let a = 0; a < hits.length; a++) {
-        for (let b = a + 1; b < hits.length; b++) {
-          if (hits[b].st - hits[a].st >= 8 && hits[b].pos > hits[a].pos) {
-            return 1;
-          }
+    const candidateStarts = Array.from(new Set([
+      0,
+      Math.floor(maxStart * 0.5),
+      maxStart
+    ]));
+    for (const seedStart of candidateStarts) {
+      const probe = shorter.slice(seedStart, seedStart + probeLen);
+      let searchFrom = 0;
+      for (let occ = 0; occ < 3; occ++) {
+        const hitPos = longer.indexOf(probe, searchFrom);
+        if (hitPos < 0) break;
+        searchFrom = hitPos + 1;
+        let startI = seedStart;
+        let startJ = hitPos;
+        while (startI > 0 && startJ > 0 && shorter[startI - 1] === longer[startJ - 1]) {
+          startI--;
+          startJ--;
+        }
+        let endI = seedStart + probeLen;
+        let endJ = hitPos + probeLen;
+        while (endI < shorter.length && endJ < longer.length && shorter[endI] === longer[endJ]) {
+          endI++;
+          endJ++;
+        }
+        const matchLen = endI - startI;
+        const headMin = Math.min(startI, startJ);
+        const headMax = Math.max(startI, startJ);
+        const tailMin = Math.min(shorter.length - endI, longer.length - endJ);
+        const tailMax = Math.max(shorter.length - endI, longer.length - endJ);
+        const shorterRatio = matchLen / shorter.length;
+        const longerRatio = matchLen / longer.length;
+        if (
+          matchLen >= 24 &&
+          shorterRatio >= 0.8 &&
+          headMin <= 12 &&
+          headMax <= 48 &&
+          tailMin <= 12 &&
+          (Boolean(options.busy) || longerRatio >= 0.65 || tailMax <= 32)
+        ) {
+          return 1;
         }
       }
     }
@@ -4659,7 +4717,14 @@ function isSameUserMessage(baseMsg, domMsg) {
   const dKey = compactMatchKey(dStripped);
   if (bKey && dKey) {
     if (bKey === dKey) return true;
-    return classifyAssistantMatch(bStripped, dStripped, { busy: false }) > 0;
+    const domRawTrimmed = String(domMsg.text || '').trim();
+    if (domRawTrimmed.endsWith('…') || dStripped.endsWith('…')) {
+      const dClean = stripTrailingEllipsis(dKey);
+      if (dClean.length >= 200 && bKey.length > dClean.length && bKey.startsWith(dClean)) {
+        return true;
+      }
+    }
+    return false;
   }
   if (!bKey && !dKey) {
     return hasUserAttachmentOrMediaMarker(baseMsg) && hasUserAttachmentOrMediaMarker(domMsg);
@@ -4866,7 +4931,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     let currentTurnStartIdx = lastBaseUserIdx;
     let currentTurnEntries = [];
     for (let k = Math.max(0, lastBaseUserIdx + 1); k < baseList.length; k++) {
-      currentTurnEntries.push({ item: baseList[k], baseIdx: k });
+      currentTurnEntries.push({ item: baseList[k], baseIdx: k, fromBase: true });
     }
     for (let j = startAppendIdx; j < domList.length; j++) {
       if (consumedDomIndices.has(j)) continue;
@@ -4902,14 +4967,14 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         if (dm.thoughtLabel || dm.thoughtText) {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          currentTurnEntries.push({ item, baseIdx: baseList.length - 1 });
+          currentTurnEntries.push({ item, baseIdx: baseList.length - 1, fromBase: false });
         }
         continue;
       }
       const dup = dHasText
         ? currentTurnEntries.some((entry) => {
             if (entry.item.role !== dm.role) return false;
-            const exactOnly = consumedBaseIndices.has(entry.baseIdx);
+            const exactOnly = !entry.fromBase || consumedBaseIndices.has(entry.baseIdx);
             return classifyAssistantMatch(entry.item.text, dm.text, { busy: Boolean(options.busy), exactOnly }) > 0;
           })
         : false;
@@ -4939,12 +5004,12 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           };
           baseList.splice(pendingThinkIdx, 1, promoted);
           const turnPos = currentTurnEntries.findIndex((e) => e.baseIdx === pendingThinkIdx || e.item === prevThink);
-          if (turnPos >= 0) currentTurnEntries.splice(turnPos, 1, { item: promoted, baseIdx: pendingThinkIdx });
-          else currentTurnEntries.push({ item: promoted, baseIdx: pendingThinkIdx });
+          if (turnPos >= 0) currentTurnEntries.splice(turnPos, 1, { item: promoted, baseIdx: pendingThinkIdx, fromBase: false });
+          else currentTurnEntries.push({ item: promoted, baseIdx: pendingThinkIdx, fromBase: false });
         } else {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          currentTurnEntries.push({ item, baseIdx: baseList.length - 1 });
+          currentTurnEntries.push({ item, baseIdx: baseList.length - 1, fromBase: false });
         }
       }
     }
