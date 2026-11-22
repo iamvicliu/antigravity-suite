@@ -23002,6 +23002,105 @@ test('消除 UTF-8 跨分片截断、isolated Markdown 合并、多段历史轮�
   assert.equal(activeStreamMerged.length, 2, '活跃末轮流式单回复应保持 2 条');
   assert.equal(activeStreamMerged[1].text, '好的，已收到正在检查并执行全量测试', '活跃末轮流式单回复应以更长 DOM 文本更新');
 
+  // 3e. Pass 2 追加的 RPC / isolated Markdown 条目保留 Markdown 来源，不误并异构代码串且仍对相同副本去重
+  const pass2MdTraj = [{ id: 't-u-0', role: 'user', text: '展示代码片段' }];
+  const pass2MdIncoming = [
+    { id: 'rpc-u-0', role: 'user', text: '展示代码片段' },
+    { id: 'rpc-a-1', role: 'assistant', text: 'const s = "x";' },
+    { id: 'rpc-a-2', role: 'assistant', text: 'const s = "**x**";' },
+    { id: 'rpc-a-3', role: 'assistant', text: 'const s = "**x**";', thoughtText: '二次确认代码块内容' }
+  ];
+  for (const opts of [{ isolated: true }, { isolated: false }, { isolated: true, busy: true }]) {
+    const res = mergeTrajectoryAndDomMessages(pass2MdTraj, pass2MdIncoming, opts);
+    assert.equal(res.length, 3, `Pass 2 追加 RPC Markdown 在 ${JSON.stringify(opts)} 下应保留两条不同代码回复并去重相同副本`);
+    assert.equal(res[1].text, 'const s = "x";');
+    assert.equal(res[2].text, 'const s = "**x**";');
+    assert.equal(res[2].thoughtText, '二次确认代码块内容', '相同 Markdown 副本去重后仍应合并思考元数据');
+  }
+  const pass2MdReverse = mergeTrajectoryAndDomMessages(
+    pass2MdTraj,
+    [
+      { id: 'rpc-u-0', role: 'user', text: '展示代码片段' },
+      { id: 'rpc-a-1', role: 'assistant', text: 'const s = "**x**";' },
+      { id: 'rpc-a-2', role: 'assistant', text: 'const s = "x";' },
+      { id: 'rpc-a-3', role: 'assistant', text: 'const s = "x";', thoughtText: '合并重复项思考' }
+    ],
+    { isolated: true }
+  );
+  assert.equal(pass2MdReverse.length, 3, '反向顺序 **x** 先于 x 追加时同样应保留两条并去重相同副本');
+  assert.equal(pass2MdReverse[1].text, 'const s = "**x**";');
+  assert.equal(pass2MdReverse[2].text, 'const s = "x";');
+  assert.equal(pass2MdReverse[2].thoughtText, '合并重复项思考');
+
+  // 3f. matchConcatenatedTurnDom 流式尾部命中应更新末段完整新增正文且绝不重复拼接前缀 A
+  const segA = '第一步先检查 **配置项** 与权限。';
+  const segB = '**第二步**：开始执行全量验证';
+  const concatStreamMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '继续排查' },
+      { id: 't-a-1', role: 'assistant', text: segA },
+      { id: 't-a-2', role: 'assistant', text: segB }
+    ],
+    [
+      {
+        id: 'u-0',
+        role: 'user',
+        text: '继续排查'
+      },
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: '第一步先检查 配置项 与权限。\n\n第二步：开始执行全量验证，目前已全部通过。',
+        html: '<div>第一步先检查 <strong>配置项</strong> 与权限。</div><div><strong>第二步</strong>：开始执行全量验证，目前已全部通过。</div>',
+        thoughtText: '整理两阶段结果'
+      }
+    ],
+    { busy: true }
+  );
+  assert.equal(concatStreamMerged.length, 3, '流式多段聚合容器命中时不得产生重复气泡');
+  assert.equal(concatStreamMerged[1].text, segA, '首段 A 应完整保留原始 Markdown');
+  assert.equal(
+    concatStreamMerged[2].text,
+    '第二步：开始执行全量验证，目前已全部通过。',
+    '末段 B 应更新为包含新增正文的完整尾部且不得包含前缀 A'
+  );
+  assert.equal(concatStreamMerged[2].html, null, '末段 B 以局部切片更新后不得复用整轮聚合 DOM html');
+  assert.equal(concatStreamMerged[2].thoughtText, '整理两阶段结果');
+
+  // 两次连续流式增长帧同轮更新（A+B+新增1 -> A+B+新增1+新增2）
+  const concatProgressiveMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '继续排查' },
+      { id: 't-a-1', role: 'assistant', text: segA },
+      { id: 't-a-2', role: 'assistant', text: segB }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '继续排查' },
+      { id: 'a-1', role: 'assistant', text: '第一步先检查 配置项 与权限。\n\n第二步：开始执行全量验证，阶段一完成' },
+      { id: 'a-2', role: 'assistant', text: '第一步先检查 配置项 与权限。\n\n第二步：开始执行全量验证，阶段一完成，最终收尾完毕。' }
+    ],
+    { busy: true }
+  );
+  assert.equal(concatProgressiveMerged.length, 3, '连续流式多段帧不应追加多余消息');
+  assert.equal(concatProgressiveMerged[1].text, segA);
+  assert.equal(concatProgressiveMerged[2].text, '第二步：开始执行全量验证，阶段一完成，最终收尾完毕。');
+
+  // 无新增正文（DOM 精确等于 A+B）时即使 busy=true 也保留末段原始 Markdown
+  const concatExactBusyMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '继续排查' },
+      { id: 't-a-1', role: 'assistant', text: segA },
+      { id: 't-a-2', role: 'assistant', text: segB }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '继续排查' },
+      { id: 'a-1', role: 'assistant', text: '第一步先检查 配置项 与权限。第二步：开始执行全量验证' }
+    ],
+    { busy: true }
+  );
+  assert.equal(concatExactBusyMerged.length, 3);
+  assert.equal(concatExactBusyMerged[2].text, segB, '无新增正文时不应覆盖末段原始 Markdown');
+
   // 4. ag-enhancer-overlay.js collectRecentMessages 过滤纯步骤进度列表节点，保留普通无 markdown-root 回退
   const envStep = createDomEnv();
   envStep.win.location = { pathname: '/c/step-prog-1', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/step-prog-1' };
