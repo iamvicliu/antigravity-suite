@@ -549,6 +549,76 @@ async function scanFiles(media, scanOptions = {}) {
 let collectSeqCounter = 0;
 const latestCollectSeqByOrigin = new Map();
 
+/**
+ * Antigravity v2.34.0+ 中页面 __APP_CONFIG__.csrfToken 可能为空，
+ * 此时从 ~/.gemini/(antigravity|antigravity-ide)/daemon/*.json 按端口与存活 PID 匹配语言服务令牌。
+ */
+function resolveCsrfFromDaemonFiles(origin, options = {}) {
+  let targetPort = null;
+  try {
+    const parsedOrigin = new URL(origin);
+    targetPort = Number(parsedOrigin.port) || null;
+  } catch { }
+  const daemonDirs = Array.isArray(options?.daemonDirs) && options.daemonDirs.length
+    ? options.daemonDirs
+    : ['antigravity', 'antigravity-ide'].map(dir => path.join(os.homedir(), '.gemini', dir, 'daemon'));
+  const isPidAlive = typeof options?.isPidAlive === 'function'
+    ? options.isPidAlive
+    : (pid) => {
+      if (!Number.isInteger(pid) || pid <= 0) return false;
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (err) {
+        return err?.code === 'EPERM';
+      }
+    };
+  const candidates = [];
+  for (const dirPath of daemonDirs) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dirPath);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      if (!/\.json$/i.test(name)) continue;
+      const fullPath = path.join(dirPath, name);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (!stat.isFile()) continue;
+        const parsed = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+        const token = typeof parsed?.csrfToken === 'string' ? parsed.csrfToken.trim() : '';
+        if (!token) continue;
+        const httpsPort = Number(parsed?.httpsPort || 0) || null;
+        const httpPort = Number(parsed?.httpPort || 0) || null;
+        const portMatched = Boolean(targetPort && (httpsPort === targetPort || httpPort === targetPort));
+        const rawPid = parsed?.pid;
+        const pidNum = (rawPid != null && rawPid !== '') ? Number(rawPid) : NaN;
+        const aliveRank = (Number.isInteger(pidNum) && pidNum > 0) ? (isPidAlive(pidNum) ? 2 : 0) : 1;
+        candidates.push({ portMatched: portMatched ? 1 : 0, aliveRank, mtimeMs: stat.mtimeMs || 0, token });
+      } catch { }
+    }
+  }
+  candidates.sort((a, b) => (b.portMatched - a.portMatched) || (b.aliveRank - a.aliveRank) || (b.mtimeMs - a.mtimeMs));
+  return candidates[0]?.token || '';
+}
+
+function resolveOriginCsrfToken(origin, html, options = {}) {
+  let token = '';
+  try {
+    const match = typeof html === 'string' ? html.match(/window\.__APP_CONFIG__\s*=\s*(\{[\s\S]*?\})\s*;/) : null;
+    if (match && match[1]) {
+      token = String(JSON.parse(match[1])?.csrfToken || '').trim();
+    }
+  } catch { }
+  if (!token) {
+    token = resolveCsrfFromDaemonFiles(origin, options);
+  }
+  if (!token) throw new Error('后台鉴权信息尚未就绪');
+  return token;
+}
+
 async function collect(origin, id, options = {}) {
   if (!/^https:\/\/127\.0\.0\.1:\d+$/.test(origin) || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
   const key = `${origin}/${id}`;
@@ -578,7 +648,7 @@ async function collect(origin, id, options = {}) {
       if (!token) {
         const html = await request(origin, null, null, null, signal);
         if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-        token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+        token = resolveOriginCsrfToken(origin, html, options);
         csrfTokenByOrigin.set(origin, token);
       }
       const call = async (method, body) => {
@@ -588,7 +658,7 @@ async function collect(origin, id, options = {}) {
           if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
             csrfTokenByOrigin.delete(origin);
             const html = await request(origin, null, null, null, signal);
-            token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+            token = resolveOriginCsrfToken(origin, html, options);
             csrfTokenByOrigin.set(origin, token);
             return await request(origin, method, body, token, signal);
           }
@@ -5280,6 +5350,7 @@ module.exports = {
   fetchQuotaSnapshotFromHost,
   buildAccountScopeKey,
   resetQuotaHostCacheForTest,
+  resolveOriginCsrfToken,
   collect,
   collectTokenHistory,
   collectTokenHistoryAsync,

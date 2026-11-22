@@ -1,6 +1,6 @@
 (() => {
   if (typeof window === 'undefined') return;
-  const PATCH_FINGERPRINT = 'app-2.34.0-20261121-r34';
+  const PATCH_FINGERPRINT = 'app-2.34.0-20261122-r36';
   const fingerprint = window.__antigravityZhPatchRequestedFingerprint || PATCH_FINGERPRINT;
   if (window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === fingerprint) return;
   const updating = window.__antigravityZhPatchInstalled === true && window.__observedDocument === document;
@@ -6000,8 +6000,8 @@
       if (projectName != null && (node.nodeValue || '').trim() === projectName.trim()) return true;
     }
 
-    // 跳过侧边栏会话历史列表中的会话名称（保留行内操作按钮）
-    const historyItem = element.closest('[data-testid="conversation-row-sidebar"], [data-cascade-id], .past-conversations, .conversation-list, .history-list, .conversations-list, [data-testid="history-list"], [data-testid="past-conversations"], .conversation-item, .convo-item, .history-item, [class*="history-item"], [class*="convo-item"]');
+    // 跳过侧边栏会话历史列表中的会话名称（保留行内操作按钮）；注意 2.34+ 主对话容器 div[data-testid="conversation-view"] 自身也带有 data-cascade-id，不得误伤对话内控件
+    const historyItem = element.closest('[data-testid="conversation-row-sidebar"], [data-cascade-id]:not([data-testid="conversation-view"]), .past-conversations, .conversation-list, .history-list, .conversations-list, [data-testid="history-list"], [data-testid="past-conversations"], .conversation-item, .convo-item, .history-item, [class*="history-item"], [class*="convo-item"]');
     if (historyItem) {
       const isActionBtn = element.closest('button[aria-label], button[title], [class*="delete"], [class*="pin"], [class*="archive"]');
       const isHistoryMeta = node.nodeType === Node.TEXT_NODE && element.closest('span.text-xs');

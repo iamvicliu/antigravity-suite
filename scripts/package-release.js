@@ -22,6 +22,7 @@ const COMMON_FILES = [
   'restore.js',
   'live-host.js',
   'mobile-remote.js',
+  'macos-dock-badge.js',
   'local-api.js',
   'meter-main.js',
   'meter-core.js',
@@ -51,8 +52,8 @@ const COMMON_FILES = [
 const PLATFORMS = [
   { name: 'windows_amd64', scripts: [{ src: 'scripts/install.bat', dest: 'install.bat' }, { src: 'scripts/uninstall.bat', dest: 'uninstall.bat' }, 'scripts/cli-window-helper.exe'] },
   { name: 'windows_arm64', scripts: [{ src: 'scripts/install.bat', dest: 'install.bat' }, { src: 'scripts/uninstall.bat', dest: 'uninstall.bat' }, 'scripts/cli-window-helper.exe'] },
-  { name: 'darwin_amd64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }] },
-  { name: 'darwin_arm64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }] },
+  { name: 'darwin_amd64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }, 'scripts/macos-dock-overlay.swift'] },
+  { name: 'darwin_arm64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }, 'scripts/macos-dock-overlay.swift'] },
   { name: 'linux_amd64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }] },
   { name: 'linux_arm64', scripts: [{ src: 'scripts/install.sh', dest: 'install.sh' }, { src: 'scripts/uninstall.sh', dest: 'uninstall.sh' }] }
 ];
