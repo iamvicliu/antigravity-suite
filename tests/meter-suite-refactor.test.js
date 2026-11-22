@@ -20282,6 +20282,77 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     } finally {
       envCollapsed.sandbox.__AGEnhancer?.dispose?.();
     }
+
+    // 14. 并发轮询抢先递增代次、原项仍在队列回归：过期响应尚无新缓存时不得返回 [] 误判已删除
+    const raceHistoryMgr = createConversationHistoryManager();
+    let streamCallSeq = 0;
+    let releaseConcurrentPoll = null;
+    const pollReleasePromise = new Promise((r) => { releaseConcurrentPoll = r; });
+    let concurrentPollPromise = null;
+    const raceLocalApiConnect = async () => ({
+      call: async () => ({ ok: true }),
+      callStreamFirstFrame: async () => {
+        streamCallSeq += 1;
+        const stillItemFrame = {
+          update: {
+            pendingAgentMessagesUpdate: {
+              pendingAgentMessages: [{
+                id: 'pm-race-1',
+                deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+                step: {
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  userInput: {
+                    items: [{ text: '并发代次核验保护' }],
+                    media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+                  }
+                }
+              }]
+            }
+          }
+        };
+        if (streamCallSeq === 1) {
+          // 第 1 次：resolvePendingMessageForEdit 正常取回原项
+          return stillItemFrame;
+        }
+        if (streamCallSeq === 2) {
+          // 第 2 次：verifyOriginalStillQueued 发起核验期间，并发轮询抢先递增代次但尚未写缓存
+          concurrentPollPromise = raceHistoryMgr.fetchPendingAgentMessages('conv-r8-race', {
+            localApiConnect: raceLocalApiConnect,
+            bypassCache: true
+          });
+          return stillItemFrame;
+        }
+        // 第 3 次：并发轮询暂挂起（尚未写缓存）
+        await pollReleasePromise;
+        return stillItemFrame;
+      }
+    });
+    const raceHandler = createRemoteHttpHandler({
+      port: 18770,
+      token: 'tok-r8-race',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: raceHistoryMgr,
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r8-race', activeConversationId: 'conv-r8-race', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method) => (method === 'DeleteAgentMessage' ? null : { ok: true }),
+      localApiConnect: raceLocalApiConnect
+    });
+    const postRace = makeMockActionPoster(raceHandler, 'tok-r8-race', 'cli-r8-race');
+    const raceRes = await postRace({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r8-race',
+      messageId: 'pm-race-1',
+      hasMedia: true,
+      text: '并发代次核验保护'
+    });
+    assert.equal(raceRes.ok, false, '并发轮询抢先递增代次且尚无新缓存时，过期核验响应绝不得返回 [] 误判原项已删除');
+    assert.equal(raceRes.outcomeUnknown, true, '必须返回 outcomeUnknown: true 而非误报编辑成功');
+    assert.equal(raceRes.attachmentsPreserved, true, '结果未知时必须保留暂存附件避免丢失');
+    if (releaseConcurrentPoll) releaseConcurrentPoll();
+    const polledList = await concurrentPollPromise;
+    assert.ok(Array.isArray(polledList) && polledList.some((x) => x.messageId === 'pm-race-1'), '并发轮询完成后可确认原项仍在队列中');
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }

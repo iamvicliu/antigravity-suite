@@ -4897,7 +4897,9 @@ function createConversationHistoryManager() {
         reqGen <= invPendingGen ||
         (currentCached && (currentCached.gen || 0) > reqGen)
       ) {
-        return Array.isArray(currentCached?.list) ? currentCached.list : [];
+        return (currentCached && (currentCached.gen || 0) > reqGen && Array.isArray(currentCached.list))
+          ? currentCached.list
+          : null;
       }
       const rawMap = new Map();
       const list = extractPendingAgentMessagesFromUpdate(firstFrame, {
