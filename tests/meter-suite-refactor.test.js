@@ -24989,3 +24989,237 @@ test('Tailscale 离线防误报 + 自定义 Tailscale 节点支持（Loon 内置
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
+
+test('超大会话上下文扫描防 96MB 断流降级与 scan 解除统计延迟死锁', async () => {
+  const https = require('node:https');
+  const { execFileSync } = require('node:child_process');
+
+  assert.equal(collector.MAX_LOCAL_RESPONSE_BYTES, 256 * 1024 * 1024, '默认单次本地响应上限应提升至 256 MiB');
+
+  // 1. 后端 collect() 在 GetCascadeTrajectory 超限时优雅降级并保留精确用量
+  const tmpCertDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-large-traj-'));
+  const keyPath = path.join(tmpCertDir, 'key.pem');
+  const certPath = path.join(tmpCertDir, 'cert.pem');
+  execFileSync('openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+    '-keyout', keyPath, '-out', certPath,
+    '-days', '1', '-subj', '/CN=127.0.0.1'
+  ], { stdio: 'pipe' });
+
+  const metaRows = [
+    { chatModel: { modelDisplayName: 'Gemini 4 Neon (High)', usage: { inputTokens: '1000', cacheReadTokens: '100000', outputTokens: '500' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } },
+    { chatModel: { modelDisplayName: 'Gemini 4 Neon (High)', usage: { inputTokens: '2000', cacheReadTokens: '150000', outputTokens: '600' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } },
+    { chatModel: { modelDisplayName: 'Gemini 4 Neon (High)', usage: { inputTokens: '2500', cacheReadTokens: '200000', outputTokens: '700' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } },
+    { chatModel: { modelDisplayName: 'Gemini 4 Neon (High)', usage: { inputTokens: '3000', cacheReadTokens: '240000', outputTokens: '1000' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }
+  ];
+  const metadataOffsets = [];
+  const srv = https.createServer(
+    { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) },
+    (req, res) => {
+      if (req.method === 'GET' && req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<html><script>window.__APP_CONFIG__ = {"csrfToken":"mock-large-csrf"};</script></html>');
+        return;
+      }
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch {}
+        if (req.url.endsWith('/GetCascadeTrajectory')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ trajectory: { steps: [] }, hugePad: 'x'.repeat(8192) }));
+          return;
+        }
+        if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+          const offset = Number(body.generatorMetadataOffset || 0);
+          metadataOffsets.push(offset);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ generatorMetadata: metaRows.slice(offset) }));
+          return;
+        }
+        res.writeHead(404);
+        res.end('{}');
+      });
+    }
+  );
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const port = srv.address().port;
+    const origin = `https://127.0.0.1:${port}`;
+    const convId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const firstRes = await collector.collect(origin, convId, { force: true, maxResponseBytes: 4096 });
+    assert.ok(firstRes && firstRes.latest, '超限降级后必须仍返回有效 latest');
+    assert.equal(firstRes.latest.actual, 244000);
+    assert.equal(firstRes.latest.budget, 512000);
+    assert.ok(Math.abs(firstRes.latest.percent - (244000 / 512000) * 100) < 0.01);
+    assert.equal(firstRes.generatorCount, 4);
+    assert.equal(firstRes.session.skippedLargeArchive, true);
+    assert.equal(firstRes.session.complete, false);
+    assert.ok(Array.isArray(firstRes.errors) && firstRes.errors.length > 0 && /本地响应过大/.test(firstRes.errors[0]));
+    assert.deepEqual(metadataOffsets, [0]);
+
+    // 增量追加一条后再次 force: true，验证先尝试 prevGenCount - 3
+    metaRows.push({
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Neon (High)',
+        usage: { inputTokens: '4000', cacheReadTokens: '250000', outputTokens: '2000' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    });
+    const secondRes = await collector.collect(origin, convId, { force: true, maxResponseBytes: 4096 });
+    assert.equal(secondRes.latest.actual, 256000);
+    assert.equal(secondRes.generatorCount, 5);
+    assert.equal(metadataOffsets.at(-1), 1, '再次降级扫描应优先使用 previous.generatorCount - 3 增量拉取');
+  } finally {
+    await new Promise((resolve) => srv.close(resolve));
+    fs.rmSync(tmpCertDir, { recursive: true, force: true });
+  }
+
+  // 2. 前端 render harness: requestPoll 超时 -> scan 解除统计延迟并推进 count -> 滞后 poll 不反杀新鲜 scan
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  let fakeNow = Date.now();
+  const MockDate = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [fakeNow])); }
+    static now() { return fakeNow; }
+  };
+  const env = createDomEnv();
+  const capturedTimers = [];
+  const abortTimeouts = [];
+  let timerSeq = 1;
+  env.sandbox.Date = MockDate;
+  env.sandbox.setInterval = (cb) => { capturedTimers.push(cb); return capturedTimers.length; };
+  env.sandbox.setTimeout = (cb, ms) => {
+    const id = timerSeq++;
+    abortTimeouts.push({ id, cb, ms, cleared: false });
+    return id;
+  };
+  env.sandbox.clearTimeout = (id) => {
+    const t = abortTimeouts.find((x) => x.id === id);
+    if (t) t.cleared = true;
+  };
+  const customFetches = [];
+  env.sandbox.fetch = (url, opts) => new Promise((resolve, reject) => {
+    const rec = { url: String(url), opts, resolve, reject };
+    if (opts?.signal) {
+      opts.signal.addEventListener('abort', () => {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        reject(err);
+      }, { once: true });
+    }
+    customFetches.push(rec);
+  });
+
+  let resolveScanDeferred = null;
+  env.apiMocks.scan = () => new Promise((resolve) => { resolveScanDeferred = resolve; });
+
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  await new Promise((r) => setImmediate(r));
+
+  const api = env.sandbox.__AGContextMeter;
+  const pollTimeout1 = abortTimeouts.find((t) => t.ms === 25000 && !t.cleared);
+  assert.ok(pollTimeout1, '首次全量 requestPoll 超时应放宽至 25000ms');
+
+  // 触发首次 requestPoll 超时，确认陷入「统计延迟」
+  pollTimeout1.cb();
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(api.snapshot().requestError, '读取超时');
+  assert.equal(env.getShadow().getElementById('amount')?.textContent, '统计延迟');
+
+  // scan 返回含 generatorCount 与 latest 的结果，必须解除 requestError 并推进 count
+  fakeNow += 50;
+  resolveScanDeferred({
+    ok: true,
+    data: {
+      scannedAt: fakeNow,
+      generatorCount: 4000,
+      latest: {
+        actual: 245760,
+        budget: 512000,
+        percent: 48,
+        input: 3000,
+        cached: 241000,
+        output: 1760,
+        model: 'Gemini 4 Neon (High)',
+        status: 'reported'
+      },
+      session: {
+        total: { low: 10000, high: 20000, chars: 30000 },
+        attachmentTotal: core.empty(),
+        groups: { user: core.empty(), assistant: core.empty(), thinking: core.empty(), tools: core.empty(), summaries: core.empty(), system: core.empty(), definitions: core.empty() },
+        attachments: [],
+        unknownFiles: 0,
+        steps: 10,
+        userMessages: 5,
+        assistantMessages: 5
+      }
+    }
+  });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  const snapAfterScan = api.snapshot();
+  assert.equal(snapAfterScan.requestError, '', 'scan 返回更新的 latest 后必须清空 requestError');
+  const amountAfterScan = env.getShadow().getElementById('amount')?.textContent || '';
+  assert.ok(!amountAfterScan.includes('统计延迟') && amountAfterScan.includes('48%'), `scan 恢复后顶栏应显示精确百分比而非统计延迟，实际=${amountAfterScan}`);
+
+  // 推进时间触发下一轮 tick，验证 requestPoll 改用增量 offset = 4000 - 3 = 3997 与 12000ms 超时
+  fakeNow += 25000;
+  let nextScanDeferred = null;
+  env.apiMocks.scan = () => new Promise((resolve) => { nextScanDeferred = resolve; });
+  const prevFetchLen = customFetches.length;
+  capturedTimers[0]();
+  await new Promise((r) => setImmediate(r));
+
+  const nextPoll = customFetches.slice(prevFetchLen).find((f) => f.url.includes('GetCascadeTrajectoryGeneratorMetadata'));
+  assert.ok(nextPoll, '推进时钟后应发起下一轮 requestPoll');
+  const nextPollBody = JSON.parse(nextPoll.opts.body);
+  assert.equal(nextPollBody.generatorMetadataOffset, 3997, 'scan 同步 count=4000 后 requestPoll 必须使用增量 offset=3997');
+  const pollTimeout2 = abortTimeouts.filter((t) => !t.cleared).at(-1);
+  assert.equal(pollTimeout2?.ms, 12000, 'state.count > 0 后增量 requestPoll 超时应保持 12000ms');
+
+  // 滞后 requestPoll 未结束前，新 scan 先返回；随后滞后 requestPoll 超时不得覆盖 requestError=''
+  fakeNow += 100;
+  nextScanDeferred({
+    ok: true,
+    data: {
+      scannedAt: fakeNow,
+      generatorCount: 4002,
+      latest: {
+        actual: 256000,
+        budget: 512000,
+        percent: 50,
+        input: 3200,
+        cached: 250800,
+        output: 2000,
+        model: 'Gemini 4 Neon (High)',
+        status: 'reported'
+      },
+      session: {
+        total: { low: 12000, high: 22000, chars: 34000 },
+        attachmentTotal: core.empty(),
+        groups: { user: core.empty(), assistant: core.empty(), thinking: core.empty(), tools: core.empty(), summaries: core.empty(), system: core.empty(), definitions: core.empty() },
+        attachments: [],
+        unknownFiles: 0,
+        steps: 12,
+        userMessages: 6,
+        assistantMessages: 6
+      }
+    }
+  });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  pollTimeout2.cb();
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  const snapAfterStaleTimeout = api.snapshot();
+  assert.equal(snapAfterStaleTimeout.requestError, '', '滞后 requestPoll 超时不得反杀 scan 刚写入的新鲜状态');
+  const finalAmount = env.getShadow().getElementById('amount')?.textContent || '';
+  assert.ok(finalAmount.includes('50%'), `滞后超时后顶栏应保持 scan 更新的 50%，实际=${finalAmount}`);
+  api.dispose?.();
+});
