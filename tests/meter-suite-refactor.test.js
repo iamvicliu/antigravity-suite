@@ -20376,6 +20376,123 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     if (releaseConcurrentPoll) releaseConcurrentPoll();
     const polledList = await concurrentPollPromise;
     assert.ok(Array.isArray(polledList) && polledList.some((x) => x.messageId === 'pm-race-1'), '并发轮询完成后可确认原项仍在队列中');
+
+    // 15. 首帧缺失 pending 更新 vs 明确空 pending 快照区分回归：
+    // 15a. 删除结果未知且核验首帧不含 pendingAgentMessagesUpdate 时，返回 null → outcomeUnknown 并保留恢复内容，绝不误判已删除
+    let noPendingFrameCalls = 0;
+    const noPendingHandler = createRemoteHttpHandler({
+      port: 18771,
+      token: 'tok-r10-nopending',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r10-a', activeConversationId: 'conv-r10-a', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method) => (method === 'DeleteAgentMessage' ? null : { ok: true }),
+      localApiConnect: async () => ({
+        call: async () => ({ ok: true }),
+        callStreamFirstFrame: async () => {
+          noPendingFrameCalls += 1;
+          if (noPendingFrameCalls === 1) {
+            return {
+              update: {
+                pendingAgentMessagesUpdate: {
+                  pendingAgentMessages: [{
+                    id: 'pm-r10-a',
+                    deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+                    step: {
+                      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                      userInput: {
+                        items: [{ text: '核验帧缺失pending保护' }],
+                        media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+                      }
+                    }
+                  }]
+                }
+              }
+            };
+          }
+          // 核验首帧仅返回其他状态更新，不含 pendingAgentMessagesUpdate
+          return { update: { status: 'CASCADE_RUN_STATUS_RUNNING' } };
+        }
+      })
+    });
+    const postNoPending = makeMockActionPoster(noPendingHandler, 'tok-r10-nopending', 'cli-r10-a');
+    const r10NoPending = await postNoPending({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r10-a',
+      messageId: 'pm-r10-a',
+      hasMedia: true,
+      text: '核验帧缺失pending保护'
+    });
+    assert.equal(r10NoPending.ok, false, '核验首帧不含 pending 更新时绝不可误判原项已删除');
+    assert.equal(r10NoPending.outcomeUnknown, true, '必须返回 outcomeUnknown: true');
+    assert.equal(r10NoPending.attachmentsPreserved, true, '必须保留恢复的文本与附件');
+    assert.equal(r10NoPending.actionResult.editedText, '核验帧缺失pending保护');
+    assert.equal(r10NoPending.actionResult.editedAttachments.length, 1);
+
+    // 15b. 删除结果未知但核验首帧明确携带空 pending 快照（pendingAgentMessagesUpdate: {} 或 pendingAgentMessages: []）→ 可确认原项已删除
+    let emptyPendingFrameCalls = 0;
+    const emptyPendingSentUploads = [];
+    const emptyPendingHandler = createRemoteHttpHandler({
+      port: 18772,
+      token: 'tok-r10-empty',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r10-b', activeConversationId: 'conv-r10-b', busy: true, messages: [] }),
+      performAction: async (act) => {
+        if (act.action === 'send') {
+          emptyPendingSentUploads.push((act.pendingUploads || []).map((u) => u.name));
+          return { ok: true, snapshot: { ok: true, sessionId: 'conv-r10-b', messages: [] } };
+        }
+        return { ok: true };
+      },
+      callLanguageServer: async (method) => (method === 'DeleteAgentMessage' ? null : { ok: true }),
+      localApiConnect: async () => ({
+        call: async () => ({ ok: true }),
+        callStreamFirstFrame: async () => {
+          emptyPendingFrameCalls += 1;
+          if (emptyPendingFrameCalls === 1) {
+            return {
+              update: {
+                pendingAgentMessagesUpdate: {
+                  pendingAgentMessages: [{
+                    id: 'pm-r10-b',
+                    deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+                    step: {
+                      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                      userInput: {
+                        items: [{ text: '明确空pending确认已删' }],
+                        media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+                      }
+                    }
+                  }]
+                }
+              }
+            };
+          }
+          // proto3 JSON 明确返回空 pendingAgentMessagesUpdate 对象（空队列）
+          return { update: { pendingAgentMessagesUpdate: {} } };
+        }
+      })
+    });
+    const postEmptyPending = makeMockActionPoster(emptyPendingHandler, 'tok-r10-empty', 'cli-r10-b');
+    const r10EmptyOk = await postEmptyPending({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r10-b',
+      messageId: 'pm-r10-b',
+      hasMedia: true,
+      text: '明确空pending确认已删'
+    });
+    assert.equal(r10EmptyOk.ok, true, '明确的空 pendingAgentMessagesUpdate 快照应确认原项已删除并返回编辑成功');
+    assert.equal(r10EmptyOk.actionResult.editedText, '明确空pending确认已删');
+    assert.equal(r10EmptyOk.actionResult.editedAttachments.length, 1);
+    const r10Resend = await postEmptyPending({ action: 'send', conversationId: 'conv-r10-b', text: '重发确认已删项' });
+    assert.equal(r10Resend.ok, true);
+    assert.deepEqual(emptyPendingSentUploads, [['disk-queued.png']]);
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }
