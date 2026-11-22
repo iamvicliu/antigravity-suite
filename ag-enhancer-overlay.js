@@ -7911,12 +7911,14 @@
         return (p1 && p1 !== cardRoot) ? p1 : d;
       }).filter(Boolean);
     } else {
-      rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'));
+      rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'))
+        .filter((el) => !isExcludedSuiteOrNavNode(el) && !isExpandBtn(el));
     }
-    const fallbackRows = rowCandidates.length ? rowCandidates : Array.from(cardRoot.children).slice(1);
+    const fallbackRows = (rowCandidates.length ? rowCandidates : Array.from(cardRoot.children).slice(1))
+      .filter((el) => !isExcludedSuiteOrNavNode(el) && !isExpandBtn(el));
 
     const inspectRow = (rowEl, rowIdx) => {
-      if (!rowEl || seenRowEls.has(rowEl) || isExcludedSuiteOrNavNode(rowEl)) return;
+      if (!rowEl || seenRowEls.has(rowEl) || isExcludedSuiteOrNavNode(rowEl) || isExpandBtn(rowEl)) return;
       seenRowEls.add(rowEl);
       const cloneTxt = (() => {
         const dec = rowEl.querySelector?.('[data-testid="queued-decorators"]');
