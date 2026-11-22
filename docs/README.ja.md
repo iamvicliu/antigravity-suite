@@ -2,7 +2,7 @@
 
 [简体中文](../README.md) · [English](README.en.md) · **日本語** · [한국어](README.ko.md) · [Español](README.es.md)
 
-> **Google Antigravity デスクトップ版（macOS）向けの 100% ゼロ改変（Zero-Patch）拡張＆リモート操作スイート。公式アプリ本体や Apple 公式署名を一切変更せず、公式アップデートにも干渉せず、いつでも即時に切り替えられます。**
+> **Google Antigravity デスクトップ版（macOS）向けのゼロ改変拡張＆リモート操作スイート。公式アプリ本体や Apple 署名を一切変更せず、アップデートに影響せず、いつでも即時に切り替えられます。**
 
 <p align="center">
   <img src="../assets/mac-preview.png" alt="Antigravity Suite macOS デスクトップ画面プレビュー" width="100%">
@@ -10,42 +10,40 @@
 
 ## 主な機能
 
-1. **🇨🇳 中国語／英語の即時切替（ゼロトークン思考翻訳）**：
-   - **`⚙️` → `🌐 Language & Appearance`** から再起動なしで中国語 UI（思考プロセスとタイトルのローカルキャッシュ翻訳付き・トークン消費ゼロ）と英語 UI を即時に切り替えられます。
-   - *補足*：内蔵 UI の表示言語は現在「簡体字中国語 / 英語」に対応していますが、カスタム定型プロンプトは日本語のまま自由に作成して利用できます。
-2. **📱 超高速モバイル／PC リモート操作（公式より圧倒的に高速）**：
-   - **ローカル直結＆軽量 PWA**：同一 Wi-Fi・有線内の **LAN** ミリ秒直結に加え、**Tailscale**（HTTPS 証明書有効時は `tailscale serve` を自動構成し `https://<host>.ts.net` を優先配信、PWA の「保護されていません」警告を抑止し HTTP ダウングレードを防止）、**Bonjour (`*.local`)**、**ログイン不要の Cloudflare 一時トンネル（独自ドメイン対応）** から最速ルートを自動選択し、公式クラウド中継の遅延を回避します（設定は **`⚙️` → `📱 Remote`** で即時変更可能）。会話切替時は旧ページの未完了読込のみをキャンセルするため、裏で動作中の AI タスクを中断しません。遅延履歴ロードと **`gzip`** 圧縮により全量履歴も快適にスクロールできます。
-   - **多機能ワークスペース**：マルチプロジェクト切替（未読・承認バッジ付き）、ゼロ依存 **Web Push バックグラウンド通知**（完了・承認待ち＋ローカル通知フォールバック）＆ **PWA アプリアイコン未読バッジ**（完了かつ未読の会話のみ厳密集計）、`$HOME` 安全境界内での新規プロジェクト作成とファイル／差分／生成物プレビュー、デスクトップ側と同期する**横スクロール定型プロンプトバー**（**`⚡Send / ✎Insert`** 切替・下書き保護対応）、待機中メッセージ管理（即時送信・編集・取り消し）、汎用ファイル＆画像アップロード、対話式確認カード（高リスク操作の二重確認）、上部ドロワー、9項目表示切替、タブごとの独立閲覧、System / Light / Dark 外観同期、IME 誤送信防止付き `Cmd/Ctrl + Enter` 送信に対応しています。
+1. **🇨🇳 中国語／英語の即時切替（ゼロトークン思考翻訳）**
+   - **`⚙️` → `🌐 Language & Appearance`** から再起動なしで簡体字中国語 UI（思考ブロックとタイトルのローカル翻訳・トークン消費ゼロ）と英語原版を即時に切り替えられます（カスタム定型文は日本語でも作成可）。
+2. **🔔 macOS Dock 未読＆ステータス通知（未読バッジ + フロストカプセル）**
+   - **別作業中もアイコンを見るだけで把握**：複数ウィンドウの未読数を重複除去し、Dock アイコンへ**右上の青・赤数字バッジ**と**下部カプセル（生成中 / 新返信 / 承認待ち / 高リスク）**を表示。**`⚙️` → `🌐 Language & Appearance`** で「バッジのみ」にも切替できます。
+   - **ホバー拡大追従＆賢い消去**：Dock の拡大アニメーションに滑らかに追従し、ウィンドウへ戻ると通常の青未読は自動消去、赤い承認待ちは対応完了まで残ります。初回のみ **Grant Access** から macOS「アクセシビリティ」権限を許可（Xcode Command Line Tools が必要）し、**Test Alert** ですぐ確認できます。
+
+   <p align="center">
+     <img src="../assets/dock-preview.jpg" alt="macOS Dock 未読バッジ＆フロスト状態カプセル表示プレビュー" width="84%">
+   </p>
+
+3. **📱 超高速モバイル／PC リモート操作（公式より圧倒的に高速）**
+   - **ローカル直結＆自動最適ルート**：**`📱 Remote`** の QR コードを読み取りホーム画面に追加すればフルスクリーン PWA として即起動（PC ブラウザは横長画面に自動対応）。同一 Wi-Fi の **LAN** 直結、**Tailscale** 自動 HTTPS、ローカル探索、**ログイン不要の Cloudflare 一時トンネル（独自ドメイン対応）** から最速ルートを自動選択します（**`⚙️` → `📱 Remote`** で個別オン／オフ可）。
+   - **充実のワークスペース**：プロジェクト別履歴、`$HOME` 安全範囲でのプロジェクト作成・差分プレビュー、画像／ファイル添付、待機中メッセージ管理（即時送信・編集・取消）、承認カード確認、定型プロンプトバー（**`⚡Send / ✎Insert`**）、バックグラウンド **Web Push 通知＆アイコン未読バッジ**、誤送信を防ぐ `Cmd/Ctrl + Enter` 送信に対応しています。
 
    <p align="center">
      <img src="../assets/mobile-preview.jpg" alt="モバイル PWA リモート操作プレビュー" width="82%">
    </p>
 
-3. **🔔 macOS Dock 未読＆ステータス通知（未読バッジ + フロストカプセル・ゼロ改変）**：
-   - **別作業中もアイコンを一目見るだけで状況を把握**：公式アプリ本体や Apple 署名を一切変更せず、複数ウィンドウのサイドバー未読ドットを重複除去しながら Dock アイコン上へリアル表示します。既定の **「Status Capsule (Recommended)」**（生成中 / 新返信 / 承認待ち / 高リスク＋右上青・赤数字バッジ）と **「Badge Only」**（数字バッジのみ）を **`⚙️` → `🌐 Language & Appearance`** で即切替できます。
-   - **ホバー拡大追従＆賢い自動消去**：光学センタリングで拡大アニメーションにも滑らかに追従。ウィンドウへ戻ると通常の青い未読は自動消去され、赤色の承認・高リスクバッジは処理完了まで残ります。初回は **Grant Access** から macOS「アクセシビリティ」権限を許可し（コンパイルに Xcode Command Line Tools が必要）、**Test Alert** ですぐ確認できます。
-
-   <p align="center">
-     <img src="../assets/dock-preview.jpg" alt="macOS Dock ゼロ改変の未読バッジ＆フロスト状態カプセル表示プレビュー" width="84%">
-   </p>
-
-4. **⚡ 入力欄ショートカット＆プロンプト最適化（`⚙️` → `⚡ Chat & Efficiency`）**：
-   - **14種のおすすめ内蔵コマンド**（シナリオ別に3グループ化・スラッシュ選択でネイティブコマンドピルへ変換）と、ワンクリックで追加できる **10種の人気テンプレート**を搭載。
-   - **`Insert` vs `⚡Send`**：**`Insert`** はログや背景を追記してから送る入力欄への挿入、**`⚡Send`**（`↵` 表示）はワンクリック即送信。下書き保護と **`⌘/Ctrl + クリック`** 反転に対応し、さらに **`✨ Optimize` / `↩ Undo`** によるプロンプト整形や **`Tab / →`** による次の一手サジェストを備えています。
-5. **🧰 デスクトップ便利ツール**：
-   - **`⌘1`〜`⌘9`**（`⌘` 長押しで番号表示）・**`⌘⇧[` / `⌘⇧]`**・**`⌃Tab`** による会話の即時切替、右側のフローティングメッセージナビゲーション、プレビュー欄でのインライン **`Edit` + `⌘S`** 編集（**`Done`** で再表示）。
-   - **`>_ CLI`** による Antigravity CLI（`agy`）ワンクリック起動（`Terminal`、`iTerm2`、`Ghostty`、`Warp`、`Alacritty`、`Kitty`、`WezTerm`、`Rex`、`tmux` およびカスタムパス対応）と、**グローバル TUN 不要の HTTP / SOCKS5 ローカルプロキシ直結**（**`⚙️` → `🧰 Terminal & Network`**）。Antigravity **`2.32.x–2.34.0`** および `nvm`/`fnm`/`volta`/`asdf`/`mise` に対応しています。
-6. **📊 コンテキスト監視・240K 自動圧縮・デュアル枠カプセル**：
-   - 右上のリングメーターでコンテキスト消費量、52週ヒートマップ、API 換算コストを可視化し、**Gemini 4 / Claude** の 5時間＆週間残量カプセル（`G4` / `C`）を追跡します。プラン種別・決済地域／通貨・カスタム実支払額は **`⚙️` → `📊 Plan & Subscription`** で設定できます。
-   - 公式クライアントは 512K まで自動圧縮を行わないため、250K〜330K 超過後にキャッシュ失効すると数分間の再計算フリーズが発生しがちです。本スイートは 0% キャッシュ脱落（328K リスク）を即時検知し、既定で有効な **240K 自動圧縮**によりアイドル時に自動で `/compact` を送信します（**`⚙️` → `⚡ Chat & Efficiency`** で切替可能）。
-7. **🛡️ 危険コマンドの赤枠ブロック**：
-   - `rm -rf`、`git reset --hard`、`git clean -f`、`git push`、`sudo`、`kill -9`、`DROP/DELETE`、`op item` などの高リスクコマンド実行時は、**`⚙️` → `⚡ Chat & Efficiency`** で安全自動承認を有効にしていても赤枠で強制一時停止し手動確認を求めます。
-8. **🔄 更新の自動検知＆ワンクリック即時適用**：
-   - GitHub の更新を自動確認し、新版がある場合は右上の **`⚙️`** に赤点が表示されます。**Update Now** をクリックするだけで再起動なしに最新版へ即更新されます。
+4. **⚡ 入力欄ショートカット＆プロンプト最適化（`⚙️` → `⚡ Chat & Efficiency`）**
+   - **14種のおすすめコマンド**＋**10種の人気テンプレート**を搭載。ログ追記向けの **`Insert`** とワンクリック即送信の **`⚡Send`**（`↵`）を使い分けられ、下書き保護や **`⌘/Ctrl + クリック`** 反転に対応。**`✨ Optimize` / `↩ Undo`** 整形や **`Tab / →`** 次の一手提案も利用できます。
+5. **🧰 デスクトップ便利ツール**
+   - **`⌘1`〜`⌘9`**（`⌘` 長押しで番号表示）・**`⌘⇧[` / `⌘⇧]`**・**`⌃Tab`** で会話即切替、右側フローティングナビ、プレビュー画面での **`Edit` + `⌘S`** 直接編集に対応。
+   - **`>_ CLI`** で主要 macOS ターミナルから `agy` をワンクリック起動（CLI や更新確認用のローカルプロキシ設定も **`⚙️` → `🧰 Terminal & Network`** で管理可能）。Antigravity **`2.32.x–2.34.0`** および各種 Node バージョン管理ツールに対応。
+6. **📊 コンテキスト監視・240K 自動圧縮・デュアル枠カプセル**
+   - 右上のリングメーターで残量・52週ヒートマップ・API 換算コストを可視化し、**Gemini 4 / Claude** の 5時間＆週間枠（`G4` / `C`）を追跡（契約内容や通貨は **`⚙️` → `📊 Plan & Subscription`** で設定）。
+   - 328K 付近のキャッシュ失効を検知し、512K まで待って数分フリーズする前に **240K 自動圧縮**（既定オン）がアイドル時自動で `/compact` を送信します（**`⚙️` → `⚡ Chat & Efficiency`** で切替可能）。
+7. **🛡️ 危険コマンドの赤枠ブロック**
+   - `rm -rf`、`git reset --hard`、`git clean -f`、`git push`、`sudo`、`kill -9`、`DROP/DELETE`、`op item` 実行時は安全自動承認がオンでも赤枠で停止し手動確認を求めます。
+8. **🔄 更新の自動検知＆ワンクリック即時適用**
+   - GitHub の更新を自動確認し、新版があると **`⚙️`** に赤点を表示。**Update Now** を押すだけで再起動なしに適用できます（`git clone` 導入環境向け）。
 
 ---
 
-## 🚀 導入手順（macOS・ゼロ改変 CDP 方式）
+## 🚀 導入手順（macOS）
 
 動作要件：**macOS**、**Google Antigravity**（`2.32.x–2.34.0`）、**Node.js `22.4.0+`**
 
@@ -55,10 +53,10 @@ cd ~/.local/share/antigravity-suite
 ./scripts/setup-macos-cdp.sh
 ```
 
-> オプション：`--no-auto`（自動起動を無効化、`ag-context-meter install-launcher` で `~/Applications` に独立起動アプリを作成可能）、`--no-remote`（リモートサーバーを無効化）。
-> **Windows / Linux**：Antigravity を `--remote-debugging-port=9222` 付きで起動し、クローンしたディレクトリで `node cli.js live` を実行してください（`node cli.js status` で状態確認）。
+> オプション：`--no-auto`（自動起動を無効化、`ag-context-meter install-launcher` で `~/Applications` に起動アプリ作成可）、`--no-remote`（リモート機能を無効化）。
+> **Windows / Linux**：Antigravity を `--remote-debugging-port=9222` 付きで起動し、クローン先で `node cli.js live` を実行してください。
 
-`~/.local/bin` をシェルの `PATH` に追加して動作確認します：
+`~/.local/bin` を `PATH` に追加して確認します：
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
@@ -66,7 +64,7 @@ source ~/.zshrc
 ag-context-meter status
 ```
 
-> **初回起動時の注意（`v2.33.0+`）**：新しい Antigravity では既定でデバッグポートが無効になっています。インストール直後に `📱 Remote`（`📱远程`）や `⚙️` が表示されない場合は、**`⌘Q` で Antigravity を一度完全終了してから再起動**（または `ag-context-meter restart` を実行）してください。
+> **初回注意（`v2.33.0+`）**：新しい Antigravity は既定でデバッグポートが無効です。`📱 Remote` や `⚙️` が表示されない場合は、**`⌘Q` で完全終了してから一度再起動**（または `ag-context-meter restart`）してください。
 
 ---
 
@@ -74,29 +72,29 @@ ag-context-meter status
 
 | コマンド | 役割 |
 | :--- | :--- |
-| `ag-context-meter status` | 有効モジュール、自動起動サービス、および公式署名の無改変状態を確認 |
-| `ag-context-meter remote` | 4ルートのペアリング URL、トンネル状態、接続中端末、QR コードを表示（`--tunnel on\|off` / `--reset-token` / `--json` 対応） |
-| `ag-context-meter live` | 起動中の Antigravity ウィンドウへ即時反映（`--no-remote` でリモート停止） |
-| `ag-context-meter restart` | `v2.33.0+` 向けにデバッグポートを有効化して Antigravity を再起動・適用 |
+| `ag-context-meter status` | 機能の有効状態・自動起動・公式署名の無改変状態を確認 |
+| `ag-context-meter remote` | QR コード・接続 URL・トンネル状態・接続中端末を表示 |
+| `ag-context-meter live` | 起動中の Antigravity へ即時適用（`--no-remote` でリモート停止） |
+| `ag-context-meter restart` | `v2.33.0+` 向けに Antigravity を安全に再起動して適用 |
 | `ag-context-meter update` | 最新版を取得し、再起動なしで現在のウィンドウへ即時反映 |
-| `ag-context-meter stop` | 今回のセッションのみ機能を一時解除して純正 UI へ戻す |
-| `ag-context-meter auto-off` / `auto-on` | Antigravity 起動時の自動読み込みを無効化または再有効化 |
-| `ag-context-meter install-launcher` | `--no-auto` 利用者向けに `~/Applications/Antigravity 增强启动器.app` を作成 |
+| `ag-context-meter stop` | 今回のセッションのみ機能を一時解除 |
+| `ag-context-meter auto-off` / `auto-on` | 起動時の自動読み込みを無効化または再有効化 |
+| `ag-context-meter install-launcher` | `~/Applications` に任意の起動アプリを作成 |
 
 **完全アンインストール**：`ag-context-meter auto-off` を実行後、以下を削除してください：
 - `~/Library/LaunchAgents/com.$(id -un).ag-live-helper.plist`
 - `~/Applications/Antigravity 增强启动器.app`
 - `~/.local/bin/ag-context-meter`
-- `~/.local/share/antigravity-suite`（旧版から移行した場合は `~/.local/share/antigravity-context-viewer` も削除）
-- *任意*：翻訳キャッシュ・ペアリングコード・個人設定も消去する場合は `rm -rf ~/Library/Application\ Support/AntigravityContextMeter ~/.config/antigravity-context-meter`
+- `~/.local/share/antigravity-suite`（旧 `antigravity-context-viewer` ディレクトリがある場合も削除）
+- *任意*：キャッシュと個人設定の消去は `rm -rf ~/Library/Application\ Support/AntigravityContextMeter ~/.config/antigravity-context-meter`
 
 ---
 
 ## 🔒 セキュリティ原則
 
-- **公式アプリの無改変**：旧来のパッケージ改変系コマンドは無効化されており、Apple 署名やバイナリを一切変更せずメモリ上のみで動作します。
-- **チャンネル制限・48文字ランダムパスコード・個別セッション分離**：`LAN` / `Tailscale` / `Bonjour` および既定のログイン不要 Cloudflare 一時トンネルを制御し（**`⚙️` → `📱 Remote`** または `--no-remote` でいつでも切替可能）、未許可ルートは遮断されます。すべての通信は再発行可能な48文字のランダムパスコードを検証し、独自固定トンネルのトークンは権限 `0600` でローカルの `remote-config.json` のみに保存されます。
-- **パス安全境界**：インラインファイル編集とリモートファイル閲覧は `$HOME` および登録済みワークスペース配下のみに厳格制限され、システム領域や認証情報ディレクトリ（`.ssh`、`.gnupg`、`1Password`、`Antigravity.app`）へのアクセスを遮断します。
+- **公式アプリの無改変**：パッケージ改変コマンドは無効化されており、アプリ本体や Apple 署名を変更せずメモリ上のみで動作します。
+- **チャンネル制限と48文字ランダムパスコード**：未許可チャンネルの接続は自動拒否され、すべての通信で再発行可能な48文字ランダムパスコードを検証。独自トンネルトークンもローカルのみに保存されます。
+- **パス安全境界**：ファイル編集と閲覧は `$HOME` および登録済みワークスペース内に厳格制限され、システム領域や認証情報ディレクトリ（`.ssh`、`.gnupg`、`1Password`、`Antigravity.app`）へのアクセスを遮断します。
 
 ---
 
@@ -106,4 +104,4 @@ ag-context-meter status
 npm run test:suite
 ```
 
-QR ペアリング・リモート操作・UI 体験の最適化に貢献してくださった [@hubo1989](https://github.com/hubo1989) 氏・[@Shens](https://github.com/Shens) 氏に深く感謝します。詳しいトラブルシューティングや上流プロジェクト一覧は **[简体中文 README](../README.md)** および **[English README](README.en.md)** をご覧ください。[MIT License](../LICENSE) 下で公開されています。
+QR ペアリング、リモート操作、パフォーマンス改善に貢献いただいた [@hubo1989](https://github.com/hubo1989) 氏・[@Shens](https://github.com/Shens) 氏に深く感謝します。詳しい案内と上流プロジェクト一覧は **[简体中文 README](../README.md)** および **[English README](README.en.md)** をご覧ください。[MIT License](../LICENSE) 下で公開されています。

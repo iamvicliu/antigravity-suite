@@ -1814,7 +1814,7 @@
           proxyBadge.className = 'key-pill pill-danger';
         }
         if (proxyStatusDesc) {
-          proxyStatusDesc.textContent = `检测免 TUN 代理状态失败: ${errMsg}`;
+          proxyStatusDesc.textContent = `检测代理设置失败: ${errMsg}`;
         }
         return;
       }
@@ -1900,8 +1900,8 @@
       currentProxyEnabled = Boolean(cfg.modules?.proxy?.enabled);
       if (proxyBadge) {
         if (currentProxyEnabled) {
-          proxyBadge.textContent = disk.proxy ? '🟢 直连已配置' : '⚠️ 待重启生效';
-          proxyBadge.className = disk.proxy ? 'key-pill pill-ok' : 'key-pill pill-warn';
+          proxyBadge.textContent = '🟢 已启用';
+          proxyBadge.className = 'key-pill pill-ok';
         } else {
           proxyBadge.textContent = '⚪ 未启用';
           proxyBadge.className = 'key-pill pill-muted';
@@ -1915,15 +1915,13 @@
       }
       if (proxyStatusDesc) {
         if (currentProxyEnabled) {
-          proxyStatusDesc.textContent = disk.proxy
-            ? `已启用本地代理直连（代理地址: ${cfg.modules.proxy.proxyUrl}）。注意：能否顺利连接模型，请在对话中发送一条消息实际验证。`
-            : `配置已开启本地代理，但客户端尚未加载生效；请完全退出并重启 Antigravity 客户端（或运行 ag-context-meter live）使其加载后再试。`;
+          proxyStatusDesc.textContent = `已立即生效（当前地址: ${cfg.modules.proxy.proxyUrl || '未填写'}）。仅用于「>_ CLI」终端启动、检查套件更新与远程隧道；因当前采用零改包运行，Antigravity 客户端本体的对话联网仍跟随系统代理。`;
         } else {
-          proxyStatusDesc.textContent = '未启用本地代理直连，网络请求将继续跟随系统代理或全局 TUN 设置。';
+          proxyStatusDesc.textContent = '未启用自定义代理。「>_ CLI」终端、检查更新与远程隧道将跟随系统网络设置；Antigravity 客户端本体的对话联网始终跟随系统代理。';
         }
       }
       if (btnToggleProxyModule) {
-        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭代理直连' : '开启代理直连';
+        btnToggleProxyModule.textContent = currentProxyEnabled ? '停用代理' : '启用代理';
       }
     } catch (err) {
       const errMsg = err?.message || String(err);
@@ -1939,7 +1937,7 @@
         proxyBadge.className = 'key-pill pill-danger';
       }
       if (proxyStatusDesc) {
-        proxyStatusDesc.textContent = `检测免 TUN 代理状态异常: ${errMsg}`;
+        proxyStatusDesc.textContent = `检测代理设置异常: ${errMsg}`;
       }
     }
   }
@@ -1984,7 +1982,7 @@
     } finally {
       if (btnToggleProxyModule) {
         btnToggleProxyModule.disabled = false;
-        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭代理直连' : '开启代理直连';
+        btnToggleProxyModule.textContent = currentProxyEnabled ? '停用代理' : '启用代理';
       }
     }
   });
@@ -2002,14 +2000,25 @@
         if (!res || !res.ok) {
           proxyTestResult.textContent = '❌ 测试失败: ' + (res?.error || '未知异常');
         } else {
-          const d = res.data;
-          proxyTestResult.innerHTML = `
-            配置格式: ${d.configValid ? '✅ 合法' : '❌ 无效'}<br>
-            本地端口: ${d.proxyReachable ? '✅ 可连接' : '❌ 无法连接'}<br>
-            公网连通: ${d.internetReachable ? '✅ 可访问' : '⚠️ 无法访问公网 (可能无境外连通)'}<br>
-            模型请求: 需在对话中发送消息实际验证
-            ${d.error ? `<br><span style="color:var(--ag-text-danger,#f87171)">⚠️ ${d.error}</span>` : ''}
-          `;
+          const d = res.data || {};
+          proxyTestResult.textContent = '';
+          const lines = [
+            `配置格式: ${d.configValid ? '✅ 合法' : '❌ 无效'}`,
+            `本地端口: ${d.proxyReachable ? '✅ 可连接' : '❌ 无法连接'}`,
+            `公网连通: ${d.internetReachable ? '✅ 可访问' : '⚠️ 无法访问公网 (可能无境外连通)'}`,
+            '作用范围: 仅用于 CLI 终端、检查更新与远程隧道（本体对话跟随系统代理）'
+          ];
+          lines.forEach((line) => {
+            const row = document.createElement('div');
+            row.textContent = line;
+            proxyTestResult.appendChild(row);
+          });
+          if (d.error) {
+            const errRow = document.createElement('div');
+            errRow.style.color = 'var(--ag-text-danger,#f87171)';
+            errRow.textContent = `⚠️ ${d.error}`;
+            proxyTestResult.appendChild(errRow);
+          }
         }
       }
     } catch (e) {

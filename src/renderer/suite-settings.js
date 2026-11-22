@@ -175,8 +175,10 @@
     '本地代理地址（支持 HTTP / SOCKS5，如 http://127.0.0.1:7897）：': 'Local Proxy URL (HTTP / SOCKS5, e.g. http://127.0.0.1:7897):',
     '不走代理的地址（本地回环默认直连）：': 'Bypass Proxy Addresses (Loopback Direct):',
     '🔍 测试代理连接': '🔍 Test Proxy',
-    '开启代理直连': 'Enable Proxy',
-    '关闭代理直连': 'Disable Proxy',
+    '启用代理': 'Enable Proxy',
+    '停用代理': 'Disable Proxy',
+    '🟢 已启用': '🟢 Enabled',
+    '⚪ 未启用': '⚪ Disabled',
     '全局主题强调色': 'Global Theme Accent',
     '浮窗与面板背景色': 'Popover & Panel Background',
     '顶部圆环进度': 'Ring Progress',
@@ -227,16 +229,8 @@
     '清除自定义': 'Clear Custom',
     '取消': 'Cancel',
     '保存': 'Save',
-    '🌐 免 TUN 网络直连（本地代理）': '🌐 Proxy-No-TUN Direct Connect',
-    '免 TUN 网络直连（本地代理）': 'Proxy-No-TUN Direct Connect',
-    '代理直连配置与状态': 'Proxy Status & Config',
     '正在核对代理设置…': 'Checking proxy settings…',
-    '本地代理地址 (例如 http://127.0.0.1:7897 或 socks5://...)：': 'Local Proxy URL (e.g. http://127.0.0.1:7897 or socks5://...):',
     '绕过代理列表 (NO_PROXY)：': 'Bypass List (NO_PROXY):',
-    '🔍 测试代理连通性': '🔍 Test Proxy',
-    '切换代理直连': 'Toggle Proxy',
-    '开启免 TUN 直连': 'Enable Proxy',
-    '关闭免 TUN 直连': 'Disable Proxy',
     '⚡ 上下文加长（实验特性说明）': '⚡ Context Window Unlock (Experimental)',
     '上下文加长（实验特性说明）': 'Context Window Unlock (Experimental)',
     '当前后端补丁状态': 'Backend Patch Status',
@@ -384,8 +378,12 @@
     '手机远程页面显示内容': 'Mobile Remote Page Visibility',
     '恢复手机远程页面默认显示的全部模块': 'Restore default visible modules on mobile remote page',
     '自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。': 'Customize modules shown on the mobile/browser remote page; changes save and apply immediately.',
-    '本地代理直连（无需开启全局代理 / TUN）': 'Local Proxy Direct Connect (No Global Proxy / TUN)',
-    '🌐 本地代理直连（无需开启全局代理 / TUN）': '🌐 Local Proxy Direct Connect (No Global Proxy / TUN)',
+    '命令行与更新代理（可选）': 'CLI & Update Proxy (Optional)',
+    '🌐 命令行与更新代理（可选）': '🌐 CLI & Update Proxy (Optional)',
+    '代理作用范围与状态': 'Proxy Scope & Status',
+    '未启用自定义代理。「>_ CLI」终端、检查更新与远程隧道将跟随系统网络设置；Antigravity 客户端本体的对话联网始终跟随系统代理。': 'Custom proxy is disabled. The CLI launcher, update checks, and remote tunnel follow system network settings; Antigravity chat requests always follow system proxy.',
+    '正在发起本地与网络连通性测试…': 'Running local & network connectivity test…',
+    '作用范围: 仅用于 CLI 终端、检查更新与远程隧道（本体对话跟随系统代理）': 'Scope: CLI launcher, update checks, and remote tunnel only (host chat follows system proxy)',
     '不走代理的地址（本机地址默认直连）：': 'Bypass Proxy Addresses (Localhost Direct):',
     '底层统计与附件检查': 'Technical Details & Attachments',
     '本地估算（可能未计入附件）': 'Local Estimate (excl. attachments)',
@@ -463,7 +461,9 @@
         return '✖ Update failed: check network or proxy and retry';
       }
       return `✖ Update failed: ${clean}`;
-    }]
+    }],
+    [/^已立即生效（当前地址:\s*([\s\S]+?)）。仅用于「>_ CLI」终端启动、检查套件更新与远程隧道；因当前采用零改包运行，Antigravity 客户端本体的对话联网仍跟随系统代理。$/, (_, url) => `Active now (Proxy URL: ${url === '未填写' ? 'Not set' : url}). Applies to CLI launcher, update checks, and remote tunnel only; in zero-patch mode, Antigravity chat traffic always follows the system proxy.`],
+    [/^检测代理设置(?:失败|异常):\s*([\s\S]+)$/, (_, d) => `Failed to inspect proxy settings: ${d}`]
   ];
 
   const SUITE_SUPPORTED_LOCALES = [

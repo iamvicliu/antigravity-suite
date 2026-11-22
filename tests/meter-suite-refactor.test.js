@@ -18294,6 +18294,83 @@ test('需求 37: 统一设置面板按 README 1→5 顺排重构、兼容旧别�
     assert.ok(readmeEn.includes('🌐 Language & Appearance') && readmeEn.includes('⚡ Chat & Efficiency') && readmeEn.includes('🧰 Terminal & Network'),
       'docs/README.en.md 应同步新设置入口名称');
     assert.ok(readmeEn.includes('macOS Dock Unread & Status Alerts'), 'docs/README.en.md 应介绍 macOS Dock 未读与状态提醒');
+
+    // 7. 零改包模式代理卡片：更新为「命令行与更新代理（可选）」，不再出现「⚠️ 待重启生效」死循环
+    assert.equal(freshRendererSrc.includes('本地代理直连（无需开启全局代理 / TUN）'), false, 'meter-renderer.js 不应再包含过时的免 TUN 本地代理直连标题');
+    assert.equal(freshRendererSrc.includes('⚠️ 待重启生效'), false, 'meter-renderer.js 不应再出现误导性的「⚠️ 待重启生效」状态');
+    assert.ok(freshRendererSrc.includes('命令行与更新代理（可选）'), 'meter-renderer.js 应包含准确的「命令行与更新代理（可选）」标题');
+
+    let mockProxyEnabled = false;
+    Object.assign(env.win.contextMeterAPI, {
+      async getModulesStatus() {
+        return {
+          ok: true,
+          data: {
+            modules: {
+              chinese: { enabled: false },
+              proxy: { enabled: mockProxyEnabled, proxyUrl: 'http://127.0.0.1:7897', bypassList: 'localhost,127.0.0.1' }
+            }
+          },
+          disk: { chinese: false, proxy: false }
+        };
+      },
+      async toggleModule(name, enable) {
+        if (name === 'proxy') mockProxyEnabled = Boolean(enable);
+        return {
+          ok: true,
+          data: {
+            modules: {
+              chinese: { enabled: false },
+              proxy: { enabled: mockProxyEnabled, proxyUrl: 'http://127.0.0.1:7897' }
+            }
+          },
+          disk: { chinese: false, proxy: false },
+          restartRequired: name !== 'proxy'
+        };
+      },
+      async testProxy() {
+        return {
+          ok: true,
+          data: {
+            configValid: true,
+            proxyReachable: false,
+            internetReachable: false,
+            error: '<img src=x onerror=alert(1)>'
+          }
+        };
+      }
+    });
+
+    const flushMicrotasks = async () => {
+      for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
+    };
+
+    const btnProxyToggle = shadow.getElementById('btn-toggle-proxy-module');
+    const proxyBadgeEl = shadow.getElementById('proxy-badge');
+    const proxyDescEl = shadow.getElementById('proxy-status-desc');
+    const btnProxyTest = shadow.getElementById('btn-test-proxy');
+    const proxyTestResEl = shadow.getElementById('proxy-test-result');
+    assert.ok(btnProxyToggle && proxyBadgeEl && proxyDescEl && btnProxyTest && proxyTestResEl, '代理配置控件必须完整存在于 Shadow DOM');
+
+    btnProxyToggle.dispatchEvent({ type: 'click', stopPropagation() {}, preventDefault() {} });
+    await flushMicrotasks();
+    assert.equal(proxyBadgeEl.textContent, '🟢 已启用', '零改包模式下启用代理应立刻显示 🟢 已启用而非 ⚠️ 待重启生效');
+    assert.ok(proxyDescEl.textContent.includes('仅用于「>_ CLI」终端启动、检查套件更新与远程隧道'), '说明文字应写明代理实际作用范围');
+    assert.ok(proxyDescEl.textContent.includes('跟随系统代理'), '说明文字应写明 Antigravity 本体对话跟随系统代理');
+    assert.equal(btnProxyToggle.textContent, '停用代理');
+
+    api.setLocale('en');
+    assert.equal(proxyBadgeEl.textContent, '🟢 Enabled');
+    assert.equal(btnProxyToggle.textContent, 'Disable Proxy');
+    assert.ok(proxyDescEl.textContent.includes('CLI launcher, update checks, and remote tunnel only'));
+    api.setLocale('zh-CN');
+
+    btnProxyTest.dispatchEvent({ type: 'click', stopPropagation() {}, preventDefault() {} });
+    await flushMicrotasks();
+    const resLines = proxyTestResEl.children.map(c => c.textContent || '');
+    assert.ok(resLines.some(line => line.includes('作用范围: 仅用于 CLI 终端、检查更新与远程隧道')), '测试结果应展示清晰的作用范围说明');
+    assert.ok(resLines.some(line => line.includes('<img src=x onerror=alert(1)>')), '错误提示应以纯文本渲染而非解析为 HTML');
+    assert.equal(proxyTestResEl.querySelectorAll('img').length, 0, '严禁将 error 解析为 HTML 标签');
   } finally {
     api.dispose?.();
   }
