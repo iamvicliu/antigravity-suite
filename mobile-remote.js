@@ -4902,6 +4902,26 @@ function collapseConsecutiveDomThinking(domMessages) {
   return out;
 }
 
+function buildCompactDomIndex(rawText) {
+  const raw = String(rawText || '');
+  let compact = '';
+  const rawStartOffsets = [];
+  for (let i = 0; i < raw.length; ) {
+    const cp = raw.codePointAt(i);
+    const chLen = cp > 0xffff ? 2 : 1;
+    const ch = raw.slice(i, i + chLen);
+    if (!/[\s\u200b-\u200d\ufeff]/.test(ch)) {
+      const lowered = ch.toLowerCase();
+      for (let j = 0; j < lowered.length; j++) {
+        rawStartOffsets.push(i);
+      }
+      compact += lowered;
+    }
+    i += chLen;
+  }
+  return { raw, compact, rawStartOffsets };
+}
+
 function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, allowBusyTail = false) {
   if (!Array.isArray(baseEntries) || baseEntries.length < 2) return null;
   const textEntries = baseEntries.filter((entry) => {
@@ -4913,9 +4933,11 @@ function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, all
     return Boolean(bk);
   });
   if (textEntries.length < 2) return null;
-  const dClean = stripTrailingEllipsis(compactDomKey(dmText));
+  const { raw, compact, rawStartOffsets } = buildCompactDomIndex(dmText);
+  const dClean = stripTrailingEllipsis(compact);
   if (!dClean) return null;
   let pos = 0;
+  let lastStartPos = 0;
   const matched = [];
   for (const entry of textEntries) {
     const item = entry.item;
@@ -4923,20 +4945,23 @@ function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, all
       baseOverwrittenByDom?.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text)
     );
     if (bk && dClean.startsWith(bk, pos)) {
+      lastStartPos = pos;
       pos += bk.length;
       matched.push(entry);
     }
   }
   if (matched.length >= 2 && pos === dClean.length) {
-    return { matched, target: matched[matched.length - 1] };
+    return { matched, target: matched[matched.length - 1], streamingTailText: '' };
   }
   const lastEntry = textEntries[textEntries.length - 1];
   if (allowBusyTail && matched.length >= 2 && matched[matched.length - 1] === lastEntry && pos < dClean.length) {
     const bkLast = stripTrailingEllipsis(
       baseOverwrittenByDom?.has(lastEntry.item) ? compactDomKey(lastEntry.item.text) : compactBaseKey(lastEntry.item.text)
     );
-    if (bkLast.length >= 4) {
-      return { matched, target: lastEntry };
+    if (bkLast.length >= 4 || pos >= 4) {
+      const rawSliceStart = rawStartOffsets[lastStartPos];
+      const streamingTailText = Number.isInteger(rawSliceStart) ? raw.slice(rawSliceStart).trim() : '';
+      return { matched, target: lastEntry, streamingTailText };
     }
   }
   return null;
@@ -4988,7 +5013,7 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
       const baseAsEntries = bAsst.map((item) => ({ item }));
       for (const dm of dAsst) {
         if (isMarkdownSourcedIncoming(dm, options)) continue;
-        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, false)) {
+        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, Boolean(options.busy && baseTurnPos === M - 1 && domTurnPos === K - 1))) {
           return 1;
         }
       }
@@ -5116,6 +5141,22 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     }
   };
 
+  const applyConcatenatedTurnHit = (hit, dm) => {
+    if (!hit?.target?.item) return;
+    const targetItem = hit.target.item;
+    if (hit.streamingTailText) {
+      const prevKeyLen = baseOverwrittenByDom.has(targetItem)
+        ? compactDomKey(targetItem.text).length
+        : compactBaseKey(targetItem.text).length;
+      if (compactDomKey(hit.streamingTailText).length > prevKeyLen) {
+        targetItem.text = hit.streamingTailText;
+        targetItem.html = null;
+        baseOverwrittenByDom.add(targetItem);
+      }
+    }
+    mergeDomMetaIntoTarget(targetItem, dm);
+  };
+
   // 先结合消息顺序与轮次结构定位轨迹最后一条用户消息在桌面 DOM 中的锚点位置
   let lastBaseUserIdx = -1;
   for (let i = baseList.length - 1; i >= 0; i--) {
@@ -5206,7 +5247,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         const hit = matchConcatenatedTurnDom(dm.text, baseEntriesInPool, baseOverwrittenByDom, allowBusyOverwrite);
         if (hit) {
           consumedDomIndices.add(di);
-          mergeDomMetaIntoTarget(hit.target.item, dm);
+          applyConcatenatedTurnHit(hit, dm);
         }
       }
     }
@@ -5266,7 +5307,12 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     let currentTurnStartIdx = lastBaseUserIdx;
     let currentTurnEntries = [];
     for (let k = Math.max(0, lastBaseUserIdx + 1); k < baseList.length; k++) {
-      currentTurnEntries.push({ item: baseList[k], baseIdx: k, fromBase: true });
+      currentTurnEntries.push({
+        item: baseList[k],
+        baseIdx: k,
+        fromBase: true,
+        fromMarkdown: !baseOverwrittenByDom.has(baseList[k])
+      });
     }
     for (let j = startAppendIdx; j < domList.length; j++) {
       if (consumedDomIndices.has(j)) continue;
@@ -5277,7 +5323,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         const dupUser = currentTurnEntries.some((entry) => (
           entry.item.role === 'user' &&
           isSameUserMessage(entry.item, dm, {
-            baseIsDom: !entry.fromBase || baseOverwrittenByDom.has(entry.item),
+            baseIsDom: !entry.fromMarkdown || baseOverwrittenByDom.has(entry.item),
             domIsMarkdown: dmIsMd
           })
         ));
@@ -5322,7 +5368,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         if (dm.thoughtLabel || dm.thoughtText) {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          currentTurnEntries.push({ item, baseIdx: baseList.length - 1, fromBase: false });
+          currentTurnEntries.push({ item, baseIdx: baseList.length - 1, fromBase: false, fromMarkdown: dmIsMd });
         }
         continue;
       }
@@ -5333,7 +5379,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         if (baseAsstEntries.length >= 2) {
           const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, Boolean(options.busy));
           if (concatHit) {
-            mergeDomMetaIntoTarget(concatHit.target.item, dm);
+            applyConcatenatedTurnHit(concatHit, dm);
             continue;
           }
         }
@@ -5349,7 +5395,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         ? currentTurnEntries.find((entry) => {
             if (entry.item.role !== dm.role) return false;
             const exactOnly = !entry.fromBase || consumedBaseIndices.has(entry.baseIdx);
-            const baseIsDom = !entry.fromBase || baseOverwrittenByDom.has(entry.item);
+            const baseIsDom = !entry.fromMarkdown || baseOverwrittenByDom.has(entry.item);
             const allowEntryBusy = Boolean(options.busy) && (!entry.fromBase || lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn);
             return classifyAssistantMatch(entry.item.text, dm.text, {
               busy: allowEntryBusy,
@@ -5387,12 +5433,12 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           };
           baseList.splice(pendingThinkIdx, 1, promoted);
           const turnPos = currentTurnEntries.findIndex((e) => e.baseIdx === pendingThinkIdx || e.item === prevThink);
-          if (turnPos >= 0) currentTurnEntries.splice(turnPos, 1, { item: promoted, baseIdx: pendingThinkIdx, fromBase: false });
-          else currentTurnEntries.push({ item: promoted, baseIdx: pendingThinkIdx, fromBase: false });
+          if (turnPos >= 0) currentTurnEntries.splice(turnPos, 1, { item: promoted, baseIdx: pendingThinkIdx, fromBase: false, fromMarkdown: dmIsMd });
+          else currentTurnEntries.push({ item: promoted, baseIdx: pendingThinkIdx, fromBase: false, fromMarkdown: dmIsMd });
         } else {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          currentTurnEntries.push({ item, baseIdx: baseList.length - 1, fromBase: false });
+          currentTurnEntries.push({ item, baseIdx: baseList.length - 1, fromBase: false, fromMarkdown: dmIsMd });
         }
       }
     }
