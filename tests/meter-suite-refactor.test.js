@@ -20804,7 +20804,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
                 steps: [
                   { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
                   { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '前序项' }] } },
-                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } }
+                  { id: 'step-send-target-1', type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } }
                 ]
               }
             };
@@ -20814,7 +20814,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
               trajectory: {
                 steps: [
                   { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
-                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } },
+                  { id: 'step-send-target-1', type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } },
                   { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '其他未发送新项' }] } }
                 ]
               }
@@ -20824,7 +20824,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
             trajectory: {
               steps: [
                 { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
-                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } }
+                { id: 'step-send-target-1', type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标发送项' }] } }
               ]
             }
           };
@@ -20891,6 +20891,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     let crossIdxPhase = 'unknown_shift';
     const crossIdxSentUploads = [];
     const crossIdxTargetStep = {
+      id: 'step-cross-target-1',
       type: 'CORTEX_STEP_TYPE_USER_INPUT',
       status: 'CORTEX_STEP_STATUS_QUEUED',
       userInput: {
@@ -21462,6 +21463,328 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     const r15SendAOnly = await postPendingCol({ action: 'send', conversationId: 'conv-r15-pc', text: '发出保留的A' });
     assert.equal(r15SendAOnly.ok, true);
     assert.deepEqual(pendingColSent, [['disk-queued.png']], 'A 已暂存的恢复附件必须完整保留');
+
+    // 25. 无稳定 ID 的队列左移替换回归（[历史, 前序项, A] → [历史, B]）：单条发送与编辑暂存均不可仅凭索引/步数减小放行
+    // 25a. 无稳定 ID 单条发送：A(step 2) 发成功删响应丢失 → 变为 [历史, B(step 1)] → 必须拒绝（0 删 0 发）
+    const noIdSendOps = [];
+    let noIdSendPhase = 'a_init';
+    const noIdSendHandler = createRemoteHttpHandler({
+      port: 18787,
+      token: 'tok-r16-noid-send',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r16-ns', activeConversationId: 'conv-r16-ns', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        noIdSendOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          if (noIdSendPhase === 'a_init') {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '前序项' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '无ID同内容消息' }] } }
+                ]
+              }
+            };
+          }
+          // A 已删、前序项已删、新入队同内容 B 形成 [历史, B]（索引减小且步数减小，但无稳定 ID）
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '无ID同内容消息' }] } }
+              ]
+            }
+          };
+        }
+        if (method === 'SendUserCascadeMessage') return { ok: true };
+        if (method === 'DeleteQueuedUserInputStep') return null;
+        return { ok: true };
+      }
+    });
+    const postNoIdSend = makeMockActionPoster(noIdSendHandler, 'tok-r16-noid-send', 'cli-r16-ns');
+    const r16NsA = await postNoIdSend({ action: 'send-queued-messages', sendAll: false, conversationId: 'conv-r16-ns', stepIndex: 2, text: '无ID同内容消息' });
+    assert.equal(r16NsA.ok, false);
+    assert.equal(r16NsA.partialSuccess, true);
+    noIdSendPhase = 'b_shifted_replace';
+    const beforeNsB = noIdSendOps.length;
+    const r16NsB = await postNoIdSend({ action: 'send-queued-messages', sendAll: false, conversationId: 'conv-r16-ns', stepIndex: 1, text: '无ID同内容消息' });
+    assert.equal(r16NsB.ok, false);
+    assert.equal(r16NsB.outcomeUnknown, true, '无稳定步骤标识时即使索引与总步数同时减小，也不能证明连续性，必须拒绝');
+    assert.equal(
+      noIdSendOps.slice(beforeNsB).filter((o) => o.method === 'DeleteQueuedUserInputStep' || o.method === 'SendUserCascadeMessage').length,
+      0,
+      '无稳定 ID 队列左移替换时绝不可误删 B'
+    );
+
+    // 25b. 无稳定 ID 编辑暂存：A(step 2) 编辑未知暂存 → 变为 [历史, B(step 1)] → 编辑 B 前拒绝（0 删 B，A 暂存完好保留）
+    const noIdEditOps = [];
+    const noIdEditSent = [];
+    let noIdEditPhase = 'a_unknown';
+    let noIdEditTrajCalls = 0;
+    const noIdMediaStep = {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      status: 'CORTEX_STEP_STATUS_QUEUED',
+      userInput: {
+        items: [{ text: '无ID同文同图' }],
+        media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+      }
+    };
+    const noIdEditHandler = createRemoteHttpHandler({
+      port: 18788,
+      token: 'tok-r16-noid-edit',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r16-ne', activeConversationId: 'conv-r16-ne', busy: true, messages: [] }),
+      performAction: async (act) => {
+        if (act.action === 'send') {
+          noIdEditSent.push((act.pendingUploads || []).map((u) => u.name));
+          return { ok: true, snapshot: { ok: true, sessionId: 'conv-r16-ne', messages: [] } };
+        }
+        return { ok: true };
+      },
+      callLanguageServer: async (method, body) => {
+        noIdEditOps.push({ method, body });
+        if (method === 'DeleteQueuedUserInputStep') return noIdEditPhase === 'a_unknown' ? null : { ok: true };
+        if (method === 'GetCascadeTrajectory') {
+          noIdEditTrajCalls += 1;
+          if (noIdEditPhase === 'a_unknown') {
+            if (noIdEditTrajCalls === 1) {
+              return {
+                trajectory: {
+                  steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '前序项' }] } },
+                    noIdMediaStep
+                  ]
+                }
+              };
+            }
+            return null;
+          }
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                noIdMediaStep
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postNoIdEdit = makeMockActionPoster(noIdEditHandler, 'tok-r16-noid-edit', 'cli-r16-ne');
+    const r16NeA = await postNoIdEdit({ action: 'edit-queued-message', conversationId: 'conv-r16-ne', stepIndex: 2, hasMedia: true, text: '无ID同文同图' });
+    assert.equal(r16NeA.ok, false);
+    assert.equal(r16NeA.outcomeUnknown, true);
+    assert.equal(r16NeA.attachmentsPreserved, true);
+    noIdEditPhase = 'b_shifted_replace';
+    const beforeNeB = noIdEditOps.length;
+    const r16NeB = await postNoIdEdit({ action: 'edit-queued-message', conversationId: 'conv-r16-ne', stepIndex: 1, hasMedia: true, text: '无ID同文同图' });
+    assert.equal(r16NeB.ok, false);
+    assert.equal(r16NeB.outcomeUnknown, true, '无稳定 ID 左移替换时编辑 B 必须被安全阻止');
+    assert.equal(noIdEditOps.slice(beforeNeB).filter((o) => o.method === 'DeleteQueuedUserInputStep').length, 0, 'B 绝不可被删除');
+    const r16NeSend = await postNoIdEdit({ action: 'send', conversationId: 'conv-r16-ne', text: '发A' });
+    assert.equal(r16NeSend.ok, true);
+    assert.deepEqual(noIdEditSent, [['disk-queued.png']], 'A 暂存附件绝不可被覆盖或丢失');
+
+    // 26. 单条 stepIndex 发送完整身份核验回归：纯图替换、文本/媒体形态变化 → 0 发送、0 删除、0 DOM 点击
+    const sendIdOps = [];
+    let sendDomClicks = 0;
+    let sendIdLiveStep = {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      status: 'CORTEX_STEP_STATUS_QUEUED',
+      userInput: { items: [], media: [{ mimeType: 'image/png', uri: `file://${pngPathB}`, thumbnail: '' }] }
+    };
+    const sendIdHandler = createRemoteHttpHandler({
+      port: 18789,
+      token: 'tok-r16-sendid',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r16-sid', activeConversationId: 'conv-r16-sid', busy: true, messages: [] }),
+      performAction: async () => { sendDomClicks += 1; return { ok: true }; },
+      callLanguageServer: async (method, body) => {
+        sendIdOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                sendIdLiveStep
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postSendId = makeMockActionPoster(sendIdHandler, 'tok-r16-sendid', 'cli-r16-sid');
+    // 26a. 纯图 A 被纯图 B 占位
+    const r16SidImg = await postSendId({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r16-sid',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '[图片附件]',
+      mediaSig: `uri:file://${diskImgPath}`
+    });
+    assert.equal(r16SidImg.ok, false);
+    assert.equal(r16SidImg.outcomeUnknown, true);
+    // 26b. 文本项被纯图占位
+    const r16SidTxtToImg = await postSendId({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r16-sid',
+      stepIndex: 1,
+      text: '原纯文本项'
+    });
+    assert.equal(r16SidTxtToImg.ok, false);
+    assert.equal(r16SidTxtToImg.outcomeUnknown, true);
+    // 26c. 纯图项被纯文本占位
+    sendIdLiveStep = {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      status: 'CORTEX_STEP_STATUS_QUEUED',
+      userInput: { items: [{ text: '占位文本B' }] }
+    };
+    const r16SidImgToTxt = await postSendId({
+      action: 'send-queued-messages',
+      sendAll: false,
+      conversationId: 'conv-r16-sid',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '[图片附件]',
+      mediaSig: `uri:file://${diskImgPath}`
+    });
+    assert.equal(r16SidImgToTxt.ok, false);
+    assert.equal(r16SidImgToTxt.outcomeUnknown, true);
+    assert.equal(sendDomClicks, 0, '单条发送身份失配时绝不得进入 DOM 回退点击按钮');
+    assert.equal(
+      sendIdOps.filter((o) => o.method === 'SendUserCascadeMessage' || o.method === 'DeleteQueuedUserInputStep').length,
+      0,
+      '单条发送身份失配时绝不得发送或删除'
+    );
+
+    // 27. mediaSig 一致生成与正向端到端验证：extractQueuedMessagesFromTrajectorySteps → 前端 buildQueueItemPayload → 处理器纯图片编辑与撤回成功
+    const { extractQueuedMessagesFromTrajectorySteps } = require('../mobile-remote');
+    const posPureImgSteps = [
+      { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+      {
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        status: 'CORTEX_STEP_STATUS_QUEUED',
+        userInput: { items: [], media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }] }
+      }
+    ];
+    const extractedPureImgQueue = extractQueuedMessagesFromTrajectorySteps(posPureImgSteps);
+    assert.equal(extractedPureImgQueue.length, 1);
+    assert.ok(extractedPureImgQueue[0].mediaSig, 'extractQueuedMessagesFromTrajectorySteps 必须生成与校验端一致的 mediaSig');
+
+    const posOps = [];
+    const posHandler = createRemoteHttpHandler({
+      port: 18790,
+      token: 'tok-r16-pos',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r16-pos', activeConversationId: 'conv-r16-pos', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        posOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') return { trajectory: { steps: posPureImgSteps } };
+        return { ok: true };
+      }
+    });
+    const postPos = makeMockActionPoster(posHandler, 'tok-r16-pos', 'cli-r16-pos');
+
+    // 通过真实前端脚本渲染出的 buildQueueItemPayload 构造编辑与撤回请求并直连处理器
+    const freshHtmlR16 = buildMobileAppHtml({ port: 18790, token: 'tok-r16-pos', enabledChannels: { lan: true } });
+    const qStart16 = freshHtmlR16.indexOf('const qDock = $(\'queue-dock\');');
+    const qEnd16 = freshHtmlR16.indexOf('// 同步上层停靠区栈顶单线状态', qStart16);
+    const aStart16 = freshHtmlR16.indexOf('function renderAttachHintStrip()');
+    const aEnd16 = freshHtmlR16.indexOf('async function uploadImageFiles(rawFiles)', aStart16);
+    const sStart16 = freshHtmlR16.indexOf('function syncSendButtonUI()');
+    const sEnd16 = freshHtmlR16.indexOf('const autoGrow = () =>', sStart16);
+    const ta16 = mkSimpleEl('msg-input');
+    const qDock16 = mkSimpleEl('queue-dock');
+    const btnSend16 = mkSimpleEl('btn-send');
+    const hint16 = mkSimpleEl('attach-hint');
+    const mkBtn16 = (q) => ({
+      dataset: {
+        queueSource: 'traj',
+        msgId: '',
+        stepIdx: String(q.stepIndex),
+        domIdx: '0',
+        queueText: q.text || '',
+        hasMedia: q.hasMedia ? '1' : '',
+        mediaSig: q.mediaSig || ''
+      },
+      disabled: false,
+      onclick: null
+    });
+    const editBtn16 = mkBtn16(extractedPureImgQueue[0]);
+    const delBtn16 = mkBtn16(extractedPureImgQueue[0]);
+    qDock16._sendAllBtn = mkSimpleEl('send-all');
+    qDock16._editBtns = [editBtn16];
+    qDock16._delBtns = [delBtn16];
+    qDock16.querySelectorAll = (sel) => {
+      if (sel === '.queue-item-edit') return qDock16._editBtns;
+      if (sel === '.queue-del-btn') return qDock16._delBtns;
+      return [];
+    };
+    const map16 = new Map([['attach-hint', hint16], ['btn-send', btnSend16], ['queue-dock', qDock16]]);
+    const capturedPayloads16 = [];
+    const sb16 = {
+      $: (id) => map16.get(id) || null,
+      ta: ta16,
+      latestSnap: { busy: true },
+      selectedConversationId: 'conv-r16-pos',
+      queueActionBusy: false,
+      sending: false,
+      apiBase: '',
+      pairState: { token: '' },
+      STOP_SQUARE_SVG: 'stop',
+      SEND_ARROW_SVG: 'send',
+      uploadedNames: [],
+      uploadedAttachments: [],
+      restoredQueueEditTextKeys: new Set(),
+      saveDraftForConv() {},
+      isDesktopLayout: () => false,
+      openMediaLightbox() {},
+      formatFileSizeShort: (n) => `${n}B`,
+      showToast() {},
+      esc: (s) => String(s ?? ''),
+      apiAction: async (p) => {
+        capturedPayloads16.push(p);
+        return await postPos(p);
+      },
+      __vmQueued: extractedPureImgQueue
+    };
+    vm.runInNewContext([
+      freshHtmlR16.slice(aStart16, aEnd16),
+      freshHtmlR16.slice(sStart16, sEnd16),
+      'const displayCfg = { showQueue: true };',
+      'const snapSid = "conv-r16-pos";',
+      'const snap = { sessionId: "conv-r16-pos", activeConversationId: "conv-r16-pos", queuedMessages: globalThis.__vmQueued };',
+      freshHtmlR16.slice(qStart16, qEnd16)
+    ].join('\n'), sb16);
+    assert.ok(qDock16.innerHTML.includes('data-media-sig="'), '渲染 HTML 必须输出 data-media-sig 属性');
+    await editBtn16.onclick();
+    assert.equal(capturedPayloads16[0].mediaSig, extractedPureImgQueue[0].mediaSig, '前端编辑请求必须透传一致的 mediaSig');
+    assert.equal(sb16.uploadedAttachments.length, 1, '合法纯图片编辑必须通过校验并恢复 1 份附件');
+    assert.equal(ta16.value, '', '纯图片编辑回填文本应为空串');
+    assert.equal(posOps.filter((o) => o.method === 'DeleteQueuedUserInputStep').length, 1, '合法纯图片编辑必须完成原项删除');
+
+    await delBtn16.onclick();
+    assert.equal(capturedPayloads16[1].mediaSig, extractedPureImgQueue[0].mediaSig, '前端撤回请求必须透传一致的 mediaSig');
+    assert.equal(posOps.filter((o) => o.method === 'DeleteQueuedUserInputStep').length, 2, '合法纯图片撤回必须通过校验并完成删除');
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }
