@@ -9868,15 +9868,23 @@ function buildMobileAppHtml() {
                     }
                     const hasServerText = Boolean(res?.actionResult && typeof res.actionResult.editedText === 'string');
                     const fillVal = hasServerText ? res.actionResult.editedText : qText;
-                    if (fillVal) {
+                    const textRestoreKey = restoreSourceKey ? ((selectedConversationId || '') + '::' + restoreSourceKey) : '';
+                    const alreadyRestoredText = Boolean(textRestoreKey && restoredQueueEditTextKeys.has(textRestoreKey));
+                    if (fillVal && !alreadyRestoredText) {
                       ta.value = ta.value.trim() ? (ta.value.trimEnd() + '\\n' + fillVal) : fillVal;
                       saveDraftForConv(selectedConversationId, ta.value);
                       ta.style.height = 'auto';
                       const maxH = isDesktopLayout() ? 180 : 112;
                       ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
                       ta.focus();
-                    } else if (restoredAtts.length) {
+                      if (textRestoreKey && !res?.ok && res?.attachmentsPreserved) {
+                        restoredQueueEditTextKeys.add(textRestoreKey);
+                      }
+                    } else if (restoredAtts.length || alreadyRestoredText) {
                       ta.focus();
+                    }
+                    if (textRestoreKey && res?.ok) {
+                      restoredQueueEditTextKeys.delete(textRestoreKey);
                     }
                     syncSendButtonUI();
                     if (!res?.ok && res?.attachmentsPreserved) {
@@ -11465,6 +11473,7 @@ function buildMobileAppHtml() {
     }
 
     let uploadedAttachments = [];
+    const restoredQueueEditTextKeys = new Set();
     let attachmentUploadInflight = 0;
     let lastAttachmentUploadAt = 0;
     function formatFileSizeShort(bytes) {
