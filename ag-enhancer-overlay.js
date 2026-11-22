@@ -1039,7 +1039,7 @@
     renderQuotaUI();
 
     try {
-      const csrf = window.__APP_CONFIG__?.csrfToken;
+      const csrf = resolveLanguageServerCsrfToken();
       let configs = null;
       let userStatus = null;
       let summaryData = null;
@@ -5510,6 +5510,10 @@
     const direct = String(window.__APP_CONFIG__?.csrfToken || '').trim();
     if (direct) return direct;
     try {
+      const ls = String(localStorage.getItem('agy_session_csrf_token') || '').trim();
+      if (ls) return ls;
+    } catch {}
+    try {
       const scripts = document.querySelectorAll?.('script') || [];
       for (const s of scripts) {
         const txt = String(s?.textContent || '');
@@ -8732,7 +8736,7 @@
 
   async function refreshCascadeTrajectorySummaries() {
     if (disposed || cascadeSummaryInflight) return;
-    const csrf = window.__APP_CONFIG__?.csrfToken;
+    const csrf = resolveLanguageServerCsrfToken();
     if (!csrf) return;
     cascadeSummaryInflight = true;
     try {
@@ -9424,7 +9428,7 @@
   }
 
   async function callLanguageServerRpc(method, body = {}, timeoutMs = 4500) {
-    const csrf = window.__APP_CONFIG__?.csrfToken;
+    const csrf = resolveLanguageServerCsrfToken();
     if (!csrf) throw new Error('缺少语言服务凭证 (csrfToken)');
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => { try { controller.abort(); } catch {} }, timeoutMs) : null;
@@ -9597,7 +9601,7 @@
 
   function getMobileSnapshot() {
     const sessionId = getSessionIdFromLocation() || '';
-    if (window.__APP_CONFIG__?.csrfToken && (Date.now() - lastCascadeSummaryFetchAt) >= 20000) {
+    if (resolveLanguageServerCsrfToken() && (Date.now() - lastCascadeSummaryFetchAt) >= 20000) {
       lastCascadeSummaryFetchAt = Date.now();
       void refreshCascadeTrajectorySummaries();
     }

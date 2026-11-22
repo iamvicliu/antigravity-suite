@@ -85,21 +85,32 @@ function discoverFromHubDaemonFiles(options = {}) {
 }
 
 async function connect() {
+  let cdpPage = null;
+  let cdpOrigin = '';
+  let primaryErr = null;
   try {
     const { targets } = await resolveActiveCdpTarget({ timeoutMs: 2500 });
     const page = targets[0];
     if (!page) throw new Error('Antigravity window not found');
+    cdpPage = page;
     const origin = new URL(page.url).origin;
+    cdpOrigin = origin;
     const html = await request(origin + '/');
     const configMatch = html.match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s);
     if (!configMatch) throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
-    const token = JSON.parse(configMatch[1]).csrfToken;
+    const token = String(JSON.parse(configMatch[1])?.csrfToken || '').trim();
     if (!token) throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
     return { origin, page, call: async (method, body) => JSON.parse(await request(`${origin}/exa.language_server_pb.LanguageServerService/${method}`, body, token)) };
   } catch (err) {
-    const fallback = discoverFromHubDaemonFiles();
-    if (fallback) return fallback;
-    throw err;
+    primaryErr = err;
   }
+  const fallback = discoverFromHubDaemonFiles();
+  if (fallback) {
+    if (cdpPage && (!cdpOrigin || fallback.origin === cdpOrigin)) {
+      return { ...fallback, page: cdpPage };
+    }
+    return fallback;
+  }
+  throw primaryErr;
 }
 module.exports = { connect, discoverFromHubDaemonFiles };
