@@ -21925,6 +21925,155 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
       0,
       '同时间戳同内容独立消息替换后绝不得误删 B'
     );
+
+    // 30. 身份已确认的原项在轨迹追加无关步骤后重试回归（单条发送 + 媒体编辑双场景）
+    // 30a. 单条发送成功但删除失败后，Agent 持续追加无关轨迹步骤（总步数增长），重试必须仅删除不重发
+    const appendSendOps = [];
+    let appendSendPhase = 'first';
+    const appendSendHandler = createRemoteHttpHandler({
+      port: 18793,
+      token: 'tok-r18-app-send',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r18-as', activeConversationId: 'conv-r18-as', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method, body) => {
+        appendSendOps.push({ method, body });
+        if (method === 'GetCascadeTrajectory') {
+          if (appendSendPhase === 'first') {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { id: 'step-r18-send-1', type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '追加步骤后重试发送' }] } }
+                ]
+              }
+            };
+          }
+          // 轨迹追加了无关的 planner 响应与工具步骤，总步数从 2 增长至 4，原项 ID 仍为 step-r18-send-1
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: 'Agent 新增回复' } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: 'Agent 工具输出' } },
+                { id: 'step-r18-send-1', type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '追加步骤后重试发送' }] } }
+              ]
+            }
+          };
+        }
+        if (method === 'SendUserCascadeMessage') return { ok: true };
+        if (method === 'DeleteQueuedUserInputStep') return appendSendPhase === 'first' ? null : { ok: true };
+        return { ok: true };
+      }
+    });
+    const postAppSend = makeMockActionPoster(appendSendHandler, 'tok-r18-app-send', 'cli-r18-as');
+    const r18Send1 = await postAppSend({ action: 'send-queued-messages', sendAll: false, conversationId: 'conv-r18-as', stepIndex: 1, text: '追加步骤后重试发送' });
+    assert.equal(r18Send1.ok, false);
+    assert.equal(r18Send1.partialSuccess, true);
+
+    appendSendPhase = 'retry';
+    const beforeAppSendRetry = appendSendOps.length;
+    const r18Send2 = await postAppSend({ action: 'send-queued-messages', sendAll: false, conversationId: 'conv-r18-as', stepIndex: 3, text: '追加步骤后重试发送' });
+    assert.equal(r18Send2.ok, true, '追加无关轨迹步骤后，身份已确认的原项重试必须成功');
+    assert.equal(r18Send2.actionResult.deduplicatedRetry, true);
+    assert.equal(
+      appendSendOps.slice(beforeAppSendRetry).filter((o) => o.method === 'SendUserCascadeMessage').length,
+      0,
+      '追加无关步骤后重试绝不可重复发送'
+    );
+    assert.equal(
+      appendSendOps.slice(beforeAppSendRetry).find((o) => o.method === 'DeleteQueuedUserInputStep')?.body?.stepIndex,
+      3,
+      '必须仅删除当前索引 stepIndex:3 的原项'
+    );
+
+    // 30b. 媒体编辑删除与核验均未知后，轨迹追加无关步骤（总步数增长），重试成功：恢复内容不重复、附件仅 1 份不丢失
+    const appendEditSent = [];
+    let appendEditPhase = 'first_unknown';
+    let appendEditTrajCalls = 0;
+    const appendEditTargetStep = {
+      id: 'step-r18-edit-1',
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      status: 'CORTEX_STEP_STATUS_QUEUED',
+      userInput: {
+        items: [{ text: '追加步骤后重试媒体编辑' }],
+        media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+      }
+    };
+    const appendEditHandler = createRemoteHttpHandler({
+      port: 18794,
+      token: 'tok-r18-app-edit',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r18-ae', activeConversationId: 'conv-r18-ae', busy: true, messages: [] }),
+      performAction: async (act) => {
+        if (act.action === 'send') {
+          appendEditSent.push((act.pendingUploads || []).map((u) => u.name));
+          return { ok: true, snapshot: { ok: true, sessionId: 'conv-r18-ae', messages: [] } };
+        }
+        return { ok: true };
+      },
+      callLanguageServer: async (method) => {
+        if (method === 'DeleteQueuedUserInputStep') return appendEditPhase === 'first_unknown' ? null : { ok: true };
+        if (method === 'GetCascadeTrajectory') {
+          appendEditTrajCalls += 1;
+          if (appendEditPhase === 'first_unknown') {
+            if (appendEditTrajCalls === 1) {
+              return {
+                trajectory: {
+                  steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                    appendEditTargetStep
+                  ]
+                }
+              };
+            }
+            return null; // 首次核验不可得
+          }
+          // 轨迹追加了无关步骤，原项 ID 仍为 step-r18-edit-1（索引变为 3）
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: 'Agent 新增回复' } },
+                { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: 'Agent 工具输出' } },
+                appendEditTargetStep
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postAppEdit = makeMockActionPoster(appendEditHandler, 'tok-r18-app-edit', 'cli-r18-ae');
+    const r18Edit1 = await postAppEdit({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r18-ae',
+      stepIndex: 1,
+      hasMedia: true,
+      text: '追加步骤后重试媒体编辑'
+    });
+    assert.equal(r18Edit1.ok, false);
+    assert.equal(r18Edit1.outcomeUnknown, true);
+    assert.equal(r18Edit1.attachmentsPreserved, true);
+
+    appendEditPhase = 'retry_ok';
+    const r18Edit2 = await postAppEdit({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r18-ae',
+      stepIndex: 3,
+      hasMedia: true,
+      text: '追加步骤后重试媒体编辑'
+    });
+    assert.equal(r18Edit2.ok, true, '追加无关轨迹步骤后，同一 ID 媒体编辑重试必须成功');
+    assert.equal(r18Edit2.actionResult.recoveryKey, r18Edit1.actionResult.recoveryKey);
+    const r18Resend = await postAppEdit({ action: 'send', conversationId: 'conv-r18-ae', text: '重发媒体项' });
+    assert.equal(r18Resend.ok, true);
+    assert.deepEqual(appendEditSent, [['disk-queued.png']], '追加无关步骤后重试成功，附件必须仅携带 1 份且不丢失');
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }

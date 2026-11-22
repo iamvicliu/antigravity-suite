@@ -15096,13 +15096,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ).trim();
           const hasStepIdentityContinuity = (prevMeta, curMeta) => {
             if (!prevMeta || !curMeta) return false;
-            if (Number(curMeta.sameFpCount || 0) !== 1 || Number(prevMeta.preSameFpCount || 0) !== 1) return false;
-            if (curMeta.stepIndex > prevMeta.originalStepIndex) return false;
-            if (curMeta.totalSteps > prevMeta.preTotalSteps) return false;
-            if (curMeta.stepIndex < prevMeta.originalStepIndex && curMeta.totalSteps >= prevMeta.preTotalSteps) return false;
             const prevTok = String(prevMeta.stepIdentityToken || '').trim();
             const curTok = String(curMeta.stepIdentityToken || '').trim();
-            // 必须具备可验证的步骤级唯一身份标识且严格一致，才能证明身份连续性；无稳定标识时仅凭索引/步数减小无法排除队列替换，一律拒绝
+            // 必须具备可验证的协议级步骤唯一 ID 且前后严格一致；一旦步骤 ID 匹配，即使轨迹追加了无关步骤（总步数增长或索引变化）也允许安全重试，无 ID 或 ID 变化一律拒绝
             return Boolean(prevTok && curTok && prevTok === curTok);
           };
           const verifyStepIndexTargetIdentity = (targetUi, matchedQ, reqPayload) => {
