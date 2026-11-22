@@ -781,7 +781,7 @@ async function startEmbeddedLiveBridge(options = {}) {
           }
           saveModulesConfig(cfg);
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, status: 'config_toggled', data: cfg, disk: inspectDiskModules(extra.asarPath || null), restartRequired: true }));
+          res.end(JSON.stringify({ ok: true, status: 'config_toggled', data: cfg, disk: inspectDiskModules(extra.asarPath || null), restartRequired: mod !== 'proxy' }));
           return;
         }
         if (req.url === '/test-proxy') {

@@ -165,11 +165,11 @@
         </div>
       </div>
 
-      <!-- 二级交互折叠区: 本地代理直连 (无需开启全局代理 / TUN) -->
+      <!-- 二级交互折叠区: 命令行与更新代理（可选） -->
       <div class="tech-drawer" id="proxy-notun-drawer">
         <button id="btn-toggle-proxy" class="drawer-trigger" aria-expanded="false" type="button">
           <span class="drawer-trigger-left">
-            <span>🌐 本地代理直连（无需开启全局代理 / TUN）</span>
+            <span>🌐 命令行与更新代理（可选）</span>
             <span id="proxy-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:11px;">读取中…</span>
           </span>
           <span id="proxy-drawer-arrow" class="drawer-arrow">▼ 展开</span>
@@ -178,7 +178,7 @@
           <div class="unlock-panel-content">
             <div class="unlock-status-row">
               <div class="unlock-status-meta">
-                <div class="unlock-label">代理直连配置与状态</div>
+                <div class="unlock-label">代理作用范围与状态</div>
                 <div id="proxy-status-desc" class="unlock-desc">正在核对代理设置…</div>
               </div>
             </div>
@@ -194,7 +194,7 @@
             </div>
             <div class="unlock-actions" style="display:flex;gap:8px;">
               <button id="btn-test-proxy" class="unlock-btn unlock-btn-secondary" type="button">🔍 测试代理连接</button>
-              <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button">开启代理直连</button>
+              <button id="btn-toggle-proxy-module" class="unlock-btn unlock-btn-primary" type="button">启用代理</button>
             </div>
             <div id="proxy-test-result" style="font-size:11.5px;margin-top:6px;display:none;color:var(--ag-text-secondary);"></div>
           </div>
