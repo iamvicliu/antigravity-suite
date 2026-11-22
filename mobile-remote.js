@@ -8792,8 +8792,10 @@ function buildMobileAppHtml() {
     }
 
     function syncUpperDockStackState() {
-      const apVisible = Boolean($('approval-dock') && !$('approval-dock').hidden);
-      const qVisible = Boolean($('queue-dock') && !$('queue-dock').hidden);
+      const apEl = $('approval-dock');
+      const qEl = $('queue-dock');
+      const apVisible = Boolean(apEl && !apEl.hidden);
+      const qVisible = Boolean(qEl && !qEl.hidden);
       try {
         document.body?.classList?.toggle?.('has-approval-dock', apVisible);
         document.body?.classList?.toggle?.('has-upper-dock', apVisible || qVisible);
