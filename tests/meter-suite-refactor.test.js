@@ -20670,6 +20670,119 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     ta11.value = '纯文本msg撤回内容（已由用户改写）';
     await btn11.onclick();
     assert.equal(ta11.value, '纯文本msg撤回内容（已由用户改写）', '重试成功后不得重复追加文本，也不得覆盖用户修改');
+
+    // 17. stepIndex 删除响应未知 + 前序项并发删除导致原项前移但仍排队回归（纯文本 + 媒体双路径）
+    // 17a. 纯文本 stepIndex 前移：原队列 [1: 前序项, 2: 目标纯文本]，删 2 响应未知，核验变为 [1: 目标纯文本] → 返回 outcomeUnknown + textPreserved
+    let shiftTxtCalls = 0;
+    const shiftTxtHandler = createRemoteHttpHandler({
+      port: 18776,
+      token: 'tok-r12-shift-txt',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r12-txt', activeConversationId: 'conv-r12-txt', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method) => {
+        if (method === 'DeleteQueuedUserInputStep') return null;
+        if (method === 'GetCascadeTrajectory') {
+          shiftTxtCalls += 1;
+          if (shiftTxtCalls === 1) {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '前序排队项' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标纯文本项' }] } }
+                ]
+              }
+            };
+          }
+          // 前序排队项被并发删除，原 step 2 前移到 step 1 且仍在排队
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '目标纯文本项' }] } }
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postShiftTxt = makeMockActionPoster(shiftTxtHandler, 'tok-r12-shift-txt', 'cli-r12-txt');
+    const r12ShiftTxt = await postShiftTxt({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r12-txt',
+      stepIndex: 2,
+      text: '目标纯文本项'
+    });
+    assert.equal(r12ShiftTxt.ok, false, '前序项并发删除导致原纯文本项前移但仍排队时，绝不可误判已删除');
+    assert.equal(r12ShiftTxt.outcomeUnknown, true);
+    assert.equal(r12ShiftTxt.textPreserved, true);
+    assert.equal(r12ShiftTxt.actionResult.editedText, '目标纯文本项');
+
+    // 17b. 媒体 stepIndex 前移：原队列 [1: 前序项, 2: 目标带图项]，删 2 响应未知，核验变为 [1: 目标带图项] → 返回 outcomeUnknown + textPreserved + attachmentsPreserved
+    let shiftMediaCalls = 0;
+    const shiftMediaHandler = createRemoteHttpHandler({
+      port: 18777,
+      token: 'tok-r12-shift-media',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r12-media', activeConversationId: 'conv-r12-media', busy: true, messages: [] }),
+      performAction: async () => ({ ok: true }),
+      callLanguageServer: async (method) => {
+        if (method === 'DeleteQueuedUserInputStep') return null;
+        if (method === 'GetCascadeTrajectory') {
+          shiftMediaCalls += 1;
+          const mediaTargetStep = {
+            type: 'CORTEX_STEP_TYPE_USER_INPUT',
+            status: 'CORTEX_STEP_STATUS_QUEUED',
+            userInput: {
+              items: [{ text: '目标带图项' }],
+              media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+            }
+          };
+          if (shiftMediaCalls === 1) {
+            return {
+              trajectory: {
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '前序排队项' }] } },
+                  mediaTargetStep
+                ]
+              }
+            };
+          }
+          // 前序排队项被并发删除，目标带图项前移到 step 1 且仍在排队
+          return {
+            trajectory: {
+              steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '历史' }] } },
+                mediaTargetStep
+              ]
+            }
+          };
+        }
+        return { ok: true };
+      }
+    });
+    const postShiftMedia = makeMockActionPoster(shiftMediaHandler, 'tok-r12-shift-media', 'cli-r12-media');
+    const r12ShiftMedia = await postShiftMedia({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r12-media',
+      stepIndex: 2,
+      hasMedia: true,
+      text: '目标带图项'
+    });
+    assert.equal(r12ShiftMedia.ok, false, '前序项并发删除导致原媒体项前移但仍排队时，绝不可误判已删除');
+    assert.equal(r12ShiftMedia.outcomeUnknown, true);
+    assert.equal(r12ShiftMedia.textPreserved, true);
+    assert.equal(r12ShiftMedia.attachmentsPreserved, true);
+    assert.equal(r12ShiftMedia.actionResult.editedText, '目标带图项');
+    assert.equal(r12ShiftMedia.actionResult.editedAttachments.length, 1);
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }
