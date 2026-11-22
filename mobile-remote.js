@@ -4846,6 +4846,7 @@ function buildMobileAppHtml() {
       --card:#18181b;--card2:#27272a;--composer-bg:#16161a;--composer-border:rgba(255,255,255,.11);
       --composer-shadow:0 8px 28px rgba(0,0,0,.45);--composer-shadow-lg:0 12px 36px rgba(0,0,0,.4);
       --approval-dock-bg:rgba(24,24,27,.98);
+      --dock-bg:rgba(16,16,20,.94);--dock-shadow:0 -6px 18px rgba(0,0,0,.38);
       --surface-subtle:rgba(255,255,255,.04);--surface-soft:rgba(255,255,255,.05);--surface-hover:rgba(255,255,255,.08);
       --surface-strong:rgba(255,255,255,.07);--surface-strong-hover:rgba(255,255,255,.11);
       --border:rgba(255,255,255,.1);--border-subtle:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.16);
@@ -4886,6 +4887,7 @@ function buildMobileAppHtml() {
         --card:#ffffff;--card2:#e2e8f0;--composer-bg:#ffffff;--composer-border:rgba(15,23,42,.13);
         --composer-shadow:0 6px 24px rgba(15,23,42,.07);--composer-shadow-lg:0 10px 30px rgba(15,23,42,.08);
         --approval-dock-bg:rgba(248,250,252,.96);
+        --dock-bg:rgba(241,245,249,.95);--dock-shadow:0 -6px 16px rgba(15,23,42,.08);
         --surface-subtle:rgba(15,23,42,.035);--surface-soft:rgba(15,23,42,.045);--surface-hover:rgba(15,23,42,.07);
         --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
         --border:rgba(15,23,42,.1);--border-subtle:rgba(15,23,42,.07);--border-strong:rgba(15,23,42,.15);
@@ -4919,6 +4921,7 @@ function buildMobileAppHtml() {
       --card:#ffffff;--card2:#e2e8f0;--composer-bg:#ffffff;--composer-border:rgba(15,23,42,.13);
       --composer-shadow:0 6px 24px rgba(15,23,42,.07);--composer-shadow-lg:0 10px 30px rgba(15,23,42,.08);
       --approval-dock-bg:rgba(248,250,252,.96);
+      --dock-bg:rgba(241,245,249,.95);--dock-shadow:0 -6px 16px rgba(15,23,42,.08);
       --surface-subtle:rgba(15,23,42,.035);--surface-soft:rgba(15,23,42,.045);--surface-hover:rgba(15,23,42,.07);
       --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
       --border:rgba(15,23,42,.1);--border-subtle:rgba(15,23,42,.07);--border-strong:rgba(15,23,42,.15);
@@ -5203,9 +5206,16 @@ function buildMobileAppHtml() {
     .queue-del-btn:active{background:var(--surface-hover);color:var(--red)}
     .queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
     .composer-dock{
-      flex-shrink:0;background:transparent;padding:2px 10px 2px;
-      display:flex;flex-direction:column;gap:5px;
+      flex-shrink:0;background:var(--dock-bg);border-top:1px solid var(--border);
+      box-shadow:var(--dock-shadow);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+      padding:2px 10px 2px;display:flex;flex-direction:column;gap:5px;
     }
+    body.has-upper-dock .composer-dock{
+      border-top-color:var(--border-subtle);box-shadow:none;
+    }
+    .approval-dock:not([hidden]){box-shadow:var(--dock-shadow)}
+    body.has-approval-dock .queue-dock:not([hidden]){border-top-color:var(--border-subtle);box-shadow:none}
+    body:not(.has-approval-dock) .queue-dock:not([hidden]){box-shadow:var(--dock-shadow)}
     .chips{display:flex;align-items:center;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 2px;min-height:32px}
     .chips::-webkit-scrollbar{display:none}
     .chip{
@@ -5712,11 +5722,10 @@ function buildMobileAppHtml() {
         padding-top:0;padding-bottom:0;
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
-      .title-wrap{grid-template-columns:auto minmax(0,1fr) auto;column-gap:7px;row-gap:1px}
+      .title-wrap{grid-template-columns:auto minmax(0,1fr);column-gap:7px;row-gap:1px}
       .conv-title{grid-column:2;grid-row:1;font-size:15.5px}
-      .sub-row{display:contents}
-      .conv-project-badge{grid-column:3;grid-row:1;justify-self:end;max-width:200px;font-size:11.5px;padding:2px 8px}
-      .sub-meta{grid-column:1 / -1;grid-row:2;font-size:12px}
+      .conv-project-badge{max-width:260px;font-size:11.5px;padding:1px 8px}
+      .sub-meta{font-size:12px}
       .quota-pill{flex-direction:row;align-items:center;gap:8px;padding:6px 12px;font-size:12px;border-radius:10px}
       .quota-pill span:last-child{font-size:11.5px;color:var(--muted);padding-left:8px;border-left:1px solid var(--border)}
       .drawer-backdrop{
@@ -6022,6 +6031,9 @@ function buildMobileAppHtml() {
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
           </button>
         </div>
+        <button id="btn-mode-switcher" class="push-footer-btn" type="button" title="切换连接通道与测速" aria-label="切换连接通道">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+        </button>
         <button id="btn-push-settings" class="push-footer-btn" type="button" title="消息推送与未读角标设置" aria-label="消息推送设置">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
         </button>
@@ -7327,6 +7339,12 @@ function buildMobileAppHtml() {
 
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
     $('sub-meta').onclick = openModeSwitcherSheet;
+    if ($('btn-mode-switcher')) {
+      $('btn-mode-switcher').addEventListener('click', () => {
+        if (!isDesktopLayout()) closeDrawer();
+        openModeSwitcherSheet();
+      });
+    }
 
     const appEl = document.querySelector('.app');
     let isStandalonePwa = false;
@@ -8361,7 +8379,7 @@ function buildMobileAppHtml() {
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
       syncTopbarProjectBadge(resolveConversationProjectName(snap));
-      $('sub-meta').textContent = getActiveChannelLabel() + (snap.isolated ? ' · 独立视图' : '') + ' ▾ · ' + (snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已连接')));
+      $('sub-meta').textContent = snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已就绪'));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
@@ -8752,6 +8770,9 @@ function buildMobileAppHtml() {
         }
       }
 
+      // 同步上层停靠区栈顶单线状态（避免 approval-dock / queue-dock / composer-dock 叠加多层分隔线与阴影）
+      if (typeof syncUpperDockStackState === 'function') syncUpperDockStackState();
+
       // 轻盈下一步建议 & 快捷口令 & 快捷操作胶囊（模型/权限已并入输入卡片内部工具栏）
       renderQuickChipsBar(snap);
 
@@ -8768,6 +8789,15 @@ function buildMobileAppHtml() {
         renderConversationList(snap);
       }
       return true;
+    }
+
+    function syncUpperDockStackState() {
+      const apVisible = Boolean($('approval-dock') && !$('approval-dock').hidden);
+      const qVisible = Boolean($('queue-dock') && !$('queue-dock').hidden);
+      try {
+        document.body?.classList?.toggle?.('has-approval-dock', apVisible);
+        document.body?.classList?.toggle?.('has-upper-dock', apVisible || qVisible);
+      } catch {}
     }
 
     function renderQuickChipsBar(snap) {
