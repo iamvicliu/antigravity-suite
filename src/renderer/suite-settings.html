@@ -1,4 +1,4 @@
-  <!-- 弹出式面板 3: Antigravity Suite 统一设置面板 (#panel-settings, 600px) -->
+  <!-- 弹出式面板 3: Antigravity Suite 统一设置面板 (#panel-settings, 640px) -->
   <section id="panel-settings" class="ag-panel" hidden aria-label="套件统一设置">
     <div class="panel-header-bar">
       <div class="panel-title">
@@ -13,19 +13,101 @@
     </div>
 
     <div id="settings-tabs-bar" class="settings-tabs-bar" role="tablist" aria-label="设置分类">
-      <button id="settings-tab-btn-terminal" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="settings-pane-terminal" tabindex="0" data-settings-tab="terminal">🖥️ 终端与通用</button>
-      <button id="settings-tab-btn-appearance" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-appearance" tabindex="-1" data-settings-tab="appearance">🎨 外观与主题</button>
-      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-subscription" tabindex="-1" data-settings-tab="subscription">💎 套餐与订阅</button>
+      <button id="settings-tab-btn-appearance" class="settings-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="settings-pane-appearance" tabindex="0" data-settings-tab="appearance">🌐 语言与外观</button>
       <button id="settings-tab-btn-remote" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-remote" tabindex="-1" data-settings-tab="remote">📱 远程设置</button>
-      <button id="settings-tab-btn-system" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-system" tabindex="-1" data-settings-tab="system">🌐 网络与高级</button>
+      <button id="settings-tab-btn-chat" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-chat" tabindex="-1" data-settings-tab="chat">⚡ 对话与效率</button>
+      <button id="settings-tab-btn-network" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-network" tabindex="-1" data-settings-tab="network">🧰 终端与网络</button>
+      <button id="settings-tab-btn-subscription" class="settings-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-pane-subscription" tabindex="-1" data-settings-tab="subscription">📊 套餐与订阅</button>
     </div>
 
     <div id="settings-body" class="settings-body">
-      <!-- 分页 1: 终端与通用 -->
-      <div id="settings-pane-terminal" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-terminal">
+      <!-- 分页 1: 语言与外观 -->
+      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-appearance">
+        <div id="settings-card-lang-appearance" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">语言与明暗外观</span>
+          </div>
+          <div class="settings-pref-list">
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">插件与客户端语言</span>
+                <span class="settings-pref-desc">同时切换主界面、设置面板、Dock 提醒及浮窗的显示语言</span>
+              </div>
+              <div class="settings-select-wrap">
+                <select id="set-ui-language-select" class="settings-select" aria-label="插件与客户端语言">
+                  <option value="zh-CN">简体中文 · Simplified Chinese</option>
+                  <option value="en">English · 英文原版</option>
+                </select>
+              </div>
+            </div>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">模式与档位名保留英文</span>
+                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名</span>
+              </div>
+              <input id="set-english-labels" type="checkbox" class="settings-checkbox" />
+            </label>
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">面板深浅外观</span>
+                <span class="settings-pref-desc">设置所有插件浮窗与设置面板的明暗配色</span>
+              </div>
+              <div class="source-switch-bar">
+                <button id="set-theme-auto" class="switch-pill-btn active" type="button">跟随客户端</button>
+                <button id="set-theme-light" class="switch-pill-btn" type="button">浅色</button>
+                <button id="set-theme-dark" class="switch-pill-btn" type="button">深色</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="settings-card-dock-badge" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">macOS Dock 未读与状态提醒</span>
+            <div class="settings-card-hdr-actions">
+              <button id="btn-test-dock-badge" class="switch-pill-btn" type="button" title="在 Dock 图标上短暂预览角标与状态胶囊效果">测试提醒</button>
+              <button id="btn-dock-open-ax" class="switch-pill-btn" type="button" hidden title="打开 macOS 系统设置，开启「辅助功能」权限以显示 Dock 图标提醒">前往开启权限</button>
+            </div>
+          </div>
+          <div id="dock-badge-status-note" class="settings-status-note">正在检查 macOS Dock 图标提醒状态…</div>
+          <div class="settings-pref-list">
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">启用 macOS Dock 图标提醒</span>
+                <span class="settings-pref-desc">不修改官方程序；后台有新回复、待审批或高危拦截时即时提醒，关闭后即彻底停用、不占后台资源</span>
+              </div>
+              <input id="set-dock-badge-enabled" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">提醒样式</span>
+                <span class="settings-pref-desc">带状态胶囊可在图标下方直观区分生成中、新回复与待审批；仅显示角标只在右上角显示数字（有待审批时优先显示待审批数）</span>
+              </div>
+              <div class="source-switch-bar" role="group" aria-label="提醒样式">
+                <button id="set-dock-style-capsule" class="switch-pill-btn active" type="button">带状态胶囊（推荐）</button>
+                <button id="set-dock-style-badge" class="switch-pill-btn" type="button">仅显示角标</button>
+              </div>
+            </div>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">用蓝 / 红区分未读与待审批</span>
+                <span class="settings-pref-desc">待审批与高危拦截用红色优先提醒，普通新回复用蓝色；关闭后全部显示为红色</span>
+              </div>
+              <input id="set-dock-badge-color-tier" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">切回窗口自动清除普通未读</span>
+                <span class="settings-pref-desc">切回 Antigravity 窗口即自动清除普通新回复提醒；待审批与高危红标会保留，直到你处理完成</span>
+              </div>
+              <input id="set-dock-badge-autoclear" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+
         <div id="settings-card-features" class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">功能显示开关</span>
+            <span class="settings-card-title">桌面功能显示开关</span>
             <button id="btn-reset-feature-toggles" class="switch-pill-btn" type="button" title="恢复显示全部顶栏入口与对话区挂件">全部恢复显示</button>
           </div>
           <div class="settings-card-desc">按需开启或隐藏顶栏入口与对话区挂件，点击立即生效。</div>
@@ -57,14 +139,91 @@
           </div>
         </div>
 
+        <div class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">主题色系与热力图配色</span>
+            <button id="btn-toggle-heat-advanced" class="switch-pill-btn" type="button">高级色阶微调 ▼</button>
+          </div>
+          <div class="settings-card-desc">切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。</div>
+          <div id="settings-slot-heatmap-colors"></div>
+          <details id="settings-meter-colors-details" class="settings-advanced-details">
+            <summary>自定义强调色与顶栏分项配色</summary>
+            <div id="settings-slot-meter-colors"></div>
+          </details>
+        </div>
+      </div>
+
+      <!-- 分页 2: 远程设置 -->
+      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-remote" hidden>
+        <div id="settings-card-remote-channels" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">远程通道与隧道</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button id="btn-settings-remote-refresh" class="switch-pill-btn" type="button" title="刷新远程连接通道与隧道状态">刷新状态</button>
+              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对口令，旧链接与已配对设备将失效">重置配对口令</button>
+            </div>
+          </div>
+          <div class="settings-card-desc">默认已开启免登录公网通道，点顶部「远程」图标即可用手机扫码连接。如需绑定自己的固定域名，可在下方展开配置。</div>
+          <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
+        </div>
+
+        <div id="settings-card-remote-display" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">手机远程页面显示内容</span>
+            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复手机远程页面默认显示的全部模块">恢复默认</button>
+          </div>
+          <div class="settings-card-desc">自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。</div>
+          <div class="settings-feature-grid">
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部上下文窗口面板</span>
+              <input id="set-remote-ctx-panel" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：历史用量统计面板</span>
+              <input id="set-remote-usage-panel" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部模型配额胶囊</span>
+              <input id="set-remote-quota-pill" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">顶部：当前连接方式提示</span>
+              <input id="set-remote-channel-meta" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">左侧会话列表栏</span>
+              <input id="set-remote-sidebar" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">AI 思考过程折叠区</span>
+              <input id="set-remote-thinking" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">底部快捷操作与下一步建议</span>
+              <input id="set-remote-quick-chips" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">输入区工具栏（模型/权限等）</span>
+              <input id="set-remote-composer-tools" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-feature-item">
+              <span class="settings-feature-name">待审批操作提醒横幅</span>
+              <input id="set-remote-approvals" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分页 3: 对话与效率 -->
+      <div id="settings-pane-chat" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-chat" hidden>
         <div id="settings-card-quick-prompts" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">快捷提示词</span>
             <button id="btn-reset-quick-prompts" class="switch-pill-btn" type="button" title="恢复默认快捷提示词">恢复默认</button>
           </div>
-          <div class="settings-card-desc">从内置推荐池中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。</div>
+          <div class="settings-card-desc">从内置常用指令中点选要在输入框上方显示的快捷按钮（点击即可开启或关闭，不可删除）；也可在下方「自定义快捷提示词」中自由新增。</div>
           <div class="settings-field-lbl" style="margin:2px 0 6px;">内置快捷按钮（点击开启或关闭 · 悬停查看说明）</div>
-          <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置快捷按钮推荐池"></div>
+          <div id="quick-builtin-pool-grid" class="qp-pool-grid" role="group" aria-label="内置常用指令"></div>
           <div id="quick-builtin-info-box" class="qp-info-box" role="region" aria-label="内置指令实时解读">
             <div class="qp-info-top">
               <div class="qp-info-title-wrap">
@@ -80,7 +239,7 @@
           <label class="settings-pref-row settings-pref-check" style="margin:6px 0 4px;">
             <div class="settings-pref-meta">
               <span class="settings-pref-name">点击内置快捷指令时直接发送</span>
-              <span class="settings-pref-desc">开启后点击「/compact 压缩」或「重载规则」会直接发送（需补充参数的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换</span>
+              <span class="settings-pref-desc">开启后点击「/compact 压缩」或「重载规则」会直接发送（需要补充内容的指令仍仅填入输入框）；按住 ⌘/Ctrl 点击可临时切换</span>
             </div>
             <input id="set-quick-builtin-autosend" type="checkbox" class="settings-checkbox" />
           </label>
@@ -88,7 +247,7 @@
             <span id="quick-custom-section-hdr" class="settings-field-lbl">自定义快捷提示词</span>
             <button id="btn-add-quick-prompt" class="switch-pill-btn qp-add-btn" type="button" title="添加一条快捷提示词">+ 新增</button>
           </div>
-          <div id="quick-custom-mode-hint" class="qp-custom-hint">填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时反转）</div>
+          <div id="quick-custom-mode-hint" class="qp-custom-hint">填入：仅放进输入框，方便粘贴报错或补充后再发 · ⚡直发：点一下立刻发出（有草稿时自动防误发；按住 ⌘/Ctrl 点击可临时切换）</div>
           <div id="quick-popular-templates" class="qp-tpl-bar" role="group" aria-label="热门模板"></div>
           <div id="quick-prompts-editor-list" class="qp-editor-list"></div>
           <div class="qp-footer">
@@ -97,6 +256,38 @@
           </div>
         </div>
 
+        <div id="settings-card-chat-policy" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">对话自动化与安全策略</span>
+          </div>
+          <div class="settings-pref-list">
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">自动确认安全操作 (Auto-Accept)</span>
+                <span class="settings-pref-desc">自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截</span>
+              </div>
+              <input id="set-auto-accept" type="checkbox" class="settings-checkbox" />
+            </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">输入框智能追问建议 (Tab / →)</span>
+                <span class="settings-pref-desc">回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入</span>
+              </div>
+              <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">240K 自动压缩防卡顿</span>
+                <span class="settings-pref-desc">官方默认满 512K 才整理，对话过长后稍作停顿就容易卡顿数分钟。开启后，上下文满 240K 或发生缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩历史</span>
+              </div>
+              <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分页 4: 终端与网络 -->
+      <div id="settings-pane-network" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-network" hidden>
         <div class="settings-card-box">
           <div class="settings-card-hdr">
             <div class="settings-card-title-wrap">
@@ -118,8 +309,8 @@
           <div id="cli-launch-options-box" class="term-custom-box" data-active="true" style="gap:7px;">
             <label class="settings-pref-row settings-pref-check" style="margin:0;">
               <div class="settings-pref-meta">
-                <span class="settings-pref-name">CLI 自动批准工具权限</span>
-                <span class="settings-pref-desc">启动命令行终端时自动批准工具调用，无需每次手动确认</span>
+                <span class="settings-pref-name">CLI 自动批准工具权限（免确认）</span>
+                <span class="settings-pref-desc">在命令行启动时自动放行文件修改与命令执行，不再逐次弹窗确认；仅建议在受信任项目开启</span>
               </div>
               <input id="set-cli-skip-permissions" type="checkbox" class="settings-checkbox" />
             </label>
@@ -158,7 +349,8 @@
               </div>
             </div>
             <div id="cli-custom-model-row" class="term-custom-row" style="display:none;">
-              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="输入模型 ID（留空则跟随 CLI 默认配置）" />
+              <label for="input-cli-custom-model" class="settings-field-lbl" style="flex:0 0 100%;">自定义模型名称（留空则跟随默认配置）</label>
+              <input id="input-cli-custom-model" type="text" class="settings-input" placeholder="例如：gemini-3.8-flash-high" />
               <button id="btn-save-cli-model" class="unlock-btn unlock-btn-primary" type="button">保存模型</button>
             </div>
             <div id="cli-mux-host-pref-row" class="settings-pref-row" style="margin:0;flex-wrap:wrap;">
@@ -174,7 +366,8 @@
               </div>
             </div>
             <div id="cli-custom-mux-host-row" class="term-custom-row" style="display:none;">
-              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="输入远程主机名或连接标识（留空代表当前电脑）" />
+              <label for="input-cli-mux-host" class="settings-field-lbl" style="flex:0 0 100%;">远程主机名称（留空则在当前电脑运行）</label>
+              <input id="input-cli-mux-host" type="text" class="settings-input" placeholder="例如：my-server 或 SSH 主机名" />
               <button id="btn-save-cli-mux-host" class="unlock-btn unlock-btn-primary" type="button">保存主机</button>
             </div>
           </div>
@@ -186,84 +379,14 @@
 
         <div class="settings-card-box">
           <div class="settings-card-hdr">
-            <span class="settings-card-title">界面与对话增强偏好</span>
+            <span class="settings-card-title">本地代理直连（无需开启全局代理 / TUN）</span>
+            <span id="settings-slot-proxy-badge"></span>
           </div>
-          <div class="settings-pref-list">
-            <div class="settings-pref-row">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">面板深浅外观</span>
-                <span class="settings-pref-desc">设置所有插件浮窗与设置面板的明暗配色</span>
-              </div>
-              <div class="source-switch-bar">
-                <button id="set-theme-auto" class="switch-pill-btn active" type="button">跟随客户端</button>
-                <button id="set-theme-light" class="switch-pill-btn" type="button">浅色</button>
-                <button id="set-theme-dark" class="switch-pill-btn" type="button">深色</button>
-              </div>
-            </div>
-            <label class="settings-pref-row settings-pref-check">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">自动确认安全操作 (Auto-Accept)</span>
-                <span class="settings-pref-desc">自动点击对话中的 Proceed / Accept / 继续 等常规确认按钮，遇到高危命令自动拦截</span>
-              </div>
-              <input id="set-auto-accept" type="checkbox" class="settings-checkbox" />
-            </label>
-            <label class="settings-pref-row settings-pref-check">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">输入框智能追问建议 (Tab / →)</span>
-                <span class="settings-pref-desc">回答结束后在输入框内提示下一步常用追问，按 Tab 或 → 键一键填入</span>
-              </div>
-              <input id="set-ghost-suggest" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-pref-row settings-pref-check">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">240K 自动压缩防卡顿</span>
-                <span class="settings-pref-desc">官方默认到 512K 才压缩，对话过长后停顿易导致缓存失效、每步卡顿数分钟。开启后，上下文满 240K 或缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩</span>
-              </div>
-              <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <div class="settings-pref-row">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">插件与客户端语言</span>
-                <span class="settings-pref-desc">同时切换客户端界面汉化、插件面板及底部状态胶囊的显示语言</span>
-              </div>
-              <div class="settings-select-wrap">
-                <select id="set-ui-language-select" class="settings-select" aria-label="插件与客户端语言">
-                  <option value="zh-CN">简体中文 · Simplified Chinese</option>
-                  <option value="en">English · 英文原版</option>
-                </select>
-              </div>
-            </div>
-            <label class="settings-pref-row settings-pref-check">
-              <div class="settings-pref-meta">
-                <span class="settings-pref-name">模式与档位名保留英文</span>
-                <span class="settings-pref-desc">中文界面下保留 Default / Auto / Turbo 及 High / Medium / Low 等英文原名</span>
-              </div>
-              <input id="set-english-labels" type="checkbox" class="settings-checkbox" />
-            </label>
-          </div>
+          <div id="settings-slot-proxy"></div>
         </div>
       </div>
 
-      <!-- 分页 2: 外观与主题 -->
-      <div id="settings-pane-appearance" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-appearance" hidden>
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">主题色系与热力图配色</span>
-            <button id="btn-toggle-heat-advanced" class="switch-pill-btn" type="button">高级色阶微调 ▼</button>
-          </div>
-          <div class="settings-card-desc">切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。</div>
-          <div id="settings-slot-heatmap-colors"></div>
-        </div>
-
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">全局强调色与顶部栏分项配色</span>
-          </div>
-          <div id="settings-slot-meter-colors"></div>
-        </div>
-      </div>
-
-      <!-- 分页 3: 套餐与订阅 -->
+      <!-- 分页 5: 套餐与订阅 -->
       <div id="settings-pane-subscription" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-subscription" hidden>
         <div class="settings-card-box">
           <div id="settings-sub-summary-bar" class="settings-sub-preview-bar">
@@ -291,78 +414,6 @@
           </dl>
 
           <div id="settings-slot-custom-plan-form"></div>
-        </div>
-      </div>
-
-      <!-- 分页 4: 远程设置 -->
-      <div id="settings-pane-remote" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-remote" hidden>
-        <div id="settings-card-remote-channels" class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">远程通道与隧道</span>
-            <div style="display:flex;align-items:center;gap:6px;">
-              <button id="btn-settings-remote-refresh" class="switch-pill-btn" type="button" title="刷新远程连接通道与隧道状态">刷新状态</button>
-              <button id="ag-remote-reset" class="switch-pill-btn" type="button" title="重新生成配对口令，旧链接与已配对设备将失效">重置配对口令</button>
-            </div>
-          </div>
-          <div class="settings-card-desc">管理手机远程访问通道与配对口令；已默认开启免登录临时公网通道（开箱即用），如需绑定自己的固定域名可展开配置，也可随时点顶部「远程」图标扫码连接。</div>
-          <div id="settings-remote-channels-root" class="settings-remote-channels-root"></div>
-        </div>
-
-        <div id="settings-card-remote-display" class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">手机远程页面显示内容</span>
-            <button id="btn-reset-remote-display" class="switch-pill-btn" type="button" title="恢复手机远程页面默认显示的全部模块">恢复默认</button>
-          </div>
-          <div class="settings-card-desc">自定义用手机或浏览器打开远程页面时显示的功能模块，勾选或取消后会立即保存并同步生效。</div>
-          <div class="settings-feature-grid">
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部上下文窗口面板</span>
-              <input id="set-remote-ctx-panel" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部桌面端已记录用量面板</span>
-              <input id="set-remote-usage-panel" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部模型配额胶囊</span>
-              <input id="set-remote-quota-pill" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">顶部通道连接状态副标题</span>
-              <input id="set-remote-channel-meta" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">左侧会话与窗口抽屉</span>
-              <input id="set-remote-sidebar" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">AI 思考过程折叠区</span>
-              <input id="set-remote-thinking" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">底部快捷操作与下一步建议</span>
-              <input id="set-remote-quick-chips" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">输入区工具栏（模型/权限等）</span>
-              <input id="set-remote-composer-tools" type="checkbox" class="settings-checkbox" checked />
-            </label>
-            <label class="settings-feature-item">
-              <span class="settings-feature-name">待审批操作提醒横幅</span>
-              <input id="set-remote-approvals" type="checkbox" class="settings-checkbox" checked />
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <!-- 分页 5: 网络与高级 -->
-      <div id="settings-pane-system" class="settings-tab-pane" role="tabpanel" aria-labelledby="settings-tab-btn-system" hidden>
-        <div class="settings-card-box">
-          <div class="settings-card-hdr">
-            <span class="settings-card-title">本地代理直连（无需开启全局代理 / TUN）</span>
-            <span id="settings-slot-proxy-badge"></span>
-          </div>
-          <div id="settings-slot-proxy"></div>
         </div>
       </div>
     </div>
