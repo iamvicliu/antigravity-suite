@@ -18084,3 +18084,334 @@ test('底栏视觉层级分隔 (#39) 与顶栏信息降噪及项目名双端正�
     for (const t of timers) clearTimeout(t);
   }
 });
+
+test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async () => {
+  const http = require('node:http');
+  const { requestConnectStreamFirstFrame } = require('../local-api');
+  const {
+    extractPendingAgentMessagesFromUpdate,
+    createConversationHistoryManager,
+    createRemoteHttpHandler,
+    buildMobileAppHtml
+  } = require('../mobile-remote');
+  const overlaySrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  const html = buildMobileAppHtml();
+
+  // 1. 脚本语法全量校验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-40-script-${i}.js` }));
+  }
+
+  // 2. 桌面 DOM 中文汉化正则修复 + queued-messages-card + 三按钮精准区分 + 排除折叠按钮
+  const env = createDomEnv();
+  env.win.__AGContextMeterLive = { port: 61221, token: 'tok-40-dom' };
+  const mainEl = env.doc.createElement('main');
+  const cardEl = env.doc.createElement('div');
+  cardEl.setAttribute('data-testid', 'queued-messages-card');
+  cardEl.offsetWidth = 360;
+  cardEl.offsetHeight = 96;
+
+  const headerWrap = env.doc.createElement('div');
+  const hdrTitle = env.doc.createElement('span');
+  hdrTitle.textContent = '排队消息 1 将在代理完成后发送';
+  const expandBtn = env.doc.createElement('button');
+  expandBtn.setAttribute('data-testid', 'queued-messages-expand-button');
+  expandBtn.setAttribute('aria-label', '收起排队消息');
+  expandBtn.offsetWidth = 24;
+  expandBtn.offsetHeight = 24;
+  headerWrap.appendChild(hdrTitle);
+  headerWrap.appendChild(expandBtn);
+  cardEl.appendChild(headerWrap);
+
+  const listWrap = env.doc.createElement('div');
+  const rowEl = env.doc.createElement('div');
+  const rowText = env.doc.createElement('span');
+  rowText.textContent = '中文队列测试消息：继续执行 Batch 3';
+  const decEl = env.doc.createElement('div');
+  decEl.setAttribute('data-testid', 'queued-decorators');
+  let sentClicks = 0;
+  let editClicks = 0;
+  let delClicks = 0;
+  const bSend = env.doc.createElement('button');
+  bSend.setAttribute('aria-label', '立即发送');
+  bSend.addEventListener('click', () => { sentClicks += 1; });
+  const bEdit = env.doc.createElement('button');
+  bEdit.setAttribute('aria-label', '编辑');
+  bEdit.addEventListener('click', () => { editClicks += 1; });
+  const bDel = env.doc.createElement('button');
+  bDel.setAttribute('aria-label', '删除');
+  bDel.addEventListener('click', () => { delClicks += 1; });
+  decEl.appendChild(bSend);
+  decEl.appendChild(bEdit);
+  decEl.appendChild(bDel);
+  rowEl.appendChild(rowText);
+  rowEl.appendChild(decEl);
+  listWrap.appendChild(rowEl);
+  cardEl.appendChild(listWrap);
+
+  // 同时挂上 Fiber 属性验证 msgId 提取
+  cardEl.__reactFiber$test = {
+    memoizedProps: {
+      queuedUserInputs: [{
+        msgId: 'fiber-msg-40',
+        step: { items: [{ text: '中文队列测试消息：继续执行 Batch 3' }] }
+      }]
+    },
+    return: null
+  };
+  mainEl.appendChild(cardEl);
+  env.doc.body.appendChild(mainEl);
+  vm.runInContext(overlaySrc, env.sandbox);
+  const enhancer = env.sandbox.__AGEnhancer;
+  try {
+    const snap = enhancer.getMobileSnapshot();
+    assert.equal(snap.queuedMessages.length, 1, '中文汉化 DOM「排队消息」必须成功采集，不得被 \\b 正则拦截');
+    assert.equal(snap.queuedMessages[0].text, '中文队列测试消息：继续执行 Batch 3');
+    assert.equal(snap.queuedMessages[0].messageId, 'fiber-msg-40');
+    assert.equal(snap.queuedMessages[0].hasEdit, true);
+
+    const editRes = await enhancer.performMobileAction({ action: 'edit-queued-dom', messageId: 'fiber-msg-40', domIndex: 0 });
+    assert.equal(editRes.ok, true);
+    assert.equal(editClicks, 1, 'edit-queued-dom 必须精确点击编辑按钮而非折叠/删除按钮');
+
+    const sendRes = await enhancer.performMobileAction({ action: 'send-queued-dom', messageId: 'fiber-msg-40', domIndex: 0, sendAll: false });
+    assert.equal(sendRes.ok, true);
+    assert.equal(sentClicks, 1);
+
+    const delRes = await enhancer.performMobileAction({ action: 'delete-queued-dom', messageId: 'fiber-msg-40', domIndex: 0 });
+    assert.equal(delRes.ok, true);
+    assert.equal(delClicks, 1);
+  } finally {
+    enhancer.dispose?.();
+  }
+
+  // 3. Connect+JSON 流式首包读取、flags=2 结束错误处理、protobuf stepPayload 二进制解码与 deliveryStrategy 过滤
+  const pbVarint = (n) => {
+    const bytes = [];
+    let v = n >>> 0;
+    while (v >= 0x80) {
+      bytes.push((v & 0x7f) | 0x80);
+      v >>>= 7;
+    }
+    bytes.push(v);
+    return Buffer.from(bytes);
+  };
+  const pbFieldBytes = (no, buf) => Buffer.concat([pbVarint((no << 3) | 2), pbVarint(buf.length), buf]);
+  const pbText = (no, s) => pbFieldBytes(no, Buffer.from(s, 'utf8'));
+  const tinyPngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const itemProto = pbText(1, '二进制编码排队消息');
+  const mediaProto = Buffer.concat([
+    pbText(1, 'image/png'),
+    pbFieldBytes(2, Buffer.from(tinyPngB64, 'base64')),
+    pbText(9, 'pb-demo.png')
+  ]);
+  const userInputProto = Buffer.concat([pbFieldBytes(3, itemProto), pbFieldBytes(9, mediaProto)]);
+  const stepProtoB64 = pbFieldBytes(19, userInputProto).toString('base64');
+  const nonUserStepB64 = pbFieldBytes(5, pbText(1, 'non-user')).toString('base64');
+
+  const pbExtracted = extractPendingAgentMessagesFromUpdate({
+    update: {
+      pendingAgentMessagesUpdate: {
+        pendingAgentMessages: [
+          { id: 'pb-hidden', hideFromUser: true, stepPayload: stepProtoB64 },
+          { id: 'pb-next', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION', stepPayload: stepProtoB64 },
+          { id: 'pb-nonuser', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE', stepPayload: nonUserStepB64 },
+          { id: 'pb-ok', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE', stepPayload: stepProtoB64 }
+        ]
+      }
+    }
+  });
+  assert.equal(pbExtracted.length, 1, '应解码真实二进制 stepPayload 并过滤 hideFromUser / NEXT_INVOCATION / 非 userInput');
+  assert.equal(pbExtracted[0].messageId, 'pb-ok');
+  assert.ok(pbExtracted[0].text.includes('二进制编码排队消息'));
+  assert.equal(pbExtracted[0].images?.length, 1);
+  assert.equal(pbExtracted[0].hasMedia, true);
+
+  const makeConnectFrame = (flags, jsonObj) => {
+    const pay = Buffer.from(JSON.stringify(jsonObj), 'utf8');
+    const hdr = Buffer.alloc(5);
+    hdr[0] = flags;
+    hdr.writeUInt32BE(pay.length, 1);
+    return Buffer.concat([hdr, pay]);
+  };
+  let streamCallCount = 0;
+  const streamSrv = http.createServer((req, res) => {
+    if (req.headers['x-codeium-csrf-token'] !== 'csrf-40') {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    let body = '';
+    req.on('data', (c) => { body += c.toString('utf8'); });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/connect+json' });
+      const parsedReq = JSON.parse(body.slice(5));
+      if (parsedReq.conversationId === 'err-conv') {
+        res.end(makeConnectFrame(2, { error: { code: 'not_found' } }));
+        return;
+      }
+      streamCallCount += 1;
+      const frame = makeConnectFrame(0, {
+        update: {
+          conversationId: parsedReq.conversationId,
+          pendingAgentMessagesUpdate: {
+            pendingAgentMessages: [
+              { id: 'hidden-1', hideFromUser: true, step: { items: [{ text: '内部消息不应暴露' }] } },
+              { id: 'pm-1', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE', step: { items: [{ text: '后台排队第一条' }], media: [{ inlineData: tinyPngB64, mimeType: 'image/png', displayName: 'demo.png' }] } }
+            ]
+          }
+        }
+      });
+      // 拆成两段写入，验证跨 chunk 组帧与首包后立即断开
+      res.write(frame.subarray(0, 7));
+      setTimeout(() => { res.write(frame.subarray(7)); }, 15);
+    });
+  });
+  await new Promise((r) => streamSrv.listen(0, '127.0.0.1', r));
+  const streamPort = streamSrv.address().port;
+  try {
+    const firstFrame = await requestConnectStreamFirstFrame(
+      `http://127.0.0.1:${streamPort}`,
+      'StreamAgentStateUpdates',
+      { conversationId: 'iso-conv-40', subscriberId: 'sub-1' },
+      'csrf-40',
+      1500
+    );
+    const extracted = extractPendingAgentMessagesFromUpdate(firstFrame);
+    assert.equal(extracted.length, 1, '应过滤 hideFromUser 并提取真实 pending_agent_messages');
+    assert.equal(extracted[0].messageId, 'pm-1');
+    assert.equal(extracted[0].text, '后台排队第一条\n[附带 1 张图片]');
+    assert.equal(extracted[0].images?.length, 1);
+
+    const errFrame = await requestConnectStreamFirstFrame(
+      `http://127.0.0.1:${streamPort}`,
+      'StreamAgentStateUpdates',
+      { conversationId: 'err-conv', subscriberId: 'sub-2' },
+      'csrf-40',
+      1500
+    );
+    assert.equal(errFrame, null, 'Connect flags=2 end-stream 错误帧应安全返回 null');
+
+    // 4. 隔离会话下通过 createConversationHistoryManager 自动融合 StreamAgentStateUpdates pending_agent_messages
+    streamCallCount = 0;
+    const histMgr = createConversationHistoryManager();
+    const isolatedSnap = await histMgr.enrichMessages(
+      { ok: true, sessionId: 'iso-conv-40', isolated: true, busy: true, messages: [], queuedMessages: [] },
+      {
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetCascadeTrajectory') {
+              return { trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '首条消息' }] } }] } };
+            }
+            return null;
+          },
+          callStreamFirstFrame: (method, b, t) =>
+            requestConnectStreamFirstFrame(`http://127.0.0.1:${streamPort}`, method, b, 'csrf-40', t)
+        })
+      }
+    );
+    assert.equal(isolatedSnap.queuedMessages.length, 1, '独立隔离会话即使未停在桌面端也必须展示真实 pending_agent_messages');
+    assert.equal(isolatedSnap.queuedMessages[0].messageId, 'pm-1');
+    assert.equal(streamCallCount, 1);
+
+    // invalidateSession 后再次 enrichMessages 必须绕过 450ms pendingMsgCache 立即重新请求流
+    histMgr.invalidateSession('iso-conv-40');
+    await histMgr.enrichMessages(
+      { ok: true, sessionId: 'iso-conv-40', isolated: true, busy: true, messages: [], queuedMessages: [] },
+      {
+        localApiConnect: async () => ({
+          call: async () => ({ trajectory: { steps: [] } }),
+          callStreamFirstFrame: (method, b, t) =>
+            requestConnectStreamFirstFrame(`http://127.0.0.1:${streamPort}`, method, b, 'csrf-40', t)
+        })
+      }
+    );
+    assert.equal(streamCallCount, 2, 'invalidateSession 必须立即失效 pendingMsgCache');
+  } finally {
+    streamSrv.close();
+  }
+
+  // 5. POST /api/action 支持真实 DeleteAgentMessage({ messageId, recipient }) / SendUserCascadeMessage(NEXT_INVOCATION) / 含媒体与废弃 SendAll 回退
+  const rpcCalls = [];
+  const domFallbackCalls = [];
+  let failSendAllRpc = false;
+  const handler = createRemoteHttpHandler({
+    port: 18765,
+    token: 'tok-40-http',
+    enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+  }, {
+    callLanguageServer: async (method, body) => {
+      rpcCalls.push({ method, body });
+      if (method === 'SendAllQueuedMessages' && failSendAllRpc) return null;
+      return {};
+    },
+    performAction: async (p) => {
+      domFallbackCalls.push(p);
+      return { ok: true, actionResult: { ok: true }, snapshot: { ok: true, sessionId: p.conversationId || 'iso-conv-40', title: '测试', queuedMessages: [] } };
+    },
+    fetchSnapshot: async (_t, opts) => ({
+      ok: true,
+      sessionId: opts?.conversationId || 'iso-conv-40',
+      title: '测试',
+      queuedMessages: []
+    })
+  });
+  const postAct = async (bodyObj) => {
+    const { Readable } = require('stream');
+    const req = Readable.from([Buffer.from(JSON.stringify(bodyObj), 'utf8')]);
+    req.method = 'POST';
+    req.url = '/api/action';
+    req.headers = { host: '127.0.0.1:18765', 'content-type': 'application/json', 'x-ag-remote-token': 'tok-40-http' };
+    req.socket = { remoteAddress: '127.0.0.1' };
+    let out = '';
+    await handler(req, { setHeader() {}, writeHead() {}, end(c) { if (c) out += String(c); } });
+    return JSON.parse(out);
+  };
+  const rSendOne = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-1', text: '立即插入执行', sendAll: false });
+  assert.equal(rSendOne.ok, true);
+  assert.deepEqual(rpcCalls[0], {
+    method: 'SendUserCascadeMessage',
+    body: {
+      cascadeId: 'iso-conv-40',
+      items: [{ text: '立即插入执行' }],
+      deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION'
+    }
+  });
+  assert.deepEqual(rpcCalls[1], { method: 'DeleteAgentMessage', body: { messageId: 'pm-1', recipient: 'iso-conv-40' } });
+
+  // 含图片附件的单条立即发送应回退桌面原生 onSendNow 保留媒体附件
+  const rSendMedia = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-media', text: '带图排队', hasMedia: true, sendAll: false });
+  assert.equal(rSendMedia.ok, true);
+  assert.equal(domFallbackCalls.length, 1);
+  assert.equal(domFallbackCalls[0].action, 'send-queued-dom');
+  assert.equal(domFallbackCalls[0].messageId, 'pm-media');
+  assert.equal(domFallbackCalls[0].sendAll, false);
+
+  // SendAllQueuedMessages 被 Antigravity 2.0 废弃返回 null 时，若携带 messageIds 应回退桌面全发
+  failSendAllRpc = true;
+  const rSendAllFallback = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageIds: ['pm-1', 'pm-2'] });
+  assert.equal(rSendAllFallback.ok, true);
+  assert.equal(domFallbackCalls.length, 2);
+  assert.equal(domFallbackCalls[1].action, 'send-queued-dom');
+  assert.equal(domFallbackCalls[1].sendAll, true);
+
+  const rEdit = await postAct({ action: 'edit-queued-message', conversationId: 'iso-conv-40', messageId: 'pm-1', text: '后台排队第一条' });
+  assert.equal(rEdit.ok, true);
+  assert.equal(rEdit.actionResult.editedText, '后台排队第一条');
+  assert.deepEqual(rpcCalls[3], { method: 'DeleteAgentMessage', body: { messageId: 'pm-1', recipient: 'iso-conv-40' } });
+
+  const rDel = await postAct({ action: 'delete-queued-message', conversationId: 'iso-conv-40', messageId: 'pm-2' });
+  assert.equal(rDel.ok, true);
+  assert.deepEqual(rpcCalls[4], { method: 'DeleteAgentMessage', body: { messageId: 'pm-2', recipient: 'iso-conv-40' } });
+
+  // send 动作成功也应能正常走通（触发 pendingMsgCache 失效）
+  const rNormalSend = await postAct({ action: 'send', conversationId: 'iso-conv-40', text: '新排队指令' });
+  assert.equal(rNormalSend.ok, true);
+
+  // 6. 前端 #queue-dock 包含三按钮（立即发送 / 编辑 / 删除）、busy 即时乐观回显且 optimistic 行按钮禁用
+  assert.ok(html.includes('queue-item-send') && html.includes('queue-item-edit') && html.includes('queue-del-btn'));
+  assert.ok(html.includes("source: 'optimistic'"), 'busy 态发消息后应即时写入乐观排队回显');
+  assert.ok(html.includes("srcAttr === 'optimistic'") && html.includes('hasOnlyOptimistic'), 'optimistic 排队项应渲染为禁用态直到同步真实 messageId');
+});

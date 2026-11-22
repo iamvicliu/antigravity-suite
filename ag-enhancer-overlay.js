@@ -7411,90 +7411,195 @@
     }));
   }
 
+  function extractQueueFiberEntries(cardEl) {
+    try {
+      const fk = Object.keys(cardEl || {}).find((k) => k.startsWith('__reactFiber$'));
+      let f = fk ? cardEl[fk] : null;
+      for (let depth = 0; depth < 8 && f; depth += 1, f = f.return) {
+        const p = f.memoizedProps || {};
+        const arr = Array.isArray(p.queuedUserInputs)
+          ? p.queuedUserInputs
+          : (Array.isArray(p.pendingUserInputs) ? p.pendingUserInputs : null);
+        if (!arr || !arr.length) continue;
+        return arr.map((item, idx) => {
+          const msgId = String(item?.msgId || item?.id || item?.messageId || '').trim();
+          const step = item?.step || item?.userInput || item || {};
+          const stepItems = Array.isArray(step.items) ? step.items : [];
+          const text = stepItems.map((it) => String(it?.text || '')).join('').trim()
+            || String(step.text || item?.text || '').trim();
+          const rawMedia = Array.isArray(step.media) ? step.media : [];
+          const imgs = rawMedia
+            .map((m) => ({
+              src: String(m?.uri || m?.url || m?.thumbnail || '').trim(),
+              alt: String(m?.displayName || m?.mimeType || '图片').trim()
+            }))
+            .filter((im) => im.src && !im.src.startsWith('data:image/svg'));
+          return { msgId, text, images: imgs, idx };
+        });
+      }
+    } catch {}
+    return [];
+  }
+
   function findQueuedMessagesDomEntries() {
     const main = document.querySelector('main') || document.body;
     if (!main) return [];
-    const headerNodes = Array.from(main.querySelectorAll('[data-testid*="queue" i], div, span, p, h3, h4')).filter((el) => {
-      if (isExcludedSuiteOrNavNode(el) || !isVisiblePromptControl(el)) return false;
-      if (el.closest?.('[data-testid="agent-response"], [data-testid="user-message"], [data-markdown-root]')) return false;
-      const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!txt || txt.length > 80) return false;
-      return /^(?:Queued Messages|排队消息)\b/i.test(txt);
-    });
-    if (!headerNodes.length) return [];
-    let cardRoot = null;
-    for (const h of headerNodes) {
-      let cur = h;
-      for (let depth = 0; cur && cur !== main && cur !== document.body && depth < 5; depth++, cur = cur.parentElement) {
-        if (isExcludedSuiteOrNavNode(cur)) break;
-        const fullTxt = String(cur.textContent || '').replace(/\s+/g, ' ').trim();
-        if (fullTxt.length > 20 && fullTxt.length < 4000 && cur.querySelectorAll('button').length >= 1) {
-          cardRoot = cur;
-          // 优先取包含多行或发送/删除按钮的最近卡片容器
-          const hasActionBtns = Array.from(cur.querySelectorAll('button')).some((b) => {
-            const meta = `${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`;
-            return /send|delete|remove|trash|queue|发送|删除|撤回/i.test(meta);
-          });
-          if (hasActionBtns) break;
+
+    let cardRoot = Array.from(main.querySelectorAll('[data-testid="queued-messages-card"]'))
+      .find((el) => !isExcludedSuiteOrNavNode(el) && isVisiblePromptControl(el)) || null;
+
+    if (!cardRoot) {
+      const headerNodes = Array.from(main.querySelectorAll('[data-testid*="queue" i], div, span, p, h3, h4')).filter((el) => {
+        if (isExcludedSuiteOrNavNode(el) || !isVisiblePromptControl(el)) return false;
+        if (el.closest?.('[data-testid="agent-response"], [data-testid="user-message"], [data-markdown-root]')) return false;
+        const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!txt || txt.length > 100) return false;
+        return /^(?:Queued Messages\b|排队消息|排队中的消息)/i.test(txt)
+          || /^(?:Sends after agent finishes working|将在代理完成后发送)/i.test(txt);
+      });
+      if (!headerNodes.length) return [];
+      for (const h of headerNodes) {
+        let cur = h;
+        for (let depth = 0; cur && cur !== main && cur !== document.body && depth < 5; depth++, cur = cur.parentElement) {
+          if (isExcludedSuiteOrNavNode(cur)) break;
+          const fullTxt = String(cur.textContent || '').replace(/\s+/g, ' ').trim();
+          if (fullTxt.length > 12 && fullTxt.length < 4000 && cur.querySelectorAll('button').length >= 1) {
+            cardRoot = cur;
+            const hasActionBtns = Array.from(cur.querySelectorAll('button')).some((b) => {
+              const tid = String(b.getAttribute?.('data-testid') || '');
+              if (tid === 'queued-messages-expand-button') return false;
+              const meta = `${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`;
+              return /send|edit|delete|remove|trash|queue|发送|编辑|删除|撤回/i.test(meta);
+            });
+            if (hasActionBtns) break;
+          }
         }
+        if (cardRoot) break;
       }
-      if (cardRoot) break;
     }
     if (!cardRoot) return [];
 
+    const fiberItems = extractQueueFiberEntries(cardRoot);
     const stripHeaderNoise = (raw) => String(raw || '')
       .replace(/\s+/g, ' ')
-      .replace(/^Queued Messages\s*\d*\s*(?:Sends after agent finishes working)?/i, '')
-      .replace(/^排队消息\s*\d*\s*(?:将在代理完成后发送)?/, '')
+      .replace(/^(?:Queued Messages\b|排队消息|排队中的消息)\s*\d*\s*(?:Sends after agent finishes working|将在代理完成后发送)?/i, '')
       .trim();
+
+    const isExpandBtn = (b) => {
+      const tid = String(b?.getAttribute?.('data-testid') || '');
+      if (tid === 'queued-messages-expand-button') return true;
+      const aria = String(b?.getAttribute?.('aria-label') || '');
+      return /^(?:Collapse queued messages|Expand queued messages|收起排队消息|展开排队消息)$/i.test(aria);
+    };
+
+    const pickDecoratorBtns = (rowEl) => {
+      const decRoot = rowEl.querySelector?.('[data-testid="queued-decorators"]') || rowEl;
+      const btns = Array.from(decRoot.querySelectorAll('button')).filter((b) => !isExcludedSuiteOrNavNode(b) && !isExpandBtn(b));
+      let sendBtn = btns.find((b) => /send|now|immediate|arrow_forward|立即发送|发送/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
+      let editBtn = btns.find((b) => /\bedit\b|编辑|修改/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
+      let deleteBtn = btns.find((b) => /delete|remove|trash|cancel|删除|撤回|移除/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
+      if (btns.length >= 3 && (!sendBtn || !editBtn || !deleteBtn)) {
+        sendBtn = sendBtn || btns[0];
+        editBtn = editBtn || btns[1];
+        deleteBtn = deleteBtn || btns[2];
+      } else if (btns.length === 2) {
+        if (!sendBtn && btns[0] !== editBtn && btns[0] !== deleteBtn) sendBtn = btns[0];
+        if (!deleteBtn && btns[1] !== sendBtn && btns[1] !== editBtn) deleteBtn = btns[1];
+      } else if (btns.length === 1 && !sendBtn && !editBtn && !deleteBtn) {
+        deleteBtn = btns[0];
+      }
+      return { sendBtn, editBtn, deleteBtn };
+    };
 
     const entries = [];
     const seenRowEls = new Set();
-    const rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'));
+    const decoratorNodes = Array.from(cardRoot.querySelectorAll('[data-testid="queued-decorators"]'))
+      .filter((d) => !isExcludedSuiteOrNavNode(d));
+    let rowCandidates = [];
+    if (decoratorNodes.length) {
+      rowCandidates = decoratorNodes.map((d) => {
+        const p1 = d.parentElement;
+        const p2 = p1?.parentElement;
+        const dTxt = String(d.textContent || '').trim();
+        const p1Txt = String(p1?.textContent || '').trim();
+        const p1HasOnlyDec = Boolean(p1 && p1 !== cardRoot && p1Txt === dTxt && !(p1.querySelectorAll('img')?.length));
+        if (p1HasOnlyDec && p2 && p2 !== cardRoot) return p2;
+        return (p1 && p1 !== cardRoot) ? p1 : d;
+      }).filter(Boolean);
+    } else {
+      rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'));
+    }
     const fallbackRows = rowCandidates.length ? rowCandidates : Array.from(cardRoot.children).slice(1);
 
-    const inspectRow = (rowEl) => {
+    const inspectRow = (rowEl, rowIdx) => {
       if (!rowEl || seenRowEls.has(rowEl) || isExcludedSuiteOrNavNode(rowEl)) return;
       seenRowEls.add(rowEl);
-      const rawTxt = stripHeaderNoise(rowEl.textContent || '');
+      const cloneTxt = (() => {
+        const dec = rowEl.querySelector?.('[data-testid="queued-decorators"]');
+        if (!dec || dec === rowEl) return rowEl.textContent || '';
+        const raw = String(rowEl.textContent || '');
+        const decTxt = String(dec.textContent || '');
+        return decTxt && raw.endsWith(decTxt) ? raw.slice(0, raw.length - decTxt.length) : raw;
+      })();
+      const rawTxt = stripHeaderNoise(cloneTxt);
       const imgs = Array.from(rowEl.querySelectorAll('img')).map((img) => ({
         src: String(img.getAttribute?.('src') || img.src || '').trim(),
         alt: String(img.getAttribute?.('alt') || '').trim()
       })).filter((im) => im.src && !im.src.startsWith('data:image/svg'));
-      if (!rawTxt && !imgs.length) return;
-      const btns = Array.from(rowEl.querySelectorAll('button')).filter((b) => !isExcludedSuiteOrNavNode(b));
-      let sendBtn = btns.find((b) => /send|now|immediate|发送/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
-      let deleteBtn = btns.find((b) => /delete|remove|trash|cancel|删除|撤回|移除/i.test(`${b.getAttribute?.('aria-label') || ''} ${b.getAttribute?.('title') || ''} ${b.textContent || ''}`)) || null;
-      if (!sendBtn && btns.length >= 2) sendBtn = btns[0];
-      if (!deleteBtn && btns.length >= 1) deleteBtn = btns[btns.length - 1];
+      const fiberRec = fiberItems[entries.length] || fiberItems[rowIdx] || null;
+      const finalText = rawTxt || fiberRec?.text || '';
+      const finalImgs = imgs.length ? imgs : (fiberRec?.images || []);
+      if (!finalText && !finalImgs.length) return;
+      const { sendBtn, editBtn, deleteBtn } = pickDecoratorBtns(rowEl);
       entries.push({
         domIndex: entries.length,
         stepIndex: -1,
+        messageId: fiberRec?.msgId || '',
         source: 'dom',
-        text: rawTxt || (imgs.length ? `[图片 ×${imgs.length}]` : ''),
-        images: imgs.slice(0, 6),
+        text: finalText || (finalImgs.length ? `[图片 ×${finalImgs.length}]` : ''),
+        images: finalImgs.slice(0, 6),
         status: 'QUEUED',
+        hasEdit: Boolean(editBtn),
         sendBtn,
+        editBtn,
         deleteBtn
       });
     };
 
-    for (const r of fallbackRows) inspectRow(r);
-    if (!entries.length) {
+    fallbackRows.forEach((r, idx) => inspectRow(r, idx));
+    if (!entries.length && fiberItems.length) {
+      fiberItems.forEach((fi, idx) => {
+        entries.push({
+          domIndex: idx,
+          stepIndex: -1,
+          messageId: fi.msgId || '',
+          source: 'dom',
+          text: fi.text || (fi.images?.length ? `[图片 ×${fi.images.length}]` : ''),
+          images: (fi.images || []).slice(0, 6),
+          status: 'QUEUED',
+          hasEdit: false,
+          sendBtn: null,
+          editBtn: null,
+          deleteBtn: null
+        });
+      });
+    } else if (!entries.length) {
       const wholeTxt = stripHeaderNoise(cardRoot.textContent || '');
-      if (wholeTxt) inspectRow(cardRoot);
+      if (wholeTxt) inspectRow(cardRoot, 0);
     }
     return entries;
   }
 
   function collectQueuedMessagesFromDom() {
-    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, source, text, images, status }) => ({
+    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, messageId, source, text, images, status, hasEdit }) => ({
       domIndex,
       stepIndex,
+      ...(messageId ? { messageId } : {}),
       source,
       text,
       images,
-      status
+      status,
+      ...(hasEdit ? { hasEdit: true } : {})
     }));
   }
 
@@ -9594,28 +9699,58 @@
         if (!sentCount) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
         return { ok: true, source: 'dom', sentCount };
       }
+      const reqMsgId = String(payload?.messageId || '').trim();
       const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
-      const target = entries[reqIdx] || entries[0];
+      const target = (reqMsgId && entries.find((e) => e.messageId && e.messageId === reqMsgId))
+        || entries[reqIdx]
+        || entries[0];
       if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
       target.sendBtn.click();
       return { ok: true, source: 'dom', sentCount: 1 };
     }
 
+    if (action === 'edit-queued-dom') {
+      const entries = findQueuedMessagesDomEntries();
+      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      const reqMsgId = String(payload?.messageId || '').trim();
+      const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : 0;
+      const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+      const reqText = normText(payload?.text);
+      const target = (reqMsgId && entries.find((e) => e.messageId && e.messageId === reqMsgId))
+        || (reqText && entries.find((e) => normText(e.text) === reqText))
+        || entries[reqIdx]
+        || entries[0];
+      if (!target) return { ok: false, error: '未找到目标排队消息' };
+      if (target.editBtn) {
+        target.editBtn.click();
+        return { ok: true, source: 'dom', editedText: target.text || '' };
+      }
+      if (!target.deleteBtn) return { ok: false, error: '未找到桌面端排队消息编辑/删除按钮' };
+      target.deleteBtn.click();
+      return { ok: true, source: 'dom', editedText: target.text || '' };
+    }
+
     if (action === 'delete-queued-dom') {
       const entries = findQueuedMessagesDomEntries();
       if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      const reqMsgId = String(payload?.messageId || '').trim();
       const reqIdx = Number.isInteger(payload?.domIndex) ? payload.domIndex : -1;
       const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
       const reqText = normText(payload?.text);
       let target = null;
-      if (reqText) {
-        if (reqIdx >= 0 && reqIdx < entries.length && normText(entries[reqIdx].text) === reqText) {
+      if (reqMsgId) {
+        target = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
+      }
+      if (!target) {
+        if (reqText) {
+          if (reqIdx >= 0 && reqIdx < entries.length && normText(entries[reqIdx].text) === reqText) {
+            target = entries[reqIdx];
+          } else {
+            target = entries.find((e) => normText(e.text) === reqText) || null;
+          }
+        } else if (reqIdx >= 0 && reqIdx < entries.length) {
           target = entries[reqIdx];
-        } else {
-          target = entries.find((e) => normText(e.text) === reqText) || null;
         }
-      } else if (reqIdx >= 0 && reqIdx < entries.length) {
-        target = entries[reqIdx];
       }
       if (!target) {
         return { ok: false, error: '目标排队消息已变化或不存在，已取消删除以防误删' };
@@ -9640,7 +9775,7 @@
     const action = String(payload?.action || '').trim();
     if (!action) return { ok: false, error: '缺少 action 参数' };
 
-    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'respond-prompt', 'select-model', 'select-permission', 'upload-image', 'remove-uploaded-attachment', 'send-queued-dom', 'delete-queued-dom'];
+    const scopedActions = ['send', 'fill', 'stop', 'click-approval', 'respond-prompt', 'select-model', 'select-permission', 'upload-image', 'remove-uploaded-attachment', 'send-queued-dom', 'edit-queued-dom', 'delete-queued-dom'];
     const reqConvId = String(payload?.conversationId || '').trim();
     const prevConvId = getSessionIdFromLocation() || '';
 

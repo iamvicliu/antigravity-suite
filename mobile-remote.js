@@ -3871,6 +3871,206 @@ function extractQueuedMessagesFromTrajectorySteps(steps, extraContainer = null) 
   return queued;
 }
 
+function decodeProtoVarint(buf, offset) {
+  let val = 0;
+  let mult = 1;
+  let pos = offset;
+  while (pos < buf.length) {
+    const b = buf[pos++];
+    val += (b & 0x7f) * mult;
+    if ((b & 0x80) === 0) return [val, pos];
+    mult *= 128;
+    if (pos - offset > 10) return null;
+  }
+  return null;
+}
+
+function parseProtoFields(buf) {
+  if (!Buffer.isBuffer(buf) || !buf.length) return [];
+  const fields = [];
+  let pos = 0;
+  while (pos < buf.length) {
+    const tagRes = decodeProtoVarint(buf, pos);
+    if (!tagRes) return null;
+    const [tag, p1] = tagRes;
+    const no = Math.floor(tag / 8);
+    const wt = tag & 7;
+    if (no <= 0) return null;
+    pos = p1;
+    if (wt === 0) {
+      const valRes = decodeProtoVarint(buf, pos);
+      if (!valRes) return null;
+      fields.push({ no, wt, val: valRes[0] });
+      pos = valRes[1];
+    } else if (wt === 1) {
+      if (pos + 8 > buf.length) return null;
+      fields.push({ no, wt, val: buf.subarray(pos, pos + 8) });
+      pos += 8;
+    } else if (wt === 2) {
+      const lenRes = decodeProtoVarint(buf, pos);
+      if (!lenRes) return null;
+      const [len, p2] = lenRes;
+      if (len < 0 || p2 + len > buf.length) return null;
+      fields.push({ no, wt, val: buf.subarray(p2, p2 + len) });
+      pos = p2 + len;
+    } else if (wt === 5) {
+      if (pos + 4 > buf.length) return null;
+      fields.push({ no, wt, val: buf.subarray(pos, pos + 4) });
+      pos += 4;
+    } else {
+      return null;
+    }
+  }
+  return fields;
+}
+
+function decodePendingAgentStepPayload(rawStepPayload) {
+  let buf = null;
+  if (Buffer.isBuffer(rawStepPayload)) {
+    buf = rawStepPayload;
+  } else if (rawStepPayload instanceof Uint8Array) {
+    buf = Buffer.from(rawStepPayload.buffer, rawStepPayload.byteOffset, rawStepPayload.byteLength);
+  } else if (typeof rawStepPayload === 'string') {
+    const clean = rawStepPayload.trim();
+    if (!clean || !/^[A-Za-z0-9+/=_-]+$/.test(clean)) return null;
+    buf = Buffer.from(clean, 'base64');
+  } else {
+    return null;
+  }
+  if (!buf || !buf.length) return null;
+  const stepFields = parseProtoFields(buf);
+  if (!stepFields || !stepFields.length) return null;
+  const userInputField = stepFields.find((f) => f.no === 19 && f.wt === 2);
+  if (!userInputField) return { isUserInput: false, ui: null };
+  const uiFields = parseProtoFields(userInputField.val);
+  if (!uiFields) return { isUserInput: false, ui: null };
+  const items = [];
+  const media = [];
+  let query = '';
+  let userResponse = '';
+  for (const f of uiFields) {
+    if (f.wt !== 2) continue;
+    if (f.no === 1 && !query) {
+      query = f.val.toString('utf8');
+    } else if (f.no === 2 && !userResponse) {
+      userResponse = f.val.toString('utf8');
+    } else if (f.no === 3) {
+      const itemFields = parseProtoFields(f.val);
+      const txtField = itemFields?.find((x) => x.no === 1 && x.wt === 2);
+      if (txtField) {
+        items.push({ text: txtField.val.toString('utf8') });
+      }
+    } else if (f.no === 9) {
+      const mFields = parseProtoFields(f.val);
+      if (!mFields) continue;
+      const mimeType = mFields.find((x) => x.no === 1 && x.wt === 2)?.val.toString('utf8') || 'image/png';
+      const inlineBuf = mFields.find((x) => x.no === 2 && x.wt === 2)?.val || null;
+      const uri = mFields.find((x) => x.no === 5 && x.wt === 2)?.val.toString('utf8') || '';
+      const thumbBuf = mFields.find((x) => x.no === 6 && x.wt === 2)?.val || null;
+      const displayName = mFields.find((x) => x.no === 9 && x.wt === 2)?.val.toString('utf8') || '';
+      media.push({
+        mimeType,
+        ...(inlineBuf?.length ? { inlineData: inlineBuf.toString('base64') } : {}),
+        ...(uri ? { uri } : {}),
+        ...(thumbBuf?.length ? { thumbnail: thumbBuf.toString('base64') } : {}),
+        ...(displayName ? { displayName } : {})
+      });
+    }
+  }
+  if (!items.length && query) {
+    items.push({ text: query });
+  }
+  return {
+    isUserInput: true,
+    ui: {
+      items,
+      ...(userResponse ? { userResponse } : {}),
+      ...(media.length ? { media } : {})
+    }
+  };
+}
+
+function extractPendingAgentMessagesFromUpdate(stateUpdate) {
+  if (!stateUpdate || typeof stateUpdate !== 'object') return [];
+  const rawList =
+    stateUpdate?.update?.pendingAgentMessagesUpdate?.pendingAgentMessages ||
+    stateUpdate?.pendingAgentMessagesUpdate?.pendingAgentMessages ||
+    stateUpdate?.update?.pendingAgentMessages ||
+    stateUpdate?.pendingAgentMessages ||
+    [];
+  if (!Array.isArray(rawList) || !rawList.length) return [];
+
+  const out = [];
+  const seenIds = new Set();
+  for (let i = 0; i < rawList.length; i++) {
+    const msg = rawList[i];
+    if (!msg || typeof msg !== 'object') continue;
+    if (msg.hideFromUser === true || msg.hide_from_user === true) continue;
+    const ds = msg.deliveryStrategy ?? msg.delivery_strategy;
+    if (ds === 1 || ds === '1' || ds === 'NEXT_INVOCATION' || ds === 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION') {
+      continue;
+    }
+    const messageId = String(msg.id || msg.messageId || msg.message_id || '').trim();
+    const rawStepPayload = msg.stepPayload ?? msg.step_payload ?? (msg.payload?.case === 'stepPayload' ? msg.payload.value : null);
+    let ui = null;
+    if (typeof rawStepPayload === 'string' || Buffer.isBuffer(rawStepPayload) || rawStepPayload instanceof Uint8Array) {
+      const decoded = decodePendingAgentStepPayload(rawStepPayload);
+      if (decoded && decoded.isUserInput === false) continue;
+      ui = decoded?.ui || null;
+    }
+    if (!ui) {
+      ui =
+        msg.step?.userInput ||
+        msg.step?.user_input ||
+        (rawStepPayload && typeof rawStepPayload === 'object' ? (rawStepPayload.userInput || rawStepPayload.user_input) : null) ||
+        msg.userInput ||
+        msg.user_input ||
+        msg.step ||
+        (rawStepPayload && typeof rawStepPayload === 'object' ? rawStepPayload : null) ||
+        msg;
+    }
+    let text = formatTrajectoryUserInput(ui);
+    if (!text) {
+      text = String(msg.text || msg.content || ui?.text || '').replace(/\r\n?/g, '\n').trim();
+    }
+    const atts = extractTrajectoryUserAttachments(ui);
+    const images = atts
+      .filter((a) => a.kind === 'image' && (a.inlineUrl || a.path))
+      .map((a) => ({
+        src: a.inlineUrl || `/api/media?path=${encodeURIComponent(a.path)}`,
+        alt: a.name || (a.path ? path.basename(a.path) : '图片')
+      }));
+    if (!images.length && Array.isArray(ui?.media)) {
+      for (const m of ui.media) {
+        const inlineUrl = buildSafeInlineImageDataUrl(m?.inlineData || m?.thumbnail || m?.data || '', m?.mimeType || 'image/png');
+        const p = normalizeLocalFileUriToPath(m?.uri || m?.url || '');
+        if (inlineUrl || p) {
+          images.push({
+            src: inlineUrl || `/api/media?path=${encodeURIComponent(p)}`,
+            alt: String(m?.displayName || m?.name || '图片')
+          });
+        }
+      }
+    }
+    const hasMedia = images.length > 0 || (Array.isArray(ui?.media) && ui.media.length > 0) || atts.length > 0;
+    if (!text && !images.length) continue;
+    if (messageId) {
+      if (seenIds.has(messageId)) continue;
+      seenIds.add(messageId);
+    }
+    out.push({
+      ...(messageId ? { id: messageId, messageId } : {}),
+      stepIndex: -1,
+      source: 'agent_state',
+      text,
+      ...(images.length ? { images } : {}),
+      ...(hasMedia ? { hasMedia: true } : {}),
+      status: 'queued'
+    });
+  }
+  return out;
+}
+
 function extractMessagesFromTrajectorySteps(steps, options = {}) {
   if (!Array.isArray(steps) || !steps.length) return [];
   const lazyHtml = Boolean(options?.lazyHtml);
@@ -4232,12 +4432,57 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
 
 function createConversationHistoryManager() {
   const cache = new Map();
+  const pendingMsgCache = new Map();
+  const lastUserConfigMap = new Map();
   const inflightMap = new Map();
   const fetchGenMap = new Map();
   const invalidatedGenMap = new Map();
   const MAX_CACHE_ENTRIES = 24;
   const MAX_FETCH_GEN_ENTRIES = 2000;
   let globalFetchSeq = 0;
+
+  function getCachedUserConfig(sessionId) {
+    const sid = String(sessionId || '').trim();
+    return sid ? (lastUserConfigMap.get(sid) || null) : null;
+  }
+
+  async function fetchPendingAgentMessages(sessionId, options = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid || sid === '__new__' || sid === 'new') return null;
+    if (typeof options.fetchPendingAgentMessages === 'function') {
+      return await options.fetchPendingAgentMessages(sid, options);
+    }
+    const nowMs = Date.now();
+    const cached = pendingMsgCache.get(sid);
+    if (!options.bypassCache && cached && (nowMs - cached.at) < 450) {
+      return cached.list;
+    }
+    const api = await resolveLocalApi(options);
+    if (!api || typeof api.callStreamFirstFrame !== 'function') return null;
+    try {
+      const firstFrame = await api.callStreamFirstFrame(
+        'StreamAgentStateUpdates',
+        {
+          conversationId: sid,
+          subscriberId: `ag-remote-q-${nowMs}`,
+          initialStepsPageBounds: { startIndex: 0, endIndexExclusive: 0 },
+          initialGeneratorMetadatasPageBounds: { startIndex: 0, endIndexExclusive: 0 },
+          initialExecutorMetadatasPageBounds: { startIndex: 0, endIndexExclusive: 0 }
+        },
+        1200
+      );
+      if (!firstFrame || typeof firstFrame !== 'object') return null;
+      const list = extractPendingAgentMessagesFromUpdate(firstFrame);
+      if (pendingMsgCache.size >= MAX_CACHE_ENTRIES && !pendingMsgCache.has(sid)) {
+        const oldest = pendingMsgCache.keys().next().value;
+        if (oldest !== undefined) pendingMsgCache.delete(oldest);
+      }
+      pendingMsgCache.set(sid, { list, at: Date.now() });
+      return list;
+    } catch {
+      return null;
+    }
+  }
 
   function touchCache(sessionId, rec) {
     if (cache.has(sessionId)) cache.delete(sessionId);
@@ -4311,6 +4556,17 @@ function createConversationHistoryManager() {
             const prevLen = allSteps.length;
             allSteps.push(...chunk);
             if (allSteps.length <= prevLen) break;
+          }
+        }
+        for (let i = allSteps.length - 1; i >= 0; i--) {
+          const uiCfg = allSteps[i]?.userInput?.userConfig || allSteps[i]?.userInput?.lastUserConfig;
+          if (uiCfg && typeof uiCfg === 'object') {
+            if (lastUserConfigMap.size >= MAX_CACHE_ENTRIES && !lastUserConfigMap.has(sid)) {
+              const oldest = lastUserConfigMap.keys().next().value;
+              if (oldest !== undefined) lastUserConfigMap.delete(oldest);
+            }
+            lastUserConfigMap.set(sid, uiCfg);
+            break;
           }
         }
         return {
@@ -4473,41 +4729,67 @@ function createConversationHistoryManager() {
   async function enrichMessages(snap, options = {}) {
     if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
     const { _activeTrajSig, ...cleanSnap } = snap;
-    const { merged: fullMsgs, trajMsgs, queuedMessages } = await resolveFullMessages(cleanSnap.sessionId, cleanSnap.messages, {
-      ...options,
-      trajSig: _activeTrajSig || '',
-      busy: Boolean(cleanSnap.busy)
-    });
+    const sid = String(cleanSnap.sessionId || '').trim();
+    const [{ merged: fullMsgs, trajMsgs, queuedMessages }, pendingAgentQueued] = await Promise.all([
+      resolveFullMessages(sid, cleanSnap.messages, {
+        ...options,
+        trajSig: _activeTrajSig || '',
+        busy: Boolean(cleanSnap.busy)
+      }),
+      (!cleanSnap.isNewConversation && !cleanSnap.isolatedError)
+        ? fetchPendingAgentMessages(sid, options).catch(() => null)
+        : Promise.resolve(null)
+    ]);
     const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
     const startIdx = (rawLimit > 0 && fullMsgs.length > rawLimit) ? (fullMsgs.length - rawLimit) : 0;
     const sliced = ensureMessagesHtmlRendered(fullMsgs.slice(startIdx), trajMsgs);
     const domQueued = (Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : []).filter((q) => q && q.source === 'dom');
-    let effQueued;
-    if (Array.isArray(queuedMessages)) {
-      const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
-      const getQImgCount = (q) => {
-        if (Array.isArray(q?.images)) return q.images.length;
-        if (Array.isArray(q?.attachments)) return q.attachments.length;
-        if (Array.isArray(q?.media)) return q.media.length;
-        return 0;
-      };
-      const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
-      // 同源重复文本与不同附件数的消息全部保留；跨来源（traj vs dom）按 (规范化文本 + 附件数) 多重集 1:1 去重
-      const mergedQ = [...queuedMessages];
-      const trajCounts = new Map();
-      for (const tq of queuedMessages) {
-        const k = queueMatchKey(tq);
-        trajCounts.set(k, (trajCounts.get(k) || 0) + 1);
+    const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+    const getQImgCount = (q) => {
+      if (Array.isArray(q?.images)) return q.images.length;
+      if (Array.isArray(q?.attachments)) return q.attachments.length;
+      if (Array.isArray(q?.media)) return q.media.length;
+      return 0;
+    };
+    const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
+    const mergeUniqueSourceList = (baseList, incomingList, mergeMeta = false) => {
+      const counts = new Map();
+      for (const bq of baseList) {
+        const k = queueMatchKey(bq);
+        counts.set(k, (counts.get(k) || 0) + 1);
       }
-      for (const dq of domQueued) {
-        const k = queueMatchKey(dq);
-        const rem = trajCounts.get(k) || 0;
-        if (rem > 0) {
-          trajCounts.set(k, rem - 1);
+      const idMap = new Map();
+      for (const bq of baseList) {
+        if (bq?.messageId) idMap.set(String(bq.messageId), bq);
+      }
+      for (const iq of incomingList) {
+        const iqId = String(iq?.messageId || '');
+        if (iqId && idMap.has(iqId)) {
+          if (mergeMeta && Number.isInteger(iq.domIndex)) idMap.get(iqId).domIndex = iq.domIndex;
           continue;
         }
-        mergedQ.push(dq);
+        const k = queueMatchKey(iq);
+        const rem = counts.get(k) || 0;
+        if (rem > 0) {
+          counts.set(k, rem - 1);
+          continue;
+        }
+        baseList.push(iq);
       }
+    };
+    let effQueued;
+    if (Array.isArray(pendingAgentQueued)) {
+      const mergedQ = [...pendingAgentQueued];
+      if (Array.isArray(queuedMessages) && queuedMessages.length) {
+        mergeUniqueSourceList(mergedQ, queuedMessages, false);
+      }
+      if (domQueued.length) {
+        mergeUniqueSourceList(mergedQ, domQueued, true);
+      }
+      effQueued = mergedQ;
+    } else if (Array.isArray(queuedMessages)) {
+      const mergedQ = [...queuedMessages];
+      mergeUniqueSourceList(mergedQ, domQueued, true);
       effQueued = mergedQ;
     } else {
       effQueued = Array.isArray(cleanSnap.queuedMessages) ? cleanSnap.queuedMessages : [];
@@ -4527,6 +4809,7 @@ function createConversationHistoryManager() {
     const sid = String(sessionId || '').trim();
     if (!sid) return;
     cache.delete(sid);
+    pendingMsgCache.delete(sid);
     const invGen = nextFetchGen(sid);
     invalidatedGenMap.set(sid, invGen);
     const prefix = `${sid}\n`;
@@ -4582,7 +4865,7 @@ function createConversationHistoryManager() {
     };
   }
 
-  return { enrichMessages, getMessagesPage, warmSession, invalidateSession };
+  return { enrichMessages, getMessagesPage, warmSession, invalidateSession, getCachedUserConfig };
 }
 
 const defaultHistoryManager = createConversationHistoryManager();
@@ -4661,6 +4944,9 @@ async function performActionInTarget(payload, options = {}) {
         : (act === 'send' && actionResult?.createdConversationId
           ? String(actionResult.createdConversationId)
           : (payload?.conversationId ? String(payload.conversationId) : '')));
+    if (act === 'send' && snapConvId && snapConvId !== '__new__') {
+      defaultHistoryManager.invalidateSession?.(snapConvId);
+    }
     const snapshot = await fetchSnapshotFromTarget(target.id, {
       convLimit: 100,
       conversationId: snapConvId,
@@ -5198,13 +5484,16 @@ function buildMobileAppHtml() {
       flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--fg);line-height:1.35;
       display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;
     }
-    .queue-del-btn{
+    .queue-actions{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
+    .queue-op-btn,.queue-del-btn{
       appearance:none;border:1px solid var(--border);background:transparent;color:var(--muted);
       border-radius:7px;width:24px;height:24px;flex-shrink:0;cursor:pointer;
-      display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1;
+      display:inline-flex;align-items:center;justify-content:center;font-size:12.5px;line-height:1;
     }
+    .queue-op-btn:hover{background:var(--surface-hover);color:var(--fg-strong)}
+    .queue-op-btn.send:active{background:var(--accent-bg);color:var(--accent-strong-fg);border-color:var(--accent-border)}
     .queue-del-btn:active{background:var(--surface-hover);color:var(--red)}
-    .queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
+    .queue-op-btn:disabled,.queue-del-btn:disabled{opacity:.45;cursor:not-allowed}
     .composer-dock{
       flex-shrink:0;background:var(--dock-bg);border-top:1px solid var(--border);
       box-shadow:var(--dock-shadow);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
@@ -8670,7 +8959,7 @@ function buildMobileAppHtml() {
         });
       }
 
-      // Queued Messages (排队中消息展示、立即发送与撤回删除)
+      // Queued Messages (排队中消息展示、立即发送、编辑回填与撤回删除)
       const qDock = $('queue-dock');
       if (qDock) {
         const queuedList = Array.isArray(snap.queuedMessages) ? snap.queuedMessages : [];
@@ -8682,13 +8971,15 @@ function buildMobileAppHtml() {
           qDock.hidden = false;
           const hasDomQueued = queuedList.some((q) => q && q.source === 'dom');
           const isDomQueuedList = queuedList.every((q) => q && q.source === 'dom');
-          const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
+          const hasOnlyOptimistic = queuedList.every((q) => q && q.source === 'optimistic');
+          const agentMsgIds = queuedList.map((q) => String(q?.messageId || q?.id || '').trim()).filter(Boolean);
+          const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.messageId || q.id || '') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
           if (qDock.dataset.queueSig !== qSig) {
             qDock.dataset.queueSig = qSig;
             qDock.innerHTML = '<div class="queue-card">'
               + '<div class="queue-head">'
               + '<span class="queue-title"><span>排队中</span><span class="queue-count">' + queuedList.length + '</span></span>'
-              + '<button class="queue-send-all" type="button"' + (queueActionBusy ? ' disabled' : '') + '>⚡ 立即发送</button>'
+              + '<button class="queue-send-all" type="button"' + ((queueActionBusy || hasOnlyOptimistic) ? ' disabled' : '') + '>⚡ 立即发送</button>'
               + '</div>'
               + '<div class="queue-list">' + queuedList.map((q, qi) => {
                 const imgsHtml = (Array.isArray(q.images) && q.images.length)
@@ -8703,27 +8994,56 @@ function buildMobileAppHtml() {
                   : '';
                 const stepAttr = Number.isInteger(Number(q.stepIndex)) ? Number(q.stepIndex) : -1;
                 const domAttr = Number.isInteger(Number(q.domIndex)) ? Number(q.domIndex) : qi;
-                const srcAttr = q.source === 'dom' ? 'dom' : 'traj';
-                return '<div class="queue-item" data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '">'
+                const msgIdAttr = String(q.messageId || q.id || '').trim();
+                const srcAttr = q.source === 'dom' ? 'dom' : (q.source === 'agent_state' ? 'agent_state' : (q.source === 'optimistic' ? 'optimistic' : 'traj'));
+                const hasMediaAttr = (q.hasMedia || (Array.isArray(q.images) && q.images.length > 0)) ? '1' : '';
+                const itemBtnDisabled = (queueActionBusy || srcAttr === 'optimistic') ? ' disabled' : '';
+                const dataAttrs = 'data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '" data-msg-id="' + esc(msgIdAttr) + '" data-queue-text="' + esc(String(q.text || '')) + '" data-has-media="' + esc(hasMediaAttr) + '"';
+                return '<div class="queue-item" ' + dataAttrs + '>'
                   + imgsHtml
                   + '<span class="queue-item-text">' + esc(q.text || '') + '</span>'
-                  + '<button class="queue-del-btn" type="button" title="撤回此条排队消息" aria-label="撤回此条排队消息" data-step-idx="' + esc(String(stepAttr)) + '" data-dom-idx="' + esc(String(domAttr)) + '" data-queue-source="' + esc(srcAttr) + '" data-queue-text="' + esc(String(q.text || '')) + '"' + (queueActionBusy ? ' disabled' : '') + '>×</button>'
-                  + '</div>';
+                  + '<span class="queue-actions">'
+                  + '<button class="queue-op-btn send queue-item-send" type="button" title="立即发送" aria-label="立即发送" ' + dataAttrs + itemBtnDisabled + '>→</button>'
+                  + '<button class="queue-op-btn edit queue-item-edit" type="button" title="编辑此条排队消息" aria-label="编辑此条排队消息" ' + dataAttrs + itemBtnDisabled + '>✎</button>'
+                  + '<button class="queue-del-btn" type="button" title="撤回此条排队消息" aria-label="撤回此条排队消息" ' + dataAttrs + itemBtnDisabled + '>×</button>'
+                  + '</span></div>';
               }).join('') + '</div></div>';
 
             const setQueueBtnsDisabled = (disabled) => {
-              qDock.querySelectorAll('.queue-send-all, .queue-del-btn').forEach((b) => { b.disabled = disabled; });
+              qDock.querySelectorAll('.queue-send-all').forEach((b) => { b.disabled = disabled || hasOnlyOptimistic; });
+              qDock.querySelectorAll('.queue-op-btn, .queue-del-btn').forEach((b) => {
+                b.disabled = disabled || b.dataset.queueSource === 'optimistic';
+              });
+            };
+            const buildQueueItemPayload = (el, extra = {}) => {
+              const src = String(el.dataset.queueSource || 'traj');
+              const msgId = String(el.dataset.msgId || '').trim();
+              const stepIdx = Number(el.dataset.stepIdx);
+              const domIdx = Number(el.dataset.domIdx);
+              const text = String(el.dataset.queueText || '');
+              const hasMedia = el.dataset.hasMedia === '1';
+              return {
+                conversationId: String(snap.activeConversationId || snap.sessionId || ''),
+                ...(msgId ? { messageId: msgId } : {}),
+                ...(text ? { text } : {}),
+                ...(hasMedia ? { hasMedia: true } : {}),
+                ...(src === 'dom' ? { source: 'dom', domIndex: Number.isInteger(domIdx) ? domIdx : 0 } : {}),
+                ...(src !== 'dom' && Number.isInteger(stepIdx) && stepIdx >= 0 ? { stepIndex: stepIdx } : {}),
+                ...extra
+              };
             };
             const sendAllBtn = qDock.querySelector('.queue-send-all');
             if (sendAllBtn) {
               sendAllBtn.onclick = async () => {
                 if (queueActionBusy) return;
+                if (hasOnlyOptimistic) return;
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
                   const res = await apiAction({
                     action: 'send-queued-messages',
                     conversationId: String(snap.activeConversationId || snap.sessionId || ''),
+                    ...(agentMsgIds.length ? { messageIds: agentMsgIds } : {}),
                     ...(isDomQueuedList ? { source: 'dom', sendAll: true } : (hasDomQueued ? { hasDomQueued: true } : {}))
                   });
                   if (res?.ok) {
@@ -8739,23 +9059,70 @@ function buildMobileAppHtml() {
                 }
               };
             }
+            qDock.querySelectorAll('.queue-item-send').forEach((sendOneBtn) => {
+              sendOneBtn.onclick = async () => {
+                if (queueActionBusy) return;
+                if (String(sendOneBtn.dataset.queueSource || '') === 'optimistic') return;
+                queueActionBusy = true;
+                setQueueBtnsDisabled(true);
+                try {
+                  const reqBody = buildQueueItemPayload(sendOneBtn, { action: 'send-queued-messages', sendAll: false });
+                  const res = await apiAction(reqBody);
+                  if (res?.ok) showToast('已立即发送此条排队消息');
+                  else showToast(res?.error || res?.actionResult?.error || '发送排队消息失败');
+                } catch (e) {
+                  showToast(e?.message || '发送排队消息失败');
+                } finally {
+                  queueActionBusy = false;
+                  setQueueBtnsDisabled(false);
+                }
+              };
+            });
+            qDock.querySelectorAll('.queue-item-edit').forEach((editBtn) => {
+              editBtn.onclick = async () => {
+                if (queueActionBusy) return;
+                const src = String(editBtn.dataset.queueSource || 'traj');
+                if (src === 'optimistic') return;
+                const qText = String(editBtn.dataset.queueText || '');
+                const msgId = String(editBtn.dataset.msgId || '').trim();
+                const stepIdx = Number(editBtn.dataset.stepIdx);
+                if (!msgId && src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
+                queueActionBusy = true;
+                setQueueBtnsDisabled(true);
+                try {
+                  const res = await apiAction(buildQueueItemPayload(editBtn, { action: 'edit-queued-message' }));
+                  if (res?.ok) {
+                    const fillVal = String(res?.actionResult?.editedText || qText || '');
+                    if (fillVal) {
+                      ta.value = ta.value.trim() ? (ta.value.trimEnd() + '\\n' + fillVal) : fillVal;
+                      saveDraftForConv(selectedConversationId, ta.value);
+                      ta.style.height = 'auto';
+                      const maxH = isDesktopLayout() ? 180 : 112;
+                      ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
+                      ta.focus();
+                    }
+                    showToast('已撤回至输入框，修改后重新发送');
+                  } else showToast(res?.error || res?.actionResult?.error || '编辑排队消息失败');
+                } catch (e) {
+                  showToast(e?.message || '编辑排队消息失败');
+                } finally {
+                  queueActionBusy = false;
+                  setQueueBtnsDisabled(false);
+                }
+              };
+            });
             qDock.querySelectorAll('.queue-del-btn').forEach((delBtn) => {
               delBtn.onclick = async () => {
                 if (queueActionBusy) return;
                 const src = String(delBtn.dataset.queueSource || 'traj');
+                if (src === 'optimistic') return;
                 const stepIdx = Number(delBtn.dataset.stepIdx);
-                const domIdx = Number(delBtn.dataset.domIdx);
-                if (src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
+                const msgId = String(delBtn.dataset.msgId || '').trim();
+                if (!msgId && src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
-                  const res = await apiAction({
-                    action: 'delete-queued-message',
-                    conversationId: String(snap.activeConversationId || snap.sessionId || ''),
-                    ...(src === 'dom'
-                      ? { source: 'dom', domIndex: Number.isInteger(domIdx) ? domIdx : 0, text: String(delBtn.dataset.queueText || '') }
-                      : { stepIndex: stepIdx })
-                  });
+                  const res = await apiAction(buildQueueItemPayload(delBtn, { action: 'delete-queued-message' }));
                   if (res?.ok) showToast('已撤回排队消息');
                   else showToast(res?.error || res?.actionResult?.error || '撤回排队消息失败');
                 } catch (e) {
@@ -11612,6 +11979,7 @@ function buildMobileAppHtml() {
       syncSendButtonUI();
       try {
         stickBottom = true;
+        const wasBusyWhenSent = Boolean(latestSnap?.busy);
         const r = await apiAction({ action: 'send', text }, { skipAutoRender: true });
         if (r?.ok) {
           ta.value = '';
@@ -11622,11 +11990,21 @@ function buildMobileAppHtml() {
           ta.style.height = 'auto';
           const maxH = isDesktopLayout() ? 180 : 112;
           ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
+          if (wasBusyWhenSent) {
+            const snapToRender = (r?.snapshot && r.snapshot.ok !== false) ? r.snapshot : latestSnap;
+            if (snapToRender && (!Array.isArray(snapToRender.queuedMessages) || !snapToRender.queuedMessages.some((q) => String(q?.text || '').trim() === text.trim()))) {
+              const curQ = Array.isArray(snapToRender.queuedMessages) ? snapToRender.queuedMessages.slice() : [];
+              curQ.push({ source: 'optimistic', stepIndex: -1, text, status: 'queued' });
+              snapToRender.queuedMessages = curQ;
+            }
+            if (snapToRender) renderSnapshot(snapToRender);
+            setTimeout(() => { void fetchSnapshot(); }, 250);
+          }
         } else {
           showToast(r?.error || r?.actionResult?.error || '发送失败');
         }
         sending = false;
-        if (r?.snapshot) renderSnapshot(r.snapshot);
+        if (r?.snapshot && !(wasBusyWhenSent && r?.ok)) renderSnapshot(r.snapshot);
       } catch (err) {
         showToast(err?.message || '发送失败');
       } finally {
@@ -13601,46 +13979,86 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const effectiveTargetId = String(payload?.targetId || session?.targetId || '').trim();
         const actionName = String(payload?.action || '').trim();
 
-        if (actionName === 'send-queued-messages' || actionName === 'delete-queued-message') {
+        if (actionName === 'send-queued-messages' || actionName === 'delete-queued-message' || actionName === 'edit-queued-message') {
           const cascadeId = String(payload?.conversationId || session?.conversationId || '').trim();
           if (!cascadeId || cascadeId === '__new__' || cascadeId === 'new') {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效会话 ID' }));
             return;
           }
-          const isDomQueueSource = payload?.source === 'dom';
+          const messageId = String(payload?.messageId || '').trim();
+          const messageIds = Array.isArray(payload?.messageIds) ? payload.messageIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+          const isDomQueueSource = payload?.source === 'dom' && !messageId;
           let rpcRes = null;
           let usedDomFallback = false;
-          if (isDomQueueSource) {
-            const domAct = actionName === 'delete-queued-message' ? 'delete-queued-dom' : 'send-queued-dom';
+          let editedText = String(payload?.text || '');
+          const runQueuedDomFallback = async (domAct, sendAllFlag) => {
             const domRes = await performAction({
               action: domAct,
               clientId,
               targetId: effectiveTargetId || undefined,
               conversationId: cascadeId,
+              ...(messageId ? { messageId } : {}),
               domIndex: Number.isInteger(Number(payload?.domIndex)) ? Number(payload.domIndex) : 0,
-              sendAll: actionName === 'send-queued-messages' ? (payload?.sendAll !== false) : undefined,
-              text: String(payload?.text || '')
+              sendAll: sendAllFlag,
+              text: editedText
             });
             if (!domRes?.ok) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domRes?.error || domRes?.actionResult?.error || '桌面端队列操作失败' }));
-              return;
+              return false;
             }
+            if (domRes?.actionResult?.editedText) editedText = String(domRes.actionResult.editedText);
             usedDomFallback = true;
-          } else if (actionName === 'delete-queued-message') {
+            return true;
+          };
+          if (messageId) {
+            if (actionName === 'delete-queued-message' || actionName === 'edit-queued-message') {
+              rpcRes = await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, 4500);
+            } else {
+              if (!payload?.hasMedia && editedText.trim()) {
+                const cascadeConfig = defaultHistoryManager.getCachedUserConfig?.(cascadeId) || null;
+                rpcRes = await callLsRpc(
+                  'SendUserCascadeMessage',
+                  {
+                    cascadeId,
+                    items: [{ text: editedText }],
+                    deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION',
+                    ...(cascadeConfig ? { cascadeConfig } : {})
+                  },
+                  4500
+                );
+                if (rpcRes !== null && rpcRes !== false) {
+                  await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, 4500).catch(() => null);
+                }
+              }
+              if (rpcRes === null || rpcRes === false) {
+                const okDom = await runQueuedDomFallback('send-queued-dom', false);
+                if (!okDom) return;
+              }
+            }
+          } else if (isDomQueueSource) {
+            const domAct = actionName === 'delete-queued-message'
+              ? 'delete-queued-dom'
+              : (actionName === 'edit-queued-message' ? 'edit-queued-dom' : 'send-queued-dom');
+            const okDom = await runQueuedDomFallback(domAct, actionName === 'send-queued-messages' ? (payload?.sendAll !== false) : undefined);
+            if (!okDom) return;
+          } else if (actionName === 'delete-queued-message' || actionName === 'edit-queued-message') {
             const rawStep = payload?.stepIndex;
             const isValidStep = (typeof rawStep === 'number' && Number.isInteger(rawStep) && rawStep >= 0)
               || (typeof rawStep === 'string' && /^\d+$/.test(rawStep.trim()));
             const stepIndex = isValidStep ? Number(rawStep) : -1;
             if (!isValidStep || !Number.isSafeInteger(stepIndex) || stepIndex < 0) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队步骤索引 stepIndex' }));
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '缺少有效的排队标识 messageId 或 stepIndex' }));
               return;
             }
             rpcRes = await callLsRpc('DeleteQueuedUserInputStep', { cascadeId, stepIndex }, 4500);
           } else {
-            // 轨迹/混合队列统一由 LanguageServer SendAllQueuedMessages RPC 执行；
-            // 若 RPC 成功或超时（可能已在后端执行但响应超时），均严禁自动补点桌面 DOM 按钮以杜绝重复发送；
-            // 仅纯 DOM 队列（isDomQueueSource === true，未调用 RPC）才走 send-queued-dom(sendAll:true)
+            // 全部立即发送：优先保留 SendAllQueuedMessages 契约；
+            // 当 Antigravity 2.0 废弃 SendAllQueuedMessages（返回 null/false）且携带 agent_state messageIds 时，回退桌面端全发
             rpcRes = await callLsRpc('SendAllQueuedMessages', { cascadeId }, 4500);
+            if ((rpcRes === null || rpcRes === false) && messageIds.length > 0) {
+              const okDom = await runQueuedDomFallback('send-queued-dom', true);
+              if (!okDom) return;
+            }
           }
           if (!usedDomFallback && (rpcRes === null || rpcRes === false)) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '本机 LanguageServer 队列操作调用失败或超时' }));
@@ -13670,6 +14088,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               ok: true,
               action: actionName,
               cascadeId,
+              ...(actionName === 'edit-queued-message' ? { editedText } : {}),
               ...(hasRemainingDomQueued ? { hasRemainingDomQueued: true } : {})
             },
             snapshot: enriched
@@ -14029,6 +14448,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               ...(draftUploadsForSend.length ? { draftPendingUploads: draftUploadsForSend } : {})
             } : {})
           });
+          if (actionName === 'send' && result?.ok !== false) {
+            const sentSid = String(
+              result?.snapshot?.activeConversationId ||
+              result?.snapshot?.sessionId ||
+              result?.actionResult?.createdConversationId ||
+              effectiveConvId ||
+              ''
+            ).trim();
+            if (sentSid && sentSid !== '__new__' && sentSid !== 'new') {
+              defaultHistoryManager.invalidateSession?.(sentSid);
+            }
+          }
           if (isDeferredDraftSend) {
             if (result?.ok === false) {
               if (!isStillSameNav()) {
@@ -14645,6 +15076,7 @@ module.exports = {
   renderSafeMarkdownToHtml,
   extractMessagesFromTrajectorySteps,
   extractQueuedMessagesFromTrajectorySteps,
+  extractPendingAgentMessagesFromUpdate,
   extractTrajectoryUserAttachments,
   collapseConsecutiveDomThinking,
   mergeTrajectoryAndDomMessages,
