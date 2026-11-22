@@ -290,9 +290,10 @@ function fetchHttpJsonLoopback(port, urlPath, timeoutMs = 1500) {
       method: 'GET',
       agent: false
     }, (res) => {
-      let body = '';
-      res.on('data', (c) => { body += c; });
+      const chunks = [];
+      res.on('data', (c) => { chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)); });
       res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode !== 200) {
           reject(new Error(`HTTP ${res.statusCode}`));
           return;

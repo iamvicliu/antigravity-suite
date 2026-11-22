@@ -9,8 +9,13 @@ const { resolveActiveCdpTarget } = require('./asar-engine');
 function request(url, body, token) {
   return new Promise((resolve, reject) => {
     const req = (url.startsWith('https:') ? https : http).request(url, { rejectUnauthorized: false, agent: false, method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {} }, response => {
-      let text = ''; response.on('data', chunk => text += chunk);
-      response.on('end', () => response.statusCode === 200 ? resolve(text) : reject(new Error(`HTTP ${response.statusCode}: ${text.slice(0, 200)}`)));
+      const chunks = [];
+      response.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        if (response.statusCode === 200) resolve(text);
+        else reject(new Error(`HTTP ${response.statusCode}: ${text.slice(0, 200)}`));
+      });
     });
     req.setTimeout(20000, () => req.destroy(new Error('Local API timeout'))); req.on('error', reject); req.end(body ? JSON.stringify(body) : undefined);
   });
@@ -187,4 +192,4 @@ async function connect() {
     throw err;
   }
 }
-module.exports = { connect, discoverFromHubDaemonFiles, requestConnectStreamFirstFrame };
+module.exports = { connect, discoverFromHubDaemonFiles, requestConnectStreamFirstFrame, request };

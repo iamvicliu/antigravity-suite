@@ -8391,7 +8391,8 @@
       let replyText = mdBounded.text;
       // 文本提取阶段已受字符与节点双预算早停；超限时直接跳过 HTML 序列化（完整长文由服务端轨迹通道渲染）
       const replyHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots, MAX_DOM_HTML_CHARS);
-      if (!replyText && !triggers.length) {
+      const isStepProgressOnly = Boolean(node.querySelector('[data-step-list="true"], [data-testid="worked-for-collapsible"]'));
+      if (!replyText && !triggers.length && !isStepProgressOnly) {
         const fallbackBounded = collectBoundedNodeText([node], MAX_DOM_MSG_CHARS, 4000);
         const cloneText = capText(fallbackBounded.text
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
