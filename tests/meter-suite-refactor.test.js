@@ -18104,9 +18104,34 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-40-script-${i}.js` }));
   }
 
-  // 2. 桌面 DOM 中文汉化正则修复 + queued-messages-card + 三按钮精准区分 + 排除折叠按钮
+  // 2. 桌面 DOM 中文汉化正则修复 + queued-messages-card + 三按钮精准区分 + messageId 失配阻断 + 真实隔离链路采集
   const env = createDomEnv();
   env.win.__AGContextMeterLive = { port: 61221, token: 'tok-40-dom' };
+  env.win.__APP_CONFIG__ = { csrfToken: 'csrf-iso-40' };
+  const desktopConvId = 'deadbeef-4000-4000-4000-000000000001';
+  const bgConvId = 'deadbeef-4000-4000-4000-000000000002';
+  const bgErrConvId = 'deadbeef-4000-4000-4000-000000000003';
+  env.sandbox.location.pathname = `/c/${desktopConvId}`;
+  env.sandbox.fetch = async (url, init) => {
+    const u = String(url || '');
+    if (u.includes('GetCascadeTrajectory')) {
+      const reqB = JSON.parse(String(init?.body || '{}'));
+      if (reqB.cascadeId === bgErrConvId) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          trajectory: {
+            summary: '后台目标会话',
+            steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '后台历史消息' }] } }]
+          }
+        })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
   const mainEl = env.doc.createElement('main');
   const cardEl = env.doc.createElement('div');
   cardEl.setAttribute('data-testid', 'queued-messages-card');
@@ -18115,7 +18140,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
 
   const headerWrap = env.doc.createElement('div');
   const hdrTitle = env.doc.createElement('span');
-  hdrTitle.textContent = '排队消息 1 将在代理完成后发送';
+  hdrTitle.textContent = '排队消息 2 将在代理完成后发送';
   const expandBtn = env.doc.createElement('button');
   expandBtn.setAttribute('data-testid', 'queued-messages-expand-button');
   expandBtn.setAttribute('aria-label', '收起排队消息');
@@ -18126,38 +18151,42 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   cardEl.appendChild(headerWrap);
 
   const listWrap = env.doc.createElement('div');
-  const rowEl = env.doc.createElement('div');
-  const rowText = env.doc.createElement('span');
-  rowText.textContent = '中文队列测试消息：继续执行 Batch 3';
-  const decEl = env.doc.createElement('div');
-  decEl.setAttribute('data-testid', 'queued-decorators');
-  let sentClicks = 0;
-  let editClicks = 0;
-  let delClicks = 0;
-  const bSend = env.doc.createElement('button');
-  bSend.setAttribute('aria-label', '立即发送');
-  bSend.addEventListener('click', () => { sentClicks += 1; });
-  const bEdit = env.doc.createElement('button');
-  bEdit.setAttribute('aria-label', '编辑');
-  bEdit.addEventListener('click', () => { editClicks += 1; });
-  const bDel = env.doc.createElement('button');
-  bDel.setAttribute('aria-label', '删除');
-  bDel.addEventListener('click', () => { delClicks += 1; });
-  decEl.appendChild(bSend);
-  decEl.appendChild(bEdit);
-  decEl.appendChild(bDel);
-  rowEl.appendChild(rowText);
-  rowEl.appendChild(decEl);
-  listWrap.appendChild(rowEl);
+  const makeQueueRow = (txt) => {
+    const row = env.doc.createElement('div');
+    const rText = env.doc.createElement('span');
+    rText.textContent = txt;
+    const dec = env.doc.createElement('div');
+    dec.setAttribute('data-testid', 'queued-decorators');
+    const counts = { send: 0, edit: 0, del: 0 };
+    const bS = env.doc.createElement('button');
+    bS.setAttribute('aria-label', '立即发送');
+    bS.addEventListener('click', () => { counts.send += 1; });
+    const bE = env.doc.createElement('button');
+    bE.setAttribute('aria-label', '编辑');
+    bE.addEventListener('click', () => { counts.edit += 1; });
+    const bD = env.doc.createElement('button');
+    bD.setAttribute('aria-label', '删除');
+    bD.addEventListener('click', () => { counts.del += 1; });
+    dec.appendChild(bS);
+    dec.appendChild(bE);
+    dec.appendChild(bD);
+    row.appendChild(rText);
+    row.appendChild(dec);
+    return { row, counts };
+  };
+  const row1 = makeQueueRow('中文队列测试消息：继续执行 Batch 3');
+  const row2 = makeQueueRow('第二条排队消息：后续检查');
+  listWrap.appendChild(row1.row);
+  listWrap.appendChild(row2.row);
   cardEl.appendChild(listWrap);
 
-  // 同时挂上 Fiber 属性验证 msgId 提取
+  // 同时挂上 Fiber 属性验证多行 msgId 提取
   cardEl.__reactFiber$test = {
     memoizedProps: {
-      queuedUserInputs: [{
-        msgId: 'fiber-msg-40',
-        step: { items: [{ text: '中文队列测试消息：继续执行 Batch 3' }] }
-      }]
+      queuedUserInputs: [
+        { msgId: 'fiber-msg-40', step: { items: [{ text: '中文队列测试消息：继续执行 Batch 3' }] } },
+        { msgId: 'fiber-msg-40b', step: { items: [{ text: '第二条排队消息：后续检查' }] } }
+      ]
     },
     return: null
   };
@@ -18165,70 +18194,8 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   env.doc.body.appendChild(mainEl);
   vm.runInContext(overlaySrc, env.sandbox);
   const enhancer = env.sandbox.__AGEnhancer;
-  try {
-    const snap = enhancer.getMobileSnapshot();
-    assert.equal(snap.queuedMessages.length, 1, '中文汉化 DOM「排队消息」必须成功采集，不得被 \\b 正则拦截');
-    assert.equal(snap.queuedMessages[0].text, '中文队列测试消息：继续执行 Batch 3');
-    assert.equal(snap.queuedMessages[0].messageId, 'fiber-msg-40');
-    assert.equal(snap.queuedMessages[0].hasEdit, true);
 
-    const editRes = await enhancer.performMobileAction({ action: 'edit-queued-dom', messageId: 'fiber-msg-40', domIndex: 0 });
-    assert.equal(editRes.ok, true);
-    assert.equal(editClicks, 1, 'edit-queued-dom 必须精确点击编辑按钮而非折叠/删除按钮');
-
-    const sendRes = await enhancer.performMobileAction({ action: 'send-queued-dom', messageId: 'fiber-msg-40', domIndex: 0, sendAll: false });
-    assert.equal(sendRes.ok, true);
-    assert.equal(sentClicks, 1);
-
-    const delRes = await enhancer.performMobileAction({ action: 'delete-queued-dom', messageId: 'fiber-msg-40', domIndex: 0 });
-    assert.equal(delRes.ok, true);
-    assert.equal(delClicks, 1);
-  } finally {
-    enhancer.dispose?.();
-  }
-
-  // 3. Connect+JSON 流式首包读取、flags=2 结束错误处理、protobuf stepPayload 二进制解码与 deliveryStrategy 过滤
-  const pbVarint = (n) => {
-    const bytes = [];
-    let v = n >>> 0;
-    while (v >= 0x80) {
-      bytes.push((v & 0x7f) | 0x80);
-      v >>>= 7;
-    }
-    bytes.push(v);
-    return Buffer.from(bytes);
-  };
-  const pbFieldBytes = (no, buf) => Buffer.concat([pbVarint((no << 3) | 2), pbVarint(buf.length), buf]);
-  const pbText = (no, s) => pbFieldBytes(no, Buffer.from(s, 'utf8'));
-  const tinyPngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-  const itemProto = pbText(1, '二进制编码排队消息');
-  const mediaProto = Buffer.concat([
-    pbText(1, 'image/png'),
-    pbFieldBytes(2, Buffer.from(tinyPngB64, 'base64')),
-    pbText(9, 'pb-demo.png')
-  ]);
-  const userInputProto = Buffer.concat([pbFieldBytes(3, itemProto), pbFieldBytes(9, mediaProto)]);
-  const stepProtoB64 = pbFieldBytes(19, userInputProto).toString('base64');
-  const nonUserStepB64 = pbFieldBytes(5, pbText(1, 'non-user')).toString('base64');
-
-  const pbExtracted = extractPendingAgentMessagesFromUpdate({
-    update: {
-      pendingAgentMessagesUpdate: {
-        pendingAgentMessages: [
-          { id: 'pb-hidden', hideFromUser: true, stepPayload: stepProtoB64 },
-          { id: 'pb-next', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION', stepPayload: stepProtoB64 },
-          { id: 'pb-nonuser', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE', stepPayload: nonUserStepB64 },
-          { id: 'pb-ok', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE', stepPayload: stepProtoB64 }
-        ]
-      }
-    }
-  });
-  assert.equal(pbExtracted.length, 1, '应解码真实二进制 stepPayload 并过滤 hideFromUser / NEXT_INVOCATION / 非 userInput');
-  assert.equal(pbExtracted[0].messageId, 'pb-ok');
-  assert.ok(pbExtracted[0].text.includes('二进制编码排队消息'));
-  assert.equal(pbExtracted[0].images?.length, 1);
-  assert.equal(pbExtracted[0].hasMedia, true);
-
+  // Connect+JSON 流式服务与真实链路共用
   const makeConnectFrame = (flags, jsonObj) => {
     const pay = Buffer.from(JSON.stringify(jsonObj), 'utf8');
     const hdr = Buffer.alloc(5);
@@ -18236,6 +18203,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     hdr.writeUInt32BE(pay.length, 1);
     return Buffer.concat([hdr, pay]);
   };
+  const tinyPngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
   let streamCallCount = 0;
   const streamSrv = http.createServer((req, res) => {
     if (req.headers['x-codeium-csrf-token'] !== 'csrf-40') {
@@ -18264,13 +18232,131 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
           }
         }
       });
-      // 拆成两段写入，验证跨 chunk 组帧与首包后立即断开
       res.write(frame.subarray(0, 7));
       setTimeout(() => { res.write(frame.subarray(7)); }, 15);
     });
   });
   await new Promise((r) => streamSrv.listen(0, '127.0.0.1', r));
+  streamSrv.unref?.();
   const streamPort = streamSrv.address().port;
+
+  try {
+    try {
+    const snap = enhancer.getMobileSnapshot();
+    assert.equal(snap.queuedMessages.length, 2, '中文汉化 DOM「排队消息」必须成功采集多行，不得被 \\b 正则拦截');
+    assert.equal(snap.queuedMessages[0].text, '中文队列测试消息：继续执行 Batch 3');
+    assert.equal(snap.queuedMessages[0].messageId, 'fiber-msg-40');
+    assert.equal(snap.queuedMessages[0].hasEdit, true);
+    assert.equal(snap.queuedMessages[1].messageId, 'fiber-msg-40b');
+
+    // messageId 失配时必须停止并严禁回退按 domIndex 或首条点击任何按钮
+    const misSend = await enhancer.performMobileAction({ action: 'send-queued-dom', messageId: 'non-existent-id', domIndex: 0, sendAll: false });
+    const misEdit = await enhancer.performMobileAction({ action: 'edit-queued-dom', messageId: 'non-existent-id', domIndex: 0, text: '中文队列测试消息：继续执行 Batch 3' });
+    const misDel = await enhancer.performMobileAction({ action: 'delete-queued-dom', messageId: 'non-existent-id', domIndex: 0, text: '中文队列测试消息：继续执行 Batch 3' });
+    assert.equal(misSend.ok, false, 'send-queued-dom 携带 messageId 失配必须停止');
+    assert.equal(misEdit.ok, false, 'edit-queued-dom 携带 messageId 失配必须停止');
+    assert.equal(misDel.ok, false, 'delete-queued-dom 携带 messageId 失配必须停止');
+    assert.deepEqual(row1.counts, { send: 0, edit: 0, del: 0 }, '失配时第一行不得触发任何按钮点击');
+    assert.deepEqual(row2.counts, { send: 0, edit: 0, del: 0 }, '失配时第二行不得触发任何按钮点击');
+
+    // 按 messageId 精确命中
+    const editRes = await enhancer.performMobileAction({ action: 'edit-queued-dom', messageId: 'fiber-msg-40', domIndex: 1 });
+    assert.equal(editRes.ok, true);
+    assert.equal(row1.counts.edit, 1, 'edit-queued-dom 必须精确点击目标 messageId 对应按钮而非折叠/删除按钮');
+    assert.equal(row2.counts.edit, 0);
+
+    const sendRes = await enhancer.performMobileAction({ action: 'send-queued-dom', messageId: 'fiber-msg-40', domIndex: 1, sendAll: false });
+    assert.equal(sendRes.ok, true);
+    assert.equal(row1.counts.send, 1);
+
+    const delRes = await enhancer.performMobileAction({ action: 'delete-queued-dom', messageId: 'fiber-msg-40', domIndex: 1 });
+    assert.equal(delRes.ok, true);
+    assert.equal(row1.counts.del, 1);
+
+    // 无 messageId 旧调用保留兼容
+    const legacyDel = await enhancer.performMobileAction({ action: 'delete-queued-dom', domIndex: 1 });
+    assert.equal(legacyDel.ok, true, '无 messageId 旧调用应继续兼容 domIndex');
+    assert.equal(row2.counts.del, 1);
+
+    // 真实 fetchIsolatedConversationSnapshot -> enrichMessages 链路验证：
+    // 1) 同会话请求保留桌面 DOM 队列；
+    const sameDesktopSnap = await enhancer.getMobileSnapshotAsync({ conversationId: desktopConvId });
+    assert.equal(sameDesktopSnap.isolated, false);
+    assert.equal(sameDesktopSnap.queuedMessages.length, 2, '同会话请求必须保留桌面 DOM 队列');
+
+    // 2) 桌面与目标会话不同时，fetchIsolatedConversationSnapshot 绝不混入桌面 DOM 队列，由服务端队列补齐
+    const isoFromOverlay = await enhancer.getMobileSnapshotAsync({ conversationId: bgConvId });
+    assert.equal(isoFromOverlay.isolated, true);
+    assert.equal(isoFromOverlay.sessionId, bgConvId);
+    assert.equal(isoFromOverlay.queuedMessages.length, 0, '桌面与目标会话不同时 fetchIsolatedConversationSnapshot 不得混入桌面 DOM 队列');
+
+    // 3) 隔离读取失败进入 catch 分支时同样不得残留桌面 DOM 队列
+    const errIsoFromOverlay = await enhancer.getMobileSnapshotAsync({ conversationId: bgErrConvId });
+    assert.equal(errIsoFromOverlay.isolatedError, true);
+    assert.equal(errIsoFromOverlay.queuedMessages.length, 0, 'fetchIsolatedConversationSnapshot catch 分支同样不得混入桌面 DOM 队列');
+
+    // 4) 将真实采集到的 isoFromOverlay 送入服务端 enrichMessages：由 pending_agent_messages 权威补齐后台目标会话队列
+    const chainHistMgr = createConversationHistoryManager();
+    const enrichedIsoSnap = await chainHistMgr.enrichMessages(isoFromOverlay, {
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetCascadeTrajectory') {
+            return { trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '后台历史消息' }] } }] } };
+          }
+          return null;
+        },
+        callStreamFirstFrame: (method, b, t) =>
+          requestConnectStreamFirstFrame(`http://127.0.0.1:${streamPort}`, method, b, 'csrf-40', t)
+      })
+    });
+    assert.equal(enrichedIsoSnap.queuedMessages.length, 1, '后台目标会话经真实隔离快照+服务端融合后应展现目标会话自己的 queuedMessages');
+    assert.equal(enrichedIsoSnap.queuedMessages[0].messageId, 'pm-1');
+    assert.ok(!enrichedIsoSnap.queuedMessages.some((q) => String(q.text || '').includes('中文队列测试消息')), '不得混入桌面端其他会话队列');
+  } finally {
+    enhancer.dispose?.();
+  }
+
+  // 3. Connect+JSON 流式首包读取、flags=2 结束错误处理、protobuf stepPayload 二进制解码与 deliveryStrategy 过滤
+  const pbVarint = (n) => {
+    const bytes = [];
+    let v = n >>> 0;
+    while (v >= 0x80) {
+      bytes.push((v & 0x7f) | 0x80);
+      v >>>= 7;
+    }
+    bytes.push(v);
+    return Buffer.from(bytes);
+  };
+  const pbFieldBytes = (no, buf) => Buffer.concat([pbVarint((no << 3) | 2), pbVarint(buf.length), buf]);
+  const pbText = (no, s) => pbFieldBytes(no, Buffer.from(s, 'utf8'));
+  const itemProto = pbText(1, '二进制编码排队消息');
+  const mediaProto = Buffer.concat([
+    pbText(1, 'image/png'),
+    pbFieldBytes(2, Buffer.from(tinyPngB64, 'base64')),
+    pbText(9, 'pb-demo.png')
+  ]);
+  const userInputProto = Buffer.concat([pbFieldBytes(3, itemProto), pbFieldBytes(9, mediaProto)]);
+  const stepProtoB64 = pbFieldBytes(19, userInputProto).toString('base64');
+  const nonUserStepB64 = pbFieldBytes(5, pbText(1, 'non-user')).toString('base64');
+
+  const pbExtracted = extractPendingAgentMessagesFromUpdate({
+    update: {
+      pendingAgentMessagesUpdate: {
+        pendingAgentMessages: [
+          { id: 'pb-hidden', hideFromUser: true, stepPayload: stepProtoB64 },
+          { id: 'pb-next', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION', stepPayload: stepProtoB64 },
+          { id: 'pb-nonuser', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE', stepPayload: nonUserStepB64 },
+          { id: 'pb-ok', deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE', stepPayload: stepProtoB64 }
+        ]
+      }
+    }
+  });
+  assert.equal(pbExtracted.length, 1, '应解码真实二进制 stepPayload 并过滤 hideFromUser / NEXT_INVOCATION / 非 userInput');
+  assert.equal(pbExtracted[0].messageId, 'pb-ok');
+  assert.ok(pbExtracted[0].text.includes('二进制编码排队消息'));
+  assert.equal(pbExtracted[0].images?.length, 1);
+  assert.equal(pbExtracted[0].hasMedia, true);
+
   try {
     const firstFrame = await requestConnectStreamFirstFrame(
       `http://127.0.0.1:${streamPort}`,
@@ -18294,29 +18380,21 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     );
     assert.equal(errFrame, null, 'Connect flags=2 end-stream 错误帧应安全返回 null');
 
-    // 4. 隔离会话下通过 createConversationHistoryManager 自动融合 StreamAgentStateUpdates pending_agent_messages
+    // 4. invalidateSession 立即失效 pendingMsgCache
     streamCallCount = 0;
     const histMgr = createConversationHistoryManager();
-    const isolatedSnap = await histMgr.enrichMessages(
+    await histMgr.enrichMessages(
       { ok: true, sessionId: 'iso-conv-40', isolated: true, busy: true, messages: [], queuedMessages: [] },
       {
         localApiConnect: async () => ({
-          call: async (method) => {
-            if (method === 'GetCascadeTrajectory') {
-              return { trajectory: { steps: [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '首条消息' }] } }] } };
-            }
-            return null;
-          },
+          call: async () => ({ trajectory: { steps: [] } }),
           callStreamFirstFrame: (method, b, t) =>
             requestConnectStreamFirstFrame(`http://127.0.0.1:${streamPort}`, method, b, 'csrf-40', t)
         })
       }
     );
-    assert.equal(isolatedSnap.queuedMessages.length, 1, '独立隔离会话即使未停在桌面端也必须展示真实 pending_agent_messages');
-    assert.equal(isolatedSnap.queuedMessages[0].messageId, 'pm-1');
     assert.equal(streamCallCount, 1);
 
-    // invalidateSession 后再次 enrichMessages 必须绕过 450ms pendingMsgCache 立即重新请求流
     histMgr.invalidateSession('iso-conv-40');
     await histMgr.enrichMessages(
       { ok: true, sessionId: 'iso-conv-40', isolated: true, busy: true, messages: [], queuedMessages: [] },
@@ -18332,11 +18410,15 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   } finally {
     streamSrv.close();
   }
+  } finally {
+    streamSrv.close();
+  }
 
-  // 5. POST /api/action 支持真实 DeleteAgentMessage({ messageId, recipient }) / SendUserCascadeMessage(NEXT_INVOCATION) / 含媒体与废弃 SendAll 回退
+  // 5. POST /api/action 支持 DeleteAgentMessage({ messageId, recipient }) / 单条轨迹 stepIndex 发送 / 部分成功可恢复防重发
   const rpcCalls = [];
   const domFallbackCalls = [];
   let failSendAllRpc = false;
+  let deleteMode = 'ok'; // 'ok' | 'null' | 'throw'
   const handler = createRemoteHttpHandler({
     port: 18765,
     token: 'tok-40-http',
@@ -18345,6 +18427,21 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
     callLanguageServer: async (method, body) => {
       rpcCalls.push({ method, body });
       if (method === 'SendAllQueuedMessages' && failSendAllRpc) return null;
+      if (method === 'DeleteAgentMessage') {
+        if (deleteMode === 'null') return null;
+        if (deleteMode === 'throw') throw new Error('delete rpc failed');
+      }
+      if (method === 'GetCascadeTrajectory') {
+        return {
+          trajectory: {
+            steps: [
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_DONE', userInput: { items: [{ text: '已完成首轮' }] } },
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '轨迹排队第一条' }] } },
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', status: 'CORTEX_STEP_STATUS_QUEUED', userInput: { items: [{ text: '轨迹排队第二条' }] } }
+            ]
+          }
+        };
+      }
       return {};
     },
     performAction: async (p) => {
@@ -18381,6 +18478,52 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   });
   assert.deepEqual(rpcCalls[1], { method: 'DeleteAgentMessage', body: { messageId: 'pm-1', recipient: 'iso-conv-40' } });
 
+  // 5b. 无 messageId 的多条轨迹队列单条发送（携带 stepIndex + sendAll: false）：绝不调用 SendAllQueuedMessages
+  const beforeTrajCalls = rpcCalls.length;
+  const rTrajSingle = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', stepIndex: 2, sendAll: false });
+  assert.equal(rTrajSingle.ok, true);
+  const trajSliceCalls = rpcCalls.slice(beforeTrajCalls);
+  assert.ok(!trajSliceCalls.some((c) => c.method === 'SendAllQueuedMessages'), '携带 stepIndex 且 sendAll:false 时绝不得调用 SendAllQueuedMessages');
+  assert.deepEqual(trajSliceCalls[0], { method: 'GetCascadeTrajectory', body: { cascadeId: 'iso-conv-40', trajectoryVerbosity: 3 } });
+  assert.deepEqual(trajSliceCalls[1], {
+    method: 'SendUserCascadeMessage',
+    body: {
+      cascadeId: 'iso-conv-40',
+      items: [{ text: '轨迹排队第二条' }],
+      deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION'
+    }
+  });
+  assert.deepEqual(trajSliceCalls[2], { method: 'DeleteQueuedUserInputStep', body: { cascadeId: 'iso-conv-40', stepIndex: 2 } });
+
+  // 非排队（已完成）stepIndex 不得误触发重发或 SendAllQueuedMessages
+  const beforeDoneStep = rpcCalls.length;
+  const rDoneStep = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', stepIndex: 0, sendAll: false });
+  assert.equal(rDoneStep.ok, false);
+  assert.equal(rpcCalls.slice(beforeDoneStep).filter((c) => c.method === 'SendUserCascadeMessage' || c.method === 'SendAllQueuedMessages').length, 0);
+
+  // 5c. 单条发送后 DeleteAgentMessage 失败（null 与异常）必须可恢复报错且重试绝不重发
+  deleteMode = 'null';
+  const beforePartial = rpcCalls.length;
+  const rPartialNull = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-partial-1', text: '不重发文本', sendAll: false });
+  assert.equal(rPartialNull.ok, false, 'DeleteAgentMessage 返回 null 不得误报成功');
+  assert.equal(rPartialNull.partialSuccess, true);
+  assert.equal(rPartialNull.sent, true);
+  assert.equal(rPartialNull.deleteFailed, true);
+
+  deleteMode = 'throw';
+  const rPartialThrow = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-partial-1', text: '不重发文本', sendAll: false });
+  assert.equal(rPartialThrow.ok, false, 'DeleteAgentMessage 抛异常同样必须返回可恢复部分成功错误');
+  assert.equal(rPartialThrow.partialSuccess, true);
+  const partialCalls = rpcCalls.slice(beforePartial);
+  assert.equal(partialCalls.filter((c) => c.method === 'SendUserCascadeMessage').length, 1, '重试不得再次调用 SendUserCascadeMessage 造成重复发送');
+  assert.equal(partialCalls.filter((c) => c.method === 'DeleteAgentMessage').length, 2, '第二次重试应仅补调 DeleteAgentMessage');
+
+  deleteMode = 'ok';
+  const rPartialRecovered = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-partial-1', text: '不重发文本', sendAll: false });
+  assert.equal(rPartialRecovered.ok, true);
+  assert.equal(rPartialRecovered.actionResult.deduplicatedRetry, true, '补删成功应标记为去重重试恢复');
+  assert.equal(rpcCalls.slice(beforePartial).filter((c) => c.method === 'SendUserCascadeMessage').length, 1, '恢复全过程 SendUserCascadeMessage 仅允许调用 1 次');
+
   // 含图片附件的单条立即发送应回退桌面原生 onSendNow 保留媒体附件
   const rSendMedia = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageId: 'pm-media', text: '带图排队', hasMedia: true, sendAll: false });
   assert.equal(rSendMedia.ok, true);
@@ -18397,14 +18540,16 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   assert.equal(domFallbackCalls[1].action, 'send-queued-dom');
   assert.equal(domFallbackCalls[1].sendAll, true);
 
+  const editCallIdx = rpcCalls.length;
   const rEdit = await postAct({ action: 'edit-queued-message', conversationId: 'iso-conv-40', messageId: 'pm-1', text: '后台排队第一条' });
   assert.equal(rEdit.ok, true);
   assert.equal(rEdit.actionResult.editedText, '后台排队第一条');
-  assert.deepEqual(rpcCalls[3], { method: 'DeleteAgentMessage', body: { messageId: 'pm-1', recipient: 'iso-conv-40' } });
+  assert.deepEqual(rpcCalls[editCallIdx], { method: 'DeleteAgentMessage', body: { messageId: 'pm-1', recipient: 'iso-conv-40' } });
 
+  const delCallIdx = rpcCalls.length;
   const rDel = await postAct({ action: 'delete-queued-message', conversationId: 'iso-conv-40', messageId: 'pm-2' });
   assert.equal(rDel.ok, true);
-  assert.deepEqual(rpcCalls[4], { method: 'DeleteAgentMessage', body: { messageId: 'pm-2', recipient: 'iso-conv-40' } });
+  assert.deepEqual(rpcCalls[delCallIdx], { method: 'DeleteAgentMessage', body: { messageId: 'pm-2', recipient: 'iso-conv-40' } });
 
   // send 动作成功也应能正常走通（触发 pendingMsgCache 失效）
   const rNormalSend = await postAct({ action: 'send', conversationId: 'iso-conv-40', text: '新排队指令' });
