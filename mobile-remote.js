@@ -4585,19 +4585,19 @@ function normPlainMatchText(text) {
   s = s.replace(/^[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '');
   s = s.replace(/^[ \t]*\[[ xX]\][ \t]+/gm, '');
   s = s.replace(/`+/g, '');
-  s = s.replace(/\*\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*\*/g, '$1');
+  s = s.replace(/(^|[^\\\w)\]])\*\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*\*(?=$|[^\\\w(\[])/g, '$1$2');
   for (let i = 0; i < 2; i++) {
-    s = s.replace(/\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*/g, '$1');
+    s = s.replace(/(^|[^\\\w)\]])\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*(?=$|[^\\\w(\[])/g, '$1$2');
   }
-  s = s.replace(/(^|[ \t])\*\*(?=[^\s*][^*\n]*$)/gm, '$1');
+  s = s.replace(/(^|\n|[ \t])\*\*(?=[^\s*][^*\n]*$)/, '$1');
   for (let i = 0; i < 2; i++) {
-    s = s.replace(/~~(?!\s)((?:[^~\n]*?[^\s~])|[^~\s])~~/g, '$1');
+    s = s.replace(/(^|[^\\\w)\]])~~(?!\s)((?:[^~\n]*?[^\s~])|[^~\s])~~(?=$|[^\\\w(\[])/g, '$1$2');
   }
   for (let i = 0; i < 2; i++) {
     s = s.replace(/(^|[^\w])__([^_\n]+?)__(?=$|[^\w])/g, '$1$2');
   }
   for (let i = 0; i < 2; i++) {
-    s = s.replace(/(^|[^*\n])\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*(?!\*)/g, '$1$2');
+    s = s.replace(/(^|[^*\\\w)\]\n])\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*(?!\*)(?=$|[^\\\w(\[])/g, '$1$2');
   }
   for (let i = 0; i < 2; i++) {
     s = s.replace(/(^|[^\w])_(?!\s)((?:[^_\n]*?[^\s_])|[^_\s])_(?=$|[^\w])/g, '$1$2');
@@ -4637,20 +4637,16 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
   }
   if (options.exactOnly) return 0;
 
-  const minLen = Math.min(tClean.length, dClean.length);
-  const maxLen = Math.max(tClean.length, dClean.length);
-  const prefixLen = Math.min(32, minLen);
-  const prefixMatch = prefixLen > 0 && tClean.slice(0, prefixLen) === dClean.slice(0, prefixLen);
-  if (prefixMatch && (
-    minLen >= 10 ||
-    (options.busy && minLen >= 4) ||
-    (minLen >= 6 && (minLen / maxLen) >= 0.6)
+  const shorter = tClean.length <= dClean.length ? tClean : dClean;
+  const longer = tClean.length <= dClean.length ? dClean : tClean;
+  if (longer.startsWith(shorter) && (
+    shorter.length >= 10 ||
+    (options.busy && shorter.length >= 4) ||
+    (shorter.length >= 6 && (shorter.length / longer.length) >= 0.6)
   )) {
     return 2;
   }
 
-  const shorter = tClean.length <= dClean.length ? tClean : dClean;
-  const longer = tClean.length <= dClean.length ? dClean : tClean;
   if (shorter.length >= 24) {
     const probeLen = shorter.length >= 48 ? 24 : 20;
     const maxStart = shorter.length - probeLen;
@@ -4690,7 +4686,7 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
           shorterRatio >= 0.8 &&
           headMin <= 12 &&
           headMax <= 48 &&
-          tailMin <= 12 &&
+          tailMin === 0 &&
           (Boolean(options.busy) || longerRatio >= 0.65 || tailMax <= 32)
         ) {
           return 1;
@@ -4815,6 +4811,83 @@ function collapseConsecutiveDomThinking(domMessages) {
   return out;
 }
 
+function findUserAnchorStartIdx(baseList, domList, options = {}) {
+  const baseUserIndices = [];
+  for (let i = 0; i < baseList.length; i++) {
+    if (baseList[i]?.role === 'user') baseUserIndices.push(i);
+  }
+  const domUserIndices = [];
+  for (let i = 0; i < domList.length; i++) {
+    if (domList[i]?.role === 'user') domUserIndices.push(i);
+  }
+  const M = baseUserIndices.length;
+  const K = domUserIndices.length;
+  if (!M || !K) return -1;
+
+  const getTurnAssistants = (list, userIndices, pos) => {
+    const start = userIndices[pos] + 1;
+    const end = pos + 1 < userIndices.length ? userIndices[pos + 1] : list.length;
+    const items = [];
+    for (let i = start; i < end; i++) {
+      const m = list[i];
+      if (m && m.role === 'assistant' && compactMatchKey(m.text)) {
+        items.push(m);
+      }
+    }
+    return items;
+  };
+
+  const scoreTurnAssistants = (baseTurnPos, domTurnPos) => {
+    const bAsst = getTurnAssistants(baseList, baseUserIndices, baseTurnPos);
+    const dAsst = getTurnAssistants(domList, domUserIndices, domTurnPos);
+    if (!bAsst.length || !dAsst.length) return 0;
+    for (const bm of bAsst) {
+      for (const dm of dAsst) {
+        if (classifyAssistantMatch(bm.text, dm.text, { busy: Boolean(options.busy) }) > 0) {
+          return 1;
+        }
+      }
+    }
+    return -1;
+  };
+
+  const anchorUser = baseList[baseUserIndices[M - 1]];
+  const candidates = [];
+  let fallbackIdx = -1;
+
+  for (let p = 0; p < K; p++) {
+    const domIdx = domUserIndices[p];
+    if (!isSameUserMessage(anchorUser, domList[domIdx])) continue;
+    fallbackIdx = domIdx;
+    if (p > M - 1) continue;
+    let allPrevMatch = true;
+    for (let offset = 1; offset <= p; offset++) {
+      if (!isSameUserMessage(baseList[baseUserIndices[M - 1 - offset]], domList[domUserIndices[p - offset]])) {
+        allPrevMatch = false;
+        break;
+      }
+    }
+    if (!allPrevMatch) continue;
+    const userSpan = p + 1;
+    let assistantScore = 0;
+    for (let offset = 0; offset <= p; offset++) {
+      assistantScore += scoreTurnAssistants(M - 1 - offset, p - offset);
+    }
+    const totalScore = assistantScore + userSpan * 2;
+    candidates.push({ p, domIdx, userSpan, totalScore });
+  }
+
+  if (candidates.length) {
+    candidates.sort((a, b) => (
+      (b.totalScore - a.totalScore) ||
+      (b.userSpan - a.userSpan) ||
+      (b.p - a.p)
+    ));
+    return candidates[0].domIdx + 1;
+  }
+  return fallbackIdx >= 0 ? fallbackIdx + 1 : -1;
+}
+
 function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
   const domList = collapseConsecutiveDomThinking(domMessages);
   const baseList = Array.isArray(trajMsgs) ? trajMsgs.map((m) => ({ ...m })) : [];
@@ -4822,18 +4895,51 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     return domList.map((m, idx) => ({ ...m, msgIndex: idx }));
   }
 
-  const attachThoughtsIfMissing = (target, src) => {
-    if (!target.thoughtText && src.thoughtText) {
-      target.thoughtLabel = src.thoughtLabel || '思考过程';
-      target.thoughtText = src.thoughtText;
-      if (Array.isArray(src.thoughts) && src.thoughts.length) {
-        target.thoughts = src.thoughts.slice();
-        target.thoughtCount = src.thoughts.length;
+  const trajHasAuthoritativeThoughts = new WeakSet();
+  for (const m of baseList) {
+    if (m && m.role === 'assistant' && String(m.thoughtText || '').trim()) {
+      trajHasAuthoritativeThoughts.add(m);
+    }
+  }
+
+  const mergeDomMetaIntoTarget = (target, src) => {
+    if (!target || !src || target === src) return;
+    if (src.highRisk) {
+      target.highRisk = true;
+      const srcRisk = String(src.riskText || '').trim();
+      const curRisk = String(target.riskText || '').trim();
+      if (srcRisk) {
+        if (!curRisk) {
+          target.riskText = srcRisk;
+        } else if (!curRisk.includes(srcRisk)) {
+          target.riskText = `${curRisk}\n${srcRisk}`;
+        }
+      }
+    }
+    if (!trajHasAuthoritativeThoughts.has(target)) {
+      const srcThoughts = Array.isArray(src.thoughts) && src.thoughts.length
+        ? src.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
+        : (String(src.thoughtText || '').trim() ? [String(src.thoughtText).trim()] : []);
+      const curThoughts = Array.isArray(target.thoughts) && target.thoughts.length
+        ? target.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
+        : (String(target.thoughtText || '').trim() ? [String(target.thoughtText).trim()] : []);
+      if (srcThoughts.length) {
+        const mergedThoughts = curThoughts.slice();
+        for (const t of srcThoughts) {
+          if (t && !mergedThoughts.includes(t)) mergedThoughts.push(t);
+        }
+        target.thoughts = mergedThoughts;
+        target.thoughtText = mergedThoughts.join('\n\n');
+        target.thoughtLabel = target.thoughtLabel || src.thoughtLabel || '思考过程';
+        target.thoughtCount = Math.max(mergedThoughts.length, Number(target.thoughtCount) || 0, Number(src.thoughtCount) || 0);
+      } else if (!target.thoughtLabel && src.thoughtLabel) {
+        target.thoughtLabel = src.thoughtLabel;
+        target.thoughtCount = Math.max(Number(target.thoughtCount) || 0, Number(src.thoughtCount) || 1);
       }
     }
   };
 
-  // 先定位轨迹最后一条用户消息及其在桌面 DOM 中的锚点位置，隔离历史轮与当前轮
+  // 先结合消息顺序与轮次结构定位轨迹最后一条用户消息在桌面 DOM 中的锚点位置
   let lastBaseUserIdx = -1;
   for (let i = baseList.length - 1; i >= 0; i--) {
     if (baseList[i].role === 'user') {
@@ -4841,16 +4947,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
       break;
     }
   }
-  let startAppendIdx = -1;
-  if (lastBaseUserIdx >= 0) {
-    const anchorUser = baseList[lastBaseUserIdx];
-    for (let i = domList.length - 1; i >= 0; i--) {
-      if (domList[i].role === 'user' && isSameUserMessage(anchorUser, domList[i])) {
-        startAppendIdx = i + 1;
-        break;
-      }
-    }
-  }
+  const startAppendIdx = lastBaseUserIdx >= 0 ? findUserAnchorStartIdx(baseList, domList, options) : -1;
 
   let currentDomTurnEnd = domList.length;
   if (startAppendIdx >= 0) {
@@ -4888,15 +4985,24 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           consumedDomIndices.add(di);
           consumedBaseIndices.add(bestBi);
           const matchTarget = baseList[bestBi];
-          if (dm.highRisk) {
-            matchTarget.highRisk = true;
-            matchTarget.riskText = dm.riskText || matchTarget.riskText || '';
-          }
           if (options.busy && compactMatchKey(dm.text).length > compactMatchKey(matchTarget.text).length) {
             matchTarget.text = dm.text;
             matchTarget.html = dm.html || null;
           }
-          attachThoughtsIfMissing(matchTarget, dm);
+          mergeDomMetaIntoTarget(matchTarget, dm);
+        }
+      }
+    }
+    // 扫尾聚合：同池内未消费的重复 DOM 节点若与已消费基准项精确同文，合并其 highRisk/riskText/thoughts 后跳过
+    for (const di of domIndices) {
+      if (consumedDomIndices.has(di)) continue;
+      const dm = domList[di];
+      for (const bi of baseDesc) {
+        if (!consumedBaseIndices.has(bi)) continue;
+        if (classifyAssistantMatch(baseList[bi].text, dm.text, { busy: Boolean(options.busy), exactOnly: true }) >= 3) {
+          mergeDomMetaIntoTarget(baseList[bi], dm);
+          consumedDomIndices.add(di);
+          break;
         }
       }
     }
@@ -4953,7 +5059,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         const lastTurnAssistant = [...currentTurnEntries].reverse().map((e) => e.item).find((bm) => bm.role === 'assistant');
         if (lastTurnAssistant) {
           if (!lastTurnAssistant.thoughtText && dm.thoughtText) {
-            attachThoughtsIfMissing(lastTurnAssistant, dm);
+            mergeDomMetaIntoTarget(lastTurnAssistant, dm);
           } else if (!normMsgPrefix(lastTurnAssistant.text) && dm.thoughtText && dm.thoughtText.length > String(lastTurnAssistant.thoughtText || '').length) {
             lastTurnAssistant.thoughtText = dm.thoughtText;
             if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
@@ -4971,14 +5077,16 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         }
         continue;
       }
-      const dup = dHasText
-        ? currentTurnEntries.some((entry) => {
+      const dupEntry = dHasText
+        ? currentTurnEntries.find((entry) => {
             if (entry.item.role !== dm.role) return false;
             const exactOnly = !entry.fromBase || consumedBaseIndices.has(entry.baseIdx);
             return classifyAssistantMatch(entry.item.text, dm.text, { busy: Boolean(options.busy), exactOnly }) > 0;
           })
-        : false;
-      if (!dup) {
+        : null;
+      if (dupEntry) {
+        mergeDomMetaIntoTarget(dupEntry.item, dm);
+      } else {
         // 流式纯思考卡转正文交接：若本轮末尾是无正文纯思考卡，合并其思考到新回复并移除临时卡
         const pendingThinkIdx = (dm.role === 'assistant' && dHasText)
           ? baseList.findIndex((bm, idx) => idx > currentTurnStartIdx && bm.role === 'assistant' && !normMsgPrefix(bm.text) && !bm.highRisk && (bm.thoughtLabel || bm.thoughtText))

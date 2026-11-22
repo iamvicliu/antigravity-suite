@@ -22374,4 +22374,143 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
     { busy: false }
   );
   assert.equal(tailWithBaseMerged.length, 3, '前 20 字不同的两段 60 字文本在 Pass 1/Pass 2 均不得误合并');
+
+  // 12. 保护代码内嵌幂运算/乘法/按位非运算符（const x = 2**3; const y = 4**5; 不得变 23 / 45）
+  assert.equal(normPlainMatchText('const x = 2**3; const y = 4**5;'), 'const x = 2**3; const y = 4**5;');
+  assert.notEqual(normPlainMatchText('const x = 2**3; const y = 4**5;'), normPlainMatchText('const x = 23; const y = 45;'));
+  assert.equal(normPlainMatchText('const x = 2*3; const y = 4*5;'), 'const x = 2*3; const y = 4*5;');
+  assert.equal(normPlainMatchText('const x = (a + 1)**3; const y = 4**(b + 1);'), 'const x = (a + 1)**3; const y = 4**(b + 1);');
+  assert.equal(normPlainMatchText('const a = ~~x; const b = 1+~~y;'), 'const a = ~~x; const b = 1+~~y;');
+  assert.equal(normPlainMatchText('这是**加粗**文字与(**重点**)及「~~旧文案~~」'), '这是加粗文字与(重点)及「旧文案」');
+
+  const powMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '展示幂运算结果' },
+      { id: 't-a-1', role: 'assistant', text: 'const x = 2**3; const y = 4**5;' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '展示幂运算结果' },
+      { id: 'a-1', role: 'assistant', text: 'const x = 2**3; const y = 4**5;' },
+      { id: 'a-2', role: 'assistant', text: 'const x = 23; const y = 45;' }
+    ],
+    { busy: false }
+  );
+  assert.equal(powMerged.length, 3, '2**3; ... 4**5; 不得与 23; ... 45; 碰撞去重，两条代码回复均须保留');
+  assert.equal(powMerged[1].text, 'const x = 2**3; const y = 4**5;');
+  assert.equal(powMerged[2].text, 'const x = 23; const y = 45;');
+
+  // 13. 收紧 Tier 2：busy=false 下前 32 字相同、后文完全不同的长回复不得判重
+  const sharedPrefix36 = '第一步检查本地环境变量以及网络代理网关监听端口配置状态已经全部完成，';
+  assert.ok(sharedPrefix36.length >= 32);
+  const replyDiffA = `${sharedPrefix36}随后发现远程服务器磁盘空间不足导致写入失败，请先扩容磁盘后再重新执行部署脚本。`;
+  const replyDiffB = `${sharedPrefix36}接下来需要校验服务端证书签发链是否有效，并确认客户端浏览器信任根证书后刷新页面。`;
+  const tier2TightMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '请汇报两项检查' },
+      { id: 't-a-1', role: 'assistant', text: replyDiffA }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '请汇报两项检查' },
+      { id: 'a-1', role: 'assistant', text: replyDiffB }
+    ],
+    { busy: false }
+  );
+  assert.equal(tier2TightMerged.length, 3, 'busy=false 时前 32 字相同但后文不同的长回复必须保留 R2');
+  assert.equal(tier2TightMerged[1].text, replyDiffA);
+  assert.equal(tier2TightMerged[2].text, replyDiffB);
+
+  const shortTailForkMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-0', role: 'user', text: '汇报两套方案结果' },
+      { id: 't-a-1', role: 'assistant', text: `${sharedPrefix36}方案A失败` }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '汇报两套方案结果' },
+      { id: 'a-1', role: 'assistant', text: `${sharedPrefix36}方案B成功` }
+    ],
+    { busy: false }
+  );
+  assert.equal(shortTailForkMerged.length, 3, '仅末尾数字符分叉（方案A失败 vs 方案B成功）亦不得误判重');
+
+  // 14. 用户锚点结合消息顺序区分重复提问（连续两轮“继续”/“收到”与滑动窗口重复提问）
+  const repeatTurnTraj = [
+    { id: 't-u-0', role: 'user', text: '继续' },
+    { id: 't-a-1', role: 'assistant', text: '收到' }
+  ];
+  const repeatTurnDom = [
+    { id: 'u-0', role: 'user', text: '继续' },
+    { id: 'a-1', role: 'assistant', text: '收到' },
+    { id: 'u-2', role: 'user', text: '继续' },
+    { id: 'a-3', role: 'assistant', text: '收到' }
+  ];
+  const repeatTurnMerged = mergeTrajectoryAndDomMessages(repeatTurnTraj, repeatTurnDom, { busy: false });
+  assert.equal(repeatTurnMerged.length, 4, '连续两轮相同问答 [继续,收到,继续,收到] 必须结合顺序锚定第一轮并保留全部 4 条');
+  assert.deepEqual(
+    repeatTurnMerged.map((m) => `${m.role}:${m.text}`),
+    ['user:继续', 'assistant:收到', 'user:继续', 'assistant:收到']
+  );
+
+  const slidingTraj = [
+    { id: 't-u-0', role: 'user', text: '继续' },
+    { id: 't-a-0', role: 'assistant', text: '甲阶段结果已经汇总完毕。' },
+    { id: 't-u-1', role: 'user', text: '继续' },
+    { id: 't-a-1', role: 'assistant', text: '乙阶段结果已经汇总完毕。' },
+    { id: 't-u-2', role: 'user', text: '继续' },
+    { id: 't-a-2', role: 'assistant', text: '丙阶段结果已经汇总完毕。' }
+  ];
+  const slidingDom = [
+    { id: 'd-u-1', role: 'user', text: '继续' },
+    { id: 'd-a-1', role: 'assistant', text: '乙阶段结果已经汇总完毕。' },
+    { id: 'd-u-2', role: 'user', text: '继续' },
+    { id: 'd-a-2', role: 'assistant', text: '丙阶段结果已经汇总完毕。' },
+    { id: 'd-u-3', role: 'user', text: '继续' },
+    { id: 'd-a-3', role: 'assistant', text: '丁阶段结果已经汇总完毕。' }
+  ];
+  const slidingMerged = mergeTrajectoryAndDomMessages(slidingTraj, slidingDom, { busy: false });
+  assert.equal(slidingMerged.length, 8, 'DOM 滑动窗口截断早轮且全部提问同为“继续”时应按轮次回复匹配定位第 3 轮并保留全部 8 条');
+  assert.equal(slidingMerged[6].text, '继续');
+  assert.equal(slidingMerged[7].text, '丁阶段结果已经汇总完毕。');
+
+  // 15. 去重时合并重复 DOM 节点元数据（highRisk / riskText / thoughts 不因倒序消费后者而丢失）
+  const riskMetaTraj = [
+    { id: 't-u-0', role: 'user', text: '清理临时目录' },
+    { id: 't-a-1', role: 'assistant', text: '执行清理脚本' }
+  ];
+  const riskMetaDom = [
+    { id: 'u-0', role: 'user', text: '清理临时目录' },
+    {
+      id: 'a-1',
+      role: 'assistant',
+      text: '执行清理脚本',
+      highRisk: true,
+      riskText: '高危删除命令 rm -rf',
+      thoughtLabel: '已思考',
+      thoughtText: '评估删除风险'
+    },
+    {
+      id: 'a-2',
+      role: 'assistant',
+      text: '执行清理脚本',
+      highRisk: false
+    }
+  ];
+  const riskMetaMerged = mergeTrajectoryAndDomMessages(riskMetaTraj, riskMetaDom, { busy: false });
+  assert.equal(riskMetaMerged.length, 2, '同文重复 DOM 节点应去重为 2 条');
+  assert.equal(riskMetaMerged[1].highRisk, true, '前一个重复节点携带的 highRisk 不得因倒序消费后者而丢失');
+  assert.ok(riskMetaMerged[1].riskText.includes('rm -rf'), '前一个重复节点的 riskText 必须合并保留');
+  assert.ok(riskMetaMerged[1].thoughtText.includes('评估删除风险'), '前一个重复节点的思考信息必须合并保留');
+
+  const pass2MetaMerged = mergeTrajectoryAndDomMessages(
+    [{ id: 't-u-0', role: 'user', text: '检查危险操作' }],
+    [
+      { id: 'u-0', role: 'user', text: '检查危险操作' },
+      { id: 'a-1', role: 'assistant', text: '相同输出', highRisk: false, thoughtText: '思考1' },
+      { id: 'a-2', role: 'assistant', text: '相同输出', highRisk: true, riskText: '危险操作', thoughtText: '思考2' }
+    ],
+    { busy: false }
+  );
+  assert.equal(pass2MetaMerged.length, 2, 'Pass 2 同快照重复 DOM 节点应去重并聚合高危与思考元数据');
+  assert.equal(pass2MetaMerged[1].highRisk, true);
+  assert.equal(pass2MetaMerged[1].riskText, '危险操作');
+  assert.deepEqual(pass2MetaMerged[1].thoughts, ['思考1', '思考2']);
 });
