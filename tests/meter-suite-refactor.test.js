@@ -19036,6 +19036,20 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
         }
       }
     },
+    ...Array.from({ length: 5 }, (_, bi) => ({
+      id: `pm-cap-batch-${bi}`,
+      deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+      step: {
+        type: 'CORTEX_STEP_TYPE_USER_INPUT',
+        userInput: {
+          items: [{ text: `容量上限测试批次-${bi}` }],
+          media: [
+            { mimeType: 'image/png', inlineData: samePrefixPngA, displayName: `cap-${bi}-1.png` },
+            { mimeType: 'image/png', inlineData: samePrefixPngB, displayName: `cap-${bi}-2.png` }
+          ]
+        }
+      }
+    })),
     {
       id: 'pm-media-applied-lost',
       deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
@@ -19473,7 +19487,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
         action: 'edit-queued-message',
         conversationId: 'conv-cap-10',
         clientId: 'cli-cap-10',
-        messageId: 'pm-media-same-prefix-2',
+        messageId: `pm-cap-batch-${k}`,
         hasMedia: true
       });
       assert.equal(rBatch.ok, true);
@@ -19491,7 +19505,7 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
       action: 'edit-queued-message',
       conversationId: 'conv-cap-10',
       clientId: 'cli-cap-10',
-      messageId: 'pm-media-same-prefix-2',
+      messageId: 'pm-cap-batch-4',
       hasMedia: true
     });
     assert.equal(rOverCap.ok, false, '累计 9 + 2 = 11 超过上限 10 必须拒绝');
@@ -19927,6 +19941,316 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
       mergedEndSnap.queuedMessages.map((x) => ({ id: x.messageId, domIndex: x.domIndex })),
       [{ id: 'pm-A', domIndex: 0 }, { id: 'pm-B', domIndex: 1 }]
     );
+
+    // 11. 撤回重试附件不重复回归：首次删除+核验结果未知已暂存 -> 原项仍在 -> 重试删除成功 -> 重发仅携带 1 份附件
+    const { Readable } = require('stream');
+    const makeMockActionPoster = (handlerFn, tokenStr, clientIdStr) => async (bodyObj) => {
+      const req = Readable.from([Buffer.from(JSON.stringify({ clientId: clientIdStr, ...bodyObj }), 'utf8')]);
+      req.method = 'POST';
+      req.url = '/api/action';
+      req.headers = { host: '127.0.0.1:18766', 'content-type': 'application/json', 'x-ag-remote-token': tokenStr };
+      req.socket = { remoteAddress: '127.0.0.1' };
+      let out = '';
+      await handlerFn(req, { setHeader() {}, writeHead() {}, end(c) { if (c) out += String(c); } });
+      return JSON.parse(out);
+    };
+    const retryDedupSentUploads = [];
+    let retryDedupDeleteAttempt = 0;
+    let retryVerifyFailedOnce = false;
+    const retryDedupHandler = createRemoteHttpHandler({
+      port: 18767,
+      token: 'tok-r6-retry',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r6-retry', activeConversationId: 'conv-r6-retry', busy: true, messages: [] }),
+      performAction: async (act) => {
+        if (act.action === 'send') {
+          retryDedupSentUploads.push((act.pendingUploads || []).map((u) => u.name));
+          return { ok: true, snapshot: { ok: true, sessionId: 'conv-r6-retry', messages: [] } };
+        }
+        return { ok: true };
+      },
+      callLanguageServer: async (method) => {
+        if (method === 'DeleteAgentMessage') {
+          retryDedupDeleteAttempt += 1;
+          if (retryDedupDeleteAttempt === 1) return null; // 首次删除超时/结果未知
+          return { ok: true }; // 第二次重试删除成功
+        }
+        return { ok: true };
+      },
+      localApiConnect: async () => ({
+        call: async () => ({ ok: true }),
+        callStreamFirstFrame: async () => {
+          // 首次解析返回待编辑含图项；首次删除后的核验抛错模拟核验结果亦不可得；第二次重试解析仍返回原项
+          if (retryDedupDeleteAttempt === 1 && !retryVerifyFailedOnce) {
+            retryVerifyFailedOnce = true;
+            throw new Error('stream verification unavailable');
+          }
+          return {
+            update: {
+              pendingAgentMessagesUpdate: {
+                pendingAgentMessages: [{
+                  id: 'pm-r6-retry-1',
+                  deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+                  step: {
+                    type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                    userInput: {
+                      items: [{ text: '撤回重试仅保留一份图' }],
+                      media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+                    }
+                  }
+                }]
+              }
+            }
+          };
+        }
+      })
+    });
+    const postRetryDedup = makeMockActionPoster(retryDedupHandler, 'tok-r6-retry', 'cli-r6-retry');
+    const r6FirstUnknown = await postRetryDedup({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r6-retry',
+      messageId: 'pm-r6-retry-1',
+      hasMedia: true,
+      text: '撤回重试仅保留一份图'
+    });
+    assert.equal(r6FirstUnknown.ok, false);
+    assert.equal(r6FirstUnknown.outcomeUnknown, true);
+    assert.equal(r6FirstUnknown.attachmentsPreserved, true, '首次删除及核验结果未知应先保留暂存附件');
+
+    const r6SecondOk = await postRetryDedup({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r6-retry',
+      messageId: 'pm-r6-retry-1',
+      hasMedia: true,
+      text: '撤回重试仅保留一份图'
+    });
+    assert.equal(r6SecondOk.ok, true, '原项仍在时重试撤回删除成功应返回 ok');
+    assert.equal(r6SecondOk.actionResult.editedAttachments.length, 1);
+
+    const r6Resend = await postRetryDedup({
+      action: 'send',
+      conversationId: 'conv-r6-retry',
+      text: '重试后重发'
+    });
+    assert.equal(r6Resend.ok, true);
+    assert.deepEqual(retryDedupSentUploads, [['disk-queued.png']], '首次结果未知后重试成功，重发必须按原消息标识复用批次、仅携带 1 份附件');
+
+    // 12. 发送与新编辑交错执行回归：send 等待期间新编辑追加的暂存附件绝不可被首次 send 完成时整键清掉
+    const interleaveSentBatches = [];
+    let releaseFirstSend = null;
+    let firstSendStarted = null;
+    const firstSendStartedPromise = new Promise((r) => { firstSendStarted = r; });
+    const pngPathB = path.join(tmpMediaDir, 'shot-b.png');
+    fs.writeFileSync(pngPathB, Buffer.concat([fs.readFileSync(diskImgPath), Buffer.from('B')]));
+    const interleaveHandler = createRemoteHttpHandler({
+      port: 18768,
+      token: 'tok-r6-interleave',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      mediaOptions: { allowedRoots: [tmpMediaDir] },
+      historyManager: createConversationHistoryManager(),
+      fetchSnapshot: async () => ({ ok: true, sessionId: 'conv-r6-interleave', activeConversationId: 'conv-r6-interleave', busy: true, messages: [] }),
+      performAction: async (act) => {
+        if (act.action === 'send') {
+          interleaveSentBatches.push((act.pendingUploads || []).map((u) => u.name));
+          if (interleaveSentBatches.length === 1) {
+            firstSendStarted();
+            await new Promise((r) => { releaseFirstSend = r; });
+          }
+          return { ok: true, snapshot: { ok: true, sessionId: 'conv-r6-interleave', messages: [] } };
+        }
+        return { ok: true };
+      },
+      callLanguageServer: async () => ({ ok: true }),
+      localApiConnect: async () => ({
+        call: async () => ({ ok: true }),
+        callStreamFirstFrame: async () => ({
+          update: {
+            pendingAgentMessagesUpdate: {
+              pendingAgentMessages: [
+                {
+                  id: 'pm-int-a',
+                  deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+                  step: {
+                    type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                    userInput: {
+                      items: [{ text: '批次A' }],
+                      media: [{ mimeType: 'image/png', uri: `file://${diskImgPath}`, thumbnail: '' }]
+                    }
+                  }
+                },
+                {
+                  id: 'pm-int-b',
+                  deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_WHEN_IDLE',
+                  step: {
+                    type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                    userInput: {
+                      items: [{ text: '批次B' }],
+                      media: [{ mimeType: 'image/png', uri: `file://${pngPathB}`, thumbnail: '' }]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        })
+      })
+    });
+    const postInterleave = makeMockActionPoster(interleaveHandler, 'tok-r6-interleave', 'cli-r6-interleave');
+    const rEditA = await postInterleave({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r6-interleave',
+      messageId: 'pm-int-a',
+      hasMedia: true,
+      text: '批次A'
+    });
+    assert.equal(rEditA.ok, true);
+
+    const firstSendPromise = postInterleave({
+      action: 'send',
+      conversationId: 'conv-r6-interleave',
+      text: '发送批次A'
+    });
+    await firstSendStartedPromise;
+
+    // 首次 send 尚在等待桌面响应期间，同一会话撤回批次 B
+    const rEditB = await postInterleave({
+      action: 'edit-queued-message',
+      conversationId: 'conv-r6-interleave',
+      messageId: 'pm-int-b',
+      hasMedia: true,
+      text: '批次B'
+    });
+    assert.equal(rEditB.ok, true);
+
+    // 放行首次 send 完成，再执行第二次 send
+    releaseFirstSend();
+    const rFirstSendDone = await firstSendPromise;
+    assert.equal(rFirstSendDone.ok, true);
+
+    const rSecondSendDone = await postInterleave({
+      action: 'send',
+      conversationId: 'conv-r6-interleave',
+      text: '发送批次B'
+    });
+    assert.equal(rSecondSendDone.ok, true);
+    assert.deepEqual(
+      interleaveSentBatches,
+      [['disk-queued.png'], ['shot-b.png']],
+      '首次发送成功时必须仅消费本次发送的暂存批次，交错期间新编辑追加的 shot-b.png 必须保留至下一次发送'
+    );
+
+    // 13. 折叠态含媒体排队消息立即发送回归：纯 Fiber 折叠卡片自动展开并重新采集，按 messageId 精准命中目标 sendBtn
+    const envCollapsed = createDomEnv();
+    envCollapsed.sandbox.setTimeout = (fn) => setTimeout(fn, 0);
+    envCollapsed.sandbox.clearTimeout = (t) => clearTimeout(t);
+    envCollapsed.sandbox.location = {
+      protocol: 'https:',
+      hostname: '127.0.0.1',
+      pathname: '/c/dddddddd-4444-4444-4444-444444444444',
+      origin: 'https://127.0.0.1:53892',
+      href: 'https://127.0.0.1:53892/c/dddddddd-4444-4444-4444-444444444444'
+    };
+    const colMain = envCollapsed.doc.createElement('main');
+    const colCard = envCollapsed.doc.createElement('div');
+    colCard.setAttribute('data-testid', 'queued-messages-card');
+    const colHeader = envCollapsed.doc.createElement('div');
+    colHeader.textContent = 'Queued Messages 2';
+    const colExpandBtn = envCollapsed.doc.createElement('button');
+    colExpandBtn.setAttribute('data-testid', 'queued-messages-expand-button');
+    colExpandBtn.setAttribute('aria-label', 'Expand queued messages');
+    colExpandBtn.setAttribute('aria-expanded', 'false');
+    colHeader.appendChild(colExpandBtn);
+    colCard.appendChild(colHeader);
+    colCard['__reactFiber$col'] = {
+      memoizedProps: {
+        queuedUserInputs: [
+          {
+            id: 'pm-col-1',
+            userInput: {
+              items: [{ text: '折叠媒体项1' }],
+              media: [{ mimeType: 'image/png', inlineData: inlinePngUrl, name: 'c1.png' }]
+            }
+          },
+          {
+            id: 'pm-col-2',
+            userInput: {
+              items: [{ text: '折叠媒体项2' }],
+              media: [{ mimeType: 'image/png', inlineData: inlinePngUrl, name: 'c2.png' }]
+            }
+          }
+        ]
+      }
+    };
+    let expandClickedCount = 0;
+    const colSendClicks = [];
+    colExpandBtn.addEventListener('click', () => {
+      expandClickedCount += 1;
+      colExpandBtn.setAttribute('aria-expanded', 'true');
+      colExpandBtn.setAttribute('aria-label', 'Collapse queued messages');
+      for (const [mid, label] of [['pm-col-1', '折叠媒体项1'], ['pm-col-2', '折叠媒体项2']]) {
+        const row = envCollapsed.doc.createElement('div');
+        row.textContent = label;
+        const dec = envCollapsed.doc.createElement('div');
+        dec.setAttribute('data-testid', 'queued-decorators');
+        const sBtn = envCollapsed.doc.createElement('button');
+        sBtn.setAttribute('aria-label', 'Send now');
+        sBtn.addEventListener('click', () => colSendClicks.push(mid));
+        const eBtn = envCollapsed.doc.createElement('button');
+        eBtn.setAttribute('aria-label', 'Edit');
+        const dBtn = envCollapsed.doc.createElement('button');
+        dBtn.setAttribute('aria-label', 'Delete');
+        dec.appendChild(sBtn);
+        dec.appendChild(eBtn);
+        dec.appendChild(dBtn);
+        row.appendChild(dec);
+        colCard.appendChild(row);
+      }
+    });
+    colMain.appendChild(colCard);
+    envCollapsed.doc.body.appendChild(colMain);
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8'), envCollapsed.sandbox);
+    try {
+      const colHandler = createRemoteHttpHandler({
+        port: 18769,
+        token: 'tok-r6-col',
+        enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+      }, {
+        historyManager: createConversationHistoryManager(),
+        fetchSnapshot: async () => ({
+          ok: true,
+          sessionId: 'dddddddd-4444-4444-4444-444444444444',
+          activeConversationId: 'dddddddd-4444-4444-4444-444444444444',
+          busy: true,
+          messages: []
+        }),
+        performAction: async (act) => {
+          const res = await envCollapsed.sandbox.__AGEnhancer.performMobileAction(act);
+          return { ok: Boolean(res?.ok), actionResult: res, error: res?.error };
+        },
+        callLanguageServer: async () => ({ ok: true }),
+        localApiConnect: async () => ({
+          call: async () => ({ ok: true })
+        })
+      });
+      const postCol = makeMockActionPoster(colHandler, 'tok-r6-col', 'cli-r6-col');
+      const colParsed = await postCol({
+        action: 'send-queued-messages',
+        sendAll: false,
+        conversationId: 'dddddddd-4444-4444-4444-444444444444',
+        messageId: 'pm-col-2',
+        hasMedia: true,
+        text: '折叠媒体项2'
+      });
+      assert.equal(colParsed.ok, true, `折叠态含媒体排队消息立即发送必须自动展开并成功触发发送: ${JSON.stringify(colParsed)}`);
+      assert.equal(expandClickedCount, 1, '必须自动点击一次折叠卡片展开按钮');
+      assert.deepEqual(colSendClicks, ['pm-col-2'], '展开重采后必须按 messageId 精准命中目标行 sendBtn，不得误点其他行');
+    } finally {
+      envCollapsed.sandbox.__AGEnhancer?.dispose?.();
+    }
   } finally {
     fs.rmSync(tmpMediaDir, { recursive: true, force: true });
   }

@@ -7994,6 +7994,50 @@
     return entries;
   }
 
+  function findQueuedMessagesExpandButton() {
+    const main = document.querySelector('main') || document.body;
+    if (!main) return null;
+    const cardRoot = Array.from(main.querySelectorAll('[data-testid="queued-messages-card"]'))
+      .find((el) => !isExcludedSuiteOrNavNode(el) && isVisiblePromptControl(el)) || main;
+    const candidates = Array.from(cardRoot.querySelectorAll('[data-testid="queued-messages-expand-button"], button'))
+      .filter((b) => !isExcludedSuiteOrNavNode(b) && isVisiblePromptControl(b));
+    return candidates.find((b) => {
+      const tid = String(b.getAttribute?.('data-testid') || '');
+      const aria = String(b.getAttribute?.('aria-label') || '').trim();
+      const expanded = String(b.getAttribute?.('aria-expanded') || '').trim().toLowerCase();
+      if (expanded === 'true') return false;
+      if (/^(?:Collapse queued messages|收起排队消息)$/i.test(aria)) return false;
+      if (tid === 'queued-messages-expand-button') return true;
+      return /^(?:Expand queued messages|展开排队消息)$/i.test(aria);
+    }) || null;
+  }
+
+  async function ensureQueuedMessagesExpanded(initialEntries, requiredBtnKey) {
+    const hasNeededBtn = (list) => {
+      if (!Array.isArray(list) || !list.length) return false;
+      if (requiredBtnKey === 'editOrDelete') {
+        return list.some((e) => Boolean(e?.editBtn || e?.deleteBtn));
+      }
+      return list.some((e) => Boolean(e?.[requiredBtnKey]));
+    };
+    let entries = Array.isArray(initialEntries) ? initialEntries : findQueuedMessagesDomEntries();
+    if (!entries.length || hasNeededBtn(entries)) return entries;
+    const expandBtn = findQueuedMessagesExpandButton();
+    if (!expandBtn) return entries;
+    try {
+      expandBtn.click();
+    } catch {
+      return entries;
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 40));
+      const refreshed = findQueuedMessagesDomEntries();
+      if (hasNeededBtn(refreshed)) return refreshed;
+      if (refreshed.length) entries = refreshed;
+    }
+    return entries;
+  }
+
   function collectQueuedMessagesFromDom() {
     return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, messageId, source, text, images, hasMedia, status, hasEdit }) => ({
       domIndex,
@@ -10207,7 +10251,7 @@
     };
 
     if (action === 'send-queued-dom') {
-      const entries = findQueuedMessagesDomEntries();
+      const entries = await ensureQueuedMessagesExpanded(findQueuedMessagesDomEntries(), 'sendBtn');
       if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
       if (payload?.sendAll === true) {
         let sentCount = 0;
@@ -10229,7 +10273,7 @@
     }
 
     if (action === 'edit-queued-dom') {
-      const entries = findQueuedMessagesDomEntries();
+      const entries = await ensureQueuedMessagesExpanded(findQueuedMessagesDomEntries(), 'editOrDelete');
       const resolved = resolveStrictQueuedDomTarget(entries, payload, '编辑');
       if (!resolved.ok) return { ok: false, error: resolved.error };
       const target = resolved.target;
@@ -10360,7 +10404,7 @@
     }
 
     if (action === 'delete-queued-dom') {
-      const entries = findQueuedMessagesDomEntries();
+      const entries = await ensureQueuedMessagesExpanded(findQueuedMessagesDomEntries(), 'deleteBtn');
       const resolved = resolveStrictQueuedDomTarget(entries, payload, '删除');
       if (!resolved.ok) return { ok: false, error: resolved.error };
       const target = resolved.target;
