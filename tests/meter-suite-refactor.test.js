@@ -24504,7 +24504,7 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
   );
   assert.deepEqual(katexMultilineMerged.map((m) => m.id), ['t-u-1', 't-a-2'], '标准多行块级公式 $$\\nE = mc^2\\n$$ 必须正常归一化去重');
 
-  // 3d. 代码槽位与文首 copy / 语言标签+Copy 词边界反例：copyright / Copyright / py\nCopyright / pyCopyright（无按钮结构证据）不得被拆为按钮铬 + right 误合并；真实复制按钮仍正常去重
+  // 3d. 代码槽位与文首 copy / 语言标签+Copy 词边界反例：copyright / Copyright / py\nCopyright / pyCopyright（即使同消息另有 <button>Copy</button>）不得被拆为按钮铬 + right 误合并；真实复制按钮仍正常去重
   const baseRightCode = [
     { id: 't-u-1', role: 'user', text: '对比两段代码' },
     { id: 't-a-2', role: 'assistant', text: '查看如下代码：\n```py\nright = get_license_metadata()\n```\n请核对。' }
@@ -24530,11 +24530,49 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
       );
     }
   }
+  // 关键反例：<code> 内本身就是真实代码 pyCopyright = get_license_metadata()，即使同消息/同代码块带有 <button>Copy</button> 或其它带 Copy 按钮的代码块，在 busy: false/true 下均必须保留不同回复
+  for (const [caseLabel, extraDomProps] of [
+    [
+      '同代码块带 Copy 按钮但 <code> 内确为 pyCopyright',
+      {
+        html: '<p>查看如下代码：</p><div class="code-header"><span>py</span><button>Copy</button></div><pre><code>pyCopyright = get_license_metadata()</code></pre><p>请核对。</p>'
+      }
+    ],
+    [
+      '同消息另有独立 <button>Copy</button> 且 <code> 内为 pyCopyright',
+      {
+        html: '<div class="code-header"><span>sh</span><button>Copy</button></div><pre><code>echo ok</code></pre><p>查看如下代码：</p><pre><code>pyCopyright = get_license_metadata()</code></pre><p>请核对。</p>'
+      }
+    ],
+    [
+      '仅带宽松布尔标记无匹配 <code> 结构证据',
+      { domHasCopyButtonChrome: true }
+    ]
+  ]) {
+    for (const busyFlag of [false, true]) {
+      const mergedRealPyCopyrightWithBtn = mergeTrajectoryAndDomMessages(baseRightCode, [
+        { id: 'u-0', role: 'user', text: '对比两段代码' },
+        { id: 'a-1', role: 'assistant', text: '查看如下代码：\npy\nCopy\nright = get_license_metadata()\n请核对。' },
+        { id: 'a-2', role: 'assistant', text: '查看如下代码：\npyCopyright = get_license_metadata()\n请核对。', ...extraDomProps }
+      ], { busy: busyFlag });
+      assert.deepEqual(
+        mergedRealPyCopyrightWithBtn.map((m) => m.id),
+        ['t-u-1', 't-a-2', 'dom-tail-2'],
+        `busy=${busyFlag} 时（${caseLabel}）不得将真实 <code> 内的 pyCopyright 拆成 pyCopy + right 误合并`
+      );
+    }
+  }
   for (const [label, domCopyText, extraFields] of [
     ['裸 Copy 换行', '查看如下代码：\nCopy\nright = get_license_metadata()\n请核对。', {}],
     ['语言标签换行 + Copy 换行', '查看如下代码：\npy\nCopy\nright = get_license_metadata()\n请核对。', {}],
     ['紧贴 pyCopy + 换行', '查看如下代码：\npyCopy\nright = get_license_metadata()\n请核对。', {}],
-    ['带显式 Copy 按钮结构证据的紧贴铬', '查看如下代码：\npyCopyright = get_license_metadata()\n请核对。', { domHasCopyButtonChrome: true }]
+    [
+      '紧邻 Copy 按钮后的 <code> 确以 right = get_license_metadata() 起始',
+      '查看如下代码：\npyCopyright = get_license_metadata()\n请核对。',
+      {
+        html: '<p>查看如下代码：</p><div class="code-header"><span>py</span><button>Copy</button></div><pre><code>right = get_license_metadata()</code></pre><p>请核对。</p>'
+      }
+    ]
   ]) {
     const mergedCopyBoundaryOk = mergeTrajectoryAndDomMessages(baseRightCode, [
       { id: 'u-0', role: 'user', text: '对比两段代码' },
