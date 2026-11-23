@@ -4705,12 +4705,56 @@ function stripTrailingEllipsis(s) {
   return String(s || '').replace(/(?:\.{3,}|…+)$/g, '');
 }
 
-const DOM_UI_CHROME_TOKEN = '(?:'
-  + '(?:(?:javascript|typescript|python|bash|shell|zsh|sh|json|yaml|yml|html|css|scss|less|sql|golang|go|rust|java|cpp|c\\+\\+|csharp|c#|ruby|php|swift|kotlin|markdown|md|xml|toml|ini|diff|plaintext|text|txt|jsx|tsx|js|ts|py|rb|rs|cs)?(?:copycode|copied|copy|复制代码|已复制|复制))'
-  + '|(?:important|warning|caution|note|tip)'
-  + '|(?:重要提示|提示信息|注意事项|警告提示)'
+const DOM_UI_CHROME_UNIT = '(?:'
+  + 'copycode|copied|copy|复制代码|已复制|复制'
+  + '|important|warning|caution|note|tip'
+  + '|重要提示|提示信息|注意事项|警告提示'
+  + '|javascript|typescript|python|bash|shell|zsh|sh|json|yaml|yml|html|css|scss|less|sql|golang|go|rust|java|cpp|c\\+\\+|csharp|c#|ruby|php|swift|kotlin|markdown|md|xml|toml|ini|diff|plaintext|text|txt|jsx|tsx|js|ts|py|rb|rs|cs|mermaid'
   + ')';
-const DOM_UI_CHROME_PREFIX_RE = new RegExp(`^(?:${DOM_UI_CHROME_TOKEN}[:：·•\\-|]*)+$`);
+const DOM_UI_CHROME_GAP_RE = new RegExp(`^(?:${DOM_UI_CHROME_UNIT}[:：·•\\-|]*)+$`);
+
+function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0) {
+  if (!tClean || !dClean || startPos < 0 || startPos >= dClean.length) return -1;
+  let ti = 0;
+  let di = startPos;
+  let skippedChrome = 0;
+  const MAX_CHROME_GAPS = 24;
+  while (ti < tClean.length && di < dClean.length) {
+    if (tClean[ti] === dClean[di]) {
+      ti += 1;
+      di += 1;
+      continue;
+    }
+    if (skippedChrome >= MAX_CHROME_GAPS) return -1;
+    const remT = tClean.length - ti;
+    const probeLen = Math.min(8, remT);
+    const probe = tClean.slice(ti, ti + probeLen);
+    const searchEnd = Math.min(dClean.length, di + 48);
+    let foundAt = -1;
+    let searchFrom = di + 1;
+    while (searchFrom < searchEnd) {
+      const idx = dClean.indexOf(probe, searchFrom);
+      if (idx < 0 || idx > searchEnd) break;
+      const gap = dClean.slice(di, idx);
+      if (gap && DOM_UI_CHROME_GAP_RE.test(gap)) {
+        foundAt = idx;
+        break;
+      }
+      searchFrom = idx + 1;
+    }
+    if (foundAt < 0) return -1;
+    di = foundAt;
+    skippedChrome += 1;
+  }
+  if (ti < tClean.length) return -1;
+  if (di < dClean.length) {
+    const trailing = dClean.slice(di);
+    if (trailing.length <= 48 && DOM_UI_CHROME_GAP_RE.test(trailing)) {
+      di = dClean.length;
+    }
+  }
+  return di;
+}
 
 function isMarkdownSourcedIncoming(msg, options = {}) {
   if (options.isolated || options.domIsMarkdown) return true;
@@ -4753,13 +4797,12 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
     return 2;
   }
 
-  // Tier 1 仅允许可识别的桌面 UI 装饰前缀（如 Alert/语言/Copy 标签）包裹完整轨迹正文，且非流式态尾部必须零失配
-  if (!options.baseIsDom && !options.domIsMarkdown && tClean.length >= 24 && dClean.length > tClean.length) {
-    const hitPos = dClean.indexOf(tClean);
-    if (hitPos > 0 && hitPos <= 48) {
-      const uiPrefix = dClean.slice(0, hitPos);
-      const tailAfter = dClean.length - (hitPos + tClean.length);
-      if (DOM_UI_CHROME_PREFIX_RE.test(uiPrefix) && (Boolean(options.busy) || tailAfter === 0)) {
+  // Tier 1 允许可识别的桌面 UI 装饰（首部/中段/尾部的代码块语言标签、Copy/复制代码、GitHub Alert 标题）穿插在完整轨迹正文中
+  if (!options.baseIsDom && !options.domIsMarkdown && tClean.length >= 12 && dClean.length > tClean.length) {
+    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0);
+    if (endPos > 0) {
+      const tailAfter = dClean.length - endPos;
+      if (tailAfter === 0 || Boolean(options.busy) || Boolean(options.allowCoveredPrefix)) {
         return 1;
       }
     }
@@ -4945,10 +4988,18 @@ function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, all
     const bk = stripTrailingEllipsis(
       baseOverwrittenByDom?.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text)
     );
-    if (bk && dClean.startsWith(bk, pos)) {
-      lastStartPos = pos;
-      pos += bk.length;
-      matched.push(entry);
+    if (bk) {
+      let nextPos = -1;
+      if (dClean.startsWith(bk, pos)) {
+        nextPos = pos + bk.length;
+      } else if (!baseOverwrittenByDom?.has(item) && bk.length >= 12) {
+        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos);
+      }
+      if (nextPos > pos) {
+        lastStartPos = pos;
+        pos = nextPos;
+        matched.push(entry);
+      }
     }
   }
   if (matched.length >= 2 && pos === dClean.length) {

@@ -8441,7 +8441,16 @@
         !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
         !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
       ));
-      const mdBounded = collectBoundedNodeText(mdRoots, MAX_DOM_MSG_CHARS, 8000);
+      const isMarkdownUiChromeNode = (el) => {
+        if (!el || el.nodeType !== 1) return false;
+        const tag = String(el.tagName || '').toUpperCase();
+        const cls = typeof el.className === 'string' ? el.className : '';
+        if (cls.includes('katex-mathml') || cls.includes('markdown-alert-title')) return true;
+        if (cls.includes('pointer-events-none') && cls.includes('sticky')) return true;
+        if (tag === 'BUTTON' && !cls.includes('inline-pill')) return true;
+        return false;
+      };
+      const mdBounded = collectBoundedNodeText(mdRoots, MAX_DOM_MSG_CHARS, 8000, 24, isMarkdownUiChromeNode);
       const overTextCap = mdBounded.truncated;
       let replyText = mdBounded.text;
       // 文本提取阶段已受字符与节点双预算早停；超限时直接跳过 HTML 序列化（完整长文由服务端轨迹通道渲染）

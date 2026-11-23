@@ -23605,3 +23605,142 @@ test('修复 240K 自动压缩死循环 3 处 Bug：压缩后旧读数滞后、�
     }
   }
 });
+
+test('根治远程端代码块与提示框中段 UI 铬导致的重复二次回复 (#47 中段 UI 铬)', async () => {
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const { mergeTrajectoryAndDomMessages } = require('../mobile-remote.js');
+
+  // 1. ag-enhancer-overlay.js collectBoundedNodeText 跳过 Copy 按钮、sticky 语言栏、katex-mathml 与 markdown-alert-title，同时保留 inline-pill 与代码正文
+  const envMd = createDomEnv();
+  let enhMd = null;
+  try {
+    const resp = envMd.doc.createElement('div');
+    resp.setAttribute('data-testid', 'agent-response');
+    const mdRoot = envMd.doc.createElement('div');
+    mdRoot.setAttribute('data-markdown-root', 'true');
+
+    const pIntro = envMd.doc.createElement('p');
+    pIntro.textContent = '先运行下面命令：';
+    const stickyBar = envMd.doc.createElement('div');
+    stickyBar.className = 'pointer-events-none sticky top-0';
+    stickyBar.textContent = 'bash';
+    const copyBtn = envMd.doc.createElement('button');
+    copyBtn.className = 'copy-code-btn';
+    copyBtn.textContent = 'Copy';
+    const inlinePill = envMd.doc.createElement('button');
+    inlinePill.className = 'inline-pill';
+    inlinePill.textContent = 'cli.js';
+    const preCode = envMd.doc.createElement('pre');
+    preCode.textContent = 'npm run test:suite';
+    const alertTitle = envMd.doc.createElement('p');
+    alertTitle.className = 'markdown-alert-title';
+    alertTitle.textContent = 'Note';
+    const alertBody = envMd.doc.createElement('p');
+    alertBody.textContent = '不要删配置。';
+    const katexMathml = envMd.doc.createElement('span');
+    katexMathml.className = 'katex-mathml';
+    katexMathml.textContent = 'x^2';
+
+    mdRoot.appendChild(pIntro);
+    mdRoot.appendChild(stickyBar);
+    mdRoot.appendChild(copyBtn);
+    mdRoot.appendChild(inlinePill);
+    mdRoot.appendChild(preCode);
+    mdRoot.appendChild(alertTitle);
+    mdRoot.appendChild(alertBody);
+    mdRoot.appendChild(katexMathml);
+    resp.appendChild(mdRoot);
+    envMd.doc.body.appendChild(resp);
+
+    vm.runInContext(ENHANCER_SRC, envMd.sandbox);
+    enhMd = envMd.sandbox.__AGEnhancer;
+    const snap = enhMd.getMobileSnapshot();
+    assert.equal(snap.messages.length, 1);
+    const extracted = snap.messages[0].text;
+    assert.ok(extracted.includes('先运行下面命令：'), '应保留正文段落');
+    assert.ok(extracted.includes('npm run test:suite'), '应保留代码块正文');
+    assert.ok(extracted.includes('cli.js'), '应保留 .inline-pill 按钮文本');
+    assert.ok(extracted.includes('不要删配置。'), '应保留 Alert 正文');
+    assert.ok(!extracted.includes('Copy'), '不得把 Copy 按钮混入 DOM 纯文本');
+    assert.ok(!extracted.includes('bash'), '不得把 pointer-events-none sticky 语言头混入 DOM 纯文本');
+    assert.ok(!extracted.includes('Note'), '不得把 markdown-alert-title 混入 DOM 纯文本');
+    assert.ok(!extracted.includes('x^2'), '不得把 katex-mathml 混入 DOM 纯文本');
+  } finally {
+    enhMd?.dispose?.();
+    envMd.sandbox.__AGContextMeter?.dispose?.();
+    envMd.cleanup?.();
+  }
+
+  // 2. mobile-remote.js: 中段代码块语言头 + Copy/复制代码、GitHub Alert Note、短前缀 shCopy、多代码块与流式增量均能精确去重
+  const baseCode = [
+    { id: 't-u-1', role: 'user', text: '给我看下命令' },
+    { id: 't-a-2', role: 'assistant', text: '先运行下面这条命令：\n\n```bash\nnpm run test:suite\n```\n\n运行完告诉我结果。' }
+  ];
+  for (const [label, domText] of [
+    ['bash Copy', '先运行下面这条命令：\nbash\nCopy\nnpm run test:suite\n运行完告诉我结果。'],
+    ['bash 复制代码', '先运行下面这条命令：\nbash\n复制代码\nnpm run test:suite\n运行完告诉我结果。'],
+    ['纯语言标签 bash', '先运行下面这条命令：\nbash\nnpm run test:suite\n运行完告诉我结果。']
+  ]) {
+    const merged = mergeTrajectoryAndDomMessages(baseCode, [
+      { id: 'u-0', role: 'user', text: '给我看下命令' },
+      { id: 'a-1', role: 'assistant', text: domText }
+    ], { busy: false });
+    assert.deepEqual(merged.map((m) => m.id), ['t-u-1', 't-a-2'], `${label} 不得追加重复 dom-tail`);
+  }
+
+  // 2b: GitHub Alert 中段 Note 与短前缀 + shCopy
+  const baseAlert = [
+    { id: 't-u-1', role: 'user', text: '注意事项' },
+    { id: 't-a-2', role: 'assistant', text: '请按步骤操作：\n\n> [!NOTE]\n> 不要删除配置文件。\n\n完成后重启。' }
+  ];
+  const mergedAlert = mergeTrajectoryAndDomMessages(baseAlert, [
+    { id: 'u-0', role: 'user', text: '注意事项' },
+    { id: 'a-1', role: 'assistant', text: '请按步骤操作：\nNote\n不要删除配置文件。\n完成后重启。' }
+  ], { busy: false });
+  assert.deepEqual(mergedAlert.map((m) => m.id), ['t-u-1', 't-a-2']);
+
+  const baseShortPrefix = [
+    { id: 't-u-1', role: 'user', text: '总结' },
+    { id: 't-a-2', role: 'assistant', text: '好的：\n```sh\n./scripts/setup.sh\n```\n结束。' }
+  ];
+  const mergedShortPrefix = mergeTrajectoryAndDomMessages(baseShortPrefix, [
+    { id: 'u-0', role: 'user', text: '总结' },
+    { id: 'a-1', role: 'assistant', text: '好的：\nshCopy./scripts/setup.sh\n结束。' }
+  ], { busy: false });
+  assert.deepEqual(mergedShortPrefix.map((m) => m.id), ['t-u-1', 't-a-2']);
+
+  // 2c: 多段拼接 matchConcatenatedTurnDom 中前段回复含代码块 bashCopy 仍能整体去重
+  const baseMulti = [
+    { id: 't-u-1', role: 'user', text: '分两步执行' },
+    { id: 't-a-2', role: 'assistant', text: '第一步执行：\n```bash\nnpm run build\n```\n完成。' },
+    { id: 't-a-3', role: 'assistant', text: '第二步验证全部测试通过，现已部署完毕。' }
+  ];
+  const mergedMulti = mergeTrajectoryAndDomMessages(baseMulti, [
+    { id: 'u-0', role: 'user', text: '分两步执行' },
+    { id: 'a-1', role: 'assistant', text: '第一步执行：\nbash\nCopy\nnpm run build\n完成。\n\n第二步验证全部测试通过，现已部署完毕。' }
+  ], { busy: false });
+  assert.deepEqual(mergedMulti.map((m) => m.id), ['t-u-1', 't-a-2', 't-a-3']);
+
+  // 2d: 流式输出中段含 jsCopy 且尾部继续增长时应合并而非追加重复气泡
+  const baseStream = [
+    { id: 't-u-1', role: 'user', text: '写段示例' },
+    { id: 't-a-2', role: 'assistant', text: '先看示例代码：\n```js\nconsole.log(1);\n```' }
+  ];
+  const mergedStream = mergeTrajectoryAndDomMessages(baseStream, [
+    { id: 'u-0', role: 'user', text: '写段示例' },
+    { id: 'a-1', role: 'assistant', text: '先看示例代码：\njsCopyconsole.log(1);\n接着输出第二段说明。' }
+  ], { busy: true });
+  assert.deepEqual(mergedStream.map((m) => m.id), ['t-u-1', 't-a-2']);
+
+  // 2e: 反例防误合并 — 同一轮两条内容不同的真实助手回复（差异非 UI 铬）必须保留两条
+  const baseDistinct = [
+    { id: 't-u-1', role: 'user', text: '汇报两项改动' },
+    { id: 't-a-2', role: 'assistant', text: '已完成修复：FooBar.swift 的端口监听释放，请查收。' }
+  ];
+  const mergedDistinct = mergeTrajectoryAndDomMessages(baseDistinct, [
+    { id: 'u-0', role: 'user', text: '汇报两项改动' },
+    { id: 'a-1', role: 'assistant', text: '已完成修复：FooBar.swift 的端口监听释放，请查收。' },
+    { id: 'a-2', role: 'assistant', text: '已完成修复：BazQux.swift 的重连超时保护，请查收。' }
+  ], { busy: false });
+  assert.deepEqual(mergedDistinct.map((m) => m.id), ['t-u-1', 't-a-2', 'dom-tail-2'], '差异非 UI 铬的不同真实回复不得被误合并');
+});
