@@ -28576,3 +28576,402 @@ test('pulse-capsule-overlay: M532-M537 兜底、短窗 TPS 过滤与窄屏 4 档
   envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
 });
 
+
+test('根治默认项目假分组、修复文件目录跨项目串台并支持多目录项目浏览 (#49)', async () => {
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const remoteMod = require('../mobile-remote.js');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+
+  // 1. 静态门禁：禁止伪造 default / dom:默认项目 分组
+  assert.equal(freshEnhancerSrc.includes("ensureGroup('default'"), false, 'ag-enhancer-overlay.js 不得伪造 default 默认项目组');
+  assert.equal(freshEnhancerSrc.includes("ensureGroup('dom:默认项目'"), false, 'ag-enhancer-overlay.js 不得伪造 dom:默认项目 分组');
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-49-'));
+  try {
+    const fakeHome = path.join(tmpRoot, 'home');
+    const configDir = path.join(fakeHome, '.gemini', 'config');
+    const projectsDir = path.join(configDir, 'projects');
+    const stateDir = path.join(tmpRoot, 'state');
+    const codebaseDir = path.join(fakeHome, 'codebase');
+    const sharedArmyDir = path.join(fakeHome, 'shared', '_army');
+    const makeFontDir = path.join(codebaseDir, 'make-font');
+    const insightRepoDir = path.join(codebaseDir, 'InsightOS');
+    const insightSiteDir = path.join(fakeHome, 'shared', 'ws_works', 'InsightOS');
+    const agSuiteDir = path.join(codebaseDir, 'antigravity-suite');
+    const agSuiteSubDir = path.join(agSuiteDir, 'src');
+    const unregisteredRepoDir = path.join(codebaseDir, 'unregistered-sibling');
+
+    for (const d of [projectsDir, stateDir, sharedArmyDir, makeFontDir, insightRepoDir, insightSiteDir, agSuiteSubDir, unregisteredRepoDir]) {
+      fs.mkdirSync(d, { recursive: true });
+    }
+    fs.writeFileSync(path.join(makeFontDir, 'font.txt'), 'font');
+    fs.writeFileSync(path.join(sharedArmyDir, 'ledger.md'), '# army');
+    fs.writeFileSync(path.join(insightRepoDir, 'insight-app.ts'), 'export const app = 1;');
+    fs.writeFileSync(path.join(insightSiteDir, 'release-note.md'), '# InsightOS Site');
+    fs.writeFileSync(path.join(agSuiteDir, 'cli.js'), '// ag-suite');
+    fs.writeFileSync(path.join(agSuiteSubDir, 'app.js'), '// sub');
+
+    const writeProjJson = (id, name, folderPaths) => {
+      fs.writeFileSync(path.join(projectsDir, `${id}.json`), JSON.stringify({
+        id,
+        name,
+        projectResources: {
+          resources: folderPaths.map((fp) => ({ folderUri: 'file://' + fp }))
+        }
+      }, null, 2));
+    };
+    // 复现真实磁盘排序：0449 (%make-font + _army) 与 b6c2 (宽泛父目录 ~/codebase) 均排在 b9e0 (antigravity-suite) 之前
+    writeProjJson('0449-make-font', '%make-font', [makeFontDir, sharedArmyDir]);
+    writeProjJson('2628-insightos', 'InsightOS', [insightRepoDir, sharedArmyDir, insightSiteDir]);
+    writeProjJson('b6c2-global', '全局问题', [codebaseDir]);
+    writeProjJson('b9e0-ag-suite', 'antigravity-suite', [agSuiteDir]);
+    writeProjJson('default-cli-project', 'CLI Project', []);
+
+    // 2. matchWorkspaceToProjectId：防 _army 共享目录与 ~/codebase 宽泛父目录抢占归属
+    const metaMap = new Map([
+      ['0449-make-font', { id: '0449-make-font', name: '%make-font', workspacePaths: [makeFontDir, sharedArmyDir] }],
+      ['2628-insightos', { id: '2628-insightos', name: 'InsightOS', workspacePaths: [insightRepoDir, sharedArmyDir, insightSiteDir] }],
+      ['b6c2-global', { id: 'b6c2-global', name: '全局问题', workspacePaths: [codebaseDir] }],
+      ['b9e0-ag-suite', { id: 'b9e0-ag-suite', name: 'antigravity-suite', workspacePaths: [agSuiteDir] }]
+    ]);
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + agSuiteDir }] }, metaMap, { homeDir: fakeHome }),
+      'b9e0-ag-suite',
+      'antigravity-suite 不得被排前面的宽泛父目录 ~/codebase (全局问题) 抢占'
+    );
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + agSuiteSubDir }] }, metaMap, { homeDir: fakeHome }),
+      'b9e0-ag-suite',
+      '专属子目录应命中精确父项目 antigravity-suite'
+    );
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({
+        workspaces: [
+          { workspaceFolderAbsoluteUri: 'file://' + sharedArmyDir },
+          { workspaceFolderAbsoluteUri: 'file://' + insightSiteDir }
+        ]
+      }, metaMap, { homeDir: fakeHome }),
+      '2628-insightos',
+      '含共享目录 _army 的多目录会话必须命中拥有专属目录的 InsightOS，不得被排第一的 %make-font 抢占'
+    );
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + sharedArmyDir }] }, metaMap, { homeDir: fakeHome }),
+      '',
+      '仅含多项目共享目录 _army 时不得随机归入排第一的 %make-font'
+    );
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + unregisteredRepoDir }] }, metaMap, { homeDir: fakeHome }),
+      '',
+      '~/codebase 下未注册的新仓库不得被宽泛父目录项目「全局问题」误抢归属'
+    );
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + codebaseDir }] }, metaMap, { homeDir: fakeHome }),
+      'b6c2-global',
+      '直接打开 ~/codebase 本身时应精确命中「全局问题」'
+    );
+
+    // 3. ag-enhancer-overlay.js：置顶/无前置 project-header 会话与 fetchIsolatedConversationSnapshot 权威归属验证
+    const envEnh = createDomEnv();
+    envEnh.sandbox.setTimeout = setTimeout;
+    envEnh.sandbox.clearTimeout = clearTimeout;
+    envEnh.win.location = { pathname: '/c/conv-pinned-ag', search: '' };
+    envEnh.sandbox.location = envEnh.win.location;
+    envEnh.sandbox.__APP_CONFIG__ = { csrfToken: 'csrf-49-test' };
+    envEnh.sandbox.fetch = async (url, init) => {
+      const u = String(url || '');
+      if (u.includes('GetCascadeTrajectory')) {
+        const reqBody = JSON.parse(String(init?.body || '{}'));
+        if (reqBody.cascadeId === 'conv-iso-insight') {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              numTotalSteps: 2,
+              trajectory: {
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                summary: 'InsightOS 多目录会话',
+                trajectoryMetadata: {
+                  projectId: '2628-insightos',
+                  workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + insightRepoDir }]
+                },
+                steps: [
+                  { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '检查多目录' } },
+                  { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', status: 'CORTEX_STEP_STATUS_DONE', plannerResponse: { response: '已完成检查' } }
+                ]
+              }
+            })
+          };
+        }
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, uiPreferences: {} }) };
+    };
+    const sidebarEl = envEnh.doc.createElement('div');
+    sidebarEl.setAttribute('data-testid', 'conversation-list-sidebar');
+    // 模拟虚拟滚动截断：置顶会话行出现在任何 project-header 之前
+    const pinnedRow = envEnh.doc.createElement('a');
+    pinnedRow.setAttribute('data-testid', 'conversation-row-sidebar');
+    pinnedRow.setAttribute('href', '/c/conv-pinned-ag');
+    pinnedRow.setAttribute('data-pinned', 'true');
+    pinnedRow.textContent = '置顶会话';
+    const isoRow = envEnh.doc.createElement('a');
+    isoRow.setAttribute('data-testid', 'conversation-row-sidebar');
+    isoRow.setAttribute('href', '/c/conv-iso-insight');
+    isoRow.textContent = '隔离会话';
+    sidebarEl.appendChild(pinnedRow);
+    sidebarEl.appendChild(isoRow);
+    envEnh.doc.body.appendChild(sidebarEl);
+
+    vm.runInContext(RENDERER_SRC, envEnh.sandbox);
+    vm.runInContext(freshEnhancerSrc, envEnh.sandbox);
+    const enh = envEnh.sandbox.__AGEnhancer;
+
+    const baseOverlaySnap = enh.getMobileSnapshot();
+    assert.equal(baseOverlaySnap.projectGroups.some((g) => g.name === '默认项目' || g.id === 'default'), false, '桌面虚拟列表截断时不得生成默认项目分组');
+    assert.notEqual(baseOverlaySnap.currentProjectId, 'default');
+    assert.notEqual(baseOverlaySnap.currentProjectName, '默认项目');
+
+    const isoSnap = await enh.getMobileSnapshotAsync({ conversationId: 'conv-iso-insight' });
+    assert.equal(isoSnap.isolated, true);
+    assert.equal(isoSnap.currentProjectId, '2628-insightos', '独立隔离快照必须优先采用 trajectoryMetadata.projectId 而非虚拟列表假分组');
+    enh.dispose?.();
+    envEnh.sandbox.__AGContextMeter?.dispose?.();
+
+    // 4. enrichSnapshotWithCatalog：自愈历史中毒的 default/默认项目 缓存，完整下发多目录 workspacePaths，独立会话不伪造项目名
+    fs.writeFileSync(path.join(stateDir, 'remote-session-catalog.json'), JSON.stringify({
+      version: 2,
+      updatedAt: Date.now() - 5000,
+      subagentIds: [],
+      subagentRoots: {},
+      subagentStates: {},
+      conversations: [
+        { id: 'conv-pinned-ag', title: '置顶会话', projectId: 'default', projectName: '默认项目', pinned: true, archived: false, updatedAt: Date.now() - 5000, status: 'idle' }
+      ]
+    }));
+
+    const trajSummaries = {
+      'conv-pinned-ag': {
+        summary: '置顶会话',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date().toISOString(),
+        trajectoryMetadata: { projectId: 'b9e0-ag-suite', rootConversationId: 'conv-pinned-ag' },
+        annotations: { pinned: true }
+      },
+      'conv-insight': {
+        summary: 'Insight 多目录开发',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date().toISOString(),
+        trajectoryMetadata: { projectId: '2628-insightos', rootConversationId: 'conv-insight' }
+      },
+      'conv-standalone': {
+        summary: '纯独立问答',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date().toISOString(),
+        trajectoryMetadata: { projectId: 'outside-of-project', rootConversationId: 'conv-standalone' }
+      }
+    };
+
+    const enrichedAg = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-pinned-ag',
+      activeConversationId: 'conv-pinned-ag',
+      currentProjectId: 'default',
+      currentProjectName: '默认项目',
+      currentProjectPath: insightRepoDir,
+      conversations: [
+        { id: 'conv-pinned-ag', title: '置顶会话', active: true, projectId: 'default', projectName: '默认项目', pinned: true }
+      ],
+      projects: [{ id: 'default', name: '默认项目' }]
+    }, {
+      stateDir,
+      configDir,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => (method === 'GetAllCascadeTrajectories' ? { trajectorySummaries: trajSummaries } : {})
+      })
+    });
+
+    assert.equal(enrichedAg.currentProjectId, 'b9e0-ag-suite', 'DOM 传入 default 假值时服务端必须以权威项目 ID 覆盖');
+    assert.equal(enrichedAg.currentProjectName, 'antigravity-suite', 'DOM 传入「默认项目」时服务端必须恢复真实项目名 antigravity-suite');
+    assert.deepEqual(
+      enrichedAg.currentWorkspacePaths,
+      [fs.realpathSync(agSuiteDir)],
+      '当前会话必须替换为自身真实工作区路径，绝不残留上一个项目的路径'
+    );
+    const insightProjEntry = enrichedAg.projects.find((p) => p.id === '2628-insightos');
+    assert.ok(insightProjEntry, 'projects 列表应包含多目录项目 InsightOS');
+    assert.equal(insightProjEntry.workspacePaths.length, 3, '多目录项目必须完整下发全部 3 个工作区路径');
+    assert.deepEqual(
+      insightProjEntry.workspacePaths,
+      [fs.realpathSync(insightRepoDir), fs.realpathSync(sharedArmyDir), fs.realpathSync(insightSiteDir)]
+    );
+
+    const enrichedStandalone = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-standalone',
+      activeConversationId: 'conv-standalone',
+      currentProjectId: 'default',
+      currentProjectName: '默认项目',
+      currentProjectPath: insightRepoDir,
+      conversations: [{ id: 'conv-standalone', title: '纯独立问答', active: true }]
+    }, {
+      stateDir,
+      configDir,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => (method === 'GetAllCascadeTrajectories' ? { trajectorySummaries: trajSummaries } : {})
+      })
+    });
+    assert.equal(enrichedStandalone.currentProjectName, '', '未归属项目的独立会话不得伪造项目名');
+    assert.equal(enrichedStandalone.currentProjectPath, undefined, '未归属项目的独立会话不得残留其他项目的 currentProjectPath');
+    assert.deepEqual(enrichedStandalone.currentWorkspacePaths, [], '未归属项目的独立会话 currentWorkspacePaths 应为空数组');
+
+    // 5. /api/project-tree 强归属校验、防盲跳 realRoots[0] 与「↑ 上级」工作区根目录锁死
+    const mockCfg = {
+      port: 18799,
+      token: 'tok-49-project-tree-1234567890abcdef',
+      tunnelEnabled: false,
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    };
+    const allowedRealRoots = remoteMod.resolveProductionMediaAllowedRoots({ configDir, homeDir: fakeHome });
+    const httpHandler = remoteMod.createRemoteHttpHandler(mockCfg, {
+      catalogOptions: { stateDir, configDir },
+      mediaOptions: { allowedRoots: allowedRealRoots, configDir, homeDir: fakeHome },
+      callLanguageServer: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: trajSummaries };
+        return null;
+      }
+    });
+    const callGetJson = async (urlPath) => {
+      const { Readable } = require('stream');
+      const req = Readable.from([]);
+      req.method = 'GET';
+      req.url = urlPath;
+      req.headers = { host: '127.0.0.1:18799', 'x-ag-remote-token': mockCfg.token };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let raw = '';
+      await httpHandler(req, {
+        setHeader() {},
+        writeHead(code) { status = code; },
+        end(chunk) { if (chunk) raw += String(chunk); }
+      });
+      return { status, json: JSON.parse(raw) };
+    };
+
+    const blindEmpty = await callGetJson('/api/project-tree');
+    assert.equal(blindEmpty.status, 400, '未传目录与会话上下文时严禁盲跳 realRoots[0]');
+
+    const standaloneEmpty = await callGetJson('/api/project-tree?conversationId=conv-standalone&projectId=outside-of-project');
+    assert.equal(standaloneEmpty.status, 200);
+    assert.equal(standaloneEmpty.json.emptyProject, true, '无工作区独立会话应返回明确 emptyProject 空态而非跳到其他项目');
+    assert.deepEqual(standaloneEmpty.json.entries, []);
+
+    const standaloneCrossAttempt = await callGetJson('/api/project-tree?conversationId=conv-standalone&dir=' + encodeURIComponent(insightRepoDir));
+    assert.equal(standaloneCrossAttempt.status, 403, '独立会话携带其他项目目录请求必须 403 拦截');
+
+    const crossProjAttempt = await callGetJson('/api/project-tree?conversationId=conv-pinned-ag&projectId=b9e0-ag-suite&dir=' + encodeURIComponent(insightRepoDir));
+    assert.equal(crossProjAttempt.status, 403, 'antigravity-suite 会话请求 InsightOS 目录必须 403 拦截防串台');
+
+    // 即便父目录 ~/codebase 存在于 allowedRoots（全局问题项目），在 antigravity-suite 根目录时 parentDir 必须为空，严禁越界上翻到 ~/codebase
+    const agRootTree = await callGetJson('/api/project-tree?conversationId=conv-pinned-ag&projectId=b9e0-ag-suite&dir=' + encodeURIComponent(agSuiteDir));
+    assert.equal(agRootTree.status, 200);
+    assert.equal(agRootTree.json.parentDir, '', '所选工作区根目录处「↑ 上级」必须锁死为空，禁止越出到父目录 ~/codebase');
+    const agSubTree = await callGetJson('/api/project-tree?conversationId=conv-pinned-ag&projectId=b9e0-ag-suite&dir=' + encodeURIComponent(agSuiteSubDir));
+    assert.equal(agSubTree.status, 200);
+    assert.equal(agSubTree.json.parentDir, fs.realpathSync(agSuiteDir), '子目录内允许正常返回至当前工作区根目录');
+
+    // 6. 前端完整交互验证：多目录项目展示全部工作区 + 顶部切换栏、切单目录项目自动重置、切独立会话展示空态绝不串台
+    const enrichedInsight = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-insight',
+      activeConversationId: 'conv-insight',
+      conversations: [
+        { id: 'conv-insight', title: 'Insight 多目录开发', active: true },
+        { id: 'conv-pinned-ag', title: '置顶会话', active: false },
+        { id: 'conv-standalone', title: '纯独立问答', active: false }
+      ]
+    }, {
+      stateDir,
+      configDir,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => (method === 'GetAllCascadeTrajectories' ? { trajectorySummaries: trajSummaries } : {})
+      })
+    });
+
+    const mobileHtml = remoteMod.buildMobileAppHtml();
+    const inlineScriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
+    const bodyMatch = mobileHtml.match(/<body>([\s\S]*?)<script>/);
+    const envUi = createDomEnv();
+    envUi.doc.body.innerHTML = bodyMatch[1];
+    let currentUiSnap = enrichedInsight;
+    envUi.win.innerWidth = 1280;
+    envUi.win.innerHeight = 820;
+    envUi.win.AbortController = AbortController;
+    envUi.win.location = { pathname: '/', search: '?token=' + mockCfg.token, protocol: 'http:', reload() {} };
+    envUi.win.history = { replaceState() {} };
+    envUi.sandbox.location = envUi.win.location;
+    envUi.sandbox.history = envUi.win.history;
+    envUi.sandbox.AbortController = AbortController;
+    envUi.sandbox.URLSearchParams = URLSearchParams;
+    envUi.sandbox.fetch = async (url) => {
+      const u = new URL(String(url), 'http://127.0.0.1:18799');
+      const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/snapshot') {
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => currentUiSnap };
+      }
+      if (u.pathname === '/api/project-tree') {
+        const res = await callGetJson(u.pathname + u.search);
+        return { ok: res.status >= 200 && res.status < 300, status: res.status, headers: jsonHeaders, json: async () => res.json };
+      }
+      return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
+    };
+
+    vm.runInContext(inlineScriptMatch[1], envUi.sandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // (a) InsightOS 含 3 个工作区文件夹：点击「项目文件」默认展示全部 3 个工作区目录列表
+    envUi.doc.getElementById('btn-files-panel').click();
+    await new Promise((r) => setTimeout(r, 30));
+    const fvBody = envUi.doc.getElementById('fv-body');
+    const rootRows = fvBody.querySelectorAll('.fv-ws-root-row');
+    assert.equal(rootRows.length, 3, '3 目录项目打开项目文件应默认列出全部 3 个工作区文件夹');
+    // 点击第 3 个目录 (ws_works/InsightOS) 进入浏览，顶部应出现工作区切换胶囊栏且根目录无「↑ 上级」
+    rootRows[2].click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('release-note.md'), '点击第 3 个工作区应加载该目录下的 release-note.md');
+    assert.equal(fvBody.querySelectorAll('.fv-ws-switch').length, 3, '进入目录后顶部应渲染 3 个工作区切换胶囊');
+    assert.equal(envUi.doc.getElementById('fv-tree-up'), null, '工作区根目录处不得渲染越界「↑ 上级」按钮');
+    // 通过顶部切换胶囊切到第 1 个工作区 (codebase/InsightOS)
+    fvBody.querySelectorAll('.fv-ws-switch')[0].click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('insight-app.ts'), '点击顶部工作区胶囊应即时切换到第 1 个工作区');
+
+    // (b) 切换到单目录会话 antigravity-suite：关闭再点开「项目文件」，必须直接进入 antigravity-suite 目录，绝不残留 InsightOS 目录
+    envUi.doc.getElementById('fv-close-btn').click();
+    currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 10 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-project-badge').textContent, 'antigravity-suite');
+    envUi.doc.getElementById('btn-files-panel').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('cli.js'), '切到单目录项目后点开文件应直接展示 antigravity-suite 下的 cli.js');
+    assert.equal((fvBody.textContent || '').includes('insight-app.ts'), false, '严禁残留上一个项目 InsightOS 的目录内容');
+
+    // (c) 切换到无项目的独立会话 conv-standalone：顶栏项目徽章自动隐藏，点开「项目文件」展示空态绝不残留 antigravity-suite
+    envUi.doc.getElementById('fv-close-btn').click();
+    currentUiSnap = { ...enrichedStandalone, snapSeq: enrichedInsight.snapSeq + 20 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('conv-project-badge').hidden, true, '独立会话顶栏项目徽章必须隐藏，不伪造默认项目');
+    envUi.doc.getElementById('btn-files-panel').click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('当前对话未关联项目文件夹'), '无项目独立会话点开文件面板必须展示空态提示');
+    assert.equal((fvBody.textContent || '').includes('cli.js'), false, '独立会话严禁沿用上一个会话的目录');
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
