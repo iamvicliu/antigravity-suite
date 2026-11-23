@@ -23,12 +23,15 @@ function request(url, body, token) {
 
 function requestConnectStreamFirstFrame(baseOrigin, method, body, token, timeoutMs = 1500) {
   return new Promise((resolve) => {
+    const MAX_FRAME_BYTES = 32 * 1024 * 1024;
     let settled = false;
     let req = null;
+    let resRef = null;
     const finish = (val) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      try { resRef?.destroy?.(); } catch {}
       try { req?.destroy?.(); } catch {}
       resolve(val);
     };
@@ -52,36 +55,57 @@ function requestConnectStreamFirstFrame(baseOrigin, method, body, token, timeout
           'x-codeium-csrf-token': String(token || '')
         }
       }, (res) => {
+        resRef = res;
         if (res.statusCode && res.statusCode !== 200) {
           res.resume();
           finish(null);
           return;
         }
-        let buf = Buffer.alloc(0);
+        const chunks = [];
+        let totalBuffered = 0;
+        let expectedLen = null;
         res.on('data', (chunk) => {
           if (settled) return;
-          buf = Buffer.concat([buf, chunk]);
-          while (buf.length >= 5) {
-            const flags = buf[0];
-            const len = buf.readUInt32BE(1);
-            if (len > 32 * 1024 * 1024) {
-              finish(null);
-              return;
-            }
-            if (buf.length < 5 + len) break;
-            const rawBody = buf.subarray(5, 5 + len);
-            buf = buf.subarray(5 + len);
-            if (flags === 2) {
-              finish(null);
-              return;
-            }
-            try {
-              const decoded = (flags & 1) ? zlib.gunzipSync(rawBody) : rawBody;
-              finish(JSON.parse(decoded.toString('utf8')));
-            } catch {
-              finish(null);
-            }
+          if (!Buffer.isBuffer(chunk) || !chunk.length) return;
+          totalBuffered += chunk.length;
+          if (totalBuffered > 5 + MAX_FRAME_BYTES) {
+            finish(null);
             return;
+          }
+          chunks.push(chunk);
+          if (totalBuffered < 5) return;
+          if (expectedLen === null) {
+            const headBuf = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks);
+            expectedLen = headBuf.readUInt32BE(1);
+            if (expectedLen > MAX_FRAME_BYTES) {
+              finish(null);
+              return;
+            }
+            if (chunks.length > 1) {
+              chunks.length = 0;
+              chunks.push(headBuf);
+            }
+          }
+          if (totalBuffered < 5 + expectedLen) return;
+          const buf = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks);
+          const flags = buf[0];
+          const len = buf.readUInt32BE(1);
+          if (len > MAX_FRAME_BYTES) {
+            finish(null);
+            return;
+          }
+          const rawBody = buf.subarray(5, 5 + len);
+          if ((flags & 2) !== 0) {
+            finish(null);
+            return;
+          }
+          try {
+            const decoded = (flags & 1)
+              ? zlib.gunzipSync(rawBody, { maxOutputLength: MAX_FRAME_BYTES })
+              : rawBody;
+            finish(JSON.parse(decoded.toString('utf8')));
+          } catch {
+            finish(null);
           }
         });
         res.on('end', () => finish(null));
@@ -168,15 +192,20 @@ function discoverFromHubDaemonFiles(options = {}) {
 }
 
 async function connect() {
+  let cdpPage = null;
+  let cdpOrigin = '';
+  let primaryErr = null;
   try {
     const { targets } = await resolveActiveCdpTarget({ timeoutMs: 2500 });
     const page = targets[0];
     if (!page) throw new Error('Antigravity window not found');
+    cdpPage = page;
     const origin = new URL(page.url).origin;
+    cdpOrigin = origin;
     const html = await request(origin + '/');
     const configMatch = html.match(/window\.__APP_CONFIG__\s*=\s*(\{.*?\})\s*;/s);
     if (!configMatch) throw new Error('Antigravity 本地连接信息尚未就绪，请稍后重试');
-    const token = JSON.parse(configMatch[1]).csrfToken;
+    const token = String(JSON.parse(configMatch[1])?.csrfToken || '').trim();
     if (!token) throw new Error('Antigravity 本地鉴权信息尚未就绪，请稍后重试');
     return {
       origin,
@@ -187,9 +216,15 @@ async function connect() {
         requestConnectStreamFirstFrame(origin, method, body, token, timeoutMs)
     };
   } catch (err) {
-    const fallback = discoverFromHubDaemonFiles();
-    if (fallback) return fallback;
-    throw err;
+    primaryErr = err;
   }
+  const fallback = discoverFromHubDaemonFiles();
+  if (fallback) {
+    if (cdpPage && (!cdpOrigin || fallback.origin === cdpOrigin)) {
+      return { ...fallback, page: cdpPage };
+    }
+    return fallback;
+  }
+  throw primaryErr;
 }
 module.exports = { connect, discoverFromHubDaemonFiles, requestConnectStreamFirstFrame, request };
