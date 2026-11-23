@@ -4184,25 +4184,10 @@ function listSafeProjectTree(rawDir, options = {}) {
     }
   }
 
-  let explicitWorkspaceRoot = '';
-  if (options.workspaceRoot) {
-    const cleanWs = normalizeLocalFileUriToPath(options.workspaceRoot);
-    if (cleanWs && path.isAbsolute(cleanWs)) {
-      try {
-        const realWs = fs.realpathSync(cleanWs);
-        const wsAllowed = scoped
-          ? projectRoots.some((r) => realWs === r)
-          : realRoots.some((r) => realWs === r || realWs.startsWith(r + path.sep));
-        if (wsAllowed && !SENSITIVE_MEDIA_DIR_RE.test(realWs) && !isSensitiveHostPath(realWs, options)) {
-          explicitWorkspaceRoot = realWs;
-        }
-      } catch {}
-    }
-  }
-
   const trimmedRawDir = normalizeLocalFileUriToPath(rawDir || '');
+  const rawWsRoot = String(options.workspaceRoot || '').trim();
   if (scoped && !projectRoots.length) {
-    if (trimmedRawDir) {
+    if (trimmedRawDir || rawWsRoot) {
       return { ok: false, status: 403, error: '当前对话未绑定项目工作区目录，已拦截跨项目目录访问' };
     }
     return {
@@ -4217,8 +4202,36 @@ function listSafeProjectTree(rawDir, options = {}) {
     };
   }
 
+  let explicitWorkspaceRoot = '';
+  if (rawWsRoot) {
+    const cleanWs = normalizeLocalFileUriToPath(rawWsRoot);
+    if (!cleanWs || !path.isAbsolute(cleanWs)) {
+      return { ok: false, status: 400, error: '无效的工作区根目录路径' };
+    }
+    let realWs = '';
+    let wsStat = null;
+    try {
+      realWs = fs.realpathSync(cleanWs);
+      wsStat = fs.statSync(realWs);
+    } catch {
+      return { ok: false, status: 404, error: '指定的工作区根目录不存在或无法访问' };
+    }
+    if (!wsStat.isDirectory()) {
+      return { ok: false, status: 400, error: '指定的工作区根不是目录' };
+    }
+    if (SENSITIVE_MEDIA_DIR_RE.test(realWs) || isSensitiveHostPath(realWs, options)) {
+      return { ok: false, status: 403, error: '禁止访问敏感密钥或凭证目录' };
+    }
+    const wsInRealRoots = realRoots.some((r) => realWs === r || realWs.startsWith(r + path.sep));
+    const wsAllowed = wsInRealRoots && (scoped ? projectRoots.some((r) => realWs === r) : true);
+    if (!wsAllowed) {
+      return { ok: false, status: 403, error: '指定的工作区根目录不属于当前会话所属项目' };
+    }
+    explicitWorkspaceRoot = realWs;
+  }
+
   // 严禁在 rawDir 为空时回退至全局 realRoots[0]（防止跨项目串台到排第一的其他仓库）
-  const candidate = trimmedRawDir || (scoped ? (explicitWorkspaceRoot || projectRoots[0] || '') : '');
+  const candidate = trimmedRawDir || explicitWorkspaceRoot || (scoped ? (projectRoots[0] || '') : '');
   if (!candidate) {
     return { ok: false, status: 400, error: '未指定要浏览的项目工作区目录' };
   }
@@ -4241,6 +4254,9 @@ function listSafeProjectTree(rawDir, options = {}) {
       return { ok: false, status: 403, error: '禁止跨项目浏览非当前会话所属的工作区目录' };
     }
   }
+  if (explicitWorkspaceRoot && !(realDir === explicitWorkspaceRoot || realDir.startsWith(explicitWorkspaceRoot + path.sep))) {
+    return { ok: false, status: 403, error: '目标目录超出当前所选工作区根目录边界，禁止静默跨工作区访问' };
+  }
   if (SENSITIVE_MEDIA_DIR_RE.test(realDir) || isSensitiveHostPath(realDir, options)) {
     return { ok: false, status: 403, error: '禁止浏览敏感密钥或凭证目录' };
   }
@@ -4254,9 +4270,9 @@ function listSafeProjectTree(rawDir, options = {}) {
     return { ok: false, status: 400, error: '目标不是目录' };
   }
 
-  // 确定当前所选工作区根目录边界，严格锁死「↑ 上级」导航不得越出所选工作区根（即便父目录如 ~/codebase 也在全局白名单中）
+  // 确定当前所选工作区根目录边界，严格锁死「↑ 上级」与目录内符号链接不得越出所选工作区根
   let activeRoot = '';
-  if (explicitWorkspaceRoot && (realDir === explicitWorkspaceRoot || realDir.startsWith(explicitWorkspaceRoot + path.sep))) {
+  if (explicitWorkspaceRoot) {
     activeRoot = explicitWorkspaceRoot;
   } else {
     const rootPool = scoped ? projectRoots : realRoots;
@@ -4289,7 +4305,8 @@ function listSafeProjectTree(rawDir, options = {}) {
       continue;
     }
     const targetInAllowedRoot = realRoots.some((root) => realTarget === root || realTarget.startsWith(root + path.sep))
-      && boundaryPool.some((root) => realTarget === root || realTarget.startsWith(root + path.sep));
+      && boundaryPool.some((root) => realTarget === root || realTarget.startsWith(root + path.sep))
+      && (!activeRoot || realTarget === activeRoot || realTarget.startsWith(activeRoot + path.sep));
     if (!targetInAllowedRoot) continue;
     if (SENSITIVE_MEDIA_DIR_RE.test(realTarget) || isSensitiveHostPath(realTarget, options)) continue;
     const isDir = targetStat.isDirectory();
@@ -11120,6 +11137,20 @@ function buildMobileAppHtml() {
           fvState.contextKey = '';
           fvState.curDir = '';
           fvState.activeRoot = '';
+          const fvBd = $('file-viewer-backdrop');
+          if (fvBd && !fvBd.hidden) {
+            const targetTab = fvState.viewingFile ? (fvState.returnTab || fvState.tab || 'tree') : (fvState.tab || 'tree');
+            fvState.viewingFile = false;
+            fvState.tab = targetTab;
+            if (typeof syncFvChrome === 'function') syncFvChrome();
+            const fvTitle = $('fv-title');
+            if (fvTitle) fvTitle.textContent = targetTab === 'changes' ? '本会话变更与产物' : '项目文件';
+            const fvBody = $('fv-body');
+            if (fvBody && typeof renderSkeletonRowsHtml === 'function') fvBody.innerHTML = renderSkeletonRowsHtml(5);
+          } else {
+            fvState.viewingFile = false;
+            fvState.returnTab = 'tree';
+          }
         }
         if (typeof ta !== 'undefined' && ta) {
           ta.value = loadDraftForConv(selectedConversationId);
@@ -11658,9 +11689,8 @@ function buildMobileAppHtml() {
       $('conv-title').textContent = snap.title || 'Antigravity';
       syncTopbarProjectBadge(resolveConversationProjectName(snap));
       if (typeof ensureFvContextFresh === 'function' && ensureFvContextFresh()) {
-        const fvBd = $('file-viewer-backdrop');
-        if (fvBd && !fvBd.hidden && fvState.tab === 'tree' && !fvState.viewingFile) {
-          void loadProjectTreeView('');
+        if (typeof syncFvModalOnContextChange === 'function') {
+          syncFvModalOnContextChange();
         }
       }
       $('sub-meta').textContent = snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已就绪'));
@@ -13953,6 +13983,23 @@ function buildMobileAppHtml() {
       }
       return false;
     }
+    function syncFvModalOnContextChange() {
+      const fvBd = $('file-viewer-backdrop');
+      if (!fvBd || fvBd.hidden) {
+        fvState.viewingFile = false;
+        fvState.returnTab = 'tree';
+        return;
+      }
+      const targetTab = fvState.viewingFile ? (fvState.returnTab || fvState.tab || 'tree') : (fvState.tab || 'tree');
+      fvState.viewingFile = false;
+      fvState.tab = targetTab;
+      syncFvChrome();
+      if (targetTab === 'changes') {
+        void loadSessionChangesView();
+      } else {
+        void loadProjectTreeView('');
+      }
+    }
     function formatWorkspaceChipLabel(wsPath, allPaths) {
       const clean = trimTrailingSlashes(wsPath);
       const parts = clean.split('/').filter(Boolean);
@@ -13991,6 +14038,7 @@ function buildMobileAppHtml() {
       ensureFvContextFresh();
       const reqEpoch = bumpFvRequestEpoch();
       const reqContextKey = computeFvContextKey();
+      const reqActiveRoot = String(fvState.activeRoot || '').trim();
       fvState.returnTab = fvState.tab;
       fvState.viewingFile = true;
       bd.hidden = false;
@@ -14001,7 +14049,8 @@ function buildMobileAppHtml() {
         reqEpoch !== fvState.reqSeq ||
         computeFvContextKey() !== reqContextKey ||
         !fvState.viewingFile ||
-        Boolean($('file-viewer-backdrop')?.hidden)
+        Boolean($('file-viewer-backdrop')?.hidden) ||
+        Boolean(reqActiveRoot && fvState.activeRoot && fvState.activeRoot !== reqActiveRoot)
       );
       const showFileErr = (errMsg) => {
         if (isFileReqStale()) return;
@@ -14328,31 +14377,35 @@ function buildMobileAppHtml() {
         }
         body.innerHTML = htmlOut;
         body.querySelectorAll('.fv-art-row').forEach((btn) => {
-          btn.onclick = () => {
-            const art = artifacts[Number(btn.dataset.artIdx)];
+          btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-art-idx') || btn.dataset?.artIdx);
+            const art = artifacts[idx];
             if (!art) return;
             if (art.path) { void openFilePreviewModal(art.path, 0); return; }
+            bumpFvRequestEpoch();
             fvState.returnTab = 'changes';
             fvState.viewingFile = true;
             syncFvChrome();
             if (title) title.textContent = art.name || '生成产物';
             body.innerHTML = '<div class="md-body">' + renderMarkdownSafe(art.content || '') + '</div>';
-          };
+          });
         });
         body.querySelectorAll('.fv-diff-row').forEach((btn) => {
-          btn.onclick = () => {
-            const df = diffs[Number(btn.dataset.diffIdx)];
+          btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-diff-idx') || btn.dataset?.diffIdx);
+            const df = diffs[idx];
             if (!df) return;
-            fvState.returnTab = 'changes';
-            fvState.viewingFile = true;
-            syncFvChrome();
-            if (title) title.textContent = df.name || df.path || '文件改动';
             if (df.diff) {
+              bumpFvRequestEpoch();
+              fvState.returnTab = 'changes';
+              fvState.viewingFile = true;
+              syncFvChrome();
+              if (title) title.textContent = df.name || df.path || '文件改动';
               body.innerHTML = '<div class="fv-path-bar">' + esc(df.path || '') + '</div>' + renderUnifiedDiffHtml(df.diff);
             } else if (df.path) {
               void openFilePreviewModal(df.path, 0);
             }
-          };
+          });
         });
       } catch (err) {
         showChangesErr(err?.message);

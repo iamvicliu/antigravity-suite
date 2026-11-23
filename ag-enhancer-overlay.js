@@ -9447,25 +9447,21 @@
               seenConv.add(cid);
               const rawSummary = String(entry?.conversation?.summary || '').replace(/\s+/g, ' ').trim();
               const cachedZh = (uiLang === 'zh' && !sidebarUserRenamedIds.has(cid)) ? sidebarZhCache.get(cid) : '';
-              const entryAuthPid = String(
-                entry?.projectId
-                || entry?.conversation?.trajectoryMetadata?.projectId
-                || cascadeSummaryMap.get(cid)?.projectId
-                || ''
-              ).trim();
-              const hookGrpPid = (!isSyntheticSidebarProjectId(gId) && !/^pinned$/i.test(gName)) ? gId : '';
-              const pid = String(
-                (!isSyntheticSidebarProjectId(entryAuthPid) ? entryAuthPid : '')
-                || hookGrpPid
-                || (!isSyntheticSidebarProjectId(convGroupMap.get(cid)) ? convGroupMap.get(cid) : '')
-                || ''
-              ).trim();
+              // 逐候选单独过滤合成/默认占位 ID 后再按权威优先级选择：语言服务元数据 > 语言服务摘要 > 干净 entry.projectId > 分组猜测
+              const trajMetaPid = cleanSidebarPid(entry?.conversation?.trajectoryMetadata?.projectId);
+              const summaryPid = cleanSidebarPid(cascadeSummaryMap.get(cid)?.projectId);
+              const entryDirectPid = cleanSidebarPid(entry?.projectId);
+              const authoritativePid = trajMetaPid || summaryPid || entryDirectPid;
+              const hookGrpPid = !/^pinned$/i.test(gName) ? cleanSidebarPid(gId) : '';
+              const virtualGrpPid = cleanSidebarPid(convGroupMap.get(cid));
+              const pid = authoritativePid || hookGrpPid || virtualGrpPid || '';
               const resolvedName = (pid && projectMap.get(pid)?.name)
                 ? projectMap.get(pid).name
                 : (pid === hookGrpPid ? (gName || '') : '');
               convs.push({
                 id: cid,
                 projectId: pid,
+                authoritativeProjectId: authoritativePid,
                 projectName: resolvedName,
                 title: (cachedZh || rawSummary || cid.slice(0, 8)).slice(0, 80),
                 timeKey: toSafeNumber(entry?.timeKey),
@@ -9534,12 +9530,15 @@
       if (!id || byId.has(id)) continue;
       const storeMeta = storeById.get(id);
       const sumMeta = cascadeSummaryMap.get(id);
-      const authPid = (!isSyntheticSidebarProjectId(storeMeta?.projectId) ? String(storeMeta.projectId).trim() : '')
-        || (!isSyntheticSidebarProjectId(sumMeta?.projectId) ? String(sumMeta.projectId).trim() : '');
-      const resolvedPid = authPid || domProjectMap.get(id) || '';
+      const storeAuthPid = cleanSidebarPid(storeMeta?.authoritativeProjectId);
+      const summaryPid = cleanSidebarPid(sumMeta?.projectId);
+      const storeFallbackPid = cleanSidebarPid(storeMeta?.projectId);
+      const domFallbackPid = cleanSidebarPid(domProjectMap.get(id));
+      const authoritativePid = storeAuthPid || summaryPid;
+      const resolvedPid = authoritativePid || storeFallbackPid || domFallbackPid || '';
       const resolvedPName = storeProjById.get(resolvedPid)?.name
         || (resolvedPid === storeMeta?.projectId ? (storeMeta?.projectName || '') : '')
-        || (!authPid && sumMeta?.project ? sumMeta.project : '');
+        || (!authoritativePid && sumMeta?.project ? sumMeta.project : '');
       const title = getSidebarRowDisplayTitle(row);
       const active = isSidebarRowActive(row, currentId);
       const domBusy = Boolean(row.querySelector('[data-testid="status-loading-spinner"], button[aria-label*="停止"], button[aria-label*="Stop"]'));
@@ -9550,6 +9549,7 @@
         title: title.slice(0, 80),
         active,
         projectId: resolvedPid,
+        ...(authoritativePid ? { authoritativeProjectId: authoritativePid } : {}),
         projectName: resolvedPName,
         domBusy,
         domUnread,
@@ -9564,12 +9564,18 @@
     for (const sc of storeCatalog.conversations) {
       if (list.length >= maxItems) break;
       if (byId.has(sc.id)) continue;
+      const sumMeta = cascadeSummaryMap.get(sc.id);
+      const authPid = cleanSidebarPid(sc.authoritativeProjectId) || cleanSidebarPid(sumMeta?.projectId);
+      const resolvedPid = authPid || cleanSidebarPid(sc.projectId) || '';
+      const resolvedName = storeProjById.get(resolvedPid)?.name
+        || (resolvedPid === sc.projectId ? (sc.projectName || '') : '');
       const item = {
         id: sc.id,
         title: sc.title,
         active: Boolean(currentId && sc.id === currentId),
-        projectId: sc.projectId || '',
-        projectName: sc.projectName || '',
+        projectId: resolvedPid,
+        ...(authPid ? { authoritativeProjectId: authPid } : {}),
+        projectName: resolvedName,
         domBusy: false,
         domUnread: false,
         pinned: false,
@@ -9585,6 +9591,11 @@
   function isSyntheticSidebarProjectId(raw) {
     const id = String(raw || '').trim();
     return !id || id === 'default' || id === 'ungrouped' || id === 'pinned' || /^dom:/i.test(id) || /^name:/i.test(id);
+  }
+
+  function cleanSidebarPid(raw) {
+    const id = String(raw || '').trim();
+    return isSyntheticSidebarProjectId(id) ? '' : id;
   }
 
   function isSyntheticSidebarProjectName(raw) {
@@ -9641,19 +9652,20 @@
     const resolveKnownGroupForRow = (cid) => {
       const storeMeta = storeConvById.get(cid);
       const sumMeta = cascadeSummaryMap.get(cid);
-      const authPid = (!isSyntheticSidebarProjectId(storeMeta?.projectId) ? String(storeMeta.projectId).trim() : '')
-        || (!isSyntheticSidebarProjectId(sumMeta?.projectId) ? String(sumMeta.projectId).trim() : '');
-      if (authPid) {
-        if (authPid === 'outside-of-project' || authPid === 'standalone') {
-          return ensureGroup('', '独立对话', 0, false, authPid);
+      // 语言服务元数据 / 摘要归属优先于 Hook 分组推断
+      const authoritativePid = cleanSidebarPid(storeMeta?.authoritativeProjectId)
+        || cleanSidebarPid(sumMeta?.projectId);
+      if (authoritativePid) {
+        if (authoritativePid === 'outside-of-project' || authoritativePid === 'standalone') {
+          return ensureGroup('', '独立对话', 0, false, authoritativePid);
         }
-        const existingGrp = groupById.get(authPid);
-        const realName = storeProjById.get(authPid)?.name
+        const existingGrp = groupById.get(authoritativePid);
+        const realName = storeProjById.get(authoritativePid)?.name
           || existingGrp?.name
-          || (authPid === storeMeta?.projectId && !isSyntheticSidebarProjectName(storeMeta?.projectName) ? storeMeta.projectName : '')
+          || (authoritativePid === storeMeta?.projectId && !isSyntheticSidebarProjectName(storeMeta?.projectName) ? storeMeta.projectName : '')
           || sumMeta?.project
-          || authPid;
-        return ensureGroup(authPid, realName, 0, Boolean(storeProjById.get(authPid)?.isCollapsed));
+          || authoritativePid;
+        return ensureGroup(authoritativePid, realName, 0, Boolean(storeProjById.get(authoritativePid)?.isCollapsed));
       }
       const sumProj = sumMeta?.project || '';
       if (sumProj) {
@@ -9662,6 +9674,18 @@
         if (matched) {
           return matched.conversations ? matched : ensureGroup(matched.id, matched.name, 0, Boolean(matched.isCollapsed));
         }
+      }
+      const inferredStorePid = cleanSidebarPid(storeMeta?.projectId);
+      if (inferredStorePid) {
+        if (inferredStorePid === 'outside-of-project' || inferredStorePid === 'standalone') {
+          return ensureGroup('', '独立对话', 0, false, inferredStorePid);
+        }
+        const existingGrp = groupById.get(inferredStorePid);
+        const realName = storeProjById.get(inferredStorePid)?.name
+          || existingGrp?.name
+          || (!isSyntheticSidebarProjectName(storeMeta?.projectName) ? storeMeta.projectName : '')
+          || inferredStorePid;
+        return ensureGroup(inferredStorePid, realName, 0, Boolean(storeProjById.get(inferredStorePid)?.isCollapsed));
       }
       return null;
     };
@@ -10423,9 +10447,11 @@
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
       const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
       const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
-      const cleanConvPid = isSyntheticSidebarProjectId(matchedConv?.projectId) ? '' : String(matchedConv?.projectId || '').trim();
-      const cleanGrpPid = isSyntheticSidebarProjectId(matchedGroup?.id) ? '' : String(matchedGroup?.id || '').trim();
-      const targetProjectId = cleanConvPid || cleanGrpPid || '';
+      const summaryPid = cleanSidebarPid(cascadeSummaryMap.get(reqConvId)?.projectId);
+      const convAuthPid = cleanSidebarPid(matchedConv?.authoritativeProjectId);
+      const cleanConvPid = cleanSidebarPid(matchedConv?.projectId);
+      const cleanGrpPid = cleanSidebarPid(matchedGroup?.id);
+      const targetProjectId = convAuthPid || summaryPid || cleanConvPid || cleanGrpPid || '';
       const isStandaloneTarget = !targetProjectId || targetProjectId === 'outside-of-project' || targetProjectId === 'standalone';
       const matchedBaseProj = (!isStandaloneTarget && Array.isArray(baseSnap.projects))
         ? baseSnap.projects.find((p) => p && p.id === targetProjectId)
