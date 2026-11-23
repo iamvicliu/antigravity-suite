@@ -23918,3 +23918,378 @@ test('根治远程端代码块与提示框中段 UI 铬导致的重复二次回�
     '多段拼接中无 Copy 按钮铬证据的 "bash sudo apt update" 不得误合并'
   );
 });
+
+test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权威空闲态保护、流式/排版归一化与降级缓存隔离 (#47 终结)', async () => {
+  const {
+    extractMessagesFromTrajectorySteps,
+    normPlainMatchText,
+    mergeTrajectoryAndDomMessages,
+    createConversationHistoryManager,
+    buildMobileAppHtml
+  } = require('../mobile-remote');
+
+  // 1a. mobile-remote.js: 紧跟 Stop hook blocked termination 的无工具调用 PLANNER_RESPONSE 草稿必须隐藏，并保留其 thinking 进入最终思考时间线
+  const stopHookSteps = [
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '解决远程端重复二次回复问题' } },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: {
+        thinking: '第 0 轮分析思考',
+        response: '已查清并修复远程网页端仍然出现重复二次回复的直接原因（r0 拦截稿）。'
+      }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      systemMessage: { message: 'Stop hook blocked termination: [军团钩子] 第 0 轮验收：rework' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: {
+        thinking: '运行测试等待',
+        response: 'Targeted #47 tests passed; waiting for the full test suite to finish.'
+      }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      systemMessage: { message: '[Message] timestamp=2026-11-23T19:00:00Z sender=task-1' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: {
+        thinking: '最终总结思考',
+        response: '已查清并修复远程网页端仍然出现重复二次回复的核心原因（最终回复）。'
+      }
+    }
+  ];
+  const extractedStopHook = extractMessagesFromTrajectorySteps(stopHookSteps);
+  assert.deepEqual(
+    extractedStopHook.map((m) => m.id),
+    ['t-u-0', 't-a-3', 't-a-5'],
+    '被 Stop hook 拦截的 r0 草稿 t-a-1 必须隐藏，正常进度与最终回复必须保留'
+  );
+  assert.deepEqual(
+    extractedStopHook[2].thoughts,
+    ['第 0 轮分析思考', '运行测试等待', '最终总结思考'],
+    '隐藏被拦截草稿时不得丢失其 thinking 思考步骤'
+  );
+
+  // 1b. 反例保护：含 toolCalls、普通 [plan review] 正文中引用提及、以及末尾未拦截回复均不得误隐藏；仅剩被拦截草稿时保留纯思考卡
+  const stopHookAntiHideSteps = [
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '核对边界' } },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: {
+        response: '带工具调用步骤的正文。',
+        toolCalls: [{ id: 'tc-1', name: 'run_command' }]
+      }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      systemMessage: { message: 'Stop hook blocked termination: test' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: { response: '计划复核前的正常汇报。' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      systemMessage: { message: '[plan review] Status report + Stop hook blocked termination mention in body' }
+    }
+  ];
+  const antiHideExtracted = extractMessagesFromTrajectorySteps(stopHookAntiHideSteps);
+  assert.deepEqual(
+    antiHideExtracted.map((m) => m.id),
+    ['t-u-0', 't-a-1', 't-a-3'],
+    '含 toolCalls 的步骤与普通 [plan review] 正文中提及 Stop hook 的前序回复均不得误隐藏'
+  );
+
+  const blockedOnlyMsgs = extractMessagesFromTrajectorySteps([
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '返工中' } },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: { thinking: '草稿阶段思考', response: '被拦截的草稿回复' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      systemMessage: { message: 'Stop hook blocked termination: rework' }
+    }
+  ]);
+  assert.equal(blockedOnlyMsgs.length, 2);
+  assert.equal(blockedOnlyMsgs[1].id, 't-think-end');
+  assert.equal(blockedOnlyMsgs[1].text, '');
+  assert.equal(blockedOnlyMsgs[1].thoughtText, '草稿阶段思考');
+
+  // 1c. 压缩清空（CORTEX_STEP_STATUS_CLEARED）后 systemMessage 已被剥离的 Stop hook 拦截稿同样须识别隐藏，而同 executionId 但含 startedAt 的正常后台任务唤醒不得误隐藏
+  const clearedStopHookSteps = [
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '修完 3 个 bug' } },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_CLEARED',
+      metadata: { executionId: 'exec-1' },
+      plannerResponse: { thinking: 'r0 思考', response: '已把 3 处 Bug 全部修完（CLEARED 拦截稿）。' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      status: 'CORTEX_STEP_STATUS_CLEARED',
+      metadata: { executionId: 'exec-1', createdAt: '2026-11-23T10:48:41Z', completedAt: '2026-11-23T10:48:41Z' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_CLEARED',
+      metadata: { executionId: 'exec-1' },
+      plannerResponse: { response: 'Waiting for node cli.js status to finish.' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      status: 'CORTEX_STEP_STATUS_CLEARED',
+      metadata: { executionId: 'exec-1', startedAt: '2026-11-23T10:59:00Z', createdAt: '2026-11-23T10:59:00Z', completedAt: '2026-11-23T10:59:00Z' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_CLEARED',
+      metadata: { executionId: 'exec-2' },
+      plannerResponse: { thinking: '最终思考', response: '3 处核心 Bug 已经全部修完并生效（最终回复）。' }
+    }
+  ];
+  const clearedExtracted = extractMessagesFromTrajectorySteps(clearedStopHookSteps);
+  assert.deepEqual(
+    clearedExtracted.map((m) => m.id),
+    ['t-u-0', 't-a-3', 't-a-5'],
+    'CLEARED 态下无 startedAt 的同执行 Stop hook 拦截稿 t-a-1 必须隐藏，含 startedAt 的正常等待唤醒 t-a-3 必须保留'
+  );
+  assert.deepEqual(clearedExtracted[2].thoughts, ['r0 思考', '最终思考']);
+
+  // 1d. ag-enhancer-overlay.js isolated 视图 extractMessagesFromTrajectorySteps 同步过滤 Stop hook 拦截稿（含 CLEARED 态）
+  const overlayCode = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
+  const isoHelperMatch = overlayCode.match(/function isStopHookBlockedSystemStep\(step, prevStep = null\) \{[\s\S]*?\n  \}\n\n  function extractMessagesFromTrajectorySteps\(steps, limit = 20\) \{[\s\S]*?\n  \}/);
+  assert.ok(isoHelperMatch, 'ag-enhancer-overlay.js 应包含 Stop hook 判定与 extractMessagesFromTrajectorySteps');
+  const extractIsoOverlay = new Function('tr', `${isoHelperMatch[0]}; return extractMessagesFromTrajectorySteps;`)((zh) => zh);
+  const isoStopHookOut = extractIsoOverlay(stopHookSteps, 20);
+  assert.deepEqual(
+    isoStopHookOut.map((m) => m.id),
+    ['rpc-u-0', 'rpc-a-3', 'rpc-a-5'],
+    'isolated 视图提取函数亦须隐藏 Stop hook 拦截草稿'
+  );
+  assert.deepEqual(isoStopHookOut[2].thoughts, ['第 0 轮分析思考', '运行测试等待', '最终总结思考']);
+  const isoAntiHideOut = extractIsoOverlay(stopHookAntiHideSteps, 20);
+  assert.deepEqual(isoAntiHideOut.map((m) => m.id), ['rpc-u-0', 'rpc-a-1', 'rpc-a-3']);
+  const isoClearedOut = extractIsoOverlay(clearedStopHookSteps, 20);
+  assert.deepEqual(isoClearedOut.map((m) => m.id), ['rpc-u-0', 'rpc-a-3', 'rpc-a-5']);
+
+  // 2a. authoritativeIdle 保护：空闲态同一已回复轮次内即使桌面 DOM 出现任意未知渲染差异（如汉化/图片/脚注），仅合并元数据绝不追加 dom-tail
+  const idleTraj = [
+    { id: 't-u-1', role: 'user', text: '解释这个界面' },
+    { id: 't-a-2', role: 'assistant', text: '点击 Settings 查看 ![截图说明](file:///a.png) 后确认[^1]。\n\n[^1]: 注释' }
+  ];
+  const idleDivergentDom = [
+    { id: 'u-0', role: 'user', text: '解释这个界面' },
+    {
+      id: 'a-1',
+      role: 'assistant',
+      text: '点击 设置 查看 后确认1\n注释',
+      highRisk: true,
+      riskText: '高危提示',
+      thoughtLabel: '思考过程',
+      thoughtText: 'DOM 补充思考'
+    }
+  ];
+  const idleProtected = mergeTrajectoryAndDomMessages(idleTraj, idleDivergentDom, {
+    busy: false,
+    isolated: false,
+    authoritativeIdle: true
+  });
+  assert.deepEqual(idleProtected.map((m) => m.id), ['t-u-1', 't-a-2'], 'authoritativeIdle 必须彻底阻断同轮桌面 DOM 重复追加 dom-tail');
+  assert.equal(idleProtected[1].highRisk, true, '阻断重复时仍须保留 DOM highRisk 标记');
+  assert.equal(idleProtected[1].riskText, '高危提示');
+  assert.equal(idleProtected[1].thoughtText, 'DOM 补充思考');
+
+  // 2b. authoritativeIdle 下 DOM 推进到新用户轮次时，旧轮不重复、新用户提问与新回复正常追尾
+  const idleNextTurn = mergeTrajectoryAndDomMessages(idleTraj, [
+    ...idleDivergentDom,
+    { id: 'u-2', role: 'user', text: '继续第二轮问题' },
+    { id: 'a-3', role: 'assistant', text: '这是第二轮的新回复正文。' }
+  ], { busy: false, isolated: false, authoritativeIdle: true });
+  assert.deepEqual(
+    idleNextTurn.map((m) => m.id),
+    ['t-u-1', 't-a-2', 'dom-tail-2', 'dom-tail-3'],
+    'authoritativeIdle 遇到 DOM 新用户轮次时必须保留新提问与新回复'
+  );
+
+  // 2c. authoritativeIdle 下当前轮轨迹尚无助手正文时，不得吞掉桌面 DOM 回复
+  const idleNoBaseAsst = mergeTrajectoryAndDomMessages(
+    [{ id: 't-u-1', role: 'user', text: '刚发出的新问题' }],
+    [
+      { id: 'u-0', role: 'user', text: '刚发出的新问题' },
+      { id: 'a-1', role: 'assistant', text: '桌面端已先渲染出的首条回复。' }
+    ],
+    { busy: false, isolated: false, authoritativeIdle: true }
+  );
+  assert.deepEqual(idleNoBaseAsst.map((m) => m.id), ['t-u-1', 'dom-tail-1']);
+
+  // 2d. createConversationHistoryManager.enrichMessages 端到端验证：可信 IDLE 签名开启 authoritativeIdle（首次拉取与 verifiedIdleMatch 均生效），RUNNING 或空签名不开启
+  let rpcCalls = 0;
+  const histMgr = createConversationHistoryManager();
+  const mockLocalApi = async () => ({
+    call: async (method) => {
+      if (method === 'GetCascadeTrajectory') {
+        rpcCalls += 1;
+        return {
+          trajectory: {
+            steps: [
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '检查页面' } },
+              { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '请打开 Settings 面板并确认 ![图](file:///x.png)。' } }
+            ]
+          }
+        };
+      }
+      return {};
+    }
+  });
+  const baseDomSnap = {
+    ok: true,
+    sessionId: 'sess-auth-idle',
+    busy: false,
+    isolated: false,
+    _activeTrajSig: 'CASCADE_RUN_STATUS_IDLE|2|2026-11-24T03:10:03Z',
+    messages: [
+      { id: 'u-0', role: 'user', text: '检查页面' },
+      { id: 'a-1', role: 'assistant', text: '请打开 设置 面板并确认。', highRisk: true, riskText: '风险告警' }
+    ]
+  };
+  const enrichedIdle1 = await histMgr.enrichMessages(baseDomSnap, { localApiConnect: mockLocalApi });
+  assert.equal(rpcCalls, 1);
+  assert.deepEqual(enrichedIdle1.messages.map((m) => m.id), ['t-u-0', 't-a-1'], '首次权威 IDLE 拉取不得生成 dom-tail');
+  assert.equal(enrichedIdle1.messages[1].highRisk, true);
+  const enrichedIdle2 = await histMgr.enrichMessages(baseDomSnap, { localApiConnect: mockLocalApi });
+  assert.equal(rpcCalls, 1, '相同 IDLE 签名命中 verifiedIdleMatch 无需重复 RPC');
+  assert.deepEqual(enrichedIdle2.messages.map((m) => m.id), ['t-u-0', 't-a-1'], 'verifiedIdleMatch 缓存命中亦不得生成 dom-tail');
+
+  const histMgrRunning = createConversationHistoryManager();
+  const enrichedRunning = await histMgrRunning.enrichMessages({
+    ...baseDomSnap,
+    sessionId: 'sess-running-unverified',
+    _activeTrajSig: 'CASCADE_RUN_STATUS_RUNNING|2|2026-11-24T03:10:03Z',
+    messages: [
+      { id: 'u-0', role: 'user', text: '检查页面' },
+      { id: 'a-1', role: 'assistant', text: '这是运行态下新增的第二条不同回复正文。' }
+    ]
+  }, { localApiConnect: mockLocalApi });
+  assert.deepEqual(
+    enrichedRunning.messages.map((m) => m.id),
+    ['t-u-0', 't-a-1', 'dom-tail-1'],
+    '非 IDLE 轨迹签名不得误启 authoritativeIdle 压制运行态新消息'
+  );
+
+  // 3a. CJK 无空格流式未闭合 **bold** 去重（复现 t-a-1170 cutLen=200）且保护 def f(**kwargs): return ~~val
+  assert.equal(normPlainMatchText('已经完成**核心修复并正在'), '已经完成核心修复并正在');
+  assert.equal(normPlainMatchText('包含**代码块**、**提示框'), '包含代码块、提示框');
+  assert.equal(normPlainMatchText('def f(**kwargs): return ~~val'), 'def f(**kwargs): return ~~val');
+  const cjkStreamMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '进展如何' },
+      { id: 't-a-2', role: 'assistant', text: '已经完成**核心修复并正在' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '进展如何' },
+      { id: 'a-1', role: 'assistant', text: '已经完成核心修复并正在验证全部自动化测试。' }
+    ],
+    { busy: true }
+  );
+  assert.deepEqual(cjkStreamMerged.map((m) => m.id), ['t-u-1', 't-a-2'], 'CJK 流式未闭合 ** 不得生成重复 dom-tail');
+
+  // 3b. 非冻结区 HTML 实体解码、白名单内联标签与代码/表达式保护
+  assert.equal(normPlainMatchText('A &amp; B &lt;tag&gt; &quot;ok&quot;&nbsp;&#39;x&#39;'), 'A & B <tag> "ok" \'x\'');
+  assert.equal(normPlainMatchText('代码 `A &amp; B` 保持原样'), '代码 A &amp; B 保持原样');
+  assert.equal(normPlainMatchText('按 <kbd>Cmd</kbd>+<kbd>Enter</kbd> 发送 <sub>2</sub>'), '按 Cmd+Enter 发送 2');
+  assert.equal(normPlainMatchText('for (int x = a<i && j>b;) Array<string>'), 'for (int x = a<i && j>b;) Array<string>');
+  assert.equal(normPlainMatchText('字面 &lt;kbd&gt;Cmd&lt;/kbd&gt; 文本'), '字面 <kbd>Cmd</kbd> 文本');
+  const htmlEntityMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '快捷键' },
+      { id: 't-a-2', role: 'assistant', text: '按 <kbd>Cmd</kbd>+<kbd>Enter</kbd> 发送 A &amp; B' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '快捷键' },
+      { id: 'a-1', role: 'assistant', text: '按 Cmd+Enter 发送 A & B' }
+    ],
+    { busy: false }
+  );
+  assert.deepEqual(htmlEntityMerged.map((m) => m.id), ['t-u-1', 't-a-2']);
+
+  // 3c. KaTeX 块级/行内数学公式去重，且严格保护货币金额与代码变量
+  assert.equal(normPlainMatchText('公式 $a + b = c$ 与块级 $$E = mc^2$$ 成立'), '公式 a + b = c 与块级 E = mc^2 成立');
+  assert.equal(normPlainMatchText('价格从 $5 涨到 $10 了'), '价格从 $5 涨到 $10 了');
+  assert.equal(normPlainMatchText('Cost is $100/mo or $200/mo'), 'Cost is $100/mo or $200/mo');
+  assert.equal(normPlainMatchText('价格 $5元 到 $10元'), '价格 $5元 到 $10元');
+  assert.equal(normPlainMatchText('const a = $x+$y;'), 'const a = $x+$y;');
+  assert.equal(normPlainMatchText('费用约 \\$100 左右'), '费用约 $100 左右');
+  const katexMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '公式' },
+      { id: 't-a-2', role: 'assistant', text: '核心公式 $a + b = c$ 成立。' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '公式' },
+      { id: 'a-1', role: 'assistant', text: '核心公式 a + b = c 成立。' }
+    ],
+    { busy: false }
+  );
+  assert.deepEqual(katexMerged.map((m) => m.id), ['t-u-1', 't-a-2']);
+
+  // 3d. 代码槽位与文首裸 copy 词边界反例：copyright / Copyright 不得被拆为 copy + right 误合并；带边界 Copy\nright 仍正常去重
+  const baseRightCode = [
+    { id: 't-u-1', role: 'user', text: '对比两段代码' },
+    { id: 't-a-2', role: 'assistant', text: '查看如下代码：\n```py\nright = get_license_metadata()\n```\n请核对。' }
+  ];
+  for (const variant of ['copyright = get_license_metadata()', 'Copyright = get_license_metadata()']) {
+    for (const busyFlag of [false, true]) {
+      const mergedCopyright = mergeTrajectoryAndDomMessages(baseRightCode, [
+        { id: 'u-0', role: 'user', text: '对比两段代码' },
+        { id: 'a-1', role: 'assistant', text: '查看如下代码：\npy\nCopy\nright = get_license_metadata()\n请核对。' },
+        { id: 'a-2', role: 'assistant', text: `查看如下代码：\n${variant}\n请核对。` }
+      ], { busy: busyFlag });
+      assert.deepEqual(
+        mergedCopyright.map((m) => m.id),
+        ['t-u-1', 't-a-2', 'dom-tail-2'],
+        `busy=${busyFlag} 时 ${variant} 不得被拆为 copy+right 误合并`
+      );
+    }
+  }
+  const mergedCopyBoundaryOk = mergeTrajectoryAndDomMessages(baseRightCode, [
+    { id: 'u-0', role: 'user', text: '对比两段代码' },
+    { id: 'a-1', role: 'assistant', text: '查看如下代码：\nCopy\nright = get_license_metadata()\n请核对。' }
+  ], { busy: false });
+  assert.deepEqual(mergedCopyBoundaryOk.map((m) => m.id), ['t-u-1', 't-a-2'], '带换行的裸 Copy 按钮铬仍正常去重');
+
+  const mergedLeadCopyright = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: 'Two lines' },
+      { id: 't-a-2', role: 'assistant', text: 'right notice for open source project' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: 'Two lines' },
+      { id: 'a-1', role: 'assistant', text: 'right notice for open source project' },
+      { id: 'a-2', role: 'assistant', text: 'Copyright notice for open source project' }
+    ],
+    { busy: false }
+  );
+  assert.deepEqual(
+    mergedLeadCopyright.map((m) => m.id),
+    ['t-u-1', 't-a-2', 'dom-tail-2'],
+    '文首 Copyright notice 不得与 right notice 误合并'
+  );
+
+  // 4. 校验服务端 catch 回退显式下发 historySource/totalMessages，且前端双向切换 historySource / 缺失 totalMessages 异常回退均清空 sessionMsgsByIndex
+  const remoteSrc = fs.readFileSync(path.join(__dirname, '..', 'mobile-remote.js'), 'utf8');
+  assert.ok(
+    remoteSrc.includes("historySource: baseSnap.historySource || 'dom'"),
+    'fetchSnapshotFromTarget catch 回退必须显式标记 historySource: dom 防止客户端混排'
+  );
+  const appHtml = buildMobileAppHtml();
+  assert.ok(
+    appHtml.includes("activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory'") &&
+    appHtml.includes("activeMsgHistorySource === 'trajectory'") &&
+    appHtml.includes("(nextHistSource === 'dom' || (!nextHistSource && !Number.isFinite(Number(snap.totalMessages))))"),
+    '前端 renderSnapshot 必须在双向切换 historySource 或缺失 totalMessages 异常回退时清空 sessionMsgsByIndex'
+  );
+});

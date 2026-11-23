@@ -9285,6 +9285,31 @@
     }
   }
 
+  function isStopHookBlockedSystemStep(step, prevStep = null) {
+    if (!step || typeof step !== 'object') return false;
+    const type = String(step.type || '');
+    if (type && type !== 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE') return false;
+    const sysMsg = step.systemMessage;
+    if (sysMsg && typeof sysMsg === 'object') {
+      return /^\s*Stop hook blocked termination(?::|\b)/i.test(String(sysMsg.message || ''));
+    }
+    if (
+      type === 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE' &&
+      String(step.status || '') === 'CORTEX_STEP_STATUS_CLEARED' &&
+      !sysMsg &&
+      prevStep && typeof prevStep === 'object'
+    ) {
+      const prevExec = String(prevStep.metadata?.executionId || '').trim();
+      const curExec = String(step.metadata?.executionId || '').trim();
+      const curCreated = String(step.metadata?.createdAt || '').trim();
+      const curCompleted = String(step.metadata?.completedAt || '').trim();
+      if (prevExec && curExec && prevExec === curExec && !step.metadata?.startedAt && curCreated && curCreated === curCompleted) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function extractMessagesFromTrajectorySteps(steps, limit = 20) {
     const list = Array.isArray(steps) ? steps : [];
     const out = [];
@@ -9378,7 +9403,9 @@
         const text = String(pr.modifiedResponse || pr.response || '').trim();
         const thoughtText = String(pr.thinking || pr.thought || '').trim();
         if (thoughtText) turnThoughts.push(thoughtText);
-        if (text) {
+        const hasToolCalls = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
+        const blockedByStopHook = !hasToolCalls && isStopHookBlockedSystemStep(list[i + 1], s);
+        if (text && !blockedByStopHook) {
           clearEarlierTurnThoughts();
           const thoughts = turnThoughts.slice();
           out.push({
