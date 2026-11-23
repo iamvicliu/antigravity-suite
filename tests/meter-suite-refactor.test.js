@@ -23328,7 +23328,8 @@ test('修复 240K 自动压缩死循环 3 处 Bug：压缩后旧读数滞后、�
     };
   };
 
-  // 1. 压缩后胶囊已精确降至 30K（3%），主计量表仍滞留在压缩前 259K + cacheDropDetected:true 时，不得误判超 240K
+  // 1. 压缩后胶囊已精确降至 30K（3%）或 230K，主计量表仍滞留在压缩前 259K + cacheDropDetected:true 时，不得误判超 240K；
+  //    而未发生压缩时“旧胶囊 200K + 新计量表 259K”或历史压缩后再涨回 230K/248K，必须保留新计量表的阈值与缓存脱落信号
   {
     const h = makeAutoCompactHarness();
     try {
@@ -23338,6 +23339,7 @@ test('修复 240K 自动压缩死循环 3 处 Bug：压缩后旧读数滞后、�
         contextUsed: 30374,
         usagePercent: 2.9,
         compressionDetected: true,
+        compressionAfter: 24277,
         cacheDropDetected: false
       };
       const postCompactRes = h.enh.runAutoCompactTick({ immediate: true });
@@ -23345,8 +23347,8 @@ test('修复 240K 自动压缩死循环 3 处 Bug：压缩后旧读数滞后、�
       assert.equal(postCompactRes.reason, 'below_threshold');
       assert.equal(h.getSendClicks(), 0);
 
-      // 正常增长到 248K（即使会话历史曾压缩过，cap 仅落后 1 步在 230K）仍应正常触发
-      h.setMeterLatest({ actual: 248000, used: 248000, cacheDropDetected: false });
+      // 1b: hasPreciseSnapshot=true、compressionDetected=true、胶囊 230K、旧计量表 259K + cacheDropDetected:true，仍应采信胶囊 230K 不触发
+      h.setMeterLatest({ actual: 259000, used: 259000, cacheDropDetected: true });
       h.capMock.__ctxUsageData = {
         hasPreciseSnapshot: true,
         contextUsed: 230000,
@@ -23354,9 +23356,46 @@ test('修复 240K 自动压缩死循环 3 处 Bug：压缩后旧读数滞后、�
         compressionDetected: true,
         cacheDropDetected: false
       };
+      const postCompact230Res = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(postCompact230Res.triggered, false);
+      assert.equal(postCompact230Res.reason, 'below_threshold');
+      assert.equal(h.getSendClicks(), 0);
+
+      // 1c: 历史压缩后再正常增长到 230K（远高于 compressionAfter=24277），新计量表已达 248K 时仍应正常触发
+      h.setMeterLatest({ actual: 248000, used: 248000, cacheDropDetected: false });
+      h.capMock.__ctxUsageData = {
+        hasPreciseSnapshot: true,
+        contextUsed: 230000,
+        usagePercent: 45,
+        compressionDetected: true,
+        compressionAfter: 24277,
+        cacheDropDetected: false
+      };
       const normalGrowRes = h.enh.runAutoCompactTick({ immediate: true });
       assert.equal(normalGrowRes.triggered, true);
       assert.equal(normalGrowRes.reason, 'threshold_240k');
+    } finally {
+      h.enh.dispose?.();
+      h.env.cleanup?.();
+    }
+  }
+
+  // 1d: 未发生压缩时，旧胶囊 200K + 新计量表 259K（含 cacheDropDetected:true）不得忽略新计量表的阈值与缓存脱落信号
+  {
+    const h = makeAutoCompactHarness();
+    try {
+      h.setMeterLatest({ actual: 259000, used: 259000, cacheDropDetected: true });
+      h.capMock.__ctxUsageData = {
+        hasPreciseSnapshot: true,
+        contextUsed: 200000,
+        usagePercent: 39,
+        compressionDetected: false,
+        cacheDropDetected: false
+      };
+      const staleCapRes = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(staleCapRes.triggered, true);
+      assert.equal(staleCapRes.reason, 'cache_drop');
+      assert.equal(staleCapRes.contextUsed, 259000);
     } finally {
       h.enh.dispose?.();
       h.env.cleanup?.();
