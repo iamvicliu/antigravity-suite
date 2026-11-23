@@ -28670,18 +28670,91 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       '直接打开 ~/codebase 本身时应精确命中「全局问题」'
     );
 
+    // 2b. 共享目录歧义与相同目录集测试：无法唯一确定归属时必须返回空值，严禁按修改时间或 ID 强行决胜
+    const soleSharedMap = new Map([
+      ['proj-a-sole-shared', { id: 'proj-a-sole-shared', name: 'SoleShared', workspacePaths: [sharedArmyDir], mtimeMs: 999999999 }],
+      ['proj-b-shared-plus-excl', { id: 'proj-b-shared-plus-excl', name: 'SharedPlusExcl', workspacePaths: [sharedArmyDir, insightSiteDir], mtimeMs: 100 }]
+    ]);
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + sharedArmyDir }] }, soleSharedMap, { homeDir: fakeHome }),
+      '',
+      '项目 A 仅挂载共享目录、项目 B 挂载同一共享目录及专属目录时，仅含共享目录的轨迹不得误归入项目 A'
+    );
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({
+        workspaces: [
+          { workspaceFolderAbsoluteUri: 'file://' + sharedArmyDir },
+          { workspaceFolderAbsoluteUri: 'file://' + insightSiteDir }
+        ]
+      }, soleSharedMap, { homeDir: fakeHome }),
+      'proj-b-shared-plus-excl',
+      '同时包含专属目录时应唯一命中项目 B'
+    );
+
+    const dupSetMap = new Map([
+      ['proj-dup-1', { id: 'proj-dup-1', name: 'DupOne', workspacePaths: [makeFontDir, sharedArmyDir], mtimeMs: 100 }],
+      ['proj-dup-2', { id: 'proj-dup-2', name: 'DupTwo', workspacePaths: [makeFontDir, sharedArmyDir], mtimeMs: 999999999 }]
+    ]);
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({
+        workspaces: [
+          { workspaceFolderAbsoluteUri: 'file://' + makeFontDir },
+          { workspaceFolderAbsoluteUri: 'file://' + sharedArmyDir }
+        ]
+      }, dupSetMap, { homeDir: fakeHome }),
+      '',
+      '多个项目共享完全相同目录集合时无法唯一确定归属，必须返回空字符串且不得以 mtimeMs 或 ID 决胜'
+    );
+    const eqLenDir1 = path.join(codebaseDir, 'eq-mod-1');
+    const eqLenDir2 = path.join(codebaseDir, 'eq-mod-2');
+    fs.mkdirSync(eqLenDir1, { recursive: true });
+    fs.mkdirSync(eqLenDir2, { recursive: true });
+    const tieExclMap = new Map([
+      ['proj-eq-1', { id: 'proj-eq-1', name: 'Eq1', workspacePaths: [eqLenDir1], mtimeMs: 100 }],
+      ['proj-eq-2', { id: 'proj-eq-2', name: 'Eq2', workspacePaths: [eqLenDir2], mtimeMs: 999999999 }]
+    ]);
+    assert.equal(
+      remoteMod.matchWorkspaceToProjectId({
+        workspaces: [
+          { workspaceFolderAbsoluteUri: 'file://' + eqLenDir1 },
+          { workspaceFolderAbsoluteUri: 'file://' + eqLenDir2 }
+        ]
+      }, tieExclMap, { homeDir: fakeHome }),
+      '',
+      '两个不同项目的专属目录等长并列命中时不得按 mtimeMs 或 ID 决胜，应返回空值'
+    );
+
     // 3. ag-enhancer-overlay.js：置顶/无前置 project-header 会话与 fetchIsolatedConversationSnapshot 权威归属验证
+    const pinnedHexId = 'aaaa1111-2222-3333-4444-555566667777';
+    const isoHexId = 'bbbb1111-2222-3333-4444-555566667777';
     const envEnh = createDomEnv();
     envEnh.sandbox.setTimeout = setTimeout;
     envEnh.sandbox.clearTimeout = clearTimeout;
-    envEnh.win.location = { pathname: '/c/conv-pinned-ag', search: '' };
+    envEnh.win.location = { pathname: '/c/' + pinnedHexId, search: '' };
     envEnh.sandbox.location = envEnh.win.location;
-    envEnh.sandbox.__APP_CONFIG__ = { csrfToken: 'csrf-49-test' };
+    envEnh.win.__APP_CONFIG__ = { csrfToken: 'csrf-49-test' };
+    envEnh.sandbox.__APP_CONFIG__ = envEnh.win.__APP_CONFIG__;
     envEnh.sandbox.fetch = async (url, init) => {
       const u = String(url || '');
+      if (u.includes('GetAllCascadeTrajectories')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            trajectorySummaries: {
+              [pinnedHexId]: {
+                summary: '置顶会话',
+                lastModifiedTime: new Date().toISOString(),
+                trajectoryMetadata: { projectId: 'b9e0-ag-suite' },
+                workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + agSuiteDir }]
+              }
+            }
+          })
+        };
+      }
       if (u.includes('GetCascadeTrajectory')) {
         const reqBody = JSON.parse(String(init?.body || '{}'));
-        if (reqBody.cascadeId === 'conv-iso-insight') {
+        if (reqBody.cascadeId === isoHexId) {
           return {
             ok: true,
             status: 200,
@@ -28708,14 +28781,14 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const sidebarEl = envEnh.doc.createElement('div');
     sidebarEl.setAttribute('data-testid', 'conversation-list-sidebar');
     // 模拟虚拟滚动截断：置顶会话行出现在任何 project-header 之前
-    const pinnedRow = envEnh.doc.createElement('a');
+    const pinnedRow = envEnh.doc.createElement('div');
     pinnedRow.setAttribute('data-testid', 'conversation-row-sidebar');
-    pinnedRow.setAttribute('href', '/c/conv-pinned-ag');
+    pinnedRow.setAttribute('data-cascade-id', pinnedHexId);
     pinnedRow.setAttribute('data-pinned', 'true');
     pinnedRow.textContent = '置顶会话';
-    const isoRow = envEnh.doc.createElement('a');
+    const isoRow = envEnh.doc.createElement('div');
     isoRow.setAttribute('data-testid', 'conversation-row-sidebar');
-    isoRow.setAttribute('href', '/c/conv-iso-insight');
+    isoRow.setAttribute('data-cascade-id', isoHexId);
     isoRow.textContent = '隔离会话';
     sidebarEl.appendChild(pinnedRow);
     sidebarEl.appendChild(isoRow);
@@ -28730,9 +28803,67 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.notEqual(baseOverlaySnap.currentProjectId, 'default');
     assert.notEqual(baseOverlaySnap.currentProjectName, '默认项目');
 
-    const isoSnap = await enh.getMobileSnapshotAsync({ conversationId: 'conv-iso-insight' });
+    const isoSnap = await enh.getMobileSnapshotAsync({ conversationId: isoHexId });
     assert.equal(isoSnap.isolated, true);
     assert.equal(isoSnap.currentProjectId, '2628-proj-b', '独立隔离快照必须优先采用 trajectoryMetadata.projectId 而非虚拟列表假分组');
+
+    // 3b. DOM 与 Fiber 分支归属冲突验证：当列表前置 project-header 或虚拟行 groupId 与权威归属冲突时，必须服从权威会话归属
+    await new Promise((r) => setTimeout(r, 30)); // 等待首次 refreshCascadeTrajectorySummaries 写入权威归属
+    // (i) DOM 分支冲突：在置顶行前插入另一个项目 (proj-a / 0449-dir-a) 的 project-header，验证不被错归入 0449-dir-a
+    const wrongDomHeader = envEnh.doc.createElement('button');
+    wrongDomHeader.setAttribute('data-testid', 'project-header');
+    wrongDomHeader.setAttribute('data-project-id', '0449-dir-a');
+    wrongDomHeader.setAttribute('data-project-label', 'proj-a');
+    wrongDomHeader.textContent = 'proj-a';
+    const rightDomHeader = envEnh.doc.createElement('button');
+    rightDomHeader.setAttribute('data-testid', 'project-header');
+    rightDomHeader.setAttribute('data-project-id', 'b9e0-ag-suite');
+    rightDomHeader.setAttribute('data-project-label', 'antigravity-suite');
+    rightDomHeader.textContent = 'antigravity-suite';
+    sidebarEl.insertBefore(wrongDomHeader, pinnedRow);
+    sidebarEl.appendChild(rightDomHeader);
+
+    const domConflictSnap = enh.getMobileSnapshot();
+    assert.equal(domConflictSnap.currentProjectId, 'b9e0-ag-suite', 'DOM 分支：前置错误 project-header 不得覆盖已知权威归属 b9e0-ag-suite');
+    assert.equal(domConflictSnap.currentProjectName, 'antigravity-suite', 'DOM 分支：当前项目名必须保持权威 antigravity-suite 而非 proj-a');
+    const agDomGrp = domConflictSnap.projectGroups.find((g) => g.id === 'b9e0-ag-suite');
+    const wrongDomGrp = domConflictSnap.projectGroups.find((g) => g.id === '0449-dir-a');
+    assert.ok(agDomGrp && agDomGrp.conversations.some((c) => c.id === pinnedHexId), 'DOM 分支：置顶会话必须归入权威组 b9e0-ag-suite');
+    assert.equal(Boolean(wrongDomGrp && wrongDomGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'DOM 分支：置顶会话不得落入前置错误组 0449-dir-a');
+
+    // (ii) Fiber 分支冲突：虚拟列表 items 将置顶会话置于 header-0449-dir-a 下且携带冲突 groupId='0449-dir-a'，而 Hook 状态权威归属为 b9e0-ag-suite
+    const hookGroups = [
+      { id: '0449-dir-a', label: 'proj-a', kind: 'project', entries: [] },
+      {
+        id: 'b9e0-ag-suite',
+        label: 'antigravity-suite',
+        kind: 'project',
+        entries: [{ cascadeId: pinnedHexId, projectId: 'b9e0-ag-suite', conversation: { conversationId: pinnedHexId, summary: '置顶会话' } }]
+      }
+    ];
+    sidebarEl.__reactFiber$test49 = {
+      memoizedProps: {},
+      memoizedState: { memoizedState: hookGroups, next: null },
+      return: {
+        memoizedProps: {
+          items: [
+            { type: 'header', id: 'header-0449-dir-a', label: 'proj-a', count: 1, isCollapsed: false },
+            { type: 'row', id: pinnedHexId, cascadeId: pinnedHexId, groupId: '0449-dir-a' },
+            { type: 'header', id: 'header-b9e0-ag-suite', label: 'antigravity-suite', count: 1, isCollapsed: false }
+          ]
+        },
+        memoizedState: null,
+        return: null
+      }
+    };
+    const fiberConflictSnap = enh.getMobileSnapshot();
+    assert.equal(fiberConflictSnap.currentProjectId, 'b9e0-ag-suite', 'Fiber 分支：冲突虚拟行 groupId 不得覆盖 Hook 权威归属 b9e0-ag-suite');
+    assert.equal(fiberConflictSnap.currentProjectName, 'antigravity-suite');
+    const agFiberGrp = fiberConflictSnap.projectGroups.find((g) => g.id === 'b9e0-ag-suite');
+    const wrongFiberGrp = fiberConflictSnap.projectGroups.find((g) => g.id === '0449-dir-a');
+    assert.ok(agFiberGrp && agFiberGrp.conversations.some((c) => c.id === pinnedHexId), 'Fiber 分支：置顶会话必须归入权威组 b9e0-ag-suite');
+    assert.equal(Boolean(wrongFiberGrp && wrongFiberGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'Fiber 分支：置顶会话不得归入冲突 groupId 指定的 0449-dir-a');
+
     enh.dispose?.();
     envEnh.sandbox.__AGContextMeter?.dispose?.();
 
@@ -28881,6 +29012,40 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const agSubTree = await callGetJson('/api/project-tree?conversationId=conv-pinned-ag&projectId=b9e0-ag-suite&dir=' + encodeURIComponent(agSuiteSubDir));
     assert.equal(agSubTree.status, 200);
     assert.equal(agSubTree.json.parentDir, fs.realpathSync(agSuiteDir), '子目录内允许正常返回至当前工作区根目录');
+
+    // 5b. 全局白名单非空 + 项目元数据为空 + 归属无法解析时，携带 conversationId/projectId 必须保持受限作用域（显式 dir 严格 403，绝不绕回全局目录）
+    const emptyProjCfgDir = path.join(tmpRoot, 'empty-proj-cfg');
+    const emptyProjStateDir = path.join(tmpRoot, 'empty-proj-state');
+    fs.mkdirSync(path.join(emptyProjCfgDir, 'projects'), { recursive: true });
+    fs.mkdirSync(emptyProjStateDir, { recursive: true });
+    const unresolvableHandler = remoteMod.createRemoteHttpHandler(mockCfg, {
+      catalogOptions: { stateDir: emptyProjStateDir, configDir: emptyProjCfgDir },
+      mediaOptions: { allowedRoots: [agSuiteDir, insightRepoDir], configDir: emptyProjCfgDir, homeDir: fakeHome },
+      callLanguageServer: async () => ({ trajectorySummaries: {} })
+    });
+    const callUnresolvableJson = async (urlPath) => {
+      const { Readable } = require('stream');
+      const req = Readable.from([]);
+      req.method = 'GET';
+      req.url = urlPath;
+      req.headers = { host: '127.0.0.1:18799', 'x-ag-remote-token': mockCfg.token };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let raw = '';
+      await unresolvableHandler(req, {
+        setHeader() {},
+        writeHead(code) { status = code; },
+        end(chunk) { if (chunk) raw += String(chunk); }
+      });
+      return { status, json: JSON.parse(raw) };
+    };
+    const unresolvedConvWithDir = await callUnresolvableJson('/api/project-tree?conversationId=conv-unknown-xyz&dir=' + encodeURIComponent(agSuiteDir));
+    assert.equal(unresolvedConvWithDir.status, 403, '项目元数据为空且会话归属无法解析时，显式传 dir 不得绕回全局白名单目录');
+    const unresolvedProjWithDir = await callUnresolvableJson('/api/project-tree?projectId=proj-unknown-xyz&dir=' + encodeURIComponent(insightRepoDir));
+    assert.equal(unresolvedProjWithDir.status, 403, '项目元数据为空且 projectId 无法解析时，显式传 dir 必须 403 拦截');
+    const unresolvedConvNoDir = await callUnresolvableJson('/api/project-tree?conversationId=conv-unknown-xyz');
+    assert.equal(unresolvedConvNoDir.status, 200);
+    assert.equal(unresolvedConvNoDir.json.emptyProject, true, '无法解析归属且无 dir 时应返回 emptyProject 空态而非跳到全局目录');
 
     // 6. 前端完整交互验证：多目录项目展示全部工作区 + 顶部切换栏、切单目录项目自动重置、切独立会话展示空态绝不串台
     const enrichedInsight = await remoteMod.enrichSnapshotWithCatalog({
