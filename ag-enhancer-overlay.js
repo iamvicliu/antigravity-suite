@@ -591,6 +591,8 @@
     lastSessionId: '',
     armedForSession: false,
     inFlightSession: '',
+    inFlightSending: false,
+    inFlightUntil: 0,
     idleSince: 0,
     lastFiredMap: new Map()
   };
@@ -4943,8 +4945,19 @@
     try {
       const capData = document.querySelector('[data-agy-context-capsule="1"]')?.__ctxUsageData;
       const meterLatest = window.__AGContextMeter?.snapshot?.()?.latest;
-      contextUsed = Math.max(Number(capData?.contextUsed || 0), Number(meterLatest?.actual || meterLatest?.used || 0));
-      cacheDropDetected = Boolean(capData?.cacheDropDetected || meterLatest?.cacheDropDetected);
+      const capUsed = Number(capData?.contextUsed || 0);
+      const meterUsed = Number(meterLatest?.actual || meterLatest?.used || 0);
+      const capShowsPostCompactDrop = Boolean(
+        capData?.hasPreciseSnapshot &&
+        capUsed > 0 &&
+        meterUsed > 0 &&
+        capUsed < 240000 &&
+        (meterUsed - capUsed >= 50000 || (capData?.compressionDetected && capUsed < meterUsed * 0.7))
+      );
+      contextUsed = capShowsPostCompactDrop ? capUsed : Math.max(capUsed, meterUsed);
+      cacheDropDetected = capShowsPostCompactDrop
+        ? Boolean(capData?.cacheDropDetected)
+        : Boolean(capData?.cacheDropDetected || meterLatest?.cacheDropDetected);
       if (
         !cacheDropDetected &&
         capData?.hasPreciseSnapshot &&
@@ -4956,6 +4969,18 @@
       }
     } catch {}
     return { percent, contextUsed, cacheDropDetected };
+  }
+
+  function isCompactUserMessageElement(userMsgEl) {
+    if (!userMsgEl) return false;
+    const contentEl = userMsgEl.querySelector?.('[data-testid="user-message-content"]') || null;
+    const rawText = String(contentEl?.textContent ?? userMsgEl.textContent ?? '').trim();
+    if (!rawText) return false;
+    const cleaned = rawText
+      .replace(/^(?:you\s+said|你说)[:：\s]*/i, '')
+      .replace(/(?:\s*(?:just\s+now|刚刚|\d+\s*(?:s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)\s*ago|\d+\s*(?:秒|分钟|小时|天)前|\d{1,2}:\d{2}))+$/i, '')
+      .trim();
+    return /^\/?compact$/i.test(cleaned);
   }
 
   function runAutoCompactTick(opts = {}) {
@@ -4972,20 +4997,27 @@
       autoCompactState.idleSince = 0;
     }
 
+    const now = Date.now();
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
-    if (busy) {
-      if (autoCompactState.inFlightSession !== sessionId) {
-        autoCompactState.armedForSession = true;
-      }
+    const isInFlightForSession = autoCompactState.inFlightSession === sessionId;
+    if (isInFlightForSession && (autoCompactState.inFlightSending || busy || now < autoCompactState.inFlightUntil)) {
+      autoCompactState.armedForSession = false;
       autoCompactState.idleSince = 0;
-      return { triggered: false, reason: 'assistant_busy' };
+      return { triggered: false, reason: 'compact_in_flight' };
     }
-    if (autoCompactState.inFlightSession === sessionId) {
+    if (isInFlightForSession) {
       autoCompactState.inFlightSession = '';
+      autoCompactState.inFlightSending = false;
+      autoCompactState.inFlightUntil = 0;
       autoCompactState.armedForSession = false;
       autoCompactState.idleSince = 0;
       return { triggered: false, reason: 'compact_finished' };
+    }
+    if (busy) {
+      autoCompactState.armedForSession = true;
+      autoCompactState.idleSince = 0;
+      return { triggered: false, reason: 'assistant_busy' };
     }
 
     if (!opts.immediate && !autoCompactState.armedForSession) {
@@ -5004,22 +5036,29 @@
       return { triggered: false, reason: 'composer_not_empty' };
     }
 
-    const now = Date.now();
     const prevFired = autoCompactState.lastFiredMap.get(sessionId);
     if (prevFired && (now - prevFired.at < 90000)) {
       return { triggered: false, reason: 'cooldown' };
     }
-    if (!opts.immediate) {
-      const userMsgs = document.querySelectorAll('[data-testid="user-message"]');
-      const lastUserMsg = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
-      const lastUserText = (lastUserMsg?.textContent || '').trim();
-      if (lastUserText === '/compact') {
-        const assistantMds = getAssistantMarkdownRoots();
-        const lastAsst = assistantMds[assistantMds.length - 1];
-        if (!lastAsst || (lastAsst.compareDocumentPosition(lastUserMsg) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-          return { triggered: false, reason: 'cooldown' };
-        }
+    const userMsgs = document.querySelectorAll('[data-testid="user-message"]');
+    const lastUserMsg = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
+    if (isCompactUserMessageElement(lastUserMsg)) {
+      const assistantMds = getAssistantMarkdownRoots();
+      const lastAsst = assistantMds[assistantMds.length - 1];
+      const posFollowing = (typeof Node !== 'undefined' && typeof Node.DOCUMENT_POSITION_FOLLOWING === 'number')
+        ? Node.DOCUMENT_POSITION_FOLLOWING
+        : 4;
+      const userFollowsAsst = !lastAsst || (
+        typeof lastAsst.compareDocumentPosition === 'function'
+          ? Boolean(lastAsst.compareDocumentPosition(lastUserMsg) & posFollowing)
+          : false
+      );
+      if (userFollowsAsst) {
+        autoCompactState.idleSince = 0;
+        return { triggered: false, reason: 'already_compacted' };
       }
+    }
+    if (!opts.immediate) {
       if (!autoCompactState.idleSince) {
         autoCompactState.idleSince = now;
         return { triggered: false, reason: 'waiting_idle_stability' };
@@ -5031,13 +5070,22 @@
 
     autoCompactState.armedForSession = false;
     autoCompactState.inFlightSession = sessionId;
+    autoCompactState.inFlightSending = true;
+    autoCompactState.inFlightUntil = now + 5000;
     autoCompactState.idleSince = 0;
     autoCompactState.lastFiredMap.set(sessionId, {
       at: now,
       contextUsed: risk.contextUsed,
       assistantCount: getAssistantMarkdownRoots().length
     });
-    void performMobileAction({ action: 'send', text: '/compact' });
+    Promise.resolve(performMobileAction({ action: 'send', text: '/compact' }))
+      .catch(() => null)
+      .finally(() => {
+        if (autoCompactState.inFlightSession === sessionId) {
+          autoCompactState.inFlightSending = false;
+          autoCompactState.inFlightUntil = Math.max(autoCompactState.inFlightUntil, Date.now() + 3000);
+        }
+      });
     const kVal = Math.round(risk.contextUsed / 1000);
     const noticeText = risk.cacheDropDetected
       ? tr(`⚡ 检测到缓存已失效 (${kVal}K)，已自动发送 /compact 压缩防卡顿（可在设置关闭）`, `⚡ Cache expired (${kVal}K): auto-sent /compact to prevent stall (toggle in Settings)`)
