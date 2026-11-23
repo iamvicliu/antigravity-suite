@@ -590,9 +590,7 @@
   let autoCompactState = {
     lastSessionId: '',
     armedForSession: false,
-    inFlightSession: '',
-    inFlightSending: false,
-    inFlightUntil: 0,
+    inFlightMap: new Map(),
     idleSince: 0,
     lastFiredMap: new Map()
   };
@@ -4974,7 +4972,11 @@
   function isCompactUserMessageElement(userMsgEl) {
     if (!userMsgEl) return false;
     const contentEl = userMsgEl.querySelector?.('[data-testid="user-message-content"]') || null;
-    const rawText = String(contentEl?.textContent ?? userMsgEl.textContent ?? '').trim();
+    if (contentEl) {
+      const directText = String(contentEl.textContent || '').trim();
+      return Boolean(directText) && /^\/?compact$/i.test(directText);
+    }
+    const rawText = String(userMsgEl.textContent || '').trim();
     if (!rawText) return false;
     const cleaned = rawText
       .replace(/^(?:you\s+said|你说)[:：\s]*/i, '')
@@ -5000,16 +5002,14 @@
     const now = Date.now();
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
-    const isInFlightForSession = autoCompactState.inFlightSession === sessionId;
-    if (isInFlightForSession && (autoCompactState.inFlightSending || busy || now < autoCompactState.inFlightUntil)) {
+    const inFlight = autoCompactState.inFlightMap.get(sessionId) || null;
+    if (inFlight && (inFlight.sending || busy || now < inFlight.until)) {
       autoCompactState.armedForSession = false;
       autoCompactState.idleSince = 0;
       return { triggered: false, reason: 'compact_in_flight' };
     }
-    if (isInFlightForSession) {
-      autoCompactState.inFlightSession = '';
-      autoCompactState.inFlightSending = false;
-      autoCompactState.inFlightUntil = 0;
+    if (inFlight) {
+      autoCompactState.inFlightMap.delete(sessionId);
       autoCompactState.armedForSession = false;
       autoCompactState.idleSince = 0;
       return { triggered: false, reason: 'compact_finished' };
@@ -5069,9 +5069,11 @@
     }
 
     autoCompactState.armedForSession = false;
-    autoCompactState.inFlightSession = sessionId;
-    autoCompactState.inFlightSending = true;
-    autoCompactState.inFlightUntil = now + 5000;
+    const inFlightEntry = {
+      sending: true,
+      until: now + 5000
+    };
+    autoCompactState.inFlightMap.set(sessionId, inFlightEntry);
     autoCompactState.idleSince = 0;
     autoCompactState.lastFiredMap.set(sessionId, {
       at: now,
@@ -5081,9 +5083,9 @@
     Promise.resolve(performMobileAction({ action: 'send', text: '/compact' }))
       .catch(() => null)
       .finally(() => {
-        if (autoCompactState.inFlightSession === sessionId) {
-          autoCompactState.inFlightSending = false;
-          autoCompactState.inFlightUntil = Math.max(autoCompactState.inFlightUntil, Date.now() + 3000);
+        if (autoCompactState.inFlightMap.get(sessionId) === inFlightEntry) {
+          inFlightEntry.sending = false;
+          inFlightEntry.until = Math.max(inFlightEntry.until, Date.now() + 3000);
         }
       });
     const kVal = Math.round(risk.contextUsed / 1000);
