@@ -9285,7 +9285,7 @@
     }
   }
 
-  function isStopHookBlockedSystemStep(step, prevStep = null) {
+  function isStopHookBlockedSystemStep(step, prevStep = null, steps = null, stepIndex = -1) {
     if (!step || typeof step !== 'object') return false;
     const type = String(step.type || '');
     if (type && type !== 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE') return false;
@@ -9297,14 +9297,41 @@
       type === 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE' &&
       String(step.status || '') === 'CORTEX_STEP_STATUS_CLEARED' &&
       !sysMsg &&
-      prevStep && typeof prevStep === 'object'
+      prevStep && typeof prevStep === 'object' &&
+      Array.isArray(steps) && stepIndex >= 0
     ) {
+      const prevType = String(prevStep.type || '');
+      const prevIsPlanner = prevType ? prevType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(prevStep.plannerResponse);
+      const prevHasTools = Array.isArray(prevStep.plannerResponse?.toolCalls) && prevStep.plannerResponse.toolCalls.length > 0;
+      const src = String(step.metadata?.source || '').trim();
       const prevExec = String(prevStep.metadata?.executionId || '').trim();
       const curExec = String(step.metadata?.executionId || '').trim();
       const curCreated = String(step.metadata?.createdAt || '').trim();
       const curCompleted = String(step.metadata?.completedAt || '').trim();
-      if (prevExec && curExec && prevExec === curExec && !step.metadata?.startedAt && curCreated && curCreated === curCompleted) {
-        return true;
+      if (
+        prevIsPlanner &&
+        !prevHasTools &&
+        src === 'CORTEX_STEP_SOURCE_SYSTEM' &&
+        prevExec && curExec && prevExec === curExec &&
+        !step.metadata?.startedAt &&
+        curCreated && curCreated === curCompleted
+      ) {
+        const nextStep = steps[stepIndex + 1];
+        const nextType = String(nextStep?.type || '');
+        const nextIsPlanner = Boolean(nextStep && (nextType ? nextType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : nextStep.plannerResponse));
+        const nextExec = String(nextStep?.metadata?.executionId || '').trim();
+        if (!nextIsPlanner || !nextExec || nextExec !== curExec) return false;
+        for (let j = stepIndex + 1; j < steps.length; j++) {
+          const sj = steps[j];
+          if (!sj || typeof sj !== 'object') continue;
+          const sjType = String(sj.type || '');
+          if (sjType === 'CORTEX_STEP_TYPE_USER_INPUT' || (!sjType && sj.userInput)) break;
+          const sjIsPlanner = sjType ? sjType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(sj.plannerResponse);
+          if (sjIsPlanner) {
+            const sjText = String(sj.plannerResponse?.modifiedResponse ?? sj.plannerResponse?.response ?? '').trim();
+            if (sjText) return true;
+          }
+        }
       }
     }
     return false;
@@ -9404,7 +9431,7 @@
         const thoughtText = String(pr.thinking || pr.thought || '').trim();
         if (thoughtText) turnThoughts.push(thoughtText);
         const hasToolCalls = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
-        const blockedByStopHook = !hasToolCalls && isStopHookBlockedSystemStep(list[i + 1], s);
+        const blockedByStopHook = !hasToolCalls && isStopHookBlockedSystemStep(list[i + 1], s, list, i + 1);
         if (text && !blockedByStopHook) {
           clearEarlierTurnThoughts();
           const thoughts = turnThoughts.slice();
