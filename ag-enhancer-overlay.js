@@ -9285,6 +9285,19 @@
     }
   }
 
+  function isQueuedTrajectoryUserStep(step) {
+    if (!step || typeof step !== 'object') return false;
+    const type = String(step.type || '');
+    if (type ? type !== 'CORTEX_STEP_TYPE_USER_INPUT' : !step.userInput) return false;
+    const st = String(step.status || '').trim().toUpperCase();
+    return st === 'CORTEX_STEP_STATUS_QUEUED'
+      || step.queued === true
+      || step.userInput?.queued === true
+      || step.userInput?.isQueuedMessage === true
+      || step.userInput?.is_queued_message === true
+      || step.metadata?.queued === true;
+  }
+
   function isStopHookBlockedSystemStep(step, prevStep = null, steps = null, stepIndex = -1) {
     if (!step || typeof step !== 'object') return false;
     const type = String(step.type || '');
@@ -9325,7 +9338,10 @@
           const sj = steps[j];
           if (!sj || typeof sj !== 'object') continue;
           const sjType = String(sj.type || '');
-          if (sjType === 'CORTEX_STEP_TYPE_USER_INPUT' || (!sjType && sj.userInput)) break;
+          if (sjType === 'CORTEX_STEP_TYPE_USER_INPUT' || (!sjType && sj.userInput)) {
+            if (isQueuedTrajectoryUserStep(sj)) continue;
+            break;
+          }
           const sjIsPlanner = sjType ? sjType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(sj.plannerResponse);
           if (sjIsPlanner) {
             const sjText = String(sj.plannerResponse?.modifiedResponse ?? sj.plannerResponse?.response ?? '').trim();
@@ -9389,6 +9405,7 @@
       const s = list[i];
       if (!s || typeof s !== 'object') continue;
       if (s.userInput) {
+        if (isQueuedTrajectoryUserStep(s)) continue;
         const u = s.userInput;
         const text = String(
           u.userResponse ||
