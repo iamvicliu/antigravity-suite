@@ -24233,10 +24233,59 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
     );
   }
 
-  // 1d. ag-enhancer-overlay.js isolated 视图 extractMessagesFromTrajectorySteps 同步过滤 Stop hook 拦截稿（含 CLEARED 态及全部反例）
+  // 1c-2. 双端 CLEARED 扫描边界对齐：紧邻续跑仅有思考 -> 排队 USER_INPUT -> 同轮最终正文，拦截稿须隐藏且全部 thinking 保留
+  const clearedAcrossQueuedSteps = [
+    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '开始修复' } },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_CLEARED',
+      metadata: { executionId: 'exec-q' },
+      plannerResponse: { thinking: '拦截稿思考', response: '被 Stop hook 拦截的草稿回复。' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      status: 'CORTEX_STEP_STATUS_CLEARED',
+      metadata: {
+        source: 'CORTEX_STEP_SOURCE_SYSTEM',
+        executionId: 'exec-q',
+        createdAt: '2026-11-23T11:05:00Z',
+        completedAt: '2026-11-23T11:05:00Z'
+      }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_CLEARED',
+      metadata: { executionId: 'exec-q' },
+      plannerResponse: { thinking: '续跑仅思考', response: '' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      status: 'CORTEX_STEP_STATUS_QUEUED',
+      userInput: { userResponse: '排队追加的问题' }
+    },
+    {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: { executionId: 'exec-q' },
+      plannerResponse: { thinking: '最终正文思考', response: '同轮最终正文回复。' }
+    }
+  ];
+  const remoteQueuedOut = extractMessagesFromTrajectorySteps(clearedAcrossQueuedSteps);
+  assert.deepEqual(
+    remoteQueuedOut.map((m) => m.id),
+    ['t-u-0', 't-a-5'],
+    'mobile-remote 在紧邻续跑仅思考 -> 排队 USER_INPUT -> 同轮最终正文路径下必须跳过排队步骤、隐藏拦截稿并保留最终回复'
+  );
+  assert.deepEqual(
+    remoteQueuedOut[1].thoughts,
+    ['拦截稿思考', '续跑仅思考', '最终正文思考'],
+    'mobile-remote 跳过排队 USER_INPUT 后必须完整保留拦截稿、续跑与最终 thinking'
+  );
+
+  // 1d. ag-enhancer-overlay.js isolated 视图 extractMessagesFromTrajectorySteps 同步过滤 Stop hook 拦截稿（含 CLEARED 态、排队 USER_INPUT 边界对齐及全部反例）
   const overlayCode = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
-  const isoHelperMatch = overlayCode.match(/function isStopHookBlockedSystemStep\(step, prevStep = null, steps = null, stepIndex = -1\) \{[\s\S]*?\n  \}\n\n  function extractMessagesFromTrajectorySteps\(steps, limit = 20\) \{[\s\S]*?\n  \}/);
-  assert.ok(isoHelperMatch, 'ag-enhancer-overlay.js 应包含 Stop hook 判定与 extractMessagesFromTrajectorySteps');
+  const isoHelperMatch = overlayCode.match(/function isQueuedTrajectoryUserStep\(step\) \{[\s\S]*?\n  \}\n\n  function isStopHookBlockedSystemStep\(step, prevStep = null, steps = null, stepIndex = -1\) \{[\s\S]*?\n  \}\n\n  function extractMessagesFromTrajectorySteps\(steps, limit = 20\) \{[\s\S]*?\n  \}/);
+  assert.ok(isoHelperMatch, 'ag-enhancer-overlay.js 应包含排队判定、Stop hook 判定与 extractMessagesFromTrajectorySteps');
   const extractIsoOverlay = new Function('tr', `${isoHelperMatch[0]}; return extractMessagesFromTrajectorySteps;`)((zh) => zh);
   const isoStopHookOut = extractIsoOverlay(stopHookSteps, 20);
   assert.deepEqual(
@@ -24249,6 +24298,17 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
   assert.deepEqual(isoAntiHideOut.map((m) => m.id), ['rpc-u-0', 'rpc-a-1', 'rpc-a-3']);
   const isoClearedOut = extractIsoOverlay(clearedStopHookSteps, 20);
   assert.deepEqual(isoClearedOut.map((m) => m.id), ['rpc-u-0', 'rpc-a-3', 'rpc-a-5']);
+  const isoQueuedOut = extractIsoOverlay(clearedAcrossQueuedSteps, 20);
+  assert.deepEqual(
+    isoQueuedOut.map((m) => m.id),
+    ['rpc-u-0', 'rpc-a-5'],
+    'ag-enhancer-overlay 必须与 mobile-remote 对齐跳过排队 USER_INPUT、隐藏拦截稿并保留最终回复'
+  );
+  assert.deepEqual(
+    isoQueuedOut[1].thoughts,
+    ['拦截稿思考', '续跑仅思考', '最终正文思考'],
+    'ag-enhancer-overlay 跳过排队 USER_INPUT 后必须完整保留全部 thinking'
+  );
   for (const tc of clearedAntiFalseHideCases) {
     assert.deepEqual(
       extractIsoOverlay(tc.steps, 20).map((m) => m.id),
@@ -24417,12 +24477,18 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
   );
   assert.deepEqual(katexMerged.map((m) => m.id), ['t-u-1', 't-a-2']);
 
-  // 3d. 代码槽位与文首裸 copy 词边界反例：copyright / Copyright 不得被拆为 copy + right 误合并；带边界 Copy\nright 仍正常去重
+  // 3d. 代码槽位与文首 copy / 语言标签+Copy 词边界反例：copyright / Copyright / py\nCopyright 不得被拆为 copy + right 误合并；真实复制按钮仍正常去重
   const baseRightCode = [
     { id: 't-u-1', role: 'user', text: '对比两段代码' },
     { id: 't-a-2', role: 'assistant', text: '查看如下代码：\n```py\nright = get_license_metadata()\n```\n请核对。' }
   ];
-  for (const variant of ['copyright = get_license_metadata()', 'Copyright = get_license_metadata()']) {
+  for (const variant of [
+    'copyright = get_license_metadata()',
+    'Copyright = get_license_metadata()',
+    'py\nCopyright = get_license_metadata()',
+    'py Copyright = get_license_metadata()',
+    'py\ncopyright = get_license_metadata()'
+  ]) {
     for (const busyFlag of [false, true]) {
       const mergedCopyright = mergeTrajectoryAndDomMessages(baseRightCode, [
         { id: 'u-0', role: 'user', text: '对比两段代码' },
@@ -24432,33 +24498,41 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
       assert.deepEqual(
         mergedCopyright.map((m) => m.id),
         ['t-u-1', 't-a-2', 'dom-tail-2'],
-        `busy=${busyFlag} 时 ${variant} 不得被拆为 copy+right 误合并`
+        `busy=${busyFlag} 时 ${JSON.stringify(variant)} 不得被拆为 copy+right 误合并`
       );
     }
   }
-  const mergedCopyBoundaryOk = mergeTrajectoryAndDomMessages(baseRightCode, [
-    { id: 'u-0', role: 'user', text: '对比两段代码' },
-    { id: 'a-1', role: 'assistant', text: '查看如下代码：\nCopy\nright = get_license_metadata()\n请核对。' }
-  ], { busy: false });
-  assert.deepEqual(mergedCopyBoundaryOk.map((m) => m.id), ['t-u-1', 't-a-2'], '带换行的裸 Copy 按钮铬仍正常去重');
+  for (const [label, domCopyText] of [
+    ['裸 Copy 换行', '查看如下代码：\nCopy\nright = get_license_metadata()\n请核对。'],
+    ['语言标签换行 + Copy 换行', '查看如下代码：\npy\nCopy\nright = get_license_metadata()\n请核对。'],
+    ['紧贴 pyCopy + 换行', '查看如下代码：\npyCopy\nright = get_license_metadata()\n请核对。']
+  ]) {
+    const mergedCopyBoundaryOk = mergeTrajectoryAndDomMessages(baseRightCode, [
+      { id: 'u-0', role: 'user', text: '对比两段代码' },
+      { id: 'a-1', role: 'assistant', text: domCopyText }
+    ], { busy: false });
+    assert.deepEqual(mergedCopyBoundaryOk.map((m) => m.id), ['t-u-1', 't-a-2'], `真实复制按钮铬（${label}）仍正常去重`);
+  }
 
-  const mergedLeadCopyright = mergeTrajectoryAndDomMessages(
-    [
-      { id: 't-u-1', role: 'user', text: 'Two lines' },
-      { id: 't-a-2', role: 'assistant', text: 'right notice for open source project' }
-    ],
-    [
-      { id: 'u-0', role: 'user', text: 'Two lines' },
-      { id: 'a-1', role: 'assistant', text: 'right notice for open source project' },
-      { id: 'a-2', role: 'assistant', text: 'Copyright notice for open source project' }
-    ],
-    { busy: false }
-  );
-  assert.deepEqual(
-    mergedLeadCopyright.map((m) => m.id),
-    ['t-u-1', 't-a-2', 'dom-tail-2'],
-    '文首 Copyright notice 不得与 right notice 误合并'
-  );
+  for (const leadVariant of ['Copyright notice for open source project', 'py\nCopyright notice for open source project']) {
+    const mergedLeadCopyright = mergeTrajectoryAndDomMessages(
+      [
+        { id: 't-u-1', role: 'user', text: 'Two lines' },
+        { id: 't-a-2', role: 'assistant', text: 'right notice for open source project' }
+      ],
+      [
+        { id: 'u-0', role: 'user', text: 'Two lines' },
+        { id: 'a-1', role: 'assistant', text: 'right notice for open source project' },
+        { id: 'a-2', role: 'assistant', text: leadVariant }
+      ],
+      { busy: false }
+    );
+    assert.deepEqual(
+      mergedLeadCopyright.map((m) => m.id),
+      ['t-u-1', 't-a-2', 'dom-tail-2'],
+      `文首 ${JSON.stringify(leadVariant)} 不得与 right notice 误合并`
+    );
+  }
 
   // 4a. 服务端 fetchSnapshotFromTarget 实际触发 catch 回退的行为测试：强制输出相互一致的 DOM/isolated_error 来源、总数、起始索引与 0-based msgIndex
   const pickMockTarget = async () => ({

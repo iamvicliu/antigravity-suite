@@ -4067,7 +4067,8 @@ function formatTrajectoryUserInput(ui) {
 
 function isQueuedTrajectoryUserStep(step) {
   if (!step || typeof step !== 'object') return false;
-  if (String(step.type || '') !== 'CORTEX_STEP_TYPE_USER_INPUT') return false;
+  const type = String(step.type || '');
+  if (type ? type !== 'CORTEX_STEP_TYPE_USER_INPUT' : !step.userInput) return false;
   const st = String(step.status || '').trim().toUpperCase();
   return st === 'CORTEX_STEP_STATUS_QUEUED'
     || step.queued === true
@@ -4861,12 +4862,25 @@ function hasDomRawBoundaryBetween(rawText, rawStartOffsets, gapEndIdx) {
   return true;
 }
 
+function isGluedLangCopyChrome(rawGap, expectedLang = '') {
+  const s = String(rawGap || '');
+  // 无后继词边界时（如 jsCopyconsole.log），仅允许语言标签与 Copy/Copied/复制代码 之间无任何空白或分隔符的紧贴复合铬；
+  // 若语言标签与 Copy 之间存在换行/空格/标点（如 "py\nCopyright" 切出的 "py\nCopy"），则后段 Copy 属于新行/新词前缀，不得拆词吞掉 Copyright
+  if (!s || /[\s:：·•\-|]/.test(s)) return false;
+  if (expectedLang) {
+    if (!s.toLowerCase().startsWith(String(expectedLang).toLowerCase())) return false;
+    const tail = s.slice(String(expectedLang).length);
+    return /^(?:CopyCode|Copy|Copied|复制代码|已复制|复制)$/.test(tail);
+  }
+  return /^[a-z0-9_+#.-]+(?:CopyCode|Copy|Copied|复制代码|已复制|复制)$/i.test(s)
+    && /(?:CopyCode|Copy|Copied|复制代码|已复制|复制)$/.test(s);
+}
+
 function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots, boundaryOk = true, rawGap = '') {
   if (!gap || gap.length > 48) return false;
-  const hasCopyChromeCasingOrCjk = /(?:Copy|Copied|复制代码|已复制|复制)/.test(String(rawGap || ''));
   if (tiPos === 0 && DOM_UI_CHROME_STRICT_RE.test(gap)) {
     const hasLangAndCopyChrome = !DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && /(?:copycode|copied|copy|复制代码|已复制|复制)[:：·•\-|]*$/.test(gap);
-    if (boundaryOk || (hasLangAndCopyChrome && hasCopyChromeCasingOrCjk)) return true;
+    if (boundaryOk || (hasLangAndCopyChrome && isGluedLangCopyChrome(rawGap))) return true;
     return false;
   }
   const list = chromeSlots?.get?.(tiPos);
@@ -4875,11 +4889,12 @@ function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots, boundaryOk = true, raw
     if (slot.kind === 'code') {
       // 代码块槽位必须包含明确的复制按钮铬（Copy/复制代码 等）：
       // 裸 Copy 必须具备词边界（彻底杜绝 copyright/Copyright 误拆为 copy + right）；
-      // 语言标签 + Copy 复合铬（如 jsCopyconsole.log）允许借助大小写 Copy/中文按钮特征去重。
+      // 语言标签 + Copy 复合铬在无后继词边界时，仅接受无空白分隔的紧贴铬（如 jsCopyconsole.log），
+      // 严禁把 "py\nCopyright" 拆成 "py\nCopy" + "right" 误合并。
       if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && boundaryOk) return true;
       if (slot.lang && gap.startsWith(slot.lang)) {
         const rest = gap.slice(slot.lang.length).replace(/^[:：·•\-|]+/, '');
-        if (rest && DOM_UI_CHROME_COPY_ONLY_RE.test(rest) && (boundaryOk || hasCopyChromeCasingOrCjk)) return true;
+        if (rest && DOM_UI_CHROME_COPY_ONLY_RE.test(rest) && (boundaryOk || isGluedLangCopyChrome(rawGap, slot.lang))) return true;
       }
     } else if (slot.kind === 'code-end') {
       if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && boundaryOk) return true;
@@ -4960,29 +4975,47 @@ function isMarkdownSourcedIncoming(msg, options = {}) {
   return /^rpc-(?:u|a|e|think)-/.test(id);
 }
 
-function classifyAssistantMatch(baseText, domText, options = {}) {
+function classifyAssistantMatchDetail(baseText, domText, options = {}) {
   if (options.domIsMarkdown && !options.baseIsDom) {
     const rawBase = String(baseText || '').trim();
     const rawDom = String(domText || '').trim();
     if (rawBase && rawDom) {
-      if (rawBase === rawDom) return 3;
+      if (rawBase === rawDom) return { tier: 3, hasStreamingGrowth: false };
       if (!options.exactOnly && String(domText || '').length >= 3900 && rawDom.length >= 3900 && rawBase.length > rawDom.length && rawBase.startsWith(rawDom)) {
-        return 3;
+        return { tier: 3, hasStreamingGrowth: false };
       }
     }
   }
   const tKey = (options.baseIsDom || options.domIsMarkdown) ? compactDomKey(baseText) : compactBaseKey(baseText);
   const dKey = (options.baseIsDom && options.domIsMarkdown) ? compactBaseKey(domText) : compactDomKey(domText);
-  if (!tKey || !dKey) return 0;
+  if (!tKey || !dKey) return { tier: 0, hasStreamingGrowth: false };
 
   const tClean = stripTrailingEllipsis(tKey);
   const dClean = stripTrailingEllipsis(dKey);
-  if (!tClean || !dClean) return 0;
+  if (!tClean || !dClean) return { tier: 0, hasStreamingGrowth: false };
+
+  if (options.baseIsDom && !options.domIsMarkdown) {
+    const bNorm = stripTrailingEllipsis(normDomPlainText(baseText).toLowerCase());
+    const dNorm = stripTrailingEllipsis(normDomPlainText(domText).toLowerCase());
+    if (bNorm === dNorm) return { tier: 3, hasStreamingGrowth: false };
+    if (options.exactOnly) return { tier: 0, hasStreamingGrowth: false };
+    const shorterN = bNorm.length <= dNorm.length ? bNorm : dNorm;
+    const longerN = bNorm.length <= dNorm.length ? dNorm : bNorm;
+    if (longerN.startsWith(shorterN) && (
+      shorterN.length >= 10 ||
+      (options.busy && shorterN.length >= 4) ||
+      (options.allowCoveredPrefix && dNorm.startsWith(bNorm) && bNorm.length >= 4) ||
+      (shorterN.length >= 6 && (shorterN.length / longerN.length) >= 0.6)
+    )) {
+      return { tier: 2, hasStreamingGrowth: dNorm.length > bNorm.length && dNorm.startsWith(bNorm) };
+    }
+    return { tier: 0, hasStreamingGrowth: false };
+  }
 
   if (tKey === dKey || (tClean === dClean && Math.min(tClean.length, dClean.length) >= 8)) {
-    return 3;
+    return { tier: 3, hasStreamingGrowth: false };
   }
-  if (options.exactOnly) return 0;
+  if (options.exactOnly) return { tier: 0, hasStreamingGrowth: false };
 
   const shorter = tClean.length <= dClean.length ? tClean : dClean;
   const longer = tClean.length <= dClean.length ? dClean : tClean;
@@ -4992,7 +5025,7 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
     (options.allowCoveredPrefix && dClean.startsWith(tClean) && tClean.length >= 4) ||
     (shorter.length >= 6 && (shorter.length / longer.length) >= 0.6)
   )) {
-    return 2;
+    return { tier: 2, hasStreamingGrowth: dClean.length > tClean.length && dClean.startsWith(tClean) };
   }
 
   // Tier 1 仅在轨迹 Markdown 对应的结构槽位（围栏代码块起止、GitHub Alert 头部及文首前缀）允许跳过可识别的桌面 UI 装饰
@@ -5003,11 +5036,15 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
     if (endPos > 0) {
       const tailAfter = dClean.length - endPos;
       if (tailAfter === 0 || Boolean(options.busy) || Boolean(options.allowCoveredPrefix)) {
-        return 1;
+        return { tier: 1, hasStreamingGrowth: tailAfter > 0 };
       }
     }
   }
-  return 0;
+  return { tier: 0, hasStreamingGrowth: false };
+}
+
+function classifyAssistantMatch(baseText, domText, options = {}) {
+  return classifyAssistantMatchDetail(baseText, domText, options).tier;
 }
 
 function hasUserAttachmentOrMediaMarker(msg) {
@@ -5471,18 +5508,21 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           const domIsMd = isMarkdownSourcedIncoming(dm, options);
           let bestBi = -1;
           let bestTier = 0;
+          let bestHasGrowth = false;
           for (const bi of baseDesc) {
             if (consumedBaseIndices.has(bi)) continue;
             const matchTarget = baseList[bi];
-            const tier = classifyAssistantMatch(matchTarget.text, dm.text, {
+            const detail = classifyAssistantMatchDetail(matchTarget.text, dm.text, {
               busy: allowBusyOverwrite && bi === lastStreamableBi,
               allowCoveredPrefix: Boolean(poolOpts.singleTurn && !poolOpts.isActiveTailTurn && !domIsMd && bi === lastTextBiInPool),
               baseIsDom: baseOverwrittenByDom.has(matchTarget),
               domIsMarkdown: domIsMd
             });
+            const tier = detail.tier;
             if (tier >= minTier && tier > bestTier) {
               bestTier = tier;
               bestBi = bi;
+              bestHasGrowth = Boolean(detail.hasStreamingGrowth);
               if (tier === 3) break;
             }
           }
@@ -5497,7 +5537,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
             const domKeyLen = (targetIsDom && domIsMd)
               ? compactBaseKey(dm.text).length
               : compactDomKey(dm.text).length;
-            if (allowBusyOverwrite && bestBi === lastStreamableBi && domKeyLen > targetKeyLen) {
+            if (allowBusyOverwrite && bestBi === lastStreamableBi && bestHasGrowth && domKeyLen > targetKeyLen) {
               matchTarget.text = dm.text;
               matchTarget.html = dm.html || null;
               if (!domIsMd) baseOverwrittenByDom.add(matchTarget);
