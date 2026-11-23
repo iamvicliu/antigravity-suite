@@ -8,12 +8,12 @@
 
 请在**仓库根目录**下执行以下命令：
 
-- **核心回归套件（Node.js，184 项用例）**：
+- **核心回归套件（Node.js）**：
   ```bash
   npm test
   # 等价于：npm run test:suite
   ```
-- **附件扫描测试（Python，9 项用例）**：
+- **附件扫描测试（Python）**：
   ```bash
   python3 -m unittest discover -s tests -p "*_test.py" -v
   ```

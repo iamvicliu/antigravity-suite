@@ -974,12 +974,12 @@ test('需求 4a: 真实 DOM 树下所有配置项迁入 #panel-settings，原面
   }
   assert.equal(shadow.getElementById('plan-custom-form')?.getAttribute('data-in-settings'), 'true');
 
-  // 3. 验证打开设置面板与 4 分页切换
+  // 3. 验证打开设置面板与 5 分页切换（README 1→5 顺排：appearance -> remote -> chat -> network -> subscription）
   api.openSettings('appearance');
   assert.equal(settingsPanel.hidden, false, 'openSettings 应打开 #panel-settings');
   assert.equal(shadow.getElementById('settings-tab-btn-appearance')?.getAttribute('aria-selected'), 'true');
   assert.equal(shadow.getElementById('settings-pane-appearance')?.hidden, false);
-  assert.equal(shadow.getElementById('settings-pane-terminal')?.hidden, true);
+  assert.equal(shadow.getElementById('settings-pane-network')?.hidden, true);
 
   api.openSettings('subscription');
   assert.equal(shadow.getElementById('settings-tab-btn-subscription')?.getAttribute('aria-selected'), 'true');
@@ -1639,8 +1639,9 @@ test('需求 5d: 移除独立汉化悬浮图标，设置下拉框同步切换 an
   const api = env.sandbox.__AGContextMeter;
   const shadow = env.getShadow();
   const settingsPanel = shadow.getElementById('panel-settings');
-  const termTabBtn = shadow.getElementById('settings-tab-btn-terminal');
-  assert.ok(settingsPanel && termTabBtn, '应渲染统一设置面板与分页按钮');
+  const appearanceTabBtn = shadow.getElementById('settings-tab-btn-appearance');
+  const networkTabBtn = shadow.getElementById('settings-tab-btn-network');
+  assert.ok(settingsPanel && appearanceTabBtn && networkTabBtn, '应渲染统一设置面板与分页按钮');
 
   const getTokenCardPairs = () => shadow.querySelectorAll('#token-stat-cards .t-card-lbl')
     .map(lbl => lbl.querySelectorAll('span').map(sp => sp.textContent.trim()));
@@ -1656,7 +1657,8 @@ test('需求 5d: 移除独立汉化悬浮图标，设置下拉框同步切换 an
   assert.equal(env.doc.documentElement.getAttribute('data-ag-hans-lang'), 'en');
   assert.equal(textNode.nodeValue, 'Turbo', '设置面板切换到 English 应立即还原原文');
   assert.ok(settingsPanel.querySelector('.panel-title')?.textContent?.includes('Antigravity Suite Settings'), '#panel-settings 标题应实时切换为英文');
-  assert.equal(termTabBtn.textContent.trim(), '🖥️ Terminal & General', '分页按钮应实时切换为英文');
+  assert.equal(appearanceTabBtn.textContent.trim(), '🌐 Language & Appearance', '首页分页按钮应实时切换为英文');
+  assert.equal(networkTabBtn.textContent.trim(), '🧰 Terminal & Network', '终端与网络分页按钮应实时切换为英文');
   assert.deepEqual(getTokenCardPairs(), [
     ['Total Processed', 'Total'],
     ["Today's Usage", 'Today'],
@@ -1669,7 +1671,8 @@ test('需求 5d: 移除独立汉化悬浮图标，设置下拉框同步切换 an
   assert.equal(env.doc.documentElement.getAttribute('data-ag-hans-lang'), 'zh');
   assert.equal(textNode.nodeValue, '无限', '切回 zh-CN 应重新应用中文译文');
   assert.ok(settingsPanel.querySelector('.panel-title')?.textContent?.includes('Antigravity Suite 统一设置'), '#panel-settings 标题应实时恢复为中文');
-  assert.equal(termTabBtn.textContent.trim(), '🖥️ 终端与通用', '分页按钮应实时恢复为中文');
+  assert.equal(appearanceTabBtn.textContent.trim(), '🌐 语言与外观', '首页分页按钮应实时恢复为中文');
+  assert.equal(networkTabBtn.textContent.trim(), '🧰 终端与网络', '终端与网络分页按钮应实时恢复为中文');
   assert.deepEqual(getTokenCardPairs(), [
     ['累计处理 Token', '总计'],
     ['今日使用', '今日'],
@@ -4020,10 +4023,12 @@ test('需求 18: meter-core 修复 cache=0 掩盖，pulse-capsule 与 renderer �
   const chkAutoCompact = sdAc.getElementById('set-auto-compact');
   assert.ok(chkAutoCompact, '设置面板必须包含 #set-auto-compact 开关');
   assert.equal(chkAutoCompact.checked, true, '240K 自动压缩开关应默认开启');
-  const terminalPaneText = sdAc.getElementById('settings-pane-terminal')?.textContent || '';
-  assert.match(terminalPaneText, /512K/);
-  assert.match(terminalPaneText, /240K/);
-  assert.match(terminalPaneText, /\/compact/);
+  const chatPane = sdAc.getElementById('settings-pane-chat');
+  assert.ok(chatPane?.contains(chkAutoCompact), '#set-auto-compact 必须位于分页 3（⚡ 对话与效率）内');
+  const chatPaneText = chatPane?.textContent || '';
+  assert.match(chatPaneText, /512K/);
+  assert.match(chatPaneText, /240K/);
+  assert.match(chatPaneText, /\/compact/);
   assert.equal(enhAc.getAutoCompact(), true);
 
   chkAutoCompact.checked = false;
@@ -16999,6 +17004,1879 @@ test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置�
   }
 });
 
+// =========================================================================
+test('PR #6 合并加固 (P0-1/P0-2): 生产文件根 fail-closed、系统/凭据路径拦截、PDF 强制下载 + 沙箱 CSP、同源去明文 token', async () => {
+  const {
+    resolveProductionMediaAllowedRoots,
+    resolveMediaAllowedRoots,
+    resolveSafeLocalMediaPath,
+    listSafeProjectTree,
+    createRemoteHttpHandler,
+    buildMobileAppHtml
+  } = require('../mobile-remote');
+  const { Readable } = require('stream');
+
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pr6-p012-'));
+  try {
+    const fakeHome = path.join(tmpBase, 'home');
+    const fakeConfig = path.join(tmpBase, 'config');
+    const projDir = path.join(fakeHome, 'work', 'app-repo');
+    const sshDir = path.join(fakeHome, '.ssh');
+    const brainDir = path.join(fakeHome, '.gemini', 'antigravity', 'brain', 'cid-pr6-1');
+    const libDir = path.join(fakeHome, 'Library', 'Preferences');
+    const ghDir = path.join(fakeHome, '.config', 'gh');
+    const claudeDir = path.join(fakeHome, '.claude');
+    for (const d of [projDir, sshDir, brainDir, libDir, ghDir, claudeDir, path.join(fakeConfig, 'projects')]) {
+      fs.mkdirSync(d, { recursive: true });
+    }
+
+    fs.writeFileSync(path.join(fakeConfig, 'projects', 'p1.json'), JSON.stringify({
+      id: 'proj-app',
+      name: 'App Repo',
+      projectResources: { resources: [{ folderUri: 'file://' + encodeURI(projDir) }] }
+    }));
+    fs.writeFileSync(path.join(fakeConfig, 'projects', 'p-ssh.json'), JSON.stringify({
+      id: 'proj-ssh',
+      name: 'SSH Bad',
+      projectResources: { resources: [{ folderUri: 'file://' + encodeURI(sshDir) }] }
+    }));
+
+    const rootSecret = path.join(fakeHome, 'root-secret.txt');
+    const libPlist = path.join(libDir, 'com.secret.plist');
+    const ghHosts = path.join(ghDir, 'hosts.yml');
+    const claudeCfg = path.join(claudeDir, 'settings.json');
+    const zshHist = path.join(fakeHome, '.zsh_history');
+    const projCred = path.join(projDir, 'credentials.json');
+    const projPng = path.join(projDir, 'app.png');
+    const projPdf = path.join(projDir, 'report.pdf');
+    const brainShot = path.join(brainDir, 'shot.png');
+
+    fs.writeFileSync(rootSecret, 'HOME_ROOT_SECRET');
+    fs.writeFileSync(libPlist, 'PLIST_SECRET');
+    fs.writeFileSync(ghHosts, 'GH_TOKEN_SECRET');
+    fs.writeFileSync(claudeCfg, '{"apiKey":"x"}');
+    fs.writeFileSync(zshHist, 'export SECRET=1');
+    fs.writeFileSync(projCred, '{"secret":1}');
+    fs.writeFileSync(projPng, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    fs.writeFileSync(projPdf, '%PDF-1.4\n%mock\n');
+    fs.writeFileSync(brainShot, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+    // 1. resolveProductionMediaAllowedRoots 只放行已注册工作区与 brain，绝不放行 $HOME 与 .ssh
+    const prodRoots = resolveProductionMediaAllowedRoots({ configDir: fakeConfig, homeDir: fakeHome });
+    const realProjDir = fs.realpathSync(projDir);
+    const realBrainBase = fs.realpathSync(path.join(fakeHome, '.gemini', 'antigravity', 'brain'));
+    const realFakeHome = fs.realpathSync(fakeHome);
+    assert.ok(prodRoots.includes(realProjDir), '应包含已注册项目工作区');
+    assert.ok(prodRoots.includes(realBrainBase), '应包含 .gemini/antigravity/brain 目录');
+    assert.ok(!prodRoots.includes(realFakeHome), '严禁把 $HOME 根目录放入生产允许根');
+    assert.ok(!prodRoots.some((r) => r.includes('.ssh')), '严禁把 .ssh 放入生产允许根');
+
+    // 无注册工作区与 brain 目录时 fail-closed 返回空数组并拒绝文件读取/目录浏览
+    const emptyCfg = path.join(tmpBase, 'empty-cfg');
+    const emptyHome = path.join(tmpBase, 'empty-home');
+    fs.mkdirSync(path.join(emptyCfg, 'projects'), { recursive: true });
+    fs.mkdirSync(emptyHome, { recursive: true });
+    assert.deepEqual(
+      resolveMediaAllowedRoots({ strictProdRoots: true, configDir: emptyCfg, homeDir: emptyHome }),
+      [],
+      'strictProdRoots 无允许根时必须 fail-closed 返回空数组'
+    );
+    assert.equal(
+      resolveSafeLocalMediaPath(projPng, { strictProdRoots: true, configDir: emptyCfg, homeDir: emptyHome }).status,
+      403
+    );
+    assert.equal(
+      listSafeProjectTree('', { strictProdRoots: true, configDir: emptyCfg, homeDir: emptyHome }).status,
+      403
+    );
+
+    // 2. HTTP /api/media 与 /api/session-files 验证
+    const cfg = {
+      port: 18765,
+      token: 'tok-pr6-p012-1234567890abcdef',
+      tunnelEnabled: false,
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    };
+    const prodMediaOpts = {
+      strictProdRoots: true,
+      homeDir: fakeHome,
+      configDir: fakeConfig,
+      getAllowedRoots: () => resolveProductionMediaAllowedRoots({ configDir: fakeConfig, homeDir: fakeHome })
+    };
+    const handler = createRemoteHttpHandler(cfg, {
+      mediaOptions: prodMediaOpts,
+      callLanguageServer: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') {
+          return { trajectorySummaries: { 'cid-pr6-1': { workspaces: [{ folderUri: 'file://' + encodeURI(projDir) }] } } };
+        }
+        if (method === 'GetTrajectoryFileDiffs') {
+          return {
+            fileDiffs: [
+              { path: rootSecret, unifiedDiff: '+leak' },
+              { path: ghHosts, unifiedDiff: '+leak-gh' },
+              { path: projPng, unifiedDiff: '+png' },
+              { path: brainShot, unifiedDiff: '+brain' }
+            ]
+          };
+        }
+        if (method === 'GetArtifactSnapshots') {
+          return {
+            artifacts: [
+              { title: 'secret.txt', path: rootSecret, content: 'SECRET' },
+              { title: 'settings.json', path: claudeCfg, content: 'SECRET' },
+              { title: 'shot.png', path: brainShot, content: 'ok' }
+            ]
+          };
+        }
+        return null;
+      }
+    });
+
+    const callGet = async (urlPath) => {
+      const req = Readable.from([]);
+      req.method = 'GET';
+      req.url = urlPath;
+      req.headers = { host: '127.0.0.1:18765', 'x-ag-remote-token': cfg.token };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      const headers = {};
+      const chunks = [];
+      const res = {
+        setHeader(k, v) { headers[k.toLowerCase()] = v; },
+        writeHead(c, h = {}) {
+          status = c;
+          for (const [k, v] of Object.entries(h)) headers[k.toLowerCase()] = v;
+        },
+        end(b) { if (b) chunks.push(Buffer.isBuffer(b) ? b : Buffer.from(String(b))); }
+      };
+      await handler(req, res);
+      return { status, headers, body: Buffer.concat(chunks) };
+    };
+
+    for (const blocked of [rootSecret, libPlist, ghHosts, claudeCfg, zshHist, projCred]) {
+      const r = await callGet('/api/media?path=' + encodeURIComponent(blocked));
+      assert.equal(r.status, 403, `敏感或未授权路径必须被 /api/media 拦截: ${blocked}`);
+    }
+
+    const okBrain = await callGet('/api/media?path=' + encodeURIComponent(brainShot));
+    assert.equal(okBrain.status, 200, 'brain 目录图片产物应正常放行');
+    assert.equal(okBrain.headers['content-security-policy'], "default-src 'none'; sandbox", '/api/media 200 必须下发严格沙箱 CSP');
+
+    const okPdf = await callGet('/api/media?path=' + encodeURIComponent(projPdf));
+    assert.equal(okPdf.status, 200);
+    assert.ok(String(okPdf.headers['content-disposition']).startsWith('attachment;'), '.pdf 必须强制 attachment 下载禁止 inline 渲染');
+    assert.equal(okPdf.headers['content-security-policy'], "default-src 'none'; sandbox");
+
+    const sessRes = await callGet('/api/session-files?conversationId=cid-pr6-1');
+    assert.equal(sessRes.status, 200);
+    const sessJson = JSON.parse(sessRes.body.toString('utf8'));
+    const retPaths = [...(sessJson.diffs || []), ...(sessJson.artifacts || [])].map((x) => x.path || '');
+    assert.ok(!retPaths.some((p) => p.includes('root-secret') || p.includes('.config/gh') || p.includes('.claude')), '/api/session-files 必须过滤 $HOME 越权文件与凭据路径');
+    assert.ok(retPaths.some((p) => p.endsWith('app.png')) && retPaths.some((p) => p.endsWith('shot.png')));
+
+    // strictProdRoots + allowedRoots: [] 时 /api/session-files 绝不回退 [homedir, tmpdir]
+    const failClosedSessHandler = createRemoteHttpHandler(cfg, {
+      mediaOptions: { allowedRoots: [], strictProdRoots: true },
+      callLanguageServer: async (method) => (
+        method === 'GetTrajectoryFileDiffs'
+          ? { fileDiffs: [{ path: projPng, unifiedDiff: '+should-block' }] }
+          : { artifacts: [] }
+      )
+    });
+    const fcReq = Readable.from([]);
+    fcReq.method = 'GET';
+    fcReq.url = '/api/session-files?conversationId=cid-pr6-1';
+    fcReq.headers = { host: '127.0.0.1:18765', 'x-ag-remote-token': cfg.token };
+    fcReq.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    const fcChunks = [];
+    await failClosedSessHandler(fcReq, {
+      setHeader() {},
+      writeHead() {},
+      end(b) { if (b) fcChunks.push(Buffer.from(String(b))); }
+    });
+    const fcJson = JSON.parse(Buffer.concat(fcChunks).toString('utf8'));
+    assert.equal(fcJson.diffs.length, 0, 'allowedRoots 为空 + strictProdRoots 时 /api/session-files 不得回退 os.homedir()');
+
+    // 3. 前端两处 /api/media?path= 同源时不拼接 &token=
+    const html = buildMobileAppHtml();
+    const tokenMediaMatches = html.match(/\/api\/media\?path=[^\n]+/g) || [];
+    assert.ok(tokenMediaMatches.length >= 2, '前端应包含媒体加载表达式');
+    for (const line of tokenMediaMatches) {
+      assert.ok(line.includes('apiBase && pairState.token'), `媒体 URL 仅可在跨源 apiBase 非空时兜底拼接 token，同源应走 HttpOnly Cookie: ${line}`);
+    }
+  } finally {
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  }
+});
+
+test('PR #6 合并加固 (P0-3/P1-1/P1-2/P1-5/P1-6): :r0: label、多段描述融合、高危 Prompt 透传与共存审批、fail-closed 删附件与防误报', async () => {
+  const { buildMobileAppHtml } = require('../mobile-remote');
+  const html = buildMobileAppHtml();
+
+  // 1. 前端 HTML 语法校验 + 高危确认卡/持久放行二次确认/高危共存/通用拖拽/防误报断言
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `mobile-app-pr6-script-${i}.js` }));
+  }
+  assert.ok(html.includes('.prompt-card.is-risk{') && html.includes('.ap-btn.is-persistent-risk{'), 'CSS 应包含高危确认卡与高危持久放行按钮样式');
+  assert.ok(html.includes('coexistRiskHtml') && html.includes('ap-coexist-btn'), '存在交互提示卡时应同步共存渲染高危审批操作');
+  assert.ok(html.includes("actBtn.dataset.confirmArmed = '1'"), '高危持久放行按钮首次点击应先武装二次确认');
+  assert.ok(!html.includes("e.dataTransfer?.files || []).filter((f) => String(f.type || '').startsWith('image/')"), 'composer 拖拽 drop 应放开通用文件上传');
+  assert.ok(html.includes('compactBlocked') && html.includes("snap?.status === 'error'"), '/compact 完成提示在错误或待确认状态下不得误报');
+
+  // 2. renderAttachHintStrip 串行删除队列：连续点击删除时第二个请求严格等待第一个 resolve 后才发出
+  const stripStart = html.indexOf('function renderAttachHintStrip()');
+  const stripEnd = html.indexOf('async function uploadImageFiles(rawFiles)');
+  assert.ok(stripStart > 0 && stripEnd > stripStart);
+  const stripHintMock = {
+    hidden: true,
+    innerHTML: '',
+    _rmBtns: [],
+    querySelectorAll(sel) {
+      if (sel === '.attach-item-rm') return stripHintMock._rmBtns;
+      return [];
+    },
+    querySelector() { return null; }
+  };
+  let releaseFirstDel = null;
+  const actionOrder = [];
+  let callCount = 0;
+  const serialSandbox = {
+    $: (id) => (id === 'attach-hint' ? stripHintMock : null),
+    esc: (s) => String(s || ''),
+    formatFileSizeShort: (n) => `${n}B`,
+    openMediaLightbox: () => {},
+    syncSendButtonUI: () => {},
+    showToast: () => {},
+    uploadedAttachments: [
+      { name: 'one.png', size: 100, isImage: false, previewUrl: '' },
+      { name: 'two.png', size: 200, isImage: false, previewUrl: '' }
+    ],
+    uploadedNames: ['one.png', 'two.png'],
+    apiAction: async (p) => {
+      callCount += 1;
+      const seq = callCount;
+      actionOrder.push(`start:${seq}:${p.name}`);
+      if (seq === 1) {
+        await new Promise((r) => { releaseFirstDel = r; });
+      }
+      actionOrder.push(`end:${seq}:${p.name}`);
+      return { ok: true };
+    },
+    Math, Number, String, Array, Promise
+  };
+  vm.runInNewContext(html.slice(stripStart, stripEnd) + '\nglobalThis.__renderStrip = renderAttachHintStrip;', serialSandbox);
+  stripHintMock._rmBtns = [
+    { dataset: { rmIdx: '0' }, onclick: null },
+    { dataset: { rmIdx: '1' }, onclick: null }
+  ];
+  serialSandbox.__renderStrip();
+  const [btn0, btn1] = stripHintMock._rmBtns;
+  btn0.onclick({ stopPropagation() {} });
+  // 第二次点击（注意同步重绘后用新绑定的第 0 项按钮）
+  stripHintMock._rmBtns[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setTimeout(r, 15));
+  assert.deepEqual(actionOrder, ['start:1:one.png'], '首个删附件请求未返回前，第二个删附件请求必须排队等待');
+  assert.ok(typeof releaseFirstDel === 'function');
+  releaseFirstDel();
+  await new Promise((r) => setTimeout(r, 15));
+  assert.deepEqual(actionOrder, ['start:1:one.png', 'end:1:one.png', 'start:2:two.png', 'end:2:two.png'], '删附件请求必须严格按 FIFO 顺序完成');
+
+  // 3. 桌面端 ag-enhancer-overlay.js：:r0: React ID、多段描述融合、稳定 promptKey、高危透传、无 composer 禁回退、扫雷缓存
+  const env = createDomEnv();
+  env.sandbox.setTimeout = setTimeout;
+  env.sandbox.clearTimeout = clearTimeout;
+  env.win.location = { pathname: '/c/aaaa1111-bbbb-2222-cccc-333333333333', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/aaaa1111-bbbb-2222-cccc-333333333333' };
+  env.sandbox.location = env.win.location;
+  env.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+  const mainEl = env.doc.createElement('main');
+  const viewport = env.doc.createElement('div');
+  viewport.setAttribute('data-testid', 'autoscroll-viewport');
+  mainEl.appendChild(viewport);
+  env.doc.body.appendChild(mainEl);
+
+  const qCard = env.doc.createElement('div');
+  qCard.setAttribute('data-testid', 'ask-question-card');
+  qCard.offsetWidth = 360;
+  qCard.offsetHeight = 200;
+  const qTitle = env.doc.createElement('h3');
+  qTitle.textContent = '删除确认';
+  qCard.appendChild(qTitle);
+  const p1 = env.doc.createElement('p');
+  p1.textContent = '请核对下方待清理路径';
+  const p2 = env.doc.createElement('p');
+  p2.textContent = '目标命令将清理 dist 缓存';
+  const preRisk = env.doc.createElement('pre');
+  preRisk.textContent = 'rm -rf ./dist/cache';
+  qCard.appendChild(p1);
+  qCard.appendChild(p2);
+  qCard.appendChild(preRisk);
+
+  for (const [rid, labelTxt] of [[':r0:', '仅清理 dist 缓存'], [':r1:', '保留旧产物并退出']]) {
+    const radio = env.doc.createElement('input');
+    radio.setAttribute('type', 'radio');
+    radio.type = 'radio';
+    radio.setAttribute('id', rid);
+    const lbl = env.doc.createElement('label');
+    lbl.setAttribute('for', rid);
+    lbl.textContent = labelTxt;
+    qCard.appendChild(radio);
+    qCard.appendChild(lbl);
+  }
+  const denyBtn = env.doc.createElement('button');
+  denyBtn.textContent = 'Deny';
+  denyBtn.offsetWidth = 70;
+  const allowAlwaysBtn = env.doc.createElement('button');
+  allowAlwaysBtn.setAttribute('type', 'submit');
+  allowAlwaysBtn.textContent = 'Allow Always';
+  allowAlwaysBtn.offsetWidth = 110;
+  qCard.appendChild(denyBtn);
+  qCard.appendChild(allowAlwaysBtn);
+  mainEl.appendChild(qCard);
+
+  // 高危 turn card 供 scanHighRiskCommands 测试缓存
+  const turnCard = env.doc.createElement('div');
+  turnCard.setAttribute('data-testid', 'turn-cards-container');
+  const cmdPre = env.doc.createElement('pre');
+  cmdPre.textContent = 'git reset --hard HEAD~1';
+  turnCard.appendChild(cmdPre);
+  viewport.appendChild(turnCard);
+
+  // 无 .surface-composer 时挂在 document.body 上的干扰移除按钮绝不能被误点
+  let decoyClicked = false;
+  const decoyBox = env.doc.createElement('div');
+  const decoyImg = env.doc.createElement('img');
+  decoyImg.setAttribute('alt', 'decoy.png');
+  const decoyRm = env.doc.createElement('button');
+  decoyRm.setAttribute('aria-label', 'Remove decoy.png');
+  decoyRm.textContent = '×';
+  decoyRm.addEventListener('click', () => { decoyClicked = true; });
+  decoyBox.appendChild(decoyImg);
+  decoyBox.appendChild(decoyRm);
+  env.doc.body.appendChild(decoyBox);
+
+  let enh = null;
+  try {
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    enh = env.sandbox.__AGEnhancer;
+
+    const snap = enh.getMobileSnapshot();
+    assert.equal(snap.pendingPrompts.length, 1);
+    const prm = snap.pendingPrompts[0];
+    assert.deepEqual(Array.from(prm.options, (o) => o.label), ['仅清理 dist 缓存', '保留旧产物并退出'], '带冒号的 React :r0: label[for] 必须准确提取而不崩溃');
+    assert.ok(prm.description.includes('请核对下方待清理路径') && prm.description.includes('目标命令将清理 dist 缓存') && prm.description.includes('rm -rf ./dist/cache'), '应合并多段描述与代码块');
+    assert.ok(!prm.promptKey.startsWith('pinst-'), `promptKey 应采用稳定语义槽位而非漂移实例编号: ${prm.promptKey}`);
+    assert.equal(prm.highRisk, true, '包含 rm -rf 的提问卡必须透传 highRisk=true');
+    assert.ok(prm.riskText.includes('高危'), '高危提问卡应携带 riskText');
+    const allowAct = prm.actions.find((a) => a.label === 'Allow Always');
+    const denyAct = prm.actions.find((a) => a.label === 'Deny');
+    assert.equal(allowAct?.isPersistentAllow, true, 'Allow Always 必须标记为持久放行');
+    assert.equal(denyAct?.isPersistentAllow, false);
+
+    // 连续轮询稳定 promptKey 不漂移
+    const snapAgain = enh.getMobileSnapshot();
+    assert.equal(snapAgain.pendingPrompts[0].promptKey, prm.promptKey, 'DOM 未变化时连续采集 promptKey 必须保持稳定');
+
+    // 无 .surface-composer 时 remove-uploaded-attachment 必须 fail-closed
+    const rmNoComposer = await enh.performMobileAction({ action: 'remove-uploaded-attachment', name: 'decoy.png', index: 0 });
+    assert.equal(rmNoComposer.ok, false);
+    assert.equal(decoyClicked, false, '缺少 .surface-composer 时严禁回退误点 document.body 内按钮');
+
+    // scanHighRiskCommands WeakMap 缓存跳过且准确累计 markedCount
+    const c1 = enh.scanHighRiskCommands();
+    const c2 = enh.scanHighRiskCommands();
+    assert.ok(c1 >= 1 && c2 === c1, `缓存命中后仍须准确累计 markedCount (${c1} vs ${c2})`);
+    cmdPre.textContent = 'echo safe ok';
+    const c3 = enh.scanHighRiskCommands();
+    assert.equal(c3, 0, '命令文本变为安全后再次扫描应重新判定为 0');
+  } finally {
+    enh?.dispose?.();
+    env.sandbox.__AGContextMeter?.dispose?.();
+  }
+});
+
+test('PR #6 合并加固 (P1-3/P1-4): 队列图片对象化、混合队列残留提示、草稿附件暂存透传与 draftSendPending 对账超时自愈', async () => {
+  const {
+    extractQueuedMessagesFromTrajectorySteps,
+    createRemoteHttpHandler,
+    clearPairedDevicesForTests
+  } = require('../mobile-remote');
+  const { Readable } = require('stream');
+
+  // 1. extractQueuedMessagesFromTrajectorySteps 输出 { src, alt }
+  const qMsgs = extractQueuedMessagesFromTrajectorySteps([
+    {
+      type: 'CORTEX_STEP_TYPE_USER_INPUT',
+      status: 'CORTEX_STEP_STATUS_QUEUED',
+      userInput: {
+        items: [{ text: '检查截图' }],
+        images: [
+          { uri: 'file:///Users/a/shot.png', mimeType: 'image/png' },
+          { inlineData: 'iVBORw0KGgo=', mimeType: 'image/png', name: 'inline.png' }
+        ]
+      }
+    }
+  ]);
+  assert.equal(qMsgs.length, 1);
+  assert.deepEqual(qMsgs[0].images, [
+    { src: '/api/media?path=%2FUsers%2Fa%2Fshot.png', alt: 'shot.png' },
+    { src: 'data:image/png;base64,iVBORw0KGgo=', alt: 'inline.png' }
+  ]);
+
+  // 2. 混合队列 RPC 成功但快照仍有 DOM 残留：返回 hasRemainingDomQueued=true 且仍不补发 DOM 点击
+  clearPairedDevicesForTests();
+  const cfg = {
+    port: 18765,
+    token: 'tok-pr6-p134-1234567890abcdef',
+    tunnelEnabled: false,
+    enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+  };
+  let domClicks = 0;
+  const hMix = createRemoteHttpHandler(cfg, {
+    callLanguageServer: async (m) => (m === 'SendAllQueuedMessages' ? {} : null),
+    performAction: async () => { domClicks += 1; return { ok: true }; },
+    fetchSnapshot: async (_tid, opts) => ({
+      ok: true,
+      sessionId: opts?.conversationId || 'conv-mix',
+      activeConversationId: opts?.conversationId || 'conv-mix',
+      queuedMessages: [{ domIndex: 0, stepIndex: -1, source: 'dom', text: '桌面未刷新排队项' }]
+    })
+  });
+  const callApi = async (h, method, urlPath, bodyObj = null, cid = 'cli-pr6-1') => {
+    const raw = bodyObj ? JSON.stringify(bodyObj) : '';
+    const req = Readable.from(raw ? [Buffer.from(raw)] : []);
+    req.method = method;
+    req.url = urlPath;
+    req.headers = {
+      host: '127.0.0.1:18765',
+      'x-ag-remote-token': cfg.token,
+      'x-ag-client-id': cid,
+      ...(bodyObj ? { 'content-type': 'application/json' } : {})
+    };
+    req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let out = '';
+    await h(req, { setHeader() {}, writeHead() {}, end(c) { if (c) out += String(c); } });
+    return JSON.parse(out || '{}');
+  };
+  const mixRes = await callApi(hMix, 'POST', '/api/action', {
+    action: 'send-queued-messages',
+    conversationId: 'conv-mix',
+    hasDomQueued: true
+  });
+  assert.equal(mixRes.ok, true);
+  assert.equal(mixRes.actionResult?.hasRemainingDomQueued, true, 'RPC 成功后仍有 DOM 残留项应返回 hasRemainingDomQueued 提示用户');
+  assert.equal(domClicks, 0, '绝不得在 RPC 成功后自动补发 send-queued-dom');
+
+  // 3. 隔离草稿 upload-image/remove-uploaded-attachment 暂存、首条 send 透传、/api/snapshot 自动对账与 15s 超时自愈
+  let fakeNow = Date.now();
+  const realNow = Date.now;
+  let sendPayloads = [];
+  let snapshotConvs = [];
+  let createdCidMode = '';
+  const hDraft = createRemoteHttpHandler(cfg, {
+    fetchSnapshot: async (_tid, opts = {}) => ({
+      ok: true,
+      sessionId: opts.conversationId && opts.conversationId !== '__new__' ? opts.conversationId : 'conv-old',
+      activeConversationId: opts.conversationId && opts.conversationId !== '__new__' ? opts.conversationId : 'conv-old',
+      projects: [{ id: 'proj-p14', name: 'P14' }],
+      conversations: snapshotConvs,
+      messages: []
+    }),
+    performAction: async (act) => {
+      sendPayloads.push(act);
+      return {
+        ok: true,
+        actionResult: { ok: true, createdConversationId: createdCidMode }
+      };
+    }
+  });
+
+  try {
+    Date.now = () => fakeNow;
+    await callApi(hDraft, 'POST', '/api/action', { action: 'switch-conversation', id: 'new', isolated: true, projectId: 'proj-p14' }, 'cli-draft-1');
+    const up1 = await callApi(hDraft, 'POST', '/api/action', { action: 'upload-image', name: 'spec.pdf', mimeType: 'application/pdf', base64: Buffer.from('pdf').toString('base64') }, 'cli-draft-1');
+    const up2 = await callApi(hDraft, 'POST', '/api/action', { action: 'upload-image', name: 'drop.png', mimeType: 'image/png', base64: Buffer.from('png').toString('base64') }, 'cli-draft-1');
+    const rm2 = await callApi(hDraft, 'POST', '/api/action', { action: 'remove-uploaded-attachment', name: 'drop.png', index: 1 }, 'cli-draft-1');
+    assert.equal(up1.deferredDraftUpload, true);
+    assert.equal(up2.deferredDraftUpload, true);
+    assert.equal(rm2.deferredDraftUpload, true);
+    assert.equal(sendPayloads.length, 0, '隔离草稿态上传和删除附件全程不得触碰桌面端');
+
+    // 首条 send（返回 createdConversationId='' 进入 draftSendPending）
+    const s1 = await callApi(hDraft, 'POST', '/api/action', { action: 'send', text: 'start task' }, 'cli-draft-1');
+    assert.equal(s1.ok, true);
+    assert.equal(sendPayloads.length, 1);
+    assert.equal(sendPayloads[0].draftPendingUploads?.length, 1);
+    assert.equal(sendPayloads[0].draftPendingUploads[0].name, 'spec.pdf', '首条发送应只透传未被删除的草稿附件 spec.pdf');
+
+    // pendingConfirmation 锁定重试
+    const sDup = await callApi(hDraft, 'POST', '/api/action', { action: 'send', text: 'retry' }, 'cli-draft-1');
+    assert.equal(sDup.ok, false);
+    assert.equal(sDup.pendingConfirmation, true);
+
+    // 未出现新会话时维持草稿态
+    const snapWait = await callApi(hDraft, 'GET', '/api/snapshot?conversationId=__new__', null, 'cli-draft-1');
+    assert.equal(snapWait.sessionId, '__new__');
+
+    // 轨迹中出现对应项目与时间戳的新会话后 /api/snapshot 自动对账绑定
+    snapshotConvs = [{ id: 'cid-reconciled-p14', projectId: 'proj-p14', updatedAt: fakeNow + 500 }];
+    const snapBound = await callApi(hDraft, 'GET', '/api/snapshot?conversationId=__new__', null, 'cli-draft-1');
+    assert.equal(snapBound.sessionId, 'cid-reconciled-p14', '/api/snapshot 应自动对账绑定新生成的会话 ID');
+
+    // 新建另一条草稿模拟超时未出现新会话：超过 15000ms 自动解除 draftSendPending 锁定
+    snapshotConvs = [];
+    await callApi(hDraft, 'POST', '/api/action', { action: 'new-conversation', isolated: true, projectId: 'proj-p14' }, 'cli-draft-2');
+    await callApi(hDraft, 'POST', '/api/action', { action: 'send', text: 'hang' }, 'cli-draft-2');
+    const blockedBeforeTimeout = await callApi(hDraft, 'POST', '/api/action', { action: 'send', text: 'retry-early' }, 'cli-draft-2');
+    assert.equal(blockedBeforeTimeout.pendingConfirmation, true);
+    fakeNow += 16000;
+    createdCidMode = 'cid-recovered-2';
+    const recoveredAfterTimeout = await callApi(hDraft, 'POST', '/api/action', { action: 'send', text: 'retry-after-15s' }, 'cli-draft-2');
+    assert.equal(recoveredAfterTimeout.ok, true, '超过 15 秒未对账应自动解除 draftSendPending 允许重新发送');
+    assert.equal(recoveredAfterTimeout.snapshot?.sessionId, 'cid-recovered-2');
+  } finally {
+    Date.now = realNow;
+    clearPairedDevicesForTests();
+  }
+
+  // 4. ag-enhancer-overlay.js：草稿首条 send 在 new-conversation 后先 inject draftPendingUploads 再 send
+  const envDesk = createDomEnv();
+  const deskTimers = new Set();
+  envDesk.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { deskTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 10));
+    deskTimers.add(t);
+    return t;
+  };
+  envDesk.sandbox.clearTimeout = (t) => { deskTimers.delete(t); clearTimeout(t); };
+  envDesk.sandbox.atob = atob;
+  envDesk.sandbox.File = File;
+  envDesk.sandbox.DataTransfer = class {
+    constructor() {
+      this.files = [];
+      this.items = { add: (f) => { this.files.push(f); } };
+    }
+  };
+
+  const eventLog = [];
+  const deskComposerProps = { inExistingConversation: false, cascadeId: '', isConvoLoading: false, handleSubmit: () => {} };
+  const deskRouterState = {
+    status: 'idle',
+    isLoading: false,
+    location: { pathname: '/', search: { project: 'proj-orig' } },
+    matches: [{ routeId: '/manager-layout/manager-landing-layout/', params: {}, status: 'success' }]
+  };
+  const applyUrl = (rawUrl) => {
+    const u = new URL(String(rawUrl), 'https://127.0.0.1');
+    const p = u.searchParams.get('project') || '';
+    envDesk.win.location.pathname = u.pathname;
+    envDesk.win.location.search = u.search;
+    deskRouterState.location = { pathname: u.pathname, search: p ? { project: p } : {} };
+    const cm = u.pathname.match(/^\/c\/([^/?#]+)/);
+    if (cm) {
+      deskRouterState.matches = [{ routeId: '/manager-layout/manager-landing-layout/c/$cascadeId', params: { cascadeId: cm[1] }, status: 'success' }];
+      deskComposerProps.inExistingConversation = true;
+      deskComposerProps.cascadeId = cm[1];
+    } else {
+      deskRouterState.matches = [{ routeId: '/manager-layout/manager-landing-layout/', params: {}, status: 'success' }];
+      deskComposerProps.inExistingConversation = false;
+      deskComposerProps.cascadeId = '';
+    }
+  };
+  envDesk.win.location = { pathname: '/', search: '?project=proj-orig', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/?project=proj-orig' };
+  envDesk.sandbox.location = envDesk.win.location;
+  applyUrl('/?project=proj-orig');
+
+  const deskRouter = {
+    state: deskRouterState,
+    history: { push: (href) => applyUrl(href) },
+    parseLocation: () => deskRouterState.location,
+    async navigate(opts) {
+      const to = String(opts?.to || '/');
+      const rs = typeof opts?.search === 'function' ? opts.search(deskRouterState.location.search || {}) : opts?.search;
+      applyUrl(rs?.project ? `${to}?project=${encodeURIComponent(rs.project)}` : to);
+    }
+  };
+  const newBtn = envDesk.doc.createElement('a');
+  newBtn.setAttribute('data-testid', 'new-conversation-button');
+  newBtn.__reactFiber$test = { dependencies: { firstContext: { memoizedValue: deskRouter, next: null } }, return: null };
+  envDesk.doc.body.appendChild(newBtn);
+
+  const composerBox = envDesk.doc.createElement('div');
+  composerBox.className = 'surface-composer';
+  composerBox.__reactFiber$test = { memoizedProps: deskComposerProps, return: null };
+  const fileInp = envDesk.doc.createElement('input');
+  fileInp.setAttribute('type', 'file');
+  fileInp.type = 'file';
+  fileInp.__reactProps$test = {
+    onChange: (ev) => eventLog.push(`upload:${ev?.target?.files?.[0]?.name || ''}`)
+  };
+  const editor = envDesk.doc.createElement('div');
+  editor.setAttribute('data-lexical-editor', 'true');
+  editor.setAttribute('contenteditable', 'true');
+  const sendBtn = envDesk.doc.createElement('button');
+  sendBtn.setAttribute('data-testid', 'send-button');
+  sendBtn.setAttribute('aria-label', 'Send');
+  const onDeskSend = () => {
+    eventLog.push(`send:${editor.textContent}`);
+    applyUrl('/c/99999999-1111-2222-3333-444444444444');
+  };
+  sendBtn.onclick = onDeskSend;
+  sendBtn.addEventListener('click', onDeskSend);
+  editor.addEventListener('keydown', (e) => { if (e?.key === 'Enter') onDeskSend(); });
+  composerBox.appendChild(fileInp);
+  composerBox.appendChild(editor);
+  composerBox.appendChild(sendBtn);
+  envDesk.doc.body.appendChild(composerBox);
+
+  envDesk.sandbox.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+  envDesk.win.getSelection = envDesk.sandbox.getSelection;
+  envDesk.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+  envDesk.doc.execCommand = (cmd, _ui, val) => {
+    if (cmd === 'insertText') { editor.textContent = String(val || ''); return true; }
+    return true;
+  };
+  envDesk.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, uiPreferences: {} }) });
+
+  let enhDesk = null;
+  try {
+    vm.runInContext(RENDERER_SRC, envDesk.sandbox);
+    vm.runInContext(ENHANCER_SRC, envDesk.sandbox);
+    enhDesk = envDesk.sandbox.__AGEnhancer;
+
+    const draftSendRes = await enhDesk.performMobileAction({
+      action: 'send',
+      conversationId: '__new__',
+      draftNewIsolated: true,
+      draftProjectId: 'proj-p14',
+      text: 'attached prompt',
+      draftPendingUploads: [
+        { name: 'draft-spec.txt', mimeType: 'text/plain', base64: Buffer.from('hello').toString('base64') }
+      ],
+      _testPollTries: 2,
+      _testPollDelayMs: 0
+    });
+    assert.equal(draftSendRes.ok, true, JSON.stringify(draftSendRes));
+    assert.deepEqual(eventLog, ['upload:draft-spec.txt', 'send:attached prompt'], '草稿首条 send 必须在 new-conversation 后先注入附件再触发发送');
+  } finally {
+    for (const t of deskTimers) clearTimeout(t);
+    enhDesk?.dispose?.();
+    envDesk.sandbox.__AGContextMeter?.dispose?.();
+  }
+});
+
+test('需求 33: 手机远程端单手快捷口令栏（方案 A：桌面配置同步、⚡直发/✎填入切换、防吞草稿与 800ms 防连点）', async () => {
+  const remoteMod = require('../mobile-remote');
+
+  // 1) 服务端 buildRemoteQuickPrompts：空配置回落默认 6 项，自定义列表与内置推荐池去重合并
+  const defPrompts = remoteMod.buildRemoteQuickPrompts(null);
+  assert.equal(defPrompts.length, 6, '空配置应回落 6 个高频手机默认口令');
+  assert.equal(defPrompts[0].label, '继续');
+  assert.equal(defPrompts[0].autoSend, true);
+  assert.equal(defPrompts.find((p) => p.id === 'tpl-fix-err')?.autoSend, false);
+
+  const mergedPrompts = remoteMod.buildRemoteQuickPrompts({
+    quickPrompts: [
+      { id: 'c1', label: '自定义直发', text: '跑测试并汇报', autoSend: true },
+      { id: 'c2', label: '忽略空文本', text: '   ', autoSend: true },
+      { id: 'c3', label: '重复compact', text: '/compact', autoSend: true },
+      { id: 'c4', label: '自定义填入', text: '排查报错：', autoSend: false }
+    ],
+    quickPool: {
+      compact: true,
+      copyid: true,
+      export: true,
+      plan: true,
+      reload: true,
+      'grill-me': true
+    },
+    quickAutoSendBuiltin: true
+  });
+  assert.deepEqual(
+    mergedPrompts.map((p) => p.label),
+    ['自定义直发', '自定义填入', '/plan 规划', '/grill-me 追问', '重载规则'],
+    '应保留合法自定义项、过滤 /compact/copyid/export 并按顺序合入已开启的内置池词条'
+  );
+  assert.equal(mergedPrompts.find((p) => p.id === 'reload')?.autoSend, true, '支持自动直发的内置项应跟随 quickAutoSendBuiltin');
+  assert.equal(mergedPrompts.find((p) => p.id === 'plan')?.autoSend, false, '带参数斜杠指令默认不应直发');
+
+  // 2) 前端 PWA #chips DOM 交互：渲染模式切换胶囊、桌面同步口令、800ms 防连点、草稿防吞、模式即时切换
+  const mobileHtml = remoteMod.buildMobileAppHtml();
+  const scriptMatch = mobileHtml.match(/<script>([\s\S]*?)<\/script>/);
+  const bodyMatch = mobileHtml.match(/<body>([\s\S]*?)<script>/);
+  assert.ok(scriptMatch && bodyMatch);
+  assert.doesNotThrow(() => new vm.Script(scriptMatch[1]));
+
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn) => {
+    const id = activeTimers.size + 1;
+    activeTimers.add(id);
+    return id;
+  };
+  env.sandbox.clearTimeout = (id) => { activeTimers.delete(id); };
+  env.win.setTimeout = env.sandbox.setTimeout;
+  env.win.clearTimeout = env.sandbox.clearTimeout;
+  env.win.innerWidth = 390;
+  env.win.innerHeight = 844;
+  env.win.location = { pathname: '/', search: '?token=tok33', protocol: 'http:', reload() {} };
+  env.win.history = { replaceState() {} };
+  env.sandbox.location = env.win.location;
+  env.sandbox.history = env.win.history;
+  env.sandbox.URLSearchParams = URLSearchParams;
+  env.doc.body.innerHTML = bodyMatch[1];
+
+  const sentActions = [];
+  const snapPayload = {
+    ok: true,
+    serverBootId: 'boot-req33',
+    serverBootAt: 9000,
+    snapSeq: 1,
+    sessionId: 'sess-req33',
+    currentProjectId: 'proj-33',
+    currentProjectName: 'Suite',
+    title: 'Quick Bar Test',
+    busy: false,
+    totalMessages: 0,
+    messagesStartIndex: 0,
+    messages: [],
+    projects: [{ id: 'proj-33', name: 'Suite', conversationCount: 1 }],
+    conversations: [{ id: 'sess-req33', projectId: 'proj-33', title: 'Quick Bar Test', active: true, status: 'idle', updatedAt: 1000 }],
+    suggestions: ['立即执行', '立即执行并校验', '优化一下', '优化一下'],
+    quickPrompts: [
+      { id: 'qp-direct', label: '立即执行', text: '立即执行并校验', autoSend: true },
+      { id: 'qp-insert', label: '带参模板', text: '参考规范：', autoSend: false }
+    ]
+  };
+
+  env.sandbox.fetch = async (url, init) => {
+    const u = new URL(String(url), 'http://127.0.0.1');
+    const headers = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+    if (u.pathname === '/api/snapshot') {
+      return { ok: true, status: 200, headers, json: async () => snapPayload };
+    }
+    if (u.pathname === '/api/action') {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      sentActions.push(body);
+      return { ok: true, status: 200, headers, json: async () => ({ ok: true, actionResult: { ok: true }, snapshot: snapPayload }) };
+    }
+    return { ok: true, status: 200, headers, json: async () => ({ ok: true }) };
+  };
+
+  try {
+    vm.runInContext(scriptMatch[1], env.sandbox);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const chipsEl = env.doc.getElementById('chips');
+    const inputEl = env.doc.getElementById('input');
+    const getButtons = () => chipsEl.querySelectorAll('.chip');
+
+    const allBtns = getButtons();
+    const modeBtn = allBtns.find((b) => String(b.className || '').includes('chip-mode-toggle'));
+    const suggestBtns = allBtns.filter((b) => String(b.className || '').includes('suggest'));
+    const directBtns = allBtns.filter((b) => (b.textContent || '').includes('立即执行'));
+    const directBtn = directBtns[0];
+    const insertBtn = allBtns.find((b) => (b.textContent || '').includes('带参模板'));
+    const compactBtn = allBtns.find((b) => (b.textContent || '').trim() === '/compact');
+    const thoughtBtn = allBtns.find((b) => (b.textContent || '').includes('展开/收起思考'));
+
+    assert.ok(modeBtn && (modeBtn.textContent || '').includes('⚡直发'), '默认应显示「⚡直发」模式切换胶囊');
+    assert.equal(directBtns.length, 1, '与快捷口令重名（label 或 text）的动态建议必须自动去重，不能并排重复渲染');
+    assert.deepEqual(
+      suggestBtns.map((b) => b.textContent),
+      ['✦ 优化一下'],
+      '不重复的有用动态建议应保留且自身去重'
+    );
+    assert.ok(
+      allBtns.indexOf(modeBtn) < allBtns.indexOf(suggestBtns[0]) && allBtns.indexOf(suggestBtns[0]) < allBtns.indexOf(directBtn),
+      '不重复的有用动态建议应保持在模式开关之后、快捷口令之前'
+    );
+    assert.ok(directBtn && (directBtn.textContent || '').includes('⚡ 立即执行'), '支持直发项在直发模式下应带 ⚡ 前缀');
+    assert.ok(insertBtn && (insertBtn.textContent || '').includes('✎ 带参模板'), '带参项在直发模式下仍应显示 ✎ 前缀');
+    assert.ok(compactBtn && thoughtBtn, '原有 /compact 与 展开/收起思考 按钮必须保留');
+
+    // 2a) 空输入框连点两次直发口令：发出 1 次，第 2 次被 800ms 防连点锁拦截
+    inputEl.value = '';
+    directBtn.click();
+    directBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '800ms 内连续点击直发口令应只触发一次发送');
+    assert.equal(sentActions[0].action, 'send');
+    assert.equal(sentActions[0].text, '立即执行并校验');
+
+    // 2b) 点击填入类型口令：追加到输入框，不发网络请求
+    insertBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '非直发口令不得触发发送');
+    assert.equal(inputEl.value, '参考规范：');
+
+    // 2c) 输入框已有草稿时点直发口令与动态建议：均防吞草稿，自动追加填入而不发请求
+    await new Promise((r) => setTimeout(r, 820));
+    inputEl.value = '先看这段代码';
+    directBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '已有草稿时点直发口令必须降级为追加填入而非直接发送');
+    assert.equal(inputEl.value, '先看这段代码 立即执行并校验');
+
+    suggestBtns[0].click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '已有草稿时点动态建议同样只能追加填入而不得吞掉草稿或直发');
+    assert.equal(inputEl.value, '先看这段代码 立即执行并校验 优化一下');
+
+    // 2d) 点击模式切换按钮切到「✎填入」后，口令即时重绘为 ✎ 前缀，且空输入框点击口令或动态建议均不直发
+    inputEl.value = '';
+    modeBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    const updatedModeBtn = getButtons().find((b) => String(b.className || '').includes('chip-mode-toggle'));
+    const updatedDirectBtn = getButtons().find((b) => (b.textContent || '').includes('立即执行'));
+    const updatedSuggestBtn = getButtons().find((b) => String(b.className || '').includes('suggest'));
+    assert.ok(updatedModeBtn && (updatedModeBtn.textContent || '').includes('✎填入'), '点击切换后按钮文案应即时变为「✎填入」');
+    assert.ok(updatedDirectBtn && (updatedDirectBtn.textContent || '').includes('✎ 立即执行'), '切换为填入模式后口令前缀应即时变为 ✎');
+
+    updatedDirectBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '处于 ✎填入 模式时点击口令只能填入输入框不得直发');
+    assert.equal(inputEl.value, '立即执行并校验');
+
+    inputEl.value = '';
+    updatedSuggestBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 1, '处于 ✎填入 模式时点击动态建议同样只能填入而不得直发');
+    assert.equal(inputEl.value, '优化一下');
+
+    // 2e) 切回「⚡直发」模式且空输入框时，有用动态建议也可正常一键直发
+    await new Promise((r) => setTimeout(r, 820));
+    inputEl.value = '';
+    updatedModeBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    const restoredSuggestBtn = getButtons().find((b) => String(b.className || '').includes('suggest'));
+    restoredSuggestBtn.click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(sentActions.length, 2, '在 ⚡直发 模式下空输入框点击不重复的动态建议应正常一键直发');
+    assert.equal(sentActions[1].text, '优化一下');
+  } finally {
+    for (const id of Array.from(activeTimers)) activeTimers.delete(id);
+  }
+});
+
+test('需求 34: 宿主真实画布主题与插件面板独立深浅外观解耦（浅色宿主+深色面板与深色宿主+浅色面板均不隐身）', async () => {
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 10));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => { activeTimers.delete(t); clearTimeout(t); };
+
+  // 模拟 Antigravity 客户端自身处于浅色主题，但用户在插件设置里将「面板深浅外观」切到「深色」
+  env.doc.documentElement.classList.add('light');
+  env.doc.body.classList.add('theme-light');
+  env.win.localStorage.setItem('ag_theme_mode', 'dark');
+  env.sandbox.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/suite-settings')) return { ok: true, json: async () => ({ ok: true, uiPreferences: { themeMode: 'dark' } }) };
+    if (u.includes('/remote-info')) return { ok: true, json: async () => ({ ok: true, data: { activeMode: 'lan', channels: [] } }) };
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+
+  const composerEl = env.doc.createElement('div');
+  composerEl.className = 'surface-composer';
+  const vpEl = env.doc.createElement('div');
+  vpEl.setAttribute('data-testid', 'autoscroll-viewport');
+  env.doc.body.appendChild(vpEl);
+  const editorWrap = env.doc.createElement('div');
+  const editorEl = env.doc.createElement('div');
+  editorEl.setAttribute('data-lexical-editor', 'true');
+  editorEl.setAttribute('contenteditable', 'true');
+  editorWrap.appendChild(editorEl);
+  const footerEl = env.doc.createElement('div');
+  footerEl.className = 'agy-composer-footer';
+  composerEl.appendChild(editorWrap);
+  composerEl.appendChild(footerEl);
+  env.doc.body.appendChild(composerEl);
+
+  const rendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const stylesSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
+  assert.ok(stylesSrc.includes(':host([data-host-theme="light"])') && stylesSrc.includes(':host([data-host-theme="dark"])'),
+    'styles.css 必须包含独立的 :host([data-host-theme=...]) 顶栏自适应变量覆盖');
+  assert.ok(/\.ctx-tip-pct\{[^}]*var\(--ag-text-primary\)/.test(stylesSrc),
+    '#context-tooltip 内部主数值应跟随实心面板自身 --ag-text-primary');
+
+  let api = null;
+  let enhancer = null;
+  try {
+    vm.runInContext(rendererSrc, env.sandbox);
+    api = env.sandbox.__AGContextMeter;
+    const host = env.getHost();
+    assert.equal(host.getAttribute('data-theme'), 'dark', '插件实心面板应遵循用户选择的 dark');
+    assert.equal(host.getAttribute('data-host-theme'), 'light', 'host[data-host-theme] 应反映宿主真实浅色画布');
+    assert.equal(host.getAttribute('data-theme-mode'), 'dark', 'host[data-theme-mode] 应反映 fixed dark');
+
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    enhancer = env.sandbox.__AGEnhancer;
+    enhancer.ensurePromptOptimizerControls();
+    enhancer.ensureNextStepGhost(['继续执行']);
+
+    assert.equal(env.doc.getElementById('ag-quick-capsule-bar')?.getAttribute('data-ag-theme'), 'light',
+      '浅色宿主+深色面板时，直接画在白底上的快捷提示词栏必须保持 light（深字），防止白底白字');
+    assert.equal(env.doc.getElementById('ag-next-step-ghost')?.getAttribute('data-ag-theme'), 'light',
+      '浅色宿主+深色面板时，追问建议胶囊必须保持 light');
+    assert.equal(env.doc.getElementById('ag-prompt-opt-wrap')?.getAttribute('data-ag-theme'), 'light',
+      '浅色宿主+深色面板时，输入区提示词优化按钮必须保持 light');
+    assert.equal(env.doc.getElementById('ag-chat-nav-float')?.getAttribute('data-ag-theme'), 'light',
+      '浅色宿主+深色面板时，画布内悬浮导航条必须保持 light');
+
+    // 反向场景：深色宿主 + 插件固定浅色面板
+    env.doc.documentElement.classList.remove('light');
+    env.doc.documentElement.classList.add('dark');
+    env.doc.body.classList.remove('theme-light');
+    env.doc.body.classList.add('theme-dark');
+    env.getShadow().getElementById('set-theme-light')?.click();
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(host.getAttribute('data-theme'), 'light', '切换固定浅色后面板本身应为 light');
+    assert.equal(host.getAttribute('data-host-theme'), 'dark', '宿主仍为暗底，data-host-theme 应为 dark');
+    assert.equal(env.doc.getElementById('ag-quick-capsule-bar')?.getAttribute('data-ag-theme'), 'dark',
+      '深色宿主+浅色面板时，快捷提示词栏必须保持 dark（浅字），防止黑底黑字');
+    assert.equal(env.doc.getElementById('ag-next-step-ghost')?.getAttribute('data-ag-theme'), 'dark',
+      '深色宿主+浅色面板时，追问建议胶囊必须保持 dark');
+    assert.equal(env.doc.getElementById('ag-prompt-opt-wrap')?.getAttribute('data-ag-theme'), 'dark',
+      '深色宿主+浅色面板时，提示词优化按钮必须保持 dark');
+    assert.equal(env.doc.getElementById('ag-chat-nav-float')?.getAttribute('data-ag-theme'), 'dark',
+      '深色宿主+浅色面板时，悬浮导航条必须保持 dark');
+
+    // 验证「面板深浅外观」位于分页 1（#settings-pane-appearance / 🌐 语言与外观）且与语言下拉同卡，不再残留于 #settings-pane-network / #settings-pane-chat
+    const paneAppearance = env.getShadow().getElementById('settings-pane-appearance');
+    const paneNetwork = env.getShadow().getElementById('settings-pane-network');
+    const paneChat = env.getShadow().getElementById('settings-pane-chat');
+    const langAppCard = env.getShadow().getElementById('settings-card-lang-appearance');
+    const langSel = env.getShadow().getElementById('set-ui-language-select');
+    assert.ok(paneAppearance && paneNetwork && paneChat && langAppCard, '分页 1/3/4 与语言外观卡均应存在');
+    assert.ok(langAppCard.contains(langSel), '#set-ui-language-select 必须位于 #settings-card-lang-appearance 内');
+    for (const themeBtnId of ['set-theme-auto', 'set-theme-light', 'set-theme-dark']) {
+      const btn = env.getShadow().getElementById(themeBtnId);
+      assert.ok(btn, `#${themeBtnId} 必须存在`);
+      assert.ok(langAppCard.contains(btn), `#${themeBtnId} 必须位于分页 1（🌐 语言与外观）的语言外观卡内`);
+      assert.ok(!paneNetwork.contains(btn) && !paneChat.contains(btn), `#${themeBtnId} 不得再残留于终端或对话页内`);
+    }
+  } finally {
+    enhancer?.dispose?.();
+    api?.dispose?.();
+    for (const id of Array.from(activeTimers)) activeTimers.delete(id);
+  }
+});
+
+test('需求 35: 手机局域网长对话首屏超时防误判与后端软预算后台回填', async () => {
+  const { buildMobileAppHtml, createConversationHistoryManager } = require('../mobile-remote');
+  const html = buildMobileAppHtml();
+  assert.equal(html.includes('latestSnap ? 4500 : 2200'), false,
+    '前端 fetchSnapshot 不得再用 2200ms 过短首屏超时提前打断尚未回包的 /api/snapshot');
+  assert.ok(/latestSnap\s*\?\s*5000\s*:\s*6500/.test(html),
+    '前端 fetchSnapshot 应给足首次加载 >= 5000ms（6500ms）与 5000ms 轮询超时');
+
+  const histMgr = createConversationHistoryManager();
+  let rpcCount = 0;
+  const delayedApiConnect = async () => ({
+    call: async (method) => {
+      if (method === 'GetCascadeTrajectory') {
+        rpcCount += 1;
+        await new Promise((r) => setTimeout(r, 220));
+        return {
+          trajectory: {
+            steps: [
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '完整轨迹历史问题' }] } },
+              { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '完整轨迹历史回答' } }
+            ]
+          }
+        };
+      }
+      return {};
+    }
+  });
+
+  const baseSnap = {
+    ok: true,
+    sessionId: 'sess-soft-budget-lan-1',
+    busy: false,
+    messages: [
+      { role: 'user', text: 'DOM 最新提问' },
+      { role: 'assistant', text: 'DOM 最新回答' }
+    ]
+  };
+
+  // 首屏遇慢 RPC 时：超过 30ms 软预算应立即秒回 DOM 消息而不卡死
+  const t0 = Date.now();
+  const fastFirst = await histMgr.enrichMessages(baseSnap, {
+    localApiConnect: delayedApiConnect,
+    softWaitMs: 30
+  });
+  const firstElapsed = Date.now() - t0;
+  assert.ok(firstElapsed < 150, `首次超过软预算应立即降级秒回 DOM 消息（实际耗时 ${firstElapsed}ms）`);
+  assert.equal(rpcCount, 1, '软预算触发时后台应已发起 GetCascadeTrajectory 拉取');
+  assert.ok(fastFirst.messages.some((m) => m.text.includes('DOM 最新回答')), '降级首屏应保留 DOM tail 消息');
+  assert.equal(fastFirst.messages.some((m) => m.text.includes('完整轨迹历史回答')), false,
+    '降级瞬间轨迹尚未返回时不应阻塞等待');
+
+  // 等待后台 fetch 完成后再次请求：应直接命中缓存返回完整轨迹历史，且不触发第 2 次 RPC
+  await new Promise((r) => setTimeout(r, 260));
+  const secondCached = await histMgr.enrichMessages(baseSnap, {
+    localApiConnect: delayedApiConnect,
+    softWaitMs: 30
+  });
+  assert.equal(rpcCount, 1, '后台回填缓存后再次读取应直接命中缓存，不得重发 RPC');
+  assert.ok(secondCached.messages.some((m) => m.text.includes('完整轨迹历史回答')),
+    '缓存回填后二次读取应包含完整轨迹历史消息');
+});
+
+test('需求 36: antigravity-hans-overlay 修复 data-cascade-id 误伤主对话视图，恢复 Quote / Side Question 选区浮层与输入框占位提示汉化同时保护侧边栏会话名', () => {
+  const hansSrc = fs.readFileSync(path.join(ROOT, 'antigravity-hans-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  env.sandbox.location.pathname = '/workbench.html';
+  env.sandbox.location.href = 'file:///Applications/Antigravity.app/workbench.html';
+  env.win.location = env.sandbox.location;
+  env.win.top = env.win;
+  env.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 };
+  env.sandbox.NodeFilter = { SHOW_TEXT: 4, SHOW_ELEMENT: 1 };
+
+  const makeTextNode = (val, parentElement) => ({
+    nodeType: 3,
+    nodeValue: val,
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement,
+    parentNode: parentElement
+  });
+
+  // 为测试元素按 Chromium 原生行为补齐对 :not([data-testid="conversation-view"]) 与 span.text-xs 组合选择器的 closest 支持
+  const origCreateEl = env.doc.createElement.bind(env.doc);
+  env.doc.createElement = (tagName) => {
+    const el = origCreateEl(tagName);
+    const origClosest = el.closest.bind(el);
+    el.closest = (selector) => {
+      const str = String(selector || '').trim();
+      if (str === 'span.text-xs') {
+        let cur = el;
+        while (cur) {
+          if (cur.tagName === 'SPAN' && cur.classList?.contains('text-xs')) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      }
+      if (str.includes('[data-cascade-id]:not([data-testid="conversation-view"])')) {
+        const replaced = str.replace(
+          '[data-cascade-id]:not([data-testid="conversation-view"])',
+          '__PSEUDO_UNMATCHABLE__'
+        );
+        const restMatch = origClosest(replaced);
+        let cur = el;
+        while (cur) {
+          if (cur.getAttribute?.('data-cascade-id') !== null && cur.getAttribute?.('data-testid') !== 'conversation-view') {
+            return cur;
+          }
+          if (restMatch && restMatch === cur) return cur;
+          cur = cur.parentElement;
+        }
+        return restMatch;
+      }
+      return origClosest(str);
+    };
+    return el;
+  };
+
+  env.doc.createTreeWalker = (rootNode, whatToShow) => {
+    const flat = [];
+    const walk = (n) => {
+      if (!n) return;
+      const children = n.childNodes || n.children || [];
+      for (const ch of children) {
+        if ((ch.nodeType === 1 && (whatToShow & 1)) || (ch.nodeType === 3 && (whatToShow & 4))) {
+          flat.push(ch);
+        }
+        walk(ch);
+      }
+    };
+    walk(rootNode);
+    let idx = 0;
+    return { nextNode: () => (idx < flat.length ? flat[idx++] : null) };
+  };
+
+  env.sandbox.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 10));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => { activeTimers.delete(t); clearTimeout(t); };
+
+  const rootShell = env.doc.createElement('div');
+  rootShell.className = 'antigravity-agent-side-panel';
+  env.doc.body.appendChild(rootShell);
+
+  // 1. 侧边栏会话行（带 data-testid="conversation-row-sidebar" 与 data-cascade-id="c-1"，即使缺少前者也应由后者+not(conversation-view) 保护）
+  const sidebarRow = env.doc.createElement('div');
+  sidebarRow.setAttribute('data-testid', 'conversation-row-sidebar');
+  sidebarRow.setAttribute('data-cascade-id', 'c-1');
+  const sidebarSpan = env.doc.createElement('span');
+  const sidebarText = makeTextNode('Quote', sidebarSpan);
+  sidebarSpan.childNodes.push(sidebarText);
+  sidebarRow.appendChild(sidebarSpan);
+  rootShell.appendChild(sidebarRow);
+
+  // 额外校验纯 data-cascade-id 的旧版侧边栏会话行也不得被误译
+  const legacySidebarRow = env.doc.createElement('div');
+  legacySidebarRow.setAttribute('data-cascade-id', 'c-legacy');
+  const legacySpan = env.doc.createElement('span');
+  const legacyText = makeTextNode('Quote', legacySpan);
+  legacySpan.childNodes.push(legacyText);
+  legacySidebarRow.appendChild(legacySpan);
+  rootShell.appendChild(legacySidebarRow);
+
+  // 2. 主对话视图容器（自身同时携带 data-testid="conversation-view" 与 data-cascade-id="c-1"）
+  const convView = env.doc.createElement('div');
+  convView.setAttribute('data-testid', 'conversation-view');
+  convView.setAttribute('data-cascade-id', 'c-1');
+  rootShell.appendChild(convView);
+
+  // 2a. 选区悬浮按钮：Quote ⌘L 与 Side Question ⌘E
+  const quoteBtn = env.doc.createElement('button');
+  quoteBtn.setAttribute('data-testid', 'selection-quote-button');
+  const quoteLabelSpan = env.doc.createElement('span');
+  const quoteLabelText = makeTextNode('Quote', quoteLabelSpan);
+  quoteLabelSpan.childNodes.push(quoteLabelText);
+  const quoteShortcutSpan = env.doc.createElement('span');
+  const quoteShortcutText = makeTextNode('⌘L', quoteShortcutSpan);
+  quoteShortcutSpan.childNodes.push(quoteShortcutText);
+  quoteBtn.appendChild(quoteLabelSpan);
+  quoteBtn.appendChild(quoteShortcutSpan);
+  convView.appendChild(quoteBtn);
+
+  const btwBtn = env.doc.createElement('button');
+  btwBtn.setAttribute('data-testid', 'selection-btw-button');
+  const btwLabelSpan = env.doc.createElement('span');
+  const btwLabelText = makeTextNode('Side Question', btwLabelSpan);
+  btwLabelSpan.childNodes.push(btwLabelText);
+  const btwShortcutSpan = env.doc.createElement('span');
+  const btwShortcutText = makeTextNode('⌘E', btwShortcutSpan);
+  btwShortcutSpan.childNodes.push(btwShortcutText);
+  btwBtn.appendChild(btwLabelSpan);
+  btwBtn.appendChild(btwShortcutSpan);
+  convView.appendChild(btwBtn);
+
+  // 2b. 输入框占位提示
+  const inputBox = env.doc.createElement('div');
+  inputBox.setAttribute('data-testid', 'agent-input-box');
+  const inputP = env.doc.createElement('p');
+  const inputText = makeTextNode('Ask anything, @ to mention, / for actions', inputP);
+  inputP.childNodes.push(inputText);
+  inputBox.appendChild(inputP);
+  convView.appendChild(inputBox);
+
+  // 2c. 受保护 AI 正文
+  const agentResp = env.doc.createElement('div');
+  agentResp.setAttribute('data-testid', 'agent-response');
+  const mdRoot = env.doc.createElement('div');
+  mdRoot.setAttribute('data-markdown-root', '');
+  const respP = env.doc.createElement('p');
+  const respText = makeTextNode('Quote Side Question', respP);
+  respP.childNodes.push(respText);
+  mdRoot.appendChild(respP);
+  agentResp.appendChild(mdRoot);
+  convView.appendChild(agentResp);
+
+  try {
+    vm.runInContext(hansSrc, env.sandbox);
+    assert.equal(quoteLabelText.nodeValue, '引用', '选区悬浮 Quote 按钮应汉化为 引用');
+    assert.equal(quoteShortcutText.nodeValue, '⌘L', 'Quote 快捷键 ⌘L 应保持原样');
+    assert.equal(btwLabelText.nodeValue, '副问题', '选区悬浮 Side Question 按钮应汉化为 副问题');
+    assert.equal(btwShortcutText.nodeValue, '⌘E', 'Side Question 快捷键 ⌘E 应保持原样');
+    assert.equal(inputText.nodeValue, '想问什么都可以，@ 引用，/ 执行动作', '输入框占位提示应恢复汉化');
+    assert.equal(sidebarText.nodeValue, 'Quote', '侧边栏会话名 Quote 必须继续受到保护不被误译');
+    assert.equal(legacyText.nodeValue, 'Quote', '仅带 data-cascade-id 的侧边栏会话名也必须继续受保护');
+    assert.equal(respText.nodeValue, 'Quote Side Question', 'AI 回复 Markdown 正文必须继续受到保护不被误译');
+  } finally {
+    env.sandbox.__antigravityZhPatchCleanup?.();
+    for (const id of Array.from(activeTimers)) clearTimeout(id);
+  }
+});
+
+// =========================================================================
+// 需求 37: 统一设置面板严格对齐 README 方案 1（1→5 顺排）、别名兼容与文档路径同步
+// =========================================================================
+test('需求 37: 统一设置面板按 README 1→5 顺排重构、兼容旧别名并同步 README 路径', async () => {
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const env = createDomEnv();
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const shadow = env.getShadow();
+
+  try {
+    // 1. 验证 5 个 Tab 严格顺排 appearance -> remote -> chat -> network -> subscription
+    const tabsBar = shadow.getElementById('settings-tabs-bar');
+    assert.ok(tabsBar, '#settings-tabs-bar 必须存在');
+    const tabBtns = tabsBar.querySelectorAll('button.settings-tab-btn');
+    assert.equal(tabBtns.length, 5, '设置栏必须保持 5 个 Tab');
+    assert.deepEqual(
+      tabBtns.map(b => b.getAttribute('data-settings-tab')),
+      ['appearance', 'remote', 'chat', 'network', 'subscription'],
+      'Tab data-settings-tab 顺序必须严格对齐 README 1→5'
+    );
+    assert.deepEqual(
+      tabBtns.map(b => b.textContent.trim()),
+      ['🌐 语言与外观', '📱 远程设置', '⚡ 对话与效率', '🧰 终端与网络', '📊 套餐与订阅'],
+      'Tab 中文标题必须严格对齐 README 1→5'
+    );
+
+    // 2. 默认打开设置即激活第 1 页 appearance
+    api.openSettings();
+    assert.equal(shadow.getElementById('settings-tab-btn-appearance')?.getAttribute('aria-selected'), 'true');
+    assert.equal(shadow.getElementById('settings-pane-appearance')?.hidden, false);
+    assert.equal(shadow.getElementById('settings-pane-remote')?.hidden, true);
+    assert.equal(shadow.getElementById('settings-pane-chat')?.hidden, true);
+    assert.equal(shadow.getElementById('settings-pane-network')?.hidden, true);
+    assert.equal(shadow.getElementById('settings-pane-subscription')?.hidden, true);
+
+    // 3. 验证旧别名兼容性（terminal / system -> network）
+    api.openSettings('terminal');
+    assert.equal(shadow.getElementById('settings-tab-btn-network')?.getAttribute('aria-selected'), 'true', 'openSettings("terminal") 应自动映射至 network');
+    assert.equal(shadow.getElementById('settings-pane-network')?.hidden, false);
+
+    api.openSettings('appearance');
+    api.openSettings('system');
+    assert.equal(shadow.getElementById('settings-tab-btn-network')?.getAttribute('aria-selected'), 'true', 'openSettings("system") 应自动映射至 network');
+    assert.equal(shadow.getElementById('settings-pane-network')?.hidden, false);
+
+    // 4. 验证各核心卡片与迁移控件归属正确
+    const paneApp = shadow.getElementById('settings-pane-appearance');
+    const paneRemote = shadow.getElementById('settings-pane-remote');
+    const paneChat = shadow.getElementById('settings-pane-chat');
+    const paneNet = shadow.getElementById('settings-pane-network');
+    const paneSub = shadow.getElementById('settings-pane-subscription');
+
+    assert.ok(paneApp.contains(shadow.getElementById('settings-card-lang-appearance')));
+    assert.ok(paneApp.contains(shadow.getElementById('settings-card-dock-badge')));
+    assert.ok(paneApp.contains(shadow.getElementById('settings-card-features')));
+    assert.ok(paneApp.contains(shadow.getElementById('settings-meter-colors-details')));
+    assert.ok(paneApp.contains(shadow.getElementById('color-drawer-body')));
+    assert.ok(paneRemote.contains(shadow.getElementById('settings-card-remote-channels')));
+    assert.ok(paneRemote.contains(shadow.getElementById('settings-card-remote-display')));
+    assert.ok(paneChat.contains(shadow.getElementById('settings-card-quick-prompts')));
+    assert.ok(paneChat.contains(shadow.getElementById('settings-card-chat-policy')));
+    assert.ok(paneNet.contains(shadow.getElementById('term-app-grid')));
+    assert.ok(paneNet.contains(shadow.getElementById('proxy-drawer-body')));
+    assert.ok(paneSub.contains(shadow.getElementById('settings-sub-summary-bar')));
+    assert.ok(paneSub.contains(shadow.getElementById('plan-custom-form')));
+
+    // 5. 切换英文验证 5 个 Tab 完整翻译
+    api.setLocale('en');
+    assert.deepEqual(
+      tabBtns.map(b => b.textContent.trim()),
+      ['🌐 Language & Appearance', '📱 Remote', '⚡ Chat & Efficiency', '🧰 Terminal & Network', '📊 Plan & Subscription'],
+      '英文模式下 5 个 Tab 标题应完整翻译'
+    );
+    api.setLocale('zh-CN');
+
+    // 6. README.md 与 docs/README.en.md 不再残留旧分页名且同步新入口
+    const readmeZh = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    const readmeEn = fs.readFileSync(path.join(ROOT, 'docs', 'README.en.md'), 'utf8');
+    assert.equal(readmeZh.includes('终端与通用'), false, 'README.md 不应残留旧分页名称「终端与通用」');
+    assert.equal(readmeZh.includes('网络与高级'), false, 'README.md 不应残留旧分页名称「网络与高级」');
+    assert.ok(readmeZh.includes('🌐 语言与外观'), 'README.md 应包含新首页名称「🌐 语言与外观」');
+    assert.ok(readmeZh.includes('⚡ 对话与效率'), 'README.md 应包含「⚡ 对话与效率」');
+    assert.ok(readmeZh.includes('🧰 终端与网络'), 'README.md 应包含「🧰 终端与网络」');
+    assert.ok(readmeZh.includes('macOS Dock 未读与状态提醒'), 'README.md 应介绍 macOS Dock 未读与状态提醒');
+    assert.ok(readmeEn.includes('🌐 Language & Appearance') && readmeEn.includes('⚡ Chat & Efficiency') && readmeEn.includes('🧰 Terminal & Network'),
+      'docs/README.en.md 应同步新设置入口名称');
+    assert.ok(readmeEn.includes('macOS Dock Unread & Status Alerts'), 'docs/README.en.md 应介绍 macOS Dock 未读与状态提醒');
+
+    // 7. 零改包模式代理卡片：更新为「命令行与更新代理（可选）」，不再出现「⚠️ 待重启生效」死循环
+    assert.equal(freshRendererSrc.includes('本地代理直连（无需开启全局代理 / TUN）'), false, 'meter-renderer.js 不应再包含过时的免 TUN 本地代理直连标题');
+    assert.equal(freshRendererSrc.includes('⚠️ 待重启生效'), false, 'meter-renderer.js 不应再出现误导性的「⚠️ 待重启生效」状态');
+    assert.ok(freshRendererSrc.includes('命令行与更新代理（可选）'), 'meter-renderer.js 应包含准确的「命令行与更新代理（可选）」标题');
+
+    let mockProxyEnabled = false;
+    Object.assign(env.win.contextMeterAPI, {
+      async getModulesStatus() {
+        return {
+          ok: true,
+          data: {
+            modules: {
+              chinese: { enabled: false },
+              proxy: { enabled: mockProxyEnabled, proxyUrl: 'http://127.0.0.1:7897', bypassList: 'localhost,127.0.0.1' }
+            }
+          },
+          disk: { chinese: false, proxy: false }
+        };
+      },
+      async toggleModule(name, enable) {
+        if (name === 'proxy') mockProxyEnabled = Boolean(enable);
+        return {
+          ok: true,
+          data: {
+            modules: {
+              chinese: { enabled: false },
+              proxy: { enabled: mockProxyEnabled, proxyUrl: 'http://127.0.0.1:7897' }
+            }
+          },
+          disk: { chinese: false, proxy: false },
+          restartRequired: name !== 'proxy'
+        };
+      },
+      async testProxy() {
+        return {
+          ok: true,
+          data: {
+            configValid: true,
+            proxyReachable: false,
+            internetReachable: false,
+            error: '<img src=x onerror=alert(1)>'
+          }
+        };
+      }
+    });
+
+    const flushMicrotasks = async () => {
+      for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
+    };
+
+    const btnProxyToggle = shadow.getElementById('btn-toggle-proxy-module');
+    const proxyBadgeEl = shadow.getElementById('proxy-badge');
+    const proxyDescEl = shadow.getElementById('proxy-status-desc');
+    const btnProxyTest = shadow.getElementById('btn-test-proxy');
+    const proxyTestResEl = shadow.getElementById('proxy-test-result');
+    assert.ok(btnProxyToggle && proxyBadgeEl && proxyDescEl && btnProxyTest && proxyTestResEl, '代理配置控件必须完整存在于 Shadow DOM');
+
+    btnProxyToggle.dispatchEvent({ type: 'click', stopPropagation() {}, preventDefault() {} });
+    await flushMicrotasks();
+    assert.equal(proxyBadgeEl.textContent, '🟢 已启用', '零改包模式下启用代理应立刻显示 🟢 已启用而非 ⚠️ 待重启生效');
+    assert.ok(proxyDescEl.textContent.includes('仅用于「>_ CLI」终端启动、检查套件更新与远程隧道'), '说明文字应写明代理实际作用范围');
+    assert.ok(proxyDescEl.textContent.includes('跟随系统代理'), '说明文字应写明 Antigravity 本体对话跟随系统代理');
+    assert.equal(btnProxyToggle.textContent, '停用代理');
+
+    api.setLocale('en');
+    assert.equal(proxyBadgeEl.textContent, '🟢 Enabled');
+    assert.equal(btnProxyToggle.textContent, 'Disable Proxy');
+    assert.ok(proxyDescEl.textContent.includes('CLI launcher, update checks, and remote tunnel only'));
+    api.setLocale('zh-CN');
+
+    btnProxyTest.dispatchEvent({ type: 'click', stopPropagation() {}, preventDefault() {} });
+    await flushMicrotasks();
+    const resLines = proxyTestResEl.children.map(c => c.textContent || '');
+    assert.ok(resLines.some(line => line.includes('作用范围: 仅用于 CLI 终端、检查更新与远程隧道')), '测试结果应展示清晰的作用范围说明');
+    assert.ok(resLines.some(line => line.includes('<img src=x onerror=alert(1)>')), '错误提示应以纯文本渲染而非解析为 HTML');
+    assert.equal(proxyTestResEl.querySelectorAll('img').length, 0, '严禁将 error 解析为 HTML 标签');
+  } finally {
+    api.dispose?.();
+  }
+});
+
+// =========================================================================
+// 需求 38: macOS Dock 未读与状态胶囊零改包浮层全链路测试（聚合/路由/设置/消点/Swift编译）
+// =========================================================================
+test('需求 38: macOS Dock 未读与状态胶囊（优化版方案3默认+纯角标可选）全链路验证', async () => {
+  const { execFileSync } = require('child_process');
+  const http = require('http');
+  const dockBadgeMod = require('../macos-dock-badge');
+  const { startEmbeddedLiveBridge } = require('../live-host');
+
+  // 1. 纯函数偏好归一化与多窗口状态聚合验证
+  assert.deepEqual(dockBadgeMod.normalizeDockBadgePrefs(null), {
+    enabled: true,
+    style: 'capsule',
+    colorTier: true,
+    autoClear: true
+  });
+  assert.deepEqual(dockBadgeMod.normalizeDockBadgePrefs({
+    dockBadgeEnabled: false,
+    dockBadgeStyle: 'BADGE',
+    dockBadgeColorTier: false,
+    dockBadgeAutoClear: false
+  }), {
+    enabled: false,
+    style: 'badge',
+    colorTier: false,
+    autoClear: false
+  });
+
+  const now = 100000;
+  const winMap = new Map([
+    ['w1', { windowId: 'w1', unreadCount: 2, approvalCount: 1, highRisk: false, running: true, locale: 'zh-CN', offline: false, updatedAt: now - 1000 }],
+    ['w2', { windowId: 'w2', unreadCount: 3, approvalCount: 2, highRisk: true, running: false, locale: 'en', offline: false, updatedAt: now - 200 }],
+    ['w-off', { windowId: 'w-off', unreadCount: 10, approvalCount: 5, highRisk: true, running: true, locale: 'en', offline: true, updatedAt: now - 100 }],
+    ['w-expired', { windowId: 'w-expired', unreadCount: 20, approvalCount: 9, highRisk: true, running: true, locale: 'zh-CN', offline: false, updatedAt: now - 20000 }]
+  ]);
+  const agg = dockBadgeMod.aggregateDockStates(winMap, now, 15000);
+  assert.deepEqual(agg, {
+    unread: 5,
+    approval: 3,
+    highRisk: true,
+    running: true,
+    locale: 'en',
+    windowCount: 2
+  }, '多窗口聚合应叠加有效窗口未读与审批、过滤 offline 与过期窗口并继承最新活跃 locale');
+
+  // 1b. 多窗口按 unreadIds 并集去重，避免同一套侧栏未读跨窗口重复累加
+  const dedupMap = new Map([
+    ['w1', { windowId: 'w1', unreadIds: ['c1', 'c2', 'c3'], unreadCount: 3, approvalCount: 0, highRisk: false, running: false, locale: 'zh-CN', offline: false, updatedAt: now - 300 }],
+    ['w2', { windowId: 'w2', unreadIds: ['c2', 'c3', 'c1'], unreadCount: 3, approvalCount: 0, highRisk: false, running: false, locale: 'zh-CN', offline: false, updatedAt: now - 100 }]
+  ]);
+  const dedupAgg = dockBadgeMod.aggregateDockStates(dedupMap, now, 15000);
+  assert.equal(dedupAgg.unread, 3, '两窗口共享同一组 3 个 unreadIds 时并集去重结果应为 3');
+  assert.equal(dedupAgg.windowCount, 2);
+
+  // 2. 非 macOS 平台安全降级
+  const winMgr = dockBadgeMod.createMacosDockBadgeManager({ platform: 'win32', autoStart: false });
+  assert.equal(winMgr.getStatus().supported, false);
+  const winPreview = await winMgr.triggerTestPreview(200);
+  assert.equal(winPreview.ok, false);
+  assert.equal(winPreview.supported, false);
+  const winAx = await winMgr.openAccessibilitySettings();
+  assert.equal(winAx.ok, false);
+  assert.equal(winAx.supported, false);
+  await winMgr.stop();
+
+  // 3. live-host 4 条 /dock-* 路由与 /save-settings 隔离实测
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-dock-test-'));
+  const tmpAgDir = path.join(tmpRoot, 'ag-dir');
+  const tmpStateDir = path.join(tmpRoot, 'state-dir');
+  fs.mkdirSync(tmpAgDir, { recursive: true });
+  fs.mkdirSync(tmpStateDir, { recursive: true });
+  const prevAgDir = process.env.AG_DIR;
+  process.env.AG_DIR = tmpAgDir;
+
+  const postLoopback = (port, route, payload, headers = {}) => new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload ?? {});
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: route,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        ...headers
+      }
+    }, (res) => {
+      let raw = '';
+      res.on('data', chunk => { raw += chunk; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(raw); } catch {}
+        resolve({ statusCode: res.statusCode, json, raw });
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+
+  const bridge = await startEmbeddedLiveBridge({
+    origin: 'vscode-file://vscode-app',
+    writeStamp: false,
+    skipMobileRemote: true,
+    dockBadgeOptions: {
+      disableSpawn: true,
+      platform: 'darwin',
+      stateDir: tmpStateDir,
+      autoStart: false
+    }
+  });
+  try {
+    const info = bridge.getInfo();
+    const validHeaders = {
+      Origin: info.origin,
+      'X-AG-Context-Token': info.token
+    };
+
+    const unauth = await postLoopback(info.port, '/dock-badge-status', {}, { Origin: info.origin });
+    assert.equal(unauth.statusCode, 403, '缺少 X-AG-Context-Token 必须拒绝 403');
+
+    const badPayload = await postLoopback(info.port, '/dock-state', { windowId: 'w1', unreadCount: -3 }, validHeaders);
+    assert.equal(badPayload.statusCode, 400, '负数 unreadCount 必须返回 400');
+
+    const upRes = await postLoopback(info.port, '/dock-state', {
+      windowId: 'w1',
+      unreadCount: 2,
+      approvalCount: 1,
+      highRisk: false,
+      running: true,
+      locale: 'zh-CN'
+    }, validHeaders);
+    assert.equal(upRes.statusCode, 200);
+    assert.equal(upRes.json?.ok, true);
+    assert.deepEqual(upRes.json?.status?.aggregated, {
+      unread: 2,
+      approval: 1,
+      highRisk: false,
+      running: true,
+      locale: 'zh-CN',
+      windowCount: 1
+    });
+
+    const previewRes = await postLoopback(info.port, '/dock-badge-test', { durationMs: 250, locale: 'en' }, validHeaders);
+    assert.equal(previewRes.statusCode, 200);
+    assert.equal(previewRes.json?.ok, true);
+    assert.equal(previewRes.json?.testing, true);
+    assert.equal(previewRes.json?.status?.previewActive, true);
+
+    const saveRes = await postLoopback(info.port, '/save-settings', {
+      uiPreferences: {
+        dockBadgeEnabled: true,
+        dockBadgeStyle: 'badge',
+        dockBadgeColorTier: false,
+        dockBadgeAutoClear: false
+      }
+    }, validHeaders);
+    assert.equal(saveRes.statusCode, 200);
+    assert.equal(saveRes.json?.ok, true);
+
+    const statusAfterSave = await postLoopback(info.port, '/dock-badge-status', {}, validHeaders);
+    assert.equal(statusAfterSave.statusCode, 200);
+    assert.equal(statusAfterSave.json?.style, 'badge');
+    assert.equal(statusAfterSave.json?.colorTier, false);
+    assert.equal(statusAfterSave.json?.autoClear, false);
+
+    const axRes = await postLoopback(info.port, '/dock-badge-open-ax', {}, validHeaders);
+    assert.equal(axRes.statusCode, 200);
+    assert.equal(axRes.json?.ok, true);
+
+    // 3b. /dock-state 两窗口上报相同 3 个 unreadIds 时并集去重仍为 3
+    await postLoopback(info.port, '/dock-state', { windowId: 'w1', offline: true }, validHeaders);
+    const dup1 = await postLoopback(info.port, '/dock-state', {
+      windowId: 'w-dup-1',
+      unreadIds: ['cid-1', 'cid-2', 'cid-3'],
+      unreadCount: 3,
+      approvalCount: 0,
+      highRisk: false,
+      running: false,
+      locale: 'zh-CN'
+    }, validHeaders);
+    assert.equal(dup1.statusCode, 200);
+    const dup2 = await postLoopback(info.port, '/dock-state', {
+      windowId: 'w-dup-2',
+      unreadIds: ['cid-1', 'cid-2', 'cid-3'],
+      unreadCount: 3,
+      approvalCount: 0,
+      highRisk: false,
+      running: false,
+      locale: 'zh-CN'
+    }, validHeaders);
+    assert.equal(dup2.statusCode, 200);
+    assert.equal(dup2.json?.status?.aggregated?.unread, 3, '双窗口通过 /dock-state 上报相同 3 个 unreadIds 应去重保持 unread=3');
+    assert.equal(dup2.json?.status?.aggregated?.windowCount, 2);
+  } finally {
+    await bridge.stop();
+    if (prevAgDir === undefined) delete process.env.AG_DIR;
+    else process.env.AG_DIR = prevAgDir;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+
+  // 4. 设置页 #settings-card-dock-badge 控件持久化、形态切换与增强层状态采集/切回消点
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  const activeTimers = new Set();
+  env.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { activeTimers.delete(t); fn(); }, Math.min(Number(ms) || 0, 20));
+    activeTimers.add(t);
+    return t;
+  };
+  env.sandbox.clearTimeout = (t) => { activeTimers.delete(t); clearTimeout(t); };
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  vm.runInContext(freshEnhancerSrc, env.sandbox);
+  const api = env.sandbox.__AGContextMeter;
+  const enhancer = env.sandbox.__AGEnhancer;
+  const shadow = env.getShadow();
+
+  try {
+    let lastPrefsEvent = null;
+    env.win.addEventListener('ag-suite-prefs-changed', ev => { lastPrefsEvent = ev.detail; });
+
+    api.openSettings('appearance');
+    const card = shadow.getElementById('settings-card-dock-badge');
+    const chkEnabled = shadow.getElementById('set-dock-badge-enabled');
+    const btnCapsule = shadow.getElementById('set-dock-style-capsule');
+    const btnBadge = shadow.getElementById('set-dock-style-badge');
+    const chkTier = shadow.getElementById('set-dock-badge-color-tier');
+    const chkAutoClear = shadow.getElementById('set-dock-badge-autoclear');
+    assert.ok(card && chkEnabled && btnCapsule && btnBadge && chkTier && chkAutoClear, 'Dock 设置卡与 4 项控件均应存在');
+    assert.equal(chkEnabled.checked, true);
+    assert.equal(btnCapsule.classList.contains('active'), true, '默认形态应为带状态胶囊');
+    assert.equal(chkTier.checked, true);
+    assert.equal(chkAutoClear.checked, true);
+
+    btnBadge.click();
+    await new Promise(r => setTimeout(r, 15));
+    assert.equal(btnBadge.classList.contains('active'), true);
+    assert.equal(env.localStorage.getItem('ag_suite_dock_badge_style'), 'badge');
+    assert.equal(lastPrefsEvent?.dockBadgeStyle, 'badge');
+    assert.equal(env.postedSettings.at(-1)?.uiPreferences?.dockBadgeStyle, 'badge');
+
+    chkAutoClear.checked = false;
+    chkAutoClear.dispatchEvent({ type: 'change' });
+    await new Promise(r => setTimeout(r, 15));
+    assert.equal(env.localStorage.getItem('ag_suite_dock_badge_autoclear'), 'false');
+    assert.equal(lastPrefsEvent?.dockBadgeAutoClear, false);
+
+    chkTier.checked = false;
+    chkTier.dispatchEvent({ type: 'change' });
+    await new Promise(r => setTimeout(r, 15));
+    assert.equal(env.localStorage.getItem('ag_suite_dock_badge_color_tier'), 'false');
+    assert.equal(lastPrefsEvent?.dockBadgeColorTier, false);
+
+    chkEnabled.checked = false;
+    chkEnabled.dispatchEvent({ type: 'change' });
+    await new Promise(r => setTimeout(r, 15));
+    assert.equal(env.localStorage.getItem('ag_suite_dock_badge_enabled'), 'false');
+    assert.equal(lastPrefsEvent?.dockBadgeEnabled, false);
+
+    // 恢复开启后验证中英文切换
+    chkEnabled.checked = true;
+    chkEnabled.dispatchEvent({ type: 'change' });
+    chkAutoClear.checked = true;
+    chkAutoClear.dispatchEvent({ type: 'change' });
+    api.setLocale('en');
+    assert.ok(card.textContent.includes('macOS Dock Unread & Status Alerts'));
+    assert.equal(btnCapsule.textContent.trim(), 'Status Capsule (Recommended)');
+    assert.equal(btnBadge.textContent.trim(), 'Badge Only');
+    api.setLocale('zh-CN');
+
+    // 验证 ag-enhancer-overlay.js 审批卡片去重（同一 Allow + Reject 仅算 1 项）
+    const sharedScope = { tagName: 'DIV', id: 'scope-1' };
+    const dedup = enhancer.countDistinctPendingApprovals(
+      [
+        { kind: 'approve', highRisk: true, cardScope: sharedScope },
+        { kind: 'reject', highRisk: true, cardScope: sharedScope },
+        { kind: 'approve', highRisk: false }
+      ],
+      [{ id: 'p1', highRisk: false }]
+    );
+    assert.equal(dedup?.approvalCount, 3, '同卡片双按钮应去重计 1，再加无归属 approve 与 prompt 共计 3');
+    assert.equal(dedup?.highRisk, true);
+
+    // 验证后台运行 -> 跑完产生未读 + 侧栏后台未读 + 切回窗口清普通未读保红审批
+    const t0 = 500000;
+    enhancer.tickDockStateForTest({
+      now: t0,
+      enabled: true,
+      autoClear: true,
+      activeCid: 'cid-a',
+      activeBusy: true,
+      focused: false,
+      sidebarConversations: [
+        { id: 'cid-a', domBusy: true },
+        { id: 'cid-bg', domBusy: true }
+      ],
+      approvals: [{ kind: 'approve', highRisk: true, cardScope: sharedScope }],
+      prompts: []
+    });
+    enhancer.tickDockStateForTest({
+      now: t0 + 100,
+      activeCid: 'cid-a',
+      activeBusy: false,
+      focused: false,
+      sidebarConversations: [
+        { id: 'cid-a', domBusy: false },
+        { id: 'cid-bg', domBusy: false }
+      ],
+      approvals: [{ kind: 'approve', highRisk: true, cardScope: sharedScope }],
+      prompts: []
+    });
+    const afterStable = enhancer.tickDockStateForTest({
+      now: t0 + 1450,
+      activeCid: 'cid-a',
+      activeBusy: false,
+      focused: false,
+      sidebarConversations: [
+        { id: 'cid-a', domBusy: false },
+        { id: 'cid-bg', domBusy: false }
+      ],
+      approvals: [{ kind: 'approve', highRisk: true, cardScope: sharedScope }],
+      prompts: []
+    });
+    assert.equal(afterStable.activeUnreadCount, 1, '失焦由忙转闲稳定 1200ms 后活跃对话未读应 +1');
+    assert.equal(afterStable.unreadCount, 2, '活跃 1 条 + 侧栏后台 1 条应累计 2 条未读');
+    assert.equal(afterStable.approvalCount, 1);
+    assert.equal(afterStable.highRisk, true);
+
+    const afterFocus = enhancer.tickDockStateForTest({
+      now: t0 + 1800,
+      activeCid: 'cid-a',
+      activeBusy: false,
+      focused: true,
+      triggerFocus: true,
+      sidebarConversations: [
+        { id: 'cid-a', domBusy: false },
+        { id: 'cid-bg', domBusy: false }
+      ],
+      approvals: [{ kind: 'approve', highRisk: true, cardScope: sharedScope }],
+      prompts: []
+    });
+    assert.equal(afterFocus.activeUnreadCount, 0, '切回窗口聚焦后普通活跃未读应自动清空');
+    assert.equal(afterFocus.approvalCount, 1, '切回窗口不得清除待审批数');
+    assert.equal(afterFocus.highRisk, true, '切回窗口不得清除高危告警');
+  } finally {
+    enhancer?.dispose?.();
+    api?.dispose?.();
+    for (const id of Array.from(activeTimers)) clearTimeout(id);
+  }
+
+  // 4b. 独立全新实例：验证热注入时侧边栏既有 3 个 domUnread 会话在首次采样即计 3，已读 1 个后降为 2
+  const envExisting = createDomEnv();
+  const timersExisting = new Set();
+  envExisting.sandbox.setTimeout = (fn, ms) => {
+    const t = setTimeout(() => { timersExisting.delete(t); fn(); }, Math.min(Number(ms) || 0, 20));
+    timersExisting.add(t);
+    return t;
+  };
+  envExisting.sandbox.clearTimeout = (t) => { timersExisting.delete(t); clearTimeout(t); };
+  vm.runInContext(freshRendererSrc, envExisting.sandbox);
+  vm.runInContext(freshEnhancerSrc, envExisting.sandbox);
+  const apiExisting = envExisting.sandbox.__AGContextMeter;
+  const enhancerExisting = envExisting.sandbox.__AGEnhancer;
+  try {
+    const tInit = 700000;
+    const initExistingUnread = enhancerExisting.tickDockStateForTest({
+      now: tInit,
+      enabled: true,
+      autoClear: true,
+      activeCid: 'cid-current',
+      activeBusy: false,
+      focused: true,
+      sidebarConversations: [
+        { id: 'cid-u1', domBusy: false, domUnread: true },
+        { id: 'cid-u2', domBusy: false, domUnread: true },
+        { id: 'cid-u3', domBusy: false, domUnread: true },
+        { id: 'cid-current', domBusy: false, domUnread: false }
+      ],
+      approvals: [],
+      prompts: []
+    });
+    assert.equal(initExistingUnread.unreadCount, 3, '侧边栏既有 3 个 status-unread-dot 在首次采样即应计为 3');
+    assert.deepEqual(Array.from(initExistingUnread.unreadIds).sort(), ['cid-u1', 'cid-u2', 'cid-u3']);
+
+    const afterOneRead = enhancerExisting.tickDockStateForTest({
+      now: tInit + 300,
+      activeCid: 'cid-current',
+      activeBusy: false,
+      focused: true,
+      sidebarConversations: [
+        { id: 'cid-u1', domBusy: false, domUnread: false },
+        { id: 'cid-u2', domBusy: false, domUnread: true },
+        { id: 'cid-u3', domBusy: false, domUnread: true },
+        { id: 'cid-current', domBusy: false, domUnread: false }
+      ],
+      approvals: [],
+      prompts: []
+    });
+    assert.equal(afterOneRead.unreadCount, 2, '其中一个未读点被点开已读后，未读计数应立即降为 2');
+
+    // 5. macOS 实机验证 Swift 6 编译零报错及亚像素/CoreText 居中符号存在
+    const swiftSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'macos-dock-overlay.swift'), 'utf8');
+    assert.ok(swiftSrc.includes('CTLineGetBoundsWithOptions'), 'macos-dock-overlay.swift 应使用 CoreText 字形墨迹测量光学居中');
+    assert.ok(swiftSrc.includes('iconRectInView'), 'macos-dock-overlay.swift 应补偿窗口亚像素原点残差');
+    if (process.platform === 'darwin') {
+      const swiftTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-swift-compile-'));
+      const swiftOut = path.join(swiftTmpDir, 'ag-dock-overlay-test');
+      try {
+        execFileSync('swiftc', ['-O', '-swift-version', '6', path.join(ROOT, 'scripts', 'macos-dock-overlay.swift'), '-o', swiftOut], {
+          stdio: 'pipe',
+          timeout: 60000
+        });
+        assert.ok(fs.existsSync(swiftOut) && fs.statSync(swiftOut).size > 0, 'macos-dock-overlay.swift 应成功编译');
+      } finally {
+        fs.rmSync(swiftTmpDir, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    enhancerExisting?.dispose?.();
+    apiExisting?.dispose?.();
+    for (const id of Array.from(timersExisting)) clearTimeout(id);
+  }
+});
+
+// =========================================================================
+// 需求 39: Antigravity v2.34.0 CSRF 迁移兼容（localStorage 与 daemon JSON 回退）
+// =========================================================================
+test('需求 39: v2.34.0 __APP_CONFIG__.csrfToken 为空时回退 agy_session_csrf_token 与 daemon JSON', async () => {
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  const freshCapsuleSrc = fs.readFileSync(path.join(ROOT, 'pulse-capsule-overlay.js'), 'utf8');
+
+  // 1. 前端 meter-renderer 轮询：__APP_CONFIG__.csrfToken 为空时读取 agy_session_csrf_token 并恢复上下文百分比
+  const env = createDomEnv({
+    initialStorage: { agy_session_csrf_token: 'v234-ls-csrf-token-12345' }
+  });
+  env.sandbox.__APP_CONFIG__ = { csrfToken: '' };
+  env.win.__APP_CONFIG__ = env.sandbox.__APP_CONFIG__;
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  await new Promise(r => setImmediate(r));
+  const pollReq = env.pendingFetches.find(f => String(f.url).includes('GetCascadeTrajectoryGeneratorMetadata'));
+  assert.ok(pollReq, '__APP_CONFIG__.csrfToken 为空时仍应读取 agy_session_csrf_token 并发起 GetCascadeTrajectoryGeneratorMetadata');
+  assert.equal(pollReq.opts?.headers?.['x-codeium-csrf-token'], 'v234-ls-csrf-token-12345');
+
+  pollReq.resolve({
+    ok: true,
+    json: async () => ({
+      generatorMetadata: [{
+        chatModel: {
+          modelDisplayName: 'Gemini 4 Neon (High)',
+          usage: { inputTokens: 7000, cacheReadTokens: 242000, outputTokens: 1200 },
+          chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+        }
+      }]
+    })
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const snap = env.sandbox.__AGContextMeter.snapshot();
+  assert.equal(snap.requestError, '');
+  assert.ok(snap.latest && snap.latest.actual > 240000, '回退 CSRF 后应成功解析上下文占用');
+  assert.ok((env.getShadow().getElementById('amount')?.textContent || '').includes('%'), '顶栏应显示真实上下文百分比');
+  env.sandbox.__AGContextMeter.dispose?.();
+
+  // 2. ag-enhancer-overlay 与 pulse-capsule-overlay 源码均含 agy_session_csrf_token 回退
+  assert.ok(freshEnhancerSrc.includes('agy_session_csrf_token'), 'ag-enhancer-overlay.js 应兼容 agy_session_csrf_token');
+  assert.ok(freshCapsuleSrc.includes('agy_session_csrf_token'), 'pulse-capsule-overlay.js 应兼容 agy_session_csrf_token');
+
+  // 3. 后端 meter-collector.js：HTML 内 __APP_CONFIG__.csrfToken 为空时回退 daemon JSON（同端口且存活 PID 优先）
+  const tmpDaemon = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-daemon-csrf-'));
+  try {
+    fs.writeFileSync(path.join(tmpDaemon, 'hub_59999.json'), JSON.stringify({
+      pid: 999999,
+      httpsPort: 51420,
+      httpPort: 51421,
+      csrfToken: 'dead-pid-token'
+    }));
+    fs.writeFileSync(path.join(tmpDaemon, 'hub_51421.json'), JSON.stringify({
+      pid: 4863,
+      httpsPort: 51420,
+      httpPort: 51421,
+      csrfToken: 'alive-port-51420-token'
+    }));
+    fs.writeFileSync(path.join(tmpDaemon, 'hub_60000.json'), JSON.stringify({
+      pid: 4864,
+      httpsPort: 60000,
+      httpPort: 60001,
+      csrfToken: 'alive-other-port-token'
+    }));
+    const emptyHtml = '<html><script>window.__APP_CONFIG__ = {"csrfToken":""};</script></html>';
+    const resolved = collector.resolveOriginCsrfToken('https://127.0.0.1:51420', emptyHtml, {
+      daemonDirs: [tmpDaemon],
+      isPidAlive: (pid) => pid === 4863 || pid === 4864
+    });
+    assert.equal(resolved, 'alive-port-51420-token', 'HTML csrfToken 为空时应准确匹配同端口存活 daemon JSON 的 csrfToken');
+  } finally {
+    fs.rmSync(tmpDaemon, { recursive: true, force: true });
+  }
+});
+
 test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、修复 detectKindFromOrigin 与防降级保护 (#37)', async () => {
   const remoteMod = require('../mobile-remote');
   const html = remoteMod.buildMobileAppHtml();
@@ -24864,4 +26742,138 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
   } finally {
     for (const t of vmTimers) clearTimeout(t);
   }
+});
+
+// =========================================================================
+// PR #8 合并加固 (P0-1~P0-5 / P1) 与跨分支语义防护回归验证
+// =========================================================================
+test('PR #8 合并加固 (P0-1~P0-5 / P1): Tailscale Serve 护栏、Web Push 曲线点与异常隔离、流式压缩上限、mediaSig 与 Dock 切会话防护', async () => {
+  const crypto = require('node:crypto');
+  const remoteMod = require('../mobile-remote');
+  const pushMod = require('../remote-web-push');
+
+  // 1. P0-1 & P0-2: ensureTailscaleServeHttps 支持空端口回退、443 占用保护与 readOnly 无副作用
+  const tsCalls = [];
+  const conflictRes = remoteMod.ensureTailscaleServeHttps(0, {
+    execFileSync: (_bin, args) => {
+      tsCalls.push(args);
+      if (args[0] === 'status') {
+        return JSON.stringify({
+          Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
+          CertDomains: ['mini-lamp.tailab4819.ts.net']
+        });
+      }
+      if (args[0] === 'serve' && args[1] === 'status') {
+        return JSON.stringify({
+          Web: { 'mini-lamp.tailab4819.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } }
+        });
+      }
+      return '';
+    }
+  });
+  assert.equal(conflictRes.enabled, false, '443 已被其他端口占用时不得覆盖');
+  assert.equal(conflictRes.conflict, true);
+  assert.ok(!tsCalls.some((a) => a[0] === 'serve' && a[1] === '--bg'), '检测到其他服务占用 443 时绝不能执行 tailscale serve --bg');
+
+  const readOnlyCalls = [];
+  const roRes = remoteMod.ensureTailscaleServeHttps(0, {
+    readOnly: true,
+    execFileSync: (_bin, args) => {
+      readOnlyCalls.push(args);
+      if (args[0] === 'status') {
+        return JSON.stringify({
+          Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
+          CertDomains: ['mini-lamp.tailab4819.ts.net']
+        });
+      }
+      if (args[0] === 'serve' && args[1] === 'status') {
+        return JSON.stringify({ Web: {} });
+      }
+      return '';
+    }
+  });
+  assert.equal(roRes.enabled, false);
+  assert.ok(!readOnlyCalls.some((a) => a[0] === 'serve' && a[1] === '--bg'), 'readOnly 探测模式绝不能写入 tailscale serve');
+
+  // 2. P0-3 & P1: validatePushSubscription 拒绝非法 P-256 点与非 443 端口；单条坏订阅不拖垮全局广播
+  const zeroPoint = Buffer.concat([Buffer.from([0x04]), Buffer.alloc(64, 0)]).toString('base64url');
+  const validAuth = crypto.randomBytes(16).toString('base64url');
+  const invalidCurveCheck = pushMod.validatePushSubscription({
+    endpoint: 'https://fcm.googleapis.com/fcm/send/invalid-curve',
+    keys: { p256dh: zeroPoint, auth: validAuth }
+  });
+  assert.equal(invalidCurveCheck.ok, false, '必须拒绝非法的全零 P-256 公钥点');
+
+  const ecdhOk = crypto.createECDH('prime256v1');
+  ecdhOk.generateKeys();
+  const validPub = ecdhOk.getPublicKey(null, 'uncompressed').toString('base64url');
+  const badPortCheck = pushMod.validatePushSubscription({
+    endpoint: 'https://fcm.googleapis.com:8443/fcm/send/non-443',
+    keys: { p256dh: validPub, auth: validAuth }
+  });
+  assert.equal(badPortCheck.ok, false, '必须拒绝非标准 443 HTTPS 端口的 Push 订阅');
+
+  const tmpPushDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-push-p03-'));
+  try {
+    const stateFile = path.join(tmpPushDir, 'push-state.json');
+    const initMgr = pushMod.createWebPushManager({ getStateFilePath: () => stateFile });
+    const vapidInfo = initMgr.getPublicInfo();
+    // 人工注入一条损坏公钥的陈旧持久化订阅 + 一条健康订阅
+    fs.writeFileSync(stateFile, JSON.stringify({
+      vapid: JSON.parse(fs.readFileSync(stateFile, 'utf8')).vapid,
+      prefs: { enabled: true, notifyCompleted: true, notifyWaiting: true },
+      subscriptions: [
+        { endpoint: 'https://fcm.googleapis.com/fcm/send/bad-sub', keys: { p256dh: zeroPoint, auth: validAuth }, createdAt: 1 },
+        { endpoint: 'https://fcm.googleapis.com/fcm/send/good-sub', keys: { p256dh: validPub, auth: validAuth }, createdAt: 2 }
+      ]
+    }), { mode: 0o600 });
+
+    const deliveredEndpoints = [];
+    const mixMgr = pushMod.createWebPushManager({
+      getStateFilePath: () => stateFile,
+      dnsLookup: async () => [{ address: '142.250.190.10', family: 4 }],
+      fetchImpl: async (ep) => {
+        deliveredEndpoints.push(ep);
+        return { ok: true, status: 201 };
+      }
+    });
+    assert.equal(mixMgr.getPublicInfo().publicKey, vapidInfo.publicKey);
+    const mixRes = await mixMgr.broadcast({ type: 'completed', title: '测试隔离', body: 'ok' });
+    assert.equal(mixRes.sent, 1, 'loadState 剔除非法曲线点订阅后，健康订阅仍正常广播成功');
+    assert.equal(mixRes.failed, 0);
+    assert.deepEqual(deliveredEndpoints, ['https://fcm.googleapis.com/fcm/send/good-sub']);
+
+    // 再测试加密阶段抛 RangeError (>4079B) 时 sendToSubscription 安全捕获而不 reject broadcast
+    const bigRes = await mixMgr.broadcast({ type: 'completed', title: '超限载荷', body: 'a'.repeat(5000) });
+    assert.equal(bigRes.ok, false);
+    assert.equal(bigRes.failed, 1);
+    assert.ok(bigRes.results?.[0]?.res?.error);
+  } finally {
+    fs.rmSync(tmpPushDir, { recursive: true, force: true });
+  }
+
+  // 3. P0-4 & P1: local-api 流式首帧含压缩膨胀上限与按位 EndStream 判定
+  const localApiSrc = fs.readFileSync(path.join(ROOT, 'local-api.js'), 'utf8');
+  assert.ok(localApiSrc.includes('maxOutputLength'), 'local-api.js gunzipSync 必须限制 maxOutputLength 防止压缩炸弹');
+  assert.ok(localApiSrc.includes('(flags & 2) !== 0'), 'local-api.js 必须按位识别 EndStream 帧 (flags & 2)');
+
+  // 4. P0-5: buildQueuedStepMediaSig 必须区分两个同名 (image.png) 但路径或内容不同的附件
+  const sigA = remoteMod.buildQueuedStepMediaSig({
+    media: [{ fileUri: 'file:///tmp/dir-a/image.png', mimeType: 'image/png' }]
+  });
+  const sigB = remoteMod.buildQueuedStepMediaSig({
+    media: [{ fileUri: 'file:///tmp/dir-b/image.png', mimeType: 'image/png' }]
+  });
+  const sigInline1 = remoteMod.buildQueuedStepMediaSig({
+    images: [{ displayName: 'image.png', inlineData: 'AAAA' }]
+  });
+  const sigInline2 = remoteMod.buildQueuedStepMediaSig({
+    images: [{ displayName: 'image.png', inlineData: 'BBBB' }]
+  });
+  assert.notEqual(sigA, sigB, 'buildQueuedStepMediaSig 必须区分不同路径的同名文件');
+  assert.notEqual(sigInline1, sigInline2, 'buildQueuedStepMediaSig 必须区分不同内容的内联同名图片');
+
+  // 5. P1-1: ag-enhancer-overlay.js 远程后台切会话期间保护 Dock 未读追踪不被误重置
+  const freshEnhancer = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  assert.ok(freshEnhancer.includes('mobileBgSwitchDepth'), 'ag-enhancer-overlay.js 应使用 mobileBgSwitchDepth 保护后台切会话期间的 Dock 未读追踪');
 });

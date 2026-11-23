@@ -326,15 +326,20 @@
     try {
       const body = document.body;
       const doc = document.documentElement;
-      if (body?.classList?.contains('theme-light') || body?.classList?.contains('light') || doc?.classList?.contains('light') || body?.classList?.contains('vscode-light')) return 'light';
-      if (body?.classList?.contains('theme-dark') || body?.classList?.contains('dark') || doc?.classList?.contains('dark') || body?.classList?.contains('vscode-dark')) return 'dark';
+      const docAttr = doc?.getAttribute?.('data-theme');
+      if (docAttr === 'light' || body?.classList?.contains('theme-light') || body?.classList?.contains('light') || doc?.classList?.contains('light') || body?.classList?.contains('vscode-light')) return 'light';
+      if (docAttr === 'dark' || body?.classList?.contains('theme-dark') || body?.classList?.contains('dark') || doc?.classList?.contains('dark') || body?.classList?.contains('vscode-dark')) return 'dark';
       if (doc?.style?.colorScheme === 'light') return 'light';
       if (doc?.style?.colorScheme === 'dark') return 'dark';
-      if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function' && (body || doc)) {
-        const cs = window.getComputedStyle(body || doc);
-        const bgVar = cs.getPropertyValue('--background') || cs.backgroundColor;
-        const lum = parseRgbLuminance(bgVar);
-        if (lum != null) return lum > 0.55 ? 'light' : 'dark';
+      if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+        for (const el of [body, doc].filter(Boolean)) {
+          const cs = window.getComputedStyle(el);
+          for (const raw of [cs?.getPropertyValue?.('--background')?.trim(), cs?.backgroundColor?.trim()]) {
+            if (!raw) continue;
+            const lum = parseRgbLuminance(raw);
+            if (lum != null) return lum > 0.55 ? 'light' : 'dark';
+          }
+        }
       }
       if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
         if (window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
@@ -602,7 +607,10 @@
 
   function applyTheme() {
     const activeTheme = resolveTheme();
+    const hostTheme = getSystemTheme();
     host.setAttribute('data-theme', activeTheme);
+    host.setAttribute('data-host-theme', hostTheme);
+    host.setAttribute('data-theme-mode', currentThemeMode);
     const hostBg = getHostZeroLevelBg(activeTheme === 'light');
     host.style.setProperty('--ag-host-bg', hostBg);
     const btns = [el('theme-toggle'), el('theme-toggle-tokens')].filter(Boolean);
@@ -662,7 +670,13 @@
   try {
     if (typeof MutationObserver !== 'undefined' && document.body) {
       themeObserver = new MutationObserver(() => {
-        if (currentThemeMode === 'auto') applyTheme();
+        const prevTheme = host.getAttribute('data-theme');
+        const prevHostTheme = host.getAttribute('data-host-theme');
+        applyTheme();
+        if ((host.getAttribute('data-theme') !== prevTheme || host.getAttribute('data-host-theme') !== prevHostTheme)
+          && typeof dispatchSuitePrefsChanged === 'function') {
+          dispatchSuitePrefsChanged();
+        }
       });
       themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
       if (document.documentElement) {

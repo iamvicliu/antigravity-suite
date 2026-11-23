@@ -2,27 +2,50 @@
 
 [简体中文](../README.md) · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Español**
 
-> **Suite de mejoras y control remoto 100 % sin parches (Zero-Patch) para Google Antigravity en escritorio (macOS). Nunca modifica `app.asar` ni la firma oficial de Apple, no interfiere con actualizaciones y se activa o desactiva al instante.**
+> **Suite de mejoras y control remoto 100 % sin parches para Google Antigravity en escritorio (macOS). Nunca altera el paquete oficial ni la firma de Apple, convive con las actualizaciones oficiales y se activa o desactiva al instante.**
+
+<p align="center">
+  <img src="../assets/mac-preview.png" alt="Vista previa de Antigravity Suite en macOS" width="100%">
+</p>
 
 ## Funciones principales
 
-1. **🇨🇳 Cambio instantáneo entre chino simplificado e inglés (traducción local sin tokens)**: Traduce y almacena localmente pensamientos y títulos sin consumir cuota, con cambio de idioma en vivo desde **`⚙️`**.
-2. **📱 Control remoto ultrarrápido para móvil y escritorio (mucho más rápido que el oficial)**:
-   - Conexión directa en LAN en milisegundos o selección automática de la ruta más rápida (Tailscale con gestión automática de `tailscale serve` HTTPS `https://<host>.ts.net` sin aviso de «No seguro» y bloqueo de degradación a HTTP, Bonjour o túnel Cloudflare sin inicio de sesión por defecto), evitando demoras del relé oficial en la nube; PWA ligera que al cambiar de chat solo cancela la carga pendiente de la vista anterior (sin interrumpir la IA en segundo plano), con carga diferida del historial y compresión **`gzip`**.
-   - Cambio entre proyectos (indicadores de no leído/aprobación), **notificaciones Web Push sin dependencias** (aviso al completar o esperar aprobación con respaldo local) e **insignia de no leídos en el icono PWA** (contando estrictamente conversaciones completadas sin leer), desplazamiento completo del historial sin pérdida, creación remota y explorador de archivos/diffs dentro del límite `$HOME`, **barra deslizante de comandos rápidos** sincronizada con el escritorio (cambio en un toque **`⚡Envío / ✎Insertar`** y protección de borrador), cola de mensajes (enviar/retirar), subida de archivos e imágenes con vista previa, tarjetas interactivas de confirmación, paneles superiores, 9 interruptores, sesiones aisladas por pestaña y envío `Cmd/Ctrl + Enter` protegido contra IME.
-3. **⚡ Comandos rápidos y optimización de prompts (`Insertar` vs `⚡Envío directo`)**:
-   - **14 comandos recomendados integrados** (conversión a píldoras nativas) + **10 plantillas populares en un clic**.
-   - **`Insertar`** coloca texto para añadir errores o contexto; **`⚡Envío directo`** (`↵`) envía al instante (8 frases cortas por defecto), con protección de borrador e inversión **`⌘/Ctrl + clic`**, además de **`✨ Optimizar` / `↩ Deshacer`** y sugerencias **`Tab / →`**.
-4. **🧰 Utilidades rápidas de escritorio**: **`⌘1`–`⌘9`** para saltar entre conversaciones, barra flotante de navegación de mensajes, edición directa con **`✏️ Editar` + `⌘S`** y lanzador **`>_ CLI`** (compatible con `v2.32.x–2.34.0`, `SingletonSocket` y detección automática de Node `nvm`/`fnm`/`volta`/`asdf`/`mise`).
-5. **📊 Monitor de contexto, autocompactación a 240K y cuotas duales**: Anillo superior con uso del contexto, mapa de calor de 52 semanas y costes API estimados, junto con cápsulas `G4` / `C` de cuota cada 5 horas y semanal; envía `/compact` automáticamente al alcanzar 240K o detectar caída de caché (alerta 328K) para evitar bloqueos de varios minutos.
-6. **🛡️ Bloqueo con marco rojo ante comandos peligrosos**: Intercepta comandos destructivos (`rm -rf`, `git reset --hard`, `sudo`) y exige confirmación manual incluso si la aprobación automática está activada.
-7. **🔄 Detcción automática y actualización en caliente con un clic**: Muestra un punto rojo en **`⚙️`** cuando hay una nueva versión en GitHub para aplicar cambios al instante sin reiniciar Antigravity.
+1. **🇨🇳 Cambio instantáneo entre chino simplificado e inglés (traducción local sin tokens)**
+   - Alterna entre la interfaz en chino simplificado (con traducción en caché local para bloques de pensamiento y títulos) y el inglés original desde **`⚙️` → `🌐 Language & Appearance`** sin reiniciar (puedes escribir tus propios prompts en español).
+2. **🔔 Alertas de estado y no leídos en el Dock de macOS (Insignia + Cápsula)**
+   - **Estado visible sin cambiar de ventana**: Agrupa y deduplica los avisos sin leer de todas tus ventanas sobre el icono del Dock mediante **contadores azul/rojo en la esquina** y una **cápsula translúcida (`Working` / `Unread` / `Approve` / `High Risk`)**, o cambia a **Badge Only** en **`⚙️` → `🌐 Language & Appearance`**.
+   - **Seguimiento fluido y limpieza automática**: Sigue la ampliación al pasar el ratón por el Dock; al volver a la ventana borra los avisos azules normales y conserva las alertas rojas hasta atenderlas. En el primer uso pulsa **Grant Access** para dar permiso de Accesibilidad en macOS (requiere Xcode Command Line Tools) y **Test Alert** para previsualizar.
+
+   <p align="center">
+     <img src="../assets/dock-preview.jpg" alt="Vista previa de insignia y cápsula de estado en el Dock de macOS" width="84%">
+   </p>
+
+3. **📱 Control remoto ultrarrápido para móvil y escritorio (mucho más rápido que el oficial)**
+   - **Conexión local directa y mejor ruta automática**: Escanea el código QR en **`📱 Remote`** y añádelo a tu pantalla de inicio como app PWA (los navegadores de PC adaptan el ancho). Elige automáticamente la vía más rápida entre **LAN** (mismo Wi-Fi), **Tailscale** con HTTPS automático, red local y un **túnel rápido de Cloudflare sin login por defecto (admite dominio propio)**, todo configurable en **`⚙️` → `📱 Remote`**.
+   - **Espacio de trabajo completo**: Historial agrupado por proyecto, creación y vista previa de archivos/diffs dentro del límite `$HOME`, subida de imágenes y archivos, gestión de cola de mensajes (enviar ahora / editar / cancelar), tarjetas de aprobación, barra sincronizada de prompts (**`⚡Send / ✎Insert`**), **notificaciones Web Push e insignia PWA en segundo plano** y envío seguro con `Cmd/Ctrl + Enter` (protegido contra IME de Safari).
+
+   <p align="center">
+     <img src="../assets/mobile-preview.jpg" alt="Vista previa del control remoto PWA móvil" width="82%">
+   </p>
+
+4. **⚡ Prompts rápidos y optimización en el compositor (`⚙️` → `⚡ Chat & Efficiency`)**
+   - **14 acciones recomendadas integradas** + **10 plantillas populares en un clic**; distingue entre **`Insert`** (coloca texto para añadir detalles o logs) y **`⚡Send`** (`↵`, envío directo) con protección de borrador e inversión con **`⌘/Ctrl + clic`**, además de **`✨ Optimize` / `↩ Undo`** y sugerencias con **`Tab / →`**.
+5. **🧰 Utilidades rápidas de escritorio**
+   - **`⌘1`–`⌘9`** (mantén `⌘` para ver números), **`⌘⇧[` / `⌘⇧]`** y **`⌃Tab`** para cambiar de chat al instante, barra flotante de navegación y edición directa **`Edit` + `⌘S`** en vistas previas.
+   - **`>_ CLI`** para abrir `agy` en los terminales más habituales de macOS (con ajustes de proxy opcionales para CLI y actualizaciones en **`⚙️` → `🧰 Terminal & Network`**). Compatible con Antigravity **`2.32.x–2.34.0`** y los principales gestores de Node.
+6. **📊 Monitor de contexto, autocompactación a 240K y cápsulas de cuota**
+   - Anillo superior, mapa de calor de 52 semanas, comparativa de costes API y cuotas de 5 horas y semanal para **Gemini 4 / Claude** (`G4` / `C`), configurables en **`⚙️` → `📊 Plan & Subscription`**.
+   - Detecta pérdidas de caché cerca de 328K y ejecuta `/compact` automáticamente al llegar a **240K** en reposo (activo por defecto en **`⚙️` → `⚡ Chat & Efficiency`**) para evitar bloqueos largos cerca de 512K.
+7. **🛡️ Bloqueo con marco rojo ante comandos peligrosos**
+   - Detiene comandos destructivos (`rm -rf`, `git reset --hard`, `git clean -f`, `git push`, `sudo`, `kill -9`, `DROP/DELETE`, `op item`) con un marco rojo para pedir confirmación manual aunque la aceptación automática esté activada.
+8. **🔄 Detección automática y actualización en un clic**
+   - Comprueba GitHub en segundo plano; si hay versión nueva, **`⚙️`** muestra un punto rojo para pulsar **Update Now** y actualizar al instante sin reiniciar (instalaciones con `git clone`).
 
 ---
 
-## 🚀 Instalación rápida (macOS · CDP sin modificar paquete)
+## 🚀 Instalación sin parches (macOS)
 
-Requisitos: **macOS**, **Google Antigravity** y **Node.js `22.4.0+`**.
+Requisitos: **macOS**, **Google Antigravity** (`2.32.x–2.34.0`) y **Node.js `22.4.0+`**.
 
 ```bash
 git clone https://github.com/iamvicliu/antigravity-suite.git ~/.local/share/antigravity-suite
@@ -30,13 +53,55 @@ cd ~/.local/share/antigravity-suite
 ./scripts/setup-macos-cdp.sh
 ```
 
-> Opciones: `--no-auto` omite el inicio automático (`ag-context-meter install-launcher` crea un lanzador opcional en `~/Applications`) y `--no-remote` desactiva el servidor remoto. En Windows / Linux puedes iniciar Antigravity con depuración remota y ejecutar `node cli.js live`.
+> Opciones: `--no-auto` omite el inicio automático (puedes crear un lanzador en `~/Applications` con `ag-context-meter install-launcher`) y `--no-remote` desactiva el servidor remoto.
+> **Windows / Linux**: Inicia Antigravity con `--remote-debugging-port=9222` y ejecuta `node cli.js live` desde el repositorio clonado.
 
-### Comandos diarios
+Añade `~/.local/bin` a tu `PATH` y verifica la instalación:
 
-- `ag-context-meter status`: comprueba los módulos activos y la integridad oficial de `app.asar`.
-- `ag-context-meter remote`: muestra el QR de los 4 canales y dispositivos conectados (`--tunnel on|off`, `--reset-token`).
-- `ag-context-meter live` / `restart`: inyecta al instante o reinicia con puerto CDP habilitado (`v2.33.0+`).
-- `ag-context-meter update` / `stop` / `auto-off`: actualiza en caliente, detiene la sesión actual o desactiva el arranque automático.
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+ag-context-meter status
+```
 
-Ejecuta `npm run test:suite` para correr las pruebas. Agradecimiento especial a los colaboradores [@hubo1989](https://github.com/hubo1989) y [@Shens](https://github.com/Shens) por sus optimizaciones en el emparejamiento QR, el control remoto y la experiencia de uso. Para más detalles, consulta el **[README en chino simplificado](../README.md)** o el **[README en inglés](README.en.md)**. Bajo licencia [MIT License](../LICENSE).
+> **Primer inicio (`v2.33.0+`)**: Las versiones recientes desactivan el puerto de depuración por defecto. Si no aparecen `📱 Remote` y `⚙️`, **pulsa `⌘Q` para cerrar por completo y vuelve a abrir Antigravity una vez** (o ejecuta `ag-context-meter restart`).
+
+---
+
+## 🛠️ Comandos diarios y desinstalación
+
+| Comando | Uso |
+| :--- | :--- |
+| `ag-context-meter status` | Comprueba módulos activos, arranque automático y firma oficial intacta |
+| `ag-context-meter remote` | Muestra código QR, URLs de acceso, estado del túnel y dispositivos |
+| `ag-context-meter live` | Carga al instante en la ventana abierta (`--no-remote` desactiva el remoto) |
+| `ag-context-meter restart` | Reinicia Antigravity (`v2.33.0+`) con la suite cargada |
+| `ag-context-meter update` | Descarga la última versión y la aplica sin reiniciar |
+| `ag-context-meter stop` | Desactiva temporalmente la suite durante la sesión actual |
+| `ag-context-meter auto-off` / `auto-on` | Desactiva o vuelve a activar la carga automática al abrir la app |
+| `ag-context-meter install-launcher` | Crea una app lanzadora opcional en `~/Applications` |
+
+**Desinstalación completa**: ejecuta `ag-context-meter auto-off` y elimina:
+- `~/Library/LaunchAgents/com.$(id -un).ag-live-helper.plist`
+- `~/Applications/Antigravity 增强启动器.app`
+- `~/.local/bin/ag-context-meter`
+- `~/.local/share/antigravity-suite` (y `~/.local/share/antigravity-context-viewer` si existe)
+- *Opcional*: borra cachés y ajustes locales con `rm -rf ~/Library/Application\ Support/AntigravityContextMeter ~/.config/antigravity-context-meter`
+
+---
+
+## 🔒 Principios de seguridad
+
+- **Aplicación oficial intacta**: Los comandos antiguos de modificación están bloqueados; todo se ejecuta en memoria sin alterar binarios ni firmas de Apple.
+- **Control de canales y código aleatorio de 48 caracteres**: Los canales apagados rechazan conexiones, cada solicitud verifica una clave aleatoria renovable en **`⚙️` → `📱 Remote`**, las pestañas se aíslan entre sí y los tokens de túnel propio permanecen solo en tu equipo.
+- **Límites de ruta**: La edición directa y el explorador están estrictamente confinados dentro de `$HOME` y los espacios de trabajo registrados, bloqueando carpetas del sistema y credenciales (`.ssh`, `.gnupg`, `1Password`, `Antigravity.app`).
+
+---
+
+## 🧪 Pruebas y agradecimientos
+
+```bash
+npm run test:suite
+```
+
+Gracias a los colaboradores principales [@hubo1989](https://github.com/hubo1989) y [@Shens](https://github.com/Shens) por sus mejoras en emparejamiento QR, control remoto y rendimiento en escritorio. Para solución de problemas y créditos completos, consulta el **[README en chino simplificado](../README.md)** o el **[README en inglés](README.en.md)**. Licencia [MIT License](../LICENSE).
