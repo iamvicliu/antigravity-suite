@@ -4711,35 +4711,84 @@ const DOM_UI_CHROME_TOKEN = '(?:'
   + '|(?:重要提示|提示信息|注意事项|警告提示)'
   + ')';
 const DOM_UI_CHROME_STRICT_RE = new RegExp(`^(?:${DOM_UI_CHROME_TOKEN}[:：·•\\-|]*)+$`);
+const DOM_UI_CHROME_COPY_ONLY_RE = /^(?:(?:copycode|copied|copy|复制代码|已复制|复制)[:：·•\-|]*)+$/;
+const DOM_ALERT_CHROME_BY_TYPE = {
+  note: /^(?:(?:note|提示信息)[:：·•\-|]*)+$/,
+  tip: /^(?:(?:tip|提示信息)[:：·•\-|]*)+$/,
+  important: /^(?:(?:important|重要提示|提示信息)[:：·•\-|]*)+$/,
+  warning: /^(?:(?:warning|注意事项|警告提示)[:：·•\-|]*)+$/,
+  caution: /^(?:(?:caution|注意事项|警告提示)[:：·•\-|]*)+$/
+};
 
-function extractFencedCodeLanguages(markdownText) {
-  const langs = new Set();
-  const src = String(markdownText || '');
-  const re = /^[ \t]*(?:`{3,}|~{3,})[ \t]*([a-z0-9+#._-]{1,24})\b/gim;
-  let m;
-  while ((m = re.exec(src)) !== null) {
-    const lang = String(m[1] || '').toLowerCase();
-    if (lang) langs.add(lang);
+function buildBaseChromeSlots(markdownText) {
+  const slots = new Map();
+  const addSlot = (pos, slot) => {
+    if (!Number.isInteger(pos) || pos < 0) return;
+    let list = slots.get(pos);
+    if (!list) {
+      list = [];
+      slots.set(pos, list);
+    }
+    list.push(slot);
+  };
+  const lines = String(markdownText || '').replace(/\r\n?/g, '\n').split('\n');
+  let inFence = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!inFence) {
+      const fm = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*([a-z0-9+#._-]{0,24})[^\n]*$/i);
+      if (fm) {
+        const lang = String(fm[2] || '').toLowerCase();
+        const pos = stripTrailingEllipsis(compactBaseKey(lines.slice(0, i).join('\n'))).length;
+        addSlot(pos, { kind: 'code', lang });
+        inFence = { ch: fm[1][0], len: fm[1].length, lang };
+        continue;
+      }
+      const am = line.match(/^[ \t]*(?:>[ \t]*)+\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:[ \t]+|$)/i);
+      if (am) {
+        const alertType = String(am[1] || '').toLowerCase();
+        const pos = stripTrailingEllipsis(compactBaseKey(lines.slice(0, i).join('\n'))).length;
+        addSlot(pos, { kind: 'alert', alertType });
+      }
+    } else {
+      const cm = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+      if (cm && cm[1][0] === inFence.ch && cm[1].length >= inFence.len) {
+        const endPos = stripTrailingEllipsis(compactBaseKey(lines.slice(0, i + 1).join('\n'))).length;
+        addSlot(endPos, { kind: 'code-end', lang: inFence.lang });
+        inFence = null;
+      }
+    }
   }
-  return langs;
+  return slots;
 }
 
-function isAllowedDomChromeGap(gap, allowedBareLangs) {
+function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots) {
   if (!gap || gap.length > 48) return false;
-  if (DOM_UI_CHROME_STRICT_RE.test(gap)) return true;
-  if (!allowedBareLangs || allowedBareLangs.size === 0) return false;
+  if (tiPos === 0 && DOM_UI_CHROME_STRICT_RE.test(gap)) return true;
+  const list = chromeSlots?.get?.(tiPos);
+  if (!Array.isArray(list) || !list.length) return false;
   const cleaned = gap.replace(/[:：·•\-|]+$/g, '');
-  if (allowedBareLangs.has(cleaned)) return true;
-  for (const lang of allowedBareLangs) {
-    if (gap.startsWith(lang)) {
-      const rest = gap.slice(lang.length).replace(/^[:：·•\-|]+/, '');
-      if (!rest || DOM_UI_CHROME_STRICT_RE.test(rest)) return true;
+  for (const slot of list) {
+    if (slot.kind === 'code') {
+      if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap)) return true;
+      if (slot.lang) {
+        if (cleaned === slot.lang) return true;
+        if (gap.startsWith(slot.lang)) {
+          const rest = gap.slice(slot.lang.length).replace(/^[:：·•\-|]+/, '');
+          if (!rest || DOM_UI_CHROME_COPY_ONLY_RE.test(rest)) return true;
+        }
+      }
+    } else if (slot.kind === 'code-end') {
+      if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap)) return true;
+    } else if (slot.kind === 'alert') {
+      const re = DOM_ALERT_CHROME_BY_TYPE[slot.alertType];
+      if (re && re.test(gap)) return true;
     }
   }
   return false;
 }
 
-function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, allowedBareLangs = null) {
+function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots = null) {
   if (!tClean || !dClean || startPos < 0 || startPos >= dClean.length) return -1;
   let ti = 0;
   let di = startPos;
@@ -4752,7 +4801,7 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, allowedBareL
       continue;
     }
     if (skippedChrome >= MAX_CHROME_GAPS) return -1;
-    // 允许最多回退 12 个已匹配字符，处理 UI 铬与后续正文共享前缀的场景（如 shCopy 插在 sudoaptupdate 前先消费了 's'）
+    // 允许最多回退 12 个已匹配字符，处理 UI 铬与后续正文共享前缀的场景（如 shCopy 插在 sudoaptupdate 前先消费了 's'），且仅在对应结构槽位允许跳过
     const maxBack = Math.min(ti, 12);
     let matchedTi = -1;
     let matchedDi = -1;
@@ -4760,6 +4809,7 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, allowedBareL
       const ti2 = ti - back;
       const di2 = di - back;
       if (di2 < startPos) break;
+      if (ti2 > 0 && !chromeSlots?.has?.(ti2)) continue;
       const remT = tClean.length - ti2;
       const probeLen = Math.min(8, remT);
       const probe = tClean.slice(ti2, ti2 + probeLen);
@@ -4769,7 +4819,7 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, allowedBareL
         const idx = dClean.indexOf(probe, searchFrom);
         if (idx < 0 || idx > searchEnd) break;
         const gap = dClean.slice(di2, idx);
-        if (isAllowedDomChromeGap(gap, allowedBareLangs)) {
+        if (isAllowedDomChromeGapAt(gap, ti2, chromeSlots)) {
           matchedTi = ti2;
           matchedDi = idx;
           break;
@@ -4786,7 +4836,7 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, allowedBareL
   if (ti < tClean.length) return -1;
   if (di < dClean.length) {
     const trailing = dClean.slice(di);
-    if (isAllowedDomChromeGap(trailing, allowedBareLangs)) {
+    if (isAllowedDomChromeGapAt(trailing, tClean.length, chromeSlots)) {
       di = dClean.length;
     }
   }
@@ -4834,10 +4884,10 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
     return 2;
   }
 
-  // Tier 1 允许可识别的桌面 UI 装饰（首部/中段/尾部的 Copy/复制代码、GitHub Alert 标题，以及轨迹实际声明的代码块语言标签）穿插在完整轨迹正文中
+  // Tier 1 仅在轨迹 Markdown 对应的结构槽位（围栏代码块起止、GitHub Alert 头部及文首前缀）允许跳过可识别的桌面 UI 装饰
   if (!options.baseIsDom && !options.domIsMarkdown && tClean.length >= 12 && dClean.length > tClean.length) {
-    const allowedBareLangs = extractFencedCodeLanguages(baseText);
-    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0, allowedBareLangs);
+    const chromeSlots = buildBaseChromeSlots(baseText);
+    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0, chromeSlots);
     if (endPos > 0) {
       const tailAfter = dClean.length - endPos;
       if (tailAfter === 0 || Boolean(options.busy) || Boolean(options.allowCoveredPrefix)) {
@@ -5031,7 +5081,7 @@ function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, all
       if (dClean.startsWith(bk, pos)) {
         nextPos = pos + bk.length;
       } else if (!baseOverwrittenByDom?.has(item) && bk.length >= 12) {
-        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos, extractFencedCodeLanguages(item.text));
+        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos, buildBaseChromeSlots(item.text));
       }
       if (nextPos > pos) {
         lastStartPos = pos;
