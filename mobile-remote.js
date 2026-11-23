@@ -2055,33 +2055,188 @@ function decodeFileUriToPath(rawUri) {
   }
 }
 
-function matchWorkspaceToProjectId(traj, projectsMetaMap) {
+function isSyntheticProjectId(raw) {
+  const s = String(raw || '').trim();
+  return !s || s === 'default' || s === 'ungrouped' || s === 'pinned' || /^dom:/i.test(s) || /^name:/i.test(s);
+}
+
+function isSyntheticProjectName(raw) {
+  const s = String(raw || '').trim();
+  return !s || s === '默认项目' || s === '未归属项目' || s === '未命名项目';
+}
+
+function canonicalizeWorkspacePath(rawUriOrPath) {
+  const decoded = decodeFileUriToPath(rawUriOrPath);
+  if (!decoded) return '';
+  let norm = decoded;
+  try {
+    if (fs.existsSync(decoded)) {
+      norm = fs.realpathSync(decoded);
+    }
+  } catch {}
+  return norm.length > 1 ? norm.replace(/[\\/]+$/, '') : norm;
+}
+
+function extractTrajectoryWorkspacePaths(traj) {
   const meta = traj?.trajectoryMetadata || {};
-  const uris = [];
+  const primaryUris = [];
+  const gitUris = [];
   for (const ws of (Array.isArray(traj?.workspaces) ? traj.workspaces : [])) {
-    if (ws?.workspaceFolderAbsoluteUri) uris.push(ws.workspaceFolderAbsoluteUri);
-    if (ws?.gitRootAbsoluteUri) uris.push(ws.gitRootAbsoluteUri);
+    if (ws?.workspaceFolderAbsoluteUri) primaryUris.push(ws.workspaceFolderAbsoluteUri);
+    else if (ws?.folderUri) primaryUris.push(ws.folderUri);
+    else if (ws?.path) primaryUris.push(ws.path);
+    if (ws?.gitRootAbsoluteUri) gitUris.push(ws.gitRootAbsoluteUri);
   }
   for (const ws of (Array.isArray(meta.workspaces) ? meta.workspaces : [])) {
-    if (ws?.workspaceFolderAbsoluteUri) uris.push(ws.workspaceFolderAbsoluteUri);
-    if (ws?.gitRootAbsoluteUri) uris.push(ws.gitRootAbsoluteUri);
+    if (ws?.workspaceFolderAbsoluteUri) primaryUris.push(ws.workspaceFolderAbsoluteUri);
+    else if (ws?.folderUri) primaryUris.push(ws.folderUri);
+    else if (ws?.path) primaryUris.push(ws.path);
+    if (ws?.gitRootAbsoluteUri) gitUris.push(ws.gitRootAbsoluteUri);
   }
   for (const u of (Array.isArray(meta.workspaceUris) ? meta.workspaceUris : [])) {
-    uris.push(u);
+    if (u) primaryUris.push(u);
   }
+  const seen = new Set();
+  const out = [];
+  for (const uri of [...primaryUris, ...gitUris]) {
+    const p = canonicalizeWorkspacePath(uri);
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
 
-  for (const uri of uris) {
-    const wsPath = decodeFileUriToPath(uri);
-    if (!wsPath) continue;
-    for (const proj of projectsMetaMap.values()) {
-      for (const pPath of proj.workspacePaths) {
-        if (wsPath === pPath || wsPath.startsWith(pPath + path.sep) || pPath.startsWith(wsPath + path.sep)) {
-          return proj.id;
-        }
-      }
+function matchWorkspaceToProjectId(traj, projectsMetaMap, options = {}) {
+  if (!projectsMetaMap || typeof projectsMetaMap.values !== 'function') return '';
+  const trajPaths = extractTrajectoryWorkspacePaths(traj);
+  if (!trajPaths.length) return '';
+
+  const homeRaw = String(options.homeDir || os.homedir() || '').trim();
+  const homeNorm = homeRaw ? canonicalizeWorkspacePath(homeRaw) : '';
+
+  const normalizedProjects = [];
+  const pathOwnerCount = new Map();
+  const allDistinctProjPaths = new Set();
+
+  for (const proj of projectsMetaMap.values()) {
+    if (!proj || !proj.id) continue;
+    const rawList = Array.isArray(proj.workspacePaths) ? proj.workspacePaths : [];
+    const seen = new Set();
+    const normPaths = [];
+    for (const rp of rawList) {
+      const np = canonicalizeWorkspacePath(rp);
+      if (!np || seen.has(np)) continue;
+      seen.add(np);
+      normPaths.push(np);
+      allDistinctProjPaths.add(np);
+      pathOwnerCount.set(np, (pathOwnerCount.get(np) || 0) + 1);
+    }
+    if (normPaths.length) {
+      normalizedProjects.push({ proj, normPaths });
     }
   }
-  return '';
+  if (!normalizedProjects.length) return '';
+
+  // 识别宽泛父容器目录（如 ~/codebase、$HOME、/）：仅当它包含其他项目的子工作区目录时判定，允许精确等于该目录命中，禁止按子目录 startsWith 误抢其他子项目归属
+  const broadContainerPaths = new Set();
+  const allPathsArr = Array.from(allDistinctProjPaths);
+  for (const p of allPathsArr) {
+    if ((homeNorm && p === homeNorm) || path.dirname(p) === p) {
+      broadContainerPaths.add(p);
+      continue;
+    }
+    const pOwnerIds = new Set();
+    for (const np of normalizedProjects) {
+      if (np.normPaths.includes(p)) pOwnerIds.add(np.proj.id);
+    }
+    const childOtherProjIds = new Set();
+    for (const np of normalizedProjects) {
+      if (pOwnerIds.size === 1 && pOwnerIds.has(np.proj.id)) continue;
+      if (np.normPaths.some((other) => other !== p && other.startsWith(p + path.sep))) {
+        childOtherProjIds.add(np.proj.id);
+      }
+    }
+    if (childOtherProjIds.size >= 2) {
+      broadContainerPaths.add(p);
+    } else if (childOtherProjIds.size === 1) {
+      let hasGitMarker = false;
+      try { hasGitMarker = fs.existsSync(path.join(p, '.git')); } catch {}
+      if (!hasGitMarker) broadContainerPaths.add(p);
+    }
+  }
+
+  let best = null;
+  for (const { proj, normPaths } of normalizedProjects) {
+    let exclusiveExactMaxLen = 0;
+    let exclusiveSubMaxLen = 0;
+    let exclusiveMatchCount = 0;
+    let matchedProjPathsCount = 0;
+    let sharedExactHits = 0;
+    let sharedExactMaxLen = 0;
+
+    for (const pPath of normPaths) {
+      const ownerCount = pathOwnerCount.get(pPath) || 1;
+      const isBroad = broadContainerPaths.has(pPath);
+      let exactHit = false;
+      let subHit = false;
+      for (const wsPath of trajPaths) {
+        if (wsPath === pPath) {
+          exactHit = true;
+          break;
+        }
+        if (!isBroad && wsPath.startsWith(pPath + path.sep)) {
+          subHit = true;
+        }
+      }
+      if (!exactHit && !subHit) continue;
+      matchedProjPathsCount += 1;
+      if (ownerCount === 1) {
+        exclusiveMatchCount += 1;
+        if (exactHit) {
+          if (pPath.length > exclusiveExactMaxLen) exclusiveExactMaxLen = pPath.length;
+        } else if (pPath.length > exclusiveSubMaxLen) {
+          exclusiveSubMaxLen = pPath.length;
+        }
+      } else if (exactHit) {
+        sharedExactHits += 1;
+        if (pPath.length > sharedExactMaxLen) sharedExactMaxLen = pPath.length;
+      }
+    }
+
+    const fullSharedSetExactMatch = exclusiveMatchCount === 0 && sharedExactHits === normPaths.length && normPaths.length > 0;
+    if (exclusiveMatchCount === 0 && !fullSharedSetExactMatch) continue;
+
+    const candidate = {
+      id: proj.id,
+      hasExclusive: exclusiveMatchCount > 0 ? 1 : 0,
+      exclusiveExactMaxLen,
+      exclusiveSubMaxLen,
+      exclusiveMatchCount,
+      matchedProjPathsCount,
+      overlapRatio: matchedProjPathsCount / normPaths.length,
+      soleSharedExactMaxLen: fullSharedSetExactMatch ? sharedExactMaxLen : 0,
+      mtimeMs: Number(proj.mtimeMs) || 0
+    };
+
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+    const cmp =
+      (candidate.hasExclusive - best.hasExclusive) ||
+      (candidate.exclusiveExactMaxLen - best.exclusiveExactMaxLen) ||
+      (candidate.exclusiveSubMaxLen - best.exclusiveSubMaxLen) ||
+      (candidate.exclusiveMatchCount - best.exclusiveMatchCount) ||
+      (candidate.matchedProjPathsCount - best.matchedProjPathsCount) ||
+      (candidate.overlapRatio - best.overlapRatio) ||
+      (candidate.soleSharedExactMaxLen - best.soleSharedExactMaxLen) ||
+      (candidate.mtimeMs - best.mtimeMs) ||
+      best.id.localeCompare(candidate.id);
+    if (cmp > 0) best = candidate;
+  }
+
+  return best ? best.id : '';
 }
 
 function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
@@ -2537,7 +2692,7 @@ function createSessionCatalogStore() {
     for (const fp of (Array.isArray(snap.projects) ? snap.projects : [])) {
       const id = String(fp?.id || '').trim();
       const name = String(fp?.name || '').trim();
-      if (!id || !name || name === 'swarm/swarm_board' || excludedProjectIds.has(id)) continue;
+      if (!id || !name || isSyntheticProjectId(id) || isSyntheticProjectName(name) || name === 'swarm/swarm_board' || excludedProjectIds.has(id)) continue;
       if (!projectNameMap.has(id) || projectNameMap.get(id) === id) {
         projectNameMap.set(id, name);
       }
@@ -2652,12 +2807,19 @@ function createSessionCatalogStore() {
       const roll = subagentRollup.get(id);
       const isActive = Boolean((activeSessionId && id === activeSessionId) || sc?.active);
 
-      const snapPid = String(sc?.projectId || '').trim();
-      const trajPid = String(t?.trajectoryMetadata?.projectId || '').trim();
-      const wsPid = t ? matchWorkspaceToProjectId(t, projectsMeta) : '';
-      let projectId = (snapPid && snapPid !== 'ungrouped') ? snapPid : (trajPid || wsPid || String(prev?.projectId || '').trim());
-      if (projectId === 'outside-of-project' && !projectNameMap.has('outside-of-project')) {
-        projectNameMap.set('outside-of-project', '独立对话');
+      const rawSnapPid = String(sc?.projectId || '').trim();
+      const snapPid = !isSyntheticProjectId(rawSnapPid) ? rawSnapPid : '';
+      const rawTrajPid = String(t?.trajectoryMetadata?.projectId || '').trim();
+      const trajPid = !isSyntheticProjectId(rawTrajPid) ? rawTrajPid : '';
+      const wsPid = t ? matchWorkspaceToProjectId(t, projectsMeta, options) : '';
+      const isolatedWsPid = (!trajPid && !wsPid && isActive && Array.isArray(snap.isolatedWorkspaceUris) && snap.isolatedWorkspaceUris.length > 0)
+        ? matchWorkspaceToProjectId({ trajectoryMetadata: { workspaceUris: snap.isolatedWorkspaceUris } }, projectsMeta, options)
+        : '';
+      const rawPrevPid = String(prev?.projectId || '').trim();
+      const prevPid = !isSyntheticProjectId(rawPrevPid) ? rawPrevPid : '';
+      let projectId = trajPid || wsPid || isolatedWsPid || snapPid || prevPid;
+      if ((projectId === 'outside-of-project' || projectId === 'standalone') && !projectNameMap.has(projectId)) {
+        projectNameMap.set(projectId, '独立对话');
       }
       const projArchived = Boolean(projectId && archivedProjectIds?.has(projectId));
 
@@ -2709,10 +2871,17 @@ function createSessionCatalogStore() {
         snap = { ...snap, busy: false };
       }
 
+      const cleanScName = (!isSyntheticProjectName(sc?.projectName) && (!snapPid || snapPid === projectId))
+        ? String(sc.projectName).trim()
+        : '';
+      const cleanPrevName = (!isSyntheticProjectName(prev?.projectName) && prevPid && prevPid === projectId)
+        ? String(prev.projectName).trim()
+        : '';
       const projectName = String(
+        projectsMeta.get(projectId)?.name ||
         projectNameMap.get(projectId) ||
-        sc?.projectName ||
-        prev?.projectName ||
+        cleanScName ||
+        cleanPrevName ||
         (projectId ? projectId : '未归属项目')
       );
 
@@ -2813,26 +2982,61 @@ function createSessionCatalogStore() {
 
     // 5. 基于全量未归档会话聚合并排序多项目列表（包含空项目，过滤内部空项目）
     const activeConvObj = allActiveConvs.find((c) => c.active);
-    const currentProjectId = String(snap.currentProjectId || activeConvObj?.projectId || '').trim();
+    const cleanSnapCurrentPid = isSyntheticProjectId(snap.currentProjectId) ? '' : String(snap.currentProjectId || '').trim();
+    const cleanActiveConvPid = (activeConvObj && !isSyntheticProjectId(activeConvObj.projectId))
+      ? String(activeConvObj.projectId).trim()
+      : '';
+    const isolatedFallbackWsPid = (!cleanActiveConvPid && !snap.isNewConversation && Array.isArray(snap.isolatedWorkspaceUris) && snap.isolatedWorkspaceUris.length > 0)
+      ? matchWorkspaceToProjectId({ trajectoryMetadata: { workspaceUris: snap.isolatedWorkspaceUris } }, projectsMeta, options)
+      : '';
+    const currentProjectId = snap.isNewConversation
+      ? (cleanSnapCurrentPid || cleanActiveConvPid || '')
+      : (cleanActiveConvPid || isolatedFallbackWsPid || (activeConvObj ? (activeConvObj.projectId || '') : cleanSnapCurrentPid));
     const projectStats = new Map();
 
+    const sanitizeProjectWorkspaceList = (rawList) => {
+      const seen = new Set();
+      const out = [];
+      for (const raw of (Array.isArray(rawList) ? rawList : [])) {
+        const p = canonicalizeWorkspacePath(raw);
+        if (!p || seen.has(p)) continue;
+        if (SENSITIVE_MEDIA_DIR_RE.test(p) || isSensitiveHostPath(p, options)) continue;
+        seen.add(p);
+        out.push(p);
+      }
+      return out;
+    };
+
     const ensureProjBucket = (pid, name, seedLastActiveAt = 0, rawPath = '') => {
-      const candidatePath = String(rawPath || projectsMeta.get(pid)?.primaryPath || '').trim();
-      const safePath = candidatePath && !isSensitiveHostPath(candidatePath) ? candidatePath : '';
+      const metaObj = projectsMeta.get(pid);
+      const rawCandidates = [
+        ...(Array.isArray(metaObj?.workspacePaths) ? metaObj.workspacePaths : []),
+        ...(rawPath ? [rawPath] : [])
+      ];
+      const safePaths = sanitizeProjectWorkspaceList(rawCandidates);
+      const safePrimary = safePaths[0] || '';
       if (!projectStats.has(pid)) {
         projectStats.set(pid, {
           id: pid,
           name: name || pid,
-          ...(safePath ? { path: safePath, workspacePath: safePath } : {}),
+          ...(safePrimary ? { path: safePrimary, workspacePath: safePrimary } : {}),
+          workspacePaths: safePaths,
           conversationCount: 0,
           runningCount: 0,
           waitingCount: 0,
           unreadCount: 0,
           lastActiveAt: Number(seedLastActiveAt) || 0
         });
-      } else if (safePath && !projectStats.get(pid).path) {
-        projectStats.get(pid).path = safePath;
-        projectStats.get(pid).workspacePath = safePath;
+      } else {
+        const existing = projectStats.get(pid);
+        if (safePaths.length > 0) {
+          const merged = Array.from(new Set([...(existing.workspacePaths || []), ...safePaths]));
+          existing.workspacePaths = merged;
+          if (!existing.path && merged[0]) {
+            existing.path = merged[0];
+            existing.workspacePath = merged[0];
+          }
+        }
       }
       return projectStats.get(pid);
     };
@@ -2858,7 +3062,7 @@ function createSessionCatalogStore() {
       .map((p) => ({
         ...p,
         isEmpty: p.conversationCount === 0,
-        active: Boolean(currentProjectId && p.id === currentProjectId)
+        active: Boolean(currentProjectId && !INTERNAL_EMPTY_PROJECT_IDS.has(currentProjectId) && currentProjectId !== 'ungrouped' && p.id === currentProjectId)
       }))
       .sort((a, b) => {
         if ((a.id === 'ungrouped') !== (b.id === 'ungrouped')) {
@@ -2889,23 +3093,52 @@ function createSessionCatalogStore() {
       outputConvs = allActiveConvs.filter((c) => picked.has(c.id));
     }
 
-    const currentProj = projects.find((p) => p.id === currentProjectId);
-    const currentProjectName = String(snap.currentProjectName || currentProj?.name || '').trim();
-    const rawCurrentPath = String(snap.currentProjectPath || currentProj?.path || '').trim();
-    const currentProjectPath = rawCurrentPath && !isSensitiveHostPath(rawCurrentPath) ? rawCurrentPath : '';
+    const isNonProjectCurrent = !currentProjectId || currentProjectId === 'ungrouped' || INTERNAL_EMPTY_PROJECT_IDS.has(currentProjectId);
+    const currentProj = !isNonProjectCurrent ? projects.find((p) => p.id === currentProjectId) : null;
+    const cleanSnapCurrentName = (!isSyntheticProjectName(snap.currentProjectName) && snap.currentProjectName !== '独立对话')
+      ? String(snap.currentProjectName).trim()
+      : '';
+    const currentProjectName = isNonProjectCurrent
+      ? ''
+      : String(
+          currentProj?.name ||
+          projectsMeta.get(currentProjectId)?.name ||
+          (cleanSnapCurrentPid === currentProjectId ? cleanSnapCurrentName : '') ||
+          (!currentProj && !projectsMeta.has(currentProjectId) ? cleanSnapCurrentName : '') ||
+          ''
+        ).trim();
     const activeTraj = activeSessionId ? summaries[activeSessionId] : null;
+    let currentWorkspacePaths = [];
+    if (!isNonProjectCurrent) {
+      if (Array.isArray(currentProj?.workspacePaths) && currentProj.workspacePaths.length > 0) {
+        currentWorkspacePaths = currentProj.workspacePaths.slice();
+      } else if (Array.isArray(projectsMeta.get(currentProjectId)?.workspacePaths) && projectsMeta.get(currentProjectId).workspacePaths.length > 0) {
+        currentWorkspacePaths = sanitizeProjectWorkspaceList(projectsMeta.get(currentProjectId).workspacePaths);
+      } else if (snap.currentProjectPath && (!cleanSnapCurrentPid || cleanSnapCurrentPid === currentProjectId)) {
+        currentWorkspacePaths = sanitizeProjectWorkspaceList([snap.currentProjectPath]);
+      }
+    }
+    if (!currentWorkspacePaths.length && !snap.isNewConversation && activeTraj) {
+      currentWorkspacePaths = sanitizeProjectWorkspaceList(extractTrajectoryWorkspacePaths(activeTraj));
+    }
+    if (!currentWorkspacePaths.length && !snap.isNewConversation && Array.isArray(snap.isolatedWorkspaceUris) && snap.isolatedWorkspaceUris.length > 0) {
+      currentWorkspacePaths = sanitizeProjectWorkspaceList(snap.isolatedWorkspaceUris);
+    }
+    const currentProjectPath = currentWorkspacePaths[0] || '';
     const _activeTrajSig = activeTraj
       ? `${activeTraj.status || ''}|${activeTraj.stepCount ?? ''}|${activeTraj.lastModifiedTime || ''}`
       : '';
+    const { currentProjectPath: _dropPrevProjPath, isolatedWorkspaceUris: _dropIsoWs, ...snapBase } = snap;
 
     return {
-      ...snap,
+      ...snapBase,
       serverBootId: REMOTE_SERVER_BOOT_ID,
       serverBootAt: REMOTE_SERVER_BOOT_AT,
       snapSeq: ++remoteServerSnapSeq,
       currentProjectId,
       currentProjectName,
       ...(currentProjectPath ? { currentProjectPath } : {}),
+      currentWorkspacePaths,
       catalogRevision,
       totalConversations: allActiveConvs.length,
       hasMoreConversations: outputConvs.length < allActiveConvs.length,
@@ -3937,8 +4170,63 @@ function listSafeProjectTree(rawDir, options = {}) {
   if (!realRoots.length) {
     return { ok: false, status: 403, error: '当前暂无已注册项目工作区，已禁止默认浏览系统主目录' };
   }
-  const candidate = normalizeLocalFileUriToPath(rawDir || '') || realRoots[0];
-  if (!candidate || !path.isAbsolute(candidate)) {
+
+  const scoped = options.scoped === true || Array.isArray(options.projectRoots);
+  const projectRoots = [];
+  if (Array.isArray(options.projectRoots)) {
+    for (const pr of options.projectRoots) {
+      const cleanPr = normalizeLocalFileUriToPath(pr);
+      if (!cleanPr || !path.isAbsolute(cleanPr)) continue;
+      try {
+        const realPr = fs.realpathSync(cleanPr);
+        if (!realRoots.some((root) => realPr === root || realPr.startsWith(root + path.sep))) continue;
+        if (SENSITIVE_MEDIA_DIR_RE.test(realPr) || isSensitiveHostPath(realPr, options)) continue;
+        if (fs.statSync(realPr).isDirectory() && !projectRoots.includes(realPr)) {
+          projectRoots.push(realPr);
+        }
+      } catch {}
+    }
+  }
+
+  let explicitWorkspaceRoot = '';
+  if (options.workspaceRoot) {
+    const cleanWs = normalizeLocalFileUriToPath(options.workspaceRoot);
+    if (cleanWs && path.isAbsolute(cleanWs)) {
+      try {
+        const realWs = fs.realpathSync(cleanWs);
+        const wsAllowed = scoped
+          ? projectRoots.some((r) => realWs === r)
+          : realRoots.some((r) => realWs === r || realWs.startsWith(r + path.sep));
+        if (wsAllowed && !SENSITIVE_MEDIA_DIR_RE.test(realWs) && !isSensitiveHostPath(realWs, options)) {
+          explicitWorkspaceRoot = realWs;
+        }
+      } catch {}
+    }
+  }
+
+  const trimmedRawDir = normalizeLocalFileUriToPath(rawDir || '');
+  if (scoped && !projectRoots.length) {
+    if (trimmedRawDir) {
+      return { ok: false, status: 403, error: '当前对话未绑定项目工作区目录，已拦截跨项目目录访问' };
+    }
+    return {
+      ok: true,
+      emptyProject: true,
+      workspaceRoots: [],
+      activeRoot: '',
+      dir: '',
+      parentDir: '',
+      entries: [],
+      truncated: false
+    };
+  }
+
+  // 严禁在 rawDir 为空时回退至全局 realRoots[0]（防止跨项目串台到排第一的其他仓库）
+  const candidate = trimmedRawDir || (scoped ? (explicitWorkspaceRoot || projectRoots[0] || '') : '');
+  if (!candidate) {
+    return { ok: false, status: 400, error: '未指定要浏览的项目工作区目录' };
+  }
+  if (!path.isAbsolute(candidate)) {
     return { ok: false, status: 400, error: '无效的目录路径' };
   }
   let realDir = '';
@@ -3950,6 +4238,12 @@ function listSafeProjectTree(rawDir, options = {}) {
   const inAllowedRoot = realRoots.some((root) => realDir === root || realDir.startsWith(root + path.sep));
   if (!inAllowedRoot) {
     return { ok: false, status: 403, error: '禁止浏览受限目录之外的路径' };
+  }
+  if (scoped) {
+    const inProjectRoot = projectRoots.some((root) => realDir === root || realDir.startsWith(root + path.sep));
+    if (!inProjectRoot) {
+      return { ok: false, status: 403, error: '禁止跨项目浏览非当前会话所属的工作区目录' };
+    }
   }
   if (SENSITIVE_MEDIA_DIR_RE.test(realDir) || isSensitiveHostPath(realDir, options)) {
     return { ok: false, status: 403, error: '禁止浏览敏感密钥或凭证目录' };
@@ -3964,6 +4258,19 @@ function listSafeProjectTree(rawDir, options = {}) {
     return { ok: false, status: 400, error: '目标不是目录' };
   }
 
+  // 确定当前所选工作区根目录边界，严格锁死「↑ 上级」导航不得越出所选工作区根（即便父目录如 ~/codebase 也在全局白名单中）
+  let activeRoot = '';
+  if (explicitWorkspaceRoot && (realDir === explicitWorkspaceRoot || realDir.startsWith(explicitWorkspaceRoot + path.sep))) {
+    activeRoot = explicitWorkspaceRoot;
+  } else {
+    const rootPool = scoped ? projectRoots : realRoots;
+    for (const root of rootPool) {
+      if (realDir === root || realDir.startsWith(root + path.sep)) {
+        if (root.length > activeRoot.length) activeRoot = root;
+      }
+    }
+  }
+
   let dirents = [];
   try {
     dirents = fs.readdirSync(realDir, { withFileTypes: true });
@@ -3972,6 +4279,7 @@ function listSafeProjectTree(rawDir, options = {}) {
   }
 
   const entries = [];
+  const boundaryPool = scoped ? projectRoots : realRoots;
   for (const d of dirents) {
     const name = String(d.name || '');
     if (!name) continue;
@@ -3984,7 +4292,8 @@ function listSafeProjectTree(rawDir, options = {}) {
     } catch {
       continue;
     }
-    const targetInAllowedRoot = realRoots.some((root) => realTarget === root || realTarget.startsWith(root + path.sep));
+    const targetInAllowedRoot = realRoots.some((root) => realTarget === root || realTarget.startsWith(root + path.sep))
+      && boundaryPool.some((root) => realTarget === root || realTarget.startsWith(root + path.sep));
     if (!targetInAllowedRoot) continue;
     if (SENSITIVE_MEDIA_DIR_RE.test(realTarget) || isSensitiveHostPath(realTarget, options)) continue;
     const isDir = targetStat.isDirectory();
@@ -4003,11 +4312,16 @@ function listSafeProjectTree(rawDir, options = {}) {
   }
   entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : (a.isDir ? -1 : 1)));
   const parentCandidate = path.dirname(realDir);
-  const canGoUp = parentCandidate !== realDir
-    && realRoots.some((root) => parentCandidate === root || parentCandidate.startsWith(root + path.sep));
+  const canGoUp = parentCandidate !== realDir && (
+    activeRoot
+      ? (parentCandidate === activeRoot || parentCandidate.startsWith(activeRoot + path.sep))
+      : realRoots.some((root) => parentCandidate === root || parentCandidate.startsWith(root + path.sep))
+  );
   return {
     ok: true,
     dir: realDir,
+    activeRoot,
+    ...(scoped ? { workspaceRoots: projectRoots } : {}),
     parentDir: canGoUp ? parentCandidate : '',
     entries: entries.slice(0, 200),
     truncated: entries.length > 200
@@ -7952,6 +8266,14 @@ function buildMobileAppHtml() {
       background:var(--surface-subtle);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;
     }
     .fv-tab.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .fv-ws-bar{display:flex;align-items:center;gap:6px;margin-bottom:8px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+    .fv-ws-bar::-webkit-scrollbar{display:none}
+    .fv-ws-chip{
+      appearance:none;min-height:30px;padding:4px 10px;border-radius:999px;border:1px solid var(--border);
+      background:var(--surface-subtle);color:var(--muted);font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0;
+    }
+    .fv-ws-chip.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .fv-row-sub{display:block;font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
     .fv-body{flex:1 1 auto;min-height:0;overflow:auto;padding:10px 12px;-webkit-overflow-scrolling:touch}
     .fv-path-bar{
       display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:11.5px;color:var(--muted);
@@ -10794,9 +11116,16 @@ function buildMobileAppHtml() {
         if (selectedConversationId) sessionStorage.setItem(CONV_ID_SESSION_KEY, selectedConversationId);
         else sessionStorage.removeItem(CONV_ID_SESSION_KEY);
       } catch {}
-      if (oldId !== selectedConversationId && typeof ta !== 'undefined' && ta) {
-        ta.value = loadDraftForConv(selectedConversationId);
-        if (typeof autoGrow === 'function') autoGrow();
+      if (oldId !== selectedConversationId) {
+        if (typeof fvState === 'object' && fvState) {
+          fvState.contextKey = '';
+          fvState.curDir = '';
+          fvState.activeRoot = '';
+        }
+        if (typeof ta !== 'undefined' && ta) {
+          ta.value = loadDraftForConv(selectedConversationId);
+          if (typeof autoGrow === 'function') autoGrow();
+        }
       }
     }
 
@@ -11131,7 +11460,7 @@ function buildMobileAppHtml() {
 
     function isNonProjectBucket(raw) {
       const pid = String(raw || '').trim();
-      return !pid || pid === 'ungrouped' || pid === 'outside-of-project' || pid === 'standalone';
+      return !pid || pid === 'ungrouped' || pid === 'outside-of-project' || pid === 'standalone' || pid === 'default' || pid === 'pinned' || /^dom:/i.test(pid) || /^name:/i.test(pid);
     }
 
     function normalizeProjectId(raw) {
@@ -11183,28 +11512,40 @@ function buildMobileAppHtml() {
       if (snap.isNewConversation) {
         return getEffectiveSelectedProject(snap).name || '';
       }
+      const isPlaceholderLabel = (v) => {
+        const s = String(v || '').trim();
+        return !s || s === '默认项目' || s === '未归属项目' || s === '独立对话' || s === '未命名项目';
+      };
+      const rawCurPid = String(snap.currentProjectId || '').trim();
+      if (rawCurPid === 'ungrouped' || rawCurPid === 'outside-of-project' || rawCurPid === 'standalone') {
+        return '';
+      }
       const projects = Array.isArray(snap.projects) ? snap.projects : [];
       const curPid = normalizeProjectId(snap.currentProjectId);
       const directName = String(snap.currentProjectName || '').trim();
-      if (directName && directName !== '未归属项目') return directName;
+      if (!isPlaceholderLabel(directName)) return directName;
       if (curPid) {
-        const matchedProj = projects.find((p) => p && p.id === curPid && p.name);
+        const matchedProj = projects.find((p) => p && p.id === curPid && !isPlaceholderLabel(p.name));
         if (matchedProj?.name) return String(matchedProj.name).trim();
       }
       const activeCid = String(snap.activeConversationId || snap.sessionId || '').trim();
       if (activeCid && Array.isArray(snap.conversations)) {
         const matchedConv = snap.conversations.find((c) => c && c.id === activeCid);
         if (matchedConv) {
+          const rawConvPid = String(matchedConv.projectId || '').trim();
+          if (rawConvPid === 'ungrouped' || rawConvPid === 'outside-of-project' || rawConvPid === 'standalone') {
+            return '';
+          }
           const convProjName = String(matchedConv.projectName || '').trim();
-          if (convProjName && convProjName !== '未归属项目') return convProjName;
+          if (!isPlaceholderLabel(convProjName)) return convProjName;
           const convPid = normalizeProjectId(matchedConv.projectId);
           if (convPid) {
-            const pByConv = projects.find((p) => p && p.id === convPid && p.name);
+            const pByConv = projects.find((p) => p && p.id === convPid && !isPlaceholderLabel(p.name));
             if (pByConv?.name) return String(pByConv.name).trim();
           }
         }
       }
-      return directName;
+      return '';
     }
 
     function syncTopbarProjectBadge(projectName) {
@@ -11317,6 +11658,12 @@ function buildMobileAppHtml() {
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
       syncTopbarProjectBadge(resolveConversationProjectName(snap));
+      if (typeof ensureFvContextFresh === 'function' && ensureFvContextFresh()) {
+        const fvBd = $('file-viewer-backdrop');
+        if (fvBd && !fvBd.hidden && fvState.tab === 'tree' && !fvState.viewingFile) {
+          void loadProjectTreeView('');
+        }
+      }
       $('sub-meta').textContent = snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已就绪'));
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
@@ -12485,7 +12832,8 @@ function buildMobileAppHtml() {
       const map = new Map();
       for (const c of convs) {
         if (!c || !c.id) continue;
-        const pName = String(c.project || '默认项目').trim() || '默认项目';
+        const rawProjLabel = String(c.projectName || c.project || '').trim();
+        const pName = (!rawProjLabel || rawProjLabel === '默认项目') ? '未归属项目' : rawProjLabel;
         if (!map.has(pName)) {
           map.set(pName, {
             id: '',
@@ -13502,7 +13850,7 @@ function buildMobileAppHtml() {
       }
     });
 
-    const fvState = { tab: 'tree', curDir: '', viewingFile: false, returnTab: 'tree' };
+    const fvState = { tab: 'tree', curDir: '', activeRoot: '', showRootList: false, contextKey: '', viewingFile: false, returnTab: 'tree' };
     function closeFileViewerModal() {
       const bd = $('file-viewer-backdrop');
       if (bd) bd.hidden = true;
@@ -13515,13 +13863,103 @@ function buildMobileAppHtml() {
       $('fv-tab-tree')?.classList.toggle('active', fvState.tab === 'tree');
       $('fv-tab-changes')?.classList.toggle('active', fvState.tab === 'changes');
     }
-    function resolveCurrentProjectRootDir() {
+    function trimTrailingSlashes(raw) {
+      let s = String(raw || '').trim();
+      while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1);
+      return s;
+    }
+    function resolveCurrentProjectWorkspacePaths() {
       const snap = latestSnap;
-      if (!snap) return '';
+      if (!snap) return [];
+      const rawCurPid = String(snap.currentProjectId || '').trim();
+      if (rawCurPid === 'ungrouped' || rawCurPid === 'outside-of-project' || rawCurPid === 'standalone') {
+        return Array.isArray(snap.currentWorkspacePaths)
+          ? snap.currentWorkspacePaths.map((p) => trimTrailingSlashes(p)).filter(Boolean)
+          : [];
+      }
       const pid = normalizeProjectId(snap.currentProjectId);
       const projs = Array.isArray(snap.projects) ? snap.projects : [];
       const matched = pid ? projs.find((p) => p && p.id === pid) : null;
-      return String(matched?.path || matched?.workspacePath || snap.currentProjectPath || '').trim();
+      const rawList = [];
+      if (Array.isArray(snap.currentWorkspacePaths) && snap.currentWorkspacePaths.length > 0) {
+        rawList.push(...snap.currentWorkspacePaths);
+      } else if (Array.isArray(matched?.workspacePaths) && matched.workspacePaths.length > 0) {
+        rawList.push(...matched.workspacePaths);
+      } else if (matched?.path || matched?.workspacePath) {
+        rawList.push(matched.path || matched.workspacePath);
+      } else if (pid && snap.currentProjectPath) {
+        rawList.push(snap.currentProjectPath);
+      }
+      const seen = new Set();
+      const out = [];
+      for (const item of rawList) {
+        const clean = trimTrailingSlashes(item);
+        if (!clean || seen.has(clean)) continue;
+        seen.add(clean);
+        out.push(clean);
+      }
+      return out;
+    }
+    function resolveCurrentProjectRootDir() {
+      const list = resolveCurrentProjectWorkspacePaths();
+      return list[0] || '';
+    }
+    function isPathInsideWorkspaceRoot(targetPath, rootPath) {
+      const t = trimTrailingSlashes(targetPath);
+      const r = trimTrailingSlashes(rootPath);
+      if (!t || !r) return false;
+      return t === r || t.startsWith(r + '/');
+    }
+    function computeFvContextKey() {
+      const cid = String(latestSnap?.activeConversationId || latestSnap?.sessionId || selectedConversationId || '').trim();
+      const pid = String(latestSnap?.currentProjectId || '').trim();
+      const wsSig = resolveCurrentProjectWorkspacePaths().join(';');
+      return cid + '|' + pid + '|' + wsSig;
+    }
+    function resetFvDirectoryContext(forceOverviewForMulti = false) {
+      const wsPaths = resolveCurrentProjectWorkspacePaths();
+      fvState.contextKey = computeFvContextKey();
+      if (wsPaths.length === 1) {
+        fvState.activeRoot = wsPaths[0];
+        fvState.curDir = wsPaths[0];
+        fvState.showRootList = false;
+      } else if (wsPaths.length > 1) {
+        fvState.activeRoot = '';
+        fvState.curDir = '';
+        fvState.showRootList = true;
+      } else {
+        fvState.activeRoot = '';
+        fvState.curDir = '';
+        fvState.showRootList = false;
+      }
+      if (forceOverviewForMulti && wsPaths.length > 1) {
+        fvState.showRootList = true;
+        fvState.curDir = '';
+        fvState.activeRoot = '';
+      }
+    }
+    function ensureFvContextFresh() {
+      const nextKey = computeFvContextKey();
+      const wsPaths = resolveCurrentProjectWorkspacePaths();
+      const curValid = Boolean(fvState.curDir && wsPaths.some((r) => isPathInsideWorkspaceRoot(fvState.curDir, r)));
+      if (fvState.contextKey !== nextKey || (fvState.curDir && !curValid)) {
+        resetFvDirectoryContext(false);
+        return true;
+      }
+      return false;
+    }
+    function formatWorkspaceChipLabel(wsPath, allPaths) {
+      const clean = trimTrailingSlashes(wsPath);
+      const parts = clean.split('/').filter(Boolean);
+      const base = parts[parts.length - 1] || clean;
+      const dupCount = (allPaths || []).filter((p) => {
+        const sp = trimTrailingSlashes(p).split('/').filter(Boolean);
+        return (sp[sp.length - 1] || p) === base;
+      }).length;
+      if (dupCount > 1 && parts.length >= 2) {
+        return parts[parts.length - 2] + '/' + base;
+      }
+      return base;
     }
     function renderCodeWithLineNumbers(text, hlLine) {
       const lines = String(text || '').split(/\\r?\\n/);
@@ -13593,16 +14031,84 @@ function buildMobileAppHtml() {
         showFileErr(err?.message);
       }
     }
-    async function loadProjectTreeView(targetDir) {
+    function renderWorkspaceRootsOverview(wsPaths) {
       const body = $('fv-body');
       const title = $('fv-title');
       if (!body) return;
       fvState.tab = 'tree';
       fvState.viewingFile = false;
+      fvState.showRootList = true;
+      fvState.curDir = '';
+      fvState.activeRoot = '';
       syncFvChrome();
-      if (title) title.textContent = '项目文件';
+      const projLabel = resolveConversationProjectName(latestSnap);
+      if (title) title.textContent = projLabel ? ('项目文件 · ' + projLabel) : '项目文件';
+      const rows = wsPaths.map((wp) => {
+        const shortName = formatWorkspaceChipLabel(wp, wsPaths);
+        return '<button class="fv-row fv-ws-root-row" type="button" data-ws-root="' + esc(wp) + '">'
+          + '<span class="fv-row-name">📁 ' + esc(shortName) + '<span class="fv-row-sub">' + esc(wp) + '</span></span>'
+          + '<span class="fv-row-meta">进入 ›</span>'
+          + '</button>';
+      }).join('');
+      body.innerHTML = '<div class="fv-path-bar"><span>该项目共挂载 ' + wsPaths.length + ' 个工作区文件夹，请选择要浏览的目录</span></div>'
+        + '<div class="fv-list">' + rows + '</div>';
+      body.querySelectorAll('.fv-ws-root-row').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const root = btn.getAttribute('data-ws-root') || btn.dataset?.wsRoot || '';
+          if (!root) return;
+          fvState.activeRoot = root;
+          fvState.curDir = root;
+          fvState.showRootList = false;
+          void loadProjectTreeView(root, { workspaceRoot: root });
+        });
+      });
+    }
+    async function loadProjectTreeView(targetDir, navOpts = {}) {
+      const body = $('fv-body');
+      const title = $('fv-title');
+      if (!body) return;
+      ensureFvContextFresh();
+      fvState.tab = 'tree';
+      fvState.viewingFile = false;
+      syncFvChrome();
+      const projLabel = resolveConversationProjectName(latestSnap);
+      if (title) title.textContent = projLabel ? ('项目文件 · ' + projLabel) : '项目文件';
+
+      const wsPaths = resolveCurrentProjectWorkspacePaths();
+      if (!targetDir && wsPaths.length === 0) {
+        fvState.curDir = '';
+        fvState.activeRoot = '';
+        body.innerHTML = renderPanelStateHtml({
+          icon: EMPTY_FOLDER_ICON_SVG,
+          compact: true,
+          title: '当前对话未关联项目文件夹',
+          desc: '该对话不属于任何本地项目目录，或所属项目尚未挂载工作区文件夹'
+        });
+        return;
+      }
+      if (!targetDir && wsPaths.length > 1 && (fvState.showRootList || !fvState.curDir)) {
+        renderWorkspaceRootsOverview(wsPaths);
+        return;
+      }
+
       body.innerHTML = renderSkeletonRowsHtml(6);
-      const dirParam = targetDir || fvState.curDir || resolveCurrentProjectRootDir();
+      const dirParam = targetDir || fvState.curDir || (wsPaths.length === 1 ? wsPaths[0] : '');
+      let matchedRoot = String(navOpts.workspaceRoot || '').trim();
+      if (!matchedRoot) {
+        for (const r of wsPaths) {
+          if (isPathInsideWorkspaceRoot(dirParam, r) && r.length > matchedRoot.length) {
+            matchedRoot = r;
+          }
+        }
+      }
+      if (!matchedRoot && fvState.activeRoot && isPathInsideWorkspaceRoot(dirParam, fvState.activeRoot)) {
+        matchedRoot = fvState.activeRoot;
+      }
+      if (matchedRoot) {
+        fvState.activeRoot = matchedRoot;
+        fvState.showRootList = false;
+      }
+
       const showTreeErr = (errMsg) => {
         body.innerHTML = renderPanelStateHtml({
           isError: true,
@@ -13612,18 +14118,56 @@ function buildMobileAppHtml() {
           actionLabel: '重试加载'
         });
         const retryBtn = $('fv-tree-retry');
-        if (retryBtn) retryBtn.onclick = () => { void loadProjectTreeView(targetDir); };
+        if (retryBtn) retryBtn.onclick = () => { void loadProjectTreeView(targetDir, navOpts); };
       };
       try {
-        const qs = dirParam ? ('?dir=' + encodeURIComponent(dirParam)) : '';
+        const qParts = [];
+        if (dirParam) qParts.push('dir=' + encodeURIComponent(dirParam));
+        const cid = String(latestSnap?.activeConversationId || latestSnap?.sessionId || selectedConversationId || '').trim();
+        const rawPid = String(latestSnap?.currentProjectId || '').trim();
+        if (cid) qParts.push('conversationId=' + encodeURIComponent(cid));
+        if (rawPid) qParts.push('projectId=' + encodeURIComponent(rawPid));
+        if (matchedRoot) qParts.push('workspaceRoot=' + encodeURIComponent(matchedRoot));
+        const qs = qParts.length ? ('?' + qParts.join('&')) : '';
         const res = await fetchWithTimeout((apiBase || '') + '/api/project-tree' + qs, { headers: authHeaders(), cache: 'no-store' }, 6000);
         const data = await res.json().catch(() => null);
         if (!res.ok || !data?.ok) {
           showTreeErr(data?.error || ('HTTP ' + res.status));
           return;
         }
+        if (data.emptyProject) {
+          fvState.curDir = '';
+          fvState.activeRoot = '';
+          body.innerHTML = renderPanelStateHtml({
+            icon: EMPTY_FOLDER_ICON_SVG,
+            compact: true,
+            title: '当前对话未关联项目文件夹',
+            desc: '该对话不属于任何本地项目目录，或所属项目尚未挂载工作区文件夹'
+          });
+          return;
+        }
         fvState.curDir = data.dir || '';
-        const upBtn = data.parentDir ? '<button class="fv-up-btn" id="fv-tree-up" type="button">↑ 上级</button>' : '';
+        const effectiveRoots = (Array.isArray(data.workspaceRoots) && data.workspaceRoots.length > 0)
+          ? data.workspaceRoots
+          : wsPaths;
+        const effectiveActiveRoot = String(data.activeRoot || fvState.activeRoot || '').trim();
+        if (effectiveActiveRoot) fvState.activeRoot = effectiveActiveRoot;
+
+        const safeParentDir = (data.parentDir && (!effectiveActiveRoot || isPathInsideWorkspaceRoot(data.parentDir, effectiveActiveRoot)))
+          ? data.parentDir
+          : '';
+        const upBtn = safeParentDir ? '<button class="fv-up-btn" id="fv-tree-up" type="button">↑ 上级</button>' : '';
+        const wsBarHtml = effectiveRoots.length > 1
+          ? ('<div class="fv-ws-bar">'
+            + '<button class="fv-ws-chip" id="fv-ws-all-btn" type="button">全部目录 (' + effectiveRoots.length + ')</button>'
+            + effectiveRoots.map((wr) => {
+              const isAct = effectiveActiveRoot ? (wr === effectiveActiveRoot) : isPathInsideWorkspaceRoot(fvState.curDir, wr);
+              return '<button class="fv-ws-chip fv-ws-switch' + (isAct ? ' active' : '') + '" type="button" data-ws-root="' + esc(wr) + '" title="' + esc(wr) + '">'
+                + '📁 ' + esc(formatWorkspaceChipLabel(wr, effectiveRoots))
+                + '</button>';
+            }).join('')
+            + '</div>')
+          : '';
         const rows = (data.entries || []).map((ent) =>
           '<button class="fv-row" type="button" data-is-dir="' + (ent.isDir ? '1' : '0') + '" data-path="' + esc(ent.path) + '">'
           + '<span class="fv-row-name">' + (ent.isDir ? '📁 ' : '📄 ') + esc(ent.name) + '</span>'
@@ -13635,20 +14179,35 @@ function buildMobileAppHtml() {
           compact: true,
           title: '当前目录为空',
           desc: '该文件夹下暂无文件或子目录',
-          actionId: data.parentDir ? 'fv-empty-up-btn' : '',
-          actionLabel: data.parentDir ? '返回上级目录' : ''
+          actionId: safeParentDir ? 'fv-empty-up-btn' : '',
+          actionLabel: safeParentDir ? '返回上级目录' : ''
         });
-        body.innerHTML = '<div class="fv-path-bar">' + upBtn + '<span>' + esc(data.dir || '') + '</span></div>'
+        body.innerHTML = wsBarHtml
+          + '<div class="fv-path-bar">' + upBtn + '<span>' + esc(data.dir || '') + '</span></div>'
           + '<div class="fv-list">' + (rows || emptyDirHtml) + '</div>';
-        $('fv-tree-up')?.addEventListener('click', () => { void loadProjectTreeView(data.parentDir); });
-        $('fv-empty-up-btn')?.addEventListener('click', () => { void loadProjectTreeView(data.parentDir); });
+        $('fv-ws-all-btn')?.addEventListener('click', () => {
+          renderWorkspaceRootsOverview(effectiveRoots);
+        });
+        body.querySelectorAll('.fv-ws-switch').forEach((chip) => {
+          chip.addEventListener('click', () => {
+            const root = chip.getAttribute('data-ws-root') || chip.dataset?.wsRoot || '';
+            if (!root) return;
+            fvState.activeRoot = root;
+            fvState.curDir = root;
+            fvState.showRootList = false;
+            void loadProjectTreeView(root, { workspaceRoot: root });
+          });
+        });
+        $('fv-tree-up')?.addEventListener('click', () => { void loadProjectTreeView(safeParentDir, { workspaceRoot: effectiveActiveRoot }); });
+        $('fv-empty-up-btn')?.addEventListener('click', () => { void loadProjectTreeView(safeParentDir, { workspaceRoot: effectiveActiveRoot }); });
         body.querySelectorAll('.fv-row').forEach((row) => {
-          row.onclick = () => {
-            const p = row.dataset.path;
+          row.addEventListener('click', () => {
+            const p = row.getAttribute('data-path') || row.dataset?.path || '';
             if (!p) return;
-            if (row.dataset.isDir === '1') void loadProjectTreeView(p);
+            const isDir = (row.getAttribute('data-is-dir') || row.dataset?.isDir) === '1';
+            if (isDir) void loadProjectTreeView(p, { workspaceRoot: effectiveActiveRoot });
             else void openFilePreviewModal(p, 0);
-          };
+          });
         });
       } catch (err) {
         showTreeErr(err?.message);
@@ -13744,8 +14303,8 @@ function buildMobileAppHtml() {
       const bd = $('file-viewer-backdrop');
       if (!bd) return;
       bd.hidden = false;
-      fvState.curDir = resolveCurrentProjectRootDir() || fvState.curDir;
-      void loadProjectTreeView(fvState.curDir);
+      ensureFvContextFresh();
+      void loadProjectTreeView('');
     });
     $('fv-close-btn')?.addEventListener('click', closeFileViewerModal);
     $('file-viewer-backdrop')?.addEventListener('click', (e) => {
@@ -13753,9 +14312,12 @@ function buildMobileAppHtml() {
     });
     $('fv-back-btn')?.addEventListener('click', () => {
       if (fvState.returnTab === 'changes') void loadSessionChangesView();
-      else void loadProjectTreeView(fvState.curDir);
+      else void loadProjectTreeView(fvState.curDir, { workspaceRoot: fvState.activeRoot });
     });
-    $('fv-tab-tree')?.addEventListener('click', () => { void loadProjectTreeView(fvState.curDir); });
+    $('fv-tab-tree')?.addEventListener('click', () => {
+      ensureFvContextFresh();
+      void loadProjectTreeView(fvState.showRootList ? '' : fvState.curDir, { workspaceRoot: fvState.activeRoot });
+    });
     $('fv-tab-changes')?.addEventListener('click', () => { void loadSessionChangesView(); });
 
     function readAttachmentFile(file) {
@@ -16634,7 +17196,127 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (req.method === 'GET' && pathname === '/api/project-tree') {
       const rawDir = urlObj.searchParams.get('dir') || '';
       const showAll = urlObj.searchParams.get('showAll') === '1';
-      const tree = listSafeProjectTree(rawDir, { ...(options.mediaOptions || {}), showAll });
+      const reqConvId = String(urlObj.searchParams.get('conversationId') || '').trim();
+      const reqProjId = String(urlObj.searchParams.get('projectId') || '').trim();
+      const reqWorkspaceRoot = urlObj.searchParams.get('workspaceRoot') || '';
+      const mediaOpts = options.mediaOptions || {};
+      const hasScopeContext = Boolean(reqConvId || reqProjId);
+
+      let scopeOpts = {};
+      if (hasScopeContext) {
+        const realRoots = resolveMediaAllowedRoots(mediaOpts);
+        const cfgDir = String(mediaOpts.configDir || options.catalogOptions?.configDir || '').trim();
+        const { metaMap: projectsMeta } = loadProjectsMetaFromDisk({ configDir: cfgDir });
+        const scopedRoots = [];
+        const pushScopedRoot = (rawCandidate) => {
+          const clean = normalizeLocalFileUriToPath(rawCandidate);
+          if (!clean || !path.isAbsolute(clean)) return;
+          try {
+            const rp = fs.realpathSync(clean);
+            if (!realRoots.some((r) => rp === r || rp.startsWith(r + path.sep))) return;
+            if (SENSITIVE_MEDIA_DIR_RE.test(rp) || isSensitiveHostPath(rp, mediaOpts)) return;
+            if (fs.statSync(rp).isDirectory() && !scopedRoots.includes(rp)) {
+              scopedRoots.push(rp);
+            }
+          } catch {}
+        };
+
+        let resolvedAuthoritative = false;
+        if (reqConvId && reqConvId !== '__new__' && reqConvId !== 'new') {
+          if (typeof options.resolveConversationProjectDirs === 'function') {
+            const customDirs = await Promise.resolve().then(() => options.resolveConversationProjectDirs(reqConvId)).catch(() => null);
+            if (Array.isArray(customDirs)) {
+              customDirs.forEach(pushScopedRoot);
+              resolvedAuthoritative = true;
+            }
+          }
+          if (!resolvedAuthoritative) {
+            const allTraj = await Promise.resolve().then(() => callLsRpc('GetAllCascadeTrajectories', {}, 2500)).catch(() => null);
+            const summaries = allTraj?.trajectorySummaries || allTraj?.trajectories || null;
+            const summary = summaries && typeof summaries === 'object' ? summaries[reqConvId] : null;
+            if (summary && typeof summary === 'object') {
+              const rawTrajPid = String(summary?.trajectoryMetadata?.projectId || '').trim();
+              const trajPid = !isSyntheticProjectId(rawTrajPid) ? rawTrajPid : '';
+              if (trajPid === 'outside-of-project' || trajPid === 'standalone') {
+                extractTrajectoryWorkspacePaths(summary).forEach(pushScopedRoot);
+                resolvedAuthoritative = true;
+              } else if (trajPid) {
+                const pMeta = projectsMeta.get(trajPid);
+                if (Array.isArray(pMeta?.workspacePaths)) pMeta.workspacePaths.forEach(pushScopedRoot);
+                if (!scopedRoots.length) extractTrajectoryWorkspacePaths(summary).forEach(pushScopedRoot);
+                if (scopedRoots.length > 0 || projectsMeta.has(trajPid) || projectsMeta.size > 0) {
+                  resolvedAuthoritative = true;
+                }
+              } else {
+                const wsPid = matchWorkspaceToProjectId(summary, projectsMeta, mediaOpts);
+                if (wsPid && projectsMeta.has(wsPid)) {
+                  projectsMeta.get(wsPid).workspacePaths.forEach(pushScopedRoot);
+                }
+                if (!scopedRoots.length) {
+                  extractTrajectoryWorkspacePaths(summary).forEach(pushScopedRoot);
+                }
+                if (scopedRoots.length > 0 || wsPid) {
+                  resolvedAuthoritative = true;
+                }
+              }
+            }
+          }
+          if (!resolvedAuthoritative) {
+            const activeCatStore = options.catalogStore || defaultCatalogStore;
+            const catPage = activeCatStore.listConversations({ ...(options.catalogOptions || {}), limit: 0 });
+            const matchedCat = Array.isArray(catPage?.conversations)
+              ? catPage.conversations.find((c) => c && c.id === reqConvId)
+              : null;
+            if (matchedCat) {
+              const catPid = String(matchedCat.projectId || '').trim();
+              if (catPid === 'ungrouped' || catPid === 'outside-of-project' || catPid === 'standalone') {
+                resolvedAuthoritative = true;
+              } else if (catPid && !isSyntheticProjectId(catPid)) {
+                const pMeta = projectsMeta.get(catPid);
+                if (Array.isArray(pMeta?.workspacePaths)) pMeta.workspacePaths.forEach(pushScopedRoot);
+                if (scopedRoots.length > 0 || projectsMeta.has(catPid) || projectsMeta.size > 0) {
+                  resolvedAuthoritative = true;
+                }
+              }
+            }
+          }
+        }
+
+        if (!resolvedAuthoritative) {
+          if (reqProjId === 'ungrouped' || reqProjId === 'outside-of-project' || reqProjId === 'standalone' || reqProjId === 'default' || isSyntheticProjectId(reqProjId)) {
+            if (reqProjId || projectsMeta.size > 0 || !rawDir) {
+              resolvedAuthoritative = true;
+            }
+          } else if (reqProjId) {
+            if (typeof options.resolveProjectWorkspaceDirs === 'function') {
+              const customProjDirs = await Promise.resolve().then(() => options.resolveProjectWorkspaceDirs(reqProjId)).catch(() => null);
+              if (Array.isArray(customProjDirs)) {
+                customProjDirs.forEach(pushScopedRoot);
+                resolvedAuthoritative = true;
+              }
+            }
+            if (projectsMeta.has(reqProjId)) {
+              const pMeta = projectsMeta.get(reqProjId);
+              if (Array.isArray(pMeta?.workspacePaths)) pMeta.workspacePaths.forEach(pushScopedRoot);
+              resolvedAuthoritative = true;
+            } else if (projectsMeta.size > 0) {
+              // 传入了未知或已删除/归档的 projectId，严格按空归属拦截
+              resolvedAuthoritative = true;
+            }
+          }
+        }
+
+        if (resolvedAuthoritative) {
+          scopeOpts = { scoped: true, projectRoots: scopedRoots };
+        }
+      }
+
+      const tree = listSafeProjectTree(rawDir, {
+        ...mediaOpts,
+        showAll,
+        workspaceRoot: reqWorkspaceRoot,
+        ...scopeOpts
+      });
       res.writeHead(tree.ok ? 200 : (tree.status || 403), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(tree));
       return;
@@ -16889,20 +17571,28 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               ? boundSnap
               : { ...snap, isolated: false, isNewConversation: false, sessionId: reconciledId, activeConversationId: reconciledId };
           } else {
-            const matchedProj = draftPid
-              ? ((Array.isArray(snap.projects) ? snap.projects : []).find((p) => p && String(p.id || '') === draftPid)
-                || (Array.isArray(snap.projectGroups) ? snap.projectGroups : []).find((g) => g && String(g.id || '') === draftPid))
+            const effDraftPid = draftPid || snap.currentProjectId || '';
+            const matchedProj = effDraftPid
+              ? ((Array.isArray(snap.projects) ? snap.projects : []).find((p) => p && String(p.id || '') === effDraftPid)
+                || (Array.isArray(snap.projectGroups) ? snap.projectGroups : []).find((g) => g && String(g.id || '') === effDraftPid))
               : null;
-            const draftName = String(session.draftProjectName || matchedProj?.name || snap.currentProjectName || '').trim();
+            const draftName = String(session.draftProjectName || matchedProj?.name || (!draftPid ? snap.currentProjectName : '') || '').trim();
+            const draftWsPaths = Array.isArray(matchedProj?.workspacePaths)
+              ? matchedProj.workspacePaths
+              : ((matchedProj?.path || matchedProj?.workspacePath) ? [matchedProj.path || matchedProj.workspacePath] : (!draftPid && Array.isArray(snap.currentWorkspacePaths) ? snap.currentWorkspacePaths : []));
+            const draftPrimaryPath = draftWsPaths[0] || (!draftPid ? (snap.currentProjectPath || '') : '');
+            const { currentProjectPath: _dropBaseDraftPath, ...snapWithoutDraftPath } = snap;
             snap = {
-              ...snap,
+              ...snapWithoutDraftPath,
               isolated: true,
               isNewConversation: true,
               sessionId: '__new__',
               activeConversationId: '',
               title: '新对话',
-              currentProjectId: draftPid || snap.currentProjectId || '',
+              currentProjectId: effDraftPid,
               currentProjectName: draftName,
+              ...(draftPrimaryPath ? { currentProjectPath: draftPrimaryPath } : {}),
+              currentWorkspacePaths: draftWsPaths,
               messages: [],
               totalMessages: 0,
               hasEarlierMessages: false,
@@ -17973,19 +18663,27 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         };
         const buildIsolatedDraftSnapshot = (baseSnap, draftPid, draftName) => {
           if (!baseSnap || baseSnap.ok === false) return baseSnap;
-          const matchedProj = draftPid
-            ? ((Array.isArray(baseSnap.projects) ? baseSnap.projects : []).find((p) => p && String(p.id || '') === draftPid)
-              || (Array.isArray(baseSnap.projectGroups) ? baseSnap.projectGroups : []).find((g) => g && String(g.id || '') === draftPid))
+          const effDraftPid = draftPid || baseSnap.currentProjectId || '';
+          const matchedProj = effDraftPid
+            ? ((Array.isArray(baseSnap.projects) ? baseSnap.projects : []).find((p) => p && String(p.id || '') === effDraftPid)
+              || (Array.isArray(baseSnap.projectGroups) ? baseSnap.projectGroups : []).find((g) => g && String(g.id || '') === effDraftPid))
             : null;
+          const draftWsPaths = Array.isArray(matchedProj?.workspacePaths)
+            ? matchedProj.workspacePaths
+            : ((matchedProj?.path || matchedProj?.workspacePath) ? [matchedProj.path || matchedProj.workspacePath] : (!draftPid && Array.isArray(baseSnap.currentWorkspacePaths) ? baseSnap.currentWorkspacePaths : []));
+          const draftPrimaryPath = draftWsPaths[0] || (!draftPid ? (baseSnap.currentProjectPath || '') : '');
+          const { currentProjectPath: _dropBaseDraftPath, ...baseWithoutDraftPath } = baseSnap;
           return {
-            ...baseSnap,
+            ...baseWithoutDraftPath,
             isolated: true,
             isNewConversation: true,
             sessionId: '__new__',
             activeConversationId: '',
             title: '新对话',
-            currentProjectId: draftPid || baseSnap.currentProjectId || '',
-            currentProjectName: String(draftName || matchedProj?.name || baseSnap.currentProjectName || '').trim(),
+            currentProjectId: effDraftPid,
+            currentProjectName: String(draftName || matchedProj?.name || (!draftPid ? baseSnap.currentProjectName : '') || '').trim(),
+            ...(draftPrimaryPath ? { currentProjectPath: draftPrimaryPath } : {}),
+            currentWorkspacePaths: draftWsPaths,
             messages: [],
             totalMessages: 0,
             hasEarlierMessages: false,
@@ -19024,6 +19722,7 @@ module.exports = {
   collapseConsecutiveDomThinking,
   normPlainMatchText,
   mergeTrajectoryAndDomMessages,
+  matchWorkspaceToProjectId,
   resolveProductionMediaAllowedRoots,
   resolveMediaAllowedRoots,
   resolveSafeLocalMediaPath,
