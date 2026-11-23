@@ -4945,12 +4945,16 @@
       const meterLatest = window.__AGContextMeter?.snapshot?.()?.latest;
       const capUsed = Number(capData?.contextUsed || 0);
       const meterUsed = Number(meterLatest?.actual || meterLatest?.used || 0);
+      const compAfter = Number(capData?.compressionAfter || 0);
+      const regrownSinceCompact = compAfter > 0 && capUsed > compAfter + 50000;
       const capShowsPostCompactDrop = Boolean(
         capData?.hasPreciseSnapshot &&
+        capData?.compressionDetected &&
+        !regrownSinceCompact &&
         capUsed > 0 &&
         meterUsed > 0 &&
         capUsed < 240000 &&
-        (meterUsed - capUsed >= 50000 || (capData?.compressionDetected && capUsed < meterUsed * 0.7))
+        capUsed < meterUsed
       );
       contextUsed = capShowsPostCompactDrop ? capUsed : Math.max(capUsed, meterUsed);
       cacheDropDetected = capShowsPostCompactDrop
