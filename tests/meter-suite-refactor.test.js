@@ -23796,4 +23796,61 @@ test('根治远程端代码块与提示框中段 UI 铬导致的重复二次回�
     { id: 'a-3', role: 'assistant', text: '第二轮执行：\nshCopy\nsudo apt upgrade\n正在校验结果…' }
   ], { busy: true });
   assert.deepEqual(mergedMultiTurnShared.map((m) => m.id), ['t-u-1', 't-a-2', 't-u-3', 't-a-4'], '多轮对齐与活跃尾轮流式增量均不得追加重复气泡');
+
+  // 2i: 反例防误合并 — 标识符/正文中部的白名单词（book vs notebook），在单条、流式与多段场景均不得误合并
+  const baseBook = [
+    { id: 't-u-1', role: 'user', text: '对比两个实体' },
+    { id: 't-a-2', role: 'assistant', text: '已创建默认对象 book 并完成持久化校验。' }
+  ];
+  const mergedBook = mergeTrajectoryAndDomMessages(baseBook, [
+    { id: 'u-0', role: 'user', text: '对比两个实体' },
+    { id: 'a-1', role: 'assistant', text: '已创建默认对象 book 并完成持久化校验。' },
+    { id: 'a-2', role: 'assistant', text: '已创建默认对象 notebook 并完成持久化校验。' }
+  ], { busy: false });
+  assert.deepEqual(mergedBook.map((m) => m.id), ['t-u-1', 't-a-2', 'dom-tail-2'], 'book 与 notebook 不得因 note 白名单词误合并');
+
+  const mergedBookBusy = mergeTrajectoryAndDomMessages(baseBook, [
+    { id: 'u-0', role: 'user', text: '对比两个实体' },
+    { id: 'a-1', role: 'assistant', text: '已创建默认对象 book 并完成持久化校验。' },
+    { id: 'a-2', role: 'assistant', text: '已创建默认对象 notebook 并完成持久化校验。' }
+  ], { busy: true });
+  assert.deepEqual(mergedBookBusy.map((m) => m.id), ['t-u-1', 't-a-2', 'dom-tail-2'], '流式态下 book 与 notebook 也不得误合并');
+
+  // 2j: 反例防误合并 — 回复包含 bash 围栏代码块，但另一段正文分别为“运行脚本”与“运行bash脚本”，单条、多段拼接与流式均不得误合并
+  const baseFencePlusProse = [
+    { id: 't-u-1', role: 'user', text: '看两段说明' },
+    { id: 't-a-2', role: 'assistant', text: '示例代码如下：\n```bash\necho hi\n```\n请按以下步骤配置环境然后运行脚本验证结果。' }
+  ];
+  const mergedFencePlusProse = mergeTrajectoryAndDomMessages(baseFencePlusProse, [
+    { id: 'u-0', role: 'user', text: '看两段说明' },
+    { id: 'a-1', role: 'assistant', text: '示例代码如下：\nbash\nCopy\necho hi\n请按以下步骤配置环境然后运行脚本验证结果。' },
+    { id: 'a-2', role: 'assistant', text: '示例代码如下：\nbash\nCopy\necho hi\n请按以下步骤配置环境然后运行bash脚本验证结果。' }
+  ], { busy: false });
+  assert.deepEqual(
+    mergedFencePlusProse.map((m) => m.id),
+    ['t-u-1', 't-a-2', 'dom-tail-2'],
+    '裸语言名授权必须限定在代码块槽位，同回复其他正文中的 bash 差异不得误合并'
+  );
+
+  const mergedFencePlusProseBusy = mergeTrajectoryAndDomMessages(baseFencePlusProse, [
+    { id: 'u-0', role: 'user', text: '看两段说明' },
+    { id: 'a-1', role: 'assistant', text: '示例代码如下：\nbash\nCopy\necho hi\n请按以下步骤配置环境然后运行脚本验证结果。' },
+    { id: 'a-2', role: 'assistant', text: '示例代码如下：\nbash\nCopy\necho hi\n请按以下步骤配置环境然后运行bash脚本验证结果。' }
+  ], { busy: true });
+  assert.deepEqual(mergedFencePlusProseBusy.map((m) => m.id), ['t-u-1', 't-a-2', 'dom-tail-2'], '流式态下非槽位处的 bash 差异也不得误合并');
+
+  const baseMultiFenceProse = [
+    { id: 't-u-1', role: 'user', text: '多段核对' },
+    { id: 't-a-2', role: 'assistant', text: '第一步：\n```bash\necho hi\n```\n然后运行脚本验证结果。' },
+    { id: 't-a-3', role: 'assistant', text: '第二步确认完成。' }
+  ];
+  const mergedMultiFenceProse = mergeTrajectoryAndDomMessages(baseMultiFenceProse, [
+    { id: 'u-0', role: 'user', text: '多段核对' },
+    { id: 'a-1', role: 'assistant', text: '第一步：\nbash\nCopy\necho hi\n然后运行bash脚本验证结果。\n\n第二步确认完成。' }
+  ], { busy: false });
+  assert.equal(
+    mergedMultiFenceProse.some((m) => m.id === 'dom-tail-1'),
+    true,
+    '多段拼接中非槽位正文多出 bash 时不得误判为与原回复一致'
+  );
 });
