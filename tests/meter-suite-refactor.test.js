@@ -23423,6 +23423,39 @@ test('修复 240K 自动压缩死循环 3 处 Bug：压缩后旧读数滞后、�
     }
   }
 
+  // 2d: user-message-content 正文为 "compact 6m ago"（普通正文，非斜杠胶囊）不得被剥离时间戳后误判为已压缩
+  {
+    const h = makeAutoCompactHarness();
+    try {
+      h.capMock.__ctxUsageData = {
+        hasPreciseSnapshot: true,
+        contextUsed: 338630,
+        usagePercent: 66,
+        cacheDropDetected: true
+      };
+      const asstMd = h.env.doc.createElement('div');
+      asstMd.setAttribute('data-markdown-root', 'true');
+      asstMd.textContent = '上一轮回复';
+      asstMd.compareDocumentPosition = () => 4;
+      h.env.doc.body.appendChild(asstMd);
+
+      const uLiteral = h.env.doc.createElement('div');
+      uLiteral.setAttribute('data-testid', 'user-message');
+      const uLiteralContent = h.env.doc.createElement('div');
+      uLiteralContent.setAttribute('data-testid', 'user-message-content');
+      uLiteralContent.textContent = 'compact 6m ago';
+      uLiteral.appendChild(uLiteralContent);
+      h.env.doc.body.appendChild(uLiteral);
+
+      const res2d = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(res2d.triggered, true, 'user-message-content 正文为 "compact 6m ago" 不得误判为 /compact 胶囊');
+      assert.equal(res2d.reason, 'cache_drop');
+    } finally {
+      h.enh.dispose?.();
+      h.env.cleanup?.();
+    }
+  }
+
   // 3. 异步发送 /compact 期间 1s 定时器提前跑过 + recent-submit 窗口不得重新上膛 armedForSession
   {
     const h = makeAutoCompactHarness();
@@ -23462,6 +23495,71 @@ test('修复 240K 自动压缩死循环 3 处 Bug：压缩后旧读数滞后、�
       assert.equal(idleAfterFinish.triggered, false);
       assert.equal(idleAfterFinish.reason, 'not_armed_after_turn');
       assert.equal(h.getSendClicks(), 1, '单次自动压缩完成后不得因自身竞态再次发送 /compact');
+    } finally {
+      h.enh.dispose?.();
+      h.env.cleanup?.();
+    }
+  }
+
+  // 4. 多会话交错：A 压缩未结束时切到 B 触发压缩再切回 A，各会话锁与异步回调必须隔离、不重上膛且最终各自释放
+  {
+    const h = makeAutoCompactHarness();
+    try {
+      const pathA = '/c/11111111-1111-1111-1111-111111111111';
+      const pathB = '/c/22222222-2222-2222-2222-222222222222';
+      h.capMock.__ctxUsageData = {
+        hasPreciseSnapshot: true,
+        contextUsed: 259000,
+        usagePercent: 51,
+        cacheDropDetected: false
+      };
+
+      // A 触发自动压缩
+      h.env.sandbox.location.pathname = pathA;
+      const firstA = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(firstA.triggered, true);
+
+      // 立刻切到 B 并触发 B 的自动压缩（不得覆盖 A 的 inFlight 锁）
+      h.env.sandbox.location.pathname = pathB;
+      h.editor.textContent = '';
+      const firstB = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(firstB.triggered, true);
+
+      // 等两次串行排队的异步发送完成，清空输入框
+      for (let i = 0; i < 20 && h.getSendClicks() < 2; i += 1) {
+        await new Promise(r => setTimeout(r, 30));
+      }
+      assert.equal(h.getSendClicks(), 2);
+      h.editor.textContent = '';
+
+      // 切回 A：即使此时处于 recent-submit / busy，A 的锁仍生效，必须返回 compact_in_flight 且不得重新上膛
+      h.env.sandbox.location.pathname = pathA;
+      const backToABusy = h.enh.runAutoCompactTick();
+      assert.equal(backToABusy.triggered, false);
+      assert.equal(backToABusy.reason, 'compact_in_flight');
+
+      // 推进时间超过保护窗与 90s 冷却：A 释放锁并保持未上膛
+      h.advanceNow(100000);
+      const releaseA = h.enh.runAutoCompactTick();
+      assert.equal(releaseA.triggered, false);
+      assert.equal(releaseA.reason, 'compact_finished');
+
+      h.advanceNow(5000);
+      const idleA = h.enh.runAutoCompactTick();
+      assert.equal(idleA.triggered, false);
+      assert.equal(idleA.reason, 'not_armed_after_turn');
+
+      // 切回 B：B 的锁未被 A 释放误清，独立收口 compact_finished 并保持未上膛
+      h.env.sandbox.location.pathname = pathB;
+      const releaseB = h.enh.runAutoCompactTick();
+      assert.equal(releaseB.triggered, false);
+      assert.equal(releaseB.reason, 'compact_finished');
+
+      h.advanceNow(5000);
+      const idleB = h.enh.runAutoCompactTick();
+      assert.equal(idleB.triggered, false);
+      assert.equal(idleB.reason, 'not_armed_after_turn');
+      assert.equal(h.getSendClicks(), 2, 'A/B 交错触发压缩后不得额外二次发送 /compact');
     } finally {
       h.enh.dispose?.();
       h.env.cleanup?.();
