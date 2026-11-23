@@ -23743,4 +23743,57 @@ test('根治远程端代码块与提示框中段 UI 铬导致的重复二次回�
     { id: 'a-2', role: 'assistant', text: '已完成修复：BazQux.swift 的重连超时保护，请查收。' }
   ], { busy: false });
   assert.deepEqual(mergedDistinct.map((m) => m.id), ['t-u-1', 't-a-2', 'dom-tail-2'], '差异非 UI 铬的不同真实回复不得被误合并');
+
+  // 2f: 反例防误合并 — 无围栏代码块时，正文中真实出现的裸语言名（如 bash）绝不得被当作 UI 铬跳过
+  const baseBareLangProse = [
+    { id: 't-u-1', role: 'user', text: '怎么验证' },
+    { id: 't-a-2', role: 'assistant', text: '请按以下步骤配置环境然后运行脚本验证结果' }
+  ];
+  const mergedBareLangProse = mergeTrajectoryAndDomMessages(baseBareLangProse, [
+    { id: 'u-0', role: 'user', text: '怎么验证' },
+    { id: 'a-1', role: 'assistant', text: '请按以下步骤配置环境然后运行脚本验证结果' },
+    { id: 'a-2', role: 'assistant', text: '请按以下步骤配置环境然后运行bash脚本验证结果' }
+  ], { busy: false });
+  assert.deepEqual(
+    mergedBareLangProse.map((m) => m.id),
+    ['t-u-1', 't-a-2', 'dom-tail-2'],
+    '轨迹无对应围栏代码块时，真实正文里的裸语言名 bash 不得被跳过误合并'
+  );
+
+  // 2g: 共同前缀防漏匹配 — shCopy 插在 sudoaptupdate 前（共享首字母 s），单条匹配、流式增量与多段拼接均须去重
+  const baseSharedPrefix = [
+    { id: 't-u-1', role: 'user', text: '更新系统' },
+    { id: 't-a-2', role: 'assistant', text: '好的：\n```sh\nsudo apt update\n```\n结束。' }
+  ];
+  const mergedSharedPrefix = mergeTrajectoryAndDomMessages(baseSharedPrefix, [
+    { id: 'u-0', role: 'user', text: '更新系统' },
+    { id: 'a-1', role: 'assistant', text: '好的：\nshCopy\nsudo apt update\n结束。' }
+  ], { busy: false });
+  assert.deepEqual(mergedSharedPrefix.map((m) => m.id), ['t-u-1', 't-a-2'], '单条匹配应回退共同前缀 s 并跳过 shCopy');
+
+  const baseSharedMulti = [
+    { id: 't-u-1', role: 'user', text: '分两步更新' },
+    { id: 't-a-2', role: 'assistant', text: '先更新系统：\n```sh\nsudo apt update\n```\n然后重启。' },
+    { id: 't-a-3', role: 'assistant', text: '第二步确认服务恢复正常。' }
+  ];
+  const mergedSharedMulti = mergeTrajectoryAndDomMessages(baseSharedMulti, [
+    { id: 'u-0', role: 'user', text: '分两步更新' },
+    { id: 'a-1', role: 'assistant', text: '先更新系统：\nshCopy\nsudo apt update\n然后重启。\n\n第二步确认服务恢复正常。' }
+  ], { busy: false });
+  assert.deepEqual(mergedSharedMulti.map((m) => m.id), ['t-u-1', 't-a-2', 't-a-3'], '多段拼接中前段含共同前缀 shCopy+sudoaptupdate 应整体去重');
+
+  // 2h: 多轮对齐 + 活跃尾轮流式增量（含共同前缀 shCopy）
+  const baseMultiTurnShared = [
+    { id: 't-u-1', role: 'user', text: '第一轮问题' },
+    { id: 't-a-2', role: 'assistant', text: '第一轮回复：\n```sh\nsudo apt update\n```\n已完成。' },
+    { id: 't-u-3', role: 'user', text: '第二轮问题' },
+    { id: 't-a-4', role: 'assistant', text: '第二轮执行：\n```sh\nsudo apt upgrade\n```' }
+  ];
+  const mergedMultiTurnShared = mergeTrajectoryAndDomMessages(baseMultiTurnShared, [
+    { id: 'u-0', role: 'user', text: '第一轮问题' },
+    { id: 'a-1', role: 'assistant', text: '第一轮回复：\nshCopy\nsudo apt update\n已完成。' },
+    { id: 'u-2', role: 'user', text: '第二轮问题' },
+    { id: 'a-3', role: 'assistant', text: '第二轮执行：\nshCopy\nsudo apt upgrade\n正在校验结果…' }
+  ], { busy: true });
+  assert.deepEqual(mergedMultiTurnShared.map((m) => m.id), ['t-u-1', 't-a-2', 't-u-3', 't-a-4'], '多轮对齐与活跃尾轮流式增量均不得追加重复气泡');
 });
