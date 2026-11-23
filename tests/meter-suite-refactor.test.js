@@ -28917,6 +28917,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     envUi.sandbox.history = envUi.win.history;
     envUi.sandbox.AbortController = AbortController;
     envUi.sandbox.URLSearchParams = URLSearchParams;
+    let interceptTreeGate = null;
     envUi.sandbox.fetch = async (url) => {
       const u = new URL(String(url), 'http://127.0.0.1:18799');
       const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
@@ -28924,6 +28925,9 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
         return { ok: true, status: 200, headers: jsonHeaders, json: async () => currentUiSnap };
       }
       if (u.pathname === '/api/project-tree') {
+        if (typeof interceptTreeGate === 'function') {
+          await interceptTreeGate(u);
+        }
         const res = await callGetJson(u.pathname + u.search);
         return { ok: res.status >= 200 && res.status < 300, status: res.status, headers: jsonHeaders, json: async () => res.json };
       }
@@ -28971,6 +28975,68 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     await new Promise((r) => setTimeout(r, 40));
     assert.ok((fvBody.textContent || '').includes('当前对话未关联项目文件夹'), '无项目独立会话点开文件面板必须展示空态提示');
     assert.equal((fvBody.textContent || '').includes('cli.js'), false, '独立会话严禁沿用上一个会话的目录');
+
+    // (d) 切工作区乱序响应回归：同一多目录项目内先点工作区 1（慢请求挂起），再点工作区 3（快请求先完成），随后放行工作区 1 的迟到响应，严禁覆盖工作区 3
+    envUi.doc.getElementById('fv-close-btn').click();
+    currentUiSnap = { ...enrichedInsight, snapSeq: enrichedInsight.snapSeq + 30 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('btn-files-panel').click();
+    await new Promise((r) => setTimeout(r, 20));
+    // 先进入工作区 3 以渲染顶部切换栏
+    fvBody.querySelectorAll('.fv-ws-root-row')[2].click();
+    await new Promise((r) => setTimeout(r, 30));
+    let releaseSlowWs1 = null;
+    const slowWs1Promise = new Promise((r) => { releaseSlowWs1 = r; });
+    interceptTreeGate = async (u) => {
+      const dirQ = u.searchParams.get('dir') || '';
+      if (dirQ.includes('codebase/InsightOS')) {
+        await slowWs1Promise;
+      }
+    };
+    // 点击工作区 1（被挂起），紧接着点击工作区 3（立即返回）
+    fvBody.querySelectorAll('.fv-ws-switch')[0].click();
+    await new Promise((r) => setTimeout(r, 15));
+    fvBody.querySelectorAll('.fv-ws-switch')[2].click();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('release-note.md'), '快请求工作区 3 应先完成渲染');
+    // 放行工作区 1 的过期慢响应
+    releaseSlowWs1();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('release-note.md'), '工作区 1 的迟到响应严禁覆盖当前工作区 3 内容');
+    assert.equal((fvBody.textContent || '').includes('insight-app.ts'), false, '工作区 1 的迟到文件列表必须被丢弃');
+
+    // (e) 切会话乱序响应回归：会话 A (antigravity-suite) 文件面板请求挂起期间切到会话 B (conv-standalone 空态) 及会话 C (InsightOS)，放行 A 的迟到响应不得污染面板或 fvState
+    envUi.doc.getElementById('fv-close-btn').click();
+    currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 40 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    let releaseSlowAg = null;
+    const slowAgPromise = new Promise((r) => { releaseSlowAg = r; });
+    interceptTreeGate = async (u) => {
+      if ((u.searchParams.get('conversationId') || '') === 'conv-pinned-ag') {
+        await slowAgPromise;
+      }
+    };
+    // 打开面板触发会话 A 的慢目录请求（保持面板打开不关闭！）
+    envUi.doc.getElementById('btn-files-panel').click();
+    await new Promise((r) => setTimeout(r, 15));
+    // 面板仍开着时直接切到独立会话 conv-standalone
+    currentUiSnap = { ...enrichedStandalone, snapSeq: enrichedInsight.snapSeq + 50 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok((fvBody.textContent || '').includes('当前对话未关联项目文件夹'), '切到独立会话后打开中的面板应即时刷新为空态');
+    // 此时会话 A 的迟到目录响应到达
+    releaseSlowAg();
+    interceptTreeGate = null;
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('当前对话未关联项目文件夹'), '会话 A 的迟到响应严禁覆盖当前会话 B 的空态面板');
+    assert.equal((fvBody.textContent || '').includes('cli.js'), false, '会话 A 的 cli.js 严禁串台写入当前会话面板');
+    assert.equal(envUi.doc.getElementById('fv-title').textContent, '项目文件', '迟到响应不得把面板标题改回旧项目名');
+    // 再次切换标签页回「项目文件」验证 fvState.curDir 亦未被迟到响应污染
+    envUi.doc.getElementById('fv-tab-tree').click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok((fvBody.textContent || '').includes('当前对话未关联项目文件夹'), 'fvState.curDir 不得被过期响应污染');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }

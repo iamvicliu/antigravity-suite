@@ -11117,6 +11117,9 @@ function buildMobileAppHtml() {
         else sessionStorage.removeItem(CONV_ID_SESSION_KEY);
       } catch {}
       if (oldId !== selectedConversationId) {
+        if (typeof bumpFvRequestEpoch === 'function') {
+          bumpFvRequestEpoch();
+        }
         if (typeof fvState === 'object' && fvState) {
           fvState.contextKey = '';
           fvState.curDir = '';
@@ -13850,8 +13853,13 @@ function buildMobileAppHtml() {
       }
     });
 
-    const fvState = { tab: 'tree', curDir: '', activeRoot: '', showRootList: false, contextKey: '', viewingFile: false, returnTab: 'tree' };
+    const fvState = { tab: 'tree', curDir: '', activeRoot: '', showRootList: false, contextKey: '', reqSeq: 0, viewingFile: false, returnTab: 'tree' };
+    function bumpFvRequestEpoch() {
+      fvState.reqSeq = (Number(fvState.reqSeq) || 0) + 1;
+      return fvState.reqSeq;
+    }
     function closeFileViewerModal() {
+      bumpFvRequestEpoch();
       const bd = $('file-viewer-backdrop');
       if (bd) bd.hidden = true;
     }
@@ -13917,6 +13925,7 @@ function buildMobileAppHtml() {
       return cid + '|' + pid + '|' + wsSig;
     }
     function resetFvDirectoryContext(forceOverviewForMulti = false) {
+      bumpFvRequestEpoch();
       const wsPaths = resolveCurrentProjectWorkspacePaths();
       fvState.contextKey = computeFvContextKey();
       if (wsPaths.length === 1) {
@@ -13983,13 +13992,23 @@ function buildMobileAppHtml() {
       const body = $('fv-body');
       const title = $('fv-title');
       if (!bd || !body || !filePath) return;
+      ensureFvContextFresh();
+      const reqEpoch = bumpFvRequestEpoch();
+      const reqContextKey = computeFvContextKey();
       fvState.returnTab = fvState.tab;
       fvState.viewingFile = true;
       bd.hidden = false;
       syncFvChrome();
       if (title) title.textContent = String(filePath).split('/').pop() || filePath;
       body.innerHTML = renderSkeletonRowsHtml(6);
+      const isFileReqStale = () => (
+        reqEpoch !== fvState.reqSeq ||
+        computeFvContextKey() !== reqContextKey ||
+        !fvState.viewingFile ||
+        Boolean($('file-viewer-backdrop')?.hidden)
+      );
       const showFileErr = (errMsg) => {
+        if (isFileReqStale()) return;
         body.innerHTML = renderPanelStateHtml({
           isError: true,
           title: '无法读取文件内容',
@@ -13998,11 +14017,13 @@ function buildMobileAppHtml() {
           actionLabel: '重试读取'
         });
         const retryBtn = $('fv-file-retry');
-        if (retryBtn) retryBtn.onclick = () => { void openFilePreviewModal(filePath, hlLine); };
+        if (retryBtn) retryBtn.addEventListener('click', () => { void openFilePreviewModal(filePath, hlLine); });
       };
       try {
         const res = await fetchWithTimeout((apiBase || '') + '/api/file-content?path=' + encodeURIComponent(filePath), { headers: authHeaders(), cache: 'no-store' }, 6000);
+        if (isFileReqStale()) return;
         const data = await res.json().catch(() => null);
+        if (isFileReqStale()) return;
         if (!res.ok || !data?.ok) {
           showFileErr(data?.error || ('HTTP ' + res.status));
           return;
@@ -14035,6 +14056,7 @@ function buildMobileAppHtml() {
       const body = $('fv-body');
       const title = $('fv-title');
       if (!body) return;
+      bumpFvRequestEpoch();
       fvState.tab = 'tree';
       fvState.viewingFile = false;
       fvState.showRootList = true;
@@ -14076,6 +14098,7 @@ function buildMobileAppHtml() {
 
       const wsPaths = resolveCurrentProjectWorkspacePaths();
       if (!targetDir && wsPaths.length === 0) {
+        bumpFvRequestEpoch();
         fvState.curDir = '';
         fvState.activeRoot = '';
         body.innerHTML = renderPanelStateHtml({
@@ -14091,7 +14114,6 @@ function buildMobileAppHtml() {
         return;
       }
 
-      body.innerHTML = renderSkeletonRowsHtml(6);
       const dirParam = targetDir || fvState.curDir || (wsPaths.length === 1 ? wsPaths[0] : '');
       let matchedRoot = String(navOpts.workspaceRoot || '').trim();
       if (!matchedRoot) {
@@ -14109,16 +14131,63 @@ function buildMobileAppHtml() {
         fvState.showRootList = false;
       }
 
+      const buildWsBarHtml = (roots, curActiveRoot, curDirPath) => {
+        if (!Array.isArray(roots) || roots.length <= 1) return '';
+        return '<div class="fv-ws-bar">'
+          + '<button class="fv-ws-chip" id="fv-ws-all-btn" type="button">全部目录 (' + roots.length + ')</button>'
+          + roots.map((wr) => {
+            const isAct = curActiveRoot ? (wr === curActiveRoot) : isPathInsideWorkspaceRoot(curDirPath, wr);
+            return '<button class="fv-ws-chip fv-ws-switch' + (isAct ? ' active' : '') + '" type="button" data-ws-root="' + esc(wr) + '" title="' + esc(wr) + '">'
+              + '📁 ' + esc(formatWorkspaceChipLabel(wr, roots))
+              + '</button>';
+          }).join('')
+          + '</div>';
+      };
+      const bindWsBarEvents = (roots) => {
+        if (!Array.isArray(roots) || roots.length <= 1) return;
+        $('fv-ws-all-btn')?.addEventListener('click', () => {
+          renderWorkspaceRootsOverview(roots);
+        });
+        body.querySelectorAll('.fv-ws-switch').forEach((chip) => {
+          chip.addEventListener('click', () => {
+            const root = chip.getAttribute('data-ws-root') || chip.dataset?.wsRoot || '';
+            if (!root) return;
+            fvState.activeRoot = root;
+            fvState.curDir = root;
+            fvState.showRootList = false;
+            void loadProjectTreeView(root, { workspaceRoot: root });
+          });
+        });
+      };
+
+      const reqEpoch = bumpFvRequestEpoch();
+      const reqContextKey = computeFvContextKey();
+      const reqExpectedRoot = matchedRoot;
+      body.innerHTML = buildWsBarHtml(wsPaths, matchedRoot, dirParam) + renderSkeletonRowsHtml(6);
+      bindWsBarEvents(wsPaths);
+
+      const isTreeReqStale = () => (
+        reqEpoch !== fvState.reqSeq ||
+        computeFvContextKey() !== reqContextKey ||
+        fvState.tab !== 'tree' ||
+        fvState.viewingFile ||
+        fvState.showRootList ||
+        Boolean($('file-viewer-backdrop')?.hidden) ||
+        Boolean(reqExpectedRoot && fvState.activeRoot && fvState.activeRoot !== reqExpectedRoot)
+      );
+
       const showTreeErr = (errMsg) => {
-        body.innerHTML = renderPanelStateHtml({
+        if (isTreeReqStale()) return;
+        body.innerHTML = buildWsBarHtml(wsPaths, matchedRoot, dirParam) + renderPanelStateHtml({
           isError: true,
           title: '读取项目文件失败',
           desc: humanizeRemoteError(errMsg, '无法加载项目目录，请检查电脑端连接后重试'),
           actionId: 'fv-tree-retry',
           actionLabel: '重试加载'
         });
+        bindWsBarEvents(wsPaths);
         const retryBtn = $('fv-tree-retry');
-        if (retryBtn) retryBtn.onclick = () => { void loadProjectTreeView(targetDir, navOpts); };
+        if (retryBtn) retryBtn.addEventListener('click', () => { void loadProjectTreeView(targetDir, navOpts); });
       };
       try {
         const qParts = [];
@@ -14130,11 +14199,14 @@ function buildMobileAppHtml() {
         if (matchedRoot) qParts.push('workspaceRoot=' + encodeURIComponent(matchedRoot));
         const qs = qParts.length ? ('?' + qParts.join('&')) : '';
         const res = await fetchWithTimeout((apiBase || '') + '/api/project-tree' + qs, { headers: authHeaders(), cache: 'no-store' }, 6000);
+        if (isTreeReqStale()) return;
         const data = await res.json().catch(() => null);
+        if (isTreeReqStale()) return;
         if (!res.ok || !data?.ok) {
           showTreeErr(data?.error || ('HTTP ' + res.status));
           return;
         }
+        if (title) title.textContent = projLabel ? ('项目文件 · ' + projLabel) : '项目文件';
         if (data.emptyProject) {
           fvState.curDir = '';
           fvState.activeRoot = '';
@@ -14157,17 +14229,7 @@ function buildMobileAppHtml() {
           ? data.parentDir
           : '';
         const upBtn = safeParentDir ? '<button class="fv-up-btn" id="fv-tree-up" type="button">↑ 上级</button>' : '';
-        const wsBarHtml = effectiveRoots.length > 1
-          ? ('<div class="fv-ws-bar">'
-            + '<button class="fv-ws-chip" id="fv-ws-all-btn" type="button">全部目录 (' + effectiveRoots.length + ')</button>'
-            + effectiveRoots.map((wr) => {
-              const isAct = effectiveActiveRoot ? (wr === effectiveActiveRoot) : isPathInsideWorkspaceRoot(fvState.curDir, wr);
-              return '<button class="fv-ws-chip fv-ws-switch' + (isAct ? ' active' : '') + '" type="button" data-ws-root="' + esc(wr) + '" title="' + esc(wr) + '">'
-                + '📁 ' + esc(formatWorkspaceChipLabel(wr, effectiveRoots))
-                + '</button>';
-            }).join('')
-            + '</div>')
-          : '';
+        const wsBarHtml = buildWsBarHtml(effectiveRoots, effectiveActiveRoot, fvState.curDir);
         const rows = (data.entries || []).map((ent) =>
           '<button class="fv-row" type="button" data-is-dir="' + (ent.isDir ? '1' : '0') + '" data-path="' + esc(ent.path) + '">'
           + '<span class="fv-row-name">' + (ent.isDir ? '📁 ' : '📄 ') + esc(ent.name) + '</span>'
@@ -14185,19 +14247,7 @@ function buildMobileAppHtml() {
         body.innerHTML = wsBarHtml
           + '<div class="fv-path-bar">' + upBtn + '<span>' + esc(data.dir || '') + '</span></div>'
           + '<div class="fv-list">' + (rows || emptyDirHtml) + '</div>';
-        $('fv-ws-all-btn')?.addEventListener('click', () => {
-          renderWorkspaceRootsOverview(effectiveRoots);
-        });
-        body.querySelectorAll('.fv-ws-switch').forEach((chip) => {
-          chip.addEventListener('click', () => {
-            const root = chip.getAttribute('data-ws-root') || chip.dataset?.wsRoot || '';
-            if (!root) return;
-            fvState.activeRoot = root;
-            fvState.curDir = root;
-            fvState.showRootList = false;
-            void loadProjectTreeView(root, { workspaceRoot: root });
-          });
-        });
+        bindWsBarEvents(effectiveRoots);
         $('fv-tree-up')?.addEventListener('click', () => { void loadProjectTreeView(safeParentDir, { workspaceRoot: effectiveActiveRoot }); });
         $('fv-empty-up-btn')?.addEventListener('click', () => { void loadProjectTreeView(safeParentDir, { workspaceRoot: effectiveActiveRoot }); });
         body.querySelectorAll('.fv-row').forEach((row) => {
@@ -14217,13 +14267,24 @@ function buildMobileAppHtml() {
       const body = $('fv-body');
       const title = $('fv-title');
       if (!body) return;
+      ensureFvContextFresh();
+      const reqEpoch = bumpFvRequestEpoch();
+      const reqContextKey = computeFvContextKey();
       fvState.tab = 'changes';
       fvState.viewingFile = false;
       syncFvChrome();
       if (title) title.textContent = '本会话变更与产物';
       body.innerHTML = renderSkeletonRowsHtml(5);
       const cid = String(latestSnap?.activeConversationId || latestSnap?.sessionId || selectedConversationId || '').trim();
+      const isChangesReqStale = () => (
+        reqEpoch !== fvState.reqSeq ||
+        computeFvContextKey() !== reqContextKey ||
+        fvState.tab !== 'changes' ||
+        fvState.viewingFile ||
+        Boolean($('file-viewer-backdrop')?.hidden)
+      );
       const showChangesErr = (errMsg) => {
+        if (isChangesReqStale()) return;
         body.innerHTML = renderPanelStateHtml({
           isError: true,
           title: '读取会话变更失败',
@@ -14232,11 +14293,13 @@ function buildMobileAppHtml() {
           actionLabel: '重试加载'
         });
         const retryBtn = $('fv-changes-retry');
-        if (retryBtn) retryBtn.onclick = () => { void loadSessionChangesView(); };
+        if (retryBtn) retryBtn.addEventListener('click', () => { void loadSessionChangesView(); });
       };
       try {
         const res = await fetchWithTimeout((apiBase || '') + '/api/session-files?conversationId=' + encodeURIComponent(cid), { headers: authHeaders(), cache: 'no-store' }, 6000);
+        if (isChangesReqStale()) return;
         const data = await res.json().catch(() => null);
+        if (isChangesReqStale()) return;
         if (!res.ok || !data?.ok) {
           showChangesErr(data?.error || ('HTTP ' + res.status));
           return;
