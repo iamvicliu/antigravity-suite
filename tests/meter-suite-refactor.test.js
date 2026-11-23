@@ -28864,6 +28864,56 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.ok(agFiberGrp && agFiberGrp.conversations.some((c) => c.id === pinnedHexId), 'Fiber 分支：置顶会话必须归入权威组 b9e0-ag-suite');
     assert.equal(Boolean(wrongFiberGrp && wrongFiberGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'Fiber 分支：置顶会话不得归入冲突 groupId 指定的 0449-make-font');
 
+    // (iii) entry.projectId='default' 污染值 + 语言服务元数据/摘要为真实项目 + Hook 分组为另一项目 (0449-make-font)：必须逐候选过滤并服从语言服务元数据/摘要，绝不短路落入 0449-make-font
+    const hookDefaultPolluted = [
+      {
+        id: '0449-make-font',
+        label: '%make-font',
+        kind: 'project',
+        entries: [{
+          cascadeId: pinnedHexId,
+          projectId: 'default',
+          conversation: {
+            conversationId: pinnedHexId,
+            summary: '置顶会话',
+            trajectoryMetadata: { projectId: 'b9e0-ag-suite' }
+          }
+        }]
+      },
+      { id: 'b9e0-ag-suite', label: 'antigravity-suite', kind: 'project', entries: [] }
+    ];
+    sidebarEl.__reactFiber$test49.memoizedState = { memoizedState: hookDefaultPolluted, next: null };
+    const defaultPollutedSnap = enh.getMobileSnapshot();
+    assert.equal(defaultPollutedSnap.currentProjectId, 'b9e0-ag-suite', 'entry.projectId=default 不得截断后续 trajectoryMetadata.projectId 也不得回退到外层错误 Hook 组');
+    assert.equal(defaultPollutedSnap.currentProjectName, 'antigravity-suite');
+    assert.ok(
+      defaultPollutedSnap.projectGroups.find((g) => g.id === 'b9e0-ag-suite')?.conversations.some((c) => c.id === pinnedHexId),
+      'entry.projectId=default 时会话仍须归入 trajectoryMetadata 指定的 b9e0-ag-suite'
+    );
+    assert.equal(
+      Boolean(defaultPollutedSnap.projectGroups.find((g) => g.id === '0449-make-font')?.conversations.some((c) => c.id === pinnedHexId)),
+      false,
+      'entry.projectId=default 时不得误落入外层 Hook 组 0449-make-font'
+    );
+
+    // 再验证 entry 无内嵌 trajectoryMetadata、但 cascadeSummaryMap 持有语言服务摘要 projectId 时，摘要同样高于外层错误 Hook 组
+    const hookSummaryOnly = [
+      {
+        id: '0449-make-font',
+        label: '%make-font',
+        kind: 'project',
+        entries: [{
+          cascadeId: pinnedHexId,
+          projectId: 'default',
+          conversation: { conversationId: pinnedHexId, summary: '置顶会话' }
+        }]
+      },
+      { id: 'b9e0-ag-suite', label: 'antigravity-suite', kind: 'project', entries: [] }
+    ];
+    sidebarEl.__reactFiber$test49.memoizedState = { memoizedState: hookSummaryOnly, next: null };
+    const summaryPrioritySnap = enh.getMobileSnapshot();
+    assert.equal(summaryPrioritySnap.currentProjectId, 'b9e0-ag-suite', '语言服务摘要 projectId 必须高于外层 Hook 分组猜测');
+
     enh.dispose?.();
     envEnh.sandbox.__AGContextMeter?.dispose?.();
 
@@ -29047,6 +29097,98 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.equal(unresolvedConvNoDir.status, 200);
     assert.equal(unresolvedConvNoDir.json.emptyProject, true, '无法解析归属且无 dir 时应返回 emptyProject 空态而非跳到全局目录');
 
+    // 5c. 显式 workspaceRoot 边界校验、父子嵌套工作区及符号链接跨工作区越界隐藏回归
+    const nestedParentDir = path.join(fakeHome, 'nested-parent');
+    const nestedChildDir = path.join(nestedParentDir, 'child-ws');
+    fs.mkdirSync(nestedChildDir, { recursive: true });
+    fs.writeFileSync(path.join(nestedParentDir, 'parent-only.txt'), 'parent-secret');
+    fs.writeFileSync(path.join(nestedChildDir, 'child-ok.txt'), 'child-ok');
+    // 在子工作区内创建指向上级父工作区文件的符号链接；在 InsightOS 工作区 1 内创建指向同项目工作区 2 (_army) 的目录符号链接
+    fs.symlinkSync(path.join(nestedParentDir, 'parent-only.txt'), path.join(nestedChildDir, 'link-to-parent-file.txt'));
+    fs.symlinkSync(sharedArmyDir, path.join(insightRepoDir, 'symlink-to-army-ws'));
+    writeProjJson('proj-nested', 'NestedProject', [nestedParentDir, nestedChildDir]);
+    trajSummaries['conv-nested'] = {
+      summary: '父子工作区会话',
+      status: 'CASCADE_RUN_STATUS_IDLE',
+      lastModifiedTime: new Date().toISOString(),
+      trajectoryMetadata: { projectId: 'proj-nested', rootConversationId: 'conv-nested' }
+    };
+    const nestedAllowedRoots = remoteMod.resolveProductionMediaAllowedRoots({ configDir, homeDir: fakeHome });
+    const nestedHandler = remoteMod.createRemoteHttpHandler(mockCfg, {
+      catalogOptions: { stateDir, configDir },
+      mediaOptions: { allowedRoots: nestedAllowedRoots, configDir, homeDir: fakeHome },
+      callLanguageServer: async (method) => {
+        if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: trajSummaries };
+        if (method === 'GetTrajectoryFileDiffs') {
+          return { fileDiffs: [{ path: path.join(agSuiteDir, 'cli.js'), unifiedDiff: '@@ -1 +1 @@\n+// ag-diff' }] };
+        }
+        if (method === 'GetArtifactSnapshots') {
+          return { artifacts: [{ title: 'insight-art.md', content: '# Insight Artifact' }] };
+        }
+        return null;
+      }
+    });
+    const callNestedJson = async (urlPath) => {
+      const { Readable } = require('stream');
+      const req = Readable.from([]);
+      req.method = 'GET';
+      req.url = urlPath;
+      req.headers = { host: '127.0.0.1:18799', 'x-ag-remote-token': mockCfg.token };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let raw = '';
+      await nestedHandler(req, {
+        setHeader() {},
+        writeHead(code) { status = code; },
+        end(chunk) { if (chunk) raw += String(chunk); }
+      });
+      return { status, json: JSON.parse(raw) };
+    };
+
+    // (i) 显式传入无效或不属于当前项目的 workspaceRoot 必须拒绝，严禁静默忽略
+    const badWsRelative = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=relative/bad');
+    assert.equal(badWsRelative.status, 400, '显式传入非绝对路径 workspaceRoot 必须返回 400');
+    const badWsMissing = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(path.join(fakeHome, 'missing-ws')));
+    assert.equal(badWsMissing.status, 404, '显式传入不存在的 workspaceRoot 必须返回 404');
+    const badWsOtherProj = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(makeFontDir) + '&dir=' + encodeURIComponent(insightRepoDir));
+    assert.equal(badWsOtherProj.status, 403, '显式传入其他项目的 workspaceRoot 必须返回 403，不得静默改用 dir 所在根');
+
+    // (ii) 显式传入合法 workspaceRoot 时，请求其他工作区或父工作区的 dir 必须 403 拒绝，严禁静默切换 activeRoot
+    const crossSiblingWs = await callNestedJson(
+      '/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightSiteDir)
+    );
+    assert.equal(crossSiblingWs.status, 403, 'dir 超出当前指定 workspaceRoot（指向同项目另一工作区）必须 403 拦截');
+    const escapeChildWsToParent = await callNestedJson(
+      '/api/project-tree?conversationId=conv-nested&workspaceRoot=' + encodeURIComponent(nestedChildDir) + '&dir=' + encodeURIComponent(nestedParentDir)
+    );
+    assert.equal(escapeChildWsToParent.status, 403, '选定子工作区根时传父工作区 dir 必须 403 拦截，不得静默切到父工作区根');
+
+    // (iii) 选定子工作区根时 parentDir 为空且隐藏指向父工作区的符号链接；选定父工作区根时进入子目录可正常返回父工作区
+    const childScopedTree = await callNestedJson(
+      '/api/project-tree?conversationId=conv-nested&workspaceRoot=' + encodeURIComponent(nestedChildDir) + '&dir=' + encodeURIComponent(nestedChildDir)
+    );
+    assert.equal(childScopedTree.status, 200);
+    assert.equal(childScopedTree.json.parentDir, '', '选定子工作区根时根目录处 parentDir 必须锁死为空');
+    const childEntryNames = childScopedTree.json.entries.map((e) => e.name);
+    assert.ok(childEntryNames.includes('child-ok.txt'), '应正常列出子工作区内常规文件');
+    assert.equal(childEntryNames.includes('link-to-parent-file.txt'), false, '指向所选子工作区根外部（父目录）的符号链接必须被隐藏');
+
+    const parentScopedSubTree = await callNestedJson(
+      '/api/project-tree?conversationId=conv-nested&workspaceRoot=' + encodeURIComponent(nestedParentDir) + '&dir=' + encodeURIComponent(nestedChildDir)
+    );
+    assert.equal(parentScopedSubTree.status, 200);
+    assert.equal(parentScopedSubTree.json.parentDir, fs.realpathSync(nestedParentDir), '选定父工作区根时浏览其子目录可正常返回父工作区');
+
+    const insightRepoScopedTree = await callNestedJson(
+      '/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightRepoDir)
+    );
+    assert.equal(insightRepoScopedTree.status, 200);
+    assert.equal(
+      insightRepoScopedTree.json.entries.some((e) => e.name === 'symlink-to-army-ws'),
+      false,
+      '目录条目必须遵守当前所选工作区根边界，隐藏指向同项目其他工作区的符号链接'
+    );
+
     // 6. 前端完整交互验证：多目录项目展示全部工作区 + 顶部切换栏、切单目录项目自动重置、切独立会话展示空态绝不串台
     const enrichedInsight = await remoteMod.enrichSnapshotWithCatalog({
       ok: true,
@@ -29083,6 +29225,8 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     envUi.sandbox.AbortController = AbortController;
     envUi.sandbox.URLSearchParams = URLSearchParams;
     let interceptTreeGate = null;
+    let interceptFileGate = null;
+    let interceptChangesGate = null;
     envUi.sandbox.fetch = async (url) => {
       const u = new URL(String(url), 'http://127.0.0.1:18799');
       const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
@@ -29095,6 +29239,25 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
         }
         const res = await callGetJson(u.pathname + u.search);
         return { ok: res.status >= 200 && res.status < 300, status: res.status, headers: jsonHeaders, json: async () => res.json };
+      }
+      if (u.pathname === '/api/file-content') {
+        if (typeof interceptFileGate === 'function') {
+          await interceptFileGate(u);
+        }
+        const res = await callGetJson(u.pathname + u.search);
+        return { ok: res.status >= 200 && res.status < 300, status: res.status, headers: jsonHeaders, json: async () => res.json };
+      }
+      if (u.pathname === '/api/session-files') {
+        if (typeof interceptChangesGate === 'function') {
+          await interceptChangesGate(u);
+        }
+        const cidQ = u.searchParams.get('conversationId') || '';
+        const payload = cidQ === 'conv-pinned-ag'
+          ? { ok: true, diffs: [{ name: 'cli.js', path: path.join(agSuiteDir, 'cli.js'), diff: '@@ -1 +1 @@\n+// ag-suite-diff' }], artifacts: [] }
+          : (cidQ === 'conv-insight'
+            ? { ok: true, diffs: [], artifacts: [{ name: 'insight-art.md', content: '# Insight Summary' }] }
+            : { ok: true, diffs: [], artifacts: [] });
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => payload };
       }
       return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
     };
@@ -29202,6 +29365,89 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     envUi.doc.getElementById('fv-tab-tree').click();
     await new Promise((r) => setTimeout(r, 30));
     assert.ok((fvBody.textContent || '').includes('当前对话未关联项目文件夹'), 'fvState.curDir 不得被过期响应污染');
+
+    // (f) 文件预览与变更面板在切会话时的清理/重载回归（覆盖「已展示内容切会话」与「请求挂起中切会话防永久卡加载」）
+    // (f-1) 已展示单文件预览 (cli.js) 时切会话 -> 必须立即退出文件预览并重载新会话目录视图，不残留旧文件内容
+    envUi.doc.getElementById('fv-close-btn').click();
+    currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 60 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('btn-files-panel').click();
+    await new Promise((r) => setTimeout(r, 30));
+    const cliFileRow = fvBody.querySelectorAll('.fv-row').find((r) => (r.textContent || '').includes('cli.js'));
+    assert.ok(cliFileRow, '应找到 cli.js 文件行');
+    cliFileRow.click();
+    await new Promise((r) => setTimeout(r, 35));
+    assert.ok((fvBody.textContent || '').includes('// ag-suite'), '点击 cli.js 后应展示文件源码预览');
+    assert.equal(envUi.doc.getElementById('fv-back-btn').hidden, false, '文件预览态应显示返回按钮');
+    // 保持预览弹窗打开，切换到独立会话 conv-standalone
+    currentUiSnap = { ...enrichedStandalone, snapSeq: enrichedInsight.snapSeq + 70 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(envUi.doc.getElementById('fv-back-btn').hidden, true, '切会话后应退出旧会话单文件预览态');
+    assert.equal((fvBody.textContent || '').includes('// ag-suite'), false, '切会话后不得残留旧会话文件预览正文');
+    assert.ok((fvBody.textContent || '').includes('当前对话未关联项目文件夹'), '切会话后应自动重载为新会话的目录状态');
+
+    // (f-2) 单文件预览请求挂起期间切会话 -> 不得永久停留在骨架屏，也不得被旧文件迟到响应覆盖
+    envUi.doc.getElementById('fv-close-btn').click();
+    currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 80 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    envUi.doc.getElementById('btn-files-panel').click();
+    await new Promise((r) => setTimeout(r, 30));
+    let releaseSlowFile = null;
+    const slowFilePromise = new Promise((r) => { releaseSlowFile = r; });
+    interceptFileGate = async () => { await slowFilePromise; };
+    fvBody.querySelectorAll('.fv-row').find((r) => (r.textContent || '').includes('cli.js')).click();
+    await new Promise((r) => setTimeout(r, 15));
+    // 文件读取仍在挂起加载态时切到多目录会话 InsightOS
+    currentUiSnap = { ...enrichedInsight, snapSeq: enrichedInsight.snapSeq + 90 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 35));
+    assert.equal(fvBody.querySelectorAll('.fv-ws-root-row').length, 3, '文件请求挂起期间切到 InsightOS 应立即重载出 3 工作区总览，绝不永久卡在骨架屏');
+    releaseSlowFile();
+    interceptFileGate = null;
+    await new Promise((r) => setTimeout(r, 35));
+    assert.equal((fvBody.textContent || '').includes('// ag-suite'), false, '旧会话迟到的文件预览响应不得覆盖新会话视图');
+    assert.equal(fvBody.querySelectorAll('.fv-ws-root-row').length, 3);
+
+    // (f-3) 已展示「变更与产物」内容时切会话 -> 自动刷新为新会话变更列表，不保留旧会话 Diff
+    currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 100 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 35));
+    envUi.doc.getElementById('fv-tab-changes').click();
+    await new Promise((r) => setTimeout(r, 35));
+    assert.ok((fvBody.textContent || '').includes('cli.js'), '会话 A 变更页应展示修改的文件 cli.js');
+    // 切换到无改动的独立会话 conv-standalone
+    currentUiSnap = { ...enrichedStandalone, snapSeq: enrichedInsight.snapSeq + 110 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('当前会话暂无代码改动或产物'), '切会话后已打开的变更页必须自动重载新会话变更');
+    assert.equal((fvBody.textContent || '').includes('cli.js'), false, '切会话后变更页不得保留旧会话修改文件');
+
+    // (f-4) 「变更与产物」请求挂起期间切会话 -> 立即发起新会话变更请求，不卡骨架屏且丢弃旧会话迟到响应
+    currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 120 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 35));
+    let releaseSlowChanges = null;
+    const slowChangesPromise = new Promise((r) => { releaseSlowChanges = r; });
+    interceptChangesGate = async (u) => {
+      if ((u.searchParams.get('conversationId') || '') === 'conv-pinned-ag') {
+        await slowChangesPromise;
+      }
+    };
+    envUi.doc.getElementById('fv-tab-changes').click();
+    await new Promise((r) => setTimeout(r, 15));
+    // 会话 A 变更接口挂起中切到会话 C (conv-insight)
+    currentUiSnap = { ...enrichedInsight, snapSeq: enrichedInsight.snapSeq + 130 };
+    envUi.win.dispatchEvent({ type: 'pageshow' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok((fvBody.textContent || '').includes('insight-art.md'), '变更请求挂起期间切会话应直接加载新会话产物 insight-art.md，绝不卡在加载态');
+    releaseSlowChanges();
+    interceptChangesGate = null;
+    await new Promise((r) => setTimeout(r, 35));
+    assert.ok((fvBody.textContent || '').includes('insight-art.md'), '旧会话迟到的变更响应不得覆盖新会话产物列表');
+    assert.equal((fvBody.textContent || '').includes('cli.js'), false, '旧会话 cli.js 变更记录必须被丢弃');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
