@@ -23679,7 +23679,7 @@ test('根治远程端代码块与提示框中段 UI 铬导致的重复二次回�
   for (const [label, domText] of [
     ['bash Copy', '先运行下面这条命令：\nbash\nCopy\nnpm run test:suite\n运行完告诉我结果。'],
     ['bash 复制代码', '先运行下面这条命令：\nbash\n复制代码\nnpm run test:suite\n运行完告诉我结果。'],
-    ['纯语言标签 bash', '先运行下面这条命令：\nbash\nnpm run test:suite\n运行完告诉我结果。']
+    ['仅 Copy 按钮', '先运行下面这条命令：\nCopy\nnpm run test:suite\n运行完告诉我结果。']
   ]) {
     const merged = mergeTrajectoryAndDomMessages(baseCode, [
       { id: 'u-0', role: 'user', text: '给我看下命令' },
@@ -23852,5 +23852,69 @@ test('根治远程端代码块与提示框中段 UI 铬导致的重复二次回�
     mergedMultiFenceProse.some((m) => m.id === 'dom-tail-1'),
     true,
     '多段拼接中非槽位正文多出 bash 时不得误判为与原回复一致'
+  );
+
+  // 2k: 文首无边界拆词反例（长度 > 12）— book recommendations for beginners vs notebook recommendations for beginners，非流式/流式/多段均不得误合并
+  const baseBookRec = [
+    { id: 't-u-1', role: 'user', text: 'Give two recommendations' },
+    { id: 't-a-2', role: 'assistant', text: 'book recommendations for beginners' }
+  ];
+  for (const busyFlag of [false, true]) {
+    const mergedBookRec = mergeTrajectoryAndDomMessages(baseBookRec, [
+      { id: 'u-0', role: 'user', text: 'Give two recommendations' },
+      { id: 'a-1', role: 'assistant', text: 'book recommendations for beginners' },
+      { id: 'a-2', role: 'assistant', text: 'notebook recommendations for beginners' }
+    ], { busy: busyFlag });
+    assert.deepEqual(
+      mergedBookRec.map((m) => m.id),
+      ['t-u-1', 't-a-2', 'dom-tail-2'],
+      `busy=${busyFlag} 时文首 notebook 不得被拆成 note+book 误合并`
+    );
+  }
+  const baseMultiBookRec = [
+    { id: 't-u-1', role: 'user', text: 'Two parts' },
+    { id: 't-a-2', role: 'assistant', text: 'book recommendations for beginners' },
+    { id: 't-a-3', role: 'assistant', text: 'summary checklist completed successfully.' }
+  ];
+  const mergedMultiBookRec = mergeTrajectoryAndDomMessages(baseMultiBookRec, [
+    { id: 'u-0', role: 'user', text: 'Two parts' },
+    { id: 'a-1', role: 'assistant', text: 'notebook recommendations for beginners\n\nsummary checklist completed successfully.' }
+  ], { busy: false });
+  assert.equal(
+    mergedMultiBookRec.some((m) => m.id === 'dom-tail-1'),
+    true,
+    '多段拼接中首段为 notebook recommendations for beginners 时不得与 book recommendations for beginners 误合并'
+  );
+
+  // 2l: 结构槽位真实代码变更反例 — 同一 bash 代码块从 sudo apt update 变为 bash sudo apt update（无 Copy 按钮铬证据），非流式/流式/多段均保持不合并
+  const baseCodeChange = [
+    { id: 't-u-1', role: 'user', text: '给两条命令' },
+    { id: 't-a-2', role: 'assistant', text: '执行命令如下：\n```bash\nsudo apt update\n```\n执行完成后检查输出。' }
+  ];
+  for (const busyFlag of [false, true]) {
+    const mergedCodeChange = mergeTrajectoryAndDomMessages(baseCodeChange, [
+      { id: 'u-0', role: 'user', text: '给两条命令' },
+      { id: 'a-1', role: 'assistant', text: '执行命令如下：\nbash\nCopy\nsudo apt update\n执行完成后检查输出。' },
+      { id: 'a-2', role: 'assistant', text: '执行命令如下：\nbash sudo apt update\n执行完成后检查输出。' }
+    ], { busy: busyFlag });
+    assert.deepEqual(
+      mergedCodeChange.map((m) => m.id),
+      ['t-u-1', 't-a-2', 'dom-tail-2'],
+      `busy=${busyFlag} 时无 Copy 按钮铬证据的 "bash sudo apt update" 不得被当作语言标签吞掉`
+    );
+  }
+  const baseMultiCodeChange = [
+    { id: 't-u-1', role: 'user', text: '两步命令' },
+    { id: 't-a-2', role: 'assistant', text: '执行命令如下：\n```bash\nsudo apt update\n```\n完成。' },
+    { id: 't-a-3', role: 'assistant', text: '第二步确认完成。' }
+  ];
+  const mergedMultiCodeChange = mergeTrajectoryAndDomMessages(baseMultiCodeChange, [
+    { id: 'u-0', role: 'user', text: '两步命令' },
+    { id: 'a-1', role: 'assistant', text: '执行命令如下：\nbash sudo apt update\n完成。\n\n第二步确认完成。' }
+  ], { busy: false });
+  assert.equal(
+    mergedMultiCodeChange.some((m) => m.id === 'dom-tail-1'),
+    true,
+    '多段拼接中无 Copy 按钮铬证据的 "bash sudo apt update" 不得误合并'
   );
 });

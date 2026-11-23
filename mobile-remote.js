@@ -4762,34 +4762,53 @@ function buildBaseChromeSlots(markdownText) {
   return slots;
 }
 
-function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots) {
+function hasDomRawBoundaryBetween(rawText, rawStartOffsets, gapEndIdx) {
+  if (!rawText || !Array.isArray(rawStartOffsets) || gapEndIdx <= 0 || gapEndIdx >= rawStartOffsets.length) return true;
+  const prevRaw = rawStartOffsets[gapEndIdx - 1];
+  const nextRaw = rawStartOffsets[gapEndIdx];
+  if (!Number.isInteger(prevRaw) || !Number.isInteger(nextRaw)) return true;
+  if (nextRaw > prevRaw + 1) {
+    const between = rawText.slice(prevRaw + 1, nextRaw);
+    if (/[\s\n\r]/.test(between)) return true;
+  }
+  const prevCh = rawText[prevRaw] || '';
+  const nextCh = rawText[nextRaw] || '';
+  // 若前一个字符与后一个字符同为连续英文字母/数字且中间无空白分隔（如 notebook 中 note 与 book），不得拆词跳过
+  if (/[a-z0-9]/i.test(prevCh) && /[a-z0-9]/i.test(nextCh)) return false;
+  return true;
+}
+
+function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots, boundaryOk = true) {
   if (!gap || gap.length > 48) return false;
-  if (tiPos === 0 && DOM_UI_CHROME_STRICT_RE.test(gap)) return true;
+  if (tiPos === 0 && DOM_UI_CHROME_STRICT_RE.test(gap)) {
+    const hasExplicitCopyChrome = /(?:copycode|copied|copy|复制代码|已复制|复制)[:：·•\-|]*$/.test(gap);
+    if (hasExplicitCopyChrome || boundaryOk) return true;
+    return false;
+  }
   const list = chromeSlots?.get?.(tiPos);
   if (!Array.isArray(list) || !list.length) return false;
-  const cleaned = gap.replace(/[:：·•\-|]+$/g, '');
   for (const slot of list) {
     if (slot.kind === 'code') {
+      // 代码块槽位必须包含明确的复制按钮铬（Copy/复制代码 等），不跳过裸语言名，避免吞掉如 "bash sudo apt update" 中的真实代码
       if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap)) return true;
-      if (slot.lang) {
-        if (cleaned === slot.lang) return true;
-        if (gap.startsWith(slot.lang)) {
-          const rest = gap.slice(slot.lang.length).replace(/^[:：·•\-|]+/, '');
-          if (!rest || DOM_UI_CHROME_COPY_ONLY_RE.test(rest)) return true;
-        }
+      if (slot.lang && gap.startsWith(slot.lang)) {
+        const rest = gap.slice(slot.lang.length).replace(/^[:：·•\-|]+/, '');
+        if (rest && DOM_UI_CHROME_COPY_ONLY_RE.test(rest)) return true;
       }
     } else if (slot.kind === 'code-end') {
       if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap)) return true;
     } else if (slot.kind === 'alert') {
       const re = DOM_ALERT_CHROME_BY_TYPE[slot.alertType];
-      if (re && re.test(gap)) return true;
+      if (re && re.test(gap) && boundaryOk) return true;
     }
   }
   return false;
 }
 
-function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots = null) {
+function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots = null, domIndex = null) {
   if (!tClean || !dClean || startPos < 0 || startPos >= dClean.length) return -1;
+  const rawDom = domIndex?.raw || '';
+  const rawOffsets = domIndex?.rawStartOffsets || null;
   let ti = 0;
   let di = startPos;
   let skippedChrome = 0;
@@ -4819,7 +4838,8 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots 
         const idx = dClean.indexOf(probe, searchFrom);
         if (idx < 0 || idx > searchEnd) break;
         const gap = dClean.slice(di2, idx);
-        if (isAllowedDomChromeGapAt(gap, ti2, chromeSlots)) {
+        const boundaryOk = hasDomRawBoundaryBetween(rawDom, rawOffsets, idx);
+        if (isAllowedDomChromeGapAt(gap, ti2, chromeSlots, boundaryOk)) {
           matchedTi = ti2;
           matchedDi = idx;
           break;
@@ -4836,7 +4856,7 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots 
   if (ti < tClean.length) return -1;
   if (di < dClean.length) {
     const trailing = dClean.slice(di);
-    if (isAllowedDomChromeGapAt(trailing, tClean.length, chromeSlots)) {
+    if (isAllowedDomChromeGapAt(trailing, tClean.length, chromeSlots, true)) {
       di = dClean.length;
     }
   }
@@ -4887,7 +4907,8 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
   // Tier 1 仅在轨迹 Markdown 对应的结构槽位（围栏代码块起止、GitHub Alert 头部及文首前缀）允许跳过可识别的桌面 UI 装饰
   if (!options.baseIsDom && !options.domIsMarkdown && tClean.length >= 12 && dClean.length > tClean.length) {
     const chromeSlots = buildBaseChromeSlots(baseText);
-    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0, chromeSlots);
+    const domIndex = buildCompactDomIndex(domText);
+    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0, chromeSlots, domIndex);
     if (endPos > 0) {
       const tailAfter = dClean.length - endPos;
       if (tailAfter === 0 || Boolean(options.busy) || Boolean(options.allowCoveredPrefix)) {
@@ -5081,7 +5102,7 @@ function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, all
       if (dClean.startsWith(bk, pos)) {
         nextPos = pos + bk.length;
       } else if (!baseOverwrittenByDom?.has(item) && bk.length >= 12) {
-        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos, buildBaseChromeSlots(item.text));
+        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos, buildBaseChromeSlots(item.text), { raw, compact, rawStartOffsets });
       }
       if (nextPos > pos) {
         lastStartPos = pos;
