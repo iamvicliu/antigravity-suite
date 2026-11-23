@@ -8461,7 +8461,13 @@
           || el.getAttribute('data-testid') === 'worked-for-collapsible';
       };
       if (!replyText && !triggers.length) {
-        const fallbackBounded = collectBoundedNodeText([node], MAX_DOM_MSG_CHARS, 4000, 24, isStepProgressNode);
+        const fallbackBounded = collectBoundedNodeText(
+          [node],
+          MAX_DOM_MSG_CHARS,
+          4000,
+          24,
+          (el) => isStepProgressNode(el) || isMarkdownUiChromeNode(el)
+        );
         const cloneText = capText(fallbackBounded.text
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
           .replace(/^Worked\s+for\s+\S+(?:\s+in\s+this\s+step)?\s*\n*/i, '')

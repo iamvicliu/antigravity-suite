@@ -23721,16 +23721,26 @@ test('根治远程端代码块与提示框中段 UI 铬导致的重复二次回�
   ], { busy: false });
   assert.deepEqual(mergedMulti.map((m) => m.id), ['t-u-1', 't-a-2', 't-a-3']);
 
-  // 2d: 流式输出中段含 jsCopy 且尾部继续增长时应合并而非追加重复气泡
+  // 2d: 流式输出中段含 jsCopy 且尾部继续增长时应合并而非追加重复气泡（带换行边界或显式 Copy 按钮结构证据）
   const baseStream = [
     { id: 't-u-1', role: 'user', text: '写段示例' },
     { id: 't-a-2', role: 'assistant', text: '先看示例代码：\n```js\nconsole.log(1);\n```' }
   ];
   const mergedStream = mergeTrajectoryAndDomMessages(baseStream, [
     { id: 'u-0', role: 'user', text: '写段示例' },
-    { id: 'a-1', role: 'assistant', text: '先看示例代码：\njsCopyconsole.log(1);\n接着输出第二段说明。' }
+    {
+      id: 'a-1',
+      role: 'assistant',
+      text: '先看示例代码：\njsCopyconsole.log(1);\n接着输出第二段说明。',
+      html: '<p>先看示例代码：</p><div class="code-header"><span>js</span><button>Copy</button></div><pre><code>console.log(1);</code></pre><p>接着输出第二段说明。</p>'
+    }
   ], { busy: true });
   assert.deepEqual(mergedStream.map((m) => m.id), ['t-u-1', 't-a-2']);
+  const mergedStreamWithBoundary = mergeTrajectoryAndDomMessages(baseStream, [
+    { id: 'u-0', role: 'user', text: '写段示例' },
+    { id: 'a-1', role: 'assistant', text: '先看示例代码：\njsCopy\nconsole.log(1);\n接着输出第二段说明。' }
+  ], { busy: true });
+  assert.deepEqual(mergedStreamWithBoundary.map((m) => m.id), ['t-u-1', 't-a-2']);
 
   // 2e: 反例防误合并 — 同一轮两条内容不同的真实助手回复（差异非 UI 铬）必须保留两条
   const baseDistinct = [
@@ -24457,8 +24467,13 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
   );
   assert.deepEqual(htmlEntityMerged.map((m) => m.id), ['t-u-1', 't-a-2']);
 
-  // 3c. KaTeX 块级/行内数学公式去重，且严格保护货币金额与代码变量
+  // 3c. KaTeX 标准多行块级（$$\n...\n$$）、单行块级与行内数学公式去重，且严格保护货币金额、散落 $$ 与代码字面量
   assert.equal(normPlainMatchText('公式 $a + b = c$ 与块级 $$E = mc^2$$ 成立'), '公式 a + b = c 与块级 E = mc^2 成立');
+  assert.equal(normPlainMatchText('$$\nE = mc^2\n$$'), 'E = mc^2');
+  assert.equal(normPlainMatchText('能量公式如下：\n$$\nE = mc^2\n$$\n以上恒成立。'), '能量公式如下： E = mc^2 以上恒成立。');
+  assert.equal(normPlainMatchText('联立方程：\n$$\na + b = c\nE = mc^2\n$$\n结束。'), '联立方程： a + b = c E = mc^2 结束。');
+  assert.equal(normPlainMatchText('行内代码 `$$E = mc^2$$` 与围栏：\n```tex\n$$\nE = mc^2\n$$\n```'), '行内代码 $$E = mc^2$$ 与围栏： $$ E = mc^2 $$');
+  assert.equal(normPlainMatchText('shell 变量 echo $$ and $$ 保持原样'), 'shell 变量 echo $$ and $$ 保持原样');
   assert.equal(normPlainMatchText('价格从 $5 涨到 $10 了'), '价格从 $5 涨到 $10 了');
   assert.equal(normPlainMatchText('Cost is $100/mo or $200/mo'), 'Cost is $100/mo or $200/mo');
   assert.equal(normPlainMatchText('价格 $5元 到 $10元'), '价格 $5元 到 $10元');
@@ -24476,8 +24491,20 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
     { busy: false }
   );
   assert.deepEqual(katexMerged.map((m) => m.id), ['t-u-1', 't-a-2']);
+  const katexMultilineMerged = mergeTrajectoryAndDomMessages(
+    [
+      { id: 't-u-1', role: 'user', text: '块级公式' },
+      { id: 't-a-2', role: 'assistant', text: '标准块级公式如下：\n\n$$\nE = mc^2\n$$\n\n请核对。' }
+    ],
+    [
+      { id: 'u-0', role: 'user', text: '块级公式' },
+      { id: 'a-1', role: 'assistant', text: '标准块级公式如下：\nE = mc^2\n请核对。' }
+    ],
+    { busy: false }
+  );
+  assert.deepEqual(katexMultilineMerged.map((m) => m.id), ['t-u-1', 't-a-2'], '标准多行块级公式 $$\\nE = mc^2\\n$$ 必须正常归一化去重');
 
-  // 3d. 代码槽位与文首 copy / 语言标签+Copy 词边界反例：copyright / Copyright / py\nCopyright 不得被拆为 copy + right 误合并；真实复制按钮仍正常去重
+  // 3d. 代码槽位与文首 copy / 语言标签+Copy 词边界反例：copyright / Copyright / py\nCopyright / pyCopyright（无按钮结构证据）不得被拆为按钮铬 + right 误合并；真实复制按钮仍正常去重
   const baseRightCode = [
     { id: 't-u-1', role: 'user', text: '对比两段代码' },
     { id: 't-a-2', role: 'assistant', text: '查看如下代码：\n```py\nright = get_license_metadata()\n```\n请核对。' }
@@ -24487,7 +24514,8 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
     'Copyright = get_license_metadata()',
     'py\nCopyright = get_license_metadata()',
     'py Copyright = get_license_metadata()',
-    'py\ncopyright = get_license_metadata()'
+    'py\ncopyright = get_license_metadata()',
+    'pyCopyright = get_license_metadata()'
   ]) {
     for (const busyFlag of [false, true]) {
       const mergedCopyright = mergeTrajectoryAndDomMessages(baseRightCode, [
@@ -24498,40 +24526,47 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
       assert.deepEqual(
         mergedCopyright.map((m) => m.id),
         ['t-u-1', 't-a-2', 'dom-tail-2'],
-        `busy=${busyFlag} 时 ${JSON.stringify(variant)} 不得被拆为 copy+right 误合并`
+        `非权威路径 busy=${busyFlag} 时 ${JSON.stringify(variant)} 不得被拆为按钮铬+right 误合并`
       );
     }
   }
-  for (const [label, domCopyText] of [
-    ['裸 Copy 换行', '查看如下代码：\nCopy\nright = get_license_metadata()\n请核对。'],
-    ['语言标签换行 + Copy 换行', '查看如下代码：\npy\nCopy\nright = get_license_metadata()\n请核对。'],
-    ['紧贴 pyCopy + 换行', '查看如下代码：\npyCopy\nright = get_license_metadata()\n请核对。']
+  for (const [label, domCopyText, extraFields] of [
+    ['裸 Copy 换行', '查看如下代码：\nCopy\nright = get_license_metadata()\n请核对。', {}],
+    ['语言标签换行 + Copy 换行', '查看如下代码：\npy\nCopy\nright = get_license_metadata()\n请核对。', {}],
+    ['紧贴 pyCopy + 换行', '查看如下代码：\npyCopy\nright = get_license_metadata()\n请核对。', {}],
+    ['带显式 Copy 按钮结构证据的紧贴铬', '查看如下代码：\npyCopyright = get_license_metadata()\n请核对。', { domHasCopyButtonChrome: true }]
   ]) {
     const mergedCopyBoundaryOk = mergeTrajectoryAndDomMessages(baseRightCode, [
       { id: 'u-0', role: 'user', text: '对比两段代码' },
-      { id: 'a-1', role: 'assistant', text: domCopyText }
+      { id: 'a-1', role: 'assistant', text: domCopyText, ...extraFields }
     ], { busy: false });
     assert.deepEqual(mergedCopyBoundaryOk.map((m) => m.id), ['t-u-1', 't-a-2'], `真实复制按钮铬（${label}）仍正常去重`);
   }
 
-  for (const leadVariant of ['Copyright notice for open source project', 'py\nCopyright notice for open source project']) {
-    const mergedLeadCopyright = mergeTrajectoryAndDomMessages(
-      [
-        { id: 't-u-1', role: 'user', text: 'Two lines' },
-        { id: 't-a-2', role: 'assistant', text: 'right notice for open source project' }
-      ],
-      [
-        { id: 'u-0', role: 'user', text: 'Two lines' },
-        { id: 'a-1', role: 'assistant', text: 'right notice for open source project' },
-        { id: 'a-2', role: 'assistant', text: leadVariant }
-      ],
-      { busy: false }
-    );
-    assert.deepEqual(
-      mergedLeadCopyright.map((m) => m.id),
-      ['t-u-1', 't-a-2', 'dom-tail-2'],
-      `文首 ${JSON.stringify(leadVariant)} 不得与 right notice 误合并`
-    );
+  for (const leadVariant of [
+    'Copyright notice for open source project',
+    'py\nCopyright notice for open source project',
+    'pyCopyright notice for open source project'
+  ]) {
+    for (const busyFlag of [false, true]) {
+      const mergedLeadCopyright = mergeTrajectoryAndDomMessages(
+        [
+          { id: 't-u-1', role: 'user', text: 'Two lines' },
+          { id: 't-a-2', role: 'assistant', text: 'right notice for open source project' }
+        ],
+        [
+          { id: 'u-0', role: 'user', text: 'Two lines' },
+          { id: 'a-1', role: 'assistant', text: 'right notice for open source project' },
+          { id: 'a-2', role: 'assistant', text: leadVariant }
+        ],
+        { busy: busyFlag }
+      );
+      assert.deepEqual(
+        mergedLeadCopyright.map((m) => m.id),
+        ['t-u-1', 't-a-2', 'dom-tail-2'],
+        `文首 busy=${busyFlag} 时 ${JSON.stringify(leadVariant)} 不得与 right notice 误合并`
+      );
+    }
   }
 
   // 4a. 服务端 fetchSnapshotFromTarget 实际触发 catch 回退的行为测试：强制输出相互一致的 DOM/isolated_error 来源、总数、起始索引与 0-based msgIndex
