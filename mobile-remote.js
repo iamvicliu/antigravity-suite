@@ -4705,15 +4705,41 @@ function stripTrailingEllipsis(s) {
   return String(s || '').replace(/(?:\.{3,}|…+)$/g, '');
 }
 
-const DOM_UI_CHROME_UNIT = '(?:'
-  + 'copycode|copied|copy|复制代码|已复制|复制'
-  + '|important|warning|caution|note|tip'
-  + '|重要提示|提示信息|注意事项|警告提示'
-  + '|javascript|typescript|python|bash|shell|zsh|sh|json|yaml|yml|html|css|scss|less|sql|golang|go|rust|java|cpp|c\\+\\+|csharp|c#|ruby|php|swift|kotlin|markdown|md|xml|toml|ini|diff|plaintext|text|txt|jsx|tsx|js|ts|py|rb|rs|cs|mermaid'
+const DOM_UI_CHROME_TOKEN = '(?:'
+  + '(?:(?:javascript|typescript|python|bash|shell|zsh|sh|json|yaml|yml|html|css|scss|less|sql|golang|go|rust|java|cpp|c\\+\\+|csharp|c#|ruby|php|swift|kotlin|markdown|md|xml|toml|ini|diff|plaintext|text|txt|jsx|tsx|js|ts|py|rb|rs|cs|mermaid)?(?:copycode|copied|copy|复制代码|已复制|复制))'
+  + '|(?:important|warning|caution|note|tip)'
+  + '|(?:重要提示|提示信息|注意事项|警告提示)'
   + ')';
-const DOM_UI_CHROME_GAP_RE = new RegExp(`^(?:${DOM_UI_CHROME_UNIT}[:：·•\\-|]*)+$`);
+const DOM_UI_CHROME_STRICT_RE = new RegExp(`^(?:${DOM_UI_CHROME_TOKEN}[:：·•\\-|]*)+$`);
 
-function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0) {
+function extractFencedCodeLanguages(markdownText) {
+  const langs = new Set();
+  const src = String(markdownText || '');
+  const re = /^[ \t]*(?:`{3,}|~{3,})[ \t]*([a-z0-9+#._-]{1,24})\b/gim;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    const lang = String(m[1] || '').toLowerCase();
+    if (lang) langs.add(lang);
+  }
+  return langs;
+}
+
+function isAllowedDomChromeGap(gap, allowedBareLangs) {
+  if (!gap || gap.length > 48) return false;
+  if (DOM_UI_CHROME_STRICT_RE.test(gap)) return true;
+  if (!allowedBareLangs || allowedBareLangs.size === 0) return false;
+  const cleaned = gap.replace(/[:：·•\-|]+$/g, '');
+  if (allowedBareLangs.has(cleaned)) return true;
+  for (const lang of allowedBareLangs) {
+    if (gap.startsWith(lang)) {
+      const rest = gap.slice(lang.length).replace(/^[:：·•\-|]+/, '');
+      if (!rest || DOM_UI_CHROME_STRICT_RE.test(rest)) return true;
+    }
+  }
+  return false;
+}
+
+function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, allowedBareLangs = null) {
   if (!tClean || !dClean || startPos < 0 || startPos >= dClean.length) return -1;
   let ti = 0;
   let di = startPos;
@@ -4726,30 +4752,41 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0) {
       continue;
     }
     if (skippedChrome >= MAX_CHROME_GAPS) return -1;
-    const remT = tClean.length - ti;
-    const probeLen = Math.min(8, remT);
-    const probe = tClean.slice(ti, ti + probeLen);
-    const searchEnd = Math.min(dClean.length, di + 48);
-    let foundAt = -1;
-    let searchFrom = di + 1;
-    while (searchFrom < searchEnd) {
-      const idx = dClean.indexOf(probe, searchFrom);
-      if (idx < 0 || idx > searchEnd) break;
-      const gap = dClean.slice(di, idx);
-      if (gap && DOM_UI_CHROME_GAP_RE.test(gap)) {
-        foundAt = idx;
-        break;
+    // 允许最多回退 12 个已匹配字符，处理 UI 铬与后续正文共享前缀的场景（如 shCopy 插在 sudoaptupdate 前先消费了 's'）
+    const maxBack = Math.min(ti, 12);
+    let matchedTi = -1;
+    let matchedDi = -1;
+    for (let back = 0; back <= maxBack; back += 1) {
+      const ti2 = ti - back;
+      const di2 = di - back;
+      if (di2 < startPos) break;
+      const remT = tClean.length - ti2;
+      const probeLen = Math.min(8, remT);
+      const probe = tClean.slice(ti2, ti2 + probeLen);
+      const searchEnd = Math.min(dClean.length, di2 + 48);
+      let searchFrom = di2 + 1;
+      while (searchFrom < searchEnd) {
+        const idx = dClean.indexOf(probe, searchFrom);
+        if (idx < 0 || idx > searchEnd) break;
+        const gap = dClean.slice(di2, idx);
+        if (isAllowedDomChromeGap(gap, allowedBareLangs)) {
+          matchedTi = ti2;
+          matchedDi = idx;
+          break;
+        }
+        searchFrom = idx + 1;
       }
-      searchFrom = idx + 1;
+      if (matchedDi >= 0) break;
     }
-    if (foundAt < 0) return -1;
-    di = foundAt;
+    if (matchedDi < 0) return -1;
+    ti = matchedTi;
+    di = matchedDi;
     skippedChrome += 1;
   }
   if (ti < tClean.length) return -1;
   if (di < dClean.length) {
     const trailing = dClean.slice(di);
-    if (trailing.length <= 48 && DOM_UI_CHROME_GAP_RE.test(trailing)) {
+    if (isAllowedDomChromeGap(trailing, allowedBareLangs)) {
       di = dClean.length;
     }
   }
@@ -4797,9 +4834,10 @@ function classifyAssistantMatch(baseText, domText, options = {}) {
     return 2;
   }
 
-  // Tier 1 允许可识别的桌面 UI 装饰（首部/中段/尾部的代码块语言标签、Copy/复制代码、GitHub Alert 标题）穿插在完整轨迹正文中
+  // Tier 1 允许可识别的桌面 UI 装饰（首部/中段/尾部的 Copy/复制代码、GitHub Alert 标题，以及轨迹实际声明的代码块语言标签）穿插在完整轨迹正文中
   if (!options.baseIsDom && !options.domIsMarkdown && tClean.length >= 12 && dClean.length > tClean.length) {
-    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0);
+    const allowedBareLangs = extractFencedCodeLanguages(baseText);
+    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0, allowedBareLangs);
     if (endPos > 0) {
       const tailAfter = dClean.length - endPos;
       if (tailAfter === 0 || Boolean(options.busy) || Boolean(options.allowCoveredPrefix)) {
@@ -4993,7 +5031,7 @@ function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, all
       if (dClean.startsWith(bk, pos)) {
         nextPos = pos + bk.length;
       } else if (!baseOverwrittenByDom?.has(item) && bk.length >= 12) {
-        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos);
+        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos, extractFencedCodeLanguages(item.text));
       }
       if (nextPos > pos) {
         lastStartPos = pos;
