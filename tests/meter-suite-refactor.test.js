@@ -23261,3 +23261,210 @@ test('消除 UTF-8 跨分片截断、isolated Markdown 合并、多段历史轮�
     envStep.cleanup?.();
   }
 });
+
+test('修复 240K 自动压缩死循环 3 处 Bug：压缩后旧读数滞后、斜杠胶囊防重护栏与异步发送状态机竞态', async () => {
+  const makeAutoCompactHarness = () => {
+    const env = createDomEnv();
+    let fakeNow = 1795428000000;
+    const OrigDate = Date;
+    class MockDate extends OrigDate {
+      constructor(...args) {
+        super(...(args.length ? args : [fakeNow]));
+      }
+      static now() { return fakeNow; }
+    }
+    env.sandbox.Date = MockDate;
+    env.sandbox.setTimeout = setTimeout;
+    env.sandbox.clearTimeout = clearTimeout;
+
+    const composer = env.doc.createElement('div');
+    composer.className = 'surface-composer';
+    const editor = env.doc.createElement('div');
+    editor.setAttribute('data-lexical-editor', 'true');
+    editor.setAttribute('contenteditable', 'true');
+    const sendBtn = env.doc.createElement('button');
+    sendBtn.setAttribute('data-testid', 'send-button');
+    let sendClicks = 0;
+    sendBtn.addEventListener('click', () => { sendClicks++; });
+    composer.appendChild(editor);
+    composer.appendChild(sendBtn);
+    env.doc.body.appendChild(composer);
+
+    const capMock = env.doc.createElement('button');
+    capMock.setAttribute('data-agy-context-capsule', '1');
+    capMock.__ctxUsageData = { hasPreciseSnapshot: true, contextUsed: 180000, usagePercent: 35, cacheDropDetected: false };
+    env.doc.body.appendChild(capMock);
+
+    env.doc.execCommand = (cmd, _ui, val) => {
+      if (cmd === 'insertText') {
+        editor.textContent = String(val || '');
+        return true;
+      }
+      if (cmd === 'delete') {
+        editor.textContent = '';
+        return true;
+      }
+      return true;
+    };
+    env.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+    env.win.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+
+    let mockedMeterLatest = null;
+    env.win.__AGContextMeter = {
+      snapshot: () => ({ latest: mockedMeterLatest })
+    };
+    env.sandbox.__AGContextMeter = env.win.__AGContextMeter;
+
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const enh = env.sandbox.__AGEnhancer;
+    return {
+      env,
+      enh,
+      editor,
+      capMock,
+      getSendClicks: () => sendClicks,
+      setMeterLatest: (v) => { mockedMeterLatest = v; },
+      advanceNow: (ms) => { fakeNow += ms; }
+    };
+  };
+
+  // 1. 压缩后胶囊已精确降至 30K（3%），主计量表仍滞留在压缩前 259K + cacheDropDetected:true 时，不得误判超 240K
+  {
+    const h = makeAutoCompactHarness();
+    try {
+      h.setMeterLatest({ actual: 258963, used: 258963, cacheDropDetected: true });
+      h.capMock.__ctxUsageData = {
+        hasPreciseSnapshot: true,
+        contextUsed: 30374,
+        usagePercent: 2.9,
+        compressionDetected: true,
+        cacheDropDetected: false
+      };
+      const postCompactRes = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(postCompactRes.triggered, false);
+      assert.equal(postCompactRes.reason, 'below_threshold');
+      assert.equal(h.getSendClicks(), 0);
+
+      // 正常增长到 248K（即使会话历史曾压缩过，cap 仅落后 1 步在 230K）仍应正常触发
+      h.setMeterLatest({ actual: 248000, used: 248000, cacheDropDetected: false });
+      h.capMock.__ctxUsageData = {
+        hasPreciseSnapshot: true,
+        contextUsed: 230000,
+        usagePercent: 45,
+        compressionDetected: true,
+        cacheDropDetected: false
+      };
+      const normalGrowRes = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(normalGrowRes.triggered, true);
+      assert.equal(normalGrowRes.reason, 'threshold_240k');
+    } finally {
+      h.enh.dispose?.();
+      h.env.cleanup?.();
+    }
+  }
+
+  // 2. 斜杠胶囊渲染形态的 /compact 历史消息防重护栏（含兜底 "You saidcompact 6m ago" 与 user-message-content="compact "），且不误拦普通消息
+  {
+    const h = makeAutoCompactHarness();
+    try {
+      h.capMock.__ctxUsageData = {
+        hasPreciseSnapshot: true,
+        contextUsed: 338630,
+        usagePercent: 66,
+        cacheDropDetected: true
+      };
+      const asstMd = h.env.doc.createElement('div');
+      asstMd.setAttribute('data-markdown-root', 'true');
+      asstMd.textContent = '上一轮回复';
+      asstMd.compareDocumentPosition = () => 4; // DOCUMENT_POSITION_FOLLOWING
+      h.env.doc.body.appendChild(asstMd);
+
+      // 2a: 兜底无 user-message-content 时识别 "You saidcompact 6m ago"
+      const uPillFallback = h.env.doc.createElement('div');
+      uPillFallback.setAttribute('data-testid', 'user-message');
+      uPillFallback.textContent = 'You saidcompact 6m ago';
+      h.env.doc.body.appendChild(uPillFallback);
+      const res2a = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(res2a.triggered, false);
+      assert.equal(res2a.reason, 'already_compacted');
+
+      // 2b: 带 user-message-content="compact " 的标准桌面端结构
+      const uPillStd = h.env.doc.createElement('div');
+      uPillStd.setAttribute('data-testid', 'user-message');
+      const uSr = h.env.doc.createElement('h5');
+      uSr.textContent = 'You said';
+      const uContent = h.env.doc.createElement('div');
+      uContent.setAttribute('data-testid', 'user-message-content');
+      uContent.textContent = 'compact ';
+      const uTime = h.env.doc.createElement('span');
+      uTime.textContent = 'just now';
+      uPillStd.appendChild(uSr);
+      uPillStd.appendChild(uContent);
+      uPillStd.appendChild(uTime);
+      h.env.doc.body.appendChild(uPillStd);
+      const res2b = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(res2b.triggered, false);
+      assert.equal(res2b.reason, 'already_compacted');
+
+      // 2c: 普通用户消息提到 compact 不得误判为已压缩
+      const uNormal = h.env.doc.createElement('div');
+      uNormal.setAttribute('data-testid', 'user-message');
+      const uNormalContent = h.env.doc.createElement('div');
+      uNormalContent.setAttribute('data-testid', 'user-message-content');
+      uNormalContent.textContent = '刚才的 compact 没生效';
+      uNormal.appendChild(uNormalContent);
+      h.env.doc.body.appendChild(uNormal);
+      const res2c = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(res2c.triggered, true);
+      assert.equal(res2c.reason, 'cache_drop');
+    } finally {
+      h.enh.dispose?.();
+      h.env.cleanup?.();
+    }
+  }
+
+  // 3. 异步发送 /compact 期间 1s 定时器提前跑过 + recent-submit 窗口不得重新上膛 armedForSession
+  {
+    const h = makeAutoCompactHarness();
+    try {
+      h.capMock.__ctxUsageData = {
+        hasPreciseSnapshot: true,
+        contextUsed: 259000,
+        usagePercent: 51,
+        cacheDropDetected: false
+      };
+      const first = h.enh.runAutoCompactTick({ immediate: true });
+      assert.equal(first.triggered, true);
+
+      // 模拟 performMobileAction 尚在异步 fillComposerText 期间（busy=false），1s tick 跑过：不得清空 inFlightSession
+      const midSendTick = h.enh.runAutoCompactTick();
+      assert.equal(midSendTick.triggered, false);
+      assert.equal(midSendTick.reason, 'compact_in_flight');
+
+      // 等异步提交完成（会触发 submitCurrentComposer -> lastUserSubmitAt -> busy='recent-submit'）
+      await new Promise(r => setTimeout(r, 90));
+      assert.equal(h.getSendClicks(), 1);
+      h.editor.textContent = '';
+
+      // 提交后 1s 内处于 recent-submit 窗口，必须仍为 compact_in_flight，不得把 armedForSession 置 true
+      const duringRecentSubmit = h.enh.runAutoCompactTick();
+      assert.equal(duringRecentSubmit.triggered, false);
+      assert.equal(duringRecentSubmit.reason, 'compact_in_flight');
+
+      // 推进时间超过 90s 冷却与 inFlightUntil 保护窗：先收口 compact_finished，随后因未上膛保持 not_armed_after_turn，绝不二次发送
+      h.advanceNow(100000);
+      const finishTick = h.enh.runAutoCompactTick();
+      assert.equal(finishTick.triggered, false);
+      assert.equal(finishTick.reason, 'compact_finished');
+
+      h.advanceNow(5000);
+      const idleAfterFinish = h.enh.runAutoCompactTick();
+      assert.equal(idleAfterFinish.triggered, false);
+      assert.equal(idleAfterFinish.reason, 'not_armed_after_turn');
+      assert.equal(h.getSendClicks(), 1, '单次自动压缩完成后不得因自身竞态再次发送 /compact');
+    } finally {
+      h.enh.dispose?.();
+      h.env.cleanup?.();
+    }
+  }
+});
