@@ -4724,8 +4724,9 @@ function normPlainMatchText(text) {
     if (lower === '&nbsp;') return ' ';
     return ent;
   });
-  // 剥离块级与行内 KaTeX 数学定界符（反斜杠转义 \$ 已在第 4 步冻结，且严格避开货币金额与变量名）
-  s = s.replace(/\$\$([^$\n]+?)\$\$/g, '$1');
+  // 剥离块级（含标准多行 $$\n...\n$$ 与单行 $$...$$）与行内 KaTeX 数学定界符（反斜杠转义 \$ 与代码块已在第 1-4 步冻结，且严格避开货币金额与变量名）
+  s = s.replace(/^[ \t]*\$\$[ \t]*\n((?:(?![ \t]*\$\$[ \t]*$)(?!\s*$)[^$\n]+\n)+)[ \t]*\$\$[ \t]*$/gm, '$1');
+  s = s.replace(/\$\$(?!\s)((?:[^$\n]*?[^\s$])|[^$\s])\$\$/g, '$1');
   s = s.replace(
     /(^|[^\\$\w])\$(?!\s)(?!\d+(?:[.,]\d+)?(?:\s|$))([A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]*?[A-Za-z\\=+\-*/^_{}][A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]*?)(?<!\s)\$(?![A-Za-z0-9_])/g,
     '$1$2'
@@ -4862,10 +4863,18 @@ function hasDomRawBoundaryBetween(rawText, rawStartOffsets, gapEndIdx) {
   return true;
 }
 
+function hasDomCopyButtonStructureEvidence(domMsg) {
+  if (!domMsg || typeof domMsg !== 'object') return false;
+  if (domMsg.domHasCopyButtonChrome === true) return true;
+  const html = String(domMsg.html || '');
+  if (!html) return false;
+  return /<button\b[^>]*>\s*(?:Copy(?:\s*Code)?|Copied|复制代码|已复制|复制)\s*<\/button>/i.test(html);
+}
+
 function isGluedLangCopyChrome(rawGap, expectedLang = '') {
   const s = String(rawGap || '');
-  // 无后继词边界时（如 jsCopyconsole.log），仅允许语言标签与 Copy/Copied/复制代码 之间无任何空白或分隔符的紧贴复合铬；
-  // 若语言标签与 Copy 之间存在换行/空格/标点（如 "py\nCopyright" 切出的 "py\nCopy"），则后段 Copy 属于新行/新词前缀，不得拆词吞掉 Copyright
+  // 仅当来源/DOM 具备显式复制按钮结构证据且语言标签与 Copy/Copied/复制代码 之间无空白/标点分隔时才允许无词边界跳过；
+  // 任何缺少按钮结构证据的普通文本（如 pyCopyright）或含空白分隔（如 py\nCopyright）一律禁止拆词。
   if (!s || /[\s:：·•\-|]/.test(s)) return false;
   if (expectedLang) {
     if (!s.toLowerCase().startsWith(String(expectedLang).toLowerCase())) return false;
@@ -4876,25 +4885,24 @@ function isGluedLangCopyChrome(rawGap, expectedLang = '') {
     && /(?:CopyCode|Copy|Copied|复制代码|已复制|复制)$/.test(s);
 }
 
-function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots, boundaryOk = true, rawGap = '') {
+function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots, boundaryOk = true, rawGap = '', allowGluedCopyChrome = false) {
   if (!gap || gap.length > 48) return false;
   if (tiPos === 0 && DOM_UI_CHROME_STRICT_RE.test(gap)) {
     const hasLangAndCopyChrome = !DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && /(?:copycode|copied|copy|复制代码|已复制|复制)[:：·•\-|]*$/.test(gap);
-    if (boundaryOk || (hasLangAndCopyChrome && isGluedLangCopyChrome(rawGap))) return true;
+    if (boundaryOk || (allowGluedCopyChrome && hasLangAndCopyChrome && isGluedLangCopyChrome(rawGap))) return true;
     return false;
   }
   const list = chromeSlots?.get?.(tiPos);
   if (!Array.isArray(list) || !list.length) return false;
   for (const slot of list) {
     if (slot.kind === 'code') {
-      // 代码块槽位必须包含明确的复制按钮铬（Copy/复制代码 等）：
-      // 裸 Copy 必须具备词边界（彻底杜绝 copyright/Copyright 误拆为 copy + right）；
-      // 语言标签 + Copy 复合铬在无后继词边界时，仅接受无空白分隔的紧贴铬（如 jsCopyconsole.log），
-      // 严禁把 "py\nCopyright" 拆成 "py\nCopy" + "right" 误合并。
+      // 代码块槽位必须包含明确的复制按钮铬（Copy/复制代码 等）与真实词边界；
+      // 无后继词边界的紧贴复合铬（如旧版 DOM 拼接的 jsCopyconsole.log）仅在具备显式按钮结构/来源证据时放行，
+      // 彻底杜绝将真实代码标识符 pyCopyright / py\nCopyright / Copyright 拆成按钮铬与 right 误合并。
       if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && boundaryOk) return true;
       if (slot.lang && gap.startsWith(slot.lang)) {
         const rest = gap.slice(slot.lang.length).replace(/^[:：·•\-|]+/, '');
-        if (rest && DOM_UI_CHROME_COPY_ONLY_RE.test(rest) && (boundaryOk || isGluedLangCopyChrome(rawGap, slot.lang))) return true;
+        if (rest && DOM_UI_CHROME_COPY_ONLY_RE.test(rest) && (boundaryOk || (allowGluedCopyChrome && isGluedLangCopyChrome(rawGap, slot.lang)))) return true;
       }
     } else if (slot.kind === 'code-end') {
       if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && boundaryOk) return true;
@@ -4906,7 +4914,7 @@ function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots, boundaryOk = true, raw
   return false;
 }
 
-function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots = null, domIndex = null) {
+function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots = null, domIndex = null, allowGluedCopyChrome = false) {
   if (!tClean || !dClean || startPos < 0 || startPos >= dClean.length) return -1;
   const rawDom = domIndex?.raw || '';
   const rawOffsets = domIndex?.rawStartOffsets || null;
@@ -4943,7 +4951,7 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots 
         const rawGapStart = Array.isArray(rawOffsets) && Number.isInteger(rawOffsets[di2]) ? rawOffsets[di2] : -1;
         const rawGapEnd = Array.isArray(rawOffsets) && idx > 0 && Number.isInteger(rawOffsets[idx - 1]) ? (rawOffsets[idx - 1] + 1) : -1;
         const rawGap = (rawDom && rawGapStart >= 0 && rawGapEnd > rawGapStart) ? rawDom.slice(rawGapStart, rawGapEnd) : gap;
-        if (isAllowedDomChromeGapAt(gap, ti2, chromeSlots, boundaryOk, rawGap)) {
+        if (isAllowedDomChromeGapAt(gap, ti2, chromeSlots, boundaryOk, rawGap, allowGluedCopyChrome)) {
           matchedTi = ti2;
           matchedDi = idx;
           break;
@@ -4962,7 +4970,7 @@ function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots 
     const trailing = dClean.slice(di);
     const rawTrailStart = Array.isArray(rawOffsets) && Number.isInteger(rawOffsets[di]) ? rawOffsets[di] : -1;
     const rawTrail = (rawDom && rawTrailStart >= 0) ? rawDom.slice(rawTrailStart) : trailing;
-    if (isAllowedDomChromeGapAt(trailing, tClean.length, chromeSlots, true, rawTrail)) {
+    if (isAllowedDomChromeGapAt(trailing, tClean.length, chromeSlots, true, rawTrail, allowGluedCopyChrome)) {
       di = dClean.length;
     }
   }
@@ -5032,7 +5040,7 @@ function classifyAssistantMatchDetail(baseText, domText, options = {}) {
   if (!options.baseIsDom && !options.domIsMarkdown && tClean.length >= 12 && dClean.length > tClean.length) {
     const chromeSlots = buildBaseChromeSlots(baseText);
     const domIndex = buildCompactDomIndex(domText);
-    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0, chromeSlots, domIndex);
+    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0, chromeSlots, domIndex, Boolean(options.allowGluedCopyChrome));
     if (endPos > 0) {
       const tailAfter = dClean.length - endPos;
       if (tailAfter === 0 || Boolean(options.busy) || Boolean(options.allowCoveredPrefix)) {
@@ -5203,7 +5211,7 @@ function buildCompactDomIndex(rawText) {
   return { raw, compact, rawStartOffsets };
 }
 
-function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, allowBusyTail = false, allowCoveredTail = false) {
+function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, allowBusyTail = false, allowCoveredTail = false, allowGluedCopyChrome = false) {
   if (!Array.isArray(baseEntries) || baseEntries.length < 2) return null;
   const textEntries = baseEntries.filter((entry) => {
     const item = entry?.item;
@@ -5230,7 +5238,7 @@ function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, all
       if (dClean.startsWith(bk, pos)) {
         nextPos = pos + bk.length;
       } else if (!baseOverwrittenByDom?.has(item) && bk.length >= 12) {
-        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos, buildBaseChromeSlots(item.text), { raw, compact, rawStartOffsets });
+        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos, buildBaseChromeSlots(item.text), { raw, compact, rawStartOffsets }, Boolean(allowGluedCopyChrome));
       }
       if (nextPos > pos) {
         lastStartPos = pos;
@@ -5295,7 +5303,8 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
       for (const dm of dAsst) {
         if (classifyAssistantMatch(bm.text, dm.text, {
           busy: isActiveTail,
-          domIsMarkdown: isMarkdownSourcedIncoming(dm, options)
+          domIsMarkdown: isMarkdownSourcedIncoming(dm, options),
+          allowGluedCopyChrome: hasDomCopyButtonStructureEvidence(dm)
         }) > 0) {
           return 1;
         }
@@ -5305,7 +5314,7 @@ function findUserAnchorAlignment(baseList, domList, options = {}) {
       const baseAsEntries = bAsst.map((item) => ({ item }));
       for (const dm of dAsst) {
         if (isMarkdownSourcedIncoming(dm, options)) continue;
-        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, isActiveTail, true)) {
+        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, isActiveTail, true, hasDomCopyButtonStructureEvidence(dm))) {
           return 1;
         }
       }
@@ -5516,7 +5525,8 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
               busy: allowBusyOverwrite && bi === lastStreamableBi,
               allowCoveredPrefix: Boolean(poolOpts.singleTurn && !poolOpts.isActiveTailTurn && !domIsMd && bi === lastTextBiInPool),
               baseIsDom: baseOverwrittenByDom.has(matchTarget),
-              domIsMarkdown: domIsMd
+              domIsMarkdown: domIsMd,
+              allowGluedCopyChrome: hasDomCopyButtonStructureEvidence(dm)
             });
             const tier = detail.tier;
             if (tier >= minTier && tier > bestTier) {
@@ -5568,7 +5578,8 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
             concatPool,
             baseOverwrittenByDom,
             canBusyConcat,
-            canBusyConcat || Boolean(poolOpts.singleTurn)
+            canBusyConcat || Boolean(poolOpts.singleTurn),
+            hasDomCopyButtonStructureEvidence(dm)
           );
           if (hit) {
             consumedDomIndices.add(di);
@@ -5713,7 +5724,7 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
           (e) => e.fromBase && e.item?.role === 'assistant' && Boolean(normMsgPrefix(e.item.text))
         );
         if (baseAsstEntries.length >= 2) {
-          const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, allowPass2Busy, true);
+          const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, allowPass2Busy, true, hasDomCopyButtonStructureEvidence(dm));
           if (concatHit) {
             applyConcatenatedTurnHit(concatHit, dm);
             continue;
@@ -5738,7 +5749,8 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
               allowCoveredPrefix: Boolean(!isDomActiveTailTurn && entry.fromBase && !dmIsMd && (lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn)),
               exactOnly,
               baseIsDom,
-              domIsMarkdown: dmIsMd
+              domIsMarkdown: dmIsMd,
+              allowGluedCopyChrome: hasDomCopyButtonStructureEvidence(dm)
             }) > 0;
           })
         : null;
