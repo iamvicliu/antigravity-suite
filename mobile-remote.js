@@ -2167,13 +2167,12 @@ function matchWorkspaceToProjectId(traj, projectsMetaMap, options = {}) {
   }
 
   let best = null;
+  let bestTied = false;
   for (const { proj, normPaths } of normalizedProjects) {
     let exclusiveExactMaxLen = 0;
     let exclusiveSubMaxLen = 0;
     let exclusiveMatchCount = 0;
     let matchedProjPathsCount = 0;
-    let sharedExactHits = 0;
-    let sharedExactMaxLen = 0;
 
     for (const pPath of normPaths) {
       const ownerCount = pathOwnerCount.get(pPath) || 1;
@@ -2198,45 +2197,42 @@ function matchWorkspaceToProjectId(traj, projectsMetaMap, options = {}) {
         } else if (pPath.length > exclusiveSubMaxLen) {
           exclusiveSubMaxLen = pPath.length;
         }
-      } else if (exactHit) {
-        sharedExactHits += 1;
-        if (pPath.length > sharedExactMaxLen) sharedExactMaxLen = pPath.length;
       }
     }
 
-    const fullSharedSetExactMatch = exclusiveMatchCount === 0 && sharedExactHits === normPaths.length && normPaths.length > 0;
-    if (exclusiveMatchCount === 0 && !fullSharedSetExactMatch) continue;
+    // 必须至少命中一条专属工作区路径；仅命中跨项目共享目录时无法唯一确定归属，直接跳过
+    if (exclusiveMatchCount === 0) continue;
 
     const candidate = {
       id: proj.id,
-      hasExclusive: exclusiveMatchCount > 0 ? 1 : 0,
       exclusiveExactMaxLen,
       exclusiveSubMaxLen,
       exclusiveMatchCount,
       matchedProjPathsCount,
-      overlapRatio: matchedProjPathsCount / normPaths.length,
-      soleSharedExactMaxLen: fullSharedSetExactMatch ? sharedExactMaxLen : 0,
-      mtimeMs: Number(proj.mtimeMs) || 0
+      overlapRatio: matchedProjPathsCount / normPaths.length
     };
 
     if (!best) {
       best = candidate;
+      bestTied = false;
       continue;
     }
     const cmp =
-      (candidate.hasExclusive - best.hasExclusive) ||
       (candidate.exclusiveExactMaxLen - best.exclusiveExactMaxLen) ||
       (candidate.exclusiveSubMaxLen - best.exclusiveSubMaxLen) ||
       (candidate.exclusiveMatchCount - best.exclusiveMatchCount) ||
       (candidate.matchedProjPathsCount - best.matchedProjPathsCount) ||
-      (candidate.overlapRatio - best.overlapRatio) ||
-      (candidate.soleSharedExactMaxLen - best.soleSharedExactMaxLen) ||
-      (candidate.mtimeMs - best.mtimeMs) ||
-      best.id.localeCompare(candidate.id);
-    if (cmp > 0) best = candidate;
+      (candidate.overlapRatio - best.overlapRatio);
+    if (cmp > 0) {
+      best = candidate;
+      bestTied = false;
+    } else if (cmp === 0) {
+      // 存在两个或以上结构特异性完全相同的候选项目时，不以修改时间或 ID 强行决胜，返回空值交由显式归属决定
+      bestTied = true;
+    }
   }
 
-  return best ? best.id : '';
+  return (best && !bestTied) ? best.id : '';
 }
 
 function loadProjectsMetaFromDisk(options = {}, cacheRef = null) {
@@ -17369,9 +17365,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           }
         }
 
-        if (resolvedAuthoritative) {
-          scopeOpts = { scoped: true, projectRoots: scopedRoots };
-        }
+        // 凡请求携带了 conversationId 或 projectId 归属上下文，一律启用受限作用域（即使无法解析任何归属也不得回退至全局目录白名单）
+        scopeOpts = { scoped: true, projectRoots: scopedRoots };
       }
 
       const tree = listSafeProjectTree(rawDir, {
