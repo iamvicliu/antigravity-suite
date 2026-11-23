@@ -23925,6 +23925,7 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
     normPlainMatchText,
     mergeTrajectoryAndDomMessages,
     createConversationHistoryManager,
+    fetchSnapshotFromTarget,
     buildMobileAppHtml
   } = require('../mobile-remote');
 
@@ -24019,7 +24020,8 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
   assert.equal(blockedOnlyMsgs[1].text, '');
   assert.equal(blockedOnlyMsgs[1].thoughtText, '草稿阶段思考');
 
-  // 1c. 压缩清空（CORTEX_STEP_STATUS_CLEARED）后 systemMessage 已被剥离的 Stop hook 拦截稿同样须识别隐藏，而同 executionId 但含 startedAt 的正常后台任务唤醒不得误隐藏
+  // 1c. 压缩清空（CORTEX_STEP_STATUS_CLEARED）后 systemMessage 已被剥离的 Stop hook 拦截稿须满足全部联合结构不变量才隐藏，
+  // 且以下反例（即使同 executionId、无 startedAt、createdAt === completedAt）一律不得误隐藏正常回复
   const clearedStopHookSteps = [
     { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '修完 3 个 bug' } },
     {
@@ -24031,7 +24033,12 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
     {
       type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
       status: 'CORTEX_STEP_STATUS_CLEARED',
-      metadata: { executionId: 'exec-1', createdAt: '2026-11-23T10:48:41Z', completedAt: '2026-11-23T10:48:41Z' }
+      metadata: {
+        source: 'CORTEX_STEP_SOURCE_SYSTEM',
+        executionId: 'exec-1',
+        createdAt: '2026-11-23T10:48:41Z',
+        completedAt: '2026-11-23T10:48:41Z'
+      }
     },
     {
       type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
@@ -24042,7 +24049,13 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
     {
       type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
       status: 'CORTEX_STEP_STATUS_CLEARED',
-      metadata: { executionId: 'exec-1', startedAt: '2026-11-23T10:59:00Z', createdAt: '2026-11-23T10:59:00Z', completedAt: '2026-11-23T10:59:00Z' }
+      metadata: {
+        source: 'CORTEX_STEP_SOURCE_SYSTEM',
+        executionId: 'exec-1',
+        startedAt: '2026-11-23T10:59:00Z',
+        createdAt: '2026-11-23T10:59:00Z',
+        completedAt: '2026-11-23T10:59:00Z'
+      }
     },
     {
       type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
@@ -24055,13 +24068,174 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
   assert.deepEqual(
     clearedExtracted.map((m) => m.id),
     ['t-u-0', 't-a-3', 't-a-5'],
-    'CLEARED 态下无 startedAt 的同执行 Stop hook 拦截稿 t-a-1 必须隐藏，含 startedAt 的正常等待唤醒 t-a-3 必须保留'
+    'CLEARED 态下满足全部联合结构不变量的 Stop hook 拦截稿 t-a-1 必须隐藏，含 startedAt 的正常等待唤醒 t-a-3 必须保留'
   );
   assert.deepEqual(clearedExtracted[2].thoughts, ['r0 思考', '最终思考']);
 
-  // 1d. ag-enhancer-overlay.js isolated 视图 extractMessagesFromTrajectorySteps 同步过滤 Stop hook 拦截稿（含 CLEARED 态）
+  // CLEARED 反例集：即使同 executionId + 无 startedAt + createdAt === completedAt，缺任一收紧不变量均不得隐藏正常回复
+  const clearedAntiFalseHideCases = [
+    {
+      name: '轮次末尾无续跑步骤（紧接下一轮 USER_INPUT）',
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '第一轮问题' } },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-end' },
+          plannerResponse: { response: '第一轮唯一正常回复。' }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: {
+            source: 'CORTEX_STEP_SOURCE_SYSTEM',
+            executionId: 'exec-end',
+            createdAt: '2026-11-23T11:00:00Z',
+            completedAt: '2026-11-23T11:00:00Z'
+          }
+        },
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '第二轮问题' } }
+      ],
+      expectedRemoteIds: ['t-u-0', 't-a-1', 't-u-3'],
+      expectedOverlayIds: ['rpc-u-0', 'rpc-a-1', 'rpc-u-3']
+    },
+    {
+      name: '紧邻后继 PLANNER_RESPONSE 属于不同 executionId',
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '跨执行测试' } },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-a' },
+          plannerResponse: { response: 'exec-a 正常回复。' }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: {
+            source: 'CORTEX_STEP_SOURCE_SYSTEM',
+            executionId: 'exec-a',
+            createdAt: '2026-11-23T11:01:00Z',
+            completedAt: '2026-11-23T11:01:00Z'
+          }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-b' },
+          plannerResponse: { response: 'exec-b 后续正常回复。' }
+        }
+      ],
+      expectedRemoteIds: ['t-u-0', 't-a-1', 't-a-3'],
+      expectedOverlayIds: ['rpc-u-0', 'rpc-a-1', 'rpc-a-3']
+    },
+    {
+      name: '紧邻后继非 PLANNER_RESPONSE（如 GENERIC 工具步骤）',
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '非续跑测试' } },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-g' },
+          plannerResponse: { response: '前序正常回复。' }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: {
+            source: 'CORTEX_STEP_SOURCE_SYSTEM',
+            executionId: 'exec-g',
+            createdAt: '2026-11-23T11:02:00Z',
+            completedAt: '2026-11-23T11:02:00Z'
+          }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_GENERIC',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-g' }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-g' },
+          plannerResponse: { response: '后续回复。' }
+        }
+      ],
+      expectedRemoteIds: ['t-u-0', 't-a-1', 't-a-4'],
+      expectedOverlayIds: ['rpc-u-0', 'rpc-a-1', 'rpc-a-4']
+    },
+    {
+      name: '缺失或非 CORTEX_STEP_SOURCE_SYSTEM 来源',
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '来源校验' } },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-src' },
+          plannerResponse: { response: '来源非 SYSTEM 时保留正常回复。' }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: {
+            source: 'CORTEX_STEP_SOURCE_USER',
+            executionId: 'exec-src',
+            createdAt: '2026-11-23T11:03:00Z',
+            completedAt: '2026-11-23T11:03:00Z'
+          }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-src' },
+          plannerResponse: { response: '后续回复。' }
+        }
+      ],
+      expectedRemoteIds: ['t-u-0', 't-a-1', 't-a-3'],
+      expectedOverlayIds: ['rpc-u-0', 'rpc-a-1', 'rpc-a-3']
+    },
+    {
+      name: '同执行续跑步骤无任何可见正文（仅思考/工具调用即结束本轮）',
+      steps: [
+        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: '无后续可见正文' } },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-notext' },
+          plannerResponse: { response: '本轮唯一可见正常回复。' }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: {
+            source: 'CORTEX_STEP_SOURCE_SYSTEM',
+            executionId: 'exec-notext',
+            createdAt: '2026-11-23T11:04:00Z',
+            completedAt: '2026-11-23T11:04:00Z'
+          }
+        },
+        {
+          type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+          status: 'CORTEX_STEP_STATUS_CLEARED',
+          metadata: { executionId: 'exec-notext' },
+          plannerResponse: { thinking: '仅思考无正文', response: '' }
+        }
+      ],
+      expectedRemoteIds: ['t-u-0', 't-a-1'],
+      expectedOverlayIds: ['rpc-u-0', 'rpc-a-1']
+    }
+  ];
+  for (const tc of clearedAntiFalseHideCases) {
+    assert.deepEqual(
+      extractMessagesFromTrajectorySteps(tc.steps).map((m) => m.id),
+      tc.expectedRemoteIds,
+      `mobile-remote CLEARED 反例不得误隐藏正常回复：${tc.name}`
+    );
+  }
+
+  // 1d. ag-enhancer-overlay.js isolated 视图 extractMessagesFromTrajectorySteps 同步过滤 Stop hook 拦截稿（含 CLEARED 态及全部反例）
   const overlayCode = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
-  const isoHelperMatch = overlayCode.match(/function isStopHookBlockedSystemStep\(step, prevStep = null\) \{[\s\S]*?\n  \}\n\n  function extractMessagesFromTrajectorySteps\(steps, limit = 20\) \{[\s\S]*?\n  \}/);
+  const isoHelperMatch = overlayCode.match(/function isStopHookBlockedSystemStep\(step, prevStep = null, steps = null, stepIndex = -1\) \{[\s\S]*?\n  \}\n\n  function extractMessagesFromTrajectorySteps\(steps, limit = 20\) \{[\s\S]*?\n  \}/);
   assert.ok(isoHelperMatch, 'ag-enhancer-overlay.js 应包含 Stop hook 判定与 extractMessagesFromTrajectorySteps');
   const extractIsoOverlay = new Function('tr', `${isoHelperMatch[0]}; return extractMessagesFromTrajectorySteps;`)((zh) => zh);
   const isoStopHookOut = extractIsoOverlay(stopHookSteps, 20);
@@ -24075,6 +24249,13 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
   assert.deepEqual(isoAntiHideOut.map((m) => m.id), ['rpc-u-0', 'rpc-a-1', 'rpc-a-3']);
   const isoClearedOut = extractIsoOverlay(clearedStopHookSteps, 20);
   assert.deepEqual(isoClearedOut.map((m) => m.id), ['rpc-u-0', 'rpc-a-3', 'rpc-a-5']);
+  for (const tc of clearedAntiFalseHideCases) {
+    assert.deepEqual(
+      extractIsoOverlay(tc.steps, 20).map((m) => m.id),
+      tc.expectedOverlayIds,
+      `ag-enhancer-overlay CLEARED 反例不得误隐藏正常回复：${tc.name}`
+    );
+  }
 
   // 2a. authoritativeIdle 保护：空闲态同一已回复轮次内即使桌面 DOM 出现任意未知渲染差异（如汉化/图片/脚注），仅合并元数据绝不追加 dom-tail
   const idleTraj = [
@@ -24279,17 +24460,261 @@ test('彻底终结远程端重复二次回复：Stop hook 拦截稿过滤、权�
     '文首 Copyright notice 不得与 right notice 误合并'
   );
 
-  // 4. 校验服务端 catch 回退显式下发 historySource/totalMessages，且前端双向切换 historySource / 缺失 totalMessages 异常回退均清空 sessionMsgsByIndex
-  const remoteSrc = fs.readFileSync(path.join(__dirname, '..', 'mobile-remote.js'), 'utf8');
-  assert.ok(
-    remoteSrc.includes("historySource: baseSnap.historySource || 'dom'"),
-    'fetchSnapshotFromTarget catch 回退必须显式标记 historySource: dom 防止客户端混排'
+  // 4a. 服务端 fetchSnapshotFromTarget 实际触发 catch 回退的行为测试：强制输出相互一致的 DOM/isolated_error 来源、总数、起始索引与 0-based msgIndex
+  const pickMockTarget = async () => ({
+    target: { id: 'target-catch-1', title: 'Antigravity', url: 'app://main', wsUrl: 'ws://127.0.0.1/mock' },
+    windows: [{ id: 'target-catch-1', title: 'Antigravity' }]
+  });
+  const poisonedBaseSnap = {
+    ok: true,
+    sessionId: 'sess-catch-dom',
+    historySource: 'trajectory',
+    totalMessages: null,
+    messagesStartIndex: 50,
+    hasEarlierMessages: true,
+    messages: [
+      { id: 'u-dom-0', role: 'user', text: 'DOM 回退问题', msgIndex: 50 },
+      null,
+      { id: 'a-dom-1', role: 'assistant', text: 'DOM 回退回复', msgIndex: 51 }
+    ]
+  };
+  let enrichThrowCount = 0;
+  const domFallbackRes = await fetchSnapshotFromTarget('target-catch-1', {
+    pickTarget: pickMockTarget,
+    evalInTarget: async () => poisonedBaseSnap,
+    enrichSnapshot: async () => {
+      enrichThrowCount += 1;
+      throw new Error('simulated catalog enrich failure');
+    }
+  });
+  assert.equal(enrichThrowCount, 1, '应实际执行并触发 fetchSnapshotFromTarget 的 catch 分支');
+  assert.equal(domFallbackRes.historySource, 'dom', 'catch 回退必须强制覆盖为 dom，不得沿用原 trajectory 来源');
+  assert.equal(domFallbackRes.totalMessages, 2, 'catch 回退 totalMessages 必须与归一化后 messages 长度一致，不得将 null 转为 0');
+  assert.equal(domFallbackRes.messagesStartIndex, 0, 'catch 回退 messagesStartIndex 必须归零以与 0-based DOM 列表一致');
+  assert.equal(domFallbackRes.hasEarlierMessages, false, 'catch 回退 hasEarlierMessages 必须为 false');
+  assert.deepEqual(
+    domFallbackRes.messages.map((m) => ({ id: m.id, msgIndex: m.msgIndex })),
+    [{ id: 'u-dom-0', msgIndex: 0 }, { id: 'a-dom-1', msgIndex: 1 }],
+    'catch 回退消息列表必须过滤空项并重建 0..N-1 连续 msgIndex'
   );
+  assert.ok(domFallbackRes.serverBootId && domFallbackRes.snapSeq > 0, 'catch 回退必须携带 serverBootId 与递增 snapSeq');
+
+  const isolatedErrFallbackRes = await fetchSnapshotFromTarget('target-catch-1', {
+    pickTarget: pickMockTarget,
+    evalInTarget: async () => ({
+      ok: true,
+      sessionId: 'sess-catch-iso',
+      isolated: true,
+      isolatedError: true,
+      historySource: 'trajectory',
+      totalMessages: 99,
+      messagesStartIndex: 69,
+      hasEarlierMessages: true,
+      messages: [{ id: 'stale-desktop-msg', role: 'assistant', text: '串台消息', msgIndex: 98 }]
+    }),
+    enrichSnapshot: async () => {
+      throw new Error('simulated isolated enrich failure');
+    }
+  });
+  assert.equal(isolatedErrFallbackRes.historySource, 'isolated_error');
+  assert.equal(isolatedErrFallbackRes.totalMessages, 0);
+  assert.equal(isolatedErrFallbackRes.messagesStartIndex, 0);
+  assert.equal(isolatedErrFallbackRes.hasEarlierMessages, false);
+  assert.deepEqual(isolatedErrFallbackRes.messages, []);
+
+  // 4b. 客户端 renderSnapshot 实际执行行为测试：缺失/无效 totalMessages（null / '' / undefined / NaN / 负数，即使显式带 historySource: 'trajectory'）
+  // 以及 trajectory <-> dom / isolated_error 切换均必须清空旧索引缓存 sessionMsgsByIndex，绝不残留旧轨迹键 50..52
   const appHtml = buildMobileAppHtml();
-  assert.ok(
-    appHtml.includes("activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory'") &&
-    appHtml.includes("activeMsgHistorySource === 'trajectory'") &&
-    appHtml.includes("(nextHistSource === 'dom' || (!nextHistSource && !Number.isFinite(Number(snap.totalMessages))))"),
-    '前端 renderSnapshot 必须在双向切换 historySource 或缺失 totalMessages 异常回退时清空 sessionMsgsByIndex'
-  );
+  const appScripts = Array.from(appHtml.matchAll(/<script>([\s\S]*?)<\/script>/g));
+  const clientScript = appScripts.map((m) => m[1]).find((s) => s.includes('function renderSnapshot('));
+  assert.ok(clientScript, 'buildMobileAppHtml 应包含主前端 renderSnapshot 脚本');
+  const makeMockEl = (id) => {
+    const cls = new Set();
+    return {
+      id,
+      hidden: true,
+      disabled: false,
+      value: '',
+      innerHTML: '',
+      textContent: '',
+      scrollHeight: 120,
+      scrollTop: 0,
+      clientHeight: 600,
+      offsetWidth: 300,
+      dataset: {},
+      style: { setProperty() {} },
+      className: '',
+      children: [],
+      classList: {
+        add: (...xs) => xs.forEach((x) => cls.add(x)),
+        remove: (...xs) => xs.forEach((x) => cls.delete(x)),
+        toggle: (x, force) => (force === undefined ? (cls.has(x) ? cls.delete(x) : cls.add(x)) : (force ? cls.add(x) : cls.delete(x))),
+        contains: (x) => cls.has(x)
+      },
+      setAttribute() {},
+      removeAttribute() {},
+      getAttribute: () => null,
+      appendChild(c) { this.children.push(c); return c; },
+      addEventListener() {},
+      contains: () => false,
+      focus() {},
+      blur() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+  };
+  const domById = new Proxy({}, { get: (t, k) => (t[k] || (t[k] = makeMockEl(String(k)))) });
+  const vmTimers = new Set();
+  const backfillRequests = [];
+  const clientSandbox = {
+    URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+    Uint8Array, TextEncoder, TextDecoder, AbortController, Intl,
+    atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+    btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+    encodeURIComponent, decodeURIComponent,
+    screen: { width: 1280, height: 800 },
+    devicePixelRatio: 2,
+    navigator: { platform: 'MacIntel', maxTouchPoints: 0, hardwareConcurrency: 8 },
+    location: { origin: 'https://local.test', protocol: 'https:', hostname: 'local.test', pathname: '/', search: '', port: '', href: 'https://local.test/' },
+    history: { replaceState() {} },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    document: {
+      hidden: false, activeElement: null,
+      documentElement: { clientHeight: 800, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+      body: { style: {}, classList: domById.__body.classList },
+      getElementById: (id) => domById[id],
+      querySelector: () => makeMockEl('__q'),
+      createElement: (tag) => makeMockEl(tag),
+      addEventListener() {}
+    },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    innerWidth: 1280, innerHeight: 800, visualViewport: null,
+    setTimeout: (fn, ms) => { const t = setTimeout(fn, Math.min(Number(ms) || 0, 50)); if (t.unref) t.unref(); vmTimers.add(t); return t; },
+    clearTimeout: (t) => clearTimeout(t),
+    fetch: async (url) => {
+      backfillRequests.push(String(url || ''));
+      return { ok: true, status: 200, json: async () => ({ ok: true, messages: [] }) };
+    }
+  };
+  clientSandbox.window = clientSandbox;
+  clientSandbox.addEventListener = () => {};
+  const clientTailIdx = clientScript.lastIndexOf('})();');
+  const hookedClient = clientScript.slice(0, clientTailIdx)
+    + '\nglobalThis.__test47 = { renderSnapshot, getKeys: () => Array.from(sessionMsgsByIndex.keys()).sort((a, b) => a - b), getMsgs: () => Array.from(sessionMsgsByIndex.values()).sort((a, b) => a.msgIndex - b.msgIndex), getHistorySource: () => activeMsgHistorySource };\n'
+    + clientScript.slice(clientTailIdx);
+  let seq = 0;
+  const makeTrajSnap = () => ({
+    ok: true,
+    snapSeq: ++seq,
+    sessionId: 'sess-deg-47',
+    title: '降级缓存隔离测试',
+    historySource: 'trajectory',
+    totalMessages: 53,
+    messagesStartIndex: 50,
+    hasEarlierMessages: true,
+    messages: [
+      { id: 't-u-50', role: 'user', text: '轨迹旧提问-50', msgIndex: 50 },
+      { id: 't-a-51', role: 'assistant', text: '轨迹旧回复-51', msgIndex: 51 },
+      { id: 't-a-52', role: 'assistant', text: '轨迹旧回复-52', msgIndex: 52 }
+    ]
+  });
+  try {
+    vm.runInNewContext(hookedClient, clientSandbox);
+    const api47 = clientSandbox.__test47;
+
+    // 基线：加载轨迹分页 50..52
+    api47.renderSnapshot(makeTrajSnap());
+    assert.deepEqual(api47.getKeys(), [50, 51, 52]);
+    assert.equal(api47.getHistorySource(), 'trajectory');
+    assert.ok(domById['messages'].innerHTML.includes('轨迹旧回复-52'));
+
+    // 关键返工场景：显式携带 historySource: 'trajectory'，但 totalMessages 为 null / '' / undefined / NaN / -1
+    for (const badCase of [
+      { label: 'null', totalMessages: null, historySource: 'trajectory' },
+      { label: 'empty-string', totalMessages: '', historySource: 'trajectory' },
+      { label: 'whitespace-string', totalMessages: '   ', historySource: 'trajectory' },
+      { label: 'undefined', totalMessages: undefined, historySource: 'trajectory' },
+      { label: 'NaN', totalMessages: Number.NaN, historySource: 'trajectory' },
+      { label: 'negative', totalMessages: -5, historySource: 'trajectory' },
+      { label: 'missing-source-and-total', totalMessages: undefined, historySource: undefined }
+    ]) {
+      api47.renderSnapshot(makeTrajSnap());
+      assert.deepEqual(api47.getKeys(), [50, 51, 52], `${badCase.label} 前置基线应为 [50,51,52]`);
+      backfillRequests.length = 0;
+
+      const degradedSnap = {
+        ok: true,
+        snapSeq: ++seq,
+        sessionId: 'sess-deg-47',
+        title: '降级缓存隔离测试',
+        messagesStartIndex: 50,
+        messages: [
+          { id: `d-u-${badCase.label}`, role: 'user', text: `降级提问-${badCase.label}`, msgIndex: null },
+          { id: `d-a-${badCase.label}`, role: 'assistant', text: `降级回复-${badCase.label}`, msgIndex: 77 }
+        ]
+      };
+      if (badCase.historySource !== undefined) degradedSnap.historySource = badCase.historySource;
+      if (badCase.totalMessages !== undefined) degradedSnap.totalMessages = badCase.totalMessages;
+
+      api47.renderSnapshot(degradedSnap);
+      assert.deepEqual(
+        api47.getKeys(),
+        [0, 1],
+        `totalMessages=${badCase.label} 降级快照必须先清空旧轨迹键 50..52，仅保留 0..1`
+      );
+      assert.equal(api47.getHistorySource(), 'dom', `totalMessages=${badCase.label} 降级后来源应切为 dom`);
+      assert.ok(
+        domById['messages'].innerHTML.includes(`降级回复-${badCase.label}`) &&
+        !domById['messages'].innerHTML.includes('轨迹旧回复-52'),
+        `totalMessages=${badCase.label} 渲染视图不得残留旧轨迹消息`
+      );
+      assert.equal(
+        backfillRequests.filter((u) => u.includes('/api/messages')).length,
+        0,
+        `totalMessages=${badCase.label} 降级快照不得触发轨迹缺口回填请求`
+      );
+
+      // 从降级恢复至轨迹时必须清空 0..1 旧降级键
+      api47.renderSnapshot(makeTrajSnap());
+      assert.deepEqual(api47.getKeys(), [50, 51, 52], `${badCase.label} 恢复轨迹时必须清空降级键 0..1`);
+      assert.equal(api47.getHistorySource(), 'trajectory');
+    }
+
+    // 显式 trajectory -> dom -> trajectory 与 trajectory -> isolated_error 切换清空验证
+    api47.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-deg-47',
+      title: '降级缓存隔离测试',
+      historySource: 'dom',
+      totalMessages: 2,
+      messagesStartIndex: 0,
+      hasEarlierMessages: false,
+      messages: [
+        { id: 'dom-u-0', role: 'user', text: '显式 DOM 问题', msgIndex: 0 },
+        { id: 'dom-a-1', role: 'assistant', text: '显式 DOM 回复', msgIndex: 1 }
+      ]
+    });
+    assert.deepEqual(api47.getKeys(), [0, 1], '显式 trajectory -> dom 必须清空 50..52 旧键');
+    assert.equal(api47.getHistorySource(), 'dom');
+
+    api47.renderSnapshot(makeTrajSnap());
+    assert.deepEqual(api47.getKeys(), [50, 51, 52], '显式 dom -> trajectory 必须清空 0..1 旧键');
+
+    api47.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-deg-47',
+      title: '降级缓存隔离测试',
+      historySource: 'isolated_error',
+      totalMessages: 0,
+      messagesStartIndex: 0,
+      hasEarlierMessages: false,
+      messages: []
+    });
+    assert.deepEqual(api47.getKeys(), [], 'trajectory -> isolated_error 必须清空旧轨迹键');
+  } finally {
+    for (const t of vmTimers) clearTimeout(t);
+  }
 });

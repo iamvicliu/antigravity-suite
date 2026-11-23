@@ -4392,7 +4392,7 @@ function extractPendingAgentMessagesFromUpdate(stateUpdate, options = {}) {
   return out;
 }
 
-function isStopHookBlockedSystemStep(step, prevStep = null) {
+function isStopHookBlockedSystemStep(step, prevStep = null, steps = null, stepIndex = -1) {
   if (!step || typeof step !== 'object') return false;
   const type = String(step.type || '');
   if (type && type !== 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE') return false;
@@ -4400,20 +4400,54 @@ function isStopHookBlockedSystemStep(step, prevStep = null) {
   if (sysMsg && typeof sysMsg === 'object') {
     return /^\s*Stop hook blocked termination(?::|\b)/i.test(String(sysMsg.message || ''));
   }
-  // 历史压缩（CORTEX_STEP_STATUS_CLEARED）会清空 systemMessage.message，
-  // 同执行内由 Stop hook 瞬时注入的拦截步骤保留 exact 结构特征：CLEARED + 同 executionId + 无 startedAt 且 createdAt === completedAt
+  // 历史压缩（CORTEX_STEP_STATUS_CLEARED）会清空 systemMessage.message；
+  // 实机 40 条轨迹 / 4079 条 SYSTEM_MESSAGE（1686 可读 + 2393 CLEARED）核验表明，
+  // 非 Stop hook 可读系统消息 0/1337 命中，仅 Stop hook 阻塞步骤同时满足全部联合结构不变量：
+  // CLEARED 无正文 + CORTEX_STEP_SOURCE_SYSTEM + 前驱无 toolCalls 的同 executionId PLANNER_RESPONSE +
+  // 无 startedAt 且 createdAt === completedAt + 紧邻后继为同 executionId 的 PLANNER_RESPONSE（执行未结束被强行续跑）+
+  // 同用户轮次后续存在至少一条带可见正文的 PLANNER_RESPONSE（确保绝不隐藏某轮唯一或最终正常回复）。
   if (
     type === 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE' &&
     String(step.status || '') === 'CORTEX_STEP_STATUS_CLEARED' &&
     !sysMsg &&
-    prevStep && typeof prevStep === 'object'
+    prevStep && typeof prevStep === 'object' &&
+    Array.isArray(steps) && stepIndex >= 0
   ) {
+    const prevType = String(prevStep.type || '');
+    const prevIsPlanner = prevType ? prevType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(prevStep.plannerResponse);
+    const prevHasTools = Array.isArray(prevStep.plannerResponse?.toolCalls) && prevStep.plannerResponse.toolCalls.length > 0;
+    const src = String(step.metadata?.source || '').trim();
     const prevExec = String(prevStep.metadata?.executionId || '').trim();
     const curExec = String(step.metadata?.executionId || '').trim();
     const curCreated = String(step.metadata?.createdAt || '').trim();
     const curCompleted = String(step.metadata?.completedAt || '').trim();
-    if (prevExec && curExec && prevExec === curExec && !step.metadata?.startedAt && curCreated && curCreated === curCompleted) {
-      return true;
+    if (
+      prevIsPlanner &&
+      !prevHasTools &&
+      src === 'CORTEX_STEP_SOURCE_SYSTEM' &&
+      prevExec && curExec && prevExec === curExec &&
+      !step.metadata?.startedAt &&
+      curCreated && curCreated === curCompleted
+    ) {
+      const nextStep = steps[stepIndex + 1];
+      const nextType = String(nextStep?.type || '');
+      const nextIsPlanner = Boolean(nextStep && (nextType ? nextType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : nextStep.plannerResponse));
+      const nextExec = String(nextStep?.metadata?.executionId || '').trim();
+      if (!nextIsPlanner || !nextExec || nextExec !== curExec) return false;
+      for (let j = stepIndex + 1; j < steps.length; j++) {
+        const sj = steps[j];
+        if (!sj || typeof sj !== 'object') continue;
+        const sjType = String(sj.type || '');
+        if (sjType === 'CORTEX_STEP_TYPE_USER_INPUT' || (!sjType && sj.userInput)) {
+          if (isQueuedTrajectoryUserStep(sj)) continue;
+          break;
+        }
+        const sjIsPlanner = sjType ? sjType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(sj.plannerResponse);
+        if (sjIsPlanner) {
+          const sjText = String(sj.plannerResponse?.modifiedResponse ?? sj.plannerResponse?.response ?? '').trim();
+          if (sjText) return true;
+        }
+      }
     }
   }
   return false;
@@ -4505,7 +4539,7 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
       if (thought) turnThoughts.push(thought);
       const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
       const hasToolCalls = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
-      const blockedByStopHook = !hasToolCalls && isStopHookBlockedSystemStep(steps[i + 1], step);
+      const blockedByStopHook = !hasToolCalls && isStopHookBlockedSystemStep(steps[i + 1], step, steps, i + 1);
       if (replyRaw && !blockedByStopHook) {
         clearEarlierTurnThoughts();
         const replyText = replyRaw;
@@ -6355,6 +6389,30 @@ function warmConversationSession(sessionId, options = {}) {
   return defaultHistoryManager.warmSession(sessionId, options);
 }
 
+function buildEnrichFallbackSnapshot(baseSnap) {
+  const isIsolatedError = Boolean(baseSnap?.isolatedError);
+  const rawMsgs = (!isIsolatedError && Array.isArray(baseSnap?.messages)) ? baseSnap.messages : [];
+  const normalizedMsgs = [];
+  for (const m of rawMsgs) {
+    if (!m || typeof m !== 'object') continue;
+    normalizedMsgs.push({
+      ...m,
+      msgIndex: normalizedMsgs.length
+    });
+  }
+  return {
+    ...baseSnap,
+    messages: normalizedMsgs,
+    historySource: isIsolatedError ? 'isolated_error' : 'dom',
+    totalMessages: normalizedMsgs.length,
+    messagesStartIndex: 0,
+    hasEarlierMessages: false,
+    serverBootId: REMOTE_SERVER_BOOT_ID,
+    serverBootAt: REMOTE_SERVER_BOOT_AT,
+    snapSeq: ++remoteServerSnapSeq
+  };
+}
+
 async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
   const serializedOpts = JSON.stringify({
     conversationId: String(snapOptions?.conversationId || '').trim(),
@@ -6371,7 +6429,11 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
     }
     return fn();
   })()`;
-  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr, 7000, { idempotent: true });
+  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr, 7000, {
+    idempotent: true,
+    pickTarget: snapOptions?.pickTarget,
+    evalInTarget: snapOptions?.evalInTarget
+  });
   if (!snap || typeof snap !== 'object') {
     throw new Error('未能读取电脑端会话画面，请确认 Antigravity 已打开');
   }
@@ -6380,19 +6442,11 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
     currentTargetId: target.id,
     windows
   };
+  const enrichFn = typeof snapOptions?.enrichSnapshot === 'function' ? snapOptions.enrichSnapshot : enrichSnapshotWithCatalog;
   try {
-    return await enrichSnapshotWithCatalog(baseSnap, snapOptions);
+    return await enrichFn(baseSnap, snapOptions);
   } catch {
-    const fallbackMsgs = Array.isArray(baseSnap.messages) ? baseSnap.messages : [];
-    return {
-      ...baseSnap,
-      historySource: baseSnap.historySource || 'dom',
-      totalMessages: Number.isFinite(Number(baseSnap.totalMessages)) ? Number(baseSnap.totalMessages) : fallbackMsgs.length,
-      messagesStartIndex: Number.isFinite(Number(baseSnap.messagesStartIndex)) ? Number(baseSnap.messagesStartIndex) : 0,
-      serverBootId: REMOTE_SERVER_BOOT_ID,
-      serverBootAt: REMOTE_SERVER_BOOT_AT,
-      snapSeq: ++remoteServerSnapSeq
-    };
+    return buildEnrichFallbackSnapshot(baseSnap);
   }
 }
 
@@ -10477,49 +10531,68 @@ function buildMobileAppHtml() {
 
       // Messages (full history + upward pagination + gap backfill + scroll anchor)
       msgEl.classList.remove('is-switching');
+      const parseNonNegativeInt = (v) => {
+        if (typeof v === 'number') return (Number.isInteger(v) && v >= 0) ? v : null;
+        if (typeof v === 'string') {
+          const trimmed = v.trim();
+          if (/^\\d+$/.test(trimmed)) {
+            const n = Number(trimmed);
+            return (Number.isSafeInteger(n) && n >= 0) ? n : null;
+          }
+        }
+        return null;
+      };
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
-      const nextHistSource = snap.historySource === 'trajectory' || snap.historySource === 'dom' ? snap.historySource : '';
+      const nextHistSource = snap.historySource === 'trajectory'
+        ? 'trajectory'
+        : (snap.historySource === 'dom' || snap.historySource === 'isolated_error' ? snap.historySource : '');
+      const totalMsgs = parseNonNegativeInt(snap.totalMessages);
+      const hasValidTotalMsgs = totalMsgs !== null;
       if (snapSid !== activeMsgSessionId) {
         activeMsgSessionId = snapSid;
-        activeMsgHistorySource = nextHistSource;
+        activeMsgHistorySource = hasValidTotalMsgs ? (nextHistSource || 'dom') : 'dom';
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
         promptDraftState.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         stickBottom = true;
+      } else if (!hasValidTotalMsgs) {
+        // 缺失或无效 totalMessages（如 undefined/null/''/NaN/负数），即使显式携带原有 historySource（含 'trajectory'），
+        // 也一律视为降级回退快照，在写入前先清空旧索引缓存，防止旧轨迹键与回退键混排重复
+        sessionMsgsByIndex.clear();
+        activeMsgHistorySource = 'dom';
       } else if (activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory') {
         // RPC 偶发降级 domTail（写入 0..59 临时键）后恢复全量轨迹时，清空旧临时键防止前 60 条重复错序
         sessionMsgsByIndex.clear();
         activeMsgHistorySource = 'trajectory';
-      } else if (
-        activeMsgHistorySource === 'trajectory' &&
-        (nextHistSource === 'dom' || (!nextHistSource && !Number.isFinite(Number(snap.totalMessages))))
-      ) {
-        // 轨迹异常降级至 DOM 或缺失 totalMessages 回退时清空旧轨迹索引键，防止双源键混排重复
+      } else if (activeMsgHistorySource === 'isolated_error' && nextHistSource === 'trajectory') {
         sessionMsgsByIndex.clear();
-        activeMsgHistorySource = 'dom';
+        activeMsgHistorySource = 'trajectory';
+      } else if (activeMsgHistorySource === 'trajectory' && nextHistSource !== 'trajectory') {
+        // 轨迹显式降级至 DOM / isolated_error 或缺失来源时清空旧轨迹索引键，防止双源键混排重复
+        sessionMsgsByIndex.clear();
+        activeMsgHistorySource = nextHistSource || 'dom';
       } else if (nextHistSource) {
         activeMsgHistorySource = nextHistSource;
       }
       const rawMsgs = Array.isArray(snap.messages) ? snap.messages : [];
-      const totalMsgs = Number(snap.totalMessages);
-      if (Number.isFinite(totalMsgs) && totalMsgs >= 0) {
+      if (hasValidTotalMsgs) {
         for (const k of Array.from(sessionMsgsByIndex.keys())) {
           if (totalMsgs === 0 || k >= totalMsgs) sessionMsgsByIndex.delete(k);
         }
-      } else if (!rawMsgs.length) {
-        sessionMsgsByIndex.clear();
       }
-      const baseIdx = Number.isFinite(Number(snap.messagesStartIndex)) ? Number(snap.messagesStartIndex) : 0;
+      const parsedBaseIdx = hasValidTotalMsgs ? parseNonNegativeInt(snap.messagesStartIndex) : null;
+      const baseIdx = parsedBaseIdx !== null ? parsedBaseIdx : 0;
       for (let idx = 0; idx < rawMsgs.length; idx++) {
         const m = rawMsgs[idx];
         if (!m) continue;
-        const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + idx);
+        const parsedMsgIdx = hasValidTotalMsgs ? parseNonNegativeInt(m.msgIndex) : null;
+        const mIdx = parsedMsgIdx !== null ? parsedMsgIdx : (baseIdx + idx);
         sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
       }
       renderMessagesView(snap);
-      if (snapSid && snapSid !== '__new__' && findMissingMsgRanges(totalMsgs).length > 0) {
+      if (hasValidTotalMsgs && activeMsgHistorySource === 'trajectory' && snapSid && snapSid !== '__new__' && findMissingMsgRanges(totalMsgs).length > 0) {
         void backfillMissingMsgGaps(snapSid);
       }
 
@@ -17999,6 +18072,8 @@ module.exports = {
   createRemoteProject,
   evalInCdpTarget,
   evalInPickedTarget,
+  buildEnrichFallbackSnapshot,
+  fetchSnapshotFromTarget,
   performActionInTarget,
   acceptsGzipEncoding,
   readJsonBody,
