@@ -2638,6 +2638,9 @@ function createSessionCatalogStore() {
         projectOrderInitialized,
         rpcTrajSeeded,
         rpcListSeeded,
+        nextOrderOpSeq: 0,
+        lastManualOrderSeq: 0,
+        createdSeqByPid: new Map(),
         subagentIds,
         subagentRoots,
         subagentStates,
@@ -2745,6 +2748,7 @@ function createSessionCatalogStore() {
   async function enrichSnapshot(snap, options = {}) {
     if (!snap || typeof snap !== 'object' || snap.ok === false) return snap;
 
+    const trajData = await fetchTrajectories(options);
     const store = getStickyStoreForDir(options.stateDir || getStateDir());
     const { metaMap: projectsMeta, excludedIds: excludedProjectIds, archivedIds: archivedProjectIds } = loadProjectsMetaFromDisk(options, projectsCache);
     const preTrajPersistedProjIds = new Set();
@@ -2755,7 +2759,6 @@ function createSessionCatalogStore() {
         preTrajPersistedProjIds.add(cpid);
       }
     }
-    const trajData = await fetchTrajectories(options);
 
     // 1. 构建项目名称字典（融合磁盘配置 + 语言服务项目 ID + 前端 DOM/Fiber 项目组 + ListProjects 暂不可达时的已知项目保底）
     const projectNameMap = new Map();
@@ -3194,6 +3197,12 @@ function createSessionCatalogStore() {
       }
       genuinelyNewBuckets.sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'));
       lateColdRpcBuckets.sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'));
+      if (genuinelyNewBuckets.length > 0) {
+        for (let i = genuinelyNewBuckets.length - 1; i >= 0; i--) {
+          store.nextOrderOpSeq = (Number(store.nextOrderOpSeq) || 0) + 1;
+          store.createdSeqByPid.set(genuinelyNewBuckets[i].id, store.nextOrderOpSeq);
+        }
+      }
       store.projectOrder = [
         ...genuinelyNewBuckets.map((p) => p.id),
         ...prunedOrder,
@@ -3450,6 +3459,9 @@ function createSessionCatalogStore() {
     // 严禁对合并后的权威顺序静默截断，确保超过 500 个项目时也不会丢失保底追加项或引发振荡跳顶
     store.projectOrder = mergedOrder;
     store.projectOrderInitialized = true;
+    store.nextOrderOpSeq = (Number(store.nextOrderOpSeq) || 0) + 1;
+    store.lastManualOrderSeq = store.nextOrderOpSeq;
+    store.createdSeqByPid.clear();
     store.lastSig = '';
     const { catalogRevision } = buildActiveCatalogItems(store, store.lastActiveSessionId || '', null);
     store.catalogRevision = catalogRevision;
@@ -3461,10 +3473,25 @@ function createSessionCatalogStore() {
     };
   }
 
+  function reserveCreateOrderSeq(options = {}) {
+    const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    store.nextOrderOpSeq = (Number(store.nextOrderOpSeq) || 0) + 1;
+    return store.nextOrderOpSeq;
+  }
+
   async function prependProjectOrder(projectId, options = {}) {
     const pid = String(projectId || '').trim();
     if (!isOrderableProjectId(pid)) return null;
     const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    const hasExplicitSeq = Number.isInteger(options.createSeq) && options.createSeq > 0;
+    if (hasExplicitSeq && options.createSeq > (Number(store.nextOrderOpSeq) || 0)) {
+      store.nextOrderOpSeq = options.createSeq;
+    }
+    const effCreateSeq = hasExplicitSeq
+      ? options.createSeq
+      : ((store.nextOrderOpSeq = (Number(store.nextOrderOpSeq) || 0) + 1));
+
+    // 第一阶段（同步原子落定，零 await 窗口）：立即将新项目按发起序号插入最新顺序并持久化，绝不在后续异步等待后重写覆盖
     const { metaMap: projectsMeta, excludedIds: excludedProjectIds, archivedIds: archivedProjectIds } = loadProjectsMetaFromDisk(
       { ...options, bypassCache: true },
       projectsCache
@@ -3472,6 +3499,11 @@ function createSessionCatalogStore() {
     if (projectsMeta.get(pid)?.name) {
       store.projectNames.set(pid, projectsMeta.get(pid).name);
     }
+    const manualOccurredAfterStart = (Number(store.lastManualOrderSeq) || 0) > effCreateSeq;
+    if (!manualOccurredAfterStart) {
+      store.createdSeqByPid.set(pid, effCreateSeq);
+    }
+
     if (!store.projectOrderInitialized) {
       const seedBucketMap = new Map();
       const upsertSeedBucket = (rawId, rawName, activeAt = 0) => {
@@ -3495,47 +3527,113 @@ function createSessionCatalogStore() {
         if (!c || c.archived || store.subagentIds.has(c.id)) continue;
         upsertSeedBucket(c.projectId, c.projectName, c.updatedAt);
       }
-      const trajData = await fetchTrajectories({ ...options, bypassCache: true }).catch(() => null);
-      if (trajData) {
-        for (const rpcPid of (trajData.projectIds || [])) {
-          const cleanRpcPid = String(rpcPid || '').trim();
-          upsertSeedBucket(cleanRpcPid, cleanRpcPid === 'default-cli-project' ? 'CLI Project' : cleanRpcPid, 0);
-        }
-        const rpcSummaries = trajData.summaries && typeof trajData.summaries === 'object' ? trajData.summaries : {};
-        for (const [cid, sum] of Object.entries(rpcSummaries)) {
-          if (!sum || typeof sum !== 'object') continue;
-          if (sum?.annotations?.archived || sum?.trajectoryMetadata?.archived) continue;
-          const subCheck = inspectSubagentRecord(cid, sum, null, store.subagentIds, store.subagentRoots);
-          if (subCheck.isSub) continue;
-          const rawTrajPid = String(sum?.trajectoryMetadata?.projectId || '').trim();
-          const effPid = (!isSyntheticProjectId(rawTrajPid) && rawTrajPid)
-            ? rawTrajPid
-            : matchWorkspaceToProjectId(sum, projectsMeta, options);
-          const mtime = sum.lastModifiedTime ? (Date.parse(sum.lastModifiedTime) || 0) : 0;
-          upsertSeedBucket(effPid, projectsMeta.get(effPid)?.name || effPid, mtime);
-        }
-      }
-      const seedIds = Array.from(seedBucketMap.values())
+      const syncSeedIds = Array.from(seedBucketMap.values())
         .sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
         .map((b) => b.id);
-      store.projectOrder = [pid, ...seedIds];
-      // 立即落定 projectOrderInitialized=true 转入增量对账模式（绝不在过渡期反复按 lastActiveAt 重排或丢失已知顺序），
-      // 同时按实际返回情况分别记录 rpcTrajSeeded / rpcListSeeded，使后续迟到返回的纯 RPC 旧项目追加在末尾不反超
+      store.projectOrder = [pid, ...syncSeedIds];
       store.projectOrderInitialized = true;
-      store.rpcTrajSeeded = Boolean(trajData?.trajOk);
-      store.rpcListSeeded = Boolean(trajData?.listOk);
     } else {
-      const rest = store.projectOrder.filter((id) => id !== pid && isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id));
-      store.projectOrder = [pid, ...rest];
+      const pruned = store.projectOrder.filter((id) => isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id));
+      if (manualOccurredAfterStart && pruned.includes(pid)) {
+        // 等待期间用户已包含该项目完成手动排序，严格保留手动位置不覆盖
+        store.projectOrder = pruned;
+      } else if (manualOccurredAfterStart) {
+        // 请求发起后发生了手动排序，而当时该项目尚未入库：排在比它更新的建项之后、若手动排序更晚则不破坏手动排定项且置于末尾保底（或若无手动覆盖则按序号插入）
+        // 注意：若用户在建项途中显式设定了顶层手动顺序，将迟到完成的并发建项追加在手动顺序末尾可确保用户刚排好的前排顺序不被迟到请求顶掉
+        store.projectOrder = [...pruned, pid];
+      } else {
+        const withoutPid = pruned.filter((id) => id !== pid);
+        let insertIdx = 0;
+        while (insertIdx < withoutPid.length) {
+          const frontId = withoutPid[insertIdx];
+          const frontSeq = Number(store.createdSeqByPid.get(frontId)) || 0;
+          if (frontSeq > effCreateSeq) {
+            insertIdx += 1;
+          } else {
+            break;
+          }
+        }
+        withoutPid.splice(insertIdx, 0, pid);
+        store.projectOrder = withoutPid;
+      }
     }
     store.lastSig = '';
-    const { catalogRevision } = buildActiveCatalogItems(store, store.lastActiveSessionId || '', null);
-    store.catalogRevision = catalogRevision;
+    const { catalogRevision: syncRev } = buildActiveCatalogItems(store, store.lastActiveSessionId || '', null);
+    store.catalogRevision = syncRev;
     persistCatalogStore(store, Date.now());
+
+    // 第二阶段（可选冷启动异步回填）：仅在仍有未完成首轮回填的 RPC 通道时拉取，返回后基于最新实时状态仅将未知纯 RPC 旧项目追加在末尾，绝不覆盖等待期间已锁定的顺序、手动排序或初始化标记
+    if (!store.rpcTrajSeeded || !store.rpcListSeeded) {
+      const trajData = await fetchTrajectories({ ...options, bypassCache: true }).catch(() => null);
+      if (trajData && (trajData.trajOk || trajData.listOk)) {
+        const { metaMap: freshMeta, excludedIds: freshExcluded, archivedIds: freshArchived } = loadProjectsMetaFromDisk(
+          { ...options, bypassCache: true },
+          projectsCache
+        );
+        const liveOrder = store.projectOrder.filter((id) => isOrderableProjectId(id) && !freshArchived.has(id) && !freshExcluded.has(id));
+        const liveSet = new Set(liveOrder);
+        const lateBucketMap = new Map();
+        const addLateCandidate = (rawId, rawName, activeAt = 0) => {
+          const id = String(rawId || '').trim();
+          if (!id || liveSet.has(id) || freshMeta.has(id)) return;
+          if (!isOrderableProjectId(id) || freshArchived.has(id) || freshExcluded.has(id)) return;
+          const ts = Number(activeAt) || 0;
+          const nm = String(rawName || '').trim() || id;
+          if (nm) store.projectNames.set(id, nm);
+          const prev = lateBucketMap.get(id);
+          if (!prev) {
+            lateBucketMap.set(id, { id, name: nm, lastActiveAt: ts });
+          } else {
+            if (ts > prev.lastActiveAt) prev.lastActiveAt = ts;
+            if ((!prev.name || prev.name === id) && nm && nm !== id) prev.name = nm;
+          }
+        };
+        if (!store.rpcListSeeded && trajData.listOk) {
+          for (const rpcPid of (trajData.projectIds || [])) {
+            const cleanRpcPid = String(rpcPid || '').trim();
+            addLateCandidate(cleanRpcPid, cleanRpcPid === 'default-cli-project' ? 'CLI Project' : cleanRpcPid, 0);
+          }
+        }
+        if (!store.rpcTrajSeeded && trajData.trajOk) {
+          const rpcSummaries = trajData.summaries && typeof trajData.summaries === 'object' ? trajData.summaries : {};
+          for (const [cid, sum] of Object.entries(rpcSummaries)) {
+            if (!sum || typeof sum !== 'object') continue;
+            if (sum?.annotations?.archived || sum?.trajectoryMetadata?.archived) continue;
+            const subCheck = inspectSubagentRecord(cid, sum, null, store.subagentIds, store.subagentRoots);
+            if (subCheck.isSub) continue;
+            const rawTrajPid = String(sum?.trajectoryMetadata?.projectId || '').trim();
+            const effPid = (!isSyntheticProjectId(rawTrajPid) && rawTrajPid)
+              ? rawTrajPid
+              : matchWorkspaceToProjectId(sum, freshMeta, options);
+            const mtime = sum.lastModifiedTime ? (Date.parse(sum.lastModifiedTime) || 0) : 0;
+            addLateCandidate(effPid, freshMeta.get(effPid)?.name || effPid, mtime);
+          }
+        }
+        const lateIds = Array.from(lateBucketMap.values())
+          .sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
+          .map((b) => b.id);
+        const prevKeyAfter = store.projectOrder.join(',');
+        const prevTrajFlag = Boolean(store.rpcTrajSeeded);
+        const prevListFlag = Boolean(store.rpcListSeeded);
+        store.projectOrder = lateIds.length > 0 ? [...liveOrder, ...lateIds] : liveOrder;
+        if (trajData.trajOk) store.rpcTrajSeeded = true;
+        if (trajData.listOk) store.rpcListSeeded = true;
+        if (
+          store.projectOrder.join(',') !== prevKeyAfter ||
+          Boolean(store.rpcTrajSeeded) !== prevTrajFlag ||
+          Boolean(store.rpcListSeeded) !== prevListFlag
+        ) {
+          store.lastSig = '';
+          const { catalogRevision: nextRev } = buildActiveCatalogItems(store, store.lastActiveSessionId || '', null);
+          store.catalogRevision = nextRev;
+          persistCatalogStore(store, Date.now());
+        }
+      }
+    }
     return store.projectOrder.slice();
   }
 
-  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getProjectOrder, setProjectOrder, prependProjectOrder };
+  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getProjectOrder, setProjectOrder, reserveCreateOrderSeq, prependProjectOrder };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -18169,6 +18267,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const payload = await readJsonBody(req);
         const clientId = extractRequestClientId(req, urlObj, payload);
         const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
+        const activeCatStore = options.catalogStore || defaultCatalogStore;
+        const catOrderOpts = {
+          ...(options.catalogOptions || {}),
+          ...(options.configDir ? { configDir: options.configDir } : {}),
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {})
+        };
+        const reservedCreateSeq = typeof activeCatStore.reserveCreateOrderSeq === 'function'
+          ? activeCatStore.reserveCreateOrderSeq(catOrderOpts)
+          : 0;
         const createdRes = await createRemoteProject(payload, {
           ...(options.homeDir ? { homeDir: options.homeDir } : {}),
           ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
@@ -18177,13 +18285,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
         });
         if (!createdRes?.alreadyExists && createdRes?.project?.id) {
-          const activeCatStore = options.catalogStore || defaultCatalogStore;
           try {
             await activeCatStore.prependProjectOrder?.(createdRes.project.id, {
-              ...(options.catalogOptions || {}),
-              ...(options.configDir ? { configDir: options.configDir } : {}),
-              ...(options.homeDir ? { homeDir: options.homeDir } : {}),
-              ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {})
+              ...catOrderOpts,
+              ...(reservedCreateSeq > 0 ? { createSeq: reservedCreateSeq } : {})
             });
           } catch {}
         }

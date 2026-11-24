@@ -30287,6 +30287,381 @@ test('锁定服务端项目顺序防跳动、新项目默认置顶、瞬态漏�
       expectedFullIncOrder,
       '完整恢复后再经服务重启与后台时间推进，仍必须保持 [B, A, ...] 权威顺序'
     );
+
+    // 9. 受控延迟 RPC 并发交错回归：
+    //    (9a) 先创建 A、后创建 B 且 A 最后返回（分别覆盖回填 RPC 延迟与 CreateProject RPC 延迟），仍保持 [B, A, ...]；
+    //    (9b) 等待期间发生快照初始化与桌面建项后，迟到回填绝不覆盖结果，重启后仍一致；
+    //    (9c) 等待期间发生手动排序后，迟到回填绝不覆盖结果，重启后仍一致。
+    const seedLegacyCatalog = (dir) => {
+      fs.writeFileSync(path.join(dir, 'remote-session-catalog.json'), JSON.stringify({
+        version: 2,
+        updatedAt: baseMs + 500000,
+        subagentIds: [],
+        subagentRoots: {},
+        subagentStates: {},
+        conversations: [
+          {
+            id: 'conv-race-old-1',
+            title: '并发基线会话 1',
+            projectId: 'proj-race-old-1',
+            projectName: 'RaceOld1',
+            archived: false,
+            pinned: false,
+            updatedAt: baseMs + 500000,
+            status: 'idle'
+          },
+          {
+            id: 'conv-race-old-2',
+            title: '并发基线会话 2',
+            projectId: 'proj-race-old-2',
+            projectName: 'RaceOld2',
+            archived: false,
+            pinned: false,
+            updatedAt: baseMs + 200000,
+            status: 'idle'
+          }
+        ]
+      }));
+    };
+
+    const callHandlerJson = async (h, urlPath, bodyObj) => {
+      const r = Readable.from([Buffer.from(JSON.stringify(bodyObj), 'utf8')]);
+      r.method = 'POST';
+      r.url = urlPath;
+      r.headers = { host: '127.0.0.1:18852', 'content-type': 'application/json', 'x-ag-remote-token': mockCfg.token };
+      r.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let code = 200;
+      let out = '';
+      await h(r, {
+        setHeader() {},
+        getHeader() { return ''; },
+        writeHead(c) { code = c; },
+        end(chunk) { if (chunk) out += String(chunk); }
+      });
+      return { status: code, json: out ? JSON.parse(out) : null };
+    };
+
+    // 9a-1: 冷启动先创建 A（回填 fetchTrajectories 延迟挂起），再创建 B（立即完成），最后放行 A（且 A 的回填响应已包含 B），仍须保持 [B, A, ...]
+    {
+      const st9a1 = path.join(tmpRoot, 'state-9a1');
+      const cfg9a1 = path.join(tmpRoot, 'config-9a1');
+      const ws9a1A = path.join(fakeHome, 'codebase', 'race-9a1-a');
+      const ws9a1B = path.join(fakeHome, 'codebase', 'race-9a1-b');
+      for (const d of [st9a1, path.join(cfg9a1, 'projects'), ws9a1A, ws9a1B]) fs.mkdirSync(d, { recursive: true });
+      seedLegacyCatalog(st9a1);
+
+      const createdIds9a1 = [];
+      let fetchBatchCount = 0;
+      let releaseSlowBackfillA = null;
+      const slowBackfillAPromise = new Promise((r) => { releaseSlowBackfillA = r; });
+      let notifyBackfillAEntered = null;
+      const backfillAEnteredPromise = new Promise((r) => { notifyBackfillAEntered = r; });
+
+      const rpc9a1 = async () => ({
+        call: async (method, reqBody) => {
+          if (method === 'CreateProject') {
+            createdIds9a1.push(reqBody.project.id);
+            return { project: reqBody.project };
+          }
+          if (method === 'GetAllCascadeTrajectories') {
+            fetchBatchCount += 1;
+            const myBatch = fetchBatchCount;
+            if (myBatch === 1) {
+              notifyBackfillAEntered();
+              await slowBackfillAPromise;
+            }
+            return { trajectorySummaries: {} };
+          }
+          if (method === 'ListProjects') {
+            return { projectIds: [...createdIds9a1, 'proj-rpc-old-9a1'] };
+          }
+          return {};
+        }
+      });
+
+      const h9a1 = remoteMod.createRemoteHttpHandler(mockCfg, {
+        catalogOptions: { stateDir: st9a1, configDir: cfg9a1, homeDir: fakeHome },
+        configDir: cfg9a1,
+        homeDir: fakeHome,
+        allowedRoots: [fakeHome],
+        allowDiskFallback: true,
+        openInDesktop: false,
+        localApiConnect: rpc9a1
+      });
+
+      const promiseA = callHandlerJson(h9a1, '/api/projects', { folderPath: ws9a1A, name: 'Race9a1_A', openInDesktop: false });
+      await backfillAEnteredPromise;
+      const resB = await callHandlerJson(h9a1, '/api/projects', { folderPath: ws9a1B, name: 'Race9a1_B', openInDesktop: false });
+      assert.equal(resB.status, 200);
+      const idB = resB.json.project.id;
+      releaseSlowBackfillA();
+      const resA = await promiseA;
+      assert.equal(resA.status, 200);
+      const idA = resA.json.project.id;
+
+      delete require.cache[require.resolve('../mobile-remote')];
+      remoteMod = require('../mobile-remote');
+      const snap9a1 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-race-old-1', conversations: [] }, {
+        stateDir: st9a1,
+        configDir: cfg9a1,
+        homeDir: fakeHome,
+        bypassCache: true,
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+            if (method === 'ListProjects') return { projectIds: [idA, idB, 'proj-rpc-old-9a1'] };
+            return {};
+          }
+        })
+      });
+      assert.deepEqual(
+        snap9a1.projects.map((p) => p.id),
+        [idB, idA, 'proj-race-old-1', 'proj-race-old-2', 'proj-rpc-old-9a1'],
+        '[9a-1] 先创建 A 后创建 B 且 A 回填最后返回（含 B）时，重启后仍必须保持 [B, A, ...]'
+      );
+    }
+
+    // 9a-2: 先发起创建 A（CreateProject RPC 延迟挂起），再发起创建 B（先完成建项与置顶），最后放行 A 完成建项，仍须按发起先后保持 [B, A, ...]
+    {
+      const st9a2 = path.join(tmpRoot, 'state-9a2');
+      const cfg9a2 = path.join(tmpRoot, 'config-9a2');
+      const ws9a2A = path.join(fakeHome, 'codebase', 'race-9a2-a');
+      const ws9a2B = path.join(fakeHome, 'codebase', 'race-9a2-b');
+      for (const d of [st9a2, path.join(cfg9a2, 'projects'), ws9a2A, ws9a2B]) fs.mkdirSync(d, { recursive: true });
+      seedLegacyCatalog(st9a2);
+
+      let releaseCreateA = null;
+      const slowCreateAPromise = new Promise((r) => { releaseCreateA = r; });
+      let notifyCreateAEntered = null;
+      const createAEnteredPromise = new Promise((r) => { notifyCreateAEntered = r; });
+      const createdIds9a2 = [];
+
+      const rpc9a2 = async () => ({
+        call: async (method, reqBody) => {
+          if (method === 'CreateProject') {
+            if (reqBody.project.name === 'Race9a2_A') {
+              notifyCreateAEntered();
+              await slowCreateAPromise;
+            }
+            createdIds9a2.push(reqBody.project.id);
+            return { project: reqBody.project };
+          }
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+          if (method === 'ListProjects') return { projectIds: [...createdIds9a2, 'proj-rpc-old-9a2'] };
+          return {};
+        }
+      });
+
+      const h9a2 = remoteMod.createRemoteHttpHandler(mockCfg, {
+        catalogOptions: { stateDir: st9a2, configDir: cfg9a2, homeDir: fakeHome },
+        configDir: cfg9a2,
+        homeDir: fakeHome,
+        allowedRoots: [fakeHome],
+        allowDiskFallback: true,
+        openInDesktop: false,
+        localApiConnect: rpc9a2
+      });
+
+      const pCreateA = callHandlerJson(h9a2, '/api/projects', { folderPath: ws9a2A, name: 'Race9a2_A', openInDesktop: false });
+      await createAEnteredPromise;
+      const resCreateB = await callHandlerJson(h9a2, '/api/projects', { folderPath: ws9a2B, name: 'Race9a2_B', openInDesktop: false });
+      assert.equal(resCreateB.status, 200);
+      const idB2 = resCreateB.json.project.id;
+      releaseCreateA();
+      const resCreateA = await pCreateA;
+      assert.equal(resCreateA.status, 200);
+      const idA2 = resCreateA.json.project.id;
+
+      delete require.cache[require.resolve('../mobile-remote')];
+      remoteMod = require('../mobile-remote');
+      const snap9a2 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-race-old-1', conversations: [] }, {
+        stateDir: st9a2,
+        configDir: cfg9a2,
+        homeDir: fakeHome,
+        bypassCache: true,
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+            if (method === 'ListProjects') return { projectIds: [idA2, idB2, 'proj-rpc-old-9a2'] };
+            return {};
+          }
+        })
+      });
+      assert.deepEqual(
+        snap9a2.projects.map((p) => p.id),
+        [idB2, idA2, 'proj-race-old-1', 'proj-race-old-2', 'proj-rpc-old-9a2'],
+        '[9a-2] CreateProject RPC 交错延迟导致 A 最后完成时，重启后仍必须保持 [B, A, ...]'
+      );
+    }
+
+    // 9b: 冷启动 A 回填挂起期间，发生快照完整初始化（含桌面新建 D 与 RPC 旧项目），A 迟到回填返回失败/残缺响应也不得覆盖已锁定顺序或回退初始化标记
+    {
+      const st9b = path.join(tmpRoot, 'state-9b');
+      const cfg9b = path.join(tmpRoot, 'config-9b');
+      const ws9bA = path.join(fakeHome, 'codebase', 'race-9b-a');
+      const ws9bD = path.join(fakeHome, 'codebase', 'race-9b-d');
+      for (const d of [st9b, path.join(cfg9b, 'projects'), ws9bA, ws9bD]) fs.mkdirSync(d, { recursive: true });
+      seedLegacyCatalog(st9b);
+
+      let releaseSlowA9b = null;
+      const slowA9bPromise = new Promise((r) => { releaseSlowA9b = r; });
+      let notifyA9bEntered = null;
+      const a9bEnteredPromise = new Promise((r) => { notifyA9bEntered = r; });
+      let createdId9bA = '';
+
+      const h9b = remoteMod.createRemoteHttpHandler(mockCfg, {
+        catalogOptions: { stateDir: st9b, configDir: cfg9b, homeDir: fakeHome },
+        configDir: cfg9b,
+        homeDir: fakeHome,
+        allowedRoots: [fakeHome],
+        allowDiskFallback: true,
+        openInDesktop: false,
+        localApiConnect: async () => ({
+          call: async (method, reqBody) => {
+            if (method === 'CreateProject') {
+              createdId9bA = reqBody.project.id;
+              return { project: reqBody.project };
+            }
+            if (method === 'GetAllCascadeTrajectories') {
+              notifyA9bEntered();
+              await slowA9bPromise;
+              // 故意让迟到回填返回残缺列表，检验不会覆盖等待期间快照已锁定的结果或把标记清回 false
+              return { trajectorySummaries: {} };
+            }
+            if (method === 'ListProjects') throw new Error('Late backfill ListProjects timeout');
+            return {};
+          }
+        })
+      });
+
+      const p9bA = callHandlerJson(h9b, '/api/projects', { folderPath: ws9bA, name: 'Race9b_A', openInDesktop: false });
+      await a9bEnteredPromise;
+
+      // 等待期间桌面新建项目 D，且快照完整拉取成功完成 RPC 初始化
+      fs.writeFileSync(path.join(cfg9b, 'projects', 'proj-9b-desk-d.json'), JSON.stringify({
+        id: 'proj-9b-desk-d',
+        name: 'Desk9bD',
+        projectResources: { resources: [{ folderUri: 'file://' + encodeURI(ws9bD) }] }
+      }, null, 2));
+      const snapMid9b = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-race-old-1', conversations: [] }, {
+        stateDir: st9b,
+        configDir: cfg9b,
+        homeDir: fakeHome,
+        bypassCache: true,
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+            if (method === 'ListProjects') return { projectIds: [createdId9bA, 'proj-9b-desk-d', 'proj-rpc-snap-9b'] };
+            return {};
+          }
+        })
+      });
+      const expected9b = ['proj-9b-desk-d', createdId9bA, 'proj-race-old-1', 'proj-race-old-2', 'proj-rpc-snap-9b'];
+      assert.deepEqual(snapMid9b.projects.map((p) => p.id), expected9b);
+
+      // 放行 A 的迟到回填
+      releaseSlowA9b();
+      const res9bA = await p9bA;
+      assert.equal(res9bA.status, 200);
+
+      const saved9b = JSON.parse(fs.readFileSync(path.join(st9b, 'remote-session-catalog.json'), 'utf8'));
+      assert.equal(saved9b.rpcListSeeded, true, '[9b] 迟到失败回填严禁把快照已完成的 rpcListSeeded 重置为 false');
+      assert.deepEqual(saved9b.projectOrder, expected9b, '[9b] 迟到回填不得覆盖等待期间快照已锁定的顺序');
+
+      delete require.cache[require.resolve('../mobile-remote')];
+      remoteMod = require('../mobile-remote');
+      const snapAfterRestart9b = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-race-old-1', conversations: [] }, {
+        stateDir: st9b,
+        configDir: cfg9b,
+        homeDir: fakeHome,
+        bypassCache: true,
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+            if (method === 'ListProjects') return { projectIds: [createdId9bA, 'proj-9b-desk-d', 'proj-rpc-snap-9b'] };
+            return {};
+          }
+        })
+      });
+      assert.deepEqual(snapAfterRestart9b.projects.map((p) => p.id), expected9b, '[9b] 重启后仍与等待期间快照初始化结果完全一致');
+    }
+
+    // 9c: 冷启动 A 回填挂起期间，用户通过 POST /api/projects/order 提交手动排序，随后 A 迟到回填返回，手动排序绝不被覆盖且重启后仍一致
+    {
+      const st9c = path.join(tmpRoot, 'state-9c');
+      const cfg9c = path.join(tmpRoot, 'config-9c');
+      const ws9cA = path.join(fakeHome, 'codebase', 'race-9c-a');
+      for (const d of [st9c, path.join(cfg9c, 'projects'), ws9cA]) fs.mkdirSync(d, { recursive: true });
+      seedLegacyCatalog(st9c);
+
+      let releaseSlowA9c = null;
+      const slowA9cPromise = new Promise((r) => { releaseSlowA9c = r; });
+      let notifyA9cEntered = null;
+      const a9cEnteredPromise = new Promise((r) => { notifyA9cEntered = r; });
+      let createdId9cA = '';
+
+      const h9c = remoteMod.createRemoteHttpHandler(mockCfg, {
+        catalogOptions: { stateDir: st9c, configDir: cfg9c, homeDir: fakeHome },
+        configDir: cfg9c,
+        homeDir: fakeHome,
+        allowedRoots: [fakeHome],
+        allowDiskFallback: true,
+        openInDesktop: false,
+        localApiConnect: async () => ({
+          call: async (method, reqBody) => {
+            if (method === 'CreateProject') {
+              createdId9cA = reqBody.project.id;
+              return { project: reqBody.project };
+            }
+            if (method === 'GetAllCascadeTrajectories') {
+              notifyA9cEntered();
+              await slowA9cPromise;
+              return { trajectorySummaries: {} };
+            }
+            if (method === 'ListProjects') {
+              return { projectIds: [createdId9cA, 'proj-rpc-late-9c'] };
+            }
+            return {};
+          }
+        })
+      });
+
+      const p9cA = callHandlerJson(h9c, '/api/projects', { folderPath: ws9cA, name: 'Race9c_A', openInDesktop: false });
+      await a9cEnteredPromise;
+
+      // 在 A 的冷启动回填尚未返回时，用户手动把顺序调为 ['proj-race-old-2', createdId9cA, 'proj-race-old-1']
+      const manualRes9c = await callHandlerJson(h9c, '/api/projects/order', {
+        projectOrder: ['proj-race-old-2', createdId9cA, 'proj-race-old-1']
+      });
+      assert.equal(manualRes9c.status, 200);
+      assert.deepEqual(manualRes9c.json.projectOrder, ['proj-race-old-2', createdId9cA, 'proj-race-old-1']);
+
+      // 放行 A 的迟到回填（带回未入库的旧空项目 proj-rpc-late-9c）：必须保留手动排序在前，仅将旧 RPC 项目追加末尾
+      releaseSlowA9c();
+      const res9cA = await p9cA;
+      assert.equal(res9cA.status, 200);
+
+      const expected9c = ['proj-race-old-2', createdId9cA, 'proj-race-old-1', 'proj-rpc-late-9c'];
+      const saved9c = JSON.parse(fs.readFileSync(path.join(st9c, 'remote-session-catalog.json'), 'utf8'));
+      assert.deepEqual(saved9c.projectOrder, expected9c, '[9c] 迟到回填严禁覆盖等待期间已提交的手动排序');
+
+      delete require.cache[require.resolve('../mobile-remote')];
+      remoteMod = require('../mobile-remote');
+      const snapAfterRestart9c = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-race-old-1', conversations: [] }, {
+        stateDir: st9c,
+        configDir: cfg9c,
+        homeDir: fakeHome,
+        bypassCache: true,
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {} };
+            if (method === 'ListProjects') return { projectIds: [createdId9cA, 'proj-rpc-late-9c'] };
+            return {};
+          }
+        })
+      });
+      assert.deepEqual(snapAfterRestart9c.projects.map((p) => p.id), expected9c, '[9c] 重启后手动排序结果仍保持一致不漂移');
+    }
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
