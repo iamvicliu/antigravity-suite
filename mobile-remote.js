@@ -4357,7 +4357,8 @@ function formatTrajectoryUserInput(ui) {
 
 function isQueuedTrajectoryUserStep(step) {
   if (!step || typeof step !== 'object') return false;
-  if (String(step.type || '') !== 'CORTEX_STEP_TYPE_USER_INPUT') return false;
+  const type = String(step.type || '');
+  if (type ? type !== 'CORTEX_STEP_TYPE_USER_INPUT' : !step.userInput) return false;
   const st = String(step.status || '').trim().toUpperCase();
   return st === 'CORTEX_STEP_STATUS_QUEUED'
     || step.queued === true
@@ -4683,6 +4684,67 @@ function extractPendingAgentMessagesFromUpdate(stateUpdate, options = {}) {
   return out;
 }
 
+function isStopHookBlockedSystemStep(step, prevStep = null, steps = null, stepIndex = -1) {
+  if (!step || typeof step !== 'object') return false;
+  const type = String(step.type || '');
+  if (type && type !== 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE') return false;
+  const sysMsg = step.systemMessage;
+  if (sysMsg && typeof sysMsg === 'object') {
+    return /^\s*Stop hook blocked termination(?::|\b)/i.test(String(sysMsg.message || ''));
+  }
+  // 历史压缩（CORTEX_STEP_STATUS_CLEARED）会清空 systemMessage.message；
+  // 实机 40 条轨迹 / 4079 条 SYSTEM_MESSAGE（1686 可读 + 2393 CLEARED）核验表明，
+  // 非 Stop hook 可读系统消息 0/1337 命中，仅 Stop hook 阻塞步骤同时满足全部联合结构不变量：
+  // CLEARED 无正文 + CORTEX_STEP_SOURCE_SYSTEM + 前驱无 toolCalls 的同 executionId PLANNER_RESPONSE +
+  // 无 startedAt 且 createdAt === completedAt + 紧邻后继为同 executionId 的 PLANNER_RESPONSE（执行未结束被强行续跑）+
+  // 同用户轮次后续存在至少一条带可见正文的 PLANNER_RESPONSE（确保绝不隐藏某轮唯一或最终正常回复）。
+  if (
+    type === 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE' &&
+    String(step.status || '') === 'CORTEX_STEP_STATUS_CLEARED' &&
+    !sysMsg &&
+    prevStep && typeof prevStep === 'object' &&
+    Array.isArray(steps) && stepIndex >= 0
+  ) {
+    const prevType = String(prevStep.type || '');
+    const prevIsPlanner = prevType ? prevType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(prevStep.plannerResponse);
+    const prevHasTools = Array.isArray(prevStep.plannerResponse?.toolCalls) && prevStep.plannerResponse.toolCalls.length > 0;
+    const src = String(step.metadata?.source || '').trim();
+    const prevExec = String(prevStep.metadata?.executionId || '').trim();
+    const curExec = String(step.metadata?.executionId || '').trim();
+    const curCreated = String(step.metadata?.createdAt || '').trim();
+    const curCompleted = String(step.metadata?.completedAt || '').trim();
+    if (
+      prevIsPlanner &&
+      !prevHasTools &&
+      src === 'CORTEX_STEP_SOURCE_SYSTEM' &&
+      prevExec && curExec && prevExec === curExec &&
+      !step.metadata?.startedAt &&
+      curCreated && curCreated === curCompleted
+    ) {
+      const nextStep = steps[stepIndex + 1];
+      const nextType = String(nextStep?.type || '');
+      const nextIsPlanner = Boolean(nextStep && (nextType ? nextType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : nextStep.plannerResponse));
+      const nextExec = String(nextStep?.metadata?.executionId || '').trim();
+      if (!nextIsPlanner || !nextExec || nextExec !== curExec) return false;
+      for (let j = stepIndex + 1; j < steps.length; j++) {
+        const sj = steps[j];
+        if (!sj || typeof sj !== 'object') continue;
+        const sjType = String(sj.type || '');
+        if (sjType === 'CORTEX_STEP_TYPE_USER_INPUT' || (!sjType && sj.userInput)) {
+          if (isQueuedTrajectoryUserStep(sj)) continue;
+          break;
+        }
+        const sjIsPlanner = sjType ? sjType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(sj.plannerResponse);
+        if (sjIsPlanner) {
+          const sjText = String(sj.plannerResponse?.modifiedResponse ?? sj.plannerResponse?.response ?? '').trim();
+          if (sjText) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function extractMessagesFromTrajectorySteps(steps, options = {}) {
   if (!Array.isArray(steps) || !steps.length) return [];
   const lazyHtml = Boolean(options?.lazyHtml);
@@ -4768,7 +4830,9 @@ function extractMessagesFromTrajectorySteps(steps, options = {}) {
       const thought = String(pr.thinking || pr.thought || '').trim();
       if (thought) turnThoughts.push(thought);
       const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
-      if (replyRaw) {
+      const hasToolCalls = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
+      const blockedByStopHook = !hasToolCalls && isStopHookBlockedSystemStep(steps[i + 1], step, steps, i + 1);
+      if (replyRaw && !blockedByStopHook) {
         clearEarlierTurnThoughts();
         const replyText = replyRaw;
         const thoughts = turnThoughts.slice();
@@ -4815,6 +4879,565 @@ function ensureMessagesHtmlRendered(msgs, sourceList = null) {
 
 function normMsgPrefix(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+function stripTablePipesAndDelims(text, frozen, sentinel) {
+  const TABLE_DELIM_RE = /^[ \t]*\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*:?-{3,}:?[ \t]*\|?[ \t]*$/;
+  const SINGLE_COL_TABLE_DELIM_RE = /^[ \t]*\|[ \t]*:?-{3,}:?[ \t]*\|[ \t]*$/;
+  const lines = String(text || '').split('\n');
+  const isDelim = new Array(lines.length).fill(false);
+  const isTableRow = new Array(lines.length).fill(false);
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!TABLE_DELIM_RE.test(line) && !SINGLE_COL_TABLE_DELIM_RE.test(line)) continue;
+    if (!lines[i - 1].includes('|')) continue;
+    isDelim[i] = true;
+    isTableRow[i - 1] = true;
+    for (let j = i + 1; j < lines.length; j++) {
+      const row = lines[j];
+      if (!row.trim() || !row.includes('|')) break;
+      isTableRow[j] = true;
+    }
+  }
+
+  const placeholderRe = (Array.isArray(frozen) && sentinel)
+    ? new RegExp(`${sentinel}(\\d+)${sentinel}`, 'g')
+    : null;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (isDelim[i]) {
+      lines[i] = '';
+    } else if (isTableRow[i]) {
+      lines[i] = lines[i].replace(/\|/g, ' ');
+      if (placeholderRe) {
+        lines[i].replace(placeholderRe, (_m, idxStr) => {
+          const idx = Number(idxStr);
+          if (typeof frozen[idx] === 'string') {
+            frozen[idx] = frozen[idx].replace(/\\\|/g, '|');
+          }
+          return '';
+        });
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+function normPlainMatchText(text) {
+  let s = String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u200b-\u200d\ufeff]/g, '');
+  if (!s.trim()) return '';
+
+  let sentinel = '\u0000';
+  while (s.includes(sentinel)) sentinel += '\u0001';
+  const frozen = [];
+  const freeze = (val) => {
+    const idx = frozen.length;
+    frozen.push(String(val));
+    return `${sentinel}${idx}${sentinel}`;
+  };
+
+  // 1. 冻结围栏代码块正文（支持流式未闭合围栏），避免内部被后续 Markdown 正则破坏
+  const rawLines = s.split('\n');
+  const fenceOut = [];
+  let inFence = null;
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    if (!inFence) {
+      const fm = line.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+      if (fm && (fm[1][0] !== '`' || !fm[2].includes('`'))) {
+        inFence = { ch: fm[1][0], len: fm[1].length, body: [] };
+        continue;
+      }
+      fenceOut.push(line);
+    } else {
+      const cm = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+      if (cm && cm[1][0] === inFence.ch && cm[1].length >= inFence.len) {
+        fenceOut.push(freeze(inFence.body.join('\n')));
+        inFence = null;
+      } else {
+        inFence.body.push(line);
+      }
+    }
+  }
+  if (inFence) {
+    fenceOut.push(freeze(inFence.body.join('\n')));
+  }
+  s = fenceOut.join('\n');
+
+  // 2. 冻结行内代码正文（兼容多反引号与文末流式未闭合反引号）
+  s = s.replace(/(?<![`\\])(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (_m, _ticks, inner) => {
+    let code = inner;
+    if (code.length >= 2 && code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) {
+      code = code.slice(1, -1);
+    }
+    return freeze(code);
+  });
+  s = s.replace(/(?<![`\\])(`+)(?!`)([^`\n]*)$/, (_m, _ticks, inner) => freeze(inner));
+
+  // 3. 剥离引用链接定义与引用/GitHub Alert 前缀
+  s = s.replace(/^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$/gm, '');
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/^[ \t]*(?:>[ \t]*)+(?:\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*)?/gim, '');
+  }
+
+  // 4. 冻结 Markdown 反斜杠转义字符，防止还原后被链接/标题/强调规则误改写
+  s = s.replace(/\\([\\`*_{}[\]()#+\-.!>|~$])/g, (_m, ch) => freeze(ch));
+
+  // 5. 仅对确认 GFM 表格块剥离列竖线与对齐分隔行，保留代码/非表格竖线
+  s = stripTablePipesAndDelims(s, frozen, sentinel);
+
+  // 6. 仅对非冻结 Markdown 骨架执行常规语法剥离
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(
+      /!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\((?:<[^>\n]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:"[^"]*"|'[^']*'))?\)/g,
+      '$1'
+    );
+    if (next === s) break;
+    s = next;
+  }
+  s = s.replace(/(?<![\w$])!?\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\[[^\]\n]*\]/g, '$1');
+  s = s.replace(/<(https?:\/\/[^>\s]+|file:\/\/[^>\s]+|mailto:[^>\s]+)>/gi, '$1');
+  s = s.replace(/<br\s*\/?>/gi, ' ');
+  // 剥离常见安全内联排版 HTML 标签（严格限定白名单与合法属性语法，避免误伤 a<i && j>b、TypeScript 泛型 <T> 或正文 <tag>）
+  s = s.replace(/<\/?(?:b|i|u)\s*\/?>/gi, '');
+  s = s.replace(/<\/?(?:kbd|sub|sup|del|ins|strong|em|mark|small|span)(?:\s+[a-z][a-z0-9-]*(?:\s*=\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s"'=<>`]+))?)*\s*\/?>/gi, '');
+  // 解码非冻结区（代码外）的常见 HTML 实体，与桌面端 DOM 渲染文本对齐
+  s = s.replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39|#x27);/gi, (ent) => {
+    const lower = ent.toLowerCase();
+    if (lower === '&amp;') return '&';
+    if (lower === '&lt;') return '<';
+    if (lower === '&gt;') return '>';
+    if (lower === '&quot;') return '"';
+    if (lower === '&apos;' || lower === '&#39;' || lower === '&#x27;') return "'";
+    if (lower === '&nbsp;') return ' ';
+    return ent;
+  });
+  // 剥离块级（含标准多行 $$\n...\n$$ 与单行 $$...$$）与行内 KaTeX 数学定界符（反斜杠转义 \$ 与代码块已在第 1-4 步冻结，且严格避开货币金额与变量名）
+  s = s.replace(/^[ \t]*\$\$[ \t]*\n((?:(?![ \t]*\$\$[ \t]*$)(?!\s*$)[^$\n]+\n)+)[ \t]*\$\$[ \t]*$/gm, '$1');
+  s = s.replace(/\$\$(?!\s)((?:[^$\n]*?[^\s$])|[^$\s])\$\$/g, '$1');
+  s = s.replace(
+    /(^|[^\\$\w])\$(?!\s)(?!\d+(?:[.,]\d+)?(?:\s|$))([A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]*?[A-Za-z\\=+\-*/^_{}][A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]*?)(?<!\s)\$(?![A-Za-z0-9_])/g,
+    '$1$2'
+  );
+  s = s.replace(/^[ \t]*(?:={3,}|-{3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*$/gm, '');
+  s = s.replace(/^[ \t]*#{1,6}[ \t]+([^\n]*?)(?:[ \t]+#+)?[ \t]*$/gm, '$1');
+  s = s.replace(/^[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '');
+  s = s.replace(/^[ \t]*\[[ xX]\][ \t]+/gm, '');
+  s = s.replace(/(^|[^\\\w)\]])\*\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*\*(?=$|[^\\\w(\[])/g, '$1$2');
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/(^|[^\\\w)\]])\*\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*\*(?=$|[^\\\w(\[])/g, '$1$2');
+  }
+  s = s.replace(/(^|\n|[ \t]|[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])\*\*(?=[^\s*][^*\n]*$)/, '$1');
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/(^|[^\\\w)\]])~~(?!\s)((?:[^~\n]*?[^\s~])|[^~\s])~~(?=$|[^\\\w(\[])/g, '$1$2');
+  }
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/(^|[^\w])__([^_\n]+?)__(?=$|[^\w])/g, '$1$2');
+  }
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/(^|[^*\\\w)\]\n])\*(?!\s)((?:[^*\n]*?[^\s*])|[^*\s])\*(?!\*)(?=$|[^\\\w(\[])/g, '$1$2');
+  }
+  for (let i = 0; i < 2; i++) {
+    s = s.replace(/(^|[^\w])_(?!\s)((?:[^_\n]*?[^\s_])|[^_\s])_(?=$|[^\w])/g, '$1$2');
+  }
+
+  // 7. 还原全部冻结代码与转义文本并折叠空白
+  const restoreRe = new RegExp(`${sentinel}(\\d+)${sentinel}`, 'g');
+  s = s.replace(restoreRe, (_m, idxStr) => frozen[Number(idxStr)] ?? '');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function normDomPlainText(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u200b-\u200d\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripUserMediaMarkers(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/(?:\s*\[附带\s*\d+\s*张图片\]|\s*\[图片附件\]|\s*\[图片\s*×\d+\])+$/g, '')
+    .trim();
+}
+
+function compactDomKey(text, options = {}) {
+  const raw = options.stripUserMediaSuffix ? stripUserMediaMarkers(text) : String(text || '');
+  return normDomPlainText(raw).replace(/\s+/g, '').toLowerCase();
+}
+
+function compactBaseKey(text, options = {}) {
+  const raw = options.stripUserMediaSuffix ? stripUserMediaMarkers(text) : String(text || '');
+  const compact = normPlainMatchText(raw).replace(/\s+/g, '').toLowerCase();
+  if (compact) return compact;
+  return raw.replace(/\s+/g, '').toLowerCase();
+}
+
+function stripTrailingEllipsis(s) {
+  return String(s || '').replace(/(?:\.{3,}|…+)$/g, '');
+}
+
+const DOM_UI_CHROME_TOKEN = '(?:'
+  + '(?:(?:javascript|typescript|python|bash|shell|zsh|sh|json|yaml|yml|html|css|scss|less|sql|golang|go|rust|java|cpp|c\\+\\+|csharp|c#|ruby|php|swift|kotlin|markdown|md|xml|toml|ini|diff|plaintext|text|txt|jsx|tsx|js|ts|py|rb|rs|cs|mermaid)?(?:copycode|copied|copy|复制代码|已复制|复制))'
+  + '|(?:important|warning|caution|note|tip)'
+  + '|(?:重要提示|提示信息|注意事项|警告提示)'
+  + ')';
+const DOM_UI_CHROME_STRICT_RE = new RegExp(`^(?:${DOM_UI_CHROME_TOKEN}[:：·•\\-|]*)+$`);
+const DOM_UI_CHROME_COPY_ONLY_RE = /^(?:(?:copycode|copied|copy|复制代码|已复制|复制)[:：·•\-|]*)+$/;
+const DOM_ALERT_CHROME_BY_TYPE = {
+  note: /^(?:(?:note|提示信息)[:：·•\-|]*)+$/,
+  tip: /^(?:(?:tip|提示信息)[:：·•\-|]*)+$/,
+  important: /^(?:(?:important|重要提示|提示信息)[:：·•\-|]*)+$/,
+  warning: /^(?:(?:warning|注意事项|警告提示)[:：·•\-|]*)+$/,
+  caution: /^(?:(?:caution|注意事项|警告提示)[:：·•\-|]*)+$/
+};
+
+function buildBaseChromeSlots(markdownText) {
+  const slots = new Map();
+  const addSlot = (pos, slot) => {
+    if (!Number.isInteger(pos) || pos < 0) return;
+    let list = slots.get(pos);
+    if (!list) {
+      list = [];
+      slots.set(pos, list);
+    }
+    list.push(slot);
+  };
+  const lines = String(markdownText || '').replace(/\r\n?/g, '\n').split('\n');
+  let inFence = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!inFence) {
+      const fm = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*([a-z0-9+#._-]{0,24})[^\n]*$/i);
+      if (fm) {
+        const lang = String(fm[2] || '').toLowerCase();
+        const pos = stripTrailingEllipsis(compactBaseKey(lines.slice(0, i).join('\n'))).length;
+        addSlot(pos, { kind: 'code', lang });
+        inFence = { ch: fm[1][0], len: fm[1].length, lang };
+        continue;
+      }
+      const am = line.match(/^[ \t]*(?:>[ \t]*)+\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:[ \t]+|$)/i);
+      if (am) {
+        const alertType = String(am[1] || '').toLowerCase();
+        const pos = stripTrailingEllipsis(compactBaseKey(lines.slice(0, i).join('\n'))).length;
+        addSlot(pos, { kind: 'alert', alertType });
+      }
+    } else {
+      const cm = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+      if (cm && cm[1][0] === inFence.ch && cm[1].length >= inFence.len) {
+        const endPos = stripTrailingEllipsis(compactBaseKey(lines.slice(0, i + 1).join('\n'))).length;
+        addSlot(endPos, { kind: 'code-end', lang: inFence.lang });
+        inFence = null;
+      }
+    }
+  }
+  return slots;
+}
+
+function hasDomRawBoundaryBetween(rawText, rawStartOffsets, gapEndIdx) {
+  if (!rawText || !Array.isArray(rawStartOffsets) || gapEndIdx <= 0 || gapEndIdx >= rawStartOffsets.length) return true;
+  const prevRaw = rawStartOffsets[gapEndIdx - 1];
+  const nextRaw = rawStartOffsets[gapEndIdx];
+  if (!Number.isInteger(prevRaw) || !Number.isInteger(nextRaw)) return true;
+  if (nextRaw > prevRaw + 1) {
+    const between = rawText.slice(prevRaw + 1, nextRaw);
+    if (/[\s\n\r]/.test(between)) return true;
+  }
+  const prevCh = rawText[prevRaw] || '';
+  const nextCh = rawText[nextRaw] || '';
+  // 若前一个字符与后一个字符同为连续英文字母/数字且中间无空白分隔（如 notebook 中 note 与 book），不得拆词跳过
+  if (/[a-z0-9]/i.test(prevCh) && /[a-z0-9]/i.test(nextCh)) return false;
+  return true;
+}
+
+function decodeBasicHtmlEntities(str) {
+  return String(str || '').replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39|#x27);/gi, (ent) => {
+    const lower = ent.toLowerCase();
+    if (lower === '&amp;') return '&';
+    if (lower === '&lt;') return '<';
+    if (lower === '&gt;') return '>';
+    if (lower === '&quot;') return '"';
+    if (lower === '&apos;' || lower === '&#39;' || lower === '&#x27;') return "'";
+    if (lower === '&nbsp;') return ' ';
+    return ent;
+  });
+}
+
+function extractDomCopyButtonCodeStarts(domMsg) {
+  const html = String(domMsg?.html || '');
+  if (!html || !/<button\b/i.test(html) || !/<code\b/i.test(html)) return null;
+  const starts = [];
+  const btnRe = /<button\b[^>]*>([\s\S]*?)<\/button>/gi;
+  let m;
+  while ((m = btnRe.exec(html)) !== null) {
+    const btnText = decodeBasicHtmlEntities(String(m[1] || '').replace(/<[^>]+>/g, '')).trim();
+    if (!/^(?:Copy(?:\s*Code)?|Copied|复制代码|已复制|复制)$/i.test(btnText)) continue;
+    const rest = html.slice(btnRe.lastIndex);
+    const nextCodeMatch = rest.match(/^(?:\s|<(?!\/?(?:button|code)\b)\/?[a-z][a-z0-9-]*(?:\s+[^>]*)?>)*<code\b[^>]*>([\s\S]*?)<\/code>/i);
+    if (!nextCodeMatch) continue;
+    const innerText = decodeBasicHtmlEntities(String(nextCodeMatch[1] || '').replace(/<[^>]+>/g, ''));
+    const compactCode = stripTrailingEllipsis(compactDomKey(innerText));
+    if (compactCode) starts.push(compactCode);
+    if (starts.length >= 24) break;
+  }
+  return starts.length ? starts : null;
+}
+
+function matchesCopyButtonCodeEvidence(copyButtonCodeStarts, dClean, gapEndIdx) {
+  if (!Array.isArray(copyButtonCodeStarts) || !copyButtonCodeStarts.length) return false;
+  const after = String(dClean || '').slice(gapEndIdx);
+  if (!after) return false;
+  for (const codeCompact of copyButtonCodeStarts) {
+    if (!codeCompact) continue;
+    if (after.startsWith(codeCompact)) return true;
+    const minPrefix = Math.min(16, codeCompact.length, after.length);
+    if (minPrefix >= 6 && codeCompact.startsWith(after.slice(0, minPrefix)) && after.length <= codeCompact.length) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isGluedLangCopyChrome(rawGap, expectedLang = '') {
+  const s = String(rawGap || '');
+  // 仅当紧邻 <button>Copy</button> 后的 <code> 正文确以跳过后的代码起始（而非 pyCopyright 自身），
+  // 且语言标签与 Copy/Copied/复制代码 之间无空白/标点分隔时才允许无词边界跳过。
+  if (!s || /[\s:：·•\-|]/.test(s)) return false;
+  if (expectedLang) {
+    if (!s.toLowerCase().startsWith(String(expectedLang).toLowerCase())) return false;
+    const tail = s.slice(String(expectedLang).length);
+    return /^(?:CopyCode|Copy|Copied|复制代码|已复制|复制)$/.test(tail);
+  }
+  return /^[a-z0-9_+#.-]+(?:CopyCode|Copy|Copied|复制代码|已复制|复制)$/i.test(s)
+    && /(?:CopyCode|Copy|Copied|复制代码|已复制|复制)$/.test(s);
+}
+
+function isAllowedDomChromeGapAt(gap, tiPos, chromeSlots, boundaryOk = true, rawGap = '', allowGluedCopyChrome = false) {
+  if (!gap || gap.length > 48) return false;
+  if (tiPos === 0 && DOM_UI_CHROME_STRICT_RE.test(gap)) {
+    const hasLangAndCopyChrome = !DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && /(?:copycode|copied|copy|复制代码|已复制|复制)[:：·•\-|]*$/.test(gap);
+    if (boundaryOk || (allowGluedCopyChrome && hasLangAndCopyChrome && isGluedLangCopyChrome(rawGap))) return true;
+    return false;
+  }
+  const list = chromeSlots?.get?.(tiPos);
+  if (!Array.isArray(list) || !list.length) return false;
+  for (const slot of list) {
+    if (slot.kind === 'code') {
+      // 代码块槽位必须包含明确的复制按钮铬（Copy/复制代码 等）与真实词边界；
+      // 无后继词边界的紧贴复合铬仅在该处紧邻 <button>Copy</button> 后的 <code> 确以跳过后正文起始时放行，
+      // 彻底杜绝将 <code> 内的 pyCopyright（即使同消息存在 <button>Copy</button>）误拆为按钮铬与 right。
+      if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && boundaryOk) return true;
+      if (slot.lang && gap.startsWith(slot.lang)) {
+        const rest = gap.slice(slot.lang.length).replace(/^[:：·•\-|]+/, '');
+        if (rest && DOM_UI_CHROME_COPY_ONLY_RE.test(rest) && (boundaryOk || (allowGluedCopyChrome && isGluedLangCopyChrome(rawGap, slot.lang)))) return true;
+      }
+    } else if (slot.kind === 'code-end') {
+      if (DOM_UI_CHROME_COPY_ONLY_RE.test(gap) && boundaryOk) return true;
+    } else if (slot.kind === 'alert') {
+      const re = DOM_ALERT_CHROME_BY_TYPE[slot.alertType];
+      if (re && re.test(gap) && boundaryOk) return true;
+    }
+  }
+  return false;
+}
+
+function consumeBaseFromDomWithChrome(tClean, dClean, startPos = 0, chromeSlots = null, domIndex = null, copyButtonCodeStarts = null) {
+  if (!tClean || !dClean || startPos < 0 || startPos >= dClean.length) return -1;
+  const rawDom = domIndex?.raw || '';
+  const rawOffsets = domIndex?.rawStartOffsets || null;
+  let ti = 0;
+  let di = startPos;
+  let skippedChrome = 0;
+  const MAX_CHROME_GAPS = 24;
+  while (ti < tClean.length && di < dClean.length) {
+    if (tClean[ti] === dClean[di]) {
+      ti += 1;
+      di += 1;
+      continue;
+    }
+    if (skippedChrome >= MAX_CHROME_GAPS) return -1;
+    // 允许最多回退 12 个已匹配字符，处理 UI 铬与后续正文共享前缀的场景（如 shCopy 插在 sudoaptupdate 前先消费了 's'），且仅在对应结构槽位允许跳过
+    const maxBack = Math.min(ti, 12);
+    let matchedTi = -1;
+    let matchedDi = -1;
+    for (let back = 0; back <= maxBack; back += 1) {
+      const ti2 = ti - back;
+      const di2 = di - back;
+      if (di2 < startPos) break;
+      if (ti2 > 0 && !chromeSlots?.has?.(ti2)) continue;
+      const remT = tClean.length - ti2;
+      const probeLen = Math.min(8, remT);
+      const probe = tClean.slice(ti2, ti2 + probeLen);
+      const searchEnd = Math.min(dClean.length, di2 + 48);
+      let searchFrom = di2 + 1;
+      while (searchFrom < searchEnd) {
+        const idx = dClean.indexOf(probe, searchFrom);
+        if (idx < 0 || idx > searchEnd) break;
+        const gap = dClean.slice(di2, idx);
+        const boundaryOk = hasDomRawBoundaryBetween(rawDom, rawOffsets, idx);
+        const rawGapStart = Array.isArray(rawOffsets) && Number.isInteger(rawOffsets[di2]) ? rawOffsets[di2] : -1;
+        const rawGapEnd = Array.isArray(rawOffsets) && idx > 0 && Number.isInteger(rawOffsets[idx - 1]) ? (rawOffsets[idx - 1] + 1) : -1;
+        const rawGap = (rawDom && rawGapStart >= 0 && rawGapEnd > rawGapStart) ? rawDom.slice(rawGapStart, rawGapEnd) : gap;
+        const allowGluedAtSlot = !boundaryOk && matchesCopyButtonCodeEvidence(copyButtonCodeStarts, dClean, idx);
+        if (isAllowedDomChromeGapAt(gap, ti2, chromeSlots, boundaryOk, rawGap, allowGluedAtSlot)) {
+          matchedTi = ti2;
+          matchedDi = idx;
+          break;
+        }
+        searchFrom = idx + 1;
+      }
+      if (matchedDi >= 0) break;
+    }
+    if (matchedDi < 0) return -1;
+    ti = matchedTi;
+    di = matchedDi;
+    skippedChrome += 1;
+  }
+  if (ti < tClean.length) return -1;
+  if (di < dClean.length) {
+    const trailing = dClean.slice(di);
+    const rawTrailStart = Array.isArray(rawOffsets) && Number.isInteger(rawOffsets[di]) ? rawOffsets[di] : -1;
+    const rawTrail = (rawDom && rawTrailStart >= 0) ? rawDom.slice(rawTrailStart) : trailing;
+    if (isAllowedDomChromeGapAt(trailing, tClean.length, chromeSlots, true, rawTrail, false)) {
+      di = dClean.length;
+    }
+  }
+  return di;
+}
+
+function isMarkdownSourcedIncoming(msg, options = {}) {
+  if (options.isolated || options.domIsMarkdown) return true;
+  const id = String(msg?.id || '');
+  return /^rpc-(?:u|a|e|think)-/.test(id);
+}
+
+function classifyAssistantMatchDetail(baseText, domText, options = {}) {
+  if (options.domIsMarkdown && !options.baseIsDom) {
+    const rawBase = String(baseText || '').trim();
+    const rawDom = String(domText || '').trim();
+    if (rawBase && rawDom) {
+      if (rawBase === rawDom) return { tier: 3, hasStreamingGrowth: false };
+      if (!options.exactOnly && String(domText || '').length >= 3900 && rawDom.length >= 3900 && rawBase.length > rawDom.length && rawBase.startsWith(rawDom)) {
+        return { tier: 3, hasStreamingGrowth: false };
+      }
+    }
+  }
+  const tKey = (options.baseIsDom || options.domIsMarkdown) ? compactDomKey(baseText) : compactBaseKey(baseText);
+  const dKey = (options.baseIsDom && options.domIsMarkdown) ? compactBaseKey(domText) : compactDomKey(domText);
+  if (!tKey || !dKey) return { tier: 0, hasStreamingGrowth: false };
+
+  const tClean = stripTrailingEllipsis(tKey);
+  const dClean = stripTrailingEllipsis(dKey);
+  if (!tClean || !dClean) return { tier: 0, hasStreamingGrowth: false };
+
+  if (options.baseIsDom && !options.domIsMarkdown) {
+    const bNorm = stripTrailingEllipsis(normDomPlainText(baseText).toLowerCase());
+    const dNorm = stripTrailingEllipsis(normDomPlainText(domText).toLowerCase());
+    if (bNorm === dNorm) return { tier: 3, hasStreamingGrowth: false };
+    if (options.exactOnly) return { tier: 0, hasStreamingGrowth: false };
+    const shorterN = bNorm.length <= dNorm.length ? bNorm : dNorm;
+    const longerN = bNorm.length <= dNorm.length ? dNorm : bNorm;
+    if (longerN.startsWith(shorterN) && (
+      shorterN.length >= 10 ||
+      (options.busy && shorterN.length >= 4) ||
+      (options.allowCoveredPrefix && dNorm.startsWith(bNorm) && bNorm.length >= 4) ||
+      (shorterN.length >= 6 && (shorterN.length / longerN.length) >= 0.6)
+    )) {
+      return { tier: 2, hasStreamingGrowth: dNorm.length > bNorm.length && dNorm.startsWith(bNorm) };
+    }
+    return { tier: 0, hasStreamingGrowth: false };
+  }
+
+  if (tKey === dKey || (tClean === dClean && Math.min(tClean.length, dClean.length) >= 8)) {
+    return { tier: 3, hasStreamingGrowth: false };
+  }
+  if (options.exactOnly) return { tier: 0, hasStreamingGrowth: false };
+
+  const shorter = tClean.length <= dClean.length ? tClean : dClean;
+  const longer = tClean.length <= dClean.length ? dClean : tClean;
+  if (longer.startsWith(shorter) && (
+    shorter.length >= 10 ||
+    (options.busy && shorter.length >= 4) ||
+    (options.allowCoveredPrefix && dClean.startsWith(tClean) && tClean.length >= 4) ||
+    (shorter.length >= 6 && (shorter.length / longer.length) >= 0.6)
+  )) {
+    return { tier: 2, hasStreamingGrowth: dClean.length > tClean.length && dClean.startsWith(tClean) };
+  }
+
+  // Tier 1 仅在轨迹 Markdown 对应的结构槽位（围栏代码块起止、GitHub Alert 头部及文首前缀）允许跳过可识别的桌面 UI 装饰
+  if (!options.baseIsDom && !options.domIsMarkdown && tClean.length >= 12 && dClean.length > tClean.length) {
+    const chromeSlots = buildBaseChromeSlots(baseText);
+    const domIndex = buildCompactDomIndex(domText);
+    const endPos = consumeBaseFromDomWithChrome(tClean, dClean, 0, chromeSlots, domIndex, options.copyButtonCodeStarts || null);
+    if (endPos > 0) {
+      const tailAfter = dClean.length - endPos;
+      if (tailAfter === 0 || Boolean(options.busy) || Boolean(options.allowCoveredPrefix)) {
+        return { tier: 1, hasStreamingGrowth: tailAfter > 0 };
+      }
+    }
+  }
+  return { tier: 0, hasStreamingGrowth: false };
+}
+
+function classifyAssistantMatch(baseText, domText, options = {}) {
+  return classifyAssistantMatchDetail(baseText, domText, options).tier;
+}
+
+function hasUserAttachmentOrMediaMarker(msg) {
+  if (!msg || typeof msg !== 'object') return false;
+  if (Array.isArray(msg.attachments) && msg.attachments.length > 0) return true;
+  if (Array.isArray(msg.images) && msg.images.length > 0) return true;
+  if (msg.hasMedia) return true;
+  return /\[(?:附带\s*\d+\s*张图片|图片附件|图片\s*×\d+)\]/.test(String(msg.text || ''));
+}
+
+function isSameUserMessage(baseMsg, domMsg, options = {}) {
+  if (!baseMsg || !domMsg) return false;
+  const bStripped = stripUserMediaMarkers(baseMsg.text);
+  const dStripped = stripUserMediaMarkers(domMsg.text);
+  const bRawKey = compactDomKey(bStripped);
+  const bMdKey = options.baseIsDom ? bRawKey : compactBaseKey(bStripped);
+  const dRawKey = compactDomKey(dStripped);
+  const dMdKey = options.domIsMarkdown ? compactBaseKey(dStripped) : dRawKey;
+  if ((bRawKey || bMdKey) && (dRawKey || dMdKey)) {
+    if (
+      bRawKey === dRawKey ||
+      (!options.baseIsDom && !options.domIsMarkdown && bMdKey && bMdKey === dRawKey) ||
+      (options.baseIsDom && options.domIsMarkdown && dMdKey && bRawKey === dMdKey)
+    ) {
+      return true;
+    }
+    if (
+      options.domIsMarkdown &&
+      String(domMsg.text || '').length >= 3900 &&
+      dStripped.length >= 3900 &&
+      bStripped.length > dStripped.length &&
+      bStripped.startsWith(dStripped)
+    ) {
+      return true;
+    }
+    const domRawTrimmed = String(domMsg.text || '').trim();
+    if (domRawTrimmed.endsWith('…') || dStripped.endsWith('…')) {
+      const dClean = stripTrailingEllipsis(dRawKey);
+      if (
+        dClean.length >= 200 && (
+          (bRawKey.length > dClean.length && bRawKey.startsWith(dClean)) ||
+          (!options.baseIsDom && bMdKey.length > dClean.length && bMdKey.startsWith(dClean))
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (!bRawKey && !bMdKey && !dRawKey && !dMdKey) {
+    return hasUserAttachmentOrMediaMarker(baseMsg) && hasUserAttachmentOrMediaMarker(domMsg);
+  }
+  return false;
 }
 
 function collapseConsecutiveDomThinking(domMessages) {
@@ -4900,6 +5523,205 @@ function collapseConsecutiveDomThinking(domMessages) {
   return out;
 }
 
+function buildCompactDomIndex(rawText) {
+  const raw = String(rawText || '');
+  let compact = '';
+  const rawStartOffsets = [];
+  for (let i = 0; i < raw.length; ) {
+    const cp = raw.codePointAt(i);
+    const chLen = cp > 0xffff ? 2 : 1;
+    const ch = raw.slice(i, i + chLen);
+    if (!/[\s\u200b-\u200d\ufeff]/.test(ch)) {
+      const lowered = ch.toLowerCase();
+      for (let j = 0; j < lowered.length; j++) {
+        rawStartOffsets.push(i);
+      }
+      compact += lowered;
+    }
+    i += chLen;
+  }
+  return { raw, compact, rawStartOffsets };
+}
+
+function matchConcatenatedTurnDom(dmText, baseEntries, baseOverwrittenByDom, allowBusyTail = false, allowCoveredTail = false, copyButtonCodeStarts = null) {
+  if (!Array.isArray(baseEntries) || baseEntries.length < 2) return null;
+  const textEntries = baseEntries.filter((entry) => {
+    const item = entry?.item;
+    if (!item || item.role !== 'assistant') return false;
+    const bk = stripTrailingEllipsis(
+      baseOverwrittenByDom?.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text)
+    );
+    return Boolean(bk);
+  });
+  if (textEntries.length < 2) return null;
+  const { raw, compact, rawStartOffsets } = buildCompactDomIndex(dmText);
+  const dClean = stripTrailingEllipsis(compact);
+  if (!dClean) return null;
+  let pos = 0;
+  let lastStartPos = 0;
+  const matched = [];
+  for (const entry of textEntries) {
+    const item = entry.item;
+    const bk = stripTrailingEllipsis(
+      baseOverwrittenByDom?.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text)
+    );
+    if (bk) {
+      let nextPos = -1;
+      if (dClean.startsWith(bk, pos)) {
+        nextPos = pos + bk.length;
+      } else if (!baseOverwrittenByDom?.has(item) && bk.length >= 12) {
+        nextPos = consumeBaseFromDomWithChrome(bk, dClean, pos, buildBaseChromeSlots(item.text), { raw, compact, rawStartOffsets }, copyButtonCodeStarts);
+      }
+      if (nextPos > pos) {
+        lastStartPos = pos;
+        pos = nextPos;
+        matched.push(entry);
+      }
+    }
+  }
+  if (matched.length >= 2 && pos === dClean.length) {
+    return { matched, target: matched[matched.length - 1], streamingTailText: '' };
+  }
+  const lastEntry = textEntries[textEntries.length - 1];
+  if ((allowBusyTail || allowCoveredTail) && matched.length >= 2 && matched[matched.length - 1] === lastEntry && pos < dClean.length) {
+    const bkLast = stripTrailingEllipsis(
+      baseOverwrittenByDom?.has(lastEntry.item) ? compactDomKey(lastEntry.item.text) : compactBaseKey(lastEntry.item.text)
+    );
+    if (bkLast.length >= 4 || pos >= 4) {
+      const rawSliceStart = rawStartOffsets[lastStartPos];
+      const streamingTailText = allowBusyTail && Number.isInteger(rawSliceStart)
+        ? raw.slice(rawSliceStart).trim()
+        : '';
+      return { matched, target: lastEntry, streamingTailText };
+    }
+  }
+  return null;
+}
+
+function findUserAnchorAlignment(baseList, domList, options = {}) {
+  const baseUserIndices = [];
+  for (let i = 0; i < baseList.length; i++) {
+    if (baseList[i]?.role === 'user') baseUserIndices.push(i);
+  }
+  const domUserIndices = [];
+  for (let i = 0; i < domList.length; i++) {
+    if (domList[i]?.role === 'user') domUserIndices.push(i);
+  }
+  const M = baseUserIndices.length;
+  const K = domUserIndices.length;
+  if (!M || !K) return { startAppendIdx: -1, alignedTurnPairs: [] };
+
+  const getTurnAssistants = (list, userIndices, pos, isDom) => {
+    const start = userIndices[pos] + 1;
+    const end = pos + 1 < userIndices.length ? userIndices[pos + 1] : list.length;
+    const items = [];
+    for (let i = start; i < end; i++) {
+      const m = list[i];
+      if (!m || m.role !== 'assistant') continue;
+      const hasKey = isDom
+        ? compactDomKey(m.text)
+        : (options.isolated ? compactDomKey(m.text) : compactBaseKey(m.text));
+      if (hasKey) items.push(m);
+    }
+    return items;
+  };
+
+  const scoreTurnAssistants = (baseTurnPos, domTurnPos) => {
+    const bAsst = getTurnAssistants(baseList, baseUserIndices, baseTurnPos, false);
+    const dAsst = getTurnAssistants(domList, domUserIndices, domTurnPos, true);
+    if (!bAsst.length || !dAsst.length) return 0;
+    const isActiveTail = Boolean(options.busy && baseTurnPos === M - 1 && domTurnPos === K - 1);
+    for (const bm of bAsst) {
+      for (const dm of dAsst) {
+        if (classifyAssistantMatch(bm.text, dm.text, {
+          busy: isActiveTail,
+          domIsMarkdown: isMarkdownSourcedIncoming(dm, options),
+          copyButtonCodeStarts: extractDomCopyButtonCodeStarts(dm)
+        }) > 0) {
+          return 1;
+        }
+      }
+    }
+    if (bAsst.length >= 2) {
+      const baseAsEntries = bAsst.map((item) => ({ item }));
+      for (const dm of dAsst) {
+        if (isMarkdownSourcedIncoming(dm, options)) continue;
+        if (matchConcatenatedTurnDom(dm.text, baseAsEntries, null, isActiveTail, true, extractDomCopyButtonCodeStarts(dm))) {
+          return 1;
+        }
+      }
+    }
+    return -1;
+  };
+
+  const makeTurnPair = (bPos, dPos) => ({
+    baseTurnStart: baseUserIndices[bPos] + 1,
+    baseTurnEnd: (bPos + 1 < M ? baseUserIndices[bPos + 1] : baseList.length) - 1,
+    domTurnStart: domUserIndices[dPos] + 1,
+    domTurnEnd: (dPos + 1 < K ? domUserIndices[dPos + 1] : domList.length) - 1
+  });
+
+  const anchorUser = baseList[baseUserIndices[M - 1]];
+  const candidates = [];
+  let fallbackP = -1;
+
+  for (let p = 0; p < K; p++) {
+    const domIdx = domUserIndices[p];
+    const domU = domList[domIdx];
+    if (!isSameUserMessage(anchorUser, domU, { domIsMarkdown: isMarkdownSourcedIncoming(domU, options) })) continue;
+    fallbackP = p;
+    if (p > M - 1) continue;
+    let allPrevMatch = true;
+    for (let offset = 1; offset <= p; offset++) {
+      const prevDomU = domList[domUserIndices[p - offset]];
+      if (!isSameUserMessage(baseList[baseUserIndices[M - 1 - offset]], prevDomU, { domIsMarkdown: isMarkdownSourcedIncoming(prevDomU, options) })) {
+        allPrevMatch = false;
+        break;
+      }
+    }
+    if (!allPrevMatch) continue;
+    const userSpan = p + 1;
+    let matchedAssistants = 0;
+    let mismatchedAssistants = 0;
+    for (let offset = 0; offset <= p; offset++) {
+      const score = scoreTurnAssistants(M - 1 - offset, p - offset);
+      if (score > 0) matchedAssistants += 1;
+      else if (score < 0) mismatchedAssistants += 1;
+    }
+    const netScore = matchedAssistants - mismatchedAssistants;
+    candidates.push({ p, domIdx, userSpan, matchedAssistants, mismatchedAssistants, netScore });
+  }
+
+  if (candidates.length) {
+    candidates.sort((a, b) => (
+      (b.netScore - a.netScore) ||
+      (a.mismatchedAssistants - b.mismatchedAssistants) ||
+      (b.matchedAssistants - a.matchedAssistants) ||
+      (b.userSpan - a.userSpan) ||
+      (b.p - a.p)
+    ));
+    const best = candidates[0];
+    const alignedTurnPairs = [];
+    for (let offset = best.p; offset >= 0; offset--) {
+      alignedTurnPairs.push(makeTurnPair(M - 1 - offset, best.p - offset));
+    }
+    return { startAppendIdx: best.domIdx + 1, alignedTurnPairs };
+  }
+
+  if (fallbackP >= 0) {
+    const alignedTurnPairs = [];
+    for (let offset = 0; offset <= fallbackP && offset <= M - 1; offset++) {
+      const bPos = M - 1 - offset;
+      const dPos = fallbackP - offset;
+      const dUser = domList[domUserIndices[dPos]];
+      if (!isSameUserMessage(baseList[baseUserIndices[bPos]], dUser, { domIsMarkdown: isMarkdownSourcedIncoming(dUser, options) })) break;
+      alignedTurnPairs.unshift(makeTurnPair(bPos, dPos));
+    }
+    return { startAppendIdx: domUserIndices[fallbackP] + 1, alignedTurnPairs };
+  }
+  return { startAppendIdx: -1, alignedTurnPairs: [] };
+}
+
 function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
   const domList = collapseConsecutiveDomThinking(domMessages);
   const baseList = Array.isArray(trajMsgs) ? trajMsgs.map((m) => ({ ...m })) : [];
@@ -4907,78 +5729,309 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
     return domList.map((m, idx) => ({ ...m, msgIndex: idx }));
   }
 
-  for (const dm of domList) {
-    if (dm.role !== 'assistant') continue;
-    const dSig = normMsgPrefix(dm.text);
-    const matchTarget = baseList
-      .slice(-8)
-      .reverse()
-      .find((tm) => tm.role === 'assistant' && dSig && normMsgPrefix(tm.text) && (
-        normMsgPrefix(tm.text).startsWith(dSig.slice(0, 32)) || dSig.startsWith(normMsgPrefix(tm.text).slice(0, 32))
-      ));
-    if (matchTarget) {
-      if (dm.highRisk) {
-        matchTarget.highRisk = true;
-        matchTarget.riskText = dm.riskText || matchTarget.riskText || '';
-      }
-      if (options.busy && String(dm.text || '').length > String(matchTarget.text || '').length) {
-        matchTarget.text = dm.text;
-        matchTarget.html = dm.html || null;
-      }
-      if (!matchTarget.thoughtText && dm.thoughtText) {
-        matchTarget.thoughtLabel = dm.thoughtLabel || '思考过程';
-        matchTarget.thoughtText = dm.thoughtText;
-        if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
-          matchTarget.thoughts = dm.thoughts.slice();
-          matchTarget.thoughtCount = dm.thoughts.length;
+  const trajHasAuthoritativeThoughts = new WeakSet();
+  for (const m of baseList) {
+    if (m && m.role === 'assistant' && String(m.thoughtText || '').trim()) {
+      trajHasAuthoritativeThoughts.add(m);
+    }
+  }
+  const baseOverwrittenByDom = new WeakSet();
+
+  const mergeDomMetaIntoTarget = (target, src) => {
+    if (!target || !src || target === src) return;
+    if (src.highRisk) {
+      target.highRisk = true;
+      const srcRisk = String(src.riskText || '').trim();
+      const curRisk = String(target.riskText || '').trim();
+      if (srcRisk) {
+        if (!curRisk) {
+          target.riskText = srcRisk;
+        } else if (!curRisk.includes(srcRisk)) {
+          target.riskText = `${curRisk}\n${srcRisk}`;
         }
       }
     }
-  }
+    if (!trajHasAuthoritativeThoughts.has(target)) {
+      const srcThoughts = Array.isArray(src.thoughts) && src.thoughts.length
+        ? src.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
+        : (String(src.thoughtText || '').trim() ? [String(src.thoughtText).trim()] : []);
+      const curThoughts = Array.isArray(target.thoughts) && target.thoughts.length
+        ? target.thoughts.map((t) => String(t || '').trim()).filter(Boolean)
+        : (String(target.thoughtText || '').trim() ? [String(target.thoughtText).trim()] : []);
+      if (srcThoughts.length) {
+        const mergedThoughts = curThoughts.slice();
+        for (const t of srcThoughts) {
+          if (t && !mergedThoughts.includes(t)) mergedThoughts.push(t);
+        }
+        target.thoughts = mergedThoughts;
+        target.thoughtText = mergedThoughts.join('\n\n');
+        target.thoughtLabel = target.thoughtLabel || src.thoughtLabel || '思考过程';
+        target.thoughtCount = Math.max(mergedThoughts.length, Number(target.thoughtCount) || 0, Number(src.thoughtCount) || 0);
+      } else if (!target.thoughtLabel && src.thoughtLabel) {
+        target.thoughtLabel = src.thoughtLabel;
+        target.thoughtCount = Math.max(Number(target.thoughtCount) || 0, Number(src.thoughtCount) || 1);
+      }
+    }
+  };
 
-  // 如果桌面 DOM 末尾刚发送/流式生成了轨迹接口尚未索引的最新消息，无损补入尾部
+  const applyConcatenatedTurnHit = (hit, dm) => {
+    if (!hit?.target?.item) return;
+    const targetItem = hit.target.item;
+    if (hit.streamingTailText) {
+      const prevKeyLen = baseOverwrittenByDom.has(targetItem)
+        ? compactDomKey(targetItem.text).length
+        : compactBaseKey(targetItem.text).length;
+      if (compactDomKey(hit.streamingTailText).length > prevKeyLen) {
+        targetItem.text = hit.streamingTailText;
+        targetItem.html = null;
+        baseOverwrittenByDom.add(targetItem);
+      }
+    }
+    mergeDomMetaIntoTarget(targetItem, dm);
+  };
+
+  // 先结合消息顺序与轮次结构定位轨迹最后一条用户消息在桌面 DOM 中的锚点位置
   let lastBaseUserIdx = -1;
-  let lastBaseUserSig = '';
   for (let i = baseList.length - 1; i >= 0; i--) {
     if (baseList[i].role === 'user') {
       lastBaseUserIdx = i;
-      lastBaseUserSig = normMsgPrefix(baseList[i].text);
       break;
     }
   }
-  let startAppendIdx = -1;
+  let lastDomUserIdx = -1;
   for (let i = domList.length - 1; i >= 0; i--) {
-    if (domList[i].role === 'user' && lastBaseUserSig && normMsgPrefix(domList[i].text) === lastBaseUserSig) {
-      startAppendIdx = i + 1;
+    if (domList[i]?.role === 'user') {
+      lastDomUserIdx = i;
       break;
     }
   }
+  const anchor = lastBaseUserIdx >= 0
+    ? findUserAnchorAlignment(baseList, domList, options)
+    : { startAppendIdx: -1, alignedTurnPairs: [] };
+  const startAppendIdx = anchor.startAppendIdx;
+
+  const consumedDomIndices = new Set();
+  const consumedBaseIndices = new Set();
+
+  const matchAndMergePool = (domIndices, baseIndices, poolOpts = {}) => {
+    if (!domIndices.length || !baseIndices.length) return;
+    const allowBusyOverwrite = Boolean(options.busy && poolOpts.isActiveTailTurn);
+    const minStreamableBaseIdx = Number.isInteger(poolOpts.minStreamableBaseIdx) ? poolOpts.minStreamableBaseIdx : 0;
+    let lastTextBiInPool = -1;
+    for (let idx = baseIndices.length - 1; idx >= 0; idx--) {
+      const bi = baseIndices[idx];
+      const item = baseList[bi];
+      const hasTextKey = item && (baseOverwrittenByDom.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text));
+      if (hasTextKey) {
+        lastTextBiInPool = bi;
+        break;
+      }
+    }
+    let lastStreamableBi = -1;
+    for (let idx = baseIndices.length - 1; idx >= 0; idx--) {
+      const bi = baseIndices[idx];
+      if (bi < minStreamableBaseIdx) break;
+      const item = baseList[bi];
+      const hasTextKey = item && (baseOverwrittenByDom.has(item) ? compactDomKey(item.text) : compactBaseKey(item.text));
+      if (hasTextKey) {
+        lastStreamableBi = bi;
+        break;
+      }
+    }
+    const domDesc = domIndices.slice().reverse();
+    const baseDesc = baseIndices.slice().reverse();
+
+    const runTierPass = (tiers) => {
+      for (const minTier of tiers) {
+        for (const di of domDesc) {
+          if (consumedDomIndices.has(di)) continue;
+          const dm = domList[di];
+          const domIsMd = isMarkdownSourcedIncoming(dm, options);
+          let bestBi = -1;
+          let bestTier = 0;
+          let bestHasGrowth = false;
+          for (const bi of baseDesc) {
+            if (consumedBaseIndices.has(bi)) continue;
+            const matchTarget = baseList[bi];
+            const detail = classifyAssistantMatchDetail(matchTarget.text, dm.text, {
+              busy: allowBusyOverwrite && bi === lastStreamableBi,
+              allowCoveredPrefix: Boolean(poolOpts.singleTurn && !poolOpts.isActiveTailTurn && !domIsMd && bi === lastTextBiInPool),
+              baseIsDom: baseOverwrittenByDom.has(matchTarget),
+              domIsMarkdown: domIsMd,
+              copyButtonCodeStarts: extractDomCopyButtonCodeStarts(dm)
+            });
+            const tier = detail.tier;
+            if (tier >= minTier && tier > bestTier) {
+              bestTier = tier;
+              bestBi = bi;
+              bestHasGrowth = Boolean(detail.hasStreamingGrowth);
+              if (tier === 3) break;
+            }
+          }
+          if (bestBi >= 0) {
+            consumedDomIndices.add(di);
+            consumedBaseIndices.add(bestBi);
+            const matchTarget = baseList[bestBi];
+            const targetIsDom = baseOverwrittenByDom.has(matchTarget);
+            const targetKeyLen = (targetIsDom || domIsMd)
+              ? compactDomKey(matchTarget.text).length
+              : compactBaseKey(matchTarget.text).length;
+            const domKeyLen = (targetIsDom && domIsMd)
+              ? compactBaseKey(dm.text).length
+              : compactDomKey(dm.text).length;
+            if (allowBusyOverwrite && bestBi === lastStreamableBi && bestHasGrowth && domKeyLen > targetKeyLen) {
+              matchTarget.text = dm.text;
+              matchTarget.html = dm.html || null;
+              if (!domIsMd) baseOverwrittenByDom.add(matchTarget);
+            }
+            mergeDomMetaIntoTarget(matchTarget, dm);
+          }
+        }
+      }
+    };
+
+    // 1. 精确 1-to-1 匹配
+    runTierPass([3]);
+
+    // 2. 桌面单轮多段聚合容器识别：防止将整轮拼合纯文本误当作单条回复或覆盖历史首条
+    if (baseIndices.length >= 2) {
+      const baseEntriesInPool = baseIndices.map((bi) => ({ item: baseList[bi], baseIdx: bi }));
+      const concatPool = poolOpts.singleTurn
+        ? baseEntriesInPool
+        : baseEntriesInPool.filter((e) => e.baseIdx >= minStreamableBaseIdx);
+      const canBusyConcat = allowBusyOverwrite && lastStreamableBi >= minStreamableBaseIdx;
+      if (concatPool.length >= 2) {
+        for (const di of domIndices) {
+          if (consumedDomIndices.has(di)) continue;
+          const dm = domList[di];
+          if (isMarkdownSourcedIncoming(dm, options)) continue;
+          const hit = matchConcatenatedTurnDom(
+            dm.text,
+            concatPool,
+            baseOverwrittenByDom,
+            canBusyConcat,
+            canBusyConcat || Boolean(poolOpts.singleTurn),
+            extractDomCopyButtonCodeStarts(dm)
+          );
+          if (hit) {
+            consumedDomIndices.add(di);
+            applyConcatenatedTurnHit(hit, dm);
+          }
+        }
+      }
+    }
+
+    // 3. Tier 2/1 前缀续写与 UI 装饰包含匹配
+    runTierPass([2, 1]);
+
+    // 扫尾聚合：同池内未消费的重复 DOM 节点若与已消费基准项精确同文，合并其 highRisk/riskText/thoughts 后跳过
+    for (const di of domIndices) {
+      if (consumedDomIndices.has(di)) continue;
+      const dm = domList[di];
+      const domIsMd = isMarkdownSourcedIncoming(dm, options);
+      for (const bi of baseDesc) {
+        if (!consumedBaseIndices.has(bi)) continue;
+        const matchTarget = baseList[bi];
+        if (classifyAssistantMatch(matchTarget.text, dm.text, {
+          busy: allowBusyOverwrite && bi === lastStreamableBi,
+          exactOnly: true,
+          baseIsDom: baseOverwrittenByDom.has(matchTarget),
+          domIsMarkdown: domIsMd
+        }) >= 3) {
+          mergeDomMetaIntoTarget(matchTarget, dm);
+          consumedDomIndices.add(di);
+          break;
+        }
+      }
+    }
+  };
+
+  const collectAssistantIndices = (list, from, to) => {
+    const ids = [];
+    for (let i = Math.max(0, from); i <= Math.min(list.length - 1, to); i++) {
+      if (list[i]?.role === 'assistant') ids.push(i);
+    }
+    return ids;
+  };
+
   if (startAppendIdx >= 0) {
-    let currentTurnMsgs = baseList.slice(Math.max(0, lastBaseUserIdx + 1));
+    for (const pair of anchor.alignedTurnPairs) {
+      const isActiveTailTurn =
+        pair.baseTurnStart > lastBaseUserIdx &&
+        pair.baseTurnEnd === baseList.length - 1 &&
+        pair.domTurnStart > lastDomUserIdx &&
+        pair.domTurnEnd === domList.length - 1;
+      matchAndMergePool(
+        collectAssistantIndices(domList, pair.domTurnStart, pair.domTurnEnd),
+        collectAssistantIndices(baseList, pair.baseTurnStart, pair.baseTurnEnd),
+        { isActiveTailTurn, minStreamableBaseIdx: lastBaseUserIdx + 1, singleTurn: true }
+      );
+    }
+  } else {
+    const hasTrailingBaseAssistants = lastBaseUserIdx < baseList.length - 1;
+    const isActiveTailTurn = lastDomUserIdx < 0 && hasTrailingBaseAssistants;
+    matchAndMergePool(
+      collectAssistantIndices(domList, 0, domList.length - 1),
+      collectAssistantIndices(baseList, Math.max(0, baseList.length - 12), baseList.length - 1),
+      { isActiveTailTurn, minStreamableBaseIdx: lastBaseUserIdx + 1, singleTurn: false }
+    );
+  }
+
+  // 如果桌面 DOM 末尾刚发送/流式生成了轨迹接口尚未索引的最新消息，无损补入尾部
+  if (startAppendIdx >= 0) {
+    let currentTurnStartIdx = lastBaseUserIdx;
+    let currentTurnEntries = [];
+    let seenNewDomUserInPass2 = false;
+    for (let k = Math.max(0, lastBaseUserIdx + 1); k < baseList.length; k++) {
+      currentTurnEntries.push({
+        item: baseList[k],
+        baseIdx: k,
+        fromBase: true,
+        fromMarkdown: !baseOverwrittenByDom.has(baseList[k])
+      });
+    }
     for (let j = startAppendIdx; j < domList.length; j++) {
+      if (consumedDomIndices.has(j)) continue;
       const dm = domList[j];
-      const dSig = normMsgPrefix(dm.text);
+      const dmIsMd = isMarkdownSourcedIncoming(dm, options);
+      const dHasText = Boolean(normMsgPrefix(dm.text));
       if (dm.role === 'user') {
-        const dupUser = currentTurnMsgs.some((bm) => bm.role === 'user' && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
+        const dupUser = currentTurnEntries.some((entry) => (
+          entry.item.role === 'user' &&
+          isSameUserMessage(entry.item, dm, {
+            baseIsDom: !entry.fromMarkdown || baseOverwrittenByDom.has(entry.item),
+            domIsMarkdown: dmIsMd
+          })
+        ));
         if (!dupUser) {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
           // 遇到新用户消息立即重置当前轮次范围，避免后续新轮思考被挂到旧轮回复
-          currentTurnMsgs = [];
+          currentTurnStartIdx = baseList.length - 1;
+          currentTurnEntries = [];
+          seenNewDomUserInPass2 = true;
         }
         continue;
       }
-      if (dm.role === 'assistant' && !dSig && !dm.highRisk) {
+      if (dm.role === 'assistant' && /^rpc-e-/.test(String(dm.id || ''))) {
+        let hasLaterDomReply = false;
+        for (let k = j + 1; k < domList.length && domList[k]?.role !== 'user'; k++) {
+          const nxt = domList[k];
+          if (nxt && nxt.role === 'assistant' && !nxt.highRisk && !/^rpc-e-/.test(String(nxt.id || '')) && Boolean(normMsgPrefix(nxt.text))) {
+            hasLaterDomReply = true;
+            break;
+          }
+        }
+        if (hasLaterDomReply) {
+          continue;
+        }
+      }
+      if (dm.role === 'assistant' && !dHasText && !dm.highRisk) {
         // 纯思考项（空正文）：不得向本轮已有回复或思考卡尾部追加空壳 dom-tail
-        const lastTurnAssistant = [...currentTurnMsgs].reverse().find((bm) => bm.role === 'assistant');
+        const lastTurnAssistant = [...currentTurnEntries].reverse().map((e) => e.item).find((bm) => bm.role === 'assistant');
         if (lastTurnAssistant) {
           if (!lastTurnAssistant.thoughtText && dm.thoughtText) {
-            lastTurnAssistant.thoughtLabel = dm.thoughtLabel || '思考过程';
-            lastTurnAssistant.thoughtText = dm.thoughtText;
-            if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
-              lastTurnAssistant.thoughts = dm.thoughts.slice();
-              lastTurnAssistant.thoughtCount = dm.thoughts.length;
-            }
+            mergeDomMetaIntoTarget(lastTurnAssistant, dm);
           } else if (!normMsgPrefix(lastTurnAssistant.text) && dm.thoughtText && dm.thoughtText.length > String(lastTurnAssistant.thoughtText || '').length) {
             lastTurnAssistant.thoughtText = dm.thoughtText;
             if (Array.isArray(dm.thoughts) && dm.thoughts.length) {
@@ -4992,15 +6045,71 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
         if (dm.thoughtLabel || dm.thoughtText) {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          currentTurnMsgs.push(item);
+          currentTurnEntries.push({ item, baseIdx: baseList.length - 1, fromBase: false, fromMarkdown: dmIsMd });
         }
         continue;
       }
-      const dup = currentTurnMsgs.some((bm) => bm.role === dm.role && dSig && normMsgPrefix(bm.text).startsWith(dSig.slice(0, 32)));
-      if (!dup) {
+      const isDomActiveTailTurn = j > lastDomUserIdx;
+      const allowPass2Busy = Boolean(options.busy && isDomActiveTailTurn);
+      if (dm.role === 'assistant' && dHasText && !dmIsMd) {
+        const baseAsstEntries = currentTurnEntries.filter(
+          (e) => e.fromBase && e.item?.role === 'assistant' && Boolean(normMsgPrefix(e.item.text))
+        );
+        if (baseAsstEntries.length >= 2) {
+          const concatHit = matchConcatenatedTurnDom(dm.text, baseAsstEntries, baseOverwrittenByDom, allowPass2Busy, true, extractDomCopyButtonCodeStarts(dm));
+          if (concatHit) {
+            applyConcatenatedTurnHit(concatHit, dm);
+            continue;
+          }
+        }
+      }
+      const lastBaseTextIdxInTurn = dHasText
+        ? currentTurnEntries.reduce((acc, e) => (
+            (e.fromBase && e.item?.role === 'assistant' && Boolean(normMsgPrefix(e.item.text)))
+              ? Math.max(acc, e.baseIdx)
+              : acc
+          ), -1)
+        : -1;
+      const dupEntry = dHasText
+        ? currentTurnEntries.find((entry) => {
+            if (entry.item.role !== dm.role) return false;
+            const exactOnly = !entry.fromBase || consumedBaseIndices.has(entry.baseIdx);
+            const baseIsDom = !entry.fromMarkdown || baseOverwrittenByDom.has(entry.item);
+            const allowEntryBusy = allowPass2Busy && (!entry.fromBase || lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn);
+            return classifyAssistantMatch(entry.item.text, dm.text, {
+              busy: allowEntryBusy,
+              allowCoveredPrefix: Boolean(!isDomActiveTailTurn && entry.fromBase && !dmIsMd && (lastBaseTextIdxInTurn < 0 || entry.baseIdx === lastBaseTextIdxInTurn)),
+              exactOnly,
+              baseIsDom,
+              domIsMarkdown: dmIsMd,
+              copyButtonCodeStarts: extractDomCopyButtonCodeStarts(dm)
+            }) > 0;
+          })
+        : null;
+      if (dupEntry) {
+        mergeDomMetaIntoTarget(dupEntry.item, dm);
+      } else {
+        // 权威空闲轨迹保护：在语言服务与桌面端均确认空闲且轨迹已与当前空闲签名对齐时，
+        // 同一已回复轮次内的非 Markdown 桌面 DOM 容器必为同一轮的渲染副本，仅合并元数据绝不重复追加 dom-tail
+        if (
+          options.authoritativeIdle === true &&
+          !options.isolated &&
+          !dmIsMd &&
+          !seenNewDomUserInPass2 &&
+          dm.role === 'assistant' &&
+          dHasText
+        ) {
+          const lastBaseAsstEntry = [...currentTurnEntries]
+            .reverse()
+            .find((e) => e.fromBase && e.item?.role === 'assistant' && Boolean(normMsgPrefix(e.item.text)));
+          if (lastBaseAsstEntry) {
+            mergeDomMetaIntoTarget(lastBaseAsstEntry.item, dm);
+            continue;
+          }
+        }
         // 流式纯思考卡转正文交接：若本轮末尾是无正文纯思考卡，合并其思考到新回复并移除临时卡
-        const pendingThinkIdx = (dm.role === 'assistant' && dSig)
-          ? baseList.findIndex((bm, idx) => idx > lastBaseUserIdx && bm.role === 'assistant' && !normMsgPrefix(bm.text) && !bm.highRisk && (bm.thoughtLabel || bm.thoughtText))
+        const pendingThinkIdx = (dm.role === 'assistant' && dHasText)
+          ? baseList.findIndex((bm, idx) => idx > currentTurnStartIdx && bm.role === 'assistant' && !normMsgPrefix(bm.text) && !bm.highRisk && (bm.thoughtLabel || bm.thoughtText))
           : -1;
         if (pendingThinkIdx >= 0) {
           const prevThink = baseList[pendingThinkIdx];
@@ -5022,17 +6131,17 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
             ...(combinedThoughts.length ? { thoughts: combinedThoughts, thoughtCount: combinedThoughts.length } : {})
           };
           baseList.splice(pendingThinkIdx, 1, promoted);
-          const turnPos = currentTurnMsgs.indexOf(prevThink);
-          if (turnPos >= 0) currentTurnMsgs.splice(turnPos, 1, promoted);
-          else currentTurnMsgs.push(promoted);
+          const turnPos = currentTurnEntries.findIndex((e) => e.baseIdx === pendingThinkIdx || e.item === prevThink);
+          if (turnPos >= 0) currentTurnEntries.splice(turnPos, 1, { item: promoted, baseIdx: pendingThinkIdx, fromBase: false, fromMarkdown: dmIsMd });
+          else currentTurnEntries.push({ item: promoted, baseIdx: pendingThinkIdx, fromBase: false, fromMarkdown: dmIsMd });
         } else {
           const item = { ...dm, id: `dom-tail-${j}` };
           baseList.push(item);
-          currentTurnMsgs.push(item);
+          currentTurnEntries.push({ item, baseIdx: baseList.length - 1, fromBase: false, fromMarkdown: dmIsMd });
         }
       }
     }
-  } else if (!lastBaseUserSig && domList.length) {
+  } else if (lastBaseUserIdx < 0 && domList.length) {
     for (let j = 0; j < domList.length; j++) {
       const dm = domList[j];
       if (dm.role === 'user') baseList.push({ ...dm, id: `dom-tail-${j}` });
@@ -5386,6 +6495,8 @@ function createConversationHistoryManager() {
     const nowMs = Date.now();
     const ttl = options.busy ? 1000 : 3500;
     const trajSig = String(options.trajSig || '').trim();
+    const trajStatusPrefix = trajSig ? trajSig.split('|')[0] : '';
+    const isCredibleIdleTraj = CREDIBLE_TRAJ_IDLE_STATUSES.has(trajStatusPrefix);
     const knownOldSig = String(existing?.trajSig || '').trim();
     const observedOldSig = String(existing?.observedSig || '').trim();
     const sigMismatch = Boolean(
@@ -5403,7 +6514,11 @@ function createConversationHistoryManager() {
 
     if (trajHit) {
       const trajMsgs = existing.trajMsgs;
-      const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
+      const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, {
+        busy: Boolean(options.busy),
+        isolated: Boolean(options.isolated),
+        authoritativeIdle: Boolean(!options.busy && !options.isolated && isCredibleIdleTraj && verifiedIdleMatch)
+      });
       // Never extend `at` on cache hits: TTL must measure elapsed time since actual RPC fetch.
       // For unknown-signature warm entries (knownOldSig === ''), record observedSig without promoting it to trajSig.
       const nextObservedSig = knownOldSig ? '' : (observedOldSig || trajSig || '');
@@ -5414,6 +6529,7 @@ function createConversationHistoryManager() {
         trajSig: knownOldSig,
         observedSig: nextObservedSig,
         domTail: domTail.length ? domTail : (existing?.domTail || []),
+        domTailIsolated: domTail.length ? Boolean(options.isolated) : Boolean(existing?.domTailIsolated),
         merged,
         at: existing.at || 0,
         gen: existing.gen || 0
@@ -5442,7 +6558,10 @@ function createConversationHistoryManager() {
         const activeQueued = Array.isArray(latestExisting?.queuedMessages)
           ? latestExisting.queuedMessages
           : (wasInvalidated ? [] : (Array.isArray(fetchedQueued) ? fetchedQueued : (Array.isArray(existing?.queuedMessages) ? existing.queuedMessages : null)));
-        const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, { busy: Boolean(options.busy) });
+        const merged = mergeTrajectoryAndDomMessages(activeTrajMsgs, domTail, {
+          busy: Boolean(options.busy),
+          isolated: Boolean(options.isolated)
+        });
         return { merged, trajMsgs: activeTrajMsgs, queuedMessages: activeQueued };
       }
 
@@ -5458,11 +6577,16 @@ function createConversationHistoryManager() {
       if (trajFetchedFresh && invGenAfter > 0 && fetchRes.gen > invGenAfter) {
         invalidatedGenMap.delete(sid);
       }
+      const stillPendingInvalidation = Boolean((invalidatedGenMap.get(sid) || 0) > 0);
       const nextQueued = trajFetchedFresh
         ? (Array.isArray(fetchedQueued) ? fetchedQueued : [])
         : (Array.isArray(baseRec?.queuedMessages) ? baseRec.queuedMessages : (isPendingInvalidation ? [] : null));
 
-      const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, { busy: Boolean(options.busy) });
+      const merged = mergeTrajectoryAndDomMessages(trajMsgs, domTail, {
+        busy: Boolean(options.busy),
+        isolated: Boolean(options.isolated),
+        authoritativeIdle: Boolean(!options.busy && !options.isolated && isCredibleIdleTraj && trajFetchedFresh && !stillPendingInvalidation)
+      });
       const nextTrajSig = trajFetchedFresh ? trajSig : String(baseRec?.trajSig || '');
       const nextObservedSig = trajFetchedFresh ? '' : String(baseRec?.observedSig || '');
       const nextAt = trajFetchedFresh ? fetchRes.startedAt : (baseRec?.at || 0);
@@ -5476,6 +6600,7 @@ function createConversationHistoryManager() {
         trajSig: nextTrajSig,
         observedSig: nextObservedSig,
         domTail: domTail.length ? domTail : (baseRec?.domTail || []),
+        domTailIsolated: domTail.length ? Boolean(options.isolated) : Boolean(baseRec?.domTailIsolated),
         merged,
         at: nextAt,
         gen: nextGen
@@ -5528,7 +6653,10 @@ function createConversationHistoryManager() {
     const latestFallbackRec = cache.get(sid) || existing;
     const fallbackTrajMsgs = Array.isArray(latestFallbackRec?.trajMsgs) ? latestFallbackRec.trajMsgs : null;
     const fallbackQueued = Array.isArray(latestFallbackRec?.queuedMessages) ? latestFallbackRec.queuedMessages : null;
-    const merged = mergeTrajectoryAndDomMessages(fallbackTrajMsgs, domTail, { busy: Boolean(options.busy) });
+    const merged = mergeTrajectoryAndDomMessages(fallbackTrajMsgs, domTail, {
+      busy: Boolean(options.busy),
+      isolated: Boolean(options.isolated)
+    });
     return { merged, trajMsgs: fallbackTrajMsgs, queuedMessages: fallbackQueued };
   }
 
@@ -5555,6 +6683,7 @@ function createConversationHistoryManager() {
         trajSig: fetchRes.fetchedSig || '',
         observedSig: '',
         domTail: [],
+        domTailIsolated: false,
         merged: [],
         at: fetchRes.startedAt,
         gen: fetchRes.gen
@@ -5570,7 +6699,8 @@ function createConversationHistoryManager() {
       resolveFullMessages(sid, cleanSnap.messages, {
         ...options,
         trajSig: _activeTrajSig || '',
-        busy: Boolean(cleanSnap.busy)
+        busy: Boolean(cleanSnap.busy),
+        isolated: Boolean(cleanSnap.isolated)
       }),
       (!cleanSnap.isNewConversation && !cleanSnap.isolatedError)
         ? fetchPendingAgentMessages(sid, options).catch(() => null)
@@ -5655,7 +6785,10 @@ function createConversationHistoryManager() {
       };
     }
 
-    const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(sid, existing?.domTail || [], options);
+    const { merged: fullMsgs, trajMsgs } = await resolveFullMessages(sid, existing?.domTail || [], {
+      ...options,
+      isolated: Boolean(options.isolated || existing?.domTailIsolated)
+    });
     const total = fullMsgs.length;
     const rawBefore = hasBefore ? Number.parseInt(options.before, 10) : total;
     const endIdx = Math.max(0, Math.min(total, Number.isFinite(rawBefore) ? rawBefore : total));
@@ -5692,6 +6825,30 @@ function warmConversationSession(sessionId, options = {}) {
   return defaultHistoryManager.warmSession(sessionId, options);
 }
 
+function buildEnrichFallbackSnapshot(baseSnap) {
+  const isIsolatedError = Boolean(baseSnap?.isolatedError);
+  const rawMsgs = (!isIsolatedError && Array.isArray(baseSnap?.messages)) ? baseSnap.messages : [];
+  const normalizedMsgs = [];
+  for (const m of rawMsgs) {
+    if (!m || typeof m !== 'object') continue;
+    normalizedMsgs.push({
+      ...m,
+      msgIndex: normalizedMsgs.length
+    });
+  }
+  return {
+    ...baseSnap,
+    messages: normalizedMsgs,
+    historySource: isIsolatedError ? 'isolated_error' : 'dom',
+    totalMessages: normalizedMsgs.length,
+    messagesStartIndex: 0,
+    hasEarlierMessages: false,
+    serverBootId: REMOTE_SERVER_BOOT_ID,
+    serverBootAt: REMOTE_SERVER_BOOT_AT,
+    snapSeq: ++remoteServerSnapSeq
+  };
+}
+
 async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
   const serializedOpts = JSON.stringify({
     conversationId: String(snapOptions?.conversationId || '').trim(),
@@ -5708,7 +6865,11 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
     }
     return fn();
   })()`;
-  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr, 7000, { idempotent: true });
+  const { value: snap, target, windows } = await evalInPickedTarget(requestedTargetId, expr, 7000, {
+    idempotent: true,
+    pickTarget: snapOptions?.pickTarget,
+    evalInTarget: snapOptions?.evalInTarget
+  });
   if (!snap || typeof snap !== 'object') {
     throw new Error('未能读取电脑端会话画面，请确认 Antigravity 已打开');
   }
@@ -5717,10 +6878,11 @@ async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
     currentTargetId: target.id,
     windows
   };
+  const enrichFn = typeof snapOptions?.enrichSnapshot === 'function' ? snapOptions.enrichSnapshot : enrichSnapshotWithCatalog;
   try {
-    return await enrichSnapshotWithCatalog(baseSnap, snapOptions);
+    return await enrichFn(baseSnap, snapOptions);
   } catch {
-    return { ...baseSnap, serverBootId: REMOTE_SERVER_BOOT_ID, serverBootAt: REMOTE_SERVER_BOOT_AT, snapSeq: ++remoteServerSnapSeq };
+    return buildEnrichFallbackSnapshot(baseSnap);
   }
 }
 
@@ -10182,42 +11344,68 @@ function buildMobileAppHtml() {
 
       // Messages (full history + upward pagination + gap backfill + scroll anchor)
       msgEl.classList.remove('is-switching');
+      const parseNonNegativeInt = (v) => {
+        if (typeof v === 'number') return (Number.isInteger(v) && v >= 0) ? v : null;
+        if (typeof v === 'string') {
+          const trimmed = v.trim();
+          if (/^\\d+$/.test(trimmed)) {
+            const n = Number(trimmed);
+            return (Number.isSafeInteger(n) && n >= 0) ? n : null;
+          }
+        }
+        return null;
+      };
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
-      const nextHistSource = snap.historySource === 'trajectory' || snap.historySource === 'dom' ? snap.historySource : '';
+      const nextHistSource = snap.historySource === 'trajectory'
+        ? 'trajectory'
+        : (snap.historySource === 'dom' || snap.historySource === 'isolated_error' ? snap.historySource : '');
+      const totalMsgs = parseNonNegativeInt(snap.totalMessages);
+      const hasValidTotalMsgs = totalMsgs !== null;
       if (snapSid !== activeMsgSessionId) {
         activeMsgSessionId = snapSid;
-        activeMsgHistorySource = nextHistSource;
+        activeMsgHistorySource = hasValidTotalMsgs ? (nextHistSource || 'dom') : 'dom';
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
         promptDraftState.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         stickBottom = true;
+      } else if (!hasValidTotalMsgs) {
+        // 缺失或无效 totalMessages（如 undefined/null/''/NaN/负数），即使显式携带原有 historySource（含 'trajectory'），
+        // 也一律视为降级回退快照，在写入前先清空旧索引缓存，防止旧轨迹键与回退键混排重复
+        sessionMsgsByIndex.clear();
+        activeMsgHistorySource = 'dom';
       } else if (activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory') {
         // RPC 偶发降级 domTail（写入 0..59 临时键）后恢复全量轨迹时，清空旧临时键防止前 60 条重复错序
         sessionMsgsByIndex.clear();
         activeMsgHistorySource = 'trajectory';
+      } else if (activeMsgHistorySource === 'isolated_error' && nextHistSource === 'trajectory') {
+        sessionMsgsByIndex.clear();
+        activeMsgHistorySource = 'trajectory';
+      } else if (activeMsgHistorySource === 'trajectory' && nextHistSource !== 'trajectory') {
+        // 轨迹显式降级至 DOM / isolated_error 或缺失来源时清空旧轨迹索引键，防止双源键混排重复
+        sessionMsgsByIndex.clear();
+        activeMsgHistorySource = nextHistSource || 'dom';
       } else if (nextHistSource) {
         activeMsgHistorySource = nextHistSource;
       }
       const rawMsgs = Array.isArray(snap.messages) ? snap.messages : [];
-      const totalMsgs = Number(snap.totalMessages);
-      if (Number.isFinite(totalMsgs) && totalMsgs >= 0) {
+      if (hasValidTotalMsgs) {
         for (const k of Array.from(sessionMsgsByIndex.keys())) {
           if (totalMsgs === 0 || k >= totalMsgs) sessionMsgsByIndex.delete(k);
         }
-      } else if (!rawMsgs.length) {
-        sessionMsgsByIndex.clear();
       }
-      const baseIdx = Number.isFinite(Number(snap.messagesStartIndex)) ? Number(snap.messagesStartIndex) : 0;
+      const parsedBaseIdx = hasValidTotalMsgs ? parseNonNegativeInt(snap.messagesStartIndex) : null;
+      const baseIdx = parsedBaseIdx !== null ? parsedBaseIdx : 0;
       for (let idx = 0; idx < rawMsgs.length; idx++) {
         const m = rawMsgs[idx];
         if (!m) continue;
-        const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + idx);
+        const parsedMsgIdx = hasValidTotalMsgs ? parseNonNegativeInt(m.msgIndex) : null;
+        const mIdx = parsedMsgIdx !== null ? parsedMsgIdx : (baseIdx + idx);
         sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
       }
       renderMessagesView(snap);
-      if (snapSid && snapSid !== '__new__' && findMissingMsgRanges(totalMsgs).length > 0) {
+      if (hasValidTotalMsgs && activeMsgHistorySource === 'trajectory' && snapSid && snapSid !== '__new__' && findMissingMsgRanges(totalMsgs).length > 0) {
         void backfillMissingMsgGaps(snapSid);
       }
 
@@ -17799,6 +18987,7 @@ module.exports = {
   classifyLanguageServerRpcError,
   mergeUniqueQueuedLists,
   collapseConsecutiveDomThinking,
+  normPlainMatchText,
   mergeTrajectoryAndDomMessages,
   resolveProductionMediaAllowedRoots,
   resolveMediaAllowedRoots,
@@ -17819,6 +19008,8 @@ module.exports = {
   createRemoteProject,
   evalInCdpTarget,
   evalInPickedTarget,
+  buildEnrichFallbackSnapshot,
+  fetchSnapshotFromTarget,
   performActionInTarget,
   acceptsGzipEncoding,
   readJsonBody,
