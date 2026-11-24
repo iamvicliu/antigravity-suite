@@ -28914,6 +28914,94 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const summaryPrioritySnap = enh.getMobileSnapshot();
     assert.equal(summaryPrioritySnap.currentProjectId, 'b9e0-ag-suite', '语言服务摘要 projectId 必须高于外层 Hook 分组猜测');
 
+    // (iv) 已有会话 URL ?project=0449-make-font 与语言服务权威归属 b9e0-ag-suite 冲突时，普通快照必须服从会话权威归属并保持 ID/名称/分组一致；新建对话才优先采用 URL 项目选择
+    const origPathname = envEnh.win.location.pathname;
+    const origSearch = envEnh.win.location.search;
+    envEnh.win.location.search = '?project=0449-make-font';
+    const urlConflictSnap = enh.getMobileSnapshot();
+    assert.equal(urlConflictSnap.isNewConversation, false);
+    assert.equal(urlConflictSnap.currentProjectId, 'b9e0-ag-suite', '已有会话普通快照必须优先采用会话权威项目归属，不被冲突 URL ?project= 覆盖');
+    assert.equal(urlConflictSnap.currentProjectName, 'antigravity-suite', '已有会话项目名称必须与权威项目 ID 一致');
+    assert.equal(
+      urlConflictSnap.projectGroups.find((g) => g.active)?.id,
+      'b9e0-ag-suite',
+      '已有会话快照 currentProjectId 必须与 projectGroups 激活分组一致'
+    );
+    envEnh.win.location.pathname = '/';
+    const newChatUrlSnap = enh.getMobileSnapshot();
+    assert.equal(newChatUrlSnap.isNewConversation, true);
+    assert.equal(newChatUrlSnap.currentProjectId, '0449-make-font', '新建空白对话页应继续采用 URL ?project= 项目选择');
+    envEnh.win.location.pathname = origPathname;
+    envEnh.win.location.search = origSearch;
+
+    // (v) 存在合成 header（header-default / 默认项目）且缺少权威归属时，Fiber 与 DOM 两条分支均必须过滤合成头，绝不恢复默认假分组
+    const orphanHexId = 'cccc1111-2222-3333-4444-555566667777';
+    const orphanRow = envEnh.doc.createElement('div');
+    orphanRow.setAttribute('data-testid', 'conversation-row-sidebar');
+    orphanRow.setAttribute('data-cascade-id', orphanHexId);
+    orphanRow.textContent = '无归属孤儿会话';
+    sidebarEl.appendChild(orphanRow);
+    const hookWithSyntheticDefault = [
+      {
+        id: 'default',
+        label: '默认项目',
+        kind: 'project',
+        entries: [{ cascadeId: orphanHexId, projectId: 'default', conversation: { conversationId: orphanHexId, summary: '无归属孤儿会话' } }]
+      },
+      {
+        id: 'b9e0-ag-suite',
+        label: 'antigravity-suite',
+        kind: 'project',
+        entries: [{ cascadeId: pinnedHexId, projectId: 'b9e0-ag-suite', conversation: { conversationId: pinnedHexId, summary: '置顶会话' } }]
+      }
+    ];
+    sidebarEl.__reactFiber$test49 = {
+      memoizedProps: {},
+      memoizedState: { memoizedState: hookWithSyntheticDefault, next: null },
+      return: {
+        memoizedProps: {
+          items: [
+            { type: 'header', id: 'header-default', label: '默认项目', count: 1, isCollapsed: false },
+            { type: 'row', id: orphanHexId, cascadeId: orphanHexId, groupId: 'default' },
+            { type: 'header', id: 'header-b9e0-ag-suite', label: 'antigravity-suite', count: 1, isCollapsed: false },
+            { type: 'row', id: pinnedHexId, cascadeId: pinnedHexId, groupId: 'b9e0-ag-suite' }
+          ]
+        },
+        memoizedState: null,
+        return: null
+      }
+    };
+    const fiberSyntheticHdrSnap = enh.getMobileSnapshot();
+    assert.equal(
+      fiberSyntheticHdrSnap.projectGroups.some((g) => g.id === 'default' || g.key === 'default' || g.name === '默认项目'),
+      false,
+      'Fiber 分支存在 header-default / 默认项目 且缺少权威归属时，不得恢复默认项目假分组'
+    );
+    assert.equal(
+      fiberSyntheticHdrSnap.projects.some((p) => p.id === 'default' || p.name === '默认项目'),
+      false,
+      'projects 列表不得混入 default / 默认项目'
+    );
+    const fiberUngrouped = fiberSyntheticHdrSnap.projectGroups.find((g) => g.key === 'ungrouped');
+    assert.ok(fiberUngrouped && fiberUngrouped.name === '未归属项目' && fiberUngrouped.conversations.some((c) => c.id === orphanHexId), '缺少权威归属的孤儿会话应落入诚实的未归属项目分组');
+
+    // 再剥离 Fiber，测试纯 DOM project-header (data-project-id="default", text="默认项目") 分支
+    delete sidebarEl.__reactFiber$test49;
+    const domDefaultHdr = envEnh.doc.createElement('button');
+    domDefaultHdr.setAttribute('data-testid', 'project-header');
+    domDefaultHdr.setAttribute('data-project-id', 'default');
+    domDefaultHdr.setAttribute('data-project-label', '默认项目');
+    domDefaultHdr.textContent = '默认项目';
+    sidebarEl.insertBefore(domDefaultHdr, orphanRow);
+    const domSyntheticHdrSnap = enh.getMobileSnapshot();
+    assert.equal(
+      domSyntheticHdrSnap.projectGroups.some((g) => g.id === 'default' || g.key === 'default' || g.name === '默认项目'),
+      false,
+      'DOM 分支存在默认项目 project-header 且缺少权威归属时，同样不得恢复默认假分组'
+    );
+    const domUngrouped = domSyntheticHdrSnap.projectGroups.find((g) => g.key === 'ungrouped');
+    assert.ok(domUngrouped && domUngrouped.name === '未归属项目' && domUngrouped.conversations.some((c) => c.id === orphanHexId), 'DOM 分支孤儿会话应落入未归属项目');
+
     enh.dispose?.();
     envEnh.sandbox.__AGContextMeter?.dispose?.();
 
@@ -29096,6 +29184,26 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const unresolvedConvNoDir = await callUnresolvableJson('/api/project-tree?conversationId=conv-unknown-xyz');
     assert.equal(unresolvedConvNoDir.status, 200);
     assert.equal(unresolvedConvNoDir.json.emptyProject, true, '无法解析归属且无 dir 时应返回 emptyProject 空态而非跳到全局目录');
+
+    // 当项目元数据非空时，未知/无法解析归属的 conversationId 即便同时携带有效的其他项目 projectId、dir 与 workspaceRoot，也必须严格拒绝，不得回退采用未经会话关联验证的 projectId
+    const unknownConvSpoofedProjWithDir = await callGetJson(
+      '/api/project-tree?conversationId=conv-unknown-999&projectId=2628-insightos&dir=' + encodeURIComponent(insightRepoDir) + '&workspaceRoot=' + encodeURIComponent(insightRepoDir)
+    );
+    assert.equal(
+      unknownConvSpoofedProjWithDir.status,
+      403,
+      '未知 conversationId 搭配有效其他项目 projectId + dir + workspaceRoot 时必须 403 拒绝，不得回退信任未验证的 projectId'
+    );
+    const unknownConvSpoofedProjNoDir = await callGetJson(
+      '/api/project-tree?conversationId=conv-unknown-999&projectId=2628-insightos'
+    );
+    assert.equal(unknownConvSpoofedProjNoDir.status, 200);
+    assert.equal(
+      unknownConvSpoofedProjNoDir.json.emptyProject,
+      true,
+      '未知 conversationId 搭配有效其他项目 projectId 且无 dir 时应返回 emptyProject 空态，不得回退列出其他项目工作区'
+    );
+    assert.deepEqual(unknownConvSpoofedProjNoDir.json.workspaceRoots, []);
 
     // 5c. 显式 workspaceRoot 边界校验、父子嵌套工作区及符号链接跨工作区越界隐藏回归
     const nestedParentDir = path.join(fakeHome, 'nested-parent');
