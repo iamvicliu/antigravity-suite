@@ -46,7 +46,29 @@
   let remotePopoverOpen = false;
   let remotePollTimer = null;
   let lastRemoteFetchAt = 0;
-  let remotePairState = { loading: false, tunnelBusy: false, tunnelPendingAction: '', error: '', data: null, copiedAt: 0, selectedChannelKey: '', tunnelConfigOpen: false, tunnelPollTimer: null, draftHost: null, draftToken: '' };
+  const REMOTE_SELECTED_CHANNEL_STORAGE_KEY = 'ag-remote-selected-channel-v1';
+  const loadSavedRemoteChannelKey = () => {
+    try {
+      const k = typeof localStorage !== 'undefined'
+        ? String(localStorage.getItem(REMOTE_SELECTED_CHANNEL_STORAGE_KEY) || '').trim()
+        : '';
+      return (k === 'lan' || k === 'tailscale' || k === 'bonjour' || k === 'tunnel') ? k : '';
+    } catch {
+      return '';
+    }
+  };
+  const saveSelectedRemoteChannelKey = (key) => {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      const k = String(key || '').trim();
+      if (k === 'lan' || k === 'tailscale' || k === 'bonjour' || k === 'tunnel') {
+        localStorage.setItem(REMOTE_SELECTED_CHANNEL_STORAGE_KEY, k);
+      } else {
+        localStorage.removeItem(REMOTE_SELECTED_CHANNEL_STORAGE_KEY);
+      }
+    } catch {}
+  };
+  let remotePairState = { loading: false, tunnelBusy: false, tunnelPendingAction: '', error: '', data: null, copiedAt: 0, selectedChannelKey: loadSavedRemoteChannelKey(), tunnelConfigOpen: false, tunnelPollTimer: null, draftHost: null, draftToken: '' };
   let fileEditorState = {
     active: false,
     fileUri: '',
@@ -612,6 +634,16 @@
     idleSince: 0,
     lastFiredMap: new Map()
   };
+  const AUTO_COMPACT_MAP_LIMIT = 64;
+  const AUTO_COMPACT_IN_FLIGHT_MAX_MS = 180000;
+
+  function trimAutoCompactMap(map, limit = AUTO_COMPACT_MAP_LIMIT) {
+    while (map.size > limit) {
+      const firstKey = map.keys().next().value;
+      if (firstKey === undefined) break;
+      map.delete(firstKey);
+    }
+  }
 
   function scoreOptimizeModelCandidate(entry, isDefaultOverride = false) {
     const mid = String(entry?.modelId || '').toLowerCase();
@@ -1753,6 +1785,21 @@
         :host([data-theme="light"]) .ag-rp-err {
           color: var(--ag-ring-danger, #dc2626);
         }
+        .ag-rp-hint {
+          font-size: 11px;
+          color: var(--ag-text-muted, #a1a1aa);
+          background: var(--ag-bg-subcard, rgba(255, 255, 255, 0.04));
+          border: 1px solid var(--ag-border-subcard, rgba(255, 255, 255, 0.08));
+          border-radius: 6px;
+          padding: 5px 8px;
+          line-height: 1.4;
+          margin: 0 0 8px;
+        }
+        :host([data-theme="light"]) .ag-rp-hint {
+          color: var(--ag-text-muted, #52525b);
+          background: rgba(15, 23, 42, 0.035);
+          border-color: rgba(15, 23, 42, 0.1);
+        }
         .ag-rp-sec {
           display: flex;
           align-items: center;
@@ -2173,10 +2220,16 @@
     const preferredChannel = remotePairState.selectedChannelKey
       ? availableList.find((c) => c.key === remotePairState.selectedChannelKey)
       : null;
+    const isTsHttpsCh = (c) => Boolean(
+      c && c.key === 'tailscale' && c.available
+      && (c.httpsUrl || (c.entryBaseUrl && String(c.entryBaseUrl).startsWith('https://')) || String(c.url || '').startsWith('https://'))
+    );
     const activeChannel = preferredChannel
-      || availableList.find((c) => c.key === 'tunnel')
-      || availableList.find((c) => c.key === 'tailscale')
+      || availableList.find((c) => c.key === 'tunnel' && c.available && c.mode === 'named')
+      || availableList.find((c) => isTsHttpsCh(c))
       || availableList.find((c) => c.key === 'lan')
+      || availableList.find((c) => c.key === 'tailscale')
+      || availableList.find((c) => c.key === 'tunnel')
       || availableList[0]
       || null;
 
@@ -2325,6 +2378,15 @@
         ? ep.activeQr
         : '';
       const tunnelCh = ep.channels.find((c) => c.key === 'tunnel') || null;
+      const tailscaleCh = ep.channels.find((c) => c.key === 'tailscale') || null;
+      const tsHttpsHintText = (
+        tailscaleCh
+        && tailscaleCh.enabled !== false
+        && !tailscaleCh.httpsUrl
+        && !remotePairState.data?.tailscaleHttpsUrl
+      )
+        ? String(tailscaleCh.httpsHint || remotePairState.data?.tailscaleHttpsHint || '').trim()
+        : '';
       const enabledChannels = ep.channels.filter((ch) => (
         ch.key === 'tunnel'
           ? Boolean(ch.enabled || ch.state === 'running' || ch.state === 'starting')
@@ -2346,6 +2408,21 @@
 
       const errHtml = (tunnelCh?.error || remotePairState.error)
         ? `<div class="ag-rp-err">${escapeHtml(tunnelCh?.error || remotePairState.error)}</div>`
+        : '';
+      const tsHintHtml = tsHttpsHintText
+        ? `<div id="ag-rp-ts-hint" class="ag-rp-hint">${escapeHtml(tsHttpsHintText)}</div>`
+        : '';
+      const showQuickTunnelHint = Boolean(
+        ep.activeKey === 'tunnel'
+        && tunnelCh
+        && tunnelCh.mode !== 'named'
+        && (tunnelCh.available || tunnelCh.state === 'running' || tunnelCh.state === 'starting')
+      );
+      const quickTunnelHintHtml = showQuickTunnelHint
+        ? `<div id="ag-rp-quick-tunnel-hint" class="ag-rp-hint">${escapeHtml(tr(
+          '提示：免登录临时隧道域名为一次性地址，电脑热更新、live 重载、重启或休眠断网后旧网址会永久失效并更换新域名；长期使用建议优先选 Tailscale HTTPS，或在「远程设置」绑定固定域名。',
+          'Note: Quick Tunnel uses a one-time URL that permanently expires on live reload, restart, or sleep. For a permanent URL, prefer Tailscale HTTPS or bind a fixed domain in Remote Settings.'
+        ))}</div>`
         : '';
 
       const statusText = pairedCount > 0
@@ -2369,6 +2446,7 @@
       bodyHtml = `
         ${qrOrEmptyHtml}
         ${activeSummaryHtml}
+        ${tsHintHtml}${quickTunnelHintHtml}
         ${errHtml}
         <div class="ag-rp-sec" data-active="${onlineCount > 0 ? 'true' : 'false'}">${LOCK_SHIELD_SVG}<span>${escapeHtml(statusText)}</span></div>
         ${devicesHtml}
@@ -2398,6 +2476,7 @@
         const canSelect = pillBtn.getAttribute('data-available') === 'true';
         if (!chKey || !canSelect) return;
         remotePairState.selectedChannelKey = chKey;
+        saveSelectedRemoteChannelKey(chKey);
         remotePairState.copiedAt = 0;
         renderRemotePopoverContent(popover);
         positionRemotePopover();
@@ -5059,7 +5138,11 @@
     const now = Date.now();
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
-    const inFlight = autoCompactState.inFlightMap.get(sessionId) || null;
+    let inFlight = autoCompactState.inFlightMap.get(sessionId) || null;
+    if (inFlight && !inFlight.sending && now >= (Number(inFlight.maxUntil) || 0)) {
+      autoCompactState.inFlightMap.delete(sessionId);
+      inFlight = null;
+    }
     if (inFlight && (inFlight.sending || busy || now < inFlight.until)) {
       autoCompactState.armedForSession = false;
       autoCompactState.idleSince = 0;
@@ -5128,15 +5211,18 @@
     autoCompactState.armedForSession = false;
     const inFlightEntry = {
       sending: true,
-      until: now + 5000
+      until: now + 5000,
+      maxUntil: now + AUTO_COMPACT_IN_FLIGHT_MAX_MS
     };
     autoCompactState.inFlightMap.set(sessionId, inFlightEntry);
+    trimAutoCompactMap(autoCompactState.inFlightMap);
     autoCompactState.idleSince = 0;
     autoCompactState.lastFiredMap.set(sessionId, {
       at: now,
       contextUsed: risk.contextUsed,
       assistantCount: getAssistantMarkdownRoots().length
     });
+    trimAutoCompactMap(autoCompactState.lastFiredMap);
     Promise.resolve(performMobileAction({ action: 'send', text: '/compact' }))
       .catch(() => null)
       .finally(() => {
@@ -7905,6 +7991,8 @@
     document.querySelectorAll('[data-ag-risk-card]').forEach((el) => el.removeAttribute('data-ag-risk-card'));
     document.querySelectorAll('[data-ag-shortcut]').forEach((el) => el.removeAttribute('data-ag-shortcut'));
     safeRemove(document.getElementById(DOC_STYLE_ID));
+    autoCompactState.inFlightMap.clear();
+    autoCompactState.lastFiredMap.clear();
   }
 
   // ==================== 手机端极速遥控面板数据桥接 (v1.6.9) ====================
