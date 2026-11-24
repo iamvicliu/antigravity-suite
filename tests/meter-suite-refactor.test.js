@@ -29845,6 +29845,215 @@ test('锁定服务端项目顺序防跳动、新项目默认置顶、瞬态漏�
       ['RemoteTopProj', 'Gamma', 'Alpha', 'NewDesktopApp', 'CLI Project', '未归属项目'],
       '前端侧边栏项目组 DOM 顺序必须与服务端锁定顺序完全一致且未归属项目固定垫底'
     );
+
+    // 6. 超过 500 个有效项目（505 项）回归：连续快照无截断振荡、部分排序提交不丢失保底项、跨重启顺序 100% 稳定
+    const stateDir505 = path.join(tmpRoot, 'state-505');
+    const configDir505 = path.join(tmpRoot, 'config-505');
+    fs.mkdirSync(stateDir505, { recursive: true });
+    fs.mkdirSync(path.join(configDir505, 'projects'), { recursive: true });
+    const ids505 = [];
+    const summaries505 = {};
+    for (let i = 1; i <= 505; i++) {
+      const pid = `proj-scale-${String(i).padStart(3, '0')}`;
+      ids505.push(pid);
+      summaries505[`conv-scale-${i}`] = {
+        summary: `Scale Task ${i}`,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date(baseMs + (1000 - i) * 1000).toISOString(),
+        trajectoryMetadata: { projectId: pid, rootConversationId: `conv-scale-${i}` }
+      };
+    }
+    const enrich505Opts = () => ({
+      stateDir: stateDir505,
+      configDir: configDir505,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: summaries505 };
+          if (method === 'ListProjects') return { projectIds: ids505 };
+          return {};
+        }
+      })
+    });
+    const snap505_1 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-scale-1', conversations: [] }, enrich505Opts());
+    assert.equal(snap505_1.projects.length, 505, '505 个有效项目应完整返回，不得被 500 上限截断');
+    assert.equal(snap505_1.projectOrder.length, 505, '持久化权威 projectOrder 应保留全部 505 项');
+    const expectedInitial505 = ids505.slice();
+    assert.deepEqual(snap505_1.projects.map((p) => p.id), expectedInitial505);
+
+    // 连续两次快照并更新尾部第 501~505 项的时间戳，绝不因截断被误判为新项目跳顶振荡
+    summaries505['conv-scale-505'].lastModifiedTime = new Date(baseMs + 90000000).toISOString();
+    summaries505['conv-scale-501'].lastModifiedTime = new Date(baseMs + 95000000).toISOString();
+    const snap505_2 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-scale-1', conversations: [] }, enrich505Opts());
+    const snap505_3 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-scale-1', conversations: [] }, enrich505Opts());
+    assert.deepEqual(snap505_2.projects.map((p) => p.id), expectedInitial505, '第 2 次连续快照不得发生尾部截断跳顶');
+    assert.deepEqual(snap505_3.projects.map((p) => p.id), expectedInitial505, '第 3 次连续快照同样保持 505 项顺序完全稳定');
+
+    // 对 505 个项目提交部分排序 ['proj-scale-505', 'proj-scale-501']，其余 503 个既有项目必须完整保底追加，不得截断丢失
+    const handler505 = remoteMod.createRemoteHttpHandler(mockCfg, {
+      catalogOptions: { stateDir: stateDir505, configDir: configDir505, homeDir: fakeHome },
+      configDir: configDir505,
+      homeDir: fakeHome,
+      allowedRoots: [fakeHome]
+    });
+    const postPartial505Req = Readable.from([Buffer.from(JSON.stringify({ projectOrder: ['proj-scale-505', 'proj-scale-501'] }), 'utf8')]);
+    postPartial505Req.method = 'POST';
+    postPartial505Req.url = '/api/projects/order';
+    postPartial505Req.headers = { host: '127.0.0.1:18852', 'content-type': 'application/json', 'x-ag-remote-token': mockCfg.token };
+    postPartial505Req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let partial505Status = 200;
+    let partial505Raw = '';
+    await handler505(postPartial505Req, {
+      setHeader() {},
+      getHeader() { return ''; },
+      writeHead(code) { partial505Status = code; },
+      end(chunk) { if (chunk) partial505Raw += String(chunk); }
+    });
+    const partial505Json = JSON.parse(partial505Raw);
+    assert.equal(partial505Status, 200);
+    assert.equal(partial505Json.projectOrder.length, 505, '部分排序合并后仍须完整保留全部 505 个项目');
+    const expectedReordered505 = [
+      'proj-scale-505',
+      'proj-scale-501',
+      ...expectedInitial505.filter((id) => id !== 'proj-scale-505' && id !== 'proj-scale-501')
+    ];
+    assert.deepEqual(partial505Json.projectOrder, expectedReordered505);
+
+    // 重启模块后再次连续拉取快照，验证 505 项顺序跨重启完全稳定
+    delete require.cache[require.resolve('../mobile-remote')];
+    remoteMod = require('../mobile-remote');
+    const snap505Restart1 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-scale-1', conversations: [] }, enrich505Opts());
+    const snap505Restart2 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-scale-1', conversations: [] }, enrich505Opts());
+    assert.deepEqual(snap505Restart1.projects.map((p) => p.id), expectedReordered505, '505 项手动顺序跨重启后必须完整保留');
+    assert.deepEqual(snap505Restart2.projects.map((p) => p.id), expectedReordered505, '505 项重启后连续快照不得发生任何跳动');
+
+    // 7. 旧版存储无 projectOrder 冷启动远程新建回归：旧项目仅存在于持久化会话（store.map）与 RPC 返回中（磁盘无旧项目 json）
+    for (const rpcAvailableDuringCreate of [true, false]) {
+      const tag = rpcAvailableDuringCreate ? 'rpc-online' : 'rpc-deferred';
+      const stateDirCold = path.join(tmpRoot, `state-cold-${tag}`);
+      const configDirCold = path.join(tmpRoot, `config-cold-${tag}`);
+      const wsColdNew = path.join(fakeHome, 'codebase', `cold-new-${tag}`);
+      fs.mkdirSync(stateDirCold, { recursive: true });
+      fs.mkdirSync(path.join(configDirCold, 'projects'), { recursive: true });
+      fs.mkdirSync(wsColdNew, { recursive: true });
+      // 模拟旧版 v2 存储：没有 projectOrder 与 projectOrderInitialized，且旧项目 proj-legacy-conv 仅存在于持久化会话中
+      fs.writeFileSync(path.join(stateDirCold, 'remote-session-catalog.json'), JSON.stringify({
+        version: 2,
+        updatedAt: baseMs + 500000,
+        subagentIds: [],
+        subagentRoots: {},
+        subagentStates: {},
+        conversations: [
+          {
+            id: 'conv-legacy-persisted',
+            title: '旧版持久化会话',
+            projectId: 'proj-legacy-conv',
+            projectName: 'LegacyPersistedProj',
+            archived: false,
+            pinned: false,
+            updatedAt: baseMs + 500000,
+            status: 'idle'
+          }
+        ]
+      }));
+      const coldRpcMock = async () => ({
+        call: async (method, reqBody) => {
+          if (method === 'CreateProject') return { project: reqBody.project };
+          if (method === 'GetAllCascadeTrajectories') {
+            return {
+              trajectorySummaries: {
+                'conv-legacy-rpc': {
+                  summary: 'RPC 侧旧项目会话',
+                  status: 'CASCADE_RUN_STATUS_IDLE',
+                  lastModifiedTime: new Date(baseMs + 800000).toISOString(),
+                  trajectoryMetadata: { projectId: 'proj-legacy-rpc-traj', rootConversationId: 'conv-legacy-rpc' }
+                }
+              }
+            };
+          }
+          if (method === 'ListProjects') {
+            return { projectIds: ['proj-legacy-rpc-traj', 'proj-legacy-rpc-empty'] };
+          }
+          return {};
+        }
+      });
+      const coldHandler = remoteMod.createRemoteHttpHandler(mockCfg, {
+        catalogOptions: { stateDir: stateDirCold, configDir: configDirCold, homeDir: fakeHome },
+        configDir: configDirCold,
+        homeDir: fakeHome,
+        allowedRoots: [fakeHome],
+        allowDiskFallback: true,
+        openInDesktop: false,
+        ...(rpcAvailableDuringCreate ? { localApiConnect: coldRpcMock } : {})
+      });
+      const createColdReq = Readable.from([Buffer.from(JSON.stringify({
+        folderPath: wsColdNew,
+        name: `ColdNewTop_${tag}`,
+        openInDesktop: false
+      }), 'utf8')]);
+      createColdReq.method = 'POST';
+      createColdReq.url = '/api/projects';
+      createColdReq.headers = { host: '127.0.0.1:18852', 'content-type': 'application/json', 'x-ag-remote-token': mockCfg.token };
+      createColdReq.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let coldStatus = 200;
+      let coldRaw = '';
+      await coldHandler(createColdReq, {
+        setHeader() {},
+        getHeader() { return ''; },
+        writeHead(code) { coldStatus = code; },
+        end(chunk) { if (chunk) coldRaw += String(chunk); }
+      });
+      assert.equal(coldStatus, 200);
+      const coldCreatedPid = JSON.parse(coldRaw).project.id;
+
+      if (!rpcAvailableDuringCreate) {
+        // 先跑一次 RPC 仍未就绪的过渡快照，验证不会提前吃掉冷启动置顶保护
+        const offlineSnap = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-legacy-persisted', conversations: [] }, {
+          stateDir: stateDirCold,
+          configDir: configDirCold,
+          homeDir: fakeHome,
+          bypassCache: true,
+          localApiConnect: async () => null
+        });
+        assert.equal(offlineSnap.projects[0].id, coldCreatedPid, '[rpc-deferred] RPC 离线过渡快照中新建项目应排第 1');
+      }
+
+      // 随后首次与第二次完整快照拉取（此时持久化会话旧项目 + RPC 旧项目全部汇总出现），验证远程新建项目始终稳居第 1 位
+      const coldEnrichOpts = {
+        stateDir: stateDirCold,
+        configDir: configDirCold,
+        homeDir: fakeHome,
+        bypassCache: true,
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetAllCascadeTrajectories') {
+              return {
+                trajectorySummaries: {
+                  'conv-legacy-rpc': {
+                    summary: 'RPC 侧旧项目会话',
+                    status: 'CASCADE_RUN_STATUS_IDLE',
+                    lastModifiedTime: new Date(baseMs + 800000).toISOString(),
+                    trajectoryMetadata: { projectId: 'proj-legacy-rpc-traj', rootConversationId: 'conv-legacy-rpc' }
+                  }
+                }
+              };
+            }
+            if (method === 'ListProjects') {
+              return { projectIds: [coldCreatedPid, 'proj-legacy-rpc-traj', 'proj-legacy-rpc-empty'] };
+            }
+            return {};
+          }
+        })
+      };
+      const coldSnap1 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-legacy-persisted', conversations: [] }, coldEnrichOpts);
+      const coldSnap2 = await remoteMod.enrichSnapshotWithCatalog({ ok: true, sessionId: 'conv-legacy-persisted', conversations: [] }, coldEnrichOpts);
+      assert.equal(coldSnap1.projects[0].id, coldCreatedPid, `[${tag}] 冷启动远程新建后首次快照必须保持新建项目在最顶部，不被旧持久化会话或 RPC 旧项目反超`);
+      assert.equal(coldSnap2.projects[0].id, coldCreatedPid, `[${tag}] 冷启动远程新建后连续快照仍须保持新建项目在最顶部`);
+      assert.ok(coldSnap1.projects.some((p) => p.id === 'proj-legacy-conv'), `[${tag}] 旧持久化会话项目应正常保留在新建项目之后`);
+      assert.ok(coldSnap1.projects.some((p) => p.id === 'proj-legacy-rpc-traj'), `[${tag}] RPC 轨迹旧项目应正常保留在新建项目之后`);
+      assert.ok(coldSnap1.projects.some((p) => p.id === 'proj-legacy-rpc-empty'), `[${tag}] RPC 空旧项目应正常保留在新建项目之后`);
+    }
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }

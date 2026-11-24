@@ -2538,22 +2538,24 @@ function createSessionCatalogStore() {
   const registryByDir = new Map();
   const projectsCache = { projectsDir: '', fetchedAt: 0, data: null };
   const trajCache = { at: 0, data: null };
-  const MAX_PROJECT_ORDER = 500;
+  const MAX_PROJECT_ORDER_REQUEST = 5000;
 
   function persistCatalogStore(store, nowMs = Date.now(), conversationsOverride = null) {
     const convList = Array.isArray(conversationsOverride)
       ? conversationsOverride
       : Array.from(store.map.values());
-    safeWriteJsonSync(store.filePath, {
+    const payload = {
       version: 2,
       updatedAt: nowMs,
       projectOrderInitialized: Boolean(store.projectOrderInitialized),
       projectOrder: Array.isArray(store.projectOrder) ? store.projectOrder : [],
+      ...(Array.isArray(store.bootstrapTopIds) && store.bootstrapTopIds.length > 0 ? { bootstrapTopIds: store.bootstrapTopIds } : {}),
       subagentIds: Array.from(store.subagentIds).sort(),
       subagentRoots: Object.fromEntries(store.subagentRoots),
       subagentStates: Object.fromEntries(store.subagentStates),
       conversations: convList
-    });
+    };
+    safeWriteJsonSync(store.filePath, payload);
   }
 
   function getStickyStoreForDir(stateDir) {
@@ -2575,7 +2577,20 @@ function createSessionCatalogStore() {
           }
         }
       }
-      const projectOrderInitialized = Boolean(saved?.projectOrderInitialized) || projectOrder.length > 0;
+      const bootstrapTopIds = [];
+      if (Array.isArray(saved?.bootstrapTopIds)) {
+        const seenBoot = new Set();
+        for (const rawBid of saved.bootstrapTopIds) {
+          const bid = String(rawBid || '').trim();
+          if (isOrderableProjectId(bid) && !seenBoot.has(bid)) {
+            seenBoot.add(bid);
+            bootstrapTopIds.push(bid);
+          }
+        }
+      }
+      const projectOrderInitialized = saved?.projectOrderInitialized !== undefined
+        ? Boolean(saved.projectOrderInitialized)
+        : projectOrder.length > 0;
       const subagentIds = new Set(Array.isArray(saved?.subagentIds) ? saved.subagentIds.map((x) => String(x || '').trim()).filter(Boolean) : []);
       const subagentRoots = new Map();
       if (saved?.subagentRoots && typeof saved.subagentRoots === 'object') {
@@ -2613,6 +2628,7 @@ function createSessionCatalogStore() {
         filePath,
         map,
         projectOrder,
+        bootstrapTopIds,
         projectOrderInitialized,
         subagentIds,
         subagentRoots,
@@ -2701,10 +2717,12 @@ function createSessionCatalogStore() {
       const trajRes = batch?.trajRes || null;
       const listProjRes = batch?.listProjRes || null;
       const hasSummaries = Boolean(trajRes && trajRes.trajectorySummaries && typeof trajRes.trajectorySummaries === 'object');
+      const hasListProjects = Boolean(listProjRes && Array.isArray(listProjRes.projectIds));
       const data = {
         trajOk: hasSummaries,
+        listOk: hasListProjects,
         summaries: hasSummaries ? trajRes.trajectorySummaries : {},
-        projectIds: Array.isArray(listProjRes?.projectIds) ? listProjRes.projectIds : []
+        projectIds: hasListProjects ? listProjRes.projectIds : []
       };
       if (!customConnect && hasSummaries) {
         trajCache.at = Date.now();
@@ -3085,18 +3103,28 @@ function createSessionCatalogStore() {
       if (c.updatedAt > bucket.lastActiveAt) bucket.lastActiveAt = c.updatedAt;
     }
 
-    // 同步维护持久化权威 projectOrder：首次升级初始化锁定顺序，后续新项目插入头部（最顶部），已归档/排除项目剔除，后台会话更新绝不改变顺序
+    // 同步维护持久化权威 projectOrder：严禁静默截断既有项目；首次升级初始化锁定顺序（保留冷启动新建置顶项），后续新项目插入最顶部，已归档/排除项目剔除，后台会话更新绝不改变顺序
     const realProjectBuckets = Array.from(projectStats.values()).filter((p) => isOrderableProjectId(p.id));
     const prevOrderKey = store.projectOrder.join(',');
     const prevOrderInit = Boolean(store.projectOrderInitialized);
+    const prevBootTopKey = (store.bootstrapTopIds || []).join(',');
     if (!store.projectOrderInitialized) {
-      if (realProjectBuckets.length > 0) {
+      const pinnedBootTop = (Array.isArray(store.bootstrapTopIds) ? store.bootstrapTopIds : [])
+        .filter((id) => isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id));
+      if (realProjectBuckets.length > 0 || pinnedBootTop.length > 0) {
+        const pinnedSet = new Set(pinnedBootTop);
         const initialSorted = realProjectBuckets
-          .slice()
+          .filter((p) => !pinnedSet.has(p.id))
           .sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
           .map((p) => p.id);
-        store.projectOrder = initialSorted.slice(0, MAX_PROJECT_ORDER);
-        store.projectOrderInitialized = true;
+        store.projectOrder = [...pinnedBootTop, ...initialSorted];
+        const fullRpcReady = Boolean(trajData && trajData.trajOk && trajData.listOk);
+        if (pinnedBootTop.length === 0 || fullRpcReady) {
+          store.bootstrapTopIds = [];
+          store.projectOrderInitialized = true;
+        } else {
+          store.bootstrapTopIds = pinnedBootTop;
+        }
       }
     } else {
       const prunedOrder = store.projectOrder.filter((id) => isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id));
@@ -3104,25 +3132,18 @@ function createSessionCatalogStore() {
       const newBuckets = realProjectBuckets
         .filter((p) => !knownOrderSet.has(p.id))
         .sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'));
-      let nextOrder = newBuckets.length > 0
+      store.projectOrder = newBuckets.length > 0
         ? [...newBuckets.map((p) => p.id), ...prunedOrder]
         : prunedOrder;
-      if (nextOrder.length > MAX_PROJECT_ORDER) {
-        const activeRealSet = new Set(realProjectBuckets.map((p) => p.id));
-        const kept = [];
-        for (const id of nextOrder) {
-          if (activeRealSet.has(id) || kept.length < MAX_PROJECT_ORDER) {
-            kept.push(id);
-          }
-          if (kept.length >= MAX_PROJECT_ORDER && kept.filter((k) => activeRealSet.has(k)).length >= Math.min(activeRealSet.size, MAX_PROJECT_ORDER)) {
-            break;
-          }
-        }
-        nextOrder = kept.slice(0, MAX_PROJECT_ORDER);
+      if (Array.isArray(store.bootstrapTopIds) && store.bootstrapTopIds.length > 0) {
+        store.bootstrapTopIds = [];
       }
-      store.projectOrder = nextOrder;
     }
-    if (store.projectOrder.join(',') !== prevOrderKey || Boolean(store.projectOrderInitialized) !== prevOrderInit) {
+    if (
+      store.projectOrder.join(',') !== prevOrderKey ||
+      Boolean(store.projectOrderInitialized) !== prevOrderInit ||
+      (store.bootstrapTopIds || []).join(',') !== prevBootTopKey
+    ) {
       catalogRevision = buildActiveCatalogItems(store, activeSessionId, snapConvMap).catalogRevision;
     }
     store.catalogRevision = catalogRevision;
@@ -3130,6 +3151,7 @@ function createSessionCatalogStore() {
     const persistSig = JSON.stringify([
       Boolean(store.projectOrderInitialized),
       store.projectOrder,
+      store.bootstrapTopIds || [],
       store.subagentIds.size,
       Array.from(store.subagentStates.entries()).sort((a, b) => a[0].localeCompare(b[0])),
       persistedAll.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt, c.status, c.lastViewedAt])
@@ -3298,8 +3320,8 @@ function createSessionCatalogStore() {
     if (!Array.isArray(orderedIds)) {
       throw Object.assign(new Error('projectOrder 必须是项目 ID 数组'), { status: 400 });
     }
-    if (orderedIds.length > MAX_PROJECT_ORDER) {
-      throw Object.assign(new Error(`projectOrder 数量超出上限 (${MAX_PROJECT_ORDER})`), { status: 400 });
+    if (orderedIds.length > MAX_PROJECT_ORDER_REQUEST) {
+      throw Object.assign(new Error(`projectOrder 请求数组长度超出上限 (${MAX_PROJECT_ORDER_REQUEST})`), { status: 400 });
     }
     for (const item of orderedIds) {
       if (typeof item !== 'string') {
@@ -3318,25 +3340,30 @@ function createSessionCatalogStore() {
         cleaned.push(pid);
       }
     }
-    // 收集既有已知项目，确保客户端提交部分可见项目顺序时不会丢失其余未显式传参的有效项目
+    // 收集既有已知项目，确保客户端提交部分可见项目顺序时绝不丢弃任何未显式传参的既有有效项目
     const existingCandidates = [];
-    for (const pid of store.projectOrder) {
-      if (isOrderableProjectId(pid) && !archivedProjectIds.has(pid) && !excludedProjectIds.has(pid) && !existingCandidates.includes(pid)) {
-        existingCandidates.push(pid);
+    const existingCandidateSet = new Set();
+    const pushExistingCandidate = (rawId) => {
+      const id = String(rawId || '').trim();
+      if (isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id) && !existingCandidateSet.has(id)) {
+        existingCandidateSet.add(id);
+        existingCandidates.push(id);
       }
+    };
+    for (const pid of store.projectOrder) {
+      pushExistingCandidate(pid);
     }
     const metaSorted = Array.from(projectsMeta.values())
       .filter((p) => p && isOrderableProjectId(p.id) && !archivedProjectIds.has(p.id) && !excludedProjectIds.has(p.id))
       .sort((a, b) => ((Number(b.mtimeMs) || 0) - (Number(a.mtimeMs) || 0)) || String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
     for (const p of metaSorted) {
-      if (!existingCandidates.includes(p.id)) existingCandidates.push(p.id);
+      pushExistingCandidate(p.id);
     }
-    for (const c of store.map.values()) {
-      if (!c || c.archived || store.subagentIds.has(c.id)) continue;
-      const cpid = String(c.projectId || '').trim();
-      if (isOrderableProjectId(cpid) && !archivedProjectIds.has(cpid) && !excludedProjectIds.has(cpid) && !existingCandidates.includes(cpid)) {
-        existingCandidates.push(cpid);
-      }
+    const persistedConvsSorted = Array.from(store.map.values())
+      .filter((c) => c && !c.archived && !store.subagentIds.has(c.id))
+      .sort((a, b) => ((Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0)) || String(a.id || '').localeCompare(String(b.id || '')));
+    for (const c of persistedConvsSorted) {
+      pushExistingCandidate(c.projectId);
     }
 
     if (orderedIds.length === 0 && existingCandidates.length > 0) {
@@ -3353,7 +3380,9 @@ function createSessionCatalogStore() {
         mergedOrder.push(pid);
       }
     }
-    store.projectOrder = mergedOrder.slice(0, MAX_PROJECT_ORDER);
+    // 严禁对合并后的权威顺序静默截断，确保超过 500 个项目时也不会丢失保底追加项或引发振荡跳顶
+    store.projectOrder = mergedOrder;
+    store.bootstrapTopIds = [];
     store.projectOrderInitialized = true;
     store.lastSig = '';
     const { catalogRevision } = buildActiveCatalogItems(store, store.lastActiveSessionId || '', null);
@@ -3366,7 +3395,7 @@ function createSessionCatalogStore() {
     };
   }
 
-  function prependProjectOrder(projectId, options = {}) {
+  async function prependProjectOrder(projectId, options = {}) {
     const pid = String(projectId || '').trim();
     if (!isOrderableProjectId(pid)) return null;
     const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
@@ -3375,15 +3404,71 @@ function createSessionCatalogStore() {
       projectsCache
     );
     if (!store.projectOrderInitialized) {
-      const seedIds = Array.from(projectsMeta.values())
-        .filter((p) => p && p.id !== pid && isOrderableProjectId(p.id) && !archivedProjectIds.has(p.id) && !excludedProjectIds.has(p.id))
-        .sort((a, b) => ((Number(b.mtimeMs) || 0) - (Number(a.mtimeMs) || 0)) || String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'))
-        .map((p) => p.id);
-      store.projectOrder = [pid, ...seedIds].slice(0, MAX_PROJECT_ORDER);
-      store.projectOrderInitialized = true;
+      const seedBucketMap = new Map();
+      const upsertSeedBucket = (rawId, rawName, activeAt = 0) => {
+        const id = String(rawId || '').trim();
+        if (!id || id === pid || !isOrderableProjectId(id) || archivedProjectIds.has(id) || excludedProjectIds.has(id)) return;
+        const ts = Number(activeAt) || 0;
+        const nm = String(rawName || '').trim() || id;
+        const prev = seedBucketMap.get(id);
+        if (!prev) {
+          seedBucketMap.set(id, { id, name: nm, lastActiveAt: ts });
+        } else {
+          if (ts > prev.lastActiveAt) prev.lastActiveAt = ts;
+          if ((!prev.name || prev.name === id) && nm && nm !== id) prev.name = nm;
+        }
+      };
+      for (const p of projectsMeta.values()) {
+        if (p) upsertSeedBucket(p.id, p.name, p.mtimeMs);
+      }
+      for (const c of store.map.values()) {
+        if (!c || c.archived || store.subagentIds.has(c.id)) continue;
+        upsertSeedBucket(c.projectId, c.projectName, c.updatedAt);
+      }
+      const trajData = await fetchTrajectories({ ...options, bypassCache: true }).catch(() => null);
+      const hasFullRpcData = Boolean(trajData && trajData.trajOk && trajData.listOk);
+      if (trajData) {
+        for (const rpcPid of (trajData.projectIds || [])) {
+          const cleanRpcPid = String(rpcPid || '').trim();
+          upsertSeedBucket(cleanRpcPid, cleanRpcPid === 'default-cli-project' ? 'CLI Project' : cleanRpcPid, 0);
+        }
+        const rpcSummaries = trajData.summaries && typeof trajData.summaries === 'object' ? trajData.summaries : {};
+        for (const [cid, sum] of Object.entries(rpcSummaries)) {
+          if (!sum || typeof sum !== 'object') continue;
+          if (sum?.annotations?.archived || sum?.trajectoryMetadata?.archived) continue;
+          const subCheck = inspectSubagentRecord(cid, sum, null, store.subagentIds, store.subagentRoots);
+          if (subCheck.isSub) continue;
+          const rawTrajPid = String(sum?.trajectoryMetadata?.projectId || '').trim();
+          const effPid = (!isSyntheticProjectId(rawTrajPid) && rawTrajPid)
+            ? rawTrajPid
+            : matchWorkspaceToProjectId(sum, projectsMeta, options);
+          const mtime = sum.lastModifiedTime ? (Date.parse(sum.lastModifiedTime) || 0) : 0;
+          upsertSeedBucket(effPid, projectsMeta.get(effPid)?.name || effPid, mtime);
+        }
+      }
+      const nextBootTop = [
+        pid,
+        ...(Array.isArray(store.bootstrapTopIds) ? store.bootstrapTopIds : [])
+          .filter((id) => id !== pid && isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id))
+      ];
+      const bootSet = new Set(nextBootTop);
+      const seedIds = Array.from(seedBucketMap.values())
+        .filter((b) => !bootSet.has(b.id))
+        .sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
+        .map((b) => b.id);
+      store.projectOrder = [...nextBootTop, ...seedIds];
+      if (hasFullRpcData) {
+        store.bootstrapTopIds = [];
+        store.projectOrderInitialized = true;
+      } else {
+        // 若冷启动建项时尚未连上语言服务 RPC，持久化记录 bootstrapTopIds，确保随后首次完整快照发现 RPC 旧项目时仍把本次新建项目固定在最顶部
+        store.bootstrapTopIds = nextBootTop;
+        store.projectOrderInitialized = false;
+      }
     } else {
       const rest = store.projectOrder.filter((id) => id !== pid && isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id));
-      store.projectOrder = [pid, ...rest].slice(0, MAX_PROJECT_ORDER);
+      store.projectOrder = [pid, ...rest];
+      store.bootstrapTopIds = [];
     }
     store.lastSig = '';
     const { catalogRevision } = buildActiveCatalogItems(store, store.lastActiveSessionId || '', null);
@@ -18036,10 +18121,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (!createdRes?.alreadyExists && createdRes?.project?.id) {
           const activeCatStore = options.catalogStore || defaultCatalogStore;
           try {
-            activeCatStore.prependProjectOrder?.(createdRes.project.id, {
+            await activeCatStore.prependProjectOrder?.(createdRes.project.id, {
               ...(options.catalogOptions || {}),
               ...(options.configDir ? { configDir: options.configDir } : {}),
-              ...(options.homeDir ? { homeDir: options.homeDir } : {})
+              ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+              ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {})
             });
           } catch {}
         }
