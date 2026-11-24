@@ -17334,7 +17334,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         };
 
         let resolvedAuthoritative = false;
-        if (reqConvId && reqConvId !== '__new__' && reqConvId !== 'new') {
+        const isExistingConvReq = Boolean(reqConvId && reqConvId !== '__new__' && reqConvId !== 'new');
+        if (isExistingConvReq) {
           if (typeof options.resolveConversationProjectDirs === 'function') {
             const customDirs = await Promise.resolve().then(() => options.resolveConversationProjectDirs(reqConvId)).catch(() => null);
             if (Array.isArray(customDirs)) {
@@ -17351,14 +17352,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               const trajPid = !isSyntheticProjectId(rawTrajPid) ? rawTrajPid : '';
               if (trajPid === 'outside-of-project' || trajPid === 'standalone') {
                 extractTrajectoryWorkspacePaths(summary).forEach(pushScopedRoot);
-                resolvedAuthoritative = true;
               } else if (trajPid) {
                 const pMeta = projectsMeta.get(trajPid);
                 if (Array.isArray(pMeta?.workspacePaths)) pMeta.workspacePaths.forEach(pushScopedRoot);
                 if (!scopedRoots.length) extractTrajectoryWorkspacePaths(summary).forEach(pushScopedRoot);
-                if (scopedRoots.length > 0 || projectsMeta.has(trajPid) || projectsMeta.size > 0) {
-                  resolvedAuthoritative = true;
-                }
               } else {
                 const wsPid = matchWorkspaceToProjectId(summary, projectsMeta, mediaOpts);
                 if (wsPid && projectsMeta.has(wsPid)) {
@@ -17367,10 +17364,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 if (!scopedRoots.length) {
                   extractTrajectoryWorkspacePaths(summary).forEach(pushScopedRoot);
                 }
-                if (scopedRoots.length > 0 || wsPid) {
-                  resolvedAuthoritative = true;
-                }
               }
+              resolvedAuthoritative = true;
             }
           }
           if (!resolvedAuthoritative) {
@@ -17381,20 +17376,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               : null;
             if (matchedCat) {
               const catPid = String(matchedCat.projectId || '').trim();
-              if (catPid === 'ungrouped' || catPid === 'outside-of-project' || catPid === 'standalone') {
-                resolvedAuthoritative = true;
-              } else if (catPid && !isSyntheticProjectId(catPid)) {
+              if (catPid && catPid !== 'ungrouped' && catPid !== 'outside-of-project' && catPid !== 'standalone' && !isSyntheticProjectId(catPid)) {
                 const pMeta = projectsMeta.get(catPid);
                 if (Array.isArray(pMeta?.workspacePaths)) pMeta.workspacePaths.forEach(pushScopedRoot);
-                if (scopedRoots.length > 0 || projectsMeta.has(catPid) || projectsMeta.size > 0) {
-                  resolvedAuthoritative = true;
-                }
               }
+              resolvedAuthoritative = true;
             }
           }
         }
 
-        if (!resolvedAuthoritative) {
+        // 仅在未携带已有 conversationId（即新建空白对话 __new__/new 或纯项目级查询）时，才允许使用 projectId 解析工作区；
+        // 凡携带了 conversationId 但无法解析该会话归属，严禁回退采用未经会话关联验证的客户端 projectId（避免借其他有效 projectId 越界浏览）
+        if (!isExistingConvReq && !resolvedAuthoritative) {
           if (reqProjId === 'ungrouped' || reqProjId === 'outside-of-project' || reqProjId === 'standalone' || reqProjId === 'default' || isSyntheticProjectId(reqProjId)) {
             if (reqProjId || projectsMeta.size > 0 || !rawDir) {
               resolvedAuthoritative = true;

@@ -9371,9 +9371,9 @@
     const seenConv = new Set();
 
     const addProject = (raw) => {
-      const id = String(raw?.id || '').trim();
+      const id = cleanSidebarPid(raw?.id);
       const name = String(raw?.name || raw?.label || '').trim();
-      if (!id || !name) return;
+      if (!id || !name || isSyntheticSidebarProjectName(name) || /^pinned$/i.test(name)) return;
       if (name === 'swarm/swarm_board') return;
       const prev = projectMap.get(id);
       if (!prev) {
@@ -9452,12 +9452,12 @@
               const summaryPid = cleanSidebarPid(cascadeSummaryMap.get(cid)?.projectId);
               const entryDirectPid = cleanSidebarPid(entry?.projectId);
               const authoritativePid = trajMetaPid || summaryPid || entryDirectPid;
-              const hookGrpPid = !/^pinned$/i.test(gName) ? cleanSidebarPid(gId) : '';
+              const hookGrpPid = (!/^pinned$/i.test(gName) && !isSyntheticSidebarProjectName(gName)) ? cleanSidebarPid(gId) : '';
               const virtualGrpPid = cleanSidebarPid(convGroupMap.get(cid));
               const pid = authoritativePid || hookGrpPid || virtualGrpPid || '';
               const resolvedName = (pid && projectMap.get(pid)?.name)
                 ? projectMap.get(pid).name
-                : (pid === hookGrpPid ? (gName || '') : '');
+                : ((pid && pid === hookGrpPid && !isSyntheticSidebarProjectName(gName)) ? gName : '');
               convs.push({
                 id: cid,
                 projectId: pid,
@@ -9513,7 +9513,9 @@
         if (n.getAttribute('data-testid') === 'project-header') {
           const wrap = n.parentElement?.parentElement || n.parentElement;
           const pLink = wrap?.querySelector?.('a[href*="project="]');
-          activeHeaderPid = parseProjectIdFromHref(pLink?.getAttribute?.('href')) || n.getAttribute('data-project-id') || '';
+          const rawHdrPid = parseProjectIdFromHref(pLink?.getAttribute?.('href')) || n.getAttribute('data-project-id') || '';
+          const hdrLabel = String(n.getAttribute('data-project-label') || n.textContent || '').replace(/\s+/g, ' ').trim();
+          activeHeaderPid = (!isSyntheticSidebarProjectName(hdrLabel) && !/^pinned$/i.test(hdrLabel)) ? cleanSidebarPid(rawHdrPid) : '';
         } else {
           const cid = extractSidebarRowId(n);
           if (cid && activeHeaderPid) domProjectMap.set(cid, activeHeaderPid);
@@ -9603,6 +9605,14 @@
     return !name || name === '默认项目' || name === '未归属项目' || name === '未命名项目';
   }
 
+  function isSyntheticSidebarGroupHeader(rawId, rawName) {
+    const id = String(rawId || '').trim();
+    const name = String(rawName || '').trim();
+    if (id && isSyntheticSidebarProjectId(id)) return true;
+    if (/^pinned$/i.test(name) || isSyntheticSidebarProjectName(name)) return true;
+    return false;
+  }
+
   function collectSidebarProjectGroups(limit = 60, preloadedStoreCatalog = null) {
     const currentId = getSessionIdFromLocation() || '';
     const storeCatalog = preloadedStoreCatalog || extractSidebarStoreCatalog();
@@ -9631,13 +9641,19 @@
     const groupById = new Map();
     const ensureGroup = (gid, name, count = 0, isCollapsed = false, explicitKey = '') => {
       const rawId = String(gid || '').trim();
-      const cleanId = isSyntheticSidebarProjectId(rawId) ? '' : rawId;
-      const key = String(explicitKey || cleanId || rawId || `name:${name}`).trim();
+      const cleanId = cleanSidebarPid(rawId);
+      const rawName = String(name || '').trim();
+      const safeName = (!rawName || rawName === '默认项目') ? '未归属项目' : rawName;
+      const cleanExplicitKey = String(explicitKey || '').trim();
+      const safeExplicitKey = (cleanExplicitKey && cleanExplicitKey !== 'default' && !/^dom:默认项目$/i.test(cleanExplicitKey) && !/^name:默认项目$/i.test(cleanExplicitKey))
+        ? cleanExplicitKey
+        : '';
+      const key = String(safeExplicitKey || cleanId || `name:${safeName}`).trim();
       if (groupById.has(key)) return groupById.get(key);
       const grp = {
         id: cleanId,
         key,
-        name: String(name || '未命名项目').trim() || '未命名项目',
+        name: safeName,
         count: Number(count) || 0,
         isCollapsed: Boolean(isCollapsed),
         active: false,
@@ -9698,8 +9714,8 @@
         if (!it || typeof it !== 'object') continue;
         if (it.type === 'header') {
           const rawHeaderId = String(it.id || '').replace(/^header-/, '').trim();
-          const hdrName = String(it.label || '未命名项目').trim() || '未命名项目';
-          if (rawHeaderId === 'pinned' || /^pinned$/i.test(hdrName)) {
+          const hdrName = String(it.label || '').trim();
+          if (isSyntheticSidebarGroupHeader(rawHeaderId, hdrName)) {
             curGrp = null;
             continue;
           }
@@ -9747,10 +9763,14 @@
       for (const node of nodes) {
         const tid = node.getAttribute?.('data-testid');
         if (tid === 'project-header') {
-          const pname = (node.textContent || '').replace(/\s+/g, ' ').trim() || '未命名项目';
+          const pname = (node.textContent || '').replace(/\s+/g, ' ').trim();
           const wrap = node.parentElement?.parentElement || node.parentElement;
           const pLink = wrap?.querySelector?.('a[href*="project="]');
           const hdrPid = parseProjectIdFromHref(pLink?.getAttribute?.('href')) || node.getAttribute?.('data-project-id') || '';
+          if (isSyntheticSidebarGroupHeader(hdrPid, pname)) {
+            curGrp = null;
+            continue;
+          }
           curGrp = ensureGroup(hdrPid, pname, 0, false, hdrPid || `dom:${pname}`);
         } else if (tid === 'conversation-row-sidebar') {
           const cid = extractSidebarRowId(node);
@@ -10151,21 +10171,39 @@
     const activeConv = conversations.find((c) => c.active);
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
+    const isNewConversation = !sessionId;
     const locProjectId = getProjectIdFromLocation();
-    const cleanLocPid = isSyntheticSidebarProjectId(locProjectId) ? '' : locProjectId;
-    const cleanActivePid = isSyntheticSidebarProjectId(activeConv?.projectId) ? '' : String(activeConv?.projectId || '').trim();
-    const currentProjectId = cleanLocPid || cleanActivePid || '';
+    const cleanLocPid = cleanSidebarPid(locProjectId);
+    const activeSumMeta = sessionId ? cascadeSummaryMap.get(sessionId) : null;
+    const activeGrp = sessionId
+      ? projectGroups.find((g) => Array.isArray(g.conversations) && g.conversations.some((c) => c.id === sessionId))
+      : null;
+    const cleanActiveAuthPid = cleanSidebarPid(activeConv?.authoritativeProjectId)
+      || cleanSidebarPid(activeSumMeta?.projectId);
+    const cleanActivePid = cleanSidebarPid(activeConv?.projectId)
+      || cleanSidebarPid(activeGrp?.id);
+    // 已有会话优先采用会话权威项目归属，防止 URL 残留 ?project=... 反客为主覆盖真实会话归属；仅新建空白对话页优先取 URL 项目选择
+    const currentProjectId = isNewConversation
+      ? (cleanLocPid || cleanActivePid || '')
+      : (cleanActiveAuthPid || cleanActivePid || cleanLocPid || '');
     const isStandalonePid = currentProjectId === 'outside-of-project' || currentProjectId === 'standalone';
     const matchedProj = (!isStandalonePid && currentProjectId)
       ? storeCatalog.projects.find((p) => p.id === currentProjectId)
       : null;
-    const cleanActiveName = (!isStandalonePid && !isSyntheticSidebarProjectName(activeConv?.projectName) && (!currentProjectId || cleanActivePid === currentProjectId))
+    const matchedGrp = (!isStandalonePid && currentProjectId)
+      ? projectGroups.find((g) => g.id === currentProjectId)
+      : null;
+    const cleanActiveName = (!isStandalonePid && !isSyntheticSidebarProjectName(activeConv?.projectName) && (!currentProjectId || cleanActivePid === currentProjectId || cleanActiveAuthPid === currentProjectId))
       ? String(activeConv.projectName).trim()
       : '';
-    const currentProjectName = (!isStandalonePid && matchedProj?.name && !isSyntheticSidebarProjectName(matchedProj.name))
-      ? String(matchedProj.name).trim()
-      : cleanActiveName;
-    const isNewConversation = !sessionId;
+    const currentProjectName = isStandalonePid
+      ? ''
+      : (
+        (matchedProj?.name && !isSyntheticSidebarProjectName(matchedProj.name) ? String(matchedProj.name).trim() : '')
+        || (matchedGrp?.name && !isSyntheticSidebarProjectName(matchedGrp.name) ? String(matchedGrp.name).trim() : '')
+        || cleanActiveName
+        || (!isNewConversation && activeSumMeta?.project && (!currentProjectId || currentProjectId === cleanSidebarPid(activeSumMeta.projectId)) && !isSyntheticSidebarProjectName(activeSumMeta.project) ? String(activeSumMeta.project).trim() : '')
+      );
     const { sr } = getMeterHostAndShadow();
     const contextBadge = (
       sr?.getElementById('amount')?.textContent ||
