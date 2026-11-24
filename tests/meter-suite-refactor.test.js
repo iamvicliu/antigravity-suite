@@ -30054,6 +30054,239 @@ test('锁定服务端项目顺序防跳动、新项目默认置顶、瞬态漏�
       assert.ok(coldSnap1.projects.some((p) => p.id === 'proj-legacy-rpc-traj'), `[${tag}] RPC 轨迹旧项目应正常保留在新建项目之后`);
       assert.ok(coldSnap1.projects.some((p) => p.id === 'proj-legacy-rpc-empty'), `[${tag}] RPC 空旧项目应正常保留在新建项目之后`);
     }
+
+    // 8. 冷启动等待完整 RPC 期间的增量对账全矩阵回归：
+    //    先远程新建 A → 后台旧项目时间推进不重排 → 桌面新建 B 置顶为 [B, A, ...] → 两类 RPC 交替缺失/恢复 + 期间重启不丢失已知顺序、迟到 RPC 旧项目不反超 → 完整恢复与再次重启仍保持 [B, A, ...]
+    const stateDirInc = path.join(tmpRoot, 'state-cold-incremental');
+    const configDirInc = path.join(tmpRoot, 'config-cold-incremental');
+    const wsRemoteA = path.join(fakeHome, 'codebase', 'remote-proj-a');
+    const wsDeskB = path.join(fakeHome, 'codebase', 'desk-proj-b');
+    for (const d of [stateDirInc, path.join(configDirInc, 'projects'), wsRemoteA, wsDeskB]) {
+      fs.mkdirSync(d, { recursive: true });
+    }
+    fs.writeFileSync(path.join(stateDirInc, 'remote-session-catalog.json'), JSON.stringify({
+      version: 2,
+      updatedAt: baseMs + 500000,
+      subagentIds: [],
+      subagentRoots: {},
+      subagentStates: {},
+      conversations: [
+        {
+          id: 'conv-inc-old-1',
+          title: '旧会话 1（初始更近）',
+          projectId: 'proj-old-1',
+          projectName: 'OldProj1',
+          archived: false,
+          pinned: false,
+          updatedAt: baseMs + 500000,
+          status: 'idle'
+        },
+        {
+          id: 'conv-inc-old-2',
+          title: '旧会话 2（初始更早）',
+          projectId: 'proj-old-2',
+          projectName: 'OldProj2',
+          archived: false,
+          pinned: false,
+          updatedAt: baseMs + 200000,
+          status: 'idle'
+        }
+      ]
+    }));
+
+    // 8a. RPC 离线状态下先远程新建项目 A
+    const handlerInc = remoteMod.createRemoteHttpHandler(mockCfg, {
+      catalogOptions: { stateDir: stateDirInc, configDir: configDirInc, homeDir: fakeHome },
+      configDir: configDirInc,
+      homeDir: fakeHome,
+      allowedRoots: [fakeHome],
+      allowDiskFallback: true,
+      openInDesktop: false,
+      localApiConnect: async () => null
+    });
+    const reqCreateA = Readable.from([Buffer.from(JSON.stringify({
+      folderPath: wsRemoteA,
+      name: 'RemoteProjA',
+      openInDesktop: false
+    }), 'utf8')]);
+    reqCreateA.method = 'POST';
+    reqCreateA.url = '/api/projects';
+    reqCreateA.headers = { host: '127.0.0.1:18852', 'content-type': 'application/json', 'x-ag-remote-token': mockCfg.token };
+    reqCreateA.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    let statusCreateA = 200;
+    let rawCreateA = '';
+    await handlerInc(reqCreateA, {
+      setHeader() {},
+      getHeader() { return ''; },
+      writeHead(code) { statusCreateA = code; },
+      end(chunk) { if (chunk) rawCreateA += String(chunk); }
+    });
+    assert.equal(statusCreateA, 200);
+    const pidA = JSON.parse(rawCreateA).project.id;
+
+    // 8b. 等待完整 RPC 期间，旧项目 proj-old-2 在桌面端活跃推进时间，过渡快照不得按 lastActiveAt 重排已知顺序
+    const snapIncOffline1 = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-inc-old-2',
+      busy: true,
+      conversations: [{ id: 'conv-inc-old-2', title: '旧会话 2（活跃更新）', active: true, domBusy: true, projectId: 'proj-old-2' }]
+    }, {
+      stateDir: stateDirInc,
+      configDir: configDirInc,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => null
+    });
+    assert.deepEqual(
+      snapIncOffline1.projects.map((p) => p.id),
+      [pidA, 'proj-old-1', 'proj-old-2'],
+      '等待完整 RPC 期间后台旧项目活跃推进时间戳不得重排已知顺序'
+    );
+
+    // 8c. 仍处于等待完整 RPC 期间，桌面端新建项目 B（即使磁盘 mtime 偏小），过渡快照必须将 B 置顶在 A 之前 -> [B, A, ...]
+    const pidB = 'proj-desk-b';
+    const projBFile = path.join(configDirInc, 'projects', `${pidB}.json`);
+    fs.writeFileSync(projBFile, JSON.stringify({
+      id: pidB,
+      name: 'DesktopProjB',
+      projectResources: { resources: [{ folderUri: 'file://' + encodeURI(wsDeskB) }] }
+    }, null, 2));
+    const earlyTs = new Date(baseMs + 1000);
+    fs.utimesSync(projBFile, earlyTs, earlyTs);
+
+    const snapIncAfterDeskB = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-inc-old-2',
+      conversations: [{ id: 'conv-inc-old-2', title: '旧会话 2', active: true, projectId: 'proj-old-2' }]
+    }, {
+      stateDir: stateDirInc,
+      configDir: configDirInc,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => null
+    });
+    assert.deepEqual(
+      snapIncAfterDeskB.projects.map((p) => p.id),
+      [pidB, pidA, 'proj-old-1', 'proj-old-2'],
+      '等待完整 RPC 期间后续桌面新建项目 B 必须置顶排在 A 之前'
+    );
+
+    // 8d-1. 两类 RPC 交替缺失与恢复（第一拍：ListProjects 先恢复返回旧空项目 proj-rpc-list-old，而 GetAllCascadeTrajectories 超时失败）
+    const snapIncPartialListOnly = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-inc-old-1',
+      conversations: []
+    }, {
+      stateDir: stateDirInc,
+      configDir: configDirInc,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') throw new Error('Trajectories RPC timeout');
+          if (method === 'ListProjects') return { projectIds: [pidA, pidB, 'proj-rpc-list-old'] };
+          return {};
+        }
+      })
+    });
+    assert.deepEqual(
+      snapIncPartialListOnly.projects.map((p) => p.id),
+      [pidB, pidA, 'proj-old-1', 'proj-old-2', 'proj-rpc-list-old'],
+      'ListProjects 首次恢复带回的旧空项目必须追加在末尾，不得反超 B、A 或重排已知顺序'
+    );
+
+    // 8d-2. 过渡期发生服务重启 + 第二拍两类 RPC 反转（ListProjects 超时失败，而 GetAllCascadeTrajectories 首次恢复且返回极新时间戳的旧项目 proj-rpc-traj-old 并推进 proj-old-2 时间）
+    delete require.cache[require.resolve('../mobile-remote')];
+    remoteMod = require('../mobile-remote');
+    const incTrajSummaries = {
+      'conv-inc-old-1': {
+        summary: '旧会话 1',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date(baseMs + 500000).toISOString(),
+        trajectoryMetadata: { projectId: 'proj-old-1', rootConversationId: 'conv-inc-old-1' }
+      },
+      'conv-inc-old-2': {
+        summary: '旧会话 2',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date(baseMs + 88000000).toISOString(),
+        trajectoryMetadata: { projectId: 'proj-old-2', rootConversationId: 'conv-inc-old-2' }
+      },
+      'conv-rpc-traj-old': {
+        summary: '迟到返回的 RPC 旧项目会话',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date(baseMs + 99000000).toISOString(),
+        trajectoryMetadata: { projectId: 'proj-rpc-traj-old', rootConversationId: 'conv-rpc-traj-old' }
+      }
+    };
+    const snapIncFlippedRpc = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-inc-old-1',
+      conversations: []
+    }, {
+      stateDir: stateDirInc,
+      configDir: configDirInc,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: incTrajSummaries };
+          if (method === 'ListProjects') throw new Error('ListProjects RPC timeout');
+          return {};
+        }
+      })
+    });
+    const expectedFullIncOrder = [pidB, pidA, 'proj-old-1', 'proj-old-2', 'proj-rpc-list-old', 'proj-rpc-traj-old'];
+    assert.deepEqual(
+      snapIncFlippedRpc.projects.map((p) => p.id),
+      expectedFullIncOrder,
+      '期间重启且两类 RPC 交替缺失时：已知空项目 proj-rpc-list-old 不得丢失，proj-old-2 不得重排，迟到的 proj-rpc-traj-old 不得反超 B、A'
+    );
+
+    // 8d-3. 两类 RPC 完整恢复 + 再次重启 + 后台时间戳继续推进，验证最终顺序始终锁定为 [B, A, ...]
+    const snapIncFullRecovered = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-inc-old-1',
+      conversations: []
+    }, {
+      stateDir: stateDirInc,
+      configDir: configDirInc,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: incTrajSummaries };
+          if (method === 'ListProjects') return { projectIds: [pidA, pidB, 'proj-rpc-list-old', 'proj-rpc-traj-old'] };
+          return {};
+        }
+      })
+    });
+    assert.deepEqual(snapIncFullRecovered.projects.map((p) => p.id), expectedFullIncOrder, '完整 RPC 恢复后顺序必须保持 [B, A, ...] 完全不变');
+
+    delete require.cache[require.resolve('../mobile-remote')];
+    remoteMod = require('../mobile-remote');
+    incTrajSummaries['conv-rpc-traj-old'].lastModifiedTime = new Date(baseMs + 199000000).toISOString();
+    const snapIncAfterFinalRestart = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-inc-old-1',
+      conversations: []
+    }, {
+      stateDir: stateDirInc,
+      configDir: configDirInc,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: incTrajSummaries };
+          if (method === 'ListProjects') return { projectIds: [pidA, pidB, 'proj-rpc-list-old', 'proj-rpc-traj-old'] };
+          return {};
+        }
+      })
+    });
+    assert.deepEqual(
+      snapIncAfterFinalRestart.projects.map((p) => p.id),
+      expectedFullIncOrder,
+      '完整恢复后再经服务重启与后台时间推进，仍必须保持 [B, A, ...] 权威顺序'
+    );
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
