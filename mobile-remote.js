@@ -1959,7 +1959,7 @@ const REMOTE_SERVER_BOOT_ID = `${REMOTE_SERVER_BOOT_AT}-${process.pid}-${globalT
 let remoteServerSnapSeq = 0;
 
 function isCatalogTestEnv() {
-  return process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  return process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT);
 }
 
 const CREDIBLE_TRAJ_IDLE_STATUSES = new Set([
@@ -2526,10 +2526,35 @@ function inspectSubagentRecord(cid, traj, snapConv, knownSubIds = null, knownRoo
   return { isSub, rootId };
 }
 
+function isOrderableProjectId(rawId) {
+  const id = String(rawId || '').trim();
+  if (!id || id === 'ungrouped' || id === 'swarm/swarm_board' || INTERNAL_EMPTY_PROJECT_IDS.has(id) || isSyntheticProjectId(id)) {
+    return false;
+  }
+  return true;
+}
+
 function createSessionCatalogStore() {
   const registryByDir = new Map();
   const projectsCache = { projectsDir: '', fetchedAt: 0, data: null };
   const trajCache = { at: 0, data: null };
+  const MAX_PROJECT_ORDER = 500;
+
+  function persistCatalogStore(store, nowMs = Date.now(), conversationsOverride = null) {
+    const convList = Array.isArray(conversationsOverride)
+      ? conversationsOverride
+      : Array.from(store.map.values());
+    safeWriteJsonSync(store.filePath, {
+      version: 2,
+      updatedAt: nowMs,
+      projectOrderInitialized: Boolean(store.projectOrderInitialized),
+      projectOrder: Array.isArray(store.projectOrder) ? store.projectOrder : [],
+      subagentIds: Array.from(store.subagentIds).sort(),
+      subagentRoots: Object.fromEntries(store.subagentRoots),
+      subagentStates: Object.fromEntries(store.subagentStates),
+      conversations: convList
+    });
+  }
 
   function getStickyStoreForDir(stateDir) {
     const dir = String(stateDir || getStateDir());
@@ -2539,6 +2564,18 @@ function createSessionCatalogStore() {
       const savedRes = safeReadJsonSync(filePath, null);
       const saved = savedRes?.ok ? savedRes.data : null;
       const map = new Map();
+      const projectOrder = [];
+      const seenProjOrder = new Set();
+      if (Array.isArray(saved?.projectOrder)) {
+        for (const rawPid of saved.projectOrder) {
+          const pid = String(rawPid || '').trim();
+          if (isOrderableProjectId(pid) && !seenProjOrder.has(pid)) {
+            seenProjOrder.add(pid);
+            projectOrder.push(pid);
+          }
+        }
+      }
+      const projectOrderInitialized = Boolean(saved?.projectOrderInitialized) || projectOrder.length > 0;
       const subagentIds = new Set(Array.isArray(saved?.subagentIds) ? saved.subagentIds.map((x) => String(x || '').trim()).filter(Boolean) : []);
       const subagentRoots = new Map();
       if (saved?.subagentRoots && typeof saved.subagentRoots === 'object') {
@@ -2571,7 +2608,19 @@ function createSessionCatalogStore() {
         const savedStatus = (CREDIBLE_STATUS_VALUES.has(item.status) || item.status === 'unknown') ? item.status : 'unknown';
         map.set(cid, { ...item, id: cid, status: savedStatus, statusLabel: statusToLabel(savedStatus) });
       }
-      entry = { dir, filePath, map, subagentIds, subagentRoots, subagentStates, lastSig: '', lastActiveSessionId: '', catalogRevision: '' };
+      entry = {
+        dir,
+        filePath,
+        map,
+        projectOrder,
+        projectOrderInitialized,
+        subagentIds,
+        subagentRoots,
+        subagentStates,
+        lastSig: '',
+        lastActiveSessionId: '',
+        catalogRevision: ''
+      };
       registryByDir.set(dir, entry);
     }
     return entry;
@@ -2605,9 +2654,10 @@ function createSessionCatalogStore() {
       });
     }
     items.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+    const projOrderKey = Array.isArray(store.projectOrder) ? store.projectOrder.join(',') : '';
     const revPayload = items
       .map((c) => `${c.id}\t${c.title}\t${c.projectId}\t${c.status}\t${c.unread ? 1 : 0}\t${c.pinned ? 1 : 0}\t${c.updatedAt}`)
-      .join('\n') + `|s:${store.subagentIds.size}|a:${archivedCount}`;
+      .join('\n') + `|s:${store.subagentIds.size}|a:${archivedCount}|po:${projOrderKey}`;
     const catalogRevision = crypto.createHash('sha1').update(revPayload).digest('hex').slice(0, 16);
     return { items, catalogRevision };
   }
@@ -2956,27 +3006,10 @@ function createSessionCatalogStore() {
     }
 
     store.lastActiveSessionId = activeSessionId;
-    const { items: allActiveConvs, catalogRevision } = buildActiveCatalogItems(store, activeSessionId, snapConvMap);
-    store.catalogRevision = catalogRevision;
+    const { items: allActiveConvs, catalogRevision: baseCatalogRevision } = buildActiveCatalogItems(store, activeSessionId, snapConvMap);
+    let catalogRevision = baseCatalogRevision;
 
-    const persistSig = JSON.stringify([
-      store.subagentIds.size,
-      Array.from(store.subagentStates.entries()).sort((a, b) => a[0].localeCompare(b[0])),
-      persistedAll.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt, c.status, c.lastViewedAt])
-    ]);
-    if (persistSig !== store.lastSig) {
-      store.lastSig = persistSig;
-      safeWriteJsonSync(store.filePath, {
-        version: 2,
-        updatedAt: nowMs,
-        subagentIds: Array.from(store.subagentIds).sort(),
-        subagentRoots: Object.fromEntries(store.subagentRoots),
-        subagentStates: Object.fromEntries(store.subagentStates),
-        conversations: persistedAll
-      });
-    }
-
-    // 5. 基于全量未归档会话聚合并排序多项目列表（包含空项目，过滤内部空项目）
+    // 5. 基于全量未归档会话聚合并锁定多项目列表顺序（包含空项目，过滤内部空项目；新项目默认置顶，后台活跃绝不乱跳）
     const activeConvObj = allActiveConvs.find((c) => c.active);
     const cleanSnapCurrentPid = isSyntheticProjectId(snap.currentProjectId) ? '' : String(snap.currentProjectId || '').trim();
     const cleanActiveConvPid = (activeConvObj && !isSyntheticProjectId(activeConvObj.projectId))
@@ -3052,6 +3085,64 @@ function createSessionCatalogStore() {
       if (c.updatedAt > bucket.lastActiveAt) bucket.lastActiveAt = c.updatedAt;
     }
 
+    // 同步维护持久化权威 projectOrder：首次升级初始化锁定顺序，后续新项目插入头部（最顶部），已归档/排除项目剔除，后台会话更新绝不改变顺序
+    const realProjectBuckets = Array.from(projectStats.values()).filter((p) => isOrderableProjectId(p.id));
+    const prevOrderKey = store.projectOrder.join(',');
+    const prevOrderInit = Boolean(store.projectOrderInitialized);
+    if (!store.projectOrderInitialized) {
+      if (realProjectBuckets.length > 0) {
+        const initialSorted = realProjectBuckets
+          .slice()
+          .sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
+          .map((p) => p.id);
+        store.projectOrder = initialSorted.slice(0, MAX_PROJECT_ORDER);
+        store.projectOrderInitialized = true;
+      }
+    } else {
+      const prunedOrder = store.projectOrder.filter((id) => isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id));
+      const knownOrderSet = new Set(prunedOrder);
+      const newBuckets = realProjectBuckets
+        .filter((p) => !knownOrderSet.has(p.id))
+        .sort((a, b) => (b.lastActiveAt - a.lastActiveAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'));
+      let nextOrder = newBuckets.length > 0
+        ? [...newBuckets.map((p) => p.id), ...prunedOrder]
+        : prunedOrder;
+      if (nextOrder.length > MAX_PROJECT_ORDER) {
+        const activeRealSet = new Set(realProjectBuckets.map((p) => p.id));
+        const kept = [];
+        for (const id of nextOrder) {
+          if (activeRealSet.has(id) || kept.length < MAX_PROJECT_ORDER) {
+            kept.push(id);
+          }
+          if (kept.length >= MAX_PROJECT_ORDER && kept.filter((k) => activeRealSet.has(k)).length >= Math.min(activeRealSet.size, MAX_PROJECT_ORDER)) {
+            break;
+          }
+        }
+        nextOrder = kept.slice(0, MAX_PROJECT_ORDER);
+      }
+      store.projectOrder = nextOrder;
+    }
+    if (store.projectOrder.join(',') !== prevOrderKey || Boolean(store.projectOrderInitialized) !== prevOrderInit) {
+      catalogRevision = buildActiveCatalogItems(store, activeSessionId, snapConvMap).catalogRevision;
+    }
+    store.catalogRevision = catalogRevision;
+
+    const persistSig = JSON.stringify([
+      Boolean(store.projectOrderInitialized),
+      store.projectOrder,
+      store.subagentIds.size,
+      Array.from(store.subagentStates.entries()).sort((a, b) => a[0].localeCompare(b[0])),
+      persistedAll.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt, c.status, c.lastViewedAt])
+    ]);
+    if (persistSig !== store.lastSig) {
+      store.lastSig = persistSig;
+      persistCatalogStore(store, nowMs, persistedAll);
+    }
+
+    const orderIdxMap = new Map();
+    store.projectOrder.forEach((pid, idx) => {
+      if (!orderIdxMap.has(pid)) orderIdxMap.set(pid, idx);
+    });
     const projects = Array.from(projectStats.values())
       .filter((p) => !(INTERNAL_EMPTY_PROJECT_IDS.has(p.id) && p.conversationCount === 0))
       .filter((p) => !(p.id === 'ungrouped' && p.conversationCount === 0))
@@ -3061,10 +3152,18 @@ function createSessionCatalogStore() {
         active: Boolean(currentProjectId && !INTERNAL_EMPTY_PROJECT_IDS.has(currentProjectId) && currentProjectId !== 'ungrouped' && p.id === currentProjectId)
       }))
       .sort((a, b) => {
-        if ((a.id === 'ungrouped') !== (b.id === 'ungrouped')) {
-          return a.id === 'ungrouped' ? 1 : -1;
+        const aNonProj = a.id === 'ungrouped' || INTERNAL_EMPTY_PROJECT_IDS.has(a.id);
+        const bNonProj = b.id === 'ungrouped' || INTERNAL_EMPTY_PROJECT_IDS.has(b.id);
+        if (aNonProj !== bNonProj) {
+          return aNonProj ? 1 : -1;
         }
-        if (b.lastActiveAt !== a.lastActiveAt) return b.lastActiveAt - a.lastActiveAt;
+        if (aNonProj && bNonProj) {
+          if ((a.id === 'ungrouped') !== (b.id === 'ungrouped')) return a.id === 'ungrouped' ? 1 : -1;
+          return a.id.localeCompare(b.id);
+        }
+        const ia = orderIdxMap.has(a.id) ? orderIdxMap.get(a.id) : Number.MAX_SAFE_INTEGER;
+        const ib = orderIdxMap.has(b.id) ? orderIdxMap.get(b.id) : Number.MAX_SAFE_INTEGER;
+        if (ia !== ib) return ia - ib;
         return a.name.localeCompare(b.name, 'zh-Hans-CN');
       });
 
@@ -3136,6 +3235,7 @@ function createSessionCatalogStore() {
       ...(currentProjectPath ? { currentProjectPath } : {}),
       currentWorkspacePaths,
       catalogRevision,
+      projectOrder: store.projectOrder.slice(),
       totalConversations: allActiveConvs.length,
       hasMoreConversations: outputConvs.length < allActiveConvs.length,
       projects,
@@ -3184,19 +3284,115 @@ function createSessionCatalogStore() {
     store.map.set(sid, item);
     store.lastSig = '';
     try {
-      safeWriteJsonSync(store.filePath, {
-        version: 2,
-        updatedAt: Date.now(),
-        subagentIds: Array.from(store.subagentIds).sort(),
-        subagentRoots: Object.fromEntries(store.subagentRoots),
-        subagentStates: Object.fromEntries(store.subagentStates),
-        conversations: Array.from(store.map.values())
-      });
+      persistCatalogStore(store, Date.now());
     } catch {}
     return true;
   }
 
-  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed };
+  function getProjectOrder(options = {}) {
+    const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    return store.projectOrder.slice();
+  }
+
+  function setProjectOrder(orderedIds, options = {}) {
+    if (!Array.isArray(orderedIds)) {
+      throw Object.assign(new Error('projectOrder 必须是项目 ID 数组'), { status: 400 });
+    }
+    if (orderedIds.length > MAX_PROJECT_ORDER) {
+      throw Object.assign(new Error(`projectOrder 数量超出上限 (${MAX_PROJECT_ORDER})`), { status: 400 });
+    }
+    for (const item of orderedIds) {
+      if (typeof item !== 'string') {
+        throw Object.assign(new Error('projectOrder 包含非字符串的项目 ID'), { status: 400 });
+      }
+    }
+    const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    const { metaMap: projectsMeta, excludedIds: excludedProjectIds, archivedIds: archivedProjectIds } = loadProjectsMetaFromDisk(options, projectsCache);
+    const cleaned = [];
+    const seen = new Set();
+    for (const rawPid of orderedIds) {
+      const pid = rawPid.trim();
+      if (!isOrderableProjectId(pid) || archivedProjectIds.has(pid) || excludedProjectIds.has(pid)) continue;
+      if (!seen.has(pid)) {
+        seen.add(pid);
+        cleaned.push(pid);
+      }
+    }
+    // 收集既有已知项目，确保客户端提交部分可见项目顺序时不会丢失其余未显式传参的有效项目
+    const existingCandidates = [];
+    for (const pid of store.projectOrder) {
+      if (isOrderableProjectId(pid) && !archivedProjectIds.has(pid) && !excludedProjectIds.has(pid) && !existingCandidates.includes(pid)) {
+        existingCandidates.push(pid);
+      }
+    }
+    const metaSorted = Array.from(projectsMeta.values())
+      .filter((p) => p && isOrderableProjectId(p.id) && !archivedProjectIds.has(p.id) && !excludedProjectIds.has(p.id))
+      .sort((a, b) => ((Number(b.mtimeMs) || 0) - (Number(a.mtimeMs) || 0)) || String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
+    for (const p of metaSorted) {
+      if (!existingCandidates.includes(p.id)) existingCandidates.push(p.id);
+    }
+    for (const c of store.map.values()) {
+      if (!c || c.archived || store.subagentIds.has(c.id)) continue;
+      const cpid = String(c.projectId || '').trim();
+      if (isOrderableProjectId(cpid) && !archivedProjectIds.has(cpid) && !excludedProjectIds.has(cpid) && !existingCandidates.includes(cpid)) {
+        existingCandidates.push(cpid);
+      }
+    }
+
+    if (orderedIds.length === 0 && existingCandidates.length > 0) {
+      throw Object.assign(new Error('projectOrder 不能为空'), { status: 400 });
+    }
+    if (orderedIds.length > 0 && cleaned.length === 0) {
+      throw Object.assign(new Error('未提供有效的可排序项目 ID'), { status: 400 });
+    }
+
+    const mergedOrder = [...cleaned];
+    for (const pid of existingCandidates) {
+      if (!seen.has(pid)) {
+        seen.add(pid);
+        mergedOrder.push(pid);
+      }
+    }
+    store.projectOrder = mergedOrder.slice(0, MAX_PROJECT_ORDER);
+    store.projectOrderInitialized = true;
+    store.lastSig = '';
+    const { catalogRevision } = buildActiveCatalogItems(store, store.lastActiveSessionId || '', null);
+    store.catalogRevision = catalogRevision;
+    persistCatalogStore(store, Date.now());
+    return {
+      ok: true,
+      projectOrder: store.projectOrder.slice(),
+      catalogRevision
+    };
+  }
+
+  function prependProjectOrder(projectId, options = {}) {
+    const pid = String(projectId || '').trim();
+    if (!isOrderableProjectId(pid)) return null;
+    const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    const { metaMap: projectsMeta, excludedIds: excludedProjectIds, archivedIds: archivedProjectIds } = loadProjectsMetaFromDisk(
+      { ...options, bypassCache: true },
+      projectsCache
+    );
+    if (!store.projectOrderInitialized) {
+      const seedIds = Array.from(projectsMeta.values())
+        .filter((p) => p && p.id !== pid && isOrderableProjectId(p.id) && !archivedProjectIds.has(p.id) && !excludedProjectIds.has(p.id))
+        .sort((a, b) => ((Number(b.mtimeMs) || 0) - (Number(a.mtimeMs) || 0)) || String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'))
+        .map((p) => p.id);
+      store.projectOrder = [pid, ...seedIds].slice(0, MAX_PROJECT_ORDER);
+      store.projectOrderInitialized = true;
+    } else {
+      const rest = store.projectOrder.filter((id) => id !== pid && isOrderableProjectId(id) && !archivedProjectIds.has(id) && !excludedProjectIds.has(id));
+      store.projectOrder = [pid, ...rest].slice(0, MAX_PROJECT_ORDER);
+    }
+    store.lastSig = '';
+    const { catalogRevision } = buildActiveCatalogItems(store, store.lastActiveSessionId || '', null);
+    store.catalogRevision = catalogRevision;
+    persistCatalogStore(store, Date.now());
+    return store.projectOrder.slice();
+  }
+
+  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getProjectOrder, setProjectOrder, prependProjectOrder };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -3208,6 +3404,10 @@ async function enrichSnapshotWithCatalog(snap, options = {}) {
 
 function listCatalogConversations(options = {}) {
   return defaultCatalogStore.listConversations(options);
+}
+
+function setCatalogProjectOrder(orderedIds, options = {}) {
+  return defaultCatalogStore.setProjectOrder(orderedIds, options);
 }
 
 // ==================== 宿主机目录浏览、新建子目录与远程创建项目 ====================
@@ -12779,9 +12979,11 @@ function buildMobileAppHtml() {
           }
         }
       } else {
-        const orderedProjects = Array.from(projMap.values()).filter((p) =>
-          !isNonProjectBucket(p.id) || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
-        );
+        const orderedProjects = Array.from(projMap.values())
+          .filter((p) =>
+            !isNonProjectBucket(p.id) || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
+          )
+          .sort((a, b) => Number(isNonProjectBucket(a.id)) - Number(isNonProjectBucket(b.id)));
         const effProj = getEffectiveSelectedProject(snap);
 
         if (!orderedProjects.length) {
@@ -17799,6 +18001,26 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
+    if (req.method === 'POST' && pathname === '/api/projects/order') {
+      try {
+        const payload = await readJsonBody(req);
+        const rawOrder = payload?.projectOrder !== undefined ? payload.projectOrder : payload?.projectIds;
+        const activeCatStore = options.catalogStore || defaultCatalogStore;
+        const result = activeCatStore.setProjectOrder(rawOrder, {
+          ...(options.catalogOptions || {}),
+          ...(options.configDir ? { configDir: options.configDir } : {}),
+          ...(options.homeDir ? { homeDir: options.homeDir } : {})
+        });
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
+      } catch (err) {
+        const errHeaders = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+        if (err?.status === 413) errHeaders.Connection = 'close';
+        res.writeHead(err?.status || 400, errHeaders);
+        res.end(JSON.stringify({ ok: false, error: err?.message || '保存项目顺序失败' }));
+      }
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/api/projects') {
       try {
         const payload = await readJsonBody(req);
@@ -17811,6 +18033,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
           ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
         });
+        if (!createdRes?.alreadyExists && createdRes?.project?.id) {
+          const activeCatStore = options.catalogStore || defaultCatalogStore;
+          try {
+            activeCatStore.prependProjectOrder?.(createdRes.project.id, {
+              ...(options.catalogOptions || {}),
+              ...(options.configDir ? { configDir: options.configDir } : {}),
+              ...(options.homeDir ? { homeDir: options.homeDir } : {})
+            });
+          } catch {}
+        }
         const shouldNavigate = payload?.openInDesktop !== false && options.openInDesktop !== false && Boolean(createdRes?.project?.id);
         let navOk = shouldNavigate ? false : null;
         let navError = '';
@@ -19836,6 +20068,7 @@ module.exports = {
   createConversationHistoryManager,
   enrichSnapshotWithCatalog,
   listCatalogConversations,
+  setCatalogProjectOrder,
   getConversationMessagesPage,
   warmConversationSession,
   isSensitiveHostPath,

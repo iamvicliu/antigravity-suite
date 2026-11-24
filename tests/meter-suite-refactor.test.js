@@ -29560,3 +29560,292 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+// =========================================================================
+// P0 [#52] Phase A: 锁定服务端项目顺序彻底防跳动、新项目默认置顶与排序持久化接口
+// =========================================================================
+test('锁定服务端项目顺序防跳动、新项目默认置顶、瞬态漏项保护与 POST /api/projects/order 持久化 (#52 Phase A)', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proj-order-52-'));
+  try {
+    const fakeHome = path.join(tmpRoot, 'home');
+    const stateDir = path.join(tmpRoot, 'state');
+    const configDir = path.join(tmpRoot, 'config');
+    const projectsDir = path.join(configDir, 'projects');
+    const wsAlpha = path.join(fakeHome, 'codebase', 'alpha');
+    const wsBeta = path.join(fakeHome, 'codebase', 'beta');
+    const wsGamma = path.join(fakeHome, 'codebase', 'gamma');
+    const wsNewDesk = path.join(fakeHome, 'codebase', 'new-desk');
+    const wsNewRemote = path.join(fakeHome, 'codebase', 'new-remote');
+    for (const d of [stateDir, projectsDir, wsAlpha, wsBeta, wsGamma, wsNewDesk, wsNewRemote]) {
+      fs.mkdirSync(d, { recursive: true });
+    }
+
+    const writeProj = (id, name, dirPath, mtimeSecOffset = 0, extra = {}) => {
+      const fp = path.join(projectsDir, `${id}.json`);
+      fs.writeFileSync(fp, JSON.stringify({
+        id,
+        name,
+        projectResources: { resources: [{ folderUri: 'file://' + encodeURI(dirPath) }] },
+        ...extra
+      }, null, 2));
+      const ts = new Date(Date.UTC(2026, 10, 24, 0, 0, 0) + mtimeSecOffset * 1000);
+      fs.utimesSync(fp, ts, ts);
+    };
+    writeProj('proj-alpha', 'Alpha', wsAlpha, 300);
+    writeProj('proj-beta', 'BetaEmpty', wsBeta, 200);
+    writeProj('proj-gamma', 'Gamma', wsGamma, 100);
+
+    let remoteMod = require('../mobile-remote');
+    const baseMs = Date.UTC(2026, 10, 24, 0, 0, 0);
+    const summaries = {
+      'conv-alpha-1': {
+        summary: 'Alpha 任务',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date(baseMs + 300000).toISOString(),
+        trajectoryMetadata: { projectId: 'proj-alpha', rootConversationId: 'conv-alpha-1' }
+      },
+      'conv-gamma-1': {
+        summary: 'Gamma 后台任务',
+        status: 'CASCADE_RUN_STATUS_RUNNING',
+        lastModifiedTime: new Date(baseMs + 100000).toISOString(),
+        trajectoryMetadata: { projectId: 'proj-gamma', rootConversationId: 'conv-gamma-1' },
+        annotations: { lastUserViewTime: new Date(baseMs + 100000).toISOString() }
+      },
+      'conv-ungrouped-1': {
+        summary: '未归属杂项问答',
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        lastModifiedTime: new Date(baseMs + 900000).toISOString(),
+        trajectoryMetadata: { rootConversationId: 'conv-ungrouped-1' }
+      }
+    };
+    let listedProjectIds = ['proj-alpha', 'proj-beta', 'proj-gamma'];
+    const enrichOpts = () => ({
+      stateDir,
+      configDir,
+      homeDir: fakeHome,
+      bypassCache: true,
+      localApiConnect: async () => ({
+        call: async (method) => {
+          if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: summaries };
+          if (method === 'ListProjects') return { projectIds: listedProjectIds };
+          return {};
+        }
+      })
+    });
+
+    // 1. 首次升级初始化：锁定当前顺序 ['proj-alpha', 'proj-beta', 'proj-gamma']，ungrouped 即使时间更新也固定垫底
+    const snapInit = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-alpha-1',
+      conversations: [{ id: 'conv-alpha-1', title: 'Alpha 任务', active: true }]
+    }, enrichOpts());
+    assert.deepEqual(
+      snapInit.projects.map((p) => p.id),
+      ['proj-alpha', 'proj-beta', 'proj-gamma', 'ungrouped'],
+      '首次初始化应锁定项目顺序且 ungrouped 固定垫底'
+    );
+    assert.deepEqual(snapInit.projectOrder, ['proj-alpha', 'proj-beta', 'proj-gamma']);
+
+    // 2. 后台会话活跃完成：Gamma 的 Agent 2 小时后跑完并产生未读，仅在原地更新计数/状态，项目位置绝不跳动！
+    summaries['conv-gamma-1'].status = 'CASCADE_RUN_STATUS_IDLE';
+    summaries['conv-gamma-1'].lastModifiedTime = new Date(baseMs + 7200000).toISOString();
+    const snapAfterBg = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-alpha-1',
+      conversations: [{ id: 'conv-alpha-1', title: 'Alpha 任务', active: true }]
+    }, enrichOpts());
+    assert.deepEqual(
+      snapAfterBg.projects.map((p) => p.id),
+      ['proj-alpha', 'proj-beta', 'proj-gamma', 'ungrouped'],
+      '后台项目 Gamma 完成更新时间戳后绝不可跳到列表顶部'
+    );
+    const gammaAfterBg = snapAfterBg.projects.find((p) => p.id === 'proj-gamma');
+    assert.equal(gammaAfterBg?.unreadCount, 1, 'Gamma 应在原地准确刷新未读计数');
+    assert.equal(gammaAfterBg?.runningCount, 0, 'Gamma 应在原地刷新运行状态');
+
+    // 3. 瞬态漏项保护：模拟某个仅来自 ListProjects 的空项目在单次轮询中因 RPC 超时漏返，恢复后不得被误判为新建项目跳顶
+    listedProjectIds = ['proj-alpha', 'proj-beta', 'proj-gamma', 'default-cli-project'];
+    const snapWithCli = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-alpha-1',
+      conversations: [{ id: 'conv-alpha-1', title: 'Alpha 任务', active: true }]
+    }, enrichOpts());
+    assert.equal(snapWithCli.projects[0].id, 'default-cli-project', '首次出现的新项目应插入最顶部');
+    // 将 default-cli-project 调到末尾模拟用户既有顺序，然后模拟单轮 ListProjects 超时返回空列表
+    remoteMod.setCatalogProjectOrder(['proj-alpha', 'proj-beta', 'proj-gamma', 'default-cli-project'], { stateDir, configDir });
+    listedProjectIds = [];
+    await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-alpha-1',
+      conversations: [{ id: 'conv-alpha-1', title: 'Alpha 任务', active: true }]
+    }, enrichOpts());
+    listedProjectIds = ['proj-alpha', 'proj-beta', 'proj-gamma', 'default-cli-project'];
+    const snapAfterTransientRecover = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-alpha-1',
+      conversations: [{ id: 'conv-alpha-1', title: 'Alpha 任务', active: true }]
+    }, enrichOpts());
+    assert.deepEqual(
+      snapAfterTransientRecover.projects.map((p) => p.id),
+      ['proj-alpha', 'proj-beta', 'proj-gamma', 'default-cli-project', 'ungrouped'],
+      '瞬态 RPC 漏项恢复后必须维持原位，不得误当新项目跳到顶部'
+    );
+
+    // 4. 桌面新建项目自动置顶 + 归档项目自动剔除且不影响其余相对顺序
+    writeProj('proj-new-desk', 'NewDesktopApp', wsNewDesk, 50); // 即使磁盘 mtime 较早，新发现项目也必须置顶
+    writeProj('proj-beta', 'BetaEmpty', wsBeta, 200, { archived: true });
+    listedProjectIds = ['proj-alpha', 'proj-gamma', 'default-cli-project', 'proj-new-desk'];
+    const snapNewAndArchived = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-alpha-1',
+      conversations: [{ id: 'conv-alpha-1', title: 'Alpha 任务', active: true }]
+    }, enrichOpts());
+    assert.deepEqual(
+      snapNewAndArchived.projects.map((p) => p.id),
+      ['proj-new-desk', 'proj-alpha', 'proj-gamma', 'default-cli-project', 'ungrouped'],
+      '新发现项目必须置顶，已归档项目自动剔除且其余项目相对位置不变'
+    );
+
+    // 5. POST /api/projects/order 鉴权、CSRF、参数校验、部分顺序保底追加、markViewed 写盘兼容与跨重启持久化
+    const mockCfg = {
+      port: 18852,
+      token: 'tok-52-order-1234567890abcdef',
+      tunnelEnabled: false,
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    };
+    const handler = remoteMod.createRemoteHttpHandler(mockCfg, {
+      catalogOptions: { stateDir, configDir, homeDir: fakeHome },
+      configDir,
+      homeDir: fakeHome,
+      allowedRoots: [fakeHome],
+      allowDiskFallback: true,
+      openInDesktop: false
+    });
+    const { Readable } = require('stream');
+    const callPost = async (urlPath, bodyObj, hdrOverrides = {}) => {
+      const rawBody = JSON.stringify(bodyObj);
+      const req = Readable.from([Buffer.from(rawBody, 'utf8')]);
+      req.method = 'POST';
+      req.url = urlPath;
+      req.headers = {
+        host: '127.0.0.1:18852',
+        'content-type': 'application/json',
+        'x-ag-remote-token': mockCfg.token,
+        ...hdrOverrides
+      };
+      req.socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+      let status = 200;
+      let rawOut = '';
+      await handler(req, {
+        setHeader() {},
+        getHeader() { return ''; },
+        writeHead(code) { status = code; },
+        end(chunk) { if (chunk) rawOut += String(chunk); }
+      });
+      return { status, json: rawOut ? JSON.parse(rawOut) : null };
+    };
+
+    const unauthRes = await callPost('/api/projects/order', { projectOrder: ['proj-gamma', 'proj-alpha'] }, { 'x-ag-remote-token': 'wrong-token' });
+    assert.equal(unauthRes.status, 401, '未鉴权写项目顺序必须返回 401');
+
+    const csrfRes = await callPost('/api/projects/order', { projectOrder: ['proj-gamma', 'proj-alpha'] }, {
+      'x-ag-remote-token': '',
+      cookie: `ag_remote_token=${mockCfg.token}`,
+      origin: 'https://evil.example.com'
+    });
+    assert.equal(csrfRes.status, 403, 'Cookie 鉴权跨源请求必须被 CSRF 拦截返回 403');
+
+    const badTypeRes = await callPost('/api/projects/order', { projectOrder: 'not-an-array' });
+    assert.equal(badTypeRes.status, 400, '非数组 projectOrder 必须返回 400');
+    const badElemRes = await callPost('/api/projects/order', { projectOrder: [123] });
+    assert.equal(badElemRes.status, 400, '包含非字符串元素的 projectOrder 必须返回 400');
+    const badEmptyRes = await callPost('/api/projects/order', { projectOrder: [] });
+    assert.equal(badEmptyRes.status, 400, '存在有效项目时传空数组必须返回 400');
+    const badSyntheticRes = await callPost('/api/projects/order', { projectOrder: ['default', 'ungrouped'] });
+    assert.equal(badSyntheticRes.status, 400, '仅包含合成/非项目桶 ID 时必须返回 400');
+
+    // 提交手动顺序 ['proj-gamma', 'proj-alpha']（故意省略 proj-new-desk 与 default-cli-project，验证未传项保底保留在尾部且自动过滤 ungrouped/重复项）
+    const prevRev = snapNewAndArchived.catalogRevision;
+    const okOrderRes = await callPost('/api/projects/order', {
+      projectOrder: ['proj-gamma', 'ungrouped', 'proj-alpha', 'proj-gamma']
+    });
+    assert.equal(okOrderRes.status, 200);
+    assert.equal(okOrderRes.json.ok, true);
+    assert.deepEqual(
+      okOrderRes.json.projectOrder,
+      ['proj-gamma', 'proj-alpha', 'proj-new-desk', 'default-cli-project'],
+      '手动排序应精确生效、去重过滤 ungrouped，并将未显式传入的既有项目按原相对顺序保底追加在末尾'
+    );
+    assert.notEqual(okOrderRes.json.catalogRevision, prevRev, '调整项目顺序后应刷新 catalogRevision 以便前端同步');
+
+    // 通过 POST /api/projects 远程新建项目，应立即置顶排到手动顺序最前面
+    const createProjRes = await callPost('/api/projects', {
+      folderPath: wsNewRemote,
+      name: 'RemoteTopProj',
+      openInDesktop: false
+    });
+    assert.equal(createProjRes.status, 200);
+    const createdPid = createProjRes.json.project.id;
+    listedProjectIds.push(createdPid);
+
+    // 模拟模块热重载/服务重启 + markViewed 写盘 + Alpha 会话再次活跃，验证手动顺序与新项目置顶跨重启永不漂移
+    const tempStoreBeforeRestart = remoteMod.createSessionCatalogStore();
+    await tempStoreBeforeRestart.enrichSnapshot({ ok: true, sessionId: 'conv-alpha-1', conversations: [] }, enrichOpts());
+    assert.equal(tempStoreBeforeRestart.markViewed('conv-gamma-1', Date.now() + 50000, { stateDir }), true, 'markViewed 应成功推进已读水位');
+    const diskAfterMarkViewed = JSON.parse(fs.readFileSync(path.join(stateDir, 'remote-session-catalog.json'), 'utf8'));
+    assert.deepEqual(
+      diskAfterMarkViewed.projectOrder,
+      [createdPid, 'proj-gamma', 'proj-alpha', 'proj-new-desk', 'default-cli-project'],
+      'markViewed 写盘绝不可覆盖清空持久化的 projectOrder'
+    );
+    delete require.cache[require.resolve('../mobile-remote')];
+    remoteMod = require('../mobile-remote');
+    summaries['conv-alpha-1'].lastModifiedTime = new Date(baseMs + 99999999).toISOString();
+    const snapAfterRestart = await remoteMod.enrichSnapshotWithCatalog({
+      ok: true,
+      sessionId: 'conv-alpha-1',
+      conversations: [{ id: 'conv-alpha-1', title: 'Alpha 任务', active: true }]
+    }, enrichOpts());
+    assert.deepEqual(
+      snapAfterRestart.projects.map((p) => p.id),
+      [createdPid, 'proj-gamma', 'proj-alpha', 'proj-new-desk', 'default-cli-project', 'ungrouped'],
+      '远程新建项目置顶 + 手动排定顺序必须跨重启持久生效，且不受后续 Alpha 活跃时间推进影响'
+    );
+
+    // 验证前端 renderConversationList 严格遵循 snap.projects 顺序且把未归属桶固定垫底
+    const mobileHtml = remoteMod.buildMobileAppHtml();
+    const inlineScript = mobileHtml.match(/<script>([\s\S]*?)<\/script>/)[1];
+    const bodyHtml = mobileHtml.match(/<body>([\s\S]*?)<script>/)[1];
+    const envDom = createDomEnv();
+    envDom.doc.body.innerHTML = bodyHtml;
+    envDom.win.innerWidth = 1280;
+    envDom.win.innerHeight = 820;
+    envDom.win.AbortController = AbortController;
+    envDom.win.location = { pathname: '/', search: '?token=' + mockCfg.token, protocol: 'http:', reload() {} };
+    envDom.win.history = { replaceState() {} };
+    envDom.sandbox.location = envDom.win.location;
+    envDom.sandbox.history = envDom.win.history;
+    envDom.sandbox.AbortController = AbortController;
+    envDom.sandbox.URLSearchParams = URLSearchParams;
+    envDom.sandbox.fetch = async (url) => {
+      const u = new URL(String(url), 'http://127.0.0.1:18852');
+      const jsonHeaders = { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : '') };
+      if (u.pathname === '/api/snapshot') {
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => snapAfterRestart };
+      }
+      return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ ok: true }) };
+    };
+    vm.runInContext(inlineScript, envDom.sandbox);
+    await new Promise((r) => setTimeout(r, 35));
+    const renderedTitles = envDom.doc.getElementById('conv-list')
+      .querySelectorAll('.proj-group .proj-name')
+      .map((el) => (el.textContent || '').trim());
+    assert.deepEqual(
+      renderedTitles,
+      ['RemoteTopProj', 'Gamma', 'Alpha', 'NewDesktopApp', 'CLI Project', '未归属项目'],
+      '前端侧边栏项目组 DOM 顺序必须与服务端锁定顺序完全一致且未归属项目固定垫底'
+    );
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
