@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-21T14:43:00.534Z",
+  "updatedAt": "2026-11-24T10:08:32.966Z",
   "upstreams": [
     {
       "repo": "elviscjn-cjn/antigravity-context-viewer",
@@ -53,8 +53,8 @@
     {
       "repo": "yiheng8023/antigravity-chinese",
       "branch": "main",
-      "absorbedSha": "3cf80cbb42c4d08acb067621ead9c4be9a2c76c8",
-      "version": "v3.3.60",
+      "absorbedSha": "b4f85afb7a092773a995a2a8e01d5a090f29e664",
+      "version": "v3.3.63",
       "role": "适配 Antigravity 2.32.1 的精确词条与安全动态正则规则",
       "mergeStrategy": "增量提取新增精确词条与安全正则并去重合并，保留本地 [data-uri] 路径保护等跳过规则后更新补丁指纹",
       "localTargets": [

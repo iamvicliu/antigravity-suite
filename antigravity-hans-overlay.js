@@ -1,6 +1,6 @@
 (() => {
   if (typeof window === 'undefined') return;
-  const PATCH_FINGERPRINT = 'app-2.34.0-20261122-r36';
+  const PATCH_FINGERPRINT = 'app-2.35.0-20261124-r37';
   const fingerprint = window.__antigravityZhPatchRequestedFingerprint || PATCH_FINGERPRINT;
   if (window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === fingerprint) return;
   const updating = window.__antigravityZhPatchInstalled === true && window.__observedDocument === document;
@@ -4262,6 +4262,62 @@
     lowerPhrases.set(k.toLowerCase(), v);
   }
 
+  // v3.3.61–v3.3.63 (Antigravity 2.35.0) 设置/排队/克隆/自动化/外观预设增量精确词典：仅写入 O(1) 精确查找表
+  const desktop235V3363ExactPhrases = [
+    ["Runs on this machine", "在此电脑上运行"],
+    ["Runs in a cloud environment", "在云端环境中运行"],
+    ["Sends after agent finishes working.", "智能体结束工作后发送。"],
+    ["Sends after background work finishes.", "后台工作完成后发送。"],
+    ["Agent finished. Queued messages send after background work finishes.", "智能体已完成工作。后台工作结束后将发送排队消息。"],
+    ["Message queued. Sends after agent finishes working. Actions available: Send Now, Edit, Delete.", "消息已排队，智能体结束工作后发送。可立即发送、编辑或删除。"],
+    ["Message queued. Sends after background work finishes. Actions available: Send Now, Edit, Delete.", "消息已排队，后台工作完成后发送。可立即发送、编辑或删除。"],
+    ["Model cannot be changed while the agent is running", "智能体运行期间无法更改模型"],
+    ["Switch to default text direction", "切换为默认文字方向"],
+    ["Switch to RTL text direction", "切换为从右到左的文字方向"],
+    ["Search Repositories…", "搜索仓库…"],
+    ["Search Projects…", "搜索项目…"],
+    ["Clone from Remote", "从远程克隆"],
+    ["Clone locally", "在本机克隆"],
+    ["Clone from This Computer", "从此电脑克隆"],
+    ["Clone did not return a valid folder path.", "克隆未返回有效的文件夹路径。"],
+    ["This side question isn't available in this conversation.", "此会话中无法查看这条旁路提问。"],
+    ["Permissions cannot be changed while the agent is running", "智能体运行期间无法更改权限"],
+    ["Prevent sleep", "阻止系统休眠"],
+    ["Keep in menu bar", "保持在菜单栏/托盘"],
+    ["Device name", "设备名称"],
+    ["Notification settings", "通知设置"],
+    ["Conversation steps", "对话步骤"],
+    ["Font size", "字体大小"],
+    ["Conversation width", "对话面板宽度"],
+    ["Screen reader mode", "屏幕阅读器模式"],
+    ["Enable notifications for agent", "启用智能体系统通知"],
+    ["Enable sounds for agent", "启用智能体提示音"],
+    ["Enable AI credit overages", "启用超额 AI 积分计费"],
+    ["Open links in", "链接打开方式"],
+    ["Download location", "下载位置"],
+    ["Browsing history", "浏览历史"],
+    ["Browser actuation rules", "浏览器操作执行规则"],
+    ["Enable telemetry", "启用遥测诊断"],
+    ["Marketing emails", "营销与产品动态邮件"],
+    ["Custom context menus", "自定义右键菜单"],
+    ["Terminal placement", "终端位置"],
+    ["Markdown artifact width", "Markdown 产物文档宽度"],
+    ["Browser JavaScript execution policy", "浏览器 JavaScript 执行策略"],
+    ["Automatic check for updates", "自动检查更新"],
+    ["Required", "必填"],
+    ["Where it runs", "运行位置"],
+    ["System UI", "系统界面字体"],
+    ["Legacy Dark", "旧版深色"],
+    ["Legacy Light", "旧版浅色"],
+    ["Runs even when your computer is off. Schedules and events.", "电脑关机后仍可运行，支持定时和事件触发。"],
+    ["Runs even when your computer is off. Schedules only.", "电脑关机后仍可运行，仅支持定时运行。"]
+  ];
+  for (const [k, v] of desktop235V3363ExactPhrases) {
+    if (!phrases.has(k)) phrases.set(k, v);
+    const low = k.toLowerCase();
+    if (!lowerPhrases.has(low)) lowerPhrases.set(low, v);
+  }
+
   // 经核验的官方与合作插件简介映射（仅在 React Fiber 溯源匹配官方插件时启用）
   const OFFICIAL_PLUGIN_DESCRIPTIONS = {
     "Core tools and knowledge required to develop for Android.": {
@@ -4325,6 +4381,11 @@
       "plugin": "cloudflare",
       "marketplace": "antigravity-plugins-partners",
       "translation": "在 Cloudflare Workers、存储和 AI 服务上构建、部署并管理应用。通过同一个 MCP 服务器使用平台技能和 Cloudflare API。"
+    },
+    "CodeRabbit is the governance and control layer for agentic software development helping developers trust AI written code.": {
+      "plugin": "coderabbit",
+      "marketplace": "antigravity-plugins-partners",
+      "translation": "CodeRabbit 为智能体参与的软件开发提供治理和管控，帮助开发者建立对 AI 所写代码的信心。"
     },
     "AI-powered code review, review-comment autofix, and repository configuration, powered by CodeRabbit.": {
       "plugin": "coderabbit",
@@ -4407,6 +4468,10 @@
     "Build applications and shell workflows with the Gemini Interactions API, Decisions API, Live API, and Gemini API CLI, including text, image, video, and speech generation, managed agents, and real-time multimodal streaming.": {
       "plugin": "gemini-api",
       "translation": "使用 Gemini Interactions API、Decisions API、Live API 和 Gemini API CLI 构建应用及 Shell 工作流，支持文本、图像、视频和语音生成、托管智能体与实时多模态流式传输。"
+    },
+    "Build applications and shell workflows with the Gemini Interactions API, Decisions API, Live API, Genie 4 interactive worlds, and Gemini API CLI, including text, image, video, speech, and music generation, managed agents, and real-time multimodal streaming.": {
+      "plugin": "gemini-api",
+      "translation": "使用 Gemini Interactions API、Decisions API、Live API、Genie 4 交互世界和 Gemini API CLI 构建应用及 Shell 工作流，支持文本、图像、视频、语音和音乐生成、托管智能体与实时多模态流式传输。"
     },
     "AlphaGenome and major genetics databases to analyze DNA variants, gene regulation, and links between genes and disease.": {
       "plugin": "genomics",
@@ -4492,6 +4557,11 @@
       "plugin": "leapwork-play",
       "marketplace": "antigravity-plugins-partners",
       "translation": "在 Antigravity 中创建、运行并调试 Leapwork Play 测试和运行列表，构建智能体，并将工作交给 Play 的 AI 流程。"
+    },
+    "Salaries, jobs & career advice. Levels.fyi is your career companion to ensure you get paid fairly and find jobs you'll love.": {
+      "plugin": "levels-fyi",
+      "marketplace": "antigravity-plugins-partners",
+      "translation": "薪资、职位与职业建议。Levels.fyi 帮助您争取公平薪酬，找到心仪的工作。"
     },
     "Real salaries and company levels from Levels.fyi: check if an offer is fair, compare offers, find jobs with pay shown and add your own salary.": {
       "plugin": "levels-fyi",
@@ -4696,6 +4766,11 @@
       "plugin": "wordpress",
       "marketplace": "antigravity-plugins-partners",
       "translation": "构建、发布和管理 WordPress.com 与连接 Jetpack 的网站。支持起草文章、编辑区块、查看流量、审核评论和管理插件。"
+    },
+    "Automate workflows across 10,000+ apps. Run one-off actions or build automations for YouTube, Instagram, Gmail, Facebook Pages, LinkedIn, Slack, Pinterest.": {
+      "plugin": "zapier",
+      "marketplace": "antigravity-plugins-partners",
+      "translation": "在 1 万款以上的应用之间实现工作流自动化。可为 YouTube、Instagram、Gmail、Facebook 公共主页、LinkedIn、Slack 和 Pinterest 执行单次操作或创建自动化流程。"
     },
     "Connect 9,000+ apps to your AI workflow. Discover, enable, and execute Zapier actions and workflows directly from your client.": {
       "plugin": "zapier",
@@ -6318,6 +6393,25 @@
       const state = { Open: '开放', Closed: '已关闭', Merged: '已合并', Draft: '草稿' }[trimmed];
       if (typeof state === 'string') return value.replace(trimmed, () => state);
     }
+    if (trimmed === 'at' && element.matches?.('span.text-muted-foreground.select-none') &&
+        element.closest?.('[data-testid="automation-schedule-editor"]')) {
+      return value.replace(trimmed, () => '于');
+    }
+    if (testId === 'queued-messages-status' && trimmed.startsWith('Waiting on ') &&
+        trimmed.length > 'Waiting on '.length) {
+      return value.replace(trimmed, () => '正在等待 ' + trimmed.slice('Waiting on '.length));
+    }
+    if ((trimmed === 'Your plan' || trimmed === 'Your plan:' || trimmed.startsWith('Your plan: ')) &&
+        element.classList?.contains('font-medium') && element.closest?.('.settings-modal-container')) {
+      return value.replace(trimmed, () => (trimmed === 'Your plan' ? '当前方案' : '当前方案：' + trimmed.slice('Your plan:'.length).trimStart()));
+    }
+    if (trimmed.endsWith(' (disabled by admin)') &&
+        element.closest?.('[data-testid^="permissions-"], button[data-testid="permissions-selector-trigger"], button.agy-select-trigger, [data-select-popup] [role="option"].agy-overlay-item')) {
+      const preset = trimmed.slice(0, -' (disabled by admin)'.length);
+      if (preset === 'Auto' || preset === 'Turbo' || preset === 'Default' || preset === 'Request Review') {
+        return value.replace(trimmed, () => (matchExactPhrase(preset) ?? preset) + '（管理员已禁用）');
+      }
+    }
     return null;
   }
 
@@ -6465,7 +6559,38 @@
       const actionZh = matchExactPhrase(action);
       if (actionZh) return value.replace(trimmed, () => '将' + actionZh + '恢复为默认设置');
     }
+    if (element.matches?.('button[data-testid="permissions-selector-trigger"]') &&
+        trimmed.startsWith('Agent permissions preset: ')) {
+      const locked = trimmed.match(/^Agent permissions preset: ([^,]+), ([\s\S]+)$/);
+      if (locked) {
+        const presetLabel = matchExactPhrase(locked[1]) ?? locked[1];
+        const reasonZh = matchExactPhrase(locked[2]) ?? locked[2];
+        return value.replace(trimmed, () => `智能体权限预设：${presetLabel}，${reasonZh}`);
+      }
+    }
     return null;
+  }
+
+  function translateScopedTitle(element, attr, value) {
+    if (attr !== 'title' || !value) return null;
+    if (element.getAttribute?.('data-testid') === 'queued-messages-status') {
+      const trimmed = value.trim();
+      if (trimmed.startsWith('Waiting on ') && trimmed.length > 'Waiting on '.length) {
+        return value.replace(trimmed, () => '正在等待 ' + trimmed.slice('Waiting on '.length));
+      }
+    }
+    return null;
+  }
+
+  function resolveElementAttrTranslation(element, attr, sourceValue) {
+    return translateScopedAriaLabel(element, attr, sourceValue) ??
+      translateScopedTitle(element, attr, sourceValue) ??
+      translateScopedPlaceholder(element, attr, sourceValue) ??
+      translateMarketplaceCategory(element, sourceValue) ??
+      translateFeaturedAttribute(element, attr, sourceValue) ??
+      translateScopedNavigation(element, sourceValue) ??
+      (attr === 'aria-label' ? translateAriaLabel(sourceValue) : null) ??
+      translate(sourceValue);
   }
 
   function translateElement(element) {
@@ -6480,22 +6605,12 @@
       const tracked = originals.attrs.get(element)?.get(attr);
       if (tracked && tracked.zh === value) {
         if (tracked.orig && tracked.orig !== value) {
-          const retranslated = translateScopedAriaLabel(element, attr, tracked.orig) ??
-            translateScopedPlaceholder(element, attr, tracked.orig) ??
-            translateMarketplaceCategory(element, tracked.orig) ??
-            translateFeaturedAttribute(element, attr, tracked.orig) ??
-            translateScopedNavigation(element, tracked.orig) ??
-            (attr === 'aria-label' ? translateAriaLabel(tracked.orig) : null) ?? translate(tracked.orig);
+          const retranslated = resolveElementAttrTranslation(element, attr, tracked.orig);
           if (retranslated && retranslated !== value) writeAttr(element, attr, retranslated);
         }
         continue;
       }
-      const translated = translateScopedAriaLabel(element, attr, value) ??
-        translateScopedPlaceholder(element, attr, value) ??
-        translateMarketplaceCategory(element, value) ??
-        translateFeaturedAttribute(element, attr, value) ??
-        translateScopedNavigation(element, value) ??
-        (attr === 'aria-label' ? translateAriaLabel(value) : null) ?? translate(value);
+      const translated = resolveElementAttrTranslation(element, attr, value);
       if (translated !== value) writeAttr(element, attr, translated);
     }
   }
