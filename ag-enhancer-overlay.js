@@ -630,7 +630,7 @@
   let autoCompactState = {
     lastSessionId: '',
     armedForSession: false,
-    inFlightSession: '',
+    inFlightMap: new Map(),
     idleSince: 0,
     lastFiredMap: new Map()
   };
@@ -5065,8 +5065,23 @@
     try {
       const capData = document.querySelector('[data-agy-context-capsule="1"]')?.__ctxUsageData;
       const meterLatest = window.__AGContextMeter?.snapshot?.()?.latest;
-      contextUsed = Math.max(Number(capData?.contextUsed || 0), Number(meterLatest?.actual || meterLatest?.used || 0));
-      cacheDropDetected = Boolean(capData?.cacheDropDetected || meterLatest?.cacheDropDetected);
+      const capUsed = Number(capData?.contextUsed || 0);
+      const meterUsed = Number(meterLatest?.actual || meterLatest?.used || 0);
+      const compAfter = Number(capData?.compressionAfter || 0);
+      const regrownSinceCompact = compAfter > 0 && capUsed > compAfter + 50000;
+      const capShowsPostCompactDrop = Boolean(
+        capData?.hasPreciseSnapshot &&
+        capData?.compressionDetected &&
+        !regrownSinceCompact &&
+        capUsed > 0 &&
+        meterUsed > 0 &&
+        capUsed < 240000 &&
+        capUsed < meterUsed
+      );
+      contextUsed = capShowsPostCompactDrop ? capUsed : Math.max(capUsed, meterUsed);
+      cacheDropDetected = capShowsPostCompactDrop
+        ? Boolean(capData?.cacheDropDetected)
+        : Boolean(capData?.cacheDropDetected || meterLatest?.cacheDropDetected);
       if (
         !cacheDropDetected &&
         capData?.hasPreciseSnapshot &&
@@ -5078,6 +5093,22 @@
       }
     } catch {}
     return { percent, contextUsed, cacheDropDetected };
+  }
+
+  function isCompactUserMessageElement(userMsgEl) {
+    if (!userMsgEl) return false;
+    const contentEl = userMsgEl.querySelector?.('[data-testid="user-message-content"]') || null;
+    if (contentEl) {
+      const directText = String(contentEl.textContent || '').trim();
+      return Boolean(directText) && /^\/?compact$/i.test(directText);
+    }
+    const rawText = String(userMsgEl.textContent || '').trim();
+    if (!rawText) return false;
+    const cleaned = rawText
+      .replace(/^(?:you\s+said|你说)[:：\s]*/i, '')
+      .replace(/(?:\s*(?:just\s+now|刚刚|\d+\s*(?:s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)\s*ago|\d+\s*(?:秒|分钟|小时|天)前|\d{1,2}:\d{2}))+$/i, '')
+      .trim();
+    return /^\/?compact$/i.test(cleaned);
   }
 
   function runAutoCompactTick(opts = {}) {
@@ -5094,20 +5125,25 @@
       autoCompactState.idleSince = 0;
     }
 
+    const now = Date.now();
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
-    if (busy) {
-      if (autoCompactState.inFlightSession !== sessionId) {
-        autoCompactState.armedForSession = true;
-      }
+    const inFlight = autoCompactState.inFlightMap.get(sessionId) || null;
+    if (inFlight && (inFlight.sending || busy || now < inFlight.until)) {
+      autoCompactState.armedForSession = false;
       autoCompactState.idleSince = 0;
-      return { triggered: false, reason: 'assistant_busy' };
+      return { triggered: false, reason: 'compact_in_flight' };
     }
-    if (autoCompactState.inFlightSession === sessionId) {
-      autoCompactState.inFlightSession = '';
+    if (inFlight) {
+      autoCompactState.inFlightMap.delete(sessionId);
       autoCompactState.armedForSession = false;
       autoCompactState.idleSince = 0;
       return { triggered: false, reason: 'compact_finished' };
+    }
+    if (busy) {
+      autoCompactState.armedForSession = true;
+      autoCompactState.idleSince = 0;
+      return { triggered: false, reason: 'assistant_busy' };
     }
 
     if (!opts.immediate && !autoCompactState.armedForSession) {
@@ -5126,22 +5162,29 @@
       return { triggered: false, reason: 'composer_not_empty' };
     }
 
-    const now = Date.now();
     const prevFired = autoCompactState.lastFiredMap.get(sessionId);
     if (prevFired && (now - prevFired.at < 90000)) {
       return { triggered: false, reason: 'cooldown' };
     }
-    if (!opts.immediate) {
-      const userMsgs = document.querySelectorAll('[data-testid="user-message"]');
-      const lastUserMsg = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
-      const lastUserText = (lastUserMsg?.textContent || '').trim();
-      if (lastUserText === '/compact') {
-        const assistantMds = getAssistantMarkdownRoots();
-        const lastAsst = assistantMds[assistantMds.length - 1];
-        if (!lastAsst || (lastAsst.compareDocumentPosition(lastUserMsg) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-          return { triggered: false, reason: 'cooldown' };
-        }
+    const userMsgs = document.querySelectorAll('[data-testid="user-message"]');
+    const lastUserMsg = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
+    if (isCompactUserMessageElement(lastUserMsg)) {
+      const assistantMds = getAssistantMarkdownRoots();
+      const lastAsst = assistantMds[assistantMds.length - 1];
+      const posFollowing = (typeof Node !== 'undefined' && typeof Node.DOCUMENT_POSITION_FOLLOWING === 'number')
+        ? Node.DOCUMENT_POSITION_FOLLOWING
+        : 4;
+      const userFollowsAsst = !lastAsst || (
+        typeof lastAsst.compareDocumentPosition === 'function'
+          ? Boolean(lastAsst.compareDocumentPosition(lastUserMsg) & posFollowing)
+          : false
+      );
+      if (userFollowsAsst) {
+        autoCompactState.idleSince = 0;
+        return { triggered: false, reason: 'already_compacted' };
       }
+    }
+    if (!opts.immediate) {
       if (!autoCompactState.idleSince) {
         autoCompactState.idleSince = now;
         return { triggered: false, reason: 'waiting_idle_stability' };
@@ -5152,14 +5195,25 @@
     }
 
     autoCompactState.armedForSession = false;
-    autoCompactState.inFlightSession = sessionId;
+    const inFlightEntry = {
+      sending: true,
+      until: now + 5000
+    };
+    autoCompactState.inFlightMap.set(sessionId, inFlightEntry);
     autoCompactState.idleSince = 0;
     autoCompactState.lastFiredMap.set(sessionId, {
       at: now,
       contextUsed: risk.contextUsed,
       assistantCount: getAssistantMarkdownRoots().length
     });
-    void performMobileAction({ action: 'send', text: '/compact' });
+    Promise.resolve(performMobileAction({ action: 'send', text: '/compact' }))
+      .catch(() => null)
+      .finally(() => {
+        if (autoCompactState.inFlightMap.get(sessionId) === inFlightEntry) {
+          inFlightEntry.sending = false;
+          inFlightEntry.until = Math.max(inFlightEntry.until, Date.now() + 3000);
+        }
+      });
     const kVal = Math.round(risk.contextUsed / 1000);
     const noticeText = risk.cacheDropDetected
       ? tr(`⚡ 检测到缓存已失效 (${kVal}K)，已自动发送 /compact 压缩防卡顿（可在设置关闭）`, `⚡ Cache expired (${kVal}K): auto-sent /compact to prevent stall (toggle in Settings)`)
@@ -8689,7 +8743,7 @@
     return budget.exceeded ? '' : out;
   }
 
-  function collectBoundedNodeText(roots, maxChars = 200000, maxNodes = 8000, maxDepth = 24) {
+  function collectBoundedNodeText(roots, maxChars = 200000, maxNodes = 8000, maxDepth = 24, shouldSkipNode = null) {
     const list = Array.isArray(roots) ? roots : (roots ? [roots] : []);
     if (!list.length) return { text: '', truncated: false, nodesVisited: 0 };
     const budget = { chars: 0, maxChars, nodes: 0, maxNodes, truncated: false };
@@ -8719,6 +8773,7 @@
       }
       if (nType !== 1) return;
       if (MD_SKIP_TAGS.has(node.tagName)) return;
+      if (typeof shouldSkipNode === 'function' && shouldSkipNode(node)) return;
       if (depth > maxDepth) {
         budget.truncated = true;
         return;
@@ -8884,13 +8939,33 @@
         !m.closest('[data-testid="thinking-collapsible-trigger"]') &&
         !m.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
       ));
-      const mdBounded = collectBoundedNodeText(mdRoots, MAX_DOM_MSG_CHARS, 8000);
+      const isMarkdownUiChromeNode = (el) => {
+        if (!el || el.nodeType !== 1) return false;
+        const tag = String(el.tagName || '').toUpperCase();
+        const cls = typeof el.className === 'string' ? el.className : '';
+        if (cls.includes('katex-mathml') || cls.includes('markdown-alert-title')) return true;
+        if (cls.includes('pointer-events-none') && cls.includes('sticky')) return true;
+        if (tag === 'BUTTON' && !cls.includes('inline-pill')) return true;
+        return false;
+      };
+      const mdBounded = collectBoundedNodeText(mdRoots, MAX_DOM_MSG_CHARS, 8000, 24, isMarkdownUiChromeNode);
       const overTextCap = mdBounded.truncated;
       let replyText = mdBounded.text;
       // 文本提取阶段已受字符与节点双预算早停；超限时直接跳过 HTML 序列化（完整长文由服务端轨迹通道渲染）
       const replyHtml = overTextCap ? '' : extractSanitizedMarkdownHtml(mdRoots, MAX_DOM_HTML_CHARS);
+      const isStepProgressNode = (el) => {
+        if (!el || el.nodeType !== 1 || typeof el.getAttribute !== 'function') return false;
+        return el.getAttribute('data-step-list') === 'true'
+          || el.getAttribute('data-testid') === 'worked-for-collapsible';
+      };
       if (!replyText && !triggers.length) {
-        const fallbackBounded = collectBoundedNodeText([node], MAX_DOM_MSG_CHARS, 4000);
+        const fallbackBounded = collectBoundedNodeText(
+          [node],
+          MAX_DOM_MSG_CHARS,
+          4000,
+          24,
+          (el) => isStepProgressNode(el) || isMarkdownUiChromeNode(el)
+        );
         const cloneText = capText(fallbackBounded.text
           .replace(/^(?:Agent\s+(?:said|working)|智能体(?:回复|正在处理))\s*\n*/i, '')
           .replace(/^Worked\s+for\s+\S+(?:\s+in\s+this\s+step)?\s*\n*/i, '')
@@ -9717,6 +9792,74 @@
     }
   }
 
+  function isQueuedTrajectoryUserStep(step) {
+    if (!step || typeof step !== 'object') return false;
+    const type = String(step.type || '');
+    if (type ? type !== 'CORTEX_STEP_TYPE_USER_INPUT' : !step.userInput) return false;
+    const st = String(step.status || '').trim().toUpperCase();
+    return st === 'CORTEX_STEP_STATUS_QUEUED'
+      || step.queued === true
+      || step.userInput?.queued === true
+      || step.userInput?.isQueuedMessage === true
+      || step.userInput?.is_queued_message === true
+      || step.metadata?.queued === true;
+  }
+
+  function isStopHookBlockedSystemStep(step, prevStep = null, steps = null, stepIndex = -1) {
+    if (!step || typeof step !== 'object') return false;
+    const type = String(step.type || '');
+    if (type && type !== 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE') return false;
+    const sysMsg = step.systemMessage;
+    if (sysMsg && typeof sysMsg === 'object') {
+      return /^\s*Stop hook blocked termination(?::|\b)/i.test(String(sysMsg.message || ''));
+    }
+    if (
+      type === 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE' &&
+      String(step.status || '') === 'CORTEX_STEP_STATUS_CLEARED' &&
+      !sysMsg &&
+      prevStep && typeof prevStep === 'object' &&
+      Array.isArray(steps) && stepIndex >= 0
+    ) {
+      const prevType = String(prevStep.type || '');
+      const prevIsPlanner = prevType ? prevType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(prevStep.plannerResponse);
+      const prevHasTools = Array.isArray(prevStep.plannerResponse?.toolCalls) && prevStep.plannerResponse.toolCalls.length > 0;
+      const src = String(step.metadata?.source || '').trim();
+      const prevExec = String(prevStep.metadata?.executionId || '').trim();
+      const curExec = String(step.metadata?.executionId || '').trim();
+      const curCreated = String(step.metadata?.createdAt || '').trim();
+      const curCompleted = String(step.metadata?.completedAt || '').trim();
+      if (
+        prevIsPlanner &&
+        !prevHasTools &&
+        src === 'CORTEX_STEP_SOURCE_SYSTEM' &&
+        prevExec && curExec && prevExec === curExec &&
+        !step.metadata?.startedAt &&
+        curCreated && curCreated === curCompleted
+      ) {
+        const nextStep = steps[stepIndex + 1];
+        const nextType = String(nextStep?.type || '');
+        const nextIsPlanner = Boolean(nextStep && (nextType ? nextType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : nextStep.plannerResponse));
+        const nextExec = String(nextStep?.metadata?.executionId || '').trim();
+        if (!nextIsPlanner || !nextExec || nextExec !== curExec) return false;
+        for (let j = stepIndex + 1; j < steps.length; j++) {
+          const sj = steps[j];
+          if (!sj || typeof sj !== 'object') continue;
+          const sjType = String(sj.type || '');
+          if (sjType === 'CORTEX_STEP_TYPE_USER_INPUT' || (!sjType && sj.userInput)) {
+            if (isQueuedTrajectoryUserStep(sj)) continue;
+            break;
+          }
+          const sjIsPlanner = sjType ? sjType === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' : Boolean(sj.plannerResponse);
+          if (sjIsPlanner) {
+            const sjText = String(sj.plannerResponse?.modifiedResponse ?? sj.plannerResponse?.response ?? '').trim();
+            if (sjText) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   function extractMessagesFromTrajectorySteps(steps, limit = 20) {
     const list = Array.isArray(steps) ? steps : [];
     const out = [];
@@ -9769,6 +9912,7 @@
       const s = list[i];
       if (!s || typeof s !== 'object') continue;
       if (s.userInput) {
+        if (isQueuedTrajectoryUserStep(s)) continue;
         const u = s.userInput;
         const text = String(
           u.userResponse ||
@@ -9810,7 +9954,9 @@
         const text = String(pr.modifiedResponse || pr.response || '').trim();
         const thoughtText = String(pr.thinking || pr.thought || '').trim();
         if (thoughtText) turnThoughts.push(thoughtText);
-        if (text) {
+        const hasToolCalls = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
+        const blockedByStopHook = !hasToolCalls && isStopHookBlockedSystemStep(list[i + 1], s, list, i + 1);
+        if (text && !blockedByStopHook) {
           clearEarlierTurnThoughts();
           const thoughts = turnThoughts.slice();
           out.push({
