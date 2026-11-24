@@ -634,6 +634,16 @@
     idleSince: 0,
     lastFiredMap: new Map()
   };
+  const AUTO_COMPACT_MAP_LIMIT = 64;
+  const AUTO_COMPACT_IN_FLIGHT_MAX_MS = 180000;
+
+  function trimAutoCompactMap(map, limit = AUTO_COMPACT_MAP_LIMIT) {
+    while (map.size > limit) {
+      const firstKey = map.keys().next().value;
+      if (firstKey === undefined) break;
+      map.delete(firstKey);
+    }
+  }
 
   function scoreOptimizeModelCandidate(entry, isDefaultOverride = false) {
     const mid = String(entry?.modelId || '').toLowerCase();
@@ -5128,7 +5138,11 @@
     const now = Date.now();
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
-    const inFlight = autoCompactState.inFlightMap.get(sessionId) || null;
+    let inFlight = autoCompactState.inFlightMap.get(sessionId) || null;
+    if (inFlight && !inFlight.sending && now >= (Number(inFlight.maxUntil) || 0)) {
+      autoCompactState.inFlightMap.delete(sessionId);
+      inFlight = null;
+    }
     if (inFlight && (inFlight.sending || busy || now < inFlight.until)) {
       autoCompactState.armedForSession = false;
       autoCompactState.idleSince = 0;
@@ -5197,15 +5211,18 @@
     autoCompactState.armedForSession = false;
     const inFlightEntry = {
       sending: true,
-      until: now + 5000
+      until: now + 5000,
+      maxUntil: now + AUTO_COMPACT_IN_FLIGHT_MAX_MS
     };
     autoCompactState.inFlightMap.set(sessionId, inFlightEntry);
+    trimAutoCompactMap(autoCompactState.inFlightMap);
     autoCompactState.idleSince = 0;
     autoCompactState.lastFiredMap.set(sessionId, {
       at: now,
       contextUsed: risk.contextUsed,
       assistantCount: getAssistantMarkdownRoots().length
     });
+    trimAutoCompactMap(autoCompactState.lastFiredMap);
     Promise.resolve(performMobileAction({ action: 'send', text: '/compact' }))
       .catch(() => null)
       .finally(() => {
@@ -7974,6 +7991,8 @@
     document.querySelectorAll('[data-ag-risk-card]').forEach((el) => el.removeAttribute('data-ag-risk-card'));
     document.querySelectorAll('[data-ag-shortcut]').forEach((el) => el.removeAttribute('data-ag-shortcut'));
     safeRemove(document.getElementById(DOC_STYLE_ID));
+    autoCompactState.inFlightMap.clear();
+    autoCompactState.lastFiredMap.clear();
   }
 
   // ==================== 手机端极速遥控面板数据桥接 (v1.6.9) ====================

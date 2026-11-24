@@ -8,16 +8,62 @@ const zlib = require('zlib');
 const { resolveActiveCdpTarget } = require('./asar-engine');
 function request(url, body, token) {
   return new Promise((resolve, reject) => {
-    const req = (url.startsWith('https:') ? https : http).request(url, { rejectUnauthorized: false, agent: false, method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {} }, response => {
-      const chunks = [];
-      response.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      response.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8');
-        if (response.statusCode === 200) resolve(text);
-        else reject(new Error(`HTTP ${response.statusCode}: ${text.slice(0, 200)}`));
+    let settled = false;
+    let req = null;
+    let resRef = null;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      try { resRef?.destroy?.(); } catch {}
+      try { req?.destroy?.(); } catch {}
+      reject(err instanceof Error ? err : new Error(String(err || 'Local API request failed')));
+    };
+    const succeed = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    try {
+      req = (url.startsWith('https:') ? https : http).request(url, {
+        rejectUnauthorized: false,
+        agent: false,
+        method: body ? 'POST' : 'GET',
+        headers: body ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {}
+      }, response => {
+        resRef = response;
+        const chunks = [];
+        response.on('data', chunk => {
+          if (settled) return;
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on('error', fail);
+        response.on('aborted', () => fail(new Error('Local API response aborted')));
+        response.on('close', () => {
+          if (!settled && !response.complete) {
+            fail(new Error('Local API connection closed unexpectedly'));
+          }
+        });
+        response.on('end', () => {
+          if (settled) return;
+          let text = '';
+          try {
+            text = Buffer.concat(chunks).toString('utf8');
+          } catch (err) {
+            chunks.length = 0;
+            fail(err);
+            return;
+          }
+          chunks.length = 0;
+          if (response.statusCode === 200) succeed(text);
+          else fail(new Error(`HTTP ${response.statusCode}: ${text.slice(0, 200)}`));
+        });
       });
-    });
-    req.setTimeout(20000, () => req.destroy(new Error('Local API timeout'))); req.on('error', reject); req.end(body ? JSON.stringify(body) : undefined);
+      req.setTimeout(20000, () => fail(new Error('Local API timeout')));
+      req.on('error', fail);
+      req.end(body ? JSON.stringify(body) : undefined);
+    } catch (err) {
+      fail(err);
+    }
   });
 }
 
