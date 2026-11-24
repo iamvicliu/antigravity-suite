@@ -310,6 +310,95 @@ function normalizeTunnelHostname(raw) {
   return res.ok ? res.origin : '';
 }
 
+function validateTailscaleCustomHost(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return { ok: true, host: '', error: '' };
+  if (/[\s\x00-\x1f\x7f]/.test(text)) {
+    return {
+      ok: false,
+      host: '',
+      error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+    };
+  }
+  let cleanHost = '';
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      const u = new URL(text);
+      if (u.username || u.password || u.search || u.hash || (u.pathname && u.pathname !== '/')) {
+        return {
+          ok: false,
+          host: '',
+          error: 'Tailscale 节点地址仅填写 IP 或域名（无需附带路径或参数）'
+        };
+      }
+      cleanHost = String(u.hostname || '').replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase();
+    } catch {
+      return {
+        ok: false,
+        host: '',
+        error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+      };
+    }
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) || /[\/?#\\@]/.test(text)) {
+    return {
+      ok: false,
+      host: '',
+      error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+    };
+  } else {
+    const bracketMatch = text.match(/^\[([0-9a-fA-F:]+)\](?::(\d{1,5}))?$/);
+    if (bracketMatch) {
+      if (bracketMatch[2]) {
+        const portNum = Number(bracketMatch[2]);
+        if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+          return {
+            ok: false,
+            host: '',
+            error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+          };
+        }
+      }
+      cleanHost = bracketMatch[1].toLowerCase();
+    } else {
+      const singlePortMatch = text.match(/^([^:]+):(\d{1,5})$/);
+      if (singlePortMatch) {
+        const portNum = Number(singlePortMatch[2]);
+        if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+          return {
+            ok: false,
+            host: '',
+            error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+          };
+        }
+        cleanHost = singlePortMatch[1].replace(/\.+$/, '').toLowerCase();
+      } else {
+        cleanHost = text.replace(/\.+$/, '').toLowerCase();
+      }
+    }
+  }
+
+  const isCgnatV4 = isTailscaleCgnatIpv4(cleanHost);
+  const v6Hextets = cleanHost.includes(':') ? expandIpv6Hextets(cleanHost) : null;
+  const isTsUlaV6 = Boolean(
+    v6Hextets && v6Hextets[0] === 0xfd7a && v6Hextets[1] === 0x115c && v6Hextets[2] === 0xa1e0
+  );
+  const isTsMagicDns = cleanHost.length <= 253
+    && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net$/i.test(cleanHost);
+  if (!isCgnatV4 && !isTsUlaV6 && !isTsMagicDns) {
+    return {
+      ok: false,
+      host: '',
+      error: '请填写有效的 Tailscale 节点 IP（100.64.0.0/10）或 MagicDNS 域名（*.ts.net）'
+    };
+  }
+  return { ok: true, host: cleanHost, error: '' };
+}
+
+function normalizeTailscaleCustomHost(raw) {
+  const res = validateTailscaleCustomHost(raw);
+  return res.ok ? res.host : '';
+}
+
 function loadOrCreateRemoteConfig(options = {}) {
   const { resetToken = false } = options;
   const cfgPath = getRemoteConfigPath();
@@ -340,6 +429,7 @@ function loadOrCreateRemoteConfig(options = {}) {
     ? extractCloudflareTunnelToken(existing.tunnelToken)
     : '';
   const tunnelHostname = normalizeTunnelHostname(existing.tunnelHostname || '');
+  const tailscaleCustomHost = normalizeTailscaleCustomHost(existing.tailscaleCustomHost || '');
   const remoteDisplay = sanitizeRemoteDisplayConfig(existing.remoteDisplay);
 
   let changed = !loaded.ok || !existing.token || resetToken || existing.port !== port;
@@ -358,6 +448,7 @@ function loadOrCreateRemoteConfig(options = {}) {
     tunnelMode,
     tunnelToken,
     tunnelHostname,
+    tailscaleCustomHost,
     remoteDisplay,
     updatedAt: changed ? new Date().toISOString() : (existing.updatedAt || new Date().toISOString())
   };
@@ -502,6 +593,7 @@ function recordPairedDeviceAccess(req, activeToken, now = Date.now(), activeTunn
   }
 
   const localHostIps = getLocalHostIpSet();
+  const tsProxyIp = extractTailscaleProxyClientIp(req, reqCh, localHostIps);
   const isSelfIp = Boolean(cleanIp && localHostIps.has(cleanIp));
   const fallbackId = 'ua-' + crypto.createHash('sha1').update(`${cleanIp}|${ua}`).digest('hex').slice(0, 12);
   let finalId = headerDevId || fallbackId;
@@ -511,10 +603,10 @@ function recordPairedDeviceAccess(req, activeToken, now = Date.now(), activeTunn
   const prevLanIp = (prev?.lastLanIp && !localHostIps.has(prev.lastLanIp)) ? prev.lastLanIp : '';
   const prevTsIp = (prev?.lastTailscaleIp && !localHostIps.has(prev.lastTailscaleIp)) ? prev.lastTailscaleIp : '';
   const freshLanHit = reqCh === 'lan' && !isSelfIp && isRfc1918Ipv4(cleanIp);
-  const freshTsHit = reqCh === 'tailscale' && !isSelfIp && isTailscaleCgnatIpv4(cleanIp);
+  const freshTsHit = Boolean(tsProxyIp) || (reqCh === 'tailscale' && !isSelfIp && isTailscaleCgnatIpv4(cleanIp));
   let lastLanIp = freshLanHit ? cleanIp : prevLanIp;
   let lastLanSeenAt = freshLanHit ? now : (prev?.lastLanSeenAt || 0);
-  let lastTailscaleIp = freshTsHit ? cleanIp : prevTsIp;
+  let lastTailscaleIp = tsProxyIp || (freshTsHit ? cleanIp : prevTsIp);
   let lastTailscaleSeenAt = freshTsHit ? now : (prev?.lastTailscaleSeenAt || 0);
 
   if (headerDevId && pairedDevicesMap.has(fallbackId)) {
@@ -647,6 +739,9 @@ function saveRemoteTunnelConfig(patch = {}) {
   const nextHost = patch.tunnelHostname !== undefined
     ? normalizeTunnelHostname(patch.tunnelHostname)
     : cur.tunnelHostname;
+  const nextTailscaleCustomHost = patch.tailscaleCustomHost !== undefined
+    ? normalizeTailscaleCustomHost(patch.tailscaleCustomHost)
+    : normalizeTailscaleCustomHost(cur.tailscaleCustomHost || '');
   const rawDisplay = patch.remoteDisplay !== undefined
     ? patch.remoteDisplay
     : (patch.displayConfig !== undefined ? patch.displayConfig : null);
@@ -661,6 +756,7 @@ function saveRemoteTunnelConfig(patch = {}) {
     tunnelMode: nextMode,
     tunnelToken: nextToken,
     tunnelHostname: nextHost,
+    tailscaleCustomHost: nextTailscaleCustomHost,
     remoteDisplay: nextRemoteDisplay,
     updatedAt: new Date().toISOString()
   };
@@ -727,6 +823,91 @@ function isIpInLocalPhysicalLanSubnet(ip, netsMap = os.networkInterfaces()) {
     }
   }
   return false;
+}
+
+function expandIpv6Hextets(rawIp) {
+  let clean = String(rawIp || '').trim();
+  if (!clean) return null;
+  if (clean.startsWith('[') && clean.endsWith(']')) clean = clean.slice(1, -1);
+  const zoneIdx = clean.indexOf('%');
+  if (zoneIdx >= 0) clean = clean.slice(0, zoneIdx);
+  if (!clean || clean.includes('.') || !/^[0-9a-fA-F:]+$/.test(clean)) return null;
+  const parts = clean.split('::');
+  if (parts.length > 2) return null;
+  let hextets = [];
+  if (parts.length === 2) {
+    const left = parts[0] ? parts[0].split(':') : [];
+    const right = parts[1] ? parts[1].split(':') : [];
+    if (left.some((s) => !s || s.length > 4) || right.some((s) => !s || s.length > 4)) return null;
+    const missing = 8 - (left.length + right.length);
+    if (missing < 1) return null;
+    hextets = [...left, ...new Array(missing).fill('0'), ...right];
+  } else {
+    const segs = clean.split(':');
+    if (segs.length !== 8 || segs.some((s) => !s || s.length > 4)) return null;
+    hextets = segs;
+  }
+  const nums = [];
+  for (const h of hextets) {
+    const v = parseInt(h, 16);
+    if (!Number.isFinite(v) || v < 0 || v > 0xffff) return null;
+    nums.push(v);
+  }
+  return nums.length === 8 ? nums : null;
+}
+
+function isIpv6InLocalPhysicalLanPrefix(ip, netsMap = os.networkInterfaces()) {
+  const target = expandIpv6Hextets(ip);
+  if (!target) return false;
+  if (target.slice(0, 7).every((x) => x === 0) && target[7] <= 1) return false;
+  if ((target[0] & 0xffc0) === 0xfe80) return true;
+  for (const [ifName, entries] of Object.entries(netsMap || {})) {
+    if (isVirtualBridgeIface(ifName)) continue;
+    for (const info of entries || []) {
+      const fam = String(info?.family || '').toUpperCase();
+      if (!info || info.internal || (fam !== 'IPV6' && info.family !== 6)) continue;
+      const selfH = expandIpv6Hextets(info.address);
+      if (!selfH) continue;
+      if ((selfH[0] & 0xffc0) === 0xfe80) continue;
+      if (selfH.every((v, idx) => v === target[idx])) continue;
+      if (
+        selfH[0] === target[0]
+        && selfH[1] === target[1]
+        && selfH[2] === target[2]
+        && selfH[3] === target[3]
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function extractTailscaleProxyClientIp(req, reqCh, localHostIps = new Set()) {
+  if (reqCh !== 'tailscale' || !req) return '';
+  const headers = req.headers || {};
+  const sockIp = normalizeRemoteIp(req.socket?.remoteAddress || req.ip || '');
+  if (!sockIp || !isLoopbackIp(sockIp)) return '';
+  const xffRaw = Array.isArray(headers['x-forwarded-for'])
+    ? headers['x-forwarded-for'].join(',')
+    : String(headers['x-forwarded-for'] || '');
+  const xriRaw = Array.isArray(headers['x-real-ip'])
+    ? headers['x-real-ip'].join(',')
+    : String(headers['x-real-ip'] || '');
+  const candidates = [];
+  for (const rawPart of xffRaw.split(',')) {
+    if (rawPart && rawPart.trim()) candidates.push(rawPart.trim());
+  }
+  for (const rawPart of xriRaw.split(',')) {
+    if (rawPart && rawPart.trim()) candidates.push(rawPart.trim());
+  }
+  for (const rawIp of candidates) {
+    const clean = normalizeRemoteIp(rawIp);
+    if (clean && isTailscaleCgnatIpv4(clean) && !localHostIps.has(clean)) {
+      return clean;
+    }
+  }
+  return '';
 }
 
 function isTailscaleCgnatIpv4(ip) {
@@ -902,6 +1083,8 @@ function detectHostIdentityMeta(options = {}) {
   let tailscaleNodeName = '';
   let tailscaleHttpsCapable = false;
   let tailscaleBin = '';
+  let tailscaleRunning = false;
+  let tailscaleBackendState = '';
   const execFn = typeof options.execFileSync === 'function' ? options.execFileSync : execFileSync;
   if (!skipProbes || typeof options.execFileSync === 'function') {
     const tsBins = process.platform === 'darwin'
@@ -915,16 +1098,22 @@ function detectHostIdentityMeta(options = {}) {
           stdio: ['ignore', 'pipe', 'ignore']
         });
         const parsed = JSON.parse(out);
-        const dns = String(parsed?.Self?.DNSName || '').trim().replace(/\.+$/, '');
-        const hostName = String(parsed?.Self?.HostName || '').trim();
-        const certDomains = Array.isArray(parsed?.CertDomains)
-          ? parsed.CertDomains.map((d) => String(d || '').trim().replace(/\.+$/, '').toLowerCase()).filter(Boolean)
-          : [];
-        if (dns) tailscaleDnsName = dns;
-        if (dns) tailscaleNodeName = dns.split('.')[0] || hostName;
-        else if (hostName) tailscaleNodeName = hostName;
-        tailscaleHttpsCapable = Boolean(tailscaleDnsName && certDomains.includes(tailscaleDnsName.toLowerCase()));
+        tailscaleBackendState = String(parsed?.BackendState || '').trim();
+        const selfOnline = parsed?.Self?.Online;
+        const isRunning = (!tailscaleBackendState || tailscaleBackendState === 'Running') && selfOnline !== false;
         tailscaleBin = bin;
+        if (isRunning) {
+          const dns = String(parsed?.Self?.DNSName || '').trim().replace(/\.+$/, '');
+          const hostName = String(parsed?.Self?.HostName || '').trim();
+          const certDomains = Array.isArray(parsed?.CertDomains)
+            ? parsed.CertDomains.map((d) => String(d || '').trim().replace(/\.+$/, '').toLowerCase()).filter(Boolean)
+            : [];
+          if (dns) tailscaleDnsName = dns;
+          if (dns) tailscaleNodeName = dns.split('.')[0] || hostName;
+          else if (hostName) tailscaleNodeName = hostName;
+          tailscaleHttpsCapable = Boolean(tailscaleDnsName && certDomains.includes(tailscaleDnsName.toLowerCase()));
+          tailscaleRunning = true;
+        }
         break;
       } catch {}
     }
@@ -937,6 +1126,8 @@ function detectHostIdentityMeta(options = {}) {
     tailscaleDnsName,
     tailscaleNodeName,
     tailscaleHttpsCapable,
+    tailscaleRunning,
+    tailscaleBackendState,
     tailscaleBin,
     deviceName
   };
@@ -1042,7 +1233,7 @@ function ensureTailscaleServeHttps(port, options = {}) {
     forceRefresh: Boolean(options.force || useCustomExec),
     execFileSync: options.execFileSync
   });
-  if (!meta.tailscaleDnsName) {
+  if (!meta.tailscaleDnsName || meta.tailscaleRunning === false) {
     const empty = { active: false, port: numPort, url: '', hint: '', createdByUs: false, checkedAt: now };
     if (!useCustomExec) cachedTailscaleServe = empty;
     return { enabled: false, url: '', hint: '', createdByUs: false };
@@ -4828,8 +5019,8 @@ function normPlainMatchText(text) {
   s = s.replace(/^[ \t]*\$\$[ \t]*\n((?:(?![ \t]*\$\$[ \t]*$)(?!\s*$)[^$\n]+\n)+)[ \t]*\$\$[ \t]*$/gm, '$1');
   s = s.replace(/\$\$(?!\s)((?:[^$\n]*?[^\s$])|[^$\s])\$\$/g, '$1');
   s = s.replace(
-    /(^|[^\\$\w])\$(?!\s)(?!\d+(?:[.,]\d+)?(?:\s|$))([A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]*?[A-Za-z\\=+\-*/^_{}][A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]*?)(?<!\s)\$(?![A-Za-z0-9_])/g,
-    '$1$2'
+    /(^|[^\\$\w])\$(?!\s)(?!\d+(?:[.,]\d+)?(?:\s|$))([A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]+?)(?<!\s)\$(?![A-Za-z0-9_])/g,
+    (full, prefix, inner) => (/[A-Za-z\\=+\-*/^_{}]/.test(inner) ? (prefix + inner) : full)
   );
   s = s.replace(/^[ \t]*(?:={3,}|-{3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*$/gm, '');
   s = s.replace(/^[ \t]*#{1,6}[ \t]+([^\n]*?)(?:[ \t]+#+)?[ \t]*$/gm, '$1');
@@ -6781,8 +6972,181 @@ function buildManifestJson() {
 
 function buildServiceWorkerJs() {
   return `'use strict';
+const RECOVERY_CACHE = 'ag-remote-recovery-v1';
+const RECOVERY_META_KEY = '/__ag_recovery_meta__';
+
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+
+function escHtmlSw(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeRecoveryPayload(raw) {
+  const src = (raw && typeof raw === 'object') ? raw : {};
+  const list = Array.isArray(src.endpoints) ? src.endpoints : [];
+  const cleanEps = [];
+  for (const ep of list) {
+    if (!ep || typeof ep.url !== 'string' || !/^https?:\\/\\//i.test(ep.url)) continue;
+    cleanEps.push({
+      url: String(ep.url).replace(/\\/+$/, ''),
+      kind: String(ep.kind || 'lan'),
+      priority: Number.isFinite(Number(ep.priority)) ? Number(ep.priority) : 100
+    });
+  }
+  return {
+    endpoints: cleanEps,
+    encodedEndpoints: typeof src.encodedEndpoints === 'string' ? src.encodedEndpoints : '',
+    token: typeof src.token === 'string' ? src.token : '',
+    name: typeof src.name === 'string' ? src.name : ''
+  };
+}
+
+async function readRecoveryMeta() {
+  try {
+    if (!self.caches) return null;
+    const cache = await self.caches.open(RECOVERY_CACHE);
+    const res = await cache.match(RECOVERY_META_KEY);
+    if (!res) return null;
+    const data = await res.json().catch(() => null);
+    return sanitizeRecoveryPayload(data);
+  } catch {
+    return null;
+  }
+}
+
+function sortRecoveryEndpoints(endpoints, currentOrigin) {
+  const rankKind = (ep) => {
+    const u = String(ep?.url || '').toLowerCase();
+    const k = String(ep?.kind || 'lan');
+    if (k === 'tailscale' && u.startsWith('https://')) return 0;
+    if (u.startsWith('https://') && k !== 'tunnel') return 1;
+    if (k === 'lan') return 2;
+    if (k === 'tailscale') return 3;
+    if (k === 'bonjour') return 4;
+    if (k === 'tunnel') return 5;
+    return 8;
+  };
+  const curClean = String(currentOrigin || '').replace(/\\/+$/, '');
+  return [...(endpoints || [])]
+    .filter((ep) => ep && ep.url && ep.url !== curClean && String(ep.kind || '') !== 'loopback')
+    .sort((a, b) => (rankKind(a) - rankKind(b)) || ((Number(a.priority) || 999) - (Number(b.priority) || 999)));
+}
+
+function kindTitleSw(ep) {
+  const k = String(ep?.kind || '');
+  const u = String(ep?.url || '').toLowerCase();
+  if (k === 'tailscale') return u.startsWith('https://') ? 'Tailscale HTTPS' : 'Tailscale 直连';
+  if (k === 'tunnel') return 'Cloudflare 隧道';
+  if (k === 'bonjour') return 'Bonjour (mDNS)';
+  return '局域网直连';
+}
+
+function buildRecoveryShellHtml(meta, statusCode) {
+  const curOrigin = String(self.location?.origin || '').replace(/\\/+$/, '');
+  const candidates = sortRecoveryEndpoints(meta?.endpoints || [], curOrigin);
+  const safeStatus = Number(statusCode) || 0;
+  const is1033 = safeStatus === 530;
+  const reasonText = is1033
+    ? '当前免登录 Cloudflare 临时隧道域名已失效（Error 1033）。临时域名是一次性的，电脑热更新、live 重载、重启软件或休眠断网后旧网址会永久作废并换新域名；可点击下方备用通道直连，或回电脑端「远程」重新扫码（长期使用推荐 Tailscale HTTPS 或固定域名）。'
+    : '当前远程地址暂时无法连接到电脑端。';
+  const btnsHtml = candidates.length > 0
+    ? candidates.map((ep, idx) => {
+        let hostText = ep.url;
+        try { hostText = new URL(ep.url).host; } catch {}
+        return '<button class="ep-btn" data-idx="' + idx + '" type="button">'
+          + '<span class="ep-left"><span class="ep-name">' + escHtmlSw(kindTitleSw(ep)) + '</span>'
+          + '<span class="ep-host">' + escHtmlSw(hostText) + '</span></span>'
+          + '<span class="ep-go">切过去 →</span></button>';
+      }).join('')
+    : '<div class="empty-tip">暂未缓存其他备用通道，请在电脑端 Antigravity 右上角「远程」重新扫码打开。</div>';
+  const inlineData = JSON.stringify({
+    candidates: candidates.map((c) => c.url),
+    token: String(meta?.token || ''),
+    name: String(meta?.name || ''),
+    encodedEndpoints: String(meta?.encodedEndpoints || '')
+  }).replace(/</g, '\\\\u003c');
+
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+    + '<title>通道已中断 · 切换可用连接</title><style>'
+    + ':root{color-scheme:light dark}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}'
+    + 'body{margin:0;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px;background:#09090b;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;line-height:1.5}'
+    + '.card{width:100%;max-width:420px;padding:22px 18px;border-radius:18px;background:#111114;border:1px solid rgba(255,255,255,.12)}'
+    + 'h1{margin:0 0 8px;font-size:17px;font-weight:700}p{margin:0 0 14px;font-size:13.5px;color:#a1a1aa}'
+    + '.list{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}'
+    + '.ep-btn{appearance:none;width:100%;padding:11px 12px;border-radius:12px;border:1px solid rgba(56,189,248,.35);background:rgba(56,189,248,.1);color:#f4f4f5;display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;cursor:pointer}'
+    + '.ep-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}'
+    + '.ep-name{font-size:14px;font-weight:600}.ep-host{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#a1a1aa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    + '.ep-go{font-size:12px;font-weight:600;color:#7dd3fc;flex-shrink:0}'
+    + '.reload-btn{appearance:none;width:100%;min-height:40px;border-radius:10px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#f4f4f5;font-size:13.5px;font-weight:600;cursor:pointer}'
+    + '.empty-tip{padding:12px;border-radius:10px;background:rgba(255,255,255,.04);font-size:13px;color:#a1a1aa}'
+    + '.hint{margin-top:12px;font-size:12px;color:#71717a;text-align:center}'
+    + '@media (prefers-color-scheme:light){body{background:#f8fafc;color:#18181b}.card{background:#fff;border-color:rgba(15,23,42,.12)}p,.ep-host,.empty-tip,.hint{color:#52525b}.ep-btn{background:rgba(2,132,199,.08);color:#09090b;border-color:rgba(2,132,199,.35)}.ep-go{color:#0369a1}.reload-btn{background:#f1f5f9;border-color:rgba(15,23,42,.15);color:#18181b}}'
+    + '</style></head><body><div class="card">'
+    + '<h1>远程通道暂时无法连接</h1>'
+    + '<p>' + escHtmlSw(reasonText) + '</p>'
+    + '<div class="list" id="ep-list">' + btnsHtml + '</div>'
+    + '<button class="reload-btn" id="btn-reload" type="button">重新加载当前页</button>'
+    + '<div class="hint">如仍无法连接，请在电脑端重新扫码或点击「远程设置」刷新</div>'
+    + '</div><script>(function(){var d=' + inlineData + ';'
+    + 'var bs=document.querySelectorAll(".ep-btn");'
+    + 'for(var i=0;i<bs.length;i++){bs[i].onclick=function(){var u=d.candidates[Number(this.getAttribute("data-idx"))];if(!u)return;'
+    + 'var ps=["manual=1"];if(d.token)ps.push("token="+encodeURIComponent(d.token));'
+    + 'if(d.name)ps.push("name="+encodeURIComponent(d.name));'
+    + 'if(d.encodedEndpoints)ps.push("endpoints="+encodeURIComponent(d.encodedEndpoints));'
+    + 'location.replace(u+"/?"+ps.join("&"));};}'
+    + 'var rb=document.getElementById("btn-reload");if(rb)rb.onclick=function(){location.reload();};'
+    + '})();<' + '/script></body></html>';
+}
+
+self.addEventListener('message', (event) => {
+  const msg = event && event.data;
+  if (!msg || msg.type !== 'ag-cache-endpoints') return;
+  const payload = sanitizeRecoveryPayload(msg);
+  if (!payload.endpoints.length || !self.caches) return;
+  event.waitUntil(
+    self.caches.open(RECOVERY_CACHE)
+      .then((cache) => cache.put(
+        RECOVERY_META_KEY,
+        new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } })
+      ))
+      .catch(() => {})
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event && event.request;
+  if (!req || req.mode !== 'navigate' || req.method !== 'GET') return;
+  try {
+    const reqUrl = new URL(req.url);
+    if (reqUrl.origin !== self.location.origin) return;
+  } catch {
+    return;
+  }
+  event.respondWith((async () => {
+    let statusCode = 0;
+    try {
+      const res = await fetch(req);
+      if (res && ![502, 503, 504, 530].includes(res.status)) {
+        return res;
+      }
+      statusCode = res ? res.status : 503;
+    } catch {
+      statusCode = 0;
+    }
+    const meta = await readRecoveryMeta();
+    return new Response(buildRecoveryShellHtml(meta, statusCode), {
+      status: 503,
+      headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }
+    });
+  })());
+});
 
 function updateSwBadge(count) {
   const n = Math.max(0, Math.floor(Number(count) || 0));
@@ -7220,6 +7584,17 @@ function buildMobileAppHtml() {
       cursor:pointer;display:block;
     }
     .sub-meta:active{color:var(--accent)}
+    .channel-pill{
+      appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
+      border-radius:999px;height:32px;padding:0 10px;display:inline-flex;align-items:center;gap:6px;
+      font-size:11.5px;font-weight:600;white-space:nowrap;flex-shrink:0;cursor:pointer;
+      transition:border-color .15s ease,background-color .15s ease,color .15s ease;
+    }
+    .channel-pill:active{background:var(--surface-hover)}
+    .channel-pill .ch-dot{width:7px;height:7px;border-radius:999px;background:var(--green);flex-shrink:0}
+    .channel-pill.is-connecting .ch-dot{background:var(--amber);animation:pulse 1s infinite ease-in-out}
+    .channel-pill.is-offline{border-color:var(--risk-border);background:var(--risk-bg);color:var(--risk-fg)}
+    .channel-pill.is-offline .ch-dot{background:var(--red)}
     .quota-pill{
       appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
       border-radius:11px;padding:5px 10px;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;
@@ -7684,6 +8059,8 @@ function buildMobileAppHtml() {
     .mode-pill{font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;line-height:1.4;white-space:nowrap}
     .mode-pill.fast{background:var(--badge-fast-bg);color:var(--badge-fast-fg);border:1px solid var(--badge-fast-border)}
     .mode-pill.cur{background:var(--accent-bg);color:var(--accent-fg);border:1px solid var(--accent-border)}
+    .mode-pill.warn{background:var(--badge-mid-bg);color:var(--badge-mid-fg);border:1px solid rgba(217,119,6,.32)}
+    .sheet-foot-note{margin-top:6px;padding:8px 10px;border-radius:10px;border:1px solid rgba(217,119,6,.28);background:var(--badge-mid-bg);color:var(--muted);font-size:11.5px;line-height:1.45}
     .lat-badge{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;padding:2px 7px;border-radius:999px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
     .lat-badge.fast{background:var(--badge-fast-bg);color:var(--badge-fast-fg)}
     .lat-badge.mid{background:var(--badge-mid-bg);color:var(--badge-mid-fg)}
@@ -7958,7 +8335,8 @@ function buildMobileAppHtml() {
     }
     /* 鼠标设备悬停交互 */
     @media (hover:hover){
-      .icon-btn:hover,.top-panel-btn:hover,.fv-up-btn:hover,.fv-row:hover,.conn-banner-btn:hover{background:var(--surface-hover);color:var(--fg)}
+      .icon-btn:hover,.top-panel-btn:hover,.fv-up-btn:hover,.fv-row:hover,.conn-banner-btn:hover,.channel-pill:hover{background:var(--surface-hover);color:var(--fg)}
+      .channel-pill.is-offline:hover{filter:brightness(1.06);color:var(--risk-fg)}
       .conn-banner-btn.primary:hover{filter:brightness(1.08)}
       .empty-state-btn:hover{filter:brightness(1.08);border-color:var(--accent)}
       .quota-pill:hover{background:var(--surface-hover);border-color:var(--border-strong)}
@@ -7993,6 +8371,7 @@ function buildMobileAppHtml() {
         padding-top:0;padding-bottom:0;
       }
       .topbar{height:54px;padding:0 24px;gap:12px}
+      .channel-pill{display:none}
       .conn-banner{padding:8px 24px}
       .title-wrap{grid-template-columns:auto minmax(0,1fr);column-gap:7px;row-gap:1px}
       .conv-title{grid-column:2;grid-row:1;font-size:15.5px}
@@ -8104,16 +8483,21 @@ function buildMobileAppHtml() {
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
     @media (max-width:859px){
-      .topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}
-      .title-wrap{flex:1 1 0;min-width:0}
+      .topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto auto;align-items:center;padding:6px 10px 7px;column-gap:6px;row-gap:4px}
+      #btn-drawer{grid-column:1;grid-row:1 / span 2;align-self:center}
+      .title-wrap{display:contents}
+      .title-row{grid-column:2;grid-row:1;display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden}
+      #btn-channel-pill{grid-column:3;grid-row:1;justify-self:end}
+      .sub-row{grid-column:2 / -1;grid-row:2}
       .topbar-actions{
-        flex:1 0 100%;width:100%;gap:6px;
+        grid-column:1 / -1;grid-row:3;width:100%;gap:6px;
         padding-top:5px;border-top:1px solid var(--topbar-border);
         overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
       }
       .topbar-actions::-webkit-scrollbar{display:none}
       .topbar-actions .quota-pill{margin-left:auto}
       .quota-drawer{top:calc(env(safe-area-inset-top) + 92px)}
+      .toast{top:calc(env(safe-area-inset-top) + 98px)}
       .top-panel-btn{height:32px;border-radius:8px;padding:0 8px;gap:4px;font-size:11.5px}
       .quota-pill{
         height:32px;padding:0 8px;border-radius:8px;font-size:11.5px;
@@ -8124,13 +8508,15 @@ function buildMobileAppHtml() {
     }
     @media (max-width:430px){
       .icon-btn{height:36px;min-width:36px;padding:0 4px}
-      .conv-project-badge{max-width:65%;font-size:10.5px;padding:1px 6px}
+      .conv-project-badge{max-width:46%;font-size:10.5px;padding:1px 6px}
+      .channel-pill{height:28px;padding:0 8px;gap:4px;font-size:11px}
       .top-panel-btn{height:32px;padding:0 7px;gap:3px;font-size:11px}
       .quota-pill{height:32px;padding:0 7px;font-size:11px}
     }
     @media (max-width:360px){
       .topbar{padding:6px 8px;column-gap:5px;row-gap:5px}
       .icon-btn{height:36px;min-width:36px;padding:0 3px}
+      .channel-pill{height:30px;padding:0 7px;gap:4px;font-size:10.5px}
       .topbar-actions{gap:4px;padding-top:4px}
       .top-panel-btn{height:32px;padding:0 6px;gap:2px;font-size:10.5px;border-radius:8px}
       #btn-usage-panel{min-width:32px;padding:0 6px;justify-content:center}
@@ -8162,6 +8548,10 @@ function buildMobileAppHtml() {
           <div id="sub-meta" class="sub-meta">正在检测连接通道…</div>
         </div>
       </div>
+      <button id="btn-channel-pill" class="channel-pill is-connecting" type="button" aria-label="切换连接方式" title="切换连接方式">
+        <span id="channel-pill-dot" class="ch-dot"></span>
+        <span id="channel-pill-label">连接中</span>
+      </button>
       <div class="topbar-actions">
         <button id="btn-context-panel" class="top-panel-btn" type="button" aria-label="上下文窗口面板" title="上下文窗口面板">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><circle cx="12" cy="12" r="9" opacity=".35"/><path d="M12 3a9 9 0 1 1-6.36 2.64" stroke-linecap="round"/></svg>
@@ -8527,6 +8917,31 @@ function buildMobileAppHtml() {
         return null;
       }
     }
+    let swRegistrationPromise = null;
+    let swLastError = '';
+    function syncEndpointsToServiceWorker(st) {
+      try {
+        const src = st || (typeof pairState === 'object' ? pairState : null);
+        if (!src || !Array.isArray(src.endpoints) || !src.endpoints.length) return;
+        if (typeof navigator === 'undefined' || !('serviceWorker' in navigator) || !navigator.serviceWorker) return;
+        const msg = {
+          type: 'ag-cache-endpoints',
+          endpoints: src.endpoints,
+          encodedEndpoints: encodeEndpointsClient(src.endpoints),
+          token: src.token || '',
+          name: src.name || ''
+        };
+        if (navigator.serviceWorker.controller && typeof navigator.serviceWorker.controller.postMessage === 'function') {
+          navigator.serviceWorker.controller.postMessage(msg);
+        }
+        if (swRegistrationPromise && typeof swRegistrationPromise.then === 'function') {
+          swRegistrationPromise.then((reg) => {
+            const target = reg?.active || navigator.serviceWorker?.controller || null;
+            if (target && typeof target.postMessage === 'function') target.postMessage(msg);
+          }).catch(() => {});
+        }
+      } catch {}
+    }
     function saveStoredPair(st) {
       try {
         localStorage.setItem(PAIR_STORAGE_KEY, JSON.stringify({
@@ -8536,6 +8951,7 @@ function buildMobileAppHtml() {
           endpoints: Array.isArray(st.endpoints) ? st.endpoints : []
         }));
       } catch {}
+      syncEndpointsToServiceWorker(st);
     }
     function loadStoredSpeed() {
       try {
@@ -8599,10 +9015,11 @@ function buildMobileAppHtml() {
       saveStoredPair(pairState);
       try { history.replaceState(null, '', location.pathname); } catch {}
     }
-    let swRegistrationPromise = null;
-    let swLastError = '';
     if (isTrustedSecureOrigin(location.origin) && 'serviceWorker' in navigator) {
-      swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+      swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).then((reg) => {
+        if (reg) syncEndpointsToServiceWorker(pairState);
+        return reg;
+      }).catch((err) => {
         swLastError = err?.message || String(err || 'register failed');
         return null;
       });
@@ -8956,6 +9373,7 @@ function buildMobileAppHtml() {
 
     let apiBase = '';
     let activeSheetKind = '';
+    let activeSheetState = null;
     let activeDrawerProject = '';
     let autoSwitchChecked = false;
     let navigatingAway = false;
@@ -9389,8 +9807,20 @@ function buildMobileAppHtml() {
       return formatKindLabel(detectKindFromOrigin(apiBase || location.origin || ''));
     }
 
+    function rankModeEntry(ep) {
+      const k = String(ep?.kind || '');
+      const u = String(ep?.url || '').toLowerCase();
+      if (k === 'tunnel' && !u.includes('.trycloudflare.com')) return 0;
+      if (k === 'tailscale' && u.startsWith('https://')) return 1;
+      if (k === 'lan') return 2;
+      if (k === 'tailscale') return 3;
+      if (k === 'bonjour') return 4;
+      if (k === 'tunnel') return 5;
+      if (k === 'loopback') return 9;
+      return 6;
+    }
+
     function getEnabledModeEntries() {
-      const order = { tunnel: 0, lan: 1, tailscale: 2, bonjour: 3, loopback: 9 };
       const byKind = new Map();
       const sorted = [...(pairState.endpoints || [])].sort((a, b) => (Number(a?.priority) || 999) - (Number(b?.priority) || 999));
       const curOriginClean = String(location.origin || '').replace(/\\/+$/, '');
@@ -9410,7 +9840,7 @@ function buildMobileAppHtml() {
         const curKind = detectKindFromOrigin(location.origin);
         byKind.set(curKind, { url: String(location.origin || '').replace(/\\/+$/, ''), kind: curKind });
       }
-      return Array.from(byKind.values()).sort((a, b) => (order[a.kind] ?? 5) - (order[b.kind] ?? 5));
+      return Array.from(byKind.values()).sort((a, b) => rankModeEntry(a) - rankModeEntry(b));
     }
 
     function formatClockTime(ts) {
@@ -9446,8 +9876,10 @@ function buildMobileAppHtml() {
       if (pairState.hosts?.length) params.push('hosts=' + encodeURIComponent(pairState.hosts.join(',')));
       const encEps = encodeEndpointsClient(pairState.endpoints || []);
       if (encEps) params.push('endpoints=' + encodeURIComponent(encEps));
-      const encSpd = encodeSpeedTestClient(speedTestState);
-      if (encSpd) params.push('spd=' + encodeURIComponent(encSpd));
+      if (!o.omitSpeed) {
+        const encSpd = encodeSpeedTestClient(speedTestState);
+        if (encSpd) params.push('spd=' + encodeURIComponent(encSpd));
+      }
       if (o.autoSwitched) {
         params.push('autosw=1');
       } else if (o.manual !== false) {
@@ -9472,6 +9904,7 @@ function buildMobileAppHtml() {
         apiBase = '';
         const modeName = formatKindLabel(ep.kind);
         $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
+        syncChannelPillUi('connecting');
         if (latestSnap) {
           showToast('已切换至 ' + modeName);
         } else {
@@ -9480,7 +9913,8 @@ function buildMobileAppHtml() {
         void fetchSnapshot();
         return;
       }
-      navigateEntryUrl(buildClientEntryUrl(cleanTarget, { manual: true }), false);
+      const isCrossProtocolDowngrade = location.protocol === 'https:' && cleanTarget.toLowerCase().startsWith('http://');
+      navigateEntryUrl(buildClientEntryUrl(cleanTarget, { manual: true, omitSpeed: isCrossProtocolDowngrade }), false);
     }
 
     function renderModeEntryGate(statusText) {
@@ -9562,6 +9996,7 @@ function buildMobileAppHtml() {
 
     function closeSheet() {
       activeSheetKind = '';
+      activeSheetState = null;
       const backBtn = $('sheet-back-btn');
       if (backBtn) {
         backBtn.hidden = true;
@@ -9570,9 +10005,20 @@ function buildMobileAppHtml() {
       const actBtn = $('sheet-action-btn');
       if (actBtn) {
         actBtn.hidden = true;
+        actBtn.disabled = false;
         actBtn.onclick = null;
       }
-      $('sheet-backdrop').hidden = true;
+      const listEl = $('sheet-list');
+      if (listEl && typeof handleSheetListClick === 'function') {
+        listEl.onclick = handleSheetListClick;
+      }
+      const backdrop = $('sheet-backdrop');
+      if (backdrop && backdrop.contains(document.activeElement)) {
+        try { document.activeElement.blur(); } catch {}
+      }
+      if (backdrop) backdrop.hidden = true;
+      if (typeof resetModalSheetShift === 'function') resetModalSheetShift();
+      if (typeof syncViewportHeight === 'function') syncViewportHeight();
     }
 
     function renderModeSwitcherSheet() {
@@ -9604,13 +10050,17 @@ function buildMobileAppHtml() {
       });
 
       const listEl = $('sheet-list');
-      listEl.innerHTML = entries.map((ep, idx) => {
+      let hasQuickTunnel = false;
+      const rowsHtml = entries.map((ep, idx) => {
         let hostText = ep.url;
         try { hostText = new URL(ep.url).host; } catch {}
         const isCurrent = ep.url === curOrigin;
+        const isQuickTunnelEp = ep.kind === 'tunnel' && String(hostText || '').toLowerCase().endsWith('.trycloudflare.com');
+        if (isQuickTunnelEp) hasQuickTunnel = true;
         const badge = formatLatencyBadge(ep.kind);
         const pills = ((fastestKind && ep.kind === fastestKind) ? '<span class="mode-pill fast">最快</span>' : '')
-          + (isCurrent ? '<span class="mode-pill cur">当前</span>' : '');
+          + (isCurrent ? '<span class="mode-pill cur">当前</span>' : '')
+          + (isQuickTunnelEp ? '<span class="mode-pill warn">临时域名</span>' : '');
         return '<button class="sheet-opt' + (isCurrent ? ' active' : '') + '" data-idx="' + idx + '" type="button">'
           + '<span class="sheet-opt-left">'
           + '<span class="sheet-opt-top"><span>' + esc(formatKindLabel(ep.kind)) + '</span>' + pills + '</span>'
@@ -9622,6 +10072,10 @@ function buildMobileAppHtml() {
           + '</span>'
           + '</button>';
       }).join('');
+      const footNoteHtml = hasQuickTunnel
+        ? '<div class="sheet-foot-note">提示：.trycloudflare.com 为免登录一次性临时域名，电脑热更新、重启或休眠断网后旧网址会永久失效并换新；长期使用建议优先选 Tailscale HTTPS、局域网或自定义固定域名。</div>'
+        : '';
+      listEl.innerHTML = rowsHtml + footNoteHtml;
       listEl.onclick = (e) => {
         const btn = e.target?.closest?.('.sheet-opt');
         if (!btn) return;
@@ -9631,7 +10085,58 @@ function buildMobileAppHtml() {
       };
     }
 
+    function formatShortChannelLabel(rawUrl) {
+      const u = String(rawUrl || '').trim().toLowerCase();
+      const k = detectKindFromOrigin(u);
+      if (k === 'tailscale') return u.startsWith('https://') ? 'TS HTTPS' : 'Tailscale';
+      if (k === 'tunnel') return '隧道';
+      if (k === 'bonjour') return 'Bonjour';
+      return '局域网';
+    }
+
+    function syncChannelPillUi(state) {
+      const btn = $('btn-channel-pill');
+      const lbl = $('channel-pill-label');
+      if (!btn || !lbl) return;
+      const st = state || (latestSnap ? 'online' : 'connecting');
+      btn.classList?.toggle?.('is-offline', st === 'offline');
+      btn.classList?.toggle?.('is-connecting', st === 'connecting');
+      const curOrigin = apiBase || location.origin || '';
+      if (st === 'offline') {
+        lbl.textContent = '切通道';
+        btn.title = '连接已断开，点击切换连接方式';
+        btn.setAttribute?.('aria-label', '连接已断开，点击切换连接方式');
+      } else if (st === 'connecting') {
+        lbl.textContent = '连接中';
+        btn.title = '正在连接，点击切换连接方式 (' + formatKindLabel(detectKindFromOrigin(curOrigin)) + ')';
+        btn.setAttribute?.('aria-label', '切换连接方式');
+      } else {
+        const shortName = formatShortChannelLabel(curOrigin);
+        lbl.textContent = shortName;
+        btn.title = '当前通道：' + formatKindLabel(detectKindFromOrigin(curOrigin)) + '，点击切换';
+        btn.setAttribute?.('aria-label', '当前通道：' + shortName + '，点击切换');
+      }
+    }
+
+    function pickDirectFallbackHintEndpoint() {
+      const curOrigin = String(apiBase || location.origin || '').replace(/\\/+$/, '');
+      const entries = getEnabledModeEntries().filter((ep) => ep && ep.url && ep.url !== curOrigin);
+      if (!entries.length) return null;
+      const rank = (ep) => {
+        const u = String(ep.url || '').toLowerCase();
+        if (ep.kind === 'tailscale' && u.startsWith('https://')) return 0;
+        if (ep.kind === 'lan') return 1;
+        if (ep.kind === 'tailscale') return 2;
+        if (ep.kind === 'bonjour') return 3;
+        return 9;
+      };
+      entries.sort((a, b) => rank(a) - rank(b));
+      const best = entries[0];
+      return best && best.kind !== 'tunnel' ? best : null;
+    }
+
     function openModeSwitcherSheet() {
+      closeTopDrawers();
       const entries = getEnabledModeEntries();
       if (!entries.length) return;
       activeSheetKind = 'mode';
@@ -9644,6 +10149,13 @@ function buildMobileAppHtml() {
 
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
     $('sub-meta').onclick = openModeSwitcherSheet;
+    syncChannelPillUi('connecting');
+    if ($('btn-channel-pill')) {
+      $('btn-channel-pill').onclick = () => {
+        closeTopDrawers();
+        openModeSwitcherSheet();
+      };
+    }
     if ($('btn-mode-switcher')) {
       $('btn-mode-switcher').addEventListener('click', () => {
         if (!isDesktopLayout()) closeDrawer();
@@ -10398,6 +10910,38 @@ function buildMobileAppHtml() {
       }
     }
 
+    function closeTopDrawers() {
+      const ctxBox = $('context-drawer');
+      const usageBox = $('usage-drawer');
+      const quotaBox = $('quota-drawer');
+      if (ctxBox) ctxBox.hidden = true;
+      if (usageBox) usageBox.hidden = true;
+      if (quotaBox) quotaBox.hidden = true;
+      syncTopbarDrawerButtons();
+    }
+
+    function positionTopDrawer(targetBox) {
+      if (!targetBox || !targetBox.style) return;
+      try {
+        const topbarEl = document.querySelector?.('.topbar');
+        const bannerEl = $('conn-banner');
+        let maxBottom = 0;
+        if (topbarEl && typeof topbarEl.getBoundingClientRect === 'function') {
+          const r = topbarEl.getBoundingClientRect();
+          if (r && Number.isFinite(r.bottom) && r.bottom > maxBottom) maxBottom = r.bottom;
+        }
+        if (bannerEl && !bannerEl.hidden && typeof bannerEl.getBoundingClientRect === 'function') {
+          const rb = bannerEl.getBoundingClientRect();
+          if (rb && Number.isFinite(rb.bottom) && rb.bottom > maxBottom) maxBottom = rb.bottom;
+        }
+        if (maxBottom > 0) {
+          targetBox.style.top = Math.round(maxBottom + 6) + 'px';
+        } else {
+          targetBox.style.top = '';
+        }
+      } catch {}
+    }
+
     function openTopDrawer(kind) {
       const ctxBox = $('context-drawer');
       const usageBox = $('usage-drawer');
@@ -10405,12 +10949,19 @@ function buildMobileAppHtml() {
       const targetBox = kind === 'context' ? ctxBox : (kind === 'usage' ? usageBox : (kind === 'quota' ? quotaBox : null));
       const willOpen = Boolean(targetBox && targetBox.hidden);
 
+      if (kind === 'quota' && willOpen && !latestSnap) {
+        closeTopDrawers();
+        showToast('正在连接电脑端，暂未获取配额');
+        return;
+      }
+
       if (ctxBox) ctxBox.hidden = true;
       if (usageBox) usageBox.hidden = true;
       if (quotaBox) quotaBox.hidden = true;
 
       if (willOpen && targetBox) {
         targetBox.hidden = false;
+        positionTopDrawer(targetBox);
         if (kind === 'context') {
           renderContextDrawer(latestSnap, cachedContextResp);
           void fetchContextPanelData();
@@ -10693,6 +11244,7 @@ function buildMobileAppHtml() {
     function renderSnapshot(snap, opts) {
       if (!snap || snap.ok === false) {
         $('status-dot').className = 'dot err';
+        syncChannelPillUi('offline');
         $('conv-title').textContent = snap?.error || '连接异常';
         if (latestSnap) {
           setConnBannerVisible(true, humanizeRemoteError(snap?.error, '与电脑端的连接暂时异常，可点击重试或切换连接方式'));
@@ -10744,6 +11296,7 @@ function buildMobileAppHtml() {
       }
       latestSnap = snap;
       setConnBannerVisible(false);
+      syncChannelPillUi('online');
       syncSelectedProjectFromSnapshot(snap);
       if ($('btn-follow-desktop')) $('btn-follow-desktop').hidden = !Boolean(snap.isolated);
       if (snap.currentTargetId) {
@@ -10791,17 +11344,6 @@ function buildMobileAppHtml() {
 
       // Messages (full history + upward pagination + gap backfill + scroll anchor)
       msgEl.classList.remove('is-switching');
-      const parseNonNegativeInt = (v) => {
-        if (typeof v === 'number') return (Number.isInteger(v) && v >= 0) ? v : null;
-        if (typeof v === 'string') {
-          const trimmed = v.trim();
-          if (/^\\d+$/.test(trimmed)) {
-            const n = Number(trimmed);
-            return (Number.isSafeInteger(n) && n >= 0) ? n : null;
-          }
-        }
-        return null;
-      };
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
       const nextHistSource = snap.historySource === 'trajectory'
         ? 'trajectory'
@@ -10811,6 +11353,7 @@ function buildMobileAppHtml() {
       if (snapSid !== activeMsgSessionId) {
         activeMsgSessionId = snapSid;
         activeMsgHistorySource = hasValidTotalMsgs ? (nextHistSource || 'dom') : 'dom';
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
         promptDraftState.clear();
@@ -10820,18 +11363,34 @@ function buildMobileAppHtml() {
       } else if (!hasValidTotalMsgs) {
         // 缺失或无效 totalMessages（如 undefined/null/''/NaN/负数），即使显式携带原有 historySource（含 'trajectory'），
         // 也一律视为降级回退快照，在写入前先清空旧索引缓存，防止旧轨迹键与回退键混排重复
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
+        loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         activeMsgHistorySource = 'dom';
       } else if (activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory') {
         // RPC 偶发降级 domTail（写入 0..59 临时键）后恢复全量轨迹时，清空旧临时键防止前 60 条重复错序
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
+        loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         activeMsgHistorySource = 'trajectory';
       } else if (activeMsgHistorySource === 'isolated_error' && nextHistSource === 'trajectory') {
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
+        loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         activeMsgHistorySource = 'trajectory';
       } else if (activeMsgHistorySource === 'trajectory' && nextHistSource !== 'trajectory') {
         // 轨迹显式降级至 DOM / isolated_error 或缺失来源时清空旧轨迹索引键，防止双源键混排重复
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
+        loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         activeMsgHistorySource = nextHistSource || 'dom';
       } else if (nextHistSource) {
         activeMsgHistorySource = nextHistSource;
@@ -12041,6 +12600,7 @@ function buildMobileAppHtml() {
         if (mySeq === snapshotSeq) renderSnapshot(data, { reqStartEpoch: fetchStartEpoch });
       } catch {
         if (mySeq !== snapshotSeq) return;
+        syncChannelPillUi('connecting');
         $('sub-meta').textContent = '连接中断 · 正在切换可用通道…';
         if (latestSnap) {
           setConnBannerVisible(true, '与电脑端的连接已断开，正在尝试切换可用通道…');
@@ -12048,7 +12608,7 @@ function buildMobileAppHtml() {
           renderModeEntryGate('正在自动尝试备用通道，也可直接点击已开启的方式立即进入：');
         }
         const switched = await tryFailoverEndpoint();
-        if (switched) {
+        if (switched && !navigatingAway) {
           try {
             const retryRes = await doFetch();
             if (retryRes.status === 401) { location.reload(); return; }
@@ -12059,10 +12619,21 @@ function buildMobileAppHtml() {
             return;
           } catch {}
         }
+        if (navigatingAway) return;
         $('status-dot').className = 'dot err';
+        syncChannelPillUi('offline');
         $('sub-meta').textContent = '连接中断，点击可切换连接方式';
+        const fallbackHintEp = pickDirectFallbackHintEndpoint();
+        const isCurrentQuickTunnel = String(apiBase || location.origin || '').toLowerCase().includes('.trycloudflare.com');
         if (latestSnap) {
-          setConnBannerVisible(true, '与电脑端连接已断开，可点击重试或切换连接方式');
+          const bannerHint = isCurrentQuickTunnel
+            ? (fallbackHintEp
+                ? ('当前临时隧道域名可能已随电脑热更新/重启/休眠失效，建议点击右侧「切换连接方式」切往 ' + formatKindLabel(fallbackHintEp.kind) + '，或回电脑端重新扫码')
+                : '当前临时隧道域名为一次性地址，电脑热更新/重启/休眠后旧网址会失效，请回电脑端「远程」重新扫码获取新地址')
+            : (fallbackHintEp
+                ? ('当前通道 (' + getActiveChannelLabel() + ') 已断开，建议点击右侧「切换连接方式」切往 ' + formatKindLabel(fallbackHintEp.kind))
+                : '与电脑端连接已断开，可点击重试或切换连接方式');
+          setConnBannerVisible(true, bannerHint);
         } else {
           renderModeEntryGate('当前入口暂未连通，请点击下方已开启的连接方式直接进入：');
         }
@@ -12085,7 +12656,10 @@ function buildMobileAppHtml() {
       };
     }
     if ($('conn-switch-btn')) {
-      $('conn-switch-btn').onclick = openModeSwitcherSheet;
+      $('conn-switch-btn').onclick = () => {
+        closeTopDrawers();
+        openModeSwitcherSheet();
+      };
     }
 
     function schedulePoll() {
@@ -12104,17 +12678,6 @@ function buildMobileAppHtml() {
     });
     window.addEventListener('pageshow', () => { void fetchSnapshot(); });
 
-    function closeSheet() {
-      const backdrop = $('sheet-backdrop');
-      if (backdrop && backdrop.contains(document.activeElement)) {
-        try { document.activeElement.blur(); } catch {}
-      }
-      if (backdrop) backdrop.hidden = true;
-      resetModalSheetShift();
-      syncViewportHeight();
-    }
-
-    let activeSheetState = null;
     async function handleSheetListClick(e) {
       const btn = e?.target?.closest?.('.sheet-opt');
       if (!btn || !activeSheetState) return;
@@ -12369,10 +12932,23 @@ function buildMobileAppHtml() {
 
     let activeMsgSessionId = null;
     let activeMsgHistorySource = '';
+    let msgCacheEpoch = 0;
     const sessionMsgsByIndex = new Map();
     const openThoughtIdxSet = new Set();
     let loadingEarlierMsgs = false;
     let backfillingMsgGaps = false;
+
+    function parseNonNegativeInt(v) {
+      if (typeof v === 'number') return (Number.isSafeInteger(v) && v >= 0) ? v : null;
+      if (typeof v === 'string') {
+        const trimmed = v.trim();
+        if (/^\\d+$/.test(trimmed)) {
+          const n = Number(trimmed);
+          return (Number.isSafeInteger(n) && n >= 0) ? n : null;
+        }
+      }
+      return null;
+    }
 
     function getThoughtFallbackText(m) {
       if (!m) return '';
@@ -12448,30 +13024,35 @@ function buildMobileAppHtml() {
     }
 
     async function backfillMissingMsgGaps(expectedSid) {
-      if (backfillingMsgGaps || !expectedSid || expectedSid === '__new__' || expectedSid !== activeMsgSessionId) return;
+      if (backfillingMsgGaps || !expectedSid || expectedSid === '__new__' || expectedSid !== activeMsgSessionId || activeMsgHistorySource !== 'trajectory') return;
+      const reqEpoch = msgCacheEpoch;
       backfillingMsgGaps = true;
       try {
-        while (expectedSid === activeMsgSessionId) {
-          const ranges = findMissingMsgRanges(Number(latestSnap?.totalMessages));
+        while (reqEpoch === msgCacheEpoch && expectedSid === activeMsgSessionId && activeMsgHistorySource === 'trajectory') {
+          const totalCount = parseNonNegativeInt(latestSnap?.totalMessages);
+          if (totalCount === null) break;
+          const ranges = findMissingMsgRanges(totalCount);
           if (!ranges.length) break;
           const [gapStart, gapEnd] = ranges[0];
           let cursorEnd = gapEnd;
           let progressed = false;
-          while (cursorEnd > gapStart && expectedSid === activeMsgSessionId) {
+          while (cursorEnd > gapStart && reqEpoch === msgCacheEpoch && expectedSid === activeMsgSessionId && activeMsgHistorySource === 'trajectory') {
             const chunkLim = Math.max(1, Math.min(200, cursorEnd - gapStart));
             const q = '/api/messages?sessionId=' + encodeURIComponent(expectedSid) + '&before=' + cursorEnd + '&limit=' + chunkLim;
             const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
             if (res.status === 401) { location.reload(); return; }
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
-            if (expectedSid !== activeMsgSessionId) return;
+            if (reqEpoch !== msgCacheEpoch || expectedSid !== activeMsgSessionId || activeMsgHistorySource !== 'trajectory') return;
             const rows = Array.isArray(data?.messages) ? data.messages : [];
             if (!rows.length) break;
-            const baseIdx = Number.isFinite(Number(data?.startIndex)) ? Number(data.startIndex) : Math.max(0, cursorEnd - rows.length);
+            const parsedStart = parseNonNegativeInt(data?.startIndex);
+            const baseIdx = parsedStart !== null ? parsedStart : Math.max(0, cursorEnd - rows.length);
             for (let i = 0; i < rows.length; i++) {
               const m = rows[i];
               if (!m) continue;
-              const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + i);
+              const parsedMIdx = parseNonNegativeInt(m.msgIndex);
+              const mIdx = parsedMIdx !== null ? parsedMIdx : (baseIdx + i);
               sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
               progressed = true;
             }
@@ -12483,7 +13064,9 @@ function buildMobileAppHtml() {
         }
       } catch {
       } finally {
-        backfillingMsgGaps = false;
+        if (reqEpoch === msgCacheEpoch) {
+          backfillingMsgGaps = false;
+        }
       }
     }
 
@@ -12668,7 +13251,8 @@ function buildMobileAppHtml() {
       const msgs = getOrderedSessionMessages();
       const earliestIdx = msgs.length ? Math.max(0, Number(msgs[0].msgIndex) || 0) : 0;
       const reqSid = activeMsgSessionId;
-      if (loadingEarlierMsgs || !reqSid || reqSid === '__new__' || !(earliestIdx > 0)) return;
+      if (loadingEarlierMsgs || !reqSid || reqSid === '__new__' || activeMsgHistorySource !== 'trajectory' || !(earliestIdx > 0)) return;
+      const reqEpoch = msgCacheEpoch;
       loadingEarlierMsgs = true;
       const btn = $('btn-load-earlier');
       if (btn) {
@@ -12678,26 +13262,34 @@ function buildMobileAppHtml() {
       try {
         const q = '/api/messages?sessionId=' + encodeURIComponent(reqSid) + '&before=' + earliestIdx + '&limit=30';
         const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
-        if (res.status === 401) { location.reload(); return; }
+        if (res.status === 401) {
+          if (reqEpoch === msgCacheEpoch) loadingEarlierMsgs = false;
+          location.reload();
+          return;
+        }
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        if (reqSid !== activeMsgSessionId) return;
+        if (reqEpoch !== msgCacheEpoch || reqSid !== activeMsgSessionId || activeMsgHistorySource !== 'trajectory') return;
         const rows = Array.isArray(data?.messages) ? data.messages : [];
-        const baseIdx = Number.isFinite(Number(data?.startIndex)) ? Number(data.startIndex) : Math.max(0, earliestIdx - rows.length);
+        const parsedStart = parseNonNegativeInt(data?.startIndex);
+        const baseIdx = parsedStart !== null ? parsedStart : Math.max(0, earliestIdx - rows.length);
         stickBottom = false;
         for (let i = 0; i < rows.length; i++) {
           const m = rows[i];
           if (!m) continue;
-          const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + i);
+          const parsedMIdx = parseNonNegativeInt(m.msgIndex);
+          const mIdx = parsedMIdx !== null ? parsedMIdx : (baseIdx + i);
           sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
         }
         loadingEarlierMsgs = false;
         renderMessagesView(latestSnap, { preserveAnchor: true });
       } catch (err) {
-        loadingEarlierMsgs = false;
-        msgEl.dataset.lastHtml = '';
-        renderMessagesView(latestSnap);
-        showToast(err?.message || '加载更早消息失败');
+        if (reqEpoch === msgCacheEpoch && reqSid === activeMsgSessionId) {
+          loadingEarlierMsgs = false;
+          msgEl.dataset.lastHtml = '';
+          renderMessagesView(latestSnap);
+          showToast(err?.message || '加载更早消息失败');
+        }
       }
     }
 
@@ -14355,7 +14947,10 @@ function buildMobileAppHtml() {
     } else if (!manualLocked && getEnabledModeEntries().length > 1) {
       autoSwitchChecked = true;
       void runSpeedTest({ autoSwitch: true, silent: true });
-    } else if (speedTestState.testedAt === 0) {
+    } else if (speedTestState.testedAt === 0 || (location.protocol !== 'https:' && getEnabledModeEntries().some((ep) => {
+      const sr = speedTestState.results?.[ep.kind];
+      return !sr || sr.via === 'server' || sr.reason === 'https_restricted';
+    }))) {
       void runSpeedTest({ autoSwitch: false, silent: true });
     }
     void fetchSnapshot();
@@ -14423,11 +15018,16 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '', allowedTailscaleDns
     if (u.protocol === 'https:' && cleanHost.endsWith('.trycloudflare.com')) return true;
     if (cleanHost === 'localhost' || cleanHost.endsWith('.local')) return true;
     if (cleanHost.endsWith('.ts.net')) {
-      const detectedTsDns = allowedTailscaleDnsName !== null && allowedTailscaleDnsName !== undefined
-        ? String(allowedTailscaleDnsName)
-        : String(detectHostIdentityMeta().tailscaleDnsName || '');
-      const normalizedTsDns = detectedTsDns.replace(/\.$/, '').trim().toLowerCase();
-      return Boolean(normalizedTsDns && cleanHost === normalizedTsDns);
+      const rawAllowed = (allowedTailscaleDnsName !== null && allowedTailscaleDnsName !== undefined)
+        ? allowedTailscaleDnsName
+        : detectHostIdentityMeta().tailscaleDnsName;
+      const candidateList = Array.isArray(rawAllowed) ? rawAllowed : [rawAllowed];
+      const normalizedSet = new Set(
+        candidateList
+          .map((item) => String(item || '').replace(/\.+$/, '').trim().toLowerCase())
+          .filter(Boolean)
+      );
+      return normalizedSet.has(cleanHost);
     }
     return isAllowedPrivateAddress(cleanHost);
   } catch {
@@ -14621,7 +15221,36 @@ function createCloudflareTunnelController(getPort) {
   let errorMsg = '';
   let mode = 'quick';
   let killEscalationTimer = null;
+  let autoRetryTimer = null;
+  let consecutiveFailures = 0;
   let lastAutoRetryAt = 0;
+
+  const clearAutoRetryTimer = () => {
+    if (autoRetryTimer) {
+      clearTimeout(autoRetryTimer);
+      autoRetryTimer = null;
+    }
+  };
+
+  const scheduleAutoRetry = () => {
+    clearAutoRetryTimer();
+    if (process.env.AG_REMOTE_SKIP_PROBES === '1' || state === 'stopped') return;
+    const cfgNow = loadOrCreateRemoteConfig();
+    if (!cfgNow.tunnelEnabled) return;
+    if (/(?:Token 无效|请先填写有效|未检测到 cloudflared|隔离空配置文件)/i.test(errorMsg || '')) return;
+    if (consecutiveFailures >= 5) return;
+    const delay = Math.min(30000, 3000 * Math.pow(2, consecutiveFailures));
+    consecutiveFailures += 1;
+    autoRetryTimer = setTimeout(() => {
+      autoRetryTimer = null;
+      if (state !== 'error') return;
+      const curCfg = loadOrCreateRemoteConfig();
+      if (!curCfg.tunnelEnabled) return;
+      lastAutoRetryAt = Date.now();
+      void start(curCfg);
+    }, delay);
+    autoRetryTimer.unref?.();
+  };
 
   const getStatus = () => {
     const cfg = loadOrCreateRemoteConfig();
@@ -14637,6 +15266,8 @@ function createCloudflareTunnelController(getPort) {
   };
 
   const stop = async () => {
+    clearAutoRetryTimer();
+    consecutiveFailures = 0;
     if (killEscalationTimer) {
       clearTimeout(killEscalationTimer);
       killEscalationTimer = null;
@@ -14668,6 +15299,7 @@ function createCloudflareTunnelController(getPort) {
   };
 
   const start = async (overrideCfg = null) => {
+    clearAutoRetryTimer();
     let cfg = overrideCfg || loadOrCreateRemoteConfig();
     mode = cfg.tunnelMode === 'named' ? 'named' : 'quick';
     if (!cfg.tunnelEnabled) {
@@ -14755,6 +15387,7 @@ function createCloudflareTunnelController(getPort) {
         publicUrl = urlStr;
         state = 'running';
         errorMsg = '';
+        consecutiveFailures = 0;
         writeTunnelStateFile({
           pid: spawned.pid,
           mode,
@@ -14771,6 +15404,7 @@ function createCloudflareTunnelController(getPort) {
         if (mode === 'quick' && quickUrlCandidate && state === 'starting' && child === spawned && !errorMsg) {
           publicUrl = quickUrlCandidate;
           state = 'running';
+          consecutiveFailures = 0;
           writeTunnelStateFile({
             pid: spawned.pid,
             mode,
@@ -14828,6 +15462,7 @@ function createCloudflareTunnelController(getPort) {
             publicUrl = cfg.tunnelHostname;
             state = 'running';
             errorMsg = '';
+            consecutiveFailures = 0;
             writeTunnelStateFile({
               pid: spawned.pid,
               mode,
@@ -14850,18 +15485,21 @@ function createCloudflareTunnelController(getPort) {
       spawned.once('error', (err) => {
         if (child !== spawned) return;
         child = null;
+        const wasStopped = state === 'stopped';
         state = 'error';
         publicUrl = '';
         errorMsg = err?.message || '启动 cloudflared 失败';
         removeTunnelStateFile();
         clearTimeout(waitTimer);
         settle();
+        if (!wasStopped) scheduleAutoRetry();
       });
 
       spawned.once('exit', (code) => {
         if (child !== spawned) return;
         child = null;
-        if (state !== 'stopped') {
+        const wasStopped = state === 'stopped';
+        if (!wasStopped) {
           state = 'error';
           publicUrl = '';
           if (!errorMsg) {
@@ -14873,6 +15511,7 @@ function createCloudflareTunnelController(getPort) {
         removeTunnelStateFile();
         clearTimeout(waitTimer);
         settle();
+        if (!wasStopped) scheduleAutoRetry();
       });
     });
   };
@@ -14894,6 +15533,12 @@ function createCloudflareTunnelController(getPort) {
     getStatus,
     ensureRunning,
     configure: async (patch = {}) => {
+      if (patch.tailscaleCustomHost !== undefined && String(patch.tailscaleCustomHost || '').trim()) {
+        const tsCheck = validateTailscaleCustomHost(patch.tailscaleCustomHost);
+        if (!tsCheck.ok) {
+          return { ...getStatus(), validationError: tsCheck.error };
+        }
+      }
       const prevCfg = loadOrCreateRemoteConfig();
       const patchCh = (patch.enabledChannels && typeof patch.enabledChannels === 'object') ? patch.enabledChannels : {};
       const nextTunnelEnabled = patch.enabled !== undefined
@@ -15133,13 +15778,15 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
     bonjour: true,
     tunnel: Boolean(config?.tunnelEnabled)
   };
+  const reqCh = detectRequestChannel(req);
+  const reqTsIp = extractTailscaleProxyClientIp(req, reqCh, localHostIps);
   const rawKnownLanIp = rec?.lastLanIp || '';
   const lanSeenRecently = (now - (rec?.lastLanSeenAt || 0)) <= LAN_RECENT_SEEN_TTL_MS;
   const knownLanIp = (rawKnownLanIp && lanSeenRecently && !localHostIps.has(rawKnownLanIp) && isIpInLocalPhysicalLanSubnet(rawKnownLanIp, netsMap))
     ? rawKnownLanIp
     : '';
   const rawKnownTsIp = rec?.lastTailscaleIp || '';
-  const knownTsIp = (rawKnownTsIp && !localHostIps.has(rawKnownTsIp)) ? rawKnownTsIp : '';
+  const knownTsIp = reqTsIp || ((rawKnownTsIp && !localHostIps.has(rawKnownTsIp)) ? rawKnownTsIp : '');
 
   const labelToOs = {
     iPhone: 'ios',
@@ -15151,7 +15798,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
   const targetOs = labelToOs[label] || '';
 
   const runTsProbe = async () => {
-    if (!en.tailscale && !en.lan) return { statusAvailable: false, pong: null };
+    if (!en.tailscale && !en.lan) return { statusAvailable: false, attempted: false, pong: null };
     const candidates = cachedTailscaleBin
       ? [cachedTailscaleBin]
       : (process.platform === 'darwin'
@@ -15172,7 +15819,11 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
       }
     }
     if (!workingBin || !parsedStatus || typeof parsedStatus !== 'object') {
-      return { statusAvailable: false, pong: null };
+      return { statusAvailable: false, attempted: false, pong: null };
+    }
+    const tsBackendState = String(parsedStatus.BackendState || '').trim();
+    if ((tsBackendState && tsBackendState !== 'Running') || parsedStatus.Self?.Online === false) {
+      return { statusAvailable: false, attempted: false, pong: null };
     }
 
     const probeIps = [];
@@ -15184,13 +15835,20 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
         if (!p || !p.Online) continue;
         if (String(p.OS || '').toLowerCase() !== targetOs) continue;
         const ip4 = Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs.find((ip) => isTailscaleCgnatIpv4(String(ip))) : '';
-        if (ip4 && !localHostIps.has(String(ip4))) mobilePeers.push(String(ip4));
+        if (ip4 && !localHostIps.has(String(ip4))) {
+          mobilePeers.push({ ip: String(ip4), active: Boolean(p.Active) });
+        }
       }
       if (mobilePeers.length === 1) {
-        probeIps.push(mobilePeers[0]);
+        probeIps.push(mobilePeers[0].ip);
+      } else if (mobilePeers.length > 1) {
+        const activePeers = mobilePeers.filter((x) => x.active);
+        if (activePeers.length === 1) {
+          probeIps.push(activePeers[0].ip);
+        }
       }
     }
-    if (!probeIps.length) return { statusAvailable: true, pong: null };
+    if (!probeIps.length) return { statusAvailable: true, attempted: false, pong: null };
 
     const pongs = await Promise.all(probeIps.map(async (ip) => {
       const pr = await execFn(workingBin, ['ping', '--c', '1', '--timeout', '1s', ip], 1250);
@@ -15198,7 +15856,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
     }));
     const validPongs = pongs.filter((p) => p && p.ok && Number.isFinite(p.ms));
     validPongs.sort((a, b) => a.ms - b.ms);
-    return { statusAvailable: true, pong: validPongs[0] || null };
+    return { statusAvailable: true, attempted: true, pong: validPongs[0] || null };
   };
 
   const [tsRes, initialLanPing] = await Promise.all([
@@ -15208,12 +15866,21 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
 
   let lanPing = initialLanPing;
   const tsPong = tsRes?.pong || null;
+  const viaSameLanIpv6 = Boolean(
+    tsPong?.ok
+    && !tsPong.isDerp
+    && !tsPong.viaLanIp
+    && tsPong.viaIp
+    && isIpv6InLocalPhysicalLanPrefix(tsPong.viaIp, netsMap)
+  );
   if (!lanPing?.ok && en.lan && tsPong?.ok && !tsPong.isDerp && tsPong.viaLanIp && !localHostIps.has(tsPong.viaLanIp) && isIpInLocalPhysicalLanSubnet(tsPong.viaLanIp, netsMap)) {
     lanPing = { ok: true, ms: Math.max(2, tsPong.ms) };
     if (rec) {
       rec.lastLanIp = tsPong.viaLanIp;
       rec.lastLanSeenAt = now;
     }
+  } else if (!lanPing?.ok && en.lan && viaSameLanIpv6) {
+    lanPing = { ok: true, ms: Math.max(2, tsPong.ms) };
   }
   if (tsPong?.ok && rec && isTailscaleCgnatIpv4(tsPong.peerIp) && !localHostIps.has(tsPong.peerIp)) {
     rec.lastTailscaleIp = tsPong.peerIp;
@@ -15224,7 +15891,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
   if (en.tailscale) {
     if (tsPong?.ok) {
       hints.tailscale = { ok: true, ms: tsPong.ms, via: 'server' };
-    } else if (tsRes?.statusAvailable) {
+    } else if (tsRes?.statusAvailable && tsRes?.attempted) {
       hints.tailscale = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
     }
   }
@@ -15235,7 +15902,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
     if (en.bonjour && detectHostIdentityMeta().bonjourHost) {
       hints.bonjour = { ok: true, ms: lanPing.ms + 5, via: 'server' };
     }
-  } else if (tsPong?.ok && !tsPong.viaLanIp) {
+  } else if (tsPong?.ok && !tsPong.viaLanIp && !viaSameLanIpv6) {
     if (en.lan) hints.lan = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
     if (en.bonjour) hints.bonjour = { ok: false, ms: null, reason: 'unreachable', via: 'server' };
   }
@@ -15479,7 +16146,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       state: 'running',
       publicUrl: activeTunnelUrl,
       mode: config.tunnelMode
-    } : null, config.enabledChannels, { readOnly: true });
+    } : null, config.enabledChannels, {
+      readOnly: true,
+      tailscaleCustomHost: config.tailscaleCustomHost
+    });
     const activeConvId = snap.activeConversationId || snap.sessionId || '';
     const convList = Array.isArray(snap.conversations) ? snap.conversations : [];
     const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
@@ -15607,7 +16277,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
     const allowedTsDns = options.allowedTailscaleDnsName !== undefined
       ? options.allowedTailscaleDnsName
-      : detectHostIdentityMeta().tailscaleDnsName;
+      : [detectHostIdentityMeta().tailscaleDnsName, config.tailscaleCustomHost]
+          .filter((h) => String(h || '').trim().toLowerCase().endsWith('.ts.net'));
     const reqOrigin = String(req.headers.origin || '').trim();
     if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl, allowedTsDns)) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
@@ -15809,7 +16480,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         state: 'running',
         publicUrl: activeTunnelUrl,
         mode: config.tunnelMode
-      } : null, config.enabledChannels, { readOnly: true });
+      } : null, config.enabledChannels, {
+        readOnly: true,
+        tailscaleCustomHost: config.tailscaleCustomHost
+      });
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({
         ok: true,
@@ -17911,7 +18585,7 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
 
   let tsHttpsUrl = '';
   let tsHttpsHint = '';
-  if (en.tailscale && meta.tailscaleDnsName) {
+  if (en.tailscale && meta.tailscaleDnsName && meta.tailscaleRunning !== false) {
     const tsServe = options.tailscaleServe || ensureTailscaleServeHttps(port, {
       hostMeta: meta,
       execFileSync: options.execFileSync,
@@ -17919,6 +18593,17 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
     });
     if (tsServe?.enabled && tsServe?.url) tsHttpsUrl = tsServe.url;
     if (tsServe?.hint) tsHttpsHint = tsServe.hint;
+  }
+
+  const customTsHost = normalizeTailscaleCustomHost(options.tailscaleCustomHost || '');
+  const effectiveTailscale = [...tailscale];
+  if (
+    en.tailscale
+    && customTsHost
+    && !effectiveTailscale.some((x) => String(x?.address || '').toLowerCase() === customTsHost)
+    && (!tsHttpsUrl || String(meta.tailscaleDnsName || '').toLowerCase() !== customTsHost)
+  ) {
+    effectiveTailscale.push({ iface: 'custom', address: customTsHost, kind: 'tailscale', custom: true });
   }
 
   const endpoints = [];
@@ -17946,10 +18631,11 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
       host: tsHttpsHost,
       kind: 'tailscale',
       priority: 90,
-      iface: tailscale[0]?.iface || 'utun0'
+      iface: effectiveTailscale[0]?.iface || 'utun0'
     });
   }
-  if (en.tailscale && tailscale[0]) addEp(tailscale[0].address, 'tailscale', 100, tailscale[0].iface);
+  if (en.tailscale && effectiveTailscale[0]) addEp(effectiveTailscale[0].address, 'tailscale', 100, effectiveTailscale[0].iface);
+  if (en.tailscale && customTsHost) addEp(customTsHost, 'tailscale', 105, 'custom');
   if (en.tailscale && !tsHttpsUrl && tailscale.length > 0 && meta.tailscaleDnsName) {
     addEp(meta.tailscaleDnsName, 'tailscale', 150, tailscale[0]?.iface || 'utun0');
   }
@@ -17978,12 +18664,13 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
   }
 
   return {
-    tailscale,
+    tailscale: effectiveTailscale,
     lan,
     primaryLan,
     deviceName: meta.deviceName,
     bonjourHost: meta.bonjourHost,
     tailscaleDnsName: meta.tailscaleDnsName,
+    tailscaleCustomHost: customTsHost,
     tailscaleHttpsUrl: tsHttpsUrl,
     tailscaleHttpsHint: tsHttpsHint,
     hosts: endpoints.map((ep) => ep.host),
@@ -18012,7 +18699,10 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       }
     : persisted;
 
-  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel, cfg.enabledChannels, { readOnly: true });
+  const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel, cfg.enabledChannels, {
+    readOnly: true,
+    tailscaleCustomHost: cfg.tailscaleCustomHost
+  });
 
   const mkFused = (entryHost, entryBaseUrl = '') => buildFusedPairingUrl({
     entryBaseUrl,
@@ -18024,10 +18714,10 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     endpoints: desc.endpoints
   });
 
-  const tsEntryHost = desc.tailscale[0]?.address || desc.tailscaleDnsName || '';
+  const tsEntryHost = desc.tailscale[0]?.address || desc.tailscaleDnsName || desc.tailscaleCustomHost || '';
   const tsDisplayHost = (desc.tailscale.length > 0 && desc.tailscaleDnsName)
     ? desc.tailscaleDnsName
-    : (desc.tailscale[0]?.address || '');
+    : (desc.tailscale[0]?.address || desc.tailscaleCustomHost || '');
   const lanEntryHost = desc.primaryLan?.address || '';
   const bonjourEntryHost = (desc.bonjourHost && desc.primaryLan) ? desc.bonjourHost : '';
 
@@ -18073,7 +18763,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     try {
       return { url: full, qrSvg: renderQrSvg(full) };
     } catch {
-      const compactEps = (desc.endpoints || []).filter((e) => e.kind === 'tunnel' || e.priority === 0 || e.priority === 100);
+      const compactEps = (desc.endpoints || []).filter((e) => e.kind === 'tunnel' || e.priority === 0 || e.priority === 90 || e.priority === 100);
       const compact = buildFusedPairingUrl({
         entryBaseUrl,
         entryHost,
@@ -18112,8 +18802,8 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       label: 'Tailscale',
       labelEn: 'Tailscale',
       enabled: Boolean(enCh.tailscale),
-      detected: desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl),
-      available: Boolean(enCh.tailscale && (desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl))),
+      detected: desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl) || Boolean(desc.tailscaleCustomHost),
+      available: Boolean(enCh.tailscale && (desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl) || Boolean(desc.tailscaleCustomHost))),
       rawHost: tsDisplayHost,
       displayHost: enCh.tailscale
         ? (desc.tailscaleHttpsUrl ? `HTTPS · ${desc.tailscaleDnsName}` : tsDisplayHost)
@@ -18122,6 +18812,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       entryBaseUrl: desc.tailscaleHttpsUrl || '',
       httpsUrl: desc.tailscaleHttpsUrl || '',
       httpsHint: desc.tailscaleHttpsHint || '',
+      customHost: cfg.tailscaleCustomHost || '',
       iface: desc.tailscale[0]?.iface || ''
     },
     {
@@ -18146,9 +18837,15 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
   const tailscaleUrls = enCh.tailscale ? desc.tailscale.map((x) => ({ ...x, ...mkQrSafe(x.address) })) : [];
   const lanUrls = enCh.lan ? desc.lan.map((x) => ({ ...x, ...mkQrSafe(x.address) })) : [];
 
-  const pickedChannel = channels.find((c) => c.key === 'tunnel' && c.available)
-    || channels.find((c) => c.key === 'tailscale' && c.available)
+  const isTailscaleHttpsCh = (c) => Boolean(
+    c && c.key === 'tailscale' && c.available
+    && (c.httpsUrl || (c.entryBaseUrl && String(c.entryBaseUrl).startsWith('https://')) || String(c.url || '').startsWith('https://'))
+  );
+  const pickedChannel = channels.find((c) => c.key === 'tunnel' && c.available && c.mode === 'named')
+    || channels.find((c) => isTailscaleHttpsCh(c))
     || channels.find((c) => c.key === 'lan' && c.available)
+    || channels.find((c) => c.key === 'tailscale' && c.available)
+    || channels.find((c) => c.key === 'tunnel' && c.available)
     || channels.find((c) => c.available);
   const localBuilt = mkQrSafe('127.0.0.1');
   const localUrl = localBuilt.url;
@@ -18164,6 +18861,7 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     deviceName: desc.deviceName,
     bonjourHost: desc.bonjourHost,
     tailscaleDnsName: desc.tailscaleDnsName,
+    tailscaleCustomHost: cfg.tailscaleCustomHost || '',
     enabledChannels: enCh,
     remoteDisplay: sanitizeRemoteDisplayConfig(cfg.remoteDisplay),
     tunnelEnabled: Boolean(cfg.tunnelEnabled),
@@ -18278,6 +18976,8 @@ module.exports = {
   validateCloudflareTunnelToken,
   validateTunnelHostname,
   normalizeTunnelHostname,
+  validateTailscaleCustomHost,
+  normalizeTailscaleCustomHost,
   getCloudflaredInstallGuide,
   resolveCloudflaredBinary,
   createCloudflareTunnelController,

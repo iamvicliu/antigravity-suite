@@ -1926,7 +1926,7 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
 
     remotePop.querySelector('#ag-remote-copy')?.click();
     await new Promise(r => setTimeout(r, 10));
-    assert.ok(copiedUrl.includes('100.64.0.2:18765') && copiedUrl.includes('&endpoints='), '复制链接应使用优先级最高通道作引导地址并保留多端点融合参数');
+    assert.ok(copiedUrl.includes('192.168.1.2:18765') && copiedUrl.includes('&endpoints='), '复制链接应使用优先级最高通道作引导地址并保留多端点融合参数');
 
     api.openSettings('terminal');
     assert.equal(remotePop.hidden, true, '打开设置面板时应互斥关闭遥控浮窗');
@@ -10755,10 +10755,28 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
 
   const remotePop = shadow.getElementById('ag-remote-popover');
   assert.ok(remotePop && !remotePop.hidden, '点击远程按钮应打开配对浮窗');
-  assert.ok(remotePop.innerHTML.includes('id="qr-tunnel"'), '默认应优先展示 Cloudflare 隧道二维码');
+  assert.ok(remotePop.innerHTML.includes('id="qr-lan"'), '默认应优先展示局域网二维码');
 
   const findPill = (key) => Array.from(remotePop.querySelectorAll('.ag-rp-ch-pill'))
     .find((node) => node.getAttribute('data-ch-key') === key);
+
+  const tunnelPill = findPill('tunnel');
+  assert.ok(tunnelPill, '浮窗应渲染可点击的 Cloudflare 隧道胶囊');
+  tunnelPill.click();
+  await new Promise((r) => setTimeout(r, 15));
+
+  assert.equal(
+    findPill('tunnel')?.getAttribute('data-active'),
+    'true',
+    '点击隧道胶囊后应激活 Cloudflare 隧道通道'
+  );
+  assert.ok(
+    remotePop.innerHTML.includes('id="qr-tunnel"'),
+    '切换通道后二维码应即时更新为隧道二维码'
+  );
+  remotePop.querySelector('#ag-remote-copy')?.click();
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(copiedText, 'https://demo.trycloudflare.com/?token=tok-switch-test-123456', '复制链接应复制当前选中隧道通道的 URL');
 
   const lanPill = findPill('lan');
   assert.ok(lanPill, '浮窗应渲染可点击的局域网通道胶囊');
@@ -10778,19 +10796,19 @@ test('远程入口多通道切换与 Cloudflare 隧道隔离修复 (#08)', async
   await new Promise((r) => setTimeout(r, 15));
   assert.equal(copiedText, 'http://192.168.1.10:18765/?token=tok-switch-test-123456', '复制链接应复制当前选中通道的 URL');
 
-  // 4. 所选局域网通道失效刷新后，应自动回退至最高优先级可用通道 (Cloudflare)
+  // 4. 所选局域网通道失效刷新后，应自动回退至次高优先级可用通道 (Tailscale > Quick Tunnel)
   lanAvailable = false;
   remotePop.querySelector('#ag-remote-refresh')?.click();
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(
-    findPill('tunnel')?.getAttribute('data-active'),
+    findPill('tailscale')?.getAttribute('data-active'),
     'true',
-    '所选通道失效后应自动回退激活 Cloudflare 通道'
+    '所选局域网通道失效后应自动回退激活次高优先级可用通道 Tailscale'
   );
-  assert.ok(remotePop.innerHTML.includes('id="qr-tunnel"'), '回退后二维码应恢复为 Cloudflare 二维码');
+  assert.ok(remotePop.innerHTML.includes('id="qr-ts"'), '回退后二维码应恢复为 Tailscale 二维码');
   remotePop.querySelector('#ag-remote-copy')?.click();
   await new Promise((r) => setTimeout(r, 15));
-  assert.equal(copiedText, 'https://demo.trycloudflare.com/?token=tok-switch-test-123456', '回退后复制链接应指向回退通道 URL');
+  assert.equal(copiedText, 'http://100.64.0.2:18765/?token=tok-switch-test-123456', '回退后复制链接应指向回退通道 URL');
 
   enhancer.dispose?.();
 });
@@ -12854,7 +12872,11 @@ test('手机端底部空白区域排查与安全区留白优化 (#07)', async ()
   assert.ok(html.includes('position:fixed;inset:0;height:auto;overflow:hidden'), '通用 body 应使用 position:fixed;inset:0;height:auto 贴满底边，避免 Safari 与独立 PWA 底部死区');
   assert.ok(html.includes("document.body.style.height = '';"), 'syncViewportHeight 在无键盘及键盘收起时应统一清除内联 height');
   assert.ok(html.includes('height:100%;height:100dvh;overflow:hidden'), 'html 应设置 height:100%;height:100dvh 随浏览器工具栏动态贴底');
-  assert.ok(html.includes('.topbar{flex-wrap:wrap;padding:6px 10px 7px;column-gap:6px;row-gap:6px}') && html.includes('flex:1 0 100%;width:100%;gap:6px;'), '手机端顶栏功能按钮应独立成第二行，释放整行宽度给标题与项目名');
+  assert.ok(
+    html.includes('.topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto auto;')
+    && html.includes('grid-column:1 / -1;grid-row:3;width:100%;gap:6px;'),
+    '手机端顶栏功能按钮应独立成底栏整行，释放整行宽度给标题与项目名'
+  );
 
   // 3. 独立 PWA 模式（navigator.standalone = true）下键盘弹出、收起与弹窗锁高行为级实测
   const pwaStart = html.indexOf('const appEl = document.querySelector(\'.app\');');
@@ -23998,7 +24020,7 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
   // 2. 前 32 字含各类 Markdown 语法 + 多块无空格 DOM 拼接（collectBoundedNodeText 实况）：只保留服务端渲染版，0 个 dom-tail
   const mdCases = [
     {
-      md: '**已根治** [mobile-remote.js](file:///Users/shenslu/codebase/antigravity-suite/mobile-remote.js#L4525) 中的去重逻辑。',
+      md: '**已根治** [mobile-remote.js](file:///Users/me/codebase/antigravity-suite/mobile-remote.js#L4525) 中的去重逻辑。',
       dom: '已根治 mobile-remote.js 中的去重逻辑。'
     },
     {
@@ -24010,7 +24032,7 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
       dom: '根因定位第一点是 原始 Markdown 与 DOM 纯文本硬比对失配。'
     },
     {
-      md: '> [!NOTE]\n> 请查看 [TODO.md](file:///Users/shenslu/codebase/antigravity-suite/TODO.md) 并确认结果。',
+      md: '> [!NOTE]\n> 请查看 [TODO.md](file:///Users/me/codebase/antigravity-suite/TODO.md) 并确认结果。',
       dom: '请查看 TODO.md 并确认结果。'
     }
   ];
@@ -26877,3 +26899,1483 @@ test('PR #8 合并加固 (P0-1~P0-5 / P1): Tailscale Serve 护栏、Web Push 曲
   const freshEnhancer = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
   assert.ok(freshEnhancer.includes('mobileBgSwitchDepth'), 'ag-enhancer-overlay.js 应使用 mobileBgSwitchDepth 保护后台切会话期间的 Dock 未读追踪');
 });
+
+// =========================================================================
+// 扫码默认选路、手机顶栏显式通道胶囊、SW 1033 容灾与 Tailscale 探测修复
+// =========================================================================
+test('扫码选路优先级、顶栏独立通道胶囊、SW Error 1033 容灾壳与 Tailscale 探测误报修复', async () => {
+  const remoteMod = require('../mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+
+  // 1. HTML 结构、唯一 closeSheet 定义、全量 <script> 语法校验
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length >= 2);
+  for (let i = 0; i < scripts.length; i++) {
+    assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `remote-ux-script-${i}.js` }));
+  }
+  const mainScript = scripts.map((m) => m[1]).find((s) => s.includes('function renderModeSwitcherSheet('));
+  assert.ok(mainScript, '应找到手机端主脚本');
+  const closeSheetDefs = mainScript.match(/function\s+closeSheet\s*\(/g) || [];
+  assert.equal(closeSheetDefs.length, 1, 'closeSheet 在手机端脚本中只能保留 1 份完整定义');
+  assert.ok(html.includes('id="btn-channel-pill"'), '顶栏必须渲染独立的 #btn-channel-pill 通道状态按钮');
+  assert.ok(html.includes('.channel-pill{'), 'CSS 必须定义 .channel-pill 样式');
+  const desktopMediaCss = html.slice(html.indexOf('@media (min-width:860px)'), html.indexOf('.topbar-actions{'));
+  const mobileMediaCss = html.slice(html.indexOf('@media (max-width:859px)'), html.indexOf('@media (max-width:430px)'));
+  assert.ok(desktopMediaCss.includes('.channel-pill{display:none}'), '桌面宽屏左下角已有切换按钮，顶栏不应再显示 .channel-pill');
+  assert.ok(
+    mobileMediaCss.includes('.toast{top:calc(env(safe-area-inset-top) + 98px)}')
+    && mobileMediaCss.includes('.sub-row{grid-column:2 / -1;grid-row:2}'),
+    '手机窄屏顶栏应采用 3 列 Grid 铺满状态副标题，并将 Toast 下移至双行顶栏下方避免遮挡用量与配额'
+  );
+
+  // 2. 手机端 DOM 交互：空 snap 不弹空配额壳、点击 #btn-channel-pill 关闭顶栏抽屉并开切通道、closeSheet 复位、跨协议切直连不带 spd=
+  const replacedUrls = [];
+  const timers = new Set();
+  const makeClassList = (initial = []) => {
+    const set = new Set(initial);
+    return {
+      add: (...xs) => xs.forEach((x) => set.add(x)),
+      remove: (...xs) => xs.forEach((x) => set.delete(x)),
+      toggle: (x, force) => (force === undefined ? (set.has(x) ? (set.delete(x), false) : (set.add(x), true)) : (force ? (set.add(x), true) : (set.delete(x), false))),
+      contains: (x) => set.has(x)
+    };
+  };
+  const makeEl = (id) => ({
+    id,
+    hidden: false,
+    disabled: false,
+    value: '',
+    innerHTML: '',
+    textContent: '',
+    title: '',
+    scrollHeight: 28,
+    scrollTop: 0,
+    clientHeight: 600,
+    offsetWidth: 300,
+    dataset: {},
+    style: { setProperty() {} },
+    className: '',
+    classList: makeClassList(),
+    children: [],
+    setAttribute() {},
+    removeAttribute() {},
+    getAttribute: () => null,
+    appendChild(c) { this.children.push(c); return c; },
+    addEventListener(ev, fn) { if (ev === 'click') this['on' + ev] = fn; },
+    click() { if (typeof this.onclick === 'function') this.onclick({ target: this, stopPropagation() {} }); },
+    contains: () => false,
+    focus() {},
+    blur() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  });
+  const byId = new Proxy({}, { get: (t, k) => (t[k] || (t[k] = makeEl(String(k)))) });
+  byId['quota-drawer'].hidden = true;
+  byId['context-drawer'].hidden = true;
+  byId['usage-drawer'].hidden = true;
+  byId['sheet-backdrop'].hidden = true;
+  byId['proj-modal-backdrop'].hidden = true;
+  byId['conn-banner'].hidden = true;
+  byId['toast'].hidden = true;
+
+  const epsHttpsToHttp = [
+    { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'https://mac.tail-demo.ts.net', kind: 'tailscale', priority: 90 },
+    { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
+  ];
+  const encEpsHttpsToHttp = remoteMod.encodeEndpointsParam(epsHttpsToHttp);
+  const encSpdDirty = Buffer.from(JSON.stringify({
+    testedAt: Date.now(),
+    results: { lan: { ok: false, ms: null, reason: 'https_restricted', url: 'http://192.168.1.8:18765' } }
+  }), 'utf8').toString('base64url');
+  const startHref = `https://demo.trycloudflare.com/?token=tok-ux&endpoints=${encEpsHttpsToHttp}&spd=${encSpdDirty}`;
+  const startUrl = new URL(startHref);
+  const locObj = {
+    get href() { return startUrl.href; },
+    set href(v) { replacedUrls.push(String(v)); },
+    origin: startUrl.origin,
+    protocol: startUrl.protocol,
+    hostname: startUrl.hostname,
+    pathname: startUrl.pathname,
+    search: startUrl.search,
+    port: startUrl.port,
+    replace(v) { replacedUrls.push(String(v)); }
+  };
+  const lStore = new Map();
+  const sStore = new Map();
+  const domSandbox = {
+    URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+    Uint8Array, TextEncoder, TextDecoder, AbortController, Intl,
+    atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+    btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+    encodeURIComponent, decodeURIComponent,
+    screen: { width: 390, height: 844 },
+    devicePixelRatio: 3,
+    navigator: { platform: 'iPhone', maxTouchPoints: 5, hardwareConcurrency: 6 },
+    location: locObj,
+    history: { replaceState() {} },
+    localStorage: {
+      getItem: (k) => (lStore.has(k) ? lStore.get(k) : null),
+      setItem: (k, v) => lStore.set(k, String(v)),
+      removeItem: (k) => lStore.delete(k)
+    },
+    sessionStorage: {
+      getItem: (k) => (sStore.has(k) ? sStore.get(k) : null),
+      setItem: (k, v) => sStore.set(k, String(v)),
+      removeItem: (k) => sStore.delete(k)
+    },
+    document: {
+      hidden: false,
+      activeElement: null,
+      documentElement: { clientHeight: 844, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+      body: { style: {}, classList: makeClassList() },
+      getElementById: (id) => byId[id],
+      querySelector: () => makeEl('__q'),
+      createElement: (tag) => makeEl(tag),
+      addEventListener() {}
+    },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    innerWidth: 390,
+    innerHeight: 844,
+    visualViewport: null,
+    setTimeout: (fn, ms) => {
+      const t = setTimeout(() => { timers.delete(t); fn(); }, Math.min(Number(ms) || 0, 20));
+      if (typeof t.unref === 'function') t.unref();
+      timers.add(t);
+      return t;
+    },
+    clearTimeout: (t) => { timers.delete(t); clearTimeout(t); },
+    fetch: async () => ({ ok: false, status: 503, json: async () => ({ ok: false }) })
+  };
+  domSandbox.window = domSandbox;
+  domSandbox.addEventListener = () => {};
+  const tailIdx = mainScript.lastIndexOf('})();');
+  const hookedScript = mainScript.slice(0, tailIdx)
+    + '\nglobalThis.__uxHooks = { openTopDrawer, openSheet, closeSheet, enterConnectionMode, getActiveSheetKind: () => activeSheetKind };\n'
+    + mainScript.slice(tailIdx);
+  try {
+    vm.runInNewContext(hookedScript, domSandbox);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // latestSnap 为空时点配额按钮不能打开空配额抽屉
+    byId['btn-quota'].onclick({ stopPropagation() {} });
+    assert.equal(byId['quota-drawer'].hidden, true, 'latestSnap 为空时点击 #btn-quota 不应弹出空配额抽屉');
+    assert.ok(byId['toast'].textContent.includes('配额'), '应通过 toast 告知暂未获取配额');
+
+    // 先打开上下文抽屉，再点顶栏右侧 #btn-channel-pill -> 抽屉关闭 + 切换连接方式弹窗打开
+    byId['context-drawer'].hidden = false;
+    byId['btn-channel-pill'].onclick({ stopPropagation() {} });
+    assert.equal(byId['context-drawer'].hidden, true, '点击 #btn-channel-pill 应互斥关闭已打开的顶栏抽屉');
+    assert.equal(byId['sheet-backdrop'].hidden, false, '点击 #btn-channel-pill 应打开切换连接方式弹窗');
+    assert.equal(byId['sheet-title-text'].textContent, '切换连接方式');
+    assert.equal(domSandbox.__uxHooks.getActiveSheetKind(), 'mode');
+    assert.equal(byId['sheet-action-btn'].hidden, false);
+    assert.ok(byId['sheet-list'].innerHTML.includes('临时域名'), '切换连接方式弹窗应对 .trycloudflare.com 标注「临时域名」标签');
+    assert.ok(byId['sheet-list'].innerHTML.includes('sheet-foot-note') && byId['sheet-list'].innerHTML.includes('一次性'), '切换连接方式弹窗应展示一次性临时域名提示');
+    const modeHtml = byId['sheet-list'].innerHTML;
+    const tsRowIdx = modeHtml.indexOf('mac.tail-demo.ts.net');
+    const lanRowIdx = modeHtml.indexOf('192.168.1.8:18765');
+    const tunnelRowIdx = modeHtml.indexOf('demo.trycloudflare.com');
+    assert.ok(tsRowIdx > 0 && lanRowIdx > tsRowIdx && tunnelRowIdx > lanRowIdx, '弹窗通道列表顺序应为 Tailscale HTTPS > 局域网 > 临时域名');
+
+    // 关闭 mode sheet 后应完全清空状态、隐藏 #sheet-action-btn 并恢复 sheet-list 默认点击处理器
+    domSandbox.__uxHooks.closeSheet();
+    assert.equal(byId['sheet-backdrop'].hidden, true);
+    assert.equal(byId['sheet-action-btn'].hidden, true);
+    assert.equal(byId['sheet-action-btn'].onclick, null);
+    assert.equal(domSandbox.__uxHooks.getActiveSheetKind(), '');
+
+    // 打开普通 sheet，点击第 0 项仍能正常回调
+    let genericPicked = null;
+    domSandbox.__uxHooks.openSheet('普通选项', [{ label: '项A', val: 'alpha' }], (opt) => { genericPicked = opt; });
+    assert.equal(byId['sheet-backdrop'].hidden, false);
+    const fakeOptBtn = { getAttribute: (name) => (name === 'data-idx' ? '0' : null) };
+    await byId['sheet-list'].onclick({ target: { closest: () => fakeOptBtn } });
+    assert.equal(genericPicked?.val, 'alpha', '关闭 mode sheet 后普通 sheet 选项点击回调应恢复正常');
+
+    // 跨协议从 https:// 手动切向 http:// 时不得携带脏 spd= 参数
+    domSandbox.__uxHooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(replacedUrls.length, 1);
+    const navTarget = new URL(replacedUrls[0]);
+    assert.equal(navTarget.origin, 'http://192.168.1.8:18765');
+    assert.equal(navTarget.searchParams.get('manual'), '1');
+    assert.equal(navTarget.searchParams.get('spd'), null, '从 HTTPS 手动切往 HTTP 时不得将受限测速参数 ?spd= 带入明文页面');
+  } finally {
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+  }
+
+  // 3. Service Worker：语法合法、包含 Error 1033 (530) 容灾壳，且能在 530 时返回带备选直连通道的恢复页
+  const swCode = remoteMod.buildServiceWorkerJs();
+  assert.doesNotThrow(() => new vm.Script(swCode, { filename: 'sw-1033-recovery.js' }));
+  assert.ok(swCode.includes('ag-cache-endpoints') && swCode.includes('530'), 'Service Worker 应监听 ag-cache-endpoints 并处理 530 (Error 1033)');
+  const swListeners = {};
+  const cacheStore = new Map();
+  class MockSwResponse {
+    constructor(body, init = {}) {
+      this._body = String(body ?? '');
+      this.status = init.status ?? 200;
+      this.headers = init.headers || {};
+    }
+    async text() { return this._body; }
+    async json() { return JSON.parse(this._body); }
+  }
+  const swSandbox = {
+    URL,
+    JSON,
+    Number,
+    String,
+    Array,
+    Response: MockSwResponse,
+    fetch: async () => new MockSwResponse('Error 1033', { status: 530 }),
+    self: null
+  };
+  swSandbox.self = {
+    location: { origin: 'https://dead-tunnel.trycloudflare.com' },
+    skipWaiting: () => Promise.resolve(),
+    clients: { claim: () => Promise.resolve(), matchAll: async () => [] },
+    caches: {
+      open: async () => ({
+        put: async (k, v) => { cacheStore.set(k, v); },
+        match: async (k) => cacheStore.get(k) || null
+      })
+    },
+    addEventListener: (type, fn) => {
+      if (!swListeners[type]) swListeners[type] = [];
+      swListeners[type].push(fn);
+    }
+  };
+  vm.runInNewContext(swCode, swSandbox);
+  assert.ok(Array.isArray(swListeners.fetch) && swListeners.fetch.length >= 1, 'SW 应注册 fetch 拦截器');
+  assert.ok(Array.isArray(swListeners.message) && swListeners.message.length >= 1, 'SW 应注册 message 监听以接收缓存端点');
+
+  const swTasks = [];
+  for (const fn of swListeners.message) {
+    fn({
+      data: {
+        type: 'ag-cache-endpoints',
+        token: 'sw-secret-tok-demo',
+        name: 'dev-mac',
+        encodedEndpoints: 'encoded-demo',
+        endpoints: [
+          { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+          { url: 'https://dev-mac.tail-demo.ts.net', kind: 'tailscale', priority: 90 },
+          { url: 'https://dead-tunnel.trycloudflare.com', kind: 'tunnel', priority: 250 }
+        ]
+      },
+      waitUntil: (p) => swTasks.push(p)
+    });
+  }
+  await Promise.all(swTasks);
+
+  let interceptedPromise = null;
+  for (const fn of swListeners.fetch) {
+    fn({
+      request: { mode: 'navigate', method: 'GET', url: 'https://dead-tunnel.trycloudflare.com/' },
+      respondWith: (p) => { interceptedPromise = p; }
+    });
+  }
+  assert.ok(interceptedPromise, 'SW 应对同源 navigate 请求调用 respondWith');
+  const recoveryRes = await interceptedPromise;
+  assert.equal(recoveryRes.status, 503);
+  const recoveryHtml = await recoveryRes.text();
+  assert.ok(
+    recoveryHtml.includes('Error 1033') && recoveryHtml.includes('一次性') && recoveryHtml.includes('重新扫码'),
+    '容灾页应清晰告知 Cloudflare 临时隧道已过期及一次性失效原因与重新扫码指引'
+  );
+  assert.ok(recoveryHtml.includes('dev-mac.tail-demo.ts.net') && recoveryHtml.includes('192.168.1.8:18765'), '容灾页应展示可用的 Tailscale HTTPS 与局域网备用通道');
+  assert.ok(!recoveryHtml.includes('dead-tunnel.trycloudflare.com'), '容灾页按钮列表不应重复渲染当前失效入口');
+  const visibleListHtml = recoveryHtml.slice(recoveryHtml.indexOf('id="ep-list"'), recoveryHtml.indexOf('<script>'));
+  assert.ok(!visibleListHtml.includes('sw-secret-tok-demo'), '容灾页可见按钮 DOM 不应明文暴露配对 token');
+
+  // 4. probeClientPrivateReachability：多台在线 iOS 未执行 tailscale ping 时不得误标红字 unreachable
+  const prevAppData = process.env.APPDATA;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevCtxStateDir = process.env.AG_CONTEXT_METER_STATE_DIR;
+  const prevSkipProbes = process.env.AG_REMOTE_SKIP_PROBES;
+  const tmpTsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ts-probe-fix-'));
+  try {
+    process.env.APPDATA = tmpTsDir;
+    process.env.AG_METER_STATE_DIR = tmpTsDir;
+    process.env.AG_CONTEXT_METER_STATE_DIR = tmpTsDir;
+    delete process.env.AG_REMOTE_SKIP_PROBES;
+    remoteMod.clearPairedDevicesForTests();
+    const cfgObj = { enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } };
+
+    // 多台在线 iOS 设备 -> probeIps 为空，未执行 tailscale ping -> hints.tailscale 必须为 undefined
+    const hintsMultiIos = await remoteMod.probeClientPrivateReachability(
+      { headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148' }, url: '/api/probe-hints?probe=1' },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: () => ({ en0: [{ address: '192.168.68.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' }] }),
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return {
+              ok: true,
+              stdout: JSON.stringify({
+                Peer: {
+                  p1: { Online: true, OS: 'ios', TailscaleIPs: ['100.64.0.10'] },
+                  p2: { Online: true, OS: 'ios', TailscaleIPs: ['100.64.0.11'] }
+                }
+              }),
+              stderr: ''
+            };
+          }
+          throw new Error('不应在多台 iOS 未确定目标时触发 ping');
+        }
+      }
+    );
+    assert.equal(hintsMultiIos.tailscale, undefined, '未实际执行 tailscale ping 时绝不能误标 Tailscale 不可达');
+
+    // 单台在线 iOS 且 tailscale ping 确实失败 -> 正常返回 unreachable
+    const hintsPingFailed = await remoteMod.probeClientPrivateReachability(
+      { headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148' }, url: '/api/probe-hints?probe=1' },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: () => ({ en0: [{ address: '192.168.68.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' }] }),
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return {
+              ok: true,
+              stdout: JSON.stringify({ Peer: { p1: { Online: true, OS: 'ios', TailscaleIPs: ['100.64.0.10'] } } }),
+              stderr: ''
+            };
+          }
+          return { ok: false, stdout: '', stderr: 'timed out' };
+        }
+      }
+    );
+    assert.equal(hintsPingFailed.tailscale?.ok, false);
+    assert.equal(hintsPingFailed.tailscale?.reason, 'unreachable', '实际 ping 失败时应准确返回 unreachable');
+
+    // 回环 tailscale serve 反代带 x-forwarded-for 应提取手机 Tailscale IP 并完成探测
+    let proxyPingedIp = '';
+    const hintsProxyXff = await remoteMod.probeClientPrivateReachability(
+      {
+        headers: {
+          host: 'mac.tail-demo.ts.net',
+          'x-forwarded-for': '100.64.0.18, 127.0.0.1',
+          'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148'
+        },
+        socket: { remoteAddress: '127.0.0.1' },
+        url: '/api/probe-hints?probe=1'
+      },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: () => ({
+          en0: [
+            { address: '192.168.68.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' },
+            { address: '240e:123:456:789:abcd::5', family: 'IPv6', internal: false }
+          ]
+        }),
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return { ok: true, stdout: JSON.stringify({ Peer: {} }), stderr: '' };
+          }
+          if (args[0] === 'ping') {
+            proxyPingedIp = args[args.length - 1];
+            return { ok: true, stdout: 'pong from iphone (100.64.0.18) via 192.168.68.33:41641 in 9ms', stderr: '' };
+          }
+          return { ok: false, stdout: '', stderr: '' };
+        }
+      }
+    );
+    assert.equal(proxyPingedIp, '100.64.0.18', '应从 Tailscale Serve 回环反代 X-Forwarded-For 提取手机 Tailscale IP');
+    assert.equal(hintsProxyXff.tailscale?.ok, true);
+    assert.equal(hintsProxyXff.lan?.ok, true);
+
+    // 多台在线 iOS 仅 1 台 Active: true + 同 /64 IPv6 直连 -> 精确命中活跃设备并回填 LAN/Bonjour 延迟
+    let activePingedIp = '';
+    const v6Nets = () => ({
+      en0: [
+        { address: '192.168.68.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' },
+        { address: '240e:123:456:789:abcd::5', family: 'IPv6', internal: false }
+      ]
+    });
+    const hintsActiveSameV6 = await remoteMod.probeClientPrivateReachability(
+      { headers: { 'x-ag-device-id': 'dev-ios-v6-same', 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148' }, url: '/api/probe-hints?probe=1' },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: v6Nets,
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return {
+              ok: true,
+              stdout: JSON.stringify({
+                Peer: {
+                  p1: { Online: true, Active: false, OS: 'ios', TailscaleIPs: ['100.64.0.21'] },
+                  p2: { Online: true, Active: true, OS: 'ios', TailscaleIPs: ['100.64.0.22'] }
+                }
+              }),
+              stderr: ''
+            };
+          }
+          if (args[0] === 'ping') {
+            activePingedIp = args[args.length - 1];
+            return { ok: true, stdout: 'pong from iphone (100.64.0.22) via [240e:123:456:789::12]:41641 in 7ms', stderr: '' };
+          }
+          return { ok: false, stdout: '', stderr: '' };
+        }
+      }
+    );
+    assert.equal(activePingedIp, '100.64.0.22', '多台在线 iOS 且唯一 Active: true 时应精确命中活跃设备');
+    assert.equal(hintsActiveSameV6.tailscale?.ms, 7);
+    assert.equal(hintsActiveSameV6.lan?.ok, true, '同 /64 前缀 IPv6 局域网直连应回填 LAN 延迟');
+    assert.equal(hintsActiveSameV6.lan?.ms, 7);
+    if (remoteMod.detectHostIdentityMeta?.().bonjourHost) {
+      assert.equal(hintsActiveSameV6.bonjour?.ok, true, '同 /64 IPv6 直连在存在 Bonjour 主机名时应一并回填 Bonjour 延迟');
+    }
+
+    // 不同 /64 前缀公网 IPv6 直连 -> Tailscale 可达，但不得误判为局域网可达
+    const hintsDiffV6 = await remoteMod.probeClientPrivateReachability(
+      { headers: { 'x-ag-device-id': 'dev-ios-v6-diff', 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148' }, url: '/api/probe-hints?probe=1' },
+      cfgObj,
+      {
+        force: true,
+        networkInterfaces: v6Nets,
+        execAsync: async (_bin, args) => {
+          if (args[0] === 'status') {
+            return {
+              ok: true,
+              stdout: JSON.stringify({ Peer: { p1: { Online: true, Active: true, OS: 'ios', TailscaleIPs: ['100.64.0.23'] } } }),
+              stderr: ''
+            };
+          }
+          return { ok: true, stdout: 'pong from iphone (100.64.0.23) via [240e:999:111:222::8]:41641 in 25ms', stderr: '' };
+        }
+      }
+    );
+    assert.equal(hintsDiffV6.tailscale?.ok, true);
+    assert.equal(hintsDiffV6.lan?.ok, false, '不同 /64 前缀的公网 IPv6 直连不得误判为局域网直连');
+  } finally {
+    remoteMod.clearPairedDevicesForTests();
+    if (prevAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prevAppData;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevCtxStateDir === undefined) delete process.env.AG_CONTEXT_METER_STATE_DIR;
+    else process.env.AG_CONTEXT_METER_STATE_DIR = prevCtxStateDir;
+    if (prevSkipProbes === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+    else process.env.AG_REMOTE_SKIP_PROBES = prevSkipProbes;
+    fs.rmSync(tmpTsDir, { recursive: true, force: true });
+  }
+
+  // 5. mkQrSafe 降级保留 priority===90 + 三端统一 6 级默认优先级 + localStorage 持久化 + tailscaleHttpsHint 渲染
+  const remoteJsSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+  assert.ok(remoteJsSrc.includes('e.priority === 90'), 'mkQrSafe 超长降级过滤必须保留 priority === 90 (Tailscale HTTPS)');
+  const overlaySrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+  const settingsSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/suite-settings.js'), 'utf8');
+  assert.ok(overlaySrc.includes('ag-remote-selected-channel-v1'), '桌面扫码浮窗应持久化所选通道至 localStorage');
+  assert.ok(settingsSrc.includes('ag-rp-ts-hint') && RENDERER_SRC.includes('ag-rp-ts-hint'), '设置页与打包渲染产物均应渲染 tailscaleHttpsHint');
+  assert.ok(settingsSrc.includes('ag-rp-quick-tunnel-hint') && RENDERER_SRC.includes('ag-rp-quick-tunnel-hint'), '设置页与打包渲染产物均应渲染免登录临时隧道一次性域名提示');
+
+  const priorityEnv = createDomEnv();
+  const priorityCases = [
+    {
+      name: '固定域名 Named Tunnel 最优先',
+      tunnelMode: 'named',
+      hasNamed: true,
+      hasTsHttps: true,
+      hasLan: true,
+      hasTsHttp: true,
+      hasQuick: false,
+      expectedKey: 'tunnel'
+    },
+    {
+      name: '其次 Tailscale HTTPS',
+      tunnelMode: 'quick',
+      hasNamed: false,
+      hasTsHttps: true,
+      hasLan: true,
+      hasTsHttp: true,
+      hasQuick: true,
+      expectedKey: 'tailscale'
+    },
+    {
+      name: '其次局域网 LAN',
+      tunnelMode: 'quick',
+      hasNamed: false,
+      hasTsHttps: false,
+      hasLan: true,
+      hasTsHttp: true,
+      hasQuick: true,
+      expectedKey: 'lan'
+    },
+    {
+      name: '其次 Tailscale HTTP',
+      tunnelMode: 'quick',
+      hasNamed: false,
+      hasTsHttps: false,
+      hasLan: false,
+      hasTsHttp: true,
+      hasQuick: true,
+      expectedKey: 'tailscale'
+    },
+    {
+      name: '最后 Cloudflare Quick Tunnel',
+      tunnelMode: 'quick',
+      hasNamed: false,
+      hasTsHttps: false,
+      hasLan: false,
+      hasTsHttp: false,
+      hasQuick: true,
+      expectedKey: 'tunnel'
+    }
+  ];
+  let curCaseIdx = 0;
+  const makeCasePayload = (c) => ({
+    port: 18765,
+    token: 'tok-priority-demo',
+    deviceName: 'mac',
+    tailscaleHttpsUrl: c.hasTsHttps ? 'https://mac.tail-demo.ts.net' : '',
+    tailscaleHttpsHint: !c.hasTsHttps ? '请在 Tailscale 控制台开启 HTTPS Certificates' : '',
+    channels: [
+      {
+        key: 'lan', label: '局域网', labelEn: 'LAN', enabled: true, available: c.hasLan,
+        displayHost: c.hasLan ? '192.168.1.8' : '', url: c.hasLan ? 'http://192.168.1.8:18765/?token=tok-priority-demo' : '', qrSvg: '<svg id="p-lan"><rect/></svg>'
+      },
+      {
+        key: 'tailscale', label: 'Tailscale', labelEn: 'Tailscale', enabled: true, available: c.hasTsHttps || c.hasTsHttp,
+        httpsUrl: c.hasTsHttps ? 'https://mac.tail-demo.ts.net' : '',
+        httpsHint: !c.hasTsHttps ? '请在 Tailscale 控制台开启 HTTPS Certificates' : '',
+        displayHost: c.hasTsHttps ? 'HTTPS · mac.tail-demo.ts.net' : '100.64.0.2',
+        url: c.hasTsHttps ? 'https://mac.tail-demo.ts.net/?token=tok-priority-demo' : (c.hasTsHttp ? 'http://100.64.0.2:18765/?token=tok-priority-demo' : ''),
+        qrSvg: '<svg id="p-ts"><rect/></svg>'
+      },
+      {
+        key: 'tunnel', label: 'Cloudflare 隧道', labelEn: 'Cloudflare Tunnel', enabled: true, available: c.hasNamed || c.hasQuick,
+        state: 'running', mode: c.tunnelMode,
+        displayHost: c.hasNamed ? 'ag.example.com' : 'quick.trycloudflare.com',
+        url: c.hasNamed ? 'https://ag.example.com/?token=tok-priority-demo' : (c.hasQuick ? 'https://quick.trycloudflare.com/?token=tok-priority-demo' : ''),
+        qrSvg: '<svg id="p-tunnel"><rect/></svg>'
+      }
+    ]
+  });
+
+  priorityEnv.win.__AGContextMeterLive = { port: 61220, token: 'tok-priority-demo' };
+  priorityEnv.sandbox.fetch = async (url) => {
+    if (String(url).includes('/remote-info')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, data: makeCasePayload(priorityCases[curCaseIdx]) }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  vm.runInContext(RENDERER_SRC, priorityEnv.sandbox);
+  vm.runInContext(overlaySrc, priorityEnv.sandbox);
+  const pEnhancer = priorityEnv.sandbox.__AGEnhancer;
+  const pShadow = priorityEnv.getShadow();
+
+  for (let i = 0; i < priorityCases.length; i++) {
+    curCaseIdx = i;
+    pEnhancer.toggleRemotePopover(true);
+    await new Promise((r) => setTimeout(r, 30));
+    const pop = pShadow.getElementById('ag-remote-popover');
+    const pills = Array.from(pop.querySelectorAll('.ag-rp-ch-pill'));
+    const activePill = pills.find((p) => p.getAttribute('data-active') === 'true');
+    assert.equal(activePill?.getAttribute('data-ch-key'), priorityCases[i].expectedKey, priorityCases[i].name);
+    if (!priorityCases[i].hasTsHttps) {
+      assert.ok(pop.innerHTML.includes('HTTPS Certificates'), '未启用 Tailscale HTTPS 时桌面浮窗应渲染引导提示');
+    } else {
+      assert.equal(pop.querySelector('#ag-rp-ts-hint'), null, '已启用 Tailscale HTTPS 时应隐藏未开通提示');
+    }
+    if (priorityCases[i].expectedKey === 'tunnel' && priorityCases[i].tunnelMode === 'quick') {
+      const qHint = pop.querySelector('#ag-rp-quick-tunnel-hint');
+      assert.ok(qHint && qHint.textContent.includes('一次性') && qHint.textContent.includes('热更新'), '桌面浮窗选中免登录临时隧道时应提示一次性域名会因热更新/重启/休眠失效');
+    } else {
+      assert.equal(pop.querySelector('#ag-rp-quick-tunnel-hint'), null, '非免登录临时隧道激活时桌面浮窗不应误显示临时域名警告');
+    }
+    pEnhancer.toggleRemotePopover(false);
+  }
+
+  // 点击切换为 Quick Tunnel 并写入 localStorage，重新加载新实例仍保持记住选中
+  curCaseIdx = 1; // hasTsHttps + hasLan + hasQuick
+  pEnhancer.toggleRemotePopover(true);
+  await new Promise((r) => setTimeout(r, 30));
+  const quickPill = Array.from(pShadow.getElementById('ag-remote-popover').querySelectorAll('.ag-rp-ch-pill'))
+    .find((p) => p.getAttribute('data-ch-key') === 'tunnel');
+  quickPill.click();
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(priorityEnv.localStorage.getItem('ag-remote-selected-channel-v1'), 'tunnel', '切换胶囊应持久化至 localStorage');
+  assert.ok(pShadow.getElementById('ag-remote-popover').querySelector('#ag-rp-quick-tunnel-hint'), '手动切回免登录临时隧道后桌面浮窗应立即展示一次性域名提示');
+  pEnhancer.dispose?.();
+
+  // 新实例复用同一 localStorage，验证打开浮窗仍默认选中 tunnel
+  const persistEnv = createDomEnv();
+  persistEnv.localStorage.setItem('ag-remote-selected-channel-v1', 'tunnel');
+  persistEnv.win.__AGContextMeterLive = { port: 61220, token: 'tok-priority-demo' };
+  persistEnv.sandbox.fetch = async (url) => {
+    if (String(url).includes('/remote-info')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, data: makeCasePayload(priorityCases[1]) }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  vm.runInContext(RENDERER_SRC, persistEnv.sandbox);
+  vm.runInContext(overlaySrc, persistEnv.sandbox);
+  const persistEnhancer = persistEnv.sandbox.__AGEnhancer;
+  persistEnhancer.toggleRemotePopover(true);
+  await new Promise((r) => setTimeout(r, 30));
+  const persistActive = Array.from(persistEnv.getShadow().getElementById('ag-remote-popover').querySelectorAll('.ag-rp-ch-pill'))
+    .find((p) => p.getAttribute('data-active') === 'true');
+  assert.equal(persistActive?.getAttribute('data-ch-key'), 'tunnel', '重开新实例后应记住上次选中的可用通道');
+  persistEnhancer.dispose?.();
+});
+
+test('Tailscale 离线防误报 + 自定义 Tailscale 节点支持（Loon 内置节点场景）', async () => {
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ts-custom-'));
+  process.env.AG_METER_STATE_DIR = tmpState;
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const mr = require('../mobile-remote.js');
+
+  try {
+    // 1. detectHostIdentityMeta: BackendState=Stopped 或 Self.Online=false 均判为离线，且不调用 tailscale serve
+    const stoppedServeCalls = [];
+    const stoppedMeta = mr.detectHostIdentityMeta({
+      execFileSync: () => JSON.stringify({
+        BackendState: 'Stopped',
+        Self: { DNSName: 'offline-mac.tailnet123.ts.net.', HostName: 'offline-mac', Online: false },
+        CertDomains: ['offline-mac.tailnet123.ts.net']
+      })
+    });
+    assert.equal(stoppedMeta.tailscaleRunning, false, 'BackendState=Stopped 时 tailscaleRunning 必须为 false');
+    assert.equal(stoppedMeta.tailscaleDnsName, '', '独立版离线时不得回填缓存的 DNSName');
+    assert.equal(stoppedMeta.tailscaleHttpsCapable, false, '独立版离线时不得标记为 HTTPS 可用');
+    const serveResStopped = mr.ensureTailscaleServeHttps(18765, {
+      hostMeta: stoppedMeta,
+      execFileSync: (_bin, args) => {
+        stoppedServeCalls.push(args);
+        return '';
+      }
+    });
+    assert.equal(serveResStopped.enabled, false);
+    assert.equal(stoppedServeCalls.length, 0, '独立版离线时 ensureTailscaleServeHttps 不得调用 serve 命令');
+
+    const offlineSelfMeta = mr.detectHostIdentityMeta({
+      execFileSync: () => JSON.stringify({
+        BackendState: 'Running',
+        Self: { DNSName: 'offline-mac.tailnet123.ts.net.', HostName: 'offline-mac', Online: false },
+        CertDomains: ['offline-mac.tailnet123.ts.net']
+      })
+    });
+    assert.equal(offlineSelfMeta.tailscaleRunning, false);
+    assert.equal(offlineSelfMeta.tailscaleDnsName, '');
+
+    // 向后兼容：省略 BackendState 与 Self.Online 时仍识别为运行中
+    const compatMeta = mr.detectHostIdentityMeta({
+      execFileSync: () => JSON.stringify({
+        Self: { DNSName: 'compat-mac.tailnet123.ts.net.', HostName: 'compat-mac' },
+        CertDomains: ['compat-mac.tailnet123.ts.net']
+      })
+    });
+    assert.equal(compatMeta.tailscaleRunning, true);
+    assert.equal(compatMeta.tailscaleDnsName, 'compat-mac.tailnet123.ts.net');
+
+    // 2. validateTailscaleCustomHost / normalizeTailscaleCustomHost 严格校验
+    assert.deepEqual(mr.validateTailscaleCustomHost(''), { ok: true, host: '', error: '' });
+    assert.equal(mr.normalizeTailscaleCustomHost('100.88.12.34'), '100.88.12.34');
+    assert.equal(mr.normalizeTailscaleCustomHost('http://Custom-Proxy.TailNet123.ts.net:18765'), 'custom-proxy.tailnet123.ts.net');
+    assert.equal(mr.normalizeTailscaleCustomHost('demo-proxy.tailnet123.ts.net:18765'), 'demo-proxy.tailnet123.ts.net');
+    assert.equal(mr.normalizeTailscaleCustomHost('fd7a:115c:a1e0::1234:5678'), 'fd7a:115c:a1e0::1234:5678');
+    assert.equal(mr.normalizeTailscaleCustomHost('[fd7a:115c:a1e0::1]:18765'), 'fd7a:115c:a1e0::1');
+
+    for (const badHost of [
+      'example.com',
+      '192.168.1.10',
+      '100.63.255.254',
+      '100.128.0.1',
+      '.ts.net',
+      'custom.ts.net/evil',
+      'custom.ts.net?x=1',
+      'custom.ts.net\nline2',
+      'fd7a:115c:a1e0::gggg'
+    ]) {
+      const check = mr.validateTailscaleCustomHost(badHost);
+      assert.equal(check.ok, false, `非法 Tailscale 地址应被拒绝: ${badHost}`);
+      assert.equal(mr.normalizeTailscaleCustomHost(badHost), '');
+    }
+
+    // 3. 配置持久化 + collectFusedEndpointDescriptor + buildRemoteInfo + CORS Origin 白名单
+    const saved = mr.saveRemoteTunnelConfig({
+      enabledChannels: { lan: true, tailscale: true, bonjour: false, tunnel: false },
+      tailscaleCustomHost: 'http://custom-proxy.tailnet123.ts.net:18765'
+    });
+    assert.equal(saved.tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
+
+    const desc = mr.collectFusedEndpointDescriptor(
+      18765,
+      null,
+      { lan: true, tailscale: true, bonjour: false, tunnel: false },
+      {
+        readOnly: true,
+        hostMeta: stoppedMeta,
+        tailscaleCustomHost: saved.tailscaleCustomHost,
+        addresses: {
+          tailscale: [],
+          lan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }],
+          physicalLan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }]
+        }
+      }
+    );
+    assert.equal(desc.tailscaleHttpsUrl, '');
+    assert.equal(desc.tailscaleDnsName, '');
+    assert.equal(desc.tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
+    assert.ok(
+      desc.endpoints.some((e) => e.kind === 'tailscale' && e.url === 'http://custom-proxy.tailnet123.ts.net:18765'),
+      '独立版离线且填写自定义节点时应生成 custom Tailscale 端点'
+    );
+    assert.ok(
+      !desc.endpoints.some((e) => e.url.includes('offline-mac')),
+      '端点列表不得包含已停用的独立版 Tailscale 域名'
+    );
+
+    const prevSkipProbes = process.env.AG_REMOTE_SKIP_PROBES;
+    process.env.AG_REMOTE_SKIP_PROBES = '1';
+    try {
+      const remoteInfo = mr.buildRemoteInfo();
+      assert.equal(remoteInfo.tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
+      const tsCh = remoteInfo.channels.find((c) => c.key === 'tailscale');
+      assert.ok(tsCh && tsCh.available, '设置 tailscaleCustomHost 后 Tailscale 通道应标记为可用');
+      assert.equal(tsCh.displayHost, 'custom-proxy.tailnet123.ts.net');
+      assert.equal(tsCh.customHost, 'custom-proxy.tailnet123.ts.net');
+      assert.ok(tsCh.url.startsWith('http://custom-proxy.tailnet123.ts.net:'));
+    } finally {
+      if (prevSkipProbes === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+      else process.env.AG_REMOTE_SKIP_PROBES = prevSkipProbes;
+    }
+
+    assert.equal(
+      mr.isAllowedPrivateOrigin('http://custom-proxy.tailnet123.ts.net:18765', '', ['custom-proxy.tailnet123.ts.net']),
+      true,
+      'isAllowedPrivateOrigin 应放行白名单数组中的自定义 .ts.net 域名'
+    );
+    assert.equal(
+      mr.isAllowedPrivateOrigin('http://other-proxy.tailnet123.ts.net:18765', '', ['custom-proxy.tailnet123.ts.net']),
+      false,
+      'isAllowedPrivateOrigin 仍须拒绝白名单之外的其他 .ts.net 域名'
+    );
+
+    // HTTP Handler CORS 对自定义 .ts.net Origin 放行且拒绝其他 .ts.net Origin，且 /api/ping 与 /api/snapshot 透传自定义节点
+    const cfgHandler = mr.createRemoteHttpHandler({
+      enabled: true,
+      port: 18765,
+      token: saved.token,
+      tailscaleCustomHost: 'custom-proxy.tailnet123.ts.net',
+      enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+    }, {
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's1', conversations: [] })
+    });
+    const runOpts = async (origin) => {
+      const hdrs = {};
+      await cfgHandler(
+        { method: 'OPTIONS', url: '/api/ping', headers: { host: '127.0.0.1:18765', origin }, socket: { remoteAddress: '127.0.0.1' } },
+        {
+          setHeader(k, v) { hdrs[String(k).toLowerCase()] = v; },
+          getHeader(k) { return hdrs[String(k).toLowerCase()]; },
+          writeHead(_c, h = {}) { for (const [k, v] of Object.entries(h)) hdrs[String(k).toLowerCase()] = v; },
+          end() {}
+        }
+      );
+      return hdrs;
+    };
+    const okHdrs = await runOpts('http://custom-proxy.tailnet123.ts.net:18765');
+    assert.equal(okHdrs['access-control-allow-origin'], 'http://custom-proxy.tailnet123.ts.net:18765');
+    const badHdrs = await runOpts('http://stranger.tailnet123.ts.net:18765');
+    assert.equal(badHdrs['access-control-allow-origin'], undefined);
+
+    const callJsonGet = async (reqUrl) => {
+      let bodyStr = '';
+      let status = 0;
+      const hdrs = {};
+      await cfgHandler(
+        { method: 'GET', url: reqUrl, headers: { host: '127.0.0.1:18765' }, socket: { remoteAddress: '127.0.0.1' } },
+        {
+          setHeader(k, v) { hdrs[String(k).toLowerCase()] = v; },
+          getHeader(k) { return hdrs[String(k).toLowerCase()]; },
+          writeHead(c, h = {}) { status = c; for (const [k, v] of Object.entries(h)) hdrs[String(k).toLowerCase()] = v; },
+          end(chunk) { if (chunk) bodyStr += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); }
+        }
+      );
+      return { status, json: JSON.parse(bodyStr) };
+    };
+    const pingRes = await callJsonGet(`/api/ping?probe=1&token=${encodeURIComponent(saved.token)}`);
+    assert.equal(pingRes.status, 200);
+    assert.ok(pingRes.json.hosts.includes('custom-proxy.tailnet123.ts.net'), '/api/ping 返回 hosts 应透传自定义 Tailscale 节点');
+    assert.ok(pingRes.json.endpoints.some((e) => e.kind === 'tailscale' && e.url === 'http://custom-proxy.tailnet123.ts.net:18765'), '/api/ping 返回 endpoints 应包含自定义 Tailscale 端点');
+
+    const snapRes = await callJsonGet(`/api/snapshot?token=${encodeURIComponent(saved.token)}`);
+    assert.equal(snapRes.status, 200);
+    assert.ok(snapRes.json.hosts.includes('custom-proxy.tailnet123.ts.net'), '/api/snapshot 返回 hosts 应透传自定义 Tailscale 节点');
+    assert.ok(snapRes.json.endpoints.some((e) => e.kind === 'tailscale' && e.url === 'http://custom-proxy.tailnet123.ts.net:18765'), '/api/snapshot 返回 endpoints 应包含自定义 Tailscale 端点');
+
+    // 4. probeClientPrivateReachability: BackendState=Stopped 时早退，不误标 tailscale unreachable
+    mr.clearPairedDevicesForTests();
+    const probeCmds = [];
+    const stoppedHints = await mr.probeClientPrivateReachability(
+      {
+        url: '/api/probe-hints?probe=1',
+        headers: { 'user-agent': 'Mozilla/5.0 (iPhone)', 'x-ag-device-id': 'dev-stopped-ts-1' }
+      },
+      { enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: true } },
+      {
+        force: true,
+        skipProbes: false,
+        execAsync: async (bin, args) => {
+          probeCmds.push([bin, ...args]);
+          if (args.includes('status')) {
+            return {
+              ok: true,
+              stdout: JSON.stringify({
+                BackendState: 'Stopped',
+                Self: { Online: false },
+                Peer: { p1: { Online: true, OS: 'ios', TailscaleIPs: ['100.88.1.2'] } }
+              }),
+              stderr: ''
+            };
+          }
+          return { ok: false, stdout: '', stderr: '' };
+        }
+      }
+    );
+    assert.equal(probeCmds.some((c) => c.includes('ping')), false, 'BackendState=Stopped 时不得执行注定失败的 tailscale ping');
+    assert.equal(stoppedHints.tailscale, undefined, 'BackendState=Stopped 时不得误标 tailscale 不可达');
+
+    // 5. configure 提交非法 tailscaleCustomHost 应返回 validationError 且不改变隧道配置
+    const ctrl = mr.createCloudflareTunnelController({ getPort: () => 18765 });
+    const badCfgRes = await ctrl.configure({ tailscaleCustomHost: '192.168.1.88' });
+    assert.ok(badCfgRes.validationError && badCfgRes.validationError.includes('Tailscale'));
+    assert.equal(mr.loadOrCreateRemoteConfig().tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
+
+    // 6. 设置页 UI: 点击 #ag-rp-ts-cfg-btn 展开表单并保存/清除自定义节点
+    const uiEnv = createDomEnv();
+    uiEnv.win.__AGContextMeterLive = { port: 61222, token: 'tok-ui-ts-test' };
+    const uiPosts = [];
+    const prevUiSkip = process.env.AG_REMOTE_SKIP_PROBES;
+    process.env.AG_REMOTE_SKIP_PROBES = '1';
+    let uiData = mr.buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
+    uiEnv.sandbox.fetch = async (url, init) => {
+      const sUrl = String(url || '');
+      if (sUrl.includes('/remote-info')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, data: uiData }) };
+      }
+      if (sUrl.includes('/remote-tunnel')) {
+        const body = JSON.parse(init?.body || '{}');
+        uiPosts.push(body);
+        mr.saveRemoteTunnelConfig(body);
+        uiData = mr.buildRemoteInfo({ tunnelStatus: { enabled: false, state: 'stopped', binaryAvailable: true } });
+        return { ok: true, status: 200, json: async () => ({ ok: true, data: uiData }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+    const RENDERER_PATH = path.join(__dirname, '..', 'meter-renderer.js');
+    const ENHANCER_PATH = path.join(__dirname, '..', 'ag-enhancer-overlay.js');
+    vm.runInContext(fs.readFileSync(RENDERER_PATH, 'utf8'), uiEnv.sandbox);
+    const uiApi = uiEnv.sandbox.__AGContextMeter;
+    vm.runInContext(fs.readFileSync(ENHANCER_PATH, 'utf8'), uiEnv.sandbox);
+    const uiEnh = uiEnv.sandbox.__AGEnhancer;
+    try {
+      const uiPane = uiEnv.getShadow().getElementById('settings-pane-remote');
+      uiApi.openSettings('remote');
+      await new Promise((r) => setTimeout(r, 30));
+      uiPane.querySelector('#ag-rp-ts-cfg-btn')?.click();
+      const tsInput = uiPane.querySelector('#ag-rp-ts-host');
+      assert.ok(tsInput, '点击自定义节点按钮后应展开 #ag-rp-ts-form 表单');
+      tsInput.value = 'new-proxy.tailnet123.ts.net';
+      uiPane.querySelector('#ag-rp-ts-save')?.click();
+      await new Promise((r) => setTimeout(r, 30));
+      assert.deepEqual(uiPosts.at(-1), { tailscaleCustomHost: 'new-proxy.tailnet123.ts.net', enabledChannels: { tailscale: true } });
+      assert.equal(uiPane.querySelector('#ag-rp-ts-form'), null, '保存成功后应自动收起表单');
+      assert.ok(uiPane.querySelector('#ag-rp-toggle-tailscale')?.textContent.includes('new-proxy.tailnet123.ts.net'), '保存后设置页应显示自定义节点地址');
+      uiPane.querySelector('#ag-rp-ts-cfg-btn')?.click();
+      uiPane.querySelector('#ag-rp-ts-clear')?.click();
+      await new Promise((r) => setTimeout(r, 30));
+      assert.deepEqual(uiPosts.at(-1), { tailscaleCustomHost: '' });
+      assert.equal(mr.loadOrCreateRemoteConfig().tailscaleCustomHost, '');
+    } finally {
+      if (prevUiSkip === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+      else process.env.AG_REMOTE_SKIP_PROBES = prevUiSkip;
+      uiEnh?.dispose?.();
+      uiApi?.dispose?.();
+    }
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
+
+test('超大会话上下文扫描防 96MB 断流降级与 scan 解除统计延迟死锁', async () => {
+  const https = require('node:https');
+  const { execFileSync } = require('node:child_process');
+
+  assert.equal(collector.MAX_LOCAL_RESPONSE_BYTES, 256 * 1024 * 1024, '默认单次本地响应上限应提升至 256 MiB');
+
+  // 1. 后端 collect() 在 GetCascadeTrajectory 超限时优雅降级并保留精确用量
+  const tmpCertDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-large-traj-'));
+  const keyPath = path.join(tmpCertDir, 'key.pem');
+  const certPath = path.join(tmpCertDir, 'cert.pem');
+  execFileSync('openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+    '-keyout', keyPath, '-out', certPath,
+    '-days', '1', '-subj', '/CN=127.0.0.1'
+  ], { stdio: 'pipe' });
+
+  const metaRows = [
+    { chatModel: { modelDisplayName: 'Gemini 4 Neon (High)', usage: { inputTokens: '1000', cacheReadTokens: '100000', outputTokens: '500' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } },
+    { chatModel: { modelDisplayName: 'Gemini 4 Neon (High)', usage: { inputTokens: '2000', cacheReadTokens: '150000', outputTokens: '600' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } },
+    { chatModel: { modelDisplayName: 'Gemini 4 Neon (High)', usage: { inputTokens: '2500', cacheReadTokens: '200000', outputTokens: '700' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } },
+    { chatModel: { modelDisplayName: 'Gemini 4 Neon (High)', usage: { inputTokens: '3000', cacheReadTokens: '240000', outputTokens: '1000' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }
+  ];
+  const metadataOffsets = [];
+  const srv = https.createServer(
+    { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) },
+    (req, res) => {
+      if (req.method === 'GET' && req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<html><script>window.__APP_CONFIG__ = {"csrfToken":"mock-large-csrf"};</script></html>');
+        return;
+      }
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch {}
+        if (req.url.endsWith('/GetCascadeTrajectory')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ trajectory: { steps: [] }, hugePad: 'x'.repeat(8192) }));
+          return;
+        }
+        if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+          const offset = Number(body.generatorMetadataOffset || 0);
+          metadataOffsets.push(offset);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ generatorMetadata: metaRows.slice(offset) }));
+          return;
+        }
+        res.writeHead(404);
+        res.end('{}');
+      });
+    }
+  );
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const port = srv.address().port;
+    const origin = `https://127.0.0.1:${port}`;
+    const convId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const firstRes = await collector.collect(origin, convId, { force: true, maxResponseBytes: 4096 });
+    assert.ok(firstRes && firstRes.latest, '超限降级后必须仍返回有效 latest');
+    assert.equal(firstRes.latest.actual, 244000);
+    assert.equal(firstRes.latest.budget, 512000);
+    assert.ok(Math.abs(firstRes.latest.percent - (244000 / 512000) * 100) < 0.01);
+    assert.equal(firstRes.generatorCount, 4);
+    assert.equal(firstRes.session.skippedLargeArchive, true);
+    assert.equal(firstRes.session.complete, false);
+    assert.ok(Array.isArray(firstRes.errors) && firstRes.errors.length > 0 && /本地响应过大/.test(firstRes.errors[0]));
+    assert.deepEqual(metadataOffsets, [0]);
+
+    // 增量追加一条后再次 force: true，验证先尝试 prevGenCount - 3
+    metaRows.push({
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Neon (High)',
+        usage: { inputTokens: '4000', cacheReadTokens: '250000', outputTokens: '2000' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    });
+    const secondRes = await collector.collect(origin, convId, { force: true, maxResponseBytes: 4096 });
+    assert.equal(secondRes.latest.actual, 256000);
+    assert.equal(secondRes.generatorCount, 5);
+    assert.equal(metadataOffsets.at(-1), 1, '再次降级扫描应优先使用 previous.generatorCount - 3 增量拉取');
+  } finally {
+    await new Promise((resolve) => srv.close(resolve));
+    fs.rmSync(tmpCertDir, { recursive: true, force: true });
+  }
+
+  // 2. 前端 render harness: requestPoll 超时 -> scan 解除统计延迟并推进 count -> 滞后 poll 不反杀新鲜 scan
+  const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+  let fakeNow = Date.now();
+  const MockDate = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [fakeNow])); }
+    static now() { return fakeNow; }
+  };
+  const env = createDomEnv();
+  const capturedTimers = [];
+  const abortTimeouts = [];
+  let timerSeq = 1;
+  env.sandbox.Date = MockDate;
+  env.sandbox.setInterval = (cb) => { capturedTimers.push(cb); return capturedTimers.length; };
+  env.sandbox.setTimeout = (cb, ms) => {
+    const id = timerSeq++;
+    abortTimeouts.push({ id, cb, ms, cleared: false });
+    return id;
+  };
+  env.sandbox.clearTimeout = (id) => {
+    const t = abortTimeouts.find((x) => x.id === id);
+    if (t) t.cleared = true;
+  };
+  const customFetches = [];
+  env.sandbox.fetch = (url, opts) => new Promise((resolve, reject) => {
+    const rec = { url: String(url), opts, resolve, reject };
+    if (opts?.signal) {
+      opts.signal.addEventListener('abort', () => {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        reject(err);
+      }, { once: true });
+    }
+    customFetches.push(rec);
+  });
+
+  let resolveScanDeferred = null;
+  env.apiMocks.scan = () => new Promise((resolve) => { resolveScanDeferred = resolve; });
+
+  vm.runInContext(freshRendererSrc, env.sandbox);
+  await new Promise((r) => setImmediate(r));
+
+  const api = env.sandbox.__AGContextMeter;
+  const pollTimeout1 = abortTimeouts.find((t) => t.ms === 25000 && !t.cleared);
+  assert.ok(pollTimeout1, '首次全量 requestPoll 超时应放宽至 25000ms');
+
+  // 触发首次 requestPoll 超时，确认陷入「统计延迟」
+  pollTimeout1.cb();
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(api.snapshot().requestError, '读取超时');
+  assert.equal(env.getShadow().getElementById('amount')?.textContent, '统计延迟');
+
+  // scan 返回含 generatorCount 与 latest 的结果，必须解除 requestError 并推进 count
+  fakeNow += 50;
+  resolveScanDeferred({
+    ok: true,
+    data: {
+      scannedAt: fakeNow,
+      generatorCount: 4000,
+      latest: {
+        actual: 245760,
+        budget: 512000,
+        percent: 48,
+        input: 3000,
+        cached: 241000,
+        output: 1760,
+        model: 'Gemini 4 Neon (High)',
+        status: 'reported'
+      },
+      session: {
+        total: { low: 10000, high: 20000, chars: 30000 },
+        attachmentTotal: core.empty(),
+        groups: { user: core.empty(), assistant: core.empty(), thinking: core.empty(), tools: core.empty(), summaries: core.empty(), system: core.empty(), definitions: core.empty() },
+        attachments: [],
+        unknownFiles: 0,
+        steps: 10,
+        userMessages: 5,
+        assistantMessages: 5
+      }
+    }
+  });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  const snapAfterScan = api.snapshot();
+  assert.equal(snapAfterScan.requestError, '', 'scan 返回更新的 latest 后必须清空 requestError');
+  const amountAfterScan = env.getShadow().getElementById('amount')?.textContent || '';
+  assert.ok(!amountAfterScan.includes('统计延迟') && amountAfterScan.includes('48%'), `scan 恢复后顶栏应显示精确百分比而非统计延迟，实际=${amountAfterScan}`);
+
+  // 推进时间触发下一轮 tick，验证 requestPoll 改用增量 offset = 4000 - 3 = 3997 与 12000ms 超时
+  fakeNow += 25000;
+  let nextScanDeferred = null;
+  env.apiMocks.scan = () => new Promise((resolve) => { nextScanDeferred = resolve; });
+  const prevFetchLen = customFetches.length;
+  capturedTimers[0]();
+  await new Promise((r) => setImmediate(r));
+
+  const nextPoll = customFetches.slice(prevFetchLen).find((f) => f.url.includes('GetCascadeTrajectoryGeneratorMetadata'));
+  assert.ok(nextPoll, '推进时钟后应发起下一轮 requestPoll');
+  const nextPollBody = JSON.parse(nextPoll.opts.body);
+  assert.equal(nextPollBody.generatorMetadataOffset, 3997, 'scan 同步 count=4000 后 requestPoll 必须使用增量 offset=3997');
+  const pollTimeout2 = abortTimeouts.filter((t) => !t.cleared).at(-1);
+  assert.equal(pollTimeout2?.ms, 12000, 'state.count > 0 后增量 requestPoll 超时应保持 12000ms');
+
+  // 滞后 requestPoll 未结束前，新 scan 先返回；随后滞后 requestPoll 超时不得覆盖 requestError=''
+  fakeNow += 100;
+  nextScanDeferred({
+    ok: true,
+    data: {
+      scannedAt: fakeNow,
+      generatorCount: 4002,
+      latest: {
+        actual: 256000,
+        budget: 512000,
+        percent: 50,
+        input: 3200,
+        cached: 250800,
+        output: 2000,
+        model: 'Gemini 4 Neon (High)',
+        status: 'reported'
+      },
+      session: {
+        total: { low: 12000, high: 22000, chars: 34000 },
+        attachmentTotal: core.empty(),
+        groups: { user: core.empty(), assistant: core.empty(), thinking: core.empty(), tools: core.empty(), summaries: core.empty(), system: core.empty(), definitions: core.empty() },
+        attachments: [],
+        unknownFiles: 0,
+        steps: 12,
+        userMessages: 6,
+        assistantMessages: 6
+      }
+    }
+  });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  pollTimeout2.cb();
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  const snapAfterStaleTimeout = api.snapshot();
+  assert.equal(snapAfterStaleTimeout.requestError, '', '滞后 requestPoll 超时不得反杀 scan 刚写入的新鲜状态');
+  const finalAmount = env.getShadow().getElementById('amount')?.textContent || '';
+  assert.ok(finalAmount.includes('50%'), `滞后超时后顶栏应保持 scan 更新的 50%，实际=${finalAmount}`);
+  api.dispose?.();
+});
+
+test('PR #11 合并加固：行内 KaTeX 线性性能、前端消息缓存代际隔离、autoCompact 超时清理与 local-api 中断防挂', async () => {
+  // 1. normPlainMatchText 对 30KB+ 未闭合 $ 文本严格线性不卡死，且合法行内公式与金额行为不变
+  const mrPath = require.resolve('../mobile-remote.js');
+  delete require.cache[mrPath];
+  const { normPlainMatchText, buildMobileAppHtml } = require('../mobile-remote.js');
+  const hugeUnclosedDollar = 'prefix $' + 'a + b = '.repeat(3800);
+  const t0 = performance.now();
+  const normHuge = normPlainMatchText(hugeUnclosedDollar);
+  const elapsedMs = performance.now() - t0;
+  assert.ok(elapsedMs < 100, `30KB 未闭合 $ 文本归一化必须在 100ms 内完成，实际=${elapsedMs.toFixed(1)}ms`);
+  assert.ok(normHuge.includes('$a + b = '), '未闭合 $ 不得误脱分隔符');
+  assert.equal(normPlainMatchText('计算 $x + y$ 结果'), '计算 x + y 结果');
+  assert.equal(normPlainMatchText('费用 $100 与 $5.50'), '费用 $100 与 $5.50');
+
+  // 2. 前端 renderSnapshot 降级与切会话时，msgCacheEpoch 阻断在途分页/补洞回灌、保护新会话锁并同步清空 openThoughtIdxSet
+  const appHtml = buildMobileAppHtml();
+  const appScripts = Array.from(appHtml.matchAll(/<script>([\s\S]*?)<\/script>/g));
+  const clientScript = appScripts.map((m) => m[1]).find((s) => s.includes('function renderSnapshot('));
+  assert.ok(clientScript);
+
+  const makeMockEl = (id) => {
+    const cls = new Set();
+    return {
+      id,
+      hidden: true,
+      disabled: false,
+      value: '',
+      innerHTML: '',
+      textContent: '',
+      scrollHeight: 120,
+      scrollTop: 0,
+      clientHeight: 600,
+      offsetWidth: 300,
+      dataset: {},
+      style: { setProperty() {} },
+      className: '',
+      children: [],
+      classList: {
+        add: (...xs) => xs.forEach((x) => cls.add(x)),
+        remove: (...xs) => xs.forEach((x) => cls.delete(x)),
+        toggle: (x, force) => (force === undefined ? (cls.has(x) ? cls.delete(x) : cls.add(x)) : (force ? cls.add(x) : cls.delete(x))),
+        contains: (x) => cls.has(x)
+      },
+      setAttribute() {},
+      removeAttribute() {},
+      getAttribute: () => null,
+      appendChild(c) { this.children.push(c); return c; },
+      addEventListener() {},
+      contains: () => false,
+      focus() {},
+      blur() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+  };
+  const domById = new Proxy({}, { get: (t, k) => (t[k] || (t[k] = makeMockEl(String(k)))) });
+  const deferredFetches = [];
+  const toasts = [];
+  const vmTimers = new Set();
+  const clientSandbox = {
+    URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+    Uint8Array, TextEncoder, TextDecoder, AbortController, Intl,
+    atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+    btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+    encodeURIComponent, decodeURIComponent,
+    screen: { width: 1280, height: 800 },
+    devicePixelRatio: 2,
+    navigator: { platform: 'MacIntel', maxTouchPoints: 0, hardwareConcurrency: 8 },
+    location: { origin: 'https://local.test', protocol: 'https:', hostname: 'local.test', pathname: '/', search: '', port: '', href: 'https://local.test/' },
+    history: { replaceState() {} },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    document: {
+      hidden: false, activeElement: null,
+      documentElement: { clientHeight: 800, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+      body: { style: {}, classList: domById.__body.classList },
+      getElementById: (id) => domById[id],
+      querySelector: () => makeMockEl('__q'),
+      createElement: (tag) => makeMockEl(tag),
+      addEventListener() {}
+    },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    innerWidth: 1280, innerHeight: 800, visualViewport: null,
+    setTimeout: (fn, ms) => { const t = setTimeout(fn, Math.min(Number(ms) || 0, 50)); if (t.unref) t.unref(); vmTimers.add(t); return t; },
+    clearTimeout: (t) => clearTimeout(t),
+    fetch: (url) => {
+      const sUrl = String(url || '');
+      if (!sUrl.includes('/api/messages')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false, error: 'mock-ignored' }) });
+      }
+      return new Promise((resolve, reject) => {
+        deferredFetches.push({ url: sUrl, resolve, reject });
+      });
+    }
+  };
+  clientSandbox.window = clientSandbox;
+  clientSandbox.addEventListener = () => {};
+  const tailIdx = clientScript.lastIndexOf('})();');
+  const hookedClient = clientScript.slice(0, tailIdx)
+    + '\nglobalThis.__testHarden = { renderSnapshot, loadEarlierMessages, openThoughtIdxSet, getKeys: () => Array.from(sessionMsgsByIndex.keys()).sort((a, b) => a - b), getState: () => ({ loadingEarlierMsgs, backfillingMsgGaps, activeMsgHistorySource, msgCacheEpoch }), origShowToast: showToast };\n'
+    + clientScript.slice(tailIdx);
+
+  try {
+    vm.runInNewContext(hookedClient, clientSandbox);
+    const apiH = clientSandbox.__testHarden;
+    // 捕获错误 toast（覆盖内部 helper 无关紧要，直接观察状态也可；同时替换 domById.toast.textContent）
+    let seq = 0;
+
+    // 2a. trajectory 首帧含缺失区间，自动发起 backfillMissingMsgGaps 并手动发起 loadEarlierMessages
+    apiH.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-h-1',
+      historySource: 'trajectory',
+      totalMessages: 40,
+      messagesStartIndex: 35,
+      hasEarlierMessages: true,
+      messages: [
+        { id: 'u-35', role: 'user', text: '旧问题-35', msgIndex: 35 },
+        { id: 'a-36', role: 'assistant', text: '旧回复-36', msgIndex: 36 }
+      ]
+    });
+    apiH.openThoughtIdxSet.add(36);
+    const load1Promise = apiH.loadEarlierMessages();
+    assert.equal(apiH.getState().backfillingMsgGaps, true);
+    assert.equal(apiH.getState().loadingEarlierMsgs, true);
+    assert.equal(deferredFetches.length, 2, '应有两个在途 /api/messages 请求（backfill + loadEarlier）');
+
+    // 同会话降级为 dom：必须清空 openThoughtIdxSet、递增 epoch 并复位加载态
+    apiH.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-h-1',
+      historySource: 'dom',
+      totalMessages: 2,
+      messagesStartIndex: 0,
+      hasEarlierMessages: false,
+      messages: [
+        { id: 'd-0', role: 'user', text: 'DOM 提问', msgIndex: 0 },
+        { id: 'd-1', role: 'assistant', text: 'DOM 回复', msgIndex: 1 }
+      ]
+    });
+    assert.equal(apiH.openThoughtIdxSet.size, 0, '同会话 trajectory -> dom 降级必须清空 openThoughtIdxSet');
+    assert.equal(apiH.getState().loadingEarlierMsgs, false);
+    assert.equal(apiH.getState().backfillingMsgGaps, false);
+
+    // 放行在途旧轨迹请求返回：绝不能回灌进已降级的 dom 缓存
+    for (const f of deferredFetches.splice(0)) {
+      f.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          startIndex: 20,
+          messages: [{ id: 'stale-20', role: 'assistant', text: '滞后轨迹-20', msgIndex: 20 }]
+        })
+      });
+    }
+    await load1Promise;
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(apiH.getKeys(), [0, 1], '降级后返回的滞后轨迹分页与补洞响应不得污染 [0, 1] 缓存');
+
+    // 2b. 切会话锁隔离：S1 在途 loadEarlier 延迟失败，不得解锁 S2 正在进行的 loadEarlier
+    apiH.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-s1',
+      historySource: 'trajectory',
+      totalMessages: 11,
+      messagesStartIndex: 10,
+      hasEarlierMessages: true,
+      messages: [{ id: 's1-10', role: 'user', text: 's1', msgIndex: 10 }]
+    });
+    const s1LoadP = apiH.loadEarlierMessages();
+    const s1Fetch = deferredFetches.find((f) => f.url.includes('sess-s1'));
+    assert.ok(s1Fetch);
+
+    apiH.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-s2',
+      historySource: 'trajectory',
+      totalMessages: 11,
+      messagesStartIndex: 10,
+      hasEarlierMessages: true,
+      messages: [{ id: 's2-10', role: 'user', text: 's2', msgIndex: 10 }]
+    });
+    const s2LoadP = apiH.loadEarlierMessages();
+    const s2Fetch = deferredFetches.find((f) => f.url.includes('sess-s2'));
+    assert.ok(s2Fetch);
+    assert.equal(apiH.getState().loadingEarlierMsgs, true);
+
+    domById.toast.textContent = '';
+    s1Fetch.reject(new Error('s1 network drop'));
+    await s1LoadP;
+    await new Promise((r) => setImmediate(r));
+    assert.equal(apiH.getState().loadingEarlierMsgs, true, 'S1 旧请求失败绝不能解开 S2 的加载锁');
+    assert.equal(domById.toast.textContent, '', 'S1 旧请求失败不得在 S2 弹出错误 toast');
+
+    s2Fetch.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        startIndex: 9,
+        messages: [{ id: 's2-9', role: 'user', text: 's2-earlier', msgIndex: 9 }]
+      })
+    });
+    await s2LoadP;
+    assert.equal(apiH.getState().loadingEarlierMsgs, false);
+    assert.deepEqual(apiH.getKeys(), [9, 10]);
+  } finally {
+    for (const t of vmTimers) clearTimeout(t);
+  }
+
+  // 3. ag-enhancer-overlay.js autoCompact maxUntil 超时释放与 dispose() 清理
+  {
+    const env = createDomEnv();
+    let fakeNow = 1795500000000;
+    const OrigDate = Date;
+    class MockDate extends OrigDate {
+      constructor(...args) { super(...(args.length ? args : [fakeNow])); }
+      static now() { return fakeNow; }
+    }
+    env.sandbox.Date = MockDate;
+    env.sandbox.setTimeout = setTimeout;
+    env.sandbox.clearTimeout = clearTimeout;
+    env.win.location = { pathname: '/c/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' };
+    env.sandbox.location = env.win.location;
+
+    const composer = env.doc.createElement('div');
+    composer.className = 'surface-composer';
+    const editor = env.doc.createElement('div');
+    editor.setAttribute('data-lexical-editor', 'true');
+    editor.setAttribute('contenteditable', 'true');
+    const sendBtn = env.doc.createElement('button');
+    sendBtn.setAttribute('data-testid', 'send-button');
+    let sendClicks = 0;
+    sendBtn.addEventListener('click', () => { sendClicks++; });
+    composer.appendChild(editor);
+    composer.appendChild(sendBtn);
+    env.doc.body.appendChild(composer);
+
+    const cancelBtn = env.doc.createElement('button');
+    cancelBtn.setAttribute('data-testid', 'input-cancel-button');
+    cancelBtn.textContent = 'Stop';
+    cancelBtn.disabled = true;
+    Object.defineProperty(cancelBtn, 'offsetWidth', { configurable: true, get: () => (cancelBtn.disabled ? 0 : 40) });
+    env.doc.body.appendChild(cancelBtn);
+
+    const capMock = env.doc.createElement('button');
+    capMock.setAttribute('data-agy-context-capsule', '1');
+    capMock.__ctxUsageData = { hasPreciseSnapshot: true, contextUsed: 256000, usagePercent: 50, cacheDropDetected: false };
+    env.doc.body.appendChild(capMock);
+
+    env.doc.execCommand = (cmd, _ui, val) => {
+      if (cmd === 'insertText') editor.textContent = String(val || '');
+      else if (cmd === 'delete') editor.textContent = '';
+      return true;
+    };
+    env.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+    env.win.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+
+    let enh = null;
+    try {
+      vm.runInContext(ENHANCER_SRC, env.sandbox);
+      enh = env.sandbox.__AGEnhancer;
+
+      const first = enh.runAutoCompactTick({ immediate: true });
+      assert.equal(first.triggered, true, JSON.stringify(first));
+      await new Promise((r) => setTimeout(r, 90));
+      assert.equal(sendClicks, 1);
+      editor.textContent = '';
+
+      // 超过 maxUntil (180s) 且处于 busy 状态切回本会话：应自动清掉陈旧 inFlight 并进入 assistant_busy 重新上膛
+      fakeNow += 190000;
+      cancelBtn.disabled = false;
+      const busyTick = enh.runAutoCompactTick();
+      assert.equal(busyTick.reason, 'assistant_busy', '超过 maxUntil 的陈旧 inFlight 不得在新轮 busy 时漏触发');
+
+      // 对话结束稳定后即可再次自动压缩
+      cancelBtn.disabled = true;
+      const waitTick = enh.runAutoCompactTick();
+      assert.equal(waitTick.reason, 'waiting_idle_stability');
+      fakeNow += 2000;
+      const second = enh.runAutoCompactTick();
+      assert.equal(second.triggered, true, '重新上膛并稳定后应触发第二次自动压缩: ' + JSON.stringify(second));
+      await new Promise((r) => setTimeout(r, 90));
+      assert.equal(sendClicks, 2);
+
+      assert.doesNotThrow(() => enh.dispose());
+    } finally {
+      enh?.dispose?.();
+      env.cleanup?.();
+    }
+  }
+
+  // 4. local-api.js request() 在服务端响应头后直接销毁 socket 时立即 reject 不悬挂，且 UTF-8 跨分片无乱码
+  {
+    const http = require('node:http');
+    const localApi = require('../local-api.js');
+    const srv = http.createServer((req, res) => {
+      if (req.url === '/abort') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.write('{"partial":');
+        setTimeout(() => { try { res.socket?.destroy(); } catch {} }, 15);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      const buf = Buffer.from('正常中文与🚀完成', 'utf8');
+      let offset = 0;
+      const pump = () => {
+        if (offset >= buf.length) { res.end(); return; }
+        res.write(buf.subarray(offset, offset + 2));
+        offset += 2;
+        setTimeout(pump, 2);
+      };
+      pump();
+    });
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    const port = srv.address().port;
+    try {
+      const tStart = performance.now();
+      await assert.rejects(
+        () => localApi.request(`http://127.0.0.1:${port}/abort`),
+        /aborted|closed|socket|ECONNRESET|unexpected/i
+      );
+      const abortMs = performance.now() - tStart;
+      assert.ok(abortMs < 2000, `socket 中途断开应在 2s 内 reject 而不悬挂超时，实际=${abortMs.toFixed(1)}ms`);
+
+      const okTxt = await localApi.request(`http://127.0.0.1:${port}/ok`);
+      assert.equal(okTxt, '正常中文与🚀完成', '逐 2 字节拆分 UTF-8 + Emoji 必须无乱码还原');
+    } finally {
+      await new Promise((resolve) => srv.close(resolve));
+    }
+  }
+});
+

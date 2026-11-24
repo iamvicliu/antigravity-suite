@@ -335,6 +335,7 @@ function sanitizeCascadeModelConfig(c) {
 
 const FILES_CACHE_MAX_ENTRIES = 512;
 const CONVERSATIONS_CACHE_MAX_ENTRIES = 32;
+const MAX_LOCAL_RESPONSE_BYTES = 256 * 1024 * 1024;
 const filesCache = new Map();
 const conversations = new Map();
 const csrfTokenByOrigin = new Map();
@@ -349,8 +350,14 @@ function setBoundedMap(map, key, val, maxEntries) {
   }
 }
 
-function request(origin, method, body, token, signal = null) {
+function request(origin, method, body, token, signal = null, reqOptions = {}) {
   const url = method ? `${origin}/exa.language_server_pb.LanguageServerService/${method}` : origin + '/';
+  const maxBytes = (Number.isFinite(reqOptions?.maxBytes) && reqOptions.maxBytes > 0)
+    ? reqOptions.maxBytes
+    : MAX_LOCAL_RESPONSE_BYTES;
+  const timeoutMs = (Number.isFinite(reqOptions?.timeoutMs) && reqOptions.timeoutMs > 0)
+    ? reqOptions.timeoutMs
+    : 45000;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const err = new Error('请求已取消');
@@ -358,6 +365,17 @@ function request(origin, method, body, token, signal = null) {
       reject(err);
       return;
     }
+    let settled = false;
+    const fail = err => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const succeed = val => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
     const req = https.request(url, {
       rejectUnauthorized: false,
       method: method ? 'POST' : 'GET',
@@ -366,28 +384,40 @@ function request(origin, method, body, token, signal = null) {
     }, response => {
       const chunks = [];
       let size = 0;
+      response.on('error', fail);
       response.on('data', chunk => {
+        if (settled) return;
         size += chunk.length;
-        if (size > 96 * 1024 * 1024) {
-          req.destroy(new Error('本地响应过大，扫描不完整'));
+        if (size > maxBytes) {
+          fail(new Error('本地响应过大，扫描不完整'));
+          try { response.destroy(); } catch {}
+          try { req.destroy(); } catch {}
           return;
         }
         chunks.push(chunk);
       });
       response.on('end', () => {
+        if (settled) return;
         if (signal?.aborted) {
           const err = new Error('请求已取消');
           err.name = 'AbortError';
-          reject(err);
+          fail(err);
           return;
         }
-        const text = Buffer.concat(chunks).toString();
-        if (response.statusCode !== 200) reject(new Error(`本机接口 HTTP ${response.statusCode}`));
-        else { try { resolve(method ? JSON.parse(text) : text); } catch (e) { reject(e); } }
+        try {
+          const text = Buffer.concat(chunks).toString();
+          if (response.statusCode !== 200) fail(new Error(`本机接口 HTTP ${response.statusCode}`));
+          else succeed(method ? JSON.parse(text) : text);
+        } catch (e) {
+          fail(e);
+        }
       });
     });
-    req.setTimeout(20000, () => req.destroy(new Error('本机接口读取超时')));
-    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      fail(new Error('本机接口读取超时'));
+      try { req.destroy(); } catch {}
+    });
+    req.on('error', fail);
     req.end(method ? JSON.stringify(body) : undefined);
   });
 }
@@ -651,45 +681,90 @@ async function collect(origin, id, options = {}) {
         token = resolveOriginCsrfToken(origin, html, options);
         csrfTokenByOrigin.set(origin, token);
       }
+      const reqOpts = { maxBytes: options.maxResponseBytes, timeoutMs: options.requestTimeoutMs };
       const call = async (method, body) => {
         try {
-          return await request(origin, method, body, token, signal);
+          return await request(origin, method, body, token, signal, reqOpts);
         } catch (err) {
           if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
             csrfTokenByOrigin.delete(origin);
             const html = await request(origin, null, null, null, signal);
             token = resolveOriginCsrfToken(origin, html, options);
             csrfTokenByOrigin.set(origin, token);
-            return await request(origin, method, body, token, signal);
+            return await request(origin, method, body, token, signal, reqOpts);
           }
           throw err;
         }
       };
-      const full = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 3 });
-      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-      const trajectory = full.trajectory;
-      if (!trajectory) throw new Error('未取得会话历史，无法完整统计');
-      const wsPath = extractWorkspaceFromTrajectory(trajectory);
-      if (wsPath) conversationWorkspaces.set(id.toLowerCase(), wsPath);
-      const steps = trajectory.steps || [];
-      const expected = Number(full.numTotalSteps ?? steps.length);
-      while (steps.length < expected) {
-        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-        const page = await call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: steps.length, trajectoryVerbosity: 3 });
-        if (!page.steps?.length) throw new Error(`历史仅取得 ${steps.length}/${expected} 步，扫描未完成`);
-        steps.push(...page.steps);
+      let full = null;
+      let largeTrajectoryFallbackReason = '';
+      try {
+        full = await call('GetCascadeTrajectory', { cascadeId: id, trajectoryVerbosity: 3 });
+      } catch (err) {
+        const msg = String(err?.message || err || '');
+        if (/本地响应过大|本机接口读取超时|Cannot create a string longer|ERR_STRING_TOO_LONG/i.test(msg) && !isSuperseded() && !signal?.aborted) {
+          largeTrajectoryFallbackReason = msg;
+        } else {
+          throw err;
+        }
       }
       if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-      const session = analyzeSteps(steps);
-      const stepCapabilities = extractObservedModelInfoFromSteps(steps);
-      const attachments = await scanFiles(session.media, { signal });
-      if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+
+      let wsPath = null;
+      let session = null;
+      let stepCapabilities = {};
+      let attachments = [];
       const attachmentTotal = empty();
-      for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
-      const total = add({ ...session.total }, attachmentTotal);
+      let total = null;
+      let count = 0;
+      let tail = null;
+
+      if (!largeTrajectoryFallbackReason) {
+        const trajectory = full.trajectory;
+        if (!trajectory) throw new Error('未取得会话历史，无法完整统计');
+        wsPath = extractWorkspaceFromTrajectory(trajectory);
+        if (wsPath) conversationWorkspaces.set(id.toLowerCase(), wsPath);
+        const steps = trajectory.steps || [];
+        const expected = Number(full.numTotalSteps ?? steps.length);
+        while (steps.length < expected) {
+          if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+          const page = await call('GetCascadeTrajectorySteps', { cascadeId: id, stepOffset: steps.length, trajectoryVerbosity: 3 });
+          if (!page.steps?.length) throw new Error(`历史仅取得 ${steps.length}/${expected} 步，扫描未完成`);
+          steps.push(...page.steps);
+        }
+        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        session = analyzeSteps(steps);
+        stepCapabilities = extractObservedModelInfoFromSteps(steps);
+        attachments = await scanFiles(session.media, { signal });
+        if (isSuperseded()) return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
+        for (const a of attachments) { const n = a.references || 1; add(attachmentTotal, Object.fromEntries(['chars', 'bytes', 'low', 'high'].map(k => [k, (a[k] || 0) * n]))); }
+        total = add({ ...session.total }, attachmentTotal);
+        count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
+        tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 3), includeMessages: false });
+      } else {
+        // 超大会话归档突破响应阈值时，直接拉取 metadata 尾部保留精确上下文用量，不阻断面板展示
+        wsPath = conversationWorkspaces.get(id.toLowerCase()) || null;
+        session = analyzeSteps([]);
+        total = { ...session.total };
+        const prevGenCount = Number(previous?.result?.generatorCount || 0);
+        if (prevGenCount > 0) {
+          const tryOffset = Math.max(0, prevGenCount - 3);
+          const tryTail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: tryOffset, includeMessages: false });
+          const tryRows = Array.isArray(tryTail?.generatorMetadata) ? tryTail.generatorMetadata : [];
+          if (tryRows.length > 0) {
+            tail = tryTail;
+            count = tryOffset + tryRows.length;
+          } else {
+            tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: 0, includeMessages: false });
+            count = Array.isArray(tail?.generatorMetadata) ? tail.generatorMetadata.length : 0;
+          }
+        } else {
+          tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: 0, includeMessages: false });
+          count = Array.isArray(tail?.generatorMetadata) ? tail.generatorMetadata.length : 0;
+        }
+      }
+
       let latest = null;
-      const count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
-      const tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 3), includeMessages: false });
       let knownCascadeConfigs = Array.isArray(cachedHostUserStatus?.cascadeModelConfigs) ? cachedHostUserStatus.cascadeModelConfigs : [];
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
@@ -747,7 +822,31 @@ async function collect(origin, id, options = {}) {
       ...(cachedHostUserStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
-    const result = { version: '0.8.5', conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
+    const result = {
+      version: '0.8.5',
+      conversation: id,
+      workspacePath: wsPath || null,
+      latest,
+      latestCallId,
+      generatorCount: count,
+      cascadeModelConfigs: compactCascadeConfigs,
+      modelCapabilitiesById,
+      session: {
+        ...session,
+        media: undefined,
+        attachmentTotal,
+        total,
+        attachments,
+        unknownFiles,
+        complete: largeTrajectoryFallbackReason ? false : (unknownFiles === 0),
+        skippedLargeArchive: Boolean(largeTrajectoryFallbackReason),
+        scope: largeTrajectoryFallbackReason
+          ? '会话归档体积超出单次扫描上限，已保留精确上下文用量并跳过全量历史正文估算'
+          : '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果'
+      },
+      scannedAt: Date.now(),
+      errors: largeTrajectoryFallbackReason ? [largeTrajectoryFallbackReason] : []
+    };
     if (isSuperseded()) {
       conversations.delete(key);
       return { version: '0.8.5', conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
@@ -5351,6 +5450,7 @@ module.exports = {
   buildAccountScopeKey,
   resetQuotaHostCacheForTest,
   resolveOriginCsrfToken,
+  MAX_LOCAL_RESPONSE_BYTES,
   collect,
   collectTokenHistory,
   collectTokenHistoryAsync,
