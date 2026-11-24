@@ -24020,7 +24020,7 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
   // 2. 前 32 字含各类 Markdown 语法 + 多块无空格 DOM 拼接（collectBoundedNodeText 实况）：只保留服务端渲染版，0 个 dom-tail
   const mdCases = [
     {
-      md: '**已根治** [mobile-remote.js](file:///Users/demo/codebase/antigravity-suite/mobile-remote.js#L4525) 中的去重逻辑。',
+      md: '**已根治** [mobile-remote.js](file:///Users/me/codebase/antigravity-suite/mobile-remote.js#L4525) 中的去重逻辑。',
       dom: '已根治 mobile-remote.js 中的去重逻辑。'
     },
     {
@@ -24032,7 +24032,7 @@ test('根治同一条 AI 回复在远程端重复显示两次的去重缺陷 (#4
       dom: '根因定位第一点是 原始 Markdown 与 DOM 纯文本硬比对失配。'
     },
     {
-      md: '> [!NOTE]\n> 请查看 [TODO.md](file:///Users/demo/codebase/antigravity-suite/TODO.md) 并确认结果。',
+      md: '> [!NOTE]\n> 请查看 [TODO.md](file:///Users/me/codebase/antigravity-suite/TODO.md) 并确认结果。',
       dom: '请查看 TODO.md 并确认结果。'
     }
   ];
@@ -27775,27 +27775,30 @@ test('Tailscale 离线防误报 + 自定义 Tailscale 节点支持（Loon 内置
     const uiApi = uiEnv.sandbox.__AGContextMeter;
     vm.runInContext(fs.readFileSync(ENHANCER_PATH, 'utf8'), uiEnv.sandbox);
     const uiEnh = uiEnv.sandbox.__AGEnhancer;
-    const uiPane = uiEnv.getShadow().getElementById('settings-pane-remote');
-    uiApi.openSettings('remote');
-    await new Promise((r) => setTimeout(r, 30));
-    uiPane.querySelector('#ag-rp-ts-cfg-btn')?.click();
-    const tsInput = uiPane.querySelector('#ag-rp-ts-host');
-    assert.ok(tsInput, '点击自定义节点按钮后应展开 #ag-rp-ts-form 表单');
-    tsInput.value = 'new-proxy.tailnet123.ts.net';
-    uiPane.querySelector('#ag-rp-ts-save')?.click();
-    await new Promise((r) => setTimeout(r, 30));
-    assert.deepEqual(uiPosts.at(-1), { tailscaleCustomHost: 'new-proxy.tailnet123.ts.net', enabledChannels: { tailscale: true } });
-    assert.equal(uiPane.querySelector('#ag-rp-ts-form'), null, '保存成功后应自动收起表单');
-    assert.ok(uiPane.querySelector('#ag-rp-toggle-tailscale')?.textContent.includes('new-proxy.tailnet123.ts.net'), '保存后设置页应显示自定义节点地址');
-    uiPane.querySelector('#ag-rp-ts-cfg-btn')?.click();
-    uiPane.querySelector('#ag-rp-ts-clear')?.click();
-    await new Promise((r) => setTimeout(r, 30));
-    assert.deepEqual(uiPosts.at(-1), { tailscaleCustomHost: '' });
-    assert.equal(mr.loadOrCreateRemoteConfig().tailscaleCustomHost, '');
-    if (prevUiSkip === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
-    else process.env.AG_REMOTE_SKIP_PROBES = prevUiSkip;
-    uiEnh.dispose?.();
-    uiApi.dispose?.();
+    try {
+      const uiPane = uiEnv.getShadow().getElementById('settings-pane-remote');
+      uiApi.openSettings('remote');
+      await new Promise((r) => setTimeout(r, 30));
+      uiPane.querySelector('#ag-rp-ts-cfg-btn')?.click();
+      const tsInput = uiPane.querySelector('#ag-rp-ts-host');
+      assert.ok(tsInput, '点击自定义节点按钮后应展开 #ag-rp-ts-form 表单');
+      tsInput.value = 'new-proxy.tailnet123.ts.net';
+      uiPane.querySelector('#ag-rp-ts-save')?.click();
+      await new Promise((r) => setTimeout(r, 30));
+      assert.deepEqual(uiPosts.at(-1), { tailscaleCustomHost: 'new-proxy.tailnet123.ts.net', enabledChannels: { tailscale: true } });
+      assert.equal(uiPane.querySelector('#ag-rp-ts-form'), null, '保存成功后应自动收起表单');
+      assert.ok(uiPane.querySelector('#ag-rp-toggle-tailscale')?.textContent.includes('new-proxy.tailnet123.ts.net'), '保存后设置页应显示自定义节点地址');
+      uiPane.querySelector('#ag-rp-ts-cfg-btn')?.click();
+      uiPane.querySelector('#ag-rp-ts-clear')?.click();
+      await new Promise((r) => setTimeout(r, 30));
+      assert.deepEqual(uiPosts.at(-1), { tailscaleCustomHost: '' });
+      assert.equal(mr.loadOrCreateRemoteConfig().tailscaleCustomHost, '');
+    } finally {
+      if (prevUiSkip === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+      else process.env.AG_REMOTE_SKIP_PROBES = prevUiSkip;
+      uiEnh?.dispose?.();
+      uiApi?.dispose?.();
+    }
   } finally {
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
     else process.env.AG_METER_STATE_DIR = prevStateDir;
@@ -28037,3 +28040,342 @@ test('超大会话上下文扫描防 96MB 断流降级与 scan 解除统计延�
   assert.ok(finalAmount.includes('50%'), `滞后超时后顶栏应保持 scan 更新的 50%，实际=${finalAmount}`);
   api.dispose?.();
 });
+
+test('PR #11 合并加固：行内 KaTeX 线性性能、前端消息缓存代际隔离、autoCompact 超时清理与 local-api 中断防挂', async () => {
+  // 1. normPlainMatchText 对 30KB+ 未闭合 $ 文本严格线性不卡死，且合法行内公式与金额行为不变
+  const mrPath = require.resolve('../mobile-remote.js');
+  delete require.cache[mrPath];
+  const { normPlainMatchText, buildMobileAppHtml } = require('../mobile-remote.js');
+  const hugeUnclosedDollar = 'prefix $' + 'a + b = '.repeat(3800);
+  const t0 = performance.now();
+  const normHuge = normPlainMatchText(hugeUnclosedDollar);
+  const elapsedMs = performance.now() - t0;
+  assert.ok(elapsedMs < 100, `30KB 未闭合 $ 文本归一化必须在 100ms 内完成，实际=${elapsedMs.toFixed(1)}ms`);
+  assert.ok(normHuge.includes('$a + b = '), '未闭合 $ 不得误脱分隔符');
+  assert.equal(normPlainMatchText('计算 $x + y$ 结果'), '计算 x + y 结果');
+  assert.equal(normPlainMatchText('费用 $100 与 $5.50'), '费用 $100 与 $5.50');
+
+  // 2. 前端 renderSnapshot 降级与切会话时，msgCacheEpoch 阻断在途分页/补洞回灌、保护新会话锁并同步清空 openThoughtIdxSet
+  const appHtml = buildMobileAppHtml();
+  const appScripts = Array.from(appHtml.matchAll(/<script>([\s\S]*?)<\/script>/g));
+  const clientScript = appScripts.map((m) => m[1]).find((s) => s.includes('function renderSnapshot('));
+  assert.ok(clientScript);
+
+  const makeMockEl = (id) => {
+    const cls = new Set();
+    return {
+      id,
+      hidden: true,
+      disabled: false,
+      value: '',
+      innerHTML: '',
+      textContent: '',
+      scrollHeight: 120,
+      scrollTop: 0,
+      clientHeight: 600,
+      offsetWidth: 300,
+      dataset: {},
+      style: { setProperty() {} },
+      className: '',
+      children: [],
+      classList: {
+        add: (...xs) => xs.forEach((x) => cls.add(x)),
+        remove: (...xs) => xs.forEach((x) => cls.delete(x)),
+        toggle: (x, force) => (force === undefined ? (cls.has(x) ? cls.delete(x) : cls.add(x)) : (force ? cls.add(x) : cls.delete(x))),
+        contains: (x) => cls.has(x)
+      },
+      setAttribute() {},
+      removeAttribute() {},
+      getAttribute: () => null,
+      appendChild(c) { this.children.push(c); return c; },
+      addEventListener() {},
+      contains: () => false,
+      focus() {},
+      blur() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+  };
+  const domById = new Proxy({}, { get: (t, k) => (t[k] || (t[k] = makeMockEl(String(k)))) });
+  const deferredFetches = [];
+  const toasts = [];
+  const vmTimers = new Set();
+  const clientSandbox = {
+    URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+    Uint8Array, TextEncoder, TextDecoder, AbortController, Intl,
+    atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+    btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+    encodeURIComponent, decodeURIComponent,
+    screen: { width: 1280, height: 800 },
+    devicePixelRatio: 2,
+    navigator: { platform: 'MacIntel', maxTouchPoints: 0, hardwareConcurrency: 8 },
+    location: { origin: 'https://local.test', protocol: 'https:', hostname: 'local.test', pathname: '/', search: '', port: '', href: 'https://local.test/' },
+    history: { replaceState() {} },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    document: {
+      hidden: false, activeElement: null,
+      documentElement: { clientHeight: 800, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+      body: { style: {}, classList: domById.__body.classList },
+      getElementById: (id) => domById[id],
+      querySelector: () => makeMockEl('__q'),
+      createElement: (tag) => makeMockEl(tag),
+      addEventListener() {}
+    },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    innerWidth: 1280, innerHeight: 800, visualViewport: null,
+    setTimeout: (fn, ms) => { const t = setTimeout(fn, Math.min(Number(ms) || 0, 50)); if (t.unref) t.unref(); vmTimers.add(t); return t; },
+    clearTimeout: (t) => clearTimeout(t),
+    fetch: (url) => {
+      const sUrl = String(url || '');
+      if (!sUrl.includes('/api/messages')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false, error: 'mock-ignored' }) });
+      }
+      return new Promise((resolve, reject) => {
+        deferredFetches.push({ url: sUrl, resolve, reject });
+      });
+    }
+  };
+  clientSandbox.window = clientSandbox;
+  clientSandbox.addEventListener = () => {};
+  const tailIdx = clientScript.lastIndexOf('})();');
+  const hookedClient = clientScript.slice(0, tailIdx)
+    + '\nglobalThis.__testHarden = { renderSnapshot, loadEarlierMessages, openThoughtIdxSet, getKeys: () => Array.from(sessionMsgsByIndex.keys()).sort((a, b) => a - b), getState: () => ({ loadingEarlierMsgs, backfillingMsgGaps, activeMsgHistorySource, msgCacheEpoch }), origShowToast: showToast };\n'
+    + clientScript.slice(tailIdx);
+
+  try {
+    vm.runInNewContext(hookedClient, clientSandbox);
+    const apiH = clientSandbox.__testHarden;
+    // 捕获错误 toast（覆盖内部 helper 无关紧要，直接观察状态也可；同时替换 domById.toast.textContent）
+    let seq = 0;
+
+    // 2a. trajectory 首帧含缺失区间，自动发起 backfillMissingMsgGaps 并手动发起 loadEarlierMessages
+    apiH.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-h-1',
+      historySource: 'trajectory',
+      totalMessages: 40,
+      messagesStartIndex: 35,
+      hasEarlierMessages: true,
+      messages: [
+        { id: 'u-35', role: 'user', text: '旧问题-35', msgIndex: 35 },
+        { id: 'a-36', role: 'assistant', text: '旧回复-36', msgIndex: 36 }
+      ]
+    });
+    apiH.openThoughtIdxSet.add(36);
+    const load1Promise = apiH.loadEarlierMessages();
+    assert.equal(apiH.getState().backfillingMsgGaps, true);
+    assert.equal(apiH.getState().loadingEarlierMsgs, true);
+    assert.equal(deferredFetches.length, 2, '应有两个在途 /api/messages 请求（backfill + loadEarlier）');
+
+    // 同会话降级为 dom：必须清空 openThoughtIdxSet、递增 epoch 并复位加载态
+    apiH.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-h-1',
+      historySource: 'dom',
+      totalMessages: 2,
+      messagesStartIndex: 0,
+      hasEarlierMessages: false,
+      messages: [
+        { id: 'd-0', role: 'user', text: 'DOM 提问', msgIndex: 0 },
+        { id: 'd-1', role: 'assistant', text: 'DOM 回复', msgIndex: 1 }
+      ]
+    });
+    assert.equal(apiH.openThoughtIdxSet.size, 0, '同会话 trajectory -> dom 降级必须清空 openThoughtIdxSet');
+    assert.equal(apiH.getState().loadingEarlierMsgs, false);
+    assert.equal(apiH.getState().backfillingMsgGaps, false);
+
+    // 放行在途旧轨迹请求返回：绝不能回灌进已降级的 dom 缓存
+    for (const f of deferredFetches.splice(0)) {
+      f.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          startIndex: 20,
+          messages: [{ id: 'stale-20', role: 'assistant', text: '滞后轨迹-20', msgIndex: 20 }]
+        })
+      });
+    }
+    await load1Promise;
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(apiH.getKeys(), [0, 1], '降级后返回的滞后轨迹分页与补洞响应不得污染 [0, 1] 缓存');
+
+    // 2b. 切会话锁隔离：S1 在途 loadEarlier 延迟失败，不得解锁 S2 正在进行的 loadEarlier
+    apiH.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-s1',
+      historySource: 'trajectory',
+      totalMessages: 11,
+      messagesStartIndex: 10,
+      hasEarlierMessages: true,
+      messages: [{ id: 's1-10', role: 'user', text: 's1', msgIndex: 10 }]
+    });
+    const s1LoadP = apiH.loadEarlierMessages();
+    const s1Fetch = deferredFetches.find((f) => f.url.includes('sess-s1'));
+    assert.ok(s1Fetch);
+
+    apiH.renderSnapshot({
+      ok: true,
+      snapSeq: ++seq,
+      sessionId: 'sess-s2',
+      historySource: 'trajectory',
+      totalMessages: 11,
+      messagesStartIndex: 10,
+      hasEarlierMessages: true,
+      messages: [{ id: 's2-10', role: 'user', text: 's2', msgIndex: 10 }]
+    });
+    const s2LoadP = apiH.loadEarlierMessages();
+    const s2Fetch = deferredFetches.find((f) => f.url.includes('sess-s2'));
+    assert.ok(s2Fetch);
+    assert.equal(apiH.getState().loadingEarlierMsgs, true);
+
+    domById.toast.textContent = '';
+    s1Fetch.reject(new Error('s1 network drop'));
+    await s1LoadP;
+    await new Promise((r) => setImmediate(r));
+    assert.equal(apiH.getState().loadingEarlierMsgs, true, 'S1 旧请求失败绝不能解开 S2 的加载锁');
+    assert.equal(domById.toast.textContent, '', 'S1 旧请求失败不得在 S2 弹出错误 toast');
+
+    s2Fetch.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        startIndex: 9,
+        messages: [{ id: 's2-9', role: 'user', text: 's2-earlier', msgIndex: 9 }]
+      })
+    });
+    await s2LoadP;
+    assert.equal(apiH.getState().loadingEarlierMsgs, false);
+    assert.deepEqual(apiH.getKeys(), [9, 10]);
+  } finally {
+    for (const t of vmTimers) clearTimeout(t);
+  }
+
+  // 3. ag-enhancer-overlay.js autoCompact maxUntil 超时释放与 dispose() 清理
+  {
+    const env = createDomEnv();
+    let fakeNow = 1795500000000;
+    const OrigDate = Date;
+    class MockDate extends OrigDate {
+      constructor(...args) { super(...(args.length ? args : [fakeNow])); }
+      static now() { return fakeNow; }
+    }
+    env.sandbox.Date = MockDate;
+    env.sandbox.setTimeout = setTimeout;
+    env.sandbox.clearTimeout = clearTimeout;
+    env.win.location = { pathname: '/c/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', search: '', origin: 'https://127.0.0.1', href: 'https://127.0.0.1/c/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' };
+    env.sandbox.location = env.win.location;
+
+    const composer = env.doc.createElement('div');
+    composer.className = 'surface-composer';
+    const editor = env.doc.createElement('div');
+    editor.setAttribute('data-lexical-editor', 'true');
+    editor.setAttribute('contenteditable', 'true');
+    const sendBtn = env.doc.createElement('button');
+    sendBtn.setAttribute('data-testid', 'send-button');
+    let sendClicks = 0;
+    sendBtn.addEventListener('click', () => { sendClicks++; });
+    composer.appendChild(editor);
+    composer.appendChild(sendBtn);
+    env.doc.body.appendChild(composer);
+
+    const cancelBtn = env.doc.createElement('button');
+    cancelBtn.setAttribute('data-testid', 'input-cancel-button');
+    cancelBtn.textContent = 'Stop';
+    cancelBtn.disabled = true;
+    Object.defineProperty(cancelBtn, 'offsetWidth', { configurable: true, get: () => (cancelBtn.disabled ? 0 : 40) });
+    env.doc.body.appendChild(cancelBtn);
+
+    const capMock = env.doc.createElement('button');
+    capMock.setAttribute('data-agy-context-capsule', '1');
+    capMock.__ctxUsageData = { hasPreciseSnapshot: true, contextUsed: 256000, usagePercent: 50, cacheDropDetected: false };
+    env.doc.body.appendChild(capMock);
+
+    env.doc.execCommand = (cmd, _ui, val) => {
+      if (cmd === 'insertText') editor.textContent = String(val || '');
+      else if (cmd === 'delete') editor.textContent = '';
+      return true;
+    };
+    env.doc.createRange = () => ({ selectNodeContents() {}, collapse() {} });
+    env.win.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+
+    let enh = null;
+    try {
+      vm.runInContext(ENHANCER_SRC, env.sandbox);
+      enh = env.sandbox.__AGEnhancer;
+
+      const first = enh.runAutoCompactTick({ immediate: true });
+      assert.equal(first.triggered, true, JSON.stringify(first));
+      await new Promise((r) => setTimeout(r, 90));
+      assert.equal(sendClicks, 1);
+      editor.textContent = '';
+
+      // 超过 maxUntil (180s) 且处于 busy 状态切回本会话：应自动清掉陈旧 inFlight 并进入 assistant_busy 重新上膛
+      fakeNow += 190000;
+      cancelBtn.disabled = false;
+      const busyTick = enh.runAutoCompactTick();
+      assert.equal(busyTick.reason, 'assistant_busy', '超过 maxUntil 的陈旧 inFlight 不得在新轮 busy 时漏触发');
+
+      // 对话结束稳定后即可再次自动压缩
+      cancelBtn.disabled = true;
+      const waitTick = enh.runAutoCompactTick();
+      assert.equal(waitTick.reason, 'waiting_idle_stability');
+      fakeNow += 2000;
+      const second = enh.runAutoCompactTick();
+      assert.equal(second.triggered, true, '重新上膛并稳定后应触发第二次自动压缩: ' + JSON.stringify(second));
+      await new Promise((r) => setTimeout(r, 90));
+      assert.equal(sendClicks, 2);
+
+      assert.doesNotThrow(() => enh.dispose());
+    } finally {
+      enh?.dispose?.();
+      env.cleanup?.();
+    }
+  }
+
+  // 4. local-api.js request() 在服务端响应头后直接销毁 socket 时立即 reject 不悬挂，且 UTF-8 跨分片无乱码
+  {
+    const http = require('node:http');
+    const localApi = require('../local-api.js');
+    const srv = http.createServer((req, res) => {
+      if (req.url === '/abort') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.write('{"partial":');
+        setTimeout(() => { try { res.socket?.destroy(); } catch {} }, 15);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      const buf = Buffer.from('正常中文与🚀完成', 'utf8');
+      let offset = 0;
+      const pump = () => {
+        if (offset >= buf.length) { res.end(); return; }
+        res.write(buf.subarray(offset, offset + 2));
+        offset += 2;
+        setTimeout(pump, 2);
+      };
+      pump();
+    });
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    const port = srv.address().port;
+    try {
+      const tStart = performance.now();
+      await assert.rejects(
+        () => localApi.request(`http://127.0.0.1:${port}/abort`),
+        /aborted|closed|socket|ECONNRESET|unexpected/i
+      );
+      const abortMs = performance.now() - tStart;
+      assert.ok(abortMs < 2000, `socket 中途断开应在 2s 内 reject 而不悬挂超时，实际=${abortMs.toFixed(1)}ms`);
+
+      const okTxt = await localApi.request(`http://127.0.0.1:${port}/ok`);
+      assert.equal(okTxt, '正常中文与🚀完成', '逐 2 字节拆分 UTF-8 + Emoji 必须无乱码还原');
+    } finally {
+      await new Promise((resolve) => srv.close(resolve));
+    }
+  }
+});
+

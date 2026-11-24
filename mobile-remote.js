@@ -5019,8 +5019,8 @@ function normPlainMatchText(text) {
   s = s.replace(/^[ \t]*\$\$[ \t]*\n((?:(?![ \t]*\$\$[ \t]*$)(?!\s*$)[^$\n]+\n)+)[ \t]*\$\$[ \t]*$/gm, '$1');
   s = s.replace(/\$\$(?!\s)((?:[^$\n]*?[^\s$])|[^$\s])\$\$/g, '$1');
   s = s.replace(
-    /(^|[^\\$\w])\$(?!\s)(?!\d+(?:[.,]\d+)?(?:\s|$))([A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]*?[A-Za-z\\=+\-*/^_{}][A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]*?)(?<!\s)\$(?![A-Za-z0-9_])/g,
-    '$1$2'
+    /(^|[^\\$\w])\$(?!\s)(?!\d+(?:[.,]\d+)?(?:\s|$))([A-Za-z0-9_\\^{}()[\]+\-*/=.,:;<>|!?' \t]+?)(?<!\s)\$(?![A-Za-z0-9_])/g,
+    (full, prefix, inner) => (/[A-Za-z\\=+\-*/^_{}]/.test(inner) ? (prefix + inner) : full)
   );
   s = s.replace(/^[ \t]*(?:={3,}|-{3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*$/gm, '');
   s = s.replace(/^[ \t]*#{1,6}[ \t]+([^\n]*?)(?:[ \t]+#+)?[ \t]*$/gm, '$1');
@@ -11344,17 +11344,6 @@ function buildMobileAppHtml() {
 
       // Messages (full history + upward pagination + gap backfill + scroll anchor)
       msgEl.classList.remove('is-switching');
-      const parseNonNegativeInt = (v) => {
-        if (typeof v === 'number') return (Number.isInteger(v) && v >= 0) ? v : null;
-        if (typeof v === 'string') {
-          const trimmed = v.trim();
-          if (/^\\d+$/.test(trimmed)) {
-            const n = Number(trimmed);
-            return (Number.isSafeInteger(n) && n >= 0) ? n : null;
-          }
-        }
-        return null;
-      };
       const snapSid = snap.isNewConversation ? '__new__' : String(snap.sessionId || '');
       const nextHistSource = snap.historySource === 'trajectory'
         ? 'trajectory'
@@ -11364,6 +11353,7 @@ function buildMobileAppHtml() {
       if (snapSid !== activeMsgSessionId) {
         activeMsgSessionId = snapSid;
         activeMsgHistorySource = hasValidTotalMsgs ? (nextHistSource || 'dom') : 'dom';
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
         promptDraftState.clear();
@@ -11373,18 +11363,34 @@ function buildMobileAppHtml() {
       } else if (!hasValidTotalMsgs) {
         // 缺失或无效 totalMessages（如 undefined/null/''/NaN/负数），即使显式携带原有 historySource（含 'trajectory'），
         // 也一律视为降级回退快照，在写入前先清空旧索引缓存，防止旧轨迹键与回退键混排重复
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
+        loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         activeMsgHistorySource = 'dom';
       } else if (activeMsgHistorySource === 'dom' && nextHistSource === 'trajectory') {
         // RPC 偶发降级 domTail（写入 0..59 临时键）后恢复全量轨迹时，清空旧临时键防止前 60 条重复错序
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
+        loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         activeMsgHistorySource = 'trajectory';
       } else if (activeMsgHistorySource === 'isolated_error' && nextHistSource === 'trajectory') {
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
+        loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         activeMsgHistorySource = 'trajectory';
       } else if (activeMsgHistorySource === 'trajectory' && nextHistSource !== 'trajectory') {
         // 轨迹显式降级至 DOM / isolated_error 或缺失来源时清空旧轨迹索引键，防止双源键混排重复
+        msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
+        openThoughtIdxSet.clear();
+        loadingEarlierMsgs = false;
+        backfillingMsgGaps = false;
         activeMsgHistorySource = nextHistSource || 'dom';
       } else if (nextHistSource) {
         activeMsgHistorySource = nextHistSource;
@@ -12926,10 +12932,23 @@ function buildMobileAppHtml() {
 
     let activeMsgSessionId = null;
     let activeMsgHistorySource = '';
+    let msgCacheEpoch = 0;
     const sessionMsgsByIndex = new Map();
     const openThoughtIdxSet = new Set();
     let loadingEarlierMsgs = false;
     let backfillingMsgGaps = false;
+
+    function parseNonNegativeInt(v) {
+      if (typeof v === 'number') return (Number.isSafeInteger(v) && v >= 0) ? v : null;
+      if (typeof v === 'string') {
+        const trimmed = v.trim();
+        if (/^\\d+$/.test(trimmed)) {
+          const n = Number(trimmed);
+          return (Number.isSafeInteger(n) && n >= 0) ? n : null;
+        }
+      }
+      return null;
+    }
 
     function getThoughtFallbackText(m) {
       if (!m) return '';
@@ -13005,30 +13024,35 @@ function buildMobileAppHtml() {
     }
 
     async function backfillMissingMsgGaps(expectedSid) {
-      if (backfillingMsgGaps || !expectedSid || expectedSid === '__new__' || expectedSid !== activeMsgSessionId) return;
+      if (backfillingMsgGaps || !expectedSid || expectedSid === '__new__' || expectedSid !== activeMsgSessionId || activeMsgHistorySource !== 'trajectory') return;
+      const reqEpoch = msgCacheEpoch;
       backfillingMsgGaps = true;
       try {
-        while (expectedSid === activeMsgSessionId) {
-          const ranges = findMissingMsgRanges(Number(latestSnap?.totalMessages));
+        while (reqEpoch === msgCacheEpoch && expectedSid === activeMsgSessionId && activeMsgHistorySource === 'trajectory') {
+          const totalCount = parseNonNegativeInt(latestSnap?.totalMessages);
+          if (totalCount === null) break;
+          const ranges = findMissingMsgRanges(totalCount);
           if (!ranges.length) break;
           const [gapStart, gapEnd] = ranges[0];
           let cursorEnd = gapEnd;
           let progressed = false;
-          while (cursorEnd > gapStart && expectedSid === activeMsgSessionId) {
+          while (cursorEnd > gapStart && reqEpoch === msgCacheEpoch && expectedSid === activeMsgSessionId && activeMsgHistorySource === 'trajectory') {
             const chunkLim = Math.max(1, Math.min(200, cursorEnd - gapStart));
             const q = '/api/messages?sessionId=' + encodeURIComponent(expectedSid) + '&before=' + cursorEnd + '&limit=' + chunkLim;
             const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
             if (res.status === 401) { location.reload(); return; }
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
-            if (expectedSid !== activeMsgSessionId) return;
+            if (reqEpoch !== msgCacheEpoch || expectedSid !== activeMsgSessionId || activeMsgHistorySource !== 'trajectory') return;
             const rows = Array.isArray(data?.messages) ? data.messages : [];
             if (!rows.length) break;
-            const baseIdx = Number.isFinite(Number(data?.startIndex)) ? Number(data.startIndex) : Math.max(0, cursorEnd - rows.length);
+            const parsedStart = parseNonNegativeInt(data?.startIndex);
+            const baseIdx = parsedStart !== null ? parsedStart : Math.max(0, cursorEnd - rows.length);
             for (let i = 0; i < rows.length; i++) {
               const m = rows[i];
               if (!m) continue;
-              const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + i);
+              const parsedMIdx = parseNonNegativeInt(m.msgIndex);
+              const mIdx = parsedMIdx !== null ? parsedMIdx : (baseIdx + i);
               sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
               progressed = true;
             }
@@ -13040,7 +13064,9 @@ function buildMobileAppHtml() {
         }
       } catch {
       } finally {
-        backfillingMsgGaps = false;
+        if (reqEpoch === msgCacheEpoch) {
+          backfillingMsgGaps = false;
+        }
       }
     }
 
@@ -13225,7 +13251,8 @@ function buildMobileAppHtml() {
       const msgs = getOrderedSessionMessages();
       const earliestIdx = msgs.length ? Math.max(0, Number(msgs[0].msgIndex) || 0) : 0;
       const reqSid = activeMsgSessionId;
-      if (loadingEarlierMsgs || !reqSid || reqSid === '__new__' || !(earliestIdx > 0)) return;
+      if (loadingEarlierMsgs || !reqSid || reqSid === '__new__' || activeMsgHistorySource !== 'trajectory' || !(earliestIdx > 0)) return;
+      const reqEpoch = msgCacheEpoch;
       loadingEarlierMsgs = true;
       const btn = $('btn-load-earlier');
       if (btn) {
@@ -13235,26 +13262,34 @@ function buildMobileAppHtml() {
       try {
         const q = '/api/messages?sessionId=' + encodeURIComponent(reqSid) + '&before=' + earliestIdx + '&limit=30';
         const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
-        if (res.status === 401) { location.reload(); return; }
+        if (res.status === 401) {
+          if (reqEpoch === msgCacheEpoch) loadingEarlierMsgs = false;
+          location.reload();
+          return;
+        }
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        if (reqSid !== activeMsgSessionId) return;
+        if (reqEpoch !== msgCacheEpoch || reqSid !== activeMsgSessionId || activeMsgHistorySource !== 'trajectory') return;
         const rows = Array.isArray(data?.messages) ? data.messages : [];
-        const baseIdx = Number.isFinite(Number(data?.startIndex)) ? Number(data.startIndex) : Math.max(0, earliestIdx - rows.length);
+        const parsedStart = parseNonNegativeInt(data?.startIndex);
+        const baseIdx = parsedStart !== null ? parsedStart : Math.max(0, earliestIdx - rows.length);
         stickBottom = false;
         for (let i = 0; i < rows.length; i++) {
           const m = rows[i];
           if (!m) continue;
-          const mIdx = Number.isFinite(Number(m.msgIndex)) ? Number(m.msgIndex) : (baseIdx + i);
+          const parsedMIdx = parseNonNegativeInt(m.msgIndex);
+          const mIdx = parsedMIdx !== null ? parsedMIdx : (baseIdx + i);
           sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
         }
         loadingEarlierMsgs = false;
         renderMessagesView(latestSnap, { preserveAnchor: true });
       } catch (err) {
-        loadingEarlierMsgs = false;
-        msgEl.dataset.lastHtml = '';
-        renderMessagesView(latestSnap);
-        showToast(err?.message || '加载更早消息失败');
+        if (reqEpoch === msgCacheEpoch && reqSid === activeMsgSessionId) {
+          loadingEarlierMsgs = false;
+          msgEl.dataset.lastHtml = '';
+          renderMessagesView(latestSnap);
+          showToast(err?.message || '加载更早消息失败');
+        }
       }
     }
 
