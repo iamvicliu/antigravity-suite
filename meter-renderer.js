@@ -157,7 +157,27 @@
       z-index:2147483646 !important;
     }
 
-    /* 窗口非活动状态适度降低顶栏对比度 */
+    /* 窗口非活动或宿主非对话全屏子视图（扩展/插件市场）时暂停动效并避让 */
+    :host([data-window-active="false"]) *,
+    :host([data-marketplace-active="true"]) *{
+      animation-play-state:paused !important;
+    }
+    :host([data-marketplace-active="true"]) .ag-panel,
+    :host([data-marketplace-active="true"]) #panel,
+    :host([data-marketplace-active="true"]) #panel-tokens,
+    :host([data-marketplace-active="true"]) #panel-settings,
+    :host([data-marketplace-active="true"]) #overflow-menu,
+    :host([data-marketplace-active="true"]) #context-tooltip,
+    :host([data-marketplace-active="true"]) #update-popover,
+    :host([data-marketplace-active="true"]) #popover{
+      display:none !important;
+      visibility:hidden !important;
+      pointer-events:none !important;
+    }
+    :host([data-dock="fixed"][data-marketplace-active="true"]){
+      display:none !important;
+      pointer-events:none !important;
+    }
     :host([data-window-active="false"]) .ag-unit{
       opacity:0.72;
     }
@@ -431,6 +451,48 @@
       min-width:30px;
       text-align:left;
       color:inherit;
+    }
+    #badge-speed[data-speed-phase="waiting"]{
+      min-width:26px;
+      justify-content:center;
+    }
+    #badge-speed[data-speed-phase="waiting"] #badge-speed-icon,
+    #badge-speed[data-speed-phase="waiting"] #speed-amount{
+      display:none !important;
+    }
+    .speed-wait-svg{
+      width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;
+      flex-shrink:0;color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));
+    }
+    .speed-wait-svg[hidden]{display:none !important}
+    .ag-hourglass-svg{
+      display:block;width:14px;height:14px;transform-origin:center;
+      animation:ag-hourglass-flip 1.8s cubic-bezier(0.4,0,0.2,1) infinite;
+      will-change:transform;
+    }
+    .ag-hourglass-sand-top{transform-origin:7px 6.5px;animation:ag-hg-top-drain 1.8s linear infinite}
+    .ag-hourglass-sand-bot{transform-origin:7px 11.5px;animation:ag-hg-bot-fill 1.8s linear infinite}
+    .ag-hourglass-stream{animation:ag-hg-stream 1.8s linear infinite}
+    @keyframes ag-hourglass-flip{
+      0%,68%{transform:rotate(0deg)}
+      88%,100%{transform:rotate(180deg)}
+    }
+    @keyframes ag-hg-top-drain{
+      0%{transform:scaleY(1);opacity:0.95}
+      68%,100%{transform:scaleY(0.12);opacity:0.35}
+    }
+    @keyframes ag-hg-bot-fill{
+      0%{transform:scaleY(0.15);opacity:0.4}
+      68%,100%{transform:scaleY(1);opacity:0.95}
+    }
+    @keyframes ag-hg-stream{
+      0%,66%{opacity:0.9;transform:translateY(0)}
+      70%,100%{opacity:0;transform:translateY(1px)}
+    }
+    @media (prefers-reduced-motion: reduce){
+      .ag-hourglass-svg,.ag-hourglass-sand-top,.ag-hourglass-sand-bot,.ag-hourglass-stream{
+        animation:none !important;
+      }
     }
 
     /* 单元 3: 累计 Token 用量 */
@@ -3213,7 +3275,15 @@
     </svg>
     <span id="badge-pct-val" class="badge-pct-val">--%</span>
     <span id="badge-speed" class="badge-inline-speed" aria-label="模型输出速度与耗时统计" aria-expanded="false">
-      <span class="speed-icon" aria-hidden="true">⚡</span>
+      <span id="badge-speed-icon" class="speed-icon" aria-hidden="true">⚡</span>
+      <span id="badge-speed-wait-svg" class="speed-wait-svg" hidden aria-hidden="true">
+        <svg class="ag-hourglass-svg" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.2 2.2h7.6M3.2 11.8h7.6M4 2.2c0 2.5 3 4.2 3 4.8s-3 2.3-3 4.8M10 2.2c0 2.5-3 4.2-3 4.8s3 2.3 3 4.8" opacity="0.88" />
+          <path class="ag-hourglass-sand-top" d="M4.8 3.2h4.4L7 6.1z" fill="currentColor" stroke="none" />
+          <line class="ag-hourglass-stream" x1="7" y1="6.7" x2="7" y2="9.4" stroke-dasharray="1 1.2" stroke-width="1.2" />
+          <path class="ag-hourglass-sand-bot" d="M4.8 11.1h4.4L7 8.4z" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
       <span id="speed-amount">-- tok/s</span>
       <span id="speed-hover-extra" class="sr-only"></span>
     </span>
@@ -3570,7 +3640,28 @@
         </div>
         <dl class="plan-detail-dl">
           <dt>当前套餐：</dt>
-          <dd id="p-det-name" style="font-weight:600">Google AI Pro</dd>
+          <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
+            <span id="p-det-name" style="display:none;font-weight:600">Google AI Pro</span>
+            <select id="direct-tier-select" aria-label="订阅方案与档位覆盖" style="display:none">
+              <option value="auto">✨ 自动检测</option>
+              <option value="free">免费版 (Free)</option>
+              <option value="plus">Google AI Plus</option>
+              <option value="pro">Google AI Pro</option>
+              <option value="ultra_5x">Google AI Ultra 5x</option>
+              <option value="ultra_20x">Google AI Ultra 20x</option>
+              <option value="ultra">Google AI Ultra</option>
+            </select>
+            <div id="direct-tier-wrap" class="ag-dropdown-wrapper" style="flex:1;min-width:0;max-width:270px">
+              <div id="direct-tier-trigger" class="ag-dropdown-trigger" tabindex="0" title="订阅方案与档位覆盖 · 可手动指定套餐或保持自动检测">
+                <span id="direct-tier-label" class="ag-dropdown-label" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">✨ 自动检测</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>
+                </div>
+              </div>
+              <div id="direct-tier-menu" class="ag-dropdown-menu"></div>
+            </div>
+            <span id="p-det-tier-tag" class="key-pill pill-muted" style="font-size:11px;padding:1px 5px;display:none;flex-shrink:0;white-space:nowrap">自定义</span>
+          </dd>
           <dt id="p-dt-subtier" style="display:none">套餐子档：</dt>
           <dd id="p-dd-subtier" style="display:none;align-items:center;gap:6px;flex-wrap:nowrap">
             <span id="p-det-subtier-readonly" style="display:none;font-weight:600">—</span>
@@ -4659,6 +4750,8 @@
           </div>
 
           <dl class="plan-detail-dl settings-sub-grid">
+            <dt>订阅方案：</dt>
+            <dd><div id="settings-slot-tier"></div></dd>
             <dt id="settings-subtier-dt">Ultra 套餐规格：</dt>
             <dd id="settings-subtier-dd"><div id="settings-slot-subtier"></div></dd>
             <dt>账号归属地区：</dt>
@@ -5073,6 +5166,13 @@
     return getSystemTheme();
   }
 
+  function refreshActiveHeatViews() {
+    if (activeHeatView === 'weekly') renderHeatmapWeekly();
+    else if (activeHeatView === 'monthly') renderHeatmapMonthly();
+    else if (activeHeatView === 'yearly') renderHeatmapYearly();
+    else if (activeHeatView === 'cum') renderHeatmapCum();
+  }
+
   function getPresetHeatmapScale() {
     const isLight = resolveTheme() === 'light';
     const presetObj = HEAT_PRESETS[heatPreset] || HEAT_PRESETS.purple;
@@ -5276,8 +5376,7 @@
     applyHeatmapPalette();
     syncSwatchAndResetButtons();
     if (typeof syncSettingsThemePills === 'function') syncSettingsThemePills();
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    refreshActiveHeatViews();
   }
 
   function setCustomColor(key, value) {
@@ -5348,8 +5447,7 @@
     applyHeatmapPalette();
     syncSwatchAndResetButtons();
     if (typeof syncSettingsThemePills === 'function') syncSettingsThemePills();
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    refreshActiveHeatViews();
     syncNativeOverlayTheme();
   }
 
@@ -5972,6 +6070,181 @@
     } catch {}
   }
 
+  function isSearchOrFilterTextbox(node) {
+    if (!node) return false;
+    try {
+      const type = String(node.type || node.getAttribute?.('type') || '').toLowerCase();
+      if (type === 'search') return true;
+      const meta = [
+        node.getAttribute?.('placeholder'),
+        node.getAttribute?.('aria-label'),
+        node.getAttribute?.('name'),
+        node.getAttribute?.('data-testid')
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (/\b(search|filter|find|extension|plugin|marketplace)\b|搜索|过滤|筛选|扩展|插件/.test(meta)) return true;
+      if (node.closest?.('[data-testid*="customization"], [data-testid*="marketplace"], [class*="customization"], [class*="marketplace"]')) {
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function hasRealChatComposer() {
+    try {
+      const selectors = '[data-testid="composer"], [data-testid="chat-input"], [data-testid="prompt-input"], textarea, [contenteditable="true"], [role="textbox"]';
+      let candidates = [];
+      if (typeof document?.querySelectorAll === 'function') {
+        candidates = Array.from(document.querySelectorAll(selectors) || []);
+      }
+      if (!candidates.length && typeof document?.querySelector === 'function') {
+        for (const singleSel of selectors.split(',')) {
+          const hit = document.querySelector(singleSel.trim());
+          if (hit) candidates.push(hit);
+        }
+      }
+      for (const node of candidates) {
+        if (!node) continue;
+        if (typeof host?.contains === 'function' && host.contains(node)) continue;
+        if (node.closest?.('#ag-context-meter')) continue;
+        if (isSearchOrFilterTextbox(node)) continue;
+        if (typeof node.getBoundingClientRect === 'function') {
+          const rect = node.getBoundingClientRect();
+          if (rect && Number(rect.width) === 0 && Number(rect.height) === 0) continue;
+        }
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function isHostNavOrSideUtilityNode(node) {
+    if (!node) return false;
+    try {
+      if (typeof host?.contains === 'function' && host.contains(node)) return true;
+      if (node.closest?.('#ag-context-meter')) return true;
+      if (node.closest?.('nav, aside, [data-side-panel-open], [data-side-panel-focus-scope]')) return true;
+      if (node.tagName === 'A' && node.getAttribute?.('href')) return true;
+    } catch {}
+    return false;
+  }
+
+  function hasActiveConversationContentInDom() {
+    try {
+      if (typeof document?.querySelector !== 'function') return false;
+      return Boolean(
+        document.querySelector('[data-testid="conversation-view"], [data-testid="cascade-system-message-toolbar"], .ag-cm-turn-footer')
+      );
+    } catch { return false; }
+  }
+
+  function isHostMarketplaceActive() {
+    try {
+      const locPath = String(typeof location !== 'undefined' ? (location.pathname || '') : '');
+      const locHash = String(typeof location !== 'undefined' ? (location.hash || '') : '');
+      const locCombined = `${locPath} ${locHash}`.toLowerCase();
+      if (/(?:^|\/|#|\s)(?:extensions|marketplace|customizations|installed|plugin|plugins)(?:\/|$|\?|#|\s)/i.test(locCombined)) {
+        return true;
+      }
+      if (typeof document?.querySelectorAll === 'function' || typeof document?.querySelector === 'function') {
+        const navSelectors = '[data-testid*="customization"], [data-testid*="marketplace"], [data-testid*="installed"], [aria-label*="自定义"], [aria-label*="Customization"]';
+        const navCandidates = typeof document?.querySelectorAll === 'function'
+          ? Array.from(document.querySelectorAll(navSelectors) || [])
+          : (document.querySelector(navSelectors) ? [document.querySelector(navSelectors)] : []);
+        const hasActiveCustomNav = navCandidates.some(node => {
+          if (!node || host?.contains?.(node) || node.closest?.('#ag-context-meter')) return false;
+          return Boolean(
+            node.classList?.contains?.('active') ||
+            node.getAttribute?.('aria-selected') === 'true' ||
+            node.getAttribute?.('aria-current') === 'page'
+          );
+        });
+        if (hasActiveCustomNav) return true;
+      }
+
+      if (hasRealChatComposer()) return false;
+
+      const headings = typeof document?.querySelectorAll === 'function'
+        ? Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"], [aria-selected="true"]') || [])
+        : [];
+      const CUSTOMIZATION_TITLES = new Set([
+        '自定义扩展', '插件市场', '已安装', '自定义扩展与技能',
+        'Marketplace', 'Customizations', 'Customizations & Skills', 'Installed', 'Plugins', 'Extensions',
+        'Browse the Marketplace'
+      ]);
+      const hasHeading = headings.some(node => {
+        if (!node || isHostNavOrSideUtilityNode(node)) return false;
+        const txt = String(node.textContent || '').trim();
+        return CUSTOMIZATION_TITLES.has(txt);
+      });
+      if (hasHeading) return true;
+
+      // 防止无输入框的已归档历史会话 (/c/...) 被宽松全局 Back 误锁
+      if (hasActiveConversationContentInDom()) return false;
+
+      const backCandidates = typeof document?.querySelectorAll === 'function'
+        ? Array.from(document.querySelectorAll('[aria-label*="Back"], [aria-label*="返回"], [data-testid*="back"]') || [])
+        : (document.querySelector?.('[aria-label*="Back"], [aria-label*="返回"], [data-testid*="back"]')
+          ? [document.querySelector('[aria-label*="Back"], [aria-label*="返回"], [data-testid*="back"]')]
+          : []);
+      const hasHostBack = backCandidates.some(btn => {
+        if (!btn || isHostNavOrSideUtilityNode(btn)) return false;
+        return btn.tagName === 'BUTTON' || btn.getAttribute?.('role') === 'button' || String(btn.getAttribute?.('data-testid') || '').toLowerCase().includes('back');
+      });
+      if (hasHostBack) {
+        const customContainerNodes = typeof document?.querySelectorAll === 'function'
+          ? Array.from(document.querySelectorAll('[data-testid*="customization"], [class*="customization"], [data-testid*="marketplace"], [class*="marketplace"]'))
+          : [];
+        if (customContainerNodes.some(node => node && !isHostNavOrSideUtilityNode(node))) {
+          return true;
+        }
+        const actionNodes = typeof document?.querySelectorAll === 'function'
+          ? Array.from(document.querySelectorAll('button, [role="button"]'))
+          : [];
+        const hasPluginDetailAction = actionNodes.some(btn => {
+          if (!btn || isHostNavOrSideUtilityNode(btn)) return false;
+          const label = String(btn.textContent || '').trim();
+          return /^(Install|Uninstall|Enable|Disable|Configure|Connect|\+\s*Add|Details|安装|卸载|启用|禁用|移除|配置|详情)$/i.test(label);
+        });
+        if (hasPluginDetailAction && !document.querySelector('[data-testid="conversation-view"]')) {
+          return true;
+        }
+      }
+      return false;
+    } catch { return false; }
+  }
+
+  function enforceMarketplaceAvoidance(forceActive) {
+    const active = typeof forceActive === 'boolean' ? forceActive : isHostMarketplaceActive();
+    if (active && host.getAttribute?.('data-marketplace-active') === 'true') return true;
+    try {
+      if (active) {
+        host.setAttribute('data-marketplace-active', 'true');
+        state.tooltipOpen = false;
+        for (const id of ['panel', 'panel-tokens', 'overflow-menu']) {
+          const node = el(id);
+          if (node) node.hidden = true;
+        }
+        const tip = el('context-tooltip');
+        if (tip) tip.setAttribute('data-visible', 'false');
+        const upPop = el('update-popover');
+        if (upPop && upPop.style) upPop.style.display = 'none';
+        const heatPop = el('popover');
+        if (heatPop && heatPop.style) heatPop.style.display = 'none';
+        for (const bid of ['badge', 'badge-speed', 'badge-tokens', 'badge-overflow']) {
+          el(bid)?.setAttribute?.('aria-expanded', 'false');
+        }
+        try {
+          globalThis.__AGEnhancer?.closeQuotaPopover?.();
+          globalThis.__AGEnhancer?.closeRemotePopover?.();
+        } catch {}
+        if (typeof syncHostStackingElevation === 'function') syncHostStackingElevation(false);
+      } else if (host.getAttribute?.('data-marketplace-active') === 'true') {
+        host.removeAttribute('data-marketplace-active');
+      }
+    } catch {}
+    return active;
+  }
+
   function ensureHostDocked() {
     if (state.disposed) return;
     syncWindowControlsOverlay();
@@ -6026,6 +6299,7 @@
       host.setAttribute('data-dock', 'fixed');
       updateFixedFallbackPosition();
     }
+    enforceMarketplaceAvoidance();
     updateResponsiveLayout();
   }
 
@@ -6464,6 +6738,9 @@
   }
 
   function showPanel(target) {
+    if ((target === 'context' || target === 'tokens') && enforceMarketplaceAvoidance()) {
+      return;
+    }
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
     const pSettings = el('panel-settings');
@@ -7027,15 +7304,30 @@ function closeAllDropdowns(exceptWrap = null) {
     const curCode = matched.currency === 'TWD' ? 'NTD' : matched.currency;
     const baseText = (matched.flag || '🌏') + ' ' + matched.name + ' (' + curCode + ')';
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
-    const hideProPresetPrice = ps.priceMode === 'custom' || ps.tierKey === 'ultra' || Boolean(ps.ultraSubTier);
-    if (hideProPresetPrice) {
+    if (ps.priceMode === 'custom') {
       return baseText;
     }
-    if (matched.currency === 'CNY') {
-      return baseText + ' · ¥' + matched.monthlyPrice + '/月';
+    const specKey = core?.resolvePlanSpecKey
+      ? core.resolvePlanSpecKey(ps)
+      : (ps.tierKey === 'ultra' ? (ps.ultraSubTier === '5x' ? 'ultra_5x' : (ps.ultraSubTier === '20x' ? 'ultra_20x' : 'ultra')) : (ps.tierKey || 'pro'));
+    const refPrice = core?.getRegionPlanReferencePrice ? core.getRegionPlanReferencePrice(matched, specKey) : null;
+    if (refPrice && refPrice.isRange) {
+      return baseText;
     }
-    const cny = core?.convertToCNY ? core.convertToCNY(matched.monthlyPrice, matched.currency, matched.name) : (matched.monthlyPrice * matched.rateToCNY);
-    return baseText + ' · ' + matched.symbol + matched.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
+    const priceVal = (refPrice && refPrice.available && refPrice.monthlyPrice != null) ? refPrice.monthlyPrice : matched.monthlyPrice;
+    const priceCur = (refPrice && refPrice.currency) ? refPrice.currency : matched.currency;
+    const priceSym = (refPrice && refPrice.symbol) ? refPrice.symbol : matched.symbol;
+    if (priceVal === 0) {
+      return baseText + ' · $0/月';
+    }
+    if (priceVal == null) {
+      return baseText;
+    }
+    if (priceCur === 'CNY') {
+      return baseText + ' · ¥' + priceVal + '/月';
+    }
+    const cny = core?.convertToCNY ? core.convertToCNY(priceVal, priceCur, matched.name) : (priceVal * (matched.rateToCNY || 1));
+    return baseText + ' · ' + priceSym + priceVal + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
   }
 
   // 刷新订阅地区直接选择器显示
@@ -7107,6 +7399,46 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     el('direct-subtier-wrap')?._controller?.refresh?.();
     el('summary-subtier-wrap')?._controller?.refresh?.();
+  }
+
+  const PLAN_TIER_OPTIONS = [
+    { value: 'auto', label: '✨ 自动检测', displayLeft: '✨ 自动检测', displayRight: '跟随当前登录账号' },
+    { value: 'free', label: '免费版 (Free)', displayLeft: '免费版 (Free)', displayRight: '$0/月 · 每周基础配额' },
+    { value: 'plus', label: 'Google AI Plus', displayLeft: 'Google AI Plus', displayRight: '$4.99/月 · 1.5×/入门配额' },
+    { value: 'pro', label: 'Google AI Pro', displayLeft: 'Google AI Pro', displayRight: '$19.99/月 · 5h 基准配额' },
+    { value: 'ultra_5x', label: 'Google AI Ultra 5x', displayLeft: '⚡ Google AI Ultra 5x', displayRight: '$99.99/月 · 5× Pro 配额' },
+    { value: 'ultra_20x', label: 'Google AI Ultra 20x', displayLeft: '🚀 Google AI Ultra 20x', displayRight: '$199.99/月 · 20× Pro 配额' },
+    { value: 'ultra', label: 'Google AI Ultra', displayLeft: 'Google AI Ultra', displayRight: '$99.99~199.99/月 · 子档未定' }
+  ];
+
+  function getActivePlanTierControlValue(ps) {
+    const plan = ps || ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const ov = String(plan.planTierOverride || '').trim().toLowerCase();
+    if (ov && ov !== 'auto' && PLAN_TIER_OPTIONS.some(o => o.value === ov)) return ov;
+    if (plan.ultraSubTier === '5x') return 'ultra_5x';
+    if (plan.ultraSubTier === '20x') return 'ultra_20x';
+    return 'auto';
+  }
+
+  function refreshDirectTierDisplay(ps) {
+    const plan = (ps && typeof ps === 'object') ? ps : (ANTIGRAVITY_TOKEN_DATA.planStatus || {});
+    const val = getActivePlanTierControlValue(plan);
+    const matched = PLAN_TIER_OPTIONS.find(o => o.value === val) || PLAN_TIER_OPTIONS[0];
+    const directLabel = el('direct-tier-label');
+    const directSel = el('direct-tier-select');
+    if (directLabel) {
+      if (val === 'auto' && plan.tierName && !String(plan.tierName).includes('未知')) {
+        directLabel.textContent = `✨ 自动: ${plan.tierName}`;
+      } else {
+        directLabel.textContent = matched.label;
+      }
+    }
+    if (directSel) {
+      runWithUiHydration(() => {
+        directSel.value = val;
+      });
+    }
+    el('direct-tier-wrap')?._controller?.refresh?.();
   }
 
   function renderDirectRegionMenu(filterText = '') {
@@ -7220,6 +7552,7 @@ function closeAllDropdowns(exceptWrap = null) {
       validEndDate: ps.validEndDate || null,
       customNote: ps.customNote || '',
       ultraSubTier: ps.ultraSubTier || lastSavedCustomPlan?.ultraSubTier || undefined,
+      planTierOverride: ps.planTierOverride || lastSavedCustomPlan?.planTierOverride || undefined,
       priceSource: ps.priceSource || (pm === 'preset' ? 'preset_region' : 'custom')
     };
   }
@@ -7342,12 +7675,18 @@ function closeAllDropdowns(exceptWrap = null) {
 
     let customObj = null;
     if (targetMode === 'preset') {
-      // 切换为「跟随订阅国家参考价」：实时根据当前订阅国家派生官方参考价与币种
+      // 切换为「跟随订阅国家参考价」：实时根据当前订阅国家与档位派生官方参考价与币种
       const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
       const matched = core?.findRegionPreset ? core.findRegionPreset(currentReg) : core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === currentReg || p.name === currentReg);
-      const curCode = matched ? matched.currency : (prevCustom.subscriptionCurrency || prevCustom.currency || 'USD');
-      const curSymbol = matched ? matched.symbol : (core?.CURRENCY_SYMBOLS?.[curCode] || '$');
-      const paid = matched ? matched.monthlyPrice : null;
+      const specKey = core?.resolvePlanSpecKey
+        ? core.resolvePlanSpecKey(ps)
+        : (ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierKey || 'pro'));
+      const refPrice = (matched && core?.getRegionPlanReferencePrice)
+        ? core.getRegionPlanReferencePrice(matched, specKey)
+        : null;
+      const curCode = (refPrice && refPrice.currency) || (matched ? matched.currency : (prevCustom.subscriptionCurrency || prevCustom.currency || 'USD'));
+      const curSymbol = (refPrice && refPrice.symbol) || (matched ? matched.symbol : (core?.CURRENCY_SYMBOLS?.[curCode] || '$'));
+      const paid = refPrice ? (refPrice.available ? refPrice.monthlyPrice : null) : (matched ? matched.monthlyPrice : null);
 
       customObj = {
         ...prevCustom,
@@ -7421,11 +7760,17 @@ function closeAllDropdowns(exceptWrap = null) {
       priceSource = 'custom';
       cycle = isZero ? '随套餐赠送/免费' : (prevCustom.billingCycle || '月付');
     } else {
-      // 跟随订阅国家参考价模式：实时从预设派生定价、币种与周期
-      curCode = regionItem.currency;
-      curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
-      paid = regionItem.monthlyPrice;
-      priceSource = 'preset_region';
+      // 切换为「跟随订阅国家参考价」：实时从对应档位与预设派生定价、币种与周期
+      const specKey = core?.resolvePlanSpecKey
+        ? core.resolvePlanSpecKey(ps)
+        : (ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierKey || 'pro'));
+      const refPrice = core?.getRegionPlanReferencePrice
+        ? core.getRegionPlanReferencePrice(regionItem, specKey)
+        : null;
+      curCode = (refPrice && refPrice.currency) || regionItem.currency;
+      curSymbol = (refPrice && refPrice.symbol) || core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
+      paid = refPrice ? (refPrice.available ? refPrice.monthlyPrice : null) : regionItem.monthlyPrice;
+      priceSource = (refPrice && refPrice.source) || 'preset_region';
       isZero = false;
       cycle = '月付';
     }
@@ -7543,11 +7888,15 @@ function closeAllDropdowns(exceptWrap = null) {
       paid = 0;
       priceSource = 'custom';
     } else if (currentPriceMode === 'preset') {
-      // 检查新币种在预设库中是否有基准定价
+      // 检查新币种在预设库中是否有当前档位对应的基准定价
       const matchedNewPreset = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.currency === curCode);
       if (matchedNewPreset) {
-        paid = matchedNewPreset.monthlyPrice;
-        priceSource = 'preset_region';
+        const specKey = core?.resolvePlanSpecKey
+          ? core.resolvePlanSpecKey(ps)
+          : (ps.planTierOverride && ps.planTierOverride !== 'auto' ? ps.planTierOverride : (ps.tierKey || 'pro'));
+        const refPrice = core?.getRegionPlanReferencePrice ? core.getRegionPlanReferencePrice(matchedNewPreset, specKey) : null;
+        paid = refPrice ? (refPrice.available ? refPrice.monthlyPrice : null) : matchedNewPreset.monthlyPrice;
+        priceSource = (refPrice && refPrice.source) || 'preset_region';
       } else {
         paid = prevCustom.actualPricePaid;
       }
@@ -7650,6 +7999,73 @@ function closeAllDropdowns(exceptWrap = null) {
     applyDirectSubTierSelection(e.target?.value || '');
   });
 
+  // 用户手动选择订阅方案档位覆盖 (auto / free / plus / pro / ultra_5x / ultra_20x / ultra)
+  function applyDirectTierSelection(newTierVal) {
+    ++userActionSeq;
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+    const email = ps.email || 'default';
+    const prevCustom = getStoredCustomPlanSnapshot(email);
+    const raw = String(newTierVal || 'auto').trim().toLowerCase();
+    const VALID_TIERS = new Set(['auto', 'free', 'plus', 'pro', 'ultra_5x', 'ultra_20x', 'ultra']);
+    const norm = VALID_TIERS.has(raw) ? raw : 'auto';
+
+    const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
+    const currentPriceMode = (prevCustom.priceMode === 'custom' || prevCustom.priceMode === 'preset')
+      ? prevCustom.priceMode
+      : (prevCustom.priceSource === 'custom' && hasExplicitCustomPaid ? 'custom' : 'preset');
+
+    const nextUltraSub = norm === 'ultra_5x' ? '5x' : (norm === 'ultra_20x' ? '20x' : null);
+    const customObj = {
+      ...prevCustom,
+      planTierOverride: norm === 'auto' ? null : norm,
+      ultraSubTier: nextUltraSub,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (currentPriceMode === 'preset') {
+      const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
+      const matchedRegPreset = core?.findRegionPreset ? core.findRegionPreset(currentReg) : null;
+      const specKey = norm === 'auto'
+        ? (core?.resolvePlanSpecKey ? core.resolvePlanSpecKey({ ...ps, planTierOverride: null, ultraSubTier: null }) : (ps.tierKey || 'pro'))
+        : norm;
+      const refPrice = (matchedRegPreset && core?.getRegionPlanReferencePrice)
+        ? core.getRegionPlanReferencePrice(matchedRegPreset, specKey)
+        : null;
+      if (refPrice && refPrice.available && refPrice.monthlyPrice != null) {
+        customObj.actualPricePaid = refPrice.monthlyPrice;
+        customObj.subscriptionCurrency = refPrice.currency || customObj.subscriptionCurrency;
+        customObj.currency = refPrice.currency || customObj.currency;
+        customObj.currencySymbol = refPrice.symbol || customObj.currencySymbol;
+        customObj.priceMode = 'preset';
+        customObj.priceSource = refPrice.source || 'preset_region';
+      } else {
+        const tierSpec = core?.getPlanTierSpec ? core.getPlanTierSpec(specKey) : core?.SUBSCRIPTION_TIER_SPECS?.[specKey];
+        if (tierSpec && tierSpec.officialPriceUSD !== null && tierSpec.officialPriceUSD !== undefined) {
+          customObj.actualPricePaid = matchedRegPreset ? null : tierSpec.officialPriceUSD;
+          customObj.priceMode = 'preset';
+          customObj.priceSource = matchedRegPreset ? 'official_reference' : 'official_reference';
+        } else {
+          customObj.actualPricePaid = null;
+          customObj.priceMode = 'preset';
+          customObj.priceSource = 'unknown';
+        }
+      }
+    }
+
+    refreshDirectSubTierDisplay(nextUltraSub || '');
+    refreshDirectTierDisplay({ ...ps, planTierOverride: customObj.planTierOverride, ultraSubTier: nextUltraSub });
+    applyCustomPlanObjectLocally(customObj, email);
+    refreshDirectRegionDisplay(customObj.subscriptionRegion || ps.region || '未知');
+    el('direct-region-wrap')?._controller?.refresh?.();
+    void persistSettingsToHost({ email, customPlan: customObj });
+  }
+
+  el('direct-tier-select')?.addEventListener('change', (e) => {
+    if (isHydratingUiControls) return;
+    applyDirectTierSelection(e.target?.value || 'auto');
+  });
+
   // 绑定统一定制「账号所在地区」、「订阅国家」与「订阅币种」下拉组件
   function initDirectCountryDropdown() {
     return initDropdownController({
@@ -7682,14 +8098,28 @@ function closeAllDropdowns(exceptWrap = null) {
       menuId: 'direct-region-menu',
       searchPlaceholder: '🔍 搜索订阅国家/地区、货币或缩写 (如: 台湾、澳、USD)...',
       getOptions: () => {
+        const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
+        const specKey = core?.resolvePlanSpecKey
+          ? core.resolvePlanSpecKey(ps)
+          : (ps.tierKey === 'ultra' ? (ps.ultraSubTier === '5x' ? 'ultra_5x' : (ps.ultraSubTier === '20x' ? 'ultra_20x' : 'ultra')) : (ps.tierKey || 'pro'));
         return presets.map(p => {
           const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
+          const refPrice = core?.getRegionPlanReferencePrice ? core.getRegionPlanReferencePrice(p, specKey) : null;
+          const priceVal = refPrice ? (refPrice.available ? refPrice.monthlyPrice : null) : p.monthlyPrice;
+          const priceCur = refPrice?.currency || p.currency;
+          const priceSym = refPrice?.symbol || p.symbol;
           let displayRight = '';
-          if (p.currency === 'CNY') {
-            displayRight = p.symbol + p.monthlyPrice + '/月';
-          } else {
-            const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-            displayRight = p.symbol + p.monthlyPrice + '/月 · ≈ ¥' + Number(cny).toFixed(1) + ' CNY';
+          if (refPrice?.isRange) {
+            displayRight = '$99.99~199.99/月';
+          } else if (priceVal === 0) {
+            displayRight = '$0/月';
+          } else if (priceVal != null) {
+            if (priceCur === 'CNY') {
+              displayRight = priceSym + priceVal + '/月';
+            } else {
+              const cny = core?.convertToCNY ? core.convertToCNY(priceVal, priceCur, p.name) : (priceVal * (p.rateToCNY || 1));
+              displayRight = priceSym + priceVal + '/月 · ≈ ¥' + Number(cny).toFixed(1) + ' CNY';
+            }
           }
           return {
             value: p.id,
@@ -7800,12 +8230,31 @@ function closeAllDropdowns(exceptWrap = null) {
     });
   }
 
-  // 立即触发初始化三大原生定制下拉及 Ultra 子档选择器
+  function initDirectTierDropdown() {
+    return initDropdownController({
+      wrapId: 'direct-tier-wrap',
+      triggerId: 'direct-tier-trigger',
+      labelId: 'direct-tier-label',
+      menuId: 'direct-tier-menu',
+      selectId: 'direct-tier-select',
+      searchPlaceholder: '🔍 搜索订阅方案 (Free / Plus / Pro / Ultra 5x / 20x)...',
+      getOptions: () => PLAN_TIER_OPTIONS,
+      getSelectedValue: () => getActivePlanTierControlValue(),
+      getLabelText: (opt) => opt.label,
+      onSelect: (opt) => {
+        applyDirectTierSelection(opt.value);
+      },
+      emptyText: '未找到匹配的订阅方案'
+    });
+  }
+
+  // 立即触发初始化三大原生定制下拉及订阅方案/Ultra 子档选择器
   initDirectCountryDropdown();
   initDirectRegionDropdown();
   initDirectCurrencyDropdown();
   initDirectSubTierDropdown();
   initSummarySubTierDropdown();
+  initDirectTierDropdown();
 
   // 全局点击外部关闭所有下拉
   if (typeof shadow !== 'undefined' && shadow && shadow.addEventListener) {
@@ -8344,17 +8793,20 @@ function closeAllDropdowns(exceptWrap = null) {
 
   function renderPlanDetail(ps) {
     if (!ps) return;
+    const isCustomTier = Boolean(ps.sources?.tier === 'custom' || (ps.planTierOverride && ps.planTierOverride !== 'auto'));
     const sumTxt = el('plan-summary-text');
     if (sumTxt) {
       if (ps.ultraSubTierSpec) {
-        const subModeTxt = ps.ultraSubTierSource === 'custom' ? '子档自定义' : '已自动识别';
+        const subModeTxt = (isCustomTier || ps.ultraSubTierSource === 'custom') ? '自定义' : '已自动识别';
         sumTxt.textContent = `${ps.tierName} · ${ps.ultraSubTierSpec.quotaMultiplierText} · ${subModeTxt}`;
       } else {
-        const modeTxt = ps.status === 'identified' ? '已自动识别' : ps.hasCustomSettings ? '自定义生效' : '未识别/默认';
+        const modeTxt = isCustomTier
+          ? '自定义生效'
+          : (ps.status === 'identified' ? '已自动识别' : ps.hasCustomSettings ? '自定义生效' : '未识别/默认');
         sumTxt.textContent = `${ps.tierName || 'Pro'} · ${modeTxt} · 刚刚更新`;
       }
     }
-    // 实时联动更新黄框位置的订阅费与汇率胶囊 (支持动效与符号消散)
+    // 实时联动顶部订阅费与汇率胶囊
     const curSymbol = ps.currencySymbol || '$';
     let targetSymbol = '$';
     let targetNum = 19.99;
@@ -8365,7 +8817,7 @@ function closeAllDropdowns(exceptWrap = null) {
       targetSymbol = curSymbol;
       targetNum = 0;
       targetCycle = '/月';
-      targetCny = '(随套餐免费)';
+      targetCny = ps.tierKey === 'free' ? '(免费版)' : '(随套餐免费)';
     } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
       targetSymbol = curSymbol;
       targetNum = Number(ps.actualPricePaid);
@@ -8399,6 +8851,22 @@ function closeAllDropdowns(exceptWrap = null) {
 
     const detName = el('p-det-name');
     if (detName) detName.textContent = ps.tierName || 'Google AI Pro';
+    const tagTier = el('p-det-tier-tag');
+    if (tagTier) {
+      if (isCustomTier) {
+        tagTier.style.display = 'inline-block';
+        tagTier.textContent = '自定义';
+      } else if (ps.status === 'identified') {
+        tagTier.style.display = 'inline-block';
+        tagTier.textContent = '自动识别';
+      } else {
+        tagTier.style.display = 'none';
+        tagTier.textContent = '';
+      }
+    }
+    if (typeof refreshDirectTierDisplay === 'function') {
+      refreshDirectTierDisplay(ps);
+    }
 
     const isUltraPlan = ps.tierKey === 'ultra' || Boolean(ps.ultraSubTier);
     const summarySubWrap = el('summary-subtier-wrap');
@@ -11441,17 +11909,25 @@ function positionHeatPopover(anchorX, anchorY) {
 
   function syncSpeedBadgeText() {
     const sp = state.latest?.speed;
+    const bSpeed = el('badge-speed');
+    const waitSvgWrap = el('badge-speed-wait-svg');
     const speedAmount = el('speed-amount');
     const overflowSpeedVal = el('overflow-speed-val');
     if (!speedAmount) return;
     const isCompact = state.layoutMode === 'compact';
     if (sp?.tps != null) {
+      bSpeed?.removeAttribute?.('data-speed-phase');
+      if (waitSvgWrap) waitSvgWrap.hidden = true;
       speedAmount.textContent = isCompact ? `${sp.tps}` : `${sp.tps} tok/s`;
       if (overflowSpeedVal) overflowSpeedVal.textContent = `${sp.tps} tok/s`;
     } else if (state.requestBusy) {
-      speedAmount.textContent = isCompact ? '…' : '计算中…';
+      bSpeed?.setAttribute?.('data-speed-phase', 'waiting');
+      if (waitSvgWrap) waitSvgWrap.hidden = false;
+      speedAmount.textContent = '';
       if (overflowSpeedVal) overflowSpeedVal.textContent = '计算中…';
     } else {
+      bSpeed?.removeAttribute?.('data-speed-phase');
+      if (waitSvgWrap) waitSvgWrap.hidden = true;
       speedAmount.textContent = isCompact ? '--' : '-- tok/s';
       if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
     }
@@ -11821,6 +12297,8 @@ function positionHeatPopover(anchorX, anchorY) {
   function tick() {
     if (!state.disposed && !host.isConnected) {
       ensureHostDocked();
+    } else if (!state.disposed) {
+      enforceMarketplaceAvoidance();
     }
     const id = route();
     if (id !== state.route) {
@@ -12017,6 +12495,7 @@ function positionHeatPopover(anchorX, anchorY) {
     '收起色阶微调 ▲': 'Hide Advanced ▲',
     '切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。': 'Switching the theme palette syncs accents, progress bars, active controls, and the heatmap.',
     '全局强调色与顶部栏分项配色': 'Global Accent & Topbar Colors',
+    '订阅方案：': 'Subscription Plan:',
     'Ultra 套餐规格：': 'Ultra Tier Spec:',
     '账号归属地区：': 'Account Region:',
     '订阅结算地区：': 'Billing Region:',
@@ -13090,6 +13569,8 @@ function positionHeatPopover(anchorX, anchorY) {
 
     // 2. 订阅与套餐配置移入「套餐与订阅」分页，原 Token 面板保留只读信息与跳转按钮
     moveTo('plan-save-feedback', 'settings-slot-sub-feedback');
+    moveTo('direct-tier-select', 'settings-slot-tier');
+    moveTo('direct-tier-wrap', 'settings-slot-tier');
     moveTo('direct-subtier-select', 'settings-slot-subtier');
     moveTo('direct-subtier-wrap', 'settings-slot-subtier');
     moveTo('direct-country-select', 'settings-slot-country');
@@ -13116,7 +13597,7 @@ function positionHeatPopover(anchorX, anchorY) {
 
     el('summary-subtier-wrap')?.remove?.();
     el('btn-edit-plan-custom')?.remove?.();
-    ['p-det-subtier-readonly', 'p-det-country', 'p-det-region', 'p-det-currency'].forEach(id => {
+    ['p-det-name', 'p-det-subtier-readonly', 'p-det-country', 'p-det-region', 'p-det-currency'].forEach(id => {
       const node = el(id);
       if (node) {
         node.style.display = 'inline-block';
@@ -16227,7 +16708,9 @@ function positionHeatPopover(anchorX, anchorY) {
     openGithubRepo: path => openGithubRepo(path),
     updateHeatTabThumb: () => updateHeatTabThumb(),
     getPlanSettings: () => ({
+      tierKey: ANTIGRAVITY_TOKEN_DATA.planStatus?.tierKey || null,
       tierName: ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName || '未知',
+      planTierOverride: ANTIGRAVITY_TOKEN_DATA.planStatus?.planTierOverride || null,
       ultraSubTier: ANTIGRAVITY_TOKEN_DATA.planStatus?.ultraSubTier || null,
       country: ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '未知',
       subscriptionRegion: ANTIGRAVITY_TOKEN_DATA.planStatus?.subscriptionRegion || ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知',
@@ -16240,6 +16723,8 @@ function positionHeatPopover(anchorX, anchorY) {
     setCountry: val => applyDirectCountrySelection(val),
     setCurrency: val => applyDirectCurrencySelection(val),
     setUltraSubTier: val => applyDirectSubTierSelection(val),
+    setPlanTierOverride: val => applyDirectTierSelection(val),
+    isMarketplaceActiveForTest: () => isHostMarketplaceActive(),
     restoreSettingsFromHost,
     openSettings: tab => openSuiteSettings(tab),
     getTerminalSettings: () => getSuiteTerminalSettings(),

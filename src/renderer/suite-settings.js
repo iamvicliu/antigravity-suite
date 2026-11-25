@@ -168,6 +168,7 @@
     '收起色阶微调 ▲': 'Hide Advanced ▲',
     '切换下方主题色系后，所有弹窗的高亮色、进度条、按钮激活态及热力图均会自动同步。': 'Switching the theme palette syncs accents, progress bars, active controls, and the heatmap.',
     '全局强调色与顶部栏分项配色': 'Global Accent & Topbar Colors',
+    '订阅方案：': 'Subscription Plan:',
     'Ultra 套餐规格：': 'Ultra Tier Spec:',
     '账号归属地区：': 'Account Region:',
     '订阅结算地区：': 'Billing Region:',
@@ -1241,6 +1242,8 @@
 
     // 2. 订阅与套餐配置移入「套餐与订阅」分页，原 Token 面板保留只读信息与跳转按钮
     moveTo('plan-save-feedback', 'settings-slot-sub-feedback');
+    moveTo('direct-tier-select', 'settings-slot-tier');
+    moveTo('direct-tier-wrap', 'settings-slot-tier');
     moveTo('direct-subtier-select', 'settings-slot-subtier');
     moveTo('direct-subtier-wrap', 'settings-slot-subtier');
     moveTo('direct-country-select', 'settings-slot-country');
@@ -1267,7 +1270,7 @@
 
     el('summary-subtier-wrap')?.remove?.();
     el('btn-edit-plan-custom')?.remove?.();
-    ['p-det-subtier-readonly', 'p-det-country', 'p-det-region', 'p-det-currency'].forEach(id => {
+    ['p-det-name', 'p-det-subtier-readonly', 'p-det-country', 'p-det-region', 'p-det-currency'].forEach(id => {
       const node = el(id);
       if (node) {
         node.style.display = 'inline-block';
