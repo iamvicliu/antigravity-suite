@@ -28379,3 +28379,143 @@ test('PR #11 合并加固：行内 KaTeX 线性性能、前端消息缓存代际
   }
 });
 
+test('同步 antigravity-chinese v3.3.64: 内置浏览器与旁路提问草稿词条、分组模型 New 徽标及 [data-uri] 保护', () => {
+  const hansSrc = fs.readFileSync(path.join(ROOT, 'antigravity-hans-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  env.sandbox.location.pathname = '/workbench.html';
+  env.sandbox.location.href = 'file:///Applications/Antigravity.app/workbench.html';
+  env.win.location = env.sandbox.location;
+  env.win.top = env.win;
+  env.sandbox.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 };
+  env.sandbox.NodeFilter = { SHOW_TEXT: 4, SHOW_ELEMENT: 1 };
+
+  const makeTextNode = (val, parentElement) => ({
+    nodeType: 3,
+    nodeValue: val,
+    get textContent() { return this.nodeValue; },
+    set textContent(v) { this.nodeValue = String(v); },
+    parentElement,
+    parentNode: parentElement
+  });
+
+  env.doc.createTreeWalker = (rootNode, whatToShow) => {
+    const flat = [];
+    const walk = (n) => {
+      if (!n) return;
+      const children = n.childNodes || n.children || [];
+      for (const ch of children) {
+        if ((ch.nodeType === 1 && (whatToShow & 1)) || (ch.nodeType === 3 && (whatToShow & 4))) {
+          flat.push(ch);
+        }
+        walk(ch);
+      }
+    };
+    walk(rootNode);
+    let idx = 0;
+    return { nextNode: () => (idx < flat.length ? flat[idx++] : null) };
+  };
+  env.sandbox.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+
+  const panel = env.doc.createElement('div');
+  panel.className = 'antigravity-agent-side-panel';
+  env.doc.body.appendChild(panel);
+
+  // 1. 内置浏览器按钮与站点安全标签
+  const inspectBtn = env.doc.createElement('button');
+  inspectBtn.setAttribute('data-testid', 'webview-url-bar-inspect-button');
+  inspectBtn.setAttribute('title', 'Inspect element to comment');
+  inspectBtn.setAttribute('aria-label', 'Inspect element to comment');
+  panel.appendChild(inspectBtn);
+
+  const shotBtn = env.doc.createElement('button');
+  shotBtn.setAttribute('data-testid', 'webview-url-bar-screenshot');
+  shotBtn.setAttribute('aria-label', 'Add screenshot to conversation');
+  panel.appendChild(shotBtn);
+
+  const secBtn = env.doc.createElement('button');
+  secBtn.setAttribute('data-testid', 'url-security-indicator');
+  secBtn.setAttribute('title', 'View site information');
+  secBtn.setAttribute('aria-label', 'example.test. View site information');
+  panel.appendChild(secBtn);
+
+  // 2. 旁路提问草稿 vs 已提交标题
+  const draftTab = env.doc.createElement('button');
+  draftTab.setAttribute('data-tab-id', 'side_question__draft');
+  draftTab.setAttribute('title', 'New Side Question');
+  const draftInner = env.doc.createElement('div');
+  draftInner.setAttribute('title', 'New Side Question');
+  const draftText = makeTextNode('New Side Question', draftInner);
+  draftInner.childNodes.push(draftText);
+  draftTab.appendChild(draftInner);
+  panel.appendChild(draftTab);
+
+  const namedTab = env.doc.createElement('button');
+  namedTab.setAttribute('data-tab-id', 'side_question__conversation');
+  namedTab.setAttribute('title', 'New Side Question');
+  const namedInner = env.doc.createElement('div');
+  namedInner.setAttribute('title', 'New Side Question');
+  const namedText = makeTextNode('New Side Question', namedInner);
+  namedInner.childNodes.push(namedText);
+  namedTab.appendChild(namedInner);
+  panel.appendChild(namedTab);
+
+  const emptyHint = env.doc.createElement('div');
+  emptyHint.setAttribute('data-testid', 'side-question-tab-empty');
+  const emptySpan = env.doc.createElement('span');
+  const emptyText = makeTextNode('Ask a side question without interrupting the main conversation', emptySpan);
+  emptySpan.childNodes.push(emptyText);
+  emptyHint.appendChild(emptySpan);
+  panel.appendChild(emptyHint);
+
+  // 3. 模型分组行中的 "New" 徽标保持原文，普通动作按钮保留 "新增"
+  const modelRow = env.doc.createElement('button');
+  modelRow.className = 'agy-overlay-item';
+  const rowWrap = env.doc.createElement('span');
+  const effortGroup = env.doc.createElement('span');
+  effortGroup.setAttribute('data-testid', 'model-selector-effort-group');
+  const badgeWrap = env.doc.createElement('div');
+  const badgeSpan = env.doc.createElement('span');
+  const badgeText = makeTextNode('New', badgeSpan);
+  badgeSpan.childNodes.push(badgeText);
+  badgeWrap.appendChild(badgeSpan);
+  rowWrap.appendChild(effortGroup);
+  rowWrap.appendChild(badgeWrap);
+  modelRow.appendChild(rowWrap);
+  panel.appendChild(modelRow);
+
+  const normalNewBtn = env.doc.createElement('button');
+  const normalNewText = makeTextNode('New', normalNewBtn);
+  normalNewBtn.childNodes.push(normalNewText);
+  panel.appendChild(normalNewBtn);
+
+  // 4. 本地 [data-uri] 路径保护必须持续生效
+  const uriNode = env.doc.createElement('span');
+  uriNode.setAttribute('data-uri', 'file:///Users/me/Settings');
+  const uriText = makeTextNode('Settings', uriNode);
+  uriNode.childNodes.push(uriText);
+  panel.appendChild(uriNode);
+
+  try {
+    vm.runInContext(hansSrc, env.sandbox);
+    assert.equal(inspectBtn.getAttribute('title'), '检查元素并添加评论');
+    assert.equal(shotBtn.getAttribute('aria-label'), '将截图添加到会话');
+    assert.equal(secBtn.getAttribute('title'), '查看网站信息');
+    assert.equal(secBtn.getAttribute('aria-label'), 'example.test。查看网站信息');
+    assert.equal(draftTab.getAttribute('title'), '新建旁路提问');
+    assert.equal(draftInner.getAttribute('title'), '新建旁路提问');
+    assert.equal(draftText.nodeValue, '新建旁路提问');
+    assert.equal(namedTab.getAttribute('title'), 'New Side Question');
+    assert.equal(namedInner.getAttribute('title'), 'New Side Question');
+    assert.equal(namedText.nodeValue, 'New Side Question');
+    assert.equal(emptyText.nodeValue, '发起旁路提问，不打断主会话');
+    assert.equal(badgeText.nodeValue, 'New');
+    assert.equal(normalNewText.nodeValue, '新增');
+    assert.equal(uriText.nodeValue, 'Settings');
+  } finally {
+    env.sandbox.__antigravityZhPatchCleanup?.();
+  }
+});
+

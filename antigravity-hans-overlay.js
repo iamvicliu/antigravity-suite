@@ -1,6 +1,6 @@
 (() => {
   if (typeof window === 'undefined') return;
-  const PATCH_FINGERPRINT = 'app-2.35.0-20261124-r37';
+  const PATCH_FINGERPRINT = 'app-2.35.1-20261125-r38';
   const fingerprint = window.__antigravityZhPatchRequestedFingerprint || PATCH_FINGERPRINT;
   if (window.__antigravityZhPatchInstalled === true && window.__observedDocument === document && window.__antigravityZhPatchFingerprint === fingerprint) return;
   const updating = window.__antigravityZhPatchInstalled === true && window.__observedDocument === document;
@@ -1668,7 +1668,7 @@
     ["Optimize the interface and terminal output for screen readers.", "针对屏幕阅读器优化界面交互与终端输出。"],
     ["Play a sound when your action is needed or the agent finishes.", "当需要你采取操作或智能体完成任务时播放提示音。"],
     ["The conversation was compacted while generating this response.", "生成此响应的过程中会话已被压缩。"],
-    ["Ask a side question without interrupting the main conversation", "提出一个副问题，无需打断主对话"],
+    ["Ask a side question without interrupting the main conversation", "发起旁路提问，不打断主会话"],
     ["Your Antigravity use will be associated with provided project.", "你的 Antigravity 使用将与所提供的项目关联。"],
     ["Tip: Complex tasks get better results with multiple responses.", "提示：复杂任务使用多个回复通常会得到更好的结果。"],
     ["A license or project selection is required to use Antigravity.", "使用 Antigravity 需要许可证或选择项目。"],
@@ -2111,7 +2111,7 @@
     ["Best of N mode is not available", "Best of N 模式不可用"],
     ["Reset all shortcuts to defaults", "将所有快捷键恢复为默认值"],
     ["Dismiss IWA installation banner", "关闭 IWA 安装提示"],
-    ["Add screenshot to conversation", "添加屏幕截图到会话"],
+    ["Add screenshot to conversation", "将截图添加到会话"],
     ["Allow access to this resource?", "允许访问此资源？"],
     ["Are you sure you want to quit?", "确定要退出吗？"],
     ["Attach a screenshot (optional)", "附上截图（可选）"],
@@ -2904,7 +2904,6 @@
     ["Current workspace", "当前工作区"],
     ["Archive Workspace", "归档工作区"],
     ["No matching files", "没有匹配的文件"],
-    ["New Side Question", "新建副问题"],
     ["Loading events...", "正在加载事件..."],
     ["Artifact Comments", "产物评论"],
     ["Browser downloads", "浏览器下载"],
@@ -4316,6 +4315,16 @@
     if (!phrases.has(k)) phrases.set(k, v);
     const low = k.toLowerCase();
     if (!lowerPhrases.has(low)) lowerPhrases.set(low, v);
+  }
+
+  // v3.3.64 (Antigravity 2.35.1) 内置浏览器按钮、旁路提问草稿与标签页菜单增量精确词条
+  const desktop2351V3364ExactPhrases = [
+    ["Inspect element to comment", "检查元素并添加评论"],
+    ["Exit inspect element mode (Esc)", "退出元素检查模式（Esc）"]
+  ];
+  for (const [k, v] of desktop2351V3364ExactPhrases) {
+    phrases.set(k, v);
+    lowerPhrases.set(k.toLowerCase(), v);
   }
 
   // 经核验的官方与合作插件简介映射（仅在 React Fiber 溯源匹配官方插件时启用）
@@ -6023,6 +6032,12 @@
       return true;
     }
 
+    // 模型按推理强度分组行中的标签与徽标（如 "New"）保留原文
+    const modelGroupItem = element.closest('.agy-overlay-item');
+    if (modelGroupItem?.firstElementChild?.firstElementChild?.getAttribute?.('data-testid') === 'model-selector-effort-group') {
+      return true;
+    }
+
     // 跳过输入框与文本域的正文/子节点，但允许元素自身属性（placeholder、aria-label）翻译
     if (node.nodeType === Node.TEXT_NODE) {
       if (element.closest('[contenteditable]:not([contenteditable="false"]), input, textarea')) {
@@ -6331,11 +6346,20 @@
     return null;
   }
 
+  function isSideQuestionDraftTitle(element) {
+    return element?.getAttribute?.('data-testid') === 'side-question-tab-header-title' ||
+      Boolean(element?.closest?.('button[data-tab-id="side_question__draft"]'));
+  }
+
   function translateScopedControlText(element, value) {
     if (!element || !value) return null;
     const trimmed = value.trim();
     if (!trimmed) return null;
     const testId = element.getAttribute?.('data-testid');
+
+    if (trimmed === 'New Side Question' && isSideQuestionDraftTitle(element)) {
+      return value.replace(trimmed, () => '新建旁路提问');
+    }
 
     const marketCat = translateMarketplaceCategory(element, value);
     if (marketCat !== null) return marketCat;
@@ -6553,6 +6577,11 @@
   function translateScopedAriaLabel(element, attr, value) {
     if (attr !== 'aria-label' || !value) return null;
     const trimmed = value.trim();
+    if (element.getAttribute?.('data-testid') === 'url-security-indicator' &&
+        trimmed.endsWith('. View site information')) {
+      const siteInfoLabel = matchExactPhrase('View site information');
+      if (siteInfoLabel) return value.replace(trimmed, () => trimmed.slice(0, -'. View site information'.length) + '。' + siteInfoLabel);
+    }
     if (trimmed.startsWith('Reset ') && trimmed.endsWith(' to default') &&
         element.closest?.('[data-testid^="shortcut-row-"]')) {
       const action = trimmed.slice('Reset '.length, -' to default'.length);
@@ -6573,8 +6602,11 @@
 
   function translateScopedTitle(element, attr, value) {
     if (attr !== 'title' || !value) return null;
+    const trimmed = value.trim();
+    if (trimmed === 'New Side Question' && isSideQuestionDraftTitle(element)) {
+      return value.replace(trimmed, () => '新建旁路提问');
+    }
     if (element.getAttribute?.('data-testid') === 'queued-messages-status') {
-      const trimmed = value.trim();
       if (trimmed.startsWith('Waiting on ') && trimmed.length > 'Waiting on '.length) {
         return value.replace(trimmed, () => '正在等待 ' + trimmed.slice('Waiting on '.length));
       }
