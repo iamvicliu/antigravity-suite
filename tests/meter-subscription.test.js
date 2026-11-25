@@ -587,3 +587,71 @@ test('Google AI Ultra 子档自定义下拉支持 5x / 20x 数据展示、自定
 
   api.dispose();
 });
+
+test('6-tier planTierOverride persistence, renderer switching & 14-country reference price sync', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  api.setTokenHistoryForTest({
+    summary: {
+      grandTotalTokens: 1000,
+      totalConversations: 1,
+      costEstimate: { pricedCostUSD: 1, unpricedCount: 0, coveragePercent: 100, byModel: {} },
+      costEstimateCurrentMonth: { pricedCostUSD: 1, unpricedCount: 0, coveragePercent: 100, byModel: {} }
+    },
+    planStatus: core.resolveEffectivePlanStatus({
+      status: 'identified',
+      tierKey: 'pro',
+      tierName: 'Google AI Pro',
+      email: 'tier_user@example.com'
+    }, null),
+    dailyMap: { '2026-11-25': { total: 1000, input: 800, output: 100, cache: 100, steps: 1 } }
+  });
+  await h.flush();
+
+  // 手动切换为 Google AI Plus
+  api.setPlanTierOverride('plus');
+  await h.flush();
+  const priceVal = h.elements.get('plan-summary-price-val');
+  assert.ok(priceVal);
+  assert.equal(api.getPlanSettings().planTierOverride, 'plus');
+  assert.equal(api.getPlanSettings().tierKey, 'plus');
+  assert.match(priceVal.textContent, /\$4\.99\/月/);
+
+  // 切换为免费版
+  api.setPlanTierOverride('free');
+  await h.flush();
+  assert.equal(api.getPlanSettings().tierKey, 'free');
+  assert.match(priceVal.textContent, /\$0\/月/);
+
+  // 恢复自动检测
+  api.setPlanTierOverride('auto');
+  await h.flush();
+  assert.equal(api.getPlanSettings().planTierOverride, 'auto');
+  assert.equal(api.getPlanSettings().tierKey, 'pro');
+
+  // 独立目录验证 planTierOverride 落盘与清除
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-tier-ov-'));
+  try {
+    const s1 = savePluginSettings({
+      email: 'tier_user@example.com',
+      customPlan: { planTierOverride: 'ultra_5x' }
+    }, { agDir: tmpDir });
+    assert.equal(s1.ok, true);
+    const g1 = getPluginSettings({ agDir: tmpDir, email: 'tier_user@example.com' });
+    assert.equal(g1.customPlan.planTierOverride, 'ultra_5x');
+    assert.equal(g1.customPlan.ultraSubTier, '5x');
+
+    const s2 = savePluginSettings({
+      email: 'tier_user@example.com',
+      customPlan: { planTierOverride: 'auto' }
+    }, { agDir: tmpDir });
+    assert.equal(s2.ok, true);
+    const g2 = getPluginSettings({ agDir: tmpDir, email: 'tier_user@example.com' });
+    assert.equal(g2.customPlan.planTierOverride, undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  api.dispose();
+});

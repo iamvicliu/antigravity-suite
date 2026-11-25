@@ -28519,3 +28519,60 @@ test('同步 antigravity-chinese v3.3.64: 内置浏览器与旁路提问草稿�
   }
 });
 
+test('pulse-capsule-overlay: M532-M537 兜底、短窗 TPS 过滤与窄屏 4 档防挤压', () => {
+  const envCap = createDomEnv();
+  envCap.sandbox.location.href = 'https://127.0.0.1:12345/';
+  envCap.win.location = envCap.sandbox.location;
+  const footerEl = envCap.doc.createElement('div');
+  footerEl.className = 'agy-composer-footer';
+  envCap.doc.body.appendChild(footerEl);
+
+  vm.runInContext(CAPSULE_SRC, envCap.sandbox);
+  const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
+  assert.equal(capsApi.version, '1.5.0');
+
+  // 1. M532-M537 Neon 模型名称与 1M 上下文兜底
+  assert.equal(capsApi.resolveModelDisplayName('MODEL_PLACEHOLDER_M532'), 'Gemini 4 Neon (High)');
+  assert.equal(capsApi.resolveModelDisplayName('MODEL_PLACEHOLDER_M537'), 'Orchestrator (Neon)');
+  assert.equal(capsApi.getContextLimitForModel('MODEL_PLACEHOLDER_M532'), 1048576);
+
+  // 2. 短窗 TPS (<1.0s 或 <30 outTok) 过滤与 streamingDuration 采样
+  const shortRes = capsApi.analyzeSteps([{
+    metadata: { streamingDuration: '0.5s' },
+    modelUsage: { inputTokens: 500, outputTokens: 200 }
+  }]);
+  assert.equal(shortRes.tokPerSec, 0);
+
+  const validRes = capsApi.analyzeSteps([{
+    metadata: { streamingDuration: '4.0s' },
+    modelUsage: { inputTokens: 500, thinkingOutputTokens: 100, responseOutputTokens: 100 }
+  }]);
+  assert.equal(validRes.tokPerSec, 50);
+
+  // 3. computeCapsuleTier 4 档响应阈值与 24px 滞回
+  assert.equal(capsApi.computeCapsuleTier(600, 'full'), 'full');
+  assert.equal(capsApi.computeCapsuleTier(520, 'full'), 'compact');
+  assert.equal(capsApi.computeCapsuleTier(440, 'compact'), 'tight');
+  assert.equal(capsApi.computeCapsuleTier(360, 'tight'), 'minimal');
+  assert.equal(capsApi.computeCapsuleTier(570, 'compact'), 'compact'); // 滞回区间内不回弹
+  assert.equal(capsApi.computeCapsuleTier(590, 'compact'), 'full');    // >= 560 + 24 恢复
+
+  // 4. 胶囊 DOM 保留 .agy-ctx-speed-num / .agy-ctx-speed-unit 且 textContent 连续一致
+  capsApi.renderFooterCapsule(footerEl, {
+    contextUsed: 120000,
+    contextLimit: 1000000,
+    usagePercent: 12,
+    cacheHitRate: 88.5,
+    hasPreciseSnapshot: true,
+    tokPerSec: 92,
+    cacheReadTokens: 100000,
+    inputTokens: 20000
+  });
+  const btn = footerEl.querySelector('[data-agy-context-capsule="1"]');
+  assert.equal(btn.querySelector('.agy-ctx-speed-num')?.textContent, '92');
+  assert.equal(btn.querySelector('.agy-ctx-speed-unit')?.textContent, ' tok/s');
+  assert.equal(btn.querySelector('.agy-ctx-speed-val')?.textContent, '92 tok/s');
+
+  envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
+});
+

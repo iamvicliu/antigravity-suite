@@ -1803,3 +1803,53 @@ test('topbar badge order places 5h/week quota after tok/s so first two open cont
   sandbox.__AGEnhancer.dispose();
   sandbox.__AGContextMeter.dispose();
 });
+
+test('ELV-93 SVG hourglass wait state and 2.33/2.34 marketplace avoidance with /c/ archive guard', async () => {
+  // 1. ELV-93 等待态纯 SVG 沙漏验证：requestPoll 发出后尚未返回 TPS 时启用沙漏，返回合法 TPS 后恢复数值
+  const h = harness();
+  h.finishScan();
+  const bSpeed = h.elements.get('badge-speed');
+  const waitSvg = h.elements.get('badge-speed-wait-svg');
+  const speedAmount = h.elements.get('speed-amount');
+  assert.equal(bSpeed.getAttribute('data-speed-phase'), 'waiting');
+  assert.equal(waitSvg.hidden, false);
+  assert.equal(speedAmount.textContent, '');
+
+  h.pending[0].resolve(response({
+    timeToFirstToken: '1.2s',
+    streamingDuration: '4.0s',
+    usage: { inputTokens: 1000, outputTokens: 200 },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+  }));
+  await h.flush();
+  assert.equal(bSpeed.getAttribute('data-speed-phase'), null);
+  assert.equal(waitSvg.hidden, true);
+  assert.equal(speedAmount.textContent, '38.5 tok/s');
+
+  // 2. 子视图避让与已归档 /c/... 会话防误锁验证
+  const api = h.sandbox.__AGContextMeter;
+  assert.equal(api.isMarketplaceActiveForTest(), false);
+
+  // 模拟路径进入 /marketplace
+  h.sandbox.location.pathname = '/marketplace';
+  assert.equal(api.isMarketplaceActiveForTest(), true);
+
+  // 切回已归档对话页 /c/uuid（有 conversation-view 但带 Back 按钮与按钮文字“详情”时绝不误锁）
+  h.sandbox.location.pathname = '/c/11111111-1111-1111-1111-111111111111';
+  const convNode = h.host; // fallback element
+  const prevQs = h.sandbox.document.querySelector;
+  const prevQsa = h.sandbox.document.querySelectorAll;
+  h.sandbox.document.querySelector = (sel) => {
+    if (String(sel).includes('conversation-view')) return { id: 'conv-marker' };
+    return prevQs ? prevQs.call(h.sandbox.document, sel) : null;
+  };
+  h.sandbox.document.querySelectorAll = (sel) => {
+    if (String(sel).includes('aria-label*="Back"')) {
+      return [{ tagName: 'BUTTON', textContent: 'Back', getAttribute: () => 'Back', closest: () => null }];
+    }
+    return prevQsa ? prevQsa.call(h.sandbox.document, sel) : [];
+  };
+  assert.equal(api.isMarketplaceActiveForTest(), false);
+
+  api.dispose();
+});
