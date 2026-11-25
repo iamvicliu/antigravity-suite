@@ -1368,3 +1368,37 @@ test('collectTokenHistoryAsync 连续两次非强制调用不会卡在旧 active
     try { fs.rmSync(tempCliDir, { recursive: true, force: true }); } catch {}
   }
 });
+
+test('Gemini 4 Neon pricing, placeholder mapping, and shared quota pool sync (elviscjn v0.9.3)', () => {
+  const {
+    GEMINI_PRICING_TABLE,
+    normalizeModelId,
+    calculateRequestApiCost,
+    getModelPoolKey,
+    getSharedQuotaGroupKey
+  } = require('../meter-core');
+
+  assert.ok(Array.isArray(GEMINI_PRICING_TABLE['gemini-4-neon']));
+  assert.equal(normalizeModelId('Gemini 4 Neon (High)'), 'gemini-4-neon');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M532'), 'gemini-4-neon');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M537'), 'gemini-4-neon');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M669'), 'gemini-4-hydrogen');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M322'), 'gemini-3.8-flash');
+  assert.equal(normalizeModelId('MODEL_PLACEHOLDER_M402'), 'claude-opus-5-5');
+
+  assert.equal(getModelPoolKey('MODEL_PLACEHOLDER_M532'), 'gemini-4-neon');
+  assert.equal(getModelPoolKey('MODEL_PLACEHOLDER_M537'), 'gemini-4-neon');
+  assert.equal(getSharedQuotaGroupKey('Gemini 4 Neon (High)'), 'shared_gemini_main');
+
+  const res = calculateRequestApiCost({
+    model: 'MODEL_PLACEHOLDER_M532',
+    input_tokens: 1000000,
+    cache_read_tokens: 1000000,
+    output_tokens: 1000000,
+    date: '2026-11-25'
+  });
+  assert.equal(res.isPriced, true);
+  assert.equal(res.modelKey, 'gemini-4-neon');
+  // 3.00 + 0.15 + 15.00 = 18.15
+  assert.equal(res.costUSD, 18.15);
+});
