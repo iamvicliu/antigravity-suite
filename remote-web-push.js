@@ -869,14 +869,17 @@ function createWebPushManager(options = {}) {
     for (const id of prevStatusMap.keys()) {
       if (!activeIds.has(id)) {
         prevStatusMap.delete(id);
-        for (const k of Array.from(lastEventSentAt.keys())) {
-          if (k === `completed:${id}` || k === `waiting:${id}` || k.startsWith(`completed:${id}:`) || k.startsWith(`waiting:${id}:`)) {
-            lastEventSentAt.delete(k);
-          }
-        }
-        lastTurnKeySent.delete(`completed:${id}`);
-        lastTurnKeySent.delete(`waiting:${id}`);
       }
+    }
+    while (lastTurnKeySent.size > 500) {
+      const oldestDedupKey = lastTurnKeySent.keys().next().value;
+      if (oldestDedupKey === undefined) break;
+      lastTurnKeySent.delete(oldestDedupKey);
+    }
+    while (lastEventSentAt.size > 1000) {
+      const oldestDebounceKey = lastEventSentAt.keys().next().value;
+      if (oldestDebounceKey === undefined) break;
+      lastEventSentAt.delete(oldestDebounceKey);
     }
 
     if (events.length > 0 && st.subscriptions.length > 0 && !options.disableAutoBroadcast) {
