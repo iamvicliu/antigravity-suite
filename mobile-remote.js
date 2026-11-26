@@ -9894,12 +9894,33 @@ function buildMobileAppHtml() {
       return h.toString(16).padStart(8, '0');
     }
 
-    function truncateClientPreview(text, maxChars) {
+    function clientUtf8ByteLen(str) {
+      const s = String(str || '');
+      try {
+        if (typeof TextEncoder === 'function') return new TextEncoder().encode(s).length;
+      } catch {}
+      try {
+        return unescape(encodeURIComponent(s)).length;
+      } catch {
+        return s.length * 3;
+      }
+    }
+
+    function truncateClientPreview(text, maxChars, maxUtf8Bytes) {
       const str = String(text || '').trim();
       if (!str) return '';
+      const charLim = Number(maxChars) > 0 ? Number(maxChars) : 150;
+      const byteLim = Number(maxUtf8Bytes) > 0 ? Number(maxUtf8Bytes) : 420;
       const cps = Array.from(str);
-      if (cps.length <= maxChars) return str;
-      return cps.slice(0, Math.max(1, maxChars - 1)).join('') + '…';
+      const sliced = cps.length > charLim ? cps.slice(0, Math.max(1, charLim - 1)) : cps.slice();
+      let truncated = cps.length > charLim;
+      while (sliced.length > 0) {
+        const candidate = sliced.join('') + (truncated ? '…' : '');
+        if (clientUtf8ByteLen(candidate) <= byteLim) return candidate;
+        truncated = true;
+        sliced.pop();
+      }
+      return '';
     }
 
     function sanitizeClientNotifyPreview(rawText, maxChars) {
@@ -9927,13 +9948,13 @@ function buildMobileAppHtml() {
           .trim())
         .filter(Boolean)
         .join('\\n');
-      return truncateClientPreview(s, maxChars || 150);
+      return truncateClientPreview(s, maxChars || 150, 420);
     }
 
     function resolveClientNotifyTurnKey(item) {
       if (!item || typeof item !== 'object') return '';
       const explicit = String(item.turnSig || '').trim();
-      if (explicit) return fnv1aClientHex(explicit);
+      if (explicit) return /^[a-z0-9_-]{1,20}$/i.test(explicit) ? explicit : fnv1aClientHex(explicit);
       const stepCnt = Number(item.stepCount);
       if (Number.isInteger(stepCnt) && stepCnt > 0) return 's' + stepCnt;
       const upd = Number(item.updatedAt);
@@ -9945,10 +9966,10 @@ function buildMobileAppHtml() {
       const item = c && typeof c === 'object' ? c : {};
       const allowPreview = showPreview !== false;
       const rawTitle = String(item.title || 'Antigravity 对话').replace(/\\s+/g, ' ').trim() || 'Antigravity 对话';
-      const titleText = truncateClientPreview(rawTitle, 60) || 'Antigravity 对话';
+      const titleText = truncateClientPreview(rawTitle, 60, 180) || 'Antigravity 对话';
       const rawProj = String(item.projectName || '').replace(/\\s+/g, ' ').trim();
       const hasRealProj = Boolean(rawProj && rawProj !== '未归属项目' && rawProj !== '独立对话');
-      const projText = hasRealProj ? truncateClientPreview(rawProj, 28) : '';
+      const projText = hasRealProj ? truncateClientPreview(rawProj, 28, 84) : '';
       const turnKey = resolveClientNotifyTurnKey(item);
       const cid = String(item.id || '').trim();
       if (eventType === 'waiting') {
@@ -13380,8 +13401,19 @@ function buildMobileAppHtml() {
         if (!eventType) continue;
         const fmt = formatClientNotification(c, eventType, showPreview);
         const dedupKey = eventType + ':' + c.id;
-        if (fmt.turnKey && clientSentNotifyTurnKeys.get(dedupKey) === fmt.turnKey) continue;
-        if (fmt.turnKey) clientSentNotifyTurnKeys.set(dedupKey, fmt.turnKey);
+        let sentSet = clientSentNotifyTurnKeys.get(dedupKey);
+        if (fmt.turnKey && sentSet && sentSet.has(fmt.turnKey)) continue;
+        if (fmt.turnKey) {
+          if (!sentSet) {
+            sentSet = new Set();
+            clientSentNotifyTurnKeys.set(dedupKey, sentSet);
+          }
+          sentSet.add(fmt.turnKey);
+          if (sentSet.size > 16) {
+            const oldestK = sentSet.values().next().value;
+            if (oldestK !== undefined) sentSet.delete(oldestK);
+          }
+        }
         showLocalSystemNotification(fmt.title, fmt.body, c.id, fmt.tag);
       }
       for (const id of Array.from(clientPrevConvStatus.keys())) {
@@ -17540,6 +17572,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
   };
 
+  const isPreviewCacheMatch = (cached, c) => {
+    if (!cached || !c) return false;
+    if (cached.status !== (c.status || '')) return false;
+    const curStep = Number(c.stepCount) || 0;
+    const curUpd = Number(c.updatedAt) || 0;
+    if (curStep > 0) return cached.stepCount === curStep;
+    if (curUpd > 0) return cached.updatedAt === curUpd;
+    return false;
+  };
+
   const hydrateConversationsForNotifications = async (convList, activeSnap = null) => {
     if (!Array.isArray(convList) || !convList.length) return convList;
     const allowPreview = isPushPreviewAllowed();
@@ -17562,15 +17604,19 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         waitPrev = replyPrev;
       }
       const stepCnt = Number(activeConv?.stepCount) || (Array.isArray(activeSnap.messages) ? activeSnap.messages.length : 0);
-      if (replyPrev || waitPrev || stepCnt > 0) {
+      const curUpd = Number(activeConv?.updatedAt) || Date.now();
+      if (replyPrev || waitPrev) {
         const prevCached = convNotifyPreviewCache.get(activeSid);
+        const sameTurnCached = (prevCached && ((stepCnt > 0 && prevCached.stepCount === stepCnt) || (stepCnt <= 0 && prevCached.updatedAt === curUpd)))
+          ? prevCached
+          : null;
         rememberConvNotifyPreview(activeSid, {
-          updatedAt: Number(activeConv?.updatedAt) || Date.now(),
+          updatedAt: curUpd,
           status: activeConv?.status || '',
           stepCount: stepCnt,
-          turnSig: stepCnt > 0 ? `s${stepCnt}` : `u${Number(activeConv?.updatedAt) || 0}`,
-          lastReplyPreview: replyPrev || prevCached?.lastReplyPreview || '',
-          waitingSummary: waitPrev || prevCached?.waitingSummary || ''
+          turnSig: stepCnt > 0 ? `s${stepCnt}` : `u${Math.floor(curUpd)}`,
+          lastReplyPreview: replyPrev || sameTurnCached?.lastReplyPreview || '',
+          waitingSummary: waitPrev || sameTurnCached?.waitingSummary || ''
         });
       }
     }
@@ -17579,27 +17625,23 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       ? webPushManager.peekPendingTransitions(convList)
       : [];
     const pendingSet = new Set(pendingTransitions.map((t) => t.id));
-    const toFetch = [];
+    const priorityFetch = [];
+    const secondaryFetch = [];
     for (const c of convList) {
       if (!c || !c.id || c.id === '__new__') continue;
       if (c.lastReplyPreview || c.waitingSummary) continue;
-      const needsSummary = pendingSet.has(c.id) || c.completedUnread === true || c.status === 'waiting';
+      const isPendingTransition = pendingSet.has(c.id);
+      const needsSummary = isPendingTransition || c.completedUnread === true || c.status === 'waiting';
       if (!needsSummary) continue;
       const cached = convNotifyPreviewCache.get(c.id);
-      const curUpd = Number(c.updatedAt) || 0;
-      const curStep = Number(c.stepCount) || 0;
-      const cacheFresh = Boolean(
-        cached &&
-        cached.status === (c.status || '') &&
-        ((curStep > 0 && cached.stepCount === curStep) || (curStep <= 0 && curUpd > 0 && cached.updatedAt === curUpd))
-      );
-      if (!cacheFresh && toFetch.length < 3) {
-        toFetch.push(c);
-      }
+      if (isPreviewCacheMatch(cached, c)) continue;
+      if (isPendingTransition) priorityFetch.push(c);
+      else secondaryFetch.push(c);
     }
+    const toFetch = priorityFetch.concat(secondaryFetch);
 
     if (toFetch.length > 0 && allowPreview) {
-      await Promise.all(toFetch.map(async (c) => {
+      const fetchTailPreviewForConv = async (c) => {
         try {
           let totalSteps = Math.max(0, Number(c.stepCount) || 0);
           let tailSteps = [];
@@ -17642,27 +17684,44 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             updatedAt: Number(c.updatedAt) || 0,
             status: c.status || '',
             stepCount: totalSteps,
-            turnSig: totalSteps > 0 ? `s${totalSteps}` : `u${Number(c.updatedAt) || 0}`,
+            turnSig: totalSteps > 0 ? `s${totalSteps}` : `u${Math.floor(Number(c.updatedAt) || 0)}`,
             lastReplyPreview: replyPrev,
             waitingSummary: waitPrev
           });
         } catch {}
+      };
+
+      let fetchCursor = 0;
+      const maxWorkers = Math.min(3, toFetch.length);
+      await Promise.all(Array.from({ length: maxWorkers }, async () => {
+        while (fetchCursor < toFetch.length) {
+          const nextConv = toFetch[fetchCursor++];
+          await fetchTailPreviewForConv(nextConv);
+        }
       }));
     }
 
     return convList.map((c) => {
       if (!c || !c.id) return c;
-      const cached = convNotifyPreviewCache.get(c.id);
-      const stepCnt = Math.max(0, Number(c.stepCount || cached?.stepCount || 0) || 0);
-      const turnSig = String(c.turnSig || cached?.turnSig || (stepCnt > 0 ? `s${stepCnt}` : (Number(c.updatedAt) > 0 ? `u${Math.floor(Number(c.updatedAt))}` : '')));
+      const rawCached = convNotifyPreviewCache.get(c.id);
+      const validCached = isPreviewCacheMatch(rawCached, c) ? rawCached : null;
+      const liveStep = Math.max(0, Number(c.stepCount) || 0);
+      const stepCnt = liveStep > 0 ? liveStep : Math.max(0, Number(validCached?.stepCount) || 0);
+      const liveUpd = Number(c.updatedAt) || 0;
+      const computedTurnSig = stepCnt > 0
+        ? `s${stepCnt}`
+        : (liveUpd > 0 ? `u${Math.floor(liveUpd)}` : (validCached?.turnSig || ''));
+      const turnSig = String(c.turnSig || computedTurnSig || '');
       const out = { ...c };
       if (stepCnt > 0) out.stepCount = stepCnt;
       if (turnSig) out.turnSig = turnSig;
       if (allowPreview) {
-        const replyPrev = c.lastReplyPreview || cached?.lastReplyPreview || '';
-        const waitPrev = c.waitingSummary || cached?.waitingSummary || '';
+        const replyPrev = c.lastReplyPreview || validCached?.lastReplyPreview || '';
+        const waitPrev = c.waitingSummary || validCached?.waitingSummary || '';
         if (replyPrev) out.lastReplyPreview = replyPrev;
+        else delete out.lastReplyPreview;
         if (waitPrev) out.waitingSummary = waitPrev;
+        else delete out.waitingSummary;
       } else {
         delete out.lastReplyPreview;
         delete out.replyPreview;

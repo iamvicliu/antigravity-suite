@@ -448,7 +448,7 @@ function sanitizeNotificationPreview(rawText, maxChars = 150, maxUtf8Bytes = 420
 function resolveNotificationTurnKey(item) {
   if (!item || typeof item !== 'object') return '';
   const explicit = String(item.turnSig || '').trim();
-  if (explicit) return fnv1aHex(explicit);
+  if (explicit) return /^[a-z0-9_-]{1,20}$/i.test(explicit) ? explicit : fnv1aHex(explicit);
   const stepCnt = Number(item.stepCount);
   if (Number.isInteger(stepCnt) && stepCnt > 0) return `s${stepCnt}`;
   const upd = Number(item.updatedAt);
@@ -835,11 +835,24 @@ function createWebPushManager(options = {}) {
 
       const formatted = formatPushNotificationEvent(c, eventType, { showPreview: st.prefs.showPreview !== false });
       const dedupKey = `${eventType}:${c.id}`;
-      if (formatted.turnKey && lastTurnKeySent.get(dedupKey) === formatted.turnKey) continue;
-      const lastAt = lastEventSentAt.get(dedupKey);
+      const hasExplicitTurn = Boolean(String(c.turnSig || '').trim() || (Number.isInteger(Number(c.stepCount)) && Number(c.stepCount) > 0));
+      let sentSet = lastTurnKeySent.get(dedupKey);
+      if (formatted.turnKey && sentSet && sentSet.has(formatted.turnKey)) continue;
+      const debounceKey = (hasExplicitTurn && formatted.turnKey) ? `${dedupKey}:${formatted.turnKey}` : dedupKey;
+      const lastAt = lastEventSentAt.get(debounceKey);
       if (debounceMs > 0 && lastAt !== undefined && (nowMs - lastAt) < debounceMs) continue;
-      lastEventSentAt.set(dedupKey, nowMs);
-      if (formatted.turnKey) lastTurnKeySent.set(dedupKey, formatted.turnKey);
+      lastEventSentAt.set(debounceKey, nowMs);
+      if (formatted.turnKey) {
+        if (!sentSet) {
+          sentSet = new Set();
+          lastTurnKeySent.set(dedupKey, sentSet);
+        }
+        sentSet.add(formatted.turnKey);
+        if (sentSet.size > 16) {
+          const oldestKey = sentSet.values().next().value;
+          if (oldestKey !== undefined) sentSet.delete(oldestKey);
+        }
+      }
 
       events.push(fitPushPayloadToRecordLimit({
         type: eventType,
@@ -856,8 +869,11 @@ function createWebPushManager(options = {}) {
     for (const id of prevStatusMap.keys()) {
       if (!activeIds.has(id)) {
         prevStatusMap.delete(id);
-        lastEventSentAt.delete(`completed:${id}`);
-        lastEventSentAt.delete(`waiting:${id}`);
+        for (const k of Array.from(lastEventSentAt.keys())) {
+          if (k === `completed:${id}` || k === `waiting:${id}` || k.startsWith(`completed:${id}:`) || k.startsWith(`waiting:${id}:`)) {
+            lastEventSentAt.delete(k);
+          }
+        }
         lastTurnKeySent.delete(`completed:${id}`);
         lastTurnKeySent.delete(`waiting:${id}`);
       }
