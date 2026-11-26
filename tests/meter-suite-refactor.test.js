@@ -3018,7 +3018,7 @@ test('需求 13: 远程浮窗整行热区勾选、CLI 多路复用器指定主�
 
   vm.runInContext(CAPSULE_SRC, envCap.sandbox);
   const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
-  assert.equal(capsApi.version, '1.5.0');
+  assert.equal(capsApi.version, '1.6.4');
 
   capsApi.renderFooterCapsule(footerEl, {
     contextUsed: 181000,
@@ -27634,7 +27634,14 @@ test('Tailscale 离线防误报 + 自定义 Tailscale 节点支持（Loon 内置
     const prevSkipProbes = process.env.AG_REMOTE_SKIP_PROBES;
     process.env.AG_REMOTE_SKIP_PROBES = '1';
     try {
-      const remoteInfo = mr.buildRemoteInfo();
+      const remoteInfo = mr.buildRemoteInfo({
+        hostMeta: stoppedMeta,
+        addresses: {
+          tailscale: [],
+          lan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }],
+          physicalLan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }]
+        }
+      });
       assert.equal(remoteInfo.tailscaleCustomHost, 'custom-proxy.tailnet123.ts.net');
       const tsCh = remoteInfo.channels.find((c) => c.key === 'tailscale');
       assert.ok(tsCh && tsCh.available, '设置 tailscaleCustomHost 后 Tailscale 通道应标记为可用');
@@ -28529,7 +28536,7 @@ test('pulse-capsule-overlay: M532-M537 兜底、短窗 TPS 过滤与窄屏 4 档
 
   vm.runInContext(CAPSULE_SRC, envCap.sandbox);
   const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
-  assert.equal(capsApi.version, '1.5.0');
+  assert.equal(capsApi.version, '1.6.4');
 
   // 1. M532-M537 Neon 模型名称与 1M 上下文兜底
   assert.equal(capsApi.resolveModelDisplayName('MODEL_PLACEHOLDER_M532'), 'Gemini 4 Neon (High)');
@@ -30664,5 +30671,480 @@ test('锁定服务端项目顺序防跳动、新项目默认置顶、瞬态漏�
     }
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// #50 Phase A: 上下文与状态指标单一权威数据源 (SSOT)、512K 压缩线分母统一与 /compact 缓存即时废弃
+// =========================================================================
+test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物理上限解耦、/compact 即时废弃旧快照与流式 tok/s 一致性', async () => {
+  const https = require('node:https');
+  const { execFileSync } = require('node:child_process');
+
+  // 1. 胶囊分母归一：1M 物理窗口模型未观测到运行时预算时主分母统一为 512,000，physicalMaxTokens 仅在悬浮详情底部浅灰辅助行展示
+  {
+    const envCap = createDomEnv();
+    envCap.sandbox.location.href = 'https://127.0.0.1:12345/';
+    envCap.win.location = envCap.sandbox.location;
+    const footerEl = envCap.doc.createElement('div');
+    footerEl.className = 'agy-composer-footer';
+    const permBtn = envCap.doc.createElement('button');
+    permBtn.setAttribute('data-testid', 'permissions-selector-trigger');
+    footerEl.appendChild(permBtn);
+    envCap.doc.body.appendChild(footerEl);
+
+    vm.runInContext(CAPSULE_SRC, envCap.sandbox);
+    const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
+    capsApi.clearCaches();
+    // 能力表为空且 M427 已观测运行时预算为 512,000 时：物理窗口仍为 1,048,576，主分母为 512,000，悬浮详情辅助行正常展示
+    capsApi.ingestGeneratorMetadata([{
+      chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } }
+    }], 'cid-empty-cap');
+    assert.equal(capsApi.getPhysicalMaxTokensForModel('MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)'), 1048576);
+    assert.equal(capsApi.resolveCompressionBudgetForModel('MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)'), 512000);
+    const emptyCapUsage = capsApi.analyzeSteps([{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '10000', cacheReadTokens: '20000', outputTokens: '374' } } }], 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 1);
+    assert.equal(emptyCapUsage.physicalMaxTokens, 1048576); assert.equal(emptyCapUsage.contextLimit, 512000);
+    capsApi.renderFooterCapsule(footerEl, emptyCapUsage);
+    footerEl.querySelector('[data-agy-context-capsule="1"]').dispatchEvent({ type: 'mouseenter' });
+    assert.ok(/1M/.test(envCap.doc.getElementById('__agy_ctx_capsule_tooltip__')?.querySelector('[data-physical-window-note="1"]')?.textContent || ''));
+
+    capsApi.clearCaches();
+    capsApi.ingestAvailableModels({
+      models: {
+        MODEL_PLACEHOLDER_M427: { model: 'MODEL_PLACEHOLDER_M427', displayName: 'Gemini 4 Carbon (High)', maxTokens: 1048576 },
+        MODEL_PLACEHOLDER_M402: { model: 'MODEL_PLACEHOLDER_M402', displayName: 'Claude Opus 5.5 (High)', maxTokens: 1000000 },
+        MODEL_OPENAI_GPT_OSS_120B_MEDIUM: { model: 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM', displayName: 'GPT-OSS 120B (Medium)', maxTokens: 131072 }
+      }
+    });
+
+    // getContextLimitForModel 保持物理能力查询语义不变（兼容需求 5b），resolveCompressionBudgetForModel 统一按实际压缩线计算
+    assert.equal(capsApi.getContextLimitForModel('MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)'), 1048576);
+    assert.equal(capsApi.resolveCompressionBudgetForModel('MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)'), 512000);
+    assert.equal(capsApi.resolveCompressionBudgetForModel('MODEL_PLACEHOLDER_M402', 'Claude Opus 5.5 (High)'), 512000);
+    assert.equal(capsApi.resolveCompressionBudgetForModel('MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 'GPT-OSS 120B (Medium)'), 131072);
+
+    // 用户自定义固定阈值优先于默认 512K
+    envCap.win.__AGContextMeterSettings = { customPlan: { contextScopeMode: 'unified', contextUnifiedPreference: { mode: 'fixed', limitTokens: 768000 } } };
+    assert.equal(capsApi.resolveCompressionBudgetForModel('MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)'), 768000);
+    delete envCap.win.__AGContextMeterSettings;
+
+    // 胶囊与悬浮提示：主显示为 30.4k/512k (5.9%)，底部辅助展示物理上限 1M
+    const stepUsage = capsApi.analyzeSteps([{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '4374', cacheReadTokens: '25000', outputTokens: '1000' }, timeToFirstToken: '4.0s', streamingDuration: '5.0s' } }], 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 1);
+    assert.equal(stepUsage.contextUsed, 30374); assert.equal(stepUsage.contextLimit, 512000); assert.equal(stepUsage.physicalMaxTokens, 1048576);
+    assert.equal(Number(stepUsage.usagePercent.toFixed(1)), 5.9); assert.equal(stepUsage.tokPerSec, 200);
+
+    capsApi.renderFooterCapsule(footerEl, stepUsage);
+    const capBtn = footerEl.querySelector('[data-agy-context-capsule="1"]');
+    assert.equal(capBtn.querySelector('.agy-ctx-label')?.textContent, '30.4k/512k');
+    assert.equal(capBtn.querySelector('.agy-ctx-occ-val')?.textContent, '5.9%');
+    capBtn.dispatchEvent({ type: 'mouseenter' });
+    const tipEl = envCap.doc.getElementById('__agy_ctx_capsule_tooltip__');
+    assert.ok(tipEl);
+    const physNote = tipEl.querySelector('[data-physical-window-note="1"]');
+    assert.ok(physNote && /1M/.test(physNote.textContent) && /512k/.test(physNote.textContent));
+
+    // CHECKPOINT 压缩步骤（无 modelUsage）后立即废弃压缩前 258,963 旧值并回落至压缩后真值
+    const postCompactSteps = capsApi.analyzeSteps([
+      { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } },
+      { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩后摘要：已完成项目排序与归属修复。' } }
+    ], 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 2);
+    assert.equal(postCompactSteps.compressionDetected, true); assert.equal(postCompactSteps.compressionBefore, 258963);
+    assert.ok(postCompactSteps.contextUsed < 20000); assert.equal(postCompactSteps.cacheDropDetected, false);
+    envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
+  }
+
+  // 2. 跨全端（胶囊 / collector / meter / 普通视图 / isolated 独立视图）SSOT、双源冲突根治、CHECKPOINT 实报/估算与 >=1M/自定义预算验证
+  {
+    const tmpR1 = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-50-ssot-'));
+    const prevStateDir = process.env.AG_METER_STATE_DIR, prevHome = process.env.HOME;
+    process.env.AG_METER_STATE_DIR = tmpR1;
+    let tlsServer = null;
+    const env = createDomEnv();
+    try {
+      const certDir = path.join(tmpR1, 'tls'); fs.mkdirSync(certDir, { recursive: true });
+      const keyPath = path.join(certDir, 'key.pem'), certPath = path.join(certDir, 'cert.pem');
+      execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyPath, '-out', certPath, '-days', '1', '-subj', '/CN=127.0.0.1'], { stdio: 'ignore' });
+
+      const CONV_ACTIVE = 'aaaaaaaa-5050-4000-8000-111111111111', CONV_PARITY = 'bbbbbbbb-5050-4000-8000-222222222222';
+      const CONV_ISO_COMPACT = '50505050-1111-4222-8333-444444444444', CONV_CP_MU = '50505050-aaaa-4111-8111-111111111111';
+      const CONV_CP_EST = '50505050-bbbb-4222-8222-222222222222', CONV_1M_RT = '50505050-cccc-4333-8333-333333333333';
+      const CONV_CUSTOM_CO = '50505050-dddd-4444-8444-444444444444', CONV_NO_IDX_TS = '50505050-eeee-4555-8555-555555555555';
+      const CONV_SPEED_ZOMBIE = '50505050-ffff-4666-8666-666666666666', CONV_POST_GM = '50505050-9999-4777-8777-777777777777';
+      const CONV_LAG_GM = '50505050-8888-4888-8888-888888888888', CONV_SCAN_STEP4 = '50505050-7777-4999-8999-999999999999';
+      const CONV_GM_CREATE = '50505050-6666-4aaa-8aaa-aaaaaaaaaaaa', CONV_GM_TOT = '50505050-5555-4bbb-8bbb-bbbbbbbbbbbb';
+      const CONV_POST_UNTIMED_MU = '50505050-4444-4ccc-8ccc-cccccccccccc', CONV_POST_UNTIMED_EST = '50505050-3333-4ddd-8ddd-dddddddddddd';
+      let zombiePhase = 'pre', postGmArrived = false, scanStep4Arrived = false;
+
+      const makeSteps = (withCheckpointUsage) => [
+        { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' }, timeToFirstToken: '4.5s', streamingDuration: '5.2s', chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } }, plannerResponse: { response: 'pre-compact heavy output' } },
+        { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '这段很长的摘要在携带 modelUsage 时绝不能覆盖精确压缩后用量，仅在缺失 modelUsage 时参与估算。'.repeat(6), ...(withCheckpointUsage ? { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', cachedTokens: '18000', promptTokens: '6200', completionTokens: '300' } } : {}) } },
+        { userInput: { userResponse: '继续推进下一步', items: [{ text: '继续推进下一步' }, { text: '附加上下文片段 item-2' }] } },
+        { metadata: { toolCall: { argumentsJson: '{"target":"/workspace/config.json","line":42}' } }, toolCalls: [{ arguments: { retries: 3, strict: true } }] }
+      ];
+
+      const makeGmRow = (stepIdx, usage, maxContextTokens, ttft = '4.5s', stream = '5.2s') => ({
+        stepIndices: [stepIdx], chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', timeToFirstToken: ttft, streamingDuration: stream, usage, chatStartMetadata: { contextWindowMetadata: { maxContextTokens } } }
+      });
+
+      const getTrajPayload = (cid) => {
+        if (cid === CONV_SCAN_STEP4) {
+          const steps = [
+            { userInput: { userResponse: 's0' } },
+            { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 's1' } },
+            { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'cp2' } },
+            { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '20000', outputTokens: '500' }, streamingDuration: '2.0s' }, plannerResponse: { response: 's3' } },
+            ...(scanStep4Arrived ? [{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '15000', cacheReadTokens: '25600', outputTokens: '600' }, streamingDuration: '3.0s' }, plannerResponse: { response: 's4' } }] : [])
+          ];
+          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        }
+        if (cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST) {
+          const steps = [
+            { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre' } },
+            { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'cp' } },
+            { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '18000', outputTokens: '240' }, streamingDuration: '2.0s' }, plannerResponse: { response: 'timed turn1' } },
+            cid === CONV_POST_UNTIMED_MU
+              ? { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '12000', cacheReadTokens: '20000', outputTokens: '180' } }, plannerResponse: { response: 'untimed mu turn2' } }
+              : { plannerResponse: { response: 'untimed estimated planner turn2 without timestamps' } }
+          ];
+          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        }
+        if (cid === CONV_POST_GM) {
+          const steps = [{ userInput: { userResponse: 'step0' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre-compact' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩摘要' } }, { userInput: { userResponse: '压缩后继续提问' } }, { plannerResponse: { response: '压缩后回复本身无内联 modelUsage，稍后新 GeneratorMetadata 到达' } }];
+          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        }
+        if (cid === CONV_LAG_GM) {
+          const steps = [{ userInput: { userResponse: 'turn1 q' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '25000', cacheReadTokens: '0', outputTokens: '1850' }, timeToFirstToken: '4.5s', streamingDuration: '10.0s' }, plannerResponse: { response: 'turn1 a' } }, { userInput: { userResponse: 'turn2 q' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '155000', cacheReadTokens: '10000', outputTokens: '160' }, streamingDuration: '2.0s' }, plannerResponse: { response: 'turn2 fast stream without ttft while gm lags' } }];
+          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        }
+        if (cid === CONV_NO_IDX_TS) {
+          const steps = [{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre-compact reply' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩后摘要：无时间戳与步骤索引场景' } }, { userInput: { userResponse: '压缩后继续提问' } }, { plannerResponse: { response: '压缩后已有回复步骤但新 GeneratorMetadata 尚未返回' } }];
+          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        }
+        if (cid === CONV_SPEED_ZOMBIE) {
+          const steps = [{ userInput: { userResponse: 'initial heavy prompt' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '1850' } }, plannerResponse: { response: 'pre-compact fast reply' } }, ...(zombiePhase === 'post' ? [{ type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩摘要：验证旧 185 tok/s 绝不复活' } }, { userInput: { userResponse: '压缩后追加消息使 stepCount 增长到 4' } }] : [])];
+          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        }
+        if (cid === CONV_ISO_COMPACT) {
+          const steps = [{ userInput: { userResponse: 'run task' } }, { plannerResponse: { response: 'done before compact' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'Compacted session summary after /compact.' } }];
+          return { numTotalSteps: 3, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        }
+        if (cid === CONV_CP_MU || cid === CONV_CP_EST) {
+          const steps = makeSteps(cid === CONV_CP_MU);
+          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        }
+        const steps = [{ userInput: { userResponse: 'parity check' } }, { plannerResponse: { response: 'parity answer' } }];
+        return { numTotalSteps: cid === CONV_PARITY ? 4 : 2, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+      };
+
+      const getGenPayload = (cid) => {
+        if (cid === CONV_SCAN_STEP4 || cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST) return { generatorMetadata: [makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
+        if (cid === CONV_GM_CREATE) return { generatorMetadata: [makeGmRow(1, { inputTokens: 15000, cacheReadTokens: 25000, cacheCreationTokens: 5000, outputTokens: 500 }, 512000, '1.0s', '5.0s')] };
+        if (cid === CONV_GM_TOT) return { generatorMetadata: [makeGmRow(1, { totalTokens: 64000 }, 512000, '1.0s', '2.0s')] };
+        if (cid === CONV_POST_GM) return { generatorMetadata: [postGmArrived ? makeGmRow(4, { inputTokens: 14000, cacheReadTokens: 20000, outputTokens: 600 }, 512000, '1.0s', '5.0s') : makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
+        if (cid === CONV_LAG_GM) return { generatorMetadata: [makeGmRow(1, { inputTokens: 25000, cacheReadTokens: 0, outputTokens: 1850 }, 512000, '4.5s', '10.0s')] };
+        if (cid === CONV_NO_IDX_TS) return { generatorMetadata: [{ chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', timeToFirstToken: '4.5s', streamingDuration: '10.0s', usage: { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 1850 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }] };
+        if (cid === CONV_SPEED_ZOMBIE) return { generatorMetadata: [makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 1850 }, 512000, '4.5s', '10.0s')] };
+        if (cid === CONV_ISO_COMPACT) return { generatorMetadata: [makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
+        if (cid === CONV_CP_MU || cid === CONV_CP_EST) return { generatorMetadata: [makeGmRow(0, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
+        if (cid === CONV_PARITY) return { generatorMetadata: [makeGmRow(3, { inputTokens: 12000, cacheReadTokens: 138000, outputTokens: 1850 }, 512000, '4.5s', '10.0s')] };
+        if (cid === CONV_1M_RT) return { generatorMetadata: [makeGmRow(1, { inputTokens: 50000, cacheReadTokens: 212144, outputTokens: 300 }, 1310720, '1.0s', '2.0s')] };
+        return { generatorMetadata: [makeGmRow(1, { inputTokens: 38400, cacheReadTokens: 115200, outputTokens: 200 }, 512000, '1.0s', '2.0s')] };
+      };
+
+      tlsServer = https.createServer({ key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) }, (req, res) => {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<script>window.__APP_CONFIG__ = {"csrfToken":"csrf-50"};</script>');
+          return;
+        }
+        let raw = '';
+        req.on('data', (c) => { raw += c; });
+        req.on('end', () => {
+          const body = raw ? JSON.parse(raw) : {};
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          if (req.url.endsWith('/GetCascadeTrajectory')) res.end(JSON.stringify(getTrajPayload(body.cascadeId)));
+          else if (req.url.endsWith('/GetCascadeTrajectorySteps')) res.end(JSON.stringify({ steps: getTrajPayload(body.cascadeId).trajectory.steps.slice(body.stepOffset || 0) }));
+          else if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) res.end(JSON.stringify(getGenPayload(body.cascadeId)));
+          else res.end('{}');
+        });
+      });
+      await new Promise((r) => tlsServer.listen(0, '127.0.0.1', r));
+      const origin = `https://127.0.0.1:${tlsServer.address().port}`;
+
+      env.sandbox.location.pathname = `/c/${CONV_ACTIVE}`;
+      env.sandbox.location.href = `${origin}/c/${CONV_ACTIVE}`;
+      env.win.location = env.sandbox.location;
+      env.win.__APP_CONFIG__ = { csrfToken: 'csrf-50' };
+      env.sandbox.__APP_CONFIG__ = env.win.__APP_CONFIG__;
+      env.sandbox.fetch = async (url, init) => {
+        const u = String(url);
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (u.includes('GetCascadeTrajectoryGeneratorMetadata')) return { ok: true, json: async () => getGenPayload(body.cascadeId) };
+        if (u.includes('GetCascadeTrajectorySteps')) return { ok: true, json: async () => ({ steps: getTrajPayload(body.cascadeId).trajectory.steps.slice(body.stepOffset || 0) }) };
+        if (u.includes('GetCascadeTrajectory') && !u.includes('Steps')) return { ok: true, json: async () => getTrajPayload(body.cascadeId) };
+        return { ok: true, json: async () => ({}) };
+      };
+      env.win.fetch = env.sandbox.fetch;
+      const collectorMod = require('../meter-collector');
+      env.win.contextMeterAPI = { scan: async (id, force) => ({ ok: true, data: await collectorMod.collect(origin, id, { force }) }) };
+      env.sandbox.contextMeterAPI = env.win.contextMeterAPI;
+
+      vm.runInContext(CAPSULE_SRC, env.sandbox);
+      vm.runInContext(RENDERER_SRC, env.sandbox);
+      vm.runInContext(ENHANCER_SRC, env.sandbox);
+      const sd = env.getShadow();
+      const capsApi = env.win.__AGY_CTX_CAPSULE_API__;
+      const meterApi = env.sandbox.__AGContextMeter;
+      const enh = env.sandbox.__AGEnhancer;
+
+      // 2a: collector 在存在尾部 CHECKPOINT 时立即废弃压缩前 259K GeneratorMetadata
+      const collected = await collectorMod.collect(origin, CONV_ISO_COMPACT, { force: true });
+      assert.equal(collected.latest.compressionDetected, true); assert.equal(collected.latest.compressionBefore, 258963);
+      assert.ok(collected.latest.actual < 20000); assert.equal(collected.latest.budget, 512000);
+      assert.equal(collected.latest.physicalMaxTokens, 1048576); assert.equal(collected.latest.cacheDropDetected, false); assert.equal(collected.latest.speed, null);
+
+      // 2b: 复现“旧 Shadow DOM 残留 259K (50.6%) + 旧胶囊 30,374 / 1M (2.9%)”冲突场景，验证彻底消除双源缝合
+      sd.getElementById('key-used').textContent = '259K (50.6%)'; sd.getElementById('key-limit').textContent = '512K'; sd.getElementById('key-remaining').textContent = '253K (49.4%)';
+      const capEl = env.doc.createElement('button'); capEl.setAttribute('data-agy-context-capsule', '1');
+      capEl.__ctxUsageData = {
+        hasPreciseSnapshot: true, contextUsed: 30374, contextLimit: 1048576, usagePercent: 2.9, compressionDetected: true,
+        compressionBefore: 258963, compressionAfter: 24277, cacheReadTokens: 25000, inputTokens: 4374, outputTokens: 1000,
+        cacheHitRate: 85.1, tokPerSec: 185, lastDurationSec: 14.5, modelId: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', stepCount: 12
+      };
+      env.doc.body.appendChild(capEl);
+
+      const setRoute = (cid) => { env.sandbox.location.pathname = `/c/${cid}`; env.sandbox.location.href = `${origin}/c/${cid}`; };
+      const cpConflict = enh.getMobileSnapshot().contextPanel;
+      assert.equal(cpConflict.usedTokens, 30374); assert.equal(cpConflict.limitTokens, 512000); assert.equal(cpConflict.physicalMaxTokens, 1048576);
+      assert.equal(cpConflict.usagePercent, 5.9); assert.equal(cpConflict.usedText, '30.4k (5.9%)'); assert.equal(cpConflict.limitText, '512k');
+      assert.ok(!JSON.stringify(cpConflict).includes('50.6%') && !JSON.stringify(cpConflict).includes('259K'));
+      const mobileHtml = require('../mobile-remote').buildMobileAppHtml({ token: 'tok-50', mode: 'lan' });
+      assert.ok(mobileHtml.includes('ctx-physical-note') && mobileHtml.includes('模型物理上限：'));
+
+      // 2c: 普通视图 (isolated: false) 与 仅本页独立视图 (isolated: true) 对同一会话指标与纯流式 tok/s (185) 100% 对齐
+      setRoute(CONV_PARITY);
+      capEl.__ctxUsageData = {
+        conversationId: CONV_PARITY, hasPreciseSnapshot: true, contextUsed: 151850, contextLimit: 512000, runtimeBudget: 512000,
+        hasExplicitRuntimeBudget: true, physicalMaxTokens: 1048576, usagePercent: (151850 / 512000) * 100, cacheReadTokens: 138000,
+        inputTokens: 12000, outputTokens: 1850, cacheHitRate: 92, tokPerSec: 185, lastDurationSec: 14.5, ttftSec: 4.5,
+        modelId: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', stepCount: 4
+      };
+      const normalSnap = enh.getMobileSnapshot();
+      setRoute(CONV_ACTIVE);
+      const isoParitySnap = await enh.getMobileSnapshotAsync({ conversationId: CONV_PARITY });
+      assert.equal(isoParitySnap.isolated, true); assert.equal(isoParitySnap.contextPanel.usedTokens, normalSnap.contextPanel.usedTokens);
+      assert.equal(isoParitySnap.contextPanel.limitTokens, normalSnap.contextPanel.limitTokens); assert.equal(isoParitySnap.contextPanel.physicalMaxTokens, normalSnap.contextPanel.physicalMaxTokens);
+      assert.equal(isoParitySnap.contextPanel.usagePercent, normalSnap.contextPanel.usagePercent); assert.equal(isoParitySnap.contextPanel.tokPerSec, 185);
+      assert.equal(isoParitySnap.contextPanel.tokPerSec, normalSnap.contextPanel.tokPerSec); assert.equal(isoParitySnap.contextBadge, normalSnap.contextBadge);
+      assert.equal(isoParitySnap.pulseText, normalSnap.pulseText); assert.equal(isoParitySnap.contextPanel.usedText, normalSnap.contextPanel.usedText);
+      assert.equal(isoParitySnap.contextPanel.remainingText, normalSnap.contextPanel.remainingText);
+
+      const isoCompactSnap = await enh.getMobileSnapshotAsync({ conversationId: CONV_ISO_COMPACT });
+      assert.equal(isoCompactSnap.contextPanel.compressionDetected, true); assert.ok(isoCompactSnap.contextPanel.usedTokens < 20000);
+      assert.equal(isoCompactSnap.contextPanel.limitTokens, 512000); assert.equal(isoCompactSnap.contextPanel.cacheDropDetected, false);
+
+      // 2d: CHECKPOINT 携带有效 modelUsage + 尾随 userInput.items + 工具参数：三端优先采信 modelUsage 且尾随增量与速度归零 100% 一致
+      const capCpMu = capsApi.analyzeSteps(makeSteps(true), 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 4);
+      const colCpMu = await collectorMod.collect(origin, CONV_CP_MU, { force: true });
+      const isoCpMu = await enh.getMobileSnapshotAsync({ conversationId: CONV_CP_MU });
+      assert.ok(capCpMu.contextUsed > 24500 && capCpMu.contextUsed < 26000);
+      assert.equal(capCpMu.contextUsed, colCpMu.latest.actual); assert.equal(capCpMu.contextUsed, isoCpMu.contextPanel.usedTokens);
+      assert.equal(capCpMu.tokPerSec, 0); assert.equal(capCpMu.lastDurationSec, 0); assert.equal(capCpMu.ttftSec, 0);
+      assert.equal(colCpMu.latest.speed, null); assert.equal(isoCpMu.contextPanel.tokPerSec, null);
+      assert.equal(isoCpMu.contextPanel.lastDurationSec, null); assert.equal(isoCpMu.contextPanel.speedText, '—');
+
+      setRoute(CONV_CP_MU); capEl.__ctxUsageData = capCpMu; meterApi.invalidateAfterCompact(CONV_CP_MU, capCpMu);
+      assert.equal(meterApi.snapshot().latest.speed, null);
+      const normalCpMu = enh.getMobileSnapshot();
+      assert.equal(normalCpMu.contextPanel.usedTokens, isoCpMu.contextPanel.usedTokens);
+      assert.equal(normalCpMu.contextPanel.tokPerSec, null); assert.equal(normalCpMu.contextPanel.lastDurationSec, null); assert.equal(normalCpMu.contextPanel.speedText, '—');
+
+      // 2e: CHECKPOINT 无 modelUsage 时，三端对摘要 + userInput.items + 工具参数估算逐 token 完全一致且速度清空
+      const capCpEst = capsApi.analyzeSteps(makeSteps(false), 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 4);
+      const colCpEst = await collectorMod.collect(origin, CONV_CP_EST, { force: true });
+      const isoCpEst = await enh.getMobileSnapshotAsync({ conversationId: CONV_CP_EST });
+      assert.equal(capCpEst.contextUsed, colCpEst.latest.actual); assert.equal(capCpEst.contextUsed, isoCpEst.contextPanel.usedTokens);
+      assert.equal(capCpEst.tokPerSec, 0); assert.equal(colCpEst.latest.speed, null); assert.equal(isoCpEst.contextPanel.tokPerSec, null);
+
+      // 2f: 明确实测预算 >= 1M (1,310,720) 跨全端完整保留为主分母，而各端物理窗口上限均保持纯净 1,048,576 不混算 Math.max
+      const cap1mRt = capsApi.analyzeSteps([{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '50000', cacheReadTokens: '212144', outputTokens: '300' }, streamingDuration: '2.0s', chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 1310720 } } } }], 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 2);
+      const col1mRt = await collectorMod.collect(origin, CONV_1M_RT, { force: true });
+      setRoute(CONV_1M_RT); capEl.__ctxUsageData = cap1mRt;
+      const normal1mSnap = enh.getMobileSnapshot();
+      capEl.__ctxUsageData = null; await meterApi.refresh();
+      const meter1mSnap = enh.getMobileSnapshot();
+      capEl.__ctxUsageData = cap1mRt;
+      setRoute(CONV_ACTIVE);
+      const iso1mSnap = await enh.getMobileSnapshotAsync({ conversationId: CONV_1M_RT });
+      assert.equal(cap1mRt.contextLimit, 1310720); assert.equal(col1mRt.latest.budget, 1310720);
+      assert.equal(normal1mSnap.contextPanel.limitTokens, 1310720); assert.equal(meter1mSnap.contextPanel.limitTokens, 1310720); assert.equal(iso1mSnap.contextPanel.limitTokens, 1310720);
+      assert.equal(cap1mRt.physicalMaxTokens, 1048576); assert.equal(col1mRt.latest.physicalMaxTokens, 1048576);
+      assert.equal(normal1mSnap.contextPanel.physicalMaxTokens, 1048576); assert.equal(meter1mSnap.contextPanel.physicalMaxTokens, 1048576); assert.equal(iso1mSnap.contextPanel.physicalMaxTokens, 1048576);
+      assert.equal(iso1mSnap.contextPanel.usagePercent, normal1mSnap.contextPanel.usagePercent);
+
+      // 2g: 自定义固定阈值 (unified=768,000 及 per_model=640,000) 与实测预算 (512,000 / 1,310,720) 共存时，全端非压缩分支一律优先采用自定义阈值
+      const fakeHome = path.join(tmpR1, 'home');
+      fs.mkdirSync(fakeHome, { recursive: true }); process.env.HOME = fakeHome;
+      const setCustomPlan = (customPlan) => {
+        collectorMod.saveCustomPlanSettings({ version: '1.1.0', ...customPlan });
+        env.win.__AGContextMeterSettings = { customPlan }; env.sandbox.__AGContextMeterSettings = env.win.__AGContextMeterSettings;
+      };
+      setCustomPlan({ contextScopeMode: 'unified', contextUnifiedPreference: { mode: 'fixed', limitTokens: 768000 } });
+      const colCustomNonCompact = await collectorMod.collect(origin, CONV_CUSTOM_CO, { force: true });
+      const capCustomCo = capsApi.analyzeSteps([{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '38400', cacheReadTokens: '115200', outputTokens: '200' }, streamingDuration: '2.0s', chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }], 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 2);
+      setRoute(CONV_CUSTOM_CO); capEl.__ctxUsageData = capCustomCo;
+      const normalCustomSnap = enh.getMobileSnapshot();
+      setRoute(CONV_ACTIVE);
+      const isoCustomSnap = await enh.getMobileSnapshotAsync({ conversationId: CONV_CUSTOM_CO });
+      assert.equal(colCustomNonCompact.latest.runtimeBudget, 512000); assert.equal(colCustomNonCompact.latest.budget, 768000);
+      assert.equal(capCustomCo.contextLimit, 768000); assert.equal(normalCustomSnap.contextPanel.limitTokens, 768000); assert.equal(isoCustomSnap.contextPanel.limitTokens, 768000);
+
+      setCustomPlan({ contextScopeMode: 'per_model', contextPreferences: { model_placeholder_m427: { modelId: 'model_placeholder_m427', label: 'Gemini 4 Carbon (High)', mode: 'fixed', limitTokens: 640000 } } });
+      const colPerModel1m = await collectorMod.collect(origin, CONV_1M_RT, { force: true });
+      const isoPerModel1m = await enh.getMobileSnapshotAsync({ conversationId: CONV_1M_RT });
+      assert.equal(colPerModel1m.latest.runtimeBudget, 1310720); assert.equal(colPerModel1m.latest.budget, 640000); assert.equal(isoPerModel1m.contextPanel.limitTokens, 640000);
+
+      setCustomPlan({ contextScopeMode: 'unified', contextUnifiedPreference: { mode: 'dynamic' } });
+      delete env.win.__AGContextMeterSettings; delete env.sandbox.__AGContextMeterSettings;
+
+      // 2h: 缺少 stepIndices 与时间戳、CHECKPOINT 后已有 plannerResponse 回复步骤但新 GeneratorMetadata 尚未返回时，全端严禁复活旧 259K 或旧 185 tok/s
+      const colNoIdx = await collectorMod.collect(origin, CONV_NO_IDX_TS, { force: true });
+      const capNoIdx = await capsApi.refreshConversationUsage(CONV_NO_IDX_TS, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-no-idx' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, null);
+      const isoNoIdx = await enh.getMobileSnapshotAsync({ conversationId: CONV_NO_IDX_TS });
+      setRoute(CONV_NO_IDX_TS); capEl.__ctxUsageData = capNoIdx; meterApi.invalidateAfterCompact(CONV_NO_IDX_TS, capNoIdx);
+      const normalNoIdx = enh.getMobileSnapshot();
+      assert.equal(colNoIdx.latest.compressionDetected, true); assert.ok(colNoIdx.latest.actual < 20000);
+      assert.equal(colNoIdx.latest.actual, capNoIdx.contextUsed); assert.equal(colNoIdx.latest.actual, normalNoIdx.contextPanel.usedTokens); assert.equal(colNoIdx.latest.actual, isoNoIdx.contextPanel.usedTokens);
+      assert.equal(colNoIdx.latest.speed, null); assert.equal(capNoIdx.tokPerSec, 0); assert.equal(normalNoIdx.contextPanel.tokPerSec, null); assert.equal(isoNoIdx.contextPanel.tokPerSec, null);
+
+      // 2i: 经过真实 sessionRuntimeBudgetMap 缓存 (185 tok/s, maxStepIndex=1) -> 压缩并追加步骤 (stepCount=4) -> collector 清空 speed -> meter.refresh -> 胶囊刷新全链路验证旧 185 tok/s 绝不复活
+      zombiePhase = 'pre'; setRoute(CONV_SPEED_ZOMBIE);
+      const preZombieCap = await capsApi.refreshConversationUsage(CONV_SPEED_ZOMBIE, { stepCount: 2, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't1' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, null);
+      assert.equal(preZombieCap.tokPerSec, 185);
+      zombiePhase = 'post';
+      const colZombie = await collectorMod.collect(origin, CONV_SPEED_ZOMBIE, { force: true });
+      assert.equal(colZombie.latest.speed, null); assert.equal(colZombie.latest.stepCount, 4);
+      meterApi.invalidateAfterCompact(CONV_SPEED_ZOMBIE, { contextUsed: colZombie.latest.actual, contextLimit: 512000, lastCheckpointStepIdx: 2, stepCount: 4 });
+      await meterApi.refresh();
+      assert.equal(meterApi.snapshot().latest.speed, null); assert.equal(meterApi.snapshot().latest.stepCount, 4);
+      const postZombieCap = await capsApi.refreshConversationUsage(CONV_SPEED_ZOMBIE, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't2' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, null);
+      capEl.__ctxUsageData = postZombieCap;
+      assert.equal(postZombieCap.tokPerSec, 0);
+      const normalZombie = enh.getMobileSnapshot();
+      setRoute(CONV_ACTIVE);
+      const isoZombie = await enh.getMobileSnapshotAsync({ conversationId: CONV_SPEED_ZOMBIE });
+      assert.equal(normalZombie.contextPanel.tokPerSec, null); assert.equal(normalZombie.contextPanel.speedText, '—');
+      assert.equal(isoZombie.contextPanel.tokPerSec, null); assert.equal(isoZombie.contextPanel.usedTokens, normalZombie.contextPanel.usedTokens);
+
+      // 2j: 压缩后回复无内联 modelUsage，随后新 GeneratorMetadata 到达（stepIndices=[4]>cp=2，count 仍为 1 且 34,600 超 >5K）：验证 postCompactFloor、仲裁与胶囊刷新全端采用新实报
+      postGmArrived = false; setRoute(CONV_POST_GM);
+      const preGmCol = await collectorMod.collect(origin, CONV_POST_GM, { force: true });
+      const preGmCap = await capsApi.refreshConversationUsage(CONV_POST_GM, { stepCount: 5, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-gm0' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, null);
+      capEl.__ctxUsageData = preGmCap; meterApi.invalidateAfterCompact(CONV_POST_GM, preGmCap); await meterApi.refresh();
+      assert.ok(preGmCol.latest.actual < 20000 && preGmCap.contextUsed < 20000);
+      postGmArrived = true;
+      const postGmCol = await collectorMod.collect(origin, CONV_POST_GM, { force: true });
+      assert.equal(postGmCol.latest.actual, 34600);
+      await meterApi.refresh();
+      assert.equal(meterApi.snapshot().latest.actual, 34600);
+      assert.equal(enh.getMobileSnapshot().contextPanel.usedTokens, 34600); assert.equal(enh.getMobileSnapshot().contextPanel.tokPerSec, 120);
+      const postGmCap = await capsApi.refreshConversationUsage(CONV_POST_GM, { stepCount: 5, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-gm0' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, null);
+      capEl.__ctxUsageData = postGmCap; setRoute(CONV_ACTIVE);
+      const postGmIso = await enh.getMobileSnapshotAsync({ conversationId: CONV_POST_GM });
+      assert.equal(postGmCap.contextUsed, 34600); assert.equal(postGmCap.tokPerSec, 120);
+      assert.equal(postGmIso.contextPanel.usedTokens, 34600); assert.equal(postGmIso.contextPanel.tokPerSec, 120);
+
+      // 2k: 最新步骤已有流式速度 (80 tok/s, 2s, 无 TTFT, 160 out) 而 GeneratorMetadata 仍滞后在上一轮 (185 tok/s, 14.5s, 4.5s TTFT, 1850 out)
+      capEl.remove();
+      const realFooter = env.doc.createElement('div');
+      realFooter.className = 'agy-composer-footer'; realFooter.__reactFiber$test = { memoizedProps: { cascadeId: CONV_LAG_GM, modelId: 'MODEL_PLACEHOLDER_M427' } };
+      const realPerm = env.doc.createElement('button'); realPerm.setAttribute('data-testid', 'permissions-selector-trigger');
+      realFooter.appendChild(realPerm); env.doc.body.appendChild(realFooter);
+
+      setRoute(CONV_LAG_GM);
+      capsApi.setTrajectorySummary(CONV_LAG_GM, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-lag' });
+      await capsApi.refreshConversationUsage(CONV_LAG_GM, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-lag' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, realFooter);
+      capsApi.renderAllFooters();
+      const renderedCap = realFooter.querySelector('[data-agy-context-capsule="1"]');
+      assert.ok(renderedCap); assert.equal(renderedCap.__ctxUsageData.contextUsed, 165160);
+      assert.equal(renderedCap.__ctxUsageData.tokPerSec, 80); assert.equal(renderedCap.__ctxUsageData.lastDurationSec, 2);
+      assert.equal(renderedCap.__ctxUsageData.ttftSec, 0); assert.equal(renderedCap.__ctxUsageData.outputTokens, 160);
+      assert.ok((renderedCap.querySelector('.agy-ctx-speed-val')?.textContent || '').includes('80'));
+
+      const savedApi = env.win.contextMeterAPI;
+      env.win.contextMeterAPI = {}; env.sandbox.contextMeterAPI = {};
+      await meterApi.refresh();
+      assert.equal(meterApi.snapshot().latest.speed.streamingTps, 185);
+      const lagMeterNormal = enh.getMobileSnapshot();
+      assert.equal(lagMeterNormal.contextPanel.tokPerSec, 80); assert.equal(lagMeterNormal.contextPanel.lastDurationSec, 2);
+      assert.equal(lagMeterNormal.contextPanel.ttftSec, null); assert.equal(lagMeterNormal.contextPanel.outputTokens, 160);
+      const origCapData = renderedCap.__ctxUsageData;
+      renderedCap.__ctxUsageData = { ...origCapData, tokPerSec: 0, lastDurationSec: 0, ttftSec: 0, outputTokens: 160, exactUsageStepIndex: 3, stepCount: 4 };
+      const noCrossTurnAuth = enh.resolveAuthoritativeContextMetrics(CONV_LAG_GM, { pulseEl: renderedCap });
+      assert.equal(noCrossTurnAuth.tokPerSec, null); assert.equal(noCrossTurnAuth.lastDurationSec, null);
+      assert.equal(noCrossTurnAuth.ttftSec, null); assert.equal(noCrossTurnAuth.outputTokens, 160);
+      renderedCap.__ctxUsageData = { ...origCapData, contextUsed: 26850, tokPerSec: 185, lastDurationSec: 10, ttftSec: 99, outputTokens: 1850, exactUsageStepIndex: 1, stepCount: 2 };
+      const atomicPrimary = enh.resolveAuthoritativeContextMetrics(CONV_LAG_GM, { pulseEl: renderedCap });
+      assert.equal(atomicPrimary.tokPerSec, 185); assert.equal(atomicPrimary.lastDurationSec, 14.5); assert.equal(atomicPrimary.ttftSec, 4.5);
+      renderedCap.__ctxUsageData = origCapData;
+      env.win.contextMeterAPI = savedApi; env.sandbox.contextMeterAPI = savedApi;
+
+      const lagCol = await collectorMod.collect(origin, CONV_LAG_GM, { force: true });
+      await meterApi.refresh();
+      const lagNormal = enh.getMobileSnapshot();
+      setRoute(CONV_ACTIVE);
+      const lagIso = await enh.getMobileSnapshotAsync({ conversationId: CONV_LAG_GM });
+      assert.equal(lagCol.latest.actual, 165160); assert.equal(lagCol.latest.speed.streamingTps, 80);
+      assert.equal(lagNormal.contextPanel.usedTokens, 165160); assert.equal(lagNormal.contextPanel.tokPerSec, 80);
+      assert.equal(lagIso.contextPanel.usedTokens, 165160); assert.equal(lagIso.contextPanel.tokPerSec, 80);
+      assert.equal(lagIso.contextPanel.lastDurationSec, 2); assert.equal(lagIso.contextPanel.ttftSec, null); assert.equal(lagIso.contextPanel.outputTokens, 160);
+
+      // 2l: CHECKPOINT=2、当前实报步骤=3 (28,500)、新扫描实报步骤=4 (41,200) 且 GeneratorMetadata 仍在压缩前时，渲染器采纳第 4 步新实报
+      scanStep4Arrived = false; setRoute(CONV_SCAN_STEP4);
+      await meterApi.refresh();
+      assert.equal(meterApi.snapshot().latest.exactUsageStepIndex, 3); assert.equal(meterApi.snapshot().latest.actual, 28500);
+      scanStep4Arrived = true;
+      await meterApi.refresh();
+      assert.equal(meterApi.snapshot().latest.exactUsageStepIndex, 4); assert.equal(meterApi.snapshot().latest.actual, 41200);
+      assert.equal(meterApi.snapshot().latest.speed.streamingTps, 200);
+
+      // 2m: 仅 GeneratorMetadata 提供用量（含 cacheCreationTokens=5,000 及仅 totalTokens=64,000 回退）时，全端已用、百分比与剩余容量 100% 一致
+      for (const [gmCid, expUsed, expPct] of [[CONV_GM_CREATE, 45500, 8.9], [CONV_GM_TOT, 64000, 12.5]]) {
+        setRoute(gmCid);
+        const colGm = await collectorMod.collect(origin, gmCid, { force: true });
+        await meterApi.refresh();
+        const capGm = await capsApi.refreshConversationUsage(gmCid, { stepCount: 2, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-gm-only' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, null);
+        renderedCap.__ctxUsageData = { ...capGm, conversationId: gmCid };
+        const normGm = enh.getMobileSnapshot();
+        renderedCap.__ctxUsageData = null;
+        const meterOnlyGm = enh.getMobileSnapshot();
+        setRoute(CONV_ACTIVE);
+        const isoGm = await enh.getMobileSnapshotAsync({ conversationId: gmCid });
+        assert.equal(colGm.latest.actual, expUsed); assert.equal(meterApi.snapshot().latest.actual, expUsed);
+        assert.equal(capGm.contextUsed, expUsed); assert.equal(normGm.contextPanel.usedTokens, expUsed);
+        assert.equal(meterOnlyGm.contextPanel.usedTokens, expUsed); assert.equal(isoGm.contextPanel.usedTokens, expUsed);
+        assert.equal(normGm.contextPanel.usagePercent, expPct); assert.equal(meterOnlyGm.contextPanel.usagePercent, expPct); assert.equal(isoGm.contextPanel.usagePercent, expPct);
+        assert.equal(isoGm.contextPanel.remainingText, normGm.contextPanel.remainingText); assert.equal(isoGm.contextPanel.remainingText, meterOnlyGm.contextPanel.remainingText);
+      }
+
+      // 2n: CHECKPOINT 后连续两轮回复且后一轮无计时（实报无时长 / 估算回复无时间戳）时，collector、胶囊与 isolated 均清空上一轮旧速度
+      for (const untimedCid of [CONV_POST_UNTIMED_MU, CONV_POST_UNTIMED_EST]) {
+        const colUnt = await collectorMod.collect(origin, untimedCid, { force: true });
+        const capUnt = capsApi.analyzeSteps(getTrajPayload(untimedCid).trajectory.steps, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 4);
+        const isoUnt = await enh.getMobileSnapshotAsync({ conversationId: untimedCid });
+        assert.equal(colUnt.latest.speed, null); assert.equal(colUnt.latest.speedStepIndex, -1);
+        assert.equal(capUnt.tokPerSec, 0); assert.equal(isoUnt.contextPanel.tokPerSec, null);
+        assert.equal(colUnt.latest.actual, capUnt.contextUsed); assert.equal(colUnt.latest.actual, isoUnt.contextPanel.usedTokens);
+      }
+    } finally {
+      try { env.sandbox.__AGEnhancer?.dispose?.(); } catch {}
+      try { env.sandbox.__AGContextMeter?.dispose?.(); } catch {}
+      try { env.win.__AGY_CTX_CAPSULE_DISPOSE__?.(); } catch {}
+      env.cleanup?.();
+      if (tlsServer) await new Promise((r) => tlsServer.close(r));
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR; else process.env.AG_METER_STATE_DIR = prevStateDir;
+      fs.rmSync(tmpR1, { recursive: true, force: true });
+    }
   }
 });
