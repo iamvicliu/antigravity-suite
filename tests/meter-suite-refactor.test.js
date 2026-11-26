@@ -31417,3 +31417,298 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
   assert.equal(corsStatus, 204);
   assert.equal(corsHeaders['access-control-allow-origin'], 'https://ag.custom-domain.example');
 });
+
+test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要层级、按轮次防覆盖 tag、末尾步骤提取与摘要隐私开关', async () => {
+  const crypto = require('node:crypto');
+  const os = require('node:os');
+  const remoteMod = require('../mobile-remote');
+  const pushMod = require('../remote-web-push');
+
+  // 1. Markdown 剥离、多字节 UTF-8 安全截断与 RFC 8291 4079B 单记录加密边界保障
+  const mdSample = '### 修复结果\n> 已完成 **核心优化**\n- [x] 查看 [详情文档](https://example.com/doc) 与 `meter-core.js`\n```js\nconst ok = true;\n```';
+  const cleanPrev = pushMod.sanitizeNotificationPreview(mdSample);
+  assert.ok(cleanPrev.includes('修复结果') && cleanPrev.includes('已完成 核心优化') && cleanPrev.includes('详情文档') && cleanPrev.includes('meter-core.js'));
+  assert.ok(!cleanPrev.includes('###') && !cleanPrev.includes('```') && !cleanPrev.includes('https://example.com'));
+
+  const uaEcdh = crypto.createECDH('prime256v1');
+  uaEcdh.generateKeys();
+  const uaAuth = crypto.randomBytes(16);
+  const sub = {
+    endpoint: 'https://fcm.googleapis.com/fcm/send/demo-48',
+    keys: { p256dh: pushMod.b64urlEncode(uaEcdh.getPublicKey()), auth: pushMod.b64urlEncode(uaAuth) }
+  };
+  const hugeReply = '🚀多字节超长回复验证——' + '中文摘要与Emoji🌟'.repeat(800);
+  const fitted = pushMod.fitPushPayloadToRecordLimit({
+    type: 'completed',
+    conversationId: 'conv-huge-48',
+    title: '超长会话标题测试'.repeat(20),
+    body: hugeReply,
+    tag: 'ag-completed-conv-huge-48-s99',
+    url: '/?conversationId=conv-huge-48',
+    completedUnreadCount: 3,
+    ts: Date.now()
+  });
+  const fittedJson = JSON.stringify(fitted);
+  assert.ok(Buffer.byteLength(fittedJson, 'utf8') <= pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES, '裁剪后载荷字节数必须严格 <= 4079B');
+  const encHuge = pushMod.encryptWebPushPayload(fittedJson, sub);
+  assert.equal(pushMod.decryptWebPushPayloadForTest(encHuge.body, uaEcdh.getPrivateKey(), uaAuth), fittedJson);
+
+  // 2. completed / waiting 官方标题层级、按轮次 tag 堆叠、同轮防重复与 showPreview 隐私开关
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-push-48-'));
+  const deliveredBodies = [];
+  try {
+    const mgr = pushMod.createWebPushManager({
+      getStateFilePath: () => path.join(tmpDir, 'push-48.json'),
+      debounceMs: 1000,
+      dnsLookup: async () => [{ address: '142.250.190.10', family: 4 }],
+      fetchImpl: async (_url, init) => {
+        const plain = pushMod.decryptWebPushPayloadForTest(init.body, uaEcdh.getPrivateKey(), uaAuth);
+        deliveredBodies.push(JSON.parse(plain));
+        return { ok: true, status: 201 };
+      }
+    });
+    assert.equal(mgr.getPublicInfo().prefs.showPreview, true, '默认应开启在通知中显示回复内容摘要');
+    mgr.addSubscription(sub, { label: 'iPhone' });
+
+    // 基线采样
+    mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 6, updatedAt: 1000 },
+      { id: 'c2', title: '部署生产配置', projectName: 'antigravity-suite', status: 'running', stepCount: 4, updatedAt: 1000 }
+    ], 1000);
+
+    // 第 1 轮完成 + 待确认触发
+    const r1 = mgr.observeCatalogItems([
+      {
+        id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true,
+        stepCount: 8, updatedAt: 2000, lastReplyPreview: '**已完成** `resolveAuthoritativeContextMetrics` 单源合并与 219 项单测校验。'
+      },
+      {
+        id: 'c2', title: '部署生产配置', projectName: 'antigravity-suite', status: 'waiting', completedUnread: false,
+        stepCount: 5, updatedAt: 2000, waitingSummary: '待执行命令: `git push -u origin feat/release`'
+      }
+    ], 3000);
+    assert.equal(r1.events.length, 2);
+    const evComp1 = r1.events.find((e) => e.conversationId === 'c1');
+    const evWait1 = r1.events.find((e) => e.conversationId === 'c2');
+    assert.equal(evComp1.title, '重构上下文指标 · antigravity-suite', 'completed 标题应直接展示会话标题与项目名');
+    assert.ok(evComp1.body.includes('已完成 resolveAuthoritativeContextMetrics') && !evComp1.body.includes('**'), 'completed 正文应展示去 Markdown 的纯文本回复摘要');
+    assert.equal(evComp1.tag, 'ag-completed-c1-s8');
+    assert.equal(evWait1.title, '需要确认 · 部署生产配置', 'waiting 标题应展示「需要确认 · <会话标题>」');
+    assert.equal(evWait1.body, '待执行命令: git push -u origin feat/release');
+    assert.equal(evWait1.tag, 'ag-waiting-c2-s5');
+
+    // 同轮 (stepCount 仍为 8) 即便过了防抖窗口且发生状态抖动，也绝不重复弹窗
+    mgr.observeCatalogItems([{ id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 8, updatedAt: 2000 }], 5000);
+    const dupSameTurn = mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 8, updatedAt: 2000, lastReplyPreview: '同轮文案' }
+    ], 6500);
+    assert.equal(dupSameTurn.events.length, 0, '同一轮次 stepCount 未推进时不得重复发送通知');
+
+    // 第 2 轮完成 (stepCount=14)：生成不同轮次 tag 支持通知中心时间线堆叠
+    mgr.observeCatalogItems([{ id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 12, updatedAt: 7000 }], 7000);
+    const r2 = mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 14, updatedAt: 8500, lastReplyPreview: '第二轮补充完成了边缘用例验证。' }
+    ], 9000);
+    assert.equal(r2.events.length, 1);
+    assert.equal(r2.events[0].tag, 'ag-completed-c1-s14');
+    assert.notEqual(r2.events[0].tag, evComp1.tag, '同一会话不同轮次完成必须生成不同 tag 以免覆盖上一轮通知');
+
+    // 关闭 showPreview 隐私开关：隐藏具体回复与待审批命令内容
+    assert.equal(mgr.updatePrefs({ showPreview: false }).prefs.showPreview, false);
+    mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 18, updatedAt: 10000 },
+      { id: 'c2', title: '部署生产配置', projectName: 'antigravity-suite', status: 'running', stepCount: 9, updatedAt: 10000 }
+    ], 11000);
+    const rPriv = mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 20, updatedAt: 12000, lastReplyPreview: '机密回复正文不应外露' },
+      { id: 'c2', title: '部署生产配置', projectName: 'antigravity-suite', status: 'waiting', completedUnread: false, stepCount: 10, updatedAt: 12000, waitingSummary: 'rm -rf /secret/path' }
+    ], 13000);
+    assert.equal(rPriv.events.find((e) => e.conversationId === 'c1')?.body, '本轮回复已完成', 'showPreview=false 时 completed 严禁携带回复正文');
+    assert.ok(!rPriv.events.find((e) => e.conversationId === 'c2')?.body.includes('/secret/path'), 'showPreview=false 时 waiting 严禁携带敏感命令摘要');
+
+    // 3. 服务端按需末尾轨迹摘要提取通道（/api/snapshot + refreshPushStateFromCatalog）及隐私脱敏校验
+    mgr.updatePrefs({ showPreview: true });
+    mgr.resetForTest();
+    mgr.addSubscription(sub, { label: 'iPad' });
+    let phase = 'boot';
+    const lsCalls = [];
+    const srvHandler = remoteMod.createRemoteHttpHandler(
+      { enabled: true, port: 18765, token: 'tok48', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        webPushManager: mgr,
+        fetchSnapshot: async () => ({
+          ok: true,
+          sessionId: 'active-other',
+          conversations: phase === 'boot'
+            ? [
+                { id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 30, updatedAt: 1000 },
+                { id: 'bg-wait', title: '数据库迁移', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 12, updatedAt: 1000 }
+              ]
+            : [
+                { id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 34, updatedAt: 2000 },
+                { id: 'bg-wait', title: '数据库迁移', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 14, updatedAt: 2000 }
+              ],
+          projects: [],
+          messages: []
+        }),
+        callLanguageServer: async (method, body) => {
+          lsCalls.push({ method, body });
+          if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'bg-comp') {
+            return {
+              steps: [
+                { userInput: { items: [{ text: '执行全量打包' }] } },
+                { plannerResponse: { response: '已完成 **macOS 零补丁热注入包** 构建，全部 `220` 项校验通过！' } }
+              ]
+            };
+          }
+          if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'bg-wait') {
+            return {
+              steps: [
+                { userInput: { items: [{ text: '清理旧迁移表' }] } },
+                { runCommand: { commandLine: 'psql -c "DROP TABLE legacy_tmp;"' } }
+              ]
+            };
+          }
+          return { steps: [] };
+        }
+      }
+    );
+    const callSnap = () => new Promise((resolve) => {
+      const chunks = [];
+      srvHandler(
+        { method: 'GET', url: '/api/snapshot?token=tok48', headers: { host: '127.0.0.1:18765' }, socket: { remoteAddress: '127.0.0.1' }, on(ev, cb) { if (ev === 'end') cb(); }, destroy() {} },
+        { setHeader() {}, getHeader: () => undefined, writeHead() {}, end(b) { if (b) chunks.push(Buffer.from(b)); resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } }
+      );
+    });
+    await callSnap();
+    deliveredBodies.length = 0;
+    phase = 'transition';
+    const snapTransition = await callSnap();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok(lsCalls.some((c) => c.method === 'GetCascadeTrajectorySteps' && c.body.cascadeId === 'bg-comp' && c.body.stepOffset === 19), '后台长会话完成时应仅按需拉取末尾 15 步提取摘要');
+    const bgCompOut = snapTransition.conversations.find((c) => c.id === 'bg-comp');
+    const bgWaitOut = snapTransition.conversations.find((c) => c.id === 'bg-wait');
+    assert.ok(bgCompOut.lastReplyPreview.includes('macOS 零补丁热注入包'));
+    assert.ok(bgWaitOut.waitingSummary.includes('DROP TABLE legacy_tmp'));
+    const pushedComp = deliveredBodies.find((p) => p.conversationId === 'bg-comp');
+    const pushedWait = deliveredBodies.find((p) => p.conversationId === 'bg-wait');
+    assert.equal(pushedComp?.title, '后台构建任务 · suite');
+    assert.ok(pushedComp?.body.includes('macOS 零补丁热注入包'));
+    assert.equal(pushedWait?.title, '需要确认 · 数据库迁移');
+    assert.ok(pushedWait?.body.includes('DROP TABLE legacy_tmp'));
+
+    // 关闭 showPreview 后，/api/snapshot 输出的会话条目也同步剔除预览字段
+    mgr.updatePrefs({ showPreview: false });
+    const snapRedacted = await callSnap();
+    assert.equal(snapRedacted.conversations.find((c) => c.id === 'bg-comp')?.lastReplyPreview, undefined, 'showPreview=false 时服务端快照不得继续下发回复摘要');
+    assert.equal(snapRedacted.conversations.find((c) => c.id === 'bg-wait')?.waitingSummary, undefined, 'showPreview=false 时服务端快照不得继续下发待确认摘要');
+
+    // 4. 前端本地 Notification 兜底与推送设置弹窗 toggle-preview 全链路一致性验证
+    const html = remoteMod.buildMobileAppHtml();
+    const mainScript = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).find((s) => s.includes('maybeTriggerLocalNotifications'));
+    assert.ok(mainScript);
+    const poppedNotifs = [];
+    const postedPrefPatches = [];
+    const lStore = new Map([['ag_remote_local_notify_v1', '1']]);
+    const makeClassList = () => ({ add() {}, remove() {}, toggle() {}, contains: () => false });
+    const byId = {};
+    const makeEl = (id) => ({
+      id, hidden: true, innerHTML: '', textContent: '', value: '', title: '', disabled: false,
+      style: { setProperty() {}, removeProperty() {} }, dataset: {}, classList: makeClassList(),
+      setAttribute() {}, getAttribute: () => null, removeAttribute() {},
+      addEventListener(ev, fn) { if (ev === 'click') this.onclick = fn; }, removeEventListener() {},
+      querySelector: () => null, querySelectorAll: () => [], focus() {}, blur() {}, contains: () => false
+    });
+    let sheetRows = [], sheetCb = null;
+    const timers = new Set();
+    function MockNotification(title, opts) {
+      poppedNotifs.push({ title, ...(opts || {}) });
+    }
+    MockNotification.permission = 'granted';
+    MockNotification.requestPermission = async () => 'granted';
+    const startUrl = new URL('https://mac.tail-demo.ts.net/?token=tok48&manual=1');
+    const domSandbox = {
+      URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+      Uint8Array, TextEncoder, TextDecoder, AbortController, Intl, Notification: MockNotification,
+      atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+      btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+      encodeURIComponent, decodeURIComponent,
+      screen: { width: 1280, height: 800 }, devicePixelRatio: 2,
+      navigator: { userAgent: 'Mozilla/5.0 Macintosh', platform: 'MacIntel', maxTouchPoints: 0 },
+      location: { href: startUrl.href, origin: startUrl.origin, protocol: startUrl.protocol, hostname: startUrl.hostname, pathname: '/', search: startUrl.search, port: '', replace() {} },
+      history: { replaceState() {} },
+      localStorage: { getItem: (k) => lStore.get(k) ?? null, setItem: (k, v) => lStore.set(k, String(v)), removeItem: (k) => lStore.delete(k) },
+      sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      document: {
+        hidden: false, activeElement: null, title: 'Antigravity Remote',
+        documentElement: { clientHeight: 800, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+        body: { style: {}, classList: makeClassList() },
+        getElementById: (id) => byId[id] || (byId[id] = makeEl(id)),
+        querySelector: () => makeEl('__q'), querySelectorAll: () => [], createElement: (t) => makeEl(t), addEventListener() {}
+      },
+      matchMedia: () => ({ matches: false, addEventListener() {} }),
+      innerWidth: 1280, innerHeight: 800, visualViewport: null,
+      setTimeout: (fn, ms) => { const t = setTimeout(() => { timers.delete(t); fn(); }, Math.min(Number(ms) || 0, 20)); if (t.unref) t.unref(); timers.add(t); return t; },
+      clearTimeout: (t) => { timers.delete(t); clearTimeout(t); },
+      fetch: async (rawUrl, init) => {
+        const u = String(rawUrl);
+        if (u.includes('/api/push/vapid-key')) {
+          return { ok: true, status: 200, json: async () => ({ ok: true, publicKey: 'k', subscriptionCount: 0, prefs: { enabled: true, notifyCompleted: true, notifyWaiting: true, showPreview: lStore.get('ag_remote_notify_preview_v1') !== '0' } }) };
+        }
+        if (u.includes('/api/push/prefs')) {
+          const patch = JSON.parse(init?.body || '{}');
+          postedPrefPatches.push(patch);
+          return { ok: true, status: 200, json: async () => ({ ok: true, prefs: patch }) };
+        }
+        return { ok: false, status: 503, json: async () => ({ ok: false }) };
+      }
+    };
+    domSandbox.window = domSandbox;
+    domSandbox.addEventListener = () => {};
+    const tail = mainScript.lastIndexOf('})();');
+    const hooked = mainScript.slice(0, tail)
+      + '\nconst __origOpenSheet = openSheet; openSheet = (title, rows, cb) => { globalThis.__capturedSheet = { title, rows, cb }; return __origOpenSheet(title, rows, cb); };'
+      + '\nglobalThis.__pushHooks = { maybeTriggerLocalNotifications, openPushSettingsSheet };\n'
+      + mainScript.slice(tail);
+    try {
+      vm.runInNewContext(hooked, domSandbox);
+      await new Promise((r) => setTimeout(r, 30));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([
+        { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 6, updatedAt: 100 }
+      ]);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([
+        { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 8, updatedAt: 200, lastReplyPreview: '**已完成** `resolveAuthoritativeContextMetrics` 单源合并与 219 项单测校验。' }
+      ]);
+      assert.equal(poppedNotifs.length, 1);
+      assert.equal(poppedNotifs[0].title, evComp1.title, '前端本地 Notification 标题必须与服务端 Web Push 完全一致');
+      assert.equal(poppedNotifs[0].body, evComp1.body, '前端本地 Notification 正文必须与服务端 Web Push 完全一致');
+      assert.equal(poppedNotifs[0].tag, evComp1.tag, '前端本地 Notification 轮次 tag 必须与服务端 Web Push 完全一致');
+
+      // 打开推送设置弹窗并切换「在通知中显示回复内容摘要」
+      await domSandbox.__pushHooks.openPushSettingsSheet();
+      sheetRows = domSandbox.__capturedSheet?.rows || [];
+      sheetCb = domSandbox.__capturedSheet?.cb;
+      const previewRow = sheetRows.find((r) => r.value === 'toggle-preview');
+      assert.ok(previewRow && previewRow.label.includes('✓ 在通知中显示回复内容摘要'));
+      await sheetCb(previewRow);
+      assert.deepEqual(postedPrefPatches[0], { showPreview: false });
+      assert.equal(lStore.get('ag_remote_notify_preview_v1'), '0');
+
+      // 关闭摘要后下一轮本地通知仅显示通用完成文案
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([
+        { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 10, updatedAt: 300 }
+      ]);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([
+        { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 12, updatedAt: 400, lastReplyPreview: '隐藏的敏感摘要' }
+      ]);
+      assert.equal(poppedNotifs.length, 2);
+      assert.equal(poppedNotifs[1].body, '本轮回复已完成');
+      assert.equal(poppedNotifs[1].tag, 'ag-completed-c1-s12');
+    } finally {
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

@@ -390,12 +390,141 @@ function computeCompletedUnreadCount(conversations) {
   return count;
 }
 
+function fnv1aHex(input) {
+  const str = String(input || '');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+function truncateUtf8Safe(text, maxChars = 150, maxUtf8Bytes = 420) {
+  const str = String(text || '').trim();
+  if (!str) return '';
+  const cps = Array.from(str);
+  let sliced = cps.length > maxChars ? cps.slice(0, Math.max(1, maxChars - 1)) : cps;
+  let truncated = cps.length > maxChars;
+  while (sliced.length > 0) {
+    const candidate = sliced.join('') + (truncated ? '…' : '');
+    if (Buffer.byteLength(candidate, 'utf8') <= maxUtf8Bytes) {
+      return candidate;
+    }
+    truncated = true;
+    sliced.pop();
+  }
+  return '';
+}
+
+function sanitizeNotificationPreview(rawText, maxChars = 150, maxUtf8Bytes = 420) {
+  if (rawText === null || rawText === undefined) return '';
+  let s = String(rawText).replace(/\r\n?/g, '\n');
+  if (!s.trim()) return '';
+  s = s.replace(/```[a-zA-Z0-9_+-]*\n?([\s\S]*?)```/g, (_m, inner) => {
+    const body = String(inner || '').trim();
+    return body ? `\n${body}\n` : ' [代码片段] ';
+  });
+  s = s.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_m, alt) => (alt ? `[图片: ${alt}]` : '[图片]'));
+  s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+  s = s.replace(/`([^`\n]+)`/g, '$1');
+  s = s.replace(/<[^>]+>/g, ' ');
+  s = s
+    .split('\n')
+    .map((line) => line
+      .replace(/^\s*#{1,6}\s+/, '')
+      .replace(/^\s*>\s?/, '')
+      .replace(/^\s*[-*+]\s+(?:\[[ xX]\]\s+)?/, '')
+      .replace(/^\s*\d+\.\s+/, '')
+      .replace(/(\*\*|__|~~)/g, '')
+      .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1$2')
+      .replace(/[ \t]+/g, ' ')
+      .trim())
+    .filter(Boolean)
+    .join('\n');
+  return truncateUtf8Safe(s, maxChars, maxUtf8Bytes);
+}
+
+function resolveNotificationTurnKey(item) {
+  if (!item || typeof item !== 'object') return '';
+  const explicit = String(item.turnSig || '').trim();
+  if (explicit) return fnv1aHex(explicit);
+  const stepCnt = Number(item.stepCount);
+  if (Number.isInteger(stepCnt) && stepCnt > 0) return `s${stepCnt}`;
+  const upd = Number(item.updatedAt);
+  if (Number.isFinite(upd) && upd > 0) return `u${Math.floor(upd)}`;
+  return '';
+}
+
+function formatPushNotificationEvent(item, eventType, options = {}) {
+  const c = item && typeof item === 'object' ? item : {};
+  const showPreview = options.showPreview !== false;
+  const rawTitle = String(c.title || 'Antigravity 对话').replace(/\s+/g, ' ').trim() || 'Antigravity 对话';
+  const titleText = truncateUtf8Safe(rawTitle, 60, 180) || 'Antigravity 对话';
+  const rawProj = String(c.projectName || '').replace(/\s+/g, ' ').trim();
+  const hasRealProj = Boolean(rawProj && rawProj !== '未归属项目' && rawProj !== '独立对话');
+  const projText = hasRealProj ? truncateUtf8Safe(rawProj, 28, 84) : '';
+  const turnKey = resolveNotificationTurnKey(c);
+  const cid = String(c.id || '').trim();
+
+  if (eventType === 'waiting') {
+    const waitPreview = showPreview
+      ? sanitizeNotificationPreview(c.waitingSummary || c.pendingSummary || '', 150, 420)
+      : '';
+    return {
+      title: `需要确认 · ${titleText}`,
+      body: waitPreview || (projText ? `${projText} · 正在等待你的确认或输入` : '正在等待你的确认或输入'),
+      tag: turnKey ? `ag-waiting-${cid}-${turnKey}` : `ag-waiting-${cid}`,
+      turnKey
+    };
+  }
+
+  const replyPreview = showPreview
+    ? sanitizeNotificationPreview(c.lastReplyPreview || c.replyPreview || '', 150, 420)
+    : '';
+  return {
+    title: projText ? `${titleText} · ${projText}` : titleText,
+    body: replyPreview || '本轮回复已完成',
+    tag: turnKey ? `ag-completed-${cid}-${turnKey}` : `ag-completed-${cid}`,
+    turnKey
+  };
+}
+
+function fitPushPayloadToRecordLimit(payloadObj, maxBytes = MAX_SINGLE_RECORD_PLAINTEXT_BYTES) {
+  if (!payloadObj || typeof payloadObj !== 'object') return payloadObj;
+  const copy = { ...payloadObj };
+  if (Buffer.byteLength(JSON.stringify(copy), 'utf8') <= maxBytes) return copy;
+  if (typeof copy.body === 'string' && copy.body.length > 0) {
+    let lo = 0;
+    let hi = Array.from(copy.body).length;
+    const cps = Array.from(copy.body);
+    let best = '';
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const candBody = mid === 0 ? '' : (cps.slice(0, mid).join('') + (mid < cps.length ? '…' : ''));
+      const candJson = JSON.stringify({ ...copy, body: candBody });
+      if (Buffer.byteLength(candJson, 'utf8') <= maxBytes) {
+        best = candBody;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    copy.body = best;
+  }
+  if (Buffer.byteLength(JSON.stringify(copy), 'utf8') > maxBytes && typeof copy.title === 'string') {
+    copy.title = truncateUtf8Safe(copy.title, 32, 96);
+  }
+  return copy;
+}
+
 function sanitizePushPrefs(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   return {
     enabled: src.enabled !== false,
     notifyCompleted: src.notifyCompleted !== false,
-    notifyWaiting: src.notifyWaiting !== false
+    notifyWaiting: src.notifyWaiting !== false,
+    showPreview: src.showPreview !== false
   };
 }
 
@@ -411,6 +540,7 @@ function createWebPushManager(options = {}) {
   const prevStatusMap = new Map();
   let trackerBootstrapped = false;
   const lastEventSentAt = new Map();
+  const lastTurnKeySent = new Map();
 
   function ensureOwnerOnlyMode(filePath) {
     if (process.platform === 'win32') return;
@@ -649,6 +779,24 @@ function createWebPushManager(options = {}) {
     return { ok: sent > 0 || failed === 0, sent, failed, expiredRemoved: expiredSet.size, results };
   }
 
+  function peekPendingTransitions(items) {
+    if (!trackerBootstrapped || !Array.isArray(items)) return [];
+    const pending = [];
+    for (const c of items) {
+      if (!c || !c.id) continue;
+      const prev = prevStatusMap.get(c.id);
+      if (!prev) continue;
+      const nextStatus = c.status || 'unknown';
+      const nextUpdatedAt = Number(c.updatedAt) || 0;
+      if (prev.status === 'running' && nextStatus === 'idle' && (c.completedUnread || nextUpdatedAt > prev.updatedAt)) {
+        pending.push({ id: c.id, type: 'completed' });
+      } else if (prev.status !== 'waiting' && nextStatus === 'waiting') {
+        pending.push({ id: c.id, type: 'waiting' });
+      }
+    }
+    return pending;
+  }
+
   function observeCatalogItems(items, nowMs = Date.now()) {
     const list = Array.isArray(items) ? items : [];
     const completedUnreadCount = computeCompletedUnreadCount(list);
@@ -685,25 +833,24 @@ function createWebPushManager(options = {}) {
       if (eventType === 'completed' && !st.prefs.notifyCompleted) continue;
       if (eventType === 'waiting' && !st.prefs.notifyWaiting) continue;
 
+      const formatted = formatPushNotificationEvent(c, eventType, { showPreview: st.prefs.showPreview !== false });
       const dedupKey = `${eventType}:${c.id}`;
+      if (formatted.turnKey && lastTurnKeySent.get(dedupKey) === formatted.turnKey) continue;
       const lastAt = lastEventSentAt.get(dedupKey);
       if (debounceMs > 0 && lastAt !== undefined && (nowMs - lastAt) < debounceMs) continue;
       lastEventSentAt.set(dedupKey, nowMs);
+      if (formatted.turnKey) lastTurnKeySent.set(dedupKey, formatted.turnKey);
 
-      const titleText = String(c.title || 'Antigravity 对话').slice(0, 60);
-      const projText = String(c.projectName || '').trim();
-      events.push({
+      events.push(fitPushPayloadToRecordLimit({
         type: eventType,
         conversationId: c.id,
-        title: eventType === 'waiting' ? '需要你的确认' : '对话已完成',
-        body: eventType === 'waiting'
-          ? `${titleText}${projText ? ` (${projText})` : ''} 正在等待确认或审批`
-          : `${titleText}${projText ? ` · ${projText}` : ''}`,
-        tag: `ag-${eventType}-${c.id}`,
+        title: formatted.title,
+        body: formatted.body,
+        tag: formatted.tag,
         url: `/?conversationId=${encodeURIComponent(c.id)}`,
         completedUnreadCount,
         ts: nowMs
-      });
+      }));
     }
 
     for (const id of prevStatusMap.keys()) {
@@ -711,6 +858,8 @@ function createWebPushManager(options = {}) {
         prevStatusMap.delete(id);
         lastEventSentAt.delete(`completed:${id}`);
         lastEventSentAt.delete(`waiting:${id}`);
+        lastTurnKeySent.delete(`completed:${id}`);
+        lastTurnKeySent.delete(`waiting:${id}`);
       }
     }
 
@@ -728,12 +877,14 @@ function createWebPushManager(options = {}) {
     removeSubscription,
     updatePrefs,
     broadcast,
+    peekPendingTransitions,
     observeCatalogItems,
     resetForTest() {
       cachedState = null;
       prevStatusMap.clear();
       trackerBootstrapped = false;
       lastEventSentAt.clear();
+      lastTurnKeySent.clear();
     }
   };
 }
@@ -857,6 +1008,11 @@ module.exports = {
   encryptWebPushPayload,
   decryptWebPushPayloadForTest,
   computeCompletedUnreadCount,
+  sanitizeNotificationPreview,
+  resolveNotificationTurnKey,
+  formatPushNotificationEvent,
+  fitPushPayloadToRecordLimit,
+  sanitizePushPrefs,
   createWebPushManager,
   buildPwaIconPng
 };
