@@ -33,7 +33,7 @@
    - **14 built-in recommended prompts** + **10 one-click popular templates**, plus custom prompts supporting **`Insert`** (stage in composer to add logs) vs **`⚡Send`** (submit immediately with `↵`), protected by draft guard and **`⌘/Ctrl + click`** inversion.
    - One-click **`✨ Optimize` / `↩ Undo`** using fast lightweight models and context-aware **`Tab / →`** next-step suggestions.
 5. **🧰 Quick Desktop Utilities**
-   - **`⌘1`–`⌘9`** (hold `⌘` for badges), **`⌘⇧[` / `⌘⇧]`**, and **`⌃Tab`** to switch chats instantly; floating message navigator bar; inline **`Edit` + `⌘S`** editing inside preview panes.
+   - **`⌘1`–`⌘9`** (hold `⌘` for badges), **`⌘⇧[` / `⌘⇧]`**, and **`⌃Tab`** to switch chats instantly; floating message navigator bar; inline **`Edit` + `⌘S`** editing inside preview panes; **right-click context menu** on chat file/folder links to copy decoded paths, folder paths, `path:line` anchors, or reveal in Finder.
    - **`>_ CLI`** one-click Antigravity CLI (`agy`) launcher supporting popular macOS terminals (plus optional proxy settings for CLI & update checks under **`⚙️` → `🧰 Terminal & Network`**). Compatible with Antigravity **`2.32.x–2.34.0`** and common Node version managers.
 6. **📊 Context Window, 240K Auto-Compact & Dual Quota Capsules**
    - Top-bar ring meter, token breakdown, 52-week heatmap, API cost comparison, and **Gemini 4 / Claude** 5-hour + weekly quota capsules (`G4` / `C`). Configure plan tiers and billing currency in **`⚙️` → `📊 Plan & Subscription`**.
