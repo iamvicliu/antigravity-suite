@@ -1292,20 +1292,23 @@ async function collect(origin, id, options = {}) {
         referenceLatest?.budget ?? latest?.budget
       );
 
-      const resolveUniqueStepBySig = (sig) => {
-        if (!sig || largeTrajectoryFallbackReason) return -1;
+      const inspectStepsBySig = (sig) => {
+        if (!sig || largeTrajectoryFallbackReason) return { index: -1, count: 0 };
         let hit = -1;
+        let hitCount = 0;
         for (let sIdx = 0; sIdx < steps.length; sIdx++) {
           const st = steps[sIdx], meta = st?.metadata || st;
           const mu = meta?.modelUsage || st?.modelUsage || st?.checkpoint?.modelUsage || st?.checkpoint?.usage || meta?.checkpoint?.modelUsage || meta?.checkpoint?.usage || st?.usage || null;
           const sm = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
           if (!isCollectorShadowOrImageModel(sm) && extractUsageTriplet(mu) === sig) {
-            if (hit >= 0) return -1;
-            hit = sIdx;
+            hitCount += 1;
+            if (hitCount === 1) hit = sIdx;
+            else hit = -1;
           }
         }
-        return hit;
+        return { index: hitCount === 1 ? hit : -1, count: hitCount };
       };
+      const resolveUniqueStepBySig = (sig) => inspectStepsBySig(sig).index;
 
       if (!largeTrajectoryFallbackReason && lastCheckpointStepIdx >= 0) {
         const rawMetaStep = extractGeneratorRowMaxStepIndex(latestMetaRow);
@@ -1352,7 +1355,8 @@ async function collect(origin, id, options = {}) {
         const rawGmStep = extractGeneratorRowMaxStepIndex(latestMetaRow);
         const gmTimeMs = parseTrajectoryTimestampMs(latestModel?.chatStartMetadata?.createdAt || latestMetaRow?.createdAt);
         const gmSig = extractUsageTriplet(latestModel?.usage || latestMetaRow?.usage);
-        const gmMaxStep = rawGmStep >= 0 ? rawGmStep : resolveUniqueStepBySig(gmSig);
+        const gmSigMatch = inspectStepsBySig(gmSig);
+        const gmMaxStep = rawGmStep >= 0 ? rawGmStep : gmSigMatch.index;
         let lastInlineUsageIdx = -1, plannerTurnCount = 0;
         if (!largeTrajectoryFallbackReason) {
           for (let sIdx = Math.max(0, lastCheckpointStepIdx + 1); sIdx < steps.length; sIdx++) {
@@ -1377,8 +1381,8 @@ async function collect(origin, id, options = {}) {
               laterUsageIdx = gmMaxStep;
             }
           }
-        } else if (!largeTrajectoryFallbackReason && rawGmStep < 0 && gmMaxStep < 0 && lastInlineUsageIdx >= 0) {
-          // 无步骤索引且用量签名归属不唯一（如两轮回复签名相同）时，回退至最新步骤切片重新计算并清空不可证旧速度
+        } else if (!largeTrajectoryFallbackReason && rawGmStep < 0 && gmMaxStep < 0 && gmSigMatch.count >= 2 && lastInlineUsageIdx >= 0) {
+          // 仅当无步骤索引且用量签名在多轮重复出现（>= 2 次）导致归属不唯一时，回退至最新步骤切片重新计算并清空不可证旧速度
           laterUsageIdx = lastInlineUsageIdx;
         }
         if (laterUsageIdx >= 0 && (gmMaxStep < 0 || laterUsageIdx > gmMaxStep || (laterUsageIdx === gmMaxStep && gmMaxStep < steps.length - 1))) {

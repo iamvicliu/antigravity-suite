@@ -2684,7 +2684,7 @@ function createSessionCatalogStore() {
       subagentStates: Object.fromEntries(store.subagentStates),
       conversations: convList
     };
-    safeWriteJsonSync(store.filePath, payload);
+    return safeWriteJsonSync(store.filePath, payload);
   }
 
   function getStickyStoreForDir(stateDir) {
@@ -3360,8 +3360,10 @@ function createSessionCatalogStore() {
       persistedAll.map((c) => [c.id, c.title, c.projectId, c.archived, c.pinned, c.updatedAt, c.status, c.lastViewedAt])
     ]);
     if (persistSig !== store.lastSig) {
-      store.lastSig = persistSig;
-      persistCatalogStore(store, nowMs, persistedAll);
+      const writeRes = persistCatalogStore(store, nowMs, persistedAll);
+      if (writeRes?.ok !== false) {
+        store.lastSig = persistSig;
+      }
     }
 
     const orderIdxMap = new Map();
@@ -16409,8 +16411,8 @@ function buildMobileAppHtml() {
       const isOpen = backdropEl.classList.contains('open');
       const target = e.target;
       if (!isOpen) {
-        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden) return;
-        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail')) return;
+        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden || ($('file-viewer-backdrop') && !$('file-viewer-backdrop').hidden)) return;
+        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail, .fv-ws-bar')) return;
         if (t.clientX > window.innerWidth * 0.85) return;
       }
       swipeState = {
