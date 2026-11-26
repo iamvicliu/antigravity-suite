@@ -17585,6 +17585,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const hydrateConversationsForNotifications = async (convList, activeSnap = null) => {
     if (!Array.isArray(convList) || !convList.length) return convList;
     const allowPreview = isPushPreviewAllowed();
+    const turnStepHints = new Map();
     const activeSid = String(activeSnap?.sessionId || activeSnap?.activeConversationId || '').trim();
     if (activeSnap && activeSnap.ok !== false && activeSid && activeSid !== '__new__') {
       const activeConv = convList.find((c) => c && c.id === activeSid);
@@ -17603,18 +17604,20 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       } else if (activeConv?.status === 'waiting') {
         waitPrev = replyPrev;
       }
-      const stepCnt = Number(activeConv?.stepCount) || (Array.isArray(activeSnap.messages) ? activeSnap.messages.length : 0);
-      const curUpd = Number(activeConv?.updatedAt) || Date.now();
-      if (replyPrev || waitPrev) {
+      const stepCnt = Math.max(0, Number(activeConv?.stepCount) || 0);
+      const curUpd = Math.max(0, Number(activeConv?.updatedAt) || 0);
+      const explicitSig = String(activeConv?.turnSig || '').trim();
+      const activeTurnSig = explicitSig || (stepCnt > 0 ? `s${stepCnt}` : (curUpd > 0 ? `u${Math.floor(curUpd)}` : ''));
+      if ((replyPrev || waitPrev) && (stepCnt > 0 || curUpd > 0)) {
         const prevCached = convNotifyPreviewCache.get(activeSid);
-        const sameTurnCached = (prevCached && ((stepCnt > 0 && prevCached.stepCount === stepCnt) || (stepCnt <= 0 && prevCached.updatedAt === curUpd)))
+        const sameTurnCached = (prevCached && ((stepCnt > 0 && prevCached.stepCount === stepCnt) || (stepCnt <= 0 && curUpd > 0 && prevCached.updatedAt === curUpd)))
           ? prevCached
           : null;
         rememberConvNotifyPreview(activeSid, {
           updatedAt: curUpd,
           status: activeConv?.status || '',
           stepCount: stepCnt,
-          turnSig: stepCnt > 0 ? `s${stepCnt}` : `u${Math.floor(curUpd)}`,
+          turnSig: activeTurnSig,
           lastReplyPreview: replyPrev || sameTurnCached?.lastReplyPreview || '',
           waitingSummary: waitPrev || sameTurnCached?.waitingSummary || ''
         });
@@ -17665,12 +17668,13 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             const numTotal = Math.max(totalSteps, Number(trajRes?.numTotalSteps || trajRes?.trajectory?.numTotalSteps || firstSteps.length) || 0);
             totalSteps = numTotal;
             if (numTotal > firstSteps.length) {
+              if (numTotal > 0) turnStepHints.set(c.id, numTotal);
               const tailRes = await Promise.resolve().then(() => callLsRpc('GetCascadeTrajectorySteps', {
                 cascadeId: c.id,
                 stepOffset: Math.max(firstSteps.length, numTotal - 15),
                 trajectoryVerbosity: 3
               }, 1200)).catch(() => null);
-              tailSteps = Array.isArray(tailRes?.steps) && tailRes.steps.length ? tailRes.steps : firstSteps.slice(-15);
+              tailSteps = Array.isArray(tailRes?.steps) && tailRes.steps.length ? tailRes.steps : [];
             } else {
               tailSteps = firstSteps.slice(-15);
             }
@@ -17706,7 +17710,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       const rawCached = convNotifyPreviewCache.get(c.id);
       const validCached = isPreviewCacheMatch(rawCached, c) ? rawCached : null;
       const liveStep = Math.max(0, Number(c.stepCount) || 0);
-      const stepCnt = liveStep > 0 ? liveStep : Math.max(0, Number(validCached?.stepCount) || 0);
+      const hintedStep = Math.max(0, Number(turnStepHints.get(c.id)) || 0);
+      const stepCnt = liveStep > 0 ? liveStep : (hintedStep > 0 ? hintedStep : Math.max(0, Number(validCached?.stepCount) || 0));
       const liveUpd = Number(c.updatedAt) || 0;
       const computedTurnSig = stepCnt > 0
         ? `s${stepCnt}`
