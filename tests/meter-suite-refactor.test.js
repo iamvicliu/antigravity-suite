@@ -28576,3 +28576,173 @@ test('pulse-capsule-overlay: M532-M537 兜底、短窗 TPS 过滤与窄屏 4 档
   envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
 });
 
+test('已配置 tailscaleCustomHost 或独立版未运行时跳过 tailscale CLI 且绝不调用 GUI 入口', async () => {
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevSkipProbes = process.env.AG_REMOTE_SKIP_PROBES;
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ts-skip-'));
+  process.env.AG_METER_STATE_DIR = tmpState;
+  delete process.env.AG_REMOTE_SKIP_PROBES;
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const mr = require('../mobile-remote.js');
+
+  try {
+    // 1. detectHostIdentityMeta 与 ensureTailscaleServeHttps 传入 tailscaleCustomHost / skipTailscaleCli 时 0 次调用 execFileSync
+    let syncExecCount = 0;
+    const countingExecSync = () => {
+      syncExecCount += 1;
+      return '{}';
+    };
+    const skippedByCustom = mr.detectHostIdentityMeta({
+      tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net',
+      execFileSync: countingExecSync
+    });
+    assert.equal(skippedByCustom.tailscaleDnsName, '');
+    assert.equal(skippedByCustom.tailscaleRunning, false);
+
+    const skippedByFlag = mr.detectHostIdentityMeta({
+      skipTailscaleCli: true,
+      execFileSync: countingExecSync
+    });
+    assert.equal(skippedByFlag.tailscaleDnsName, '');
+    assert.equal(skippedByFlag.tailscaleRunning, false);
+
+    const serveSkipRes = mr.ensureTailscaleServeHttps(18765, {
+      tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net',
+      execFileSync: countingExecSync
+    });
+    assert.deepEqual(serveSkipRes, { enabled: false, url: '', hint: '', createdByUs: false });
+    assert.equal(syncExecCount, 0, '配置了 tailscaleCustomHost 或 skipTailscaleCli 时 execFileSync 调用次数必须为 0');
+
+    // 2. probeClientPrivateReachability 在 config.tailscaleCustomHost 已配置时 0 次调用 execAsync
+    mr.clearPairedDevicesForTests();
+    let asyncExecCount = 0;
+    const hints = await mr.probeClientPrivateReachability(
+      {
+        url: '/api/probe-hints?force=1',
+        headers: { 'user-agent': 'Mozilla/5.0 (iPhone)', 'x-ag-device-id': 'dev-ts-skip-1' }
+      },
+      {
+        tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net',
+        enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+      },
+      {
+        force: true,
+        skipProbes: false,
+        execAsync: async () => {
+          asyncExecCount += 1;
+          return { ok: true, stdout: '{}', stderr: '' };
+        }
+      }
+    );
+    assert.equal(asyncExecCount, 0, '配置了 tailscaleCustomHost 时 probeClientPrivateReachability 不得调用 tailscale CLI');
+    assert.equal(hints.tailscale, undefined);
+
+    // 3. resolveTailscaleCliCandidates 在 darwin 下绝不包含 GUI 入口且尊重运行态
+    assert.deepEqual(
+      mr.resolveTailscaleCliCandidates({ platform: 'darwin', hasCustomExec: false, isMacRunning: () => false }),
+      [],
+      'macOS 未运行独立版 Tailscale 时必须返回空候选列表'
+    );
+    const macRunningTwo = mr.resolveTailscaleCliCandidates({
+      platform: 'darwin',
+      hasCustomExec: false,
+      isMacRunning: () => true,
+      existsSync: (p) => p === '/opt/homebrew/bin/tailscale' || p === '/usr/local/bin/tailscale'
+    });
+    assert.deepEqual(macRunningTwo, ['/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']);
+    assert.equal(
+      macRunningTwo.some((p) => p.includes('/Applications/Tailscale.app/Contents/MacOS/Tailscale')),
+      false,
+      '严禁包含会唤醒菜单栏 GUI 图标的大写 Tailscale 主程序路径'
+    );
+    assert.deepEqual(
+      mr.resolveTailscaleCliCandidates({
+        platform: 'darwin',
+        hasCustomExec: false,
+        isMacRunning: () => true,
+        existsSync: () => false
+      }),
+      ['tailscale'],
+      '运行中但固定路径均不存在时回退为 tailscale'
+    );
+
+    // 4. 保存 tailscaleCustomHost 后 shouldSkipTailscaleCliProbe、collectFusedEndpointDescriptor 与 CORS 放行均正常工作，且清配置后恢复探测
+    const saved = mr.saveRemoteTunnelConfig({
+      enabledChannels: { lan: true, tailscale: true, bonjour: false, tunnel: false },
+      tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net'
+    });
+    assert.equal(mr.shouldSkipTailscaleCliProbe(), true, '磁盘已配置 tailscaleCustomHost 时应默认跳过独立版 CLI 探测');
+
+    let descExecCount = 0;
+    const desc = mr.collectFusedEndpointDescriptor(
+      18765,
+      null,
+      saved.enabledChannels,
+      {
+        readOnly: true,
+        tailscaleCustomHost: saved.tailscaleCustomHost,
+        execFileSync: () => {
+          descExecCount += 1;
+          return '{}';
+        },
+        addresses: {
+          tailscale: [],
+          lan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }],
+          physicalLan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }]
+        }
+      }
+    );
+    assert.equal(descExecCount, 0, 'collectFusedEndpointDescriptor 在已配置 tailscaleCustomHost 时不得调用 tailscale CLI');
+    assert.ok(desc.endpoints.some((e) => e.kind === 'tailscale' && e.url === 'http://my-mac.tailnet-demo.ts.net:18765'));
+
+    const corsHandler = mr.createRemoteHttpHandler({
+      enabled: true,
+      port: 18765,
+      token: saved.token,
+      tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net',
+      enabledChannels: { lan: true, tailscale: true, bonjour: false, tunnel: false }
+    }, {
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's1', conversations: [] })
+    });
+    const corsHdrs = {};
+    await corsHandler(
+      {
+        method: 'OPTIONS',
+        url: '/api/ping',
+        headers: { host: '127.0.0.1:18765', origin: 'http://my-mac.tailnet-demo.ts.net:18765' },
+        socket: { remoteAddress: '127.0.0.1' }
+      },
+      {
+        setHeader(k, v) { corsHdrs[String(k).toLowerCase()] = v; },
+        getHeader(k) { return corsHdrs[String(k).toLowerCase()]; },
+        writeHead(_c, h = {}) { for (const [k, v] of Object.entries(h)) corsHdrs[String(k).toLowerCase()] = v; },
+        end() {}
+      }
+    );
+    assert.equal(corsHdrs['access-control-allow-origin'], 'http://my-mac.tailnet-demo.ts.net:18765');
+
+    // 清除 tailscaleCustomHost 后，saveRemoteTunnelConfig 应主动失效缓存并恢复探测策略
+    mr.saveRemoteTunnelConfig({ tailscaleCustomHost: '' });
+    assert.equal(mr.shouldSkipTailscaleCliProbe(), false, '清除 tailscaleCustomHost 后应恢复为允许探测');
+    let afterClearCount = 0;
+    const afterClearMeta = mr.detectHostIdentityMeta({
+      execFileSync: () => {
+        afterClearCount += 1;
+        return JSON.stringify({
+          BackendState: 'Running',
+          Self: { DNSName: 'restored-mac.tailnet-demo.ts.net.', HostName: 'restored-mac', Online: true },
+          CertDomains: ['restored-mac.tailnet-demo.ts.net']
+        });
+      }
+    });
+    assert.equal(afterClearCount, 1);
+    assert.equal(afterClearMeta.tailscaleDnsName, 'restored-mac.tailnet-demo.ts.net');
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevSkipProbes === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+    else process.env.AG_REMOTE_SKIP_PROBES = prevSkipProbes;
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
