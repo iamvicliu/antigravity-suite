@@ -31151,3 +31151,221 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
     }
   }
 });
+
+test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快与跨协议防盲跳保护', async () => {
+  const remoteMod = require('../mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+  const scripts = Array.from(html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)).map((m) => m[1]);
+  const mainScript = scripts.find((s) => s.includes('enterConnectionMode('));
+  assert.ok(mainScript, '应包含客户端主脚本');
+
+  const endpoints = [
+    { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'http://mac-mini.local:18765', kind: 'bonjour', priority: 20 },
+    { url: 'https://mac.tail-demo.ts.net', kind: 'tailscale', priority: 90 },
+    { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
+  ];
+  const encEps = remoteMod.encodeEndpointsParam(endpoints);
+
+  const runChannelVm = async ({ standalone = false, reachMap = {}, popupAllow = true } = {}) => {
+    const replacedUrls = [];
+    const openedTabs = [];
+    const snapshotOrigins = [];
+    const timers = new Set();
+    const makeClassList = () => {
+      const s = new Set();
+      return {
+        add: (...xs) => xs.forEach((x) => s.add(x)),
+        remove: (...xs) => xs.forEach((x) => s.delete(x)),
+        toggle: (x, f) => { if (f === undefined) { if (s.has(x)) { s.delete(x); return false; } s.add(x); return true; } if (f) s.add(x); else s.delete(x); return Boolean(f); },
+        contains: (x) => s.has(x)
+      };
+    };
+    const byId = {};
+    const makeEl = (id) => ({
+      id, hidden: id.includes('backdrop') || id.includes('drawer'), innerHTML: '', textContent: '', value: '', title: '', disabled: false,
+      style: { setProperty() {}, removeProperty() {} }, dataset: {}, classList: makeClassList(),
+      setAttribute(k, v) { if (k === 'title') this.title = v; }, getAttribute() { return ''; }, removeAttribute() {},
+      addEventListener(ev, fn) { if (ev === 'click') this.onclick = fn; }, removeEventListener() {},
+      querySelector: () => null, querySelectorAll: () => [], focus() {}, blur() {}, contains: () => false
+    });
+    for (const id of [
+      'sub-meta', 'btn-channel-pill', 'channel-pill-label', 'btn-mode-switcher', 'btn-quota', 'btn-context', 'btn-usage',
+      'btn-files', 'btn-push', 'btn-menu', 'btn-new-conv', 'btn-send', 'btn-stop', 'btn-attach', 'btn-quick-mode',
+      'quota-drawer', 'context-drawer', 'usage-drawer', 'sheet-backdrop', 'sheet-title-text', 'sheet-sub-text',
+      'sheet-back-btn', 'sheet-action-btn', 'sheet-list', 'drawer-backdrop', 'toast', 'messages', 'prompt',
+      'conv-list', 'conv-title', 'conv-project-badge', 'quick-bar', 'attach-input', 'attach-strip',
+      'approval-dock', 'queue-dock', 'composer-dock', 'file-viewer-backdrop', 'new-proj-backdrop'
+    ]) {
+      byId[id] = makeEl(id);
+    }
+    const startUrl = new URL(`https://demo.trycloudflare.com/?token=tok46&manual=1&endpoints=${encEps}`);
+    const locObj = {
+      get href() { return startUrl.href; },
+      set href(v) { replacedUrls.push(String(v)); },
+      origin: startUrl.origin, protocol: startUrl.protocol, hostname: startUrl.hostname,
+      pathname: startUrl.pathname, search: startUrl.search, port: startUrl.port,
+      replace(v) { replacedUrls.push(String(v)); }
+    };
+    const lStore = new Map(), sStore = new Map();
+    const sandbox = {
+      URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+      Uint8Array, TextEncoder, TextDecoder, AbortController, Intl,
+      atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+      btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+      encodeURIComponent, decodeURIComponent,
+      screen: { width: 390, height: 844 }, devicePixelRatio: 3,
+      navigator: { platform: 'iPhone', maxTouchPoints: 5, hardwareConcurrency: 6, standalone },
+      location: locObj, history: { replaceState() {} },
+      localStorage: { getItem: (k) => lStore.get(k) ?? null, setItem: (k, v) => lStore.set(k, String(v)), removeItem: (k) => lStore.delete(k) },
+      sessionStorage: { getItem: (k) => sStore.get(k) ?? null, setItem: (k, v) => sStore.set(k, String(v)), removeItem: (k) => sStore.delete(k) },
+      document: {
+        hidden: false, activeElement: null,
+        documentElement: { clientHeight: 844, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+        body: { style: {}, classList: makeClassList() },
+        getElementById: (id) => byId[id] || (byId[id] = makeEl(id)),
+        querySelector: () => makeEl('__q'), querySelectorAll: () => [], createElement: (t) => makeEl(t), addEventListener() {}
+      },
+      matchMedia: (q) => ({ matches: Boolean(standalone && String(q).includes('standalone')), addEventListener() {} }),
+      innerWidth: 390, innerHeight: 844, visualViewport: null,
+      open: (u, target, feat) => {
+        if (!popupAllow) return null;
+        openedTabs.push({ url: String(u), target, feat });
+        return { closed: false };
+      },
+      setTimeout: (fn, ms) => {
+        const t = setTimeout(() => { timers.delete(t); fn(); }, Math.min(Number(ms) || 0, 20));
+        if (typeof t.unref === 'function') t.unref();
+        timers.add(t);
+        return t;
+      },
+      clearTimeout: (t) => { timers.delete(t); clearTimeout(t); },
+      fetch: async (rawUrl) => {
+        const u = new URL(String(rawUrl), startUrl.origin);
+        if (u.protocol === 'http:') throw new Error('Mixed Content blocked');
+        if (u.pathname === '/api/probe-hints') {
+          return {
+            ok: true, status: 200,
+            json: async () => ({ ok: true, hints: { lan: { ok: true, ms: 6, via: 'server' }, bonjour: { ok: true, ms: 9, via: 'server' } } })
+          };
+        }
+        if (u.pathname === '/api/ping') {
+          const st = reachMap[u.origin] || 'ok';
+          if (st === 'disabled') return { ok: false, status: 403, json: async () => ({ ok: false }) };
+          if (st === 'down') return { ok: false, status: 502, json: async () => ({ ok: false }) };
+          const nonce = u.searchParams.get('_n') || '';
+          return { ok: true, status: 200, json: async () => ({ ok: true, service: 'ag-mobile-remote', nonce, endpoints }) };
+        }
+        if (u.pathname === '/api/snapshot') {
+          snapshotOrigins.push(u.origin);
+          return { ok: true, status: 200, json: async () => ({ ok: true, title: 'Connected Session', busy: false, messages: [], conversations: [], projects: [], endpoints }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+    };
+    sandbox.window = sandbox;
+    sandbox.addEventListener = () => {};
+    const tail = mainScript.lastIndexOf('})();');
+    const hooked = mainScript.slice(0, tail)
+      + '\nglobalThis.__chHooks = { enterConnectionMode, runSpeedTest, openModeSwitcherSheet, getApiBase: () => apiBase, getSpeed: () => speedTestState };\n'
+      + mainScript.slice(tail);
+    vm.runInNewContext(hooked, sandbox);
+    await new Promise((r) => setTimeout(r, 45));
+    return {
+      byId, replacedUrls, openedTabs, snapshotOrigins, hooks: sandbox.__chHooks,
+      setReach: (origin, st) => { reachMap[origin] = st; },
+      cleanup: () => { for (const t of timers) clearTimeout(t); timers.clear(); }
+    };
+  };
+
+  // 1 & 2 & 3: serverHints 标注「仅电脑端参考 · 未验证本机直连」且绝不获评「最快」；同协议探活热切 apiBase 与不可达/停用防盲跳
+  const vm1 = await runChannelVm({ standalone: false, reachMap: { 'https://demo.trycloudflare.com': 'ok', 'https://mac.tail-demo.ts.net': 'down' } });
+  try {
+    await vm1.hooks.runSpeedTest({ autoSwitch: false, silent: true });
+    vm1.hooks.openModeSwitcherSheet();
+    const sheetHtml1 = vm1.byId['sheet-list'].innerHTML;
+    assert.ok(sheetHtml1.includes('仅电脑端参考 · 6 ms') && sheetHtml1.includes('未验证本机直连'), '宿主机 serverHints 结果必须明确标注「仅电脑端参考」与「未验证本机直连」');
+    const lanSeg = sheetHtml1.split('192.168.1.8:18765')[0].split('<button').pop() || '';
+    assert.ok(!lanSeg.includes('最快'), '未经本机直测通过的宿主机参考 HTTP 通道绝不能标注「最快」');
+
+    // 同协议切往不可达的 Tailscale HTTPS：探活失败，不跳转、不改 apiBase
+    const okDown = await vm1.hooks.enterConnectionMode({ url: 'https://mac.tail-demo.ts.net', kind: 'tailscale' });
+    assert.equal(okDown, false);
+    assert.equal(vm1.replacedUrls.length, 0, '目标不可达时严禁整页跳转死页');
+    assert.equal(vm1.hooks.getApiBase(), '', '目标不可达时应无损保留原通道 apiBase');
+    assert.ok(vm1.byId['toast'].textContent.includes('无法连通') && vm1.byId['toast'].textContent.includes('已保留当前连接'));
+
+    // 同协议切往已停用 (403) 通道：提示已停用并保留当前连接
+    vm1.setReach('https://mac.tail-demo.ts.net', 'disabled');
+    const okDis = await vm1.hooks.enterConnectionMode({ url: 'https://mac.tail-demo.ts.net', kind: 'tailscale' });
+    assert.equal(okDis, false);
+    assert.equal(vm1.replacedUrls.length, 0);
+    assert.ok(vm1.byId['toast'].textContent.includes('已停用'));
+
+    // Tailscale HTTPS 恢复可达后点击切换：原地热切 apiBase，零整页跳转，且立即向新源拉取 /api/snapshot
+    vm1.setReach('https://mac.tail-demo.ts.net', 'ok');
+    const snapCountBefore = vm1.snapshotOrigins.length;
+    const okHot = await vm1.hooks.enterConnectionMode({ url: 'https://mac.tail-demo.ts.net', kind: 'tailscale' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(okHot, true);
+    assert.equal(vm1.replacedUrls.length, 0, '同协议通道切换应原地热切 apiBase，不执行 location.href 跳转');
+    assert.equal(vm1.hooks.getApiBase(), 'https://mac.tail-demo.ts.net');
+    assert.equal(vm1.byId['channel-pill-label'].textContent, 'TS HTTPS');
+    assert.ok(vm1.snapshotOrigins.slice(snapCountBefore).includes('https://mac.tail-demo.ts.net'), '原地热切后后续快照应直接请求新通道 origin');
+
+    // 4a: 普通浏览器从 HTTPS 切往明文 HTTP：新标签页打开验证（不含 ?spd=），原页面保留作退路
+    const okTab = await vm1.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(okTab, true);
+    assert.equal(vm1.replacedUrls.length, 0, '普通浏览器跨协议切 HTTP 不得覆盖当前正常页面');
+    assert.equal(vm1.openedTabs.length, 1, '普通浏览器应通过新标签页打开目标 HTTP 入口');
+    const tabUrl = new URL(vm1.openedTabs[0].url);
+    assert.equal(tabUrl.origin, 'http://192.168.1.8:18765');
+    assert.equal(tabUrl.searchParams.get('spd'), null);
+    assert.equal(vm1.hooks.getApiBase(), 'https://mac.tail-demo.ts.net', '原标签页连接源应保持不变');
+  } finally {
+    vm1.cleanup();
+  }
+
+  // 4b: 普通浏览器弹窗被拦截且当前会话已连通时，仍保留原正常页面不覆盖
+  const vmPopupBlocked = await runChannelVm({ standalone: false, popupAllow: false });
+  try {
+    const okBlocked = await vmPopupBlocked.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(okBlocked, false);
+    assert.equal(vmPopupBlocked.replacedUrls.length, 0, '新标签弹窗被拒且当前连接正常时不得强行覆盖原页面');
+    assert.ok(vmPopupBlocked.byId['toast'].textContent.includes('保留当前连接'));
+  } finally {
+    vmPopupBlocked.cleanup();
+  }
+
+  // 4c: 独立 PWA 窗口 (isStandalonePwa) 拦截从 HTTPS 到未验证明文 HTTP 的盲跳
+  const vmPwa = await runChannelVm({ standalone: true });
+  try {
+    const okPwa = await vmPwa.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(okPwa, false);
+    assert.equal(vmPwa.replacedUrls.length, 0, 'standalone PWA 严禁盲跳至未验证明文 HTTP 死页');
+    assert.equal(vmPwa.openedTabs.length, 0);
+    assert.ok(vmPwa.byId['toast'].textContent.includes('独立应用窗口内禁止'));
+  } finally {
+    vmPwa.cleanup();
+  }
+
+  // 4d: 自定义固定域名 tunnelHostname 未带 https:// 前缀时服务端 CORS Origin 白名单正常放行（保障同协议跨域名热切）
+  const handler = remoteMod.createRemoteHttpHandler(
+    { port: 18765, token: 'tok-cors', tunnelHostname: 'ag.custom-domain.example', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: true } },
+    { fetchSnapshot: async () => ({ ok: true }), webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) } }
+  );
+  const corsHeaders = {};
+  let corsStatus = 0;
+  await new Promise((resolve) => {
+    handler(
+      { method: 'OPTIONS', url: '/api/ping', headers: { host: 'mac.tail-demo.ts.net', origin: 'https://ag.custom-domain.example' }, socket: { remoteAddress: '127.0.0.1' } },
+      {
+        setHeader: (k, v) => { corsHeaders[k.toLowerCase()] = v; },
+        writeHead: (code) => { corsStatus = code; },
+        end: () => resolve()
+      }
+    );
+  });
+  assert.equal(corsStatus, 204);
+  assert.equal(corsHeaders['access-control-allow-origin'], 'https://ag.custom-domain.example');
+});

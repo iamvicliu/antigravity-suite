@@ -10340,13 +10340,17 @@ function buildMobileAppHtml() {
       };
     }
 
+    function isServerHintResult(r) {
+      return Boolean(r && (r.via === 'server' || r.reason === 'server_hint'));
+    }
+
     function pickFastestReachable(resultsMap, entries) {
       const order = { lan: 0, tailscale: 1, bonjour: 2, tunnel: 3, loopback: 9 };
       const list = [];
       for (const ep of (entries || [])) {
         if (!ep || !ep.kind) continue;
         const r = resultsMap && resultsMap[ep.kind];
-        if (r && r.ok && Number.isFinite(r.ms)) {
+        if (r && r.ok && Number.isFinite(r.ms) && !isServerHintResult(r)) {
           list.push({ kind: ep.kind, url: r.url || ep.url, ms: r.ms, data: r.data || null });
         }
       }
@@ -10548,10 +10552,16 @@ function buildMobileAppHtml() {
             const aBlock = shouldBlockInsecureDowngrade(curOriginFail, a.url, isStandalonePwa) ? 1 : 0;
             const bBlock = shouldBlockInsecureDowngrade(curOriginFail, b.url, isStandalonePwa) ? 1 : 0;
             if (aBlock !== bBlock) return aBlock - bBlock;
+            const aHint = isServerHintResult(a) ? 1 : 0;
+            const bHint = isServerHintResult(b) ? 1 : 0;
+            if (aHint !== bHint) return aHint - bHint;
             return (a.ms - b.ms) || ((order[a.kind] ?? 5) - (order[b.kind] ?? 5));
           });
         const winner = winners[0] || null;
         if (!winner) return false;
+        if (isServerHintResult(winner) && location.protocol === 'https:' && String(winner.url || '').toLowerCase().startsWith('http://')) {
+          return false;
+        }
 
         if (Array.isArray(winner.data?.endpoints) && winner.data.endpoints.length) {
           pairState.endpoints = winner.data.endpoints;
@@ -10629,17 +10639,20 @@ function buildMobileAppHtml() {
 
     function formatLatencyBadge(kind) {
       if (speedTestState.running) {
-        return { cls: 'pending', html: '<span class="mini-spin"></span><span>测速中</span>' };
+        return { cls: 'pending', html: '<span class="mini-spin"></span><span>测速中</span>', serverHint: false };
       }
       const r = speedTestState.results ? speedTestState.results[kind] : null;
-      if (!r) return { cls: 'muted', html: '未测速' };
+      if (!r) return { cls: 'muted', html: '未测速', serverHint: false };
       if (r.ok && Number.isFinite(r.ms)) {
+        if (isServerHintResult(r)) {
+          return { cls: 'muted', html: esc('仅电脑端参考 · ' + r.ms + ' ms'), serverHint: true };
+        }
         const cls = r.ms < 80 ? 'fast' : (r.ms <= 250 ? 'mid' : 'slow');
-        return { cls, html: esc(r.ms + ' ms') };
+        return { cls, html: esc(r.ms + ' ms'), serverHint: false };
       }
-      if (r.reason === 'https_restricted') return { cls: 'muted', html: '点击切直连' };
-      if (r.reason === 'disabled') return { cls: 'err', html: '已停用' };
-      return { cls: 'err', html: '不可达' };
+      if (r.reason === 'https_restricted') return { cls: 'muted', html: '仅电脑端参考（未验证本机直连）', serverHint: true };
+      if (r.reason === 'disabled') return { cls: 'err', html: '已停用', serverHint: false };
+      return { cls: 'err', html: '不可达', serverHint: false };
     }
 
     function buildClientEntryUrl(targetBaseUrl, opts) {
@@ -10665,8 +10678,94 @@ function buildMobileAppHtml() {
       return cleanBase + '/?' + params.join('&');
     }
 
-    function enterConnectionMode(ep) {
-      if (!ep || !ep.url) return;
+    let modeSwitchSeq = 0;
+    async function enterConnectionMode(ep) {
+      if (!ep || !ep.url) return false;
+      const mySeq = ++modeSwitchSeq;
+      saveStoredPair(pairState);
+      const cleanTarget = String(ep.url).replace(/\\/+$/, '');
+      const cleanPageOrigin = String(location.origin || '').replace(/\\/+$/, '');
+      const cleanActiveOrigin = String(apiBase || cleanPageOrigin).replace(/\\/+$/, '');
+      const targetKind = ep.kind || detectKindFromOrigin(cleanTarget);
+      const modeName = formatKindLabel(targetKind);
+      const isCrossProtocolDowngrade = location.protocol === 'https:' && cleanTarget.toLowerCase().startsWith('http://');
+
+      if (cleanTarget === cleanActiveOrigin && latestSnap) {
+        manualLocked = true;
+        try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
+        showToast('当前已连接 ' + modeName);
+        return true;
+      }
+
+      if (isCrossProtocolDowngrade) {
+        if (isStandalonePwa) {
+          showToast('独立应用窗口内禁止从安全 HTTPS 盲跳至未验证的明文 HTTP（' + modeName + '），以免断连锁死页面');
+          return false;
+        }
+        const targetUrl = buildClientEntryUrl(cleanTarget, { manual: true, omitSpeed: true });
+        if (typeof window.open === 'function') {
+          let opened = null;
+          try { opened = window.open(targetUrl, '_blank', 'noopener,noreferrer'); } catch {}
+          if (opened) {
+            showToast('已在新标签页打开 ' + modeName + ' 验证，原页面保留作退路');
+            return true;
+          }
+          if (latestSnap) {
+            showToast('浏览器拦截了新标签页，请允许弹窗后重试（已保留当前连接）');
+            return false;
+          }
+        }
+        if (activeSnapAbort) {
+          try { activeSnapAbort.abort(); } catch {}
+          activeSnapAbort = null;
+        }
+        clearTimeout(pollTimer);
+        manualLocked = true;
+        try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
+        navigateEntryUrl(targetUrl, false);
+        return true;
+      }
+
+      if (!latestSnap) {
+        renderModeEntryGate('正在验证 ' + modeName + ' 连通性…');
+      } else {
+        showToast('正在验证 ' + modeName + ' 连通性…');
+      }
+      const probe = await probeEndpointOnce({ url: cleanTarget, kind: targetKind }, 2600);
+      if (mySeq !== modeSwitchSeq) return false;
+      speedTestState = {
+        running: false,
+        testedAt: Date.now(),
+        results: Object.assign({}, speedTestState.results || {}, {
+          [targetKind]: {
+            ok: Boolean(probe.ok),
+            ms: probe.ok && Number.isFinite(probe.ms) ? probe.ms : null,
+            reason: probe.reason || (probe.ok ? 'ok' : 'unreachable'),
+            via: 'client',
+            url: cleanTarget,
+            testedAt: Date.now()
+          }
+        })
+      };
+      saveStoredSpeed(speedTestState);
+      if (!probe.ok) {
+        renderModeSwitcherSheet();
+        const curLabel = getActiveChannelLabel();
+        const errToast = probe.reason === 'disabled'
+          ? (modeName + ' 通道已停用，仍保持当前连接（' + curLabel + '）')
+          : ('无法连通 ' + modeName + '，已保留当前连接（' + curLabel + '）');
+        showToast(errToast);
+        if (!latestSnap) {
+          renderModeEntryGate('无法连通 ' + modeName + '，请选择其他可用通道：');
+        }
+        return false;
+      }
+
+      if (probe.data && Array.isArray(probe.data.endpoints) && probe.data.endpoints.length) {
+        pairState.endpoints = probe.data.endpoints;
+        if (Array.isArray(probe.data.hosts)) pairState.hosts = probe.data.hosts;
+        saveStoredPair(pairState);
+      }
       manualLocked = true;
       try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
       if (activeSnapAbort) {
@@ -10674,24 +10773,17 @@ function buildMobileAppHtml() {
         activeSnapAbort = null;
       }
       clearTimeout(pollTimer);
-      saveStoredPair(pairState);
-      const cleanTarget = String(ep.url).replace(/\\/+$/, '');
-      const cleanCur = String(location.origin || '').replace(/\\/+$/, '');
-      if (cleanTarget === cleanCur) {
-        apiBase = '';
-        const modeName = formatKindLabel(ep.kind);
-        $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
-        syncChannelPillUi('connecting');
-        if (latestSnap) {
-          showToast('已切换至 ' + modeName);
-        } else {
-          renderModeEntryGate('正在通过 ' + modeName + ' 连接电脑端…');
-        }
-        void fetchSnapshot();
-        return;
+      apiBase = cleanTarget === cleanPageOrigin ? '' : cleanTarget;
+      $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
+      syncChannelPillUi('online');
+      renderModeSwitcherSheet();
+      if (latestSnap) {
+        showToast('已切换至 ' + modeName + (probe.ms ? ' (' + probe.ms + ' ms)' : ''));
+      } else {
+        renderModeEntryGate('正在通过 ' + modeName + ' 连接电脑端…');
       }
-      const isCrossProtocolDowngrade = location.protocol === 'https:' && cleanTarget.toLowerCase().startsWith('http://');
-      navigateEntryUrl(buildClientEntryUrl(cleanTarget, { manual: true, omitSpeed: isCrossProtocolDowngrade }), false);
+      void fetchSnapshot();
+      return true;
     }
 
     function renderModeEntryGate(statusText) {
@@ -10705,7 +10797,8 @@ function buildMobileAppHtml() {
         try { hostText = new URL(ep.url).host; } catch {}
         const isCurrent = ep.url === curOrigin;
         const badge = formatLatencyBadge(ep.kind);
-        const fastPill = (fastestKind && ep.kind === fastestKind) ? ' <span class="mode-pill fast">最快</span>' : '';
+        if (badge.serverHint) hostText += ' · 未验证本机直连';
+        const fastPill = (fastestKind && ep.kind === fastestKind && !badge.serverHint) ? ' <span class="mode-pill fast">最快</span>' : '';
         return '<button class="mode-entry-btn' + (isCurrent ? ' active' : '') + '" data-mode-idx="' + idx + '" type="button">'
           + '<span class="mode-entry-left">'
           + '<span class="mode-entry-name">' + esc(formatKindLabel(ep.kind)) + fastPill + '</span>'
@@ -10835,7 +10928,8 @@ function buildMobileAppHtml() {
         const isQuickTunnelEp = ep.kind === 'tunnel' && String(hostText || '').toLowerCase().endsWith('.trycloudflare.com');
         if (isQuickTunnelEp) hasQuickTunnel = true;
         const badge = formatLatencyBadge(ep.kind);
-        const pills = ((fastestKind && ep.kind === fastestKind) ? '<span class="mode-pill fast">最快</span>' : '')
+        if (badge.serverHint) hostText += ' · 未验证本机直连';
+        const pills = ((fastestKind && ep.kind === fastestKind && !badge.serverHint) ? '<span class="mode-pill fast">最快</span>' : '')
           + (isCurrent ? '<span class="mode-pill cur">当前</span>' : '')
           + (isQuickTunnelEp ? '<span class="mode-pill warn">临时域名</span>' : '');
         return '<button class="sheet-opt' + (isCurrent ? ' active' : '') + '" data-idx="' + idx + '" type="button">'
@@ -16125,9 +16219,11 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '', allowedTailscaleDns
   try {
     const u = new URL(rawOrigin);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-    if (extraOrigin) {
+    const extraOrigins = Array.isArray(extraOrigin) ? extraOrigin : [extraOrigin];
+    for (const eo of extraOrigins) {
+      if (!eo) continue;
       try {
-        const eu = new URL(extraOrigin);
+        const eu = new URL(eo);
         if (u.origin === eu.origin) return true;
       } catch {}
     }
@@ -17392,13 +17488,19 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
-    const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
+    const normCfgTunnelOrigin = (() => {
+      const raw = String(config.tunnelHostname || '').trim();
+      if (!raw) return '';
+      return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    })();
+    const activeTunnelUrls = [getTunnelOrigin(), readPersistedTunnelStatus().publicUrl, normCfgTunnelOrigin].filter(Boolean);
+    const activeTunnelUrl = activeTunnelUrls[0] || '';
     const allowedTsDns = options.allowedTailscaleDnsName !== undefined
       ? options.allowedTailscaleDnsName
       : [detectHostIdentityMeta().tailscaleDnsName, config.tailscaleCustomHost]
           .filter((h) => String(h || '').trim().toLowerCase().endsWith('.ts.net'));
     const reqOrigin = String(req.headers.origin || '').trim();
-    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl, allowedTsDns)) {
+    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrls, allowedTsDns)) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
