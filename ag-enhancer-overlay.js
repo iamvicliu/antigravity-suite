@@ -97,6 +97,9 @@
   let autoAcceptEnabled = false;
   let ghostSuggestEnabled = true;
   let autoCompactEnabled = true;
+  let longFoldEnabled = true;
+  const foldUserStateMap = new WeakMap();
+  const foldNaturalHeightMap = new WeakMap();
   let quickBuiltinAutoSendEnabled = false;
   let quickAutoSendInFlight = false;
   let quickAutoSendLockUntil = 0;
@@ -471,6 +474,16 @@
         const rawCompact = localStorage.getItem('ag_suite_auto_compact');
         if (rawCompact === 'true' || rawCompact === 'false') {
           autoCompactEnabled = rawCompact !== 'false';
+        }
+      }
+    } catch {}
+    try {
+      if (detail && typeof detail.longFold === 'boolean') {
+        longFoldEnabled = detail.longFold;
+      } else if (typeof localStorage !== 'undefined') {
+        const rawFold = localStorage.getItem('ag_suite_long_fold');
+        if (rawFold === 'true' || rawFold === 'false') {
+          longFoldEnabled = rawFold !== 'false';
         }
       }
     } catch {}
@@ -3682,6 +3695,84 @@
           background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
           color: var(--ag-effective-accent, #7c3aed);
         }
+        [data-ag-fold-state="collapsed"] {
+          position: relative !important;
+          overflow: hidden !important;
+        }
+        [data-ag-fold-kind="code"][data-ag-fold-state="collapsed"] {
+          max-height: 220px !important;
+        }
+        [data-ag-fold-kind="markdown"][data-ag-fold-state="collapsed"] {
+          max-height: 280px !important;
+        }
+        [data-ag-fold-kind="user"][data-ag-fold-state="collapsed"] {
+          max-height: 150px !important;
+        }
+        [data-ag-fold-state="collapsed"]::after {
+          content: '';
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          height: 52px;
+          pointer-events: none;
+          z-index: 2;
+          background: linear-gradient(to bottom, rgba(24, 24, 27, 0), rgba(24, 24, 27, 0.92));
+        }
+        [data-ag-fold-theme="light"][data-ag-fold-state="collapsed"]::after {
+          background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.94));
+        }
+        .ag-fold-bar {
+          display: flex;
+          align-items: center;
+          justify-content: flex-start;
+          gap: 8px;
+          margin: 4px 0 8px;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+        .ag-fold-bar[data-ag-fold-for="user"] {
+          justify-content: flex-end;
+          margin: 2px 0 6px;
+        }
+        .ag-fold-bar .ag-fold-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          height: 24px;
+          padding: 0 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 500;
+          line-height: 1;
+          cursor: pointer;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(255, 255, 255, 0.06);
+          color: rgba(244, 244, 245, 0.88);
+          transition: background-color 0.16s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.16s cubic-bezier(0.22, 1, 0.36, 1), color 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .ag-fold-bar .ag-fold-btn:hover {
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+          border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          color: var(--ag-effective-accent, #a78bfa);
+        }
+        .ag-fold-bar .ag-fold-btn:focus-visible {
+          outline: 2px solid var(--ag-effective-accent, #a78bfa);
+          outline-offset: 2px;
+        }
+        .ag-fold-bar[data-ag-theme="light"] .ag-fold-btn {
+          border-color: rgba(0, 0, 0, 0.12);
+          background: rgba(0, 0, 0, 0.045);
+          color: rgba(24, 24, 27, 0.84);
+        }
+        .ag-fold-bar[data-ag-theme="light"] .ag-fold-btn:hover {
+          background: var(--ag-accent-bg, rgba(124, 58, 237, 0.1));
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          color: var(--ag-effective-accent, #7c3aed);
+        }
+        .ag-fold-bar[data-ag-theme="light"] .ag-fold-btn:focus-visible {
+          outline-color: var(--ag-effective-accent, #7c3aed);
+        }
         @supports (corner-shape: superellipse(1.25)) {
           #${CHAT_NAV_ID},
           #${NEXT_STEP_TOOLTIP_ID},
@@ -3700,7 +3791,8 @@
           #${QUICK_BAR_TOOLTIP_ID},
           #${PROMPT_OPT_WRAP_ID} .ag-prompt-opt-btn,
           #${PROMPT_OPT_WRAP_ID} .ag-prompt-undo-btn,
-          #${PROMPT_OPT_WRAP_ID} .ag-opt-spin {
+          #${PROMPT_OPT_WRAP_ID} .ag-opt-spin,
+          .ag-fold-bar .ag-fold-btn {
             animation: none !important;
             transition: none !important;
             transform: none !important;
@@ -4313,6 +4405,223 @@
     return markedCount;
   }
 
+  function clearSingleLongFold(targetEl) {
+    if (!targetEl) return;
+    targetEl.removeAttribute?.('data-ag-fold-kind');
+    targetEl.removeAttribute?.('data-ag-fold-state');
+    targetEl.removeAttribute?.('data-ag-fold-theme');
+    const next = targetEl.nextElementSibling;
+    if (next?.getAttribute?.('data-ag-fold-ui') === '1' || next?.classList?.contains?.('ag-fold-bar')) {
+      safeRemove(next);
+    }
+  }
+
+  function clearAllLongFolds() {
+    document.querySelectorAll('.ag-fold-bar[data-ag-fold-ui="1"], [data-ag-fold-ui="1"]').forEach(safeRemove);
+    document.querySelectorAll('[data-ag-fold-kind], [data-ag-fold-state], [data-ag-fold-theme]').forEach((el) => {
+      el.removeAttribute('data-ag-fold-kind');
+      el.removeAttribute('data-ag-fold-state');
+      el.removeAttribute('data-ag-fold-theme');
+    });
+  }
+
+  function formatLongFoldBtnLabel(kind, isCollapsed, lineCount) {
+    if (kind === 'code') {
+      if (isCollapsed) {
+        return lineCount > 1
+          ? tr(`▸ 展开代码（共 ${lineCount} 行）`, `▸ Expand code (${lineCount} lines)`)
+          : tr('▸ 展开代码', '▸ Expand code');
+      }
+      return lineCount > 1
+        ? tr(`▾ 收起代码（共 ${lineCount} 行）`, `▾ Collapse code (${lineCount} lines)`)
+        : tr('▾ 收起代码', '▾ Collapse code');
+    }
+    if (kind === 'user') {
+      return isCollapsed
+        ? tr('▸ 展开消息', '▸ Expand message')
+        : tr('▾ 收起消息', '▾ Collapse message');
+    }
+    return isCollapsed
+      ? tr('▸ 展开全文', '▸ Expand full reply')
+      : tr('▾ 收起长回复', '▾ Collapse reply');
+  }
+
+  function measureFoldableMetrics(el) {
+    if (!el) return { height: 0, textLen: 0, lineCount: 0 };
+    const isCollapsed = el.getAttribute?.('data-ag-fold-state') === 'collapsed';
+    const rectH = Number(el.getBoundingClientRect?.().height || 0);
+    const scrollH = Number(el.scrollHeight || 0);
+    let cachedH = Number(foldNaturalHeightMap.get(el) || 0);
+    const liveH = isCollapsed ? scrollH : Math.max(scrollH, rectH);
+    if (liveH > 0) {
+      cachedH = liveH;
+      foldNaturalHeightMap.set(el, liveH);
+    }
+    const rawText = String(el.textContent || '');
+    const trimmed = rawText.trim();
+    const lineCount = trimmed ? trimmed.split(/\r?\n/).length : 0;
+    return {
+      height: Math.max(liveH, cachedH),
+      textLen: trimmed.length,
+      lineCount
+    };
+  }
+
+  function upsertLongFoldControl(targetEl, kind, defaultState, theme, lineCount) {
+    if (!targetEl || !targetEl.parentElement) return false;
+    const savedState = foldUserStateMap.get(targetEl);
+    const state = (savedState === 'collapsed' || savedState === 'expanded') ? savedState : defaultState;
+    const isCollapsed = state === 'collapsed';
+
+    if (targetEl.getAttribute('data-ag-fold-kind') !== kind) targetEl.setAttribute('data-ag-fold-kind', kind);
+    if (targetEl.getAttribute('data-ag-fold-state') !== state) targetEl.setAttribute('data-ag-fold-state', state);
+    if (targetEl.getAttribute('data-ag-fold-theme') !== theme) targetEl.setAttribute('data-ag-fold-theme', theme);
+
+    let bar = targetEl.nextElementSibling;
+    if (!(bar && (bar.getAttribute?.('data-ag-fold-ui') === '1' || bar.classList?.contains?.('ag-fold-bar')))) {
+      bar = document.createElement('div');
+      bar.className = 'ag-fold-bar';
+      bar.setAttribute('data-ag-fold-ui', '1');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ag-fold-btn';
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', (e) => {
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        const curState = targetEl.getAttribute('data-ag-fold-state') === 'collapsed' ? 'collapsed' : 'expanded';
+        const nextState = curState === 'collapsed' ? 'expanded' : 'collapsed';
+        foldUserStateMap.set(targetEl, nextState);
+        targetEl.setAttribute('data-ag-fold-state', nextState);
+        btn.setAttribute('aria-expanded', nextState === 'expanded' ? 'true' : 'false');
+        const nextCollapsed = nextState === 'collapsed';
+        const latestLines = Number(bar.__agFoldLineCount || 0);
+        btn.textContent = formatLongFoldBtnLabel(kind, nextCollapsed, latestLines);
+        if (nextCollapsed) {
+          try {
+            const vp = getScrollViewport();
+            const vpTop = vp?.getBoundingClientRect?.().top ?? 0;
+            const targetTop = targetEl.getBoundingClientRect?.().top ?? vpTop;
+            if (targetTop < vpTop) {
+              targetEl.scrollIntoView?.({ block: 'nearest', behavior: getPreferredScrollBehavior() });
+            }
+          } catch {}
+        }
+      });
+      bar.appendChild(btn);
+      targetEl.parentElement.insertBefore(bar, targetEl.nextSibling);
+    }
+
+    if (bar.getAttribute('data-ag-fold-for') !== kind) bar.setAttribute('data-ag-fold-for', kind);
+    if (bar.getAttribute('data-ag-theme') !== theme) bar.setAttribute('data-ag-theme', theme);
+    bar.__agFoldLineCount = lineCount;
+
+    const btn = bar.querySelector?.('.ag-fold-btn') || bar.firstElementChild;
+    if (btn) {
+      const wantExpanded = isCollapsed ? 'false' : 'true';
+      if (btn.getAttribute('aria-expanded') !== wantExpanded) btn.setAttribute('aria-expanded', wantExpanded);
+      const wantLabel = formatLongFoldBtnLabel(kind, isCollapsed, lineCount);
+      if (btn.textContent !== wantLabel) btn.textContent = wantLabel;
+    }
+    return true;
+  }
+
+  function scanLongFoldables() {
+    if (disposed) return 0;
+    if (!longFoldEnabled) {
+      clearAllLongFolds();
+      return 0;
+    }
+    const viewport = getScrollViewport();
+    if (!viewport) return 0;
+
+    ensureDocStyle();
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveSurfaceTheme(host);
+    const busy = isAssistantBusy();
+    const agentResponses = Array.from(viewport.querySelectorAll('[data-testid="agent-response"]'));
+    const latestAgentResponse = agentResponses.length ? agentResponses[agentResponses.length - 1] : null;
+    let count = 0;
+
+    // 1. 长代码块（pre）
+    const pres = Array.from(viewport.querySelectorAll('pre'));
+    for (const pre of pres) {
+      if (
+        pre.closest(`[data-testid="user-message"], [data-testid="thinking-collapsible-trigger"], [data-testid="tool-group-collapsible"], #${FILE_EDITOR_WRAP_ID}, .ag-fold-bar`)
+      ) {
+        continue;
+      }
+      if (pre.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')) {
+        continue;
+      }
+      const { height, lineCount } = measureFoldableMetrics(pre);
+      if (!(lineCount > 18 || height > 320)) {
+        if (pre.hasAttribute('data-ag-fold-kind')) clearSingleLongFold(pre);
+        continue;
+      }
+      const inStreamingLatest = Boolean(busy && latestAgentResponse && latestAgentResponse.contains(pre));
+      const defaultState = inStreamingLatest ? 'expanded' : 'collapsed';
+      if (upsertLongFoldControl(pre, 'code', defaultState, theme, lineCount)) count++;
+    }
+
+    // 2. 长 Markdown / AI 回复（历史旧轮默认折叠；最新一轮与生成中默认展开并附收起按钮）
+    const mdRoots = Array.from(viewport.querySelectorAll('[data-markdown-root]'));
+    for (const md of mdRoots) {
+      if (
+        md.closest('[data-testid="user-message"], [data-testid="thinking-collapsible-trigger"], .ag-fold-bar') ||
+        md.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
+      ) {
+        continue;
+      }
+      const hostTurn = md.closest('[data-testid="agent-response"]');
+      if (!hostTurn) continue;
+      const { height, textLen, lineCount } = measureFoldableMetrics(md);
+      const hit = height > 480 || (height === 0 && textLen > 900 && lineCount > 14);
+      if (!hit) {
+        if (md.hasAttribute('data-ag-fold-kind')) clearSingleLongFold(md);
+        continue;
+      }
+      const isLatest = Boolean(latestAgentResponse && latestAgentResponse.contains(md));
+      const defaultState = (isLatest || busy) ? 'expanded' : 'collapsed';
+      if (upsertLongFoldControl(md, 'markdown', defaultState, theme, lineCount)) count++;
+    }
+
+    // 3. 长用户消息（宿主原生已收起的不重复干涉；展开后提供收起按钮）
+    const userMsgs = Array.from(viewport.querySelectorAll('[data-testid="user-message"]'));
+    for (const msg of userMsgs) {
+      const contentEl = msg.querySelector?.('[data-testid="user-message-content"]') || msg;
+      const clsStr = String(contentEl.className || '');
+      const nativeCollapsed = clsStr.includes('max-h-[9em]') && !contentEl.hasAttribute('data-ag-fold-kind');
+      if (nativeCollapsed) continue;
+      if (clsStr.includes('max-h-[9em]')) {
+        clearSingleLongFold(contentEl);
+        continue;
+      }
+      const { height, textLen, lineCount } = measureFoldableMetrics(contentEl);
+      const hit = height > 260 || (height === 0 && textLen > 420 && lineCount > 8);
+      if (!hit) {
+        if (contentEl.hasAttribute('data-ag-fold-kind')) clearSingleLongFold(contentEl);
+        continue;
+      }
+      if (upsertLongFoldControl(contentEl, 'user', 'expanded', theme, lineCount)) count++;
+    }
+
+    return count;
+  }
+
+  function toggleAllLongFolds(forceCollapse = null) {
+    const targets = Array.from(document.querySelectorAll('[data-ag-fold-kind]'));
+    if (!targets.length) return 0;
+    const anyExpanded = targets.some((el) => el.getAttribute('data-ag-fold-state') !== 'collapsed');
+    const nextState = typeof forceCollapse === 'boolean'
+      ? (forceCollapse ? 'collapsed' : 'expanded')
+      : (anyExpanded ? 'collapsed' : 'expanded');
+    for (const el of targets) {
+      foldUserStateMap.set(el, nextState);
+    }
+    return scanLongFoldables();
+  }
+
   function getPreferredScrollBehavior() {
     try {
       if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) {
@@ -4553,7 +4862,7 @@
     const now = Date.now();
     const buttons = container.querySelectorAll('button');
     for (const btn of buttons) {
-      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, [data-agy-hans-ui], [data-agy-context-capsule]`)) continue;
+      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .ag-fold-bar, [data-ag-fold-ui="1"], [data-agy-hans-ui], [data-agy-context-capsule]`)) continue;
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
       if (btn.offsetWidth <= 0 || btn.offsetHeight <= 0) continue;
       const rawText = (btn.textContent || '').replace(/\s+/g, ' ').trim();
@@ -7832,6 +8141,11 @@
     const prevDockAutoClear = dockBadgeAutoClear;
     syncSuitePrefsFromStorage(ev?.detail || null);
     if (!autoCompactEnabled) autoCompactState.idleSince = 0;
+    if (!longFoldEnabled) {
+      clearAllLongFolds();
+    } else {
+      scanLongFoldables();
+    }
     if (!dockBadgeEnabled) {
       if (prevDockEnabled || dockStateTracker.lastSentSig !== 'offline') {
         reportDockOffline();
@@ -7898,6 +8212,7 @@
     ensureNextStepGhost();
     ensureFileViewerEditor();
     scanHighRiskCommands();
+    scanLongFoldables();
     if (dockBadgeEnabled) {
       updateDockUnreadTracker(Date.now());
       reportDockStateIfNeeded(false);
@@ -7987,6 +8302,7 @@
     }
     safeRemove(document.getElementById(QUICK_BAR_ID));
     safeRemove(document.getElementById(CHAT_NAV_ID));
+    clearAllLongFolds();
     document.querySelectorAll('.ag-risk-banner').forEach(safeRemove);
     document.querySelectorAll('[data-ag-risk-card]').forEach((el) => el.removeAttribute('data-ag-risk-card'));
     document.querySelectorAll('[data-ag-shortcut]').forEach((el) => el.removeAttribute('data-ag-shortcut'));
@@ -8006,7 +8322,7 @@
     const results = [];
     const buttons = container.querySelectorAll('button');
     for (const btn of buttons) {
-      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .surface-composer, [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="thinking-collapsible-trigger"], [data-testid="conversation-row-sidebar"]`)) {
+      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .surface-composer, .ag-fold-bar, [data-ag-fold-ui="1"], [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="thinking-collapsible-trigger"], [data-testid="conversation-row-sidebar"]`)) {
         continue;
       }
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
@@ -8701,6 +9017,9 @@
     }
 
     const cls = typeof node.className === 'string' ? node.className : '';
+    if (node.getAttribute?.('data-ag-fold-ui') === '1' || cls.includes('ag-fold-bar')) {
+      return '';
+    }
     if (cls.includes('katex-mathml') || (cls.includes('pointer-events-none') && cls.includes('sticky'))) {
       return '';
     }
@@ -8919,7 +9238,12 @@
             }
           }
         }
-        const userBounded = collectBoundedNodeText([contentNode], MAX_DOM_MSG_CHARS + 512, 8000);
+        const isFoldChromeNode = (el) => {
+          if (!el || el.nodeType !== 1) return false;
+          const cls = typeof el.className === 'string' ? el.className : '';
+          return el.getAttribute?.('data-ag-fold-ui') === '1' || cls.includes('ag-fold-bar');
+        };
+        const userBounded = collectBoundedNodeText([contentNode], MAX_DOM_MSG_CHARS + 512, 8000, 24, isFoldChromeNode);
         let rawUserText = cleanUserMessageText(userBounded.text);
         if (domAtts.length && rawUserText) {
           const attNames = new Set(domAtts.map((a) => String(a.name || '').trim().toLowerCase()).filter(Boolean));
@@ -8962,7 +9286,8 @@
         if (!el || el.nodeType !== 1) return false;
         const tag = String(el.tagName || '').toUpperCase();
         const cls = typeof el.className === 'string' ? el.className : '';
-        if (cls.includes('katex-mathml') || cls.includes('markdown-alert-title')) return true;
+        if (cls.includes('katex-mathml') || cls.includes('markdown-alert-title') || cls.includes('ag-fold-bar')) return true;
+        if (el.getAttribute?.('data-ag-fold-ui') === '1') return true;
         if (cls.includes('pointer-events-none') && cls.includes('sticky')) return true;
         if (tag === 'BUTTON' && !cls.includes('inline-pill')) return true;
         return false;
@@ -11313,6 +11638,15 @@
       try { localStorage.setItem('ag_suite_auto_compact', autoCompactEnabled ? 'true' : 'false'); } catch {}
       if (!autoCompactEnabled) autoCompactState.idleSince = 0;
     },
+    getLongFold: () => longFoldEnabled,
+    setLongFold: (val) => {
+      longFoldEnabled = Boolean(val);
+      try { localStorage.setItem('ag_suite_long_fold', longFoldEnabled ? 'true' : 'false'); } catch {}
+      if (!longFoldEnabled) clearAllLongFolds();
+      else scanLongFoldables();
+    },
+    scanLongFoldables,
+    toggleAllLongFolds,
     getQuickBuiltinAutoSend: () => quickBuiltinAutoSendEnabled,
     setQuickBuiltinAutoSend: (val) => {
       quickBuiltinAutoSendEnabled = Boolean(val);
@@ -11344,6 +11678,7 @@
   ensureFileViewerEditor();
   syncSidebarShortcutBadges();
   scanHighRiskCommands();
+  scanLongFoldables();
   renderQuotaUI();
   guardExpandedThinkingBlocks();
   startLocalizationObserver();
