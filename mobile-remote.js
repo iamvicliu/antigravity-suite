@@ -19895,54 +19895,78 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               rpcRes = sendAllOutcome.result;
             } else if (sendAllOutcome.confirmedNotExecuted) {
               const rawQueuedItems = Array.isArray(payload?.queuedItems) ? payload.queuedItems.filter((it) => it && typeof it === 'object') : [];
-              const canDirectRpcBatch = rawQueuedItems.length > 0 && rawQueuedItems.every((it) => {
-                const mid = String(it.messageId || '').trim();
-                const txt = String(it.text || '').trim();
-                return Boolean(mid && !/^opt-/i.test(mid) && txt && !it.hasMedia);
-              });
-              if (canDirectRpcBatch) {
-                let sentAny = false;
-                let directAllOk = true;
-                let fallbackDomAllowed = false;
-                let batchErrOutcome = null;
-                for (const it of rawQueuedItems) {
-                  const itMid = String(it.messageId || '').trim();
-                  const itTxt = String(it.text || '');
-                  const singleOut = await sendSingleQueuedWithCheckedDelete({
-                    dispatchKey: `${cascadeId}::msg:${itMid}`,
-                    text: itTxt,
-                    hasMedia: false,
-                    deleteMethod: 'DeleteAgentMessage',
-                    deleteBody: { messageId: itMid, recipient: cascadeId }
-                  });
-                  if (singleOut.partialSuccess) {
-                    await respondPartialSendDeleteFailure({ messageId: itMid }, singleOut.error);
-                    return;
-                  }
-                  if (singleOut.ok) {
-                    sentAny = true;
-                    rpcRes = singleOut.rpcRes;
-                    if (singleOut.deduplicatedRetry) deduplicatedRetry = true;
-                    continue;
-                  }
-                  directAllOk = false;
-                  batchErrOutcome = singleOut;
-                  if (!sentAny && (singleOut.needsDomFallback || singleOut.confirmedNotExecuted)) {
-                    fallbackDomAllowed = true;
-                  }
-                  break;
-                }
-                if (!directAllOk) {
-                  if (fallbackDomAllowed) {
+              const livePending = await historyManager.fetchPendingAgentMessages?.(cascadeId, {
+                localApiConnect: options.localApiConnect,
+                fetchPendingAgentMessages: options.fetchPendingAgentMessages,
+                bypassCache: true
+              }).catch(() => null);
+              if (Array.isArray(livePending)) {
+                if (!livePending.length) {
+                  if (payload?.hasDomQueued === true) {
                     const okDom = await runQueuedDomFallback('send-queued-dom', true);
                     if (!okDom) return;
                   } else {
                     sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                       ok: false,
-                      ...(batchErrOutcome?.confirmedNotExecuted ? {} : { outcomeUnknown: true }),
-                      error: batchErrOutcome?.error || '立即发送排队消息超时或结果未知，已阻止继续自动补发以避免重复发送'
+                      error: '当前已无待发送的排队消息（可能已被发送或撤回）'
                     }));
                     return;
+                  }
+                } else {
+                  const allLivePureText = livePending.every((lp) => {
+                    const mid = String(lp?.messageId || lp?.id || '').trim();
+                    const txt = String(lp?.text || '').trim();
+                    const hasMedia = Boolean(lp?.hasMedia || (Array.isArray(lp?.images) && lp.images.length > 0));
+                    return Boolean(lp?.source === 'agent_state' && mid && !/^opt-/i.test(mid) && txt && !hasMedia);
+                  });
+                  if (allLivePureText && !payload?.hasDomQueued) {
+                    let sentAny = false;
+                    let directAllOk = true;
+                    let fallbackDomAllowed = false;
+                    let batchErrOutcome = null;
+                    for (const lp of livePending) {
+                      const itMid = String(lp.messageId || lp.id || '').trim();
+                      const itTxt = String(lp.text || '');
+                      const singleOut = await sendSingleQueuedWithCheckedDelete({
+                        dispatchKey: `${cascadeId}::msg:${itMid}`,
+                        text: itTxt,
+                        hasMedia: false,
+                        deleteMethod: 'DeleteAgentMessage',
+                        deleteBody: { messageId: itMid, recipient: cascadeId }
+                      });
+                      if (singleOut.partialSuccess) {
+                        await respondPartialSendDeleteFailure({ messageId: itMid }, singleOut.error);
+                        return;
+                      }
+                      if (singleOut.ok) {
+                        sentAny = true;
+                        rpcRes = singleOut.rpcRes;
+                        if (singleOut.deduplicatedRetry) deduplicatedRetry = true;
+                        continue;
+                      }
+                      directAllOk = false;
+                      batchErrOutcome = singleOut;
+                      if (!sentAny && (singleOut.needsDomFallback || singleOut.confirmedNotExecuted)) {
+                        fallbackDomAllowed = true;
+                      }
+                      break;
+                    }
+                    if (!directAllOk) {
+                      if (fallbackDomAllowed) {
+                        const okDom = await runQueuedDomFallback('send-queued-dom', true);
+                        if (!okDom) return;
+                      } else {
+                        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                          ok: false,
+                          ...(batchErrOutcome?.confirmedNotExecuted ? {} : { outcomeUnknown: true }),
+                          error: batchErrOutcome?.error || '立即发送排队消息超时或结果未知，已阻止继续自动补发以避免重复发送'
+                        }));
+                        return;
+                      }
+                    }
+                  } else {
+                    const okDom = await runQueuedDomFallback('send-queued-dom', true);
+                    if (!okDom) return;
                   }
                 }
               } else if (messageIds.length > 0 || payload?.hasDomQueued === true || rawQueuedItems.length > 0) {
@@ -20377,9 +20401,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           String(session.conversationId || '') === sendStartConvId &&
           Boolean(session.draftNewIsolated)
         );
-        if (isDeferredDraftSend && session) {
-          session.draftSendInflight = true;
-        }
+        const isSendConfirmedNotExecuted = (obj) => {
+          if (!obj || typeof obj !== 'object') return false;
+          if (obj.confirmedNotExecuted === true || obj.actionResult?.confirmedNotExecuted === true) return true;
+          if (obj.cdpDispatched === false) return true;
+          return false;
+        };
         const clientActionId = actionName === 'send' ? String(payload?.clientActionId || '').trim().slice(0, 96) : '';
         const sendDedupKey = clientActionId ? `${String(clientId || '__anon__')}::${clientActionId}` : '';
         if (sendDedupKey) {
@@ -20391,6 +20418,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(sharedRes));
               return;
             }
+            if (existingSendRec.outcomeUnknown) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                deduplicatedUnknownRetry: true,
+                error: existingSendRec.error || '上次发送请求超时或结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认'
+              }));
+              return;
+            }
             if (existingSendRec.result && existingSendRec.result.ok !== false) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                 ...existingSendRec.result,
@@ -20400,10 +20436,13 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
           }
         }
+        if (isDeferredDraftSend && session) {
+          session.draftSendInflight = true;
+        }
         let resolveSendInflight = null;
         if (sendDedupKey) {
           const inflightPromise = new Promise((resolve) => { resolveSendInflight = resolve; });
-          recentSendActionCache.set(sendDedupKey, { at: Date.now(), inflight: inflightPromise, result: null });
+          recentSendActionCache.set(sendDedupKey, { at: Date.now(), inflight: inflightPromise, result: null, outcomeUnknown: false });
         }
         let result;
         try {
@@ -20507,9 +20546,25 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           }
         } catch (actErr) {
           if (sendDedupKey) {
-            recentSendActionCache.delete(sendDedupKey);
+            const confirmedNotExec = isSendConfirmedNotExecuted(actErr);
+            const errPayload = {
+              ok: false,
+              ...(confirmedNotExec ? { confirmedNotExecuted: true } : { outcomeUnknown: true }),
+              error: actErr?.message || '操作失败'
+            };
+            if (confirmedNotExec) {
+              recentSendActionCache.delete(sendDedupKey);
+            } else {
+              recentSendActionCache.set(sendDedupKey, {
+                at: Date.now(),
+                inflight: null,
+                result: null,
+                outcomeUnknown: true,
+                error: '上次发送请求响应超时或结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认'
+              });
+            }
             if (resolveSendInflight) {
-              resolveSendInflight({ ok: false, error: actErr?.message || '操作失败' });
+              resolveSendInflight(errPayload);
               resolveSendInflight = null;
             }
           }
@@ -20525,9 +20580,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         }
         if (sendDedupKey) {
           if (result && result.ok !== false) {
-            recentSendActionCache.set(sendDedupKey, { at: Date.now(), inflight: null, result });
-          } else {
+            recentSendActionCache.set(sendDedupKey, { at: Date.now(), inflight: null, result, outcomeUnknown: false });
+          } else if (isSendConfirmedNotExecuted(result)) {
             recentSendActionCache.delete(sendDedupKey);
+          } else {
+            recentSendActionCache.set(sendDedupKey, {
+              at: Date.now(),
+              inflight: null,
+              result: null,
+              outcomeUnknown: true,
+              error: result?.error || result?.actionResult?.error || '上次发送结果未知，已阻止同一操作自动重发以避免重复入队'
+            });
           }
           if (resolveSendInflight) resolveSendInflight(result);
         }

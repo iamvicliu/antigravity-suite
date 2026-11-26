@@ -32247,7 +32247,8 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   // 2. 桌面增强层 extractQueueFiberEntries / findQueuedMessagesDomEntries：支持 Antigravity 2.35+ Protobuf ES v2 items[].chunk.value、data-queued-msg-id 与 tooltip 剥离
   const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
   const env = createDomEnv();
-  env.sandbox.location.pathname = '/c/conv-opt-235';
+  const optDesktopCid = 'deadbeef-2350-4000-8000-000000000235';
+  env.sandbox.location.pathname = `/c/${optDesktopCid}`;
   const mainEl = env.doc.createElement('main');
   const cardEl = env.doc.createElement('div');
   cardEl.setAttribute('data-testid', 'queued-messages-card');
@@ -32302,6 +32303,79 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
     assert.equal(snap235.queuedMessages[0].messageId, 'opt-235-abc');
     assert.equal(snap235.queuedMessages[0].clientMessageId, 'cid-235-abc');
     assert.equal(snap235.queuedMessages[0].text, 'https://example.com/1  sample queued message', '应从 12 层深 Fiber 的 Protobuf ES v2 chunk.value 提取纯净原文而非拼接 tooltip');
+
+    // 2b. resolveStrictQueuedDomTarget：当桌面处于 opt-* 态但存在两条同文排队项（模拟同文项替换/重排且总数量不变=2）时，用失配真实服务端 ID 绝不得按 domIndex 盲绑
+    const dupRowClicks = [];
+    const makeOptDupRow = (optId, labelText) => {
+      const r = env.doc.createElement('div');
+      r.setAttribute('data-queued-msg-id', optId);
+      r.offsetWidth = 340;
+      r.offsetHeight = 32;
+      const s = env.doc.createElement('span');
+      s.textContent = labelText;
+      const dec = env.doc.createElement('div');
+      dec.setAttribute('data-testid', 'queued-decorators');
+      for (const [act, lbl] of [['send-now', 'Send now'], ['', 'Edit'], ['delete', 'Delete']]) {
+        const b = env.doc.createElement('button');
+        b.setAttribute('aria-label', lbl);
+        if (act) b.setAttribute('data-queued-action', act);
+        b.textContent = lbl;
+        b.addEventListener('click', () => dupRowClicks.push(`${optId}:${lbl}`));
+        dec.appendChild(b);
+      }
+      r.appendChild(s);
+      r.appendChild(dec);
+      return r;
+    };
+    cardEl.children.length = 0;
+    cardEl.childNodes.length = 0;
+    cardEl.appendChild(makeOptDupRow('opt-reordered-1', '继续跑测试'));
+    cardEl.appendChild(makeOptDupRow('opt-reordered-2', '继续跑测试'));
+    cardEl.__reactFiber$test = {
+      memoizedProps: {
+        pendingUserInputs: [
+          { msgId: 'opt-reordered-1', step: { items: [{ chunk: { case: 'text', value: '继续跑测试' } }] } },
+          { msgId: 'opt-reordered-2', step: { items: [{ chunk: { case: 'text', value: '继续跑测试' } }] } }
+        ]
+      },
+      return: null
+    };
+    const ambigRes = await enh.performMobileAction({
+      action: 'delete-queued-dom',
+      conversationId: optDesktopCid,
+      messageId: 'real-server-old-id',
+      domIndex: 0,
+      expectedQueueCount: 2,
+      text: '继续跑测试'
+    });
+    assert.equal(ambigRes.ok, false, '同文多条 opt-* 项替换或重排（即使队列总条数仍为 2）时，真实 ID 回退绑定必须拒绝而不得按 domIndex 误删');
+    assert.ok(String(ambigRes.error || '').includes('目标排队消息已变化或不存在'), '应直接由 resolveStrictQueuedDomTarget 拒绝而非切会话失败');
+    assert.equal(dupRowClicks.length, 0, '身份歧义时不得点击任何桌面队列按钮');
+
+    // 当队列中该文本唯一匹配单条 opt-* 项时，允许安全绑定
+    cardEl.children.length = 0;
+    cardEl.childNodes.length = 0;
+    cardEl.appendChild(makeOptDupRow('opt-unique-1', '唯一待撤回文本'));
+    cardEl.appendChild(makeOptDupRow('opt-other-2', '另一条不同文本'));
+    cardEl.__reactFiber$test = {
+      memoizedProps: {
+        pendingUserInputs: [
+          { msgId: 'opt-unique-1', step: { items: [{ chunk: { case: 'text', value: '唯一待撤回文本' } }] } },
+          { msgId: 'opt-other-2', step: { items: [{ chunk: { case: 'text', value: '另一条不同文本' } }] } }
+        ]
+      },
+      return: null
+    };
+    const uniqRes = await enh.performMobileAction({
+      action: 'delete-queued-dom',
+      conversationId: optDesktopCid,
+      messageId: 'real-server-uniq-id',
+      domIndex: 1, // 故意传错重排前旧 domIndex=1，验证只按唯一内容绑定 opt-unique-1 而非盲信旧索引
+      expectedQueueCount: 2,
+      text: '唯一待撤回文本'
+    });
+    assert.equal(uniqRes.ok, true);
+    assert.deepEqual(dupRowClicks, ['opt-unique-1:Delete'], '唯一内容匹配 opt-* 项时应精准定位目标项而不受旧 domIndex 移位影响');
   } finally {
     enh.dispose?.();
   }
@@ -32324,14 +32398,20 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
     '非 SendAllQueuedMessages 方法不得套用该 deprecated 豁免'
   );
 
-  // 4. 顶栏「⚡ 立即发送」在 SendAllQueuedMessages 报 deprecated (error ID: ...) 时对纯文本排队项直接走 SendUserCascadeMessage + DeleteAgentMessage 成功发送，且 /api/action send 具备 clientActionId 幂等防重
+  // 4. 顶栏「⚡ 立即发送」在 SendAllQueuedMessages 报 deprecated (error ID: ...) 时经服务端实时 pendingAgentMessages 核验身份与媒体，防止陈旧已删项或伪装纯文本媒体项误重发；且 /api/action send 对超时结果保留幂等拦截、仅确认未执行允许重试
   const lsRpcLog = [];
+  const domQueuedActions = [];
   let desktopSendCalls = 0;
   let sendAllShouldHang = false;
+  let sendBehavior = 'ok';
+  let liveServerPendingList = [
+    { id: 'pm-real-1', messageId: 'pm-real-1', source: 'agent_state', stepIndex: -1, text: '服务端权威待发正文' }
+  ];
   const handler = remoteMod.createRemoteHttpHandler(
     { enabled: true, port: 18765, token: 'tok-q40x', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
     {
       rpcTimeoutMs: 120,
+      fetchPendingAgentMessages: async () => liveServerPendingList,
       webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) },
       fetchSnapshot: async () => ({
         ok: true,
@@ -32344,7 +32424,19 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
         queuedMessages: [{ domIndex: 0, stepIndex: -1, messageId: 'opt-dup-space', source: 'dom', text: 'https://example.com/1 sample queued message' }]
       }),
       performAction: async (p) => {
-        if (p.action === 'send') desktopSendCalls += 1;
+        if (p.action === 'send-queued-dom') {
+          domQueuedActions.push(p);
+          return { ok: true, actionResult: { ok: true } };
+        }
+        if (p.action === 'send') {
+          desktopSendCalls += 1;
+          if (sendBehavior === 'timeout_after_dispatch') {
+            throw new Error('CDP Runtime.evaluate timed out after dispatch');
+          }
+          if (sendBehavior === 'confirmed_not_executed') {
+            return { ok: false, confirmedNotExecuted: true, error: '未能填入输入框' };
+          }
+        }
         return {
           ok: true,
           actionResult: { ok: true },
@@ -32402,22 +32494,54 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
     );
   });
 
+  // 4a. 客户端传入了陈旧已删除的 pm-stale-deleted 与被篡改文本，服务端仅按实时核验的 pm-real-1 权威正文直发，绝不重发已删项
   const sendAllOk = await postJson({
     action: 'send-queued-messages',
     conversationId: 'conv-insight',
-    messageIds: ['pm-real-1'],
-    queuedItems: [{ messageId: 'pm-real-1', source: 'agent_state', domIndex: 0, text: '前面输入有误，是说：缺入一个显示全部的选项' }]
+    messageIds: ['pm-stale-deleted', 'pm-real-1'],
+    queuedItems: [
+      { messageId: 'pm-stale-deleted', source: 'agent_state', domIndex: 0, text: '早已撤回或自动出队的陈旧消息' },
+      { messageId: 'pm-real-1', source: 'agent_state', domIndex: 1, text: '客户端陈旧文本' }
+    ]
   });
-  assert.equal(sendAllOk.ok, true, 'SendAllQueuedMessages 报 deprecated(error ID) 时顶栏「⚡ 立即发送」应自动走逐条直发成功');
+  assert.equal(sendAllOk.ok, true, 'SendAllQueuedMessages 报 deprecated(error ID) 时应经服务端核验后逐条直发成功');
   assert.deepEqual(
     lsRpcLog.map((x) => x.method),
     ['SendAllQueuedMessages', 'SendUserCascadeMessage', 'DeleteAgentMessage'],
-    '应依次调用 SendAllQueuedMessages(确认废弃) -> SendUserCascadeMessage(NEXT_INVOCATION) -> DeleteAgentMessage'
+    '已出队/已删除的 pm-stale-deleted 绝不得重发，仅发送服务端实时确认仍在队列中的 pm-real-1'
   );
-  assert.equal(lsRpcLog[1].body.deliveryStrategy, 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION');
+  assert.equal(lsRpcLog[1].body.items[0].text, '服务端权威待发正文', '必须采用服务端核验正文而非盲信客户端文本');
   assert.equal(lsRpcLog[2].body.messageId, 'pm-real-1');
 
-  // 超时场景仍严格 fail-closed 绝不补发
+  // 4b. 服务端实时队列含媒体项（即使客户端谎报 hasMedia: false），严禁走纯文本 RPC 丢图，自动转走桌面 send-queued-dom
+  lsRpcLog.length = 0;
+  liveServerPendingList = [
+    { id: 'pm-media-1', messageId: 'pm-media-1', source: 'agent_state', stepIndex: -1, text: '带图排队项', hasMedia: true, images: [{ src: 'data:image/png;base64,AA==' }] }
+  ];
+  const sendAllMedia = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    messageIds: ['pm-media-1'],
+    queuedItems: [{ messageId: 'pm-media-1', source: 'agent_state', domIndex: 0, text: '带图排队项', hasMedia: false }]
+  });
+  assert.equal(sendAllMedia.ok, true);
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages'], '服务端核验含媒体项时不得调用纯文本 SendUserCascadeMessage');
+  assert.equal(domQueuedActions.length, 1);
+  assert.equal(domQueuedActions[0].sendAll, true);
+
+  // 4c. 服务端实时队列已空（全部已出队/已删）时，不得重发客户端陈旧项
+  lsRpcLog.length = 0;
+  liveServerPendingList = [];
+  const sendAllEmpty = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    messageIds: ['pm-already-gone'],
+    queuedItems: [{ messageId: 'pm-already-gone', source: 'agent_state', domIndex: 0, text: '已空队列陈旧项' }]
+  });
+  assert.equal(sendAllEmpty.ok, false, '服务端核验队列已空时不得重发陈旧项');
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages']);
+
+  // 4d. 超时场景仍严格 fail-closed 绝不补发
   lsRpcLog.length = 0;
   sendAllShouldHang = true;
   const sendAllTimeout = await postJson({
@@ -32430,13 +32554,33 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   assert.equal(sendAllTimeout.outcomeUnknown, true);
   assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages']);
 
-  // 同一 clientActionId 重试 /api/action send 绝不二次触发桌面发送
+  // 4e. /api/action send 幂等保护：① 成功重放不二次执行；② 已派发后超时抛错（结果未知）同 clientActionId 重试被严格拦截；③ confirmedNotExecuted=true 允许同 ID 安全重试
+  desktopSendCalls = 0;
+  sendBehavior = 'ok';
   const send1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
   const send2 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
   assert.equal(send1.ok, true);
   assert.equal(send2.ok, true);
   assert.equal(send2.deduplicatedAction, true);
-  assert.equal(desktopSendCalls, 1, '相同 clientActionId 通道故障转移重试时服务端只得执行 1 次桌面发送');
+  assert.equal(desktopSendCalls, 1, '相同 clientActionId 成功重放时服务端只得执行 1 次桌面发送');
+
+  sendBehavior = 'timeout_after_dispatch';
+  const sendTimeout1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
+  assert.equal(sendTimeout1.ok, false);
+  sendBehavior = 'ok';
+  const sendTimeoutRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
+  assert.equal(sendTimeoutRetry.ok, false, '首次发送超时结果未知后，同一 clientActionId 自动故障转移重试必须被拦截以防重复入队');
+  assert.equal(sendTimeoutRetry.outcomeUnknown, true);
+  assert.equal(sendTimeoutRetry.deduplicatedUnknownRetry, true);
+  assert.equal(desktopSendCalls, 2, '超时后同一 clientActionId 重试不得再次调用 performAction');
+
+  sendBehavior = 'confirmed_not_executed';
+  const sendPreFail = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-insight', text: '首次未填入' });
+  assert.equal(sendPreFail.ok, false);
+  sendBehavior = 'ok';
+  const sendPreRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-insight', text: '首次未填入' });
+  assert.equal(sendPreRetry.ok, true, '明确 confirmedNotExecuted=true 时允许同一 clientActionId 重试成功');
+  assert.equal(desktopSendCalls, 4);
 
   // 5. 客户端 sendInput 在 busy 状态发送含 URL 双空格文本时，与快照归一化单空格排队项精确匹配，不追加重复 optimistic 排队项
   const appHtml = remoteMod.buildMobileAppHtml();
