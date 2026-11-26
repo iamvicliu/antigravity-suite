@@ -30772,7 +30772,8 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
       const CONV_LAG_GM = '50505050-8888-4888-8888-888888888888', CONV_SCAN_STEP4 = '50505050-7777-4999-8999-999999999999';
       const CONV_GM_CREATE = '50505050-6666-4aaa-8aaa-aaaaaaaaaaaa', CONV_GM_TOT = '50505050-5555-4bbb-8bbb-bbbbbbbbbbbb';
       const CONV_POST_UNTIMED_MU = '50505050-4444-4ccc-8ccc-cccccccccccc', CONV_POST_UNTIMED_EST = '50505050-3333-4ddd-8ddd-dddddddddddd';
-      let zombiePhase = 'pre', postGmArrived = false, scanStep4Arrived = false;
+      const CONV_POST_DUP_SIG = '50505050-2222-4eee-8eee-eeeeeeeeeeee';
+      let zombiePhase = 'pre', postGmArrived = false, scanStep4Arrived = false, scan4GmStep = 1;
 
       const makeSteps = (withCheckpointUsage) => [
         { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' }, timeToFirstToken: '4.5s', streamingDuration: '5.2s', chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } }, plannerResponse: { response: 'pre-compact heavy output' } },
@@ -30785,62 +30786,28 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
         stepIndices: [stepIdx], chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', timeToFirstToken: ttft, streamingDuration: stream, usage, chatStartMetadata: { contextWindowMetadata: { maxContextTokens } } }
       });
 
+      const wrapTraj = (steps, numGen = 1) => ({ numTotalSteps: steps.length, numTotalGeneratorMetadata: numGen, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } });
       const getTrajPayload = (cid) => {
         if (cid === CONV_SCAN_STEP4) {
-          const steps = [
-            { userInput: { userResponse: 's0' } },
-            { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 's1' } },
-            { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'cp2' } },
-            { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '20000', outputTokens: '500' }, streamingDuration: '2.0s' }, plannerResponse: { response: 's3' } },
-            ...(scanStep4Arrived ? [{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '15000', cacheReadTokens: '25600', outputTokens: '600' }, streamingDuration: '3.0s' }, plannerResponse: { response: 's4' } }] : [])
-          ];
-          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+          const steps = [{ userInput: { userResponse: 's0' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 's1' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'cp2' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '20000', outputTokens: '500' }, streamingDuration: '2.0s' }, plannerResponse: { response: 's3' } }, ...(scanStep4Arrived ? [{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '15000', cacheReadTokens: '25600', outputTokens: '600' }, streamingDuration: '3.0s' }, plannerResponse: { response: 's4' } }] : [])];
+          return wrapTraj(steps, scan4GmStep > 1 ? 2 : 1);
         }
-        if (cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST) {
-          const steps = [
-            { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre' } },
-            { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'cp' } },
-            { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '18000', outputTokens: '240' }, streamingDuration: '2.0s' }, plannerResponse: { response: 'timed turn1' } },
-            cid === CONV_POST_UNTIMED_MU
-              ? { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '12000', cacheReadTokens: '20000', outputTokens: '180' } }, plannerResponse: { response: 'untimed mu turn2' } }
-              : { plannerResponse: { response: 'untimed estimated planner turn2 without timestamps' } }
-          ];
-          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        if (cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST || cid === CONV_POST_DUP_SIG) {
+          const turn2 = cid === CONV_POST_UNTIMED_MU ? { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '12000', cacheReadTokens: '20000', outputTokens: '180' } }, plannerResponse: { response: 'untimed mu turn2' } } : (cid === CONV_POST_DUP_SIG ? { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '18000', outputTokens: '240' } }, plannerResponse: { response: 'untimed duplicate-sig turn2' } } : { plannerResponse: { response: 'untimed estimated planner turn2 without timestamps' } });
+          return wrapTraj([{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'cp' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '18000', outputTokens: '240' }, streamingDuration: '2.0s' }, plannerResponse: { response: 'timed turn1' } }, turn2]);
         }
-        if (cid === CONV_POST_GM) {
-          const steps = [{ userInput: { userResponse: 'step0' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre-compact' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩摘要' } }, { userInput: { userResponse: '压缩后继续提问' } }, { plannerResponse: { response: '压缩后回复本身无内联 modelUsage，稍后新 GeneratorMetadata 到达' } }];
-          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
-        }
-        if (cid === CONV_LAG_GM) {
-          const steps = [{ userInput: { userResponse: 'turn1 q' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '25000', cacheReadTokens: '0', outputTokens: '1850' }, timeToFirstToken: '4.5s', streamingDuration: '10.0s' }, plannerResponse: { response: 'turn1 a' } }, { userInput: { userResponse: 'turn2 q' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '155000', cacheReadTokens: '10000', outputTokens: '160' }, streamingDuration: '2.0s' }, plannerResponse: { response: 'turn2 fast stream without ttft while gm lags' } }];
-          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
-        }
-        if (cid === CONV_NO_IDX_TS) {
-          const steps = [{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre-compact reply' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩后摘要：无时间戳与步骤索引场景' } }, { userInput: { userResponse: '压缩后继续提问' } }, { plannerResponse: { response: '压缩后已有回复步骤但新 GeneratorMetadata 尚未返回' } }];
-          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
-        }
-        if (cid === CONV_SPEED_ZOMBIE) {
-          const steps = [{ userInput: { userResponse: 'initial heavy prompt' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '1850' } }, plannerResponse: { response: 'pre-compact fast reply' } }, ...(zombiePhase === 'post' ? [{ type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩摘要：验证旧 185 tok/s 绝不复活' } }, { userInput: { userResponse: '压缩后追加消息使 stepCount 增长到 4' } }] : [])];
-          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
-        }
-        if (cid === CONV_ISO_COMPACT) {
-          const steps = [{ userInput: { userResponse: 'run task' } }, { plannerResponse: { response: 'done before compact' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'Compacted session summary after /compact.' } }];
-          return { numTotalSteps: 3, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
-        }
-        if (cid === CONV_CP_MU || cid === CONV_CP_EST) {
-          const steps = makeSteps(cid === CONV_CP_MU);
-          return { numTotalSteps: steps.length, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
-        }
-        const steps = [{ userInput: { userResponse: 'parity check' } }, { plannerResponse: { response: 'parity answer' } }];
-        return { numTotalSteps: cid === CONV_PARITY ? 4 : 2, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps } };
+        if (cid === CONV_POST_GM) return wrapTraj([{ userInput: { userResponse: 'step0' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre-compact' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩摘要' } }, { userInput: { userResponse: '压缩后继续提问' } }, { plannerResponse: { response: '压缩后回复本身无内联 modelUsage，稍后新 GeneratorMetadata 到达' } }]);
+        if (cid === CONV_LAG_GM) return wrapTraj([{ userInput: { userResponse: 'turn1 q' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '25000', cacheReadTokens: 0, outputTokens: '1850' }, timeToFirstToken: '4.5s', streamingDuration: '10.0s' }, plannerResponse: { response: 'turn1 a' } }, { userInput: { userResponse: 'turn2 q' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '155000', cacheReadTokens: '10000', outputTokens: '160' }, streamingDuration: '2.0s' }, plannerResponse: { response: 'turn2 fast stream without ttft while gm lags' } }]);
+        if (cid === CONV_NO_IDX_TS) return wrapTraj([{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 'pre-compact reply' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩后摘要：无时间戳与步骤索引场景' } }, { userInput: { userResponse: '压缩后继续提问' } }, { plannerResponse: { response: '压缩后已有回复步骤但新 GeneratorMetadata 尚未返回' } }]);
+        if (cid === CONV_SPEED_ZOMBIE) return wrapTraj([{ userInput: { userResponse: 'initial heavy prompt' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '1850' } }, plannerResponse: { response: 'pre-compact fast reply' } }, ...(zombiePhase === 'post' ? [{ type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: '压缩摘要：验证旧 185 tok/s 绝不复活' } }, { userInput: { userResponse: '压缩后追加消息使 stepCount 增长到 4' } }] : [])]);
+        if (cid === CONV_ISO_COMPACT) return wrapTraj([{ userInput: { userResponse: 'run task' } }, { plannerResponse: { response: 'done before compact' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'Compacted session summary after /compact.' } }]);
+        if (cid === CONV_CP_MU || cid === CONV_CP_EST) return wrapTraj(makeSteps(cid === CONV_CP_MU));
+        return { numTotalSteps: cid === CONV_PARITY ? 4 : 2, numTotalGeneratorMetadata: 1, trajectory: { status: 'CASCADE_RUN_STATUS_IDLE', steps: [{ userInput: { userResponse: 'parity check' } }, { plannerResponse: { response: 'parity answer' } }] } };
       };
 
       const getGenPayload = (cid) => {
-        if (cid === CONV_SCAN_STEP4) return { generatorMetadata: [makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
-        if (cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST) {
-          // 无步骤索引的 GeneratorMetadata 仍停留在 CHECKPOINT 后第一轮计时回复 A (120 tok/s)，随后已有无计时第二轮回复 B
-          return { generatorMetadata: [{ chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', streamingDuration: '2.0s', usage: { inputTokens: 8000, cacheReadTokens: 18000, outputTokens: 240 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }] };
-        }
+        if (cid === CONV_SCAN_STEP4) return { generatorMetadata: [scan4GmStep === 3 ? makeGmRow(3, { inputTokens: 8000, cacheReadTokens: 20000, outputTokens: 500 }, 512000, '0.5s', '2.0s') : makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
+        if (cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST || cid === CONV_POST_DUP_SIG) return { generatorMetadata: [{ chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', streamingDuration: '2.0s', usage: { inputTokens: 8000, cacheReadTokens: 18000, outputTokens: 240 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }] };
         if (cid === CONV_GM_CREATE) return { generatorMetadata: [makeGmRow(1, { inputTokens: 15000, cacheReadTokens: 25000, cacheCreationTokens: 5000, outputTokens: 500 }, 512000, '1.0s', '5.0s')] };
         if (cid === CONV_GM_TOT) return { generatorMetadata: [makeGmRow(1, { totalTokens: 64000 }, 512000, '1.0s', '2.0s')] };
         if (cid === CONV_POST_GM) return { generatorMetadata: [postGmArrived ? makeGmRow(4, { inputTokens: 14000, cacheReadTokens: 20000, outputTokens: 600 }, 512000, '1.0s', '5.0s') : makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
@@ -31102,14 +31069,21 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
       assert.equal(lagIso.contextPanel.usedTokens, 165160); assert.equal(lagIso.contextPanel.tokPerSec, 80);
       assert.equal(lagIso.contextPanel.lastDurationSec, 2); assert.equal(lagIso.contextPanel.ttftSec, null); assert.equal(lagIso.contextPanel.outputTokens, 160);
 
-      // 2l: CHECKPOINT=2、当前实报步骤=3 (28,500)、新扫描实报步骤=4 (41,200) 且 GeneratorMetadata 仍在压缩前时，渲染器采纳第 4 步新实报
-      scanStep4Arrived = false; setRoute(CONV_SCAN_STEP4);
+      // 2l: CHECKPOINT=2、当前实报步骤=3 (28,500)、新扫描实报步骤=4 (41,200) -> 随后元数据仅追到步骤 3 时 requestPoll 绝不回退到步骤 3
+      scanStep4Arrived = false; scan4GmStep = 1; setRoute(CONV_SCAN_STEP4);
       await meterApi.refresh();
       assert.equal(meterApi.snapshot().latest.exactUsageStepIndex, 3); assert.equal(meterApi.snapshot().latest.actual, 28500);
       scanStep4Arrived = true;
       await meterApi.refresh();
       assert.equal(meterApi.snapshot().latest.exactUsageStepIndex, 4); assert.equal(meterApi.snapshot().latest.actual, 41200);
       assert.equal(meterApi.snapshot().latest.speed.streamingTps, 200);
+      scan4GmStep = 3;
+      const savedScanApi = env.win.contextMeterAPI;
+      env.win.contextMeterAPI = {}; env.sandbox.contextMeterAPI = {};
+      await meterApi.refresh();
+      assert.equal(meterApi.snapshot().latest.exactUsageStepIndex, 4); assert.equal(meterApi.snapshot().latest.actual, 41200);
+      assert.equal(meterApi.snapshot().latest.speed.streamingTps, 200);
+      env.win.contextMeterAPI = savedScanApi; env.sandbox.contextMeterAPI = savedScanApi;
 
       // 2m: 仅 GeneratorMetadata 提供用量（含 cacheCreationTokens=5,000 及仅 totalTokens=64,000 回退）时，全端已用、百分比与剩余容量 100% 一致
       for (const [gmCid, expUsed, expPct] of [[CONV_GM_CREATE, 45500, 8.9], [CONV_GM_TOT, 64000, 12.5]]) {
@@ -31130,20 +31104,25 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
         assert.equal(isoGm.contextPanel.remainingText, normGm.contextPanel.remainingText); assert.equal(isoGm.contextPanel.remainingText, meterOnlyGm.contextPanel.remainingText);
       }
 
-      // 2n: CHECKPOINT 后先有计时回复 A (120 tok/s)、再有无计时回复 B，且无步骤索引的 GeneratorMetadata 对应 A：经 refreshConversationUsage + renderAllFooters 验证胶囊、collector、isolated 全端清空旧速度
-      for (const untimedCid of [CONV_POST_UNTIMED_MU, CONV_POST_UNTIMED_EST]) {
+      // 2n: CHECKPOINT 后先有计时回复 A (120 tok/s)、再有无计时回复 B（覆盖不同签名、完全相同用量签名、无时间戳估算回复三类），且无步骤索引的 GeneratorMetadata 对应 A：验证全端旧速度及归属字段清空、用量一致
+      for (const untimedCid of [CONV_POST_UNTIMED_MU, CONV_POST_DUP_SIG, CONV_POST_UNTIMED_EST]) {
         setRoute(untimedCid);
         realFooter.__reactFiber$test = { memoizedProps: { cascadeId: untimedCid, modelId: 'MODEL_PLACEHOLDER_M427' } };
+        const colUnt = await collectorMod.collect(origin, untimedCid, { force: true });
+        await meterApi.refresh();
         capsApi.setTrajectorySummary(untimedCid, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-untimed-b' });
         const capUnt = await capsApi.refreshConversationUsage(untimedCid, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-untimed-b' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, realFooter);
         capsApi.renderAllFooters();
-        const colUnt = await collectorMod.collect(origin, untimedCid, { force: true });
+        const normUnt = enh.getMobileSnapshot();
         setRoute(CONV_ACTIVE);
         const isoUnt = await enh.getMobileSnapshotAsync({ conversationId: untimedCid });
         assert.equal(capUnt.tokPerSec, 0); assert.equal(renderedCap.__ctxUsageData.tokPerSec, 0);
         assert.equal(colUnt.latest.speed, null); assert.equal(colUnt.latest.speedStepIndex, -1);
-        assert.equal(isoUnt.contextPanel.tokPerSec, null);
-        assert.equal(colUnt.latest.actual, capUnt.contextUsed); assert.equal(colUnt.latest.actual, isoUnt.contextPanel.usedTokens);
+        assert.equal(colUnt.latest.speedCreatedAtMs, 0); assert.equal(colUnt.latest.speedUsageSignature, '');
+        assert.equal(meterApi.snapshot().latest.speed, null); assert.equal(meterApi.snapshot().latest.speedStepIndex, -1);
+        assert.equal(normUnt.contextPanel.tokPerSec, null); assert.equal(isoUnt.contextPanel.tokPerSec, null);
+        assert.equal(colUnt.latest.actual, capUnt.contextUsed); assert.equal(colUnt.latest.actual, normUnt.contextPanel.usedTokens);
+        assert.equal(colUnt.latest.actual, isoUnt.contextPanel.usedTokens);
       }
     } finally {
       try { env.sandbox.__AGEnhancer?.dispose?.(); } catch {}

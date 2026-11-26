@@ -12283,10 +12283,20 @@ function positionHeatPopover(anchorX, anchorY) {
         latestVal.exactUsageStepIndex = matchedMaxStepIdx;
         latestVal.updatedAtMs = Date.now();
         const pf = state.postCompactFloor;
-        const rowProvenAfterCp = Boolean(pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 && matchedMaxStepIdx > pf.lastCheckpointStepIdx);
+        const curExact = typeof state.latest?.exactUsageStepIndex === 'number' ? state.latest.exactUsageStepIndex : -1;
+        const pfExact = (pf && pf.route === id && typeof pf.latest?.exactUsageStepIndex === 'number') ? pf.latest.exactUsageStepIndex : -1;
+        const knownExact = Math.max(curExact, pfExact);
+        const rowProvenAfterCp = Boolean(
+          pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 &&
+          matchedMaxStepIdx > pf.lastCheckpointStepIdx && matchedMaxStepIdx >= knownExact
+        );
+        const rowBehindKnownStep = matchedMaxStepIdx >= 0 && knownExact >= 0 && matchedMaxStepIdx < knownExact;
         const rowPredatesFloorCp = Boolean(pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 && matchedMaxStepIdx <= pf.lastCheckpointStepIdx);
-        if (pf && pf.route === id && !rowProvenAfterCp && (rowPredatesFloorCp || (state.count <= pf.generatorCount && (latestVal.actual || 0) > ((pf.latest?.actual || 0) + 5000)))) {
-          if (rowPredatesFloorCp && state.count > pf.generatorCount) pf.generatorCount = state.count;
+        if (rowBehindKnownStep) {
+          if (pf && pf.route === id && state.count > pf.generatorCount) pf.generatorCount = state.count;
+          if (pf && pf.route === id && pf.latest && pfExact >= curExact) state.latest = pf.latest;
+        } else if (pf && pf.route === id && !rowProvenAfterCp && (rowPredatesFloorCp || (matchedMaxStepIdx < 0 && pf.lastCheckpointStepIdx >= 0 && knownExact > pf.lastCheckpointStepIdx) || (state.count <= pf.generatorCount && (latestVal.actual || 0) > ((pf.latest?.actual || 0) + 5000)))) {
+          if ((rowPredatesFloorCp || matchedMaxStepIdx < 0) && state.count > pf.generatorCount) pf.generatorCount = state.count;
           state.latest = pf.latest;
         } else {
           if (pf && (rowProvenAfterCp || state.count > pf.generatorCount)) state.postCompactFloor = null;

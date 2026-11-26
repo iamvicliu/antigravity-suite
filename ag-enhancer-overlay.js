@@ -10698,6 +10698,15 @@
         !validMeta || (metaMaxStep >= 0 ? metaMaxStep <= lastCheckpointStepIdx : ((metaTimeMs > 0 && cpTimeMs > 0) ? metaTimeMs <= cpTimeMs : !gmMatchesPostStep))
       );
 
+      let lastIsoInlineUsageIdx = -1, isoPlannerCount = 0;
+      for (let sIdx = Math.max(0, lastCheckpointStepIdx + 1); sIdx < steps.length; sIdx++) {
+        const st = steps[sIdx], meta = st?.metadata || st, mu = meta?.modelUsage || st?.modelUsage || st?.usage || null;
+        const m = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
+        if (usageSig(mu) && !isShadowStepModel(m)) { lastIsoInlineUsageIdx = sIdx; isoPlannerCount += 1; continue; }
+        const sType = String(st?.type || st?.role || (st?.plannerResponse ? 'PLANNER_RESPONSE' : '')).toUpperCase();
+        const isCpSt = Boolean((st?.checkpoint && typeof st.checkpoint === 'object') || /CHECKPOINT/i.test(String(st?.type || '')));
+        if (!isCpSt && (sType.includes('PLANNER') || sType.includes('MODEL') || sType.includes('ASSISTANT') || Boolean(st?.plannerResponse))) isoPlannerCount += 1;
+      }
       let laterUsageStepIdx = -1;
       if (!metaInvalidatedByCheckpoint && metaMaxStep >= 0) {
         for (let sIdx = metaMaxStep + 1; sIdx < steps.length; sIdx++) {
@@ -10708,6 +10717,8 @@
         if (laterUsageStepIdx < 0 && metaMaxStep < steps.length - 1 && matchGmSig(steps[metaMaxStep]) && steps.slice(metaMaxStep + 1).some((s) => Boolean(extractStepEstimateTextUnified(s)))) {
           laterUsageStepIdx = metaMaxStep;
         }
+      } else if (!metaInvalidatedByCheckpoint && rawMetaStep < 0 && metaMaxStep < 0 && lastIsoInlineUsageIdx >= 0) {
+        laterUsageStepIdx = lastIsoInlineUsageIdx;
       }
       const sliceStartIdx = metaInvalidatedByCheckpoint ? lastCheckpointStepIdx : laterUsageStepIdx;
 
@@ -10814,11 +10825,13 @@
         cacheHitRate = totalIn > 0
           ? Number(((cached / totalIn) * 100).toFixed(1))
           : null;
-        // 统一采用纯流式输出速度口径（无流式时长时回退总时长，过滤短窗噪音）
-        const speedDenom = (streaming != null && streaming >= 1.0) ? streaming : (streaming == null && dur != null && dur >= 1.0 ? dur : null);
-        tokPerSec = (output >= 30 && speedDenom && speedDenom < 600)
-          ? Number((output / speedDenom).toFixed(1))
-          : null;
+        const unprovenIsoSpeed = rawMetaStep < 0 && metaMaxStep < 0 && (lastCheckpointStepIdx >= 0 || isoPlannerCount > 1);
+        if (unprovenIsoSpeed) {
+          tokPerSec = null; effectiveDur = null; effectiveTtft = null;
+        } else {
+          const speedDenom = (streaming != null && streaming >= 1.0) ? streaming : (streaming == null && dur != null && dur >= 1.0 ? dur : null);
+          tokPerSec = (output >= 30 && speedDenom && speedDenom < 600) ? Number((output / speedDenom).toFixed(1)) : null;
+        }
         const hadPriorHighCache = validMetaIdx > 0 && genList.slice(0, validMetaIdx).some((r) => {
           const ru = r?.chatModel?.usage || r?.usage || {};
           return Number(ru.cacheReadTokens ?? ru.cachedTokens ?? 0) >= 50000;
