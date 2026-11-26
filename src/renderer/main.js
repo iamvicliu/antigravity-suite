@@ -4035,9 +4035,18 @@
         } catch {}
         const matchedRow = latestIdx >= 0 ? rows[latestIdx] : null;
         let matchedMaxStepIdx = -1;
-        if (Array.isArray(matchedRow?.stepIndices) && matchedRow.stepIndices.length > 0) {
-          matchedMaxStepIdx = Math.max(...matchedRow.stepIndices.map(Number).filter(Number.isFinite));
-          if (matchedMaxStepIdx >= 0) latestVal.stepCount = matchedMaxStepIdx + 1;
+        const rawStepCandidates = Array.isArray(matchedRow?.stepIndices) && matchedRow.stepIndices.length > 0
+          ? matchedRow.stepIndices
+          : ((matchedRow?.stepIndex != null && matchedRow.stepIndex !== '') || (matchedRow?.step_index != null && matchedRow.step_index !== '')
+            ? [matchedRow.stepIndex ?? matchedRow.step_index]
+            : []);
+        const validMatchedSteps = rawStepCandidates
+          .filter((v) => v !== null && v !== '' && typeof v !== 'boolean')
+          .map(Number)
+          .filter((n) => Number.isFinite(n) && n >= 0);
+        if (validMatchedSteps.length > 0) {
+          matchedMaxStepIdx = Math.max(...validMatchedSteps);
+          latestVal.stepCount = matchedMaxStepIdx + 1;
         }
         latestVal.speedStepIndex = latestVal.speed ? matchedMaxStepIdx : -1;
         latestVal.speedCreatedAtMs = 0;
@@ -4058,6 +4067,7 @@
         const sameScannedUnindexed = matchedMaxStepIdx < 0 && state.scanGeneratorCount >= 0 && state.count <= state.scanGeneratorCount && Number(state.latest?.stepCount) > 0;
         const rowBehindKnownStep = (knownExact >= 0 && (matchedMaxStepIdx < 0 || matchedMaxStepIdx < knownExact || rowHasTrailingScanSteps)) || sameScannedUnindexed;
         const rowPredatesFloorCp = Boolean(pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 && matchedMaxStepIdx <= pf.lastCheckpointStepIdx);
+        let adoptedLatest = false;
         if (rowBehindKnownStep) {
           if (pf && pf.route === id && state.count > pf.generatorCount) pf.generatorCount = state.count;
           if (pf && pf.route === id && pf.latest && pfExact >= curExact) state.latest = pf.latest;
@@ -4067,9 +4077,13 @@
         } else {
           if (pf && (rowProvenAfterCp || state.count > pf.generatorCount)) state.postCompactFloor = null;
           state.latest = latestVal;
+          adoptedLatest = true;
         }
+        if (adoptedLatest) state.requestAt = Date.now();
+      } else {
+        state.requestAt = Date.now();
       }
-      state.requestAt = Date.now(); state.requestError = '';
+      state.requestError = '';
     } catch (e) {
       if (generation === state.generation && !state.disposed && !(state.requestAt > startedAt && state.latest)) {
         state.requestError = e.name === 'AbortError' ? '读取超时' : e.message;
@@ -4104,13 +4118,15 @@
         scanLat?.compressionDetected && scanCp >= 0 && curExact > scanCp &&
         (scanExact < 0 || curExact > scanExact || (curExact === scanExact && !state.latest?.compressionDetected))
       );
+      const scanBehindCur = scanExact >= 0 && curExact >= 0 && scanExact < curExact;
+      const scanBlockedByFloor = Boolean(state.postCompactFloor && state.postCompactFloor.route === id && state.postCompactFloor.lastCheckpointStepIdx >= 0 && scanExact < 0 && !scanLat?.compressionDetected);
       if (!staleCompactScan && scanLat?.compressionDetected && scanLat?.postCompactAtGeneratorCount != null) {
         state.scanGeneratorCount = Number.isFinite(genCount) ? Math.max(genCount, state.count) : state.count;
         state.postCompactFloor = { route: id, generatorCount: scanLat.postCompactAtGeneratorCount, lastCheckpointStepIdx: scanCp, latest: scanLat };
         state.latest = scanLat;
         state.requestAt = result.data.scannedAt || Date.now();
         state.requestError = '';
-      } else if (!staleCompactScan && scanLat && (scanExact > curExact || result.data.scannedAt >= state.requestAt)) {
+      } else if (!staleCompactScan && !scanBehindCur && !scanBlockedByFloor && scanLat && (scanExact > curExact || result.data.scannedAt >= state.requestAt)) {
         state.scanGeneratorCount = Number.isFinite(genCount) ? Math.max(genCount, state.count) : state.count;
         if (state.postCompactFloor && state.postCompactFloor.route === id && scanExact > state.postCompactFloor.lastCheckpointStepIdx) state.postCompactFloor = null;
         state.latest = scanLat;
