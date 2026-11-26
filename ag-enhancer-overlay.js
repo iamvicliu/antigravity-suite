@@ -11149,7 +11149,7 @@
     if (action === 'send') {
       const text = String(payload?.text || '').trim();
       const pendingUploads = Array.isArray(payload?.pendingUploads) ? payload.pendingUploads : [];
-      if (!text && !pendingUploads.length) return { ok: false, error: '发送内容不能为空' };
+      if (!text && !pendingUploads.length) return { ok: false, confirmedNotExecuted: true, error: '发送内容不能为空' };
       const beforeRemoveBtns = pendingUploads.length > 0 ? new Set(findComposerAttachmentRemoveButtons()) : null;
       let injectedCount = 0;
       const rollbackNewlyInjected = () => {
@@ -11165,7 +11165,7 @@
             const upRes = await injectUploadedFileToDesktopComposer(att?.name, att?.mimeType, att?.base64);
             if (!upRes?.ok) {
               rollbackNewlyInjected();
-              return { ok: false, error: upRes?.error || '恢复附件注入桌面输入框失败，已回滚本次已注入附件并取消发送' };
+              return { ok: false, confirmedNotExecuted: true, error: upRes?.error || '恢复附件注入桌面输入框失败，已回滚本次已注入附件并取消发送' };
             }
             injectedCount += 1;
           }
@@ -11175,12 +11175,13 @@
           const filled = await fillComposerText(text);
           if (!filled) {
             rollbackNewlyInjected();
-            return { ok: false, error: '未能填入输入框' };
+            return { ok: false, confirmedNotExecuted: true, error: '未能填入输入框' };
           }
         }
         const submitRes = await submitCurrentComposer({ allowEnterOnDisabled: true, checkBusyOnEnter: false });
         if (!submitRes?.ok) {
           rollbackNewlyInjected();
+          return { ...submitRes, ok: false, confirmedNotExecuted: true };
         }
         return submitRes;
       } catch (err) {
@@ -11604,26 +11605,6 @@
       if (!Array.isArray(entries) || !entries.length) {
         return { ok: false, error: '当前没有排队中的消息' };
       }
-      const reqMsgId = String(reqPayload?.messageId || '').trim();
-      if (reqMsgId) {
-        const matched = entries.find((e) => (e.messageId && e.messageId === reqMsgId) || (e.clientMessageId && e.clientMessageId === reqMsgId)) || null;
-        if (matched) {
-          return { ok: true, target: matched };
-        }
-        const canBindOptimisticDom = !/^opt-/i.test(reqMsgId)
-          && entries.some((e) => /^opt-/i.test(String(e?.messageId || '')))
-          && !entries.some((e) => e?.messageId && !/^opt-/i.test(String(e.messageId)))
-          && Boolean(normQueuedText(reqPayload?.text));
-        if (!canBindOptimisticDom) {
-          return { ok: false, error: `目标排队消息已变化或不存在，已取消${actionVerb}以防误操作` };
-        }
-      }
-      const expQueueCount = Number(reqPayload?.expectedQueueCount);
-      if (Number.isInteger(expQueueCount) && expQueueCount > 0 && entries.length !== expQueueCount) {
-        return { ok: false, error: `桌面排队数量已变化，已取消${actionVerb}以防索引移位误操作` };
-      }
-      const hasReqIdx = Number.isInteger(reqPayload?.domIndex);
-      const reqIdx = hasReqIdx ? reqPayload.domIndex : -1;
       const reqText = normQueuedText(reqPayload?.text);
       const reqTextCore = stripQueuedMediaSuffix(reqText);
       const matchesEntryText = (entry) => {
@@ -11634,6 +11615,32 @@
         if (reqTextCore) return Boolean(etCore && etCore === reqTextCore);
         return !etCore && ((Array.isArray(entry?.images) && entry.images.length > 0) || Boolean(entry?.hasMedia) || /\[(?:图片附件|图片\s*×\d+)\]/.test(et));
       };
+      const reqMsgId = String(reqPayload?.messageId || '').trim();
+      if (reqMsgId) {
+        const matched = entries.find((e) => (e.messageId && e.messageId === reqMsgId) || (e.clientMessageId && e.clientMessageId === reqMsgId)) || null;
+        if (matched) {
+          return { ok: true, target: matched };
+        }
+        // 仅在全部桌面项均处于未对账 opt-* 态、无任何其他真实服务端 ID，且当前队列中该文本能够唯一匹配单条 opt-* 项时才允许回退绑定；
+        // 若存在同文多条、发生替换/重排或无文本，即使总数量相同也一律拒绝（绝不回落按 domIndex 盲选）
+        if (
+          !/^opt-/i.test(reqMsgId) &&
+          reqText &&
+          !entries.some((e) => e?.messageId && !/^opt-/i.test(String(e.messageId)))
+        ) {
+          const uniqueOptMatches = entries.filter((e) => matchesEntryText(e));
+          if (uniqueOptMatches.length === 1 && /^opt-/i.test(String(uniqueOptMatches[0]?.messageId || ''))) {
+            return { ok: true, target: uniqueOptMatches[0] };
+          }
+        }
+        return { ok: false, error: `目标排队消息已变化或不存在，已取消${actionVerb}以防误操作` };
+      }
+      const expQueueCount = Number(reqPayload?.expectedQueueCount);
+      if (Number.isInteger(expQueueCount) && expQueueCount > 0 && entries.length !== expQueueCount) {
+        return { ok: false, error: `桌面排队数量已变化，已取消${actionVerb}以防索引移位误操作` };
+      }
+      const hasReqIdx = Number.isInteger(reqPayload?.domIndex);
+      const reqIdx = hasReqIdx ? reqPayload.domIndex : -1;
       if (hasReqIdx) {
         if (reqIdx < 0 || reqIdx >= entries.length) {
           return { ok: false, error: `目标排队索引越界，已取消${actionVerb}以防误操作` };
