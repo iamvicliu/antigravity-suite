@@ -31806,6 +31806,163 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
       assert.equal(poppedNotifs[2].title, srvEmojiFmt.title, '长多字节 Emoji 标题+项目名前后端 UTF-8 字节截断结果必须 100% 一致');
       assert.equal(poppedNotifs[2].body, srvEmojiFmt.body, '长多字节 Emoji 正文摘要前后端 UTF-8 字节截断结果必须 100% 一致');
       assert.equal(poppedNotifs[2].tag, srvEmojiFmt.tag);
+
+      // 5. 轨迹分页回退安全回归：首页含历史旧回复/旧命令而尾页拉取失败时，绝不展示旧摘要（保留当前轮标识并回退通用提示）；
+      //    同时验证活动快照缺失 stepCount、两轮分页窗口消息条数相同但 updatedAt 不同时，两轮均正常发送且标签不同、同轮重复观测不重发
+      mgr.resetForTest();
+      mgr.addSubscription(sub, { label: 'MacBook' });
+      deliveredBodies.length = 0;
+      let edgePhase = 'boot';
+      const edgeHandler = remoteMod.createRemoteHttpHandler(
+        { enabled: true, port: 18765, token: 'tok48e', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+        {
+          webPushManager: mgr,
+          fetchSnapshot: async () => {
+            if (edgePhase === 'boot') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 1000 },
+                  { id: 'paged-wait', title: '长会话尾页失败待批', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 1000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 9000 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: 'q0' }, { role: 'assistant', text: 'r0' }]
+              };
+            }
+            if (edgePhase === 'paged-tail-fail') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 2000 },
+                  { id: 'paged-wait', title: '长会话尾页失败待批', projectName: 'suite', status: 'waiting', completedUnread: false, updatedAt: 2000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'act-dup-run') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 9100 }],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'act-dup-idle') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'act-turn2-run') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 9300 }],
+                projects: [],
+                messages: [{ role: 'user', text: '第二轮提问' }, { role: 'assistant', text: '生成中' }]
+              };
+            }
+            return {
+              ok: true,
+              sessionId: 'act-nosc',
+              conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9500 }],
+              projects: [],
+              // 分页窗口条数仍为 2 条（与第一轮 messages.length 完全相同！）
+              messages: [{ role: 'user', text: '第二轮提问' }, { role: 'assistant', text: '第二轮全新回复摘要内容' }]
+            };
+          },
+          callLanguageServer: async (method, body) => {
+            if (method === 'GetCascadeTrajectory') {
+              return {
+                numTotalSteps: 80,
+                trajectory: {
+                  steps: [
+                    { userInput: { items: [{ text: '很久以前的第1轮' }] } },
+                    body.cascadeId === 'paged-comp'
+                      ? { plannerResponse: { response: '第1轮远古旧回复绝不能当成第80步新摘要' } }
+                      : { runCommand: { commandLine: 'rm -rf /ancient-first-page-cmd' } }
+                  ]
+                }
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps') {
+              throw new Error('Tail page RPC timeout');
+            }
+            return {};
+          }
+        }
+      );
+      const callEdgeSnap = () => new Promise((resolve) => {
+        const chunks = [];
+        edgeHandler(
+          { method: 'GET', url: '/api/snapshot?token=tok48e', headers: { host: '127.0.0.1:18765' }, socket: { remoteAddress: '127.0.0.1' }, on(ev, cb) { if (ev === 'end') cb(); }, destroy() {} },
+          { setHeader() {}, getHeader: () => undefined, writeHead() {}, end(b) { if (b) chunks.push(Buffer.from(b)); resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } }
+        );
+      });
+
+      const snapBootEdge = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(snapBootEdge.conversations);
+      poppedNotifs.length = 0;
+      deliveredBodies.length = 0;
+
+      edgePhase = 'paged-tail-fail';
+      const snapTailFail = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 50));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(snapTailFail.conversations);
+
+      const pushPagedComp = deliveredBodies.find((p) => p.conversationId === 'paged-comp');
+      const pushPagedWait = deliveredBodies.find((p) => p.conversationId === 'paged-wait');
+      const localPagedComp = poppedNotifs.find((n) => n.tag && n.tag.includes('paged-comp'));
+      const localPagedWait = poppedNotifs.find((n) => n.tag && n.tag.includes('paged-wait'));
+      assert.equal(pushPagedComp?.tag, 'ag-completed-paged-comp-s80', '尾页拉取失败时仍应保留 numTotalSteps=80 轮次标识');
+      assert.equal(pushPagedComp?.body, '本轮回复已完成', '尾页拉取失败时 Web Push 严禁回退采用首页旧回复摘要');
+      assert.ok(!pushPagedWait?.body.includes('ancient-first-page-cmd'), '尾页拉取失败时 Web Push 严禁回退采用首页旧命令摘要');
+      assert.equal(localPagedComp?.body, '本轮回复已完成', '尾页拉取失败时本地 Notification 同样严禁展示首页旧回复摘要');
+      assert.ok(!localPagedWait?.body.includes('ancient-first-page-cmd'), '尾页拉取失败时本地 Notification 同样严禁展示首页旧命令摘要');
+
+      // 验证无 stepCount 的活跃会话第 1 轮 (updatedAt=9100, messages.length=2)
+      const pushAct1 = deliveredBodies.find((p) => p.conversationId === 'act-nosc');
+      const localAct1 = poppedNotifs.find((n) => n.tag && n.tag.includes('act-nosc'));
+      assert.equal(pushAct1?.tag, 'ag-completed-act-nosc-u9100', '缺失 stepCount 时不得用分页窗口 messages.length 伪造步骤数');
+      assert.ok(pushAct1?.body.includes('第一轮活动回复摘要内容'));
+      assert.equal(localAct1?.tag, 'ag-completed-act-nosc-u9100');
+
+      // 同轮 (updatedAt 仍为 9100) 重复观测绝不重发
+      deliveredBodies.length = 0;
+      poppedNotifs.length = 0;
+      edgePhase = 'act-dup-run';
+      const sDupRun = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sDupRun.conversations);
+      edgePhase = 'act-dup-idle';
+      const sDupIdle = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 40));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sDupIdle.conversations);
+      assert.equal(deliveredBodies.length, 0, '同轮 updatedAt 未变时 Web Push 不得重发');
+      assert.equal(poppedNotifs.length, 0, '同轮 updatedAt 未变时本地通知不得重发');
+
+      // 第 2 轮 (updatedAt=9500，但分页窗口 messages.length 仍为 2！) 必须正常发送且携带新标签与新摘要
+      edgePhase = 'act-turn2-run';
+      const sT2Run = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sT2Run.conversations);
+      edgePhase = 'act-turn2-idle';
+      const sT2Idle = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 50));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sT2Idle.conversations);
+      assert.equal(deliveredBodies.length, 1, '两轮分页消息数相同但 updatedAt 不同时第 2 轮 Web Push 必须发送');
+      assert.equal(deliveredBodies[0].tag, 'ag-completed-act-nosc-u9500');
+      assert.ok(deliveredBodies[0].body.includes('第二轮全新回复摘要内容'));
+      assert.equal(poppedNotifs.length, 1, '两轮分页消息数相同但 updatedAt 不同时第 2 轮本地通知必须发送');
+      assert.equal(poppedNotifs[0].tag, 'ag-completed-act-nosc-u9500');
+      assert.ok(poppedNotifs[0].body.includes('第二轮全新回复摘要内容'));
     } finally {
       for (const t of timers) clearTimeout(t);
       timers.clear();
