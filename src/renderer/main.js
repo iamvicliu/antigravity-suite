@@ -69,7 +69,7 @@
   const range = value => value ? `≈ ${short(value.low)}–${short(value.high)}` : '—';
   const token = value => value == null ? '未提供' : `${fmt(value)} tokens`;
   const state = {
-    route: null, count: 0, latest: null, requestAt: 0, requestError: '',
+    route: null, count: 0, scanGeneratorCount: -1, latest: null, requestAt: 0, requestError: '',
     requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0,
     scanError: '', scan: null, generation: 0, controllers: new Set(),
     disposed: false, layoutMode: 'wide', tooltipOpen: false,
@@ -4051,7 +4051,8 @@
           pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 &&
           matchedMaxStepIdx > pf.lastCheckpointStepIdx && matchedMaxStepIdx >= knownExact
         );
-        const rowBehindKnownStep = matchedMaxStepIdx >= 0 && knownExact >= 0 && matchedMaxStepIdx < knownExact;
+        const sameScannedUnindexed = matchedMaxStepIdx < 0 && state.scanGeneratorCount >= 0 && state.count <= state.scanGeneratorCount && Number(state.latest?.stepCount) > 0;
+        const rowBehindKnownStep = (knownExact >= 0 && (matchedMaxStepIdx < 0 || matchedMaxStepIdx < knownExact)) || sameScannedUnindexed;
         const rowPredatesFloorCp = Boolean(pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 && matchedMaxStepIdx <= pf.lastCheckpointStepIdx);
         if (rowBehindKnownStep) {
           if (pf && pf.route === id && state.count > pf.generatorCount) pf.generatorCount = state.count;
@@ -4100,11 +4101,13 @@
         (scanExact < 0 || curExact > scanExact || (curExact === scanExact && !state.latest?.compressionDetected))
       );
       if (!staleCompactScan && scanLat?.compressionDetected && scanLat?.postCompactAtGeneratorCount != null) {
+        state.scanGeneratorCount = Number.isFinite(genCount) ? Math.max(genCount, state.count) : state.count;
         state.postCompactFloor = { route: id, generatorCount: scanLat.postCompactAtGeneratorCount, lastCheckpointStepIdx: scanCp, latest: scanLat };
         state.latest = scanLat;
         state.requestAt = result.data.scannedAt || Date.now();
         state.requestError = '';
       } else if (!staleCompactScan && scanLat && (scanExact > curExact || result.data.scannedAt >= state.requestAt)) {
+        state.scanGeneratorCount = Number.isFinite(genCount) ? Math.max(genCount, state.count) : state.count;
         if (state.postCompactFloor && state.postCompactFloor.route === id && scanExact > state.postCompactFloor.lastCheckpointStepIdx) state.postCompactFloor = null;
         state.latest = scanLat;
         state.requestAt = Math.max(state.requestAt, result.data.scannedAt || Date.now());
@@ -4136,7 +4139,7 @@
       if (state.reportedFinalCallIds) state.reportedFinalCallIds.clear();
       if (state.reportedFinalCallOutputs) state.reportedFinalCallOutputs.clear();
       Object.assign(state, {
-        route: id, count: 0, latest: null, postCompactFloor: null, sessionCalls: [], sessionCostTotal: 0,
+        route: id, count: 0, scanGeneratorCount: -1, latest: null, postCompactFloor: null, sessionCalls: [], sessionCostTotal: 0,
         requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
         scanBusy: false, scanNext: 0, scanError: '', scan: null,
         reportedFinalCallIds: state.reportedFinalCallIds || new Set(),

@@ -30790,7 +30790,7 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
       const getTrajPayload = (cid) => {
         if (cid === CONV_SCAN_STEP4) {
           const steps = [{ userInput: { userResponse: 's0' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '258000', cacheReadTokens: '0', outputTokens: '963' } }, plannerResponse: { response: 's1' } }, { type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'cp2' } }, { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '20000', outputTokens: '500' }, streamingDuration: '2.0s' }, plannerResponse: { response: 's3' } }, ...(scanStep4Arrived ? [{ metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '15000', cacheReadTokens: '25600', outputTokens: '600' }, streamingDuration: '3.0s' }, plannerResponse: { response: 's4' } }] : [])];
-          return wrapTraj(steps, scan4GmStep > 1 ? 2 : 1);
+          return wrapTraj(steps, scan4GmStep !== 1 ? 2 : 1);
         }
         if (cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST || cid === CONV_POST_DUP_SIG) {
           const turn2 = cid === CONV_POST_UNTIMED_MU ? { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '12000', cacheReadTokens: '20000', outputTokens: '180' } }, plannerResponse: { response: 'untimed mu turn2' } } : (cid === CONV_POST_DUP_SIG ? { metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M427', inputTokens: '8000', cacheReadTokens: '18000', outputTokens: '240' } }, plannerResponse: { response: 'untimed duplicate-sig turn2' } } : { plannerResponse: { response: 'untimed estimated planner turn2 without timestamps' } });
@@ -30806,7 +30806,7 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
       };
 
       const getGenPayload = (cid) => {
-        if (cid === CONV_SCAN_STEP4) return { generatorMetadata: [scan4GmStep === 3 ? makeGmRow(3, { inputTokens: 8000, cacheReadTokens: 20000, outputTokens: 500 }, 512000, '0.5s', '2.0s') : makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
+        if (cid === CONV_SCAN_STEP4) return { generatorMetadata: scan4GmStep === '3-unindexed' ? [makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000), { chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', timeToFirstToken: '0.5s', streamingDuration: '2.0s', usage: { inputTokens: 8000, cacheReadTokens: 20000, outputTokens: 500 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }] : [scan4GmStep === 3 ? makeGmRow(3, { inputTokens: 8000, cacheReadTokens: 20000, outputTokens: 500 }, 512000, '0.5s', '2.0s') : makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
         if (cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST || cid === CONV_POST_DUP_SIG) return { generatorMetadata: [{ chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', streamingDuration: '2.0s', usage: { inputTokens: 8000, cacheReadTokens: 18000, outputTokens: 240 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }] };
         if (cid === CONV_GM_CREATE) return { generatorMetadata: [makeGmRow(1, { inputTokens: 15000, cacheReadTokens: 25000, cacheCreationTokens: 5000, outputTokens: 500 }, 512000, '1.0s', '5.0s')] };
         if (cid === CONV_GM_TOT) return { generatorMetadata: [makeGmRow(1, { totalTokens: 64000 }, 512000, '1.0s', '2.0s')] };
@@ -31084,6 +31084,13 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
       assert.equal(meterApi.snapshot().latest.exactUsageStepIndex, 4); assert.equal(meterApi.snapshot().latest.actual, 41200);
       assert.equal(meterApi.snapshot().latest.speed.streamingTps, 200);
       env.win.contextMeterAPI = savedScanApi; env.sandbox.contextMeterAPI = savedScanApi;
+      scan4GmStep = '3-unindexed';
+      await meterApi.refresh();
+      env.win.contextMeterAPI = {}; env.sandbox.contextMeterAPI = {};
+      await meterApi.refresh();
+      assert.equal(meterApi.snapshot().latest.exactUsageStepIndex, 4); assert.equal(meterApi.snapshot().latest.actual, 41200);
+      assert.equal(meterApi.snapshot().latest.speed.streamingTps, 200);
+      env.win.contextMeterAPI = savedScanApi; env.sandbox.contextMeterAPI = savedScanApi;
 
       // 2m: 仅 GeneratorMetadata 提供用量（含 cacheCreationTokens=5,000 及仅 totalTokens=64,000 回退）时，全端已用、百分比与剩余容量 100% 一致
       for (const [gmCid, expUsed, expPct] of [[CONV_GM_CREATE, 45500, 8.9], [CONV_GM_TOT, 64000, 12.5]]) {
@@ -31110,6 +31117,10 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
         realFooter.__reactFiber$test = { memoizedProps: { cascadeId: untimedCid, modelId: 'MODEL_PLACEHOLDER_M427' } };
         const colUnt = await collectorMod.collect(origin, untimedCid, { force: true });
         await meterApi.refresh();
+        const savedUntApi = env.win.contextMeterAPI;
+        env.win.contextMeterAPI = {}; env.sandbox.contextMeterAPI = {};
+        await meterApi.refresh();
+        env.win.contextMeterAPI = savedUntApi; env.sandbox.contextMeterAPI = savedUntApi;
         capsApi.setTrajectorySummary(untimedCid, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-untimed-b' });
         const capUnt = await capsApi.refreshConversationUsage(untimedCid, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-untimed-b' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, realFooter);
         capsApi.renderAllFooters();
