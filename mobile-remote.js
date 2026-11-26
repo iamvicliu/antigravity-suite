@@ -10462,14 +10462,14 @@ function buildMobileAppHtml() {
         const curRes = exactCurRes || (kindRes && kindRes.url === curOrigin ? kindRes : null);
         const curReachable = Boolean((curRes && curRes.ok) || (!curRes && (isTrustedSecureOrigin(pageOrigin) || isStandalonePwa)));
         const switchOrigin = isTrustedSecureOrigin(pageOrigin) ? pageOrigin : curOrigin;
-        const eligibleRanked = curReachable
-          ? ranked.filter((ep) => ep && !isServerHintResult(ep) && !shouldBlockInsecureDowngrade(switchOrigin, ep.url, isStandalonePwa))
-          : ranked.filter((ep) => ep && !isServerHintResult(ep));
+        const eligibleRanked = ranked.filter(
+          (ep) => ep && !isServerHintResult(ep) && !shouldBlockInsecureDowngrade(switchOrigin, ep.url, isStandalonePwa)
+        );
         const switchBest = eligibleRanked[0] || null;
 
         if (wantAutoSwitch && !manualLocked && !isAutoSwitched && switchBest) {
           const sameEntry = switchBest.url === curOrigin || switchBest.kind === curKind;
-          const downgradeBlocked = Boolean(curReachable && shouldBlockInsecureDowngrade(switchOrigin, switchBest.url, isStandalonePwa));
+          const downgradeBlocked = shouldBlockInsecureDowngrade(switchOrigin, switchBest.url, isStandalonePwa);
           const significantlyFaster = !curReachable
             || (curRes && curRes.ok && curKind === 'tunnel' && switchBest.kind !== 'tunnel' && (!curRes.ms || switchBest.ms < curRes.ms))
             || (curRes && curRes.ok && Number.isFinite(curRes.ms) && (curRes.ms - switchBest.ms >= 15) && switchBest.ms <= curRes.ms * 0.75);

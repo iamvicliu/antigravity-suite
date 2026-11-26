@@ -31167,7 +31167,7 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
   ];
   const encEps = remoteMod.encodeEndpointsParam(endpoints);
 
-  const runChannelVm = async ({ standalone = false, reachMap = {}, popupMode = 'proxy', snapshotFail = false } = {}) => {
+  const runChannelVm = async ({ standalone = false, reachMap = {}, popupMode = 'proxy', snapshotFail = false, manualParam = true, allowHttpProbe = false } = {}) => {
     const replacedUrls = [];
     const openedTabs = [];
     const snapshotOrigins = [];
@@ -31200,7 +31200,7 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
     ]) {
       byId[id] = makeEl(id);
     }
-    const startUrl = new URL(`https://demo.trycloudflare.com/?token=tok46&manual=1&endpoints=${encEps}`);
+    const startUrl = new URL(`https://demo.trycloudflare.com/?token=tok46${manualParam ? '&manual=1' : ''}&endpoints=${encEps}`);
     const locObj = {
       get href() { return startUrl.href; },
       set href(v) { replacedUrls.push(String(v)); },
@@ -31251,7 +31251,7 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
       clearTimeout: (t) => { timers.delete(t); clearTimeout(t); },
       fetch: async (rawUrl) => {
         const u = new URL(String(rawUrl), startUrl.origin);
-        if (u.protocol === 'http:') throw new Error('Mixed Content blocked');
+        if (u.protocol === 'http:' && !allowHttpProbe) throw new Error('Mixed Content blocked');
         if (u.pathname === '/api/probe-hints') {
           return {
             ok: true, status: 200,
@@ -31369,9 +31369,25 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
     vmPopupBlocked.cleanup();
   }
 
-  // 4c: 独立 PWA 窗口 (isStandalonePwa) 拦截从 HTTPS 到未验证明文 HTTP 的盲跳
-  const vmPwa = await runChannelVm({ standalone: true });
+  // 4c: 独立 PWA 窗口 (isStandalonePwa) 拦截从 HTTPS 到未验证明文 HTTP 的手动盲跳，且 curReachable=false 时 runSpeedTest(autoSwitch=true) 也严禁自动跳往 HTTP
+  const vmPwa = await runChannelVm({
+    standalone: true,
+    manualParam: false,
+    allowHttpProbe: true,
+    snapshotFail: true,
+    reachMap: {
+      'https://demo.trycloudflare.com': 'down',
+      'https://mac.tail-demo.ts.net': 'down',
+      'http://192.168.1.8:18765': 'ok',
+      'http://mac-mini.local:18765': 'ok'
+    }
+  });
   try {
+    await vmPwa.hooks.runSpeedTest({ autoSwitch: true, silent: true });
+    assert.equal(vmPwa.replacedUrls.length, 0, 'curReachable=false 时 HTTPS PWA 的 runSpeedTest(autoSwitch=true) 也严禁绕过 shouldBlockInsecureDowngrade 跳往明文 HTTP');
+    const okPwaFailover = await vmPwa.hooks.tryFailoverEndpoint();
+    assert.equal(okPwaFailover, false, 'curReachable=false 时 HTTPS PWA 的 tryFailoverEndpoint 仅有明文 HTTP 可达也必须拒绝降级');
+    assert.equal(vmPwa.replacedUrls.length, 0);
     const okPwa = await vmPwa.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
     assert.equal(okPwa, false);
     assert.equal(vmPwa.replacedUrls.length, 0, 'standalone PWA 严禁盲跳至未验证明文 HTTP 死页');
