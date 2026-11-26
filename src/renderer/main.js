@@ -3809,7 +3809,7 @@
         }
 
         const usedTokenCount = d?.actual != null ? d.actual : (d?.used != null ? d.used : (d?.estimate != null ? d.estimate : (session?.total?.low ?? null)));
-        const budgetTokenCount = d?.budget || (d?.serviceLimit ? d.serviceLimit : 983040);
+        const budgetTokenCount = d?.budget || (d?.serviceLimit ? d.serviceLimit : 512000);
 
         if (disp.isOverflow) {
           if (keyUsed) keyUsed.textContent = d.serviceLimit ? `>${short(d.serviceLimit)}` : '超限';
@@ -4008,7 +4008,51 @@
         latestVal.cacheCliffRisk = (latestVal.actual || 0) >= 328000
           ? 'critical'
           : ((latestVal.actual || 0) >= 240000 ? 'warn' : 'none');
-        state.latest = latestVal;
+        latestVal.runtimeBudget = latestVal.budget || null;
+        try {
+          const cp = window.__AGContextMeterSettings?.customPlan;
+          if (cp && typeof cp === 'object') {
+            let customLim = 0;
+            if (cp.contextScopeMode !== 'per_model') {
+              if (cp.contextUnifiedPreference?.mode === 'fixed' && Number(cp.contextUnifiedPreference.limitTokens) > 0) {
+                customLim = Math.round(Number(cp.contextUnifiedPreference.limitTokens));
+              }
+            } else if (cp.contextPreferences && typeof cp.contextPreferences === 'object') {
+              const cands = [latestVal.modelId, latestVal.modelRaw, latestVal.model].map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
+              for (const [k, ent] of Object.entries(cp.contextPreferences)) {
+                if (!ent || ent.mode !== 'fixed' || !(Number(ent.limitTokens) > 0)) continue;
+                const ek = [k, ent.modelId, ent.label].map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
+                if (cands.some(c => ek.includes(c))) { customLim = Math.round(Number(ent.limitTokens)); break; }
+              }
+            }
+            if (customLim > 0) {
+              latestVal.budget = customLim;
+              if (latestVal.actual != null && !latestVal.exceeded) {
+                latestVal.percent = (latestVal.actual / customLim) * 100;
+              }
+            }
+          }
+        } catch {}
+        const matchedRow = latestIdx >= 0 ? rows[latestIdx] : null;
+        let matchedMaxStepIdx = -1;
+        if (Array.isArray(matchedRow?.stepIndices) && matchedRow.stepIndices.length > 0) {
+          matchedMaxStepIdx = Math.max(...matchedRow.stepIndices.map(Number).filter(Number.isFinite));
+          if (matchedMaxStepIdx >= 0) latestVal.stepCount = matchedMaxStepIdx + 1;
+        }
+        latestVal.speedStepIndex = latestVal.speed ? matchedMaxStepIdx : -1;
+        latestVal.metaMaxStepIndex = matchedMaxStepIdx;
+        latestVal.exactUsageStepIndex = matchedMaxStepIdx;
+        latestVal.updatedAtMs = Date.now();
+        const pf = state.postCompactFloor;
+        const rowProvenAfterCp = Boolean(pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 && matchedMaxStepIdx > pf.lastCheckpointStepIdx);
+        const rowPredatesFloorCp = Boolean(pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 && matchedMaxStepIdx <= pf.lastCheckpointStepIdx);
+        if (pf && pf.route === id && !rowProvenAfterCp && (rowPredatesFloorCp || (state.count <= pf.generatorCount && (latestVal.actual || 0) > ((pf.latest?.actual || 0) + 5000)))) {
+          if (rowPredatesFloorCp && state.count > pf.generatorCount) pf.generatorCount = state.count;
+          state.latest = pf.latest;
+        } else {
+          if (pf && (rowProvenAfterCp || state.count > pf.generatorCount)) state.postCompactFloor = null;
+          state.latest = latestVal;
+        }
       }
       state.requestAt = Date.now(); state.requestError = '';
     } catch (e) {
@@ -4037,9 +4081,23 @@
       if (Number.isFinite(genCount) && genCount > state.count) {
         state.count = genCount;
       }
-      if (result.data.scannedAt >= state.requestAt && result.data.latest) {
-        state.latest = result.data.latest;
-        state.requestAt = result.data.scannedAt;
+      const scanLat = result.data.latest;
+      const curExact = typeof state.latest?.exactUsageStepIndex === 'number' ? state.latest.exactUsageStepIndex : -1;
+      const scanExact = typeof scanLat?.exactUsageStepIndex === 'number' ? scanLat.exactUsageStepIndex : -1;
+      const scanCp = typeof scanLat?.lastCheckpointStepIdx === 'number' ? scanLat.lastCheckpointStepIdx : -1;
+      const staleCompactScan = Boolean(
+        scanLat?.compressionDetected && scanCp >= 0 && curExact > scanCp &&
+        (scanExact < 0 || curExact > scanExact || (curExact === scanExact && !state.latest?.compressionDetected))
+      );
+      if (!staleCompactScan && scanLat?.compressionDetected && scanLat?.postCompactAtGeneratorCount != null) {
+        state.postCompactFloor = { route: id, generatorCount: scanLat.postCompactAtGeneratorCount, lastCheckpointStepIdx: scanCp, latest: scanLat };
+        state.latest = scanLat;
+        state.requestAt = result.data.scannedAt || Date.now();
+        state.requestError = '';
+      } else if (!staleCompactScan && scanLat && (scanExact > curExact || result.data.scannedAt >= state.requestAt)) {
+        if (state.postCompactFloor && state.postCompactFloor.route === id && scanExact > state.postCompactFloor.lastCheckpointStepIdx) state.postCompactFloor = null;
+        state.latest = scanLat;
+        state.requestAt = Math.max(state.requestAt, result.data.scannedAt || Date.now());
         state.requestError = '';
       }
       state.latest = withStepError(state.latest);
@@ -4068,7 +4126,7 @@
       if (state.reportedFinalCallIds) state.reportedFinalCallIds.clear();
       if (state.reportedFinalCallOutputs) state.reportedFinalCallOutputs.clear();
       Object.assign(state, {
-        route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
+        route: id, count: 0, latest: null, postCompactFloor: null, sessionCalls: [], sessionCostTotal: 0,
         requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
         scanBusy: false, scanNext: 0, scanError: '', scan: null,
         reportedFinalCallIds: state.reportedFinalCallIds || new Set(),
@@ -4087,7 +4145,7 @@
 
   const timer = setInterval(tick, 500);
   /* @INSERT_SUITE_SETTINGS_MODULE */
-  globalThis.__AGContextMeter = {
+  globalThis.__AGContextMeter = window.__AGContextMeter = {
     version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.2',
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -4193,6 +4251,68 @@
     findTopRightClusterForTest: () => findTopRightCluster(),
     syncWindowControlsOverlayForTest: () => syncWindowControlsOverlay(),
     computeWindowControlsWidthForTest: el => computeWindowControlsWidth(el),
+    invalidateAfterCompact: (cascadeId, compactInfo) => {
+      if (state.disposed || !compactInfo || typeof compactInfo !== 'object') return false;
+      const liveId = route();
+      if (liveId && liveId !== state.route) tick();
+      if (!state.route) return false;
+      const norm = v => String(v || '').trim().split('/').pop() || '';
+      if (cascadeId && norm(cascadeId) !== norm(state.route)) return false;
+      const compactCpIdx = typeof compactInfo.lastCheckpointStepIdx === 'number' ? compactInfo.lastCheckpointStepIdx : (state.latest?.lastCheckpointStepIdx ?? -1);
+      const curExactStep = typeof state.latest?.exactUsageStepIndex === 'number' ? state.latest.exactUsageStepIndex : (typeof state.latest?.metaMaxStepIndex === 'number' ? state.latest.metaMaxStepIndex : -1);
+      if (compactCpIdx >= 0 && curExactStep > compactCpIdx) return false;
+      const compactedUsed = Math.max(0, Math.round(Number(compactInfo.contextUsed ?? compactInfo.usedTokens ?? compactInfo.actual ?? 0) || 0));
+      if (!compactedUsed) return false;
+      const curActual = Number(state.latest?.actual ?? state.latest?.used ?? 0) || 0;
+      const regrown = Number(compactInfo.compressionAfter || 0) > 0 && compactedUsed > Number(compactInfo.compressionAfter) + 50000;
+      if (regrown) return false;
+      if (curActual > 0 && !state.latest?.compressionDetected && curActual <= compactedUsed + 5000) return false;
+      const effBudget = Math.round(Number(compactInfo.contextLimit ?? compactInfo.limitTokens ?? state.latest?.budget ?? 512000) || 512000);
+      const inTok = Math.max(0, Math.round(Number(compactInfo.inputTokens ?? 0) || 0));
+      const cRead = Math.max(0, Math.round(Number(compactInfo.cacheReadTokens ?? 0) || 0));
+      const outTok = Math.max(0, Math.round(Number(compactInfo.outputTokens ?? 0) || 0));
+      const totalIn = (inTok + cRead) || compactedUsed;
+      const postTps = Number(compactInfo.tokPerSec || 0) > 0 ? Number(Number(compactInfo.tokPerSec).toFixed(1)) : 0;
+      const nextLatest = {
+        ...(state.latest || {}),
+        used: compactedUsed, actual: compactedUsed, estimate: compactedUsed, budget: effBudget,
+        runtimeBudget: Number(compactInfo.runtimeBudget || state.latest?.runtimeBudget || 0) || null,
+        physicalMaxTokens: Number(compactInfo.physicalMaxTokens || state.latest?.physicalMaxTokens || 0) || null,
+        estimated: false, exceeded: false, network: false, error: '',
+        input: totalIn, cached: cRead, uncachedInput: inTok,
+        cacheHitRate: typeof compactInfo.cacheHitRate === 'number' ? Number(compactInfo.cacheHitRate.toFixed(1)) : (totalIn > 0 ? Number(((cRead / totalIn) * 100).toFixed(1)) : 100),
+        output: outTok,
+        speed: postTps > 0 ? {
+          tps: postTps, streamingTps: postTps, duration: Number(compactInfo.lastDurationSec || 0) || null,
+          ttft: Number(compactInfo.ttftSec || 0) || null, streamingSec: null, outputTokens: outTok, thinkingTokens: 0, responseTokens: outTok
+        } : null,
+        speedStepIndex: postTps > 0 ? Math.max(0, Number(compactInfo.stepCount || 1) - 1) : -1,
+        metaMaxStepIndex: -1, exactUsageStepIndex: compactCpIdx,
+        percent: effBudget > 0 ? (compactedUsed / effBudget) * 100 : null,
+        model: compactInfo.modelDisplayName || state.latest?.model || '', modelId: compactInfo.modelId || state.latest?.modelId || null,
+        status: 'reported', compressionDetected: true,
+        compressionBefore: Number(compactInfo.compressionBefore || curActual || 0) || 0,
+        compressionAfter: Number(compactInfo.compressionAfter || compactedUsed) || compactedUsed,
+        cacheDropDetected: false, cacheCliffRisk: compactedUsed >= 328000 ? 'critical' : (compactedUsed >= 240000 ? 'warn' : 'none'),
+        postCompactAtGeneratorCount: state.count, lastCheckpointStepIdx: compactCpIdx,
+        stepCount: Number(compactInfo.stepCount || state.latest?.stepCount || 0) || 0,
+        updatedAtMs: Number(compactInfo.updatedAtMs || Date.now())
+      };
+      state.postCompactFloor = { route: state.route, generatorCount: state.count, lastCheckpointStepIdx: nextLatest.lastCheckpointStepIdx, latest: nextLatest };
+      state.latest = nextLatest;
+      state.requestAt = Date.now();
+      render();
+      return true;
+    },
+    refresh: () => {
+      if (state.disposed) return false;
+      const liveId = route();
+      if (liveId && liveId !== state.route) tick();
+      if (!state.route) return false;
+      state.requestNext = 0;
+      state.scanNext = 0;
+      return Promise.allSettled([scan(state.generation, state.route, true), requestPoll(state.generation, state.route)]);
+    },
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     dispose() {
       state.disposed = true;

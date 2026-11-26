@@ -5060,6 +5060,12 @@
   }
 
   function extractContextPercent() {
+    try {
+      const auth = resolveAuthoritativeContextMetrics();
+      if (auth && auth.usedTokens > 0 && typeof auth.usagePercent === 'number') {
+        return auth.usagePercent;
+      }
+    } catch {}
     const cap = document.querySelector('[data-agy-context-capsule="1"]');
     const capMatch = (cap?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
     if (capMatch) return Number(capMatch[1]);
@@ -5069,40 +5075,27 @@
   }
 
   function extractContextRiskState() {
-    const percent = extractContextPercent();
-    let contextUsed = 0;
-    let cacheDropDetected = false;
     try {
-      const capData = document.querySelector('[data-agy-context-capsule="1"]')?.__ctxUsageData;
-      const meterLatest = window.__AGContextMeter?.snapshot?.()?.latest;
-      const capUsed = Number(capData?.contextUsed || 0);
-      const meterUsed = Number(meterLatest?.actual || meterLatest?.used || 0);
-      const compAfter = Number(capData?.compressionAfter || 0);
-      const regrownSinceCompact = compAfter > 0 && capUsed > compAfter + 50000;
-      const capShowsPostCompactDrop = Boolean(
-        capData?.hasPreciseSnapshot &&
-        capData?.compressionDetected &&
-        !regrownSinceCompact &&
-        capUsed > 0 &&
-        meterUsed > 0 &&
-        capUsed < 240000 &&
-        capUsed < meterUsed
-      );
-      contextUsed = capShowsPostCompactDrop ? capUsed : Math.max(capUsed, meterUsed);
-      cacheDropDetected = capShowsPostCompactDrop
-        ? Boolean(capData?.cacheDropDetected)
-        : Boolean(capData?.cacheDropDetected || meterLatest?.cacheDropDetected);
-      if (
-        !cacheDropDetected &&
-        capData?.hasPreciseSnapshot &&
-        contextUsed >= 240000 &&
-        Number(capData?.inputTokens || 0) >= 200000 &&
-        Number(capData?.cacheHitRate || 0) < 25
-      ) {
-        cacheDropDetected = true;
+      const auth = resolveAuthoritativeContextMetrics();
+      if (auth && (auth.usedTokens > 0 || typeof auth.usagePercent === 'number')) {
+        return {
+          percent: typeof auth.usagePercent === 'number' ? auth.usagePercent : extractContextPercent(),
+          contextUsed: auth.usedTokens || 0,
+          limitTokens: auth.limitTokens || null,
+          physicalMaxTokens: auth.physicalMaxTokens || null,
+          cacheDropDetected: Boolean(auth.cacheDropDetected),
+          source: auth.source
+        };
       }
     } catch {}
-    return { percent, contextUsed, cacheDropDetected };
+    return {
+      percent: extractContextPercent(),
+      contextUsed: 0,
+      limitTokens: null,
+      physicalMaxTokens: null,
+      cacheDropDetected: false,
+      source: 'none'
+    };
   }
 
   function isCompactUserMessageElement(userMsgEl) {
@@ -9835,50 +9828,249 @@
     ];
   }
 
-  function collectDesktopContextPanelData(sr, pulseEl, contextBadge, model) {
-    const ctxData = pulseEl?.__ctxUsageData || null;
-    const readText = (id) => (sr?.getElementById(id)?.textContent || '').replace(/\s+/g, ' ').trim();
-    const usedText = readText('key-used');
-    const limitText = readText('key-limit');
-    const remainingText = readText('key-remaining');
-    const keyBadge = readText('key-badge');
-    const speedVal = readText('speed-val');
-    const durationText = readText('speed-duration');
-    const ttftText = readText('speed-ttft');
-    const outputTokensText = readText('speed-tokens');
-    const roundCostText = readText('round-cost-text');
-    const sessionCostText = readText('session-cost-text');
-    const pctText = readText('badge-pct-val') || contextBadge || '';
-    const pctMatch = pctText.match(/(\d+(?:\.\d+)?)\s*%/);
-    const usagePercent = ctxData && typeof ctxData.usagePercent === 'number'
-      ? Number(ctxData.usagePercent)
-      : (pctMatch ? Number(pctMatch[1]) : null);
-    const speedMatch = speedVal.match(/(\d+(?:\.\d+)?)/);
-    const durMatch = durationText.match(/(\d+(?:\.\d+)?)/);
+  function normalizeContextCidKey(val) {
+    if (!val || typeof val !== 'string') return '';
+    const parts = val.trim().split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  }
+
+  function resolveEnhancerPhysicalMaxTokens(modelId, modelLabel) {
+    try {
+      const viaCaps = window.__AGY_CTX_CAPSULE_API__?.getPhysicalMaxTokensForModel?.(modelId, modelLabel);
+      if (typeof viaCaps === 'number' && viaCaps > 0) return Math.round(viaCaps);
+    } catch {}
+    const combined = `${modelId || ''} ${modelLabel || ''}`.trim().toUpperCase();
+    if (!combined) return 0;
+    if (combined.includes('GPT_OSS') || combined.includes('GPT-OSS') || combined.includes('120B')) return 131072;
+    if (combined.includes('CLAUDE') || combined.includes('OPUS') || combined.includes('SONNET')) return /5[._-]5|M40[0-5]/.test(combined) ? 1000000 : 200000;
+    if (/GEMINI|NEON|CARBON|ARGON|HYDROGEN|ORCHESTRATOR|FLASH|M41[789]|M427|M43[78]|M52[5-8]|M53[2-7]|M667|M669|M681|M31[89]|M320/.test(combined)) return 1048576;
+    return 256000;
+  }
+
+  function resolveEnhancerCustomFixedLimit(modelId, modelLabel, explicitCustom = 0) {
+    const direct = Number(explicitCustom || 0);
+    if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+    try {
+      const cp = window.__AGContextMeterSettings?.customPlan;
+      if (!cp || typeof cp !== 'object') return 0;
+      if (cp.contextScopeMode !== 'per_model') {
+        return (cp.contextUnifiedPreference?.mode === 'fixed' && Number(cp.contextUnifiedPreference.limitTokens) > 0)
+          ? Math.round(Number(cp.contextUnifiedPreference.limitTokens)) : 0;
+      }
+      const prefs = cp.contextPreferences;
+      if (!prefs || typeof prefs !== 'object') return 0;
+      const cand = [modelId, modelLabel].map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
+      for (const [k, entry] of Object.entries(prefs)) {
+        if (!entry || entry.mode !== 'fixed' || !(Number(entry.limitTokens) > 0)) continue;
+        const keys = [k, entry.modelId, entry.label].map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
+        if (!cand.length || cand.some((c) => keys.includes(c))) return Math.round(Number(entry.limitTokens));
+      }
+    } catch {}
+    return 0;
+  }
+
+  function resolveEnhancerCompressionBudget(modelId, modelLabel, observedRuntimeBudget = 0, explicitCustom = 0) {
+    const customFixed = resolveEnhancerCustomFixedLimit(modelId, modelLabel, explicitCustom);
+    if (customFixed > 0) return customFixed;
+    const rt = Number(observedRuntimeBudget || 0);
+    if (Number.isFinite(rt) && rt > 0) return Math.round(rt);
+    try {
+      const viaCaps = window.__AGY_CTX_CAPSULE_API__?.resolveCompressionBudgetForModel?.(modelId, modelLabel, {});
+      if (typeof viaCaps === 'number' && viaCaps > 0) return Math.round(viaCaps);
+    } catch {}
+    const phys = resolveEnhancerPhysicalMaxTokens(modelId, modelLabel);
+    return (phys > 0 && phys < 512000) ? phys : 512000;
+  }
+
+  function makeAuthMetricsRecord(source, cid, p) {
+    const usedTokens = Math.max(0, Math.round(Number(p.usedTokens || 0) || 0));
+    const limitTokens = Math.max(0, Math.round(Number(p.limitTokens || 0) || 0));
+    const usagePercent = (usedTokens > 0 && limitTokens > 0 && !p.exceeded)
+      ? Number(((usedTokens / limitTokens) * 100).toFixed(1))
+      : (typeof p.fallbackPct === 'number' ? Number(p.fallbackPct.toFixed(1)) : (p.zeroWhenLimit && limitTokens > 0 ? 0 : null));
     return {
-      usedTokens: ctxData && typeof ctxData.contextUsed === 'number' ? ctxData.contextUsed : null,
-      limitTokens: ctxData && typeof ctxData.contextLimit === 'number' ? ctxData.contextLimit : null,
-      usagePercent,
-      cacheHitRate: ctxData && typeof ctxData.cacheHitRate === 'number' ? ctxData.cacheHitRate : null,
-      tokPerSec: ctxData && typeof ctxData.tokPerSec === 'number'
-        ? ctxData.tokPerSec
-        : (speedMatch ? Number(speedMatch[1]) : null),
-      lastDurationSec: ctxData && typeof ctxData.lastDurationSec === 'number'
-        ? ctxData.lastDurationSec
-        : (durMatch ? Number(durMatch[1]) : null),
-      outputTokens: ctxData && typeof ctxData.outputTokens === 'number' ? ctxData.outputTokens : null,
-      modelDisplayName: ctxData?.modelDisplayName || model || '',
-      contextBadge: contextBadge || '',
-      usedText,
-      limitText,
-      remainingText,
-      keyBadge,
-      speedText: speedVal,
-      durationText,
-      ttftText,
-      outputTokensText,
-      roundCostText,
-      sessionCostText
+      source, conversationId: String(cid || ''),
+      ...(p.isReported !== undefined ? { isReported: Boolean(p.isReported) } : {}),
+      usedTokens, limitTokens, physicalMaxTokens: Number(p.physicalMaxTokens || 0) || null, usagePercent,
+      cacheHitRate: typeof p.cacheHitRate === 'number' ? Number(p.cacheHitRate.toFixed(1)) : null,
+      tokPerSec: Number(p.tokPerSec || 0) > 0 ? Number(Number(p.tokPerSec).toFixed(1)) : null,
+      lastDurationSec: Number(p.lastDurationSec || 0) > 0 ? Number(p.lastDurationSec) : null,
+      ttftSec: Number(p.ttftSec || 0) > 0 ? Number(p.ttftSec) : null,
+      outputTokens: Number(p.outputTokens || 0) > 0 ? Math.round(Number(p.outputTokens)) : null,
+      modelId: String(p.modelId || '').trim(), modelDisplayName: String(p.modelDisplayName || '').trim(),
+      compressionDetected: Boolean(p.compressionDetected), compressionBefore: Number(p.compressionBefore || 0) || 0,
+      compressionAfter: Number(p.compressionAfter || 0) || 0, cacheDropDetected: Boolean(p.cacheDropDetected),
+      exactUsageStepIndex: typeof p.exactUsageStepIndex === 'number' ? p.exactUsageStepIndex : (typeof p.metaMaxStepIndex === 'number' ? p.metaMaxStepIndex : -1),
+      lastCheckpointStepIdx: typeof p.lastCheckpointStepIdx === 'number' ? p.lastCheckpointStepIdx : -1,
+      stepCount: Number(p.stepCount || 0) || 0, updatedAtMs: Number(p.updatedAtMs || 0) || 0
+    };
+  }
+
+  // 全端上下文与速度单一权威数据源（SSOT）：严禁 Math.max 或跨源文本缝合，按压缩状态/步骤数/时间戳择一采用
+  function resolveAuthoritativeContextMetrics(conversationId = '', options = {}) {
+    const fallbackModel = String(options.fallbackModel || '').trim();
+    if (options.isolatedMetrics && typeof options.isolatedMetrics === 'object') {
+      const iso = options.isolatedMetrics;
+      const modelId = String(iso.modelId || '').trim();
+      const modelDisplayName = String(iso.modelDisplayName || fallbackModel || '').trim();
+      const rtBudget = Math.max(0, Math.round(Number(iso.runtimeBudget || 0) || 0));
+      const basePhys = Number(iso.physicalMaxTokens || 0) || resolveEnhancerPhysicalMaxTokens(modelId, modelDisplayName) || 0;
+      return makeAuthMetricsRecord('isolated', conversationId || iso.conversationId || '', {
+        ...iso, modelId, modelDisplayName, zeroWhenLimit: true,
+        limitTokens: resolveEnhancerCompressionBudget(modelId, modelDisplayName, rtBudget, options.customLimitTokens),
+        physicalMaxTokens: basePhys || null, updatedAtMs: iso.updatedAtMs || Date.now()
+      });
+    }
+
+    const targetCid = normalizeContextCidKey(conversationId || getSessionIdFromLocation() || '');
+    const pulseEl = options.pulseEl !== undefined ? options.pulseEl : document.querySelector('[data-agy-context-capsule="1"]');
+    const capRaw = pulseEl?.__ctxUsageData || null;
+    const capCid = normalizeContextCidKey(capRaw?.conversationId || '');
+    const capMatchesRoute = !targetCid || !capCid || capCid === targetCid;
+    const meterSnap = (() => { try { return (window.__AGContextMeter || globalThis.__AGContextMeter)?.snapshot?.() || null; } catch { return null; } })();
+    const meterRoute = normalizeContextCidKey(meterSnap?.route || '');
+    const meterRaw = (!targetCid || !meterRoute || meterRoute === targetCid) ? (meterSnap?.latest || null) : null;
+
+    let cap = null;
+    if (capRaw && capMatchesRoute && (Number(capRaw.contextUsed || 0) > 0 || typeof capRaw.usagePercent === 'number')) {
+      const usedTokens = Math.max(0, Math.round(Number(capRaw.contextUsed || 0) || 0));
+      const rawLimit = Math.max(0, Math.round(Number(capRaw.contextLimit || 0) || 0));
+      const explicitRt = Math.max(0, Math.round(Number(capRaw.runtimeBudget || 0) || 0));
+      const isLegacyPhys = !explicitRt && !capRaw.hasExplicitRuntimeBudget && !capRaw.hasCustomFixedLimit && (rawLimit === 1000000 || rawLimit === 1048576);
+      const rtBudget = explicitRt > 0 ? explicitRt : (isLegacyPhys ? 0 : rawLimit);
+      const modelId = String(capRaw.modelId || '').trim();
+      const modelDisplayName = String(capRaw.modelDisplayName || fallbackModel || '').trim();
+      const basePhys = Math.max(0, Math.round(Number(capRaw.physicalMaxTokens || 0) || 0)) || (isLegacyPhys ? rawLimit : resolveEnhancerPhysicalMaxTokens(modelId, modelDisplayName));
+      const capHit = (typeof capRaw.cacheHitRate === 'number' && (capRaw.hasPreciseSnapshot || usedTokens > 0 || Number(capRaw.cacheReadTokens || 0) > 0)) ? capRaw.cacheHitRate : null;
+      const capDrop = Boolean(capRaw.cacheDropDetected || (capRaw.hasPreciseSnapshot && usedTokens >= 240000 && Number(capRaw.inputTokens || 0) >= 200000 && Number(capRaw.cacheHitRate ?? 100) < 25));
+      cap = makeAuthMetricsRecord('capsule', targetCid, {
+        ...capRaw, usedTokens, modelId, modelDisplayName, fallbackPct: capRaw.usagePercent, cacheHitRate: capHit, cacheDropDetected: capDrop,
+        limitTokens: resolveEnhancerCompressionBudget(modelId, modelDisplayName, rtBudget, options.customLimitTokens),
+        physicalMaxTokens: basePhys || null
+      });
+    }
+
+    let met = null;
+    const metUsedRaw = Number(meterRaw?.actual ?? meterRaw?.used ?? meterRaw?.estimate ?? 0) || 0;
+    if (meterRaw && metUsedRaw > 0) {
+      const rtBudget = Math.max(0, Math.round(Number(meterRaw.runtimeBudget ?? meterRaw.budget ?? 0) || 0));
+      const modelId = String(meterRaw.modelId || meterRaw.modelRaw || '').trim();
+      const modelDisplayName = String(meterRaw.model || fallbackModel || '').trim();
+      const basePhys = Math.max(0, Math.round(Number(meterRaw.physicalMaxTokens || 0) || 0)) || resolveEnhancerPhysicalMaxTokens(modelId, modelDisplayName);
+      const sp = meterRaw.speed || null;
+      met = makeAuthMetricsRecord('meter', targetCid, {
+        ...meterRaw, modelId, modelDisplayName, usedTokens: metUsedRaw, fallbackPct: meterRaw.percent,
+        isReported: Boolean(meterRaw.actual != null && meterRaw.actual > 0 && !meterRaw.estimated),
+        limitTokens: resolveEnhancerCompressionBudget(modelId, modelDisplayName, rtBudget, options.customLimitTokens),
+        physicalMaxTokens: basePhys || null,
+        tokPerSec: sp?.streamingTps ?? sp?.tps ?? null, lastDurationSec: sp?.duration, ttftSec: sp?.ttft, outputTokens: sp?.outputTokens ?? meterRaw.output
+      });
+    }
+
+    if (cap && !met) return cap;
+    if (met && !cap) return met;
+    if (cap && met) {
+      const cpIdx = Math.max(cap.lastCheckpointStepIdx, met.lastCheckpointStepIdx);
+      const metProvenAfterCp = cpIdx >= 0 && met.exactUsageStepIndex > cpIdx;
+      const capProvenAfterCp = cpIdx >= 0 && cap.exactUsageStepIndex > cpIdx;
+      const capRegrown = cap.compressionAfter > 0 && cap.usedTokens > cap.compressionAfter + 50000;
+      const metRegrown = met.compressionAfter > 0 && met.usedTokens > met.compressionAfter + 50000;
+      if (cap.compressionDetected && !capRegrown && !met.compressionDetected && !metProvenAfterCp && cap.usedTokens > 0 && met.usedTokens > cap.usedTokens + 5000) {
+        try { window.__AGContextMeter?.invalidateAfterCompact?.(targetCid, capRaw); } catch {}
+        return cap;
+      }
+      if (met.compressionDetected && !metRegrown && !cap.compressionDetected && !capProvenAfterCp && met.usedTokens > 0 && cap.usedTokens > met.usedTokens + 5000) return met;
+      if (metProvenAfterCp && !capProvenAfterCp) return met;
+      if (capProvenAfterCp && !metProvenAfterCp) return cap;
+      if (cap.exactUsageStepIndex >= 0 && met.exactUsageStepIndex >= 0 && cap.exactUsageStepIndex !== met.exactUsageStepIndex) {
+        return cap.exactUsageStepIndex > met.exactUsageStepIndex ? cap : met;
+      }
+      if (cap.stepCount > 0 && met.stepCount > 0 && cap.stepCount !== met.stepCount) return cap.stepCount > met.stepCount ? cap : met;
+      if (cap.updatedAtMs > 0 && met.updatedAtMs > 0 && Math.abs(cap.updatedAtMs - met.updatedAtMs) > 500) return cap.updatedAtMs > met.updatedAtMs ? cap : met;
+      const primary = met.isReported ? met : cap;
+      const secondary = primary === met ? cap : met;
+      const sameTurnForSpeed = !primary.compressionDetected && !secondary.compressionDetected && (
+        (primary.exactUsageStepIndex >= 0 && primary.exactUsageStepIndex === secondary.exactUsageStepIndex) ||
+        (primary.exactUsageStepIndex < 0 && secondary.exactUsageStepIndex < 0 && primary.stepCount > 0 && primary.stepCount === secondary.stepCount && primary.usedTokens === secondary.usedTokens)
+      );
+      const speedSrc = primary.tokPerSec != null ? primary : (sameTurnForSpeed && secondary.tokPerSec != null ? secondary : primary);
+      return {
+        ...primary,
+        tokPerSec: speedSrc.tokPerSec,
+        lastDurationSec: speedSrc.lastDurationSec,
+        ttftSec: speedSrc.ttftSec,
+        outputTokens: speedSrc.tokPerSec != null ? speedSrc.outputTokens : primary.outputTokens,
+        cacheHitRate: sameTurnForSpeed ? (primary.cacheHitRate ?? secondary.cacheHitRate) : primary.cacheHitRate,
+        modelDisplayName: primary.modelDisplayName || secondary.modelDisplayName
+      };
+    }
+
+    return makeAuthMetricsRecord('empty', targetCid, {
+      usedTokens: 0, modelDisplayName: fallbackModel,
+      limitTokens: resolveEnhancerCompressionBudget('', fallbackModel, 0, options.customLimitTokens),
+      physicalMaxTokens: resolveEnhancerPhysicalMaxTokens('', fallbackModel)
+    });
+  }
+
+  function buildCanonicalContextPanelPayload(auth, extra = {}) {
+    const usedTokens = Number(auth?.usedTokens || 0) || 0;
+    const limitTokens = Number(auth?.limitTokens || 0) || 0;
+    const physicalMaxTokens = Number(auth?.physicalMaxTokens || 0) || null;
+    const pct = typeof auth?.usagePercent === 'number' ? Number(auth.usagePercent.toFixed(1)) : (usedTokens > 0 && limitTokens > 0 ? Number(((usedTokens / limitTokens) * 100).toFixed(1)) : null);
+    const usedShort = usedTokens > 0 ? formatRpcTokensShort(usedTokens) : '';
+    const limitShort = limitTokens > 0 ? formatRpcTokensShort(limitTokens) : '';
+    const remainTokens = (limitTokens > 0 && usedTokens > 0) ? Math.max(0, limitTokens - usedTokens) : (limitTokens > 0 && pct === 0 ? limitTokens : null);
+    const remainPct = pct != null ? Number(Math.max(0, 100 - pct).toFixed(1)) : null;
+    const contextBadge = (usedTokens > 0 && limitTokens > 0 && pct != null) ? `${usedShort}/${limitShort} (${pct}%)` : (usedTokens > 0 ? usedShort : (extra.fallbackBadge || ''));
+    const tokPerSec = typeof auth?.tokPerSec === 'number' && auth.tokPerSec > 0 ? Number(auth.tokPerSec.toFixed(1)) : null;
+    const pulseText = [tokPerSec ? `${tokPerSec} tok/s` : '', contextBadge].filter(Boolean).join(' · ') || (extra.fallbackPulse || '');
+    const dur = typeof auth?.lastDurationSec === 'number' && auth.lastDurationSec > 0 ? auth.lastDurationSec : null;
+    const ttft = typeof auth?.ttftSec === 'number' && auth.ttftSec > 0 ? auth.ttftSec : null;
+    const outTok = typeof auth?.outputTokens === 'number' && auth.outputTokens > 0 ? auth.outputTokens : null;
+    const keyBadge = auth?.cacheDropDetected ? '缓存脱落' : (pct != null ? `${pct}%` : (extra.fallbackKeyBadge || '--%'));
+
+    return {
+      contextBadge, pulseText,
+      contextPanel: {
+        source: auth?.source || 'empty', usedTokens: usedTokens || null, limitTokens: limitTokens || null,
+        physicalMaxTokens, usagePercent: pct,
+        cacheHitRate: typeof auth?.cacheHitRate === 'number' ? Number(auth.cacheHitRate.toFixed(1)) : null,
+        tokPerSec, lastDurationSec: dur, ttftSec: ttft, outputTokens: outTok,
+        compressionDetected: Boolean(auth?.compressionDetected), cacheDropDetected: Boolean(auth?.cacheDropDetected),
+        modelDisplayName: auth?.modelDisplayName || extra.fallbackModel || '', contextBadge,
+        usedText: usedTokens > 0 ? (pct != null ? `${usedShort} (${pct}%)` : usedShort) : '—',
+        limitText: limitTokens > 0 ? limitShort : '—',
+        remainingText: remainTokens != null ? (remainPct != null ? `${formatRpcTokensShort(remainTokens)} (${remainPct}%)` : formatRpcTokensShort(remainTokens)) : '—',
+        keyBadge, speedText: tokPerSec ? `${tokPerSec} tok/s` : '—', durationText: dur != null ? `${dur}s` : '—',
+        ttftText: ttft != null ? `${ttft}s` : '—', outputTokensText: outTok != null ? `${outTok}` : '—',
+        roundCostText: extra.roundCostText || '', sessionCostText: extra.sessionCostText || ''
+      }
+    };
+  }
+
+  function collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, precomputedAuth = null) {
+    const readText = (id) => (sr?.getElementById(id)?.textContent || '').replace(/\s+/g, ' ').trim();
+    const auth = precomputedAuth || resolveAuthoritativeContextMetrics('', { pulseEl, fallbackModel: model });
+    const roundCostText = auth.source === 'capsule' && auth.compressionDetected ? '' : readText('round-cost-text');
+    const sessionCostText = readText('session-cost-text');
+    if (auth && (auth.usedTokens > 0 || typeof auth.usagePercent === 'number')) {
+      return buildCanonicalContextPanelPayload(auth, { fallbackBadge: contextBadge || '', fallbackModel: model || '', roundCostText, sessionCostText }).contextPanel;
+    }
+    const usedText = readText('key-used'), limitText = readText('key-limit'), remainingText = readText('key-remaining');
+    const keyBadge = readText('key-badge'), speedVal = readText('speed-val'), durationText = readText('speed-duration');
+    const ttftText = readText('speed-ttft'), outputTokensText = readText('speed-tokens');
+    const pctMatch = (readText('badge-pct-val') || usedText || contextBadge || '').match(/(\d+(?:\.\d+)?)\s*%/);
+    const speedMatch = speedVal.match(/(\d+(?:\.\d+)?)/), durMatch = durationText.match(/(\d+(?:\.\d+)?)/);
+    return {
+      source: 'dom', usedTokens: null, limitTokens: auth?.limitTokens || null, physicalMaxTokens: auth?.physicalMaxTokens || null,
+      usagePercent: pctMatch ? Number(pctMatch[1]) : null, cacheHitRate: null,
+      tokPerSec: speedMatch ? Number(speedMatch[1]) : null, lastDurationSec: durMatch ? Number(durMatch[1]) : null,
+      ttftSec: null, outputTokens: null, compressionDetected: false, cacheDropDetected: false,
+      modelDisplayName: model || '', contextBadge: contextBadge || '', usedText: usedText || '—',
+      limitText: limitText || (auth?.limitTokens ? formatRpcTokensShort(auth.limitTokens) : '—'),
+      remainingText: remainingText || '—', keyBadge: keyBadge || '--%', speedText: speedVal || '—',
+      durationText: durationText || '—', ttftText: ttftText || '—', outputTokensText: outputTokensText || '—',
+      roundCostText, sessionCostText
     };
   }
 
@@ -10205,7 +10397,7 @@
         || (!isNewConversation && activeSumMeta?.project && (!currentProjectId || currentProjectId === cleanSidebarPid(activeSumMeta.projectId)) && !isSyntheticSidebarProjectName(activeSumMeta.project) ? String(activeSumMeta.project).trim() : '')
       );
     const { sr } = getMeterHostAndShadow();
-    const contextBadge = (
+    const rawContextBadge = (
       sr?.getElementById('amount')?.textContent ||
       sr?.getElementById('badge-pct-val')?.textContent ||
       sr?.getElementById('badge')?.textContent ||
@@ -10215,10 +10407,23 @@
     const pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
     const rawPulse = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
     const speedMatch = rawPulse.match(/(\d+(?:\.\d+)?\s*tok\/s)/i);
-    const ratioMatch = contextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/);
-    const pulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : contextBadge].filter(Boolean).join(' · ') || rawPulse;
+    const ratioMatch = rawContextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/i);
+    const fallbackPulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : rawContextBadge].filter(Boolean).join(' · ') || rawPulse;
     const modelCtx = getModelSelectorContext();
     const model = modelCtx?.selectedModel?.label || detectCurrentModelText();
+    const authCtx = resolveAuthoritativeContextMetrics(sessionId, {
+      pulseEl,
+      fallbackModel: model
+    });
+    const canonicalCtx = (authCtx && (authCtx.usedTokens > 0 || typeof authCtx.usagePercent === 'number'))
+      ? buildCanonicalContextPanelPayload(authCtx, {
+          fallbackBadge: rawContextBadge,
+          fallbackPulse: fallbackPulseText,
+          fallbackModel: model
+        })
+      : null;
+    const contextBadge = canonicalCtx ? canonicalCtx.contextBadge : rawContextBadge;
+    const pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
     const EFFORT_ORDER = { xhigh: 1, high: 2, medium: 3, low: 4 };
     const rawModels = Array.isArray(modelCtx?.modelOptions)
       ? modelCtx.modelOptions.filter((o) => o && !o.disabled && o.label)
@@ -10248,7 +10453,7 @@
     const queuedMessages = collectQueuedMessagesFromDom();
     const messages = collectRecentMessages(60);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
-    const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model);
+    const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, authCtx);
     const usageSummary = collectDesktopUsageSummary(sr);
 
     if (activeConv) {
@@ -10341,45 +10546,287 @@
         }
       }
 
-      let validMeta = null;
+      const estimateQuickTok = (text) => {
+        if (!text || typeof text !== 'string') return 0;
+        let ascii = 0, nonAscii = 0;
+        for (let i = 0, len = Math.min(text.length, 250000); i < len; i++) {
+          if (text.charCodeAt(i) < 128) ascii++; else nonAscii++;
+        }
+        return Math.ceil(ascii / 4 + nonAscii / 1.5);
+      };
+      const extractRowMaxStep = (row) => {
+        if (!row || typeof row !== 'object') return -1;
+        let maxIdx = -1;
+        if (Array.isArray(row.stepIndices)) {
+          for (const v of row.stepIndices) if (Number.isFinite(Number(v)) && Number(v) > maxIdx) maxIdx = Math.trunc(Number(v));
+        }
+        const single = row.stepIndex ?? row.step_index;
+        return (single !== undefined && single !== null && Number.isFinite(Number(single))) ? Math.max(maxIdx, Math.trunc(Number(single))) : maxIdx;
+      };
+      const parseIsoOrTsMs = (raw) => {
+        if (!raw) return 0;
+        if (typeof raw === 'number' && Number.isFinite(raw)) return raw < 1e11 ? raw * 1000 : raw;
+        if (typeof raw === 'string') {
+          const t = Date.parse(raw.trim().replace(/(\.\d{3})\d+(Z|[+-]\d{2}:?\d{2})$/, '$1$2'));
+          return Number.isFinite(t) && t > 946684800000 ? t : 0;
+        }
+        if (typeof raw === 'object' && raw.seconds != null) {
+          const s = Number(raw.seconds || 0);
+          return Number.isFinite(s) && s > 946684800 ? Math.round(s * 1000 + Number(raw.nanos || 0) / 1e6) : 0;
+        }
+        return 0;
+      };
+
+      let validMeta = null, validMetaIdx = -1;
       for (let i = genList.length - 1; i >= 0; i--) {
         const cand = genList[i];
-        if (cand && (cand.chatModel || cand.usage)) {
-          validMeta = cand;
-          break;
+        if (cand && (cand.chatModel || cand.usage)) { validMeta = cand; validMetaIdx = i; break; }
+      }
+
+      let lastCheckpointStepIdx = -1;
+      for (let sIdx = steps.length - 1; sIdx >= 0; sIdx--) {
+        const st = steps[sIdx];
+        if (st && ((st.checkpoint && typeof st.checkpoint === 'object') || /CHECKPOINT/i.test(String(st.type || '')))) {
+          lastCheckpointStepIdx = sIdx; break;
         }
       }
 
       const cm = validMeta?.chatModel || null;
-      const u = cm?.usage || validMeta?.usage || {};
-      const input = Number(u.inputTokens || 0) || 0;
-      const cached = Number(u.cacheReadTokens || 0) || 0;
-      const output = Number(u.outputTokens || 0) || 0;
+      const isolatedModelId = String(cm?.model || cm?.modelId || cm?.responseModel || '').trim();
+      const isolatedModel = cm?.modelDisplayName || cm?.responseModel || cm?.model || baseSnap.model || '';
       const ctxMeta = cm?.chatStartMetadata?.contextWindowMetadata || {};
-      const usedTokens = (input + cached + output) || Number(ctxMeta.estimatedTokensUsed || 0) || 0;
-      const limitTokens = Number(ctxMeta.maxContextTokens || 0) || 0;
-      const usagePercent = limitTokens > 0
-        ? Number(((usedTokens / limitTokens) * 100).toFixed(1))
-        : null;
-      const cacheHitRate = (input + cached) > 0
-        ? Number(((cached / (input + cached)) * 100).toFixed(1))
-        : null;
+      const observedRuntimeBudget = Number(ctxMeta.maxContextTokens || 0) || 0;
       const ttft = parseRpcDurationSec(cm?.timeToFirstToken);
       const streaming = parseRpcDurationSec(cm?.streamingDuration);
       const dur = (ttft != null && streaming != null)
         ? Number((ttft + streaming).toFixed(2))
         : (streaming != null ? Number(streaming.toFixed(2)) : (ttft != null ? Number(ttft.toFixed(2)) : null));
-      const tokPerSec = (output > 0 && dur && dur > 0)
-        ? Number((output / dur).toFixed(1))
-        : null;
-      const isolatedModel = cm?.modelDisplayName || cm?.responseModel || cm?.model || baseSnap.model || '';
-      const isolatedContextBadge = limitTokens > 0
-        ? `${formatRpcTokensShort(usedTokens)}/${formatRpcTokensShort(limitTokens)} (${usagePercent ?? 0}%)`
-        : (usedTokens > 0 ? formatRpcTokensShort(usedTokens) : '独立视图');
-      const isolatedPulseText = [
-        tokPerSec ? `${tokPerSec} tok/s` : '',
-        isolatedContextBadge
-      ].filter(Boolean).join(' · ');
+
+      const extractStepEstimateTextUnified = (step) => {
+        if (!step || typeof step !== 'object') return '';
+        const parts = [];
+        const pushUniq = (s) => { if (typeof s === 'string' && s && !parts.includes(s)) parts.push(s); };
+        const pushCalls = (list) => {
+          if (!Array.isArray(list)) return;
+          for (const tc of list) {
+            if (!tc) continue;
+            const args = tc.argumentsJson ?? tc.arguments ?? tc.args ?? tc.function?.arguments;
+            pushUniq(typeof args === 'string' ? args : (args && typeof args === 'object' ? JSON.stringify(args) : ''));
+          }
+        };
+        try {
+          if (step.checkpoint && typeof step.checkpoint === 'object') {
+            const sum = step.checkpoint.sessionSummary || step.checkpoint.summary || '';
+            if (typeof sum === 'string' && sum) parts.push(sum);
+          } else if (/CHECKPOINT/i.test(String(step.type || ''))) {
+            const topSum = step.sessionSummary || step.summary || '';
+            if (typeof topSum === 'string' && topSum) parts.push(topSum);
+          }
+          if (step.userInput) {
+            const u = step.userInput;
+            if (typeof u.userResponse === 'string' && u.userResponse) parts.push(u.userResponse);
+            if (typeof u.text === 'string' && u.text && u.text !== u.userResponse) parts.push(u.text);
+            if (Array.isArray(u.items)) for (const it of u.items) pushUniq(it?.text);
+          }
+          if (step.plannerResponse) {
+            const pr = step.plannerResponse;
+            const mainResp = (typeof pr.modifiedResponse === 'string' && pr.modifiedResponse) ? pr.modifiedResponse : (typeof pr.response === 'string' ? pr.response : '');
+            if (mainResp) parts.push(mainResp);
+            if (typeof pr.thinking === 'string' && pr.thinking) parts.push(pr.thinking);
+            if (typeof pr.text === 'string' && pr.text && pr.text !== mainResp) parts.push(pr.text);
+            pushCalls(pr.toolCalls);
+          }
+          pushUniq(step.metadata?.toolCall?.argumentsJson);
+          if (typeof step.content === 'string' && step.content) parts.push(step.content);
+          else if (Array.isArray(step.content)) {
+            for (const c of step.content) {
+              if (typeof c === 'string' && c) parts.push(c);
+              else if (c && typeof c.text === 'string' && c.text) parts.push(c.text);
+            }
+          }
+          for (const k of ['text', 'thinking', 'response', 'message']) pushUniq(step[k]);
+          pushCalls(step.toolCalls || step.tool_calls);
+        } catch {}
+        return parts.join('\n');
+      };
+      const isShadowStepModel = (m) => {
+        if (!m) return false;
+        const s = String(m).toUpperCase();
+        return s.includes('_M50') || s === 'M50' || s.includes('FLASH_LITE') || s.includes('_M21') || s === 'M21' || s.includes('IMAGE') || s.includes('BANANA');
+      };
+
+      const extractIsoOutTok = (mu) => {
+        if (!mu || typeof mu !== 'object') return 0;
+        const d = Math.max(0, parseInt(mu.outputTokens ?? mu.completionTokens ?? '0', 10) || 0);
+        return d > 0 ? d : (Math.max(0, parseInt(mu.thinkingOutputTokens ?? '0', 10) || 0) + Math.max(0, parseInt(mu.responseOutputTokens ?? '0', 10) || 0));
+      };
+      const usageSig = (mu) => {
+        if (!mu || typeof mu !== 'object') return '';
+        let i = Math.max(0, parseInt(mu.inputTokens ?? mu.promptTokens ?? '0', 10) || 0);
+        const c = Math.max(0, parseInt(mu.cacheReadTokens ?? mu.cachedTokens ?? '0', 10) || 0);
+        const cr = Math.max(0, parseInt(mu.cacheCreationTokens ?? '0', 10) || 0);
+        const o = extractIsoOutTok(mu);
+        if ((i + c + cr + o) === 0 && mu.totalTokens !== undefined) i = Math.max(0, parseInt(mu.totalTokens || '0', 10) || 0);
+        return (i + c + cr + o) > 0 ? `${i}:${c}:${cr}:${o}` : '';
+      };
+      const metaMaxStep = extractRowMaxStep(validMeta);
+      const cpStep = lastCheckpointStepIdx >= 0 ? steps[lastCheckpointStepIdx] : null;
+      const cpTimeMs = parseIsoOrTsMs(cpStep?.metadata?.createdAt || cpStep?.createdAt || cpStep?.metadata?.completedAt);
+      const metaTimeMs = parseIsoOrTsMs(cm?.chatStartMetadata?.createdAt || validMeta?.createdAt);
+      const gmUsageSig = usageSig(cm?.usage || validMeta?.usage);
+      const matchGmSig = (st) => {
+        if (!gmUsageSig || !st || typeof st !== 'object') return false;
+        const meta = st.metadata || st;
+        const mu = meta.modelUsage || st.modelUsage || st.checkpoint?.modelUsage || st.checkpoint?.usage || meta.checkpoint?.modelUsage || meta.checkpoint?.usage || st.usage || null;
+        const m = (mu && (mu.model || mu.modelId)) || meta.generatorModel || st.model || '';
+        return !isShadowStepModel(m) && usageSig(mu) === gmUsageSig;
+      };
+      const gmMatchesPostStep = Boolean(gmUsageSig && lastCheckpointStepIdx >= 0 && !steps.slice(0, lastCheckpointStepIdx).some(matchGmSig) && steps.slice(lastCheckpointStepIdx + 1).some(matchGmSig));
+      const metaInvalidatedByCheckpoint = lastCheckpointStepIdx >= 0 && (
+        !validMeta || (metaMaxStep >= 0 ? metaMaxStep <= lastCheckpointStepIdx : ((metaTimeMs > 0 && cpTimeMs > 0) ? metaTimeMs <= cpTimeMs : !gmMatchesPostStep))
+      );
+
+      let laterUsageStepIdx = -1;
+      if (!metaInvalidatedByCheckpoint && metaMaxStep >= 0) {
+        for (let sIdx = metaMaxStep + 1; sIdx < steps.length; sIdx++) {
+          const st = steps[sIdx], meta = st?.metadata || st, mu = meta?.modelUsage || st?.modelUsage || st?.usage || null;
+          const m = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
+          if (usageSig(mu) && !isShadowStepModel(m)) { laterUsageStepIdx = sIdx; break; }
+        }
+      }
+      const sliceStartIdx = metaInvalidatedByCheckpoint ? lastCheckpointStepIdx : laterUsageStepIdx;
+
+      let usedTokens = 0, cacheHitRate = null, output = 0, tokPerSec = null;
+      let effectiveDur = dur, effectiveTtft = ttft;
+      let compressionDetected = false, compressionBefore = 0, compressionAfter = 0, cacheDropDetected = false;
+
+      if (sliceStartIdx >= 0) {
+        const uPrior = cm?.usage || validMeta?.usage || {};
+        const priorTotal = (Math.max(0, parseInt(uPrior.inputTokens ?? uPrior.promptTokens ?? '0', 10) || 0) + Math.max(0, parseInt(uPrior.cacheReadTokens ?? uPrior.cachedTokens ?? '0', 10) || 0) + Math.max(0, parseInt(uPrior.cacheCreationTokens ?? '0', 10) || 0) + extractIsoOutTok(uPrior)) || Math.max(0, parseInt(uPrior.totalTokens ?? '0', 10) || 0);
+        const postSlice = steps.slice(sliceStartIdx);
+        let baseUsed = 0, baseIn = 0, baseCached = 0, baseCreate = 0, baseOut = 0, deltaTok = 0;
+        effectiveDur = null; effectiveTtft = null; tokPerSec = null;
+
+        for (let idx = 0; idx < postSlice.length; idx++) {
+          const st = postSlice[idx];
+          if (!st || typeof st !== 'object') continue;
+          const meta = st.metadata || st;
+          const isCp = (idx === 0 && metaInvalidatedByCheckpoint) || Boolean((st.checkpoint && typeof st.checkpoint === 'object') || /CHECKPOINT/i.test(String(st.type || '')));
+          const mu = meta.modelUsage || st.modelUsage || st.checkpoint?.modelUsage || st.checkpoint?.usage || meta.checkpoint?.modelUsage || meta.checkpoint?.usage || st.usage || null;
+          const stepModel = (mu && (mu.model || mu.modelId)) || meta.generatorModel || st.model || '';
+          const hasFields = Boolean(mu && typeof mu === 'object' && (
+            mu.inputTokens !== undefined || mu.promptTokens !== undefined || mu.cacheReadTokens !== undefined || mu.cachedTokens !== undefined ||
+            mu.cacheCreationTokens !== undefined || mu.outputTokens !== undefined || mu.completionTokens !== undefined ||
+            mu.thinkingOutputTokens !== undefined || mu.responseOutputTokens !== undefined || mu.totalTokens !== undefined
+          ));
+          if (isCp) { tokPerSec = null; effectiveDur = null; effectiveTtft = null; }
+          let adoptedMu = false;
+          if (hasFields && !isShadowStepModel(stepModel)) {
+            let inTok = Math.max(0, parseInt(mu.inputTokens ?? mu.promptTokens ?? '0', 10) || 0);
+            const cRead = Math.max(0, parseInt(mu.cacheReadTokens ?? mu.cachedTokens ?? '0', 10) || 0);
+            const cCreate = Math.max(0, parseInt(mu.cacheCreationTokens ?? '0', 10) || 0);
+            const outTok = extractIsoOutTok(mu);
+            let tot = inTok + cRead + cCreate + outTok;
+            if (tot === 0 && mu.totalTokens !== undefined) {
+              const totFallback = Math.max(0, parseInt(mu.totalTokens || '0', 10) || 0);
+              if (totFallback > 0) { inTok = totFallback; tot = totFallback; }
+            }
+            if (tot > 0) {
+              baseIn = inTok; baseCached = cRead; baseCreate = cCreate; baseOut = outTok; baseUsed = tot; deltaTok = 0; adoptedMu = true;
+              if (!isCp) { tokPerSec = null; effectiveDur = null; effectiveTtft = null; }
+              if (!isCp && outTok >= 30) {
+                const stStream = parseRpcDurationSec(meta.streamingDuration ?? st.streamingDuration ?? mu.streamingDuration);
+                const stTtft = parseRpcDurationSec(meta.timeToFirstToken ?? st.timeToFirstToken ?? mu.timeToFirstToken);
+                const tS = parseIsoOrTsMs(meta.createdAt || meta.created_at || meta.startedAt || st.createdAt || st.created_at);
+                const tE = parseIsoOrTsMs(meta.finishedGeneratingAt || meta.completedAt || meta.updatedAt || st.finishedGeneratingAt || st.completedAt || st.updatedAt);
+                const wallD = (tS > 0 && tE > tS) ? (tE - tS) / 1000 : 0;
+                const totD = (stTtft != null && stStream != null) ? (stTtft + stStream) : (wallD > 0 ? wallD : (stStream || 0));
+                const denom = (stStream != null && stStream >= 1.0) ? stStream : (stStream == null && totD >= 1.0 ? totD : 0);
+                if (denom >= 1.0 && denom < 600) {
+                  tokPerSec = Number((outTok / denom).toFixed(1));
+                  effectiveDur = Number((totD || denom).toFixed(2));
+                  effectiveTtft = stTtft != null && stTtft > 0 ? Number(stTtft.toFixed(2)) : null;
+                }
+              }
+            }
+          }
+          if (adoptedMu) continue;
+          if (isCp) {
+            const summaryTok = estimateQuickTok(extractStepEstimateTextUnified(st));
+            baseCached = 12500; baseIn = summaryTok; baseCreate = 0; baseOut = 0; baseUsed = 12500 + summaryTok; deltaTok = 0;
+            continue;
+          }
+          if (isShadowStepModel(stepModel) && hasFields) continue;
+          const stepType = String(st.type || st.role || (st.plannerResponse ? 'PLANNER_RESPONSE' : '')).toUpperCase();
+          const isPlanner = stepType.includes('PLANNER') || stepType.includes('MODEL') || stepType.includes('ASSISTANT') || Boolean(st.plannerResponse);
+          if (isPlanner) { tokPerSec = null; effectiveDur = null; effectiveTtft = null; }
+          const estText = extractStepEstimateTextUnified(st);
+          if (estText) {
+            const stepTok = estimateQuickTok(estText);
+            deltaTok += stepTok;
+            if (isPlanner) {
+              const tS = parseIsoOrTsMs(meta.createdAt || meta.created_at || meta.startedAt || st.createdAt || st.created_at);
+              const tE = parseIsoOrTsMs(meta.finishedGeneratingAt || meta.completedAt || meta.updatedAt || st.finishedGeneratingAt || st.completedAt || st.updatedAt);
+              const durSec = (tS > 0 && tE > tS) ? (tE - tS) / 1000 : 0;
+              if (stepTok > 5 && durSec >= 0.2 && durSec < 600) {
+                tokPerSec = Number((stepTok / durSec).toFixed(1));
+                effectiveDur = Number(durSec.toFixed(2));
+              }
+            }
+          }
+        }
+        usedTokens = baseUsed + deltaTok;
+        output = baseOut;
+        const baseTotIn = baseIn + baseCached + baseCreate;
+        cacheHitRate = baseTotIn > 0 ? Number(((baseCached / baseTotIn) * 100).toFixed(1)) : (metaInvalidatedByCheckpoint ? 100 : null);
+        compressionDetected = metaInvalidatedByCheckpoint;
+        compressionBefore = metaInvalidatedByCheckpoint && priorTotal > usedTokens ? priorTotal : 0;
+        compressionAfter = metaInvalidatedByCheckpoint ? usedTokens : 0;
+        cacheDropDetected = !metaInvalidatedByCheckpoint && baseTotIn >= 150000 && cacheHitRate != null && cacheHitRate < 25 && (baseIn + baseCreate) >= 240000;
+      } else {
+        const u = cm?.usage || validMeta?.usage || {};
+        let input = Math.max(0, parseInt(u.inputTokens ?? u.promptTokens ?? '0', 10) || 0);
+        const cached = Math.max(0, parseInt(u.cacheReadTokens ?? u.cachedTokens ?? '0', 10) || 0);
+        const cacheCreate = Math.max(0, parseInt(u.cacheCreationTokens ?? '0', 10) || 0);
+        output = extractIsoOutTok(u);
+        let sumTok = input + cached + cacheCreate + output;
+        if (sumTok === 0 && u.totalTokens !== undefined) {
+          const totFb = Math.max(0, parseInt(u.totalTokens || '0', 10) || 0);
+          if (totFb > 0) { input = totFb; sumTok = totFb; }
+        }
+        usedTokens = sumTok || Math.max(0, parseInt(ctxMeta.estimatedTokensUsed || '0', 10) || 0) || 0;
+        const totalIn = input + cached + cacheCreate;
+        cacheHitRate = totalIn > 0
+          ? Number(((cached / totalIn) * 100).toFixed(1))
+          : null;
+        // 统一采用纯流式输出速度口径（无流式时长时回退总时长，过滤短窗噪音）
+        const speedDenom = (streaming != null && streaming >= 1.0) ? streaming : (streaming == null && dur != null && dur >= 1.0 ? dur : null);
+        tokPerSec = (output >= 30 && speedDenom && speedDenom < 600)
+          ? Number((output / speedDenom).toFixed(1))
+          : null;
+        const hadPriorHighCache = validMetaIdx > 0 && genList.slice(0, validMetaIdx).some((r) => {
+          const ru = r?.chatModel?.usage || r?.usage || {};
+          return Number(ru.cacheReadTokens ?? ru.cachedTokens ?? 0) >= 50000;
+        });
+        cacheDropDetected = Boolean(
+          totalIn >= 150000 && cacheHitRate != null && cacheHitRate < 25 && (hadPriorHighCache || (input + cacheCreate) >= 240000)
+        );
+      }
+
+      const isoAuth = resolveAuthoritativeContextMetrics(reqConvId, {
+        fallbackModel: isolatedModel,
+        isolatedMetrics: {
+          conversationId: reqConvId, usedTokens, runtimeBudget: observedRuntimeBudget, cacheHitRate,
+          tokPerSec, lastDurationSec: effectiveDur, ttftSec: effectiveTtft, outputTokens: output,
+          modelId: isolatedModelId, modelDisplayName: isolatedModel, compressionDetected,
+          compressionBefore, compressionAfter, cacheDropDetected,
+          stepCount: Math.max(expected, steps.length), updatedAtMs: Date.now()
+        }
+      });
+      const isoCanonical = buildCanonicalContextPanelPayload(isoAuth, { fallbackBadge: '独立视图', fallbackModel: isolatedModel });
+      const usagePercent = isoCanonical.contextPanel.usagePercent;
+      const isolatedContextBadge = isoCanonical.contextBadge || '独立视图';
+      const isolatedPulseText = isoCanonical.pulseText;
 
       const messages = extractMessagesFromTrajectorySteps(steps, 20);
       const lastStep = steps.length ? steps[steps.length - 1] : null;
@@ -10452,27 +10899,7 @@
         model: isolatedModel,
         contextBadge: isolatedContextBadge,
         pulseText: isolatedPulseText,
-        contextPanel: {
-          usedTokens: usedTokens || null,
-          limitTokens: limitTokens || null,
-          usagePercent,
-          cacheHitRate,
-          tokPerSec,
-          lastDurationSec: dur,
-          outputTokens: output || null,
-          modelDisplayName: isolatedModel,
-          contextBadge: isolatedContextBadge,
-          usedText: usedTokens > 0 ? formatRpcTokensShort(usedTokens) : '—',
-          limitText: limitTokens > 0 ? formatRpcTokensShort(limitTokens) : '—',
-          remainingText: limitTokens > usedTokens ? formatRpcTokensShort(limitTokens - usedTokens) : (limitTokens > 0 ? '0' : '—'),
-          keyBadge: `${usagePercent ?? '--'}%`,
-          speedText: tokPerSec ? `${tokPerSec} tok/s` : '—',
-          durationText: dur != null ? `${dur}s` : '—',
-          ttftText: ttft != null ? `${ttft}s` : '—',
-          outputTokensText: output > 0 ? `${output}` : '—',
-          roundCostText: '',
-          sessionCostText: ''
-        },
+        contextPanel: isoCanonical.contextPanel,
         pendingApprovals: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingApprovals || []) : [],
         pendingPrompts: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingPrompts || []) : [],
         queuedMessages: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.queuedMessages || []) : [],
@@ -11492,6 +11919,7 @@
       candidates: [...(promptOptState.cacheModel.candidates || [])]
     }),
     syncRemotePairData,
+    resolveAuthoritativeContextMetrics,
     getMobileSnapshot,
     getMobileSnapshotAsync,
     performMobileAction,

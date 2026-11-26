@@ -1054,15 +1054,15 @@ function enumerateLocalAddresses() {
 
 let cachedHostMeta = null;
 let cachedHostMetaAt = 0;
+let cachedHostMetaSkipProbes = false;
 
 function detectHostIdentityMeta(options = {}) {
-  const force = Boolean(options?.force || options?.forceRefresh || typeof options?.execFileSync === 'function');
+  const skipProbes = process.env.AG_REMOTE_SKIP_PROBES === '1';
+  const force = Boolean(options?.force || options?.forceRefresh || typeof options?.execFileSync === 'function' || skipProbes !== cachedHostMetaSkipProbes);
   const now = Date.now();
   if (!force && cachedHostMeta && now - cachedHostMetaAt < 45000) {
     return cachedHostMeta;
   }
-
-  const skipProbes = process.env.AG_REMOTE_SKIP_PROBES === '1';
   let localHostLabel = '';
   if (!skipProbes && process.platform === 'darwin') {
     try {
@@ -1134,6 +1134,7 @@ function detectHostIdentityMeta(options = {}) {
   if (typeof options.execFileSync !== 'function') {
     cachedHostMeta = result;
     cachedHostMetaAt = now;
+    cachedHostMetaSkipProbes = skipProbes;
   }
   return result;
 }
@@ -11806,7 +11807,10 @@ function buildMobileAppHtml() {
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">输出速度 · 耗时</div><div class="ctx-stat-val">' + esc(speedStr) + ' · ' + esc(durStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">缓存命中率</div><div class="ctx-stat-val">' + esc(cacheStr) + '</div></div>' +
         '</div>' +
-        (cp.sessionCostText ? '<div class="qreset" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '');
+        (cp.sessionCostText ? '<div class="qreset" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '') +
+        (Number(cp.physicalMaxTokens) > Number(cp.limitTokens || 0) && Number(cp.limitTokens) > 0
+          ? '<div class="qreset ctx-physical-note" style="margin-top:6px;opacity:0.78">模型物理上限：' + esc(fmtNumShort(cp.physicalMaxTokens)) + '（主百分比按 ' + esc(limitStr) + ' 自动压缩线计算）</div>'
+          : '');
 
       const refBtn = $('btn-refresh-context');
       if (refBtn) refBtn.onclick = () => { void fetchContextPanelData(); };
@@ -19961,7 +19965,7 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
   };
 }
 
-function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
+function buildRemoteInfo({ resetToken = false, tunnelStatus = null, addresses = null, hostMeta = null } = {}) {
   const cfg = loadOrCreateRemoteConfig({ resetToken });
   if (resetToken) {
     pairedDevicesMap.clear();
@@ -19984,7 +19988,9 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
 
   const desc = collectFusedEndpointDescriptor(cfg.port, effTunnel, cfg.enabledChannels, {
     readOnly: true,
-    tailscaleCustomHost: cfg.tailscaleCustomHost
+    tailscaleCustomHost: cfg.tailscaleCustomHost,
+    ...(addresses ? { addresses } : {}),
+    ...(hostMeta ? { hostMeta } : {})
   });
 
   const mkFused = (entryHost, entryBaseUrl = '') => buildFusedPairingUrl({
@@ -19997,10 +20003,11 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
     endpoints: desc.endpoints
   });
 
-  const tsEntryHost = desc.tailscale[0]?.address || desc.tailscaleDnsName || desc.tailscaleCustomHost || '';
-  const tsDisplayHost = (desc.tailscale.length > 0 && desc.tailscaleDnsName)
-    ? desc.tailscaleDnsName
-    : (desc.tailscale[0]?.address || desc.tailscaleCustomHost || '');
+  const tsEntryHost = desc.tailscaleCustomHost || desc.tailscale[0]?.address || desc.tailscaleDnsName || '';
+  const tsDisplayHost = desc.tailscaleCustomHost
+    || ((desc.tailscale.length > 0 && desc.tailscaleDnsName)
+      ? desc.tailscaleDnsName
+      : (desc.tailscale[0]?.address || ''));
   const lanEntryHost = desc.primaryLan?.address || '';
   const bonjourEntryHost = (desc.bonjourHost && desc.primaryLan) ? desc.bonjourHost : '';
 
@@ -20089,10 +20096,14 @@ function buildRemoteInfo({ resetToken = false, tunnelStatus = null } = {}) {
       available: Boolean(enCh.tailscale && (desc.tailscale.length > 0 || Boolean(desc.tailscaleHttpsUrl) || Boolean(desc.tailscaleCustomHost))),
       rawHost: tsDisplayHost,
       displayHost: enCh.tailscale
-        ? (desc.tailscaleHttpsUrl ? `HTTPS · ${desc.tailscaleDnsName}` : tsDisplayHost)
+        ? ((desc.tailscaleHttpsUrl && (!desc.tailscaleCustomHost || String(desc.tailscaleDnsName || '').toLowerCase() === desc.tailscaleCustomHost))
+            ? `HTTPS · ${desc.tailscaleDnsName}`
+            : tsDisplayHost)
         : (tsDisplayHost ? `已停用 · ${tsDisplayHost}` : '已停用'),
       entryHost: tsEntryHost,
-      entryBaseUrl: desc.tailscaleHttpsUrl || '',
+      entryBaseUrl: (desc.tailscaleHttpsUrl && (!desc.tailscaleCustomHost || String(desc.tailscaleDnsName || '').toLowerCase() === desc.tailscaleCustomHost))
+        ? desc.tailscaleHttpsUrl
+        : '',
       httpsUrl: desc.tailscaleHttpsUrl || '',
       httpsHint: desc.tailscaleHttpsHint || '',
       customHost: cfg.tailscaleCustomHost || '',
