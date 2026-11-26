@@ -145,6 +145,32 @@ function resolveCachedRemoteQuickPrompts() {
   return next;
 }
 
+let cachedRemoteUiPrefs = null;
+let cachedRemoteUiPrefsAt = 0;
+
+function resolveCachedRemoteUiPrefs() {
+  const now = Date.now();
+  if (cachedRemoteUiPrefs && (now - cachedRemoteUiPrefsAt) < 2000) {
+    return cachedRemoteUiPrefs;
+  }
+  let next = { longFold: true };
+  try {
+    const collector = require('./meter-collector');
+    const res = collector && typeof collector.getPluginSettings === 'function'
+      ? collector.getPluginSettings()
+      : null;
+    const uiPrefs = res?.uiPreferences;
+    next = {
+      longFold: uiPrefs?.longFold !== false
+    };
+  } catch {
+    next = { longFold: true };
+  }
+  cachedRemoteUiPrefs = next;
+  cachedRemoteUiPrefsAt = now;
+  return next;
+}
+
 // ==================== 配置与内网安全校验 ====================
 
 function getRemoteConfigPath() {
@@ -7615,7 +7641,7 @@ function buildMobileAppHtml() {
       font-size:14px;line-height:1.45;overscroll-behavior:none;
     }
     .app{
-      display:flex;flex-direction:column;width:100%;height:100%;
+      position:relative;display:flex;flex-direction:column;width:100%;height:100%;
       padding-top:env(safe-area-inset-top);
       padding-bottom:calc(4px + var(--safe-bottom));
       padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
@@ -7761,6 +7787,51 @@ function buildMobileAppHtml() {
     .md-body code.md-pill{background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent-strong-fg)}
     .md-body pre{margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--pre-bg);border:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch}
     .md-body pre code{background:none;padding:0;border:none;color:var(--fg-secondary);font-size:12px;line-height:1.5;white-space:pre}
+    .foldable-collapsed{position:relative;overflow:hidden!important}
+    .md-body pre.foldable-collapsed{max-height:190px;overflow:hidden!important}
+    .md-body.foldable-collapsed{max-height:260px}
+    .msg.user.foldable-collapsed{max-height:145px;flex-shrink:0}
+    .foldable-collapsed::after{content:'';position:absolute;left:0;right:0;bottom:0;height:44px;pointer-events:none;z-index:2;background:linear-gradient(to bottom,transparent,var(--bg))}
+    .md-body pre.foldable-collapsed::after{background:linear-gradient(to bottom,transparent,var(--pre-bg))}
+    .msg.user.foldable-collapsed::after{background:linear-gradient(to bottom,transparent,var(--user-bg))}
+    .fold-bar{display:flex;align-items:center;justify-content:flex-start;margin:4px 0 6px;user-select:none;-webkit-user-select:none}
+    .fold-bar.is-user{justify-content:flex-end;margin:4px 0 2px}
+    .messages>.fold-bar.is-user{margin:-10px 0 2px;align-self:flex-end}
+    .msg-user-group>.fold-bar.is-user{margin:-2px 0 0;align-self:flex-end}
+    .msg.assistant>.fold-bar{margin:6px 0 2px}
+    .md-body .fold-bar{margin:4px 0 10px}
+    .fold-btn{appearance:none;display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:3px 11px;border-radius:999px;font-size:12px;font-weight:500;line-height:1.2;border:1px solid var(--border);background:var(--surface-subtle);color:var(--accent-fg);cursor:pointer}
+    .fold-btn:active{transform:scale(.98)}
+    .msg-rail{
+      position:absolute;left:2px;top:50%;transform:translateY(-50%);z-index:22;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+      width:20px;max-height:min(56vh,400px);padding:6px 0;overflow:hidden;
+      touch-action:none;user-select:none;-webkit-user-select:none;
+    }
+    .msg-rail[hidden],.msg-rail-tip[hidden]{display:none!important}
+    .msg-rail-item{
+      appearance:none;border:none;background:transparent;padding:1.5px 0;margin:0;
+      width:18px;min-height:6px;display:flex;align-items:center;justify-content:center;
+      cursor:pointer;flex:0 0 auto;transition:none!important;
+    }
+    .msg-rail-item:active{transform:none!important}
+    .msg-rail-mark{
+      display:block;border-radius:999px;background:var(--muted);opacity:.4;
+      transition:transform .14s var(--ease-out),background-color .14s ease,opacity .14s ease;
+    }
+    .msg-rail-item.is-user .msg-rail-mark{width:4px;height:4px;opacity:.48}
+    .msg-rail-item.is-assistant .msg-rail-mark{width:3px;height:8px;opacity:.36}
+    .msg-rail-item.is-assistant.is-long .msg-rail-mark{height:11px}
+    .msg-rail-item:hover .msg-rail-mark{background:var(--accent);opacity:.9}
+    .msg-rail-item.is-active .msg-rail-mark{background:var(--fg-strong);opacity:.95;transform:scale(1.22)}
+    .msg-rail-tip{
+      position:absolute;left:26px;top:50%;transform:translateY(-50%);z-index:25;pointer-events:none;
+      max-width:min(210px,60vw);padding:5px 10px;border-radius:999px;
+      font-size:11.5px;font-weight:500;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      background:var(--drawer-bg);color:var(--fg-strong);
+      border:1px solid var(--border-strong);box-shadow:var(--pop-shadow);
+    }
+    .msg-rail-flash{outline:1.5px solid var(--accent-border);border-radius:12px}
     .md-table-wrap{margin:8px 0;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:10px}
     .md-body table{width:max-content;min-width:100%;border-collapse:collapse;font-size:12.5px}
     .md-body th,.md-body td{padding:6px 9px;border-bottom:1px solid var(--border-subtle);border-right:1px solid var(--topbar-border);text-align:left;vertical-align:top;max-width:260px}
@@ -8511,8 +8582,10 @@ function buildMobileAppHtml() {
         transition:background-color .14s ease,border-color .14s ease;
       }
       .messages{
-        padding:24px max(24px,calc(50% - 410px)) 18px;gap:18px;
+        padding:24px max(36px,calc(50% - 410px)) 18px;gap:18px;
       }
+      .msg-rail{left:10px;width:22px;max-height:min(64vh,480px);gap:3px}
+      .msg-rail-tip{left:36px;max-width:260px}
       .msg.user{max-width:72%;font-size:14.5px;padding:11px 16px}
       .md-body{font-size:14.5px}
       .md-body code{font-size:13px}
@@ -8585,6 +8658,7 @@ function buildMobileAppHtml() {
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
     @media (max-width:859px){
+      body.has-msg-rail .messages{padding-left:24px}
       .topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto auto;align-items:center;padding:6px 10px 7px;column-gap:6px;row-gap:4px}
       #btn-drawer{grid-column:1;grid-row:1 / span 2;align-self:center}
       .title-wrap{display:contents}
@@ -8688,6 +8762,8 @@ function buildMobileAppHtml() {
     <main id="messages" class="messages">
       <div class="empty-tip">正在读取桌面端对话画面…</div>
     </main>
+    <nav id="msg-rail" class="msg-rail" aria-label="对话消息导览" hidden></nav>
+    <div id="msg-rail-tip" class="msg-rail-tip" role="status" aria-live="polite" hidden></div>
 
     <section id="approval-dock" class="approval-dock" hidden></section>
     <section id="queue-dock" class="queue-dock" hidden></section>
@@ -10632,6 +10708,7 @@ function buildMobileAppHtml() {
         lastLayoutWidth = window.innerWidth || 0;
         syncViewportHeight();
         if (typeof syncSidebarA11y === 'function') syncSidebarA11y();
+        if (typeof scheduleMessageRailSync === 'function') scheduleMessageRailSync();
       }, 150);
     });
     syncViewportHeight();
@@ -10639,6 +10716,7 @@ function buildMobileAppHtml() {
     msgEl.addEventListener('scroll', () => {
       if (programmaticScrollTop !== null && Math.abs(msgEl.scrollTop - programmaticScrollTop) <= 2) {
         programmaticScrollTop = null;
+        if (typeof scheduleMessageRailSync === 'function') scheduleMessageRailSync();
         return;
       }
       programmaticScrollTop = null;
@@ -10646,6 +10724,7 @@ function buildMobileAppHtml() {
       if (msgEl.scrollTop <= 50 && !stickBottom && msgEl.scrollHeight > msgEl.clientHeight + 40) {
         void loadEarlierMessages();
       }
+      if (typeof scheduleMessageRailSync === 'function') scheduleMessageRailSync();
     });
     msgEl.addEventListener('toggle', (e) => {
       const target = e?.target;
@@ -11416,6 +11495,7 @@ function buildMobileAppHtml() {
       }
 
       const displayCfg = applyRemoteDisplayConfig(snap);
+      if (typeof applyRemoteLongFoldPref === 'function') applyRemoteLongFoldPref(snap);
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
       syncTopbarProjectBadge(resolveConversationProjectName(snap));
@@ -11459,6 +11539,7 @@ function buildMobileAppHtml() {
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
         promptDraftState.clear();
+        foldStateMap.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         stickBottom = true;
@@ -11468,6 +11549,7 @@ function buildMobileAppHtml() {
         msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
+        foldStateMap.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         activeMsgHistorySource = 'dom';
@@ -11476,6 +11558,7 @@ function buildMobileAppHtml() {
         msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
+        foldStateMap.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         activeMsgHistorySource = 'trajectory';
@@ -11483,6 +11566,7 @@ function buildMobileAppHtml() {
         msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
+        foldStateMap.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         activeMsgHistorySource = 'trajectory';
@@ -11491,6 +11575,7 @@ function buildMobileAppHtml() {
         msgCacheEpoch += 1;
         sessionMsgsByIndex.clear();
         openThoughtIdxSet.clear();
+        foldStateMap.clear();
         loadingEarlierMsgs = false;
         backfillingMsgGaps = false;
         activeMsgHistorySource = nextHistSource || 'dom';
@@ -13037,6 +13122,17 @@ function buildMobileAppHtml() {
     let msgCacheEpoch = 0;
     const sessionMsgsByIndex = new Map();
     const openThoughtIdxSet = new Set();
+    const foldStateMap = new Map();
+    let remoteLongFoldEnabled = true;
+    const msgRailEl = $('msg-rail');
+    const msgRailTipEl = $('msg-rail-tip');
+    let railEntries = [];
+    let railScrollRaf = 0;
+    let railScrubRaf = 0;
+    let railTipTimer = null;
+    let railScrubbing = false;
+    let railLastFlashEl = null;
+    let railFlashTimer = null;
     let loadingEarlierMsgs = false;
     let backfillingMsgGaps = false;
 
@@ -13227,6 +13323,348 @@ function buildMobileAppHtml() {
       setMsgScrollTop(anchor.fallbackTop);
     }
 
+    function formatMobileFoldLabel(kind, collapsed, lineCount) {
+      if (kind === 'code') {
+        if (collapsed) return lineCount > 1 ? ('▸ 展开代码（共 ' + lineCount + ' 行）') : '▸ 展开代码';
+        return lineCount > 1 ? ('▾ 收起代码（共 ' + lineCount + ' 行）') : '▾ 收起代码';
+      }
+      if (kind === 'user') return collapsed ? '▸ 展开消息' : '▾ 收起消息';
+      return collapsed ? '▸ 展开全文' : '▾ 收起长回复';
+    }
+
+    function insertMobileFoldBar(targetEl, foldKey, kind, state, lineCount, isUser) {
+      if (!targetEl || !targetEl.parentElement) return;
+      const collapsed = state === 'collapsed';
+      targetEl.classList.toggle('foldable-collapsed', collapsed);
+      targetEl.dataset.foldTargetKey = foldKey;
+      const bar = document.createElement('div');
+      bar.className = isUser ? 'fold-bar is-user' : 'fold-bar';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'fold-btn';
+      btn.dataset.foldKey = foldKey;
+      btn.dataset.foldKind = kind;
+      if (lineCount > 0) btn.dataset.foldLines = String(lineCount);
+      btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      btn.textContent = formatMobileFoldLabel(kind, collapsed, lineCount);
+      bar.appendChild(btn);
+      targetEl.parentElement.insertBefore(bar, targetEl.nextSibling);
+    }
+
+    function clearMobileLongFolds() {
+      if (!msgEl) return;
+      msgEl.querySelectorAll('.fold-bar').forEach((bar) => bar.remove());
+      msgEl.querySelectorAll('.foldable-collapsed, [data-fold-target-key]').forEach((el) => {
+        el.classList.remove('foldable-collapsed');
+        delete el.dataset.foldTargetKey;
+      });
+    }
+
+    function applyMobileLongFolds(snap) {
+      if (!msgEl) return;
+      clearMobileLongFolds();
+      if (!remoteLongFoldEnabled) return;
+      const isBusy = Boolean(snap?.busy);
+      const assistantEls = Array.from(msgEl.querySelectorAll('.msg.assistant'));
+      const lastAssistant = assistantEls.length ? assistantEls[assistantEls.length - 1] : null;
+      const userEls = Array.from(msgEl.querySelectorAll('.msg.user'));
+      const lastUser = userEls.length ? userEls[userEls.length - 1] : null;
+
+      assistantEls.forEach((aEl, aIdx) => {
+        const msgIdx = aEl.dataset.msgIdx || String(aIdx);
+        const isLastA = aEl === lastAssistant;
+        const pres = Array.from(aEl.querySelectorAll('.md-body pre'));
+        pres.forEach((pre, cIdx) => {
+          const text = String(pre.textContent || '').trim();
+          const lineCount = text ? text.split(/\\r?\\n/).length : 0;
+          const h = Math.max(Number(pre.scrollHeight || 0), Number(pre.getBoundingClientRect?.().height || 0));
+          if (!(lineCount > 18 || h > 280)) return;
+          const key = 'c:' + msgIdx + ':' + cIdx;
+          const state = foldStateMap.get(key) || ((isBusy && isLastA) ? 'expanded' : 'collapsed');
+          insertMobileFoldBar(pre, key, 'code', state, lineCount, false);
+        });
+
+        const mdBody = aEl.querySelector('.md-body');
+        if (mdBody) {
+          const h = Math.max(Number(mdBody.scrollHeight || 0), Number(mdBody.getBoundingClientRect?.().height || 0));
+          const text = String(mdBody.textContent || '').trim();
+          const lines = text ? text.split(/\\r?\\n/).length : 0;
+          if (h > 460 || (h === 0 && text.length > 900 && lines > 14)) {
+            const key = 'm:' + msgIdx;
+            const state = foldStateMap.get(key) || ((isLastA || isBusy) ? 'expanded' : 'collapsed');
+            insertMobileFoldBar(mdBody, key, 'markdown', state, lines, false);
+          }
+        }
+      });
+
+      userEls.forEach((uEl, uIdx) => {
+        const group = uEl.closest('.msg-user-group');
+        const msgIdx = uEl.dataset.msgIdx || group?.dataset?.msgIdx || String(uIdx);
+        const isLastU = uEl === lastUser;
+        const text = String(uEl.textContent || '').trim();
+        const lines = text ? text.split(/\\r?\\n/).length : 0;
+        const h = Math.max(Number(uEl.scrollHeight || 0), Number(uEl.getBoundingClientRect?.().height || 0));
+        if (!(h > 240 || text.length > 360 || lines > 10)) return;
+        const key = 'u:' + msgIdx;
+        const state = foldStateMap.get(key) || (isLastU ? 'expanded' : 'collapsed');
+        insertMobileFoldBar(uEl, key, 'user', state, lines, true);
+      });
+    }
+
+    function applyRemoteLongFoldPref(snap) {
+      if (typeof snap?.longFold !== 'boolean') return;
+      if (snap.longFold === remoteLongFoldEnabled) return;
+      remoteLongFoldEnabled = snap.longFold;
+      if (!remoteLongFoldEnabled) {
+        clearMobileLongFolds();
+      } else {
+        applyMobileLongFolds(snap);
+      }
+      renderMessageRail();
+    }
+
+    function hideMessageRail() {
+      railEntries = [];
+      if (msgRailEl) {
+        msgRailEl.innerHTML = '';
+        msgRailEl.hidden = true;
+      }
+      if (msgRailTipEl) msgRailTipEl.hidden = true;
+      document.body?.classList?.remove('has-msg-rail');
+    }
+
+    function buildRailPreviewText(el, role, ordinal) {
+      let raw = '';
+      if (role === 'assistant') {
+        const mdBody = el.querySelector?.('.md-body');
+        raw = mdBody ? String(mdBody.textContent || '') : '';
+        if (!raw.trim()) {
+          const sum = el.querySelector?.('.thought-box summary');
+          raw = sum ? String(sum.textContent || '') : String(el.textContent || '');
+        }
+      } else {
+        const bubble = el.classList?.contains('msg') ? el : el.querySelector?.('.msg.user');
+        raw = bubble ? String(bubble.textContent || '') : String(el.textContent || '');
+      }
+      const line = raw.split(/\\r?\\n/).map((s) => s.replace(/\\s+/g, ' ').trim()).find(Boolean) || '';
+      const snippet = line.length > 26 ? (line.slice(0, 26) + '…') : line;
+      return (role === 'user' ? '我' : 'AI') + ' · #' + ordinal + (snippet ? (' ' + snippet) : '');
+    }
+
+    function showRailTip(entry, anchorClientY, sticky) {
+      if (!msgRailTipEl || !entry) return;
+      msgRailTipEl.textContent = entry.label || '';
+      const appRect = msgRailEl?.parentElement?.getBoundingClientRect?.();
+      if (appRect && appRect.height > 140 && Number.isFinite(anchorClientY)) {
+        const relY = anchorClientY - appRect.top;
+        const clamped = Math.max(68, Math.min(appRect.height - 110, relY));
+        msgRailTipEl.style.top = Math.round(clamped) + 'px';
+      }
+      msgRailTipEl.hidden = false;
+      clearTimeout(railTipTimer);
+      if (!sticky) {
+        railTipTimer = setTimeout(() => {
+          if (msgRailTipEl) msgRailTipEl.hidden = true;
+        }, 1200);
+      }
+    }
+
+    function updateMessageRailActive(forcedIdx = null) {
+      if (!msgRailEl || msgRailEl.hidden || !railEntries.length) return;
+      let activePos = 0;
+      if (typeof forcedIdx === 'number' && forcedIdx >= 0 && forcedIdx < railEntries.length) {
+        activePos = forcedIdx;
+      } else if (stickBottom && (msgEl.scrollHeight - msgEl.scrollTop - msgEl.clientHeight) < 80) {
+        activePos = railEntries.length - 1;
+      } else {
+        const anchorY = (msgEl.scrollTop || 0) + Math.min(120, (msgEl.clientHeight || 400) * 0.28);
+        for (let i = 0; i < railEntries.length; i++) {
+          const itemEl = railEntries[i].el;
+          if (!itemEl) continue;
+          const m = measureMsgViewportMetrics(itemEl);
+          const top = m ? ((msgEl.scrollTop || 0) + m.offset) : (Number(itemEl.offsetTop) || 0);
+          if (top <= anchorY + 12) activePos = i;
+          else break;
+        }
+      }
+      const btns = msgRailEl.querySelectorAll('.msg-rail-item');
+      btns.forEach((btn, idx) => {
+        const isAct = idx === activePos;
+        btn.classList.toggle('is-active', isAct);
+        if (isAct) btn.setAttribute('aria-current', 'location');
+        else btn.removeAttribute('aria-current');
+      });
+    }
+
+    function scheduleMessageRailSync() {
+      if (!msgRailEl || msgRailEl.hidden || !railEntries.length) return;
+      if (railScrollRaf) return;
+      const raf = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : (fn) => setTimeout(fn, 16);
+      railScrollRaf = raf(() => {
+        railScrollRaf = 0;
+        updateMessageRailActive();
+      });
+    }
+
+    function scrollToRailMessage(pos, opts = {}) {
+      const entry = railEntries[pos];
+      if (!entry || !entry.el || !msgEl) return;
+      const isLast = pos === railEntries.length - 1;
+      stickBottom = isLast;
+      const m = measureMsgViewportMetrics(entry.el);
+      if (m) {
+        const targetTop = Math.max(0, (msgEl.scrollTop || 0) + m.offset - 10);
+        if (opts.instant || typeof msgEl.scrollTo !== 'function') {
+          setMsgScrollTop(targetTop);
+        } else {
+          programmaticScrollTop = targetTop;
+          try {
+            msgEl.scrollTo({ top: targetTop, behavior: 'smooth' });
+          } catch {
+            setMsgScrollTop(targetTop);
+          }
+        }
+      } else if (typeof entry.el.scrollIntoView === 'function') {
+        entry.el.scrollIntoView({ behavior: opts.instant ? 'auto' : 'smooth', block: 'start' });
+      }
+      updateMessageRailActive(pos);
+      if (!opts.instant) {
+        if (railLastFlashEl) railLastFlashEl.classList.remove('msg-rail-flash');
+        clearTimeout(railFlashTimer);
+        entry.el.classList.add('msg-rail-flash');
+        railLastFlashEl = entry.el;
+        railFlashTimer = setTimeout(() => {
+          if (railLastFlashEl) railLastFlashEl.classList.remove('msg-rail-flash');
+          railLastFlashEl = null;
+        }, 850);
+      }
+      const btn = msgRailEl?.querySelector?.('[data-rail-pos="' + pos + '"]');
+      const btnRect = btn?.getBoundingClientRect?.();
+      const tipY = Number.isFinite(opts.clientY) ? opts.clientY : (btnRect ? (btnRect.top + btnRect.height / 2) : NaN);
+      showRailTip(entry, tipY, Boolean(opts.stickyTip));
+    }
+
+    function renderMessageRail() {
+      if (!msgRailEl || !msgEl) return;
+      const rawNodes = Array.from(msgEl.children || []).filter((el) => (
+        el.matches?.('.msg.assistant, .msg.user, .msg-user-group')
+      ));
+      if (rawNodes.length < 3) {
+        hideMessageRail();
+        return;
+      }
+      const maxDots = isDesktopLayout() ? 32 : 24;
+      const pickedIndices = [];
+      if (rawNodes.length <= maxDots) {
+        for (let i = 0; i < rawNodes.length; i++) pickedIndices.push(i);
+      } else {
+        for (let slot = 0; slot < maxDots; slot++) {
+          const idx = Math.round((slot * (rawNodes.length - 1)) / (maxDots - 1));
+          if (!pickedIndices.length || pickedIndices[pickedIndices.length - 1] !== idx) {
+            pickedIndices.push(idx);
+          }
+        }
+      }
+      const entries = [];
+      const frag = document.createDocumentFragment();
+      pickedIndices.forEach((rawIdx, pos) => {
+        const el = rawNodes[rawIdx];
+        const isAssistant = el.classList?.contains('assistant');
+        const role = isAssistant ? 'assistant' : 'user';
+        let isLong = false;
+        if (isAssistant) {
+          const mdBody = el.querySelector?.('.md-body');
+          const h = Number(mdBody?.scrollHeight || el.scrollHeight || 0);
+          const len = String(mdBody?.textContent || '').trim().length;
+          isLong = h > 420 || len > 600;
+        }
+        const label = buildRailPreviewText(el, role, rawIdx + 1);
+        entries.push({ el, role, isLong, msgIdx: el.dataset?.msgIdx || String(rawIdx), label });
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'msg-rail-item ' + (isAssistant ? 'is-assistant' : 'is-user') + (isLong ? ' is-long' : '');
+        btn.dataset.railPos = String(pos);
+        btn.dataset.msgIdx = String(el.dataset?.msgIdx || rawIdx);
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+        const mark = document.createElement('span');
+        mark.className = 'msg-rail-mark';
+        mark.setAttribute('aria-hidden', 'true');
+        btn.appendChild(mark);
+        frag.appendChild(btn);
+      });
+      railEntries = entries;
+      msgRailEl.innerHTML = '';
+      msgRailEl.appendChild(frag);
+      msgRailEl.hidden = false;
+      document.body?.classList?.add('has-msg-rail');
+      updateMessageRailActive();
+    }
+
+    if (msgRailEl) {
+      const resolveRailPosByClientY = (clientY) => {
+        if (!railEntries.length) return -1;
+        const rect = msgRailEl.getBoundingClientRect?.();
+        if (!rect || rect.height <= 0) return -1;
+        const ratio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+        return Math.max(0, Math.min(railEntries.length - 1, Math.round(ratio * (railEntries.length - 1))));
+      };
+      msgRailEl.addEventListener('click', (e) => {
+        const item = e.target?.closest?.('.msg-rail-item[data-rail-pos]');
+        if (!item) return;
+        const pos = Number(item.dataset.railPos);
+        if (!Number.isInteger(pos) || pos < 0 || pos >= railEntries.length) return;
+        scrollToRailMessage(pos, { clientY: e.clientY });
+      });
+      msgRailEl.addEventListener('mousemove', (e) => {
+        if (railScrubbing) return;
+        const item = e.target?.closest?.('.msg-rail-item[data-rail-pos]');
+        if (!item) return;
+        const pos = Number(item.dataset.railPos);
+        if (Number.isInteger(pos) && railEntries[pos]) {
+          showRailTip(railEntries[pos], e.clientY, true);
+        }
+      });
+      msgRailEl.addEventListener('mouseleave', () => {
+        if (!railScrubbing && msgRailTipEl) msgRailTipEl.hidden = true;
+      });
+      msgRailEl.addEventListener('touchstart', (e) => {
+        if (!railEntries.length || e.touches.length !== 1) return;
+        railScrubbing = true;
+        const t = e.touches[0];
+        const pos = resolveRailPosByClientY(t.clientY);
+        if (pos >= 0) scrollToRailMessage(pos, { instant: true, clientY: t.clientY, stickyTip: true });
+      }, { passive: true });
+      msgRailEl.addEventListener('touchmove', (e) => {
+        if (!railScrubbing || !railEntries.length || e.touches.length !== 1) return;
+        e.preventDefault();
+        const t = e.touches[0];
+        if (railScrubRaf) return;
+        const raf = typeof requestAnimationFrame === 'function'
+          ? requestAnimationFrame
+          : (fn) => setTimeout(fn, 16);
+        const y = t.clientY;
+        railScrubRaf = raf(() => {
+          railScrubRaf = 0;
+          if (!railScrubbing) return;
+          const pos = resolveRailPosByClientY(y);
+          if (pos >= 0) scrollToRailMessage(pos, { instant: true, clientY: y, stickyTip: true });
+        });
+      }, { passive: false });
+      const endRailScrub = () => {
+        if (!railScrubbing) return;
+        railScrubbing = false;
+        clearTimeout(railTipTimer);
+        railTipTimer = setTimeout(() => {
+          if (msgRailTipEl) msgRailTipEl.hidden = true;
+        }, 600);
+      };
+      msgRailEl.addEventListener('touchend', endRailScrub, { passive: true });
+      msgRailEl.addEventListener('touchcancel', endRailScrub, { passive: true });
+    }
+
     function renderMessagesView(snap, opts = {}) {
       const msgs = getOrderedSessionMessages();
       if (!msgs.length && !snap?.busy) {
@@ -13245,6 +13683,7 @@ function buildMobileAppHtml() {
           msgEl.innerHTML = emptyHtml;
           msgEl.dataset.lastHtml = emptyHtml;
         }
+        hideMessageRail();
         return;
       }
 
@@ -13340,6 +13779,8 @@ function buildMobileAppHtml() {
         const anchor = shouldPreserve ? captureReadingAnchor() : null;
         msgEl.innerHTML = html;
         msgEl.dataset.lastHtml = html;
+        applyMobileLongFolds(snap);
+        renderMessageRail();
         if (!shouldPreserve) {
           programmaticScrollTop = msgEl.scrollHeight;
           msgEl.scrollTop = msgEl.scrollHeight;
@@ -13588,6 +14029,35 @@ function buildMobileAppHtml() {
       if (e.target === $('media-lightbox')) closeMediaLightbox();
     });
     msgEl.addEventListener('click', (e) => {
+      const foldBtn = e.target?.closest?.('.fold-btn[data-fold-key]');
+      if (foldBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const key = foldBtn.dataset.foldKey;
+        const kind = foldBtn.dataset.foldKind || 'markdown';
+        const lineCount = Number(foldBtn.dataset.foldLines || 0);
+        const bar = foldBtn.closest('.fold-bar');
+        const target = bar?.previousElementSibling;
+        if (target && key) {
+          const nextCollapsed = !target.classList.contains('foldable-collapsed');
+          const nextState = nextCollapsed ? 'collapsed' : 'expanded';
+          foldStateMap.set(key, nextState);
+          target.classList.toggle('foldable-collapsed', nextCollapsed);
+          foldBtn.setAttribute('aria-expanded', nextCollapsed ? 'false' : 'true');
+          foldBtn.textContent = formatMobileFoldLabel(kind, nextCollapsed, lineCount);
+          if (nextCollapsed) {
+            try {
+              const msgRect = msgEl.getBoundingClientRect?.();
+              const tRect = target.getBoundingClientRect?.();
+              if (msgRect && tRect && tRect.top < msgRect.top) {
+                target.scrollIntoView?.({ block: 'nearest' });
+              }
+            } catch {}
+          }
+          scheduleMessageRailSync();
+        }
+        return;
+      }
       if (e.target?.closest?.('#empty-open-drawer-btn')) {
         $('btn-drawer')?.click?.();
         return;
@@ -14824,7 +15294,7 @@ function buildMobileAppHtml() {
       const target = e.target;
       if (!isOpen) {
         if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden) return;
-        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select')) return;
+        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail')) return;
         if (t.clientX > window.innerWidth * 0.85) return;
       }
       swipeState = {
@@ -16271,6 +16741,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       endpoints: snapInfo.endpoints,
       enabledChannels: config.enabledChannels,
       displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay),
+      longFold: typeof snap.longFold === 'boolean' ? snap.longFold : resolveCachedRemoteUiPrefs().longFold,
       quickPrompts: Array.isArray(snap.quickPrompts) ? snap.quickPrompts : resolveCachedRemoteQuickPrompts()
     };
     if (clientId) out.clientId = clientId;
@@ -19110,6 +19581,11 @@ module.exports = {
   sanitizeRemoteDisplayConfig,
   DEFAULT_REMOTE_QUICK_PROMPTS,
   buildRemoteQuickPrompts,
+  resolveCachedRemoteUiPrefs,
+  clearRemoteUiPrefsCacheForTests: () => {
+    cachedRemoteUiPrefs = null;
+    cachedRemoteUiPrefsAt = 0;
+  },
   getRemoteClientSession,
   clearRemoteClientSessionsForTests,
   enumerateLocalAddresses,
