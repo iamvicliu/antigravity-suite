@@ -1292,12 +1292,28 @@ async function collect(origin, id, options = {}) {
         referenceLatest?.budget ?? latest?.budget
       );
 
+      const resolveUniqueStepBySig = (sig) => {
+        if (!sig || largeTrajectoryFallbackReason) return -1;
+        let hit = -1;
+        for (let sIdx = 0; sIdx < steps.length; sIdx++) {
+          const st = steps[sIdx], meta = st?.metadata || st;
+          const mu = meta?.modelUsage || st?.modelUsage || st?.checkpoint?.modelUsage || st?.checkpoint?.usage || meta?.checkpoint?.modelUsage || meta?.checkpoint?.usage || st?.usage || null;
+          const sm = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
+          if (!isCollectorShadowOrImageModel(sm) && extractUsageTriplet(mu) === sig) {
+            if (hit >= 0) return -1;
+            hit = sIdx;
+          }
+        }
+        return hit;
+      };
+
       if (!largeTrajectoryFallbackReason && lastCheckpointStepIdx >= 0) {
-        const metaMaxStep = extractGeneratorRowMaxStepIndex(latestMetaRow);
+        const rawMetaStep = extractGeneratorRowMaxStepIndex(latestMetaRow);
+        const metaUsageObj = latestModel?.usage || latestMetaRow?.usage || null;
+        const metaMaxStep = rawMetaStep >= 0 ? rawMetaStep : resolveUniqueStepBySig(extractUsageTriplet(metaUsageObj));
         const cpStep = steps[lastCheckpointStepIdx];
         const cpTimeMs = parseTrajectoryTimestampMs(cpStep?.metadata?.createdAt || cpStep?.createdAt || cpStep?.metadata?.completedAt);
         const metaTimeMs = parseTrajectoryTimestampMs(latestModel?.chatStartMetadata?.createdAt || latestMetaRow?.createdAt);
-        const metaUsageObj = latestModel?.usage || latestMetaRow?.usage || null;
         const metaPredatesCheckpoint = !latestMetaRow || (
           metaMaxStep >= 0
             ? metaMaxStep <= lastCheckpointStepIdx
@@ -1333,9 +1349,10 @@ async function collect(origin, id, options = {}) {
 
       if (latest && !latest.compressionDetected) {
         const effBudget = resolvedLimits.compressionBudget || latest.budget || null;
-        const gmMaxStep = extractGeneratorRowMaxStepIndex(latestMetaRow);
+        const rawGmStep = extractGeneratorRowMaxStepIndex(latestMetaRow);
         const gmTimeMs = parseTrajectoryTimestampMs(latestModel?.chatStartMetadata?.createdAt || latestMetaRow?.createdAt);
         const gmSig = extractUsageTriplet(latestModel?.usage || latestMetaRow?.usage);
+        const gmMaxStep = rawGmStep >= 0 ? rawGmStep : resolveUniqueStepBySig(gmSig);
         let laterUsageIdx = -1;
         if (!largeTrajectoryFallbackReason && gmMaxStep >= 0) {
           for (let sIdx = gmMaxStep + 1; sIdx < steps.length; sIdx++) {
@@ -1343,8 +1360,15 @@ async function collect(origin, id, options = {}) {
             const sm = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
             if (extractUsageTriplet(mu) && !isCollectorShadowOrImageModel(sm)) { laterUsageIdx = sIdx; break; }
           }
+          if (laterUsageIdx < 0 && gmMaxStep < steps.length - 1) {
+            const stAtGm = steps[gmMaxStep], metaAtGm = stAtGm?.metadata || stAtGm;
+            const muAtGm = metaAtGm?.modelUsage || stAtGm?.modelUsage || stAtGm?.usage || null;
+            if (extractUsageTriplet(muAtGm) && steps.slice(gmMaxStep + 1).some((s) => Boolean(estimatePostCheckpointStepText(s)))) {
+              laterUsageIdx = gmMaxStep;
+            }
+          }
         }
-        if (laterUsageIdx > gmMaxStep) {
+        if (laterUsageIdx >= 0 && (laterUsageIdx > gmMaxStep || (laterUsageIdx === gmMaxStep && gmMaxStep < steps.length - 1))) {
           const ev = evaluatePostCheckpointSlice(steps.slice(laterUsageIdx), false);
           latest = {
             ...latest,

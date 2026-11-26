@@ -5,7 +5,7 @@
 (function () {
     if (window.__AGY_CTX_CAPSULE_ACTIVE__) return;
 
-    const CAPSULE_VERSION = '1.6.4';
+    const CAPSULE_VERSION = '1.6.5';
 
     // 网页端非 Antigravity 站点快速排除守卫 (避免在 Gmail / Google 搜索 / Cloud / Colab 等无关或敏感页面挂载钩子)
     const isElectronHost = typeof navigator !== 'undefined' && /Antigravity|Electron/i.test(navigator.userAgent || '');
@@ -788,10 +788,12 @@
         let lastCheckpointAtMs = 0;
         let lastPlannerStepIdx = -1;
         let lastPlannerUsageSig = '';
+        let plannerTurnCount = 0;
         let lastUsageStepIdx = -1;
         let latestStepTimeMs = 0;
         const preCheckpointUsageSigs = new Set();
         const postCheckpointUsageSigs = new Set();
+        const priorPlannerUsageSigs = new Set();
         const estEntries = [];
 
         if (Array.isArray(steps)) {
@@ -814,6 +816,8 @@
 
                 const isCheckpoint = Boolean(st.checkpoint && typeof st.checkpoint === 'object') || /CHECKPOINT/i.test(String(st.type || ''));
                 if (isCheckpoint) {
+                    if (lastPlannerUsageSig) priorPlannerUsageSigs.add(lastPlannerUsageSig);
+                    lastPlannerUsageSig = '';
                     for (const sig of postCheckpointUsageSigs) preCheckpointUsageSigs.add(sig);
                     postCheckpointUsageSigs.clear();
                     lastCheckpointStepIdx = stepIdx;
@@ -852,10 +856,12 @@
                         }
                         if (!isCheckpoint) {
                             const stepSig = snapshotTotal > 0 ? `${inTok}:${cacheRead}:${cacheCreate}:${outTok}` : '';
+                            if (lastPlannerUsageSig) priorPlannerUsageSigs.add(lastPlannerUsageSig);
                             if (stepSig) {
                                 if (lastCheckpointStepIdx >= 0) postCheckpointUsageSigs.add(stepSig);
                                 else preCheckpointUsageSigs.add(stepSig);
                             }
+                            plannerTurnCount += 1;
                             lastPlannerStepIdx = stepIdx;
                             lastPlannerUsageSig = stepSig;
                             lastTokPerSec = 0;
@@ -915,6 +921,8 @@
                 const stepType = String(st.type || st.role || (st.plannerResponse ? 'PLANNER_RESPONSE' : (st.userInput ? 'USER_INPUT' : ''))).toUpperCase();
                 const isPlanner = stepType.includes('PLANNER') || stepType.includes('MODEL') || stepType.includes('ASSISTANT') || Boolean(st.plannerResponse);
                 if (isPlanner) {
+                    if (lastPlannerUsageSig) priorPlannerUsageSigs.add(lastPlannerUsageSig);
+                    plannerTurnCount += 1;
                     lastPlannerStepIdx = stepIdx; lastPlannerUsageSig = ''; lastTokPerSec = 0; lastDurationSec = 0; lastTtftSec = 0;
                 }
                 const estText = extractStepEstimateText(st);
@@ -979,10 +987,15 @@
         const gmPredatesCheckpoint = absCheckpointStepIdx >= 0 && (
             gmMaxStep >= 0 ? gmMaxStep <= absCheckpointStepIdx : ((gmCreatedMs > 0 && lastCheckpointAtMs > 0) ? gmCreatedMs <= lastCheckpointAtMs : !gmMatchesPostUsage)
         );
+        const lastPlannerSignatureUnique = Boolean(lastPlannerUsageSig && !priorPlannerUsageSigs.has(lastPlannerUsageSig));
+        const canAdoptUnindexedSingleTurnGm = Boolean(absCheckpointStepIdx < 0 && lastUsageStepIdx < 0 && plannerTurnCount === 1);
+        const gmProvenLatestUnindexed = lastPlannerUsageSig
+            ? Boolean(lastPlannerSignatureUnique && gmUsageSig && gmUsageSig === lastPlannerUsageSig)
+            : canAdoptUnindexedSingleTurnGm;
         const gmNotBehindPlanner = absLastPlannerStepIdx < 0
-            ? true : (gmMaxStep >= 0 ? gmMaxStep >= absLastPlannerStepIdx : (lastTokPerSec === 0 || Boolean(gmUsageSig && gmUsageSig === lastPlannerUsageSig)));
+            ? true : (gmMaxStep >= 0 ? gmMaxStep >= absLastPlannerStepIdx : gmProvenLatestUnindexed);
         if (gmTps > 0 && !gmPredatesCheckpoint && gmNotBehindPlanner) {
-            const sameTurn = (gmMaxStep >= 0 && gmMaxStep === absLastPlannerStepIdx) || Boolean(gmUsageSig && gmUsageSig === lastPlannerUsageSig);
+            const sameTurn = (gmMaxStep >= 0 && gmMaxStep === absLastPlannerStepIdx) || Boolean(lastPlannerSignatureUnique && gmUsageSig && gmUsageSig === lastPlannerUsageSig);
             lastTokPerSec = gmTps;
             lastDurationSec = extraLimits?.generatorDurationSec > 0 ? extraLimits.generatorDurationSec : (sameTurn ? lastDurationSec : 0);
             lastTtftSec = extraLimits?.generatorTtftSec > 0 ? extraLimits.generatorTtftSec : (sameTurn ? lastTtftSec : 0);
@@ -1031,6 +1044,7 @@
             compressionDetected, compressionBefore, compressionAfter, compressionDrop,
             lastCheckpointStepIdx: absCheckpointStepIdx, exactUsageStepIndex: absLastUsageStepIdx,
             lastPlannerStepIdx: absLastPlannerStepIdx, lastPlannerUsageSig,
+            lastPlannerSignatureUnique, canAdoptUnindexedSingleTurnGm,
             updatedAtMs: latestStepTimeMs || Date.now(),
             modelId: activeModelId || preferredModelId || '',
             modelDisplayName: resolveModelDisplayName(activeModelId || preferredModelId, preferredModelLabel),
@@ -2216,24 +2230,12 @@
             ));
         }
 
-        // 8. 底部栏：步数统计与模型物理窗口辅助说明（仅展开详情浅灰辅助展示，绝不混入主百分比分母）
+        // 8. 底部栏：步数统计（语言配置统一移至套件设置面板）
         const footerRow = document.createElement('div');
-        footerRow.style.cssText = `border-top:1px solid ${borderColor};margin-top:6px;padding-top:5px;font-size:12px;color:${mutedColor};font-weight:400;display:flex;flex-direction:column;gap:2px;min-width:0;`;
-        const footerTop = document.createElement('div');
-        footerTop.style.cssText = 'display:flex;justify-content:space-between;gap:12px;min-width:0;';
+        footerRow.style.cssText = `border-top:1px solid ${borderColor};margin-top:6px;padding-top:5px;font-size:12px;color:${mutedColor};font-weight:400;display:flex;justify-content:space-between;gap:12px;min-width:0;`;
         const stepsSpan = document.createElement('span');
         stepsSpan.textContent = `${isEn ? 'Steps' : '步数'}: ${data.stepCount || 0}`;
-        footerTop.appendChild(stepsSpan);
-        footerRow.appendChild(footerTop);
-        if (Number(data.physicalMaxTokens) > Number(data.contextLimit || 0) && Number(data.contextLimit) > 0) {
-            const physSpan = document.createElement('div');
-            physSpan.setAttribute('data-physical-window-note', '1');
-            physSpan.style.cssText = `font-size:11px;color:${mutedColor};opacity:0.86;line-height:1.35;`;
-            physSpan.textContent = isEn
-                ? `Physical window: ${formatTokenValue(data.physicalMaxTokens)} (main % uses ${formatTokenValue(data.contextLimit)} compact limit)`
-                : `模型物理上限：${formatTokenValue(data.physicalMaxTokens)}（主百分比按 ${formatTokenValue(data.contextLimit)} 自动压缩线计算）`;
-            footerRow.appendChild(physSpan);
-        }
+        footerRow.appendChild(stepsSpan);
         nodes.push(footerRow);
 
         if (typeof el.replaceChildren === 'function') {
@@ -2673,10 +2675,13 @@
                 const absLastPlanner = typeof baseUsage.lastPlannerStepIdx === 'number' ? baseUsage.lastPlannerStepIdx : -1;
                 const rtMaxStep = rtLimits.generatorMaxStepIndex;
                 const rtNotBeforeCp = absCpIdx < 0 || (rtMaxStep >= 0 && rtMaxStep > absCpIdx);
+                const rtProvenLatestUnindexed = baseUsage.lastPlannerUsageSig
+                    ? Boolean(baseUsage.lastPlannerSignatureUnique && rtLimits.generatorUsageSignature && rtLimits.generatorUsageSignature === baseUsage.lastPlannerUsageSig)
+                    : Boolean(baseUsage.canAdoptUnindexedSingleTurnGm);
                 const rtNotBehindPlanner = absLastPlanner < 0
-                    ? true : (rtMaxStep >= 0 ? rtMaxStep >= absLastPlanner : (baseUsage.tokPerSec === 0 || Boolean(rtLimits.generatorUsageSignature && rtLimits.generatorUsageSignature === baseUsage.lastPlannerUsageSig)));
+                    ? true : (rtMaxStep >= 0 ? rtMaxStep >= absLastPlanner : rtProvenLatestUnindexed);
                 const useRtStreamSpeed = Boolean(!modelSwitched && rtLimits.generatorStreamingTps > 0 && rtNotBeforeCp && rtNotBehindPlanner);
-                const rtSameTurnAsBase = (rtMaxStep >= 0 && rtMaxStep === absLastPlanner) || Boolean(rtLimits.generatorUsageSignature && rtLimits.generatorUsageSignature === baseUsage.lastPlannerUsageSig);
+                const rtSameTurnAsBase = (rtMaxStep >= 0 && rtMaxStep === absLastPlanner) || Boolean(baseUsage.lastPlannerSignatureUnique && rtLimits.generatorUsageSignature && rtLimits.generatorUsageSignature === baseUsage.lastPlannerUsageSig);
                 const usage = Object.assign({}, baseUsage, {
                     conversationId: cid || baseUsage.conversationId || '', contextLimit: dynamicLimit, physicalMaxTokens,
                     runtimeBudget: mergedRtBudget, hasExplicitRuntimeBudget: mergedRtBudget > 0, hasCustomFixedLimit: customFixed > 0,

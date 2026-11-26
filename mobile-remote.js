@@ -11807,10 +11807,7 @@ function buildMobileAppHtml() {
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">输出速度 · 耗时</div><div class="ctx-stat-val">' + esc(speedStr) + ' · ' + esc(durStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">缓存命中率</div><div class="ctx-stat-val">' + esc(cacheStr) + '</div></div>' +
         '</div>' +
-        (cp.sessionCostText ? '<div class="qreset" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '') +
-        (Number(cp.physicalMaxTokens) > Number(cp.limitTokens || 0) && Number(cp.limitTokens) > 0
-          ? '<div class="qreset ctx-physical-note" style="margin-top:6px;opacity:0.78">模型物理上限：' + esc(fmtNumShort(cp.physicalMaxTokens)) + '（主百分比按 ' + esc(limitStr) + ' 自动压缩线计算）</div>'
-          : '');
+        (cp.sessionCostText ? '<div class="qreset" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '');
 
       const refBtn = $('btn-refresh-context');
       if (refBtn) refBtn.onclick = () => { void fetchContextPanelData(); };

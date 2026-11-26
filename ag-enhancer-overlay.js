@@ -10669,7 +10669,7 @@
         if ((i + c + cr + o) === 0 && mu.totalTokens !== undefined) i = Math.max(0, parseInt(mu.totalTokens || '0', 10) || 0);
         return (i + c + cr + o) > 0 ? `${i}:${c}:${cr}:${o}` : '';
       };
-      const metaMaxStep = extractRowMaxStep(validMeta);
+      const rawMetaStep = extractRowMaxStep(validMeta);
       const cpStep = lastCheckpointStepIdx >= 0 ? steps[lastCheckpointStepIdx] : null;
       const cpTimeMs = parseIsoOrTsMs(cpStep?.metadata?.createdAt || cpStep?.createdAt || cpStep?.metadata?.completedAt);
       const metaTimeMs = parseIsoOrTsMs(cm?.chatStartMetadata?.createdAt || validMeta?.createdAt);
@@ -10681,6 +10681,18 @@
         const m = (mu && (mu.model || mu.modelId)) || meta.generatorModel || st.model || '';
         return !isShadowStepModel(m) && usageSig(mu) === gmUsageSig;
       };
+      const resolveUniqueGmStep = () => {
+        if (!gmUsageSig) return -1;
+        let hit = -1;
+        for (let sIdx = 0; sIdx < steps.length; sIdx++) {
+          if (matchGmSig(steps[sIdx])) {
+            if (hit >= 0) return -1;
+            hit = sIdx;
+          }
+        }
+        return hit;
+      };
+      const metaMaxStep = rawMetaStep >= 0 ? rawMetaStep : resolveUniqueGmStep();
       const gmMatchesPostStep = Boolean(gmUsageSig && lastCheckpointStepIdx >= 0 && !steps.slice(0, lastCheckpointStepIdx).some(matchGmSig) && steps.slice(lastCheckpointStepIdx + 1).some(matchGmSig));
       const metaInvalidatedByCheckpoint = lastCheckpointStepIdx >= 0 && (
         !validMeta || (metaMaxStep >= 0 ? metaMaxStep <= lastCheckpointStepIdx : ((metaTimeMs > 0 && cpTimeMs > 0) ? metaTimeMs <= cpTimeMs : !gmMatchesPostStep))
@@ -10692,6 +10704,9 @@
           const st = steps[sIdx], meta = st?.metadata || st, mu = meta?.modelUsage || st?.modelUsage || st?.usage || null;
           const m = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
           if (usageSig(mu) && !isShadowStepModel(m)) { laterUsageStepIdx = sIdx; break; }
+        }
+        if (laterUsageStepIdx < 0 && metaMaxStep < steps.length - 1 && matchGmSig(steps[metaMaxStep]) && steps.slice(metaMaxStep + 1).some((s) => Boolean(extractStepEstimateTextUnified(s)))) {
+          laterUsageStepIdx = metaMaxStep;
         }
       }
       const sliceStartIdx = metaInvalidatedByCheckpoint ? lastCheckpointStepIdx : laterUsageStepIdx;
