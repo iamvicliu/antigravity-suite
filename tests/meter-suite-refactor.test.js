@@ -31504,7 +31504,7 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
     ], 6500);
     assert.equal(dupSameTurn.events.length, 0, '同一轮次 stepCount 未推进时不得重复发送通知');
 
-    // 第 2 轮完成 (stepCount=14)：生成不同轮次 tag 支持通知中心时间线堆叠
+    // 第 2 轮完成 (stepCount=14) 且在 debounceMs (1000ms) 窗口内快速完成第 3 轮 (stepCount=16)：不同轮次绝不因会话级防抖丢失
     mgr.observeCatalogItems([{ id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 12, updatedAt: 7000 }], 7000);
     const r2 = mgr.observeCatalogItems([
       { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 14, updatedAt: 8500, lastReplyPreview: '第二轮补充完成了边缘用例验证。' }
@@ -31512,6 +31512,13 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
     assert.equal(r2.events.length, 1);
     assert.equal(r2.events[0].tag, 'ag-completed-c1-s14');
     assert.notEqual(r2.events[0].tag, evComp1.tag, '同一会话不同轮次完成必须生成不同 tag 以免覆盖上一轮通知');
+
+    mgr.observeCatalogItems([{ id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 15, updatedAt: 9100 }], 9100);
+    const rFastTurn3 = mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 16, updatedAt: 9200, lastReplyPreview: '防抖窗口内快速连续完成的第三轮回复。' }
+    ], 9200);
+    assert.equal(rFastTurn3.events.length, 1, 'debounceMs 窗口内的新轮次完成不得被上一轮会话防抖丢弃');
+    assert.equal(rFastTurn3.events[0].tag, 'ag-completed-c1-s16');
 
     // 关闭 showPreview 隐私开关：隐藏具体回复与待审批命令内容
     assert.equal(mgr.updatePrefs({ showPreview: false }).prefs.showPreview, false);
@@ -31526,11 +31533,14 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
     assert.equal(rPriv.events.find((e) => e.conversationId === 'c1')?.body, '本轮回复已完成', 'showPreview=false 时 completed 严禁携带回复正文');
     assert.ok(!rPriv.events.find((e) => e.conversationId === 'c2')?.body.includes('/secret/path'), 'showPreview=false 时 waiting 严禁携带敏感命令摘要');
 
-    // 3. 服务端按需末尾轨迹摘要提取通道（/api/snapshot + refreshPushStateFromCatalog）及隐私脱敏校验
+    // 3. 服务端按需末尾轨迹摘要提取通道（5 个会话同时跃迁 <=3 并发池 + 关闭预览连续两轮不复用旧 turnSig + 拉取失败不复用过期缓存）
     mgr.updatePrefs({ showPreview: true });
     mgr.resetForTest();
     mgr.addSubscription(sub, { label: 'iPad' });
     let phase = 'boot';
+    let rpcShouldFail = false;
+    let inFlightRpc = 0;
+    let maxInFlightRpc = 0;
     const lsCalls = [];
     const srvHandler = remoteMod.createRemoteHttpHandler(
       { enabled: true, port: 18765, token: 'tok48', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
@@ -31539,37 +31549,80 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
         fetchSnapshot: async () => ({
           ok: true,
           sessionId: 'active-other',
-          conversations: phase === 'boot'
-            ? [
+          conversations: (() => {
+            if (phase === 'boot') {
+              return [
                 { id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 30, updatedAt: 1000 },
-                { id: 'bg-wait', title: '数据库迁移', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 12, updatedAt: 1000 }
-              ]
-            : [
+                { id: 'bg-wait', title: '数据库迁移', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 12, updatedAt: 1000 },
+                { id: 'bg-3', title: '并发任务三', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 10, updatedAt: 1000 },
+                { id: 'bg-4', title: '并发任务四', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 10, updatedAt: 1000 },
+                { id: 'bg-5', title: '并发任务五', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 10, updatedAt: 1000 }
+              ];
+            }
+            if (phase === 'transition') {
+              return [
                 { id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 34, updatedAt: 2000 },
-                { id: 'bg-wait', title: '数据库迁移', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 14, updatedAt: 2000 }
-              ],
+                { id: 'bg-wait', title: '数据库迁移', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 14, updatedAt: 2000 },
+                { id: 'bg-3', title: '并发任务三', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 12, updatedAt: 2000 },
+                { id: 'bg-4', title: '并发任务四', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 12, updatedAt: 2000 },
+                { id: 'bg-5', title: '并发任务五', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 12, updatedAt: 2000 }
+              ];
+            }
+            if (phase === 'priv-run-1') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 36, updatedAt: 3000 }];
+            }
+            if (phase === 'priv-done-1') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 38, updatedAt: 4000 }];
+            }
+            if (phase === 'priv-run-2') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 40, updatedAt: 5000 }];
+            }
+            if (phase === 'priv-done-2') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 42, updatedAt: 6000 }];
+            }
+            if (phase === 'fail-run') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 44, updatedAt: 7000 }];
+            }
+            return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 46, updatedAt: 8000 }];
+          })(),
           projects: [],
           messages: []
         }),
         callLanguageServer: async (method, body) => {
-          lsCalls.push({ method, body });
-          if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'bg-comp') {
-            return {
-              steps: [
-                { userInput: { items: [{ text: '执行全量打包' }] } },
-                { plannerResponse: { response: '已完成 **macOS 零补丁热注入包** 构建，全部 `220` 项校验通过！' } }
-              ]
-            };
+          inFlightRpc += 1;
+          if (inFlightRpc > maxInFlightRpc) maxInFlightRpc = inFlightRpc;
+          try {
+            await new Promise((r) => setTimeout(r, 12));
+            if (rpcShouldFail) throw new Error('LS RPC timeout');
+            lsCalls.push({ method, body });
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'bg-comp') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '执行全量打包' }] } },
+                  { plannerResponse: { response: '已完成 **macOS 零补丁热注入包** 构建，全部 `220` 项校验通过！' } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'bg-wait') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '清理旧迁移表' }] } },
+                  { runCommand: { commandLine: 'psql -c "DROP TABLE legacy_tmp;"' } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId.startsWith('bg-')) {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '批量任务' }] } },
+                  { plannerResponse: { response: `批量并发摘要完成：${body.cascadeId}` } }
+                ]
+              };
+            }
+            return { steps: [] };
+          } finally {
+            inFlightRpc -= 1;
           }
-          if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'bg-wait') {
-            return {
-              steps: [
-                { userInput: { items: [{ text: '清理旧迁移表' }] } },
-                { runCommand: { commandLine: 'psql -c "DROP TABLE legacy_tmp;"' } }
-              ]
-            };
-          }
-          return { steps: [] };
         }
       }
     );
@@ -31584,12 +31637,17 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
     deliveredBodies.length = 0;
     phase = 'transition';
     const snapTransition = await callSnap();
-    await new Promise((r) => setTimeout(r, 40));
+    await new Promise((r) => setTimeout(r, 60));
+    assert.ok(maxInFlightRpc <= 3, `并发拉取末尾步骤不得超过 3 路（实测 ${maxInFlightRpc}）`);
     assert.ok(lsCalls.some((c) => c.method === 'GetCascadeTrajectorySteps' && c.body.cascadeId === 'bg-comp' && c.body.stepOffset === 19), '后台长会话完成时应仅按需拉取末尾 15 步提取摘要');
     const bgCompOut = snapTransition.conversations.find((c) => c.id === 'bg-comp');
     const bgWaitOut = snapTransition.conversations.find((c) => c.id === 'bg-wait');
     assert.ok(bgCompOut.lastReplyPreview.includes('macOS 零补丁热注入包'));
     assert.ok(bgWaitOut.waitingSummary.includes('DROP TABLE legacy_tmp'));
+    assert.equal(deliveredBodies.length, 5, '5 个同时跃迁的会话均须在补齐摘要后发送通知');
+    for (const cid of ['bg-3', 'bg-4', 'bg-5']) {
+      assert.ok(deliveredBodies.find((p) => p.conversationId === cid)?.body.includes(`批量并发摘要完成：${cid}`), `第 4/5 个跃迁会话 ${cid} 也必须携带完整摘要而非回退空摘要`);
+    }
     const pushedComp = deliveredBodies.find((p) => p.conversationId === 'bg-comp');
     const pushedWait = deliveredBodies.find((p) => p.conversationId === 'bg-wait');
     assert.equal(pushedComp?.title, '后台构建任务 · suite');
@@ -31597,11 +31655,35 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
     assert.equal(pushedWait?.title, '需要确认 · 数据库迁移');
     assert.ok(pushedWait?.body.includes('DROP TABLE legacy_tmp'));
 
-    // 关闭 showPreview 后，/api/snapshot 输出的会话条目也同步剔除预览字段
+    // 关闭 showPreview 后：快照剔除预览，且后台连续完成两轮 (stepCount 38 -> 42) 绝不沿用旧缓存 turnSig (s34) 导致漏推
     mgr.updatePrefs({ showPreview: false });
     const snapRedacted = await callSnap();
     assert.equal(snapRedacted.conversations.find((c) => c.id === 'bg-comp')?.lastReplyPreview, undefined, 'showPreview=false 时服务端快照不得继续下发回复摘要');
     assert.equal(snapRedacted.conversations.find((c) => c.id === 'bg-wait')?.waitingSummary, undefined, 'showPreview=false 时服务端快照不得继续下发待确认摘要');
+
+    deliveredBodies.length = 0;
+    phase = 'priv-run-1'; await callSnap();
+    phase = 'priv-done-1'; await callSnap();
+    phase = 'priv-run-2'; await callSnap();
+    phase = 'priv-done-2'; await callSnap();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(deliveredBodies.length, 2, '关闭预览后后台连续两轮完成均须正常推送而不被旧缓存 turnSig 去重');
+    assert.equal(deliveredBodies[0].tag, 'ag-completed-bg-comp-s38');
+    assert.equal(deliveredBodies[0].body, '本轮回复已完成');
+    assert.equal(deliveredBodies[1].tag, 'ag-completed-bg-comp-s42');
+    assert.equal(deliveredBodies[1].body, '本轮回复已完成');
+
+    // 重新开启 showPreview 但令新轮次 (stepCount=46) RPC 拉取失败：绝不能复用旧轮次 (s34) 的过期摘要或旧指纹
+    mgr.updatePrefs({ showPreview: true });
+    rpcShouldFail = true;
+    deliveredBodies.length = 0;
+    phase = 'fail-run'; await callSnap();
+    phase = 'fail-done'; const snapFailDone = await callSnap();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(snapFailDone.conversations.find((c) => c.id === 'bg-comp')?.lastReplyPreview, undefined, '新轮次拉取失败时不得复用旧轮次缓存摘要');
+    assert.equal(deliveredBodies.length, 1);
+    assert.equal(deliveredBodies[0].tag, 'ag-completed-bg-comp-s46');
+    assert.equal(deliveredBodies[0].body, '本轮回复已完成');
 
     // 4. 前端本地 Notification 兜底与推送设置弹窗 toggle-preview 全链路一致性验证
     const html = remoteMod.buildMobileAppHtml();
@@ -31704,6 +31786,26 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
       assert.equal(poppedNotifs.length, 2);
       assert.equal(poppedNotifs[1].body, '本轮回复已完成');
       assert.equal(poppedNotifs[1].tag, 'ag-completed-c1-s12');
+
+      // 重新开启预览并验证超字节上限（码点数未达上限但 UTF-8 字节数超 180B/84B/420B）的多字节 Emoji 标题、项目名和正文前后端 100% 一致
+      lStore.set('ag_remote_notify_preview_v1', '1');
+      const emojiConv = {
+        id: 'c-emoji',
+        title: '🚀🔥✨🌟🎉'.repeat(10),       // 50 码点 (<60) 但 200B (>180B)
+        projectName: '📦⚡🔮🎯'.repeat(6),   // 24 码点 (<28) 但 96B (>84B)
+        status: 'idle',
+        completedUnread: true,
+        stepCount: 9,
+        updatedAt: 900,
+        lastReplyPreview: '💡🎉🚀🌊🍀'.repeat(26) // 130 码点 (<150) 但 520B (>420B)
+      };
+      const srvEmojiFmt = pushMod.formatPushNotificationEvent(emojiConv, 'completed', { showPreview: true });
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ ...emojiConv, status: 'running', stepCount: 7 }]);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([emojiConv]);
+      assert.equal(poppedNotifs.length, 3);
+      assert.equal(poppedNotifs[2].title, srvEmojiFmt.title, '长多字节 Emoji 标题+项目名前后端 UTF-8 字节截断结果必须 100% 一致');
+      assert.equal(poppedNotifs[2].body, srvEmojiFmt.body, '长多字节 Emoji 正文摘要前后端 UTF-8 字节截断结果必须 100% 一致');
+      assert.equal(poppedNotifs[2].tag, srvEmojiFmt.tag);
     } finally {
       for (const t of timers) clearTimeout(t);
       timers.clear();
