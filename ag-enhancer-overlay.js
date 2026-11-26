@@ -20,6 +20,8 @@
   const CHAT_NAV_ID = 'ag-chat-nav-float';
   const FILE_EDITOR_CONTROLS_ID = 'ag-file-editor-controls';
   const FILE_EDITOR_WRAP_ID = 'ag-inline-file-editor-wrap';
+  const FILE_CTX_MENU_ID = 'ag-file-link-context-menu';
+  const FILE_CTX_TOAST_ID = 'ag-file-ctx-toast';
   const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
   const NEXT_STEP_TOOLTIP_ID = 'ag-next-step-tooltip';
   const QUICK_BAR_TOOLTIP_ID = 'ag-quickbar-tooltip';
@@ -3773,10 +3775,200 @@
         .ag-fold-bar[data-ag-theme="light"] .ag-fold-btn:focus-visible {
           outline-color: var(--ag-effective-accent, #7c3aed);
         }
+        #${FILE_CTX_MENU_ID} {
+          position: fixed;
+          z-index: 2147483647;
+          min-width: 224px;
+          max-width: min(320px, calc(100vw - 20px));
+          box-sizing: border-box;
+          padding: 5px;
+          border-radius: 10px;
+          border: 1px solid var(--ag-border-card, rgba(255, 255, 255, 0.09));
+          background: linear-gradient(var(--ag-bg-card, rgba(255, 255, 255, 0.025)), var(--ag-bg-card, rgba(255, 255, 255, 0.025))), var(--ag-bg-panel, #18181b);
+          color: var(--ag-text-primary, #ececef);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), var(--ag-shadow-panel, 0 16px 40px rgba(0, 0, 0, 0.58));
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+          font-size: 12.5px;
+          line-height: 1.35;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+        #${FILE_CTX_MENU_ID}[hidden] {
+          display: none !important;
+        }
+        #${FILE_CTX_MENU_ID}:not([hidden]) {
+          animation: ag-pop-in 0.12s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] {
+          border-color: var(--ag-border-card, rgba(0, 0, 0, 0.10));
+          background: linear-gradient(var(--ag-bg-card, rgba(0, 0, 0, 0.02)), var(--ag-bg-card, rgba(0, 0, 0, 0.02))), var(--ag-bg-panel, #ffffff);
+          color: var(--ag-text-primary, #18181b);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85), var(--ag-shadow-panel, 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06));
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-header {
+          padding: 5px 8px 6px;
+          margin-bottom: 4px;
+          border-bottom: 1px solid var(--ag-border-card, rgba(255, 255, 255, 0.09));
+          min-width: 0;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-header {
+          border-bottom-color: var(--ag-border-card, rgba(0, 0, 0, 0.10));
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-name {
+          font-size: 11.5px;
+          font-weight: 600;
+          color: var(--ag-text-primary, #ececef);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-name {
+          color: var(--ag-text-primary, #18181b);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-path-preview {
+          font-size: 10.5px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          color: var(--ag-text-muted, #a1a1aa);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          margin-top: 1px;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-path-preview {
+          color: var(--ag-text-muted, #52525b);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-list {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          width: 100%;
+          box-sizing: border-box;
+          padding: 6px 8px;
+          border: 1px solid transparent;
+          border-radius: 7px;
+          background: transparent;
+          color: var(--ag-text-primary, #ececef);
+          font-size: 12.5px;
+          font-weight: 500;
+          line-height: 1.3;
+          text-align: left;
+          cursor: pointer;
+          transition: background-color 0.12s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.12s cubic-bezier(0.22, 1, 0.36, 1), color 0.12s cubic-bezier(0.22, 1, 0.36, 1), transform 0.1s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-item {
+          color: var(--ag-text-primary, #18181b);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item:hover,
+        #${FILE_CTX_MENU_ID} .ag-fctx-item:focus-visible {
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+          border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          color: var(--ag-effective-accent, #a78bfa);
+          outline: none;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-item:hover,
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-item:focus-visible {
+          background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          color: var(--ag-effective-accent, #7c3aed);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item:active {
+          transform: scale(0.985) translateY(0.5px);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item-left {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          min-width: 0;
+          flex: 1 1 auto;
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item-label {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 14px;
+          height: 14px;
+          flex-shrink: 0;
+          color: var(--ag-effective-accent, #a78bfa);
+          opacity: 0.92;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-icon {
+          color: var(--ag-effective-accent, #7c3aed);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-hint {
+          font-size: 11px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          color: var(--ag-text-muted, #a1a1aa);
+          flex-shrink: 0;
+          white-space: nowrap;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-hint {
+          color: var(--ag-text-muted, #52525b);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-sep {
+          height: 1px;
+          margin: 4px 6px;
+          background: var(--ag-border-card, rgba(255, 255, 255, 0.09));
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-sep {
+          background: var(--ag-border-card, rgba(0, 0, 0, 0.10));
+        }
+        #${FILE_CTX_TOAST_ID} {
+          position: fixed;
+          left: 50%;
+          bottom: 68px;
+          transform: translateX(-50%);
+          z-index: 2147483647;
+          max-width: min(480px, calc(100vw - 32px));
+          padding: 7px 14px;
+          border-radius: 999px;
+          border: 1px solid var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          background: linear-gradient(var(--ag-bg-card, rgba(255, 255, 255, 0.025)), var(--ag-bg-card, rgba(255, 255, 255, 0.025))), var(--ag-bg-panel, #18181b);
+          color: var(--ag-effective-accent, #a78bfa);
+          box-shadow: var(--ag-shadow-panel, 0 12px 28px rgba(0, 0, 0, 0.45));
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+          font-size: 12px;
+          font-weight: 500;
+          line-height: 1.35;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          pointer-events: none;
+        }
+        #${FILE_CTX_TOAST_ID}[hidden] {
+          display: none !important;
+        }
+        #${FILE_CTX_TOAST_ID}[data-ag-theme="light"] {
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          background: linear-gradient(var(--ag-bg-card, rgba(0, 0, 0, 0.02)), var(--ag-bg-card, rgba(0, 0, 0, 0.02))), var(--ag-bg-panel, #ffffff);
+          color: var(--ag-effective-accent, #7c3aed);
+          box-shadow: var(--ag-shadow-panel, 0 10px 26px rgba(0, 0, 0, 0.12));
+        }
+        #${FILE_CTX_TOAST_ID}[data-tone="error"] {
+          border-color: rgba(239, 68, 68, 0.45);
+          color: #f87171;
+        }
+        #${FILE_CTX_TOAST_ID}[data-ag-theme="light"][data-tone="error"] {
+          border-color: rgba(220, 38, 38, 0.36);
+          color: #dc2626;
+        }
         @supports (corner-shape: superellipse(1.25)) {
           #${CHAT_NAV_ID},
           #${NEXT_STEP_TOOLTIP_ID},
-          #${QUICK_BAR_TOOLTIP_ID} {
+          #${QUICK_BAR_TOOLTIP_ID},
+          #${FILE_CTX_MENU_ID} {
             corner-shape: superellipse(1.25);
           }
         }
@@ -3787,6 +3979,8 @@
           #${CHAT_NAV_ID} .ag-nav-btn,
           #${CHAT_NAV_ID} .ag-nav-icon,
           #${FILE_EDITOR_CONTROLS_ID} .ag-fedit-btn,
+          #${FILE_CTX_MENU_ID},
+          #${FILE_CTX_MENU_ID} .ag-fctx-item,
           #${NEXT_STEP_TOOLTIP_ID},
           #${QUICK_BAR_TOOLTIP_ID},
           #${PROMPT_OPT_WRAP_ID} .ag-prompt-opt-btn,
@@ -5369,6 +5563,12 @@
   }
 
   function extractContextPercent() {
+    try {
+      const auth = resolveAuthoritativeContextMetrics();
+      if (auth && auth.usedTokens > 0 && typeof auth.usagePercent === 'number') {
+        return auth.usagePercent;
+      }
+    } catch {}
     const cap = document.querySelector('[data-agy-context-capsule="1"]');
     const capMatch = (cap?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
     if (capMatch) return Number(capMatch[1]);
@@ -5378,40 +5578,27 @@
   }
 
   function extractContextRiskState() {
-    const percent = extractContextPercent();
-    let contextUsed = 0;
-    let cacheDropDetected = false;
     try {
-      const capData = document.querySelector('[data-agy-context-capsule="1"]')?.__ctxUsageData;
-      const meterLatest = window.__AGContextMeter?.snapshot?.()?.latest;
-      const capUsed = Number(capData?.contextUsed || 0);
-      const meterUsed = Number(meterLatest?.actual || meterLatest?.used || 0);
-      const compAfter = Number(capData?.compressionAfter || 0);
-      const regrownSinceCompact = compAfter > 0 && capUsed > compAfter + 50000;
-      const capShowsPostCompactDrop = Boolean(
-        capData?.hasPreciseSnapshot &&
-        capData?.compressionDetected &&
-        !regrownSinceCompact &&
-        capUsed > 0 &&
-        meterUsed > 0 &&
-        capUsed < 240000 &&
-        capUsed < meterUsed
-      );
-      contextUsed = capShowsPostCompactDrop ? capUsed : Math.max(capUsed, meterUsed);
-      cacheDropDetected = capShowsPostCompactDrop
-        ? Boolean(capData?.cacheDropDetected)
-        : Boolean(capData?.cacheDropDetected || meterLatest?.cacheDropDetected);
-      if (
-        !cacheDropDetected &&
-        capData?.hasPreciseSnapshot &&
-        contextUsed >= 240000 &&
-        Number(capData?.inputTokens || 0) >= 200000 &&
-        Number(capData?.cacheHitRate || 0) < 25
-      ) {
-        cacheDropDetected = true;
+      const auth = resolveAuthoritativeContextMetrics();
+      if (auth && (auth.usedTokens > 0 || typeof auth.usagePercent === 'number')) {
+        return {
+          percent: typeof auth.usagePercent === 'number' ? auth.usagePercent : extractContextPercent(),
+          contextUsed: auth.usedTokens || 0,
+          limitTokens: auth.limitTokens || null,
+          physicalMaxTokens: auth.physicalMaxTokens || null,
+          cacheDropDetected: Boolean(auth.cacheDropDetected),
+          source: auth.source
+        };
       }
     } catch {}
-    return { percent, contextUsed, cacheDropDetected };
+    return {
+      percent: extractContextPercent(),
+      contextUsed: 0,
+      limitTokens: null,
+      physicalMaxTokens: null,
+      cacheDropDetected: false,
+      source: 'none'
+    };
   }
 
   function isCompactUserMessageElement(userMsgEl) {
@@ -6933,7 +7120,7 @@
     if (!row) return '';
     const attrId = (row.getAttribute('data-cascade-id') || '').trim();
     if (attrId) return attrId;
-    const href = row.querySelector?.('a[href*="/c/"]')?.getAttribute('href') || '';
+    const href = row.getAttribute?.('href') || row.querySelector?.('a[href*="/c/"]')?.getAttribute('href') || '';
     const m = href.match(/\/c\/([^/?#]+)/);
     return m ? m[1] : '';
   }
@@ -7475,6 +7662,552 @@
     return { ok: false, error: '打开失败' };
   }
 
+  // ==================== 聊天区本地文件/文件夹链接右键菜单 ====================
+
+  const FILE_CTX_ICONS = {
+    copyPath: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
+    copyFolder: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>',
+    copyLine: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line></svg>',
+    revealFinder: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>'
+  };
+  const FILE_CTX_CHAT_ROOT_SEL = '[data-testid="autoscroll-viewport"], [data-testid="agent-response"], [data-testid="user-message"], [data-markdown-root]';
+  const FILE_CTX_EXCLUDE_SEL = `#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, #${FILE_EDITOR_CONTROLS_ID}, #${FILE_EDITOR_WRAP_ID}, #${FILE_CTX_MENU_ID}, .surface-composer, [data-testid="conversation-row-sidebar"], [data-testid="conversation-list-sidebar"], [data-testid="settings-sidebar"], .settings-modal-backdrop, [aria-label="File Viewer header"], [aria-label="文件查看器标题栏"], [data-testid="quote-scope-pill"]`;
+  const FILE_CTX_SENTINEL_URIS = new Set(['file:///quote', '/quote']);
+
+  let fileCtxToastTimer = null;
+  let fileCtxMenuState = {
+    open: false,
+    clientX: 0,
+    clientY: 0,
+    info: null,
+    openerEl: null,
+    statCache: new Map(),
+    pendingStatPromise: null
+  };
+
+  function safeDecodeUriPath(rawPath) {
+    return String(rawPath || '')
+      .split('/')
+      .map((seg) => {
+        if (!seg || !seg.includes('%')) return seg;
+        try {
+          return decodeURIComponent(seg);
+        } catch {
+          return seg.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => {
+            try { return decodeURIComponent(m); } catch { return m; }
+          });
+        }
+      })
+      .join('/');
+  }
+
+  function computeParentDirPath(cleanPath) {
+    const p = String(cleanPath || '').trim();
+    if (!p) return '';
+    if (p === '/') return '/';
+    if (/^[A-Za-z]:[\\/]?$/.test(p)) return p.length === 2 ? `${p}/` : p;
+    const lastSep = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    if (lastSep < 0) return '';
+    if (lastSep === 0) return '/';
+    if (lastSep === 2 && /^[A-Za-z]:/.test(p)) return p.slice(0, 3);
+    return p.slice(0, lastSep);
+  }
+
+  function formatShortToastPath(fullPath, maxLen = 46) {
+    const s = String(fullPath || '').trim();
+    if (s.length <= maxLen) return s;
+    const parts = s.split(/[\\/]/).filter(Boolean);
+    const tail = parts.slice(-2).join('/');
+    if (tail && tail.length + 4 <= maxLen) return `…/${tail}`;
+    return `…${s.slice(-(maxLen - 1))}`;
+  }
+
+  function parseLocalFileReference(rawRef, el = null, opts = {}) {
+    const trimmed = String(rawRef || '').trim();
+    if (!trimmed || /[\r\n\0]/.test(trimmed)) return null;
+    if (FILE_CTX_SENTINEL_URIS.has(trimmed.toLowerCase())) return null;
+
+    const fromExplicitAttr = Boolean(opts && opts.fromExplicitAttr);
+    const isFileScheme = /^file:\/\//i.test(trimmed);
+    if (!isFileScheme) {
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return null;
+      if (trimmed === '/' || /^\/c\/[0-9a-fA-F-]{8,}/i.test(trimmed) || /^\/(?:customizations|settings)(?:\/|$)/i.test(trimmed)) {
+        return null;
+      }
+      const looksLikeLocalFsPath =
+        /^\/(?:Users|Applications|Library|Volumes|System|opt|etc|var|tmp|home|root|mnt|srv|private)\//.test(trimmed) ||
+        /^~\//.test(trimmed) ||
+        /^[A-Za-z]:[\\/]/.test(trimmed) ||
+        (fromExplicitAttr && ((trimmed.startsWith('/') && !trimmed.startsWith('//')) || /^[A-Za-z]:[\\/]/.test(trimmed)));
+      if (!looksLikeLocalFsPath) return null;
+    }
+
+    const hashIdx = trimmed.indexOf('#');
+    const beforeHash = hashIdx >= 0 ? trimmed.slice(0, hashIdx) : trimmed;
+    const rawHash = hashIdx >= 0 ? trimmed.slice(hashIdx + 1).trim() : '';
+
+    let body = beforeHash;
+    if (isFileScheme) {
+      body = body.replace(/^file:\/\/(?:localhost)?/i, '');
+      const qIdx = body.indexOf('?');
+      if (qIdx >= 0) body = body.slice(0, qIdx);
+      if (/^\/[A-Za-z]:[/\\]/.test(body)) body = body.slice(1);
+    }
+
+    if (!body || FILE_CTX_SENTINEL_URIS.has(body.toLowerCase())) return null;
+    const decodedPath = safeDecodeUriPath(body);
+    if (!decodedPath || decodedPath === '/quote') return null;
+
+    const isRootOnly = decodedPath === '/' || /^[A-Za-z]:[\\/]$/.test(decodedPath);
+    const hasTrailingSlash = !isRootOnly && /[\\/]$/.test(decodedPath);
+    const cleanPath = isRootOnly ? decodedPath : decodedPath.replace(/[\\/]+$/, '');
+    if (!cleanPath) return null;
+
+    let lineSuffix = '';
+    if (rawHash) {
+      const lm = rawHash.match(/^L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i);
+      if (lm) {
+        lineSuffix = lm[2] ? `${lm[1]}-${lm[2]}` : lm[1];
+      }
+    }
+    if (!lineSuffix && el && typeof el.getAttribute === 'function') {
+      const attrLine = String(el.getAttribute('data-line') || el.getAttribute('data-file-line') || '').trim();
+      if (/^\d+(?:-\d+)?$/.test(attrLine)) {
+        lineSuffix = attrLine;
+      }
+    }
+
+    const dirAttr = el && typeof el.getAttribute === 'function'
+      ? (el.getAttribute('data-is-dir') === 'true' || el.getAttribute('data-kind') === 'directory' || el.getAttribute('data-type') === 'directory')
+      : false;
+    const isKnownDir = Boolean(hasTrailingSlash || dirAttr || isRootOnly);
+    const folderPath = isKnownDir ? cleanPath : computeParentDirPath(cleanPath);
+    const pathWithLine = lineSuffix ? `${cleanPath}:${lineSuffix}` : '';
+    const baseParts = cleanPath.split(/[\\/]/).filter(Boolean);
+    const displayName = baseParts.length ? baseParts[baseParts.length - 1] : cleanPath;
+
+    return {
+      rawRef: trimmed,
+      path: cleanPath,
+      folderPath: folderPath || cleanPath,
+      lineSuffix,
+      pathWithLine,
+      displayName,
+      isKnownDir
+    };
+  }
+
+  function extractChatLocalFileTarget(target) {
+    const el = (target && target.nodeType === 1) ? target : target?.parentElement;
+    if (!el || typeof el.closest !== 'function') return null;
+    if (el.closest(FILE_CTX_EXCLUDE_SEL)) return null;
+    if (!el.closest(FILE_CTX_CHAT_ROOT_SEL)) return null;
+
+    const candidate = el.closest('a[href], [data-uri], [data-file-path], [data-path]');
+    if (!candidate || candidate.closest(FILE_CTX_EXCLUDE_SEL)) return null;
+
+    if (String(candidate.tagName || '').toUpperCase() === 'A') {
+      const href = String(candidate.getAttribute('href') || '').trim();
+      const parsedHref = parseLocalFileReference(href, candidate, { fromExplicitAttr: false });
+      if (parsedHref) return { element: candidate, ...parsedHref };
+      return null;
+    }
+
+    const attrCandidates = [
+      ['data-uri', false],
+      ['data-file-path', true],
+      ['data-path', true]
+    ];
+    for (const [attrName, fromExplicit] of attrCandidates) {
+      const rawVal = String(candidate.getAttribute(attrName) || '').trim();
+      if (!rawVal) continue;
+      const parsed = parseLocalFileReference(rawVal, candidate, { fromExplicitAttr: fromExplicit });
+      if (parsed) return { element: candidate, ...parsed };
+    }
+    return null;
+  }
+
+  function notifyEnhancerToast(text, options = {}) {
+    const bar = document.getElementById(QUICK_BAR_ID);
+    const qToast = bar && !bar.hidden ? bar.querySelector('.ag-qcap-toast') : null;
+    if (qToast) {
+      showQuickToast(text, options);
+      return;
+    }
+    if (!document.body) return;
+    ensureDocStyle();
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveSurfaceTheme(host);
+    let el = document.getElementById(FILE_CTX_TOAST_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = FILE_CTX_TOAST_ID;
+      el.setAttribute('role', 'status');
+      document.body.appendChild(el);
+    }
+    const opts = (options && typeof options === 'object') ? options : {};
+    const isError = Boolean(opts.isError);
+    const durationMs = Number.isFinite(Number(opts.durationMs)) && Number(opts.durationMs) > 0
+      ? Math.max(1000, Number(opts.durationMs))
+      : (isError ? 5000 : 2600);
+    el.setAttribute('data-ag-theme', theme);
+    el.setAttribute('data-tone', isError ? 'error' : 'info');
+    el.textContent = text;
+    el.hidden = false;
+    if (fileCtxToastTimer) {
+      clearTimeout(fileCtxToastTimer);
+      fileCtxToastTimer = null;
+    }
+    fileCtxToastTimer = setTimeout(() => {
+      fileCtxToastTimer = null;
+      const node = document.getElementById(FILE_CTX_TOAST_ID);
+      if (node) node.hidden = true;
+    }, durationMs);
+  }
+
+  async function probeLocalPathStat(localPath) {
+    const clean = String(localPath || '').trim();
+    if (!clean) return null;
+    const cached = fileCtxMenuState.statCache.get(clean);
+    if (cached && (Date.now() - cached.at) < 8000) {
+      return cached;
+    }
+    const live = window.__AGContextMeterLive;
+    if (!live?.port || !live?.token) return null;
+    const res = await postToLiveHost('/stat-local-path', { path: clean });
+    if (!res || !res.ok) return null;
+    const entry = {
+      exists: Boolean(res.exists),
+      isDirectory: Boolean(res.isDirectory),
+      isFile: Boolean(res.isFile),
+      at: Date.now()
+    };
+    if (fileCtxMenuState.statCache.size >= 200) {
+      const oldestKey = fileCtxMenuState.statCache.keys().next().value;
+      if (oldestKey) fileCtxMenuState.statCache.delete(oldestKey);
+    }
+    fileCtxMenuState.statCache.set(clean, entry);
+    return entry;
+  }
+
+  async function revealLocalPathInFinder(localPath, opts = {}) {
+    const clean = String(localPath || '').trim();
+    if (!clean) return { ok: false, error: '无效的本地路径' };
+    const dryRun = Boolean(opts && opts.dryRun);
+    const res = await postToLiveHost('/reveal-local-path', { path: clean, dryRun });
+    if (res && res.ok) {
+      if (!dryRun) {
+        notifyEnhancerToast(tr('已在 Finder 中显示', 'Revealed in Finder'));
+      }
+      return res;
+    }
+    const errText = res?.error || tr('本地桥接服务未连接', 'Local bridge offline');
+    if (!dryRun) {
+      notifyEnhancerToast(
+        tr(`无法在 Finder 中显示：${errText}`, `Failed to reveal: ${errText}`),
+        { isError: true }
+      );
+    }
+    return res || { ok: false, error: errText };
+  }
+
+  function resolveFolderCopyPathForInfo(info) {
+    if (!info) return '';
+    if (info.isKnownDir || info.statIsDir) return info.path;
+    const cached = fileCtxMenuState.statCache.get(info.path);
+    if (cached?.exists && cached.isDirectory) return info.path;
+    return info.folderPath || computeParentDirPath(info.path) || info.path;
+  }
+
+  async function handleFileContextMenuAction(actionId, info) {
+    if (!info) return false;
+    closeFileContextMenu();
+    if (actionId === 'copy-path') {
+      const ok = await copyToClipboard(info.path);
+      if (ok) {
+        notifyEnhancerToast(tr(`已复制路径：${formatShortToastPath(info.path)}`, `Copied path: ${formatShortToastPath(info.path)}`));
+      } else {
+        notifyEnhancerToast(tr('复制失败，请检查剪贴板权限', 'Copy failed, check clipboard permission'), { isError: true });
+      }
+      return ok;
+    }
+    if (actionId === 'copy-folder') {
+      if (!info.isKnownDir && !info.statResolved && fileCtxMenuState.pendingStatPromise) {
+        try {
+          await Promise.race([
+            fileCtxMenuState.pendingStatPromise,
+            new Promise((r) => setTimeout(r, 120))
+          ]);
+        } catch {}
+      }
+      const folderPath = resolveFolderCopyPathForInfo(info);
+      const ok = await copyToClipboard(folderPath);
+      if (ok) {
+        notifyEnhancerToast(tr(`已复制所在文件夹：${formatShortToastPath(folderPath)}`, `Copied folder: ${formatShortToastPath(folderPath)}`));
+      } else {
+        notifyEnhancerToast(tr('复制失败，请检查剪贴板权限', 'Copy failed, check clipboard permission'), { isError: true });
+      }
+      return ok;
+    }
+    if (actionId === 'copy-line-path') {
+      if (!info.pathWithLine) return false;
+      const ok = await copyToClipboard(info.pathWithLine);
+      if (ok) {
+        notifyEnhancerToast(tr(`已复制含行号路径：${formatShortToastPath(info.pathWithLine)}`, `Copied path with line: ${formatShortToastPath(info.pathWithLine)}`));
+      } else {
+        notifyEnhancerToast(tr('复制失败，请检查剪贴板权限', 'Copy failed, check clipboard permission'), { isError: true });
+      }
+      return ok;
+    }
+    if (actionId === 'reveal-finder') {
+      const res = await revealLocalPathInFinder(info.path);
+      return Boolean(res && res.ok);
+    }
+    return false;
+  }
+
+  function positionFileContextMenu(menu, clientX, clientY) {
+    if (!menu) return;
+    const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+    const margin = 10;
+    const rect = typeof menu.getBoundingClientRect === 'function' ? menu.getBoundingClientRect() : null;
+    const menuW = Math.max(180, Math.round((rect && rect.width > 40 ? rect.width : 0) || menu.offsetWidth || 240));
+    const menuH = Math.max(84, Math.round((rect && rect.height > 40 ? rect.height : 0) || menu.offsetHeight || 168));
+    const x = Number.isFinite(Number(clientX)) ? Number(clientX) : 20;
+    const y = Number.isFinite(Number(clientY)) ? Number(clientY) : 20;
+
+    let left = x + 4;
+    if (left + menuW > vw - margin) {
+      left = x - menuW - 4 >= margin ? x - menuW - 4 : Math.max(margin, vw - menuW - margin);
+    }
+    left = Math.max(margin, Math.min(vw - menuW - margin, left));
+
+    let top = y + 4;
+    if (top + menuH > vh - margin) {
+      top = y - menuH - 4 >= margin ? y - menuH - 4 : Math.max(margin, vh - menuH - margin);
+    }
+    top = Math.max(margin, Math.min(vh - menuH - margin, top));
+
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+  }
+
+  function renderFileContextMenuContent(menu, info) {
+    if (!menu || !info) return;
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveSurfaceTheme(host);
+    menu.setAttribute('data-ag-theme', theme);
+    menu.textContent = '';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'ag-fctx-header';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'ag-fctx-name';
+    nameEl.textContent = info.displayName || info.path;
+    nameEl.title = info.path;
+    const pathPreviewEl = document.createElement('div');
+    pathPreviewEl.className = 'ag-fctx-path-preview';
+    pathPreviewEl.textContent = info.pathWithLine || info.path;
+    pathPreviewEl.title = info.pathWithLine || info.path;
+    hdr.appendChild(nameEl);
+    hdr.appendChild(pathPreviewEl);
+    menu.appendChild(hdr);
+
+    const listEl = document.createElement('div');
+    listEl.className = 'ag-fctx-list';
+
+    const resolvedFolder = resolveFolderCopyPathForInfo(info);
+    const items = [
+      {
+        id: 'copy-path',
+        icon: FILE_CTX_ICONS.copyPath,
+        label: tr('复制路径', 'Copy Path'),
+        hint: '',
+        title: info.path
+      },
+      {
+        id: 'copy-folder',
+        icon: FILE_CTX_ICONS.copyFolder,
+        label: tr('复制所在文件夹路径', 'Copy Folder Path'),
+        hint: '',
+        title: resolvedFolder
+      }
+    ];
+    if (info.pathWithLine) {
+      items.push({
+        id: 'copy-line-path',
+        icon: FILE_CTX_ICONS.copyLine,
+        label: tr('复制含行号路径', 'Copy Path with Line'),
+        hint: `:${info.lineSuffix}`,
+        title: info.pathWithLine
+      });
+    }
+
+    const canReveal = Boolean(window.__AGContextMeterLive?.port && window.__AGContextMeterLive?.token);
+    const isMac = typeof navigator === 'undefined' || !/win|linux/i.test(String(navigator.platform || navigator.userAgent || ''));
+    const appendMenuButton = (item) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ag-fctx-item';
+      btn.setAttribute('role', 'menuitem');
+      btn.setAttribute('data-fctx-action', item.id);
+      btn.title = item.title || item.label;
+
+      const left = document.createElement('span');
+      left.className = 'ag-fctx-item-left';
+      const icon = document.createElement('span');
+      icon.className = 'ag-fctx-icon';
+      icon.innerHTML = item.icon;
+      const lbl = document.createElement('span');
+      lbl.className = 'ag-fctx-item-label';
+      lbl.textContent = item.label;
+      left.appendChild(icon);
+      left.appendChild(lbl);
+      btn.appendChild(left);
+
+      if (item.hint) {
+        const hint = document.createElement('span');
+        hint.className = 'ag-fctx-hint';
+        hint.textContent = item.hint;
+        btn.appendChild(hint);
+      }
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void handleFileContextMenuAction(item.id, info);
+      });
+      listEl.appendChild(btn);
+    };
+
+    for (const item of items) appendMenuButton(item);
+    if (canReveal) {
+      const sep = document.createElement('div');
+      sep.className = 'ag-fctx-sep';
+      sep.setAttribute('role', 'separator');
+      listEl.appendChild(sep);
+      appendMenuButton({
+        id: 'reveal-finder',
+        icon: FILE_CTX_ICONS.revealFinder,
+        label: isMac
+          ? tr('在 Finder 中显示', 'Reveal in Finder')
+          : tr('在文件管理器中显示', 'Reveal in File Manager'),
+        hint: '',
+        title: info.path
+      });
+    }
+
+    menu.appendChild(listEl);
+  }
+
+  function closeFileContextMenu(opts = {}) {
+    const wasOpen = fileCtxMenuState.open;
+    const prevOpener = fileCtxMenuState.openerEl;
+    fileCtxMenuState.open = false;
+    fileCtxMenuState.info = null;
+    fileCtxMenuState.openerEl = null;
+    fileCtxMenuState.pendingStatPromise = null;
+    const menu = document.getElementById(FILE_CTX_MENU_ID);
+    if (menu) {
+      menu.hidden = true;
+    }
+    if (wasOpen && opts?.restoreFocus && prevOpener && typeof prevOpener.focus === 'function') {
+      try { prevOpener.focus(); } catch {}
+    }
+  }
+
+  function openFileContextMenu(info, clientX, clientY) {
+    if (disposed || !info || !document.body) return null;
+    ensureDocStyle();
+    let menu = document.getElementById(FILE_CTX_MENU_ID);
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = FILE_CTX_MENU_ID;
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', tr('文件路径操作菜单', 'File Path Actions'));
+      menu.addEventListener('mousedown', (e) => e.stopPropagation());
+      menu.addEventListener('click', (e) => e.stopPropagation());
+      menu.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      document.body.appendChild(menu);
+    } else {
+      menu.setAttribute('aria-label', tr('文件路径操作菜单', 'File Path Actions'));
+    }
+
+    const menuInfo = { ...info, statIsDir: false, statResolved: Boolean(info.isKnownDir) };
+    fileCtxMenuState.open = true;
+    fileCtxMenuState.clientX = Number(clientX) || 0;
+    fileCtxMenuState.clientY = Number(clientY) || 0;
+    fileCtxMenuState.info = menuInfo;
+    fileCtxMenuState.openerEl = info.element || null;
+
+    renderFileContextMenuContent(menu, menuInfo);
+    menu.hidden = false;
+    positionFileContextMenu(menu, fileCtxMenuState.clientX, fileCtxMenuState.clientY);
+
+    if (!menuInfo.isKnownDir && window.__AGContextMeterLive?.port && window.__AGContextMeterLive?.token) {
+      const p = probeLocalPathStat(menuInfo.path).then((st) => {
+        if (st && st.exists) {
+          menuInfo.statIsDir = Boolean(st.isDirectory);
+          menuInfo.statResolved = true;
+          if (menuInfo.statIsDir) {
+            menuInfo.folderPath = menuInfo.path;
+            if (fileCtxMenuState.open && fileCtxMenuState.info === menuInfo) {
+              const folderBtn = menu.querySelector('[data-fctx-action="copy-folder"]');
+              if (folderBtn) folderBtn.title = menuInfo.path;
+            }
+          }
+        }
+        return st;
+      }).catch(() => null);
+      fileCtxMenuState.pendingStatPromise = p;
+    }
+
+    return menu;
+  }
+
+  function onDocContextMenu(e) {
+    if (disposed) return;
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+    const menu = document.getElementById(FILE_CTX_MENU_ID);
+    if (menu && !menu.hidden && target && menu.contains(target)) {
+      e.preventDefault();
+      return;
+    }
+    const info = extractChatLocalFileTarget(target);
+    if (!info) {
+      if (fileCtxMenuState.open) closeFileContextMenu();
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') {
+      e.stopImmediatePropagation();
+    }
+    openFileContextMenu(info, e.clientX, e.clientY);
+  }
+
+  function onDocMouseDownForFileMenu(e) {
+    if (!fileCtxMenuState.open) return;
+    const menu = document.getElementById(FILE_CTX_MENU_ID);
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    if (menu && ((target && menu.contains(target)) || path.includes(menu))) {
+      return;
+    }
+    closeFileContextMenu();
+  }
+
+  function onDocScrollForFileMenu(e) {
+    if (!fileCtxMenuState.open) return;
+    const menu = document.getElementById(FILE_CTX_MENU_ID);
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+    if (menu && target && menu.contains(target)) return;
+    closeFileContextMenu();
+  }
+
   function getOrderedSidebarConversationRows() {
     return Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"]'))
       .filter((row) => Boolean(extractSidebarRowId(row)));
@@ -7571,10 +8304,17 @@
   // ==================== 全局事件与定时巡检 ====================
 
   function onDocClick(e) {
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    if (fileCtxMenuState.open) {
+      const fMenu = document.getElementById(FILE_CTX_MENU_ID);
+      const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+      if (!fMenu || (!(target && fMenu.contains(target)) && !path.includes(fMenu))) {
+        closeFileContextMenu();
+      }
+    }
     if (!popoverOpen && !remotePopoverOpen) return;
     const { sr } = getMeterHostAndShadow();
     if (!sr) return;
-    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
     if (popoverOpen) {
       const btn = sr.getElementById(QUOTA_BADGE_ID);
       const pop = sr.getElementById(QUOTA_POPOVER_ID);
@@ -7627,6 +8367,31 @@
 
   function onDocKeydown(e) {
     syncCmdModifierState(Boolean(e.metaKey || e.ctrlKey));
+    if (fileCtxMenuState.open) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        closeFileContextMenu({ restoreFocus: true });
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
+        const menu = document.getElementById(FILE_CTX_MENU_ID);
+        const items = menu ? Array.from(menu.querySelectorAll('.ag-fctx-item')) : [];
+        if (items.length) {
+          e.preventDefault();
+          e.stopPropagation();
+          const curIdx = items.indexOf(document.activeElement);
+          let nextIdx = 0;
+          if (e.key === 'Home') nextIdx = 0;
+          else if (e.key === 'End') nextIdx = items.length - 1;
+          else if (e.key === 'ArrowDown') nextIdx = curIdx >= 0 ? (curIdx + 1) % items.length : 0;
+          else nextIdx = curIdx >= 0 ? (curIdx - 1 + items.length) % items.length : items.length - 1;
+          try { items[nextIdx]?.focus?.(); } catch {}
+          return;
+        }
+      }
+    }
     if (e.key === 'Escape' && (popoverOpen || remotePopoverOpen)) {
       if (popoverOpen) toggleQuotaPopover(false);
       if (remotePopoverOpen) toggleRemotePopover(false);
@@ -7746,10 +8511,12 @@
 
   function onWindowBlur() {
     syncCmdModifierState(false);
+    closeFileContextMenu();
   }
 
   function onWindowResize() {
     positionChatNavFloat(document.getElementById(CHAT_NAV_ID));
+    closeFileContextMenu();
   }
 
   function applyEnhancerFeatureVisibility() {
@@ -8181,6 +8948,14 @@
     updateAutoAcceptBtn();
     updateRemoteBtnLanguage();
     renderQuotaUI();
+    if (fileCtxMenuState.open && fileCtxMenuState.info) {
+      const fMenu = document.getElementById(FILE_CTX_MENU_ID);
+      if (fMenu && !fMenu.hidden) {
+        fMenu.setAttribute('aria-label', tr('文件路径操作菜单', 'File Path Actions'));
+        renderFileContextMenuContent(fMenu, fileCtxMenuState.info);
+        positionFileContextMenu(fMenu, fileCtxMenuState.clientX, fileCtxMenuState.clientY);
+      }
+    }
     if (uiLang !== 'zh') {
       revertEnhancerTranslations();
     } else if (prevLang !== 'zh') {
@@ -8193,6 +8968,9 @@
   window.addEventListener('ag-remote-state-changed', onRemoteStateChanged);
   window.addEventListener('click', onWindowClickCapture, true);
   document.addEventListener('click', onDocClick, true);
+  document.addEventListener('contextmenu', onDocContextMenu, true);
+  document.addEventListener('mousedown', onDocMouseDownForFileMenu, true);
+  document.addEventListener('scroll', onDocScrollForFileMenu, true);
   document.addEventListener('keydown', onDocKeydown, true);
   document.addEventListener('keyup', onDocKeyup, true);
   document.addEventListener('input', onDocInput, true);
@@ -8243,6 +9021,10 @@
     clearRemotePollTimer();
     reportDockOffline();
     if (toastTimer) clearTimeout(toastTimer);
+    if (fileCtxToastTimer) {
+      clearTimeout(fileCtxToastTimer);
+      fileCtxToastTimer = null;
+    }
     if (quickAutoSendLockTimer) {
       clearTimeout(quickAutoSendLockTimer);
       quickAutoSendLockTimer = null;
@@ -8267,6 +9049,9 @@
       localizeMutationObserver = null;
     }
     document.removeEventListener('click', onDocClick, true);
+    document.removeEventListener('contextmenu', onDocContextMenu, true);
+    document.removeEventListener('mousedown', onDocMouseDownForFileMenu, true);
+    document.removeEventListener('scroll', onDocScrollForFileMenu, true);
     window.removeEventListener('ag-suite-prefs-changed', onSuitePrefsChanged);
     window.removeEventListener('ag-remote-state-changed', onRemoteStateChanged);
     window.removeEventListener('click', onWindowClickCapture, true);
@@ -8281,6 +9066,10 @@
     document.removeEventListener('visibilitychange', onVisibilityChangeForDock);
     window.removeEventListener('beforeunload', onWindowBeforeUnloadForDock);
     syncCmdModifierState(false);
+    closeFileContextMenu();
+    fileCtxMenuState.statCache.clear();
+    safeRemove(document.getElementById(FILE_CTX_MENU_ID));
+    safeRemove(document.getElementById(FILE_CTX_TOAST_ID));
     hideNextStepGhost();
     hideQuickBarTooltip();
     safeRemove(document.getElementById(NEXT_STEP_TOOLTIP_ID));
@@ -9446,10 +10235,11 @@
         for (const [cid, meta] of Object.entries(summaries)) {
           if (!cid || !meta || typeof meta !== 'object') continue;
           const title = String(meta.summary || '').trim();
+          const trajPid = String(meta.trajectoryMetadata?.projectId || '').trim();
           const ws0 = Array.isArray(meta.workspaces) ? meta.workspaces[0] : null;
           const proj = extractProjectNameFromUri(ws0?.workspaceFolderAbsoluteUri || ws0?.gitRootAbsoluteUri || '');
           const mtime = meta.lastModifiedTime ? (Date.parse(meta.lastModifiedTime) || 0) : 0;
-          cascadeSummaryMap.set(cid, { id: cid, title, project: proj, mtime });
+          cascadeSummaryMap.set(cid, { id: cid, title, projectId: trajPid, project: proj, mtime });
         }
       } finally {
         if (timer) clearTimeout(timer);
@@ -9695,9 +10485,9 @@
     const seenConv = new Set();
 
     const addProject = (raw) => {
-      const id = String(raw?.id || '').trim();
+      const id = cleanSidebarPid(raw?.id);
       const name = String(raw?.name || raw?.label || '').trim();
-      if (!id || !name) return;
+      if (!id || !name || isSyntheticSidebarProjectName(name) || /^pinned$/i.test(name)) return;
       if (name === 'swarm/swarm_board') return;
       const prev = projectMap.get(id);
       if (!prev) {
@@ -9771,11 +10561,22 @@
               seenConv.add(cid);
               const rawSummary = String(entry?.conversation?.summary || '').replace(/\s+/g, ' ').trim();
               const cachedZh = (uiLang === 'zh' && !sidebarUserRenamedIds.has(cid)) ? sidebarZhCache.get(cid) : '';
-              const pid = String(entry?.projectId || convGroupMap.get(cid) || gId).trim();
+              // 逐候选单独过滤合成/默认占位 ID 后再按权威优先级选择：语言服务元数据 > 语言服务摘要 > 干净 entry.projectId > 分组猜测
+              const trajMetaPid = cleanSidebarPid(entry?.conversation?.trajectoryMetadata?.projectId);
+              const summaryPid = cleanSidebarPid(cascadeSummaryMap.get(cid)?.projectId);
+              const entryDirectPid = cleanSidebarPid(entry?.projectId);
+              const authoritativePid = trajMetaPid || summaryPid || entryDirectPid;
+              const hookGrpPid = (!/^pinned$/i.test(gName) && !isSyntheticSidebarProjectName(gName)) ? cleanSidebarPid(gId) : '';
+              const virtualGrpPid = cleanSidebarPid(convGroupMap.get(cid));
+              const pid = authoritativePid || hookGrpPid || virtualGrpPid || '';
+              const resolvedName = (pid && projectMap.get(pid)?.name)
+                ? projectMap.get(pid).name
+                : ((pid && pid === hookGrpPid && !isSyntheticSidebarProjectName(gName)) ? gName : '');
               convs.push({
                 id: cid,
                 projectId: pid,
-                projectName: gName || '',
+                authoritativeProjectId: authoritativePid,
+                projectName: resolvedName,
                 title: (cachedZh || rawSummary || cid.slice(0, 8)).slice(0, 80),
                 timeKey: toSafeNumber(entry?.timeKey),
                 workspaceUri: String(entry?.workspaceUriStr || '')
@@ -9826,7 +10627,9 @@
         if (n.getAttribute('data-testid') === 'project-header') {
           const wrap = n.parentElement?.parentElement || n.parentElement;
           const pLink = wrap?.querySelector?.('a[href*="project="]');
-          activeHeaderPid = parseProjectIdFromHref(pLink?.getAttribute?.('href')) || n.getAttribute('data-project-id') || '';
+          const rawHdrPid = parseProjectIdFromHref(pLink?.getAttribute?.('href')) || n.getAttribute('data-project-id') || '';
+          const hdrLabel = String(n.getAttribute('data-project-label') || n.textContent || '').replace(/\s+/g, ' ').trim();
+          activeHeaderPid = (!isSyntheticSidebarProjectName(hdrLabel) && !/^pinned$/i.test(hdrLabel)) ? cleanSidebarPid(rawHdrPid) : '';
         } else {
           const cid = extractSidebarRowId(n);
           if (cid && activeHeaderPid) domProjectMap.set(cid, activeHeaderPid);
@@ -9836,11 +10639,22 @@
 
     const storeCatalog = preloadedStoreCatalog || extractSidebarStoreCatalog();
     const storeById = new Map(storeCatalog.conversations.map((c) => [c.id, c]));
+    const storeProjById = new Map(storeCatalog.projects.map((p) => [p.id, p]));
 
     for (const row of rows) {
       const id = extractSidebarRowId(row);
       if (!id || byId.has(id)) continue;
       const storeMeta = storeById.get(id);
+      const sumMeta = cascadeSummaryMap.get(id);
+      const storeAuthPid = cleanSidebarPid(storeMeta?.authoritativeProjectId);
+      const summaryPid = cleanSidebarPid(sumMeta?.projectId);
+      const storeFallbackPid = cleanSidebarPid(storeMeta?.projectId);
+      const domFallbackPid = cleanSidebarPid(domProjectMap.get(id));
+      const authoritativePid = storeAuthPid || summaryPid;
+      const resolvedPid = authoritativePid || storeFallbackPid || domFallbackPid || '';
+      const resolvedPName = storeProjById.get(resolvedPid)?.name
+        || (resolvedPid === storeMeta?.projectId ? (storeMeta?.projectName || '') : '')
+        || (!authoritativePid && sumMeta?.project ? sumMeta.project : '');
       const title = getSidebarRowDisplayTitle(row);
       const active = isSidebarRowActive(row, currentId);
       const domBusy = Boolean(row.querySelector('[data-testid="status-loading-spinner"], button[aria-label*="停止"], button[aria-label*="Stop"]'));
@@ -9850,8 +10664,9 @@
         id,
         title: title.slice(0, 80),
         active,
-        projectId: storeMeta?.projectId || domProjectMap.get(id) || '',
-        projectName: storeMeta?.projectName || '',
+        projectId: resolvedPid,
+        ...(authoritativePid ? { authoritativeProjectId: authoritativePid } : {}),
+        projectName: resolvedPName,
         domBusy,
         domUnread,
         pinned,
@@ -9865,12 +10680,18 @@
     for (const sc of storeCatalog.conversations) {
       if (list.length >= maxItems) break;
       if (byId.has(sc.id)) continue;
+      const sumMeta = cascadeSummaryMap.get(sc.id);
+      const authPid = cleanSidebarPid(sc.authoritativeProjectId) || cleanSidebarPid(sumMeta?.projectId);
+      const resolvedPid = authPid || cleanSidebarPid(sc.projectId) || '';
+      const resolvedName = storeProjById.get(resolvedPid)?.name
+        || (resolvedPid === sc.projectId ? (sc.projectName || '') : '');
       const item = {
         id: sc.id,
         title: sc.title,
         active: Boolean(currentId && sc.id === currentId),
-        projectId: sc.projectId || '',
-        projectName: sc.projectName || '',
+        projectId: resolvedPid,
+        ...(authPid ? { authoritativeProjectId: authPid } : {}),
+        projectName: resolvedName,
         domBusy: false,
         domUnread: false,
         pinned: false,
@@ -9883,8 +10704,34 @@
     return list;
   }
 
-  function collectSidebarProjectGroups(limit = 60) {
+  function isSyntheticSidebarProjectId(raw) {
+    const id = String(raw || '').trim();
+    return !id || id === 'default' || id === 'ungrouped' || id === 'pinned' || /^dom:/i.test(id) || /^name:/i.test(id);
+  }
+
+  function cleanSidebarPid(raw) {
+    const id = String(raw || '').trim();
+    return isSyntheticSidebarProjectId(id) ? '' : id;
+  }
+
+  function isSyntheticSidebarProjectName(raw) {
+    const name = String(raw || '').trim();
+    return !name || name === '默认项目' || name === '未归属项目' || name === '未命名项目';
+  }
+
+  function isSyntheticSidebarGroupHeader(rawId, rawName) {
+    const id = String(rawId || '').trim();
+    const name = String(rawName || '').trim();
+    if (id && isSyntheticSidebarProjectId(id)) return true;
+    if (/^pinned$/i.test(name) || isSyntheticSidebarProjectName(name)) return true;
+    return false;
+  }
+
+  function collectSidebarProjectGroups(limit = 60, preloadedStoreCatalog = null) {
     const currentId = getSessionIdFromLocation() || '';
+    const storeCatalog = preloadedStoreCatalog || extractSidebarStoreCatalog();
+    const storeConvById = new Map(storeCatalog.conversations.map((c) => [c.id, c]));
+    const storeProjById = new Map(storeCatalog.projects.map((p) => [p.id, p]));
     const domRows = getOrderedSidebarConversationRows();
     const domRowMap = new Map();
     for (const row of domRows) {
@@ -9906,13 +10753,21 @@
 
     const groups = [];
     const groupById = new Map();
-    const ensureGroup = (gid, name, count = 0, isCollapsed = false) => {
-      const key = String(gid || `name:${name}`).trim();
+    const ensureGroup = (gid, name, count = 0, isCollapsed = false, explicitKey = '') => {
+      const rawId = String(gid || '').trim();
+      const cleanId = cleanSidebarPid(rawId);
+      const rawName = String(name || '').trim();
+      const safeName = (!rawName || rawName === '默认项目') ? '未归属项目' : rawName;
+      const cleanExplicitKey = String(explicitKey || '').trim();
+      const safeExplicitKey = (cleanExplicitKey && cleanExplicitKey !== 'default' && !/^dom:默认项目$/i.test(cleanExplicitKey) && !/^name:默认项目$/i.test(cleanExplicitKey))
+        ? cleanExplicitKey
+        : '';
+      const key = String(safeExplicitKey || cleanId || `name:${safeName}`).trim();
       if (groupById.has(key)) return groupById.get(key);
       const grp = {
-        id: String(gid || ''),
+        id: cleanId,
         key,
-        name: String(name || '未命名项目').trim() || '未命名项目',
+        name: safeName,
         count: Number(count) || 0,
         isCollapsed: Boolean(isCollapsed),
         active: false,
@@ -9920,7 +10775,49 @@
       };
       groups.push(grp);
       groupById.set(key, grp);
+      if (cleanId && !groupById.has(cleanId)) groupById.set(cleanId, grp);
       return grp;
+    };
+
+    const resolveKnownGroupForRow = (cid) => {
+      const storeMeta = storeConvById.get(cid);
+      const sumMeta = cascadeSummaryMap.get(cid);
+      // 语言服务元数据 / 摘要归属优先于 Hook 分组推断
+      const authoritativePid = cleanSidebarPid(storeMeta?.authoritativeProjectId)
+        || cleanSidebarPid(sumMeta?.projectId);
+      if (authoritativePid) {
+        if (authoritativePid === 'outside-of-project' || authoritativePid === 'standalone') {
+          return ensureGroup('', '独立对话', 0, false, authoritativePid);
+        }
+        const existingGrp = groupById.get(authoritativePid);
+        const realName = storeProjById.get(authoritativePid)?.name
+          || existingGrp?.name
+          || (authoritativePid === storeMeta?.projectId && !isSyntheticSidebarProjectName(storeMeta?.projectName) ? storeMeta.projectName : '')
+          || sumMeta?.project
+          || authoritativePid;
+        return ensureGroup(authoritativePid, realName, 0, Boolean(storeProjById.get(authoritativePid)?.isCollapsed));
+      }
+      const sumProj = sumMeta?.project || '';
+      if (sumProj) {
+        const matched = groups.find((g) => g.name === sumProj)
+          || storeCatalog.projects.find((p) => p.name === sumProj);
+        if (matched) {
+          return matched.conversations ? matched : ensureGroup(matched.id, matched.name, 0, Boolean(matched.isCollapsed));
+        }
+      }
+      const inferredStorePid = cleanSidebarPid(storeMeta?.projectId);
+      if (inferredStorePid) {
+        if (inferredStorePid === 'outside-of-project' || inferredStorePid === 'standalone') {
+          return ensureGroup('', '独立对话', 0, false, inferredStorePid);
+        }
+        const existingGrp = groupById.get(inferredStorePid);
+        const realName = storeProjById.get(inferredStorePid)?.name
+          || existingGrp?.name
+          || (!isSyntheticSidebarProjectName(storeMeta?.projectName) ? storeMeta.projectName : '')
+          || inferredStorePid;
+        return ensureGroup(inferredStorePid, realName, 0, Boolean(storeProjById.get(inferredStorePid)?.isCollapsed));
+      }
+      return null;
     };
 
     const fiberProps = findSidebarFiberProps();
@@ -9930,20 +10827,29 @@
       for (const it of fiberItems) {
         if (!it || typeof it !== 'object') continue;
         if (it.type === 'header') {
-          const gid = String(it.id || '').replace(/^header-/, '') || String(it.label || '未命名项目');
-          curGrp = ensureGroup(gid, it.label || '未命名项目', it.count || 0, Boolean(it.isCollapsed));
+          const rawHeaderId = String(it.id || '').replace(/^header-/, '').trim();
+          const hdrName = String(it.label || '').trim();
+          if (isSyntheticSidebarGroupHeader(rawHeaderId, hdrName)) {
+            curGrp = null;
+            continue;
+          }
+          curGrp = ensureGroup(rawHeaderId, hdrName, it.count || 0, Boolean(it.isCollapsed), rawHeaderId || `name:${hdrName}`);
         } else if (it.type === 'row') {
           const cid = String(it.cascadeId || it.id || '').trim();
           if (!cid) continue;
-          const targetGrp = (it.groupId && groupById.get(String(it.groupId))) || curGrp || ensureGroup('default', '默认项目');
+          const explicitGrp = (it.groupId && !isSyntheticSidebarProjectId(it.groupId)) ? groupById.get(String(it.groupId)) : null;
+          // 权威会话归属（Hook 状态 / 语言服务摘要）必须高于虚拟列表 groupId 与前置 header 猜测
+          const targetGrp = resolveKnownGroupForRow(cid) || explicitGrp || curGrp || ensureGroup('', '未归属项目', 0, false, 'ungrouped');
           if (targetGrp.conversations.some((c) => c.id === cid)) continue;
           const domMeta = domRowMap.get(cid);
           const active = Boolean(domMeta?.active || (currentId && cid === currentId));
+          const isUngroupedTarget = !targetGrp.id && (targetGrp.key === 'ungrouped' || targetGrp.key === 'outside-of-project' || targetGrp.key === 'standalone');
           targetGrp.conversations.push({
             id: cid,
             title: resolveConvTitle(cid).slice(0, 80),
             active,
-            project: targetGrp.name
+            ...(targetGrp.id ? { projectId: targetGrp.id } : {}),
+            project: isUngroupedTarget ? '' : targetGrp.name
           });
         }
       }
@@ -9958,6 +10864,7 @@
               id: meta.id,
               title: resolveConvTitle(meta.id).slice(0, 80),
               active: Boolean(domRowMap.get(meta.id)?.active || (currentId && meta.id === currentId)),
+              ...(grp.id ? { projectId: grp.id } : {}),
               project: grp.name
             });
           }
@@ -9970,19 +10877,29 @@
       for (const node of nodes) {
         const tid = node.getAttribute?.('data-testid');
         if (tid === 'project-header') {
-          const pname = (node.textContent || '').replace(/\s+/g, ' ').trim() || '未命名项目';
-          curGrp = ensureGroup(`dom:${pname}`, pname);
+          const pname = (node.textContent || '').replace(/\s+/g, ' ').trim();
+          const wrap = node.parentElement?.parentElement || node.parentElement;
+          const pLink = wrap?.querySelector?.('a[href*="project="]');
+          const hdrPid = parseProjectIdFromHref(pLink?.getAttribute?.('href')) || node.getAttribute?.('data-project-id') || '';
+          if (isSyntheticSidebarGroupHeader(hdrPid, pname)) {
+            curGrp = null;
+            continue;
+          }
+          curGrp = ensureGroup(hdrPid, pname, 0, false, hdrPid || `dom:${pname}`);
         } else if (tid === 'conversation-row-sidebar') {
           const cid = extractSidebarRowId(node);
           if (!cid) continue;
-          const targetGrp = curGrp || ensureGroup('dom:默认项目', '默认项目');
+          // 权威会话归属优先于 DOM 前置 project-header 猜测（防止虚拟列表隐藏置顶行原组头后误落入前一组）
+          const targetGrp = resolveKnownGroupForRow(cid) || curGrp || ensureGroup('', '未归属项目', 0, false, 'ungrouped');
           if (targetGrp.conversations.some((c) => c.id === cid)) continue;
           const active = isSidebarRowActive(node, currentId);
+          const isUngroupedTarget = !targetGrp.id && (targetGrp.key === 'ungrouped' || targetGrp.key === 'outside-of-project' || targetGrp.key === 'standalone');
           targetGrp.conversations.push({
             id: cid,
             title: getSidebarRowDisplayTitle(node).slice(0, 80),
             active,
-            project: targetGrp.name
+            ...(targetGrp.id ? { projectId: targetGrp.id } : {}),
+            project: isUngroupedTarget ? '' : targetGrp.name
           });
         }
       }
@@ -10032,50 +10949,249 @@
     ];
   }
 
-  function collectDesktopContextPanelData(sr, pulseEl, contextBadge, model) {
-    const ctxData = pulseEl?.__ctxUsageData || null;
-    const readText = (id) => (sr?.getElementById(id)?.textContent || '').replace(/\s+/g, ' ').trim();
-    const usedText = readText('key-used');
-    const limitText = readText('key-limit');
-    const remainingText = readText('key-remaining');
-    const keyBadge = readText('key-badge');
-    const speedVal = readText('speed-val');
-    const durationText = readText('speed-duration');
-    const ttftText = readText('speed-ttft');
-    const outputTokensText = readText('speed-tokens');
-    const roundCostText = readText('round-cost-text');
-    const sessionCostText = readText('session-cost-text');
-    const pctText = readText('badge-pct-val') || contextBadge || '';
-    const pctMatch = pctText.match(/(\d+(?:\.\d+)?)\s*%/);
-    const usagePercent = ctxData && typeof ctxData.usagePercent === 'number'
-      ? Number(ctxData.usagePercent)
-      : (pctMatch ? Number(pctMatch[1]) : null);
-    const speedMatch = speedVal.match(/(\d+(?:\.\d+)?)/);
-    const durMatch = durationText.match(/(\d+(?:\.\d+)?)/);
+  function normalizeContextCidKey(val) {
+    if (!val || typeof val !== 'string') return '';
+    const parts = val.trim().split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  }
+
+  function resolveEnhancerPhysicalMaxTokens(modelId, modelLabel) {
+    try {
+      const viaCaps = window.__AGY_CTX_CAPSULE_API__?.getPhysicalMaxTokensForModel?.(modelId, modelLabel);
+      if (typeof viaCaps === 'number' && viaCaps > 0) return Math.round(viaCaps);
+    } catch {}
+    const combined = `${modelId || ''} ${modelLabel || ''}`.trim().toUpperCase();
+    if (!combined) return 0;
+    if (combined.includes('GPT_OSS') || combined.includes('GPT-OSS') || combined.includes('120B')) return 131072;
+    if (combined.includes('CLAUDE') || combined.includes('OPUS') || combined.includes('SONNET')) return /5[._-]5|M40[0-5]/.test(combined) ? 1000000 : 200000;
+    if (/GEMINI|NEON|CARBON|ARGON|HYDROGEN|ORCHESTRATOR|FLASH|M41[789]|M427|M43[78]|M52[5-8]|M53[2-7]|M667|M669|M681|M31[89]|M320/.test(combined)) return 1048576;
+    return 256000;
+  }
+
+  function resolveEnhancerCustomFixedLimit(modelId, modelLabel, explicitCustom = 0) {
+    const direct = Number(explicitCustom || 0);
+    if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+    try {
+      const cp = window.__AGContextMeterSettings?.customPlan;
+      if (!cp || typeof cp !== 'object') return 0;
+      if (cp.contextScopeMode !== 'per_model') {
+        return (cp.contextUnifiedPreference?.mode === 'fixed' && Number(cp.contextUnifiedPreference.limitTokens) > 0)
+          ? Math.round(Number(cp.contextUnifiedPreference.limitTokens)) : 0;
+      }
+      const prefs = cp.contextPreferences;
+      if (!prefs || typeof prefs !== 'object') return 0;
+      const cand = [modelId, modelLabel].map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
+      for (const [k, entry] of Object.entries(prefs)) {
+        if (!entry || entry.mode !== 'fixed' || !(Number(entry.limitTokens) > 0)) continue;
+        const keys = [k, entry.modelId, entry.label].map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
+        if (!cand.length || cand.some((c) => keys.includes(c))) return Math.round(Number(entry.limitTokens));
+      }
+    } catch {}
+    return 0;
+  }
+
+  function resolveEnhancerCompressionBudget(modelId, modelLabel, observedRuntimeBudget = 0, explicitCustom = 0) {
+    const customFixed = resolveEnhancerCustomFixedLimit(modelId, modelLabel, explicitCustom);
+    if (customFixed > 0) return customFixed;
+    const rt = Number(observedRuntimeBudget || 0);
+    if (Number.isFinite(rt) && rt > 0) return Math.round(rt);
+    try {
+      const viaCaps = window.__AGY_CTX_CAPSULE_API__?.resolveCompressionBudgetForModel?.(modelId, modelLabel, {});
+      if (typeof viaCaps === 'number' && viaCaps > 0) return Math.round(viaCaps);
+    } catch {}
+    const phys = resolveEnhancerPhysicalMaxTokens(modelId, modelLabel);
+    return (phys > 0 && phys < 512000) ? phys : 512000;
+  }
+
+  function makeAuthMetricsRecord(source, cid, p) {
+    const usedTokens = Math.max(0, Math.round(Number(p.usedTokens || 0) || 0));
+    const limitTokens = Math.max(0, Math.round(Number(p.limitTokens || 0) || 0));
+    const usagePercent = (usedTokens > 0 && limitTokens > 0 && !p.exceeded)
+      ? Number(((usedTokens / limitTokens) * 100).toFixed(1))
+      : (typeof p.fallbackPct === 'number' ? Number(p.fallbackPct.toFixed(1)) : (p.zeroWhenLimit && limitTokens > 0 ? 0 : null));
     return {
-      usedTokens: ctxData && typeof ctxData.contextUsed === 'number' ? ctxData.contextUsed : null,
-      limitTokens: ctxData && typeof ctxData.contextLimit === 'number' ? ctxData.contextLimit : null,
-      usagePercent,
-      cacheHitRate: ctxData && typeof ctxData.cacheHitRate === 'number' ? ctxData.cacheHitRate : null,
-      tokPerSec: ctxData && typeof ctxData.tokPerSec === 'number'
-        ? ctxData.tokPerSec
-        : (speedMatch ? Number(speedMatch[1]) : null),
-      lastDurationSec: ctxData && typeof ctxData.lastDurationSec === 'number'
-        ? ctxData.lastDurationSec
-        : (durMatch ? Number(durMatch[1]) : null),
-      outputTokens: ctxData && typeof ctxData.outputTokens === 'number' ? ctxData.outputTokens : null,
-      modelDisplayName: ctxData?.modelDisplayName || model || '',
-      contextBadge: contextBadge || '',
-      usedText,
-      limitText,
-      remainingText,
-      keyBadge,
-      speedText: speedVal,
-      durationText,
-      ttftText,
-      outputTokensText,
-      roundCostText,
-      sessionCostText
+      source, conversationId: String(cid || ''),
+      ...(p.isReported !== undefined ? { isReported: Boolean(p.isReported) } : {}),
+      usedTokens, limitTokens, physicalMaxTokens: Number(p.physicalMaxTokens || 0) || null, usagePercent,
+      cacheHitRate: typeof p.cacheHitRate === 'number' ? Number(p.cacheHitRate.toFixed(1)) : null,
+      tokPerSec: Number(p.tokPerSec || 0) > 0 ? Number(Number(p.tokPerSec).toFixed(1)) : null,
+      lastDurationSec: Number(p.lastDurationSec || 0) > 0 ? Number(p.lastDurationSec) : null,
+      ttftSec: Number(p.ttftSec || 0) > 0 ? Number(p.ttftSec) : null,
+      outputTokens: Number(p.outputTokens || 0) > 0 ? Math.round(Number(p.outputTokens)) : null,
+      modelId: String(p.modelId || '').trim(), modelDisplayName: String(p.modelDisplayName || '').trim(),
+      compressionDetected: Boolean(p.compressionDetected), compressionBefore: Number(p.compressionBefore || 0) || 0,
+      compressionAfter: Number(p.compressionAfter || 0) || 0, cacheDropDetected: Boolean(p.cacheDropDetected),
+      exactUsageStepIndex: typeof p.exactUsageStepIndex === 'number' ? p.exactUsageStepIndex : (typeof p.metaMaxStepIndex === 'number' ? p.metaMaxStepIndex : -1),
+      lastCheckpointStepIdx: typeof p.lastCheckpointStepIdx === 'number' ? p.lastCheckpointStepIdx : -1,
+      stepCount: Number(p.stepCount || 0) || 0, updatedAtMs: Number(p.updatedAtMs || 0) || 0
+    };
+  }
+
+  // 全端上下文与速度单一权威数据源（SSOT）：严禁 Math.max 或跨源文本缝合，按压缩状态/步骤数/时间戳择一采用
+  function resolveAuthoritativeContextMetrics(conversationId = '', options = {}) {
+    const fallbackModel = String(options.fallbackModel || '').trim();
+    if (options.isolatedMetrics && typeof options.isolatedMetrics === 'object') {
+      const iso = options.isolatedMetrics;
+      const modelId = String(iso.modelId || '').trim();
+      const modelDisplayName = String(iso.modelDisplayName || fallbackModel || '').trim();
+      const rtBudget = Math.max(0, Math.round(Number(iso.runtimeBudget || 0) || 0));
+      const basePhys = Number(iso.physicalMaxTokens || 0) || resolveEnhancerPhysicalMaxTokens(modelId, modelDisplayName) || 0;
+      return makeAuthMetricsRecord('isolated', conversationId || iso.conversationId || '', {
+        ...iso, modelId, modelDisplayName, zeroWhenLimit: true,
+        limitTokens: resolveEnhancerCompressionBudget(modelId, modelDisplayName, rtBudget, options.customLimitTokens),
+        physicalMaxTokens: basePhys || null, updatedAtMs: iso.updatedAtMs || Date.now()
+      });
+    }
+
+    const targetCid = normalizeContextCidKey(conversationId || getSessionIdFromLocation() || '');
+    const pulseEl = options.pulseEl !== undefined ? options.pulseEl : document.querySelector('[data-agy-context-capsule="1"]');
+    const capRaw = pulseEl?.__ctxUsageData || null;
+    const capCid = normalizeContextCidKey(capRaw?.conversationId || '');
+    const capMatchesRoute = !targetCid || !capCid || capCid === targetCid;
+    const meterSnap = (() => { try { return (window.__AGContextMeter || globalThis.__AGContextMeter)?.snapshot?.() || null; } catch { return null; } })();
+    const meterRoute = normalizeContextCidKey(meterSnap?.route || '');
+    const meterRaw = (!targetCid || !meterRoute || meterRoute === targetCid) ? (meterSnap?.latest || null) : null;
+
+    let cap = null;
+    if (capRaw && capMatchesRoute && (Number(capRaw.contextUsed || 0) > 0 || typeof capRaw.usagePercent === 'number')) {
+      const usedTokens = Math.max(0, Math.round(Number(capRaw.contextUsed || 0) || 0));
+      const rawLimit = Math.max(0, Math.round(Number(capRaw.contextLimit || 0) || 0));
+      const explicitRt = Math.max(0, Math.round(Number(capRaw.runtimeBudget || 0) || 0));
+      const isLegacyPhys = !explicitRt && !capRaw.hasExplicitRuntimeBudget && !capRaw.hasCustomFixedLimit && (rawLimit === 1000000 || rawLimit === 1048576);
+      const rtBudget = explicitRt > 0 ? explicitRt : (isLegacyPhys ? 0 : rawLimit);
+      const modelId = String(capRaw.modelId || '').trim();
+      const modelDisplayName = String(capRaw.modelDisplayName || fallbackModel || '').trim();
+      const basePhys = Math.max(0, Math.round(Number(capRaw.physicalMaxTokens || 0) || 0)) || (isLegacyPhys ? rawLimit : resolveEnhancerPhysicalMaxTokens(modelId, modelDisplayName));
+      const capHit = (typeof capRaw.cacheHitRate === 'number' && (capRaw.hasPreciseSnapshot || usedTokens > 0 || Number(capRaw.cacheReadTokens || 0) > 0)) ? capRaw.cacheHitRate : null;
+      const capDrop = Boolean(capRaw.cacheDropDetected || (capRaw.hasPreciseSnapshot && usedTokens >= 240000 && Number(capRaw.inputTokens || 0) >= 200000 && Number(capRaw.cacheHitRate ?? 100) < 25));
+      cap = makeAuthMetricsRecord('capsule', targetCid, {
+        ...capRaw, usedTokens, modelId, modelDisplayName, fallbackPct: capRaw.usagePercent, cacheHitRate: capHit, cacheDropDetected: capDrop,
+        limitTokens: resolveEnhancerCompressionBudget(modelId, modelDisplayName, rtBudget, options.customLimitTokens),
+        physicalMaxTokens: basePhys || null
+      });
+    }
+
+    let met = null;
+    const metUsedRaw = Number(meterRaw?.actual ?? meterRaw?.used ?? meterRaw?.estimate ?? 0) || 0;
+    if (meterRaw && metUsedRaw > 0) {
+      const rtBudget = Math.max(0, Math.round(Number(meterRaw.runtimeBudget ?? meterRaw.budget ?? 0) || 0));
+      const modelId = String(meterRaw.modelId || meterRaw.modelRaw || '').trim();
+      const modelDisplayName = String(meterRaw.model || fallbackModel || '').trim();
+      const basePhys = Math.max(0, Math.round(Number(meterRaw.physicalMaxTokens || 0) || 0)) || resolveEnhancerPhysicalMaxTokens(modelId, modelDisplayName);
+      const sp = meterRaw.speed || null;
+      met = makeAuthMetricsRecord('meter', targetCid, {
+        ...meterRaw, modelId, modelDisplayName, usedTokens: metUsedRaw, fallbackPct: meterRaw.percent,
+        isReported: Boolean(meterRaw.actual != null && meterRaw.actual > 0 && !meterRaw.estimated),
+        limitTokens: resolveEnhancerCompressionBudget(modelId, modelDisplayName, rtBudget, options.customLimitTokens),
+        physicalMaxTokens: basePhys || null,
+        tokPerSec: sp?.streamingTps ?? sp?.tps ?? null, lastDurationSec: sp?.duration, ttftSec: sp?.ttft, outputTokens: sp?.outputTokens ?? meterRaw.output
+      });
+    }
+
+    if (cap && !met) return cap;
+    if (met && !cap) return met;
+    if (cap && met) {
+      const cpIdx = Math.max(cap.lastCheckpointStepIdx, met.lastCheckpointStepIdx);
+      const metProvenAfterCp = cpIdx >= 0 && met.exactUsageStepIndex > cpIdx;
+      const capProvenAfterCp = cpIdx >= 0 && cap.exactUsageStepIndex > cpIdx;
+      const capRegrown = cap.compressionAfter > 0 && cap.usedTokens > cap.compressionAfter + 50000;
+      const metRegrown = met.compressionAfter > 0 && met.usedTokens > met.compressionAfter + 50000;
+      if (cap.compressionDetected && !capRegrown && !met.compressionDetected && !metProvenAfterCp && cap.usedTokens > 0 && met.usedTokens > cap.usedTokens + 5000) {
+        try { window.__AGContextMeter?.invalidateAfterCompact?.(targetCid, capRaw); } catch {}
+        return cap;
+      }
+      if (met.compressionDetected && !metRegrown && !cap.compressionDetected && !capProvenAfterCp && met.usedTokens > 0 && cap.usedTokens > met.usedTokens + 5000) return met;
+      if (metProvenAfterCp && !capProvenAfterCp) return met;
+      if (capProvenAfterCp && !metProvenAfterCp) return cap;
+      if (cap.exactUsageStepIndex >= 0 && met.exactUsageStepIndex >= 0 && cap.exactUsageStepIndex !== met.exactUsageStepIndex) {
+        return cap.exactUsageStepIndex > met.exactUsageStepIndex ? cap : met;
+      }
+      if (cap.stepCount > 0 && met.stepCount > 0 && cap.stepCount !== met.stepCount) return cap.stepCount > met.stepCount ? cap : met;
+      if (cap.updatedAtMs > 0 && met.updatedAtMs > 0 && Math.abs(cap.updatedAtMs - met.updatedAtMs) > 500) return cap.updatedAtMs > met.updatedAtMs ? cap : met;
+      const primary = met.isReported ? met : cap;
+      const secondary = primary === met ? cap : met;
+      const sameTurnForSpeed = !primary.compressionDetected && !secondary.compressionDetected && (
+        (primary.exactUsageStepIndex >= 0 && primary.exactUsageStepIndex === secondary.exactUsageStepIndex) ||
+        (primary.exactUsageStepIndex < 0 && secondary.exactUsageStepIndex < 0 && primary.stepCount > 0 && primary.stepCount === secondary.stepCount && primary.usedTokens === secondary.usedTokens)
+      );
+      const speedSrc = primary.tokPerSec != null ? primary : (sameTurnForSpeed && secondary.tokPerSec != null ? secondary : primary);
+      return {
+        ...primary,
+        tokPerSec: speedSrc.tokPerSec,
+        lastDurationSec: speedSrc.lastDurationSec,
+        ttftSec: speedSrc.ttftSec,
+        outputTokens: speedSrc.tokPerSec != null ? speedSrc.outputTokens : primary.outputTokens,
+        cacheHitRate: sameTurnForSpeed ? (primary.cacheHitRate ?? secondary.cacheHitRate) : primary.cacheHitRate,
+        modelDisplayName: primary.modelDisplayName || secondary.modelDisplayName
+      };
+    }
+
+    return makeAuthMetricsRecord('empty', targetCid, {
+      usedTokens: 0, modelDisplayName: fallbackModel,
+      limitTokens: resolveEnhancerCompressionBudget('', fallbackModel, 0, options.customLimitTokens),
+      physicalMaxTokens: resolveEnhancerPhysicalMaxTokens('', fallbackModel)
+    });
+  }
+
+  function buildCanonicalContextPanelPayload(auth, extra = {}) {
+    const usedTokens = Number(auth?.usedTokens || 0) || 0;
+    const limitTokens = Number(auth?.limitTokens || 0) || 0;
+    const physicalMaxTokens = Number(auth?.physicalMaxTokens || 0) || null;
+    const pct = typeof auth?.usagePercent === 'number' ? Number(auth.usagePercent.toFixed(1)) : (usedTokens > 0 && limitTokens > 0 ? Number(((usedTokens / limitTokens) * 100).toFixed(1)) : null);
+    const usedShort = usedTokens > 0 ? formatRpcTokensShort(usedTokens) : '';
+    const limitShort = limitTokens > 0 ? formatRpcTokensShort(limitTokens) : '';
+    const remainTokens = (limitTokens > 0 && usedTokens > 0) ? Math.max(0, limitTokens - usedTokens) : (limitTokens > 0 && pct === 0 ? limitTokens : null);
+    const remainPct = pct != null ? Number(Math.max(0, 100 - pct).toFixed(1)) : null;
+    const contextBadge = (usedTokens > 0 && limitTokens > 0 && pct != null) ? `${usedShort}/${limitShort} (${pct}%)` : (usedTokens > 0 ? usedShort : (extra.fallbackBadge || ''));
+    const tokPerSec = typeof auth?.tokPerSec === 'number' && auth.tokPerSec > 0 ? Number(auth.tokPerSec.toFixed(1)) : null;
+    const pulseText = [tokPerSec ? `${tokPerSec} tok/s` : '', contextBadge].filter(Boolean).join(' · ') || (extra.fallbackPulse || '');
+    const dur = typeof auth?.lastDurationSec === 'number' && auth.lastDurationSec > 0 ? auth.lastDurationSec : null;
+    const ttft = typeof auth?.ttftSec === 'number' && auth.ttftSec > 0 ? auth.ttftSec : null;
+    const outTok = typeof auth?.outputTokens === 'number' && auth.outputTokens > 0 ? auth.outputTokens : null;
+    const keyBadge = auth?.cacheDropDetected ? '缓存脱落' : (pct != null ? `${pct}%` : (extra.fallbackKeyBadge || '--%'));
+
+    return {
+      contextBadge, pulseText,
+      contextPanel: {
+        source: auth?.source || 'empty', usedTokens: usedTokens || null, limitTokens: limitTokens || null,
+        physicalMaxTokens, usagePercent: pct,
+        cacheHitRate: typeof auth?.cacheHitRate === 'number' ? Number(auth.cacheHitRate.toFixed(1)) : null,
+        tokPerSec, lastDurationSec: dur, ttftSec: ttft, outputTokens: outTok,
+        compressionDetected: Boolean(auth?.compressionDetected), cacheDropDetected: Boolean(auth?.cacheDropDetected),
+        modelDisplayName: auth?.modelDisplayName || extra.fallbackModel || '', contextBadge,
+        usedText: usedTokens > 0 ? (pct != null ? `${usedShort} (${pct}%)` : usedShort) : '—',
+        limitText: limitTokens > 0 ? limitShort : '—',
+        remainingText: remainTokens != null ? (remainPct != null ? `${formatRpcTokensShort(remainTokens)} (${remainPct}%)` : formatRpcTokensShort(remainTokens)) : '—',
+        keyBadge, speedText: tokPerSec ? `${tokPerSec} tok/s` : '—', durationText: dur != null ? `${dur}s` : '—',
+        ttftText: ttft != null ? `${ttft}s` : '—', outputTokensText: outTok != null ? `${outTok}` : '—',
+        roundCostText: extra.roundCostText || '', sessionCostText: extra.sessionCostText || ''
+      }
+    };
+  }
+
+  function collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, precomputedAuth = null) {
+    const readText = (id) => (sr?.getElementById(id)?.textContent || '').replace(/\s+/g, ' ').trim();
+    const auth = precomputedAuth || resolveAuthoritativeContextMetrics('', { pulseEl, fallbackModel: model });
+    const roundCostText = auth.source === 'capsule' && auth.compressionDetected ? '' : readText('round-cost-text');
+    const sessionCostText = readText('session-cost-text');
+    if (auth && (auth.usedTokens > 0 || typeof auth.usagePercent === 'number')) {
+      return buildCanonicalContextPanelPayload(auth, { fallbackBadge: contextBadge || '', fallbackModel: model || '', roundCostText, sessionCostText }).contextPanel;
+    }
+    const usedText = readText('key-used'), limitText = readText('key-limit'), remainingText = readText('key-remaining');
+    const keyBadge = readText('key-badge'), speedVal = readText('speed-val'), durationText = readText('speed-duration');
+    const ttftText = readText('speed-ttft'), outputTokensText = readText('speed-tokens');
+    const pctMatch = (readText('badge-pct-val') || usedText || contextBadge || '').match(/(\d+(?:\.\d+)?)\s*%/);
+    const speedMatch = speedVal.match(/(\d+(?:\.\d+)?)/), durMatch = durationText.match(/(\d+(?:\.\d+)?)/);
+    return {
+      source: 'dom', usedTokens: null, limitTokens: auth?.limitTokens || null, physicalMaxTokens: auth?.physicalMaxTokens || null,
+      usagePercent: pctMatch ? Number(pctMatch[1]) : null, cacheHitRate: null,
+      tokPerSec: speedMatch ? Number(speedMatch[1]) : null, lastDurationSec: durMatch ? Number(durMatch[1]) : null,
+      ttftSec: null, outputTokens: null, compressionDetected: false, cacheDropDetected: false,
+      modelDisplayName: model || '', contextBadge: contextBadge || '', usedText: usedText || '—',
+      limitText: limitText || (auth?.limitTokens ? formatRpcTokensShort(auth.limitTokens) : '—'),
+      remainingText: remainingText || '—', keyBadge: keyBadge || '--%', speedText: speedVal || '—',
+      durationText: durationText || '—', ttftText: ttftText || '—', outputTokensText: outputTokensText || '—',
+      roundCostText, sessionCostText
     };
   }
 
@@ -10364,17 +11480,45 @@
     }
     const storeCatalog = extractSidebarStoreCatalog();
     const conversations = collectSidebarConversations(0, storeCatalog);
-    const { projectGroups } = collectSidebarProjectGroups(60);
+    const { projectGroups } = collectSidebarProjectGroups(60, storeCatalog);
     const activeConv = conversations.find((c) => c.active);
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
-    const locProjectId = getProjectIdFromLocation();
-    const currentProjectId = locProjectId || activeConv?.projectId || '';
-    const matchedProj = storeCatalog.projects.find((p) => p.id === currentProjectId);
-    const currentProjectName = activeConv?.projectName || matchedProj?.name || '';
     const isNewConversation = !sessionId;
+    const locProjectId = getProjectIdFromLocation();
+    const cleanLocPid = cleanSidebarPid(locProjectId);
+    const activeSumMeta = sessionId ? cascadeSummaryMap.get(sessionId) : null;
+    const activeGrp = sessionId
+      ? projectGroups.find((g) => Array.isArray(g.conversations) && g.conversations.some((c) => c.id === sessionId))
+      : null;
+    const cleanActiveAuthPid = cleanSidebarPid(activeConv?.authoritativeProjectId)
+      || cleanSidebarPid(activeSumMeta?.projectId);
+    const cleanActivePid = cleanSidebarPid(activeConv?.projectId)
+      || cleanSidebarPid(activeGrp?.id);
+    // 已有会话优先采用会话权威项目归属，防止 URL 残留 ?project=... 反客为主覆盖真实会话归属；仅新建空白对话页优先取 URL 项目选择
+    const currentProjectId = isNewConversation
+      ? (cleanLocPid || cleanActivePid || '')
+      : (cleanActiveAuthPid || cleanActivePid || cleanLocPid || '');
+    const isStandalonePid = currentProjectId === 'outside-of-project' || currentProjectId === 'standalone';
+    const matchedProj = (!isStandalonePid && currentProjectId)
+      ? storeCatalog.projects.find((p) => p.id === currentProjectId)
+      : null;
+    const matchedGrp = (!isStandalonePid && currentProjectId)
+      ? projectGroups.find((g) => g.id === currentProjectId)
+      : null;
+    const cleanActiveName = (!isStandalonePid && !isSyntheticSidebarProjectName(activeConv?.projectName) && (!currentProjectId || cleanActivePid === currentProjectId || cleanActiveAuthPid === currentProjectId))
+      ? String(activeConv.projectName).trim()
+      : '';
+    const currentProjectName = isStandalonePid
+      ? ''
+      : (
+        (matchedProj?.name && !isSyntheticSidebarProjectName(matchedProj.name) ? String(matchedProj.name).trim() : '')
+        || (matchedGrp?.name && !isSyntheticSidebarProjectName(matchedGrp.name) ? String(matchedGrp.name).trim() : '')
+        || cleanActiveName
+        || (!isNewConversation && activeSumMeta?.project && (!currentProjectId || currentProjectId === cleanSidebarPid(activeSumMeta.projectId)) && !isSyntheticSidebarProjectName(activeSumMeta.project) ? String(activeSumMeta.project).trim() : '')
+      );
     const { sr } = getMeterHostAndShadow();
-    const contextBadge = (
+    const rawContextBadge = (
       sr?.getElementById('amount')?.textContent ||
       sr?.getElementById('badge-pct-val')?.textContent ||
       sr?.getElementById('badge')?.textContent ||
@@ -10384,10 +11528,23 @@
     const pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
     const rawPulse = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
     const speedMatch = rawPulse.match(/(\d+(?:\.\d+)?\s*tok\/s)/i);
-    const ratioMatch = contextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/);
-    const pulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : contextBadge].filter(Boolean).join(' · ') || rawPulse;
+    const ratioMatch = rawContextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/i);
+    const fallbackPulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : rawContextBadge].filter(Boolean).join(' · ') || rawPulse;
     const modelCtx = getModelSelectorContext();
     const model = modelCtx?.selectedModel?.label || detectCurrentModelText();
+    const authCtx = resolveAuthoritativeContextMetrics(sessionId, {
+      pulseEl,
+      fallbackModel: model
+    });
+    const canonicalCtx = (authCtx && (authCtx.usedTokens > 0 || typeof authCtx.usagePercent === 'number'))
+      ? buildCanonicalContextPanelPayload(authCtx, {
+          fallbackBadge: rawContextBadge,
+          fallbackPulse: fallbackPulseText,
+          fallbackModel: model
+        })
+      : null;
+    const contextBadge = canonicalCtx ? canonicalCtx.contextBadge : rawContextBadge;
+    const pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
     const EFFORT_ORDER = { xhigh: 1, high: 2, medium: 3, low: 4 };
     const rawModels = Array.isArray(modelCtx?.modelOptions)
       ? modelCtx.modelOptions.filter((o) => o && !o.disabled && o.label)
@@ -10417,7 +11574,7 @@
     const queuedMessages = collectQueuedMessagesFromDom();
     const messages = collectRecentMessages(60);
     const suggestions = !busy ? computeNextStepCandidates().candidates : [];
-    const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model);
+    const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, authCtx);
     const usageSummary = collectDesktopUsageSummary(sr);
 
     if (activeConv) {
@@ -10510,45 +11667,315 @@
         }
       }
 
-      let validMeta = null;
+      const estimateQuickTok = (text) => {
+        if (!text || typeof text !== 'string') return 0;
+        let ascii = 0, nonAscii = 0;
+        for (let i = 0, len = Math.min(text.length, 250000); i < len; i++) {
+          if (text.charCodeAt(i) < 128) ascii++; else nonAscii++;
+        }
+        return Math.ceil(ascii / 4 + nonAscii / 1.5);
+      };
+      const extractRowMaxStep = (row) => {
+        if (!row || typeof row !== 'object') return -1;
+        let maxIdx = -1;
+        if (Array.isArray(row.stepIndices)) {
+          for (const v of row.stepIndices) if (Number.isFinite(Number(v)) && Number(v) > maxIdx) maxIdx = Math.trunc(Number(v));
+        }
+        const single = row.stepIndex ?? row.step_index;
+        return (single !== undefined && single !== null && Number.isFinite(Number(single))) ? Math.max(maxIdx, Math.trunc(Number(single))) : maxIdx;
+      };
+      const parseIsoOrTsMs = (raw) => {
+        if (!raw) return 0;
+        if (typeof raw === 'number' && Number.isFinite(raw)) return raw < 1e11 ? raw * 1000 : raw;
+        if (typeof raw === 'string') {
+          const t = Date.parse(raw.trim().replace(/(\.\d{3})\d+(Z|[+-]\d{2}:?\d{2})$/, '$1$2'));
+          return Number.isFinite(t) && t > 946684800000 ? t : 0;
+        }
+        if (typeof raw === 'object' && raw.seconds != null) {
+          const s = Number(raw.seconds || 0);
+          return Number.isFinite(s) && s > 946684800 ? Math.round(s * 1000 + Number(raw.nanos || 0) / 1e6) : 0;
+        }
+        return 0;
+      };
+
+      let validMeta = null, validMetaIdx = -1;
       for (let i = genList.length - 1; i >= 0; i--) {
         const cand = genList[i];
-        if (cand && (cand.chatModel || cand.usage)) {
-          validMeta = cand;
-          break;
+        if (cand && (cand.chatModel || cand.usage)) { validMeta = cand; validMetaIdx = i; break; }
+      }
+
+      let lastCheckpointStepIdx = -1;
+      for (let sIdx = steps.length - 1; sIdx >= 0; sIdx--) {
+        const st = steps[sIdx];
+        if (st && ((st.checkpoint && typeof st.checkpoint === 'object') || /CHECKPOINT/i.test(String(st.type || '')))) {
+          lastCheckpointStepIdx = sIdx; break;
         }
       }
 
       const cm = validMeta?.chatModel || null;
-      const u = cm?.usage || validMeta?.usage || {};
-      const input = Number(u.inputTokens || 0) || 0;
-      const cached = Number(u.cacheReadTokens || 0) || 0;
-      const output = Number(u.outputTokens || 0) || 0;
+      const isolatedModelId = String(cm?.model || cm?.modelId || cm?.responseModel || '').trim();
+      const isolatedModel = cm?.modelDisplayName || cm?.responseModel || cm?.model || baseSnap.model || '';
       const ctxMeta = cm?.chatStartMetadata?.contextWindowMetadata || {};
-      const usedTokens = (input + cached + output) || Number(ctxMeta.estimatedTokensUsed || 0) || 0;
-      const limitTokens = Number(ctxMeta.maxContextTokens || 0) || 0;
-      const usagePercent = limitTokens > 0
-        ? Number(((usedTokens / limitTokens) * 100).toFixed(1))
-        : null;
-      const cacheHitRate = (input + cached) > 0
-        ? Number(((cached / (input + cached)) * 100).toFixed(1))
-        : null;
+      const observedRuntimeBudget = Number(ctxMeta.maxContextTokens || 0) || 0;
       const ttft = parseRpcDurationSec(cm?.timeToFirstToken);
       const streaming = parseRpcDurationSec(cm?.streamingDuration);
       const dur = (ttft != null && streaming != null)
         ? Number((ttft + streaming).toFixed(2))
         : (streaming != null ? Number(streaming.toFixed(2)) : (ttft != null ? Number(ttft.toFixed(2)) : null));
-      const tokPerSec = (output > 0 && dur && dur > 0)
-        ? Number((output / dur).toFixed(1))
-        : null;
-      const isolatedModel = cm?.modelDisplayName || cm?.responseModel || cm?.model || baseSnap.model || '';
-      const isolatedContextBadge = limitTokens > 0
-        ? `${formatRpcTokensShort(usedTokens)}/${formatRpcTokensShort(limitTokens)} (${usagePercent ?? 0}%)`
-        : (usedTokens > 0 ? formatRpcTokensShort(usedTokens) : '独立视图');
-      const isolatedPulseText = [
-        tokPerSec ? `${tokPerSec} tok/s` : '',
-        isolatedContextBadge
-      ].filter(Boolean).join(' · ');
+
+      const extractStepEstimateTextUnified = (step) => {
+        if (!step || typeof step !== 'object') return '';
+        const parts = [];
+        const pushUniq = (s) => { if (typeof s === 'string' && s && !parts.includes(s)) parts.push(s); };
+        const pushCalls = (list) => {
+          if (!Array.isArray(list)) return;
+          for (const tc of list) {
+            if (!tc) continue;
+            const args = tc.argumentsJson ?? tc.arguments ?? tc.args ?? tc.function?.arguments;
+            pushUniq(typeof args === 'string' ? args : (args && typeof args === 'object' ? JSON.stringify(args) : ''));
+          }
+        };
+        try {
+          if (step.checkpoint && typeof step.checkpoint === 'object') {
+            const sum = step.checkpoint.sessionSummary || step.checkpoint.summary || '';
+            if (typeof sum === 'string' && sum) parts.push(sum);
+          } else if (/CHECKPOINT/i.test(String(step.type || ''))) {
+            const topSum = step.sessionSummary || step.summary || '';
+            if (typeof topSum === 'string' && topSum) parts.push(topSum);
+          }
+          if (step.userInput) {
+            const u = step.userInput;
+            if (typeof u.userResponse === 'string' && u.userResponse) parts.push(u.userResponse);
+            if (typeof u.text === 'string' && u.text && u.text !== u.userResponse) parts.push(u.text);
+            if (Array.isArray(u.items)) for (const it of u.items) pushUniq(it?.text);
+          }
+          if (step.plannerResponse) {
+            const pr = step.plannerResponse;
+            const mainResp = (typeof pr.modifiedResponse === 'string' && pr.modifiedResponse) ? pr.modifiedResponse : (typeof pr.response === 'string' ? pr.response : '');
+            if (mainResp) parts.push(mainResp);
+            if (typeof pr.thinking === 'string' && pr.thinking) parts.push(pr.thinking);
+            if (typeof pr.text === 'string' && pr.text && pr.text !== mainResp) parts.push(pr.text);
+            pushCalls(pr.toolCalls);
+          }
+          pushUniq(step.metadata?.toolCall?.argumentsJson);
+          if (typeof step.content === 'string' && step.content) parts.push(step.content);
+          else if (Array.isArray(step.content)) {
+            for (const c of step.content) {
+              if (typeof c === 'string' && c) parts.push(c);
+              else if (c && typeof c.text === 'string' && c.text) parts.push(c.text);
+            }
+          }
+          for (const k of ['text', 'thinking', 'response', 'message']) pushUniq(step[k]);
+          pushCalls(step.toolCalls || step.tool_calls);
+        } catch {}
+        return parts.join('\n');
+      };
+      const isShadowStepModel = (m) => {
+        if (!m) return false;
+        const s = String(m).toUpperCase();
+        return s.includes('_M50') || s === 'M50' || s.includes('FLASH_LITE') || s.includes('_M21') || s === 'M21' || s.includes('IMAGE') || s.includes('BANANA');
+      };
+
+      const extractIsoOutTok = (mu) => {
+        if (!mu || typeof mu !== 'object') return 0;
+        const d = Math.max(0, parseInt(mu.outputTokens ?? mu.completionTokens ?? '0', 10) || 0);
+        return d > 0 ? d : (Math.max(0, parseInt(mu.thinkingOutputTokens ?? '0', 10) || 0) + Math.max(0, parseInt(mu.responseOutputTokens ?? '0', 10) || 0));
+      };
+      const usageSig = (mu) => {
+        if (!mu || typeof mu !== 'object') return '';
+        let i = Math.max(0, parseInt(mu.inputTokens ?? mu.promptTokens ?? '0', 10) || 0);
+        const c = Math.max(0, parseInt(mu.cacheReadTokens ?? mu.cachedTokens ?? '0', 10) || 0);
+        const cr = Math.max(0, parseInt(mu.cacheCreationTokens ?? '0', 10) || 0);
+        const o = extractIsoOutTok(mu);
+        if ((i + c + cr + o) === 0 && mu.totalTokens !== undefined) i = Math.max(0, parseInt(mu.totalTokens || '0', 10) || 0);
+        return (i + c + cr + o) > 0 ? `${i}:${c}:${cr}:${o}` : '';
+      };
+      const rawMetaStep = extractRowMaxStep(validMeta);
+      const cpStep = lastCheckpointStepIdx >= 0 ? steps[lastCheckpointStepIdx] : null;
+      const cpTimeMs = parseIsoOrTsMs(cpStep?.metadata?.createdAt || cpStep?.createdAt || cpStep?.metadata?.completedAt);
+      const metaTimeMs = parseIsoOrTsMs(cm?.chatStartMetadata?.createdAt || validMeta?.createdAt);
+      const gmUsageSig = usageSig(cm?.usage || validMeta?.usage);
+      const matchGmSig = (st) => {
+        if (!gmUsageSig || !st || typeof st !== 'object') return false;
+        const meta = st.metadata || st;
+        const mu = meta.modelUsage || st.modelUsage || st.checkpoint?.modelUsage || st.checkpoint?.usage || meta.checkpoint?.modelUsage || meta.checkpoint?.usage || st.usage || null;
+        const m = (mu && (mu.model || mu.modelId)) || meta.generatorModel || st.model || '';
+        return !isShadowStepModel(m) && usageSig(mu) === gmUsageSig;
+      };
+      const resolveUniqueGmStep = () => {
+        if (!gmUsageSig) return -1;
+        let hit = -1;
+        for (let sIdx = 0; sIdx < steps.length; sIdx++) {
+          if (matchGmSig(steps[sIdx])) {
+            if (hit >= 0) return -1;
+            hit = sIdx;
+          }
+        }
+        return hit;
+      };
+      const metaMaxStep = rawMetaStep >= 0 ? rawMetaStep : resolveUniqueGmStep();
+      const gmMatchesPostStep = Boolean(gmUsageSig && lastCheckpointStepIdx >= 0 && !steps.slice(0, lastCheckpointStepIdx).some(matchGmSig) && steps.slice(lastCheckpointStepIdx + 1).some(matchGmSig));
+      const metaInvalidatedByCheckpoint = lastCheckpointStepIdx >= 0 && (
+        !validMeta || (metaMaxStep >= 0 ? metaMaxStep <= lastCheckpointStepIdx : ((metaTimeMs > 0 && cpTimeMs > 0) ? metaTimeMs <= cpTimeMs : !gmMatchesPostStep))
+      );
+
+      let lastIsoInlineUsageIdx = -1, isoPlannerCount = 0;
+      for (let sIdx = Math.max(0, lastCheckpointStepIdx + 1); sIdx < steps.length; sIdx++) {
+        const st = steps[sIdx], meta = st?.metadata || st, mu = meta?.modelUsage || st?.modelUsage || st?.usage || null;
+        const m = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
+        if (usageSig(mu) && !isShadowStepModel(m)) { lastIsoInlineUsageIdx = sIdx; isoPlannerCount += 1; continue; }
+        const sType = String(st?.type || st?.role || (st?.plannerResponse ? 'PLANNER_RESPONSE' : '')).toUpperCase();
+        const isCpSt = Boolean((st?.checkpoint && typeof st.checkpoint === 'object') || /CHECKPOINT/i.test(String(st?.type || '')));
+        if (!isCpSt && (sType.includes('PLANNER') || sType.includes('MODEL') || sType.includes('ASSISTANT') || Boolean(st?.plannerResponse))) isoPlannerCount += 1;
+      }
+      let laterUsageStepIdx = -1;
+      if (!metaInvalidatedByCheckpoint && metaMaxStep >= 0) {
+        for (let sIdx = metaMaxStep + 1; sIdx < steps.length; sIdx++) {
+          const st = steps[sIdx], meta = st?.metadata || st, mu = meta?.modelUsage || st?.modelUsage || st?.usage || null;
+          const m = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
+          if (usageSig(mu) && !isShadowStepModel(m)) { laterUsageStepIdx = sIdx; break; }
+        }
+        if (laterUsageStepIdx < 0 && metaMaxStep < steps.length - 1 && matchGmSig(steps[metaMaxStep]) && steps.slice(metaMaxStep + 1).some((s) => Boolean(extractStepEstimateTextUnified(s)))) {
+          laterUsageStepIdx = metaMaxStep;
+        }
+      } else if (!metaInvalidatedByCheckpoint && rawMetaStep < 0 && metaMaxStep < 0 && lastIsoInlineUsageIdx >= 0) {
+        laterUsageStepIdx = lastIsoInlineUsageIdx;
+      }
+      const sliceStartIdx = metaInvalidatedByCheckpoint ? lastCheckpointStepIdx : laterUsageStepIdx;
+
+      let usedTokens = 0, cacheHitRate = null, output = 0, tokPerSec = null;
+      let effectiveDur = dur, effectiveTtft = ttft;
+      let compressionDetected = false, compressionBefore = 0, compressionAfter = 0, cacheDropDetected = false;
+
+      if (sliceStartIdx >= 0) {
+        const uPrior = cm?.usage || validMeta?.usage || {};
+        const priorTotal = (Math.max(0, parseInt(uPrior.inputTokens ?? uPrior.promptTokens ?? '0', 10) || 0) + Math.max(0, parseInt(uPrior.cacheReadTokens ?? uPrior.cachedTokens ?? '0', 10) || 0) + Math.max(0, parseInt(uPrior.cacheCreationTokens ?? '0', 10) || 0) + extractIsoOutTok(uPrior)) || Math.max(0, parseInt(uPrior.totalTokens ?? '0', 10) || 0);
+        const postSlice = steps.slice(sliceStartIdx);
+        let baseUsed = 0, baseIn = 0, baseCached = 0, baseCreate = 0, baseOut = 0, deltaTok = 0;
+        effectiveDur = null; effectiveTtft = null; tokPerSec = null;
+
+        for (let idx = 0; idx < postSlice.length; idx++) {
+          const st = postSlice[idx];
+          if (!st || typeof st !== 'object') continue;
+          const meta = st.metadata || st;
+          const isCp = (idx === 0 && metaInvalidatedByCheckpoint) || Boolean((st.checkpoint && typeof st.checkpoint === 'object') || /CHECKPOINT/i.test(String(st.type || '')));
+          const mu = meta.modelUsage || st.modelUsage || st.checkpoint?.modelUsage || st.checkpoint?.usage || meta.checkpoint?.modelUsage || meta.checkpoint?.usage || st.usage || null;
+          const stepModel = (mu && (mu.model || mu.modelId)) || meta.generatorModel || st.model || '';
+          const hasFields = Boolean(mu && typeof mu === 'object' && (
+            mu.inputTokens !== undefined || mu.promptTokens !== undefined || mu.cacheReadTokens !== undefined || mu.cachedTokens !== undefined ||
+            mu.cacheCreationTokens !== undefined || mu.outputTokens !== undefined || mu.completionTokens !== undefined ||
+            mu.thinkingOutputTokens !== undefined || mu.responseOutputTokens !== undefined || mu.totalTokens !== undefined
+          ));
+          if (isCp) { tokPerSec = null; effectiveDur = null; effectiveTtft = null; }
+          let adoptedMu = false;
+          if (hasFields && !isShadowStepModel(stepModel)) {
+            let inTok = Math.max(0, parseInt(mu.inputTokens ?? mu.promptTokens ?? '0', 10) || 0);
+            const cRead = Math.max(0, parseInt(mu.cacheReadTokens ?? mu.cachedTokens ?? '0', 10) || 0);
+            const cCreate = Math.max(0, parseInt(mu.cacheCreationTokens ?? '0', 10) || 0);
+            const outTok = extractIsoOutTok(mu);
+            let tot = inTok + cRead + cCreate + outTok;
+            if (tot === 0 && mu.totalTokens !== undefined) {
+              const totFallback = Math.max(0, parseInt(mu.totalTokens || '0', 10) || 0);
+              if (totFallback > 0) { inTok = totFallback; tot = totFallback; }
+            }
+            if (tot > 0) {
+              baseIn = inTok; baseCached = cRead; baseCreate = cCreate; baseOut = outTok; baseUsed = tot; deltaTok = 0; adoptedMu = true;
+              if (!isCp) { tokPerSec = null; effectiveDur = null; effectiveTtft = null; }
+              if (!isCp && outTok >= 30) {
+                const stStream = parseRpcDurationSec(meta.streamingDuration ?? st.streamingDuration ?? mu.streamingDuration);
+                const stTtft = parseRpcDurationSec(meta.timeToFirstToken ?? st.timeToFirstToken ?? mu.timeToFirstToken);
+                const tS = parseIsoOrTsMs(meta.createdAt || meta.created_at || meta.startedAt || st.createdAt || st.created_at);
+                const tE = parseIsoOrTsMs(meta.finishedGeneratingAt || meta.completedAt || meta.updatedAt || st.finishedGeneratingAt || st.completedAt || st.updatedAt);
+                const wallD = (tS > 0 && tE > tS) ? (tE - tS) / 1000 : 0;
+                const totD = (stTtft != null && stStream != null) ? (stTtft + stStream) : (wallD > 0 ? wallD : (stStream || 0));
+                const denom = (stStream != null && stStream >= 1.0) ? stStream : (stStream == null && totD >= 1.0 ? totD : 0);
+                if (denom >= 1.0 && denom < 600) {
+                  tokPerSec = Number((outTok / denom).toFixed(1));
+                  effectiveDur = Number((totD || denom).toFixed(2));
+                  effectiveTtft = stTtft != null && stTtft > 0 ? Number(stTtft.toFixed(2)) : null;
+                }
+              }
+            }
+          }
+          if (adoptedMu) continue;
+          if (isCp) {
+            const summaryTok = estimateQuickTok(extractStepEstimateTextUnified(st));
+            baseCached = 12500; baseIn = summaryTok; baseCreate = 0; baseOut = 0; baseUsed = 12500 + summaryTok; deltaTok = 0;
+            continue;
+          }
+          if (isShadowStepModel(stepModel) && hasFields) continue;
+          const stepType = String(st.type || st.role || (st.plannerResponse ? 'PLANNER_RESPONSE' : '')).toUpperCase();
+          const isPlanner = stepType.includes('PLANNER') || stepType.includes('MODEL') || stepType.includes('ASSISTANT') || Boolean(st.plannerResponse);
+          if (isPlanner) { tokPerSec = null; effectiveDur = null; effectiveTtft = null; }
+          const estText = extractStepEstimateTextUnified(st);
+          if (estText) {
+            const stepTok = estimateQuickTok(estText);
+            deltaTok += stepTok;
+            if (isPlanner) {
+              const tS = parseIsoOrTsMs(meta.createdAt || meta.created_at || meta.startedAt || st.createdAt || st.created_at);
+              const tE = parseIsoOrTsMs(meta.finishedGeneratingAt || meta.completedAt || meta.updatedAt || st.finishedGeneratingAt || st.completedAt || st.updatedAt);
+              const durSec = (tS > 0 && tE > tS) ? (tE - tS) / 1000 : 0;
+              if (stepTok > 5 && durSec >= 0.2 && durSec < 600) {
+                tokPerSec = Number((stepTok / durSec).toFixed(1));
+                effectiveDur = Number(durSec.toFixed(2));
+              }
+            }
+          }
+        }
+        usedTokens = baseUsed + deltaTok;
+        output = baseOut;
+        const baseTotIn = baseIn + baseCached + baseCreate;
+        cacheHitRate = baseTotIn > 0 ? Number(((baseCached / baseTotIn) * 100).toFixed(1)) : (metaInvalidatedByCheckpoint ? 100 : null);
+        compressionDetected = metaInvalidatedByCheckpoint;
+        compressionBefore = metaInvalidatedByCheckpoint && priorTotal > usedTokens ? priorTotal : 0;
+        compressionAfter = metaInvalidatedByCheckpoint ? usedTokens : 0;
+        cacheDropDetected = !metaInvalidatedByCheckpoint && baseTotIn >= 150000 && cacheHitRate != null && cacheHitRate < 25 && (baseIn + baseCreate) >= 240000;
+      } else {
+        const u = cm?.usage || validMeta?.usage || {};
+        let input = Math.max(0, parseInt(u.inputTokens ?? u.promptTokens ?? '0', 10) || 0);
+        const cached = Math.max(0, parseInt(u.cacheReadTokens ?? u.cachedTokens ?? '0', 10) || 0);
+        const cacheCreate = Math.max(0, parseInt(u.cacheCreationTokens ?? '0', 10) || 0);
+        output = extractIsoOutTok(u);
+        let sumTok = input + cached + cacheCreate + output;
+        if (sumTok === 0 && u.totalTokens !== undefined) {
+          const totFb = Math.max(0, parseInt(u.totalTokens || '0', 10) || 0);
+          if (totFb > 0) { input = totFb; sumTok = totFb; }
+        }
+        usedTokens = sumTok || Math.max(0, parseInt(ctxMeta.estimatedTokensUsed || '0', 10) || 0) || 0;
+        const totalIn = input + cached + cacheCreate;
+        cacheHitRate = totalIn > 0
+          ? Number(((cached / totalIn) * 100).toFixed(1))
+          : null;
+        const unprovenIsoSpeed = rawMetaStep < 0 && metaMaxStep < 0 && (lastCheckpointStepIdx >= 0 || isoPlannerCount > 1);
+        if (unprovenIsoSpeed) {
+          tokPerSec = null; effectiveDur = null; effectiveTtft = null;
+        } else {
+          const speedDenom = (streaming != null && streaming >= 1.0) ? streaming : (streaming == null && dur != null && dur >= 1.0 ? dur : null);
+          tokPerSec = (output >= 30 && speedDenom && speedDenom < 600) ? Number((output / speedDenom).toFixed(1)) : null;
+        }
+        const hadPriorHighCache = validMetaIdx > 0 && genList.slice(0, validMetaIdx).some((r) => {
+          const ru = r?.chatModel?.usage || r?.usage || {};
+          return Number(ru.cacheReadTokens ?? ru.cachedTokens ?? 0) >= 50000;
+        });
+        cacheDropDetected = Boolean(
+          totalIn >= 150000 && cacheHitRate != null && cacheHitRate < 25 && (hadPriorHighCache || (input + cacheCreate) >= 240000)
+        );
+      }
+
+      const isoAuth = resolveAuthoritativeContextMetrics(reqConvId, {
+        fallbackModel: isolatedModel,
+        isolatedMetrics: {
+          conversationId: reqConvId, usedTokens, runtimeBudget: observedRuntimeBudget, cacheHitRate,
+          tokPerSec, lastDurationSec: effectiveDur, ttftSec: effectiveTtft, outputTokens: output,
+          modelId: isolatedModelId, modelDisplayName: isolatedModel, compressionDetected,
+          compressionBefore, compressionAfter, cacheDropDetected,
+          stepCount: Math.max(expected, steps.length), updatedAtMs: Date.now()
+        }
+      });
+      const isoCanonical = buildCanonicalContextPanelPayload(isoAuth, { fallbackBadge: '独立视图', fallbackModel: isolatedModel });
+      const usagePercent = isoCanonical.contextPanel.usagePercent;
+      const isolatedContextBadge = isoCanonical.contextBadge || '独立视图';
+      const isolatedPulseText = isoCanonical.pulseText;
 
       const messages = extractMessagesFromTrajectorySteps(steps, 20);
       const lastStep = steps.length ? steps[steps.length - 1] : null;
@@ -10572,8 +11999,36 @@
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
       const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
       const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
-      const targetProjectId = String(matchedConv?.projectId || matchedGroup?.id || trajectory?.trajectoryMetadata?.projectId || '').trim();
-      const targetProjectName = String(matchedConv?.projectName || matchedGroup?.name || '').trim();
+      const rawTrajPid = String(trajectory?.trajectoryMetadata?.projectId || '').trim();
+      const cleanTrajPid = isSyntheticSidebarProjectId(rawTrajPid) ? '' : rawTrajPid;
+      const cleanConvPid = isSyntheticSidebarProjectId(matchedConv?.projectId) ? '' : String(matchedConv?.projectId || '').trim();
+      const cleanGrpPid = isSyntheticSidebarProjectId(matchedGroup?.id) ? '' : String(matchedGroup?.id || '').trim();
+      const targetProjectId = cleanTrajPid || cleanConvPid || cleanGrpPid || '';
+      const isStandaloneTarget = !targetProjectId || targetProjectId === 'outside-of-project' || targetProjectId === 'standalone';
+      const matchedBaseProj = (!isStandaloneTarget && Array.isArray(baseSnap.projects))
+        ? baseSnap.projects.find((p) => p && p.id === targetProjectId)
+        : null;
+      const targetProjectName = isStandaloneTarget
+        ? ''
+        : String(
+            (matchedBaseProj?.name && !isSyntheticSidebarProjectName(matchedBaseProj.name) ? matchedBaseProj.name : '')
+            || (cleanConvPid === targetProjectId && !isSyntheticSidebarProjectName(matchedConv?.projectName) ? matchedConv.projectName : '')
+            || (cleanGrpPid === targetProjectId && !isSyntheticSidebarProjectName(matchedGroup?.name) ? matchedGroup.name : '')
+            || ''
+          ).trim();
+      const isolatedWorkspaceUris = [];
+      for (const ws of (Array.isArray(trajectory?.workspaces) ? trajectory.workspaces : [])) {
+        if (ws?.workspaceFolderAbsoluteUri) isolatedWorkspaceUris.push(String(ws.workspaceFolderAbsoluteUri));
+        if (ws?.gitRootAbsoluteUri) isolatedWorkspaceUris.push(String(ws.gitRootAbsoluteUri));
+      }
+      const tMeta = trajectory?.trajectoryMetadata || {};
+      for (const ws of (Array.isArray(tMeta.workspaces) ? tMeta.workspaces : [])) {
+        if (ws?.workspaceFolderAbsoluteUri) isolatedWorkspaceUris.push(String(ws.workspaceFolderAbsoluteUri));
+        if (ws?.gitRootAbsoluteUri) isolatedWorkspaceUris.push(String(ws.gitRootAbsoluteUri));
+      }
+      for (const u of (Array.isArray(tMeta.workspaceUris) ? tMeta.workspaceUris : [])) {
+        if (u) isolatedWorkspaceUris.push(String(u));
+      }
       const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || String(trajectory.summary || '').trim() || `会话 ${reqConvId.slice(0, 8)}`;
 
       return {
@@ -10585,32 +12040,15 @@
         isNewConversation: false,
         currentProjectId: targetProjectId,
         currentProjectName: targetProjectName,
+        currentProjectPath: '',
+        currentWorkspacePaths: undefined,
+        isolatedWorkspaceUris,
         title,
         busy,
         model: isolatedModel,
         contextBadge: isolatedContextBadge,
         pulseText: isolatedPulseText,
-        contextPanel: {
-          usedTokens: usedTokens || null,
-          limitTokens: limitTokens || null,
-          usagePercent,
-          cacheHitRate,
-          tokPerSec,
-          lastDurationSec: dur,
-          outputTokens: output || null,
-          modelDisplayName: isolatedModel,
-          contextBadge: isolatedContextBadge,
-          usedText: usedTokens > 0 ? formatRpcTokensShort(usedTokens) : '—',
-          limitText: limitTokens > 0 ? formatRpcTokensShort(limitTokens) : '—',
-          remainingText: limitTokens > usedTokens ? formatRpcTokensShort(limitTokens - usedTokens) : (limitTokens > 0 ? '0' : '—'),
-          keyBadge: `${usagePercent ?? '--'}%`,
-          speedText: tokPerSec ? `${tokPerSec} tok/s` : '—',
-          durationText: dur != null ? `${dur}s` : '—',
-          ttftText: ttft != null ? `${ttft}s` : '—',
-          outputTokensText: output > 0 ? `${output}` : '—',
-          roundCostText: '',
-          sessionCostText: ''
-        },
+        contextPanel: isoCanonical.contextPanel,
         pendingApprovals: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingApprovals || []) : [],
         pendingPrompts: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingPrompts || []) : [],
         queuedMessages: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.queuedMessages || []) : [],
@@ -10623,8 +12061,23 @@
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
       const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
       const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
-      const targetProjectId = String(matchedConv?.projectId || matchedGroup?.id || '').trim();
-      const targetProjectName = String(matchedConv?.projectName || matchedGroup?.name || '').trim();
+      const summaryPid = cleanSidebarPid(cascadeSummaryMap.get(reqConvId)?.projectId);
+      const convAuthPid = cleanSidebarPid(matchedConv?.authoritativeProjectId);
+      const cleanConvPid = cleanSidebarPid(matchedConv?.projectId);
+      const cleanGrpPid = cleanSidebarPid(matchedGroup?.id);
+      const targetProjectId = convAuthPid || summaryPid || cleanConvPid || cleanGrpPid || '';
+      const isStandaloneTarget = !targetProjectId || targetProjectId === 'outside-of-project' || targetProjectId === 'standalone';
+      const matchedBaseProj = (!isStandaloneTarget && Array.isArray(baseSnap.projects))
+        ? baseSnap.projects.find((p) => p && p.id === targetProjectId)
+        : null;
+      const targetProjectName = isStandaloneTarget
+        ? ''
+        : String(
+            (matchedBaseProj?.name && !isSyntheticSidebarProjectName(matchedBaseProj.name) ? matchedBaseProj.name : '')
+            || (cleanConvPid === targetProjectId && !isSyntheticSidebarProjectName(matchedConv?.projectName) ? matchedConv.projectName : '')
+            || (cleanGrpPid === targetProjectId && !isSyntheticSidebarProjectName(matchedGroup?.name) ? matchedGroup.name : '')
+            || ''
+          ).trim();
       const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || `会话 ${reqConvId.slice(0, 8)}`;
       return {
         ...baseSnap,
@@ -10637,6 +12090,8 @@
         isNewConversation: false,
         currentProjectId: targetProjectId,
         currentProjectName: targetProjectName,
+        currentProjectPath: '',
+        currentWorkspacePaths: undefined,
         title,
         busy: false,
         pendingApprovals: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingApprovals || []) : [],
@@ -11576,7 +13031,7 @@
   }
 
     globalThis.__AGEnhancer = {
-    version: '1.7.4',
+    version: '1.7.5',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -11613,11 +13068,23 @@
       candidates: [...(promptOptState.cacheModel.candidates || [])]
     }),
     syncRemotePairData,
+    resolveAuthoritativeContextMetrics,
     getMobileSnapshot,
     getMobileSnapshotAsync,
     performMobileAction,
     extractExternalUrlFromTarget,
     openExternalUrlInSystemBrowser,
+    parseLocalFileReference,
+    extractChatLocalFileTarget,
+    openFileContextMenu,
+    closeFileContextMenu,
+    getFileContextMenuState: () => ({
+      open: fileCtxMenuState.open,
+      clientX: fileCtxMenuState.clientX,
+      clientY: fileCtxMenuState.clientY,
+      info: fileCtxMenuState.info ? { ...fileCtxMenuState.info } : null
+    }),
+    revealLocalPathInFinder,
     getBrainStats: () => latestBrainStats,
     getAutoAccept: () => autoAcceptEnabled,
     setAutoAccept: (val) => {
