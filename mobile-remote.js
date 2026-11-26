@@ -13419,9 +13419,12 @@ function buildMobileAppHtml() {
       for (const id of Array.from(clientPrevConvStatus.keys())) {
         if (!activeIds.has(id)) {
           clientPrevConvStatus.delete(id);
-          clientSentNotifyTurnKeys.delete('completed:' + id);
-          clientSentNotifyTurnKeys.delete('waiting:' + id);
         }
+      }
+      while (clientSentNotifyTurnKeys.size > 500) {
+        const oldestKey = clientSentNotifyTurnKeys.keys().next().value;
+        if (oldestKey === undefined) break;
+        clientSentNotifyTurnKeys.delete(oldestKey);
       }
     }
 
@@ -17477,6 +17480,33 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let pushWatcherTimer = null;
   let pushPollInFlight = false;
   const convNotifyPreviewCache = new Map();
+  const convConfirmedTurnCache = new Map();
+
+  const rememberConfirmedTurn = (cid, updatedAt, stepCount) => {
+    const id = String(cid || '').trim();
+    const stepCnt = Math.max(0, Number(stepCount) || 0);
+    const upd = Math.max(0, Number(updatedAt) || 0);
+    if (!id || stepCnt <= 0) return;
+    if (convConfirmedTurnCache.size >= 500 && !convConfirmedTurnCache.has(id)) {
+      const oldest = convConfirmedTurnCache.keys().next().value;
+      if (oldest !== undefined) convConfirmedTurnCache.delete(oldest);
+    }
+    convConfirmedTurnCache.set(id, { updatedAt: upd, stepCount: stepCnt });
+  };
+
+  const isStepTerminalStatus = (raw) => {
+    const s = String(raw || '').trim().toUpperCase();
+    return Boolean(s && /(DONE|COMPLETED|FINISHED|SUCCEEDED|FAILED|CANCELLED|CANCELED|REJECTED|ERROR)/.test(s) && !/(WAITING|PENDING|PROPOSED|RUNNING)/.test(s));
+  };
+
+  const isCommandStepAlreadyExecuted = (st) => {
+    const rc = st?.runCommand || st?.commandAction || st?.commandStatus || st?.proposedCommand || null;
+    if (!rc || typeof rc !== 'object') return isStepTerminalStatus(st?.status);
+    if (rc.exitCode !== undefined && rc.exitCode !== null) return true;
+    if (rc.output || rc.stdout || rc.stderr || rc.combinedOutput) return true;
+    if (isStepTerminalStatus(rc.status || st?.status)) return true;
+    return false;
+  };
 
   const extractWaitingSummaryFromStepList = (steps) => {
     if (!Array.isArray(steps) || !steps.length) return '';
@@ -17484,37 +17514,64 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       const st = steps[i];
       if (!st || typeof st !== 'object') continue;
       if (st.userInput || String(st.type || '').toUpperCase().includes('USER_INPUT')) break;
-      const cmdLine = st?.runCommand?.commandLine || st?.runCommand?.proposedCommandLine || st?.runCommand?.command
-        || st?.commandAction?.commandLine || st?.commandStatus?.commandLine || st?.proposedCommand?.commandLine || '';
-      if (cmdLine && String(cmdLine).trim()) {
-        return `待执行命令: ${String(cmdLine).trim()}`;
+
+      const askObj = st?.askQuestion || st?.userInteraction || null;
+      if (askObj && typeof askObj === 'object') {
+        if (askObj.response !== undefined || askObj.answers !== undefined || isStepTerminalStatus(askObj.status || st?.status)) {
+          break;
+        }
+        const askText = askObj.question || askObj.prompt || '';
+        if (askText && String(askText).trim()) return String(askText).trim();
       }
+
+      const pr = st.plannerResponse;
       const rawCalls = [];
       if (st?.metadata?.toolCall) rawCalls.push(st.metadata.toolCall);
       if (Array.isArray(st?.toolCalls)) rawCalls.push(...st.toolCalls);
+      if (Array.isArray(pr?.toolCalls)) rawCalls.push(...pr.toolCalls);
+      let fallbackToolName = '';
       for (const tc of rawCalls) {
         if (!tc || typeof tc !== 'object') continue;
+        if (!pr && isStepTerminalStatus(tc.status || st?.status)) {
+          return '';
+        }
         let args = tc.arguments && typeof tc.arguments === 'object' ? tc.arguments : null;
         if (!args && typeof tc.argumentsJson === 'string' && tc.argumentsJson.trim()) {
           try { args = JSON.parse(tc.argumentsJson); } catch {}
         }
         const toolName = String(tc.name || tc.toolName || '').trim();
         if (args && typeof args === 'object') {
-          const argCmd = args.CommandLine || args.commandLine || args.command || '';
-          if (argCmd && String(argCmd).trim()) return `待执行命令: ${String(argCmd).trim()}`;
           const firstQ = Array.isArray(args.questions) ? args.questions[0]?.question : (args.question || '');
           if (firstQ && String(firstQ).trim()) return String(firstQ).trim();
+          const argCmd = args.CommandLine || args.commandLine || args.command || '';
+          if (argCmd && String(argCmd).trim()) return `待执行命令: ${String(argCmd).trim()}`;
         }
-        if (toolName) return `等待授权工具: ${toolName}`;
+        if (toolName && !fallbackToolName) fallbackToolName = toolName;
       }
-      const askText = st?.askQuestion?.question || st?.userInteraction?.prompt || '';
-      if (askText && String(askText).trim()) return String(askText).trim();
-    }
-    const msgs = extractMessagesFromTrajectorySteps(steps);
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i]?.role === 'user') break;
-      if (msgs[i]?.role === 'assistant' && String(msgs[i]?.text || '').trim()) {
-        return String(msgs[i].text).trim();
+
+      if (pr && typeof pr === 'object') {
+        const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
+        const hasPrTools = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
+        if (replyRaw && (hasPrTools || !isStopHookBlockedSystemStep(steps[i + 1], st, steps, i + 1))) {
+          return replyRaw;
+        }
+        if (fallbackToolName) return `等待授权工具: ${fallbackToolName}`;
+        if (replyRaw || pr.thinking || pr.thought || hasPrTools) break;
+      } else if (fallbackToolName) {
+        return `等待授权工具: ${fallbackToolName}`;
+      }
+
+      const cmdLine = st?.runCommand?.commandLine || st?.runCommand?.proposedCommandLine || st?.runCommand?.command
+        || st?.commandAction?.commandLine || st?.commandStatus?.commandLine || st?.proposedCommand?.commandLine || '';
+      if (cmdLine && String(cmdLine).trim()) {
+        if (!isCommandStepAlreadyExecuted(st)) {
+          return `待执行命令: ${String(cmdLine).trim()}`;
+        }
+        break;
+      }
+
+      if (st.toolResponse || st.commandOutput || isStepTerminalStatus(st?.status)) {
+        break;
       }
     }
     return '';
@@ -17572,10 +17629,25 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
   };
 
+  const resolveConfirmedStepCount = (c) => {
+    if (!c || !c.id) return 0;
+    const liveStep = Math.max(0, Number(c.stepCount) || 0);
+    const liveUpd = Math.max(0, Number(c.updatedAt) || 0);
+    if (liveStep > 0) {
+      rememberConfirmedTurn(c.id, liveUpd, liveStep);
+      return liveStep;
+    }
+    const confirmed = convConfirmedTurnCache.get(c.id);
+    if (confirmed && confirmed.stepCount > 0 && liveUpd > 0 && confirmed.updatedAt === liveUpd) {
+      return confirmed.stepCount;
+    }
+    return 0;
+  };
+
   const isPreviewCacheMatch = (cached, c) => {
     if (!cached || !c) return false;
     if (cached.status !== (c.status || '')) return false;
-    const curStep = Number(c.stepCount) || 0;
+    const curStep = resolveConfirmedStepCount(c);
     const curUpd = Number(c.updatedAt) || 0;
     if (curStep > 0) return cached.stepCount === curStep;
     if (curUpd > 0) return cached.updatedAt === curUpd;
@@ -17585,7 +17657,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const hydrateConversationsForNotifications = async (convList, activeSnap = null) => {
     if (!Array.isArray(convList) || !convList.length) return convList;
     const allowPreview = isPushPreviewAllowed();
-    const turnStepHints = new Map();
+    for (const item of convList) {
+      if (item && item.id && Number(item.stepCount) > 0) {
+        rememberConfirmedTurn(item.id, item.updatedAt, item.stepCount);
+      }
+    }
     const activeSid = String(activeSnap?.sessionId || activeSnap?.activeConversationId || '').trim();
     if (activeSnap && activeSnap.ok !== false && activeSid && activeSid !== '__new__') {
       const activeConv = convList.find((c) => c && c.id === activeSid);
@@ -17646,7 +17722,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (toFetch.length > 0 && allowPreview) {
       const fetchTailPreviewForConv = async (c) => {
         try {
-          let totalSteps = Math.max(0, Number(c.stepCount) || 0);
+          let totalSteps = resolveConfirmedStepCount(c);
           let tailSteps = [];
           if (totalSteps > 0) {
             const offset = Math.max(0, totalSteps - 15);
@@ -17667,8 +17743,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             const firstSteps = Array.isArray(trajRes?.trajectory?.steps) ? trajRes.trajectory.steps : [];
             const numTotal = Math.max(totalSteps, Number(trajRes?.numTotalSteps || trajRes?.trajectory?.numTotalSteps || firstSteps.length) || 0);
             totalSteps = numTotal;
+            if (totalSteps > 0) {
+              rememberConfirmedTurn(c.id, c.updatedAt, totalSteps);
+            }
             if (numTotal > firstSteps.length) {
-              if (numTotal > 0) turnStepHints.set(c.id, numTotal);
               const tailRes = await Promise.resolve().then(() => callLsRpc('GetCascadeTrajectorySteps', {
                 cascadeId: c.id,
                 stepOffset: Math.max(firstSteps.length, numTotal - 15),
@@ -17680,6 +17758,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
           }
           if (!tailSteps.length) return;
+          if (totalSteps > 0) {
+            rememberConfirmedTurn(c.id, c.updatedAt, totalSteps);
+          }
           const replyPrev = extractReplyPreviewFromStepList(tailSteps);
           const waitPrev = c.status === 'waiting'
             ? sanitizeNotificationPreview(extractWaitingSummaryFromStepList(tailSteps), 150, 420)
@@ -17709,9 +17790,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       if (!c || !c.id) return c;
       const rawCached = convNotifyPreviewCache.get(c.id);
       const validCached = isPreviewCacheMatch(rawCached, c) ? rawCached : null;
-      const liveStep = Math.max(0, Number(c.stepCount) || 0);
-      const hintedStep = Math.max(0, Number(turnStepHints.get(c.id)) || 0);
-      const stepCnt = liveStep > 0 ? liveStep : (hintedStep > 0 ? hintedStep : Math.max(0, Number(validCached?.stepCount) || 0));
+      const confirmedStep = resolveConfirmedStepCount(c);
+      const stepCnt = confirmedStep > 0 ? confirmedStep : Math.max(0, Number(validCached?.stepCount) || 0);
       const liveUpd = Number(c.updatedAt) || 0;
       const computedTurnSig = stepCnt > 0
         ? `s${stepCnt}`

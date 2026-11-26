@@ -31813,6 +31813,7 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
       mgr.addSubscription(sub, { label: 'MacBook' });
       deliveredBodies.length = 0;
       let edgePhase = 'boot';
+      let allEdgeRpcFail = false;
       const edgeHandler = remoteMod.createRemoteHttpHandler(
         { enabled: true, port: 18765, token: 'tok48e', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
         {
@@ -31825,6 +31826,9 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
                 conversations: [
                   { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 1000 },
                   { id: 'paged-wait', title: '长会话尾页失败待批', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 1000 },
+                  { id: 'cmd-then-ask', title: '命令后新工具提问', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 6, updatedAt: 1000 },
+                  { id: 'cmd-then-text', title: '命令后新文本提问', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 6, updatedAt: 1000 },
+                  { id: 'cmd-done-unknown-wait', title: '已执行命令后未知等待', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 6, updatedAt: 1000 },
                   { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 9000 }
                 ],
                 projects: [],
@@ -31838,6 +31842,57 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
                 conversations: [
                   { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 2000 },
                   { id: 'paged-wait', title: '长会话尾页失败待批', projectName: 'suite', status: 'waiting', completedUnread: false, updatedAt: 2000 },
+                  { id: 'cmd-then-ask', title: '命令后新工具提问', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 8, updatedAt: 2000 },
+                  { id: 'cmd-then-text', title: '命令后新文本提问', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 8, updatedAt: 2000 },
+                  { id: 'cmd-done-unknown-wait', title: '已执行命令后未知等待', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 8, updatedAt: 2000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'paged-same-jitter-run') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 2000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'paged-same-jitter-idle') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 2000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'paged-next-run') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 3000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'paged-next-idle') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 3200 },
                   { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
                 ],
                 projects: [],
@@ -31876,11 +31931,41 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
               sessionId: 'act-nosc',
               conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9500 }],
               projects: [],
-              // 分页窗口条数仍为 2 条（与第一轮 messages.length 完全相同！）
               messages: [{ role: 'user', text: '第二轮提问' }, { role: 'assistant', text: '第二轮全新回复摘要内容' }]
             };
           },
           callLanguageServer: async (method, body) => {
+            if (allEdgeRpcFail) throw new Error('All LS RPCs unavailable');
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'cmd-then-ask') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '构建并部署' }] } },
+                  { runCommand: { commandLine: 'npm run build', exitCode: 0, status: 'CORTEX_STEP_STATUS_DONE' } },
+                  { plannerResponse: { response: '构建已通过，请确认目标环境。', toolCalls: [{ name: 'ask_question', argumentsJson: '{"questions":[{"question":"请选择发布环境：预发还是生产？"}]}' }] } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'cmd-then-text') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '跑测试后询问我' }] } },
+                  { plannerResponse: { response: '先运行单测检查一下', toolCalls: [{ name: 'run_command', argumentsJson: '{"CommandLine":"npm test"}' }] } },
+                  { runCommand: { commandLine: 'npm test', output: 'PASS', status: 'DONE' } },
+                  { plannerResponse: { response: '测试全绿，是否立即推送远端分支？' } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'cmd-done-unknown-wait') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '执行预检后调用外部无文本审批' }] } },
+                  { plannerResponse: { response: '先执行预检脚本', toolCalls: [{ name: 'run_command', argumentsJson: '{"CommandLine":"./preflight.sh"}' }] } },
+                  { runCommand: { commandLine: './preflight.sh', exitCode: 0, status: 'CORTEX_STEP_STATUS_DONE' } },
+                  { plannerResponse: { thinking: '等待外部动作授权' } },
+                  { customGate: { status: 'WAITING' } }
+                ]
+              };
+            }
             if (method === 'GetCascadeTrajectory') {
               return {
                 numTotalSteps: 80,
@@ -31929,12 +32014,59 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
       assert.equal(localPagedComp?.body, '本轮回复已完成', '尾页拉取失败时本地 Notification 同样严禁展示首页旧回复摘要');
       assert.ok(!localPagedWait?.body.includes('ancient-first-page-cmd'), '尾页拉取失败时本地 Notification 同样严禁展示首页旧命令摘要');
 
+      // 验证同轮早先命令已执行、随后出现新提问（工具提问 + 纯文本提问）时，双端均提取最新提问而非历史已执行命令
+      const pushCmdAsk = deliveredBodies.find((p) => p.conversationId === 'cmd-then-ask');
+      const localCmdAsk = poppedNotifs.find((n) => n.tag && n.tag.includes('cmd-then-ask'));
+      const pushCmdText = deliveredBodies.find((p) => p.conversationId === 'cmd-then-text');
+      const localCmdText = poppedNotifs.find((n) => n.tag && n.tag.includes('cmd-then-text'));
+      const pushCmdUnknown = deliveredBodies.find((p) => p.conversationId === 'cmd-done-unknown-wait');
+      const localCmdUnknown = poppedNotifs.find((n) => n.tag && n.tag.includes('cmd-done-unknown-wait'));
+      assert.equal(pushCmdAsk?.body, '请选择发布环境：预发还是生产？', '命令已执行后出现 ask_question 时 Web Push 应展示最新问题而非旧命令');
+      assert.equal(localCmdAsk?.body, '请选择发布环境：预发还是生产？', '命令已执行后出现 ask_question 时本地通知应展示最新问题而非旧命令');
+      assert.equal(pushCmdText?.body, '测试全绿，是否立即推送远端分支？', '命令已执行后出现文本提问时 Web Push 应展示最新提问而非旧命令');
+      assert.equal(localCmdText?.body, '测试全绿，是否立即推送远端分支？', '命令已执行后出现文本提问时本地通知应展示最新提问而非旧命令');
+      assert.ok(!pushCmdUnknown?.body.includes('preflight.sh') && !pushCmdUnknown?.body.includes('先执行预检脚本'), '命令已执行且后续进入无文本等待时 Web Push 绝不回退抓取同轮旧命令或旧回复');
+      assert.ok(!localCmdUnknown?.body.includes('preflight.sh') && !localCmdUnknown?.body.includes('先执行预检脚本'), '命令已执行且后续进入无文本等待时本地通知绝不回退抓取同轮旧命令或旧回复');
+
       // 验证无 stepCount 的活跃会话第 1 轮 (updatedAt=9100, messages.length=2)
       const pushAct1 = deliveredBodies.find((p) => p.conversationId === 'act-nosc');
       const localAct1 = poppedNotifs.find((n) => n.tag && n.tag.includes('act-nosc'));
       assert.equal(pushAct1?.tag, 'ag-completed-act-nosc-u9100', '缺失 stepCount 时不得用分页窗口 messages.length 伪造步骤数');
       assert.ok(pushAct1?.body.includes('第一轮活动回复摘要内容'));
       assert.equal(localAct1?.tag, 'ag-completed-act-nosc-u9100');
+
+      // 验证尾页失败已确认 s80 后，后续全部 RPC 失败且关闭预览，发生同轮 running->idle 状态抖动时：
+      // 双端 turnSig 稳定保持 s80（不退化为 u2000）、不重发，且下一轮 (updatedAt=3200) 正常发送
+      allEdgeRpcFail = true;
+      mgr.updatePrefs({ showPreview: false });
+      lStore.set('ag_remote_notify_preview_v1', '0');
+      deliveredBodies.length = 0;
+      poppedNotifs.length = 0;
+      edgePhase = 'paged-same-jitter-run';
+      const sPjRun = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sPjRun.conversations);
+      edgePhase = 'paged-same-jitter-idle';
+      const sPjIdle = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 40));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sPjIdle.conversations);
+      assert.equal(sPjIdle.conversations.find((c) => c.id === 'paged-comp')?.turnSig, 's80', '后续 RPC 全败或关闭预览时同轮标识必须稳定保持 s80 而不退回 u2000');
+      assert.equal(deliveredBodies.length, 0, '同轮标识稳定保持 s80，状态抖动时 Web Push 绝不重发');
+      assert.equal(poppedNotifs.length, 0, '同轮标识稳定保持 s80，状态抖动时本地通知绝不重发');
+
+      edgePhase = 'paged-next-run';
+      const sPnRun = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sPnRun.conversations);
+      edgePhase = 'paged-next-idle';
+      const sPnIdle = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 50));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sPnIdle.conversations);
+      assert.equal(deliveredBodies.length, 1, '推进到下一轮 updatedAt=3200 时 Web Push 必须正常发送');
+      assert.equal(deliveredBodies[0].tag, 'ag-completed-paged-comp-u3200');
+      assert.equal(poppedNotifs.length, 1, '推进到下一轮 updatedAt=3200 时本地通知必须正常发送');
+      assert.equal(poppedNotifs[0].tag, 'ag-completed-paged-comp-u3200');
+      allEdgeRpcFail = false;
+      mgr.updatePrefs({ showPreview: true });
+      lStore.set('ag_remote_notify_preview_v1', '1');
 
       // 同轮 (updatedAt 仍为 9100) 重复观测绝不重发
       deliveredBodies.length = 0;
