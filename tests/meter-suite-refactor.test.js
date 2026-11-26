@@ -31818,4 +31818,33 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
     mrSrc.includes('#msg-rail'),
     'mobile-remote.js 应包含左侧对话点阵导览条、气泡预览、同步高亮、点击与触摸拖拽跳转及左滑抽屉排重'
   );
+
+  // 4. 三方合并加固门禁与 5 语种 README 融合检查
+  assert.ok(
+    mrSrc.includes("!$('file-viewer-backdrop').hidden"),
+    'mobile-remote.js 全局左滑抽屉应阻断 file-viewer-backdrop 与 .fv-ws-bar'
+  );
+  assert.ok(mrSrc.includes('.fv-ws-bar') && mrSrc.includes('writeRes?.ok !== false'),
+    'mobile-remote.js 应排除 .fv-ws-bar 误滑并校验 persistCatalogStore 写盘成功再更新 lastSig');
+
+  const collectorSrc = fs.readFileSync(path.join(ROOT, 'meter-collector.js'), 'utf8');
+  assert.ok(collectorSrc.includes('inspectStepsBySig') && collectorSrc.includes('gmSigMatch.count >= 2'),
+    'meter-collector.js 必须区分未索引 GM 0 次命中与重复签名命中，防止最新轮精确用量误回退旧步骤');
+
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'main.js'), 'utf8');
+  assert.ok(mainSrc.includes('matchedRow.stepIndex ?? matchedRow.step_index') && mainSrc.includes('scanBehindCur'),
+    'src/renderer/main.js 应兼容单值 stepIndex 并阻断旧步 scan 覆盖');
+
+  for (const [docPath, tokens] of [
+    [path.join(ROOT, 'README.md'), ['右键复制文件路径', '长消息与代码块折叠']],
+    [path.join(ROOT, 'docs', 'README.en.md'), ['right-click context menu', 'long message & code block folding']],
+    [path.join(ROOT, 'docs', 'README.ja.md'), ['右クリックメニュー', '長文＆コードブロック折りたたみ']],
+    [path.join(ROOT, 'docs', 'README.ko.md'), ['우클릭 메뉴', '긴 메시지·코드 블록 접기']],
+    [path.join(ROOT, 'docs', 'README.es.md'), ['menú contextual con clic derecho', 'plegado de mensajes largos y código']]
+  ]) {
+    const docText = fs.readFileSync(docPath, 'utf8');
+    for (const tok of tokens) {
+      assert.ok(docText.includes(tok), `${path.basename(docPath)} 应同时保留 "${tok}"`);
+    }
+  }
 });

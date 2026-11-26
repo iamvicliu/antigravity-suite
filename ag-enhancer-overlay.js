@@ -5056,7 +5056,7 @@
     const now = Date.now();
     const buttons = container.querySelectorAll('button');
     for (const btn of buttons) {
-      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .ag-fold-bar, [data-ag-fold-ui="1"], [data-agy-hans-ui], [data-agy-context-capsule]`)) continue;
+      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, #${FILE_CTX_MENU_ID}, .ag-fold-bar, [data-ag-fold-ui="1"], [data-agy-hans-ui], [data-agy-context-capsule]`)) continue;
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
       if (btn.offsetWidth <= 0 || btn.offsetHeight <= 0) continue;
       const rawText = (btn.textContent || '').replace(/\s+/g, ' ').trim();
@@ -7671,7 +7671,7 @@
     revealFinder: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>'
   };
   const FILE_CTX_CHAT_ROOT_SEL = '[data-testid="autoscroll-viewport"], [data-testid="agent-response"], [data-testid="user-message"], [data-markdown-root]';
-  const FILE_CTX_EXCLUDE_SEL = `#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, #${FILE_EDITOR_CONTROLS_ID}, #${FILE_EDITOR_WRAP_ID}, #${FILE_CTX_MENU_ID}, .surface-composer, [data-testid="conversation-row-sidebar"], [data-testid="conversation-list-sidebar"], [data-testid="settings-sidebar"], .settings-modal-backdrop, [aria-label="File Viewer header"], [aria-label="文件查看器标题栏"], [data-testid="quote-scope-pill"]`;
+  const FILE_CTX_EXCLUDE_SEL = `#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, #${FILE_EDITOR_CONTROLS_ID}, #${FILE_EDITOR_WRAP_ID}, #${FILE_CTX_MENU_ID}, .ag-fold-bar, [data-ag-fold-ui="1"], .surface-composer, [data-testid="conversation-row-sidebar"], [data-testid="conversation-list-sidebar"], [data-testid="settings-sidebar"], .settings-modal-backdrop, [aria-label="File Viewer header"], [aria-label="文件查看器标题栏"], [data-testid="quote-scope-pill"]`;
   const FILE_CTX_SENTINEL_URIS = new Set(['file:///quote', '/quote']);
 
   let fileCtxToastTimer = null;
@@ -9111,7 +9111,7 @@
     const results = [];
     const buttons = container.querySelectorAll('button');
     for (const btn of buttons) {
-      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .surface-composer, .ag-fold-bar, [data-ag-fold-ui="1"], [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="thinking-collapsible-trigger"], [data-testid="conversation-row-sidebar"]`)) {
+      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, #${FILE_CTX_MENU_ID}, .surface-composer, .ag-fold-bar, [data-ag-fold-ui="1"], [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="thinking-collapsible-trigger"], [data-testid="conversation-row-sidebar"]`)) {
         continue;
       }
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
