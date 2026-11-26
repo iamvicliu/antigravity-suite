@@ -9720,15 +9720,16 @@ function buildMobileAppHtml() {
       } catch {}
     }
     function saveStoredPair(st) {
+      const targetState = st || pairState;
       try {
         localStorage.setItem(PAIR_STORAGE_KEY, JSON.stringify({
-          token: st.token || '',
-          name: st.name || '',
-          hosts: Array.isArray(st.hosts) ? st.hosts : [],
-          endpoints: Array.isArray(st.endpoints) ? st.endpoints : []
+          token: targetState.token || '',
+          name: targetState.name || '',
+          hosts: Array.isArray(targetState.hosts) ? targetState.hosts : [],
+          endpoints: Array.isArray(targetState.endpoints) ? targetState.endpoints : []
         }));
       } catch {}
-      syncEndpointsToServiceWorker(st);
+      syncEndpointsToServiceWorker(targetState);
     }
     function loadStoredSpeed() {
       try {
@@ -10462,8 +10463,8 @@ function buildMobileAppHtml() {
         const curReachable = Boolean((curRes && curRes.ok) || (!curRes && (isTrustedSecureOrigin(pageOrigin) || isStandalonePwa)));
         const switchOrigin = isTrustedSecureOrigin(pageOrigin) ? pageOrigin : curOrigin;
         const eligibleRanked = curReachable
-          ? ranked.filter((ep) => ep && !shouldBlockInsecureDowngrade(switchOrigin, ep.url, isStandalonePwa))
-          : ranked;
+          ? ranked.filter((ep) => ep && !isServerHintResult(ep) && !shouldBlockInsecureDowngrade(switchOrigin, ep.url, isStandalonePwa))
+          : ranked.filter((ep) => ep && !isServerHintResult(ep));
         const switchBest = eligibleRanked[0] || null;
 
         if (wantAutoSwitch && !manualLocked && !isAutoSwitched && switchBest) {
@@ -10547,27 +10548,21 @@ function buildMobileAppHtml() {
         const order = { lan: 0, tailscale: 1, bonjour: 2, tunnel: 3, loopback: 9 };
         const curOriginFail = String(location.origin || '').replace(/\\/+$/, '');
         const winners = mergedList
-          .filter((r) => r && r.ok && Number.isFinite(r.ms))
+          .filter((r) => r && r.ok && Number.isFinite(r.ms) && !isServerHintResult(r))
           .sort((a, b) => {
             const aBlock = shouldBlockInsecureDowngrade(curOriginFail, a.url, isStandalonePwa) ? 1 : 0;
             const bBlock = shouldBlockInsecureDowngrade(curOriginFail, b.url, isStandalonePwa) ? 1 : 0;
             if (aBlock !== bBlock) return aBlock - bBlock;
-            const aHint = isServerHintResult(a) ? 1 : 0;
-            const bHint = isServerHintResult(b) ? 1 : 0;
-            if (aHint !== bHint) return aHint - bHint;
             return (a.ms - b.ms) || ((order[a.kind] ?? 5) - (order[b.kind] ?? 5));
           });
         const winner = winners[0] || null;
         if (!winner) return false;
-        if (isServerHintResult(winner) && location.protocol === 'https:' && String(winner.url || '').toLowerCase().startsWith('http://')) {
-          return false;
-        }
 
         if (Array.isArray(winner.data?.endpoints) && winner.data.endpoints.length) {
           pairState.endpoints = winner.data.endpoints;
           if (Array.isArray(winner.data.hosts)) pairState.hosts = winner.data.hosts;
-          saveStoredPair(pairState);
         }
+        saveStoredPair(pairState);
         if (winner.url !== curOriginFail && shouldBlockInsecureDowngrade(curOriginFail, winner.url, isStandalonePwa)) {
           return false;
         }
@@ -10704,16 +10699,18 @@ function buildMobileAppHtml() {
         }
         const targetUrl = buildClientEntryUrl(cleanTarget, { manual: true, omitSpeed: true });
         if (typeof window.open === 'function') {
-          let opened = null;
-          try { opened = window.open(targetUrl, '_blank', 'noopener,noreferrer'); } catch {}
-          if (opened) {
-            showToast('已在新标签页打开 ' + modeName + ' 验证，原页面保留作退路');
-            return true;
-          }
-          if (latestSnap) {
+          try {
+            window.open(targetUrl, '_blank', 'noopener,noreferrer');
+          } catch {
             showToast('浏览器拦截了新标签页，请允许弹窗后重试（已保留当前连接）');
             return false;
           }
+          showToast('已在新标签页打开 ' + modeName + ' 验证（若未弹出请允许弹窗），原页面保留作退路');
+          return true;
+        }
+        if (latestSnap) {
+          showToast('当前环境不支持新标签页打开，已保留当前连接');
+          return false;
         }
         if (activeSnapAbort) {
           try { activeSnapAbort.abort(); } catch {}
@@ -10764,8 +10761,8 @@ function buildMobileAppHtml() {
       if (probe.data && Array.isArray(probe.data.endpoints) && probe.data.endpoints.length) {
         pairState.endpoints = probe.data.endpoints;
         if (Array.isArray(probe.data.hosts)) pairState.hosts = probe.data.hosts;
-        saveStoredPair(pairState);
       }
+      saveStoredPair(pairState);
       manualLocked = true;
       try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
       if (activeSnapAbort) {

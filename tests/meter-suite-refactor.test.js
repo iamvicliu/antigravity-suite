@@ -31167,10 +31167,11 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
   ];
   const encEps = remoteMod.encodeEndpointsParam(endpoints);
 
-  const runChannelVm = async ({ standalone = false, reachMap = {}, popupAllow = true } = {}) => {
+  const runChannelVm = async ({ standalone = false, reachMap = {}, popupMode = 'proxy', snapshotFail = false } = {}) => {
     const replacedUrls = [];
     const openedTabs = [];
     const snapshotOrigins = [];
+    const swMessages = [];
     const timers = new Set();
     const makeClassList = () => {
       const s = new Set();
@@ -31215,7 +31216,14 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
       btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
       encodeURIComponent, decodeURIComponent,
       screen: { width: 390, height: 844 }, devicePixelRatio: 3,
-      navigator: { platform: 'iPhone', maxTouchPoints: 5, hardwareConcurrency: 6, standalone },
+      navigator: {
+        platform: 'iPhone', maxTouchPoints: 5, hardwareConcurrency: 6, standalone,
+        serviceWorker: {
+          register: async () => ({ active: { postMessage: (m) => swMessages.push(m) } }),
+          controller: { postMessage: (m) => swMessages.push(m) },
+          addEventListener() {}
+        }
+      },
       location: locObj, history: { replaceState() {} },
       localStorage: { getItem: (k) => lStore.get(k) ?? null, setItem: (k, v) => lStore.set(k, String(v)), removeItem: (k) => lStore.delete(k) },
       sessionStorage: { getItem: (k) => sStore.get(k) ?? null, setItem: (k, v) => sStore.set(k, String(v)), removeItem: (k) => sStore.delete(k) },
@@ -31229,8 +31237,9 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
       matchMedia: (q) => ({ matches: Boolean(standalone && String(q).includes('standalone')), addEventListener() {} }),
       innerWidth: 390, innerHeight: 844, visualViewport: null,
       open: (u, target, feat) => {
-        if (!popupAllow) return null;
+        if (popupMode === 'throw') throw new Error('Popup blocked');
         openedTabs.push({ url: String(u), target, feat });
+        if (popupMode === 'noopener-null') return null;
         return { closed: false };
       },
       setTimeout: (fn, ms) => {
@@ -31257,6 +31266,7 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
           return { ok: true, status: 200, json: async () => ({ ok: true, service: 'ag-mobile-remote', nonce, endpoints }) };
         }
         if (u.pathname === '/api/snapshot') {
+          if (snapshotFail) return { ok: false, status: 503, json: async () => ({ ok: false }) };
           snapshotOrigins.push(u.origin);
           return { ok: true, status: 200, json: async () => ({ ok: true, title: 'Connected Session', busy: false, messages: [], conversations: [], projects: [], endpoints }) };
         }
@@ -31267,20 +31277,27 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
     sandbox.addEventListener = () => {};
     const tail = mainScript.lastIndexOf('})();');
     const hooked = mainScript.slice(0, tail)
-      + '\nglobalThis.__chHooks = { enterConnectionMode, runSpeedTest, openModeSwitcherSheet, getApiBase: () => apiBase, getSpeed: () => speedTestState };\n'
+      + '\nglobalThis.__chHooks = { enterConnectionMode, runSpeedTest, tryFailoverEndpoint, openModeSwitcherSheet, getApiBase: () => apiBase, getLatestSnap: () => latestSnap, getSpeed: () => speedTestState };\n'
       + mainScript.slice(tail);
     vm.runInNewContext(hooked, sandbox);
     await new Promise((r) => setTimeout(r, 45));
     return {
-      byId, replacedUrls, openedTabs, snapshotOrigins, hooks: sandbox.__chHooks,
+      byId, replacedUrls, openedTabs, snapshotOrigins, swMessages, hooks: sandbox.__chHooks,
       setReach: (origin, st) => { reachMap[origin] = st; },
       cleanup: () => { for (const t of timers) clearTimeout(t); timers.clear(); }
     };
   };
 
-  // 1 & 2 & 3: serverHints 标注「仅电脑端参考 · 未验证本机直连」且绝不获评「最快」；同协议探活热切 apiBase 与不可达/停用防盲跳
+  // 1 & 2 & 3: serverHints 标注「仅电脑端参考 · 未验证本机直连」且绝不获评「最快」、绝不触发自动切路；同协议探活热切 apiBase 同步 SW 与不可达/停用防盲跳
   const vm1 = await runChannelVm({ standalone: false, reachMap: { 'https://demo.trycloudflare.com': 'ok', 'https://mac.tail-demo.ts.net': 'down' } });
   try {
+    await vm1.hooks.runSpeedTest({ autoSwitch: true, silent: true });
+    assert.equal(vm1.replacedUrls.length, 0, 'runSpeedTest(autoSwitch=true) 不得被宿主机 serverHints 触发未经验证切路');
+    vm1.setReach('https://demo.trycloudflare.com', 'down');
+    const failoverOnlyHints = await vm1.hooks.tryFailoverEndpoint();
+    assert.equal(failoverOnlyHints, false, 'tryFailoverEndpoint 仅有宿主机 serverHints 可达而客户端均未实测通过时必须返回 false 不切路');
+    assert.equal(vm1.replacedUrls.length, 0);
+    vm1.setReach('https://demo.trycloudflare.com', 'ok');
     await vm1.hooks.runSpeedTest({ autoSwitch: false, silent: true });
     vm1.hooks.openModeSwitcherSheet();
     const sheetHtml1 = vm1.byId['sheet-list'].innerHTML;
@@ -31302,15 +31319,17 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
     assert.equal(vm1.replacedUrls.length, 0);
     assert.ok(vm1.byId['toast'].textContent.includes('已停用'));
 
-    // Tailscale HTTPS 恢复可达后点击切换：原地热切 apiBase，零整页跳转，且立即向新源拉取 /api/snapshot
+    // Tailscale HTTPS 恢复可达后点击切换：原地热切 apiBase，零整页跳转，同步 SW 备用通道缓存，且立即向新源拉取 /api/snapshot
     vm1.setReach('https://mac.tail-demo.ts.net', 'ok');
     const snapCountBefore = vm1.snapshotOrigins.length;
+    const swCountBefore = vm1.swMessages.length;
     const okHot = await vm1.hooks.enterConnectionMode({ url: 'https://mac.tail-demo.ts.net', kind: 'tailscale' });
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(okHot, true);
     assert.equal(vm1.replacedUrls.length, 0, '同协议通道切换应原地热切 apiBase，不执行 location.href 跳转');
     assert.equal(vm1.hooks.getApiBase(), 'https://mac.tail-demo.ts.net');
     assert.equal(vm1.byId['channel-pill-label'].textContent, 'TS HTTPS');
+    assert.ok(vm1.swMessages.slice(swCountBefore).some((m) => m?.type === 'ag-cache-endpoints' && Array.isArray(m.endpoints) && m.endpoints.length === 4), '热切成功后必须通过 saveStoredPair -> syncEndpointsToServiceWorker 同步备用通道');
     assert.ok(vm1.snapshotOrigins.slice(snapCountBefore).includes('https://mac.tail-demo.ts.net'), '原地热切后后续快照应直接请求新通道 origin');
 
     // 4a: 普通浏览器从 HTTPS 切往明文 HTTP：新标签页打开验证（不含 ?spd=），原页面保留作退路
@@ -31326,12 +31345,25 @@ test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快�
     vm1.cleanup();
   }
 
-  // 4b: 普通浏览器弹窗被拦截且当前会话已连通时，仍保留原正常页面不覆盖
-  const vmPopupBlocked = await runChannelVm({ standalone: false, popupAllow: false });
+  // 4b-1: 模拟标准浏览器对带 noopener,noreferrer 的 window.open 成功打开新标签页但返回 null（且 latestSnap 为 null 尚未连通）：绝不误判拦截，绝不覆盖原页面
+  const vmNoopenerNull = await runChannelVm({ standalone: false, popupMode: 'noopener-null', snapshotFail: true });
+  try {
+    assert.equal(vmNoopenerNull.hooks.getLatestSnap(), null, '初始 latestSnap 应为空');
+    const okNoop = await vmNoopenerNull.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(okNoop, true, 'noopener 成功打开新标签返回 null 时应视为成功而非拦截');
+    assert.equal(vmNoopenerNull.openedTabs.length, 1, '应调用 window.open 打开新标签页');
+    assert.equal(vmNoopenerNull.replacedUrls.length, 0, '即使 latestSnap 为空，成功打开新标签页返回 null 时也绝不能调用 navigateEntryUrl 覆盖原页');
+    assert.ok(vmNoopenerNull.byId['toast'].textContent.includes('已在新标签页打开'));
+  } finally {
+    vmNoopenerNull.cleanup();
+  }
+
+  // 4b-2: 普通浏览器弹窗抛错被拒时，同样保留原页面不覆盖
+  const vmPopupBlocked = await runChannelVm({ standalone: false, popupMode: 'throw' });
   try {
     const okBlocked = await vmPopupBlocked.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
     assert.equal(okBlocked, false);
-    assert.equal(vmPopupBlocked.replacedUrls.length, 0, '新标签弹窗被拒且当前连接正常时不得强行覆盖原页面');
+    assert.equal(vmPopupBlocked.replacedUrls.length, 0, '新标签弹窗被拒时不得强行覆盖原页面');
     assert.ok(vmPopupBlocked.byId['toast'].textContent.includes('保留当前连接'));
   } finally {
     vmPopupBlocked.cleanup();
