@@ -769,6 +769,11 @@ function saveRemoteTunnelConfig(patch = {}) {
   try {
     fs.chmodSync(cfgPath, 0o600);
   } catch {}
+  cachedHostMeta = null;
+  cachedHostMetaAt = 0;
+  cachedHostMetaKey = '';
+  cachedTailscaleServe = { active: false, port: 0, url: '', hint: '', createdByUs: false, checkedAt: 0 };
+  cachedTailscaleBin = '';
   return next;
 }
 
@@ -1054,11 +1059,95 @@ function enumerateLocalAddresses() {
 
 let cachedHostMeta = null;
 let cachedHostMetaAt = 0;
+let cachedHostMetaKey = '';
+
+function readSavedTailscaleProbePolicy() {
+  const cfgPath = getRemoteConfigPath();
+  const loaded = safeReadJsonSync(cfgPath, null);
+  const data = (loaded?.ok && loaded.data && typeof loaded.data === 'object') ? loaded.data : null;
+  if (!data) {
+    return { tailscaleCustomHost: '', tailscaleEnabled: true };
+  }
+  const rawCh = (data.enabledChannels && typeof data.enabledChannels === 'object') ? data.enabledChannels : {};
+  return {
+    tailscaleCustomHost: normalizeTailscaleCustomHost(data.tailscaleCustomHost || ''),
+    tailscaleEnabled: typeof rawCh.tailscale === 'boolean' ? rawCh.tailscale : true
+  };
+}
+
+function shouldSkipTailscaleCliProbe(options = {}) {
+  if (typeof options?.skipTailscaleCli === 'boolean') {
+    return options.skipTailscaleCli;
+  }
+  if (options?.enabledChannels && options.enabledChannels.tailscale === false) {
+    return true;
+  }
+  if (normalizeTailscaleCustomHost(options?.tailscaleCustomHost || '')) {
+    return true;
+  }
+  if (
+    options?.ignoreSavedConfig !== true
+    && typeof options?.execFileSync !== 'function'
+    && typeof options?.execAsync !== 'function'
+  ) {
+    const policy = readSavedTailscaleProbePolicy();
+    if (policy.tailscaleCustomHost || policy.tailscaleEnabled === false) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isMacTailscaleDaemonOrAppRunning() {
+  try {
+    if (fs.existsSync('/var/run/tailscaled.socket')) return true;
+  } catch {}
+  // 精确匹配进程名，避免误命中系统扩展或小组件进程
+  for (const procName of ['Tailscale', 'tailscaled']) {
+    try {
+      execFileSync('pgrep', ['-x', procName], {
+        timeout: 300,
+        stdio: 'ignore'
+      });
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+function resolveTailscaleCliCandidates(options = {}) {
+  const {
+    platform = process.platform,
+    hasCustomExec = false,
+    existsSync = fs.existsSync,
+    isMacRunning = isMacTailscaleDaemonOrAppRunning
+  } = options || {};
+  if (hasCustomExec || platform !== 'darwin') {
+    return ['tailscale'];
+  }
+  if (typeof isMacRunning === 'function' && !isMacRunning()) {
+    return [];
+  }
+  // 仅使用纯 CLI 路径，严禁包含会拉起 GUI 菜单栏图标的 /Applications/Tailscale.app/Contents/MacOS/Tailscale
+  const found = [];
+  for (const binPath of ['/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']) {
+    try {
+      if (existsSync(binPath) && !found.includes(binPath)) {
+        found.push(binPath);
+      }
+    } catch {}
+  }
+  return found.length > 0 ? found : ['tailscale'];
+}
 
 function detectHostIdentityMeta(options = {}) {
-  const force = Boolean(options?.force || options?.forceRefresh || typeof options?.execFileSync === 'function');
+  const skipTsCli = shouldSkipTailscaleCliProbe(options);
+  const cacheKey = skipTsCli ? 'no-ts' : 'with-ts';
+  const hasCustomExec = typeof options?.execFileSync === 'function';
+  const hasCustomRunningCheck = typeof options?.isTailscaleRunning === 'function';
+  const force = Boolean(options?.force || options?.forceRefresh || hasCustomExec || hasCustomRunningCheck);
   const now = Date.now();
-  if (!force && cachedHostMeta && now - cachedHostMetaAt < 45000) {
+  if (!force && cachedHostMeta && cachedHostMetaKey === cacheKey && now - cachedHostMetaAt < 45000) {
     return cachedHostMeta;
   }
 
@@ -1085,11 +1174,12 @@ function detectHostIdentityMeta(options = {}) {
   let tailscaleBin = '';
   let tailscaleRunning = false;
   let tailscaleBackendState = '';
-  const execFn = typeof options.execFileSync === 'function' ? options.execFileSync : execFileSync;
-  if (!skipProbes || typeof options.execFileSync === 'function') {
-    const tsBins = process.platform === 'darwin'
-      ? ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']
-      : ['tailscale'];
+  const execFn = hasCustomExec ? options.execFileSync : execFileSync;
+  if (!skipTsCli && (!skipProbes || hasCustomExec)) {
+    const tsBins = resolveTailscaleCliCandidates({
+      hasCustomExec,
+      isMacRunning: hasCustomRunningCheck ? options.isTailscaleRunning : isMacTailscaleDaemonOrAppRunning
+    });
     for (const bin of tsBins) {
       try {
         const out = execFn(bin, ['status', '--json'], {
@@ -1131,9 +1221,10 @@ function detectHostIdentityMeta(options = {}) {
     tailscaleBin,
     deviceName
   };
-  if (typeof options.execFileSync !== 'function') {
+  if (!hasCustomExec && !hasCustomRunningCheck) {
     cachedHostMeta = result;
     cachedHostMetaAt = now;
+    cachedHostMetaKey = cacheKey;
   }
   return result;
 }
@@ -1192,8 +1283,11 @@ function inspectTailscaleServe443Target(rawJson, numPort) {
 
 function cleanupTailscaleServeHttps(port, options = {}) {
   const numPort = Number(port) || DEFAULT_REMOTE_PORT;
-  const bin = String(options.tailscaleBin || detectHostIdentityMeta().tailscaleBin || 'tailscale');
-  const execFn = typeof options.execFileSync === 'function' ? options.execFileSync : execFileSync;
+  const useCustomExec = typeof options.execFileSync === 'function';
+  const metaBin = options.tailscaleBin || (useCustomExec ? '' : detectHostIdentityMeta().tailscaleBin);
+  if (!useCustomExec && !metaBin) return false;
+  const bin = String(metaBin || 'tailscale');
+  const execFn = useCustomExec ? options.execFileSync : execFileSync;
   try {
     const statusRaw = execFn(bin, ['serve', 'status', '--json'], {
       timeout: 1500,
@@ -1221,6 +1315,14 @@ function ensureTailscaleServeHttps(port, options = {}) {
   const now = Date.now();
   const useCustomExec = typeof options.execFileSync === 'function';
   const readOnly = options.readOnly === true;
+  const explicitSkip = (
+    options?.skipTailscaleCli === true
+    || options?.enabledChannels?.tailscale === false
+    || Boolean(normalizeTailscaleCustomHost(options?.tailscaleCustomHost || ''))
+  );
+  if (explicitSkip || (!options?.hostMeta && shouldSkipTailscaleCliProbe(options))) {
+    return { enabled: false, url: '', hint: '', createdByUs: false };
+  }
   if (!useCustomExec && !options.force && cachedTailscaleServe.port === numPort && (now - cachedTailscaleServe.checkedAt < 60000)) {
     return {
       enabled: Boolean(cachedTailscaleServe.active && cachedTailscaleServe.url),
@@ -15799,11 +15901,18 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
 
   const runTsProbe = async () => {
     if (!en.tailscale && !en.lan) return { statusAvailable: false, attempted: false, pong: null };
-    const candidates = cachedTailscaleBin
+    if (opts.skipTailscaleCli === true || normalizeTailscaleCustomHost(config?.tailscaleCustomHost || '')) {
+      return { statusAvailable: false, attempted: false, pong: null };
+    }
+    const candidates = (!customExec && cachedTailscaleBin)
       ? [cachedTailscaleBin]
-      : (process.platform === 'darwin'
-          ? ['tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']
-          : ['tailscale']);
+      : resolveTailscaleCliCandidates({
+          hasCustomExec: Boolean(customExec),
+          isMacRunning: typeof opts.isTailscaleRunning === 'function' ? opts.isTailscaleRunning : isMacTailscaleDaemonOrAppRunning
+        });
+    if (!candidates.length) {
+      return { statusAvailable: false, attempted: false, pong: null };
+    }
     let workingBin = '';
     let parsedStatus = null;
     for (const bin of candidates) {
@@ -15899,7 +16008,7 @@ async function probeClientPrivateReachability(req, config, opts = {}) {
     if (en.lan) {
       hints.lan = { ok: true, ms: lanPing.ms, via: 'server' };
     }
-    if (en.bonjour && detectHostIdentityMeta().bonjourHost) {
+    if (en.bonjour && detectHostIdentityMeta({ skipTailscaleCli: true }).bonjourHost) {
       hints.bonjour = { ok: true, ms: lanPing.ms + 5, via: 'server' };
     }
   } else if (tsPong?.ok && !tsPong.viaLanIp && !viaSameLanIpv6) {
@@ -16275,9 +16384,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
 
     const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
+    const skipTsForCors = config.enabledChannels?.tailscale === false || Boolean(config.tailscaleCustomHost);
     const allowedTsDns = options.allowedTailscaleDnsName !== undefined
       ? options.allowedTailscaleDnsName
-      : [detectHostIdentityMeta().tailscaleDnsName, config.tailscaleCustomHost]
+      : [skipTsForCors ? '' : detectHostIdentityMeta().tailscaleDnsName, config.tailscaleCustomHost]
           .filter((h) => String(h || '').trim().toLowerCase().endsWith('.ts.net'));
     const reqOrigin = String(req.headers.origin || '').trim();
     if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl, allowedTsDns)) {
@@ -18527,7 +18637,7 @@ function startMobileRemoteServer() {
       }
     }
     const latestCfg = loadOrCreateRemoteConfig();
-    if (!stopped && latestCfg.enabledChannels?.tailscale !== false && process.env.AG_REMOTE_SKIP_PROBES !== '1') {
+    if (!stopped && latestCfg.enabledChannels?.tailscale !== false && !latestCfg.tailscaleCustomHost && process.env.AG_REMOTE_SKIP_PROBES !== '1') {
       try {
         const tsServeRes = ensureTailscaleServeHttps(config.port);
         if (tsServeRes?.createdByUs) managedTailscaleServePort = config.port;
@@ -18573,7 +18683,6 @@ function startMobileRemoteServer() {
 
 function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChannels = null, options = {}) {
   const { tailscale, lan, physicalLan } = options.addresses || enumerateLocalAddresses();
-  const meta = options.hostMeta || detectHostIdentityMeta(options.execFileSync ? { execFileSync: options.execFileSync } : {});
   const primaryLan = physicalLan[0] || lan[0] || null;
   const secondaryLan = physicalLan[1] || null;
   const en = {
@@ -18582,10 +18691,15 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
     bonjour: enabledChannels?.bonjour !== false,
     tunnel: enabledChannels?.tunnel !== false
   };
+  const customTsHost = normalizeTailscaleCustomHost(options.tailscaleCustomHost || '');
+  const meta = options.hostMeta || detectHostIdentityMeta({
+    ...(options.execFileSync ? { execFileSync: options.execFileSync } : {}),
+    skipTailscaleCli: !en.tailscale || Boolean(customTsHost)
+  });
 
   let tsHttpsUrl = '';
   let tsHttpsHint = '';
-  if (en.tailscale && meta.tailscaleDnsName && meta.tailscaleRunning !== false) {
+  if (en.tailscale && !customTsHost && meta.tailscaleDnsName && meta.tailscaleRunning !== false) {
     const tsServe = options.tailscaleServe || ensureTailscaleServeHttps(port, {
       hostMeta: meta,
       execFileSync: options.execFileSync,
@@ -18595,7 +18709,6 @@ function collectFusedEndpointDescriptor(port, tunnelStatus = null, enabledChanne
     if (tsServe?.hint) tsHttpsHint = tsServe.hint;
   }
 
-  const customTsHost = normalizeTailscaleCustomHost(options.tailscaleCustomHost || '');
   const effectiveTailscale = [...tailscale];
   if (
     en.tailscale
@@ -19054,6 +19167,8 @@ module.exports = {
   startMobileRemoteServer,
   resolveEmptyCloudflaredConfigPath,
   buildRemoteInfo,
+  shouldSkipTailscaleCliProbe,
+  resolveTailscaleCliCandidates,
   detectHostIdentityMeta,
   ensureTailscaleServeHttps,
   cleanupTailscaleServeHttps,
