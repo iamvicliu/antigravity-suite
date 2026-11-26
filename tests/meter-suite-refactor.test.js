@@ -20659,9 +20659,14 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   assert.equal(rSendAllNull.ok, false);
   assert.equal(domFallbackCalls.length, domBeforeAllTimeout, 'SendAllQueuedMessages 返回 null 时绝不得自动补点 DOM');
 
-  // 仅当服务端明确返回 deprecated（confirmedNotExecuted）且携带 messageIds 时，回退桌面全发
+  // 仅当服务端明确返回 deprecated（confirmedNotExecuted）且携带 messageIds、同时当前会话无未决超时发送记录时，回退桌面全发
   sendAllMode = 'deprecated';
-  const rSendAllFallback = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageIds: ['pm-1', 'pm-2'] });
+  const rSendAllBlockedOnTainted = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageIds: ['pm-1', 'pm-2'] });
+  assert.equal(rSendAllBlockedOnTainted.ok, false, '会话存在 pm-timeout-1 未决发送超时时，批量 deprecated 回退必须停止发送');
+  assert.equal(rSendAllBlockedOnTainted.outcomeUnknown, true);
+  assert.equal(domFallbackCalls.length, domBeforeAllTimeout, '存在未决超时项时绝不得执行 send-queued-dom 全发');
+
+  const rSendAllFallback = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40-clean', messageIds: ['pm-1', 'pm-2'] });
   assert.equal(rSendAllFallback.ok, true);
   assert.equal(domFallbackCalls.length, domBeforeAllTimeout + 1);
   assert.equal(domFallbackCalls[domBeforeAllTimeout].action, 'send-queued-dom');
@@ -32404,6 +32409,9 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   let desktopSendCalls = 0;
   let sendAllShouldHang = false;
   let sendCascadeShouldHang = false;
+  let sendCascadeDelayMs = 0;
+  let deleteAgentShouldFail = false;
+  let pendingFetchShouldThrow = false;
   let sendBehavior = 'ok';
   let fakeClockNow = 1_800_000_000_000;
   let liveServerPendingList = [
@@ -32415,8 +32423,12 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
       rpcTimeoutMs: 100,
       now: () => fakeClockNow,
       maxRecentOkSendActions: 2,
+      maxCompletedSendActions: 2,
       maxUnknownSendActions: 2,
-      fetchPendingAgentMessages: async () => liveServerPendingList,
+      fetchPendingAgentMessages: async () => {
+        if (pendingFetchShouldThrow) throw new Error('StreamAgentStateUpdates transient failure');
+        return liveServerPendingList;
+      },
       webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) },
       fetchSnapshot: async () => ({
         ok: true,
@@ -32469,6 +32481,12 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
         if (method === 'SendUserCascadeMessage' && sendCascadeShouldHang) {
           await new Promise((r) => setTimeout(r, 300));
           return {};
+        }
+        if (method === 'SendUserCascadeMessage' && sendCascadeDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, sendCascadeDelayMs));
+        }
+        if (method === 'DeleteAgentMessage' && deleteAgentShouldFail) {
+          throw new Error('DeleteAgentMessage temporary failure');
         }
         return { ok: true };
       }
@@ -32592,7 +32610,117 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   assert.equal(batchSendHangRetry.outcomeUnknown, true);
   assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages'], '重试批量发送绝不得再次调用 SendUserCascadeMessage');
 
-  // 4e. /api/action send 幂等保护：① 成功重放不二次执行；② 已派发后超时抛错（结果未知）同 clientActionId 重试被严格拦截，且跨 >60s 过期及容量淘汰后仍不放行；③ confirmedNotExecuted=true 允许同 ID 安全重试
+  // 4d-3. 统一保护批量发送的所有发送通道：
+  // ① pm-hang-1 超时未决后，即使队列新增媒体项、携带 hasDomQueued:true 或实时查询抛错，也绝不得走 send-queued-dom 绕过保护；
+  // ② 已发送但 DeleteAgentMessage 失败（partialSuccess）的会话，在新增媒体项或 hasDomQueued 时同样阻止 DOM 全发防止二次发送。
+  const domCountBeforeTaintedChecks = domQueuedActions.length;
+  liveServerPendingList = [
+    { id: 'pm-hang-1', messageId: 'pm-hang-1', source: 'agent_state', stepIndex: -1, text: '超时未决待发项' },
+    { id: 'pm-new-media', messageId: 'pm-new-media', source: 'agent_state', stepIndex: -1, text: '新增带图排队项', hasMedia: true, images: [{ src: 'data:image/png;base64,AA==' }] }
+  ];
+  const taintedWithMedia = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    messageIds: ['pm-hang-1', 'pm-new-media'],
+    queuedItems: [
+      { messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' },
+      { messageId: 'pm-new-media', source: 'agent_state', domIndex: 1, text: '新增带图排队项', hasMedia: true }
+    ]
+  });
+  assert.equal(taintedWithMedia.ok, false, '超时未决后新增媒体项时绝不得通过 send-queued-dom 全发绕过拦截');
+  assert.equal(taintedWithMedia.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domCountBeforeTaintedChecks);
+
+  liveServerPendingList = [
+    { id: 'pm-hang-1', messageId: 'pm-hang-1', source: 'agent_state', stepIndex: -1, text: '超时未决待发项' }
+  ];
+  const taintedWithHasDom = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    hasDomQueued: true,
+    messageIds: ['pm-hang-1']
+  });
+  assert.equal(taintedWithHasDom.ok, false, '超时未决后携带 hasDomQueued 时绝不得通过 send-queued-dom 全发绕过拦截');
+  assert.equal(taintedWithHasDom.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domCountBeforeTaintedChecks);
+
+  pendingFetchShouldThrow = true;
+  const taintedQueryFailed = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    hasDomQueued: true,
+    messageIds: ['pm-hang-1']
+  });
+  pendingFetchShouldThrow = false;
+  assert.equal(taintedQueryFailed.ok, false, '实时查询失败时绝不得回退桌面全发');
+  assert.equal(taintedQueryFailed.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domCountBeforeTaintedChecks);
+
+  // 已发送但删除失败（dispatchedQueueDeletes）同样阻止跨过 5min 过期及新增媒体/hasDomQueued 触发 DOM 全发
+  deleteAgentShouldFail = true;
+  const partialDelConv = 'conv-partial-del-guard';
+  const partialDelFirst = await postJson({
+    action: 'send-queued-messages',
+    conversationId: partialDelConv,
+    messageId: 'pm-pdel-1',
+    text: '已发待删项',
+    sendAll: false
+  });
+  deleteAgentShouldFail = false;
+  assert.equal(partialDelFirst.ok, false);
+  assert.equal(partialDelFirst.partialSuccess, true);
+  fakeClockNow += 10 * 60 * 1000; // 推进 +10min（超过旧 5min TTL）
+  liveServerPendingList = [
+    { id: 'pm-pdel-1', messageId: 'pm-pdel-1', source: 'agent_state', stepIndex: -1, text: '已发待删项' },
+    { id: 'pm-pdel-media', messageId: 'pm-pdel-media', source: 'agent_state', stepIndex: -1, text: '后加媒体项', hasMedia: true, images: [{ src: 'data:image/png;base64,AA==' }] }
+  ];
+  const partialDelBatchMedia = await postJson({
+    action: 'send-queued-messages',
+    conversationId: partialDelConv,
+    hasDomQueued: true,
+    messageIds: ['pm-pdel-1', 'pm-pdel-media']
+  });
+  assert.equal(partialDelBatchMedia.ok, false, '已发送但删除失败记录即使跨过 10 分钟且带媒体/hasDomQueued，也绝不得执行 DOM 全发');
+  assert.equal(partialDelBatchMedia.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domCountBeforeTaintedChecks);
+
+  // 4d-4. 单条请求与批量请求并发命中同一 dispatchKey 时共享在途锁，SendUserCascadeMessage 仅派发 1 次
+  const concurrentConv = 'conv-concurrent-lock';
+  liveServerPendingList = [
+    { id: 'pm-race-1', messageId: 'pm-race-1', source: 'agent_state', stepIndex: -1, text: '并发单条与批量同一排队项' }
+  ];
+  sendCascadeDelayMs = 35;
+  lsRpcLog.length = 0;
+  const [raceSingleRes, raceBatchRes] = await Promise.all([
+    postJson({
+      action: 'send-queued-messages',
+      conversationId: concurrentConv,
+      messageId: 'pm-race-1',
+      text: '并发单条与批量同一排队项',
+      sendAll: false
+    }),
+    postJson({
+      action: 'send-queued-messages',
+      conversationId: concurrentConv,
+      messageIds: ['pm-race-1'],
+      queuedItems: [{ messageId: 'pm-race-1', source: 'agent_state', domIndex: 0, text: '并发单条与批量同一排队项' }]
+    })
+  ]);
+  sendCascadeDelayMs = 0;
+  assert.equal(raceSingleRes.ok, true);
+  assert.equal(raceBatchRes.ok, true);
+  assert.equal(
+    lsRpcLog.filter((x) => x.method === 'SendUserCascadeMessage' && x.body?.cascadeId === concurrentConv).length,
+    1,
+    '单条与批量请求并发发送同一排队消息时 SendUserCascadeMessage 必须严格只执行 1 次'
+  );
+  assert.equal(
+    lsRpcLog.filter((x) => x.method === 'DeleteAgentMessage' && x.body?.messageId === 'pm-race-1').length,
+    1,
+    '共享在途锁下 DeleteAgentMessage 也只执行 1 次'
+  );
+
+  // 4e. /api/action send 幂等保护：① 成功重放（含跨 >60s TTL 与容量淘汰后响应丢失重试）均不二次执行；② 已派发后超时抛错（结果未知）同 clientActionId 重试被严格拦截，且跨 >60s 过期及容量淘汰后仍不放行；③ confirmedNotExecuted=true 允许同 ID 安全重试
   desktopSendCalls = 0;
   sendBehavior = 'ok';
   const send1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
@@ -32605,7 +32733,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   sendBehavior = 'timeout_after_dispatch';
   const sendTimeout1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
   assert.equal(sendTimeout1.ok, false);
-  // 推进时钟超过 60s TTL (+180s)，再制造 3 条新的未知超时（超过 maxUnknownSendActions=2 触发容量淘汰）与 4 条正常成功（超过 maxRecentOkSendActions=2）
+  // 推进时钟超过 60s TTL (+180s)，再制造 3 条新的未知超时（超过 maxUnknownSendActions=2 触发容量淘汰）与 4 条正常成功（同时超过 maxRecentOkSendActions=2 和 maxCompletedSendActions=2 触发成功缓存淘汰）
   fakeClockNow += 180_000;
   for (const extraUnknownId of ['act-timeout-2', 'act-timeout-3', 'act-timeout-4']) {
     await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraUnknownId, conversationId: 'conv-insight', text: '填充未知容量' });
@@ -32615,6 +32743,11 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
     await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraOkId, conversationId: 'conv-insight', text: '填充成功容量' });
   }
   const callsBeforeEvictedRetry = desktopSendCalls;
+  const sendOkPostEvictRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
+  assert.equal(sendOkPostEvictRetry.ok, true, '此前已成功发送但响应丢失的 clientActionId 即使跨过 60s TTL 与双重容量淘汰，重试仍应幂等返回成功');
+  assert.equal(sendOkPostEvictRetry.deduplicatedAction, true);
+  assert.equal(desktopSendCalls, callsBeforeEvictedRetry, '成功记录跨 TTL 及容量淘汰后同 clientActionId 重试绝不得再次执行 performAction');
+
   const sendTimeoutRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
   assert.equal(sendTimeoutRetry.ok, false, '即使跨过 60s TTL 且经历未知/成功双重容量淘汰，原超时未知 clientActionId 仍必须被永久拦截');
   assert.equal(sendTimeoutRetry.outcomeUnknown, true);
