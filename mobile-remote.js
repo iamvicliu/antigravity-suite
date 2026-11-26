@@ -17409,6 +17409,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const maxUnknownQueueSends = Number(options.maxUnknownQueueSends) > 0 ? Number(options.maxUnknownQueueSends) : 2048;
   const evictedUnknownQueueBloom = new Uint8Array(8192);
   const cascadesWithEvictedUnresolvedQueue = new Set();
+  const cascadesWithUnknownDomSend = new Set();
   const inflightQueueDispatches = new Map();
   const inflightDomQueueCascades = new Set();
   const parseCascadeFromQueueKey = (rawKey) => String(rawKey || '').split('::')[0].trim();
@@ -17416,21 +17417,22 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     .replace(/[\u200B-\u200D\u2060\u2066-\u2069\uFEFF]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  const bloomPositions = (rawKey) => {
+  const bloomPositions = (rawKey, bloom) => {
     const dig = crypto.createHash('sha256').update(String(rawKey || '')).digest();
+    const totalBits = bloom && bloom.length > 0 ? (bloom.length << 3) : 65536;
     return [
-      dig.readUInt16BE(0),
-      dig.readUInt16BE(2),
-      dig.readUInt16BE(4),
-      dig.readUInt16BE(6)
+      dig.readUInt16BE(0) % totalBits,
+      dig.readUInt16BE(2) % totalBits,
+      dig.readUInt16BE(4) % totalBits,
+      dig.readUInt16BE(6) % totalBits
     ];
   };
   const setBloomBits = (bloom, rawKey) => {
-    for (const bit of bloomPositions(rawKey)) {
+    for (const bit of bloomPositions(rawKey, bloom)) {
       bloom[bit >> 3] |= (1 << (bit & 7));
     }
   };
-  const testBloomBits = (bloom, rawKey) => bloomPositions(rawKey).every((bit) => (bloom[bit >> 3] & (1 << (bit & 7))) !== 0);
+  const testBloomBits = (bloom, rawKey) => bloomPositions(rawKey, bloom).every((bit) => (bloom[bit >> 3] & (1 << (bit & 7))) !== 0);
   const markUnknownQueueSend = (key, errMsg = '', text = '') => {
     if (!key) return;
     if (unknownDispatchedQueueSends.has(key)) unknownDispatchedQueueSends.delete(key);
@@ -17470,7 +17472,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const cleanCid = String(cid || '').trim();
     const msgIds = new Set();
     const normTexts = new Set();
-    let hasNonMsgKey = false;
+    let hasNonMsgKey = cleanCid ? cascadesWithUnknownDomSend.has(cleanCid) : false;
     const hasEvicted = cleanCid ? cascadesWithEvictedUnresolvedQueue.has(cleanCid) : false;
     if (cleanCid) {
       const prefix = `${cleanCid}::`;
@@ -17504,15 +17506,51 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const maxRecentOkSendActions = Number(options.maxRecentOkSendActions) > 0 ? Number(options.maxRecentOkSendActions) : 300;
   const completedSendActionMeta = new Map();
   const maxCompletedSendActions = Number(options.maxCompletedSendActions) > 0 ? Number(options.maxCompletedSendActions) : 4096;
-  const evictedCompletedSendBloom = new Uint8Array(8192);
+  const completedBloomBytes = Number(options.completedBloomBytes) > 0 ? Number(options.completedBloomBytes) : 8192;
+  const evictedCompletedSendBloom = new Uint8Array(completedBloomBytes);
+  const completedSendSpillPath = path.join(
+    os.tmpdir(),
+    `ag-completed-sends-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.ndjson`
+  );
+  const appendEvictedCompletedSendExact = (key, rec) => {
+    try {
+      const line = `${JSON.stringify({
+        k: String(key || ''),
+        cid: String(rec?.conversationId || ''),
+        ccid: String(rec?.createdConversationId || '')
+      })}\n`;
+      fs.appendFileSync(completedSendSpillPath, line, 'utf8');
+    } catch {}
+  };
+  const lookupEvictedCompletedSendExact = (key) => {
+    try {
+      if (!fs.existsSync(completedSendSpillPath)) return null;
+      const lines = fs.readFileSync(completedSendSpillPath, 'utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const ln = lines[i].trim();
+        if (!ln) continue;
+        const parsed = JSON.parse(ln);
+        if (parsed && parsed.k === key) {
+          return {
+            evicted: true,
+            conversationId: String(parsed.cid || ''),
+            createdConversationId: String(parsed.ccid || '')
+          };
+        }
+      }
+    } catch {}
+    return null;
+  };
   const markCompletedSendAction = (key, meta = {}) => {
     if (!key) return;
     if (completedSendActionMeta.has(key)) completedSendActionMeta.delete(key);
     while (completedSendActionMeta.size >= maxCompletedSendActions) {
-      const oldest = completedSendActionMeta.keys().next().value;
-      if (oldest === undefined) break;
-      setBloomBits(evictedCompletedSendBloom, oldest);
-      completedSendActionMeta.delete(oldest);
+      const oldestEntry = completedSendActionMeta.entries().next().value;
+      if (!oldestEntry) break;
+      const [oldestKey, oldestRec] = oldestEntry;
+      setBloomBits(evictedCompletedSendBloom, oldestKey);
+      appendEvictedCompletedSendExact(oldestKey, oldestRec);
+      completedSendActionMeta.delete(oldestKey);
     }
     completedSendActionMeta.set(key, {
       at: getSendClockNow(),
@@ -17524,10 +17562,11 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (!key) return null;
     const rec = completedSendActionMeta.get(key);
     if (rec) return rec;
-    if (testBloomBits(evictedCompletedSendBloom, key)) {
-      return { evicted: true, conversationId: '', createdConversationId: '' };
+    // 布隆位图仅作为负向预过滤器避免常规新消息发生磁盘读取；命中时必须经精确归档键逐字比对通过才可返回已完成，彻底杜绝布隆假阳性静默吞掉合法新消息
+    if (!testBloomBits(evictedCompletedSendBloom, key)) {
+      return null;
     }
-    return null;
+    return lookupEvictedCompletedSendExact(key);
   };
   const unknownSendActionMap = new Map();
   const maxUnknownSendActions = Number(options.maxUnknownSendActions) > 0 ? Number(options.maxUnknownSendActions) : 2048;
@@ -19552,6 +19591,21 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 }
               }
             }
+            const recordDomSendUnknownIfNeeded = (confirmedNotExec) => {
+              if (domAct !== 'send-queued-dom' || confirmedNotExec) return;
+              if (sendAllFlag !== false) {
+                if (cascadeId) cascadesWithUnknownDomSend.add(cascadeId);
+              } else {
+                const domUnknownKey = messageId
+                  ? `${cascadeId}::msg:${messageId}`
+                  : `${cascadeId}::dom:${optDomMessageId || (resolvedDomIdx !== undefined ? resolvedDomIdx : 'single')}`;
+                markUnknownQueueSend(
+                  domUnknownKey,
+                  '此前桌面端队列立即发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息',
+                  resolvedText
+                );
+              }
+            };
             inflightDomQueueCascades.add(cascadeId);
             let domRes = null;
             try {
@@ -19568,14 +19622,30 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 text: resolvedText
               });
             } catch (domErr) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domErr?.message || '桌面端队列操作失败' }));
+              const errConfirmedNotExec = Boolean(domErr?.confirmedNotExecuted === true);
+              recordDomSendUnknownIfNeeded(errConfirmedNotExec);
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                ...(domAct === 'send-queued-dom'
+                  ? (errConfirmedNotExec ? { confirmedNotExecuted: true } : { outcomeUnknown: true })
+                  : {}),
+                error: domErr?.message || '桌面端队列操作失败'
+              }));
               return false;
             } finally {
               inflightDomQueueCascades.delete(cascadeId);
             }
             if (!domRes?.ok) {
+              const resConfirmedNotExec = Boolean(
+                domRes?.confirmedNotExecuted === true ||
+                domRes?.actionResult?.confirmedNotExecuted === true
+              );
+              recordDomSendUnknownIfNeeded(resConfirmedNotExec);
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                 ok: false,
+                ...(domAct === 'send-queued-dom'
+                  ? (resConfirmedNotExec ? { confirmedNotExecuted: true } : { outcomeUnknown: true })
+                  : {}),
                 ...(domRes?.mediaRecoveryUnavailable || domRes?.actionResult?.mediaRecoveryUnavailable ? { mediaRecoveryUnavailable: true } : {}),
                 error: domRes?.error || domRes?.actionResult?.error || '电脑端队列操作未能生效，请重试'
               }));
@@ -19626,6 +19696,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }));
           };
           const sendSingleQueuedWithCheckedDelete = async ({ dispatchKey, text, hasMedia, deleteMethod, deleteBody, dispatchMeta }) => {
+            if (inflightDomQueueCascades.has(cascadeId) || cascadesWithUnknownDomSend.has(cascadeId)) {
+              return {
+                ok: false,
+                sendFailed: true,
+                confirmedNotExecuted: false,
+                outcomeUnknown: true,
+                error: inflightDomQueueCascades.has(cascadeId)
+                  ? '当前会话存在正在执行的桌面端队列发送操作，已阻止并发直发以避免重复发送'
+                  : '当前会话此前桌面端队列发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息'
+              };
+            }
             if (dispatchKey && inflightQueueDispatches.has(dispatchKey)) {
               const sharedOut = await inflightQueueDispatches.get(dispatchKey);
               if (sharedOut?.ok) {
@@ -20135,6 +20216,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             // 1) 若全部待发项均为具备真实服务端 messageId 的纯文本排队消息，优先逐条走与单条 → 一致的 SendUserCascadeMessage + DeleteAgentMessage 直发（支持隔离后台会话、无需切换桌面窗口）；
             // 2) 含媒体或仅携带 messageIds/hasDomQueued 时安全回退桌面端 send-queued-dom(sendAll:true)；
             // 3) 若返回 null/超时/未知错误，严格 fail-closed 严禁补发！
+            if (inflightDomQueueCascades.has(cascadeId) || cascadesWithUnknownDomSend.has(cascadeId)) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: inflightDomQueueCascades.has(cascadeId)
+                  ? '当前会话存在正在执行的桌面端队列发送操作，已阻止并发全发以避免重复发送'
+                  : '当前会话此前桌面端队列发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息'
+              }));
+              return;
+            }
             const sendAllOutcome = await callLsRpcDetailed('SendAllQueuedMessages', { cascadeId }, rpcTimeoutMs);
             if (sendAllOutcome.ok) {
               rpcRes = sendAllOutcome.result;

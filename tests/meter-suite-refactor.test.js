@@ -32410,6 +32410,8 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   let sendAllShouldHang = false;
   let sendCascadeShouldHang = false;
   let sendCascadeDelayMs = 0;
+  let domSendDelayMs = 0;
+  let domSendBehavior = 'ok';
   let deleteAgentShouldFail = false;
   let pendingFetchShouldThrow = false;
   let sendBehavior = 'ok';
@@ -32424,6 +32426,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
       now: () => fakeClockNow,
       maxRecentOkSendActions: 2,
       maxCompletedSendActions: 2,
+      completedBloomBytes: 1,
       maxUnknownSendActions: 2,
       fetchPendingAgentMessages: async () => {
         if (pendingFetchShouldThrow) throw new Error('StreamAgentStateUpdates transient failure');
@@ -32443,6 +32446,15 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
       performAction: async (p) => {
         if (p.action === 'send-queued-dom') {
           domQueuedActions.push(p);
+          if (domSendDelayMs > 0) {
+            await new Promise((r) => setTimeout(r, domSendDelayMs));
+          }
+          if (domSendBehavior === 'timeout_after_click') {
+            throw new Error('CDP Runtime.evaluate timed out after sendBtn.click()');
+          }
+          if (domSendBehavior === 'confirmed_not_executed') {
+            return { ok: false, confirmedNotExecuted: true, error: '当前没有排队中的消息' };
+          }
           return { ok: true, actionResult: { ok: true } };
         }
         if (p.action === 'send') {
@@ -32720,6 +32732,90 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
     '共享在途锁下 DeleteAgentMessage 也只执行 1 次'
   );
 
+  // 4d-5. 双向在途互斥 + DOM 回退结果未知防重：
+  // ① 先启动 DOM 全发（在途）时，并发到达的单条 RPC 直发必须被互斥拦截（SendUserCascadeMessage 调用 0 次）；
+  // ② DOM 回退 performAction 在点击后抛超时异常（结果未知）时保留未决状态，再次触发 DOM 或 RPC 发送同一会话均被拦截，仅 confirmedNotExecuted=true 允许安全重试。
+  const domMutexConv = 'conv-dom-rpc-mutex';
+  liveServerPendingList = [
+    { id: 'pm-dm-1', messageId: 'pm-dm-1', source: 'agent_state', stepIndex: -1, text: '纯文本项' },
+    { id: 'pm-dm-2', messageId: 'pm-dm-2', source: 'agent_state', stepIndex: -1, text: '媒体项触发DOM全发', hasMedia: true, images: [{ src: 'data:image/png;base64,AA==' }] }
+  ];
+  domSendDelayMs = 50;
+  lsRpcLog.length = 0;
+  const domAllPromise = postJson({
+    action: 'send-queued-messages',
+    conversationId: domMutexConv,
+    messageIds: ['pm-dm-1', 'pm-dm-2']
+  });
+  await new Promise((r) => setTimeout(r, 12));
+  const rpcDuringDomRes = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domMutexConv,
+    messageId: 'pm-dm-1',
+    text: '纯文本项',
+    sendAll: false
+  });
+  const domAllFinished = await domAllPromise;
+  domSendDelayMs = 0;
+  assert.equal(domAllFinished.ok, true);
+  assert.equal(rpcDuringDomRes.ok, false, 'DOM 全发在途期间并发单条 RPC 请求必须被互斥拦截');
+  assert.equal(rpcDuringDomRes.outcomeUnknown, true);
+  assert.equal(
+    lsRpcLog.filter((x) => x.method === 'SendUserCascadeMessage' && x.body?.cascadeId === domMutexConv).length,
+    0,
+    'DOM 全发在途期间绝不得并发调用 SendUserCascadeMessage 重复发送'
+  );
+
+  const domUnknownConv = 'conv-dom-timeout-guard';
+  const domPreCheckConv = 'conv-dom-precheck-retry';
+  domSendBehavior = 'confirmed_not_executed';
+  const domPreFail = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domPreCheckConv,
+    messageId: 'pm-dom-pre-1',
+    text: '前置未点击',
+    hasMedia: true,
+    sendAll: false
+  });
+  assert.equal(domPreFail.ok, false);
+  assert.equal(domPreFail.confirmedNotExecuted, true);
+  domSendBehavior = 'ok';
+  const domPreRetry = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domPreCheckConv,
+    messageId: 'pm-dom-pre-1',
+    text: '前置未点击',
+    hasMedia: true,
+    sendAll: false
+  });
+  assert.equal(domPreRetry.ok, true, 'DOM 确认未点击（confirmedNotExecuted=true）时允许安全重试');
+
+  domSendBehavior = 'timeout_after_click';
+  const domClicksBeforeTimeout = domQueuedActions.length;
+  const domTimeoutFirst = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domUnknownConv,
+    messageId: 'pm-dom-to-1',
+    text: '桌面点击后超时',
+    hasMedia: true,
+    sendAll: false
+  });
+  domSendBehavior = 'ok';
+  assert.equal(domTimeoutFirst.ok, false);
+  assert.equal(domTimeoutFirst.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domClicksBeforeTimeout + 1);
+  const domTimeoutRetry = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domUnknownConv,
+    messageId: 'pm-dom-to-1',
+    text: '桌面点击后超时',
+    hasMedia: true,
+    sendAll: false
+  });
+  assert.equal(domTimeoutRetry.ok, false, 'DOM 回退已派发后超时结果未知时，重试同一排队项必须拦截');
+  assert.equal(domTimeoutRetry.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domClicksBeforeTimeout + 1, '拦截后绝不得第二次触发 send-queued-dom');
+
   // 4e. /api/action send 幂等保护：① 成功重放（含跨 >60s TTL 与容量淘汰后响应丢失重试）均不二次执行；② 已派发后超时抛错（结果未知）同 clientActionId 重试被严格拦截，且跨 >60s 过期及容量淘汰后仍不放行；③ confirmedNotExecuted=true 允许同 ID 安全重试
   desktopSendCalls = 0;
   sendBehavior = 'ok';
@@ -32748,11 +32844,38 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   assert.equal(sendOkPostEvictRetry.deduplicatedAction, true);
   assert.equal(desktopSendCalls, callsBeforeEvictedRetry, '成功记录跨 TTL 及容量淘汰后同 clientActionId 重试绝不得再次执行 performAction');
 
+  // 确定性布隆假阳性验证：completedBloomBytes=1（8 位）下精确搜索与已淘汰成功键位点 100% 重合的全新 clientActionId，证明新消息不会被静默判为已完成丢弃
+  const cryptoMod = require('crypto');
+  const evictedOkIds = ['act-idem-1', 'act-ok-fill-1', 'act-ok-fill-2'];
+  let simulatedBloomByte = 0;
+  const bloomBits8 = (cid) => {
+    const dig = cryptoMod.createHash('sha256').update(`cli-1::send::${cid}`).digest();
+    return [dig.readUInt16BE(0) % 8, dig.readUInt16BE(2) % 8, dig.readUInt16BE(4) % 8, dig.readUInt16BE(6) % 8];
+  };
+  for (const eid of evictedOkIds) {
+    for (const b of bloomBits8(eid)) simulatedBloomByte |= (1 << b);
+  }
+  let collidingNewActionId = '';
+  for (let n = 0; n < 5000; n++) {
+    const cand = `act-bloom-fp-new-${n}`;
+    if (bloomBits8(cand).every((b) => (simulatedBloomByte & (1 << b)) !== 0)) {
+      collidingNewActionId = cand;
+      break;
+    }
+  }
+  assert.ok(collidingNewActionId, '应确定性构造出命中已淘汰布隆位点的全新 clientActionId');
+  const callsBeforeBloomFp = desktopSendCalls;
+  const bloomFpRes = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: collidingNewActionId, conversationId: 'conv-insight', text: '合法全新消息绝不可因布隆假阳性丢失' });
+  assert.equal(bloomFpRes.ok, true);
+  assert.notEqual(bloomFpRes.deduplicatedAction, true, '命中布隆假阳性的全新 clientActionId 不得被误标为 deduplicatedAction');
+  assert.equal(desktopSendCalls, callsBeforeBloomFp + 1, '命中布隆假阳性的合法新消息必须真实执行 performAction 而绝不被静默丢弃');
+
+  const callsBeforeTimeoutEvictedRetry = desktopSendCalls;
   const sendTimeoutRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
   assert.equal(sendTimeoutRetry.ok, false, '即使跨过 60s TTL 且经历未知/成功双重容量淘汰，原超时未知 clientActionId 仍必须被永久拦截');
   assert.equal(sendTimeoutRetry.outcomeUnknown, true);
   assert.equal(sendTimeoutRetry.deduplicatedUnknownRetry, true);
-  assert.equal(desktopSendCalls, callsBeforeEvictedRetry, '过期及容量淘汰后重试未知 clientActionId 绝不得再次调用 performAction');
+  assert.equal(desktopSendCalls, callsBeforeTimeoutEvictedRetry, '过期及容量淘汰后重试未知 clientActionId 绝不得再次调用 performAction');
 
   sendBehavior = 'confirmed_not_executed';
   const sendPreFail = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-insight', text: '首次未填入' });
@@ -32760,7 +32883,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   sendBehavior = 'ok';
   const sendPreRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-insight', text: '首次未填入' });
   assert.equal(sendPreRetry.ok, true, '明确 confirmedNotExecuted=true 时允许同一 clientActionId 重试成功');
-  assert.equal(desktopSendCalls, callsBeforeEvictedRetry + 2);
+  assert.equal(desktopSendCalls, callsBeforeTimeoutEvictedRetry + 2);
 
   // 5. 客户端 sendInput 在 busy 状态发送含 URL 双空格文本时，与快照归一化单空格排队项精确匹配，不追加重复 optimistic 排队项
   const appHtml = remoteMod.buildMobileAppHtml();
