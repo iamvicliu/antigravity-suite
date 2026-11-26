@@ -1353,6 +1353,16 @@ async function collect(origin, id, options = {}) {
         const gmTimeMs = parseTrajectoryTimestampMs(latestModel?.chatStartMetadata?.createdAt || latestMetaRow?.createdAt);
         const gmSig = extractUsageTriplet(latestModel?.usage || latestMetaRow?.usage);
         const gmMaxStep = rawGmStep >= 0 ? rawGmStep : resolveUniqueStepBySig(gmSig);
+        let lastInlineUsageIdx = -1, plannerTurnCount = 0;
+        if (!largeTrajectoryFallbackReason) {
+          for (let sIdx = Math.max(0, lastCheckpointStepIdx + 1); sIdx < steps.length; sIdx++) {
+            const st = steps[sIdx], meta = st?.metadata || st, mu = meta?.modelUsage || st?.modelUsage || st?.usage || null;
+            const sm = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
+            if (extractUsageTriplet(mu) && !isCollectorShadowOrImageModel(sm)) { lastInlineUsageIdx = sIdx; plannerTurnCount += 1; continue; }
+            const sType = String(st?.type || st?.role || (st?.plannerResponse ? 'PLANNER_RESPONSE' : '')).toUpperCase();
+            if (!isCheckpointTrajectoryStep(st) && (sType.includes('PLANNER') || sType.includes('MODEL') || sType.includes('ASSISTANT') || Boolean(st?.plannerResponse))) plannerTurnCount += 1;
+          }
+        }
         let laterUsageIdx = -1;
         if (!largeTrajectoryFallbackReason && gmMaxStep >= 0) {
           for (let sIdx = gmMaxStep + 1; sIdx < steps.length; sIdx++) {
@@ -1367,8 +1377,11 @@ async function collect(origin, id, options = {}) {
               laterUsageIdx = gmMaxStep;
             }
           }
+        } else if (!largeTrajectoryFallbackReason && rawGmStep < 0 && gmMaxStep < 0 && lastInlineUsageIdx >= 0) {
+          // 无步骤索引且用量签名归属不唯一（如两轮回复签名相同）时，回退至最新步骤切片重新计算并清空不可证旧速度
+          laterUsageIdx = lastInlineUsageIdx;
         }
-        if (laterUsageIdx >= 0 && (laterUsageIdx > gmMaxStep || (laterUsageIdx === gmMaxStep && gmMaxStep < steps.length - 1))) {
+        if (laterUsageIdx >= 0 && (gmMaxStep < 0 || laterUsageIdx > gmMaxStep || (laterUsageIdx === gmMaxStep && gmMaxStep < steps.length - 1))) {
           const ev = evaluatePostCheckpointSlice(steps.slice(laterUsageIdx), false);
           latest = {
             ...latest,
@@ -1378,16 +1391,19 @@ async function collect(origin, id, options = {}) {
             cacheHitRate: ev.postHitRate, output: ev.postOutput, speed: ev.postSpeed,
             speedStepIndex: ev.postSpeed && ev.postSpeedStepOffset >= 0 ? (laterUsageIdx + ev.postSpeedStepOffset) : -1,
             speedCreatedAtMs: ev.postSpeed ? ev.postSpeedCreatedMs : 0, speedUsageSignature: ev.postSpeed ? ev.postSpeedUsageSig : '',
-            metaMaxStepIndex: gmMaxStep, exactUsageStepIndex: laterUsageIdx + ev.exactRelIdx,
+            metaMaxStepIndex: rawGmStep, exactUsageStepIndex: laterUsageIdx + ev.exactRelIdx,
             percent: effBudget > 0 && !latest.exceeded ? (ev.postUsed / effBudget) * 100 : latest.percent,
             lastCheckpointStepIdx, stepCount: steps.length, updatedAtMs: scannedNow
           };
         } else {
+          const unprovenUnindexedSpeed = !largeTrajectoryFallbackReason && rawGmStep < 0 && gmMaxStep < 0 && (lastCheckpointStepIdx >= 0 || plannerTurnCount > 1);
+          const keepSpeed = Boolean(latest.speed && !unprovenUnindexedSpeed);
           latest = {
             ...latest, budget: effBudget, runtimeBudget: resolvedLimits.runtimeBudget, physicalMaxTokens: resolvedLimits.physicalMaxTokens,
             percent: (latest.actual != null && effBudget > 0 && !latest.exceeded) ? (latest.actual / effBudget) * 100 : latest.percent,
-            speedStepIndex: latest.speed ? gmMaxStep : -1, speedCreatedAtMs: latest.speed ? gmTimeMs : 0, speedUsageSignature: latest.speed ? gmSig : '',
-            metaMaxStepIndex: gmMaxStep, exactUsageStepIndex: gmMaxStep, lastCheckpointStepIdx, stepCount: largeTrajectoryFallbackReason ? Number(session.steps || 0) : steps.length, updatedAtMs: scannedNow
+            speed: keepSpeed ? latest.speed : null,
+            speedStepIndex: keepSpeed ? gmMaxStep : -1, speedCreatedAtMs: keepSpeed ? gmTimeMs : 0, speedUsageSignature: keepSpeed ? gmSig : '',
+            metaMaxStepIndex: rawGmStep, exactUsageStepIndex: gmMaxStep, lastCheckpointStepIdx, stepCount: largeTrajectoryFallbackReason ? Number(session.steps || 0) : steps.length, updatedAtMs: scannedNow
           };
         }
       }
