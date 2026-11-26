@@ -835,9 +835,20 @@ function createWebPushManager(options = {}) {
 
       const formatted = formatPushNotificationEvent(c, eventType, { showPreview: st.prefs.showPreview !== false });
       const dedupKey = `${eventType}:${c.id}`;
+      const updAlias = nextUpdatedAt > 0 ? `u${Math.floor(nextUpdatedAt)}` : '';
       const hasExplicitTurn = Boolean(String(c.turnSig || '').trim() || (Number.isInteger(Number(c.stepCount)) && Number(c.stepCount) > 0));
       let sentSet = lastTurnKeySent.get(dedupKey);
-      if (formatted.turnKey && sentSet && sentSet.has(formatted.turnKey)) continue;
+      if (formatted.turnKey && sentSet) {
+        if (sentSet.has(formatted.turnKey)) continue;
+        if (updAlias && formatted.turnKey !== updAlias && sentSet.has(`unstepped:${updAlias}`)) {
+          sentSet.add(formatted.turnKey);
+          continue;
+        }
+        if (updAlias && formatted.turnKey === updAlias && sentSet.has(`stepped:${updAlias}`)) {
+          sentSet.add(formatted.turnKey);
+          continue;
+        }
+      }
       const debounceKey = (hasExplicitTurn && formatted.turnKey) ? `${dedupKey}:${formatted.turnKey}` : dedupKey;
       const lastAt = lastEventSentAt.get(debounceKey);
       if (debounceMs > 0 && lastAt !== undefined && (nowMs - lastAt) < debounceMs) continue;
@@ -848,9 +859,13 @@ function createWebPushManager(options = {}) {
           lastTurnKeySent.set(dedupKey, sentSet);
         }
         sentSet.add(formatted.turnKey);
-        if (sentSet.size > 16) {
+        if (updAlias) {
+          sentSet.add(formatted.turnKey === updAlias ? `unstepped:${updAlias}` : `stepped:${updAlias}`);
+        }
+        while (sentSet.size > 32) {
           const oldestKey = sentSet.values().next().value;
-          if (oldestKey !== undefined) sentSet.delete(oldestKey);
+          if (oldestKey === undefined) break;
+          sentSet.delete(oldestKey);
         }
       }
 

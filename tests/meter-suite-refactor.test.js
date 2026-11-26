@@ -32095,6 +32095,111 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
       assert.equal(poppedNotifs.length, 1, '两轮分页消息数相同但 updatedAt 不同时第 2 轮本地通知必须发送');
       assert.equal(poppedNotifs[0].tag, 'ag-completed-act-nosc-u9500');
       assert.ok(poppedNotifs[0].body.includes('第二轮全新回复摘要内容'));
+
+      // 6a. 首次完成时全部 RPC 失败发送 u5000，随后同轮 (updatedAt=5000) RPC 恢复升级为 s90 并发生 running->idle 抖动：双端关联去重绝不重发
+      mgr.resetForTest();
+      mgr.addSubscription(sub, { label: 'MacPro' });
+      deliveredBodies.length = 0;
+      poppedNotifs.length = 0;
+      mgr.observeCatalogItems([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'running', updatedAt: 4500 }], 1000);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'running', updatedAt: 4500 }]);
+      mgr.observeCatalogItems([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'idle', completedUnread: true, turnSig: 'u5000', updatedAt: 5000 }], 3000);
+      await new Promise((r) => setTimeout(r, 30));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'idle', completedUnread: true, turnSig: 'u5000', updatedAt: 5000 }]);
+      assert.equal(deliveredBodies.length, 1);
+      assert.equal(deliveredBodies[0].tag, 'ag-completed-recov-c-u5000');
+      const prevPopLen = poppedNotifs.length;
+      mgr.observeCatalogItems([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'running', stepCount: 90, turnSig: 's90', updatedAt: 5000 }], 5000);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'running', stepCount: 90, turnSig: 's90', updatedAt: 5000 }]);
+      mgr.observeCatalogItems([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 90, turnSig: 's90', updatedAt: 5000 }], 7000);
+      await new Promise((r) => setTimeout(r, 30));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 90, turnSig: 's90', updatedAt: 5000 }]);
+      assert.equal(deliveredBodies.length, 1, '同轮从 u5000 恢复升级为 s90 后抖动时 Web Push 绝不重发');
+      assert.equal(poppedNotifs.length, prevPopLen, '同轮从 u5000 恢复升级为 s90 后抖动时本地通知绝不重发');
+
+      // 6b. 会话目录存储通道：新 updatedAt 缺失 stepCount 时不得继承上一轮 prev.stepCount
+      const catDir = path.join(tmpDir, 'cat-store');
+      fs.mkdirSync(catDir, { recursive: true });
+      const catStore = remoteMod.createSessionCatalogStore();
+      let catTrajMode = 'with-step';
+      const tMs1 = 1795700010000;
+      const tMs2 = 1795700020000;
+      const catOpts = {
+        stateDir: catDir,
+        configDir: catDir,
+        homeDir: tmpDir,
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetAllCascadeTrajectories') {
+              return catTrajMode === 'with-step'
+                ? { trajectorySummaries: { 'cat-c1': { summary: '目录步数测试', stepCount: 25, status: 'CORTEX_STEP_STATUS_DONE', lastModifiedTime: new Date(tMs1).toISOString() } } }
+                : { trajectorySummaries: { 'cat-c1': { summary: '目录步数测试', status: 'CORTEX_STEP_STATUS_DONE', lastModifiedTime: new Date(tMs2).toISOString() } } };
+            }
+            return {};
+          }
+        })
+      };
+      const catSnap1 = await catStore.enrichSnapshot({ ok: true, sessionId: 'other', conversations: [{ id: 'cat-c1', title: '目录步数测试', status: 'idle', updatedAt: tMs1 }] }, { ...catOpts, bypassCache: true });
+      assert.equal(catSnap1.conversations.find((c) => c.id === 'cat-c1')?.stepCount, 25);
+      catTrajMode = 'no-step-new-upd';
+      const catSnap2 = await catStore.enrichSnapshot({ ok: true, sessionId: 'other', conversations: [{ id: 'cat-c1', title: '目录步数测试', status: 'idle', updatedAt: tMs2 }] }, { ...catOpts, bypassCache: true });
+      assert.equal(catSnap2.conversations.find((c) => c.id === 'cat-c1')?.stepCount, undefined, '跨轮新 updatedAt 缺失步数时目录存储不得继承上一轮旧 stepCount=25');
+
+      // 6c. 活动会话进入无确认卡且同轮命令已执行后的无文本外部等待时，不得把同轮早先助手回复缓存成当前等待摘要
+      mgr.resetForTest();
+      mgr.addSubscription(sub, { label: 'iMac' });
+      deliveredBodies.length = 0;
+      poppedNotifs.length = 0;
+      let actWaitPhase = 'run';
+      const actWaitHandler = remoteMod.createRemoteHttpHandler(
+        { enabled: true, port: 18765, token: 'tok48w', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+        {
+          webPushManager: mgr,
+          fetchSnapshot: async () => ({
+            ok: true,
+            sessionId: 'act-wait-gate',
+            conversations: [{
+              id: 'act-wait-gate', title: '活跃会话外部等待', projectName: 'suite',
+              status: actWaitPhase === 'run' ? 'running' : 'waiting',
+              completedUnread: false, stepCount: actWaitPhase === 'run' ? 4 : 6, updatedAt: actWaitPhase === 'run' ? 1000 : 2000
+            }],
+            projects: [],
+            pendingApprovals: [],
+            pendingPrompts: [],
+            messages: [{ role: 'user', text: '部署检查' }, { role: 'assistant', text: '我先运行预检脚本看看输出。' }]
+          }),
+          callLanguageServer: async (method) => {
+            if (method === 'GetCascadeTrajectorySteps') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '部署检查' }] } },
+                  { plannerResponse: { response: '我先运行预检脚本看看输出。', toolCalls: [{ name: 'run_command', argumentsJson: '{"CommandLine":"./check.sh"}' }] } },
+                  { runCommand: { commandLine: './check.sh', exitCode: 0, status: 'CORTEX_STEP_STATUS_DONE' } },
+                  { plannerResponse: { thinking: '等待外部审批门禁' } },
+                  { externalGate: { status: 'WAITING' } }
+                ]
+              };
+            }
+            return {};
+          }
+        }
+      );
+      const callActWaitSnap = () => new Promise((resolve) => {
+        const chunks = [];
+        actWaitHandler(
+          { method: 'GET', url: '/api/snapshot?token=tok48w', headers: { host: '127.0.0.1:18765' }, socket: { remoteAddress: '127.0.0.1' }, on(ev, cb) { if (ev === 'end') cb(); }, destroy() {} },
+          { setHeader() {}, getHeader: () => undefined, writeHead() {}, end(b) { if (b) chunks.push(Buffer.from(b)); resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } }
+        );
+      });
+      const awBoot = await callActWaitSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(awBoot.conversations);
+      actWaitPhase = 'wait';
+      const awWait = await callActWaitSnap();
+      await new Promise((r) => setTimeout(r, 40));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(awWait.conversations);
+      assert.equal(awWait.conversations[0]?.waitingSummary, undefined, '活跃会话无待确认卡时必须经末尾步骤核实，不得把早先已执行命令前的回复当成等待摘要');
+      assert.ok(!deliveredBodies[0]?.body.includes('我先运行预检脚本看看输出'), 'Web Push 不得误发活动会话同轮早先助手回复作为等待摘要');
+      assert.ok(!poppedNotifs[0]?.body.includes('我先运行预检脚本看看输出'), '本地通知不得误发活动会话同轮早先助手回复作为等待摘要');
     } finally {
       for (const t of timers) clearTimeout(t);
       timers.clear();

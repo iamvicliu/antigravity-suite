@@ -2989,6 +2989,10 @@ function createSessionCatalogStore() {
         projectNameMap.set(projectId, projectName);
       }
 
+      const liveStepCount = Math.max(0, Number(t?.stepCount ?? sc?.stepCount ?? 0) || 0);
+      const prevSameTurnStep = (prev && Number(prev.stepCount) > 0 && updatedAt > 0 && Number(prev.updatedAt) === updatedAt)
+        ? Math.max(0, Number(prev.stepCount) || 0)
+        : 0;
       store.map.set(id, {
         id,
         title: title.slice(0, 100),
@@ -3000,7 +3004,7 @@ function createSessionCatalogStore() {
         lastViewedAt: viewMs,
         status,
         statusLabel: statusToLabel(status),
-        stepCount: Math.max(0, Number(t?.stepCount ?? prev?.stepCount ?? 0) || 0)
+        stepCount: liveStepCount > 0 ? liveStepCount : prevSameTurnStep
       });
     }
 
@@ -13401,17 +13405,32 @@ function buildMobileAppHtml() {
         if (!eventType) continue;
         const fmt = formatClientNotification(c, eventType, showPreview);
         const dedupKey = eventType + ':' + c.id;
+        const updAlias = curUpdatedAt > 0 ? ('u' + Math.floor(curUpdatedAt)) : '';
         let sentSet = clientSentNotifyTurnKeys.get(dedupKey);
-        if (fmt.turnKey && sentSet && sentSet.has(fmt.turnKey)) continue;
+        if (fmt.turnKey && sentSet) {
+          if (sentSet.has(fmt.turnKey)) continue;
+          if (updAlias && fmt.turnKey !== updAlias && sentSet.has('unstepped:' + updAlias)) {
+            sentSet.add(fmt.turnKey);
+            continue;
+          }
+          if (updAlias && fmt.turnKey === updAlias && sentSet.has('stepped:' + updAlias)) {
+            sentSet.add(fmt.turnKey);
+            continue;
+          }
+        }
         if (fmt.turnKey) {
           if (!sentSet) {
             sentSet = new Set();
             clientSentNotifyTurnKeys.set(dedupKey, sentSet);
           }
           sentSet.add(fmt.turnKey);
-          if (sentSet.size > 16) {
+          if (updAlias) {
+            sentSet.add(fmt.turnKey === updAlias ? ('unstepped:' + updAlias) : ('stepped:' + updAlias));
+          }
+          while (sentSet.size > 32) {
             const oldestK = sentSet.values().next().value;
-            if (oldestK !== undefined) sentSet.delete(oldestK);
+            if (oldestK === undefined) break;
+            sentSet.delete(oldestK);
           }
         }
         showLocalSystemNotification(fmt.title, fmt.body, c.id, fmt.tag);
@@ -17649,6 +17668,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (cached.status !== (c.status || '')) return false;
     const curStep = resolveConfirmedStepCount(c);
     const curUpd = Number(c.updatedAt) || 0;
+    if (curUpd > 0 && cached.updatedAt > 0 && cached.updatedAt !== curUpd) return false;
     if (curStep > 0) return cached.stepCount === curStep;
     if (curUpd > 0) return cached.updatedAt === curUpd;
     return false;
@@ -17665,6 +17685,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const activeSid = String(activeSnap?.sessionId || activeSnap?.activeConversationId || '').trim();
     if (activeSnap && activeSnap.ok !== false && activeSid && activeSid !== '__new__') {
       const activeConv = convList.find((c) => c && c.id === activeSid);
+      const isActiveWaiting = activeConv?.status === 'waiting';
       const replyPrev = extractReplyPreviewFromMessages(activeSnap.messages);
       let waitPrev = '';
       const approvals = Array.isArray(activeSnap.pendingApprovals) ? activeSnap.pendingApprovals : [];
@@ -17677,16 +17698,16 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const pp = prompts[0] || {};
         const rawPp = pp.question || pp.prompt || pp.title || pp.text || '';
         waitPrev = sanitizeNotificationPreview(rawPp, 150, 420);
-      } else if (activeConv?.status === 'waiting') {
-        waitPrev = replyPrev;
       }
       const stepCnt = Math.max(0, Number(activeConv?.stepCount) || 0);
       const curUpd = Math.max(0, Number(activeConv?.updatedAt) || 0);
       const explicitSig = String(activeConv?.turnSig || '').trim();
       const activeTurnSig = explicitSig || (stepCnt > 0 ? `s${stepCnt}` : (curUpd > 0 ? `u${Math.floor(curUpd)}` : ''));
-      if ((replyPrev || waitPrev) && (stepCnt > 0 || curUpd > 0)) {
+      const canCacheActiveSnap = isActiveWaiting ? Boolean(waitPrev) : Boolean(replyPrev);
+      if (canCacheActiveSnap && (stepCnt > 0 || curUpd > 0)) {
         const prevCached = convNotifyPreviewCache.get(activeSid);
-        const sameTurnCached = (prevCached && ((stepCnt > 0 && prevCached.stepCount === stepCnt) || (stepCnt <= 0 && curUpd > 0 && prevCached.updatedAt === curUpd)))
+        const sameUpdOk = !curUpd || !prevCached?.updatedAt || prevCached.updatedAt === curUpd;
+        const sameTurnCached = (prevCached && sameUpdOk && ((stepCnt > 0 && prevCached.stepCount === stepCnt) || (stepCnt <= 0 && curUpd > 0 && prevCached.updatedAt === curUpd)))
           ? prevCached
           : null;
         rememberConvNotifyPreview(activeSid, {
@@ -17695,7 +17716,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           stepCount: stepCnt,
           turnSig: activeTurnSig,
           lastReplyPreview: replyPrev || sameTurnCached?.lastReplyPreview || '',
-          waitingSummary: waitPrev || sameTurnCached?.waitingSummary || ''
+          waitingSummary: waitPrev || (isActiveWaiting ? '' : (sameTurnCached?.waitingSummary || ''))
         });
       }
     }
