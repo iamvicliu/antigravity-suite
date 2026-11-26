@@ -32208,3 +32208,238 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、SendAllQueuedMessages deprecated(error ID) 识别与逐条直发回退及 send 幂等防重', async () => {
+  const remoteMod = require('../mobile-remote');
+
+  // 1. mergeUniqueQueuedLists：真实服务端 UUID 与桌面端 opt-* 临时乐观 ID（含 URL 双空格与单空格差异）合并为单条，且保留两条不同真实服务端 ID 的合法同文消息
+  const baseReal = [{
+    id: '9f82a4e1-1111-4444-8888-abcdef012345',
+    messageId: '9f82a4e1-1111-4444-8888-abcdef012345',
+    source: 'agent_state',
+    stepIndex: -1,
+    text: 'https://example.com/1  sample queued message'
+  }];
+  const domOpt = [{
+    domIndex: 0,
+    stepIndex: -1,
+    messageId: 'opt-64d3fb42-e4dc-4590-ae89-f69ceb311b59',
+    source: 'dom',
+    text: 'https://example.com/1 sample queued message'
+  }];
+  const mergedSingle = remoteMod.mergeUniqueQueuedLists(baseReal, domOpt, true);
+  assert.equal(mergedSingle.length, 1, '桌面端 opt-* 乐观 ID 与服务端真实 UUID 同内容项必须去重合并为 1 条，严禁双显');
+  assert.equal(mergedSingle[0].messageId, '9f82a4e1-1111-4444-8888-abcdef012345');
+  assert.equal(mergedSingle[0].domIndex, 0, '合并后应保留桌面 domIndex 元数据');
+
+  const baseTwoDistinctReal = [
+    { id: 'real-a', messageId: 'real-a', source: 'agent_state', text: '继续执行下一步' },
+    { id: 'real-b', messageId: 'real-b', source: 'agent_state', text: '继续执行下一步' }
+  ];
+  const mergedTwoReal = remoteMod.mergeUniqueQueuedLists(baseTwoDistinctReal.slice(), [
+    { domIndex: 0, messageId: 'opt-1', source: 'dom', text: '继续执行下一步' },
+    { domIndex: 1, messageId: 'opt-2', source: 'dom', text: '继续执行下一步' }
+  ], true);
+  assert.equal(mergedTwoReal.length, 2, '用户真实连续发送两条同文消息（具备两个不同真实服务端 ID）时必须完整保留 2 条');
+  assert.equal(mergedTwoReal[0].domIndex, 0);
+  assert.equal(mergedTwoReal[1].domIndex, 1);
+
+  // 2. 桌面增强层 extractQueueFiberEntries / findQueuedMessagesDomEntries：支持 Antigravity 2.35+ Protobuf ES v2 items[].chunk.value、data-queued-msg-id 与 tooltip 剥离
+  const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  env.sandbox.location.pathname = '/c/conv-opt-235';
+  const mainEl = env.doc.createElement('main');
+  const cardEl = env.doc.createElement('div');
+  cardEl.setAttribute('data-testid', 'queued-messages-card');
+  cardEl.offsetWidth = 360;
+  cardEl.offsetHeight = 96;
+  const rowEl = env.doc.createElement('div');
+  rowEl.setAttribute('data-queued-msg-id', 'opt-235-abc');
+  rowEl.offsetWidth = 340;
+  rowEl.offsetHeight = 32;
+  const txtSpan = env.doc.createElement('span');
+  txtSpan.textContent = 'https://example.com/1 sample queued message';
+  const ttSpan = env.doc.createElement('span');
+  ttSpan.setAttribute('role', 'tooltip');
+  ttSpan.textContent = 'https://example.com/1';
+  const decEl = env.doc.createElement('div');
+  decEl.setAttribute('data-testid', 'queued-decorators');
+  for (const [act, lbl] of [['send-now', 'Send now'], ['', 'Edit'], ['delete', 'Delete']]) {
+    const b = env.doc.createElement('button');
+    b.setAttribute('aria-label', lbl);
+    if (act) b.setAttribute('data-queued-action', act);
+    b.textContent = lbl;
+    decEl.appendChild(b);
+  }
+  rowEl.appendChild(txtSpan);
+  rowEl.appendChild(ttSpan);
+  rowEl.appendChild(decEl);
+  cardEl.appendChild(rowEl);
+  // 模拟 Antigravity 2.35+ 深层包装组件 (>8 层 Fiber return) + Protobuf ES v2 chunk.case === 'text'
+  let deepFiber = {
+    memoizedProps: {
+      pendingUserInputs: [{
+        msgId: 'opt-235-abc',
+        step: {
+          clientMessageId: 'cid-235-abc',
+          items: [{ chunk: { case: 'text', value: 'https://example.com/1  sample queued message' } }]
+        }
+      }]
+    },
+    return: null
+  };
+  for (let d = 0; d < 12; d += 1) {
+    deepFiber = { memoizedProps: {}, return: deepFiber };
+  }
+  cardEl.__reactFiber$test = deepFiber;
+  mainEl.appendChild(cardEl);
+  env.doc.body.appendChild(mainEl);
+  vm.runInContext(overlaySrc, env.sandbox);
+  const enh = env.sandbox.__AGEnhancer;
+  try {
+    const snap235 = enh.getMobileSnapshot();
+    assert.equal(snap235.queuedMessages.length, 1);
+    assert.equal(snap235.queuedMessages[0].messageId, 'opt-235-abc');
+    assert.equal(snap235.queuedMessages[0].clientMessageId, 'cid-235-abc');
+    assert.equal(snap235.queuedMessages[0].text, 'https://example.com/1  sample queued message', '应从 12 层深 Fiber 的 Protobuf ES v2 chunk.value 提取纯净原文而非拼接 tooltip');
+  } finally {
+    enh.dispose?.();
+  }
+
+  // 3. classifyLanguageServerRpcError 精准识别 Antigravity 2.35.2 "deprecated (error ID: <hex>)"，同时拒绝模糊错误
+  assert.equal(
+    remoteMod.classifyLanguageServerRpcError(
+      new Error('HTTP 500: {"code":"unknown","message":"deprecated (error ID: c40325d4d16046c0a615d023c4fd57db)"}'),
+      'SendAllQueuedMessages'
+    ).confirmedNotExecuted,
+    true,
+    'SendAllQueuedMessages 返回带 error ID 的官方 deprecated 报错必须识别为 confirmedNotExecuted'
+  );
+  assert.equal(
+    remoteMod.classifyLanguageServerRpcError(
+      new Error('HTTP 500: {"code":"unknown","message":"deprecated (error ID: c40325d4d16046c0a615d023c4fd57db)"}'),
+      'SendUserCascadeMessage'
+    ).confirmedNotExecuted,
+    false,
+    '非 SendAllQueuedMessages 方法不得套用该 deprecated 豁免'
+  );
+
+  // 4. 顶栏「⚡ 立即发送」在 SendAllQueuedMessages 报 deprecated (error ID: ...) 时对纯文本排队项直接走 SendUserCascadeMessage + DeleteAgentMessage 成功发送，且 /api/action send 具备 clientActionId 幂等防重
+  const lsRpcLog = [];
+  let desktopSendCalls = 0;
+  let sendAllShouldHang = false;
+  const handler = remoteMod.createRemoteHttpHandler(
+    { enabled: true, port: 18765, token: 'tok-q40x', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    {
+      rpcTimeoutMs: 120,
+      webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) },
+      fetchSnapshot: async () => ({
+        ok: true,
+        sessionId: 'conv-insight',
+        activeConversationId: 'conv-insight',
+        busy: true,
+        conversations: [{ id: 'conv-insight', title: 'sample task', projectName: 'proj-a', status: 'running' }],
+        projects: [],
+        messages: [],
+        queuedMessages: [{ domIndex: 0, stepIndex: -1, messageId: 'opt-dup-space', source: 'dom', text: 'https://example.com/1 sample queued message' }]
+      }),
+      performAction: async (p) => {
+        if (p.action === 'send') desktopSendCalls += 1;
+        return {
+          ok: true,
+          actionResult: { ok: true },
+          snapshot: {
+            ok: true,
+            sessionId: 'conv-insight',
+            activeConversationId: 'conv-insight',
+            busy: true,
+            conversations: [],
+            projects: [],
+            messages: [],
+            queuedMessages: [{ domIndex: 0, stepIndex: -1, messageId: 'pm-real-1', source: 'agent_state', text: 'https://example.com/1 sample queued message' }]
+          }
+        };
+      },
+      callLanguageServer: async (method, body) => {
+        lsRpcLog.push({ method, body });
+        if (method === 'SendAllQueuedMessages') {
+          if (sendAllShouldHang) {
+            await new Promise((r) => setTimeout(r, 300));
+            return {};
+          }
+          throw new Error('HTTP 500: {"code":"unknown","message":"deprecated (error ID: c40325d4d16046c0a615d023c4fd57db)"}');
+        }
+        return { ok: true };
+      }
+    }
+  );
+  const postJson = (bodyObj) => new Promise((resolve) => {
+    const raw = Buffer.from(JSON.stringify(bodyObj), 'utf8');
+    const chunks = [];
+    handler(
+      {
+        method: 'POST',
+        url: '/api/action?token=tok-q40x',
+        headers: { host: '127.0.0.1:18765', 'content-type': 'application/json' },
+        socket: { remoteAddress: '127.0.0.1' },
+        on(ev, cb) {
+          if (ev === 'data') cb(raw);
+          if (ev === 'end') cb();
+        },
+        pause() {},
+        destroy() {},
+        complete: true
+      },
+      {
+        setHeader() {},
+        getHeader: () => undefined,
+        writeHead() {},
+        end(b) {
+          if (b) chunks.push(Buffer.from(b));
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        }
+      }
+    );
+  });
+
+  const sendAllOk = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    messageIds: ['pm-real-1'],
+    queuedItems: [{ messageId: 'pm-real-1', source: 'agent_state', domIndex: 0, text: '前面输入有误，是说：缺入一个显示全部的选项' }]
+  });
+  assert.equal(sendAllOk.ok, true, 'SendAllQueuedMessages 报 deprecated(error ID) 时顶栏「⚡ 立即发送」应自动走逐条直发成功');
+  assert.deepEqual(
+    lsRpcLog.map((x) => x.method),
+    ['SendAllQueuedMessages', 'SendUserCascadeMessage', 'DeleteAgentMessage'],
+    '应依次调用 SendAllQueuedMessages(确认废弃) -> SendUserCascadeMessage(NEXT_INVOCATION) -> DeleteAgentMessage'
+  );
+  assert.equal(lsRpcLog[1].body.deliveryStrategy, 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION');
+  assert.equal(lsRpcLog[2].body.messageId, 'pm-real-1');
+
+  // 超时场景仍严格 fail-closed 绝不补发
+  lsRpcLog.length = 0;
+  sendAllShouldHang = true;
+  const sendAllTimeout = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    messageIds: ['pm-real-2'],
+    queuedItems: [{ messageId: 'pm-real-2', source: 'agent_state', domIndex: 0, text: '超时不应补发' }]
+  });
+  assert.equal(sendAllTimeout.ok, false, 'SendAllQueuedMessages 真实超时结果未知时仍必须 fail-closed 拦截补发');
+  assert.equal(sendAllTimeout.outcomeUnknown, true);
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages']);
+
+  // 同一 clientActionId 重试 /api/action send 绝不二次触发桌面发送
+  const send1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
+  const send2 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
+  assert.equal(send1.ok, true);
+  assert.equal(send2.ok, true);
+  assert.equal(send2.deduplicatedAction, true);
+  assert.equal(desktopSendCalls, 1, '相同 clientActionId 通道故障转移重试时服务端只得执行 1 次桌面发送');
+
+  // 5. 客户端 sendInput 在 busy 状态发送含 URL 双空格文本时，与快照归一化单空格排队项精确匹配，不追加重复 optimistic 排队项
+  const appHtml = remoteMod.buildMobileAppHtml();
+  assert.ok(appHtml.includes('normQueueCmp(q?.text) === normTargetTxt'), '前端 sendInput 乐观排队去重必须对连续空白做归一化比较');
+  assert.ok(appHtml.includes('sendableQueuedItems.length ? { queuedItems: sendableQueuedItems }'), '前端顶栏立即发送必须携带 queuedItems 以支持废弃接口逐条直发回退');
+});

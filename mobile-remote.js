@@ -2418,7 +2418,7 @@ function classifyLanguageServerRpcError(err, method = '') {
     parsedBody &&
     (!method || method === 'SendAllQueuedMessages') &&
     (structCode === 'unknown' || structCode === 'unimplemented') &&
-    structMessage === 'deprecated'
+    /^deprecated(?:\s*\(error\s+id:\s*[0-9a-f-]+\))?$/i.test(structMessage)
   );
   const isConfirmedRejected = Boolean(
     EXPLICIT_HTTP_REJECT_STATUSES.has(httpStatus) ||
@@ -6932,25 +6932,40 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
 function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
   if (!Array.isArray(baseList)) return [];
   if (!Array.isArray(incomingList) || !incomingList.length) return baseList;
-  const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const normQText = (t) => String(t || '').replace(/[\u2066-\u2069\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
   const getQImgCount = (q) => {
     if (Array.isArray(q?.images)) return q.images.length;
     if (Array.isArray(q?.attachments)) return q.attachments.length;
     if (Array.isArray(q?.media)) return q.media.length;
     return 0;
   };
-  const getStableId = (q) => String(q?.messageId || '').trim();
+  const isOptimisticQueueId = (raw) => /^opt-/i.test(String(raw || '').trim());
+  const getStableId = (q) => {
+    const raw = String(q?.messageId || '').trim();
+    return (raw && !isOptimisticQueueId(raw)) ? raw : '';
+  };
+  const getClientQueueId = (q) => {
+    const explicitCid = String(q?.clientMessageId || '').trim();
+    if (explicitCid) return explicitCid;
+    const raw = String(q?.messageId || '').trim();
+    return isOptimisticQueueId(raw) ? raw : '';
+  };
   const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
 
   const idMap = new Map();
+  const clientIdMap = new Map();
   for (let i = 0; i < baseList.length; i++) {
     const bid = getStableId(baseList[i]);
     if (bid && !idMap.has(bid)) {
       idMap.set(bid, { item: baseList[i], idx: i });
     }
+    const bcid = getClientQueueId(baseList[i]);
+    if (bcid && !clientIdMap.has(bcid)) {
+      clientIdMap.set(bcid, { item: baseList[i], idx: i });
+    }
   }
 
-  // 第一轮：优先按稳定 messageId 精确匹配并消耗对应基准项，防止同行额外无 ID/异 ID 项误用其文本配额
+  // 第一轮：优先按稳定服务端 messageId（或精确 clientMessageId）匹配并消耗对应基准项，防止同行额外无 ID/异 ID 项误用其文本配额
   const matchedBaseIndices = new Set();
   const handledIncomingIndices = new Set();
   for (let i = 0; i < incomingList.length; i++) {
@@ -6960,12 +6975,18 @@ function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
       continue;
     }
     const iqId = getStableId(iq);
-    if (iqId && idMap.has(iqId)) {
-      const hit = idMap.get(iqId);
+    const iqClientId = getClientQueueId(iq);
+    const hit = (iqId && idMap.get(iqId)) || (!iqId && iqClientId && clientIdMap.get(iqClientId)) || null;
+    if (hit && !matchedBaseIndices.has(hit.idx)) {
       matchedBaseIndices.add(hit.idx);
       handledIncomingIndices.add(i);
       if (mergeMeta && Number.isInteger(iq.domIndex)) {
         hit.item.domIndex = iq.domIndex;
+      }
+      if (iqId && !getStableId(hit.item)) {
+        hit.item.messageId = iqId;
+        if (!hit.item.id || isOptimisticQueueId(hit.item.id)) hit.item.id = iqId;
+        idMap.set(iqId, hit);
       }
     }
   }
@@ -11699,10 +11720,14 @@ function buildMobileAppHtml() {
       const actionStartEpoch = ++clientSyncEpoch;
       const myNavSeq = isNavAction ? (++lastNavActionSeq) : 0;
       if (isNavAction) invalidateInflightSnapshotPolls();
+      const autoActionId = (act === 'send' && !payload?.clientActionId)
+        ? ('act-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10))
+        : '';
       const bodyPayload = {
         targetId: currentTargetId || undefined,
         conversationId: (isNavAction ? undefined : selectedConversationId) || undefined,
         clientId: clientId || undefined,
+        ...(autoActionId ? { clientActionId: autoActionId } : {}),
         ...payload
       };
       const doPost = () => fetchWithTimeout((apiBase || '') + '/api/action', {
@@ -12711,7 +12736,24 @@ function buildMobileAppHtml() {
           const hasDomQueued = queuedList.some((q) => q && q.source === 'dom');
           const isDomQueuedList = queuedList.every((q) => q && q.source === 'dom');
           const hasOnlyOptimistic = queuedList.every((q) => q && q.source === 'optimistic');
-          const agentMsgIds = queuedList.map((q) => String(q?.messageId || q?.id || '').trim()).filter(Boolean);
+          const agentMsgIds = queuedList
+            .map((q) => String(q?.messageId || q?.id || '').trim())
+            .filter((id) => id && !/^opt-/i.test(id));
+          const sendableQueuedItems = queuedList
+            .filter((q) => q && q.source !== 'optimistic')
+            .map((q, qi) => {
+              const mid = String(q?.messageId || q?.id || '').trim();
+              const sIdx = Number(q?.stepIndex);
+              const dIdx = Number(q?.domIndex);
+              return {
+                ...(mid ? { messageId: mid } : {}),
+                ...(Number.isInteger(sIdx) && sIdx >= 0 ? { stepIndex: sIdx } : {}),
+                domIndex: Number.isInteger(dIdx) && dIdx >= 0 ? dIdx : qi,
+                source: String(q?.source || 'traj'),
+                text: String(q?.text || ''),
+                ...(q?.hasMedia || (Array.isArray(q?.images) && q.images.length > 0) ? { hasMedia: true } : {})
+              };
+            });
           const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.messageId || q.id || '') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
           if (qDock.dataset.queueSig !== qSig) {
             qDock.dataset.queueSig = qSig;
@@ -12790,6 +12832,7 @@ function buildMobileAppHtml() {
                     action: 'send-queued-messages',
                     conversationId: String(snap.activeConversationId || snap.sessionId || ''),
                     ...(agentMsgIds.length ? { messageIds: agentMsgIds } : {}),
+                    ...(sendableQueuedItems.length ? { queuedItems: sendableQueuedItems } : {}),
                     ...(isDomQueuedList ? { source: 'dom', sendAll: true } : (hasDomQueued ? { hasDomQueued: true } : {}))
                   });
                   if (res?.ok) {
@@ -16311,8 +16354,10 @@ function buildMobileAppHtml() {
           const maxH = isDesktopLayout() ? 180 : 112;
           ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
           if (wasBusyWhenSent) {
+            const normQueueCmp = (s) => String(s || '').replace(/[\u2066-\u2069\u200B-\u200D\uFEFF]/g, '').replace(/\\s+/g, ' ').trim();
+            const normTargetTxt = normQueueCmp(text);
             const snapToRender = (r?.snapshot && r.snapshot.ok !== false) ? r.snapshot : latestSnap;
-            if (snapToRender && (!Array.isArray(snapToRender.queuedMessages) || !snapToRender.queuedMessages.some((q) => String(q?.text || '').trim() === text.trim()))) {
+            if (snapToRender && (!Array.isArray(snapToRender.queuedMessages) || !snapToRender.queuedMessages.some((q) => normQueueCmp(q?.text) === normTargetTxt))) {
               const curQ = Array.isArray(snapToRender.queuedMessages) ? snapToRender.queuedMessages.slice() : [];
               curQ.push({ source: 'optimistic', stepIndex: -1, text, status: 'queued' });
               snapToRender.queuedMessages = curQ;
@@ -17359,6 +17404,22 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let cachedUsageAt = 0;
   const dispatchedQueueDeletes = new Map();
   const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
+  const recentSendActionCache = new Map();
+  const RECENT_SEND_ACTION_TTL_MS = 60 * 1000;
+  const pruneRecentSendActions = () => {
+    const now = Date.now();
+    for (const [k, rec] of recentSendActionCache.entries()) {
+      if (!rec || (!rec.inflight && (now - rec.at) > RECENT_SEND_ACTION_TTL_MS)) {
+        recentSendActionCache.delete(k);
+      }
+    }
+    while (recentSendActionCache.size > 300) {
+      const oldest = recentSendActionCache.keys().next().value;
+      if (oldest === undefined) break;
+      if (recentSendActionCache.get(oldest)?.inflight) break;
+      recentSendActionCache.delete(oldest);
+    }
+  };
   const stagedEditUploadsByKey = new Map();
   let nextStagedUploadId = 1;
   const STAGED_EDIT_UPLOADS_TTL_MS = 30 * 60 * 1000;
@@ -19017,8 +19078,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '当前尚未打开有效会话，请先选择一个对话' }));
             return;
           }
-          const messageId = String(payload?.messageId || '').trim();
-          const messageIds = Array.isArray(payload?.messageIds) ? payload.messageIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+          const rawMessageId = String(payload?.messageId || '').trim();
+          const optDomMessageId = /^opt-/i.test(rawMessageId) ? rawMessageId : '';
+          const messageId = optDomMessageId ? '' : rawMessageId;
+          const messageIds = Array.isArray(payload?.messageIds)
+            ? payload.messageIds.map((x) => String(x || '').trim()).filter((x) => x && !/^opt-/i.test(x))
+            : [];
           const isDomQueueSource = payload?.source === 'dom' && !messageId;
           let rpcRes = null;
           let usedDomFallback = false;
@@ -19311,7 +19376,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 clientId,
                 targetId: effectiveTargetId || undefined,
                 conversationId: cascadeId,
-                ...(messageId ? { messageId } : {}),
+                ...((messageId || optDomMessageId) ? { messageId: messageId || optDomMessageId } : {}),
                 ...(resolvedDomIdx !== undefined && resolvedDomIdx >= 0 ? { domIndex: resolvedDomIdx } : {}),
                 ...(hasExpCount ? { expectedQueueCount: Number(rawExpCount) } : {}),
                 ...(payload?.hasMedia ? { hasMedia: true } : {}),
@@ -19821,21 +19886,80 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
           } else {
             // 全部立即发送：优先保留 SendAllQueuedMessages 契约；
-            // 仅当服务端明确返回 confirmedNotExecuted（如 Antigravity 2.0 报 deprecated/unimplemented）且携带 agent_state messageIds 时，才允许回退桌面端全发；
-            // 若返回 null/超时/未知错误，必须 fail-closed 严禁补发！
+            // 当服务端明确返回 confirmedNotExecuted（如 Antigravity 2.35+ 报 deprecated (error ID: ...) / unimplemented）时：
+            // 1) 若全部待发项均为具备真实服务端 messageId 的纯文本排队消息，优先逐条走与单条 → 一致的 SendUserCascadeMessage + DeleteAgentMessage 直发（支持隔离后台会话、无需切换桌面窗口）；
+            // 2) 含媒体或仅携带 messageIds/hasDomQueued 时安全回退桌面端 send-queued-dom(sendAll:true)；
+            // 3) 若返回 null/超时/未知错误，严格 fail-closed 严禁补发！
             const sendAllOutcome = await callLsRpcDetailed('SendAllQueuedMessages', { cascadeId }, rpcTimeoutMs);
             if (sendAllOutcome.ok) {
               rpcRes = sendAllOutcome.result;
-            } else if (sendAllOutcome.confirmedNotExecuted && messageIds.length > 0) {
-              const okDom = await runQueuedDomFallback('send-queued-dom', true);
-              if (!okDom) return;
+            } else if (sendAllOutcome.confirmedNotExecuted) {
+              const rawQueuedItems = Array.isArray(payload?.queuedItems) ? payload.queuedItems.filter((it) => it && typeof it === 'object') : [];
+              const canDirectRpcBatch = rawQueuedItems.length > 0 && rawQueuedItems.every((it) => {
+                const mid = String(it.messageId || '').trim();
+                const txt = String(it.text || '').trim();
+                return Boolean(mid && !/^opt-/i.test(mid) && txt && !it.hasMedia);
+              });
+              if (canDirectRpcBatch) {
+                let sentAny = false;
+                let directAllOk = true;
+                let fallbackDomAllowed = false;
+                let batchErrOutcome = null;
+                for (const it of rawQueuedItems) {
+                  const itMid = String(it.messageId || '').trim();
+                  const itTxt = String(it.text || '');
+                  const singleOut = await sendSingleQueuedWithCheckedDelete({
+                    dispatchKey: `${cascadeId}::msg:${itMid}`,
+                    text: itTxt,
+                    hasMedia: false,
+                    deleteMethod: 'DeleteAgentMessage',
+                    deleteBody: { messageId: itMid, recipient: cascadeId }
+                  });
+                  if (singleOut.partialSuccess) {
+                    await respondPartialSendDeleteFailure({ messageId: itMid }, singleOut.error);
+                    return;
+                  }
+                  if (singleOut.ok) {
+                    sentAny = true;
+                    rpcRes = singleOut.rpcRes;
+                    if (singleOut.deduplicatedRetry) deduplicatedRetry = true;
+                    continue;
+                  }
+                  directAllOk = false;
+                  batchErrOutcome = singleOut;
+                  if (!sentAny && (singleOut.needsDomFallback || singleOut.confirmedNotExecuted)) {
+                    fallbackDomAllowed = true;
+                  }
+                  break;
+                }
+                if (!directAllOk) {
+                  if (fallbackDomAllowed) {
+                    const okDom = await runQueuedDomFallback('send-queued-dom', true);
+                    if (!okDom) return;
+                  } else {
+                    sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                      ok: false,
+                      ...(batchErrOutcome?.confirmedNotExecuted ? {} : { outcomeUnknown: true }),
+                      error: batchErrOutcome?.error || '立即发送排队消息超时或结果未知，已阻止继续自动补发以避免重复发送'
+                    }));
+                    return;
+                  }
+                }
+              } else if (messageIds.length > 0 || payload?.hasDomQueued === true || rawQueuedItems.length > 0) {
+                const okDom = await runQueuedDomFallback('send-queued-dom', true);
+                if (!okDom) return;
+              } else {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  error: sendAllOutcome.error || '本机 LanguageServer 队列操作失败'
+                }));
+                return;
+              }
             } else {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                 ok: false,
-                ...(sendAllOutcome.confirmedNotExecuted ? {} : { outcomeUnknown: true }),
-                error: sendAllOutcome.confirmedNotExecuted
-                  ? (sendAllOutcome.error || '本机 LanguageServer 队列操作失败')
-                  : '本机 LanguageServer 队列操作调用超时或结果未知，已阻止自动补发以避免重复发送'
+                outcomeUnknown: true,
+                error: '本机 LanguageServer 队列操作调用超时或结果未知，已阻止自动补发以避免重复发送'
               }));
               return;
             }
@@ -20256,6 +20380,31 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (isDeferredDraftSend && session) {
           session.draftSendInflight = true;
         }
+        const clientActionId = actionName === 'send' ? String(payload?.clientActionId || '').trim().slice(0, 96) : '';
+        const sendDedupKey = clientActionId ? `${String(clientId || '__anon__')}::${clientActionId}` : '';
+        if (sendDedupKey) {
+          pruneRecentSendActions();
+          const existingSendRec = recentSendActionCache.get(sendDedupKey);
+          if (existingSendRec) {
+            if (existingSendRec.inflight) {
+              const sharedRes = await existingSendRec.inflight;
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(sharedRes));
+              return;
+            }
+            if (existingSendRec.result && existingSendRec.result.ok !== false) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ...existingSendRec.result,
+                deduplicatedAction: true
+              }));
+              return;
+            }
+          }
+        }
+        let resolveSendInflight = null;
+        if (sendDedupKey) {
+          const inflightPromise = new Promise((resolve) => { resolveSendInflight = resolve; });
+          recentSendActionCache.set(sendDedupKey, { at: Date.now(), inflight: inflightPromise, result: null });
+        }
         let result;
         try {
           result = await performAction({
@@ -20356,6 +20505,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               session.conversationId = respSid;
             }
           }
+        } catch (actErr) {
+          if (sendDedupKey) {
+            recentSendActionCache.delete(sendDedupKey);
+            if (resolveSendInflight) {
+              resolveSendInflight({ ok: false, error: actErr?.message || '操作失败' });
+              resolveSendInflight = null;
+            }
+          }
+          throw actErr;
         } finally {
           if (isDeferredDraftSend && session && (session.navEpoch || 0) === sendStartNavEpoch) {
             session.draftSendInflight = false;
@@ -20364,6 +20522,14 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (result?.snapshot) {
           const usageSummary = !result.snapshot.usageSummary ? await getCachedUsageSummary() : null;
           result.snapshot = enrichSnapshotPayload(result.snapshot, config, activeTunnelUrl, clientId, usageSummary);
+        }
+        if (sendDedupKey) {
+          if (result && result.ok !== false) {
+            recentSendActionCache.set(sendDedupKey, { at: Date.now(), inflight: null, result });
+          } else {
+            recentSendActionCache.delete(sendDedupKey);
+          }
+          if (resolveSendInflight) resolveSendInflight(result);
         }
         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
       } catch (err) {
