@@ -32403,14 +32403,19 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   const domQueuedActions = [];
   let desktopSendCalls = 0;
   let sendAllShouldHang = false;
+  let sendCascadeShouldHang = false;
   let sendBehavior = 'ok';
+  let fakeClockNow = 1_800_000_000_000;
   let liveServerPendingList = [
     { id: 'pm-real-1', messageId: 'pm-real-1', source: 'agent_state', stepIndex: -1, text: '服务端权威待发正文' }
   ];
   const handler = remoteMod.createRemoteHttpHandler(
     { enabled: true, port: 18765, token: 'tok-q40x', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
     {
-      rpcTimeoutMs: 120,
+      rpcTimeoutMs: 100,
+      now: () => fakeClockNow,
+      maxRecentOkSendActions: 2,
+      maxUnknownSendActions: 2,
       fetchPendingAgentMessages: async () => liveServerPendingList,
       webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) },
       fetchSnapshot: async () => ({
@@ -32460,6 +32465,10 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
             return {};
           }
           throw new Error('HTTP 500: {"code":"unknown","message":"deprecated (error ID: c40325d4d16046c0a615d023c4fd57db)"}');
+        }
+        if (method === 'SendUserCascadeMessage' && sendCascadeShouldHang) {
+          await new Promise((r) => setTimeout(r, 300));
+          return {};
         }
         return { ok: true };
       }
@@ -32554,7 +32563,36 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   assert.equal(sendAllTimeout.outcomeUnknown, true);
   assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages']);
 
-  // 4e. /api/action send 幂等保护：① 成功重放不二次执行；② 已派发后超时抛错（结果未知）同 clientActionId 重试被严格拦截；③ confirmedNotExecuted=true 允许同 ID 安全重试
+  // 4d-2. 批量逐条直发中 SendUserCascadeMessage 服务端已接收但响应超时（原排队项仍在队列中），再次重试批量发送必须拦截而不二次调用 SendUserCascadeMessage
+  sendAllShouldHang = false;
+  sendCascadeShouldHang = true;
+  lsRpcLog.length = 0;
+  liveServerPendingList = [
+    { id: 'pm-hang-1', messageId: 'pm-hang-1', source: 'agent_state', stepIndex: -1, text: '超时未决待发项' }
+  ];
+  const batchSendHang1 = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    messageIds: ['pm-hang-1'],
+    queuedItems: [{ messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' }]
+  });
+  assert.equal(batchSendHang1.ok, false);
+  assert.equal(batchSendHang1.outcomeUnknown, true);
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages', 'SendUserCascadeMessage']);
+
+  sendCascadeShouldHang = false;
+  lsRpcLog.length = 0;
+  const batchSendHangRetry = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-insight',
+    messageIds: ['pm-hang-1'],
+    queuedItems: [{ messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' }]
+  });
+  assert.equal(batchSendHangRetry.ok, false, 'SendUserCascadeMessage 超时结果未知且原项仍在队列中时，再次批量发送必须拦截');
+  assert.equal(batchSendHangRetry.outcomeUnknown, true);
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages'], '重试批量发送绝不得再次调用 SendUserCascadeMessage');
+
+  // 4e. /api/action send 幂等保护：① 成功重放不二次执行；② 已派发后超时抛错（结果未知）同 clientActionId 重试被严格拦截，且跨 >60s 过期及容量淘汰后仍不放行；③ confirmedNotExecuted=true 允许同 ID 安全重试
   desktopSendCalls = 0;
   sendBehavior = 'ok';
   const send1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
@@ -32567,12 +32605,21 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   sendBehavior = 'timeout_after_dispatch';
   const sendTimeout1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
   assert.equal(sendTimeout1.ok, false);
+  // 推进时钟超过 60s TTL (+180s)，再制造 3 条新的未知超时（超过 maxUnknownSendActions=2 触发容量淘汰）与 4 条正常成功（超过 maxRecentOkSendActions=2）
+  fakeClockNow += 180_000;
+  for (const extraUnknownId of ['act-timeout-2', 'act-timeout-3', 'act-timeout-4']) {
+    await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraUnknownId, conversationId: 'conv-insight', text: '填充未知容量' });
+  }
   sendBehavior = 'ok';
+  for (const extraOkId of ['act-ok-fill-1', 'act-ok-fill-2', 'act-ok-fill-3', 'act-ok-fill-4']) {
+    await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraOkId, conversationId: 'conv-insight', text: '填充成功容量' });
+  }
+  const callsBeforeEvictedRetry = desktopSendCalls;
   const sendTimeoutRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
-  assert.equal(sendTimeoutRetry.ok, false, '首次发送超时结果未知后，同一 clientActionId 自动故障转移重试必须被拦截以防重复入队');
+  assert.equal(sendTimeoutRetry.ok, false, '即使跨过 60s TTL 且经历未知/成功双重容量淘汰，原超时未知 clientActionId 仍必须被永久拦截');
   assert.equal(sendTimeoutRetry.outcomeUnknown, true);
   assert.equal(sendTimeoutRetry.deduplicatedUnknownRetry, true);
-  assert.equal(desktopSendCalls, 2, '超时后同一 clientActionId 重试不得再次调用 performAction');
+  assert.equal(desktopSendCalls, callsBeforeEvictedRetry, '过期及容量淘汰后重试未知 clientActionId 绝不得再次调用 performAction');
 
   sendBehavior = 'confirmed_not_executed';
   const sendPreFail = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-insight', text: '首次未填入' });
@@ -32580,7 +32627,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   sendBehavior = 'ok';
   const sendPreRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-insight', text: '首次未填入' });
   assert.equal(sendPreRetry.ok, true, '明确 confirmedNotExecuted=true 时允许同一 clientActionId 重试成功');
-  assert.equal(desktopSendCalls, 4);
+  assert.equal(desktopSendCalls, callsBeforeEvictedRetry + 2);
 
   // 5. 客户端 sendInput 在 busy 状态发送含 URL 双空格文本时，与快照归一化单空格排队项精确匹配，不追加重复 optimistic 排队项
   const appHtml = remoteMod.buildMobileAppHtml();
