@@ -14,6 +14,9 @@ const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const { detectProxyConfig } = require('./meter-proxy');
 const {
   computeCompletedUnreadCount,
+  sanitizeNotificationPreview,
+  resolveNotificationTurnKey,
+  formatPushNotificationEvent,
   createWebPushManager,
   buildPwaIconPng
 } = require('./remote-web-push');
@@ -2678,7 +2681,8 @@ function createSessionCatalogStore() {
         unread,
         completedUnread,
         pinned: Boolean(c.pinned),
-        updatedAt: c.updatedAt
+        updatedAt: c.updatedAt,
+        ...(Number(c.stepCount) > 0 ? { stepCount: Number(c.stepCount) } : {})
       });
     }
     items.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
@@ -2995,7 +2999,8 @@ function createSessionCatalogStore() {
         updatedAt,
         lastViewedAt: viewMs,
         status,
-        statusLabel: statusToLabel(status)
+        statusLabel: statusToLabel(status),
+        stepCount: Math.max(0, Number(t?.stepCount ?? prev?.stepCount ?? 0) || 0)
       });
     }
 
@@ -9862,6 +9867,7 @@ function buildMobileAppHtml() {
     }
 
     const LOCAL_NOTIFY_STORAGE_KEY = 'ag_remote_local_notify_v1';
+    const LOCAL_NOTIFY_PREVIEW_KEY = 'ag_remote_notify_preview_v1';
     function isLocalNotifyEnabled() {
       try { return localStorage.getItem(LOCAL_NOTIFY_STORAGE_KEY) === '1'; } catch { return false; }
     }
@@ -9871,14 +9877,105 @@ function buildMobileAppHtml() {
         else localStorage.removeItem(LOCAL_NOTIFY_STORAGE_KEY);
       } catch {}
     }
+    function isLocalNotifyShowPreview() {
+      try { return localStorage.getItem(LOCAL_NOTIFY_PREVIEW_KEY) !== '0'; } catch { return true; }
+    }
+    function setLocalNotifyShowPreview(on) {
+      try { localStorage.setItem(LOCAL_NOTIFY_PREVIEW_KEY, on ? '1' : '0'); } catch {}
+    }
 
-    function showLocalSystemNotification(title, body, conversationId) {
+    function fnv1aClientHex(input) {
+      const str = String(input || '');
+      let h = 0x811c9dc5;
+      for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      return h.toString(16).padStart(8, '0');
+    }
+
+    function truncateClientPreview(text, maxChars) {
+      const str = String(text || '').trim();
+      if (!str) return '';
+      const cps = Array.from(str);
+      if (cps.length <= maxChars) return str;
+      return cps.slice(0, Math.max(1, maxChars - 1)).join('') + '…';
+    }
+
+    function sanitizeClientNotifyPreview(rawText, maxChars) {
+      if (rawText === null || rawText === undefined) return '';
+      let s = String(rawText).replace(/\\r\\n?/g, '\\n');
+      if (!s.trim()) return '';
+      s = s.replace(/\\x60{3}[a-zA-Z0-9_+-]*\\n?([\\s\\S]*?)\\x60{3}/g, (_m, inner) => {
+        const b = String(inner || '').trim();
+        return b ? ('\\n' + b + '\\n') : ' [代码片段] ';
+      });
+      s = s.replace(/!\\[([^\\]]*)\\]\\([^)]*\\)/g, (_m, alt) => (alt ? ('[图片: ' + alt + ']') : '[图片]'));
+      s = s.replace(/\\[([^\\]]+)\\]\\([^)]*\\)/g, '$1');
+      s = s.replace(/\\x60([^\\x60\\n]+)\\x60/g, '$1');
+      s = s.replace(/<[^>]+>/g, ' ');
+      s = s
+        .split('\\n')
+        .map((line) => line
+          .replace(/^\\s*#{1,6}\\s+/, '')
+          .replace(/^\\s*>\\s?/, '')
+          .replace(/^\\s*[-*+]\\s+(?:\\[[ xX]\\]\\s+)?/, '')
+          .replace(/^\\s*\\d+\\.\\s+/, '')
+          .replace(/(\\*\\*|__|~~)/g, '')
+          .replace(/(^|[\\s(])\\*([^*\\n]+)\\*(?=[\\s).,!?:;]|$)/g, '$1$2')
+          .replace(/[ \\t]+/g, ' ')
+          .trim())
+        .filter(Boolean)
+        .join('\\n');
+      return truncateClientPreview(s, maxChars || 150);
+    }
+
+    function resolveClientNotifyTurnKey(item) {
+      if (!item || typeof item !== 'object') return '';
+      const explicit = String(item.turnSig || '').trim();
+      if (explicit) return fnv1aClientHex(explicit);
+      const stepCnt = Number(item.stepCount);
+      if (Number.isInteger(stepCnt) && stepCnt > 0) return 's' + stepCnt;
+      const upd = Number(item.updatedAt);
+      if (Number.isFinite(upd) && upd > 0) return 'u' + Math.floor(upd);
+      return '';
+    }
+
+    function formatClientNotification(c, eventType, showPreview) {
+      const item = c && typeof c === 'object' ? c : {};
+      const allowPreview = showPreview !== false;
+      const rawTitle = String(item.title || 'Antigravity 对话').replace(/\\s+/g, ' ').trim() || 'Antigravity 对话';
+      const titleText = truncateClientPreview(rawTitle, 60) || 'Antigravity 对话';
+      const rawProj = String(item.projectName || '').replace(/\\s+/g, ' ').trim();
+      const hasRealProj = Boolean(rawProj && rawProj !== '未归属项目' && rawProj !== '独立对话');
+      const projText = hasRealProj ? truncateClientPreview(rawProj, 28) : '';
+      const turnKey = resolveClientNotifyTurnKey(item);
+      const cid = String(item.id || '').trim();
+      if (eventType === 'waiting') {
+        const waitSummary = allowPreview ? sanitizeClientNotifyPreview(item.waitingSummary || item.pendingSummary || '', 150) : '';
+        return {
+          title: '需要确认 · ' + titleText,
+          body: waitSummary || (projText ? (projText + ' · 正在等待你的确认或输入') : '正在等待你的确认或输入'),
+          tag: turnKey ? ('ag-waiting-' + cid + '-' + turnKey) : ('ag-waiting-' + cid),
+          turnKey
+        };
+      }
+      const replyPreview = allowPreview ? sanitizeClientNotifyPreview(item.lastReplyPreview || item.replyPreview || '', 150) : '';
+      return {
+        title: projText ? (titleText + ' · ' + projText) : titleText,
+        body: replyPreview || '本轮回复已完成',
+        tag: turnKey ? ('ag-completed-' + cid + '-' + turnKey) : ('ag-completed-' + cid),
+        turnKey
+      };
+    }
+
+    function showLocalSystemNotification(title, body, conversationId, customTag) {
       try {
         if (typeof Notification !== 'function' || Notification.permission !== 'granted') return false;
         const n = new Notification(String(title || 'Antigravity 远程通知'), {
           body: String(body || ''),
           icon: '/icon-192.png',
-          tag: conversationId ? ('ag-local-' + conversationId) : ('ag-local-' + Date.now())
+          tag: String(customTag || (conversationId ? ('ag-local-' + conversationId) : ('ag-local-' + Date.now())))
         });
         n.onclick = () => {
           try { window.focus(); } catch {}
@@ -9991,7 +10088,15 @@ function buildMobileAppHtml() {
       } catch {}
       const sub = hasPushApi ? await getActivePushSubscription() : null;
       const localOn = isLocalNotifyEnabled() && hasNotifApi && Notification.permission === 'granted';
-      const prefs = (serverInfo && serverInfo.prefs) || { enabled: true, notifyCompleted: true, notifyWaiting: true };
+      if (serverInfo && serverInfo.prefs && typeof serverInfo.prefs.showPreview === 'boolean') {
+        setLocalNotifyShowPreview(serverInfo.prefs.showPreview);
+      }
+      const prefs = (serverInfo && serverInfo.prefs) || {
+        enabled: true,
+        notifyCompleted: true,
+        notifyWaiting: true,
+        showPreview: isLocalNotifyShowPreview()
+      };
 
       const rows = [];
       if (!isSecure) {
@@ -10037,6 +10142,11 @@ function buildMobileAppHtml() {
           label: (prefs.notifyWaiting ? '✓ ' : '○ ') + '待审批 / 等待确认提醒',
           sub: prefs.notifyWaiting ? '已开启：触发权限或提问卡时高优推送' : '已关闭',
           value: 'toggle-waiting'
+        });
+        rows.push({
+          label: (prefs.showPreview !== false ? '✓ ' : '○ ') + '在通知中显示回复内容摘要',
+          sub: prefs.showPreview !== false ? '已开启：通知正文显示最新 AI 回复或待确认内容摘要' : '已关闭：仅提示会话状态，隐藏具体内容（隐私保护）',
+          value: 'toggle-preview'
         });
         rows.push({
           label: '📤 发送测试通知',
@@ -10118,18 +10228,32 @@ function buildMobileAppHtml() {
           }
           return;
         }
-        if (item.value === 'toggle-completed' || item.value === 'toggle-waiting') {
+        if (item.value === 'toggle-completed' || item.value === 'toggle-waiting' || item.value === 'toggle-preview') {
+          const nextShowPreview = !(prefs.showPreview !== false);
           const patch = item.value === 'toggle-completed'
             ? { notifyCompleted: !prefs.notifyCompleted }
-            : { notifyWaiting: !prefs.notifyWaiting };
+            : (item.value === 'toggle-waiting'
+                ? { notifyWaiting: !prefs.notifyWaiting }
+                : { showPreview: nextShowPreview });
+          if (item.value === 'toggle-preview') {
+            setLocalNotifyShowPreview(nextShowPreview);
+          }
           try {
             const prefRes = await pushApiRequest('/api/push/prefs', 'POST', patch);
             if (!prefRes.ok) {
+              if (item.value === 'toggle-preview' && !sub) {
+                showToast('推送摘要偏好已在本地更新');
+                return;
+              }
               showToast('更新推送偏好失败（HTTP ' + prefRes.status + '）');
               return;
             }
             showToast('推送偏好已更新');
           } catch {
+            if (item.value === 'toggle-preview' && !sub) {
+              showToast('推送摘要偏好已在本地更新');
+              return;
+            }
             showToast('更新推送偏好失败，请检查网络连接');
           }
           return;
@@ -13223,27 +13347,48 @@ function buildMobileAppHtml() {
     const FOLDER_SM_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 
     let clientPrevConvStatus = new Map();
+    let clientSentNotifyTurnKeys = new Map();
     let clientNotifyBootstrapped = false;
     function maybeTriggerLocalNotifications(convs) {
       if (!Array.isArray(convs)) return;
       if (!clientNotifyBootstrapped) {
         for (const c of convs) {
-          if (c && c.id) clientPrevConvStatus.set(c.id, c.status || 'unknown');
+          if (c && c.id) {
+            clientPrevConvStatus.set(c.id, { status: c.status || 'unknown', updatedAt: Number(c.updatedAt) || 0 });
+          }
         }
         clientNotifyBootstrapped = true;
         return;
       }
       const canPop = !cachedHasActiveWebPush && isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
+      const showPreview = isLocalNotifyShowPreview();
+      const activeIds = new Set();
       for (const c of convs) {
         if (!c || !c.id) continue;
-        const prev = clientPrevConvStatus.get(c.id);
+        activeIds.add(c.id);
+        const prevRec = clientPrevConvStatus.get(c.id);
         const cur = c.status || 'unknown';
-        clientPrevConvStatus.set(c.id, cur);
-        if (!canPop || !prev) continue;
-        if (prev === 'running' && cur === 'idle' && c.completedUnread === true) {
-          showLocalSystemNotification('对话已完成', (c.title || 'Antigravity 对话') + (c.projectName ? (' · ' + c.projectName) : ''), c.id);
-        } else if (prev !== 'waiting' && cur === 'waiting') {
-          showLocalSystemNotification('需要你的确认', (c.title || 'Antigravity 对话') + ' 正在等待确认或审批', c.id);
+        const curUpdatedAt = Number(c.updatedAt) || 0;
+        clientPrevConvStatus.set(c.id, { status: cur, updatedAt: curUpdatedAt });
+        if (!canPop || !prevRec) continue;
+        let eventType = '';
+        if (prevRec.status === 'running' && cur === 'idle' && (c.completedUnread === true || curUpdatedAt > prevRec.updatedAt)) {
+          eventType = 'completed';
+        } else if (prevRec.status !== 'waiting' && cur === 'waiting') {
+          eventType = 'waiting';
+        }
+        if (!eventType) continue;
+        const fmt = formatClientNotification(c, eventType, showPreview);
+        const dedupKey = eventType + ':' + c.id;
+        if (fmt.turnKey && clientSentNotifyTurnKeys.get(dedupKey) === fmt.turnKey) continue;
+        if (fmt.turnKey) clientSentNotifyTurnKeys.set(dedupKey, fmt.turnKey);
+        showLocalSystemNotification(fmt.title, fmt.body, c.id, fmt.tag);
+      }
+      for (const id of Array.from(clientPrevConvStatus.keys())) {
+        if (!activeIds.has(id)) {
+          clientPrevConvStatus.delete(id);
+          clientSentNotifyTurnKeys.delete('completed:' + id);
+          clientSentNotifyTurnKeys.delete('waiting:' + id);
         }
       }
     }
@@ -17299,17 +17444,246 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let lastCompletedUnreadCount = 0;
   let pushWatcherTimer = null;
   let pushPollInFlight = false;
+  const convNotifyPreviewCache = new Map();
+
+  const extractWaitingSummaryFromStepList = (steps) => {
+    if (!Array.isArray(steps) || !steps.length) return '';
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const st = steps[i];
+      if (!st || typeof st !== 'object') continue;
+      if (st.userInput || String(st.type || '').toUpperCase().includes('USER_INPUT')) break;
+      const cmdLine = st?.runCommand?.commandLine || st?.runCommand?.proposedCommandLine || st?.runCommand?.command
+        || st?.commandAction?.commandLine || st?.commandStatus?.commandLine || st?.proposedCommand?.commandLine || '';
+      if (cmdLine && String(cmdLine).trim()) {
+        return `待执行命令: ${String(cmdLine).trim()}`;
+      }
+      const rawCalls = [];
+      if (st?.metadata?.toolCall) rawCalls.push(st.metadata.toolCall);
+      if (Array.isArray(st?.toolCalls)) rawCalls.push(...st.toolCalls);
+      for (const tc of rawCalls) {
+        if (!tc || typeof tc !== 'object') continue;
+        let args = tc.arguments && typeof tc.arguments === 'object' ? tc.arguments : null;
+        if (!args && typeof tc.argumentsJson === 'string' && tc.argumentsJson.trim()) {
+          try { args = JSON.parse(tc.argumentsJson); } catch {}
+        }
+        const toolName = String(tc.name || tc.toolName || '').trim();
+        if (args && typeof args === 'object') {
+          const argCmd = args.CommandLine || args.commandLine || args.command || '';
+          if (argCmd && String(argCmd).trim()) return `待执行命令: ${String(argCmd).trim()}`;
+          const firstQ = Array.isArray(args.questions) ? args.questions[0]?.question : (args.question || '');
+          if (firstQ && String(firstQ).trim()) return String(firstQ).trim();
+        }
+        if (toolName) return `等待授权工具: ${toolName}`;
+      }
+      const askText = st?.askQuestion?.question || st?.userInteraction?.prompt || '';
+      if (askText && String(askText).trim()) return String(askText).trim();
+    }
+    const msgs = extractMessagesFromTrajectorySteps(steps);
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i]?.role === 'user') break;
+      if (msgs[i]?.role === 'assistant' && String(msgs[i]?.text || '').trim()) {
+        return String(msgs[i].text).trim();
+      }
+    }
+    return '';
+  };
+
+  const extractReplyPreviewFromMessages = (messages) => {
+    if (!Array.isArray(messages) || !messages.length) return '';
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (!m) continue;
+      if (m.role === 'user') break;
+      if (m.role === 'assistant' && String(m.text || '').trim()) {
+        return sanitizeNotificationPreview(m.text, 150, 420);
+      }
+    }
+    return '';
+  };
+
+  const extractReplyPreviewFromStepList = (steps) => {
+    if (!Array.isArray(steps) || !steps.length) return '';
+    const msgs = extractMessagesFromTrajectorySteps(steps, { lazyHtml: true });
+    const fromMsgs = extractReplyPreviewFromMessages(msgs);
+    if (fromMsgs) return fromMsgs;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const st = steps[i];
+      if (!st || typeof st !== 'object') continue;
+      if (st.userInput || String(st.type || '').toUpperCase().includes('USER_INPUT')) break;
+      const pr = st.plannerResponse;
+      if (pr && typeof pr === 'object') {
+        const raw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
+        const hasToolCalls = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
+        if (raw && (hasToolCalls || !isStopHookBlockedSystemStep(steps[i + 1], st, steps, i + 1))) {
+          return sanitizeNotificationPreview(raw, 150, 420);
+        }
+      }
+    }
+    return '';
+  };
+
+  const rememberConvNotifyPreview = (cid, entry) => {
+    if (!cid || !entry) return;
+    if (convNotifyPreviewCache.size >= 200 && !convNotifyPreviewCache.has(cid)) {
+      const oldest = convNotifyPreviewCache.keys().next().value;
+      if (oldest !== undefined) convNotifyPreviewCache.delete(oldest);
+    }
+    convNotifyPreviewCache.set(cid, entry);
+  };
+
+  const isPushPreviewAllowed = () => {
+    try {
+      const info = typeof webPushManager.getPublicInfo === 'function' ? webPushManager.getPublicInfo() : null;
+      return info?.prefs?.showPreview !== false;
+    } catch {
+      return true;
+    }
+  };
+
+  const hydrateConversationsForNotifications = async (convList, activeSnap = null) => {
+    if (!Array.isArray(convList) || !convList.length) return convList;
+    const allowPreview = isPushPreviewAllowed();
+    const activeSid = String(activeSnap?.sessionId || activeSnap?.activeConversationId || '').trim();
+    if (activeSnap && activeSnap.ok !== false && activeSid && activeSid !== '__new__') {
+      const activeConv = convList.find((c) => c && c.id === activeSid);
+      const replyPrev = extractReplyPreviewFromMessages(activeSnap.messages);
+      let waitPrev = '';
+      const approvals = Array.isArray(activeSnap.pendingApprovals) ? activeSnap.pendingApprovals : [];
+      const prompts = Array.isArray(activeSnap.pendingPrompts) ? activeSnap.pendingPrompts : [];
+      if (approvals.length > 0) {
+        const ap = approvals[0] || {};
+        const rawAp = ap.command || ap.commandLine || ap.title || ap.description || ap.label || ap.text || '';
+        waitPrev = sanitizeNotificationPreview(rawAp, 150, 420);
+      } else if (prompts.length > 0) {
+        const pp = prompts[0] || {};
+        const rawPp = pp.question || pp.prompt || pp.title || pp.text || '';
+        waitPrev = sanitizeNotificationPreview(rawPp, 150, 420);
+      } else if (activeConv?.status === 'waiting') {
+        waitPrev = replyPrev;
+      }
+      const stepCnt = Number(activeConv?.stepCount) || (Array.isArray(activeSnap.messages) ? activeSnap.messages.length : 0);
+      if (replyPrev || waitPrev || stepCnt > 0) {
+        const prevCached = convNotifyPreviewCache.get(activeSid);
+        rememberConvNotifyPreview(activeSid, {
+          updatedAt: Number(activeConv?.updatedAt) || Date.now(),
+          status: activeConv?.status || '',
+          stepCount: stepCnt,
+          turnSig: stepCnt > 0 ? `s${stepCnt}` : `u${Number(activeConv?.updatedAt) || 0}`,
+          lastReplyPreview: replyPrev || prevCached?.lastReplyPreview || '',
+          waitingSummary: waitPrev || prevCached?.waitingSummary || ''
+        });
+      }
+    }
+
+    const pendingTransitions = typeof webPushManager.peekPendingTransitions === 'function'
+      ? webPushManager.peekPendingTransitions(convList)
+      : [];
+    const pendingSet = new Set(pendingTransitions.map((t) => t.id));
+    const toFetch = [];
+    for (const c of convList) {
+      if (!c || !c.id || c.id === '__new__') continue;
+      if (c.lastReplyPreview || c.waitingSummary) continue;
+      const needsSummary = pendingSet.has(c.id) || c.completedUnread === true || c.status === 'waiting';
+      if (!needsSummary) continue;
+      const cached = convNotifyPreviewCache.get(c.id);
+      const curUpd = Number(c.updatedAt) || 0;
+      const curStep = Number(c.stepCount) || 0;
+      const cacheFresh = Boolean(
+        cached &&
+        cached.status === (c.status || '') &&
+        ((curStep > 0 && cached.stepCount === curStep) || (curStep <= 0 && curUpd > 0 && cached.updatedAt === curUpd))
+      );
+      if (!cacheFresh && toFetch.length < 3) {
+        toFetch.push(c);
+      }
+    }
+
+    if (toFetch.length > 0 && allowPreview) {
+      await Promise.all(toFetch.map(async (c) => {
+        try {
+          let totalSteps = Math.max(0, Number(c.stepCount) || 0);
+          let tailSteps = [];
+          if (totalSteps > 0) {
+            const offset = Math.max(0, totalSteps - 15);
+            const stepRes = await Promise.resolve().then(() => callLsRpc('GetCascadeTrajectorySteps', {
+              cascadeId: c.id,
+              stepOffset: offset,
+              trajectoryVerbosity: 3
+            }, 1200)).catch(() => null);
+            if (Array.isArray(stepRes?.steps) && stepRes.steps.length > 0) {
+              tailSteps = stepRes.steps;
+            }
+          }
+          if (!tailSteps.length) {
+            const trajRes = await Promise.resolve().then(() => callLsRpc('GetCascadeTrajectory', {
+              cascadeId: c.id,
+              trajectoryVerbosity: 3
+            }, 1200)).catch(() => null);
+            const firstSteps = Array.isArray(trajRes?.trajectory?.steps) ? trajRes.trajectory.steps : [];
+            const numTotal = Math.max(totalSteps, Number(trajRes?.numTotalSteps || trajRes?.trajectory?.numTotalSteps || firstSteps.length) || 0);
+            totalSteps = numTotal;
+            if (numTotal > firstSteps.length) {
+              const tailRes = await Promise.resolve().then(() => callLsRpc('GetCascadeTrajectorySteps', {
+                cascadeId: c.id,
+                stepOffset: Math.max(firstSteps.length, numTotal - 15),
+                trajectoryVerbosity: 3
+              }, 1200)).catch(() => null);
+              tailSteps = Array.isArray(tailRes?.steps) && tailRes.steps.length ? tailRes.steps : firstSteps.slice(-15);
+            } else {
+              tailSteps = firstSteps.slice(-15);
+            }
+          }
+          if (!tailSteps.length) return;
+          const replyPrev = extractReplyPreviewFromStepList(tailSteps);
+          const waitPrev = c.status === 'waiting'
+            ? sanitizeNotificationPreview(extractWaitingSummaryFromStepList(tailSteps), 150, 420)
+            : '';
+          rememberConvNotifyPreview(c.id, {
+            updatedAt: Number(c.updatedAt) || 0,
+            status: c.status || '',
+            stepCount: totalSteps,
+            turnSig: totalSteps > 0 ? `s${totalSteps}` : `u${Number(c.updatedAt) || 0}`,
+            lastReplyPreview: replyPrev,
+            waitingSummary: waitPrev
+          });
+        } catch {}
+      }));
+    }
+
+    return convList.map((c) => {
+      if (!c || !c.id) return c;
+      const cached = convNotifyPreviewCache.get(c.id);
+      const stepCnt = Math.max(0, Number(c.stepCount || cached?.stepCount || 0) || 0);
+      const turnSig = String(c.turnSig || cached?.turnSig || (stepCnt > 0 ? `s${stepCnt}` : (Number(c.updatedAt) > 0 ? `u${Math.floor(Number(c.updatedAt))}` : '')));
+      const out = { ...c };
+      if (stepCnt > 0) out.stepCount = stepCnt;
+      if (turnSig) out.turnSig = turnSig;
+      if (allowPreview) {
+        const replyPrev = c.lastReplyPreview || cached?.lastReplyPreview || '';
+        const waitPrev = c.waitingSummary || cached?.waitingSummary || '';
+        if (replyPrev) out.lastReplyPreview = replyPrev;
+        if (waitPrev) out.waitingSummary = waitPrev;
+      } else {
+        delete out.lastReplyPreview;
+        delete out.replyPreview;
+        delete out.waitingSummary;
+        delete out.pendingSummary;
+      }
+      return out;
+    });
+  };
 
   const refreshPushStateFromCatalog = async (force = false) => {
     if (pushPollInFlight && !force) return lastCompletedUnreadCount;
     pushPollInFlight = true;
     try {
       let convList = null;
+      let snapObj = null;
       if (typeof options.pollConversations === 'function') {
         convList = await options.pollConversations({ force });
       } else if (typeof options.fetchSnapshot === 'function') {
-        const snap = await options.fetchSnapshot({ bypassCache: force }).catch(() => null);
-        if (snap && Array.isArray(snap.conversations)) convList = snap.conversations;
+        snapObj = await options.fetchSnapshot({ bypassCache: force }).catch(() => null);
+        if (snapObj && Array.isArray(snapObj.conversations)) convList = snapObj.conversations;
       } else {
         const enriched = await enrichSnapshotWithCatalog({ ok: true, conversations: [] }, {
           bypassCache: force,
@@ -17318,7 +17692,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (enriched && Array.isArray(enriched.conversations)) convList = enriched.conversations;
       }
       if (Array.isArray(convList)) {
-        const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
+        const hydrated = await hydrateConversationsForNotifications(convList, snapObj);
+        const { completedUnreadCount } = webPushManager.observeCatalogItems(hydrated);
         lastCompletedUnreadCount = completedUnreadCount;
       }
     } catch {} finally {
@@ -18255,6 +18630,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           if (!session.conversationId && (snap.activeConversationId || snap.sessionId)) {
             session.conversationId = String(snap.activeConversationId || snap.sessionId || '');
           }
+        }
+        if (snap && snap.ok !== false && Array.isArray(snap.conversations)) {
+          snap = {
+            ...snap,
+            conversations: await hydrateConversationsForNotifications(snap.conversations, snap)
+          };
         }
         const usageSummary = (snap && snap.ok !== false && !snap.usageSummary)
           ? await getCachedUsageSummary()
