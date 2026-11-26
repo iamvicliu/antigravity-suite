@@ -11675,7 +11675,7 @@
 
     if (action === 'send-queued-dom') {
       const entries = await ensureQueuedMessagesExpanded(findQueuedMessagesDomEntries(), 'sendBtn');
-      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      if (!entries.length) return { ok: false, confirmedNotExecuted: true, error: '当前没有排队中的消息' };
       if (payload?.sendAll === true) {
         let sentCount = 0;
         for (const entry of entries) {
@@ -11684,13 +11684,13 @@
             sentCount += 1;
           }
         }
-        if (!sentCount) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+        if (!sentCount) return { ok: false, confirmedNotExecuted: true, error: '未找到桌面端排队消息发送按钮' };
         return { ok: true, source: 'dom', sentCount };
       }
       const resolved = resolveStrictQueuedDomTarget(entries, payload, '发送');
-      if (!resolved.ok) return { ok: false, error: resolved.error };
+      if (!resolved.ok) return { ok: false, confirmedNotExecuted: true, error: resolved.error };
       const target = resolved.target;
-      if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+      if (!target?.sendBtn) return { ok: false, confirmedNotExecuted: true, error: '未找到桌面端排队消息发送按钮' };
       target.sendBtn.click();
       return { ok: true, source: 'dom', sentCount: 1 };
     }
