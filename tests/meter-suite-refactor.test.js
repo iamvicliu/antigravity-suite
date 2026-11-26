@@ -3018,7 +3018,7 @@ test('需求 13: 远程浮窗整行热区勾选、CLI 多路复用器指定主�
 
   vm.runInContext(CAPSULE_SRC, envCap.sandbox);
   const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
-  assert.equal(capsApi.version, '1.6.4');
+  assert.equal(capsApi.version, '1.6.5');
 
   capsApi.renderFooterCapsule(footerEl, {
     contextUsed: 181000,
@@ -28536,7 +28536,7 @@ test('pulse-capsule-overlay: M532-M537 兜底、短窗 TPS 过滤与窄屏 4 档
 
   vm.runInContext(CAPSULE_SRC, envCap.sandbox);
   const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
-  assert.equal(capsApi.version, '1.6.4');
+  assert.equal(capsApi.version, '1.6.5');
 
   // 1. M532-M537 Neon 模型名称与 1M 上下文兜底
   assert.equal(capsApi.resolveModelDisplayName('MODEL_PLACEHOLDER_M532'), 'Gemini 4 Neon (High)');
@@ -30696,7 +30696,7 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
     vm.runInContext(CAPSULE_SRC, envCap.sandbox);
     const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
     capsApi.clearCaches();
-    // 能力表为空且 M427 已观测运行时预算为 512,000 时：物理窗口仍为 1,048,576，主分母为 512,000，悬浮详情辅助行正常展示
+    // 能力表为空且 M427 已观测运行时预算为 512,000 时：数据层物理窗口仍为 1,048,576，主分母为 512,000，且不引入未确认的 UI 布局行
     capsApi.ingestGeneratorMetadata([{
       chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } }
     }], 'cid-empty-cap');
@@ -30706,7 +30706,7 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
     assert.equal(emptyCapUsage.physicalMaxTokens, 1048576); assert.equal(emptyCapUsage.contextLimit, 512000);
     capsApi.renderFooterCapsule(footerEl, emptyCapUsage);
     footerEl.querySelector('[data-agy-context-capsule="1"]').dispatchEvent({ type: 'mouseenter' });
-    assert.ok(/1M/.test(envCap.doc.getElementById('__agy_ctx_capsule_tooltip__')?.querySelector('[data-physical-window-note="1"]')?.textContent || ''));
+    assert.equal(envCap.doc.getElementById('__agy_ctx_capsule_tooltip__')?.querySelector('[data-physical-window-note="1"]'), null);
 
     capsApi.clearCaches();
     capsApi.ingestAvailableModels({
@@ -30740,8 +30740,7 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
     capBtn.dispatchEvent({ type: 'mouseenter' });
     const tipEl = envCap.doc.getElementById('__agy_ctx_capsule_tooltip__');
     assert.ok(tipEl);
-    const physNote = tipEl.querySelector('[data-physical-window-note="1"]');
-    assert.ok(physNote && /1M/.test(physNote.textContent) && /512k/.test(physNote.textContent));
+    assert.equal(tipEl.querySelector('[data-physical-window-note="1"]'), null);
 
     // CHECKPOINT 压缩步骤（无 modelUsage）后立即废弃压缩前 258,963 旧值并回落至压缩后真值
     const postCompactSteps = capsApi.analyzeSteps([
@@ -30837,7 +30836,11 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
       };
 
       const getGenPayload = (cid) => {
-        if (cid === CONV_SCAN_STEP4 || cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST) return { generatorMetadata: [makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
+        if (cid === CONV_SCAN_STEP4) return { generatorMetadata: [makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
+        if (cid === CONV_POST_UNTIMED_MU || cid === CONV_POST_UNTIMED_EST) {
+          // 无步骤索引的 GeneratorMetadata 仍停留在 CHECKPOINT 后第一轮计时回复 A (120 tok/s)，随后已有无计时第二轮回复 B
+          return { generatorMetadata: [{ chatModel: { model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)', streamingDuration: '2.0s', usage: { inputTokens: 8000, cacheReadTokens: 18000, outputTokens: 240 }, chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } } } }] };
+        }
         if (cid === CONV_GM_CREATE) return { generatorMetadata: [makeGmRow(1, { inputTokens: 15000, cacheReadTokens: 25000, cacheCreationTokens: 5000, outputTokens: 500 }, 512000, '1.0s', '5.0s')] };
         if (cid === CONV_GM_TOT) return { generatorMetadata: [makeGmRow(1, { totalTokens: 64000 }, 512000, '1.0s', '2.0s')] };
         if (cid === CONV_POST_GM) return { generatorMetadata: [postGmArrived ? makeGmRow(4, { inputTokens: 14000, cacheReadTokens: 20000, outputTokens: 600 }, 512000, '1.0s', '5.0s') : makeGmRow(1, { inputTokens: 258000, cacheReadTokens: 0, outputTokens: 963 }, 512000)] };
@@ -30919,7 +30922,7 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
       assert.equal(cpConflict.usagePercent, 5.9); assert.equal(cpConflict.usedText, '30.4k (5.9%)'); assert.equal(cpConflict.limitText, '512k');
       assert.ok(!JSON.stringify(cpConflict).includes('50.6%') && !JSON.stringify(cpConflict).includes('259K'));
       const mobileHtml = require('../mobile-remote').buildMobileAppHtml({ token: 'tok-50', mode: 'lan' });
-      assert.ok(mobileHtml.includes('ctx-physical-note') && mobileHtml.includes('模型物理上限：'));
+      assert.ok(!mobileHtml.includes('ctx-physical-note'));
 
       // 2c: 普通视图 (isolated: false) 与 仅本页独立视图 (isolated: true) 对同一会话指标与纯流式 tok/s (185) 100% 对齐
       setRoute(CONV_PARITY);
@@ -31127,13 +31130,19 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
         assert.equal(isoGm.contextPanel.remainingText, normGm.contextPanel.remainingText); assert.equal(isoGm.contextPanel.remainingText, meterOnlyGm.contextPanel.remainingText);
       }
 
-      // 2n: CHECKPOINT 后连续两轮回复且后一轮无计时（实报无时长 / 估算回复无时间戳）时，collector、胶囊与 isolated 均清空上一轮旧速度
+      // 2n: CHECKPOINT 后先有计时回复 A (120 tok/s)、再有无计时回复 B，且无步骤索引的 GeneratorMetadata 对应 A：经 refreshConversationUsage + renderAllFooters 验证胶囊、collector、isolated 全端清空旧速度
       for (const untimedCid of [CONV_POST_UNTIMED_MU, CONV_POST_UNTIMED_EST]) {
+        setRoute(untimedCid);
+        realFooter.__reactFiber$test = { memoizedProps: { cascadeId: untimedCid, modelId: 'MODEL_PLACEHOLDER_M427' } };
+        capsApi.setTrajectorySummary(untimedCid, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-untimed-b' });
+        const capUnt = await capsApi.refreshConversationUsage(untimedCid, { stepCount: 4, status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: 't-untimed-b' }, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', {}, realFooter);
+        capsApi.renderAllFooters();
         const colUnt = await collectorMod.collect(origin, untimedCid, { force: true });
-        const capUnt = capsApi.analyzeSteps(getTrajPayload(untimedCid).trajectory.steps, 'MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)', 4);
+        setRoute(CONV_ACTIVE);
         const isoUnt = await enh.getMobileSnapshotAsync({ conversationId: untimedCid });
+        assert.equal(capUnt.tokPerSec, 0); assert.equal(renderedCap.__ctxUsageData.tokPerSec, 0);
         assert.equal(colUnt.latest.speed, null); assert.equal(colUnt.latest.speedStepIndex, -1);
-        assert.equal(capUnt.tokPerSec, 0); assert.equal(isoUnt.contextPanel.tokPerSec, null);
+        assert.equal(isoUnt.contextPanel.tokPerSec, null);
         assert.equal(colUnt.latest.actual, capUnt.contextUsed); assert.equal(colUnt.latest.actual, isoUnt.contextPanel.usedTokens);
       }
     } finally {
