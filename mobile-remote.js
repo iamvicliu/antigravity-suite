@@ -17403,10 +17403,19 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let cachedUsageData = null;
   let cachedUsageAt = 0;
   const dispatchedQueueDeletes = new Map();
-  const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
+  const maxDispatchedQueueDeletes = Number(options.maxDispatchedQueueDeletes) > 0 ? Number(options.maxDispatchedQueueDeletes) : 2048;
+  const evictedDispatchedDeleteBloom = new Uint8Array(8192);
   const unknownDispatchedQueueSends = new Map();
   const maxUnknownQueueSends = Number(options.maxUnknownQueueSends) > 0 ? Number(options.maxUnknownQueueSends) : 2048;
   const evictedUnknownQueueBloom = new Uint8Array(8192);
+  const cascadesWithEvictedUnresolvedQueue = new Set();
+  const inflightQueueDispatches = new Map();
+  const inflightDomQueueCascades = new Set();
+  const parseCascadeFromQueueKey = (rawKey) => String(rawKey || '').split('::')[0].trim();
+  const normalizeQueueDedupText = (rawText) => stripDisplayMediaSuffixFromQueuedText(String(rawText || ''), true)
+    .replace(/[\u200B-\u200D\u2060\u2066-\u2069\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
   const bloomPositions = (rawKey) => {
     const dig = crypto.createHash('sha256').update(String(rawKey || '')).digest();
     return [
@@ -17422,16 +17431,22 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
   };
   const testBloomBits = (bloom, rawKey) => bloomPositions(rawKey).every((bit) => (bloom[bit >> 3] & (1 << (bit & 7))) !== 0);
-  const markUnknownQueueSend = (key, errMsg = '') => {
+  const markUnknownQueueSend = (key, errMsg = '', text = '') => {
     if (!key) return;
     if (unknownDispatchedQueueSends.has(key)) unknownDispatchedQueueSends.delete(key);
     while (unknownDispatchedQueueSends.size >= maxUnknownQueueSends) {
       const oldest = unknownDispatchedQueueSends.keys().next().value;
       if (oldest === undefined) break;
       setBloomBits(evictedUnknownQueueBloom, oldest);
+      const evictedCid = parseCascadeFromQueueKey(oldest);
+      if (evictedCid) cascadesWithEvictedUnresolvedQueue.add(evictedCid);
       unknownDispatchedQueueSends.delete(oldest);
     }
-    unknownDispatchedQueueSends.set(key, { at: getSendClockNow(), error: String(errMsg || '') });
+    unknownDispatchedQueueSends.set(key, {
+      at: getSendClockNow(),
+      error: String(errMsg || ''),
+      text: String(text || '')
+    });
   };
   const getUnknownQueueSendError = (key) => {
     if (!key) return null;
@@ -17442,10 +17457,78 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     }
     return null;
   };
+  const hasCascadeInflightQueueSend = (cid) => {
+    const cleanCid = String(cid || '').trim();
+    if (!cleanCid) return false;
+    const prefix = `${cleanCid}::`;
+    for (const k of inflightQueueDispatches.keys()) {
+      if (String(k).startsWith(prefix)) return true;
+    }
+    return false;
+  };
+  const getCascadeUnresolvedQueueSummary = (cid) => {
+    const cleanCid = String(cid || '').trim();
+    const msgIds = new Set();
+    const normTexts = new Set();
+    let hasNonMsgKey = false;
+    const hasEvicted = cleanCid ? cascadesWithEvictedUnresolvedQueue.has(cleanCid) : false;
+    if (cleanCid) {
+      const prefix = `${cleanCid}::`;
+      const scanEntry = (k, rec) => {
+        const ks = String(k || '');
+        if (!ks.startsWith(prefix)) return;
+        const rest = ks.slice(prefix.length);
+        if (rest.startsWith('msg:')) {
+          const mid = rest.slice(4).trim();
+          if (mid) msgIds.add(mid);
+        } else {
+          hasNonMsgKey = true;
+        }
+        const nt = normalizeQueueDedupText(rec?.text);
+        if (nt) normTexts.add(nt);
+      };
+      for (const [k, rec] of unknownDispatchedQueueSends.entries()) scanEntry(k, rec);
+      for (const [k, rec] of dispatchedQueueDeletes.entries()) scanEntry(k, rec);
+    }
+    return {
+      hasAny: Boolean(hasEvicted || msgIds.size > 0 || hasNonMsgKey),
+      hasEvicted,
+      hasNonMsgKey,
+      msgIds,
+      normTexts
+    };
+  };
   const getSendClockNow = typeof options.now === 'function' ? options.now : () => Date.now();
   const recentSendActionCache = new Map();
   const RECENT_SEND_ACTION_TTL_MS = 60 * 1000;
   const maxRecentOkSendActions = Number(options.maxRecentOkSendActions) > 0 ? Number(options.maxRecentOkSendActions) : 300;
+  const completedSendActionMeta = new Map();
+  const maxCompletedSendActions = Number(options.maxCompletedSendActions) > 0 ? Number(options.maxCompletedSendActions) : 4096;
+  const evictedCompletedSendBloom = new Uint8Array(8192);
+  const markCompletedSendAction = (key, meta = {}) => {
+    if (!key) return;
+    if (completedSendActionMeta.has(key)) completedSendActionMeta.delete(key);
+    while (completedSendActionMeta.size >= maxCompletedSendActions) {
+      const oldest = completedSendActionMeta.keys().next().value;
+      if (oldest === undefined) break;
+      setBloomBits(evictedCompletedSendBloom, oldest);
+      completedSendActionMeta.delete(oldest);
+    }
+    completedSendActionMeta.set(key, {
+      at: getSendClockNow(),
+      conversationId: String(meta?.conversationId || '').trim(),
+      createdConversationId: String(meta?.createdConversationId || '').trim()
+    });
+  };
+  const getCompletedSendAction = (key) => {
+    if (!key) return null;
+    const rec = completedSendActionMeta.get(key);
+    if (rec) return rec;
+    if (testBloomBits(evictedCompletedSendBloom, key)) {
+      return { evicted: true, conversationId: '', createdConversationId: '' };
+    }
+    return null;
+  };
   const unknownSendActionMap = new Map();
   const maxUnknownSendActions = Number(options.maxUnknownSendActions) > 0 ? Number(options.maxUnknownSendActions) : 2048;
   const evictedUnknownSendBloom = new Uint8Array(8192);
@@ -17571,26 +17654,24 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     return 1;
   };
   const markDispatchedQueueDelete = (key, text = '', meta = {}) => {
-    const now = Date.now();
-    for (const [k, v] of dispatchedQueueDeletes.entries()) {
-      if (!v || (now - v.at) > DISPATCHED_QUEUE_TTL_MS) dispatchedQueueDeletes.delete(k);
-    }
-    if (dispatchedQueueDeletes.size >= 500 && !dispatchedQueueDeletes.has(key)) {
+    if (!key) return;
+    if (dispatchedQueueDeletes.has(key)) dispatchedQueueDeletes.delete(key);
+    while (dispatchedQueueDeletes.size >= maxDispatchedQueueDeletes) {
       const oldest = dispatchedQueueDeletes.keys().next().value;
-      if (oldest !== undefined) dispatchedQueueDeletes.delete(oldest);
+      if (oldest === undefined) break;
+      setBloomBits(evictedDispatchedDeleteBloom, oldest);
+      const evictedCid = parseCascadeFromQueueKey(oldest);
+      if (evictedCid) cascadesWithEvictedUnresolvedQueue.add(evictedCid);
+      dispatchedQueueDeletes.delete(oldest);
     }
-    dispatchedQueueDeletes.set(key, { at: now, text, ...(meta && typeof meta === 'object' ? meta : {}) });
+    dispatchedQueueDeletes.set(key, { at: getSendClockNow(), text: String(text || ''), ...(meta && typeof meta === 'object' ? meta : {}) });
   };
   const getDispatchedQueueDelete = (key) => {
-    const rec = dispatchedQueueDeletes.get(key);
-    if (!rec) return null;
-    if ((Date.now() - rec.at) > DISPATCHED_QUEUE_TTL_MS) {
-      dispatchedQueueDeletes.delete(key);
-      return null;
-    }
-    return rec;
+    if (!key) return null;
+    return dispatchedQueueDeletes.get(key) || null;
   };
-  const hasDispatchedQueueDelete = (key) => Boolean(getDispatchedQueueDelete(key));
+  const isEvictedDispatchedQueueDelete = (key) => Boolean(key && !dispatchedQueueDeletes.has(key) && testBloomBits(evictedDispatchedDeleteBloom, key));
+  const hasDispatchedQueueDelete = (key) => Boolean(dispatchedQueueDeletes.has(key) || isEvictedDispatchedQueueDelete(key));
   try {
     lastMtimeMs = fs.statSync(getRemoteConfigPath()).mtimeMs;
   } catch {}
@@ -19433,6 +19514,45 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             const rawExpCount = overrides.expectedQueueCount !== undefined ? overrides.expectedQueueCount : payload?.expectedQueueCount;
             const hasExpCount = rawExpCount !== undefined && rawExpCount !== null && rawExpCount !== '' && Number.isInteger(Number(rawExpCount)) && Number(rawExpCount) > 0;
             const resolvedText = overrides.text !== undefined ? String(overrides.text) : editedText;
+            if (hasCascadeInflightQueueSend(cascadeId) || inflightDomQueueCascades.has(cascadeId)) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: '当前会话存在正在派发中的排队操作，已阻止并发桌面端回退操作以避免重复发送或冲突'
+              }));
+              return false;
+            }
+            if (domAct === 'send-queued-dom') {
+              const unresolved = getCascadeUnresolvedQueueSummary(cascadeId);
+              if (unresolved.hasAny) {
+                if (sendAllFlag !== false) {
+                  sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                    ok: false,
+                    outcomeUnknown: true,
+                    error: '当前会话存在发送结果未知或待移除的已发送排队项，已阻止桌面端全量回退发送以避免重复发送；请先核对或撤回对应排队项'
+                  }));
+                  return false;
+                }
+                const targetNormText = normalizeQueueDedupText(resolvedText);
+                const hasProvenDistinctId = Boolean(
+                  messageId &&
+                  !/^opt-/i.test(messageId) &&
+                  !unresolved.hasEvicted &&
+                  !unresolved.hasNonMsgKey &&
+                  !unresolved.msgIds.has(messageId) &&
+                  (!targetNormText || !unresolved.normTexts.has(targetNormText))
+                );
+                if (!hasProvenDistinctId) {
+                  sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                    ok: false,
+                    outcomeUnknown: true,
+                    error: '当前会话存在未决排队发送状态且无法确认目标项独立身份，已阻止桌面端回退发送以避免重复发送'
+                  }));
+                  return false;
+                }
+              }
+            }
+            inflightDomQueueCascades.add(cascadeId);
             let domRes = null;
             try {
               domRes = await performAction({
@@ -19450,6 +19570,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             } catch (domErr) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domErr?.message || '桌面端队列操作失败' }));
               return false;
+            } finally {
+              inflightDomQueueCascades.delete(cascadeId);
             }
             if (!domRes?.ok) {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
@@ -19504,69 +19626,109 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }));
           };
           const sendSingleQueuedWithCheckedDelete = async ({ dispatchKey, text, hasMedia, deleteMethod, deleteBody, dispatchMeta }) => {
-            if (hasDispatchedQueueDelete(dispatchKey)) {
-              const delRetryOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
-              if (!delRetryOutcome.ok) {
+            if (dispatchKey && inflightQueueDispatches.has(dispatchKey)) {
+              const sharedOut = await inflightQueueDispatches.get(dispatchKey);
+              if (sharedOut?.ok) {
+                return { ...sharedOut, deduplicatedRetry: true };
+              }
+              if (sharedOut?.needsDomFallback || sharedOut?.confirmedNotExecuted) {
+                return {
+                  ok: false,
+                  sendFailed: true,
+                  confirmedNotExecuted: false,
+                  deduplicatedInflight: true,
+                  error: '同一排队消息已有并发发送请求正在处理，已阻止重复回退发送'
+                };
+              }
+              return { ...sharedOut, deduplicatedInflight: true };
+            }
+            const runSingleDispatch = async () => {
+              if (dispatchedQueueDeletes.has(dispatchKey)) {
+                const delRetryOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+                if (!delRetryOutcome.ok) {
+                  return {
+                    ok: false,
+                    partialSuccess: true,
+                    error: delRetryOutcome.error || '消息此前已发送，重试移除原排队项仍失败；请稍后再试，不会重复发送'
+                  };
+                }
+                dispatchedQueueDeletes.delete(dispatchKey);
+                unknownDispatchedQueueSends.delete(dispatchKey);
+                return { ok: true, rpcRes: delRetryOutcome.result, deduplicatedRetry: true };
+              }
+              if (isEvictedDispatchedQueueDelete(dispatchKey)) {
+                return {
+                  ok: false,
+                  sendFailed: true,
+                  confirmedNotExecuted: false,
+                  deduplicatedUnknownSend: true,
+                  error: '该排队消息此前已发送但移除状态记录已归档，已阻止重复发送，请先撤回或核对会话消息'
+                };
+              }
+              const priorUnknownErr = getUnknownQueueSendError(dispatchKey);
+              if (priorUnknownErr) {
+                return {
+                  ok: false,
+                  sendFailed: true,
+                  confirmedNotExecuted: false,
+                  deduplicatedUnknownSend: true,
+                  error: priorUnknownErr
+                };
+              }
+              if (hasMedia || !String(text || '').trim()) {
+                return { ok: false, needsDomFallback: true };
+              }
+              const cascadeConfig = historyManager.getCachedUserConfig?.(cascadeId) || null;
+              const sendOutcome = await callLsRpcDetailed(
+                'SendUserCascadeMessage',
+                {
+                  cascadeId,
+                  items: [{ text: String(text) }],
+                  deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION',
+                  ...(cascadeConfig ? { cascadeConfig } : {})
+                },
+                rpcTimeoutMs
+              );
+              if (!sendOutcome.ok) {
+                if (!sendOutcome.confirmedNotExecuted) {
+                  markUnknownQueueSend(
+                    dispatchKey,
+                    '该排队消息此前立即发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息',
+                    String(text)
+                  );
+                }
+                return {
+                  ok: false,
+                  sendFailed: true,
+                  confirmedNotExecuted: Boolean(sendOutcome.confirmedNotExecuted),
+                  error: sendOutcome.error || '立即发送排队消息失败'
+                };
+              }
+              const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+              if (!delOutcome.ok) {
+                markDispatchedQueueDelete(dispatchKey, String(text), dispatchMeta);
                 return {
                   ok: false,
                   partialSuccess: true,
-                  error: delRetryOutcome.error || '消息此前已发送，重试移除原排队项仍失败；请稍后再试，不会重复发送'
+                  error: delOutcome.error || '消息已立即发送，但移除原排队项失败；再次点击将仅重试移除而不重复发送'
                 };
               }
               dispatchedQueueDeletes.delete(dispatchKey);
               unknownDispatchedQueueSends.delete(dispatchKey);
-              return { ok: true, rpcRes: delRetryOutcome.result, deduplicatedRetry: true };
+              return { ok: true, rpcRes: sendOutcome.result, deduplicatedRetry: false };
+            };
+            if (!dispatchKey) {
+              return await runSingleDispatch();
             }
-            const priorUnknownErr = getUnknownQueueSendError(dispatchKey);
-            if (priorUnknownErr) {
-              return {
-                ok: false,
-                sendFailed: true,
-                confirmedNotExecuted: false,
-                deduplicatedUnknownSend: true,
-                error: priorUnknownErr
-              };
-            }
-            if (hasMedia || !String(text || '').trim()) {
-              return { ok: false, needsDomFallback: true };
-            }
-            const cascadeConfig = historyManager.getCachedUserConfig?.(cascadeId) || null;
-            const sendOutcome = await callLsRpcDetailed(
-              'SendUserCascadeMessage',
-              {
-                cascadeId,
-                items: [{ text: String(text) }],
-                deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION',
-                ...(cascadeConfig ? { cascadeConfig } : {})
-              },
-              rpcTimeoutMs
-            );
-            if (!sendOutcome.ok) {
-              if (!sendOutcome.confirmedNotExecuted) {
-                markUnknownQueueSend(
-                  dispatchKey,
-                  '该排队消息此前立即发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息'
-                );
+            const dispatchPromise = runSingleDispatch();
+            inflightQueueDispatches.set(dispatchKey, dispatchPromise);
+            try {
+              return await dispatchPromise;
+            } finally {
+              if (inflightQueueDispatches.get(dispatchKey) === dispatchPromise) {
+                inflightQueueDispatches.delete(dispatchKey);
               }
-              return {
-                ok: false,
-                sendFailed: true,
-                confirmedNotExecuted: Boolean(sendOutcome.confirmedNotExecuted),
-                error: sendOutcome.error || '立即发送排队消息失败'
-              };
             }
-            const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
-            if (!delOutcome.ok) {
-              markDispatchedQueueDelete(dispatchKey, String(text), dispatchMeta);
-              return {
-                ok: false,
-                partialSuccess: true,
-                error: delOutcome.error || '消息已立即发送，但移除原排队项失败；再次点击将仅重试移除而不重复发送'
-              };
-            }
-            dispatchedQueueDeletes.delete(dispatchKey);
-            unknownDispatchedQueueSends.delete(dispatchKey);
-            return { ok: true, rpcRes: sendOutcome.result, deduplicatedRetry: false };
           };
           if (messageId) {
             const dispatchKey = `${cascadeId}::msg:${messageId}`;
@@ -19978,11 +20140,29 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               rpcRes = sendAllOutcome.result;
             } else if (sendAllOutcome.confirmedNotExecuted) {
               const rawQueuedItems = Array.isArray(payload?.queuedItems) ? payload.queuedItems.filter((it) => it && typeof it === 'object') : [];
+              const canQueryLivePending = Boolean(
+                typeof options.fetchPendingAgentMessages === 'function' ||
+                options.localApiConnect ||
+                globalThis.__AG_REMOTE_TEST_API__ ||
+                !isCatalogTestEnv()
+              );
+              let pendingQueryFailed = false;
               const livePending = await historyManager.fetchPendingAgentMessages?.(cascadeId, {
                 localApiConnect: options.localApiConnect,
                 fetchPendingAgentMessages: options.fetchPendingAgentMessages,
                 bypassCache: true
-              }).catch(() => null);
+              }).catch(() => {
+                pendingQueryFailed = true;
+                return null;
+              });
+              if (pendingQueryFailed || (canQueryLivePending && !Array.isArray(livePending))) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '无法实时核验服务端排队状态，已停止自动回退全发以避免重复发送'
+                }));
+                return;
+              }
               if (Array.isArray(livePending)) {
                 if (!livePending.length) {
                   if (payload?.hasDomQueued === true) {
@@ -20519,6 +20699,32 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               return;
             }
           }
+          const archivedCompletedSend = getCompletedSendAction(sendDedupKey);
+          if (archivedCompletedSend) {
+            const snapConvId = archivedCompletedSend.conversationId || (effectiveConvId && effectiveConvId !== '__new__' ? effectiveConvId : '');
+            const dedupRawSnap = await fetchSnapshot(effectiveTargetId, {
+              ...(snapConvId ? { conversationId: snapConvId } : {}),
+              clientId,
+              convLimit: 100,
+              msgLimit: 30
+            }).catch(() => null);
+            let dedupSnap = null;
+            if (dedupRawSnap && dedupRawSnap.ok !== false) {
+              const usageSummary = !dedupRawSnap.usageSummary ? await getCachedUsageSummary() : null;
+              dedupSnap = enrichSnapshotPayload(dedupRawSnap, config, activeTunnelUrl, clientId, usageSummary);
+            }
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: true,
+              deduplicatedAction: true,
+              actionResult: {
+                ok: true,
+                deduplicatedAction: true,
+                ...(archivedCompletedSend.createdConversationId ? { createdConversationId: archivedCompletedSend.createdConversationId } : {})
+              },
+              ...(dedupSnap ? { snapshot: dedupSnap } : {})
+            }));
+            return;
+          }
         }
         if (isDeferredDraftSend && session) {
           session.draftSendInflight = true;
@@ -20662,6 +20868,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (sendDedupKey) {
           if (result && result.ok !== false) {
             recentSendActionCache.set(sendDedupKey, { at: getSendClockNow(), inflight: null, result });
+            const resolvedCompletedCid = String(
+              result?.actionResult?.createdConversationId ||
+              result?.snapshot?.activeConversationId ||
+              result?.snapshot?.sessionId ||
+              effectiveConvId ||
+              ''
+            ).trim();
+            markCompletedSendAction(sendDedupKey, {
+              conversationId: (resolvedCompletedCid && resolvedCompletedCid !== '__new__' && resolvedCompletedCid !== 'new') ? resolvedCompletedCid : '',
+              createdConversationId: String(result?.actionResult?.createdConversationId || '').trim()
+            });
           } else if (isSendConfirmedNotExecuted(result)) {
             recentSendActionCache.delete(sendDedupKey);
           } else {
