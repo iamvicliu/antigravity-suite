@@ -4040,6 +4040,8 @@
           if (matchedMaxStepIdx >= 0) latestVal.stepCount = matchedMaxStepIdx + 1;
         }
         latestVal.speedStepIndex = latestVal.speed ? matchedMaxStepIdx : -1;
+        latestVal.speedCreatedAtMs = 0;
+        latestVal.speedUsageSignature = '';
         latestVal.metaMaxStepIndex = matchedMaxStepIdx;
         latestVal.exactUsageStepIndex = matchedMaxStepIdx;
         latestVal.updatedAtMs = Date.now();
@@ -4047,12 +4049,14 @@
         const curExact = typeof state.latest?.exactUsageStepIndex === 'number' ? state.latest.exactUsageStepIndex : -1;
         const pfExact = (pf && pf.route === id && typeof pf.latest?.exactUsageStepIndex === 'number') ? pf.latest.exactUsageStepIndex : -1;
         const knownExact = Math.max(curExact, pfExact);
+        const knownStepCount = Math.max(Number(state.latest?.stepCount || 0), pf && pf.route === id ? Number(pf.latest?.stepCount || 0) : 0);
+        const rowHasTrailingScanSteps = matchedMaxStepIdx >= 0 && matchedMaxStepIdx === knownExact && knownStepCount > matchedMaxStepIdx + 1;
         const rowProvenAfterCp = Boolean(
           pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 &&
-          matchedMaxStepIdx > pf.lastCheckpointStepIdx && matchedMaxStepIdx >= knownExact
+          matchedMaxStepIdx > pf.lastCheckpointStepIdx && matchedMaxStepIdx >= knownExact && !rowHasTrailingScanSteps
         );
         const sameScannedUnindexed = matchedMaxStepIdx < 0 && state.scanGeneratorCount >= 0 && state.count <= state.scanGeneratorCount && Number(state.latest?.stepCount) > 0;
-        const rowBehindKnownStep = (knownExact >= 0 && (matchedMaxStepIdx < 0 || matchedMaxStepIdx < knownExact)) || sameScannedUnindexed;
+        const rowBehindKnownStep = (knownExact >= 0 && (matchedMaxStepIdx < 0 || matchedMaxStepIdx < knownExact || rowHasTrailingScanSteps)) || sameScannedUnindexed;
         const rowPredatesFloorCp = Boolean(pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 && matchedMaxStepIdx <= pf.lastCheckpointStepIdx);
         if (rowBehindKnownStep) {
           if (pf && pf.route === id && state.count > pf.generatorCount) pf.generatorCount = state.count;
