@@ -8337,21 +8337,75 @@
   }
 
   function extractQueueFiberEntries(cardEl) {
-    try {
-      const fk = Object.keys(cardEl || {}).find((k) => k.startsWith('__reactFiber$'));
-      let f = fk ? cardEl[fk] : null;
-      for (let depth = 0; depth < 8 && f; depth += 1, f = f.return) {
+    const formatQueueStepItem = (it) => {
+      if (!it || typeof it !== 'object') return '';
+      if (typeof it.text === 'string' && it.text) return it.text;
+      const ch = it.chunk;
+      if (ch && typeof ch === 'object') {
+        if (ch.case === 'text') return String(ch.value || '');
+        if (ch.case === 'item' && ch.value && typeof ch.value === 'object') {
+          const v = ch.value;
+          const scope = v.scopeItem || v.item || v;
+          if (scope?.case === 'file' || scope?.file) {
+            const uri = String(scope.value?.absoluteUri || scope.file?.absoluteUri || '');
+            let base = uri.split('/').pop() || uri;
+            try { base = decodeURIComponent(base); } catch {}
+            return base ? `@${base}` : '';
+          }
+          if (scope?.case === 'directory' || scope?.directory) {
+            const uri = String(scope.value?.absoluteUri || scope.directory?.absoluteUri || '').replace(/\/+$/, '');
+            let base = uri.split('/').pop() || uri;
+            try { base = decodeURIComponent(base); } catch {}
+            return base ? `@${base}` : '';
+          }
+          if (scope?.case === 'slashCommand' || scope?.slashCommand) {
+            const nm = String(scope.value?.info?.name || scope.slashCommand?.info?.name || '');
+            return nm ? `/${nm}` : '';
+          }
+          return String(v.displayLabel || v.title || v.url || '');
+        }
+      }
+      if (it.item?.file?.absoluteUri) {
+        const uri = String(it.item.file.absoluteUri);
+        let base = uri.split('/').pop() || uri;
+        try { base = decodeURIComponent(base); } catch {}
+        return `@${base}`;
+      }
+      if (it.item?.directory?.absoluteUri) {
+        const uri = String(it.item.directory.absoluteUri).replace(/\/+$/, '');
+        let base = uri.split('/').pop() || uri;
+        try { base = decodeURIComponent(base); } catch {}
+        return `@${base}`;
+      }
+      if (it.item?.slashCommand?.info?.name) {
+        return `/${it.item.slashCommand.info.name}`;
+      }
+      return '';
+    };
+    const findArrFromNode = (el, maxDepth) => {
+      if (!el) return null;
+      const fk = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+      let f = fk ? el[fk] : null;
+      for (let depth = 0; depth < maxDepth && f; depth += 1, f = f.return) {
         const p = f.memoizedProps || {};
         const arr = Array.isArray(p.queuedUserInputs)
           ? p.queuedUserInputs
           : (Array.isArray(p.pendingUserInputs) ? p.pendingUserInputs : null);
-        if (!arr || !arr.length) continue;
+        if (arr && arr.length) return arr;
+      }
+      return null;
+    };
+    try {
+      const firstRowNode = cardEl?.querySelector?.('[data-queued-msg-id]') || null;
+      const arr = findArrFromNode(cardEl, 20) || findArrFromNode(firstRowNode, 14);
+      if (arr && arr.length) {
         return arr.map((item, idx) => {
           const msgId = String(item?.msgId || item?.id || item?.messageId || '').trim();
           const step = item?.step || item?.userInput || item || {};
+          const clientMessageId = String(step?.clientMessageId || step?.client_message_id || item?.clientMessageId || '').trim();
           const stepItems = Array.isArray(step.items) ? step.items : [];
-          const text = stepItems.map((it) => String(it?.text || '')).join('').trim()
-            || String(step.text || item?.text || '').trim();
+          const text = stepItems.map(formatQueueStepItem).join('').trim()
+            || String(step.userResponse || step.text || item?.text || '').trim();
           const rawMedia = Array.isArray(step.media)
             ? step.media
             : (Array.isArray(step.images)
@@ -8382,7 +8436,7 @@
               src: att.previewUrl,
               alt: att.name || '图片'
             }));
-          return { msgId, text, images: imgs, attachments, idx };
+          return { msgId, ...(clientMessageId ? { clientMessageId } : {}), text, images: imgs, attachments, idx };
         });
       }
     } catch {}
@@ -8461,10 +8515,14 @@
 
     const entries = [];
     const seenRowEls = new Set();
+    const explicitMsgIdRows = Array.from(cardRoot.querySelectorAll('[data-queued-msg-id]'))
+      .filter((el) => !isExcludedSuiteOrNavNode(el) && !isExpandBtn(el));
     const decoratorNodes = Array.from(cardRoot.querySelectorAll('[data-testid="queued-decorators"]'))
       .filter((d) => !isExcludedSuiteOrNavNode(d));
     let rowCandidates = [];
-    if (decoratorNodes.length) {
+    if (explicitMsgIdRows.length) {
+      rowCandidates = explicitMsgIdRows;
+    } else if (decoratorNodes.length) {
       rowCandidates = decoratorNodes.map((d) => {
         const p1 = d.parentElement;
         const p2 = p1?.parentElement;
@@ -8475,8 +8533,9 @@
         return (p1 && p1 !== cardRoot) ? p1 : d;
       }).filter(Boolean);
     } else {
-      rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'))
+      const rawMatched = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'))
         .filter((el) => !isExcludedSuiteOrNavNode(el) && !isExpandBtn(el));
+      rowCandidates = rawMatched.filter((el) => !rawMatched.some((other) => other !== el && typeof el.contains === 'function' && el.contains(other)));
     }
     const fallbackRows = (rowCandidates.length ? rowCandidates : Array.from(cardRoot.children).slice(1))
       .filter((el) => !isExcludedSuiteOrNavNode(el) && !isExpandBtn(el));
@@ -8484,20 +8543,37 @@
     const inspectRow = (rowEl, rowIdx) => {
       if (!rowEl || seenRowEls.has(rowEl) || isExcludedSuiteOrNavNode(rowEl) || isExpandBtn(rowEl)) return;
       seenRowEls.add(rowEl);
+      const rowMsgId = String(
+        rowEl.getAttribute?.('data-queued-msg-id') ||
+        rowEl.closest?.('[data-queued-msg-id]')?.getAttribute?.('data-queued-msg-id') ||
+        ''
+      ).trim();
       const cloneTxt = (() => {
         const dec = rowEl.querySelector?.('[data-testid="queued-decorators"]');
-        if (!dec || dec === rowEl) return rowEl.textContent || '';
-        const raw = String(rowEl.textContent || '');
-        const decTxt = String(dec.textContent || '');
-        return decTxt && raw.endsWith(decTxt) ? raw.slice(0, raw.length - decTxt.length) : raw;
+        let raw = String(rowEl.textContent || '');
+        if (dec && dec !== rowEl) {
+          const decTxt = String(dec.textContent || '');
+          if (decTxt && raw.endsWith(decTxt)) raw = raw.slice(0, raw.length - decTxt.length);
+        }
+        const tooltips = rowEl.querySelectorAll?.('[role="tooltip"]');
+        if (tooltips && tooltips.length) {
+          for (const tt of tooltips) {
+            const ttTxt = String(tt.textContent || '');
+            if (ttTxt && raw.endsWith(ttTxt)) raw = raw.slice(0, raw.length - ttTxt.length);
+          }
+        }
+        return raw;
       })();
       const rawTxt = stripHeaderNoise(cloneTxt);
       const imgs = Array.from(rowEl.querySelectorAll('img')).map((img) => ({
         src: String(img.getAttribute?.('src') || img.src || '').trim(),
         alt: String(img.getAttribute?.('alt') || '').trim()
       })).filter((im) => im.src && !im.src.startsWith('data:image/svg'));
-      const fiberRec = fiberItems[entries.length] || fiberItems[rowIdx] || null;
-      const finalText = rawTxt || fiberRec?.text || '';
+      const fiberRec = (rowMsgId ? fiberItems.find((fi) => fi && fi.msgId === rowMsgId) : null)
+        || fiberItems[entries.length]
+        || fiberItems[rowIdx]
+        || null;
+      const finalText = fiberRec?.text || rawTxt || '';
       const finalImgs = imgs.length ? imgs : (fiberRec?.images || []);
       const domAttachments = imgs.map((im, imIdx) => {
         const mimeMatch = im.src.match(/^data:([^;,\s]+);base64,/i);
@@ -8515,10 +8591,12 @@
         : domAttachments;
       if (!finalText && !finalImgs.length && !finalAttachments.length) return;
       const { sendBtn, editBtn, deleteBtn } = pickDecoratorBtns(rowEl);
+      const effMsgId = rowMsgId || fiberRec?.msgId || '';
       entries.push({
         domIndex: entries.length,
         stepIndex: -1,
-        messageId: fiberRec?.msgId || '',
+        messageId: effMsgId,
+        ...(fiberRec?.clientMessageId ? { clientMessageId: fiberRec.clientMessageId } : {}),
         source: 'dom',
         text: finalText || ((finalImgs.length || finalAttachments.length) ? `[图片 ×${finalImgs.length || finalAttachments.length}]` : ''),
         images: finalImgs.slice(0, 6),
@@ -8605,10 +8683,11 @@
   }
 
   function collectQueuedMessagesFromDom() {
-    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, messageId, source, text, images, hasMedia, status, hasEdit }) => ({
+    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, messageId, clientMessageId, source, text, images, hasMedia, status, hasEdit }) => ({
       domIndex,
       stepIndex,
       ...(messageId ? { messageId } : {}),
+      ...(clientMessageId ? { clientMessageId } : {}),
       source,
       text,
       images,
@@ -11527,11 +11606,17 @@
       }
       const reqMsgId = String(reqPayload?.messageId || '').trim();
       if (reqMsgId) {
-        const matched = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
-        if (!matched) {
+        const matched = entries.find((e) => (e.messageId && e.messageId === reqMsgId) || (e.clientMessageId && e.clientMessageId === reqMsgId)) || null;
+        if (matched) {
+          return { ok: true, target: matched };
+        }
+        const canBindOptimisticDom = !/^opt-/i.test(reqMsgId)
+          && entries.some((e) => /^opt-/i.test(String(e?.messageId || '')))
+          && !entries.some((e) => e?.messageId && !/^opt-/i.test(String(e.messageId)))
+          && Boolean(normQueuedText(reqPayload?.text));
+        if (!canBindOptimisticDom) {
           return { ok: false, error: `目标排队消息已变化或不存在，已取消${actionVerb}以防误操作` };
         }
-        return { ok: true, target: matched };
       }
       const expQueueCount = Number(reqPayload?.expectedQueueCount);
       if (Number.isInteger(expQueueCount) && expQueueCount > 0 && entries.length !== expQueueCount) {
