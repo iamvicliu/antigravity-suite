@@ -17404,16 +17404,80 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let cachedUsageAt = 0;
   const dispatchedQueueDeletes = new Map();
   const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
+  const unknownDispatchedQueueSends = new Map();
+  const maxUnknownQueueSends = Number(options.maxUnknownQueueSends) > 0 ? Number(options.maxUnknownQueueSends) : 2048;
+  const evictedUnknownQueueBloom = new Uint8Array(8192);
+  const bloomPositions = (rawKey) => {
+    const dig = crypto.createHash('sha256').update(String(rawKey || '')).digest();
+    return [
+      dig.readUInt16BE(0),
+      dig.readUInt16BE(2),
+      dig.readUInt16BE(4),
+      dig.readUInt16BE(6)
+    ];
+  };
+  const setBloomBits = (bloom, rawKey) => {
+    for (const bit of bloomPositions(rawKey)) {
+      bloom[bit >> 3] |= (1 << (bit & 7));
+    }
+  };
+  const testBloomBits = (bloom, rawKey) => bloomPositions(rawKey).every((bit) => (bloom[bit >> 3] & (1 << (bit & 7))) !== 0);
+  const markUnknownQueueSend = (key, errMsg = '') => {
+    if (!key) return;
+    if (unknownDispatchedQueueSends.has(key)) unknownDispatchedQueueSends.delete(key);
+    while (unknownDispatchedQueueSends.size >= maxUnknownQueueSends) {
+      const oldest = unknownDispatchedQueueSends.keys().next().value;
+      if (oldest === undefined) break;
+      setBloomBits(evictedUnknownQueueBloom, oldest);
+      unknownDispatchedQueueSends.delete(oldest);
+    }
+    unknownDispatchedQueueSends.set(key, { at: getSendClockNow(), error: String(errMsg || '') });
+  };
+  const getUnknownQueueSendError = (key) => {
+    if (!key) return null;
+    const rec = unknownDispatchedQueueSends.get(key);
+    if (rec) return rec.error || '该排队消息此前立即发送响应超时、执行结果未知，已阻止重复发送，请先刷新核对会话消息';
+    if (testBloomBits(evictedUnknownQueueBloom, key)) {
+      return '该排队消息此前立即发送结果未知，已阻止重复发送，请先刷新核对会话消息';
+    }
+    return null;
+  };
+  const getSendClockNow = typeof options.now === 'function' ? options.now : () => Date.now();
   const recentSendActionCache = new Map();
   const RECENT_SEND_ACTION_TTL_MS = 60 * 1000;
+  const maxRecentOkSendActions = Number(options.maxRecentOkSendActions) > 0 ? Number(options.maxRecentOkSendActions) : 300;
+  const unknownSendActionMap = new Map();
+  const maxUnknownSendActions = Number(options.maxUnknownSendActions) > 0 ? Number(options.maxUnknownSendActions) : 2048;
+  const evictedUnknownSendBloom = new Uint8Array(8192);
+  const markUnknownSendAction = (key, errMsg = '') => {
+    if (!key) return;
+    recentSendActionCache.delete(key);
+    if (unknownSendActionMap.has(key)) unknownSendActionMap.delete(key);
+    while (unknownSendActionMap.size >= maxUnknownSendActions) {
+      const oldest = unknownSendActionMap.keys().next().value;
+      if (oldest === undefined) break;
+      setBloomBits(evictedUnknownSendBloom, oldest);
+      unknownSendActionMap.delete(oldest);
+    }
+    unknownSendActionMap.set(key, { at: getSendClockNow(), error: String(errMsg || '') });
+  };
+  const getUnknownSendActionError = (key) => {
+    if (!key) return null;
+    const rec = unknownSendActionMap.get(key);
+    if (rec) return rec.error || '上次发送请求超时或结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认';
+    if (testBloomBits(evictedUnknownSendBloom, key)) {
+      return '上次发送请求结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认';
+    }
+    return null;
+  };
   const pruneRecentSendActions = () => {
-    const now = Date.now();
+    const now = getSendClockNow();
     for (const [k, rec] of recentSendActionCache.entries()) {
       if (!rec || (!rec.inflight && (now - rec.at) > RECENT_SEND_ACTION_TTL_MS)) {
         recentSendActionCache.delete(k);
       }
     }
-    while (recentSendActionCache.size > 300) {
+    while (recentSendActionCache.size > maxRecentOkSendActions) {
       const oldest = recentSendActionCache.keys().next().value;
       if (oldest === undefined) break;
       if (recentSendActionCache.get(oldest)?.inflight) break;
@@ -19450,7 +19514,18 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 };
               }
               dispatchedQueueDeletes.delete(dispatchKey);
+              unknownDispatchedQueueSends.delete(dispatchKey);
               return { ok: true, rpcRes: delRetryOutcome.result, deduplicatedRetry: true };
+            }
+            const priorUnknownErr = getUnknownQueueSendError(dispatchKey);
+            if (priorUnknownErr) {
+              return {
+                ok: false,
+                sendFailed: true,
+                confirmedNotExecuted: false,
+                deduplicatedUnknownSend: true,
+                error: priorUnknownErr
+              };
             }
             if (hasMedia || !String(text || '').trim()) {
               return { ok: false, needsDomFallback: true };
@@ -19467,6 +19542,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               rpcTimeoutMs
             );
             if (!sendOutcome.ok) {
+              if (!sendOutcome.confirmedNotExecuted) {
+                markUnknownQueueSend(
+                  dispatchKey,
+                  '该排队消息此前立即发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息'
+                );
+              }
               return {
                 ok: false,
                 sendFailed: true,
@@ -19484,6 +19565,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               };
             }
             dispatchedQueueDeletes.delete(dispatchKey);
+            unknownDispatchedQueueSends.delete(dispatchKey);
             return { ok: true, rpcRes: sendOutcome.result, deduplicatedRetry: false };
           };
           if (messageId) {
@@ -19492,6 +19574,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               rpcRes = await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, rpcTimeoutMs);
               if (rpcRes !== null && rpcRes !== false) {
                 dispatchedQueueDeletes.delete(dispatchKey);
+                unknownDispatchedQueueSends.delete(dispatchKey);
               }
             } else if (actionName === 'edit-queued-message') {
               const pendingRec = await historyManager.resolvePendingMessageForEdit(cascadeId, messageId, {
@@ -20411,20 +20494,21 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const sendDedupKey = clientActionId ? `${String(clientId || '__anon__')}::${clientActionId}` : '';
         if (sendDedupKey) {
           pruneRecentSendActions();
+          const existingUnknownErr = getUnknownSendActionError(sendDedupKey);
+          if (existingUnknownErr) {
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: false,
+              outcomeUnknown: true,
+              deduplicatedUnknownRetry: true,
+              error: existingUnknownErr
+            }));
+            return;
+          }
           const existingSendRec = recentSendActionCache.get(sendDedupKey);
           if (existingSendRec) {
             if (existingSendRec.inflight) {
               const sharedRes = await existingSendRec.inflight;
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(sharedRes));
-              return;
-            }
-            if (existingSendRec.outcomeUnknown) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
-                ok: false,
-                outcomeUnknown: true,
-                deduplicatedUnknownRetry: true,
-                error: existingSendRec.error || '上次发送请求超时或结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认'
-              }));
               return;
             }
             if (existingSendRec.result && existingSendRec.result.ok !== false) {
@@ -20442,7 +20526,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         let resolveSendInflight = null;
         if (sendDedupKey) {
           const inflightPromise = new Promise((resolve) => { resolveSendInflight = resolve; });
-          recentSendActionCache.set(sendDedupKey, { at: Date.now(), inflight: inflightPromise, result: null, outcomeUnknown: false });
+          recentSendActionCache.set(sendDedupKey, { at: getSendClockNow(), inflight: inflightPromise, result: null });
         }
         let result;
         try {
@@ -20555,13 +20639,10 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             if (confirmedNotExec) {
               recentSendActionCache.delete(sendDedupKey);
             } else {
-              recentSendActionCache.set(sendDedupKey, {
-                at: Date.now(),
-                inflight: null,
-                result: null,
-                outcomeUnknown: true,
-                error: '上次发送请求响应超时或结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认'
-              });
+              markUnknownSendAction(
+                sendDedupKey,
+                '上次发送请求响应超时或结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认'
+              );
             }
             if (resolveSendInflight) {
               resolveSendInflight(errPayload);
@@ -20580,17 +20661,14 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         }
         if (sendDedupKey) {
           if (result && result.ok !== false) {
-            recentSendActionCache.set(sendDedupKey, { at: Date.now(), inflight: null, result, outcomeUnknown: false });
+            recentSendActionCache.set(sendDedupKey, { at: getSendClockNow(), inflight: null, result });
           } else if (isSendConfirmedNotExecuted(result)) {
             recentSendActionCache.delete(sendDedupKey);
           } else {
-            recentSendActionCache.set(sendDedupKey, {
-              at: Date.now(),
-              inflight: null,
-              result: null,
-              outcomeUnknown: true,
-              error: result?.error || result?.actionResult?.error || '上次发送结果未知，已阻止同一操作自动重发以避免重复入队'
-            });
+            markUnknownSendAction(
+              sendDedupKey,
+              result?.error || result?.actionResult?.error || '上次发送结果未知，已阻止同一操作自动重发以避免重复入队'
+            );
           }
           if (resolveSendInflight) resolveSendInflight(result);
         }

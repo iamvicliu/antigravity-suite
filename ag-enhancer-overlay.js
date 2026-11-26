@@ -3986,13 +3986,13 @@
       return { ok: true, method: 'button' };
     }
     if (sendBtn && isComposerSendButtonDisabled(sendBtn) && !allowEnterOnDisabled) {
-      return { ok: false, reason: 'send_disabled', error: '当前发送按钮不可用' };
+      return { ok: false, confirmedNotExecuted: true, reason: 'send_disabled', error: '当前发送按钮不可用' };
     }
     if (!allowEnterFallback) {
-      return { ok: false, reason: 'no_send_button', error: '未找到发送按钮' };
+      return { ok: false, confirmedNotExecuted: true, reason: 'no_send_button', error: '未找到发送按钮' };
     }
     if (checkBusyOnEnter && isAssistantBusy()) {
-      return { ok: false, reason: 'assistant_busy', error: '智能体正在响应中' };
+      return { ok: false, confirmedNotExecuted: true, reason: 'assistant_busy', error: '智能体正在响应中' };
     }
     const ed = getComposerEditor();
     if (ed) {
@@ -4009,7 +4009,7 @@
       hideNextStepGhost();
       return { ok: true, method: 'enter' };
     }
-    return { ok: false, reason: 'no_composer', error: '未找到发送按钮或输入框' };
+    return { ok: false, confirmedNotExecuted: true, reason: 'no_composer', error: '未找到发送按钮或输入框' };
   }
 
   function showQuickFillSuccessToast({ id, slash, label, fillRes }) {
@@ -11181,7 +11181,11 @@
         const submitRes = await submitCurrentComposer({ allowEnterOnDisabled: true, checkBusyOnEnter: false });
         if (!submitRes?.ok) {
           rollbackNewlyInjected();
-          return { ...submitRes, ok: false, confirmedNotExecuted: true };
+          return {
+            ...submitRes,
+            ok: false,
+            ...(submitRes?.confirmedNotExecuted === true ? { confirmedNotExecuted: true } : {})
+          };
         }
         return submitRes;
       } catch (err) {
