@@ -33626,6 +33626,8 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
     assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-gamma', 'proj-beta', 'proj-alpha']);
 
     let failNextOrderSave = false;
+    let orderSaveDelayMs = 0;
+    const orderSaveQueueOutcomes = [];
     const orderRequests = [];
     const handler = remoteMod.createRemoteHttpHandler(
       { enabled: true, port: 18765, token: 'tok-52pb', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
@@ -33651,43 +33653,53 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
       }
     );
 
-    const invokeServer = (method, urlPath, bodyObj) => new Promise((resolve) => {
+    const invokeServer = async (method, urlPath, bodyObj, customHeaders = {}) => {
       if (method === 'POST' && urlPath.startsWith('/api/projects/order')) {
         orderRequests.push(bodyObj);
-        if (failNextOrderSave) {
-          failNextOrderSave = false;
-          resolve({ status: 500, json: { ok: false, error: '模拟磁盘写保护失败' } });
-          return;
+        if (orderSaveDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, orderSaveDelayMs));
         }
-      }
-      const raw = bodyObj ? Buffer.from(JSON.stringify(bodyObj), 'utf8') : Buffer.alloc(0);
-      let status = 200;
-      const chunks = [];
-      handler(
-        {
-          method,
-          url: urlPath + (urlPath.includes('?') ? '&' : '?') + 'token=tok-52pb',
-          headers: { host: '127.0.0.1:18765', 'content-type': 'application/json' },
-          socket: { remoteAddress: '127.0.0.1' },
-          on(ev, cb) {
-            if (ev === 'data' && raw.length) cb(raw);
-            if (ev === 'end') cb();
-          },
-          pause() {},
-          destroy() {},
-          complete: true
-        },
-        {
-          setHeader() {},
-          getHeader: () => undefined,
-          writeHead(code) { status = code; },
-          end(b) {
-            if (b) chunks.push(Buffer.from(b));
-            resolve({ status, json: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') });
+        if (orderSaveQueueOutcomes.length > 0) {
+          const mode = orderSaveQueueOutcomes.shift();
+          if (mode === 'fail') {
+            return { status: 500, json: { ok: false, error: '模拟交错写入失败' } };
           }
         }
-      );
-    });
+        if (failNextOrderSave) {
+          failNextOrderSave = false;
+          return { status: 500, json: { ok: false, error: '模拟磁盘写保护失败' } };
+        }
+      }
+      return await new Promise((resolve) => {
+        const raw = bodyObj ? Buffer.from(JSON.stringify(bodyObj), 'utf8') : Buffer.alloc(0);
+        let status = 200;
+        const chunks = [];
+        handler(
+          {
+            method,
+            url: urlPath + (urlPath.includes('?') ? '&' : '?') + 'token=tok-52pb',
+            headers: { host: '127.0.0.1:18765', 'content-type': 'application/json', ...customHeaders },
+            socket: { remoteAddress: '127.0.0.1' },
+            on(ev, cb) {
+              if (ev === 'data' && raw.length) cb(raw);
+              if (ev === 'end') cb();
+            },
+            pause() {},
+            destroy() {},
+            complete: true
+          },
+          {
+            setHeader() {},
+            getHeader: () => undefined,
+            writeHead(code) { status = code; },
+            end(b) {
+              if (b) chunks.push(Buffer.from(b));
+              resolve({ status, json: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') });
+            }
+          }
+        );
+      });
+    };
 
     // 在轻量客户端沙箱中挂载完整 buildMobileAppHtml 主脚本（模拟手机端 pointer:coarse 默认非桌面环境）
     const appHtml = remoteMod.buildMobileAppHtml();
@@ -33697,19 +33709,80 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
     assert.ok(mainScript, '客户端主脚本应包含项目排序状态机');
 
     const elById = new Map();
-    const makeEl = (id = '') => {
+    const matchesSimpleSel = (node, sel) => {
+      for (const rawAlt of String(sel || '').split(',')) {
+        const alt = rawAlt.trim();
+        if (!alt) continue;
+        let ok = true;
+        const clsMatches = alt.matchAll(/\.([A-Za-z0-9_-]+)/g);
+        for (const m of clsMatches) {
+          if (!node.classList.contains(m[1])) { ok = false; break; }
+        }
+        if (!ok) continue;
+        const attrMatches = alt.matchAll(/\[([A-Za-z0-9_-]+)(?:="([^"]*)")?\]/g);
+        for (const m of attrMatches) {
+          const val = node.getAttribute(m[1]);
+          if (val === null || (m[2] !== undefined && val !== m[2])) { ok = false; break; }
+        }
+        if (ok) return true;
+      }
+      return false;
+    };
+    const makeEl = (id = '', parent = null) => {
       const clsSet = new Set();
       const attrs = new Map();
       const listeners = new Map();
+      let rawHtml = '';
+      let children = [];
+      let customRect = { top: 0, bottom: 40, left: 0, right: 240, width: 240, height: 40 };
       const el = {
         id,
+        parentElement: parent,
         hidden: false,
         disabled: false,
         textContent: '',
         value: '',
-        innerHTML: '',
         dataset: {},
         style: { setProperty() {}, removeProperty() {} },
+        get children() { return children; },
+        get innerHTML() { return rawHtml; },
+        set innerHTML(val) {
+          rawHtml = String(val || '');
+          children = [];
+          if (id === 'conv-list' && rawHtml.includes('proj-group')) {
+            const groupRe = /<div class="([^"]*proj-group[^"]*)"([^>]*)>([\s\S]*?)<\/div>(?=<div class="[^"]*proj-group|$)/g;
+            let idx = 0;
+            for (const gm of rawHtml.matchAll(groupRe)) {
+              const grp = makeEl('', el);
+              gm[1].trim().split(/\s+/).filter(Boolean).forEach((c) => grp.classList.add(c));
+              for (const am of gm[2].matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)) grp.setAttribute(am[1], am[2]);
+              const topY = idx * 48;
+              grp._setRect({ top: topY, bottom: topY + 40, left: 0, right: 240, width: 240, height: 40 });
+              idx += 1;
+              const inner = gm[3];
+              const headEl = makeEl('', grp);
+              headEl.classList.add('proj-head');
+              if (/class="proj-head"\s+draggable="true"/.test(inner)) headEl.setAttribute('draggable', 'true');
+              const hm = inner.match(/<span class="proj-drag-handle"([^>]*)>/);
+              if (hm) {
+                const hEl = makeEl('', headEl);
+                hEl.classList.add('proj-drag-handle');
+                for (const am of hm[1].matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)) hEl.setAttribute(am[1], am[2]);
+                headEl.appendChild(hEl);
+              }
+              for (const bm of inner.matchAll(/<button class="proj-sort-btn"([^>]*)>/g)) {
+                const bEl = makeEl('', headEl);
+                bEl.classList.add('proj-sort-btn');
+                for (const am of bm[1].matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)) bEl.setAttribute(am[1], am[2]);
+                if (/\bdisabled\b/.test(bm[1])) bEl.disabled = true;
+                headEl.appendChild(bEl);
+              }
+              grp.appendChild(headEl);
+              children.push(grp);
+            }
+          }
+        },
+        _setRect: (r) => { customRect = r; },
         classList: {
           add: (...ns) => ns.forEach((n) => clsSet.add(n)),
           remove: (...ns) => ns.forEach((n) => clsSet.delete(n)),
@@ -33723,25 +33796,57 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
         setAttribute: (k, v) => attrs.set(k, String(v)),
         getAttribute: (k) => (attrs.has(k) ? attrs.get(k) : null),
         removeAttribute: (k) => attrs.delete(k),
-        contains: () => false,
+        setPointerCapture() {},
+        closest: (sel) => {
+          let cur = el;
+          while (cur) {
+            if (matchesSimpleSel(cur, sel)) return cur;
+            cur = cur.parentElement || null;
+          }
+          return null;
+        },
+        contains: (other) => {
+          let cur = other;
+          while (cur) {
+            if (cur === el) return true;
+            cur = cur.parentElement || null;
+          }
+          return false;
+        },
         focus() {},
         blur() {},
         scrollTo() {},
-        appendChild: (ch) => ch,
+        appendChild: (ch) => {
+          if (ch) { ch.parentElement = el; children.push(ch); }
+          return ch;
+        },
         removeChild: () => {},
-        replaceChildren: () => {},
-        getBoundingClientRect: () => ({ top: 0, bottom: 40, left: 0, right: 240, width: 240, height: 40 }),
+        replaceChildren: () => { children = []; },
+        getBoundingClientRect: () => customRect,
         addEventListener: (ev, fn) => {
           if (!listeners.has(ev)) listeners.set(ev, []);
           listeners.get(ev).push(fn);
         },
-        dispatchClick: async (extra = {}) => {
-          for (const fn of (listeners.get('click') || [])) {
-            await fn({ preventDefault() {}, stopPropagation() {}, ...extra });
+        dispatchEventAsync: async (evName, payload = {}) => {
+          for (const fn of (listeners.get(evName) || [])) {
+            await fn({ target: el, preventDefault() {}, stopPropagation() {}, ...payload });
           }
         },
-        querySelector: () => null,
-        querySelectorAll: () => []
+        dispatchClick: async (extra = {}) => {
+          await el.dispatchEventAsync('click', extra);
+        },
+        querySelectorAll: (sel) => {
+          const out = [];
+          const walk = (node) => {
+            for (const ch of (node.children || [])) {
+              if (matchesSimpleSel(ch, sel)) out.push(ch);
+              walk(ch);
+            }
+          };
+          walk(el);
+          return out;
+        },
+        querySelector: (sel) => el.querySelectorAll(sel)[0] || null
       };
       if (id) elById.set(id, el);
       return el;
@@ -33794,7 +33899,10 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
       fetch: async (url, init = {}) => {
         const u = new URL(url, 'http://127.0.0.1:18765');
         const bodyObj = init.body ? JSON.parse(String(init.body)) : null;
-        const r = await invokeServer(init.method || 'GET', u.pathname + u.search, bodyObj);
+        const hdrs = init.headers && typeof init.headers === 'object' ? init.headers : {};
+        const normHdrs = {};
+        for (const [hk, hv] of Object.entries(hdrs)) normHdrs[hk.toLowerCase()] = String(hv);
+        const r = await invokeServer(init.method || 'GET', u.pathname + u.search, bodyObj, normHdrs);
         return {
           ok: r.status >= 200 && r.status < 300,
           status: r.status,
@@ -33879,15 +33987,105 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
       'POST /api/projects/order 失败时必须立即回滚恢复原权威顺序'
     );
 
-    // 6. 点击 [完成] 退出排序态并恢复桌面精细指针悬停直排检测
+    // 6. 真实 DOM 事件链验证：① 上移/下移按钮点击；② 手机排序态 pointerdown→pointermove→pointerup 手柄拖拽命中与落点持久化；③ 桌面宽屏 dragstart→dragover→drop→dragend 事件链
+    const convListEl = elById.get('conv-list');
+    // 当前顺序：proj-alpha(0), proj-beta(1), proj-gamma(2)
+    const downAlphaBtn = convListEl.querySelector('.proj-sort-btn[data-proj-id="proj-alpha"][data-proj-move="down"]');
+    assert.ok(downAlphaBtn && !downAlphaBtn.disabled, '首项 proj-alpha 下移按钮应可用');
+    const topAlphaBtn = convListEl.querySelector('.proj-sort-btn[data-proj-id="proj-alpha"][data-proj-move="top"]');
+    assert.equal(topAlphaBtn?.disabled, true, '首项置顶按钮应处于禁用态');
+    await convListEl.dispatchEventAsync('click', { target: downAlphaBtn });
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-beta', 'proj-alpha', 'proj-gamma']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-beta', 'proj-alpha', 'proj-gamma'], '点击下移按钮后服务端应持久化新顺序');
+
+    const upGammaBtn = convListEl.querySelector('.proj-sort-btn[data-proj-id="proj-gamma"][data-proj-move="up"]');
+    assert.ok(upGammaBtn && !upGammaBtn.disabled, '末项 proj-gamma 上移按钮应可用');
+    await convListEl.dispatchEventAsync('click', { target: upGammaBtn });
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-beta', 'proj-gamma', 'proj-alpha']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-beta', 'proj-gamma', 'proj-alpha'], '点击上移按钮后服务端应持久化新顺序');
+
+    // 手机排序态 pointer 手柄拖拽：将第 3 项 proj-alpha (idx=2) 拖到第 1 项 proj-beta (top:0..40, mid=20) 上半区 (clientY=8 → before)
+    const alphaHandle = convListEl.querySelector('.proj-drag-handle[data-proj-drag-handle="proj-alpha"]');
+    assert.ok(alphaHandle, '应渲染 proj-alpha 触摸拖拽手柄');
+    await convListEl.dispatchEventAsync('pointerdown', { target: alphaHandle, pointerId: 7, clientY: 100 });
+    await convListEl.dispatchEventAsync('pointermove', { target: alphaHandle, pointerId: 7, clientY: 8 });
+    const betaGroupDuringPointer = convListEl.querySelector('.proj-group[data-proj-group-id="proj-beta"]');
+    assert.equal(betaGroupDuringPointer?.classList.contains('drag-over-before'), true, 'pointermove 命中目标上半区时应标记 drag-over-before');
+    await convListEl.dispatchEventAsync('pointerup', { target: alphaHandle, pointerId: 7, clientY: 8 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-beta', 'proj-gamma'], '手机 pointer 释放后应持久化至 proj-beta 之前');
+
+    // 点击 [完成] 退出排序态，切换桌面精细指针环境验证原生 HTML5 dragstart→dragover→drop→dragend 事件链
     await elById.get('btn-sort-projects').dispatchClick();
     assert.equal(sandbox.__projSortHooks.getSortMode(), false);
     assert.equal(elById.get('sort-projects-label').textContent, '排序');
-    assert.ok(elById.get('conv-list').innerHTML.includes('class="proj-body"'), '退出排序态后应恢复项目子会话展示');
+    assert.ok(convListEl.innerHTML.includes('class="proj-body"'), '退出排序态后应恢复项目子会话展示');
 
     isDesktopFinePointer = true;
-    sandbox.__projSortHooks.renderSnapshot(freshSnap, { reqStartEpoch: 1000 });
-    assert.ok(elById.get('conv-list').innerHTML.includes('draggable="true"'), '桌面宽屏精细指针环境下常规态即允许直接拖拽项目头');
+    const postPointerSnap = (await invokeServer('GET', '/api/snapshot')).json;
+    sandbox.__projSortHooks.renderSnapshot(postPointerSnap, { reqStartEpoch: 1000 });
+    assert.ok(convListEl.innerHTML.includes('draggable="true"'), '桌面宽屏精细指针环境下常规态即允许直接拖拽项目头');
+
+    // 桌面拖拽：将第 1 项 proj-alpha (idx=0) 拖到第 3 项 proj-gamma (top:96..136, mid=116) 下半区 (clientY=128 → after)
+    const alphaHead = convListEl.querySelector('.proj-group[data-proj-group-id="proj-alpha"]')?.querySelector('.proj-head');
+    assert.ok(alphaHead, '应能定位 proj-alpha 头部节点');
+    await convListEl.dispatchEventAsync('dragstart', { target: alphaHead, dataTransfer: { setData() {}, effectAllowed: '' } });
+    await convListEl.dispatchEventAsync('dragover', { target: convListEl, clientY: 128, dataTransfer: { dropEffect: '' } });
+    const gammaGroupDuringDrag = convListEl.querySelector('.proj-group[data-proj-group-id="proj-gamma"]');
+    assert.equal(gammaGroupDuringDrag?.classList.contains('drag-over-after'), true, 'dragover 命中目标下半区时应标记 drag-over-after');
+    await convListEl.dispatchEventAsync('drop', { target: convListEl, clientY: 128, dataTransfer: {} });
+    await convListEl.dispatchEventAsync('dragend', { target: alphaHead });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-beta', 'proj-gamma', 'proj-alpha'], '桌面 drop 释放后应持久化至 proj-gamma 之后');
+
+    // 7. 并发与乱序交错回归验证：
+    // ① 服务端 clientOrderSeq 单调防乱序：同客户端 seq=20 先到达落盘，滞后的旧请求 seq=19 后到达必须返回 staleIgnored=true 且绝不覆盖 seq=20
+    const seq20Res = await invokeServer('POST', '/api/projects/order', {
+      projectOrder: ['proj-gamma', 'proj-alpha', 'proj-beta'],
+      clientOrderSeq: 20
+    }, { 'x-ag-client-id': 'race-client-1' });
+    assert.equal(seq20Res.json.ok, true);
+    const staleSeq19Res = await invokeServer('POST', '/api/projects/order', {
+      projectOrder: ['proj-alpha', 'proj-beta', 'proj-gamma'],
+      clientOrderSeq: 19
+    }, { 'x-ag-client-id': 'race-client-1' });
+    assert.equal(staleSeq19Res.json.ok, true);
+    assert.equal(staleSeq19Res.json.staleIgnored, true, '乱序滞后到达的旧 clientOrderSeq 必须被服务端拒绝覆盖');
+    const snapAfterOutOfOrder = (await invokeServer('GET', '/api/snapshot')).json;
+    assert.deepEqual(
+      snapAfterOutOfOrder.projects.filter((p) => p.id !== 'ungrouped').map((p) => p.id),
+      ['proj-gamma', 'proj-alpha', 'proj-beta'],
+      '乱序旧请求后拉取权威快照仍必须保持较新的 seq=20 顺序'
+    );
+    sandbox.__projSortHooks.renderSnapshot(snapAfterOutOfOrder, { reqStartEpoch: 1100 });
+
+    // ② 客户端单飞串行队列交错场景 i：A 在途失败 (500)、排队中的最新提交 B 成功 (200) → 最终顺序稳定为 B
+    orderSaveDelayMs = 20;
+    orderSaveQueueOutcomes.push('fail', 'ok');
+    const pFailA = sandbox.__projSortHooks.commitProjectOrder(['proj-alpha', 'proj-gamma', 'proj-beta']);
+    const pOkB = sandbox.__projSortHooks.commitProjectOrder(['proj-beta', 'proj-alpha', 'proj-gamma']);
+    const [resFailA, resOkB] = await Promise.all([pFailA, pOkB]);
+    orderSaveDelayMs = 0;
+    assert.equal(resFailA.ok, false);
+    assert.equal(resOkB.ok, true);
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-beta', 'proj-alpha', 'proj-gamma']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-beta', 'proj-alpha', 'proj-gamma']);
+
+    // ③ 客户端单飞串行队列交错场景 ii：A 在途成功 (200)、紧随其后的 B 失败 (500) → 最终回滚至已确认的 A（而非 A 之前的旧态）
+    orderSaveDelayMs = 20;
+    orderSaveQueueOutcomes.push('ok', 'fail');
+    const pOkA2 = sandbox.__projSortHooks.commitProjectOrder(['proj-alpha', 'proj-gamma', 'proj-beta']);
+    const pFailB2 = sandbox.__projSortHooks.commitProjectOrder(['proj-gamma', 'proj-beta', 'proj-alpha']);
+    const [resOkA2, resFailB2] = await Promise.all([pOkA2, pFailB2]);
+    orderSaveDelayMs = 0;
+    assert.equal(resOkA2.ok, true);
+    assert.equal(resFailB2.ok, false);
+    assert.deepEqual(
+      Array.from(sandbox.__projSortHooks.getOrderedProjectIds()),
+      ['proj-alpha', 'proj-gamma', 'proj-beta'],
+      'A 成功后 B 失败时客户端必须精确回滚至最近已确认的 A 顺序'
+    );
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-gamma', 'proj-beta']);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
