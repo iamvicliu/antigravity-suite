@@ -210,20 +210,23 @@
     }
 
     async function triggerCapsuleCompactAction(ev, triggerBtn) {
-        let enhancerHandled = false;
-        try {
-            if (typeof window !== 'undefined' && window.__AGEnhancer && typeof window.__AGEnhancer.triggerCompact === 'function') {
-                const res = await window.__AGEnhancer.triggerCompact(ev || null, triggerBtn || null);
-                enhancerHandled = true;
-                return res;
+        const enhancer = typeof window !== 'undefined' ? window.__AGEnhancer : null;
+        if (enhancer && typeof enhancer.triggerCompact === 'function') {
+            try {
+                return await enhancer.triggerCompact(ev || null, triggerBtn || null);
+            } catch (e) {
+                if (!e || e.confirmedNotExecuted !== true) {
+                    return { ok: false, confirmedNotExecuted: false, reason: 'enhancer_unknown_outcome' };
+                }
             }
-            if (typeof window !== 'undefined' && window.__AGEnhancer && typeof window.__AGEnhancer.fillComposerText === 'function') {
-                const res = await window.__AGEnhancer.fillComposerText('/compact', { slashCommand: 'compact' });
-                enhancerHandled = true;
-                return res;
+        } else if (enhancer && typeof enhancer.fillComposerText === 'function') {
+            try {
+                return await enhancer.fillComposerText('/compact', { slashCommand: 'compact' });
+            } catch (e) {
+                if (!e || e.confirmedNotExecuted !== true) {
+                    return { ok: false, confirmedNotExecuted: false, reason: 'enhancer_unknown_outcome' };
+                }
             }
-        } catch (e) {
-            if (enhancerHandled) return false;
         }
         try {
             const scope = triggerBtn?.closest?.('.surface-composer') || document;

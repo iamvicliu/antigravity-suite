@@ -34326,23 +34326,45 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(enhancerCompactCalls, 1, '点击一键压缩按钮应调用 __AGEnhancer.triggerCompact');
 
-    // 无 __AGEnhancer 或 __AGEnhancer 抛错时的独立兜底：严格保护非空草稿（textarea 与 contenteditable），仅在空编辑器或已是 /compact 时发送
+    // 增强器异常安全护栏：
+    // ① 若增强器已发送 /compact 并清空编辑器后在收尾阶段抛错（执行状态不明），严禁回退再次自动发送导致重复压缩
+    editorEl.value = '';
+    fallbackSendClicks = 0;
+    envCap.win.__AGEnhancer = {
+      triggerCompact: async () => {
+        editorEl.value = '/compact';
+        sendBtnEl.click();
+        editorEl.value = '';
+        throw new Error('post-send toast render fault');
+      }
+    };
+    const unknownOutcomeRes = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(unknownOutcomeRes.ok, false);
+    assert.equal(unknownOutcomeRes.confirmedNotExecuted, false);
+    assert.equal(unknownOutcomeRes.reason, 'enhancer_unknown_outcome', '增强器抛错且未声明 confirmedNotExecuted 时必须阻断自动补发');
+    assert.equal(editorEl.value, '', '已发送清空后的编辑器不得被回退重新写入 /compact');
+    assert.equal(fallbackSendClicks, 1, '增强器已发送一次后抛错，绝不得二次点击发送按钮');
+
+    // ② 仅当异常显式标记 confirmedNotExecuted: true（确证尚未执行）时允许进入独立回退，且仍须严格保护非空草稿
+    fallbackSendClicks = 0;
     editorEl.value = '用户正在撰写的未发送草稿';
     envCap.win.__AGEnhancer = {
       triggerCompact: async () => {
-        throw new Error('enhancer transient failure');
+        const err = new Error('enhancer precheck not ready');
+        err.confirmedNotExecuted = true;
+        throw err;
       }
     };
-    const draftProtectedOnThrow = await capsApi.triggerCompactAction(null, compactBtn);
-    assert.equal(draftProtectedOnThrow.ok, false);
-    assert.equal(draftProtectedOnThrow.reason, 'draft_protected', '增强器抛错回退遇到 textarea 非空草稿必须拒绝覆盖与误发');
+    const draftProtectedOnConfirmedPreErr = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(draftProtectedOnConfirmedPreErr.ok, false);
+    assert.equal(draftProtectedOnConfirmedPreErr.reason, 'draft_protected', '确证未执行而回退时遇到 textarea 非空草稿仍必须拒绝覆盖与误发');
     assert.equal(editorEl.value, '用户正在撰写的未发送草稿', 'textarea 草稿原文必须完整保留');
     assert.equal(fallbackSendClicks, 0, '存在未发送草稿时绝不能点击发送按钮');
 
     editorEl.value = '';
-    const okOnThrowEmpty = await capsApi.triggerCompactAction(null, compactBtn);
-    assert.equal(okOnThrowEmpty.ok, true);
-    assert.equal(okOnThrowEmpty.method, 'fallback_button', '增强器抛错且编辑器为空时应回退填入并发送 /compact');
+    const okOnConfirmedPreErrEmpty = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(okOnConfirmedPreErrEmpty.ok, true);
+    assert.equal(okOnConfirmedPreErrEmpty.method, 'fallback_button', '确证未执行且编辑器为空时允许回退填入并发送 /compact');
     assert.equal(editorEl.value, '/compact');
     assert.equal(fallbackSendClicks, 1);
 
