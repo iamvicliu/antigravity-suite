@@ -15271,8 +15271,8 @@ function buildMobileAppHtml() {
         grp.summaryText = pickPreferredGroupEffort(grp.variants, grp.defaultEffort);
       }
 
-      const explicitPlanners = Array.isArray(orchestratorConfig?.planners)
-        ? orchestratorConfig.planners.filter((p) => p && p.label)
+      const explicitPlanners = (orchestratorConfig?.canSelectPlanner !== false && Array.isArray(orchestratorConfig?.planners))
+        ? orchestratorConfig.planners.filter((p) => p && p.label && typeof p.value === 'number' && p.value > 0)
         : [];
       const hasMultiTierOrch = explicitPlanners.length > 0 || rawOrchEntries.length > 1;
 
@@ -15327,7 +15327,7 @@ function buildMobileAppHtml() {
               orchestrator: true,
               plannerModelId: parsed.rawModelId,
               plannerLabel: parsed.rawLabel,
-              plannerValue: typeof p.value === 'number' ? p.value : 0,
+              plannerValue: Number(p.value),
               effortKey: parsed.effortKey,
               effortLabel: parsed.meta.label,
               effortShort: parsed.meta.short,
@@ -15337,53 +15337,28 @@ function buildMobileAppHtml() {
             });
           }
         } else {
+          // 无 orchestratorPlanners / orchestratorPick 时，严禁借常规模型伪造不可执行的推理强度选项，仅展示真实可直选的 Orchestrator 基座
           for (const oe of rawOrchEntries) {
             const slugM = oe.label.match(/Orchestrator\\s*\\(([^)]+)\\)/i) || oe.modelId.match(/orchestrator-(neon|argon|carbon|hydrogen)/i);
             const famHint = slugM ? slugM[1].trim() : oe.label;
-            const matchedReg = regularGroups.find((rg) => rg.baseLabel.toLowerCase().includes(famHint.toLowerCase()));
-            if (matchedReg && matchedReg.variants.length > 0) {
-              const smShort = shortenOrchestratorSubLabel(matchedReg.baseLabel);
-              subModels.push({
-                baseModelId: matchedReg.baseModelId,
-                baseLabel: matchedReg.baseLabel,
-                shortName: smShort,
-                isNew: Boolean(oe.isNew || matchedReg.isNew),
-                active: Boolean(oe.active),
-                hasEffortChoice: matchedReg.variants.length > 1,
-                variants: matchedReg.variants.map((rv) => ({
-                  label: 'Orchestrator · ' + smShort + (rv.effortShort ? (' (' + rv.effortShort + ')') : ''),
-                  modelId: oe.modelId,
-                  orchestrator: true,
-                  plannerModelId: rv.modelId,
-                  plannerLabel: rv.label,
-                  plannerValue: 0,
-                  effortKey: rv.effortKey,
-                  effortLabel: rv.effortLabel,
-                  effortShort: rv.effortShort,
-                  rank: rv.rank,
-                  active: Boolean(oe.active && rv.effortKey === 'high')
-                }))
-              });
-            } else {
-              subModels.push({
-                baseModelId: oe.modelId || famHint.toLowerCase(),
-                baseLabel: famHint,
-                shortName: famHint,
-                isNew: Boolean(oe.isNew),
-                active: Boolean(oe.active),
-                hasEffortChoice: false,
-                variants: [{
-                  label: oe.label,
-                  modelId: oe.modelId,
-                  orchestrator: false,
-                  effortKey: '',
-                  effortLabel: famHint,
-                  effortShort: '',
-                  rank: 1,
-                  active: Boolean(oe.active)
-                }]
-              });
-            }
+            subModels.push({
+              baseModelId: oe.modelId || famHint.toLowerCase(),
+              baseLabel: oe.label,
+              shortName: famHint,
+              isNew: Boolean(oe.isNew),
+              active: Boolean(oe.active),
+              hasEffortChoice: false,
+              variants: [{
+                label: oe.label,
+                modelId: oe.modelId,
+                orchestrator: false,
+                effortKey: '',
+                effortLabel: '',
+                effortShort: '',
+                rank: 1,
+                active: Boolean(oe.active)
+              }]
+            });
           }
         }
 

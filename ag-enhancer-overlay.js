@@ -11010,13 +11010,47 @@
       let f = fk ? btn[fk] : null;
       for (let i = 0; i < 28 && f; i++) {
         const v = f.memoizedProps?.value;
-        if (v && typeof v.setSelectedModel === 'function' && Array.isArray(v.modelOptions)) {
+        if (v && typeof v.setSelectedModel === 'function' && (
+          Array.isArray(v.modelOptions) ||
+          Array.isArray(v.userStatus?.cascadeModelConfigData?.clientModelConfigs)
+        )) {
           return v;
         }
         f = f.return;
       }
     } catch {}
     return null;
+  }
+
+  function resolveSelectableModelPool(modelCtx) {
+    if (!modelCtx || typeof modelCtx.setSelectedModel !== 'function') {
+      return { source: 'none', options: [], fallbackConfigs: [] };
+    }
+    const cascadeCfg = modelCtx.userStatus?.cascadeModelConfigData || null;
+    const fallbackConfigs = Array.isArray(cascadeCfg?.clientModelConfigs)
+      ? cascadeCfg.clientModelConfigs.filter((c) => c && typeof c === 'object' && !c.disabled && c.label)
+      : [];
+    const directOptions = Array.isArray(modelCtx.modelOptions)
+      ? modelCtx.modelOptions.filter((o) => o && typeof o === 'object' && !o.disabled && o.label)
+      : [];
+    if (directOptions.length > 0) {
+      return { source: 'modelOptions', options: directOptions, fallbackConfigs };
+    }
+    if (fallbackConfigs.length > 0) {
+      const normalizedFallback = fallbackConfigs.map((c) => {
+        const modelEnum = typeof c.value === 'number'
+          ? c.value
+          : (typeof c.modelOrAlias?.model === 'number' ? c.modelOrAlias.model : undefined);
+        return {
+          ...c,
+          label: String(c.label),
+          modelId: String(c.modelId || ''),
+          ...(modelEnum !== undefined ? { value: modelEnum } : {})
+        };
+      });
+      return { source: 'clientModelConfigs', options: normalizedFallback, fallbackConfigs };
+    }
+    return { source: 'empty', options: [], fallbackConfigs: [] };
   }
 
   function getPermissionPresetsMeta() {
@@ -11651,23 +11685,23 @@
       const baseName = String(groupedEntry?.displayName || (lblM ? lblM[1].trim() : String(rawLbl || '').trim())).trim();
       return { effKey, effLabel, defaultEffort, baseName, baseId };
     };
-    const fallbackClientConfigs = Array.isArray(cascadeCfg?.clientModelConfigs)
-      ? cascadeCfg.clientModelConfigs.filter((c) => c && typeof c === 'object' && !c.disabled && c.label)
-      : [];
-    const rawModelsSource = Array.isArray(modelCtx?.modelOptions) && modelCtx.modelOptions.length > 0
-      ? modelCtx.modelOptions
-      : fallbackClientConfigs;
-    const rawModels = rawModelsSource.filter((o) => o && typeof o === 'object' && !o.disabled && o.label);
+    const selectablePool = resolveSelectableModelPool(modelCtx);
+    const fallbackClientConfigs = selectablePool.fallbackConfigs;
+    const rawModels = selectablePool.options;
     const selectedRawLabel = String(modelCtx?.selectedModel?.label || '').trim();
     const selectedRawModelId = String(modelCtx?.selectedModel?.modelId || '').trim();
     const isOrchOption = (o) => Boolean(o && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`));
     const isOrchestratorSelected = isOrchOption(modelCtx?.selectedModel);
-    const rawPlanners = Array.isArray(modelCtx?.orchestratorPlanners)
-      ? modelCtx.orchestratorPlanners.filter((p) => p && typeof p === 'object' && !p.disabled && p.label)
+    const canSelectOrchPlanner = typeof modelCtx?.orchestratorPick?.select === 'function';
+    const rawPlanners = canSelectOrchPlanner && Array.isArray(modelCtx?.orchestratorPlanners)
+      ? modelCtx.orchestratorPlanners.filter((p) =>
+          p && typeof p === 'object' && !p.disabled && p.label && typeof p.value === 'number' && p.value > 0
+        )
       : [];
+    const hasOrchBaseInPool = rawModels.some((o) => isOrchOption(o));
     const pickedOrchValue = typeof modelCtx?.orchestratorPick?.model === 'number' ? modelCtx.orchestratorPick.model : 0;
     let activeOrchPlanner = null;
-    if (rawPlanners.length > 0) {
+    if (rawPlanners.length > 0 && hasOrchBaseInPool) {
       if (pickedOrchValue > 0) {
         activeOrchPlanner = rawPlanners.find((p) => Number(p.value) === pickedOrchValue) || null;
       }
@@ -11695,8 +11729,9 @@
       }
       return rawModels.find((o) => isOrchOption(o)) || null;
     })();
-    const orchestratorConfig = rawPlanners.length > 0 ? {
+    const orchestratorConfig = (canSelectOrchPlanner && rawPlanners.length > 0 && primaryOrchOption) ? {
       enabled: true,
+      canSelectPlanner: true,
       active: isOrchestratorSelected,
       pickedValue: pickedOrchValue,
       pickedModelId: activeOrchPlanner ? String(activeOrchPlanner.modelId || '') : '',
@@ -12655,32 +12690,66 @@
     if (action === 'select-model') {
       const targetLabel = String(payload?.label || '').trim();
       const targetModelId = String(payload?.modelId || '').trim();
+      const reqEffortKey = String(payload?.effortKey || '').trim().toLowerCase();
       const isOrchReq = Boolean(payload?.orchestrator === true || payload?.plannerModelId || payload?.plannerLabel);
-      const modelCtx = getModelSelectorContext();
-      if (!modelCtx || !Array.isArray(modelCtx.modelOptions)) {
+      let modelCtx = getModelSelectorContext();
+      if (!modelCtx || typeof modelCtx.setSelectedModel !== 'function') {
         return { ok: false, error: '未找到桌面端模型选择器' };
       }
+      if ((!Array.isArray(modelCtx.modelOptions) || modelCtx.modelOptions.length === 0) && typeof modelCtx.refreshModels === 'function') {
+        try { await modelCtx.refreshModels(); } catch {}
+        modelCtx = getModelSelectorContext() || modelCtx;
+      }
+      const selectablePool = resolveSelectableModelPool(modelCtx);
+      if (!selectablePool.options.length) {
+        return { ok: false, error: '桌面端模型列表为空，暂无法切换模型' };
+      }
+      const normEffLbl = (s) => String(s || '').trim().replace(/\(Extra\s+High\)/i, '(XHigh)').toLowerCase();
+      const extractVariantEffKey = (lbl, mid) => {
+        const idM = String(mid || '').trim().match(/-(xhigh|high|medium|low|max)$/i);
+        if (idM) return idM[1].toLowerCase();
+        const lblM = String(lbl || '').trim().match(/\((Extra\s+High|XHigh|High|Medium|Low|Max)\)\s*$/i);
+        if (!lblM) return '';
+        const k = lblM[1].toLowerCase().replace(/\s+/g, '');
+        return k === 'extrahigh' ? 'xhigh' : k;
+      };
+
       if (isOrchReq) {
         const plannerModelId = String(payload?.plannerModelId || '').trim();
         const plannerLabel = String(payload?.plannerLabel || '').trim();
         const plannerValNum = Number(payload?.plannerValue || 0);
+        if (typeof modelCtx.orchestratorPick?.select !== 'function') {
+          return { ok: false, error: '当前桌面端不支持切换 Orchestrator 编排子模型或推理强度' };
+        }
         const rawPlanners = Array.isArray(modelCtx.orchestratorPlanners)
-          ? modelCtx.orchestratorPlanners.filter((p) => p && typeof p === 'object' && !p.disabled)
+          ? modelCtx.orchestratorPlanners.filter((p) =>
+              p && typeof p === 'object' && !p.disabled && p.label && typeof p.value === 'number' && p.value > 0
+            )
           : [];
-        const normEffLbl = (s) => String(s || '').trim().replace(/\(Extra\s+High\)/i, '(XHigh)').toLowerCase();
-        const pickedPlanner = rawPlanners.find((p) =>
-          (Number.isFinite(plannerValNum) && plannerValNum > 0 && Number(p.value) === plannerValNum) ||
-          (plannerModelId && String(p.modelId || '') === plannerModelId) ||
-          (plannerLabel && normEffLbl(p.label) === normEffLbl(plannerLabel))
-        ) || modelCtx.modelOptions.find((o) =>
-          o && !o.disabled && (
-            (plannerModelId && String(o.modelId || '') === plannerModelId) ||
-            (plannerLabel && normEffLbl(o.label) === normEffLbl(plannerLabel))
-          )
-        ) || null;
+        if (!rawPlanners.length) {
+          return { ok: false, error: '当前桌面端未提供可用的 Orchestrator 候选编排模型列表' };
+        }
+        const pickedPlanner = rawPlanners.find((p) => {
+          const valHit = Number.isFinite(plannerValNum) && plannerValNum > 0 && Number(p.value) === plannerValNum;
+          const idHit = Boolean(plannerModelId && String(p.modelId || '') === plannerModelId);
+          const lblHit = Boolean(plannerLabel && normEffLbl(p.label) === normEffLbl(plannerLabel));
+          if (!valHit && !idHit && !lblHit) return false;
+          if (reqEffortKey) {
+            const pEff = extractVariantEffKey(p.label, p.modelId);
+            if (pEff && pEff !== reqEffortKey) return false;
+          }
+          return true;
+        }) || null;
 
-        const orchCandidates = modelCtx.modelOptions.filter((o) => o && !o.disabled && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`));
-        const plannerSlugMatch = (plannerModelId || pickedPlanner?.modelId || '').toLowerCase().match(/(neon|argon|carbon|hydrogen)/);
+        if (!pickedPlanner) {
+          return {
+            ok: false,
+            error: `未找到可执行的目标编排模型或推理强度: ${plannerLabel || plannerModelId || reqEffortKey || targetLabel}`
+          };
+        }
+
+        const orchCandidates = selectablePool.options.filter((o) => o && !o.disabled && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`));
+        const plannerSlugMatch = String(pickedPlanner.modelId || plannerModelId || '').toLowerCase().match(/(neon|argon|carbon|hydrogen)/);
         const plannerSlug = plannerSlugMatch ? plannerSlugMatch[1] : '';
         const pickedOrchBase = orchCandidates.find((o) =>
           (targetModelId && o.modelId === targetModelId) ||
@@ -12696,35 +12765,49 @@
           return orchCandidates[0] || null;
         })();
 
-        if (!pickedOrchBase && !pickedPlanner) {
-          return { ok: false, error: `未找到目标编排模型: ${plannerLabel || plannerModelId || targetLabel || targetModelId}` };
+        if (!pickedOrchBase) {
+          return { ok: false, error: '未找到桌面端 Orchestrator 基座模型选项' };
         }
-        if (pickedOrchBase) {
-          modelCtx.setSelectedModel(pickedOrchBase);
-        } else if (pickedPlanner) {
-          modelCtx.setSelectedModel(pickedPlanner);
-        }
-        if (pickedPlanner && typeof modelCtx.orchestratorPick?.select === 'function' && typeof pickedPlanner.value === 'number') {
-          modelCtx.orchestratorPick.select(pickedPlanner.value);
-        }
+
+        modelCtx.setSelectedModel(pickedOrchBase);
+        modelCtx.orchestratorPick.select(pickedPlanner.value);
         await new Promise((r) => setTimeout(r, 80));
-        const resolvedTitle = targetLabel || (pickedPlanner ? `Orchestrator · ${pickedPlanner.label}` : pickedOrchBase.label);
+
+        const postSnap = getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+        const postOrch = postSnap?.orchestratorConfig || null;
+        const baseVerified = Boolean(
+          postOrch?.active === true &&
+          (!pickedOrchBase.modelId || postOrch.orchestratorModelId === pickedOrchBase.modelId)
+        );
+        const plannerVerified = Boolean(
+          postOrch &&
+          Number(postOrch.pickedValue) === Number(pickedPlanner.value) &&
+          (!pickedPlanner.modelId || postOrch.pickedModelId === pickedPlanner.modelId)
+        );
+        if (!baseVerified || !plannerVerified) {
+          return {
+            ok: false,
+            error: '桌面端编排基座或目标推理强度切换后校验未生效，请确认客户端状态后重试'
+          };
+        }
         return {
           ok: true,
-          model: resolvedTitle,
-          selectedModelId: String((pickedOrchBase || pickedPlanner)?.modelId || targetModelId || ''),
+          model: String(postSnap.model || targetLabel || `Orchestrator · ${pickedPlanner.label}`),
+          selectedModelId: String(postOrch.orchestratorModelId || pickedOrchBase.modelId || ''),
           orchestrator: true,
-          plannerModelId: String(pickedPlanner?.modelId || plannerModelId || ''),
-          plannerValue: typeof pickedPlanner?.value === 'number' ? pickedPlanner.value : plannerValNum,
-          effortKey: String(payload?.effortKey || '')
+          plannerModelId: String(postOrch.pickedModelId || pickedPlanner.modelId || ''),
+          plannerValue: Number(postOrch.pickedValue || pickedPlanner.value),
+          effortKey: reqEffortKey || extractVariantEffKey(pickedPlanner.label, pickedPlanner.modelId),
+          source: selectablePool.source,
+          verifiedBySnapshot: true
         };
       }
-      const normLbl = (s) => String(s || '').trim().replace(/\(Extra\s+High\)/i, '(XHigh)').toLowerCase();
-      const picked = modelCtx.modelOptions.find((o) =>
+
+      const picked = selectablePool.options.find((o) =>
         o && !o.disabled && (
           (targetLabel && o.label === targetLabel) ||
           (targetModelId && o.modelId === targetModelId) ||
-          (targetLabel && normLbl(o.label) === normLbl(targetLabel))
+          (targetLabel && normEffLbl(o.label) === normEffLbl(targetLabel))
         )
       );
       if (!picked) {
@@ -12732,11 +12815,33 @@
       }
       modelCtx.setSelectedModel(picked);
       await new Promise((r) => setTimeout(r, 80));
+
+      const postSnap = getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+      const postCtx = getModelSelectorContext() || modelCtx;
+      const postSel = postCtx?.selectedModel || null;
+      const regularVerified = Boolean(
+        (picked.modelId && (
+          postSel?.modelId === picked.modelId ||
+          postSnap?.modelOptions?.some((m) => m.modelId === picked.modelId && m.selected)
+        )) ||
+        (!picked.modelId && (
+          postSel?.label === picked.label ||
+          postSnap?.model === picked.label
+        ))
+      );
+      if (!regularVerified) {
+        return {
+          ok: false,
+          error: `桌面端未能激活目标模型: ${picked.label || targetLabel || targetModelId}`
+        };
+      }
       return {
         ok: true,
-        model: picked.label,
-        selectedModelId: String(picked.modelId || ''),
-        orchestrator: false
+        model: String(postSnap?.model || picked.label),
+        selectedModelId: String(postSel?.modelId || picked.modelId || ''),
+        orchestrator: false,
+        source: selectablePool.source,
+        verifiedBySnapshot: true
       };
     }
 
