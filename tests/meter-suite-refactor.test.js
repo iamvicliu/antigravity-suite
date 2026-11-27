@@ -33863,67 +33863,77 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
 
     const toasts = [];
     const storageMap = new Map();
+    const sessionMap = new Map();
+    sessionMap.set('ag_remote_client_id_v1', 'agb-reload-fixed-tab-01');
     let isDesktopFinePointer = false;
-    const sandbox = {
-      console,
-      URL,
-      URLSearchParams,
-      AbortController,
-      setTimeout: (fn) => { return 1; },
-      clearTimeout: () => {},
-      setInterval: () => 1,
-      clearInterval: () => {},
-      requestAnimationFrame: (fn) => { fn(); return 1; },
-      CSS: { escape: (s) => String(s) },
-      localStorage: {
-        getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
-        setItem: (k, v) => storageMap.set(k, String(v)),
-        removeItem: (k) => storageMap.delete(k)
-      },
-      sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
-      location: { origin: 'http://127.0.0.1:18765', href: 'http://127.0.0.1:18765/?token=tok-52pb', search: '?token=tok-52pb', protocol: 'http:', hostname: '127.0.0.1', reload() {} },
-      history: { replaceState() {} },
-      navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', setAppBadge: async () => {}, clearAppBadge: async () => {} },
-      Notification: undefined,
-      innerWidth: 390,
-      innerHeight: 844,
-      visualViewport: { height: 844, offsetTop: 0, addEventListener() {}, removeEventListener() {} },
-      addEventListener() {},
-      removeEventListener() {},
-      dispatchEvent() {},
-      matchMedia: (q) => ({
-        matches: q.includes('pointer: fine') ? isDesktopFinePointer : false,
+    const createClientSandbox = () => {
+      const sb = {
+        console,
+        URL,
+        URLSearchParams,
+        AbortController,
+        setTimeout: () => 1,
+        clearTimeout: () => {},
+        setInterval: () => 1,
+        clearInterval: () => {},
+        requestAnimationFrame: (fn) => { fn(); return 1; },
+        CSS: { escape: (s) => String(s) },
+        localStorage: {
+          getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+          setItem: (k, v) => storageMap.set(k, String(v)),
+          removeItem: (k) => storageMap.delete(k)
+        },
+        sessionStorage: {
+          getItem: (k) => (sessionMap.has(k) ? sessionMap.get(k) : null),
+          setItem: (k, v) => sessionMap.set(k, String(v)),
+          removeItem: (k) => sessionMap.delete(k)
+        },
+        innerWidth: 390,
+        innerHeight: 844,
+        visualViewport: { height: 844, offsetTop: 0, addEventListener() {}, removeEventListener() {} },
         addEventListener() {},
-        removeEventListener() {}
-      }),
-      fetch: async (url, init = {}) => {
-        const u = new URL(url, 'http://127.0.0.1:18765');
-        const bodyObj = init.body ? JSON.parse(String(init.body)) : null;
-        const hdrs = init.headers && typeof init.headers === 'object' ? init.headers : {};
-        const normHdrs = {};
-        for (const [hk, hv] of Object.entries(hdrs)) normHdrs[hk.toLowerCase()] = String(hv);
-        const r = await invokeServer(init.method || 'GET', u.pathname + u.search, bodyObj, normHdrs);
-        return {
-          ok: r.status >= 200 && r.status < 300,
-          status: r.status,
-          json: async () => r.json,
-          text: async () => JSON.stringify(r.json)
-        };
-      },
-      document: {
-        documentElement: makeEl('html'),
-        body: makeEl('body'),
-        createElement: () => makeEl(),
-        createDocumentFragment: () => makeEl(),
-        getElementById: (id) => elById.get(id) || makeEl(id),
-        querySelector: () => null,
-        querySelectorAll: () => [],
-        addEventListener() {}
-      }
+        removeEventListener() {},
+        dispatchEvent() {},
+        location: { origin: 'http://127.0.0.1:18765', href: 'http://127.0.0.1:18765/?token=tok-52pb', search: '?token=tok-52pb', protocol: 'http:', hostname: '127.0.0.1', reload() {} },
+        history: { replaceState() {} },
+        navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', setAppBadge: async () => {}, clearAppBadge: async () => {} },
+        Notification: undefined,
+        matchMedia: (q) => ({
+          matches: q.includes('pointer: fine') ? isDesktopFinePointer : false,
+          addEventListener() {},
+          removeEventListener() {}
+        }),
+        fetch: async (url, init = {}) => {
+          const u = new URL(url, 'http://127.0.0.1:18765');
+          const bodyObj = init.body ? JSON.parse(String(init.body)) : null;
+          const hdrs = init.headers && typeof init.headers === 'object' ? init.headers : {};
+          const normHdrs = {};
+          for (const [hk, hv] of Object.entries(hdrs)) normHdrs[hk.toLowerCase()] = String(hv);
+          const r = await invokeServer(init.method || 'GET', u.pathname + u.search, bodyObj, normHdrs);
+          return {
+            ok: r.status >= 200 && r.status < 300,
+            status: r.status,
+            json: async () => r.json,
+            text: async () => JSON.stringify(r.json)
+          };
+        },
+        document: {
+          documentElement: makeEl('html'),
+          body: makeEl('body'),
+          createElement: () => makeEl(),
+          createDocumentFragment: () => makeEl(),
+          getElementById: (id) => elById.get(id) || makeEl(id),
+          querySelector: () => null,
+          querySelectorAll: () => [],
+          addEventListener() {}
+        }
+      };
+      sb.window = sb;
+      sb.globalThis = sb;
+      vm.runInNewContext(mainScript, sb);
+      return sb;
     };
-    sandbox.window = sandbox;
-    sandbox.globalThis = sandbox;
-    vm.runInNewContext(mainScript, sandbox);
+    const sandbox = createClientSandbox();
 
     // 1. 首次拉取快照：验证手机端常规浏览态下不设置 draggable="true"（防上下滚动误触）、渲染子会话且 ungrouped 垫底
     const initSnap = (await invokeServer('GET', '/api/snapshot')).json;
@@ -34086,6 +34096,28 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
       'A 成功后 B 失败时客户端必须精确回滚至最近已确认的 A 顺序'
     );
     assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-gamma', 'proj-beta']);
+
+    // ④ 页面重载回归：服务端已记录同一 sessionStorage clientId (agb-reload-fixed-tab-01) 较高序号 (如 seq=99) 后，
+    //    模拟页面重载（包括 sessionStorage 仅保留 clientId 而清空其他缓存键的极端隐私/部分清理场景），重新调整顺序必须真实落盘且后续快照保持一致
+    await invokeServer('POST', '/api/projects/order', {
+      projectOrder: ['proj-alpha', 'proj-gamma', 'proj-beta'],
+      orderScopeId: 'agb-reload-fixed-tab-01',
+      clientOrderSeq: 99
+    }, { 'x-ag-client-id': 'agb-reload-fixed-tab-01' });
+    sessionMap.delete('ag_remote_proj_order_seq_v1'); // 即使序号缓存键缺失、仅复用相同 clientId，新页面实例也绝不可被误判为过期请求
+    const reloadedSandbox = createClientSandbox();
+    const snapOnReload = (await invokeServer('GET', '/api/snapshot')).json;
+    reloadedSandbox.__projSortHooks.renderSnapshot(snapOnReload, { reqStartEpoch: 1 });
+    const postReloadOrderRes = await reloadedSandbox.__projSortHooks.commitProjectOrder(['proj-gamma', 'proj-beta', 'proj-alpha']);
+    assert.equal(postReloadOrderRes.ok, true);
+    assert.notEqual(postReloadOrderRes.staleIgnored, true, '页面重载复用同一 clientId 后首次重排绝不得被误判为 staleIgnored');
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-gamma', 'proj-beta', 'proj-alpha'], '页面重载后重新排序必须真实写入服务端持久化顺序');
+    const snapAfterReloadSave = (await invokeServer('GET', '/api/snapshot')).json;
+    assert.deepEqual(
+      snapAfterReloadSave.projects.filter((p) => p.id !== 'ungrouped').map((p) => p.id),
+      ['proj-gamma', 'proj-beta', 'proj-alpha'],
+      '重载保存后的后续权威快照必须保持新顺序一致'
+    );
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
