@@ -4758,7 +4758,19 @@ function renderSafeMarkdownToHtml(rawMd, bqDepth = 0) {
         flushList();
         i += 2;
         const bodyRows = [];
-        while (i < lines.length && lines[i].trim().includes('|') && !/^\s*$/.test(lines[i])) {
+        const isServerTableBlockInterrupt = (rawRow) => {
+          const rt = String(rawRow || '').trim();
+          if (!rt || !rawRow.includes('|')) return true;
+          if (/^\u0000CB\d+\u0000$/.test(rt)) return true;
+          if (/^ {0,3}(?:`{3,}|~{3,})/.test(rawRow)) return true;
+          if (/^ {0,3}>/.test(rawRow)) return true;
+          if (/^ {0,3}#{1,6}(?:\s|$)/.test(rawRow)) return true;
+          if (/^ {0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/.test(rawRow)) return true;
+          if (/^[ \t]*[-*+]\s+/.test(rawRow)) return true;
+          if (/^[ \t]*\d+[.)]\s+/.test(rawRow)) return true;
+          return false;
+        };
+        while (i < lines.length && !isServerTableBlockInterrupt(lines[i])) {
           bodyRows.push(splitGfmTableRowCells(lines[i]));
           i++;
         }
@@ -12632,10 +12644,20 @@ function buildMobileAppHtml() {
             }).join('');
             const bodyRowsHtml = [];
             idx += 2;
+            const isClientTableInterrupt = (rawRow) => {
+              const rt = String(rawRow || '').trim();
+              if (!rt || !rawRow.includes('|')) return true;
+              if (Boolean(matchClientFenceOpen(rawRow))) return true;
+              if (/^ {0,3}>/.test(rawRow)) return true;
+              if (/^ {0,3}#{1,6}(?:\\s|$)/.test(rawRow)) return true;
+              if (/^ {0,3}(?:-{3,}|\\*{3,}|_{3,})[ \\t]*$/.test(rawRow)) return true;
+              if (/^[ \\t]*[-*+]\\s+/.test(rawRow)) return true;
+              if (/^[ \\t]*\\d+[.)]\\s+/.test(rawRow)) return true;
+              return false;
+            };
             while (idx < lines.length) {
               const rLine = lines[idx];
-              const rTrim = rLine.trim();
-              if (!rTrim || !rLine.includes('|') || Boolean(matchClientFenceOpen(rLine)) || /^#{1,6}\\s+/.test(rTrim)) {
+              if (isClientTableInterrupt(rLine)) {
                 idx -= 1;
                 break;
               }
