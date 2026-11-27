@@ -34689,13 +34689,18 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       '  - [ ] 子项 A2（嵌套子任务）',
       '- [ ] 待验证极端窄屏',
       '',
+      '1. [x] 有序任务已完成',
+      '2. [ ] 有序任务待执行',
+      '',
       '> 引用说明块',
       '',
       '安全链接：[文档](https://example.com/docs) 与 危险链接：[点我](javascript:alert(1)) 及 [数据](data:text/html,<script>alert(1)</script>) 与 [远端共享](file://evil-host/share)',
       '<script>window.__xss=1</script><img src=x onerror="alert(1)">',
+      '````markdown',
       '```js',
-      'const answer = 42;',
-      '```'
+      'const nestedTripleFence = 42;',
+      '```',
+      '````'
     ];
     while (mdLines.length < 115) {
       mdLines.push('Line-' + (mdLines.length + 1) + ': anchor target check');
@@ -34712,17 +34717,20 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
     delete require.cache[require.resolve('../mobile-remote')];
     const remoteMod = require('../mobile-remote');
 
-    // 0. 静态门禁：严禁任何 allow-same-origin 出现在 mobile-remote.js，CSP 必须包含 frame-src
+    // 0. 静态门禁：严禁任何 allow-same-origin 出现在 mobile-remote.js，CSP 必须包含 frame-src，且宽屏媒体查询严格以 min-width:1180px 为准
     const mrSource = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
     assert.equal(mrSource.includes('allow-same-origin'), false, 'mobile-remote.js 严禁授予 iframe allow-same-origin 权限');
-    assert.match(mrSource, /frame-src 'self' blob: data:/, 'HTML_CSP 应显式配置 frame-src 以兼容沙盒 iframe srcdoc');
+    assert.match(mrSource, /frame-src 'self' blob: data:/, 'HTML_CSP 应显式配置 frame-src 以兼容沙盒 iframe srcdoc/data');
+    assert.match(mrSource, /@media \(min-width:1180px\)\{/, 'CSS 宽屏三栏工作台应严格按 min-width:1180px 切换，不得附加额外高度或精细指针限制');
 
-    // 1. 服务端 GFM 渲染与文件预览接口契约验证
+    // 1. 服务端 GFM 渲染与文件预览接口契约验证（覆盖有序任务列表与四反引号包三反引号代码围栏）
     const gfmServerHtml = remoteMod.renderSafeMarkdownToHtml(fs.readFileSync(mdFile, 'utf8'));
     assert.match(gfmServerHtml, /<h1>架构说明文档<\/h1>/);
     assert.match(gfmServerHtml, /<div class="md-table-wrap"><table><thead><tr><th style="text-align:left">模块<\/th><th style="text-align:center">状态<\/th><th style="text-align:right">对齐<\/th><\/tr><\/thead>/);
     assert.match(gfmServerHtml, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td>/);
     assert.match(gfmServerHtml, /<ul class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '服务端 GFM 应正确渲染嵌套列表与子任务');
+    assert.match(gfmServerHtml, /<ol class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>有序任务已完成<\/span><\/li><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled><span>有序任务待执行<\/span><\/li><\/ol>/, '服务端 GFM 应正确渲染有序任务列表 1. [x]');
+    assert.match(gfmServerHtml, /<pre><code>```js\nconst nestedTripleFence = 42;\n```<\/code><\/pre>/, '服务端四反引号围栏内部的三反引号不得提前截断代码块');
     assert.ok(!gfmServerHtml.includes('javascript:alert'), '服务端 GFM 必须拦截 javascript: 危险链接');
     assert.ok(!gfmServerHtml.includes('href="file://evil-host'), '服务端 GFM 必须拦截非本机路径的远端 file:// 权威链接');
     assert.ok(!gfmServerHtml.includes('点我)'), '服务端 GFM 链接正则应正确消费平衡括号不遗留悬空右括号');
@@ -34776,7 +34784,10 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       historySource: 'trajectory'
     };
 
-    const makeMockDomEnv = (initWidth, initHeight, storedMap = {}) => {
+    const makeMockDomEnv = (initWidth, initHeight, envOpts = {}) => {
+      const storedMap = envOpts.storedMap || {};
+      const pointerCoarse = Boolean(envOpts.pointerCoarse);
+      const replaceStateThrows = Boolean(envOpts.replaceStateThrows);
       const listeners = new Map();
       const elementsById = new Map();
       const storage = new Map(Object.entries(storedMap));
@@ -34977,12 +34988,30 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
 
       const bodyEl = createEl('body');
       const docEl = createEl('html');
+      const locState = {
+        pathname: '/',
+        search: '?token=' + token,
+        hash: '#boot=' + token,
+        origin: 'http://127.0.0.1:18499',
+        protocol: 'http:',
+        href: 'http://127.0.0.1:18499/?token=' + token + '#boot=' + token,
+        reload() {}
+      };
       const winObj = {
         innerWidth: initWidth,
         innerHeight: initHeight,
         devicePixelRatio: 2,
-        location: { search: '?token=' + token, origin: 'http://127.0.0.1:18499', protocol: 'http:', href: 'http://127.0.0.1:18499/?token=' + token, reload() {} },
-        history: { replaceState() {} },
+        location: locState,
+        history: {
+          replaceState(_state, _title, nextUrl) {
+            if (replaceStateThrows) throw new Error('SecurityError: replaceState blocked');
+            const parsed = new URL(String(nextUrl || '/'), locState.origin);
+            locState.pathname = parsed.pathname;
+            locState.search = parsed.search;
+            locState.hash = parsed.hash;
+            locState.href = parsed.href;
+          }
+        },
         navigator: { userAgent: 'Mozilla/5.0 Macintosh', platform: 'MacIntel', hardwareConcurrency: 8 },
         screen: { width: initWidth, height: initHeight },
         localStorage: {
@@ -34997,10 +35026,10 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
         },
         matchMedia(q) {
           const qs = String(q || '');
-          const isFine = winObj.innerWidth >= 860;
+          const isFine = !pointerCoarse && winObj.innerWidth >= 860;
           let matches = false;
           if (qs.includes('min-width: 1180px') || qs.includes('min-width:1180px')) {
-            matches = winObj.innerWidth >= 1180 && winObj.innerHeight >= 521 && isFine;
+            matches = winObj.innerWidth >= 1180;
           } else if (qs.includes('min-width: 860px') || qs.includes('min-width:860px')) {
             matches = winObj.innerWidth >= 860 && winObj.innerHeight >= 521 && isFine;
           } else if (qs.includes('hover: hover') || qs.includes('pointer: fine')) {
@@ -35175,6 +35204,8 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       assert.match(fvBody.innerHTML, /<table>/, '客户端预览应渲染 GFM 表格');
       assert.match(fvBody.innerHTML, /md-task-check/, '客户端预览应渲染 GFM 任务列表复选框');
       assert.match(fvBody.innerHTML, /完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '客户端预览应正确渲染嵌套列表');
+      assert.match(fvBody.innerHTML, /<ol class="md-task-list"><li class="md-task-item"><input class="md-task-check" type="checkbox" disabled checked><span>有序任务已完成<\/span><\/li>/, '客户端预览应正确渲染有序任务列表 1. [x]');
+      assert.match(fvBody.innerHTML, /<pre><code>```js\nconst nestedTripleFence = 42;\n```<\/code><\/pre>/, '客户端四反引号围栏内部的三反引号不得提前结束代码块');
       assert.ok(!fvBody.innerHTML.includes('javascript:alert'), '客户端 GFM 渲染必须剥离 javascript: 危险协议');
       assert.ok(!fvBody.innerHTML.includes('href="file://evil-host'), '客户端 GFM 渲染不得生成远端 SMB file:// 链接');
       assert.ok(!fvBody.innerHTML.includes('<script>window.__xss'), '客户端 GFM 渲染必须转义原始危险 HTML');
@@ -35187,7 +35218,9 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       assert.ok(hlLineEl && hlLineEl.classList.contains('hl'), '切换源码后第 109 行应高亮');
       assert.equal(hlLineEl.scrolledIntoViewCount > 0, true, '切换源码后应自动滚动定位到第 109 行');
 
-      // (4) HTML 与 SVG 强隔离沙盒预览：必须具备 sandbox="allow-scripts" 与 referrerpolicy="no-referrer" 且绝不含 allow-same-origin
+      // (4) HTML 与 SVG 强隔离沙盒预览：挂载前 URL 已清除配对口令、注入 <base href="about:blank">、禁止 allow-same-origin
+      assert.equal(deskEnv.winObj.location.href, 'http://127.0.0.1:18499/', '启动及挂载沙盒前必须已通过 replaceState 彻底清除 URL search/hash 中的配对口令');
+      assert.equal(deskEnv.winObj.location.href.includes(token), false, '宿页面当前 URL 严禁残留配对 token');
       const prevHtmlLoads = htmlLoads;
       await deskEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(htmlFile, 0);
       assert.equal(htmlLoads, prevHtmlLoads + 1);
@@ -35195,6 +35228,8 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       assert.ok(iframeEl, '打开 .html 文件应挂载沙盒 iframe');
       assert.equal(iframeEl.getAttribute('sandbox'), 'allow-scripts', 'iframe sandbox 必须严格等于 allow-scripts（禁止同源权限）');
       assert.equal(iframeEl.getAttribute('referrerpolicy'), 'no-referrer', 'iframe 必须设置 referrerpolicy="no-referrer"');
+      assert.equal(iframeEl.getAttribute('data-url-scrubbed'), '1', 'URL 口令已净化时应标记 data-url-scrubbed=1');
+      assert.match(iframeEl.getAttribute('srcdoc') || '', /<base href="\/">/, 'srcdoc 应注入兼容 CSP base-uri self 的 <base href="/"> 并清除未受信 base 标签');
       assert.ok((iframeEl.getAttribute('srcdoc') || '').includes('Interactive Demo'), 'iframe srcdoc 应承载目标 HTML 内容');
 
       // 切换到源码再点击「↻ 刷新」重挂载验证
@@ -35222,7 +35257,48 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       deskEnv.cleanup();
     }
 
-    // (5) 窄屏移动端 (< 1180px) 默认不自动占屏，点击按钮作为右侧抽屉打开，点击背景遮罩可关闭
+    // (5) 宽屏边界回归：宽度 >= 1180px 但高度 < 521px（如 1200x480 分屏窗口）及触屏宽屏设备（1280x800 coarse pointer）同样必须识别为常驻边栏，而非遮罩抽屉
+    const shortWideEnv = makeMockDomEnv(1200, 480);
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      const bdShort = shortWideEnv.docObj.getElementById('file-viewer-backdrop');
+      assert.equal(shortWideEnv.winObj.__fvWorkbenchHooks.isWideDesktopWorkbench(), true, '1200x480 宽屏短高窗口必须判定为三栏常驻工作台');
+      assert.equal(bdShort.hidden, false, '1200x480 首次加载应自动常驻展开右侧边栏');
+      assert.equal(shortWideEnv.docObj.getElementById('fv-close-btn').textContent, '⇥ 收起');
+      bdShort.dispatchEvent({ type: 'click', target: bdShort });
+      assert.equal(bdShort.hidden, false, '常驻边栏模式下点击容器不得像遮罩抽屉一样意外关闭');
+    } finally {
+      shortWideEnv.cleanup();
+    }
+
+    const touchWideEnv = makeMockDomEnv(1280, 800, { pointerCoarse: true });
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      const bdTouch = touchWideEnv.docObj.getElementById('file-viewer-backdrop');
+      assert.equal(touchWideEnv.winObj.__fvWorkbenchHooks.isWideDesktopWorkbench(), true, '1280x800 触屏平板/二合一宽屏同样应进入常驻右侧边栏');
+      assert.equal(bdTouch.hidden, false);
+      assert.equal(touchWideEnv.docObj.getElementById('fv-close-btn').textContent, '⇥ 收起');
+    } finally {
+      touchWideEnv.cleanup();
+    }
+
+    // (6) 极端受限环境 Fail-Closed 防护验证：若 history.replaceState 抛错导致 URL 仍残留 ?token=，自动降级为独立 data: 文档阻断 srcdoc baseURI 继承
+    const dirtyUrlEnv = makeMockDomEnv(1280, 800, { replaceStateThrows: true });
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      assert.ok(dirtyUrlEnv.winObj.location.href.includes(token), '模拟 replaceState 被阻断时宿页面 URL 仍含 token');
+      await dirtyUrlEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(htmlFile, 0);
+      const fvBodyDirty = dirtyUrlEnv.docObj.getElementById('fv-body');
+      const dirtyFrame = fvBodyDirty.querySelector('iframe');
+      assert.ok(dirtyFrame, '受限环境仍应渲染沙盒 iframe');
+      assert.equal(dirtyFrame.getAttribute('data-url-scrubbed'), '0', '应准确识别父 URL 未能净化');
+      assert.equal(dirtyFrame.hasAttribute('srcdoc'), false, '父 URL 含未净化口令时严禁使用会继承父 baseURI 的 srcdoc');
+      assert.match(dirtyFrame.getAttribute('src') || '', /^data:text\/html;charset=utf-8,/, '必须自动切换至独立 data: 文档彻底切断父页面 URL 继承');
+    } finally {
+      dirtyUrlEnv.cleanup();
+    }
+
+    // (7) 窄屏移动端 (< 1180px，如 1179x800 与 390x844) 默认不自动占屏，点击按钮作为右侧抽屉打开，点击背景遮罩可关闭
     const mobEnv = makeMockDomEnv(390, 844);
     try {
       await new Promise((r) => setTimeout(r, 40));
@@ -35237,6 +35313,190 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       assert.equal(bdMob.hidden, true, '窄屏抽屉点击半透明遮罩应关闭抽屉');
     } finally {
       mobEnv.cleanup();
+    }
+
+    // (8) 真实 Headless Chrome 运行时沙盒口令隔离端到端实证：验证带 ?token= 进页并删除 <base> 后，srcdoc 内 baseURI / URL / referrer / parent / storage 均 0 口令泄露
+    const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(CHROME_BIN)) {
+      const { spawn } = require('node:child_process');
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+      const realSecretToken = httpCfg.token;
+      const exploitFile = path.join(wsAlpha, 'probe-sandbox.html');
+      fs.writeFileSync(
+        exploitFile,
+        '<!doctype html><html><head><title>Probe</title></head><body><h2 id="p">Probe</h2><script>'
+        + 'const baseBefore = document.baseURI;'
+        + 'document.querySelectorAll("base").forEach((b) => b.remove());'
+        + 'const baseAfterRemove = document.baseURI;'
+        + 'const tryRead = (fn) => { try { return String(fn()); } catch (e) { return "BLOCKED:" + e.name; } };'
+        + 'window.parent.postMessage({'
+        + '  type: "ag30_sandbox_probe",'
+        + '  origin: window.origin,'
+        + '  baseBefore,'
+        + '  baseAfterRemove,'
+        + '  docUrl: document.URL,'
+        + '  referrer: document.referrer,'
+        + '  parentHref: tryRead(() => window.parent.location.href),'
+        + '  cookie: tryRead(() => document.cookie),'
+        + '  storage: tryRead(() => localStorage.getItem("ag_remote_pair_v1"))'
+        + '}, "*");'
+        + '</script></body></html>',
+        'utf8'
+      );
+
+      const handler = remoteMod.createRemoteHttpHandler(
+        httpCfg,
+        {
+          homeDir: tmpDir,
+          configDir: path.join(tmpDir, 'cfg'),
+          localApiConnect: async () => ({ ok: true }),
+          fetchSnapshot: async () => ({
+            ...baseSnap,
+            currentWorkspacePaths: [wsAlpha, wsBeta]
+          }),
+          performAction: async () => ({ ok: true })
+        }
+      );
+      const server = http.createServer(handler);
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const port = server.address().port;
+      const chromeUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-30wb-chrome-'));
+      let chromeProc = null;
+      let cdpWs = null;
+      try {
+        chromeProc = spawn(CHROME_BIN, [
+          '--headless=new',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--remote-debugging-port=0',
+          `--user-data-dir=${chromeUserDir}`,
+          'about:blank'
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const browserWsUrl = await new Promise((resolve, reject) => {
+          let errOut = '';
+          const timer = setTimeout(() => reject(new Error('Chrome startup timeout: ' + errOut)), 10000);
+          chromeProc.stderr.on('data', (chunk) => {
+            errOut += String(chunk);
+            const m = errOut.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+            if (m) {
+              clearTimeout(timer);
+              resolve(m[1]);
+            }
+          });
+          chromeProc.on('exit', (code) => {
+            clearTimeout(timer);
+            reject(new Error(`Chrome exited (${code}): ${errOut}`));
+          });
+        });
+        const devOrigin = browserWsUrl.replace(/^ws:/, 'http:').replace(/\/devtools\/.*$/, '');
+        const tabMeta = await new Promise((resolve, reject) => {
+          const req = http.request(`${devOrigin}/json/new?about:blank`, { method: 'PUT' }, (res) => {
+            let body = '';
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => {
+              try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+            });
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        cdpWs = new WebSocket(tabMeta.webSocketDebuggerUrl);
+        await new Promise((resolve, reject) => {
+          cdpWs.addEventListener('open', resolve, { once: true });
+          cdpWs.addEventListener('error', reject, { once: true });
+        });
+        let cdpSeq = 0;
+        const cdpPending = new Map();
+        cdpWs.addEventListener('message', (ev) => {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg.id && cdpPending.has(msg.id)) {
+            const p = cdpPending.get(msg.id);
+            cdpPending.delete(msg.id);
+            clearTimeout(p.timer);
+            if (msg.error) p.reject(new Error(msg.error.message || 'CDP error'));
+            else p.resolve(msg.result);
+          }
+        });
+        const cdpCall = (method, params = {}) => new Promise((resolve, reject) => {
+          const id = ++cdpSeq;
+          const timer = setTimeout(() => {
+            cdpPending.delete(id);
+            reject(new Error('CDP timeout: ' + method));
+          }, 8000);
+          cdpPending.set(id, { resolve, reject, timer });
+          cdpWs.send(JSON.stringify({ id, method, params }));
+        });
+        const cdpEval = async (expression) => {
+          const r = await cdpCall('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+          if (r?.exceptionDetails) {
+            throw new Error('CDP eval exception: ' + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
+          }
+          return r?.result?.value;
+        };
+
+        await cdpCall('Page.enable');
+        await cdpCall('Emulation.setDeviceMetricsOverride', { width: 1200, height: 480, deviceScaleFactor: 1, mobile: false });
+        // 携带真实配对口令与 hash 口令进入远程工作台
+        await cdpCall('Page.navigate', {
+          url: `http://127.0.0.1:${port}/?token=${realSecretToken}#hashSecret=${realSecretToken}`
+        });
+
+        let probeResult = null;
+        const startWait = Date.now();
+        while (Date.now() - startWait < 8000) {
+          let ready = false;
+          try {
+            ready = await cdpEval(`Boolean(document.readyState === 'complete' && window.__fvWorkbenchHooks && document.getElementById('file-viewer-backdrop'))`);
+          } catch {}
+          if (ready) break;
+          await sleep(50);
+        }
+        probeResult = await cdpEval(`(async () => {
+          const probePromise = new Promise((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('sandbox postMessage timeout')), 5000);
+            window.addEventListener('message', function onMsg(ev) {
+              if (ev.data && ev.data.type === 'ag30_sandbox_probe') {
+                clearTimeout(t);
+                window.removeEventListener('message', onMsg);
+                resolve(ev.data);
+              }
+            });
+          });
+          await window.__fvWorkbenchHooks.openFilePreviewModal(${JSON.stringify(exploitFile)}, 0);
+          const probe = await probePromise;
+          const frame = document.querySelector('#fv-body iframe');
+          const modalRect = document.getElementById('file-viewer-modal')?.getBoundingClientRect?.();
+          const appRect = document.querySelector('.app')?.getBoundingClientRect?.();
+          return {
+            parentHref: window.location.href,
+            hasSrcdoc: Boolean(frame && frame.hasAttribute('srcdoc')),
+            sandboxAttr: frame ? frame.getAttribute('sandbox') : '',
+            dockedSideBySide: Boolean(modalRect && appRect && modalRect.left >= appRect.right - 2),
+            probe
+          };
+        })()`);
+
+        assert.equal(probeResult.parentHref, `http://127.0.0.1:${port}/`, '真实 Chrome 进入页面后 URL 中的 query/hash 口令已被彻底抹除');
+        assert.equal(probeResult.dockedSideBySide, true, '真实 Chrome 在 1200x480 (<521px 高度) 窗口下仍应以右侧并排常驻边栏渲染而非全屏遮罩抽屉');
+        assert.equal(probeResult.hasSrcdoc, true, '口令净化后应采用 srcdoc 承载 HTML 预览');
+        assert.equal(probeResult.sandboxAttr, 'allow-scripts');
+        assert.equal(probeResult.probe.origin, 'null', '真实 Chrome 沙盒 iframe origin 必须为 opaque null');
+        assert.equal(probeResult.probe.baseBefore, `http://127.0.0.1:${port}/`, '真实 Chrome 沙盒初始 document.baseURI 仅含已脱敏根路径，绝不含配对口令');
+        assert.equal(probeResult.probe.baseAfterRemove, `http://127.0.0.1:${port}/`, '即便恶意脚本移除 <base>，回退 baseURI 也仅含无口令根路径');
+        assert.equal(probeResult.probe.referrer, '', 'referrer 必须为空');
+        assert.match(probeResult.probe.parentHref, /^BLOCKED:/, '跨域沙盒访问 window.parent.location.href 必须被浏览器同源策略拦截');
+        assert.match(probeResult.probe.storage, /^BLOCKED:/, 'opaque null origin 访问 localStorage 必须被拦截');
+        assert.match(probeResult.probe.cookie, /^BLOCKED:/, 'opaque null origin 访问 document.cookie 必须被拦截');
+        assert.equal(JSON.stringify(probeResult).includes(realSecretToken), false, '沙盒内外任何可读属性严禁出现配对口令');
+      } finally {
+        try { cdpWs?.close(); } catch {}
+        try { chromeProc?.kill('SIGKILL'); } catch {}
+        await new Promise((resolve) => server.close(resolve));
+        fs.rmSync(chromeUserDir, { recursive: true, force: true });
+      }
     }
   } finally {
     if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
