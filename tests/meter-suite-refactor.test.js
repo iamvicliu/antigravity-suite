@@ -36681,6 +36681,144 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
       assert.equal(storedProjects.get(customBranchPid).name, 'PartialSnapSafeSaved');
       assert.equal(storedProjects.get(customBranchPid).projectResources.resources.length, 2, '保存后 2 个绑定目录均完整保留');
       assert.equal(storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.defaultBranch, 'release/v2.4-lts');
+
+      // 11) 返工回归 E：LanguageServer 含 2 个目录与额外配置字段、而磁盘副本落后（仅 1 个目录且缺字段）时，ReadProject 失败严禁回退磁盘副本解锁保存或调用 UpdateProject 覆盖
+      const staleDiskPid = 'proj-ls-rich-disk-stale';
+      const lsAuthoritativeProj = {
+        id: staleDiskPid,
+        name: 'AuthoritativeLsProj',
+        projectResources: {
+          resources: [
+            { gitFolder: { folderUri: pathToFileURL(dirRepoA).href, defaultBranch: 'release/3.0' } },
+            { folderUri: pathToFileURL(dirSharedB).href }
+          ]
+        },
+        permissionGrants: { v2Migrated: true, secretScope: 'enterprise-write' },
+        settings: { indexingTier: 'deep', preserveMe: true },
+        extraServerOnlyField: { owner: 'ls-memory' },
+        isWorkspaceOnly: false
+      };
+      // 磁盘副本故意落后：仅包含 1 个目录且缺失 secretScope / settings / extraServerOnlyField
+      const staleDiskCopy = {
+        id: staleDiskPid,
+        name: 'StaleDiskCopyName',
+        projectResources: {
+          resources: [
+            { folderUri: pathToFileURL(dirRepoA).href }
+          ]
+        }
+      };
+      storedProjects.set(staleDiskPid, lsAuthoritativeProj);
+      fs.writeFileSync(path.join(configDir, 'projects', `${staleDiskPid}.json`), JSON.stringify(staleDiskCopy, null, 2));
+
+      // 11a) 普通运行（未传 configDir、未开 allowDiskFallback，即使 $HOME/.gemini/config/projects 下存在同名滞后 JSON）ReadProject 失败或无连接均必须直接报错
+      const prodHomeWithStaleJson = path.join(tmpRoot, 'prod-home-sim');
+      const prodDirRepo = path.join(prodHomeWithStaleJson, 'codebase', 'app-one');
+      fs.mkdirSync(prodDirRepo, { recursive: true });
+      fs.mkdirSync(path.join(prodHomeWithStaleJson, '.gemini', 'config', 'projects'), { recursive: true });
+      fs.writeFileSync(
+        path.join(prodHomeWithStaleJson, '.gemini', 'config', 'projects', `${staleDiskPid}.json`),
+        JSON.stringify({ id: staleDiskPid, name: 'DefaultHomeStale', projectResources: { resources: [{ folderUri: pathToFileURL(prodDirRepo).href }] } }, null, 2)
+      );
+      let prodUpdateCalled = 0;
+      const failingProdLs = async () => ({
+        call: async (method) => {
+          if (method === 'ReadProject') throw new Error('ls_unavailable: ReadProject rpc failed');
+          if (method === 'UpdateProject') prodUpdateCalled += 1;
+          return {};
+        }
+      });
+      await assert.rejects(
+        () => remoteMod.readRemoteProjectDetail(staleDiskPid, { homeDir: prodHomeWithStaleJson, localApiConnect: failingProdLs }),
+        (err) => err?.status === 502 && /ReadProject/.test(err.message),
+        '普通运行未开启回退时 ReadProject 失败必须返回 502 错误，不得读取 ~/.gemini/config 磁盘副本'
+      );
+      await assert.rejects(
+        () => remoteMod.updateRemoteProject({ id: staleDiskPid, name: 'TryOverwrite', folderPaths: [prodDirRepo] }, { homeDir: prodHomeWithStaleJson, localApiConnect: failingProdLs }),
+        (err) => err?.status === 502 && /ReadProject/.test(err.message),
+        '普通运行未开启回退时 updateRemoteProject 在 ReadProject 失败后必须拒绝执行 UpdateProject'
+      );
+      assert.equal(prodUpdateCalled, 0, 'ReadProject 失败时严禁调用 UpdateProject');
+
+      // 11b) 即便服务端配置了 configDir，只要已连接 LanguageServer 且未显式设置 allowDiskFallback:true，ReadProject 失败时前后端均不得用滞后磁盘副本解锁或覆盖
+      const origStoredGet = storedProjects.get.bind(storedProjects);
+      let failLsReadForStalePid = false;
+      storedProjects.get = (k) => {
+        if (failLsReadForStalePid && k === staleDiskPid) {
+          throw new Error('rpc_unavailable: transient ReadProject failure');
+        }
+        return origStoredGet(k);
+      };
+      try {
+        // 先刷新前端会话列表使 staleDiskPid 渲染出编辑按钮（快照读取期间正常）
+        detailMode = 'normal';
+        await uiPartialEnv.win.fetch('/api/snapshot');
+        // 打开失败开关后再触发前端编辑弹窗详情拉取与后端直接保存尝试
+        failLsReadForStalePid = true;
+
+        const detailHttpWhileReadFails = await apiJson('GET', `/api/projects/detail?id=${encodeURIComponent(staleDiskPid)}`);
+        assert.equal(detailHttpWhileReadFails.status, 502, 'ReadProject 失败时 /api/projects/detail 必须返回 502，不得回退至仅 1 目录的滞后磁盘 JSON');
+        assert.equal(detailHttpWhileReadFails.data.ok, false);
+
+        const updateCountBeforeStaleAttempt = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        const updateHttpWhileReadFails = await apiJson('POST', '/api/projects/update', {
+          id: staleDiskPid,
+          name: 'ShouldNeverSaveFromStaleDisk',
+          folderPaths: [dirRepoA]
+        });
+        assert.equal(updateHttpWhileReadFails.status, 502, 'ReadProject 失败时 /api/projects/update 必须返回 502 拒绝更新');
+        assert.equal(updateHttpWhileReadFails.data.ok, false);
+        const updateCountAfterStaleAttempt = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        assert.equal(updateCountAfterStaleAttempt, updateCountBeforeStaleAttempt, '严禁调用 UpdateProject 覆盖 LanguageServer 原配置');
+
+        // 前端真实联动：重新加载最新快照渲染 staleDiskPid 编辑按钮，然后在 ReadProject 失败下点击编辑按钮
+        failLsReadForStalePid = false;
+        const freshEnv = createDomEnv();
+        freshEnv.sandbox.setTimeout = freshEnv.win.setTimeout = uiPartialEnv.sandbox.setTimeout;
+        freshEnv.doc.body.innerHTML = bodyMatch[1];
+        freshEnv.win.innerWidth = 1280;
+        freshEnv.win.innerHeight = 800;
+        freshEnv.win.AbortController = AbortController;
+        freshEnv.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, hash: '', href: `${baseUrl}/?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+        freshEnv.win.history = { replaceState() {} };
+        freshEnv.sandbox.location = freshEnv.win.location;
+        freshEnv.sandbox.history = freshEnv.win.history;
+        freshEnv.sandbox.AbortController = AbortController;
+        freshEnv.sandbox.URLSearchParams = URLSearchParams;
+        freshEnv.win.fetch = freshEnv.sandbox.fetch = (u, init) => fetch(String(u).startsWith('http') ? String(u) : `${baseUrl}${u}`, init);
+        vm.runInNewContext(scriptMatch[1], freshEnv.sandbox);
+        await new Promise((r) => rawSetTimeout(r, 60));
+
+        failLsReadForStalePid = true;
+        const freshConvList = freshEnv.doc.getElementById('conv-list');
+        const staleEditBtn = freshConvList.querySelectorAll('.proj-edit-btn').find((b) => b.getAttribute('data-edit-proj') === staleDiskPid);
+        assert.ok(staleEditBtn);
+        await freshConvList.dispatchEvent({ type: 'click', target: staleEditBtn, stopPropagation() {} });
+        await new Promise((r) => rawSetTimeout(r, 60));
+
+        const freshSubmit = freshEnv.doc.getElementById('proj-create-submit');
+        const freshFoldersBox = freshEnv.doc.getElementById('proj-folders-box');
+        assert.equal(Boolean(freshSubmit.disabled), true, 'ReadProject 失败时前端绝不得用磁盘滞后副本解锁保存按钮');
+        assert.equal(freshFoldersBox.querySelectorAll('.proj-folder-chip').length, 0, '不得渲染滞后磁盘副本的不完整单目录列表');
+        freshSubmit.click();
+        await new Promise((r) => rawSetTimeout(r, 40));
+        assert.equal(
+          rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length,
+          updateCountBeforeStaleAttempt,
+          '前端点击禁用提交按钮绝不触发 UpdateProject'
+        );
+
+        // 验证原 LanguageServer 中的 2 个目录与额外字段丝毫无损
+        failLsReadForStalePid = false;
+        const intactProj = storedProjects.get(staleDiskPid);
+        assert.equal(intactProj.name, 'AuthoritativeLsProj');
+        assert.equal(intactProj.projectResources.resources.length, 2);
+        assert.deepEqual(intactProj.permissionGrants, { v2Migrated: true, secretScope: 'enterprise-write' });
+        assert.deepEqual(intactProj.settings, { indexingTier: 'deep', preserveMe: true });
+        assert.deepEqual(intactProj.extraServerOnlyField, { owner: 'ls-memory' });
+      } finally {
+        storedProjects.get = origStoredGet;
+      }
     } finally {
       await new Promise((r) => server.close(r));
     }
