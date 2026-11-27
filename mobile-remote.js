@@ -8584,13 +8584,13 @@ function buildMobileAppHtml() {
       --surface-strong:rgba(255,255,255,.07);--surface-strong-hover:rgba(255,255,255,.11);
       --border:rgba(255,255,255,.11);--border-subtle:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.18);
       --fg:#f4f4f5;--fg-strong:#fafafa;--fg-secondary:#e4e4e7;--fg-sub:#d4d4d8;--muted:#a1a1aa;--placeholder:#8e8e98;
-      --accent:#38bdf8;--accent-fg:#7dd3fc;--accent-strong-fg:#bae6fd;--accent-bg:rgba(56,189,248,.11);--accent-border:rgba(56,189,248,.34);
-      --btn-primary-bg:#38bdf8;
+      --accent:#a78bfa;--accent-fg:#c4b5fd;--accent-strong-fg:#ddd6fe;--accent-bg:rgba(167,139,250,.14);--accent-border:rgba(167,139,250,.34);
+      --btn-primary-bg:#a78bfa;
       --green:#34d399;--amber:#fbbf24;--red:#f87171;--risk-fg:#fca5a5;--risk-bg:rgba(239,68,68,.14);--risk-border:rgba(248,113,113,.55);
       --diff-add:#4ade80;--diff-del:#f87171;
-      --code-bg:rgba(255,255,255,.1);--pre-bg:#09090b;--qbar-bg:rgba(255,255,255,.12);--thought-summary:#93c5fd;
+      --code-bg:rgba(255,255,255,.1);--pre-bg:#09090b;--qbar-bg:rgba(255,255,255,.12);--thought-summary:#c4b5fd;
       --ap-approve-bg:#10b981;--ap-approve-fg:#052e16;--ap-reject-bg:#3f3f46;--ap-reject-fg:#f4f4f5;
-      --user-bg:#1d4ed8;--user-fg:#f8fafc;--send-ready-fg:#082f49;
+      --user-bg:#6d28d9;--user-fg:#f8fafc;--send-ready-fg:#1e1038;
       --toast-bg:#27272a;--toast-fg:#fff;--backdrop-bg:rgba(0,0,0,.58);
       --pop-shadow:0 16px 40px rgba(0,0,0,.6);--sheet-shadow:0 24px 64px rgba(0,0,0,.65);
       --scroll-thumb:rgba(255,255,255,.14);--scroll-thumb-hover:rgba(255,255,255,.26);
@@ -8631,8 +8631,8 @@ function buildMobileAppHtml() {
         --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
         --border:rgba(15,23,42,.13);--border-subtle:rgba(15,23,42,.08);--border-strong:rgba(15,23,42,.2);
         --fg:#18181b;--fg-strong:#09090b;--fg-secondary:#27272a;--fg-sub:#3f3f46;--muted:#52525b;--placeholder:#64748b;
-        --accent:#0284c7;--accent-fg:#0369a1;--accent-strong-fg:#075985;--accent-bg:rgba(2,132,199,.09);--accent-border:rgba(2,132,199,.32);
-        --btn-primary-bg:#0369a1;
+        --accent:#7c3aed;--accent-fg:#6d28d9;--accent-strong-fg:#5b21b6;--accent-bg:rgba(124,58,237,.10);--accent-border:rgba(124,58,237,.32);
+        --btn-primary-bg:#7c3aed;
         --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);--risk-border:rgba(220,38,38,.42);
         --diff-add:#15803d;--diff-del:#b91c1c;
         --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0369a1;
@@ -8671,8 +8671,8 @@ function buildMobileAppHtml() {
       --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
       --border:rgba(15,23,42,.13);--border-subtle:rgba(15,23,42,.08);--border-strong:rgba(15,23,42,.2);
       --fg:#18181b;--fg-strong:#09090b;--fg-secondary:#27272a;--fg-sub:#3f3f46;--muted:#52525b;--placeholder:#64748b;
-      --accent:#0284c7;--accent-fg:#0369a1;--accent-strong-fg:#075985;--accent-bg:rgba(2,132,199,.09);--accent-border:rgba(2,132,199,.32);
-      --btn-primary-bg:#0369a1;
+      --accent:#7c3aed;--accent-fg:#6d28d9;--accent-strong-fg:#5b21b6;--accent-bg:rgba(124,58,237,.10);--accent-border:rgba(124,58,237,.32);
+      --btn-primary-bg:#7c3aed;
       --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);--risk-border:rgba(220,38,38,.42);
       --diff-add:#15803d;--diff-del:#b91c1c;
       --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0369a1;
@@ -15190,10 +15190,13 @@ function buildMobileAppHtml() {
       return { rawLabel, rawModelId, baseModelId, baseLabel, effortKey, meta };
     }
 
-    function pickPreferredGroupEffort(variants) {
+    function pickPreferredGroupEffort(variants, defaultEffortKey) {
       if (!Array.isArray(variants) || !variants.length) return '';
       const activeVar = variants.find((v) => v.active);
       if (activeVar?.effortShort) return activeVar.effortShort;
+      const defKey = String(defaultEffortKey || '').trim().toLowerCase();
+      const byDef = defKey ? variants.find((v) => v.effortKey === defKey) : null;
+      if (byDef?.effortShort) return byDef.effortShort;
       const byPref = variants.find((v) => v.effortKey === 'high')
         || variants.find((v) => v.effortKey === 'medium')
         || variants[variants.length - 1];
@@ -15250,6 +15253,7 @@ function buildMobileAppHtml() {
         const grp = regularMap.get(parsed.baseModelId);
         if (isActive) grp.active = true;
         if (isNewFlag) grp.isNew = true;
+        if (m.defaultEffort && !grp.defaultEffort) grp.defaultEffort = String(m.defaultEffort);
         grp.variants.push({
           label: rawLabel,
           modelId: rawModelId,
@@ -15264,7 +15268,7 @@ function buildMobileAppHtml() {
       for (const grp of regularGroups) {
         grp.variants.sort((a, b) => a.rank - b.rank);
         grp.hasEffortChoice = grp.variants.length > 1;
-        grp.summaryText = pickPreferredGroupEffort(grp.variants);
+        grp.summaryText = pickPreferredGroupEffort(grp.variants, grp.defaultEffort);
       }
 
       const explicitPlanners = Array.isArray(orchestratorConfig?.planners)
@@ -15462,8 +15466,52 @@ function buildMobileAppHtml() {
           if (opt.effortKey) reqBody.effortKey = opt.effortKey;
         }
         const r = await apiAction(reqBody);
-        if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
-        else showToast(r?.error || r?.actionResult?.error || '切换模型失败，请确认电脑端窗口在线后重试');
+        if (r?.ok) {
+          const nextModelTitle = String(r.actionResult?.model || opt.label || '').trim();
+          if (latestSnap && typeof latestSnap === 'object') {
+            if (nextModelTitle) latestSnap.model = nextModelTitle;
+            const selId = String(r.actionResult?.selectedModelId || opt.modelId || '').trim();
+            if (Array.isArray(latestSnap.modelOptions)) {
+              for (const mo of latestSnap.modelOptions) {
+                if (!mo) continue;
+                mo.selected = Boolean(
+                  (selId && mo.modelId === selId) ||
+                  (!opt.orchestrator && nextModelTitle && mo.label === nextModelTitle)
+                );
+              }
+            }
+            if (latestSnap.orchestratorConfig && typeof latestSnap.orchestratorConfig === 'object') {
+              const nextIsOrch = Boolean(opt.orchestrator);
+              latestSnap.orchestratorConfig.active = nextIsOrch;
+              if (nextIsOrch) {
+                const pId = String(r.actionResult?.plannerModelId || opt.plannerModelId || '').trim();
+                const pVal = Number(r.actionResult?.plannerValue || opt.plannerValue || 0);
+                if (pId) latestSnap.orchestratorConfig.pickedModelId = pId;
+                if (pVal > 0) latestSnap.orchestratorConfig.pickedValue = pVal;
+                if (selId) latestSnap.orchestratorConfig.orchestratorModelId = selId;
+                if (Array.isArray(latestSnap.orchestratorConfig.planners)) {
+                  for (const pl of latestSnap.orchestratorConfig.planners) {
+                    if (!pl) continue;
+                    pl.selected = Boolean((pId && pl.modelId === pId) || (pVal > 0 && Number(pl.value) === pVal));
+                  }
+                }
+              } else if (Array.isArray(latestSnap.orchestratorConfig.planners)) {
+                for (const pl of latestSnap.orchestratorConfig.planners) {
+                  if (pl) pl.selected = false;
+                }
+              }
+            }
+          }
+          if ($('model-inline-label') && nextModelTitle) {
+            $('model-inline-label').textContent = nextModelTitle;
+          }
+          if (r.snapshot && typeof renderSnapshot === 'function') {
+            renderSnapshot(r.snapshot);
+          }
+          showToast('已切换到 ' + (nextModelTitle || opt.label));
+        } else {
+          showToast(r?.error || r?.actionResult?.error || '切换模型失败，请确认电脑端窗口在线后重试');
+        }
       } catch (err) {
         showToast(humanizeRemoteError(err?.message, '切换模型失败，请确认电脑端窗口在线后重试'));
       }
