@@ -34326,11 +34326,65 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(enhancerCompactCalls, 1, '点击一键压缩按钮应调用 __AGEnhancer.triggerCompact');
 
-    // 无 __AGEnhancer 时的独立兜底填入并发送 /compact
-    delete envCap.win.__AGEnhancer;
-    await capsApi.triggerCompactAction(null, compactBtn);
+    // 无 __AGEnhancer 或 __AGEnhancer 抛错时的独立兜底：严格保护非空草稿（textarea 与 contenteditable），仅在空编辑器或已是 /compact 时发送
+    editorEl.value = '用户正在撰写的未发送草稿';
+    envCap.win.__AGEnhancer = {
+      triggerCompact: async () => {
+        throw new Error('enhancer transient failure');
+      }
+    };
+    const draftProtectedOnThrow = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(draftProtectedOnThrow.ok, false);
+    assert.equal(draftProtectedOnThrow.reason, 'draft_protected', '增强器抛错回退遇到 textarea 非空草稿必须拒绝覆盖与误发');
+    assert.equal(editorEl.value, '用户正在撰写的未发送草稿', 'textarea 草稿原文必须完整保留');
+    assert.equal(fallbackSendClicks, 0, '存在未发送草稿时绝不能点击发送按钮');
+
+    editorEl.value = '';
+    const okOnThrowEmpty = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(okOnThrowEmpty.ok, true);
+    assert.equal(okOnThrowEmpty.method, 'fallback_button', '增强器抛错且编辑器为空时应回退填入并发送 /compact');
     assert.equal(editorEl.value, '/compact');
     assert.equal(fallbackSendClicks, 1);
+
+    delete envCap.win.__AGEnhancer;
+    editorEl.value = '第二段未发草稿';
+    const textareaProtectedRes = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(textareaProtectedRes.ok, false);
+    assert.equal(textareaProtectedRes.reason, 'draft_protected', '无增强器时 textarea 非空草稿必须受保护不误发');
+    assert.equal(editorEl.value, '第二段未发草稿');
+    assert.equal(fallbackSendClicks, 1, '不得因非空草稿增加发送点击次数');
+
+    // 验证 contenteditable 编辑器（非空草稿保护 + 空草稿自动填入发送）
+    const ceComposer = envCap.doc.createElement('div');
+    ceComposer.className = 'surface-composer';
+    const ceEditor = envCap.doc.createElement('div');
+    ceEditor.setAttribute('contenteditable', 'true');
+    const ceSendBtn = envCap.doc.createElement('button');
+    ceSendBtn.setAttribute('data-testid', 'send-button');
+    let ceSendClicks = 0;
+    ceSendBtn.click = () => { ceSendClicks += 1; };
+    const ceFooter = envCap.doc.createElement('div');
+    ceFooter.className = 'agy-composer-footer';
+    const ceCompactBtn = envCap.doc.createElement('button');
+    ceFooter.appendChild(ceCompactBtn);
+    ceComposer.appendChild(ceEditor);
+    ceComposer.appendChild(ceSendBtn);
+    ceComposer.appendChild(ceFooter);
+    envCap.doc.body.appendChild(ceComposer);
+
+    ceEditor.textContent = '富文本输入框中的未发草稿';
+    const ceDraftBlocked = await capsApi.triggerCompactAction(null, ceCompactBtn);
+    assert.equal(ceDraftBlocked.ok, false);
+    assert.equal(ceDraftBlocked.reason, 'draft_protected', 'contenteditable 非空草稿必须拒绝发送');
+    assert.equal(ceEditor.textContent, '富文本输入框中的未发草稿');
+    assert.equal(ceSendClicks, 0);
+
+    ceEditor.textContent = '';
+    const ceEmptySent = await capsApi.triggerCompactAction(null, ceCompactBtn);
+    assert.equal(ceEmptySent.ok, true);
+    assert.equal(ceEmptySent.method, 'fallback_button');
+    assert.equal(ceEditor.textContent, '/compact');
+    assert.equal(ceSendClicks, 1);
 
     // 2d: 切换为 footer 或 both 模式时，常态低水位也常驻显示胶囊，但一键压缩按钮仅在告警态出现
     envCap.localStorage.setItem('ag_suite_context_display_mode', 'footer');
@@ -34356,21 +34410,28 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-50pb-remote-'));
     const prevStateDir = process.env.AG_METER_STATE_DIR;
     const prevAgDir = process.env.AG_DIR;
+    const prevAppData = process.env.APPDATA;
     process.env.AG_METER_STATE_DIR = tmpDir;
     process.env.AG_DIR = tmpDir;
+    delete process.env.APPDATA;
+    delete require.cache[require.resolve('../meter-collector')];
+    delete require.cache[require.resolve('../mobile-remote')];
+    const isolatedCollector = require('../meter-collector');
     const remote = require('../mobile-remote');
     try {
       remote.clearRemoteUiPrefsCacheForTests();
       assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, false, '远程端默认应关闭 API 参考费用展示');
 
-      collector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
+      isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
       assert.equal(
         remote.resolveCachedRemoteUiPrefs().showApiReferenceCost,
         true,
         '保存 settings.json 后无需等待 2 秒缓存过期即可立即读取最新 showApiReferenceCost=true'
       );
-      collector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
+      isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
       assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, false);
+      const savedRemoteCfg = remote.loadOrCreateRemoteConfig();
+      const activeTok = savedRemoteCfg.token;
 
       const html = remote.buildMobileAppHtml({ deviceName: 'Mac' });
       const scriptBlocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
@@ -34417,7 +34478,7 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
         console, URL, URLSearchParams, Math, Date, JSON, Promise, Set, Map, RegExp, Array, Object, Number, String, Boolean,
         encodeURIComponent, decodeURIComponent, parseInt, parseFloat, isNaN, isFinite,
         navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', serviceWorker: null },
-        location: { origin: 'http://127.0.0.1:18765', href: 'http://127.0.0.1:18765/?t=tok', search: '?t=tok', pathname: '/', hash: '', protocol: 'http:', reload() {} },
+        location: { origin: 'http://127.0.0.1:18765', href: 'http://127.0.0.1:18765/?t=' + activeTok, search: '?t=' + activeTok, pathname: '/', hash: '', protocol: 'http:', reload() {} },
         history: { replaceState() {} },
         localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
         sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -34434,53 +34495,105 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
         innerWidth: 390, innerHeight: 844, visualViewport: null,
         setTimeout: (fn, ms) => { const t = setTimeout(fn, Math.min(Number(ms) || 0, 30)); if (t.unref) t.unref(); timers.add(t); return t; },
         clearTimeout: (t) => clearTimeout(t),
-        fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })
+        fetch: async (reqUrl) => {
+          const u = String(reqUrl || '');
+          if (u.includes('/api/context') || u.includes('/api/snapshot')) {
+            let statusCode = 200;
+            let rawBody = '';
+            const parsedU = new URL(u, 'http://127.0.0.1:18765');
+            if (!parsedU.searchParams.has('token')) parsedU.searchParams.set('token', activeTok);
+            await remoteHttpHandler(
+              {
+                method: 'GET',
+                url: parsedU.pathname + parsedU.search,
+                headers: { host: '127.0.0.1:18765', 'x-ag-remote-token': activeTok },
+                socket: { remoteAddress: '127.0.0.1' }
+              },
+              {
+                setHeader() {},
+                getHeader: () => undefined,
+                writeHead(sc) { statusCode = sc; },
+                end(buf) { rawBody = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf || ''); }
+              }
+            );
+            return { ok: statusCode >= 200 && statusCode < 300, status: statusCode, json: async () => JSON.parse(rawBody || '{}') };
+          }
+          return { ok: true, status: 200, json: async () => ({ ok: true }) };
+        }
       };
+      const baseSnap = {
+        ok: true,
+        sessionId: 'conv-50pb',
+        title: '物品库存及管理系统',
+        currentProjectId: 'p-essay',
+        currentProjectName: 'essay-gen',
+        model: 'Gemini 4 Neon (Medium)',
+        contextBadge: '297k/512k (57.9%)',
+        pulseText: '137.7 tok/s · 297k/512k (57.9%)',
+        contextPanel: {
+          usedTokens: 297000,
+          limitTokens: 512000,
+          physicalMaxTokens: 1048576,
+          usagePercent: 57.9,
+          tokPerSec: 137.7,
+          lastDurationSec: 4.2,
+          cacheHitRate: 88.5,
+          modelDisplayName: 'Gemini 4 Neon (Medium)',
+          roundCostText: '本轮 $0.12',
+          sessionCostText: '会话累计 $1.45'
+        },
+        usageSummary: { todayTokens: 50000, sevenDayTokens: 200000, thirtyDayTokens: 800000, totalTokens: 1200000, totalCostUsd: 18.6 },
+        messages: [],
+        projects: [{ id: 'p-essay', name: 'essay-gen' }],
+        conversations: [{ id: 'conv-50pb', title: '物品库存及管理系统', projectId: 'p-essay', projectName: 'essay-gen', status: 'idle' }],
+        pendingApprovals: [],
+        pendingPrompts: []
+      };
+      const remoteHttpHandler = remote.createRemoteHttpHandler(savedRemoteCfg, {
+        fetchSnapshot: async () => ({ ...baseSnap })
+      });
+      const invokeRemoteApi = async (urlPath) => {
+        let rawBody = '';
+        const sep = urlPath.includes('?') ? '&' : '?';
+        await remoteHttpHandler(
+          {
+            method: 'GET',
+            url: `${urlPath}${sep}token=${activeTok}`,
+            headers: { host: '127.0.0.1:18765', 'x-ag-remote-token': activeTok },
+            socket: { remoteAddress: '127.0.0.1' }
+          },
+          {
+            setHeader() {},
+            getHeader: () => undefined,
+            writeHead() {},
+            end(buf) { rawBody = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf || ''); }
+          }
+        );
+        return JSON.parse(rawBody || '{}');
+      };
+
       sandbox.window = sandbox;
       sandbox.addEventListener = () => {};
       const tailIdx = mainScript.lastIndexOf('})();');
       const hooked = mainScript.slice(0, tailIdx) +
-        '\nglobalThis.__test50pb = { renderSnapshot, renderContextDrawer, renderUsageDrawer };\n' +
+        '\nglobalThis.__test50pb = { renderSnapshot, renderContextDrawer, renderUsageDrawer, openTopDrawer, fetchContextPanelData };\n' +
         mainScript.slice(tailIdx);
       try {
         vm.runInNewContext(hooked, sandbox);
         assert.equal(byId['sub-meta'].hidden, false, '初始连接探测态 #sub-meta 应可见');
         assert.match(byId['sub-meta'].textContent, /正在连接/);
 
-        const baseSnap = {
-          ok: true,
-          sessionId: 'conv-50pb',
-          title: '物品库存及管理系统',
-          currentProjectId: 'p-essay',
-          currentProjectName: 'essay-gen',
-          model: 'Gemini 4 Neon (Medium)',
-          contextBadge: '297k/512k (57.9%)',
-          pulseText: '137.7 tok/s · 297k/512k (57.9%)',
-          showApiReferenceCost: false,
-          contextPanel: {
-            usedTokens: 297000,
-            limitTokens: 512000,
-            physicalMaxTokens: 1048576,
-            usagePercent: 57.9,
-            tokPerSec: 137.7,
-            lastDurationSec: 4.2,
-            cacheHitRate: 88.5,
-            modelDisplayName: 'Gemini 4 Neon (Medium)',
-            roundCostText: '本轮 $0.12',
-            sessionCostText: '会话累计 $1.45'
-          },
-          usageSummary: { todayTokens: 50000, sevenDayTokens: 200000, thirtyDayTokens: 800000, totalTokens: 1200000, totalCostUsd: 18.6 },
-          messages: [],
-          projects: [{ id: 'p-essay', name: 'essay-gen' }],
-          conversations: [{ id: 'conv-50pb', title: '物品库存及管理系统', projectId: 'p-essay', projectName: 'essay-gen', status: 'idle' }],
-          pendingApprovals: [],
-          pendingPrompts: []
-        };
-
-        sandbox.__test50pb.renderSnapshot(baseSnap);
+        const snapInitial = await invokeRemoteApi('/api/snapshot');
+        assert.equal(snapInitial.showApiReferenceCost, false, JSON.stringify(snapInitial));
+        sandbox.__test50pb.renderSnapshot(snapInitial);
         assert.equal(byId['sub-meta'].hidden, true, '正常在线态必须隐藏 #sub-meta 避免与顶栏 [58%] 重复');
         assert.equal(byId['conv-project-badge'].textContent, 'essay-gen');
         assert.equal(byId['ctx-top-val'].textContent, '58%');
+
+        // 先真实拉取一次 /api/context 使客户端写入 cachedContextResp (showApiReferenceCost: false)
+        const ctxInitial = await sandbox.__test50pb.fetchContextPanelData();
+        assert.equal(ctxInitial.ok, true);
+        assert.equal(ctxInitial.showApiReferenceCost, false);
 
         // 上下文抽屉应展示 1M 物理上限辅助说明且默认不渲染 $ 参考费用
         assert.match(byId['context-drawer'].innerHTML, /data-ctx-phys-note="1"/, '应展示物理窗口上限辅助说明');
@@ -34488,10 +34601,23 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
         assert.ok(!byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '默认关闭参考费用时上下文抽屉不得渲染 $ 金额');
         assert.ok(!byId['usage-drawer'].innerHTML.includes('API 参考等值'), '默认关闭参考费用时用量抽屉不得渲染 API 参考等值卡片');
 
-        // 开启 showApiReferenceCost 后两个抽屉均同步恢复显示 $ 参考金额
-        sandbox.__test50pb.renderSnapshot({ ...baseSnap, showApiReferenceCost: true });
-        assert.ok(byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '开启参考费用后上下文抽屉应恢复显示金额');
-        assert.ok(byId['usage-drawer'].innerHTML.includes('API 参考等值'), '开启参考费用后用量抽屉应恢复显示 API 参考等值卡片');
+        // 桌面端切换开关 false -> true（不重新请求 /api/context，仅接收新 /api/snapshot）：已缓存的旧 ctxRes 不得覆盖新快照偏好
+        isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
+        const snapCostOn = await invokeRemoteApi('/api/snapshot');
+        assert.equal(snapCostOn.showApiReferenceCost, true, '服务端新快照应立即反映桌面开启的 showApiReferenceCost=true');
+        sandbox.__test50pb.renderSnapshot(snapCostOn);
+        assert.ok(byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '即使曾缓存旧 /api/context(false)，新快照开启后上下文抽屉也必须立即显示 $ 金额');
+        assert.ok(byId['usage-drawer'].innerHTML.includes('API 参考等值'), '开启参考费用后用量抽屉应同步显示 API 参考等值卡片');
+
+        // 再真实拉取一次 /api/context 使其缓存 showApiReferenceCost=true，随后桌面端切换 true -> false 并推送新快照
+        const ctxWhenOn = await sandbox.__test50pb.fetchContextPanelData();
+        assert.equal(ctxWhenOn.showApiReferenceCost, true);
+        isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
+        const snapCostOff = await invokeRemoteApi('/api/snapshot');
+        assert.equal(snapCostOff.showApiReferenceCost, false, '服务端新快照应立即反映桌面关闭的 showApiReferenceCost=false');
+        sandbox.__test50pb.renderSnapshot(snapCostOff);
+        assert.ok(!byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '即使曾缓存 /api/context(true)，桌面关闭后新快照也必须立即隐藏上下文抽屉 $ 金额');
+        assert.ok(!byId['usage-drawer'].innerHTML.includes('API 参考等值'), '关闭参考费用后用量抽屉也必须立即隐藏 API 参考等值卡片');
 
         // 连接异常时 #sub-meta 自动恢复显示提示
         sandbox.__test50pb.renderSnapshot({ ok: false, error: '连接中断' });
@@ -34505,7 +34631,11 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
       else process.env.AG_METER_STATE_DIR = prevStateDir;
       if (prevAgDir === undefined) delete process.env.AG_DIR;
       else process.env.AG_DIR = prevAgDir;
+      if (prevAppData === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = prevAppData;
       remote.clearRemoteUiPrefsCacheForTests();
+      delete require.cache[require.resolve('../meter-collector')];
+      delete require.cache[require.resolve('../mobile-remote')];
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }

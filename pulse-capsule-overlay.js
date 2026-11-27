@@ -210,27 +210,46 @@
     }
 
     async function triggerCapsuleCompactAction(ev, triggerBtn) {
+        let enhancerHandled = false;
         try {
             if (typeof window !== 'undefined' && window.__AGEnhancer && typeof window.__AGEnhancer.triggerCompact === 'function') {
-                return await window.__AGEnhancer.triggerCompact(ev || null, triggerBtn || null);
+                const res = await window.__AGEnhancer.triggerCompact(ev || null, triggerBtn || null);
+                enhancerHandled = true;
+                return res;
             }
             if (typeof window !== 'undefined' && window.__AGEnhancer && typeof window.__AGEnhancer.fillComposerText === 'function') {
-                return await window.__AGEnhancer.fillComposerText('/compact', { slashCommand: 'compact' });
+                const res = await window.__AGEnhancer.fillComposerText('/compact', { slashCommand: 'compact' });
+                enhancerHandled = true;
+                return res;
             }
-        } catch (e) {}
+        } catch (e) {
+            if (enhancerHandled) return false;
+        }
         try {
             const scope = triggerBtn?.closest?.('.surface-composer') || document;
             const ed = scope.querySelector?.('textarea, [contenteditable="true"]');
             if (!ed) return false;
+            const isTextarea = String(ed.tagName || '').toUpperCase() === 'TEXTAREA';
+            const readText = () => String(isTextarea ? (ed.value ?? '') : (ed.textContent ?? '')).trim();
+            const existingDraft = readText();
+            if (existingDraft && existingDraft !== '/compact') {
+                return { ok: false, confirmedNotExecuted: true, reason: 'draft_protected' };
+            }
             ed.focus?.();
-            if (String(ed.tagName || '').toUpperCase() === 'TEXTAREA') {
-                if (!String(ed.value || '').trim()) {
+            if (!existingDraft) {
+                if (isTextarea) {
                     ed.value = '/compact';
-                    ed.dispatchEvent?.(new Event('input', { bubbles: true }));
+                } else {
+                    ed.textContent = '/compact';
                 }
-            } else if (!String(ed.textContent || '').trim()) {
-                ed.textContent = '/compact';
-                ed.dispatchEvent?.(new Event('input', { bubbles: true }));
+                try {
+                    ed.dispatchEvent?.(new Event('input', { bubbles: true }));
+                } catch {
+                    ed.dispatchEvent?.({ type: 'input', bubbles: true });
+                }
+            }
+            if (readText() !== '/compact') {
+                return { ok: false, confirmedNotExecuted: true, reason: 'draft_mismatch' };
             }
             const sendBtn = scope.querySelector?.('[data-testid="send-button"], .agy-send-button');
             if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute?.('aria-disabled') !== 'true') {

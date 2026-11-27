@@ -4467,7 +4467,7 @@
             <span class="settings-card-title">上下文与指标精简显示</span>
             <button id="btn-reset-context-display" class="switch-pill-btn" type="button" title="恢复上下文显示位置与精简降噪默认设置">恢复默认</button>
           </div>
-          <div class="settings-card-desc">默认仅保留右上角单一上下文进度环，把输出速度与估算费用收进详情面板；输入框底部仅在高水位或缓存失效时提示压缩。</div>
+          <div class="settings-card-desc">默认仅保留右上角单一上下文进度环，把输出速度收进详情面板，并默认隐藏详情面板中的 API 参考估算费用（开启开关后显示）；输入框底部仅在高水位或缓存失效时提示压缩。</div>
           <div class="settings-pref-list">
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
@@ -12505,7 +12505,7 @@ function positionHeatPopover(anchorX, anchorY) {
     '语言与明暗外观': 'Language & Appearance',
     '上下文与指标精简显示': 'Context & Metric Display',
     '恢复上下文显示位置与精简降噪默认设置': 'Restore default context display & decluttering settings',
-    '默认仅保留右上角单一上下文进度环，把输出速度与估算费用收进详情面板；输入框底部仅在高水位或缓存失效时提示压缩。': 'Shows a single topbar context ring by default while tucking streaming speed and estimated API costs into detail panels; composer capsule surfaces only on high usage or cache drops.',
+    '默认仅保留右上角单一上下文进度环，把输出速度收进详情面板，并默认隐藏详情面板中的 API 参考估算费用（开启开关后显示）；输入框底部仅在高水位或缓存失效时提示压缩。': 'Shows a single topbar context ring by default, tucks streaming speed into the detail panel, and hides API reference cost estimates across detail panels unless enabled; composer capsule surfaces only on high usage or cache drops.',
     '上下文显示位置': 'Context Display Position',
     '选「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口': 'When set to Topbar, the bottom capsule stays tucked away until context hits 240K+ or cache expires, surfacing a compact alert and one-click /compact',
     '右上角顶栏（默认）': 'Topbar (Default)',

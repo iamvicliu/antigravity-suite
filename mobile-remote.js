@@ -12244,6 +12244,9 @@ function buildMobileAppHtml() {
       if (snap?.displayConfig) latestDisplayConfig = snap.displayConfig;
       if (typeof snap?.showApiReferenceCost === 'boolean') {
         remoteShowApiRefCost = snap.showApiReferenceCost;
+        if (cachedContextResp && typeof cachedContextResp === 'object') {
+          cachedContextResp.showApiReferenceCost = snap.showApiReferenceCost;
+        }
       }
       const cfg = getEffectiveDisplayConfig(snap);
       const ctxBtn = $('btn-context-panel');
@@ -12304,7 +12307,12 @@ function buildMobileAppHtml() {
         const res = await fetchWithTimeout((apiBase || '') + '/api/context' + q, { headers: authHeaders(), cache: 'no-store' }, 4500);
         if (res.status === 401) { location.reload(); return null; }
         const data = await res.json().catch(() => null);
-        if (data?.ok) cachedContextResp = data;
+        if (data?.ok) {
+          cachedContextResp = data;
+          if (typeof data.showApiReferenceCost === 'boolean') {
+            remoteShowApiRefCost = data.showApiReferenceCost;
+          }
+        }
         return data;
       } catch {
         return null;
@@ -12406,9 +12414,6 @@ function buildMobileAppHtml() {
     function renderContextDrawer(snap, ctxRes) {
       const box = $('context-drawer');
       if (!box || box.hidden) return;
-      if (typeof ctxRes?.showApiReferenceCost === 'boolean') {
-        remoteShowApiRefCost = ctxRes.showApiReferenceCost;
-      }
       const cp = ctxRes?.contextPanel || snap?.contextPanel || {};
       const pct = typeof cp.usagePercent === 'number' ? Math.max(0, Math.min(100, cp.usagePercent)) : null;
       const usedStr = cp.usedText || (cp.usedTokens ? fmtNumShort(cp.usedTokens) : '—');
@@ -12427,9 +12432,9 @@ function buildMobileAppHtml() {
         ? '<div class="qreset" data-ctx-phys-note="1" style="margin-top:4px">模型物理上限：' + esc(physShort) + '（当前按 ' + esc(limitStr) + ' 自动压缩线计算）</div>'
         : '';
       const showRefCost = Boolean(
-        typeof ctxRes?.showApiReferenceCost === 'boolean'
-          ? ctxRes.showApiReferenceCost
-          : (typeof snap?.showApiReferenceCost === 'boolean' ? snap.showApiReferenceCost : remoteShowApiRefCost)
+        typeof snap?.showApiReferenceCost === 'boolean'
+          ? snap.showApiReferenceCost
+          : (typeof remoteShowApiRefCost === 'boolean' ? remoteShowApiRefCost : Boolean(ctxRes?.showApiReferenceCost))
       );
 
       box.innerHTML =
