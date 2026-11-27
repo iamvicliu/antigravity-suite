@@ -34662,3 +34662,586 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
     }
   }
 });
+
+test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、安全 GFM 渲染与 HTML/SVG 强隔离沙盒预览', async () => {
+  const vm = require('node:vm');
+  const http = require('node:http');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-30wb-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    const wsAlpha = path.join(tmpDir, 'ws-alpha');
+    const wsBeta = path.join(tmpDir, 'ws-beta');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(path.join(wsAlpha, 'sub'), { recursive: true });
+    fs.mkdirSync(wsBeta, { recursive: true });
+
+    const mdLines = [
+      '# 架构说明文档',
+      '',
+      '| 模块 | 状态 | 对齐 |',
+      '| :--- | :---: | ---: |',
+      '| 预览边栏 | **已就绪** | 100% |',
+      '| 转义管道 \\| 单元格 | ~~旧版~~ | `GFM` |',
+      '',
+      '- [x] 完成三栏工作台',
+      '  - 子项 A1（嵌套无序列表）',
+      '  - [ ] 子项 A2（嵌套子任务）',
+      '- [ ] 待验证极端窄屏',
+      '',
+      '> 引用说明块',
+      '',
+      '安全链接：[文档](https://example.com/docs) 与 危险链接：[点我](javascript:alert(1)) 及 [数据](data:text/html,<script>alert(1)</script>) 与 [远端共享](file://evil-host/share)',
+      '<script>window.__xss=1</script><img src=x onerror="alert(1)">',
+      '```js',
+      'const answer = 42;',
+      '```'
+    ];
+    while (mdLines.length < 115) {
+      mdLines.push('Line-' + (mdLines.length + 1) + ': anchor target check');
+    }
+    const mdFile = path.join(wsAlpha, 'SPEC.md');
+    const htmlFile = path.join(wsAlpha, 'demo.html');
+    const svgFile = path.join(wsBeta, 'badge.svg');
+    fs.writeFileSync(mdFile, mdLines.join('\n'), 'utf8');
+    fs.writeFileSync(htmlFile, '<!doctype html><html><body><h1 id="app">Interactive Demo</h1><script>window.__demoRan = true;</script></body></html>', 'utf8');
+    fs.writeFileSync(svgFile, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 30"><rect width="100" height="30" fill="#a78bfa"/></svg>', 'utf8');
+    fs.writeFileSync(path.join(wsAlpha, 'sub', 'nested.ts'), 'export const nested = true;\n', 'utf8');
+
+    process.env.AG_METER_STATE_DIR = stateDir;
+    delete require.cache[require.resolve('../mobile-remote')];
+    const remoteMod = require('../mobile-remote');
+
+    // 0. 静态门禁：严禁任何 allow-same-origin 出现在 mobile-remote.js，CSP 必须包含 frame-src
+    const mrSource = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+    assert.equal(mrSource.includes('allow-same-origin'), false, 'mobile-remote.js 严禁授予 iframe allow-same-origin 权限');
+    assert.match(mrSource, /frame-src 'self' blob: data:/, 'HTML_CSP 应显式配置 frame-src 以兼容沙盒 iframe srcdoc');
+
+    // 1. 服务端 GFM 渲染与文件预览接口契约验证
+    const gfmServerHtml = remoteMod.renderSafeMarkdownToHtml(fs.readFileSync(mdFile, 'utf8'));
+    assert.match(gfmServerHtml, /<h1>架构说明文档<\/h1>/);
+    assert.match(gfmServerHtml, /<div class="md-table-wrap"><table><thead><tr><th style="text-align:left">模块<\/th><th style="text-align:center">状态<\/th><th style="text-align:right">对齐<\/th><\/tr><\/thead>/);
+    assert.match(gfmServerHtml, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td>/);
+    assert.match(gfmServerHtml, /<ul class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '服务端 GFM 应正确渲染嵌套列表与子任务');
+    assert.ok(!gfmServerHtml.includes('javascript:alert'), '服务端 GFM 必须拦截 javascript: 危险链接');
+    assert.ok(!gfmServerHtml.includes('href="file://evil-host'), '服务端 GFM 必须拦截非本机路径的远端 file:// 权威链接');
+    assert.ok(!gfmServerHtml.includes('点我)'), '服务端 GFM 链接正则应正确消费平衡括号不遗留悬空右括号');
+    assert.ok(!gfmServerHtml.includes('href="data:'), '服务端 GFM 必须拦截 data: 危险链接');
+    assert.ok(!gfmServerHtml.includes('<script>window.__xss'), '服务端 GFM 必须转义原始 script 标签');
+    assert.ok(!gfmServerHtml.includes('<img src=x'), '服务端 GFM 必须转义原始危险 HTML 标签');
+
+    const mdPreviewData = remoteMod.readSafeTextFilePreview(mdFile, [wsAlpha, wsBeta]);
+    assert.equal(mdPreviewData.ok, true);
+    assert.equal(mdPreviewData.isMarkdown, true);
+    assert.match(mdPreviewData.renderedHtml, /<table>/);
+
+    const htmlPreviewData = remoteMod.readSafeTextFilePreview(htmlFile, [wsAlpha, wsBeta]);
+    assert.equal(htmlPreviewData.ok, true);
+    assert.equal(htmlPreviewData.isHtml, true);
+
+    const svgPreviewData = remoteMod.readSafeTextFilePreview(svgFile, [wsAlpha, wsBeta]);
+    assert.equal(svgPreviewData.ok, true);
+    assert.equal(svgPreviewData.isSvg, true);
+    assert.equal(svgPreviewData.isImage, false, '.svg 应走可切换源码的强隔离沙盒渲染而非盲目 img 加载');
+
+    // 2. 启动真实本地 Remote Handler 驱动前端三栏工作台 DOM 闭环测试
+    const token = 'tok-30wb-secret';
+    let htmlLoads = 0;
+    const baseSnap = {
+      ok: true,
+      serverBootId: 'boot-30wb',
+      snapSeq: 1,
+      sessionId: 'conv-multi-30',
+      activeConversationId: 'conv-multi-30',
+      title: 'Workbench #30 Session',
+      currentProjectId: 'proj-30',
+      currentProjectName: 'DualWorkspaceProj',
+      currentWorkspacePaths: [wsAlpha, wsBeta],
+      projects: [
+        { id: 'proj-30', name: 'DualWorkspaceProj', path: wsAlpha, workspacePaths: [wsAlpha, wsBeta], conversationCount: 1 }
+      ],
+      conversations: [
+        { id: 'conv-multi-30', title: 'Workbench #30 Session', projectId: 'proj-30', projectName: 'DualWorkspaceProj', active: true, status: 'idle', updatedAt: Date.now() }
+      ],
+      messages: [
+        {
+          role: 'assistant',
+          text: '请查看 [SPEC.md](file://' + mdFile + '#L109)',
+          html: remoteMod.renderSafeMarkdownToHtml('请查看 [SPEC.md](file://' + mdFile + '#L109)'),
+          msgIndex: 0
+        }
+      ],
+      totalMessages: 1,
+      messagesStartIndex: 0,
+      historySource: 'trajectory'
+    };
+
+    const makeMockDomEnv = (initWidth, initHeight, storedMap = {}) => {
+      const listeners = new Map();
+      const elementsById = new Map();
+      const storage = new Map(Object.entries(storedMap));
+      const sessionStore = new Map();
+
+      const createEl = (tag, id = '') => {
+        const attrs = new Map();
+        const classes = new Set();
+        const elListeners = new Map();
+        const styleProps = new Map();
+        const children = [];
+        let innerHtmlVal = '';
+        let textVal = '';
+        const el = {
+          tagName: String(tag || 'DIV').toUpperCase(),
+          id,
+          hidden: false,
+          disabled: false,
+          value: '',
+          src: '',
+          alt: '',
+          title: '',
+          srcdoc: '',
+          scrollTop: 0,
+          scrollHeight: 400,
+          offsetWidth: 320,
+          dataset: {},
+          scrolledIntoViewCount: 0,
+          children,
+          style: {
+            setProperty(k, v) { styleProps.set(k, String(v)); },
+            getPropertyValue(k) { return styleProps.get(k) || ''; }
+          },
+          classList: {
+            add(...ns) { ns.forEach((n) => n && classes.add(n)); },
+            remove(...ns) { ns.forEach((n) => classes.delete(n)); },
+            toggle(n, force) {
+              const next = force !== undefined ? Boolean(force) : !classes.has(n);
+              if (next) classes.add(n); else classes.delete(n);
+              return next;
+            },
+            contains(n) { return classes.has(n); }
+          },
+          setAttribute(k, v) {
+            const sv = String(v);
+            attrs.set(k, sv);
+            if (k === 'id') { el.id = sv; elementsById.set(sv, el); }
+            if (k === 'class') {
+              classes.clear();
+              sv.split(/\s+/).filter(Boolean).forEach((c) => classes.add(c));
+            }
+            if (k.startsWith('data-')) {
+              const camel = k.slice(5).replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+              el.dataset[camel] = sv;
+            }
+          },
+          getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+          hasAttribute(k) { return attrs.has(k); },
+          removeAttribute(k) { attrs.delete(k); },
+          appendChild(child) {
+            if (child) {
+              child.parentElement = el;
+              children.push(child);
+            }
+            return child;
+          },
+          contains(other) {
+            let cur = other;
+            while (cur) {
+              if (cur === el) return true;
+              cur = cur.parentElement || null;
+            }
+            return false;
+          },
+          closest(sel) {
+            let cur = el;
+            while (cur) {
+              if (matchesSelectorSimple(cur, sel)) return cur;
+              cur = cur.parentElement || null;
+            }
+            return null;
+          },
+          addEventListener(type, fn) {
+            if (!elListeners.has(type)) elListeners.set(type, []);
+            elListeners.get(type).push(fn);
+          },
+          dispatchEvent(ev) {
+            const e = { target: el, preventDefault() {}, stopPropagation() {}, ...ev };
+            for (const fn of (elListeners.get(e.type) || [])) fn(e);
+            if (e.type === 'click' && typeof el.onclick === 'function') el.onclick(e);
+          },
+          click() {
+            el.dispatchEvent({ type: 'click' });
+          },
+          scrollIntoView() {
+            el.scrolledIntoViewCount += 1;
+          },
+          getBoundingClientRect() {
+            return { top: 0, bottom: 40, left: 0, right: 320, width: 320, height: 40 };
+          },
+          querySelectorAll(sel) {
+            const out = [];
+            const visit = (node) => {
+              for (const ch of (node.children || [])) {
+                if (matchesSelectorSimple(ch, sel)) out.push(ch);
+                visit(ch);
+              }
+            };
+            visit(el);
+            return out;
+          },
+          querySelector(sel) {
+            return el.querySelectorAll(sel)[0] || null;
+          }
+        };
+        const purgeDescendantIds = (node) => {
+          for (const ch of (node.children || [])) {
+            if (ch.id && elementsById.get(ch.id) === ch) elementsById.delete(ch.id);
+            purgeDescendantIds(ch);
+          }
+        };
+        Object.defineProperty(el, 'innerHTML', {
+          get() { return innerHtmlVal; },
+          set(htmlStr) {
+            purgeDescendantIds(el);
+            innerHtmlVal = String(htmlStr || '');
+            children.length = 0;
+            parseSimpleHtmlIntoChildren(el, innerHtmlVal);
+          }
+        });
+        Object.defineProperty(el, 'textContent', {
+          get() {
+            if (children.length > 0) {
+              return innerHtmlVal.replace(/<[^>]+>/g, '');
+            }
+            return textVal || innerHtmlVal.replace(/<[^>]+>/g, '');
+          },
+          set(v) {
+            textVal = String(v ?? '');
+            innerHtmlVal = textVal;
+            children.length = 0;
+          }
+        });
+        if (id) elementsById.set(id, el);
+        return el;
+      };
+
+      const matchesSingleSel = (node, rawPart) => {
+        const part = rawPart.trim();
+        if (!part || !node) return false;
+        const attrMatch = /^([a-z0-9_-]+)?(?:\.([a-z0-9_-]+))?\[([a-z0-9_-]+)(?:="([^"]*)")?\]$/i.exec(part);
+        if (attrMatch) {
+          const [, tagP, clsP, attrName, attrVal] = attrMatch;
+          if (tagP && node.tagName !== tagP.toUpperCase()) return false;
+          if (clsP && !node.classList.contains(clsP)) return false;
+          const got = node.getAttribute(attrName);
+          if (got === null) return false;
+          return attrVal === undefined ? true : got === attrVal;
+        }
+        if (part.startsWith('#')) return node.id === part.slice(1);
+        if (part.startsWith('.')) return part.slice(1).split('.').every((c) => node.classList.contains(c));
+        return node.tagName === part.toUpperCase();
+      };
+
+      const matchesSelectorSimple = (node, selGroup) => {
+        return String(selGroup || '').split(',').some((s) => matchesSingleSel(node, s));
+      };
+
+      const parseSimpleHtmlIntoChildren = (parent, htmlStr) => {
+        const tagRe = /<(button|a|span|div|iframe|input|table|th|td|h1|pre|code|del)\b([^>]*)>([\s\S]*?)<\/\1>|<(input|img|hr)\b([^>]*)\/?>/gi;
+        let m;
+        while ((m = tagRe.exec(htmlStr)) !== null) {
+          const tag = m[1] || m[4];
+          const attrRaw = m[2] || m[5] || '';
+          const inner = m[3] || '';
+          const child = createEl(tag);
+          const attrIter = /([a-zA-Z0-9_-]+)(?:="([^"]*)")?/g;
+          let am;
+          while ((am = attrIter.exec(attrRaw)) !== null) {
+            child.setAttribute(am[1], am[2] !== undefined ? am[2] : '');
+          }
+          if (inner) child.innerHTML = inner;
+          parent.appendChild(child);
+        }
+      };
+
+      const appHtml = remoteMod.buildMobileAppHtml();
+      const staticMarkup = appHtml.replace(/<script>[\s\S]*?<\/script>/g, '');
+      const idMatches = staticMarkup.matchAll(/\bid="([^"]+)"/g);
+      for (const m of idMatches) {
+        if (!elementsById.has(m[1])) {
+          const el = createEl('div', m[1]);
+          if (['file-viewer-backdrop', 'fv-back-btn', 'fv-ws-persistent-bar', 'fv-preview-toolbar', 'quota-drawer', 'context-drawer', 'usage-drawer', 'sheet-backdrop', 'proj-modal-backdrop', 'conn-banner', 'approval-dock', 'queue-dock', 'attach-hint', 'msg-rail', 'msg-rail-tip'].includes(m[1])) {
+            el.hidden = true;
+          }
+        }
+      }
+
+      const bodyEl = createEl('body');
+      const docEl = createEl('html');
+      const winObj = {
+        innerWidth: initWidth,
+        innerHeight: initHeight,
+        devicePixelRatio: 2,
+        location: { search: '?token=' + token, origin: 'http://127.0.0.1:18499', protocol: 'http:', href: 'http://127.0.0.1:18499/?token=' + token, reload() {} },
+        history: { replaceState() {} },
+        navigator: { userAgent: 'Mozilla/5.0 Macintosh', platform: 'MacIntel', hardwareConcurrency: 8 },
+        screen: { width: initWidth, height: initHeight },
+        localStorage: {
+          getItem(k) { return storage.has(k) ? storage.get(k) : null; },
+          setItem(k, v) { storage.set(k, String(v)); },
+          removeItem(k) { storage.delete(k); }
+        },
+        sessionStorage: {
+          getItem(k) { return sessionStore.has(k) ? sessionStore.get(k) : null; },
+          setItem(k, v) { sessionStore.set(k, String(v)); },
+          removeItem(k) { sessionStore.delete(k); }
+        },
+        matchMedia(q) {
+          const qs = String(q || '');
+          const isFine = winObj.innerWidth >= 860;
+          let matches = false;
+          if (qs.includes('min-width: 1180px') || qs.includes('min-width:1180px')) {
+            matches = winObj.innerWidth >= 1180 && winObj.innerHeight >= 521 && isFine;
+          } else if (qs.includes('min-width: 860px') || qs.includes('min-width:860px')) {
+            matches = winObj.innerWidth >= 860 && winObj.innerHeight >= 521 && isFine;
+          } else if (qs.includes('hover: hover') || qs.includes('pointer: fine')) {
+            matches = isFine;
+          }
+          return { matches, addEventListener() {}, removeEventListener() {} };
+        },
+        addEventListener(type, fn) {
+          if (!listeners.has(type)) listeners.set(type, []);
+          listeners.get(type).push(fn);
+        },
+        dispatchEvent(ev) {
+          for (const fn of (listeners.get(ev.type) || [])) fn(ev);
+        },
+        fetch: async (rawUrl) => {
+          const u = new URL(String(rawUrl), 'http://127.0.0.1:18499');
+          if (u.pathname === '/api/snapshot') {
+            return { ok: true, status: 200, json: async () => baseSnap };
+          }
+          if (u.pathname === '/api/project-tree') {
+            const dir = u.searchParams.get('dir') || '';
+            const wsRoot = u.searchParams.get('workspaceRoot') || '';
+            const resolvedRoots = [wsAlpha, wsBeta];
+            const activeRoot = wsRoot || (dir.startsWith(wsBeta) ? wsBeta : wsAlpha);
+            const target = dir || activeRoot;
+            const entries = fs.readdirSync(target, { withFileTypes: true }).map((d) => {
+              const p = path.join(target, d.name);
+              const st = fs.statSync(p);
+              return { name: d.name, path: p, isDir: d.isDirectory(), size: st.size };
+            });
+            const parentCandidate = path.dirname(target);
+            const parentDir = (parentCandidate !== target && (parentCandidate === activeRoot || parentCandidate.startsWith(activeRoot + path.sep)))
+              ? parentCandidate
+              : null;
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                ok: true,
+                dir: target,
+                parentDir,
+                activeRoot,
+                workspaceRoots: resolvedRoots,
+                entries
+              })
+            };
+          }
+          if (u.pathname === '/api/file-content') {
+            const p = u.searchParams.get('path') || '';
+            if (p.endsWith('/demo.html')) htmlLoads += 1;
+            const data = remoteMod.readSafeTextFilePreview(p, [wsAlpha, wsBeta]);
+            return { ok: Boolean(data.ok), status: data.ok ? 200 : 400, json: async () => data };
+          }
+          if (u.pathname === '/api/session-files') {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                ok: true,
+                diffs: [],
+                artifacts: [{ name: 'report.html', path: htmlFile }]
+              })
+            };
+          }
+          return { ok: true, status: 200, json: async () => ({ ok: true }) };
+        }
+      };
+
+      const docObj = {
+        documentElement: docEl,
+        body: bodyEl,
+        activeElement: null,
+        getElementById(id) { return elementsById.get(id) || null; },
+        createElement(tag) { return createEl(tag); },
+        createDocumentFragment() { return createEl('fragment'); },
+        querySelector(sel) {
+          if (sel === '.topbar') return createEl('header');
+          if (sel === '.composer-card') return createEl('div');
+          if (sel === '.conv-toolbar') return createEl('div');
+          return null;
+        },
+        querySelectorAll() { return []; },
+        addEventListener() {}
+      };
+
+      const timers = [];
+      const sandbox = {
+        window: winObj,
+        document: docObj,
+        location: winObj.location,
+        history: winObj.history,
+        navigator: winObj.navigator,
+        screen: winObj.screen,
+        localStorage: winObj.localStorage,
+        sessionStorage: winObj.sessionStorage,
+        fetch: winObj.fetch,
+        URL,
+        URLSearchParams,
+        CSS: { escape: (s) => String(s) },
+        AbortController,
+        setTimeout: (fn, ms) => {
+          if (Number(ms) <= 150) {
+            const t = setTimeout(fn, ms);
+            timers.push(t);
+            return t;
+          }
+          return 0;
+        },
+        clearTimeout,
+        setInterval: () => 0,
+        clearInterval: () => {},
+        requestAnimationFrame: (fn) => setTimeout(fn, 0),
+        console
+      };
+      sandbox.globalThis = sandbox;
+      vm.createContext(sandbox);
+      const scriptMatch = appHtml.match(/<script>([\s\S]*?)<\/script>/);
+      assert.ok(scriptMatch, '应提取出内联脚本');
+      vm.runInContext(scriptMatch[1], sandbox);
+      return { winObj, docObj, storage, elementsById, sandbox, cleanup: () => timers.forEach(clearTimeout) };
+    };
+
+    // (1) 桌面宽屏 (1440x900) 默认自动展开右侧常驻预览边栏 + 拖拽调宽 (300px–680px 边界夹紧与持久化) + 收起/展开
+    const deskEnv = makeMockDomEnv(1440, 900);
+    try {
+      await new Promise((r) => setTimeout(r, 45));
+      const bd = deskEnv.docObj.getElementById('file-viewer-backdrop');
+      const fvBody = deskEnv.docObj.getElementById('fv-body');
+      const closeBtn = deskEnv.docObj.getElementById('fv-close-btn');
+      const wsTopBar = deskEnv.docObj.getElementById('fv-ws-persistent-bar');
+      assert.equal(bd.hidden, false, '桌面宽屏 (>=1180px) 首次快照应自动展开右侧常驻预览边栏');
+      assert.equal(closeBtn.textContent, '⇥ 收起', '桌面宽屏关闭按钮应文案化为「⇥ 收起」');
+      assert.equal(wsTopBar.hidden, false, '多目录项目顶部常驻工作区切换栏应自动显示');
+      assert.equal(wsTopBar.querySelectorAll('.fv-ws-top-switch').length, 2, '顶部常驻切换栏应渲染 2 个工作区胶囊');
+
+      // 拖拽左移扩大宽度与超界夹紧校验 (300px ~ 680px)
+      const resizeHandle = deskEnv.docObj.getElementById('fv-resize-handle');
+      resizeHandle.dispatchEvent({ type: 'pointerdown', pointerId: 1, clientX: 1000 });
+      deskEnv.winObj.dispatchEvent({ type: 'pointermove', pointerId: 1, clientX: 880 }); // 向左拖 120px -> 420 + 120 = 540
+      deskEnv.winObj.dispatchEvent({ type: 'pointerup', pointerId: 1, clientX: 880 });
+      assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '540px', '向左拖拽 120px 应将边栏宽度调为 540px');
+      assert.equal(deskEnv.storage.get('ag_remote_fv_width_v1'), '540', '松手后应持久化宽度至 localStorage');
+
+      resizeHandle.dispatchEvent({ type: 'pointerdown', pointerId: 2, clientX: 880 });
+      deskEnv.winObj.dispatchEvent({ type: 'pointermove', pointerId: 2, clientX: 100 }); // 远超上限 -> 夹紧 680px
+      deskEnv.winObj.dispatchEvent({ type: 'pointerup', pointerId: 2, clientX: 100 });
+      assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '680px', '超宽拖拽必须夹紧在 680px 上限');
+
+      resizeHandle.dispatchEvent({ type: 'pointerdown', pointerId: 3, clientX: 700 });
+      deskEnv.winObj.dispatchEvent({ type: 'pointermove', pointerId: 3, clientX: 1300 }); // 远超下限 -> 夹紧 300px
+      deskEnv.winObj.dispatchEvent({ type: 'pointerup', pointerId: 3, clientX: 1300 });
+      assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '300px', '过窄拖拽必须夹紧在 300px 下限');
+
+      // (2) 顶部常驻工作区切换器联动 & 子目录上级导航不越出工作区根目录
+      wsTopBar.querySelectorAll('.fv-ws-top-switch')[0].click();
+      await new Promise((r) => setTimeout(r, 35));
+      assert.ok((fvBody.textContent || '').includes('SPEC.md'), '点击顶部 ws-alpha 胶囊应加载 ws-alpha 目录树');
+      assert.equal(deskEnv.docObj.getElementById('fv-tree-up'), null, '工作区根路径处不得渲染越界「↑ 上级」按钮');
+      const subRow = fvBody.querySelectorAll('.fv-row').find((r) => r.getAttribute('data-path') === path.join(wsAlpha, 'sub'));
+      assert.ok(subRow, '应包含 sub 子目录行');
+      subRow.click();
+      await new Promise((r) => setTimeout(r, 35));
+      assert.ok((fvBody.textContent || '').includes('nested.ts'), '进入 sub 子目录应看到 nested.ts');
+      assert.ok(deskEnv.docObj.getElementById('fv-tree-up'), '子目录内应提供返回工作区根的「↑ 上级」按钮');
+
+      // (3) 模拟从聊天消息点击 SPEC.md#L109：默认仍进入 GFM 渲染预览（修复强制源码化），并提供「定位第 L109 行」与「预览 / 源码」切换
+      await deskEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(mdFile, 109);
+      const toolbar = deskEnv.docObj.getElementById('fv-preview-toolbar');
+      assert.equal(deskEnv.docObj.getElementById('fv-tab-preview').classList.contains('active'), true, '打开文件后应自动切入「📄 预览」标签页');
+      assert.equal(toolbar.hidden, false, 'Markdown 预览应展示顶部模式切换工具栏');
+      assert.ok(deskEnv.docObj.getElementById('fv-mode-render').classList.contains('active'), '带 #L109 行号的 .md 文件默认也应进入 GFM 渲染模式');
+      assert.match(fvBody.innerHTML, /<table>/, '客户端预览应渲染 GFM 表格');
+      assert.match(fvBody.innerHTML, /md-task-check/, '客户端预览应渲染 GFM 任务列表复选框');
+      assert.match(fvBody.innerHTML, /完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '客户端预览应正确渲染嵌套列表');
+      assert.ok(!fvBody.innerHTML.includes('javascript:alert'), '客户端 GFM 渲染必须剥离 javascript: 危险协议');
+      assert.ok(!fvBody.innerHTML.includes('href="file://evil-host'), '客户端 GFM 渲染不得生成远端 SMB file:// 链接');
+      assert.ok(!fvBody.innerHTML.includes('<script>window.__xss'), '客户端 GFM 渲染必须转义原始危险 HTML');
+
+      const jumpBtn = deskEnv.docObj.getElementById('fv-jump-line-btn');
+      assert.ok(jumpBtn && jumpBtn.textContent.includes('L109'), '带行号打开时应在工具栏提供「定位第 L109 行」快捷胶囊');
+      jumpBtn.click();
+      assert.ok(deskEnv.docObj.getElementById('fv-mode-source').classList.contains('active'), '点击定位行号胶囊应切换至源码视图');
+      const hlLineEl = fvBody.querySelector('[data-ln="109"]');
+      assert.ok(hlLineEl && hlLineEl.classList.contains('hl'), '切换源码后第 109 行应高亮');
+      assert.equal(hlLineEl.scrolledIntoViewCount > 0, true, '切换源码后应自动滚动定位到第 109 行');
+
+      // (4) HTML 与 SVG 强隔离沙盒预览：必须具备 sandbox="allow-scripts" 与 referrerpolicy="no-referrer" 且绝不含 allow-same-origin
+      const prevHtmlLoads = htmlLoads;
+      await deskEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(htmlFile, 0);
+      assert.equal(htmlLoads, prevHtmlLoads + 1);
+      let iframeEl = fvBody.querySelector('iframe');
+      assert.ok(iframeEl, '打开 .html 文件应挂载沙盒 iframe');
+      assert.equal(iframeEl.getAttribute('sandbox'), 'allow-scripts', 'iframe sandbox 必须严格等于 allow-scripts（禁止同源权限）');
+      assert.equal(iframeEl.getAttribute('referrerpolicy'), 'no-referrer', 'iframe 必须设置 referrerpolicy="no-referrer"');
+      assert.ok((iframeEl.getAttribute('srcdoc') || '').includes('Interactive Demo'), 'iframe srcdoc 应承载目标 HTML 内容');
+
+      // 切换到源码再点击「↻ 刷新」重挂载验证
+      deskEnv.docObj.getElementById('fv-mode-source').click();
+      assert.equal(fvBody.querySelector('iframe'), null, '切到源码态应卸载 iframe 展示带行号源码');
+      assert.ok((fvBody.textContent || '').includes('Interactive Demo'));
+      deskEnv.docObj.getElementById('fv-refresh-sandbox').click();
+      await new Promise((r) => setTimeout(r, 35));
+      assert.equal(htmlLoads, prevHtmlLoads + 2, '点击刷新按钮应重新读取最新 HTML 文件并重挂载沙盒');
+      iframeEl = fvBody.querySelector('iframe');
+      assert.ok(iframeEl && iframeEl.getAttribute('sandbox') === 'allow-scripts');
+
+      // SVG 沙盒预览验证
+      await deskEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(svgFile, 0);
+      const svgFrame = fvBody.querySelector('iframe');
+      assert.ok(svgFrame, '打开 .svg 文件应挂载强隔离沙盒 iframe');
+      assert.equal(svgFrame.getAttribute('sandbox'), 'allow-scripts');
+      assert.ok((svgFrame.getAttribute('srcdoc') || '').includes('<svg'));
+
+      // 桌面收起持久化校验
+      closeBtn.click();
+      assert.equal(bd.hidden, true, '点击「⇥ 收起」应收起右侧预览边栏');
+      assert.equal(deskEnv.storage.get('ag_remote_fv_open_v1'), '0', '收起状态应持久化至 localStorage');
+    } finally {
+      deskEnv.cleanup();
+    }
+
+    // (5) 窄屏移动端 (< 1180px) 默认不自动占屏，点击按钮作为右侧抽屉打开，点击背景遮罩可关闭
+    const mobEnv = makeMockDomEnv(390, 844);
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      const bdMob = mobEnv.docObj.getElementById('file-viewer-backdrop');
+      const closeBtnMob = mobEnv.docObj.getElementById('fv-close-btn');
+      assert.equal(bdMob.hidden, true, '手机窄屏 (<1180px) 初始不得自动占屏展开预览抽屉');
+      mobEnv.docObj.getElementById('btn-files-panel').click();
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(bdMob.hidden, false, '点击顶栏文件夹按钮应打开右侧全高抽屉');
+      assert.equal(closeBtnMob.textContent, '✕ 关闭', '手机窄屏关闭按钮应显示「✕ 关闭」');
+      bdMob.dispatchEvent({ type: 'click', target: bdMob });
+      assert.equal(bdMob.hidden, true, '窄屏抽屉点击半透明遮罩应关闭抽屉');
+    } finally {
+      mobEnv.cleanup();
+    }
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('../mobile-remote')];
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
