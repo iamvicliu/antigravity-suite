@@ -19925,9 +19925,10 @@ test('底栏视觉层级分隔 (#39) 与顶栏信息降噪及项目名双端正�
       pendingApprovals: [],
       pendingPrompts: []
     });
-    const subText = byId['sub-meta'].textContent;
-    assert.equal(subText, '42.0 tok/s · 120k/840k (14.3%)', '正常态 #sub-meta 仅保留核心实时指标');
-    assert.ok(!subText.includes('Tailscale') && !subText.includes('独立视图') && !subText.includes('▾'), '正常态 #sub-meta 不得出现冗余通道名或「独立视图」');
+    assert.equal(byId['sub-meta'].hidden, true, '正常在线态 #sub-meta 应自动隐藏，避免与顶栏上下文按钮重复显示指标');
+    assert.equal(byId['sub-meta'].textContent, '', '正常在线态 #sub-meta 不再重复渲染 tok/s 与上下文百分比');
+    assert.equal(byId['conv-project-badge'].hidden, false, '正常在线态仍保留所属项目胶囊');
+    assert.equal(byId['conv-project-badge'].textContent, 'antigravity-suite');
     assert.equal(bodyCls.has('has-upper-dock'), true, '仅队列可见时 body 应标记 has-upper-dock');
     assert.equal(bodyCls.has('has-approval-dock'), false, '仅队列可见时不应标记 has-approval-dock');
 
@@ -33489,7 +33490,7 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
   try {
     mc.savePluginSettings({ uiPreferences: { longFold: false } });
     mr.clearRemoteUiPrefsCacheForTests();
-    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: false }, '应读取磁盘 uiPreferences.longFold = false');
+    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: false, showApiReferenceCost: false }, '应读取磁盘 uiPreferences.longFold = false');
 
     const stateHandler = mr.createRemoteHttpHandler({
       enabled: true,
@@ -33519,7 +33520,7 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
 
     mc.savePluginSettings({ uiPreferences: { longFold: true } });
     mr.clearRemoteUiPrefsCacheForTests();
-    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: true }, '开启开关并刷新缓存后应恢复 longFold = true');
+    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: true, showApiReferenceCost: false }, '开启开关并刷新缓存后应恢复 longFold = true');
 
     const html = mr.buildMobileAppHtml();
     const scripts = html.match(/<script>([\s\S]*?)<\/script>/g) || [];
@@ -34162,5 +34163,350 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
     );
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏好、底部胶囊高水位预警一键压缩与远程端同步', async () => {
+  // 1. 桌面统一设置面板：默认降噪状态与三项可逆偏好切换 + 持久化同步
+  {
+    const env = createDomEnv();
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    const host = env.getHost();
+    const shadow = env.getShadow();
+
+    assert.ok(shadow.getElementById('settings-card-context-display'), '应包含上下文与指标精简显示设置卡片');
+    assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
+      contextDisplayMode: 'topbar',
+      showTopbarSpeed: false,
+      showApiReferenceCost: false
+    }, '默认应为顶栏显示上下文、隐藏顶栏内联速度、隐藏详情面板 API 参考费用');
+    assert.equal(host.getAttribute('data-hide-context-ring'), null, '默认 topbar 模式应保留顶栏上下文圆环');
+    assert.equal(host.getAttribute('data-hide-inline-speed'), 'true', '默认应隐藏顶栏内联 tok/s 徽章');
+    assert.equal(host.getAttribute('data-hide-api-cost'), 'true', '默认应隐藏桌面端详情面板 API 参考估算金额');
+    assert.equal(env.doc.documentElement.getAttribute('data-ag-context-display-mode'), 'topbar');
+
+    // 切换上下文显示位置到「输入框底部胶囊」
+    shadow.getElementById('set-ctx-pos-footer').click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(api.getContextDisplayPrefs().contextDisplayMode, 'footer');
+    assert.equal(host.getAttribute('data-hide-context-ring'), 'true', '选底部胶囊模式时应隐藏顶栏圆环');
+    assert.equal(env.doc.documentElement.getAttribute('data-ag-context-display-mode'), 'footer');
+    assert.equal(env.localStorage.getItem('ag_suite_context_display_mode'), 'footer');
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.contextDisplayMode === 'footer'));
+
+    // 切换到「同时显示」并开启速度与 API 参考费用
+    shadow.getElementById('set-ctx-pos-both').click();
+    const chkSpeed = shadow.getElementById('set-show-topbar-speed');
+    chkSpeed.checked = true;
+    chkSpeed.dispatchEvent({ type: 'change', target: chkSpeed });
+    const chkCost = shadow.getElementById('set-show-api-ref-cost');
+    chkCost.checked = true;
+    chkCost.dispatchEvent({ type: 'change', target: chkCost });
+    await new Promise((r) => setTimeout(r, 15));
+
+    assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
+      contextDisplayMode: 'both',
+      showTopbarSpeed: true,
+      showApiReferenceCost: true
+    });
+    assert.equal(host.getAttribute('data-hide-context-ring'), null);
+    assert.equal(host.getAttribute('data-hide-inline-speed'), null, '开启速度开关后应恢复顶栏内联 tok/s');
+    assert.equal(host.getAttribute('data-hide-api-cost'), null, '开启费用开关后应恢复详情面板 API 参考费用');
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.showTopbarSpeed === true));
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.showApiReferenceCost === true));
+
+    // 在 API 参考金额子视图打开时关闭费用开关，应自动切回 Token 统计视图
+    shadow.getElementById('badge-tokens').click();
+    shadow.getElementById('tok-view-cost').click();
+    assert.equal(shadow.getElementById('cost-estimate-card').style.display, 'block');
+    chkCost.checked = false;
+    chkCost.dispatchEvent({ type: 'change', target: chkCost });
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(host.getAttribute('data-hide-api-cost'), 'true');
+    assert.equal(shadow.getElementById('cost-estimate-card').style.display, 'none', '关闭参考费用开关后应自动退回 Token 统计视图');
+
+    // 点击「恢复默认」一键还原精简降噪默认态
+    shadow.getElementById('btn-reset-context-display').click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
+      contextDisplayMode: 'topbar',
+      showTopbarSpeed: false,
+      showApiReferenceCost: false
+    });
+
+    env.sandbox.__AGEnhancer?.dispose?.();
+    api.dispose?.();
+  }
+
+  // 2. 底部脉冲胶囊：默认 topbar 模式平时自动收起，>=240K / >=328K / 缓存失效自动浮现紧凑预警与一键 /compact 入口
+  {
+    const envCap = createDomEnv();
+    vm.runInContext(CAPSULE_SRC, envCap.sandbox);
+    const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
+    assert.ok(capsApi);
+    assert.equal(capsApi.getContextDisplayMode(), 'topbar', '默认上下文显示模式应为 topbar');
+
+    const composerWrap = envCap.doc.createElement('div');
+    composerWrap.className = 'surface-composer';
+    const editorEl = envCap.doc.createElement('textarea');
+    const sendBtnEl = envCap.doc.createElement('button');
+    sendBtnEl.setAttribute('data-testid', 'send-button');
+    let fallbackSendClicks = 0;
+    sendBtnEl.click = () => { fallbackSendClicks += 1; };
+    const footerEl = envCap.doc.createElement('div');
+    footerEl.className = 'agy-composer-footer';
+    const permBtn = envCap.doc.createElement('button');
+    permBtn.setAttribute('data-testid', 'permissions-selector-trigger');
+    footerEl.appendChild(permBtn);
+    composerWrap.appendChild(editorEl);
+    composerWrap.appendChild(sendBtnEl);
+    composerWrap.appendChild(footerEl);
+    envCap.doc.body.appendChild(composerWrap);
+
+    // 2a: 常态低水位 (120K / 512K) -> topbar 模式下自动收起胶囊且隐藏一键压缩按钮
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 120000,
+      contextLimit: 512000,
+      usagePercent: 23.4,
+      cacheHitRate: 92.0,
+      hasPreciseSnapshot: true,
+      tokPerSec: 95,
+      cacheReadTokens: 110000,
+      inputTokens: 10000
+    });
+    const capBtn = footerEl.querySelector('[data-agy-context-capsule="1"]');
+    const compactBtn = footerEl.querySelector('[data-agy-compact-btn="1"]');
+    assert.ok(capBtn && compactBtn);
+    assert.equal(capBtn.getAttribute('data-agy-display-mode'), 'topbar');
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'true', 'topbar 模式下常态低水位应自动隐藏底部重复胶囊');
+    assert.equal(compactBtn.hidden, true, '常态低水位不应显示一键压缩按钮');
+
+    // 2b: 240K+ 高水位 (256K / 512K) -> 自动浮现紧凑预警与一键压缩按钮
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 256000,
+      contextLimit: 512000,
+      usagePercent: 50.0,
+      cacheHitRate: 90.0,
+      hasPreciseSnapshot: true,
+      tokPerSec: 88,
+      cacheReadTokens: 230000,
+      inputTokens: 26000
+    });
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'false', '满 240K 高水位应自动浮现底部预警胶囊');
+    assert.equal(capBtn.getAttribute('data-agy-alert-state'), 'warn');
+    assert.match(capBtn.querySelector('.agy-ctx-alert-tag')?.textContent || '', /高水位|High Context/);
+    assert.equal(compactBtn.hidden, false, '高水位时应展示一键 /compact 按钮');
+
+    // 2c: 缓存失效 (cacheDropDetected) -> 升级为 drop 告警并支持点击一键触发 /compact
+    let enhancerCompactCalls = 0;
+    envCap.win.__AGEnhancer = {
+      triggerCompact: async () => {
+        enhancerCompactCalls += 1;
+        return true;
+      }
+    };
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 195000,
+      contextLimit: 512000,
+      usagePercent: 38.1,
+      cacheHitRate: 4.0,
+      hasPreciseSnapshot: true,
+      cacheDropDetected: true,
+      tokPerSec: 40,
+      cacheReadTokens: 8000,
+      inputTokens: 187000
+    });
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'false', '缓存失效时即使未满 240K 也必须立即浮现预警胶囊');
+    assert.equal(capBtn.getAttribute('data-agy-alert-state'), 'drop');
+    assert.match(capBtn.querySelector('.agy-ctx-alert-tag')?.textContent || '', /缓存失效|Cache Expired/);
+    assert.equal(compactBtn.hidden, false);
+    compactBtn.dispatchEvent({ type: 'click', preventDefault() {}, stopPropagation() {} });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(enhancerCompactCalls, 1, '点击一键压缩按钮应调用 __AGEnhancer.triggerCompact');
+
+    // 无 __AGEnhancer 时的独立兜底填入并发送 /compact
+    delete envCap.win.__AGEnhancer;
+    await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(editorEl.value, '/compact');
+    assert.equal(fallbackSendClicks, 1);
+
+    // 2d: 切换为 footer 或 both 模式时，常态低水位也常驻显示胶囊，但一键压缩按钮仅在告警态出现
+    envCap.localStorage.setItem('ag_suite_context_display_mode', 'footer');
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 80000,
+      contextLimit: 512000,
+      usagePercent: 15.6,
+      cacheHitRate: 95.0,
+      hasPreciseSnapshot: true,
+      tokPerSec: 110,
+      cacheReadTokens: 76000,
+      inputTokens: 4000
+    });
+    assert.equal(capBtn.getAttribute('data-agy-display-mode'), 'footer');
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'false', 'footer 模式下常态低水位应常驻显示胶囊');
+    assert.equal(compactBtn.hidden, true, 'footer 模式下常态低水位仍不显示高水位压缩按钮');
+
+    envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
+  }
+
+  // 3. 远程端：正常在线态隐藏重复 #sub-meta（连接/切通道/异常态保留）、物理上限辅助说明与 showApiReferenceCost 零延迟同步
+  {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-50pb-remote-'));
+    const prevStateDir = process.env.AG_METER_STATE_DIR;
+    const prevAgDir = process.env.AG_DIR;
+    process.env.AG_METER_STATE_DIR = tmpDir;
+    process.env.AG_DIR = tmpDir;
+    const remote = require('../mobile-remote');
+    try {
+      remote.clearRemoteUiPrefsCacheForTests();
+      assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, false, '远程端默认应关闭 API 参考费用展示');
+
+      collector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
+      assert.equal(
+        remote.resolveCachedRemoteUiPrefs().showApiReferenceCost,
+        true,
+        '保存 settings.json 后无需等待 2 秒缓存过期即可立即读取最新 showApiReferenceCost=true'
+      );
+      collector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
+      assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, false);
+
+      const html = remote.buildMobileAppHtml({ deviceName: 'Mac' });
+      const scriptBlocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+      const mainScript = scriptBlocks[scriptBlocks.length - 1];
+      const byId = {};
+      const makeEl = (id) => ({
+        id,
+        hidden: false,
+        textContent: '',
+        innerHTML: '',
+        value: '',
+        style: { setProperty() {} },
+        dataset: {},
+        className: '',
+        classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+        setAttribute(k, v) { this[k] = String(v); },
+        getAttribute(k) { return this[k] ?? null; },
+        removeAttribute(k) { delete this[k]; },
+        appendChild() {},
+        contains: () => false,
+        focus() {},
+        blur() {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener() {},
+        removeEventListener() {}
+      });
+      for (const id of [
+        'status-dot', 'conv-title', 'conv-project-badge', 'sub-meta', 'conn-banner', 'conn-banner-msg',
+        'quota-main', 'ctx-badge', 'ctx-top-val', 'usage-top-val', 'model-inline-label', 'perm-inline-label',
+        'btn-new-chat', 'new-chat-label', 'new-chat-sub', 'btn-follow-desktop', 'btn-context-panel',
+        'btn-usage-panel', 'btn-quota', 'btn-drawer', 'chips', 'approval-dock', 'queue-dock', 'messages',
+        'context-drawer', 'usage-drawer', 'quota-drawer', 'channel-pill-label', 'btn-channel-pill',
+        'prompt', 'btn-send', 'toast'
+      ]) {
+        byId[id] = makeEl(id);
+      }
+      byId['context-drawer'].hidden = false;
+      byId['usage-drawer'].hidden = false;
+      byId['quota-drawer'].hidden = true;
+
+      const timers = new Set();
+      const sandbox = {
+        console, URL, URLSearchParams, Math, Date, JSON, Promise, Set, Map, RegExp, Array, Object, Number, String, Boolean,
+        encodeURIComponent, decodeURIComponent, parseInt, parseFloat, isNaN, isFinite,
+        navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', serviceWorker: null },
+        location: { origin: 'http://127.0.0.1:18765', href: 'http://127.0.0.1:18765/?t=tok', search: '?t=tok', pathname: '/', hash: '', protocol: 'http:', reload() {} },
+        history: { replaceState() {} },
+        localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+        sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+        document: {
+          documentElement: makeEl('html'),
+          body: makeEl('body'),
+          getElementById: (id) => byId[id] || makeEl(id),
+          querySelector: () => makeEl('__q'),
+          querySelectorAll: () => [],
+          createElement: (tag) => makeEl(tag),
+          addEventListener() {}
+        },
+        matchMedia: () => ({ matches: false, addEventListener() {} }),
+        innerWidth: 390, innerHeight: 844, visualViewport: null,
+        setTimeout: (fn, ms) => { const t = setTimeout(fn, Math.min(Number(ms) || 0, 30)); if (t.unref) t.unref(); timers.add(t); return t; },
+        clearTimeout: (t) => clearTimeout(t),
+        fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })
+      };
+      sandbox.window = sandbox;
+      sandbox.addEventListener = () => {};
+      const tailIdx = mainScript.lastIndexOf('})();');
+      const hooked = mainScript.slice(0, tailIdx) +
+        '\nglobalThis.__test50pb = { renderSnapshot, renderContextDrawer, renderUsageDrawer };\n' +
+        mainScript.slice(tailIdx);
+      try {
+        vm.runInNewContext(hooked, sandbox);
+        assert.equal(byId['sub-meta'].hidden, false, '初始连接探测态 #sub-meta 应可见');
+        assert.match(byId['sub-meta'].textContent, /正在连接/);
+
+        const baseSnap = {
+          ok: true,
+          sessionId: 'conv-50pb',
+          title: '物品库存及管理系统',
+          currentProjectId: 'p-essay',
+          currentProjectName: 'essay-gen',
+          model: 'Gemini 4 Neon (Medium)',
+          contextBadge: '297k/512k (57.9%)',
+          pulseText: '137.7 tok/s · 297k/512k (57.9%)',
+          showApiReferenceCost: false,
+          contextPanel: {
+            usedTokens: 297000,
+            limitTokens: 512000,
+            physicalMaxTokens: 1048576,
+            usagePercent: 57.9,
+            tokPerSec: 137.7,
+            lastDurationSec: 4.2,
+            cacheHitRate: 88.5,
+            modelDisplayName: 'Gemini 4 Neon (Medium)',
+            roundCostText: '本轮 $0.12',
+            sessionCostText: '会话累计 $1.45'
+          },
+          usageSummary: { todayTokens: 50000, sevenDayTokens: 200000, thirtyDayTokens: 800000, totalTokens: 1200000, totalCostUsd: 18.6 },
+          messages: [],
+          projects: [{ id: 'p-essay', name: 'essay-gen' }],
+          conversations: [{ id: 'conv-50pb', title: '物品库存及管理系统', projectId: 'p-essay', projectName: 'essay-gen', status: 'idle' }],
+          pendingApprovals: [],
+          pendingPrompts: []
+        };
+
+        sandbox.__test50pb.renderSnapshot(baseSnap);
+        assert.equal(byId['sub-meta'].hidden, true, '正常在线态必须隐藏 #sub-meta 避免与顶栏 [58%] 重复');
+        assert.equal(byId['conv-project-badge'].textContent, 'essay-gen');
+        assert.equal(byId['ctx-top-val'].textContent, '58%');
+
+        // 上下文抽屉应展示 1M 物理上限辅助说明且默认不渲染 $ 参考费用
+        assert.match(byId['context-drawer'].innerHTML, /data-ctx-phys-note="1"/, '应展示物理窗口上限辅助说明');
+        assert.match(byId['context-drawer'].innerHTML, /模型物理上限：1M（当前按 512k 自动压缩线计算）/);
+        assert.ok(!byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '默认关闭参考费用时上下文抽屉不得渲染 $ 金额');
+        assert.ok(!byId['usage-drawer'].innerHTML.includes('API 参考等值'), '默认关闭参考费用时用量抽屉不得渲染 API 参考等值卡片');
+
+        // 开启 showApiReferenceCost 后两个抽屉均同步恢复显示 $ 参考金额
+        sandbox.__test50pb.renderSnapshot({ ...baseSnap, showApiReferenceCost: true });
+        assert.ok(byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '开启参考费用后上下文抽屉应恢复显示金额');
+        assert.ok(byId['usage-drawer'].innerHTML.includes('API 参考等值'), '开启参考费用后用量抽屉应恢复显示 API 参考等值卡片');
+
+        // 连接异常时 #sub-meta 自动恢复显示提示
+        sandbox.__test50pb.renderSnapshot({ ok: false, error: '连接中断' });
+        assert.equal(byId['sub-meta'].hidden, false, '离线异常态 #sub-meta 应重新显示状态提示');
+        assert.match(byId['sub-meta'].textContent, /连接异常/);
+      } finally {
+        for (const t of timers) clearTimeout(t);
+      }
+    } finally {
+      if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+      else process.env.AG_METER_STATE_DIR = prevStateDir;
+      if (prevAgDir === undefined) delete process.env.AG_DIR;
+      else process.env.AG_DIR = prevAgDir;
+      remote.clearRemoteUiPrefsCacheForTests();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   }
 });

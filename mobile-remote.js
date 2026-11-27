@@ -150,13 +150,28 @@ function resolveCachedRemoteQuickPrompts() {
 
 let cachedRemoteUiPrefs = null;
 let cachedRemoteUiPrefsAt = 0;
+let cachedRemoteUiPrefsStatSig = '';
 
 function resolveCachedRemoteUiPrefs() {
   const now = Date.now();
-  if (cachedRemoteUiPrefs && (now - cachedRemoteUiPrefsAt) < 2000) {
+  let curStatSig = '';
+  try {
+    const collector = require('./meter-collector');
+    if (collector && typeof collector.getCustomPlanPath === 'function') {
+      const st = fs.statSync(collector.getCustomPlanPath());
+      curStatSig = `${st.mtimeMs}:${st.size}`;
+    }
+  } catch {
+    curStatSig = '';
+  }
+  if (
+    cachedRemoteUiPrefs
+    && (now - cachedRemoteUiPrefsAt) < 2000
+    && curStatSig === cachedRemoteUiPrefsStatSig
+  ) {
     return cachedRemoteUiPrefs;
   }
-  let next = { longFold: true };
+  let next = { longFold: true, showApiReferenceCost: false };
   try {
     const collector = require('./meter-collector');
     const res = collector && typeof collector.getPluginSettings === 'function'
@@ -164,13 +179,15 @@ function resolveCachedRemoteUiPrefs() {
       : null;
     const uiPrefs = res?.uiPreferences;
     next = {
-      longFold: uiPrefs?.longFold !== false
+      longFold: uiPrefs?.longFold !== false,
+      showApiReferenceCost: uiPrefs?.showApiReferenceCost === true
     };
   } catch {
-    next = { longFold: true };
+    next = { longFold: true, showApiReferenceCost: false };
   }
   cachedRemoteUiPrefs = next;
   cachedRemoteUiPrefsAt = now;
+  cachedRemoteUiPrefsStatSig = curStatSig;
   return next;
 }
 
@@ -8598,6 +8615,7 @@ function buildMobileAppHtml() {
       grid-column:1 / -1;grid-row:2;min-width:0;overflow:hidden;
       display:flex;align-items:center;gap:5px;
     }
+    .sub-row:empty{display:none}
     .conv-project-badge{
       display:inline-block;vertical-align:middle;max-width:128px;min-width:0;padding:1px 6px;border-radius:999px;
       font-size:10.5px;font-weight:500;line-height:1.35;letter-spacing:0;
@@ -8610,6 +8628,7 @@ function buildMobileAppHtml() {
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;
       cursor:pointer;display:block;
     }
+    .sub-meta[hidden]{display:none!important}
     .sub-meta:active{color:var(--accent)}
     .channel-pill{
       appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
@@ -10152,7 +10171,7 @@ function buildMobileAppHtml() {
       saveStoredPair(pairState);
       try { history.replaceState(null, '', location.pathname); } catch {}
     }
-    if (isTrustedSecureOrigin(location.origin) && 'serviceWorker' in navigator) {
+    if (isTrustedSecureOrigin(location.origin) && navigator?.serviceWorker && typeof navigator.serviceWorker.register === 'function') {
       swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).then((reg) => {
         if (reg) syncEndpointsToServiceWorker(pairState);
         return reg;
@@ -11271,7 +11290,11 @@ function buildMobileAppHtml() {
       }
       clearTimeout(pollTimer);
       apiBase = cleanTarget === cleanPageOrigin ? '' : cleanTarget;
-      $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
+      subMetaNoticeActive = true;
+      if ($('sub-meta')) {
+        $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
+        $('sub-meta').hidden = !getEffectiveDisplayConfig(latestSnap).showChannelMeta;
+      }
       syncChannelPillUi('online');
       renderModeSwitcherSheet();
       if (latestSnap) {
@@ -11515,7 +11538,10 @@ function buildMobileAppHtml() {
       }
     }
 
+    let subMetaNoticeActive = true;
+    let remoteShowApiRefCost = false;
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
+    $('sub-meta').hidden = false;
     $('sub-meta').onclick = openModeSwitcherSheet;
     syncChannelPillUi('connecting');
     if ($('btn-channel-pill')) {
@@ -12216,6 +12242,9 @@ function buildMobileAppHtml() {
 
     function applyRemoteDisplayConfig(snap) {
       if (snap?.displayConfig) latestDisplayConfig = snap.displayConfig;
+      if (typeof snap?.showApiReferenceCost === 'boolean') {
+        remoteShowApiRefCost = snap.showApiReferenceCost;
+      }
       const cfg = getEffectiveDisplayConfig(snap);
       const ctxBtn = $('btn-context-panel');
       const usageBtn = $('btn-usage-panel');
@@ -12240,7 +12269,7 @@ function buildMobileAppHtml() {
         $('quota-drawer').hidden = true;
         quotaBtn?.classList.remove('active');
       }
-      if (subMeta) subMeta.hidden = !cfg.showChannelMeta;
+      if (subMeta) subMeta.hidden = !(subMetaNoticeActive && cfg.showChannelMeta);
       if (drawerBtn) drawerBtn.hidden = !cfg.showSidebar;
       if (!cfg.showSidebar && typeof closeDrawer === 'function') closeDrawer();
       if (document.body?.classList) {
@@ -12377,6 +12406,9 @@ function buildMobileAppHtml() {
     function renderContextDrawer(snap, ctxRes) {
       const box = $('context-drawer');
       if (!box || box.hidden) return;
+      if (typeof ctxRes?.showApiReferenceCost === 'boolean') {
+        remoteShowApiRefCost = ctxRes.showApiReferenceCost;
+      }
       const cp = ctxRes?.contextPanel || snap?.contextPanel || {};
       const pct = typeof cp.usagePercent === 'number' ? Math.max(0, Math.min(100, cp.usagePercent)) : null;
       const usedStr = cp.usedText || (cp.usedTokens ? fmtNumShort(cp.usedTokens) : '—');
@@ -12388,6 +12420,17 @@ function buildMobileAppHtml() {
       const modelStr = cp.modelDisplayName || ctxRes?.model || snap?.model || '—';
       const barCol = pct == null ? 'var(--accent)' : (pct >= 85 ? 'var(--red)' : (pct >= 65 ? 'var(--amber)' : 'var(--green)'));
       const isolatedTag = snap?.isolated ? '<span class="isolated-badge" title="当前仅在本页浏览其他会话，不会改变电脑端屏幕">仅本页</span>' : '';
+      const physMaxNum = Number(cp.physicalMaxTokens || 0);
+      const limitNum = Number(cp.limitTokens || 0);
+      const physShort = physMaxNum >= 1000000 ? '1M' : (physMaxNum > 0 ? fmtNumShort(physMaxNum) : '');
+      const physNoteHtml = (physMaxNum > limitNum && limitNum > 0 && physShort)
+        ? '<div class="qreset" data-ctx-phys-note="1" style="margin-top:4px">模型物理上限：' + esc(physShort) + '（当前按 ' + esc(limitStr) + ' 自动压缩线计算）</div>'
+        : '';
+      const showRefCost = Boolean(
+        typeof ctxRes?.showApiReferenceCost === 'boolean'
+          ? ctxRes.showApiReferenceCost
+          : (typeof snap?.showApiReferenceCost === 'boolean' ? snap.showApiReferenceCost : remoteShowApiRefCost)
+      );
 
       box.innerHTML =
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">' +
@@ -12398,14 +12441,15 @@ function buildMobileAppHtml() {
           '<div class="qhead"><span>' + esc(ctxRes?.title || snap?.title || '当前会话') + '</span><span style="color:' + barCol + '">' + (pct != null ? pct.toFixed(1) + '%' : '--%') + '</span></div>' +
           '<div class="qbar"><div class="qfill" style="width:' + (pct != null ? pct.toFixed(1) : 0) + '%;background:' + barCol + '"></div></div>' +
           '<div class="qreset" style="margin-top:5px">模型：' + esc(modelStr) + '</div>' +
+          physNoteHtml +
         '</div>' +
         '<div class="ctx-drawer-grid">' +
-          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">当前已用 / 上限</div><div class="ctx-stat-val">' + esc(usedStr) + ' / ' + esc(limitStr) + '</div></div>' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">当前已用 / 压缩上限</div><div class="ctx-stat-val">' + esc(usedStr) + ' / ' + esc(limitStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">剩余可用</div><div class="ctx-stat-val">' + esc(remainStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">输出速度 · 耗时</div><div class="ctx-stat-val">' + esc(speedStr) + ' · ' + esc(durStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">缓存命中率</div><div class="ctx-stat-val">' + esc(cacheStr) + '</div></div>' +
         '</div>' +
-        (cp.sessionCostText ? '<div class="qreset" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '');
+        (showRefCost && cp.sessionCostText ? '<div class="qreset" data-ctx-cost-line="1" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '');
 
       const refBtn = $('btn-refresh-context');
       if (refBtn) refBtn.onclick = () => { void fetchContextPanelData(); };
@@ -12440,6 +12484,11 @@ function buildMobileAppHtml() {
       const totalStr = fmtNumShort(summary.totalTokens || 0);
       const costNum = Number(usageData?.referenceCost?.totalUsd ?? usageData?.costEstimate?.totalUsd ?? summary.totalCostUsd ?? 0) || 0;
       const costStr = costNum > 0 ? '$' + costNum.toFixed(2) : '—';
+      const showRefCost = Boolean(
+        typeof latestSnap?.showApiReferenceCost === 'boolean'
+          ? latestSnap.showApiReferenceCost
+          : remoteShowApiRefCost
+      );
 
       box.innerHTML =
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">' +
@@ -12455,7 +12504,7 @@ function buildMobileAppHtml() {
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">今日用量</div><div class="ctx-stat-val">' + esc(todayStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">近 7 天 / 30 天</div><div class="ctx-stat-val">' + esc(sevenStr) + ' / ' + esc(thirtyStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">累计总用量</div><div class="ctx-stat-val">' + esc(totalStr) + '</div></div>' +
-          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">API 参考等值</div><div class="ctx-stat-val">' + esc(costStr) + '</div></div>' +
+          (showRefCost ? '<div class="ctx-stat-box" data-usage-cost-box="1"><div class="ctx-stat-lbl">API 参考等值</div><div class="ctx-stat-val">' + esc(costStr) + '</div></div>' : '') +
         '</div>' +
         barsHtml;
 
@@ -12657,6 +12706,11 @@ function buildMobileAppHtml() {
         $('status-dot').className = 'dot err';
         syncChannelPillUi('offline');
         $('conv-title').textContent = snap?.error || '连接异常';
+        subMetaNoticeActive = true;
+        if ($('sub-meta')) {
+          $('sub-meta').textContent = '连接异常 · 点击切换连接方式';
+          $('sub-meta').hidden = !getEffectiveDisplayConfig(latestSnap).showChannelMeta;
+        }
         if (latestSnap) {
           setConnBannerVisible(true, humanizeRemoteError(snap?.error, '与电脑端的连接暂时异常，可点击重试或切换连接方式'));
         }
@@ -12724,6 +12778,7 @@ function buildMobileAppHtml() {
         }
       }
 
+      subMetaNoticeActive = false;
       const displayCfg = applyRemoteDisplayConfig(snap);
       if (typeof applyRemoteLongFoldPref === 'function') applyRemoteLongFoldPref(snap);
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
@@ -12734,7 +12789,10 @@ function buildMobileAppHtml() {
           syncFvModalOnContextChange();
         }
       }
-      $('sub-meta').textContent = snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已就绪'));
+      if ($('sub-meta')) {
+        $('sub-meta').textContent = '';
+        $('sub-meta').hidden = true;
+      }
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
@@ -19332,6 +19390,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       enabledChannels: config.enabledChannels,
       displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay),
       longFold: typeof snap.longFold === 'boolean' ? snap.longFold : resolveCachedRemoteUiPrefs().longFold,
+      showApiReferenceCost: typeof snap.showApiReferenceCost === 'boolean' ? snap.showApiReferenceCost : Boolean(resolveCachedRemoteUiPrefs().showApiReferenceCost),
       quickPrompts: Array.isArray(snap.quickPrompts) ? snap.quickPrompts : resolveCachedRemoteQuickPrompts()
     };
     if (clientId) out.clientId = clientId;
@@ -20084,7 +20143,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           model: snap.model || '',
           contextBadge: snap.contextBadge || '',
           pulseText: snap.pulseText || '',
-          contextPanel: snap.contextPanel || null
+          contextPanel: snap.contextPanel || null,
+          showApiReferenceCost: typeof snap.showApiReferenceCost === 'boolean' ? snap.showApiReferenceCost : Boolean(resolveCachedRemoteUiPrefs().showApiReferenceCost)
         }));
       } catch (err) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -22757,6 +22817,7 @@ module.exports = {
   clearRemoteUiPrefsCacheForTests: () => {
     cachedRemoteUiPrefs = null;
     cachedRemoteUiPrefsAt = 0;
+    cachedRemoteUiPrefsStatSig = '';
   },
   getRemoteClientSession,
   clearRemoteClientSessionsForTests,
