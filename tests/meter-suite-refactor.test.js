@@ -34735,6 +34735,29 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
     assert.match(gfmServerHtml, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td><td style="text-align:right"><code>a \| b<\/code><\/td>/, '服务端表格代码单元格内 \\| 应转义为单管道符不留多余反斜杠');
     assert.match(gfmServerHtml, /<blockquote><h2>引用内二级标题<\/h2><ul><li>引用内列表项 1<ul><li>引用内嵌套子项<\/li><\/ul><\/li><\/ul><pre><code>const quotedCode = true;<\/code><\/pre><\/blockquote>/, '服务端引用块必须支持标题、嵌套列表与围栏代码块等块级语法');
     assert.match(gfmServerHtml, /<ul class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '服务端 GFM 应正确渲染嵌套列表与子任务');
+
+    // 无空行紧接块级结构终止表格回归（表格后直接跟引用块、无序列表、有序列表、标题、代码块，即便行内带 | 也必须交回对应块解析）
+    const tableInterruptCases = [
+      {
+        md: '| A | B |\n| --- | --- |\n> foo | bar',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead></table></div><blockquote><p>foo | bar</p></blockquote>'
+      },
+      {
+        md: '| A | B |\n| --- | --- |\n| 1 | 2 |\n- list | item',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table></div><ul><li>list | item</li></ul>'
+      },
+      {
+        md: '| A | B |\n| --- | --- |\n1. step | one',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead></table></div><ol><li>step | one</li></ol>'
+      },
+      {
+        md: '| A | B |\n| --- | --- |\n### 标题 | 小节',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead></table></div><h3>标题 | 小节</h3>'
+      }
+    ];
+    for (const tc of tableInterruptCases) {
+      assert.equal(remoteMod.renderSafeMarkdownToHtml(tc.md), tc.expected, '服务端无空行衔接块级语法必须正确终止表格');
+    }
     assert.match(gfmServerHtml, /<ol class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>有序任务已完成<\/span><\/li><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled><span>有序任务待执行<\/span><\/li><\/ol>/, '服务端 GFM 应正确渲染有序任务列表 1. [x]');
     assert.match(gfmServerHtml, /<pre><code>```js\nconst nestedTripleFence = 42;\n```<\/code><\/pre>/, '服务端四反引号围栏内部的三反引号不得提前截断代码块');
     assert.ok(!gfmServerHtml.includes('javascript:alert'), '服务端 GFM 必须拦截 javascript: 危险链接');
@@ -35220,6 +35243,9 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       assert.ok(deskEnv.docObj.getElementById('fv-mode-render').classList.contains('active'), '带 #L109 行号的 .md 文件默认也应进入 GFM 渲染模式');
       assert.match(fvBody.innerHTML, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td><td style="text-align:right"><code>a \| b<\/code><\/td>/, '客户端表格代码单元格内 \\| 转义必须与服务端语义完全一致，不残留反斜杠');
       assert.match(fvBody.innerHTML, /<blockquote><h2>引用内二级标题<\/h2><ul><li>引用内列表项 1<ul><li>引用内嵌套子项<\/li><\/ul><\/li><\/ul><pre><code>const quotedCode = true;<\/code><\/pre><\/blockquote>/, '客户端引用块必须支持块级标题、嵌套列表与围栏代码块且与服务端一致');
+      for (const tc of tableInterruptCases) {
+        assert.equal(deskEnv.winObj.__fvWorkbenchHooks.renderMarkdownSafe(tc.md), tc.expected, '客户端无空行衔接块级语法必须与服务端逐字节一致终止表格');
+      }
       assert.match(fvBody.innerHTML, /md-task-check/, '客户端预览应渲染 GFM 任务列表复选框');
       assert.match(fvBody.innerHTML, /完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '客户端预览应正确渲染嵌套列表');
       assert.match(fvBody.innerHTML, /<ol class="md-task-list"><li class="md-task-item"><input class="md-task-check" type="checkbox" disabled checked><span>有序任务已完成<\/span><\/li>/, '客户端预览应正确渲染有序任务列表 1. [x]');
