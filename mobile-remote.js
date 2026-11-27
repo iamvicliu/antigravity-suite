@@ -4612,7 +4612,7 @@ function renderNestedMarkdownListEntries(entries, formatInlineFn) {
   return outHtml;
 }
 
-function renderSafeMarkdownToHtml(rawMd) {
+function renderSafeMarkdownToHtml(rawMd, bqDepth = 0) {
   const src = String(rawMd || '').replace(/\u0000/g, '').replace(/\r\n?/g, '\n');
   if (!src.trim()) return '';
 
@@ -4732,18 +4732,22 @@ function renderSafeMarkdownToHtml(rawMd) {
       out.push('<hr>');
       continue;
     }
-    if (trimmed.startsWith('>')) {
+    if (/^ {0,3}>/.test(line)) {
       flushPara();
       flushList();
       const bqLines = [];
-      while (i < lines.length && lines[i].trim().startsWith('>')) {
-        bqLines.push(lines[i].trim().replace(/^>\s?/, ''));
+      while (i < lines.length && /^ {0,3}>/.test(lines[i])) {
+        bqLines.push(lines[i].replace(/^ {0,3}> ?/, ''));
         i++;
       }
       i--;
-      const isAlert = /^\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(bqLines[0] || '');
+      const firstTrimmed = String(bqLines[0] || '').trim();
+      const isAlert = /^\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(firstTrimmed);
       const clsAttr = isAlert ? ' class="md-alert"' : '';
-      out.push(`<blockquote${clsAttr}>${bqLines.map((l) => formatInline(l)).join('<br>')}</blockquote>`);
+      const bqInnerHtml = bqDepth < 8
+        ? renderSafeMarkdownToHtml(bqLines.join('\n'), bqDepth + 1)
+        : `<p>${bqLines.map((l) => formatInline(l)).join('<br>')}</p>`;
+      out.push(`<blockquote${clsAttr}>${bqInnerHtml}</blockquote>`);
       continue;
     }
     if (trimmed.includes('|') && i + 1 < lines.length) {
@@ -12419,22 +12423,17 @@ function buildMobileAppHtml() {
 
     function splitClientGfmCells(line) {
       const BS = String.fromCharCode(92);
-      const BT = String.fromCharCode(96);
       let s = String(line || '').trim();
       if (s.startsWith('|')) s = s.slice(1);
       if (s.endsWith('|') && !s.endsWith(BS + '|')) s = s.slice(0, -1);
       const cells = [];
       let cur = '';
-      let inCode = false;
       for (let i = 0; i < s.length; i++) {
         const ch = s[i];
-        if (ch === BT) {
-          inCode = !inCode;
-          cur += ch;
-        } else if (ch === BS && s[i + 1] === '|' && !inCode) {
+        if (ch === BS && i + 1 < s.length && s[i + 1] === '|') {
           cur += '|';
           i += 1;
-        } else if (ch === '|' && !inCode) {
+        } else if (ch === '|') {
           cells.push(cur.trim());
           cur = '';
         } else {
@@ -12535,7 +12534,7 @@ function buildMobileAppHtml() {
       return s.slice(sp + len).trim() === '';
     }
 
-    function renderMarkdownSafe(rawText) {
+    function renderMarkdownSafe(rawText, bqDepth = 0) {
       const src = String(rawText || '').replace(/\\u0000/g, '').replace(/\\r\\n/g, '\\n');
       if (!src) return '';
       const lines = src.split('\\n');
@@ -12560,7 +12559,13 @@ function buildMobileAppHtml() {
       };
       const flushQuote = () => {
         if (!quoteLines.length) return;
-        blocks.push('<blockquote>' + quoteLines.map((l) => renderInlineClientMarkdown(l)).join('<br>') + '</blockquote>');
+        const firstTrim = String(quoteLines[0] || '').trim();
+        const isAlert = /^\\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\]/i.test(firstTrim);
+        const clsAttr = isAlert ? ' class="md-alert"' : '';
+        const bqBodyHtml = bqDepth < 8
+          ? renderMarkdownSafe(quoteLines.join('\\n'), bqDepth + 1)
+          : ('<p>' + quoteLines.map((l) => renderInlineClientMarkdown(l)).join('<br>') + '</p>');
+        blocks.push('<blockquote' + clsAttr + '>' + bqBodyHtml + '</blockquote>');
         quoteLines = [];
       };
       const flushAllText = () => {
@@ -12651,10 +12656,10 @@ function buildMobileAppHtml() {
           }
         }
 
-        if (trimmed.startsWith('>')) {
+        if (/^ {0,3}>/.test(line)) {
           flushPara();
           flushList();
-          quoteLines.push(trimmed.replace(/^>\\s?/, ''));
+          quoteLines.push(line.replace(/^ {0,3}> ?/, ''));
           continue;
         }
         if (quoteLines.length) flushQuote();
@@ -16274,15 +16279,17 @@ function buildMobileAppHtml() {
       : null;
 
     function clampFvSidebarWidth(raw) {
+      if (raw === null || raw === undefined || typeof raw === 'boolean') return FV_DEFAULT_WIDTH;
+      if (typeof raw === 'string' && raw.trim() === '') return FV_DEFAULT_WIDTH;
       const n = Math.round(Number(raw));
-      if (!Number.isFinite(n) || n <= 0) return FV_DEFAULT_WIDTH;
+      if (!Number.isFinite(n)) return FV_DEFAULT_WIDTH;
       return Math.max(FV_MIN_WIDTH, Math.min(FV_MAX_WIDTH, n));
     }
 
     function readStoredFvSidebarWidth() {
       try {
         const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FV_WIDTH_STORAGE_KEY) : null;
-        return raw ? clampFvSidebarWidth(raw) : FV_DEFAULT_WIDTH;
+        return clampFvSidebarWidth(raw);
       } catch {
         return FV_DEFAULT_WIDTH;
       }
