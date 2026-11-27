@@ -4514,16 +4514,117 @@ function escSafeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+function isSafeMarkdownLinkHref(rawHref) {
+  const href = String(rawHref || '').trim();
+  if (!href) return false;
+  if (href.startsWith('#')) return true;
+  return /^(?:https?:\/\/|mailto:)/i.test(href);
+}
+
+function splitGfmTableRowCells(line) {
+  let trimmed = String(line || '').trim();
+  if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith('|') && !trimmed.endsWith('\\|')) trimmed = trimmed.slice(0, -1);
+  const cells = [];
+  let cur = '';
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch === '\\' && i + 1 < trimmed.length && trimmed[i + 1] === '|') {
+      cur += '|';
+      i++;
+      continue;
+    }
+    if (ch === '|') {
+      cells.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+function parseGfmTableAlignments(sepLine, expectedCols) {
+  const trimmed = String(sepLine || '').trim();
+  if (!trimmed.includes('-')) return null;
+  const rawCells = splitGfmTableRowCells(trimmed);
+  if (rawCells.length < 1) return null;
+  const aligns = [];
+  for (const cell of rawCells) {
+    if (!/^:?-{3,}:?$/.test(cell)) return null;
+    const left = cell.startsWith(':');
+    const right = cell.endsWith(':');
+    aligns.push(left && right ? 'center' : (right ? 'right' : (left ? 'left' : '')));
+  }
+  if (expectedCols > 0 && aligns.length !== expectedCols) return null;
+  return aligns;
+}
+
+function renderNestedMarkdownListEntries(entries, formatInlineFn) {
+  if (!Array.isArray(entries) || !entries.length) return '';
+  let pos = 0;
+  const parseLevel = (baseIndent) => {
+    if (pos >= entries.length) return '';
+    const first = entries[pos];
+    const tag = first.ordered ? 'ol' : 'ul';
+    const items = [];
+    let hasTask = false;
+    while (pos < entries.length) {
+      const cur = entries[pos];
+      if (cur.indent < baseIndent) break;
+      if (cur.indent === baseIndent && cur.ordered !== first.ordered && items.length > 0) break;
+      if (cur.indent > baseIndent) {
+        const subHtml = parseLevel(cur.indent);
+        if (items.length > 0) {
+          items[items.length - 1].subHtml += subHtml;
+        } else {
+          items.push({ isTask: false, checked: false, bodyHtml: '', subHtml });
+        }
+        continue;
+      }
+      pos += 1;
+      if (cur.isTask) hasTask = true;
+      let subHtml = '';
+      while (pos < entries.length && entries[pos].indent >= cur.indent + 2) {
+        subHtml += parseLevel(entries[pos].indent);
+      }
+      items.push({
+        isTask: cur.isTask,
+        checked: cur.checked,
+        bodyHtml: formatInlineFn(cur.text),
+        subHtml
+      });
+    }
+    const cls = (!first.ordered && hasTask) ? ' class="md-task-list"' : '';
+    const liHtml = items.map((it) => {
+      if (it.isTask) {
+        return `<li class="md-task-item"><input type="checkbox" class="md-task-check" disabled${it.checked ? ' checked' : ''}><span>${it.bodyHtml}${it.subHtml}</span></li>`;
+      }
+      return `<li>${it.bodyHtml}${it.subHtml}</li>`;
+    }).join('');
+    return `<${tag}${cls}>${liHtml}</${tag}>`;
+  };
+  let outHtml = '';
+  while (pos < entries.length) {
+    outHtml += parseLevel(entries[pos].indent);
+  }
+  return outHtml;
+}
+
 function renderSafeMarkdownToHtml(rawMd) {
-  const src = String(rawMd || '').replace(/\r\n?/g, '\n');
+  const src = String(rawMd || '').replace(/\u0000/g, '').replace(/\r\n?/g, '\n');
   if (!src.trim()) return '';
 
   const codeBlocks = [];
-  const withCodePlaceholders = src.replace(/```[^\n]*\n([\s\S]*?)```/g, (_m, code) => {
+  const stashFence = (_m, _info, code) => {
     const idx = codeBlocks.length;
     codeBlocks.push(`<pre><code>${escSafeHtml(String(code || '').replace(/\n$/, ''))}</code></pre>`);
     return `\n\u0000CB${idx}\u0000\n`;
-  });
+  };
+  const withCodePlaceholders = src
+    .replace(/```([^\n`]*)\n([\s\S]*?)```/g, stashFence)
+    .replace(/~~~([^\n~]*)\n([\s\S]*?)~~~/g, stashFence);
 
   const formatInline = (text) => {
     const inlineCodes = [];
@@ -4533,14 +4634,17 @@ function renderSafeMarkdownToHtml(rawMd) {
       inlineCodes.push(`<code>${escSafeHtml(c)}</code>`);
       return `\u0000IC${idx}\u0000`;
     });
-    s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_m, label, rawUrl) => {
+    s = s.replace(/!?\[([^\]\n]+)\]\(((?:[^()\s]+|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g, (fullMatch, label, rawTarget) => {
+      const isImgSyntax = fullMatch.startsWith('!');
+      const cleanTarget = String(rawTarget || '').trim().split(/\s+/)[0] || '';
       const idx = tokens.length;
-      if (/^https?:\/\//i.test(rawUrl)) {
-        tokens.push(`<a href="${escSafeHtml(rawUrl)}" target="_blank" rel="noopener">${escSafeHtml(label)}</a>`);
-      } else if (/^file:\/\//i.test(rawUrl)) {
-        const hashIdx = rawUrl.indexOf('#');
-        const uriPart = hashIdx >= 0 ? rawUrl.slice(0, hashIdx) : rawUrl;
-        const hashPart = hashIdx >= 0 ? rawUrl.slice(hashIdx + 1) : '';
+      if (!isImgSyntax && isSafeMarkdownLinkHref(cleanTarget)) {
+        const extAttrs = cleanTarget.startsWith('#') ? '' : ' target="_blank" rel="noopener noreferrer"';
+        tokens.push(`<a href="${escSafeHtml(cleanTarget)}"${extAttrs}>${escSafeHtml(label)}</a>`);
+      } else if (!isImgSyntax && /^file:\/\//i.test(cleanTarget)) {
+        const hashIdx = cleanTarget.indexOf('#');
+        const uriPart = hashIdx >= 0 ? cleanTarget.slice(0, hashIdx) : cleanTarget;
+        const hashPart = hashIdx >= 0 ? cleanTarget.slice(hashIdx + 1) : '';
         const lineMatch = hashPart.match(/^L(\d+)/i);
         const lineNum = lineMatch ? lineMatch[1] : '';
         const localPath = normalizeLocalFileUriToPath(uriPart);
@@ -4555,26 +4659,19 @@ function renderSafeMarkdownToHtml(rawMd) {
       return `\u0000LN${idx}\u0000`;
     });
     let escaped = escSafeHtml(s);
+    escaped = escaped.replace(/~~([^\n~][^\n]*?[^\n~]|[^\n~])~~/g, '<del>$1</del>');
     escaped = escaped.replace(/\*\*([^\n*][^\n]*?[^\n*]|[^\n*])\*\*/g, '<strong>$1</strong>');
+    escaped = escaped.replace(/__([^\n_][^\n]*?[^\n_]|[^\n_])__/g, '<strong>$1</strong>');
     escaped = escaped.replace(/(^|[^*])\*([^\s*\n][^*\n]*?[^\s*\n]|[^\s*\n])\*(?!\*)/g, '$1<em>$2</em>');
     escaped = escaped.replace(/\u0000LN(\d+)\u0000/g, (_m, idx) => tokens[Number(idx)] || '');
     escaped = escaped.replace(/\u0000IC(\d+)\u0000/g, (_m, idx) => inlineCodes[Number(idx)] || '');
     return escaped;
   };
 
-  const splitTableCells = (line) => {
-    let trimmed = line.trim();
-    if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
-    if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
-    return trimmed.split('|').map((c) => c.trim());
-  };
-  const isTableSep = (line) => /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
-
   const lines = withCodePlaceholders.split('\n');
   const out = [];
   let para = [];
-  let listTag = '';
-  let listItems = [];
+  let listEntries = [];
 
   const flushPara = () => {
     if (!para.length) return;
@@ -4582,10 +4679,9 @@ function renderSafeMarkdownToHtml(rawMd) {
     para = [];
   };
   const flushList = () => {
-    if (!listItems.length || !listTag) return;
-    out.push(`<${listTag}>${listItems.map((it) => `<li>${formatInline(it)}</li>`).join('')}</${listTag}>`);
-    listTag = '';
-    listItems = [];
+    if (!listEntries.length) return;
+    out.push(renderNestedMarkdownListEntries(listEntries, formatInline));
+    listEntries = [];
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -4603,7 +4699,7 @@ function renderSafeMarkdownToHtml(rawMd) {
       out.push(codeBlocks[Number(cbMatch[1])] || '');
       continue;
     }
-    const hMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    const hMatch = trimmed.match(/^(#{1,6})\s+(.*?)(?:\s+#+)?$/);
     if (hMatch) {
       flushPara();
       flushList();
@@ -4631,42 +4727,53 @@ function renderSafeMarkdownToHtml(rawMd) {
       out.push(`<blockquote${clsAttr}>${bqLines.map((l) => formatInline(l)).join('<br>')}</blockquote>`);
       continue;
     }
-    if (trimmed.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
-      flushPara();
-      flushList();
-      const headers = splitTableCells(trimmed);
-      i += 2;
-      const bodyRows = [];
-      while (i < lines.length && lines[i].trim().includes('|') && !/^\s*$/.test(lines[i])) {
-        bodyRows.push(splitTableCells(lines[i]));
-        i++;
+    if (trimmed.includes('|') && i + 1 < lines.length) {
+      const headers = splitGfmTableRowCells(trimmed);
+      const aligns = parseGfmTableAlignments(lines[i + 1], headers.length);
+      if (aligns) {
+        flushPara();
+        flushList();
+        i += 2;
+        const bodyRows = [];
+        while (i < lines.length && lines[i].trim().includes('|') && !/^\s*$/.test(lines[i])) {
+          bodyRows.push(splitGfmTableRowCells(lines[i]));
+          i++;
+        }
+        i--;
+        const alignAttr = (ci) => (aligns[ci] ? ` style="text-align:${aligns[ci]}"` : '');
+        const thead = `<thead><tr>${headers.map((h, ci) => `<th${alignAttr(ci)}>${formatInline(h)}</th>`).join('')}</tr></thead>`;
+        const tbody = bodyRows.length
+          ? `<tbody>${bodyRows.map((row) => `<tr>${headers.map((_, ci) => `<td${alignAttr(ci)}>${formatInline(row[ci] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`
+          : '';
+        out.push(`<div class="md-table-wrap"><table>${thead}${tbody}</table></div>`);
+        continue;
       }
-      i--;
-      const thead = `<thead><tr>${headers.map((h) => `<th>${formatInline(h)}</th>`).join('')}</tr></thead>`;
-      const tbody = bodyRows.length
-        ? `<tbody>${bodyRows.map((row) => `<tr>${headers.map((_, ci) => `<td>${formatInline(row[ci] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`
-        : '';
-      out.push(`<div class="md-table-wrap"><table>${thead}${tbody}</table></div>`);
-      continue;
     }
-    const ulMatch = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ulMatch = line.match(/^([ \t]*)[-*+]\s+(.*)$/);
     if (ulMatch) {
       flushPara();
-      if (listTag !== 'ul') {
-        flushList();
-        listTag = 'ul';
-      }
-      listItems.push(ulMatch[1]);
+      const indent = ulMatch[1].replace(/\t/g, '  ').length;
+      const tm = /^\[([ xX])\]\s+(.*)$/.exec(ulMatch[2]);
+      listEntries.push({
+        indent,
+        ordered: false,
+        isTask: Boolean(tm),
+        checked: Boolean(tm && tm[1].toLowerCase() === 'x'),
+        text: tm ? tm[2] : ulMatch[2]
+      });
       continue;
     }
-    const olMatch = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    const olMatch = line.match(/^([ \t]*)\d+[.)]\s+(.*)$/);
     if (olMatch) {
       flushPara();
-      if (listTag !== 'ol') {
-        flushList();
-        listTag = 'ol';
-      }
-      listItems.push(olMatch[1]);
+      const indent = olMatch[1].replace(/\t/g, '  ').length;
+      listEntries.push({
+        indent,
+        ordered: true,
+        isTask: false,
+        checked: false,
+        text: olMatch[2]
+      });
       continue;
     }
     flushList();
@@ -5041,12 +5148,17 @@ function readSafeTextFilePreview(rawPath, options = {}) {
   const maxTextBytes = Number.isFinite(options.maxTextBytes) ? options.maxTextBytes : (512 * 1024);
   const checked = resolveSafeLocalMediaPath(rawPath, options);
   if (!checked.ok) return checked;
-  if (/^image\//i.test(checked.contentType)) {
+  const isSvgFile = checked.ext === '.svg';
+  const isHtmlFile = checked.ext === '.html' || checked.ext === '.htm';
+  const isMdFile = checked.ext === '.md' || checked.ext === '.markdown';
+  if (/^image\//i.test(checked.contentType) && !isSvgFile) {
     return {
       ok: true,
       isImage: true,
       isBinary: false,
       isMarkdown: false,
+      isHtml: false,
+      isSvg: false,
       name: checked.baseName,
       path: checked.realPath,
       ext: checked.ext,
@@ -5059,6 +5171,9 @@ function readSafeTextFilePreview(rawPath, options = {}) {
       isImage: false,
       isBinary: false,
       isTooLargeForText: true,
+      isMarkdown: isMdFile,
+      isHtml: isHtmlFile,
+      isSvg: isSvgFile,
       name: checked.baseName,
       path: checked.realPath,
       ext: checked.ext,
@@ -5083,6 +5198,8 @@ function readSafeTextFilePreview(rawPath, options = {}) {
       isImage: false,
       isBinary: true,
       isMarkdown: false,
+      isHtml: false,
+      isSvg: false,
       name: checked.baseName,
       path: checked.realPath,
       ext: checked.ext,
@@ -5094,7 +5211,10 @@ function readSafeTextFilePreview(rawPath, options = {}) {
     ok: true,
     isImage: false,
     isBinary: false,
-    isMarkdown: checked.ext === '.md' || checked.ext === '.markdown',
+    isMarkdown: isMdFile,
+    isHtml: isHtmlFile,
+    isSvg: isSvgFile,
+    ...(isMdFile ? { renderedHtml: renderSafeMarkdownToHtml(content) } : {}),
     name: checked.baseName,
     path: checked.realPath,
     ext: checked.ext,
@@ -9022,27 +9142,60 @@ function buildMobileAppHtml() {
     .md-file-link:active{filter:brightness(1.1)}
     .fv-backdrop{
       position:fixed;top:0;left:0;right:0;height:var(--modal-h,100dvh);z-index:110;background:var(--backdrop-bg);
-      display:flex;align-items:flex-end;justify-content:center;
+      display:flex;align-items:stretch;justify-content:flex-end;
       backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
     }
-    .fv-backdrop[hidden]{display:none}
+    .fv-backdrop[hidden]{display:none!important}
     .fv-modal{
-      width:100%;max-width:760px;height:min(86%,calc(var(--modal-h,100dvh) * 0.86));max-height:calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px);
-      background:var(--card);border-top-left-radius:18px;border-top-right-radius:18px;border:1px solid var(--border-strong);
-      padding-bottom:var(--safe-bottom);
+      position:relative;width:min(92vw,480px);max-width:100%;height:100%;max-height:100%;
+      background:var(--card);border-top-left-radius:16px;border-bottom-left-radius:16px;border-top-right-radius:0;border-bottom-right-radius:0;
+      border:1px solid var(--border-strong);border-right:none;
+      padding-top:env(safe-area-inset-top,0px);padding-bottom:var(--safe-bottom);
       display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--sheet-shadow);
     }
+    .fv-resize-handle{display:none}
     .fv-head{
       display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;
       border-bottom:1px solid var(--border);flex-shrink:0;
     }
-    .fv-title{font-size:14px;font-weight:700;color:var(--fg-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;text-wrap:balance}
-    .fv-tabs{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+    .fv-head-left{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+    .fv-title{font-size:13.5px;font-weight:700;color:var(--fg-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-ws-persistent-bar{
+      display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--border);
+      overflow-x:auto;scrollbar-width:none;flex-shrink:0;background:var(--surface-subtle);
+    }
+    .fv-ws-persistent-bar::-webkit-scrollbar{display:none}
+    .fv-ws-persistent-bar[hidden]{display:none!important}
+    .fv-tabs{display:flex;gap:6px;padding:7px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
     .fv-tab{
-      appearance:none;flex:1;min-height:34px;padding:6px 10px;border-radius:9px;border:1px solid var(--border);
-      background:var(--surface-subtle);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;
+      appearance:none;flex:1;min-height:32px;padding:5px 8px;border-radius:8px;border:1px solid var(--border);
+      background:var(--surface-subtle);color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;
     }
     .fv-tab.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .fv-preview-toolbar{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 12px;
+      border-bottom:1px solid var(--border);background:var(--surface-subtle);flex-shrink:0;flex-wrap:wrap;
+    }
+    .fv-preview-toolbar[hidden]{display:none!important}
+    .fv-preview-meta{display:flex;align-items:center;gap:6px;min-width:0;flex:1;font-size:11.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+    .fv-preview-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-seg-group{display:inline-flex;align-items:center;padding:2px;border-radius:8px;border:1px solid var(--border);background:var(--card);gap:2px;flex-shrink:0}
+    .fv-seg-btn{
+      appearance:none;border:1px solid transparent;background:transparent;color:var(--muted);
+      border-radius:6px;min-height:26px;padding:0 9px;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;
+    }
+    .fv-seg-btn.active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+    .fv-line-jump-pill{
+      appearance:none;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      border-radius:999px;height:24px;padding:0 8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0;
+    }
+    .fv-sandbox-wrap{display:flex;flex-direction:column;height:100%;min-height:360px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff}
+    .fv-sandbox-iframe{width:100%;flex:1 1 auto;min-height:360px;border:none;display:block;background:#fff}
+    body.fv-resizing .fv-sandbox-iframe{pointer-events:none}
+    body.fv-resizing{user-select:none;cursor:col-resize}
+    .md-task-list{list-style:none;padding-left:4px}
+    .md-task-item{display:flex;align-items:flex-start;gap:7px;margin:3px 0}
+    .md-task-check{margin-top:4px;accent-color:var(--accent);flex-shrink:0}
     .fv-ws-bar{display:flex;align-items:center;gap:6px;margin-bottom:8px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
     .fv-ws-bar::-webkit-scrollbar{display:none}
     .fv-ws-chip{
@@ -9573,13 +9726,32 @@ function buildMobileAppHtml() {
         box-shadow:var(--sheet-shadow);
       }
       .sheet.proj-modal{max-width:520px;max-height:min(680px,86vh)}
-      .fv-backdrop{align-items:center;padding:24px}
-      .fv-modal{max-height:min(760px,84vh);height:min(680px,84vh);border-radius:18px;padding-bottom:0}
+      .fv-backdrop{justify-content:flex-end;align-items:stretch;padding:0}
+      .fv-modal{width:min(520px,52vw);max-height:100%;height:100%;border-radius:16px 0 0 16px;padding-top:0;padding-bottom:0}
       .proj-path-input{font-size:13px}
       .proj-field-input{font-size:14px}
       .prompt-other-input{font-size:13px}
       .sheet-opt{padding:10px 12px;font-size:13.5px}
       .toast{top:18px}
+    }
+    /* 宽屏三栏工作台：右侧常驻可拖拽预览边栏 (>= 1180px) */
+    @media (min-width:1180px) and (min-height:521px) and (hover:hover) and (pointer:fine){
+      .fv-backdrop{
+        position:relative;top:auto;left:auto;right:auto;bottom:auto;
+        width:var(--fv-sidebar-w,420px);min-width:300px;max-width:680px;height:100%;
+        flex-shrink:0;z-index:12;background:transparent;
+        backdrop-filter:none;-webkit-backdrop-filter:none;padding:0;
+      }
+      .fv-modal{
+        width:100%;max-width:none;height:100%;max-height:none;border-radius:0;
+        border:none;border-left:1px solid var(--sidebar-border);background:var(--sidebar-bg);
+        box-shadow:none;padding-top:0;padding-bottom:0;
+      }
+      .fv-resize-handle{
+        display:block;position:absolute;left:-3px;top:0;bottom:0;width:6px;z-index:8;
+        cursor:col-resize;background:transparent;transition:background-color .14s ease;
+      }
+      .fv-resize-handle:hover,.fv-resize-handle.is-resizing{background:var(--accent)}
     }
     .topbar-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
     .top-panel-btn{
@@ -9868,18 +10040,24 @@ function buildMobileAppHtml() {
     <img id="media-lightbox-img" alt="附件预览" />
   </div>
   <div id="file-viewer-backdrop" class="fv-backdrop" hidden>
-    <div id="file-viewer-modal" class="fv-modal" role="dialog" aria-label="文件与项目验收">
+    <aside id="file-viewer-modal" class="fv-modal" role="complementary" aria-label="项目文件与预览边栏">
+      <div id="fv-resize-handle" class="fv-resize-handle" role="separator" aria-orientation="vertical" title="左右拖拽调节预览边栏宽度"></div>
       <div class="fv-head">
-        <button id="fv-back-btn" class="fv-up-btn" type="button" hidden>← 返回</button>
-        <span id="fv-title" class="fv-title">项目文件与验收</span>
+        <div class="fv-head-left">
+          <button id="fv-back-btn" class="fv-up-btn" type="button" hidden>← 返回</button>
+          <span id="fv-title" class="fv-title">项目文件与预览</span>
+        </div>
         <button id="fv-close-btn" class="fv-up-btn" type="button">✕ 关闭</button>
       </div>
-      <div id="fv-tabs" class="fv-tabs">
-        <button id="fv-tab-tree" class="fv-tab active" type="button">📁 项目文件</button>
-        <button id="fv-tab-changes" class="fv-tab" type="button">📝 变更与产物</button>
+      <div id="fv-ws-persistent-bar" class="fv-ws-persistent-bar" hidden></div>
+      <div id="fv-tabs" class="fv-tabs" role="tablist">
+        <button id="fv-tab-tree" class="fv-tab active" role="tab" type="button">📁 目录</button>
+        <button id="fv-tab-changes" class="fv-tab" role="tab" type="button">✨ 产物</button>
+        <button id="fv-tab-preview" class="fv-tab" role="tab" type="button">📄 预览</button>
       </div>
+      <div id="fv-preview-toolbar" class="fv-preview-toolbar" hidden></div>
       <div id="fv-body" class="fv-body"></div>
-    </div>
+    </aside>
   </div>
 
   <script>
@@ -12146,30 +12324,329 @@ function buildMobileAppHtml() {
       return String(Math.round(v));
     }
 
-    function renderMarkdownSafe(rawText) {
-      const src = String(rawText || '');
+    function isSafeClientMdHref(rawHref) {
+      const h = String(rawHref || '').trim();
+      if (!h) return false;
+      if (h.startsWith('#')) return true;
+      const low = h.toLowerCase();
+      return low.startsWith('http://') || low.startsWith('https://') || low.startsWith('mailto:') || low.startsWith('file://');
+    }
+
+    function renderInlineClientMarkdown(rawLine) {
+      const BT = String.fromCharCode(96);
+      const BS = String.fromCharCode(92);
+      const src = String(rawLine || '');
       if (!src) return '';
-      const fence = String.fromCharCode(96).repeat(3);
-      const inlineBt = String.fromCharCode(96);
-      const parts = src.split(fence);
-      let out = '';
+      const codeSpans = [];
+      let segBuf = '';
+      const parts = src.split(BT);
       for (let i = 0; i < parts.length; i++) {
-        if (i % 2 === 1) {
-          const nlIdx = parts[i].indexOf('\\n');
-          const codeBody = nlIdx >= 0 ? parts[i].slice(nlIdx + 1) : parts[i];
-          out += '<pre><code>' + esc(codeBody) + '</code></pre>';
+        if (i % 2 === 1 && i < parts.length - 1) {
+          const idx = codeSpans.length;
+          codeSpans.push('<code>' + esc(parts[i]) + '</code>');
+          segBuf += '\\u0000MCSP' + idx + '\\u0000';
         } else {
-          const segs = parts[i].split(inlineBt);
-          let lineHtml = '';
-          for (let j = 0; j < segs.length; j++) {
-            lineHtml += j % 2 === 1
-              ? ('<code>' + esc(segs[j]) + '</code>')
-              : esc(segs[j]).replace(/\\n/g, '<br>');
-          }
-          out += lineHtml;
+          segBuf += (i % 2 === 1 ? BT : '') + parts[i];
         }
       }
+      const links = [];
+      let textWithLinks = segBuf.replace(/\\[([^\\]\\n]+)\\]\\(((?:[^()\\s]+|\\([^()\\s]*\\))+)(?:\\s+"[^"]*")?\\)/g, (_m, rawLabel, rawUrl) => {
+        let href = String(rawUrl || '').trim();
+        if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1).trim();
+        const labelHtml = esc(rawLabel).replace(/\\u0000MCSP(\\d+)\\u0000/g, (_2, ci) => codeSpans[Number(ci)] || '');
+        if (!isSafeClientMdHref(href)) return labelHtml;
+        const idx = links.length;
+        if (href.toLowerCase().startsWith('file://')) {
+          let fPath = href.slice(7);
+          if (fPath.toLowerCase().startsWith('localhost/')) fPath = fPath.slice(9);
+          let lineNo = 0;
+          const hashIdx = fPath.indexOf('#');
+          if (hashIdx >= 0) {
+            const lm = /^#L(\\d+)/i.exec(fPath.slice(hashIdx));
+            if (lm) lineNo = Number.parseInt(lm[1], 10) || 0;
+            fPath = fPath.slice(0, hashIdx);
+          }
+          try { fPath = decodeURIComponent(fPath); } catch {}
+          if (fPath.startsWith('/')) {
+            links.push(
+              '<a class="md-file-link" href="#file-preview" data-file-path="' + esc(fPath) + '"'
+              + (lineNo > 0 ? (' data-file-line="' + lineNo + '"') : '')
+              + ' title="' + esc(fPath + (lineNo > 0 ? (':' + lineNo) : '')) + '">📄 ' + labelHtml + '</a>'
+            );
+          } else {
+            links.push('<code class="md-pill">' + labelHtml + '</code>');
+          }
+          return '\\u0000MLNK' + idx + '\\u0000';
+        }
+        const extAttrs = href.startsWith('#') ? '' : ' target="_blank" rel="noopener noreferrer"';
+        links.push('<a href="' + esc(href) + '"' + extAttrs + '>' + labelHtml + '</a>');
+        return '\\u0000MLNK' + idx + '\\u0000';
+      });
+
+      let safe = esc(textWithLinks);
+      safe = safe.replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<strong>$1</strong>');
+      safe = safe.replace(/__([^_\\n]+)__/g, '<strong>$1</strong>');
+      safe = safe.replace(/~~([^~\\n]+)~~/g, '<del>$1</del>');
+      safe = safe.replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<em>$2</em>');
+      safe = safe.replace(/\\u0000MLNK(\\d+)\\u0000/g, (_m, idx) => links[Number(idx)] || '');
+      safe = safe.replace(/\\u0000MCSP(\\d+)\\u0000/g, (_m, idx) => codeSpans[Number(idx)] || '');
+      void BS;
+      return safe;
+    }
+
+    function splitClientGfmCells(line) {
+      const BS = String.fromCharCode(92);
+      const BT = String.fromCharCode(96);
+      let s = String(line || '').trim();
+      if (s.startsWith('|')) s = s.slice(1);
+      if (s.endsWith('|') && !s.endsWith(BS + '|')) s = s.slice(0, -1);
+      const cells = [];
+      let cur = '';
+      let inCode = false;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === BT) {
+          inCode = !inCode;
+          cur += ch;
+        } else if (ch === BS && s[i + 1] === '|' && !inCode) {
+          cur += '|';
+          i += 1;
+        } else if (ch === '|' && !inCode) {
+          cells.push(cur.trim());
+          cur = '';
+        } else {
+          cur += ch;
+        }
+      }
+      cells.push(cur.trim());
+      return cells;
+    }
+
+    function parseClientGfmDelimiterRow(line, expectedCount) {
+      const t = String(line || '').trim();
+      if (!t.includes('|') && !/^:?-{3,}:?$/.test(t)) return null;
+      const cells = splitClientGfmCells(t);
+      if (cells.length < 1 || (expectedCount > 0 && cells.length !== expectedCount)) return null;
+      const aligns = [];
+      for (const c of cells) {
+        if (!/^:?-{3,}:?$/.test(c)) return null;
+        const left = c.startsWith(':');
+        const right = c.endsWith(':');
+        aligns.push(left && right ? 'center' : (right ? 'right' : (left ? 'left' : '')));
+      }
+      return aligns;
+    }
+
+    function renderClientNestedLists(entries) {
+      if (!entries.length) return '';
+      let pos = 0;
+      const parseLvl = (baseIndent) => {
+        if (pos >= entries.length) return '';
+        const first = entries[pos];
+        const tag = first.ordered ? 'ol' : 'ul';
+        const items = [];
+        let hasTask = false;
+        while (pos < entries.length) {
+          const cur = entries[pos];
+          if (cur.indent < baseIndent) break;
+          if (cur.indent === baseIndent && cur.ordered !== first.ordered && items.length > 0) break;
+          if (cur.indent > baseIndent) {
+            const subHtml = parseLvl(cur.indent);
+            if (items.length > 0) items[items.length - 1].subHtml += subHtml;
+            else items.push({ isTask: false, checked: false, bodyHtml: '', subHtml });
+            continue;
+          }
+          pos += 1;
+          if (cur.isTask) hasTask = true;
+          let subHtml = '';
+          while (pos < entries.length && entries[pos].indent >= cur.indent + 2) {
+            subHtml += parseLvl(entries[pos].indent);
+          }
+          items.push({
+            isTask: cur.isTask,
+            checked: cur.checked,
+            bodyHtml: renderInlineClientMarkdown(cur.text),
+            subHtml
+          });
+        }
+        const cls = (!first.ordered && hasTask) ? ' class="md-task-list"' : '';
+        const liHtml = items.map((it) => {
+          if (it.isTask) {
+            return '<li class="md-task-item"><input class="md-task-check" type="checkbox" disabled' + (it.checked ? ' checked' : '') + '><span>' + it.bodyHtml + it.subHtml + '</span></li>';
+          }
+          return '<li>' + it.bodyHtml + it.subHtml + '</li>';
+        }).join('');
+        return '<' + tag + cls + '>' + liHtml + '</' + tag + '>';
+      };
+      let out = '';
+      while (pos < entries.length) {
+        out += parseLvl(entries[pos].indent);
+      }
       return out;
+    }
+
+    function renderMarkdownSafe(rawText) {
+      const src = String(rawText || '').replace(/\\u0000/g, '').replace(/\\r\\n/g, '\\n');
+      if (!src) return '';
+      const BT = String.fromCharCode(96);
+      const fenceBt = BT.repeat(3);
+      const lines = src.split('\\n');
+      const blocks = [];
+      let paraLines = [];
+      let listEntries = [];
+      let quoteLines = [];
+      let inCode = false;
+      let codeFenceMarker = fenceBt;
+      let codeLang = '';
+      let codeLines = [];
+
+      const flushPara = () => {
+        if (!paraLines.length) return;
+        blocks.push('<p>' + paraLines.map((l) => renderInlineClientMarkdown(l)).join('<br>') + '</p>');
+        paraLines = [];
+      };
+      const flushList = () => {
+        if (!listEntries.length) return;
+        blocks.push(renderClientNestedLists(listEntries));
+        listEntries = [];
+      };
+      const flushQuote = () => {
+        if (!quoteLines.length) return;
+        blocks.push('<blockquote>' + quoteLines.map((l) => renderInlineClientMarkdown(l)).join('<br>') + '</blockquote>');
+        quoteLines = [];
+      };
+      const flushAllText = () => {
+        flushPara();
+        flushList();
+        flushQuote();
+      };
+
+      for (let idx = 0; idx < lines.length; idx++) {
+        const line = lines[idx];
+        const trimmed = line.trim();
+
+        if (inCode) {
+          if (trimmed.startsWith(codeFenceMarker)) {
+            blocks.push('<pre><code>' + esc(codeLines.join('\\n')) + '</code></pre>');
+            inCode = false;
+            codeLang = '';
+            codeLines = [];
+          } else {
+            codeLines.push(line);
+          }
+          continue;
+        }
+
+        if (trimmed.startsWith(fenceBt) || trimmed.startsWith('~~~')) {
+          flushAllText();
+          inCode = true;
+          codeFenceMarker = trimmed.startsWith('~~~') ? '~~~' : fenceBt;
+          codeLang = trimmed.slice(3).trim().split(/\\s+/)[0] || '';
+          codeLines = [];
+          continue;
+        }
+
+        if (!trimmed) {
+          flushAllText();
+          continue;
+        }
+
+        if (/^(?:-{3,}|\\*{3,}|_{3,})$/.test(trimmed)) {
+          flushAllText();
+          blocks.push('<hr>');
+          continue;
+        }
+
+        const hm = /^(#{1,6})\\s+(.+)$/.exec(trimmed);
+        if (hm) {
+          flushAllText();
+          const lvl = Math.min(6, Math.max(1, hm[1].length));
+          const hText = hm[2].replace(/\\s+#+\\s*$/, '');
+          blocks.push('<h' + lvl + '>' + renderInlineClientMarkdown(hText) + '</h' + lvl + '>');
+          continue;
+        }
+
+        if (line.includes('|') && idx + 1 < lines.length) {
+          const headCells = splitClientGfmCells(line);
+          const aligns = headCells.length >= 1 ? parseClientGfmDelimiterRow(lines[idx + 1], headCells.length) : null;
+          if (aligns) {
+            flushAllText();
+            const thHtml = headCells.map((cell, ci) => {
+              const al = aligns[ci] ? (' style="text-align:' + aligns[ci] + '"') : '';
+              return '<th' + al + '>' + renderInlineClientMarkdown(cell) + '</th>';
+            }).join('');
+            const bodyRowsHtml = [];
+            idx += 2;
+            while (idx < lines.length) {
+              const rLine = lines[idx];
+              const rTrim = rLine.trim();
+              if (!rTrim || !rLine.includes('|') || rTrim.startsWith(fenceBt) || rTrim.startsWith('~~~') || /^#{1,6}\\s+/.test(rTrim)) {
+                idx -= 1;
+                break;
+              }
+              const rCells = splitClientGfmCells(rLine);
+              const tdHtml = aligns.map((alName, ci) => {
+                const al = alName ? (' style="text-align:' + alName + '"') : '';
+                return '<td' + al + '>' + renderInlineClientMarkdown(rCells[ci] !== undefined ? rCells[ci] : '') + '</td>';
+              }).join('');
+              bodyRowsHtml.push('<tr>' + tdHtml + '</tr>');
+              idx += 1;
+            }
+            blocks.push(
+              '<div class="md-table-wrap"><table><thead><tr>' + thHtml + '</tr></thead>'
+              + (bodyRowsHtml.length ? ('<tbody>' + bodyRowsHtml.join('') + '</tbody>') : '')
+              + '</table></div>'
+            );
+            continue;
+          }
+        }
+
+        if (trimmed.startsWith('>')) {
+          flushPara();
+          flushList();
+          quoteLines.push(trimmed.replace(/^>\\s?/, ''));
+          continue;
+        }
+        if (quoteLines.length) flushQuote();
+
+        const ulMatch = /^([ \\t]*)[-*+]\\s+(.+)$/.exec(line);
+        if (ulMatch) {
+          flushPara();
+          const indent = ulMatch[1].replace(/\\t/g, '  ').length;
+          const tm = /^\\[([ xX])\\]\\s+(.+)$/.exec(ulMatch[2].trim());
+          listEntries.push({
+            indent,
+            ordered: false,
+            isTask: Boolean(tm),
+            checked: Boolean(tm && tm[1].toLowerCase() === 'x'),
+            text: tm ? tm[2] : ulMatch[2].trim()
+          });
+          continue;
+        }
+
+        const olMatch = /^([ \\t]*)\\d+[.)]\\s+(.+)$/.exec(line);
+        if (olMatch) {
+          flushPara();
+          const indent = olMatch[1].replace(/\\t/g, '  ').length;
+          listEntries.push({
+            indent,
+            ordered: true,
+            isTask: false,
+            checked: false,
+            text: olMatch[2].trim()
+          });
+          continue;
+        }
+
+        if (listEntries.length) flushList();
+        paraLines.push(line);
+      }
+
+      if (inCode) {
+        blocks.push('<pre><code>' + esc(codeLines.join('\\n')) + '</code></pre>');
+      }
+      flushAllText();
+      return blocks.join('');
     }
 
     function saveDraftForConv(convId, text) {
@@ -12203,9 +12680,11 @@ function buildMobileAppHtml() {
           fvState.contextKey = '';
           fvState.curDir = '';
           fvState.activeRoot = '';
+          fvState.previewItem = null;
           const fvBd = $('file-viewer-backdrop');
           if (fvBd && !fvBd.hidden) {
-            const targetTab = fvState.viewingFile ? (fvState.returnTab || fvState.tab || 'tree') : (fvState.tab || 'tree');
+            const rawTarget = (fvState.viewingFile || fvState.tab === 'preview') ? (fvState.returnTab || 'tree') : (fvState.tab || 'tree');
+            const targetTab = rawTarget === 'changes' ? 'changes' : 'tree';
             fvState.viewingFile = false;
             fvState.tab = targetTab;
             if (typeof syncFvChrome === 'function') syncFvChrome();
@@ -12215,6 +12694,7 @@ function buildMobileAppHtml() {
             if (fvBody && typeof renderSkeletonRowsHtml === 'function') fvBody.innerHTML = renderSkeletonRowsHtml(5);
           } else {
             fvState.viewingFile = false;
+            fvState.tab = 'tree';
             fvState.returnTab = 'tree';
           }
         }
@@ -12789,10 +13269,13 @@ function buildMobileAppHtml() {
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
       syncTopbarProjectBadge(resolveConversationProjectName(snap));
-      if (typeof ensureFvContextFresh === 'function' && ensureFvContextFresh()) {
-        if (typeof syncFvModalOnContextChange === 'function') {
-          syncFvModalOnContextChange();
-        }
+      const fvCtxChanged = typeof ensureFvContextFresh === 'function' && ensureFvContextFresh();
+      if (typeof maybeAutoDockWidePreviewSidebar === 'function' && maybeAutoDockWidePreviewSidebar()) {
+        // 首次在桌面宽屏工作台自动展开右侧常驻预览边栏并加载当前项目目录
+      } else if (fvCtxChanged && typeof syncFvModalOnContextChange === 'function') {
+        syncFvModalOnContextChange();
+      } else if (typeof syncFvPersistentWsBar === 'function') {
+        syncFvPersistentWsBar();
       }
       if ($('sub-meta')) {
         $('sub-meta').textContent = '';
@@ -15727,24 +16210,167 @@ function buildMobileAppHtml() {
       }
     });
 
-    const fvState = { tab: 'tree', curDir: '', activeRoot: '', showRootList: false, contextKey: '', reqSeq: 0, viewingFile: false, returnTab: 'tree' };
+    const FV_WIDTH_STORAGE_KEY = 'ag_remote_fv_width_v1';
+    const FV_OPEN_STORAGE_KEY = 'ag_remote_fv_open_v1';
+    const FV_DEFAULT_WIDTH = 420;
+    const FV_MIN_WIDTH = 300;
+    const FV_MAX_WIDTH = 680;
+    const fvWinRef = typeof window !== 'undefined' ? window : null;
+    const fvDocRef = typeof document !== 'undefined' ? document : null;
+    const wideWorkbenchMq = (fvWinRef && typeof fvWinRef.matchMedia === 'function')
+      ? fvWinRef.matchMedia('(min-width: 1180px) and (min-height: 521px) and (hover: hover) and (pointer: fine)')
+      : null;
+
+    function clampFvSidebarWidth(raw) {
+      const n = Math.round(Number(raw));
+      if (!Number.isFinite(n) || n <= 0) return FV_DEFAULT_WIDTH;
+      return Math.max(FV_MIN_WIDTH, Math.min(FV_MAX_WIDTH, n));
+    }
+
+    function readStoredFvSidebarWidth() {
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FV_WIDTH_STORAGE_KEY) : null;
+        return raw ? clampFvSidebarWidth(raw) : FV_DEFAULT_WIDTH;
+      } catch {
+        return FV_DEFAULT_WIDTH;
+      }
+    }
+
+    function readStoredFvOpenPref() {
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FV_OPEN_STORAGE_KEY) : null;
+        if (raw === '0') return false;
+        if (raw === '1') return true;
+        return null;
+      } catch {
+        return null;
+      }
+    }
+
+    function isWideDesktopWorkbench() {
+      if (!fvWinRef) return false;
+      const w = Number(fvWinRef.innerWidth) || 0;
+      const h = Number(fvWinRef.innerHeight) || 800;
+      if (w >= 1180 && h >= 521) {
+        if (!fvWinRef.matchMedia) return true;
+        try {
+          const fineMq = fvWinRef.matchMedia('(hover: hover) and (pointer: fine)');
+          if (fineMq && typeof fineMq.matches === 'boolean') return fineMq.matches;
+        } catch {}
+        return Boolean(wideWorkbenchMq?.matches);
+      }
+      return Boolean(wideWorkbenchMq?.matches && w >= 1180);
+    }
+
+    const fvState = {
+      tab: 'tree',
+      curDir: '',
+      activeRoot: '',
+      showRootList: false,
+      contextKey: '',
+      reqSeq: 0,
+      viewingFile: false,
+      returnTab: 'tree',
+      previewItem: null,
+      previewMode: 'render',
+      sandboxRefreshNonce: 0,
+      sidebarWidth: readStoredFvSidebarWidth(),
+      autoDockInitialized: false,
+      openedExplicitly: false,
+      userClosedDesktop: readStoredFvOpenPref() === false
+    };
+
+    function applyFvSidebarWidth(rawPx, persist = false) {
+      const w = clampFvSidebarWidth(rawPx);
+      fvState.sidebarWidth = w;
+      const bd = $('file-viewer-backdrop');
+      if (bd?.style?.setProperty) bd.style.setProperty('--fv-sidebar-w', w + 'px');
+      else if (bd?.style) bd.style.width = w + 'px';
+      fvDocRef?.documentElement?.style?.setProperty?.('--fv-sidebar-w', w + 'px');
+      if (persist) {
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem(FV_WIDTH_STORAGE_KEY, String(w)); } catch {}
+      }
+      return w;
+    }
+    applyFvSidebarWidth(fvState.sidebarWidth, false);
+
     function bumpFvRequestEpoch() {
       fvState.reqSeq = (Number(fvState.reqSeq) || 0) + 1;
       return fvState.reqSeq;
     }
+
+    function syncFvSidebarButtonsAndA11y() {
+      const bd = $('file-viewer-backdrop');
+      const isOpen = Boolean(bd && !bd.hidden);
+      const isWide = isWideDesktopWorkbench();
+      $('btn-files-panel')?.classList?.toggle?.('active', isOpen);
+      $('btn-files-panel')?.setAttribute?.('aria-expanded', isOpen ? 'true' : 'false');
+      const closeBtn = $('fv-close-btn');
+      if (closeBtn) {
+        closeBtn.textContent = isWide ? '⇥ 收起' : '✕ 关闭';
+        closeBtn.title = isWide ? '收起右侧常驻预览边栏' : '关闭预览抽屉';
+      }
+      fvDocRef?.body?.classList?.toggle?.('fv-docked-open', Boolean(isOpen && isWide));
+    }
+
     function closeFileViewerModal() {
       bumpFvRequestEpoch();
       const bd = $('file-viewer-backdrop');
       if (bd) bd.hidden = true;
+      fvState.openedExplicitly = false;
+      if (isWideDesktopWorkbench()) {
+        fvState.userClosedDesktop = true;
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem(FV_OPEN_STORAGE_KEY, '0'); } catch {}
+      }
+      syncFvSidebarButtonsAndA11y();
     }
-    function syncFvChrome() {
-      const tabsEl = $('fv-tabs');
-      const backBtn = $('fv-back-btn');
-      if (tabsEl) tabsEl.hidden = fvState.viewingFile;
-      if (backBtn) backBtn.hidden = !fvState.viewingFile;
-      $('fv-tab-tree')?.classList.toggle('active', fvState.tab === 'tree');
-      $('fv-tab-changes')?.classList.toggle('active', fvState.tab === 'changes');
+
+    function openFvWorkbenchContainer() {
+      const bd = $('file-viewer-backdrop');
+      if (!bd) return false;
+      bd.hidden = false;
+      fvState.openedExplicitly = true;
+      if (isWideDesktopWorkbench()) {
+        fvState.userClosedDesktop = false;
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem(FV_OPEN_STORAGE_KEY, '1'); } catch {}
+      }
+      applyFvSidebarWidth(fvState.sidebarWidth, false);
+      syncFvSidebarButtonsAndA11y();
+      return true;
     }
+
+    function maybeAutoDockWidePreviewSidebar() {
+      if (!isWideDesktopWorkbench()) {
+        const bd = $('file-viewer-backdrop');
+        if (bd && !bd.hidden && !fvState.openedExplicitly) {
+          bumpFvRequestEpoch();
+          bd.hidden = true;
+          fvState.autoDockInitialized = false;
+          syncFvSidebarButtonsAndA11y();
+        }
+        return false;
+      }
+      if (fvState.autoDockInitialized) return false;
+      fvState.autoDockInitialized = true;
+      if (fvState.userClosedDesktop) {
+        syncFvSidebarButtonsAndA11y();
+        return false;
+      }
+      const bd = $('file-viewer-backdrop');
+      if (!bd) return false;
+      if (bd.hidden) {
+        bd.hidden = false;
+        fvState.openedExplicitly = false;
+        applyFvSidebarWidth(fvState.sidebarWidth, false);
+        syncFvSidebarButtonsAndA11y();
+        ensureFvContextFresh();
+        void loadProjectTreeView('');
+        return true;
+      }
+      syncFvSidebarButtonsAndA11y();
+      return false;
+    }
+
     function trimTrailingSlashes(raw) {
       let s = String(raw || '').trim();
       while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1);
@@ -15792,6 +16418,72 @@ function buildMobileAppHtml() {
       if (!t || !r) return false;
       return t === r || t.startsWith(r + '/');
     }
+    function formatWorkspaceChipLabel(wsPath, allPaths) {
+      const clean = trimTrailingSlashes(wsPath);
+      const parts = clean.split('/').filter(Boolean);
+      const base = parts[parts.length - 1] || clean;
+      const dupCount = (allPaths || []).filter((p) => {
+        const sp = trimTrailingSlashes(p).split('/').filter(Boolean);
+        return (sp[sp.length - 1] || p) === base;
+      }).length;
+      if (dupCount > 1 && parts.length >= 2) {
+        return parts[parts.length - 2] + '/' + base;
+      }
+      return base;
+    }
+    function syncFvPersistentWsBar(customRoots) {
+      const bar = $('fv-ws-persistent-bar');
+      if (!bar) return;
+      const roots = Array.isArray(customRoots) && customRoots.length > 0
+        ? customRoots
+        : resolveCurrentProjectWorkspacePaths();
+      if (!Array.isArray(roots) || roots.length <= 1) {
+        bar.hidden = true;
+        bar.innerHTML = '';
+        return;
+      }
+      bar.hidden = false;
+      const curActRoot = String(fvState.activeRoot || '').trim();
+      const curDir = String(fvState.curDir || '').trim();
+      const isOverview = Boolean(fvState.showRootList || (!curActRoot && !curDir));
+      bar.innerHTML =
+        '<button class="fv-ws-chip fv-ws-top-all' + (isOverview ? ' active' : '') + '" id="fv-ws-top-all" type="button">全部 (' + roots.length + ')</button>'
+        + roots.map((wr) => {
+          const isAct = !isOverview && (curActRoot ? (wr === curActRoot) : isPathInsideWorkspaceRoot(curDir, wr));
+          return '<button class="fv-ws-chip fv-ws-top-switch' + (isAct ? ' active' : '') + '" type="button" data-ws-root="' + esc(wr) + '" title="' + esc(wr) + '">'
+            + '📁 ' + esc(formatWorkspaceChipLabel(wr, roots))
+            + '</button>';
+        }).join('');
+      bar.querySelector('#fv-ws-top-all')?.addEventListener('click', () => {
+        renderWorkspaceRootsOverview(roots);
+      });
+      bar.querySelectorAll('.fv-ws-top-switch').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          const root = chip.getAttribute('data-ws-root') || chip.dataset?.wsRoot || '';
+          if (!root) return;
+          fvState.activeRoot = root;
+          fvState.curDir = root;
+          fvState.showRootList = false;
+          void loadProjectTreeView(root, { workspaceRoot: root });
+        });
+      });
+    }
+    function syncFvChrome() {
+      const tabsEl = $('fv-tabs');
+      const backBtn = $('fv-back-btn');
+      const toolbarEl = $('fv-preview-toolbar');
+      if (tabsEl) tabsEl.hidden = false;
+      if (backBtn) backBtn.hidden = !(fvState.tab === 'preview' && fvState.viewingFile);
+      if (toolbarEl && fvState.tab !== 'preview') {
+        toolbarEl.hidden = true;
+        toolbarEl.innerHTML = '';
+      }
+      $('fv-tab-tree')?.classList.toggle('active', fvState.tab === 'tree');
+      $('fv-tab-changes')?.classList.toggle('active', fvState.tab === 'changes');
+      $('fv-tab-preview')?.classList.toggle('active', fvState.tab === 'preview');
+      syncFvPersistentWsBar();
+      syncFvSidebarButtonsAndA11y();
+    }
     function computeFvContextKey() {
       const cid = String(latestSnap?.activeConversationId || latestSnap?.sessionId || selectedConversationId || '').trim();
       const pid = String(latestSnap?.currentProjectId || '').trim();
@@ -15801,7 +16493,11 @@ function buildMobileAppHtml() {
     function resetFvDirectoryContext(forceOverviewForMulti = false) {
       bumpFvRequestEpoch();
       const wsPaths = resolveCurrentProjectWorkspacePaths();
-      fvState.contextKey = computeFvContextKey();
+      const nextKey = computeFvContextKey();
+      if (fvState.previewItem && fvState.previewItem.contextKey !== nextKey) {
+        fvState.previewItem = null;
+      }
+      fvState.contextKey = nextKey;
       if (wsPaths.length === 1) {
         fvState.activeRoot = wsPaths[0];
         fvState.curDir = wsPaths[0];
@@ -15832,13 +16528,17 @@ function buildMobileAppHtml() {
       return false;
     }
     function syncFvModalOnContextChange() {
+      fvState.previewItem = null;
       const fvBd = $('file-viewer-backdrop');
       if (!fvBd || fvBd.hidden) {
         fvState.viewingFile = false;
+        fvState.tab = 'tree';
         fvState.returnTab = 'tree';
+        syncFvSidebarButtonsAndA11y();
         return;
       }
-      const targetTab = fvState.viewingFile ? (fvState.returnTab || fvState.tab || 'tree') : (fvState.tab || 'tree');
+      const rawTarget = (fvState.viewingFile || fvState.tab === 'preview') ? (fvState.returnTab || 'tree') : (fvState.tab || 'tree');
+      const targetTab = rawTarget === 'changes' ? 'changes' : 'tree';
       fvState.viewingFile = false;
       fvState.tab = targetTab;
       syncFvChrome();
@@ -15847,19 +16547,6 @@ function buildMobileAppHtml() {
       } else {
         void loadProjectTreeView('');
       }
-    }
-    function formatWorkspaceChipLabel(wsPath, allPaths) {
-      const clean = trimTrailingSlashes(wsPath);
-      const parts = clean.split('/').filter(Boolean);
-      const base = parts[parts.length - 1] || clean;
-      const dupCount = (allPaths || []).filter((p) => {
-        const sp = trimTrailingSlashes(p).split('/').filter(Boolean);
-        return (sp[sp.length - 1] || p) === base;
-      }).length;
-      if (dupCount > 1 && parts.length >= 2) {
-        return parts[parts.length - 2] + '/' + base;
-      }
-      return base;
     }
     function renderCodeWithLineNumbers(text, hlLine) {
       const lines = String(text || '').split(/\\r?\\n/);
@@ -15878,7 +16565,147 @@ function buildMobileAppHtml() {
         return '<span class="fv-code-line' + cls + '">' + esc(ln) + '</span>';
       }).join('\\n') + '</pre>';
     }
-    async function openFilePreviewModal(filePath, hlLine = 0) {
+    function buildSvgPreviewSrcdoc(svgMarkup) {
+      return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        + '<style>html,body{margin:0;padding:12px;display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 24px);background:#fff;overflow:auto}svg{max-width:100%;height:auto}</style>'
+        + '</head><body>' + String(svgMarkup || '') + '</body></html>';
+    }
+    function mountIsolatedSandboxIframe(containerEl, item) {
+      if (!containerEl || !item) return null;
+      containerEl.innerHTML = '';
+      const wrap = document.createElement('div');
+      wrap.className = 'fv-sandbox-wrap';
+      const frame = document.createElement('iframe');
+      frame.className = 'fv-sandbox-iframe';
+      // 严禁授予同源权限，强制 opaque null origin 隔离父页面 localStorage / Cookie / 鉴权口令
+      frame.setAttribute('sandbox', 'allow-scripts');
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      frame.setAttribute('title', String(item.name || 'HTML') + ' 沙盒预览');
+      frame.setAttribute('data-sandbox-nonce', String(fvState.sandboxRefreshNonce || 0));
+      const srcdocVal = item.kind === 'svg' ? buildSvgPreviewSrcdoc(item.content || '') : String(item.content || '');
+      try { frame.srcdoc = srcdocVal; } catch {}
+      frame.setAttribute('srcdoc', srcdocVal);
+      wrap.appendChild(frame);
+      containerEl.appendChild(wrap);
+      return frame;
+    }
+    function renderFvPreviewCurrentItem() {
+      const body = $('fv-body');
+      const title = $('fv-title');
+      const toolbar = $('fv-preview-toolbar');
+      if (!body) return;
+      const item = fvState.previewItem;
+      if (!item || (item.contextKey && item.contextKey !== computeFvContextKey())) {
+        fvState.previewItem = null;
+        fvState.viewingFile = false;
+        if (toolbar) {
+          toolbar.hidden = true;
+          toolbar.innerHTML = '';
+        }
+        if (title) title.textContent = '文件预览';
+        body.innerHTML = renderPanelStateHtml({
+          icon: EMPTY_CHANGES_ICON_SVG,
+          compact: true,
+          title: '尚未选择预览文件',
+          desc: '在「目录」或「产物」中点选任意代码、Markdown 文档或 HTML/SVG 网页文件即可在此查看',
+          actionId: 'fv-preview-go-tree',
+          actionLabel: '浏览项目目录'
+        });
+        body.querySelector('#fv-preview-go-tree')?.addEventListener('click', () => {
+          void loadProjectTreeView(fvState.showRootList ? '' : fvState.curDir, { workspaceRoot: fvState.activeRoot });
+        });
+        return;
+      }
+
+      if (title) title.textContent = item.name || item.path || '文件预览';
+      const canToggleRender = item.kind === 'markdown' || item.kind === 'html' || item.kind === 'svg';
+      const isSandboxKind = item.kind === 'html' || item.kind === 'svg';
+      const mode = canToggleRender ? (fvState.previewMode === 'source' ? 'source' : 'render') : 'source';
+      const hlLine = Number(item.hlLine) || 0;
+
+      if (toolbar) {
+        if (canToggleRender || item.path) {
+          toolbar.hidden = false;
+          const jumpPillHtml = (canToggleRender && hlLine > 0 && mode === 'render')
+            ? ('<button id="fv-jump-line-btn" class="fv-line-jump-pill" type="button" data-target-line="' + hlLine + '">定位第 L' + hlLine + ' 行</button>')
+            : '';
+          const segHtml = canToggleRender
+            ? ('<div class="fv-seg-group" role="group" aria-label="预览模式切换">'
+              + '<button id="fv-mode-render" class="fv-seg-btn' + (mode === 'render' ? ' active' : '') + '" type="button" data-fv-mode="render">预览</button>'
+              + '<button id="fv-mode-source" class="fv-seg-btn' + (mode === 'source' ? ' active' : '') + '" type="button" data-fv-mode="source">源码</button>'
+              + (isSandboxKind ? '<button id="fv-refresh-sandbox" class="fv-seg-btn" type="button" title="刷新沙盒预览">↻ 刷新</button>' : '')
+              + '</div>')
+            : '';
+          toolbar.innerHTML =
+            '<div class="fv-preview-meta">'
+            + '<span class="fv-preview-path" title="' + esc(item.path || item.name || '') + '">' + esc(item.path || item.name || '') + '</span>'
+            + jumpPillHtml
+            + '</div>'
+            + segHtml;
+
+          toolbar.querySelector('#fv-mode-render')?.addEventListener('click', () => {
+            if (fvState.previewMode === 'render') return;
+            fvState.previewMode = 'render';
+            renderFvPreviewCurrentItem();
+          });
+          toolbar.querySelector('#fv-mode-source')?.addEventListener('click', () => {
+            if (fvState.previewMode === 'source') return;
+            fvState.previewMode = 'source';
+            renderFvPreviewCurrentItem();
+          });
+          toolbar.querySelector('#fv-jump-line-btn')?.addEventListener('click', () => {
+            fvState.previewMode = 'source';
+            renderFvPreviewCurrentItem();
+          });
+          toolbar.querySelector('#fv-refresh-sandbox')?.addEventListener('click', () => {
+            fvState.sandboxRefreshNonce = (Number(fvState.sandboxRefreshNonce) || 0) + 1;
+            fvState.previewMode = 'render';
+            if (item.path) {
+              void openFilePreviewModal(item.path, hlLine, { preserveReturnTab: true, forceMode: 'render' });
+            } else {
+              renderFvPreviewCurrentItem();
+            }
+          });
+        } else {
+          toolbar.hidden = true;
+          toolbar.innerHTML = '';
+        }
+      }
+
+      if (item.kind === 'image') {
+        const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(item.path) + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
+        body.innerHTML = '<img src="' + esc(mediaSrc) + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" alt="' + esc(item.name || '') + '" />';
+        return;
+      }
+      if (item.kind === 'binary') {
+        body.innerHTML = renderPanelStateHtml({
+          icon: EMPTY_CHANGES_ICON_SVG,
+          title: '暂不支持直接预览该文件',
+          desc: item.error || ('该文件为二进制或体积较大 (' + formatFileSizeShort(item.size) + ')，暂不支持纯文本预览')
+        });
+        return;
+      }
+      if (item.kind === 'diff') {
+        body.innerHTML = renderUnifiedDiffHtml(item.diff || '');
+        return;
+      }
+      if (item.kind === 'markdown' && mode === 'render') {
+        const htmlContent = renderMarkdownSafe(item.content || '');
+        body.innerHTML = '<div class="md-body fv-md-preview">' + htmlContent + '</div>';
+        return;
+      }
+      if ((item.kind === 'html' || item.kind === 'svg') && mode === 'render') {
+        mountIsolatedSandboxIframe(body, item);
+        return;
+      }
+
+      body.innerHTML = renderCodeWithLineNumbers(item.content || '', hlLine);
+      if (hlLine > 0) {
+        const target = body.querySelector('[data-ln="' + hlLine + '"]');
+        if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
+      }
+    }
+    async function openFilePreviewModal(filePath, hlLine = 0, previewOpts = {}) {
       const bd = $('file-viewer-backdrop');
       const body = $('fv-body');
       const title = $('fv-title');
@@ -15887,16 +16714,25 @@ function buildMobileAppHtml() {
       const reqEpoch = bumpFvRequestEpoch();
       const reqContextKey = computeFvContextKey();
       const reqActiveRoot = String(fvState.activeRoot || '').trim();
-      fvState.returnTab = fvState.tab;
+      if (!previewOpts.preserveReturnTab && fvState.tab !== 'preview') {
+        fvState.returnTab = fvState.tab || 'tree';
+      }
+      fvState.tab = 'preview';
       fvState.viewingFile = true;
-      bd.hidden = false;
+      openFvWorkbenchContainer();
       syncFvChrome();
+      const toolbar = $('fv-preview-toolbar');
+      if (toolbar) {
+        toolbar.hidden = true;
+        toolbar.innerHTML = '';
+      }
       if (title) title.textContent = String(filePath).split('/').pop() || filePath;
       body.innerHTML = renderSkeletonRowsHtml(6);
       const isFileReqStale = () => (
         reqEpoch !== fvState.reqSeq ||
         computeFvContextKey() !== reqContextKey ||
         !fvState.viewingFile ||
+        fvState.tab !== 'preview' ||
         Boolean($('file-viewer-backdrop')?.hidden) ||
         Boolean(reqActiveRoot && fvState.activeRoot && fvState.activeRoot !== reqActiveRoot)
       );
@@ -15910,7 +16746,7 @@ function buildMobileAppHtml() {
           actionLabel: '重试读取'
         });
         const retryBtn = $('fv-file-retry');
-        if (retryBtn) retryBtn.addEventListener('click', () => { void openFilePreviewModal(filePath, hlLine); });
+        if (retryBtn) retryBtn.addEventListener('click', () => { void openFilePreviewModal(filePath, hlLine, previewOpts); });
       };
       try {
         const res = await fetchWithTimeout((apiBase || '') + '/api/file-content?path=' + encodeURIComponent(filePath), { headers: authHeaders(), cache: 'no-store' }, 6000);
@@ -15921,26 +16757,40 @@ function buildMobileAppHtml() {
           showFileErr(data?.error || ('HTTP ' + res.status));
           return;
         }
-        if (title) title.textContent = data.name || filePath;
-        const pathBar = '<div class="fv-path-bar">' + esc(data.path || filePath) + '</div>';
-        if (data.isImage) {
-          const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(data.path) + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
-          body.innerHTML = pathBar + '<img src="' + esc(mediaSrc) + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" alt="' + esc(data.name || '') + '" />';
-        } else if (data.isBinary || data.isTooLargeForText) {
-          body.innerHTML = pathBar + renderPanelStateHtml({
-            icon: EMPTY_CHANGES_ICON_SVG,
-            title: '暂不支持直接预览该文件',
-            desc: data.error || ('该文件为二进制或体积较大 (' + formatFileSizeShort(data.size) + ')，暂不支持纯文本预览')
-          });
-        } else if (data.isMarkdown && !hlLine) {
-          body.innerHTML = pathBar + '<div class="md-body">' + renderMarkdownSafe(data.content || '') + '</div>';
+        const resolvedName = data.name || String(filePath).split('/').pop() || filePath;
+        const resolvedPath = data.path || filePath;
+        const extLow = String(data.ext || resolvedName.slice(resolvedName.lastIndexOf('.')) || '').toLowerCase();
+        const isSvgFile = Boolean(data.isSvg || extLow === '.svg');
+        const isHtmlFile = Boolean(data.isHtml || extLow === '.html' || extLow === '.htm');
+        const isMdFile = Boolean(data.isMarkdown || extLow === '.md' || extLow === '.markdown');
+
+        let kind = 'code';
+        if (data.isImage && !isSvgFile) kind = 'image';
+        else if (data.isBinary || data.isTooLargeForText) kind = 'binary';
+        else if (isMdFile) kind = 'markdown';
+        else if (isHtmlFile) kind = 'html';
+        else if (isSvgFile) kind = 'svg';
+
+        fvState.previewItem = {
+          kind,
+          name: resolvedName,
+          path: resolvedPath,
+          content: String(data.content || ''),
+          renderedHtml: typeof data.renderedHtml === 'string' ? data.renderedHtml : '',
+          size: Number(data.size) || 0,
+          error: data.error || '',
+          hlLine: Number(hlLine) || 0,
+          contextKey: reqContextKey
+        };
+        if (previewOpts.forceMode === 'source' || previewOpts.forceMode === 'render') {
+          fvState.previewMode = previewOpts.forceMode;
+        } else if (kind === 'markdown' || kind === 'html' || kind === 'svg') {
+          // Markdown（含聊天内 #L109 行号锚点）与 HTML/SVG 默认进入可视化预览，可随时一键切至源码定位行号
+          fvState.previewMode = 'render';
         } else {
-          body.innerHTML = pathBar + renderCodeWithLineNumbers(data.content || '', hlLine);
-          if (hlLine > 0) {
-            const target = body.querySelector('[data-ln="' + hlLine + '"]');
-            if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
-          }
+          fvState.previewMode = 'source';
         }
+        renderFvPreviewCurrentItem();
       } catch (err) {
         showFileErr(err?.message);
       }
@@ -15994,6 +16844,7 @@ function buildMobileAppHtml() {
         bumpFvRequestEpoch();
         fvState.curDir = '';
         fvState.activeRoot = '';
+        syncFvPersistentWsBar([]);
         body.innerHTML = renderPanelStateHtml({
           icon: EMPTY_FOLDER_ICON_SVG,
           compact: true,
@@ -16023,6 +16874,7 @@ function buildMobileAppHtml() {
         fvState.activeRoot = matchedRoot;
         fvState.showRootList = false;
       }
+      syncFvPersistentWsBar(wsPaths);
 
       const buildWsBarHtml = (roots, curActiveRoot, curDirPath) => {
         if (!Array.isArray(roots) || roots.length <= 1) return '';
@@ -16103,6 +16955,7 @@ function buildMobileAppHtml() {
         if (data.emptyProject) {
           fvState.curDir = '';
           fvState.activeRoot = '';
+          syncFvPersistentWsBar([]);
           body.innerHTML = renderPanelStateHtml({
             icon: EMPTY_FOLDER_ICON_SVG,
             compact: true,
@@ -16117,6 +16970,7 @@ function buildMobileAppHtml() {
           : wsPaths;
         const effectiveActiveRoot = String(data.activeRoot || fvState.activeRoot || '').trim();
         if (effectiveActiveRoot) fvState.activeRoot = effectiveActiveRoot;
+        syncFvPersistentWsBar(effectiveRoots);
 
         const safeParentDir = (data.parentDir && (!effectiveActiveRoot || isPathInsideWorkspaceRoot(data.parentDir, effectiveActiveRoot)))
           ? data.parentDir
@@ -16231,11 +17085,23 @@ function buildMobileAppHtml() {
             if (!art) return;
             if (art.path) { void openFilePreviewModal(art.path, 0); return; }
             bumpFvRequestEpoch();
+            const artName = String(art.name || '生成产物');
+            const artExt = artName.toLowerCase();
+            const artKind = (artExt.endsWith('.html') || artExt.endsWith('.htm')) ? 'html' : (artExt.endsWith('.svg') ? 'svg' : 'markdown');
             fvState.returnTab = 'changes';
+            fvState.tab = 'preview';
             fvState.viewingFile = true;
+            fvState.previewMode = 'render';
+            fvState.previewItem = {
+              kind: artKind,
+              name: artName,
+              path: '',
+              content: String(art.content || ''),
+              hlLine: 0,
+              contextKey: computeFvContextKey()
+            };
             syncFvChrome();
-            if (title) title.textContent = art.name || '生成产物';
-            body.innerHTML = '<div class="md-body">' + renderMarkdownSafe(art.content || '') + '</div>';
+            renderFvPreviewCurrentItem();
           });
         });
         body.querySelectorAll('.fv-diff-row').forEach((btn) => {
@@ -16246,10 +17112,19 @@ function buildMobileAppHtml() {
             if (df.diff) {
               bumpFvRequestEpoch();
               fvState.returnTab = 'changes';
+              fvState.tab = 'preview';
               fvState.viewingFile = true;
+              fvState.previewMode = 'source';
+              fvState.previewItem = {
+                kind: 'diff',
+                name: df.name || df.path || '文件改动',
+                path: df.path || '',
+                diff: String(df.diff || ''),
+                hlLine: 0,
+                contextKey: computeFvContextKey()
+              };
               syncFvChrome();
-              if (title) title.textContent = df.name || df.path || '文件改动';
-              body.innerHTML = '<div class="fv-path-bar">' + esc(df.path || '') + '</div>' + renderUnifiedDiffHtml(df.diff);
+              renderFvPreviewCurrentItem();
             } else if (df.path) {
               void openFilePreviewModal(df.path, 0);
             }
@@ -16259,26 +17134,89 @@ function buildMobileAppHtml() {
         showChangesErr(err?.message);
       }
     }
+    $('fv-body')?.addEventListener('click', (e) => {
+      const fLink = e.target?.closest?.('.md-file-link');
+      if (fLink && fLink.dataset?.filePath) {
+        e.preventDefault();
+        void openFilePreviewModal(fLink.dataset.filePath, Number(fLink.dataset.fileLine || 0));
+      }
+    });
     $('btn-files-panel')?.addEventListener('click', () => {
-      const bd = $('file-viewer-backdrop');
-      if (!bd) return;
-      bd.hidden = false;
+      if (!openFvWorkbenchContainer()) return;
       ensureFvContextFresh();
       void loadProjectTreeView('');
     });
     $('fv-close-btn')?.addEventListener('click', closeFileViewerModal);
     $('file-viewer-backdrop')?.addEventListener('click', (e) => {
-      if (e.target === $('file-viewer-backdrop')) closeFileViewerModal();
+      if (!isWideDesktopWorkbench() && e.target === $('file-viewer-backdrop')) closeFileViewerModal();
     });
     $('fv-back-btn')?.addEventListener('click', () => {
       if (fvState.returnTab === 'changes') void loadSessionChangesView();
-      else void loadProjectTreeView(fvState.curDir, { workspaceRoot: fvState.activeRoot });
+      else void loadProjectTreeView(fvState.showRootList ? '' : fvState.curDir, { workspaceRoot: fvState.activeRoot });
     });
     $('fv-tab-tree')?.addEventListener('click', () => {
       ensureFvContextFresh();
       void loadProjectTreeView(fvState.showRootList ? '' : fvState.curDir, { workspaceRoot: fvState.activeRoot });
     });
     $('fv-tab-changes')?.addEventListener('click', () => { void loadSessionChangesView(); });
+    $('fv-tab-preview')?.addEventListener('click', () => {
+      bumpFvRequestEpoch();
+      ensureFvContextFresh();
+      if (fvState.tab !== 'preview') fvState.returnTab = fvState.tab || 'tree';
+      fvState.tab = 'preview';
+      fvState.viewingFile = Boolean(fvState.previewItem);
+      syncFvChrome();
+      renderFvPreviewCurrentItem();
+    });
+
+    let fvResizeDragState = null;
+    const fvResizeHandleEl = $('fv-resize-handle');
+    if (fvResizeHandleEl) {
+      fvResizeHandleEl.addEventListener('pointerdown', (e) => {
+        if (!isWideDesktopWorkbench()) return;
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        try { fvResizeHandleEl.setPointerCapture?.(e.pointerId); } catch {}
+        fvResizeDragState = {
+          pointerId: e.pointerId,
+          startX: Number(e.clientX) || 0,
+          startWidth: fvState.sidebarWidth || FV_DEFAULT_WIDTH
+        };
+        fvResizeHandleEl.classList.add('is-resizing');
+        fvDocRef?.body?.classList?.add?.('fv-resizing');
+      });
+    }
+    fvWinRef?.addEventListener?.('pointermove', (e) => {
+      if (!fvResizeDragState || (e?.pointerId !== undefined && e.pointerId !== fvResizeDragState.pointerId)) return;
+      const dx = (Number(e.clientX) || 0) - fvResizeDragState.startX;
+      applyFvSidebarWidth(fvResizeDragState.startWidth - dx, false);
+    });
+    const finishFvResizeDrag = (e) => {
+      if (!fvResizeDragState || (e?.pointerId !== undefined && e.pointerId !== fvResizeDragState.pointerId)) return;
+      fvResizeDragState = null;
+      fvResizeHandleEl?.classList?.remove?.('is-resizing');
+      fvDocRef?.body?.classList?.remove?.('fv-resizing');
+      applyFvSidebarWidth(fvState.sidebarWidth, true);
+    };
+    fvWinRef?.addEventListener?.('pointerup', finishFvResizeDrag);
+    fvWinRef?.addEventListener?.('pointercancel', finishFvResizeDrag);
+
+    try {
+      if (fvWinRef) {
+        fvWinRef.__fvWorkbenchHooks = {
+          getState: () => fvState,
+          isWideDesktopWorkbench,
+          clampFvSidebarWidth,
+          applyFvSidebarWidth,
+          openFilePreviewModal,
+          loadProjectTreeView,
+          loadSessionChangesView,
+          closeFileViewerModal,
+          renderMarkdownSafe,
+          renderSnapshot
+        };
+      }
+    } catch {}
 
     function readAttachmentFile(file) {
       if ((file?.size || 0) > 15 * 1024 * 1024) {
@@ -17384,12 +18322,20 @@ function buildMobileAppHtml() {
       } else {
         syncSidebarA11y();
       }
+      if (typeof syncFvSidebarButtonsAndA11y === 'function') syncFvSidebarButtonsAndA11y();
+      if (latestSnap && typeof maybeAutoDockWidePreviewSidebar === 'function') {
+        maybeAutoDockWidePreviewSidebar();
+      }
       if (typeof autoGrow === 'function') autoGrow();
     };
     window.addEventListener('resize', handleLayoutChange);
     if (desktopMq) {
       if (typeof desktopMq.addEventListener === 'function') desktopMq.addEventListener('change', handleLayoutChange);
       else if (typeof desktopMq.addListener === 'function') desktopMq.addListener(handleLayoutChange);
+    }
+    if (wideWorkbenchMq) {
+      if (typeof wideWorkbenchMq.addEventListener === 'function') wideWorkbenchMq.addEventListener('change', handleLayoutChange);
+      else if (typeof wideWorkbenchMq.addListener === 'function') wideWorkbenchMq.addListener(handleLayoutChange);
     }
     syncSidebarA11y();
 
@@ -17402,7 +18348,7 @@ function buildMobileAppHtml() {
       const target = e.target;
       if (!isOpen) {
         if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden || ($('file-viewer-backdrop') && !$('file-viewer-backdrop').hidden)) return;
-        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail, .fv-ws-bar')) return;
+        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail, .fv-ws-bar, .fv-ws-persistent-bar, .fv-preview-toolbar, .fv-resize-handle')) return;
         if (t.clientX > window.innerWidth * 0.85) return;
       }
       swipeState = {
@@ -19500,7 +20446,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
-    const HTML_CSP = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob: http: https:; connect-src 'self' http: https:; base-uri 'none'; frame-ancestors 'none'";
+    const HTML_CSP = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob: http: https:; frame-src 'self' blob: data:; connect-src 'self' http: https:; base-uri 'none'; frame-ancestors 'none'";
     const remoteIp = req.socket?.remoteAddress || '';
     if (!isAllowedPrivateAddress(remoteIp)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
