@@ -4596,7 +4596,7 @@ function renderNestedMarkdownListEntries(entries, formatInlineFn) {
         subHtml
       });
     }
-    const cls = (!first.ordered && hasTask) ? ' class="md-task-list"' : '';
+    const cls = hasTask ? ' class="md-task-list"' : '';
     const liHtml = items.map((it) => {
       if (it.isTask) {
         return `<li class="md-task-item"><input type="checkbox" class="md-task-check" disabled${it.checked ? ' checked' : ''}><span>${it.bodyHtml}${it.subHtml}</span></li>`;
@@ -4617,14 +4617,33 @@ function renderSafeMarkdownToHtml(rawMd) {
   if (!src.trim()) return '';
 
   const codeBlocks = [];
-  const stashFence = (_m, _info, code) => {
-    const idx = codeBlocks.length;
-    codeBlocks.push(`<pre><code>${escSafeHtml(String(code || '').replace(/\n$/, ''))}</code></pre>`);
-    return `\n\u0000CB${idx}\u0000\n`;
-  };
-  const withCodePlaceholders = src
-    .replace(/```([^\n`]*)\n([\s\S]*?)```/g, stashFence)
-    .replace(/~~~([^\n~]*)\n([\s\S]*?)~~~/g, stashFence);
+  const rawFenceLines = src.split('\n');
+  const nonCodeLines = [];
+  for (let li = 0; li < rawFenceLines.length; li++) {
+    const openM = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(rawFenceLines[li]);
+    if (openM && !(openM[1][0] === '`' && openM[2].includes('`'))) {
+      const fenceCh = openM[1][0];
+      const fenceMinLen = openM[1].length;
+      const codeBuf = [];
+      li += 1;
+      while (li < rawFenceLines.length) {
+        const closeM = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(rawFenceLines[li]);
+        if (closeM && closeM[1][0] === fenceCh && closeM[1].length >= fenceMinLen) {
+          break;
+        }
+        codeBuf.push(rawFenceLines[li]);
+        li += 1;
+      }
+      const idx = codeBlocks.length;
+      codeBlocks.push(`<pre><code>${escSafeHtml(codeBuf.join('\n'))}</code></pre>`);
+      nonCodeLines.push('');
+      nonCodeLines.push(`\u0000CB${idx}\u0000`);
+      nonCodeLines.push('');
+    } else {
+      nonCodeLines.push(rawFenceLines[li]);
+    }
+  }
+  const withCodePlaceholders = nonCodeLines.join('\n');
 
   const formatInline = (text) => {
     const inlineCodes = [];
@@ -4767,12 +4786,13 @@ function renderSafeMarkdownToHtml(rawMd) {
     if (olMatch) {
       flushPara();
       const indent = olMatch[1].replace(/\t/g, '  ').length;
+      const tm = /^\[([ xX])\]\s+(.*)$/.exec(olMatch[2].trim());
       listEntries.push({
         indent,
         ordered: true,
-        isTask: false,
-        checked: false,
-        text: olMatch[2]
+        isTask: Boolean(tm),
+        checked: Boolean(tm && tm[1].toLowerCase() === 'x'),
+        text: tm ? tm[2] : olMatch[2]
       });
       continue;
     }
@@ -9734,8 +9754,10 @@ function buildMobileAppHtml() {
       .sheet-opt{padding:10px 12px;font-size:13.5px}
       .toast{top:18px}
     }
-    /* 宽屏三栏工作台：右侧常驻可拖拽预览边栏 (>= 1180px) */
-    @media (min-width:1180px) and (min-height:521px) and (hover:hover) and (pointer:fine){
+    /* 宽屏三栏工作台：右侧常驻可拖拽预览边栏（严格以宽度 >= 1180px 为准，兼容短高窗口与触屏宽屏设备） */
+    @media (min-width:1180px){
+      body{display:flex;flex-direction:row}
+      .app{flex:1 1 auto;min-width:0;width:auto;height:100%;position:relative}
       .fv-backdrop{
         position:relative;top:auto;left:auto;right:auto;bottom:auto;
         width:var(--fv-sidebar-w,420px);min-width:300px;max-width:680px;height:100%;
@@ -10345,9 +10367,10 @@ function buildMobileAppHtml() {
     if (urlSpeed && urlSpeed.testedAt) saveStoredSpeed(speedTestState);
 
     const urlOpenConvId = String(urlParams.get('conversationId') || '').trim();
-    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched || urlOpenConvId) {
+    const hasUrlHashSecret = typeof location !== 'undefined' && /[?#&](?:token|passcode|endpoints|spd|hosts|did|bcid)=/i.test(String(location.hash || ''));
+    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched || urlOpenConvId || hasUrlHashSecret) {
       saveStoredPair(pairState);
-      try { history.replaceState(null, '', location.pathname); } catch {}
+      try { history.replaceState(null, '', location.pathname || '/'); } catch {}
     }
     if (isTrustedSecureOrigin(location.origin) && navigator?.serviceWorker && typeof navigator.serviceWorker.register === 'function') {
       swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).then((reg) => {
@@ -12469,7 +12492,7 @@ function buildMobileAppHtml() {
             subHtml
           });
         }
-        const cls = (!first.ordered && hasTask) ? ' class="md-task-list"' : '';
+        const cls = hasTask ? ' class="md-task-list"' : '';
         const liHtml = items.map((it) => {
           if (it.isTask) {
             return '<li class="md-task-item"><input class="md-task-check" type="checkbox" disabled' + (it.checked ? ' checked' : '') + '><span>' + it.bodyHtml + it.subHtml + '</span></li>';
@@ -12485,19 +12508,44 @@ function buildMobileAppHtml() {
       return out;
     }
 
+    function matchClientFenceOpen(rawLine) {
+      const BT = String.fromCharCode(96);
+      const s = String(rawLine || '');
+      let sp = 0;
+      while (sp < s.length && s[sp] === ' ') sp += 1;
+      if (sp > 3 || sp >= s.length) return null;
+      const ch = s[sp];
+      if (ch !== BT && ch !== '~') return null;
+      let len = 0;
+      while (sp + len < s.length && s[sp + len] === ch) len += 1;
+      if (len < 3) return null;
+      const info = s.slice(sp + len);
+      if (ch === BT && info.includes(BT)) return null;
+      return { ch, len };
+    }
+
+    function matchClientFenceClose(rawLine, fenceCh, minLen) {
+      const s = String(rawLine || '');
+      let sp = 0;
+      while (sp < s.length && s[sp] === ' ') sp += 1;
+      if (sp > 3 || sp >= s.length || s[sp] !== fenceCh) return false;
+      let len = 0;
+      while (sp + len < s.length && s[sp + len] === fenceCh) len += 1;
+      if (len < minLen) return false;
+      return s.slice(sp + len).trim() === '';
+    }
+
     function renderMarkdownSafe(rawText) {
       const src = String(rawText || '').replace(/\\u0000/g, '').replace(/\\r\\n/g, '\\n');
       if (!src) return '';
-      const BT = String.fromCharCode(96);
-      const fenceBt = BT.repeat(3);
       const lines = src.split('\\n');
       const blocks = [];
       let paraLines = [];
       let listEntries = [];
       let quoteLines = [];
       let inCode = false;
-      let codeFenceMarker = fenceBt;
-      let codeLang = '';
+      let codeFenceCh = '';
+      let codeFenceMinLen = 3;
       let codeLines = [];
 
       const flushPara = () => {
@@ -12526,10 +12574,11 @@ function buildMobileAppHtml() {
         const trimmed = line.trim();
 
         if (inCode) {
-          if (trimmed.startsWith(codeFenceMarker)) {
+          if (matchClientFenceClose(line, codeFenceCh, codeFenceMinLen)) {
             blocks.push('<pre><code>' + esc(codeLines.join('\\n')) + '</code></pre>');
             inCode = false;
-            codeLang = '';
+            codeFenceCh = '';
+            codeFenceMinLen = 3;
             codeLines = [];
           } else {
             codeLines.push(line);
@@ -12537,11 +12586,12 @@ function buildMobileAppHtml() {
           continue;
         }
 
-        if (trimmed.startsWith(fenceBt) || trimmed.startsWith('~~~')) {
+        const fenceOpen = matchClientFenceOpen(line);
+        if (fenceOpen) {
           flushAllText();
           inCode = true;
-          codeFenceMarker = trimmed.startsWith('~~~') ? '~~~' : fenceBt;
-          codeLang = trimmed.slice(3).trim().split(/\\s+/)[0] || '';
+          codeFenceCh = fenceOpen.ch;
+          codeFenceMinLen = fenceOpen.len;
           codeLines = [];
           continue;
         }
@@ -12580,7 +12630,7 @@ function buildMobileAppHtml() {
             while (idx < lines.length) {
               const rLine = lines[idx];
               const rTrim = rLine.trim();
-              if (!rTrim || !rLine.includes('|') || rTrim.startsWith(fenceBt) || rTrim.startsWith('~~~') || /^#{1,6}\\s+/.test(rTrim)) {
+              if (!rTrim || !rLine.includes('|') || Boolean(matchClientFenceOpen(rLine)) || /^#{1,6}\\s+/.test(rTrim)) {
                 idx -= 1;
                 break;
               }
@@ -12628,12 +12678,14 @@ function buildMobileAppHtml() {
         if (olMatch) {
           flushPara();
           const indent = olMatch[1].replace(/\\t/g, '  ').length;
+          const rawOlBody = olMatch[2].trim();
+          const tm = /^\\[([ xX])\\]\\s+(.+)$/.exec(rawOlBody);
           listEntries.push({
             indent,
             ordered: true,
-            isTask: false,
-            checked: false,
-            text: olMatch[2].trim()
+            isTask: Boolean(tm),
+            checked: Boolean(tm && tm[1].toLowerCase() === 'x'),
+            text: tm ? tm[2] : rawOlBody
           });
           continue;
         }
@@ -16218,7 +16270,7 @@ function buildMobileAppHtml() {
     const fvWinRef = typeof window !== 'undefined' ? window : null;
     const fvDocRef = typeof document !== 'undefined' ? document : null;
     const wideWorkbenchMq = (fvWinRef && typeof fvWinRef.matchMedia === 'function')
-      ? fvWinRef.matchMedia('(min-width: 1180px) and (min-height: 521px) and (hover: hover) and (pointer: fine)')
+      ? fvWinRef.matchMedia('(min-width: 1180px)')
       : null;
 
     function clampFvSidebarWidth(raw) {
@@ -16249,17 +16301,9 @@ function buildMobileAppHtml() {
 
     function isWideDesktopWorkbench() {
       if (!fvWinRef) return false;
-      const w = Number(fvWinRef.innerWidth) || 0;
-      const h = Number(fvWinRef.innerHeight) || 800;
-      if (w >= 1180 && h >= 521) {
-        if (!fvWinRef.matchMedia) return true;
-        try {
-          const fineMq = fvWinRef.matchMedia('(hover: hover) and (pointer: fine)');
-          if (fineMq && typeof fineMq.matches === 'boolean') return fineMq.matches;
-        } catch {}
-        return Boolean(wideWorkbenchMq?.matches);
-      }
-      return Boolean(wideWorkbenchMq?.matches && w >= 1180);
+      const w = Number(fvWinRef.innerWidth);
+      if (Number.isFinite(w) && w > 0) return w >= 1180;
+      return Boolean(wideWorkbenchMq?.matches);
     }
 
     const fvState = {
@@ -16570,8 +16614,37 @@ function buildMobileAppHtml() {
         + '<style>html,body{margin:0;padding:12px;display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 24px);background:#fff;overflow:auto}svg{max-width:100%;height:auto}</style>'
         + '</head><body>' + String(svgMarkup || '') + '</body></html>';
     }
+    function scrubParentLocationSecrets() {
+      try {
+        if (!fvWinRef || !fvWinRef.location) return true;
+        const loc = fvWinRef.location;
+        const hasSearchOrHash = Boolean((loc.search && loc.search.length > 0) || (loc.hash && loc.hash.length > 0));
+        if (hasSearchOrHash && fvWinRef.history && typeof fvWinRef.history.replaceState === 'function') {
+          fvWinRef.history.replaceState(null, '', loc.pathname || '/');
+        }
+        const combined = String(loc.href || '') + ' ' + String(loc.search || '') + ' ' + String(loc.hash || '');
+        const activeTok = String(pairState?.token || urlToken || '').trim();
+        if (activeTok && combined.includes(activeTok)) return false;
+        if (/[?#&](?:token|passcode|endpoints|spd)=/i.test(combined)) return false;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    function injectSandboxIsolatedBase(rawHtml) {
+      const cleaned = String(rawHtml || '').replace(/<base\\b[^>]*>/gi, '');
+      const baseTag = '<base href="/">';
+      if (/<head\\b[^>]*>/i.test(cleaned)) {
+        return cleaned.replace(/<head\\b[^>]*>/i, (m) => m + baseTag);
+      }
+      if (/<html\\b[^>]*>/i.test(cleaned)) {
+        return cleaned.replace(/<html\\b[^>]*>/i, (m) => m + '<head>' + baseTag + '</head>');
+      }
+      return baseTag + cleaned;
+    }
     function mountIsolatedSandboxIframe(containerEl, item) {
       if (!containerEl || !item) return null;
+      const urlClean = scrubParentLocationSecrets();
       containerEl.innerHTML = '';
       const wrap = document.createElement('div');
       wrap.className = 'fv-sandbox-wrap';
@@ -16582,9 +16655,18 @@ function buildMobileAppHtml() {
       frame.setAttribute('referrerpolicy', 'no-referrer');
       frame.setAttribute('title', String(item.name || 'HTML') + ' 沙盒预览');
       frame.setAttribute('data-sandbox-nonce', String(fvState.sandboxRefreshNonce || 0));
-      const srcdocVal = item.kind === 'svg' ? buildSvgPreviewSrcdoc(item.content || '') : String(item.content || '');
-      try { frame.srcdoc = srcdocVal; } catch {}
-      frame.setAttribute('srcdoc', srcdocVal);
+      frame.setAttribute('data-url-scrubbed', urlClean ? '1' : '0');
+      const rawDoc = item.kind === 'svg' ? buildSvgPreviewSrcdoc(item.content || '') : String(item.content || '');
+      const isolatedDoc = injectSandboxIsolatedBase(rawDoc);
+      if (urlClean) {
+        try { frame.srcdoc = isolatedDoc; } catch {}
+        frame.setAttribute('srcdoc', isolatedDoc);
+      } else {
+        // 极端环境若 history.replaceState 被阻断导致父 URL 仍含口令参数，自动降级至独立 data: 文档彻底切断 srcdoc baseURI 继承
+        const dataUri = 'data:text/html;charset=utf-8,' + encodeURIComponent(isolatedDoc);
+        try { frame.src = dataUri; } catch {}
+        frame.setAttribute('src', dataUri);
+      }
       wrap.appendChild(frame);
       containerEl.appendChild(wrap);
       return frame;
@@ -18347,7 +18429,7 @@ function buildMobileAppHtml() {
       const isOpen = backdropEl.classList.contains('open');
       const target = e.target;
       if (!isOpen) {
-        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden || ($('file-viewer-backdrop') && !$('file-viewer-backdrop').hidden)) return;
+        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden || (!isWideDesktopWorkbench() && $('file-viewer-backdrop') && !$('file-viewer-backdrop').hidden)) return;
         if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail, .fv-ws-bar, .fv-ws-persistent-bar, .fv-preview-toolbar, .fv-resize-handle')) return;
         if (t.clientX > window.innerWidth * 0.85) return;
       }
