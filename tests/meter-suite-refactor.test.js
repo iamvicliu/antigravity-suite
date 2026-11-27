@@ -34682,7 +34682,7 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       '| 模块 | 状态 | 对齐 |',
       '| :--- | :---: | ---: |',
       '| 预览边栏 | **已就绪** | 100% |',
-      '| 转义管道 \\| 单元格 | ~~旧版~~ | `GFM` |',
+      '| 转义管道 \\| 单元格 | ~~旧版~~ | `a \\| b` |',
       '',
       '- [x] 完成三栏工作台',
       '  - 子项 A1（嵌套无序列表）',
@@ -34692,7 +34692,12 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       '1. [x] 有序任务已完成',
       '2. [ ] 有序任务待执行',
       '',
-      '> 引用说明块',
+      '> ## 引用内二级标题',
+      '> - 引用内列表项 1',
+      '>   - 引用内嵌套子项',
+      '> ```ts',
+      '> const quotedCode = true;',
+      '> ```',
       '',
       '安全链接：[文档](https://example.com/docs) 与 危险链接：[点我](javascript:alert(1)) 及 [数据](data:text/html,<script>alert(1)</script>) 与 [远端共享](file://evil-host/share)',
       '<script>window.__xss=1</script><img src=x onerror="alert(1)">',
@@ -34727,7 +34732,8 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
     const gfmServerHtml = remoteMod.renderSafeMarkdownToHtml(fs.readFileSync(mdFile, 'utf8'));
     assert.match(gfmServerHtml, /<h1>架构说明文档<\/h1>/);
     assert.match(gfmServerHtml, /<div class="md-table-wrap"><table><thead><tr><th style="text-align:left">模块<\/th><th style="text-align:center">状态<\/th><th style="text-align:right">对齐<\/th><\/tr><\/thead>/);
-    assert.match(gfmServerHtml, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td>/);
+    assert.match(gfmServerHtml, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td><td style="text-align:right"><code>a \| b<\/code><\/td>/, '服务端表格代码单元格内 \\| 应转义为单管道符不留多余反斜杠');
+    assert.match(gfmServerHtml, /<blockquote><h2>引用内二级标题<\/h2><ul><li>引用内列表项 1<ul><li>引用内嵌套子项<\/li><\/ul><\/li><\/ul><pre><code>const quotedCode = true;<\/code><\/pre><\/blockquote>/, '服务端引用块必须支持标题、嵌套列表与围栏代码块等块级语法');
     assert.match(gfmServerHtml, /<ul class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '服务端 GFM 应正确渲染嵌套列表与子任务');
     assert.match(gfmServerHtml, /<ol class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>有序任务已完成<\/span><\/li><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled><span>有序任务待执行<\/span><\/li><\/ol>/, '服务端 GFM 应正确渲染有序任务列表 1. [x]');
     assert.match(gfmServerHtml, /<pre><code>```js\nconst nestedTripleFence = 42;\n```<\/code><\/pre>/, '服务端四反引号围栏内部的三反引号不得提前截断代码块');
@@ -35179,9 +35185,20 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '680px', '超宽拖拽必须夹紧在 680px 上限');
 
       resizeHandle.dispatchEvent({ type: 'pointerdown', pointerId: 3, clientX: 700 });
-      deskEnv.winObj.dispatchEvent({ type: 'pointermove', pointerId: 3, clientX: 1300 }); // 远超下限 -> 夹紧 300px
-      deskEnv.winObj.dispatchEvent({ type: 'pointerup', pointerId: 3, clientX: 1300 });
-      assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '300px', '过窄拖拽必须夹紧在 300px 下限');
+      deskEnv.winObj.dispatchEvent({ type: 'pointermove', pointerId: 3, clientX: 1650 }); // 大幅向右拖 950px 使计算宽度 680 - 950 = -270 <= 0 -> 仍必须夹紧在 300px 而非跳回 420px
+      deskEnv.winObj.dispatchEvent({ type: 'pointerup', pointerId: 3, clientX: 1650 });
+      assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '300px', '大幅向右拖拽至 0 或负数宽度时必须夹紧在 300px 下限而非回跳默认 420px');
+      assert.equal(deskEnv.storage.get('ag_remote_fv_width_v1'), '300', '大幅向右拖拽松手后应持久化 300px 至 localStorage');
+      assert.equal(deskEnv.winObj.__fvWorkbenchHooks.clampFvSidebarWidth(0), 300, '宽度计算为 0 时应夹紧至 300px');
+      assert.equal(deskEnv.winObj.__fvWorkbenchHooks.clampFvSidebarWidth(-150), 300, '宽度计算为负数时应夹紧至 300px');
+      assert.equal(deskEnv.winObj.__fvWorkbenchHooks.clampFvSidebarWidth(null), 420, '未设置 (null) 时应使用默认 420px');
+
+      const restoredMinEnv = makeMockDomEnv(1440, 900, { storedMap: { ag_remote_fv_width_v1: '300' } });
+      try {
+        assert.equal(restoredMinEnv.docObj.getElementById('file-viewer-backdrop').style.getPropertyValue('--fv-sidebar-w'), '300px', '刷新后应从 localStorage 恢复持久化的 300px 下限宽度');
+      } finally {
+        restoredMinEnv.cleanup();
+      }
 
       // (2) 顶部常驻工作区切换器联动 & 子目录上级导航不越出工作区根目录
       wsTopBar.querySelectorAll('.fv-ws-top-switch')[0].click();
@@ -35201,7 +35218,8 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       assert.equal(deskEnv.docObj.getElementById('fv-tab-preview').classList.contains('active'), true, '打开文件后应自动切入「📄 预览」标签页');
       assert.equal(toolbar.hidden, false, 'Markdown 预览应展示顶部模式切换工具栏');
       assert.ok(deskEnv.docObj.getElementById('fv-mode-render').classList.contains('active'), '带 #L109 行号的 .md 文件默认也应进入 GFM 渲染模式');
-      assert.match(fvBody.innerHTML, /<table>/, '客户端预览应渲染 GFM 表格');
+      assert.match(fvBody.innerHTML, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td><td style="text-align:right"><code>a \| b<\/code><\/td>/, '客户端表格代码单元格内 \\| 转义必须与服务端语义完全一致，不残留反斜杠');
+      assert.match(fvBody.innerHTML, /<blockquote><h2>引用内二级标题<\/h2><ul><li>引用内列表项 1<ul><li>引用内嵌套子项<\/li><\/ul><\/li><\/ul><pre><code>const quotedCode = true;<\/code><\/pre><\/blockquote>/, '客户端引用块必须支持块级标题、嵌套列表与围栏代码块且与服务端一致');
       assert.match(fvBody.innerHTML, /md-task-check/, '客户端预览应渲染 GFM 任务列表复选框');
       assert.match(fvBody.innerHTML, /完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '客户端预览应正确渲染嵌套列表');
       assert.match(fvBody.innerHTML, /<ol class="md-task-list"><li class="md-task-item"><input class="md-task-check" type="checkbox" disabled checked><span>有序任务已完成<\/span><\/li>/, '客户端预览应正确渲染有序任务列表 1. [x]');
