@@ -33627,6 +33627,7 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
 
     let failNextOrderSave = false;
     let orderSaveDelayMs = 0;
+    let interceptOrderSaveFn = null;
     const orderSaveQueueOutcomes = [];
     const orderRequests = [];
     const handler = remoteMod.createRemoteHttpHandler(
@@ -33656,6 +33657,9 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
     const invokeServer = async (method, urlPath, bodyObj, customHeaders = {}) => {
       if (method === 'POST' && urlPath.startsWith('/api/projects/order')) {
         orderRequests.push(bodyObj);
+        if (typeof interceptOrderSaveFn === 'function') {
+          await interceptOrderSaveFn(bodyObj, customHeaders);
+        }
         if (orderSaveDelayMs > 0) {
           await new Promise((r) => setTimeout(r, orderSaveDelayMs));
         }
@@ -34097,26 +34101,64 @@ test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚�
     );
     assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-gamma', 'proj-beta']);
 
-    // ④ 页面重载回归：服务端已记录同一 sessionStorage clientId (agb-reload-fixed-tab-01) 较高序号 (如 seq=99) 后，
-    //    模拟页面重载（包括 sessionStorage 仅保留 clientId 而清空其他缓存键的极端隐私/部分清理场景），重新调整顺序必须真实落盘且后续快照保持一致
+    // ④ 页面重载与跨页面实例在途迟到请求防覆盖回归：
+    //    相同稳定 clientId (agb-reload-fixed-tab-01)、不同 orderScopeId：
+    //    a) 旧页面先拉取快照登记旧实例域并触发一次慢速排序保存（挂起在途尚未送达服务端），且此前曾接受高序号 seq=99；
+    //    b) 页面重载创建新页面实例（清空序号缓存键使新页从 seq=1 起算），新页面拉取快照并完成首次重新排序（先到达服务端并真实落盘）；
+    //    c) 随后放行旧页面的在途慢请求晚于新页面到达服务端 → 断言旧页面迟到请求返回 staleIgnored=true，持久化顺序及后续权威快照均严格保持新页面顺序！
     await invokeServer('POST', '/api/projects/order', {
       projectOrder: ['proj-alpha', 'proj-gamma', 'proj-beta'],
-      orderScopeId: 'agb-reload-fixed-tab-01',
+      orderScopeId: 'agb-reload-fixed-tab-01:000001-legacy',
       clientOrderSeq: 99
     }, { 'x-ag-client-id': 'agb-reload-fixed-tab-01' });
-    sessionMap.delete('ag_remote_proj_order_seq_v1'); // 即使序号缓存键缺失、仅复用相同 clientId，新页面实例也绝不可被误判为过期请求
+
+    const preReloadPage = createClientSandbox();
+    await preReloadPage.__projSortHooks.renderSnapshot((await invokeServer('GET', '/api/snapshot', null, {
+      'x-ag-client-id': 'agb-reload-fixed-tab-01',
+      'x-ag-order-scope': orderRequests[orderRequests.length - 1]?.orderScopeId || ''
+    })).json, { reqStartEpoch: 1 });
+    // 让 preReloadPage 真实执行一次 fetchSnapshot 以通过 authHeaders 自动登记自身旧实例 X-AG-Order-Scope
+    let oldScopeCaptured = '';
+    let releaseStaleOldPageSave = null;
+    const staleOldPageGate = new Promise((r) => { releaseStaleOldPageSave = r; });
+    interceptOrderSaveFn = async (bodyObj) => {
+      if (!oldScopeCaptured) {
+        oldScopeCaptured = bodyObj.orderScopeId;
+        await staleOldPageGate;
+      }
+    };
+    const inflightOldPageSavePromise = preReloadPage.__projSortHooks.commitProjectOrder(['proj-beta', 'proj-gamma', 'proj-alpha']);
+    await new Promise((r) => setTimeout(r, 15));
+    assert.ok(oldScopeCaptured.startsWith('agb-reload-fixed-tab-01:'), '旧页面在途请求应携带旧实例专属 orderScopeId');
+
+    // 页面重载：同一 sessionStorage clientId，即使清空序号键从 seq=1 重新起算，新页面首次重排也必须成功落盘
+    sessionMap.delete('ag_remote_proj_order_seq_v1');
     const reloadedSandbox = createClientSandbox();
     const snapOnReload = (await invokeServer('GET', '/api/snapshot')).json;
     reloadedSandbox.__projSortHooks.renderSnapshot(snapOnReload, { reqStartEpoch: 1 });
     const postReloadOrderRes = await reloadedSandbox.__projSortHooks.commitProjectOrder(['proj-gamma', 'proj-beta', 'proj-alpha']);
+    const newScopeCaptured = orderRequests[orderRequests.length - 1]?.orderScopeId || '';
+    assert.notEqual(newScopeCaptured, oldScopeCaptured, '重载后新页面实例必须生成不同于旧页面的 orderScopeId');
     assert.equal(postReloadOrderRes.ok, true);
     assert.notEqual(postReloadOrderRes.staleIgnored, true, '页面重载复用同一 clientId 后首次重排绝不得被误判为 staleIgnored');
-    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-gamma', 'proj-beta', 'proj-alpha'], '页面重载后重新排序必须真实写入服务端持久化顺序');
-    const snapAfterReloadSave = (await invokeServer('GET', '/api/snapshot')).json;
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-gamma', 'proj-beta', 'proj-alpha'], '新页面保存必须真实写入服务端持久化顺序');
+
+    // 放行旧页面的在途迟到请求，使其在新页面保存完成后才由服务端处理
+    interceptOrderSaveFn = null;
+    releaseStaleOldPageSave();
+    const lateOldPageRes = await inflightOldPageSavePromise;
+    assert.equal(lateOldPageRes.ok, true);
+    assert.equal(lateOldPageRes.staleIgnored, true, '相同 clientId 下旧页面实例迟到的在途请求必须被服务端拦截为 staleIgnored');
     assert.deepEqual(
-      snapAfterReloadSave.projects.filter((p) => p.id !== 'ungrouped').map((p) => p.id),
+      catStore.getProjectOrder(catOpts),
       ['proj-gamma', 'proj-beta', 'proj-alpha'],
-      '重载保存后的后续权威快照必须保持新顺序一致'
+      '旧页面迟到请求处理后，服务端持久化顺序必须严格保持新页面顺序不变'
+    );
+    const snapAfterLateOldReq = (await invokeServer('GET', '/api/snapshot')).json;
+    assert.deepEqual(
+      snapAfterLateOldReq.projects.filter((p) => p.id !== 'ungrouped').map((p) => p.id),
+      ['proj-gamma', 'proj-beta', 'proj-alpha'],
+      '后续权威快照必须保持新页面已保存的顺序，不被旧页面迟到请求回退'
     );
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

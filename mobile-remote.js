@@ -3530,6 +3530,34 @@ function createSessionCatalogStore() {
     return store.projectOrder.slice();
   }
 
+  function parseOrderScopePageEpoch(scopeStr) {
+    const m = String(scopeStr || '').trim().match(/:([0-9a-z]{6,16})-[0-9a-z]+$/i);
+    if (!m) return 0;
+    const parsed = Number.parseInt(m[1], 36);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+  }
+
+  function registerOrderScope(clientId, orderScopeId, options = {}) {
+    const cid = String(clientId || '').trim().slice(0, 128);
+    const scope = String(orderScopeId || '').trim().slice(0, 128);
+    if (!cid || !scope) return 0;
+    const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    if (!(store.orderScopeBirthMap instanceof Map)) store.orderScopeBirthMap = new Map();
+    const key = `${cid}::${scope}`;
+    if (store.orderScopeBirthMap.has(key)) {
+      return store.orderScopeBirthMap.get(key);
+    }
+    const birthSeq = (Number(store.nextOrderScopeBirthSeq) || 0) + 1;
+    store.nextOrderScopeBirthSeq = birthSeq;
+    while (store.orderScopeBirthMap.size >= 2000) {
+      const oldestKey = store.orderScopeBirthMap.keys().next().value;
+      if (oldestKey === undefined) break;
+      store.orderScopeBirthMap.delete(oldestKey);
+    }
+    store.orderScopeBirthMap.set(key, birthSeq);
+    return birthSeq;
+  }
+
   function setProjectOrder(orderedIds, options = {}) {
     if (!Array.isArray(orderedIds)) {
       throw Object.assign(new Error('projectOrder 必须是项目 ID 数组'), { status: 400 });
@@ -3546,8 +3574,38 @@ function createSessionCatalogStore() {
     if (!(store.clientOrderSeqMap instanceof Map)) {
       store.clientOrderSeqMap = new Map();
     }
-    const reqOrderScope = String(options.orderScopeId || options.clientId || '').trim().slice(0, 128);
+    if (!(store.clientActiveOrderCursorMap instanceof Map)) {
+      store.clientActiveOrderCursorMap = new Map();
+    }
+    if (!(store.orderScopeBirthMap instanceof Map)) {
+      store.orderScopeBirthMap = new Map();
+    }
+    const reqClientId = String(options.clientId || '').trim().slice(0, 128);
+    const reqOrderScope = String(options.orderScopeId || reqClientId || '').trim().slice(0, 128);
     const reqClientSeq = Number.isInteger(options.clientOrderSeq) && options.clientOrderSeq > 0 ? options.clientOrderSeq : 0;
+    const reqPageEpoch = (Number.isSafeInteger(options.clientPageEpoch) && options.clientPageEpoch > 0)
+      ? options.clientPageEpoch
+      : parseOrderScopePageEpoch(reqOrderScope);
+    const reqScopeBirth = (reqClientId && reqOrderScope)
+      ? (store.orderScopeBirthMap.get(`${reqClientId}::${reqOrderScope}`) || 0)
+      : 0;
+    if (reqClientId && reqOrderScope) {
+      const activeCursor = store.clientActiveOrderCursorMap.get(reqClientId);
+      if (activeCursor && activeCursor.scopeId && activeCursor.scopeId !== reqOrderScope) {
+        const isOlderByBirth = reqScopeBirth > 0 && activeCursor.scopeBirthSeq > 0 && reqScopeBirth < activeCursor.scopeBirthSeq;
+        const isOlderByEpoch = reqPageEpoch > 0 && activeCursor.pageEpoch > 0 && reqPageEpoch < activeCursor.pageEpoch;
+        // 若新页面已通过快照登记了更新的 birthSeq 而迟到旧请求甚至未登记且无更高 pageEpoch，同样拦截旧实例覆盖
+        const isUnregisteredAgainstNewerBirth = reqScopeBirth === 0 && activeCursor.scopeBirthSeq > 0 && !(reqPageEpoch > 0 && reqPageEpoch > activeCursor.pageEpoch);
+        if (isOlderByBirth || isOlderByEpoch || isUnregisteredAgainstNewerBirth) {
+          return {
+            ok: true,
+            staleIgnored: true,
+            projectOrder: store.projectOrder.slice(),
+            catalogRevision: store.catalogRevision || ''
+          };
+        }
+      }
+    }
     if (reqOrderScope && reqClientSeq > 0) {
       const lastAcceptedSeq = store.clientOrderSeqMap.get(reqOrderScope) || 0;
       if (reqClientSeq <= lastAcceptedSeq) {
@@ -3619,6 +3677,23 @@ function createSessionCatalogStore() {
         store.clientOrderSeqMap.delete(oldestCid);
       }
       store.clientOrderSeqMap.set(reqOrderScope, reqClientSeq);
+    }
+    if (reqClientId && reqOrderScope) {
+      const committedBirth = reqScopeBirth || registerOrderScope(reqClientId, reqOrderScope, options);
+      if (store.clientActiveOrderCursorMap.has(reqClientId)) {
+        store.clientActiveOrderCursorMap.delete(reqClientId);
+      }
+      while (store.clientActiveOrderCursorMap.size >= 500) {
+        const oldestKey = store.clientActiveOrderCursorMap.keys().next().value;
+        if (oldestKey === undefined) break;
+        store.clientActiveOrderCursorMap.delete(oldestKey);
+      }
+      store.clientActiveOrderCursorMap.set(reqClientId, {
+        scopeId: reqOrderScope,
+        scopeBirthSeq: committedBirth,
+        pageEpoch: reqPageEpoch,
+        seq: reqClientSeq
+      });
     }
     store.projectOrder = mergedOrder;
     store.projectOrderInitialized = true;
@@ -3796,7 +3871,7 @@ function createSessionCatalogStore() {
     return store.projectOrder.slice();
   }
 
-  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getProjectOrder, setProjectOrder, reserveCreateOrderSeq, prependProjectOrder };
+  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getProjectOrder, registerOrderScope, setProjectOrder, reserveCreateOrderSeq, prependProjectOrder };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -9841,6 +9916,20 @@ function buildMobileAppHtml() {
       }
     })();
 
+    const PAGE_EPOCH_SESSION_KEY = 'ag_remote_page_epoch_v1';
+    const clientPageEpoch = (() => {
+      const nowMs = Date.now();
+      try {
+        const prev = Number.parseInt(sessionStorage.getItem(PAGE_EPOCH_SESSION_KEY) || '0', 10) || 0;
+        const next = Math.max(nowMs, prev + 1);
+        sessionStorage.setItem(PAGE_EPOCH_SESSION_KEY, String(next));
+        return next;
+      } catch {
+        return nowMs;
+      }
+    })();
+    const pageOrderScopeId = clientId + ':' + clientPageEpoch.toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+
     const deviceFp = (() => {
       try {
         const scr = (typeof screen === 'object' && screen) ? screen : {};
@@ -10613,6 +10702,7 @@ function buildMobileAppHtml() {
       const h = Object.assign({}, extra || {});
       if (pairState.token) h['X-AG-Remote-Token'] = pairState.token;
       if (clientId) h['X-AG-Client-Id'] = clientId;
+      if (pageOrderScopeId) h['X-AG-Order-Scope'] = pageOrderScopeId;
       if (deviceId) h['X-AG-Device-Id'] = deviceId;
       if (deviceFp) h['X-AG-Device-Fp'] = deviceFp;
       if (isIpadDesktopUa) h['X-AG-Device-Hint'] = 'iPad';
@@ -13456,7 +13546,6 @@ function buildMobileAppHtml() {
     let syncingExtraConvs = false;
     let pendingCatalogRev = '';
     const ORDER_SEQ_SESSION_KEY = 'ag_remote_proj_order_seq_v1';
-    const pageOrderScopeId = clientId + ':' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     let projSortMode = false;
     let localOptimisticProjectOrder = null;
     let lastConfirmedProjectOrder = null;
@@ -13596,6 +13685,7 @@ function buildMobileAppHtml() {
                 body: JSON.stringify({
                   projectOrder: job.cleaned,
                   orderScopeId: pageOrderScopeId,
+                  clientPageEpoch,
                   clientOrderSeq: job.seq
                 })
               }, 6000);
@@ -19371,7 +19461,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id, X-AG-Client-Id, X-AG-Device-Hint, X-AG-Device-Fp, X-AG-Probe');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id, X-AG-Client-Id, X-AG-Order-Scope, X-AG-Device-Hint, X-AG-Device-Fp, X-AG-Probe');
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
     if (req.method === 'OPTIONS') {
@@ -19967,6 +20057,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (req.method === 'GET' && pathname === '/api/context') {
       try {
         const clientId = extractRequestClientId(req, urlObj);
+        const snapOrderScope = String(req.headers['x-ag-order-scope'] || '').trim();
+        if (clientId && /^[a-z0-9:_-]{4,128}$/i.test(snapOrderScope)) {
+          const activeCatStore = options.catalogStore || defaultCatalogStore;
+          activeCatStore.registerOrderScope?.(clientId, snapOrderScope, {
+            ...(options.catalogOptions || {}),
+            ...(options.configDir ? { configDir: options.configDir } : {}),
+            ...(options.homeDir ? { homeDir: options.homeDir } : {})
+          });
+        }
         const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
         const targetId = urlObj.searchParams.get('targetId') || session?.targetId || '';
         const convId = (urlObj.searchParams.get('conversationId') || session?.conversationId || '').trim();
@@ -20003,6 +20102,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       }
       try {
         const clientId = extractRequestClientId(req, urlObj);
+        const snapOrderScope = String(req.headers['x-ag-order-scope'] || '').trim();
+        if (clientId && /^[a-z0-9:_-]{4,128}$/i.test(snapOrderScope)) {
+          const activeCatStore = options.catalogStore || defaultCatalogStore;
+          activeCatStore.registerOrderScope?.(clientId, snapOrderScope, {
+            ...(options.catalogOptions || {}),
+            ...(options.configDir ? { configDir: options.configDir } : {}),
+            ...(options.homeDir ? { homeDir: options.homeDir } : {})
+          });
+        }
         const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
         const hasExplicitTarget = urlObj.searchParams.has('targetId');
         const hasExplicitConv = urlObj.searchParams.has('conversationId');
@@ -20223,8 +20331,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const payload = await readJsonBody(req);
         const rawOrder = payload?.projectOrder !== undefined ? payload.projectOrder : payload?.projectIds;
         const clientId = extractRequestClientId(req, urlObj, payload);
-        const rawOrderScope = typeof payload?.orderScopeId === 'string' ? payload.orderScopeId.trim() : '';
+        const rawOrderScope = typeof payload?.orderScopeId === 'string' ? payload.orderScopeId.trim() : String(req.headers['x-ag-order-scope'] || '').trim();
         const orderScopeId = /^[a-z0-9:_-]{4,128}$/i.test(rawOrderScope) ? rawOrderScope : clientId;
+        const clientPageEpoch = Number.isSafeInteger(payload?.clientPageEpoch) && payload.clientPageEpoch > 0 ? payload.clientPageEpoch : 0;
         const clientOrderSeq = Number.isInteger(payload?.clientOrderSeq) && payload.clientOrderSeq > 0 ? payload.clientOrderSeq : 0;
         const activeCatStore = options.catalogStore || defaultCatalogStore;
         const result = activeCatStore.setProjectOrder(rawOrder, {
@@ -20233,6 +20342,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ...(options.homeDir ? { homeDir: options.homeDir } : {}),
           ...(clientId ? { clientId } : {}),
           ...(orderScopeId ? { orderScopeId } : {}),
+          ...(clientPageEpoch > 0 ? { clientPageEpoch } : {}),
           ...(clientOrderSeq > 0 ? { clientOrderSeq } : {})
         });
         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
