@@ -3546,10 +3546,10 @@ function createSessionCatalogStore() {
     if (!(store.clientOrderSeqMap instanceof Map)) {
       store.clientOrderSeqMap = new Map();
     }
-    const reqClientId = String(options.clientId || '').trim();
+    const reqOrderScope = String(options.orderScopeId || options.clientId || '').trim().slice(0, 128);
     const reqClientSeq = Number.isInteger(options.clientOrderSeq) && options.clientOrderSeq > 0 ? options.clientOrderSeq : 0;
-    if (reqClientId && reqClientSeq > 0) {
-      const lastAcceptedSeq = store.clientOrderSeqMap.get(reqClientId) || 0;
+    if (reqOrderScope && reqClientSeq > 0) {
+      const lastAcceptedSeq = store.clientOrderSeqMap.get(reqOrderScope) || 0;
       if (reqClientSeq <= lastAcceptedSeq) {
         return {
           ok: true,
@@ -3611,14 +3611,14 @@ function createSessionCatalogStore() {
       }
     }
     // 严禁对合并后的权威顺序静默截断，确保超过 500 个项目时也不会丢失保底追加项或引发振荡跳顶
-    if (reqClientId && reqClientSeq > 0) {
-      if (store.clientOrderSeqMap.has(reqClientId)) store.clientOrderSeqMap.delete(reqClientId);
+    if (reqOrderScope && reqClientSeq > 0) {
+      if (store.clientOrderSeqMap.has(reqOrderScope)) store.clientOrderSeqMap.delete(reqOrderScope);
       while (store.clientOrderSeqMap.size >= 500) {
         const oldestCid = store.clientOrderSeqMap.keys().next().value;
         if (oldestCid === undefined) break;
         store.clientOrderSeqMap.delete(oldestCid);
       }
-      store.clientOrderSeqMap.set(reqClientId, reqClientSeq);
+      store.clientOrderSeqMap.set(reqOrderScope, reqClientSeq);
     }
     store.projectOrder = mergedOrder;
     store.projectOrderInitialized = true;
@@ -13455,11 +13455,20 @@ function buildMobileAppHtml() {
     let lastSyncedCatalogRev = '';
     let syncingExtraConvs = false;
     let pendingCatalogRev = '';
+    const ORDER_SEQ_SESSION_KEY = 'ag_remote_proj_order_seq_v1';
+    const pageOrderScopeId = clientId + ':' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     let projSortMode = false;
     let localOptimisticProjectOrder = null;
     let lastConfirmedProjectOrder = null;
     let pendingOrderAckRev = '';
-    let projOrderSaveSeq = 0;
+    let projOrderSaveSeq = (() => {
+      try {
+        const saved = Number.parseInt(sessionStorage.getItem(ORDER_SEQ_SESSION_KEY) || '0', 10);
+        return Number.isSafeInteger(saved) && saved > 0 ? saved : 0;
+      } catch {
+        return 0;
+      }
+    })();
     let projOrderInflightCount = 0;
     let pendingQueuedOrderJob = null;
     let orderDrainLoopPromise = null;
@@ -13586,6 +13595,7 @@ function buildMobileAppHtml() {
                 headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                   projectOrder: job.cleaned,
+                  orderScopeId: pageOrderScopeId,
                   clientOrderSeq: job.seq
                 })
               }, 6000);
@@ -13658,6 +13668,7 @@ function buildMobileAppHtml() {
         lastConfirmedProjectOrder = currentIds.slice();
       }
       const mySaveSeq = ++projOrderSaveSeq;
+      try { sessionStorage.setItem(ORDER_SEQ_SESSION_KEY, String(mySaveSeq)); } catch {}
       localOptimisticProjectOrder = cleaned.slice();
       pendingOrderAckRev = '';
       lastProjectOrderSettledEpoch = ++clientSyncEpoch;
@@ -20212,6 +20223,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         const payload = await readJsonBody(req);
         const rawOrder = payload?.projectOrder !== undefined ? payload.projectOrder : payload?.projectIds;
         const clientId = extractRequestClientId(req, urlObj, payload);
+        const rawOrderScope = typeof payload?.orderScopeId === 'string' ? payload.orderScopeId.trim() : '';
+        const orderScopeId = /^[a-z0-9:_-]{4,128}$/i.test(rawOrderScope) ? rawOrderScope : clientId;
         const clientOrderSeq = Number.isInteger(payload?.clientOrderSeq) && payload.clientOrderSeq > 0 ? payload.clientOrderSeq : 0;
         const activeCatStore = options.catalogStore || defaultCatalogStore;
         const result = activeCatStore.setProjectOrder(rawOrder, {
@@ -20219,6 +20232,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           ...(options.configDir ? { configDir: options.configDir } : {}),
           ...(options.homeDir ? { homeDir: options.homeDir } : {}),
           ...(clientId ? { clientId } : {}),
+          ...(orderScopeId ? { orderScopeId } : {}),
           ...(clientOrderSeq > 0 ? { clientOrderSeq } : {})
         });
         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
