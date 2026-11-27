@@ -34753,6 +34753,10 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       {
         md: '| A | B |\n| --- | --- |\n### 标题 | 小节',
         expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead></table></div><h3>标题 | 小节</h3>'
+      },
+      {
+        md: '| A | B |\n| --- | --- |\nplain',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>plain</td><td></td></tr></tbody></table></div>'
       }
     ];
     for (const tc of tableInterruptCases) {

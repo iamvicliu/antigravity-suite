@@ -4760,7 +4760,7 @@ function renderSafeMarkdownToHtml(rawMd, bqDepth = 0) {
         const bodyRows = [];
         const isServerTableBlockInterrupt = (rawRow) => {
           const rt = String(rawRow || '').trim();
-          if (!rt || !rawRow.includes('|')) return true;
+          if (!rt) return true;
           if (/^\u0000CB\d+\u0000$/.test(rt)) return true;
           if (/^ {0,3}(?:`{3,}|~{3,})/.test(rawRow)) return true;
           if (/^ {0,3}>/.test(rawRow)) return true;
@@ -12646,7 +12646,7 @@ function buildMobileAppHtml() {
             idx += 2;
             const isClientTableInterrupt = (rawRow) => {
               const rt = String(rawRow || '').trim();
-              if (!rt || !rawRow.includes('|')) return true;
+              if (!rt) return true;
               if (Boolean(matchClientFenceOpen(rawRow))) return true;
               if (/^ {0,3}>/.test(rawRow)) return true;
               if (/^ {0,3}#{1,6}(?:\\s|$)/.test(rawRow)) return true;
