@@ -35988,3 +35988,356 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
   assert.equal(lastBaseOnlyPost.modelId, 'gemini-pro-orchestrator');
   assert.ok(settingsHtml.includes('value="__custom__"') && settingsHtml.includes('id="input-cli-custom-model"'), 'suite-settings.html 必须保留自定义模型 ID 兼容入口');
 });
+
+test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadProject+UpdateProject 保留原字段、最少 1 目录与禁删保护）', async () => {
+  const http = require('node:http');
+  const { pathToFileURL } = require('node:url');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proj-41-42-'));
+  const homeDir = path.join(tmpRoot, 'home');
+  const configDir = path.join(tmpRoot, 'config');
+  const dirRepoA = path.join(homeDir, 'codebase', 'repo-alpha');
+  const dirSharedB = path.join(homeDir, 'shared', 'common-lib');
+  const dirExtraC = path.join(homeDir, 'codebase', 'module-gamma');
+  const dirOutside = path.join(tmpRoot, 'outside-secret');
+  const symlinkAliasA = path.join(homeDir, 'codebase', 'repo-alpha-link');
+  fs.mkdirSync(path.join(dirRepoA, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(dirRepoA, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+  fs.mkdirSync(dirSharedB, { recursive: true });
+  fs.mkdirSync(dirExtraC, { recursive: true });
+  fs.mkdirSync(dirOutside, { recursive: true });
+  fs.mkdirSync(path.join(configDir, 'projects'), { recursive: true });
+  fs.symlinkSync(dirRepoA, symlinkAliasA, 'dir');
+
+  try {
+    delete require.cache[require.resolve('../mobile-remote')];
+    const remoteMod = require('../mobile-remote');
+
+    const rpcCalls = [];
+    const storedProjects = new Map();
+    // 预置一个已有单目录项目用于同目录冲突测试，以及一个待编辑的多字段项目
+    const otherProj = {
+      id: 'proj-other-fixed',
+      name: 'ExistingOther',
+      projectResources: { resources: [{ folderUri: pathToFileURL(dirExtraC).href }] },
+      permissionGrants: { v2Migrated: true },
+      settings: {},
+      isWorkspaceOnly: false
+    };
+    storedProjects.set(otherProj.id, otherProj);
+    fs.writeFileSync(path.join(configDir, 'projects', `${otherProj.id}.json`), JSON.stringify(otherProj, null, 2));
+
+    const mockLsConnect = async () => ({
+      call: async (method, body) => {
+        rpcCalls.push({ method, body: JSON.parse(JSON.stringify(body || {})) });
+        if (method === 'ResolveFolder') {
+          const isGit = String(body?.folderUri || '').includes('repo-alpha');
+          return { resourceType: isGit ? 'FOLDER_TYPE_GIT_FOLDER' : 'FOLDER_TYPE_PLAIN' };
+        }
+        if (method === 'GetRepoInfos') {
+          return { repos: [{ branches: [{ name: 'main', isCurrentBranch: true }] }] };
+        }
+        if (method === 'CreateProject') {
+          const p = JSON.parse(JSON.stringify(body.project));
+          storedProjects.set(p.id, p);
+          return { project: p };
+        }
+        if (method === 'ReadProject') {
+          const hit = storedProjects.get(body.id);
+          if (!hit) throw new Error(`not_found: project ${body.id} not found`);
+          return { project: JSON.parse(JSON.stringify(hit)) };
+        }
+        if (method === 'UpdateProject') {
+          const p = JSON.parse(JSON.stringify(body.project));
+          if (!p?.id || !storedProjects.has(p.id)) {
+            throw new Error(`not_found: project with id "${p?.id || ''}" not found`);
+          }
+          storedProjects.set(p.id, p);
+          return { project: p };
+        }
+        return {};
+      }
+    });
+
+    const catStore = remoteMod.createSessionCatalogStore();
+    const httpCfg = { token: 'tok4142', port: 0, allowLan: true };
+    const handler = remoteMod.createRemoteHttpHandler(httpCfg, {
+      homeDir,
+      configDir,
+      catalogStore: catStore,
+      localApiConnect: mockLsConnect,
+      openInDesktop: false,
+      fetchSnapshot: async () => {
+        const projects = Array.from(storedProjects.values()).map((p) => {
+          const ws = (p.projectResources?.resources || []).map((r) => {
+            const u = r?.gitFolder?.folderUri || r?.folderUri || '';
+            return decodeURIComponent(new URL(u).pathname);
+          });
+          return {
+            id: p.id,
+            name: p.name,
+            path: ws[0] || '',
+            workspacePath: ws[0] || '',
+            workspacePaths: ws,
+            conversationCount: 1,
+            runningCount: 0,
+            waitingCount: 0,
+            unreadCount: 0,
+            isEmpty: false,
+            active: true
+          };
+        });
+        return {
+          ok: true,
+          sessionId: 'conv-41-1',
+          activeConversationId: 'conv-41-1',
+          currentProjectId: projects[projects.length - 1]?.id || '',
+          currentProjectName: projects[projects.length - 1]?.name || '',
+          currentWorkspacePaths: projects[projects.length - 1]?.workspacePaths || [],
+          title: '多目录项目测试会话',
+          busy: false,
+          model: 'Gemini 4 Neon (High)',
+          modelOptions: [{ label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', selected: true }],
+          permissionKey: 'auto',
+          permissionLabel: '自动',
+          usageSummary: { total: 0 },
+          messages: [],
+          projects,
+          conversations: projects.map((p, i) => ({
+            id: `conv-41-${i + 1}`,
+            projectId: p.id,
+            projectName: p.name,
+            title: `${p.name} 会话`,
+            active: i === projects.length - 1,
+            status: 'idle',
+            updatedAt: Date.now() - i * 1000
+          }))
+        };
+      },
+      performAction: async () => ({ ok: true })
+    });
+
+    const server = http.createServer(handler);
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const apiJson = async (method, pathname, body) => {
+      const res = await fetch(`${baseUrl}${pathname}`, {
+        method,
+        headers: {
+          'X-AG-Remote-Token': httpCfg.token,
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {})
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {})
+      });
+      return { status: res.status, data: await res.json() };
+    };
+
+    try {
+      // 1) [#41] POST /api/projects 多目录创建 + realpathSync 软链去重 + Git/普通目录混合解析
+      const createRes = await apiJson('POST', '/api/projects', {
+        name: 'MultiWorkspaceApp',
+        folderPaths: [dirRepoA, symlinkAliasA, dirSharedB],
+        openInDesktop: false
+      });
+      assert.equal(createRes.status, 200);
+      assert.equal(createRes.data.ok, true);
+      const newPid = createRes.data.project.id;
+      assert.ok(newPid);
+      assert.equal(createRes.data.project.folderPaths.length, 2, '指向同一真实目录的软链应通过 realpathSync 自动去重为 2 个目录');
+      const createdInRpc = storedProjects.get(newPid);
+      assert.equal(createdInRpc.projectResources.resources.length, 2);
+      assert.ok(createdInRpc.projectResources.resources[0].gitFolder?.folderUri.endsWith('/repo-alpha'), '首目录应识别为 Git 仓库并保留 gitFolder');
+      assert.equal(createdInRpc.projectResources.resources[0].gitFolder.defaultBranch, 'main');
+      assert.ok(createdInRpc.projectResources.resources[1].folderUri.endsWith('/common-lib'), '第二目录应作为普通目录写入 folderUri');
+
+      // 注入自定义未知配置字段，验证后续 UpdateProject 完整保留原项目配置
+      createdInRpc.settings = { customTheme: 'violet', autoIndex: true };
+      createdInRpc.permissionGrants = { v2Migrated: true, customGrant: 'keep-me' };
+      createdInRpc.customEnterpriseMeta = { teamId: 'shens-army' };
+      storedProjects.set(newPid, createdInRpc);
+
+      // 2) [#32] 安全边界校验：多目录中任一路径越出 $HOME 必须拦截且不得创建或更新
+      const escapeCreate = await apiJson('POST', '/api/projects', {
+        name: 'EscapeAttempt',
+        folderPaths: [dirRepoA, dirOutside],
+        openInDesktop: false
+      });
+      assert.equal(escapeCreate.data.ok, false);
+      assert.ok(escapeCreate.status === 403 || escapeCreate.status === 400, '包含 $HOME 之外目录的多目录创建请求必须被拦截');
+
+      // 3) [#42] GET /api/projects/detail 回显项目名与全部已绑定目录
+      const detailRes = await apiJson('GET', `/api/projects/detail?id=${encodeURIComponent(newPid)}`);
+      assert.equal(detailRes.status, 200);
+      assert.equal(detailRes.data.ok, true);
+      assert.equal(detailRes.data.project.name, 'MultiWorkspaceApp');
+      assert.equal(detailRes.data.project.folderPaths.length, 2);
+
+      // 4) [#42] POST /api/projects/update：改名 + 新增目录 (dirExtraC) + 移除目录 (dirSharedB)，并验证未知字段完整保留
+      const updateRes = await apiJson('POST', '/api/projects/update', {
+        id: newPid,
+        name: 'MultiWorkspaceRenamed',
+        folderPaths: [dirRepoA, dirExtraC]
+      });
+      assert.equal(updateRes.status, 200);
+      assert.equal(updateRes.data.ok, true);
+      assert.equal(updateRes.data.project.name, 'MultiWorkspaceRenamed');
+      assert.equal(updateRes.data.project.folderPaths.length, 2);
+      const updatedSnapProj = (updateRes.data.snapshot?.projects || []).find((p) => p.id === newPid);
+      assert.ok(updatedSnapProj, 'POST /api/projects/update 返回的 snapshot 应立即包含更新后的项目');
+      assert.equal(updatedSnapProj.name, 'MultiWorkspaceRenamed');
+      assert.equal(updatedSnapProj.workspacePaths.length, 2);
+      assert.ok(rpcCalls.some((c) => c.method === 'ReadProject' && c.body?.id === newPid), '编辑项目必须先调用 ReadProject 读取原配置');
+      assert.ok(rpcCalls.some((c) => c.method === 'UpdateProject' && c.body?.project?.id === newPid), '编辑项目必须调用 UpdateProject 提交更新');
+
+      const updatedInRpc = storedProjects.get(newPid);
+      assert.equal(updatedInRpc.name, 'MultiWorkspaceRenamed');
+      assert.equal(updatedInRpc.projectResources.resources.length, 2);
+      assert.ok(updatedInRpc.projectResources.resources[1].folderUri.endsWith('/module-gamma'));
+      assert.deepEqual(updatedInRpc.settings, { customTheme: 'violet', autoIndex: true }, 'UpdateProject 必须保留原 settings 字段');
+      assert.deepEqual(updatedInRpc.permissionGrants, { v2Migrated: true, customGrant: 'keep-me' }, 'UpdateProject 必须保留原 permissionGrants 字段');
+      assert.deepEqual(updatedInRpc.customEnterpriseMeta, { teamId: 'shens-army' }, 'UpdateProject 必须保留未知扩展字段');
+      assert.equal(updatedInRpc.archived, undefined, '编辑项目不得写入 archived');
+
+      // 5) [#42] 边界拦截：不允许移除至 0 个目录、不允许与其他项目重名、不允许传入 delete/archived
+      const zeroFolderRes = await apiJson('POST', '/api/projects/update', {
+        id: newPid,
+        name: 'MultiWorkspaceRenamed',
+        folderPaths: []
+      });
+      assert.equal(zeroFolderRes.status, 400);
+      assert.equal(zeroFolderRes.data.ok, false);
+
+      const dupNameRes = await apiJson('POST', '/api/projects/update', {
+        id: newPid,
+        name: 'existingother',
+        folderPaths: [dirRepoA]
+      });
+      assert.equal(dupNameRes.status, 400);
+      assert.equal(dupNameRes.data.ok, false);
+
+      const deleteAttemptRes = await apiJson('POST', '/api/projects/update', {
+        id: newPid,
+        name: 'MultiWorkspaceRenamed',
+        folderPaths: [dirRepoA],
+        delete: true
+      });
+      assert.equal(deleteAttemptRes.status, 400);
+      assert.equal(deleteAttemptRes.data.ok, false);
+
+      // 6) 前端 UI 闭环验证：新建弹窗连续添加多目录提交 + 侧边栏编辑按钮打开编辑弹窗（剩 1 目录禁用移除且无删除项目按钮）
+      const html = remoteMod.buildMobileAppHtml();
+      const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+      const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
+      assert.ok(scriptMatch && bodyMatch);
+      assert.equal(/删除项目|delete-project|btn-delete-project/i.test(html), false, '前端严禁提供任何删除项目按钮或入口');
+
+      const uiEnv = createDomEnv();
+      const rawSetTimeout = setTimeout;
+      uiEnv.sandbox.setTimeout = uiEnv.win.setTimeout = (fn, ms, ...args) => {
+        if (typeof fn === 'function' && Number(ms || 0) <= 250) {
+          const t = rawSetTimeout(fn, 0, ...args);
+          t?.unref?.();
+          return t;
+        }
+        return 1;
+      };
+      uiEnv.doc.body.innerHTML = bodyMatch[1];
+      uiEnv.win.innerWidth = 1280;
+      uiEnv.win.innerHeight = 800;
+      uiEnv.win.AbortController = AbortController;
+      uiEnv.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, hash: '', href: `${baseUrl}/?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+      uiEnv.win.history = { replaceState() {} };
+      uiEnv.sandbox.location = uiEnv.win.location;
+      uiEnv.sandbox.history = uiEnv.win.history;
+      uiEnv.sandbox.AbortController = AbortController;
+      uiEnv.sandbox.URLSearchParams = URLSearchParams;
+      uiEnv.win.fetch = (u, init) => fetch(String(u).startsWith('http') ? u : `${baseUrl}${u}`, init);
+      uiEnv.sandbox.fetch = uiEnv.win.fetch;
+
+      vm.runInNewContext(scriptMatch[1], uiEnv.sandbox);
+      await new Promise((r) => rawSetTimeout(r, 60));
+
+      // 6a) 侧边栏真实项目分组头部渲染编辑入口按钮，点击打开编辑弹窗并回显 2 个已绑定目录
+      const convList = uiEnv.doc.getElementById('conv-list');
+      const editBtns = convList.querySelectorAll('.proj-edit-btn');
+      assert.ok(editBtns.length >= 2, '每个真实项目行均应提供编辑项目设置按钮');
+      const targetEditBtn = editBtns.find((b) => b.getAttribute('data-edit-proj') === newPid);
+      assert.ok(targetEditBtn);
+      await convList.dispatchEvent({ type: 'click', target: targetEditBtn, stopPropagation() {} });
+      await new Promise((r) => rawSetTimeout(r, 60));
+
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, false);
+      assert.equal(uiEnv.doc.getElementById('proj-modal-title').textContent, '编辑项目设置');
+      assert.equal(uiEnv.doc.getElementById('proj-name-input').value, 'MultiWorkspaceRenamed');
+      const foldersBox = uiEnv.doc.getElementById('proj-folders-box');
+      let rmBtns = foldersBox.querySelectorAll('[data-rm-proj-folder]');
+      assert.equal(rmBtns.length, 2, '编辑弹窗应回显该项目已绑定的 2 个目录');
+      assert.equal(rmBtns[0].disabled, false);
+
+      // 移除第 2 个目录后仅剩 1 个目录，最后一个移除按钮必须自动禁用防止删空
+      foldersBox.dispatchEvent({ type: 'click', target: rmBtns[1] });
+      rmBtns = foldersBox.querySelectorAll('[data-rm-proj-folder]');
+      assert.equal(rmBtns.length, 1);
+      assert.equal(Boolean(rmBtns[0].disabled || rmBtns[0].hasAttribute('disabled')), true, '仅剩 1 个绑定目录时移除按钮必须禁用');
+      // 再次点击已禁用移除按钮，仍必须保留最后 1 个目录
+      foldersBox.dispatchEvent({ type: 'click', target: rmBtns[0] });
+      assert.equal(foldersBox.querySelectorAll('[data-rm-proj-folder]').length, 1, '已禁用的最后 1 个目录不可被移除');
+
+      // 修改项目名称并点击保存
+      const nameInput = uiEnv.doc.getElementById('proj-name-input');
+      nameInput.value = 'SingleFolderKept';
+      nameInput.dispatchEvent({ type: 'input' });
+      uiEnv.doc.getElementById('proj-create-submit').dispatchEvent({ type: 'click' });
+      for (let w = 0; w < 40 && !uiEnv.doc.getElementById('proj-modal-backdrop').hidden; w++) {
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+
+      assert.equal(
+        uiEnv.doc.getElementById('proj-modal-backdrop').hidden,
+        true,
+        `保存项目设置成功后应关闭弹窗 (toast=${uiEnv.doc.getElementById('toast')?.textContent || ''}, btn=${uiEnv.doc.getElementById('proj-create-submit')?.textContent || ''})`
+      );
+      assert.equal(storedProjects.get(newPid).name, 'SingleFolderKept');
+      assert.equal(storedProjects.get(newPid).projectResources.resources.length, 1);
+
+      // 6b) 前端新建弹窗连续添加 2 个目录并提交创建多目录项目
+      const projCountBeforeUiCreate = storedProjects.size;
+      uiEnv.doc.getElementById('btn-new-project').click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, false);
+      assert.match(uiEnv.doc.getElementById('proj-modal-title').textContent, /新建项目/);
+
+      const pathIn = uiEnv.doc.getElementById('proj-path-input');
+      const pathGo = uiEnv.doc.getElementById('proj-path-go');
+      pathIn.value = dirRepoA;
+      pathGo.click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      uiEnv.doc.getElementById('proj-add-folder-btn').click();
+
+      pathIn.value = dirSharedB;
+      pathGo.click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      uiEnv.doc.getElementById('proj-add-folder-btn').click();
+
+      assert.equal(foldersBox.querySelectorAll('.proj-folder-chip').length, 2, '新建项目弹窗应展示连续加入的 2 个目录芯片');
+      assert.match(uiEnv.doc.getElementById('proj-create-submit').textContent, /2 个目录/, '多目录创建提交按钮应显示已选目录数');
+
+      nameInput.value = 'UiCreatedMultiProj';
+      nameInput.dispatchEvent({ type: 'input' });
+      uiEnv.doc.getElementById('proj-create-submit').click();
+      for (let w = 0; w < 40 && !uiEnv.doc.getElementById('proj-modal-backdrop').hidden; w++) {
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, true);
+      assert.equal(storedProjects.size, projCountBeforeUiCreate + 1, '前端提交应创建新的多目录项目');
+      const uiCreatedProj = Array.from(storedProjects.values()).find((p) => p.name === 'UiCreatedMultiProj');
+      assert.ok(uiCreatedProj);
+      assert.equal(uiCreatedProj.projectResources.resources.length, 2, '前端创建的多目录项目应持久化 2 个目录资源');
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  } finally {
+    delete require.cache[require.resolve('../mobile-remote')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

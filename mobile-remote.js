@@ -4309,37 +4309,169 @@ function createHostSubdirectory(payload = {}, options = {}) {
   return { ok: true, existed: false, path: targetPath, name: rawName };
 }
 
-async function createRemoteProject(payload = {}, options = {}) {
-  const rawFolder = String(payload?.folderPath || '').trim();
-  if (!rawFolder) {
-    throw Object.assign(new Error('请选择项目文件夹路径'), { status: 400 });
+async function connectProjectLsApi(options = {}) {
+  const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
+  let connectFn = customConnect;
+  if (!connectFn && !isCatalogTestEnv()) {
+    try {
+      connectFn = require('./local-api').connect;
+    } catch {}
   }
-  const {
-    resolvedPath,
-    realPath,
-    homeDir,
-    realHomeDir
-  } = assertSafeHostDirectoryPath(rawFolder, options);
-  if (
-    resolvedPath === path.parse(resolvedPath).root ||
-    resolvedPath === homeDir ||
-    realPath === realHomeDir
-  ) {
-    throw Object.assign(new Error('不支持直接以用户主目录或系统根目录作为项目，请选择具体项目子目录'), { status: 400 });
+  if (!connectFn) return null;
+  try {
+    return typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1500, null) : connectFn;
+  } catch {
+    return null;
+  }
+}
+
+function validateSafeProjectFolderList(rawFoldersInput, options = {}, emptyErrorMsg = '请选择项目文件夹路径') {
+  const rawArr = Array.isArray(rawFoldersInput)
+    ? rawFoldersInput
+    : (rawFoldersInput !== undefined && rawFoldersInput !== null ? [rawFoldersInput] : []);
+  const trimmedList = rawArr.map((x) => String(x || '').trim()).filter(Boolean);
+  if (!trimmedList.length) {
+    throw Object.assign(new Error(emptyErrorMsg), { status: 400 });
+  }
+  const seenReal = new Set();
+  const validated = [];
+  for (const rawFolder of trimmedList) {
+    const {
+      resolvedPath,
+      realPath,
+      homeDir,
+      realHomeDir
+    } = assertSafeHostDirectoryPath(rawFolder, options);
+    if (
+      resolvedPath === path.parse(resolvedPath).root ||
+      resolvedPath === homeDir ||
+      realPath === realHomeDir
+    ) {
+      throw Object.assign(new Error('不支持直接以用户主目录或系统根目录作为项目，请选择具体项目子目录'), { status: 400 });
+    }
+    let dirStat;
+    try {
+      dirStat = fs.statSync(realPath);
+    } catch (err) {
+      if (err?.code === 'EACCES' || err?.code === 'EPERM') {
+        throw Object.assign(new Error('无权限访问所选文件夹'), { status: 403 });
+      }
+      throw Object.assign(new Error('所选项目目录不存在'), { status: 400 });
+    }
+    if (!dirStat.isDirectory()) {
+      throw Object.assign(new Error('所选路径不是文件夹'), { status: 400 });
+    }
+    if (seenReal.has(realPath)) continue;
+    seenReal.add(realPath);
+    const folderUri = pathToFileURL(resolvedPath).href.replace(/\/+$/, '');
+    validated.push({ resolvedPath, realPath, folderUri });
+  }
+  if (!validated.length) {
+    throw Object.assign(new Error(emptyErrorMsg), { status: 400 });
+  }
+  return validated;
+}
+
+async function resolveProjectResourcesForFolders(validatedFolders, lsApi, existingResources = []) {
+  const existingByReal = new Map();
+  if (Array.isArray(existingResources)) {
+    for (const resItem of existingResources) {
+      if (!resItem || typeof resItem !== 'object') continue;
+      const rawUri = resItem?.gitFolder?.folderUri || resItem?.folderUri || '';
+      const decoded = decodeFileUriToPath(rawUri);
+      if (!decoded) continue;
+      let rp = path.resolve(decoded);
+      try { rp = fs.realpathSync(decoded); } catch {}
+      if (!existingByReal.has(rp)) existingByReal.set(rp, resItem);
+    }
   }
 
-  let dirStat;
-  try {
-    dirStat = fs.statSync(realPath);
-  } catch (err) {
-    if (err?.code === 'EACCES' || err?.code === 'EPERM') {
-      throw Object.assign(new Error('无权限访问所选文件夹'), { status: 403 });
+  const resources = [];
+  const enrichedFolders = [];
+  for (const item of validatedFolders) {
+    const { resolvedPath, realPath, folderUri } = item;
+    const prevRes = existingByReal.get(realPath) || null;
+    let isGitRepo = Boolean(prevRes?.gitFolder);
+    try {
+      if (fs.existsSync(path.join(resolvedPath, '.git')) || fs.existsSync(path.join(realPath, '.git'))) {
+        isGitRepo = true;
+      }
+    } catch {}
+    let defaultBranch = isGitRepo
+      ? (String(prevRes?.gitFolder?.defaultBranch || '').trim() || readGitDefaultBranchFromDisk(resolvedPath))
+      : '';
+
+    if (lsApi && typeof lsApi.call === 'function') {
+      try {
+        const resolvedFolder = await withRaceTimeout(lsApi.call('ResolveFolder', { folderUri }), 2500, null);
+        if (resolvedFolder && (resolvedFolder.resourceType === 'FOLDER_TYPE_GIT_FOLDER' || resolvedFolder.resourceType === 2)) {
+          isGitRepo = true;
+        }
+      } catch {}
+      if (isGitRepo) {
+        try {
+          const repoRes = await withRaceTimeout(lsApi.call('GetRepoInfos', { repoUris: [folderUri] }), 2500, null);
+          const branches = Array.isArray(repoRes?.repos?.[0]?.branches) ? repoRes.repos[0].branches : [];
+          if (branches.length) {
+            const names = branches.map((b) => String(b?.name || '').trim()).filter(Boolean);
+            const cur = branches.find((b) => b?.isCurrentBranch && b?.name)?.name;
+            if (names.includes('main')) defaultBranch = 'main';
+            else if (names.includes('master')) defaultBranch = 'master';
+            else if (cur) defaultBranch = String(cur).trim();
+            else if (names[0] && !defaultBranch) defaultBranch = names[0];
+          }
+        } catch {}
+      }
     }
-    throw Object.assign(new Error('所选项目目录不存在'), { status: 400 });
+
+    let resourceObj;
+    if (prevRes) {
+      if (isGitRepo) {
+        const { folderUri: _dropPlainUri, ...restPrev } = prevRes;
+        resourceObj = {
+          ...restPrev,
+          gitFolder: {
+            ...(prevRes.gitFolder && typeof prevRes.gitFolder === 'object' ? prevRes.gitFolder : {}),
+            folderUri,
+            defaultBranch: defaultBranch || ''
+          }
+        };
+      } else {
+        const { gitFolder: _dropGit, ...restPrev } = prevRes;
+        resourceObj = { ...restPrev, folderUri };
+      }
+    } else {
+      resourceObj = isGitRepo
+        ? { gitFolder: { folderUri, defaultBranch: defaultBranch || '' } }
+        : { folderUri };
+    }
+    resources.push(resourceObj);
+    enrichedFolders.push({
+      resolvedPath,
+      realPath,
+      folderUri,
+      isGitRepo,
+      defaultBranch: defaultBranch || ''
+    });
   }
-  if (!dirStat.isDirectory()) {
-    throw Object.assign(new Error('所选路径不是文件夹'), { status: 400 });
-  }
+  return { resources, enrichedFolders };
+}
+
+function isValidEditableProjectId(rawId) {
+  const id = String(rawId || '').trim();
+  if (!id || id.length > 160) return false;
+  if (id === 'ungrouped' || id === 'default' || INTERNAL_EMPTY_PROJECT_IDS.has(id)) return false;
+  if (/[\\/\0]/.test(id) || id === '.' || id === '..') return false;
+  return true;
+}
+
+async function createRemoteProject(payload = {}, options = {}) {
+  const hasFolderArray = Array.isArray(payload?.folderPaths) && payload.folderPaths.some((x) => String(x || '').trim());
+  const rawInputFolders = hasFolderArray ? payload.folderPaths : [payload?.folderPath];
+  const validatedFolders = validateSafeProjectFolderList(rawInputFolders, options, '请选择项目文件夹路径');
+  const primary = validatedFolders[0];
+  const resolvedPath = primary.resolvedPath;
+  const isSingleFolderReq = validatedFolders.length === 1;
 
   const requestedName = String(payload?.name || '').trim();
   if (!requestedName) {
@@ -4351,46 +4483,35 @@ async function createRemoteProject(payload = {}, options = {}) {
 
   const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
   let matchedExisting = null;
-  for (const proj of metaMap.values()) {
-    if (proj.primaryPath && path.resolve(proj.primaryPath) === resolvedPath) {
-      matchedExisting = proj;
-      break;
-    }
-  }
-  if (!matchedExisting && requestedExistingId && metaMap.has(requestedExistingId)) {
-    matchedExisting = metaMap.get(requestedExistingId);
-  }
-
-  if (matchedExisting && !forceNew && (!requestedName || requestedName.toLowerCase() === matchedExisting.name.toLowerCase())) {
-    return {
-      ok: true,
-      alreadyExists: true,
-      project: {
-        id: matchedExisting.id,
-        name: matchedExisting.name,
-        folderPath: resolvedPath
+  if (isSingleFolderReq) {
+    for (const proj of metaMap.values()) {
+      if (proj.primaryPath && path.resolve(proj.primaryPath) === resolvedPath) {
+        matchedExisting = proj;
+        break;
       }
-    };
-  }
+    }
+    if (!matchedExisting && requestedExistingId && metaMap.has(requestedExistingId)) {
+      matchedExisting = metaMap.get(requestedExistingId);
+    }
 
-  const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
-  let connectFn = customConnect;
-  if (!connectFn && !isCatalogTestEnv()) {
-    try {
-      connectFn = require('./local-api').connect;
-    } catch {}
-  }
-
-  let lsApi = null;
-  if (connectFn) {
-    try {
-      lsApi = typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1500, null) : connectFn;
-    } catch {
-      lsApi = null;
+    if (matchedExisting && !forceNew && (!requestedName || requestedName.toLowerCase() === matchedExisting.name.toLowerCase())) {
+      return {
+        ok: true,
+        alreadyExists: true,
+        project: {
+          id: matchedExisting.id,
+          name: matchedExisting.name,
+          folderPath: resolvedPath,
+          folderPaths: [resolvedPath],
+          workspacePaths: [resolvedPath]
+        }
+      };
     }
   }
 
-  if (!forceNew && requestedExistingId && lsApi && typeof lsApi.call === 'function') {
+  const lsApi = await connectProjectLsApi(options);
+
+  if (isSingleFolderReq && !forceNew && requestedExistingId && lsApi && typeof lsApi.call === 'function') {
     try {
       const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: requestedExistingId }), 1500, null);
       const rp = readRes?.project;
@@ -4403,7 +4524,9 @@ async function createRemoteProject(payload = {}, options = {}) {
             project: {
               id: rp.id,
               name: rpName,
-              folderPath: resolvedPath
+              folderPath: resolvedPath,
+              folderPaths: [resolvedPath],
+              workspacePaths: [resolvedPath]
             }
           };
         }
@@ -4417,44 +4540,13 @@ async function createRemoteProject(payload = {}, options = {}) {
     }
   }
 
-  const folderUri = pathToFileURL(resolvedPath).href.replace(/\/+$/, '');
-  let isGitRepo = false;
-  try {
-    isGitRepo = fs.existsSync(path.join(resolvedPath, '.git'));
-  } catch {}
-  let defaultBranch = isGitRepo ? readGitDefaultBranchFromDisk(resolvedPath) : '';
-
-  if (lsApi && typeof lsApi.call === 'function') {
-    try {
-      const resolvedFolder = await withRaceTimeout(lsApi.call('ResolveFolder', { folderUri }), 2500, null);
-      if (resolvedFolder && (resolvedFolder.resourceType === 'FOLDER_TYPE_GIT_FOLDER' || resolvedFolder.resourceType === 2)) {
-        isGitRepo = true;
-      }
-    } catch {}
-    if (isGitRepo) {
-      try {
-        const repoRes = await withRaceTimeout(lsApi.call('GetRepoInfos', { repoUris: [folderUri] }), 2500, null);
-        const branches = Array.isArray(repoRes?.repos?.[0]?.branches) ? repoRes.repos[0].branches : [];
-        if (branches.length) {
-          const names = branches.map((b) => String(b?.name || '').trim()).filter(Boolean);
-          const cur = branches.find((b) => b?.isCurrentBranch && b?.name)?.name;
-          if (names.includes('main')) defaultBranch = 'main';
-          else if (names.includes('master')) defaultBranch = 'master';
-          else if (cur) defaultBranch = String(cur).trim();
-          else if (names[0] && !defaultBranch) defaultBranch = names[0];
-        }
-      } catch {}
-    }
-  }
-
+  const { resources, enrichedFolders } = await resolveProjectResourcesForFolders(validatedFolders, lsApi, []);
+  const primaryEnriched = enrichedFolders[0];
   const projectId = crypto.randomUUID();
-  const resource = isGitRepo
-    ? { gitFolder: { folderUri, defaultBranch: defaultBranch || '' } }
-    : { folderUri };
   const projectObj = {
     id: projectId,
     name: projectName,
-    projectResources: { resources: [resource] },
+    projectResources: { resources },
     permissionGrants: { v2Migrated: true },
     settings: {},
     isWorkspaceOnly: false
@@ -4486,6 +4578,10 @@ async function createRemoteProject(payload = {}, options = {}) {
     if (!writeRes?.ok) {
       throw Object.assign(new Error(writeRes?.error || '保存项目配置失败'), { status: 500 });
     }
+  } else if (options.configDir && effectiveConfigDir) {
+    // 隔离测试环境显式传入 configDir 且 mock lsApi 不会落盘时，同步写入隔离目录以便目录元数据缓存立即一致
+    const projFile = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    safeWriteJsonSync(projFile, projectObj, { indent: 2 });
   }
 
   defaultCatalogStore.invalidateProjectsCache();
@@ -4495,10 +4591,214 @@ async function createRemoteProject(payload = {}, options = {}) {
     project: {
       id: projectId,
       name: projectName,
-      folderPath: resolvedPath,
-      folderUri,
-      isGitRepo,
-      defaultBranch
+      folderPath: primaryEnriched.resolvedPath,
+      folderPaths: enrichedFolders.map((f) => f.resolvedPath),
+      workspacePaths: enrichedFolders.map((f) => f.resolvedPath),
+      folderUri: primaryEnriched.folderUri,
+      isGitRepo: primaryEnriched.isGitRepo,
+      defaultBranch: primaryEnriched.defaultBranch
+    }
+  };
+}
+
+async function readRemoteProjectDetail(projectIdInput, options = {}) {
+  const projectId = String(projectIdInput || '').trim();
+  if (!isValidEditableProjectId(projectId)) {
+    throw Object.assign(new Error('无效的项目 ID'), { status: 400 });
+  }
+  const lsApi = await connectProjectLsApi(options);
+  let rawProject = null;
+  if (lsApi && typeof lsApi.call === 'function') {
+    try {
+      const res = await withRaceTimeout(lsApi.call('ReadProject', { id: projectId }), 2000, null);
+      if (res?.project && typeof res.project === 'object') {
+        rawProject = res.project;
+      }
+    } catch {}
+  }
+  const effectiveConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim()
+    || (isCatalogTestEnv() ? '' : path.join(os.homedir(), '.gemini', 'config'));
+  if (!rawProject && effectiveConfigDir) {
+    const fp = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    const readRes = safeReadJsonSync(fp, null);
+    if (readRes?.ok && readRes.data && typeof readRes.data === 'object') {
+      rawProject = readRes.data;
+    }
+  }
+  if (!rawProject || rawProject.archived === true) {
+    throw Object.assign(new Error('未找到目标项目或该项目已归档'), { status: 404 });
+  }
+  const resources = Array.isArray(rawProject.projectResources?.resources) ? rawProject.projectResources.resources : [];
+  const folderPaths = [];
+  const folders = [];
+  for (const r of resources) {
+    const uri = r?.gitFolder?.folderUri || r?.folderUri || '';
+    const p = decodeFileUriToPath(uri);
+    if (!p) continue;
+    folderPaths.push(p);
+    folders.push({
+      path: p,
+      folderUri: uri,
+      isGitRepo: Boolean(r?.gitFolder),
+      defaultBranch: String(r?.gitFolder?.defaultBranch || '')
+    });
+  }
+  return {
+    ok: true,
+    project: {
+      id: String(rawProject.id || projectId),
+      name: String(rawProject.name || projectId).trim(),
+      folderPaths,
+      workspacePaths: folderPaths.slice(),
+      folders
+    }
+  };
+}
+
+async function updateRemoteProject(payload = {}, options = {}) {
+  // 严格护栏：明确禁止通过项目编辑接口执行删除或归档项目
+  if (payload?.delete === true || payload?.archived === true || payload?.action === 'delete') {
+    throw Object.assign(new Error('不支持删除或归档项目，仅支持修改项目名称与增减绑定目录'), { status: 400 });
+  }
+  const projectId = String(payload?.id || payload?.projectId || '').trim();
+  if (!isValidEditableProjectId(projectId)) {
+    throw Object.assign(new Error('无效的项目 ID，无法编辑该项目'), { status: 400 });
+  }
+  const projectName = String(payload?.name || '').trim();
+  if (!projectName) {
+    throw Object.assign(new Error('请输入项目名称'), { status: 400 });
+  }
+  const rawInputFolders = Array.isArray(payload?.folderPaths)
+    ? payload.folderPaths
+    : (payload?.folderPath !== undefined ? [payload.folderPath] : []);
+  if (!Array.isArray(rawInputFolders) || !rawInputFolders.some((x) => String(x || '').trim())) {
+    throw Object.assign(new Error('请至少保留 1 个有效的项目目录，不支持清空目录或删除项目'), { status: 400 });
+  }
+
+  const lsApi = await connectProjectLsApi(options);
+  let existingProjObj = null;
+  let lastReadError = '';
+  if (lsApi && typeof lsApi.call === 'function') {
+    try {
+      const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: projectId }), 2500, null);
+      if (readRes?.project && typeof readRes.project === 'object') {
+        existingProjObj = readRes.project;
+      }
+    } catch (err) {
+      lastReadError = err?.message || '';
+    }
+  }
+  const effectiveConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim()
+    || (isCatalogTestEnv() ? '' : path.join(os.homedir(), '.gemini', 'config'));
+  if (!existingProjObj && effectiveConfigDir) {
+    const fp = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    const readRes = safeReadJsonSync(fp, null);
+    if (readRes?.ok && readRes.data && typeof readRes.data === 'object') {
+      existingProjObj = readRes.data;
+    }
+  }
+  if (!existingProjObj || existingProjObj.archived === true) {
+    throw Object.assign(new Error(lastReadError || '未找到目标项目或该项目已归档'), { status: 404 });
+  }
+
+  // 将该项目原有的合法具体项目目录（排除 /、$HOME 及敏感路径）加入允许根，兼容桌面端此前已绑定的外部卷工作区目录且绝不放宽全盘边界
+  const { homeDir: resolvedHome, realHomeDir, logicalRoots: baseRoots } = resolveAllowedHostRoots(options);
+  const prevAllowedExtras = [];
+  const prevResources = Array.isArray(existingProjObj.projectResources?.resources) ? existingProjObj.projectResources.resources : [];
+  for (const r of prevResources) {
+    const rawPrev = decodeFileUriToPath(r?.gitFolder?.folderUri || r?.folderUri || '');
+    const prevPath = rawPrev ? path.resolve(rawPrev) : '';
+    if (
+      prevPath &&
+      prevPath !== '/' &&
+      prevPath !== resolvedHome &&
+      prevPath !== realHomeDir &&
+      !isSensitiveHostPath(prevPath, options)
+    ) {
+      prevAllowedExtras.push(prevPath);
+    }
+  }
+  const mergedAllowedRoots = prevAllowedExtras.length
+    ? Array.from(new Set([...baseRoots, ...prevAllowedExtras]))
+    : options.allowedRoots;
+  const validationOpts = mergedAllowedRoots ? { ...options, allowedRoots: mergedAllowedRoots } : options;
+
+  const validatedFolders = validateSafeProjectFolderList(
+    rawInputFolders,
+    validationOpts,
+    '请至少保留 1 个有效的项目目录，不支持清空目录或删除项目'
+  );
+
+  const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
+  for (const proj of metaMap.values()) {
+    if (proj.id !== projectId && proj.name && proj.name.toLowerCase() === projectName.toLowerCase()) {
+      throw Object.assign(new Error(`同名项目「${proj.name}」已存在，请修改项目名称`), { status: 400 });
+    }
+  }
+
+  const { resources, enrichedFolders } = await resolveProjectResourcesForFolders(validatedFolders, lsApi, prevResources);
+  const updatedProjectObj = {
+    ...existingProjObj,
+    id: projectId,
+    name: projectName,
+    projectResources: {
+      ...(existingProjObj.projectResources && typeof existingProjObj.projectResources === 'object' ? existingProjObj.projectResources : {}),
+      resources
+    }
+  };
+  if (!existingProjObj.archived) {
+    delete updatedProjectObj.archived;
+  }
+
+  let updatedViaRpc = false;
+  let lastUpdateErr = '';
+  if (lsApi && typeof lsApi.call === 'function') {
+    try {
+      await lsApi.call('UpdateProject', { project: updatedProjectObj });
+      updatedViaRpc = true;
+    } catch (err) {
+      lastUpdateErr = err?.message || 'UpdateProject 调用失败';
+      if (!options.allowDiskFallback) {
+        throw Object.assign(new Error(`更新项目设置失败：${lastUpdateErr}`), { status: 502 });
+      }
+    }
+  }
+
+  if (!updatedViaRpc) {
+    const canFallback = Boolean(options.allowDiskFallback || options.configDir || process.env.AG_CONFIG_DIR);
+    if (!canFallback || !effectiveConfigDir) {
+      throw Object.assign(new Error(lastUpdateErr || '无法连接 Antigravity 语言服务以保存项目设置'), { status: 503 });
+    }
+    const projFile = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    const writeRes = safeWriteJsonSync(projFile, updatedProjectObj, {
+      indent: 2,
+      validate: (d) => d && d.id === projectId && d.name === projectName && Array.isArray(d.projectResources?.resources) && d.projectResources.resources.length >= 1
+    });
+    if (!writeRes?.ok) {
+      throw Object.assign(new Error(writeRes?.error || '保存项目配置失败'), { status: 500 });
+    }
+  } else if (options.configDir && effectiveConfigDir) {
+    const projFile = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    if (fs.existsSync(projFile) || fs.existsSync(path.dirname(projFile))) {
+      safeWriteJsonSync(projFile, updatedProjectObj, { indent: 2 });
+    }
+  }
+
+  defaultCatalogStore.invalidateProjectsCache();
+  return {
+    ok: true,
+    project: {
+      id: projectId,
+      name: projectName,
+      folderPath: enrichedFolders[0].resolvedPath,
+      folderPaths: enrichedFolders.map((f) => f.resolvedPath),
+      workspacePaths: enrichedFolders.map((f) => f.resolvedPath),
+      folders: enrichedFolders.map((f) => ({
+        path: f.resolvedPath,
+        folderUri: f.folderUri,
+        isGitRepo: f.isGitRepo,
+        defaultBranch: f.defaultBranch
+      }))
     }
   };
 }
@@ -9477,12 +9777,47 @@ function buildMobileAppHtml() {
       margin-left:auto;padding:1px 7px;border-radius:999px;background:var(--proj-count-bg);
       font-size:11px;color:var(--fg-sub);font-weight:600;font-variant-numeric:tabular-nums;flex-shrink:0;
     }
-    .proj-new-btn{
+    .proj-edit-btn,.proj-new-btn{
       appearance:none;width:28px;height:28px;flex-shrink:0;border-radius:8px;
       border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-sub);
       display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;line-height:1;
     }
-    .proj-new-btn:active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
+    .proj-edit-btn{width:26px;height:26px;color:var(--muted)}
+    .conv-list.is-proj-sorting .proj-edit-btn,.conv-list.is-proj-sorting .proj-new-btn{display:none}
+    .proj-edit-btn:active,.proj-new-btn:active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
+    .proj-summary-top{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+    .proj-add-folder-btn{
+      appearance:none;min-height:28px;padding:3px 9px;border-radius:8px;
+      border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;
+    }
+    .proj-add-folder-btn:disabled{opacity:.52;cursor:default;border-color:var(--border);background:var(--surface-soft);color:var(--muted)}
+    .proj-folders-box{
+      display:flex;flex-direction:column;gap:5px;padding:8px 10px;border-radius:10px;
+      background:var(--surface-subtle);border:1px solid var(--border);flex-shrink:0;
+    }
+    .proj-folders-hdr{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11.5px;font-weight:600;color:var(--muted)}
+    .proj-folders-hint{font-size:11.5px;color:var(--muted);line-height:1.4}
+    .proj-folders-list{display:flex;flex-direction:column;gap:5px;max-height:132px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+    .proj-folder-chip{
+      display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:8px;
+      background:var(--surface-soft);border:1px solid var(--border-subtle);min-width:0;
+    }
+    .proj-folder-chip-path{
+      flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      font-size:11.5px;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    .proj-folder-primary-pill{
+      flex-shrink:0;font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;
+      background:var(--accent-bg);color:var(--accent-fg);border:1px solid var(--accent-border);
+    }
+    .proj-folder-rm-btn{
+      appearance:none;width:22px;height:22px;flex-shrink:0;border-radius:6px;
+      border:1px solid var(--border);background:transparent;color:var(--muted);
+      display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;line-height:1;
+    }
+    .proj-folder-rm-btn:hover:not(:disabled){background:var(--surface-hover);color:var(--red);border-color:var(--risk-border)}
+    .proj-folder-rm-btn:disabled{opacity:.35;cursor:not-allowed}
     .proj-body{
       display:flex;flex-direction:column;gap:4px;margin-left:11px;padding-left:9px;
       border-left:1.5px solid var(--border);
@@ -9684,7 +10019,7 @@ function buildMobileAppHtml() {
       .proj-sort-btn:hover:not(:disabled){background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
       .proj-sort-toggle-btn.active:hover{background:var(--accent-bg);border-color:var(--accent);color:var(--accent-strong-fg)}
       .proj-toggle:hover{color:var(--fg-strong)}
-      .proj-new-btn:hover{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
+      .proj-edit-btn:hover,.proj-new-btn:hover{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
       .proj-root-pill:hover,.proj-act-btn:hover,.proj-dir-item:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .proj-primary-btn:hover{filter:brightness(1.08)}
       .conv-more-btn:hover{background:var(--surface-hover);color:var(--fg-secondary)}
@@ -10022,9 +10357,9 @@ function buildMobileAppHtml() {
   </div>
 
   <div id="proj-modal-backdrop" class="sheet-backdrop" hidden>
-    <div class="sheet proj-modal" role="dialog" aria-label="新建项目">
+    <div id="proj-modal-dialog" class="sheet proj-modal" role="dialog" aria-label="新建项目">
       <div class="sheet-title">
-        <span>新建项目 · 选择电脑目录</span>
+        <span id="proj-modal-title">新建项目 · 选择电脑目录</span>
         <button id="proj-modal-close" class="icon-btn panel-close-btn" type="button">关闭</button>
       </div>
       <div id="proj-modal-body" class="proj-modal-body">
@@ -10044,6 +10379,7 @@ function buildMobileAppHtml() {
         </div>
         <div id="proj-dir-list" class="proj-dir-list"></div>
         <div id="proj-selected-summary" class="proj-summary-card"></div>
+        <div id="proj-folders-box" class="proj-folders-box"></div>
         <div class="proj-name-row">
           <label class="proj-name-label" for="proj-name-input">项目名称</label>
           <input id="proj-name-input" class="proj-field-input" type="text" placeholder="请填写项目名称…">
@@ -14708,6 +15044,7 @@ function buildMobileAppHtml() {
 
     const FOLDER_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
     const FOLDER_SM_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+    const PROJ_EDIT_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>';
 
     let clientPrevConvStatus = new Map();
     let clientSentNotifyTurnKeys = new Map();
@@ -14872,6 +15209,9 @@ function buildMobileAppHtml() {
                 + '<button class="proj-sort-btn" data-proj-move="down" data-proj-id="' + esc(p.id) + '" type="button" title="下移项目" aria-label="下移 ' + esc(p.name) + '"' + (ordIdx >= orderableTotal - 1 ? ' disabled' : '') + '>↓</button>'
                 + '</span>')
               : (isUngroupedProj && projSortMode ? '<span class="proj-fixed-tag">固定垫底</span>' : '');
+            const editBtnHtml = (!isUngroupedProj && !projSortMode)
+              ? '<button class="proj-edit-btn" data-edit-proj="' + esc(p.id) + '" type="button" title="编辑项目设置" aria-label="编辑项目 ' + esc(p.name) + '">' + PROJ_EDIT_ICON_SVG + '</button>'
+              : '';
             const newBtnHtml = !isUngroupedProj
               ? '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话" aria-label="在 ' + esc(p.name) + ' 中新建对话">+</button>'
               : '';
@@ -14892,6 +15232,7 @@ function buildMobileAppHtml() {
                   '<span class="proj-count">' + projTotal + '</span>' +
                 '</button>' +
                 sortBtnsHtml +
+                editBtnHtml +
                 newBtnHtml +
               '</div>' +
               itemsHtml +
@@ -18138,7 +18479,29 @@ function buildMobileAppHtml() {
       });
     }
 
+    function normalizeClientFolderEntryPath(rawVal) {
+      let s = String(rawVal || '').trim();
+      if (!s) return '';
+      if (/^file:\\/\\//i.test(s)) {
+        try {
+          const u = new URL(s);
+          s = decodeURIComponent(u.pathname || '');
+        } catch {
+          s = s.replace(/^file:\\/\\/+/i, '/');
+        }
+      }
+      if (s.length > 1) s = s.replace(/\\/+$/, '');
+      return s;
+    }
+
     const projBrowserState = {
+      mode: 'create',
+      editingProjectId: '',
+      detailSeq: 0,
+      selectedFolders: [],
+      userTouchedFolders: false,
+      userTouchedName: false,
+      dirLoadSeq: 0,
       currentPath: '',
       parentPath: null,
       showHidden: false,
@@ -18150,10 +18513,86 @@ function buildMobileAppHtml() {
       submitting: false
     };
 
+    function isPathInSelectedFolders(candidatePath) {
+      const norm = normalizeClientFolderEntryPath(candidatePath);
+      if (!norm) return false;
+      return projBrowserState.selectedFolders.some((f) => normalizeClientFolderEntryPath(f.path) === norm);
+    }
+
+    function addFolderToProjSelection(rawPath, isGitHint) {
+      const norm = normalizeClientFolderEntryPath(rawPath);
+      if (!norm) return false;
+      if (isPathInSelectedFolders(norm)) {
+        showToast('该目录已在项目目录列表中');
+        return false;
+      }
+      projBrowserState.userTouchedFolders = true;
+      projBrowserState.selectedFolders.push({
+        path: norm,
+        isGitRepo: Boolean(isGitHint)
+      });
+      if (projBrowserState.mode === 'create') {
+        const nameIn = $('proj-name-input');
+        if (nameIn && !String(nameIn.value || '').trim()) {
+          const baseSeg = norm.split('/').filter(Boolean).pop() || '';
+          if (baseSeg) nameIn.value = baseSeg;
+        }
+      }
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
+      syncCreateProjectSubmitUi();
+      return true;
+    }
+
+    function removeFolderFromProjSelection(idx) {
+      const i = Number(idx);
+      if (!Number.isInteger(i) || i < 0 || i >= projBrowserState.selectedFolders.length) return false;
+      if (projBrowserState.mode === 'edit' && projBrowserState.selectedFolders.length <= 1) {
+        showToast('至少需要保留 1 个有效的项目目录');
+        return false;
+      }
+      projBrowserState.userTouchedFolders = true;
+      projBrowserState.selectedFolders.splice(i, 1);
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
+      syncCreateProjectSubmitUi();
+      return true;
+    }
+
+    function renderProjSelectedFoldersBox() {
+      const boxEl = $('proj-folders-box');
+      if (!boxEl) return;
+      const isEdit = projBrowserState.mode === 'edit';
+      const list = projBrowserState.selectedFolders;
+      if (!isEdit && list.length === 0) {
+        boxEl.innerHTML =
+          '<div class="proj-folders-hdr"><span>多目录工作区（可选）</span></div>' +
+          '<div class="proj-folders-hint">点击上方「＋ 加入项目目录」可连续添加多个文件夹；未手动加入时默认使用当前浏览目录创建项目。</div>';
+        return;
+      }
+      const titleLabel = isEdit
+        ? ('已绑定项目目录 (' + list.length + ') · 至少保留 1 个')
+        : ('已选项目目录 (' + list.length + ')');
+      const lockRemove = isEdit && list.length <= 1;
+      const rowsHtml = list.map((item, idx) => {
+        const primaryBadge = idx === 0 ? '<span class="proj-folder-primary-pill">主目录</span>' : '';
+        const rmTitle = lockRemove ? '至少保留 1 个有效项目目录' : '移除此目录';
+        return '<div class="proj-folder-chip" data-proj-folder-row="' + idx + '">' +
+          '<span class="proj-icon">' + FOLDER_SM_SVG + '</span>' +
+          '<span class="proj-folder-chip-path" title="' + esc(item.path) + '">' + esc(item.path) + '</span>' +
+          primaryBadge +
+          '<button class="proj-folder-rm-btn" data-rm-proj-folder="' + idx + '" type="button" title="' + esc(rmTitle) + '" aria-label="' + esc(rmTitle) + '"' + (lockRemove ? ' disabled' : '') + '>×</button>' +
+          '</div>';
+      }).join('');
+      boxEl.innerHTML =
+        '<div class="proj-folders-hdr"><span>' + esc(titleLabel) + '</span></div>' +
+        '<div class="proj-folders-list">' + rowsHtml + '</div>';
+    }
+
     function renderProjModalSummary() {
       const sumEl = $('proj-selected-summary');
       if (!sumEl) return;
-      if (projBrowserState.navFailedError && projBrowserState.existingProject) {
+      if (projBrowserState.mode === 'create' && projBrowserState.navFailedError && projBrowserState.existingProject) {
         sumEl.classList.add('is-warn');
         const exName = projBrowserState.existingProject.name || $('proj-name-input')?.value || '';
         const headline = projBrowserState.justCreatedButNavFailed
@@ -18167,20 +18606,47 @@ function buildMobileAppHtml() {
       }
       sumEl.classList.remove('is-warn');
       const repoBadge = projBrowserState.isGitRepo ? 'Git 仓库' : '普通目录';
-      const linkedHint = projBrowserState.existingProject
-        ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」（填写同名可直接进入，或填写新名称另建）')
+      const isEdit = projBrowserState.mode === 'edit';
+      const linkedHint = (!isEdit && projBrowserState.existingProject && projBrowserState.selectedFolders.length <= 1)
+        ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」')
         : '';
+      const curPath = projBrowserState.currentPath;
+      const alreadyAdded = Boolean(curPath && isPathInSelectedFolders(curPath));
+      const addDisabled = !curPath || alreadyAdded || projBrowserState.submitting;
+      const addLabel = alreadyAdded ? '✓ 已在目录列表' : '＋ 加入项目目录';
       sumEl.innerHTML =
-        '<div><strong>当前选中目录</strong> (' + esc(repoBadge) + esc(linkedHint) + ')</div>' +
-        '<div class="proj-summary-path">' + esc(projBrowserState.currentPath) + '</div>';
+        '<div class="proj-summary-top">' +
+          '<span><strong>当前浏览目录</strong> (' + esc(repoBadge + linkedHint) + ')</span>' +
+          '<button id="proj-add-folder-btn" class="proj-add-folder-btn" type="button"' + (addDisabled ? ' disabled' : '') + '>' + esc(addLabel) + '</button>' +
+        '</div>' +
+        '<div class="proj-summary-path">' + esc(curPath || '正在读取电脑目录…') + '</div>';
     }
 
     function syncCreateProjectSubmitUi() {
       const submitBtn = $('proj-create-submit');
       if (!submitBtn) return;
       const typedName = String($('proj-name-input')?.value || '').trim();
+      const isEdit = projBrowserState.mode === 'edit';
+      if (isEdit) {
+        if (projBrowserState.submitting) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = '正在保存项目设置…';
+          return;
+        }
+        const hasValidFolders = projBrowserState.selectedFolders.length >= 1;
+        submitBtn.disabled = !hasValidFolders || !typedName;
+        submitBtn.textContent = '保存项目设置';
+        return;
+      }
       const ex = projBrowserState.existingProject;
-      const matchesExisting = Boolean(ex && typedName && typedName.toLowerCase() === String(ex.name || '').toLowerCase());
+      const effectiveCount = projBrowserState.selectedFolders.length;
+      const matchesExisting = Boolean(
+        effectiveCount <= 1 &&
+        ex &&
+        typedName &&
+        typedName.toLowerCase() === String(ex.name || '').toLowerCase() &&
+        (!effectiveCount || normalizeClientFolderEntryPath(projBrowserState.selectedFolders[0]?.path) === normalizeClientFolderEntryPath(projBrowserState.currentPath))
+      );
       if (projBrowserState.submitting) {
         submitBtn.disabled = true;
         submitBtn.textContent = (projBrowserState.navFailedError && matchesExisting)
@@ -18188,10 +18654,12 @@ function buildMobileAppHtml() {
           : '正在创建并打开项目…';
         return;
       }
-      const hasPath = Boolean(projBrowserState.currentPath);
+      const hasPath = Boolean(effectiveCount > 0 || projBrowserState.currentPath);
       submitBtn.disabled = !hasPath || !typedName;
       if (matchesExisting) {
         submitBtn.textContent = (projBrowserState.navFailedError ? '重试进入已有项目「' : '进入已有项目「') + ex.name + '」';
+      } else if (effectiveCount > 1) {
+        submitBtn.textContent = '创建多目录项目 (' + effectiveCount + ' 个目录) 并进入对话';
       } else {
         submitBtn.textContent = '创建项目并进入对话';
       }
@@ -18247,11 +18715,13 @@ function buildMobileAppHtml() {
       }
 
       renderProjModalSummary();
+      renderProjSelectedFoldersBox();
 
       syncCreateProjectSubmitUi();
     }
 
     async function loadHostDirListing(targetPath) {
+      const myDirSeq = ++projBrowserState.dirLoadSeq;
       projBrowserState.loading = true;
       const listEl = $('proj-dir-list');
       if (listEl && (!listEl.children.length || listEl.querySelector?.('.empty-state-card'))) {
@@ -18265,6 +18735,7 @@ function buildMobileAppHtml() {
         if (projBrowserState.showHidden) params.push('showHidden=1');
         const q = '/api/fs/dirs' + (params.length ? ('?' + params.join('&')) : '');
         const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
+        if (myDirSeq !== projBrowserState.dirLoadSeq) return false;
         if (res.status === 401) { location.reload(); return false; }
         const data = await res.json().catch(() => null);
         if (!res.ok || !data || data.ok === false) {
@@ -18274,6 +18745,7 @@ function buildMobileAppHtml() {
         renderDirBrowserData(data);
         return true;
       } catch (err) {
+        if (myDirSeq !== projBrowserState.dirLoadSeq) return false;
         projBrowserState.loading = false;
         const readableErr = humanizeRemoteError(err?.message, '读取电脑目录失败，请检查电脑端连接后重试');
         if (listEl && !projBrowserState.currentPath) {
@@ -18297,20 +18769,107 @@ function buildMobileAppHtml() {
     async function openCreateProjectModal() {
       const backdrop = $('proj-modal-backdrop');
       if (!backdrop) return;
+      projBrowserState.mode = 'create';
+      projBrowserState.editingProjectId = '';
+      projBrowserState.detailSeq++;
+      projBrowserState.selectedFolders = [];
+      projBrowserState.userTouchedFolders = false;
+      projBrowserState.userTouchedName = false;
       projBrowserState.navFailedError = '';
       projBrowserState.justCreatedButNavFailed = false;
+      const titleEl = $('proj-modal-title');
+      if (titleEl) titleEl.textContent = '新建项目 · 选择电脑目录';
+      $('proj-modal-dialog')?.setAttribute?.('aria-label', '新建项目');
       if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
       if ($('proj-mkdir-input')) $('proj-mkdir-input').value = '';
       if ($('proj-name-input')) $('proj-name-input').value = '';
       backdrop.hidden = false;
       resetModalSheetShift();
       syncViewportHeight();
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
       syncCreateProjectSubmitUi();
       const initialPath = projBrowserState.currentPath || '';
       await loadHostDirListing(initialPath);
     }
 
+    async function openEditProjectModal(projectId) {
+      const pid = String(projectId || '').trim();
+      if (!pid || isNonProjectBucket(pid)) return;
+      const backdrop = $('proj-modal-backdrop');
+      if (!backdrop) return;
+      const snapProj = (Array.isArray(latestSnap?.projects) ? latestSnap.projects : []).find((p) => p && p.id === pid) || null;
+      const seedRawPaths = Array.isArray(snapProj?.workspacePaths) && snapProj.workspacePaths.length
+        ? snapProj.workspacePaths
+        : (snapProj?.path ? [snapProj.path] : []);
+      const seedFolders = [];
+      const seenSeed = new Set();
+      for (const rp of seedRawPaths) {
+        const norm = normalizeClientFolderEntryPath(rp);
+        if (!norm || seenSeed.has(norm)) continue;
+        seenSeed.add(norm);
+        seedFolders.push({ path: norm, isGitRepo: false });
+      }
+      const myDetailSeq = ++projBrowserState.detailSeq;
+      projBrowserState.mode = 'edit';
+      projBrowserState.editingProjectId = pid;
+      projBrowserState.selectedFolders = seedFolders;
+      projBrowserState.userTouchedFolders = false;
+      projBrowserState.userTouchedName = false;
+      projBrowserState.navFailedError = '';
+      projBrowserState.justCreatedButNavFailed = false;
+      const titleEl = $('proj-modal-title');
+      if (titleEl) titleEl.textContent = '编辑项目设置';
+      $('proj-modal-dialog')?.setAttribute?.('aria-label', '编辑项目设置');
+      if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
+      if ($('proj-mkdir-input')) $('proj-mkdir-input').value = '';
+      if ($('proj-name-input')) $('proj-name-input').value = String(snapProj?.name || '');
+      backdrop.hidden = false;
+      resetModalSheetShift();
+      syncViewportHeight();
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
+      syncCreateProjectSubmitUi();
+
+      let browseSeedPath = seedFolders[0]?.path || projBrowserState.currentPath || '';
+      try {
+        const detRes = await fetchWithTimeout((apiBase || '') + '/api/projects/detail?id=' + encodeURIComponent(pid), {
+          headers: authHeaders(),
+          cache: 'no-store'
+        }, 4000);
+        const detJson = await detRes.json().catch(() => null);
+        if (
+          !backdrop.hidden &&
+          myDetailSeq === projBrowserState.detailSeq &&
+          detRes.ok &&
+          detJson?.ok &&
+          detJson.project &&
+          projBrowserState.mode === 'edit' &&
+          projBrowserState.editingProjectId === pid
+        ) {
+          const authFolders = Array.isArray(detJson.project.folders) && detJson.project.folders.length
+            ? detJson.project.folders.map((f) => ({ path: normalizeClientFolderEntryPath(f.path), isGitRepo: Boolean(f.isGitRepo) })).filter((f) => f.path)
+            : (Array.isArray(detJson.project.folderPaths) ? detJson.project.folderPaths.map((p) => ({ path: normalizeClientFolderEntryPath(p), isGitRepo: false })).filter((f) => f.path) : []);
+          if (authFolders.length > 0 && !projBrowserState.userTouchedFolders) {
+            projBrowserState.selectedFolders = authFolders;
+            if (!browseSeedPath) browseSeedPath = authFolders[0].path;
+          }
+          if (detJson.project.name && $('proj-name-input') && !projBrowserState.userTouchedName) {
+            $('proj-name-input').value = String(detJson.project.name);
+          }
+          renderProjSelectedFoldersBox();
+          syncCreateProjectSubmitUi();
+        }
+      } catch {}
+      if (backdrop.hidden || myDetailSeq !== projBrowserState.detailSeq || projBrowserState.mode !== 'edit' || projBrowserState.editingProjectId !== pid) {
+        return;
+      }
+      await loadHostDirListing(browseSeedPath);
+    }
+
     function closeCreateProjectModal() {
+      projBrowserState.detailSeq++;
+      projBrowserState.dirLoadSeq++;
       const backdrop = $('proj-modal-backdrop');
       if (backdrop && backdrop.contains(document.activeElement)) {
         try { document.activeElement.blur(); } catch {}
@@ -18350,14 +18909,102 @@ function buildMobileAppHtml() {
 
     async function submitCreateProjectModal() {
       if (projBrowserState.submitting) return;
-      const folderPath = String(projBrowserState.currentPath || '').trim();
       const projectName = String($('proj-name-input')?.value || '').trim();
-      if (!folderPath) {
-        showToast('请先选择项目目录');
-        return;
-      }
       if (!projectName) {
         showToast('请输入项目名称');
+        return;
+      }
+
+      if (projBrowserState.mode === 'edit') {
+        const editPid = String(projBrowserState.editingProjectId || '').trim();
+        const folderPaths = projBrowserState.selectedFolders
+          .map((f) => normalizeClientFolderEntryPath(f.path))
+          .filter(Boolean);
+        if (!editPid) {
+          showToast('缺少目标项目 ID');
+          return;
+        }
+        if (!folderPaths.length) {
+          showToast('请至少保留 1 个有效的项目目录');
+          return;
+        }
+        projBrowserState.submitting = true;
+        syncCreateProjectSubmitUi();
+        const editStartEpoch = ++clientSyncEpoch;
+        invalidateInflightSnapshotPolls();
+        try {
+          const res = await fetchWithTimeout((apiBase || '') + '/api/projects/update', {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({
+              id: editPid,
+              name: projectName,
+              folderPaths,
+              targetId: currentTargetId || undefined
+            })
+          }, 8000);
+          if (res.status === 401) { location.reload(); return; }
+          const data = await res.json().catch(() => null);
+          if (!res.ok || !data || data.ok === false) {
+            throw new Error(data?.error || ('保存项目设置失败 (HTTP ' + res.status + ')'));
+          }
+          const updatedName = String(data.project?.name || projectName).trim();
+          const updatedPaths = Array.isArray(data.project?.workspacePaths) && data.project.workspacePaths.length
+            ? data.project.workspacePaths
+            : folderPaths;
+          if (latestSnap && Array.isArray(latestSnap.projects)) {
+            for (const p of latestSnap.projects) {
+              if (p && p.id === editPid) {
+                p.name = updatedName;
+                p.workspacePaths = updatedPaths.slice();
+                p.path = updatedPaths[0] || '';
+                p.workspacePath = updatedPaths[0] || '';
+              }
+            }
+            if (latestSnap.currentProjectId === editPid) {
+              latestSnap.currentProjectName = updatedName;
+              latestSnap.currentWorkspacePaths = updatedPaths.slice();
+              latestSnap.currentProjectPath = updatedPaths[0] || '';
+            }
+          }
+          if (getEffectiveSelectedProject(latestSnap).id === editPid) {
+            setUserSelectedProject(editPid, updatedName);
+          }
+          let appliedEditSnap = false;
+          if (data.snapshot) {
+            appliedEditSnap = renderSnapshot(data.snapshot, {
+              reqStartEpoch: editStartEpoch,
+              advanceFloorOnApply: true
+            });
+            if (appliedEditSnap) invalidateInflightSnapshotPolls();
+          }
+          if (!appliedEditSnap && latestSnap) {
+            renderConversationList(latestSnap);
+            syncNewChatButtonUi(latestSnap);
+            if ($('conv-project-badge') && latestSnap.currentProjectId === editPid) {
+              $('conv-project-badge').textContent = updatedName;
+            }
+          }
+          closeCreateProjectModal();
+          showToast('已保存项目「' + updatedName + '」设置');
+        } catch (err) {
+          showToast(err?.message || '保存项目设置失败');
+        } finally {
+          projBrowserState.submitting = false;
+          syncCreateProjectSubmitUi();
+          if (!snapshotInflight) schedulePoll();
+        }
+        return;
+      }
+
+      const explicitPaths = projBrowserState.selectedFolders
+        .map((f) => normalizeClientFolderEntryPath(f.path))
+        .filter(Boolean);
+      const fallbackSingle = String(projBrowserState.currentPath || '').trim();
+      const folderPaths = explicitPaths.length > 0 ? explicitPaths : (fallbackSingle ? [fallbackSingle] : []);
+      const folderPath = folderPaths[0] || '';
+      if (!folderPaths.length) {
+        showToast('请先选择项目目录');
         return;
       }
       projBrowserState.submitting = true;
@@ -18367,13 +19014,14 @@ function buildMobileAppHtml() {
       const myNavSeq = ++lastNavActionSeq;
       invalidateInflightSnapshotPolls();
       try {
-        const ex = projBrowserState.existingProject;
+        const ex = folderPaths.length === 1 ? projBrowserState.existingProject : null;
         const forceNew = Boolean(ex && ex.name && projectName.toLowerCase() !== String(ex.name).toLowerCase());
         const res = await fetchWithTimeout((apiBase || '') + '/api/projects', {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             folderPath,
+            folderPaths,
             name: projectName,
             forceNew,
             existingProjectId: (!forceNew && ex?.id) ? ex.id : undefined,
@@ -18492,6 +19140,7 @@ function buildMobileAppHtml() {
       if (val) void loadHostDirListing(val);
     });
     $('proj-name-input')?.addEventListener('input', () => {
+      projBrowserState.userTouchedName = true;
       const typedName = String($('proj-name-input')?.value || '').trim();
       const ex = projBrowserState.existingProject;
       if (projBrowserState.navFailedError && (!ex || typedName.toLowerCase() !== String(ex.name || '').toLowerCase())) {
@@ -18500,6 +19149,18 @@ function buildMobileAppHtml() {
         renderProjModalSummary();
       }
       syncCreateProjectSubmitUi();
+    });
+    $('proj-selected-summary')?.addEventListener('click', (e) => {
+      const addBtn = e.target?.closest?.('#proj-add-folder-btn');
+      if (addBtn && !addBtn.disabled && !addBtn.hasAttribute?.('disabled') && projBrowserState.currentPath) {
+        addFolderToProjSelection(projBrowserState.currentPath, projBrowserState.isGitRepo);
+      }
+    });
+    $('proj-folders-box')?.addEventListener('click', (e) => {
+      const rmBtn = e.target?.closest?.('[data-rm-proj-folder]');
+      if (rmBtn && !rmBtn.disabled && !rmBtn.hasAttribute?.('disabled')) {
+        removeFolderFromProjSelection(rmBtn.getAttribute('data-rm-proj-folder'));
+      }
     });
     $('proj-create-submit')?.addEventListener('click', () => { void submitCreateProjectModal(); });
 
@@ -18693,6 +19354,14 @@ function buildMobileAppHtml() {
           const eff = getEffectiveSelectedProject(latestSnap);
           await startNewConversationInProject(eff.id, eff.name);
         }
+        return;
+      }
+
+      const editProjBtn = e.target?.closest?.('.proj-edit-btn');
+      if (editProjBtn) {
+        e.stopPropagation();
+        const pid = editProjBtn.getAttribute('data-edit-proj') || '';
+        if (pid) await openEditProjectModal(pid);
         return;
       }
 
@@ -21929,6 +22598,62 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/projects/detail') {
+      try {
+        const projectId = String(urlObj.searchParams.get('id') || '').trim();
+        const detailRes = await readRemoteProjectDetail(projectId, {
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
+          ...(options.configDir ? { configDir: options.configDir } : {}),
+          ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
+          ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
+        });
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(detailRes));
+      } catch (err) {
+        res.writeHead(err?.status || 400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取项目详情失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/projects/update') {
+      try {
+        const payload = await readJsonBody(req);
+        const clientId = extractRequestClientId(req, urlObj, payload);
+        const activeCatStore = options.catalogStore || defaultCatalogStore;
+        const updatedRes = await updateRemoteProject(payload, {
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
+          ...(options.configDir ? { configDir: options.configDir } : {}),
+          ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
+          ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
+        });
+        activeCatStore.invalidateProjectsCache?.();
+        const doFetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
+        let snapshot = await doFetchSnapshot(payload?.targetId || '', {
+          convLimit: 100,
+          msgLimit: 30,
+          bypassCache: true,
+          bypassCatalogCache: true,
+          clientId
+        }).catch(() => null);
+        if (snapshot && snapshot.ok !== false) {
+          const usageSummary = !snapshot.usageSummary ? await getCachedUsageSummary() : null;
+          snapshot = enrichSnapshotPayload(snapshot, config, activeTunnelUrl, clientId, usageSummary);
+        }
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+          ...updatedRes,
+          snapshot
+        }));
+      } catch (err) {
+        const errHeaders = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+        if (err?.status === 413) errHeaders.Connection = 'close';
+        res.writeHead(err?.status || 400, errHeaders);
+        res.end(JSON.stringify({ ok: false, error: err?.message || '保存项目设置失败' }));
+      }
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/api/projects') {
       try {
         const payload = await readJsonBody(req);
@@ -24379,6 +25104,8 @@ module.exports = {
   listHostDirectories,
   createHostSubdirectory,
   createRemoteProject,
+  readRemoteProjectDetail,
+  updateRemoteProject,
   evalInCdpTarget,
   evalInPickedTarget,
   buildEnrichFallbackSnapshot,
