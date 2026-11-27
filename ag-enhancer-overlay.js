@@ -13217,6 +13217,15 @@
       const bar = document.getElementById(QUICK_BAR_ID);
       if (bar) syncQuickBarActionButtons(bar);
     },
+    triggerCompact: (ev, triggerBtn) => runQuickPromptAction({
+      fillText: '/compact',
+      slash: 'compact',
+      label: '/compact 压缩',
+      id: 'compact',
+      defaultAutoSend: true,
+      event: ev || null,
+      triggerBtn: triggerBtn || null
+    }),
     runAutoCompactTick,
     getFeatureFlags: () => ({ ...featureFlags }),
     getQuickPool: () => ({ ...quickPoolState }),

@@ -21,6 +21,18 @@
     '🧰 终端与网络': '🧰 Terminal & Network',
     '📊 套餐与订阅': '📊 Plan & Subscription',
     '语言与明暗外观': 'Language & Appearance',
+    '上下文与指标精简显示': 'Context & Metric Display',
+    '恢复上下文显示位置与精简降噪默认设置': 'Restore default context display & decluttering settings',
+    '默认仅保留右上角单一上下文进度环，把输出速度与估算费用收进详情面板；输入框底部仅在高水位或缓存失效时提示压缩。': 'Shows a single topbar context ring by default while tucking streaming speed and estimated API costs into detail panels; composer capsule surfaces only on high usage or cache drops.',
+    '上下文显示位置': 'Context Display Position',
+    '选「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口': 'When set to Topbar, the bottom capsule stays tucked away until context hits 240K+ or cache expires, surfacing a compact alert and one-click /compact',
+    '右上角顶栏（默认）': 'Topbar (Default)',
+    '输入框底部胶囊': 'Composer Capsule',
+    '同时显示': 'Show Both',
+    '顶栏常驻显示流式生成速度 (tok/s)': 'Always Show Streaming Speed in Topbar (tok/s)',
+    '关闭时隐藏顶栏内联 tok/s 徽章，点击上下文圆环仍可在详情面板查看完整输出速度与首字延迟': 'Hides the inline tok/s badge in the topbar; full speed and TTFT metrics remain available inside the context detail panel',
+    '详情面板显示 API 参考估算费用 ($)': 'Show API Reference Cost Estimates in Panels ($)',
+    '开启后在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付）': 'Displays public API price-equivalent reference costs (not actual subscription charges) in desktop and mobile remote detail panels',
     '桌面功能显示开关': 'Desktop Feature Toggles',
     '对话自动化与安全策略': 'Chat Automation & Safety',
     '自定义强调色与顶栏分项配色': 'Custom Accent & Topbar Colors',
@@ -484,12 +496,21 @@
     terminals: [],
     platform: (typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')) ? 'win32' : 'darwin'
   };
+  function normalizeContextDisplayMode(raw) {
+    const clean = String(raw || '').trim().toLowerCase();
+    if (clean === 'footer' || clean === 'both') return clean;
+    return 'topbar';
+  }
+
   let suiteEnhancerPrefs = {
     autoAccept: false,
     ghostSuggest: true,
     autoCompact: true,
     longFold: true,
     quickBuiltinAutoSend: false,
+    contextDisplayMode: 'topbar',
+    showTopbarSpeed: false,
+    showApiReferenceCost: false,
     dockBadgeEnabled: true,
     dockBadgeStyle: 'capsule',
     dockBadgeColorTier: true,
@@ -1159,6 +1180,18 @@
     if (lsQuickAutoSend === 'true' || lsQuickAutoSend === 'false') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = lsQuickAutoSend === 'true';
     }
+    const lsCtxPos = localStorage?.getItem?.('ag_suite_context_display_mode');
+    if (lsCtxPos) {
+      suiteEnhancerPrefs.contextDisplayMode = normalizeContextDisplayMode(lsCtxPos);
+    }
+    const lsShowSpeed = localStorage?.getItem?.('ag_suite_show_topbar_speed');
+    if (lsShowSpeed === 'true' || lsShowSpeed === 'false') {
+      suiteEnhancerPrefs.showTopbarSpeed = lsShowSpeed === 'true';
+    }
+    const lsShowRefCost = localStorage?.getItem?.('ag_suite_show_api_ref_cost');
+    if (lsShowRefCost === 'true' || lsShowRefCost === 'false') {
+      suiteEnhancerPrefs.showApiReferenceCost = lsShowRefCost === 'true';
+    }
     const lsDockEnabled = localStorage?.getItem?.('ag_suite_dock_badge_enabled');
     if (lsDockEnabled === 'true' || lsDockEnabled === 'false') {
       suiteEnhancerPrefs.dockBadgeEnabled = lsDockEnabled !== 'false';
@@ -1331,10 +1364,12 @@
     const curEntry = findSupportedLocaleEntry(suiteEnhancerPrefs.locale);
     const activeLocale = suiteEnhancerPrefs.locale || 'zh-CN';
     const hansLangVal = curEntry.hansCode === 'en' ? 'en' : 'zh';
+    const activeCtxPos = normalizeContextDisplayMode(suiteEnhancerPrefs.contextDisplayMode);
     try {
       if (typeof document !== 'undefined' && document.documentElement?.setAttribute) {
         document.documentElement.setAttribute('data-ag-suite-locale', activeLocale);
         document.documentElement.setAttribute('data-ag-hans-lang', hansLangVal);
+        document.documentElement.setAttribute('data-ag-context-display-mode', activeCtxPos);
       }
     } catch {}
     try {
@@ -1348,6 +1383,9 @@
       localStorage?.setItem?.('ag_suite_auto_compact', suiteEnhancerPrefs.autoCompact !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_long_fold', suiteEnhancerPrefs.longFold !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_quick_builtin_autosend', suiteEnhancerPrefs.quickBuiltinAutoSend ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_context_display_mode', activeCtxPos);
+      localStorage?.setItem?.('ag_suite_show_topbar_speed', suiteEnhancerPrefs.showTopbarSpeed ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_show_api_ref_cost', suiteEnhancerPrefs.showApiReferenceCost ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_dock_badge_enabled', suiteEnhancerPrefs.dockBadgeEnabled !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_dock_badge_style', suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule');
       localStorage?.setItem?.('ag_suite_dock_badge_color_tier', suiteEnhancerPrefs.dockBadgeColorTier !== false ? 'true' : 'false');
@@ -1378,6 +1416,9 @@
             autoCompact: suiteEnhancerPrefs.autoCompact !== false,
             longFold: suiteEnhancerPrefs.longFold !== false,
             quickBuiltinAutoSend: Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend),
+            contextDisplayMode: activeCtxPos,
+            showTopbarSpeed: Boolean(suiteEnhancerPrefs.showTopbarSpeed),
+            showApiReferenceCost: Boolean(suiteEnhancerPrefs.showApiReferenceCost),
             dockBadgeEnabled: suiteEnhancerPrefs.dockBadgeEnabled !== false,
             dockBadgeStyle: suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule',
             dockBadgeColorTier: suiteEnhancerPrefs.dockBadgeColorTier !== false,
@@ -1682,16 +1723,73 @@
     }
   }
 
+  function syncContextDisplayControls() {
+    const mode = normalizeContextDisplayMode(suiteEnhancerPrefs.contextDisplayMode);
+    const btnTop = el('set-ctx-pos-topbar');
+    const btnFoot = el('set-ctx-pos-footer');
+    const btnBoth = el('set-ctx-pos-both');
+    setPillActive(btnTop, mode === 'topbar');
+    setPillActive(btnFoot, mode === 'footer');
+    setPillActive(btnBoth, mode === 'both');
+    if (btnTop) btnTop.setAttribute('aria-pressed', String(mode === 'topbar'));
+    if (btnFoot) btnFoot.setAttribute('aria-pressed', String(mode === 'footer'));
+    if (btnBoth) btnBoth.setAttribute('aria-pressed', String(mode === 'both'));
+    const chkSpeed = el('set-show-topbar-speed');
+    if (chkSpeed) chkSpeed.checked = Boolean(suiteEnhancerPrefs.showTopbarSpeed);
+    const chkCost = el('set-show-api-ref-cost');
+    if (chkCost) chkCost.checked = Boolean(suiteEnhancerPrefs.showApiReferenceCost);
+  }
+
+  function getContextDisplayPrefs() {
+    return {
+      contextDisplayMode: normalizeContextDisplayMode(suiteEnhancerPrefs.contextDisplayMode),
+      showTopbarSpeed: Boolean(suiteEnhancerPrefs.showTopbarSpeed),
+      showApiReferenceCost: Boolean(suiteEnhancerPrefs.showApiReferenceCost)
+    };
+  }
+
+  async function setContextDisplayPrefs(partialPrefs = {}, opts = {}) {
+    const savePayload = {};
+    if (partialPrefs && typeof partialPrefs === 'object') {
+      if (partialPrefs.contextDisplayMode !== undefined) {
+        suiteEnhancerPrefs.contextDisplayMode = normalizeContextDisplayMode(partialPrefs.contextDisplayMode);
+        savePayload.contextDisplayMode = suiteEnhancerPrefs.contextDisplayMode;
+      }
+      if (typeof partialPrefs.showTopbarSpeed === 'boolean') {
+        suiteEnhancerPrefs.showTopbarSpeed = partialPrefs.showTopbarSpeed;
+        savePayload.showTopbarSpeed = suiteEnhancerPrefs.showTopbarSpeed;
+      }
+      if (typeof partialPrefs.showApiReferenceCost === 'boolean') {
+        suiteEnhancerPrefs.showApiReferenceCost = partialPrefs.showApiReferenceCost;
+        savePayload.showApiReferenceCost = suiteEnhancerPrefs.showApiReferenceCost;
+      }
+    }
+    syncContextDisplayControls();
+    applySuiteFeatureFlags();
+    dispatchSuitePrefsChanged();
+    if (opts.syncHost !== false && Object.keys(savePayload).length > 0) {
+      await saveSuiteUiPrefs(savePayload);
+    }
+    return getContextDisplayPrefs();
+  }
+
   function applySuiteFeatureFlags() {
+    const activeCtxPos = normalizeContextDisplayMode(suiteEnhancerPrefs.contextDisplayMode);
     if (host?.setAttribute && host?.removeAttribute) {
       const toggleAttr = (attr, visible) => {
         if (visible === false) host.setAttribute(attr, 'true');
         else host.removeAttribute(attr);
       };
+      toggleAttr('data-hide-context-ring', activeCtxPos !== 'footer');
+      toggleAttr('data-hide-inline-speed', Boolean(suiteEnhancerPrefs.showTopbarSpeed));
+      toggleAttr('data-hide-api-cost', Boolean(suiteEnhancerPrefs.showApiReferenceCost));
       toggleAttr('data-hide-tokens', suiteFeatureFlags.showTopbarTokens);
       toggleAttr('data-hide-cli', suiteFeatureFlags.showTopbarCli);
       toggleAttr('data-hide-quota', suiteFeatureFlags.showTopbarQuota);
       toggleAttr('data-hide-remote', suiteFeatureFlags.showTopbarRemote);
+    }
+    if (!suiteEnhancerPrefs.showApiReferenceCost && typeof activeTokenView !== 'undefined' && activeTokenView === 'cost' && typeof switchTokenView === 'function') {
+      switchTokenView('tokens');
     }
     if (suiteFeatureFlags.showTopbarTokens === false) {
       const pTok = el('panel-tokens');
@@ -1731,6 +1829,7 @@
         }
       }
     }
+    syncContextDisplayControls();
     syncFeatureFlagControls();
     applySuiteFeatureFlags();
     dispatchSuitePrefsChanged();
@@ -2044,6 +2143,7 @@
         document.querySelectorAll('[data-agy-hans-ui]')?.forEach?.(node => node.remove?.());
       }
     } catch {}
+    syncContextDisplayControls();
     syncFeatureFlagControls();
     applySuiteFeatureFlags();
     syncLanguageDropdownOptions();
@@ -2374,6 +2474,15 @@
     }
     if (typeof uiPrefs.quickBuiltinAutoSend === 'boolean') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = uiPrefs.quickBuiltinAutoSend;
+    }
+    if (typeof uiPrefs.contextDisplayMode === 'string' && uiPrefs.contextDisplayMode.trim()) {
+      suiteEnhancerPrefs.contextDisplayMode = normalizeContextDisplayMode(uiPrefs.contextDisplayMode);
+    }
+    if (typeof uiPrefs.showTopbarSpeed === 'boolean') {
+      suiteEnhancerPrefs.showTopbarSpeed = uiPrefs.showTopbarSpeed;
+    }
+    if (typeof uiPrefs.showApiReferenceCost === 'boolean') {
+      suiteEnhancerPrefs.showApiReferenceCost = uiPrefs.showApiReferenceCost;
     }
     if (typeof uiPrefs.dockBadgeEnabled === 'boolean') {
       suiteEnhancerPrefs.dockBadgeEnabled = uiPrefs.dockBadgeEnabled;
@@ -4303,6 +4412,28 @@
 
   el('btn-reset-feature-toggles')?.addEventListener('click', () => {
     void setSuiteFeatureFlags({ ...DEFAULT_SUITE_FEATURE_FLAGS });
+  });
+
+  ['topbar', 'footer', 'both'].forEach(mode => {
+    el(`set-ctx-pos-${mode}`)?.addEventListener('click', () => {
+      void setContextDisplayPrefs({ contextDisplayMode: mode });
+    });
+  });
+
+  el('set-show-topbar-speed')?.addEventListener('change', e => {
+    void setContextDisplayPrefs({ showTopbarSpeed: Boolean(e?.target?.checked) });
+  });
+
+  el('set-show-api-ref-cost')?.addEventListener('change', e => {
+    void setContextDisplayPrefs({ showApiReferenceCost: Boolean(e?.target?.checked) });
+  });
+
+  el('btn-reset-context-display')?.addEventListener('click', () => {
+    void setContextDisplayPrefs({
+      contextDisplayMode: 'topbar',
+      showTopbarSpeed: false,
+      showApiReferenceCost: false
+    });
   });
 
   el('btn-toggle-heat-advanced')?.addEventListener('click', () => {
