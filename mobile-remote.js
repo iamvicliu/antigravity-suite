@@ -9104,6 +9104,34 @@ function buildMobileAppHtml() {
       transition:background-color .14s ease,border-color .14s ease,color .14s ease;
     }
     .new-proj-mini-btn:active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+    .proj-sort-toggle-btn{width:auto;padding:0 9px;gap:4px;font-size:12px;font-weight:600;white-space:nowrap}
+    .proj-sort-toggle-btn.active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+    .proj-sort-toggle-btn:disabled{opacity:.45;cursor:default}
+    .proj-sort-toggle-btn[hidden]{display:none}
+    .proj-drag-handle{
+      display:none;align-items:center;justify-content:center;width:22px;height:26px;border-radius:6px;
+      color:var(--muted);font-size:14px;font-weight:700;cursor:grab;user-select:none;-webkit-user-select:none;
+      touch-action:none;flex-shrink:0;
+    }
+    .proj-drag-handle:active{cursor:grabbing;background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .conv-list.is-proj-sorting .proj-group:not(.is-ungrouped) .proj-drag-handle{display:inline-flex}
+    .proj-sort-actions{display:none;align-items:center;gap:3px;flex-shrink:0}
+    .conv-list.is-proj-sorting .proj-sort-actions{display:inline-flex}
+    .conv-list.is-proj-sorting .proj-new-btn{display:none}
+    .proj-sort-btn{
+      appearance:none;width:26px;height:26px;padding:0;border-radius:7px;border:1px solid var(--border);
+      background:var(--surface-soft);color:var(--fg-sub);font-size:12px;font-weight:700;line-height:1;
+      display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;
+    }
+    .proj-sort-btn:active:not(:disabled){background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+    .proj-sort-btn:disabled{opacity:.35;cursor:default}
+    .proj-fixed-tag{
+      font-size:10.5px;color:var(--muted);padding:1px 6px;border-radius:999px;border:1px dashed var(--border);
+      flex-shrink:0;white-space:nowrap;
+    }
+    .proj-group.is-dragging{opacity:.55}
+    .proj-group.drag-over-before>.proj-head{box-shadow:inset 0 2px 0 var(--accent);border-color:var(--accent-border)}
+    .proj-group.drag-over-after>.proj-head{box-shadow:inset 0 -2px 0 var(--accent);border-color:var(--accent-border)}
     .proj-group{display:flex;flex-direction:column;gap:5px;margin-top:6px}
     .proj-group:first-child{margin-top:0}
     .proj-head{
@@ -9331,6 +9359,11 @@ function buildMobileAppHtml() {
       .conv-tab:hover{color:var(--fg-secondary)}
       .new-proj-mini-btn:hover{background:var(--surface-hover);border-color:var(--border-strong);color:var(--fg-strong)}
       .proj-head:hover{background:var(--surface-hover);border-color:var(--border-strong)}
+      .proj-group:not(.is-ungrouped) .proj-head:hover .proj-sort-actions,
+      .proj-group:not(.is-ungrouped) .proj-head:focus-within .proj-sort-actions{display:inline-flex}
+      .proj-group:not(.is-ungrouped) .proj-head:hover .proj-drag-handle{display:inline-flex}
+      .proj-sort-btn:hover:not(:disabled){background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+      .proj-sort-toggle-btn.active:hover{background:var(--accent-bg);border-color:var(--accent);color:var(--accent-strong-fg)}
       .proj-toggle:hover{color:var(--fg-strong)}
       .proj-new-btn:hover{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
       .proj-root-pill:hover,.proj-act-btn:hover,.proj-dir-item:hover{background:var(--surface-hover);border-color:var(--border-strong)}
@@ -9678,6 +9711,10 @@ function buildMobileAppHtml() {
           <button class="conv-tab active" data-conv-view="projects" type="button" role="tab" aria-selected="true">按项目 <span id="tab-proj-count" class="tab-count"></span></button>
           <button class="conv-tab" data-conv-view="recent" type="button" role="tab" aria-selected="false">活跃 <span id="tab-conv-count" class="tab-count"></span></button>
         </div>
+        <button id="btn-sort-projects" class="new-proj-mini-btn proj-sort-toggle-btn" type="button" title="手动调整项目顺序" aria-label="排序项目" aria-pressed="false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/></svg>
+          <span id="sort-projects-label">排序</span>
+        </button>
         <button id="btn-new-project" class="new-proj-mini-btn" type="button" title="新建项目（选择电脑目录）" aria-label="新建项目">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v3.5"/><path d="M18 15v6"/><path d="M15 18h6"/></svg>
         </button>
@@ -13186,6 +13223,15 @@ function buildMobileAppHtml() {
       if (useDrilldownDrawer) {
         renderDrawerProjectsAndConversations(snap);
       } else {
+        if (
+          localOptimisticProjectOrder &&
+          projOrderInflightCount === 0 &&
+          ((reqEpoch !== null && reqEpoch > lastProjectOrderSettledEpoch) ||
+            (pendingOrderAckRev && String(snap.catalogRevision || '') === pendingOrderAckRev))
+        ) {
+          localOptimisticProjectOrder = null;
+          pendingOrderAckRev = '';
+        }
         reconcileExtraConversations(snap);
         renderConversationList(snap);
       }
@@ -13382,6 +13428,218 @@ function buildMobileAppHtml() {
     let lastSyncedCatalogRev = '';
     let syncingExtraConvs = false;
     let pendingCatalogRev = '';
+    let projSortMode = false;
+    let localOptimisticProjectOrder = null;
+    let pendingOrderAckRev = '';
+    let projOrderSaveSeq = 0;
+    let projOrderInflightCount = 0;
+    let lastProjectOrderSettledEpoch = 0;
+    let activeDragProjectId = '';
+
+    function isDesktopPointerFineEnv() {
+      try {
+        return Boolean(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+      } catch {
+        return false;
+      }
+    }
+
+    function computeOrderedProjectsForView(rawProjects, convs) {
+      const projMap = new Map();
+      const grouped = new Map();
+      for (const p of (Array.isArray(rawProjects) ? rawProjects : [])) {
+        if (!p || !p.id) continue;
+        projMap.set(p.id, p);
+        grouped.set(p.id, []);
+      }
+      for (const c of (Array.isArray(convs) ? convs : [])) {
+        if (!c) continue;
+        const pid = c.projectId || 'ungrouped';
+        if (!projMap.has(pid)) {
+          projMap.set(pid, {
+            id: pid,
+            name: c.projectName || (pid === 'ungrouped' ? '未归属项目' : pid),
+            conversationCount: 0,
+            runningCount: 0,
+            waitingCount: 0,
+            isEmpty: false
+          });
+        }
+        if (!grouped.has(pid)) grouped.set(pid, []);
+        grouped.get(pid).push(c);
+      }
+      const visibleProjects = Array.from(projMap.values()).filter((p) =>
+        !isNonProjectBucket(p.id) || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
+      );
+      const realProjs = [];
+      const nonProjs = [];
+      for (const p of visibleProjects) {
+        if (isNonProjectBucket(p.id)) nonProjs.push(p);
+        else realProjs.push(p);
+      }
+      let orderedReal = realProjs;
+      if (Array.isArray(localOptimisticProjectOrder) && localOptimisticProjectOrder.length > 0) {
+        const optIdxMap = new Map();
+        localOptimisticProjectOrder.forEach((id, idx) => {
+          if (id && !optIdxMap.has(id)) optIdxMap.set(id, idx);
+        });
+        const unlistedNew = [];
+        const listedExisting = [];
+        for (const p of realProjs) {
+          if (optIdxMap.has(p.id)) listedExisting.push(p);
+          else unlistedNew.push(p);
+        }
+        listedExisting.sort((a, b) => optIdxMap.get(a.id) - optIdxMap.get(b.id));
+        orderedReal = unlistedNew.concat(listedExisting);
+      }
+      return {
+        projMap,
+        grouped,
+        orderedReal,
+        orderedProjects: orderedReal.concat(nonProjs)
+      };
+    }
+
+    function getCurrentOrderableProjectIds(snap) {
+      const targetSnap = snap || latestSnap;
+      if (!targetSnap) return [];
+      const convs = getMergedConversations(targetSnap);
+      return computeOrderedProjectsForView(targetSnap.projects, convs).orderedReal.map((p) => p.id);
+    }
+
+    function syncSortProjectsButtonUi(orderableCount) {
+      const sortBtn = $('btn-sort-projects');
+      if (!sortBtn) return;
+      if (convViewMode !== 'projects') {
+        if (projSortMode) projSortMode = false;
+        sortBtn.hidden = true;
+        sortBtn.classList.remove('active');
+        sortBtn.setAttribute('aria-pressed', 'false');
+        const lbl = $('sort-projects-label');
+        if (lbl) lbl.textContent = '排序';
+        return;
+      }
+      sortBtn.hidden = false;
+      const count = Number.isFinite(orderableCount) ? orderableCount : getCurrentOrderableProjectIds(latestSnap).length;
+      if (!projSortMode && count < 2) {
+        sortBtn.disabled = true;
+      } else {
+        sortBtn.disabled = false;
+      }
+      sortBtn.classList.toggle('active', projSortMode);
+      sortBtn.setAttribute('aria-pressed', projSortMode ? 'true' : 'false');
+      sortBtn.title = projSortMode ? '完成并锁定项目顺序' : '手动调整项目顺序';
+      const lbl = $('sort-projects-label');
+      if (lbl) lbl.textContent = projSortMode ? '完成' : '排序';
+    }
+
+    function setProjectSortMode(nextFlag) {
+      const want = Boolean(nextFlag) && convViewMode === 'projects';
+      if (projSortMode === want) return projSortMode;
+      projSortMode = want;
+      if (latestSnap) renderConversationList(latestSnap);
+      else syncSortProjectsButtonUi(0);
+      return projSortMode;
+    }
+
+    async function commitProjectOrder(nextIds) {
+      const cleaned = [];
+      const seen = new Set();
+      for (const rawId of (Array.isArray(nextIds) ? nextIds : [])) {
+        const id = String(rawId || '').trim();
+        if (!id || isNonProjectBucket(id) || seen.has(id)) continue;
+        seen.add(id);
+        cleaned.push(id);
+      }
+      if (cleaned.length < 2) return { ok: false, noop: true };
+      const currentIds = getCurrentOrderableProjectIds(latestSnap);
+      if (currentIds.length === cleaned.length && currentIds.every((id, i) => id === cleaned[i])) {
+        return { ok: true, noop: true, projectOrder: cleaned };
+      }
+      localOptimisticProjectOrder = cleaned.slice();
+      pendingOrderAckRev = '';
+      const mySaveSeq = ++projOrderSaveSeq;
+      projOrderInflightCount += 1;
+      lastProjectOrderSettledEpoch = ++clientSyncEpoch;
+      if (latestSnap) renderConversationList(latestSnap);
+      try {
+        const res = await fetchWithTimeout((apiBase || '') + '/api/projects/order', {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ projectOrder: cleaned })
+        }, 6000);
+        let data = null;
+        try { data = await res.json(); } catch {}
+        if (!res.ok || !data || data.ok === false) {
+          throw new Error(data?.error || ('HTTP ' + res.status));
+        }
+        if (mySaveSeq === projOrderSaveSeq) {
+          if (Array.isArray(data.projectOrder) && data.projectOrder.length) {
+            localOptimisticProjectOrder = data.projectOrder.filter((id) => id && !isNonProjectBucket(id));
+          }
+          pendingOrderAckRev = String(data.catalogRevision || '');
+          lastProjectOrderSettledEpoch = ++clientSyncEpoch;
+          if (latestSnap) renderConversationList(latestSnap);
+        }
+        return { ok: true, projectOrder: data.projectOrder || cleaned, catalogRevision: data.catalogRevision || '' };
+      } catch (err) {
+        if (mySaveSeq === projOrderSaveSeq) {
+          localOptimisticProjectOrder = null;
+          pendingOrderAckRev = '';
+          if (latestSnap) renderConversationList(latestSnap);
+          showToast(humanizeRemoteError(err?.message, '保存项目顺序失败，已恢复原顺序'));
+          void fetchSnapshot();
+        }
+        return { ok: false, error: err?.message || '保存项目顺序失败' };
+      } finally {
+        projOrderInflightCount = Math.max(0, projOrderInflightCount - 1);
+      }
+    }
+
+    function moveProjectOrderRelative(projectId, direction) {
+      const pid = String(projectId || '').trim();
+      if (!pid || isNonProjectBucket(pid)) return Promise.resolve({ ok: false, noop: true });
+      const ids = getCurrentOrderableProjectIds(latestSnap);
+      const idx = ids.indexOf(pid);
+      if (idx < 0 || ids.length < 2) return Promise.resolve({ ok: false, noop: true });
+      const next = ids.slice();
+      if (direction === 'top') {
+        if (idx === 0) return Promise.resolve({ ok: true, noop: true });
+        next.splice(idx, 1);
+        next.unshift(pid);
+      } else if (direction === 'up') {
+        if (idx <= 0) return Promise.resolve({ ok: true, noop: true });
+        const tmp = next[idx - 1];
+        next[idx - 1] = next[idx];
+        next[idx] = tmp;
+      } else if (direction === 'down') {
+        if (idx >= next.length - 1) return Promise.resolve({ ok: true, noop: true });
+        const tmp = next[idx + 1];
+        next[idx + 1] = next[idx];
+        next[idx] = tmp;
+      } else {
+        return Promise.resolve({ ok: false, noop: true });
+      }
+      return commitProjectOrder(next);
+    }
+
+    function reorderProjectBeforeOrAfter(srcPid, targetPid, placement) {
+      const fromId = String(srcPid || '').trim();
+      const toId = String(targetPid || '').trim();
+      if (!fromId || !toId || fromId === toId || isNonProjectBucket(fromId) || isNonProjectBucket(toId)) {
+        return Promise.resolve({ ok: false, noop: true });
+      }
+      const ids = getCurrentOrderableProjectIds(latestSnap);
+      if (!ids.includes(fromId) || !ids.includes(toId) || ids.length < 2) {
+        return Promise.resolve({ ok: false, noop: true });
+      }
+      const filtered = ids.filter((id) => id !== fromId);
+      const targetIdx = filtered.indexOf(toId);
+      if (targetIdx < 0) return Promise.resolve({ ok: false, noop: true });
+      const insertAt = placement === 'after' ? targetIdx + 1 : targetIdx;
+      filtered.splice(insertAt, 0, fromId);
+      return commitProjectOrder(filtered);
+    }
 
     function saveConvUiPrefs() {
       try {
@@ -13691,36 +13949,15 @@ function buildMobileAppHtml() {
         }
       }
       const totalAllCount = Math.max(convs.length, Number(snap.totalConversations) || 0);
-      const rawProjects = Array.isArray(snap.projects) ? snap.projects : [];
-      const projMap = new Map();
-      const grouped = new Map();
-
-      for (const p of rawProjects) {
-        if (!p || !p.id) continue;
-        projMap.set(p.id, p);
-        grouped.set(p.id, []);
-      }
-      for (const c of convs) {
-        const pid = c.projectId || 'ungrouped';
-        if (!projMap.has(pid)) {
-          projMap.set(pid, {
-            id: pid,
-            name: c.projectName || (pid === 'ungrouped' ? '未归属项目' : pid),
-            conversationCount: 0,
-            runningCount: 0,
-            waitingCount: 0,
-            isEmpty: false
-          });
-        }
-        if (!grouped.has(pid)) grouped.set(pid, []);
-        grouped.get(pid).push(c);
-      }
+      const { projMap, grouped, orderedReal, orderedProjects } = computeOrderedProjectsForView(snap.projects, convs);
 
       const projCountEl = $('tab-proj-count');
       const convCountEl = $('tab-conv-count');
       if (projCountEl) projCountEl.textContent = projMap.size ? ('(' + projMap.size + ')') : '';
       if (convCountEl) convCountEl.textContent = totalAllCount ? ('(' + totalAllCount + ')') : '';
       syncConvTabsUi();
+      syncSortProjectsButtonUi(orderedReal.length);
+      convList.classList?.toggle?.('is-proj-sorting', Boolean(projSortMode && convViewMode === 'projects'));
 
       let html = '';
       if (convViewMode === 'recent') {
@@ -13741,12 +13978,11 @@ function buildMobileAppHtml() {
           }
         }
       } else {
-        const orderedProjects = Array.from(projMap.values())
-          .filter((p) =>
-            !isNonProjectBucket(p.id) || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
-          )
-          .sort((a, b) => Number(isNonProjectBucket(a.id)) - Number(isNonProjectBucket(b.id)));
         const effProj = getEffectiveSelectedProject(snap);
+        const allowDesktopHeadDrag = Boolean(projSortMode || isDesktopPointerFineEnv());
+        const orderIdxById = new Map();
+        orderedReal.forEach((p, idx) => orderIdxById.set(p.id, idx));
+        const orderableTotal = orderedReal.length;
 
         if (!orderedProjects.length) {
           html = renderPanelStateHtml({
@@ -13764,24 +14000,40 @@ function buildMobileAppHtml() {
             const isEmptyProj = projTotal === 0 && list.length === 0;
             const hasRunning = (p.runningCount > 0) || list.some((x) => x.status === 'running');
             const hasWaiting = (p.waitingCount > 0) || list.some((x) => x.status === 'waiting');
-            const collapsed = !isEmptyProj && Boolean(collapsedProjMap[p.id]);
+            const collapsed = projSortMode ? true : (!isEmptyProj && Boolean(collapsedProjMap[p.id]));
             const isCurrentProj = Boolean(effProj.id && p.id === effProj.id);
             const isUngroupedProj = isNonProjectBucket(p.id);
             const groupCls = 'proj-group' + (isCurrentProj ? ' is-current' : '') + (isUngroupedProj ? ' is-ungrouped' : '') + (isEmptyProj ? ' is-empty' : '');
+            const groupAttrs = !isUngroupedProj
+              ? (' data-proj-group-id="' + esc(p.id) + '" data-orderable-proj="1"')
+              : (' data-proj-group-id="' + esc(p.id) + '"');
+            const headDragAttr = (!isUngroupedProj && allowDesktopHeadDrag && orderableTotal >= 2) ? ' draggable="true"' : '';
             const statDot = hasWaiting
               ? '<span class="proj-stat-dot waiting" title="有待确认操作"></span>'
               : (hasRunning ? '<span class="proj-stat-dot running" title="有运行中对话"></span>' : '');
+            const dragHandleHtml = (!isUngroupedProj && orderableTotal >= 2)
+              ? '<span class="proj-drag-handle" data-proj-drag-handle="' + esc(p.id) + '" title="拖拽调整项目顺序" aria-hidden="true">≡</span>'
+              : '';
+            const ordIdx = orderIdxById.has(p.id) ? orderIdxById.get(p.id) : -1;
+            const sortBtnsHtml = (!isUngroupedProj && orderableTotal >= 2 && ordIdx >= 0)
+              ? ('<span class="proj-sort-actions" role="group" aria-label="排序项目">'
+                + '<button class="proj-sort-btn" data-proj-move="top" data-proj-id="' + esc(p.id) + '" type="button" title="置顶该项目" aria-label="置顶 ' + esc(p.name) + '"' + (ordIdx === 0 ? ' disabled' : '') + '>⤒</button>'
+                + '<button class="proj-sort-btn" data-proj-move="up" data-proj-id="' + esc(p.id) + '" type="button" title="上移项目" aria-label="上移 ' + esc(p.name) + '"' + (ordIdx === 0 ? ' disabled' : '') + '>↑</button>'
+                + '<button class="proj-sort-btn" data-proj-move="down" data-proj-id="' + esc(p.id) + '" type="button" title="下移项目" aria-label="下移 ' + esc(p.name) + '"' + (ordIdx >= orderableTotal - 1 ? ' disabled' : '') + '>↓</button>'
+                + '</span>')
+              : (isUngroupedProj && projSortMode ? '<span class="proj-fixed-tag">固定垫底</span>' : '');
             const newBtnHtml = !isUngroupedProj
               ? '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话" aria-label="在 ' + esc(p.name) + ' 中新建对话">+</button>'
               : '';
             const projMoreHtml = list.length < projTotal
               ? '<button class="conv-more-btn" data-proj-more="' + esc(p.id) + '" type="button">加载该项目更多对话 (' + list.length + '/' + projTotal + ')</button>'
               : '';
-            const itemsHtml = (isEmptyProj || collapsed) ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + projMoreHtml + '</div>');
-            const chevChar = isEmptyProj ? '·' : (collapsed ? '▸' : '▾');
-            const expandedAttr = isEmptyProj ? '' : (' aria-expanded="' + (collapsed ? 'false' : 'true') + '"');
-            return '<div class="' + groupCls + '">' +
-              '<div class="proj-head">' +
+            const itemsHtml = (projSortMode || isEmptyProj || collapsed) ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + projMoreHtml + '</div>');
+            const chevChar = projSortMode ? '·' : (isEmptyProj ? '·' : (collapsed ? '▸' : '▾'));
+            const expandedAttr = (projSortMode || isEmptyProj) ? '' : (' aria-expanded="' + (collapsed ? 'false' : 'true') + '"');
+            return '<div class="' + groupCls + '"' + groupAttrs + '>' +
+              '<div class="proj-head"' + headDragAttr + '>' +
+                dragHandleHtml +
                 '<button class="proj-toggle" data-proj-toggle="' + esc(p.id) + '" type="button"' + expandedAttr + '>' +
                   '<span class="proj-chev">' + chevChar + '</span>' +
                   '<span class="proj-icon">' + FOLDER_ICON_SVG + '</span>' +
@@ -13789,6 +14041,7 @@ function buildMobileAppHtml() {
                   statDot +
                   '<span class="proj-count">' + projTotal + '</span>' +
                 '</button>' +
+                sortBtnsHtml +
                 newBtnHtml +
               '</div>' +
               itemsHtml +
@@ -16503,6 +16756,11 @@ function buildMobileAppHtml() {
     });
     $('proj-create-submit')?.addEventListener('click', () => { void submitCreateProjectModal(); });
 
+    $('btn-sort-projects')?.addEventListener('click', () => {
+      if (convViewMode !== 'projects') return;
+      setProjectSortMode(!projSortMode);
+    });
+
     const convViewTabsEl = $('conv-view-tabs');
     if (convViewTabsEl) {
       convViewTabsEl.addEventListener('click', (e) => {
@@ -16512,9 +16770,13 @@ function buildMobileAppHtml() {
         if (nextMode !== 'projects' && nextMode !== 'recent') return;
         if (convViewMode === nextMode) return;
         convViewMode = nextMode;
+        if (convViewMode !== 'projects' && projSortMode) projSortMode = false;
         saveConvUiPrefs();
         if (latestSnap) renderConversationList(latestSnap);
-        else syncConvTabsUi();
+        else {
+          syncConvTabsUi();
+          syncSortProjectsButtonUi(0);
+        }
       });
     }
     if ($('drawer-nav-bar')) {
@@ -16526,7 +16788,155 @@ function buildMobileAppHtml() {
       });
     }
 
+    function clearProjectDragVisuals() {
+      const listEl = $('conv-list');
+      if (!listEl) return;
+      listEl.querySelectorAll?.('.proj-group.is-dragging,.proj-group.drag-over-before,.proj-group.drag-over-after')?.forEach?.((el) => {
+        el.classList.remove('is-dragging', 'drag-over-before', 'drag-over-after');
+      });
+    }
+
+    function resolveDropTargetFromClientY(clientY, excludePid) {
+      const listEl = $('conv-list');
+      if (!listEl || !Number.isFinite(clientY)) return null;
+      const groups = Array.from(listEl.querySelectorAll?.('.proj-group[data-orderable-proj="1"]') || []);
+      for (const grp of groups) {
+        const pid = grp.getAttribute('data-proj-group-id') || '';
+        if (!pid || pid === excludePid) continue;
+        const rect = grp.getBoundingClientRect?.();
+        if (!rect || rect.height <= 0) continue;
+        if (clientY >= rect.top && clientY <= rect.bottom) {
+          const midY = rect.top + rect.height / 2;
+          return { el: grp, pid, placement: clientY < midY ? 'before' : 'after' };
+        }
+      }
+      return null;
+    }
+
+    $('conv-list').addEventListener('dragstart', (e) => {
+      const grp = e.target?.closest?.('.proj-group[data-orderable-proj="1"]');
+      if (!grp || !(projSortMode || isDesktopPointerFineEnv())) {
+        e.preventDefault?.();
+        return;
+      }
+      const pid = grp.getAttribute('data-proj-group-id') || '';
+      if (!pid || isNonProjectBucket(pid)) {
+        e.preventDefault?.();
+        return;
+      }
+      activeDragProjectId = pid;
+      grp.classList.add('is-dragging');
+      try {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', pid);
+      } catch {}
+    });
+
+    $('conv-list').addEventListener('dragover', (e) => {
+      if (!activeDragProjectId) return;
+      const hit = resolveDropTargetFromClientY(e.clientY, activeDragProjectId);
+      clearProjectDragVisuals();
+      const srcEl = $('conv-list')?.querySelector?.('.proj-group[data-proj-group-id="' + CSS.escape(activeDragProjectId) + '"]');
+      srcEl?.classList?.add?.('is-dragging');
+      if (!hit) return;
+      e.preventDefault?.();
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+      hit.el.classList.add(hit.placement === 'after' ? 'drag-over-after' : 'drag-over-before');
+    });
+
+    $('conv-list').addEventListener('drop', (e) => {
+      if (!activeDragProjectId) return;
+      e.preventDefault?.();
+      const srcPid = activeDragProjectId;
+      const hit = resolveDropTargetFromClientY(e.clientY, srcPid);
+      activeDragProjectId = '';
+      clearProjectDragVisuals();
+      if (hit && hit.pid && hit.pid !== srcPid) {
+        void reorderProjectBeforeOrAfter(srcPid, hit.pid, hit.placement);
+      }
+    });
+
+    $('conv-list').addEventListener('dragend', () => {
+      activeDragProjectId = '';
+      clearProjectDragVisuals();
+    });
+
+    let touchDragState = null;
+    $('conv-list').addEventListener('pointerdown', (e) => {
+      if (!projSortMode) return;
+      const handleEl = e.target?.closest?.('[data-proj-drag-handle]');
+      if (!handleEl) return;
+      const pid = handleEl.getAttribute('data-proj-drag-handle') || '';
+      if (!pid || isNonProjectBucket(pid)) return;
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      try { handleEl.setPointerCapture?.(e.pointerId); } catch {}
+      const grp = handleEl.closest?.('.proj-group[data-orderable-proj="1"]');
+      grp?.classList?.add?.('is-dragging');
+      touchDragState = { pointerId: e.pointerId, srcPid: pid, targetPid: '', placement: 'before' };
+    });
+
+    $('conv-list').addEventListener('pointermove', (e) => {
+      if (!touchDragState || e.pointerId !== touchDragState.pointerId) return;
+      e.preventDefault?.();
+      const hit = resolveDropTargetFromClientY(e.clientY, touchDragState.srcPid);
+      clearProjectDragVisuals();
+      const srcGrp = Array.from($('conv-list')?.querySelectorAll?.('.proj-group[data-orderable-proj="1"]') || [])
+        .find((el) => el.getAttribute('data-proj-group-id') === touchDragState.srcPid);
+      srcGrp?.classList?.add?.('is-dragging');
+      if (hit) {
+        touchDragState.targetPid = hit.pid;
+        touchDragState.placement = hit.placement;
+        hit.el.classList.add(hit.placement === 'after' ? 'drag-over-after' : 'drag-over-before');
+      } else {
+        touchDragState.targetPid = '';
+      }
+    });
+
+    const finishTouchProjectDrag = (e) => {
+      if (!touchDragState || (e?.pointerId !== undefined && e.pointerId !== touchDragState.pointerId)) return;
+      const { srcPid, targetPid, placement } = touchDragState;
+      touchDragState = null;
+      clearProjectDragVisuals();
+      if (srcPid && targetPid && srcPid !== targetPid) {
+        void reorderProjectBeforeOrAfter(srcPid, targetPid, placement);
+      }
+    };
+    $('conv-list').addEventListener('pointerup', finishTouchProjectDrag);
+    $('conv-list').addEventListener('pointercancel', () => {
+      touchDragState = null;
+      clearProjectDragVisuals();
+    });
+
+    try {
+      window.__projSortHooks = {
+        getSortMode: () => projSortMode,
+        setSortMode: setProjectSortMode,
+        moveProjectOrderRelative,
+        reorderProjectBeforeOrAfter,
+        commitProjectOrder,
+        getOrderedProjectIds: () => getCurrentOrderableProjectIds(latestSnap),
+        renderSnapshot
+      };
+    } catch {}
+
     $('conv-list').addEventListener('click', async (e) => {
+      const sortMoveBtn = e.target?.closest?.('.proj-sort-btn');
+      if (sortMoveBtn) {
+        e.stopPropagation();
+        const pid = sortMoveBtn.getAttribute('data-proj-id') || '';
+        const dir = sortMoveBtn.getAttribute('data-proj-move') || '';
+        if (pid && dir && !sortMoveBtn.disabled) {
+          await moveProjectOrderRelative(pid, dir);
+        }
+        return;
+      }
+
+      if (e.target?.closest?.('[data-proj-drag-handle]')) {
+        e.stopPropagation();
+        return;
+      }
+
       const emptyActBtn = e.target?.closest?.('[data-empty-action]');
       if (emptyActBtn) {
         const act = emptyActBtn.getAttribute('data-empty-action');
@@ -16553,6 +16963,7 @@ function buildMobileAppHtml() {
       if (toggleBtn) {
         const pid = toggleBtn.getAttribute('data-proj-toggle') || '';
         if (!pid) return;
+        if (projSortMode) return;
         const wasSelected = getEffectiveSelectedProject(latestSnap).id === pid;
         const clickedChev = Boolean(e.target?.closest?.('.proj-chev'));
         const isEmptyGroup = Boolean(toggleBtn.closest?.('.proj-group')?.classList?.contains('is-empty'));

@@ -33586,3 +33586,309 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
     }
   }
 });
+
+test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚动误触、乐观防回跳与错误回滚', async () => {
+  const remoteMod = require('../mobile-remote');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-52pb-'));
+  try {
+    const fakeHome = path.join(tmpDir, 'home');
+    const stateDir = path.join(tmpDir, 'state');
+    const configDir = path.join(tmpDir, 'config');
+    const projectsDiskDir = path.join(configDir, 'projects');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(projectsDiskDir, { recursive: true });
+    for (const [pid, name, mtimeSec] of [
+      ['proj-alpha', 'Alpha 项目', 1000],
+      ['proj-beta', 'Beta 项目', 2000],
+      ['proj-gamma', 'Gamma 项目', 3000]
+    ]) {
+      const wsDir = path.join(fakeHome, pid);
+      fs.mkdirSync(wsDir, { recursive: true });
+      const pFile = path.join(projectsDiskDir, `${pid}.json`);
+      fs.writeFileSync(pFile, JSON.stringify({ id: pid, name, workspacePaths: [wsDir] }), 'utf8');
+      fs.utimesSync(pFile, mtimeSec, mtimeSec);
+    }
+
+    const catStore = remoteMod.createSessionCatalogStore();
+    const catOpts = { stateDir, configDir, homeDir: fakeHome };
+    // 初始化顺序：proj-gamma, proj-beta, proj-alpha
+    await catStore.enrichSnapshot({
+      ok: true,
+      sessionId: 'c-gamma-1',
+      conversations: [
+        { id: 'c-gamma-1', title: 'Gamma 对话', projectId: 'proj-gamma', projectName: 'Gamma 项目', updatedAt: 3000_000, status: 'idle' },
+        { id: 'c-beta-1', title: 'Beta 对话', projectId: 'proj-beta', projectName: 'Beta 项目', updatedAt: 2000_000, status: 'idle' },
+        { id: 'c-alpha-1', title: 'Alpha 对话', projectId: 'proj-alpha', projectName: 'Alpha 项目', updatedAt: 1000_000, status: 'idle' },
+        { id: 'c-ung-1', title: '独立散落对话', projectId: 'ungrouped', projectName: '未归属项目', updatedAt: 4000_000, status: 'idle' }
+      ]
+    }, catOpts);
+    catStore.setProjectOrder(['proj-gamma', 'proj-beta', 'proj-alpha'], catOpts);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-gamma', 'proj-beta', 'proj-alpha']);
+
+    let failNextOrderSave = false;
+    const orderRequests = [];
+    const handler = remoteMod.createRemoteHttpHandler(
+      { enabled: true, port: 18765, token: 'tok-52pb', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        catalogStore: catStore,
+        catalogOptions: catOpts,
+        webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) },
+        fetchSnapshot: async () => {
+          const base = {
+            ok: true,
+            sessionId: 'c-gamma-1',
+            activeConversationId: 'c-gamma-1',
+            conversations: [
+              { id: 'c-gamma-1', title: 'Gamma 对话', projectId: 'proj-gamma', projectName: 'Gamma 项目', updatedAt: 3000_000, status: 'idle' },
+              { id: 'c-beta-1', title: 'Beta 对话', projectId: 'proj-beta', projectName: 'Beta 项目', updatedAt: 2000_000, status: 'idle' },
+              { id: 'c-alpha-1', title: 'Alpha 对话', projectId: 'proj-alpha', projectName: 'Alpha 项目', updatedAt: 1000_000, status: 'idle' },
+              { id: 'c-ung-1', title: '独立散落对话', projectId: 'ungrouped', projectName: '未归属项目', updatedAt: 4000_000, status: 'idle' }
+            ],
+            messages: []
+          };
+          return await catStore.enrichSnapshot(base, catOpts);
+        }
+      }
+    );
+
+    const invokeServer = (method, urlPath, bodyObj) => new Promise((resolve) => {
+      if (method === 'POST' && urlPath.startsWith('/api/projects/order')) {
+        orderRequests.push(bodyObj);
+        if (failNextOrderSave) {
+          failNextOrderSave = false;
+          resolve({ status: 500, json: { ok: false, error: '模拟磁盘写保护失败' } });
+          return;
+        }
+      }
+      const raw = bodyObj ? Buffer.from(JSON.stringify(bodyObj), 'utf8') : Buffer.alloc(0);
+      let status = 200;
+      const chunks = [];
+      handler(
+        {
+          method,
+          url: urlPath + (urlPath.includes('?') ? '&' : '?') + 'token=tok-52pb',
+          headers: { host: '127.0.0.1:18765', 'content-type': 'application/json' },
+          socket: { remoteAddress: '127.0.0.1' },
+          on(ev, cb) {
+            if (ev === 'data' && raw.length) cb(raw);
+            if (ev === 'end') cb();
+          },
+          pause() {},
+          destroy() {},
+          complete: true
+        },
+        {
+          setHeader() {},
+          getHeader: () => undefined,
+          writeHead(code) { status = code; },
+          end(b) {
+            if (b) chunks.push(Buffer.from(b));
+            resolve({ status, json: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') });
+          }
+        }
+      );
+    });
+
+    // 在轻量客户端沙箱中挂载完整 buildMobileAppHtml 主脚本（模拟手机端 pointer:coarse 默认非桌面环境）
+    const appHtml = remoteMod.buildMobileAppHtml();
+    assert.ok(appHtml.includes('id="btn-sort-projects"'), '侧边栏工具条应包含 #btn-sort-projects 按钮');
+    const scripts = Array.from(appHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)).map((m) => m[1]);
+    const mainScript = scripts.find((s) => s.includes('computeOrderedProjectsForView'));
+    assert.ok(mainScript, '客户端主脚本应包含项目排序状态机');
+
+    const elById = new Map();
+    const makeEl = (id = '') => {
+      const clsSet = new Set();
+      const attrs = new Map();
+      const listeners = new Map();
+      const el = {
+        id,
+        hidden: false,
+        disabled: false,
+        textContent: '',
+        value: '',
+        innerHTML: '',
+        dataset: {},
+        style: { setProperty() {}, removeProperty() {} },
+        classList: {
+          add: (...ns) => ns.forEach((n) => clsSet.add(n)),
+          remove: (...ns) => ns.forEach((n) => clsSet.delete(n)),
+          toggle: (n, f) => {
+            const on = f === undefined ? !clsSet.has(n) : Boolean(f);
+            if (on) clsSet.add(n); else clsSet.delete(n);
+            return on;
+          },
+          contains: (n) => clsSet.has(n)
+        },
+        setAttribute: (k, v) => attrs.set(k, String(v)),
+        getAttribute: (k) => (attrs.has(k) ? attrs.get(k) : null),
+        removeAttribute: (k) => attrs.delete(k),
+        contains: () => false,
+        focus() {},
+        blur() {},
+        scrollTo() {},
+        appendChild: (ch) => ch,
+        removeChild: () => {},
+        replaceChildren: () => {},
+        getBoundingClientRect: () => ({ top: 0, bottom: 40, left: 0, right: 240, width: 240, height: 40 }),
+        addEventListener: (ev, fn) => {
+          if (!listeners.has(ev)) listeners.set(ev, []);
+          listeners.get(ev).push(fn);
+        },
+        dispatchClick: async (extra = {}) => {
+          for (const fn of (listeners.get('click') || [])) {
+            await fn({ preventDefault() {}, stopPropagation() {}, ...extra });
+          }
+        },
+        querySelector: () => null,
+        querySelectorAll: () => []
+      };
+      if (id) elById.set(id, el);
+      return el;
+    };
+    for (const id of [
+      'conv-list', 'btn-sort-projects', 'sort-projects-label', 'tab-proj-count', 'tab-conv-count',
+      'conv-view-tabs', 'drawer-nav-bar', 'status-dot', 'conv-title', 'sub-meta', 'conn-banner',
+      'conn-banner-msg', 'messages', 'approval-dock', 'queue-dock', 'chips', 'toast', 'new-chat-sub',
+      'btn-new-chat', 'new-chat-label', 'conv-project-badge', 'btn-follow-desktop', 'input', 'send-btn',
+      'model-label', 'perm-label', 'quota-pill', 'ctx-btn', 'ctx-btn-label', 'channel-pill', 'channel-pill-text'
+    ]) {
+      makeEl(id);
+    }
+
+    const toasts = [];
+    const storageMap = new Map();
+    let isDesktopFinePointer = false;
+    const sandbox = {
+      console,
+      URL,
+      URLSearchParams,
+      AbortController,
+      setTimeout: (fn) => { return 1; },
+      clearTimeout: () => {},
+      setInterval: () => 1,
+      clearInterval: () => {},
+      requestAnimationFrame: (fn) => { fn(); return 1; },
+      CSS: { escape: (s) => String(s) },
+      localStorage: {
+        getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+        setItem: (k, v) => storageMap.set(k, String(v)),
+        removeItem: (k) => storageMap.delete(k)
+      },
+      sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+      location: { origin: 'http://127.0.0.1:18765', href: 'http://127.0.0.1:18765/?token=tok-52pb', search: '?token=tok-52pb', protocol: 'http:', hostname: '127.0.0.1', reload() {} },
+      history: { replaceState() {} },
+      navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', setAppBadge: async () => {}, clearAppBadge: async () => {} },
+      Notification: undefined,
+      innerWidth: 390,
+      innerHeight: 844,
+      visualViewport: { height: 844, offsetTop: 0, addEventListener() {}, removeEventListener() {} },
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {},
+      matchMedia: (q) => ({
+        matches: q.includes('pointer: fine') ? isDesktopFinePointer : false,
+        addEventListener() {},
+        removeEventListener() {}
+      }),
+      fetch: async (url, init = {}) => {
+        const u = new URL(url, 'http://127.0.0.1:18765');
+        const bodyObj = init.body ? JSON.parse(String(init.body)) : null;
+        const r = await invokeServer(init.method || 'GET', u.pathname + u.search, bodyObj);
+        return {
+          ok: r.status >= 200 && r.status < 300,
+          status: r.status,
+          json: async () => r.json,
+          text: async () => JSON.stringify(r.json)
+        };
+      },
+      document: {
+        documentElement: makeEl('html'),
+        body: makeEl('body'),
+        createElement: () => makeEl(),
+        createDocumentFragment: () => makeEl(),
+        getElementById: (id) => elById.get(id) || makeEl(id),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener() {}
+      }
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.runInNewContext(mainScript, sandbox);
+
+    // 1. 首次拉取快照：验证手机端常规浏览态下不设置 draggable="true"（防上下滚动误触）、渲染子会话且 ungrouped 垫底
+    const initSnap = (await invokeServer('GET', '/api/snapshot')).json;
+    sandbox.__projSortHooks.renderSnapshot(initSnap, { reqStartEpoch: 1 });
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-gamma', 'proj-beta', 'proj-alpha']);
+    const normalHtml = elById.get('conv-list').innerHTML;
+    assert.ok(!normalHtml.includes('draggable="true"'), '手机端日常浏览态严禁开启 draggable 以免干扰列表滚动');
+    assert.ok(normalHtml.includes('class="proj-body"'), '日常浏览态应正常展开项目子会话');
+    assert.equal(elById.get('sort-projects-label').textContent, '排序');
+
+    // 2. 点击 [⇅ 排序] 进入手机独立排序态：标签切换为「完成」、自动收起子会话、ungrouped 标记固定垫底
+    await elById.get('btn-sort-projects').dispatchClick();
+    assert.equal(sandbox.__projSortHooks.getSortMode(), true);
+    assert.equal(elById.get('sort-projects-label').textContent, '完成');
+    assert.equal(elById.get('btn-sort-projects').classList.contains('active'), true);
+    const sortingHtml = elById.get('conv-list').innerHTML;
+    assert.ok(!sortingHtml.includes('class="proj-body"'), '排序编辑态应自动收起子会话防止误触');
+    assert.ok(sortingHtml.includes('draggable="true"'), '排序编辑态应开启拖拽支持');
+    assert.ok(sortingHtml.includes('固定垫底'), '排序编辑态应明确标识 ungrouped 固定垫底');
+
+    // ungrouped 桶任何移动或混排请求均须被安全忽略，绝不越过真实项目
+    const ungNoop1 = await sandbox.__projSortHooks.moveProjectOrderRelative('ungrouped', 'top');
+    const ungNoop2 = await sandbox.__projSortHooks.reorderProjectBeforeOrAfter('ungrouped', 'proj-gamma', 'before');
+    assert.equal(ungNoop1.noop, true);
+    assert.equal(ungNoop2.noop, true);
+    assert.equal(orderRequests.length, 0, '操作 ungrouped 不得发起排序请求');
+
+    // 3. 将 proj-alpha 置顶 + 将 proj-gamma 下移到 proj-beta 之后（模拟拖拽放置）并验证持久化写盘
+    const topRes = await sandbox.__projSortHooks.moveProjectOrderRelative('proj-alpha', 'top');
+    assert.equal(topRes.ok, true);
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-alpha', 'proj-gamma', 'proj-beta']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-gamma', 'proj-beta']);
+
+    const dragRes = await sandbox.__projSortHooks.reorderProjectBeforeOrAfter('proj-gamma', 'proj-beta', 'after');
+    assert.equal(dragRes.ok, true);
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-alpha', 'proj-beta', 'proj-gamma']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-beta', 'proj-gamma']);
+
+    // 4. 模拟在途旧快照（reqStartEpoch=1 早于手动排序完成代次）晚归：绝不得将项目顺序回跳为旧顺序
+    sandbox.__projSortHooks.renderSnapshot(initSnap, { reqStartEpoch: 1 });
+    assert.deepEqual(
+      Array.from(sandbox.__projSortHooks.getOrderedProjectIds()),
+      ['proj-alpha', 'proj-beta', 'proj-gamma'],
+      '在途旧快照晚归时乐观保护必须锁定新顺序不回跳'
+    );
+
+    // 新一轮权威快照（reqStartEpoch=999）到达后平稳接管并保持新顺序，ungrouped 仍在最末位
+    const freshSnap = (await invokeServer('GET', '/api/snapshot')).json;
+    sandbox.__projSortHooks.renderSnapshot(freshSnap, { reqStartEpoch: 999 });
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-alpha', 'proj-beta', 'proj-gamma']);
+    const renderedGroupIds = Array.from(elById.get('conv-list').innerHTML.matchAll(/data-proj-group-id="([^"]+)"/g)).map((m) => m[1]);
+    assert.deepEqual(renderedGroupIds, ['proj-alpha', 'proj-beta', 'proj-gamma', 'ungrouped']);
+
+    // 5. 服务端保存失败（HTTP 500）时自动回滚至原权威顺序，不残留错误乐观态
+    failNextOrderSave = true;
+    const failedMove = await sandbox.__projSortHooks.moveProjectOrderRelative('proj-gamma', 'top');
+    assert.equal(failedMove.ok, false);
+    assert.deepEqual(
+      Array.from(sandbox.__projSortHooks.getOrderedProjectIds()),
+      ['proj-alpha', 'proj-beta', 'proj-gamma'],
+      'POST /api/projects/order 失败时必须立即回滚恢复原权威顺序'
+    );
+
+    // 6. 点击 [完成] 退出排序态并恢复桌面精细指针悬停直排检测
+    await elById.get('btn-sort-projects').dispatchClick();
+    assert.equal(sandbox.__projSortHooks.getSortMode(), false);
+    assert.equal(elById.get('sort-projects-label').textContent, '排序');
+    assert.ok(elById.get('conv-list').innerHTML.includes('class="proj-body"'), '退出排序态后应恢复项目子会话展示');
+
+    isDesktopFinePointer = true;
+    sandbox.__projSortHooks.renderSnapshot(freshSnap, { reqStartEpoch: 1000 });
+    assert.ok(elById.get('conv-list').innerHTML.includes('draggable="true"'), '桌面宽屏精细指针环境下常规态即允许直接拖拽项目头');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
