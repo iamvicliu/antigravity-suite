@@ -36519,6 +36519,168 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
         folderPaths: [dirRepoA]
       });
       assert.equal(cleanEvilRes.status, 200, '剔除异常软链仅保留合法目录时应正常保存');
+
+      // 9) 返工回归 C：仅改名或增删其他目录时，未移除目录原有的非 main/master 默认分支必须原样保留（即便 GetRepoInfos 返回 main/master）
+      const dirNewGitRepo = path.join(homeDir, 'codebase', 'repo-newly-added');
+      fs.mkdirSync(path.join(dirNewGitRepo, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(dirNewGitRepo, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+      const customBranchPid = 'proj-custom-branch';
+      const customBranchProj = {
+        id: customBranchPid,
+        name: 'CustomBranchBeforeRename',
+        projectResources: {
+          resources: [
+            { gitFolder: { folderUri: pathToFileURL(dirRepoA).href, defaultBranch: 'release/v2.4-lts', customRepoFlag: 'keep' } },
+            { folderUri: pathToFileURL(dirSharedB).href }
+          ]
+        },
+        permissionGrants: { v2Migrated: true },
+        settings: {},
+        isWorkspaceOnly: false
+      };
+      storedProjects.set(customBranchPid, customBranchProj);
+      fs.writeFileSync(path.join(configDir, 'projects', `${customBranchPid}.json`), JSON.stringify(customBranchProj, null, 2));
+
+      // 9a) 仅修改项目名：已有目录 dirRepoA 的 defaultBranch 必须保持 'release/v2.4-lts'，绝不被 GetRepoInfos 的 'main' 覆盖
+      const renameKeepBranchRes = await apiJson('POST', '/api/projects/update', {
+        id: customBranchPid,
+        name: 'CustomBranchAfterRename',
+        folderPaths: [dirRepoA, dirSharedB]
+      });
+      assert.equal(renameKeepBranchRes.status, 200);
+      assert.equal(
+        storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.defaultBranch,
+        'release/v2.4-lts',
+        '仅改名时未移除目录原有的非 main/master 默认分支必须完整保留'
+      );
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.customRepoFlag, 'keep');
+
+      // 9b) 同时新增另一个无历史配置的 Git 目录 dirNewGitRepo：原目录保持 'release/v2.4-lts'，新增目录自动推断为 'main'
+      const addGitKeepBranchRes = await apiJson('POST', '/api/projects/update', {
+        id: customBranchPid,
+        name: 'CustomBranchWithAddedRepo',
+        folderPaths: [dirRepoA, dirNewGitRepo]
+      });
+      assert.equal(addGitKeepBranchRes.status, 200);
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.defaultBranch, 'release/v2.4-lts');
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources[1].gitFolder.defaultBranch, 'main', '新增 Git 目录应正常推断默认分支');
+
+      // 10) 返工回归 D：快照仅含主目录 path（无 workspacePaths）时，详情请求延迟期间与失败时均必须禁止保存，重试恢复后完整回显全部目录
+      let detailMode = 'fail';
+      let releaseDelayedDetail = null;
+      let interceptedUpdates = 0;
+      const uiPartialEnv = createDomEnv();
+      uiPartialEnv.sandbox.setTimeout = uiPartialEnv.win.setTimeout = (fn, ms, ...args) => {
+        if (typeof fn === 'function' && Number(ms || 0) <= 250) {
+          const t = rawSetTimeout(fn, 0, ...args);
+          t?.unref?.();
+          return t;
+        }
+        return 1;
+      };
+      uiPartialEnv.doc.body.innerHTML = bodyMatch[1];
+      uiPartialEnv.win.innerWidth = 1280;
+      uiPartialEnv.win.innerHeight = 800;
+      uiPartialEnv.win.AbortController = AbortController;
+      uiPartialEnv.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, hash: '', href: `${baseUrl}/?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+      uiPartialEnv.win.history = { replaceState() {} };
+      uiPartialEnv.sandbox.location = uiPartialEnv.win.location;
+      uiPartialEnv.sandbox.history = uiPartialEnv.win.history;
+      uiPartialEnv.sandbox.AbortController = AbortController;
+      uiPartialEnv.sandbox.URLSearchParams = URLSearchParams;
+      uiPartialEnv.win.fetch = uiPartialEnv.sandbox.fetch = async (u, init) => {
+        const fullUrl = String(u).startsWith('http') ? String(u) : `${baseUrl}${u}`;
+        const parsedU = new URL(fullUrl);
+        if (parsedU.pathname === '/api/snapshot') {
+          const realRes = await fetch(fullUrl, init);
+          const snapData = await realRes.json();
+          // 模拟快照仅含主目录 path、缺失 workspacePaths 的场景
+          snapData.projects = (snapData.projects || []).map((p) => {
+            if (p.id === customBranchPid) {
+              const { workspacePaths: _omitWs, ...onlyPrimary } = p;
+              return { ...onlyPrimary, path: dirRepoA };
+            }
+            return p;
+          });
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => 'application/json' },
+            json: async () => snapData
+          };
+        }
+        if (parsedU.pathname === '/api/projects/detail' && parsedU.searchParams.get('id') === customBranchPid) {
+          if (detailMode === 'fail') {
+            return {
+              ok: false,
+              status: 503,
+              headers: { get: () => 'application/json' },
+              json: async () => ({ ok: false, error: '模拟详情接口暂时不可用' })
+            };
+          }
+          if (detailMode === 'delay') {
+            await new Promise((r) => { releaseDelayedDetail = r; });
+          }
+        }
+        if (parsedU.pathname === '/api/projects/update') {
+          interceptedUpdates += 1;
+        }
+        return fetch(fullUrl, init);
+      };
+
+      vm.runInNewContext(scriptMatch[1], uiPartialEnv.sandbox);
+      await new Promise((r) => rawSetTimeout(r, 60));
+
+      const partialConvList = uiPartialEnv.doc.getElementById('conv-list');
+      const partialEditBtn = partialConvList.querySelectorAll('.proj-edit-btn').find((b) => b.getAttribute('data-edit-proj') === customBranchPid);
+      assert.ok(partialEditBtn, '仅含 path 的项目仍应渲染编辑入口');
+
+      // 10a) 详情接口失败：保存按钮必须禁用、明确显示错误提示，点击提交绝不触发 /api/projects/update 误删第 2 目录
+      await partialConvList.dispatchEvent({ type: 'click', target: partialEditBtn, stopPropagation() {} });
+      await new Promise((r) => rawSetTimeout(r, 60));
+      const pSubmitBtn = uiPartialEnv.doc.getElementById('proj-create-submit');
+      const pFoldersBox = uiPartialEnv.doc.getElementById('proj-folders-box');
+      assert.equal(Boolean(pSubmitBtn.disabled), true, '详情读取失败时必须禁用保存按钮');
+      assert.match(pSubmitBtn.textContent, /失败|无法保存/);
+      assert.match(pFoldersBox.textContent, /模拟详情接口暂时不可用/, '详情失败应在目录区域明确提示错误原因');
+      pSubmitBtn.click();
+      await new Promise((r) => rawSetTimeout(r, 40));
+      assert.equal(interceptedUpdates, 0, '详情失败状态下点击提交绝不得发出更新请求');
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources.length, 2, '原项目的 2 个绑定目录必须毫发无损');
+
+      // 10b) 点击「重新读取详情」且详情接口延迟返回：加载期间同样禁止保存，返回后完整回显全部 2 个目录并恢复可保存状态
+      detailMode = 'delay';
+      const retryBtn = uiPartialEnv.doc.getElementById('proj-detail-retry-btn');
+      assert.ok(retryBtn, '失败态应提供重新读取详情按钮');
+      retryBtn.click();
+      await new Promise((r) => rawSetTimeout(r, 20));
+      assert.equal(Boolean(pSubmitBtn.disabled), true, '详情延迟加载期间必须禁止保存，不得用快照单主目录放行');
+      assert.match(pSubmitBtn.textContent, /正在加载/);
+      pSubmitBtn.click();
+      await new Promise((r) => rawSetTimeout(r, 20));
+      assert.equal(interceptedUpdates, 0, '详情尚未返回前点击提交绝不得发出更新请求');
+
+      assert.equal(typeof releaseDelayedDetail, 'function');
+      releaseDelayedDetail();
+      await new Promise((r) => rawSetTimeout(r, 80));
+
+      assert.equal(Boolean(pSubmitBtn.disabled), false, '完整详情读取成功后应解锁保存按钮');
+      assert.equal(pSubmitBtn.textContent, '保存项目设置');
+      assert.equal(pFoldersBox.querySelectorAll('.proj-folder-chip').length, 2, '即使快照仅含主目录 path，详情返回后也必须完整回显全部 2 个目录');
+
+      // 此时仅改名保存，验证 2 个目录与原有自定义分支全部无损保留
+      const pNameInput = uiPartialEnv.doc.getElementById('proj-name-input');
+      pNameInput.value = 'PartialSnapSafeSaved';
+      pNameInput.dispatchEvent({ type: 'input' });
+      pSubmitBtn.click();
+      for (let w = 0; w < 40 && !uiPartialEnv.doc.getElementById('proj-modal-backdrop').hidden; w++) {
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+      assert.equal(uiPartialEnv.doc.getElementById('proj-modal-backdrop').hidden, true);
+      assert.equal(interceptedUpdates, 1);
+      assert.equal(storedProjects.get(customBranchPid).name, 'PartialSnapSafeSaved');
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources.length, 2, '保存后 2 个绑定目录均完整保留');
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.defaultBranch, 'release/v2.4-lts');
     } finally {
       await new Promise((r) => server.close(r));
     }

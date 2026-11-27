@@ -4506,8 +4506,9 @@ async function resolveProjectResourcesForFolders(validatedFolders, lsApi, existi
         isGitRepo = true;
       }
     } catch {}
+    const preservedDefaultBranch = String(prevRes?.gitFolder?.defaultBranch || '').trim();
     let defaultBranch = isGitRepo
-      ? (String(prevRes?.gitFolder?.defaultBranch || '').trim() || readGitDefaultBranchFromDisk(resolvedPath))
+      ? (preservedDefaultBranch || readGitDefaultBranchFromDisk(resolvedPath))
       : '';
 
     if (lsApi && typeof lsApi.call === 'function') {
@@ -4517,7 +4518,11 @@ async function resolveProjectResourcesForFolders(validatedFolders, lsApi, existi
           isGitRepo = true;
         }
       } catch {}
-      if (isGitRepo) {
+      // 仅对新增目录或原配置缺失 defaultBranch 的目录推断默认分支，严禁覆盖未移除目录原有的自定义默认分支
+      if (isGitRepo && !preservedDefaultBranch) {
+        if (!defaultBranch) {
+          defaultBranch = readGitDefaultBranchFromDisk(resolvedPath);
+        }
         try {
           const repoRes = await withRaceTimeout(lsApi.call('GetRepoInfos', { repoUris: [folderUri] }), 2500, null);
           const branches = Array.isArray(repoRes?.repos?.[0]?.branches) ? repoRes.repos[0].branches : [];
@@ -18600,6 +18605,9 @@ function buildMobileAppHtml() {
       mode: 'create',
       editingProjectId: '',
       detailSeq: 0,
+      detailLoading: false,
+      detailLoaded: false,
+      detailError: '',
       selectedFolders: [],
       userTouchedFolders: false,
       userTouchedName: false,
@@ -18622,6 +18630,10 @@ function buildMobileAppHtml() {
     }
 
     function addFolderToProjSelection(rawPath, isGitHint) {
+      if (projBrowserState.mode === 'edit' && (projBrowserState.detailLoading || !projBrowserState.detailLoaded)) {
+        showToast(projBrowserState.detailError || '正在读取项目完整目录配置，请稍候');
+        return false;
+      }
       const norm = normalizeClientFolderEntryPath(rawPath);
       if (!norm) return false;
       if (isPathInSelectedFolders(norm)) {
@@ -18647,6 +18659,10 @@ function buildMobileAppHtml() {
     }
 
     function removeFolderFromProjSelection(idx) {
+      if (projBrowserState.mode === 'edit' && (projBrowserState.detailLoading || !projBrowserState.detailLoaded)) {
+        showToast(projBrowserState.detailError || '正在读取项目完整目录配置，请稍候');
+        return false;
+      }
       const i = Number(idx);
       if (!Number.isInteger(i) || i < 0 || i >= projBrowserState.selectedFolders.length) return false;
       if (projBrowserState.mode === 'edit' && projBrowserState.selectedFolders.length <= 1) {
@@ -18666,6 +18682,22 @@ function buildMobileAppHtml() {
       if (!boxEl) return;
       const isEdit = projBrowserState.mode === 'edit';
       const list = projBrowserState.selectedFolders;
+      if (isEdit && projBrowserState.detailLoading) {
+        boxEl.innerHTML =
+          '<div class="proj-folders-hdr"><span>已绑定项目目录 · 正在读取完整配置…</span></div>' +
+          '<div class="proj-folders-hint">正在从电脑端读取该项目的全部绑定目录，读取完成前暂不可修改或保存，以防丢失多目录配置。</div>';
+        return;
+      }
+      if (isEdit && !projBrowserState.detailLoaded) {
+        const errMsg = projBrowserState.detailError || '读取项目完整目录配置失败，请重试';
+        boxEl.innerHTML =
+          '<div class="proj-folders-hdr" style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+            '<span>无法读取完整绑定目录</span>' +
+            '<button id="proj-detail-retry-btn" class="proj-add-folder-btn" type="button">重新读取详情</button>' +
+          '</div>' +
+          '<div class="proj-folders-hint">' + esc(errMsg) + '（完整详情读取成功前已禁止保存，避免误删其他已绑定目录）</div>';
+        return;
+      }
       if (!isEdit && list.length === 0) {
         boxEl.innerHTML =
           '<div class="proj-folders-hdr"><span>多目录工作区（可选）</span></div>' +
@@ -18719,7 +18751,8 @@ function buildMobileAppHtml() {
         : '';
       const curPath = projBrowserState.currentPath;
       const alreadyAdded = Boolean(curPath && isPathInSelectedFolders(curPath));
-      const addDisabled = !curPath || alreadyAdded || projBrowserState.submitting;
+      const editDetailNotReady = isEdit && (projBrowserState.detailLoading || !projBrowserState.detailLoaded);
+      const addDisabled = !curPath || alreadyAdded || projBrowserState.submitting || editDetailNotReady;
       const addLabel = alreadyAdded ? '✓ 已在目录列表' : '＋ 加入项目目录';
       sumEl.innerHTML =
         '<div class="proj-summary-top">' +
@@ -18738,6 +18771,16 @@ function buildMobileAppHtml() {
         if (projBrowserState.submitting) {
           submitBtn.disabled = true;
           submitBtn.textContent = '正在保存项目设置…';
+          return;
+        }
+        if (projBrowserState.detailLoading) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = '正在加载项目设置…';
+          return;
+        }
+        if (!projBrowserState.detailLoaded) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = '项目详情读取失败，无法保存';
           return;
         }
         const hasValidFolders = projBrowserState.selectedFolders.length >= 1;
@@ -18879,6 +18922,9 @@ function buildMobileAppHtml() {
       projBrowserState.mode = 'create';
       projBrowserState.editingProjectId = '';
       projBrowserState.detailSeq++;
+      projBrowserState.detailLoading = false;
+      projBrowserState.detailLoaded = false;
+      projBrowserState.detailError = '';
       projBrowserState.selectedFolders = [];
       projBrowserState.userTouchedFolders = false;
       projBrowserState.userTouchedName = false;
@@ -18900,27 +18946,83 @@ function buildMobileAppHtml() {
       await loadHostDirListing(initialPath);
     }
 
+    async function loadEditProjectDetail(projectId, initialBrowseHint) {
+      const pid = String(projectId || '').trim();
+      const backdrop = $('proj-modal-backdrop');
+      if (!pid || !backdrop) return false;
+      const myDetailSeq = ++projBrowserState.detailSeq;
+      projBrowserState.detailLoading = true;
+      projBrowserState.detailLoaded = false;
+      projBrowserState.detailError = '';
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
+      syncCreateProjectSubmitUi();
+
+      let browseSeedPath = String(initialBrowseHint || projBrowserState.currentPath || '').trim();
+      try {
+        const detRes = await fetchWithTimeout((apiBase || '') + '/api/projects/detail?id=' + encodeURIComponent(pid), {
+          headers: authHeaders(),
+          cache: 'no-store'
+        }, 4000);
+        if (detRes.status === 401) { location.reload(); return false; }
+        const detJson = await detRes.json().catch(() => null);
+        if (backdrop.hidden || myDetailSeq !== projBrowserState.detailSeq || projBrowserState.mode !== 'edit' || projBrowserState.editingProjectId !== pid) {
+          return false;
+        }
+        if (!detRes.ok || !detJson?.ok || !detJson.project) {
+          throw new Error(detJson?.error || ('读取项目详情失败 (HTTP ' + detRes.status + ')'));
+        }
+        const authFolders = Array.isArray(detJson.project.folders) && detJson.project.folders.length
+          ? detJson.project.folders.map((f) => ({ path: normalizeClientFolderEntryPath(f.path), isGitRepo: Boolean(f.isGitRepo) })).filter((f) => f.path)
+          : (Array.isArray(detJson.project.folderPaths) ? detJson.project.folderPaths.map((p) => ({ path: normalizeClientFolderEntryPath(p), isGitRepo: false })).filter((f) => f.path) : []);
+        if (!authFolders.length) {
+          throw new Error('该项目未包含有效的绑定目录，无法安全编辑');
+        }
+        projBrowserState.detailLoading = false;
+        projBrowserState.detailLoaded = true;
+        projBrowserState.detailError = '';
+        projBrowserState.selectedFolders = authFolders;
+        if (!browseSeedPath) browseSeedPath = authFolders[0].path;
+        if (detJson.project.name && $('proj-name-input') && !projBrowserState.userTouchedName) {
+          $('proj-name-input').value = String(detJson.project.name);
+        }
+        renderProjModalSummary();
+        renderProjSelectedFoldersBox();
+        syncCreateProjectSubmitUi();
+        await loadHostDirListing(browseSeedPath);
+        return true;
+      } catch (err) {
+        if (backdrop.hidden || myDetailSeq !== projBrowserState.detailSeq || projBrowserState.mode !== 'edit' || projBrowserState.editingProjectId !== pid) {
+          return false;
+        }
+        const readableErr = humanizeRemoteError(err?.message, '读取项目完整目录配置失败，请重试');
+        projBrowserState.detailLoading = false;
+        projBrowserState.detailLoaded = false;
+        projBrowserState.detailError = readableErr;
+        projBrowserState.selectedFolders = [];
+        renderProjModalSummary();
+        renderProjSelectedFoldersBox();
+        syncCreateProjectSubmitUi();
+        showToast(readableErr);
+        return false;
+      }
+    }
+
     async function openEditProjectModal(projectId) {
       const pid = String(projectId || '').trim();
       if (!pid || isNonProjectBucket(pid)) return;
       const backdrop = $('proj-modal-backdrop');
       if (!backdrop) return;
       const snapProj = (Array.isArray(latestSnap?.projects) ? latestSnap.projects : []).find((p) => p && p.id === pid) || null;
-      const seedRawPaths = Array.isArray(snapProj?.workspacePaths) && snapProj.workspacePaths.length
-        ? snapProj.workspacePaths
-        : (snapProj?.path ? [snapProj.path] : []);
-      const seedFolders = [];
-      const seenSeed = new Set();
-      for (const rp of seedRawPaths) {
-        const norm = normalizeClientFolderEntryPath(rp);
-        if (!norm || seenSeed.has(norm)) continue;
-        seenSeed.add(norm);
-        seedFolders.push({ path: norm, isGitRepo: false });
-      }
-      const myDetailSeq = ++projBrowserState.detailSeq;
+      const browseHintRaw = (Array.isArray(snapProj?.workspacePaths) && snapProj.workspacePaths[0]) || snapProj?.path || '';
+      const browseHint = normalizeClientFolderEntryPath(browseHintRaw);
       projBrowserState.mode = 'edit';
       projBrowserState.editingProjectId = pid;
-      projBrowserState.selectedFolders = seedFolders;
+      projBrowserState.detailLoading = true;
+      projBrowserState.detailLoaded = false;
+      projBrowserState.detailError = '';
+      // 严禁在权威详情接口成功返回前用仅含 path 主目录的快照残留初始化可保存目录列表，彻底防止漏读或失败时误删其他已绑定目录
+      projBrowserState.selectedFolders = [];
       projBrowserState.userTouchedFolders = false;
       projBrowserState.userTouchedName = false;
       projBrowserState.navFailedError = '';
@@ -18934,44 +19036,7 @@ function buildMobileAppHtml() {
       backdrop.hidden = false;
       resetModalSheetShift();
       syncViewportHeight();
-      renderProjModalSummary();
-      renderProjSelectedFoldersBox();
-      syncCreateProjectSubmitUi();
-
-      let browseSeedPath = seedFolders[0]?.path || projBrowserState.currentPath || '';
-      try {
-        const detRes = await fetchWithTimeout((apiBase || '') + '/api/projects/detail?id=' + encodeURIComponent(pid), {
-          headers: authHeaders(),
-          cache: 'no-store'
-        }, 4000);
-        const detJson = await detRes.json().catch(() => null);
-        if (
-          !backdrop.hidden &&
-          myDetailSeq === projBrowserState.detailSeq &&
-          detRes.ok &&
-          detJson?.ok &&
-          detJson.project &&
-          projBrowserState.mode === 'edit' &&
-          projBrowserState.editingProjectId === pid
-        ) {
-          const authFolders = Array.isArray(detJson.project.folders) && detJson.project.folders.length
-            ? detJson.project.folders.map((f) => ({ path: normalizeClientFolderEntryPath(f.path), isGitRepo: Boolean(f.isGitRepo) })).filter((f) => f.path)
-            : (Array.isArray(detJson.project.folderPaths) ? detJson.project.folderPaths.map((p) => ({ path: normalizeClientFolderEntryPath(p), isGitRepo: false })).filter((f) => f.path) : []);
-          if (authFolders.length > 0 && !projBrowserState.userTouchedFolders) {
-            projBrowserState.selectedFolders = authFolders;
-            if (!browseSeedPath) browseSeedPath = authFolders[0].path;
-          }
-          if (detJson.project.name && $('proj-name-input') && !projBrowserState.userTouchedName) {
-            $('proj-name-input').value = String(detJson.project.name);
-          }
-          renderProjSelectedFoldersBox();
-          syncCreateProjectSubmitUi();
-        }
-      } catch {}
-      if (backdrop.hidden || myDetailSeq !== projBrowserState.detailSeq || projBrowserState.mode !== 'edit' || projBrowserState.editingProjectId !== pid) {
-        return;
-      }
-      await loadHostDirListing(browseSeedPath);
+      await loadEditProjectDetail(pid, browseHint);
     }
 
     function closeCreateProjectModal() {
@@ -19023,6 +19088,10 @@ function buildMobileAppHtml() {
       }
 
       if (projBrowserState.mode === 'edit') {
+        if (projBrowserState.detailLoading || !projBrowserState.detailLoaded) {
+          showToast(projBrowserState.detailError || '正在加载项目完整目录配置，完成前暂不可保存');
+          return;
+        }
         const editPid = String(projBrowserState.editingProjectId || '').trim();
         const folderPaths = projBrowserState.selectedFolders
           .map((f) => normalizeClientFolderEntryPath(f.path))
@@ -19268,6 +19337,11 @@ function buildMobileAppHtml() {
       }
     });
     $('proj-folders-box')?.addEventListener('click', (e) => {
+      const retryDetBtn = e.target?.closest?.('#proj-detail-retry-btn');
+      if (retryDetBtn && projBrowserState.mode === 'edit' && projBrowserState.editingProjectId) {
+        void loadEditProjectDetail(projBrowserState.editingProjectId);
+        return;
+      }
       const rmBtn = e.target?.closest?.('[data-rm-proj-folder]');
       if (rmBtn && !rmBtn.disabled && !rmBtn.hasAttribute?.('disabled')) {
         removeFolderFromProjSelection(rmBtn.getAttribute('data-rm-proj-folder'));
