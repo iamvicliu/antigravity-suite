@@ -5045,7 +5045,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
       attachDatasetProxy(sheetList);
       const groupButtons = sheetList.querySelectorAll('[data-group-idx]');
       assert.equal(groupButtons.length, 2, '4 个模型选项按 base modelId 应聚合为 2 组 (Gemini 4 Carbon 与 Orchestrator (Carbon))');
-      assert.ok(groupButtons[0].textContent.includes('Gemini 4 Carbon') && groupButtons[0].textContent.includes('3 档'));
+      assert.ok(groupButtons[0].textContent.includes('Gemini 4 Carbon') && groupButtons[0].textContent.includes('Medium') && !groupButtons[0].textContent.includes('3 档'));
 
       // 点击 Gemini 4 Carbon -> 左滑切换为思考等级抽屉
       sheetList.onclick({ target: groupButtons[0] });
@@ -5054,10 +5054,11 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
       assert.ok(trackEl.classList.contains('step-effort'), '点击模型后轨道应添加 .step-effort 触发左滑动画');
       assert.equal(backBtn.hidden, false, '思考等级抽屉头部应显示返回按钮');
       const effortButtons = sheetList.querySelectorAll('[data-variant-idx]');
-      assert.equal(effortButtons.length, 3, 'Gemini 4 Carbon 思考等级抽屉应包含 高/中/低 3 个选项');
+      assert.equal(effortButtons.length, 3, 'Gemini 4 Carbon 思考等级抽屉应包含 Low/Medium/High 3 个选项');
 
-      // 选择 High 等级
-      await sheetList.onclick({ target: effortButtons[0] });
+      // 选择 High 等级（按 Low -> Medium -> High 顺序排列在末位）
+      const highEffortBtn = effortButtons.find((b) => (b.textContent || '').includes('High')) || effortButtons[effortButtons.length - 1];
+      await sheetList.onclick({ target: highEffortBtn });
       assert.ok(actionRequests.some((r) => r.action === 'select-model' && r.modelId === 'gemini-4-carbon-high'),
         '选择思考等级后应调用 select-model 提交对应 modelId');
 
@@ -9333,8 +9334,9 @@ test('PR #5 / 远程需求 29: 融合回归——隔离会话后跨项目新建�
     assert.ok(envUi.doc.getElementById('sheet-stage-track')?.classList?.contains('step-effort'));
     const variantBtns = sheetList.querySelectorAll('[data-variant-idx]');
     assert.equal(variantBtns.length, 3);
-    sheetList.dispatchEvent({ type: 'click', target: variantBtns[0] });
-    await sheetList.onclick({ target: variantBtns[0] });
+    const highVariantBtn = variantBtns.find((b) => (b.textContent || '').includes('High')) || variantBtns[variantBtns.length - 1];
+    sheetList.dispatchEvent({ type: 'click', target: highVariantBtn });
+    await sheetList.onclick({ target: highVariantBtn });
     assert.equal(countActions('select-model'), baseModelCnt + 1, '切换模型分档后应精确发送 1 次 select-model');
     assert.equal(countActions('new-conversation'), baseNewCnt, 'activeSheetState 清空后不得误触项目选择回调');
     assert.equal(uiActions[uiActions.length - 1].label, 'Gemini 4 Carbon (High)');
@@ -35552,4 +35554,280 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
     delete require.cache[require.resolve('../mobile-remote')];
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级编排模型与 Extra High 推理强度级联及降噪', async () => {
+  const repoRoot = path.join(__dirname, '..');
+  // 1) 验证 suite-settings.html 与编译产物包含 Gemini 4 Neon (Extra High/High/Medium/Low) 与 Orchestrator (Neon)
+  const settingsHtml = fs.readFileSync(path.join(repoRoot, 'src', 'renderer', 'suite-settings.html'), 'utf8');
+  for (const expectedVal of [
+    'value="gemini-4-neon-xhigh"',
+    'value="gemini-4-neon-high"',
+    'value="gemini-4-neon-medium"',
+    'value="gemini-4-neon-low"',
+    'value="gemini-pro-orchestrator-neon"'
+  ]) {
+    assert.ok(settingsHtml.includes(expectedVal), `suite-settings.html CLI 模型下拉应包含 ${expectedVal}`);
+  }
+  assert.ok(settingsHtml.includes('Gemini 4 Neon (Extra High)'), 'XHigh 档位应统一显示为 Extra High');
+
+  // 2) 验证 ag-enhancer-overlay.js collectSnapshot 提取 orchestratorConfig/New 标记，且 select-model 联动 setSelectedModel + orchestratorPick.select
+  const overlaySrc = fs.readFileSync(path.join(repoRoot, 'ag-enhancer-overlay.js'), 'utf8');
+  const selectedCalls = [];
+  const orchPickCalls = [];
+  const mockTriggerBtn = {
+    getAttribute(k) { return k === 'data-testid' ? 'model-selector-trigger' : null; },
+    textContent: 'Orchestrator Neon · Extra High'
+  };
+  const neonHigh = { label: 'Gemini 4 Neon (High)', value: 1532, modelId: 'gemini-4-neon-high', tagTitle: 'New', disabled: false, quotaInfo: { resetTime: { seconds: 1795822552n } } };
+  const neonXHigh = { label: 'Gemini 4 Neon (XHigh)', value: 1535, modelId: 'gemini-4-neon-xhigh', tagTitle: 'New', disabled: false, quotaInfo: { resetTime: { seconds: 1795822552n } } };
+  const neonMed = { label: 'Gemini 4 Neon (Medium)', value: 1533, modelId: 'gemini-4-neon-medium', tagTitle: 'New', disabled: false };
+  const neonLow = { label: 'Gemini 4 Neon (Low)', value: 1534, modelId: 'gemini-4-neon-low', tagTitle: 'New', disabled: false };
+  const carbonHigh = { label: 'Gemini 4 Carbon (High)', value: 1427, modelId: 'gemini-4-carbon-high', tagTitle: 'New', disabled: false };
+  const carbonMed = { label: 'Gemini 4 Carbon (Medium)', value: 1437, modelId: 'gemini-4-carbon-medium', tagTitle: 'New', disabled: false };
+  const carbonLow = { label: 'Gemini 4 Carbon (Low)', value: 1438, modelId: 'gemini-4-carbon-low', tagTitle: 'New', disabled: false };
+  const argonHigh = { label: 'Gemini 4 Argon (High)', value: 1417, modelId: 'gemini-4-argon-high', tagTitle: 'Leaving Soon', disabled: false };
+  const opusHigh = { label: 'Claude Opus 5.5 (High)', value: 1402, modelId: 'claude-opus-5-5-high', tagTitle: 'New', disabled: false };
+  const opusMed = { label: 'Claude Opus 5.5 (Medium)', value: 1401, modelId: 'claude-opus-5-5-medium', tagTitle: 'New', disabled: false };
+  const opusLow = { label: 'Claude Opus 5.5 (Low)', value: 1400, modelId: 'claude-opus-5-5-low', tagTitle: 'New', disabled: false };
+  const gptOss = { label: 'GPT-OSS 120B (Medium)', value: 342, modelId: 'gpt-oss-120b-medium', tagTitle: 'Notice', disabled: false };
+  const orchNeon = { label: 'Orchestrator (Neon)', value: 1537, modelId: 'gemini-pro-orchestrator-neon', tagTitle: 'New', disabled: false };
+  const orchCarbon = { label: 'Orchestrator (Carbon)', value: 1667, modelId: 'gemini-pro-orchestrator', tagTitle: 'New', disabled: false };
+  const orchArgon = { label: 'Orchestrator (Argon)', value: 1681, modelId: 'gemini-pro-orchestrator-argon', tagTitle: 'New', disabled: false };
+
+  const mockModelCtx = {
+    selectedModel: orchNeon,
+    setSelectedModel: (opt) => { selectedCalls.push(opt); mockModelCtx.selectedModel = opt; },
+    modelOptions: [neonHigh, neonXHigh, neonMed, neonLow, carbonHigh, carbonMed, carbonLow, argonHigh, orchNeon, orchCarbon, orchArgon, opusLow, opusMed, opusHigh, gptOss],
+    groups: [{ groupName: 'Recommended', options: [neonHigh, carbonMed, argonHigh, orchNeon, opusLow, gptOss] }],
+    orchestratorDefaultPlanner: neonHigh,
+    orchestratorPlanners: [neonHigh, neonXHigh, neonMed, neonLow, carbonMed, carbonHigh, carbonLow, argonHigh, opusLow, opusMed, opusHigh],
+    orchestratorPick: {
+      model: 1535,
+      select: (val) => { orchPickCalls.push(val); mockModelCtx.orchestratorPick.model = val; }
+    }
+  };
+  mockTriggerBtn.__reactFiber$ag38 = {
+    memoizedProps: { value: mockModelCtx },
+    return: null
+  };
+
+  const unrefTimers = (envObj) => {
+    envObj.sandbox.setTimeout = envObj.win.setTimeout = (fn, ms, ...args) => {
+      if (typeof fn === 'function' && Number(ms || 0) <= 200) {
+        const t = setTimeout(fn, 0, ...args);
+        t?.unref?.();
+        return t;
+      }
+      return 1;
+    };
+    envObj.sandbox.clearTimeout = envObj.win.clearTimeout = (t) => {
+      if (t && typeof t === 'object') clearTimeout(t);
+    };
+  };
+
+  const overlayEnv = createDomEnv();
+  unrefTimers(overlayEnv);
+  overlayEnv.doc.title = 'Antigravity';
+  const origDocQuery = overlayEnv.doc.querySelector.bind(overlayEnv.doc);
+  overlayEnv.doc.querySelector = (sel) => {
+    if (sel === '[data-testid="model-selector-trigger"]') return mockTriggerBtn;
+    return origDocQuery(sel);
+  };
+  overlayEnv.win.fetch = async () => ({ ok: false, status: 404, headers: { get: () => '' }, json: async () => ({}) });
+  overlayEnv.sandbox.fetch = overlayEnv.win.fetch;
+  overlayEnv.sandbox.AbortController = AbortController;
+  overlayEnv.win.AbortController = AbortController;
+  vm.runInNewContext(overlaySrc, overlayEnv.sandbox);
+
+  const enhancer = overlayEnv.sandbox.__AGEnhancer;
+  assert.ok(enhancer && typeof enhancer.getMobileSnapshot === 'function' && typeof enhancer.performMobileAction === 'function');
+  const snap = enhancer.getMobileSnapshot({ convLimit: 10, msgLimit: 5 });
+  // BigInt-safe 序列化验证
+  const snapJson = JSON.stringify(snap);
+  assert.ok(snapJson.length > 10, '含 Protobuf BigInt 配额字段的 modelCtx 快照必须可被 JSON.stringify 安全序列化');
+  assert.equal(snap.model, 'Orchestrator · Neon (Extra High)', 'Orchestrator 激活时顶栏模型名应精简展示当前编排模型与 Extra High 强度');
+  assert.ok(snap.orchestratorConfig && snap.orchestratorConfig.enabled === true && snap.orchestratorConfig.active === true);
+  assert.equal(snap.orchestratorConfig.pickedModelId, 'gemini-4-neon-xhigh');
+  const neonOptInSnap = snap.modelOptions.find((m) => m.modelId === 'gemini-4-neon-xhigh');
+  const argonOptInSnap = snap.modelOptions.find((m) => m.modelId === 'gemini-4-argon-high');
+  assert.equal(neonOptInSnap?.isNew, true, 'tagTitle="New" 应提取为 isNew: true');
+  assert.equal(Boolean(argonOptInSnap?.isNew), false, 'tagTitle="Leaving Soon" 不得误标为 New');
+
+  // 执行三级 Orchestrator 选择（Claude Opus 5.5 · High）
+  const actOrch = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Orchestrator · Opus 5.5 (High)',
+    modelId: 'gemini-pro-orchestrator-neon',
+    orchestrator: true,
+    plannerModelId: 'claude-opus-5-5-high',
+    plannerLabel: 'Claude Opus 5.5 (High)',
+    plannerValue: 1402,
+    effortKey: 'high'
+  });
+  assert.equal(actOrch.ok, true);
+  assert.equal(selectedCalls.length, 1);
+  assert.equal(selectedCalls[0].modelId, 'gemini-pro-orchestrator-neon', '无独立后缀的 Opus 编排器应选中主 Orchestrator 基座并交由 orchestratorPick 指定子模型');
+  assert.deepEqual(orchPickCalls, [1402], '应同步调用 orchestratorPick.select(1402) 锁定 Claude Opus 5.5 (High)');
+
+  // 执行常规两级模型选择（Gemini 4 Neon · Extra High）
+  const actReg = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Gemini 4 Neon (Extra High)',
+    modelId: 'gemini-4-neon-xhigh'
+  });
+  assert.equal(actReg.ok, true);
+  assert.equal(selectedCalls[selectedCalls.length - 1].modelId, 'gemini-4-neon-xhigh');
+  assert.equal(orchPickCalls.length, 1, '切换常规模型时不得误调 orchestratorPick.select');
+  try { enhancer.dispose?.(); } catch {}
+
+  // 3) 验证远程前端（mobile-remote.js）：常规两级、单档直选、Orchestrator 三级左滑与逐级返回、降噪无 modelId/N档
+  delete require.cache[require.resolve('../mobile-remote')];
+  const remoteMod = require('../mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+  const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+  const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
+  assert.ok(scriptMatch && bodyMatch);
+  assert.doesNotThrow(() => new Function(scriptMatch[1]), '内联脚本不得有语法错误');
+
+  const uiEnv = createDomEnv();
+  unrefTimers(uiEnv);
+  uiEnv.doc.body.innerHTML = bodyMatch[1];
+  uiEnv.win.innerWidth = 390;
+  uiEnv.win.innerHeight = 844;
+  uiEnv.win.AbortController = AbortController;
+  uiEnv.win.location = { pathname: '/', search: '?token=test38', hash: '', href: 'http://127.0.0.1:18888/?token=test38', protocol: 'http:', reload() {} };
+  uiEnv.win.history = { replaceState() {} };
+  uiEnv.sandbox.location = uiEnv.win.location;
+  uiEnv.sandbox.history = uiEnv.win.history;
+  uiEnv.sandbox.AbortController = AbortController;
+  uiEnv.sandbox.URLSearchParams = URLSearchParams;
+
+  const postedActions = [];
+  const mockHeaders = { get: (k) => (String(k || '').toLowerCase() === 'content-type' ? 'application/json' : '') };
+  uiEnv.win.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.includes('/api/snapshot')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: mockHeaders,
+        json: async () => ({
+          ok: true,
+          sessionId: 'conv-38',
+          title: '三级编排选择器测试',
+          busy: false,
+          model: snap.model,
+          modelOptions: snap.modelOptions,
+          orchestratorConfig: snap.orchestratorConfig,
+          permissionKey: 'auto',
+          permissionLabel: '自动',
+          messages: [],
+          projects: [],
+          conversations: []
+        })
+      };
+    }
+    if (u.includes('/api/action')) {
+      const body = JSON.parse(String(init.body || '{}'));
+      postedActions.push(body);
+      return {
+        ok: true,
+        status: 200,
+        headers: mockHeaders,
+        json: async () => ({
+          ok: true,
+          actionResult: { ok: true, model: body.label }
+        })
+      };
+    }
+    return { ok: true, status: 200, headers: mockHeaders, json: async () => ({ ok: true }) };
+  };
+  uiEnv.sandbox.fetch = uiEnv.win.fetch;
+
+  vm.runInNewContext(scriptMatch[1], uiEnv.sandbox);
+  await new Promise((r) => setTimeout(r, 40));
+
+  const modelBtn = uiEnv.doc.getElementById('btn-model-inline');
+  const sheetList = uiEnv.doc.getElementById('sheet-list');
+  const backBtn = uiEnv.doc.getElementById('sheet-back-btn');
+  const titleText = uiEnv.doc.getElementById('sheet-title-text');
+  const sheetCard = uiEnv.doc.getElementById('sheet-backdrop')?.querySelector?.('.sheet');
+
+  // 打开模型选择器
+  modelBtn.onclick();
+  assert.equal(sheetCard?.getAttribute('data-sheet-kind'), 'model', '桌面多列级联样式钩子 data-sheet-kind 应设为 model');
+  assert.ok(sheetCard?.classList?.contains('model-picker-sheet'));
+  const groupPane = uiEnv.doc.getElementById('model-group-pane');
+  const rootText = groupPane?.textContent || '';
+  assert.equal(/档/.test(rootText), false, '模型列表应移除“N 档”杂讯文案');
+  assert.equal(rootText.includes('gemini-4-neon'), false, '模型列表应移除裸露内部 baseModelId');
+  assert.ok(sheetList.querySelectorAll('.model-picker-divider').length === 1, 'Orchestrator 入口上方应渲染独立分隔线');
+  assert.ok(sheetList.querySelectorAll('.model-new-pill').length >= 2, 'New 模型应展示主题紫 New 徽标');
+
+  const rootBtns = sheetList.querySelectorAll('[data-group-idx]');
+  // 包含: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Claude Opus 5.5, GPT-OSS 120B, Orchestrator (聚合了 3 个 Orchestrator 项为单一入口)
+  assert.equal(rootBtns.length, 6, '多个 Orchestrator 项应聚合为末尾单一 Orchestrator 根入口');
+  const orchRootBtn = rootBtns[rootBtns.length - 1];
+  assert.ok((orchRootBtn.textContent || '').includes('Orchestrator'));
+  assert.ok((orchRootBtn.textContent || '').includes('Neon · Extra High'), 'Orchestrator 根行应回显当前 Neon · Extra High 状态');
+
+  // 点击 Orchestrator -> 进入第 2 级「候选编排模型」
+  await sheetList.onclick({ target: orchRootBtn });
+  const trackEl = uiEnv.doc.getElementById('sheet-stage-track');
+  const subPane = uiEnv.doc.getElementById('model-submodel-pane');
+  assert.equal(subPane.hidden, false, '进入 Orchestrator 第 2 级时候选编排模型面板应可见');
+  assert.ok(trackEl.classList.contains('is-three-stage') && trackEl.classList.contains('step-submodel'), '轨道应切换为 3 栏左滑第 2 阶段');
+  assert.equal(titleText.textContent, 'Orchestrator');
+  assert.equal(backBtn.hidden, false);
+
+  const subBtns = subPane.querySelectorAll('[data-submodel-idx]');
+  assert.equal(subBtns.length, 4, 'Orchestrator 第 2 级应列出 Neon / Carbon / Argon / Opus 4 个候选编排家族');
+  assert.ok((subBtns[0].textContent || '').includes('Gemini 4 Neon'));
+
+  // 点击 Gemini 4 Neon -> 进入第 3 级「推理强度 (Low / Medium / High / Extra High)」
+  await sheetList.onclick({ target: subBtns[0] });
+  assert.ok(trackEl.classList.contains('is-three-stage') && trackEl.classList.contains('step-effort'), '点击候选编排模型后应推进至第 3 阶段推理强度');
+  assert.equal(titleText.textContent, 'Gemini 4 Neon');
+  const effortPane = uiEnv.doc.getElementById('model-effort-pane');
+  const orchVarBtns = effortPane.querySelectorAll('[data-variant-idx]');
+  assert.equal(orchVarBtns.length, 4, 'Gemini 4 Neon 编排强度应覆盖 Low / Medium / High / Extra High 共 4 档');
+  const effTexts = orchVarBtns.map((b) => (b.textContent || '').replace(/✓|当前/g, '').trim());
+  assert.deepEqual(effTexts, ['Low', 'Medium', 'High', 'Extra High'], '推理强度应按 Low -> Medium -> High -> Extra High 清晰展示且不含裸 modelId');
+
+  // 测试顶部返回键逐级回退：第 3 级 (推理强度) -> 第 2 级 (Orchestrator 候选模型) -> 第 1 级 (切换模型)
+  backBtn.onclick({ stopPropagation() {} });
+  assert.ok(trackEl.classList.contains('step-submodel') && !trackEl.classList.contains('step-effort'), '第 1 次返回应退回第 2 级候选编排模型');
+  assert.equal(titleText.textContent, 'Orchestrator');
+  backBtn.onclick({ stopPropagation() {} });
+  assert.ok(!trackEl.classList.contains('step-submodel') && !trackEl.classList.contains('is-three-stage'), '第 2 次返回应退回第 1 级根模型列表');
+  assert.equal(titleText.textContent, '切换模型');
+  assert.equal(backBtn.hidden, true);
+
+  // 重新进入 Orchestrator -> Claude Opus 5.5 -> High 并确认提交载荷
+  await sheetList.onclick({ target: rootBtns[rootBtns.length - 1] });
+  const opusSubBtn = uiEnv.doc.getElementById('model-submodel-pane').querySelectorAll('[data-submodel-idx]')
+    .find((b) => (b.textContent || '').includes('Claude Opus 5.5'));
+  assert.ok(opusSubBtn);
+  await sheetList.onclick({ target: opusSubBtn });
+  const opusHighBtn = uiEnv.doc.getElementById('model-effort-pane').querySelectorAll('[data-variant-idx]')
+    .find((b) => (b.textContent || '').includes('High'));
+  assert.ok(opusHighBtn);
+  await sheetList.onclick({ target: opusHighBtn });
+  const lastOrchPost = postedActions[postedActions.length - 1];
+  assert.equal(lastOrchPost.action, 'select-model');
+  assert.equal(lastOrchPost.orchestrator, true);
+  assert.equal(lastOrchPost.plannerModelId, 'claude-opus-5-5-high');
+  assert.equal(lastOrchPost.plannerValue, 1402);
+  assert.equal(lastOrchPost.effortKey, 'high');
+
+  // 单档模型 GPT-OSS 120B (Medium) 应点击即直选，不进入二级菜单
+  modelBtn.onclick();
+  const gptBtn = sheetList.querySelectorAll('[data-group-idx]').find((b) => (b.textContent || '').includes('GPT-OSS 120B'));
+  assert.ok(gptBtn);
+  await sheetList.onclick({ target: gptBtn });
+  const lastSinglePost = postedActions[postedActions.length - 1];
+  assert.equal(lastSinglePost.action, 'select-model');
+  assert.equal(Boolean(lastSinglePost.orchestrator), false);
+  assert.equal(lastSinglePost.modelId, 'gpt-oss-120b-medium');
 });

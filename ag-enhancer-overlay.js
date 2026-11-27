@@ -11624,28 +11624,117 @@
       : null;
     const contextBadge = canonicalCtx ? canonicalCtx.contextBadge : rawContextBadge;
     const pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
-    const EFFORT_ORDER = { xhigh: 1, high: 2, medium: 3, low: 4 };
+    const EFFORT_ORDER = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
+    const EFFORT_DISPLAY = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
+    const parseEffortFromModelItem = (rawLbl, rawId) => {
+      const idM = String(rawId || '').trim().match(/^(.*?)-(xhigh|high|medium|low|max)$/i);
+      const lblM = String(rawLbl || '').trim().match(/^(.*?)\s*\((Extra\s+High|XHigh|High|Medium|Low|Max)\)\s*$/i);
+      const rawEff = idM ? idM[2].toLowerCase() : (lblM ? lblM[2].toLowerCase().replace(/\s+/g, '') : '');
+      const effKey = rawEff === 'extrahigh' ? 'xhigh' : rawEff;
+      const baseName = lblM ? lblM[1].trim() : String(rawLbl || '').trim();
+      const baseId = idM ? idM[1].toLowerCase() : (String(rawId || '').trim() || baseName).toLowerCase();
+      return { effKey, effLabel: EFFORT_DISPLAY[effKey] || '', baseName, baseId };
+    };
     const rawModels = Array.isArray(modelCtx?.modelOptions)
-      ? modelCtx.modelOptions.filter((o) => o && !o.disabled && o.label)
+      ? modelCtx.modelOptions.filter((o) => o && typeof o === 'object' && !o.disabled && o.label)
       : [];
+    const selectedRawLabel = String(modelCtx?.selectedModel?.label || '').trim();
+    const selectedRawModelId = String(modelCtx?.selectedModel?.modelId || '').trim();
+    const isOrchOption = (o) => Boolean(o && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`));
+    const isOrchestratorSelected = isOrchOption(modelCtx?.selectedModel);
+    const rawPlanners = Array.isArray(modelCtx?.orchestratorPlanners)
+      ? modelCtx.orchestratorPlanners.filter((p) => p && typeof p === 'object' && !p.disabled && p.label)
+      : [];
+    const pickedOrchValue = typeof modelCtx?.orchestratorPick?.model === 'number' ? modelCtx.orchestratorPick.model : 0;
+    let activeOrchPlanner = null;
+    if (rawPlanners.length > 0) {
+      if (pickedOrchValue > 0) {
+        activeOrchPlanner = rawPlanners.find((p) => Number(p.value) === pickedOrchValue) || null;
+      }
+      if (!activeOrchPlanner && isOrchestratorSelected) {
+        const selSlugMatch = selectedRawModelId.match(/orchestrator-(neon|argon|carbon|hydrogen)/i);
+        const selSlug = selSlugMatch ? selSlugMatch[1].toLowerCase() : (/orchestrator$/i.test(selectedRawModelId) ? 'carbon' : '');
+        if (selSlug) {
+          activeOrchPlanner = rawPlanners.find((p) => String(p.modelId || '').toLowerCase().includes(`${selSlug}-high`))
+            || rawPlanners.find((p) => String(p.modelId || '').toLowerCase().includes(selSlug))
+            || null;
+        }
+      }
+      if (!activeOrchPlanner && modelCtx?.orchestratorDefaultPlanner && typeof modelCtx.orchestratorDefaultPlanner === 'object') {
+        const defId = String(modelCtx.orchestratorDefaultPlanner.modelId || '');
+        const defLbl = String(modelCtx.orchestratorDefaultPlanner.label || '');
+        activeOrchPlanner = rawPlanners.find((p) => (defId && p.modelId === defId) || (defLbl && p.label === defLbl)) || rawPlanners[0] || null;
+      }
+    }
+    const primaryOrchOption = (() => {
+      if (Array.isArray(modelCtx?.groups)) {
+        for (const grp of modelCtx.groups) {
+          const found = Array.isArray(grp?.options) ? grp.options.find((o) => o && !o.disabled && isOrchOption(o)) : null;
+          if (found) return found;
+        }
+      }
+      return rawModels.find((o) => isOrchOption(o)) || null;
+    })();
+    const orchestratorConfig = rawPlanners.length > 0 ? {
+      enabled: true,
+      active: isOrchestratorSelected,
+      pickedValue: pickedOrchValue,
+      pickedModelId: activeOrchPlanner ? String(activeOrchPlanner.modelId || '') : '',
+      pickedLabel: activeOrchPlanner ? String(activeOrchPlanner.label || '') : '',
+      defaultModelId: String(modelCtx?.orchestratorDefaultPlanner?.modelId || ''),
+      orchestratorModelId: String((isOrchestratorSelected ? selectedRawModelId : '') || primaryOrchOption?.modelId || 'gemini-pro-orchestrator-neon'),
+      orchestratorLabel: 'Orchestrator',
+      tagTitle: String(primaryOrchOption?.tagTitle || ''),
+      isNew: /^new$/i.test(String(primaryOrchOption?.tagTitle || '').trim()),
+      planners: rawPlanners.map((p) => ({
+        label: String(p.label || ''),
+        modelId: String(p.modelId || ''),
+        value: typeof p.value === 'number' ? p.value : 0,
+        tagTitle: String(p.tagTitle || ''),
+        isNew: /^new$/i.test(String(p.tagTitle || '').trim()),
+        selected: Boolean(isOrchestratorSelected && activeOrchPlanner && (
+          (p.modelId && p.modelId === activeOrchPlanner.modelId) || p.label === activeOrchPlanner.label
+        ))
+      }))
+    } : null;
+    const effectiveDisplayModel = (() => {
+      if (isOrchestratorSelected && activeOrchPlanner) {
+        const parsed = parseEffortFromModelItem(activeOrchPlanner.label, activeOrchPlanner.modelId);
+        const shortFam = parsed.baseName.replace(/^Gemini\s+4\s+/i, '').replace(/^Claude\s+/i, '').trim() || parsed.baseName;
+        return parsed.effLabel ? `Orchestrator · ${shortFam} (${parsed.effLabel})` : `Orchestrator · ${shortFam}`;
+      }
+      return model;
+    })();
     const familyOrder = new Map();
     const parsedModels = rawModels.map((o, idx) => {
       const label = String(o.label);
-      const m = label.match(/^(.*?)\s*\((XHigh|High|Medium|Low)\)\s*$/i);
-      const family = m ? m[1].trim().toLowerCase() : label.trim().toLowerCase();
-      const effort = m ? (EFFORT_ORDER[m[2].toLowerCase()] || 9) : 0;
+      const parsed = parseEffortFromModelItem(label, o.modelId);
+      const family = parsed.baseName.toLowerCase();
+      const effort = parsed.effKey ? (EFFORT_ORDER[parsed.effKey] || 9) : 0;
+      const tagTitle = String(o.tagTitle || '').trim();
       if (!familyOrder.has(family)) familyOrder.set(family, idx);
       return {
         label,
         modelId: String(o.modelId || ''),
-        selected: Boolean(o.label === modelCtx?.selectedModel?.label),
+        selected: Boolean(
+          (selectedRawLabel && o.label === selectedRawLabel) ||
+          (selectedRawModelId && o.modelId && o.modelId === selectedRawModelId)
+        ),
+        tagTitle,
+        isNew: /^new$/i.test(tagTitle),
         familyRank: familyOrder.get(family),
         effortRank: effort,
         origIdx: idx
       };
     });
     parsedModels.sort((a, b) => (a.familyRank - b.familyRank) || (a.effortRank - b.effortRank) || (a.origIdx - b.origIdx));
-    const modelOptions = parsedModels.map(({ label, modelId, selected }) => ({ label, modelId, selected }));
+    const modelOptions = parsedModels.map(({ label, modelId, selected, tagTitle, isNew }) => ({
+      label,
+      modelId,
+      selected,
+      ...(tagTitle ? { tagTitle } : {}),
+      ...(isNew ? { isNew: true } : {})
+    }));
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
     const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
     const pendingApprovals = collectPendingApprovals();
@@ -11680,8 +11769,9 @@
       busySignal,
       strongDomBusy: busySignal === 'cancel-btn' || busySignal === 'thinking' || busySignal === 'spinner' || busySignal === 'recent-submit',
       autoAccept: autoAcceptEnabled,
-      model,
+      model: effectiveDisplayModel,
       modelOptions,
+      ...(orchestratorConfig ? { orchestratorConfig } : {}),
       permissionKey,
       permissionLabel,
       permissionOptions: getPermissionPresetsMeta(),
@@ -12536,14 +12626,73 @@
     if (action === 'select-model') {
       const targetLabel = String(payload?.label || '').trim();
       const targetModelId = String(payload?.modelId || '').trim();
+      const isOrchReq = Boolean(payload?.orchestrator === true || payload?.plannerModelId || payload?.plannerLabel);
       const modelCtx = getModelSelectorContext();
       if (!modelCtx || !Array.isArray(modelCtx.modelOptions)) {
         return { ok: false, error: '未找到桌面端模型选择器' };
       }
+      if (isOrchReq) {
+        const plannerModelId = String(payload?.plannerModelId || '').trim();
+        const plannerLabel = String(payload?.plannerLabel || '').trim();
+        const plannerValNum = Number(payload?.plannerValue || 0);
+        const rawPlanners = Array.isArray(modelCtx.orchestratorPlanners)
+          ? modelCtx.orchestratorPlanners.filter((p) => p && typeof p === 'object' && !p.disabled)
+          : [];
+        const normEffLbl = (s) => String(s || '').trim().replace(/\(Extra\s+High\)/i, '(XHigh)').toLowerCase();
+        const pickedPlanner = rawPlanners.find((p) =>
+          (Number.isFinite(plannerValNum) && plannerValNum > 0 && Number(p.value) === plannerValNum) ||
+          (plannerModelId && String(p.modelId || '') === plannerModelId) ||
+          (plannerLabel && normEffLbl(p.label) === normEffLbl(plannerLabel))
+        ) || modelCtx.modelOptions.find((o) =>
+          o && !o.disabled && (
+            (plannerModelId && String(o.modelId || '') === plannerModelId) ||
+            (plannerLabel && normEffLbl(o.label) === normEffLbl(plannerLabel))
+          )
+        ) || null;
+
+        const orchCandidates = modelCtx.modelOptions.filter((o) => o && !o.disabled && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`));
+        const plannerSlugMatch = (plannerModelId || pickedPlanner?.modelId || '').toLowerCase().match(/(neon|argon|carbon|hydrogen)/);
+        const plannerSlug = plannerSlugMatch ? plannerSlugMatch[1] : '';
+        const pickedOrchBase = orchCandidates.find((o) =>
+          (targetModelId && o.modelId === targetModelId) ||
+          (plannerSlug === 'carbon' && /^gemini-pro-orchestrator$/i.test(String(o.modelId || ''))) ||
+          (plannerSlug && String(o.modelId || '').toLowerCase().includes(`orchestrator-${plannerSlug}`))
+        ) || (() => {
+          if (Array.isArray(modelCtx.groups)) {
+            for (const grp of modelCtx.groups) {
+              const gOpt = Array.isArray(grp?.options) ? grp.options.find((o) => o && !o.disabled && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`)) : null;
+              if (gOpt) return gOpt;
+            }
+          }
+          return orchCandidates[0] || null;
+        })();
+
+        if (!pickedOrchBase && !pickedPlanner) {
+          return { ok: false, error: `未找到目标编排模型: ${plannerLabel || plannerModelId || targetLabel || targetModelId}` };
+        }
+        if (pickedOrchBase) {
+          modelCtx.setSelectedModel(pickedOrchBase);
+        } else if (pickedPlanner) {
+          modelCtx.setSelectedModel(pickedPlanner);
+        }
+        if (pickedPlanner && typeof modelCtx.orchestratorPick?.select === 'function' && typeof pickedPlanner.value === 'number') {
+          modelCtx.orchestratorPick.select(pickedPlanner.value);
+        }
+        await new Promise((r) => setTimeout(r, 80));
+        const resolvedTitle = targetLabel || (pickedPlanner ? `Orchestrator · ${pickedPlanner.label}` : pickedOrchBase.label);
+        return {
+          ok: true,
+          model: resolvedTitle,
+          orchestrator: true,
+          plannerModelId: String(pickedPlanner?.modelId || plannerModelId || '')
+        };
+      }
+      const normLbl = (s) => String(s || '').trim().replace(/\(Extra\s+High\)/i, '(XHigh)').toLowerCase();
       const picked = modelCtx.modelOptions.find((o) =>
         o && !o.disabled && (
           (targetLabel && o.label === targetLabel) ||
-          (targetModelId && o.modelId === targetModelId)
+          (targetModelId && o.modelId === targetModelId) ||
+          (targetLabel && normLbl(o.label) === normLbl(targetLabel))
         )
       );
       if (!picked) {
