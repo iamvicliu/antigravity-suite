@@ -4579,6 +4579,74 @@ function isValidEditableProjectId(rawId) {
   return true;
 }
 
+function isValidReadProjectObject(proj, expectedId = '') {
+  if (!proj || typeof proj !== 'object' || Array.isArray(proj)) return false;
+  const pid = String(proj.id || '').trim();
+  if (!pid) return false;
+  if (expectedId && pid !== expectedId) return false;
+  const resList = proj.projectResources?.resources;
+  if (!proj.projectResources || typeof proj.projectResources !== 'object' || !Array.isArray(resList) || resList.length < 1) {
+    return false;
+  }
+  for (const r of resList) {
+    if (!r || typeof r !== 'object') return false;
+    const rawUri = r?.gitFolder?.folderUri || r?.folderUri || '';
+    const decoded = decodeFileUriToPath(rawUri);
+    if (!decoded) return false;
+  }
+  return true;
+}
+
+function isDuplicateProjectRpcError(errOrMsg) {
+  const msg = String(errOrMsg?.message || errOrMsg || '').trim();
+  if (!msg) return false;
+  return /already[_ -]?exists|duplicate|同名|name.*exists|conflict/i.test(msg);
+}
+
+async function collectAuthoritativeProjectNameMap(lsApi, options = {}) {
+  const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
+  const merged = new Map();
+  for (const [id, proj] of metaMap.entries()) {
+    if (id && proj?.name) {
+      merged.set(id, { id, name: String(proj.name).trim() });
+    }
+  }
+  if (lsApi && typeof lsApi.call === 'function') {
+    try {
+      const listRes = await withRaceTimeout(lsApi.call('ListProjects', {}), 2000, null);
+      let lsProjects = Array.isArray(listRes?.projects) ? listRes.projects.slice() : [];
+      const ids = Array.isArray(listRes?.projectIds)
+        ? listRes.projectIds.map((x) => String(x || '').trim()).filter(Boolean)
+        : [];
+      if (!lsProjects.length && ids.length > 0) {
+        const batchRes = await withRaceTimeout(lsApi.call('ReadProjects', { ids }), 2500, null).catch(() => null);
+        if (Array.isArray(batchRes?.projects) && batchRes.projects.length > 0) {
+          lsProjects = batchRes.projects;
+        } else {
+          const perIdReads = await Promise.all(
+            ids.slice(0, 200).map((id) => withRaceTimeout(lsApi.call('ReadProject', { id }), 1500, null).catch(() => null))
+          );
+          lsProjects = perIdReads.map((r) => r?.project).filter(Boolean);
+        }
+      }
+      for (const p of lsProjects) {
+        if (!p || typeof p !== 'object') continue;
+        const pid = String(p.id || '').trim();
+        if (!pid) continue;
+        const pname = String(p.name || '').trim();
+        if (p.archived === true || p.sidecar || pname === 'swarm/swarm_board') {
+          merged.delete(pid);
+          continue;
+        }
+        if (pname) {
+          merged.set(pid, { id: pid, name: pname });
+        }
+      }
+    } catch {}
+  }
+  return merged;
+}
+
 async function createRemoteProject(payload = {}, options = {}) {
   const hasFolderArray = Array.isArray(payload?.folderPaths) && payload.folderPaths.some((x) => String(x || '').trim());
   const rawInputFolders = hasFolderArray ? payload.folderPaths : [payload?.folderPath];
@@ -4633,8 +4701,7 @@ async function createRemoteProject(payload = {}, options = {}) {
       const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: requestedExistingId }), 1500, null);
       const rp = readRes?.project;
       if (
-        rp &&
-        rp.id === requestedExistingId &&
+        isValidReadProjectObject(rp, requestedExistingId) &&
         !rp.archived &&
         doesProjectPrimaryMatchTarget(rp, resolvedPath, primary.realPath)
       ) {
@@ -4656,7 +4723,8 @@ async function createRemoteProject(payload = {}, options = {}) {
     } catch {}
   }
 
-  for (const proj of metaMap.values()) {
+  const authNameMap = await collectAuthoritativeProjectNameMap(lsApi, options);
+  for (const proj of authNameMap.values()) {
     if (proj.name && proj.name.toLowerCase() === projectName.toLowerCase()) {
       throw Object.assign(new Error(`同名项目「${proj.name}」已存在，请修改项目名称`), { status: 400 });
     }
@@ -4682,6 +4750,9 @@ async function createRemoteProject(payload = {}, options = {}) {
       created = true;
     } catch (err) {
       lastLsError = err?.message || 'CreateProject 调用失败';
+      if (isDuplicateProjectRpcError(lastLsError)) {
+        throw Object.assign(new Error(`同名项目「${projectName}」已存在，请修改项目名称`), { status: 400 });
+      }
     }
   }
 
@@ -4741,11 +4812,11 @@ async function readRemoteProjectDetail(projectIdInput, options = {}) {
       if (res === READ_TIMEOUT) {
         readFailedFromRpc = true;
         lastReadError = '调用 LanguageServer ReadProject 超时';
-      } else if (res?.project && typeof res.project === 'object') {
+      } else if (isValidReadProjectObject(res?.project, projectId)) {
         rawProject = res.project;
       } else {
         readFailedFromRpc = true;
-        lastReadError = 'LanguageServer ReadProject 未返回有效项目数据';
+        lastReadError = 'LanguageServer ReadProject 返回的项目结构不完整或 ID 不匹配';
       }
     } catch (err) {
       readFailedFromRpc = true;
@@ -4753,7 +4824,7 @@ async function readRemoteProjectDetail(projectIdInput, options = {}) {
     }
   }
   // 严格收紧磁盘读取回退：普通运行（未显式开启 allowDiskFallback）绝不回退读取默认 ~/.gemini/config；
-  // 且只要已连接 LanguageServer 而 ReadProject 失败/超时，除非显式指定 allowDiskFallback === true，否则立即报错，绝不用可能滞后的本地磁盘 JSON 解锁编辑
+  // 且只要已连接 LanguageServer 而 ReadProject 失败/超时/结构残缺，除非显式指定 allowDiskFallback === true，否则立即报错，绝不用可能滞后的本地磁盘 JSON 解锁编辑
   const canReadDiskFallback = hasLsRpc
     ? Boolean(options.allowDiskFallback === true)
     : Boolean(options.allowDiskFallback === true || explicitConfigDir);
@@ -4763,7 +4834,7 @@ async function readRemoteProjectDetail(projectIdInput, options = {}) {
     if (fallbackConfigDir) {
       const fp = path.join(fallbackConfigDir, 'projects', `${projectId}.json`);
       const readRes = safeReadJsonSync(fp, null);
-      if (readRes?.ok && readRes.data && typeof readRes.data === 'object') {
+      if (readRes?.ok && isValidReadProjectObject(readRes.data, projectId)) {
         rawProject = readRes.data;
       }
     }
@@ -4844,11 +4915,11 @@ async function updateRemoteProject(payload = {}, options = {}) {
       if (readRes === READ_TIMEOUT) {
         readFailedFromRpc = true;
         lastReadError = '调用 LanguageServer ReadProject 超时';
-      } else if (readRes?.project && typeof readRes.project === 'object') {
+      } else if (isValidReadProjectObject(readRes?.project, projectId)) {
         existingProjObj = readRes.project;
       } else {
         readFailedFromRpc = true;
-        lastReadError = 'LanguageServer ReadProject 未返回有效项目数据';
+        lastReadError = 'LanguageServer ReadProject 返回的项目结构不完整或 ID 不匹配';
       }
     } catch (err) {
       readFailedFromRpc = true;
@@ -4856,7 +4927,7 @@ async function updateRemoteProject(payload = {}, options = {}) {
     }
   }
   // 严格收紧磁盘读取回退：普通运行未允许回退时绝不读取 ~/.gemini/config；
-  // 且只要已连接 LanguageServer 而 ReadProject 失败/超时，除非显式 allowDiskFallback === true，否则立即拒绝更新，严防以滞后磁盘副本覆盖原项目目录与扩展字段
+  // 且只要已连接 LanguageServer 而 ReadProject 失败/超时/结构残缺，除非显式 allowDiskFallback === true，否则立即拒绝更新，严防以残缺或滞后副本覆盖原项目目录与扩展字段
   const canReadDiskFallback = hasLsRpc
     ? Boolean(options.allowDiskFallback === true)
     : Boolean(options.allowDiskFallback === true || explicitConfigDir);
@@ -4867,7 +4938,7 @@ async function updateRemoteProject(payload = {}, options = {}) {
   if (!existingProjObj && canReadDiskFallback && effectiveConfigDir) {
     const fp = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
     const readRes = safeReadJsonSync(fp, null);
-    if (readRes?.ok && readRes.data && typeof readRes.data === 'object') {
+    if (readRes?.ok && isValidReadProjectObject(readRes.data, projectId)) {
       existingProjObj = readRes.data;
     }
   }
@@ -4901,8 +4972,8 @@ async function updateRemoteProject(payload = {}, options = {}) {
     '请至少保留 1 个有效的项目目录，不支持清空目录或删除项目'
   );
 
-  const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
-  for (const proj of metaMap.values()) {
+  const authNameMap = await collectAuthoritativeProjectNameMap(lsApi, options);
+  for (const proj of authNameMap.values()) {
     if (proj.id !== projectId && proj.name && proj.name.toLowerCase() === projectName.toLowerCase()) {
       throw Object.assign(new Error(`同名项目「${proj.name}」已存在，请修改项目名称`), { status: 400 });
     }
@@ -4930,6 +5001,9 @@ async function updateRemoteProject(payload = {}, options = {}) {
       updatedViaRpc = true;
     } catch (err) {
       lastUpdateErr = err?.message || 'UpdateProject 调用失败';
+      if (isDuplicateProjectRpcError(lastUpdateErr)) {
+        throw Object.assign(new Error(`同名项目「${projectName}」已存在，请修改项目名称`), { status: 400 });
+      }
       if (!options.allowDiskFallback) {
         throw Object.assign(new Error(`更新项目设置失败：${lastUpdateErr}`), { status: 502 });
       }

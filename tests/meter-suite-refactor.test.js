@@ -36030,9 +36030,23 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
     storedProjects.set(otherProj.id, otherProj);
     fs.writeFileSync(path.join(configDir, 'projects', `${otherProj.id}.json`), JSON.stringify(otherProj, null, 2));
 
+    let customReadProjectHook = null;
+    let customUpdateProjectHook = null;
     const mockLsConnect = async () => ({
       call: async (method, body) => {
         rpcCalls.push({ method, body: JSON.parse(JSON.stringify(body || {})) });
+        if (method === 'ListProjects') {
+          return { projectIds: Array.from(storedProjects.keys()) };
+        }
+        if (method === 'ReadProjects') {
+          const ids = Array.isArray(body?.ids) ? body.ids : [];
+          return {
+            projects: ids
+              .map((id) => storedProjects.get(id))
+              .filter(Boolean)
+              .map((p) => JSON.parse(JSON.stringify(p)))
+          };
+        }
         if (method === 'ResolveFolder') {
           const isGit = String(body?.folderUri || '').includes('repo-alpha');
           return { resourceType: isGit ? 'FOLDER_TYPE_GIT_FOLDER' : 'FOLDER_TYPE_PLAIN' };
@@ -36046,11 +36060,18 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
           return { project: p };
         }
         if (method === 'ReadProject') {
+          if (typeof customReadProjectHook === 'function') {
+            const hooked = customReadProjectHook(body);
+            if (hooked !== undefined) return hooked;
+          }
           const hit = storedProjects.get(body.id);
           if (!hit) throw new Error(`not_found: project ${body.id} not found`);
           return { project: JSON.parse(JSON.stringify(hit)) };
         }
         if (method === 'UpdateProject') {
+          if (typeof customUpdateProjectHook === 'function') {
+            customUpdateProjectHook(body);
+          }
           const p = JSON.parse(JSON.stringify(body.project));
           if (!p?.id || !storedProjects.has(p.id)) {
             throw new Error(`not_found: project with id "${p?.id || ''}" not found`);
@@ -36818,6 +36839,121 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
         assert.deepEqual(intactProj.extraServerOnlyField, { owner: 'ls-memory' });
       } finally {
         storedProjects.get = origStoredGet;
+      }
+
+      // 12) 返工回归 F：ReadProject 返回残缺结构（{ project: {} } / ID 不符 / 空资源）拦截保护 + LanguageServer 与磁盘名称不一致时的双源重名拦截
+      try {
+        const invalidReadPayloads = [
+          { project: {} },
+          { project: { id: 'wrong-project-id', name: 'WrongId', projectResources: lsAuthoritativeProj.projectResources } },
+          { project: { id: staleDiskPid, name: 'NoResourcesObj' } },
+          { project: { id: staleDiskPid, name: 'EmptyResourcesArr', projectResources: { resources: [] } } },
+          { project: { id: staleDiskPid, name: 'BrokenUriItem', projectResources: { resources: [{}] } } }
+        ];
+        const updatesBeforeMalformed = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        for (const badPayload of invalidReadPayloads) {
+          customReadProjectHook = (b) => (b?.id === staleDiskPid ? badPayload : undefined);
+          const detBadRes = await apiJson('GET', `/api/projects/detail?id=${encodeURIComponent(staleDiskPid)}`);
+          assert.equal(detBadRes.status, 502, `残缺 ReadProject 结果 ${JSON.stringify(badPayload)} 在 detail 接口必须返回 502`);
+          assert.equal(detBadRes.data.ok, false);
+
+          const updBadRes = await apiJson('POST', '/api/projects/update', {
+            id: staleDiskPid,
+            name: 'OverwriteFromEmptyProjectAttempt',
+            folderPaths: [dirRepoA]
+          });
+          assert.equal(updBadRes.status, 502, `残缺 ReadProject 结果 ${JSON.stringify(badPayload)} 在 update 接口必须返回 502`);
+          assert.equal(updBadRes.data.ok, false);
+        }
+        customReadProjectHook = null;
+        const updatesAfterMalformed = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        assert.equal(updatesAfterMalformed, updatesBeforeMalformed, '任何残缺 ReadProject 返回均严禁调用 UpdateProject');
+        // 原项目 2 个目录与全部扩展字段必须毫发无损
+        const afterMalformedProj = storedProjects.get(staleDiskPid);
+        assert.equal(afterMalformedProj.name, 'AuthoritativeLsProj');
+        assert.equal(afterMalformedProj.projectResources.resources.length, 2);
+        assert.deepEqual(afterMalformedProj.permissionGrants, { v2Migrated: true, secretScope: 'enterprise-write' });
+        assert.deepEqual(afterMalformedProj.settings, { indexingTier: 'deep', preserveMe: true });
+        assert.deepEqual(afterMalformedProj.extraServerOnlyField, { owner: 'ls-memory' });
+
+        // 12b) 重名校验覆盖 LanguageServer 与磁盘不一致场景：
+        // ① 另一项目在 LanguageServer 中名为 'LsRenamedTargetX'，而磁盘 JSON 仍为旧名 'LegacyDiskOldName'
+        const driftPid = 'proj-ls-disk-name-drift';
+        storedProjects.set(driftPid, {
+          id: driftPid,
+          name: 'LsRenamedTargetX',
+          projectResources: { resources: [{ folderUri: pathToFileURL(dirExtraC).href }] },
+          permissionGrants: { v2Migrated: true },
+          settings: {},
+          isWorkspaceOnly: false
+        });
+        fs.writeFileSync(
+          path.join(configDir, 'projects', `${driftPid}.json`),
+          JSON.stringify({
+            id: driftPid,
+            name: 'LegacyDiskOldName',
+            projectResources: { resources: [{ folderUri: pathToFileURL(dirExtraC).href }] }
+          }, null, 2)
+        );
+        // ② 另一项目仅存在于 LanguageServer ('LsOnlyNoDiskRecordY')，磁盘无任何记录文件
+        const lsOnlyPid = 'proj-ls-only-no-disk';
+        storedProjects.set(lsOnlyPid, {
+          id: lsOnlyPid,
+          name: 'LsOnlyNoDiskRecordY',
+          projectResources: { resources: [{ folderUri: pathToFileURL(dirSharedB).href }] },
+          permissionGrants: { v2Migrated: true },
+          settings: {},
+          isWorkspaceOnly: false
+        });
+
+        const updatesBeforeDupDrift = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        const dupWithLsDriftRes = await apiJson('POST', '/api/projects/update', {
+          id: staleDiskPid,
+          name: 'lsrenamedtargetx',
+          folderPaths: [dirRepoA, dirSharedB]
+        });
+        assert.equal(dupWithLsDriftRes.status, 400, '另一项目在 LanguageServer 中名为 X（磁盘仍为旧名）时，改名为 X 必须 400 明确拒绝');
+        assert.equal(dupWithLsDriftRes.data.ok, false);
+        assert.match(dupWithLsDriftRes.data.error, /LsRenamedTargetX/);
+
+        const dupWithLsOnlyRes = await apiJson('POST', '/api/projects/update', {
+          id: staleDiskPid,
+          name: 'LsOnlyNoDiskRecordY',
+          folderPaths: [dirRepoA, dirSharedB]
+        });
+        assert.equal(dupWithLsOnlyRes.status, 400, '另一项目仅存在于 LanguageServer（磁盘缺少记录）时，改名为该名称必须 400 明确拒绝');
+        assert.equal(dupWithLsOnlyRes.data.ok, false);
+        assert.match(dupWithLsOnlyRes.data.error, /LsOnlyNoDiskRecordY/);
+        assert.equal(
+          rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length,
+          updatesBeforeDupDrift,
+          '重名冲突拦截后不得发出 UpdateProject 请求'
+        );
+
+        // 新建项目接口同样覆盖 LanguageServer 专属项目名冲突
+        const createDupLsOnlyRes = await apiJson('POST', '/api/projects', {
+          name: 'LsOnlyNoDiskRecordY',
+          folderPaths: [dirRepoA],
+          openInDesktop: false
+        });
+        assert.equal(createDupLsOnlyRes.status, 400);
+        assert.equal(createDupLsOnlyRes.data.ok, false);
+
+        // ③ 即便并发窗口下 UpdateProject RPC 本身抛出 already_exists 冲突，接口也必须正确映射为 400 冲突提示
+        customUpdateProjectHook = () => {
+          throw new Error('already_exists: project with name "ConcurrentLsConflict" already exists');
+        };
+        const rpcConflictRes = await apiJson('POST', '/api/projects/update', {
+          id: staleDiskPid,
+          name: 'ConcurrentLsConflict',
+          folderPaths: [dirRepoA, dirSharedB]
+        });
+        assert.equal(rpcConflictRes.status, 400, 'UpdateProject RPC 返回并发重名冲突时必须映射为 400');
+        assert.equal(rpcConflictRes.data.ok, false);
+        assert.match(rpcConflictRes.data.error, /同名项目/);
+      } finally {
+        customReadProjectHook = null;
+        customUpdateProjectHook = null;
       }
     } finally {
       await new Promise((r) => server.close(r));
