@@ -4729,25 +4729,59 @@ async function readRemoteProjectDetail(projectIdInput, options = {}) {
     throw Object.assign(new Error('无效的项目 ID'), { status: 400 });
   }
   const lsApi = await connectProjectLsApi(options);
+  const explicitConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim();
+  const hasLsRpc = Boolean(lsApi && typeof lsApi.call === 'function');
   let rawProject = null;
-  if (lsApi && typeof lsApi.call === 'function') {
+  let lastReadError = '';
+  let readFailedFromRpc = false;
+  if (hasLsRpc) {
     try {
-      const res = await withRaceTimeout(lsApi.call('ReadProject', { id: projectId }), 2000, null);
-      if (res?.project && typeof res.project === 'object') {
+      const READ_TIMEOUT = Symbol('read-project-timeout');
+      const res = await withRaceTimeout(lsApi.call('ReadProject', { id: projectId }), 2500, READ_TIMEOUT);
+      if (res === READ_TIMEOUT) {
+        readFailedFromRpc = true;
+        lastReadError = '调用 LanguageServer ReadProject 超时';
+      } else if (res?.project && typeof res.project === 'object') {
         rawProject = res.project;
+      } else {
+        readFailedFromRpc = true;
+        lastReadError = 'LanguageServer ReadProject 未返回有效项目数据';
       }
-    } catch {}
-  }
-  const effectiveConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim()
-    || (isCatalogTestEnv() ? '' : path.join(os.homedir(), '.gemini', 'config'));
-  if (!rawProject && effectiveConfigDir) {
-    const fp = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
-    const readRes = safeReadJsonSync(fp, null);
-    if (readRes?.ok && readRes.data && typeof readRes.data === 'object') {
-      rawProject = readRes.data;
+    } catch (err) {
+      readFailedFromRpc = true;
+      lastReadError = err?.message || 'ReadProject 调用失败';
     }
   }
-  if (!rawProject || rawProject.archived === true) {
+  // 严格收紧磁盘读取回退：普通运行（未显式开启 allowDiskFallback）绝不回退读取默认 ~/.gemini/config；
+  // 且只要已连接 LanguageServer 而 ReadProject 失败/超时，除非显式指定 allowDiskFallback === true，否则立即报错，绝不用可能滞后的本地磁盘 JSON 解锁编辑
+  const canReadDiskFallback = hasLsRpc
+    ? Boolean(options.allowDiskFallback === true)
+    : Boolean(options.allowDiskFallback === true || explicitConfigDir);
+  if (!rawProject && canReadDiskFallback) {
+    const fallbackConfigDir = explicitConfigDir
+      || (!isCatalogTestEnv() ? path.join(path.resolve(String(options.homeDir || os.homedir())), '.gemini', 'config') : '');
+    if (fallbackConfigDir) {
+      const fp = path.join(fallbackConfigDir, 'projects', `${projectId}.json`);
+      const readRes = safeReadJsonSync(fp, null);
+      if (readRes?.ok && readRes.data && typeof readRes.data === 'object') {
+        rawProject = readRes.data;
+      }
+    }
+  }
+  if (!rawProject) {
+    if (readFailedFromRpc) {
+      const isNotFound = /not[_ -]?found/i.test(lastReadError);
+      throw Object.assign(
+        new Error(isNotFound ? '未找到目标项目' : `读取项目完整配置失败：${lastReadError}`),
+        { status: isNotFound ? 404 : 502 }
+      );
+    }
+    if (!hasLsRpc && !canReadDiskFallback) {
+      throw Object.assign(new Error('无法连接 Antigravity 语言服务以读取项目完整配置'), { status: 503 });
+    }
+    throw Object.assign(new Error(lastReadError || '未找到目标项目或该项目已归档'), { status: 404 });
+  }
+  if (rawProject.archived === true) {
     throw Object.assign(new Error('未找到目标项目或该项目已归档'), { status: 404 });
   }
   const resources = Array.isArray(rawProject.projectResources?.resources) ? rawProject.projectResources.resources : [];
@@ -4798,29 +4832,60 @@ async function updateRemoteProject(payload = {}, options = {}) {
   }
 
   const lsApi = await connectProjectLsApi(options);
+  const explicitConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim();
+  const hasLsRpc = Boolean(lsApi && typeof lsApi.call === 'function');
   let existingProjObj = null;
   let lastReadError = '';
-  if (lsApi && typeof lsApi.call === 'function') {
+  let readFailedFromRpc = false;
+  if (hasLsRpc) {
     try {
-      const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: projectId }), 2500, null);
-      if (readRes?.project && typeof readRes.project === 'object') {
+      const READ_TIMEOUT = Symbol('read-project-timeout');
+      const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: projectId }), 2500, READ_TIMEOUT);
+      if (readRes === READ_TIMEOUT) {
+        readFailedFromRpc = true;
+        lastReadError = '调用 LanguageServer ReadProject 超时';
+      } else if (readRes?.project && typeof readRes.project === 'object') {
         existingProjObj = readRes.project;
+      } else {
+        readFailedFromRpc = true;
+        lastReadError = 'LanguageServer ReadProject 未返回有效项目数据';
       }
     } catch (err) {
-      lastReadError = err?.message || '';
+      readFailedFromRpc = true;
+      lastReadError = err?.message || 'ReadProject 调用失败';
     }
   }
-  const effectiveConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim()
-    || (isCatalogTestEnv() ? '' : path.join(os.homedir(), '.gemini', 'config'));
-  if (!existingProjObj && effectiveConfigDir) {
+  // 严格收紧磁盘读取回退：普通运行未允许回退时绝不读取 ~/.gemini/config；
+  // 且只要已连接 LanguageServer 而 ReadProject 失败/超时，除非显式 allowDiskFallback === true，否则立即拒绝更新，严防以滞后磁盘副本覆盖原项目目录与扩展字段
+  const canReadDiskFallback = hasLsRpc
+    ? Boolean(options.allowDiskFallback === true)
+    : Boolean(options.allowDiskFallback === true || explicitConfigDir);
+  const effectiveConfigDir = explicitConfigDir
+    || ((options.allowDiskFallback === true && !isCatalogTestEnv())
+      ? path.join(path.resolve(String(options.homeDir || os.homedir())), '.gemini', 'config')
+      : '');
+  if (!existingProjObj && canReadDiskFallback && effectiveConfigDir) {
     const fp = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
     const readRes = safeReadJsonSync(fp, null);
     if (readRes?.ok && readRes.data && typeof readRes.data === 'object') {
       existingProjObj = readRes.data;
     }
   }
-  if (!existingProjObj || existingProjObj.archived === true) {
+  if (!existingProjObj) {
+    if (readFailedFromRpc) {
+      const isNotFound = /not[_ -]?found/i.test(lastReadError);
+      throw Object.assign(
+        new Error(isNotFound ? '未找到目标项目' : `无法从 LanguageServer 读取原项目配置（${lastReadError}），已拒绝保存以防覆盖丢失目录或设置`),
+        { status: isNotFound ? 404 : 502 }
+      );
+    }
+    if (!hasLsRpc && !canReadDiskFallback) {
+      throw Object.assign(new Error('无法连接 Antigravity 语言服务以读取原项目配置'), { status: 503 });
+    }
     throw Object.assign(new Error(lastReadError || '未找到目标项目或该项目已归档'), { status: 404 });
+  }
+  if (existingProjObj.archived === true) {
+    throw Object.assign(new Error('未找到目标项目或该项目已归档'), { status: 404 });
   }
 
   // 仅允许精确保留该项目原本已绑定的非符号链接、非根、非 $HOME、非敏感真实目录（preboundExactMap），绝不扩大 allowedRoots 子树或放行软链越界
