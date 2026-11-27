@@ -3543,6 +3543,22 @@ function createSessionCatalogStore() {
       }
     }
     const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    if (!(store.clientOrderSeqMap instanceof Map)) {
+      store.clientOrderSeqMap = new Map();
+    }
+    const reqClientId = String(options.clientId || '').trim();
+    const reqClientSeq = Number.isInteger(options.clientOrderSeq) && options.clientOrderSeq > 0 ? options.clientOrderSeq : 0;
+    if (reqClientId && reqClientSeq > 0) {
+      const lastAcceptedSeq = store.clientOrderSeqMap.get(reqClientId) || 0;
+      if (reqClientSeq <= lastAcceptedSeq) {
+        return {
+          ok: true,
+          staleIgnored: true,
+          projectOrder: store.projectOrder.slice(),
+          catalogRevision: store.catalogRevision || ''
+        };
+      }
+    }
     const { metaMap: projectsMeta, excludedIds: excludedProjectIds, archivedIds: archivedProjectIds } = loadProjectsMetaFromDisk(options, projectsCache);
     const cleaned = [];
     const seen = new Set();
@@ -3595,6 +3611,15 @@ function createSessionCatalogStore() {
       }
     }
     // 严禁对合并后的权威顺序静默截断，确保超过 500 个项目时也不会丢失保底追加项或引发振荡跳顶
+    if (reqClientId && reqClientSeq > 0) {
+      if (store.clientOrderSeqMap.has(reqClientId)) store.clientOrderSeqMap.delete(reqClientId);
+      while (store.clientOrderSeqMap.size >= 500) {
+        const oldestCid = store.clientOrderSeqMap.keys().next().value;
+        if (oldestCid === undefined) break;
+        store.clientOrderSeqMap.delete(oldestCid);
+      }
+      store.clientOrderSeqMap.set(reqClientId, reqClientSeq);
+    }
     store.projectOrder = mergedOrder;
     store.projectOrderInitialized = true;
     store.nextOrderOpSeq = (Number(store.nextOrderOpSeq) || 0) + 1;
@@ -13226,10 +13251,12 @@ function buildMobileAppHtml() {
         if (
           localOptimisticProjectOrder &&
           projOrderInflightCount === 0 &&
+          !pendingQueuedOrderJob &&
           ((reqEpoch !== null && reqEpoch > lastProjectOrderSettledEpoch) ||
             (pendingOrderAckRev && String(snap.catalogRevision || '') === pendingOrderAckRev))
         ) {
           localOptimisticProjectOrder = null;
+          lastConfirmedProjectOrder = null;
           pendingOrderAckRev = '';
         }
         reconcileExtraConversations(snap);
@@ -13430,9 +13457,12 @@ function buildMobileAppHtml() {
     let pendingCatalogRev = '';
     let projSortMode = false;
     let localOptimisticProjectOrder = null;
+    let lastConfirmedProjectOrder = null;
     let pendingOrderAckRev = '';
     let projOrderSaveSeq = 0;
     let projOrderInflightCount = 0;
+    let pendingQueuedOrderJob = null;
+    let orderDrainLoopPromise = null;
     let lastProjectOrderSettledEpoch = 0;
     let activeDragProjectId = '';
 
@@ -13542,7 +13572,70 @@ function buildMobileAppHtml() {
       return projSortMode;
     }
 
-    async function commitProjectOrder(nextIds) {
+    function ensureOrderDrainLoop() {
+      if (orderDrainLoopPromise) return orderDrainLoopPromise;
+      projOrderInflightCount = 1;
+      orderDrainLoopPromise = (async () => {
+        try {
+          while (pendingQueuedOrderJob) {
+            const job = pendingQueuedOrderJob;
+            pendingQueuedOrderJob = null;
+            try {
+              const res = await fetchWithTimeout((apiBase || '') + '/api/projects/order', {
+                method: 'POST',
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                  projectOrder: job.cleaned,
+                  clientOrderSeq: job.seq
+                })
+              }, 6000);
+              let data = null;
+              try { data = await res.json(); } catch {}
+              if (!res.ok || !data || data.ok === false) {
+                throw new Error(data?.error || ('HTTP ' + res.status));
+              }
+              const confirmed = (Array.isArray(data.projectOrder) && data.projectOrder.length)
+                ? data.projectOrder.filter((id) => id && !isNonProjectBucket(id))
+                : job.cleaned.slice();
+              lastConfirmedProjectOrder = confirmed.slice();
+              if (!pendingQueuedOrderJob) {
+                localOptimisticProjectOrder = confirmed.slice();
+                pendingOrderAckRev = String(data.catalogRevision || '');
+                lastProjectOrderSettledEpoch = ++clientSyncEpoch;
+                if (latestSnap) renderConversationList(latestSnap);
+              }
+              const out = {
+                ok: true,
+                projectOrder: confirmed,
+                catalogRevision: data.catalogRevision || '',
+                ...(data.staleIgnored ? { staleIgnored: true } : {})
+              };
+              for (const fn of job.resolvers) fn(out);
+            } catch (err) {
+              const errMsg = err?.message || '保存项目顺序失败';
+              if (!pendingQueuedOrderJob) {
+                localOptimisticProjectOrder = Array.isArray(lastConfirmedProjectOrder) && lastConfirmedProjectOrder.length
+                  ? lastConfirmedProjectOrder.slice()
+                  : null;
+                pendingOrderAckRev = '';
+                lastProjectOrderSettledEpoch = ++clientSyncEpoch;
+                if (latestSnap) renderConversationList(latestSnap);
+                showToast(humanizeRemoteError(errMsg, '保存项目顺序失败，已恢复原顺序'));
+                void fetchSnapshot();
+              }
+              const failOut = { ok: false, error: errMsg };
+              for (const fn of job.resolvers) fn(failOut);
+            }
+          }
+        } finally {
+          projOrderInflightCount = 0;
+          orderDrainLoopPromise = null;
+        }
+      })();
+      return orderDrainLoopPromise;
+    }
+
+    function commitProjectOrder(nextIds) {
       const cleaned = [];
       const seen = new Set();
       for (const rawId of (Array.isArray(nextIds) ? nextIds : [])) {
@@ -13551,49 +13644,38 @@ function buildMobileAppHtml() {
         seen.add(id);
         cleaned.push(id);
       }
-      if (cleaned.length < 2) return { ok: false, noop: true };
+      if (cleaned.length < 2) return Promise.resolve({ ok: false, noop: true });
       const currentIds = getCurrentOrderableProjectIds(latestSnap);
-      if (currentIds.length === cleaned.length && currentIds.every((id, i) => id === cleaned[i])) {
-        return { ok: true, noop: true, projectOrder: cleaned };
+      if (
+        !pendingQueuedOrderJob &&
+        projOrderInflightCount === 0 &&
+        currentIds.length === cleaned.length &&
+        currentIds.every((id, i) => id === cleaned[i])
+      ) {
+        return Promise.resolve({ ok: true, noop: true, projectOrder: cleaned });
       }
+      if (!localOptimisticProjectOrder && currentIds.length >= 2) {
+        lastConfirmedProjectOrder = currentIds.slice();
+      }
+      const mySaveSeq = ++projOrderSaveSeq;
       localOptimisticProjectOrder = cleaned.slice();
       pendingOrderAckRev = '';
-      const mySaveSeq = ++projOrderSaveSeq;
-      projOrderInflightCount += 1;
       lastProjectOrderSettledEpoch = ++clientSyncEpoch;
       if (latestSnap) renderConversationList(latestSnap);
-      try {
-        const res = await fetchWithTimeout((apiBase || '') + '/api/projects/order', {
-          method: 'POST',
-          headers: authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ projectOrder: cleaned })
-        }, 6000);
-        let data = null;
-        try { data = await res.json(); } catch {}
-        if (!res.ok || !data || data.ok === false) {
-          throw new Error(data?.error || ('HTTP ' + res.status));
+      return new Promise((resolve) => {
+        if (pendingQueuedOrderJob) {
+          pendingQueuedOrderJob.cleaned = cleaned.slice();
+          pendingQueuedOrderJob.seq = mySaveSeq;
+          pendingQueuedOrderJob.resolvers.push(resolve);
+        } else {
+          pendingQueuedOrderJob = {
+            cleaned: cleaned.slice(),
+            seq: mySaveSeq,
+            resolvers: [resolve]
+          };
         }
-        if (mySaveSeq === projOrderSaveSeq) {
-          if (Array.isArray(data.projectOrder) && data.projectOrder.length) {
-            localOptimisticProjectOrder = data.projectOrder.filter((id) => id && !isNonProjectBucket(id));
-          }
-          pendingOrderAckRev = String(data.catalogRevision || '');
-          lastProjectOrderSettledEpoch = ++clientSyncEpoch;
-          if (latestSnap) renderConversationList(latestSnap);
-        }
-        return { ok: true, projectOrder: data.projectOrder || cleaned, catalogRevision: data.catalogRevision || '' };
-      } catch (err) {
-        if (mySaveSeq === projOrderSaveSeq) {
-          localOptimisticProjectOrder = null;
-          pendingOrderAckRev = '';
-          if (latestSnap) renderConversationList(latestSnap);
-          showToast(humanizeRemoteError(err?.message, '保存项目顺序失败，已恢复原顺序'));
-          void fetchSnapshot();
-        }
-        return { ok: false, error: err?.message || '保存项目顺序失败' };
-      } finally {
-        projOrderInflightCount = Math.max(0, projOrderInflightCount - 1);
-      }
+        void ensureOrderDrainLoop();
+      });
     }
 
     function moveProjectOrderRelative(projectId, direction) {
@@ -20129,11 +20211,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       try {
         const payload = await readJsonBody(req);
         const rawOrder = payload?.projectOrder !== undefined ? payload.projectOrder : payload?.projectIds;
+        const clientId = extractRequestClientId(req, urlObj, payload);
+        const clientOrderSeq = Number.isInteger(payload?.clientOrderSeq) && payload.clientOrderSeq > 0 ? payload.clientOrderSeq : 0;
         const activeCatStore = options.catalogStore || defaultCatalogStore;
         const result = activeCatStore.setProjectOrder(rawOrder, {
           ...(options.catalogOptions || {}),
           ...(options.configDir ? { configDir: options.configDir } : {}),
-          ...(options.homeDir ? { homeDir: options.homeDir } : {})
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(clientId ? { clientId } : {}),
+          ...(clientOrderSeq > 0 ? { clientOrderSeq } : {})
         });
         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
       } catch (err) {
