@@ -35543,9 +35543,13 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
         assert.equal(JSON.stringify(probeResult).includes(realSecretToken), false, '沙盒内外任何可读属性严禁出现配对口令');
       } finally {
         try { cdpWs?.close(); } catch {}
-        try { chromeProc?.kill('SIGKILL'); } catch {}
+        if (chromeProc) {
+          const exitWait = new Promise((r) => chromeProc.once('exit', r));
+          try { chromeProc.kill('SIGKILL'); } catch {}
+          await Promise.race([exitWait, new Promise((r) => setTimeout(r, 500))]);
+        }
         await new Promise((resolve) => server.close(resolve));
-        fs.rmSync(chromeUserDir, { recursive: true, force: true });
+        fs.rmSync(chromeUserDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
       }
     }
   } finally {
@@ -36333,6 +36337,188 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
       const uiCreatedProj = Array.from(storedProjects.values()).find((p) => p.name === 'UiCreatedMultiProj');
       assert.ok(uiCreatedProj);
       assert.equal(uiCreatedProj.projectResources.resources.length, 2, '前端创建的多目录项目应持久化 2 个目录资源');
+
+      // 7) 返工回归 A：选中单目录 A 后继续浏览已关联项目 B (dirExtraC -> ExistingOther) 时，前后端均严禁误复用项目 B
+      const mismatchSameNameRes = await apiJson('POST', '/api/projects', {
+        name: 'ExistingOther',
+        folderPaths: [dirSharedB],
+        existingProjectId: otherProj.id,
+        openInDesktop: false
+      });
+      assert.equal(mismatchSameNameRes.status, 400, '实际提交目录与 existingProjectId 不符且同名时必须按重名拦截，绝不得返回项目 B');
+      assert.equal(mismatchSameNameRes.data.ok, false);
+      assert.notEqual(mismatchSameNameRes.data.alreadyExists, true);
+
+      const mismatchNewNameRes = await apiJson('POST', '/api/projects', {
+        name: 'CreatedOnDirSharedB',
+        folderPaths: [dirSharedB],
+        existingProjectId: otherProj.id,
+        openInDesktop: false
+      });
+      assert.equal(mismatchNewNameRes.status, 200);
+      assert.equal(mismatchNewNameRes.data.ok, true);
+      assert.equal(mismatchNewNameRes.data.alreadyExists, false, 'existingProjectId 目录不匹配时不得复用旧项目');
+      assert.notEqual(mismatchNewNameRes.data.project.id, otherProj.id);
+      assert.deepEqual(mismatchNewNameRes.data.project.folderPaths, [fs.realpathSync(dirSharedB).startsWith('/private/') && !dirSharedB.startsWith('/private/') ? path.resolve(dirSharedB) : path.resolve(dirSharedB)]);
+
+      // 前端闭环：暂存单目录 dirSharedB 后浏览已关联 ExistingOther 的 dirExtraC，提交时不得携带 ExistingOther 的 existingProjectId
+      const dirFreshSingle = path.join(homeDir, 'codebase', 'fresh-single-a');
+      fs.mkdirSync(dirFreshSingle, { recursive: true });
+      uiEnv.doc.getElementById('btn-new-project').click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      pathIn.value = dirFreshSingle;
+      pathGo.click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      uiEnv.doc.getElementById('proj-add-folder-btn').click();
+      assert.equal(foldersBox.querySelectorAll('.proj-folder-chip').length, 1);
+
+      // 随后浏览到已关联项目 ExistingOther 的目录 dirExtraC（不点击加入目录列表）
+      pathIn.value = dirExtraC;
+      pathGo.click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      assert.equal(uiEnv.doc.getElementById('proj-create-submit').textContent, '创建项目并进入对话', '浏览目录与已选单目录不一致时不得显示进入已有项目');
+
+      // 若输入与项目 B 相同的名称，提交必须报错拦截（绝不能静默进入项目 B）
+      nameInput.value = 'ExistingOther';
+      nameInput.dispatchEvent({ type: 'input' });
+      assert.equal(uiEnv.doc.getElementById('proj-create-submit').textContent, '创建项目并进入对话');
+      uiEnv.doc.getElementById('proj-create-submit').click();
+      await new Promise((r) => rawSetTimeout(r, 80));
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, false, '同名冲突时弹窗必须保持打开并报错，不得误复用项目 B');
+
+      // 改为新名称后提交，必须以已选单目录 dirFreshSingle 创建新项目（而非当前浏览的 dirExtraC）
+      nameInput.value = 'UiSelectedAWhileBrowsingB';
+      nameInput.dispatchEvent({ type: 'input' });
+      uiEnv.doc.getElementById('proj-create-submit').click();
+      for (let w = 0; w < 40 && !uiEnv.doc.getElementById('proj-modal-backdrop').hidden; w++) {
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, true);
+      const uiSingleCreated = Array.from(storedProjects.values()).find((p) => p.name === 'UiSelectedAWhileBrowsingB');
+      assert.ok(uiSingleCreated, '应成功创建新项目而非复用项目 B');
+      assert.notEqual(uiSingleCreated.id, otherProj.id);
+      assert.equal(uiSingleCreated.projectResources.resources.length, 1);
+      assert.ok(uiSingleCreated.projectResources.resources[0].folderUri.endsWith('/fresh-single-a'), '新建项目必须绑定已选目录 A 而非最后浏览的目录 B');
+
+      // 8) 返工回归 B：外部已绑定目录精确保留与白名单外新目录 / 软链越界 / 系统根与敏感目录软链禁扩权验证
+      const extVolRoot = path.join(tmpRoot, 'external-vol');
+      const extPreboundDir = path.join(extVolRoot, 'team-bound-repo');
+      const extPreboundSubdir = path.join(extPreboundDir, 'nested-sub');
+      const extUnboundDir = path.join(extVolRoot, 'other-unbound-repo');
+      const symlinkInHomeToOutside = path.join(homeDir, 'codebase', 'escape-outside-link');
+      const symlinkPreboundToRoot = path.join(extVolRoot, 'evil-link-root');
+      const symlinkPreboundToEtc = path.join(extVolRoot, 'evil-link-etc');
+      const symlinkPreboundToHome = path.join(extVolRoot, 'evil-link-home');
+      fs.mkdirSync(extPreboundSubdir, { recursive: true });
+      fs.mkdirSync(extUnboundDir, { recursive: true });
+      fs.symlinkSync(extUnboundDir, symlinkInHomeToOutside, 'dir');
+      fs.symlinkSync('/', symlinkPreboundToRoot, 'dir');
+      fs.symlinkSync('/etc', symlinkPreboundToEtc, 'dir');
+      fs.symlinkSync(homeDir, symlinkPreboundToHome, 'dir');
+
+      const safeMapCheck = remoteMod.collectSafePreboundProjectFolders([
+        { folderUri: pathToFileURL(extPreboundDir).href },
+        { folderUri: pathToFileURL('/').href },
+        { folderUri: pathToFileURL(homeDir).href },
+        { folderUri: pathToFileURL('/etc').href },
+        { folderUri: pathToFileURL(symlinkPreboundToRoot).href },
+        { folderUri: pathToFileURL(symlinkPreboundToEtc).href },
+        { folderUri: pathToFileURL(symlinkPreboundToHome).href }
+      ], { homeDir });
+      assert.equal(safeMapCheck.size, 1, '仅真实存在的非符号链接、非根、非 $HOME、非敏感目录可进入精确保留映射');
+      assert.equal(safeMapCheck.has(path.resolve(extPreboundDir)), true);
+
+      const extProjId = 'proj-prebound-ext';
+      const extProjObj = {
+        id: extProjId,
+        name: 'PreboundExternalProj',
+        projectResources: {
+          resources: [
+            { folderUri: pathToFileURL(dirRepoA).href },
+            { folderUri: pathToFileURL(extPreboundDir).href }
+          ]
+        },
+        permissionGrants: { v2Migrated: true },
+        settings: {},
+        isWorkspaceOnly: false
+      };
+      storedProjects.set(extProjId, extProjObj);
+      fs.writeFileSync(path.join(configDir, 'projects', `${extProjId}.json`), JSON.stringify(extProjObj, null, 2));
+
+      // 8a) 原已绑定的外部真实目录 extPreboundDir 在编辑改名与新增 $HOME 内目录时可正常保留
+      const keepExtRes = await apiJson('POST', '/api/projects/update', {
+        id: extProjId,
+        name: 'PreboundExternalKept',
+        folderPaths: [dirRepoA, extPreboundDir, dirSharedB]
+      });
+      assert.equal(keepExtRes.status, 200, `原已绑定外部目录应允许精确保留: ${JSON.stringify(keepExtRes.data)}`);
+      assert.equal(keepExtRes.data.ok, true);
+      assert.equal(keepExtRes.data.project.folderPaths.length, 3);
+      assert.ok(keepExtRes.data.project.folderPaths.includes(path.resolve(extPreboundDir)));
+
+      // 8b) 未绑定的其他外部目录与原外部目录的子目录均必须 403 拒绝（精确匹配，绝不升级为子树允许根）
+      const addUnboundExtRes = await apiJson('POST', '/api/projects/update', {
+        id: extProjId,
+        name: 'PreboundExternalKept',
+        folderPaths: [dirRepoA, extPreboundDir, extUnboundDir]
+      });
+      assert.equal(addUnboundExtRes.status, 403, '白名单之外的新外部目录必须 403 拒绝');
+      assert.equal(addUnboundExtRes.data.ok, false);
+
+      const addExtSubdirRes = await apiJson('POST', '/api/projects/update', {
+        id: extProjId,
+        name: 'PreboundExternalKept',
+        folderPaths: [dirRepoA, extPreboundSubdir]
+      });
+      assert.equal(addExtSubdirRes.status, 403, '原外部目录仅允许精确原路径保留，不得将整个外部父目录放宽为允许根');
+
+      // 8c) $HOME 内部指向外部目录的越界符号链接必须 403 拒绝
+      const escapeSymlinkUpdateRes = await apiJson('POST', '/api/projects/update', {
+        id: extProjId,
+        name: 'PreboundExternalKept',
+        folderPaths: [dirRepoA, extPreboundDir, symlinkInHomeToOutside]
+      });
+      assert.equal(escapeSymlinkUpdateRes.status, 403, '$HOME 内指向未授权外部目录的软链必须 403 拒绝');
+
+      // 8d) 若历史项目配置中混入指向系统根 (/)、敏感目录 (/etc) 或 $HOME 的符号链接，既不可保留也绝不能扩大授权边界
+      const evilProjId = 'proj-evil-symlinks';
+      const evilProjObj = {
+        id: evilProjId,
+        name: 'EvilSymlinkSeed',
+        projectResources: {
+          resources: [
+            { folderUri: pathToFileURL(dirRepoA).href },
+            { folderUri: pathToFileURL(symlinkPreboundToRoot).href },
+            { folderUri: pathToFileURL(symlinkPreboundToEtc).href },
+            { folderUri: pathToFileURL(symlinkPreboundToHome).href }
+          ]
+        },
+        permissionGrants: { v2Migrated: true },
+        settings: {},
+        isWorkspaceOnly: false
+      };
+      storedProjects.set(evilProjId, evilProjObj);
+      fs.writeFileSync(path.join(configDir, 'projects', `${evilProjId}.json`), JSON.stringify(evilProjObj, null, 2));
+
+      for (const badTarget of [symlinkPreboundToRoot, symlinkPreboundToEtc, symlinkPreboundToHome, extUnboundDir, symlinkInHomeToOutside]) {
+        const badRes = await apiJson('POST', '/api/projects/update', {
+          id: evilProjId,
+          name: 'EvilSymlinkSeed',
+          folderPaths: [dirRepoA, badTarget]
+        });
+        assert.equal(
+          badRes.status,
+          403,
+          `预置恶意软链 (${path.basename(badTarget)}) 绝不得被保留或借此扩大全盘/外部目录授权 (got status=${badRes.status})`
+        );
+      }
+
+      const cleanEvilRes = await apiJson('POST', '/api/projects/update', {
+        id: evilProjId,
+        name: 'EvilSymlinkCleaned',
+        folderPaths: [dirRepoA]
+      });
+      assert.equal(cleanEvilRes.status, 200, '剔除异常软链仅保留合法目录时应正常保存');
     } finally {
       await new Promise((r) => server.close(r));
     }

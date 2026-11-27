@@ -4325,6 +4325,56 @@ async function connectProjectLsApi(options = {}) {
   }
 }
 
+function collectSafePreboundProjectFolders(existingResources, options = {}) {
+  const { homeDir, realHomeDir } = resolveAllowedHostRoots(options);
+  const safeMap = new Map();
+  if (!Array.isArray(existingResources)) return safeMap;
+  for (const resItem of existingResources) {
+    if (!resItem || typeof resItem !== 'object') continue;
+    const rawDecoded = decodeFileUriToPath(resItem?.gitFolder?.folderUri || resItem?.folderUri || '');
+    if (!rawDecoded || rawDecoded.includes('\0')) continue;
+    const logicalPath = path.resolve(rawDecoded);
+    const logicalRoot = path.parse(logicalPath).root;
+    if (
+      !logicalPath ||
+      logicalPath === logicalRoot ||
+      logicalPath === homeDir ||
+      logicalPath === realHomeDir ||
+      isSensitiveHostPath(logicalPath, options)
+    ) {
+      continue;
+    }
+    let lst = null;
+    try {
+      lst = fs.lstatSync(logicalPath);
+    } catch {
+      continue;
+    }
+    // 严禁将符号链接纳入外部豁免目录：防止指向 /、$HOME、/etc 或未授权目录的软链保留或扩大授权边界
+    if (!lst || lst.isSymbolicLink() || !lst.isDirectory()) continue;
+    let realPath = '';
+    let realStat = null;
+    try {
+      realPath = fs.realpathSync(logicalPath);
+      realStat = fs.statSync(realPath);
+    } catch {
+      continue;
+    }
+    if (!realPath || !realStat || !realStat.isDirectory()) continue;
+    const realRoot = path.parse(realPath).root;
+    if (
+      realPath === realRoot ||
+      realPath === homeDir ||
+      realPath === realHomeDir ||
+      isSensitiveHostPath(realPath, options)
+    ) {
+      continue;
+    }
+    safeMap.set(logicalPath, { logicalPath, realPath });
+  }
+  return safeMap;
+}
+
 function validateSafeProjectFolderList(rawFoldersInput, options = {}, emptyErrorMsg = '请选择项目文件夹路径') {
   const rawArr = Array.isArray(rawFoldersInput)
     ? rawFoldersInput
@@ -4333,17 +4383,58 @@ function validateSafeProjectFolderList(rawFoldersInput, options = {}, emptyError
   if (!trimmedList.length) {
     throw Object.assign(new Error(emptyErrorMsg), { status: 400 });
   }
+  const { homeDir: baseHomeDir, realHomeDir: baseRealHomeDir } = resolveAllowedHostRoots(options);
+  const preboundExactMap = options.preboundExactMap instanceof Map ? options.preboundExactMap : null;
   const seenReal = new Set();
   const validated = [];
   for (const rawFolder of trimmedList) {
-    const {
-      resolvedPath,
-      realPath,
-      homeDir,
-      realHomeDir
-    } = assertSafeHostDirectoryPath(rawFolder, options);
+    let resolvedPath = '';
+    let realPath = '';
+    let homeDir = baseHomeDir;
+    let realHomeDir = baseRealHomeDir;
+    try {
+      const checked = assertSafeHostDirectoryPath(rawFolder, options);
+      resolvedPath = checked.resolvedPath;
+      realPath = checked.realPath;
+      homeDir = checked.homeDir;
+      realHomeDir = checked.realHomeDir;
+    } catch (err) {
+      if (err?.status !== 403 || !preboundExactMap || preboundExactMap.size === 0) {
+        throw err;
+      }
+      const candLogical = resolveHostPathInput(rawFolder, baseHomeDir);
+      const exactHit = preboundExactMap.get(candLogical);
+      if (!exactHit) {
+        throw err;
+      }
+      let candLst = null;
+      let candReal = '';
+      try {
+        candLst = fs.lstatSync(candLogical);
+        if (!candLst || candLst.isSymbolicLink() || !candLst.isDirectory()) {
+          throw err;
+        }
+        candReal = fs.realpathSync(candLogical);
+      } catch {
+        throw err;
+      }
+      if (
+        !candReal ||
+        candReal !== exactHit.realPath ||
+        candReal === path.parse(candReal).root ||
+        candReal === baseHomeDir ||
+        candReal === baseRealHomeDir ||
+        isSensitiveHostPath(candLogical, options) ||
+        isSensitiveHostPath(candReal, options)
+      ) {
+        throw err;
+      }
+      resolvedPath = candLogical;
+      realPath = candReal;
+    }
     if (
       resolvedPath === path.parse(resolvedPath).root ||
+      realPath === path.parse(realPath).root ||
       resolvedPath === homeDir ||
       realPath === realHomeDir
     ) {
@@ -4370,6 +4461,24 @@ function validateSafeProjectFolderList(rawFoldersInput, options = {}, emptyError
     throw Object.assign(new Error(emptyErrorMsg), { status: 400 });
   }
   return validated;
+}
+
+function doesProjectPrimaryMatchTarget(projOrRaw, targetResolvedPath, targetRealPath) {
+  if (!projOrRaw || typeof projOrRaw !== 'object') return false;
+  let primaryCandidate = String(projOrRaw.primaryPath || '').trim();
+  if (!primaryCandidate && Array.isArray(projOrRaw.projectResources?.resources) && projOrRaw.projectResources.resources.length > 0) {
+    const r0 = projOrRaw.projectResources.resources[0];
+    primaryCandidate = decodeFileUriToPath(r0?.gitFolder?.folderUri || r0?.folderUri || '');
+  }
+  if (!primaryCandidate) return false;
+  const candResolved = path.resolve(primaryCandidate);
+  if (candResolved === targetResolvedPath) return true;
+  if (targetRealPath) {
+    try {
+      if (fs.realpathSync(candResolved) === targetRealPath) return true;
+    } catch {}
+  }
+  return false;
 }
 
 async function resolveProjectResourcesForFolders(validatedFolders, lsApi, existingResources = []) {
@@ -4485,13 +4594,16 @@ async function createRemoteProject(payload = {}, options = {}) {
   let matchedExisting = null;
   if (isSingleFolderReq) {
     for (const proj of metaMap.values()) {
-      if (proj.primaryPath && path.resolve(proj.primaryPath) === resolvedPath) {
+      if (doesProjectPrimaryMatchTarget(proj, resolvedPath, primary.realPath)) {
         matchedExisting = proj;
         break;
       }
     }
     if (!matchedExisting && requestedExistingId && metaMap.has(requestedExistingId)) {
-      matchedExisting = metaMap.get(requestedExistingId);
+      const byId = metaMap.get(requestedExistingId);
+      if (doesProjectPrimaryMatchTarget(byId, resolvedPath, primary.realPath)) {
+        matchedExisting = byId;
+      }
     }
 
     if (matchedExisting && !forceNew && (!requestedName || requestedName.toLowerCase() === matchedExisting.name.toLowerCase())) {
@@ -4515,7 +4627,12 @@ async function createRemoteProject(payload = {}, options = {}) {
     try {
       const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: requestedExistingId }), 1500, null);
       const rp = readRes?.project;
-      if (rp && rp.id === requestedExistingId && !rp.archived) {
+      if (
+        rp &&
+        rp.id === requestedExistingId &&
+        !rp.archived &&
+        doesProjectPrimaryMatchTarget(rp, resolvedPath, primary.realPath)
+      ) {
         const rpName = String(rp.name || requestedName || '').trim();
         if (!requestedName || requestedName.toLowerCase() === rpName.toLowerCase()) {
           return {
@@ -4701,27 +4818,12 @@ async function updateRemoteProject(payload = {}, options = {}) {
     throw Object.assign(new Error(lastReadError || '未找到目标项目或该项目已归档'), { status: 404 });
   }
 
-  // 将该项目原有的合法具体项目目录（排除 /、$HOME 及敏感路径）加入允许根，兼容桌面端此前已绑定的外部卷工作区目录且绝不放宽全盘边界
-  const { homeDir: resolvedHome, realHomeDir, logicalRoots: baseRoots } = resolveAllowedHostRoots(options);
-  const prevAllowedExtras = [];
+  // 仅允许精确保留该项目原本已绑定的非符号链接、非根、非 $HOME、非敏感真实目录（preboundExactMap），绝不扩大 allowedRoots 子树或放行软链越界
   const prevResources = Array.isArray(existingProjObj.projectResources?.resources) ? existingProjObj.projectResources.resources : [];
-  for (const r of prevResources) {
-    const rawPrev = decodeFileUriToPath(r?.gitFolder?.folderUri || r?.folderUri || '');
-    const prevPath = rawPrev ? path.resolve(rawPrev) : '';
-    if (
-      prevPath &&
-      prevPath !== '/' &&
-      prevPath !== resolvedHome &&
-      prevPath !== realHomeDir &&
-      !isSensitiveHostPath(prevPath, options)
-    ) {
-      prevAllowedExtras.push(prevPath);
-    }
-  }
-  const mergedAllowedRoots = prevAllowedExtras.length
-    ? Array.from(new Set([...baseRoots, ...prevAllowedExtras]))
-    : options.allowedRoots;
-  const validationOpts = mergedAllowedRoots ? { ...options, allowedRoots: mergedAllowedRoots } : options;
+  const preboundExactMap = collectSafePreboundProjectFolders(prevResources, options);
+  const validationOpts = preboundExactMap.size > 0
+    ? { ...options, preboundExactMap }
+    : options;
 
   const validatedFolders = validateSafeProjectFolderList(
     rawInputFolders,
@@ -18607,7 +18709,12 @@ function buildMobileAppHtml() {
       sumEl.classList.remove('is-warn');
       const repoBadge = projBrowserState.isGitRepo ? 'Git 仓库' : '普通目录';
       const isEdit = projBrowserState.mode === 'edit';
-      const linkedHint = (!isEdit && projBrowserState.existingProject && projBrowserState.selectedFolders.length <= 1)
+      const canShowLinkedHint = !isEdit && projBrowserState.existingProject && (
+        projBrowserState.selectedFolders.length === 0 ||
+        (projBrowserState.selectedFolders.length === 1 &&
+          normalizeClientFolderEntryPath(projBrowserState.selectedFolders[0]?.path) === normalizeClientFolderEntryPath(projBrowserState.currentPath))
+      );
+      const linkedHint = canShowLinkedHint
         ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」')
         : '';
       const curPath = projBrowserState.currentPath;
@@ -19014,7 +19121,11 @@ function buildMobileAppHtml() {
       const myNavSeq = ++lastNavActionSeq;
       invalidateInflightSnapshotPolls();
       try {
-        const ex = folderPaths.length === 1 ? projBrowserState.existingProject : null;
+        const ex = (
+          folderPaths.length === 1 &&
+          projBrowserState.existingProject &&
+          normalizeClientFolderEntryPath(folderPaths[0]) === normalizeClientFolderEntryPath(projBrowserState.currentPath)
+        ) ? projBrowserState.existingProject : null;
         const forceNew = Boolean(ex && ex.name && projectName.toLowerCase() !== String(ex.name).toLowerCase());
         const res = await fetchWithTimeout((apiBase || '') + '/api/projects', {
           method: 'POST',
@@ -25103,6 +25214,7 @@ module.exports = {
   assertSafeHostDirectoryPath,
   listHostDirectories,
   createHostSubdirectory,
+  collectSafePreboundProjectFolders,
   createRemoteProject,
   readRemoteProjectDetail,
   updateRemoteProject,
