@@ -9333,7 +9333,18 @@ function buildMobileAppHtml() {
     .sheet-stage-viewport{width:100%;overflow:hidden}
     .sheet-stage-track{display:flex;width:200%;align-items:flex-start;transition:transform .24s var(--ease-out);will-change:transform}
     .sheet-stage-track.step-effort{transform:translateX(-50%)}
+    .sheet-stage-track.is-three-stage{width:300%}
+    .sheet-stage-track.is-three-stage .sheet-stage-pane{width:33.333333%;flex:0 0 33.333333%}
+    .sheet-stage-track.is-three-stage.step-submodel{transform:translateX(-33.333333%)}
+    .sheet-stage-track.is-three-stage.step-effort{transform:translateX(-66.666667%)}
     .sheet-stage-pane{width:50%;flex:0 0 50%;display:flex;flex-direction:column;gap:6px;max-height:56dvh;overflow-y:auto;padding-right:2px;-webkit-overflow-scrolling:touch}
+    .model-col-hdr{display:none;font-size:11px;font-weight:600;color:var(--muted);padding:2px 6px 4px;letter-spacing:.02em}
+    .model-picker-divider{height:1px;background:var(--border);margin:4px 2px;flex-shrink:0}
+    .model-opt-check{display:inline-flex;align-items:center;justify-content:center;width:15px;font-size:13px;font-weight:700;color:var(--accent);flex-shrink:0}
+    .model-new-pill{font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;background:var(--accent-bg);color:var(--accent-fg);border:1px solid var(--accent-border);line-height:1.35;white-space:nowrap}
+    .model-effort-hint{font-size:12px;font-weight:500;color:var(--muted);white-space:nowrap}
+    .sheet-opt.active .model-effort-hint,.sheet-opt.sliding-out .model-effort-hint{color:var(--accent-fg);font-weight:600}
+    .model-opt-arrow{font-size:15px;line-height:1;color:var(--muted);font-weight:500;margin-left:1px}
     .sheet-opt.sliding-out{background:var(--accent-bg);border-color:var(--accent-border)}
     .sheet-opt{
       width:100%;text-align:left;padding:11px 12px;border-radius:10px;border:1px solid var(--border);
@@ -9761,6 +9772,32 @@ function buildMobileAppHtml() {
         border:1px solid var(--border-strong);padding:16px;
         box-shadow:var(--sheet-shadow);
       }
+      .sheet.model-picker-sheet,.sheet[data-sheet-kind^="model"]{
+        width:fit-content;min-width:340px;max-width:min(840px,94vw);
+      }
+      .sheet.model-picker-sheet .sheet-back-btn,.sheet[data-sheet-kind^="model"] .sheet-back-btn{display:none!important}
+      .sheet.model-picker-sheet .sheet-stage-viewport,.sheet[data-sheet-kind^="model"] .sheet-stage-viewport{overflow:visible}
+      .sheet.model-picker-sheet .sheet-stage-track,
+      .sheet.model-picker-sheet .sheet-stage-track.is-three-stage,
+      .sheet[data-sheet-kind^="model"] .sheet-stage-track,
+      .sheet[data-sheet-kind^="model"] .sheet-stage-track.is-three-stage{
+        width:auto!important;transform:none!important;transition:none;gap:10px;align-items:stretch;
+      }
+      .sheet.model-picker-sheet .sheet-stage-pane,
+      .sheet.model-picker-sheet .sheet-stage-track.is-three-stage .sheet-stage-pane,
+      .sheet[data-sheet-kind^="model"] .sheet-stage-pane,
+      .sheet[data-sheet-kind^="model"] .sheet-stage-track.is-three-stage .sheet-stage-pane{
+        width:268px;flex:0 0 268px;max-height:min(460px,66vh);
+      }
+      .sheet.model-picker-sheet #model-submodel-pane:not([hidden]),
+      .sheet.model-picker-sheet #model-effort-pane:not(.is-empty-col),
+      .sheet[data-sheet-kind^="model"] #model-submodel-pane:not([hidden]),
+      .sheet[data-sheet-kind^="model"] #model-effort-pane:not(.is-empty-col){
+        border-left:1px solid var(--border);padding-left:10px;
+      }
+      .sheet.model-picker-sheet #model-effort-pane,.sheet[data-sheet-kind^="model"] #model-effort-pane{width:204px;flex:0 0 204px}
+      .sheet.model-picker-sheet #model-effort-pane.is-empty-col,.sheet[data-sheet-kind^="model"] #model-effort-pane.is-empty-col{display:none!important}
+      .sheet.model-picker-sheet .model-col-hdr,.sheet[data-sheet-kind^="model"] .model-col-hdr{display:block}
       .sheet.proj-modal{max-width:520px;max-height:min(680px,86vh)}
       .fv-backdrop{justify-content:flex-end;align-items:stretch;padding:0}
       .fv-modal{width:min(520px,52vw);max-height:100%;height:100%;border-radius:16px 0 0 16px;padding-top:0;padding-bottom:0}
@@ -11562,6 +11599,11 @@ function buildMobileAppHtml() {
     function configureSheetChrome(cfg) {
       const c = cfg || {};
       activeSheetKind = c.kind || '';
+      const sheetCardEl = $('sheet-backdrop')?.querySelector?.('.sheet') || null;
+      if (sheetCardEl) {
+        sheetCardEl.setAttribute?.('data-sheet-kind', activeSheetKind);
+        sheetCardEl.classList?.toggle?.('model-picker-sheet', /^model/.test(activeSheetKind));
+      }
       $('sheet-title-text').textContent = c.title || '选择选项';
       const subEl = $('sheet-sub-text');
       if (subEl) {
@@ -15124,67 +15166,302 @@ function buildMobileAppHtml() {
     };
 
     const EFFORT_META = {
-      max: { label: '最高 · Max', short: 'Max', rank: 0 },
-      xhigh: { label: '超高 · XHigh', short: 'XHigh', rank: 1 },
-      high: { label: '高 · High', short: 'High', rank: 2 },
-      medium: { label: '中 · Medium', short: 'Medium', rank: 3 },
-      low: { label: '低 · Low', short: 'Low', rank: 4 }
+      low: { label: 'Low', short: 'Low', rank: 1 },
+      medium: { label: 'Medium', short: 'Medium', rank: 2 },
+      high: { label: 'High', short: 'High', rank: 3 },
+      xhigh: { label: 'Extra High', short: 'Extra High', rank: 4 },
+      max: { label: 'Max', short: 'Max', rank: 5 }
     };
 
-    function groupModelsByBaseId(modelOptions, currentModelLabel) {
-      const groups = [];
-      const groupMap = new Map();
+    function parseClientModelVariant(rawLabelInput, rawModelIdInput) {
+      const rawLabel = String(rawLabelInput || '').trim();
+      const rawModelId = String(rawModelIdInput || '').trim();
+      const idMatch = rawModelId.match(/^(.*?)-(xhigh|high|medium|low|max)$/i);
+      const lblMatch = rawLabel.match(/^(.*?)\\s*\\((Extra\\s+High|XHigh|High|Medium|Low|Max)\\)\\s*$/i);
+      const rawEffort = idMatch
+        ? idMatch[2].toLowerCase()
+        : (lblMatch ? lblMatch[2].toLowerCase().replace(/\\s+/g, '') : '');
+      const effortKey = rawEffort === 'extrahigh' ? 'xhigh' : rawEffort;
+      const baseModelId = idMatch
+        ? idMatch[1].toLowerCase()
+        : (rawModelId || (lblMatch ? lblMatch[1].trim() : rawLabel)).toLowerCase();
+      const baseLabel = lblMatch ? lblMatch[1].trim() : rawLabel;
+      const meta = EFFORT_META[effortKey] || { label: effortKey || rawLabel, short: effortKey || '', rank: 9 };
+      return { rawLabel, rawModelId, baseModelId, baseLabel, effortKey, meta };
+    }
+
+    function pickPreferredGroupEffort(variants) {
+      if (!Array.isArray(variants) || !variants.length) return '';
+      const activeVar = variants.find((v) => v.active);
+      if (activeVar?.effortShort) return activeVar.effortShort;
+      const byPref = variants.find((v) => v.effortKey === 'high')
+        || variants.find((v) => v.effortKey === 'medium')
+        || variants[variants.length - 1];
+      return byPref?.effortShort || '';
+    }
+
+    function shortenOrchestratorSubLabel(baseLabel) {
+      return String(baseLabel || '')
+        .replace(/^Gemini\\s+4\\s+/i, '')
+        .replace(/^Claude\\s+/i, '')
+        .trim() || String(baseLabel || '').trim();
+    }
+
+    function groupModelsByBaseId(modelOptions, currentModelLabel, orchestratorConfig) {
+      const regularGroups = [];
+      const regularMap = new Map();
+      const rawOrchEntries = [];
+      const curLblText = String(currentModelLabel || '').trim();
+      const curIsOrch = Boolean(orchestratorConfig?.active || /^orchestrator\\b/i.test(curLblText));
+
       for (const m of (modelOptions || [])) {
         if (!m || !m.label) continue;
         const rawLabel = String(m.label).trim();
         const rawModelId = String(m.modelId || '').trim();
-        const idMatch = rawModelId.match(/^(.*?)-(xhigh|high|medium|low|max)$/i);
-        const lblMatch = rawLabel.match(/^(.*?)\\s*\\((XHigh|High|Medium|Low|Max)\\)\\s*$/i);
-        const effortKey = idMatch
-          ? idMatch[2].toLowerCase()
-          : (lblMatch ? lblMatch[2].toLowerCase() : '');
-        const baseModelId = idMatch
-          ? idMatch[1].toLowerCase()
-          : (rawModelId || (lblMatch ? lblMatch[1].trim() : rawLabel)).toLowerCase();
-        const baseLabel = lblMatch ? lblMatch[1].trim() : rawLabel;
-        const meta = EFFORT_META[effortKey] || { label: effortKey || rawLabel, short: effortKey || '', rank: 9 };
-        const isActive = Boolean(m.selected || rawLabel === currentModelLabel);
-
-        if (!groupMap.has(baseModelId)) {
-          const g = {
-            baseModelId,
-            baseLabel,
-            active: false,
-            hasEffortChoice: false,
-            variants: []
-          };
-          groupMap.set(baseModelId, g);
-          groups.push(g);
+        const isNewFlag = Boolean(m.isNew || /^new$/i.test(String(m.tagTitle || '').trim()));
+        const isOrchItem = /orchestrator/i.test(rawModelId + ' ' + rawLabel);
+        if (isOrchItem) {
+          rawOrchEntries.push({
+            label: rawLabel,
+            modelId: rawModelId,
+            isNew: isNewFlag,
+            active: Boolean(m.selected || rawLabel === curLblText)
+          });
+          continue;
         }
-        const grp = groupMap.get(baseModelId);
+        const parsed = parseClientModelVariant(rawLabel, rawModelId);
+        const isActive = !curIsOrch && Boolean(m.selected || rawLabel === curLblText);
+
+        if (!regularMap.has(parsed.baseModelId)) {
+          const g = {
+            baseModelId: parsed.baseModelId,
+            baseLabel: parsed.baseLabel,
+            active: false,
+            isNew: false,
+            isOrchestrator: false,
+            hasSubModels: false,
+            hasEffortChoice: false,
+            variants: [],
+            subModels: []
+          };
+          regularMap.set(parsed.baseModelId, g);
+          regularGroups.push(g);
+        }
+        const grp = regularMap.get(parsed.baseModelId);
         if (isActive) grp.active = true;
+        if (isNewFlag) grp.isNew = true;
         grp.variants.push({
           label: rawLabel,
           modelId: rawModelId,
-          effortKey,
-          effortLabel: meta.label,
-          effortShort: meta.short,
-          rank: meta.rank,
+          effortKey: parsed.effortKey,
+          effortLabel: parsed.meta.label,
+          effortShort: parsed.meta.short,
+          rank: parsed.meta.rank,
           active: isActive
         });
       }
-      for (const grp of groups) {
+
+      for (const grp of regularGroups) {
         grp.variants.sort((a, b) => a.rank - b.rank);
         grp.hasEffortChoice = grp.variants.length > 1;
+        grp.summaryText = pickPreferredGroupEffort(grp.variants);
       }
-      return groups;
+
+      const explicitPlanners = Array.isArray(orchestratorConfig?.planners)
+        ? orchestratorConfig.planners.filter((p) => p && p.label)
+        : [];
+      const hasMultiTierOrch = explicitPlanners.length > 0 || rawOrchEntries.length > 1;
+
+      if (hasMultiTierOrch) {
+        const primaryOrchModelId = String(
+          orchestratorConfig?.orchestratorModelId ||
+          rawOrchEntries.find((o) => o.active)?.modelId ||
+          rawOrchEntries[0]?.modelId ||
+          'gemini-pro-orchestrator-neon'
+        );
+        const subMap = new Map();
+        const subModels = [];
+        const resolveOrchModelIdForSlug = (baseId) => {
+          const slugMatch = String(baseId || '').match(/(neon|argon|carbon|hydrogen)/i);
+          const slug = slugMatch ? slugMatch[1].toLowerCase() : '';
+          if (slug === 'carbon') {
+            return rawOrchEntries.find((o) => /^gemini-pro-orchestrator$/i.test(o.modelId))?.modelId || primaryOrchModelId;
+          }
+          if (slug) {
+            return rawOrchEntries.find((o) => o.modelId.toLowerCase().includes('orchestrator-' + slug))?.modelId || primaryOrchModelId;
+          }
+          return primaryOrchModelId;
+        };
+
+        if (explicitPlanners.length > 0) {
+          const pickedPlannerId = String(orchestratorConfig?.pickedModelId || '').trim();
+          const defaultPlannerId = String(orchestratorConfig?.defaultModelId || '').trim();
+          for (const p of explicitPlanners) {
+            const parsed = parseClientModelVariant(p.label, p.modelId);
+            const isPlannerNew = Boolean(p.isNew || /^new$/i.test(String(p.tagTitle || '').trim()));
+            const isPlannerActive = Boolean(curIsOrch && (p.selected || (pickedPlannerId && parsed.rawModelId === pickedPlannerId)));
+            if (!subMap.has(parsed.baseModelId)) {
+              const sm = {
+                baseModelId: parsed.baseModelId,
+                baseLabel: parsed.baseLabel,
+                shortName: shortenOrchestratorSubLabel(parsed.baseLabel),
+                isNew: false,
+                active: false,
+                hasEffortChoice: false,
+                variants: []
+              };
+              subMap.set(parsed.baseModelId, sm);
+              subModels.push(sm);
+            }
+            const sm = subMap.get(parsed.baseModelId);
+            if (isPlannerNew) sm.isNew = true;
+            if (isPlannerActive) sm.active = true;
+            const dispTitle = 'Orchestrator · ' + sm.shortName + (parsed.meta.short ? (' (' + parsed.meta.short + ')') : '');
+            sm.variants.push({
+              label: dispTitle,
+              modelId: resolveOrchModelIdForSlug(parsed.baseModelId),
+              orchestrator: true,
+              plannerModelId: parsed.rawModelId,
+              plannerLabel: parsed.rawLabel,
+              plannerValue: typeof p.value === 'number' ? p.value : 0,
+              effortKey: parsed.effortKey,
+              effortLabel: parsed.meta.label,
+              effortShort: parsed.meta.short,
+              rank: parsed.meta.rank,
+              isDefault: Boolean(defaultPlannerId && parsed.rawModelId === defaultPlannerId),
+              active: isPlannerActive
+            });
+          }
+        } else {
+          for (const oe of rawOrchEntries) {
+            const slugM = oe.label.match(/Orchestrator\\s*\\(([^)]+)\\)/i) || oe.modelId.match(/orchestrator-(neon|argon|carbon|hydrogen)/i);
+            const famHint = slugM ? slugM[1].trim() : oe.label;
+            const matchedReg = regularGroups.find((rg) => rg.baseLabel.toLowerCase().includes(famHint.toLowerCase()));
+            if (matchedReg && matchedReg.variants.length > 0) {
+              const smShort = shortenOrchestratorSubLabel(matchedReg.baseLabel);
+              subModels.push({
+                baseModelId: matchedReg.baseModelId,
+                baseLabel: matchedReg.baseLabel,
+                shortName: smShort,
+                isNew: Boolean(oe.isNew || matchedReg.isNew),
+                active: Boolean(oe.active),
+                hasEffortChoice: matchedReg.variants.length > 1,
+                variants: matchedReg.variants.map((rv) => ({
+                  label: 'Orchestrator · ' + smShort + (rv.effortShort ? (' (' + rv.effortShort + ')') : ''),
+                  modelId: oe.modelId,
+                  orchestrator: true,
+                  plannerModelId: rv.modelId,
+                  plannerLabel: rv.label,
+                  plannerValue: 0,
+                  effortKey: rv.effortKey,
+                  effortLabel: rv.effortLabel,
+                  effortShort: rv.effortShort,
+                  rank: rv.rank,
+                  active: Boolean(oe.active && rv.effortKey === 'high')
+                }))
+              });
+            } else {
+              subModels.push({
+                baseModelId: oe.modelId || famHint.toLowerCase(),
+                baseLabel: famHint,
+                shortName: famHint,
+                isNew: Boolean(oe.isNew),
+                active: Boolean(oe.active),
+                hasEffortChoice: false,
+                variants: [{
+                  label: oe.label,
+                  modelId: oe.modelId,
+                  orchestrator: false,
+                  effortKey: '',
+                  effortLabel: famHint,
+                  effortShort: '',
+                  rank: 1,
+                  active: Boolean(oe.active)
+                }]
+              });
+            }
+          }
+        }
+
+        const PREFERRED_SUB_ORDER = ['neon', 'carbon', 'argon', 'opus', 'sonnet', 'hydrogen'];
+        subModels.sort((a, b) => {
+          const idxA = PREFERRED_SUB_ORDER.findIndex((k) => a.baseModelId.includes(k));
+          const idxB = PREFERRED_SUB_ORDER.findIndex((k) => b.baseModelId.includes(k));
+          const rA = idxA >= 0 ? idxA : 99;
+          const rB = idxB >= 0 ? idxB : 99;
+          return rA - rB;
+        });
+        for (const sm of subModels) {
+          sm.variants.sort((a, b) => a.rank - b.rank);
+          sm.hasEffortChoice = sm.variants.length > 1;
+          sm.summaryText = pickPreferredGroupEffort(sm.variants);
+        }
+
+        const activeSub = subModels.find((sm) => sm.active) || subModels[0] || null;
+        const activeSubVar = activeSub?.variants?.find((v) => v.active)
+          || activeSub?.variants?.find((v) => v.isDefault)
+          || activeSub?.variants?.find((v) => v.effortKey === 'high')
+          || activeSub?.variants?.[activeSub.variants.length - 1]
+          || null;
+        const orchSummary = activeSub
+          ? (activeSub.shortName + (activeSubVar?.effortShort ? (' · ' + activeSubVar.effortShort) : ''))
+          : '';
+        regularGroups.push({
+          baseModelId: primaryOrchModelId,
+          baseLabel: 'Orchestrator',
+          active: Boolean(curIsOrch || rawOrchEntries.some((o) => o.active)),
+          isNew: Boolean(orchestratorConfig?.isNew || rawOrchEntries.some((o) => o.isNew) || subModels.some((sm) => sm.isNew)),
+          isOrchestrator: true,
+          hasSubModels: subModels.length > 0,
+          hasEffortChoice: false,
+          summaryText: orchSummary,
+          variants: [],
+          subModels
+        });
+      } else if (rawOrchEntries.length === 1) {
+        const singleOrch = rawOrchEntries[0];
+        regularGroups.push({
+          baseModelId: singleOrch.modelId || 'orchestrator',
+          baseLabel: singleOrch.label,
+          active: Boolean(singleOrch.active),
+          isNew: Boolean(singleOrch.isNew),
+          isOrchestrator: false,
+          hasSubModels: false,
+          hasEffortChoice: false,
+          summaryText: '',
+          variants: [{
+            label: singleOrch.label,
+            modelId: singleOrch.modelId,
+            effortKey: '',
+            effortLabel: singleOrch.label,
+            effortShort: '',
+            rank: 1,
+            active: Boolean(singleOrch.active)
+          }],
+          subModels: []
+        });
+      }
+
+      return regularGroups;
     }
 
     async function applyModelSelection(opt) {
       if (!opt) return;
       showToast('正在切换至 ' + opt.label + '…');
       try {
-        const r = await apiAction({ action: 'select-model', label: opt.label, modelId: opt.modelId });
+        const reqBody = {
+          action: 'select-model',
+          label: opt.label,
+          modelId: opt.modelId
+        };
+        if (opt.orchestrator) {
+          reqBody.orchestrator = true;
+          if (opt.plannerModelId) reqBody.plannerModelId = opt.plannerModelId;
+          if (opt.plannerLabel) reqBody.plannerLabel = opt.plannerLabel;
+          if (opt.plannerValue) reqBody.plannerValue = opt.plannerValue;
+          if (opt.effortKey) reqBody.effortKey = opt.effortKey;
+        }
+        const r = await apiAction(reqBody);
         if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
         else showToast(r?.error || r?.actionResult?.error || '切换模型失败，请确认电脑端窗口在线后重试');
       } catch (err) {
@@ -15194,7 +15471,11 @@ function buildMobileAppHtml() {
 
     function openModelPicker() {
       activeSheetState = null;
-      const groups = groupModelsByBaseId(latestSnap?.modelOptions || [], latestSnap?.model || '');
+      const groups = groupModelsByBaseId(
+        latestSnap?.modelOptions || [],
+        latestSnap?.model || '',
+        latestSnap?.orchestratorConfig || null
+      );
       if (!groups.length) {
         showToast('未检测到可用模型列表');
         return;
@@ -15207,20 +15488,25 @@ function buildMobileAppHtml() {
         onBack: null
       });
       const listEl = $('sheet-list');
-      const groupsHtml = groups.map((g, gIdx) => {
-        const activeVar = g.variants.find((v) => v.active);
-        const effPill = (g.hasEffortChoice && activeVar?.effortShort)
-          ? '<span class="mode-pill cur">' + esc(activeVar.effortShort) + '</span>'
+      const groupsHtml = '<div class="model-col-hdr">1. 选择模型</div>' + groups.map((g, gIdx) => {
+        const hasNextStep = Boolean(g.hasSubModels || g.hasEffortChoice);
+        const checkHtml = '<span class="model-opt-check">' + (g.active ? '✓' : '') + '</span>';
+        const newBadge = g.isNew ? '<span class="mode-pill cur model-new-pill">New</span>' : '';
+        const summaryHtml = g.summaryText
+          ? (g.active
+            ? '<span class="mode-pill cur">' + esc(g.summaryText) + '</span>'
+            : '<span class="model-effort-hint">' + esc(g.summaryText) + '</span>')
           : '';
-        const rightTag = g.hasEffortChoice
-          ? ('<span class="lat-badge muted">' + g.variants.length + ' 档 ›</span>')
-          : (g.active ? '<span>✓</span>' : '');
-        return '<button class="sheet-opt' + (g.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" type="button">'
+        const arrowHtml = hasNextStep ? '<span class="model-opt-arrow">›</span>' : '';
+        const dividerHtml = (g.isOrchestrator && g.hasSubModels && gIdx > 0)
+          ? '<div class="model-picker-divider" role="separator"></div>'
+          : '';
+        return dividerHtml
+          + '<button class="sheet-opt' + (g.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" type="button">'
           + '<span class="sheet-opt-left">'
-          + '<span class="sheet-opt-top"><span>' + esc(g.baseLabel) + '</span>' + effPill + '</span>'
-          + (g.baseModelId ? ('<span class="sheet-opt-host">' + esc(g.baseModelId) + '</span>') : '')
+          + '<span class="sheet-opt-top">' + checkHtml + '<span>' + esc(g.baseLabel) + '</span>' + newBadge + '</span>'
           + '</span>'
-          + '<span class="sheet-opt-right">' + rightTag + '</span>'
+          + '<span class="sheet-opt-right">' + summaryHtml + arrowHtml + '</span>'
           + '</button>';
       }).join('');
 
@@ -15228,25 +15514,180 @@ function buildMobileAppHtml() {
         '<div class="sheet-stage-viewport">'
         + '<div id="sheet-stage-track" class="sheet-stage-track">'
         + '<div id="model-group-pane" class="sheet-stage-pane">' + groupsHtml + '</div>'
-        + '<div id="model-effort-pane" class="sheet-stage-pane"></div>'
+        + '<div id="model-submodel-pane" class="sheet-stage-pane" hidden></div>'
+        + '<div id="model-effort-pane" class="sheet-stage-pane is-empty-col"></div>'
         + '</div>'
         + '</div>';
 
       const findPane = (id) => $(id) || listEl.querySelector?.('#' + id) || null;
+      const readIdxAttr = (el, attrName, dsKey) => {
+        if (!el) return NaN;
+        const raw = el.getAttribute?.(attrName) ?? el.dataset?.[dsKey];
+        return raw !== undefined && raw !== null && raw !== '' ? Number(raw) : NaN;
+      };
+      const clearSlidingInPane = (pane) => {
+        pane?.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
+      };
+      const renderEffortOptionsHtml = (variants, gIdx, subIdx, colTitle) => {
+        const hdr = '<div class="model-col-hdr">' + esc(colTitle || '推理强度') + '</div>';
+        return hdr + variants.map((v, vIdx) =>
+          '<button class="sheet-opt' + (v.active ? ' active' : '') + '" data-group-idx="' + gIdx + '"'
+          + (Number.isInteger(subIdx) && subIdx >= 0 ? (' data-submodel-idx="' + subIdx + '"') : '')
+          + ' data-variant-idx="' + vIdx + '" type="button">'
+          + '<span class="sheet-opt-left">'
+          + '<span class="sheet-opt-top"><span class="model-opt-check">' + (v.active ? '✓' : '') + '</span><span>' + esc(v.effortLabel) + '</span>' + (v.active ? '<span class="mode-pill cur">当前</span>' : '') + '</span>'
+          + '</span>'
+          + '<span class="sheet-opt-right"></span>'
+          + '</button>'
+        ).join('');
+      };
+      const resetToRootStage = () => {
+        const trackEl = findPane('sheet-stage-track');
+        const groupPane = findPane('model-group-pane');
+        const subPane = findPane('model-submodel-pane');
+        const effortPane = findPane('model-effort-pane');
+        if (trackEl) {
+          trackEl.classList.remove('step-effort');
+          trackEl.classList.remove('step-submodel');
+          trackEl.classList.remove('is-three-stage');
+        }
+        clearSlidingInPane(groupPane);
+        if (subPane) {
+          subPane.hidden = true;
+          subPane.innerHTML = '';
+        }
+        if (effortPane) {
+          effortPane.innerHTML = '';
+          effortPane.classList.add('is-empty-col');
+        }
+        configureSheetChrome({
+          kind: 'model',
+          title: '切换模型',
+          subText: '',
+          showSpeed: false,
+          onBack: null
+        });
+      };
+      const openOrchestratorSubmodelStage = (g, gIdx, grpBtn) => {
+        const trackEl = findPane('sheet-stage-track');
+        const groupPane = findPane('model-group-pane');
+        const subPane = findPane('model-submodel-pane');
+        const effortPane = findPane('model-effort-pane');
+        clearSlidingInPane(groupPane);
+        grpBtn?.classList?.add?.('sliding-out');
+        if (subPane) {
+          subPane.hidden = false;
+          subPane.innerHTML = '<div class="model-col-hdr">2. Orchestrator 编排模型</div>' + g.subModels.map((sm, smIdx) => {
+            const checkHtml = '<span class="model-opt-check">' + (sm.active ? '✓' : '') + '</span>';
+            const newBadge = sm.isNew ? '<span class="mode-pill cur model-new-pill">New</span>' : '';
+            const sumHtml = sm.summaryText
+              ? (sm.active
+                ? '<span class="mode-pill cur">' + esc(sm.summaryText) + '</span>'
+                : '<span class="model-effort-hint">' + esc(sm.summaryText) + '</span>')
+              : '';
+            const arrowHtml = sm.hasEffortChoice ? '<span class="model-opt-arrow">›</span>' : '';
+            return '<button class="sheet-opt' + (sm.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" data-submodel-idx="' + smIdx + '" type="button">'
+              + '<span class="sheet-opt-left">'
+              + '<span class="sheet-opt-top">' + checkHtml + '<span>' + esc(sm.baseLabel) + '</span>' + newBadge + '</span>'
+              + '</span>'
+              + '<span class="sheet-opt-right">' + sumHtml + arrowHtml + '</span>'
+              + '</button>';
+          }).join('');
+        }
+        if (effortPane) {
+          effortPane.innerHTML = '';
+          effortPane.classList.add('is-empty-col');
+        }
+        if (trackEl) {
+          trackEl.classList.remove('step-effort');
+          trackEl.classList.add('is-three-stage');
+          trackEl.classList.add('step-submodel');
+        }
+        configureSheetChrome({
+          kind: 'model-submodel',
+          title: 'Orchestrator',
+          subText: '选择候选编排模型',
+          showSpeed: false,
+          onBack: resetToRootStage
+        });
+      };
+
       listEl.onclick = async (e) => {
         const varBtn = e.target?.closest?.('[data-variant-idx]');
         if (varBtn) {
-          const g = groups[Number(varBtn.dataset.groupIdx)];
-          const v = g?.variants?.[Number(varBtn.dataset.variantIdx)];
+          const gIdx = readIdxAttr(varBtn, 'data-group-idx', 'groupIdx');
+          const subIdx = readIdxAttr(varBtn, 'data-submodel-idx', 'submodelIdx');
+          const vIdx = readIdxAttr(varBtn, 'data-variant-idx', 'variantIdx');
+          const g = groups[gIdx];
+          const v = (Number.isInteger(subIdx) && subIdx >= 0)
+            ? g?.subModels?.[subIdx]?.variants?.[vIdx]
+            : g?.variants?.[vIdx];
           closeSheet();
           if (v) await applyModelSelection(v);
           return;
         }
+        const subBtn = e.target?.closest?.('[data-submodel-idx]');
+        if (subBtn) {
+          const gIdx = readIdxAttr(subBtn, 'data-group-idx', 'groupIdx');
+          const subIdx = readIdxAttr(subBtn, 'data-submodel-idx', 'submodelIdx');
+          const g = groups[gIdx];
+          const sm = g?.subModels?.[subIdx];
+          if (!g || !sm) return;
+          if (!sm.hasEffortChoice) {
+            closeSheet();
+            if (sm.variants[0]) await applyModelSelection(sm.variants[0]);
+            return;
+          }
+          const trackEl = findPane('sheet-stage-track');
+          const subPane = findPane('model-submodel-pane');
+          const effortPane = findPane('model-effort-pane');
+          clearSlidingInPane(subPane);
+          subBtn.classList?.add?.('sliding-out');
+          if (effortPane) {
+            effortPane.classList.remove('is-empty-col');
+            effortPane.innerHTML = renderEffortOptionsHtml(sm.variants, gIdx, subIdx, '3. 推理强度');
+          }
+          if (trackEl) {
+            trackEl.classList.remove('step-submodel');
+            trackEl.classList.add('is-three-stage');
+            trackEl.classList.add('step-effort');
+          }
+          configureSheetChrome({
+            kind: 'model-orch-effort',
+            title: sm.baseLabel,
+            subText: 'Orchestrator · 选择推理强度',
+            showSpeed: false,
+            onBack: () => {
+              if (trackEl) {
+                trackEl.classList.remove('step-effort');
+                trackEl.classList.add('is-three-stage');
+                trackEl.classList.add('step-submodel');
+              }
+              clearSlidingInPane(subPane);
+              if (effortPane) {
+                effortPane.innerHTML = '';
+                effortPane.classList.add('is-empty-col');
+              }
+              configureSheetChrome({
+                kind: 'model-submodel',
+                title: 'Orchestrator',
+                subText: '选择候选编排模型',
+                showSpeed: false,
+                onBack: resetToRootStage
+              });
+            }
+          });
+          return;
+        }
         const grpBtn = e.target?.closest?.('[data-group-idx]');
         if (!grpBtn) return;
-        const gIdx = Number(grpBtn.dataset.groupIdx);
+        const gIdx = readIdxAttr(grpBtn, 'data-group-idx', 'groupIdx');
         const g = groups[gIdx];
         if (!g) return;
+        if (g.hasSubModels) {
+          openOrchestratorSubmodelStage(g, gIdx, grpBtn);
+          return;
+        }
         if (!g.hasEffortChoice) {
           closeSheet();
           await applyModelSelection(g.variants[0]);
@@ -15254,41 +15695,29 @@ function buildMobileAppHtml() {
         }
         const trackEl = findPane('sheet-stage-track');
         const groupPane = findPane('model-group-pane');
+        const subPane = findPane('model-submodel-pane');
         const effortPane = findPane('model-effort-pane');
-        if (groupPane) {
-          groupPane.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
-        }
+        clearSlidingInPane(groupPane);
         grpBtn.classList?.add?.('sliding-out');
-        if (effortPane) {
-          effortPane.innerHTML = g.variants.map((v, vIdx) =>
-            '<button class="sheet-opt' + (v.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" data-variant-idx="' + vIdx + '" type="button">'
-            + '<span class="sheet-opt-left">'
-            + '<span class="sheet-opt-top"><span>' + esc(v.effortLabel) + '</span>' + (v.active ? '<span class="mode-pill cur">当前</span>' : '') + '</span>'
-            + '<span class="sheet-opt-host">' + esc(v.modelId || v.label) + '</span>'
-            + '</span>'
-            + '<span class="sheet-opt-right">' + (v.active ? '<span>✓</span>' : '') + '</span>'
-            + '</button>'
-          ).join('');
+        if (subPane) {
+          subPane.hidden = true;
+          subPane.innerHTML = '';
         }
-        if (trackEl) trackEl.classList.add('step-effort');
+        if (effortPane) {
+          effortPane.classList.remove('is-empty-col');
+          effortPane.innerHTML = renderEffortOptionsHtml(g.variants, gIdx, -1, '2. 推理强度');
+        }
+        if (trackEl) {
+          trackEl.classList.remove('is-three-stage');
+          trackEl.classList.remove('step-submodel');
+          trackEl.classList.add('step-effort');
+        }
         configureSheetChrome({
           kind: 'model-effort',
           title: g.baseLabel,
-          subText: '选择思考等级 · ' + g.baseModelId,
+          subText: '选择推理强度',
           showSpeed: false,
-          onBack: () => {
-            if (trackEl) trackEl.classList.remove('step-effort');
-            if (groupPane) {
-              groupPane.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
-            }
-            configureSheetChrome({
-              kind: 'model',
-              title: '切换模型',
-              subText: '',
-              showSpeed: false,
-              onBack: null
-            });
-          }
+          onBack: resetToRootStage
         });
       };
       $('sheet-backdrop').hidden = false;
