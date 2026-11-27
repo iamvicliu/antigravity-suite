@@ -2115,6 +2115,7 @@ test('需求 6: #badge-remote 与 #ag-remote-popover 挂载、一码三用融合
 });
 
 
+
 // =========================================================================
 // 需求 7: #ag-chat-nav-float 对话导航胶囊移除内圈边框并改用 shadcn/ui 风格 Lucide SVG 图标
 // =========================================================================
@@ -2629,6 +2630,7 @@ test('需求 11: Cloudflare 隧道 Token 提取、公网融合 URL、弹窗开�
 });
 
 
+
 // =========================================================================
 // 需求 12: “局域网”命名、四通道复选框启停门禁（停用返回 403）及客户页直选入口
 // =========================================================================
@@ -2785,6 +2787,7 @@ test('需求 12: 局域网命名、通道复选框启停与后端 403 拦截、�
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
+
 
 
 // =========================================================================
@@ -3627,6 +3630,7 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
   }
 });
 
+
 // =========================================================================
 // 需求 16: 远程网页端支持跟随系统、固定浅色、固定深色三态外观切换与实时同步
 // =========================================================================
@@ -3802,6 +3806,7 @@ test('需求 16: 远程网页端支持跟随系统、固定浅色、固定深色
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
+
 
 // =========================================================================
 // 需求 17: Antigravity v2.33.0+ 裸进程识别、运行时长解析与调试参数探测
@@ -4573,6 +4578,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
 });
 
 
+
 // =========================================================================
 // 需求 20: QuickBar 右对齐建议/免CLI提示词优化 + 手机端防假1ms/发送锁定/分组模型滑窗/按项目聚合历史
 // =========================================================================
@@ -5095,6 +5101,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
   }
 });
 
+
 test('需求 21: Tab 补全 8 字截断悬停完整展示、单色 SVG 上方优化按钮、快捷提示词自定义、设置整合及 agy remote 多浏览器隔离', async () => {
   const http = require('node:http');
   const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-req19-'));
@@ -5530,6 +5537,7 @@ test('需求 21: Tab 补全 8 字截断悬停完整展示、单色 SVG 上方优
   }
 });
 
+
 // =========================================================================
 // 需求 22: 远程设置默认启用免登录零配置隧道 + cloudflared 一键复制安装命令引导
 // =========================================================================
@@ -5644,6 +5652,7 @@ test('需求 22: 远程设置默认免登录零配置可用与 cloudflared 一�
     fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });
+
 
 // =========================================================================
 // 需求 23: 提示词优化轻量快速模型优先、多模型自动回退与完整错误信息保留
@@ -27819,6 +27828,7 @@ test('Tailscale 离线防误报 + 自定义 Tailscale 节点支持（Loon 内置
   }
 });
 
+
 test('超大会话上下文扫描防 96MB 断流降级与 scan 解除统计延迟死锁', async () => {
   const https = require('node:https');
   const { execFileSync } = require('node:child_process');
@@ -32214,6 +32224,278 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
   }
 });
 
+// =========================================================================
+// 需求 40: 聊天区本地文件/文件夹链接右键菜单一键复制路径与 Finder 显示
+// =========================================================================
+test('需求 40: 聊天区本地文件/文件夹超链接右键菜单、路径解码、主题跟随、自动关闭与 live-host 接口', async () => {
+  const { startEmbeddedLiveBridge, resolveSafeLocalPath } = require('../live-host');
+
+  // 1. live-host 路径校验与 /stat-local-path、/reveal-local-path 真实服务闭环验证
+  assert.equal(resolveSafeLocalPath('https://example.com/a.js'), null, '应拒绝 http/https 协议');
+  assert.equal(resolveSafeLocalPath('relative/path.js'), null, '应拒绝相对路径');
+  assert.equal(resolveSafeLocalPath('/tmp/bad\x00path'), null, '应拒绝控制字符');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-fctx-'));
+  const subDir = path.join(tmpDir, '中文 目录');
+  fs.mkdirSync(subDir, { recursive: true });
+  const sampleFile = path.join(subDir, '测试 file.js');
+  fs.writeFileSync(sampleFile, 'console.log(1);\n', 'utf8');
+
+  const testOrigin = 'https://127.0.0.1:65432';
+  const bridge = await startEmbeddedLiveBridge({
+    origin: testOrigin,
+    origins: [testOrigin],
+    skipMobileRemote: true,
+    disableDockBadge: true,
+    writeStamp: false
+  });
+
+  try {
+    const postLive = async (route, body) => {
+      const resp = await fetch(`http://127.0.0.1:${bridge.port}${route}`, {
+        method: 'POST',
+        headers: {
+          'Origin': testOrigin,
+          'Content-Type': 'application/json',
+          'X-AG-Context-Token': bridge.token
+        },
+        body: JSON.stringify(body)
+      });
+      return resp.json();
+    };
+
+    const statDir = await postLive('/stat-local-path', { path: subDir });
+    assert.equal(statDir.ok, true);
+    assert.equal(statDir.exists, true);
+    assert.equal(statDir.isDirectory, true);
+
+    const statFile = await postLive('/stat-local-path', { path: `file://${encodeURI(sampleFile)}#L12-L34` });
+    assert.equal(statFile.ok, true);
+    assert.equal(statFile.exists, true);
+    assert.equal(statFile.isFile, true);
+
+    const revealOk = await postLive('/reveal-local-path', { path: sampleFile, dryRun: true });
+    assert.equal(revealOk.ok, true);
+    assert.equal(revealOk.dryRun, true);
+    assert.equal(revealOk.path, path.resolve(sampleFile));
+
+    const revealMissing = await postLive('/reveal-local-path', { path: path.join(tmpDir, 'missing.txt'), dryRun: true });
+    assert.equal(revealMissing.ok, false);
+    assert.equal(revealMissing.notFound, true);
+
+    // 2. 前端右键菜单解析、主题镜像、防溢出定位、复制与自动关闭验证
+    const env = createDomEnv();
+    env.sandbox.location.href = `${testOrigin}/c/11111111-1111-1111-1111-111111111111`;
+    env.win.location = env.sandbox.location;
+    const copiedTexts = [];
+    env.win.navigator.clipboard = {
+      writeText: async (text) => { copiedTexts.push(String(text)); }
+    };
+    env.sandbox.navigator = env.win.navigator;
+    env.win.__AGContextMeterLive = { port: bridge.port, token: bridge.token };
+    env.sandbox.fetch = async (url, init) => {
+      if (String(url).startsWith(`http://127.0.0.1:${bridge.port}`)) {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        const route = new URL(url).pathname;
+        const data = await postLive(route, body);
+        return { ok: true, json: async () => data };
+      }
+      return { ok: false, json: async () => ({}) };
+    };
+
+    const freshRendererSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
+    const freshEnhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+    vm.runInContext(freshRendererSrc, env.sandbox);
+    const meterApi = env.sandbox.__AGContextMeter;
+    vm.runInContext(freshEnhancerSrc, env.sandbox);
+    const enhancer = env.sandbox.__AGEnhancer;
+
+    try {
+      // 验证主题变量镜像（含 --ag-bg-card / --ag-border-card / --ag-effective-accent）
+      meterApi.setHeatPreset('blue');
+      assert.equal(env.doc.documentElement.style.getPropertyValue('--ag-effective-accent'), '#60a5fa');
+      assert.ok(env.doc.documentElement.style.getPropertyValue('--ag-bg-card'));
+      assert.ok(env.doc.documentElement.style.getPropertyValue('--ag-border-card'));
+
+      // 构造聊天区与非聊天区 DOM
+      const viewport = env.doc.createElement('div');
+      viewport.setAttribute('data-testid', 'autoscroll-viewport');
+      const agentResp = env.doc.createElement('div');
+      agentResp.setAttribute('data-testid', 'agent-response');
+      const mdRoot = env.doc.createElement('div');
+      mdRoot.setAttribute('data-markdown-root', 'true');
+
+      const fileAnchor = env.doc.createElement('a');
+      fileAnchor.setAttribute('href', 'file:///Users/me/My%20Docs/%E4%B8%AD%E6%96%87%20100%25done/demo%231.js#L123-L145');
+      const fileCode = env.doc.createElement('code');
+      fileCode.textContent = 'demo#1.js';
+      fileAnchor.appendChild(fileCode);
+
+      const dirPill = env.doc.createElement('button');
+      dirPill.setAttribute('type', 'button');
+      dirPill.setAttribute('data-uri', 'file:///Users/me/Github/extension-manager-mv3/');
+      dirPill.textContent = 'extension-manager-mv3';
+
+      const noSlashRealDirPill = env.doc.createElement('button');
+      noSlashRealDirPill.setAttribute('type', 'button');
+      noSlashRealDirPill.setAttribute('data-uri', `file://${encodeURI(subDir)}`);
+      noSlashRealDirPill.textContent = '中文 目录';
+
+      const webAnchor = env.doc.createElement('a');
+      webAnchor.setAttribute('href', 'https://example.com/a.js#L10');
+      webAnchor.textContent = 'https link';
+
+      const quotePill = env.doc.createElement('span');
+      quotePill.setAttribute('data-testid', 'quote-scope-pill');
+      quotePill.setAttribute('data-uri', 'file:///quote');
+      quotePill.textContent = '选中文本';
+
+      mdRoot.appendChild(fileAnchor);
+      mdRoot.appendChild(dirPill);
+      mdRoot.appendChild(noSlashRealDirPill);
+      mdRoot.appendChild(webAnchor);
+      mdRoot.appendChild(quotePill);
+      agentResp.appendChild(mdRoot);
+      viewport.appendChild(agentResp);
+      env.doc.body.appendChild(viewport);
+
+      // 侧栏与输入区排除校验
+      const composer = env.doc.createElement('div');
+      composer.className = 'surface-composer';
+      const composerPill = env.doc.createElement('button');
+      composerPill.setAttribute('data-uri', 'file:///tmp/in-composer.js');
+      composer.appendChild(composerPill);
+      env.doc.body.appendChild(composer);
+
+      const parsedWithLine = enhancer.extractChatLocalFileTarget(fileCode);
+      assert.equal(parsedWithLine.path, '/Users/me/My Docs/中文 100%done/demo#1.js');
+      assert.equal(parsedWithLine.folderPath, '/Users/me/My Docs/中文 100%done');
+      assert.equal(parsedWithLine.pathWithLine, '/Users/me/My Docs/中文 100%done/demo#1.js:123-145');
+      assert.equal(enhancer.extractChatLocalFileTarget(webAnchor), null, '普通 https 链接不应拦截');
+      assert.equal(enhancer.extractChatLocalFileTarget(quotePill), null, 'file:///quote 引用胶囊不应拦截');
+      assert.equal(enhancer.extractChatLocalFileTarget(composerPill), null, '输入区内的文件胶囊不应拦截');
+
+      // 触发右键菜单（靠近右下角边界以测试防溢出）
+      let prevented = false;
+      env.doc.dispatchEvent({
+        type: 'contextmenu',
+        target: fileCode,
+        clientX: 1272,
+        clientY: 794,
+        preventDefault() { prevented = true; },
+        stopPropagation() {},
+        stopImmediatePropagation() {}
+      });
+      assert.equal(prevented, true, '命中聊天区 file:// 链接应拦截默认右键菜单');
+
+      const menu = env.doc.getElementById('ag-file-link-context-menu');
+      assert.ok(menu && !menu.hidden, '应显示自定义右键菜单');
+      const menuLeft = parseInt(menu.style.left, 10);
+      const menuTop = parseInt(menu.style.top, 10);
+      assert.ok(menuLeft >= 10 && menuLeft < 1200, `菜单水平位置 (${menuLeft}) 应自动防溢出`);
+      assert.ok(menuTop >= 10 && menuTop < 750, `菜单垂直位置 (${menuTop}) 应自动防溢出`);
+
+      const itemLabels = menu.querySelectorAll('.ag-fctx-item').map((b) => b.getAttribute('data-fctx-action'));
+      assert.deepEqual(itemLabels, ['copy-path', 'copy-folder', 'copy-line-path', 'reveal-finder']);
+
+      // 切换英文界面时菜单文案同步切换
+      env.win.dispatchEvent({ type: 'ag-suite-prefs-changed', detail: { locale: 'en', hansCode: 'en', capsuleLang: 'en' } });
+      assert.equal(menu.querySelector('[data-fctx-action="copy-path"] .ag-fctx-item-label')?.textContent, 'Copy Path');
+      assert.equal(menu.querySelector('[data-fctx-action="copy-folder"] .ag-fctx-item-label')?.textContent, 'Copy Folder Path');
+      assert.equal(menu.querySelector('[data-fctx-action="copy-line-path"] .ag-fctx-item-label')?.textContent, 'Copy Path with Line');
+      assert.equal(menu.querySelector('[data-fctx-action="reveal-finder"] .ag-fctx-item-label')?.textContent, 'Reveal in Finder');
+
+      // 切回中文并验证 3 项复制 + Toast（含无快捷栏回退 Toast）
+      env.win.dispatchEvent({ type: 'ag-suite-prefs-changed', detail: { locale: 'zh-CN', hansCode: 'zh', capsuleLang: 'zh' } });
+      assert.equal(menu.querySelector('[data-fctx-action="copy-path"] .ag-fctx-item-label')?.textContent, '复制路径');
+
+      menu.querySelector('[data-fctx-action="copy-line-path"]').click();
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(copiedTexts.at(-1), '/Users/me/My Docs/中文 100%done/demo#1.js:123-145');
+      assert.equal(menu.hidden, true, '点击菜单项后应自动关闭');
+      const quickToast = env.doc.querySelector('#ag-quick-capsule-bar .ag-qcap-toast');
+      assert.ok(
+        quickToast && quickToast.getAttribute('data-visible') === 'true' && (quickToast.textContent || '').includes('已复制含行号路径'),
+        '快捷栏存在时应在快捷栏 Toast 槽位提示已复制含行号路径'
+      );
+
+      // 隐藏快捷栏后，应降级弹出独立浮动 Toast #ag-file-ctx-toast
+      env.win.dispatchEvent({ type: 'ag-suite-prefs-changed', detail: { featureFlags: { showQuickBar: false } } });
+      env.doc.dispatchEvent({
+        type: 'contextmenu',
+        target: fileAnchor,
+        clientX: 160,
+        clientY: 160,
+        preventDefault() {},
+        stopPropagation() {},
+        stopImmediatePropagation() {}
+      });
+      menu.querySelector('[data-fctx-action="copy-path"]').click();
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(copiedTexts.at(-1), '/Users/me/My Docs/中文 100%done/demo#1.js');
+      const fallbackToast = env.doc.getElementById('ag-file-ctx-toast');
+      assert.ok(fallbackToast && !fallbackToast.hidden && (fallbackToast.textContent || '').includes('已复制路径'), '无快捷栏时应弹出独立浮动 Toast 提示');
+
+      // 无行号目录胶囊：不应显示「复制含行号路径」，且复制所在文件夹直接复制目录本身
+      env.doc.dispatchEvent({
+        type: 'contextmenu',
+        target: dirPill,
+        clientX: 200,
+        clientY: 200,
+        preventDefault() {},
+        stopPropagation() {},
+        stopImmediatePropagation() {}
+      });
+      assert.equal(menu.querySelector('[data-fctx-action="copy-line-path"]'), null, '无行号时不应显示复制含行号路径');
+      menu.querySelector('[data-fctx-action="copy-folder"]').click();
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(copiedTexts.at(-1), '/Users/me/Github/extension-manager-mv3');
+
+      // 无结尾斜杠的真实存在目录，通过 /stat-local-path 自动识别为目录并直接复制自身
+      env.doc.dispatchEvent({
+        type: 'contextmenu',
+        target: noSlashRealDirPill,
+        clientX: 220,
+        clientY: 220,
+        preventDefault() {},
+        stopPropagation() {},
+        stopImmediatePropagation() {}
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      menu.querySelector('[data-fctx-action="copy-folder"]').click();
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(copiedTexts.at(-1), path.resolve(subDir));
+
+      // 验证滚动与 Esc、点击空白处均能自动关闭
+      env.doc.dispatchEvent({ type: 'contextmenu', target: fileAnchor, clientX: 100, clientY: 100, preventDefault() {}, stopPropagation() {} });
+      assert.equal(menu.hidden, false);
+      env.doc.dispatchEvent({ type: 'scroll', target: viewport });
+      assert.equal(menu.hidden, true, '滚动时应自动关闭右键菜单');
+
+      env.doc.dispatchEvent({ type: 'contextmenu', target: fileAnchor, clientX: 100, clientY: 100, preventDefault() {}, stopPropagation() {} });
+      assert.equal(menu.hidden, false);
+      env.doc.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+      assert.equal(menu.hidden, true, '按 Esc 时应自动关闭右键菜单');
+
+      env.doc.dispatchEvent({ type: 'contextmenu', target: fileAnchor, clientX: 100, clientY: 100, preventDefault() {}, stopPropagation() {} });
+      assert.equal(menu.hidden, false);
+      env.doc.dispatchEvent({ type: 'mousedown', target: env.doc.body });
+      assert.equal(menu.hidden, true, '点击空白处时应自动关闭右键菜单');
+
+      // 验证「在 Finder 中显示」dryRun 调用链路
+      const dryReveal = await enhancer.revealLocalPathInFinder(sampleFile, { dryRun: true });
+      assert.equal(dryReveal.ok, true);
+      assert.equal(dryReveal.path, path.resolve(sampleFile));
+    } finally {
+      enhancer?.dispose?.();
+      meterApi?.dispose?.();
+    }
+  } finally {
+    await bridge.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、SendAllQueuedMessages deprecated(error ID) 识别与逐条直发回退及 send 幂等防重', async () => {
   const remoteMod = require('../mobile-remote');
 
@@ -32889,4 +33171,418 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   const appHtml = remoteMod.buildMobileAppHtml();
   assert.ok(appHtml.includes('normQueueCmp(q?.text) === normTargetTxt'), '前端 sendInput 乐观排队去重必须对连续空白做归一化比较');
   assert.ok(appHtml.includes('sendableQueuedItems.length ? { queuedItems: sendableQueuedItems }'), '前端顶栏立即发送必须携带 queuedItems 以支持废弃接口逐条直发回退');
+});
+
+test('已配置 tailscaleCustomHost 或独立版未运行时跳过 tailscale CLI 且绝不调用 GUI 入口', async () => {
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const prevSkipProbes = process.env.AG_REMOTE_SKIP_PROBES;
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ts-skip-'));
+  process.env.AG_METER_STATE_DIR = tmpState;
+  delete process.env.AG_REMOTE_SKIP_PROBES;
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const mr = require('../mobile-remote.js');
+
+  try {
+    // 1. detectHostIdentityMeta 与 ensureTailscaleServeHttps 传入 tailscaleCustomHost / skipTailscaleCli 时 0 次调用 execFileSync
+    let syncExecCount = 0;
+    const countingExecSync = () => {
+      syncExecCount += 1;
+      return '{}';
+    };
+    const skippedByCustom = mr.detectHostIdentityMeta({
+      tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net',
+      execFileSync: countingExecSync
+    });
+    assert.equal(skippedByCustom.tailscaleDnsName, '');
+    assert.equal(skippedByCustom.tailscaleRunning, false);
+
+    const skippedByFlag = mr.detectHostIdentityMeta({
+      skipTailscaleCli: true,
+      execFileSync: countingExecSync
+    });
+    assert.equal(skippedByFlag.tailscaleDnsName, '');
+    assert.equal(skippedByFlag.tailscaleRunning, false);
+
+    const serveSkipRes = mr.ensureTailscaleServeHttps(18765, {
+      tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net',
+      execFileSync: countingExecSync
+    });
+    assert.deepEqual(serveSkipRes, { enabled: false, url: '', hint: '', createdByUs: false });
+    assert.equal(syncExecCount, 0, '配置了 tailscaleCustomHost 或 skipTailscaleCli 时 execFileSync 调用次数必须为 0');
+
+    // 2. probeClientPrivateReachability 在 config.tailscaleCustomHost 已配置时 0 次调用 execAsync
+    mr.clearPairedDevicesForTests();
+    let asyncExecCount = 0;
+    const hints = await mr.probeClientPrivateReachability(
+      {
+        url: '/api/probe-hints?force=1',
+        headers: { 'user-agent': 'Mozilla/5.0 (iPhone)', 'x-ag-device-id': 'dev-ts-skip-1' }
+      },
+      {
+        tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net',
+        enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false }
+      },
+      {
+        force: true,
+        skipProbes: false,
+        execAsync: async () => {
+          asyncExecCount += 1;
+          return { ok: true, stdout: '{}', stderr: '' };
+        }
+      }
+    );
+    assert.equal(asyncExecCount, 0, '配置了 tailscaleCustomHost 时 probeClientPrivateReachability 不得调用 tailscale CLI');
+    assert.equal(hints.tailscale, undefined);
+
+    // 3. resolveTailscaleCliCandidates 在 darwin 下绝不包含 GUI 入口且尊重运行态
+    assert.deepEqual(
+      mr.resolveTailscaleCliCandidates({ platform: 'darwin', hasCustomExec: false, isMacRunning: () => false }),
+      [],
+      'macOS 未运行独立版 Tailscale 时必须返回空候选列表'
+    );
+    const macRunningTwo = mr.resolveTailscaleCliCandidates({
+      platform: 'darwin',
+      hasCustomExec: false,
+      isMacRunning: () => true,
+      existsSync: (p) => p === '/opt/homebrew/bin/tailscale' || p === '/usr/local/bin/tailscale'
+    });
+    assert.deepEqual(macRunningTwo, ['/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']);
+    assert.equal(
+      macRunningTwo.some((p) => p.includes('/Applications/Tailscale.app/Contents/MacOS/Tailscale')),
+      false,
+      '严禁包含会唤醒菜单栏 GUI 图标的大写 Tailscale 主程序路径'
+    );
+    assert.deepEqual(
+      mr.resolveTailscaleCliCandidates({
+        platform: 'darwin',
+        hasCustomExec: false,
+        isMacRunning: () => true,
+        existsSync: () => false
+      }),
+      ['tailscale'],
+      '运行中但固定路径均不存在时回退为 tailscale'
+    );
+
+    // 4. 保存 tailscaleCustomHost 后 shouldSkipTailscaleCliProbe、collectFusedEndpointDescriptor 与 CORS 放行均正常工作，且清配置后恢复探测
+    const saved = mr.saveRemoteTunnelConfig({
+      enabledChannels: { lan: true, tailscale: true, bonjour: false, tunnel: false },
+      tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net'
+    });
+    assert.equal(mr.shouldSkipTailscaleCliProbe(), true, '磁盘已配置 tailscaleCustomHost 时应默认跳过独立版 CLI 探测');
+
+    let descExecCount = 0;
+    const desc = mr.collectFusedEndpointDescriptor(
+      18765,
+      null,
+      saved.enabledChannels,
+      {
+        readOnly: true,
+        tailscaleCustomHost: saved.tailscaleCustomHost,
+        execFileSync: () => {
+          descExecCount += 1;
+          return '{}';
+        },
+        addresses: {
+          tailscale: [],
+          lan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }],
+          physicalLan: [{ iface: 'en0', address: '192.168.50.10', kind: 'lan' }]
+        }
+      }
+    );
+    assert.equal(descExecCount, 0, 'collectFusedEndpointDescriptor 在已配置 tailscaleCustomHost 时不得调用 tailscale CLI');
+    assert.ok(desc.endpoints.some((e) => e.kind === 'tailscale' && e.url === 'http://my-mac.tailnet-demo.ts.net:18765'));
+
+    const corsHandler = mr.createRemoteHttpHandler({
+      enabled: true,
+      port: 18765,
+      token: saved.token,
+      tailscaleCustomHost: 'my-mac.tailnet-demo.ts.net',
+      enabledChannels: { lan: true, tailscale: true, bonjour: false, tunnel: false }
+    }, {
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's1', conversations: [] })
+    });
+    const corsHdrs = {};
+    await corsHandler(
+      {
+        method: 'OPTIONS',
+        url: '/api/ping',
+        headers: { host: '127.0.0.1:18765', origin: 'http://my-mac.tailnet-demo.ts.net:18765' },
+        socket: { remoteAddress: '127.0.0.1' }
+      },
+      {
+        setHeader(k, v) { corsHdrs[String(k).toLowerCase()] = v; },
+        getHeader(k) { return corsHdrs[String(k).toLowerCase()]; },
+        writeHead(_c, h = {}) { for (const [k, v] of Object.entries(h)) corsHdrs[String(k).toLowerCase()] = v; },
+        end() {}
+      }
+    );
+    assert.equal(corsHdrs['access-control-allow-origin'], 'http://my-mac.tailnet-demo.ts.net:18765');
+
+    // 清除 tailscaleCustomHost 后，saveRemoteTunnelConfig 应主动失效缓存并恢复探测策略
+    mr.saveRemoteTunnelConfig({ tailscaleCustomHost: '' });
+    assert.equal(mr.shouldSkipTailscaleCliProbe(), false, '清除 tailscaleCustomHost 后应恢复为允许探测');
+    let afterClearCount = 0;
+    const afterClearMeta = mr.detectHostIdentityMeta({
+      execFileSync: () => {
+        afterClearCount += 1;
+        return JSON.stringify({
+          BackendState: 'Running',
+          Self: { DNSName: 'restored-mac.tailnet-demo.ts.net.', HostName: 'restored-mac', Online: true },
+          CertDomains: ['restored-mac.tailnet-demo.ts.net']
+        });
+      }
+    });
+    assert.equal(afterClearCount, 1);
+    assert.equal(afterClearMeta.tailscaleDnsName, 'restored-mac.tailnet-demo.ts.net');
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    if (prevSkipProbes === undefined) delete process.env.AG_REMOTE_SKIP_PROBES;
+    else process.env.AG_REMOTE_SKIP_PROBES = prevSkipProbes;
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
+
+// =========================================================================
+// 长消息 / 长 Markdown / 长代码块折叠 + 移动端折叠联动与左侧对话点阵导览条
+// =========================================================================
+test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端三类折叠、手机端联动与点阵导览条验证', async () => {
+  // 1. 设置面板 #set-long-fold 位于分页 3，双向同步且派发 ag-suite-prefs-changed
+  const env = createDomEnv();
+  vm.runInContext(RENDERER_SRC, env.sandbox);
+  const sd = env.getShadow();
+  const chkLongFold = sd.getElementById('set-long-fold');
+  assert.ok(chkLongFold, '设置面板必须包含 #set-long-fold 开关');
+  assert.equal(chkLongFold.checked, true, '#set-long-fold 默认应开启');
+  const chatPane = sd.getElementById('settings-pane-chat');
+  assert.ok(chatPane?.contains(chkLongFold), '#set-long-fold 必须位于分页 3（对话与效率）内');
+
+  vm.runInContext(ENHANCER_SRC, env.sandbox);
+  const enhancer = env.sandbox.__AGEnhancer;
+  assert.equal(enhancer.getLongFold(), true, 'enhancer 默认应开启长内容折叠');
+
+  // 2. 构建桌面端对话视口：旧轮（长 markdown + 长代码块）+ 最新一轮（长 markdown + 短代码块 + 审批按钮）+ 已展开的长用户消息 + 原生未展开用户消息
+  const vp = env.doc.createElement('div');
+  vp.setAttribute('data-testid', 'autoscroll-viewport');
+  vp.getBoundingClientRect = () => ({ top: 0, left: 0, width: 900, height: 700, right: 900, bottom: 700 });
+  env.doc.body.appendChild(vp);
+
+  const oldTurn = env.doc.createElement('div');
+  oldTurn.setAttribute('data-testid', 'agent-response');
+  const oldMd = env.doc.createElement('div');
+  oldMd.setAttribute('data-markdown-root', 'true');
+  oldMd.scrollHeight = 760;
+  oldMd.textContent = Array.from({ length: 20 }, (_, i) => `旧轮长结论段落 ${i + 1}: 保留核心证据与验证结果。`).join('\n');
+  const oldPre = env.doc.createElement('pre');
+  oldPre.scrollHeight = 420;
+  oldPre.textContent = Array.from({ length: 24 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n');
+  oldMd.appendChild(oldPre);
+  oldTurn.appendChild(oldMd);
+  vp.appendChild(oldTurn);
+
+  const uExpanded = env.doc.createElement('div');
+  uExpanded.setAttribute('data-testid', 'user-message');
+  const uExpandedContent = env.doc.createElement('div');
+  uExpandedContent.setAttribute('data-testid', 'user-message-content');
+  uExpandedContent.className = 'relative p-0.5 cursor-pointer';
+  uExpandedContent.scrollHeight = 320;
+  uExpandedContent.textContent = Array.from({ length: 12 }, (_, i) => `用户已展开的长文本需求第 ${i + 1} 行内容`).join('\n');
+  uExpanded.appendChild(uExpandedContent);
+  vp.appendChild(uExpanded);
+
+  const uNativeCollapsed = env.doc.createElement('div');
+  uNativeCollapsed.setAttribute('data-testid', 'user-message');
+  const uNativeContent = env.doc.createElement('div');
+  uNativeContent.setAttribute('data-testid', 'user-message-content');
+  uNativeContent.className = 'relative p-0.5 max-h-[9em] overflow-hidden';
+  uNativeContent.scrollHeight = 360;
+  uNativeContent.textContent = Array.from({ length: 12 }, (_, i) => `原生 9em 已收起的长文本第 ${i + 1} 行`).join('\n');
+  uNativeCollapsed.appendChild(uNativeContent);
+  vp.appendChild(uNativeCollapsed);
+
+  const latestTurn = env.doc.createElement('div');
+  latestTurn.setAttribute('data-testid', 'agent-response');
+  const latestMd = env.doc.createElement('div');
+  latestMd.setAttribute('data-markdown-root', 'true');
+  latestMd.scrollHeight = 620;
+  latestMd.textContent = Array.from({ length: 18 }, (_, i) => `最新一轮详细说明第 ${i + 1} 行：默认保持展开且可手动收起。`).join('\n');
+  const latestPre = env.doc.createElement('pre');
+  latestPre.scrollHeight = 410;
+  latestPre.textContent = Array.from({ length: 22 }, (_, i) => `export const step${i + 1} = true;`).join('\n');
+  latestMd.appendChild(latestPre);
+  latestTurn.appendChild(latestMd);
+  vp.appendChild(latestTurn);
+
+  const mountedCount = enhancer.scanLongFoldables();
+  assert.equal(mountedCount, 5, '应挂载 2 个长代码块 + 2 个长 Markdown + 1 个已展开长用户消息（共 5 处，原生 9em 不干扰）');
+  assert.equal(oldPre.getAttribute('data-ag-fold-state'), 'collapsed', '非生成中的旧轮长代码块默认应折叠');
+  assert.equal(latestPre.getAttribute('data-ag-fold-state'), 'collapsed', '非生成中的最新一轮长代码块默认也应折叠');
+  assert.equal(oldMd.getAttribute('data-ag-fold-state'), 'collapsed', '旧轮长 Markdown 默认应折叠');
+  assert.equal(latestMd.getAttribute('data-ag-fold-state'), 'expanded', '最新一轮长 Markdown 默认应保持展开并带收起按钮');
+  assert.equal(uExpandedContent.getAttribute('data-ag-fold-state'), 'expanded', '已展开长用户消息应挂载收起按钮且保持展开');
+  assert.equal(uNativeContent.getAttribute('data-ag-fold-kind'), null, '宿主原生 max-h-[9em] 用户消息不得重复挂折叠栏');
+
+  // 点击旧轮代码块按钮展开，再点击用户消息按钮收起
+  const oldPreBar = oldPre.nextElementSibling;
+  assert.ok(oldPreBar?.classList?.contains('ag-fold-bar'), '折叠条应紧邻目标元素后方作为兄弟节点挂载');
+  const oldPreBtn = oldPreBar.querySelector('.ag-fold-btn');
+  assert.ok(oldPreBtn.textContent.includes('24 行'), '代码块折叠按钮应展示行数');
+  oldPreBtn.click();
+  assert.equal(oldPre.getAttribute('data-ag-fold-state'), 'expanded', '点击后应展开代码块');
+  assert.equal(oldPreBtn.getAttribute('aria-expanded'), 'true');
+
+  const uBtn = uExpandedContent.nextElementSibling.querySelector('.ag-fold-btn');
+  uBtn.click();
+  assert.equal(uExpandedContent.getAttribute('data-ag-fold-state'), 'collapsed', '点击用户消息收起按钮后应切换为 collapsed');
+
+  // 正在生成中的最新一轮长代码块不自动折叠
+  const cancelBtn = env.doc.createElement('button');
+  cancelBtn.setAttribute('data-testid', 'input-cancel-button');
+  cancelBtn.offsetWidth = 80;
+  cancelBtn.offsetHeight = 28;
+  env.doc.body.appendChild(cancelBtn);
+
+  const streamingTurn = env.doc.createElement('div');
+  streamingTurn.setAttribute('data-testid', 'agent-response');
+  const streamingMd = env.doc.createElement('div');
+  streamingMd.setAttribute('data-markdown-root', 'true');
+  streamingMd.scrollHeight = 520;
+  streamingMd.textContent = Array.from({ length: 16 }, (_, i) => `流式输出第 ${i + 1} 行`).join('\n');
+  const streamingPre = env.doc.createElement('pre');
+  streamingPre.scrollHeight = 380;
+  streamingPre.textContent = Array.from({ length: 20 }, (_, i) => `console.log(${i});`).join('\n');
+  streamingMd.appendChild(streamingPre);
+  streamingTurn.appendChild(streamingMd);
+  vp.appendChild(streamingTurn);
+
+  enhancer.scanLongFoldables();
+  assert.equal(streamingPre.getAttribute('data-ag-fold-state'), 'expanded', '生成中的最新一轮代码块不得自动折叠');
+  cancelBtn.remove();
+
+  // collectRecentMessages 与自动确认审批扫描不得被折叠按钮文案污染
+  const snapMsgs = enhancer.getMobileSnapshot().messages;
+  assert.ok(snapMsgs.every((m) => !String(m.text || '').includes('展开代码') && !String(m.text || '').includes('收起长回复') && !String(m.text || '').includes('收起消息')),
+    'collectRecentMessages 提取的正文不得混入折叠按钮文案');
+  assert.equal(enhancer.getMobileSnapshot().pendingApprovals.length, 0, '折叠按钮不得被误识别为待审批按钮');
+
+  // 关闭设置面板 #set-long-fold 应立即清空全部折叠并持久化
+  chkLongFold.checked = false;
+  chkLongFold.dispatchEvent({ type: 'change' });
+  assert.equal(enhancer.getLongFold(), false, '关闭开关后应同步停用长内容折叠');
+  assert.equal(env.doc.querySelectorAll('.ag-fold-bar').length, 0, '关闭开关后应移除全部折叠条');
+  assert.equal(env.doc.querySelectorAll('[data-ag-fold-kind]').length, 0, '关闭开关后应清除全部 data-ag-fold-kind 属性');
+  assert.equal(env.localStorage.getItem('ag_suite_long_fold'), 'false', 'ag_suite_long_fold 应持久化为 false');
+  assert.ok(env.postedSettings.some((p) => p.uiPreferences?.longFold === false), '应向宿主推送 uiPreferences.longFold = false');
+
+  enhancer.dispose?.();
+  env.sandbox.__AGContextMeter?.dispose?.();
+
+  // 3. 手机远程页（折叠开关联动 + 间距修复 + 左侧对话点阵导览条 + 客户端 JS 语法 + 版本门禁）
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-fold-sync-'));
+  process.env.AG_METER_STATE_DIR = tmpState;
+  delete require.cache[require.resolve('../meter-collector.js')];
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const mc = require('../meter-collector.js');
+  const mr = require('../mobile-remote.js');
+  try {
+    mc.savePluginSettings({ uiPreferences: { longFold: false } });
+    mr.clearRemoteUiPrefsCacheForTests();
+    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: false }, '应读取磁盘 uiPreferences.longFold = false');
+
+    const stateHandler = mr.createRemoteHttpHandler({
+      enabled: true,
+      port: 18765,
+      token: 'tok-fold-sync-test',
+      enabledChannels: { lan: true, tailscale: false, bonjour: false, tunnel: false }
+    }, {
+      fetchSnapshot: async () => ({ ok: true, sessionId: 's-fold-1', conversations: [], messages: [] })
+    });
+    let stateBody = '';
+    await stateHandler(
+      {
+        method: 'GET',
+        url: '/api/snapshot?token=tok-fold-sync-test',
+        headers: { host: '127.0.0.1:18765' },
+        socket: { remoteAddress: '127.0.0.1' }
+      },
+      {
+        setHeader() {},
+        getHeader() { return undefined; },
+        writeHead() {},
+        end(buf) { stateBody = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf || ''); }
+      }
+    );
+    const stateJson = JSON.parse(stateBody);
+    assert.equal(stateJson.longFold, false, '/api/snapshot 应随快照下发桌面同步的 longFold = false');
+
+    mc.savePluginSettings({ uiPreferences: { longFold: true } });
+    mr.clearRemoteUiPrefsCacheForTests();
+    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: true }, '开启开关并刷新缓存后应恢复 longFold = true');
+
+    const html = mr.buildMobileAppHtml();
+    const scripts = html.match(/<script>([\s\S]*?)<\/script>/g) || [];
+    assert.ok(scripts.length >= 1, '手机远程 HTML 应包含内联脚本');
+    const clientJs = scripts[scripts.length - 1].replace(/^<script>|<\/script>$/g, '');
+    assert.doesNotThrow(() => new Function(clientJs), '手机远程前端脚本不得存在任何语法错误');
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('../meter-collector.js')];
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+
+  const mrSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const pulseSrc = fs.readFileSync(path.join(ROOT, 'pulse-capsule-overlay.js'), 'utf8');
+  assert.equal(pkg.version, '0.8.5', 'package.json 版本必须保持 0.8.5 不变');
+  assert.ok(mrSrc.includes("MOBILE_UI_VERSION = '2.1.0'"), 'MOBILE_UI_VERSION 必须保持 2.1.0 不变');
+  assert.ok(pulseSrc.includes("CAPSULE_VERSION = '1.6.5'"), 'pulse-capsule-overlay 版本应与最新 CAPSULE_VERSION 1.6.5 一致');
+
+  assert.ok(mrSrc.includes('applyMobileLongFolds(snap)') && mrSrc.includes('foldStateMap.clear()'),
+    'mobile-remote.js 应包含 applyMobileLongFolds 与切会话清空 foldStateMap 逻辑');
+  assert.ok(mrSrc.includes('applyRemoteLongFoldPref(snap)') && mrSrc.includes('clearMobileLongFolds()'),
+    'mobile-remote.js 应包含桌面开关实时同步与清空折叠逻辑');
+  assert.ok(mrSrc.includes('.messages>.fold-bar.is-user{margin:-10px 0 2px;align-self:flex-end}'),
+    'mobile-remote.js 应修正用户长消息折叠条上边距避免过大留白');
+  assert.ok(
+    mrSrc.includes('id="msg-rail"') &&
+    mrSrc.includes('id="msg-rail-tip"') &&
+    mrSrc.includes('renderMessageRail()') &&
+    mrSrc.includes('updateMessageRailActive(') &&
+    mrSrc.includes('scrollToRailMessage(') &&
+    mrSrc.includes('#msg-rail'),
+    'mobile-remote.js 应包含左侧对话点阵导览条、气泡预览、同步高亮、点击与触摸拖拽跳转及左滑抽屉排重'
+  );
+
+  // 4. 三方合并加固门禁与 5 语种 README 融合检查
+  assert.ok(
+    mrSrc.includes("!$('file-viewer-backdrop').hidden"),
+    'mobile-remote.js 全局左滑抽屉应阻断 file-viewer-backdrop 与 .fv-ws-bar'
+  );
+  assert.ok(mrSrc.includes('.fv-ws-bar') && mrSrc.includes('writeRes?.ok !== false'),
+    'mobile-remote.js 应排除 .fv-ws-bar 误滑并校验 persistCatalogStore 写盘成功再更新 lastSig');
+
+  const collectorSrc = fs.readFileSync(path.join(ROOT, 'meter-collector.js'), 'utf8');
+  assert.ok(collectorSrc.includes('inspectStepsBySig') && collectorSrc.includes('gmSigMatch.count >= 2'),
+    'meter-collector.js 必须区分未索引 GM 0 次命中与重复签名命中，防止最新轮精确用量误回退旧步骤');
+
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'main.js'), 'utf8');
+  assert.ok(mainSrc.includes('matchedRow.stepIndex ?? matchedRow.step_index') && mainSrc.includes('scanBehindCur'),
+    'src/renderer/main.js 应兼容单值 stepIndex 并阻断旧步 scan 覆盖');
+
+  for (const [docPath, tokens] of [
+    [path.join(ROOT, 'README.md'), ['右键复制文件路径', '长消息与代码块折叠']],
+    [path.join(ROOT, 'docs', 'README.en.md'), ['right-click context menu', 'long message & code block folding']],
+    [path.join(ROOT, 'docs', 'README.ja.md'), ['右クリックメニュー', '長文＆コードブロック折りたたみ']],
+    [path.join(ROOT, 'docs', 'README.ko.md'), ['우클릭 메뉴', '긴 메시지·코드 블록 접기']],
+    [path.join(ROOT, 'docs', 'README.es.md'), ['menú contextual con clic derecho', 'plegado de mensajes largos y código']]
+  ]) {
+    const docText = fs.readFileSync(docPath, 'utf8');
+    for (const tok of tokens) {
+      assert.ok(docText.includes(tok), `${path.basename(docPath)} 应同时保留 "${tok}"`);
+    }
+  }
 });

@@ -4631,6 +4631,13 @@
               </div>
               <input id="set-auto-compact" type="checkbox" class="settings-checkbox" checked />
             </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">长消息与代码块折叠</span>
+                <span class="settings-pref-desc">超长代码块与历史长回复自动折叠（保留开头摘要，生成中与最新回复保持展开），支持随时一键展开或收起</span>
+              </div>
+              <input id="set-long-fold" type="checkbox" class="settings-checkbox" checked />
+            </label>
           </div>
         </div>
       </div>
@@ -5249,6 +5256,7 @@
     const defaultTotal = getDefaultSlotColor('tokenTotal');
     const effAccent = getEffectiveSlotColor('tokenAccent');
     const rgb = hexToRgb(effAccent) || { r: 167, g: 139, b: 250 };
+    const panelBg = normalizeHex(customColors.panelBg) || getHostZeroLevelBg(isLight);
     const accentVars = {
       '--ag-effective-accent': effAccent,
       '--ag-token-accent-default': defaultAccent,
@@ -5259,14 +5267,27 @@
       '--ag-accent-border-hover': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.48 : 0.56})`,
       '--ag-accent-glow': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${isLight ? 0.32 : 0.44})`
     };
+    const surfaceVars = {
+      '--ag-bg-panel': panelBg,
+      '--ag-border-panel': isLight ? 'rgba(0, 0, 0, 0.12)' : 'rgba(255, 255, 255, 0.11)',
+      '--ag-shadow-panel': isLight
+        ? '0 14px 36px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06)'
+        : '0 16px 40px rgba(0, 0, 0, 0.58), 0 2px 10px rgba(0, 0, 0, 0.32)',
+      '--ag-bg-card': isLight ? 'rgba(0, 0, 0, 0.02)' : 'rgba(255, 255, 255, 0.025)',
+      '--ag-bg-card-hover': isLight ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.045)',
+      '--ag-border-card': isLight ? 'rgba(0, 0, 0, 0.10)' : 'rgba(255, 255, 255, 0.09)',
+      '--ag-text-primary': isLight ? '#18181b' : '#ececef',
+      '--ag-text-secondary': isLight ? '#3f3f46' : '#c8c8d0',
+      '--ag-text-muted': isLight ? '#52525b' : '#a1a1aa'
+    };
     for (const [k, v] of Object.entries(accentVars)) {
       host.style.setProperty(k, v);
     }
-    // 镜像写入宿主根节点，供 Shadow DOM 外部的浮层与底部胶囊继承当前主题强调色
+    // 镜像写入宿主根节点，供 Shadow DOM 外部的浮层、菜单与底部胶囊继承当前主题表面色与强调色
     try {
       const rootStyle = typeof document !== 'undefined' ? document.documentElement?.style : null;
       if (rootStyle && typeof rootStyle.setProperty === 'function') {
-        for (const [k, v] of Object.entries(accentVars)) {
+        for (const [k, v] of Object.entries({ ...accentVars, ...surfaceVars })) {
           rootStyle.setProperty(k, v);
         }
       }
@@ -12274,9 +12295,18 @@ function positionHeatPopover(anchorX, anchorY) {
         } catch {}
         const matchedRow = latestIdx >= 0 ? rows[latestIdx] : null;
         let matchedMaxStepIdx = -1;
-        if (Array.isArray(matchedRow?.stepIndices) && matchedRow.stepIndices.length > 0) {
-          matchedMaxStepIdx = Math.max(...matchedRow.stepIndices.map(Number).filter(Number.isFinite));
-          if (matchedMaxStepIdx >= 0) latestVal.stepCount = matchedMaxStepIdx + 1;
+        const rawStepCandidates = Array.isArray(matchedRow?.stepIndices) && matchedRow.stepIndices.length > 0
+          ? matchedRow.stepIndices
+          : ((matchedRow?.stepIndex != null && matchedRow.stepIndex !== '') || (matchedRow?.step_index != null && matchedRow.step_index !== '')
+            ? [matchedRow.stepIndex ?? matchedRow.step_index]
+            : []);
+        const validMatchedSteps = rawStepCandidates
+          .filter((v) => v !== null && v !== '' && typeof v !== 'boolean')
+          .map(Number)
+          .filter((n) => Number.isFinite(n) && n >= 0);
+        if (validMatchedSteps.length > 0) {
+          matchedMaxStepIdx = Math.max(...validMatchedSteps);
+          latestVal.stepCount = matchedMaxStepIdx + 1;
         }
         latestVal.speedStepIndex = latestVal.speed ? matchedMaxStepIdx : -1;
         latestVal.speedCreatedAtMs = 0;
@@ -12297,6 +12327,7 @@ function positionHeatPopover(anchorX, anchorY) {
         const sameScannedUnindexed = matchedMaxStepIdx < 0 && state.scanGeneratorCount >= 0 && state.count <= state.scanGeneratorCount && Number(state.latest?.stepCount) > 0;
         const rowBehindKnownStep = (knownExact >= 0 && (matchedMaxStepIdx < 0 || matchedMaxStepIdx < knownExact || rowHasTrailingScanSteps)) || sameScannedUnindexed;
         const rowPredatesFloorCp = Boolean(pf && pf.route === id && matchedMaxStepIdx >= 0 && pf.lastCheckpointStepIdx >= 0 && matchedMaxStepIdx <= pf.lastCheckpointStepIdx);
+        let adoptedLatest = false;
         if (rowBehindKnownStep) {
           if (pf && pf.route === id && state.count > pf.generatorCount) pf.generatorCount = state.count;
           if (pf && pf.route === id && pf.latest && pfExact >= curExact) state.latest = pf.latest;
@@ -12306,9 +12337,13 @@ function positionHeatPopover(anchorX, anchorY) {
         } else {
           if (pf && (rowProvenAfterCp || state.count > pf.generatorCount)) state.postCompactFloor = null;
           state.latest = latestVal;
+          adoptedLatest = true;
         }
+        if (adoptedLatest) state.requestAt = Date.now();
+      } else {
+        state.requestAt = Date.now();
       }
-      state.requestAt = Date.now(); state.requestError = '';
+      state.requestError = '';
     } catch (e) {
       if (generation === state.generation && !state.disposed && !(state.requestAt > startedAt && state.latest)) {
         state.requestError = e.name === 'AbortError' ? '读取超时' : e.message;
@@ -12343,13 +12378,15 @@ function positionHeatPopover(anchorX, anchorY) {
         scanLat?.compressionDetected && scanCp >= 0 && curExact > scanCp &&
         (scanExact < 0 || curExact > scanExact || (curExact === scanExact && !state.latest?.compressionDetected))
       );
+      const scanBehindCur = scanExact >= 0 && curExact >= 0 && scanExact < curExact;
+      const scanBlockedByFloor = Boolean(state.postCompactFloor && state.postCompactFloor.route === id && state.postCompactFloor.lastCheckpointStepIdx >= 0 && scanExact < 0 && !scanLat?.compressionDetected);
       if (!staleCompactScan && scanLat?.compressionDetected && scanLat?.postCompactAtGeneratorCount != null) {
         state.scanGeneratorCount = Number.isFinite(genCount) ? Math.max(genCount, state.count) : state.count;
         state.postCompactFloor = { route: id, generatorCount: scanLat.postCompactAtGeneratorCount, lastCheckpointStepIdx: scanCp, latest: scanLat };
         state.latest = scanLat;
         state.requestAt = result.data.scannedAt || Date.now();
         state.requestError = '';
-      } else if (!staleCompactScan && scanLat && (scanExact > curExact || result.data.scannedAt >= state.requestAt)) {
+      } else if (!staleCompactScan && !scanBehindCur && !scanBlockedByFloor && scanLat && (scanExact > curExact || result.data.scannedAt >= state.requestAt)) {
         state.scanGeneratorCount = Number.isFinite(genCount) ? Math.max(genCount, state.count) : state.count;
         if (state.postCompactFloor && state.postCompactFloor.route === id && scanExact > state.postCompactFloor.lastCheckpointStepIdx) state.postCompactFloor = null;
         state.latest = scanLat;
@@ -12775,6 +12812,8 @@ function positionHeatPopover(anchorX, anchorY) {
     '例如：my-server 或 SSH 主机名': 'e.g. my-server or SSH host',
     '240K 自动压缩防卡顿': '240K Auto-Compact Anti-Stall',
     '官方默认满 512K 才整理，对话过长后稍作停顿就容易卡顿数分钟。开启后，上下文满 240K 或发生缓存失效时，会在回复结束且输入框为空时自动发送 /compact 压缩历史': 'Official default waits until 512K to organize context, risking multi-minute stalls after pauses. Auto-sends /compact after replies when context reaches 240K or cache drops',
+    '长消息与代码块折叠': 'Fold Long Messages & Code Blocks',
+    '超长代码块与历史长回复自动折叠（保留开头摘要，生成中与最新回复保持展开），支持随时一键展开或收起': 'Auto-fold long code blocks and older long replies (keeping leading preview; streaming and latest reply stay expanded) with one-click toggle',
     '重置配对口令': 'Reset Pairing Passcode',
     '重新生成配对口令，旧链接与已配对设备将失效': 'Regenerate pairing passcode (invalidates old links & paired devices)',
     '默认已开启免登录公网通道，点顶部「远程」图标即可用手机扫码连接。如需绑定自己的固定域名，可在下方展开配置。': 'Zero-login public tunnel is enabled by default — click the topbar Remote icon to scan QR and connect. Expand below to bind a custom fixed domain.',
@@ -12888,6 +12927,7 @@ function positionHeatPopover(anchorX, anchorY) {
     autoAccept: false,
     ghostSuggest: true,
     autoCompact: true,
+    longFold: true,
     quickBuiltinAutoSend: false,
     dockBadgeEnabled: true,
     dockBadgeStyle: 'capsule',
@@ -13552,6 +13592,8 @@ function positionHeatPopover(anchorX, anchorY) {
     if (lsGhost === 'true' || lsGhost === 'false') suiteEnhancerPrefs.ghostSuggest = lsGhost !== 'false';
     const lsAutoCompact = localStorage?.getItem?.('ag_suite_auto_compact');
     if (lsAutoCompact === 'true' || lsAutoCompact === 'false') suiteEnhancerPrefs.autoCompact = lsAutoCompact !== 'false';
+    const lsLongFold = localStorage?.getItem?.('ag_suite_long_fold');
+    if (lsLongFold === 'true' || lsLongFold === 'false') suiteEnhancerPrefs.longFold = lsLongFold !== 'false';
     const lsQuickAutoSend = localStorage?.getItem?.('ag_suite_quick_builtin_autosend');
     if (lsQuickAutoSend === 'true' || lsQuickAutoSend === 'false') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = lsQuickAutoSend === 'true';
@@ -13743,6 +13785,7 @@ function positionHeatPopover(anchorX, anchorY) {
       localStorage?.setItem?.('ag_suite_auto_accept', suiteEnhancerPrefs.autoAccept ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_ghost_suggest', suiteEnhancerPrefs.ghostSuggest ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_auto_compact', suiteEnhancerPrefs.autoCompact !== false ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_long_fold', suiteEnhancerPrefs.longFold !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_quick_builtin_autosend', suiteEnhancerPrefs.quickBuiltinAutoSend ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_dock_badge_enabled', suiteEnhancerPrefs.dockBadgeEnabled !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_dock_badge_style', suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule');
@@ -13772,6 +13815,7 @@ function positionHeatPopover(anchorX, anchorY) {
             autoAccept: suiteEnhancerPrefs.autoAccept,
             ghostSuggest: suiteEnhancerPrefs.ghostSuggest,
             autoCompact: suiteEnhancerPrefs.autoCompact !== false,
+            longFold: suiteEnhancerPrefs.longFold !== false,
             quickBuiltinAutoSend: Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend),
             dockBadgeEnabled: suiteEnhancerPrefs.dockBadgeEnabled !== false,
             dockBadgeStyle: suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule',
@@ -14425,11 +14469,13 @@ function positionHeatPopover(anchorX, anchorY) {
     const chkAuto = el('set-auto-accept');
     const chkGhost = el('set-ghost-suggest');
     const chkCompact = el('set-auto-compact');
+    const chkLongFold = el('set-long-fold');
     const chkQuickBuiltinAutoSend = el('set-quick-builtin-autosend');
     const chkEngLbl = el('set-english-labels');
     if (chkAuto) chkAuto.checked = Boolean(suiteEnhancerPrefs.autoAccept);
     if (chkGhost) chkGhost.checked = Boolean(suiteEnhancerPrefs.ghostSuggest);
     if (chkCompact) chkCompact.checked = suiteEnhancerPrefs.autoCompact !== false;
+    if (chkLongFold) chkLongFold.checked = suiteEnhancerPrefs.longFold !== false;
     if (chkQuickBuiltinAutoSend) chkQuickBuiltinAutoSend.checked = Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend);
     if (chkEngLbl) chkEngLbl.checked = Boolean(suiteEnhancerPrefs.englishLabels);
     try {
@@ -14761,6 +14807,9 @@ function positionHeatPopover(anchorX, anchorY) {
     }
     if (typeof uiPrefs.autoCompact === 'boolean') {
       suiteEnhancerPrefs.autoCompact = uiPrefs.autoCompact;
+    }
+    if (typeof uiPrefs.longFold === 'boolean') {
+      suiteEnhancerPrefs.longFold = uiPrefs.longFold;
     }
     if (typeof uiPrefs.quickBuiltinAutoSend === 'boolean') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = uiPrefs.quickBuiltinAutoSend;
@@ -16479,6 +16528,12 @@ function positionHeatPopover(anchorX, anchorY) {
     suiteEnhancerPrefs.autoCompact = Boolean(e?.target?.checked);
     dispatchSuitePrefsChanged();
     void saveSuiteUiPrefs({ autoCompact: suiteEnhancerPrefs.autoCompact });
+  });
+
+  el('set-long-fold')?.addEventListener('change', e => {
+    suiteEnhancerPrefs.longFold = Boolean(e?.target?.checked);
+    dispatchSuitePrefsChanged();
+    void saveSuiteUiPrefs({ longFold: suiteEnhancerPrefs.longFold });
   });
 
   el('set-quick-builtin-autosend')?.addEventListener('change', e => {
