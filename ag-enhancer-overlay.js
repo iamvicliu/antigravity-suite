@@ -20,6 +20,8 @@
   const CHAT_NAV_ID = 'ag-chat-nav-float';
   const FILE_EDITOR_CONTROLS_ID = 'ag-file-editor-controls';
   const FILE_EDITOR_WRAP_ID = 'ag-inline-file-editor-wrap';
+  const FILE_CTX_MENU_ID = 'ag-file-link-context-menu';
+  const FILE_CTX_TOAST_ID = 'ag-file-ctx-toast';
   const NEXT_STEP_GHOST_ID = 'ag-next-step-ghost';
   const NEXT_STEP_TOOLTIP_ID = 'ag-next-step-tooltip';
   const QUICK_BAR_TOOLTIP_ID = 'ag-quickbar-tooltip';
@@ -97,6 +99,9 @@
   let autoAcceptEnabled = false;
   let ghostSuggestEnabled = true;
   let autoCompactEnabled = true;
+  let longFoldEnabled = true;
+  const foldUserStateMap = new WeakMap();
+  const foldNaturalHeightMap = new WeakMap();
   let quickBuiltinAutoSendEnabled = false;
   let quickAutoSendInFlight = false;
   let quickAutoSendLockUntil = 0;
@@ -471,6 +476,16 @@
         const rawCompact = localStorage.getItem('ag_suite_auto_compact');
         if (rawCompact === 'true' || rawCompact === 'false') {
           autoCompactEnabled = rawCompact !== 'false';
+        }
+      }
+    } catch {}
+    try {
+      if (detail && typeof detail.longFold === 'boolean') {
+        longFoldEnabled = detail.longFold;
+      } else if (typeof localStorage !== 'undefined') {
+        const rawFold = localStorage.getItem('ag_suite_long_fold');
+        if (rawFold === 'true' || rawFold === 'false') {
+          longFoldEnabled = rawFold !== 'false';
         }
       }
     } catch {}
@@ -3682,10 +3697,278 @@
           background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
           color: var(--ag-effective-accent, #7c3aed);
         }
+        [data-ag-fold-state="collapsed"] {
+          position: relative !important;
+          overflow: hidden !important;
+        }
+        [data-ag-fold-kind="code"][data-ag-fold-state="collapsed"] {
+          max-height: 220px !important;
+        }
+        [data-ag-fold-kind="markdown"][data-ag-fold-state="collapsed"] {
+          max-height: 280px !important;
+        }
+        [data-ag-fold-kind="user"][data-ag-fold-state="collapsed"] {
+          max-height: 150px !important;
+        }
+        [data-ag-fold-state="collapsed"]::after {
+          content: '';
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          height: 52px;
+          pointer-events: none;
+          z-index: 2;
+          background: linear-gradient(to bottom, rgba(24, 24, 27, 0), rgba(24, 24, 27, 0.92));
+        }
+        [data-ag-fold-theme="light"][data-ag-fold-state="collapsed"]::after {
+          background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.94));
+        }
+        .ag-fold-bar {
+          display: flex;
+          align-items: center;
+          justify-content: flex-start;
+          gap: 8px;
+          margin: 4px 0 8px;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+        .ag-fold-bar[data-ag-fold-for="user"] {
+          justify-content: flex-end;
+          margin: 2px 0 6px;
+        }
+        .ag-fold-bar .ag-fold-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          height: 24px;
+          padding: 0 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 500;
+          line-height: 1;
+          cursor: pointer;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(255, 255, 255, 0.06);
+          color: rgba(244, 244, 245, 0.88);
+          transition: background-color 0.16s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.16s cubic-bezier(0.22, 1, 0.36, 1), color 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .ag-fold-bar .ag-fold-btn:hover {
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+          border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          color: var(--ag-effective-accent, #a78bfa);
+        }
+        .ag-fold-bar .ag-fold-btn:focus-visible {
+          outline: 2px solid var(--ag-effective-accent, #a78bfa);
+          outline-offset: 2px;
+        }
+        .ag-fold-bar[data-ag-theme="light"] .ag-fold-btn {
+          border-color: rgba(0, 0, 0, 0.12);
+          background: rgba(0, 0, 0, 0.045);
+          color: rgba(24, 24, 27, 0.84);
+        }
+        .ag-fold-bar[data-ag-theme="light"] .ag-fold-btn:hover {
+          background: var(--ag-accent-bg, rgba(124, 58, 237, 0.1));
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          color: var(--ag-effective-accent, #7c3aed);
+        }
+        .ag-fold-bar[data-ag-theme="light"] .ag-fold-btn:focus-visible {
+          outline-color: var(--ag-effective-accent, #7c3aed);
+        }
+        #${FILE_CTX_MENU_ID} {
+          position: fixed;
+          z-index: 2147483647;
+          min-width: 224px;
+          max-width: min(320px, calc(100vw - 20px));
+          box-sizing: border-box;
+          padding: 5px;
+          border-radius: 10px;
+          border: 1px solid var(--ag-border-card, rgba(255, 255, 255, 0.09));
+          background: linear-gradient(var(--ag-bg-card, rgba(255, 255, 255, 0.025)), var(--ag-bg-card, rgba(255, 255, 255, 0.025))), var(--ag-bg-panel, #18181b);
+          color: var(--ag-text-primary, #ececef);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), var(--ag-shadow-panel, 0 16px 40px rgba(0, 0, 0, 0.58));
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+          font-size: 12.5px;
+          line-height: 1.35;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+        #${FILE_CTX_MENU_ID}[hidden] {
+          display: none !important;
+        }
+        #${FILE_CTX_MENU_ID}:not([hidden]) {
+          animation: ag-pop-in 0.12s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] {
+          border-color: var(--ag-border-card, rgba(0, 0, 0, 0.10));
+          background: linear-gradient(var(--ag-bg-card, rgba(0, 0, 0, 0.02)), var(--ag-bg-card, rgba(0, 0, 0, 0.02))), var(--ag-bg-panel, #ffffff);
+          color: var(--ag-text-primary, #18181b);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85), var(--ag-shadow-panel, 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06));
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-header {
+          padding: 5px 8px 6px;
+          margin-bottom: 4px;
+          border-bottom: 1px solid var(--ag-border-card, rgba(255, 255, 255, 0.09));
+          min-width: 0;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-header {
+          border-bottom-color: var(--ag-border-card, rgba(0, 0, 0, 0.10));
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-name {
+          font-size: 11.5px;
+          font-weight: 600;
+          color: var(--ag-text-primary, #ececef);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-name {
+          color: var(--ag-text-primary, #18181b);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-path-preview {
+          font-size: 10.5px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          color: var(--ag-text-muted, #a1a1aa);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          margin-top: 1px;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-path-preview {
+          color: var(--ag-text-muted, #52525b);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-list {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          width: 100%;
+          box-sizing: border-box;
+          padding: 6px 8px;
+          border: 1px solid transparent;
+          border-radius: 7px;
+          background: transparent;
+          color: var(--ag-text-primary, #ececef);
+          font-size: 12.5px;
+          font-weight: 500;
+          line-height: 1.3;
+          text-align: left;
+          cursor: pointer;
+          transition: background-color 0.12s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.12s cubic-bezier(0.22, 1, 0.36, 1), color 0.12s cubic-bezier(0.22, 1, 0.36, 1), transform 0.1s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-item {
+          color: var(--ag-text-primary, #18181b);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item:hover,
+        #${FILE_CTX_MENU_ID} .ag-fctx-item:focus-visible {
+          background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+          border-color: var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          color: var(--ag-effective-accent, #a78bfa);
+          outline: none;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-item:hover,
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-item:focus-visible {
+          background: var(--ag-accent-bg, rgba(124, 58, 237, 0.10));
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          color: var(--ag-effective-accent, #7c3aed);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item:active {
+          transform: scale(0.985) translateY(0.5px);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item-left {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          min-width: 0;
+          flex: 1 1 auto;
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-item-label {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 14px;
+          height: 14px;
+          flex-shrink: 0;
+          color: var(--ag-effective-accent, #a78bfa);
+          opacity: 0.92;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-icon {
+          color: var(--ag-effective-accent, #7c3aed);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-hint {
+          font-size: 11px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          color: var(--ag-text-muted, #a1a1aa);
+          flex-shrink: 0;
+          white-space: nowrap;
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-hint {
+          color: var(--ag-text-muted, #52525b);
+        }
+        #${FILE_CTX_MENU_ID} .ag-fctx-sep {
+          height: 1px;
+          margin: 4px 6px;
+          background: var(--ag-border-card, rgba(255, 255, 255, 0.09));
+        }
+        #${FILE_CTX_MENU_ID}[data-ag-theme="light"] .ag-fctx-sep {
+          background: var(--ag-border-card, rgba(0, 0, 0, 0.10));
+        }
+        #${FILE_CTX_TOAST_ID} {
+          position: fixed;
+          left: 50%;
+          bottom: 68px;
+          transform: translateX(-50%);
+          z-index: 2147483647;
+          max-width: min(480px, calc(100vw - 32px));
+          padding: 7px 14px;
+          border-radius: 999px;
+          border: 1px solid var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+          background: linear-gradient(var(--ag-bg-card, rgba(255, 255, 255, 0.025)), var(--ag-bg-card, rgba(255, 255, 255, 0.025))), var(--ag-bg-panel, #18181b);
+          color: var(--ag-effective-accent, #a78bfa);
+          box-shadow: var(--ag-shadow-panel, 0 12px 28px rgba(0, 0, 0, 0.45));
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+          font-size: 12px;
+          font-weight: 500;
+          line-height: 1.35;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          pointer-events: none;
+        }
+        #${FILE_CTX_TOAST_ID}[hidden] {
+          display: none !important;
+        }
+        #${FILE_CTX_TOAST_ID}[data-ag-theme="light"] {
+          border-color: var(--ag-accent-border, rgba(124, 58, 237, 0.28));
+          background: linear-gradient(var(--ag-bg-card, rgba(0, 0, 0, 0.02)), var(--ag-bg-card, rgba(0, 0, 0, 0.02))), var(--ag-bg-panel, #ffffff);
+          color: var(--ag-effective-accent, #7c3aed);
+          box-shadow: var(--ag-shadow-panel, 0 10px 26px rgba(0, 0, 0, 0.12));
+        }
+        #${FILE_CTX_TOAST_ID}[data-tone="error"] {
+          border-color: rgba(239, 68, 68, 0.45);
+          color: #f87171;
+        }
+        #${FILE_CTX_TOAST_ID}[data-ag-theme="light"][data-tone="error"] {
+          border-color: rgba(220, 38, 38, 0.36);
+          color: #dc2626;
+        }
         @supports (corner-shape: superellipse(1.25)) {
           #${CHAT_NAV_ID},
           #${NEXT_STEP_TOOLTIP_ID},
-          #${QUICK_BAR_TOOLTIP_ID} {
+          #${QUICK_BAR_TOOLTIP_ID},
+          #${FILE_CTX_MENU_ID} {
             corner-shape: superellipse(1.25);
           }
         }
@@ -3696,11 +3979,14 @@
           #${CHAT_NAV_ID} .ag-nav-btn,
           #${CHAT_NAV_ID} .ag-nav-icon,
           #${FILE_EDITOR_CONTROLS_ID} .ag-fedit-btn,
+          #${FILE_CTX_MENU_ID},
+          #${FILE_CTX_MENU_ID} .ag-fctx-item,
           #${NEXT_STEP_TOOLTIP_ID},
           #${QUICK_BAR_TOOLTIP_ID},
           #${PROMPT_OPT_WRAP_ID} .ag-prompt-opt-btn,
           #${PROMPT_OPT_WRAP_ID} .ag-prompt-undo-btn,
-          #${PROMPT_OPT_WRAP_ID} .ag-opt-spin {
+          #${PROMPT_OPT_WRAP_ID} .ag-opt-spin,
+          .ag-fold-bar .ag-fold-btn {
             animation: none !important;
             transition: none !important;
             transform: none !important;
@@ -4313,6 +4599,223 @@
     return markedCount;
   }
 
+  function clearSingleLongFold(targetEl) {
+    if (!targetEl) return;
+    targetEl.removeAttribute?.('data-ag-fold-kind');
+    targetEl.removeAttribute?.('data-ag-fold-state');
+    targetEl.removeAttribute?.('data-ag-fold-theme');
+    const next = targetEl.nextElementSibling;
+    if (next?.getAttribute?.('data-ag-fold-ui') === '1' || next?.classList?.contains?.('ag-fold-bar')) {
+      safeRemove(next);
+    }
+  }
+
+  function clearAllLongFolds() {
+    document.querySelectorAll('.ag-fold-bar[data-ag-fold-ui="1"], [data-ag-fold-ui="1"]').forEach(safeRemove);
+    document.querySelectorAll('[data-ag-fold-kind], [data-ag-fold-state], [data-ag-fold-theme]').forEach((el) => {
+      el.removeAttribute('data-ag-fold-kind');
+      el.removeAttribute('data-ag-fold-state');
+      el.removeAttribute('data-ag-fold-theme');
+    });
+  }
+
+  function formatLongFoldBtnLabel(kind, isCollapsed, lineCount) {
+    if (kind === 'code') {
+      if (isCollapsed) {
+        return lineCount > 1
+          ? tr(`▸ 展开代码（共 ${lineCount} 行）`, `▸ Expand code (${lineCount} lines)`)
+          : tr('▸ 展开代码', '▸ Expand code');
+      }
+      return lineCount > 1
+        ? tr(`▾ 收起代码（共 ${lineCount} 行）`, `▾ Collapse code (${lineCount} lines)`)
+        : tr('▾ 收起代码', '▾ Collapse code');
+    }
+    if (kind === 'user') {
+      return isCollapsed
+        ? tr('▸ 展开消息', '▸ Expand message')
+        : tr('▾ 收起消息', '▾ Collapse message');
+    }
+    return isCollapsed
+      ? tr('▸ 展开全文', '▸ Expand full reply')
+      : tr('▾ 收起长回复', '▾ Collapse reply');
+  }
+
+  function measureFoldableMetrics(el) {
+    if (!el) return { height: 0, textLen: 0, lineCount: 0 };
+    const isCollapsed = el.getAttribute?.('data-ag-fold-state') === 'collapsed';
+    const rectH = Number(el.getBoundingClientRect?.().height || 0);
+    const scrollH = Number(el.scrollHeight || 0);
+    let cachedH = Number(foldNaturalHeightMap.get(el) || 0);
+    const liveH = isCollapsed ? scrollH : Math.max(scrollH, rectH);
+    if (liveH > 0) {
+      cachedH = liveH;
+      foldNaturalHeightMap.set(el, liveH);
+    }
+    const rawText = String(el.textContent || '');
+    const trimmed = rawText.trim();
+    const lineCount = trimmed ? trimmed.split(/\r?\n/).length : 0;
+    return {
+      height: Math.max(liveH, cachedH),
+      textLen: trimmed.length,
+      lineCount
+    };
+  }
+
+  function upsertLongFoldControl(targetEl, kind, defaultState, theme, lineCount) {
+    if (!targetEl || !targetEl.parentElement) return false;
+    const savedState = foldUserStateMap.get(targetEl);
+    const state = (savedState === 'collapsed' || savedState === 'expanded') ? savedState : defaultState;
+    const isCollapsed = state === 'collapsed';
+
+    if (targetEl.getAttribute('data-ag-fold-kind') !== kind) targetEl.setAttribute('data-ag-fold-kind', kind);
+    if (targetEl.getAttribute('data-ag-fold-state') !== state) targetEl.setAttribute('data-ag-fold-state', state);
+    if (targetEl.getAttribute('data-ag-fold-theme') !== theme) targetEl.setAttribute('data-ag-fold-theme', theme);
+
+    let bar = targetEl.nextElementSibling;
+    if (!(bar && (bar.getAttribute?.('data-ag-fold-ui') === '1' || bar.classList?.contains?.('ag-fold-bar')))) {
+      bar = document.createElement('div');
+      bar.className = 'ag-fold-bar';
+      bar.setAttribute('data-ag-fold-ui', '1');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ag-fold-btn';
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', (e) => {
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        const curState = targetEl.getAttribute('data-ag-fold-state') === 'collapsed' ? 'collapsed' : 'expanded';
+        const nextState = curState === 'collapsed' ? 'expanded' : 'collapsed';
+        foldUserStateMap.set(targetEl, nextState);
+        targetEl.setAttribute('data-ag-fold-state', nextState);
+        btn.setAttribute('aria-expanded', nextState === 'expanded' ? 'true' : 'false');
+        const nextCollapsed = nextState === 'collapsed';
+        const latestLines = Number(bar.__agFoldLineCount || 0);
+        btn.textContent = formatLongFoldBtnLabel(kind, nextCollapsed, latestLines);
+        if (nextCollapsed) {
+          try {
+            const vp = getScrollViewport();
+            const vpTop = vp?.getBoundingClientRect?.().top ?? 0;
+            const targetTop = targetEl.getBoundingClientRect?.().top ?? vpTop;
+            if (targetTop < vpTop) {
+              targetEl.scrollIntoView?.({ block: 'nearest', behavior: getPreferredScrollBehavior() });
+            }
+          } catch {}
+        }
+      });
+      bar.appendChild(btn);
+      targetEl.parentElement.insertBefore(bar, targetEl.nextSibling);
+    }
+
+    if (bar.getAttribute('data-ag-fold-for') !== kind) bar.setAttribute('data-ag-fold-for', kind);
+    if (bar.getAttribute('data-ag-theme') !== theme) bar.setAttribute('data-ag-theme', theme);
+    bar.__agFoldLineCount = lineCount;
+
+    const btn = bar.querySelector?.('.ag-fold-btn') || bar.firstElementChild;
+    if (btn) {
+      const wantExpanded = isCollapsed ? 'false' : 'true';
+      if (btn.getAttribute('aria-expanded') !== wantExpanded) btn.setAttribute('aria-expanded', wantExpanded);
+      const wantLabel = formatLongFoldBtnLabel(kind, isCollapsed, lineCount);
+      if (btn.textContent !== wantLabel) btn.textContent = wantLabel;
+    }
+    return true;
+  }
+
+  function scanLongFoldables() {
+    if (disposed) return 0;
+    if (!longFoldEnabled) {
+      clearAllLongFolds();
+      return 0;
+    }
+    const viewport = getScrollViewport();
+    if (!viewport) return 0;
+
+    ensureDocStyle();
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveSurfaceTheme(host);
+    const busy = isAssistantBusy();
+    const agentResponses = Array.from(viewport.querySelectorAll('[data-testid="agent-response"]'));
+    const latestAgentResponse = agentResponses.length ? agentResponses[agentResponses.length - 1] : null;
+    let count = 0;
+
+    // 1. 长代码块（pre）
+    const pres = Array.from(viewport.querySelectorAll('pre'));
+    for (const pre of pres) {
+      if (
+        pre.closest(`[data-testid="user-message"], [data-testid="thinking-collapsible-trigger"], [data-testid="tool-group-collapsible"], #${FILE_EDITOR_WRAP_ID}, .ag-fold-bar`)
+      ) {
+        continue;
+      }
+      if (pre.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')) {
+        continue;
+      }
+      const { height, lineCount } = measureFoldableMetrics(pre);
+      if (!(lineCount > 18 || height > 320)) {
+        if (pre.hasAttribute('data-ag-fold-kind')) clearSingleLongFold(pre);
+        continue;
+      }
+      const inStreamingLatest = Boolean(busy && latestAgentResponse && latestAgentResponse.contains(pre));
+      const defaultState = inStreamingLatest ? 'expanded' : 'collapsed';
+      if (upsertLongFoldControl(pre, 'code', defaultState, theme, lineCount)) count++;
+    }
+
+    // 2. 长 Markdown / AI 回复（历史旧轮默认折叠；最新一轮与生成中默认展开并附收起按钮）
+    const mdRoots = Array.from(viewport.querySelectorAll('[data-markdown-root]'));
+    for (const md of mdRoots) {
+      if (
+        md.closest('[data-testid="user-message"], [data-testid="thinking-collapsible-trigger"], .ag-fold-bar') ||
+        md.parentElement?.previousElementSibling?.matches?.('[data-testid="thinking-collapsible-trigger"]')
+      ) {
+        continue;
+      }
+      const hostTurn = md.closest('[data-testid="agent-response"]');
+      if (!hostTurn) continue;
+      const { height, textLen, lineCount } = measureFoldableMetrics(md);
+      const hit = height > 480 || (height === 0 && textLen > 900 && lineCount > 14);
+      if (!hit) {
+        if (md.hasAttribute('data-ag-fold-kind')) clearSingleLongFold(md);
+        continue;
+      }
+      const isLatest = Boolean(latestAgentResponse && latestAgentResponse.contains(md));
+      const defaultState = (isLatest || busy) ? 'expanded' : 'collapsed';
+      if (upsertLongFoldControl(md, 'markdown', defaultState, theme, lineCount)) count++;
+    }
+
+    // 3. 长用户消息（宿主原生已收起的不重复干涉；展开后提供收起按钮）
+    const userMsgs = Array.from(viewport.querySelectorAll('[data-testid="user-message"]'));
+    for (const msg of userMsgs) {
+      const contentEl = msg.querySelector?.('[data-testid="user-message-content"]') || msg;
+      const clsStr = String(contentEl.className || '');
+      const nativeCollapsed = clsStr.includes('max-h-[9em]') && !contentEl.hasAttribute('data-ag-fold-kind');
+      if (nativeCollapsed) continue;
+      if (clsStr.includes('max-h-[9em]')) {
+        clearSingleLongFold(contentEl);
+        continue;
+      }
+      const { height, textLen, lineCount } = measureFoldableMetrics(contentEl);
+      const hit = height > 260 || (height === 0 && textLen > 420 && lineCount > 8);
+      if (!hit) {
+        if (contentEl.hasAttribute('data-ag-fold-kind')) clearSingleLongFold(contentEl);
+        continue;
+      }
+      if (upsertLongFoldControl(contentEl, 'user', 'expanded', theme, lineCount)) count++;
+    }
+
+    return count;
+  }
+
+  function toggleAllLongFolds(forceCollapse = null) {
+    const targets = Array.from(document.querySelectorAll('[data-ag-fold-kind]'));
+    if (!targets.length) return 0;
+    const anyExpanded = targets.some((el) => el.getAttribute('data-ag-fold-state') !== 'collapsed');
+    const nextState = typeof forceCollapse === 'boolean'
+      ? (forceCollapse ? 'collapsed' : 'expanded')
+      : (anyExpanded ? 'collapsed' : 'expanded');
+    for (const el of targets) {
+      foldUserStateMap.set(el, nextState);
+    }
+    return scanLongFoldables();
+  }
+
   function getPreferredScrollBehavior() {
     try {
       if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) {
@@ -4553,7 +5056,7 @@
     const now = Date.now();
     const buttons = container.querySelectorAll('button');
     for (const btn of buttons) {
-      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, [data-agy-hans-ui], [data-agy-context-capsule]`)) continue;
+      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, #${FILE_CTX_MENU_ID}, .ag-fold-bar, [data-ag-fold-ui="1"], [data-agy-hans-ui], [data-agy-context-capsule]`)) continue;
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
       if (btn.offsetWidth <= 0 || btn.offsetHeight <= 0) continue;
       const rawText = (btn.textContent || '').replace(/\s+/g, ' ').trim();
@@ -7159,6 +7662,552 @@
     return { ok: false, error: '打开失败' };
   }
 
+  // ==================== 聊天区本地文件/文件夹链接右键菜单 ====================
+
+  const FILE_CTX_ICONS = {
+    copyPath: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
+    copyFolder: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>',
+    copyLine: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line></svg>',
+    revealFinder: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>'
+  };
+  const FILE_CTX_CHAT_ROOT_SEL = '[data-testid="autoscroll-viewport"], [data-testid="agent-response"], [data-testid="user-message"], [data-markdown-root]';
+  const FILE_CTX_EXCLUDE_SEL = `#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, #${FILE_EDITOR_CONTROLS_ID}, #${FILE_EDITOR_WRAP_ID}, #${FILE_CTX_MENU_ID}, .ag-fold-bar, [data-ag-fold-ui="1"], .surface-composer, [data-testid="conversation-row-sidebar"], [data-testid="conversation-list-sidebar"], [data-testid="settings-sidebar"], .settings-modal-backdrop, [aria-label="File Viewer header"], [aria-label="文件查看器标题栏"], [data-testid="quote-scope-pill"]`;
+  const FILE_CTX_SENTINEL_URIS = new Set(['file:///quote', '/quote']);
+
+  let fileCtxToastTimer = null;
+  let fileCtxMenuState = {
+    open: false,
+    clientX: 0,
+    clientY: 0,
+    info: null,
+    openerEl: null,
+    statCache: new Map(),
+    pendingStatPromise: null
+  };
+
+  function safeDecodeUriPath(rawPath) {
+    return String(rawPath || '')
+      .split('/')
+      .map((seg) => {
+        if (!seg || !seg.includes('%')) return seg;
+        try {
+          return decodeURIComponent(seg);
+        } catch {
+          return seg.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => {
+            try { return decodeURIComponent(m); } catch { return m; }
+          });
+        }
+      })
+      .join('/');
+  }
+
+  function computeParentDirPath(cleanPath) {
+    const p = String(cleanPath || '').trim();
+    if (!p) return '';
+    if (p === '/') return '/';
+    if (/^[A-Za-z]:[\\/]?$/.test(p)) return p.length === 2 ? `${p}/` : p;
+    const lastSep = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    if (lastSep < 0) return '';
+    if (lastSep === 0) return '/';
+    if (lastSep === 2 && /^[A-Za-z]:/.test(p)) return p.slice(0, 3);
+    return p.slice(0, lastSep);
+  }
+
+  function formatShortToastPath(fullPath, maxLen = 46) {
+    const s = String(fullPath || '').trim();
+    if (s.length <= maxLen) return s;
+    const parts = s.split(/[\\/]/).filter(Boolean);
+    const tail = parts.slice(-2).join('/');
+    if (tail && tail.length + 4 <= maxLen) return `…/${tail}`;
+    return `…${s.slice(-(maxLen - 1))}`;
+  }
+
+  function parseLocalFileReference(rawRef, el = null, opts = {}) {
+    const trimmed = String(rawRef || '').trim();
+    if (!trimmed || /[\r\n\0]/.test(trimmed)) return null;
+    if (FILE_CTX_SENTINEL_URIS.has(trimmed.toLowerCase())) return null;
+
+    const fromExplicitAttr = Boolean(opts && opts.fromExplicitAttr);
+    const isFileScheme = /^file:\/\//i.test(trimmed);
+    if (!isFileScheme) {
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return null;
+      if (trimmed === '/' || /^\/c\/[0-9a-fA-F-]{8,}/i.test(trimmed) || /^\/(?:customizations|settings)(?:\/|$)/i.test(trimmed)) {
+        return null;
+      }
+      const looksLikeLocalFsPath =
+        /^\/(?:Users|Applications|Library|Volumes|System|opt|etc|var|tmp|home|root|mnt|srv|private)\//.test(trimmed) ||
+        /^~\//.test(trimmed) ||
+        /^[A-Za-z]:[\\/]/.test(trimmed) ||
+        (fromExplicitAttr && ((trimmed.startsWith('/') && !trimmed.startsWith('//')) || /^[A-Za-z]:[\\/]/.test(trimmed)));
+      if (!looksLikeLocalFsPath) return null;
+    }
+
+    const hashIdx = trimmed.indexOf('#');
+    const beforeHash = hashIdx >= 0 ? trimmed.slice(0, hashIdx) : trimmed;
+    const rawHash = hashIdx >= 0 ? trimmed.slice(hashIdx + 1).trim() : '';
+
+    let body = beforeHash;
+    if (isFileScheme) {
+      body = body.replace(/^file:\/\/(?:localhost)?/i, '');
+      const qIdx = body.indexOf('?');
+      if (qIdx >= 0) body = body.slice(0, qIdx);
+      if (/^\/[A-Za-z]:[/\\]/.test(body)) body = body.slice(1);
+    }
+
+    if (!body || FILE_CTX_SENTINEL_URIS.has(body.toLowerCase())) return null;
+    const decodedPath = safeDecodeUriPath(body);
+    if (!decodedPath || decodedPath === '/quote') return null;
+
+    const isRootOnly = decodedPath === '/' || /^[A-Za-z]:[\\/]$/.test(decodedPath);
+    const hasTrailingSlash = !isRootOnly && /[\\/]$/.test(decodedPath);
+    const cleanPath = isRootOnly ? decodedPath : decodedPath.replace(/[\\/]+$/, '');
+    if (!cleanPath) return null;
+
+    let lineSuffix = '';
+    if (rawHash) {
+      const lm = rawHash.match(/^L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i);
+      if (lm) {
+        lineSuffix = lm[2] ? `${lm[1]}-${lm[2]}` : lm[1];
+      }
+    }
+    if (!lineSuffix && el && typeof el.getAttribute === 'function') {
+      const attrLine = String(el.getAttribute('data-line') || el.getAttribute('data-file-line') || '').trim();
+      if (/^\d+(?:-\d+)?$/.test(attrLine)) {
+        lineSuffix = attrLine;
+      }
+    }
+
+    const dirAttr = el && typeof el.getAttribute === 'function'
+      ? (el.getAttribute('data-is-dir') === 'true' || el.getAttribute('data-kind') === 'directory' || el.getAttribute('data-type') === 'directory')
+      : false;
+    const isKnownDir = Boolean(hasTrailingSlash || dirAttr || isRootOnly);
+    const folderPath = isKnownDir ? cleanPath : computeParentDirPath(cleanPath);
+    const pathWithLine = lineSuffix ? `${cleanPath}:${lineSuffix}` : '';
+    const baseParts = cleanPath.split(/[\\/]/).filter(Boolean);
+    const displayName = baseParts.length ? baseParts[baseParts.length - 1] : cleanPath;
+
+    return {
+      rawRef: trimmed,
+      path: cleanPath,
+      folderPath: folderPath || cleanPath,
+      lineSuffix,
+      pathWithLine,
+      displayName,
+      isKnownDir
+    };
+  }
+
+  function extractChatLocalFileTarget(target) {
+    const el = (target && target.nodeType === 1) ? target : target?.parentElement;
+    if (!el || typeof el.closest !== 'function') return null;
+    if (el.closest(FILE_CTX_EXCLUDE_SEL)) return null;
+    if (!el.closest(FILE_CTX_CHAT_ROOT_SEL)) return null;
+
+    const candidate = el.closest('a[href], [data-uri], [data-file-path], [data-path]');
+    if (!candidate || candidate.closest(FILE_CTX_EXCLUDE_SEL)) return null;
+
+    if (String(candidate.tagName || '').toUpperCase() === 'A') {
+      const href = String(candidate.getAttribute('href') || '').trim();
+      const parsedHref = parseLocalFileReference(href, candidate, { fromExplicitAttr: false });
+      if (parsedHref) return { element: candidate, ...parsedHref };
+      return null;
+    }
+
+    const attrCandidates = [
+      ['data-uri', false],
+      ['data-file-path', true],
+      ['data-path', true]
+    ];
+    for (const [attrName, fromExplicit] of attrCandidates) {
+      const rawVal = String(candidate.getAttribute(attrName) || '').trim();
+      if (!rawVal) continue;
+      const parsed = parseLocalFileReference(rawVal, candidate, { fromExplicitAttr: fromExplicit });
+      if (parsed) return { element: candidate, ...parsed };
+    }
+    return null;
+  }
+
+  function notifyEnhancerToast(text, options = {}) {
+    const bar = document.getElementById(QUICK_BAR_ID);
+    const qToast = bar && !bar.hidden ? bar.querySelector('.ag-qcap-toast') : null;
+    if (qToast) {
+      showQuickToast(text, options);
+      return;
+    }
+    if (!document.body) return;
+    ensureDocStyle();
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveSurfaceTheme(host);
+    let el = document.getElementById(FILE_CTX_TOAST_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = FILE_CTX_TOAST_ID;
+      el.setAttribute('role', 'status');
+      document.body.appendChild(el);
+    }
+    const opts = (options && typeof options === 'object') ? options : {};
+    const isError = Boolean(opts.isError);
+    const durationMs = Number.isFinite(Number(opts.durationMs)) && Number(opts.durationMs) > 0
+      ? Math.max(1000, Number(opts.durationMs))
+      : (isError ? 5000 : 2600);
+    el.setAttribute('data-ag-theme', theme);
+    el.setAttribute('data-tone', isError ? 'error' : 'info');
+    el.textContent = text;
+    el.hidden = false;
+    if (fileCtxToastTimer) {
+      clearTimeout(fileCtxToastTimer);
+      fileCtxToastTimer = null;
+    }
+    fileCtxToastTimer = setTimeout(() => {
+      fileCtxToastTimer = null;
+      const node = document.getElementById(FILE_CTX_TOAST_ID);
+      if (node) node.hidden = true;
+    }, durationMs);
+  }
+
+  async function probeLocalPathStat(localPath) {
+    const clean = String(localPath || '').trim();
+    if (!clean) return null;
+    const cached = fileCtxMenuState.statCache.get(clean);
+    if (cached && (Date.now() - cached.at) < 8000) {
+      return cached;
+    }
+    const live = window.__AGContextMeterLive;
+    if (!live?.port || !live?.token) return null;
+    const res = await postToLiveHost('/stat-local-path', { path: clean });
+    if (!res || !res.ok) return null;
+    const entry = {
+      exists: Boolean(res.exists),
+      isDirectory: Boolean(res.isDirectory),
+      isFile: Boolean(res.isFile),
+      at: Date.now()
+    };
+    if (fileCtxMenuState.statCache.size >= 200) {
+      const oldestKey = fileCtxMenuState.statCache.keys().next().value;
+      if (oldestKey) fileCtxMenuState.statCache.delete(oldestKey);
+    }
+    fileCtxMenuState.statCache.set(clean, entry);
+    return entry;
+  }
+
+  async function revealLocalPathInFinder(localPath, opts = {}) {
+    const clean = String(localPath || '').trim();
+    if (!clean) return { ok: false, error: '无效的本地路径' };
+    const dryRun = Boolean(opts && opts.dryRun);
+    const res = await postToLiveHost('/reveal-local-path', { path: clean, dryRun });
+    if (res && res.ok) {
+      if (!dryRun) {
+        notifyEnhancerToast(tr('已在 Finder 中显示', 'Revealed in Finder'));
+      }
+      return res;
+    }
+    const errText = res?.error || tr('本地桥接服务未连接', 'Local bridge offline');
+    if (!dryRun) {
+      notifyEnhancerToast(
+        tr(`无法在 Finder 中显示：${errText}`, `Failed to reveal: ${errText}`),
+        { isError: true }
+      );
+    }
+    return res || { ok: false, error: errText };
+  }
+
+  function resolveFolderCopyPathForInfo(info) {
+    if (!info) return '';
+    if (info.isKnownDir || info.statIsDir) return info.path;
+    const cached = fileCtxMenuState.statCache.get(info.path);
+    if (cached?.exists && cached.isDirectory) return info.path;
+    return info.folderPath || computeParentDirPath(info.path) || info.path;
+  }
+
+  async function handleFileContextMenuAction(actionId, info) {
+    if (!info) return false;
+    closeFileContextMenu();
+    if (actionId === 'copy-path') {
+      const ok = await copyToClipboard(info.path);
+      if (ok) {
+        notifyEnhancerToast(tr(`已复制路径：${formatShortToastPath(info.path)}`, `Copied path: ${formatShortToastPath(info.path)}`));
+      } else {
+        notifyEnhancerToast(tr('复制失败，请检查剪贴板权限', 'Copy failed, check clipboard permission'), { isError: true });
+      }
+      return ok;
+    }
+    if (actionId === 'copy-folder') {
+      if (!info.isKnownDir && !info.statResolved && fileCtxMenuState.pendingStatPromise) {
+        try {
+          await Promise.race([
+            fileCtxMenuState.pendingStatPromise,
+            new Promise((r) => setTimeout(r, 120))
+          ]);
+        } catch {}
+      }
+      const folderPath = resolveFolderCopyPathForInfo(info);
+      const ok = await copyToClipboard(folderPath);
+      if (ok) {
+        notifyEnhancerToast(tr(`已复制所在文件夹：${formatShortToastPath(folderPath)}`, `Copied folder: ${formatShortToastPath(folderPath)}`));
+      } else {
+        notifyEnhancerToast(tr('复制失败，请检查剪贴板权限', 'Copy failed, check clipboard permission'), { isError: true });
+      }
+      return ok;
+    }
+    if (actionId === 'copy-line-path') {
+      if (!info.pathWithLine) return false;
+      const ok = await copyToClipboard(info.pathWithLine);
+      if (ok) {
+        notifyEnhancerToast(tr(`已复制含行号路径：${formatShortToastPath(info.pathWithLine)}`, `Copied path with line: ${formatShortToastPath(info.pathWithLine)}`));
+      } else {
+        notifyEnhancerToast(tr('复制失败，请检查剪贴板权限', 'Copy failed, check clipboard permission'), { isError: true });
+      }
+      return ok;
+    }
+    if (actionId === 'reveal-finder') {
+      const res = await revealLocalPathInFinder(info.path);
+      return Boolean(res && res.ok);
+    }
+    return false;
+  }
+
+  function positionFileContextMenu(menu, clientX, clientY) {
+    if (!menu) return;
+    const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+    const margin = 10;
+    const rect = typeof menu.getBoundingClientRect === 'function' ? menu.getBoundingClientRect() : null;
+    const menuW = Math.max(180, Math.round((rect && rect.width > 40 ? rect.width : 0) || menu.offsetWidth || 240));
+    const menuH = Math.max(84, Math.round((rect && rect.height > 40 ? rect.height : 0) || menu.offsetHeight || 168));
+    const x = Number.isFinite(Number(clientX)) ? Number(clientX) : 20;
+    const y = Number.isFinite(Number(clientY)) ? Number(clientY) : 20;
+
+    let left = x + 4;
+    if (left + menuW > vw - margin) {
+      left = x - menuW - 4 >= margin ? x - menuW - 4 : Math.max(margin, vw - menuW - margin);
+    }
+    left = Math.max(margin, Math.min(vw - menuW - margin, left));
+
+    let top = y + 4;
+    if (top + menuH > vh - margin) {
+      top = y - menuH - 4 >= margin ? y - menuH - 4 : Math.max(margin, vh - menuH - margin);
+    }
+    top = Math.max(margin, Math.min(vh - menuH - margin, top));
+
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+  }
+
+  function renderFileContextMenuContent(menu, info) {
+    if (!menu || !info) return;
+    const { host } = getMeterHostAndShadow();
+    const theme = resolveSurfaceTheme(host);
+    menu.setAttribute('data-ag-theme', theme);
+    menu.textContent = '';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'ag-fctx-header';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'ag-fctx-name';
+    nameEl.textContent = info.displayName || info.path;
+    nameEl.title = info.path;
+    const pathPreviewEl = document.createElement('div');
+    pathPreviewEl.className = 'ag-fctx-path-preview';
+    pathPreviewEl.textContent = info.pathWithLine || info.path;
+    pathPreviewEl.title = info.pathWithLine || info.path;
+    hdr.appendChild(nameEl);
+    hdr.appendChild(pathPreviewEl);
+    menu.appendChild(hdr);
+
+    const listEl = document.createElement('div');
+    listEl.className = 'ag-fctx-list';
+
+    const resolvedFolder = resolveFolderCopyPathForInfo(info);
+    const items = [
+      {
+        id: 'copy-path',
+        icon: FILE_CTX_ICONS.copyPath,
+        label: tr('复制路径', 'Copy Path'),
+        hint: '',
+        title: info.path
+      },
+      {
+        id: 'copy-folder',
+        icon: FILE_CTX_ICONS.copyFolder,
+        label: tr('复制所在文件夹路径', 'Copy Folder Path'),
+        hint: '',
+        title: resolvedFolder
+      }
+    ];
+    if (info.pathWithLine) {
+      items.push({
+        id: 'copy-line-path',
+        icon: FILE_CTX_ICONS.copyLine,
+        label: tr('复制含行号路径', 'Copy Path with Line'),
+        hint: `:${info.lineSuffix}`,
+        title: info.pathWithLine
+      });
+    }
+
+    const canReveal = Boolean(window.__AGContextMeterLive?.port && window.__AGContextMeterLive?.token);
+    const isMac = typeof navigator === 'undefined' || !/win|linux/i.test(String(navigator.platform || navigator.userAgent || ''));
+    const appendMenuButton = (item) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ag-fctx-item';
+      btn.setAttribute('role', 'menuitem');
+      btn.setAttribute('data-fctx-action', item.id);
+      btn.title = item.title || item.label;
+
+      const left = document.createElement('span');
+      left.className = 'ag-fctx-item-left';
+      const icon = document.createElement('span');
+      icon.className = 'ag-fctx-icon';
+      icon.innerHTML = item.icon;
+      const lbl = document.createElement('span');
+      lbl.className = 'ag-fctx-item-label';
+      lbl.textContent = item.label;
+      left.appendChild(icon);
+      left.appendChild(lbl);
+      btn.appendChild(left);
+
+      if (item.hint) {
+        const hint = document.createElement('span');
+        hint.className = 'ag-fctx-hint';
+        hint.textContent = item.hint;
+        btn.appendChild(hint);
+      }
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void handleFileContextMenuAction(item.id, info);
+      });
+      listEl.appendChild(btn);
+    };
+
+    for (const item of items) appendMenuButton(item);
+    if (canReveal) {
+      const sep = document.createElement('div');
+      sep.className = 'ag-fctx-sep';
+      sep.setAttribute('role', 'separator');
+      listEl.appendChild(sep);
+      appendMenuButton({
+        id: 'reveal-finder',
+        icon: FILE_CTX_ICONS.revealFinder,
+        label: isMac
+          ? tr('在 Finder 中显示', 'Reveal in Finder')
+          : tr('在文件管理器中显示', 'Reveal in File Manager'),
+        hint: '',
+        title: info.path
+      });
+    }
+
+    menu.appendChild(listEl);
+  }
+
+  function closeFileContextMenu(opts = {}) {
+    const wasOpen = fileCtxMenuState.open;
+    const prevOpener = fileCtxMenuState.openerEl;
+    fileCtxMenuState.open = false;
+    fileCtxMenuState.info = null;
+    fileCtxMenuState.openerEl = null;
+    fileCtxMenuState.pendingStatPromise = null;
+    const menu = document.getElementById(FILE_CTX_MENU_ID);
+    if (menu) {
+      menu.hidden = true;
+    }
+    if (wasOpen && opts?.restoreFocus && prevOpener && typeof prevOpener.focus === 'function') {
+      try { prevOpener.focus(); } catch {}
+    }
+  }
+
+  function openFileContextMenu(info, clientX, clientY) {
+    if (disposed || !info || !document.body) return null;
+    ensureDocStyle();
+    let menu = document.getElementById(FILE_CTX_MENU_ID);
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = FILE_CTX_MENU_ID;
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', tr('文件路径操作菜单', 'File Path Actions'));
+      menu.addEventListener('mousedown', (e) => e.stopPropagation());
+      menu.addEventListener('click', (e) => e.stopPropagation());
+      menu.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      document.body.appendChild(menu);
+    } else {
+      menu.setAttribute('aria-label', tr('文件路径操作菜单', 'File Path Actions'));
+    }
+
+    const menuInfo = { ...info, statIsDir: false, statResolved: Boolean(info.isKnownDir) };
+    fileCtxMenuState.open = true;
+    fileCtxMenuState.clientX = Number(clientX) || 0;
+    fileCtxMenuState.clientY = Number(clientY) || 0;
+    fileCtxMenuState.info = menuInfo;
+    fileCtxMenuState.openerEl = info.element || null;
+
+    renderFileContextMenuContent(menu, menuInfo);
+    menu.hidden = false;
+    positionFileContextMenu(menu, fileCtxMenuState.clientX, fileCtxMenuState.clientY);
+
+    if (!menuInfo.isKnownDir && window.__AGContextMeterLive?.port && window.__AGContextMeterLive?.token) {
+      const p = probeLocalPathStat(menuInfo.path).then((st) => {
+        if (st && st.exists) {
+          menuInfo.statIsDir = Boolean(st.isDirectory);
+          menuInfo.statResolved = true;
+          if (menuInfo.statIsDir) {
+            menuInfo.folderPath = menuInfo.path;
+            if (fileCtxMenuState.open && fileCtxMenuState.info === menuInfo) {
+              const folderBtn = menu.querySelector('[data-fctx-action="copy-folder"]');
+              if (folderBtn) folderBtn.title = menuInfo.path;
+            }
+          }
+        }
+        return st;
+      }).catch(() => null);
+      fileCtxMenuState.pendingStatPromise = p;
+    }
+
+    return menu;
+  }
+
+  function onDocContextMenu(e) {
+    if (disposed) return;
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+    const menu = document.getElementById(FILE_CTX_MENU_ID);
+    if (menu && !menu.hidden && target && menu.contains(target)) {
+      e.preventDefault();
+      return;
+    }
+    const info = extractChatLocalFileTarget(target);
+    if (!info) {
+      if (fileCtxMenuState.open) closeFileContextMenu();
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') {
+      e.stopImmediatePropagation();
+    }
+    openFileContextMenu(info, e.clientX, e.clientY);
+  }
+
+  function onDocMouseDownForFileMenu(e) {
+    if (!fileCtxMenuState.open) return;
+    const menu = document.getElementById(FILE_CTX_MENU_ID);
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    if (menu && ((target && menu.contains(target)) || path.includes(menu))) {
+      return;
+    }
+    closeFileContextMenu();
+  }
+
+  function onDocScrollForFileMenu(e) {
+    if (!fileCtxMenuState.open) return;
+    const menu = document.getElementById(FILE_CTX_MENU_ID);
+    const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+    if (menu && target && menu.contains(target)) return;
+    closeFileContextMenu();
+  }
+
   function getOrderedSidebarConversationRows() {
     return Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"]'))
       .filter((row) => Boolean(extractSidebarRowId(row)));
@@ -7255,10 +8304,17 @@
   // ==================== 全局事件与定时巡检 ====================
 
   function onDocClick(e) {
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    if (fileCtxMenuState.open) {
+      const fMenu = document.getElementById(FILE_CTX_MENU_ID);
+      const target = (e.target && e.target.nodeType === 1) ? e.target : e.target?.parentElement;
+      if (!fMenu || (!(target && fMenu.contains(target)) && !path.includes(fMenu))) {
+        closeFileContextMenu();
+      }
+    }
     if (!popoverOpen && !remotePopoverOpen) return;
     const { sr } = getMeterHostAndShadow();
     if (!sr) return;
-    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
     if (popoverOpen) {
       const btn = sr.getElementById(QUOTA_BADGE_ID);
       const pop = sr.getElementById(QUOTA_POPOVER_ID);
@@ -7311,6 +8367,31 @@
 
   function onDocKeydown(e) {
     syncCmdModifierState(Boolean(e.metaKey || e.ctrlKey));
+    if (fileCtxMenuState.open) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        closeFileContextMenu({ restoreFocus: true });
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
+        const menu = document.getElementById(FILE_CTX_MENU_ID);
+        const items = menu ? Array.from(menu.querySelectorAll('.ag-fctx-item')) : [];
+        if (items.length) {
+          e.preventDefault();
+          e.stopPropagation();
+          const curIdx = items.indexOf(document.activeElement);
+          let nextIdx = 0;
+          if (e.key === 'Home') nextIdx = 0;
+          else if (e.key === 'End') nextIdx = items.length - 1;
+          else if (e.key === 'ArrowDown') nextIdx = curIdx >= 0 ? (curIdx + 1) % items.length : 0;
+          else nextIdx = curIdx >= 0 ? (curIdx - 1 + items.length) % items.length : items.length - 1;
+          try { items[nextIdx]?.focus?.(); } catch {}
+          return;
+        }
+      }
+    }
     if (e.key === 'Escape' && (popoverOpen || remotePopoverOpen)) {
       if (popoverOpen) toggleQuotaPopover(false);
       if (remotePopoverOpen) toggleRemotePopover(false);
@@ -7430,10 +8511,12 @@
 
   function onWindowBlur() {
     syncCmdModifierState(false);
+    closeFileContextMenu();
   }
 
   function onWindowResize() {
     positionChatNavFloat(document.getElementById(CHAT_NAV_ID));
+    closeFileContextMenu();
   }
 
   function applyEnhancerFeatureVisibility() {
@@ -7825,6 +8908,11 @@
     const prevDockAutoClear = dockBadgeAutoClear;
     syncSuitePrefsFromStorage(ev?.detail || null);
     if (!autoCompactEnabled) autoCompactState.idleSince = 0;
+    if (!longFoldEnabled) {
+      clearAllLongFolds();
+    } else {
+      scanLongFoldables();
+    }
     if (!dockBadgeEnabled) {
       if (prevDockEnabled || dockStateTracker.lastSentSig !== 'offline') {
         reportDockOffline();
@@ -7860,6 +8948,14 @@
     updateAutoAcceptBtn();
     updateRemoteBtnLanguage();
     renderQuotaUI();
+    if (fileCtxMenuState.open && fileCtxMenuState.info) {
+      const fMenu = document.getElementById(FILE_CTX_MENU_ID);
+      if (fMenu && !fMenu.hidden) {
+        fMenu.setAttribute('aria-label', tr('文件路径操作菜单', 'File Path Actions'));
+        renderFileContextMenuContent(fMenu, fileCtxMenuState.info);
+        positionFileContextMenu(fMenu, fileCtxMenuState.clientX, fileCtxMenuState.clientY);
+      }
+    }
     if (uiLang !== 'zh') {
       revertEnhancerTranslations();
     } else if (prevLang !== 'zh') {
@@ -7872,6 +8968,9 @@
   window.addEventListener('ag-remote-state-changed', onRemoteStateChanged);
   window.addEventListener('click', onWindowClickCapture, true);
   document.addEventListener('click', onDocClick, true);
+  document.addEventListener('contextmenu', onDocContextMenu, true);
+  document.addEventListener('mousedown', onDocMouseDownForFileMenu, true);
+  document.addEventListener('scroll', onDocScrollForFileMenu, true);
   document.addEventListener('keydown', onDocKeydown, true);
   document.addEventListener('keyup', onDocKeyup, true);
   document.addEventListener('input', onDocInput, true);
@@ -7891,6 +8990,7 @@
     ensureNextStepGhost();
     ensureFileViewerEditor();
     scanHighRiskCommands();
+    scanLongFoldables();
     if (dockBadgeEnabled) {
       updateDockUnreadTracker(Date.now());
       reportDockStateIfNeeded(false);
@@ -7921,6 +9021,10 @@
     clearRemotePollTimer();
     reportDockOffline();
     if (toastTimer) clearTimeout(toastTimer);
+    if (fileCtxToastTimer) {
+      clearTimeout(fileCtxToastTimer);
+      fileCtxToastTimer = null;
+    }
     if (quickAutoSendLockTimer) {
       clearTimeout(quickAutoSendLockTimer);
       quickAutoSendLockTimer = null;
@@ -7945,6 +9049,9 @@
       localizeMutationObserver = null;
     }
     document.removeEventListener('click', onDocClick, true);
+    document.removeEventListener('contextmenu', onDocContextMenu, true);
+    document.removeEventListener('mousedown', onDocMouseDownForFileMenu, true);
+    document.removeEventListener('scroll', onDocScrollForFileMenu, true);
     window.removeEventListener('ag-suite-prefs-changed', onSuitePrefsChanged);
     window.removeEventListener('ag-remote-state-changed', onRemoteStateChanged);
     window.removeEventListener('click', onWindowClickCapture, true);
@@ -7959,6 +9066,10 @@
     document.removeEventListener('visibilitychange', onVisibilityChangeForDock);
     window.removeEventListener('beforeunload', onWindowBeforeUnloadForDock);
     syncCmdModifierState(false);
+    closeFileContextMenu();
+    fileCtxMenuState.statCache.clear();
+    safeRemove(document.getElementById(FILE_CTX_MENU_ID));
+    safeRemove(document.getElementById(FILE_CTX_TOAST_ID));
     hideNextStepGhost();
     hideQuickBarTooltip();
     safeRemove(document.getElementById(NEXT_STEP_TOOLTIP_ID));
@@ -7980,6 +9091,7 @@
     }
     safeRemove(document.getElementById(QUICK_BAR_ID));
     safeRemove(document.getElementById(CHAT_NAV_ID));
+    clearAllLongFolds();
     document.querySelectorAll('.ag-risk-banner').forEach(safeRemove);
     document.querySelectorAll('[data-ag-risk-card]').forEach((el) => el.removeAttribute('data-ag-risk-card'));
     document.querySelectorAll('[data-ag-shortcut]').forEach((el) => el.removeAttribute('data-ag-shortcut'));
@@ -7999,7 +9111,7 @@
     const results = [];
     const buttons = container.querySelectorAll('button');
     for (const btn of buttons) {
-      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, .surface-composer, [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="thinking-collapsible-trigger"], [data-testid="conversation-row-sidebar"]`)) {
+      if (btn.closest(`#${QUICK_BAR_ID}, #${CHAT_NAV_ID}, #${METER_HOST_ID}, #${FILE_CTX_MENU_ID}, .surface-composer, .ag-fold-bar, [data-ag-fold-ui="1"], [data-agy-hans-ui], [data-agy-context-capsule], [data-testid="thinking-collapsible-trigger"], [data-testid="conversation-row-sidebar"]`)) {
         continue;
       }
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
@@ -8773,6 +9885,9 @@
     }
 
     const cls = typeof node.className === 'string' ? node.className : '';
+    if (node.getAttribute?.('data-ag-fold-ui') === '1' || cls.includes('ag-fold-bar')) {
+      return '';
+    }
     if (cls.includes('katex-mathml') || (cls.includes('pointer-events-none') && cls.includes('sticky'))) {
       return '';
     }
@@ -8991,7 +10106,12 @@
             }
           }
         }
-        const userBounded = collectBoundedNodeText([contentNode], MAX_DOM_MSG_CHARS + 512, 8000);
+        const isFoldChromeNode = (el) => {
+          if (!el || el.nodeType !== 1) return false;
+          const cls = typeof el.className === 'string' ? el.className : '';
+          return el.getAttribute?.('data-ag-fold-ui') === '1' || cls.includes('ag-fold-bar');
+        };
+        const userBounded = collectBoundedNodeText([contentNode], MAX_DOM_MSG_CHARS + 512, 8000, 24, isFoldChromeNode);
         let rawUserText = cleanUserMessageText(userBounded.text);
         if (domAtts.length && rawUserText) {
           const attNames = new Set(domAtts.map((a) => String(a.name || '').trim().toLowerCase()).filter(Boolean));
@@ -9034,7 +10154,8 @@
         if (!el || el.nodeType !== 1) return false;
         const tag = String(el.tagName || '').toUpperCase();
         const cls = typeof el.className === 'string' ? el.className : '';
-        if (cls.includes('katex-mathml') || cls.includes('markdown-alert-title')) return true;
+        if (cls.includes('katex-mathml') || cls.includes('markdown-alert-title') || cls.includes('ag-fold-bar')) return true;
+        if (el.getAttribute?.('data-ag-fold-ui') === '1') return true;
         if (cls.includes('pointer-events-none') && cls.includes('sticky')) return true;
         if (tag === 'BUTTON' && !cls.includes('inline-pill')) return true;
         return false;
@@ -12006,7 +13127,7 @@
   }
 
     globalThis.__AGEnhancer = {
-    version: '1.7.4',
+    version: '1.7.5',
     isAlive: () => {
       if (disposed) return false;
       const { sr } = getMeterHostAndShadow();
@@ -12049,6 +13170,17 @@
     performMobileAction,
     extractExternalUrlFromTarget,
     openExternalUrlInSystemBrowser,
+    parseLocalFileReference,
+    extractChatLocalFileTarget,
+    openFileContextMenu,
+    closeFileContextMenu,
+    getFileContextMenuState: () => ({
+      open: fileCtxMenuState.open,
+      clientX: fileCtxMenuState.clientX,
+      clientY: fileCtxMenuState.clientY,
+      info: fileCtxMenuState.info ? { ...fileCtxMenuState.info } : null
+    }),
+    revealLocalPathInFinder,
     getBrainStats: () => latestBrainStats,
     getAutoAccept: () => autoAcceptEnabled,
     setAutoAccept: (val) => {
@@ -12069,6 +13201,15 @@
       try { localStorage.setItem('ag_suite_auto_compact', autoCompactEnabled ? 'true' : 'false'); } catch {}
       if (!autoCompactEnabled) autoCompactState.idleSince = 0;
     },
+    getLongFold: () => longFoldEnabled,
+    setLongFold: (val) => {
+      longFoldEnabled = Boolean(val);
+      try { localStorage.setItem('ag_suite_long_fold', longFoldEnabled ? 'true' : 'false'); } catch {}
+      if (!longFoldEnabled) clearAllLongFolds();
+      else scanLongFoldables();
+    },
+    scanLongFoldables,
+    toggleAllLongFolds,
     getQuickBuiltinAutoSend: () => quickBuiltinAutoSendEnabled,
     setQuickBuiltinAutoSend: (val) => {
       quickBuiltinAutoSendEnabled = Boolean(val);
@@ -12100,6 +13241,7 @@
   ensureFileViewerEditor();
   syncSidebarShortcutBadges();
   scanHighRiskCommands();
+  scanLongFoldables();
   renderQuotaUI();
   guardExpandedThinkingBlocks();
   startLocalizationObserver();
