@@ -11626,18 +11626,38 @@
     const pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
     const EFFORT_ORDER = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
     const EFFORT_DISPLAY = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
+    const cascadeCfg = modelCtx?.userStatus?.cascadeModelConfigData || null;
+    const rawGroupedModels = cascadeCfg?.groupedModels || null;
+    const lookupGroupedModelCfg = (baseId) => {
+      const key = String(baseId || '').trim().toLowerCase();
+      if (!key || !rawGroupedModels) return null;
+      if (typeof rawGroupedModels.get === 'function') return rawGroupedModels.get(key) || null;
+      if (typeof rawGroupedModels === 'object' && key in rawGroupedModels) return rawGroupedModels[key] || null;
+      return null;
+    };
     const parseEffortFromModelItem = (rawLbl, rawId) => {
       const idM = String(rawId || '').trim().match(/^(.*?)-(xhigh|high|medium|low|max)$/i);
       const lblM = String(rawLbl || '').trim().match(/^(.*?)\s*\((Extra\s+High|XHigh|High|Medium|Low|Max)\)\s*$/i);
       const rawEff = idM ? idM[2].toLowerCase() : (lblM ? lblM[2].toLowerCase().replace(/\s+/g, '') : '');
       const effKey = rawEff === 'extrahigh' ? 'xhigh' : rawEff;
-      const baseName = lblM ? lblM[1].trim() : String(rawLbl || '').trim();
-      const baseId = idM ? idM[1].toLowerCase() : (String(rawId || '').trim() || baseName).toLowerCase();
-      return { effKey, effLabel: EFFORT_DISPLAY[effKey] || '', baseName, baseId };
+      const baseId = idM ? idM[1].toLowerCase() : (String(rawId || '').trim() || (lblM ? lblM[1].trim() : String(rawLbl || '').trim())).toLowerCase();
+      const groupedEntry = lookupGroupedModelCfg(baseId);
+      const groupedLevels = Array.isArray(groupedEntry?.supportedThinkingLevels) ? groupedEntry.supportedThinkingLevels : [];
+      const matchedLevel = effKey
+        ? groupedLevels.find((lv) => String(lv?.thinkingSuffix || '').trim().toLowerCase() === effKey)
+        : null;
+      const effLabel = String(matchedLevel?.thinkingDisplayName || EFFORT_DISPLAY[effKey] || '').trim();
+      const defaultEffort = String(groupedEntry?.defaultThinkingSuffix || '').trim().toLowerCase();
+      const baseName = String(groupedEntry?.displayName || (lblM ? lblM[1].trim() : String(rawLbl || '').trim())).trim();
+      return { effKey, effLabel, defaultEffort, baseName, baseId };
     };
-    const rawModels = Array.isArray(modelCtx?.modelOptions)
-      ? modelCtx.modelOptions.filter((o) => o && typeof o === 'object' && !o.disabled && o.label)
+    const fallbackClientConfigs = Array.isArray(cascadeCfg?.clientModelConfigs)
+      ? cascadeCfg.clientModelConfigs.filter((c) => c && typeof c === 'object' && !c.disabled && c.label)
       : [];
+    const rawModelsSource = Array.isArray(modelCtx?.modelOptions) && modelCtx.modelOptions.length > 0
+      ? modelCtx.modelOptions
+      : fallbackClientConfigs;
+    const rawModels = rawModelsSource.filter((o) => o && typeof o === 'object' && !o.disabled && o.label);
     const selectedRawLabel = String(modelCtx?.selectedModel?.label || '').trim();
     const selectedRawModelId = String(modelCtx?.selectedModel?.modelId || '').trim();
     const isOrchOption = (o) => Boolean(o && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`));
@@ -11686,16 +11706,20 @@
       orchestratorLabel: 'Orchestrator',
       tagTitle: String(primaryOrchOption?.tagTitle || ''),
       isNew: /^new$/i.test(String(primaryOrchOption?.tagTitle || '').trim()),
-      planners: rawPlanners.map((p) => ({
-        label: String(p.label || ''),
-        modelId: String(p.modelId || ''),
-        value: typeof p.value === 'number' ? p.value : 0,
-        tagTitle: String(p.tagTitle || ''),
-        isNew: /^new$/i.test(String(p.tagTitle || '').trim()),
-        selected: Boolean(isOrchestratorSelected && activeOrchPlanner && (
-          (p.modelId && p.modelId === activeOrchPlanner.modelId) || p.label === activeOrchPlanner.label
-        ))
-      }))
+      planners: rawPlanners.map((p) => {
+        const pParsed = parseEffortFromModelItem(p.label, p.modelId);
+        return {
+          label: String(p.label || ''),
+          modelId: String(p.modelId || ''),
+          value: typeof p.value === 'number' ? p.value : 0,
+          tagTitle: String(p.tagTitle || ''),
+          isNew: /^new$/i.test(String(p.tagTitle || '').trim()),
+          ...(pParsed.defaultEffort ? { defaultEffort: pParsed.defaultEffort } : {}),
+          selected: Boolean(isOrchestratorSelected && activeOrchPlanner && (
+            (p.modelId && p.modelId === activeOrchPlanner.modelId) || p.label === activeOrchPlanner.label
+          ))
+        };
+      })
     } : null;
     const effectiveDisplayModel = (() => {
       if (isOrchestratorSelected && activeOrchPlanner) {
@@ -11711,7 +11735,10 @@
       const parsed = parseEffortFromModelItem(label, o.modelId);
       const family = parsed.baseName.toLowerCase();
       const effort = parsed.effKey ? (EFFORT_ORDER[parsed.effKey] || 9) : 0;
-      const tagTitle = String(o.tagTitle || '').trim();
+      const cfgMatch = !o.tagTitle && fallbackClientConfigs.length
+        ? fallbackClientConfigs.find((c) => (o.modelId && c.modelId === o.modelId) || c.label === label)
+        : null;
+      const tagTitle = String(o.tagTitle || cfgMatch?.tagTitle || '').trim();
       if (!familyOrder.has(family)) familyOrder.set(family, idx);
       return {
         label,
@@ -11722,18 +11749,20 @@
         ),
         tagTitle,
         isNew: /^new$/i.test(tagTitle),
+        defaultEffort: parsed.defaultEffort,
         familyRank: familyOrder.get(family),
         effortRank: effort,
         origIdx: idx
       };
     });
     parsedModels.sort((a, b) => (a.familyRank - b.familyRank) || (a.effortRank - b.effortRank) || (a.origIdx - b.origIdx));
-    const modelOptions = parsedModels.map(({ label, modelId, selected, tagTitle, isNew }) => ({
+    const modelOptions = parsedModels.map(({ label, modelId, selected, tagTitle, isNew, defaultEffort }) => ({
       label,
       modelId,
       selected,
       ...(tagTitle ? { tagTitle } : {}),
-      ...(isNew ? { isNew: true } : {})
+      ...(isNew ? { isNew: true } : {}),
+      ...(defaultEffort ? { defaultEffort } : {})
     }));
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
     const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
@@ -12683,8 +12712,11 @@
         return {
           ok: true,
           model: resolvedTitle,
+          selectedModelId: String((pickedOrchBase || pickedPlanner)?.modelId || targetModelId || ''),
           orchestrator: true,
-          plannerModelId: String(pickedPlanner?.modelId || plannerModelId || '')
+          plannerModelId: String(pickedPlanner?.modelId || plannerModelId || ''),
+          plannerValue: typeof pickedPlanner?.value === 'number' ? pickedPlanner.value : plannerValNum,
+          effortKey: String(payload?.effortKey || '')
         };
       }
       const normLbl = (s) => String(s || '').trim().replace(/\(Extra\s+High\)/i, '(XHigh)').toLowerCase();
@@ -12700,7 +12732,12 @@
       }
       modelCtx.setSelectedModel(picked);
       await new Promise((r) => setTimeout(r, 80));
-      return { ok: true, model: picked.label };
+      return {
+        ok: true,
+        model: picked.label,
+        selectedModelId: String(picked.modelId || ''),
+        orchestrator: false
+      };
     }
 
     if (action === 'select-permission') {

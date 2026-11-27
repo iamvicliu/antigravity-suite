@@ -35600,6 +35600,32 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
     setSelectedModel: (opt) => { selectedCalls.push(opt); mockModelCtx.selectedModel = opt; },
     modelOptions: [neonHigh, neonXHigh, neonMed, neonLow, carbonHigh, carbonMed, carbonLow, argonHigh, orchNeon, orchCarbon, orchArgon, opusLow, opusMed, opusHigh, gptOss],
     groups: [{ groupName: 'Recommended', options: [neonHigh, carbonMed, argonHigh, orchNeon, opusLow, gptOss] }],
+    userStatus: {
+      cascadeModelConfigData: {
+        groupedModels: new Map([
+          ['gemini-4-neon', {
+            displayName: 'Gemini 4 Neon',
+            defaultThinkingSuffix: 'high',
+            supportedThinkingLevels: [
+              { thinkingSuffix: 'low', thinkingDisplayName: 'Low' },
+              { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
+              { thinkingSuffix: 'high', thinkingDisplayName: 'High' },
+              { thinkingSuffix: 'xhigh', thinkingDisplayName: 'Extra High' }
+            ]
+          }],
+          ['gemini-4-carbon', {
+            displayName: 'Gemini 4 Carbon',
+            defaultThinkingSuffix: 'medium',
+            supportedThinkingLevels: [
+              { thinkingSuffix: 'low', thinkingDisplayName: 'Low' },
+              { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
+              { thinkingSuffix: 'high', thinkingDisplayName: 'High' }
+            ]
+          }]
+        ]),
+        clientModelConfigs: [neonHigh, neonXHigh, neonMed, neonLow, carbonHigh, carbonMed, carbonLow]
+      }
+    },
     orchestratorDefaultPlanner: neonHigh,
     orchestratorPlanners: [neonHigh, neonXHigh, neonMed, neonLow, carbonMed, carbonHigh, carbonLow, argonHigh, opusLow, opusMed, opusHigh],
     orchestratorPick: {
@@ -35685,6 +35711,8 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
   delete require.cache[require.resolve('../mobile-remote')];
   const remoteMod = require('../mobile-remote');
   const html = remoteMod.buildMobileAppHtml();
+  assert.ok(html.includes('--accent:#a78bfa') && html.includes('--accent:#7c3aed'), '远程页面深浅色默认强调色必须统一为 #a78bfa / #7c3aed 主题紫');
+  assert.equal(html.includes('--accent:#38bdf8'), false, '远程页面 :root 不得残留旧版野生天蓝 #38bdf8');
   const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
   const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
   assert.ok(scriptMatch && bodyMatch);
@@ -35820,6 +35848,12 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
   assert.equal(lastOrchPost.plannerModelId, 'claude-opus-5-5-high');
   assert.equal(lastOrchPost.plannerValue, 1402);
   assert.equal(lastOrchPost.effortKey, 'high');
+  assert.equal(uiEnv.doc.getElementById('model-inline-label')?.textContent, 'Orchestrator · Opus 5.5 (High)', 'select-model 成功后底栏模型按钮应立即回显新选中的编排子模型与强度');
+  // 立即重开选择器核验选中态回写
+  modelBtn.onclick();
+  const reopenedOrchRoot = sheetList.querySelectorAll('[data-group-idx]')[5];
+  assert.ok((reopenedOrchRoot.textContent || '').includes('Opus 5.5 · High'), '重开选择器时 Orchestrator 根行应回显已切换的 Opus 5.5 · High');
+  uiEnv.doc.getElementById('sheet-close').onclick();
 
   // 单档模型 GPT-OSS 120B (Medium) 应点击即直选，不进入二级菜单
   modelBtn.onclick();
@@ -35830,4 +35864,6 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
   assert.equal(lastSinglePost.action, 'select-model');
   assert.equal(Boolean(lastSinglePost.orchestrator), false);
   assert.equal(lastSinglePost.modelId, 'gpt-oss-120b-medium');
+  assert.equal(uiEnv.doc.getElementById('model-inline-label')?.textContent, 'GPT-OSS 120B (Medium)');
+  assert.ok(settingsHtml.includes('value="__custom__"') && settingsHtml.includes('id="input-cli-custom-model"'), 'suite-settings.html 必须保留自定义模型 ID 兼容入口');
 });
