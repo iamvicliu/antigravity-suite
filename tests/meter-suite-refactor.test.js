@@ -35680,7 +35680,7 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
   assert.equal(neonOptInSnap?.isNew, true, 'tagTitle="New" 应提取为 isNew: true');
   assert.equal(Boolean(argonOptInSnap?.isNew), false, 'tagTitle="Leaving Soon" 不得误标为 New');
 
-  // 执行三级 Orchestrator 选择（Claude Opus 5.5 · High）
+  // 执行三级 Orchestrator 选择（Claude Opus 5.5 · High）并重采快照核验实际基座与 planner/强度
   const actOrch = await enhancer.performMobileAction({
     action: 'select-model',
     label: 'Orchestrator · Opus 5.5 (High)',
@@ -35692,19 +35692,113 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
     effortKey: 'high'
   });
   assert.equal(actOrch.ok, true);
+  assert.equal(actOrch.verifiedBySnapshot, true);
   assert.equal(selectedCalls.length, 1);
   assert.equal(selectedCalls[0].modelId, 'gemini-pro-orchestrator-neon', '无独立后缀的 Opus 编排器应选中主 Orchestrator 基座并交由 orchestratorPick 指定子模型');
   assert.deepEqual(orchPickCalls, [1402], '应同步调用 orchestratorPick.select(1402) 锁定 Claude Opus 5.5 (High)');
+  const snapAfterOpus = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterOpus.model, 'Orchestrator · Opus 5.5 (High)');
+  assert.equal(snapAfterOpus.orchestratorConfig?.active, true);
+  assert.equal(snapAfterOpus.orchestratorConfig?.orchestratorModelId, 'gemini-pro-orchestrator-neon');
+  assert.equal(snapAfterOpus.orchestratorConfig?.pickedModelId, 'claude-opus-5-5-high');
+  assert.equal(snapAfterOpus.orchestratorConfig?.pickedValue, 1402);
 
-  // 执行常规两级模型选择（Gemini 4 Neon · Extra High）
+  // 执行三级 Orchestrator 跨基座选择（Gemini 4 Carbon · Medium）并重采快照核验基座切至 gemini-pro-orchestrator
+  const actOrchCarbon = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Orchestrator · Carbon (Medium)',
+    modelId: 'gemini-pro-orchestrator',
+    orchestrator: true,
+    plannerModelId: 'gemini-4-carbon-medium',
+    plannerLabel: 'Gemini 4 Carbon (Medium)',
+    plannerValue: 1437,
+    effortKey: 'medium'
+  });
+  assert.equal(actOrchCarbon.ok, true);
+  const snapAfterCarbonOrch = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterCarbonOrch.model, 'Orchestrator · Carbon (Medium)');
+  assert.equal(snapAfterCarbonOrch.orchestratorConfig?.orchestratorModelId, 'gemini-pro-orchestrator');
+  assert.equal(snapAfterCarbonOrch.orchestratorConfig?.pickedModelId, 'gemini-4-carbon-medium');
+  assert.equal(snapAfterCarbonOrch.orchestratorConfig?.pickedValue, 1437);
+
+  // 异常防护 1：目标 planner / 推理强度不存在（如 Carbon 请求不存在的 xhigh）时必须明确失败，严禁只切基座返回假成功
+  const callsBeforeBadPlanner = selectedCalls.length;
+  const pickCallsBeforeBadPlanner = orchPickCalls.length;
+  const actMissingPlanner = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Orchestrator · Carbon (Extra High)',
+    modelId: 'gemini-pro-orchestrator-neon',
+    orchestrator: true,
+    plannerModelId: 'gemini-4-carbon-xhigh',
+    plannerLabel: 'Gemini 4 Carbon (XHigh)',
+    effortKey: 'xhigh'
+  });
+  assert.equal(actMissingPlanner.ok, false, '目标编排子模型/强度不存在时必须明确返回失败');
+  assert.equal(selectedCalls.length, callsBeforeBadPlanner, 'planner 校验失败时严禁提前篡改基座 selectedModel');
+  assert.equal(orchPickCalls.length, pickCallsBeforeBadPlanner);
+
+  // 执行常规两级模型选择（Gemini 4 Neon · Extra High）并重采快照核验
   const actReg = await enhancer.performMobileAction({
     action: 'select-model',
     label: 'Gemini 4 Neon (Extra High)',
     modelId: 'gemini-4-neon-xhigh'
   });
   assert.equal(actReg.ok, true);
+  assert.equal(actReg.verifiedBySnapshot, true);
   assert.equal(selectedCalls[selectedCalls.length - 1].modelId, 'gemini-4-neon-xhigh');
-  assert.equal(orchPickCalls.length, 1, '切换常规模型时不得误调 orchestratorPick.select');
+  assert.equal(orchPickCalls.length, pickCallsBeforeBadPlanner, '切换常规模型时不得误调 orchestratorPick.select');
+  const snapAfterReg = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterReg.orchestratorConfig?.active, false);
+  assert.equal(snapAfterReg.modelOptions.find((m) => m.modelId === 'gemini-4-neon-xhigh')?.selected, true);
+
+  // 回归校验 A：modelOptions 缺失 (undefined) 与为空 ([]) 时，快照与 select-model 统一使用 clientModelConfigs 数据源并可选中生效
+  const savedModelOptions = mockModelCtx.modelOptions;
+  mockModelCtx.modelOptions = undefined;
+  const snapMissingOpts = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.ok(snapMissingOpts.modelOptions.some((m) => m.modelId === 'gemini-4-carbon-high'), 'modelOptions 缺失时快照应回填 clientModelConfigs');
+  const actFromUndefined = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Gemini 4 Carbon (High)',
+    modelId: 'gemini-4-carbon-high'
+  });
+  assert.equal(actFromUndefined.ok, true, 'modelOptions 缺失时 select-model 必须可从统一回填源成功选中');
+  assert.equal(actFromUndefined.source, 'clientModelConfigs');
+  const snapAfterUndefined = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterUndefined.model, 'Gemini 4 Carbon (High)');
+  assert.equal(snapAfterUndefined.modelOptions.find((m) => m.modelId === 'gemini-4-carbon-high')?.selected, true);
+
+  mockModelCtx.modelOptions = [];
+  const snapEmptyOpts = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.ok(snapEmptyOpts.modelOptions.some((m) => m.modelId === 'gemini-4-neon-low'), 'modelOptions 为空数组时快照应回填 clientModelConfigs');
+  const actFromEmpty = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Gemini 4 Neon (Low)',
+    modelId: 'gemini-4-neon-low'
+  });
+  assert.equal(actFromEmpty.ok, true, 'modelOptions 为空数组时 select-model 必须可从统一回填源成功选中');
+  assert.equal(actFromEmpty.source, 'clientModelConfigs');
+  const snapAfterEmpty = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterEmpty.model, 'Gemini 4 Neon (Low)');
+  assert.equal(snapAfterEmpty.modelOptions.find((m) => m.modelId === 'gemini-4-neon-low')?.selected, true);
+
+  // 回归校验 B：无 orchestratorPlanners 但存在多个编排基座时，快照不下发伪造 orchestratorConfig，后端拒绝伪造强度请求
+  mockModelCtx.modelOptions = savedModelOptions;
+  const savedPlanners = mockModelCtx.orchestratorPlanners;
+  mockModelCtx.orchestratorPlanners = [];
+  const snapNoPlanners = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapNoPlanners.orchestratorConfig, undefined, '无 orchestratorPlanners 时不得下发不可执行的编排强度配置');
+  const callsBeforeNoPlanners = selectedCalls.length;
+  const actFakeOrch = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Orchestrator · Neon (Extra High)',
+    modelId: 'gemini-pro-orchestrator-neon',
+    orchestrator: true,
+    plannerModelId: 'gemini-4-neon-xhigh',
+    effortKey: 'xhigh'
+  });
+  assert.equal(actFakeOrch.ok, false, '无 orchestratorPlanners 时请求特定编排强度必须明确失败，严禁仅切基座返回假成功');
+  assert.equal(selectedCalls.length, callsBeforeNoPlanners, '拒绝不可执行强度请求时不得篡改当前基座模型');
+  mockModelCtx.orchestratorPlanners = savedPlanners;
   try { enhancer.dispose?.(); } catch {}
 
   // 3) 验证远程前端（mobile-remote.js）：常规两级、单档直选、Orchestrator 三级左滑与逐级返回、降噪无 modelId/N档
@@ -35732,6 +35826,20 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
   uiEnv.sandbox.URLSearchParams = URLSearchParams;
 
   const postedActions = [];
+  let currentMockSnapPayload = {
+    ok: true,
+    sessionId: 'conv-38',
+    title: '三级编排选择器测试',
+    busy: false,
+    model: snap.model,
+    modelOptions: snap.modelOptions,
+    orchestratorConfig: snap.orchestratorConfig,
+    permissionKey: 'auto',
+    permissionLabel: '自动',
+    messages: [],
+    projects: [],
+    conversations: []
+  };
   const mockHeaders = { get: (k) => (String(k || '').toLowerCase() === 'content-type' ? 'application/json' : '') };
   uiEnv.win.fetch = async (url, init = {}) => {
     const u = String(url);
@@ -35740,20 +35848,7 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
         ok: true,
         status: 200,
         headers: mockHeaders,
-        json: async () => ({
-          ok: true,
-          sessionId: 'conv-38',
-          title: '三级编排选择器测试',
-          busy: false,
-          model: snap.model,
-          modelOptions: snap.modelOptions,
-          orchestratorConfig: snap.orchestratorConfig,
-          permissionKey: 'auto',
-          permissionLabel: '自动',
-          messages: [],
-          projects: [],
-          conversations: []
-        })
+        json: async () => currentMockSnapPayload
       };
     }
     if (u.includes('/api/action')) {
@@ -35865,5 +35960,31 @@ test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级�
   assert.equal(Boolean(lastSinglePost.orchestrator), false);
   assert.equal(lastSinglePost.modelId, 'gpt-oss-120b-medium');
   assert.equal(uiEnv.doc.getElementById('model-inline-label')?.textContent, 'GPT-OSS 120B (Medium)');
+
+  // 回归校验 C（前端）：无 orchestratorConfig / orchestratorPlanners 且存在多个 Orchestrator 基座时，仅展示真实可直选基座，绝不借常规模型伪造强度档位
+  currentMockSnapPayload = {
+    ...currentMockSnapPayload,
+    model: 'Gemini 4 Neon (High)',
+    modelOptions: snapNoPlanners.modelOptions,
+    orchestratorConfig: undefined
+  };
+  uiEnv.doc.hidden = false;
+  uiEnv.doc.dispatchEvent({ type: 'visibilitychange' });
+  await new Promise((r) => setTimeout(r, 30));
+  modelBtn.onclick();
+  const fallbackRootBtns = sheetList.querySelectorAll('[data-group-idx]');
+  const fallbackOrchBtn = fallbackRootBtns[fallbackRootBtns.length - 1];
+  await sheetList.onclick({ target: fallbackOrchBtn });
+  const fallbackSubBtns = uiEnv.doc.getElementById('model-submodel-pane').querySelectorAll('[data-submodel-idx]');
+  assert.equal(fallbackSubBtns.length, 3, '仅存在 3 个 Orchestrator 基座时第 2 级只展示这 3 个真实基座');
+  assert.equal(fallbackSubBtns.some((b) => (b.textContent || '').includes('›')), false, '无 orchestratorPlanners 时子项不得出现下一级强度箭头 ›');
+  const carbonBaseBtn = fallbackSubBtns.find((b) => (b.textContent || '').includes('Orchestrator (Carbon)'));
+  assert.ok(carbonBaseBtn);
+  await sheetList.onclick({ target: carbonBaseBtn });
+  assert.equal(uiEnv.doc.getElementById('model-effort-pane').querySelectorAll('[data-variant-idx]').length, 0, '点击基座应直接提交而非展开伪造的第 3 级强度菜单');
+  const lastBaseOnlyPost = postedActions[postedActions.length - 1];
+  assert.equal(lastBaseOnlyPost.action, 'select-model');
+  assert.equal(Boolean(lastBaseOnlyPost.orchestrator), false, '直接切换 Orchestrator 基座不应附带伪造的 orchestrator planner 参数');
+  assert.equal(lastBaseOnlyPost.modelId, 'gemini-pro-orchestrator');
   assert.ok(settingsHtml.includes('value="__custom__"') && settingsHtml.includes('id="input-cli-custom-model"'), 'suite-settings.html 必须保留自定义模型 ID 兼容入口');
 });
