@@ -410,12 +410,39 @@ private struct DockTargetGeometry {
 }
 
 @MainActor
+private final class OverlayTransport {
+    private let socketFd: Int32
+
+    init(socketFd: Int32 = -1) {
+        self.socketFd = socketFd
+    }
+
+    func sendStatusLine(_ jsonLine: String) {
+        if socketFd >= 0 {
+            let bytes = Array(jsonLine.utf8)
+            var sent = 0
+            while sent < bytes.count {
+                let n = bytes.withUnsafeBytes { rawBuf in
+                    Darwin.write(socketFd, rawBuf.baseAddress!.advanced(by: sent), bytes.count - sent)
+                }
+                if n <= 0 { break }
+                sent += n
+            }
+        } else {
+            fputs(jsonLine, stdout)
+            fflush(stdout)
+        }
+    }
+}
+
+@MainActor
 final class OverlayController {
     static let shared = OverlayController()
 
     private let pad: CGFloat = 16.0
     private let window: NSWindow
     private let overlayView: DockOverlayView
+    private var transport = OverlayTransport()
 
     private var state = OverlayState()
     private var cachedDockPid: pid_t = 0
@@ -451,7 +478,8 @@ final class OverlayController {
         window = win
     }
 
-    func start() {
+    func start(socketFd: Int32 = -1) {
+        transport = OverlayTransport(socketFd: socketFd)
         tick(forceInitialReport: true)
     }
 
@@ -563,8 +591,7 @@ final class OverlayController {
         lastReportedIconSide = roundedSide
 
         let payload = "{\"type\":\"status\",\"axTrusted\":\(axTrusted ? "true" : "false"),\"dockFound\":\(dockFound ? "true" : "false"),\"iconSide\":\(Int(roundedSide))}\n"
-        fputs(payload, stdout)
-        fflush(stdout)
+        transport.sendStatusLine(payload)
     }
 
     private func resolveDockElement() -> AXUIElement? {
@@ -759,13 +786,102 @@ final class OverlayController {
     }
 }
 
+private func connectUnixSocket(at socketPath: String) -> Int32? {
+    let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return nil }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathUtf8 = Array(socketPath.utf8)
+    let maxPathBytes = MemoryLayout.size(ofValue: addr.sun_path) - 1
+    guard pathUtf8.count > 0, pathUtf8.count <= maxPathBytes else {
+        Darwin.close(fd)
+        return nil
+    }
+    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+        ptr.withMemoryRebound(to: CChar.self, capacity: maxPathBytes + 1) { dst in
+            for i in 0..<pathUtf8.count {
+                dst[i] = CChar(bitPattern: pathUtf8[i])
+            }
+            dst[pathUtf8.count] = 0
+        }
+    }
+    addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+    let res = withUnsafePointer(to: &addr) { ptr in
+        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            Darwin.connect(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    if res != 0 {
+        Darwin.close(fd)
+        return nil
+    }
+    return fd
+}
+
+private func parseCliMode(arguments: [String]) -> (promptAxOnly: Bool, socketPath: String?) {
+    var promptAxOnly = false
+    var socketPath: String? = nil
+    var idx = 1
+    while idx < arguments.count {
+        let arg = arguments[idx]
+        if arg == "--prompt-ax" {
+            promptAxOnly = true
+        } else if arg == "--socket", idx + 1 < arguments.count {
+            socketPath = arguments[idx + 1]
+            idx += 1
+        }
+        idx += 1
+    }
+    return (promptAxOnly, socketPath)
+}
+
+@MainActor
+private func terminateMainLoopSafely() {
+    MainActor.assumeIsolated {
+        NSApp.terminate(nil)
+        if let wake = NSEvent.otherEvent(
+            with: .applicationDefined,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            subtype: 0,
+            data1: 0,
+            data2: 0
+        ) {
+            NSApp.postEvent(wake, atStart: true)
+        }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+        Darwin.exit(0)
+    }
+}
+
 @MainActor
 private func runOverlayMain() {
+    let mode = parseCliMode(arguments: CommandLine.arguments)
+    if mode.promptAxOnly {
+        let opts = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(opts)
+        Darwin.exit(0)
+    }
+
+    var activeSocketFd: Int32 = -1
+    if let sockPath = mode.socketPath {
+        guard let connectedFd = connectUnixSocket(at: sockPath) else {
+            fputs("dock-overlay socket connect failed\n", stderr)
+            Darwin.exit(1)
+        }
+        activeSocketFd = connectedFd
+    }
+
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
 
     signal(SIGTERM, SIG_IGN)
     signal(SIGINT, SIG_IGN)
+    signal(SIGPIPE, SIG_IGN)
 
     let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     sigterm.setEventHandler {
@@ -783,16 +899,17 @@ private func runOverlayMain() {
     }
     sigint.resume()
 
-    OverlayController.shared.start()
+    OverlayController.shared.start(socketFd: activeSocketFd)
 
+    let readerSocketFd = activeSocketFd
     DispatchQueue.global(qos: .utility).async {
         let decoder = JSONDecoder()
-        while let rawLine = readLine(strippingNewline: true) {
+        let processLine = { (rawLine: String) in
             let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { continue }
+            if trimmed.isEmpty { return }
             guard let data = trimmed.data(using: .utf8),
                   let cmd = try? decoder.decode(OverlayCommand.self, from: data) else {
-                continue
+                return
             }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -800,26 +917,38 @@ private func runOverlayMain() {
                 }
             }
         }
-        // stdin EOF: 在主线程立即退出并唤醒 AppKit 事件循环
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                NSApp.terminate(nil)
-                if let wake = NSEvent.otherEvent(
-                    with: .applicationDefined,
-                    location: .zero,
-                    modifierFlags: [],
-                    timestamp: 0,
-                    windowNumber: 0,
-                    context: nil,
-                    subtype: 0,
-                    data1: 0,
-                    data2: 0
-                ) {
-                    NSApp.postEvent(wake, atStart: true)
+
+        if readerSocketFd >= 0 {
+            var lineBuf = Data()
+            var readChunk = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let n = Darwin.read(readerSocketFd, &readChunk, readChunk.count)
+                if n > 0 {
+                    lineBuf.append(contentsOf: readChunk[0..<n])
+                    while let nlIdx = lineBuf.firstIndex(of: 0x0A) {
+                        let lineData = lineBuf[..<nlIdx]
+                        lineBuf.removeSubrange(...nlIdx)
+                        if let lineStr = String(data: lineData, encoding: .utf8) {
+                            processLine(lineStr)
+                        }
+                    }
+                } else if n < 0 && errno == EINTR {
+                    continue
+                } else {
+                    break
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                Darwin.exit(0)
+            Darwin.close(readerSocketFd)
+        } else {
+            while let rawLine = readLine(strippingNewline: true) {
+                processLine(rawLine)
+            }
+        }
+
+        // stdin/socket EOF: 在主线程立即退出并唤醒 AppKit 事件循环
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                terminateMainLoopSafely()
             }
         }
     }

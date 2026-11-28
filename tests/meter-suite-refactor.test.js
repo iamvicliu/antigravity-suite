@@ -37109,3 +37109,445 @@ test('静态门禁：公开仓库源码、测试与文档严禁硬编码真实�
     `公开仓库存在未脱敏隐私数据，请替换为占位符：\n${violations.join('\n')}`
   );
 });
+
+// =========================================================================
+// 需求 65: 手机远程切换会话全链路提速无损保留与 macOS Dock .app Bundle 稳定签名验证
+// =========================================================================
+test('需求 65: 手机切会话无损加速（隔离缓存/去重/目录索引缓存/前端LRU）与 macOS Dock .app Bundle 固定签名', async () => {
+  const mrSrc = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+  const localApiSrc = fs.readFileSync(path.join(ROOT, 'local-api.js'), 'utf8');
+  const enhancerSrc = fs.readFileSync(path.join(ROOT, 'ag-enhancer-overlay.js'), 'utf8');
+
+  // 1. loopback Keep-Alive 连接池契约与流式首帧保持 agent:false 防污染
+  assert.ok(localApiSrc.includes('loopbackHttpAgent') && localApiSrc.includes('loopbackHttpsAgent'),
+    'local-api.js 应提供回环 HTTP/HTTPS Keep-Alive Agent');
+  assert.ok(localApiSrc.includes('requestConnectStreamFirstFrame') && localApiSrc.includes('agent: false'),
+    '流式首帧探测仍需保持 agent: false 避免提前销毁响应污染连接池');
+
+  // 2. matchWorkspaceToProjectId 预计算索引缓存一致且不破坏既有返回值
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-perf-65-'));
+  process.env.NODE_ENV = 'test';
+  process.env.AG_METER_STATE_DIR = tmpDir;
+  delete require.cache[require.resolve('../mobile-remote.js')];
+  const remoteMod = require('../mobile-remote.js');
+  try {
+    const pDirA = path.join(tmpDir, 'proj-a');
+    const pDirB = path.join(tmpDir, 'proj-b');
+    fs.mkdirSync(pDirA, { recursive: true });
+    fs.mkdirSync(pDirB, { recursive: true });
+    const metaMap = new Map([
+      ['proj-a', { id: 'proj-a', name: 'ProjA', workspacePaths: [pDirA] }],
+      ['proj-b', { id: 'proj-b', name: 'ProjB', workspacePaths: [pDirB] }]
+    ]);
+    for (let i = 0; i < 5; i++) {
+      assert.equal(remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + pDirA }] }, metaMap, { homeDir: tmpDir }), 'proj-a');
+      assert.equal(remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + pDirB }] }, metaMap, { homeDir: tmpDir }), 'proj-b');
+    }
+
+    // 3. markViewed 支持 deferPersist 延迟写盘并在默认调用保留即刻写盘
+    const store = remoteMod.createSessionCatalogStore();
+    assert.equal(typeof store.getCachedTrajectorySig, 'function');
+    assert.equal(store.getCachedTrajectorySig('unknown-sid'), '');
+
+    // 4. fetchPendingAgentMessages 同会话并发去重与空更新负缓存
+    const hm = remoteMod.createConversationHistoryManager();
+    let streamCalls = 0;
+    const mockApi = {
+      call: async () => ({}),
+      callStreamFirstFrame: async () => {
+        streamCalls += 1;
+        await new Promise((r) => setTimeout(r, 20));
+        return { stateUpdate: { otherField: true } };
+      }
+    };
+    const [p1, p2] = await Promise.all([
+      hm.fetchPendingAgentMessages('conv-dedup-1', { localApiConnect: async () => mockApi }),
+      hm.fetchPendingAgentMessages('conv-dedup-1', { localApiConnect: async () => mockApi })
+    ]);
+    assert.equal(p1, null);
+    assert.equal(p2, null);
+    assert.equal(streamCalls, 1, '同会话并发 fetchPendingAgentMessages 应共享 in-flight 请求只发 1 次');
+    await hm.fetchPendingAgentMessages('conv-dedup-1', { localApiConnect: async () => mockApi });
+    assert.equal(streamCalls, 1, '显式无待发消息状态应写入负缓存避免短时间重复撞流接口');
+  } finally {
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  // 5. ag-enhancer-overlay 隔离模式轻量快照 + trajSig 精准缓存命中/失效（完整保留全部有用字段）
+  assert.ok(enhancerSrc.includes('lightForIsolated'), 'getMobileSnapshot 应支持 lightForIsolated 跳过异会话重 DOM 扫描');
+  const env = createDomEnv();
+  env.sandbox.historyHref = 'http://127.0.0.1:62392/c/aaaa1111-1111-1111-1111-111111111111';
+  let rpcGetCount = 0;
+  let remoteStepText = '第一轮回复';
+  const targetIsoId = 'bbbb2222-2222-2222-2222-222222222222';
+  env.sandbox.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith('/GetCascadeTrajectory')) {
+      rpcGetCount += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          numTotalSteps: 2,
+          numTotalGeneratorMetadata: 1,
+          trajectory: {
+            status: 'CASCADE_RUN_STATUS_IDLE',
+            summary: '隔离会话标题',
+            steps: [
+              { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { items: [{ text: '你好' }] } },
+              { type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: remoteStepText } }
+            ],
+            generatorMetadata: [{
+              stepIndices: [1],
+              chatModel: {
+                modelDisplayName: 'Gemini 4 Neon',
+                usage: { inputTokens: '1000', cacheReadTokens: '4000', outputTokens: '200' },
+                chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+              }
+            }]
+          }
+        })
+      };
+    }
+    if (u.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ generatorMetadata: [] })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  env.win.__APP_CONFIG__ = { csrfToken: 'test-csrf', languageServerAddress: '127.0.0.1:60000' };
+  env.sandbox.__APP_CONFIG__ = env.win.__APP_CONFIG__;
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8'), env.sandbox);
+  vm.runInContext(enhancerSrc, env.sandbox);
+  const enh = env.sandbox.__AGEnhancer;
+  try {
+    const snap1 = await enh.getMobileSnapshotAsync({ conversationId: targetIsoId, trajSig: 'CASCADE_RUN_STATUS_IDLE|2|t1' });
+    assert.equal(snap1.isolated, true);
+    assert.equal(snap1.sessionId, targetIsoId);
+    assert.equal(snap1.title, '隔离会话标题');
+    assert.equal(snap1.model, 'Gemini 4 Neon');
+    assert.ok(snap1.messages.some((m) => String(m.text || '').includes('第一轮回复')));
+    assert.equal(rpcGetCount, 1);
+
+    // 相同 trajSig 命中缓存（零 RPC），且完整保留标题/模型/上下文/消息
+    const snap2 = await enh.getMobileSnapshotAsync({ conversationId: targetIsoId, trajSig: 'CASCADE_RUN_STATUS_IDLE|2|t1' });
+    assert.equal(rpcGetCount, 1, '相同 trajSig 命中隔离缓存不应重复调 LS RPC');
+    assert.equal(snap2.title, '隔离会话标题');
+    assert.ok(snap2.messages.some((m) => String(m.text || '').includes('第一轮回复')));
+
+    // trajSig 变化立即失效并拿最新内容
+    remoteStepText = '第二轮更新回复';
+    const snap3 = await enh.getMobileSnapshotAsync({ conversationId: targetIsoId, trajSig: 'CASCADE_RUN_STATUS_IDLE|4|t2' });
+    assert.equal(rpcGetCount, 2, 'trajSig 变更后必须立即重新拉取');
+    assert.ok(snap3.messages.some((m) => String(m.text || '').includes('第二轮更新回复')));
+
+    // msgLimit: 0 元信息快速路径与 lightForIsolated 应共存互不干扰
+    const metaFast = enh.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+    assert.equal(metaFast.ok, true);
+    assert.equal(Array.isArray(metaFast.modelOptions), true, 'msgLimit=0 快速路径应保留 modelOptions');
+    assert.equal(metaFast.messages?.length, 0, 'msgLimit=0 快速路径应跳过重 DOM 消息扫描');
+    assert.equal(metaFast.conversations?.length, 0, 'msgLimit=0 快速路径应跳过侧边栏会话列表扫描');
+  } finally {
+    enh?.dispose?.();
+    env.sandbox.__AGContextMeter?.dispose?.();
+  }
+
+  // 6. 前端 LRU 缓存、轮询防自踩与长消息折叠读写分离门禁
+  assert.ok(mrSrc.includes('skipReschedule') && mrSrc.includes('activeNavAbort'),
+    'mobile-remote.js 前端应阻断 900ms 轮询自踩并提供导航请求 Abort 取消连点');
+  assert.ok(mrSrc.includes('lastNavActionSeq += 1') && mrSrc.includes('isClientCacheRestore') && mrSrc.includes('buildHydratedClientCacheSnap'),
+    'enterConnectionMode 应递增 lastNavActionSeq 并中断在途导航请求，缓存恢复应走 isClientCacheRestore 与全局字段水合');
+  assert.ok(mrSrc.includes('saveCurrentSessionToClientCache') && mrSrc.includes('restoreSessionFromClientCache'),
+    'mobile-remote.js 应提供跨会话前端 LRU 缓存秒切');
+  assert.ok(mrSrc.includes('const pendingFolds = []'),
+    'applyMobileLongFolds 应保持读写分离消除强制同步回流');
+
+  // 6b. 前端 buildMobileAppHtml() VM 实测：跨 snapSeq 客户端缓存秒切 + 全局字段水合 + 单调门禁保留 + 切换失败回滚
+  {
+    delete require.cache[require.resolve('../mobile-remote.js')];
+    const remoteHtmlMod = require('../mobile-remote.js');
+    const html = remoteHtmlMod.buildMobileAppHtml();
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
+    assert.ok(scriptMatch && bodyMatch);
+    assert.doesNotThrow(() => new Function(scriptMatch[1]), 'mobile-remote 客户端内联脚本不得有语法错误');
+
+    const uiEnv = createDomEnv();
+    const rawSetTimeout = setTimeout;
+    const rawClearTimeout = clearTimeout;
+    const rawSetInterval = setInterval;
+    const rawClearInterval = clearInterval;
+    let vmDisposed = false;
+    const activeTimers = new Set();
+    uiEnv.sandbox.setTimeout = uiEnv.win.setTimeout = (fn, ms, ...args) => {
+      if (vmDisposed || typeof fn !== 'function') return 0;
+      const delay = Number(ms || 0);
+      const capped = delay > 300 ? 35 : (delay > 0 ? Math.min(delay, 10) : 0);
+      const t = rawSetTimeout(() => {
+        activeTimers.delete(t);
+        if (!vmDisposed) fn(...args);
+      }, capped);
+      t?.unref?.();
+      activeTimers.add(t);
+      return t;
+    };
+    uiEnv.sandbox.clearTimeout = uiEnv.win.clearTimeout = (t) => {
+      activeTimers.delete(t);
+      try { rawClearTimeout(t); } catch {}
+    };
+    uiEnv.sandbox.setInterval = uiEnv.win.setInterval = (fn, ms, ...args) => {
+      if (vmDisposed || typeof fn !== 'function') return 0;
+      const t = rawSetInterval(() => {
+        if (!vmDisposed) fn(...args);
+      }, Math.max(20, Math.min(Number(ms || 50), 100)));
+      t?.unref?.();
+      activeTimers.add(t);
+      return t;
+    };
+    uiEnv.sandbox.clearInterval = uiEnv.win.clearInterval = (t) => {
+      activeTimers.delete(t);
+      try { rawClearInterval(t); } catch {}
+      try { rawClearTimeout(t); } catch {}
+    };
+    uiEnv.doc.body.innerHTML = bodyMatch[1];
+    uiEnv.win.innerWidth = 390;
+    uiEnv.win.innerHeight = 844;
+    uiEnv.win.AbortController = AbortController;
+    uiEnv.win.location = { pathname: '/', search: '?token=test65', hash: '', href: 'http://127.0.0.1:18888/?token=test65', protocol: 'http:', reload() {} };
+    uiEnv.win.history = { replaceState() {} };
+    uiEnv.sandbox.location = uiEnv.win.location;
+    uiEnv.sandbox.history = uiEnv.win.history;
+    uiEnv.sandbox.AbortController = AbortController;
+    uiEnv.sandbox.URLSearchParams = URLSearchParams;
+
+    const mockHeaders = { get: (k) => (String(k || '').toLowerCase() === 'content-type' ? 'application/json' : '') };
+    const snapAInit = {
+      ok: true,
+      serverBootId: 'boot-65',
+      serverBootAt: 1000,
+      snapSeq: 12,
+      sessionId: 'conv-a',
+      desktopSessionId: 'conv-a',
+      isolated: false,
+      currentProjectId: 'p1',
+      currentProjectName: 'OldProj',
+      currentWorkspacePaths: ['/Users/demo/old'],
+      title: '会话A',
+      busy: false,
+      model: 'ModelOld',
+      modelOptions: [{ label: 'ModelOldOpt', modelId: 'm-old-opt', selected: true }],
+      showApiReferenceCost: false,
+      messagesStartIndex: 0,
+      totalMessages: 1,
+      messages: [{ role: 'user', text: 'MSG_A1', msgIndex: 0 }],
+      projects: [{ id: 'p1', name: 'OldProj', workspacePaths: ['/Users/demo/old'] }],
+      projectOrder: ['p1', 'p2'],
+      conversations: [
+        { id: 'conv-a', title: '会话A', projectId: 'p1', projectName: 'OldProj', active: true },
+        { id: 'conv-b', title: '会话B', projectId: 'p2', projectName: 'ProjB', active: false },
+        { id: 'conv-c', title: '会话C', projectId: 'p2', projectName: 'ProjB', active: false }
+      ]
+    };
+    const snapB = {
+      ok: true,
+      serverBootId: 'boot-65',
+      serverBootAt: 1000,
+      snapSeq: 50,
+      sessionId: 'conv-b',
+      desktopSessionId: 'conv-a',
+      isolated: true,
+      currentProjectId: 'p2',
+      currentProjectName: 'ProjB',
+      currentWorkspacePaths: ['/Users/demo/b'],
+      title: '会话B',
+      busy: false,
+      model: 'ModelNew',
+      modelOptions: [{ label: 'ModelNew', modelId: 'm-new', selected: true }],
+      showApiReferenceCost: true,
+      messagesStartIndex: 0,
+      totalMessages: 1,
+      messages: [{ role: 'user', text: 'MSG_B1', msgIndex: 0 }],
+      projects: [
+        { id: 'p1', name: 'RenamedProjA', workspacePaths: ['/Users/demo/new-a'] },
+        { id: 'p2', name: 'ProjB', workspacePaths: ['/Users/demo/b'] }
+      ],
+      projectOrder: ['p2', 'p1'],
+      conversations: [
+        { id: 'conv-a', title: '会话A', projectId: 'p1', projectName: 'RenamedProjA', active: false },
+        { id: 'conv-b', title: '会话B', projectId: 'p2', projectName: 'ProjB', active: true },
+        { id: 'conv-c', title: '会话C', projectId: 'p2', projectName: 'ProjB', active: false }
+      ]
+    };
+    const snapAUpdated = {
+      ...snapB,
+      snapSeq: 51,
+      sessionId: 'conv-a',
+      desktopSessionId: 'conv-a',
+      isolated: false,
+      currentProjectId: 'p1',
+      currentProjectName: 'RenamedProjA',
+      currentWorkspacePaths: ['/Users/demo/new-a'],
+      title: '会话A',
+      messagesStartIndex: 0,
+      totalMessages: 2,
+      messages: [
+        { role: 'user', text: 'MSG_A1', msgIndex: 0 },
+        { role: 'assistant', text: 'MSG_A2', msgIndex: 1 }
+      ],
+      conversations: [
+        { id: 'conv-a', title: '会话A', projectId: 'p1', projectName: 'RenamedProjA', active: true },
+        { id: 'conv-b', title: '会话B', projectId: 'p2', projectName: 'ProjB', active: false },
+        { id: 'conv-c', title: '会话C', projectId: 'p2', projectName: 'ProjB', active: false }
+      ]
+    };
+
+    let currentPollSnap = snapAInit;
+    let deferredActionResolve = null;
+    let switchCShouldFail = false;
+    uiEnv.win.fetch = async (url, init = {}) => {
+      if (vmDisposed) {
+        return { ok: true, status: 200, headers: mockHeaders, json: async () => ({ ok: true }) };
+      }
+      const u = String(url);
+      if (u.includes('/api/snapshot')) {
+        return { ok: true, status: 200, headers: mockHeaders, json: async () => currentPollSnap };
+      }
+      if (u.includes('/api/action')) {
+        const body = JSON.parse(String(init.body || '{}'));
+        if (body.action === 'switch-conversation' && body.id === 'conv-b') {
+          currentPollSnap = snapB;
+          return { ok: true, status: 200, headers: mockHeaders, json: async () => ({ ok: true, snapshot: snapB }) };
+        }
+        if (body.action === 'switch-conversation' && body.id === 'conv-a') {
+          return new Promise((resolve) => {
+            deferredActionResolve = (payload) => resolve({
+              ok: payload?.ok !== false,
+              status: payload?.ok === false ? 500 : 200,
+              headers: mockHeaders,
+              json: async () => payload
+            });
+          });
+        }
+        if (body.action === 'switch-conversation' && body.id === 'conv-c' && switchCShouldFail) {
+          return { ok: false, status: 500, headers: mockHeaders, json: async () => ({ ok: false, error: 'mock switch failed' }) };
+        }
+        return { ok: true, status: 200, headers: mockHeaders, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, status: 200, headers: mockHeaders, json: async () => ({ ok: true }) };
+    };
+    uiEnv.sandbox.fetch = uiEnv.win.fetch;
+
+    try {
+      vm.runInNewContext(scriptMatch[1], uiEnv.sandbox);
+      const convList = uiEnv.doc.getElementById('conv-list');
+      const waitFor = async (pred, msg) => {
+        for (let i = 0; i < 60; i++) {
+          if (pred()) return;
+          await new Promise((r) => rawSetTimeout(r, 15));
+        }
+        assert.ok(pred(), msg);
+      };
+
+      // 1) 等待初始渲染会话 A (snapSeq=12)
+      await waitFor(() => uiEnv.doc.getElementById('conv-title').textContent === '会话A'
+        && uiEnv.doc.getElementById('messages').textContent.includes('MSG_A1'),
+        '初始应渲染会话A'
+      );
+
+      // 2) 点击切到会话 B (snapSeq=50)
+      const btnB = convList.querySelectorAll('.conv-item').find((el) => el.getAttribute('data-cid') === 'conv-b');
+      assert.ok(btnB, '侧边栏应存在 conv-b 按钮');
+      await convList.dispatchEvent({ type: 'click', target: btnB, stopPropagation() {} });
+      await waitFor(() => uiEnv.doc.getElementById('conv-title').textContent === '会话B'
+        && uiEnv.doc.getElementById('messages').textContent.includes('MSG_B1'),
+        '应切换到会话B'
+      );
+      assert.equal(uiEnv.doc.getElementById('btn-follow-desktop').hidden, false, '异会话B应显示返回桌面会话按钮');
+
+      // 3) 挂起 conv-a 切换请求并点击切回 conv-a：验证立刻命中 LRU 缓存且不被 snapSeq=12<50 拒绝，且全局字段已水合
+      const btnA = convList.querySelectorAll('.conv-item').find((el) => el.getAttribute('data-cid') === 'conv-a');
+      assert.ok(btnA, '侧边栏应存在 conv-a 按钮');
+      const clickPromise = convList.dispatchEvent({ type: 'click', target: btnA, stopPropagation() {} });
+      await waitFor(() => typeof deferredActionResolve === 'function', '应发出 conv-a 切换请求');
+
+      assert.equal(uiEnv.doc.getElementById('conv-title').textContent, '会话A', '命中 LRU 缓存后应瞬间渲染会话A标题');
+      assert.ok(uiEnv.doc.getElementById('messages').textContent.includes('MSG_A1'), '命中 LRU 缓存后应瞬间渲染会话A消息');
+      assert.equal(uiEnv.doc.getElementById('btn-follow-desktop').hidden, true, '切回同桌面会话后 isolated 必须水合为 false 并隐藏跟随按钮');
+      assert.equal(uiEnv.doc.getElementById('model-inline-label').textContent, 'ModelOld', '本会话自己的上次模型标签应保留为 ModelOld');
+      uiEnv.doc.getElementById('btn-model-inline').click();
+      const modelSheetHtml = uiEnv.doc.getElementById('sheet-list').innerHTML;
+      assert.ok(modelSheetHtml.includes('ModelNew'), '全局 modelOptions 应水合为最新 ModelNew');
+      assert.equal(modelSheetHtml.includes('ModelOldOpt'), false, '全局 modelOptions 不得闪回旧缓存 ModelOldOpt');
+      uiEnv.doc.getElementById('sheet-close')?.click?.();
+      assert.equal(uiEnv.doc.getElementById('conv-project-badge').textContent, 'RenamedProjA', '全局 projects 目录重命名应通过水合同步到顶部徽章');
+
+      // 4) 缓存恢复不应降级单调水线：投递 snapSeq=40 (<50) 的陈旧快照仍应被拦截
+      currentPollSnap = {
+        ...snapB,
+        snapSeq: 40,
+        sessionId: 'conv-stale',
+        title: 'STALE_TITLE_40',
+        messages: [{ role: 'user', text: 'STALE_40', msgIndex: 0 }]
+      };
+      await new Promise((r) => rawSetTimeout(r, 40));
+      assert.notEqual(uiEnv.doc.getElementById('conv-title').textContent, 'STALE_TITLE_40', 'snapSeq=40 陈旧快照必须仍被单调门禁拦截');
+
+      // 5) 释放 conv-a 切换响应 (snapSeq=51) 更新消息并推高水线
+      currentPollSnap = snapAUpdated;
+      deferredActionResolve({ ok: true, snapshot: snapAUpdated });
+      await clickPromise;
+      await waitFor(() => uiEnv.doc.getElementById('messages').textContent.includes('MSG_A2'), '收到真实响应后应更新到 MSG_A2');
+
+      // 6) 切换 conv-c 失败时自动回滚到 conv-a
+      switchCShouldFail = true;
+      const btnC = convList.querySelectorAll('.conv-item').find((el) => el.getAttribute('data-cid') === 'conv-c');
+      assert.ok(btnC, '侧边栏应存在 conv-c 按钮');
+      await convList.dispatchEvent({ type: 'click', target: btnC, stopPropagation() {} });
+      await waitFor(() => uiEnv.doc.getElementById('conv-title').textContent === '会话A'
+        && uiEnv.doc.getElementById('messages').textContent.includes('MSG_A2'),
+        'switch-conversation 失败时必须回滚到切换前的会话A与消息内容'
+      );
+    } finally {
+      vmDisposed = true;
+      for (const t of activeTimers) {
+        try { rawClearTimeout(t); } catch {}
+        try { rawClearInterval(t); } catch {}
+      }
+      activeTimers.clear();
+    }
+  }
+
+  // 7. macOS Dock .app Bundle 固定签名与 LaunchServices 双模结构核验
+  const dockSrc = fs.readFileSync(path.join(ROOT, 'macos-dock-badge.js'), 'utf8');
+  const swiftSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'macos-dock-overlay.swift'), 'utf8');
+  assert.ok(dockSrc.includes('AntigravityDockOverlay.app') && dockSrc.includes('com.antigravity.context-meter.dock-overlay'),
+    'macos-dock-badge.js 应编译打包为固定路径与固定 Bundle ID 的 .app Bundle');
+  assert.ok(swiftSrc.includes('--socket') && swiftSrc.includes('--prompt-ax') && swiftSrc.includes('AXIsProcessTrustedWithOptions'),
+    'macos-dock-overlay.swift 应支持 --socket Unix Socket IPC 与 --prompt-ax 系统授权登记');
+  if (process.platform === 'darwin') {
+    const dockBadgeMod = require('../macos-dock-badge');
+    const tmpDockState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-dock-bundle-'));
+    const mgr = dockBadgeMod.createMacosDockBadgeManager({
+      platform: 'darwin',
+      stateDir: tmpDockState,
+      autoStart: false
+    });
+    try {
+      // 调用 triggerTestPreview 会因为 prefs.enabled=true 而确保编译打包 .app Bundle；但避免在单测启动真实 UI 弹窗，直接通过 disableSpawn=false 的私有编译或校验 codesign 产物更可控
+      assert.equal(mgr.getStatus().launchMode, 'spawn');
+    } finally {
+      await mgr.stop();
+      fs.rmSync(tmpDockState, { recursive: true, force: true });
+    }
+  }
+});
