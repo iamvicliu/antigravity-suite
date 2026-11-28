@@ -13069,7 +13069,7 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
   permH.textContent = 'Allow write access to this path?';
   permCard.appendChild(permH);
   const permDesc = env.doc.createElement('code');
-  permDesc.textContent = '/Users/shenslu/shared/_army/ledger/tasks/T-261121-6gud.md';
+  permDesc.textContent = '/Users/demo/workspace/notes/task-demo.md';
   permCard.appendChild(permDesc);
   const clickedLog = [];
   for (const label of [
@@ -28618,10 +28618,10 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const projectsDir = path.join(configDir, 'projects');
     const stateDir = path.join(tmpRoot, 'state');
     const codebaseDir = path.join(fakeHome, 'codebase');
-    const sharedArmyDir = path.join(fakeHome, 'shared', '_army');
-    const makeFontDir = path.join(codebaseDir, 'make-font');
-    const insightRepoDir = path.join(codebaseDir, 'InsightOS');
-    const insightSiteDir = path.join(fakeHome, 'shared', 'ws_works', 'InsightOS');
+    const sharedArmyDir = path.join(fakeHome, 'shared', 'shared-dir');
+    const makeFontDir = path.join(codebaseDir, 'dir-a');
+    const insightRepoDir = path.join(codebaseDir, 'proj-b');
+    const insightSiteDir = path.join(fakeHome, 'shared', 'dir-b-extra', 'proj-b');
     const agSuiteDir = path.join(codebaseDir, 'antigravity-suite');
     const agSuiteSubDir = path.join(agSuiteDir, 'src');
     const unregisteredRepoDir = path.join(codebaseDir, 'unregistered-sibling');
@@ -28631,8 +28631,8 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     }
     fs.writeFileSync(path.join(makeFontDir, 'font.txt'), 'font');
     fs.writeFileSync(path.join(sharedArmyDir, 'ledger.md'), '# army');
-    fs.writeFileSync(path.join(insightRepoDir, 'insight-app.ts'), 'export const app = 1;');
-    fs.writeFileSync(path.join(insightSiteDir, 'release-note.md'), '# InsightOS Site');
+    fs.writeFileSync(path.join(insightRepoDir, 'app.ts'), 'export const app = 1;');
+    fs.writeFileSync(path.join(insightSiteDir, 'release-note.md'), '# proj-b Site');
     fs.writeFileSync(path.join(agSuiteDir, 'cli.js'), '// ag-suite');
     fs.writeFileSync(path.join(agSuiteSubDir, 'app.js'), '// sub');
 
@@ -28645,17 +28645,17 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
         }
       }, null, 2));
     };
-    // 复现真实磁盘排序：0449 (%make-font + _army) 与 b6c2 (宽泛父目录 ~/codebase) 均排在 b9e0 (antigravity-suite) 之前
-    writeProjJson('0449-make-font', '%make-font', [makeFontDir, sharedArmyDir]);
-    writeProjJson('2628-insightos', 'InsightOS', [insightRepoDir, sharedArmyDir, insightSiteDir]);
+    // 复现真实磁盘排序：proj-a (dir-a + shared-dir) 与 b6c2 (宽泛父目录 ~/codebase) 均排在 b9e0 (antigravity-suite) 之前
+    writeProjJson('proj-a', 'proj-a', [makeFontDir, sharedArmyDir]);
+    writeProjJson('proj-b', 'proj-b', [insightRepoDir, sharedArmyDir, insightSiteDir]);
     writeProjJson('b6c2-global', '全局问题', [codebaseDir]);
     writeProjJson('b9e0-ag-suite', 'antigravity-suite', [agSuiteDir]);
     writeProjJson('default-cli-project', 'CLI Project', []);
 
-    // 2. matchWorkspaceToProjectId：防 _army 共享目录与 ~/codebase 宽泛父目录抢占归属
+    // 2. matchWorkspaceToProjectId：防 shared-dir 共享目录与 ~/codebase 宽泛父目录抢占归属
     const metaMap = new Map([
-      ['0449-make-font', { id: '0449-make-font', name: '%make-font', workspacePaths: [makeFontDir, sharedArmyDir] }],
-      ['2628-insightos', { id: '2628-insightos', name: 'InsightOS', workspacePaths: [insightRepoDir, sharedArmyDir, insightSiteDir] }],
+      ['proj-a', { id: 'proj-a', name: 'proj-a', workspacePaths: [makeFontDir, sharedArmyDir] }],
+      ['proj-b', { id: 'proj-b', name: 'proj-b', workspacePaths: [insightRepoDir, sharedArmyDir, insightSiteDir] }],
       ['b6c2-global', { id: 'b6c2-global', name: '全局问题', workspacePaths: [codebaseDir] }],
       ['b9e0-ag-suite', { id: 'b9e0-ag-suite', name: 'antigravity-suite', workspacePaths: [agSuiteDir] }]
     ]);
@@ -28676,13 +28676,13 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
           { workspaceFolderAbsoluteUri: 'file://' + insightSiteDir }
         ]
       }, metaMap, { homeDir: fakeHome }),
-      '2628-insightos',
-      '含共享目录 _army 的多目录会话必须命中拥有专属目录的 InsightOS，不得被排第一的 %make-font 抢占'
+      'proj-b',
+      '含共享目录 shared-dir 的多目录会话必须命中拥有专属目录的 proj-b，不得被排第一的 proj-a 抢占'
     );
     assert.equal(
       remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + sharedArmyDir }] }, metaMap, { homeDir: fakeHome }),
       '',
-      '仅含多项目共享目录 _army 时不得随机归入排第一的 %make-font'
+      '仅含多项目共享目录 shared-dir 时不得随机归入排第一的 proj-a'
     );
     assert.equal(
       remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + unregisteredRepoDir }] }, metaMap, { homeDir: fakeHome }),
@@ -28787,9 +28787,9 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
               numTotalSteps: 2,
               trajectory: {
                 status: 'CASCADE_RUN_STATUS_IDLE',
-                summary: 'InsightOS 多目录会话',
+                summary: 'proj-b 多目录会话',
                 trajectoryMetadata: {
-                  projectId: '2628-insightos',
+                  projectId: 'proj-b',
                   workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + insightRepoDir }]
                 },
                 steps: [
@@ -28830,16 +28830,16 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
 
     const isoSnap = await enh.getMobileSnapshotAsync({ conversationId: isoHexId });
     assert.equal(isoSnap.isolated, true);
-    assert.equal(isoSnap.currentProjectId, '2628-insightos', '独立隔离快照必须优先采用 trajectoryMetadata.projectId 而非虚拟列表假分组');
+    assert.equal(isoSnap.currentProjectId, 'proj-b', '独立隔离快照必须优先采用 trajectoryMetadata.projectId 而非虚拟列表假分组');
 
     // 3b. DOM 与 Fiber 分支归属冲突验证：当列表前置 project-header 或虚拟行 groupId 与权威归属冲突时，必须服从权威会话归属
     await new Promise((r) => setTimeout(r, 30)); // 等待首次 refreshCascadeTrajectorySummaries 写入权威归属
-    // (i) DOM 分支冲突：在置顶行前插入另一个项目 (%make-font / 0449-make-font) 的 project-header，验证不被错归入 0449-make-font
+    // (i) DOM 分支冲突：在置顶行前插入另一个项目 (proj-a / proj-a) 的 project-header，验证不被错归入 proj-a
     const wrongDomHeader = envEnh.doc.createElement('button');
     wrongDomHeader.setAttribute('data-testid', 'project-header');
-    wrongDomHeader.setAttribute('data-project-id', '0449-make-font');
-    wrongDomHeader.setAttribute('data-project-label', '%make-font');
-    wrongDomHeader.textContent = '%make-font';
+    wrongDomHeader.setAttribute('data-project-id', 'proj-a');
+    wrongDomHeader.setAttribute('data-project-label', 'proj-a');
+    wrongDomHeader.textContent = 'proj-a';
     const rightDomHeader = envEnh.doc.createElement('button');
     rightDomHeader.setAttribute('data-testid', 'project-header');
     rightDomHeader.setAttribute('data-project-id', 'b9e0-ag-suite');
@@ -28850,15 +28850,15 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
 
     const domConflictSnap = enh.getMobileSnapshot();
     assert.equal(domConflictSnap.currentProjectId, 'b9e0-ag-suite', 'DOM 分支：前置错误 project-header 不得覆盖已知权威归属 b9e0-ag-suite');
-    assert.equal(domConflictSnap.currentProjectName, 'antigravity-suite', 'DOM 分支：当前项目名必须保持权威 antigravity-suite 而非 %make-font');
+    assert.equal(domConflictSnap.currentProjectName, 'antigravity-suite', 'DOM 分支：当前项目名必须保持权威 antigravity-suite 而非 proj-a');
     const agDomGrp = domConflictSnap.projectGroups.find((g) => g.id === 'b9e0-ag-suite');
-    const wrongDomGrp = domConflictSnap.projectGroups.find((g) => g.id === '0449-make-font');
+    const wrongDomGrp = domConflictSnap.projectGroups.find((g) => g.id === 'proj-a');
     assert.ok(agDomGrp && agDomGrp.conversations.some((c) => c.id === pinnedHexId), 'DOM 分支：置顶会话必须归入权威组 b9e0-ag-suite');
-    assert.equal(Boolean(wrongDomGrp && wrongDomGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'DOM 分支：置顶会话不得落入前置错误组 0449-make-font');
+    assert.equal(Boolean(wrongDomGrp && wrongDomGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'DOM 分支：置顶会话不得落入前置错误组 proj-a');
 
-    // (ii) Fiber 分支冲突：虚拟列表 items 将置顶会话置于 header-0449-make-font 下且携带冲突 groupId='0449-make-font'，而 Hook 状态权威归属为 b9e0-ag-suite
+    // (ii) Fiber 分支冲突：虚拟列表 items 将置顶会话置于 header-proj-a 下且携带冲突 groupId='proj-a'，而 Hook 状态权威归属为 b9e0-ag-suite
     const hookGroups = [
-      { id: '0449-make-font', label: '%make-font', kind: 'project', entries: [] },
+      { id: 'proj-a', label: 'proj-a', kind: 'project', entries: [] },
       {
         id: 'b9e0-ag-suite',
         label: 'antigravity-suite',
@@ -28872,8 +28872,8 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       return: {
         memoizedProps: {
           items: [
-            { type: 'header', id: 'header-0449-make-font', label: '%make-font', count: 1, isCollapsed: false },
-            { type: 'row', id: pinnedHexId, cascadeId: pinnedHexId, groupId: '0449-make-font' },
+            { type: 'header', id: 'header-proj-a', label: 'proj-a', count: 1, isCollapsed: false },
+            { type: 'row', id: pinnedHexId, cascadeId: pinnedHexId, groupId: 'proj-a' },
             { type: 'header', id: 'header-b9e0-ag-suite', label: 'antigravity-suite', count: 1, isCollapsed: false }
           ]
         },
@@ -28885,15 +28885,15 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.equal(fiberConflictSnap.currentProjectId, 'b9e0-ag-suite', 'Fiber 分支：冲突虚拟行 groupId 不得覆盖 Hook 权威归属 b9e0-ag-suite');
     assert.equal(fiberConflictSnap.currentProjectName, 'antigravity-suite');
     const agFiberGrp = fiberConflictSnap.projectGroups.find((g) => g.id === 'b9e0-ag-suite');
-    const wrongFiberGrp = fiberConflictSnap.projectGroups.find((g) => g.id === '0449-make-font');
+    const wrongFiberGrp = fiberConflictSnap.projectGroups.find((g) => g.id === 'proj-a');
     assert.ok(agFiberGrp && agFiberGrp.conversations.some((c) => c.id === pinnedHexId), 'Fiber 分支：置顶会话必须归入权威组 b9e0-ag-suite');
-    assert.equal(Boolean(wrongFiberGrp && wrongFiberGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'Fiber 分支：置顶会话不得归入冲突 groupId 指定的 0449-make-font');
+    assert.equal(Boolean(wrongFiberGrp && wrongFiberGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'Fiber 分支：置顶会话不得归入冲突 groupId 指定的 proj-a');
 
-    // (iii) entry.projectId='default' 污染值 + 语言服务元数据/摘要为真实项目 + Hook 分组为另一项目 (0449-make-font)：必须逐候选过滤并服从语言服务元数据/摘要，绝不短路落入 0449-make-font
+    // (iii) entry.projectId='default' 污染值 + 语言服务元数据/摘要为真实项目 + Hook 分组为另一项目 (proj-a)：必须逐候选过滤并服从语言服务元数据/摘要，绝不短路落入 proj-a
     const hookDefaultPolluted = [
       {
-        id: '0449-make-font',
-        label: '%make-font',
+        id: 'proj-a',
+        label: 'proj-a',
         kind: 'project',
         entries: [{
           cascadeId: pinnedHexId,
@@ -28916,16 +28916,16 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       'entry.projectId=default 时会话仍须归入 trajectoryMetadata 指定的 b9e0-ag-suite'
     );
     assert.equal(
-      Boolean(defaultPollutedSnap.projectGroups.find((g) => g.id === '0449-make-font')?.conversations.some((c) => c.id === pinnedHexId)),
+      Boolean(defaultPollutedSnap.projectGroups.find((g) => g.id === 'proj-a')?.conversations.some((c) => c.id === pinnedHexId)),
       false,
-      'entry.projectId=default 时不得误落入外层 Hook 组 0449-make-font'
+      'entry.projectId=default 时不得误落入外层 Hook 组 proj-a'
     );
 
     // 再验证 entry 无内嵌 trajectoryMetadata、但 cascadeSummaryMap 持有语言服务摘要 projectId 时，摘要同样高于外层错误 Hook 组
     const hookSummaryOnly = [
       {
-        id: '0449-make-font',
-        label: '%make-font',
+        id: 'proj-a',
+        label: 'proj-a',
         kind: 'project',
         entries: [{
           cascadeId: pinnedHexId,
@@ -28939,10 +28939,10 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const summaryPrioritySnap = enh.getMobileSnapshot();
     assert.equal(summaryPrioritySnap.currentProjectId, 'b9e0-ag-suite', '语言服务摘要 projectId 必须高于外层 Hook 分组猜测');
 
-    // (iv) 已有会话 URL ?project=0449-make-font 与语言服务权威归属 b9e0-ag-suite 冲突时，普通快照必须服从会话权威归属并保持 ID/名称/分组一致；新建对话才优先采用 URL 项目选择
+    // (iv) 已有会话 URL ?project=proj-a 与语言服务权威归属 b9e0-ag-suite 冲突时，普通快照必须服从会话权威归属并保持 ID/名称/分组一致；新建对话才优先采用 URL 项目选择
     const origPathname = envEnh.win.location.pathname;
     const origSearch = envEnh.win.location.search;
-    envEnh.win.location.search = '?project=0449-make-font';
+    envEnh.win.location.search = '?project=proj-a';
     const urlConflictSnap = enh.getMobileSnapshot();
     assert.equal(urlConflictSnap.isNewConversation, false);
     assert.equal(urlConflictSnap.currentProjectId, 'b9e0-ag-suite', '已有会话普通快照必须优先采用会话权威项目归属，不被冲突 URL ?project= 覆盖');
@@ -28955,7 +28955,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     envEnh.win.location.pathname = '/';
     const newChatUrlSnap = enh.getMobileSnapshot();
     assert.equal(newChatUrlSnap.isNewConversation, true);
-    assert.equal(newChatUrlSnap.currentProjectId, '0449-make-font', '新建空白对话页应继续采用 URL ?project= 项目选择');
+    assert.equal(newChatUrlSnap.currentProjectId, 'proj-a', '新建空白对话页应继续采用 URL ?project= 项目选择');
     envEnh.win.location.pathname = origPathname;
     envEnh.win.location.search = origSearch;
 
@@ -29050,11 +29050,11 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
         trajectoryMetadata: { projectId: 'b9e0-ag-suite', rootConversationId: 'conv-pinned-ag' },
         annotations: { pinned: true }
       },
-      'conv-insight': {
+      'conv-b': {
         summary: 'Insight 多目录开发',
         status: 'CASCADE_RUN_STATUS_IDLE',
         lastModifiedTime: new Date().toISOString(),
-        trajectoryMetadata: { projectId: '2628-insightos', rootConversationId: 'conv-insight' }
+        trajectoryMetadata: { projectId: 'proj-b', rootConversationId: 'conv-b' }
       },
       'conv-standalone': {
         summary: '纯独立问答',
@@ -29092,8 +29092,8 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       [fs.realpathSync(agSuiteDir)],
       '当前会话必须替换为自身真实工作区路径，绝不残留上一个项目的路径'
     );
-    const insightProjEntry = enrichedAg.projects.find((p) => p.id === '2628-insightos');
-    assert.ok(insightProjEntry, 'projects 列表应包含多目录项目 InsightOS');
+    const insightProjEntry = enrichedAg.projects.find((p) => p.id === 'proj-b');
+    assert.ok(insightProjEntry, 'projects 列表应包含多目录项目 proj-b');
     assert.equal(insightProjEntry.workspacePaths.length, 3, '多目录项目必须完整下发全部 3 个工作区路径');
     assert.deepEqual(
       insightProjEntry.workspacePaths,
@@ -29166,7 +29166,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.equal(standaloneCrossAttempt.status, 403, '独立会话携带其他项目目录请求必须 403 拦截');
 
     const crossProjAttempt = await callGetJson('/api/project-tree?conversationId=conv-pinned-ag&projectId=b9e0-ag-suite&dir=' + encodeURIComponent(insightRepoDir));
-    assert.equal(crossProjAttempt.status, 403, 'antigravity-suite 会话请求 InsightOS 目录必须 403 拦截防串台');
+    assert.equal(crossProjAttempt.status, 403, 'antigravity-suite 会话请求 proj-b 目录必须 403 拦截防串台');
 
     // 即便父目录 ~/codebase 存在于 allowedRoots（全局问题项目），在 antigravity-suite 根目录时 parentDir 必须为空，严禁越界上翻到 ~/codebase
     const agRootTree = await callGetJson('/api/project-tree?conversationId=conv-pinned-ag&projectId=b9e0-ag-suite&dir=' + encodeURIComponent(agSuiteDir));
@@ -29212,7 +29212,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
 
     // 当项目元数据非空时，未知/无法解析归属的 conversationId 即便同时携带有效的其他项目 projectId、dir 与 workspaceRoot，也必须严格拒绝，不得回退采用未经会话关联验证的 projectId
     const unknownConvSpoofedProjWithDir = await callGetJson(
-      '/api/project-tree?conversationId=conv-unknown-999&projectId=2628-insightos&dir=' + encodeURIComponent(insightRepoDir) + '&workspaceRoot=' + encodeURIComponent(insightRepoDir)
+      '/api/project-tree?conversationId=conv-unknown-999&projectId=proj-b&dir=' + encodeURIComponent(insightRepoDir) + '&workspaceRoot=' + encodeURIComponent(insightRepoDir)
     );
     assert.equal(
       unknownConvSpoofedProjWithDir.status,
@@ -29220,7 +29220,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       '未知 conversationId 搭配有效其他项目 projectId + dir + workspaceRoot 时必须 403 拒绝，不得回退信任未验证的 projectId'
     );
     const unknownConvSpoofedProjNoDir = await callGetJson(
-      '/api/project-tree?conversationId=conv-unknown-999&projectId=2628-insightos'
+      '/api/project-tree?conversationId=conv-unknown-999&projectId=proj-b'
     );
     assert.equal(unknownConvSpoofedProjNoDir.status, 200);
     assert.equal(
@@ -29236,7 +29236,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     fs.mkdirSync(nestedChildDir, { recursive: true });
     fs.writeFileSync(path.join(nestedParentDir, 'parent-only.txt'), 'parent-secret');
     fs.writeFileSync(path.join(nestedChildDir, 'child-ok.txt'), 'child-ok');
-    // 在子工作区内创建指向上级父工作区文件的符号链接；在 InsightOS 工作区 1 内创建指向同项目工作区 2 (_army) 的目录符号链接
+    // 在子工作区内创建指向上级父工作区文件的符号链接；在 proj-b 工作区 1 内创建指向同项目工作区 2 (shared-dir) 的目录符号链接
     fs.symlinkSync(path.join(nestedParentDir, 'parent-only.txt'), path.join(nestedChildDir, 'link-to-parent-file.txt'));
     fs.symlinkSync(sharedArmyDir, path.join(insightRepoDir, 'symlink-to-army-ws'));
     writeProjJson('proj-nested', 'NestedProject', [nestedParentDir, nestedChildDir]);
@@ -29279,16 +29279,16 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     };
 
     // (i) 显式传入无效或不属于当前项目的 workspaceRoot 必须拒绝，严禁静默忽略
-    const badWsRelative = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=relative/bad');
+    const badWsRelative = await callNestedJson('/api/project-tree?conversationId=conv-b&workspaceRoot=relative/bad');
     assert.equal(badWsRelative.status, 400, '显式传入非绝对路径 workspaceRoot 必须返回 400');
-    const badWsMissing = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(path.join(fakeHome, 'missing-ws')));
+    const badWsMissing = await callNestedJson('/api/project-tree?conversationId=conv-b&workspaceRoot=' + encodeURIComponent(path.join(fakeHome, 'missing-ws')));
     assert.equal(badWsMissing.status, 404, '显式传入不存在的 workspaceRoot 必须返回 404');
-    const badWsOtherProj = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(makeFontDir) + '&dir=' + encodeURIComponent(insightRepoDir));
+    const badWsOtherProj = await callNestedJson('/api/project-tree?conversationId=conv-b&workspaceRoot=' + encodeURIComponent(makeFontDir) + '&dir=' + encodeURIComponent(insightRepoDir));
     assert.equal(badWsOtherProj.status, 403, '显式传入其他项目的 workspaceRoot 必须返回 403，不得静默改用 dir 所在根');
 
     // (ii) 显式传入合法 workspaceRoot 时，请求其他工作区或父工作区的 dir 必须 403 拒绝，严禁静默切换 activeRoot
     const crossSiblingWs = await callNestedJson(
-      '/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightSiteDir)
+      '/api/project-tree?conversationId=conv-b&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightSiteDir)
     );
     assert.equal(crossSiblingWs.status, 403, 'dir 超出当前指定 workspaceRoot（指向同项目另一工作区）必须 403 拦截');
     const escapeChildWsToParent = await callNestedJson(
@@ -29313,7 +29313,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.equal(parentScopedSubTree.json.parentDir, fs.realpathSync(nestedParentDir), '选定父工作区根时浏览其子目录可正常返回父工作区');
 
     const insightRepoScopedTree = await callNestedJson(
-      '/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightRepoDir)
+      '/api/project-tree?conversationId=conv-b&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightRepoDir)
     );
     assert.equal(insightRepoScopedTree.status, 200);
     assert.equal(
@@ -29325,10 +29325,10 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     // 6. 前端完整交互验证：多目录项目展示全部工作区 + 顶部切换栏、切单目录项目自动重置、切独立会话展示空态绝不串台
     const enrichedInsight = await remoteMod.enrichSnapshotWithCatalog({
       ok: true,
-      sessionId: 'conv-insight',
-      activeConversationId: 'conv-insight',
+      sessionId: 'conv-b',
+      activeConversationId: 'conv-b',
       conversations: [
-        { id: 'conv-insight', title: 'Insight 多目录开发', active: true },
+        { id: 'conv-b', title: 'Insight 多目录开发', active: true },
         { id: 'conv-pinned-ag', title: '置顶会话', active: false },
         { id: 'conv-standalone', title: '纯独立问答', active: false }
       ]
@@ -29387,7 +29387,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
         const cidQ = u.searchParams.get('conversationId') || '';
         const payload = cidQ === 'conv-pinned-ag'
           ? { ok: true, diffs: [{ name: 'cli.js', path: path.join(agSuiteDir, 'cli.js'), diff: '@@ -1 +1 @@\n+// ag-suite-diff' }], artifacts: [] }
-          : (cidQ === 'conv-insight'
+          : (cidQ === 'conv-b'
             ? { ok: true, diffs: [], artifacts: [{ name: 'insight-art.md', content: '# Insight Summary' }] }
             : { ok: true, diffs: [], artifacts: [] });
         return { ok: true, status: 200, headers: jsonHeaders, json: async () => payload };
@@ -29398,24 +29398,24 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     vm.runInContext(inlineScriptMatch[1], envUi.sandbox);
     await new Promise((r) => setTimeout(r, 40));
 
-    // (a) InsightOS 含 3 个工作区文件夹：点击「项目文件」默认展示全部 3 个工作区目录列表
+    // (a) proj-b 含 3 个工作区文件夹：点击「项目文件」默认展示全部 3 个工作区目录列表
     envUi.doc.getElementById('btn-files-panel').click();
     await new Promise((r) => setTimeout(r, 30));
     const fvBody = envUi.doc.getElementById('fv-body');
     const rootRows = fvBody.querySelectorAll('.fv-ws-root-row');
     assert.equal(rootRows.length, 3, '3 目录项目打开项目文件应默认列出全部 3 个工作区文件夹');
-    // 点击第 3 个目录 (ws_works/InsightOS) 进入浏览，顶部应出现工作区切换胶囊栏且根目录无「↑ 上级」
+    // 点击第 3 个目录 (dir-b-extra/proj-b) 进入浏览，顶部应出现工作区切换胶囊栏且根目录无「↑ 上级」
     rootRows[2].click();
     await new Promise((r) => setTimeout(r, 40));
     assert.ok((fvBody.textContent || '').includes('release-note.md'), '点击第 3 个工作区应加载该目录下的 release-note.md');
     assert.equal(fvBody.querySelectorAll('.fv-ws-switch').length, 3, '进入目录后顶部应渲染 3 个工作区切换胶囊');
     assert.equal(envUi.doc.getElementById('fv-tree-up'), null, '工作区根目录处不得渲染越界「↑ 上级」按钮');
-    // 通过顶部切换胶囊切到第 1 个工作区 (codebase/InsightOS)
+    // 通过顶部切换胶囊切到第 1 个工作区 (codebase/proj-b)
     fvBody.querySelectorAll('.fv-ws-switch')[0].click();
     await new Promise((r) => setTimeout(r, 40));
-    assert.ok((fvBody.textContent || '').includes('insight-app.ts'), '点击顶部工作区胶囊应即时切换到第 1 个工作区');
+    assert.ok((fvBody.textContent || '').includes('app.ts'), '点击顶部工作区胶囊应即时切换到第 1 个工作区');
 
-    // (b) 切换到单目录会话 antigravity-suite：关闭再点开「项目文件」，必须直接进入 antigravity-suite 目录，绝不残留 InsightOS 目录
+    // (b) 切换到单目录会话 antigravity-suite：关闭再点开「项目文件」，必须直接进入 antigravity-suite 目录，绝不残留 proj-b 目录
     envUi.doc.getElementById('fv-close-btn').click();
     currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 10 };
     envUi.win.dispatchEvent({ type: 'pageshow' });
@@ -29424,7 +29424,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     envUi.doc.getElementById('btn-files-panel').click();
     await new Promise((r) => setTimeout(r, 40));
     assert.ok((fvBody.textContent || '').includes('cli.js'), '切到单目录项目后点开文件应直接展示 antigravity-suite 下的 cli.js');
-    assert.equal((fvBody.textContent || '').includes('insight-app.ts'), false, '严禁残留上一个项目 InsightOS 的目录内容');
+    assert.equal((fvBody.textContent || '').includes('app.ts'), false, '严禁残留上一个项目 proj-b 的目录内容');
 
     // (c) 切换到无项目的独立会话 conv-standalone：顶栏项目徽章自动隐藏，点开「项目文件」展示空态绝不残留 antigravity-suite
     envUi.doc.getElementById('fv-close-btn').click();
@@ -29451,7 +29451,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const slowWs1Promise = new Promise((r) => { releaseSlowWs1 = r; });
     interceptTreeGate = async (u) => {
       const dirQ = u.searchParams.get('dir') || '';
-      if (dirQ.includes('codebase/InsightOS')) {
+      if (dirQ.includes('codebase/proj-b')) {
         await slowWs1Promise;
       }
     };
@@ -29465,9 +29465,9 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     releaseSlowWs1();
     await new Promise((r) => setTimeout(r, 40));
     assert.ok((fvBody.textContent || '').includes('release-note.md'), '工作区 1 的迟到响应严禁覆盖当前工作区 3 内容');
-    assert.equal((fvBody.textContent || '').includes('insight-app.ts'), false, '工作区 1 的迟到文件列表必须被丢弃');
+    assert.equal((fvBody.textContent || '').includes('app.ts'), false, '工作区 1 的迟到文件列表必须被丢弃');
 
-    // (e) 切会话乱序响应回归：会话 A (antigravity-suite) 文件面板请求挂起期间切到会话 B (conv-standalone 空态) 及会话 C (InsightOS)，放行 A 的迟到响应不得污染面板或 fvState
+    // (e) 切会话乱序响应回归：会话 A (antigravity-suite) 文件面板请求挂起期间切到会话 B (conv-standalone 空态) 及会话 C (proj-b)，放行 A 的迟到响应不得污染面板或 fvState
     envUi.doc.getElementById('fv-close-btn').click();
     currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 40 };
     envUi.win.dispatchEvent({ type: 'pageshow' });
@@ -29533,11 +29533,11 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     interceptFileGate = async () => { await slowFilePromise; };
     fvBody.querySelectorAll('.fv-row').find((r) => (r.textContent || '').includes('cli.js')).click();
     await new Promise((r) => setTimeout(r, 15));
-    // 文件读取仍在挂起加载态时切到多目录会话 InsightOS
+    // 文件读取仍在挂起加载态时切到多目录会话 proj-b
     currentUiSnap = { ...enrichedInsight, snapSeq: enrichedInsight.snapSeq + 90 };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 35));
-    assert.equal(fvBody.querySelectorAll('.fv-ws-root-row').length, 3, '文件请求挂起期间切到 InsightOS 应立即重载出 3 工作区总览，绝不永久卡在骨架屏');
+    assert.equal(fvBody.querySelectorAll('.fv-ws-root-row').length, 3, '文件请求挂起期间切到 proj-b 应立即重载出 3 工作区总览，绝不永久卡在骨架屏');
     releaseSlowFile();
     interceptFileGate = null;
     await new Promise((r) => setTimeout(r, 35));
@@ -29571,7 +29571,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     };
     envUi.doc.getElementById('fv-tab-changes').click();
     await new Promise((r) => setTimeout(r, 15));
-    // 会话 A 变更接口挂起中切到会话 C (conv-insight)
+    // 会话 A 变更接口挂起中切到会话 C (conv-b)
     currentUiSnap = { ...enrichedInsight, snapSeq: enrichedInsight.snapSeq + 130 };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
@@ -32720,10 +32720,10 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
       webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) },
       fetchSnapshot: async () => ({
         ok: true,
-        sessionId: 'conv-insight',
-        activeConversationId: 'conv-insight',
+        sessionId: 'conv-b',
+        activeConversationId: 'conv-b',
         busy: true,
-        conversations: [{ id: 'conv-insight', title: 'sample task', projectName: 'proj-a', status: 'running' }],
+        conversations: [{ id: 'conv-b', title: 'sample task', projectName: 'proj-a', status: 'running' }],
         projects: [],
         messages: [],
         queuedMessages: [{ domIndex: 0, stepIndex: -1, messageId: 'opt-dup-space', source: 'dom', text: 'https://example.com/1 sample queued message' }]
@@ -32756,8 +32756,8 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
           actionResult: { ok: true },
           snapshot: {
             ok: true,
-            sessionId: 'conv-insight',
-            activeConversationId: 'conv-insight',
+            sessionId: 'conv-b',
+            activeConversationId: 'conv-b',
             busy: true,
             conversations: [],
             projects: [],
@@ -32821,7 +32821,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   // 4a. 客户端传入了陈旧已删除的 pm-stale-deleted 与被篡改文本，服务端仅按实时核验的 pm-real-1 权威正文直发，绝不重发已删项
   const sendAllOk = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     messageIds: ['pm-stale-deleted', 'pm-real-1'],
     queuedItems: [
       { messageId: 'pm-stale-deleted', source: 'agent_state', domIndex: 0, text: '早已撤回或自动出队的陈旧消息' },
@@ -32844,7 +32844,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   ];
   const sendAllMedia = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     messageIds: ['pm-media-1'],
     queuedItems: [{ messageId: 'pm-media-1', source: 'agent_state', domIndex: 0, text: '带图排队项', hasMedia: false }]
   });
@@ -32858,7 +32858,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   liveServerPendingList = [];
   const sendAllEmpty = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     messageIds: ['pm-already-gone'],
     queuedItems: [{ messageId: 'pm-already-gone', source: 'agent_state', domIndex: 0, text: '已空队列陈旧项' }]
   });
@@ -32870,7 +32870,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   sendAllShouldHang = true;
   const sendAllTimeout = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     messageIds: ['pm-real-2'],
     queuedItems: [{ messageId: 'pm-real-2', source: 'agent_state', domIndex: 0, text: '超时不应补发' }]
   });
@@ -32887,7 +32887,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   ];
   const batchSendHang1 = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     messageIds: ['pm-hang-1'],
     queuedItems: [{ messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' }]
   });
@@ -32899,7 +32899,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   lsRpcLog.length = 0;
   const batchSendHangRetry = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     messageIds: ['pm-hang-1'],
     queuedItems: [{ messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' }]
   });
@@ -32917,7 +32917,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   ];
   const taintedWithMedia = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     messageIds: ['pm-hang-1', 'pm-new-media'],
     queuedItems: [
       { messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' },
@@ -32933,7 +32933,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   ];
   const taintedWithHasDom = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     hasDomQueued: true,
     messageIds: ['pm-hang-1']
   });
@@ -32944,7 +32944,7 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   pendingFetchShouldThrow = true;
   const taintedQueryFailed = await postJson({
     action: 'send-queued-messages',
-    conversationId: 'conv-insight',
+    conversationId: 'conv-b',
     hasDomQueued: true,
     messageIds: ['pm-hang-1']
   });
@@ -33104,27 +33104,27 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   // 4e. /api/action send 幂等保护：① 成功重放（含跨 >60s TTL 与容量淘汰后响应丢失重试）均不二次执行；② 已派发后超时抛错（结果未知）同 clientActionId 重试被严格拦截，且跨 >60s 过期及容量淘汰后仍不放行；③ confirmedNotExecuted=true 允许同 ID 安全重试
   desktopSendCalls = 0;
   sendBehavior = 'ok';
-  const send1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
-  const send2 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
+  const send1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-b', text: '幂等消息' });
+  const send2 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-b', text: '幂等消息' });
   assert.equal(send1.ok, true);
   assert.equal(send2.ok, true);
   assert.equal(send2.deduplicatedAction, true);
   assert.equal(desktopSendCalls, 1, '相同 clientActionId 成功重放时服务端只得执行 1 次桌面发送');
 
   sendBehavior = 'timeout_after_dispatch';
-  const sendTimeout1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
+  const sendTimeout1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-b', text: '可能已发出但超时' });
   assert.equal(sendTimeout1.ok, false);
   // 推进时钟超过 60s TTL (+180s)，再制造 3 条新的未知超时（超过 maxUnknownSendActions=2 触发容量淘汰）与 4 条正常成功（同时超过 maxRecentOkSendActions=2 和 maxCompletedSendActions=2 触发成功缓存淘汰）
   fakeClockNow += 180_000;
   for (const extraUnknownId of ['act-timeout-2', 'act-timeout-3', 'act-timeout-4']) {
-    await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraUnknownId, conversationId: 'conv-insight', text: '填充未知容量' });
+    await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraUnknownId, conversationId: 'conv-b', text: '填充未知容量' });
   }
   sendBehavior = 'ok';
   for (const extraOkId of ['act-ok-fill-1', 'act-ok-fill-2', 'act-ok-fill-3', 'act-ok-fill-4']) {
-    await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraOkId, conversationId: 'conv-insight', text: '填充成功容量' });
+    await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraOkId, conversationId: 'conv-b', text: '填充成功容量' });
   }
   const callsBeforeEvictedRetry = desktopSendCalls;
-  const sendOkPostEvictRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-insight', text: '幂等消息' });
+  const sendOkPostEvictRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-b', text: '幂等消息' });
   assert.equal(sendOkPostEvictRetry.ok, true, '此前已成功发送但响应丢失的 clientActionId 即使跨过 60s TTL 与双重容量淘汰，重试仍应幂等返回成功');
   assert.equal(sendOkPostEvictRetry.deduplicatedAction, true);
   assert.equal(desktopSendCalls, callsBeforeEvictedRetry, '成功记录跨 TTL 及容量淘汰后同 clientActionId 重试绝不得再次执行 performAction');
@@ -33150,23 +33150,23 @@ test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、S
   }
   assert.ok(collidingNewActionId, '应确定性构造出命中已淘汰布隆位点的全新 clientActionId');
   const callsBeforeBloomFp = desktopSendCalls;
-  const bloomFpRes = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: collidingNewActionId, conversationId: 'conv-insight', text: '合法全新消息绝不可因布隆假阳性丢失' });
+  const bloomFpRes = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: collidingNewActionId, conversationId: 'conv-b', text: '合法全新消息绝不可因布隆假阳性丢失' });
   assert.equal(bloomFpRes.ok, true);
   assert.notEqual(bloomFpRes.deduplicatedAction, true, '命中布隆假阳性的全新 clientActionId 不得被误标为 deduplicatedAction');
   assert.equal(desktopSendCalls, callsBeforeBloomFp + 1, '命中布隆假阳性的合法新消息必须真实执行 performAction 而绝不被静默丢弃');
 
   const callsBeforeTimeoutEvictedRetry = desktopSendCalls;
-  const sendTimeoutRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-insight', text: '可能已发出但超时' });
+  const sendTimeoutRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-b', text: '可能已发出但超时' });
   assert.equal(sendTimeoutRetry.ok, false, '即使跨过 60s TTL 且经历未知/成功双重容量淘汰，原超时未知 clientActionId 仍必须被永久拦截');
   assert.equal(sendTimeoutRetry.outcomeUnknown, true);
   assert.equal(sendTimeoutRetry.deduplicatedUnknownRetry, true);
   assert.equal(desktopSendCalls, callsBeforeTimeoutEvictedRetry, '过期及容量淘汰后重试未知 clientActionId 绝不得再次调用 performAction');
 
   sendBehavior = 'confirmed_not_executed';
-  const sendPreFail = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-insight', text: '首次未填入' });
+  const sendPreFail = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-b', text: '首次未填入' });
   assert.equal(sendPreFail.ok, false);
   sendBehavior = 'ok';
-  const sendPreRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-insight', text: '首次未填入' });
+  const sendPreRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-b', text: '首次未填入' });
   assert.equal(sendPreRetry.ok, true, '明确 confirmedNotExecuted=true 时允许同一 clientActionId 重试成功');
   assert.equal(desktopSendCalls, callsBeforeTimeoutEvictedRetry + 2);
 
@@ -36966,4 +36966,56 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
     delete require.cache[require.resolve('../mobile-remote')];
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
+});
+test('静态门禁：公开仓库源码、测试与文档严禁硬编码真实本机用户路径或个人社交短链', () => {
+  const { execFileSync } = require('child_process');
+  const repoRoot = path.resolve(__dirname, '..');
+  const tracked = execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8' })
+    .split(/\r?\n/)
+    .filter(Boolean);
+  const textExt = /\.(js|mjs|cjs|ts|json|md|html|css|sh|py|yml|yaml|txt)$/i;
+  const safeHomeUsers = new Set([
+    'demo', 'me', 'a', 'alice', 'bob', 'user', 'users', 'test', 'example',
+    'dev', 'runner', 'yourname', 'username', 'foo', 'bar', 'work', 'admin', 'guest'
+  ]);
+  const homePathRe = /(?:^|[^A-Za-z0-9_])\/(?:Users|home)\/([A-Za-z0-9._-]+)(?:\/|$)/g;
+  const socialShortlinkRe = /https?:\/\/(?:okjk\.co|xhslink\.com|okjike\.com\/u|weibo\.com\/u)\/[A-Za-z0-9_-]+/gi;
+  const secretTokenRe = /\b(?:ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})\b/g;
+  const forbiddenTrackedFileRe = /(?:^|\/)(?:\.env(?:\.(?!example\b)[^/]+)?|\.DS_Store|Thumbs\.db|[^/]+\.(?:db|sqlite|jsonl|log))$/i;
+
+  const violations = [];
+  for (const rel of tracked) {
+    if (forbiddenTrackedFileRe.test(rel)) {
+      violations.push(`${rel} 检测到禁止跟踪的私有/临时文件`);
+    }
+    if (!textExt.test(rel)) continue;
+    const full = path.join(repoRoot, rel);
+    if (!fs.existsSync(full)) continue;
+    const content = fs.readFileSync(full, 'utf8');
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      homePathRe.lastIndex = 0;
+      let m;
+      while ((m = homePathRe.exec(line)) !== null) {
+        const uname = (m[1] || '').toLowerCase();
+        if (!safeHomeUsers.has(uname) && !uname.startsWith('$') && !uname.startsWith('<')) {
+          violations.push(`${rel}:${i + 1} 检测到疑似真实本机用户路径 (/Users|home/${m[1]})`);
+        }
+      }
+      socialShortlinkRe.lastIndex = 0;
+      while ((m = socialShortlinkRe.exec(line)) !== null) {
+        violations.push(`${rel}:${i + 1} 检测到个人社交主页/短链 (${m[0]})`);
+      }
+      secretTokenRe.lastIndex = 0;
+      while ((m = secretTokenRe.exec(line)) !== null) {
+        violations.push(`${rel}:${i + 1} 检测到疑似明文密钥/Token`);
+      }
+    }
+  }
+  assert.deepEqual(
+    violations,
+    [],
+    `公开仓库存在未脱敏隐私数据，请替换为占位符：\n${violations.join('\n')}`
+  );
 });
