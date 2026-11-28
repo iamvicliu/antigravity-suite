@@ -33481,7 +33481,7 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
   enhancer.dispose?.();
   env.sandbox.__AGContextMeter?.dispose?.();
 
-  // 3. 手机远程页（折叠开关联动 + 间距修复 + 左侧对话点阵导览条 + 客户端 JS 语法 + 版本门禁）
+  // 3. 手机远程页（折叠开关联动 + 间距修复 + 右侧对话点阵导览条释放左滑手势 + 客户端 JS 语法 + 版本门禁）
   const prevStateDir = process.env.AG_METER_STATE_DIR;
   const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-fold-sync-'));
   process.env.AG_METER_STATE_DIR = tmpState;
@@ -33553,11 +33553,15 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
   assert.ok(
     mrSrc.includes('id="msg-rail"') &&
     mrSrc.includes('id="msg-rail-tip"') &&
+    mrSrc.includes('position:absolute;right:2px;left:auto;') &&
+    mrSrc.includes('position:absolute;right:26px;left:auto;') &&
+    mrSrc.includes('body.has-msg-rail .messages{padding-right:24px}') &&
+    !mrSrc.includes('body.has-msg-rail .messages{padding-left:24px}') &&
     mrSrc.includes('renderMessageRail()') &&
     mrSrc.includes('updateMessageRailActive(') &&
     mrSrc.includes('scrollToRailMessage(') &&
     mrSrc.includes('#msg-rail'),
-    'mobile-remote.js 应包含左侧对话点阵导览条、气泡预览、同步高亮、点击与触摸拖拽跳转及左滑抽屉排重'
+    'mobile-remote.js 应将对话点阵导览条与向左展开气泡定位在聊天区右侧边缘，避免遮挡左边缘右滑抽屉手势'
   );
 
   // 4. 三方合并加固门禁与 5 语种 README 融合检查
