@@ -1383,12 +1383,14 @@ function ensureTailscaleServeHttps(port, options = {}) {
     return { enabled: false, url: '', hint: '', createdByUs: false };
   }
   if (!useCustomExec && !options.force && cachedTailscaleServe.port === numPort && (now - cachedTailscaleServe.checkedAt < 60000)) {
-    return {
-      enabled: Boolean(cachedTailscaleServe.active && cachedTailscaleServe.url),
-      url: cachedTailscaleServe.url,
-      hint: cachedTailscaleServe.hint,
-      createdByUs: Boolean(cachedTailscaleServe.createdByUs)
-    };
+    if (!cachedTailscaleServe.readOnlyMiss || readOnly) {
+      return {
+        enabled: Boolean(cachedTailscaleServe.active && cachedTailscaleServe.url),
+        url: cachedTailscaleServe.url,
+        hint: cachedTailscaleServe.hint,
+        createdByUs: Boolean(cachedTailscaleServe.createdByUs)
+      };
+    }
   }
   const meta = options.hostMeta || detectHostIdentityMeta({
     forceRefresh: Boolean(options.force || useCustomExec),
@@ -1429,6 +1431,9 @@ function ensureTailscaleServeHttps(port, options = {}) {
     return { enabled: false, url: '', hint, createdByUs: false, conflict: true };
   }
   if (readOnly) {
+    if (!useCustomExec) {
+      cachedTailscaleServe = { active: false, port: numPort, url: '', hint: '', createdByUs: false, checkedAt: now, readOnlyMiss: true };
+    }
     return { enabled: false, url: '', hint: '', createdByUs: false };
   }
   try {
@@ -2268,13 +2273,13 @@ function extractTrajectoryWorkspacePaths(traj) {
   return out;
 }
 
-function matchWorkspaceToProjectId(traj, projectsMetaMap, options = {}) {
-  if (!projectsMetaMap || typeof projectsMetaMap.values !== 'function') return '';
-  const trajPaths = extractTrajectoryWorkspacePaths(traj);
-  if (!trajPaths.length) return '';
+const projectsWsIndexCache = new WeakMap();
 
-  const homeRaw = String(options.homeDir || os.homedir() || '').trim();
-  const homeNorm = homeRaw ? canonicalizeWorkspacePath(homeRaw) : '';
+function buildProjectsWorkspaceIndex(projectsMetaMap, homeNorm) {
+  let byHome = projectsWsIndexCache.get(projectsMetaMap);
+  if (byHome && byHome.has(homeNorm)) {
+    return byHome.get(homeNorm);
+  }
 
   const normalizedProjects = [];
   const pathOwnerCount = new Map();
@@ -2297,35 +2302,55 @@ function matchWorkspaceToProjectId(traj, projectsMetaMap, options = {}) {
       normalizedProjects.push({ proj, normPaths });
     }
   }
-  if (!normalizedProjects.length) return '';
 
   // 识别宽泛父容器目录（如 ~/codebase、$HOME、/）：仅当它包含其他项目的子工作区目录时判定，允许精确等于该目录命中，禁止按子目录 startsWith 误抢其他子项目归属
   const broadContainerPaths = new Set();
-  const allPathsArr = Array.from(allDistinctProjPaths);
-  for (const p of allPathsArr) {
-    if ((homeNorm && p === homeNorm) || path.dirname(p) === p) {
-      broadContainerPaths.add(p);
-      continue;
-    }
-    const pOwnerIds = new Set();
-    for (const np of normalizedProjects) {
-      if (np.normPaths.includes(p)) pOwnerIds.add(np.proj.id);
-    }
-    const childOtherProjIds = new Set();
-    for (const np of normalizedProjects) {
-      if (pOwnerIds.size === 1 && pOwnerIds.has(np.proj.id)) continue;
-      if (np.normPaths.some((other) => other !== p && other.startsWith(p + path.sep))) {
-        childOtherProjIds.add(np.proj.id);
+  if (normalizedProjects.length) {
+    const allPathsArr = Array.from(allDistinctProjPaths);
+    for (const p of allPathsArr) {
+      if ((homeNorm && p === homeNorm) || path.dirname(p) === p) {
+        broadContainerPaths.add(p);
+        continue;
+      }
+      const pOwnerIds = new Set();
+      for (const np of normalizedProjects) {
+        if (np.normPaths.includes(p)) pOwnerIds.add(np.proj.id);
+      }
+      const childOtherProjIds = new Set();
+      for (const np of normalizedProjects) {
+        if (pOwnerIds.size === 1 && pOwnerIds.has(np.proj.id)) continue;
+        if (np.normPaths.some((other) => other !== p && other.startsWith(p + path.sep))) {
+          childOtherProjIds.add(np.proj.id);
+        }
+      }
+      if (childOtherProjIds.size >= 2) {
+        broadContainerPaths.add(p);
+      } else if (childOtherProjIds.size === 1) {
+        let hasGitMarker = false;
+        try { hasGitMarker = fs.existsSync(path.join(p, '.git')); } catch {}
+        if (!hasGitMarker) broadContainerPaths.add(p);
       }
     }
-    if (childOtherProjIds.size >= 2) {
-      broadContainerPaths.add(p);
-    } else if (childOtherProjIds.size === 1) {
-      let hasGitMarker = false;
-      try { hasGitMarker = fs.existsSync(path.join(p, '.git')); } catch {}
-      if (!hasGitMarker) broadContainerPaths.add(p);
-    }
   }
+
+  const index = { normalizedProjects, pathOwnerCount, broadContainerPaths };
+  if (!byHome) {
+    byHome = new Map();
+    projectsWsIndexCache.set(projectsMetaMap, byHome);
+  }
+  byHome.set(homeNorm, index);
+  return index;
+}
+
+function matchWorkspaceToProjectId(traj, projectsMetaMap, options = {}) {
+  if (!projectsMetaMap || typeof projectsMetaMap.values !== 'function') return '';
+  const trajPaths = extractTrajectoryWorkspacePaths(traj);
+  if (!trajPaths.length) return '';
+
+  const homeRaw = String(options.homeDir || os.homedir() || '').trim();
+  const homeNorm = homeRaw ? canonicalizeWorkspacePath(homeRaw) : '';
+  const { normalizedProjects, pathOwnerCount, broadContainerPaths } = buildProjectsWorkspaceIndex(projectsMetaMap, homeNorm);
+  if (!normalizedProjects.length) return '';
 
   let best = null;
   let bestTied = false;
@@ -3550,10 +3575,34 @@ function createSessionCatalogStore() {
     item.lastViewedAt = nextViewMs;
     store.map.set(sid, item);
     store.lastSig = '';
+    if (options.deferPersist === true) {
+      return true;
+    }
     try {
       persistCatalogStore(store, Date.now());
     } catch {}
     return true;
+  }
+
+  function getCachedTrajectorySig(sessionId) {
+    const sid = String(sessionId || '').trim();
+    if (!sid || !trajCache?.data?.summaries) return '';
+    const sum = trajCache.data.summaries[sid];
+    if (!sum || typeof sum !== 'object') return '';
+    return `${sum.status || ''}|${sum.stepCount ?? ''}|${sum.lastModifiedTime || ''}`;
+  }
+
+  function getCachedTrajectoryMeta(sessionId) {
+    const sid = String(sessionId || '').trim();
+    if (!sid || !trajCache?.data?.summaries) return null;
+    const sum = trajCache.data.summaries[sid];
+    if (!sum || typeof sum !== 'object') return null;
+    return {
+      trajSig: `${sum.status || ''}|${sum.stepCount ?? ''}|${sum.lastModifiedTime || ''}`,
+      stepCount: Number(sum.stepCount || 0) || 0,
+      status: String(sum.status || '').trim(),
+      title: String(sum?.annotations?.title || sum?.summary || '').trim()
+    };
   }
 
   function getProjectOrder(options = {}) {
@@ -3902,7 +3951,7 @@ function createSessionCatalogStore() {
     return store.projectOrder.slice();
   }
 
-  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getProjectOrder, registerOrderScope, setProjectOrder, reserveCreateOrderSeq, prependProjectOrder };
+  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getCachedTrajectorySig, getCachedTrajectoryMeta, getProjectOrder, registerOrderScope, setProjectOrder, reserveCreateOrderSeq, prependProjectOrder };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -8060,6 +8109,7 @@ function createConversationHistoryManager() {
   const pendingRawUiCache = new Map();
   const lastUserConfigMap = new Map();
   const inflightMap = new Map();
+  const pendingInflightMap = new Map();
   const fetchGenMap = new Map();
   const invalidatedGenMap = new Map();
   const pendingFetchGenMap = new Map();
@@ -8093,62 +8143,84 @@ function createConversationHistoryManager() {
       return await options.fetchPendingAgentMessages(sid, options);
     }
     const nowMs = Date.now();
+    const pendingTtlMs = options.busy ? 900 : 2000;
     const cached = pendingMsgCache.get(sid);
-    if (!options.bypassCache && cached && (nowMs - cached.at) < 450) {
-      return cached.list;
+    if (!options.bypassCache && cached && (nowMs - cached.at) < pendingTtlMs) {
+      return cached.isNull ? null : cached.list;
+    }
+    if (!options.bypassCache && pendingInflightMap.has(sid)) {
+      return await pendingInflightMap.get(sid);
     }
     const reqGen = nextPendingGen(sid);
-    const api = await resolveLocalApi(options);
-    if (!api || typeof api.callStreamFirstFrame !== 'function') return null;
-    try {
-      const firstFrame = await api.callStreamFirstFrame(
-        'StreamAgentStateUpdates',
-        {
-          conversationId: sid,
-          subscriberId: `ag-remote-q-${nowMs}`,
-          initialStepsPageBounds: { startIndex: 0, endIndexExclusive: 0 },
-          initialGeneratorMetadatasPageBounds: { startIndex: 0, endIndexExclusive: 0 },
-          initialExecutorMetadatasPageBounds: { startIndex: 0, endIndexExclusive: 0 }
-        },
-        1200
-      );
-      if (!firstFrame || typeof firstFrame !== 'object') return null;
-      if (!hasExplicitPendingAgentMessagesUpdate(firstFrame)) return null;
-      const latestPendingGen = pendingFetchGenMap.get(sid) || 0;
-      const invPendingGen = pendingInvalidatedGenMap.get(sid) || 0;
-      const currentCached = pendingMsgCache.get(sid);
-      if (
-        reqGen < latestPendingGen ||
-        reqGen <= invPendingGen ||
-        (currentCached && (currentCached.gen || 0) > reqGen)
-      ) {
-        return (currentCached && (currentCached.gen || 0) > reqGen && Array.isArray(currentCached.list))
-          ? currentCached.list
-          : null;
-      }
-      const rawMap = new Map();
-      const list = extractPendingAgentMessagesFromUpdate(firstFrame, {
-        onRawRecord: (rec) => {
-          if (rec?.messageId) rawMap.set(rec.messageId, rec);
+    const workPromise = (async () => {
+      const api = await resolveLocalApi(options);
+      if (!api || typeof api.callStreamFirstFrame !== 'function') return null;
+      const streamTimeoutMs = options.busy ? 750 : 450;
+      try {
+        const firstFrame = await api.callStreamFirstFrame(
+          'StreamAgentStateUpdates',
+          {
+            conversationId: sid,
+            subscriberId: `ag-remote-q-${nowMs}`,
+            initialStepsPageBounds: { startIndex: 0, endIndexExclusive: 0 },
+            initialGeneratorMetadatasPageBounds: { startIndex: 0, endIndexExclusive: 0 },
+            initialExecutorMetadatasPageBounds: { startIndex: 0, endIndexExclusive: 0 }
+          },
+          streamTimeoutMs
+        );
+        const latestPendingGen = pendingFetchGenMap.get(sid) || 0;
+        const invPendingGen = pendingInvalidatedGenMap.get(sid) || 0;
+        const currentCached = pendingMsgCache.get(sid);
+        if (
+          reqGen < latestPendingGen ||
+          reqGen <= invPendingGen ||
+          (currentCached && (currentCached.gen || 0) > reqGen)
+        ) {
+          return (currentCached && (currentCached.gen || 0) > reqGen && !currentCached.isNull && Array.isArray(currentCached.list))
+            ? currentCached.list
+            : null;
         }
-      });
-      if (invPendingGen > 0 && reqGen > invPendingGen) {
-        pendingInvalidatedGenMap.delete(sid);
+        if (!firstFrame || typeof firstFrame !== 'object' || !hasExplicitPendingAgentMessagesUpdate(firstFrame)) {
+          if (pendingMsgCache.size >= MAX_CACHE_ENTRIES && !pendingMsgCache.has(sid)) {
+            const oldest = pendingMsgCache.keys().next().value;
+            if (oldest !== undefined) pendingMsgCache.delete(oldest);
+          }
+          const cacheAt = (!firstFrame || typeof firstFrame !== 'object')
+            ? (Date.now() - Math.max(0, pendingTtlMs - 1200))
+            : Date.now();
+          pendingMsgCache.set(sid, { list: null, isNull: true, at: cacheAt, gen: reqGen });
+          return null;
+        }
+        const rawMap = new Map();
+        const list = extractPendingAgentMessagesFromUpdate(firstFrame, {
+          onRawRecord: (rec) => {
+            if (rec?.messageId) rawMap.set(rec.messageId, rec);
+          }
+        });
+        if (invPendingGen > 0 && reqGen > invPendingGen) {
+          pendingInvalidatedGenMap.delete(sid);
+        }
+        if (pendingMsgCache.size >= MAX_CACHE_ENTRIES && !pendingMsgCache.has(sid)) {
+          const oldest = pendingMsgCache.keys().next().value;
+          if (oldest !== undefined) pendingMsgCache.delete(oldest);
+        }
+        if (pendingRawUiCache.size >= MAX_CACHE_ENTRIES && !pendingRawUiCache.has(sid)) {
+          const oldestRaw = pendingRawUiCache.keys().next().value;
+          if (oldestRaw !== undefined) pendingRawUiCache.delete(oldestRaw);
+        }
+        pendingMsgCache.set(sid, { list, isNull: false, at: Date.now(), gen: reqGen });
+        pendingRawUiCache.set(sid, rawMap);
+        return list;
+      } catch {
+        return null;
+      } finally {
+        if (pendingInflightMap.get(sid) === workPromise) {
+          pendingInflightMap.delete(sid);
+        }
       }
-      if (pendingMsgCache.size >= MAX_CACHE_ENTRIES && !pendingMsgCache.has(sid)) {
-        const oldest = pendingMsgCache.keys().next().value;
-        if (oldest !== undefined) pendingMsgCache.delete(oldest);
-      }
-      if (pendingRawUiCache.size >= MAX_CACHE_ENTRIES && !pendingRawUiCache.has(sid)) {
-        const oldestRaw = pendingRawUiCache.keys().next().value;
-        if (oldestRaw !== undefined) pendingRawUiCache.delete(oldestRaw);
-      }
-      pendingMsgCache.set(sid, { list, at: Date.now(), gen: reqGen });
-      pendingRawUiCache.set(sid, rawMap);
-      return list;
-    } catch {
-      return null;
-    }
+    })();
+    pendingInflightMap.set(sid, workPromise);
+    return await workPromise;
   }
 
   async function resolvePendingMessageForEdit(sessionId, messageId, options = {}) {
@@ -8213,7 +8285,7 @@ function createConversationHistoryManager() {
     const reqSig = String(options.trajSig || '').trim();
     const inflightKey = `${sid}\n${reqSig}`;
     if (!options.bypassCache) {
-      const existingEntry = inflightMap.get(inflightKey);
+      const existingEntry = inflightMap.get(inflightKey) || (reqSig === '' ? findInflightBySession(sid) : null);
       if (existingEntry) {
         return await existingEntry.promise;
       }
@@ -8233,19 +8305,63 @@ function createConversationHistoryManager() {
         const totalSteps = Number(res?.numTotalSteps || res?.trajectory?.numTotalSteps || 0);
         if (totalSteps > allSteps.length) {
           const maxPages = Math.min(totalSteps + 1, 20000);
-          for (let page = 0; page < maxPages && allSteps.length < totalSteps; page++) {
-            const stepOffset = allSteps.length;
-            const pageRes = await callLocalLanguageServer(
-              'GetCascadeTrajectorySteps',
-              { cascadeId: sid, stepOffset, trajectoryVerbosity: 3 },
-              4000,
-              options
-            ).catch(() => null);
-            const chunk = Array.isArray(pageRes?.steps) ? pageRes.steps : [];
-            if (!chunk.length) break;
-            const prevLen = allSteps.length;
-            allSteps.push(...chunk);
-            if (allSteps.length <= prevLen) break;
+          let pagesFetched = 0;
+          const probeRes = await callLocalLanguageServer(
+            'GetCascadeTrajectorySteps',
+            { cascadeId: sid, stepOffset: allSteps.length, trajectoryVerbosity: 3 },
+            4000,
+            options
+          ).catch(() => null);
+          const probeChunk = Array.isArray(probeRes?.steps) ? probeRes.steps : [];
+          if (probeChunk.length > 0) {
+            allSteps.push(...probeChunk);
+            pagesFetched += 1;
+            const pageSize = probeChunk.length;
+            if (pageSize >= 20 && (totalSteps - allSteps.length) > pageSize && pagesFetched < maxPages) {
+              const offsets = [];
+              for (let off = allSteps.length; off < totalSteps && (pagesFetched + offsets.length) < maxPages; off += pageSize) {
+                offsets.push(off);
+              }
+              if (offsets.length >= 2) {
+                const results = new Array(offsets.length);
+                let nextIdx = 0;
+                const workerCount = Math.min(4, offsets.length);
+                await Promise.all(Array.from({ length: workerCount }, async () => {
+                  while (true) {
+                    const i = nextIdx++;
+                    if (i >= offsets.length) break;
+                    const pageRes = await callLocalLanguageServer(
+                      'GetCascadeTrajectorySteps',
+                      { cascadeId: sid, stepOffset: offsets[i], trajectoryVerbosity: 3 },
+                      4000,
+                      options
+                    ).catch(() => null);
+                    results[i] = Array.isArray(pageRes?.steps) ? pageRes.steps : [];
+                  }
+                }));
+                pagesFetched += offsets.length;
+                for (let i = 0; i < results.length; i++) {
+                  const chunk = results[i];
+                  if (!chunk || chunk.length === 0) break;
+                  allSteps.push(...chunk);
+                  if (chunk.length < pageSize) break;
+                }
+              }
+            }
+            for (let page = pagesFetched; page < maxPages && allSteps.length < totalSteps; page++) {
+              const stepOffset = allSteps.length;
+              const pageRes = await callLocalLanguageServer(
+                'GetCascadeTrajectorySteps',
+                { cascadeId: sid, stepOffset, trajectoryVerbosity: 3 },
+                4000,
+                options
+              ).catch(() => null);
+              const chunk = Array.isArray(pageRes?.steps) ? pageRes.steps : [];
+              if (!chunk.length) break;
+              const prevLen = allSteps.length;
+              allSteps.push(...chunk);
+              if (allSteps.length <= prevLen) break;
+            }
           }
         }
         for (let i = allSteps.length - 1; i >= 0; i--) {
@@ -8402,6 +8518,8 @@ function createConversationHistoryManager() {
       return { merged, trajMsgs: persistedTrajMsgs, queuedMessages: nextQueued };
     };
 
+    const preExistingInflight = !options.bypassCache ? findInflightBySession(sid) : null;
+    const inflightAgeMs = preExistingInflight ? (Date.now() - (preExistingInflight.startedAt || 0)) : 0;
     const fetchPromise = fetchTrajectoryMessages(sid, { ...options, trajSig })
       .then((fetchRes) => commitFetchResult(fetchRes));
     // 防止软预算超时提前返回后，后台拉取偶发异常变成 unhandledRejection
@@ -8418,9 +8536,9 @@ function createConversationHistoryManager() {
       !options.bypassCache
     ) {
       if (Array.isArray(existing?.trajMsgs)) {
-        softWaitMs = 600;
+        softWaitMs = 450;
       } else if (domTail.length > 0) {
-        softWaitMs = 1200;
+        softWaitMs = inflightAgeMs >= 250 ? 120 : 500;
       }
     }
 
@@ -8497,7 +8615,7 @@ function createConversationHistoryManager() {
         isolated: Boolean(cleanSnap.isolated)
       }),
       (!cleanSnap.isNewConversation && !cleanSnap.isolatedError)
-        ? fetchPendingAgentMessages(sid, options).catch(() => null)
+        ? fetchPendingAgentMessages(sid, { ...options, busy: Boolean(cleanSnap.busy) }).catch(() => null)
         : Promise.resolve(null)
     ]);
     const rawLimit = options.msgLimit === undefined ? 30 : Math.max(0, Number(options.msgLimit) || 0);
@@ -8538,6 +8656,7 @@ function createConversationHistoryManager() {
     cache.delete(sid);
     pendingMsgCache.delete(sid);
     pendingRawUiCache.delete(sid);
+    pendingInflightMap.delete(sid);
     const invPendingGen = nextPendingGen(sid);
     pendingInvalidatedGenMap.set(sid, invPendingGen);
     const invGen = nextFetchGen(sid);
@@ -8644,9 +8763,17 @@ function buildEnrichFallbackSnapshot(baseSnap) {
 }
 
 async function fetchSnapshotFromTarget(requestedTargetId, snapOptions = {}) {
+  const reqConvId = String(snapOptions?.conversationId || '').trim();
+  const cachedMeta = (reqConvId && reqConvId !== '__new__' && typeof defaultCatalogStore?.getCachedTrajectoryMeta === 'function')
+    ? defaultCatalogStore.getCachedTrajectoryMeta(reqConvId)
+    : null;
   const serializedOpts = JSON.stringify({
-    conversationId: String(snapOptions?.conversationId || '').trim(),
-    clientId: String(snapOptions?.clientId || '').trim()
+    conversationId: reqConvId,
+    clientId: String(snapOptions?.clientId || '').trim(),
+    ...(cachedMeta?.trajSig ? { trajSig: cachedMeta.trajSig } : {}),
+    ...(cachedMeta?.stepCount > 0 ? { knownStepCount: cachedMeta.stepCount } : {}),
+    ...(cachedMeta?.status ? { knownStatus: cachedMeta.status } : {}),
+    ...(cachedMeta?.title ? { knownTitle: cachedMeta.title } : {})
   });
   const expr = `(async () => {
     const fnAsync = window.__AGEnhancer?.getMobileSnapshotAsync;
@@ -12147,6 +12274,11 @@ function buildMobileAppHtml() {
           return false;
         }
         invalidateInflightSnapshotPolls({ skipReschedule: true });
+        lastNavActionSeq += 1;
+        if (activeNavAbort) {
+          try { activeNavAbort.abort(); } catch {}
+          activeNavAbort = null;
+        }
         manualLocked = true;
         try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
         navigateEntryUrl(targetUrl, false);
@@ -12196,6 +12328,11 @@ function buildMobileAppHtml() {
       manualLocked = true;
       try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
       invalidateInflightSnapshotPolls({ skipReschedule: true });
+      lastNavActionSeq += 1;
+      if (activeNavAbort) {
+        try { activeNavAbort.abort(); } catch {}
+        activeNavAbort = null;
+      }
       apiBase = cleanTarget === cleanPageOrigin ? '' : cleanTarget;
       subMetaNoticeActive = true;
       if ($('sub-meta')) {
@@ -12986,10 +13123,11 @@ function buildMobileAppHtml() {
 
     let snapshotInflight = false;
     let snapshotSeq = 0;
+    let activeNavAbort = null;
     function invalidateInflightSnapshotPolls(opts) {
-      clearTimeout(pollTimer);
       snapshotSeq += 1;
       snapshotInflight = false;
+      clearTimeout(pollTimer);
       if (activeSnapAbort) {
         try { activeSnapAbort.abort(); } catch {}
         activeSnapAbort = null;
@@ -13004,7 +13142,18 @@ function buildMobileAppHtml() {
       const isNavAction = act === 'new-conversation' || act === 'switch-conversation';
       const actionStartEpoch = ++clientSyncEpoch;
       const myNavSeq = isNavAction ? (++lastNavActionSeq) : 0;
-      if (isNavAction) invalidateInflightSnapshotPolls();
+      let navCtrl = null;
+      if (isNavAction) {
+        invalidateInflightSnapshotPolls({ skipReschedule: true });
+        if (activeNavAbort) {
+          try { activeNavAbort.abort(); } catch {}
+          activeNavAbort = null;
+        }
+        if (typeof AbortController === 'function') {
+          navCtrl = new AbortController();
+          activeNavAbort = navCtrl;
+        }
+      }
       const autoActionId = (act === 'send' && !payload?.clientActionId)
         ? ('act-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10))
         : '';
@@ -13019,14 +13168,16 @@ function buildMobileAppHtml() {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(bodyPayload)
-      }, 8000);
+      }, 8000, navCtrl);
       try {
         let res;
         try {
           res = await doPost();
           if (res.status === 403) throw new Error('channel_disabled');
         } catch (err) {
+          if (isNavAction && myNavSeq !== lastNavActionSeq) return null;
           if (await tryFailoverEndpoint()) {
+            if (isNavAction && myNavSeq !== lastNavActionSeq) return null;
             res = await doPost();
           } else {
             throw err;
@@ -13054,10 +13205,14 @@ function buildMobileAppHtml() {
             reqStartEpoch: actionStartEpoch,
             advanceFloorOnApply: isNavAction
           });
-          if (snapApplied && isNavAction) invalidateInflightSnapshotPolls();
+          if (snapApplied && isNavAction) invalidateInflightSnapshotPolls({ skipReschedule: true });
         }
         return data;
+      } catch (err) {
+        if (isNavAction && myNavSeq !== lastNavActionSeq) return null;
+        throw err;
       } finally {
+        if (navCtrl && activeNavAbort === navCtrl) activeNavAbort = null;
         if (isNavAction && myNavSeq === lastNavActionSeq && !snapshotInflight) {
           schedulePoll();
         }
@@ -13988,65 +14143,70 @@ function buildMobileAppHtml() {
         }
         return false;
       }
-      const reqEpoch = typeof opts?.reqStartEpoch === 'number' ? opts.reqStartEpoch : null;
-      if (reqEpoch !== null && reqEpoch < minAcceptableReqStartEpoch) {
-        return false;
-      }
-      const bootId = String(snap.serverBootId || '').trim();
-      const bootAt = Number(snap.serverBootAt) || 0;
-      const snapSeqNum = Number.isInteger(snap.snapSeq) && snap.snapSeq > 0 ? snap.snapSeq : 0;
-      if (bootId) {
-        if (retiredServerBootIds.has(bootId)) {
+      const isClientCacheRestore = Boolean(opts?.isClientCacheRestore);
+      const reqEpoch = (!isClientCacheRestore && typeof opts?.reqStartEpoch === 'number') ? opts.reqStartEpoch : null;
+      if (!isClientCacheRestore) {
+        if (reqEpoch !== null && reqEpoch < minAcceptableReqStartEpoch) {
           return false;
         }
-        if (lastRenderedServerBootId && bootId !== lastRenderedServerBootId) {
-          if (bootAt > 0 && lastRenderedServerBootAt > 0 && bootAt < lastRenderedServerBootAt) {
+        const bootId = String(snap.serverBootId || '').trim();
+        const bootAt = Number(snap.serverBootAt) || 0;
+        const snapSeqNum = Number.isInteger(snap.snapSeq) && snap.snapSeq > 0 ? snap.snapSeq : 0;
+        if (bootId) {
+          if (retiredServerBootIds.has(bootId)) {
             return false;
           }
-          if (lastRenderedServerBootAt > 0 && bootAt <= 0) {
+          if (lastRenderedServerBootId && bootId !== lastRenderedServerBootId) {
+            if (bootAt > 0 && lastRenderedServerBootAt > 0 && bootAt < lastRenderedServerBootAt) {
+              return false;
+            }
+            if (lastRenderedServerBootAt > 0 && bootAt <= 0) {
+              return false;
+            }
+          } else if (snapSeqNum > 0 && snapSeqNum < lastRenderedServerSnapSeq) {
             return false;
           }
         } else if (snapSeqNum > 0 && snapSeqNum < lastRenderedServerSnapSeq) {
           return false;
         }
-      } else if (snapSeqNum > 0 && snapSeqNum < lastRenderedServerSnapSeq) {
-        return false;
-      }
-      if (reqEpoch !== null) {
-        minAcceptableReqStartEpoch = opts?.advanceFloorOnApply
-          ? Math.max(minAcceptableReqStartEpoch, ++clientSyncEpoch)
-          : Math.max(minAcceptableReqStartEpoch, reqEpoch);
-      }
-      if (bootId) {
-        if (lastRenderedServerBootId && bootId !== lastRenderedServerBootId) {
-          retiredServerBootIds.add(lastRenderedServerBootId);
-          lastRenderedServerBootId = bootId;
-          lastRenderedServerBootAt = bootAt > 0 ? bootAt : lastRenderedServerBootAt;
-          lastRenderedServerSnapSeq = snapSeqNum;
-        } else {
-          if (!lastRenderedServerBootId) lastRenderedServerBootId = bootId;
-          if (bootAt > lastRenderedServerBootAt) lastRenderedServerBootAt = bootAt;
-          if (snapSeqNum > lastRenderedServerSnapSeq) lastRenderedServerSnapSeq = snapSeqNum;
+        if (reqEpoch !== null) {
+          minAcceptableReqStartEpoch = opts?.advanceFloorOnApply
+            ? Math.max(minAcceptableReqStartEpoch, ++clientSyncEpoch)
+            : Math.max(minAcceptableReqStartEpoch, reqEpoch);
         }
-      } else if (snapSeqNum > lastRenderedServerSnapSeq) {
-        lastRenderedServerSnapSeq = snapSeqNum;
+        if (bootId) {
+          if (lastRenderedServerBootId && bootId !== lastRenderedServerBootId) {
+            retiredServerBootIds.add(lastRenderedServerBootId);
+            lastRenderedServerBootId = bootId;
+            lastRenderedServerBootAt = bootAt > 0 ? bootAt : lastRenderedServerBootAt;
+            lastRenderedServerSnapSeq = snapSeqNum;
+          } else {
+            if (!lastRenderedServerBootId) lastRenderedServerBootId = bootId;
+            if (bootAt > lastRenderedServerBootAt) lastRenderedServerBootAt = bootAt;
+            if (snapSeqNum > lastRenderedServerSnapSeq) lastRenderedServerSnapSeq = snapSeqNum;
+          }
+        } else if (snapSeqNum > lastRenderedServerSnapSeq) {
+          lastRenderedServerSnapSeq = snapSeqNum;
+        }
       }
       latestSnap = snap;
       setConnBannerVisible(false);
       syncChannelPillUi('online');
       syncSelectedProjectFromSnapshot(snap);
       if ($('btn-follow-desktop')) $('btn-follow-desktop').hidden = !Boolean(snap.isolated);
-      if (snap.currentTargetId) {
-        currentTargetId = snap.currentTargetId;
-        try { sessionStorage.setItem(TARGET_ID_SESSION_KEY, currentTargetId); } catch {}
-      }
-      if (Array.isArray(snap.endpoints) && snap.endpoints.length) {
-        pairState.endpoints = snap.endpoints;
-        if (Array.isArray(snap.hosts) && snap.hosts.length) pairState.hosts = snap.hosts;
-        saveStoredPair(pairState);
-        if (!manualLocked && !isAutoSwitched && !autoSwitchChecked && getEnabledModeEntries().length > 1) {
-          autoSwitchChecked = true;
-          void runSpeedTest({ autoSwitch: true, silent: true });
+      if (!isClientCacheRestore) {
+        if (snap.currentTargetId) {
+          currentTargetId = snap.currentTargetId;
+          try { sessionStorage.setItem(TARGET_ID_SESSION_KEY, currentTargetId); } catch {}
+        }
+        if (Array.isArray(snap.endpoints) && snap.endpoints.length) {
+          pairState.endpoints = snap.endpoints;
+          if (Array.isArray(snap.hosts) && snap.hosts.length) pairState.hosts = snap.hosts;
+          saveStoredPair(pairState);
+          if (!manualLocked && !isAutoSwitched && !autoSwitchChecked && getEnabledModeEntries().length > 1) {
+            autoSwitchChecked = true;
+            void runSpeedTest({ autoSwitch: true, silent: true });
+          }
         }
       }
 
@@ -14167,7 +14327,7 @@ function buildMobileAppHtml() {
         sessionMsgsByIndex.set(mIdx, { ...m, msgIndex: mIdx });
       }
       renderMessagesView(snap);
-      if (hasValidTotalMsgs && activeMsgHistorySource === 'trajectory' && snapSid && snapSid !== '__new__' && findMissingMsgRanges(totalMsgs).length > 0) {
+      if (!isClientCacheRestore && hasValidTotalMsgs && activeMsgHistorySource === 'trajectory' && snapSid && snapSid !== '__new__' && findMissingMsgRanges(totalMsgs).length > 0) {
         void backfillMissingMsgGaps(snapSid);
       }
 
@@ -14692,6 +14852,7 @@ function buildMobileAppHtml() {
         renderDrawerProjectsAndConversations(snap);
       } else {
         if (
+          !isClientCacheRestore &&
           localOptimisticProjectOrder &&
           projOrderInflightCount === 0 &&
           !pendingQueuedOrderJob &&
@@ -14703,7 +14864,7 @@ function buildMobileAppHtml() {
           pendingOrderAckRev = '';
         }
         reconcileExtraConversations(snap);
-        renderConversationList(snap);
+        renderConversationList(snap, isClientCacheRestore ? { skipNotifications: true } : undefined);
       }
       return true;
     }
@@ -15477,12 +15638,14 @@ function buildMobileAppHtml() {
       }
     }
 
-    function renderConversationList(snap) {
+    function renderConversationList(snap, opts) {
       const convList = $('conv-list');
       if (!convList || !snap) return;
       const convs = getMergedConversations(snap);
       syncAppBadgeCount(computeClientCompletedUnreadCount(convs));
-      maybeTriggerLocalNotifications(convs);
+      if (!opts?.skipNotifications) {
+        maybeTriggerLocalNotifications(convs);
+      }
       if (pendingOpenConvId && convs.some((c) => c && c.id === pendingOpenConvId)) {
         const targetOpenId = pendingOpenConvId;
         pendingOpenConvId = '';
@@ -16526,6 +16689,130 @@ function buildMobileAppHtml() {
     const sessionMsgsByIndex = new Map();
     const openThoughtIdxSet = new Set();
     const foldStateMap = new Map();
+    const clientConvSnapCache = new Map();
+    const MAX_CLIENT_CONV_SNAP_CACHE = 10;
+    const GLOBAL_LIVE_SNAP_KEYS = [
+      'serverBootId', 'serverBootAt', 'snapSeq', 'currentTargetId', 'windows',
+      'clientId', 'desktopSessionId', 'hosts', 'endpoints', 'enabledChannels',
+      'projects', 'projectOrder', 'projectGroups', 'catalogRevision',
+      'totalConversations', 'hasMoreConversations', 'completedUnreadCount',
+      'displayConfig', 'showApiReferenceCost', 'longFold', 'quickPrompts',
+      'pushPrefs', 'modelOptions', 'orchestratorConfig', 'permissionKey',
+      'permissionLabel', 'permissionOptions', 'quota', 'usageSummary', 'autoAccept'
+    ];
+    function buildHydratedClientCacheSnap(cachedSnap, liveSnap, targetId, savedAt) {
+      const out = Object.assign({}, cachedSnap);
+      if (!liveSnap || liveSnap.ok === false) return out;
+      for (const k of GLOBAL_LIVE_SNAP_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(liveSnap, k) && liveSnap[k] !== undefined) {
+          out[k] = (k === 'orchestratorConfig' && liveSnap[k] && typeof liveSnap[k] === 'object')
+            ? Object.assign({}, liveSnap[k])
+            : liveSnap[k];
+        }
+      }
+      let targetConv = null;
+      if (Array.isArray(liveSnap.conversations)) {
+        out.conversations = liveSnap.conversations.map((c) => {
+          if (!c || typeof c !== 'object') return c;
+          if (c.id === targetId) {
+            const updated = Object.assign({}, c, { active: true, unread: false, completedUnread: false });
+            targetConv = updated;
+            return updated;
+          }
+          return c.active ? Object.assign({}, c, { active: false }) : c;
+        });
+      }
+      if (!targetConv && Array.isArray(out.conversations)) {
+        targetConv = out.conversations.find((c) => c && c.id === targetId) || null;
+      }
+      if (targetConv) {
+        if (targetConv.title) out.title = targetConv.title;
+        const projId = targetConv.projectId !== undefined ? targetConv.projectId : out.currentProjectId;
+        if (projId !== undefined) out.currentProjectId = projId;
+        const normProjId = typeof normalizeProjectId === 'function'
+          ? normalizeProjectId(projId)
+          : String(projId || '').trim().toLowerCase();
+        const liveProjs = Array.isArray(liveSnap.projects) ? liveSnap.projects : [];
+        const matchedProj = normProjId
+          ? liveProjs.find((p) => p && (
+            (typeof normalizeProjectId === 'function' ? normalizeProjectId(p.id) : String(p.id || '').trim().toLowerCase()) === normProjId
+          ))
+          : null;
+        if (matchedProj) {
+          if (matchedProj.name) out.currentProjectName = matchedProj.name;
+          if (Array.isArray(matchedProj.workspacePaths) && matchedProj.workspacePaths.length) {
+            out.currentWorkspacePaths = matchedProj.workspacePaths.slice();
+            out.currentProjectPath = matchedProj.workspacePaths[0] || out.currentProjectPath || '';
+          } else if (matchedProj.workspacePath) {
+            out.currentWorkspacePaths = [matchedProj.workspacePath];
+            out.currentProjectPath = matchedProj.workspacePath;
+          }
+        } else if (targetConv.projectName) {
+          out.currentProjectName = targetConv.projectName;
+        }
+      }
+      const liveDeskSid = String(liveSnap.desktopSessionId || '').trim();
+      if (liveDeskSid) {
+        out.isolated = Boolean(targetId && targetId !== liveDeskSid);
+      }
+      if (savedAt && (Date.now() - savedAt) > 15000) {
+        out.pendingApprovals = [];
+        out.pendingPrompts = [];
+        out.queuedMessages = [];
+      }
+      return out;
+    }
+    function saveCurrentSessionToClientCache() {
+      const sid = String(activeMsgSessionId || '').trim();
+      if (!sid || sid === '__new__' || !latestSnap || latestSnap.ok === false || latestSnap.isolatedError) return;
+      if (String(latestSnap.sessionId || '') !== sid) return;
+      const snapSnapshot = Object.assign({}, latestSnap);
+      if (latestSnap.orchestratorConfig && typeof latestSnap.orchestratorConfig === 'object') {
+        snapSnapshot.orchestratorConfig = Object.assign({}, latestSnap.orchestratorConfig);
+      }
+      if (clientConvSnapCache.has(sid)) clientConvSnapCache.delete(sid);
+      clientConvSnapCache.set(sid, {
+        snap: snapSnapshot,
+        msgs: Array.from(sessionMsgsByIndex.entries()),
+        historySource: activeMsgHistorySource,
+        foldEntries: Array.from(foldStateMap.entries()),
+        openThoughtIds: Array.from(openThoughtIdxSet),
+        savedAt: Date.now()
+      });
+      while (clientConvSnapCache.size > MAX_CLIENT_CONV_SNAP_CACHE) {
+        const oldest = clientConvSnapCache.keys().next().value;
+        if (oldest !== undefined) clientConvSnapCache.delete(oldest);
+        else break;
+      }
+    }
+    function restoreSessionFromClientCache(cid) {
+      const targetId = String(cid || '').trim();
+      if (!targetId) return false;
+      const rec = clientConvSnapCache.get(targetId);
+      if (!rec || !rec.snap || rec.snap.ok === false || rec.snap.isolatedError) return false;
+      const hydratedSnap = buildHydratedClientCacheSnap(rec.snap, latestSnap, targetId, rec.savedAt);
+      clientConvSnapCache.delete(targetId);
+      clientConvSnapCache.set(targetId, rec);
+      activeMsgSessionId = targetId;
+      activeMsgHistorySource = rec.historySource || (hydratedSnap.historySource || 'dom');
+      msgCacheEpoch += 1;
+      sessionMsgsByIndex.clear();
+      for (const [k, v] of (rec.msgs || [])) {
+        sessionMsgsByIndex.set(k, v);
+      }
+      openThoughtIdxSet.clear();
+      for (const id of (rec.openThoughtIds || [])) {
+        openThoughtIdxSet.add(id);
+      }
+      foldStateMap.clear();
+      for (const [k, v] of (rec.foldEntries || [])) {
+        foldStateMap.set(k, v);
+      }
+      loadingEarlierMsgs = false;
+      backfillingMsgGaps = false;
+      stickBottom = true;
+      return Boolean(renderSnapshot(hydratedSnap, { isClientCacheRestore: true }));
+    }
     let remoteLongFoldEnabled = true;
     const msgRailEl = $('msg-rail');
     const msgRailTipEl = $('msg-rail-tip');
@@ -16773,6 +17060,8 @@ function buildMobileAppHtml() {
       const userEls = Array.from(msgEl.querySelectorAll('.msg.user'));
       const lastUser = userEls.length ? userEls[userEls.length - 1] : null;
 
+      // 阶段 1 纯测量：批量读取几何尺寸与文本，避免循环内读写交替触发布局抖动
+      const pendingFolds = [];
       assistantEls.forEach((aEl, aIdx) => {
         const msgIdx = aEl.dataset.msgIdx || String(aIdx);
         const isLastA = aEl === lastAssistant;
@@ -16784,7 +17073,7 @@ function buildMobileAppHtml() {
           if (!(lineCount > 18 || h > 280)) return;
           const key = 'c:' + msgIdx + ':' + cIdx;
           const state = foldStateMap.get(key) || ((isBusy && isLastA) ? 'expanded' : 'collapsed');
-          insertMobileFoldBar(pre, key, 'code', state, lineCount, false);
+          pendingFolds.push({ el: pre, key, kind: 'code', state, lineCount, isUser: false });
         });
 
         const mdBody = aEl.querySelector('.md-body');
@@ -16795,7 +17084,7 @@ function buildMobileAppHtml() {
           if (h > 460 || (h === 0 && text.length > 900 && lines > 14)) {
             const key = 'm:' + msgIdx;
             const state = foldStateMap.get(key) || ((isLastA || isBusy) ? 'expanded' : 'collapsed');
-            insertMobileFoldBar(mdBody, key, 'markdown', state, lines, false);
+            pendingFolds.push({ el: mdBody, key, kind: 'markdown', state, lineCount: lines, isUser: false });
           }
         }
       });
@@ -16810,8 +17099,13 @@ function buildMobileAppHtml() {
         if (!(h > 240 || text.length > 360 || lines > 10)) return;
         const key = 'u:' + msgIdx;
         const state = foldStateMap.get(key) || (isLastU ? 'expanded' : 'collapsed');
-        insertMobileFoldBar(uEl, key, 'user', state, lines, true);
+        pendingFolds.push({ el: uEl, key, kind: 'user', state, lineCount: lines, isUser: true });
       });
+
+      // 阶段 2 纯写入：统一插入折叠按钮与切换类名
+      for (const item of pendingFolds) {
+        insertMobileFoldBar(item.el, item.key, item.kind, item.state, item.lineCount, item.isUser);
+      }
     }
 
     function applyRemoteLongFoldPref(snap) {
@@ -16849,7 +17143,8 @@ function buildMobileAppHtml() {
         const bubble = el.classList?.contains('msg') ? el : el.querySelector?.('.msg.user');
         raw = bubble ? String(bubble.textContent || '') : String(el.textContent || '');
       }
-      const line = raw.split(/\\r?\\n/).map((s) => s.replace(/\\s+/g, ' ').trim()).find(Boolean) || '';
+      const head = raw.length > 260 ? raw.slice(0, 260) : raw;
+      const line = head.split(/\\r?\\n/).map((s) => s.replace(/\\s+/g, ' ').trim()).find(Boolean) || '';
       const snippet = line.length > 26 ? (line.slice(0, 26) + '…') : line;
       return (role === 'user' ? '我' : 'AI') + ' · #' + ordinal + (snippet ? (' ' + snippet) : '');
     }
@@ -17183,13 +17478,13 @@ function buildMobileAppHtml() {
         msgEl.innerHTML = html;
         msgEl.dataset.lastHtml = html;
         applyMobileLongFolds(snap);
-        renderMessageRail();
         if (!shouldPreserve) {
           programmaticScrollTop = msgEl.scrollHeight;
           msgEl.scrollTop = msgEl.scrollHeight;
         } else if (anchor) {
           restoreReadingAnchor(anchor);
         }
+        renderMessageRail();
       }
     }
 
@@ -19972,7 +20267,6 @@ function buildMobileAppHtml() {
           const grpPid = grp.querySelector('.proj-toggle')?.getAttribute('data-proj-toggle') || '';
           grp.classList.toggle('is-current', Boolean(effId && grpPid === effId));
         });
-        convListEl.dataset.lastHtml = '';
       }
 
       const projBtn = e.target?.closest?.('.proj-item');
@@ -20004,33 +20298,66 @@ function buildMobileAppHtml() {
         syncNewChatButtonUi(latestSnap);
       }
       applyOptimisticSidebarConvClick(btn);
+      const prevSessionIdBeforeSwitch = (
+        latestSnap &&
+        latestSnap.ok !== false &&
+        !latestSnap.isolatedError &&
+        latestSnap.sessionId &&
+        latestSnap.sessionId !== '__new__'
+      ) ? String(latestSnap.sessionId) : '';
       const prevSessionId = String(latestSnap?.sessionId || '');
       const isSwitchingToOther = Boolean(cid && prevSessionId && prevSessionId !== cid);
       const myNavSeqSnapshot = lastNavActionSeq;
       if (isSwitchingToOther) {
+        saveCurrentSessionToClientCache();
+      }
+      const cacheHit = isSwitchingToOther ? restoreSessionFromClientCache(cid) : false;
+      if (isSwitchingToOther && !cacheHit) {
         msgEl.classList.add('is-switching');
         if (matchedConv?.title) $('conv-title').textContent = matchedConv.title;
         if (matchedConv) syncTopbarProjectBadge(matchedConv.projectName || '');
+        const dock = $('approval-dock');
+        if (dock && !dock.hidden) {
+          dock.hidden = true;
+          dock.innerHTML = '';
+          dock.dataset.promptSig = '';
+        }
+        hideMessageRail();
       }
       if (!isDesktopLayout()) closeDrawer();
       stickBottom = true;
-      showToast('正在切换会话…');
+      if (!cacheHit) showToast('正在切换会话…');
       try {
         applySelectedConversation(cid);
         const r = await apiAction({ action: 'switch-conversation', id: cid, isolated: true });
+        if (!r) return;
         if (!r?.ok && mySwitchSelEpoch === selectedProjectEpoch) {
+          const clEl = $('conv-list');
+          if (clEl) clEl.dataset.lastHtml = '';
           showToast(r?.error || r?.actionResult?.error || '切换会话失败，请检查电脑端连接或刷新重试');
-          if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
-            $('conv-title').textContent = latestSnap.title || 'Antigravity';
-            syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
+          if (lastNavActionSeq === myNavSeqSnapshot + 1) {
+            if (prevSessionIdBeforeSwitch && clientConvSnapCache.has(prevSessionIdBeforeSwitch)) {
+              applySelectedConversation(prevSessionIdBeforeSwitch);
+              restoreSessionFromClientCache(prevSessionIdBeforeSwitch);
+            } else if (latestSnap) {
+              $('conv-title').textContent = latestSnap.title || 'Antigravity';
+              syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
+            }
           }
         }
       } catch (err) {
         if (mySwitchSelEpoch === selectedProjectEpoch) {
+          const clEl = $('conv-list');
+          if (clEl) clEl.dataset.lastHtml = '';
           showToast(humanizeRemoteError(err?.message, '切换会话失败，请检查电脑端连接或刷新重试'));
-          if (latestSnap && lastNavActionSeq === myNavSeqSnapshot + 1) {
-            $('conv-title').textContent = latestSnap.title || 'Antigravity';
-            syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
+          if (lastNavActionSeq === myNavSeqSnapshot + 1) {
+            if (prevSessionIdBeforeSwitch && clientConvSnapCache.has(prevSessionIdBeforeSwitch)) {
+              applySelectedConversation(prevSessionIdBeforeSwitch);
+              restoreSessionFromClientCache(prevSessionIdBeforeSwitch);
+            } else if (latestSnap) {
+              $('conv-title').textContent = latestSnap.title || 'Antigravity';
+              syncTopbarProjectBadge(resolveConversationProjectName(latestSnap));
+            }
           }
         }
       } finally {
@@ -20048,6 +20375,8 @@ function buildMobileAppHtml() {
         matchedConv.completedUnread = false;
         syncAppBadgeCount(computeClientCompletedUnreadCount(getMergedConversations(latestSnap)));
       }
+      saveCurrentSessionToClientCache();
+      restoreSessionFromClientCache(targetId);
       applySelectedConversation(targetId);
       try {
         await apiAction({ action: 'switch-conversation', id: targetId, isolated: true });
@@ -20459,9 +20788,27 @@ function getCloudflaredInstallGuide(platform = process.platform) {
   };
 }
 
+const cloudflaredBinCache = { key: null, path: '', checkedAt: 0 };
+
 function resolveCloudflaredBinary() {
+  const customEnv = String(process.env.AG_CLOUDFLARED_BIN || '').trim();
+  const now = Date.now();
+  if (cloudflaredBinCache.key === customEnv) {
+    const ttl = cloudflaredBinCache.path ? 300000 : 60000;
+    if ((now - cloudflaredBinCache.checkedAt) < ttl) {
+      if (!cloudflaredBinCache.path || fs.existsSync(cloudflaredBinCache.path)) {
+        return cloudflaredBinCache.path;
+      }
+    }
+  }
+  const cacheResult = (binPath) => {
+    cloudflaredBinCache.key = customEnv;
+    cloudflaredBinCache.path = binPath;
+    cloudflaredBinCache.checkedAt = Date.now();
+    return binPath;
+  };
   const candidates = [];
-  if (process.env.AG_CLOUDFLARED_BIN) candidates.push(process.env.AG_CLOUDFLARED_BIN);
+  if (customEnv) candidates.push(customEnv);
   if (process.platform === 'win32') {
     candidates.push(
       path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'cloudflared', 'cloudflared.exe'),
@@ -20479,7 +20826,7 @@ function resolveCloudflaredBinary() {
   for (const p of candidates) {
     if (!p) continue;
     try {
-      if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) return cacheResult(p);
     } catch {}
   }
   try {
@@ -20489,9 +20836,9 @@ function resolveCloudflaredBinary() {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore']
     }).split(/\r?\n/)[0]?.trim();
-    if (out && fs.existsSync(out)) return out;
+    if (out && fs.existsSync(out)) return cacheResult(out);
   } catch {}
-  return '';
+  return cacheResult('');
 }
 
 function isPidAlive(pid) {
@@ -24544,16 +24891,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               if (payload?.targetId) session.targetId = effectiveTargetId;
             }
             const activeCatStore = options.catalogStore || defaultCatalogStore;
-            activeCatStore.markViewed(nextId, Date.now(), options.catalogOptions || {});
-            if (!options.fetchSnapshot && typeof historyManager?.warmSession === 'function') {
-              historyManager.warmSession(nextId).catch(() => null);
-            }
+            activeCatStore.markViewed(nextId, Date.now(), { ...(options.catalogOptions || {}), deferPersist: true });
             const snap = await fetchSnapshot(effectiveTargetId, {
               conversationId: nextId,
               clientId,
               convLimit: 100,
-              msgLimit: 30,
-              bypassCatalogCache: true
+              msgLimit: 30
             });
             const usageSummary = (snap && snap.ok !== false && !snap.usageSummary) ? await getCachedUsageSummary() : null;
             const enriched = enrichSnapshotPayload(snap, config, activeTunnelUrl, clientId, usageSummary);

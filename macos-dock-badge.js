@@ -1,6 +1,8 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
+const net = require('net');
 const path = require('path');
 const crypto = require('crypto');
 const { execFile, spawn } = require('child_process');
@@ -11,6 +13,45 @@ const DEFAULT_TEST_PREVIEW_MS = 5000;
 const MAX_UNREAD_TOTAL = 999;
 const MAX_APPROVAL_TOTAL = 99;
 const CACHE_BINARY_PREFIX = 'ag-dock-overlay-';
+const APP_BUNDLE_DIRNAME = 'AntigravityDockOverlay.app';
+const APP_EXECUTABLE_NAME = 'AntigravityDockOverlay';
+const APP_BUNDLE_IDENTIFIER = 'com.antigravity.context-meter.dock-overlay';
+
+function buildOverlayInfoPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+  <key>CFBundleDisplayName</key>
+  <string>Antigravity Dock 提醒</string>
+  <key>CFBundleExecutable</key>
+  <string>${APP_EXECUTABLE_NAME}</string>
+  <key>CFBundleIdentifier</key>
+  <string>${APP_BUNDLE_IDENTIFIER}</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>${APP_EXECUTABLE_NAME}</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSBackgroundOnly</key>
+  <false/>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>
+`;
+}
 
 function isDockOverlaySupportedPlatform(platform = process.platform) {
   return platform === 'darwin';
@@ -150,7 +191,8 @@ function createMacosDockBadgeManager(options = {}) {
     : DEFAULT_TTL_MS;
   const disableSpawn = options.disableSpawn === true;
   const hasCustomExecFile = typeof options.execFile === 'function';
-  const spawnFn = typeof options.spawn === 'function' ? options.spawn : spawn;
+  const hasCustomSpawn = typeof options.spawn === 'function';
+  const spawnFn = hasCustomSpawn ? options.spawn : spawn;
   const execFileFn = hasCustomExecFile ? options.execFile : execFile;
 
   const initialUiPrefs = options.uiPreferences !== undefined ? options.uiPreferences : loadInitialUiPrefsSafe();
@@ -169,6 +211,7 @@ function createMacosDockBadgeManager(options = {}) {
   let compileError = '';
   let compileErrorDetail = '';
   let compiledBinPath = '';
+  let compiledAppPath = '';
   let compiledHash = '';
   let compilePromise = null;
 
@@ -193,6 +236,15 @@ function createMacosDockBadgeManager(options = {}) {
   let restartTimer = null;
   let lastSentFrameJson = '';
 
+  let launchMode = 'spawn';
+  let triedAppBundleFallback = false;
+  let switchingToAppBundle = false;
+  let socketServer = null;
+  let socketClient = null;
+  let socketPath = '';
+  let socketBuf = '';
+  let socketConnectTimer = null;
+
   let axTrusted = null;
   let dockFound = null;
   let iconSide = 0;
@@ -209,7 +261,7 @@ function createMacosDockBadgeManager(options = {}) {
       for (const ent of entries) {
         if (!ent.isFile()) continue;
         if (!ent.name.startsWith(CACHE_BINARY_PREFIX)) continue;
-        if (ent.name === keepFilename) continue;
+        if (keepFilename && ent.name === keepFilename) continue;
         // 跳过同进程或别的进程正在临时编译中的文件（超过 5 分钟再清理）
         if (ent.name.includes('.tmp-')) {
           try {
@@ -222,6 +274,33 @@ function createMacosDockBadgeManager(options = {}) {
         } catch {}
       }
     } catch {}
+  }
+
+  function cleanupSocketArtifacts() {
+    if (socketConnectTimer) {
+      clearTimeout(socketConnectTimer);
+      socketConnectTimer = null;
+    }
+    if (socketClient) {
+      try { socketClient.destroy(); } catch {}
+      socketClient = null;
+    }
+    if (socketServer) {
+      try { socketServer.close(); } catch {}
+      socketServer = null;
+    }
+    if (socketPath) {
+      try { if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath); } catch {}
+      socketPath = '';
+    }
+    socketBuf = '';
+  }
+
+  function isHelperActive() {
+    if (launchMode === 'app-bundle') {
+      return Boolean(socketClient && !socketClient.destroyed && socketClient.writable);
+    }
+    return Boolean(helperChild && !helperChild.killed && helperChild.exitCode === null);
   }
 
   async function ensureCompiled() {
@@ -249,20 +328,30 @@ function createMacosDockBadgeManager(options = {}) {
       return false;
     }
 
-    const expectedFilename = `${CACHE_BINARY_PREFIX}${hash8}`;
-    const expectedPath = path.join(binDir, expectedFilename);
+    const appPath = path.join(binDir, APP_BUNDLE_DIRNAME);
+    const contentsDir = path.join(appPath, 'Contents');
+    const macOsDir = path.join(contentsDir, 'MacOS');
+    const resourcesDir = path.join(contentsDir, 'Resources');
+    const infoPlistPath = path.join(contentsDir, 'Info.plist');
+    const execPath = path.join(macOsDir, APP_EXECUTABLE_NAME);
+    const hashFilePath = path.join(resourcesDir, 'source.sha256');
+    const macTargetArch = process.arch === 'x64' ? 'x86_64' : 'arm64';
+    const macTargetTriple = `${macTargetArch}-apple-macosx13.0`;
+    const expectedBuildSig = `${hash8}-mac13-${macTargetArch}`;
 
     try {
-      if (fs.existsSync(expectedPath)) {
-        const st = fs.statSync(expectedPath);
-        if (st.isFile() && st.size > 0) {
-          try { fs.chmodSync(expectedPath, 0o755); } catch {}
-          compiledBinPath = expectedPath;
+      if (fs.existsSync(execPath) && fs.existsSync(infoPlistPath) && fs.existsSync(hashFilePath)) {
+        const st = fs.statSync(execPath);
+        const savedHash = fs.readFileSync(hashFilePath, 'utf8').trim();
+        if (st.isFile() && st.size > 0 && savedHash === expectedBuildSig) {
+          try { fs.chmodSync(execPath, 0o755); } catch {}
+          compiledBinPath = execPath;
+          compiledAppPath = appPath;
           compiledHash = hash8;
           compiled = true;
           clearCompileError();
           swiftcAvailable = true;
-          cleanupOldBinaries(expectedFilename);
+          cleanupOldBinaries('');
           return true;
         }
       }
@@ -303,12 +392,13 @@ function createMacosDockBadgeManager(options = {}) {
         swiftcAvailable = true;
 
         if (stopped) return false;
-        fs.mkdirSync(binDir, { recursive: true });
-        const tmpOut = path.join(binDir, `${expectedFilename}.tmp-${process.pid}-${Date.now()}`);
+        fs.mkdirSync(macOsDir, { recursive: true });
+        fs.mkdirSync(resourcesDir, { recursive: true });
+        const tmpOut = path.join(binDir, `${APP_EXECUTABLE_NAME}.tmp-${process.pid}-${Date.now()}`);
         const compRes = await execFileAsync(
           execFileFn,
           'swiftc',
-          ['-O', swiftSourcePath, '-o', tmpOut],
+          ['-O', '-swift-version', '6', '-target', macTargetTriple, swiftSourcePath, '-o', tmpOut],
           { timeout: 60000 }
         );
         if (!compRes.ok || !fs.existsSync(tmpOut)) {
@@ -322,13 +412,36 @@ function createMacosDockBadgeManager(options = {}) {
           compiled = false;
           return false;
         }
+        fs.writeFileSync(infoPlistPath, buildOverlayInfoPlist(), 'utf8');
         try { fs.chmodSync(tmpOut, 0o755); } catch {}
-        fs.renameSync(tmpOut, expectedPath);
-        compiledBinPath = expectedPath;
+        fs.renameSync(tmpOut, execPath);
+
+        if (!hasCustomExecFile) {
+          const signRes = await execFileAsync(
+            execFileFn,
+            'codesign',
+            ['--force', '--sign', '-', '--identifier', APP_BUNDLE_IDENTIFIER, appPath],
+            { timeout: 15000 }
+          );
+          if (!signRes.ok) {
+            const signDetail = (signRes.stderr || signRes.error?.message || 'codesign 签名失败').trim().split(/\r?\n/)[0];
+            setCompileError(
+              'COMPILE_FAILED',
+              'Dock 图标提醒组件签名未通过（原有功能不受影响），请重试或重启 Antigravity',
+              signDetail
+            );
+            compiled = false;
+            return false;
+          }
+        }
+
+        fs.writeFileSync(hashFilePath, `${expectedBuildSig}\n`, 'utf8');
+        compiledBinPath = execPath;
+        compiledAppPath = appPath;
         compiledHash = hash8;
         compiled = true;
         clearCompileError();
-        cleanupOldBinaries(expectedFilename);
+        cleanupOldBinaries('');
         return true;
       } catch (err) {
         setCompileError(
@@ -370,9 +483,20 @@ function createMacosDockBadgeManager(options = {}) {
   }
 
   function writeFrameToHelper(frameObj, force = false) {
+    const line = JSON.stringify(frameObj);
+    if (launchMode === 'app-bundle') {
+      if (!socketClient || socketClient.destroyed || !socketClient.writable) return false;
+      if (!force && line === lastSentFrameJson) return true;
+      try {
+        socketClient.write(line + '\n');
+        lastSentFrameJson = line;
+        return true;
+      } catch {
+        return false;
+      }
+    }
     if (!helperChild || helperChild.killed || helperChild.exitCode !== null) return false;
     if (!helperChild.stdin || helperChild.stdin.destroyed || !helperChild.stdin.writable) return false;
-    const line = JSON.stringify(frameObj);
     if (!force && line === lastSentFrameJson) return true;
     try {
       helperChild.stdin.write(line + '\n');
@@ -380,6 +504,22 @@ function createMacosDockBadgeManager(options = {}) {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async function switchToAppBundleMode() {
+    if (switchingToAppBundle || stopped || !prefs.enabled) return false;
+    if (!compiled || !compiledAppPath || hasCustomSpawn || disableSpawn) return false;
+    switchingToAppBundle = true;
+    triedAppBundleFallback = true;
+    try {
+      await stopHelperProcess();
+      if (stopped || !prefs.enabled) return false;
+      launchMode = 'app-bundle';
+      restartAttempts = 0;
+      return await startAppBundleViaLaunchServices();
+    } finally {
+      switchingToAppBundle = false;
     }
   }
 
@@ -394,6 +534,19 @@ function createMacosDockBadgeManager(options = {}) {
         if (typeof msg.iconSide === 'number' && Number.isFinite(msg.iconSide)) {
           iconSide = Math.max(0, Math.round(msg.iconSide));
         }
+        if (
+          msg.axTrusted === false &&
+          launchMode === 'spawn' &&
+          !triedAppBundleFallback &&
+          !switchingToAppBundle &&
+          !hasCustomSpawn &&
+          !disableSpawn &&
+          !stopped &&
+          prefs.enabled &&
+          compiledAppPath
+        ) {
+          void switchToAppBundleMode();
+        }
       }
     } catch {}
   }
@@ -403,6 +556,115 @@ function createMacosDockBadgeManager(options = {}) {
       clearTimeout(restartTimer);
       restartTimer = null;
     }
+  }
+
+  async function startAppBundleViaLaunchServices() {
+    if (!supported || disableSpawn || stopped || !prefs.enabled) return false;
+    if (!compiled || !compiledAppPath) return false;
+    if (helperStoppingPromise) return false;
+    if (isHelperActive()) return true;
+
+    clearRestartTimer();
+    cleanupSocketArtifacts();
+    lastSentFrameJson = '';
+
+    const sockFile = path.join(os.tmpdir(), `ag-dock-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.sock`);
+    socketPath = sockFile;
+
+    return await new Promise((resolve) => {
+      let resolved = false;
+      const done = (ok) => {
+        if (resolved) return;
+        resolved = true;
+        resolve(ok);
+      };
+
+      const srv = net.createServer((conn) => {
+        if (stopped || socketServer !== srv || socketClient) {
+          try { conn.destroy(); } catch {}
+          return;
+        }
+        if (socketConnectTimer) {
+          clearTimeout(socketConnectTimer);
+          socketConnectTimer = null;
+        }
+        socketClient = conn;
+        socketBuf = '';
+        helperStartedAt = Date.now();
+        clearCompileError();
+        conn.on('data', (chunk) => {
+          socketBuf += chunk.toString('utf8');
+          let nlIdx;
+          while ((nlIdx = socketBuf.indexOf('\n')) !== -1) {
+            const line = socketBuf.slice(0, nlIdx);
+            socketBuf = socketBuf.slice(nlIdx + 1);
+            handleHelperStdoutLine(line);
+          }
+        });
+        conn.on('error', () => {});
+        conn.on('close', () => {
+          const uptimeMs = Date.now() - helperStartedAt;
+          if (socketClient === conn) {
+            socketClient = null;
+            lastSentFrameJson = '';
+          }
+          if (uptimeMs >= 15000) restartAttempts = 0;
+          if (!stopped && prefs.enabled && !helperStoppingPromise && !switchingToAppBundle && launchMode === 'app-bundle') {
+            if (restartAttempts < 5) {
+              restartAttempts += 1;
+              const delayMs = Math.min(10000, 1000 * Math.pow(2, restartAttempts - 1));
+              restartTimer = setTimeout(() => {
+                restartTimer = null;
+                void ensureHelperRunning();
+              }, delayMs);
+              restartTimer.unref?.();
+            }
+          }
+        });
+        writeFrameToHelper(buildFramePayload(), true);
+        done(true);
+      });
+
+      srv.on('error', (err) => {
+        cleanupSocketArtifacts();
+        setCompileError(
+          'SPAWN_FAILED',
+          '无法创建 Dock 图标提醒本地通道（其他功能不受影响），请重试或重启 Antigravity',
+          err?.message || 'unix socket listen failed'
+        );
+        done(false);
+      });
+
+      socketServer = srv;
+      srv.listen(sockFile, () => {
+        try { fs.chmodSync(sockFile, 0o600); } catch {}
+        socketConnectTimer = setTimeout(() => {
+          socketConnectTimer = null;
+          if (!socketClient && !resolved) {
+            cleanupSocketArtifacts();
+            done(false);
+          }
+        }, 6000);
+        socketConnectTimer.unref?.();
+
+        execFileFn(
+          '/usr/bin/open',
+          ['-g', '-n', '-a', compiledAppPath, '--args', '--socket', sockFile],
+          { timeout: 6000 },
+          (err, _stdout, stderr) => {
+            if (err) {
+              cleanupSocketArtifacts();
+              setCompileError(
+                'SPAWN_FAILED',
+                '无法通过 LaunchServices 启动 AntigravityDockOverlay（其他功能不受影响），请重试或重启 Antigravity',
+                (stderr ? String(stderr) : '') || err.message || 'open -a AntigravityDockOverlay failed'
+              );
+              done(false);
+            }
+          }
+        );
+      });
+    });
   }
 
   function spawnHelperIfReady() {
@@ -461,7 +723,7 @@ function createMacosDockBadgeManager(options = {}) {
       if (uptimeMs >= 15000) {
         restartAttempts = 0;
       }
-      if (!stopped && prefs.enabled && !helperStoppingPromise) {
+      if (!stopped && prefs.enabled && !helperStoppingPromise && !switchingToAppBundle && launchMode === 'spawn') {
         if (restartAttempts < 5) {
           restartAttempts += 1;
           const delayMs = Math.min(10000, 1000 * Math.pow(2, restartAttempts - 1));
@@ -486,12 +748,45 @@ function createMacosDockBadgeManager(options = {}) {
     if (stopped || !prefs.enabled) return false;
     const ok = await ensureCompiled();
     if (!ok || stopped || !prefs.enabled) return false;
+    if (launchMode === 'app-bundle') {
+      return await startAppBundleViaLaunchServices();
+    }
     return spawnHelperIfReady();
   }
 
   function stopHelperProcess() {
     clearRestartTimer();
     if (helperStoppingPromise) return helperStoppingPromise;
+
+    if (socketClient || socketServer || socketPath) {
+      helperStoppingPromise = new Promise((resolve) => {
+        const conn = socketClient;
+        if (conn && !conn.destroyed && conn.writable) {
+          try {
+            const hideFrame = JSON.stringify({
+              visible: false,
+              unread: 0,
+              approval: 0,
+              highRisk: false,
+              running: false,
+              style: prefs.style,
+              colorTier: prefs.colorTier,
+              locale: 'zh-CN'
+            });
+            conn.write(hideFrame + '\n');
+            conn.end();
+          } catch {}
+        }
+        setTimeout(() => {
+          cleanupSocketArtifacts();
+          lastSentFrameJson = '';
+          helperStoppingPromise = null;
+          resolve();
+        }, 80);
+      });
+      return helperStoppingPromise;
+    }
+
     const child = helperChild;
     if (!child || child.exitCode !== null) {
       helperChild = null;
@@ -554,9 +849,9 @@ function createMacosDockBadgeManager(options = {}) {
 
   function syncOverlayFrame() {
     if (!supported || disableSpawn || stopped || !prefs.enabled) return;
-    if (helperChild && !helperChild.killed && helperChild.exitCode === null) {
+    if (isHelperActive()) {
       writeFrameToHelper(buildFramePayload(), false);
-    } else if (!compilePromise && !helperStoppingPromise && !restartTimer) {
+    } else if (!compilePromise && !helperStoppingPromise && !restartTimer && !switchingToAppBundle) {
       void ensureHelperRunning();
     }
   }
@@ -654,7 +949,7 @@ function createMacosDockBadgeManager(options = {}) {
       previewState = null;
       void stopHelperProcess();
     } else if (supported && !disableSpawn) {
-      if (!prevEnabled || !helperChild || helperChild.exitCode !== null) {
+      if (!prevEnabled || !isHelperActive()) {
         restartAttempts = 0;
         void ensureHelperRunning();
       } else {
@@ -742,6 +1037,16 @@ function createMacosDockBadgeManager(options = {}) {
     if (disableSpawn) {
       return { ok: true, dryRun: true };
     }
+    if (compiled && compiledAppPath && !hasCustomExecFile) {
+      try {
+        await execFileAsync(
+          execFileFn,
+          '/usr/bin/open',
+          ['-g', '-n', '-a', compiledAppPath, '--args', '--prompt-ax'],
+          { timeout: 3000 }
+        );
+      } catch {}
+    }
     const res = await execFileAsync(
       execFileFn,
       'open',
@@ -752,7 +1057,7 @@ function createMacosDockBadgeManager(options = {}) {
       return {
         ok: false,
         errorCode: 'OPEN_AX_FAILED',
-        error: '未能自动打开「系统设置」，请手动前往「系统设置 → 隐私与安全性 → 辅助功能」开启 Antigravity 的权限'
+        error: '未能自动打开「系统设置」，请手动前往「系统设置 → 隐私与安全性 → 辅助功能」勾选 AntigravityDockOverlay（或 Antigravity）的权限'
       };
     }
     return { ok: true };
@@ -760,7 +1065,7 @@ function createMacosDockBadgeManager(options = {}) {
 
   function getStatus() {
     const agg = aggregateDockStates(windows, Date.now(), ttlMs);
-    const helperRunning = Boolean(helperChild && !helperChild.killed && helperChild.exitCode === null);
+    const helperRunning = isHelperActive();
     return {
       ok: true,
       supported,
@@ -777,8 +1082,10 @@ function createMacosDockBadgeManager(options = {}) {
       compileErrorDetail,
       binaryHash: compiledHash,
       binaryPath: compiled ? compiledBinPath : '',
+      appBundlePath: compiled ? compiledAppPath : '',
+      launchMode,
       helperRunning,
-      helperPid: helperRunning ? (helperChild?.pid || null) : null,
+      helperPid: helperRunning && launchMode === 'spawn' ? (helperChild?.pid || null) : null,
       axTrusted,
       dockFound,
       iconSide,

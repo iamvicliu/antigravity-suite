@@ -11589,16 +11589,17 @@
   }
 
   function getMobileSnapshot(opts = {}) {
+    const lightForIsolated = Boolean(opts?.lightForIsolated);
     const parsedMsgLimit = (opts && opts.msgLimit !== undefined && opts.msgLimit !== null && opts.msgLimit !== '')
       ? Number.parseInt(opts.msgLimit, 10)
       : NaN;
-    const isModelMetaFastPath = Number.isFinite(parsedMsgLimit) && parsedMsgLimit <= 0;
-    const effectiveMsgLimit = (!isModelMetaFastPath && Number.isFinite(parsedMsgLimit) && parsedMsgLimit > 0) ? parsedMsgLimit : 60;
+    const isModelMetaFastPath = !lightForIsolated && Number.isFinite(parsedMsgLimit) && parsedMsgLimit <= 0;
+    const skipHeavyDom = lightForIsolated || isModelMetaFastPath;
+    const effectiveMsgLimit = (!skipHeavyDom && Number.isFinite(parsedMsgLimit) && parsedMsgLimit > 0) ? parsedMsgLimit : 60;
     const parsedConvLimit = (opts && opts.convLimit !== undefined && opts.convLimit !== null && opts.convLimit !== '')
       ? Number.parseInt(opts.convLimit, 10)
       : 0;
     const effectiveConvLimit = (Number.isFinite(parsedConvLimit) && parsedConvLimit > 0) ? parsedConvLimit : 0;
-
     const sessionId = getSessionIdFromLocation() || '';
     if (!isModelMetaFastPath && resolveLanguageServerCsrfToken() && (Date.now() - lastCascadeSummaryFetchAt) >= 20000) {
       lastCascadeSummaryFetchAt = Date.now();
@@ -11656,7 +11657,8 @@
     let pulseText = '';
     let pulseEl = null;
     let authCtx = null;
-    if (!isModelMetaFastPath) {
+    let contextPanel = null;
+    if (!skipHeavyDom) {
       const rawContextBadge = (
         sr?.getElementById('amount')?.textContent ||
         sr?.getElementById('badge-pct-val')?.textContent ||
@@ -11682,6 +11684,7 @@
         : null;
       contextBadge = canonicalCtx ? canonicalCtx.contextBadge : rawContextBadge;
       pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
+      contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, authCtx);
     }
     const EFFORT_ORDER = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
     const EFFORT_DISPLAY = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
@@ -11826,12 +11829,11 @@
     }));
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
     const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
-    const pendingApprovals = isModelMetaFastPath ? [] : collectPendingApprovals();
-    const pendingPrompts = isModelMetaFastPath ? [] : collectPendingPrompts();
-    const queuedMessages = isModelMetaFastPath ? [] : collectQueuedMessagesFromDom();
-    const messages = isModelMetaFastPath ? [] : collectRecentMessages(effectiveMsgLimit);
-    const suggestions = (!isModelMetaFastPath && !busy) ? computeNextStepCandidates().candidates : [];
-    const contextPanel = isModelMetaFastPath ? null : collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, authCtx);
+    const pendingApprovals = skipHeavyDom ? [] : collectPendingApprovals();
+    const pendingPrompts = skipHeavyDom ? [] : collectPendingPrompts();
+    const queuedMessages = skipHeavyDom ? [] : collectQueuedMessagesFromDom();
+    const messages = skipHeavyDom ? [] : collectRecentMessages(effectiveMsgLimit);
+    const suggestions = (!skipHeavyDom && !busy) ? computeNextStepCandidates().candidates : [];
     const usageSummary = isModelMetaFastPath ? null : collectDesktopUsageSummary(sr);
 
     if (activeConv) {
@@ -11885,47 +11887,215 @@
     };
   }
 
-  async function fetchIsolatedConversationSnapshot(baseSnap, reqConvId) {
-    try {
-      const full = await callLanguageServerRpc('GetCascadeTrajectory', {
-        cascadeId: reqConvId,
-        trajectoryVerbosity: 3
-      }, 4500);
-      const trajectory = full?.trajectory;
-      if (!trajectory || typeof trajectory !== 'object') {
-        throw new Error('未取得目标会话历史');
+  const isolatedSnapCache = new Map();
+  const isolatedSnapInflight = new Map();
+  const isolatedGenCountCache = new Map();
+  const MAX_ISOLATED_SNAP_CACHE = 16;
+
+  function resolveIsolatedCacheSig(reqConvId, opts) {
+    const optSig = String(opts?.trajSig || '').trim();
+    if (optSig) return optSig;
+    const sum = cascadeSummaryMap.get(reqConvId);
+    if (!sum || typeof sum !== 'object') return '';
+    const status = String(sum.status || '').trim();
+    const hasVer = sum.stepCount !== undefined && sum.stepCount !== null && sum.stepCount !== '';
+    const modTime = String(sum.lastModifiedTime || '').trim();
+    if (!status && !hasVer && !modTime) return '';
+    return `${status}|${hasVer ? sum.stepCount : ''}|${modTime}`;
+  }
+
+  function touchIsolatedSnapCache(convId, entry) {
+    if (isolatedSnapCache.has(convId)) isolatedSnapCache.delete(convId);
+    isolatedSnapCache.set(convId, entry);
+    if (isolatedSnapCache.size > MAX_ISOLATED_SNAP_CACHE) {
+      const oldest = isolatedSnapCache.keys().next().value;
+      if (oldest !== undefined) isolatedSnapCache.delete(oldest);
+    }
+  }
+
+  function materializeIsolatedFromCached(baseSnap, reqConvId, cached) {
+    const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
+    const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
+    const matchedGroup = (cloned.projectGroups || []).find((g) => (g.conversations || []).some((c) => c.id === reqConvId)) || null;
+    const targetProjectId = cached.targetProjectId || '';
+    const isStandaloneTarget = !targetProjectId || targetProjectId === 'outside-of-project' || targetProjectId === 'standalone';
+    const matchedBaseProj = (!isStandaloneTarget && Array.isArray(baseSnap.projects))
+      ? baseSnap.projects.find((p) => p && p.id === targetProjectId)
+      : null;
+    const cleanConvPid = isSyntheticSidebarProjectId(matchedConv?.projectId) ? '' : String(matchedConv?.projectId || '').trim();
+    const cleanGrpPid = isSyntheticSidebarProjectId(matchedGroup?.id) ? '' : String(matchedGroup?.id || '').trim();
+    const targetProjectName = isStandaloneTarget
+      ? ''
+      : String(
+          (matchedBaseProj?.name && !isSyntheticSidebarProjectName(matchedBaseProj.name) ? matchedBaseProj.name : '')
+          || cached.targetProjectName
+          || (cleanConvPid === targetProjectId && !isSyntheticSidebarProjectName(matchedConv?.projectName) ? matchedConv.projectName : '')
+          || (cleanGrpPid === targetProjectId && !isSyntheticSidebarProjectName(matchedGroup?.name) ? matchedGroup.name : '')
+          || ''
+        ).trim();
+    const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || cached.title || `会话 ${reqConvId.slice(0, 8)}`;
+    return {
+      ...baseSnap,
+      sessionId: reqConvId,
+      activeConversationId: reqConvId,
+      desktopSessionId: baseSnap.sessionId || '',
+      isolated: true,
+      isNewConversation: false,
+      currentProjectId: targetProjectId,
+      currentProjectName: targetProjectName,
+      currentProjectPath: '',
+      currentWorkspacePaths: undefined,
+      isolatedWorkspaceUris: cached.isolatedWorkspaceUris,
+      title,
+      busy: cached.busy,
+      model: cached.isolatedModel || baseSnap.model || '',
+      contextBadge: cached.isolatedContextBadge,
+      pulseText: cached.isolatedPulseText,
+      contextPanel: cached.contextPanel,
+      pendingApprovals: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingApprovals || []) : [],
+      pendingPrompts: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingPrompts || []) : [],
+      queuedMessages: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.queuedMessages || []) : [],
+      suggestions: cached.suggestions,
+      messages: cached.messages,
+      conversations: cloned.conversations,
+      projectGroups: cloned.projectGroups
+    };
+  }
+
+  async function fetchIsolatedConversationSnapshot(baseSnap, reqConvId, opts = {}) {
+    const effSig = resolveIsolatedCacheSig(reqConvId, opts);
+    if (!opts?.bypassCache && effSig) {
+      const cached = isolatedSnapCache.get(reqConvId);
+      const ttlMs = cached?.busy ? 1500 : 30000;
+      if (cached && cached.sig === effSig && (Date.now() - cached.at) < ttlMs) {
+        touchIsolatedSnapCache(reqConvId, cached);
+        return materializeIsolatedFromCached(baseSnap, reqConvId, cached);
       }
-      const steps = Array.isArray(trajectory.steps) ? trajectory.steps.slice() : [];
-      const expected = Number(full?.numTotalSteps ?? steps.length);
-      if (expected > steps.length) {
-        let offset = Math.max(steps.length, expected - 80);
-        for (let n = 0; n < 4 && offset < expected; n++) {
-          const page = await callLanguageServerRpc('GetCascadeTrajectorySteps', {
+    }
+
+    const inflightKey = effSig ? `${reqConvId}|${effSig}` : '';
+    if (!opts?.bypassCache && inflightKey && isolatedSnapInflight.has(inflightKey)) {
+      const cachedEntry = await isolatedSnapInflight.get(inflightKey);
+      if (cachedEntry && !cachedEntry.isError) {
+        return materializeIsolatedFromCached(baseSnap, reqConvId, cachedEntry);
+      }
+    }
+
+    const workPromise = (async () => {
+      try {
+        const knownStepCount = Math.max(0, Number(opts?.knownStepCount || 0) || 0);
+        let trajectory = null;
+        let steps = [];
+        let stepBaseOffset = 0;
+        let expected = 0;
+        let genList = [];
+
+        if (knownStepCount >= 600) {
+          const tailStart = Math.max(0, knownStepCount - 240);
+          const prevGenCount = Number(isolatedGenCountCache.get(reqConvId) || 0) || 0;
+          const reqGenOffset = prevGenCount > 3 ? (prevGenCount - 3) : 0;
+          const tailStepsPromise = (async () => {
+            const collected = [];
+            let off = tailStart;
+            for (let n = 0; n < 3 && off < knownStepCount + 120; n++) {
+              const pRes = await callLanguageServerRpc('GetCascadeTrajectorySteps', {
+                cascadeId: reqConvId,
+                stepOffset: off,
+                trajectoryVerbosity: 3
+              }, 3000).catch(() => null);
+              const chunk = Array.isArray(pRes?.steps) ? pRes.steps : [];
+              if (!chunk.length) break;
+              collected.push(...chunk);
+              off += chunk.length;
+              if (off >= knownStepCount) break;
+            }
+            return collected;
+          })();
+          const fastGenPromise = callLanguageServerRpc('GetCascadeTrajectoryGeneratorMetadata', {
             cascadeId: reqConvId,
-            stepOffset: offset,
+            generatorMetadataOffset: reqGenOffset,
+            includeMessages: false
+          }, 3000).catch(() => null);
+
+          const [tailSteps, fastGenRes] = await Promise.all([tailStepsPromise, fastGenPromise]);
+          if (tailSteps.length > 0) {
+            steps = tailSteps;
+            stepBaseOffset = tailStart;
+            expected = Math.max(knownStepCount, stepBaseOffset + steps.length);
+            let fgList = Array.isArray(fastGenRes?.generatorMetadata) ? fastGenRes.generatorMetadata : [];
+            if (!fgList.length && reqGenOffset > 0) {
+              const fullGenRes = await callLanguageServerRpc('GetCascadeTrajectoryGeneratorMetadata', {
+                cascadeId: reqConvId,
+                generatorMetadataOffset: 0,
+                includeMessages: false
+              }, 3000).catch(() => null);
+              if (Array.isArray(fullGenRes?.generatorMetadata)) {
+                fgList = fullGenRes.generatorMetadata;
+                isolatedGenCountCache.set(reqConvId, fgList.length);
+              }
+            } else if (fgList.length) {
+              isolatedGenCountCache.set(reqConvId, reqGenOffset + fgList.length);
+            }
+            while (isolatedGenCountCache.size > 32) {
+              const oldestGenK = isolatedGenCountCache.keys().next().value;
+              if (oldestGenK !== undefined) isolatedGenCountCache.delete(oldestGenK);
+              else break;
+            }
+            genList = fgList;
+          }
+        }
+
+        if (!steps.length) {
+          stepBaseOffset = 0;
+          const full = await callLanguageServerRpc('GetCascadeTrajectory', {
+            cascadeId: reqConvId,
             trajectoryVerbosity: 3
-          }, 3500).catch(() => null);
-          const chunk = Array.isArray(page?.steps) ? page.steps : [];
-          if (!chunk.length) break;
-          steps.push(...chunk);
-          offset += chunk.length;
-        }
-      }
+          }, 4500);
+          trajectory = full?.trajectory;
+          if (!trajectory || typeof trajectory !== 'object') {
+            throw new Error('未取得目标会话历史');
+          }
+          steps = Array.isArray(trajectory.steps) ? trajectory.steps.slice() : [];
+          expected = Number(full?.numTotalSteps ?? steps.length);
+          const genCount = Number(full?.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
 
-      const genCount = Number(full?.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
-      let genList = Array.isArray(trajectory.generatorMetadata) ? trajectory.generatorMetadata : [];
-      if (genCount > 0) {
-        const tail = await callLanguageServerRpc('GetCascadeTrajectoryGeneratorMetadata', {
-          cascadeId: reqConvId,
-          generatorMetadataOffset: Math.max(0, genCount - 3),
-          includeMessages: false
-        }, 3000).catch(() => null);
-        if (Array.isArray(tail?.generatorMetadata) && tail.generatorMetadata.length) {
-          genList = tail.generatorMetadata;
-        }
-      }
+          const stepsPromise = (async () => {
+            if (!(expected > steps.length)) return [];
+            const appended = [];
+            let offset = Math.max(steps.length, expected - 80);
+            for (let n = 0; n < 4 && offset < expected; n++) {
+              const page = await callLanguageServerRpc('GetCascadeTrajectorySteps', {
+                cascadeId: reqConvId,
+                stepOffset: offset,
+                trajectoryVerbosity: 3
+              }, 3500).catch(() => null);
+              const chunk = Array.isArray(page?.steps) ? page.steps : [];
+              if (!chunk.length) break;
+              appended.push(...chunk);
+              offset += chunk.length;
+            }
+            return appended;
+          })();
 
-      const estimateQuickTok = (text) => {
+          const genPromise = (genCount > 0)
+            ? callLanguageServerRpc('GetCascadeTrajectoryGeneratorMetadata', {
+                cascadeId: reqConvId,
+                generatorMetadataOffset: Math.max(0, genCount - 3),
+                includeMessages: false
+              }, 3000).catch(() => null)
+            : Promise.resolve(null);
+
+          const [appendedSteps, tailGenRes] = await Promise.all([stepsPromise, genPromise]);
+          if (appendedSteps.length) steps.push(...appendedSteps);
+
+          genList = Array.isArray(trajectory.generatorMetadata) ? trajectory.generatorMetadata : [];
+          if (Array.isArray(tailGenRes?.generatorMetadata) && tailGenRes.generatorMetadata.length) {
+            genList = tailGenRes.generatorMetadata;
+          }
+          if (genCount > 0) isolatedGenCountCache.set(reqConvId, genCount);
+        }
+
+        const estimateQuickTok = (text) => {
         if (!text || typeof text !== 'string') return 0;
         let ascii = 0, nonAscii = 0;
         for (let i = 0, len = Math.min(text.length, 250000); i < len; i++) {
@@ -11969,6 +12139,7 @@
           lastCheckpointStepIdx = sIdx; break;
         }
       }
+      const lastCheckpointGlobalIdx = lastCheckpointStepIdx >= 0 ? (stepBaseOffset + lastCheckpointStepIdx) : -1;
 
       const cm = validMeta?.chatModel || null;
       const isolatedModelId = String(cm?.model || cm?.modelId || cm?.responseModel || '').trim();
@@ -12066,7 +12237,7 @@
         for (let sIdx = 0; sIdx < steps.length; sIdx++) {
           if (matchGmSig(steps[sIdx])) {
             if (hit >= 0) return -1;
-            hit = sIdx;
+            hit = stepBaseOffset + sIdx;
           }
         }
         return hit;
@@ -12074,7 +12245,7 @@
       const metaMaxStep = rawMetaStep >= 0 ? rawMetaStep : resolveUniqueGmStep();
       const gmMatchesPostStep = Boolean(gmUsageSig && lastCheckpointStepIdx >= 0 && !steps.slice(0, lastCheckpointStepIdx).some(matchGmSig) && steps.slice(lastCheckpointStepIdx + 1).some(matchGmSig));
       const metaInvalidatedByCheckpoint = lastCheckpointStepIdx >= 0 && (
-        !validMeta || (metaMaxStep >= 0 ? metaMaxStep <= lastCheckpointStepIdx : ((metaTimeMs > 0 && cpTimeMs > 0) ? metaTimeMs <= cpTimeMs : !gmMatchesPostStep))
+        !validMeta || (metaMaxStep >= 0 ? metaMaxStep <= lastCheckpointGlobalIdx : ((metaTimeMs > 0 && cpTimeMs > 0) ? metaTimeMs <= cpTimeMs : !gmMatchesPostStep))
       );
 
       let lastIsoInlineUsageIdx = -1, isoPlannerCount = 0;
@@ -12088,13 +12259,15 @@
       }
       let laterUsageStepIdx = -1;
       if (!metaInvalidatedByCheckpoint && metaMaxStep >= 0) {
-        for (let sIdx = metaMaxStep + 1; sIdx < steps.length; sIdx++) {
+        const metaMaxLocal = metaMaxStep - stepBaseOffset;
+        const startLocal = Math.max(0, metaMaxLocal + 1);
+        for (let sIdx = startLocal; sIdx < steps.length; sIdx++) {
           const st = steps[sIdx], meta = st?.metadata || st, mu = meta?.modelUsage || st?.modelUsage || st?.usage || null;
           const m = (mu && (mu.model || mu.modelId)) || meta?.generatorModel || st?.model || '';
           if (usageSig(mu) && !isShadowStepModel(m)) { laterUsageStepIdx = sIdx; break; }
         }
-        if (laterUsageStepIdx < 0 && metaMaxStep < steps.length - 1 && matchGmSig(steps[metaMaxStep]) && steps.slice(metaMaxStep + 1).some((s) => Boolean(extractStepEstimateTextUnified(s)))) {
-          laterUsageStepIdx = metaMaxStep;
+        if (laterUsageStepIdx < 0 && metaMaxLocal >= 0 && metaMaxLocal < steps.length - 1 && matchGmSig(steps[metaMaxLocal]) && steps.slice(metaMaxLocal + 1).some((s) => Boolean(extractStepEstimateTextUnified(s)))) {
+          laterUsageStepIdx = metaMaxLocal;
         }
       } else if (!metaInvalidatedByCheckpoint && rawMetaStep < 0 && metaMaxStep < 0 && lastIsoInlineUsageIdx >= 0) {
         laterUsageStepIdx = lastIsoInlineUsageIdx;
@@ -12237,7 +12410,7 @@
 
       const messages = extractMessagesFromTrajectorySteps(steps, 20);
       const lastStep = steps.length ? steps[steps.length - 1] : null;
-      const trajStatusStr = String(trajectory.status || '').trim();
+      const trajStatusStr = String(trajectory?.status || opts?.knownStatus || cascadeSummaryMap.get(reqConvId)?.status || '').trim();
       const isTrajTerminalIdle = /IDLE|CANCELED|CANCELLED|COMPLETED|DONE/i.test(trajStatusStr);
       const busy = isTrajTerminalIdle
         ? false
@@ -12252,7 +12425,7 @@
         }
       }
       const suggestions = !busy
-        ? computeNextStepCandidatesFromText(reqConvId, lastAssistantText, usagePercent || 0, steps.length).candidates
+        ? computeNextStepCandidatesFromText(reqConvId, lastAssistantText, usagePercent || 0, Math.max(expected, steps.length)).candidates
         : [];
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
       const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
@@ -12287,34 +12460,27 @@
       for (const u of (Array.isArray(tMeta.workspaceUris) ? tMeta.workspaceUris : [])) {
         if (u) isolatedWorkspaceUris.push(String(u));
       }
-      const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || String(trajectory.summary || '').trim() || `会话 ${reqConvId.slice(0, 8)}`;
-
-      return {
-        ...baseSnap,
-        sessionId: reqConvId,
-        activeConversationId: reqConvId,
-        desktopSessionId: baseSnap.sessionId || '',
-        isolated: true,
-        isNewConversation: false,
-        currentProjectId: targetProjectId,
-        currentProjectName: targetProjectName,
-        currentProjectPath: '',
-        currentWorkspacePaths: undefined,
-        isolatedWorkspaceUris,
+      const title = matchedConv?.title || cascadeSummaryMap.get(reqConvId)?.title || String(opts?.knownTitle || trajectory?.summary || '').trim() || `会话 ${reqConvId.slice(0, 8)}`;
+      const cacheEntry = {
+        sig: effSig,
+        at: Date.now(),
         title,
         busy,
-        model: isolatedModel,
-        contextBadge: isolatedContextBadge,
-        pulseText: isolatedPulseText,
+        isolatedModel,
+        isolatedContextBadge,
+        isolatedPulseText,
         contextPanel: isoCanonical.contextPanel,
-        pendingApprovals: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingApprovals || []) : [],
-        pendingPrompts: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.pendingPrompts || []) : [],
-        queuedMessages: (reqConvId && reqConvId === (baseSnap.sessionId || '')) ? (baseSnap.queuedMessages || []) : [],
         suggestions,
         messages,
-        conversations: cloned.conversations,
-        projectGroups: cloned.projectGroups
+        isolatedWorkspaceUris,
+        targetProjectId,
+        targetProjectName,
+        isError: false
       };
+      if (effSig) {
+        touchIsolatedSnapCache(reqConvId, cacheEntry);
+      }
+      return materializeIsolatedFromCached(baseSnap, reqConvId, cacheEntry);
     } catch (err) {
       const cloned = cloneSidebarWithActiveConversation(baseSnap.conversations, baseSnap.projectGroups, reqConvId);
       const matchedConv = cloned.conversations.find((c) => c.id === reqConvId);
@@ -12365,11 +12531,26 @@
         isolationWarning: err?.message || '无法独立读取该会话'
       };
     }
+    })();
+
+    if (!opts?.bypassCache && inflightKey) {
+      isolatedSnapInflight.set(inflightKey, workPromise);
+      try {
+        return await workPromise;
+      } finally {
+        if (isolatedSnapInflight.get(inflightKey) === workPromise) {
+          isolatedSnapInflight.delete(inflightKey);
+        }
+      }
+    }
+    return await workPromise;
   }
 
   async function getMobileSnapshotAsync(opts = {}) {
-    const baseSnap = getMobileSnapshot();
+    const desktopSessionId = getSessionIdFromLocation() || '';
     const reqConvId = String(opts?.conversationId || '').trim();
+    const isIsolatedReq = Boolean(reqConvId && reqConvId !== desktopSessionId && reqConvId !== '__new__');
+    const baseSnap = getMobileSnapshot({ lightForIsolated: isIsolatedReq });
     if (!reqConvId || reqConvId === (baseSnap.sessionId || '') || reqConvId === '__new__') {
       return {
         ...baseSnap,
@@ -12378,7 +12559,7 @@
         isolated: false
       };
     }
-    return await fetchIsolatedConversationSnapshot(baseSnap, reqConvId);
+    return await fetchIsolatedConversationSnapshot(baseSnap, reqConvId, opts);
   }
 
   async function switchToConversationInternal(rawTargetId) {

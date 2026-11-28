@@ -2009,9 +2009,11 @@
     }
 
     if (st.axTrusted === false) {
+      const targetName = st.launchMode === 'app-bundle' ? 'AntigravityDockOverlay' : 'Antigravity（或 AntigravityDockOverlay）';
+      const targetEn = st.launchMode === 'app-bundle' ? 'AntigravityDockOverlay' : 'Antigravity (or AntigravityDockOverlay)';
       setDockBadgeStatusNote(
-        '需要开启「辅助功能」权限才能在 Dock 图标上显示提醒，请点击右上角「前往开启权限」并勾选放行',
-        'Accessibility permission is required to show alerts on the Dock icon. Click "Grant Access" above to enable it.',
+        `需要开启「辅助功能」权限才能在 Dock 图标上显示提醒，请点击右上角「前往开启权限」并在列表中勾选 ${targetName}`,
+        `Accessibility permission is required to show alerts on the Dock icon. Click "Grant Access" above and enable ${targetEn}.`,
         'warn',
         false
       );
@@ -4374,8 +4376,8 @@
       const res = await invokeHostBridge('/dock-badge-open-ax', {}, 'dockBadgeOpenAx');
       if (res && res.ok) {
         setDockBadgeStatusNote(
-          '已打开「系统设置 → 隐私与安全性 → 辅助功能」，请在列表中开启 Antigravity（若是用终端启动则开启对应终端）的权限，几秒后自动生效',
-          'Opened System Settings → Privacy & Security → Accessibility. Enable permission for Antigravity (or your terminal if launched from terminal); it takes effect in a few seconds.',
+          '已打开「系统设置 → 隐私与安全性 → 辅助功能」，请在列表中勾选 AntigravityDockOverlay（或 Antigravity），几秒后自动生效',
+          'Opened System Settings → Privacy & Security → Accessibility. Enable AntigravityDockOverlay (or Antigravity); it takes effect in a few seconds.',
           'warn',
           false
         );
