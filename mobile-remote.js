@@ -9423,7 +9423,7 @@ function buildMobileAppHtml() {
     .fold-btn{appearance:none;display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:3px 11px;border-radius:999px;font-size:12px;font-weight:500;line-height:1.2;border:1px solid var(--border);background:var(--surface-subtle);color:var(--accent-fg);cursor:pointer}
     .fold-btn:active{transform:scale(.98)}
     .msg-rail{
-      position:absolute;left:2px;top:50%;transform:translateY(-50%);z-index:22;
+      position:absolute;right:2px;left:auto;top:50%;transform:translateY(-50%);z-index:22;
       display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
       width:20px;max-height:min(56vh,400px);padding:6px 0;overflow:hidden;
       touch-action:none;user-select:none;-webkit-user-select:none;
@@ -9445,7 +9445,7 @@ function buildMobileAppHtml() {
     .msg-rail-item:hover .msg-rail-mark{background:var(--accent);opacity:.9}
     .msg-rail-item.is-active .msg-rail-mark{background:var(--fg-strong);opacity:.95;transform:scale(1.22)}
     .msg-rail-tip{
-      position:absolute;left:26px;top:50%;transform:translateY(-50%);z-index:25;pointer-events:none;
+      position:absolute;right:26px;left:auto;top:50%;transform:translateY(-50%);z-index:25;pointer-events:none;
       max-width:min(210px,60vw);padding:5px 10px;border-radius:999px;
       font-size:11.5px;font-weight:500;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
       background:var(--drawer-bg);color:var(--fg-strong);
@@ -10324,8 +10324,8 @@ function buildMobileAppHtml() {
       .messages{
         padding:24px max(36px,calc(50% - 410px)) 18px;gap:18px;
       }
-      .msg-rail{left:10px;width:22px;max-height:min(64vh,480px);gap:3px}
-      .msg-rail-tip{left:36px;max-width:260px}
+      .msg-rail{right:10px;left:auto;width:22px;max-height:min(64vh,480px);gap:3px}
+      .msg-rail-tip{right:36px;left:auto;max-width:260px}
       .msg.user{max-width:72%;font-size:14.5px;padding:11px 16px}
       .md-body{font-size:14.5px}
       .md-body code{font-size:13px}
@@ -10445,7 +10445,7 @@ function buildMobileAppHtml() {
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
     @media (max-width:859px){
-      body.has-msg-rail .messages{padding-left:24px}
+      body.has-msg-rail .messages{padding-right:24px}
       .topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto auto;align-items:center;padding:6px 10px 7px;column-gap:6px;row-gap:4px}
       #btn-drawer{grid-column:1;grid-row:1 / span 2;align-self:center}
       .title-wrap{display:contents}
