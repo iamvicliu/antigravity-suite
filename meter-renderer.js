@@ -658,6 +658,9 @@
     }
 
     /* 用户自定义功能显示开关 */
+    :host([data-layout="ring-only"][data-hide-context-ring="true"]) #badge-settings{
+      display:inline-flex!important;
+    }
     :host([data-hide-context-ring="true"]) #badge,
     :host([data-hide-inline-speed="true"]) #badge-speed,
     :host([data-hide-inline-speed="true"]) #overflow-speed-btn,
@@ -4465,19 +4468,19 @@
         <div id="settings-card-context-display" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">上下文与指标精简显示</span>
-            <button id="btn-reset-context-display" class="switch-pill-btn" type="button" title="恢复上下文显示位置与精简降噪默认设置">恢复默认</button>
+            <button id="btn-reset-context-display" class="switch-pill-btn" type="button" title="恢复上下文显示与指标默认设置">恢复默认</button>
           </div>
-          <div class="settings-card-desc">默认仅保留右上角单一上下文进度环，把输出速度收进详情面板，并默认隐藏详情面板中的 API 参考估算费用（开启开关后显示）；输入框底部仅在高水位或缓存失效时提示压缩。</div>
+          <div class="settings-card-desc">默认同时保留右上角进度环、顶栏推理速度、输入框底部脉冲胶囊与 API 参考估算费用；需要极简界面时，可随时切换仅顶栏显示或按需隐藏。</div>
           <div class="settings-pref-list">
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
                 <span class="settings-pref-name">上下文显示位置</span>
-                <span class="settings-pref-desc">选「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口</span>
+                <span class="settings-pref-desc">切至「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口</span>
               </div>
               <div class="source-switch-bar" role="group" aria-label="上下文显示位置">
-                <button id="set-ctx-pos-topbar" class="switch-pill-btn active" type="button" data-ctx-pos="topbar">右上角顶栏（默认）</button>
+                <button id="set-ctx-pos-topbar" class="switch-pill-btn" type="button" data-ctx-pos="topbar">右上角顶栏</button>
                 <button id="set-ctx-pos-footer" class="switch-pill-btn" type="button" data-ctx-pos="footer">输入框底部胶囊</button>
-                <button id="set-ctx-pos-both" class="switch-pill-btn" type="button" data-ctx-pos="both">同时显示</button>
+                <button id="set-ctx-pos-both" class="switch-pill-btn active" type="button" data-ctx-pos="both">同时显示（默认）</button>
               </div>
             </div>
             <label class="settings-pref-row settings-pref-check">
@@ -4485,14 +4488,14 @@
                 <span class="settings-pref-name">顶栏常驻显示流式生成速度 (tok/s)</span>
                 <span class="settings-pref-desc">关闭时隐藏顶栏内联 tok/s 徽章，点击上下文圆环仍可在详情面板查看完整输出速度与首字延迟</span>
               </div>
-              <input id="set-show-topbar-speed" type="checkbox" class="settings-checkbox" />
+              <input id="set-show-topbar-speed" type="checkbox" class="settings-checkbox" checked />
             </label>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
                 <span class="settings-pref-name">详情面板显示 API 参考估算费用 ($)</span>
-                <span class="settings-pref-desc">开启后在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付）</span>
+                <span class="settings-pref-desc">在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付），关闭可隐藏全部估算金额</span>
               </div>
-              <input id="set-show-api-ref-cost" type="checkbox" class="settings-checkbox" />
+              <input id="set-show-api-ref-cost" type="checkbox" class="settings-checkbox" checked />
             </label>
           </div>
         </div>
@@ -11116,7 +11119,13 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
-function positionHeatPopover(anchorX, anchorY) {
+function shouldShowApiRefCost() {
+    return typeof host !== 'undefined' && host?.getAttribute
+      ? host.getAttribute('data-hide-api-cost') !== 'true'
+      : true;
+  }
+
+  function positionHeatPopover(anchorX, anchorY) {
     if (!heatPop) return;
     const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
     const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
@@ -11182,9 +11191,12 @@ function positionHeatPopover(anchorX, anchorY) {
         const showPop = () => {
           const d = item.date;
           heatPopDate.textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${item.isToday ? '（今日）' : (item.key === win.firstStr ? '（首次使用）' : '')}`;
-          const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const cny = convertToCNY(costInfo.costUSD, 'USD');
-          const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          let costStr = '';
+          if (shouldShowApiRefCost()) {
+            const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
+            const cny = convertToCNY(costInfo.costUSD, 'USD');
+            costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          }
           heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? '未来日期（待产生记录）' : '0 Tokens');
           if (item.rec) {
             heatPopDet.innerHTML = `
@@ -11260,17 +11272,23 @@ function positionHeatPopover(anchorX, anchorY) {
       col.appendChild(fill);
 
       const showPop = () => {
-        const weekDates = [];
-        for (let r = 0; r < 7; r++) weekDates.push(formatLocalYmd(addDays(w.sDate, r)));
-        const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, weekDates, activeCostModel, {
-          mode: activeCostMode,
-          todayStr: formatLocalYmd(win.today)
-        });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const showCost = shouldShowApiRefCost();
+        let costStr = '';
+        let detHtml = '<span>周累计</span>';
+        if (showCost) {
+          const weekDates = [];
+          for (let r = 0; r < 7; r++) weekDates.push(formatLocalYmd(addDays(w.sDate, r)));
+          const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, weekDates, activeCostModel, {
+            mode: activeCostMode,
+            todayStr: formatLocalYmd(win.today)
+          });
+          const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+          costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          detHtml = `<span>周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+        }
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : '0 Tokens';
-        heatPopDet.innerHTML = `<span>周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+        heatPopDet.innerHTML = detHtml;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
         positionHeatPopover(r.left + r.width / 2, r.top - 6);
@@ -11369,19 +11387,25 @@ function positionHeatPopover(anchorX, anchorY) {
       const mouseX = e.clientX - r.left;
       const idx = points.length === 1 ? 0 : Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
       const pt = points[idx];
-      const cumDates = [];
-      for (const k of Object.keys(map)) {
-        if (k <= pt.key) cumDates.push(k);
+      const showCost = shouldShowApiRefCost();
+      let costStr = '';
+      let detHtml = '<span>截至当日累计</span>';
+      if (showCost) {
+        const cumDates = [];
+        for (const k of Object.keys(map)) {
+          if (k <= pt.key) cumDates.push(k);
+        }
+        const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
+          mode: activeCostMode,
+          todayStr: formatLocalYmd(win.today)
+        });
+        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+        costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        detHtml = `<span>截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
       }
-      const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
-        mode: activeCostMode,
-        todayStr: formatLocalYmd(win.today)
-      });
-      const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-      const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
       heatPopDate.textContent = `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日 (累计)`;
       heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
-      heatPopDet.innerHTML = `<span>截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+      heatPopDet.innerHTML = detHtml;
       heatPopDet.style.display = 'block';
       positionHeatPopover(e.clientX, r.top + (height - (pt.val / max) * (height - 12)) - 6);
     };
@@ -11507,9 +11531,12 @@ function positionHeatPopover(anchorX, anchorY) {
       }
 
       const showPop = () => {
-        const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
-        const cny = convertToCNY(costInfo.costUSD, 'USD');
-        const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        let costStr = '';
+        if (shouldShowApiRefCost()) {
+          const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
+          const cny = convertToCNY(costInfo.costUSD, 'USD');
+          costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        }
         heatPopDate.textContent = `${targetYear}年${targetMonth + 1}月${day}日${isToday ? '（今日）' : ''}`;
         heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? '未来日期（待产生记录）' : '0 Tokens');
         if (rec) {
@@ -11677,15 +11704,22 @@ function positionHeatPopover(anchorX, anchorY) {
       g.appendChild(text);
 
       const showPop = () => {
-        const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, item.dates, activeCostModel, {
-          mode: activeCostMode,
-          todayStr: formatLocalYmd(win.today)
-        });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const showCost = shouldShowApiRefCost();
+        const activeDays = item.dates.reduce((cnt, dk) => cnt + (ANTIGRAVITY_TOKEN_DATA.dailyMap[dk]?.total > 0 ? 1 : 0), 0);
+        let costStr = '';
+        let detHtml = `<span>月累计 (活跃 ${activeDays} 天)</span>`;
+        if (showCost) {
+          const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, item.dates, activeCostModel, {
+            mode: activeCostMode,
+            todayStr: formatLocalYmd(win.today)
+          });
+          const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+          costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          detHtml = `<span>月累计 · 折合日均 $${costAgg.dailyAverageUSD.toFixed(2)} (活跃 ${costAgg.activeDays} 天)</span>`;
+        }
         heatPopDate.textContent = `${targetYear}年${item.monthName}${item.isCurrent ? '（进行中）' : (item.monthIndex === peakMonthIndex ? '（年度峰值）' : '')}`;
         heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? '未来月份（尚未产生用量）' : '0 Tokens');
-        heatPopDet.innerHTML = `<span>月累计 · 折合日均 $${costAgg.dailyAverageUSD.toFixed(2)} (活跃 ${costAgg.activeDays} 天)</span>`;
+        heatPopDet.innerHTML = detHtml;
         heatPopDet.style.display = 'block';
 
         const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
@@ -12509,17 +12543,17 @@ function positionHeatPopover(anchorX, anchorY) {
     '📊 套餐与订阅': '📊 Plan & Subscription',
     '语言与明暗外观': 'Language & Appearance',
     '上下文与指标精简显示': 'Context & Metric Display',
-    '恢复上下文显示位置与精简降噪默认设置': 'Restore default context display & decluttering settings',
-    '默认仅保留右上角单一上下文进度环，把输出速度收进详情面板，并默认隐藏详情面板中的 API 参考估算费用（开启开关后显示）；输入框底部仅在高水位或缓存失效时提示压缩。': 'Shows a single topbar context ring by default, tucks streaming speed into the detail panel, and hides API reference cost estimates across detail panels unless enabled; composer capsule surfaces only on high usage or cache drops.',
+    '恢复上下文显示与指标默认设置': 'Restore default context display & metric settings',
+    '默认同时保留右上角进度环、顶栏推理速度、输入框底部脉冲胶囊与 API 参考估算费用；需要极简界面时，可随时切换仅顶栏显示或按需隐藏。': 'Shows the topbar context ring, inline streaming speed, composer capsule, and API reference cost estimates by default; switch to Topbar-only mode or toggle items off anytime for a minimal UI.',
     '上下文显示位置': 'Context Display Position',
-    '选「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口': 'When set to Topbar, the bottom capsule stays tucked away until context hits 240K+ or cache expires, surfacing a compact alert and one-click /compact',
-    '右上角顶栏（默认）': 'Topbar (Default)',
+    '切至「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口': 'When set to Topbar, the bottom capsule stays tucked away until context hits 240K+ or cache expires, surfacing a compact alert and one-click /compact',
+    '右上角顶栏': 'Topbar Only',
     '输入框底部胶囊': 'Composer Capsule',
-    '同时显示': 'Show Both',
+    '同时显示（默认）': 'Show Both (Default)',
     '顶栏常驻显示流式生成速度 (tok/s)': 'Always Show Streaming Speed in Topbar (tok/s)',
     '关闭时隐藏顶栏内联 tok/s 徽章，点击上下文圆环仍可在详情面板查看完整输出速度与首字延迟': 'Hides the inline tok/s badge in the topbar; full speed and TTFT metrics remain available inside the context detail panel',
     '详情面板显示 API 参考估算费用 ($)': 'Show API Reference Cost Estimates in Panels ($)',
-    '开启后在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付）': 'Displays public API price-equivalent reference costs (not actual subscription charges) in desktop and mobile remote detail panels',
+    '在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付），关闭可隐藏全部估算金额': 'Displays public API price-equivalent reference costs (not actual subscription charges) in desktop and mobile remote detail panels; toggle off to hide all estimates',
     '桌面功能显示开关': 'Desktop Feature Toggles',
     '对话自动化与安全策略': 'Chat Automation & Safety',
     '自定义强调色与顶栏分项配色': 'Custom Accent & Topbar Colors',
@@ -12985,8 +13019,8 @@ function positionHeatPopover(anchorX, anchorY) {
   };
   function normalizeContextDisplayMode(raw) {
     const clean = String(raw || '').trim().toLowerCase();
-    if (clean === 'footer' || clean === 'both') return clean;
-    return 'topbar';
+    if (clean === 'topbar' || clean === 'footer') return clean;
+    return 'both';
   }
 
   let suiteEnhancerPrefs = {
@@ -12995,9 +13029,9 @@ function positionHeatPopover(anchorX, anchorY) {
     autoCompact: true,
     longFold: true,
     quickBuiltinAutoSend: false,
-    contextDisplayMode: 'topbar',
-    showTopbarSpeed: false,
-    showApiReferenceCost: false,
+    contextDisplayMode: 'both',
+    showTopbarSpeed: true,
+    showApiReferenceCost: true,
     dockBadgeEnabled: true,
     dockBadgeStyle: 'capsule',
     dockBadgeColorTier: true,
@@ -16917,9 +16951,9 @@ function positionHeatPopover(anchorX, anchorY) {
 
   el('btn-reset-context-display')?.addEventListener('click', () => {
     void setContextDisplayPrefs({
-      contextDisplayMode: 'topbar',
-      showTopbarSpeed: false,
-      showApiReferenceCost: false
+      contextDisplayMode: 'both',
+      showTopbarSpeed: true,
+      showApiReferenceCost: true
     });
   });
 

@@ -23,6 +23,20 @@ const {
 
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
+const activeCompletedSendSpillPaths = new Set();
+let completedSpillExitHookRegistered = false;
+function registerCompletedSendSpillFile(filePath) {
+  if (!filePath) return;
+  activeCompletedSendSpillPaths.add(filePath);
+  if (completedSpillExitHookRegistered) return;
+  completedSpillExitHookRegistered = true;
+  process.once('exit', () => {
+    for (const fp of activeCompletedSendSpillPaths) {
+      try { fs.rmSync(fp, { force: true }); } catch {}
+    }
+    activeCompletedSendSpillPaths.clear();
+  });
+}
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
 const MOBILE_UI_VERSION = '2.1.0';
@@ -171,7 +185,7 @@ function resolveCachedRemoteUiPrefs() {
   ) {
     return cachedRemoteUiPrefs;
   }
-  let next = { longFold: true, showApiReferenceCost: false };
+  let next = { longFold: true, showApiReferenceCost: true };
   try {
     const collector = require('./meter-collector');
     const res = collector && typeof collector.getPluginSettings === 'function'
@@ -180,10 +194,10 @@ function resolveCachedRemoteUiPrefs() {
     const uiPrefs = res?.uiPreferences;
     next = {
       longFold: uiPrefs?.longFold !== false,
-      showApiReferenceCost: uiPrefs?.showApiReferenceCost === true
+      showApiReferenceCost: uiPrefs?.showApiReferenceCost !== false
     };
   } catch {
-    next = { longFold: true, showApiReferenceCost: false };
+    next = { longFold: true, showApiReferenceCost: true };
   }
   cachedRemoteUiPrefs = next;
   cachedRemoteUiPrefsAt = now;
@@ -3971,6 +3985,10 @@ function isPathWithinRoot(candidatePath, rootPath) {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+function safeRealpathSync(p) {
+  return typeof fs.realpathSync.native === 'function' ? fs.realpathSync.native(p) : fs.realpathSync(p);
+}
+
 function resolveRealPathWithFallback(targetPath) {
   const abs = path.resolve(String(targetPath || ''));
   const probeRealAt = (p) => {
@@ -3982,7 +4000,7 @@ function resolveRealPathWithFallback(targetPath) {
       throw Object.assign(new Error(`无法安全检查路径状态 (${err?.code || 'ERR'})`), { status: 403 });
     }
     try {
-      return fs.realpathSync(p);
+      return safeRealpathSync(p);
     } catch (err) {
       // 已存在的符号链接（悬空软链/循环软链/无权限目标）一律直接拒绝，绝不回溯拼接放行
       if (lst?.isSymbolicLink()) {
@@ -4043,7 +4061,7 @@ function assertSafeHostDirectoryPath(rawPath, options = {}) {
   if (matchedRootIdx < 0) {
     throw Object.assign(new Error('目标路径超出允许访问的宿主机根目录边界'), { status: 403 });
   }
-  if (isSensitiveHostPath(resolvedPath)) {
+  if (isSensitiveHostPath(resolvedPath, options)) {
     throw Object.assign(new Error('禁止访问敏感系统或凭证目录'), { status: 403 });
   }
   // 显式经 lstatSync 检查非 ENOENT 错误（如 EACCES/ELOOP）并经 realpathSync 二次校验真实物理路径
@@ -4060,7 +4078,7 @@ function assertSafeHostDirectoryPath(rawPath, options = {}) {
   if (matchedRealIdx < 0) {
     throw Object.assign(new Error('检测到符号链接指向授权目录之外，已拒绝访问'), { status: 403 });
   }
-  if (isSensitiveHostPath(realPath)) {
+  if (isSensitiveHostPath(realPath, options)) {
     throw Object.assign(new Error('检测到符号链接指向敏感目录，已拒绝访问'), { status: 403 });
   }
   return {
@@ -4166,25 +4184,29 @@ function listHostDirectories(options = {}) {
     }
   }
 
-  const rootCandidates = [
-    { label: '主目录 (~)', path: homeDir },
-    { label: 'codebase', path: path.join(homeDir, 'codebase') },
-    { label: 'shared', path: path.join(homeDir, 'shared') },
-    { label: 'Projects', path: path.join(homeDir, 'Projects') },
-    { label: 'Developer', path: path.join(homeDir, 'Developer') },
-    { label: 'Desktop', path: path.join(homeDir, 'Desktop') },
-    { label: 'Documents', path: path.join(homeDir, 'Documents') }
-  ];
+  const hasCustomAllowedRoots = Array.isArray(options.allowedRoots) && options.allowedRoots.length > 0;
+  const rootCandidates = hasCustomAllowedRoots
+    ? logicalRoots.map((r) => ({ label: path.basename(r) || r, path: r }))
+    : [
+        { label: '主目录 (~)', path: homeDir },
+        { label: 'codebase', path: path.join(homeDir, 'codebase') },
+        { label: 'shared', path: path.join(homeDir, 'shared') },
+        { label: 'Projects', path: path.join(homeDir, 'Projects') },
+        { label: 'Developer', path: path.join(homeDir, 'Developer') },
+        { label: 'Desktop', path: path.join(homeDir, 'Desktop') },
+        { label: 'Documents', path: path.join(homeDir, 'Documents') }
+      ];
   const roots = [];
   const seenRoots = new Set();
   for (const rc of rootCandidates) {
     const abs = path.resolve(rc.path);
     if (seenRoots.has(abs)) continue;
     try {
-      if (fs.statSync(abs).isDirectory()) {
-        fs.accessSync(abs, fs.constants.R_OK);
-        seenRoots.add(abs);
-        roots.push({ label: rc.label, path: abs });
+      const checkedRoot = assertSafeHostDirectoryPath(abs, options);
+      if (fs.statSync(checkedRoot.realPath).isDirectory()) {
+        fs.accessSync(checkedRoot.realPath, fs.constants.R_OK);
+        seenRoots.add(checkedRoot.resolvedPath);
+        roots.push({ label: rc.label, path: checkedRoot.resolvedPath });
       }
     } catch {}
   }
@@ -4196,14 +4218,15 @@ function listHostDirectories(options = {}) {
     const isHidden = name.startsWith('.');
     if (!showHidden && isHidden) continue;
     const childFull = path.join(resolvedPath, name);
-    if (isSensitiveHostPath(childFull)) continue;
+    if (isSensitiveHostPath(childFull, options)) continue;
     let isDir = false;
     try {
       if (d.isDirectory()) {
+        if (isSensitiveHostPath(path.join(realPath, name), options)) continue;
         isDir = true;
       } else if (d.isSymbolicLink()) {
-        const realChild = fs.realpathSync(childFull);
-        if (!realRoots.some((r) => isPathWithinRoot(realChild, r)) || isSensitiveHostPath(realChild)) {
+        const realChild = safeRealpathSync(childFull);
+        if (!realRoots.some((r) => isPathWithinRoot(realChild, r)) || isSensitiveHostPath(realChild, options)) {
           continue;
         }
         if (fs.statSync(realChild).isDirectory()) isDir = true;
@@ -4355,7 +4378,7 @@ function collectSafePreboundProjectFolders(existingResources, options = {}) {
     let realPath = '';
     let realStat = null;
     try {
-      realPath = fs.realpathSync(logicalPath);
+      realPath = safeRealpathSync(logicalPath);
       realStat = fs.statSync(realPath);
     } catch {
       continue;
@@ -4382,6 +4405,9 @@ function validateSafeProjectFolderList(rawFoldersInput, options = {}, emptyError
   const trimmedList = rawArr.map((x) => String(x || '').trim()).filter(Boolean);
   if (!trimmedList.length) {
     throw Object.assign(new Error(emptyErrorMsg), { status: 400 });
+  }
+  if (trimmedList.length > 32) {
+    throw Object.assign(new Error('单个项目最多绑定 32 个目录'), { status: 400 });
   }
   const { homeDir: baseHomeDir, realHomeDir: baseRealHomeDir } = resolveAllowedHostRoots(options);
   const preboundExactMap = options.preboundExactMap instanceof Map ? options.preboundExactMap : null;
@@ -4659,6 +4685,9 @@ async function createRemoteProject(payload = {}, options = {}) {
   if (!requestedName) {
     throw Object.assign(new Error('请输入项目名称'), { status: 400 });
   }
+  if (requestedName.length > 120 || /[\r\n\0]/.test(requestedName)) {
+    throw Object.assign(new Error('项目名称过长或包含非法控制字符'), { status: 400 });
+  }
   const projectName = requestedName;
   const forceNew = Boolean(payload?.forceNew);
   const requestedExistingId = String(payload?.existingProjectId || '').trim();
@@ -4753,11 +4782,15 @@ async function createRemoteProject(payload = {}, options = {}) {
       if (isDuplicateProjectRpcError(lastLsError)) {
         throw Object.assign(new Error(`同名项目「${projectName}」已存在，请修改项目名称`), { status: 400 });
       }
+      if (!options.allowDiskFallback) {
+        throw Object.assign(new Error(`创建项目失败：${lastLsError}`), { status: 502 });
+      }
     }
   }
 
+  const fallbackHome = path.resolve(String(options.homeDir || os.homedir()));
   const effectiveConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim()
-    || (isCatalogTestEnv() ? '' : path.join(os.homedir(), '.gemini', 'config'));
+    || (isCatalogTestEnv() ? '' : path.join(fallbackHome, '.gemini', 'config'));
   if (!created) {
     const canFallback = Boolean(options.allowDiskFallback || options.configDir || process.env.AG_CONFIG_DIR);
     if (!canFallback || !effectiveConfigDir) {
@@ -4894,6 +4927,9 @@ async function updateRemoteProject(payload = {}, options = {}) {
   const projectName = String(payload?.name || '').trim();
   if (!projectName) {
     throw Object.assign(new Error('请输入项目名称'), { status: 400 });
+  }
+  if (projectName.length > 120 || /[\r\n\0]/.test(projectName)) {
+    throw Object.assign(new Error('项目名称过长或包含非法控制字符'), { status: 400 });
   }
   const rawInputFolders = Array.isArray(payload?.folderPaths)
     ? payload.folderPaths
@@ -5199,13 +5235,18 @@ function renderSafeMarkdownToHtml(rawMd, bqDepth = 0) {
       inlineCodes.push(`<code>${escSafeHtml(c)}</code>`);
       return `\u0000IC${idx}\u0000`;
     });
-    s = s.replace(/!?\[([^\]\n]+)\]\(((?:[^()\s]+|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g, (fullMatch, label, rawTarget) => {
+    s = s.replace(/!?\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g, (fullMatch, label, rawTarget) => {
       const isImgSyntax = fullMatch.startsWith('!');
-      const cleanTarget = String(rawTarget || '').trim().split(/\s+/)[0] || '';
+      const rawTargetStr = String(rawTarget || '');
+      const cleanTarget = rawTargetStr.trim().split(/\s+/)[0] || '';
+      const labelHtml = escSafeHtml(label).replace(/\u0000IC(\d+)\u0000/g, (_2, ci) => inlineCodes[Number(ci)] || '');
+      if (rawTargetStr.includes('\u0000') || cleanTarget.includes('\u0000')) {
+        return labelHtml;
+      }
       const idx = tokens.length;
       if (!isImgSyntax && isSafeMarkdownLinkHref(cleanTarget)) {
         const extAttrs = cleanTarget.startsWith('#') ? '' : ' target="_blank" rel="noopener noreferrer"';
-        tokens.push(`<a href="${escSafeHtml(cleanTarget)}"${extAttrs}>${escSafeHtml(label)}</a>`);
+        tokens.push(`<a href="${escSafeHtml(cleanTarget)}"${extAttrs}>${labelHtml}</a>`);
       } else if (!isImgSyntax && /^file:\/\//i.test(cleanTarget)) {
         const hashIdx = cleanTarget.indexOf('#');
         const uriPart = hashIdx >= 0 ? cleanTarget.slice(0, hashIdx) : cleanTarget;
@@ -5214,22 +5255,21 @@ function renderSafeMarkdownToHtml(rawMd, bqDepth = 0) {
         const lineNum = lineMatch ? lineMatch[1] : '';
         const localPath = normalizeLocalFileUriToPath(uriPart);
         if (localPath) {
-          tokens.push(`<button type="button" class="md-file-link" data-file-path="${escSafeHtml(localPath)}"${lineNum ? ` data-file-line="${escSafeHtml(lineNum)}"` : ''}><code class="md-pill">${escSafeHtml(label)}</code></button>`);
+          tokens.push(`<button type="button" class="md-file-link" data-file-path="${escSafeHtml(localPath)}"${lineNum ? ` data-file-line="${escSafeHtml(lineNum)}"` : ''}><code class="md-pill">${labelHtml}</code></button>`);
         } else {
-          tokens.push(`<code class="md-pill">${escSafeHtml(label)}</code>`);
+          tokens.push(`<code class="md-pill">${labelHtml}</code>`);
         }
       } else {
-        tokens.push(escSafeHtml(label));
+        tokens.push(labelHtml);
       }
       return `\u0000LN${idx}\u0000`;
     });
     let escaped = escSafeHtml(s);
-    escaped = escaped.replace(/~~([^\n~][^\n]*?[^\n~]|[^\n~])~~/g, '<del>$1</del>');
-    escaped = escaped.replace(/\*\*([^\n*][^\n]*?[^\n*]|[^\n*])\*\*/g, '<strong>$1</strong>');
-    escaped = escaped.replace(/__([^\n_][^\n]*?[^\n_]|[^\n_])__/g, '<strong>$1</strong>');
-    escaped = escaped.replace(/(^|[^*])\*([^\s*\n][^*\n]*?[^\s*\n]|[^\s*\n])\*(?!\*)/g, '$1<em>$2</em>');
-    escaped = escaped.replace(/\u0000LN(\d+)\u0000/g, (_m, idx) => tokens[Number(idx)] || '');
-    escaped = escaped.replace(/\u0000IC(\d+)\u0000/g, (_m, idx) => inlineCodes[Number(idx)] || '');
+    escaped = escaped.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+    escaped = escaped.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    escaped = escaped.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+    escaped = escaped.replace(/(^|[^*])\*([^* \t\n][^*\n]*?[^* \t\n]|[^* \t\n])\*(?!\*)/g, '$1<em>$2</em>');
+    escaped = escaped.replace(/\u0000(LN|IC)(\d+)\u0000/g, (_m, kind, idx) => (kind === 'LN' ? tokens : inlineCodes)[Number(idx)] || '');
     return escaped;
   };
 
@@ -5264,12 +5304,13 @@ function renderSafeMarkdownToHtml(rawMd, bqDepth = 0) {
       out.push(codeBlocks[Number(cbMatch[1])] || '');
       continue;
     }
-    const hMatch = trimmed.match(/^(#{1,6})\s+(.*?)(?:\s+#+)?$/);
+    const hMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (hMatch) {
       flushPara();
       flushList();
       const lvl = hMatch[1].length;
-      out.push(`<h${lvl}>${formatInline(hMatch[2])}</h${lvl}>`);
+      const hContent = hMatch[2].replace(/[ \t]+#+\s*$/, '').trim();
+      out.push(`<h${lvl}>${formatInline(hContent)}</h${lvl}>`);
       continue;
     }
     if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
@@ -5487,7 +5528,7 @@ function normalizeLocalFileUriToPath(rawPath) {
       }
     }
   }
-  return s;
+  return s.includes('\u0000') ? '' : s;
 }
 
 function resolveSafeLocalMediaPath(rawPath, options = {}) {
@@ -7923,7 +7964,11 @@ function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
     }
     const iqId = getStableId(iq);
     const iqClientId = getClientQueueId(iq);
-    const hit = (iqId && idMap.get(iqId)) || (!iqId && iqClientId && clientIdMap.get(iqClientId)) || null;
+    let hit = (iqId && idMap.get(iqId)) || null;
+    if (!hit && iqClientId) {
+      const cidHit = clientIdMap.get(iqClientId);
+      if (cidHit && (!iqId || !getStableId(cidHit.item))) hit = cidHit;
+    }
     if (hit && !matchedBaseIndices.has(hit.idx)) {
       matchedBaseIndices.add(hit.idx);
       handledIncomingIndices.add(i);
@@ -7986,8 +8031,11 @@ function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
           idlessHit.item.domIndex = iq.domIndex;
         }
         idlessHit.item.messageId = iqId;
-        if (!idlessHit.item.id) idlessHit.item.id = iqId;
-        idMap.set(iqId, { item: idlessHit.item, idx: idlessHit.idx });
+        if (!idlessHit.item.id || isOptimisticQueueId(idlessHit.item.id)) idlessHit.item.id = iqId;
+        const upgradedRec = { item: idlessHit.item, idx: idlessHit.idx };
+        idMap.set(iqId, upgradedRec);
+        const iqCid = getClientQueueId(iq);
+        if (iqCid && !clientIdMap.has(iqCid)) clientIdMap.set(iqCid, upgradedRec);
         continue;
       }
       baseList.push(iq);
@@ -9181,9 +9229,9 @@ function buildMobileAppHtml() {
         --btn-primary-bg:#7c3aed;
         --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);--risk-border:rgba(220,38,38,.42);
         --diff-add:#15803d;--diff-del:#b91c1c;
-        --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0369a1;
+        --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#6d28d9;
         --ap-approve-bg:#047857;--ap-approve-fg:#ffffff;--ap-reject-bg:#e4e4e7;--ap-reject-fg:#18181b;
-        --user-bg:#2563eb;--user-fg:#ffffff;--send-ready-fg:#ffffff;
+        --user-bg:#6d28d9;--user-fg:#ffffff;--send-ready-fg:#ffffff;
         --toast-bg:#18181b;--toast-fg:#fafafa;--backdrop-bg:rgba(15,23,42,.36);
         --pop-shadow:0 14px 36px rgba(15,23,42,.14);--sheet-shadow:0 20px 56px rgba(15,23,42,.18);
         --scroll-thumb:rgba(15,23,42,.18);--scroll-thumb-hover:rgba(15,23,42,.32);
@@ -9221,9 +9269,9 @@ function buildMobileAppHtml() {
       --btn-primary-bg:#7c3aed;
       --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);--risk-border:rgba(220,38,38,.42);
       --diff-add:#15803d;--diff-del:#b91c1c;
-      --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0369a1;
+      --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#6d28d9;
       --ap-approve-bg:#047857;--ap-approve-fg:#ffffff;--ap-reject-bg:#e4e4e7;--ap-reject-fg:#18181b;
-      --user-bg:#2563eb;--user-fg:#ffffff;--send-ready-fg:#ffffff;
+      --user-bg:#6d28d9;--user-fg:#ffffff;--send-ready-fg:#ffffff;
       --toast-bg:#18181b;--toast-fg:#fafafa;--backdrop-bg:rgba(15,23,42,.36);
       --pop-shadow:0 14px 36px rgba(15,23,42,.14);--sheet-shadow:0 20px 56px rgba(15,23,42,.18);
       --scroll-thumb:rgba(15,23,42,.18);--scroll-thumb-hover:rgba(15,23,42,.32);
@@ -9877,13 +9925,13 @@ function buildMobileAppHtml() {
     .sheet-speed-btn:disabled{opacity:.65;cursor:default}
     .sheet-list{display:flex;flex-direction:column;gap:6px;overflow-y:auto;-webkit-overflow-scrolling:touch}
     .sheet-stage-viewport{width:100%;overflow:hidden}
-    .sheet-stage-track{display:flex;width:200%;align-items:flex-start;transition:transform .24s var(--ease-out);will-change:transform}
-    .sheet-stage-track.step-effort{transform:translateX(-50%)}
-    .sheet-stage-track.is-three-stage{width:300%}
-    .sheet-stage-track.is-three-stage .sheet-stage-pane{width:33.333333%;flex:0 0 33.333333%}
-    .sheet-stage-track.is-three-stage.step-submodel{transform:translateX(-33.333333%)}
-    .sheet-stage-track.is-three-stage.step-effort{transform:translateX(-66.666667%)}
-    .sheet-stage-pane{width:50%;flex:0 0 50%;display:flex;flex-direction:column;gap:6px;max-height:56dvh;overflow-y:auto;padding-right:2px;-webkit-overflow-scrolling:touch}
+    .sheet-stage-track{display:flex;width:100%;align-items:flex-start;transition:transform .24s var(--ease-out);will-change:transform}
+    .sheet-stage-track.step-effort{transform:translateX(-100%)}
+    .sheet-stage-track.is-three-stage{width:100%}
+    .sheet-stage-track.is-three-stage .sheet-stage-pane{width:100%;flex:0 0 100%}
+    .sheet-stage-track.is-three-stage.step-submodel{transform:translateX(-100%)}
+    .sheet-stage-track.is-three-stage.step-effort{transform:translateX(-200%)}
+    .sheet-stage-pane{width:100%;flex:0 0 100%;display:flex;flex-direction:column;gap:6px;max-height:56dvh;overflow-y:auto;padding-right:2px;-webkit-overflow-scrolling:touch}
     .model-col-hdr{display:none;font-size:11px;font-weight:600;color:var(--muted);padding:2px 6px 4px;letter-spacing:.02em}
     .model-picker-divider{height:1px;background:var(--border);margin:4px 2px;flex-shrink:0}
     .model-opt-check{display:inline-flex;align-items:center;justify-content:center;width:15px;font-size:13px;font-weight:700;color:var(--accent);flex-shrink:0}
@@ -10354,10 +10402,10 @@ function buildMobileAppHtml() {
         box-shadow:var(--sheet-shadow);
       }
       .sheet.model-picker-sheet,.sheet[data-sheet-kind^="model"]{
-        width:fit-content;min-width:340px;max-width:min(840px,94vw);
+        width:fit-content;min-width:340px;max-width:min(840px,calc(100vw - 32px));
       }
       .sheet.model-picker-sheet .sheet-back-btn,.sheet[data-sheet-kind^="model"] .sheet-back-btn{display:none!important}
-      .sheet.model-picker-sheet .sheet-stage-viewport,.sheet[data-sheet-kind^="model"] .sheet-stage-viewport{overflow:visible}
+      .sheet.model-picker-sheet .sheet-stage-viewport,.sheet[data-sheet-kind^="model"] .sheet-stage-viewport{max-width:100%;overflow-x:auto;overflow-y:visible}
       .sheet.model-picker-sheet .sheet-stage-track,
       .sheet.model-picker-sheet .sheet-stage-track.is-three-stage,
       .sheet[data-sheet-kind^="model"] .sheet-stage-track,
@@ -10368,7 +10416,7 @@ function buildMobileAppHtml() {
       .sheet.model-picker-sheet .sheet-stage-track.is-three-stage .sheet-stage-pane,
       .sheet[data-sheet-kind^="model"] .sheet-stage-pane,
       .sheet[data-sheet-kind^="model"] .sheet-stage-track.is-three-stage .sheet-stage-pane{
-        width:268px;flex:0 0 268px;max-height:min(460px,66vh);
+        width:clamp(208px,27vw,268px);flex:1 1 auto;min-width:0;max-width:268px;max-height:min(460px,66vh);
       }
       .sheet.model-picker-sheet #model-submodel-pane:not([hidden]),
       .sheet.model-picker-sheet #model-effort-pane:not(.is-empty-col),
@@ -10376,7 +10424,7 @@ function buildMobileAppHtml() {
       .sheet[data-sheet-kind^="model"] #model-effort-pane:not(.is-empty-col){
         border-left:1px solid var(--border);padding-left:10px;
       }
-      .sheet.model-picker-sheet #model-effort-pane,.sheet[data-sheet-kind^="model"] #model-effort-pane{width:204px;flex:0 0 204px}
+      .sheet.model-picker-sheet #model-effort-pane,.sheet[data-sheet-kind^="model"] #model-effort-pane{width:clamp(164px,21vw,204px);flex:0 1 204px;min-width:156px}
       .sheet.model-picker-sheet #model-effort-pane.is-empty-col,.sheet[data-sheet-kind^="model"] #model-effort-pane.is-empty-col{display:none!important}
       .sheet.model-picker-sheet .model-col-hdr,.sheet[data-sheet-kind^="model"] .model-col-hdr{display:block}
       .sheet.proj-modal{max-width:520px;max-height:min(680px,86vh)}
@@ -11077,6 +11125,8 @@ function buildMobileAppHtml() {
 
     const LOCAL_NOTIFY_STORAGE_KEY = 'ag_remote_local_notify_v1';
     const LOCAL_NOTIFY_PREVIEW_KEY = 'ag_remote_notify_preview_v1';
+    const LOCAL_NOTIFY_COMPLETED_KEY = 'ag_remote_notify_completed_v1';
+    const LOCAL_NOTIFY_WAITING_KEY = 'ag_remote_notify_waiting_v1';
     function isLocalNotifyEnabled() {
       try { return localStorage.getItem(LOCAL_NOTIFY_STORAGE_KEY) === '1'; } catch { return false; }
     }
@@ -11091,6 +11141,24 @@ function buildMobileAppHtml() {
     }
     function setLocalNotifyShowPreview(on) {
       try { localStorage.setItem(LOCAL_NOTIFY_PREVIEW_KEY, on ? '1' : '0'); } catch {}
+    }
+    function isLocalNotifyCompleted() {
+      try { return localStorage.getItem(LOCAL_NOTIFY_COMPLETED_KEY) !== '0'; } catch { return true; }
+    }
+    function setLocalNotifyCompleted(on) {
+      try { localStorage.setItem(LOCAL_NOTIFY_COMPLETED_KEY, on ? '1' : '0'); } catch {}
+    }
+    function isLocalNotifyWaiting() {
+      try { return localStorage.getItem(LOCAL_NOTIFY_WAITING_KEY) !== '0'; } catch { return true; }
+    }
+    function setLocalNotifyWaiting(on) {
+      try { localStorage.setItem(LOCAL_NOTIFY_WAITING_KEY, on ? '1' : '0'); } catch {}
+    }
+    function syncLocalNotifyPrefs(p) {
+      if (!p || typeof p !== 'object') return;
+      if (typeof p.showPreview === 'boolean') setLocalNotifyShowPreview(p.showPreview);
+      if (typeof p.notifyCompleted === 'boolean') setLocalNotifyCompleted(p.notifyCompleted);
+      if (typeof p.notifyWaiting === 'boolean') setLocalNotifyWaiting(p.notifyWaiting);
     }
 
     function fnv1aClientHex(input) {
@@ -11318,13 +11386,13 @@ function buildMobileAppHtml() {
       } catch {}
       const sub = hasPushApi ? await getActivePushSubscription() : null;
       const localOn = isLocalNotifyEnabled() && hasNotifApi && Notification.permission === 'granted';
-      if (serverInfo && serverInfo.prefs && typeof serverInfo.prefs.showPreview === 'boolean') {
-        setLocalNotifyShowPreview(serverInfo.prefs.showPreview);
+      if (serverInfo && serverInfo.prefs) {
+        syncLocalNotifyPrefs(serverInfo.prefs);
       }
       const prefs = (serverInfo && serverInfo.prefs) || {
         enabled: true,
-        notifyCompleted: true,
-        notifyWaiting: true,
+        notifyCompleted: isLocalNotifyCompleted(),
+        notifyWaiting: isLocalNotifyWaiting(),
         showPreview: isLocalNotifyShowPreview()
       };
 
@@ -11460,30 +11528,41 @@ function buildMobileAppHtml() {
         }
         if (item.value === 'toggle-completed' || item.value === 'toggle-waiting' || item.value === 'toggle-preview') {
           const nextShowPreview = !(prefs.showPreview !== false);
+          const nextCompleted = !prefs.notifyCompleted;
+          const nextWaiting = !prefs.notifyWaiting;
           const patch = item.value === 'toggle-completed'
-            ? { notifyCompleted: !prefs.notifyCompleted }
+            ? { notifyCompleted: nextCompleted }
             : (item.value === 'toggle-waiting'
-                ? { notifyWaiting: !prefs.notifyWaiting }
+                ? { notifyWaiting: nextWaiting }
                 : { showPreview: nextShowPreview });
-          if (item.value === 'toggle-preview') {
-            setLocalNotifyShowPreview(nextShowPreview);
-          }
+          const prevShowPreview = isLocalNotifyShowPreview();
+          const prevCompleted = isLocalNotifyCompleted();
+          const prevWaiting = isLocalNotifyWaiting();
+          if (item.value === 'toggle-preview') setLocalNotifyShowPreview(nextShowPreview);
+          else if (item.value === 'toggle-completed') setLocalNotifyCompleted(nextCompleted);
+          else setLocalNotifyWaiting(nextWaiting);
           try {
             const prefRes = await pushApiRequest('/api/push/prefs', 'POST', patch);
             if (!prefRes.ok) {
-              if (item.value === 'toggle-preview' && !sub) {
-                showToast('推送摘要偏好已在本地更新');
+              if (!sub) {
+                showToast('推送偏好已在本地更新');
                 return;
               }
+              setLocalNotifyShowPreview(prevShowPreview);
+              setLocalNotifyCompleted(prevCompleted);
+              setLocalNotifyWaiting(prevWaiting);
               showToast('更新推送偏好失败（HTTP ' + prefRes.status + '）');
               return;
             }
             showToast('推送偏好已更新');
           } catch {
-            if (item.value === 'toggle-preview' && !sub) {
+            if (!sub) {
               showToast('推送摘要偏好已在本地更新');
               return;
             }
+            setLocalNotifyShowPreview(prevShowPreview);
+            setLocalNotifyCompleted(prevCompleted);
+            setLocalNotifyWaiting(prevWaiting);
             showToast('更新推送偏好失败，请检查网络连接');
           }
           return;
@@ -11829,11 +11908,7 @@ function buildMobileAppHtml() {
             || (curRes && curRes.ok && curKind === 'tunnel' && switchBest.kind !== 'tunnel' && (!curRes.ms || switchBest.ms < curRes.ms))
             || (curRes && curRes.ok && Number.isFinite(curRes.ms) && (curRes.ms - switchBest.ms >= 15) && switchBest.ms <= curRes.ms * 0.75);
           if (!sameEntry && !downgradeBlocked && significantlyFaster) {
-            if (activeSnapAbort) {
-              try { activeSnapAbort.abort(); } catch {}
-              activeSnapAbort = null;
-            }
-            clearTimeout(pollTimer);
+            invalidateInflightSnapshotPolls({ skipReschedule: true });
             const targetUrl = buildClientEntryUrl(switchBest.url, { autoSwitched: true });
             navigateEntryUrl(targetUrl, true);
             return speedTestState;
@@ -11859,6 +11934,7 @@ function buildMobileAppHtml() {
     let failoverBusy = null;
     async function tryFailoverEndpoint() {
       if (failoverBusy) return failoverBusy;
+      const startModeSeq = modeSwitchSeq;
       failoverBusy = (async () => {
         const entries = getEnabledModeEntries();
         const extra = [];
@@ -11878,6 +11954,7 @@ function buildMobileAppHtml() {
           Promise.all(candidates.map((ep) => probeEndpointLatency(ep, 1600))),
           needServerHints ? fetchServerProbeHints(true) : Promise.resolve(null)
         ]);
+        if (startModeSeq !== modeSwitchSeq) return false;
         const nextResults = Object.assign({}, speedTestState.results || {});
         const nowTs = Date.now();
         const mergedList = [];
@@ -11913,6 +11990,7 @@ function buildMobileAppHtml() {
         const winner = winners[0] || null;
         if (!winner) return false;
 
+        if (startModeSeq !== modeSwitchSeq) return false;
         if (Array.isArray(winner.data?.endpoints) && winner.data.endpoints.length) {
           pairState.endpoints = winner.data.endpoints;
           if (Array.isArray(winner.data.hosts)) pairState.hosts = winner.data.hosts;
@@ -11921,6 +11999,7 @@ function buildMobileAppHtml() {
         if (winner.url !== curOriginFail && shouldBlockInsecureDowngrade(curOriginFail, winner.url, isStandalonePwa)) {
           return false;
         }
+        if (startModeSeq !== modeSwitchSeq) return false;
         if (location.protocol === 'https:' && winner.url.toLowerCase().startsWith('http://')) {
           navigateEntryUrl(buildClientEntryUrl(winner.url, { autoSwitched: true }), true);
           return true;
@@ -12067,11 +12146,7 @@ function buildMobileAppHtml() {
           showToast('当前环境不支持新标签页打开，已保留当前连接');
           return false;
         }
-        if (activeSnapAbort) {
-          try { activeSnapAbort.abort(); } catch {}
-          activeSnapAbort = null;
-        }
-        clearTimeout(pollTimer);
+        invalidateInflightSnapshotPolls({ skipReschedule: true });
         manualLocked = true;
         try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
         navigateEntryUrl(targetUrl, false);
@@ -12120,11 +12195,7 @@ function buildMobileAppHtml() {
       saveStoredPair(pairState);
       manualLocked = true;
       try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
-      if (activeSnapAbort) {
-        try { activeSnapAbort.abort(); } catch {}
-        activeSnapAbort = null;
-      }
-      clearTimeout(pollTimer);
+      invalidateInflightSnapshotPolls({ skipReschedule: true });
       apiBase = cleanTarget === cleanPageOrigin ? '' : cleanTarget;
       subMetaNoticeActive = true;
       if ($('sub-meta')) {
@@ -12225,7 +12296,18 @@ function buildMobileAppHtml() {
       }
     }
 
+    let stageCleanupSeq = 0;
+    let stageCleanupTimer = null;
+    function cancelDeferredStageCleanup() {
+      stageCleanupSeq += 1;
+      if (stageCleanupTimer) {
+        clearTimeout(stageCleanupTimer);
+        stageCleanupTimer = null;
+      }
+    }
+
     function closeSheet() {
+      cancelDeferredStageCleanup();
       activeSheetKind = '';
       activeSheetState = null;
       const backBtn = $('sheet-back-btn');
@@ -12380,7 +12462,7 @@ function buildMobileAppHtml() {
     }
 
     let subMetaNoticeActive = true;
-    let remoteShowApiRefCost = false;
+    let remoteShowApiRefCost = true;
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
     $('sub-meta').hidden = false;
     $('sub-meta').onclick = openModeSwitcherSheet;
@@ -12904,14 +12986,17 @@ function buildMobileAppHtml() {
 
     let snapshotInflight = false;
     let snapshotSeq = 0;
-    function invalidateInflightSnapshotPolls() {
+    function invalidateInflightSnapshotPolls(opts) {
+      clearTimeout(pollTimer);
       snapshotSeq += 1;
       snapshotInflight = false;
       if (activeSnapAbort) {
         try { activeSnapAbort.abort(); } catch {}
         activeSnapAbort = null;
       }
-      schedulePoll();
+      if (!opts || (!opts.skipReschedule && !opts.skipSchedule)) {
+        schedulePoll();
+      }
     }
 
     async function apiAction(payload, opts) {
@@ -12998,7 +13083,7 @@ function buildMobileAppHtml() {
     function renderInlineClientMarkdown(rawLine) {
       const BT = String.fromCharCode(96);
       const BS = String.fromCharCode(92);
-      const src = String(rawLine || '');
+      const src = String(rawLine || '').replace(/\\u0000/g, '');
       if (!src) return '';
       const codeSpans = [];
       let segBuf = '';
@@ -13013,11 +13098,11 @@ function buildMobileAppHtml() {
         }
       }
       const links = [];
-      let textWithLinks = segBuf.replace(/\\[([^\\]\\n]+)\\]\\(((?:[^()\\s]+|\\([^()\\s]*\\))+)(?:\\s+"[^"]*")?\\)/g, (_m, rawLabel, rawUrl) => {
+      let textWithLinks = segBuf.replace(/\\[([^\\]\\n]+)\\]\\(((?:[^()\\s]|\\([^()\\s]*\\))+)(?:\\s+"[^"]*")?\\)/g, (_m, rawLabel, rawUrl) => {
         let href = String(rawUrl || '').trim();
         if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1).trim();
         const labelHtml = esc(rawLabel).replace(/\\u0000MCSP(\\d+)\\u0000/g, (_2, ci) => codeSpans[Number(ci)] || '');
-        if (!isSafeClientMdHref(href)) return labelHtml;
+        if (href.includes('\\u0000') || !isSafeClientMdHref(href)) return labelHtml;
         const idx = links.length;
         if (href.toLowerCase().startsWith('file://')) {
           let fPath = href.slice(7);
@@ -13030,7 +13115,7 @@ function buildMobileAppHtml() {
             fPath = fPath.slice(0, hashIdx);
           }
           try { fPath = decodeURIComponent(fPath); } catch {}
-          if (fPath.startsWith('/')) {
+          if (fPath.startsWith('/') && !fPath.includes('\\u0000')) {
             links.push(
               '<a class="md-file-link" href="#file-preview" data-file-path="' + esc(fPath) + '"'
               + (lineNo > 0 ? (' data-file-line="' + lineNo + '"') : '')
@@ -13051,8 +13136,7 @@ function buildMobileAppHtml() {
       safe = safe.replace(/__([^_\\n]+)__/g, '<strong>$1</strong>');
       safe = safe.replace(/~~([^~\\n]+)~~/g, '<del>$1</del>');
       safe = safe.replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<em>$2</em>');
-      safe = safe.replace(/\\u0000MLNK(\\d+)\\u0000/g, (_m, idx) => links[Number(idx)] || '');
-      safe = safe.replace(/\\u0000MCSP(\\d+)\\u0000/g, (_m, idx) => codeSpans[Number(idx)] || '');
+      safe = safe.replace(/\\u0000(MLNK|MCSP)(\\d+)\\u0000/g, (_m, kind, idx) => (kind === 'MLNK' ? links : codeSpans)[Number(idx)] || '');
       void BS;
       return safe;
     }
@@ -13967,6 +14051,7 @@ function buildMobileAppHtml() {
       }
 
       subMetaNoticeActive = false;
+      if (snap.pushPrefs && typeof syncLocalNotifyPrefs === 'function') syncLocalNotifyPrefs(snap.pushPrefs);
       const displayCfg = applyRemoteDisplayConfig(snap);
       if (typeof applyRemoteLongFoldPref === 'function') applyRemoteLongFoldPref(snap);
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
@@ -14342,7 +14427,11 @@ function buildMobileAppHtml() {
                 ...(q?.hasMedia || (Array.isArray(q?.images) && q.images.length > 0) ? { hasMedia: true } : {})
               };
             });
-          const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.messageId || q.id || '') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
+          const qRouteKey = String(apiBase || '') + '|' + (apiBase && pairState?.token ? fnv1aClientHex(pairState.token) : '');
+          const qSig = qRouteKey + '::' + String(snapSid || '') + '::' + queuedList.map((q, qi) => {
+            const imgKey = (q.hasMedia ? '1' : '0') + '|' + String(q.mediaSig || '') + '|' + (Array.isArray(q.images) ? q.images.slice(0, 3).map((im) => (typeof im === 'string' ? im : (String(im?.src || '') + '#' + String(im?.alt || '')))).join(',') : '');
+            return String(q.source || 'traj') + ':' + String(q.messageId || q.id || '') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + imgKey;
+          }).join('\u001f');
           if (qDock.dataset.queueSig !== qSig) {
             qDock.dataset.queueSig = qSig;
             qDock.innerHTML = '<div class="queue-card">'
@@ -14464,11 +14553,15 @@ function buildMobileAppHtml() {
                 const msgId = String(editBtn.dataset.msgId || '').trim();
                 const stepIdx = Number(editBtn.dataset.stepIdx);
                 if (!msgId && src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
+                const reqPayload = buildQueueItemPayload(editBtn, { action: 'edit-queued-message' });
+                const editOriginConvId = String(reqPayload.conversationId || selectedConversationId || '').trim();
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
-                  const res = await apiAction(buildQueueItemPayload(editBtn, { action: 'edit-queued-message' }));
+                  const res = await apiAction(reqPayload);
                   if (res?.ok || res?.attachmentsPreserved || res?.textPreserved) {
+                    const curConvId = String(selectedConversationId || latestSnap?.activeConversationId || latestSnap?.sessionId || '').trim();
+                    const switchedConvAway = Boolean(editOriginConvId && curConvId && editOriginConvId !== curConvId);
                     const restoredAtts = Array.isArray(res?.actionResult?.editedAttachments)
                       ? res.actionResult.editedAttachments
                       : [];
@@ -14477,6 +14570,21 @@ function buildMobileAppHtml() {
                     const restoreSourceKey = msgId
                       ? ('msg:' + msgId)
                       : (serverRecoveryKey || (Number.isInteger(stepIdx) && stepIdx >= 0 ? ('step:' + stepIdx) : ''));
+                    const hasServerText = Boolean(res?.actionResult && typeof res.actionResult.editedText === 'string');
+                    const fillVal = hasServerText ? res.actionResult.editedText : qText;
+                    const textRestoreKey = restoreSourceKey ? ((editOriginConvId || '') + '::' + restoreSourceKey) : '';
+                    const alreadyRestoredText = Boolean(textRestoreKey && restoredQueueEditTextKeys.has(textRestoreKey));
+                    if (switchedConvAway) {
+                      if (fillVal && !alreadyRestoredText && editOriginConvId) {
+                        const prevOriginDraft = typeof draftByConv === 'object' && draftByConv ? String(draftByConv[editOriginConvId] || '') : '';
+                        const mergedOriginDraft = prevOriginDraft.trim() ? (prevOriginDraft.trimEnd() + '\\n' + fillVal) : fillVal;
+                        saveDraftForConv(editOriginConvId, mergedOriginDraft);
+                        if (textRestoreKey && isPendingRetryRestore) restoredQueueEditTextKeys.add(textRestoreKey);
+                      }
+                      if (textRestoreKey && res?.ok) restoredQueueEditTextKeys.delete(textRestoreKey);
+                      showToast('已撤回原会话排队消息并暂存至原会话草稿，切回原会话可继续编辑');
+                      return;
+                    }
                     if (restoreSourceKey && restoredAtts.length) {
                       for (let ri = uploadedAttachments.length - 1; ri >= 0; ri -= 1) {
                         if (
@@ -14509,13 +14617,9 @@ function buildMobileAppHtml() {
                     if (restoredAtts.length) {
                       renderAttachHintStrip();
                     }
-                    const hasServerText = Boolean(res?.actionResult && typeof res.actionResult.editedText === 'string');
-                    const fillVal = hasServerText ? res.actionResult.editedText : qText;
-                    const textRestoreKey = restoreSourceKey ? ((selectedConversationId || '') + '::' + restoreSourceKey) : '';
-                    const alreadyRestoredText = Boolean(textRestoreKey && restoredQueueEditTextKeys.has(textRestoreKey));
                     if (fillVal && !alreadyRestoredText) {
                       ta.value = ta.value.trim() ? (ta.value.trimEnd() + '\\n' + fillVal) : fillVal;
-                      saveDraftForConv(selectedConversationId, ta.value);
+                      saveDraftForConv(editOriginConvId || selectedConversationId, ta.value);
                       ta.style.height = 'auto';
                       const maxH = isDesktopLayout() ? 180 : 112;
                       ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
@@ -14812,6 +14916,7 @@ function buildMobileAppHtml() {
     let orderDrainLoopPromise = null;
     let lastProjectOrderSettledEpoch = 0;
     let activeDragProjectId = '';
+    let touchDragState = null;
 
     function isDesktopPointerFineEnv() {
       try {
@@ -14910,10 +15015,12 @@ function buildMobileAppHtml() {
       if (lbl) lbl.textContent = projSortMode ? '完成' : '排序';
     }
 
+    let pendingConvListRerender = false;
     function setProjectSortMode(nextFlag) {
       const want = Boolean(nextFlag) && convViewMode === 'projects';
       if (projSortMode === want) return projSortMode;
       projSortMode = want;
+      pendingConvListRerender = false;
       if (latestSnap) renderConversationList(latestSnap);
       else syncSortProjectsButtonUi(0);
       return projSortMode;
@@ -15324,6 +15431,8 @@ function buildMobileAppHtml() {
           eventType = 'waiting';
         }
         if (!eventType) continue;
+        if (eventType === 'completed' && !isLocalNotifyCompleted()) continue;
+        if (eventType === 'waiting' && !isLocalNotifyWaiting()) continue;
         const fmt = formatClientNotification(c, eventType, showPreview);
         const dedupKey = eventType + ':' + c.id;
         const updAlias = curUpdatedAt > 0 ? ('u' + Math.floor(curUpdatedAt)) : '';
@@ -15488,6 +15597,11 @@ function buildMobileAppHtml() {
       }
 
       if (convList.dataset.lastHtml !== html) {
+        if (touchDragState || activeDragProjectId) {
+          pendingConvListRerender = true;
+          return;
+        }
+        pendingConvListRerender = false;
         convList.innerHTML = html;
         convList.dataset.lastHtml = html;
       }
@@ -15624,6 +15738,7 @@ function buildMobileAppHtml() {
       };
       try {
         let res = await doFetch();
+        if (mySeq !== snapshotSeq) return;
         if (res.status === 401) { location.reload(); return; }
         if (res.status === 403) throw new Error('channel_disabled');
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -15639,9 +15754,11 @@ function buildMobileAppHtml() {
           renderModeEntryGate('正在自动尝试备用通道，也可直接点击已开启的方式立即进入：');
         }
         const switched = await tryFailoverEndpoint();
+        if (mySeq !== snapshotSeq) return;
         if (switched && !navigatingAway) {
           try {
             const retryRes = await doFetch();
+            if (mySeq !== snapshotSeq) return;
             if (retryRes.status === 401) { location.reload(); return; }
             if (retryRes.status === 403) throw new Error('channel_disabled');
             if (!retryRes.ok) throw new Error('HTTP ' + retryRes.status);
@@ -15650,7 +15767,7 @@ function buildMobileAppHtml() {
             return;
           } catch {}
         }
-        if (navigatingAway) return;
+        if (navigatingAway || mySeq !== snapshotSeq) return;
         $('status-dot').className = 'dot err';
         syncChannelPillUi('offline');
         $('sub-meta').textContent = '连接中断，点击可切换连接方式';
@@ -16138,6 +16255,30 @@ function buildMobileAppHtml() {
       const clearSlidingInPane = (pane) => {
         pane?.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
       };
+      const scheduleDeferredPaneClear = (trackEl, clearFn) => {
+        cancelDeferredStageCleanup();
+        if (isDesktopLayout() || !trackEl || typeof trackEl.addEventListener !== 'function') {
+          clearFn();
+          return;
+        }
+        const myCleanSeq = stageCleanupSeq;
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          if (stageCleanupTimer) {
+            clearTimeout(stageCleanupTimer);
+            stageCleanupTimer = null;
+          }
+          try { trackEl.removeEventListener?.('transitionend', onEnd); } catch {}
+          if (myCleanSeq === stageCleanupSeq) clearFn();
+        };
+        const onEnd = (ev) => {
+          if (!ev || ev.target === trackEl) finish();
+        };
+        try { trackEl.addEventListener('transitionend', onEnd); } catch {}
+        stageCleanupTimer = setTimeout(finish, 260);
+      };
       const renderEffortOptionsHtml = (variants, gIdx, subIdx, colTitle) => {
         const hdr = '<div class="model-col-hdr">' + esc(colTitle || '推理强度') + '</div>';
         return hdr + variants.map((v, vIdx) =>
@@ -16152,6 +16293,7 @@ function buildMobileAppHtml() {
         ).join('');
       };
       const resetToRootStage = () => {
+        cancelDeferredStageCleanup();
         const trackEl = findPane('sheet-stage-track');
         const groupPane = findPane('model-group-pane');
         const subPane = findPane('model-submodel-pane');
@@ -16162,14 +16304,16 @@ function buildMobileAppHtml() {
           trackEl.classList.remove('is-three-stage');
         }
         clearSlidingInPane(groupPane);
-        if (subPane) {
-          subPane.hidden = true;
-          subPane.innerHTML = '';
-        }
-        if (effortPane) {
-          effortPane.innerHTML = '';
-          effortPane.classList.add('is-empty-col');
-        }
+        scheduleDeferredPaneClear(trackEl, () => {
+          if (subPane) {
+            subPane.hidden = true;
+            subPane.innerHTML = '';
+          }
+          if (effortPane) {
+            effortPane.innerHTML = '';
+            effortPane.classList.add('is-empty-col');
+          }
+        });
         configureSheetChrome({
           kind: 'model',
           title: '切换模型',
@@ -16179,6 +16323,7 @@ function buildMobileAppHtml() {
         });
       };
       const openOrchestratorSubmodelStage = (g, gIdx, grpBtn) => {
+        cancelDeferredStageCleanup();
         const trackEl = findPane('sheet-stage-track');
         const groupPane = findPane('model-group-pane');
         const subPane = findPane('model-submodel-pane');
@@ -16248,6 +16393,7 @@ function buildMobileAppHtml() {
             if (sm.variants[0]) await applyModelSelection(sm.variants[0]);
             return;
           }
+          cancelDeferredStageCleanup();
           const trackEl = findPane('sheet-stage-track');
           const subPane = findPane('model-submodel-pane');
           const effortPane = findPane('model-effort-pane');
@@ -16274,10 +16420,12 @@ function buildMobileAppHtml() {
                 trackEl.classList.add('step-submodel');
               }
               clearSlidingInPane(subPane);
-              if (effortPane) {
-                effortPane.innerHTML = '';
-                effortPane.classList.add('is-empty-col');
-              }
+              scheduleDeferredPaneClear(trackEl, () => {
+                if (effortPane) {
+                  effortPane.innerHTML = '';
+                  effortPane.classList.add('is-empty-col');
+                }
+              });
               configureSheetChrome({
                 kind: 'model-submodel',
                 title: 'Orchestrator',
@@ -16303,6 +16451,7 @@ function buildMobileAppHtml() {
           await applyModelSelection(g.variants[0]);
           return;
         }
+        cancelDeferredStageCleanup();
         const trackEl = findPane('sheet-stage-track');
         const groupPane = findPane('model-group-pane');
         const subPane = findPane('model-submodel-pane');
@@ -17425,8 +17574,26 @@ function buildMobileAppHtml() {
       fvDocRef?.body?.classList?.toggle?.('fv-docked-open', Boolean(isOpen && isWide));
     }
 
+    function destroyFvSandboxIframes() {
+      const body = $('fv-body');
+      if (!body) return;
+      const frames = Array.from(body.querySelectorAll?.('iframe') || []);
+      if (!frames.length) return;
+      for (const f of frames) {
+        try { f.removeAttribute?.('srcdoc'); f.removeAttribute?.('src'); } catch {}
+        const wrap = f.closest?.('.fv-sandbox-wrap');
+        if (wrap && typeof wrap.remove === 'function') wrap.remove();
+        else if (wrap && wrap.parentElement && typeof wrap.parentElement.removeChild === 'function') wrap.parentElement.removeChild(wrap);
+        else if (typeof f.remove === 'function') f.remove();
+      }
+      if ((body.querySelectorAll?.('iframe') || []).length > 0) {
+        body.innerHTML = '';
+      }
+    }
+
     function closeFileViewerModal() {
       bumpFvRequestEpoch();
+      destroyFvSandboxIframes();
       const bd = $('file-viewer-backdrop');
       if (bd) bd.hidden = true;
       fvState.openedExplicitly = false;
@@ -17448,6 +17615,11 @@ function buildMobileAppHtml() {
       }
       applyFvSidebarWidth(fvState.sidebarWidth, false);
       syncFvSidebarButtonsAndA11y();
+      if (fvState.tab === 'preview' && fvState.previewItem && fvState.previewMode !== 'source' && !$('fv-body')?.querySelector?.('iframe')) {
+        if (fvState.previewItem.kind === 'html' || fvState.previewItem.kind === 'svg') {
+          renderFvPreviewCurrentItem();
+        }
+      }
       return true;
     }
 
@@ -17456,6 +17628,7 @@ function buildMobileAppHtml() {
         const bd = $('file-viewer-backdrop');
         if (bd && !bd.hidden && !fvState.openedExplicitly) {
           bumpFvRequestEpoch();
+          destroyFvSandboxIframes();
           bd.hidden = true;
           fvState.autoDockInitialized = false;
           syncFvSidebarButtonsAndA11y();
@@ -17643,6 +17816,7 @@ function buildMobileAppHtml() {
       fvState.previewItem = null;
       const fvBd = $('file-viewer-backdrop');
       if (!fvBd || fvBd.hidden) {
+        destroyFvSandboxIframes();
         fvState.viewingFile = false;
         fvState.tab = 'tree';
         fvState.returnTab = 'tree';
@@ -17699,16 +17873,44 @@ function buildMobileAppHtml() {
         return false;
       }
     }
-    function injectSandboxIsolatedBase(rawHtml) {
+    function injectSandboxIsolatedBase(rawHtml, kind) {
       const cleaned = String(rawHtml || '').replace(/<base\\b[^>]*>/gi, '');
-      const baseTag = '<base href="/">';
-      if (/<head\\b[^>]*>/i.test(cleaned)) {
-        return cleaned.replace(/<head\\b[^>]*>/i, (m) => m + baseTag);
+      const cspPolicy = kind === 'svg'
+        ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; script-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'"
+        : "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+      const metaTag = '<meta http-equiv="Content-Security-Policy" content="' + cspPolicy + '">';
+      let pos = 0;
+      const len = cleaned.length;
+      while (pos < len) {
+        while (pos < len && /\\s/.test(cleaned[pos])) pos += 1;
+        if (cleaned.slice(pos, pos + 4) === '<!--') {
+          const endC = cleaned.indexOf('-->', pos + 4);
+          if (endC < 0) break;
+          pos = endC + 3;
+          continue;
+        }
+        const dt = /^<!doctype\\b[^>]*>/i.exec(cleaned.slice(pos));
+        if (dt) {
+          pos += dt[0].length;
+          continue;
+        }
+        break;
       }
-      if (/<html\\b[^>]*>/i.test(cleaned)) {
-        return cleaned.replace(/<html\\b[^>]*>/i, (m) => m + '<head>' + baseTag + '</head>');
+      const tail = cleaned.slice(pos);
+      const headOpen = /^((?:\\s|<\\!--[\\s\\S]*?-->)*<head\\b[^>]*>)/i.exec(tail);
+      if (headOpen) {
+        return cleaned.slice(0, pos) + headOpen[1] + metaTag + tail.slice(headOpen[1].length);
       }
-      return baseTag + cleaned;
+      const htmlOpen = /^((?:\\s|<\\!--[\\s\\S]*?-->)*<html\\b[^>]*>)/i.exec(tail);
+      if (htmlOpen) {
+        const afterHtml = tail.slice(htmlOpen[1].length);
+        const nestedHead = /^((?:\\s|<\\!--[\\s\\S]*?-->)*<head\\b[^>]*>)/i.exec(afterHtml);
+        if (nestedHead) {
+          return cleaned.slice(0, pos) + htmlOpen[1] + nestedHead[1] + metaTag + afterHtml.slice(nestedHead[1].length);
+        }
+        return cleaned.slice(0, pos) + htmlOpen[1] + '<head>' + metaTag + '</head>' + afterHtml;
+      }
+      return cleaned.slice(0, pos) + '<head>' + metaTag + '</head>' + tail;
     }
     function mountIsolatedSandboxIframe(containerEl, item) {
       if (!containerEl || !item) return null;
@@ -17718,14 +17920,14 @@ function buildMobileAppHtml() {
       wrap.className = 'fv-sandbox-wrap';
       const frame = document.createElement('iframe');
       frame.className = 'fv-sandbox-iframe';
-      // 严禁授予同源权限，强制 opaque null origin 隔离父页面 localStorage / Cookie / 鉴权口令
-      frame.setAttribute('sandbox', 'allow-scripts');
+      // 严禁授予同源权限，强制 opaque null origin 隔离父页面 localStorage / Cookie / 鉴权口令；SVG 彻底禁用脚本
+      frame.setAttribute('sandbox', item.kind === 'svg' ? '' : 'allow-scripts');
       frame.setAttribute('referrerpolicy', 'no-referrer');
       frame.setAttribute('title', String(item.name || 'HTML') + ' 沙盒预览');
       frame.setAttribute('data-sandbox-nonce', String(fvState.sandboxRefreshNonce || 0));
       frame.setAttribute('data-url-scrubbed', urlClean ? '1' : '0');
       const rawDoc = item.kind === 'svg' ? buildSvgPreviewSrcdoc(item.content || '') : String(item.content || '');
-      const isolatedDoc = injectSandboxIsolatedBase(rawDoc);
+      const isolatedDoc = injectSandboxIsolatedBase(rawDoc, item.kind);
       if (urlClean) {
         try { frame.srcdoc = isolatedDoc; } catch {}
         frame.setAttribute('srcdoc', isolatedDoc);
@@ -19583,6 +19785,10 @@ function buildMobileAppHtml() {
       const hit = resolveDropTargetFromClientY(e.clientY, srcPid);
       activeDragProjectId = '';
       clearProjectDragVisuals();
+      if (pendingConvListRerender) {
+        pendingConvListRerender = false;
+        if (latestSnap) renderConversationList(latestSnap);
+      }
       if (hit && hit.pid && hit.pid !== srcPid) {
         void reorderProjectBeforeOrAfter(srcPid, hit.pid, hit.placement);
       }
@@ -19591,9 +19797,12 @@ function buildMobileAppHtml() {
     $('conv-list').addEventListener('dragend', () => {
       activeDragProjectId = '';
       clearProjectDragVisuals();
+      if (pendingConvListRerender) {
+        pendingConvListRerender = false;
+        if (latestSnap) renderConversationList(latestSnap);
+      }
     });
 
-    let touchDragState = null;
     $('conv-list').addEventListener('pointerdown', (e) => {
       if (!projSortMode) return;
       const handleEl = e.target?.closest?.('[data-proj-drag-handle]');
@@ -19630,6 +19839,10 @@ function buildMobileAppHtml() {
       const { srcPid, targetPid, placement } = touchDragState;
       touchDragState = null;
       clearProjectDragVisuals();
+      if (pendingConvListRerender) {
+        pendingConvListRerender = false;
+        if (latestSnap) renderConversationList(latestSnap);
+      }
       if (srcPid && targetPid && srcPid !== targetPid) {
         void reorderProjectBeforeOrAfter(srcPid, targetPid, placement);
       }
@@ -19638,6 +19851,10 @@ function buildMobileAppHtml() {
     $('conv-list').addEventListener('pointercancel', () => {
       touchDragState = null;
       clearProjectDragVisuals();
+      if (pendingConvListRerender) {
+        pendingConvListRerender = false;
+        if (latestSnap) renderConversationList(latestSnap);
+      }
     });
 
     try {
@@ -19902,6 +20119,10 @@ function buildMobileAppHtml() {
       const t = e.touches[0];
       const isOpen = backdropEl.classList.contains('open');
       const target = e.target;
+      if (touchDragState || activeDragProjectId || target?.closest?.('[data-proj-drag-handle], .proj-sort-actions')) {
+        swipeState = null;
+        return;
+      }
       if (!isOpen) {
         if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden || (!isWideDesktopWorkbench() && $('file-viewer-backdrop') && !$('file-viewer-backdrop').hidden)) return;
         if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail, .fv-ws-bar, .fv-ws-persistent-bar, .fv-preview-toolbar, .fv-resize-handle')) return;
@@ -19918,6 +20139,7 @@ function buildMobileAppHtml() {
     }, { passive: true });
 
     document.addEventListener('touchmove', (e) => {
+      if (touchDragState || activeDragProjectId) { swipeState = null; return; }
       if (!swipeState || isDesktopLayout() || e.touches.length !== 1) return;
       const t = e.touches[0];
       const dx = t.clientX - swipeState.startX;
@@ -21148,6 +21370,17 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   const evictedUnknownQueueBloom = new Uint8Array(8192);
   const cascadesWithEvictedUnresolvedQueue = new Set();
   const cascadesWithUnknownDomSend = new Set();
+  const addBoundedCascadeSet = (setObj, cid, maxEntries = 2048) => {
+    const cleanCid = String(cid || '').trim();
+    if (!cleanCid) return;
+    if (setObj.has(cleanCid)) setObj.delete(cleanCid);
+    while (setObj.size >= maxEntries) {
+      const oldestCid = setObj.values().next().value;
+      if (oldestCid === undefined) break;
+      setObj.delete(oldestCid);
+    }
+    setObj.add(cleanCid);
+  };
   const inflightQueueDispatches = new Map();
   const inflightDomQueueCascades = new Set();
   const parseCascadeFromQueueKey = (rawKey) => String(rawKey || '').split('::')[0].trim();
@@ -21179,7 +21412,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       if (oldest === undefined) break;
       setBloomBits(evictedUnknownQueueBloom, oldest);
       const evictedCid = parseCascadeFromQueueKey(oldest);
-      if (evictedCid) cascadesWithEvictedUnresolvedQueue.add(evictedCid);
+      if (evictedCid) addBoundedCascadeSet(cascadesWithEvictedUnresolvedQueue, evictedCid);
       unknownDispatchedQueueSends.delete(oldest);
     }
     unknownDispatchedQueueSends.set(key, {
@@ -21250,6 +21483,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     os.tmpdir(),
     `ag-completed-sends-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.ndjson`
   );
+  registerCompletedSendSpillFile(completedSendSpillPath);
   const appendEvictedCompletedSendExact = (key, rec) => {
     try {
       const line = `${JSON.stringify({
@@ -21257,7 +21491,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         cid: String(rec?.conversationId || ''),
         ccid: String(rec?.createdConversationId || '')
       })}\n`;
-      fs.appendFileSync(completedSendSpillPath, line, 'utf8');
+      fs.appendFileSync(completedSendSpillPath, line, { encoding: 'utf8', mode: 0o600 });
     } catch {}
   };
   const lookupEvictedCompletedSendExact = (key) => {
@@ -21267,7 +21501,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       for (let i = lines.length - 1; i >= 0; i--) {
         const ln = lines[i].trim();
         if (!ln) continue;
-        const parsed = JSON.parse(ln);
+        let parsed = null;
+        try {
+          parsed = JSON.parse(ln);
+        } catch {
+          continue;
+        }
         if (parsed && parsed.k === key) {
           return {
             evicted: true,
@@ -21438,7 +21677,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       if (oldest === undefined) break;
       setBloomBits(evictedDispatchedDeleteBloom, oldest);
       const evictedCid = parseCascadeFromQueueKey(oldest);
-      if (evictedCid) cascadesWithEvictedUnresolvedQueue.add(evictedCid);
+      if (evictedCid) addBoundedCascadeSet(cascadesWithEvictedUnresolvedQueue, evictedCid);
       dispatchedQueueDeletes.delete(oldest);
     }
     dispatchedQueueDeletes.set(key, { at: getSendClockNow(), text: String(text || ''), ...(meta && typeof meta === 'object' ? meta : {}) });
@@ -21888,6 +22127,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const convList = Array.isArray(snap.conversations) ? snap.conversations : [];
     const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
     lastCompletedUnreadCount = completedUnreadCount;
+    const pushPubInfo = typeof webPushManager?.getPublicInfo === 'function' ? webPushManager.getPublicInfo() : null;
     const out = {
       ...snap,
       activeConversationId: activeConvId,
@@ -21898,7 +22138,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay),
       longFold: typeof snap.longFold === 'boolean' ? snap.longFold : resolveCachedRemoteUiPrefs().longFold,
       showApiReferenceCost: typeof snap.showApiReferenceCost === 'boolean' ? snap.showApiReferenceCost : Boolean(resolveCachedRemoteUiPrefs().showApiReferenceCost),
-      quickPrompts: Array.isArray(snap.quickPrompts) ? snap.quickPrompts : resolveCachedRemoteQuickPrompts()
+      quickPrompts: Array.isArray(snap.quickPrompts) ? snap.quickPrompts : resolveCachedRemoteQuickPrompts(),
+      ...(pushPubInfo?.prefs ? { pushPrefs: pushPubInfo.prefs } : {})
     };
     if (clientId) out.clientId = clientId;
     if (!out.usageSummary && fallbackUsageSummary) {
@@ -23419,7 +23660,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             const recordDomSendUnknownIfNeeded = (confirmedNotExec) => {
               if (domAct !== 'send-queued-dom' || confirmedNotExec) return;
               if (sendAllFlag !== false) {
-                if (cascadeId) cascadesWithUnknownDomSend.add(cascadeId);
+                if (cascadeId) addBoundedCascadeSet(cascadesWithUnknownDomSend, cascadeId);
               } else {
                 const domUnknownKey = messageId
                   ? `${cascadeId}::msg:${messageId}`
@@ -24135,10 +24376,28 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                         const okDom = await runQueuedDomFallback('send-queued-dom', true);
                         if (!okDom) return;
                       } else {
+                        let partialFailSnap = null;
+                        if (sentAny) {
+                          historyManager.invalidateSession?.(cascadeId);
+                          const rawPartialFailSnap = await fetchSnapshot(effectiveTargetId, {
+                            conversationId: cascadeId,
+                            clientId,
+                            convLimit: 100,
+                            msgLimit: 30,
+                            bypassCache: true,
+                            bypassCatalogCache: true
+                          }).catch(() => null);
+                          if (rawPartialFailSnap && rawPartialFailSnap.ok !== false) {
+                            const partialUsage = !rawPartialFailSnap.usageSummary ? await getCachedUsageSummary() : null;
+                            partialFailSnap = enrichSnapshotPayload(rawPartialFailSnap, config, activeTunnelUrl, clientId, partialUsage);
+                          }
+                        }
                         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                           ok: false,
+                          ...(sentAny ? { partialSuccess: true, sent: true } : {}),
                           ...(batchErrOutcome?.confirmedNotExecuted ? {} : { outcomeUnknown: true }),
-                          error: batchErrOutcome?.error || '立即发送排队消息超时或结果未知，已阻止继续自动补发以避免重复发送'
+                          error: batchErrOutcome?.error || '立即发送排队消息超时或结果未知，已阻止继续自动补发以避免重复发送',
+                          ...(partialFailSnap ? { snapshot: partialFailSnap } : {})
                         }));
                         return;
                       }

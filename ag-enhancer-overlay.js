@@ -11041,11 +11041,14 @@
         const modelEnum = typeof c.value === 'number'
           ? c.value
           : (typeof c.modelOrAlias?.model === 'number' ? c.modelOrAlias.model : undefined);
+        const modelAlias = (typeof c.modelOrAlias?.model === 'string' && c.modelOrAlias.model.trim())
+          ? c.modelOrAlias.model.trim()
+          : (typeof c.modelId === 'string' ? c.modelId : '');
         return {
           ...c,
           label: String(c.label),
-          modelId: String(c.modelId || ''),
-          ...(modelEnum !== undefined ? { value: modelEnum } : {})
+          modelId: String(c.modelId || modelAlias || ''),
+          ...(modelEnum !== undefined ? { value: modelEnum } : (modelAlias ? { value: modelAlias } : {}))
         };
       });
       return { source: 'clientModelConfigs', options: normalizedFallback, fallbackConfigs };
@@ -11585,15 +11588,31 @@
     return { conversations: nextConvs, projectGroups: nextGroups };
   }
 
-  function getMobileSnapshot() {
+  function getMobileSnapshot(opts = {}) {
+    const parsedMsgLimit = (opts && opts.msgLimit !== undefined && opts.msgLimit !== null && opts.msgLimit !== '')
+      ? Number.parseInt(opts.msgLimit, 10)
+      : NaN;
+    const isModelMetaFastPath = Number.isFinite(parsedMsgLimit) && parsedMsgLimit <= 0;
+    const effectiveMsgLimit = (!isModelMetaFastPath && Number.isFinite(parsedMsgLimit) && parsedMsgLimit > 0) ? parsedMsgLimit : 60;
+    const parsedConvLimit = (opts && opts.convLimit !== undefined && opts.convLimit !== null && opts.convLimit !== '')
+      ? Number.parseInt(opts.convLimit, 10)
+      : 0;
+    const effectiveConvLimit = (Number.isFinite(parsedConvLimit) && parsedConvLimit > 0) ? parsedConvLimit : 0;
+
     const sessionId = getSessionIdFromLocation() || '';
-    if (resolveLanguageServerCsrfToken() && (Date.now() - lastCascadeSummaryFetchAt) >= 20000) {
+    if (!isModelMetaFastPath && resolveLanguageServerCsrfToken() && (Date.now() - lastCascadeSummaryFetchAt) >= 20000) {
       lastCascadeSummaryFetchAt = Date.now();
       void refreshCascadeTrajectorySummaries();
     }
-    const storeCatalog = extractSidebarStoreCatalog();
-    const conversations = collectSidebarConversations(0, storeCatalog);
-    const { projectGroups } = collectSidebarProjectGroups(60, storeCatalog);
+    const storeCatalog = isModelMetaFastPath
+      ? { projects: [], conversations: [] }
+      : extractSidebarStoreCatalog();
+    const conversations = isModelMetaFastPath
+      ? []
+      : collectSidebarConversations(effectiveConvLimit, storeCatalog);
+    const { projectGroups } = isModelMetaFastPath
+      ? { projectGroups: [] }
+      : collectSidebarProjectGroups(effectiveConvLimit > 0 ? Math.min(60, effectiveConvLimit) : 60, storeCatalog);
     const activeConv = conversations.find((c) => c.active);
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
@@ -11631,33 +11650,39 @@
         || (!isNewConversation && activeSumMeta?.project && (!currentProjectId || currentProjectId === cleanSidebarPid(activeSumMeta.projectId)) && !isSyntheticSidebarProjectName(activeSumMeta.project) ? String(activeSumMeta.project).trim() : '')
       );
     const { sr } = getMeterHostAndShadow();
-    const rawContextBadge = (
-      sr?.getElementById('amount')?.textContent ||
-      sr?.getElementById('badge-pct-val')?.textContent ||
-      sr?.getElementById('badge')?.textContent ||
-      ''
-    ).replace(/\s+/g, ' ').trim();
-    const speedBadge = (sr?.getElementById('badge-speed')?.textContent || '').replace(/\s+/g, ' ').trim();
-    const pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
-    const rawPulse = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
-    const speedMatch = rawPulse.match(/(\d+(?:\.\d+)?\s*tok\/s)/i);
-    const ratioMatch = rawContextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/i);
-    const fallbackPulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : rawContextBadge].filter(Boolean).join(' · ') || rawPulse;
     const modelCtx = getModelSelectorContext();
     const model = modelCtx?.selectedModel?.label || detectCurrentModelText();
-    const authCtx = resolveAuthoritativeContextMetrics(sessionId, {
-      pulseEl,
-      fallbackModel: model
-    });
-    const canonicalCtx = (authCtx && (authCtx.usedTokens > 0 || typeof authCtx.usagePercent === 'number'))
-      ? buildCanonicalContextPanelPayload(authCtx, {
-          fallbackBadge: rawContextBadge,
-          fallbackPulse: fallbackPulseText,
-          fallbackModel: model
-        })
-      : null;
-    const contextBadge = canonicalCtx ? canonicalCtx.contextBadge : rawContextBadge;
-    const pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
+    let contextBadge = '';
+    let pulseText = '';
+    let pulseEl = null;
+    let authCtx = null;
+    if (!isModelMetaFastPath) {
+      const rawContextBadge = (
+        sr?.getElementById('amount')?.textContent ||
+        sr?.getElementById('badge-pct-val')?.textContent ||
+        sr?.getElementById('badge')?.textContent ||
+        ''
+      ).replace(/\s+/g, ' ').trim();
+      const speedBadge = (sr?.getElementById('badge-speed')?.textContent || '').replace(/\s+/g, ' ').trim();
+      pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
+      const rawPulse = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
+      const speedMatch = rawPulse.match(/(\d+(?:\.\d+)?\s*tok\/s)/i);
+      const ratioMatch = rawContextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/i);
+      const fallbackPulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : rawContextBadge].filter(Boolean).join(' · ') || rawPulse;
+      authCtx = resolveAuthoritativeContextMetrics(sessionId, {
+        pulseEl,
+        fallbackModel: model
+      });
+      const canonicalCtx = (authCtx && (authCtx.usedTokens > 0 || typeof authCtx.usagePercent === 'number'))
+        ? buildCanonicalContextPanelPayload(authCtx, {
+            fallbackBadge: rawContextBadge,
+            fallbackPulse: fallbackPulseText,
+            fallbackModel: model
+          })
+        : null;
+      contextBadge = canonicalCtx ? canonicalCtx.contextBadge : rawContextBadge;
+      pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
+    }
     const EFFORT_ORDER = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
     const EFFORT_DISPLAY = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
     const cascadeCfg = modelCtx?.userStatus?.cascadeModelConfigData || null;
@@ -11801,13 +11826,13 @@
     }));
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
     const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
-    const pendingApprovals = collectPendingApprovals();
-    const pendingPrompts = collectPendingPrompts();
-    const queuedMessages = collectQueuedMessagesFromDom();
-    const messages = collectRecentMessages(60);
-    const suggestions = !busy ? computeNextStepCandidates().candidates : [];
-    const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, authCtx);
-    const usageSummary = collectDesktopUsageSummary(sr);
+    const pendingApprovals = isModelMetaFastPath ? [] : collectPendingApprovals();
+    const pendingPrompts = isModelMetaFastPath ? [] : collectPendingPrompts();
+    const queuedMessages = isModelMetaFastPath ? [] : collectQueuedMessagesFromDom();
+    const messages = isModelMetaFastPath ? [] : collectRecentMessages(effectiveMsgLimit);
+    const suggestions = (!isModelMetaFastPath && !busy) ? computeNextStepCandidates().candidates : [];
+    const contextPanel = isModelMetaFastPath ? null : collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, authCtx);
+    const usageSummary = isModelMetaFastPath ? null : collectDesktopUsageSummary(sr);
 
     if (activeConv) {
       if (pendingApprovals.length > 0 || pendingPrompts.length > 0) activeConv.status = 'waiting';
@@ -12771,19 +12796,32 @@
 
         modelCtx.setSelectedModel(pickedOrchBase);
         modelCtx.orchestratorPick.select(pickedPlanner.value);
-        await new Promise((r) => setTimeout(r, 80));
 
-        const postSnap = getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
-        const postOrch = postSnap?.orchestratorConfig || null;
-        const baseVerified = Boolean(
-          postOrch?.active === true &&
-          (!pickedOrchBase.modelId || postOrch.orchestratorModelId === pickedOrchBase.modelId)
-        );
-        const plannerVerified = Boolean(
-          postOrch &&
-          Number(postOrch.pickedValue) === Number(pickedPlanner.value) &&
-          (!pickedPlanner.modelId || postOrch.pickedModelId === pickedPlanner.modelId)
-        );
+        let postSnap = null;
+        let postOrch = null;
+        let baseVerified = false;
+        let plannerVerified = false;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          await new Promise((r) => setTimeout(r, 40));
+          postSnap = getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+          postOrch = postSnap?.orchestratorConfig || null;
+          const postOrchModelId = String(postOrch?.orchestratorModelId || '').toLowerCase();
+          const pickedBaseModelId = String(pickedOrchBase.modelId || '').toLowerCase();
+          baseVerified = Boolean(
+            postOrch?.active === true &&
+            (
+              !pickedBaseModelId ||
+              postOrchModelId === pickedBaseModelId ||
+              (/orchestrator/i.test(postOrchModelId) && /orchestrator/i.test(pickedBaseModelId))
+            )
+          );
+          plannerVerified = Boolean(
+            postOrch &&
+            Number(postOrch.pickedValue) === Number(pickedPlanner.value) &&
+            (!pickedPlanner.modelId || postOrch.pickedModelId === pickedPlanner.modelId)
+          );
+          if (baseVerified && plannerVerified) break;
+        }
         if (!baseVerified || !plannerVerified) {
           return {
             ok: false,
@@ -12814,21 +12852,28 @@
         return { ok: false, error: `未找到目标模型: ${targetLabel || targetModelId}` };
       }
       modelCtx.setSelectedModel(picked);
-      await new Promise((r) => setTimeout(r, 80));
 
-      const postSnap = getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
-      const postCtx = getModelSelectorContext() || modelCtx;
-      const postSel = postCtx?.selectedModel || null;
-      const regularVerified = Boolean(
-        (picked.modelId && (
-          postSel?.modelId === picked.modelId ||
-          postSnap?.modelOptions?.some((m) => m.modelId === picked.modelId && m.selected)
-        )) ||
-        (!picked.modelId && (
-          postSel?.label === picked.label ||
-          postSnap?.model === picked.label
-        ))
-      );
+      let postSnap = null;
+      let postCtx = null;
+      let postSel = null;
+      let regularVerified = false;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await new Promise((r) => setTimeout(r, 40));
+        postSnap = getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+        postCtx = getModelSelectorContext() || modelCtx;
+        postSel = postCtx?.selectedModel || null;
+        regularVerified = Boolean(
+          (picked.modelId && (
+            postSel?.modelId === picked.modelId ||
+            postSnap?.modelOptions?.some((m) => m.modelId === picked.modelId && m.selected)
+          )) ||
+          (!picked.modelId && (
+            postSel?.label === picked.label ||
+            postSnap?.model === picked.label
+          ))
+        );
+        if (regularVerified) break;
+      }
       if (!regularVerified) {
         return {
           ok: false,

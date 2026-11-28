@@ -12,7 +12,8 @@ const DEFAULT_PUSH_SUBJECT = 'mailto:remote@antigravity.local';
 const MAX_SUBSCRIPTIONS = 24;
 const DEFAULT_DEBOUNCE_MS = 8000;
 const RFC8188_RECORD_SIZE = 4096;
-const MAX_SINGLE_RECORD_PLAINTEXT_BYTES = RFC8188_RECORD_SIZE - 16 - 1; // 4079 bytes (GCM tag 16B + delimiter 0x02 1B)
+const RFC8291_HEADER_BYTES = 86; // salt 16B + rs 4B + idlen 1B + ECDH P-256 uncompressed pubkey 65B
+const MAX_SINGLE_RECORD_PLAINTEXT_BYTES = RFC8188_RECORD_SIZE - RFC8291_HEADER_BYTES - 16 - 1; // 3993 bytes (86B header + 16B GCM tag + 0x02 1B <= 4096B)
 
 function b64urlEncode(buf) {
   return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
@@ -495,9 +496,9 @@ function fitPushPayloadToRecordLimit(payloadObj, maxBytes = MAX_SINGLE_RECORD_PL
   const copy = { ...payloadObj };
   if (Buffer.byteLength(JSON.stringify(copy), 'utf8') <= maxBytes) return copy;
   if (typeof copy.body === 'string' && copy.body.length > 0) {
-    let lo = 0;
-    let hi = Array.from(copy.body).length;
     const cps = Array.from(copy.body);
+    let lo = 0;
+    let hi = cps.length;
     let best = '';
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
@@ -514,6 +515,30 @@ function fitPushPayloadToRecordLimit(payloadObj, maxBytes = MAX_SINGLE_RECORD_PL
   }
   if (Buffer.byteLength(JSON.stringify(copy), 'utf8') > maxBytes && typeof copy.title === 'string') {
     copy.title = truncateUtf8Safe(copy.title, 32, 96);
+  }
+  if (Buffer.byteLength(JSON.stringify(copy), 'utf8') > maxBytes && typeof copy.tag === 'string') {
+    copy.tag = truncateUtf8Safe(copy.tag, 64, 128);
+  }
+  if (Buffer.byteLength(JSON.stringify(copy), 'utf8') > maxBytes && typeof copy.url === 'string') {
+    copy.url = '/';
+  }
+  if (Buffer.byteLength(JSON.stringify(copy), 'utf8') > maxBytes) {
+    const coreKeys = new Set(['type', 'title', 'body', 'tag', 'url', 'ts']);
+    for (const k of Object.keys(copy)) {
+      if (!coreKeys.has(k)) delete copy[k];
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(copy), 'utf8') > maxBytes) {
+    const minFallback = {
+      type: String(copy.type || 'completed').slice(0, 32),
+      title: 'Antigravity',
+      body: '',
+      url: '/'
+    };
+    if (Buffer.byteLength(JSON.stringify(minFallback), 'utf8') <= maxBytes) {
+      return minFallback;
+    }
+    return { type: 'msg', title: '', body: '', url: '/' };
   }
   return copy;
 }

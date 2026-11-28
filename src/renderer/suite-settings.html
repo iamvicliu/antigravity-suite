@@ -108,19 +108,19 @@
         <div id="settings-card-context-display" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">上下文与指标精简显示</span>
-            <button id="btn-reset-context-display" class="switch-pill-btn" type="button" title="恢复上下文显示位置与精简降噪默认设置">恢复默认</button>
+            <button id="btn-reset-context-display" class="switch-pill-btn" type="button" title="恢复上下文显示与指标默认设置">恢复默认</button>
           </div>
-          <div class="settings-card-desc">默认仅保留右上角单一上下文进度环，把输出速度收进详情面板，并默认隐藏详情面板中的 API 参考估算费用（开启开关后显示）；输入框底部仅在高水位或缓存失效时提示压缩。</div>
+          <div class="settings-card-desc">默认同时保留右上角进度环、顶栏推理速度、输入框底部脉冲胶囊与 API 参考估算费用；需要极简界面时，可随时切换仅顶栏显示或按需隐藏。</div>
           <div class="settings-pref-list">
             <div class="settings-pref-row">
               <div class="settings-pref-meta">
                 <span class="settings-pref-name">上下文显示位置</span>
-                <span class="settings-pref-desc">选「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口</span>
+                <span class="settings-pref-desc">切至「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口</span>
               </div>
               <div class="source-switch-bar" role="group" aria-label="上下文显示位置">
-                <button id="set-ctx-pos-topbar" class="switch-pill-btn active" type="button" data-ctx-pos="topbar">右上角顶栏（默认）</button>
+                <button id="set-ctx-pos-topbar" class="switch-pill-btn" type="button" data-ctx-pos="topbar">右上角顶栏</button>
                 <button id="set-ctx-pos-footer" class="switch-pill-btn" type="button" data-ctx-pos="footer">输入框底部胶囊</button>
-                <button id="set-ctx-pos-both" class="switch-pill-btn" type="button" data-ctx-pos="both">同时显示</button>
+                <button id="set-ctx-pos-both" class="switch-pill-btn active" type="button" data-ctx-pos="both">同时显示（默认）</button>
               </div>
             </div>
             <label class="settings-pref-row settings-pref-check">
@@ -128,14 +128,14 @@
                 <span class="settings-pref-name">顶栏常驻显示流式生成速度 (tok/s)</span>
                 <span class="settings-pref-desc">关闭时隐藏顶栏内联 tok/s 徽章，点击上下文圆环仍可在详情面板查看完整输出速度与首字延迟</span>
               </div>
-              <input id="set-show-topbar-speed" type="checkbox" class="settings-checkbox" />
+              <input id="set-show-topbar-speed" type="checkbox" class="settings-checkbox" checked />
             </label>
             <label class="settings-pref-row settings-pref-check">
               <div class="settings-pref-meta">
                 <span class="settings-pref-name">详情面板显示 API 参考估算费用 ($)</span>
-                <span class="settings-pref-desc">开启后在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付）</span>
+                <span class="settings-pref-desc">在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付），关闭可隐藏全部估算金额</span>
               </div>
-              <input id="set-show-api-ref-cost" type="checkbox" class="settings-checkbox" />
+              <input id="set-show-api-ref-cost" type="checkbox" class="settings-checkbox" checked />
             </label>
           </div>
         </div>
