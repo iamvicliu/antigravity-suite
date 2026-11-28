@@ -56,3 +56,12 @@ Build the renderer and run tests before reloading via `ag-context-meter live`.
    - 重大卖点或核心定位变更时，须同步更新 `package.json` 的 `description`，并提醒或经用户确认后执行 `gh repo edit` 同步 GitHub 仓库 Description。
 3. **多语言 README 打包完整性与禁用项约束**：
    - `scripts/package-release.js` 与 `scripts/package-release.py` 依赖根目录 `README.md` 与 `docs/` 下全部 4 份外语文档（`docs/README.en.md`、`docs/README.ja.md`、`docs/README.ko.md`、`docs/README.es.md`），**严禁删除**任意语种 README，且文档中绝不可再写入已禁用的 `node cli.js install` 或“无语言切换”等过时内容。
+
+## Privacy & Desensitization Guardrails（公开仓库隐私与测试数据脱敏红线）
+
+1. **严禁直接照搬或“改皮脱敏”真实个人/工作区数据进源码、测试或文档**：
+   - 业务源码中零测试数据；编写单元测试 fixture、回归用例、注释或文档示例时，**严禁**原样复制或仅改几个字来“改皮脱敏”本机真实聊天记录、个人社交账号/短链、真实本机绝对路径（如 `/Users/<真实用户名>/...` 或 `/home/<真实用户名>/...`）、个人邮箱/手机号/令牌/Cookie，以及与本仓库无关的其他私人项目名或本地目录结构。
+   - 测试输入必须**从零构造最小化、纯抽象的通用占位符**（如 `proj-a` / `proj-b`、`dir-1` / `dir-2`、`shared-dir`、`/Users/demo/...`、`https://example.com/1`、`sample message`），与真实个人及本地项目零映射。
+2. **Automated Gate（提交前隐私静态门禁）**：
+   - `tests/meter-suite-refactor.test.js` 包含静态隐私脱敏门禁，自动扫描仓库受控文本文件是否出现非占位符的真实本机用户路径、个人社交短链、常见明文密钥或禁止跟踪的私有文件；每次修改源码、测试或文档后必须确保 `npm run test:suite` 全部通过。
+   - 提交 PR 前须复核 `git diff` 与 commit 历史；若在未合入分支发现隐私残留，必须重写分支历史彻底抹除后再推送，禁止仅用追加新 commit 的方式掩盖。
