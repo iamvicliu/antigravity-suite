@@ -183,6 +183,88 @@
         }
     }
 
+    function normalizeContextDisplayMode(raw) {
+        const clean = String(raw || '').trim().toLowerCase();
+        if (clean === 'footer' || clean === 'both') return clean;
+        return clean === 'topbar' ? 'topbar' : '';
+    }
+
+    function getContextDisplayMode() {
+        try {
+            const attrMode = normalizeContextDisplayMode(
+                typeof document !== 'undefined' ? document.documentElement?.getAttribute?.('data-ag-context-display-mode') : ''
+            );
+            if (attrMode) return attrMode;
+        } catch (e) {}
+        try {
+            const lsMode = normalizeContextDisplayMode(localStorage.getItem('ag_suite_context_display_mode'));
+            if (lsMode) return lsMode;
+        } catch (e) {}
+        try {
+            const cfgMode = normalizeContextDisplayMode(
+                typeof window !== 'undefined' ? window.__AGContextMeterSettings?.uiPreferences?.contextDisplayMode : ''
+            );
+            if (cfgMode) return cfgMode;
+        } catch (e) {}
+        return 'both';
+    }
+
+    async function triggerCapsuleCompactAction(ev, triggerBtn) {
+        const enhancer = typeof window !== 'undefined' ? window.__AGEnhancer : null;
+        if (enhancer && typeof enhancer.triggerCompact === 'function') {
+            try {
+                return await enhancer.triggerCompact(ev || null, triggerBtn || null);
+            } catch (e) {
+                if (!e || e.confirmedNotExecuted !== true) {
+                    return { ok: false, confirmedNotExecuted: false, reason: 'enhancer_unknown_outcome' };
+                }
+            }
+        } else if (enhancer && typeof enhancer.fillComposerText === 'function') {
+            try {
+                return await enhancer.fillComposerText('/compact', { slashCommand: 'compact' });
+            } catch (e) {
+                if (!e || e.confirmedNotExecuted !== true) {
+                    return { ok: false, confirmedNotExecuted: false, reason: 'enhancer_unknown_outcome' };
+                }
+            }
+        }
+        try {
+            const scope = triggerBtn?.closest?.('.surface-composer') || document;
+            const ed = scope.querySelector?.('textarea, [contenteditable="true"]');
+            if (!ed) return false;
+            const isTextarea = String(ed.tagName || '').toUpperCase() === 'TEXTAREA';
+            const readText = () => String(isTextarea ? (ed.value ?? '') : (ed.textContent ?? '')).trim();
+            const existingDraft = readText();
+            if (existingDraft && existingDraft !== '/compact') {
+                return { ok: false, confirmedNotExecuted: true, reason: 'draft_protected' };
+            }
+            ed.focus?.();
+            if (!existingDraft) {
+                if (isTextarea) {
+                    ed.value = '/compact';
+                } else {
+                    ed.textContent = '/compact';
+                }
+                try {
+                    ed.dispatchEvent?.(new Event('input', { bubbles: true }));
+                } catch {
+                    ed.dispatchEvent?.({ type: 'input', bubbles: true });
+                }
+            }
+            if (readText() !== '/compact') {
+                return { ok: false, confirmedNotExecuted: true, reason: 'draft_mismatch' };
+            }
+            const sendBtn = scope.querySelector?.('[data-testid="send-button"], .agy-send-button');
+            if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute?.('aria-disabled') !== 'true') {
+                sendBtn.click?.();
+                return { ok: true, method: 'fallback_button' };
+            }
+            return { ok: true, method: 'fallback_fill' };
+        } catch (e) {
+            return false;
+        }
+    }
+
     function toggleLangMode() {
         try {
             const next = getLangMode() === 'zh' ? 'en' : 'zh';
@@ -1619,6 +1701,60 @@
                     font-feature-settings: "tnum" 1;
                     transition: background-color 0.16s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1), transform 0.12s cubic-bezier(0.22, 1, 0.36, 1);
                 }
+                [data-agy-context-capsule="1"][data-agy-calm-hidden="true"] {
+                    display: none !important;
+                }
+                [data-agy-context-capsule="1"][data-agy-display-mode="topbar"] .agy-ctx-speed {
+                    display: none !important;
+                }
+                [data-agy-context-capsule="1"] .agy-ctx-alert-tag {
+                    display: none;
+                    align-items: center;
+                    font-weight: 600;
+                    letter-spacing: -0.01em;
+                }
+                [data-agy-context-capsule="1"][data-agy-display-mode="topbar"][data-agy-alert-state="warn"] .agy-ctx-alert-tag,
+                [data-agy-context-capsule="1"][data-agy-display-mode="topbar"][data-agy-alert-state="cliff"] .agy-ctx-alert-tag,
+                [data-agy-context-capsule="1"][data-agy-display-mode="topbar"][data-agy-alert-state="drop"] .agy-ctx-alert-tag {
+                    display: inline-flex;
+                }
+                [data-agy-compact-btn="1"] {
+                    appearance: none;
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 3px;
+                    height: 24px;
+                    padding: 0 8px;
+                    margin-right: 4px;
+                    border-radius: 999px;
+                    font-size: 11px;
+                    font-weight: 600;
+                    line-height: 1;
+                    cursor: pointer;
+                    white-space: nowrap;
+                    flex-shrink: 0;
+                    color: var(--ag-effective-accent, #a78bfa);
+                    background: var(--ag-accent-bg, rgba(167, 139, 250, 0.14));
+                    border: 1px solid var(--ag-accent-border, rgba(167, 139, 250, 0.34));
+                    transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.12s ease;
+                }
+                [data-agy-compact-btn="1"][data-ag-theme="light"] {
+                    color: var(--ag-effective-accent, #7c3aed);
+                }
+                [data-agy-compact-btn="1"]:hover {
+                    background: var(--ag-accent-bg-hover, rgba(167, 139, 250, 0.24));
+                    border-color: var(--ag-accent-border-hover, rgba(167, 139, 250, 0.56));
+                }
+                [data-agy-compact-btn="1"]:active:not(:disabled) {
+                    transform: scale(0.97);
+                }
+                [data-agy-compact-btn="1"]:focus-visible {
+                    outline: 2px solid var(--ag-effective-accent, #a78bfa);
+                    outline-offset: 2px;
+                }
+                [data-agy-compact-btn="1"][hidden] {
+                    display: none !important;
+                }
                 [data-agy-context-capsule="1"]:active:not(:disabled) {
                     transform: scale(0.975) translateY(0.5px);
                 }
@@ -2366,10 +2502,41 @@
         cacheWrap.appendChild(cacheIcon);
         cacheWrap.appendChild(cacheVal);
 
+        const alertTagSpan = document.createElement('span');
+        alertTagSpan.className = 'agy-ctx-alert-tag';
+        alertTagSpan.textContent = '';
+
         capsuleBtn.appendChild(speedWrap);
+        capsuleBtn.appendChild(alertTagSpan);
         capsuleBtn.appendChild(tokensWrap);
         capsuleBtn.appendChild(occWrap);
         capsuleBtn.appendChild(cacheWrap);
+    }
+
+    function ensureCompactActionButton(footerEl, capsuleBtn, permBtn) {
+        let compactBtn = footerEl.querySelector('[data-agy-compact-btn="1"]');
+        if (!compactBtn) {
+            compactBtn = document.createElement('button');
+            compactBtn.type = 'button';
+            compactBtn.setAttribute('data-agy-compact-btn', '1');
+            compactBtn.setAttribute('translate', 'no');
+            compactBtn.className = 'notranslate select-none shrink-0 whitespace-nowrap';
+            compactBtn.hidden = true;
+            compactBtn.style.display = 'none';
+            compactBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void triggerCapsuleCompactAction(e, compactBtn);
+            });
+        }
+        const parent = capsuleBtn.parentNode || footerEl;
+        if (parent) {
+            const refNode = (permBtn && permBtn.parentNode === parent) ? permBtn : capsuleBtn.nextSibling;
+            if (compactBtn.parentNode !== parent || compactBtn.previousSibling !== capsuleBtn) {
+                parent.insertBefore(compactBtn, refNode || null);
+            }
+        }
+        return compactBtn;
     }
 
     // 在单个 .agy-composer-footer 内创建或更新 3A 莫兰迪跑道胶囊
@@ -2424,25 +2591,80 @@
                 }
             }
         } else {
-            if (!capsuleBtn.querySelector('.agy-ctx-occ') || !capsuleBtn.querySelector('.agy-ctx-cache') || !capsuleBtn.querySelector('.agy-ctx-speed-num')) {
+            if (!capsuleBtn.querySelector('.agy-ctx-occ') || !capsuleBtn.querySelector('.agy-ctx-cache') || !capsuleBtn.querySelector('.agy-ctx-speed-num') || !capsuleBtn.querySelector('.agy-ctx-alert-tag')) {
                 if (typeof capsuleBtn.replaceChildren === 'function') capsuleBtn.replaceChildren();
                 else {
                     while (capsuleBtn.firstChild) capsuleBtn.removeChild(capsuleBtn.firstChild);
                 }
                 populateCapsuleButtonDom(capsuleBtn);
             }
-            if (permBtn && permBtn.parentNode && capsuleBtn.nextSibling !== permBtn) {
+            const curNext = capsuleBtn.nextSibling;
+            const isBeforePermOrCompact = permBtn && permBtn.parentNode && (
+                curNext === permBtn || (curNext?.getAttribute?.('data-agy-compact-btn') === '1' && curNext.nextSibling === permBtn)
+            );
+            if (permBtn && permBtn.parentNode && !isBeforePermOrCompact) {
                 permBtn.parentNode.insertBefore(capsuleBtn, permBtn);
             }
         }
+
+        const compactBtn = ensureCompactActionButton(footerEl, capsuleBtn, permBtn);
 
         capsuleBtn.__ctxUsageData = usageData;
 
         const isEn = getLangMode() === 'en';
         const light = isLightMode(capsuleBtn);
         capsuleBtn.setAttribute('data-ag-theme', light ? 'light' : 'dark');
+        const warnTextColor = light ? '#b45309' : MORANDI_3A.yellow;
         const dangerTextColor = light ? '#dc2626' : MORANDI_3A.red;
         const alertState = resolveCacheAlertState(usageData);
+        const displayMode = getContextDisplayMode();
+        const isHighWaterPct = Number(usageData?.usagePercent || 0) >= 85;
+        const isAlertActive = Boolean(alertState.isCacheDrop || alertState.isCliff328k || alertState.isWarn240k || isHighWaterPct);
+        const alertKind = alertState.isCacheDrop
+            ? 'drop'
+            : (alertState.isCliff328k ? 'cliff' : (isAlertActive ? 'warn' : 'none'));
+        const calmHidden = displayMode === 'topbar' && !isAlertActive;
+
+        capsuleBtn.setAttribute('data-agy-display-mode', displayMode);
+        capsuleBtn.setAttribute('data-agy-alert-state', alertKind);
+        capsuleBtn.setAttribute('data-agy-calm-hidden', calmHidden ? 'true' : 'false');
+        if (calmHidden && activeTooltipTarget === capsuleBtn) {
+            hideTooltip();
+        }
+
+        const alertTagEl = capsuleBtn.querySelector('.agy-ctx-alert-tag');
+        if (alertTagEl) {
+            if (displayMode === 'topbar' && isAlertActive) {
+                alertTagEl.textContent = alertState.isCacheDrop
+                    ? (isEn ? '⚠ Cache Expired' : '⚠ 缓存失效')
+                    : (alertState.isCliff328k
+                        ? (isEn ? '⚠ 328K+ Stall Risk' : '⚠ 328K+ 易失速')
+                        : (isEn ? '◐ High Context' : '◐ 高水位'));
+                alertTagEl.style.color = (alertState.isCacheDrop || alertState.isCliff328k || isHighWaterPct)
+                    ? dangerTextColor
+                    : warnTextColor;
+            } else {
+                alertTagEl.textContent = '';
+                alertTagEl.style.color = '';
+            }
+        }
+
+        if (compactBtn) {
+            compactBtn.setAttribute('data-ag-theme', light ? 'light' : 'dark');
+            compactBtn.setAttribute('data-alert-kind', alertKind);
+            if (isAlertActive) {
+                compactBtn.hidden = false;
+                compactBtn.style.display = 'inline-flex';
+                const compactLabel = isEn ? '⚡ /compact' : '⚡ 一键压缩';
+                if (compactBtn.textContent !== compactLabel) compactBtn.textContent = compactLabel;
+                compactBtn.title = alertState.isCacheDrop
+                    ? (isEn ? 'Context cache expired — click to run /compact immediately' : '上下文缓存已失效，点击立即执行 /compact 压缩前文')
+                    : (isEn ? 'Context is above 240K — click to run /compact and prevent cache-expiry slowdowns' : '当前上下文已超 240K 高水位，点击执行 /compact 压缩防失速');
+            } else {
+                compactBtn.hidden = true;
+                compactBtn.style.display = 'none';
+            }
+        }
         const color = getEffectiveCapsuleColor(usageData, capsuleBtn);
         const remainPct = Math.max(0, Math.min(100, 100 - usageData.usagePercent));
         const fillWidth = Math.max(2.2, (12.4 * remainPct) / 100).toFixed(1);
@@ -2879,6 +3101,8 @@
             resolveModelDisplayName,
             renderFooterCapsule,
             computeCapsuleTier,
+            getContextDisplayMode,
+            triggerCompactAction: triggerCapsuleCompactAction,
             ingestAvailableModels: ingestAvailableModelsPayload,
             ingestUserStatusModelConfigs,
             ingestGeneratorMetadata: ingestGeneratorMetadataRows,
@@ -2906,6 +3130,7 @@
             try { if (typeof domObserver !== "undefined") domObserver.disconnect(); } catch {}
             try {
                 document.querySelectorAll("[data-agy-context-capsule=\"1\"]").forEach(el => el.remove());
+                document.querySelectorAll("[data-agy-compact-btn=\"1\"]").forEach(el => el.remove());
                 document.getElementById("__agy_ctx_capsule_tooltip__")?.remove();
                 document.getElementById(CAPSULE_STYLE_ID)?.remove();
             } catch {}

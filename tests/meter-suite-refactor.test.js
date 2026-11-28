@@ -3427,18 +3427,18 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
     assert.equal(loadOrCreateRemoteConfig().tunnelHostname, 'https://ag.example.com', '非法域名不得覆盖已保存的域名');
 
     // *.cloudflareaccess.com / dash.cloudflare.com / *.trycloudflare.com 误填防护
-    const accessCheck = validateTunnelHostname('https://hubo1989.cloudflareaccess.com');
+    const accessCheck = validateTunnelHostname('https://demo-team.cloudflareaccess.com');
     assert.equal(accessCheck.ok, false);
     assert.match(accessCheck.error, /cloudflareaccess\.com/);
     assert.match(accessCheck.error, /NoAuth/);
-    assert.equal(normalizeTunnelHostname('https://hubo1989.cloudflareaccess.com'), '');
+    assert.equal(normalizeTunnelHostname('https://demo-team.cloudflareaccess.com'), '');
     assert.equal(validateTunnelHostname('https://one.dash.cloudflare.com').ok, false);
     assert.equal(validateTunnelHostname('https://abc.trycloudflare.com').ok, false);
 
     const accessStatus = await ctrl.configure({
       enabled: true,
       tunnelMode: 'named',
-      tunnelHostname: 'https://hubo1989.cloudflareaccess.com',
+      tunnelHostname: 'https://demo-team.cloudflareaccess.com',
       tunnelToken: stdToken
     });
     assert.equal(accessStatus.state, 'error');
@@ -3554,18 +3554,18 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
         enabled: true,
         mode: 'named',
         state: 'running',
-        publicUrl: 'https://hubo1989.cloudflareaccess.com',
+        publicUrl: 'https://demo-team.cloudflareaccess.com',
         error: '',
         binaryAvailable: true
       }
     });
-    staleNamedInfo.tunnelHostname = 'https://hubo1989.cloudflareaccess.com';
+    staleNamedInfo.tunnelHostname = 'https://demo-team.cloudflareaccess.com';
     const staleTunnelCh = staleNamedInfo.channels.find((c) => c.key === 'tunnel');
     if (staleTunnelCh) {
       staleTunnelCh.enabled = true;
       staleTunnelCh.available = true;
-      staleTunnelCh.displayHost = 'hubo1989.cloudflareaccess.com';
-      staleTunnelCh.tunnelHostname = 'https://hubo1989.cloudflareaccess.com';
+      staleTunnelCh.displayHost = 'demo-team.cloudflareaccess.com';
+      staleTunnelCh.tunnelHostname = 'https://demo-team.cloudflareaccess.com';
     }
     saveRemoteTunnelConfig({ enabled: true, tunnelMode: 'quick' });
     const quickReadyInfo = buildRemoteInfo({
@@ -3608,7 +3608,7 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
     assert.ok(paneQ.querySelector('#ag-rp-cf-quick .ag-rp-spin'), '切换按钮应渲染 .ag-rp-spin 加载动画');
     const toggleHostText = paneQ.querySelector('#ag-rp-tunnel-toggle')?.textContent || '';
     assert.ok(toggleHostText.includes('正在切换临时隧道'), '通道行应显示正在切换临时隧道');
-    assert.ok(!toggleHostText.includes('hubo1989.cloudflareaccess.com'), '切换期间通道行不得继续显示旧的 cloudflareaccess.com');
+    assert.ok(!toggleHostText.includes('demo-team.cloudflareaccess.com'), '切换期间通道行不得继续显示旧的 cloudflareaccess.com');
 
     resolveQuickReq({ ok: true, json: async () => ({ ok: true, data: quickReadyInfo }) });
     await new Promise(r => setTimeout(r, 30));
@@ -4124,7 +4124,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
         'user-agent': iphoneUa,
         'x-ag-device-id': 'dev-ts-origin',
         'x-ag-device-fp': 'fp-same111-393x852',
-        host: '100.67.239.94:18765'
+        host: '100.64.0.20:18765'
       },
       socket: { remoteAddress: '100.67.239.10' }
     }, tok, baseNow);
@@ -4214,7 +4214,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
 
     const gifBlocked = await runHttpReq({
       url: '/api/ping.gif?probe=1&_t=1',
-      headers: { host: '100.67.239.94:18765' },
+      headers: { host: '100.64.0.20:18765' },
       remoteAddress: '100.67.239.10'
     });
     assert.equal(gifBlocked.status, 403, '已停用的 Tailscale 通道请求 /api/ping.gif 应返回 403');
@@ -4385,18 +4385,18 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
 
     const testEps = [
       { url: 'http://10.181.51.171:18765', kind: 'lan', priority: 0 },
-      { url: 'http://100.67.239.94:18765', kind: 'tailscale', priority: 100 },
+      { url: 'http://100.64.0.20:18765', kind: 'tailscale', priority: 100 },
       { url: 'https://demo-quick.trycloudflare.com', kind: 'tunnel', priority: 250 }
     ];
     const encEps = encodeEndpointsParam(testEps);
 
     // 3a. 从较慢的明文 Tailscale 打开，自动测速发现 LAN (~4ms) 显著快于 Tailscale (~60ms) -> 调用 location.replace 自动切到 LAN 并携带 did/autosw/spd
     const autoVm = runMobileClientVm({
-      href: `http://100.67.239.94:18765/?token=${tok}&endpoints=${encEps}`,
+      href: `http://100.64.0.20:18765/?token=${tok}&endpoints=${encEps}`,
       fetchHandler: async (url) => {
         const u = String(url);
         if (u.includes('/api/ping')) {
-          const parsedU = new URL(u, 'http://100.67.239.94:18765');
+          const parsedU = new URL(u, 'http://100.64.0.20:18765');
           const nonce = parsedU.searchParams.get('_n') || '';
           const delayMs = u.includes('10.181.51.171') ? 4 : 60;
           await new Promise((r) => setTimeout(r, delayMs));
@@ -4499,9 +4499,9 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     // 3c. 模拟 iOS Safari 在 HTTPS 页面拦截全部 http:// 图片与 fetch 探测，结合 /api/probe-hints 仍能识别内网延迟并自动切换
     const fullEps = [
       { url: 'http://10.181.51.171:18765', kind: 'lan', priority: 0 },
-      { url: 'http://100.67.239.94:18765', kind: 'tailscale', priority: 100 },
-      { url: 'http://hubertdemacbook-pro.local:18765', kind: 'bonjour', priority: 200 },
-      { url: 'https://ag.20160325.xyz', kind: 'tunnel', priority: 250 }
+      { url: 'http://100.64.0.20:18765', kind: 'tailscale', priority: 100 },
+      { url: 'http://dev-macbook.local:18765', kind: 'bonjour', priority: 200 },
+      { url: 'https://ag.example.com', kind: 'tunnel', priority: 250 }
     ];
     const encFull = encodeEndpointsParam(fullEps);
     const makeSafariHttpsHandlers = () => ({
@@ -4525,7 +4525,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
           };
         }
         if (u.includes('/api/ping')) {
-          const parsedU = new URL(u, 'https://ag.20160325.xyz');
+          const parsedU = new URL(u, 'https://ag.example.com');
           const nonce = parsedU.searchParams.get('_n') || '';
           await new Promise((r) => setTimeout(r, 45));
           return { ok: true, status: 200, json: async () => ({ ok: true, service: 'ag-mobile-remote', nonce, endpoints: fullEps }) };
@@ -4542,7 +4542,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     });
 
     const safariAutoVm = runMobileClientVm({
-      href: `https://ag.20160325.xyz/?token=${tok}&endpoints=${encFull}`,
+      href: `https://ag.example.com/?token=${tok}&endpoints=${encFull}`,
       ...makeSafariHttpsHandlers()
     });
     try {
@@ -4553,7 +4553,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     }
 
     const safariManualVm = runMobileClientVm({
-      href: `https://ag.20160325.xyz/?token=${tok}&manual=1&endpoints=${encFull}`,
+      href: `https://ag.example.com/?token=${tok}&manual=1&endpoints=${encFull}`,
       ...makeSafariHttpsHandlers()
     });
     try {
@@ -4781,7 +4781,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
   try {
     const fakeNets = {
       en0: [{ address: '10.181.51.171', netmask: '255.255.254.0', family: 'IPv4', internal: false }],
-      utun4: [{ address: '100.67.239.94', netmask: '255.255.255.255', family: 'IPv4', internal: false }]
+      utun4: [{ address: '100.64.0.20', netmask: '255.255.255.255', family: 'IPv4', internal: false }]
     };
     assert.equal(mr.isIpInLocalPhysicalLanSubnet('10.181.50.88', fakeNets), true, '同物理子网对端 IP 应匹配');
     assert.equal(mr.isIpInLocalPhysicalLanSubnet('10.181.51.171', fakeNets), false, '本机自身 LAN IP 必须排除，防环回 1ms');
@@ -4794,7 +4794,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
       url: '/api/snapshot?did=dev-iphone-stale1',
       headers: { host: '10.181.51.171:18765', 'user-agent': 'Mozilla/5.0 (iPhone)', 'x-ag-device-id': 'dev-iphone-stale1' },
       socket: { remoteAddress: '::ffff:10.181.51.88' }
-    }, 'tok-test-12345678901234567890', baseNow - 30000, 'https://ag.20160325.xyz');
+    }, 'tok-test-12345678901234567890', baseNow - 30000, 'https://ag.example.com');
 
     const executedCmds = [];
     const hints = await mr.probeClientPrivateReachability(
@@ -4871,8 +4871,8 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
     mEnv.sandbox.escape = (s) => encodeURIComponent(s);
     mEnv.sandbox.unescape = (s) => decodeURIComponent(s);
     mEnv.sandbox.location = {
-      href: 'https://ag.20160325.xyz/?token=tok-ui-test-1234567890&manual=1',
-      origin: 'https://ag.20160325.xyz',
+      href: 'https://ag.example.com/?token=tok-ui-test-1234567890&manual=1',
+      origin: 'https://ag.example.com',
       protocol: 'https:',
       pathname: '/',
       search: '?token=tok-ui-test-1234567890&manual=1',
@@ -4965,7 +4965,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
       ],
       endpoints: [
         { url: 'http://10.181.51.171:18765', kind: 'lan', priority: 0 },
-        { url: 'https://ag.20160325.xyz', kind: 'tunnel', priority: 250 }
+        { url: 'https://ag.example.com', kind: 'tunnel', priority: 250 }
       ]
     };
 
@@ -5045,7 +5045,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
       attachDatasetProxy(sheetList);
       const groupButtons = sheetList.querySelectorAll('[data-group-idx]');
       assert.equal(groupButtons.length, 2, '4 个模型选项按 base modelId 应聚合为 2 组 (Gemini 4 Carbon 与 Orchestrator (Carbon))');
-      assert.ok(groupButtons[0].textContent.includes('Gemini 4 Carbon') && groupButtons[0].textContent.includes('3 档'));
+      assert.ok(groupButtons[0].textContent.includes('Gemini 4 Carbon') && groupButtons[0].textContent.includes('Medium') && !groupButtons[0].textContent.includes('3 档'));
 
       // 点击 Gemini 4 Carbon -> 左滑切换为思考等级抽屉
       sheetList.onclick({ target: groupButtons[0] });
@@ -5054,10 +5054,11 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
       assert.ok(trackEl.classList.contains('step-effort'), '点击模型后轨道应添加 .step-effort 触发左滑动画');
       assert.equal(backBtn.hidden, false, '思考等级抽屉头部应显示返回按钮');
       const effortButtons = sheetList.querySelectorAll('[data-variant-idx]');
-      assert.equal(effortButtons.length, 3, 'Gemini 4 Carbon 思考等级抽屉应包含 高/中/低 3 个选项');
+      assert.equal(effortButtons.length, 3, 'Gemini 4 Carbon 思考等级抽屉应包含 Low/Medium/High 3 个选项');
 
-      // 选择 High 等级
-      await sheetList.onclick({ target: effortButtons[0] });
+      // 选择 High 等级（按 Low -> Medium -> High 顺序排列在末位）
+      const highEffortBtn = effortButtons.find((b) => (b.textContent || '').includes('High')) || effortButtons[effortButtons.length - 1];
+      await sheetList.onclick({ target: highEffortBtn });
       assert.ok(actionRequests.some((r) => r.action === 'select-model' && r.modelId === 'gemini-4-carbon-high'),
         '选择思考等级后应调用 select-model 提交对应 modelId');
 
@@ -9333,8 +9334,9 @@ test('PR #5 / 远程需求 29: 融合回归——隔离会话后跨项目新建�
     assert.ok(envUi.doc.getElementById('sheet-stage-track')?.classList?.contains('step-effort'));
     const variantBtns = sheetList.querySelectorAll('[data-variant-idx]');
     assert.equal(variantBtns.length, 3);
-    sheetList.dispatchEvent({ type: 'click', target: variantBtns[0] });
-    await sheetList.onclick({ target: variantBtns[0] });
+    const highVariantBtn = variantBtns.find((b) => (b.textContent || '').includes('High')) || variantBtns[variantBtns.length - 1];
+    sheetList.dispatchEvent({ type: 'click', target: highVariantBtn });
+    await sheetList.onclick({ target: highVariantBtn });
     assert.equal(countActions('select-model'), baseModelCnt + 1, '切换模型分档后应精确发送 1 次 select-model');
     assert.equal(countActions('new-conversation'), baseNewCnt, 'activeSheetState 清空后不得误触项目选择回调');
     assert.equal(uiActions[uiActions.length - 1].label, 'Gemini 4 Carbon (High)');
@@ -13067,7 +13069,7 @@ test('远程端选择框与贴图防冲突、DOM 排队消息合并、单个附�
   permH.textContent = 'Allow write access to this path?';
   permCard.appendChild(permH);
   const permDesc = env.doc.createElement('code');
-  permDesc.textContent = '/Users/shenslu/shared/_army/ledger/tasks/T-261121-6gud.md';
+  permDesc.textContent = '/Users/demo/workspace/notes/task-demo.md';
   permCard.appendChild(permDesc);
   const clickedLog = [];
   for (const label of [
@@ -18929,21 +18931,21 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     ctx
   );
 
-  assert.equal(ctx.__detect('https://mini-lamp.tailab4819.ts.net'), 'tailscale', 'https://*.ts.net 必须识别为 tailscale 而非 tunnel');
-  assert.equal(ctx.__detect('http://100.103.118.78:18765'), 'tailscale');
+  assert.equal(ctx.__detect('https://demo-host.tail-demo.ts.net'), 'tailscale', 'https://*.ts.net 必须识别为 tailscale 而非 tunnel');
+  assert.equal(ctx.__detect('http://100.64.0.10:18765'), 'tailscale');
   assert.equal(ctx.__detect('https://demo.trycloudflare.com'), 'tunnel');
-  assert.equal(ctx.__detect('http://mini-lamp.local:18765'), 'bonjour');
+  assert.equal(ctx.__detect('http://demo-host.local:18765'), 'bonjour');
   assert.equal(ctx.__detect('http://192.168.1.8:18765'), 'lan');
 
-  assert.equal(ctx.__block('https://mini-lamp.tailab4819.ts.net', 'http://100.103.118.78:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文 Tailscale IP');
-  assert.equal(ctx.__block('https://mini-lamp.tailab4819.ts.net', 'http://192.168.1.8:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文局域网 IP');
+  assert.equal(ctx.__block('https://demo-host.tail-demo.ts.net', 'http://100.64.0.10:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文 Tailscale IP');
+  assert.equal(ctx.__block('https://demo-host.tail-demo.ts.net', 'http://192.168.1.8:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文局域网 IP');
   assert.equal(ctx.__block('http://localhost:18765', 'http://192.168.1.8:18765', false), true, 'localhost 安全源严禁自动降级到非受信明文 IP');
   assert.equal(ctx.__block('http://127.0.0.1:18765', 'http://192.168.1.8:18765', false), true, '127.0.0.1 安全源严禁自动降级到非受信明文 IP');
   assert.equal(ctx.__block('https://demo.trycloudflare.com', 'http://192.168.1.8:18765', true), true, 'standalone 独立应用严禁自动降级跳往明文地址');
   assert.equal(ctx.__block('https://demo.trycloudflare.com', 'http://192.168.1.8:18765', false), true, '任意 HTTPS 安全源在当前路线可达时均严禁自动降级到非受信 HTTP');
-  assert.equal(ctx.__block('https://demo.trycloudflare.com', 'https://mini-lamp.tailab4819.ts.net', true), false, '允许安全源之间同级切换（HTTPS -> Tailscale HTTPS）');
-  assert.equal(ctx.__block('http://192.168.1.8:18765', 'https://mini-lamp.tailab4819.ts.net', false), false, '允许明文源升级至 HTTPS');
-  assert.equal(ctx.__block('http://100.103.118.78:18765', 'http://192.168.1.8:18765', false), false, '非 standalone 明文源之间允许按测速切换');
+  assert.equal(ctx.__block('https://demo.trycloudflare.com', 'https://demo-host.tail-demo.ts.net', true), false, '允许安全源之间同级切换（HTTPS -> Tailscale HTTPS）');
+  assert.equal(ctx.__block('http://192.168.1.8:18765', 'https://demo-host.tail-demo.ts.net', false), false, '允许明文源升级至 HTTPS');
+  assert.equal(ctx.__block('http://100.64.0.10:18765', 'http://192.168.1.8:18765', false), false, '非 standalone 明文源之间允许按测速切换');
 
   // 2b. runSpeedTest 与 tryFailoverEndpoint 两个自动切换入口端到端行为测试
   const mainScript = scripts.map((m) => m[1]).find((s) => s.includes('async function runSpeedTest(opts)'));
@@ -19136,7 +19138,7 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   // 2b-2: runSpeedTest 在 HTTPS 源下同时存在更快的 HTTP 与更快的 Tailscale HTTPS -> 跳过 HTTP，切往安全源
   const epsTunnelLanTsHttps = [
     { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
-    { url: 'https://mini-lamp.tailab4819.ts.net', kind: 'tailscale', priority: 90 },
+    { url: 'https://demo-host.tail-demo.ts.net', kind: 'tailscale', priority: 90 },
     { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
   ];
   const h2 = await runSwitchHarness({
@@ -19145,14 +19147,14 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     endpoints: epsTunnelLanTsHttps,
     latencyByUrl: {
       'http://192.168.1.8:18765': 3,
-      'https://mini-lamp.tailab4819.ts.net': 10,
+      'https://demo-host.tail-demo.ts.net': 10,
       'https://demo.trycloudflare.com': 60
     }
   });
   try {
     await new Promise((r) => setTimeout(r, 180));
     assert.equal(h2.replacedUrls.length, 1, 'runSpeedTest：存在更快的安全 HTTPS 源时应跳过 HTTP 并切换至安全源');
-    assert.equal(new URL(h2.replacedUrls[0]).origin, 'https://mini-lamp.tailab4819.ts.net');
+    assert.equal(new URL(h2.replacedUrls[0]).origin, 'https://demo-host.tail-demo.ts.net');
   } finally { h2.cleanup(); }
 
   // 2b-3: runSpeedTest 在 localhost 安全源下禁止降级到明文 LAN HTTP
@@ -19170,13 +19172,13 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   // 2b-3b: 当前 localhost 未列入测速列表、列表内 LAN 端点失败、明文 Tailscale 端点成功时，仍不得自动降级
   const epsLanFailTsOk = [
     { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
-    { url: 'http://100.103.118.78:18765', kind: 'tailscale', priority: 100 }
+    { url: 'http://100.64.0.10:18765', kind: 'tailscale', priority: 100 }
   ];
   const h3b = await runSwitchHarness({
     href: `http://localhost:18765/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsLanFailTsOk)}`,
     standalone: false,
     endpoints: epsLanFailTsOk,
-    latencyByUrl: { 'http://100.103.118.78:18765': 8 },
+    latencyByUrl: { 'http://100.64.0.10:18765': 8 },
     failUrls: ['http://192.168.1.8:18765']
   });
   try {
@@ -19187,13 +19189,13 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   // 2b-4: runSpeedTest 在 standalone 模式下严禁自动降级到非受信 HTTP
   const epsTsLan = [
     { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
-    { url: 'http://100.103.118.78:18765', kind: 'tailscale', priority: 100 }
+    { url: 'http://100.64.0.10:18765', kind: 'tailscale', priority: 100 }
   ];
   const h4 = await runSwitchHarness({
-    href: `http://100.103.118.78:18765/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsTsLan)}`,
+    href: `http://100.64.0.10:18765/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsTsLan)}`,
     standalone: true,
     endpoints: epsTsLan,
-    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'http://100.103.118.78:18765': 60 }
+    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'http://100.64.0.10:18765': 60 }
   });
   try {
     await new Promise((r) => setTimeout(r, 150));
@@ -19231,13 +19233,13 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     href: `https://demo.trycloudflare.com/?token=tok37&manual=1&endpoints=${remoteMod.encodeEndpointsParam(epsTunnelLanTsHttps)}`,
     standalone: true,
     endpoints: epsTunnelLanTsHttps,
-    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'https://mini-lamp.tailab4819.ts.net': 12 },
+    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'https://demo-host.tail-demo.ts.net': 12 },
     failUrls: ['https://demo.trycloudflare.com']
   });
   try {
     const ok7 = await h7.hooks.tryFailoverEndpoint();
     assert.equal(ok7, true, 'tryFailoverEndpoint：standalone 下存在可用 HTTPS 安全源时应正常切往该安全源');
-    assert.equal(h7.hooks.getApiBase(), 'https://mini-lamp.tailab4819.ts.net');
+    assert.equal(h7.hooks.getApiBase(), 'https://demo-host.tail-demo.ts.net');
   } finally { h7.cleanup(); }
 
   // 3. 服务端自动探测 CertDomains、托管 tailscale serve --bg 18765 与端点优先级排序
@@ -19246,11 +19248,11 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     calls.push({ bin, args });
     if (args[0] === 'status') {
       return JSON.stringify({
-        Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
-        CertDomains: ['mini-lamp.tailab4819.ts.net']
+        Self: { DNSName: 'demo-host.tail-demo.ts.net.', HostName: 'demo-host' },
+        CertDomains: ['demo-host.tail-demo.ts.net']
       });
     }
-    if (args[0] === 'serve') return 'Available within your tailnet:\nhttps://mini-lamp.tailab4819.ts.net/';
+    if (args[0] === 'serve') return 'Available within your tailnet:\nhttps://demo-host.tail-demo.ts.net/';
     return '';
   };
   const desc = remoteMod.collectFusedEndpointDescriptor(
@@ -19260,36 +19262,36 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     {
       execFileSync: mockExecOk,
       addresses: {
-        tailscale: [{ iface: 'utun4', address: '100.103.118.78', kind: 'tailscale' }],
+        tailscale: [{ iface: 'utun4', address: '100.64.0.10', kind: 'tailscale' }],
         lan: [{ iface: 'en0', address: '192.168.1.8', kind: 'lan' }],
         physicalLan: [{ iface: 'en0', address: '192.168.1.8', kind: 'lan' }]
       }
     }
   );
   assert.ok(calls.some((c) => c.args[0] === 'serve' && c.args[1] === '--bg' && c.args[2] === '18765'), '开通 CertDomains 时应以安全参数数组调用 tailscale serve --bg 18765');
-  assert.equal(desc.tailscaleHttpsUrl, 'https://mini-lamp.tailab4819.ts.net');
-  const tsHttpsEp = desc.endpoints.find((e) => e.url === 'https://mini-lamp.tailab4819.ts.net');
-  const tsHttpEp = desc.endpoints.find((e) => e.url === 'http://100.103.118.78:18765');
+  assert.equal(desc.tailscaleHttpsUrl, 'https://demo-host.tail-demo.ts.net');
+  const tsHttpsEp = desc.endpoints.find((e) => e.url === 'https://demo-host.tail-demo.ts.net');
+  const tsHttpEp = desc.endpoints.find((e) => e.url === 'http://100.64.0.10:18765');
   assert.ok(tsHttpsEp && tsHttpEp && tsHttpsEp.priority < tsHttpEp.priority, 'Tailscale HTTPS 端点优先级应高于明文 :18765 端点');
 
   // 3b. Origin 白名单严格收窄至本机 tailscaleDnsName：本机域名通过，其他 .ts.net 域名与空配置均拒绝
   assert.equal(
-    remoteMod.isAllowedPrivateOrigin('https://mini-lamp.tailab4819.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    remoteMod.isAllowedPrivateOrigin('https://demo-host.tail-demo.ts.net', '', 'demo-host.tail-demo.ts.net'),
     true,
     '服务端 Origin 白名单应放行本机 tailscaleDnsName'
   );
   assert.equal(
-    remoteMod.isAllowedPrivateOrigin('https://other-node.tailab4819.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    remoteMod.isAllowedPrivateOrigin('https://other-node.tail-demo.ts.net', '', 'demo-host.tail-demo.ts.net'),
     false,
     '服务端 Origin 白名单必须拒绝同 tailnet 的其他 .ts.net 域名'
   );
   assert.equal(
-    remoteMod.isAllowedPrivateOrigin('https://evil.other-tailnet.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    remoteMod.isAllowedPrivateOrigin('https://evil.other-tailnet.ts.net', '', 'demo-host.tail-demo.ts.net'),
     false,
     '服务端 Origin 白名单必须拒绝任意外部 .ts.net 域名'
   );
   assert.equal(
-    remoteMod.isAllowedPrivateOrigin('https://mini-lamp.tailab4819.ts.net', '', ''),
+    remoteMod.isAllowedPrivateOrigin('https://demo-host.tail-demo.ts.net', '', ''),
     false,
     '未探测到本机 tailscaleDnsName 时必须拒绝所有 .ts.net 域名'
   );
@@ -19297,7 +19299,7 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   // 3c. HTTP Handler CORS 回归：本机 .ts.net Origin 获得 ACAO，其他 .ts.net Origin 被拒（无 ACAO）
   const corsHandler = remoteMod.createRemoteHttpHandler(
     { enabled: true, port: 18765, token: 'tok-cors-37', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
-    { allowedTailscaleDnsName: 'mini-lamp.tailab4819.ts.net' }
+    { allowedTailscaleDnsName: 'demo-host.tail-demo.ts.net' }
   );
   const runCorsReq = async (origin) => {
     const resHeaders = {};
@@ -19313,8 +19315,8 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     );
     return { status, resHeaders };
   };
-  const selfCors = await runCorsReq('https://mini-lamp.tailab4819.ts.net');
-  assert.equal(selfCors.resHeaders['access-control-allow-origin'], 'https://mini-lamp.tailab4819.ts.net', '本机 .ts.net Origin 应下发 CORS 允许头');
+  const selfCors = await runCorsReq('https://demo-host.tail-demo.ts.net');
+  assert.equal(selfCors.resHeaders['access-control-allow-origin'], 'https://demo-host.tail-demo.ts.net', '本机 .ts.net Origin 应下发 CORS 允许头');
   const foreignCors = await runCorsReq('https://attacker.other-tailnet.ts.net');
   assert.equal(foreignCors.resHeaders['access-control-allow-origin'], undefined, '非本机 .ts.net Origin 不得下发 CORS 允许头');
 
@@ -19323,7 +19325,7 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   const noCertRes = remoteMod.ensureTailscaleServeHttps(18765, {
     execFileSync: (bin, args) => {
       noCertCalls.push(args);
-      return JSON.stringify({ Self: { DNSName: 'mini-lamp.tailab4819.ts.net.' }, CertDomains: [] });
+      return JSON.stringify({ Self: { DNSName: 'demo-host.tail-demo.ts.net.' }, CertDomains: [] });
     }
   });
   assert.equal(noCertRes.enabled, false);
@@ -19407,19 +19409,20 @@ test('遥控网页 Web Push 消息推送与桌面 PWA 图标未读角标 (#10)',
     'RFC 8291 Section 5 官方标准测试向量密文必须逐字节完全匹配'
   );
 
-  // 2c. 加密前 UTF-8 字节长度单记录上限边界验证 (rs=4096 -> max 4079 bytes)
+  // 2c. 加密前 UTF-8 字节长度单记录上限边界验证 (rs=4096 - 86B RFC8291 header - 16B tag - 1B 0x02 -> max 3993 bytes)
   const exactMaxPayload = 'a'.repeat(pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES);
   const exactMaxEnc = pushMod.encryptWebPushPayload(exactMaxPayload, validSub);
-  assert.equal(pushMod.decryptWebPushPayloadForTest(exactMaxEnc.body, uaEcdh.getPrivateKey(), uaAuth), exactMaxPayload, '恰好 4079 UTF-8 字节载荷应正常加密解密');
+  assert.ok(exactMaxEnc.body.length <= 4096, `单记录 Web Push 密文总长度必须 <= 4096B (实测 ${exactMaxEnc.body.length})`);
+  assert.equal(pushMod.decryptWebPushPayloadForTest(exactMaxEnc.body, uaEcdh.getPrivateKey(), uaAuth), exactMaxPayload, '恰好 3993 UTF-8 字节载荷应正常加密解密');
   assert.throws(
     () => pushMod.encryptWebPushPayload('a'.repeat(pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES + 1), validSub),
     RangeError,
-    '超过 4079 字节的载荷必须在加密前抛出 RangeError'
+    '超过 3993 字节的载荷必须在加密前抛出 RangeError'
   );
   assert.throws(
-    () => pushMod.encryptWebPushPayload('中'.repeat(1360), validSub), // 1360 * 3 = 4080 UTF-8 bytes
+    () => pushMod.encryptWebPushPayload('中'.repeat(1332), validSub), // 1332 * 3 = 3996 UTF-8 bytes
     RangeError,
-    '多字节 UTF-8 字符按字节长度超限(4080B > 4079B)必须抛出 RangeError'
+    '多字节 UTF-8 字符按字节长度超限(3996B > 3993B)必须抛出 RangeError'
   );
 
   // 3. 订阅校验与 SSRF 防护（含 DNS 解析私网拦截与禁止重定向）
@@ -19427,7 +19430,7 @@ test('遥控网页 Web Push 消息推送与桌面 PWA 图标未读角标 (#10)',
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'http://fcm.googleapis.com/plain' }).ok, false, '拒绝明文 http:// 订阅');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://127.0.0.1:8443/push' }).ok, false, '拒绝回环地址 SSRF');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://192.168.1.10/push' }).ok, false, '拒绝内网地址 SSRF');
-  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://100.103.118.78/push' }).ok, false, '拒绝 Tailscale 私网地址 SSRF');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://100.64.0.10/push' }).ok, false, '拒绝 Tailscale 私网地址 SSRF');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://198.18.0.1/push' }).ok, false, '拒绝 198.18.0.0/15 基准测试非公网地址');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://192.0.2.1/push' }).ok, false, '拒绝 192.0.2.0/24 TEST-NET-1 非公网地址');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://[2001:db8::1]/push' }).ok, false, '拒绝 2001:db8::/32 IPv6 文档非公网地址');
@@ -19885,7 +19888,7 @@ test('底栏视觉层级分隔 (#39) 与顶栏信息降噪及项目名双端正�
     screen: { width: 1280, height: 800 },
     devicePixelRatio: 2,
     navigator: { platform: 'MacIntel', maxTouchPoints: 0, hardwareConcurrency: 8 },
-    location: { origin: 'https://mini-lamp.tailab4819.ts.net', protocol: 'https:', hostname: 'mini-lamp.tailab4819.ts.net', pathname: '/', search: '', port: '', href: 'https://mini-lamp.tailab4819.ts.net/' },
+    location: { origin: 'https://demo-host.tail-demo.ts.net', protocol: 'https:', hostname: 'demo-host.tail-demo.ts.net', pathname: '/', search: '', port: '', href: 'https://demo-host.tail-demo.ts.net/' },
     history: { replaceState() {} },
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -19925,9 +19928,10 @@ test('底栏视觉层级分隔 (#39) 与顶栏信息降噪及项目名双端正�
       pendingApprovals: [],
       pendingPrompts: []
     });
-    const subText = byId['sub-meta'].textContent;
-    assert.equal(subText, '42.0 tok/s · 120k/840k (14.3%)', '正常态 #sub-meta 仅保留核心实时指标');
-    assert.ok(!subText.includes('Tailscale') && !subText.includes('独立视图') && !subText.includes('▾'), '正常态 #sub-meta 不得出现冗余通道名或「独立视图」');
+    assert.equal(byId['sub-meta'].hidden, true, '正常在线态 #sub-meta 应自动隐藏，避免与顶栏上下文按钮重复显示指标');
+    assert.equal(byId['sub-meta'].textContent, '', '正常在线态 #sub-meta 不再重复渲染 tok/s 与上下文百分比');
+    assert.equal(byId['conv-project-badge'].hidden, false, '正常在线态仍保留所属项目胶囊');
+    assert.equal(byId['conv-project-badge'].textContent, 'antigravity-suite');
     assert.equal(bodyCls.has('has-upper-dock'), true, '仅队列可见时 body 应标记 has-upper-dock');
     assert.equal(bodyCls.has('has-approval-dock'), false, '仅队列可见时不应标记 has-approval-dock');
 
@@ -20668,9 +20672,14 @@ test('彻底修复排队消息在远程端不显示与操作闭环 (#40)', async
   assert.equal(rSendAllNull.ok, false);
   assert.equal(domFallbackCalls.length, domBeforeAllTimeout, 'SendAllQueuedMessages 返回 null 时绝不得自动补点 DOM');
 
-  // 仅当服务端明确返回 deprecated（confirmedNotExecuted）且携带 messageIds 时，回退桌面全发
+  // 仅当服务端明确返回 deprecated（confirmedNotExecuted）且携带 messageIds、同时当前会话无未决超时发送记录时，回退桌面全发
   sendAllMode = 'deprecated';
-  const rSendAllFallback = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageIds: ['pm-1', 'pm-2'] });
+  const rSendAllBlockedOnTainted = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40', messageIds: ['pm-1', 'pm-2'] });
+  assert.equal(rSendAllBlockedOnTainted.ok, false, '会话存在 pm-timeout-1 未决发送超时时，批量 deprecated 回退必须停止发送');
+  assert.equal(rSendAllBlockedOnTainted.outcomeUnknown, true);
+  assert.equal(domFallbackCalls.length, domBeforeAllTimeout, '存在未决超时项时绝不得执行 send-queued-dom 全发');
+
+  const rSendAllFallback = await postAct({ action: 'send-queued-messages', conversationId: 'iso-conv-40-clean', messageIds: ['pm-1', 'pm-2'] });
   assert.equal(rSendAllFallback.ok, true);
   assert.equal(domFallbackCalls.length, domBeforeAllTimeout + 1);
   assert.equal(domFallbackCalls[domBeforeAllTimeout].action, 'send-queued-dom');
@@ -26790,13 +26799,13 @@ test('PR #8 合并加固 (P0-1~P0-5 / P1): Tailscale Serve 护栏、Web Push 曲
       tsCalls.push(args);
       if (args[0] === 'status') {
         return JSON.stringify({
-          Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
-          CertDomains: ['mini-lamp.tailab4819.ts.net']
+          Self: { DNSName: 'demo-host.tail-demo.ts.net.', HostName: 'demo-host' },
+          CertDomains: ['demo-host.tail-demo.ts.net']
         });
       }
       if (args[0] === 'serve' && args[1] === 'status') {
         return JSON.stringify({
-          Web: { 'mini-lamp.tailab4819.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } }
+          Web: { 'demo-host.tail-demo.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } }
         });
       }
       return '';
@@ -26813,8 +26822,8 @@ test('PR #8 合并加固 (P0-1~P0-5 / P1): Tailscale Serve 护栏、Web Push 曲
       readOnlyCalls.push(args);
       if (args[0] === 'status') {
         return JSON.stringify({
-          Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
-          CertDomains: ['mini-lamp.tailab4819.ts.net']
+          Self: { DNSName: 'demo-host.tail-demo.ts.net.', HostName: 'demo-host' },
+          CertDomains: ['demo-host.tail-demo.ts.net']
         });
       }
       if (args[0] === 'serve' && args[1] === 'status') {
@@ -28610,10 +28619,10 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const projectsDir = path.join(configDir, 'projects');
     const stateDir = path.join(tmpRoot, 'state');
     const codebaseDir = path.join(fakeHome, 'codebase');
-    const sharedArmyDir = path.join(fakeHome, 'shared', '_army');
-    const makeFontDir = path.join(codebaseDir, 'make-font');
-    const insightRepoDir = path.join(codebaseDir, 'InsightOS');
-    const insightSiteDir = path.join(fakeHome, 'shared', 'ws_works', 'InsightOS');
+    const sharedArmyDir = path.join(fakeHome, 'shared', 'shared-dir');
+    const makeFontDir = path.join(codebaseDir, 'dir-a');
+    const insightRepoDir = path.join(codebaseDir, 'proj-b');
+    const insightSiteDir = path.join(fakeHome, 'shared', 'dir-b-extra', 'proj-b');
     const agSuiteDir = path.join(codebaseDir, 'antigravity-suite');
     const agSuiteSubDir = path.join(agSuiteDir, 'src');
     const unregisteredRepoDir = path.join(codebaseDir, 'unregistered-sibling');
@@ -28623,8 +28632,8 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     }
     fs.writeFileSync(path.join(makeFontDir, 'font.txt'), 'font');
     fs.writeFileSync(path.join(sharedArmyDir, 'ledger.md'), '# army');
-    fs.writeFileSync(path.join(insightRepoDir, 'insight-app.ts'), 'export const app = 1;');
-    fs.writeFileSync(path.join(insightSiteDir, 'release-note.md'), '# InsightOS Site');
+    fs.writeFileSync(path.join(insightRepoDir, 'app.ts'), 'export const app = 1;');
+    fs.writeFileSync(path.join(insightSiteDir, 'release-note.md'), '# proj-b Site');
     fs.writeFileSync(path.join(agSuiteDir, 'cli.js'), '// ag-suite');
     fs.writeFileSync(path.join(agSuiteSubDir, 'app.js'), '// sub');
 
@@ -28637,17 +28646,17 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
         }
       }, null, 2));
     };
-    // 复现真实磁盘排序：0449 (%make-font + _army) 与 b6c2 (宽泛父目录 ~/codebase) 均排在 b9e0 (antigravity-suite) 之前
-    writeProjJson('0449-make-font', '%make-font', [makeFontDir, sharedArmyDir]);
-    writeProjJson('2628-insightos', 'InsightOS', [insightRepoDir, sharedArmyDir, insightSiteDir]);
+    // 复现真实磁盘排序：proj-a (dir-a + shared-dir) 与 b6c2 (宽泛父目录 ~/codebase) 均排在 b9e0 (antigravity-suite) 之前
+    writeProjJson('proj-a', 'proj-a', [makeFontDir, sharedArmyDir]);
+    writeProjJson('proj-b', 'proj-b', [insightRepoDir, sharedArmyDir, insightSiteDir]);
     writeProjJson('b6c2-global', '全局问题', [codebaseDir]);
     writeProjJson('b9e0-ag-suite', 'antigravity-suite', [agSuiteDir]);
     writeProjJson('default-cli-project', 'CLI Project', []);
 
-    // 2. matchWorkspaceToProjectId：防 _army 共享目录与 ~/codebase 宽泛父目录抢占归属
+    // 2. matchWorkspaceToProjectId：防 shared-dir 共享目录与 ~/codebase 宽泛父目录抢占归属
     const metaMap = new Map([
-      ['0449-make-font', { id: '0449-make-font', name: '%make-font', workspacePaths: [makeFontDir, sharedArmyDir] }],
-      ['2628-insightos', { id: '2628-insightos', name: 'InsightOS', workspacePaths: [insightRepoDir, sharedArmyDir, insightSiteDir] }],
+      ['proj-a', { id: 'proj-a', name: 'proj-a', workspacePaths: [makeFontDir, sharedArmyDir] }],
+      ['proj-b', { id: 'proj-b', name: 'proj-b', workspacePaths: [insightRepoDir, sharedArmyDir, insightSiteDir] }],
       ['b6c2-global', { id: 'b6c2-global', name: '全局问题', workspacePaths: [codebaseDir] }],
       ['b9e0-ag-suite', { id: 'b9e0-ag-suite', name: 'antigravity-suite', workspacePaths: [agSuiteDir] }]
     ]);
@@ -28668,13 +28677,13 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
           { workspaceFolderAbsoluteUri: 'file://' + insightSiteDir }
         ]
       }, metaMap, { homeDir: fakeHome }),
-      '2628-insightos',
-      '含共享目录 _army 的多目录会话必须命中拥有专属目录的 InsightOS，不得被排第一的 %make-font 抢占'
+      'proj-b',
+      '含共享目录 shared-dir 的多目录会话必须命中拥有专属目录的 proj-b，不得被排第一的 proj-a 抢占'
     );
     assert.equal(
       remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + sharedArmyDir }] }, metaMap, { homeDir: fakeHome }),
       '',
-      '仅含多项目共享目录 _army 时不得随机归入排第一的 %make-font'
+      '仅含多项目共享目录 shared-dir 时不得随机归入排第一的 proj-a'
     );
     assert.equal(
       remoteMod.matchWorkspaceToProjectId({ workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + unregisteredRepoDir }] }, metaMap, { homeDir: fakeHome }),
@@ -28779,9 +28788,9 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
               numTotalSteps: 2,
               trajectory: {
                 status: 'CASCADE_RUN_STATUS_IDLE',
-                summary: 'InsightOS 多目录会话',
+                summary: 'proj-b 多目录会话',
                 trajectoryMetadata: {
-                  projectId: '2628-insightos',
+                  projectId: 'proj-b',
                   workspaces: [{ workspaceFolderAbsoluteUri: 'file://' + insightRepoDir }]
                 },
                 steps: [
@@ -28822,16 +28831,16 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
 
     const isoSnap = await enh.getMobileSnapshotAsync({ conversationId: isoHexId });
     assert.equal(isoSnap.isolated, true);
-    assert.equal(isoSnap.currentProjectId, '2628-insightos', '独立隔离快照必须优先采用 trajectoryMetadata.projectId 而非虚拟列表假分组');
+    assert.equal(isoSnap.currentProjectId, 'proj-b', '独立隔离快照必须优先采用 trajectoryMetadata.projectId 而非虚拟列表假分组');
 
     // 3b. DOM 与 Fiber 分支归属冲突验证：当列表前置 project-header 或虚拟行 groupId 与权威归属冲突时，必须服从权威会话归属
     await new Promise((r) => setTimeout(r, 30)); // 等待首次 refreshCascadeTrajectorySummaries 写入权威归属
-    // (i) DOM 分支冲突：在置顶行前插入另一个项目 (%make-font / 0449-make-font) 的 project-header，验证不被错归入 0449-make-font
+    // (i) DOM 分支冲突：在置顶行前插入另一个项目 (proj-a / proj-a) 的 project-header，验证不被错归入 proj-a
     const wrongDomHeader = envEnh.doc.createElement('button');
     wrongDomHeader.setAttribute('data-testid', 'project-header');
-    wrongDomHeader.setAttribute('data-project-id', '0449-make-font');
-    wrongDomHeader.setAttribute('data-project-label', '%make-font');
-    wrongDomHeader.textContent = '%make-font';
+    wrongDomHeader.setAttribute('data-project-id', 'proj-a');
+    wrongDomHeader.setAttribute('data-project-label', 'proj-a');
+    wrongDomHeader.textContent = 'proj-a';
     const rightDomHeader = envEnh.doc.createElement('button');
     rightDomHeader.setAttribute('data-testid', 'project-header');
     rightDomHeader.setAttribute('data-project-id', 'b9e0-ag-suite');
@@ -28842,15 +28851,15 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
 
     const domConflictSnap = enh.getMobileSnapshot();
     assert.equal(domConflictSnap.currentProjectId, 'b9e0-ag-suite', 'DOM 分支：前置错误 project-header 不得覆盖已知权威归属 b9e0-ag-suite');
-    assert.equal(domConflictSnap.currentProjectName, 'antigravity-suite', 'DOM 分支：当前项目名必须保持权威 antigravity-suite 而非 %make-font');
+    assert.equal(domConflictSnap.currentProjectName, 'antigravity-suite', 'DOM 分支：当前项目名必须保持权威 antigravity-suite 而非 proj-a');
     const agDomGrp = domConflictSnap.projectGroups.find((g) => g.id === 'b9e0-ag-suite');
-    const wrongDomGrp = domConflictSnap.projectGroups.find((g) => g.id === '0449-make-font');
+    const wrongDomGrp = domConflictSnap.projectGroups.find((g) => g.id === 'proj-a');
     assert.ok(agDomGrp && agDomGrp.conversations.some((c) => c.id === pinnedHexId), 'DOM 分支：置顶会话必须归入权威组 b9e0-ag-suite');
-    assert.equal(Boolean(wrongDomGrp && wrongDomGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'DOM 分支：置顶会话不得落入前置错误组 0449-make-font');
+    assert.equal(Boolean(wrongDomGrp && wrongDomGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'DOM 分支：置顶会话不得落入前置错误组 proj-a');
 
-    // (ii) Fiber 分支冲突：虚拟列表 items 将置顶会话置于 header-0449-make-font 下且携带冲突 groupId='0449-make-font'，而 Hook 状态权威归属为 b9e0-ag-suite
+    // (ii) Fiber 分支冲突：虚拟列表 items 将置顶会话置于 header-proj-a 下且携带冲突 groupId='proj-a'，而 Hook 状态权威归属为 b9e0-ag-suite
     const hookGroups = [
-      { id: '0449-make-font', label: '%make-font', kind: 'project', entries: [] },
+      { id: 'proj-a', label: 'proj-a', kind: 'project', entries: [] },
       {
         id: 'b9e0-ag-suite',
         label: 'antigravity-suite',
@@ -28864,8 +28873,8 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       return: {
         memoizedProps: {
           items: [
-            { type: 'header', id: 'header-0449-make-font', label: '%make-font', count: 1, isCollapsed: false },
-            { type: 'row', id: pinnedHexId, cascadeId: pinnedHexId, groupId: '0449-make-font' },
+            { type: 'header', id: 'header-proj-a', label: 'proj-a', count: 1, isCollapsed: false },
+            { type: 'row', id: pinnedHexId, cascadeId: pinnedHexId, groupId: 'proj-a' },
             { type: 'header', id: 'header-b9e0-ag-suite', label: 'antigravity-suite', count: 1, isCollapsed: false }
           ]
         },
@@ -28877,15 +28886,15 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.equal(fiberConflictSnap.currentProjectId, 'b9e0-ag-suite', 'Fiber 分支：冲突虚拟行 groupId 不得覆盖 Hook 权威归属 b9e0-ag-suite');
     assert.equal(fiberConflictSnap.currentProjectName, 'antigravity-suite');
     const agFiberGrp = fiberConflictSnap.projectGroups.find((g) => g.id === 'b9e0-ag-suite');
-    const wrongFiberGrp = fiberConflictSnap.projectGroups.find((g) => g.id === '0449-make-font');
+    const wrongFiberGrp = fiberConflictSnap.projectGroups.find((g) => g.id === 'proj-a');
     assert.ok(agFiberGrp && agFiberGrp.conversations.some((c) => c.id === pinnedHexId), 'Fiber 分支：置顶会话必须归入权威组 b9e0-ag-suite');
-    assert.equal(Boolean(wrongFiberGrp && wrongFiberGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'Fiber 分支：置顶会话不得归入冲突 groupId 指定的 0449-make-font');
+    assert.equal(Boolean(wrongFiberGrp && wrongFiberGrp.conversations.some((c) => c.id === pinnedHexId)), false, 'Fiber 分支：置顶会话不得归入冲突 groupId 指定的 proj-a');
 
-    // (iii) entry.projectId='default' 污染值 + 语言服务元数据/摘要为真实项目 + Hook 分组为另一项目 (0449-make-font)：必须逐候选过滤并服从语言服务元数据/摘要，绝不短路落入 0449-make-font
+    // (iii) entry.projectId='default' 污染值 + 语言服务元数据/摘要为真实项目 + Hook 分组为另一项目 (proj-a)：必须逐候选过滤并服从语言服务元数据/摘要，绝不短路落入 proj-a
     const hookDefaultPolluted = [
       {
-        id: '0449-make-font',
-        label: '%make-font',
+        id: 'proj-a',
+        label: 'proj-a',
         kind: 'project',
         entries: [{
           cascadeId: pinnedHexId,
@@ -28908,16 +28917,16 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       'entry.projectId=default 时会话仍须归入 trajectoryMetadata 指定的 b9e0-ag-suite'
     );
     assert.equal(
-      Boolean(defaultPollutedSnap.projectGroups.find((g) => g.id === '0449-make-font')?.conversations.some((c) => c.id === pinnedHexId)),
+      Boolean(defaultPollutedSnap.projectGroups.find((g) => g.id === 'proj-a')?.conversations.some((c) => c.id === pinnedHexId)),
       false,
-      'entry.projectId=default 时不得误落入外层 Hook 组 0449-make-font'
+      'entry.projectId=default 时不得误落入外层 Hook 组 proj-a'
     );
 
     // 再验证 entry 无内嵌 trajectoryMetadata、但 cascadeSummaryMap 持有语言服务摘要 projectId 时，摘要同样高于外层错误 Hook 组
     const hookSummaryOnly = [
       {
-        id: '0449-make-font',
-        label: '%make-font',
+        id: 'proj-a',
+        label: 'proj-a',
         kind: 'project',
         entries: [{
           cascadeId: pinnedHexId,
@@ -28931,10 +28940,10 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const summaryPrioritySnap = enh.getMobileSnapshot();
     assert.equal(summaryPrioritySnap.currentProjectId, 'b9e0-ag-suite', '语言服务摘要 projectId 必须高于外层 Hook 分组猜测');
 
-    // (iv) 已有会话 URL ?project=0449-make-font 与语言服务权威归属 b9e0-ag-suite 冲突时，普通快照必须服从会话权威归属并保持 ID/名称/分组一致；新建对话才优先采用 URL 项目选择
+    // (iv) 已有会话 URL ?project=proj-a 与语言服务权威归属 b9e0-ag-suite 冲突时，普通快照必须服从会话权威归属并保持 ID/名称/分组一致；新建对话才优先采用 URL 项目选择
     const origPathname = envEnh.win.location.pathname;
     const origSearch = envEnh.win.location.search;
-    envEnh.win.location.search = '?project=0449-make-font';
+    envEnh.win.location.search = '?project=proj-a';
     const urlConflictSnap = enh.getMobileSnapshot();
     assert.equal(urlConflictSnap.isNewConversation, false);
     assert.equal(urlConflictSnap.currentProjectId, 'b9e0-ag-suite', '已有会话普通快照必须优先采用会话权威项目归属，不被冲突 URL ?project= 覆盖');
@@ -28947,7 +28956,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     envEnh.win.location.pathname = '/';
     const newChatUrlSnap = enh.getMobileSnapshot();
     assert.equal(newChatUrlSnap.isNewConversation, true);
-    assert.equal(newChatUrlSnap.currentProjectId, '0449-make-font', '新建空白对话页应继续采用 URL ?project= 项目选择');
+    assert.equal(newChatUrlSnap.currentProjectId, 'proj-a', '新建空白对话页应继续采用 URL ?project= 项目选择');
     envEnh.win.location.pathname = origPathname;
     envEnh.win.location.search = origSearch;
 
@@ -29042,11 +29051,11 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
         trajectoryMetadata: { projectId: 'b9e0-ag-suite', rootConversationId: 'conv-pinned-ag' },
         annotations: { pinned: true }
       },
-      'conv-insight': {
+      'conv-b': {
         summary: 'Insight 多目录开发',
         status: 'CASCADE_RUN_STATUS_IDLE',
         lastModifiedTime: new Date().toISOString(),
-        trajectoryMetadata: { projectId: '2628-insightos', rootConversationId: 'conv-insight' }
+        trajectoryMetadata: { projectId: 'proj-b', rootConversationId: 'conv-b' }
       },
       'conv-standalone': {
         summary: '纯独立问答',
@@ -29084,8 +29093,8 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       [fs.realpathSync(agSuiteDir)],
       '当前会话必须替换为自身真实工作区路径，绝不残留上一个项目的路径'
     );
-    const insightProjEntry = enrichedAg.projects.find((p) => p.id === '2628-insightos');
-    assert.ok(insightProjEntry, 'projects 列表应包含多目录项目 InsightOS');
+    const insightProjEntry = enrichedAg.projects.find((p) => p.id === 'proj-b');
+    assert.ok(insightProjEntry, 'projects 列表应包含多目录项目 proj-b');
     assert.equal(insightProjEntry.workspacePaths.length, 3, '多目录项目必须完整下发全部 3 个工作区路径');
     assert.deepEqual(
       insightProjEntry.workspacePaths,
@@ -29158,7 +29167,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.equal(standaloneCrossAttempt.status, 403, '独立会话携带其他项目目录请求必须 403 拦截');
 
     const crossProjAttempt = await callGetJson('/api/project-tree?conversationId=conv-pinned-ag&projectId=b9e0-ag-suite&dir=' + encodeURIComponent(insightRepoDir));
-    assert.equal(crossProjAttempt.status, 403, 'antigravity-suite 会话请求 InsightOS 目录必须 403 拦截防串台');
+    assert.equal(crossProjAttempt.status, 403, 'antigravity-suite 会话请求 proj-b 目录必须 403 拦截防串台');
 
     // 即便父目录 ~/codebase 存在于 allowedRoots（全局问题项目），在 antigravity-suite 根目录时 parentDir 必须为空，严禁越界上翻到 ~/codebase
     const agRootTree = await callGetJson('/api/project-tree?conversationId=conv-pinned-ag&projectId=b9e0-ag-suite&dir=' + encodeURIComponent(agSuiteDir));
@@ -29204,7 +29213,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
 
     // 当项目元数据非空时，未知/无法解析归属的 conversationId 即便同时携带有效的其他项目 projectId、dir 与 workspaceRoot，也必须严格拒绝，不得回退采用未经会话关联验证的 projectId
     const unknownConvSpoofedProjWithDir = await callGetJson(
-      '/api/project-tree?conversationId=conv-unknown-999&projectId=2628-insightos&dir=' + encodeURIComponent(insightRepoDir) + '&workspaceRoot=' + encodeURIComponent(insightRepoDir)
+      '/api/project-tree?conversationId=conv-unknown-999&projectId=proj-b&dir=' + encodeURIComponent(insightRepoDir) + '&workspaceRoot=' + encodeURIComponent(insightRepoDir)
     );
     assert.equal(
       unknownConvSpoofedProjWithDir.status,
@@ -29212,7 +29221,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
       '未知 conversationId 搭配有效其他项目 projectId + dir + workspaceRoot 时必须 403 拒绝，不得回退信任未验证的 projectId'
     );
     const unknownConvSpoofedProjNoDir = await callGetJson(
-      '/api/project-tree?conversationId=conv-unknown-999&projectId=2628-insightos'
+      '/api/project-tree?conversationId=conv-unknown-999&projectId=proj-b'
     );
     assert.equal(unknownConvSpoofedProjNoDir.status, 200);
     assert.equal(
@@ -29228,7 +29237,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     fs.mkdirSync(nestedChildDir, { recursive: true });
     fs.writeFileSync(path.join(nestedParentDir, 'parent-only.txt'), 'parent-secret');
     fs.writeFileSync(path.join(nestedChildDir, 'child-ok.txt'), 'child-ok');
-    // 在子工作区内创建指向上级父工作区文件的符号链接；在 InsightOS 工作区 1 内创建指向同项目工作区 2 (_army) 的目录符号链接
+    // 在子工作区内创建指向上级父工作区文件的符号链接；在 proj-b 工作区 1 内创建指向同项目工作区 2 (shared-dir) 的目录符号链接
     fs.symlinkSync(path.join(nestedParentDir, 'parent-only.txt'), path.join(nestedChildDir, 'link-to-parent-file.txt'));
     fs.symlinkSync(sharedArmyDir, path.join(insightRepoDir, 'symlink-to-army-ws'));
     writeProjJson('proj-nested', 'NestedProject', [nestedParentDir, nestedChildDir]);
@@ -29271,16 +29280,16 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     };
 
     // (i) 显式传入无效或不属于当前项目的 workspaceRoot 必须拒绝，严禁静默忽略
-    const badWsRelative = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=relative/bad');
+    const badWsRelative = await callNestedJson('/api/project-tree?conversationId=conv-b&workspaceRoot=relative/bad');
     assert.equal(badWsRelative.status, 400, '显式传入非绝对路径 workspaceRoot 必须返回 400');
-    const badWsMissing = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(path.join(fakeHome, 'missing-ws')));
+    const badWsMissing = await callNestedJson('/api/project-tree?conversationId=conv-b&workspaceRoot=' + encodeURIComponent(path.join(fakeHome, 'missing-ws')));
     assert.equal(badWsMissing.status, 404, '显式传入不存在的 workspaceRoot 必须返回 404');
-    const badWsOtherProj = await callNestedJson('/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(makeFontDir) + '&dir=' + encodeURIComponent(insightRepoDir));
+    const badWsOtherProj = await callNestedJson('/api/project-tree?conversationId=conv-b&workspaceRoot=' + encodeURIComponent(makeFontDir) + '&dir=' + encodeURIComponent(insightRepoDir));
     assert.equal(badWsOtherProj.status, 403, '显式传入其他项目的 workspaceRoot 必须返回 403，不得静默改用 dir 所在根');
 
     // (ii) 显式传入合法 workspaceRoot 时，请求其他工作区或父工作区的 dir 必须 403 拒绝，严禁静默切换 activeRoot
     const crossSiblingWs = await callNestedJson(
-      '/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightSiteDir)
+      '/api/project-tree?conversationId=conv-b&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightSiteDir)
     );
     assert.equal(crossSiblingWs.status, 403, 'dir 超出当前指定 workspaceRoot（指向同项目另一工作区）必须 403 拦截');
     const escapeChildWsToParent = await callNestedJson(
@@ -29305,7 +29314,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     assert.equal(parentScopedSubTree.json.parentDir, fs.realpathSync(nestedParentDir), '选定父工作区根时浏览其子目录可正常返回父工作区');
 
     const insightRepoScopedTree = await callNestedJson(
-      '/api/project-tree?conversationId=conv-insight&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightRepoDir)
+      '/api/project-tree?conversationId=conv-b&workspaceRoot=' + encodeURIComponent(insightRepoDir) + '&dir=' + encodeURIComponent(insightRepoDir)
     );
     assert.equal(insightRepoScopedTree.status, 200);
     assert.equal(
@@ -29317,10 +29326,10 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     // 6. 前端完整交互验证：多目录项目展示全部工作区 + 顶部切换栏、切单目录项目自动重置、切独立会话展示空态绝不串台
     const enrichedInsight = await remoteMod.enrichSnapshotWithCatalog({
       ok: true,
-      sessionId: 'conv-insight',
-      activeConversationId: 'conv-insight',
+      sessionId: 'conv-b',
+      activeConversationId: 'conv-b',
       conversations: [
-        { id: 'conv-insight', title: 'Insight 多目录开发', active: true },
+        { id: 'conv-b', title: 'Insight 多目录开发', active: true },
         { id: 'conv-pinned-ag', title: '置顶会话', active: false },
         { id: 'conv-standalone', title: '纯独立问答', active: false }
       ]
@@ -29379,7 +29388,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
         const cidQ = u.searchParams.get('conversationId') || '';
         const payload = cidQ === 'conv-pinned-ag'
           ? { ok: true, diffs: [{ name: 'cli.js', path: path.join(agSuiteDir, 'cli.js'), diff: '@@ -1 +1 @@\n+// ag-suite-diff' }], artifacts: [] }
-          : (cidQ === 'conv-insight'
+          : (cidQ === 'conv-b'
             ? { ok: true, diffs: [], artifacts: [{ name: 'insight-art.md', content: '# Insight Summary' }] }
             : { ok: true, diffs: [], artifacts: [] });
         return { ok: true, status: 200, headers: jsonHeaders, json: async () => payload };
@@ -29390,24 +29399,24 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     vm.runInContext(inlineScriptMatch[1], envUi.sandbox);
     await new Promise((r) => setTimeout(r, 40));
 
-    // (a) InsightOS 含 3 个工作区文件夹：点击「项目文件」默认展示全部 3 个工作区目录列表
+    // (a) proj-b 含 3 个工作区文件夹：点击「项目文件」默认展示全部 3 个工作区目录列表
     envUi.doc.getElementById('btn-files-panel').click();
     await new Promise((r) => setTimeout(r, 30));
     const fvBody = envUi.doc.getElementById('fv-body');
     const rootRows = fvBody.querySelectorAll('.fv-ws-root-row');
     assert.equal(rootRows.length, 3, '3 目录项目打开项目文件应默认列出全部 3 个工作区文件夹');
-    // 点击第 3 个目录 (ws_works/InsightOS) 进入浏览，顶部应出现工作区切换胶囊栏且根目录无「↑ 上级」
+    // 点击第 3 个目录 (dir-b-extra/proj-b) 进入浏览，顶部应出现工作区切换胶囊栏且根目录无「↑ 上级」
     rootRows[2].click();
     await new Promise((r) => setTimeout(r, 40));
     assert.ok((fvBody.textContent || '').includes('release-note.md'), '点击第 3 个工作区应加载该目录下的 release-note.md');
     assert.equal(fvBody.querySelectorAll('.fv-ws-switch').length, 3, '进入目录后顶部应渲染 3 个工作区切换胶囊');
     assert.equal(envUi.doc.getElementById('fv-tree-up'), null, '工作区根目录处不得渲染越界「↑ 上级」按钮');
-    // 通过顶部切换胶囊切到第 1 个工作区 (codebase/InsightOS)
+    // 通过顶部切换胶囊切到第 1 个工作区 (codebase/proj-b)
     fvBody.querySelectorAll('.fv-ws-switch')[0].click();
     await new Promise((r) => setTimeout(r, 40));
-    assert.ok((fvBody.textContent || '').includes('insight-app.ts'), '点击顶部工作区胶囊应即时切换到第 1 个工作区');
+    assert.ok((fvBody.textContent || '').includes('app.ts'), '点击顶部工作区胶囊应即时切换到第 1 个工作区');
 
-    // (b) 切换到单目录会话 antigravity-suite：关闭再点开「项目文件」，必须直接进入 antigravity-suite 目录，绝不残留 InsightOS 目录
+    // (b) 切换到单目录会话 antigravity-suite：关闭再点开「项目文件」，必须直接进入 antigravity-suite 目录，绝不残留 proj-b 目录
     envUi.doc.getElementById('fv-close-btn').click();
     currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 10 };
     envUi.win.dispatchEvent({ type: 'pageshow' });
@@ -29416,7 +29425,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     envUi.doc.getElementById('btn-files-panel').click();
     await new Promise((r) => setTimeout(r, 40));
     assert.ok((fvBody.textContent || '').includes('cli.js'), '切到单目录项目后点开文件应直接展示 antigravity-suite 下的 cli.js');
-    assert.equal((fvBody.textContent || '').includes('insight-app.ts'), false, '严禁残留上一个项目 InsightOS 的目录内容');
+    assert.equal((fvBody.textContent || '').includes('app.ts'), false, '严禁残留上一个项目 proj-b 的目录内容');
 
     // (c) 切换到无项目的独立会话 conv-standalone：顶栏项目徽章自动隐藏，点开「项目文件」展示空态绝不残留 antigravity-suite
     envUi.doc.getElementById('fv-close-btn').click();
@@ -29443,7 +29452,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     const slowWs1Promise = new Promise((r) => { releaseSlowWs1 = r; });
     interceptTreeGate = async (u) => {
       const dirQ = u.searchParams.get('dir') || '';
-      if (dirQ.includes('codebase/InsightOS')) {
+      if (dirQ.includes('codebase/proj-b')) {
         await slowWs1Promise;
       }
     };
@@ -29457,9 +29466,9 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     releaseSlowWs1();
     await new Promise((r) => setTimeout(r, 40));
     assert.ok((fvBody.textContent || '').includes('release-note.md'), '工作区 1 的迟到响应严禁覆盖当前工作区 3 内容');
-    assert.equal((fvBody.textContent || '').includes('insight-app.ts'), false, '工作区 1 的迟到文件列表必须被丢弃');
+    assert.equal((fvBody.textContent || '').includes('app.ts'), false, '工作区 1 的迟到文件列表必须被丢弃');
 
-    // (e) 切会话乱序响应回归：会话 A (antigravity-suite) 文件面板请求挂起期间切到会话 B (conv-standalone 空态) 及会话 C (InsightOS)，放行 A 的迟到响应不得污染面板或 fvState
+    // (e) 切会话乱序响应回归：会话 A (antigravity-suite) 文件面板请求挂起期间切到会话 B (conv-standalone 空态) 及会话 C (proj-b)，放行 A 的迟到响应不得污染面板或 fvState
     envUi.doc.getElementById('fv-close-btn').click();
     currentUiSnap = { ...enrichedAg, snapSeq: enrichedInsight.snapSeq + 40 };
     envUi.win.dispatchEvent({ type: 'pageshow' });
@@ -29525,11 +29534,11 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     interceptFileGate = async () => { await slowFilePromise; };
     fvBody.querySelectorAll('.fv-row').find((r) => (r.textContent || '').includes('cli.js')).click();
     await new Promise((r) => setTimeout(r, 15));
-    // 文件读取仍在挂起加载态时切到多目录会话 InsightOS
+    // 文件读取仍在挂起加载态时切到多目录会话 proj-b
     currentUiSnap = { ...enrichedInsight, snapSeq: enrichedInsight.snapSeq + 90 };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 35));
-    assert.equal(fvBody.querySelectorAll('.fv-ws-root-row').length, 3, '文件请求挂起期间切到 InsightOS 应立即重载出 3 工作区总览，绝不永久卡在骨架屏');
+    assert.equal(fvBody.querySelectorAll('.fv-ws-root-row').length, 3, '文件请求挂起期间切到 proj-b 应立即重载出 3 工作区总览，绝不永久卡在骨架屏');
     releaseSlowFile();
     interceptFileGate = null;
     await new Promise((r) => setTimeout(r, 35));
@@ -29563,7 +29572,7 @@ test('根治默认项目假分组、修复文件目录跨项目串台并支持�
     };
     envUi.doc.getElementById('fv-tab-changes').click();
     await new Promise((r) => setTimeout(r, 15));
-    // 会话 A 变更接口挂起中切到会话 C (conv-insight)
+    // 会话 A 变更接口挂起中切到会话 C (conv-b)
     currentUiSnap = { ...enrichedInsight, snapSeq: enrichedInsight.snapSeq + 130 };
     envUi.win.dispatchEvent({ type: 'pageshow' });
     await new Promise((r) => setTimeout(r, 40));
@@ -31162,6 +31171,1064 @@ test('#50 Phase A: 全端上下文指标 SSOT 归一、512K 压缩线与 1M 物�
   }
 });
 
+test('#46: 通道切换原地热切 apiBase、宿主机参考测速禁标最快与跨协议防盲跳保护', async () => {
+  const remoteMod = require('../mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+  const scripts = Array.from(html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)).map((m) => m[1]);
+  const mainScript = scripts.find((s) => s.includes('enterConnectionMode('));
+  assert.ok(mainScript, '应包含客户端主脚本');
+
+  const endpoints = [
+    { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
+    { url: 'http://mac-mini.local:18765', kind: 'bonjour', priority: 20 },
+    { url: 'https://mac.tail-demo.ts.net', kind: 'tailscale', priority: 90 },
+    { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
+  ];
+  const encEps = remoteMod.encodeEndpointsParam(endpoints);
+
+  const runChannelVm = async ({ standalone = false, reachMap = {}, popupMode = 'proxy', snapshotFail = false, manualParam = true, allowHttpProbe = false } = {}) => {
+    const replacedUrls = [];
+    const openedTabs = [];
+    const snapshotOrigins = [];
+    const swMessages = [];
+    const timers = new Set();
+    const makeClassList = () => {
+      const s = new Set();
+      return {
+        add: (...xs) => xs.forEach((x) => s.add(x)),
+        remove: (...xs) => xs.forEach((x) => s.delete(x)),
+        toggle: (x, f) => { if (f === undefined) { if (s.has(x)) { s.delete(x); return false; } s.add(x); return true; } if (f) s.add(x); else s.delete(x); return Boolean(f); },
+        contains: (x) => s.has(x)
+      };
+    };
+    const byId = {};
+    const makeEl = (id) => ({
+      id, hidden: id.includes('backdrop') || id.includes('drawer'), innerHTML: '', textContent: '', value: '', title: '', disabled: false,
+      style: { setProperty() {}, removeProperty() {} }, dataset: {}, classList: makeClassList(),
+      setAttribute(k, v) { if (k === 'title') this.title = v; }, getAttribute() { return ''; }, removeAttribute() {},
+      addEventListener(ev, fn) { if (ev === 'click') this.onclick = fn; }, removeEventListener() {},
+      querySelector: () => null, querySelectorAll: () => [], focus() {}, blur() {}, contains: () => false
+    });
+    for (const id of [
+      'sub-meta', 'btn-channel-pill', 'channel-pill-label', 'btn-mode-switcher', 'btn-quota', 'btn-context', 'btn-usage',
+      'btn-files', 'btn-push', 'btn-menu', 'btn-new-conv', 'btn-send', 'btn-stop', 'btn-attach', 'btn-quick-mode',
+      'quota-drawer', 'context-drawer', 'usage-drawer', 'sheet-backdrop', 'sheet-title-text', 'sheet-sub-text',
+      'sheet-back-btn', 'sheet-action-btn', 'sheet-list', 'drawer-backdrop', 'toast', 'messages', 'prompt',
+      'conv-list', 'conv-title', 'conv-project-badge', 'quick-bar', 'attach-input', 'attach-strip',
+      'approval-dock', 'queue-dock', 'composer-dock', 'file-viewer-backdrop', 'new-proj-backdrop'
+    ]) {
+      byId[id] = makeEl(id);
+    }
+    const startUrl = new URL(`https://demo.trycloudflare.com/?token=tok46${manualParam ? '&manual=1' : ''}&endpoints=${encEps}`);
+    const locObj = {
+      get href() { return startUrl.href; },
+      set href(v) { replacedUrls.push(String(v)); },
+      origin: startUrl.origin, protocol: startUrl.protocol, hostname: startUrl.hostname,
+      pathname: startUrl.pathname, search: startUrl.search, port: startUrl.port,
+      replace(v) { replacedUrls.push(String(v)); }
+    };
+    const lStore = new Map(), sStore = new Map();
+    const sandbox = {
+      URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+      Uint8Array, TextEncoder, TextDecoder, AbortController, Intl,
+      atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+      btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+      encodeURIComponent, decodeURIComponent,
+      screen: { width: 390, height: 844 }, devicePixelRatio: 3,
+      navigator: {
+        platform: 'iPhone', maxTouchPoints: 5, hardwareConcurrency: 6, standalone,
+        serviceWorker: {
+          register: async () => ({ active: { postMessage: (m) => swMessages.push(m) } }),
+          controller: { postMessage: (m) => swMessages.push(m) },
+          addEventListener() {}
+        }
+      },
+      location: locObj, history: { replaceState() {} },
+      localStorage: { getItem: (k) => lStore.get(k) ?? null, setItem: (k, v) => lStore.set(k, String(v)), removeItem: (k) => lStore.delete(k) },
+      sessionStorage: { getItem: (k) => sStore.get(k) ?? null, setItem: (k, v) => sStore.set(k, String(v)), removeItem: (k) => sStore.delete(k) },
+      document: {
+        hidden: false, activeElement: null,
+        documentElement: { clientHeight: 844, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+        body: { style: {}, classList: makeClassList() },
+        getElementById: (id) => byId[id] || (byId[id] = makeEl(id)),
+        querySelector: () => makeEl('__q'), querySelectorAll: () => [], createElement: (t) => makeEl(t), addEventListener() {}
+      },
+      matchMedia: (q) => ({ matches: Boolean(standalone && String(q).includes('standalone')), addEventListener() {} }),
+      innerWidth: 390, innerHeight: 844, visualViewport: null,
+      open: (u, target, feat) => {
+        if (popupMode === 'throw') throw new Error('Popup blocked');
+        openedTabs.push({ url: String(u), target, feat });
+        if (popupMode === 'noopener-null') return null;
+        return { closed: false };
+      },
+      setTimeout: (fn, ms) => {
+        const t = setTimeout(() => { timers.delete(t); fn(); }, Math.min(Number(ms) || 0, 20));
+        if (typeof t.unref === 'function') t.unref();
+        timers.add(t);
+        return t;
+      },
+      clearTimeout: (t) => { timers.delete(t); clearTimeout(t); },
+      fetch: async (rawUrl) => {
+        const u = new URL(String(rawUrl), startUrl.origin);
+        if (u.protocol === 'http:' && !allowHttpProbe) throw new Error('Mixed Content blocked');
+        if (u.pathname === '/api/probe-hints') {
+          return {
+            ok: true, status: 200,
+            json: async () => ({ ok: true, hints: { lan: { ok: true, ms: 6, via: 'server' }, bonjour: { ok: true, ms: 9, via: 'server' } } })
+          };
+        }
+        if (u.pathname === '/api/ping') {
+          const st = reachMap[u.origin] || 'ok';
+          if (st === 'disabled') return { ok: false, status: 403, json: async () => ({ ok: false }) };
+          if (st === 'down') return { ok: false, status: 502, json: async () => ({ ok: false }) };
+          const nonce = u.searchParams.get('_n') || '';
+          return { ok: true, status: 200, json: async () => ({ ok: true, service: 'ag-mobile-remote', nonce, endpoints }) };
+        }
+        if (u.pathname === '/api/snapshot') {
+          if (snapshotFail) return { ok: false, status: 503, json: async () => ({ ok: false }) };
+          snapshotOrigins.push(u.origin);
+          return { ok: true, status: 200, json: async () => ({ ok: true, title: 'Connected Session', busy: false, messages: [], conversations: [], projects: [], endpoints }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+    };
+    sandbox.window = sandbox;
+    sandbox.addEventListener = () => {};
+    const tail = mainScript.lastIndexOf('})();');
+    const hooked = mainScript.slice(0, tail)
+      + '\nglobalThis.__chHooks = { enterConnectionMode, runSpeedTest, tryFailoverEndpoint, openModeSwitcherSheet, getApiBase: () => apiBase, getLatestSnap: () => latestSnap, getSpeed: () => speedTestState };\n'
+      + mainScript.slice(tail);
+    vm.runInNewContext(hooked, sandbox);
+    await new Promise((r) => setTimeout(r, 45));
+    return {
+      byId, replacedUrls, openedTabs, snapshotOrigins, swMessages, hooks: sandbox.__chHooks,
+      setReach: (origin, st) => { reachMap[origin] = st; },
+      cleanup: () => { for (const t of timers) clearTimeout(t); timers.clear(); }
+    };
+  };
+
+  // 1 & 2 & 3: serverHints 标注「仅电脑端参考 · 未验证本机直连」且绝不获评「最快」、绝不触发自动切路；同协议探活热切 apiBase 同步 SW 与不可达/停用防盲跳
+  const vm1 = await runChannelVm({ standalone: false, reachMap: { 'https://demo.trycloudflare.com': 'ok', 'https://mac.tail-demo.ts.net': 'down' } });
+  try {
+    await vm1.hooks.runSpeedTest({ autoSwitch: true, silent: true });
+    assert.equal(vm1.replacedUrls.length, 0, 'runSpeedTest(autoSwitch=true) 不得被宿主机 serverHints 触发未经验证切路');
+    vm1.setReach('https://demo.trycloudflare.com', 'down');
+    const failoverOnlyHints = await vm1.hooks.tryFailoverEndpoint();
+    assert.equal(failoverOnlyHints, false, 'tryFailoverEndpoint 仅有宿主机 serverHints 可达而客户端均未实测通过时必须返回 false 不切路');
+    assert.equal(vm1.replacedUrls.length, 0);
+    vm1.setReach('https://demo.trycloudflare.com', 'ok');
+    await vm1.hooks.runSpeedTest({ autoSwitch: false, silent: true });
+    vm1.hooks.openModeSwitcherSheet();
+    const sheetHtml1 = vm1.byId['sheet-list'].innerHTML;
+    assert.ok(sheetHtml1.includes('仅电脑端参考 · 6 ms') && sheetHtml1.includes('未验证本机直连'), '宿主机 serverHints 结果必须明确标注「仅电脑端参考」与「未验证本机直连」');
+    const lanSeg = sheetHtml1.split('192.168.1.8:18765')[0].split('<button').pop() || '';
+    assert.ok(!lanSeg.includes('最快'), '未经本机直测通过的宿主机参考 HTTP 通道绝不能标注「最快」');
+
+    // 同协议切往不可达的 Tailscale HTTPS：探活失败，不跳转、不改 apiBase
+    const okDown = await vm1.hooks.enterConnectionMode({ url: 'https://mac.tail-demo.ts.net', kind: 'tailscale' });
+    assert.equal(okDown, false);
+    assert.equal(vm1.replacedUrls.length, 0, '目标不可达时严禁整页跳转死页');
+    assert.equal(vm1.hooks.getApiBase(), '', '目标不可达时应无损保留原通道 apiBase');
+    assert.ok(vm1.byId['toast'].textContent.includes('无法连通') && vm1.byId['toast'].textContent.includes('已保留当前连接'));
+
+    // 同协议切往已停用 (403) 通道：提示已停用并保留当前连接
+    vm1.setReach('https://mac.tail-demo.ts.net', 'disabled');
+    const okDis = await vm1.hooks.enterConnectionMode({ url: 'https://mac.tail-demo.ts.net', kind: 'tailscale' });
+    assert.equal(okDis, false);
+    assert.equal(vm1.replacedUrls.length, 0);
+    assert.ok(vm1.byId['toast'].textContent.includes('已停用'));
+
+    // Tailscale HTTPS 恢复可达后点击切换：原地热切 apiBase，零整页跳转，同步 SW 备用通道缓存，且立即向新源拉取 /api/snapshot
+    vm1.setReach('https://mac.tail-demo.ts.net', 'ok');
+    const snapCountBefore = vm1.snapshotOrigins.length;
+    const swCountBefore = vm1.swMessages.length;
+    const okHot = await vm1.hooks.enterConnectionMode({ url: 'https://mac.tail-demo.ts.net', kind: 'tailscale' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(okHot, true);
+    assert.equal(vm1.replacedUrls.length, 0, '同协议通道切换应原地热切 apiBase，不执行 location.href 跳转');
+    assert.equal(vm1.hooks.getApiBase(), 'https://mac.tail-demo.ts.net');
+    assert.equal(vm1.byId['channel-pill-label'].textContent, 'TS HTTPS');
+    assert.ok(vm1.swMessages.slice(swCountBefore).some((m) => m?.type === 'ag-cache-endpoints' && Array.isArray(m.endpoints) && m.endpoints.length === 4), '热切成功后必须通过 saveStoredPair -> syncEndpointsToServiceWorker 同步备用通道');
+    assert.ok(vm1.snapshotOrigins.slice(snapCountBefore).includes('https://mac.tail-demo.ts.net'), '原地热切后后续快照应直接请求新通道 origin');
+
+    // 4a: 普通浏览器从 HTTPS 切往明文 HTTP：新标签页打开验证（不含 ?spd=），原页面保留作退路
+    const okTab = await vm1.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(okTab, true);
+    assert.equal(vm1.replacedUrls.length, 0, '普通浏览器跨协议切 HTTP 不得覆盖当前正常页面');
+    assert.equal(vm1.openedTabs.length, 1, '普通浏览器应通过新标签页打开目标 HTTP 入口');
+    const tabUrl = new URL(vm1.openedTabs[0].url);
+    assert.equal(tabUrl.origin, 'http://192.168.1.8:18765');
+    assert.equal(tabUrl.searchParams.get('spd'), null);
+    assert.equal(vm1.hooks.getApiBase(), 'https://mac.tail-demo.ts.net', '原标签页连接源应保持不变');
+  } finally {
+    vm1.cleanup();
+  }
+
+  // 4b-1: 模拟标准浏览器对带 noopener,noreferrer 的 window.open 成功打开新标签页但返回 null（且 latestSnap 为 null 尚未连通）：绝不误判拦截，绝不覆盖原页面
+  const vmNoopenerNull = await runChannelVm({ standalone: false, popupMode: 'noopener-null', snapshotFail: true });
+  try {
+    assert.equal(vmNoopenerNull.hooks.getLatestSnap(), null, '初始 latestSnap 应为空');
+    const okNoop = await vmNoopenerNull.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(okNoop, true, 'noopener 成功打开新标签返回 null 时应视为成功而非拦截');
+    assert.equal(vmNoopenerNull.openedTabs.length, 1, '应调用 window.open 打开新标签页');
+    assert.equal(vmNoopenerNull.replacedUrls.length, 0, '即使 latestSnap 为空，成功打开新标签页返回 null 时也绝不能调用 navigateEntryUrl 覆盖原页');
+    assert.ok(vmNoopenerNull.byId['toast'].textContent.includes('已在新标签页打开'));
+  } finally {
+    vmNoopenerNull.cleanup();
+  }
+
+  // 4b-2: 普通浏览器弹窗抛错被拒时，同样保留原页面不覆盖
+  const vmPopupBlocked = await runChannelVm({ standalone: false, popupMode: 'throw' });
+  try {
+    const okBlocked = await vmPopupBlocked.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(okBlocked, false);
+    assert.equal(vmPopupBlocked.replacedUrls.length, 0, '新标签弹窗被拒时不得强行覆盖原页面');
+    assert.ok(vmPopupBlocked.byId['toast'].textContent.includes('保留当前连接'));
+  } finally {
+    vmPopupBlocked.cleanup();
+  }
+
+  // 4c: 独立 PWA 窗口 (isStandalonePwa) 拦截从 HTTPS 到未验证明文 HTTP 的手动盲跳，且 curReachable=false 时 runSpeedTest(autoSwitch=true) 也严禁自动跳往 HTTP
+  const vmPwa = await runChannelVm({
+    standalone: true,
+    manualParam: false,
+    allowHttpProbe: true,
+    snapshotFail: true,
+    reachMap: {
+      'https://demo.trycloudflare.com': 'down',
+      'https://mac.tail-demo.ts.net': 'down',
+      'http://192.168.1.8:18765': 'ok',
+      'http://mac-mini.local:18765': 'ok'
+    }
+  });
+  try {
+    await vmPwa.hooks.runSpeedTest({ autoSwitch: true, silent: true });
+    assert.equal(vmPwa.replacedUrls.length, 0, 'curReachable=false 时 HTTPS PWA 的 runSpeedTest(autoSwitch=true) 也严禁绕过 shouldBlockInsecureDowngrade 跳往明文 HTTP');
+    const okPwaFailover = await vmPwa.hooks.tryFailoverEndpoint();
+    assert.equal(okPwaFailover, false, 'curReachable=false 时 HTTPS PWA 的 tryFailoverEndpoint 仅有明文 HTTP 可达也必须拒绝降级');
+    assert.equal(vmPwa.replacedUrls.length, 0);
+    const okPwa = await vmPwa.hooks.enterConnectionMode({ url: 'http://192.168.1.8:18765', kind: 'lan' });
+    assert.equal(okPwa, false);
+    assert.equal(vmPwa.replacedUrls.length, 0, 'standalone PWA 严禁盲跳至未验证明文 HTTP 死页');
+    assert.equal(vmPwa.openedTabs.length, 0);
+    assert.ok(vmPwa.byId['toast'].textContent.includes('独立应用窗口内禁止'));
+  } finally {
+    vmPwa.cleanup();
+  }
+
+  // 4d: 自定义固定域名 tunnelHostname 未带 https:// 前缀时服务端 CORS Origin 白名单正常放行（保障同协议跨域名热切）
+  const handler = remoteMod.createRemoteHttpHandler(
+    { port: 18765, token: 'tok-cors', tunnelHostname: 'ag.custom-domain.example', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: true } },
+    { fetchSnapshot: async () => ({ ok: true }), webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) } }
+  );
+  const corsHeaders = {};
+  let corsStatus = 0;
+  await new Promise((resolve) => {
+    handler(
+      { method: 'OPTIONS', url: '/api/ping', headers: { host: 'mac.tail-demo.ts.net', origin: 'https://ag.custom-domain.example' }, socket: { remoteAddress: '127.0.0.1' } },
+      {
+        setHeader: (k, v) => { corsHeaders[k.toLowerCase()] = v; },
+        writeHead: (code) => { corsStatus = code; },
+        end: () => resolve()
+      }
+    );
+  });
+  assert.equal(corsStatus, 204);
+  assert.equal(corsHeaders['access-control-allow-origin'], 'https://ag.custom-domain.example');
+});
+
+test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要层级、按轮次防覆盖 tag、末尾步骤提取与摘要隐私开关', async () => {
+  const crypto = require('node:crypto');
+  const os = require('node:os');
+  const remoteMod = require('../mobile-remote');
+  const pushMod = require('../remote-web-push');
+
+  // 1. Markdown 剥离、多字节 UTF-8 安全截断与 RFC 8291 4079B 单记录加密边界保障
+  const mdSample = '### 修复结果\n> 已完成 **核心优化**\n- [x] 查看 [详情文档](https://example.com/doc) 与 `meter-core.js`\n```js\nconst ok = true;\n```';
+  const cleanPrev = pushMod.sanitizeNotificationPreview(mdSample);
+  assert.ok(cleanPrev.includes('修复结果') && cleanPrev.includes('已完成 核心优化') && cleanPrev.includes('详情文档') && cleanPrev.includes('meter-core.js'));
+  assert.ok(!cleanPrev.includes('###') && !cleanPrev.includes('```') && !cleanPrev.includes('https://example.com'));
+
+  const uaEcdh = crypto.createECDH('prime256v1');
+  uaEcdh.generateKeys();
+  const uaAuth = crypto.randomBytes(16);
+  const sub = {
+    endpoint: 'https://fcm.googleapis.com/fcm/send/demo-48',
+    keys: { p256dh: pushMod.b64urlEncode(uaEcdh.getPublicKey()), auth: pushMod.b64urlEncode(uaAuth) }
+  };
+  const hugeReply = '🚀多字节超长回复验证——' + '中文摘要与Emoji🌟'.repeat(800);
+  const fitted = pushMod.fitPushPayloadToRecordLimit({
+    type: 'completed',
+    conversationId: 'conv-huge-48',
+    title: '超长会话标题测试'.repeat(20),
+    body: hugeReply,
+    tag: 'ag-completed-conv-huge-48-s99',
+    url: '/?conversationId=conv-huge-48',
+    completedUnreadCount: 3,
+    ts: Date.now()
+  });
+  const fittedJson = JSON.stringify(fitted);
+  assert.ok(Buffer.byteLength(fittedJson, 'utf8') <= pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES, '裁剪后载荷字节数必须严格 <= 3993B');
+  const encHuge = pushMod.encryptWebPushPayload(fittedJson, sub);
+  assert.ok(encHuge.body.length <= 4096, `单记录推送总密文必须 <= 4096B (实测 ${encHuge.body.length})`);
+  assert.equal(pushMod.decryptWebPushPayloadForTest(encHuge.body, uaEcdh.getPrivateKey(), uaAuth), fittedJson);
+
+  // 2. completed / waiting 官方标题层级、按轮次 tag 堆叠、同轮防重复与 showPreview 隐私开关
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-push-48-'));
+  const deliveredBodies = [];
+  try {
+    const mgr = pushMod.createWebPushManager({
+      getStateFilePath: () => path.join(tmpDir, 'push-48.json'),
+      debounceMs: 1000,
+      dnsLookup: async () => [{ address: '142.250.190.10', family: 4 }],
+      fetchImpl: async (_url, init) => {
+        const plain = pushMod.decryptWebPushPayloadForTest(init.body, uaEcdh.getPrivateKey(), uaAuth);
+        deliveredBodies.push(JSON.parse(plain));
+        return { ok: true, status: 201 };
+      }
+    });
+    assert.equal(mgr.getPublicInfo().prefs.showPreview, true, '默认应开启在通知中显示回复内容摘要');
+    mgr.addSubscription(sub, { label: 'iPhone' });
+
+    // 基线采样
+    mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 6, updatedAt: 1000 },
+      { id: 'c2', title: '部署生产配置', projectName: 'antigravity-suite', status: 'running', stepCount: 4, updatedAt: 1000 }
+    ], 1000);
+
+    // 第 1 轮完成 + 待确认触发
+    const r1 = mgr.observeCatalogItems([
+      {
+        id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true,
+        stepCount: 8, updatedAt: 2000, lastReplyPreview: '**已完成** `resolveAuthoritativeContextMetrics` 单源合并与 219 项单测校验。'
+      },
+      {
+        id: 'c2', title: '部署生产配置', projectName: 'antigravity-suite', status: 'waiting', completedUnread: false,
+        stepCount: 5, updatedAt: 2000, waitingSummary: '待执行命令: `git push -u origin feat/release`'
+      }
+    ], 3000);
+    assert.equal(r1.events.length, 2);
+    const evComp1 = r1.events.find((e) => e.conversationId === 'c1');
+    const evWait1 = r1.events.find((e) => e.conversationId === 'c2');
+    assert.equal(evComp1.title, '重构上下文指标 · antigravity-suite', 'completed 标题应直接展示会话标题与项目名');
+    assert.ok(evComp1.body.includes('已完成 resolveAuthoritativeContextMetrics') && !evComp1.body.includes('**'), 'completed 正文应展示去 Markdown 的纯文本回复摘要');
+    assert.equal(evComp1.tag, 'ag-completed-c1-s8');
+    assert.equal(evWait1.title, '需要确认 · 部署生产配置', 'waiting 标题应展示「需要确认 · <会话标题>」');
+    assert.equal(evWait1.body, '待执行命令: git push -u origin feat/release');
+    assert.equal(evWait1.tag, 'ag-waiting-c2-s5');
+
+    // 同轮 (stepCount 仍为 8) 即便过了防抖窗口且发生状态抖动，也绝不重复弹窗
+    mgr.observeCatalogItems([{ id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 8, updatedAt: 2000 }], 5000);
+    const dupSameTurn = mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 8, updatedAt: 2000, lastReplyPreview: '同轮文案' }
+    ], 6500);
+    assert.equal(dupSameTurn.events.length, 0, '同一轮次 stepCount 未推进时不得重复发送通知');
+
+    // 第 2 轮完成 (stepCount=14) 且在 debounceMs (1000ms) 窗口内快速完成第 3 轮 (stepCount=16)：不同轮次绝不因会话级防抖丢失
+    mgr.observeCatalogItems([{ id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 12, updatedAt: 7000 }], 7000);
+    const r2 = mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 14, updatedAt: 8500, lastReplyPreview: '第二轮补充完成了边缘用例验证。' }
+    ], 9000);
+    assert.equal(r2.events.length, 1);
+    assert.equal(r2.events[0].tag, 'ag-completed-c1-s14');
+    assert.notEqual(r2.events[0].tag, evComp1.tag, '同一会话不同轮次完成必须生成不同 tag 以免覆盖上一轮通知');
+
+    mgr.observeCatalogItems([{ id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 15, updatedAt: 9100 }], 9100);
+    const rFastTurn3 = mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 16, updatedAt: 9200, lastReplyPreview: '防抖窗口内快速连续完成的第三轮回复。' }
+    ], 9200);
+    assert.equal(rFastTurn3.events.length, 1, 'debounceMs 窗口内的新轮次完成不得被上一轮会话防抖丢弃');
+    assert.equal(rFastTurn3.events[0].tag, 'ag-completed-c1-s16');
+
+    // 关闭 showPreview 隐私开关：隐藏具体回复与待审批命令内容
+    assert.equal(mgr.updatePrefs({ showPreview: false }).prefs.showPreview, false);
+    mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 18, updatedAt: 10000 },
+      { id: 'c2', title: '部署生产配置', projectName: 'antigravity-suite', status: 'running', stepCount: 9, updatedAt: 10000 }
+    ], 11000);
+    const rPriv = mgr.observeCatalogItems([
+      { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 20, updatedAt: 12000, lastReplyPreview: '机密回复正文不应外露' },
+      { id: 'c2', title: '部署生产配置', projectName: 'antigravity-suite', status: 'waiting', completedUnread: false, stepCount: 10, updatedAt: 12000, waitingSummary: 'rm -rf /secret/path' }
+    ], 13000);
+    assert.equal(rPriv.events.find((e) => e.conversationId === 'c1')?.body, '本轮回复已完成', 'showPreview=false 时 completed 严禁携带回复正文');
+    assert.ok(!rPriv.events.find((e) => e.conversationId === 'c2')?.body.includes('/secret/path'), 'showPreview=false 时 waiting 严禁携带敏感命令摘要');
+
+    // 3. 服务端按需末尾轨迹摘要提取通道（5 个会话同时跃迁 <=3 并发池 + 关闭预览连续两轮不复用旧 turnSig + 拉取失败不复用过期缓存）
+    mgr.updatePrefs({ showPreview: true });
+    mgr.resetForTest();
+    mgr.addSubscription(sub, { label: 'iPad' });
+    let phase = 'boot';
+    let rpcShouldFail = false;
+    let inFlightRpc = 0;
+    let maxInFlightRpc = 0;
+    const lsCalls = [];
+    const srvHandler = remoteMod.createRemoteHttpHandler(
+      { enabled: true, port: 18765, token: 'tok48', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        webPushManager: mgr,
+        fetchSnapshot: async () => ({
+          ok: true,
+          sessionId: 'active-other',
+          conversations: (() => {
+            if (phase === 'boot') {
+              return [
+                { id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 30, updatedAt: 1000 },
+                { id: 'bg-wait', title: '数据库迁移', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 12, updatedAt: 1000 },
+                { id: 'bg-3', title: '并发任务三', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 10, updatedAt: 1000 },
+                { id: 'bg-4', title: '并发任务四', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 10, updatedAt: 1000 },
+                { id: 'bg-5', title: '并发任务五', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 10, updatedAt: 1000 }
+              ];
+            }
+            if (phase === 'transition') {
+              return [
+                { id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 34, updatedAt: 2000 },
+                { id: 'bg-wait', title: '数据库迁移', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 14, updatedAt: 2000 },
+                { id: 'bg-3', title: '并发任务三', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 12, updatedAt: 2000 },
+                { id: 'bg-4', title: '并发任务四', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 12, updatedAt: 2000 },
+                { id: 'bg-5', title: '并发任务五', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 12, updatedAt: 2000 }
+              ];
+            }
+            if (phase === 'priv-run-1') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 36, updatedAt: 3000 }];
+            }
+            if (phase === 'priv-done-1') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 38, updatedAt: 4000 }];
+            }
+            if (phase === 'priv-run-2') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 40, updatedAt: 5000 }];
+            }
+            if (phase === 'priv-done-2') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 42, updatedAt: 6000 }];
+            }
+            if (phase === 'fail-run') {
+              return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 44, updatedAt: 7000 }];
+            }
+            return [{ id: 'bg-comp', title: '后台构建任务', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 46, updatedAt: 8000 }];
+          })(),
+          projects: [],
+          messages: []
+        }),
+        callLanguageServer: async (method, body) => {
+          inFlightRpc += 1;
+          if (inFlightRpc > maxInFlightRpc) maxInFlightRpc = inFlightRpc;
+          try {
+            await new Promise((r) => setTimeout(r, 12));
+            if (rpcShouldFail) throw new Error('LS RPC timeout');
+            lsCalls.push({ method, body });
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'bg-comp') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '执行全量打包' }] } },
+                  { plannerResponse: { response: '已完成 **macOS 零补丁热注入包** 构建，全部 `220` 项校验通过！' } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'bg-wait') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '清理旧迁移表' }] } },
+                  { runCommand: { commandLine: 'psql -c "DROP TABLE legacy_tmp;"' } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId.startsWith('bg-')) {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '批量任务' }] } },
+                  { plannerResponse: { response: `批量并发摘要完成：${body.cascadeId}` } }
+                ]
+              };
+            }
+            return { steps: [] };
+          } finally {
+            inFlightRpc -= 1;
+          }
+        }
+      }
+    );
+    const callSnap = () => new Promise((resolve) => {
+      const chunks = [];
+      srvHandler(
+        { method: 'GET', url: '/api/snapshot?token=tok48', headers: { host: '127.0.0.1:18765' }, socket: { remoteAddress: '127.0.0.1' }, on(ev, cb) { if (ev === 'end') cb(); }, destroy() {} },
+        { setHeader() {}, getHeader: () => undefined, writeHead() {}, end(b) { if (b) chunks.push(Buffer.from(b)); resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } }
+      );
+    });
+    await callSnap();
+    deliveredBodies.length = 0;
+    phase = 'transition';
+    const snapTransition = await callSnap();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.ok(maxInFlightRpc <= 3, `并发拉取末尾步骤不得超过 3 路（实测 ${maxInFlightRpc}）`);
+    assert.ok(lsCalls.some((c) => c.method === 'GetCascadeTrajectorySteps' && c.body.cascadeId === 'bg-comp' && c.body.stepOffset === 19), '后台长会话完成时应仅按需拉取末尾 15 步提取摘要');
+    const bgCompOut = snapTransition.conversations.find((c) => c.id === 'bg-comp');
+    const bgWaitOut = snapTransition.conversations.find((c) => c.id === 'bg-wait');
+    assert.ok(bgCompOut.lastReplyPreview.includes('macOS 零补丁热注入包'));
+    assert.ok(bgWaitOut.waitingSummary.includes('DROP TABLE legacy_tmp'));
+    assert.equal(deliveredBodies.length, 5, '5 个同时跃迁的会话均须在补齐摘要后发送通知');
+    for (const cid of ['bg-3', 'bg-4', 'bg-5']) {
+      assert.ok(deliveredBodies.find((p) => p.conversationId === cid)?.body.includes(`批量并发摘要完成：${cid}`), `第 4/5 个跃迁会话 ${cid} 也必须携带完整摘要而非回退空摘要`);
+    }
+    const pushedComp = deliveredBodies.find((p) => p.conversationId === 'bg-comp');
+    const pushedWait = deliveredBodies.find((p) => p.conversationId === 'bg-wait');
+    assert.equal(pushedComp?.title, '后台构建任务 · suite');
+    assert.ok(pushedComp?.body.includes('macOS 零补丁热注入包'));
+    assert.equal(pushedWait?.title, '需要确认 · 数据库迁移');
+    assert.ok(pushedWait?.body.includes('DROP TABLE legacy_tmp'));
+
+    // 关闭 showPreview 后：快照剔除预览，且后台连续完成两轮 (stepCount 38 -> 42) 绝不沿用旧缓存 turnSig (s34) 导致漏推
+    mgr.updatePrefs({ showPreview: false });
+    const snapRedacted = await callSnap();
+    assert.equal(snapRedacted.conversations.find((c) => c.id === 'bg-comp')?.lastReplyPreview, undefined, 'showPreview=false 时服务端快照不得继续下发回复摘要');
+    assert.equal(snapRedacted.conversations.find((c) => c.id === 'bg-wait')?.waitingSummary, undefined, 'showPreview=false 时服务端快照不得继续下发待确认摘要');
+
+    deliveredBodies.length = 0;
+    phase = 'priv-run-1'; await callSnap();
+    phase = 'priv-done-1'; await callSnap();
+    phase = 'priv-run-2'; await callSnap();
+    phase = 'priv-done-2'; await callSnap();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(deliveredBodies.length, 2, '关闭预览后后台连续两轮完成均须正常推送而不被旧缓存 turnSig 去重');
+    assert.equal(deliveredBodies[0].tag, 'ag-completed-bg-comp-s38');
+    assert.equal(deliveredBodies[0].body, '本轮回复已完成');
+    assert.equal(deliveredBodies[1].tag, 'ag-completed-bg-comp-s42');
+    assert.equal(deliveredBodies[1].body, '本轮回复已完成');
+
+    // 重新开启 showPreview 但令新轮次 (stepCount=46) RPC 拉取失败：绝不能复用旧轮次 (s34) 的过期摘要或旧指纹
+    mgr.updatePrefs({ showPreview: true });
+    rpcShouldFail = true;
+    deliveredBodies.length = 0;
+    phase = 'fail-run'; await callSnap();
+    phase = 'fail-done'; const snapFailDone = await callSnap();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(snapFailDone.conversations.find((c) => c.id === 'bg-comp')?.lastReplyPreview, undefined, '新轮次拉取失败时不得复用旧轮次缓存摘要');
+    assert.equal(deliveredBodies.length, 1);
+    assert.equal(deliveredBodies[0].tag, 'ag-completed-bg-comp-s46');
+    assert.equal(deliveredBodies[0].body, '本轮回复已完成');
+
+    // 4. 前端本地 Notification 兜底与推送设置弹窗 toggle-preview 全链路一致性验证
+    const html = remoteMod.buildMobileAppHtml();
+    const mainScript = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).find((s) => s.includes('maybeTriggerLocalNotifications'));
+    assert.ok(mainScript);
+    const poppedNotifs = [];
+    const postedPrefPatches = [];
+    const lStore = new Map([['ag_remote_local_notify_v1', '1']]);
+    const makeClassList = () => ({ add() {}, remove() {}, toggle() {}, contains: () => false });
+    const byId = {};
+    const makeEl = (id) => ({
+      id, hidden: true, innerHTML: '', textContent: '', value: '', title: '', disabled: false,
+      style: { setProperty() {}, removeProperty() {} }, dataset: {}, classList: makeClassList(),
+      setAttribute() {}, getAttribute: () => null, removeAttribute() {},
+      addEventListener(ev, fn) { if (ev === 'click') this.onclick = fn; }, removeEventListener() {},
+      querySelector: () => null, querySelectorAll: () => [], focus() {}, blur() {}, contains: () => false
+    });
+    let sheetRows = [], sheetCb = null;
+    const timers = new Set();
+    function MockNotification(title, opts) {
+      poppedNotifs.push({ title, ...(opts || {}) });
+    }
+    MockNotification.permission = 'granted';
+    MockNotification.requestPermission = async () => 'granted';
+    const startUrl = new URL('https://mac.tail-demo.ts.net/?token=tok48&manual=1');
+    const domSandbox = {
+      URL, URLSearchParams, Math, Number, String, Boolean, Array, Object, Set, Map, Date, JSON, Promise,
+      Uint8Array, TextEncoder, TextDecoder, AbortController, Intl, Notification: MockNotification,
+      atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+      btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+      encodeURIComponent, decodeURIComponent,
+      screen: { width: 1280, height: 800 }, devicePixelRatio: 2,
+      navigator: { userAgent: 'Mozilla/5.0 Macintosh', platform: 'MacIntel', maxTouchPoints: 0 },
+      location: { href: startUrl.href, origin: startUrl.origin, protocol: startUrl.protocol, hostname: startUrl.hostname, pathname: '/', search: startUrl.search, port: '', replace() {} },
+      history: { replaceState() {} },
+      localStorage: { getItem: (k) => lStore.get(k) ?? null, setItem: (k, v) => lStore.set(k, String(v)), removeItem: (k) => lStore.delete(k) },
+      sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      document: {
+        hidden: false, activeElement: null, title: 'Antigravity Remote',
+        documentElement: { clientHeight: 800, style: { setProperty() {} }, setAttribute() {}, getAttribute: () => '' },
+        body: { style: {}, classList: makeClassList() },
+        getElementById: (id) => byId[id] || (byId[id] = makeEl(id)),
+        querySelector: () => makeEl('__q'), querySelectorAll: () => [], createElement: (t) => makeEl(t), addEventListener() {}
+      },
+      matchMedia: () => ({ matches: false, addEventListener() {} }),
+      innerWidth: 1280, innerHeight: 800, visualViewport: null,
+      setTimeout: (fn, ms) => { const t = setTimeout(() => { timers.delete(t); fn(); }, Math.min(Number(ms) || 0, 20)); if (t.unref) t.unref(); timers.add(t); return t; },
+      clearTimeout: (t) => { timers.delete(t); clearTimeout(t); },
+      fetch: async (rawUrl, init) => {
+        const u = String(rawUrl);
+        if (u.includes('/api/push/vapid-key')) {
+          return { ok: true, status: 200, json: async () => ({ ok: true, publicKey: 'k', subscriptionCount: 0, prefs: { enabled: true, notifyCompleted: true, notifyWaiting: true, showPreview: lStore.get('ag_remote_notify_preview_v1') !== '0' } }) };
+        }
+        if (u.includes('/api/push/prefs')) {
+          const patch = JSON.parse(init?.body || '{}');
+          postedPrefPatches.push(patch);
+          return { ok: true, status: 200, json: async () => ({ ok: true, prefs: patch }) };
+        }
+        return { ok: false, status: 503, json: async () => ({ ok: false }) };
+      }
+    };
+    domSandbox.window = domSandbox;
+    domSandbox.addEventListener = () => {};
+    const tail = mainScript.lastIndexOf('})();');
+    const hooked = mainScript.slice(0, tail)
+      + '\nconst __origOpenSheet = openSheet; openSheet = (title, rows, cb) => { globalThis.__capturedSheet = { title, rows, cb }; return __origOpenSheet(title, rows, cb); };'
+      + '\nglobalThis.__pushHooks = { maybeTriggerLocalNotifications, openPushSettingsSheet };\n'
+      + mainScript.slice(tail);
+    try {
+      vm.runInNewContext(hooked, domSandbox);
+      await new Promise((r) => setTimeout(r, 30));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([
+        { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 6, updatedAt: 100 }
+      ]);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([
+        { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 8, updatedAt: 200, lastReplyPreview: '**已完成** `resolveAuthoritativeContextMetrics` 单源合并与 219 项单测校验。' }
+      ]);
+      assert.equal(poppedNotifs.length, 1);
+      assert.equal(poppedNotifs[0].title, evComp1.title, '前端本地 Notification 标题必须与服务端 Web Push 完全一致');
+      assert.equal(poppedNotifs[0].body, evComp1.body, '前端本地 Notification 正文必须与服务端 Web Push 完全一致');
+      assert.equal(poppedNotifs[0].tag, evComp1.tag, '前端本地 Notification 轮次 tag 必须与服务端 Web Push 完全一致');
+
+      // 打开推送设置弹窗并切换「在通知中显示回复内容摘要」
+      await domSandbox.__pushHooks.openPushSettingsSheet();
+      sheetRows = domSandbox.__capturedSheet?.rows || [];
+      sheetCb = domSandbox.__capturedSheet?.cb;
+      const previewRow = sheetRows.find((r) => r.value === 'toggle-preview');
+      assert.ok(previewRow && previewRow.label.includes('✓ 在通知中显示回复内容摘要'));
+      await sheetCb(previewRow);
+      assert.deepEqual(postedPrefPatches[0], { showPreview: false });
+      assert.equal(lStore.get('ag_remote_notify_preview_v1'), '0');
+
+      // 关闭摘要后下一轮本地通知仅显示通用完成文案
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([
+        { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'running', stepCount: 10, updatedAt: 300 }
+      ]);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([
+        { id: 'c1', title: '重构上下文指标', projectName: 'antigravity-suite', status: 'idle', completedUnread: true, stepCount: 12, updatedAt: 400, lastReplyPreview: '隐藏的敏感摘要' }
+      ]);
+      assert.equal(poppedNotifs.length, 2);
+      assert.equal(poppedNotifs[1].body, '本轮回复已完成');
+      assert.equal(poppedNotifs[1].tag, 'ag-completed-c1-s12');
+
+      // 重新开启预览并验证超字节上限（码点数未达上限但 UTF-8 字节数超 180B/84B/420B）的多字节 Emoji 标题、项目名和正文前后端 100% 一致
+      lStore.set('ag_remote_notify_preview_v1', '1');
+      const emojiConv = {
+        id: 'c-emoji',
+        title: '🚀🔥✨🌟🎉'.repeat(10),       // 50 码点 (<60) 但 200B (>180B)
+        projectName: '📦⚡🔮🎯'.repeat(6),   // 24 码点 (<28) 但 96B (>84B)
+        status: 'idle',
+        completedUnread: true,
+        stepCount: 9,
+        updatedAt: 900,
+        lastReplyPreview: '💡🎉🚀🌊🍀'.repeat(26) // 130 码点 (<150) 但 520B (>420B)
+      };
+      const srvEmojiFmt = pushMod.formatPushNotificationEvent(emojiConv, 'completed', { showPreview: true });
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ ...emojiConv, status: 'running', stepCount: 7 }]);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([emojiConv]);
+      assert.equal(poppedNotifs.length, 3);
+      assert.equal(poppedNotifs[2].title, srvEmojiFmt.title, '长多字节 Emoji 标题+项目名前后端 UTF-8 字节截断结果必须 100% 一致');
+      assert.equal(poppedNotifs[2].body, srvEmojiFmt.body, '长多字节 Emoji 正文摘要前后端 UTF-8 字节截断结果必须 100% 一致');
+      assert.equal(poppedNotifs[2].tag, srvEmojiFmt.tag);
+
+      // 5. 轨迹分页回退安全回归：首页含历史旧回复/旧命令而尾页拉取失败时，绝不展示旧摘要（保留当前轮标识并回退通用提示）；
+      //    同时验证活动快照缺失 stepCount、两轮分页窗口消息条数相同但 updatedAt 不同时，两轮均正常发送且标签不同、同轮重复观测不重发
+      mgr.resetForTest();
+      mgr.addSubscription(sub, { label: 'MacBook' });
+      deliveredBodies.length = 0;
+      let edgePhase = 'boot';
+      let allEdgeRpcFail = false;
+      const edgeHandler = remoteMod.createRemoteHttpHandler(
+        { enabled: true, port: 18765, token: 'tok48e', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+        {
+          webPushManager: mgr,
+          fetchSnapshot: async () => {
+            if (edgePhase === 'boot') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 1000 },
+                  { id: 'paged-wait', title: '长会话尾页失败待批', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 1000 },
+                  { id: 'cmd-then-ask', title: '命令后新工具提问', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 6, updatedAt: 1000 },
+                  { id: 'cmd-then-text', title: '命令后新文本提问', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 6, updatedAt: 1000 },
+                  { id: 'cmd-done-unknown-wait', title: '已执行命令后未知等待', projectName: 'suite', status: 'running', completedUnread: false, stepCount: 6, updatedAt: 1000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 9000 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: 'q0' }, { role: 'assistant', text: 'r0' }]
+              };
+            }
+            if (edgePhase === 'paged-tail-fail') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 2000 },
+                  { id: 'paged-wait', title: '长会话尾页失败待批', projectName: 'suite', status: 'waiting', completedUnread: false, updatedAt: 2000 },
+                  { id: 'cmd-then-ask', title: '命令后新工具提问', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 8, updatedAt: 2000 },
+                  { id: 'cmd-then-text', title: '命令后新文本提问', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 8, updatedAt: 2000 },
+                  { id: 'cmd-done-unknown-wait', title: '已执行命令后未知等待', projectName: 'suite', status: 'waiting', completedUnread: false, stepCount: 8, updatedAt: 2000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'paged-same-jitter-run') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 2000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'paged-same-jitter-idle') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 2000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'paged-next-run') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 3000 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'paged-next-idle') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [
+                  { id: 'paged-comp', title: '长会话尾页失败完成', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 3200 },
+                  { id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }
+                ],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'act-dup-run') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 9100 }],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'act-dup-idle') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9100 }],
+                projects: [],
+                messages: [{ role: 'user', text: '第一轮提问' }, { role: 'assistant', text: '第一轮活动回复摘要内容' }]
+              };
+            }
+            if (edgePhase === 'act-turn2-run') {
+              return {
+                ok: true,
+                sessionId: 'act-nosc',
+                conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'running', completedUnread: false, updatedAt: 9300 }],
+                projects: [],
+                messages: [{ role: 'user', text: '第二轮提问' }, { role: 'assistant', text: '生成中' }]
+              };
+            }
+            return {
+              ok: true,
+              sessionId: 'act-nosc',
+              conversations: [{ id: 'act-nosc', title: '无步骤数活跃会话', projectName: 'suite', status: 'idle', completedUnread: true, updatedAt: 9500 }],
+              projects: [],
+              messages: [{ role: 'user', text: '第二轮提问' }, { role: 'assistant', text: '第二轮全新回复摘要内容' }]
+            };
+          },
+          callLanguageServer: async (method, body) => {
+            if (allEdgeRpcFail) throw new Error('All LS RPCs unavailable');
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'cmd-then-ask') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '构建并部署' }] } },
+                  { runCommand: { commandLine: 'npm run build', exitCode: 0, status: 'CORTEX_STEP_STATUS_DONE' } },
+                  { plannerResponse: { response: '构建已通过，请确认目标环境。', toolCalls: [{ name: 'ask_question', argumentsJson: '{"questions":[{"question":"请选择发布环境：预发还是生产？"}]}' }] } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'cmd-then-text') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '跑测试后询问我' }] } },
+                  { plannerResponse: { response: '先运行单测检查一下', toolCalls: [{ name: 'run_command', argumentsJson: '{"CommandLine":"npm test"}' }] } },
+                  { runCommand: { commandLine: 'npm test', output: 'PASS', status: 'DONE' } },
+                  { plannerResponse: { response: '测试全绿，是否立即推送远端分支？' } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps' && body.cascadeId === 'cmd-done-unknown-wait') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '执行预检后调用外部无文本审批' }] } },
+                  { plannerResponse: { response: '先执行预检脚本', toolCalls: [{ name: 'run_command', argumentsJson: '{"CommandLine":"./preflight.sh"}' }] } },
+                  { runCommand: { commandLine: './preflight.sh', exitCode: 0, status: 'CORTEX_STEP_STATUS_DONE' } },
+                  { plannerResponse: { thinking: '等待外部动作授权' } },
+                  { customGate: { status: 'WAITING' } }
+                ]
+              };
+            }
+            if (method === 'GetCascadeTrajectory') {
+              return {
+                numTotalSteps: 80,
+                trajectory: {
+                  steps: [
+                    { userInput: { items: [{ text: '很久以前的第1轮' }] } },
+                    body.cascadeId === 'paged-comp'
+                      ? { plannerResponse: { response: '第1轮远古旧回复绝不能当成第80步新摘要' } }
+                      : { runCommand: { commandLine: 'rm -rf /ancient-first-page-cmd' } }
+                  ]
+                }
+              };
+            }
+            if (method === 'GetCascadeTrajectorySteps') {
+              throw new Error('Tail page RPC timeout');
+            }
+            return {};
+          }
+        }
+      );
+      const callEdgeSnap = () => new Promise((resolve) => {
+        const chunks = [];
+        edgeHandler(
+          { method: 'GET', url: '/api/snapshot?token=tok48e', headers: { host: '127.0.0.1:18765' }, socket: { remoteAddress: '127.0.0.1' }, on(ev, cb) { if (ev === 'end') cb(); }, destroy() {} },
+          { setHeader() {}, getHeader: () => undefined, writeHead() {}, end(b) { if (b) chunks.push(Buffer.from(b)); resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } }
+        );
+      });
+
+      const snapBootEdge = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(snapBootEdge.conversations);
+      poppedNotifs.length = 0;
+      deliveredBodies.length = 0;
+
+      edgePhase = 'paged-tail-fail';
+      const snapTailFail = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 50));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(snapTailFail.conversations);
+
+      const pushPagedComp = deliveredBodies.find((p) => p.conversationId === 'paged-comp');
+      const pushPagedWait = deliveredBodies.find((p) => p.conversationId === 'paged-wait');
+      const localPagedComp = poppedNotifs.find((n) => n.tag && n.tag.includes('paged-comp'));
+      const localPagedWait = poppedNotifs.find((n) => n.tag && n.tag.includes('paged-wait'));
+      assert.equal(pushPagedComp?.tag, 'ag-completed-paged-comp-s80', '尾页拉取失败时仍应保留 numTotalSteps=80 轮次标识');
+      assert.equal(pushPagedComp?.body, '本轮回复已完成', '尾页拉取失败时 Web Push 严禁回退采用首页旧回复摘要');
+      assert.ok(!pushPagedWait?.body.includes('ancient-first-page-cmd'), '尾页拉取失败时 Web Push 严禁回退采用首页旧命令摘要');
+      assert.equal(localPagedComp?.body, '本轮回复已完成', '尾页拉取失败时本地 Notification 同样严禁展示首页旧回复摘要');
+      assert.ok(!localPagedWait?.body.includes('ancient-first-page-cmd'), '尾页拉取失败时本地 Notification 同样严禁展示首页旧命令摘要');
+
+      // 验证同轮早先命令已执行、随后出现新提问（工具提问 + 纯文本提问）时，双端均提取最新提问而非历史已执行命令
+      const pushCmdAsk = deliveredBodies.find((p) => p.conversationId === 'cmd-then-ask');
+      const localCmdAsk = poppedNotifs.find((n) => n.tag && n.tag.includes('cmd-then-ask'));
+      const pushCmdText = deliveredBodies.find((p) => p.conversationId === 'cmd-then-text');
+      const localCmdText = poppedNotifs.find((n) => n.tag && n.tag.includes('cmd-then-text'));
+      const pushCmdUnknown = deliveredBodies.find((p) => p.conversationId === 'cmd-done-unknown-wait');
+      const localCmdUnknown = poppedNotifs.find((n) => n.tag && n.tag.includes('cmd-done-unknown-wait'));
+      assert.equal(pushCmdAsk?.body, '请选择发布环境：预发还是生产？', '命令已执行后出现 ask_question 时 Web Push 应展示最新问题而非旧命令');
+      assert.equal(localCmdAsk?.body, '请选择发布环境：预发还是生产？', '命令已执行后出现 ask_question 时本地通知应展示最新问题而非旧命令');
+      assert.equal(pushCmdText?.body, '测试全绿，是否立即推送远端分支？', '命令已执行后出现文本提问时 Web Push 应展示最新提问而非旧命令');
+      assert.equal(localCmdText?.body, '测试全绿，是否立即推送远端分支？', '命令已执行后出现文本提问时本地通知应展示最新提问而非旧命令');
+      assert.ok(!pushCmdUnknown?.body.includes('preflight.sh') && !pushCmdUnknown?.body.includes('先执行预检脚本'), '命令已执行且后续进入无文本等待时 Web Push 绝不回退抓取同轮旧命令或旧回复');
+      assert.ok(!localCmdUnknown?.body.includes('preflight.sh') && !localCmdUnknown?.body.includes('先执行预检脚本'), '命令已执行且后续进入无文本等待时本地通知绝不回退抓取同轮旧命令或旧回复');
+
+      // 验证无 stepCount 的活跃会话第 1 轮 (updatedAt=9100, messages.length=2)
+      const pushAct1 = deliveredBodies.find((p) => p.conversationId === 'act-nosc');
+      const localAct1 = poppedNotifs.find((n) => n.tag && n.tag.includes('act-nosc'));
+      assert.equal(pushAct1?.tag, 'ag-completed-act-nosc-u9100', '缺失 stepCount 时不得用分页窗口 messages.length 伪造步骤数');
+      assert.ok(pushAct1?.body.includes('第一轮活动回复摘要内容'));
+      assert.equal(localAct1?.tag, 'ag-completed-act-nosc-u9100');
+
+      // 验证尾页失败已确认 s80 后，后续全部 RPC 失败且关闭预览，发生同轮 running->idle 状态抖动时：
+      // 双端 turnSig 稳定保持 s80（不退化为 u2000）、不重发，且下一轮 (updatedAt=3200) 正常发送
+      allEdgeRpcFail = true;
+      mgr.updatePrefs({ showPreview: false });
+      lStore.set('ag_remote_notify_preview_v1', '0');
+      deliveredBodies.length = 0;
+      poppedNotifs.length = 0;
+      edgePhase = 'paged-same-jitter-run';
+      const sPjRun = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sPjRun.conversations);
+      edgePhase = 'paged-same-jitter-idle';
+      const sPjIdle = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 40));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sPjIdle.conversations);
+      assert.equal(sPjIdle.conversations.find((c) => c.id === 'paged-comp')?.turnSig, 's80', '后续 RPC 全败或关闭预览时同轮标识必须稳定保持 s80 而不退回 u2000');
+      assert.equal(deliveredBodies.length, 0, '同轮标识稳定保持 s80，状态抖动时 Web Push 绝不重发');
+      assert.equal(poppedNotifs.length, 0, '同轮标识稳定保持 s80，状态抖动时本地通知绝不重发');
+
+      edgePhase = 'paged-next-run';
+      const sPnRun = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sPnRun.conversations);
+      edgePhase = 'paged-next-idle';
+      const sPnIdle = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 50));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sPnIdle.conversations);
+      assert.equal(deliveredBodies.length, 1, '推进到下一轮 updatedAt=3200 时 Web Push 必须正常发送');
+      assert.equal(deliveredBodies[0].tag, 'ag-completed-paged-comp-u3200');
+      assert.equal(poppedNotifs.length, 1, '推进到下一轮 updatedAt=3200 时本地通知必须正常发送');
+      assert.equal(poppedNotifs[0].tag, 'ag-completed-paged-comp-u3200');
+      allEdgeRpcFail = false;
+      mgr.updatePrefs({ showPreview: true });
+      lStore.set('ag_remote_notify_preview_v1', '1');
+
+      // 同轮 (updatedAt 仍为 9100) 重复观测绝不重发
+      deliveredBodies.length = 0;
+      poppedNotifs.length = 0;
+      edgePhase = 'act-dup-run';
+      const sDupRun = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sDupRun.conversations);
+      edgePhase = 'act-dup-idle';
+      const sDupIdle = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 40));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sDupIdle.conversations);
+      assert.equal(deliveredBodies.length, 0, '同轮 updatedAt 未变时 Web Push 不得重发');
+      assert.equal(poppedNotifs.length, 0, '同轮 updatedAt 未变时本地通知不得重发');
+
+      // 第 2 轮 (updatedAt=9500，但分页窗口 messages.length 仍为 2！) 必须正常发送且携带新标签与新摘要
+      edgePhase = 'act-turn2-run';
+      const sT2Run = await callEdgeSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sT2Run.conversations);
+      edgePhase = 'act-turn2-idle';
+      const sT2Idle = await callEdgeSnap();
+      await new Promise((r) => setTimeout(r, 50));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(sT2Idle.conversations);
+      assert.equal(deliveredBodies.length, 1, '两轮分页消息数相同但 updatedAt 不同时第 2 轮 Web Push 必须发送');
+      assert.equal(deliveredBodies[0].tag, 'ag-completed-act-nosc-u9500');
+      assert.ok(deliveredBodies[0].body.includes('第二轮全新回复摘要内容'));
+      assert.equal(poppedNotifs.length, 1, '两轮分页消息数相同但 updatedAt 不同时第 2 轮本地通知必须发送');
+      assert.equal(poppedNotifs[0].tag, 'ag-completed-act-nosc-u9500');
+      assert.ok(poppedNotifs[0].body.includes('第二轮全新回复摘要内容'));
+
+      // 6a. 首次完成时全部 RPC 失败发送 u5000，随后同轮 (updatedAt=5000) RPC 恢复升级为 s90 并发生 running->idle 抖动：双端关联去重绝不重发
+      mgr.resetForTest();
+      mgr.addSubscription(sub, { label: 'MacPro' });
+      deliveredBodies.length = 0;
+      poppedNotifs.length = 0;
+      mgr.observeCatalogItems([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'running', updatedAt: 4500 }], 1000);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'running', updatedAt: 4500 }]);
+      mgr.observeCatalogItems([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'idle', completedUnread: true, turnSig: 'u5000', updatedAt: 5000 }], 3000);
+      await new Promise((r) => setTimeout(r, 30));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'idle', completedUnread: true, turnSig: 'u5000', updatedAt: 5000 }]);
+      assert.equal(deliveredBodies.length, 1);
+      assert.equal(deliveredBodies[0].tag, 'ag-completed-recov-c-u5000');
+      const prevPopLen = poppedNotifs.length;
+      mgr.observeCatalogItems([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'running', stepCount: 90, turnSig: 's90', updatedAt: 5000 }], 5000);
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'running', stepCount: 90, turnSig: 's90', updatedAt: 5000 }]);
+      mgr.observeCatalogItems([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 90, turnSig: 's90', updatedAt: 5000 }], 7000);
+      await new Promise((r) => setTimeout(r, 30));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications([{ id: 'recov-c', title: '恢复关联测试', projectName: 'suite', status: 'idle', completedUnread: true, stepCount: 90, turnSig: 's90', updatedAt: 5000 }]);
+      assert.equal(deliveredBodies.length, 1, '同轮从 u5000 恢复升级为 s90 后抖动时 Web Push 绝不重发');
+      assert.equal(poppedNotifs.length, prevPopLen, '同轮从 u5000 恢复升级为 s90 后抖动时本地通知绝不重发');
+
+      // 6b. 会话目录存储通道：新 updatedAt 缺失 stepCount 时不得继承上一轮 prev.stepCount
+      const catDir = path.join(tmpDir, 'cat-store');
+      fs.mkdirSync(catDir, { recursive: true });
+      const catStore = remoteMod.createSessionCatalogStore();
+      let catTrajMode = 'with-step';
+      const tMs1 = 1795700010000;
+      const tMs2 = 1795700020000;
+      const catOpts = {
+        stateDir: catDir,
+        configDir: catDir,
+        homeDir: tmpDir,
+        localApiConnect: async () => ({
+          call: async (method) => {
+            if (method === 'GetAllCascadeTrajectories') {
+              return catTrajMode === 'with-step'
+                ? { trajectorySummaries: { 'cat-c1': { summary: '目录步数测试', stepCount: 25, status: 'CORTEX_STEP_STATUS_DONE', lastModifiedTime: new Date(tMs1).toISOString() } } }
+                : { trajectorySummaries: { 'cat-c1': { summary: '目录步数测试', status: 'CORTEX_STEP_STATUS_DONE', lastModifiedTime: new Date(tMs2).toISOString() } } };
+            }
+            return {};
+          }
+        })
+      };
+      const catSnap1 = await catStore.enrichSnapshot({ ok: true, sessionId: 'other', conversations: [{ id: 'cat-c1', title: '目录步数测试', status: 'idle', updatedAt: tMs1 }] }, { ...catOpts, bypassCache: true });
+      assert.equal(catSnap1.conversations.find((c) => c.id === 'cat-c1')?.stepCount, 25);
+      catTrajMode = 'no-step-new-upd';
+      const catSnap2 = await catStore.enrichSnapshot({ ok: true, sessionId: 'other', conversations: [{ id: 'cat-c1', title: '目录步数测试', status: 'idle', updatedAt: tMs2 }] }, { ...catOpts, bypassCache: true });
+      assert.equal(catSnap2.conversations.find((c) => c.id === 'cat-c1')?.stepCount, undefined, '跨轮新 updatedAt 缺失步数时目录存储不得继承上一轮旧 stepCount=25');
+
+      // 6c. 活动会话进入无确认卡且同轮命令已执行后的无文本外部等待时，不得把同轮早先助手回复缓存成当前等待摘要
+      mgr.resetForTest();
+      mgr.addSubscription(sub, { label: 'iMac' });
+      deliveredBodies.length = 0;
+      poppedNotifs.length = 0;
+      let actWaitPhase = 'run';
+      const actWaitHandler = remoteMod.createRemoteHttpHandler(
+        { enabled: true, port: 18765, token: 'tok48w', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+        {
+          webPushManager: mgr,
+          fetchSnapshot: async () => ({
+            ok: true,
+            sessionId: 'act-wait-gate',
+            conversations: [{
+              id: 'act-wait-gate', title: '活跃会话外部等待', projectName: 'suite',
+              status: actWaitPhase === 'run' ? 'running' : 'waiting',
+              completedUnread: false, stepCount: actWaitPhase === 'run' ? 4 : 6, updatedAt: actWaitPhase === 'run' ? 1000 : 2000
+            }],
+            projects: [],
+            pendingApprovals: [],
+            pendingPrompts: [],
+            messages: [{ role: 'user', text: '部署检查' }, { role: 'assistant', text: '我先运行预检脚本看看输出。' }]
+          }),
+          callLanguageServer: async (method) => {
+            if (method === 'GetCascadeTrajectorySteps') {
+              return {
+                steps: [
+                  { userInput: { items: [{ text: '部署检查' }] } },
+                  { plannerResponse: { response: '我先运行预检脚本看看输出。', toolCalls: [{ name: 'run_command', argumentsJson: '{"CommandLine":"./check.sh"}' }] } },
+                  { runCommand: { commandLine: './check.sh', exitCode: 0, status: 'CORTEX_STEP_STATUS_DONE' } },
+                  { plannerResponse: { thinking: '等待外部审批门禁' } },
+                  { externalGate: { status: 'WAITING' } }
+                ]
+              };
+            }
+            return {};
+          }
+        }
+      );
+      const callActWaitSnap = () => new Promise((resolve) => {
+        const chunks = [];
+        actWaitHandler(
+          { method: 'GET', url: '/api/snapshot?token=tok48w', headers: { host: '127.0.0.1:18765' }, socket: { remoteAddress: '127.0.0.1' }, on(ev, cb) { if (ev === 'end') cb(); }, destroy() {} },
+          { setHeader() {}, getHeader: () => undefined, writeHead() {}, end(b) { if (b) chunks.push(Buffer.from(b)); resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } }
+        );
+      });
+      const awBoot = await callActWaitSnap();
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(awBoot.conversations);
+      actWaitPhase = 'wait';
+      const awWait = await callActWaitSnap();
+      await new Promise((r) => setTimeout(r, 40));
+      domSandbox.__pushHooks.maybeTriggerLocalNotifications(awWait.conversations);
+      assert.equal(awWait.conversations[0]?.waitingSummary, undefined, '活跃会话无待确认卡时必须经末尾步骤核实，不得把早先已执行命令前的回复当成等待摘要');
+      assert.ok(!deliveredBodies[0]?.body.includes('我先运行预检脚本看看输出'), 'Web Push 不得误发活动会话同轮早先助手回复作为等待摘要');
+      assert.ok(!poppedNotifs[0]?.body.includes('我先运行预检脚本看看输出'), '本地通知不得误发活动会话同轮早先助手回复作为等待摘要');
+    } finally {
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 // =========================================================================
 // 需求 40: 聊天区本地文件/文件夹链接右键菜单一键复制路径与 Finder 显示
 // =========================================================================
@@ -31434,6 +32501,682 @@ test('需求 40: 聊天区本地文件/文件夹超链接右键菜单、路径�
   }
 });
 
+test('#40 实机加固: 消除 opt-* 乐观排队 ID + 双空格合并双显、SendAllQueuedMessages deprecated(error ID) 识别与逐条直发回退及 send 幂等防重', async () => {
+  const remoteMod = require('../mobile-remote');
+
+  // 1. mergeUniqueQueuedLists：真实服务端 UUID 与桌面端 opt-* 临时乐观 ID（含 URL 双空格与单空格差异）合并为单条，且保留两条不同真实服务端 ID 的合法同文消息
+  const baseReal = [{
+    id: '9f82a4e1-1111-4444-8888-abcdef012345',
+    messageId: '9f82a4e1-1111-4444-8888-abcdef012345',
+    source: 'agent_state',
+    stepIndex: -1,
+    text: 'https://example.com/1  sample queued message'
+  }];
+  const domOpt = [{
+    domIndex: 0,
+    stepIndex: -1,
+    messageId: 'opt-64d3fb42-e4dc-4590-ae89-f69ceb311b59',
+    source: 'dom',
+    text: 'https://example.com/1 sample queued message'
+  }];
+  const mergedSingle = remoteMod.mergeUniqueQueuedLists(baseReal, domOpt, true);
+  assert.equal(mergedSingle.length, 1, '桌面端 opt-* 乐观 ID 与服务端真实 UUID 同内容项必须去重合并为 1 条，严禁双显');
+  assert.equal(mergedSingle[0].messageId, '9f82a4e1-1111-4444-8888-abcdef012345');
+  assert.equal(mergedSingle[0].domIndex, 0, '合并后应保留桌面 domIndex 元数据');
+
+  const baseTwoDistinctReal = [
+    { id: 'real-a', messageId: 'real-a', source: 'agent_state', text: '继续执行下一步' },
+    { id: 'real-b', messageId: 'real-b', source: 'agent_state', text: '继续执行下一步' }
+  ];
+  const mergedTwoReal = remoteMod.mergeUniqueQueuedLists(baseTwoDistinctReal.slice(), [
+    { domIndex: 0, messageId: 'opt-1', source: 'dom', text: '继续执行下一步' },
+    { domIndex: 1, messageId: 'opt-2', source: 'dom', text: '继续执行下一步' }
+  ], true);
+  assert.equal(mergedTwoReal.length, 2, '用户真实连续发送两条同文消息（具备两个不同真实服务端 ID）时必须完整保留 2 条');
+  assert.equal(mergedTwoReal[0].domIndex, 0);
+  assert.equal(mergedTwoReal[1].domIndex, 1);
+
+  // 2. 桌面增强层 extractQueueFiberEntries / findQueuedMessagesDomEntries：支持 Antigravity 2.35+ Protobuf ES v2 items[].chunk.value、data-queued-msg-id 与 tooltip 剥离
+  const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'ag-enhancer-overlay.js'), 'utf8');
+  const env = createDomEnv();
+  const optDesktopCid = 'deadbeef-2350-4000-8000-000000000235';
+  env.sandbox.location.pathname = `/c/${optDesktopCid}`;
+  const mainEl = env.doc.createElement('main');
+  const cardEl = env.doc.createElement('div');
+  cardEl.setAttribute('data-testid', 'queued-messages-card');
+  cardEl.offsetWidth = 360;
+  cardEl.offsetHeight = 96;
+  const rowEl = env.doc.createElement('div');
+  rowEl.setAttribute('data-queued-msg-id', 'opt-235-abc');
+  rowEl.offsetWidth = 340;
+  rowEl.offsetHeight = 32;
+  const txtSpan = env.doc.createElement('span');
+  txtSpan.textContent = 'https://example.com/1 sample queued message';
+  const ttSpan = env.doc.createElement('span');
+  ttSpan.setAttribute('role', 'tooltip');
+  ttSpan.textContent = 'https://example.com/1';
+  const decEl = env.doc.createElement('div');
+  decEl.setAttribute('data-testid', 'queued-decorators');
+  for (const [act, lbl] of [['send-now', 'Send now'], ['', 'Edit'], ['delete', 'Delete']]) {
+    const b = env.doc.createElement('button');
+    b.setAttribute('aria-label', lbl);
+    if (act) b.setAttribute('data-queued-action', act);
+    b.textContent = lbl;
+    decEl.appendChild(b);
+  }
+  rowEl.appendChild(txtSpan);
+  rowEl.appendChild(ttSpan);
+  rowEl.appendChild(decEl);
+  cardEl.appendChild(rowEl);
+  // 模拟 Antigravity 2.35+ 深层包装组件 (>8 层 Fiber return) + Protobuf ES v2 chunk.case === 'text'
+  let deepFiber = {
+    memoizedProps: {
+      pendingUserInputs: [{
+        msgId: 'opt-235-abc',
+        step: {
+          clientMessageId: 'cid-235-abc',
+          items: [{ chunk: { case: 'text', value: 'https://example.com/1  sample queued message' } }]
+        }
+      }]
+    },
+    return: null
+  };
+  for (let d = 0; d < 12; d += 1) {
+    deepFiber = { memoizedProps: {}, return: deepFiber };
+  }
+  cardEl.__reactFiber$test = deepFiber;
+  mainEl.appendChild(cardEl);
+  env.doc.body.appendChild(mainEl);
+  vm.runInContext(overlaySrc, env.sandbox);
+  const enh = env.sandbox.__AGEnhancer;
+  try {
+    const snap235 = enh.getMobileSnapshot();
+    assert.equal(snap235.queuedMessages.length, 1);
+    assert.equal(snap235.queuedMessages[0].messageId, 'opt-235-abc');
+    assert.equal(snap235.queuedMessages[0].clientMessageId, 'cid-235-abc');
+    assert.equal(snap235.queuedMessages[0].text, 'https://example.com/1  sample queued message', '应从 12 层深 Fiber 的 Protobuf ES v2 chunk.value 提取纯净原文而非拼接 tooltip');
+
+    // 2b. resolveStrictQueuedDomTarget：当桌面处于 opt-* 态但存在两条同文排队项（模拟同文项替换/重排且总数量不变=2）时，用失配真实服务端 ID 绝不得按 domIndex 盲绑
+    const dupRowClicks = [];
+    const makeOptDupRow = (optId, labelText) => {
+      const r = env.doc.createElement('div');
+      r.setAttribute('data-queued-msg-id', optId);
+      r.offsetWidth = 340;
+      r.offsetHeight = 32;
+      const s = env.doc.createElement('span');
+      s.textContent = labelText;
+      const dec = env.doc.createElement('div');
+      dec.setAttribute('data-testid', 'queued-decorators');
+      for (const [act, lbl] of [['send-now', 'Send now'], ['', 'Edit'], ['delete', 'Delete']]) {
+        const b = env.doc.createElement('button');
+        b.setAttribute('aria-label', lbl);
+        if (act) b.setAttribute('data-queued-action', act);
+        b.textContent = lbl;
+        b.addEventListener('click', () => dupRowClicks.push(`${optId}:${lbl}`));
+        dec.appendChild(b);
+      }
+      r.appendChild(s);
+      r.appendChild(dec);
+      return r;
+    };
+    cardEl.children.length = 0;
+    cardEl.childNodes.length = 0;
+    cardEl.appendChild(makeOptDupRow('opt-reordered-1', '继续跑测试'));
+    cardEl.appendChild(makeOptDupRow('opt-reordered-2', '继续跑测试'));
+    cardEl.__reactFiber$test = {
+      memoizedProps: {
+        pendingUserInputs: [
+          { msgId: 'opt-reordered-1', step: { items: [{ chunk: { case: 'text', value: '继续跑测试' } }] } },
+          { msgId: 'opt-reordered-2', step: { items: [{ chunk: { case: 'text', value: '继续跑测试' } }] } }
+        ]
+      },
+      return: null
+    };
+    const ambigRes = await enh.performMobileAction({
+      action: 'delete-queued-dom',
+      conversationId: optDesktopCid,
+      messageId: 'real-server-old-id',
+      domIndex: 0,
+      expectedQueueCount: 2,
+      text: '继续跑测试'
+    });
+    assert.equal(ambigRes.ok, false, '同文多条 opt-* 项替换或重排（即使队列总条数仍为 2）时，真实 ID 回退绑定必须拒绝而不得按 domIndex 误删');
+    assert.ok(String(ambigRes.error || '').includes('目标排队消息已变化或不存在'), '应直接由 resolveStrictQueuedDomTarget 拒绝而非切会话失败');
+    assert.equal(dupRowClicks.length, 0, '身份歧义时不得点击任何桌面队列按钮');
+
+    // 当队列中该文本唯一匹配单条 opt-* 项时，允许安全绑定
+    cardEl.children.length = 0;
+    cardEl.childNodes.length = 0;
+    cardEl.appendChild(makeOptDupRow('opt-unique-1', '唯一待撤回文本'));
+    cardEl.appendChild(makeOptDupRow('opt-other-2', '另一条不同文本'));
+    cardEl.__reactFiber$test = {
+      memoizedProps: {
+        pendingUserInputs: [
+          { msgId: 'opt-unique-1', step: { items: [{ chunk: { case: 'text', value: '唯一待撤回文本' } }] } },
+          { msgId: 'opt-other-2', step: { items: [{ chunk: { case: 'text', value: '另一条不同文本' } }] } }
+        ]
+      },
+      return: null
+    };
+    const uniqRes = await enh.performMobileAction({
+      action: 'delete-queued-dom',
+      conversationId: optDesktopCid,
+      messageId: 'real-server-uniq-id',
+      domIndex: 1, // 故意传错重排前旧 domIndex=1，验证只按唯一内容绑定 opt-unique-1 而非盲信旧索引
+      expectedQueueCount: 2,
+      text: '唯一待撤回文本'
+    });
+    assert.equal(uniqRes.ok, true);
+    assert.deepEqual(dupRowClicks, ['opt-unique-1:Delete'], '唯一内容匹配 opt-* 项时应精准定位目标项而不受旧 domIndex 移位影响');
+  } finally {
+    enh.dispose?.();
+  }
+
+  // 3. classifyLanguageServerRpcError 精准识别 Antigravity 2.35.2 "deprecated (error ID: <hex>)"，同时拒绝模糊错误
+  assert.equal(
+    remoteMod.classifyLanguageServerRpcError(
+      new Error('HTTP 500: {"code":"unknown","message":"deprecated (error ID: c40325d4d16046c0a615d023c4fd57db)"}'),
+      'SendAllQueuedMessages'
+    ).confirmedNotExecuted,
+    true,
+    'SendAllQueuedMessages 返回带 error ID 的官方 deprecated 报错必须识别为 confirmedNotExecuted'
+  );
+  assert.equal(
+    remoteMod.classifyLanguageServerRpcError(
+      new Error('HTTP 500: {"code":"unknown","message":"deprecated (error ID: c40325d4d16046c0a615d023c4fd57db)"}'),
+      'SendUserCascadeMessage'
+    ).confirmedNotExecuted,
+    false,
+    '非 SendAllQueuedMessages 方法不得套用该 deprecated 豁免'
+  );
+
+  // 4. 顶栏「⚡ 立即发送」在 SendAllQueuedMessages 报 deprecated (error ID: ...) 时经服务端实时 pendingAgentMessages 核验身份与媒体，防止陈旧已删项或伪装纯文本媒体项误重发；且 /api/action send 对超时结果保留幂等拦截、仅确认未执行允许重试
+  const lsRpcLog = [];
+  const domQueuedActions = [];
+  let desktopSendCalls = 0;
+  let sendAllShouldHang = false;
+  let sendCascadeShouldHang = false;
+  let sendCascadeDelayMs = 0;
+  let domSendDelayMs = 0;
+  let domSendBehavior = 'ok';
+  let deleteAgentShouldFail = false;
+  let pendingFetchShouldThrow = false;
+  let sendBehavior = 'ok';
+  let fakeClockNow = 1_800_000_000_000;
+  let liveServerPendingList = [
+    { id: 'pm-real-1', messageId: 'pm-real-1', source: 'agent_state', stepIndex: -1, text: '服务端权威待发正文' }
+  ];
+  const handler = remoteMod.createRemoteHttpHandler(
+    { enabled: true, port: 18765, token: 'tok-q40x', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+    {
+      rpcTimeoutMs: 100,
+      now: () => fakeClockNow,
+      maxRecentOkSendActions: 2,
+      maxCompletedSendActions: 2,
+      completedBloomBytes: 1,
+      maxUnknownSendActions: 2,
+      fetchPendingAgentMessages: async () => {
+        if (pendingFetchShouldThrow) throw new Error('StreamAgentStateUpdates transient failure');
+        return liveServerPendingList;
+      },
+      webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) },
+      fetchSnapshot: async () => ({
+        ok: true,
+        sessionId: 'conv-b',
+        activeConversationId: 'conv-b',
+        busy: true,
+        conversations: [{ id: 'conv-b', title: 'sample task', projectName: 'proj-a', status: 'running' }],
+        projects: [],
+        messages: [],
+        queuedMessages: [{ domIndex: 0, stepIndex: -1, messageId: 'opt-dup-space', source: 'dom', text: 'https://example.com/1 sample queued message' }]
+      }),
+      performAction: async (p) => {
+        if (p.action === 'send-queued-dom') {
+          domQueuedActions.push(p);
+          if (domSendDelayMs > 0) {
+            await new Promise((r) => setTimeout(r, domSendDelayMs));
+          }
+          if (domSendBehavior === 'timeout_after_click') {
+            throw new Error('CDP Runtime.evaluate timed out after sendBtn.click()');
+          }
+          if (domSendBehavior === 'confirmed_not_executed') {
+            return { ok: false, confirmedNotExecuted: true, error: '当前没有排队中的消息' };
+          }
+          return { ok: true, actionResult: { ok: true } };
+        }
+        if (p.action === 'send') {
+          desktopSendCalls += 1;
+          if (sendBehavior === 'timeout_after_dispatch') {
+            throw new Error('CDP Runtime.evaluate timed out after dispatch');
+          }
+          if (sendBehavior === 'confirmed_not_executed') {
+            return { ok: false, confirmedNotExecuted: true, error: '未能填入输入框' };
+          }
+        }
+        return {
+          ok: true,
+          actionResult: { ok: true },
+          snapshot: {
+            ok: true,
+            sessionId: 'conv-b',
+            activeConversationId: 'conv-b',
+            busy: true,
+            conversations: [],
+            projects: [],
+            messages: [],
+            queuedMessages: [{ domIndex: 0, stepIndex: -1, messageId: 'pm-real-1', source: 'agent_state', text: 'https://example.com/1 sample queued message' }]
+          }
+        };
+      },
+      callLanguageServer: async (method, body) => {
+        lsRpcLog.push({ method, body });
+        if (method === 'SendAllQueuedMessages') {
+          if (sendAllShouldHang) {
+            await new Promise((r) => setTimeout(r, 300));
+            return {};
+          }
+          throw new Error('HTTP 500: {"code":"unknown","message":"deprecated (error ID: c40325d4d16046c0a615d023c4fd57db)"}');
+        }
+        if (method === 'SendUserCascadeMessage' && sendCascadeShouldHang) {
+          await new Promise((r) => setTimeout(r, 300));
+          return {};
+        }
+        if (method === 'SendUserCascadeMessage' && sendCascadeDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, sendCascadeDelayMs));
+        }
+        if (method === 'DeleteAgentMessage' && deleteAgentShouldFail) {
+          throw new Error('DeleteAgentMessage temporary failure');
+        }
+        return { ok: true };
+      }
+    }
+  );
+  const postJson = (bodyObj) => new Promise((resolve) => {
+    const raw = Buffer.from(JSON.stringify(bodyObj), 'utf8');
+    const chunks = [];
+    handler(
+      {
+        method: 'POST',
+        url: '/api/action?token=tok-q40x',
+        headers: { host: '127.0.0.1:18765', 'content-type': 'application/json' },
+        socket: { remoteAddress: '127.0.0.1' },
+        on(ev, cb) {
+          if (ev === 'data') cb(raw);
+          if (ev === 'end') cb();
+        },
+        pause() {},
+        destroy() {},
+        complete: true
+      },
+      {
+        setHeader() {},
+        getHeader: () => undefined,
+        writeHead() {},
+        end(b) {
+          if (b) chunks.push(Buffer.from(b));
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        }
+      }
+    );
+  });
+
+  // 4a. 客户端传入了陈旧已删除的 pm-stale-deleted 与被篡改文本，服务端仅按实时核验的 pm-real-1 权威正文直发，绝不重发已删项
+  const sendAllOk = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    messageIds: ['pm-stale-deleted', 'pm-real-1'],
+    queuedItems: [
+      { messageId: 'pm-stale-deleted', source: 'agent_state', domIndex: 0, text: '早已撤回或自动出队的陈旧消息' },
+      { messageId: 'pm-real-1', source: 'agent_state', domIndex: 1, text: '客户端陈旧文本' }
+    ]
+  });
+  assert.equal(sendAllOk.ok, true, 'SendAllQueuedMessages 报 deprecated(error ID) 时应经服务端核验后逐条直发成功');
+  assert.deepEqual(
+    lsRpcLog.map((x) => x.method),
+    ['SendAllQueuedMessages', 'SendUserCascadeMessage', 'DeleteAgentMessage'],
+    '已出队/已删除的 pm-stale-deleted 绝不得重发，仅发送服务端实时确认仍在队列中的 pm-real-1'
+  );
+  assert.equal(lsRpcLog[1].body.items[0].text, '服务端权威待发正文', '必须采用服务端核验正文而非盲信客户端文本');
+  assert.equal(lsRpcLog[2].body.messageId, 'pm-real-1');
+
+  // 4b. 服务端实时队列含媒体项（即使客户端谎报 hasMedia: false），严禁走纯文本 RPC 丢图，自动转走桌面 send-queued-dom
+  lsRpcLog.length = 0;
+  liveServerPendingList = [
+    { id: 'pm-media-1', messageId: 'pm-media-1', source: 'agent_state', stepIndex: -1, text: '带图排队项', hasMedia: true, images: [{ src: 'data:image/png;base64,AA==' }] }
+  ];
+  const sendAllMedia = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    messageIds: ['pm-media-1'],
+    queuedItems: [{ messageId: 'pm-media-1', source: 'agent_state', domIndex: 0, text: '带图排队项', hasMedia: false }]
+  });
+  assert.equal(sendAllMedia.ok, true);
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages'], '服务端核验含媒体项时不得调用纯文本 SendUserCascadeMessage');
+  assert.equal(domQueuedActions.length, 1);
+  assert.equal(domQueuedActions[0].sendAll, true);
+
+  // 4c. 服务端实时队列已空（全部已出队/已删）时，不得重发客户端陈旧项
+  lsRpcLog.length = 0;
+  liveServerPendingList = [];
+  const sendAllEmpty = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    messageIds: ['pm-already-gone'],
+    queuedItems: [{ messageId: 'pm-already-gone', source: 'agent_state', domIndex: 0, text: '已空队列陈旧项' }]
+  });
+  assert.equal(sendAllEmpty.ok, false, '服务端核验队列已空时不得重发陈旧项');
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages']);
+
+  // 4d. 超时场景仍严格 fail-closed 绝不补发
+  lsRpcLog.length = 0;
+  sendAllShouldHang = true;
+  const sendAllTimeout = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    messageIds: ['pm-real-2'],
+    queuedItems: [{ messageId: 'pm-real-2', source: 'agent_state', domIndex: 0, text: '超时不应补发' }]
+  });
+  assert.equal(sendAllTimeout.ok, false, 'SendAllQueuedMessages 真实超时结果未知时仍必须 fail-closed 拦截补发');
+  assert.equal(sendAllTimeout.outcomeUnknown, true);
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages']);
+
+  // 4d-2. 批量逐条直发中 SendUserCascadeMessage 服务端已接收但响应超时（原排队项仍在队列中），再次重试批量发送必须拦截而不二次调用 SendUserCascadeMessage
+  sendAllShouldHang = false;
+  sendCascadeShouldHang = true;
+  lsRpcLog.length = 0;
+  liveServerPendingList = [
+    { id: 'pm-hang-1', messageId: 'pm-hang-1', source: 'agent_state', stepIndex: -1, text: '超时未决待发项' }
+  ];
+  const batchSendHang1 = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    messageIds: ['pm-hang-1'],
+    queuedItems: [{ messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' }]
+  });
+  assert.equal(batchSendHang1.ok, false);
+  assert.equal(batchSendHang1.outcomeUnknown, true);
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages', 'SendUserCascadeMessage']);
+
+  sendCascadeShouldHang = false;
+  lsRpcLog.length = 0;
+  const batchSendHangRetry = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    messageIds: ['pm-hang-1'],
+    queuedItems: [{ messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' }]
+  });
+  assert.equal(batchSendHangRetry.ok, false, 'SendUserCascadeMessage 超时结果未知且原项仍在队列中时，再次批量发送必须拦截');
+  assert.equal(batchSendHangRetry.outcomeUnknown, true);
+  assert.deepEqual(lsRpcLog.map((x) => x.method), ['SendAllQueuedMessages'], '重试批量发送绝不得再次调用 SendUserCascadeMessage');
+
+  // 4d-3. 统一保护批量发送的所有发送通道：
+  // ① pm-hang-1 超时未决后，即使队列新增媒体项、携带 hasDomQueued:true 或实时查询抛错，也绝不得走 send-queued-dom 绕过保护；
+  // ② 已发送但 DeleteAgentMessage 失败（partialSuccess）的会话，在新增媒体项或 hasDomQueued 时同样阻止 DOM 全发防止二次发送。
+  const domCountBeforeTaintedChecks = domQueuedActions.length;
+  liveServerPendingList = [
+    { id: 'pm-hang-1', messageId: 'pm-hang-1', source: 'agent_state', stepIndex: -1, text: '超时未决待发项' },
+    { id: 'pm-new-media', messageId: 'pm-new-media', source: 'agent_state', stepIndex: -1, text: '新增带图排队项', hasMedia: true, images: [{ src: 'data:image/png;base64,AA==' }] }
+  ];
+  const taintedWithMedia = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    messageIds: ['pm-hang-1', 'pm-new-media'],
+    queuedItems: [
+      { messageId: 'pm-hang-1', source: 'agent_state', domIndex: 0, text: '超时未决待发项' },
+      { messageId: 'pm-new-media', source: 'agent_state', domIndex: 1, text: '新增带图排队项', hasMedia: true }
+    ]
+  });
+  assert.equal(taintedWithMedia.ok, false, '超时未决后新增媒体项时绝不得通过 send-queued-dom 全发绕过拦截');
+  assert.equal(taintedWithMedia.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domCountBeforeTaintedChecks);
+
+  liveServerPendingList = [
+    { id: 'pm-hang-1', messageId: 'pm-hang-1', source: 'agent_state', stepIndex: -1, text: '超时未决待发项' }
+  ];
+  const taintedWithHasDom = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    hasDomQueued: true,
+    messageIds: ['pm-hang-1']
+  });
+  assert.equal(taintedWithHasDom.ok, false, '超时未决后携带 hasDomQueued 时绝不得通过 send-queued-dom 全发绕过拦截');
+  assert.equal(taintedWithHasDom.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domCountBeforeTaintedChecks);
+
+  pendingFetchShouldThrow = true;
+  const taintedQueryFailed = await postJson({
+    action: 'send-queued-messages',
+    conversationId: 'conv-b',
+    hasDomQueued: true,
+    messageIds: ['pm-hang-1']
+  });
+  pendingFetchShouldThrow = false;
+  assert.equal(taintedQueryFailed.ok, false, '实时查询失败时绝不得回退桌面全发');
+  assert.equal(taintedQueryFailed.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domCountBeforeTaintedChecks);
+
+  // 已发送但删除失败（dispatchedQueueDeletes）同样阻止跨过 5min 过期及新增媒体/hasDomQueued 触发 DOM 全发
+  deleteAgentShouldFail = true;
+  const partialDelConv = 'conv-partial-del-guard';
+  const partialDelFirst = await postJson({
+    action: 'send-queued-messages',
+    conversationId: partialDelConv,
+    messageId: 'pm-pdel-1',
+    text: '已发待删项',
+    sendAll: false
+  });
+  deleteAgentShouldFail = false;
+  assert.equal(partialDelFirst.ok, false);
+  assert.equal(partialDelFirst.partialSuccess, true);
+  fakeClockNow += 10 * 60 * 1000; // 推进 +10min（超过旧 5min TTL）
+  liveServerPendingList = [
+    { id: 'pm-pdel-1', messageId: 'pm-pdel-1', source: 'agent_state', stepIndex: -1, text: '已发待删项' },
+    { id: 'pm-pdel-media', messageId: 'pm-pdel-media', source: 'agent_state', stepIndex: -1, text: '后加媒体项', hasMedia: true, images: [{ src: 'data:image/png;base64,AA==' }] }
+  ];
+  const partialDelBatchMedia = await postJson({
+    action: 'send-queued-messages',
+    conversationId: partialDelConv,
+    hasDomQueued: true,
+    messageIds: ['pm-pdel-1', 'pm-pdel-media']
+  });
+  assert.equal(partialDelBatchMedia.ok, false, '已发送但删除失败记录即使跨过 10 分钟且带媒体/hasDomQueued，也绝不得执行 DOM 全发');
+  assert.equal(partialDelBatchMedia.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domCountBeforeTaintedChecks);
+
+  // 4d-4. 单条请求与批量请求并发命中同一 dispatchKey 时共享在途锁，SendUserCascadeMessage 仅派发 1 次
+  const concurrentConv = 'conv-concurrent-lock';
+  liveServerPendingList = [
+    { id: 'pm-race-1', messageId: 'pm-race-1', source: 'agent_state', stepIndex: -1, text: '并发单条与批量同一排队项' }
+  ];
+  sendCascadeDelayMs = 35;
+  lsRpcLog.length = 0;
+  const [raceSingleRes, raceBatchRes] = await Promise.all([
+    postJson({
+      action: 'send-queued-messages',
+      conversationId: concurrentConv,
+      messageId: 'pm-race-1',
+      text: '并发单条与批量同一排队项',
+      sendAll: false
+    }),
+    postJson({
+      action: 'send-queued-messages',
+      conversationId: concurrentConv,
+      messageIds: ['pm-race-1'],
+      queuedItems: [{ messageId: 'pm-race-1', source: 'agent_state', domIndex: 0, text: '并发单条与批量同一排队项' }]
+    })
+  ]);
+  sendCascadeDelayMs = 0;
+  assert.equal(raceSingleRes.ok, true);
+  assert.equal(raceBatchRes.ok, true);
+  assert.equal(
+    lsRpcLog.filter((x) => x.method === 'SendUserCascadeMessage' && x.body?.cascadeId === concurrentConv).length,
+    1,
+    '单条与批量请求并发发送同一排队消息时 SendUserCascadeMessage 必须严格只执行 1 次'
+  );
+  assert.equal(
+    lsRpcLog.filter((x) => x.method === 'DeleteAgentMessage' && x.body?.messageId === 'pm-race-1').length,
+    1,
+    '共享在途锁下 DeleteAgentMessage 也只执行 1 次'
+  );
+
+  // 4d-5. 双向在途互斥 + DOM 回退结果未知防重：
+  // ① 先启动 DOM 全发（在途）时，并发到达的单条 RPC 直发必须被互斥拦截（SendUserCascadeMessage 调用 0 次）；
+  // ② DOM 回退 performAction 在点击后抛超时异常（结果未知）时保留未决状态，再次触发 DOM 或 RPC 发送同一会话均被拦截，仅 confirmedNotExecuted=true 允许安全重试。
+  const domMutexConv = 'conv-dom-rpc-mutex';
+  liveServerPendingList = [
+    { id: 'pm-dm-1', messageId: 'pm-dm-1', source: 'agent_state', stepIndex: -1, text: '纯文本项' },
+    { id: 'pm-dm-2', messageId: 'pm-dm-2', source: 'agent_state', stepIndex: -1, text: '媒体项触发DOM全发', hasMedia: true, images: [{ src: 'data:image/png;base64,AA==' }] }
+  ];
+  domSendDelayMs = 50;
+  lsRpcLog.length = 0;
+  const domAllPromise = postJson({
+    action: 'send-queued-messages',
+    conversationId: domMutexConv,
+    messageIds: ['pm-dm-1', 'pm-dm-2']
+  });
+  await new Promise((r) => setTimeout(r, 12));
+  const rpcDuringDomRes = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domMutexConv,
+    messageId: 'pm-dm-1',
+    text: '纯文本项',
+    sendAll: false
+  });
+  const domAllFinished = await domAllPromise;
+  domSendDelayMs = 0;
+  assert.equal(domAllFinished.ok, true);
+  assert.equal(rpcDuringDomRes.ok, false, 'DOM 全发在途期间并发单条 RPC 请求必须被互斥拦截');
+  assert.equal(rpcDuringDomRes.outcomeUnknown, true);
+  assert.equal(
+    lsRpcLog.filter((x) => x.method === 'SendUserCascadeMessage' && x.body?.cascadeId === domMutexConv).length,
+    0,
+    'DOM 全发在途期间绝不得并发调用 SendUserCascadeMessage 重复发送'
+  );
+
+  const domUnknownConv = 'conv-dom-timeout-guard';
+  const domPreCheckConv = 'conv-dom-precheck-retry';
+  domSendBehavior = 'confirmed_not_executed';
+  const domPreFail = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domPreCheckConv,
+    messageId: 'pm-dom-pre-1',
+    text: '前置未点击',
+    hasMedia: true,
+    sendAll: false
+  });
+  assert.equal(domPreFail.ok, false);
+  assert.equal(domPreFail.confirmedNotExecuted, true);
+  domSendBehavior = 'ok';
+  const domPreRetry = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domPreCheckConv,
+    messageId: 'pm-dom-pre-1',
+    text: '前置未点击',
+    hasMedia: true,
+    sendAll: false
+  });
+  assert.equal(domPreRetry.ok, true, 'DOM 确认未点击（confirmedNotExecuted=true）时允许安全重试');
+
+  domSendBehavior = 'timeout_after_click';
+  const domClicksBeforeTimeout = domQueuedActions.length;
+  const domTimeoutFirst = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domUnknownConv,
+    messageId: 'pm-dom-to-1',
+    text: '桌面点击后超时',
+    hasMedia: true,
+    sendAll: false
+  });
+  domSendBehavior = 'ok';
+  assert.equal(domTimeoutFirst.ok, false);
+  assert.equal(domTimeoutFirst.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domClicksBeforeTimeout + 1);
+  const domTimeoutRetry = await postJson({
+    action: 'send-queued-messages',
+    conversationId: domUnknownConv,
+    messageId: 'pm-dom-to-1',
+    text: '桌面点击后超时',
+    hasMedia: true,
+    sendAll: false
+  });
+  assert.equal(domTimeoutRetry.ok, false, 'DOM 回退已派发后超时结果未知时，重试同一排队项必须拦截');
+  assert.equal(domTimeoutRetry.outcomeUnknown, true);
+  assert.equal(domQueuedActions.length, domClicksBeforeTimeout + 1, '拦截后绝不得第二次触发 send-queued-dom');
+
+  // 4e. /api/action send 幂等保护：① 成功重放（含跨 >60s TTL 与容量淘汰后响应丢失重试）均不二次执行；② 已派发后超时抛错（结果未知）同 clientActionId 重试被严格拦截，且跨 >60s 过期及容量淘汰后仍不放行；③ confirmedNotExecuted=true 允许同 ID 安全重试
+  desktopSendCalls = 0;
+  sendBehavior = 'ok';
+  const send1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-b', text: '幂等消息' });
+  const send2 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-b', text: '幂等消息' });
+  assert.equal(send1.ok, true);
+  assert.equal(send2.ok, true);
+  assert.equal(send2.deduplicatedAction, true);
+  assert.equal(desktopSendCalls, 1, '相同 clientActionId 成功重放时服务端只得执行 1 次桌面发送');
+
+  sendBehavior = 'timeout_after_dispatch';
+  const sendTimeout1 = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-b', text: '可能已发出但超时' });
+  assert.equal(sendTimeout1.ok, false);
+  // 推进时钟超过 60s TTL (+180s)，再制造 3 条新的未知超时（超过 maxUnknownSendActions=2 触发容量淘汰）与 4 条正常成功（同时超过 maxRecentOkSendActions=2 和 maxCompletedSendActions=2 触发成功缓存淘汰）
+  fakeClockNow += 180_000;
+  for (const extraUnknownId of ['act-timeout-2', 'act-timeout-3', 'act-timeout-4']) {
+    await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraUnknownId, conversationId: 'conv-b', text: '填充未知容量' });
+  }
+  sendBehavior = 'ok';
+  for (const extraOkId of ['act-ok-fill-1', 'act-ok-fill-2', 'act-ok-fill-3', 'act-ok-fill-4']) {
+    await postJson({ action: 'send', clientId: 'cli-1', clientActionId: extraOkId, conversationId: 'conv-b', text: '填充成功容量' });
+  }
+  const callsBeforeEvictedRetry = desktopSendCalls;
+  const sendOkPostEvictRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-idem-1', conversationId: 'conv-b', text: '幂等消息' });
+  assert.equal(sendOkPostEvictRetry.ok, true, '此前已成功发送但响应丢失的 clientActionId 即使跨过 60s TTL 与双重容量淘汰，重试仍应幂等返回成功');
+  assert.equal(sendOkPostEvictRetry.deduplicatedAction, true);
+  assert.equal(desktopSendCalls, callsBeforeEvictedRetry, '成功记录跨 TTL 及容量淘汰后同 clientActionId 重试绝不得再次执行 performAction');
+
+  // 确定性布隆假阳性验证：completedBloomBytes=1（8 位）下精确搜索与已淘汰成功键位点 100% 重合的全新 clientActionId，证明新消息不会被静默判为已完成丢弃
+  const cryptoMod = require('crypto');
+  const evictedOkIds = ['act-idem-1', 'act-ok-fill-1', 'act-ok-fill-2'];
+  let simulatedBloomByte = 0;
+  const bloomBits8 = (cid) => {
+    const dig = cryptoMod.createHash('sha256').update(`cli-1::send::${cid}`).digest();
+    return [dig.readUInt16BE(0) % 8, dig.readUInt16BE(2) % 8, dig.readUInt16BE(4) % 8, dig.readUInt16BE(6) % 8];
+  };
+  for (const eid of evictedOkIds) {
+    for (const b of bloomBits8(eid)) simulatedBloomByte |= (1 << b);
+  }
+  let collidingNewActionId = '';
+  for (let n = 0; n < 5000; n++) {
+    const cand = `act-bloom-fp-new-${n}`;
+    if (bloomBits8(cand).every((b) => (simulatedBloomByte & (1 << b)) !== 0)) {
+      collidingNewActionId = cand;
+      break;
+    }
+  }
+  assert.ok(collidingNewActionId, '应确定性构造出命中已淘汰布隆位点的全新 clientActionId');
+  const callsBeforeBloomFp = desktopSendCalls;
+  const bloomFpRes = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: collidingNewActionId, conversationId: 'conv-b', text: '合法全新消息绝不可因布隆假阳性丢失' });
+  assert.equal(bloomFpRes.ok, true);
+  assert.notEqual(bloomFpRes.deduplicatedAction, true, '命中布隆假阳性的全新 clientActionId 不得被误标为 deduplicatedAction');
+  assert.equal(desktopSendCalls, callsBeforeBloomFp + 1, '命中布隆假阳性的合法新消息必须真实执行 performAction 而绝不被静默丢弃');
+
+  const callsBeforeTimeoutEvictedRetry = desktopSendCalls;
+  const sendTimeoutRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-timeout-1', conversationId: 'conv-b', text: '可能已发出但超时' });
+  assert.equal(sendTimeoutRetry.ok, false, '即使跨过 60s TTL 且经历未知/成功双重容量淘汰，原超时未知 clientActionId 仍必须被永久拦截');
+  assert.equal(sendTimeoutRetry.outcomeUnknown, true);
+  assert.equal(sendTimeoutRetry.deduplicatedUnknownRetry, true);
+  assert.equal(desktopSendCalls, callsBeforeTimeoutEvictedRetry, '过期及容量淘汰后重试未知 clientActionId 绝不得再次调用 performAction');
+
+  sendBehavior = 'confirmed_not_executed';
+  const sendPreFail = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-b', text: '首次未填入' });
+  assert.equal(sendPreFail.ok, false);
+  sendBehavior = 'ok';
+  const sendPreRetry = await postJson({ action: 'send', clientId: 'cli-1', clientActionId: 'act-pre-1', conversationId: 'conv-b', text: '首次未填入' });
+  assert.equal(sendPreRetry.ok, true, '明确 confirmedNotExecuted=true 时允许同一 clientActionId 重试成功');
+  assert.equal(desktopSendCalls, callsBeforeTimeoutEvictedRetry + 2);
+
+  // 5. 客户端 sendInput 在 busy 状态发送含 URL 双空格文本时，与快照归一化单空格排队项精确匹配，不追加重复 optimistic 排队项
+  const appHtml = remoteMod.buildMobileAppHtml();
+  assert.ok(appHtml.includes('normQueueCmp(q?.text) === normTargetTxt'), '前端 sendInput 乐观排队去重必须对连续空白做归一化比较');
+  assert.ok(appHtml.includes('sendableQueuedItems.length ? { queuedItems: sendableQueuedItems }'), '前端顶栏立即发送必须携带 queuedItems 以支持废弃接口逐条直发回退');
+});
 
 test('已配置 tailscaleCustomHost 或独立版未运行时跳过 tailscale CLI 且绝不调用 GUI 入口', async () => {
   const prevStateDir = process.env.AG_METER_STATE_DIR;
@@ -31740,7 +33483,7 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
   enhancer.dispose?.();
   env.sandbox.__AGContextMeter?.dispose?.();
 
-  // 3. 手机远程页（折叠开关联动 + 间距修复 + 左侧对话点阵导览条 + 客户端 JS 语法 + 版本门禁）
+  // 3. 手机远程页（折叠开关联动 + 间距修复 + 右侧对话点阵导览条释放左滑手势 + 客户端 JS 语法 + 版本门禁）
   const prevStateDir = process.env.AG_METER_STATE_DIR;
   const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-fold-sync-'));
   process.env.AG_METER_STATE_DIR = tmpState;
@@ -31751,7 +33494,7 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
   try {
     mc.savePluginSettings({ uiPreferences: { longFold: false } });
     mr.clearRemoteUiPrefsCacheForTests();
-    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: false }, '应读取磁盘 uiPreferences.longFold = false');
+    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: false, showApiReferenceCost: true }, '应读取磁盘 uiPreferences.longFold = false 且默认保留 showApiReferenceCost=true');
 
     const stateHandler = mr.createRemoteHttpHandler({
       enabled: true,
@@ -31781,7 +33524,7 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
 
     mc.savePluginSettings({ uiPreferences: { longFold: true } });
     mr.clearRemoteUiPrefsCacheForTests();
-    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: true }, '开启开关并刷新缓存后应恢复 longFold = true');
+    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: true, showApiReferenceCost: true }, '开启开关并刷新缓存后应恢复 longFold = true');
 
     const html = mr.buildMobileAppHtml();
     const scripts = html.match(/<script>([\s\S]*?)<\/script>/g) || [];
@@ -31812,11 +33555,15 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
   assert.ok(
     mrSrc.includes('id="msg-rail"') &&
     mrSrc.includes('id="msg-rail-tip"') &&
+    mrSrc.includes('position:absolute;right:2px;left:auto;') &&
+    mrSrc.includes('position:absolute;right:26px;left:auto;') &&
+    mrSrc.includes('body.has-msg-rail .messages{padding-right:24px}') &&
+    !mrSrc.includes('body.has-msg-rail .messages{padding-left:24px}') &&
     mrSrc.includes('renderMessageRail()') &&
     mrSrc.includes('updateMessageRailActive(') &&
     mrSrc.includes('scrollToRailMessage(') &&
     mrSrc.includes('#msg-rail'),
-    'mobile-remote.js 应包含左侧对话点阵导览条、气泡预览、同步高亮、点击与触摸拖拽跳转及左滑抽屉排重'
+    'mobile-remote.js 应将对话点阵导览条与向左展开气泡定位在聊天区右侧边缘，避免遮挡左边缘右滑抽屉手势'
   );
 
   // 4. 三方合并加固门禁与 5 语种 README 融合检查
@@ -31847,4 +33594,3518 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
       assert.ok(docText.includes(tok), `${path.basename(docPath)} 应同时保留 "${tok}"`);
     }
   }
+});
+
+test('#52 Phase B: 双端项目手动排序界面、手机独立排序态防滚动误触、乐观防回跳与错误回滚', async () => {
+  const remoteMod = require('../mobile-remote');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-52pb-'));
+  try {
+    const fakeHome = path.join(tmpDir, 'home');
+    const stateDir = path.join(tmpDir, 'state');
+    const configDir = path.join(tmpDir, 'config');
+    const projectsDiskDir = path.join(configDir, 'projects');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(projectsDiskDir, { recursive: true });
+    for (const [pid, name, mtimeSec] of [
+      ['proj-alpha', 'Alpha 项目', 1000],
+      ['proj-beta', 'Beta 项目', 2000],
+      ['proj-gamma', 'Gamma 项目', 3000]
+    ]) {
+      const wsDir = path.join(fakeHome, pid);
+      fs.mkdirSync(wsDir, { recursive: true });
+      const pFile = path.join(projectsDiskDir, `${pid}.json`);
+      fs.writeFileSync(pFile, JSON.stringify({ id: pid, name, workspacePaths: [wsDir] }), 'utf8');
+      fs.utimesSync(pFile, mtimeSec, mtimeSec);
+    }
+
+    const catStore = remoteMod.createSessionCatalogStore();
+    const catOpts = { stateDir, configDir, homeDir: fakeHome };
+    // 初始化顺序：proj-gamma, proj-beta, proj-alpha
+    await catStore.enrichSnapshot({
+      ok: true,
+      sessionId: 'c-gamma-1',
+      conversations: [
+        { id: 'c-gamma-1', title: 'Gamma 对话', projectId: 'proj-gamma', projectName: 'Gamma 项目', updatedAt: 3000_000, status: 'idle' },
+        { id: 'c-beta-1', title: 'Beta 对话', projectId: 'proj-beta', projectName: 'Beta 项目', updatedAt: 2000_000, status: 'idle' },
+        { id: 'c-alpha-1', title: 'Alpha 对话', projectId: 'proj-alpha', projectName: 'Alpha 项目', updatedAt: 1000_000, status: 'idle' },
+        { id: 'c-ung-1', title: '独立散落对话', projectId: 'ungrouped', projectName: '未归属项目', updatedAt: 4000_000, status: 'idle' }
+      ]
+    }, catOpts);
+    catStore.setProjectOrder(['proj-gamma', 'proj-beta', 'proj-alpha'], catOpts);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-gamma', 'proj-beta', 'proj-alpha']);
+
+    let failNextOrderSave = false;
+    let orderSaveDelayMs = 0;
+    let interceptOrderSaveFn = null;
+    const orderSaveQueueOutcomes = [];
+    const orderRequests = [];
+    const handler = remoteMod.createRemoteHttpHandler(
+      { enabled: true, port: 18765, token: 'tok-52pb', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
+      {
+        catalogStore: catStore,
+        catalogOptions: catOpts,
+        webPushManager: { observeCatalogItems: () => ({ events: [], completedUnreadCount: 0 }), getPublicInfo: () => ({}), addSubscription: () => ({}), removeSubscription: () => ({}), updatePrefs: () => ({}), broadcast: async () => ({}) },
+        fetchSnapshot: async () => {
+          const base = {
+            ok: true,
+            sessionId: 'c-gamma-1',
+            activeConversationId: 'c-gamma-1',
+            conversations: [
+              { id: 'c-gamma-1', title: 'Gamma 对话', projectId: 'proj-gamma', projectName: 'Gamma 项目', updatedAt: 3000_000, status: 'idle' },
+              { id: 'c-beta-1', title: 'Beta 对话', projectId: 'proj-beta', projectName: 'Beta 项目', updatedAt: 2000_000, status: 'idle' },
+              { id: 'c-alpha-1', title: 'Alpha 对话', projectId: 'proj-alpha', projectName: 'Alpha 项目', updatedAt: 1000_000, status: 'idle' },
+              { id: 'c-ung-1', title: '独立散落对话', projectId: 'ungrouped', projectName: '未归属项目', updatedAt: 4000_000, status: 'idle' }
+            ],
+            messages: []
+          };
+          return await catStore.enrichSnapshot(base, catOpts);
+        }
+      }
+    );
+
+    const invokeServer = async (method, urlPath, bodyObj, customHeaders = {}) => {
+      if (method === 'POST' && urlPath.startsWith('/api/projects/order')) {
+        orderRequests.push(bodyObj);
+        if (typeof interceptOrderSaveFn === 'function') {
+          await interceptOrderSaveFn(bodyObj, customHeaders);
+        }
+        if (orderSaveDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, orderSaveDelayMs));
+        }
+        if (orderSaveQueueOutcomes.length > 0) {
+          const mode = orderSaveQueueOutcomes.shift();
+          if (mode === 'fail') {
+            return { status: 500, json: { ok: false, error: '模拟交错写入失败' } };
+          }
+        }
+        if (failNextOrderSave) {
+          failNextOrderSave = false;
+          return { status: 500, json: { ok: false, error: '模拟磁盘写保护失败' } };
+        }
+      }
+      return await new Promise((resolve) => {
+        const raw = bodyObj ? Buffer.from(JSON.stringify(bodyObj), 'utf8') : Buffer.alloc(0);
+        let status = 200;
+        const chunks = [];
+        handler(
+          {
+            method,
+            url: urlPath + (urlPath.includes('?') ? '&' : '?') + 'token=tok-52pb',
+            headers: { host: '127.0.0.1:18765', 'content-type': 'application/json', ...customHeaders },
+            socket: { remoteAddress: '127.0.0.1' },
+            on(ev, cb) {
+              if (ev === 'data' && raw.length) cb(raw);
+              if (ev === 'end') cb();
+            },
+            pause() {},
+            destroy() {},
+            complete: true
+          },
+          {
+            setHeader() {},
+            getHeader: () => undefined,
+            writeHead(code) { status = code; },
+            end(b) {
+              if (b) chunks.push(Buffer.from(b));
+              resolve({ status, json: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') });
+            }
+          }
+        );
+      });
+    };
+
+    // 在轻量客户端沙箱中挂载完整 buildMobileAppHtml 主脚本（模拟手机端 pointer:coarse 默认非桌面环境）
+    const appHtml = remoteMod.buildMobileAppHtml();
+    assert.ok(appHtml.includes('id="btn-sort-projects"'), '侧边栏工具条应包含 #btn-sort-projects 按钮');
+    const scripts = Array.from(appHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)).map((m) => m[1]);
+    const mainScript = scripts.find((s) => s.includes('computeOrderedProjectsForView'));
+    assert.ok(mainScript, '客户端主脚本应包含项目排序状态机');
+
+    const elById = new Map();
+    const matchesSimpleSel = (node, sel) => {
+      for (const rawAlt of String(sel || '').split(',')) {
+        const alt = rawAlt.trim();
+        if (!alt) continue;
+        let ok = true;
+        const clsMatches = alt.matchAll(/\.([A-Za-z0-9_-]+)/g);
+        for (const m of clsMatches) {
+          if (!node.classList.contains(m[1])) { ok = false; break; }
+        }
+        if (!ok) continue;
+        const attrMatches = alt.matchAll(/\[([A-Za-z0-9_-]+)(?:="([^"]*)")?\]/g);
+        for (const m of attrMatches) {
+          const val = node.getAttribute(m[1]);
+          if (val === null || (m[2] !== undefined && val !== m[2])) { ok = false; break; }
+        }
+        if (ok) return true;
+      }
+      return false;
+    };
+    const makeEl = (id = '', parent = null) => {
+      const clsSet = new Set();
+      const attrs = new Map();
+      const listeners = new Map();
+      let rawHtml = '';
+      let children = [];
+      let customRect = { top: 0, bottom: 40, left: 0, right: 240, width: 240, height: 40 };
+      const el = {
+        id,
+        parentElement: parent,
+        hidden: false,
+        disabled: false,
+        textContent: '',
+        value: '',
+        dataset: {},
+        style: { setProperty() {}, removeProperty() {} },
+        get children() { return children; },
+        get innerHTML() { return rawHtml; },
+        set innerHTML(val) {
+          rawHtml = String(val || '');
+          children = [];
+          if (id === 'conv-list' && rawHtml.includes('proj-group')) {
+            const groupRe = /<div class="([^"]*proj-group[^"]*)"([^>]*)>([\s\S]*?)<\/div>(?=<div class="[^"]*proj-group|$)/g;
+            let idx = 0;
+            for (const gm of rawHtml.matchAll(groupRe)) {
+              const grp = makeEl('', el);
+              gm[1].trim().split(/\s+/).filter(Boolean).forEach((c) => grp.classList.add(c));
+              for (const am of gm[2].matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)) grp.setAttribute(am[1], am[2]);
+              const topY = idx * 48;
+              grp._setRect({ top: topY, bottom: topY + 40, left: 0, right: 240, width: 240, height: 40 });
+              idx += 1;
+              const inner = gm[3];
+              const headEl = makeEl('', grp);
+              headEl.classList.add('proj-head');
+              if (/class="proj-head"\s+draggable="true"/.test(inner)) headEl.setAttribute('draggable', 'true');
+              const hm = inner.match(/<span class="proj-drag-handle"([^>]*)>/);
+              if (hm) {
+                const hEl = makeEl('', headEl);
+                hEl.classList.add('proj-drag-handle');
+                for (const am of hm[1].matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)) hEl.setAttribute(am[1], am[2]);
+                headEl.appendChild(hEl);
+              }
+              for (const bm of inner.matchAll(/<button class="proj-sort-btn"([^>]*)>/g)) {
+                const bEl = makeEl('', headEl);
+                bEl.classList.add('proj-sort-btn');
+                for (const am of bm[1].matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)) bEl.setAttribute(am[1], am[2]);
+                if (/\bdisabled\b/.test(bm[1])) bEl.disabled = true;
+                headEl.appendChild(bEl);
+              }
+              grp.appendChild(headEl);
+              children.push(grp);
+            }
+          }
+        },
+        _setRect: (r) => { customRect = r; },
+        classList: {
+          add: (...ns) => ns.forEach((n) => clsSet.add(n)),
+          remove: (...ns) => ns.forEach((n) => clsSet.delete(n)),
+          toggle: (n, f) => {
+            const on = f === undefined ? !clsSet.has(n) : Boolean(f);
+            if (on) clsSet.add(n); else clsSet.delete(n);
+            return on;
+          },
+          contains: (n) => clsSet.has(n)
+        },
+        setAttribute: (k, v) => attrs.set(k, String(v)),
+        getAttribute: (k) => (attrs.has(k) ? attrs.get(k) : null),
+        removeAttribute: (k) => attrs.delete(k),
+        setPointerCapture() {},
+        closest: (sel) => {
+          let cur = el;
+          while (cur) {
+            if (matchesSimpleSel(cur, sel)) return cur;
+            cur = cur.parentElement || null;
+          }
+          return null;
+        },
+        contains: (other) => {
+          let cur = other;
+          while (cur) {
+            if (cur === el) return true;
+            cur = cur.parentElement || null;
+          }
+          return false;
+        },
+        focus() {},
+        blur() {},
+        scrollTo() {},
+        appendChild: (ch) => {
+          if (ch) { ch.parentElement = el; children.push(ch); }
+          return ch;
+        },
+        removeChild: () => {},
+        replaceChildren: () => { children = []; },
+        getBoundingClientRect: () => customRect,
+        addEventListener: (ev, fn) => {
+          if (!listeners.has(ev)) listeners.set(ev, []);
+          listeners.get(ev).push(fn);
+        },
+        dispatchEventAsync: async (evName, payload = {}) => {
+          for (const fn of (listeners.get(evName) || [])) {
+            await fn({ target: el, preventDefault() {}, stopPropagation() {}, ...payload });
+          }
+        },
+        dispatchClick: async (extra = {}) => {
+          await el.dispatchEventAsync('click', extra);
+        },
+        querySelectorAll: (sel) => {
+          const out = [];
+          const walk = (node) => {
+            for (const ch of (node.children || [])) {
+              if (matchesSimpleSel(ch, sel)) out.push(ch);
+              walk(ch);
+            }
+          };
+          walk(el);
+          return out;
+        },
+        querySelector: (sel) => el.querySelectorAll(sel)[0] || null
+      };
+      if (id) elById.set(id, el);
+      return el;
+    };
+    for (const id of [
+      'conv-list', 'btn-sort-projects', 'sort-projects-label', 'tab-proj-count', 'tab-conv-count',
+      'conv-view-tabs', 'drawer-nav-bar', 'status-dot', 'conv-title', 'sub-meta', 'conn-banner',
+      'conn-banner-msg', 'messages', 'approval-dock', 'queue-dock', 'chips', 'toast', 'new-chat-sub',
+      'btn-new-chat', 'new-chat-label', 'conv-project-badge', 'btn-follow-desktop', 'input', 'send-btn',
+      'model-label', 'perm-label', 'quota-pill', 'ctx-btn', 'ctx-btn-label', 'channel-pill', 'channel-pill-text'
+    ]) {
+      makeEl(id);
+    }
+
+    const toasts = [];
+    const storageMap = new Map();
+    const sessionMap = new Map();
+    sessionMap.set('ag_remote_client_id_v1', 'agb-reload-fixed-tab-01');
+    let isDesktopFinePointer = false;
+    const createClientSandbox = () => {
+      const sb = {
+        console,
+        URL,
+        URLSearchParams,
+        AbortController,
+        setTimeout: () => 1,
+        clearTimeout: () => {},
+        setInterval: () => 1,
+        clearInterval: () => {},
+        requestAnimationFrame: (fn) => { fn(); return 1; },
+        CSS: { escape: (s) => String(s) },
+        localStorage: {
+          getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+          setItem: (k, v) => storageMap.set(k, String(v)),
+          removeItem: (k) => storageMap.delete(k)
+        },
+        sessionStorage: {
+          getItem: (k) => (sessionMap.has(k) ? sessionMap.get(k) : null),
+          setItem: (k, v) => sessionMap.set(k, String(v)),
+          removeItem: (k) => sessionMap.delete(k)
+        },
+        innerWidth: 390,
+        innerHeight: 844,
+        visualViewport: { height: 844, offsetTop: 0, addEventListener() {}, removeEventListener() {} },
+        addEventListener() {},
+        removeEventListener() {},
+        dispatchEvent() {},
+        location: { origin: 'http://127.0.0.1:18765', href: 'http://127.0.0.1:18765/?token=tok-52pb', search: '?token=tok-52pb', protocol: 'http:', hostname: '127.0.0.1', reload() {} },
+        history: { replaceState() {} },
+        navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', setAppBadge: async () => {}, clearAppBadge: async () => {} },
+        Notification: undefined,
+        matchMedia: (q) => ({
+          matches: q.includes('pointer: fine') ? isDesktopFinePointer : false,
+          addEventListener() {},
+          removeEventListener() {}
+        }),
+        fetch: async (url, init = {}) => {
+          const u = new URL(url, 'http://127.0.0.1:18765');
+          const bodyObj = init.body ? JSON.parse(String(init.body)) : null;
+          const hdrs = init.headers && typeof init.headers === 'object' ? init.headers : {};
+          const normHdrs = {};
+          for (const [hk, hv] of Object.entries(hdrs)) normHdrs[hk.toLowerCase()] = String(hv);
+          const r = await invokeServer(init.method || 'GET', u.pathname + u.search, bodyObj, normHdrs);
+          return {
+            ok: r.status >= 200 && r.status < 300,
+            status: r.status,
+            json: async () => r.json,
+            text: async () => JSON.stringify(r.json)
+          };
+        },
+        document: {
+          documentElement: makeEl('html'),
+          body: makeEl('body'),
+          createElement: () => makeEl(),
+          createDocumentFragment: () => makeEl(),
+          getElementById: (id) => elById.get(id) || makeEl(id),
+          querySelector: () => null,
+          querySelectorAll: () => [],
+          addEventListener() {}
+        }
+      };
+      sb.window = sb;
+      sb.globalThis = sb;
+      vm.runInNewContext(mainScript, sb);
+      return sb;
+    };
+    const sandbox = createClientSandbox();
+
+    // 1. 首次拉取快照：验证手机端常规浏览态下不设置 draggable="true"（防上下滚动误触）、渲染子会话且 ungrouped 垫底
+    const initSnap = (await invokeServer('GET', '/api/snapshot')).json;
+    sandbox.__projSortHooks.renderSnapshot(initSnap, { reqStartEpoch: 1 });
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-gamma', 'proj-beta', 'proj-alpha']);
+    const normalHtml = elById.get('conv-list').innerHTML;
+    assert.ok(!normalHtml.includes('draggable="true"'), '手机端日常浏览态严禁开启 draggable 以免干扰列表滚动');
+    assert.ok(normalHtml.includes('class="proj-body"'), '日常浏览态应正常展开项目子会话');
+    assert.equal(elById.get('sort-projects-label').textContent, '排序');
+
+    // 2. 点击 [⇅ 排序] 进入手机独立排序态：标签切换为「完成」、自动收起子会话、ungrouped 标记固定垫底
+    await elById.get('btn-sort-projects').dispatchClick();
+    assert.equal(sandbox.__projSortHooks.getSortMode(), true);
+    assert.equal(elById.get('sort-projects-label').textContent, '完成');
+    assert.equal(elById.get('btn-sort-projects').classList.contains('active'), true);
+    const sortingHtml = elById.get('conv-list').innerHTML;
+    assert.ok(!sortingHtml.includes('class="proj-body"'), '排序编辑态应自动收起子会话防止误触');
+    assert.ok(sortingHtml.includes('draggable="true"'), '排序编辑态应开启拖拽支持');
+    assert.ok(sortingHtml.includes('固定垫底'), '排序编辑态应明确标识 ungrouped 固定垫底');
+
+    // ungrouped 桶任何移动或混排请求均须被安全忽略，绝不越过真实项目
+    const ungNoop1 = await sandbox.__projSortHooks.moveProjectOrderRelative('ungrouped', 'top');
+    const ungNoop2 = await sandbox.__projSortHooks.reorderProjectBeforeOrAfter('ungrouped', 'proj-gamma', 'before');
+    assert.equal(ungNoop1.noop, true);
+    assert.equal(ungNoop2.noop, true);
+    assert.equal(orderRequests.length, 0, '操作 ungrouped 不得发起排序请求');
+
+    // 3. 将 proj-alpha 置顶 + 将 proj-gamma 下移到 proj-beta 之后（模拟拖拽放置）并验证持久化写盘
+    const topRes = await sandbox.__projSortHooks.moveProjectOrderRelative('proj-alpha', 'top');
+    assert.equal(topRes.ok, true);
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-alpha', 'proj-gamma', 'proj-beta']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-gamma', 'proj-beta']);
+
+    const dragRes = await sandbox.__projSortHooks.reorderProjectBeforeOrAfter('proj-gamma', 'proj-beta', 'after');
+    assert.equal(dragRes.ok, true);
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-alpha', 'proj-beta', 'proj-gamma']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-beta', 'proj-gamma']);
+
+    // 4. 模拟在途旧快照（reqStartEpoch=1 早于手动排序完成代次）晚归：绝不得将项目顺序回跳为旧顺序
+    sandbox.__projSortHooks.renderSnapshot(initSnap, { reqStartEpoch: 1 });
+    assert.deepEqual(
+      Array.from(sandbox.__projSortHooks.getOrderedProjectIds()),
+      ['proj-alpha', 'proj-beta', 'proj-gamma'],
+      '在途旧快照晚归时乐观保护必须锁定新顺序不回跳'
+    );
+
+    // 新一轮权威快照（reqStartEpoch=999）到达后平稳接管并保持新顺序，ungrouped 仍在最末位
+    const freshSnap = (await invokeServer('GET', '/api/snapshot')).json;
+    sandbox.__projSortHooks.renderSnapshot(freshSnap, { reqStartEpoch: 999 });
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-alpha', 'proj-beta', 'proj-gamma']);
+    const renderedGroupIds = Array.from(elById.get('conv-list').innerHTML.matchAll(/data-proj-group-id="([^"]+)"/g)).map((m) => m[1]);
+    assert.deepEqual(renderedGroupIds, ['proj-alpha', 'proj-beta', 'proj-gamma', 'ungrouped']);
+
+    // 5. 服务端保存失败（HTTP 500）时自动回滚至原权威顺序，不残留错误乐观态
+    failNextOrderSave = true;
+    const failedMove = await sandbox.__projSortHooks.moveProjectOrderRelative('proj-gamma', 'top');
+    assert.equal(failedMove.ok, false);
+    assert.deepEqual(
+      Array.from(sandbox.__projSortHooks.getOrderedProjectIds()),
+      ['proj-alpha', 'proj-beta', 'proj-gamma'],
+      'POST /api/projects/order 失败时必须立即回滚恢复原权威顺序'
+    );
+
+    // 6. 真实 DOM 事件链验证：① 上移/下移按钮点击；② 手机排序态 pointerdown→pointermove→pointerup 手柄拖拽命中与落点持久化；③ 桌面宽屏 dragstart→dragover→drop→dragend 事件链
+    const convListEl = elById.get('conv-list');
+    // 当前顺序：proj-alpha(0), proj-beta(1), proj-gamma(2)
+    const downAlphaBtn = convListEl.querySelector('.proj-sort-btn[data-proj-id="proj-alpha"][data-proj-move="down"]');
+    assert.ok(downAlphaBtn && !downAlphaBtn.disabled, '首项 proj-alpha 下移按钮应可用');
+    const topAlphaBtn = convListEl.querySelector('.proj-sort-btn[data-proj-id="proj-alpha"][data-proj-move="top"]');
+    assert.equal(topAlphaBtn?.disabled, true, '首项置顶按钮应处于禁用态');
+    await convListEl.dispatchEventAsync('click', { target: downAlphaBtn });
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-beta', 'proj-alpha', 'proj-gamma']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-beta', 'proj-alpha', 'proj-gamma'], '点击下移按钮后服务端应持久化新顺序');
+
+    const upGammaBtn = convListEl.querySelector('.proj-sort-btn[data-proj-id="proj-gamma"][data-proj-move="up"]');
+    assert.ok(upGammaBtn && !upGammaBtn.disabled, '末项 proj-gamma 上移按钮应可用');
+    await convListEl.dispatchEventAsync('click', { target: upGammaBtn });
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-beta', 'proj-gamma', 'proj-alpha']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-beta', 'proj-gamma', 'proj-alpha'], '点击上移按钮后服务端应持久化新顺序');
+
+    // 手机排序态 pointer 手柄拖拽：将第 3 项 proj-alpha (idx=2) 拖到第 1 项 proj-beta (top:0..40, mid=20) 上半区 (clientY=8 → before)
+    const alphaHandle = convListEl.querySelector('.proj-drag-handle[data-proj-drag-handle="proj-alpha"]');
+    assert.ok(alphaHandle, '应渲染 proj-alpha 触摸拖拽手柄');
+    await convListEl.dispatchEventAsync('pointerdown', { target: alphaHandle, pointerId: 7, clientY: 100 });
+    await convListEl.dispatchEventAsync('pointermove', { target: alphaHandle, pointerId: 7, clientY: 8 });
+    const betaGroupDuringPointer = convListEl.querySelector('.proj-group[data-proj-group-id="proj-beta"]');
+    assert.equal(betaGroupDuringPointer?.classList.contains('drag-over-before'), true, 'pointermove 命中目标上半区时应标记 drag-over-before');
+    await convListEl.dispatchEventAsync('pointerup', { target: alphaHandle, pointerId: 7, clientY: 8 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-beta', 'proj-gamma'], '手机 pointer 释放后应持久化至 proj-beta 之前');
+
+    // 点击 [完成] 退出排序态，切换桌面精细指针环境验证原生 HTML5 dragstart→dragover→drop→dragend 事件链
+    await elById.get('btn-sort-projects').dispatchClick();
+    assert.equal(sandbox.__projSortHooks.getSortMode(), false);
+    assert.equal(elById.get('sort-projects-label').textContent, '排序');
+    assert.ok(convListEl.innerHTML.includes('class="proj-body"'), '退出排序态后应恢复项目子会话展示');
+
+    isDesktopFinePointer = true;
+    const postPointerSnap = (await invokeServer('GET', '/api/snapshot')).json;
+    sandbox.__projSortHooks.renderSnapshot(postPointerSnap, { reqStartEpoch: 1000 });
+    assert.ok(convListEl.innerHTML.includes('draggable="true"'), '桌面宽屏精细指针环境下常规态即允许直接拖拽项目头');
+
+    // 桌面拖拽：将第 1 项 proj-alpha (idx=0) 拖到第 3 项 proj-gamma (top:96..136, mid=116) 下半区 (clientY=128 → after)
+    const alphaHead = convListEl.querySelector('.proj-group[data-proj-group-id="proj-alpha"]')?.querySelector('.proj-head');
+    assert.ok(alphaHead, '应能定位 proj-alpha 头部节点');
+    await convListEl.dispatchEventAsync('dragstart', { target: alphaHead, dataTransfer: { setData() {}, effectAllowed: '' } });
+    await convListEl.dispatchEventAsync('dragover', { target: convListEl, clientY: 128, dataTransfer: { dropEffect: '' } });
+    const gammaGroupDuringDrag = convListEl.querySelector('.proj-group[data-proj-group-id="proj-gamma"]');
+    assert.equal(gammaGroupDuringDrag?.classList.contains('drag-over-after'), true, 'dragover 命中目标下半区时应标记 drag-over-after');
+    await convListEl.dispatchEventAsync('drop', { target: convListEl, clientY: 128, dataTransfer: {} });
+    await convListEl.dispatchEventAsync('dragend', { target: alphaHead });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-beta', 'proj-gamma', 'proj-alpha'], '桌面 drop 释放后应持久化至 proj-gamma 之后');
+
+    // 7. 并发与乱序交错回归验证：
+    // ① 服务端 clientOrderSeq 单调防乱序：同客户端 seq=20 先到达落盘，滞后的旧请求 seq=19 后到达必须返回 staleIgnored=true 且绝不覆盖 seq=20
+    const seq20Res = await invokeServer('POST', '/api/projects/order', {
+      projectOrder: ['proj-gamma', 'proj-alpha', 'proj-beta'],
+      clientOrderSeq: 20
+    }, { 'x-ag-client-id': 'race-client-1' });
+    assert.equal(seq20Res.json.ok, true);
+    const staleSeq19Res = await invokeServer('POST', '/api/projects/order', {
+      projectOrder: ['proj-alpha', 'proj-beta', 'proj-gamma'],
+      clientOrderSeq: 19
+    }, { 'x-ag-client-id': 'race-client-1' });
+    assert.equal(staleSeq19Res.json.ok, true);
+    assert.equal(staleSeq19Res.json.staleIgnored, true, '乱序滞后到达的旧 clientOrderSeq 必须被服务端拒绝覆盖');
+    const snapAfterOutOfOrder = (await invokeServer('GET', '/api/snapshot')).json;
+    assert.deepEqual(
+      snapAfterOutOfOrder.projects.filter((p) => p.id !== 'ungrouped').map((p) => p.id),
+      ['proj-gamma', 'proj-alpha', 'proj-beta'],
+      '乱序旧请求后拉取权威快照仍必须保持较新的 seq=20 顺序'
+    );
+    sandbox.__projSortHooks.renderSnapshot(snapAfterOutOfOrder, { reqStartEpoch: 1100 });
+
+    // ② 客户端单飞串行队列交错场景 i：A 在途失败 (500)、排队中的最新提交 B 成功 (200) → 最终顺序稳定为 B
+    orderSaveDelayMs = 20;
+    orderSaveQueueOutcomes.push('fail', 'ok');
+    const pFailA = sandbox.__projSortHooks.commitProjectOrder(['proj-alpha', 'proj-gamma', 'proj-beta']);
+    const pOkB = sandbox.__projSortHooks.commitProjectOrder(['proj-beta', 'proj-alpha', 'proj-gamma']);
+    const [resFailA, resOkB] = await Promise.all([pFailA, pOkB]);
+    orderSaveDelayMs = 0;
+    assert.equal(resFailA.ok, false);
+    assert.equal(resOkB.ok, true);
+    assert.deepEqual(Array.from(sandbox.__projSortHooks.getOrderedProjectIds()), ['proj-beta', 'proj-alpha', 'proj-gamma']);
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-beta', 'proj-alpha', 'proj-gamma']);
+
+    // ③ 客户端单飞串行队列交错场景 ii：A 在途成功 (200)、紧随其后的 B 失败 (500) → 最终回滚至已确认的 A（而非 A 之前的旧态）
+    orderSaveDelayMs = 20;
+    orderSaveQueueOutcomes.push('ok', 'fail');
+    const pOkA2 = sandbox.__projSortHooks.commitProjectOrder(['proj-alpha', 'proj-gamma', 'proj-beta']);
+    const pFailB2 = sandbox.__projSortHooks.commitProjectOrder(['proj-gamma', 'proj-beta', 'proj-alpha']);
+    const [resOkA2, resFailB2] = await Promise.all([pOkA2, pFailB2]);
+    orderSaveDelayMs = 0;
+    assert.equal(resOkA2.ok, true);
+    assert.equal(resFailB2.ok, false);
+    assert.deepEqual(
+      Array.from(sandbox.__projSortHooks.getOrderedProjectIds()),
+      ['proj-alpha', 'proj-gamma', 'proj-beta'],
+      'A 成功后 B 失败时客户端必须精确回滚至最近已确认的 A 顺序'
+    );
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-alpha', 'proj-gamma', 'proj-beta']);
+
+    // ④ 页面重载与跨页面实例在途迟到请求防覆盖回归：
+    //    相同稳定 clientId (agb-reload-fixed-tab-01)、不同 orderScopeId：
+    //    a) 旧页面先拉取快照登记旧实例域并触发一次慢速排序保存（挂起在途尚未送达服务端），且此前曾接受高序号 seq=99；
+    //    b) 页面重载创建新页面实例（清空序号缓存键使新页从 seq=1 起算），新页面拉取快照并完成首次重新排序（先到达服务端并真实落盘）；
+    //    c) 随后放行旧页面的在途慢请求晚于新页面到达服务端 → 断言旧页面迟到请求返回 staleIgnored=true，持久化顺序及后续权威快照均严格保持新页面顺序！
+    await invokeServer('POST', '/api/projects/order', {
+      projectOrder: ['proj-alpha', 'proj-gamma', 'proj-beta'],
+      orderScopeId: 'agb-reload-fixed-tab-01:000001-legacy',
+      clientOrderSeq: 99
+    }, { 'x-ag-client-id': 'agb-reload-fixed-tab-01' });
+
+    const preReloadPage = createClientSandbox();
+    await preReloadPage.__projSortHooks.renderSnapshot((await invokeServer('GET', '/api/snapshot', null, {
+      'x-ag-client-id': 'agb-reload-fixed-tab-01',
+      'x-ag-order-scope': orderRequests[orderRequests.length - 1]?.orderScopeId || ''
+    })).json, { reqStartEpoch: 1 });
+    // 让 preReloadPage 真实执行一次 fetchSnapshot 以通过 authHeaders 自动登记自身旧实例 X-AG-Order-Scope
+    let oldScopeCaptured = '';
+    let releaseStaleOldPageSave = null;
+    const staleOldPageGate = new Promise((r) => { releaseStaleOldPageSave = r; });
+    interceptOrderSaveFn = async (bodyObj) => {
+      if (!oldScopeCaptured) {
+        oldScopeCaptured = bodyObj.orderScopeId;
+        await staleOldPageGate;
+      }
+    };
+    const inflightOldPageSavePromise = preReloadPage.__projSortHooks.commitProjectOrder(['proj-beta', 'proj-gamma', 'proj-alpha']);
+    await new Promise((r) => setTimeout(r, 15));
+    assert.ok(oldScopeCaptured.startsWith('agb-reload-fixed-tab-01:'), '旧页面在途请求应携带旧实例专属 orderScopeId');
+
+    // 页面重载：同一 sessionStorage clientId，即使清空序号键从 seq=1 重新起算，新页面首次重排也必须成功落盘
+    sessionMap.delete('ag_remote_proj_order_seq_v1');
+    const reloadedSandbox = createClientSandbox();
+    const snapOnReload = (await invokeServer('GET', '/api/snapshot')).json;
+    reloadedSandbox.__projSortHooks.renderSnapshot(snapOnReload, { reqStartEpoch: 1 });
+    const postReloadOrderRes = await reloadedSandbox.__projSortHooks.commitProjectOrder(['proj-gamma', 'proj-beta', 'proj-alpha']);
+    const newScopeCaptured = orderRequests[orderRequests.length - 1]?.orderScopeId || '';
+    assert.notEqual(newScopeCaptured, oldScopeCaptured, '重载后新页面实例必须生成不同于旧页面的 orderScopeId');
+    assert.equal(postReloadOrderRes.ok, true);
+    assert.notEqual(postReloadOrderRes.staleIgnored, true, '页面重载复用同一 clientId 后首次重排绝不得被误判为 staleIgnored');
+    assert.deepEqual(catStore.getProjectOrder(catOpts), ['proj-gamma', 'proj-beta', 'proj-alpha'], '新页面保存必须真实写入服务端持久化顺序');
+
+    // 放行旧页面的在途迟到请求，使其在新页面保存完成后才由服务端处理
+    interceptOrderSaveFn = null;
+    releaseStaleOldPageSave();
+    const lateOldPageRes = await inflightOldPageSavePromise;
+    assert.equal(lateOldPageRes.ok, true);
+    assert.equal(lateOldPageRes.staleIgnored, true, '相同 clientId 下旧页面实例迟到的在途请求必须被服务端拦截为 staleIgnored');
+    assert.deepEqual(
+      catStore.getProjectOrder(catOpts),
+      ['proj-gamma', 'proj-beta', 'proj-alpha'],
+      '旧页面迟到请求处理后，服务端持久化顺序必须严格保持新页面顺序不变'
+    );
+    const snapAfterLateOldReq = (await invokeServer('GET', '/api/snapshot')).json;
+    assert.deepEqual(
+      snapAfterLateOldReq.projects.filter((p) => p.id !== 'ungrouped').map((p) => p.id),
+      ['proj-gamma', 'proj-beta', 'proj-alpha'],
+      '后续权威快照必须保持新页面已保存的顺序，不被旧页面迟到请求回退'
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏好、底部胶囊高水位预警一键压缩与远程端同步', async () => {
+  // 1. 桌面统一设置面板：默认降噪状态与三项可逆偏好切换 + 持久化同步
+  {
+    const env = createDomEnv();
+    vm.runInContext(RENDERER_SRC, env.sandbox);
+    vm.runInContext(ENHANCER_SRC, env.sandbox);
+    const api = env.sandbox.__AGContextMeter;
+    const host = env.getHost();
+    const shadow = env.getShadow();
+
+    assert.ok(shadow.getElementById('settings-card-context-display'), '应包含上下文与指标精简显示设置卡片');
+    assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
+      contextDisplayMode: 'both',
+      showTopbarSpeed: true,
+      showApiReferenceCost: true
+    }, '默认应完整保留有用信息：同时显示顶栏与底部胶囊、显示顶栏内联速度、显示详情面板 API 参考费用');
+    assert.equal(host.getAttribute('data-hide-context-ring'), null, '默认 both 模式应保留顶栏上下文圆环');
+    assert.equal(host.getAttribute('data-hide-inline-speed'), null, '默认应显示顶栏内联 tok/s 徽章');
+    assert.equal(host.getAttribute('data-hide-api-cost'), null, '默认应显示桌面端详情面板 API 参考估算金额');
+    assert.equal(env.doc.documentElement.getAttribute('data-ag-context-display-mode'), 'both');
+
+    // 切换上下文显示位置到「输入框底部胶囊」并隐藏速度与 API 参考费用
+    shadow.getElementById('set-ctx-pos-footer').click();
+    const chkSpeed = shadow.getElementById('set-show-topbar-speed');
+    chkSpeed.checked = false;
+    chkSpeed.dispatchEvent({ type: 'change', target: chkSpeed });
+    const chkCost = shadow.getElementById('set-show-api-ref-cost');
+    chkCost.checked = false;
+    chkCost.dispatchEvent({ type: 'change', target: chkCost });
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(api.getContextDisplayPrefs().contextDisplayMode, 'footer');
+    assert.equal(host.getAttribute('data-hide-context-ring'), 'true', '选底部胶囊模式时应隐藏顶栏圆环');
+    assert.equal(host.getAttribute('data-hide-inline-speed'), 'true', '关闭速度开关后应隐藏顶栏内联 tok/s');
+    assert.equal(host.getAttribute('data-hide-api-cost'), 'true', '关闭费用开关后应隐藏详情面板 API 参考费用');
+    assert.equal(env.doc.documentElement.getAttribute('data-ag-context-display-mode'), 'footer');
+    assert.equal(env.localStorage.getItem('ag_suite_context_display_mode'), 'footer');
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.contextDisplayMode === 'footer'));
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.showTopbarSpeed === false));
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.showApiReferenceCost === false));
+
+    // 切换到「右上角顶栏」并开启速度与 API 参考费用
+    shadow.getElementById('set-ctx-pos-topbar').click();
+    chkSpeed.checked = true;
+    chkSpeed.dispatchEvent({ type: 'change', target: chkSpeed });
+    chkCost.checked = true;
+    chkCost.dispatchEvent({ type: 'change', target: chkCost });
+    await new Promise((r) => setTimeout(r, 15));
+
+    assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
+      contextDisplayMode: 'topbar',
+      showTopbarSpeed: true,
+      showApiReferenceCost: true
+    });
+    assert.equal(host.getAttribute('data-hide-context-ring'), null);
+    assert.equal(host.getAttribute('data-hide-inline-speed'), null, '开启速度开关后应恢复顶栏内联 tok/s');
+    assert.equal(host.getAttribute('data-hide-api-cost'), null, '开启费用开关后应恢复详情面板 API 参考费用');
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.showTopbarSpeed === true));
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.showApiReferenceCost === true));
+
+    // 在 API 参考金额子视图打开时关闭费用开关，应自动切回 Token 统计视图
+    shadow.getElementById('badge-tokens').click();
+    shadow.getElementById('tok-view-cost').click();
+    assert.equal(shadow.getElementById('cost-estimate-card').style.display, 'block');
+    chkCost.checked = false;
+    chkCost.dispatchEvent({ type: 'change', target: chkCost });
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(host.getAttribute('data-hide-api-cost'), 'true');
+    assert.equal(shadow.getElementById('cost-estimate-card').style.display, 'none', '关闭参考费用开关后应自动退回 Token 统计视图');
+
+    // 点击「恢复默认」一键还原信息保留默认态
+    shadow.getElementById('btn-reset-context-display').click();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
+      contextDisplayMode: 'both',
+      showTopbarSpeed: true,
+      showApiReferenceCost: true
+    });
+
+    env.sandbox.__AGEnhancer?.dispose?.();
+    api.dispose?.();
+  }
+
+  // 2. 底部脉冲胶囊：默认 both 模式常温常驻展示有用指标；切到 topbar 模式时平时自动收起，>=240K / >=328K / 缓存失效自动浮现预警与一键 /compact 入口
+  {
+    const envCap = createDomEnv();
+    vm.runInContext(CAPSULE_SRC, envCap.sandbox);
+    const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
+    assert.ok(capsApi);
+    assert.equal(capsApi.getContextDisplayMode(), 'both', '默认上下文显示模式应为 both');
+
+    const composerWrap = envCap.doc.createElement('div');
+    composerWrap.className = 'surface-composer';
+    const editorEl = envCap.doc.createElement('textarea');
+    const sendBtnEl = envCap.doc.createElement('button');
+    sendBtnEl.setAttribute('data-testid', 'send-button');
+    let fallbackSendClicks = 0;
+    sendBtnEl.click = () => { fallbackSendClicks += 1; };
+    const footerEl = envCap.doc.createElement('div');
+    footerEl.className = 'agy-composer-footer';
+    const permBtn = envCap.doc.createElement('button');
+    permBtn.setAttribute('data-testid', 'permissions-selector-trigger');
+    footerEl.appendChild(permBtn);
+    composerWrap.appendChild(editorEl);
+    composerWrap.appendChild(sendBtnEl);
+    composerWrap.appendChild(footerEl);
+    envCap.doc.body.appendChild(composerWrap);
+
+    // 2a-0: 默认 both 模式下常态低水位 (120K / 512K) 仍保留底部实时缓存与速度胶囊
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 120000,
+      contextLimit: 512000,
+      usagePercent: 23.4,
+      cacheHitRate: 92.0,
+      hasPreciseSnapshot: true,
+      tokPerSec: 95,
+      cacheReadTokens: 110000,
+      inputTokens: 10000
+    });
+    const capBtn = footerEl.querySelector('[data-agy-context-capsule="1"]');
+    const compactBtn = footerEl.querySelector('[data-agy-compact-btn="1"]');
+    assert.ok(capBtn && compactBtn);
+    assert.equal(capBtn.getAttribute('data-agy-display-mode'), 'both');
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'false', '默认 both 模式下常态也应保留底部脉冲胶囊展示缓存命中率与速率');
+
+    // 2a: 切换至 topbar 极简模式 -> 常态低水位自动收起胶囊且隐藏一键压缩按钮
+    envCap.localStorage.setItem('ag_suite_context_display_mode', 'topbar');
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 120000,
+      contextLimit: 512000,
+      usagePercent: 23.4,
+      cacheHitRate: 92.0,
+      hasPreciseSnapshot: true,
+      tokPerSec: 95,
+      cacheReadTokens: 110000,
+      inputTokens: 10000
+    });
+    assert.equal(capBtn.getAttribute('data-agy-display-mode'), 'topbar');
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'true', 'topbar 模式下常态低水位应自动隐藏底部重复胶囊');
+    assert.equal(compactBtn.hidden, true, '常态低水位不应显示一键压缩按钮');
+
+    // 2b: 240K+ 高水位 (256K / 512K) -> 自动浮现紧凑预警与一键压缩按钮
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 256000,
+      contextLimit: 512000,
+      usagePercent: 50.0,
+      cacheHitRate: 90.0,
+      hasPreciseSnapshot: true,
+      tokPerSec: 88,
+      cacheReadTokens: 230000,
+      inputTokens: 26000
+    });
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'false', '满 240K 高水位应自动浮现底部预警胶囊');
+    assert.equal(capBtn.getAttribute('data-agy-alert-state'), 'warn');
+    assert.match(capBtn.querySelector('.agy-ctx-alert-tag')?.textContent || '', /高水位|High Context/);
+    assert.equal(compactBtn.hidden, false, '高水位时应展示一键 /compact 按钮');
+
+    // 2c: 缓存失效 (cacheDropDetected) -> 升级为 drop 告警并支持点击一键触发 /compact
+    let enhancerCompactCalls = 0;
+    envCap.win.__AGEnhancer = {
+      triggerCompact: async () => {
+        enhancerCompactCalls += 1;
+        return true;
+      }
+    };
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 195000,
+      contextLimit: 512000,
+      usagePercent: 38.1,
+      cacheHitRate: 4.0,
+      hasPreciseSnapshot: true,
+      cacheDropDetected: true,
+      tokPerSec: 40,
+      cacheReadTokens: 8000,
+      inputTokens: 187000
+    });
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'false', '缓存失效时即使未满 240K 也必须立即浮现预警胶囊');
+    assert.equal(capBtn.getAttribute('data-agy-alert-state'), 'drop');
+    assert.match(capBtn.querySelector('.agy-ctx-alert-tag')?.textContent || '', /缓存失效|Cache Expired/);
+    assert.equal(compactBtn.hidden, false);
+    compactBtn.dispatchEvent({ type: 'click', preventDefault() {}, stopPropagation() {} });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(enhancerCompactCalls, 1, '点击一键压缩按钮应调用 __AGEnhancer.triggerCompact');
+
+    // 增强器异常安全护栏：
+    // ① 若增强器已发送 /compact 并清空编辑器后在收尾阶段抛错（执行状态不明），严禁回退再次自动发送导致重复压缩
+    editorEl.value = '';
+    fallbackSendClicks = 0;
+    envCap.win.__AGEnhancer = {
+      triggerCompact: async () => {
+        editorEl.value = '/compact';
+        sendBtnEl.click();
+        editorEl.value = '';
+        throw new Error('post-send toast render fault');
+      }
+    };
+    const unknownOutcomeRes = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(unknownOutcomeRes.ok, false);
+    assert.equal(unknownOutcomeRes.confirmedNotExecuted, false);
+    assert.equal(unknownOutcomeRes.reason, 'enhancer_unknown_outcome', '增强器抛错且未声明 confirmedNotExecuted 时必须阻断自动补发');
+    assert.equal(editorEl.value, '', '已发送清空后的编辑器不得被回退重新写入 /compact');
+    assert.equal(fallbackSendClicks, 1, '增强器已发送一次后抛错，绝不得二次点击发送按钮');
+
+    // ② 仅当异常显式标记 confirmedNotExecuted: true（确证尚未执行）时允许进入独立回退，且仍须严格保护非空草稿
+    fallbackSendClicks = 0;
+    editorEl.value = '用户正在撰写的未发送草稿';
+    envCap.win.__AGEnhancer = {
+      triggerCompact: async () => {
+        const err = new Error('enhancer precheck not ready');
+        err.confirmedNotExecuted = true;
+        throw err;
+      }
+    };
+    const draftProtectedOnConfirmedPreErr = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(draftProtectedOnConfirmedPreErr.ok, false);
+    assert.equal(draftProtectedOnConfirmedPreErr.reason, 'draft_protected', '确证未执行而回退时遇到 textarea 非空草稿仍必须拒绝覆盖与误发');
+    assert.equal(editorEl.value, '用户正在撰写的未发送草稿', 'textarea 草稿原文必须完整保留');
+    assert.equal(fallbackSendClicks, 0, '存在未发送草稿时绝不能点击发送按钮');
+
+    editorEl.value = '';
+    const okOnConfirmedPreErrEmpty = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(okOnConfirmedPreErrEmpty.ok, true);
+    assert.equal(okOnConfirmedPreErrEmpty.method, 'fallback_button', '确证未执行且编辑器为空时允许回退填入并发送 /compact');
+    assert.equal(editorEl.value, '/compact');
+    assert.equal(fallbackSendClicks, 1);
+
+    delete envCap.win.__AGEnhancer;
+    editorEl.value = '第二段未发草稿';
+    const textareaProtectedRes = await capsApi.triggerCompactAction(null, compactBtn);
+    assert.equal(textareaProtectedRes.ok, false);
+    assert.equal(textareaProtectedRes.reason, 'draft_protected', '无增强器时 textarea 非空草稿必须受保护不误发');
+    assert.equal(editorEl.value, '第二段未发草稿');
+    assert.equal(fallbackSendClicks, 1, '不得因非空草稿增加发送点击次数');
+
+    // 验证 contenteditable 编辑器（非空草稿保护 + 空草稿自动填入发送）
+    const ceComposer = envCap.doc.createElement('div');
+    ceComposer.className = 'surface-composer';
+    const ceEditor = envCap.doc.createElement('div');
+    ceEditor.setAttribute('contenteditable', 'true');
+    const ceSendBtn = envCap.doc.createElement('button');
+    ceSendBtn.setAttribute('data-testid', 'send-button');
+    let ceSendClicks = 0;
+    ceSendBtn.click = () => { ceSendClicks += 1; };
+    const ceFooter = envCap.doc.createElement('div');
+    ceFooter.className = 'agy-composer-footer';
+    const ceCompactBtn = envCap.doc.createElement('button');
+    ceFooter.appendChild(ceCompactBtn);
+    ceComposer.appendChild(ceEditor);
+    ceComposer.appendChild(ceSendBtn);
+    ceComposer.appendChild(ceFooter);
+    envCap.doc.body.appendChild(ceComposer);
+
+    ceEditor.textContent = '富文本输入框中的未发草稿';
+    const ceDraftBlocked = await capsApi.triggerCompactAction(null, ceCompactBtn);
+    assert.equal(ceDraftBlocked.ok, false);
+    assert.equal(ceDraftBlocked.reason, 'draft_protected', 'contenteditable 非空草稿必须拒绝发送');
+    assert.equal(ceEditor.textContent, '富文本输入框中的未发草稿');
+    assert.equal(ceSendClicks, 0);
+
+    ceEditor.textContent = '';
+    const ceEmptySent = await capsApi.triggerCompactAction(null, ceCompactBtn);
+    assert.equal(ceEmptySent.ok, true);
+    assert.equal(ceEmptySent.method, 'fallback_button');
+    assert.equal(ceEditor.textContent, '/compact');
+    assert.equal(ceSendClicks, 1);
+
+    // 2d: 切换为 footer 或 both 模式时，常态低水位也常驻显示胶囊，但一键压缩按钮仅在告警态出现
+    envCap.localStorage.setItem('ag_suite_context_display_mode', 'footer');
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 80000,
+      contextLimit: 512000,
+      usagePercent: 15.6,
+      cacheHitRate: 95.0,
+      hasPreciseSnapshot: true,
+      tokPerSec: 110,
+      cacheReadTokens: 76000,
+      inputTokens: 4000
+    });
+    assert.equal(capBtn.getAttribute('data-agy-display-mode'), 'footer');
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'false', 'footer 模式下常态低水位应常驻显示胶囊');
+    assert.equal(compactBtn.hidden, true, 'footer 模式下常态低水位仍不显示高水位压缩按钮');
+
+    envCap.win.__AGY_CTX_CAPSULE_DISPOSE__();
+  }
+
+  // 3. 远程端：正常在线态隐藏重复 #sub-meta（连接/切通道/异常态保留）、物理上限辅助说明与 showApiReferenceCost 零延迟同步
+  {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-50pb-remote-'));
+    const prevStateDir = process.env.AG_METER_STATE_DIR;
+    const prevAgDir = process.env.AG_DIR;
+    const prevAppData = process.env.APPDATA;
+    process.env.AG_METER_STATE_DIR = tmpDir;
+    process.env.AG_DIR = tmpDir;
+    delete process.env.APPDATA;
+    delete require.cache[require.resolve('../meter-collector')];
+    delete require.cache[require.resolve('../mobile-remote')];
+    const isolatedCollector = require('../meter-collector');
+    const remote = require('../mobile-remote');
+    try {
+      remote.clearRemoteUiPrefsCacheForTests();
+      assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, true, '远程端默认应保留 API 参考费用展示');
+
+      isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
+      assert.equal(
+        remote.resolveCachedRemoteUiPrefs().showApiReferenceCost,
+        false,
+        '保存 settings.json 后无需等待 2 秒缓存过期即可立即读取最新 showApiReferenceCost=false'
+      );
+      isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
+      assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, true);
+      const savedRemoteCfg = remote.loadOrCreateRemoteConfig();
+      const activeTok = savedRemoteCfg.token;
+
+      const html = remote.buildMobileAppHtml({ deviceName: 'Mac' });
+      const scriptBlocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+      const mainScript = scriptBlocks[scriptBlocks.length - 1];
+      const byId = {};
+      const makeEl = (id) => ({
+        id,
+        hidden: false,
+        textContent: '',
+        innerHTML: '',
+        value: '',
+        style: { setProperty() {} },
+        dataset: {},
+        className: '',
+        classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+        setAttribute(k, v) { this[k] = String(v); },
+        getAttribute(k) { return this[k] ?? null; },
+        removeAttribute(k) { delete this[k]; },
+        appendChild() {},
+        contains: () => false,
+        focus() {},
+        blur() {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener() {},
+        removeEventListener() {}
+      });
+      for (const id of [
+        'status-dot', 'conv-title', 'conv-project-badge', 'sub-meta', 'conn-banner', 'conn-banner-msg',
+        'quota-main', 'ctx-badge', 'ctx-top-val', 'usage-top-val', 'model-inline-label', 'perm-inline-label',
+        'btn-new-chat', 'new-chat-label', 'new-chat-sub', 'btn-follow-desktop', 'btn-context-panel',
+        'btn-usage-panel', 'btn-quota', 'btn-drawer', 'chips', 'approval-dock', 'queue-dock', 'messages',
+        'context-drawer', 'usage-drawer', 'quota-drawer', 'channel-pill-label', 'btn-channel-pill',
+        'prompt', 'btn-send', 'toast'
+      ]) {
+        byId[id] = makeEl(id);
+      }
+      byId['context-drawer'].hidden = false;
+      byId['usage-drawer'].hidden = false;
+      byId['quota-drawer'].hidden = true;
+
+      const timers = new Set();
+      const sandbox = {
+        console, URL, URLSearchParams, Math, Date, JSON, Promise, Set, Map, RegExp, Array, Object, Number, String, Boolean,
+        encodeURIComponent, decodeURIComponent, parseInt, parseFloat, isNaN, isFinite,
+        navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', serviceWorker: null },
+        location: { origin: 'http://127.0.0.1:18765', href: 'http://127.0.0.1:18765/?t=' + activeTok, search: '?t=' + activeTok, pathname: '/', hash: '', protocol: 'http:', reload() {} },
+        history: { replaceState() {} },
+        localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+        sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+        document: {
+          documentElement: makeEl('html'),
+          body: makeEl('body'),
+          getElementById: (id) => byId[id] || makeEl(id),
+          querySelector: () => makeEl('__q'),
+          querySelectorAll: () => [],
+          createElement: (tag) => makeEl(tag),
+          addEventListener() {}
+        },
+        matchMedia: () => ({ matches: false, addEventListener() {} }),
+        innerWidth: 390, innerHeight: 844, visualViewport: null,
+        setTimeout: (fn, ms) => { const t = setTimeout(fn, Math.min(Number(ms) || 0, 30)); if (t.unref) t.unref(); timers.add(t); return t; },
+        clearTimeout: (t) => clearTimeout(t),
+        fetch: async (reqUrl) => {
+          const u = String(reqUrl || '');
+          if (u.includes('/api/context') || u.includes('/api/snapshot')) {
+            let statusCode = 200;
+            let rawBody = '';
+            const parsedU = new URL(u, 'http://127.0.0.1:18765');
+            if (!parsedU.searchParams.has('token')) parsedU.searchParams.set('token', activeTok);
+            await remoteHttpHandler(
+              {
+                method: 'GET',
+                url: parsedU.pathname + parsedU.search,
+                headers: { host: '127.0.0.1:18765', 'x-ag-remote-token': activeTok },
+                socket: { remoteAddress: '127.0.0.1' }
+              },
+              {
+                setHeader() {},
+                getHeader: () => undefined,
+                writeHead(sc) { statusCode = sc; },
+                end(buf) { rawBody = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf || ''); }
+              }
+            );
+            return { ok: statusCode >= 200 && statusCode < 300, status: statusCode, json: async () => JSON.parse(rawBody || '{}') };
+          }
+          return { ok: true, status: 200, json: async () => ({ ok: true }) };
+        }
+      };
+      const baseSnap = {
+        ok: true,
+        sessionId: 'conv-50pb',
+        title: '物品库存及管理系统',
+        currentProjectId: 'p-essay',
+        currentProjectName: 'essay-gen',
+        model: 'Gemini 4 Neon (Medium)',
+        contextBadge: '297k/512k (57.9%)',
+        pulseText: '137.7 tok/s · 297k/512k (57.9%)',
+        contextPanel: {
+          usedTokens: 297000,
+          limitTokens: 512000,
+          physicalMaxTokens: 1048576,
+          usagePercent: 57.9,
+          tokPerSec: 137.7,
+          lastDurationSec: 4.2,
+          cacheHitRate: 88.5,
+          modelDisplayName: 'Gemini 4 Neon (Medium)',
+          roundCostText: '本轮 $0.12',
+          sessionCostText: '会话累计 $1.45'
+        },
+        usageSummary: { todayTokens: 50000, sevenDayTokens: 200000, thirtyDayTokens: 800000, totalTokens: 1200000, totalCostUsd: 18.6 },
+        messages: [],
+        projects: [{ id: 'p-essay', name: 'essay-gen' }],
+        conversations: [{ id: 'conv-50pb', title: '物品库存及管理系统', projectId: 'p-essay', projectName: 'essay-gen', status: 'idle' }],
+        pendingApprovals: [],
+        pendingPrompts: []
+      };
+      const remoteHttpHandler = remote.createRemoteHttpHandler(savedRemoteCfg, {
+        fetchSnapshot: async () => ({ ...baseSnap })
+      });
+      const invokeRemoteApi = async (urlPath) => {
+        let rawBody = '';
+        const sep = urlPath.includes('?') ? '&' : '?';
+        await remoteHttpHandler(
+          {
+            method: 'GET',
+            url: `${urlPath}${sep}token=${activeTok}`,
+            headers: { host: '127.0.0.1:18765', 'x-ag-remote-token': activeTok },
+            socket: { remoteAddress: '127.0.0.1' }
+          },
+          {
+            setHeader() {},
+            getHeader: () => undefined,
+            writeHead() {},
+            end(buf) { rawBody = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf || ''); }
+          }
+        );
+        return JSON.parse(rawBody || '{}');
+      };
+
+      sandbox.window = sandbox;
+      sandbox.addEventListener = () => {};
+      const tailIdx = mainScript.lastIndexOf('})();');
+      const hooked = mainScript.slice(0, tailIdx) +
+        '\nglobalThis.__test50pb = { renderSnapshot, renderContextDrawer, renderUsageDrawer, openTopDrawer, fetchContextPanelData };\n' +
+        mainScript.slice(tailIdx);
+      try {
+        vm.runInNewContext(hooked, sandbox);
+        assert.equal(byId['sub-meta'].hidden, false, '初始连接探测态 #sub-meta 应可见');
+        assert.match(byId['sub-meta'].textContent, /正在连接/);
+
+        const snapInitial = await invokeRemoteApi('/api/snapshot');
+        assert.equal(snapInitial.showApiReferenceCost, true, JSON.stringify(snapInitial));
+        sandbox.__test50pb.renderSnapshot(snapInitial);
+        assert.equal(byId['sub-meta'].hidden, true, '正常在线态必须隐藏 #sub-meta 避免与顶栏 [58%] 重复');
+        assert.equal(byId['conv-project-badge'].textContent, 'essay-gen');
+        assert.equal(byId['ctx-top-val'].textContent, '58%');
+
+        // 先真实拉取一次 /api/context 使客户端写入 cachedContextResp (showApiReferenceCost: true)
+        const ctxInitial = await sandbox.__test50pb.fetchContextPanelData();
+        assert.equal(ctxInitial.ok, true);
+        assert.equal(ctxInitial.showApiReferenceCost, true);
+
+        // 上下文抽屉应展示 1M 物理上限辅助说明且默认保留渲染 $ 参考费用
+        assert.match(byId['context-drawer'].innerHTML, /data-ctx-phys-note="1"/, '应展示物理窗口上限辅助说明');
+        assert.match(byId['context-drawer'].innerHTML, /模型物理上限：1M（当前按 512k 自动压缩线计算）/);
+        assert.ok(byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '默认开启参考费用时上下文抽屉应渲染 $ 金额');
+        assert.ok(byId['usage-drawer'].innerHTML.includes('API 参考等值'), '默认开启参考费用时用量抽屉应渲染 API 参考等值卡片');
+
+        // 桌面端切换开关 true -> false（不重新请求 /api/context，仅接收新 /api/snapshot）：已缓存的旧 ctxRes 不得覆盖新快照偏好
+        isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
+        const snapCostOff = await invokeRemoteApi('/api/snapshot');
+        assert.equal(snapCostOff.showApiReferenceCost, false, '服务端新快照应立即反映桌面关闭的 showApiReferenceCost=false');
+        sandbox.__test50pb.renderSnapshot(snapCostOff);
+        assert.ok(!byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '即使曾缓存旧 /api/context(true)，新快照关闭后上下文抽屉也必须立即隐藏 $ 金额');
+        assert.ok(!byId['usage-drawer'].innerHTML.includes('API 参考等值'), '关闭参考费用后用量抽屉应同步隐藏 API 参考等值卡片');
+
+        // 再真实拉取一次 /api/context 使其缓存 showApiReferenceCost=false，随后桌面端切换 false -> true 并推送新快照
+        const ctxWhenOff = await sandbox.__test50pb.fetchContextPanelData();
+        assert.equal(ctxWhenOff.showApiReferenceCost, false);
+        isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
+        const snapCostOn = await invokeRemoteApi('/api/snapshot');
+        assert.equal(snapCostOn.showApiReferenceCost, true, '服务端新快照应立即反映桌面开启的 showApiReferenceCost=true');
+        sandbox.__test50pb.renderSnapshot(snapCostOn);
+        assert.ok(byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '即使曾缓存 /api/context(false)，桌面开启后新快照也必须立即显示上下文抽屉 $ 金额');
+        assert.ok(byId['usage-drawer'].innerHTML.includes('API 参考等值'), '开启参考费用后用量抽屉也必须立即显示 API 参考等值卡片');
+
+        // 连接异常时 #sub-meta 自动恢复显示提示
+        sandbox.__test50pb.renderSnapshot({ ok: false, error: '连接中断' });
+        assert.equal(byId['sub-meta'].hidden, false, '离线异常态 #sub-meta 应重新显示状态提示');
+        assert.match(byId['sub-meta'].textContent, /连接异常/);
+      } finally {
+        for (const t of timers) clearTimeout(t);
+      }
+    } finally {
+      if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+      else process.env.AG_METER_STATE_DIR = prevStateDir;
+      if (prevAgDir === undefined) delete process.env.AG_DIR;
+      else process.env.AG_DIR = prevAgDir;
+      if (prevAppData === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = prevAppData;
+      remote.clearRemoteUiPrefsCacheForTests();
+      delete require.cache[require.resolve('../meter-collector')];
+      delete require.cache[require.resolve('../mobile-remote')];
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、安全 GFM 渲染与 HTML/SVG 强隔离沙盒预览', async () => {
+  const vm = require('node:vm');
+  const http = require('node:http');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-30wb-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    const wsAlpha = path.join(tmpDir, 'ws-alpha');
+    const wsBeta = path.join(tmpDir, 'ws-beta');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(path.join(wsAlpha, 'sub'), { recursive: true });
+    fs.mkdirSync(wsBeta, { recursive: true });
+
+    const mdLines = [
+      '# 架构说明文档',
+      '',
+      '| 模块 | 状态 | 对齐 |',
+      '| :--- | :---: | ---: |',
+      '| 预览边栏 | **已就绪** | 100% |',
+      '| 转义管道 \\| 单元格 | ~~旧版~~ | `a \\| b` |',
+      '',
+      '- [x] 完成三栏工作台',
+      '  - 子项 A1（嵌套无序列表）',
+      '  - [ ] 子项 A2（嵌套子任务）',
+      '- [ ] 待验证极端窄屏',
+      '',
+      '1. [x] 有序任务已完成',
+      '2. [ ] 有序任务待执行',
+      '',
+      '> ## 引用内二级标题',
+      '> - 引用内列表项 1',
+      '>   - 引用内嵌套子项',
+      '> ```ts',
+      '> const quotedCode = true;',
+      '> ```',
+      '',
+      '安全链接：[文档](https://example.com/docs) 与 危险链接：[点我](javascript:alert(1)) 及 [数据](data:text/html,<script>alert(1)</script>) 与 [远端共享](file://evil-host/share)',
+      '<script>window.__xss=1</script><img src=x onerror="alert(1)">',
+      '````markdown',
+      '```js',
+      'const nestedTripleFence = 42;',
+      '```',
+      '````'
+    ];
+    while (mdLines.length < 115) {
+      mdLines.push('Line-' + (mdLines.length + 1) + ': anchor target check');
+    }
+    const mdFile = path.join(wsAlpha, 'SPEC.md');
+    const htmlFile = path.join(wsAlpha, 'demo.html');
+    const svgFile = path.join(wsBeta, 'badge.svg');
+    fs.writeFileSync(mdFile, mdLines.join('\n'), 'utf8');
+    fs.writeFileSync(htmlFile, '<!doctype html><html><body><h1 id="app">Interactive Demo</h1><script>window.__demoRan = true;</script></body></html>', 'utf8');
+    fs.writeFileSync(svgFile, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 30"><rect width="100" height="30" fill="#a78bfa"/></svg>', 'utf8');
+    fs.writeFileSync(path.join(wsAlpha, 'sub', 'nested.ts'), 'export const nested = true;\n', 'utf8');
+
+    process.env.AG_METER_STATE_DIR = stateDir;
+    delete require.cache[require.resolve('../mobile-remote')];
+    const remoteMod = require('../mobile-remote');
+
+    // 0. 静态门禁：严禁任何 allow-same-origin 出现在 mobile-remote.js，CSP 必须包含 frame-src，且宽屏媒体查询严格以 min-width:1180px 为准
+    const mrSource = fs.readFileSync(path.join(ROOT, 'mobile-remote.js'), 'utf8');
+    assert.equal(mrSource.includes('allow-same-origin'), false, 'mobile-remote.js 严禁授予 iframe allow-same-origin 权限');
+    assert.match(mrSource, /frame-src 'self' blob: data:/, 'HTML_CSP 应显式配置 frame-src 以兼容沙盒 iframe srcdoc/data');
+    assert.match(mrSource, /@media \(min-width:1180px\)\{/, 'CSS 宽屏三栏工作台应严格按 min-width:1180px 切换，不得附加额外高度或精细指针限制');
+
+    // 1. 服务端 GFM 渲染与文件预览接口契约验证（覆盖有序任务列表与四反引号包三反引号代码围栏）
+    const gfmServerHtml = remoteMod.renderSafeMarkdownToHtml(fs.readFileSync(mdFile, 'utf8'));
+    assert.match(gfmServerHtml, /<h1>架构说明文档<\/h1>/);
+    assert.match(gfmServerHtml, /<div class="md-table-wrap"><table><thead><tr><th style="text-align:left">模块<\/th><th style="text-align:center">状态<\/th><th style="text-align:right">对齐<\/th><\/tr><\/thead>/);
+    assert.match(gfmServerHtml, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td><td style="text-align:right"><code>a \| b<\/code><\/td>/, '服务端表格代码单元格内 \\| 应转义为单管道符不留多余反斜杠');
+    assert.match(gfmServerHtml, /<blockquote><h2>引用内二级标题<\/h2><ul><li>引用内列表项 1<ul><li>引用内嵌套子项<\/li><\/ul><\/li><\/ul><pre><code>const quotedCode = true;<\/code><\/pre><\/blockquote>/, '服务端引用块必须支持标题、嵌套列表与围栏代码块等块级语法');
+    assert.match(gfmServerHtml, /<ul class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '服务端 GFM 应正确渲染嵌套列表与子任务');
+
+    // 无空行紧接块级结构终止表格回归（表格后直接跟引用块、无序列表、有序列表、标题、代码块，即便行内带 | 也必须交回对应块解析）
+    const tableInterruptCases = [
+      {
+        md: '| A | B |\n| --- | --- |\n> foo | bar',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead></table></div><blockquote><p>foo | bar</p></blockquote>'
+      },
+      {
+        md: '| A | B |\n| --- | --- |\n| 1 | 2 |\n- list | item',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table></div><ul><li>list | item</li></ul>'
+      },
+      {
+        md: '| A | B |\n| --- | --- |\n1. step | one',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead></table></div><ol><li>step | one</li></ol>'
+      },
+      {
+        md: '| A | B |\n| --- | --- |\n### 标题 | 小节',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead></table></div><h3>标题 | 小节</h3>'
+      },
+      {
+        md: '| A | B |\n| --- | --- |\nplain',
+        expected: '<div class="md-table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>plain</td><td></td></tr></tbody></table></div>'
+      }
+    ];
+    for (const tc of tableInterruptCases) {
+      assert.equal(remoteMod.renderSafeMarkdownToHtml(tc.md), tc.expected, '服务端无空行衔接块级语法必须正确终止表格');
+    }
+    assert.match(gfmServerHtml, /<ol class="md-task-list"><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled checked><span>有序任务已完成<\/span><\/li><li class="md-task-item"><input type="checkbox" class="md-task-check" disabled><span>有序任务待执行<\/span><\/li><\/ol>/, '服务端 GFM 应正确渲染有序任务列表 1. [x]');
+    assert.match(gfmServerHtml, /<pre><code>```js\nconst nestedTripleFence = 42;\n```<\/code><\/pre>/, '服务端四反引号围栏内部的三反引号不得提前截断代码块');
+    assert.ok(!gfmServerHtml.includes('javascript:alert'), '服务端 GFM 必须拦截 javascript: 危险链接');
+    assert.ok(!gfmServerHtml.includes('href="file://evil-host'), '服务端 GFM 必须拦截非本机路径的远端 file:// 权威链接');
+    assert.ok(!gfmServerHtml.includes('点我)'), '服务端 GFM 链接正则应正确消费平衡括号不遗留悬空右括号');
+    assert.ok(!gfmServerHtml.includes('href="data:'), '服务端 GFM 必须拦截 data: 危险链接');
+    assert.ok(!gfmServerHtml.includes('<script>window.__xss'), '服务端 GFM 必须转义原始 script 标签');
+    assert.ok(!gfmServerHtml.includes('<img src=x'), '服务端 GFM 必须转义原始危险 HTML 标签');
+
+    const mdPreviewData = remoteMod.readSafeTextFilePreview(mdFile, [wsAlpha, wsBeta]);
+    assert.equal(mdPreviewData.ok, true);
+    assert.equal(mdPreviewData.isMarkdown, true);
+    assert.match(mdPreviewData.renderedHtml, /<table>/);
+
+    const htmlPreviewData = remoteMod.readSafeTextFilePreview(htmlFile, [wsAlpha, wsBeta]);
+    assert.equal(htmlPreviewData.ok, true);
+    assert.equal(htmlPreviewData.isHtml, true);
+
+    const svgPreviewData = remoteMod.readSafeTextFilePreview(svgFile, [wsAlpha, wsBeta]);
+    assert.equal(svgPreviewData.ok, true);
+    assert.equal(svgPreviewData.isSvg, true);
+    assert.equal(svgPreviewData.isImage, false, '.svg 应走可切换源码的强隔离沙盒渲染而非盲目 img 加载');
+
+    // 2. 启动真实本地 Remote Handler 驱动前端三栏工作台 DOM 闭环测试
+    const token = 'tok-30wb-secret';
+    let htmlLoads = 0;
+    const baseSnap = {
+      ok: true,
+      serverBootId: 'boot-30wb',
+      snapSeq: 1,
+      sessionId: 'conv-multi-30',
+      activeConversationId: 'conv-multi-30',
+      title: 'Workbench #30 Session',
+      currentProjectId: 'proj-30',
+      currentProjectName: 'DualWorkspaceProj',
+      currentWorkspacePaths: [wsAlpha, wsBeta],
+      projects: [
+        { id: 'proj-30', name: 'DualWorkspaceProj', path: wsAlpha, workspacePaths: [wsAlpha, wsBeta], conversationCount: 1 }
+      ],
+      conversations: [
+        { id: 'conv-multi-30', title: 'Workbench #30 Session', projectId: 'proj-30', projectName: 'DualWorkspaceProj', active: true, status: 'idle', updatedAt: Date.now() }
+      ],
+      messages: [
+        {
+          role: 'assistant',
+          text: '请查看 [SPEC.md](file://' + mdFile + '#L109)',
+          html: remoteMod.renderSafeMarkdownToHtml('请查看 [SPEC.md](file://' + mdFile + '#L109)'),
+          msgIndex: 0
+        }
+      ],
+      totalMessages: 1,
+      messagesStartIndex: 0,
+      historySource: 'trajectory'
+    };
+
+    const makeMockDomEnv = (initWidth, initHeight, envOpts = {}) => {
+      const storedMap = envOpts.storedMap || {};
+      const pointerCoarse = Boolean(envOpts.pointerCoarse);
+      const replaceStateThrows = Boolean(envOpts.replaceStateThrows);
+      const listeners = new Map();
+      const elementsById = new Map();
+      const storage = new Map(Object.entries(storedMap));
+      const sessionStore = new Map();
+
+      const createEl = (tag, id = '') => {
+        const attrs = new Map();
+        const classes = new Set();
+        const elListeners = new Map();
+        const styleProps = new Map();
+        const children = [];
+        let innerHtmlVal = '';
+        let textVal = '';
+        const el = {
+          tagName: String(tag || 'DIV').toUpperCase(),
+          id,
+          hidden: false,
+          disabled: false,
+          value: '',
+          src: '',
+          alt: '',
+          title: '',
+          srcdoc: '',
+          scrollTop: 0,
+          scrollHeight: 400,
+          offsetWidth: 320,
+          dataset: {},
+          scrolledIntoViewCount: 0,
+          children,
+          style: {
+            setProperty(k, v) { styleProps.set(k, String(v)); },
+            getPropertyValue(k) { return styleProps.get(k) || ''; }
+          },
+          classList: {
+            add(...ns) { ns.forEach((n) => n && classes.add(n)); },
+            remove(...ns) { ns.forEach((n) => classes.delete(n)); },
+            toggle(n, force) {
+              const next = force !== undefined ? Boolean(force) : !classes.has(n);
+              if (next) classes.add(n); else classes.delete(n);
+              return next;
+            },
+            contains(n) { return classes.has(n); }
+          },
+          setAttribute(k, v) {
+            const sv = String(v);
+            attrs.set(k, sv);
+            if (k === 'id') { el.id = sv; elementsById.set(sv, el); }
+            if (k === 'class') {
+              classes.clear();
+              sv.split(/\s+/).filter(Boolean).forEach((c) => classes.add(c));
+            }
+            if (k.startsWith('data-')) {
+              const camel = k.slice(5).replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+              el.dataset[camel] = sv;
+            }
+          },
+          getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+          hasAttribute(k) { return attrs.has(k); },
+          removeAttribute(k) { attrs.delete(k); },
+          appendChild(child) {
+            if (child) {
+              child.parentElement = el;
+              children.push(child);
+            }
+            return child;
+          },
+          contains(other) {
+            let cur = other;
+            while (cur) {
+              if (cur === el) return true;
+              cur = cur.parentElement || null;
+            }
+            return false;
+          },
+          closest(sel) {
+            let cur = el;
+            while (cur) {
+              if (matchesSelectorSimple(cur, sel)) return cur;
+              cur = cur.parentElement || null;
+            }
+            return null;
+          },
+          addEventListener(type, fn) {
+            if (!elListeners.has(type)) elListeners.set(type, []);
+            elListeners.get(type).push(fn);
+          },
+          dispatchEvent(ev) {
+            const e = { target: el, preventDefault() {}, stopPropagation() {}, ...ev };
+            for (const fn of (elListeners.get(e.type) || [])) fn(e);
+            if (e.type === 'click' && typeof el.onclick === 'function') el.onclick(e);
+          },
+          click() {
+            el.dispatchEvent({ type: 'click' });
+          },
+          scrollIntoView() {
+            el.scrolledIntoViewCount += 1;
+          },
+          getBoundingClientRect() {
+            return { top: 0, bottom: 40, left: 0, right: 320, width: 320, height: 40 };
+          },
+          querySelectorAll(sel) {
+            const out = [];
+            const visit = (node) => {
+              for (const ch of (node.children || [])) {
+                if (matchesSelectorSimple(ch, sel)) out.push(ch);
+                visit(ch);
+              }
+            };
+            visit(el);
+            return out;
+          },
+          querySelector(sel) {
+            return el.querySelectorAll(sel)[0] || null;
+          }
+        };
+        const purgeDescendantIds = (node) => {
+          for (const ch of (node.children || [])) {
+            if (ch.id && elementsById.get(ch.id) === ch) elementsById.delete(ch.id);
+            purgeDescendantIds(ch);
+          }
+        };
+        Object.defineProperty(el, 'innerHTML', {
+          get() { return innerHtmlVal; },
+          set(htmlStr) {
+            purgeDescendantIds(el);
+            innerHtmlVal = String(htmlStr || '');
+            children.length = 0;
+            parseSimpleHtmlIntoChildren(el, innerHtmlVal);
+          }
+        });
+        Object.defineProperty(el, 'textContent', {
+          get() {
+            if (children.length > 0) {
+              return innerHtmlVal.replace(/<[^>]+>/g, '');
+            }
+            return textVal || innerHtmlVal.replace(/<[^>]+>/g, '');
+          },
+          set(v) {
+            textVal = String(v ?? '');
+            innerHtmlVal = textVal;
+            children.length = 0;
+          }
+        });
+        if (id) elementsById.set(id, el);
+        return el;
+      };
+
+      const matchesSingleSel = (node, rawPart) => {
+        const part = rawPart.trim();
+        if (!part || !node) return false;
+        const attrMatch = /^([a-z0-9_-]+)?(?:\.([a-z0-9_-]+))?\[([a-z0-9_-]+)(?:="([^"]*)")?\]$/i.exec(part);
+        if (attrMatch) {
+          const [, tagP, clsP, attrName, attrVal] = attrMatch;
+          if (tagP && node.tagName !== tagP.toUpperCase()) return false;
+          if (clsP && !node.classList.contains(clsP)) return false;
+          const got = node.getAttribute(attrName);
+          if (got === null) return false;
+          return attrVal === undefined ? true : got === attrVal;
+        }
+        if (part.startsWith('#')) return node.id === part.slice(1);
+        if (part.startsWith('.')) return part.slice(1).split('.').every((c) => node.classList.contains(c));
+        return node.tagName === part.toUpperCase();
+      };
+
+      const matchesSelectorSimple = (node, selGroup) => {
+        return String(selGroup || '').split(',').some((s) => matchesSingleSel(node, s));
+      };
+
+      const parseSimpleHtmlIntoChildren = (parent, htmlStr) => {
+        const tagRe = /<(button|a|span|div|iframe|input|table|th|td|h1|pre|code|del)\b([^>]*)>([\s\S]*?)<\/\1>|<(input|img|hr)\b([^>]*)\/?>/gi;
+        let m;
+        while ((m = tagRe.exec(htmlStr)) !== null) {
+          const tag = m[1] || m[4];
+          const attrRaw = m[2] || m[5] || '';
+          const inner = m[3] || '';
+          const child = createEl(tag);
+          const attrIter = /([a-zA-Z0-9_-]+)(?:="([^"]*)")?/g;
+          let am;
+          while ((am = attrIter.exec(attrRaw)) !== null) {
+            child.setAttribute(am[1], am[2] !== undefined ? am[2] : '');
+          }
+          if (inner) child.innerHTML = inner;
+          parent.appendChild(child);
+        }
+      };
+
+      const appHtml = remoteMod.buildMobileAppHtml();
+      const staticMarkup = appHtml.replace(/<script>[\s\S]*?<\/script>/g, '');
+      const idMatches = staticMarkup.matchAll(/\bid="([^"]+)"/g);
+      for (const m of idMatches) {
+        if (!elementsById.has(m[1])) {
+          const el = createEl('div', m[1]);
+          if (['file-viewer-backdrop', 'fv-back-btn', 'fv-ws-persistent-bar', 'fv-preview-toolbar', 'quota-drawer', 'context-drawer', 'usage-drawer', 'sheet-backdrop', 'proj-modal-backdrop', 'conn-banner', 'approval-dock', 'queue-dock', 'attach-hint', 'msg-rail', 'msg-rail-tip'].includes(m[1])) {
+            el.hidden = true;
+          }
+        }
+      }
+
+      const bodyEl = createEl('body');
+      const docEl = createEl('html');
+      const locState = {
+        pathname: '/',
+        search: '?token=' + token,
+        hash: '#boot=' + token,
+        origin: 'http://127.0.0.1:18499',
+        protocol: 'http:',
+        href: 'http://127.0.0.1:18499/?token=' + token + '#boot=' + token,
+        reload() {}
+      };
+      const winObj = {
+        innerWidth: initWidth,
+        innerHeight: initHeight,
+        devicePixelRatio: 2,
+        location: locState,
+        history: {
+          replaceState(_state, _title, nextUrl) {
+            if (replaceStateThrows) throw new Error('SecurityError: replaceState blocked');
+            const parsed = new URL(String(nextUrl || '/'), locState.origin);
+            locState.pathname = parsed.pathname;
+            locState.search = parsed.search;
+            locState.hash = parsed.hash;
+            locState.href = parsed.href;
+          }
+        },
+        navigator: { userAgent: 'Mozilla/5.0 Macintosh', platform: 'MacIntel', hardwareConcurrency: 8 },
+        screen: { width: initWidth, height: initHeight },
+        localStorage: {
+          getItem(k) { return storage.has(k) ? storage.get(k) : null; },
+          setItem(k, v) { storage.set(k, String(v)); },
+          removeItem(k) { storage.delete(k); }
+        },
+        sessionStorage: {
+          getItem(k) { return sessionStore.has(k) ? sessionStore.get(k) : null; },
+          setItem(k, v) { sessionStore.set(k, String(v)); },
+          removeItem(k) { sessionStore.delete(k); }
+        },
+        matchMedia(q) {
+          const qs = String(q || '');
+          const isFine = !pointerCoarse && winObj.innerWidth >= 860;
+          let matches = false;
+          if (qs.includes('min-width: 1180px') || qs.includes('min-width:1180px')) {
+            matches = winObj.innerWidth >= 1180;
+          } else if (qs.includes('min-width: 860px') || qs.includes('min-width:860px')) {
+            matches = winObj.innerWidth >= 860 && winObj.innerHeight >= 521 && isFine;
+          } else if (qs.includes('hover: hover') || qs.includes('pointer: fine')) {
+            matches = isFine;
+          }
+          return { matches, addEventListener() {}, removeEventListener() {} };
+        },
+        addEventListener(type, fn) {
+          if (!listeners.has(type)) listeners.set(type, []);
+          listeners.get(type).push(fn);
+        },
+        dispatchEvent(ev) {
+          for (const fn of (listeners.get(ev.type) || [])) fn(ev);
+        },
+        fetch: async (rawUrl) => {
+          const u = new URL(String(rawUrl), 'http://127.0.0.1:18499');
+          if (u.pathname === '/api/snapshot') {
+            return { ok: true, status: 200, json: async () => baseSnap };
+          }
+          if (u.pathname === '/api/project-tree') {
+            const dir = u.searchParams.get('dir') || '';
+            const wsRoot = u.searchParams.get('workspaceRoot') || '';
+            const resolvedRoots = [wsAlpha, wsBeta];
+            const activeRoot = wsRoot || (dir.startsWith(wsBeta) ? wsBeta : wsAlpha);
+            const target = dir || activeRoot;
+            const entries = fs.readdirSync(target, { withFileTypes: true }).map((d) => {
+              const p = path.join(target, d.name);
+              const st = fs.statSync(p);
+              return { name: d.name, path: p, isDir: d.isDirectory(), size: st.size };
+            });
+            const parentCandidate = path.dirname(target);
+            const parentDir = (parentCandidate !== target && (parentCandidate === activeRoot || parentCandidate.startsWith(activeRoot + path.sep)))
+              ? parentCandidate
+              : null;
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                ok: true,
+                dir: target,
+                parentDir,
+                activeRoot,
+                workspaceRoots: resolvedRoots,
+                entries
+              })
+            };
+          }
+          if (u.pathname === '/api/file-content') {
+            const p = u.searchParams.get('path') || '';
+            if (p.endsWith('/demo.html')) htmlLoads += 1;
+            const data = remoteMod.readSafeTextFilePreview(p, [wsAlpha, wsBeta]);
+            return { ok: Boolean(data.ok), status: data.ok ? 200 : 400, json: async () => data };
+          }
+          if (u.pathname === '/api/session-files') {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                ok: true,
+                diffs: [],
+                artifacts: [{ name: 'report.html', path: htmlFile }]
+              })
+            };
+          }
+          return { ok: true, status: 200, json: async () => ({ ok: true }) };
+        }
+      };
+
+      const docObj = {
+        documentElement: docEl,
+        body: bodyEl,
+        activeElement: null,
+        getElementById(id) { return elementsById.get(id) || null; },
+        createElement(tag) { return createEl(tag); },
+        createDocumentFragment() { return createEl('fragment'); },
+        querySelector(sel) {
+          if (sel === '.topbar') return createEl('header');
+          if (sel === '.composer-card') return createEl('div');
+          if (sel === '.conv-toolbar') return createEl('div');
+          return null;
+        },
+        querySelectorAll() { return []; },
+        addEventListener() {}
+      };
+
+      const timers = [];
+      const sandbox = {
+        window: winObj,
+        document: docObj,
+        location: winObj.location,
+        history: winObj.history,
+        navigator: winObj.navigator,
+        screen: winObj.screen,
+        localStorage: winObj.localStorage,
+        sessionStorage: winObj.sessionStorage,
+        fetch: winObj.fetch,
+        URL,
+        URLSearchParams,
+        CSS: { escape: (s) => String(s) },
+        AbortController,
+        setTimeout: (fn, ms) => {
+          if (Number(ms) <= 150) {
+            const t = setTimeout(fn, ms);
+            timers.push(t);
+            return t;
+          }
+          return 0;
+        },
+        clearTimeout,
+        setInterval: () => 0,
+        clearInterval: () => {},
+        requestAnimationFrame: (fn) => setTimeout(fn, 0),
+        console
+      };
+      sandbox.globalThis = sandbox;
+      vm.createContext(sandbox);
+      const scriptMatch = appHtml.match(/<script>([\s\S]*?)<\/script>/);
+      assert.ok(scriptMatch, '应提取出内联脚本');
+      vm.runInContext(scriptMatch[1], sandbox);
+      return { winObj, docObj, storage, elementsById, sandbox, cleanup: () => timers.forEach(clearTimeout) };
+    };
+
+    // (1) 桌面宽屏 (1440x900) 默认自动展开右侧常驻预览边栏 + 拖拽调宽 (300px–680px 边界夹紧与持久化) + 收起/展开
+    const deskEnv = makeMockDomEnv(1440, 900);
+    try {
+      await new Promise((r) => setTimeout(r, 45));
+      const bd = deskEnv.docObj.getElementById('file-viewer-backdrop');
+      const fvBody = deskEnv.docObj.getElementById('fv-body');
+      const closeBtn = deskEnv.docObj.getElementById('fv-close-btn');
+      const wsTopBar = deskEnv.docObj.getElementById('fv-ws-persistent-bar');
+      assert.equal(bd.hidden, false, '桌面宽屏 (>=1180px) 首次快照应自动展开右侧常驻预览边栏');
+      assert.equal(closeBtn.textContent, '⇥ 收起', '桌面宽屏关闭按钮应文案化为「⇥ 收起」');
+      assert.equal(wsTopBar.hidden, false, '多目录项目顶部常驻工作区切换栏应自动显示');
+      assert.equal(wsTopBar.querySelectorAll('.fv-ws-top-switch').length, 2, '顶部常驻切换栏应渲染 2 个工作区胶囊');
+
+      // 拖拽左移扩大宽度与超界夹紧校验 (300px ~ 680px)
+      const resizeHandle = deskEnv.docObj.getElementById('fv-resize-handle');
+      resizeHandle.dispatchEvent({ type: 'pointerdown', pointerId: 1, clientX: 1000 });
+      deskEnv.winObj.dispatchEvent({ type: 'pointermove', pointerId: 1, clientX: 880 }); // 向左拖 120px -> 420 + 120 = 540
+      deskEnv.winObj.dispatchEvent({ type: 'pointerup', pointerId: 1, clientX: 880 });
+      assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '540px', '向左拖拽 120px 应将边栏宽度调为 540px');
+      assert.equal(deskEnv.storage.get('ag_remote_fv_width_v1'), '540', '松手后应持久化宽度至 localStorage');
+
+      resizeHandle.dispatchEvent({ type: 'pointerdown', pointerId: 2, clientX: 880 });
+      deskEnv.winObj.dispatchEvent({ type: 'pointermove', pointerId: 2, clientX: 100 }); // 远超上限 -> 夹紧 680px
+      deskEnv.winObj.dispatchEvent({ type: 'pointerup', pointerId: 2, clientX: 100 });
+      assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '680px', '超宽拖拽必须夹紧在 680px 上限');
+
+      resizeHandle.dispatchEvent({ type: 'pointerdown', pointerId: 3, clientX: 700 });
+      deskEnv.winObj.dispatchEvent({ type: 'pointermove', pointerId: 3, clientX: 1650 }); // 大幅向右拖 950px 使计算宽度 680 - 950 = -270 <= 0 -> 仍必须夹紧在 300px 而非跳回 420px
+      deskEnv.winObj.dispatchEvent({ type: 'pointerup', pointerId: 3, clientX: 1650 });
+      assert.equal(bd.style.getPropertyValue('--fv-sidebar-w'), '300px', '大幅向右拖拽至 0 或负数宽度时必须夹紧在 300px 下限而非回跳默认 420px');
+      assert.equal(deskEnv.storage.get('ag_remote_fv_width_v1'), '300', '大幅向右拖拽松手后应持久化 300px 至 localStorage');
+      assert.equal(deskEnv.winObj.__fvWorkbenchHooks.clampFvSidebarWidth(0), 300, '宽度计算为 0 时应夹紧至 300px');
+      assert.equal(deskEnv.winObj.__fvWorkbenchHooks.clampFvSidebarWidth(-150), 300, '宽度计算为负数时应夹紧至 300px');
+      assert.equal(deskEnv.winObj.__fvWorkbenchHooks.clampFvSidebarWidth(null), 420, '未设置 (null) 时应使用默认 420px');
+
+      const restoredMinEnv = makeMockDomEnv(1440, 900, { storedMap: { ag_remote_fv_width_v1: '300' } });
+      try {
+        assert.equal(restoredMinEnv.docObj.getElementById('file-viewer-backdrop').style.getPropertyValue('--fv-sidebar-w'), '300px', '刷新后应从 localStorage 恢复持久化的 300px 下限宽度');
+      } finally {
+        restoredMinEnv.cleanup();
+      }
+
+      // (2) 顶部常驻工作区切换器联动 & 子目录上级导航不越出工作区根目录
+      wsTopBar.querySelectorAll('.fv-ws-top-switch')[0].click();
+      await new Promise((r) => setTimeout(r, 35));
+      assert.ok((fvBody.textContent || '').includes('SPEC.md'), '点击顶部 ws-alpha 胶囊应加载 ws-alpha 目录树');
+      assert.equal(deskEnv.docObj.getElementById('fv-tree-up'), null, '工作区根路径处不得渲染越界「↑ 上级」按钮');
+      const subRow = fvBody.querySelectorAll('.fv-row').find((r) => r.getAttribute('data-path') === path.join(wsAlpha, 'sub'));
+      assert.ok(subRow, '应包含 sub 子目录行');
+      subRow.click();
+      await new Promise((r) => setTimeout(r, 35));
+      assert.ok((fvBody.textContent || '').includes('nested.ts'), '进入 sub 子目录应看到 nested.ts');
+      assert.ok(deskEnv.docObj.getElementById('fv-tree-up'), '子目录内应提供返回工作区根的「↑ 上级」按钮');
+
+      // (3) 模拟从聊天消息点击 SPEC.md#L109：默认仍进入 GFM 渲染预览（修复强制源码化），并提供「定位第 L109 行」与「预览 / 源码」切换
+      await deskEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(mdFile, 109);
+      const toolbar = deskEnv.docObj.getElementById('fv-preview-toolbar');
+      assert.equal(deskEnv.docObj.getElementById('fv-tab-preview').classList.contains('active'), true, '打开文件后应自动切入「📄 预览」标签页');
+      assert.equal(toolbar.hidden, false, 'Markdown 预览应展示顶部模式切换工具栏');
+      assert.ok(deskEnv.docObj.getElementById('fv-mode-render').classList.contains('active'), '带 #L109 行号的 .md 文件默认也应进入 GFM 渲染模式');
+      assert.match(fvBody.innerHTML, /<td style="text-align:left">转义管道 \| 单元格<\/td><td style="text-align:center"><del>旧版<\/del><\/td><td style="text-align:right"><code>a \| b<\/code><\/td>/, '客户端表格代码单元格内 \\| 转义必须与服务端语义完全一致，不残留反斜杠');
+      assert.match(fvBody.innerHTML, /<blockquote><h2>引用内二级标题<\/h2><ul><li>引用内列表项 1<ul><li>引用内嵌套子项<\/li><\/ul><\/li><\/ul><pre><code>const quotedCode = true;<\/code><\/pre><\/blockquote>/, '客户端引用块必须支持块级标题、嵌套列表与围栏代码块且与服务端一致');
+      for (const tc of tableInterruptCases) {
+        assert.equal(deskEnv.winObj.__fvWorkbenchHooks.renderMarkdownSafe(tc.md), tc.expected, '客户端无空行衔接块级语法必须与服务端逐字节一致终止表格');
+      }
+      assert.match(fvBody.innerHTML, /md-task-check/, '客户端预览应渲染 GFM 任务列表复选框');
+      assert.match(fvBody.innerHTML, /完成三栏工作台<ul class="md-task-list"><li>子项 A1（嵌套无序列表）<\/li>/, '客户端预览应正确渲染嵌套列表');
+      assert.match(fvBody.innerHTML, /<ol class="md-task-list"><li class="md-task-item"><input class="md-task-check" type="checkbox" disabled checked><span>有序任务已完成<\/span><\/li>/, '客户端预览应正确渲染有序任务列表 1. [x]');
+      assert.match(fvBody.innerHTML, /<pre><code>```js\nconst nestedTripleFence = 42;\n```<\/code><\/pre>/, '客户端四反引号围栏内部的三反引号不得提前结束代码块');
+      assert.ok(!fvBody.innerHTML.includes('javascript:alert'), '客户端 GFM 渲染必须剥离 javascript: 危险协议');
+      assert.ok(!fvBody.innerHTML.includes('href="file://evil-host'), '客户端 GFM 渲染不得生成远端 SMB file:// 链接');
+      assert.ok(!fvBody.innerHTML.includes('<script>window.__xss'), '客户端 GFM 渲染必须转义原始危险 HTML');
+
+      const jumpBtn = deskEnv.docObj.getElementById('fv-jump-line-btn');
+      assert.ok(jumpBtn && jumpBtn.textContent.includes('L109'), '带行号打开时应在工具栏提供「定位第 L109 行」快捷胶囊');
+      jumpBtn.click();
+      assert.ok(deskEnv.docObj.getElementById('fv-mode-source').classList.contains('active'), '点击定位行号胶囊应切换至源码视图');
+      const hlLineEl = fvBody.querySelector('[data-ln="109"]');
+      assert.ok(hlLineEl && hlLineEl.classList.contains('hl'), '切换源码后第 109 行应高亮');
+      assert.equal(hlLineEl.scrolledIntoViewCount > 0, true, '切换源码后应自动滚动定位到第 109 行');
+
+      // (4) HTML 与 SVG 强隔离沙盒预览：挂载前 URL 已清除配对口令、注入 <base href="about:blank">、禁止 allow-same-origin
+      assert.equal(deskEnv.winObj.location.href, 'http://127.0.0.1:18499/', '启动及挂载沙盒前必须已通过 replaceState 彻底清除 URL search/hash 中的配对口令');
+      assert.equal(deskEnv.winObj.location.href.includes(token), false, '宿页面当前 URL 严禁残留配对 token');
+      const prevHtmlLoads = htmlLoads;
+      await deskEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(htmlFile, 0);
+      assert.equal(htmlLoads, prevHtmlLoads + 1);
+      let iframeEl = fvBody.querySelector('iframe');
+      assert.ok(iframeEl, '打开 .html 文件应挂载沙盒 iframe');
+      assert.equal(iframeEl.getAttribute('sandbox'), 'allow-scripts', 'iframe sandbox 必须严格等于 allow-scripts（禁止同源权限）');
+      assert.equal(iframeEl.getAttribute('referrerpolicy'), 'no-referrer', 'iframe 必须设置 referrerpolicy="no-referrer"');
+      assert.equal(iframeEl.getAttribute('data-url-scrubbed'), '1', 'URL 口令已净化时应标记 data-url-scrubbed=1');
+      assert.match(iframeEl.getAttribute('srcdoc') || '', /<meta http-equiv="Content-Security-Policy" content="[^"]*connect-src 'none'[^"]*base-uri 'none'/i, 'srcdoc 应注入严格内层 CSP 封堵外连与 base');
+      assert.doesNotMatch(iframeEl.getAttribute('srcdoc') || '', /<base\b/i, 'srcdoc 应清除未受信 base 标签且不再注入会被外层 base-uri none 拦截的 <base>');
+      assert.ok((iframeEl.getAttribute('srcdoc') || '').includes('Interactive Demo'), 'iframe srcdoc 应承载目标 HTML 内容');
+
+      // 切换到源码再点击「↻ 刷新」重挂载验证
+      deskEnv.docObj.getElementById('fv-mode-source').click();
+      assert.equal(fvBody.querySelector('iframe'), null, '切到源码态应卸载 iframe 展示带行号源码');
+      assert.ok((fvBody.textContent || '').includes('Interactive Demo'));
+      deskEnv.docObj.getElementById('fv-refresh-sandbox').click();
+      await new Promise((r) => setTimeout(r, 35));
+      assert.equal(htmlLoads, prevHtmlLoads + 2, '点击刷新按钮应重新读取最新 HTML 文件并重挂载沙盒');
+      iframeEl = fvBody.querySelector('iframe');
+      assert.ok(iframeEl && iframeEl.getAttribute('sandbox') === 'allow-scripts');
+
+      // SVG 沙盒预览验证（严格 sandbox="" 禁止执行脚本）
+      await deskEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(svgFile, 0);
+      const svgFrame = fvBody.querySelector('iframe');
+      assert.ok(svgFrame, '打开 .svg 文件应挂载强隔离沙盒 iframe');
+      assert.equal(svgFrame.getAttribute('sandbox'), '', 'SVG 沙盒 iframe 必须严格 sandbox="" 禁用脚本');
+      assert.match(svgFrame.getAttribute('srcdoc') || '', /script-src 'none'/i);
+      assert.ok((svgFrame.getAttribute('srcdoc') || '').includes('<svg'));
+
+      // 桌面收起持久化校验（收起时必须销毁后台沙盒 iframe）
+      closeBtn.click();
+      assert.equal(bd.hidden, true, '点击「⇥ 收起」应收起右侧预览边栏');
+      assert.equal(fvBody.querySelector('iframe'), null, '关闭/收起预览后必须销毁沙盒 iframe');
+      assert.equal(deskEnv.storage.get('ag_remote_fv_open_v1'), '0', '收起状态应持久化至 localStorage');
+    } finally {
+      deskEnv.cleanup();
+    }
+
+    // (5) 宽屏边界回归：宽度 >= 1180px 但高度 < 521px（如 1200x480 分屏窗口）及触屏宽屏设备（1280x800 coarse pointer）同样必须识别为常驻边栏，而非遮罩抽屉
+    const shortWideEnv = makeMockDomEnv(1200, 480);
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      const bdShort = shortWideEnv.docObj.getElementById('file-viewer-backdrop');
+      assert.equal(shortWideEnv.winObj.__fvWorkbenchHooks.isWideDesktopWorkbench(), true, '1200x480 宽屏短高窗口必须判定为三栏常驻工作台');
+      assert.equal(bdShort.hidden, false, '1200x480 首次加载应自动常驻展开右侧边栏');
+      assert.equal(shortWideEnv.docObj.getElementById('fv-close-btn').textContent, '⇥ 收起');
+      bdShort.dispatchEvent({ type: 'click', target: bdShort });
+      assert.equal(bdShort.hidden, false, '常驻边栏模式下点击容器不得像遮罩抽屉一样意外关闭');
+    } finally {
+      shortWideEnv.cleanup();
+    }
+
+    const touchWideEnv = makeMockDomEnv(1280, 800, { pointerCoarse: true });
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      const bdTouch = touchWideEnv.docObj.getElementById('file-viewer-backdrop');
+      assert.equal(touchWideEnv.winObj.__fvWorkbenchHooks.isWideDesktopWorkbench(), true, '1280x800 触屏平板/二合一宽屏同样应进入常驻右侧边栏');
+      assert.equal(bdTouch.hidden, false);
+      assert.equal(touchWideEnv.docObj.getElementById('fv-close-btn').textContent, '⇥ 收起');
+    } finally {
+      touchWideEnv.cleanup();
+    }
+
+    // (6) 极端受限环境 Fail-Closed 防护验证：若 history.replaceState 抛错导致 URL 仍残留 ?token=，自动降级为独立 data: 文档阻断 srcdoc baseURI 继承
+    const dirtyUrlEnv = makeMockDomEnv(1280, 800, { replaceStateThrows: true });
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      assert.ok(dirtyUrlEnv.winObj.location.href.includes(token), '模拟 replaceState 被阻断时宿页面 URL 仍含 token');
+      await dirtyUrlEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(htmlFile, 0);
+      const fvBodyDirty = dirtyUrlEnv.docObj.getElementById('fv-body');
+      const dirtyFrame = fvBodyDirty.querySelector('iframe');
+      assert.ok(dirtyFrame, '受限环境仍应渲染沙盒 iframe');
+      assert.equal(dirtyFrame.getAttribute('data-url-scrubbed'), '0', '应准确识别父 URL 未能净化');
+      assert.equal(dirtyFrame.hasAttribute('srcdoc'), false, '父 URL 含未净化口令时严禁使用会继承父 baseURI 的 srcdoc');
+      assert.match(dirtyFrame.getAttribute('src') || '', /^data:text\/html;charset=utf-8,/, '必须自动切换至独立 data: 文档彻底切断父页面 URL 继承');
+    } finally {
+      dirtyUrlEnv.cleanup();
+    }
+
+    // (7) 窄屏移动端 (< 1180px，如 1179x800 与 390x844) 默认不自动占屏，点击按钮作为右侧抽屉打开，点击背景遮罩可关闭
+    const mobEnv = makeMockDomEnv(390, 844);
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      const bdMob = mobEnv.docObj.getElementById('file-viewer-backdrop');
+      const closeBtnMob = mobEnv.docObj.getElementById('fv-close-btn');
+      assert.equal(bdMob.hidden, true, '手机窄屏 (<1180px) 初始不得自动占屏展开预览抽屉');
+      mobEnv.docObj.getElementById('btn-files-panel').click();
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(bdMob.hidden, false, '点击顶栏文件夹按钮应打开右侧全高抽屉');
+      assert.equal(closeBtnMob.textContent, '✕ 关闭', '手机窄屏关闭按钮应显示「✕ 关闭」');
+      bdMob.dispatchEvent({ type: 'click', target: bdMob });
+      assert.equal(bdMob.hidden, true, '窄屏抽屉点击半透明遮罩应关闭抽屉');
+    } finally {
+      mobEnv.cleanup();
+    }
+
+    // (8) 真实 Headless Chrome 运行时沙盒口令隔离端到端实证：验证带 ?token= 进页并删除 <base> 后，srcdoc 内 baseURI / URL / referrer / parent / storage 均 0 口令泄露
+    const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(CHROME_BIN)) {
+      const { spawn } = require('node:child_process');
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const httpCfg = remoteMod.loadOrCreateRemoteConfig();
+      const realSecretToken = httpCfg.token;
+      const exploitFile = path.join(wsAlpha, 'probe-sandbox.html');
+      fs.writeFileSync(
+        exploitFile,
+        '<!doctype html><html><head><title>Probe</title></head><body><h2 id="p">Probe</h2><script>'
+        + 'const baseBefore = document.baseURI;'
+        + 'document.querySelectorAll("base").forEach((b) => b.remove());'
+        + 'const baseAfterRemove = document.baseURI;'
+        + 'const tryRead = (fn) => { try { return String(fn()); } catch (e) { return "BLOCKED:" + e.name; } };'
+        + 'window.parent.postMessage({'
+        + '  type: "ag30_sandbox_probe",'
+        + '  origin: window.origin,'
+        + '  baseBefore,'
+        + '  baseAfterRemove,'
+        + '  docUrl: document.URL,'
+        + '  referrer: document.referrer,'
+        + '  parentHref: tryRead(() => window.parent.location.href),'
+        + '  cookie: tryRead(() => document.cookie),'
+        + '  storage: tryRead(() => localStorage.getItem("ag_remote_pair_v1"))'
+        + '}, "*");'
+        + '</script></body></html>',
+        'utf8'
+      );
+
+      const handler = remoteMod.createRemoteHttpHandler(
+        httpCfg,
+        {
+          homeDir: tmpDir,
+          configDir: path.join(tmpDir, 'cfg'),
+          localApiConnect: async () => ({ ok: true }),
+          fetchSnapshot: async () => ({
+            ...baseSnap,
+            currentWorkspacePaths: [wsAlpha, wsBeta]
+          }),
+          performAction: async () => ({ ok: true })
+        }
+      );
+      const server = http.createServer(handler);
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const port = server.address().port;
+      const chromeUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-30wb-chrome-'));
+      let chromeProc = null;
+      let cdpWs = null;
+      try {
+        chromeProc = spawn(CHROME_BIN, [
+          '--headless=new',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--remote-debugging-port=0',
+          `--user-data-dir=${chromeUserDir}`,
+          'about:blank'
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const browserWsUrl = await new Promise((resolve, reject) => {
+          let errOut = '';
+          const timer = setTimeout(() => reject(new Error('Chrome startup timeout: ' + errOut)), 10000);
+          chromeProc.stderr.on('data', (chunk) => {
+            errOut += String(chunk);
+            const m = errOut.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+            if (m) {
+              clearTimeout(timer);
+              resolve(m[1]);
+            }
+          });
+          chromeProc.on('exit', (code) => {
+            clearTimeout(timer);
+            reject(new Error(`Chrome exited (${code}): ${errOut}`));
+          });
+        });
+        const devOrigin = browserWsUrl.replace(/^ws:/, 'http:').replace(/\/devtools\/.*$/, '');
+        const tabMeta = await new Promise((resolve, reject) => {
+          const req = http.request(`${devOrigin}/json/new?about:blank`, { method: 'PUT' }, (res) => {
+            let body = '';
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => {
+              try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+            });
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        cdpWs = new WebSocket(tabMeta.webSocketDebuggerUrl);
+        await new Promise((resolve, reject) => {
+          cdpWs.addEventListener('open', resolve, { once: true });
+          cdpWs.addEventListener('error', reject, { once: true });
+        });
+        let cdpSeq = 0;
+        const cdpPending = new Map();
+        cdpWs.addEventListener('message', (ev) => {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg.id && cdpPending.has(msg.id)) {
+            const p = cdpPending.get(msg.id);
+            cdpPending.delete(msg.id);
+            clearTimeout(p.timer);
+            if (msg.error) p.reject(new Error(msg.error.message || 'CDP error'));
+            else p.resolve(msg.result);
+          }
+        });
+        const cdpCall = (method, params = {}) => new Promise((resolve, reject) => {
+          const id = ++cdpSeq;
+          const timer = setTimeout(() => {
+            cdpPending.delete(id);
+            reject(new Error('CDP timeout: ' + method));
+          }, 8000);
+          cdpPending.set(id, { resolve, reject, timer });
+          cdpWs.send(JSON.stringify({ id, method, params }));
+        });
+        const cdpEval = async (expression) => {
+          const r = await cdpCall('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+          if (r?.exceptionDetails) {
+            throw new Error('CDP eval exception: ' + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
+          }
+          return r?.result?.value;
+        };
+
+        await cdpCall('Page.enable');
+        await cdpCall('Emulation.setDeviceMetricsOverride', { width: 1200, height: 480, deviceScaleFactor: 1, mobile: false });
+        // 携带真实配对口令与 hash 口令进入远程工作台
+        await cdpCall('Page.navigate', {
+          url: `http://127.0.0.1:${port}/?token=${realSecretToken}#hashSecret=${realSecretToken}`
+        });
+
+        let probeResult = null;
+        const startWait = Date.now();
+        while (Date.now() - startWait < 8000) {
+          let ready = false;
+          try {
+            ready = await cdpEval(`Boolean(document.readyState === 'complete' && window.__fvWorkbenchHooks && document.getElementById('file-viewer-backdrop'))`);
+          } catch {}
+          if (ready) break;
+          await sleep(50);
+        }
+        probeResult = await cdpEval(`(async () => {
+          const probePromise = new Promise((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('sandbox postMessage timeout')), 5000);
+            window.addEventListener('message', function onMsg(ev) {
+              if (ev.data && ev.data.type === 'ag30_sandbox_probe') {
+                clearTimeout(t);
+                window.removeEventListener('message', onMsg);
+                resolve(ev.data);
+              }
+            });
+          });
+          await window.__fvWorkbenchHooks.openFilePreviewModal(${JSON.stringify(exploitFile)}, 0);
+          const probe = await probePromise;
+          const frame = document.querySelector('#fv-body iframe');
+          const modalRect = document.getElementById('file-viewer-modal')?.getBoundingClientRect?.();
+          const appRect = document.querySelector('.app')?.getBoundingClientRect?.();
+          return {
+            parentHref: window.location.href,
+            hasSrcdoc: Boolean(frame && frame.hasAttribute('srcdoc')),
+            sandboxAttr: frame ? frame.getAttribute('sandbox') : '',
+            dockedSideBySide: Boolean(modalRect && appRect && modalRect.left >= appRect.right - 2),
+            probe
+          };
+        })()`);
+
+        assert.equal(probeResult.parentHref, `http://127.0.0.1:${port}/`, '真实 Chrome 进入页面后 URL 中的 query/hash 口令已被彻底抹除');
+        assert.equal(probeResult.dockedSideBySide, true, '真实 Chrome 在 1200x480 (<521px 高度) 窗口下仍应以右侧并排常驻边栏渲染而非全屏遮罩抽屉');
+        assert.equal(probeResult.hasSrcdoc, true, '口令净化后应采用 srcdoc 承载 HTML 预览');
+        assert.equal(probeResult.sandboxAttr, 'allow-scripts');
+        assert.equal(probeResult.probe.origin, 'null', '真实 Chrome 沙盒 iframe origin 必须为 opaque null');
+        assert.equal(probeResult.probe.baseBefore, `http://127.0.0.1:${port}/`, '真实 Chrome 沙盒初始 document.baseURI 仅含已脱敏根路径，绝不含配对口令');
+        assert.equal(probeResult.probe.baseAfterRemove, `http://127.0.0.1:${port}/`, '即便恶意脚本移除 <base>，回退 baseURI 也仅含无口令根路径');
+        assert.equal(probeResult.probe.referrer, '', 'referrer 必须为空');
+        assert.match(probeResult.probe.parentHref, /^BLOCKED:/, '跨域沙盒访问 window.parent.location.href 必须被浏览器同源策略拦截');
+        assert.match(probeResult.probe.storage, /^BLOCKED:/, 'opaque null origin 访问 localStorage 必须被拦截');
+        assert.match(probeResult.probe.cookie, /^BLOCKED:/, 'opaque null origin 访问 document.cookie 必须被拦截');
+        assert.equal(JSON.stringify(probeResult).includes(realSecretToken), false, '沙盒内外任何可读属性严禁出现配对口令');
+      } finally {
+        try { cdpWs?.close(); } catch {}
+        if (chromeProc) {
+          const exitWait = new Promise((r) => chromeProc.once('exit', r));
+          try { chromeProc.kill('SIGKILL'); } catch {}
+          await Promise.race([exitWait, new Promise((r) => setTimeout(r, 500))]);
+        }
+        await new Promise((resolve) => server.close(resolve));
+        try {
+          fs.rmSync(chromeUserDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 80 });
+        } catch {}
+      }
+    }
+  } finally {
+    if (prevStateDir === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateDir;
+    delete require.cache[require.resolve('../mobile-remote')];
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('需求 #38: 新版模型选择器支持常规两级、Orchestrator 三级编排模型与 Extra High 推理强度级联及降噪', async () => {
+  const repoRoot = path.join(__dirname, '..');
+  // 1) 验证 suite-settings.html 与编译产物包含 Gemini 4 Neon (Extra High/High/Medium/Low) 与 Orchestrator (Neon)
+  const settingsHtml = fs.readFileSync(path.join(repoRoot, 'src', 'renderer', 'suite-settings.html'), 'utf8');
+  for (const expectedVal of [
+    'value="gemini-4-neon-xhigh"',
+    'value="gemini-4-neon-high"',
+    'value="gemini-4-neon-medium"',
+    'value="gemini-4-neon-low"',
+    'value="gemini-pro-orchestrator-neon"'
+  ]) {
+    assert.ok(settingsHtml.includes(expectedVal), `suite-settings.html CLI 模型下拉应包含 ${expectedVal}`);
+  }
+  assert.ok(settingsHtml.includes('Gemini 4 Neon (Extra High)'), 'XHigh 档位应统一显示为 Extra High');
+
+  // 2) 验证 ag-enhancer-overlay.js collectSnapshot 提取 orchestratorConfig/New 标记，且 select-model 联动 setSelectedModel + orchestratorPick.select
+  const overlaySrc = fs.readFileSync(path.join(repoRoot, 'ag-enhancer-overlay.js'), 'utf8');
+  const selectedCalls = [];
+  const orchPickCalls = [];
+  const mockTriggerBtn = {
+    getAttribute(k) { return k === 'data-testid' ? 'model-selector-trigger' : null; },
+    textContent: 'Orchestrator Neon · Extra High'
+  };
+  const neonHigh = { label: 'Gemini 4 Neon (High)', value: 1532, modelId: 'gemini-4-neon-high', tagTitle: 'New', disabled: false, quotaInfo: { resetTime: { seconds: 1795822552n } } };
+  const neonXHigh = { label: 'Gemini 4 Neon (XHigh)', value: 1535, modelId: 'gemini-4-neon-xhigh', tagTitle: 'New', disabled: false, quotaInfo: { resetTime: { seconds: 1795822552n } } };
+  const neonMed = { label: 'Gemini 4 Neon (Medium)', value: 1533, modelId: 'gemini-4-neon-medium', tagTitle: 'New', disabled: false };
+  const neonLow = { label: 'Gemini 4 Neon (Low)', value: 1534, modelId: 'gemini-4-neon-low', tagTitle: 'New', disabled: false };
+  const carbonHigh = { label: 'Gemini 4 Carbon (High)', value: 1427, modelId: 'gemini-4-carbon-high', tagTitle: 'New', disabled: false };
+  const carbonMed = { label: 'Gemini 4 Carbon (Medium)', value: 1437, modelId: 'gemini-4-carbon-medium', tagTitle: 'New', disabled: false };
+  const carbonLow = { label: 'Gemini 4 Carbon (Low)', value: 1438, modelId: 'gemini-4-carbon-low', tagTitle: 'New', disabled: false };
+  const argonHigh = { label: 'Gemini 4 Argon (High)', value: 1417, modelId: 'gemini-4-argon-high', tagTitle: 'Leaving Soon', disabled: false };
+  const opusHigh = { label: 'Claude Opus 5.5 (High)', value: 1402, modelId: 'claude-opus-5-5-high', tagTitle: 'New', disabled: false };
+  const opusMed = { label: 'Claude Opus 5.5 (Medium)', value: 1401, modelId: 'claude-opus-5-5-medium', tagTitle: 'New', disabled: false };
+  const opusLow = { label: 'Claude Opus 5.5 (Low)', value: 1400, modelId: 'claude-opus-5-5-low', tagTitle: 'New', disabled: false };
+  const gptOss = { label: 'GPT-OSS 120B (Medium)', value: 342, modelId: 'gpt-oss-120b-medium', tagTitle: 'Notice', disabled: false };
+  const orchNeon = { label: 'Orchestrator (Neon)', value: 1537, modelId: 'gemini-pro-orchestrator-neon', tagTitle: 'New', disabled: false };
+  const orchCarbon = { label: 'Orchestrator (Carbon)', value: 1667, modelId: 'gemini-pro-orchestrator', tagTitle: 'New', disabled: false };
+  const orchArgon = { label: 'Orchestrator (Argon)', value: 1681, modelId: 'gemini-pro-orchestrator-argon', tagTitle: 'New', disabled: false };
+
+  const mockModelCtx = {
+    selectedModel: orchNeon,
+    setSelectedModel: (opt) => { selectedCalls.push(opt); mockModelCtx.selectedModel = opt; },
+    modelOptions: [neonHigh, neonXHigh, neonMed, neonLow, carbonHigh, carbonMed, carbonLow, argonHigh, orchNeon, orchCarbon, orchArgon, opusLow, opusMed, opusHigh, gptOss],
+    groups: [{ groupName: 'Recommended', options: [neonHigh, carbonMed, argonHigh, orchNeon, opusLow, gptOss] }],
+    userStatus: {
+      cascadeModelConfigData: {
+        groupedModels: new Map([
+          ['gemini-4-neon', {
+            displayName: 'Gemini 4 Neon',
+            defaultThinkingSuffix: 'high',
+            supportedThinkingLevels: [
+              { thinkingSuffix: 'low', thinkingDisplayName: 'Low' },
+              { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
+              { thinkingSuffix: 'high', thinkingDisplayName: 'High' },
+              { thinkingSuffix: 'xhigh', thinkingDisplayName: 'Extra High' }
+            ]
+          }],
+          ['gemini-4-carbon', {
+            displayName: 'Gemini 4 Carbon',
+            defaultThinkingSuffix: 'medium',
+            supportedThinkingLevels: [
+              { thinkingSuffix: 'low', thinkingDisplayName: 'Low' },
+              { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
+              { thinkingSuffix: 'high', thinkingDisplayName: 'High' }
+            ]
+          }]
+        ]),
+        clientModelConfigs: [neonHigh, neonXHigh, neonMed, neonLow, carbonHigh, carbonMed, carbonLow]
+      }
+    },
+    orchestratorDefaultPlanner: neonHigh,
+    orchestratorPlanners: [neonHigh, neonXHigh, neonMed, neonLow, carbonMed, carbonHigh, carbonLow, argonHigh, opusLow, opusMed, opusHigh],
+    orchestratorPick: {
+      model: 1535,
+      select: (val) => { orchPickCalls.push(val); mockModelCtx.orchestratorPick.model = val; }
+    }
+  };
+  mockTriggerBtn.__reactFiber$ag38 = {
+    memoizedProps: { value: mockModelCtx },
+    return: null
+  };
+
+  const unrefTimers = (envObj) => {
+    envObj.sandbox.setTimeout = envObj.win.setTimeout = (fn, ms, ...args) => {
+      if (typeof fn === 'function' && Number(ms || 0) <= 200) {
+        const t = setTimeout(fn, 0, ...args);
+        t?.unref?.();
+        return t;
+      }
+      return 1;
+    };
+    envObj.sandbox.clearTimeout = envObj.win.clearTimeout = (t) => {
+      if (t && typeof t === 'object') clearTimeout(t);
+    };
+  };
+
+  const overlayEnv = createDomEnv();
+  unrefTimers(overlayEnv);
+  overlayEnv.doc.title = 'Antigravity';
+  const origDocQuery = overlayEnv.doc.querySelector.bind(overlayEnv.doc);
+  overlayEnv.doc.querySelector = (sel) => {
+    if (sel === '[data-testid="model-selector-trigger"]') return mockTriggerBtn;
+    return origDocQuery(sel);
+  };
+  overlayEnv.win.fetch = async () => ({ ok: false, status: 404, headers: { get: () => '' }, json: async () => ({}) });
+  overlayEnv.sandbox.fetch = overlayEnv.win.fetch;
+  overlayEnv.sandbox.AbortController = AbortController;
+  overlayEnv.win.AbortController = AbortController;
+  vm.runInNewContext(overlaySrc, overlayEnv.sandbox);
+
+  const enhancer = overlayEnv.sandbox.__AGEnhancer;
+  assert.ok(enhancer && typeof enhancer.getMobileSnapshot === 'function' && typeof enhancer.performMobileAction === 'function');
+  const snap = enhancer.getMobileSnapshot({ convLimit: 10, msgLimit: 5 });
+  // BigInt-safe 序列化验证
+  const snapJson = JSON.stringify(snap);
+  assert.ok(snapJson.length > 10, '含 Protobuf BigInt 配额字段的 modelCtx 快照必须可被 JSON.stringify 安全序列化');
+  assert.equal(snap.model, 'Orchestrator · Neon (Extra High)', 'Orchestrator 激活时顶栏模型名应精简展示当前编排模型与 Extra High 强度');
+  assert.ok(snap.orchestratorConfig && snap.orchestratorConfig.enabled === true && snap.orchestratorConfig.active === true);
+  assert.equal(snap.orchestratorConfig.pickedModelId, 'gemini-4-neon-xhigh');
+  const neonOptInSnap = snap.modelOptions.find((m) => m.modelId === 'gemini-4-neon-xhigh');
+  const argonOptInSnap = snap.modelOptions.find((m) => m.modelId === 'gemini-4-argon-high');
+  assert.equal(neonOptInSnap?.isNew, true, 'tagTitle="New" 应提取为 isNew: true');
+  assert.equal(Boolean(argonOptInSnap?.isNew), false, 'tagTitle="Leaving Soon" 不得误标为 New');
+
+  // 执行三级 Orchestrator 选择（Claude Opus 5.5 · High）并重采快照核验实际基座与 planner/强度
+  const actOrch = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Orchestrator · Opus 5.5 (High)',
+    modelId: 'gemini-pro-orchestrator-neon',
+    orchestrator: true,
+    plannerModelId: 'claude-opus-5-5-high',
+    plannerLabel: 'Claude Opus 5.5 (High)',
+    plannerValue: 1402,
+    effortKey: 'high'
+  });
+  assert.equal(actOrch.ok, true);
+  assert.equal(actOrch.verifiedBySnapshot, true);
+  assert.equal(selectedCalls.length, 1);
+  assert.equal(selectedCalls[0].modelId, 'gemini-pro-orchestrator-neon', '无独立后缀的 Opus 编排器应选中主 Orchestrator 基座并交由 orchestratorPick 指定子模型');
+  assert.deepEqual(orchPickCalls, [1402], '应同步调用 orchestratorPick.select(1402) 锁定 Claude Opus 5.5 (High)');
+  const snapAfterOpus = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterOpus.model, 'Orchestrator · Opus 5.5 (High)');
+  assert.equal(snapAfterOpus.orchestratorConfig?.active, true);
+  assert.equal(snapAfterOpus.orchestratorConfig?.orchestratorModelId, 'gemini-pro-orchestrator-neon');
+  assert.equal(snapAfterOpus.orchestratorConfig?.pickedModelId, 'claude-opus-5-5-high');
+  assert.equal(snapAfterOpus.orchestratorConfig?.pickedValue, 1402);
+
+  // 执行三级 Orchestrator 跨基座选择（Gemini 4 Carbon · Medium）并重采快照核验基座切至 gemini-pro-orchestrator
+  const actOrchCarbon = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Orchestrator · Carbon (Medium)',
+    modelId: 'gemini-pro-orchestrator',
+    orchestrator: true,
+    plannerModelId: 'gemini-4-carbon-medium',
+    plannerLabel: 'Gemini 4 Carbon (Medium)',
+    plannerValue: 1437,
+    effortKey: 'medium'
+  });
+  assert.equal(actOrchCarbon.ok, true);
+  const snapAfterCarbonOrch = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterCarbonOrch.model, 'Orchestrator · Carbon (Medium)');
+  assert.equal(snapAfterCarbonOrch.orchestratorConfig?.orchestratorModelId, 'gemini-pro-orchestrator');
+  assert.equal(snapAfterCarbonOrch.orchestratorConfig?.pickedModelId, 'gemini-4-carbon-medium');
+  assert.equal(snapAfterCarbonOrch.orchestratorConfig?.pickedValue, 1437);
+
+  // 异常防护 1：目标 planner / 推理强度不存在（如 Carbon 请求不存在的 xhigh）时必须明确失败，严禁只切基座返回假成功
+  const callsBeforeBadPlanner = selectedCalls.length;
+  const pickCallsBeforeBadPlanner = orchPickCalls.length;
+  const actMissingPlanner = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Orchestrator · Carbon (Extra High)',
+    modelId: 'gemini-pro-orchestrator-neon',
+    orchestrator: true,
+    plannerModelId: 'gemini-4-carbon-xhigh',
+    plannerLabel: 'Gemini 4 Carbon (XHigh)',
+    effortKey: 'xhigh'
+  });
+  assert.equal(actMissingPlanner.ok, false, '目标编排子模型/强度不存在时必须明确返回失败');
+  assert.equal(selectedCalls.length, callsBeforeBadPlanner, 'planner 校验失败时严禁提前篡改基座 selectedModel');
+  assert.equal(orchPickCalls.length, pickCallsBeforeBadPlanner);
+
+  // 执行常规两级模型选择（Gemini 4 Neon · Extra High）并重采快照核验
+  const actReg = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Gemini 4 Neon (Extra High)',
+    modelId: 'gemini-4-neon-xhigh'
+  });
+  assert.equal(actReg.ok, true);
+  assert.equal(actReg.verifiedBySnapshot, true);
+  assert.equal(selectedCalls[selectedCalls.length - 1].modelId, 'gemini-4-neon-xhigh');
+  assert.equal(orchPickCalls.length, pickCallsBeforeBadPlanner, '切换常规模型时不得误调 orchestratorPick.select');
+  const snapAfterReg = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterReg.orchestratorConfig?.active, false);
+  assert.equal(snapAfterReg.modelOptions.find((m) => m.modelId === 'gemini-4-neon-xhigh')?.selected, true);
+
+  // 回归校验 A：modelOptions 缺失 (undefined) 与为空 ([]) 时，快照与 select-model 统一使用 clientModelConfigs 数据源并可选中生效
+  const savedModelOptions = mockModelCtx.modelOptions;
+  mockModelCtx.modelOptions = undefined;
+  const snapMissingOpts = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.ok(snapMissingOpts.modelOptions.some((m) => m.modelId === 'gemini-4-carbon-high'), 'modelOptions 缺失时快照应回填 clientModelConfigs');
+  const actFromUndefined = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Gemini 4 Carbon (High)',
+    modelId: 'gemini-4-carbon-high'
+  });
+  assert.equal(actFromUndefined.ok, true, 'modelOptions 缺失时 select-model 必须可从统一回填源成功选中');
+  assert.equal(actFromUndefined.source, 'clientModelConfigs');
+  const snapAfterUndefined = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterUndefined.model, 'Gemini 4 Carbon (High)');
+  assert.equal(snapAfterUndefined.modelOptions.find((m) => m.modelId === 'gemini-4-carbon-high')?.selected, true);
+
+  mockModelCtx.modelOptions = [];
+  const snapEmptyOpts = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.ok(snapEmptyOpts.modelOptions.some((m) => m.modelId === 'gemini-4-neon-low'), 'modelOptions 为空数组时快照应回填 clientModelConfigs');
+  const actFromEmpty = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Gemini 4 Neon (Low)',
+    modelId: 'gemini-4-neon-low'
+  });
+  assert.equal(actFromEmpty.ok, true, 'modelOptions 为空数组时 select-model 必须可从统一回填源成功选中');
+  assert.equal(actFromEmpty.source, 'clientModelConfigs');
+  const snapAfterEmpty = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapAfterEmpty.model, 'Gemini 4 Neon (Low)');
+  assert.equal(snapAfterEmpty.modelOptions.find((m) => m.modelId === 'gemini-4-neon-low')?.selected, true);
+
+  // 回归校验 B：无 orchestratorPlanners 但存在多个编排基座时，快照不下发伪造 orchestratorConfig，后端拒绝伪造强度请求
+  mockModelCtx.modelOptions = savedModelOptions;
+  const savedPlanners = mockModelCtx.orchestratorPlanners;
+  mockModelCtx.orchestratorPlanners = [];
+  const snapNoPlanners = enhancer.getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+  assert.equal(snapNoPlanners.orchestratorConfig, undefined, '无 orchestratorPlanners 时不得下发不可执行的编排强度配置');
+  const callsBeforeNoPlanners = selectedCalls.length;
+  const actFakeOrch = await enhancer.performMobileAction({
+    action: 'select-model',
+    label: 'Orchestrator · Neon (Extra High)',
+    modelId: 'gemini-pro-orchestrator-neon',
+    orchestrator: true,
+    plannerModelId: 'gemini-4-neon-xhigh',
+    effortKey: 'xhigh'
+  });
+  assert.equal(actFakeOrch.ok, false, '无 orchestratorPlanners 时请求特定编排强度必须明确失败，严禁仅切基座返回假成功');
+  assert.equal(selectedCalls.length, callsBeforeNoPlanners, '拒绝不可执行强度请求时不得篡改当前基座模型');
+  mockModelCtx.orchestratorPlanners = savedPlanners;
+  try { enhancer.dispose?.(); } catch {}
+
+  // 3) 验证远程前端（mobile-remote.js）：常规两级、单档直选、Orchestrator 三级左滑与逐级返回、降噪无 modelId/N档
+  delete require.cache[require.resolve('../mobile-remote')];
+  const remoteMod = require('../mobile-remote');
+  const html = remoteMod.buildMobileAppHtml();
+  assert.ok(html.includes('--accent:#a78bfa') && html.includes('--accent:#7c3aed'), '远程页面深浅色默认强调色必须统一为 #a78bfa / #7c3aed 主题紫');
+  assert.equal(html.includes('--accent:#38bdf8'), false, '远程页面 :root 不得残留旧版野生天蓝 #38bdf8');
+  const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+  const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
+  assert.ok(scriptMatch && bodyMatch);
+  assert.doesNotThrow(() => new Function(scriptMatch[1]), '内联脚本不得有语法错误');
+
+  const uiEnv = createDomEnv();
+  unrefTimers(uiEnv);
+  uiEnv.doc.body.innerHTML = bodyMatch[1];
+  uiEnv.win.innerWidth = 390;
+  uiEnv.win.innerHeight = 844;
+  uiEnv.win.AbortController = AbortController;
+  uiEnv.win.location = { pathname: '/', search: '?token=test38', hash: '', href: 'http://127.0.0.1:18888/?token=test38', protocol: 'http:', reload() {} };
+  uiEnv.win.history = { replaceState() {} };
+  uiEnv.sandbox.location = uiEnv.win.location;
+  uiEnv.sandbox.history = uiEnv.win.history;
+  uiEnv.sandbox.AbortController = AbortController;
+  uiEnv.sandbox.URLSearchParams = URLSearchParams;
+
+  const postedActions = [];
+  let currentMockSnapPayload = {
+    ok: true,
+    sessionId: 'conv-38',
+    title: '三级编排选择器测试',
+    busy: false,
+    model: snap.model,
+    modelOptions: snap.modelOptions,
+    orchestratorConfig: snap.orchestratorConfig,
+    permissionKey: 'auto',
+    permissionLabel: '自动',
+    messages: [],
+    projects: [],
+    conversations: []
+  };
+  const mockHeaders = { get: (k) => (String(k || '').toLowerCase() === 'content-type' ? 'application/json' : '') };
+  uiEnv.win.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.includes('/api/snapshot')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: mockHeaders,
+        json: async () => currentMockSnapPayload
+      };
+    }
+    if (u.includes('/api/action')) {
+      const body = JSON.parse(String(init.body || '{}'));
+      postedActions.push(body);
+      return {
+        ok: true,
+        status: 200,
+        headers: mockHeaders,
+        json: async () => ({
+          ok: true,
+          actionResult: { ok: true, model: body.label }
+        })
+      };
+    }
+    return { ok: true, status: 200, headers: mockHeaders, json: async () => ({ ok: true }) };
+  };
+  uiEnv.sandbox.fetch = uiEnv.win.fetch;
+
+  vm.runInNewContext(scriptMatch[1], uiEnv.sandbox);
+  await new Promise((r) => setTimeout(r, 40));
+
+  const modelBtn = uiEnv.doc.getElementById('btn-model-inline');
+  const sheetList = uiEnv.doc.getElementById('sheet-list');
+  const backBtn = uiEnv.doc.getElementById('sheet-back-btn');
+  const titleText = uiEnv.doc.getElementById('sheet-title-text');
+  const sheetCard = uiEnv.doc.getElementById('sheet-backdrop')?.querySelector?.('.sheet');
+
+  // 打开模型选择器
+  modelBtn.onclick();
+  assert.equal(sheetCard?.getAttribute('data-sheet-kind'), 'model', '桌面多列级联样式钩子 data-sheet-kind 应设为 model');
+  assert.ok(sheetCard?.classList?.contains('model-picker-sheet'));
+  const groupPane = uiEnv.doc.getElementById('model-group-pane');
+  const rootText = groupPane?.textContent || '';
+  assert.equal(/档/.test(rootText), false, '模型列表应移除“N 档”杂讯文案');
+  assert.equal(rootText.includes('gemini-4-neon'), false, '模型列表应移除裸露内部 baseModelId');
+  assert.ok(sheetList.querySelectorAll('.model-picker-divider').length === 1, 'Orchestrator 入口上方应渲染独立分隔线');
+  assert.ok(sheetList.querySelectorAll('.model-new-pill').length >= 2, 'New 模型应展示主题紫 New 徽标');
+
+  const rootBtns = sheetList.querySelectorAll('[data-group-idx]');
+  // 包含: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Claude Opus 5.5, GPT-OSS 120B, Orchestrator (聚合了 3 个 Orchestrator 项为单一入口)
+  assert.equal(rootBtns.length, 6, '多个 Orchestrator 项应聚合为末尾单一 Orchestrator 根入口');
+  const orchRootBtn = rootBtns[rootBtns.length - 1];
+  assert.ok((orchRootBtn.textContent || '').includes('Orchestrator'));
+  assert.ok((orchRootBtn.textContent || '').includes('Neon · Extra High'), 'Orchestrator 根行应回显当前 Neon · Extra High 状态');
+
+  // 点击 Orchestrator -> 进入第 2 级「候选编排模型」
+  await sheetList.onclick({ target: orchRootBtn });
+  const trackEl = uiEnv.doc.getElementById('sheet-stage-track');
+  const subPane = uiEnv.doc.getElementById('model-submodel-pane');
+  assert.equal(subPane.hidden, false, '进入 Orchestrator 第 2 级时候选编排模型面板应可见');
+  assert.ok(trackEl.classList.contains('is-three-stage') && trackEl.classList.contains('step-submodel'), '轨道应切换为 3 栏左滑第 2 阶段');
+  assert.equal(titleText.textContent, 'Orchestrator');
+  assert.equal(backBtn.hidden, false);
+
+  const subBtns = subPane.querySelectorAll('[data-submodel-idx]');
+  assert.equal(subBtns.length, 4, 'Orchestrator 第 2 级应列出 Neon / Carbon / Argon / Opus 4 个候选编排家族');
+  assert.ok((subBtns[0].textContent || '').includes('Gemini 4 Neon'));
+
+  // 点击 Gemini 4 Neon -> 进入第 3 级「推理强度 (Low / Medium / High / Extra High)」
+  await sheetList.onclick({ target: subBtns[0] });
+  assert.ok(trackEl.classList.contains('is-three-stage') && trackEl.classList.contains('step-effort'), '点击候选编排模型后应推进至第 3 阶段推理强度');
+  assert.equal(titleText.textContent, 'Gemini 4 Neon');
+  const effortPane = uiEnv.doc.getElementById('model-effort-pane');
+  const orchVarBtns = effortPane.querySelectorAll('[data-variant-idx]');
+  assert.equal(orchVarBtns.length, 4, 'Gemini 4 Neon 编排强度应覆盖 Low / Medium / High / Extra High 共 4 档');
+  const effTexts = orchVarBtns.map((b) => (b.textContent || '').replace(/✓|当前/g, '').trim());
+  assert.deepEqual(effTexts, ['Low', 'Medium', 'High', 'Extra High'], '推理强度应按 Low -> Medium -> High -> Extra High 清晰展示且不含裸 modelId');
+
+  // 测试顶部返回键逐级回退：第 3 级 (推理强度) -> 第 2 级 (Orchestrator 候选模型) -> 第 1 级 (切换模型)
+  backBtn.onclick({ stopPropagation() {} });
+  assert.ok(trackEl.classList.contains('step-submodel') && !trackEl.classList.contains('step-effort'), '第 1 次返回应退回第 2 级候选编排模型');
+  assert.equal(titleText.textContent, 'Orchestrator');
+  backBtn.onclick({ stopPropagation() {} });
+  assert.ok(!trackEl.classList.contains('step-submodel') && !trackEl.classList.contains('is-three-stage'), '第 2 次返回应退回第 1 级根模型列表');
+  assert.equal(titleText.textContent, '切换模型');
+  assert.equal(backBtn.hidden, true);
+
+  // 重新进入 Orchestrator -> Claude Opus 5.5 -> High 并确认提交载荷
+  await sheetList.onclick({ target: rootBtns[rootBtns.length - 1] });
+  const opusSubBtn = uiEnv.doc.getElementById('model-submodel-pane').querySelectorAll('[data-submodel-idx]')
+    .find((b) => (b.textContent || '').includes('Claude Opus 5.5'));
+  assert.ok(opusSubBtn);
+  await sheetList.onclick({ target: opusSubBtn });
+  const opusHighBtn = uiEnv.doc.getElementById('model-effort-pane').querySelectorAll('[data-variant-idx]')
+    .find((b) => (b.textContent || '').includes('High'));
+  assert.ok(opusHighBtn);
+  await sheetList.onclick({ target: opusHighBtn });
+  const lastOrchPost = postedActions[postedActions.length - 1];
+  assert.equal(lastOrchPost.action, 'select-model');
+  assert.equal(lastOrchPost.orchestrator, true);
+  assert.equal(lastOrchPost.plannerModelId, 'claude-opus-5-5-high');
+  assert.equal(lastOrchPost.plannerValue, 1402);
+  assert.equal(lastOrchPost.effortKey, 'high');
+  assert.equal(uiEnv.doc.getElementById('model-inline-label')?.textContent, 'Orchestrator · Opus 5.5 (High)', 'select-model 成功后底栏模型按钮应立即回显新选中的编排子模型与强度');
+  // 立即重开选择器核验选中态回写
+  modelBtn.onclick();
+  const reopenedOrchRoot = sheetList.querySelectorAll('[data-group-idx]')[5];
+  assert.ok((reopenedOrchRoot.textContent || '').includes('Opus 5.5 · High'), '重开选择器时 Orchestrator 根行应回显已切换的 Opus 5.5 · High');
+  uiEnv.doc.getElementById('sheet-close').onclick();
+
+  // 单档模型 GPT-OSS 120B (Medium) 应点击即直选，不进入二级菜单
+  modelBtn.onclick();
+  const gptBtn = sheetList.querySelectorAll('[data-group-idx]').find((b) => (b.textContent || '').includes('GPT-OSS 120B'));
+  assert.ok(gptBtn);
+  await sheetList.onclick({ target: gptBtn });
+  const lastSinglePost = postedActions[postedActions.length - 1];
+  assert.equal(lastSinglePost.action, 'select-model');
+  assert.equal(Boolean(lastSinglePost.orchestrator), false);
+  assert.equal(lastSinglePost.modelId, 'gpt-oss-120b-medium');
+  assert.equal(uiEnv.doc.getElementById('model-inline-label')?.textContent, 'GPT-OSS 120B (Medium)');
+
+  // 回归校验 C（前端）：无 orchestratorConfig / orchestratorPlanners 且存在多个 Orchestrator 基座时，仅展示真实可直选基座，绝不借常规模型伪造强度档位
+  currentMockSnapPayload = {
+    ...currentMockSnapPayload,
+    model: 'Gemini 4 Neon (High)',
+    modelOptions: snapNoPlanners.modelOptions,
+    orchestratorConfig: undefined
+  };
+  uiEnv.doc.hidden = false;
+  uiEnv.doc.dispatchEvent({ type: 'visibilitychange' });
+  await new Promise((r) => setTimeout(r, 30));
+  modelBtn.onclick();
+  const fallbackRootBtns = sheetList.querySelectorAll('[data-group-idx]');
+  const fallbackOrchBtn = fallbackRootBtns[fallbackRootBtns.length - 1];
+  await sheetList.onclick({ target: fallbackOrchBtn });
+  const fallbackSubBtns = uiEnv.doc.getElementById('model-submodel-pane').querySelectorAll('[data-submodel-idx]');
+  assert.equal(fallbackSubBtns.length, 3, '仅存在 3 个 Orchestrator 基座时第 2 级只展示这 3 个真实基座');
+  assert.equal(fallbackSubBtns.some((b) => (b.textContent || '').includes('›')), false, '无 orchestratorPlanners 时子项不得出现下一级强度箭头 ›');
+  const carbonBaseBtn = fallbackSubBtns.find((b) => (b.textContent || '').includes('Orchestrator (Carbon)'));
+  assert.ok(carbonBaseBtn);
+  await sheetList.onclick({ target: carbonBaseBtn });
+  assert.equal(uiEnv.doc.getElementById('model-effort-pane').querySelectorAll('[data-variant-idx]').length, 0, '点击基座应直接提交而非展开伪造的第 3 级强度菜单');
+  const lastBaseOnlyPost = postedActions[postedActions.length - 1];
+  assert.equal(lastBaseOnlyPost.action, 'select-model');
+  assert.equal(Boolean(lastBaseOnlyPost.orchestrator), false, '直接切换 Orchestrator 基座不应附带伪造的 orchestrator planner 参数');
+  assert.equal(lastBaseOnlyPost.modelId, 'gemini-pro-orchestrator');
+  assert.ok(settingsHtml.includes('value="__custom__"') && settingsHtml.includes('id="input-cli-custom-model"'), 'suite-settings.html 必须保留自定义模型 ID 兼容入口');
+});
+
+test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadProject+UpdateProject 保留原字段、最少 1 目录与禁删保护）', async () => {
+  const http = require('node:http');
+  const { pathToFileURL } = require('node:url');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-proj-41-42-'));
+  const homeDir = path.join(tmpRoot, 'home');
+  const configDir = path.join(tmpRoot, 'config');
+  const dirRepoA = path.join(homeDir, 'codebase', 'repo-alpha');
+  const dirSharedB = path.join(homeDir, 'shared', 'common-lib');
+  const dirExtraC = path.join(homeDir, 'codebase', 'module-gamma');
+  const dirOutside = path.join(tmpRoot, 'outside-secret');
+  const symlinkAliasA = path.join(homeDir, 'codebase', 'repo-alpha-link');
+  fs.mkdirSync(path.join(dirRepoA, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(dirRepoA, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+  fs.mkdirSync(dirSharedB, { recursive: true });
+  fs.mkdirSync(dirExtraC, { recursive: true });
+  fs.mkdirSync(dirOutside, { recursive: true });
+  fs.mkdirSync(path.join(configDir, 'projects'), { recursive: true });
+  fs.symlinkSync(dirRepoA, symlinkAliasA, 'dir');
+
+  try {
+    delete require.cache[require.resolve('../mobile-remote')];
+    const remoteMod = require('../mobile-remote');
+
+    const rpcCalls = [];
+    const storedProjects = new Map();
+    // 预置一个已有单目录项目用于同目录冲突测试，以及一个待编辑的多字段项目
+    const otherProj = {
+      id: 'proj-other-fixed',
+      name: 'ExistingOther',
+      projectResources: { resources: [{ folderUri: pathToFileURL(dirExtraC).href }] },
+      permissionGrants: { v2Migrated: true },
+      settings: {},
+      isWorkspaceOnly: false
+    };
+    storedProjects.set(otherProj.id, otherProj);
+    fs.writeFileSync(path.join(configDir, 'projects', `${otherProj.id}.json`), JSON.stringify(otherProj, null, 2));
+
+    let customReadProjectHook = null;
+    let customUpdateProjectHook = null;
+    const mockLsConnect = async () => ({
+      call: async (method, body) => {
+        rpcCalls.push({ method, body: JSON.parse(JSON.stringify(body || {})) });
+        if (method === 'ListProjects') {
+          return { projectIds: Array.from(storedProjects.keys()) };
+        }
+        if (method === 'ReadProjects') {
+          const ids = Array.isArray(body?.ids) ? body.ids : [];
+          return {
+            projects: ids
+              .map((id) => storedProjects.get(id))
+              .filter(Boolean)
+              .map((p) => JSON.parse(JSON.stringify(p)))
+          };
+        }
+        if (method === 'ResolveFolder') {
+          const isGit = String(body?.folderUri || '').includes('repo-alpha');
+          return { resourceType: isGit ? 'FOLDER_TYPE_GIT_FOLDER' : 'FOLDER_TYPE_PLAIN' };
+        }
+        if (method === 'GetRepoInfos') {
+          return { repos: [{ branches: [{ name: 'main', isCurrentBranch: true }] }] };
+        }
+        if (method === 'CreateProject') {
+          const p = JSON.parse(JSON.stringify(body.project));
+          storedProjects.set(p.id, p);
+          return { project: p };
+        }
+        if (method === 'ReadProject') {
+          if (typeof customReadProjectHook === 'function') {
+            const hooked = customReadProjectHook(body);
+            if (hooked !== undefined) return hooked;
+          }
+          const hit = storedProjects.get(body.id);
+          if (!hit) throw new Error(`not_found: project ${body.id} not found`);
+          return { project: JSON.parse(JSON.stringify(hit)) };
+        }
+        if (method === 'UpdateProject') {
+          if (typeof customUpdateProjectHook === 'function') {
+            customUpdateProjectHook(body);
+          }
+          const p = JSON.parse(JSON.stringify(body.project));
+          if (!p?.id || !storedProjects.has(p.id)) {
+            throw new Error(`not_found: project with id "${p?.id || ''}" not found`);
+          }
+          storedProjects.set(p.id, p);
+          return { project: p };
+        }
+        return {};
+      }
+    });
+
+    const catStore = remoteMod.createSessionCatalogStore();
+    const httpCfg = { token: 'tok4142', port: 0, allowLan: true };
+    const handler = remoteMod.createRemoteHttpHandler(httpCfg, {
+      homeDir,
+      configDir,
+      catalogStore: catStore,
+      localApiConnect: mockLsConnect,
+      openInDesktop: false,
+      fetchSnapshot: async () => {
+        const projects = Array.from(storedProjects.values()).map((p) => {
+          const ws = (p.projectResources?.resources || []).map((r) => {
+            const u = r?.gitFolder?.folderUri || r?.folderUri || '';
+            return decodeURIComponent(new URL(u).pathname);
+          });
+          return {
+            id: p.id,
+            name: p.name,
+            path: ws[0] || '',
+            workspacePath: ws[0] || '',
+            workspacePaths: ws,
+            conversationCount: 1,
+            runningCount: 0,
+            waitingCount: 0,
+            unreadCount: 0,
+            isEmpty: false,
+            active: true
+          };
+        });
+        return {
+          ok: true,
+          sessionId: 'conv-41-1',
+          activeConversationId: 'conv-41-1',
+          currentProjectId: projects[projects.length - 1]?.id || '',
+          currentProjectName: projects[projects.length - 1]?.name || '',
+          currentWorkspacePaths: projects[projects.length - 1]?.workspacePaths || [],
+          title: '多目录项目测试会话',
+          busy: false,
+          model: 'Gemini 4 Neon (High)',
+          modelOptions: [{ label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', selected: true }],
+          permissionKey: 'auto',
+          permissionLabel: '自动',
+          usageSummary: { total: 0 },
+          messages: [],
+          projects,
+          conversations: projects.map((p, i) => ({
+            id: `conv-41-${i + 1}`,
+            projectId: p.id,
+            projectName: p.name,
+            title: `${p.name} 会话`,
+            active: i === projects.length - 1,
+            status: 'idle',
+            updatedAt: Date.now() - i * 1000
+          }))
+        };
+      },
+      performAction: async () => ({ ok: true })
+    });
+
+    const server = http.createServer(handler);
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const apiJson = async (method, pathname, body) => {
+      const res = await fetch(`${baseUrl}${pathname}`, {
+        method,
+        headers: {
+          'X-AG-Remote-Token': httpCfg.token,
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {})
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {})
+      });
+      return { status: res.status, data: await res.json() };
+    };
+
+    try {
+      // 1) [#41] POST /api/projects 多目录创建 + realpathSync 软链去重 + Git/普通目录混合解析
+      const createRes = await apiJson('POST', '/api/projects', {
+        name: 'MultiWorkspaceApp',
+        folderPaths: [dirRepoA, symlinkAliasA, dirSharedB],
+        openInDesktop: false
+      });
+      assert.equal(createRes.status, 200);
+      assert.equal(createRes.data.ok, true);
+      const newPid = createRes.data.project.id;
+      assert.ok(newPid);
+      assert.equal(createRes.data.project.folderPaths.length, 2, '指向同一真实目录的软链应通过 realpathSync 自动去重为 2 个目录');
+      const createdInRpc = storedProjects.get(newPid);
+      assert.equal(createdInRpc.projectResources.resources.length, 2);
+      assert.ok(createdInRpc.projectResources.resources[0].gitFolder?.folderUri.endsWith('/repo-alpha'), '首目录应识别为 Git 仓库并保留 gitFolder');
+      assert.equal(createdInRpc.projectResources.resources[0].gitFolder.defaultBranch, 'main');
+      assert.ok(createdInRpc.projectResources.resources[1].folderUri.endsWith('/common-lib'), '第二目录应作为普通目录写入 folderUri');
+
+      // 注入自定义未知配置字段，验证后续 UpdateProject 完整保留原项目配置
+      createdInRpc.settings = { customTheme: 'violet', autoIndex: true };
+      createdInRpc.permissionGrants = { v2Migrated: true, customGrant: 'keep-me' };
+      createdInRpc.customEnterpriseMeta = { teamId: 'shens-army' };
+      storedProjects.set(newPid, createdInRpc);
+
+      // 2) [#32] 安全边界校验：多目录中任一路径越出 $HOME 必须拦截且不得创建或更新
+      const escapeCreate = await apiJson('POST', '/api/projects', {
+        name: 'EscapeAttempt',
+        folderPaths: [dirRepoA, dirOutside],
+        openInDesktop: false
+      });
+      assert.equal(escapeCreate.data.ok, false);
+      assert.ok(escapeCreate.status === 403 || escapeCreate.status === 400, '包含 $HOME 之外目录的多目录创建请求必须被拦截');
+
+      // 3) [#42] GET /api/projects/detail 回显项目名与全部已绑定目录
+      const detailRes = await apiJson('GET', `/api/projects/detail?id=${encodeURIComponent(newPid)}`);
+      assert.equal(detailRes.status, 200);
+      assert.equal(detailRes.data.ok, true);
+      assert.equal(detailRes.data.project.name, 'MultiWorkspaceApp');
+      assert.equal(detailRes.data.project.folderPaths.length, 2);
+
+      // 4) [#42] POST /api/projects/update：改名 + 新增目录 (dirExtraC) + 移除目录 (dirSharedB)，并验证未知字段完整保留
+      const updateRes = await apiJson('POST', '/api/projects/update', {
+        id: newPid,
+        name: 'MultiWorkspaceRenamed',
+        folderPaths: [dirRepoA, dirExtraC]
+      });
+      assert.equal(updateRes.status, 200);
+      assert.equal(updateRes.data.ok, true);
+      assert.equal(updateRes.data.project.name, 'MultiWorkspaceRenamed');
+      assert.equal(updateRes.data.project.folderPaths.length, 2);
+      const updatedSnapProj = (updateRes.data.snapshot?.projects || []).find((p) => p.id === newPid);
+      assert.ok(updatedSnapProj, 'POST /api/projects/update 返回的 snapshot 应立即包含更新后的项目');
+      assert.equal(updatedSnapProj.name, 'MultiWorkspaceRenamed');
+      assert.equal(updatedSnapProj.workspacePaths.length, 2);
+      assert.ok(rpcCalls.some((c) => c.method === 'ReadProject' && c.body?.id === newPid), '编辑项目必须先调用 ReadProject 读取原配置');
+      assert.ok(rpcCalls.some((c) => c.method === 'UpdateProject' && c.body?.project?.id === newPid), '编辑项目必须调用 UpdateProject 提交更新');
+
+      const updatedInRpc = storedProjects.get(newPid);
+      assert.equal(updatedInRpc.name, 'MultiWorkspaceRenamed');
+      assert.equal(updatedInRpc.projectResources.resources.length, 2);
+      assert.ok(updatedInRpc.projectResources.resources[1].folderUri.endsWith('/module-gamma'));
+      assert.deepEqual(updatedInRpc.settings, { customTheme: 'violet', autoIndex: true }, 'UpdateProject 必须保留原 settings 字段');
+      assert.deepEqual(updatedInRpc.permissionGrants, { v2Migrated: true, customGrant: 'keep-me' }, 'UpdateProject 必须保留原 permissionGrants 字段');
+      assert.deepEqual(updatedInRpc.customEnterpriseMeta, { teamId: 'shens-army' }, 'UpdateProject 必须保留未知扩展字段');
+      assert.equal(updatedInRpc.archived, undefined, '编辑项目不得写入 archived');
+
+      // 5) [#42] 边界拦截：不允许移除至 0 个目录、不允许与其他项目重名、不允许传入 delete/archived
+      const zeroFolderRes = await apiJson('POST', '/api/projects/update', {
+        id: newPid,
+        name: 'MultiWorkspaceRenamed',
+        folderPaths: []
+      });
+      assert.equal(zeroFolderRes.status, 400);
+      assert.equal(zeroFolderRes.data.ok, false);
+
+      const dupNameRes = await apiJson('POST', '/api/projects/update', {
+        id: newPid,
+        name: 'existingother',
+        folderPaths: [dirRepoA]
+      });
+      assert.equal(dupNameRes.status, 400);
+      assert.equal(dupNameRes.data.ok, false);
+
+      const deleteAttemptRes = await apiJson('POST', '/api/projects/update', {
+        id: newPid,
+        name: 'MultiWorkspaceRenamed',
+        folderPaths: [dirRepoA],
+        delete: true
+      });
+      assert.equal(deleteAttemptRes.status, 400);
+      assert.equal(deleteAttemptRes.data.ok, false);
+
+      // 6) 前端 UI 闭环验证：新建弹窗连续添加多目录提交 + 侧边栏编辑按钮打开编辑弹窗（剩 1 目录禁用移除且无删除项目按钮）
+      const html = remoteMod.buildMobileAppHtml();
+      const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+      const bodyMatch = html.match(/<body>([\s\S]*?)<script>/);
+      assert.ok(scriptMatch && bodyMatch);
+      assert.equal(/删除项目|delete-project|btn-delete-project/i.test(html), false, '前端严禁提供任何删除项目按钮或入口');
+
+      const uiEnv = createDomEnv();
+      const rawSetTimeout = setTimeout;
+      uiEnv.sandbox.setTimeout = uiEnv.win.setTimeout = (fn, ms, ...args) => {
+        if (typeof fn === 'function' && Number(ms || 0) <= 250) {
+          const t = rawSetTimeout(fn, 0, ...args);
+          t?.unref?.();
+          return t;
+        }
+        return 1;
+      };
+      uiEnv.doc.body.innerHTML = bodyMatch[1];
+      uiEnv.win.innerWidth = 1280;
+      uiEnv.win.innerHeight = 800;
+      uiEnv.win.AbortController = AbortController;
+      uiEnv.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, hash: '', href: `${baseUrl}/?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+      uiEnv.win.history = { replaceState() {} };
+      uiEnv.sandbox.location = uiEnv.win.location;
+      uiEnv.sandbox.history = uiEnv.win.history;
+      uiEnv.sandbox.AbortController = AbortController;
+      uiEnv.sandbox.URLSearchParams = URLSearchParams;
+      uiEnv.win.fetch = (u, init) => fetch(String(u).startsWith('http') ? u : `${baseUrl}${u}`, init);
+      uiEnv.sandbox.fetch = uiEnv.win.fetch;
+
+      vm.runInNewContext(scriptMatch[1], uiEnv.sandbox);
+      const convList = uiEnv.doc.getElementById('conv-list');
+      let editBtns = [];
+      for (let w = 0; w < 40; w++) {
+        editBtns = convList.querySelectorAll('.proj-edit-btn');
+        if (editBtns.length >= 2) break;
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+
+      // 6a) 侧边栏真实项目分组头部渲染编辑入口按钮，点击打开编辑弹窗并回显 2 个已绑定目录
+      assert.ok(editBtns.length >= 2, '每个真实项目行均应提供编辑项目设置按钮');
+      const targetEditBtn = editBtns.find((b) => b.getAttribute('data-edit-proj') === newPid);
+      assert.ok(targetEditBtn);
+      await convList.dispatchEvent({ type: 'click', target: targetEditBtn, stopPropagation() {} });
+      await new Promise((r) => rawSetTimeout(r, 60));
+
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, false);
+      assert.equal(uiEnv.doc.getElementById('proj-modal-title').textContent, '编辑项目设置');
+      assert.equal(uiEnv.doc.getElementById('proj-name-input').value, 'MultiWorkspaceRenamed');
+      const foldersBox = uiEnv.doc.getElementById('proj-folders-box');
+      let rmBtns = foldersBox.querySelectorAll('[data-rm-proj-folder]');
+      assert.equal(rmBtns.length, 2, '编辑弹窗应回显该项目已绑定的 2 个目录');
+      assert.equal(rmBtns[0].disabled, false);
+
+      // 移除第 2 个目录后仅剩 1 个目录，最后一个移除按钮必须自动禁用防止删空
+      foldersBox.dispatchEvent({ type: 'click', target: rmBtns[1] });
+      rmBtns = foldersBox.querySelectorAll('[data-rm-proj-folder]');
+      assert.equal(rmBtns.length, 1);
+      assert.equal(Boolean(rmBtns[0].disabled || rmBtns[0].hasAttribute('disabled')), true, '仅剩 1 个绑定目录时移除按钮必须禁用');
+      // 再次点击已禁用移除按钮，仍必须保留最后 1 个目录
+      foldersBox.dispatchEvent({ type: 'click', target: rmBtns[0] });
+      assert.equal(foldersBox.querySelectorAll('[data-rm-proj-folder]').length, 1, '已禁用的最后 1 个目录不可被移除');
+
+      // 修改项目名称并点击保存
+      const nameInput = uiEnv.doc.getElementById('proj-name-input');
+      nameInput.value = 'SingleFolderKept';
+      nameInput.dispatchEvent({ type: 'input' });
+      uiEnv.doc.getElementById('proj-create-submit').dispatchEvent({ type: 'click' });
+      for (let w = 0; w < 40 && !uiEnv.doc.getElementById('proj-modal-backdrop').hidden; w++) {
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+
+      assert.equal(
+        uiEnv.doc.getElementById('proj-modal-backdrop').hidden,
+        true,
+        `保存项目设置成功后应关闭弹窗 (toast=${uiEnv.doc.getElementById('toast')?.textContent || ''}, btn=${uiEnv.doc.getElementById('proj-create-submit')?.textContent || ''})`
+      );
+      assert.equal(storedProjects.get(newPid).name, 'SingleFolderKept');
+      assert.equal(storedProjects.get(newPid).projectResources.resources.length, 1);
+
+      // 6b) 前端新建弹窗连续添加 2 个目录并提交创建多目录项目
+      const projCountBeforeUiCreate = storedProjects.size;
+      uiEnv.doc.getElementById('btn-new-project').click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, false);
+      assert.match(uiEnv.doc.getElementById('proj-modal-title').textContent, /新建项目/);
+
+      const pathIn = uiEnv.doc.getElementById('proj-path-input');
+      const pathGo = uiEnv.doc.getElementById('proj-path-go');
+      pathIn.value = dirRepoA;
+      pathGo.click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      uiEnv.doc.getElementById('proj-add-folder-btn').click();
+
+      pathIn.value = dirSharedB;
+      pathGo.click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      uiEnv.doc.getElementById('proj-add-folder-btn').click();
+
+      assert.equal(foldersBox.querySelectorAll('.proj-folder-chip').length, 2, '新建项目弹窗应展示连续加入的 2 个目录芯片');
+      assert.match(uiEnv.doc.getElementById('proj-create-submit').textContent, /2 个目录/, '多目录创建提交按钮应显示已选目录数');
+
+      nameInput.value = 'UiCreatedMultiProj';
+      nameInput.dispatchEvent({ type: 'input' });
+      uiEnv.doc.getElementById('proj-create-submit').click();
+      for (let w = 0; w < 40 && !uiEnv.doc.getElementById('proj-modal-backdrop').hidden; w++) {
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, true);
+      assert.equal(storedProjects.size, projCountBeforeUiCreate + 1, '前端提交应创建新的多目录项目');
+      const uiCreatedProj = Array.from(storedProjects.values()).find((p) => p.name === 'UiCreatedMultiProj');
+      assert.ok(uiCreatedProj);
+      assert.equal(uiCreatedProj.projectResources.resources.length, 2, '前端创建的多目录项目应持久化 2 个目录资源');
+
+      // 7) 返工回归 A：选中单目录 A 后继续浏览已关联项目 B (dirExtraC -> ExistingOther) 时，前后端均严禁误复用项目 B
+      const mismatchSameNameRes = await apiJson('POST', '/api/projects', {
+        name: 'ExistingOther',
+        folderPaths: [dirSharedB],
+        existingProjectId: otherProj.id,
+        openInDesktop: false
+      });
+      assert.equal(mismatchSameNameRes.status, 400, '实际提交目录与 existingProjectId 不符且同名时必须按重名拦截，绝不得返回项目 B');
+      assert.equal(mismatchSameNameRes.data.ok, false);
+      assert.notEqual(mismatchSameNameRes.data.alreadyExists, true);
+
+      const mismatchNewNameRes = await apiJson('POST', '/api/projects', {
+        name: 'CreatedOnDirSharedB',
+        folderPaths: [dirSharedB],
+        existingProjectId: otherProj.id,
+        openInDesktop: false
+      });
+      assert.equal(mismatchNewNameRes.status, 200);
+      assert.equal(mismatchNewNameRes.data.ok, true);
+      assert.equal(mismatchNewNameRes.data.alreadyExists, false, 'existingProjectId 目录不匹配时不得复用旧项目');
+      assert.notEqual(mismatchNewNameRes.data.project.id, otherProj.id);
+      assert.deepEqual(mismatchNewNameRes.data.project.folderPaths, [fs.realpathSync(dirSharedB).startsWith('/private/') && !dirSharedB.startsWith('/private/') ? path.resolve(dirSharedB) : path.resolve(dirSharedB)]);
+
+      // 前端闭环：暂存单目录 dirSharedB 后浏览已关联 ExistingOther 的 dirExtraC，提交时不得携带 ExistingOther 的 existingProjectId
+      const dirFreshSingle = path.join(homeDir, 'codebase', 'fresh-single-a');
+      fs.mkdirSync(dirFreshSingle, { recursive: true });
+      uiEnv.doc.getElementById('btn-new-project').click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      pathIn.value = dirFreshSingle;
+      pathGo.click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      uiEnv.doc.getElementById('proj-add-folder-btn').click();
+      assert.equal(foldersBox.querySelectorAll('.proj-folder-chip').length, 1);
+
+      // 随后浏览到已关联项目 ExistingOther 的目录 dirExtraC（不点击加入目录列表）
+      pathIn.value = dirExtraC;
+      pathGo.click();
+      await new Promise((r) => rawSetTimeout(r, 60));
+      assert.equal(uiEnv.doc.getElementById('proj-create-submit').textContent, '创建项目并进入对话', '浏览目录与已选单目录不一致时不得显示进入已有项目');
+
+      // 若输入与项目 B 相同的名称，提交必须报错拦截（绝不能静默进入项目 B）
+      nameInput.value = 'ExistingOther';
+      nameInput.dispatchEvent({ type: 'input' });
+      assert.equal(uiEnv.doc.getElementById('proj-create-submit').textContent, '创建项目并进入对话');
+      uiEnv.doc.getElementById('proj-create-submit').click();
+      await new Promise((r) => rawSetTimeout(r, 80));
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, false, '同名冲突时弹窗必须保持打开并报错，不得误复用项目 B');
+
+      // 改为新名称后提交，必须以已选单目录 dirFreshSingle 创建新项目（而非当前浏览的 dirExtraC）
+      nameInput.value = 'UiSelectedAWhileBrowsingB';
+      nameInput.dispatchEvent({ type: 'input' });
+      uiEnv.doc.getElementById('proj-create-submit').click();
+      for (let w = 0; w < 40 && !uiEnv.doc.getElementById('proj-modal-backdrop').hidden; w++) {
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+      assert.equal(uiEnv.doc.getElementById('proj-modal-backdrop').hidden, true);
+      const uiSingleCreated = Array.from(storedProjects.values()).find((p) => p.name === 'UiSelectedAWhileBrowsingB');
+      assert.ok(uiSingleCreated, '应成功创建新项目而非复用项目 B');
+      assert.notEqual(uiSingleCreated.id, otherProj.id);
+      assert.equal(uiSingleCreated.projectResources.resources.length, 1);
+      assert.ok(uiSingleCreated.projectResources.resources[0].folderUri.endsWith('/fresh-single-a'), '新建项目必须绑定已选目录 A 而非最后浏览的目录 B');
+
+      // 8) 返工回归 B：外部已绑定目录精确保留与白名单外新目录 / 软链越界 / 系统根与敏感目录软链禁扩权验证
+      const extVolRoot = path.join(tmpRoot, 'external-vol');
+      const extPreboundDir = path.join(extVolRoot, 'team-bound-repo');
+      const extPreboundSubdir = path.join(extPreboundDir, 'nested-sub');
+      const extUnboundDir = path.join(extVolRoot, 'other-unbound-repo');
+      const symlinkInHomeToOutside = path.join(homeDir, 'codebase', 'escape-outside-link');
+      const symlinkPreboundToRoot = path.join(extVolRoot, 'evil-link-root');
+      const symlinkPreboundToEtc = path.join(extVolRoot, 'evil-link-etc');
+      const symlinkPreboundToHome = path.join(extVolRoot, 'evil-link-home');
+      fs.mkdirSync(extPreboundSubdir, { recursive: true });
+      fs.mkdirSync(extUnboundDir, { recursive: true });
+      fs.symlinkSync(extUnboundDir, symlinkInHomeToOutside, 'dir');
+      fs.symlinkSync('/', symlinkPreboundToRoot, 'dir');
+      fs.symlinkSync('/etc', symlinkPreboundToEtc, 'dir');
+      fs.symlinkSync(homeDir, symlinkPreboundToHome, 'dir');
+
+      const safeMapCheck = remoteMod.collectSafePreboundProjectFolders([
+        { folderUri: pathToFileURL(extPreboundDir).href },
+        { folderUri: pathToFileURL('/').href },
+        { folderUri: pathToFileURL(homeDir).href },
+        { folderUri: pathToFileURL('/etc').href },
+        { folderUri: pathToFileURL(symlinkPreboundToRoot).href },
+        { folderUri: pathToFileURL(symlinkPreboundToEtc).href },
+        { folderUri: pathToFileURL(symlinkPreboundToHome).href }
+      ], { homeDir });
+      assert.equal(safeMapCheck.size, 1, '仅真实存在的非符号链接、非根、非 $HOME、非敏感目录可进入精确保留映射');
+      assert.equal(safeMapCheck.has(path.resolve(extPreboundDir)), true);
+
+      const extProjId = 'proj-prebound-ext';
+      const extProjObj = {
+        id: extProjId,
+        name: 'PreboundExternalProj',
+        projectResources: {
+          resources: [
+            { folderUri: pathToFileURL(dirRepoA).href },
+            { folderUri: pathToFileURL(extPreboundDir).href }
+          ]
+        },
+        permissionGrants: { v2Migrated: true },
+        settings: {},
+        isWorkspaceOnly: false
+      };
+      storedProjects.set(extProjId, extProjObj);
+      fs.writeFileSync(path.join(configDir, 'projects', `${extProjId}.json`), JSON.stringify(extProjObj, null, 2));
+
+      // 8a) 原已绑定的外部真实目录 extPreboundDir 在编辑改名与新增 $HOME 内目录时可正常保留
+      const keepExtRes = await apiJson('POST', '/api/projects/update', {
+        id: extProjId,
+        name: 'PreboundExternalKept',
+        folderPaths: [dirRepoA, extPreboundDir, dirSharedB]
+      });
+      assert.equal(keepExtRes.status, 200, `原已绑定外部目录应允许精确保留: ${JSON.stringify(keepExtRes.data)}`);
+      assert.equal(keepExtRes.data.ok, true);
+      assert.equal(keepExtRes.data.project.folderPaths.length, 3);
+      assert.ok(keepExtRes.data.project.folderPaths.includes(path.resolve(extPreboundDir)));
+
+      // 8b) 未绑定的其他外部目录与原外部目录的子目录均必须 403 拒绝（精确匹配，绝不升级为子树允许根）
+      const addUnboundExtRes = await apiJson('POST', '/api/projects/update', {
+        id: extProjId,
+        name: 'PreboundExternalKept',
+        folderPaths: [dirRepoA, extPreboundDir, extUnboundDir]
+      });
+      assert.equal(addUnboundExtRes.status, 403, '白名单之外的新外部目录必须 403 拒绝');
+      assert.equal(addUnboundExtRes.data.ok, false);
+
+      const addExtSubdirRes = await apiJson('POST', '/api/projects/update', {
+        id: extProjId,
+        name: 'PreboundExternalKept',
+        folderPaths: [dirRepoA, extPreboundSubdir]
+      });
+      assert.equal(addExtSubdirRes.status, 403, '原外部目录仅允许精确原路径保留，不得将整个外部父目录放宽为允许根');
+
+      // 8c) $HOME 内部指向外部目录的越界符号链接必须 403 拒绝
+      const escapeSymlinkUpdateRes = await apiJson('POST', '/api/projects/update', {
+        id: extProjId,
+        name: 'PreboundExternalKept',
+        folderPaths: [dirRepoA, extPreboundDir, symlinkInHomeToOutside]
+      });
+      assert.equal(escapeSymlinkUpdateRes.status, 403, '$HOME 内指向未授权外部目录的软链必须 403 拒绝');
+
+      // 8d) 若历史项目配置中混入指向系统根 (/)、敏感目录 (/etc) 或 $HOME 的符号链接，既不可保留也绝不能扩大授权边界
+      const evilProjId = 'proj-evil-symlinks';
+      const evilProjObj = {
+        id: evilProjId,
+        name: 'EvilSymlinkSeed',
+        projectResources: {
+          resources: [
+            { folderUri: pathToFileURL(dirRepoA).href },
+            { folderUri: pathToFileURL(symlinkPreboundToRoot).href },
+            { folderUri: pathToFileURL(symlinkPreboundToEtc).href },
+            { folderUri: pathToFileURL(symlinkPreboundToHome).href }
+          ]
+        },
+        permissionGrants: { v2Migrated: true },
+        settings: {},
+        isWorkspaceOnly: false
+      };
+      storedProjects.set(evilProjId, evilProjObj);
+      fs.writeFileSync(path.join(configDir, 'projects', `${evilProjId}.json`), JSON.stringify(evilProjObj, null, 2));
+
+      for (const badTarget of [symlinkPreboundToRoot, symlinkPreboundToEtc, symlinkPreboundToHome, extUnboundDir, symlinkInHomeToOutside]) {
+        const badRes = await apiJson('POST', '/api/projects/update', {
+          id: evilProjId,
+          name: 'EvilSymlinkSeed',
+          folderPaths: [dirRepoA, badTarget]
+        });
+        assert.equal(
+          badRes.status,
+          403,
+          `预置恶意软链 (${path.basename(badTarget)}) 绝不得被保留或借此扩大全盘/外部目录授权 (got status=${badRes.status})`
+        );
+      }
+
+      const cleanEvilRes = await apiJson('POST', '/api/projects/update', {
+        id: evilProjId,
+        name: 'EvilSymlinkCleaned',
+        folderPaths: [dirRepoA]
+      });
+      assert.equal(cleanEvilRes.status, 200, '剔除异常软链仅保留合法目录时应正常保存');
+
+      // 9) 返工回归 C：仅改名或增删其他目录时，未移除目录原有的非 main/master 默认分支必须原样保留（即便 GetRepoInfos 返回 main/master）
+      const dirNewGitRepo = path.join(homeDir, 'codebase', 'repo-newly-added');
+      fs.mkdirSync(path.join(dirNewGitRepo, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(dirNewGitRepo, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+      const customBranchPid = 'proj-custom-branch';
+      const customBranchProj = {
+        id: customBranchPid,
+        name: 'CustomBranchBeforeRename',
+        projectResources: {
+          resources: [
+            { gitFolder: { folderUri: pathToFileURL(dirRepoA).href, defaultBranch: 'release/v2.4-lts', customRepoFlag: 'keep' } },
+            { folderUri: pathToFileURL(dirSharedB).href }
+          ]
+        },
+        permissionGrants: { v2Migrated: true },
+        settings: {},
+        isWorkspaceOnly: false
+      };
+      storedProjects.set(customBranchPid, customBranchProj);
+      fs.writeFileSync(path.join(configDir, 'projects', `${customBranchPid}.json`), JSON.stringify(customBranchProj, null, 2));
+
+      // 9a) 仅修改项目名：已有目录 dirRepoA 的 defaultBranch 必须保持 'release/v2.4-lts'，绝不被 GetRepoInfos 的 'main' 覆盖
+      const renameKeepBranchRes = await apiJson('POST', '/api/projects/update', {
+        id: customBranchPid,
+        name: 'CustomBranchAfterRename',
+        folderPaths: [dirRepoA, dirSharedB]
+      });
+      assert.equal(renameKeepBranchRes.status, 200);
+      assert.equal(
+        storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.defaultBranch,
+        'release/v2.4-lts',
+        '仅改名时未移除目录原有的非 main/master 默认分支必须完整保留'
+      );
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.customRepoFlag, 'keep');
+
+      // 9b) 同时新增另一个无历史配置的 Git 目录 dirNewGitRepo：原目录保持 'release/v2.4-lts'，新增目录自动推断为 'main'
+      const addGitKeepBranchRes = await apiJson('POST', '/api/projects/update', {
+        id: customBranchPid,
+        name: 'CustomBranchWithAddedRepo',
+        folderPaths: [dirRepoA, dirNewGitRepo]
+      });
+      assert.equal(addGitKeepBranchRes.status, 200);
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.defaultBranch, 'release/v2.4-lts');
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources[1].gitFolder.defaultBranch, 'main', '新增 Git 目录应正常推断默认分支');
+
+      // 10) 返工回归 D：快照仅含主目录 path（无 workspacePaths）时，详情请求延迟期间与失败时均必须禁止保存，重试恢复后完整回显全部目录
+      let detailMode = 'fail';
+      let releaseDelayedDetail = null;
+      let interceptedUpdates = 0;
+      const uiPartialEnv = createDomEnv();
+      uiPartialEnv.sandbox.setTimeout = uiPartialEnv.win.setTimeout = (fn, ms, ...args) => {
+        if (typeof fn === 'function' && Number(ms || 0) <= 250) {
+          const t = rawSetTimeout(fn, 0, ...args);
+          t?.unref?.();
+          return t;
+        }
+        return 1;
+      };
+      uiPartialEnv.doc.body.innerHTML = bodyMatch[1];
+      uiPartialEnv.win.innerWidth = 1280;
+      uiPartialEnv.win.innerHeight = 800;
+      uiPartialEnv.win.AbortController = AbortController;
+      uiPartialEnv.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, hash: '', href: `${baseUrl}/?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+      uiPartialEnv.win.history = { replaceState() {} };
+      uiPartialEnv.sandbox.location = uiPartialEnv.win.location;
+      uiPartialEnv.sandbox.history = uiPartialEnv.win.history;
+      uiPartialEnv.sandbox.AbortController = AbortController;
+      uiPartialEnv.sandbox.URLSearchParams = URLSearchParams;
+      uiPartialEnv.win.fetch = uiPartialEnv.sandbox.fetch = async (u, init) => {
+        const fullUrl = String(u).startsWith('http') ? String(u) : `${baseUrl}${u}`;
+        const parsedU = new URL(fullUrl);
+        if (parsedU.pathname === '/api/snapshot') {
+          const realRes = await fetch(fullUrl, init);
+          const snapData = await realRes.json();
+          // 模拟快照仅含主目录 path、缺失 workspacePaths 的场景
+          snapData.projects = (snapData.projects || []).map((p) => {
+            if (p.id === customBranchPid) {
+              const { workspacePaths: _omitWs, ...onlyPrimary } = p;
+              return { ...onlyPrimary, path: dirRepoA };
+            }
+            return p;
+          });
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => 'application/json' },
+            json: async () => snapData
+          };
+        }
+        if (parsedU.pathname === '/api/projects/detail' && parsedU.searchParams.get('id') === customBranchPid) {
+          if (detailMode === 'fail') {
+            return {
+              ok: false,
+              status: 503,
+              headers: { get: () => 'application/json' },
+              json: async () => ({ ok: false, error: '模拟详情接口暂时不可用' })
+            };
+          }
+          if (detailMode === 'delay') {
+            await new Promise((r) => { releaseDelayedDetail = r; });
+          }
+        }
+        if (parsedU.pathname === '/api/projects/update') {
+          interceptedUpdates += 1;
+        }
+        return fetch(fullUrl, init);
+      };
+
+      vm.runInNewContext(scriptMatch[1], uiPartialEnv.sandbox);
+      const partialConvList = uiPartialEnv.doc.getElementById('conv-list');
+      let partialEditBtn = null;
+      for (let w = 0; w < 40; w++) {
+        partialEditBtn = partialConvList.querySelectorAll('.proj-edit-btn').find((b) => b.getAttribute('data-edit-proj') === customBranchPid) || null;
+        if (partialEditBtn) break;
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+      assert.ok(partialEditBtn, '仅含 path 的项目仍应渲染编辑入口');
+
+      // 10a) 详情接口失败：保存按钮必须禁用、明确显示错误提示，点击提交绝不触发 /api/projects/update 误删第 2 目录
+      await partialConvList.dispatchEvent({ type: 'click', target: partialEditBtn, stopPropagation() {} });
+      await new Promise((r) => rawSetTimeout(r, 60));
+      const pSubmitBtn = uiPartialEnv.doc.getElementById('proj-create-submit');
+      const pFoldersBox = uiPartialEnv.doc.getElementById('proj-folders-box');
+      assert.equal(Boolean(pSubmitBtn.disabled), true, '详情读取失败时必须禁用保存按钮');
+      assert.match(pSubmitBtn.textContent, /失败|无法保存/);
+      assert.match(pFoldersBox.textContent, /模拟详情接口暂时不可用/, '详情失败应在目录区域明确提示错误原因');
+      pSubmitBtn.click();
+      await new Promise((r) => rawSetTimeout(r, 40));
+      assert.equal(interceptedUpdates, 0, '详情失败状态下点击提交绝不得发出更新请求');
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources.length, 2, '原项目的 2 个绑定目录必须毫发无损');
+
+      // 10b) 点击「重新读取详情」且详情接口延迟返回：加载期间同样禁止保存，返回后完整回显全部 2 个目录并恢复可保存状态
+      detailMode = 'delay';
+      const retryBtn = uiPartialEnv.doc.getElementById('proj-detail-retry-btn');
+      assert.ok(retryBtn, '失败态应提供重新读取详情按钮');
+      retryBtn.click();
+      await new Promise((r) => rawSetTimeout(r, 20));
+      assert.equal(Boolean(pSubmitBtn.disabled), true, '详情延迟加载期间必须禁止保存，不得用快照单主目录放行');
+      assert.match(pSubmitBtn.textContent, /正在加载/);
+      pSubmitBtn.click();
+      await new Promise((r) => rawSetTimeout(r, 20));
+      assert.equal(interceptedUpdates, 0, '详情尚未返回前点击提交绝不得发出更新请求');
+
+      assert.equal(typeof releaseDelayedDetail, 'function');
+      releaseDelayedDetail();
+      await new Promise((r) => rawSetTimeout(r, 80));
+
+      assert.equal(Boolean(pSubmitBtn.disabled), false, '完整详情读取成功后应解锁保存按钮');
+      assert.equal(pSubmitBtn.textContent, '保存项目设置');
+      assert.equal(pFoldersBox.querySelectorAll('.proj-folder-chip').length, 2, '即使快照仅含主目录 path，详情返回后也必须完整回显全部 2 个目录');
+
+      // 此时仅改名保存，验证 2 个目录与原有自定义分支全部无损保留
+      const pNameInput = uiPartialEnv.doc.getElementById('proj-name-input');
+      pNameInput.value = 'PartialSnapSafeSaved';
+      pNameInput.dispatchEvent({ type: 'input' });
+      pSubmitBtn.click();
+      for (let w = 0; w < 40 && !uiPartialEnv.doc.getElementById('proj-modal-backdrop').hidden; w++) {
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
+      assert.equal(uiPartialEnv.doc.getElementById('proj-modal-backdrop').hidden, true);
+      assert.equal(interceptedUpdates, 1);
+      assert.equal(storedProjects.get(customBranchPid).name, 'PartialSnapSafeSaved');
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources.length, 2, '保存后 2 个绑定目录均完整保留');
+      assert.equal(storedProjects.get(customBranchPid).projectResources.resources[0].gitFolder.defaultBranch, 'release/v2.4-lts');
+
+      // 11) 返工回归 E：LanguageServer 含 2 个目录与额外配置字段、而磁盘副本落后（仅 1 个目录且缺字段）时，ReadProject 失败严禁回退磁盘副本解锁保存或调用 UpdateProject 覆盖
+      const staleDiskPid = 'proj-ls-rich-disk-stale';
+      const lsAuthoritativeProj = {
+        id: staleDiskPid,
+        name: 'AuthoritativeLsProj',
+        projectResources: {
+          resources: [
+            { gitFolder: { folderUri: pathToFileURL(dirRepoA).href, defaultBranch: 'release/3.0' } },
+            { folderUri: pathToFileURL(dirSharedB).href }
+          ]
+        },
+        permissionGrants: { v2Migrated: true, secretScope: 'enterprise-write' },
+        settings: { indexingTier: 'deep', preserveMe: true },
+        extraServerOnlyField: { owner: 'ls-memory' },
+        isWorkspaceOnly: false
+      };
+      // 磁盘副本故意落后：仅包含 1 个目录且缺失 secretScope / settings / extraServerOnlyField
+      const staleDiskCopy = {
+        id: staleDiskPid,
+        name: 'StaleDiskCopyName',
+        projectResources: {
+          resources: [
+            { folderUri: pathToFileURL(dirRepoA).href }
+          ]
+        }
+      };
+      storedProjects.set(staleDiskPid, lsAuthoritativeProj);
+      fs.writeFileSync(path.join(configDir, 'projects', `${staleDiskPid}.json`), JSON.stringify(staleDiskCopy, null, 2));
+
+      // 11a) 普通运行（未传 configDir、未开 allowDiskFallback，即使 $HOME/.gemini/config/projects 下存在同名滞后 JSON）ReadProject 失败或无连接均必须直接报错
+      const prodHomeWithStaleJson = path.join(tmpRoot, 'prod-home-sim');
+      const prodDirRepo = path.join(prodHomeWithStaleJson, 'codebase', 'app-one');
+      fs.mkdirSync(prodDirRepo, { recursive: true });
+      fs.mkdirSync(path.join(prodHomeWithStaleJson, '.gemini', 'config', 'projects'), { recursive: true });
+      fs.writeFileSync(
+        path.join(prodHomeWithStaleJson, '.gemini', 'config', 'projects', `${staleDiskPid}.json`),
+        JSON.stringify({ id: staleDiskPid, name: 'DefaultHomeStale', projectResources: { resources: [{ folderUri: pathToFileURL(prodDirRepo).href }] } }, null, 2)
+      );
+      let prodUpdateCalled = 0;
+      const failingProdLs = async () => ({
+        call: async (method) => {
+          if (method === 'ReadProject') throw new Error('ls_unavailable: ReadProject rpc failed');
+          if (method === 'UpdateProject') prodUpdateCalled += 1;
+          return {};
+        }
+      });
+      await assert.rejects(
+        () => remoteMod.readRemoteProjectDetail(staleDiskPid, { homeDir: prodHomeWithStaleJson, localApiConnect: failingProdLs }),
+        (err) => err?.status === 502 && /ReadProject/.test(err.message),
+        '普通运行未开启回退时 ReadProject 失败必须返回 502 错误，不得读取 ~/.gemini/config 磁盘副本'
+      );
+      await assert.rejects(
+        () => remoteMod.updateRemoteProject({ id: staleDiskPid, name: 'TryOverwrite', folderPaths: [prodDirRepo] }, { homeDir: prodHomeWithStaleJson, localApiConnect: failingProdLs }),
+        (err) => err?.status === 502 && /ReadProject/.test(err.message),
+        '普通运行未开启回退时 updateRemoteProject 在 ReadProject 失败后必须拒绝执行 UpdateProject'
+      );
+      assert.equal(prodUpdateCalled, 0, 'ReadProject 失败时严禁调用 UpdateProject');
+
+      // 11b) 即便服务端配置了 configDir，只要已连接 LanguageServer 且未显式设置 allowDiskFallback:true，ReadProject 失败时前后端均不得用滞后磁盘副本解锁或覆盖
+      const origStoredGet = storedProjects.get.bind(storedProjects);
+      let failLsReadForStalePid = false;
+      storedProjects.get = (k) => {
+        if (failLsReadForStalePid && k === staleDiskPid) {
+          throw new Error('rpc_unavailable: transient ReadProject failure');
+        }
+        return origStoredGet(k);
+      };
+      try {
+        // 先刷新前端会话列表使 staleDiskPid 渲染出编辑按钮（快照读取期间正常）
+        detailMode = 'normal';
+        await uiPartialEnv.win.fetch('/api/snapshot');
+        // 打开失败开关后再触发前端编辑弹窗详情拉取与后端直接保存尝试
+        failLsReadForStalePid = true;
+
+        const detailHttpWhileReadFails = await apiJson('GET', `/api/projects/detail?id=${encodeURIComponent(staleDiskPid)}`);
+        assert.equal(detailHttpWhileReadFails.status, 502, 'ReadProject 失败时 /api/projects/detail 必须返回 502，不得回退至仅 1 目录的滞后磁盘 JSON');
+        assert.equal(detailHttpWhileReadFails.data.ok, false);
+
+        const updateCountBeforeStaleAttempt = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        const updateHttpWhileReadFails = await apiJson('POST', '/api/projects/update', {
+          id: staleDiskPid,
+          name: 'ShouldNeverSaveFromStaleDisk',
+          folderPaths: [dirRepoA]
+        });
+        assert.equal(updateHttpWhileReadFails.status, 502, 'ReadProject 失败时 /api/projects/update 必须返回 502 拒绝更新');
+        assert.equal(updateHttpWhileReadFails.data.ok, false);
+        const updateCountAfterStaleAttempt = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        assert.equal(updateCountAfterStaleAttempt, updateCountBeforeStaleAttempt, '严禁调用 UpdateProject 覆盖 LanguageServer 原配置');
+
+        // 前端真实联动：重新加载最新快照渲染 staleDiskPid 编辑按钮，然后在 ReadProject 失败下点击编辑按钮
+        failLsReadForStalePid = false;
+        const freshEnv = createDomEnv();
+        freshEnv.sandbox.setTimeout = freshEnv.win.setTimeout = uiPartialEnv.sandbox.setTimeout;
+        freshEnv.doc.body.innerHTML = bodyMatch[1];
+        freshEnv.win.innerWidth = 1280;
+        freshEnv.win.innerHeight = 800;
+        freshEnv.win.AbortController = AbortController;
+        freshEnv.win.location = { pathname: '/', search: `?token=${httpCfg.token}`, hash: '', href: `${baseUrl}/?token=${httpCfg.token}`, protocol: 'http:', reload() {} };
+        freshEnv.win.history = { replaceState() {} };
+        freshEnv.sandbox.location = freshEnv.win.location;
+        freshEnv.sandbox.history = freshEnv.win.history;
+        freshEnv.sandbox.AbortController = AbortController;
+        freshEnv.sandbox.URLSearchParams = URLSearchParams;
+        freshEnv.win.fetch = freshEnv.sandbox.fetch = (u, init) => fetch(String(u).startsWith('http') ? String(u) : `${baseUrl}${u}`, init);
+        vm.runInNewContext(scriptMatch[1], freshEnv.sandbox);
+
+        failLsReadForStalePid = true;
+        const freshConvList = freshEnv.doc.getElementById('conv-list');
+        let staleEditBtn = null;
+        for (let w = 0; w < 40; w++) {
+          staleEditBtn = freshConvList.querySelectorAll('.proj-edit-btn').find((b) => b.getAttribute('data-edit-proj') === staleDiskPid) || null;
+          if (staleEditBtn) break;
+          await new Promise((r) => rawSetTimeout(r, 20));
+        }
+        assert.ok(staleEditBtn);
+        await freshConvList.dispatchEvent({ type: 'click', target: staleEditBtn, stopPropagation() {} });
+        await new Promise((r) => rawSetTimeout(r, 60));
+
+        const freshSubmit = freshEnv.doc.getElementById('proj-create-submit');
+        const freshFoldersBox = freshEnv.doc.getElementById('proj-folders-box');
+        assert.equal(Boolean(freshSubmit.disabled), true, 'ReadProject 失败时前端绝不得用磁盘滞后副本解锁保存按钮');
+        assert.equal(freshFoldersBox.querySelectorAll('.proj-folder-chip').length, 0, '不得渲染滞后磁盘副本的不完整单目录列表');
+        freshSubmit.click();
+        await new Promise((r) => rawSetTimeout(r, 40));
+        assert.equal(
+          rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length,
+          updateCountBeforeStaleAttempt,
+          '前端点击禁用提交按钮绝不触发 UpdateProject'
+        );
+
+        // 验证原 LanguageServer 中的 2 个目录与额外字段丝毫无损
+        failLsReadForStalePid = false;
+        const intactProj = storedProjects.get(staleDiskPid);
+        assert.equal(intactProj.name, 'AuthoritativeLsProj');
+        assert.equal(intactProj.projectResources.resources.length, 2);
+        assert.deepEqual(intactProj.permissionGrants, { v2Migrated: true, secretScope: 'enterprise-write' });
+        assert.deepEqual(intactProj.settings, { indexingTier: 'deep', preserveMe: true });
+        assert.deepEqual(intactProj.extraServerOnlyField, { owner: 'ls-memory' });
+      } finally {
+        storedProjects.get = origStoredGet;
+      }
+
+      // 12) 返工回归 F：ReadProject 返回残缺结构（{ project: {} } / ID 不符 / 空资源）拦截保护 + LanguageServer 与磁盘名称不一致时的双源重名拦截
+      try {
+        const invalidReadPayloads = [
+          { project: {} },
+          { project: { id: 'wrong-project-id', name: 'WrongId', projectResources: lsAuthoritativeProj.projectResources } },
+          { project: { id: staleDiskPid, name: 'NoResourcesObj' } },
+          { project: { id: staleDiskPid, name: 'EmptyResourcesArr', projectResources: { resources: [] } } },
+          { project: { id: staleDiskPid, name: 'BrokenUriItem', projectResources: { resources: [{}] } } }
+        ];
+        const updatesBeforeMalformed = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        for (const badPayload of invalidReadPayloads) {
+          customReadProjectHook = (b) => (b?.id === staleDiskPid ? badPayload : undefined);
+          const detBadRes = await apiJson('GET', `/api/projects/detail?id=${encodeURIComponent(staleDiskPid)}`);
+          assert.equal(detBadRes.status, 502, `残缺 ReadProject 结果 ${JSON.stringify(badPayload)} 在 detail 接口必须返回 502`);
+          assert.equal(detBadRes.data.ok, false);
+
+          const updBadRes = await apiJson('POST', '/api/projects/update', {
+            id: staleDiskPid,
+            name: 'OverwriteFromEmptyProjectAttempt',
+            folderPaths: [dirRepoA]
+          });
+          assert.equal(updBadRes.status, 502, `残缺 ReadProject 结果 ${JSON.stringify(badPayload)} 在 update 接口必须返回 502`);
+          assert.equal(updBadRes.data.ok, false);
+        }
+        customReadProjectHook = null;
+        const updatesAfterMalformed = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        assert.equal(updatesAfterMalformed, updatesBeforeMalformed, '任何残缺 ReadProject 返回均严禁调用 UpdateProject');
+        // 原项目 2 个目录与全部扩展字段必须毫发无损
+        const afterMalformedProj = storedProjects.get(staleDiskPid);
+        assert.equal(afterMalformedProj.name, 'AuthoritativeLsProj');
+        assert.equal(afterMalformedProj.projectResources.resources.length, 2);
+        assert.deepEqual(afterMalformedProj.permissionGrants, { v2Migrated: true, secretScope: 'enterprise-write' });
+        assert.deepEqual(afterMalformedProj.settings, { indexingTier: 'deep', preserveMe: true });
+        assert.deepEqual(afterMalformedProj.extraServerOnlyField, { owner: 'ls-memory' });
+
+        // 12b) 重名校验覆盖 LanguageServer 与磁盘不一致场景：
+        // ① 另一项目在 LanguageServer 中名为 'LsRenamedTargetX'，而磁盘 JSON 仍为旧名 'LegacyDiskOldName'
+        const driftPid = 'proj-ls-disk-name-drift';
+        storedProjects.set(driftPid, {
+          id: driftPid,
+          name: 'LsRenamedTargetX',
+          projectResources: { resources: [{ folderUri: pathToFileURL(dirExtraC).href }] },
+          permissionGrants: { v2Migrated: true },
+          settings: {},
+          isWorkspaceOnly: false
+        });
+        fs.writeFileSync(
+          path.join(configDir, 'projects', `${driftPid}.json`),
+          JSON.stringify({
+            id: driftPid,
+            name: 'LegacyDiskOldName',
+            projectResources: { resources: [{ folderUri: pathToFileURL(dirExtraC).href }] }
+          }, null, 2)
+        );
+        // ② 另一项目仅存在于 LanguageServer ('LsOnlyNoDiskRecordY')，磁盘无任何记录文件
+        const lsOnlyPid = 'proj-ls-only-no-disk';
+        storedProjects.set(lsOnlyPid, {
+          id: lsOnlyPid,
+          name: 'LsOnlyNoDiskRecordY',
+          projectResources: { resources: [{ folderUri: pathToFileURL(dirSharedB).href }] },
+          permissionGrants: { v2Migrated: true },
+          settings: {},
+          isWorkspaceOnly: false
+        });
+
+        const updatesBeforeDupDrift = rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length;
+        const dupWithLsDriftRes = await apiJson('POST', '/api/projects/update', {
+          id: staleDiskPid,
+          name: 'lsrenamedtargetx',
+          folderPaths: [dirRepoA, dirSharedB]
+        });
+        assert.equal(dupWithLsDriftRes.status, 400, '另一项目在 LanguageServer 中名为 X（磁盘仍为旧名）时，改名为 X 必须 400 明确拒绝');
+        assert.equal(dupWithLsDriftRes.data.ok, false);
+        assert.match(dupWithLsDriftRes.data.error, /LsRenamedTargetX/);
+
+        const dupWithLsOnlyRes = await apiJson('POST', '/api/projects/update', {
+          id: staleDiskPid,
+          name: 'LsOnlyNoDiskRecordY',
+          folderPaths: [dirRepoA, dirSharedB]
+        });
+        assert.equal(dupWithLsOnlyRes.status, 400, '另一项目仅存在于 LanguageServer（磁盘缺少记录）时，改名为该名称必须 400 明确拒绝');
+        assert.equal(dupWithLsOnlyRes.data.ok, false);
+        assert.match(dupWithLsOnlyRes.data.error, /LsOnlyNoDiskRecordY/);
+        assert.equal(
+          rpcCalls.filter((c) => c.method === 'UpdateProject' && c.body?.project?.id === staleDiskPid).length,
+          updatesBeforeDupDrift,
+          '重名冲突拦截后不得发出 UpdateProject 请求'
+        );
+
+        // 新建项目接口同样覆盖 LanguageServer 专属项目名冲突
+        const createDupLsOnlyRes = await apiJson('POST', '/api/projects', {
+          name: 'LsOnlyNoDiskRecordY',
+          folderPaths: [dirRepoA],
+          openInDesktop: false
+        });
+        assert.equal(createDupLsOnlyRes.status, 400);
+        assert.equal(createDupLsOnlyRes.data.ok, false);
+
+        // ③ 即便并发窗口下 UpdateProject RPC 本身抛出 already_exists 冲突，接口也必须正确映射为 400 冲突提示
+        customUpdateProjectHook = () => {
+          throw new Error('already_exists: project with name "ConcurrentLsConflict" already exists');
+        };
+        const rpcConflictRes = await apiJson('POST', '/api/projects/update', {
+          id: staleDiskPid,
+          name: 'ConcurrentLsConflict',
+          folderPaths: [dirRepoA, dirSharedB]
+        });
+        assert.equal(rpcConflictRes.status, 400, 'UpdateProject RPC 返回并发重名冲突时必须映射为 400');
+        assert.equal(rpcConflictRes.data.ok, false);
+        assert.match(rpcConflictRes.data.error, /同名项目/);
+      } finally {
+        customReadProjectHook = null;
+        customUpdateProjectHook = null;
+      }
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  } finally {
+    delete require.cache[require.resolve('../mobile-remote')];
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('PR15 加固回归: Markdown 防 ReDoS/二次展开、宿主机 options 传递、footer 极窄保底与 heatmap 费用门控', async () => {
+  const mr = require('../mobile-remote');
+  // 1. ReDoS 线性性能 & \u0000 编码注入防护
+  const t0 = Date.now();
+  const nastyInput = '[x](' + 'a'.repeat(120) + '!';
+  mr.renderSafeMarkdownToHtml(nastyInput);
+  const elapsedMs = Date.now() - t0;
+  assert.ok(elapsedMs < 80, `未闭合 Markdown 链接正则必须在 <80ms 内线性完成 (实测 ${elapsedMs}ms)`);
+  const nulHtml = mr.renderSafeMarkdownToHtml('[t](file:///%00IC0%00/etc/passwd) and `safe`');
+  assert.ok(!nulHtml.includes('data-file-path'), '含 %00 NUL 编码的 file:// URI 不得生成可点击文件链接');
+  assert.ok(!nulHtml.includes('<code>safe</code>"'), '内联代码不得展开进属性值内部');
+  assert.ok(!mr.renderSafeMarkdownToHtml('[bad](file:///tmp/%00evil)').includes('data-file-path'), '含 %00 NUL 字节的 file:// URI 不得生成可点击文件链接');
+
+  // 2. 前端 renderInlineClientMarkdown 线性耗时 & opt-* 二次升级合并
+  const html = mr.buildMobileAppHtml({ deviceName: 'Mac' });
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const clientJs = scripts[scripts.length - 1];
+  assert.ok(clientJs.includes('isOptimisticQueueId') || mr.mergeUniqueQueuedLists, '排队合并应完整升级 opt-* 乐观 ID');
+  const mergedUpgraded = mr.mergeUniqueQueuedLists(
+    [{ id: 'opt-local-1', clientMessageId: 'cid-upg-1', text: '升级测试', source: 'dom', domIndex: 0 }],
+    [{ messageId: 'srv-uuid-1', clientMessageId: 'cid-upg-1', text: '升级测试', source: 'agent_state', stepIndex: -1 }],
+    true
+  );
+  assert.equal(mergedUpgraded.length, 1);
+  assert.equal(mergedUpgraded[0].messageId, 'srv-uuid-1');
+  assert.equal(mergedUpgraded[0].id, 'srv-uuid-1', 'opt-* 升级后 id 不得残留 opt-* 前缀');
+
+  // 3. footer + ring-only 极窄顶栏保留设置按钮 & heatmap.js 5 处 Popover 门控
+  const cssSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'styles.css'), 'utf8');
+  assert.match(cssSrc, /:host\(\[data-layout="ring-only"\]\[data-hide-context-ring="true"\]\)\s*#badge-settings/);
+  const heatSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'heatmap.js'), 'utf8');
+  const showCostCalls = (heatSrc.match(/\bshouldShowApiRefCost\(\)/g) || []).length;
+  assert.equal(showCostCalls, 6, 'heatmap.js 应包含 1 处 shouldShowApiRefCost() 定义与全部 5 处视图 Popover 门控调用');
+
+  // 4. 宿主机 options.homeDir 敏感目录校验
+  const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-home-priv-'));
+  try {
+    const customLib = path.join(customHome, 'Library', 'Secrets');
+    fs.mkdirSync(customLib, { recursive: true });
+    assert.throws(
+      () => mr.assertSafeHostDirectoryPath(customLib, { homeDir: customHome, forceProd: true }),
+      (e) => e.status === 403,
+      '自定义 homeDir 下的 Library 目录也必须被 assertSafeHostDirectoryPath 拦截'
+    );
+  } finally {
+    fs.rmSync(customHome, { recursive: true, force: true });
+  }
+});
+test('静态门禁：公开仓库源码、测试与文档严禁硬编码真实本机用户路径或个人社交短链', () => {
+  const { execFileSync } = require('child_process');
+  const repoRoot = path.resolve(__dirname, '..');
+  const tracked = execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8' })
+    .split(/\r?\n/)
+    .filter(Boolean);
+  const textExt = /\.(js|mjs|cjs|ts|json|md|html|css|sh|py|yml|yaml|txt)$/i;
+  const safeHomeUsers = new Set([
+    'demo', 'me', 'a', 'alice', 'bob', 'user', 'users', 'test', 'example',
+    'dev', 'runner', 'yourname', 'username', 'foo', 'bar', 'work', 'admin', 'guest'
+  ]);
+  const homePathRe = /(?:^|[^A-Za-z0-9_])\/(?:Users|home)\/([A-Za-z0-9._-]+)(?:\/|$)/g;
+  const socialShortlinkRe = /https?:\/\/(?:okjk\.co|xhslink\.com|okjike\.com\/u|weibo\.com\/u)\/[A-Za-z0-9_-]+/gi;
+  const secretTokenRe = /\b(?:ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})\b/g;
+  const forbiddenTrackedFileRe = /(?:^|\/)(?:\.env(?:\.(?!example\b)[^/]+)?|\.DS_Store|Thumbs\.db|[^/]+\.(?:db|sqlite|jsonl|log))$/i;
+
+  const violations = [];
+  for (const rel of tracked) {
+    if (forbiddenTrackedFileRe.test(rel)) {
+      violations.push(`${rel} 检测到禁止跟踪的私有/临时文件`);
+    }
+    if (!textExt.test(rel)) continue;
+    const full = path.join(repoRoot, rel);
+    if (!fs.existsSync(full)) continue;
+    const content = fs.readFileSync(full, 'utf8');
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      homePathRe.lastIndex = 0;
+      let m;
+      while ((m = homePathRe.exec(line)) !== null) {
+        const uname = (m[1] || '').toLowerCase();
+        if (!safeHomeUsers.has(uname) && !uname.startsWith('$') && !uname.startsWith('<')) {
+          violations.push(`${rel}:${i + 1} 检测到疑似真实本机用户路径 (/Users|home/${m[1]})`);
+        }
+      }
+      socialShortlinkRe.lastIndex = 0;
+      while ((m = socialShortlinkRe.exec(line)) !== null) {
+        violations.push(`${rel}:${i + 1} 检测到个人社交主页/短链 (${m[0]})`);
+      }
+      secretTokenRe.lastIndex = 0;
+      while ((m = secretTokenRe.exec(line)) !== null) {
+        violations.push(`${rel}:${i + 1} 检测到疑似明文密钥/Token`);
+      }
+    }
+  }
+  assert.deepEqual(
+    violations,
+    [],
+    `公开仓库存在未脱敏隐私数据，请替换为占位符：\n${violations.join('\n')}`
+  );
 });

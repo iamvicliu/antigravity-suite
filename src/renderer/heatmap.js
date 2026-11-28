@@ -1,3 +1,9 @@
+  function shouldShowApiRefCost() {
+    return typeof host !== 'undefined' && host?.getAttribute
+      ? host.getAttribute('data-hide-api-cost') !== 'true'
+      : true;
+  }
+
   function positionHeatPopover(anchorX, anchorY) {
     if (!heatPop) return;
     const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
@@ -64,9 +70,12 @@
         const showPop = () => {
           const d = item.date;
           heatPopDate.textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${item.isToday ? '（今日）' : (item.key === win.firstStr ? '（首次使用）' : '')}`;
-          const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const cny = convertToCNY(costInfo.costUSD, 'USD');
-          const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          let costStr = '';
+          if (shouldShowApiRefCost()) {
+            const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
+            const cny = convertToCNY(costInfo.costUSD, 'USD');
+            costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          }
           heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? '未来日期（待产生记录）' : '0 Tokens');
           if (item.rec) {
             heatPopDet.innerHTML = `
@@ -142,17 +151,23 @@
       col.appendChild(fill);
 
       const showPop = () => {
-        const weekDates = [];
-        for (let r = 0; r < 7; r++) weekDates.push(formatLocalYmd(addDays(w.sDate, r)));
-        const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, weekDates, activeCostModel, {
-          mode: activeCostMode,
-          todayStr: formatLocalYmd(win.today)
-        });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const showCost = shouldShowApiRefCost();
+        let costStr = '';
+        let detHtml = '<span>周累计</span>';
+        if (showCost) {
+          const weekDates = [];
+          for (let r = 0; r < 7; r++) weekDates.push(formatLocalYmd(addDays(w.sDate, r)));
+          const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, weekDates, activeCostModel, {
+            mode: activeCostMode,
+            todayStr: formatLocalYmd(win.today)
+          });
+          const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+          costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          detHtml = `<span>周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+        }
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : '0 Tokens';
-        heatPopDet.innerHTML = `<span>周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+        heatPopDet.innerHTML = detHtml;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
         positionHeatPopover(r.left + r.width / 2, r.top - 6);
@@ -251,19 +266,25 @@
       const mouseX = e.clientX - r.left;
       const idx = points.length === 1 ? 0 : Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
       const pt = points[idx];
-      const cumDates = [];
-      for (const k of Object.keys(map)) {
-        if (k <= pt.key) cumDates.push(k);
+      const showCost = shouldShowApiRefCost();
+      let costStr = '';
+      let detHtml = '<span>截至当日累计</span>';
+      if (showCost) {
+        const cumDates = [];
+        for (const k of Object.keys(map)) {
+          if (k <= pt.key) cumDates.push(k);
+        }
+        const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
+          mode: activeCostMode,
+          todayStr: formatLocalYmd(win.today)
+        });
+        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+        costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        detHtml = `<span>截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
       }
-      const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
-        mode: activeCostMode,
-        todayStr: formatLocalYmd(win.today)
-      });
-      const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-      const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
       heatPopDate.textContent = `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日 (累计)`;
       heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
-      heatPopDet.innerHTML = `<span>截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+      heatPopDet.innerHTML = detHtml;
       heatPopDet.style.display = 'block';
       positionHeatPopover(e.clientX, r.top + (height - (pt.val / max) * (height - 12)) - 6);
     };
@@ -389,9 +410,12 @@
       }
 
       const showPop = () => {
-        const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
-        const cny = convertToCNY(costInfo.costUSD, 'USD');
-        const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        let costStr = '';
+        if (shouldShowApiRefCost()) {
+          const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
+          const cny = convertToCNY(costInfo.costUSD, 'USD');
+          costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        }
         heatPopDate.textContent = `${targetYear}年${targetMonth + 1}月${day}日${isToday ? '（今日）' : ''}`;
         heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? '未来日期（待产生记录）' : '0 Tokens');
         if (rec) {
@@ -559,15 +583,22 @@
       g.appendChild(text);
 
       const showPop = () => {
-        const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, item.dates, activeCostModel, {
-          mode: activeCostMode,
-          todayStr: formatLocalYmd(win.today)
-        });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const showCost = shouldShowApiRefCost();
+        const activeDays = item.dates.reduce((cnt, dk) => cnt + (ANTIGRAVITY_TOKEN_DATA.dailyMap[dk]?.total > 0 ? 1 : 0), 0);
+        let costStr = '';
+        let detHtml = `<span>月累计 (活跃 ${activeDays} 天)</span>`;
+        if (showCost) {
+          const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, item.dates, activeCostModel, {
+            mode: activeCostMode,
+            todayStr: formatLocalYmd(win.today)
+          });
+          const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+          costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          detHtml = `<span>月累计 · 折合日均 $${costAgg.dailyAverageUSD.toFixed(2)} (活跃 ${costAgg.activeDays} 天)</span>`;
+        }
         heatPopDate.textContent = `${targetYear}年${item.monthName}${item.isCurrent ? '（进行中）' : (item.monthIndex === peakMonthIndex ? '（年度峰值）' : '')}`;
         heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? '未来月份（尚未产生用量）' : '0 Tokens');
-        heatPopDet.innerHTML = `<span>月累计 · 折合日均 $${costAgg.dailyAverageUSD.toFixed(2)} (活跃 ${costAgg.activeDays} 天)</span>`;
+        heatPopDet.innerHTML = detHtml;
         heatPopDet.style.display = 'block';
 
         const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
