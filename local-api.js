@@ -10,6 +10,19 @@ const zlib = require('zlib');
 const { resolveActiveCdpTarget } = require('./asar-engine');
 
 const LOOPBACK_ORIGIN_RE = /^https?:\/\/127\.0\.0\.1:(\d+)$/;
+const loopbackHttpAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 16,
+  maxFreeSockets: 8,
+  keepAliveMsecs: 15000
+});
+const loopbackHttpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 16,
+  maxFreeSockets: 8,
+  keepAliveMsecs: 15000,
+  rejectUnauthorized: false
+});
 
 function normalizeLoopbackOrigin(rawOrigin) {
   if (!rawOrigin || typeof rawOrigin !== 'string') return null;
@@ -44,9 +57,10 @@ function request(url, body, token, timeoutMs = 20000) {
       resolve(val);
     };
     try {
-      req = (url.startsWith('https:') ? https : http).request(url, {
+      const isHttps = url.startsWith('https:');
+      req = (isHttps ? https : http).request(url, {
         rejectUnauthorized: false,
-        agent: false,
+        agent: isHttps ? loopbackHttpsAgent : loopbackHttpAgent,
         method: body ? 'POST' : 'GET',
         headers: body ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {}
       }, response => {
