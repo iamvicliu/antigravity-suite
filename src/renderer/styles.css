@@ -610,6 +610,17 @@
     }
 
     /* 用户自定义功能显示开关 */
+    :host([data-layout="ring-only"][data-hide-context-ring="true"]) #badge-settings{
+      display:inline-flex!important;
+    }
+    :host([data-hide-context-ring="true"]) #badge,
+    :host([data-hide-inline-speed="true"]) #badge-speed,
+    :host([data-hide-inline-speed="true"]) #overflow-speed-btn,
+    :host([data-hide-api-cost="true"]) #round-cost-bar,
+    :host([data-hide-api-cost="true"]) #tok-view-cost,
+    :host([data-hide-api-cost="true"]) .t-card-cost,
+    :host([data-hide-api-cost="true"]) .heat-sum-item[data-cost-metric="true"],
+    :host([data-hide-api-cost="true"]) .heat-cost-disclaimer,
     :host([data-hide-tokens="true"]) #badge-tokens,
     :host([data-hide-tokens="true"]) #overflow-tokens-btn,
     :host([data-hide-cli="true"]) #badge-cli,

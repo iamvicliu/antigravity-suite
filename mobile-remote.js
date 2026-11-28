@@ -14,12 +14,29 @@ const { safeReadJsonSync, safeWriteJsonSync } = require('./meter-storage');
 const { detectProxyConfig } = require('./meter-proxy');
 const {
   computeCompletedUnreadCount,
+  sanitizeNotificationPreview,
+  resolveNotificationTurnKey,
+  formatPushNotificationEvent,
   createWebPushManager,
   buildPwaIconPng
 } = require('./remote-web-push');
 
 const DEFAULT_REMOTE_PORT = 18765;
 const MAX_ACTION_BODY_BYTES = 15 * 1024 * 1024;
+const activeCompletedSendSpillPaths = new Set();
+let completedSpillExitHookRegistered = false;
+function registerCompletedSendSpillFile(filePath) {
+  if (!filePath) return;
+  activeCompletedSendSpillPaths.add(filePath);
+  if (completedSpillExitHookRegistered) return;
+  completedSpillExitHookRegistered = true;
+  process.once('exit', () => {
+    for (const fp of activeCompletedSendSpillPaths) {
+      try { fs.rmSync(fp, { force: true }); } catch {}
+    }
+    activeCompletedSendSpillPaths.clear();
+  });
+}
 const CONFIG_FILE_NAME = 'remote-config.json';
 const TUNNEL_STATE_FILE_NAME = '.cloudflared-tunnel-state.json';
 const MOBILE_UI_VERSION = '2.1.0';
@@ -147,13 +164,28 @@ function resolveCachedRemoteQuickPrompts() {
 
 let cachedRemoteUiPrefs = null;
 let cachedRemoteUiPrefsAt = 0;
+let cachedRemoteUiPrefsStatSig = '';
 
 function resolveCachedRemoteUiPrefs() {
   const now = Date.now();
-  if (cachedRemoteUiPrefs && (now - cachedRemoteUiPrefsAt) < 2000) {
+  let curStatSig = '';
+  try {
+    const collector = require('./meter-collector');
+    if (collector && typeof collector.getCustomPlanPath === 'function') {
+      const st = fs.statSync(collector.getCustomPlanPath());
+      curStatSig = `${st.mtimeMs}:${st.size}`;
+    }
+  } catch {
+    curStatSig = '';
+  }
+  if (
+    cachedRemoteUiPrefs
+    && (now - cachedRemoteUiPrefsAt) < 2000
+    && curStatSig === cachedRemoteUiPrefsStatSig
+  ) {
     return cachedRemoteUiPrefs;
   }
-  let next = { longFold: true };
+  let next = { longFold: true, showApiReferenceCost: true };
   try {
     const collector = require('./meter-collector');
     const res = collector && typeof collector.getPluginSettings === 'function'
@@ -161,13 +193,15 @@ function resolveCachedRemoteUiPrefs() {
       : null;
     const uiPrefs = res?.uiPreferences;
     next = {
-      longFold: uiPrefs?.longFold !== false
+      longFold: uiPrefs?.longFold !== false,
+      showApiReferenceCost: uiPrefs?.showApiReferenceCost !== false
     };
   } catch {
-    next = { longFold: true };
+    next = { longFold: true, showApiReferenceCost: true };
   }
   cachedRemoteUiPrefs = next;
   cachedRemoteUiPrefsAt = now;
+  cachedRemoteUiPrefsStatSig = curStatSig;
   return next;
 }
 
@@ -2541,7 +2575,7 @@ function classifyLanguageServerRpcError(err, method = '') {
     parsedBody &&
     (!method || method === 'SendAllQueuedMessages') &&
     (structCode === 'unknown' || structCode === 'unimplemented') &&
-    structMessage === 'deprecated'
+    /^deprecated(?:\s*\(error\s+id:\s*[0-9a-f-]+\))?$/i.test(structMessage)
   );
   const isConfirmedRejected = Boolean(
     EXPLICIT_HTTP_REJECT_STATUSES.has(httpStatus) ||
@@ -2804,7 +2838,8 @@ function createSessionCatalogStore() {
         unread,
         completedUnread,
         pinned: Boolean(c.pinned),
-        updatedAt: c.updatedAt
+        updatedAt: c.updatedAt,
+        ...(Number(c.stepCount) > 0 ? { stepCount: Number(c.stepCount) } : {})
       });
     }
     items.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
@@ -3111,6 +3146,10 @@ function createSessionCatalogStore() {
         projectNameMap.set(projectId, projectName);
       }
 
+      const liveStepCount = Math.max(0, Number(t?.stepCount ?? sc?.stepCount ?? 0) || 0);
+      const prevSameTurnStep = (prev && Number(prev.stepCount) > 0 && updatedAt > 0 && Number(prev.updatedAt) === updatedAt)
+        ? Math.max(0, Number(prev.stepCount) || 0)
+        : 0;
       store.map.set(id, {
         id,
         title: title.slice(0, 100),
@@ -3121,7 +3160,8 @@ function createSessionCatalogStore() {
         updatedAt,
         lastViewedAt: viewMs,
         status,
-        statusLabel: statusToLabel(status)
+        statusLabel: statusToLabel(status),
+        stepCount: liveStepCount > 0 ? liveStepCount : prevSameTurnStep
       });
     }
 
@@ -3521,6 +3561,34 @@ function createSessionCatalogStore() {
     return store.projectOrder.slice();
   }
 
+  function parseOrderScopePageEpoch(scopeStr) {
+    const m = String(scopeStr || '').trim().match(/:([0-9a-z]{6,16})-[0-9a-z]+$/i);
+    if (!m) return 0;
+    const parsed = Number.parseInt(m[1], 36);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+  }
+
+  function registerOrderScope(clientId, orderScopeId, options = {}) {
+    const cid = String(clientId || '').trim().slice(0, 128);
+    const scope = String(orderScopeId || '').trim().slice(0, 128);
+    if (!cid || !scope) return 0;
+    const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    if (!(store.orderScopeBirthMap instanceof Map)) store.orderScopeBirthMap = new Map();
+    const key = `${cid}::${scope}`;
+    if (store.orderScopeBirthMap.has(key)) {
+      return store.orderScopeBirthMap.get(key);
+    }
+    const birthSeq = (Number(store.nextOrderScopeBirthSeq) || 0) + 1;
+    store.nextOrderScopeBirthSeq = birthSeq;
+    while (store.orderScopeBirthMap.size >= 2000) {
+      const oldestKey = store.orderScopeBirthMap.keys().next().value;
+      if (oldestKey === undefined) break;
+      store.orderScopeBirthMap.delete(oldestKey);
+    }
+    store.orderScopeBirthMap.set(key, birthSeq);
+    return birthSeq;
+  }
+
   function setProjectOrder(orderedIds, options = {}) {
     if (!Array.isArray(orderedIds)) {
       throw Object.assign(new Error('projectOrder 必须是项目 ID 数组'), { status: 400 });
@@ -3534,6 +3602,52 @@ function createSessionCatalogStore() {
       }
     }
     const store = getStickyStoreForDir(options.dataDir || options.stateDir || getStateDir());
+    if (!(store.clientOrderSeqMap instanceof Map)) {
+      store.clientOrderSeqMap = new Map();
+    }
+    if (!(store.clientActiveOrderCursorMap instanceof Map)) {
+      store.clientActiveOrderCursorMap = new Map();
+    }
+    if (!(store.orderScopeBirthMap instanceof Map)) {
+      store.orderScopeBirthMap = new Map();
+    }
+    const reqClientId = String(options.clientId || '').trim().slice(0, 128);
+    const reqOrderScope = String(options.orderScopeId || reqClientId || '').trim().slice(0, 128);
+    const reqClientSeq = Number.isInteger(options.clientOrderSeq) && options.clientOrderSeq > 0 ? options.clientOrderSeq : 0;
+    const reqPageEpoch = (Number.isSafeInteger(options.clientPageEpoch) && options.clientPageEpoch > 0)
+      ? options.clientPageEpoch
+      : parseOrderScopePageEpoch(reqOrderScope);
+    const reqScopeBirth = (reqClientId && reqOrderScope)
+      ? (store.orderScopeBirthMap.get(`${reqClientId}::${reqOrderScope}`) || 0)
+      : 0;
+    if (reqClientId && reqOrderScope) {
+      const activeCursor = store.clientActiveOrderCursorMap.get(reqClientId);
+      if (activeCursor && activeCursor.scopeId && activeCursor.scopeId !== reqOrderScope) {
+        const isOlderByBirth = reqScopeBirth > 0 && activeCursor.scopeBirthSeq > 0 && reqScopeBirth < activeCursor.scopeBirthSeq;
+        const isOlderByEpoch = reqPageEpoch > 0 && activeCursor.pageEpoch > 0 && reqPageEpoch < activeCursor.pageEpoch;
+        // 若新页面已通过快照登记了更新的 birthSeq 而迟到旧请求甚至未登记且无更高 pageEpoch，同样拦截旧实例覆盖
+        const isUnregisteredAgainstNewerBirth = reqScopeBirth === 0 && activeCursor.scopeBirthSeq > 0 && !(reqPageEpoch > 0 && reqPageEpoch > activeCursor.pageEpoch);
+        if (isOlderByBirth || isOlderByEpoch || isUnregisteredAgainstNewerBirth) {
+          return {
+            ok: true,
+            staleIgnored: true,
+            projectOrder: store.projectOrder.slice(),
+            catalogRevision: store.catalogRevision || ''
+          };
+        }
+      }
+    }
+    if (reqOrderScope && reqClientSeq > 0) {
+      const lastAcceptedSeq = store.clientOrderSeqMap.get(reqOrderScope) || 0;
+      if (reqClientSeq <= lastAcceptedSeq) {
+        return {
+          ok: true,
+          staleIgnored: true,
+          projectOrder: store.projectOrder.slice(),
+          catalogRevision: store.catalogRevision || ''
+        };
+      }
+    }
     const { metaMap: projectsMeta, excludedIds: excludedProjectIds, archivedIds: archivedProjectIds } = loadProjectsMetaFromDisk(options, projectsCache);
     const cleaned = [];
     const seen = new Set();
@@ -3586,6 +3700,32 @@ function createSessionCatalogStore() {
       }
     }
     // 严禁对合并后的权威顺序静默截断，确保超过 500 个项目时也不会丢失保底追加项或引发振荡跳顶
+    if (reqOrderScope && reqClientSeq > 0) {
+      if (store.clientOrderSeqMap.has(reqOrderScope)) store.clientOrderSeqMap.delete(reqOrderScope);
+      while (store.clientOrderSeqMap.size >= 500) {
+        const oldestCid = store.clientOrderSeqMap.keys().next().value;
+        if (oldestCid === undefined) break;
+        store.clientOrderSeqMap.delete(oldestCid);
+      }
+      store.clientOrderSeqMap.set(reqOrderScope, reqClientSeq);
+    }
+    if (reqClientId && reqOrderScope) {
+      const committedBirth = reqScopeBirth || registerOrderScope(reqClientId, reqOrderScope, options);
+      if (store.clientActiveOrderCursorMap.has(reqClientId)) {
+        store.clientActiveOrderCursorMap.delete(reqClientId);
+      }
+      while (store.clientActiveOrderCursorMap.size >= 500) {
+        const oldestKey = store.clientActiveOrderCursorMap.keys().next().value;
+        if (oldestKey === undefined) break;
+        store.clientActiveOrderCursorMap.delete(oldestKey);
+      }
+      store.clientActiveOrderCursorMap.set(reqClientId, {
+        scopeId: reqOrderScope,
+        scopeBirthSeq: committedBirth,
+        pageEpoch: reqPageEpoch,
+        seq: reqClientSeq
+      });
+    }
     store.projectOrder = mergedOrder;
     store.projectOrderInitialized = true;
     store.nextOrderOpSeq = (Number(store.nextOrderOpSeq) || 0) + 1;
@@ -3762,7 +3902,7 @@ function createSessionCatalogStore() {
     return store.projectOrder.slice();
   }
 
-  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getProjectOrder, setProjectOrder, reserveCreateOrderSeq, prependProjectOrder };
+  return { enrichSnapshot, listConversations, invalidateProjectsCache, markViewed, getProjectOrder, registerOrderScope, setProjectOrder, reserveCreateOrderSeq, prependProjectOrder };
 }
 
 const defaultCatalogStore = createSessionCatalogStore();
@@ -3845,6 +3985,10 @@ function isPathWithinRoot(candidatePath, rootPath) {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+function safeRealpathSync(p) {
+  return typeof fs.realpathSync.native === 'function' ? fs.realpathSync.native(p) : fs.realpathSync(p);
+}
+
 function resolveRealPathWithFallback(targetPath) {
   const abs = path.resolve(String(targetPath || ''));
   const probeRealAt = (p) => {
@@ -3856,7 +4000,7 @@ function resolveRealPathWithFallback(targetPath) {
       throw Object.assign(new Error(`无法安全检查路径状态 (${err?.code || 'ERR'})`), { status: 403 });
     }
     try {
-      return fs.realpathSync(p);
+      return safeRealpathSync(p);
     } catch (err) {
       // 已存在的符号链接（悬空软链/循环软链/无权限目标）一律直接拒绝，绝不回溯拼接放行
       if (lst?.isSymbolicLink()) {
@@ -3917,7 +4061,7 @@ function assertSafeHostDirectoryPath(rawPath, options = {}) {
   if (matchedRootIdx < 0) {
     throw Object.assign(new Error('目标路径超出允许访问的宿主机根目录边界'), { status: 403 });
   }
-  if (isSensitiveHostPath(resolvedPath)) {
+  if (isSensitiveHostPath(resolvedPath, options)) {
     throw Object.assign(new Error('禁止访问敏感系统或凭证目录'), { status: 403 });
   }
   // 显式经 lstatSync 检查非 ENOENT 错误（如 EACCES/ELOOP）并经 realpathSync 二次校验真实物理路径
@@ -3934,7 +4078,7 @@ function assertSafeHostDirectoryPath(rawPath, options = {}) {
   if (matchedRealIdx < 0) {
     throw Object.assign(new Error('检测到符号链接指向授权目录之外，已拒绝访问'), { status: 403 });
   }
-  if (isSensitiveHostPath(realPath)) {
+  if (isSensitiveHostPath(realPath, options)) {
     throw Object.assign(new Error('检测到符号链接指向敏感目录，已拒绝访问'), { status: 403 });
   }
   return {
@@ -4040,25 +4184,29 @@ function listHostDirectories(options = {}) {
     }
   }
 
-  const rootCandidates = [
-    { label: '主目录 (~)', path: homeDir },
-    { label: 'codebase', path: path.join(homeDir, 'codebase') },
-    { label: 'shared', path: path.join(homeDir, 'shared') },
-    { label: 'Projects', path: path.join(homeDir, 'Projects') },
-    { label: 'Developer', path: path.join(homeDir, 'Developer') },
-    { label: 'Desktop', path: path.join(homeDir, 'Desktop') },
-    { label: 'Documents', path: path.join(homeDir, 'Documents') }
-  ];
+  const hasCustomAllowedRoots = Array.isArray(options.allowedRoots) && options.allowedRoots.length > 0;
+  const rootCandidates = hasCustomAllowedRoots
+    ? logicalRoots.map((r) => ({ label: path.basename(r) || r, path: r }))
+    : [
+        { label: '主目录 (~)', path: homeDir },
+        { label: 'codebase', path: path.join(homeDir, 'codebase') },
+        { label: 'shared', path: path.join(homeDir, 'shared') },
+        { label: 'Projects', path: path.join(homeDir, 'Projects') },
+        { label: 'Developer', path: path.join(homeDir, 'Developer') },
+        { label: 'Desktop', path: path.join(homeDir, 'Desktop') },
+        { label: 'Documents', path: path.join(homeDir, 'Documents') }
+      ];
   const roots = [];
   const seenRoots = new Set();
   for (const rc of rootCandidates) {
     const abs = path.resolve(rc.path);
     if (seenRoots.has(abs)) continue;
     try {
-      if (fs.statSync(abs).isDirectory()) {
-        fs.accessSync(abs, fs.constants.R_OK);
-        seenRoots.add(abs);
-        roots.push({ label: rc.label, path: abs });
+      const checkedRoot = assertSafeHostDirectoryPath(abs, options);
+      if (fs.statSync(checkedRoot.realPath).isDirectory()) {
+        fs.accessSync(checkedRoot.realPath, fs.constants.R_OK);
+        seenRoots.add(checkedRoot.resolvedPath);
+        roots.push({ label: rc.label, path: checkedRoot.resolvedPath });
       }
     } catch {}
   }
@@ -4070,14 +4218,15 @@ function listHostDirectories(options = {}) {
     const isHidden = name.startsWith('.');
     if (!showHidden && isHidden) continue;
     const childFull = path.join(resolvedPath, name);
-    if (isSensitiveHostPath(childFull)) continue;
+    if (isSensitiveHostPath(childFull, options)) continue;
     let isDir = false;
     try {
       if (d.isDirectory()) {
+        if (isSensitiveHostPath(path.join(realPath, name), options)) continue;
         isDir = true;
       } else if (d.isSymbolicLink()) {
-        const realChild = fs.realpathSync(childFull);
-        if (!realRoots.some((r) => isPathWithinRoot(realChild, r)) || isSensitiveHostPath(realChild)) {
+        const realChild = safeRealpathSync(childFull);
+        if (!realRoots.some((r) => isPathWithinRoot(realChild, r)) || isSensitiveHostPath(realChild, options)) {
           continue;
         }
         if (fs.statSync(realChild).isDirectory()) isDir = true;
@@ -4183,70 +4332,7 @@ function createHostSubdirectory(payload = {}, options = {}) {
   return { ok: true, existed: false, path: targetPath, name: rawName };
 }
 
-async function createRemoteProject(payload = {}, options = {}) {
-  const rawFolder = String(payload?.folderPath || '').trim();
-  if (!rawFolder) {
-    throw Object.assign(new Error('请选择项目文件夹路径'), { status: 400 });
-  }
-  const {
-    resolvedPath,
-    realPath,
-    homeDir,
-    realHomeDir
-  } = assertSafeHostDirectoryPath(rawFolder, options);
-  if (
-    resolvedPath === path.parse(resolvedPath).root ||
-    resolvedPath === homeDir ||
-    realPath === realHomeDir
-  ) {
-    throw Object.assign(new Error('不支持直接以用户主目录或系统根目录作为项目，请选择具体项目子目录'), { status: 400 });
-  }
-
-  let dirStat;
-  try {
-    dirStat = fs.statSync(realPath);
-  } catch (err) {
-    if (err?.code === 'EACCES' || err?.code === 'EPERM') {
-      throw Object.assign(new Error('无权限访问所选文件夹'), { status: 403 });
-    }
-    throw Object.assign(new Error('所选项目目录不存在'), { status: 400 });
-  }
-  if (!dirStat.isDirectory()) {
-    throw Object.assign(new Error('所选路径不是文件夹'), { status: 400 });
-  }
-
-  const requestedName = String(payload?.name || '').trim();
-  if (!requestedName) {
-    throw Object.assign(new Error('请输入项目名称'), { status: 400 });
-  }
-  const projectName = requestedName;
-  const forceNew = Boolean(payload?.forceNew);
-  const requestedExistingId = String(payload?.existingProjectId || '').trim();
-
-  const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
-  let matchedExisting = null;
-  for (const proj of metaMap.values()) {
-    if (proj.primaryPath && path.resolve(proj.primaryPath) === resolvedPath) {
-      matchedExisting = proj;
-      break;
-    }
-  }
-  if (!matchedExisting && requestedExistingId && metaMap.has(requestedExistingId)) {
-    matchedExisting = metaMap.get(requestedExistingId);
-  }
-
-  if (matchedExisting && !forceNew && (!requestedName || requestedName.toLowerCase() === matchedExisting.name.toLowerCase())) {
-    return {
-      ok: true,
-      alreadyExists: true,
-      project: {
-        id: matchedExisting.id,
-        name: matchedExisting.name,
-        folderPath: resolvedPath
-      }
-    };
-  }
-
+async function connectProjectLsApi(options = {}) {
   const customConnect = options.localApiConnect || globalThis.__AG_REMOTE_TEST_API__;
   let connectFn = customConnect;
   if (!connectFn && !isCatalogTestEnv()) {
@@ -4254,21 +4340,400 @@ async function createRemoteProject(payload = {}, options = {}) {
       connectFn = require('./local-api').connect;
     } catch {}
   }
+  if (!connectFn) return null;
+  try {
+    return typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1500, null) : connectFn;
+  } catch {
+    return null;
+  }
+}
 
-  let lsApi = null;
-  if (connectFn) {
+function collectSafePreboundProjectFolders(existingResources, options = {}) {
+  const { homeDir, realHomeDir } = resolveAllowedHostRoots(options);
+  const safeMap = new Map();
+  if (!Array.isArray(existingResources)) return safeMap;
+  for (const resItem of existingResources) {
+    if (!resItem || typeof resItem !== 'object') continue;
+    const rawDecoded = decodeFileUriToPath(resItem?.gitFolder?.folderUri || resItem?.folderUri || '');
+    if (!rawDecoded || rawDecoded.includes('\0')) continue;
+    const logicalPath = path.resolve(rawDecoded);
+    const logicalRoot = path.parse(logicalPath).root;
+    if (
+      !logicalPath ||
+      logicalPath === logicalRoot ||
+      logicalPath === homeDir ||
+      logicalPath === realHomeDir ||
+      isSensitiveHostPath(logicalPath, options)
+    ) {
+      continue;
+    }
+    let lst = null;
     try {
-      lsApi = typeof connectFn === 'function' ? await withRaceTimeout(connectFn(), 1500, null) : connectFn;
+      lst = fs.lstatSync(logicalPath);
     } catch {
-      lsApi = null;
+      continue;
+    }
+    // 严禁将符号链接纳入外部豁免目录：防止指向 /、$HOME、/etc 或未授权目录的软链保留或扩大授权边界
+    if (!lst || lst.isSymbolicLink() || !lst.isDirectory()) continue;
+    let realPath = '';
+    let realStat = null;
+    try {
+      realPath = safeRealpathSync(logicalPath);
+      realStat = fs.statSync(realPath);
+    } catch {
+      continue;
+    }
+    if (!realPath || !realStat || !realStat.isDirectory()) continue;
+    const realRoot = path.parse(realPath).root;
+    if (
+      realPath === realRoot ||
+      realPath === homeDir ||
+      realPath === realHomeDir ||
+      isSensitiveHostPath(realPath, options)
+    ) {
+      continue;
+    }
+    safeMap.set(logicalPath, { logicalPath, realPath });
+  }
+  return safeMap;
+}
+
+function validateSafeProjectFolderList(rawFoldersInput, options = {}, emptyErrorMsg = '请选择项目文件夹路径') {
+  const rawArr = Array.isArray(rawFoldersInput)
+    ? rawFoldersInput
+    : (rawFoldersInput !== undefined && rawFoldersInput !== null ? [rawFoldersInput] : []);
+  const trimmedList = rawArr.map((x) => String(x || '').trim()).filter(Boolean);
+  if (!trimmedList.length) {
+    throw Object.assign(new Error(emptyErrorMsg), { status: 400 });
+  }
+  if (trimmedList.length > 32) {
+    throw Object.assign(new Error('单个项目最多绑定 32 个目录'), { status: 400 });
+  }
+  const { homeDir: baseHomeDir, realHomeDir: baseRealHomeDir } = resolveAllowedHostRoots(options);
+  const preboundExactMap = options.preboundExactMap instanceof Map ? options.preboundExactMap : null;
+  const seenReal = new Set();
+  const validated = [];
+  for (const rawFolder of trimmedList) {
+    let resolvedPath = '';
+    let realPath = '';
+    let homeDir = baseHomeDir;
+    let realHomeDir = baseRealHomeDir;
+    try {
+      const checked = assertSafeHostDirectoryPath(rawFolder, options);
+      resolvedPath = checked.resolvedPath;
+      realPath = checked.realPath;
+      homeDir = checked.homeDir;
+      realHomeDir = checked.realHomeDir;
+    } catch (err) {
+      if (err?.status !== 403 || !preboundExactMap || preboundExactMap.size === 0) {
+        throw err;
+      }
+      const candLogical = resolveHostPathInput(rawFolder, baseHomeDir);
+      const exactHit = preboundExactMap.get(candLogical);
+      if (!exactHit) {
+        throw err;
+      }
+      let candLst = null;
+      let candReal = '';
+      try {
+        candLst = fs.lstatSync(candLogical);
+        if (!candLst || candLst.isSymbolicLink() || !candLst.isDirectory()) {
+          throw err;
+        }
+        candReal = fs.realpathSync(candLogical);
+      } catch {
+        throw err;
+      }
+      if (
+        !candReal ||
+        candReal !== exactHit.realPath ||
+        candReal === path.parse(candReal).root ||
+        candReal === baseHomeDir ||
+        candReal === baseRealHomeDir ||
+        isSensitiveHostPath(candLogical, options) ||
+        isSensitiveHostPath(candReal, options)
+      ) {
+        throw err;
+      }
+      resolvedPath = candLogical;
+      realPath = candReal;
+    }
+    if (
+      resolvedPath === path.parse(resolvedPath).root ||
+      realPath === path.parse(realPath).root ||
+      resolvedPath === homeDir ||
+      realPath === realHomeDir
+    ) {
+      throw Object.assign(new Error('不支持直接以用户主目录或系统根目录作为项目，请选择具体项目子目录'), { status: 400 });
+    }
+    let dirStat;
+    try {
+      dirStat = fs.statSync(realPath);
+    } catch (err) {
+      if (err?.code === 'EACCES' || err?.code === 'EPERM') {
+        throw Object.assign(new Error('无权限访问所选文件夹'), { status: 403 });
+      }
+      throw Object.assign(new Error('所选项目目录不存在'), { status: 400 });
+    }
+    if (!dirStat.isDirectory()) {
+      throw Object.assign(new Error('所选路径不是文件夹'), { status: 400 });
+    }
+    if (seenReal.has(realPath)) continue;
+    seenReal.add(realPath);
+    const folderUri = pathToFileURL(resolvedPath).href.replace(/\/+$/, '');
+    validated.push({ resolvedPath, realPath, folderUri });
+  }
+  if (!validated.length) {
+    throw Object.assign(new Error(emptyErrorMsg), { status: 400 });
+  }
+  return validated;
+}
+
+function doesProjectPrimaryMatchTarget(projOrRaw, targetResolvedPath, targetRealPath) {
+  if (!projOrRaw || typeof projOrRaw !== 'object') return false;
+  let primaryCandidate = String(projOrRaw.primaryPath || '').trim();
+  if (!primaryCandidate && Array.isArray(projOrRaw.projectResources?.resources) && projOrRaw.projectResources.resources.length > 0) {
+    const r0 = projOrRaw.projectResources.resources[0];
+    primaryCandidate = decodeFileUriToPath(r0?.gitFolder?.folderUri || r0?.folderUri || '');
+  }
+  if (!primaryCandidate) return false;
+  const candResolved = path.resolve(primaryCandidate);
+  if (candResolved === targetResolvedPath) return true;
+  if (targetRealPath) {
+    try {
+      if (fs.realpathSync(candResolved) === targetRealPath) return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function resolveProjectResourcesForFolders(validatedFolders, lsApi, existingResources = []) {
+  const existingByReal = new Map();
+  if (Array.isArray(existingResources)) {
+    for (const resItem of existingResources) {
+      if (!resItem || typeof resItem !== 'object') continue;
+      const rawUri = resItem?.gitFolder?.folderUri || resItem?.folderUri || '';
+      const decoded = decodeFileUriToPath(rawUri);
+      if (!decoded) continue;
+      let rp = path.resolve(decoded);
+      try { rp = fs.realpathSync(decoded); } catch {}
+      if (!existingByReal.has(rp)) existingByReal.set(rp, resItem);
     }
   }
 
-  if (!forceNew && requestedExistingId && lsApi && typeof lsApi.call === 'function') {
+  const resources = [];
+  const enrichedFolders = [];
+  for (const item of validatedFolders) {
+    const { resolvedPath, realPath, folderUri } = item;
+    const prevRes = existingByReal.get(realPath) || null;
+    let isGitRepo = Boolean(prevRes?.gitFolder);
+    try {
+      if (fs.existsSync(path.join(resolvedPath, '.git')) || fs.existsSync(path.join(realPath, '.git'))) {
+        isGitRepo = true;
+      }
+    } catch {}
+    const preservedDefaultBranch = String(prevRes?.gitFolder?.defaultBranch || '').trim();
+    let defaultBranch = isGitRepo
+      ? (preservedDefaultBranch || readGitDefaultBranchFromDisk(resolvedPath))
+      : '';
+
+    if (lsApi && typeof lsApi.call === 'function') {
+      try {
+        const resolvedFolder = await withRaceTimeout(lsApi.call('ResolveFolder', { folderUri }), 2500, null);
+        if (resolvedFolder && (resolvedFolder.resourceType === 'FOLDER_TYPE_GIT_FOLDER' || resolvedFolder.resourceType === 2)) {
+          isGitRepo = true;
+        }
+      } catch {}
+      // 仅对新增目录或原配置缺失 defaultBranch 的目录推断默认分支，严禁覆盖未移除目录原有的自定义默认分支
+      if (isGitRepo && !preservedDefaultBranch) {
+        if (!defaultBranch) {
+          defaultBranch = readGitDefaultBranchFromDisk(resolvedPath);
+        }
+        try {
+          const repoRes = await withRaceTimeout(lsApi.call('GetRepoInfos', { repoUris: [folderUri] }), 2500, null);
+          const branches = Array.isArray(repoRes?.repos?.[0]?.branches) ? repoRes.repos[0].branches : [];
+          if (branches.length) {
+            const names = branches.map((b) => String(b?.name || '').trim()).filter(Boolean);
+            const cur = branches.find((b) => b?.isCurrentBranch && b?.name)?.name;
+            if (names.includes('main')) defaultBranch = 'main';
+            else if (names.includes('master')) defaultBranch = 'master';
+            else if (cur) defaultBranch = String(cur).trim();
+            else if (names[0] && !defaultBranch) defaultBranch = names[0];
+          }
+        } catch {}
+      }
+    }
+
+    let resourceObj;
+    if (prevRes) {
+      if (isGitRepo) {
+        const { folderUri: _dropPlainUri, ...restPrev } = prevRes;
+        resourceObj = {
+          ...restPrev,
+          gitFolder: {
+            ...(prevRes.gitFolder && typeof prevRes.gitFolder === 'object' ? prevRes.gitFolder : {}),
+            folderUri,
+            defaultBranch: defaultBranch || ''
+          }
+        };
+      } else {
+        const { gitFolder: _dropGit, ...restPrev } = prevRes;
+        resourceObj = { ...restPrev, folderUri };
+      }
+    } else {
+      resourceObj = isGitRepo
+        ? { gitFolder: { folderUri, defaultBranch: defaultBranch || '' } }
+        : { folderUri };
+    }
+    resources.push(resourceObj);
+    enrichedFolders.push({
+      resolvedPath,
+      realPath,
+      folderUri,
+      isGitRepo,
+      defaultBranch: defaultBranch || ''
+    });
+  }
+  return { resources, enrichedFolders };
+}
+
+function isValidEditableProjectId(rawId) {
+  const id = String(rawId || '').trim();
+  if (!id || id.length > 160) return false;
+  if (id === 'ungrouped' || id === 'default' || INTERNAL_EMPTY_PROJECT_IDS.has(id)) return false;
+  if (/[\\/\0]/.test(id) || id === '.' || id === '..') return false;
+  return true;
+}
+
+function isValidReadProjectObject(proj, expectedId = '') {
+  if (!proj || typeof proj !== 'object' || Array.isArray(proj)) return false;
+  const pid = String(proj.id || '').trim();
+  if (!pid) return false;
+  if (expectedId && pid !== expectedId) return false;
+  const resList = proj.projectResources?.resources;
+  if (!proj.projectResources || typeof proj.projectResources !== 'object' || !Array.isArray(resList) || resList.length < 1) {
+    return false;
+  }
+  for (const r of resList) {
+    if (!r || typeof r !== 'object') return false;
+    const rawUri = r?.gitFolder?.folderUri || r?.folderUri || '';
+    const decoded = decodeFileUriToPath(rawUri);
+    if (!decoded) return false;
+  }
+  return true;
+}
+
+function isDuplicateProjectRpcError(errOrMsg) {
+  const msg = String(errOrMsg?.message || errOrMsg || '').trim();
+  if (!msg) return false;
+  return /already[_ -]?exists|duplicate|同名|name.*exists|conflict/i.test(msg);
+}
+
+async function collectAuthoritativeProjectNameMap(lsApi, options = {}) {
+  const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
+  const merged = new Map();
+  for (const [id, proj] of metaMap.entries()) {
+    if (id && proj?.name) {
+      merged.set(id, { id, name: String(proj.name).trim() });
+    }
+  }
+  if (lsApi && typeof lsApi.call === 'function') {
+    try {
+      const listRes = await withRaceTimeout(lsApi.call('ListProjects', {}), 2000, null);
+      let lsProjects = Array.isArray(listRes?.projects) ? listRes.projects.slice() : [];
+      const ids = Array.isArray(listRes?.projectIds)
+        ? listRes.projectIds.map((x) => String(x || '').trim()).filter(Boolean)
+        : [];
+      if (!lsProjects.length && ids.length > 0) {
+        const batchRes = await withRaceTimeout(lsApi.call('ReadProjects', { ids }), 2500, null).catch(() => null);
+        if (Array.isArray(batchRes?.projects) && batchRes.projects.length > 0) {
+          lsProjects = batchRes.projects;
+        } else {
+          const perIdReads = await Promise.all(
+            ids.slice(0, 200).map((id) => withRaceTimeout(lsApi.call('ReadProject', { id }), 1500, null).catch(() => null))
+          );
+          lsProjects = perIdReads.map((r) => r?.project).filter(Boolean);
+        }
+      }
+      for (const p of lsProjects) {
+        if (!p || typeof p !== 'object') continue;
+        const pid = String(p.id || '').trim();
+        if (!pid) continue;
+        const pname = String(p.name || '').trim();
+        if (p.archived === true || p.sidecar || pname === 'swarm/swarm_board') {
+          merged.delete(pid);
+          continue;
+        }
+        if (pname) {
+          merged.set(pid, { id: pid, name: pname });
+        }
+      }
+    } catch {}
+  }
+  return merged;
+}
+
+async function createRemoteProject(payload = {}, options = {}) {
+  const hasFolderArray = Array.isArray(payload?.folderPaths) && payload.folderPaths.some((x) => String(x || '').trim());
+  const rawInputFolders = hasFolderArray ? payload.folderPaths : [payload?.folderPath];
+  const validatedFolders = validateSafeProjectFolderList(rawInputFolders, options, '请选择项目文件夹路径');
+  const primary = validatedFolders[0];
+  const resolvedPath = primary.resolvedPath;
+  const isSingleFolderReq = validatedFolders.length === 1;
+
+  const requestedName = String(payload?.name || '').trim();
+  if (!requestedName) {
+    throw Object.assign(new Error('请输入项目名称'), { status: 400 });
+  }
+  if (requestedName.length > 120 || /[\r\n\0]/.test(requestedName)) {
+    throw Object.assign(new Error('项目名称过长或包含非法控制字符'), { status: 400 });
+  }
+  const projectName = requestedName;
+  const forceNew = Boolean(payload?.forceNew);
+  const requestedExistingId = String(payload?.existingProjectId || '').trim();
+
+  const { metaMap } = loadProjectsMetaFromDisk({ configDir: options.configDir, bypassCache: true });
+  let matchedExisting = null;
+  if (isSingleFolderReq) {
+    for (const proj of metaMap.values()) {
+      if (doesProjectPrimaryMatchTarget(proj, resolvedPath, primary.realPath)) {
+        matchedExisting = proj;
+        break;
+      }
+    }
+    if (!matchedExisting && requestedExistingId && metaMap.has(requestedExistingId)) {
+      const byId = metaMap.get(requestedExistingId);
+      if (doesProjectPrimaryMatchTarget(byId, resolvedPath, primary.realPath)) {
+        matchedExisting = byId;
+      }
+    }
+
+    if (matchedExisting && !forceNew && (!requestedName || requestedName.toLowerCase() === matchedExisting.name.toLowerCase())) {
+      return {
+        ok: true,
+        alreadyExists: true,
+        project: {
+          id: matchedExisting.id,
+          name: matchedExisting.name,
+          folderPath: resolvedPath,
+          folderPaths: [resolvedPath],
+          workspacePaths: [resolvedPath]
+        }
+      };
+    }
+  }
+
+  const lsApi = await connectProjectLsApi(options);
+
+  if (isSingleFolderReq && !forceNew && requestedExistingId && lsApi && typeof lsApi.call === 'function') {
     try {
       const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: requestedExistingId }), 1500, null);
       const rp = readRes?.project;
-      if (rp && rp.id === requestedExistingId && !rp.archived) {
+      if (
+        isValidReadProjectObject(rp, requestedExistingId) &&
+        !rp.archived &&
+        doesProjectPrimaryMatchTarget(rp, resolvedPath, primary.realPath)
+      ) {
         const rpName = String(rp.name || requestedName || '').trim();
         if (!requestedName || requestedName.toLowerCase() === rpName.toLowerCase()) {
           return {
@@ -4277,7 +4742,9 @@ async function createRemoteProject(payload = {}, options = {}) {
             project: {
               id: rp.id,
               name: rpName,
-              folderPath: resolvedPath
+              folderPath: resolvedPath,
+              folderPaths: [resolvedPath],
+              workspacePaths: [resolvedPath]
             }
           };
         }
@@ -4285,50 +4752,20 @@ async function createRemoteProject(payload = {}, options = {}) {
     } catch {}
   }
 
-  for (const proj of metaMap.values()) {
+  const authNameMap = await collectAuthoritativeProjectNameMap(lsApi, options);
+  for (const proj of authNameMap.values()) {
     if (proj.name && proj.name.toLowerCase() === projectName.toLowerCase()) {
       throw Object.assign(new Error(`同名项目「${proj.name}」已存在，请修改项目名称`), { status: 400 });
     }
   }
 
-  const folderUri = pathToFileURL(resolvedPath).href.replace(/\/+$/, '');
-  let isGitRepo = false;
-  try {
-    isGitRepo = fs.existsSync(path.join(resolvedPath, '.git'));
-  } catch {}
-  let defaultBranch = isGitRepo ? readGitDefaultBranchFromDisk(resolvedPath) : '';
-
-  if (lsApi && typeof lsApi.call === 'function') {
-    try {
-      const resolvedFolder = await withRaceTimeout(lsApi.call('ResolveFolder', { folderUri }), 2500, null);
-      if (resolvedFolder && (resolvedFolder.resourceType === 'FOLDER_TYPE_GIT_FOLDER' || resolvedFolder.resourceType === 2)) {
-        isGitRepo = true;
-      }
-    } catch {}
-    if (isGitRepo) {
-      try {
-        const repoRes = await withRaceTimeout(lsApi.call('GetRepoInfos', { repoUris: [folderUri] }), 2500, null);
-        const branches = Array.isArray(repoRes?.repos?.[0]?.branches) ? repoRes.repos[0].branches : [];
-        if (branches.length) {
-          const names = branches.map((b) => String(b?.name || '').trim()).filter(Boolean);
-          const cur = branches.find((b) => b?.isCurrentBranch && b?.name)?.name;
-          if (names.includes('main')) defaultBranch = 'main';
-          else if (names.includes('master')) defaultBranch = 'master';
-          else if (cur) defaultBranch = String(cur).trim();
-          else if (names[0] && !defaultBranch) defaultBranch = names[0];
-        }
-      } catch {}
-    }
-  }
-
+  const { resources, enrichedFolders } = await resolveProjectResourcesForFolders(validatedFolders, lsApi, []);
+  const primaryEnriched = enrichedFolders[0];
   const projectId = crypto.randomUUID();
-  const resource = isGitRepo
-    ? { gitFolder: { folderUri, defaultBranch: defaultBranch || '' } }
-    : { folderUri };
   const projectObj = {
     id: projectId,
     name: projectName,
-    projectResources: { resources: [resource] },
+    projectResources: { resources },
     permissionGrants: { v2Migrated: true },
     settings: {},
     isWorkspaceOnly: false
@@ -4342,11 +4779,18 @@ async function createRemoteProject(payload = {}, options = {}) {
       created = true;
     } catch (err) {
       lastLsError = err?.message || 'CreateProject 调用失败';
+      if (isDuplicateProjectRpcError(lastLsError)) {
+        throw Object.assign(new Error(`同名项目「${projectName}」已存在，请修改项目名称`), { status: 400 });
+      }
+      if (!options.allowDiskFallback) {
+        throw Object.assign(new Error(`创建项目失败：${lastLsError}`), { status: 502 });
+      }
     }
   }
 
+  const fallbackHome = path.resolve(String(options.homeDir || os.homedir()));
   const effectiveConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim()
-    || (isCatalogTestEnv() ? '' : path.join(os.homedir(), '.gemini', 'config'));
+    || (isCatalogTestEnv() ? '' : path.join(fallbackHome, '.gemini', 'config'));
   if (!created) {
     const canFallback = Boolean(options.allowDiskFallback || options.configDir || process.env.AG_CONFIG_DIR);
     if (!canFallback || !effectiveConfigDir) {
@@ -4360,6 +4804,10 @@ async function createRemoteProject(payload = {}, options = {}) {
     if (!writeRes?.ok) {
       throw Object.assign(new Error(writeRes?.error || '保存项目配置失败'), { status: 500 });
     }
+  } else if (options.configDir && effectiveConfigDir) {
+    // 隔离测试环境显式传入 configDir 且 mock lsApi 不会落盘时，同步写入隔离目录以便目录元数据缓存立即一致
+    const projFile = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    safeWriteJsonSync(projFile, projectObj, { indent: 2 });
   }
 
   defaultCatalogStore.invalidateProjectsCache();
@@ -4369,10 +4817,270 @@ async function createRemoteProject(payload = {}, options = {}) {
     project: {
       id: projectId,
       name: projectName,
-      folderPath: resolvedPath,
-      folderUri,
-      isGitRepo,
-      defaultBranch
+      folderPath: primaryEnriched.resolvedPath,
+      folderPaths: enrichedFolders.map((f) => f.resolvedPath),
+      workspacePaths: enrichedFolders.map((f) => f.resolvedPath),
+      folderUri: primaryEnriched.folderUri,
+      isGitRepo: primaryEnriched.isGitRepo,
+      defaultBranch: primaryEnriched.defaultBranch
+    }
+  };
+}
+
+async function readRemoteProjectDetail(projectIdInput, options = {}) {
+  const projectId = String(projectIdInput || '').trim();
+  if (!isValidEditableProjectId(projectId)) {
+    throw Object.assign(new Error('无效的项目 ID'), { status: 400 });
+  }
+  const lsApi = await connectProjectLsApi(options);
+  const explicitConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim();
+  const hasLsRpc = Boolean(lsApi && typeof lsApi.call === 'function');
+  let rawProject = null;
+  let lastReadError = '';
+  let readFailedFromRpc = false;
+  if (hasLsRpc) {
+    try {
+      const READ_TIMEOUT = Symbol('read-project-timeout');
+      const res = await withRaceTimeout(lsApi.call('ReadProject', { id: projectId }), 2500, READ_TIMEOUT);
+      if (res === READ_TIMEOUT) {
+        readFailedFromRpc = true;
+        lastReadError = '调用 LanguageServer ReadProject 超时';
+      } else if (isValidReadProjectObject(res?.project, projectId)) {
+        rawProject = res.project;
+      } else {
+        readFailedFromRpc = true;
+        lastReadError = 'LanguageServer ReadProject 返回的项目结构不完整或 ID 不匹配';
+      }
+    } catch (err) {
+      readFailedFromRpc = true;
+      lastReadError = err?.message || 'ReadProject 调用失败';
+    }
+  }
+  // 严格收紧磁盘读取回退：普通运行（未显式开启 allowDiskFallback）绝不回退读取默认 ~/.gemini/config；
+  // 且只要已连接 LanguageServer 而 ReadProject 失败/超时/结构残缺，除非显式指定 allowDiskFallback === true，否则立即报错，绝不用可能滞后的本地磁盘 JSON 解锁编辑
+  const canReadDiskFallback = hasLsRpc
+    ? Boolean(options.allowDiskFallback === true)
+    : Boolean(options.allowDiskFallback === true || explicitConfigDir);
+  if (!rawProject && canReadDiskFallback) {
+    const fallbackConfigDir = explicitConfigDir
+      || (!isCatalogTestEnv() ? path.join(path.resolve(String(options.homeDir || os.homedir())), '.gemini', 'config') : '');
+    if (fallbackConfigDir) {
+      const fp = path.join(fallbackConfigDir, 'projects', `${projectId}.json`);
+      const readRes = safeReadJsonSync(fp, null);
+      if (readRes?.ok && isValidReadProjectObject(readRes.data, projectId)) {
+        rawProject = readRes.data;
+      }
+    }
+  }
+  if (!rawProject) {
+    if (readFailedFromRpc) {
+      const isNotFound = /not[_ -]?found/i.test(lastReadError);
+      throw Object.assign(
+        new Error(isNotFound ? '未找到目标项目' : `读取项目完整配置失败：${lastReadError}`),
+        { status: isNotFound ? 404 : 502 }
+      );
+    }
+    if (!hasLsRpc && !canReadDiskFallback) {
+      throw Object.assign(new Error('无法连接 Antigravity 语言服务以读取项目完整配置'), { status: 503 });
+    }
+    throw Object.assign(new Error(lastReadError || '未找到目标项目或该项目已归档'), { status: 404 });
+  }
+  if (rawProject.archived === true) {
+    throw Object.assign(new Error('未找到目标项目或该项目已归档'), { status: 404 });
+  }
+  const resources = Array.isArray(rawProject.projectResources?.resources) ? rawProject.projectResources.resources : [];
+  const folderPaths = [];
+  const folders = [];
+  for (const r of resources) {
+    const uri = r?.gitFolder?.folderUri || r?.folderUri || '';
+    const p = decodeFileUriToPath(uri);
+    if (!p) continue;
+    folderPaths.push(p);
+    folders.push({
+      path: p,
+      folderUri: uri,
+      isGitRepo: Boolean(r?.gitFolder),
+      defaultBranch: String(r?.gitFolder?.defaultBranch || '')
+    });
+  }
+  return {
+    ok: true,
+    project: {
+      id: String(rawProject.id || projectId),
+      name: String(rawProject.name || projectId).trim(),
+      folderPaths,
+      workspacePaths: folderPaths.slice(),
+      folders
+    }
+  };
+}
+
+async function updateRemoteProject(payload = {}, options = {}) {
+  // 严格护栏：明确禁止通过项目编辑接口执行删除或归档项目
+  if (payload?.delete === true || payload?.archived === true || payload?.action === 'delete') {
+    throw Object.assign(new Error('不支持删除或归档项目，仅支持修改项目名称与增减绑定目录'), { status: 400 });
+  }
+  const projectId = String(payload?.id || payload?.projectId || '').trim();
+  if (!isValidEditableProjectId(projectId)) {
+    throw Object.assign(new Error('无效的项目 ID，无法编辑该项目'), { status: 400 });
+  }
+  const projectName = String(payload?.name || '').trim();
+  if (!projectName) {
+    throw Object.assign(new Error('请输入项目名称'), { status: 400 });
+  }
+  if (projectName.length > 120 || /[\r\n\0]/.test(projectName)) {
+    throw Object.assign(new Error('项目名称过长或包含非法控制字符'), { status: 400 });
+  }
+  const rawInputFolders = Array.isArray(payload?.folderPaths)
+    ? payload.folderPaths
+    : (payload?.folderPath !== undefined ? [payload.folderPath] : []);
+  if (!Array.isArray(rawInputFolders) || !rawInputFolders.some((x) => String(x || '').trim())) {
+    throw Object.assign(new Error('请至少保留 1 个有效的项目目录，不支持清空目录或删除项目'), { status: 400 });
+  }
+
+  const lsApi = await connectProjectLsApi(options);
+  const explicitConfigDir = String(options.configDir || process.env.AG_CONFIG_DIR || '').trim();
+  const hasLsRpc = Boolean(lsApi && typeof lsApi.call === 'function');
+  let existingProjObj = null;
+  let lastReadError = '';
+  let readFailedFromRpc = false;
+  if (hasLsRpc) {
+    try {
+      const READ_TIMEOUT = Symbol('read-project-timeout');
+      const readRes = await withRaceTimeout(lsApi.call('ReadProject', { id: projectId }), 2500, READ_TIMEOUT);
+      if (readRes === READ_TIMEOUT) {
+        readFailedFromRpc = true;
+        lastReadError = '调用 LanguageServer ReadProject 超时';
+      } else if (isValidReadProjectObject(readRes?.project, projectId)) {
+        existingProjObj = readRes.project;
+      } else {
+        readFailedFromRpc = true;
+        lastReadError = 'LanguageServer ReadProject 返回的项目结构不完整或 ID 不匹配';
+      }
+    } catch (err) {
+      readFailedFromRpc = true;
+      lastReadError = err?.message || 'ReadProject 调用失败';
+    }
+  }
+  // 严格收紧磁盘读取回退：普通运行未允许回退时绝不读取 ~/.gemini/config；
+  // 且只要已连接 LanguageServer 而 ReadProject 失败/超时/结构残缺，除非显式 allowDiskFallback === true，否则立即拒绝更新，严防以残缺或滞后副本覆盖原项目目录与扩展字段
+  const canReadDiskFallback = hasLsRpc
+    ? Boolean(options.allowDiskFallback === true)
+    : Boolean(options.allowDiskFallback === true || explicitConfigDir);
+  const effectiveConfigDir = explicitConfigDir
+    || ((options.allowDiskFallback === true && !isCatalogTestEnv())
+      ? path.join(path.resolve(String(options.homeDir || os.homedir())), '.gemini', 'config')
+      : '');
+  if (!existingProjObj && canReadDiskFallback && effectiveConfigDir) {
+    const fp = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    const readRes = safeReadJsonSync(fp, null);
+    if (readRes?.ok && isValidReadProjectObject(readRes.data, projectId)) {
+      existingProjObj = readRes.data;
+    }
+  }
+  if (!existingProjObj) {
+    if (readFailedFromRpc) {
+      const isNotFound = /not[_ -]?found/i.test(lastReadError);
+      throw Object.assign(
+        new Error(isNotFound ? '未找到目标项目' : `无法从 LanguageServer 读取原项目配置（${lastReadError}），已拒绝保存以防覆盖丢失目录或设置`),
+        { status: isNotFound ? 404 : 502 }
+      );
+    }
+    if (!hasLsRpc && !canReadDiskFallback) {
+      throw Object.assign(new Error('无法连接 Antigravity 语言服务以读取原项目配置'), { status: 503 });
+    }
+    throw Object.assign(new Error(lastReadError || '未找到目标项目或该项目已归档'), { status: 404 });
+  }
+  if (existingProjObj.archived === true) {
+    throw Object.assign(new Error('未找到目标项目或该项目已归档'), { status: 404 });
+  }
+
+  // 仅允许精确保留该项目原本已绑定的非符号链接、非根、非 $HOME、非敏感真实目录（preboundExactMap），绝不扩大 allowedRoots 子树或放行软链越界
+  const prevResources = Array.isArray(existingProjObj.projectResources?.resources) ? existingProjObj.projectResources.resources : [];
+  const preboundExactMap = collectSafePreboundProjectFolders(prevResources, options);
+  const validationOpts = preboundExactMap.size > 0
+    ? { ...options, preboundExactMap }
+    : options;
+
+  const validatedFolders = validateSafeProjectFolderList(
+    rawInputFolders,
+    validationOpts,
+    '请至少保留 1 个有效的项目目录，不支持清空目录或删除项目'
+  );
+
+  const authNameMap = await collectAuthoritativeProjectNameMap(lsApi, options);
+  for (const proj of authNameMap.values()) {
+    if (proj.id !== projectId && proj.name && proj.name.toLowerCase() === projectName.toLowerCase()) {
+      throw Object.assign(new Error(`同名项目「${proj.name}」已存在，请修改项目名称`), { status: 400 });
+    }
+  }
+
+  const { resources, enrichedFolders } = await resolveProjectResourcesForFolders(validatedFolders, lsApi, prevResources);
+  const updatedProjectObj = {
+    ...existingProjObj,
+    id: projectId,
+    name: projectName,
+    projectResources: {
+      ...(existingProjObj.projectResources && typeof existingProjObj.projectResources === 'object' ? existingProjObj.projectResources : {}),
+      resources
+    }
+  };
+  if (!existingProjObj.archived) {
+    delete updatedProjectObj.archived;
+  }
+
+  let updatedViaRpc = false;
+  let lastUpdateErr = '';
+  if (lsApi && typeof lsApi.call === 'function') {
+    try {
+      await lsApi.call('UpdateProject', { project: updatedProjectObj });
+      updatedViaRpc = true;
+    } catch (err) {
+      lastUpdateErr = err?.message || 'UpdateProject 调用失败';
+      if (isDuplicateProjectRpcError(lastUpdateErr)) {
+        throw Object.assign(new Error(`同名项目「${projectName}」已存在，请修改项目名称`), { status: 400 });
+      }
+      if (!options.allowDiskFallback) {
+        throw Object.assign(new Error(`更新项目设置失败：${lastUpdateErr}`), { status: 502 });
+      }
+    }
+  }
+
+  if (!updatedViaRpc) {
+    const canFallback = Boolean(options.allowDiskFallback || options.configDir || process.env.AG_CONFIG_DIR);
+    if (!canFallback || !effectiveConfigDir) {
+      throw Object.assign(new Error(lastUpdateErr || '无法连接 Antigravity 语言服务以保存项目设置'), { status: 503 });
+    }
+    const projFile = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    const writeRes = safeWriteJsonSync(projFile, updatedProjectObj, {
+      indent: 2,
+      validate: (d) => d && d.id === projectId && d.name === projectName && Array.isArray(d.projectResources?.resources) && d.projectResources.resources.length >= 1
+    });
+    if (!writeRes?.ok) {
+      throw Object.assign(new Error(writeRes?.error || '保存项目配置失败'), { status: 500 });
+    }
+  } else if (options.configDir && effectiveConfigDir) {
+    const projFile = path.join(effectiveConfigDir, 'projects', `${projectId}.json`);
+    if (fs.existsSync(projFile) || fs.existsSync(path.dirname(projFile))) {
+      safeWriteJsonSync(projFile, updatedProjectObj, { indent: 2 });
+    }
+  }
+
+  defaultCatalogStore.invalidateProjectsCache();
+  return {
+    ok: true,
+    project: {
+      id: projectId,
+      name: projectName,
+      folderPath: enrichedFolders[0].resolvedPath,
+      folderPaths: enrichedFolders.map((f) => f.resolvedPath),
+      workspacePaths: enrichedFolders.map((f) => f.resolvedPath),
+      folders: enrichedFolders.map((f) => ({
+        path: f.resolvedPath,
+        folderUri: f.folderUri,
+        isGitRepo: f.isGitRepo,
+        defaultBranch: f.defaultBranch
+      }))
     }
   };
 }
@@ -4388,16 +5096,136 @@ function escSafeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
-function renderSafeMarkdownToHtml(rawMd) {
-  const src = String(rawMd || '').replace(/\r\n?/g, '\n');
+function isSafeMarkdownLinkHref(rawHref) {
+  const href = String(rawHref || '').trim();
+  if (!href) return false;
+  if (href.startsWith('#')) return true;
+  return /^(?:https?:\/\/|mailto:)/i.test(href);
+}
+
+function splitGfmTableRowCells(line) {
+  let trimmed = String(line || '').trim();
+  if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith('|') && !trimmed.endsWith('\\|')) trimmed = trimmed.slice(0, -1);
+  const cells = [];
+  let cur = '';
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch === '\\' && i + 1 < trimmed.length && trimmed[i + 1] === '|') {
+      cur += '|';
+      i++;
+      continue;
+    }
+    if (ch === '|') {
+      cells.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+function parseGfmTableAlignments(sepLine, expectedCols) {
+  const trimmed = String(sepLine || '').trim();
+  if (!trimmed.includes('-')) return null;
+  const rawCells = splitGfmTableRowCells(trimmed);
+  if (rawCells.length < 1) return null;
+  const aligns = [];
+  for (const cell of rawCells) {
+    if (!/^:?-{3,}:?$/.test(cell)) return null;
+    const left = cell.startsWith(':');
+    const right = cell.endsWith(':');
+    aligns.push(left && right ? 'center' : (right ? 'right' : (left ? 'left' : '')));
+  }
+  if (expectedCols > 0 && aligns.length !== expectedCols) return null;
+  return aligns;
+}
+
+function renderNestedMarkdownListEntries(entries, formatInlineFn) {
+  if (!Array.isArray(entries) || !entries.length) return '';
+  let pos = 0;
+  const parseLevel = (baseIndent) => {
+    if (pos >= entries.length) return '';
+    const first = entries[pos];
+    const tag = first.ordered ? 'ol' : 'ul';
+    const items = [];
+    let hasTask = false;
+    while (pos < entries.length) {
+      const cur = entries[pos];
+      if (cur.indent < baseIndent) break;
+      if (cur.indent === baseIndent && cur.ordered !== first.ordered && items.length > 0) break;
+      if (cur.indent > baseIndent) {
+        const subHtml = parseLevel(cur.indent);
+        if (items.length > 0) {
+          items[items.length - 1].subHtml += subHtml;
+        } else {
+          items.push({ isTask: false, checked: false, bodyHtml: '', subHtml });
+        }
+        continue;
+      }
+      pos += 1;
+      if (cur.isTask) hasTask = true;
+      let subHtml = '';
+      while (pos < entries.length && entries[pos].indent >= cur.indent + 2) {
+        subHtml += parseLevel(entries[pos].indent);
+      }
+      items.push({
+        isTask: cur.isTask,
+        checked: cur.checked,
+        bodyHtml: formatInlineFn(cur.text),
+        subHtml
+      });
+    }
+    const cls = hasTask ? ' class="md-task-list"' : '';
+    const liHtml = items.map((it) => {
+      if (it.isTask) {
+        return `<li class="md-task-item"><input type="checkbox" class="md-task-check" disabled${it.checked ? ' checked' : ''}><span>${it.bodyHtml}${it.subHtml}</span></li>`;
+      }
+      return `<li>${it.bodyHtml}${it.subHtml}</li>`;
+    }).join('');
+    return `<${tag}${cls}>${liHtml}</${tag}>`;
+  };
+  let outHtml = '';
+  while (pos < entries.length) {
+    outHtml += parseLevel(entries[pos].indent);
+  }
+  return outHtml;
+}
+
+function renderSafeMarkdownToHtml(rawMd, bqDepth = 0) {
+  const src = String(rawMd || '').replace(/\u0000/g, '').replace(/\r\n?/g, '\n');
   if (!src.trim()) return '';
 
   const codeBlocks = [];
-  const withCodePlaceholders = src.replace(/```[^\n]*\n([\s\S]*?)```/g, (_m, code) => {
-    const idx = codeBlocks.length;
-    codeBlocks.push(`<pre><code>${escSafeHtml(String(code || '').replace(/\n$/, ''))}</code></pre>`);
-    return `\n\u0000CB${idx}\u0000\n`;
-  });
+  const rawFenceLines = src.split('\n');
+  const nonCodeLines = [];
+  for (let li = 0; li < rawFenceLines.length; li++) {
+    const openM = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(rawFenceLines[li]);
+    if (openM && !(openM[1][0] === '`' && openM[2].includes('`'))) {
+      const fenceCh = openM[1][0];
+      const fenceMinLen = openM[1].length;
+      const codeBuf = [];
+      li += 1;
+      while (li < rawFenceLines.length) {
+        const closeM = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(rawFenceLines[li]);
+        if (closeM && closeM[1][0] === fenceCh && closeM[1].length >= fenceMinLen) {
+          break;
+        }
+        codeBuf.push(rawFenceLines[li]);
+        li += 1;
+      }
+      const idx = codeBlocks.length;
+      codeBlocks.push(`<pre><code>${escSafeHtml(codeBuf.join('\n'))}</code></pre>`);
+      nonCodeLines.push('');
+      nonCodeLines.push(`\u0000CB${idx}\u0000`);
+      nonCodeLines.push('');
+    } else {
+      nonCodeLines.push(rawFenceLines[li]);
+    }
+  }
+  const withCodePlaceholders = nonCodeLines.join('\n');
 
   const formatInline = (text) => {
     const inlineCodes = [];
@@ -4407,48 +5235,48 @@ function renderSafeMarkdownToHtml(rawMd) {
       inlineCodes.push(`<code>${escSafeHtml(c)}</code>`);
       return `\u0000IC${idx}\u0000`;
     });
-    s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_m, label, rawUrl) => {
+    s = s.replace(/!?\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g, (fullMatch, label, rawTarget) => {
+      const isImgSyntax = fullMatch.startsWith('!');
+      const rawTargetStr = String(rawTarget || '');
+      const cleanTarget = rawTargetStr.trim().split(/\s+/)[0] || '';
+      const labelHtml = escSafeHtml(label).replace(/\u0000IC(\d+)\u0000/g, (_2, ci) => inlineCodes[Number(ci)] || '');
+      if (rawTargetStr.includes('\u0000') || cleanTarget.includes('\u0000')) {
+        return labelHtml;
+      }
       const idx = tokens.length;
-      if (/^https?:\/\//i.test(rawUrl)) {
-        tokens.push(`<a href="${escSafeHtml(rawUrl)}" target="_blank" rel="noopener">${escSafeHtml(label)}</a>`);
-      } else if (/^file:\/\//i.test(rawUrl)) {
-        const hashIdx = rawUrl.indexOf('#');
-        const uriPart = hashIdx >= 0 ? rawUrl.slice(0, hashIdx) : rawUrl;
-        const hashPart = hashIdx >= 0 ? rawUrl.slice(hashIdx + 1) : '';
+      if (!isImgSyntax && isSafeMarkdownLinkHref(cleanTarget)) {
+        const extAttrs = cleanTarget.startsWith('#') ? '' : ' target="_blank" rel="noopener noreferrer"';
+        tokens.push(`<a href="${escSafeHtml(cleanTarget)}"${extAttrs}>${labelHtml}</a>`);
+      } else if (!isImgSyntax && /^file:\/\//i.test(cleanTarget)) {
+        const hashIdx = cleanTarget.indexOf('#');
+        const uriPart = hashIdx >= 0 ? cleanTarget.slice(0, hashIdx) : cleanTarget;
+        const hashPart = hashIdx >= 0 ? cleanTarget.slice(hashIdx + 1) : '';
         const lineMatch = hashPart.match(/^L(\d+)/i);
         const lineNum = lineMatch ? lineMatch[1] : '';
         const localPath = normalizeLocalFileUriToPath(uriPart);
         if (localPath) {
-          tokens.push(`<button type="button" class="md-file-link" data-file-path="${escSafeHtml(localPath)}"${lineNum ? ` data-file-line="${escSafeHtml(lineNum)}"` : ''}><code class="md-pill">${escSafeHtml(label)}</code></button>`);
+          tokens.push(`<button type="button" class="md-file-link" data-file-path="${escSafeHtml(localPath)}"${lineNum ? ` data-file-line="${escSafeHtml(lineNum)}"` : ''}><code class="md-pill">${labelHtml}</code></button>`);
         } else {
-          tokens.push(`<code class="md-pill">${escSafeHtml(label)}</code>`);
+          tokens.push(`<code class="md-pill">${labelHtml}</code>`);
         }
       } else {
-        tokens.push(escSafeHtml(label));
+        tokens.push(labelHtml);
       }
       return `\u0000LN${idx}\u0000`;
     });
     let escaped = escSafeHtml(s);
-    escaped = escaped.replace(/\*\*([^\n*][^\n]*?[^\n*]|[^\n*])\*\*/g, '<strong>$1</strong>');
-    escaped = escaped.replace(/(^|[^*])\*([^\s*\n][^*\n]*?[^\s*\n]|[^\s*\n])\*(?!\*)/g, '$1<em>$2</em>');
-    escaped = escaped.replace(/\u0000LN(\d+)\u0000/g, (_m, idx) => tokens[Number(idx)] || '');
-    escaped = escaped.replace(/\u0000IC(\d+)\u0000/g, (_m, idx) => inlineCodes[Number(idx)] || '');
+    escaped = escaped.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+    escaped = escaped.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    escaped = escaped.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+    escaped = escaped.replace(/(^|[^*])\*([^* \t\n][^*\n]*?[^* \t\n]|[^* \t\n])\*(?!\*)/g, '$1<em>$2</em>');
+    escaped = escaped.replace(/\u0000(LN|IC)(\d+)\u0000/g, (_m, kind, idx) => (kind === 'LN' ? tokens : inlineCodes)[Number(idx)] || '');
     return escaped;
   };
-
-  const splitTableCells = (line) => {
-    let trimmed = line.trim();
-    if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
-    if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
-    return trimmed.split('|').map((c) => c.trim());
-  };
-  const isTableSep = (line) => /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
 
   const lines = withCodePlaceholders.split('\n');
   const out = [];
   let para = [];
-  let listTag = '';
-  let listItems = [];
+  let listEntries = [];
 
   const flushPara = () => {
     if (!para.length) return;
@@ -4456,10 +5284,9 @@ function renderSafeMarkdownToHtml(rawMd) {
     para = [];
   };
   const flushList = () => {
-    if (!listItems.length || !listTag) return;
-    out.push(`<${listTag}>${listItems.map((it) => `<li>${formatInline(it)}</li>`).join('')}</${listTag}>`);
-    listTag = '';
-    listItems = [];
+    if (!listEntries.length) return;
+    out.push(renderNestedMarkdownListEntries(listEntries, formatInline));
+    listEntries = [];
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -4477,12 +5304,13 @@ function renderSafeMarkdownToHtml(rawMd) {
       out.push(codeBlocks[Number(cbMatch[1])] || '');
       continue;
     }
-    const hMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    const hMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (hMatch) {
       flushPara();
       flushList();
       const lvl = hMatch[1].length;
-      out.push(`<h${lvl}>${formatInline(hMatch[2])}</h${lvl}>`);
+      const hContent = hMatch[2].replace(/[ \t]+#+\s*$/, '').trim();
+      out.push(`<h${lvl}>${formatInline(hContent)}</h${lvl}>`);
       continue;
     }
     if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
@@ -4491,56 +5319,84 @@ function renderSafeMarkdownToHtml(rawMd) {
       out.push('<hr>');
       continue;
     }
-    if (trimmed.startsWith('>')) {
+    if (/^ {0,3}>/.test(line)) {
       flushPara();
       flushList();
       const bqLines = [];
-      while (i < lines.length && lines[i].trim().startsWith('>')) {
-        bqLines.push(lines[i].trim().replace(/^>\s?/, ''));
+      while (i < lines.length && /^ {0,3}>/.test(lines[i])) {
+        bqLines.push(lines[i].replace(/^ {0,3}> ?/, ''));
         i++;
       }
       i--;
-      const isAlert = /^\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(bqLines[0] || '');
+      const firstTrimmed = String(bqLines[0] || '').trim();
+      const isAlert = /^\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(firstTrimmed);
       const clsAttr = isAlert ? ' class="md-alert"' : '';
-      out.push(`<blockquote${clsAttr}>${bqLines.map((l) => formatInline(l)).join('<br>')}</blockquote>`);
+      const bqInnerHtml = bqDepth < 8
+        ? renderSafeMarkdownToHtml(bqLines.join('\n'), bqDepth + 1)
+        : `<p>${bqLines.map((l) => formatInline(l)).join('<br>')}</p>`;
+      out.push(`<blockquote${clsAttr}>${bqInnerHtml}</blockquote>`);
       continue;
     }
-    if (trimmed.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
-      flushPara();
-      flushList();
-      const headers = splitTableCells(trimmed);
-      i += 2;
-      const bodyRows = [];
-      while (i < lines.length && lines[i].trim().includes('|') && !/^\s*$/.test(lines[i])) {
-        bodyRows.push(splitTableCells(lines[i]));
-        i++;
+    if (trimmed.includes('|') && i + 1 < lines.length) {
+      const headers = splitGfmTableRowCells(trimmed);
+      const aligns = parseGfmTableAlignments(lines[i + 1], headers.length);
+      if (aligns) {
+        flushPara();
+        flushList();
+        i += 2;
+        const bodyRows = [];
+        const isServerTableBlockInterrupt = (rawRow) => {
+          const rt = String(rawRow || '').trim();
+          if (!rt) return true;
+          if (/^\u0000CB\d+\u0000$/.test(rt)) return true;
+          if (/^ {0,3}(?:`{3,}|~{3,})/.test(rawRow)) return true;
+          if (/^ {0,3}>/.test(rawRow)) return true;
+          if (/^ {0,3}#{1,6}(?:\s|$)/.test(rawRow)) return true;
+          if (/^ {0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/.test(rawRow)) return true;
+          if (/^[ \t]*[-*+]\s+/.test(rawRow)) return true;
+          if (/^[ \t]*\d+[.)]\s+/.test(rawRow)) return true;
+          return false;
+        };
+        while (i < lines.length && !isServerTableBlockInterrupt(lines[i])) {
+          bodyRows.push(splitGfmTableRowCells(lines[i]));
+          i++;
+        }
+        i--;
+        const alignAttr = (ci) => (aligns[ci] ? ` style="text-align:${aligns[ci]}"` : '');
+        const thead = `<thead><tr>${headers.map((h, ci) => `<th${alignAttr(ci)}>${formatInline(h)}</th>`).join('')}</tr></thead>`;
+        const tbody = bodyRows.length
+          ? `<tbody>${bodyRows.map((row) => `<tr>${headers.map((_, ci) => `<td${alignAttr(ci)}>${formatInline(row[ci] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`
+          : '';
+        out.push(`<div class="md-table-wrap"><table>${thead}${tbody}</table></div>`);
+        continue;
       }
-      i--;
-      const thead = `<thead><tr>${headers.map((h) => `<th>${formatInline(h)}</th>`).join('')}</tr></thead>`;
-      const tbody = bodyRows.length
-        ? `<tbody>${bodyRows.map((row) => `<tr>${headers.map((_, ci) => `<td>${formatInline(row[ci] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`
-        : '';
-      out.push(`<div class="md-table-wrap"><table>${thead}${tbody}</table></div>`);
-      continue;
     }
-    const ulMatch = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ulMatch = line.match(/^([ \t]*)[-*+]\s+(.*)$/);
     if (ulMatch) {
       flushPara();
-      if (listTag !== 'ul') {
-        flushList();
-        listTag = 'ul';
-      }
-      listItems.push(ulMatch[1]);
+      const indent = ulMatch[1].replace(/\t/g, '  ').length;
+      const tm = /^\[([ xX])\]\s+(.*)$/.exec(ulMatch[2]);
+      listEntries.push({
+        indent,
+        ordered: false,
+        isTask: Boolean(tm),
+        checked: Boolean(tm && tm[1].toLowerCase() === 'x'),
+        text: tm ? tm[2] : ulMatch[2]
+      });
       continue;
     }
-    const olMatch = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    const olMatch = line.match(/^([ \t]*)\d+[.)]\s+(.*)$/);
     if (olMatch) {
       flushPara();
-      if (listTag !== 'ol') {
-        flushList();
-        listTag = 'ol';
-      }
-      listItems.push(olMatch[1]);
+      const indent = olMatch[1].replace(/\t/g, '  ').length;
+      const tm = /^\[([ xX])\]\s+(.*)$/.exec(olMatch[2].trim());
+      listEntries.push({
+        indent,
+        ordered: true,
+        isTask: Boolean(tm),
+        checked: Boolean(tm && tm[1].toLowerCase() === 'x'),
+        text: tm ? tm[2] : olMatch[2]
+      });
       continue;
     }
     flushList();
@@ -4672,7 +5528,7 @@ function normalizeLocalFileUriToPath(rawPath) {
       }
     }
   }
-  return s;
+  return s.includes('\u0000') ? '' : s;
 }
 
 function resolveSafeLocalMediaPath(rawPath, options = {}) {
@@ -4915,12 +5771,17 @@ function readSafeTextFilePreview(rawPath, options = {}) {
   const maxTextBytes = Number.isFinite(options.maxTextBytes) ? options.maxTextBytes : (512 * 1024);
   const checked = resolveSafeLocalMediaPath(rawPath, options);
   if (!checked.ok) return checked;
-  if (/^image\//i.test(checked.contentType)) {
+  const isSvgFile = checked.ext === '.svg';
+  const isHtmlFile = checked.ext === '.html' || checked.ext === '.htm';
+  const isMdFile = checked.ext === '.md' || checked.ext === '.markdown';
+  if (/^image\//i.test(checked.contentType) && !isSvgFile) {
     return {
       ok: true,
       isImage: true,
       isBinary: false,
       isMarkdown: false,
+      isHtml: false,
+      isSvg: false,
       name: checked.baseName,
       path: checked.realPath,
       ext: checked.ext,
@@ -4933,6 +5794,9 @@ function readSafeTextFilePreview(rawPath, options = {}) {
       isImage: false,
       isBinary: false,
       isTooLargeForText: true,
+      isMarkdown: isMdFile,
+      isHtml: isHtmlFile,
+      isSvg: isSvgFile,
       name: checked.baseName,
       path: checked.realPath,
       ext: checked.ext,
@@ -4957,6 +5821,8 @@ function readSafeTextFilePreview(rawPath, options = {}) {
       isImage: false,
       isBinary: true,
       isMarkdown: false,
+      isHtml: false,
+      isSvg: false,
       name: checked.baseName,
       path: checked.realPath,
       ext: checked.ext,
@@ -4968,7 +5834,10 @@ function readSafeTextFilePreview(rawPath, options = {}) {
     ok: true,
     isImage: false,
     isBinary: false,
-    isMarkdown: checked.ext === '.md' || checked.ext === '.markdown',
+    isMarkdown: isMdFile,
+    isHtml: isHtmlFile,
+    isSvg: isSvgFile,
+    ...(isMdFile ? { renderedHtml: renderSafeMarkdownToHtml(content) } : {}),
     name: checked.baseName,
     path: checked.realPath,
     ext: checked.ext,
@@ -7051,25 +7920,40 @@ function mergeTrajectoryAndDomMessages(trajMsgs, domMessages, options = {}) {
 function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
   if (!Array.isArray(baseList)) return [];
   if (!Array.isArray(incomingList) || !incomingList.length) return baseList;
-  const normQText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const normQText = (t) => String(t || '').replace(/[\u2066-\u2069\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
   const getQImgCount = (q) => {
     if (Array.isArray(q?.images)) return q.images.length;
     if (Array.isArray(q?.attachments)) return q.attachments.length;
     if (Array.isArray(q?.media)) return q.media.length;
     return 0;
   };
-  const getStableId = (q) => String(q?.messageId || '').trim();
+  const isOptimisticQueueId = (raw) => /^opt-/i.test(String(raw || '').trim());
+  const getStableId = (q) => {
+    const raw = String(q?.messageId || '').trim();
+    return (raw && !isOptimisticQueueId(raw)) ? raw : '';
+  };
+  const getClientQueueId = (q) => {
+    const explicitCid = String(q?.clientMessageId || '').trim();
+    if (explicitCid) return explicitCid;
+    const raw = String(q?.messageId || '').trim();
+    return isOptimisticQueueId(raw) ? raw : '';
+  };
   const queueMatchKey = (q) => `${normQText(q?.text)}::img=${getQImgCount(q)}`;
 
   const idMap = new Map();
+  const clientIdMap = new Map();
   for (let i = 0; i < baseList.length; i++) {
     const bid = getStableId(baseList[i]);
     if (bid && !idMap.has(bid)) {
       idMap.set(bid, { item: baseList[i], idx: i });
     }
+    const bcid = getClientQueueId(baseList[i]);
+    if (bcid && !clientIdMap.has(bcid)) {
+      clientIdMap.set(bcid, { item: baseList[i], idx: i });
+    }
   }
 
-  // 第一轮：优先按稳定 messageId 精确匹配并消耗对应基准项，防止同行额外无 ID/异 ID 项误用其文本配额
+  // 第一轮：优先按稳定服务端 messageId（或精确 clientMessageId）匹配并消耗对应基准项，防止同行额外无 ID/异 ID 项误用其文本配额
   const matchedBaseIndices = new Set();
   const handledIncomingIndices = new Set();
   for (let i = 0; i < incomingList.length; i++) {
@@ -7079,12 +7963,22 @@ function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
       continue;
     }
     const iqId = getStableId(iq);
-    if (iqId && idMap.has(iqId)) {
-      const hit = idMap.get(iqId);
+    const iqClientId = getClientQueueId(iq);
+    let hit = (iqId && idMap.get(iqId)) || null;
+    if (!hit && iqClientId) {
+      const cidHit = clientIdMap.get(iqClientId);
+      if (cidHit && (!iqId || !getStableId(cidHit.item))) hit = cidHit;
+    }
+    if (hit && !matchedBaseIndices.has(hit.idx)) {
       matchedBaseIndices.add(hit.idx);
       handledIncomingIndices.add(i);
       if (mergeMeta && Number.isInteger(iq.domIndex)) {
         hit.item.domIndex = iq.domIndex;
+      }
+      if (iqId && !getStableId(hit.item)) {
+        hit.item.messageId = iqId;
+        if (!hit.item.id || isOptimisticQueueId(hit.item.id)) hit.item.id = iqId;
+        idMap.set(iqId, hit);
       }
     }
   }
@@ -7137,8 +8031,11 @@ function mergeUniqueQueuedLists(baseList, incomingList, mergeMeta = false) {
           idlessHit.item.domIndex = iq.domIndex;
         }
         idlessHit.item.messageId = iqId;
-        if (!idlessHit.item.id) idlessHit.item.id = iqId;
-        idMap.set(iqId, { item: idlessHit.item, idx: idlessHit.idx });
+        if (!idlessHit.item.id || isOptimisticQueueId(idlessHit.item.id)) idlessHit.item.id = iqId;
+        const upgradedRec = { item: idlessHit.item, idx: idlessHit.idx };
+        idMap.set(iqId, upgradedRec);
+        const iqCid = getClientQueueId(iq);
+        if (iqCid && !clientIdMap.has(iqCid)) clientIdMap.set(iqCid, upgradedRec);
         continue;
       }
       baseList.push(iq);
@@ -8281,13 +9178,13 @@ function buildMobileAppHtml() {
       --surface-strong:rgba(255,255,255,.07);--surface-strong-hover:rgba(255,255,255,.11);
       --border:rgba(255,255,255,.11);--border-subtle:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.18);
       --fg:#f4f4f5;--fg-strong:#fafafa;--fg-secondary:#e4e4e7;--fg-sub:#d4d4d8;--muted:#a1a1aa;--placeholder:#8e8e98;
-      --accent:#38bdf8;--accent-fg:#7dd3fc;--accent-strong-fg:#bae6fd;--accent-bg:rgba(56,189,248,.11);--accent-border:rgba(56,189,248,.34);
-      --btn-primary-bg:#38bdf8;
+      --accent:#a78bfa;--accent-fg:#c4b5fd;--accent-strong-fg:#ddd6fe;--accent-bg:rgba(167,139,250,.14);--accent-border:rgba(167,139,250,.34);
+      --btn-primary-bg:#a78bfa;
       --green:#34d399;--amber:#fbbf24;--red:#f87171;--risk-fg:#fca5a5;--risk-bg:rgba(239,68,68,.14);--risk-border:rgba(248,113,113,.55);
       --diff-add:#4ade80;--diff-del:#f87171;
-      --code-bg:rgba(255,255,255,.1);--pre-bg:#09090b;--qbar-bg:rgba(255,255,255,.12);--thought-summary:#93c5fd;
+      --code-bg:rgba(255,255,255,.1);--pre-bg:#09090b;--qbar-bg:rgba(255,255,255,.12);--thought-summary:#c4b5fd;
       --ap-approve-bg:#10b981;--ap-approve-fg:#052e16;--ap-reject-bg:#3f3f46;--ap-reject-fg:#f4f4f5;
-      --user-bg:#1d4ed8;--user-fg:#f8fafc;--send-ready-fg:#082f49;
+      --user-bg:#6d28d9;--user-fg:#f8fafc;--send-ready-fg:#1e1038;
       --toast-bg:#27272a;--toast-fg:#fff;--backdrop-bg:rgba(0,0,0,.58);
       --pop-shadow:0 16px 40px rgba(0,0,0,.6);--sheet-shadow:0 24px 64px rgba(0,0,0,.65);
       --scroll-thumb:rgba(255,255,255,.14);--scroll-thumb-hover:rgba(255,255,255,.26);
@@ -8328,13 +9225,13 @@ function buildMobileAppHtml() {
         --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
         --border:rgba(15,23,42,.13);--border-subtle:rgba(15,23,42,.08);--border-strong:rgba(15,23,42,.2);
         --fg:#18181b;--fg-strong:#09090b;--fg-secondary:#27272a;--fg-sub:#3f3f46;--muted:#52525b;--placeholder:#64748b;
-        --accent:#0284c7;--accent-fg:#0369a1;--accent-strong-fg:#075985;--accent-bg:rgba(2,132,199,.09);--accent-border:rgba(2,132,199,.32);
-        --btn-primary-bg:#0369a1;
+        --accent:#7c3aed;--accent-fg:#6d28d9;--accent-strong-fg:#5b21b6;--accent-bg:rgba(124,58,237,.10);--accent-border:rgba(124,58,237,.32);
+        --btn-primary-bg:#7c3aed;
         --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);--risk-border:rgba(220,38,38,.42);
         --diff-add:#15803d;--diff-del:#b91c1c;
-        --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0369a1;
+        --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#6d28d9;
         --ap-approve-bg:#047857;--ap-approve-fg:#ffffff;--ap-reject-bg:#e4e4e7;--ap-reject-fg:#18181b;
-        --user-bg:#2563eb;--user-fg:#ffffff;--send-ready-fg:#ffffff;
+        --user-bg:#6d28d9;--user-fg:#ffffff;--send-ready-fg:#ffffff;
         --toast-bg:#18181b;--toast-fg:#fafafa;--backdrop-bg:rgba(15,23,42,.36);
         --pop-shadow:0 14px 36px rgba(15,23,42,.14);--sheet-shadow:0 20px 56px rgba(15,23,42,.18);
         --scroll-thumb:rgba(15,23,42,.18);--scroll-thumb-hover:rgba(15,23,42,.32);
@@ -8368,13 +9265,13 @@ function buildMobileAppHtml() {
       --surface-strong:#ffffff;--surface-strong-hover:rgba(15,23,42,.06);
       --border:rgba(15,23,42,.13);--border-subtle:rgba(15,23,42,.08);--border-strong:rgba(15,23,42,.2);
       --fg:#18181b;--fg-strong:#09090b;--fg-secondary:#27272a;--fg-sub:#3f3f46;--muted:#52525b;--placeholder:#64748b;
-      --accent:#0284c7;--accent-fg:#0369a1;--accent-strong-fg:#075985;--accent-bg:rgba(2,132,199,.09);--accent-border:rgba(2,132,199,.32);
-      --btn-primary-bg:#0369a1;
+      --accent:#7c3aed;--accent-fg:#6d28d9;--accent-strong-fg:#5b21b6;--accent-bg:rgba(124,58,237,.10);--accent-border:rgba(124,58,237,.32);
+      --btn-primary-bg:#7c3aed;
       --green:#059669;--amber:#d97706;--red:#dc2626;--risk-fg:#b91c1c;--risk-bg:rgba(239,68,68,.09);--risk-border:rgba(220,38,38,.42);
       --diff-add:#15803d;--diff-del:#b91c1c;
-      --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#0369a1;
+      --code-bg:rgba(15,23,42,.06);--pre-bg:#f1f5f9;--qbar-bg:rgba(15,23,42,.1);--thought-summary:#6d28d9;
       --ap-approve-bg:#047857;--ap-approve-fg:#ffffff;--ap-reject-bg:#e4e4e7;--ap-reject-fg:#18181b;
-      --user-bg:#2563eb;--user-fg:#ffffff;--send-ready-fg:#ffffff;
+      --user-bg:#6d28d9;--user-fg:#ffffff;--send-ready-fg:#ffffff;
       --toast-bg:#18181b;--toast-fg:#fafafa;--backdrop-bg:rgba(15,23,42,.36);
       --pop-shadow:0 14px 36px rgba(15,23,42,.14);--sheet-shadow:0 20px 56px rgba(15,23,42,.18);
       --scroll-thumb:rgba(15,23,42,.18);--scroll-thumb-hover:rgba(15,23,42,.32);
@@ -8468,6 +9365,7 @@ function buildMobileAppHtml() {
       grid-column:1 / -1;grid-row:2;min-width:0;overflow:hidden;
       display:flex;align-items:center;gap:5px;
     }
+    .sub-row:empty{display:none}
     .conv-project-badge{
       display:inline-block;vertical-align:middle;max-width:128px;min-width:0;padding:1px 6px;border-radius:999px;
       font-size:10.5px;font-weight:500;line-height:1.35;letter-spacing:0;
@@ -8480,6 +9378,7 @@ function buildMobileAppHtml() {
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;
       cursor:pointer;display:block;
     }
+    .sub-meta[hidden]{display:none!important}
     .sub-meta:active{color:var(--accent)}
     .channel-pill{
       appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-secondary);
@@ -8572,7 +9471,7 @@ function buildMobileAppHtml() {
     .fold-btn{appearance:none;display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:3px 11px;border-radius:999px;font-size:12px;font-weight:500;line-height:1.2;border:1px solid var(--border);background:var(--surface-subtle);color:var(--accent-fg);cursor:pointer}
     .fold-btn:active{transform:scale(.98)}
     .msg-rail{
-      position:absolute;left:2px;top:50%;transform:translateY(-50%);z-index:22;
+      position:absolute;right:2px;left:auto;top:50%;transform:translateY(-50%);z-index:22;
       display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
       width:20px;max-height:min(56vh,400px);padding:6px 0;overflow:hidden;
       touch-action:none;user-select:none;-webkit-user-select:none;
@@ -8594,7 +9493,7 @@ function buildMobileAppHtml() {
     .msg-rail-item:hover .msg-rail-mark{background:var(--accent);opacity:.9}
     .msg-rail-item.is-active .msg-rail-mark{background:var(--fg-strong);opacity:.95;transform:scale(1.22)}
     .msg-rail-tip{
-      position:absolute;left:26px;top:50%;transform:translateY(-50%);z-index:25;pointer-events:none;
+      position:absolute;right:26px;left:auto;top:50%;transform:translateY(-50%);z-index:25;pointer-events:none;
       max-width:min(210px,60vw);padding:5px 10px;border-radius:999px;
       font-size:11.5px;font-weight:500;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
       background:var(--drawer-bg);color:var(--fg-strong);
@@ -8873,27 +9772,60 @@ function buildMobileAppHtml() {
     .md-file-link:active{filter:brightness(1.1)}
     .fv-backdrop{
       position:fixed;top:0;left:0;right:0;height:var(--modal-h,100dvh);z-index:110;background:var(--backdrop-bg);
-      display:flex;align-items:flex-end;justify-content:center;
+      display:flex;align-items:stretch;justify-content:flex-end;
       backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
     }
-    .fv-backdrop[hidden]{display:none}
+    .fv-backdrop[hidden]{display:none!important}
     .fv-modal{
-      width:100%;max-width:760px;height:min(86%,calc(var(--modal-h,100dvh) * 0.86));max-height:calc(var(--modal-h,100dvh) - env(safe-area-inset-top,0px) - 16px);
-      background:var(--card);border-top-left-radius:18px;border-top-right-radius:18px;border:1px solid var(--border-strong);
-      padding-bottom:var(--safe-bottom);
+      position:relative;width:min(92vw,480px);max-width:100%;height:100%;max-height:100%;
+      background:var(--card);border-top-left-radius:16px;border-bottom-left-radius:16px;border-top-right-radius:0;border-bottom-right-radius:0;
+      border:1px solid var(--border-strong);border-right:none;
+      padding-top:env(safe-area-inset-top,0px);padding-bottom:var(--safe-bottom);
       display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--sheet-shadow);
     }
+    .fv-resize-handle{display:none}
     .fv-head{
       display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;
       border-bottom:1px solid var(--border);flex-shrink:0;
     }
-    .fv-title{font-size:14px;font-weight:700;color:var(--fg-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;text-wrap:balance}
-    .fv-tabs{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+    .fv-head-left{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+    .fv-title{font-size:13.5px;font-weight:700;color:var(--fg-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-ws-persistent-bar{
+      display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--border);
+      overflow-x:auto;scrollbar-width:none;flex-shrink:0;background:var(--surface-subtle);
+    }
+    .fv-ws-persistent-bar::-webkit-scrollbar{display:none}
+    .fv-ws-persistent-bar[hidden]{display:none!important}
+    .fv-tabs{display:flex;gap:6px;padding:7px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
     .fv-tab{
-      appearance:none;flex:1;min-height:34px;padding:6px 10px;border-radius:9px;border:1px solid var(--border);
-      background:var(--surface-subtle);color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;
+      appearance:none;flex:1;min-height:32px;padding:5px 8px;border-radius:8px;border:1px solid var(--border);
+      background:var(--surface-subtle);color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;
     }
     .fv-tab.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .fv-preview-toolbar{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 12px;
+      border-bottom:1px solid var(--border);background:var(--surface-subtle);flex-shrink:0;flex-wrap:wrap;
+    }
+    .fv-preview-toolbar[hidden]{display:none!important}
+    .fv-preview-meta{display:flex;align-items:center;gap:6px;min-width:0;flex:1;font-size:11.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+    .fv-preview-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .fv-seg-group{display:inline-flex;align-items:center;padding:2px;border-radius:8px;border:1px solid var(--border);background:var(--card);gap:2px;flex-shrink:0}
+    .fv-seg-btn{
+      appearance:none;border:1px solid transparent;background:transparent;color:var(--muted);
+      border-radius:6px;min-height:26px;padding:0 9px;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;
+    }
+    .fv-seg-btn.active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+    .fv-line-jump-pill{
+      appearance:none;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      border-radius:999px;height:24px;padding:0 8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0;
+    }
+    .fv-sandbox-wrap{display:flex;flex-direction:column;height:100%;min-height:360px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff}
+    .fv-sandbox-iframe{width:100%;flex:1 1 auto;min-height:360px;border:none;display:block;background:#fff}
+    body.fv-resizing .fv-sandbox-iframe{pointer-events:none}
+    body.fv-resizing{user-select:none;cursor:col-resize}
+    .md-task-list{list-style:none;padding-left:4px}
+    .md-task-item{display:flex;align-items:flex-start;gap:7px;margin:3px 0}
+    .md-task-check{margin-top:4px;accent-color:var(--accent);flex-shrink:0}
     .fv-ws-bar{display:flex;align-items:center;gap:6px;margin-bottom:8px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
     .fv-ws-bar::-webkit-scrollbar{display:none}
     .fv-ws-chip{
@@ -8993,9 +9925,20 @@ function buildMobileAppHtml() {
     .sheet-speed-btn:disabled{opacity:.65;cursor:default}
     .sheet-list{display:flex;flex-direction:column;gap:6px;overflow-y:auto;-webkit-overflow-scrolling:touch}
     .sheet-stage-viewport{width:100%;overflow:hidden}
-    .sheet-stage-track{display:flex;width:200%;align-items:flex-start;transition:transform .24s var(--ease-out);will-change:transform}
-    .sheet-stage-track.step-effort{transform:translateX(-50%)}
-    .sheet-stage-pane{width:50%;flex:0 0 50%;display:flex;flex-direction:column;gap:6px;max-height:56dvh;overflow-y:auto;padding-right:2px;-webkit-overflow-scrolling:touch}
+    .sheet-stage-track{display:flex;width:100%;align-items:flex-start;transition:transform .24s var(--ease-out);will-change:transform}
+    .sheet-stage-track.step-effort{transform:translateX(-100%)}
+    .sheet-stage-track.is-three-stage{width:100%}
+    .sheet-stage-track.is-three-stage .sheet-stage-pane{width:100%;flex:0 0 100%}
+    .sheet-stage-track.is-three-stage.step-submodel{transform:translateX(-100%)}
+    .sheet-stage-track.is-three-stage.step-effort{transform:translateX(-200%)}
+    .sheet-stage-pane{width:100%;flex:0 0 100%;display:flex;flex-direction:column;gap:6px;max-height:56dvh;overflow-y:auto;padding-right:2px;-webkit-overflow-scrolling:touch}
+    .model-col-hdr{display:none;font-size:11px;font-weight:600;color:var(--muted);padding:2px 6px 4px;letter-spacing:.02em}
+    .model-picker-divider{height:1px;background:var(--border);margin:4px 2px;flex-shrink:0}
+    .model-opt-check{display:inline-flex;align-items:center;justify-content:center;width:15px;font-size:13px;font-weight:700;color:var(--accent);flex-shrink:0}
+    .model-new-pill{font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;background:var(--accent-bg);color:var(--accent-fg);border:1px solid var(--accent-border);line-height:1.35;white-space:nowrap}
+    .model-effort-hint{font-size:12px;font-weight:500;color:var(--muted);white-space:nowrap}
+    .sheet-opt.active .model-effort-hint,.sheet-opt.sliding-out .model-effort-hint{color:var(--accent-fg);font-weight:600}
+    .model-opt-arrow{font-size:15px;line-height:1;color:var(--muted);font-weight:500;margin-left:1px}
     .sheet-opt.sliding-out{background:var(--accent-bg);border-color:var(--accent-border)}
     .sheet-opt{
       width:100%;text-align:left;padding:11px 12px;border-radius:10px;border:1px solid var(--border);
@@ -9074,6 +10017,34 @@ function buildMobileAppHtml() {
       transition:background-color .14s ease,border-color .14s ease,color .14s ease;
     }
     .new-proj-mini-btn:active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+    .proj-sort-toggle-btn{width:auto;padding:0 9px;gap:4px;font-size:12px;font-weight:600;white-space:nowrap}
+    .proj-sort-toggle-btn.active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+    .proj-sort-toggle-btn:disabled{opacity:.45;cursor:default}
+    .proj-sort-toggle-btn[hidden]{display:none}
+    .proj-drag-handle{
+      display:none;align-items:center;justify-content:center;width:22px;height:26px;border-radius:6px;
+      color:var(--muted);font-size:14px;font-weight:700;cursor:grab;user-select:none;-webkit-user-select:none;
+      touch-action:none;flex-shrink:0;
+    }
+    .proj-drag-handle:active{cursor:grabbing;background:var(--accent-bg);color:var(--accent-strong-fg)}
+    .conv-list.is-proj-sorting .proj-group:not(.is-ungrouped) .proj-drag-handle{display:inline-flex}
+    .proj-sort-actions{display:none;align-items:center;gap:3px;flex-shrink:0}
+    .conv-list.is-proj-sorting .proj-sort-actions{display:inline-flex}
+    .conv-list.is-proj-sorting .proj-new-btn{display:none}
+    .proj-sort-btn{
+      appearance:none;width:26px;height:26px;padding:0;border-radius:7px;border:1px solid var(--border);
+      background:var(--surface-soft);color:var(--fg-sub);font-size:12px;font-weight:700;line-height:1;
+      display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;
+    }
+    .proj-sort-btn:active:not(:disabled){background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+    .proj-sort-btn:disabled{opacity:.35;cursor:default}
+    .proj-fixed-tag{
+      font-size:10.5px;color:var(--muted);padding:1px 6px;border-radius:999px;border:1px dashed var(--border);
+      flex-shrink:0;white-space:nowrap;
+    }
+    .proj-group.is-dragging{opacity:.55}
+    .proj-group.drag-over-before>.proj-head{box-shadow:inset 0 2px 0 var(--accent);border-color:var(--accent-border)}
+    .proj-group.drag-over-after>.proj-head{box-shadow:inset 0 -2px 0 var(--accent);border-color:var(--accent-border)}
     .proj-group{display:flex;flex-direction:column;gap:5px;margin-top:6px}
     .proj-group:first-child{margin-top:0}
     .proj-head{
@@ -9100,12 +10071,47 @@ function buildMobileAppHtml() {
       margin-left:auto;padding:1px 7px;border-radius:999px;background:var(--proj-count-bg);
       font-size:11px;color:var(--fg-sub);font-weight:600;font-variant-numeric:tabular-nums;flex-shrink:0;
     }
-    .proj-new-btn{
+    .proj-edit-btn,.proj-new-btn{
       appearance:none;width:28px;height:28px;flex-shrink:0;border-radius:8px;
       border:1px solid var(--border);background:var(--surface-soft);color:var(--fg-sub);
       display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;line-height:1;
     }
-    .proj-new-btn:active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
+    .proj-edit-btn{width:26px;height:26px;color:var(--muted)}
+    .conv-list.is-proj-sorting .proj-edit-btn,.conv-list.is-proj-sorting .proj-new-btn{display:none}
+    .proj-edit-btn:active,.proj-new-btn:active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
+    .proj-summary-top{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+    .proj-add-folder-btn{
+      appearance:none;min-height:28px;padding:3px 9px;border-radius:8px;
+      border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent-strong-fg);
+      font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;
+    }
+    .proj-add-folder-btn:disabled{opacity:.52;cursor:default;border-color:var(--border);background:var(--surface-soft);color:var(--muted)}
+    .proj-folders-box{
+      display:flex;flex-direction:column;gap:5px;padding:8px 10px;border-radius:10px;
+      background:var(--surface-subtle);border:1px solid var(--border);flex-shrink:0;
+    }
+    .proj-folders-hdr{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11.5px;font-weight:600;color:var(--muted)}
+    .proj-folders-hint{font-size:11.5px;color:var(--muted);line-height:1.4}
+    .proj-folders-list{display:flex;flex-direction:column;gap:5px;max-height:132px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+    .proj-folder-chip{
+      display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:8px;
+      background:var(--surface-soft);border:1px solid var(--border-subtle);min-width:0;
+    }
+    .proj-folder-chip-path{
+      flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      font-size:11.5px;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    .proj-folder-primary-pill{
+      flex-shrink:0;font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;
+      background:var(--accent-bg);color:var(--accent-fg);border:1px solid var(--accent-border);
+    }
+    .proj-folder-rm-btn{
+      appearance:none;width:22px;height:22px;flex-shrink:0;border-radius:6px;
+      border:1px solid var(--border);background:transparent;color:var(--muted);
+      display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;line-height:1;
+    }
+    .proj-folder-rm-btn:hover:not(:disabled){background:var(--surface-hover);color:var(--red);border-color:var(--risk-border)}
+    .proj-folder-rm-btn:disabled{opacity:.35;cursor:not-allowed}
     .proj-body{
       display:flex;flex-direction:column;gap:4px;margin-left:11px;padding-left:9px;
       border-left:1.5px solid var(--border);
@@ -9301,8 +10307,13 @@ function buildMobileAppHtml() {
       .conv-tab:hover{color:var(--fg-secondary)}
       .new-proj-mini-btn:hover{background:var(--surface-hover);border-color:var(--border-strong);color:var(--fg-strong)}
       .proj-head:hover{background:var(--surface-hover);border-color:var(--border-strong)}
+      .proj-group:not(.is-ungrouped) .proj-head:hover .proj-sort-actions,
+      .proj-group:not(.is-ungrouped) .proj-head:focus-within .proj-sort-actions{display:inline-flex}
+      .proj-group:not(.is-ungrouped) .proj-head:hover .proj-drag-handle{display:inline-flex}
+      .proj-sort-btn:hover:not(:disabled){background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-strong-fg)}
+      .proj-sort-toggle-btn.active:hover{background:var(--accent-bg);border-color:var(--accent);color:var(--accent-strong-fg)}
       .proj-toggle:hover{color:var(--fg-strong)}
-      .proj-new-btn:hover{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
+      .proj-edit-btn:hover,.proj-new-btn:hover{background:var(--accent-bg);border-color:var(--accent-border);color:var(--fg-strong)}
       .proj-root-pill:hover,.proj-act-btn:hover,.proj-dir-item:hover{background:var(--surface-hover);border-color:var(--border-strong)}
       .proj-primary-btn:hover{filter:brightness(1.08)}
       .conv-more-btn:hover{background:var(--surface-hover);color:var(--fg-secondary)}
@@ -9361,8 +10372,8 @@ function buildMobileAppHtml() {
       .messages{
         padding:24px max(36px,calc(50% - 410px)) 18px;gap:18px;
       }
-      .msg-rail{left:10px;width:22px;max-height:min(64vh,480px);gap:3px}
-      .msg-rail-tip{left:36px;max-width:260px}
+      .msg-rail{right:10px;left:auto;width:22px;max-height:min(64vh,480px);gap:3px}
+      .msg-rail-tip{right:36px;left:auto;max-width:260px}
       .msg.user{max-width:72%;font-size:14.5px;padding:11px 16px}
       .md-body{font-size:14.5px}
       .md-body code{font-size:13px}
@@ -9390,14 +10401,61 @@ function buildMobileAppHtml() {
         border:1px solid var(--border-strong);padding:16px;
         box-shadow:var(--sheet-shadow);
       }
+      .sheet.model-picker-sheet,.sheet[data-sheet-kind^="model"]{
+        width:fit-content;min-width:340px;max-width:min(840px,calc(100vw - 32px));
+      }
+      .sheet.model-picker-sheet .sheet-back-btn,.sheet[data-sheet-kind^="model"] .sheet-back-btn{display:none!important}
+      .sheet.model-picker-sheet .sheet-stage-viewport,.sheet[data-sheet-kind^="model"] .sheet-stage-viewport{max-width:100%;overflow-x:auto;overflow-y:visible}
+      .sheet.model-picker-sheet .sheet-stage-track,
+      .sheet.model-picker-sheet .sheet-stage-track.is-three-stage,
+      .sheet[data-sheet-kind^="model"] .sheet-stage-track,
+      .sheet[data-sheet-kind^="model"] .sheet-stage-track.is-three-stage{
+        width:auto!important;transform:none!important;transition:none;gap:10px;align-items:stretch;
+      }
+      .sheet.model-picker-sheet .sheet-stage-pane,
+      .sheet.model-picker-sheet .sheet-stage-track.is-three-stage .sheet-stage-pane,
+      .sheet[data-sheet-kind^="model"] .sheet-stage-pane,
+      .sheet[data-sheet-kind^="model"] .sheet-stage-track.is-three-stage .sheet-stage-pane{
+        width:clamp(208px,27vw,268px);flex:1 1 auto;min-width:0;max-width:268px;max-height:min(460px,66vh);
+      }
+      .sheet.model-picker-sheet #model-submodel-pane:not([hidden]),
+      .sheet.model-picker-sheet #model-effort-pane:not(.is-empty-col),
+      .sheet[data-sheet-kind^="model"] #model-submodel-pane:not([hidden]),
+      .sheet[data-sheet-kind^="model"] #model-effort-pane:not(.is-empty-col){
+        border-left:1px solid var(--border);padding-left:10px;
+      }
+      .sheet.model-picker-sheet #model-effort-pane,.sheet[data-sheet-kind^="model"] #model-effort-pane{width:clamp(164px,21vw,204px);flex:0 1 204px;min-width:156px}
+      .sheet.model-picker-sheet #model-effort-pane.is-empty-col,.sheet[data-sheet-kind^="model"] #model-effort-pane.is-empty-col{display:none!important}
+      .sheet.model-picker-sheet .model-col-hdr,.sheet[data-sheet-kind^="model"] .model-col-hdr{display:block}
       .sheet.proj-modal{max-width:520px;max-height:min(680px,86vh)}
-      .fv-backdrop{align-items:center;padding:24px}
-      .fv-modal{max-height:min(760px,84vh);height:min(680px,84vh);border-radius:18px;padding-bottom:0}
+      .fv-backdrop{justify-content:flex-end;align-items:stretch;padding:0}
+      .fv-modal{width:min(520px,52vw);max-height:100%;height:100%;border-radius:16px 0 0 16px;padding-top:0;padding-bottom:0}
       .proj-path-input{font-size:13px}
       .proj-field-input{font-size:14px}
       .prompt-other-input{font-size:13px}
       .sheet-opt{padding:10px 12px;font-size:13.5px}
       .toast{top:18px}
+    }
+    /* 宽屏三栏工作台：右侧常驻可拖拽预览边栏（严格以宽度 >= 1180px 为准，兼容短高窗口与触屏宽屏设备） */
+    @media (min-width:1180px){
+      body{display:flex;flex-direction:row}
+      .app{flex:1 1 auto;min-width:0;width:auto;height:100%;position:relative}
+      .fv-backdrop{
+        position:relative;top:auto;left:auto;right:auto;bottom:auto;
+        width:var(--fv-sidebar-w,420px);min-width:300px;max-width:680px;height:100%;
+        flex-shrink:0;z-index:12;background:transparent;
+        backdrop-filter:none;-webkit-backdrop-filter:none;padding:0;
+      }
+      .fv-modal{
+        width:100%;max-width:none;height:100%;max-height:none;border-radius:0;
+        border:none;border-left:1px solid var(--sidebar-border);background:var(--sidebar-bg);
+        box-shadow:none;padding-top:0;padding-bottom:0;
+      }
+      .fv-resize-handle{
+        display:block;position:absolute;left:-3px;top:0;bottom:0;width:6px;z-index:8;
+        cursor:col-resize;background:transparent;transition:background-color .14s ease;
+      }
+      .fv-resize-handle:hover,.fv-resize-handle.is-resizing{background:var(--accent)}
     }
     .topbar-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
     .top-panel-btn{
@@ -9435,7 +10493,7 @@ function buildMobileAppHtml() {
     body.hide-thinking .thought-box{display:none!important}
     body.hide-composer-tools .composer-toolbar .toolbar-left{display:none!important}
     @media (max-width:859px){
-      body.has-msg-rail .messages{padding-left:24px}
+      body.has-msg-rail .messages{padding-right:24px}
       .topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto auto;align-items:center;padding:6px 10px 7px;column-gap:6px;row-gap:4px}
       #btn-drawer{grid-column:1;grid-row:1 / span 2;align-self:center}
       .title-wrap{display:contents}
@@ -9593,9 +10651,9 @@ function buildMobileAppHtml() {
   </div>
 
   <div id="proj-modal-backdrop" class="sheet-backdrop" hidden>
-    <div class="sheet proj-modal" role="dialog" aria-label="新建项目">
+    <div id="proj-modal-dialog" class="sheet proj-modal" role="dialog" aria-label="新建项目">
       <div class="sheet-title">
-        <span>新建项目 · 选择电脑目录</span>
+        <span id="proj-modal-title">新建项目 · 选择电脑目录</span>
         <button id="proj-modal-close" class="icon-btn panel-close-btn" type="button">关闭</button>
       </div>
       <div id="proj-modal-body" class="proj-modal-body">
@@ -9615,6 +10673,7 @@ function buildMobileAppHtml() {
         </div>
         <div id="proj-dir-list" class="proj-dir-list"></div>
         <div id="proj-selected-summary" class="proj-summary-card"></div>
+        <div id="proj-folders-box" class="proj-folders-box"></div>
         <div class="proj-name-row">
           <label class="proj-name-label" for="proj-name-input">项目名称</label>
           <input id="proj-name-input" class="proj-field-input" type="text" placeholder="请填写项目名称…">
@@ -9648,6 +10707,10 @@ function buildMobileAppHtml() {
           <button class="conv-tab active" data-conv-view="projects" type="button" role="tab" aria-selected="true">按项目 <span id="tab-proj-count" class="tab-count"></span></button>
           <button class="conv-tab" data-conv-view="recent" type="button" role="tab" aria-selected="false">活跃 <span id="tab-conv-count" class="tab-count"></span></button>
         </div>
+        <button id="btn-sort-projects" class="new-proj-mini-btn proj-sort-toggle-btn" type="button" title="手动调整项目顺序" aria-label="排序项目" aria-pressed="false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/></svg>
+          <span id="sort-projects-label">排序</span>
+        </button>
         <button id="btn-new-project" class="new-proj-mini-btn" type="button" title="新建项目（选择电脑目录）" aria-label="新建项目">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v3.5"/><path d="M18 15v6"/><path d="M15 18h6"/></svg>
         </button>
@@ -9682,18 +10745,24 @@ function buildMobileAppHtml() {
     <img id="media-lightbox-img" alt="附件预览" />
   </div>
   <div id="file-viewer-backdrop" class="fv-backdrop" hidden>
-    <div id="file-viewer-modal" class="fv-modal" role="dialog" aria-label="文件与项目验收">
+    <aside id="file-viewer-modal" class="fv-modal" role="complementary" aria-label="项目文件与预览边栏">
+      <div id="fv-resize-handle" class="fv-resize-handle" role="separator" aria-orientation="vertical" title="左右拖拽调节预览边栏宽度"></div>
       <div class="fv-head">
-        <button id="fv-back-btn" class="fv-up-btn" type="button" hidden>← 返回</button>
-        <span id="fv-title" class="fv-title">项目文件与验收</span>
+        <div class="fv-head-left">
+          <button id="fv-back-btn" class="fv-up-btn" type="button" hidden>← 返回</button>
+          <span id="fv-title" class="fv-title">项目文件与预览</span>
+        </div>
         <button id="fv-close-btn" class="fv-up-btn" type="button">✕ 关闭</button>
       </div>
-      <div id="fv-tabs" class="fv-tabs">
-        <button id="fv-tab-tree" class="fv-tab active" type="button">📁 项目文件</button>
-        <button id="fv-tab-changes" class="fv-tab" type="button">📝 变更与产物</button>
+      <div id="fv-ws-persistent-bar" class="fv-ws-persistent-bar" hidden></div>
+      <div id="fv-tabs" class="fv-tabs" role="tablist">
+        <button id="fv-tab-tree" class="fv-tab active" role="tab" type="button">📁 目录</button>
+        <button id="fv-tab-changes" class="fv-tab" role="tab" type="button">✨ 产物</button>
+        <button id="fv-tab-preview" class="fv-tab" role="tab" type="button">📄 预览</button>
       </div>
+      <div id="fv-preview-toolbar" class="fv-preview-toolbar" hidden></div>
       <div id="fv-body" class="fv-body"></div>
-    </div>
+    </aside>
   </div>
 
   <script>
@@ -9748,6 +10817,20 @@ function buildMobileAppHtml() {
         return 'agb-' + Math.random().toString(36).slice(2, 10);
       }
     })();
+
+    const PAGE_EPOCH_SESSION_KEY = 'ag_remote_page_epoch_v1';
+    const clientPageEpoch = (() => {
+      const nowMs = Date.now();
+      try {
+        const prev = Number.parseInt(sessionStorage.getItem(PAGE_EPOCH_SESSION_KEY) || '0', 10) || 0;
+        const next = Math.max(nowMs, prev + 1);
+        sessionStorage.setItem(PAGE_EPOCH_SESSION_KEY, String(next));
+        return next;
+      } catch {
+        return nowMs;
+      }
+    })();
+    const pageOrderScopeId = clientId + ':' + clientPageEpoch.toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 
     const deviceFp = (() => {
       try {
@@ -9898,15 +10981,16 @@ function buildMobileAppHtml() {
       } catch {}
     }
     function saveStoredPair(st) {
+      const targetState = st || pairState;
       try {
         localStorage.setItem(PAIR_STORAGE_KEY, JSON.stringify({
-          token: st.token || '',
-          name: st.name || '',
-          hosts: Array.isArray(st.hosts) ? st.hosts : [],
-          endpoints: Array.isArray(st.endpoints) ? st.endpoints : []
+          token: targetState.token || '',
+          name: targetState.name || '',
+          hosts: Array.isArray(targetState.hosts) ? targetState.hosts : [],
+          endpoints: Array.isArray(targetState.endpoints) ? targetState.endpoints : []
         }));
       } catch {}
-      syncEndpointsToServiceWorker(st);
+      syncEndpointsToServiceWorker(targetState);
     }
     function loadStoredSpeed() {
       try {
@@ -9966,11 +11050,12 @@ function buildMobileAppHtml() {
     if (urlSpeed && urlSpeed.testedAt) saveStoredSpeed(speedTestState);
 
     const urlOpenConvId = String(urlParams.get('conversationId') || '').trim();
-    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched || urlOpenConvId) {
+    const hasUrlHashSecret = typeof location !== 'undefined' && /[?#&](?:token|passcode|endpoints|spd|hosts|did|bcid)=/i.test(String(location.hash || ''));
+    if (urlToken || urlEndpoints.length || urlHosts.length || urlDid || urlBcid || urlSpeed || isManualEntry || isAutoSwitched || urlOpenConvId || hasUrlHashSecret) {
       saveStoredPair(pairState);
-      try { history.replaceState(null, '', location.pathname); } catch {}
+      try { history.replaceState(null, '', location.pathname || '/'); } catch {}
     }
-    if (isTrustedSecureOrigin(location.origin) && 'serviceWorker' in navigator) {
+    if (isTrustedSecureOrigin(location.origin) && navigator?.serviceWorker && typeof navigator.serviceWorker.register === 'function') {
       swRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }).then((reg) => {
         if (reg) syncEndpointsToServiceWorker(pairState);
         return reg;
@@ -10039,6 +11124,9 @@ function buildMobileAppHtml() {
     }
 
     const LOCAL_NOTIFY_STORAGE_KEY = 'ag_remote_local_notify_v1';
+    const LOCAL_NOTIFY_PREVIEW_KEY = 'ag_remote_notify_preview_v1';
+    const LOCAL_NOTIFY_COMPLETED_KEY = 'ag_remote_notify_completed_v1';
+    const LOCAL_NOTIFY_WAITING_KEY = 'ag_remote_notify_waiting_v1';
     function isLocalNotifyEnabled() {
       try { return localStorage.getItem(LOCAL_NOTIFY_STORAGE_KEY) === '1'; } catch { return false; }
     }
@@ -10048,14 +11136,144 @@ function buildMobileAppHtml() {
         else localStorage.removeItem(LOCAL_NOTIFY_STORAGE_KEY);
       } catch {}
     }
+    function isLocalNotifyShowPreview() {
+      try { return localStorage.getItem(LOCAL_NOTIFY_PREVIEW_KEY) !== '0'; } catch { return true; }
+    }
+    function setLocalNotifyShowPreview(on) {
+      try { localStorage.setItem(LOCAL_NOTIFY_PREVIEW_KEY, on ? '1' : '0'); } catch {}
+    }
+    function isLocalNotifyCompleted() {
+      try { return localStorage.getItem(LOCAL_NOTIFY_COMPLETED_KEY) !== '0'; } catch { return true; }
+    }
+    function setLocalNotifyCompleted(on) {
+      try { localStorage.setItem(LOCAL_NOTIFY_COMPLETED_KEY, on ? '1' : '0'); } catch {}
+    }
+    function isLocalNotifyWaiting() {
+      try { return localStorage.getItem(LOCAL_NOTIFY_WAITING_KEY) !== '0'; } catch { return true; }
+    }
+    function setLocalNotifyWaiting(on) {
+      try { localStorage.setItem(LOCAL_NOTIFY_WAITING_KEY, on ? '1' : '0'); } catch {}
+    }
+    function syncLocalNotifyPrefs(p) {
+      if (!p || typeof p !== 'object') return;
+      if (typeof p.showPreview === 'boolean') setLocalNotifyShowPreview(p.showPreview);
+      if (typeof p.notifyCompleted === 'boolean') setLocalNotifyCompleted(p.notifyCompleted);
+      if (typeof p.notifyWaiting === 'boolean') setLocalNotifyWaiting(p.notifyWaiting);
+    }
 
-    function showLocalSystemNotification(title, body, conversationId) {
+    function fnv1aClientHex(input) {
+      const str = String(input || '');
+      let h = 0x811c9dc5;
+      for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      return h.toString(16).padStart(8, '0');
+    }
+
+    function clientUtf8ByteLen(str) {
+      const s = String(str || '');
+      try {
+        if (typeof TextEncoder === 'function') return new TextEncoder().encode(s).length;
+      } catch {}
+      try {
+        return unescape(encodeURIComponent(s)).length;
+      } catch {
+        return s.length * 3;
+      }
+    }
+
+    function truncateClientPreview(text, maxChars, maxUtf8Bytes) {
+      const str = String(text || '').trim();
+      if (!str) return '';
+      const charLim = Number(maxChars) > 0 ? Number(maxChars) : 150;
+      const byteLim = Number(maxUtf8Bytes) > 0 ? Number(maxUtf8Bytes) : 420;
+      const cps = Array.from(str);
+      const sliced = cps.length > charLim ? cps.slice(0, Math.max(1, charLim - 1)) : cps.slice();
+      let truncated = cps.length > charLim;
+      while (sliced.length > 0) {
+        const candidate = sliced.join('') + (truncated ? '…' : '');
+        if (clientUtf8ByteLen(candidate) <= byteLim) return candidate;
+        truncated = true;
+        sliced.pop();
+      }
+      return '';
+    }
+
+    function sanitizeClientNotifyPreview(rawText, maxChars) {
+      if (rawText === null || rawText === undefined) return '';
+      let s = String(rawText).replace(/\\r\\n?/g, '\\n');
+      if (!s.trim()) return '';
+      s = s.replace(/\\x60{3}[a-zA-Z0-9_+-]*\\n?([\\s\\S]*?)\\x60{3}/g, (_m, inner) => {
+        const b = String(inner || '').trim();
+        return b ? ('\\n' + b + '\\n') : ' [代码片段] ';
+      });
+      s = s.replace(/!\\[([^\\]]*)\\]\\([^)]*\\)/g, (_m, alt) => (alt ? ('[图片: ' + alt + ']') : '[图片]'));
+      s = s.replace(/\\[([^\\]]+)\\]\\([^)]*\\)/g, '$1');
+      s = s.replace(/\\x60([^\\x60\\n]+)\\x60/g, '$1');
+      s = s.replace(/<[^>]+>/g, ' ');
+      s = s
+        .split('\\n')
+        .map((line) => line
+          .replace(/^\\s*#{1,6}\\s+/, '')
+          .replace(/^\\s*>\\s?/, '')
+          .replace(/^\\s*[-*+]\\s+(?:\\[[ xX]\\]\\s+)?/, '')
+          .replace(/^\\s*\\d+\\.\\s+/, '')
+          .replace(/(\\*\\*|__|~~)/g, '')
+          .replace(/(^|[\\s(])\\*([^*\\n]+)\\*(?=[\\s).,!?:;]|$)/g, '$1$2')
+          .replace(/[ \\t]+/g, ' ')
+          .trim())
+        .filter(Boolean)
+        .join('\\n');
+      return truncateClientPreview(s, maxChars || 150, 420);
+    }
+
+    function resolveClientNotifyTurnKey(item) {
+      if (!item || typeof item !== 'object') return '';
+      const explicit = String(item.turnSig || '').trim();
+      if (explicit) return /^[a-z0-9_-]{1,20}$/i.test(explicit) ? explicit : fnv1aClientHex(explicit);
+      const stepCnt = Number(item.stepCount);
+      if (Number.isInteger(stepCnt) && stepCnt > 0) return 's' + stepCnt;
+      const upd = Number(item.updatedAt);
+      if (Number.isFinite(upd) && upd > 0) return 'u' + Math.floor(upd);
+      return '';
+    }
+
+    function formatClientNotification(c, eventType, showPreview) {
+      const item = c && typeof c === 'object' ? c : {};
+      const allowPreview = showPreview !== false;
+      const rawTitle = String(item.title || 'Antigravity 对话').replace(/\\s+/g, ' ').trim() || 'Antigravity 对话';
+      const titleText = truncateClientPreview(rawTitle, 60, 180) || 'Antigravity 对话';
+      const rawProj = String(item.projectName || '').replace(/\\s+/g, ' ').trim();
+      const hasRealProj = Boolean(rawProj && rawProj !== '未归属项目' && rawProj !== '独立对话');
+      const projText = hasRealProj ? truncateClientPreview(rawProj, 28, 84) : '';
+      const turnKey = resolveClientNotifyTurnKey(item);
+      const cid = String(item.id || '').trim();
+      if (eventType === 'waiting') {
+        const waitSummary = allowPreview ? sanitizeClientNotifyPreview(item.waitingSummary || item.pendingSummary || '', 150) : '';
+        return {
+          title: '需要确认 · ' + titleText,
+          body: waitSummary || (projText ? (projText + ' · 正在等待你的确认或输入') : '正在等待你的确认或输入'),
+          tag: turnKey ? ('ag-waiting-' + cid + '-' + turnKey) : ('ag-waiting-' + cid),
+          turnKey
+        };
+      }
+      const replyPreview = allowPreview ? sanitizeClientNotifyPreview(item.lastReplyPreview || item.replyPreview || '', 150) : '';
+      return {
+        title: projText ? (titleText + ' · ' + projText) : titleText,
+        body: replyPreview || '本轮回复已完成',
+        tag: turnKey ? ('ag-completed-' + cid + '-' + turnKey) : ('ag-completed-' + cid),
+        turnKey
+      };
+    }
+
+    function showLocalSystemNotification(title, body, conversationId, customTag) {
       try {
         if (typeof Notification !== 'function' || Notification.permission !== 'granted') return false;
         const n = new Notification(String(title || 'Antigravity 远程通知'), {
           body: String(body || ''),
           icon: '/icon-192.png',
-          tag: conversationId ? ('ag-local-' + conversationId) : ('ag-local-' + Date.now())
+          tag: String(customTag || (conversationId ? ('ag-local-' + conversationId) : ('ag-local-' + Date.now())))
         });
         n.onclick = () => {
           try { window.focus(); } catch {}
@@ -10168,7 +11386,15 @@ function buildMobileAppHtml() {
       } catch {}
       const sub = hasPushApi ? await getActivePushSubscription() : null;
       const localOn = isLocalNotifyEnabled() && hasNotifApi && Notification.permission === 'granted';
-      const prefs = (serverInfo && serverInfo.prefs) || { enabled: true, notifyCompleted: true, notifyWaiting: true };
+      if (serverInfo && serverInfo.prefs) {
+        syncLocalNotifyPrefs(serverInfo.prefs);
+      }
+      const prefs = (serverInfo && serverInfo.prefs) || {
+        enabled: true,
+        notifyCompleted: isLocalNotifyCompleted(),
+        notifyWaiting: isLocalNotifyWaiting(),
+        showPreview: isLocalNotifyShowPreview()
+      };
 
       const rows = [];
       if (!isSecure) {
@@ -10214,6 +11440,11 @@ function buildMobileAppHtml() {
           label: (prefs.notifyWaiting ? '✓ ' : '○ ') + '待审批 / 等待确认提醒',
           sub: prefs.notifyWaiting ? '已开启：触发权限或提问卡时高优推送' : '已关闭',
           value: 'toggle-waiting'
+        });
+        rows.push({
+          label: (prefs.showPreview !== false ? '✓ ' : '○ ') + '在通知中显示回复内容摘要',
+          sub: prefs.showPreview !== false ? '已开启：通知正文显示最新 AI 回复或待确认内容摘要' : '已关闭：仅提示会话状态，隐藏具体内容（隐私保护）',
+          value: 'toggle-preview'
         });
         rows.push({
           label: '📤 发送测试通知',
@@ -10295,18 +11526,43 @@ function buildMobileAppHtml() {
           }
           return;
         }
-        if (item.value === 'toggle-completed' || item.value === 'toggle-waiting') {
+        if (item.value === 'toggle-completed' || item.value === 'toggle-waiting' || item.value === 'toggle-preview') {
+          const nextShowPreview = !(prefs.showPreview !== false);
+          const nextCompleted = !prefs.notifyCompleted;
+          const nextWaiting = !prefs.notifyWaiting;
           const patch = item.value === 'toggle-completed'
-            ? { notifyCompleted: !prefs.notifyCompleted }
-            : { notifyWaiting: !prefs.notifyWaiting };
+            ? { notifyCompleted: nextCompleted }
+            : (item.value === 'toggle-waiting'
+                ? { notifyWaiting: nextWaiting }
+                : { showPreview: nextShowPreview });
+          const prevShowPreview = isLocalNotifyShowPreview();
+          const prevCompleted = isLocalNotifyCompleted();
+          const prevWaiting = isLocalNotifyWaiting();
+          if (item.value === 'toggle-preview') setLocalNotifyShowPreview(nextShowPreview);
+          else if (item.value === 'toggle-completed') setLocalNotifyCompleted(nextCompleted);
+          else setLocalNotifyWaiting(nextWaiting);
           try {
             const prefRes = await pushApiRequest('/api/push/prefs', 'POST', patch);
             if (!prefRes.ok) {
+              if (!sub) {
+                showToast('推送偏好已在本地更新');
+                return;
+              }
+              setLocalNotifyShowPreview(prevShowPreview);
+              setLocalNotifyCompleted(prevCompleted);
+              setLocalNotifyWaiting(prevWaiting);
               showToast('更新推送偏好失败（HTTP ' + prefRes.status + '）');
               return;
             }
             showToast('推送偏好已更新');
           } catch {
+            if (!sub) {
+              showToast('推送摘要偏好已在本地更新');
+              return;
+            }
+            setLocalNotifyShowPreview(prevShowPreview);
+            setLocalNotifyCompleted(prevCompleted);
+            setLocalNotifyWaiting(prevWaiting);
             showToast('更新推送偏好失败，请检查网络连接');
           }
           return;
@@ -10380,6 +11636,7 @@ function buildMobileAppHtml() {
       const h = Object.assign({}, extra || {});
       if (pairState.token) h['X-AG-Remote-Token'] = pairState.token;
       if (clientId) h['X-AG-Client-Id'] = clientId;
+      if (pageOrderScopeId) h['X-AG-Order-Scope'] = pageOrderScopeId;
       if (deviceId) h['X-AG-Device-Id'] = deviceId;
       if (deviceFp) h['X-AG-Device-Fp'] = deviceFp;
       if (isIpadDesktopUa) h['X-AG-Device-Hint'] = 'iPad';
@@ -10518,13 +11775,17 @@ function buildMobileAppHtml() {
       };
     }
 
+    function isServerHintResult(r) {
+      return Boolean(r && (r.via === 'server' || r.reason === 'server_hint'));
+    }
+
     function pickFastestReachable(resultsMap, entries) {
       const order = { lan: 0, tailscale: 1, bonjour: 2, tunnel: 3, loopback: 9 };
       const list = [];
       for (const ep of (entries || [])) {
         if (!ep || !ep.kind) continue;
         const r = resultsMap && resultsMap[ep.kind];
-        if (r && r.ok && Number.isFinite(r.ms)) {
+        if (r && r.ok && Number.isFinite(r.ms) && !isServerHintResult(r)) {
           list.push({ kind: ep.kind, url: r.url || ep.url, ms: r.ms, data: r.data || null });
         }
       }
@@ -10635,23 +11896,19 @@ function buildMobileAppHtml() {
         const curRes = exactCurRes || (kindRes && kindRes.url === curOrigin ? kindRes : null);
         const curReachable = Boolean((curRes && curRes.ok) || (!curRes && (isTrustedSecureOrigin(pageOrigin) || isStandalonePwa)));
         const switchOrigin = isTrustedSecureOrigin(pageOrigin) ? pageOrigin : curOrigin;
-        const eligibleRanked = curReachable
-          ? ranked.filter((ep) => ep && !shouldBlockInsecureDowngrade(switchOrigin, ep.url, isStandalonePwa))
-          : ranked;
+        const eligibleRanked = ranked.filter(
+          (ep) => ep && !isServerHintResult(ep) && !shouldBlockInsecureDowngrade(switchOrigin, ep.url, isStandalonePwa)
+        );
         const switchBest = eligibleRanked[0] || null;
 
         if (wantAutoSwitch && !manualLocked && !isAutoSwitched && switchBest) {
           const sameEntry = switchBest.url === curOrigin || switchBest.kind === curKind;
-          const downgradeBlocked = Boolean(curReachable && shouldBlockInsecureDowngrade(switchOrigin, switchBest.url, isStandalonePwa));
+          const downgradeBlocked = shouldBlockInsecureDowngrade(switchOrigin, switchBest.url, isStandalonePwa);
           const significantlyFaster = !curReachable
             || (curRes && curRes.ok && curKind === 'tunnel' && switchBest.kind !== 'tunnel' && (!curRes.ms || switchBest.ms < curRes.ms))
             || (curRes && curRes.ok && Number.isFinite(curRes.ms) && (curRes.ms - switchBest.ms >= 15) && switchBest.ms <= curRes.ms * 0.75);
           if (!sameEntry && !downgradeBlocked && significantlyFaster) {
-            if (activeSnapAbort) {
-              try { activeSnapAbort.abort(); } catch {}
-              activeSnapAbort = null;
-            }
-            clearTimeout(pollTimer);
+            invalidateInflightSnapshotPolls({ skipReschedule: true });
             const targetUrl = buildClientEntryUrl(switchBest.url, { autoSwitched: true });
             navigateEntryUrl(targetUrl, true);
             return speedTestState;
@@ -10677,6 +11934,7 @@ function buildMobileAppHtml() {
     let failoverBusy = null;
     async function tryFailoverEndpoint() {
       if (failoverBusy) return failoverBusy;
+      const startModeSeq = modeSwitchSeq;
       failoverBusy = (async () => {
         const entries = getEnabledModeEntries();
         const extra = [];
@@ -10696,6 +11954,7 @@ function buildMobileAppHtml() {
           Promise.all(candidates.map((ep) => probeEndpointLatency(ep, 1600))),
           needServerHints ? fetchServerProbeHints(true) : Promise.resolve(null)
         ]);
+        if (startModeSeq !== modeSwitchSeq) return false;
         const nextResults = Object.assign({}, speedTestState.results || {});
         const nowTs = Date.now();
         const mergedList = [];
@@ -10721,7 +11980,7 @@ function buildMobileAppHtml() {
         const order = { lan: 0, tailscale: 1, bonjour: 2, tunnel: 3, loopback: 9 };
         const curOriginFail = String(location.origin || '').replace(/\\/+$/, '');
         const winners = mergedList
-          .filter((r) => r && r.ok && Number.isFinite(r.ms))
+          .filter((r) => r && r.ok && Number.isFinite(r.ms) && !isServerHintResult(r))
           .sort((a, b) => {
             const aBlock = shouldBlockInsecureDowngrade(curOriginFail, a.url, isStandalonePwa) ? 1 : 0;
             const bBlock = shouldBlockInsecureDowngrade(curOriginFail, b.url, isStandalonePwa) ? 1 : 0;
@@ -10731,14 +11990,16 @@ function buildMobileAppHtml() {
         const winner = winners[0] || null;
         if (!winner) return false;
 
+        if (startModeSeq !== modeSwitchSeq) return false;
         if (Array.isArray(winner.data?.endpoints) && winner.data.endpoints.length) {
           pairState.endpoints = winner.data.endpoints;
           if (Array.isArray(winner.data.hosts)) pairState.hosts = winner.data.hosts;
-          saveStoredPair(pairState);
         }
+        saveStoredPair(pairState);
         if (winner.url !== curOriginFail && shouldBlockInsecureDowngrade(curOriginFail, winner.url, isStandalonePwa)) {
           return false;
         }
+        if (startModeSeq !== modeSwitchSeq) return false;
         if (location.protocol === 'https:' && winner.url.toLowerCase().startsWith('http://')) {
           navigateEntryUrl(buildClientEntryUrl(winner.url, { autoSwitched: true }), true);
           return true;
@@ -10807,17 +12068,20 @@ function buildMobileAppHtml() {
 
     function formatLatencyBadge(kind) {
       if (speedTestState.running) {
-        return { cls: 'pending', html: '<span class="mini-spin"></span><span>测速中</span>' };
+        return { cls: 'pending', html: '<span class="mini-spin"></span><span>测速中</span>', serverHint: false };
       }
       const r = speedTestState.results ? speedTestState.results[kind] : null;
-      if (!r) return { cls: 'muted', html: '未测速' };
+      if (!r) return { cls: 'muted', html: '未测速', serverHint: false };
       if (r.ok && Number.isFinite(r.ms)) {
+        if (isServerHintResult(r)) {
+          return { cls: 'muted', html: esc('仅电脑端参考 · ' + r.ms + ' ms'), serverHint: true };
+        }
         const cls = r.ms < 80 ? 'fast' : (r.ms <= 250 ? 'mid' : 'slow');
-        return { cls, html: esc(r.ms + ' ms') };
+        return { cls, html: esc(r.ms + ' ms'), serverHint: false };
       }
-      if (r.reason === 'https_restricted') return { cls: 'muted', html: '点击切直连' };
-      if (r.reason === 'disabled') return { cls: 'err', html: '已停用' };
-      return { cls: 'err', html: '不可达' };
+      if (r.reason === 'https_restricted') return { cls: 'muted', html: '仅电脑端参考（未验证本机直连）', serverHint: true };
+      if (r.reason === 'disabled') return { cls: 'err', html: '已停用', serverHint: false };
+      return { cls: 'err', html: '不可达', serverHint: false };
     }
 
     function buildClientEntryUrl(targetBaseUrl, opts) {
@@ -10843,33 +12107,110 @@ function buildMobileAppHtml() {
       return cleanBase + '/?' + params.join('&');
     }
 
-    function enterConnectionMode(ep) {
-      if (!ep || !ep.url) return;
-      manualLocked = true;
-      try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
-      if (activeSnapAbort) {
-        try { activeSnapAbort.abort(); } catch {}
-        activeSnapAbort = null;
-      }
-      clearTimeout(pollTimer);
+    let modeSwitchSeq = 0;
+    async function enterConnectionMode(ep) {
+      if (!ep || !ep.url) return false;
+      const mySeq = ++modeSwitchSeq;
       saveStoredPair(pairState);
       const cleanTarget = String(ep.url).replace(/\\/+$/, '');
-      const cleanCur = String(location.origin || '').replace(/\\/+$/, '');
-      if (cleanTarget === cleanCur) {
-        apiBase = '';
-        const modeName = formatKindLabel(ep.kind);
-        $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
-        syncChannelPillUi('connecting');
-        if (latestSnap) {
-          showToast('已切换至 ' + modeName);
-        } else {
-          renderModeEntryGate('正在通过 ' + modeName + ' 连接电脑端…');
-        }
-        void fetchSnapshot();
-        return;
-      }
+      const cleanPageOrigin = String(location.origin || '').replace(/\\/+$/, '');
+      const cleanActiveOrigin = String(apiBase || cleanPageOrigin).replace(/\\/+$/, '');
+      const targetKind = ep.kind || detectKindFromOrigin(cleanTarget);
+      const modeName = formatKindLabel(targetKind);
       const isCrossProtocolDowngrade = location.protocol === 'https:' && cleanTarget.toLowerCase().startsWith('http://');
-      navigateEntryUrl(buildClientEntryUrl(cleanTarget, { manual: true, omitSpeed: isCrossProtocolDowngrade }), false);
+
+      if (cleanTarget === cleanActiveOrigin && latestSnap) {
+        manualLocked = true;
+        try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
+        showToast('当前已连接 ' + modeName);
+        return true;
+      }
+
+      if (isCrossProtocolDowngrade) {
+        if (isStandalonePwa) {
+          showToast('独立应用窗口内禁止从安全 HTTPS 盲跳至未验证的明文 HTTP（' + modeName + '），以免断连锁死页面');
+          return false;
+        }
+        const targetUrl = buildClientEntryUrl(cleanTarget, { manual: true, omitSpeed: true });
+        if (typeof window.open === 'function') {
+          try {
+            window.open(targetUrl, '_blank', 'noopener,noreferrer');
+          } catch {
+            showToast('浏览器拦截了新标签页，请允许弹窗后重试（已保留当前连接）');
+            return false;
+          }
+          showToast('已在新标签页打开 ' + modeName + ' 验证（若未弹出请允许弹窗），原页面保留作退路');
+          return true;
+        }
+        if (latestSnap) {
+          showToast('当前环境不支持新标签页打开，已保留当前连接');
+          return false;
+        }
+        invalidateInflightSnapshotPolls({ skipReschedule: true });
+        manualLocked = true;
+        try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
+        navigateEntryUrl(targetUrl, false);
+        return true;
+      }
+
+      if (!latestSnap) {
+        renderModeEntryGate('正在验证 ' + modeName + ' 连通性…');
+      } else {
+        showToast('正在验证 ' + modeName + ' 连通性…');
+      }
+      const probe = await probeEndpointOnce({ url: cleanTarget, kind: targetKind }, 2600);
+      if (mySeq !== modeSwitchSeq) return false;
+      speedTestState = {
+        running: false,
+        testedAt: Date.now(),
+        results: Object.assign({}, speedTestState.results || {}, {
+          [targetKind]: {
+            ok: Boolean(probe.ok),
+            ms: probe.ok && Number.isFinite(probe.ms) ? probe.ms : null,
+            reason: probe.reason || (probe.ok ? 'ok' : 'unreachable'),
+            via: 'client',
+            url: cleanTarget,
+            testedAt: Date.now()
+          }
+        })
+      };
+      saveStoredSpeed(speedTestState);
+      if (!probe.ok) {
+        renderModeSwitcherSheet();
+        const curLabel = getActiveChannelLabel();
+        const errToast = probe.reason === 'disabled'
+          ? (modeName + ' 通道已停用，仍保持当前连接（' + curLabel + '）')
+          : ('无法连通 ' + modeName + '，已保留当前连接（' + curLabel + '）');
+        showToast(errToast);
+        if (!latestSnap) {
+          renderModeEntryGate('无法连通 ' + modeName + '，请选择其他可用通道：');
+        }
+        return false;
+      }
+
+      if (probe.data && Array.isArray(probe.data.endpoints) && probe.data.endpoints.length) {
+        pairState.endpoints = probe.data.endpoints;
+        if (Array.isArray(probe.data.hosts)) pairState.hosts = probe.data.hosts;
+      }
+      saveStoredPair(pairState);
+      manualLocked = true;
+      try { sessionStorage.setItem(MANUAL_LOCK_SESSION_KEY, '1'); } catch {}
+      invalidateInflightSnapshotPolls({ skipReschedule: true });
+      apiBase = cleanTarget === cleanPageOrigin ? '' : cleanTarget;
+      subMetaNoticeActive = true;
+      if ($('sub-meta')) {
+        $('sub-meta').textContent = '正在通过 ' + modeName + ' 连接…';
+        $('sub-meta').hidden = !getEffectiveDisplayConfig(latestSnap).showChannelMeta;
+      }
+      syncChannelPillUi('online');
+      renderModeSwitcherSheet();
+      if (latestSnap) {
+        showToast('已切换至 ' + modeName + (probe.ms ? ' (' + probe.ms + ' ms)' : ''));
+      } else {
+        renderModeEntryGate('正在通过 ' + modeName + ' 连接电脑端…');
+      }
+      void fetchSnapshot();
+      return true;
     }
 
     function renderModeEntryGate(statusText) {
@@ -10883,7 +12224,8 @@ function buildMobileAppHtml() {
         try { hostText = new URL(ep.url).host; } catch {}
         const isCurrent = ep.url === curOrigin;
         const badge = formatLatencyBadge(ep.kind);
-        const fastPill = (fastestKind && ep.kind === fastestKind) ? ' <span class="mode-pill fast">最快</span>' : '';
+        if (badge.serverHint) hostText += ' · 未验证本机直连';
+        const fastPill = (fastestKind && ep.kind === fastestKind && !badge.serverHint) ? ' <span class="mode-pill fast">最快</span>' : '';
         return '<button class="mode-entry-btn' + (isCurrent ? ' active' : '') + '" data-mode-idx="' + idx + '" type="button">'
           + '<span class="mode-entry-left">'
           + '<span class="mode-entry-name">' + esc(formatKindLabel(ep.kind)) + fastPill + '</span>'
@@ -10910,6 +12252,11 @@ function buildMobileAppHtml() {
     function configureSheetChrome(cfg) {
       const c = cfg || {};
       activeSheetKind = c.kind || '';
+      const sheetCardEl = $('sheet-backdrop')?.querySelector?.('.sheet') || null;
+      if (sheetCardEl) {
+        sheetCardEl.setAttribute?.('data-sheet-kind', activeSheetKind);
+        sheetCardEl.classList?.toggle?.('model-picker-sheet', /^model/.test(activeSheetKind));
+      }
       $('sheet-title-text').textContent = c.title || '选择选项';
       const subEl = $('sheet-sub-text');
       if (subEl) {
@@ -10949,7 +12296,18 @@ function buildMobileAppHtml() {
       }
     }
 
+    let stageCleanupSeq = 0;
+    let stageCleanupTimer = null;
+    function cancelDeferredStageCleanup() {
+      stageCleanupSeq += 1;
+      if (stageCleanupTimer) {
+        clearTimeout(stageCleanupTimer);
+        stageCleanupTimer = null;
+      }
+    }
+
     function closeSheet() {
+      cancelDeferredStageCleanup();
       activeSheetKind = '';
       activeSheetState = null;
       const backBtn = $('sheet-back-btn');
@@ -11013,7 +12371,8 @@ function buildMobileAppHtml() {
         const isQuickTunnelEp = ep.kind === 'tunnel' && String(hostText || '').toLowerCase().endsWith('.trycloudflare.com');
         if (isQuickTunnelEp) hasQuickTunnel = true;
         const badge = formatLatencyBadge(ep.kind);
-        const pills = ((fastestKind && ep.kind === fastestKind) ? '<span class="mode-pill fast">最快</span>' : '')
+        if (badge.serverHint) hostText += ' · 未验证本机直连';
+        const pills = ((fastestKind && ep.kind === fastestKind && !badge.serverHint) ? '<span class="mode-pill fast">最快</span>' : '')
           + (isCurrent ? '<span class="mode-pill cur">当前</span>' : '')
           + (isQuickTunnelEp ? '<span class="mode-pill warn">临时域名</span>' : '');
         return '<button class="sheet-opt' + (isCurrent ? ' active' : '') + '" data-idx="' + idx + '" type="button">'
@@ -11102,7 +12461,10 @@ function buildMobileAppHtml() {
       }
     }
 
+    let subMetaNoticeActive = true;
+    let remoteShowApiRefCost = true;
     $('sub-meta').textContent = '正在连接 · ' + getActiveChannelLabel();
+    $('sub-meta').hidden = false;
     $('sub-meta').onclick = openModeSwitcherSheet;
     syncChannelPillUi('connecting');
     if ($('btn-channel-pill')) {
@@ -11624,14 +12986,17 @@ function buildMobileAppHtml() {
 
     let snapshotInflight = false;
     let snapshotSeq = 0;
-    function invalidateInflightSnapshotPolls() {
+    function invalidateInflightSnapshotPolls(opts) {
+      clearTimeout(pollTimer);
       snapshotSeq += 1;
       snapshotInflight = false;
       if (activeSnapAbort) {
         try { activeSnapAbort.abort(); } catch {}
         activeSnapAbort = null;
       }
-      schedulePoll();
+      if (!opts || (!opts.skipReschedule && !opts.skipSchedule)) {
+        schedulePoll();
+      }
     }
 
     async function apiAction(payload, opts) {
@@ -11640,10 +13005,14 @@ function buildMobileAppHtml() {
       const actionStartEpoch = ++clientSyncEpoch;
       const myNavSeq = isNavAction ? (++lastNavActionSeq) : 0;
       if (isNavAction) invalidateInflightSnapshotPolls();
+      const autoActionId = (act === 'send' && !payload?.clientActionId)
+        ? ('act-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10))
+        : '';
       const bodyPayload = {
         targetId: currentTargetId || undefined,
         conversationId: (isNavAction ? undefined : selectedConversationId) || undefined,
         clientId: clientId || undefined,
+        ...(autoActionId ? { clientActionId: autoActionId } : {}),
         ...payload
       };
       const doPost = () => fetchWithTimeout((apiBase || '') + '/api/action', {
@@ -11703,30 +13072,368 @@ function buildMobileAppHtml() {
       return String(Math.round(v));
     }
 
-    function renderMarkdownSafe(rawText) {
-      const src = String(rawText || '');
+    function isSafeClientMdHref(rawHref) {
+      const h = String(rawHref || '').trim();
+      if (!h) return false;
+      if (h.startsWith('#')) return true;
+      const low = h.toLowerCase();
+      return low.startsWith('http://') || low.startsWith('https://') || low.startsWith('mailto:') || low.startsWith('file://');
+    }
+
+    function renderInlineClientMarkdown(rawLine) {
+      const BT = String.fromCharCode(96);
+      const BS = String.fromCharCode(92);
+      const src = String(rawLine || '').replace(/\\u0000/g, '');
       if (!src) return '';
-      const fence = String.fromCharCode(96).repeat(3);
-      const inlineBt = String.fromCharCode(96);
-      const parts = src.split(fence);
-      let out = '';
+      const codeSpans = [];
+      let segBuf = '';
+      const parts = src.split(BT);
       for (let i = 0; i < parts.length; i++) {
-        if (i % 2 === 1) {
-          const nlIdx = parts[i].indexOf('\\n');
-          const codeBody = nlIdx >= 0 ? parts[i].slice(nlIdx + 1) : parts[i];
-          out += '<pre><code>' + esc(codeBody) + '</code></pre>';
+        if (i % 2 === 1 && i < parts.length - 1) {
+          const idx = codeSpans.length;
+          codeSpans.push('<code>' + esc(parts[i]) + '</code>');
+          segBuf += '\\u0000MCSP' + idx + '\\u0000';
         } else {
-          const segs = parts[i].split(inlineBt);
-          let lineHtml = '';
-          for (let j = 0; j < segs.length; j++) {
-            lineHtml += j % 2 === 1
-              ? ('<code>' + esc(segs[j]) + '</code>')
-              : esc(segs[j]).replace(/\\n/g, '<br>');
-          }
-          out += lineHtml;
+          segBuf += (i % 2 === 1 ? BT : '') + parts[i];
         }
       }
+      const links = [];
+      let textWithLinks = segBuf.replace(/\\[([^\\]\\n]+)\\]\\(((?:[^()\\s]|\\([^()\\s]*\\))+)(?:\\s+"[^"]*")?\\)/g, (_m, rawLabel, rawUrl) => {
+        let href = String(rawUrl || '').trim();
+        if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1).trim();
+        const labelHtml = esc(rawLabel).replace(/\\u0000MCSP(\\d+)\\u0000/g, (_2, ci) => codeSpans[Number(ci)] || '');
+        if (href.includes('\\u0000') || !isSafeClientMdHref(href)) return labelHtml;
+        const idx = links.length;
+        if (href.toLowerCase().startsWith('file://')) {
+          let fPath = href.slice(7);
+          if (fPath.toLowerCase().startsWith('localhost/')) fPath = fPath.slice(9);
+          let lineNo = 0;
+          const hashIdx = fPath.indexOf('#');
+          if (hashIdx >= 0) {
+            const lm = /^#L(\\d+)/i.exec(fPath.slice(hashIdx));
+            if (lm) lineNo = Number.parseInt(lm[1], 10) || 0;
+            fPath = fPath.slice(0, hashIdx);
+          }
+          try { fPath = decodeURIComponent(fPath); } catch {}
+          if (fPath.startsWith('/') && !fPath.includes('\\u0000')) {
+            links.push(
+              '<a class="md-file-link" href="#file-preview" data-file-path="' + esc(fPath) + '"'
+              + (lineNo > 0 ? (' data-file-line="' + lineNo + '"') : '')
+              + ' title="' + esc(fPath + (lineNo > 0 ? (':' + lineNo) : '')) + '">📄 ' + labelHtml + '</a>'
+            );
+          } else {
+            links.push('<code class="md-pill">' + labelHtml + '</code>');
+          }
+          return '\\u0000MLNK' + idx + '\\u0000';
+        }
+        const extAttrs = href.startsWith('#') ? '' : ' target="_blank" rel="noopener noreferrer"';
+        links.push('<a href="' + esc(href) + '"' + extAttrs + '>' + labelHtml + '</a>');
+        return '\\u0000MLNK' + idx + '\\u0000';
+      });
+
+      let safe = esc(textWithLinks);
+      safe = safe.replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<strong>$1</strong>');
+      safe = safe.replace(/__([^_\\n]+)__/g, '<strong>$1</strong>');
+      safe = safe.replace(/~~([^~\\n]+)~~/g, '<del>$1</del>');
+      safe = safe.replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<em>$2</em>');
+      safe = safe.replace(/\\u0000(MLNK|MCSP)(\\d+)\\u0000/g, (_m, kind, idx) => (kind === 'MLNK' ? links : codeSpans)[Number(idx)] || '');
+      void BS;
+      return safe;
+    }
+
+    function splitClientGfmCells(line) {
+      const BS = String.fromCharCode(92);
+      let s = String(line || '').trim();
+      if (s.startsWith('|')) s = s.slice(1);
+      if (s.endsWith('|') && !s.endsWith(BS + '|')) s = s.slice(0, -1);
+      const cells = [];
+      let cur = '';
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === BS && i + 1 < s.length && s[i + 1] === '|') {
+          cur += '|';
+          i += 1;
+        } else if (ch === '|') {
+          cells.push(cur.trim());
+          cur = '';
+        } else {
+          cur += ch;
+        }
+      }
+      cells.push(cur.trim());
+      return cells;
+    }
+
+    function parseClientGfmDelimiterRow(line, expectedCount) {
+      const t = String(line || '').trim();
+      if (!t.includes('|') && !/^:?-{3,}:?$/.test(t)) return null;
+      const cells = splitClientGfmCells(t);
+      if (cells.length < 1 || (expectedCount > 0 && cells.length !== expectedCount)) return null;
+      const aligns = [];
+      for (const c of cells) {
+        if (!/^:?-{3,}:?$/.test(c)) return null;
+        const left = c.startsWith(':');
+        const right = c.endsWith(':');
+        aligns.push(left && right ? 'center' : (right ? 'right' : (left ? 'left' : '')));
+      }
+      return aligns;
+    }
+
+    function renderClientNestedLists(entries) {
+      if (!entries.length) return '';
+      let pos = 0;
+      const parseLvl = (baseIndent) => {
+        if (pos >= entries.length) return '';
+        const first = entries[pos];
+        const tag = first.ordered ? 'ol' : 'ul';
+        const items = [];
+        let hasTask = false;
+        while (pos < entries.length) {
+          const cur = entries[pos];
+          if (cur.indent < baseIndent) break;
+          if (cur.indent === baseIndent && cur.ordered !== first.ordered && items.length > 0) break;
+          if (cur.indent > baseIndent) {
+            const subHtml = parseLvl(cur.indent);
+            if (items.length > 0) items[items.length - 1].subHtml += subHtml;
+            else items.push({ isTask: false, checked: false, bodyHtml: '', subHtml });
+            continue;
+          }
+          pos += 1;
+          if (cur.isTask) hasTask = true;
+          let subHtml = '';
+          while (pos < entries.length && entries[pos].indent >= cur.indent + 2) {
+            subHtml += parseLvl(entries[pos].indent);
+          }
+          items.push({
+            isTask: cur.isTask,
+            checked: cur.checked,
+            bodyHtml: renderInlineClientMarkdown(cur.text),
+            subHtml
+          });
+        }
+        const cls = hasTask ? ' class="md-task-list"' : '';
+        const liHtml = items.map((it) => {
+          if (it.isTask) {
+            return '<li class="md-task-item"><input class="md-task-check" type="checkbox" disabled' + (it.checked ? ' checked' : '') + '><span>' + it.bodyHtml + it.subHtml + '</span></li>';
+          }
+          return '<li>' + it.bodyHtml + it.subHtml + '</li>';
+        }).join('');
+        return '<' + tag + cls + '>' + liHtml + '</' + tag + '>';
+      };
+      let out = '';
+      while (pos < entries.length) {
+        out += parseLvl(entries[pos].indent);
+      }
       return out;
+    }
+
+    function matchClientFenceOpen(rawLine) {
+      const BT = String.fromCharCode(96);
+      const s = String(rawLine || '');
+      let sp = 0;
+      while (sp < s.length && s[sp] === ' ') sp += 1;
+      if (sp > 3 || sp >= s.length) return null;
+      const ch = s[sp];
+      if (ch !== BT && ch !== '~') return null;
+      let len = 0;
+      while (sp + len < s.length && s[sp + len] === ch) len += 1;
+      if (len < 3) return null;
+      const info = s.slice(sp + len);
+      if (ch === BT && info.includes(BT)) return null;
+      return { ch, len };
+    }
+
+    function matchClientFenceClose(rawLine, fenceCh, minLen) {
+      const s = String(rawLine || '');
+      let sp = 0;
+      while (sp < s.length && s[sp] === ' ') sp += 1;
+      if (sp > 3 || sp >= s.length || s[sp] !== fenceCh) return false;
+      let len = 0;
+      while (sp + len < s.length && s[sp + len] === fenceCh) len += 1;
+      if (len < minLen) return false;
+      return s.slice(sp + len).trim() === '';
+    }
+
+    function renderMarkdownSafe(rawText, bqDepth = 0) {
+      const src = String(rawText || '').replace(/\\u0000/g, '').replace(/\\r\\n/g, '\\n');
+      if (!src) return '';
+      const lines = src.split('\\n');
+      const blocks = [];
+      let paraLines = [];
+      let listEntries = [];
+      let quoteLines = [];
+      let inCode = false;
+      let codeFenceCh = '';
+      let codeFenceMinLen = 3;
+      let codeLines = [];
+
+      const flushPara = () => {
+        if (!paraLines.length) return;
+        blocks.push('<p>' + paraLines.map((l) => renderInlineClientMarkdown(l)).join('<br>') + '</p>');
+        paraLines = [];
+      };
+      const flushList = () => {
+        if (!listEntries.length) return;
+        blocks.push(renderClientNestedLists(listEntries));
+        listEntries = [];
+      };
+      const flushQuote = () => {
+        if (!quoteLines.length) return;
+        const firstTrim = String(quoteLines[0] || '').trim();
+        const isAlert = /^\\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\]/i.test(firstTrim);
+        const clsAttr = isAlert ? ' class="md-alert"' : '';
+        const bqBodyHtml = bqDepth < 8
+          ? renderMarkdownSafe(quoteLines.join('\\n'), bqDepth + 1)
+          : ('<p>' + quoteLines.map((l) => renderInlineClientMarkdown(l)).join('<br>') + '</p>');
+        blocks.push('<blockquote' + clsAttr + '>' + bqBodyHtml + '</blockquote>');
+        quoteLines = [];
+      };
+      const flushAllText = () => {
+        flushPara();
+        flushList();
+        flushQuote();
+      };
+
+      for (let idx = 0; idx < lines.length; idx++) {
+        const line = lines[idx];
+        const trimmed = line.trim();
+
+        if (inCode) {
+          if (matchClientFenceClose(line, codeFenceCh, codeFenceMinLen)) {
+            blocks.push('<pre><code>' + esc(codeLines.join('\\n')) + '</code></pre>');
+            inCode = false;
+            codeFenceCh = '';
+            codeFenceMinLen = 3;
+            codeLines = [];
+          } else {
+            codeLines.push(line);
+          }
+          continue;
+        }
+
+        const fenceOpen = matchClientFenceOpen(line);
+        if (fenceOpen) {
+          flushAllText();
+          inCode = true;
+          codeFenceCh = fenceOpen.ch;
+          codeFenceMinLen = fenceOpen.len;
+          codeLines = [];
+          continue;
+        }
+
+        if (!trimmed) {
+          flushAllText();
+          continue;
+        }
+
+        if (/^(?:-{3,}|\\*{3,}|_{3,})$/.test(trimmed)) {
+          flushAllText();
+          blocks.push('<hr>');
+          continue;
+        }
+
+        const hm = /^(#{1,6})\\s+(.+)$/.exec(trimmed);
+        if (hm) {
+          flushAllText();
+          const lvl = Math.min(6, Math.max(1, hm[1].length));
+          const hText = hm[2].replace(/\\s+#+\\s*$/, '');
+          blocks.push('<h' + lvl + '>' + renderInlineClientMarkdown(hText) + '</h' + lvl + '>');
+          continue;
+        }
+
+        if (line.includes('|') && idx + 1 < lines.length) {
+          const headCells = splitClientGfmCells(line);
+          const aligns = headCells.length >= 1 ? parseClientGfmDelimiterRow(lines[idx + 1], headCells.length) : null;
+          if (aligns) {
+            flushAllText();
+            const thHtml = headCells.map((cell, ci) => {
+              const al = aligns[ci] ? (' style="text-align:' + aligns[ci] + '"') : '';
+              return '<th' + al + '>' + renderInlineClientMarkdown(cell) + '</th>';
+            }).join('');
+            const bodyRowsHtml = [];
+            idx += 2;
+            const isClientTableInterrupt = (rawRow) => {
+              const rt = String(rawRow || '').trim();
+              if (!rt) return true;
+              if (Boolean(matchClientFenceOpen(rawRow))) return true;
+              if (/^ {0,3}>/.test(rawRow)) return true;
+              if (/^ {0,3}#{1,6}(?:\\s|$)/.test(rawRow)) return true;
+              if (/^ {0,3}(?:-{3,}|\\*{3,}|_{3,})[ \\t]*$/.test(rawRow)) return true;
+              if (/^[ \\t]*[-*+]\\s+/.test(rawRow)) return true;
+              if (/^[ \\t]*\\d+[.)]\\s+/.test(rawRow)) return true;
+              return false;
+            };
+            while (idx < lines.length) {
+              const rLine = lines[idx];
+              if (isClientTableInterrupt(rLine)) {
+                idx -= 1;
+                break;
+              }
+              const rCells = splitClientGfmCells(rLine);
+              const tdHtml = aligns.map((alName, ci) => {
+                const al = alName ? (' style="text-align:' + alName + '"') : '';
+                return '<td' + al + '>' + renderInlineClientMarkdown(rCells[ci] !== undefined ? rCells[ci] : '') + '</td>';
+              }).join('');
+              bodyRowsHtml.push('<tr>' + tdHtml + '</tr>');
+              idx += 1;
+            }
+            blocks.push(
+              '<div class="md-table-wrap"><table><thead><tr>' + thHtml + '</tr></thead>'
+              + (bodyRowsHtml.length ? ('<tbody>' + bodyRowsHtml.join('') + '</tbody>') : '')
+              + '</table></div>'
+            );
+            continue;
+          }
+        }
+
+        if (/^ {0,3}>/.test(line)) {
+          flushPara();
+          flushList();
+          quoteLines.push(line.replace(/^ {0,3}> ?/, ''));
+          continue;
+        }
+        if (quoteLines.length) flushQuote();
+
+        const ulMatch = /^([ \\t]*)[-*+]\\s+(.+)$/.exec(line);
+        if (ulMatch) {
+          flushPara();
+          const indent = ulMatch[1].replace(/\\t/g, '  ').length;
+          const tm = /^\\[([ xX])\\]\\s+(.+)$/.exec(ulMatch[2].trim());
+          listEntries.push({
+            indent,
+            ordered: false,
+            isTask: Boolean(tm),
+            checked: Boolean(tm && tm[1].toLowerCase() === 'x'),
+            text: tm ? tm[2] : ulMatch[2].trim()
+          });
+          continue;
+        }
+
+        const olMatch = /^([ \\t]*)\\d+[.)]\\s+(.+)$/.exec(line);
+        if (olMatch) {
+          flushPara();
+          const indent = olMatch[1].replace(/\\t/g, '  ').length;
+          const rawOlBody = olMatch[2].trim();
+          const tm = /^\\[([ xX])\\]\\s+(.+)$/.exec(rawOlBody);
+          listEntries.push({
+            indent,
+            ordered: true,
+            isTask: Boolean(tm),
+            checked: Boolean(tm && tm[1].toLowerCase() === 'x'),
+            text: tm ? tm[2] : rawOlBody
+          });
+          continue;
+        }
+
+        if (listEntries.length) flushList();
+        paraLines.push(line);
+      }
+
+      if (inCode) {
+        blocks.push('<pre><code>' + esc(codeLines.join('\\n')) + '</code></pre>');
+      }
+      flushAllText();
+      return blocks.join('');
     }
 
     function saveDraftForConv(convId, text) {
@@ -11760,9 +13467,11 @@ function buildMobileAppHtml() {
           fvState.contextKey = '';
           fvState.curDir = '';
           fvState.activeRoot = '';
+          fvState.previewItem = null;
           const fvBd = $('file-viewer-backdrop');
           if (fvBd && !fvBd.hidden) {
-            const targetTab = fvState.viewingFile ? (fvState.returnTab || fvState.tab || 'tree') : (fvState.tab || 'tree');
+            const rawTarget = (fvState.viewingFile || fvState.tab === 'preview') ? (fvState.returnTab || 'tree') : (fvState.tab || 'tree');
+            const targetTab = rawTarget === 'changes' ? 'changes' : 'tree';
             fvState.viewingFile = false;
             fvState.tab = targetTab;
             if (typeof syncFvChrome === 'function') syncFvChrome();
@@ -11772,6 +13481,7 @@ function buildMobileAppHtml() {
             if (fvBody && typeof renderSkeletonRowsHtml === 'function') fvBody.innerHTML = renderSkeletonRowsHtml(5);
           } else {
             fvState.viewingFile = false;
+            fvState.tab = 'tree';
             fvState.returnTab = 'tree';
           }
         }
@@ -11799,6 +13509,12 @@ function buildMobileAppHtml() {
 
     function applyRemoteDisplayConfig(snap) {
       if (snap?.displayConfig) latestDisplayConfig = snap.displayConfig;
+      if (typeof snap?.showApiReferenceCost === 'boolean') {
+        remoteShowApiRefCost = snap.showApiReferenceCost;
+        if (cachedContextResp && typeof cachedContextResp === 'object') {
+          cachedContextResp.showApiReferenceCost = snap.showApiReferenceCost;
+        }
+      }
       const cfg = getEffectiveDisplayConfig(snap);
       const ctxBtn = $('btn-context-panel');
       const usageBtn = $('btn-usage-panel');
@@ -11823,7 +13539,7 @@ function buildMobileAppHtml() {
         $('quota-drawer').hidden = true;
         quotaBtn?.classList.remove('active');
       }
-      if (subMeta) subMeta.hidden = !cfg.showChannelMeta;
+      if (subMeta) subMeta.hidden = !(subMetaNoticeActive && cfg.showChannelMeta);
       if (drawerBtn) drawerBtn.hidden = !cfg.showSidebar;
       if (!cfg.showSidebar && typeof closeDrawer === 'function') closeDrawer();
       if (document.body?.classList) {
@@ -11858,7 +13574,12 @@ function buildMobileAppHtml() {
         const res = await fetchWithTimeout((apiBase || '') + '/api/context' + q, { headers: authHeaders(), cache: 'no-store' }, 4500);
         if (res.status === 401) { location.reload(); return null; }
         const data = await res.json().catch(() => null);
-        if (data?.ok) cachedContextResp = data;
+        if (data?.ok) {
+          cachedContextResp = data;
+          if (typeof data.showApiReferenceCost === 'boolean') {
+            remoteShowApiRefCost = data.showApiReferenceCost;
+          }
+        }
         return data;
       } catch {
         return null;
@@ -11971,6 +13692,17 @@ function buildMobileAppHtml() {
       const modelStr = cp.modelDisplayName || ctxRes?.model || snap?.model || '—';
       const barCol = pct == null ? 'var(--accent)' : (pct >= 85 ? 'var(--red)' : (pct >= 65 ? 'var(--amber)' : 'var(--green)'));
       const isolatedTag = snap?.isolated ? '<span class="isolated-badge" title="当前仅在本页浏览其他会话，不会改变电脑端屏幕">仅本页</span>' : '';
+      const physMaxNum = Number(cp.physicalMaxTokens || 0);
+      const limitNum = Number(cp.limitTokens || 0);
+      const physShort = physMaxNum >= 1000000 ? '1M' : (physMaxNum > 0 ? fmtNumShort(physMaxNum) : '');
+      const physNoteHtml = (physMaxNum > limitNum && limitNum > 0 && physShort)
+        ? '<div class="qreset" data-ctx-phys-note="1" style="margin-top:4px">模型物理上限：' + esc(physShort) + '（当前按 ' + esc(limitStr) + ' 自动压缩线计算）</div>'
+        : '';
+      const showRefCost = Boolean(
+        typeof snap?.showApiReferenceCost === 'boolean'
+          ? snap.showApiReferenceCost
+          : (typeof remoteShowApiRefCost === 'boolean' ? remoteShowApiRefCost : Boolean(ctxRes?.showApiReferenceCost))
+      );
 
       box.innerHTML =
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">' +
@@ -11981,14 +13713,15 @@ function buildMobileAppHtml() {
           '<div class="qhead"><span>' + esc(ctxRes?.title || snap?.title || '当前会话') + '</span><span style="color:' + barCol + '">' + (pct != null ? pct.toFixed(1) + '%' : '--%') + '</span></div>' +
           '<div class="qbar"><div class="qfill" style="width:' + (pct != null ? pct.toFixed(1) : 0) + '%;background:' + barCol + '"></div></div>' +
           '<div class="qreset" style="margin-top:5px">模型：' + esc(modelStr) + '</div>' +
+          physNoteHtml +
         '</div>' +
         '<div class="ctx-drawer-grid">' +
-          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">当前已用 / 上限</div><div class="ctx-stat-val">' + esc(usedStr) + ' / ' + esc(limitStr) + '</div></div>' +
+          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">当前已用 / 压缩上限</div><div class="ctx-stat-val">' + esc(usedStr) + ' / ' + esc(limitStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">剩余可用</div><div class="ctx-stat-val">' + esc(remainStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">输出速度 · 耗时</div><div class="ctx-stat-val">' + esc(speedStr) + ' · ' + esc(durStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">缓存命中率</div><div class="ctx-stat-val">' + esc(cacheStr) + '</div></div>' +
         '</div>' +
-        (cp.sessionCostText ? '<div class="qreset" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '');
+        (showRefCost && cp.sessionCostText ? '<div class="qreset" data-ctx-cost-line="1" style="margin-top:6px">' + esc(cp.roundCostText ? cp.roundCostText + ' · ' : '') + esc(cp.sessionCostText) + '</div>' : '');
 
       const refBtn = $('btn-refresh-context');
       if (refBtn) refBtn.onclick = () => { void fetchContextPanelData(); };
@@ -12023,6 +13756,11 @@ function buildMobileAppHtml() {
       const totalStr = fmtNumShort(summary.totalTokens || 0);
       const costNum = Number(usageData?.referenceCost?.totalUsd ?? usageData?.costEstimate?.totalUsd ?? summary.totalCostUsd ?? 0) || 0;
       const costStr = costNum > 0 ? '$' + costNum.toFixed(2) : '—';
+      const showRefCost = Boolean(
+        typeof latestSnap?.showApiReferenceCost === 'boolean'
+          ? latestSnap.showApiReferenceCost
+          : remoteShowApiRefCost
+      );
 
       box.innerHTML =
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">' +
@@ -12038,7 +13776,7 @@ function buildMobileAppHtml() {
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">今日用量</div><div class="ctx-stat-val">' + esc(todayStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">近 7 天 / 30 天</div><div class="ctx-stat-val">' + esc(sevenStr) + ' / ' + esc(thirtyStr) + '</div></div>' +
           '<div class="ctx-stat-box"><div class="ctx-stat-lbl">累计总用量</div><div class="ctx-stat-val">' + esc(totalStr) + '</div></div>' +
-          '<div class="ctx-stat-box"><div class="ctx-stat-lbl">API 参考等值</div><div class="ctx-stat-val">' + esc(costStr) + '</div></div>' +
+          (showRefCost ? '<div class="ctx-stat-box" data-usage-cost-box="1"><div class="ctx-stat-lbl">API 参考等值</div><div class="ctx-stat-val">' + esc(costStr) + '</div></div>' : '') +
         '</div>' +
         barsHtml;
 
@@ -12240,6 +13978,11 @@ function buildMobileAppHtml() {
         $('status-dot').className = 'dot err';
         syncChannelPillUi('offline');
         $('conv-title').textContent = snap?.error || '连接异常';
+        subMetaNoticeActive = true;
+        if ($('sub-meta')) {
+          $('sub-meta').textContent = '连接异常 · 点击切换连接方式';
+          $('sub-meta').hidden = !getEffectiveDisplayConfig(latestSnap).showChannelMeta;
+        }
         if (latestSnap) {
           setConnBannerVisible(true, humanizeRemoteError(snap?.error, '与电脑端的连接暂时异常，可点击重试或切换连接方式'));
         }
@@ -12307,17 +14050,25 @@ function buildMobileAppHtml() {
         }
       }
 
+      subMetaNoticeActive = false;
+      if (snap.pushPrefs && typeof syncLocalNotifyPrefs === 'function') syncLocalNotifyPrefs(snap.pushPrefs);
       const displayCfg = applyRemoteDisplayConfig(snap);
       if (typeof applyRemoteLongFoldPref === 'function') applyRemoteLongFoldPref(snap);
       $('status-dot').className = snap.busy ? 'dot busy' : 'dot';
       $('conv-title').textContent = snap.title || 'Antigravity';
       syncTopbarProjectBadge(resolveConversationProjectName(snap));
-      if (typeof ensureFvContextFresh === 'function' && ensureFvContextFresh()) {
-        if (typeof syncFvModalOnContextChange === 'function') {
-          syncFvModalOnContextChange();
-        }
+      const fvCtxChanged = typeof ensureFvContextFresh === 'function' && ensureFvContextFresh();
+      if (typeof maybeAutoDockWidePreviewSidebar === 'function' && maybeAutoDockWidePreviewSidebar()) {
+        // 首次在桌面宽屏工作台自动展开右侧常驻预览边栏并加载当前项目目录
+      } else if (fvCtxChanged && typeof syncFvModalOnContextChange === 'function') {
+        syncFvModalOnContextChange();
+      } else if (typeof syncFvPersistentWsBar === 'function') {
+        syncFvPersistentWsBar();
       }
-      $('sub-meta').textContent = snap.pulseText || (snap.busy ? '正在生成内容…' : (snap.contextBadge || '已就绪'));
+      if ($('sub-meta')) {
+        $('sub-meta').textContent = '';
+        $('sub-meta').hidden = true;
+      }
 
       const gStr = fmtPct(snap.quota?.gemini?.remainingFraction);
       const cStr = fmtPct(snap.quota?.claude?.remainingFraction);
@@ -12658,8 +14409,29 @@ function buildMobileAppHtml() {
           const hasDomQueued = queuedList.some((q) => q && q.source === 'dom');
           const isDomQueuedList = queuedList.every((q) => q && q.source === 'dom');
           const hasOnlyOptimistic = queuedList.every((q) => q && q.source === 'optimistic');
-          const agentMsgIds = queuedList.map((q) => String(q?.messageId || q?.id || '').trim()).filter(Boolean);
-          const qSig = String(snapSid || '') + '::' + queuedList.map((q, qi) => String(q.source || 'traj') + ':' + String(q.messageId || q.id || '') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + (Array.isArray(q.images) ? q.images.length : 0)).join('\u001f');
+          const agentMsgIds = queuedList
+            .map((q) => String(q?.messageId || q?.id || '').trim())
+            .filter((id) => id && !/^opt-/i.test(id));
+          const sendableQueuedItems = queuedList
+            .filter((q) => q && q.source !== 'optimistic')
+            .map((q, qi) => {
+              const mid = String(q?.messageId || q?.id || '').trim();
+              const sIdx = Number(q?.stepIndex);
+              const dIdx = Number(q?.domIndex);
+              return {
+                ...(mid ? { messageId: mid } : {}),
+                ...(Number.isInteger(sIdx) && sIdx >= 0 ? { stepIndex: sIdx } : {}),
+                domIndex: Number.isInteger(dIdx) && dIdx >= 0 ? dIdx : qi,
+                source: String(q?.source || 'traj'),
+                text: String(q?.text || ''),
+                ...(q?.hasMedia || (Array.isArray(q?.images) && q.images.length > 0) ? { hasMedia: true } : {})
+              };
+            });
+          const qRouteKey = String(apiBase || '') + '|' + (apiBase && pairState?.token ? fnv1aClientHex(pairState.token) : '');
+          const qSig = qRouteKey + '::' + String(snapSid || '') + '::' + queuedList.map((q, qi) => {
+            const imgKey = (q.hasMedia ? '1' : '0') + '|' + String(q.mediaSig || '') + '|' + (Array.isArray(q.images) ? q.images.slice(0, 3).map((im) => (typeof im === 'string' ? im : (String(im?.src || '') + '#' + String(im?.alt || '')))).join(',') : '');
+            return String(q.source || 'traj') + ':' + String(q.messageId || q.id || '') + ':' + String(q.stepIndex ?? qi) + ':' + String(q.domIndex ?? qi) + ':' + String(q.text || '') + ':' + imgKey;
+          }).join('\u001f');
           if (qDock.dataset.queueSig !== qSig) {
             qDock.dataset.queueSig = qSig;
             qDock.innerHTML = '<div class="queue-card">'
@@ -12737,6 +14509,7 @@ function buildMobileAppHtml() {
                     action: 'send-queued-messages',
                     conversationId: String(snap.activeConversationId || snap.sessionId || ''),
                     ...(agentMsgIds.length ? { messageIds: agentMsgIds } : {}),
+                    ...(sendableQueuedItems.length ? { queuedItems: sendableQueuedItems } : {}),
                     ...(isDomQueuedList ? { source: 'dom', sendAll: true } : (hasDomQueued ? { hasDomQueued: true } : {}))
                   });
                   if (res?.ok) {
@@ -12780,11 +14553,15 @@ function buildMobileAppHtml() {
                 const msgId = String(editBtn.dataset.msgId || '').trim();
                 const stepIdx = Number(editBtn.dataset.stepIdx);
                 if (!msgId && src !== 'dom' && (!Number.isInteger(stepIdx) || stepIdx < 0)) return;
+                const reqPayload = buildQueueItemPayload(editBtn, { action: 'edit-queued-message' });
+                const editOriginConvId = String(reqPayload.conversationId || selectedConversationId || '').trim();
                 queueActionBusy = true;
                 setQueueBtnsDisabled(true);
                 try {
-                  const res = await apiAction(buildQueueItemPayload(editBtn, { action: 'edit-queued-message' }));
+                  const res = await apiAction(reqPayload);
                   if (res?.ok || res?.attachmentsPreserved || res?.textPreserved) {
+                    const curConvId = String(selectedConversationId || latestSnap?.activeConversationId || latestSnap?.sessionId || '').trim();
+                    const switchedConvAway = Boolean(editOriginConvId && curConvId && editOriginConvId !== curConvId);
                     const restoredAtts = Array.isArray(res?.actionResult?.editedAttachments)
                       ? res.actionResult.editedAttachments
                       : [];
@@ -12793,6 +14570,21 @@ function buildMobileAppHtml() {
                     const restoreSourceKey = msgId
                       ? ('msg:' + msgId)
                       : (serverRecoveryKey || (Number.isInteger(stepIdx) && stepIdx >= 0 ? ('step:' + stepIdx) : ''));
+                    const hasServerText = Boolean(res?.actionResult && typeof res.actionResult.editedText === 'string');
+                    const fillVal = hasServerText ? res.actionResult.editedText : qText;
+                    const textRestoreKey = restoreSourceKey ? ((editOriginConvId || '') + '::' + restoreSourceKey) : '';
+                    const alreadyRestoredText = Boolean(textRestoreKey && restoredQueueEditTextKeys.has(textRestoreKey));
+                    if (switchedConvAway) {
+                      if (fillVal && !alreadyRestoredText && editOriginConvId) {
+                        const prevOriginDraft = typeof draftByConv === 'object' && draftByConv ? String(draftByConv[editOriginConvId] || '') : '';
+                        const mergedOriginDraft = prevOriginDraft.trim() ? (prevOriginDraft.trimEnd() + '\\n' + fillVal) : fillVal;
+                        saveDraftForConv(editOriginConvId, mergedOriginDraft);
+                        if (textRestoreKey && isPendingRetryRestore) restoredQueueEditTextKeys.add(textRestoreKey);
+                      }
+                      if (textRestoreKey && res?.ok) restoredQueueEditTextKeys.delete(textRestoreKey);
+                      showToast('已撤回原会话排队消息并暂存至原会话草稿，切回原会话可继续编辑');
+                      return;
+                    }
                     if (restoreSourceKey && restoredAtts.length) {
                       for (let ri = uploadedAttachments.length - 1; ri >= 0; ri -= 1) {
                         if (
@@ -12825,13 +14617,9 @@ function buildMobileAppHtml() {
                     if (restoredAtts.length) {
                       renderAttachHintStrip();
                     }
-                    const hasServerText = Boolean(res?.actionResult && typeof res.actionResult.editedText === 'string');
-                    const fillVal = hasServerText ? res.actionResult.editedText : qText;
-                    const textRestoreKey = restoreSourceKey ? ((selectedConversationId || '') + '::' + restoreSourceKey) : '';
-                    const alreadyRestoredText = Boolean(textRestoreKey && restoredQueueEditTextKeys.has(textRestoreKey));
                     if (fillVal && !alreadyRestoredText) {
                       ta.value = ta.value.trim() ? (ta.value.trimEnd() + '\\n' + fillVal) : fillVal;
-                      saveDraftForConv(selectedConversationId, ta.value);
+                      saveDraftForConv(editOriginConvId || selectedConversationId, ta.value);
                       ta.style.height = 'auto';
                       const maxH = isDesktopLayout() ? 180 : 112;
                       ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
@@ -12903,6 +14691,17 @@ function buildMobileAppHtml() {
       if (useDrilldownDrawer) {
         renderDrawerProjectsAndConversations(snap);
       } else {
+        if (
+          localOptimisticProjectOrder &&
+          projOrderInflightCount === 0 &&
+          !pendingQueuedOrderJob &&
+          ((reqEpoch !== null && reqEpoch > lastProjectOrderSettledEpoch) ||
+            (pendingOrderAckRev && String(snap.catalogRevision || '') === pendingOrderAckRev))
+        ) {
+          localOptimisticProjectOrder = null;
+          lastConfirmedProjectOrder = null;
+          pendingOrderAckRev = '';
+        }
         reconcileExtraConversations(snap);
         renderConversationList(snap);
       }
@@ -13099,6 +14898,287 @@ function buildMobileAppHtml() {
     let lastSyncedCatalogRev = '';
     let syncingExtraConvs = false;
     let pendingCatalogRev = '';
+    const ORDER_SEQ_SESSION_KEY = 'ag_remote_proj_order_seq_v1';
+    let projSortMode = false;
+    let localOptimisticProjectOrder = null;
+    let lastConfirmedProjectOrder = null;
+    let pendingOrderAckRev = '';
+    let projOrderSaveSeq = (() => {
+      try {
+        const saved = Number.parseInt(sessionStorage.getItem(ORDER_SEQ_SESSION_KEY) || '0', 10);
+        return Number.isSafeInteger(saved) && saved > 0 ? saved : 0;
+      } catch {
+        return 0;
+      }
+    })();
+    let projOrderInflightCount = 0;
+    let pendingQueuedOrderJob = null;
+    let orderDrainLoopPromise = null;
+    let lastProjectOrderSettledEpoch = 0;
+    let activeDragProjectId = '';
+    let touchDragState = null;
+
+    function isDesktopPointerFineEnv() {
+      try {
+        return Boolean(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+      } catch {
+        return false;
+      }
+    }
+
+    function computeOrderedProjectsForView(rawProjects, convs) {
+      const projMap = new Map();
+      const grouped = new Map();
+      for (const p of (Array.isArray(rawProjects) ? rawProjects : [])) {
+        if (!p || !p.id) continue;
+        projMap.set(p.id, p);
+        grouped.set(p.id, []);
+      }
+      for (const c of (Array.isArray(convs) ? convs : [])) {
+        if (!c) continue;
+        const pid = c.projectId || 'ungrouped';
+        if (!projMap.has(pid)) {
+          projMap.set(pid, {
+            id: pid,
+            name: c.projectName || (pid === 'ungrouped' ? '未归属项目' : pid),
+            conversationCount: 0,
+            runningCount: 0,
+            waitingCount: 0,
+            isEmpty: false
+          });
+        }
+        if (!grouped.has(pid)) grouped.set(pid, []);
+        grouped.get(pid).push(c);
+      }
+      const visibleProjects = Array.from(projMap.values()).filter((p) =>
+        !isNonProjectBucket(p.id) || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
+      );
+      const realProjs = [];
+      const nonProjs = [];
+      for (const p of visibleProjects) {
+        if (isNonProjectBucket(p.id)) nonProjs.push(p);
+        else realProjs.push(p);
+      }
+      let orderedReal = realProjs;
+      if (Array.isArray(localOptimisticProjectOrder) && localOptimisticProjectOrder.length > 0) {
+        const optIdxMap = new Map();
+        localOptimisticProjectOrder.forEach((id, idx) => {
+          if (id && !optIdxMap.has(id)) optIdxMap.set(id, idx);
+        });
+        const unlistedNew = [];
+        const listedExisting = [];
+        for (const p of realProjs) {
+          if (optIdxMap.has(p.id)) listedExisting.push(p);
+          else unlistedNew.push(p);
+        }
+        listedExisting.sort((a, b) => optIdxMap.get(a.id) - optIdxMap.get(b.id));
+        orderedReal = unlistedNew.concat(listedExisting);
+      }
+      return {
+        projMap,
+        grouped,
+        orderedReal,
+        orderedProjects: orderedReal.concat(nonProjs)
+      };
+    }
+
+    function getCurrentOrderableProjectIds(snap) {
+      const targetSnap = snap || latestSnap;
+      if (!targetSnap) return [];
+      const convs = getMergedConversations(targetSnap);
+      return computeOrderedProjectsForView(targetSnap.projects, convs).orderedReal.map((p) => p.id);
+    }
+
+    function syncSortProjectsButtonUi(orderableCount) {
+      const sortBtn = $('btn-sort-projects');
+      if (!sortBtn) return;
+      if (convViewMode !== 'projects') {
+        if (projSortMode) projSortMode = false;
+        sortBtn.hidden = true;
+        sortBtn.classList.remove('active');
+        sortBtn.setAttribute('aria-pressed', 'false');
+        const lbl = $('sort-projects-label');
+        if (lbl) lbl.textContent = '排序';
+        return;
+      }
+      sortBtn.hidden = false;
+      const count = Number.isFinite(orderableCount) ? orderableCount : getCurrentOrderableProjectIds(latestSnap).length;
+      if (!projSortMode && count < 2) {
+        sortBtn.disabled = true;
+      } else {
+        sortBtn.disabled = false;
+      }
+      sortBtn.classList.toggle('active', projSortMode);
+      sortBtn.setAttribute('aria-pressed', projSortMode ? 'true' : 'false');
+      sortBtn.title = projSortMode ? '完成并锁定项目顺序' : '手动调整项目顺序';
+      const lbl = $('sort-projects-label');
+      if (lbl) lbl.textContent = projSortMode ? '完成' : '排序';
+    }
+
+    let pendingConvListRerender = false;
+    function setProjectSortMode(nextFlag) {
+      const want = Boolean(nextFlag) && convViewMode === 'projects';
+      if (projSortMode === want) return projSortMode;
+      projSortMode = want;
+      pendingConvListRerender = false;
+      if (latestSnap) renderConversationList(latestSnap);
+      else syncSortProjectsButtonUi(0);
+      return projSortMode;
+    }
+
+    function ensureOrderDrainLoop() {
+      if (orderDrainLoopPromise) return orderDrainLoopPromise;
+      projOrderInflightCount = 1;
+      orderDrainLoopPromise = (async () => {
+        try {
+          while (pendingQueuedOrderJob) {
+            const job = pendingQueuedOrderJob;
+            pendingQueuedOrderJob = null;
+            try {
+              const res = await fetchWithTimeout((apiBase || '') + '/api/projects/order', {
+                method: 'POST',
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                  projectOrder: job.cleaned,
+                  orderScopeId: pageOrderScopeId,
+                  clientPageEpoch,
+                  clientOrderSeq: job.seq
+                })
+              }, 6000);
+              let data = null;
+              try { data = await res.json(); } catch {}
+              if (!res.ok || !data || data.ok === false) {
+                throw new Error(data?.error || ('HTTP ' + res.status));
+              }
+              const confirmed = (Array.isArray(data.projectOrder) && data.projectOrder.length)
+                ? data.projectOrder.filter((id) => id && !isNonProjectBucket(id))
+                : job.cleaned.slice();
+              lastConfirmedProjectOrder = confirmed.slice();
+              if (!pendingQueuedOrderJob) {
+                localOptimisticProjectOrder = confirmed.slice();
+                pendingOrderAckRev = String(data.catalogRevision || '');
+                lastProjectOrderSettledEpoch = ++clientSyncEpoch;
+                if (latestSnap) renderConversationList(latestSnap);
+              }
+              const out = {
+                ok: true,
+                projectOrder: confirmed,
+                catalogRevision: data.catalogRevision || '',
+                ...(data.staleIgnored ? { staleIgnored: true } : {})
+              };
+              for (const fn of job.resolvers) fn(out);
+            } catch (err) {
+              const errMsg = err?.message || '保存项目顺序失败';
+              if (!pendingQueuedOrderJob) {
+                localOptimisticProjectOrder = Array.isArray(lastConfirmedProjectOrder) && lastConfirmedProjectOrder.length
+                  ? lastConfirmedProjectOrder.slice()
+                  : null;
+                pendingOrderAckRev = '';
+                lastProjectOrderSettledEpoch = ++clientSyncEpoch;
+                if (latestSnap) renderConversationList(latestSnap);
+                showToast(humanizeRemoteError(errMsg, '保存项目顺序失败，已恢复原顺序'));
+                void fetchSnapshot();
+              }
+              const failOut = { ok: false, error: errMsg };
+              for (const fn of job.resolvers) fn(failOut);
+            }
+          }
+        } finally {
+          projOrderInflightCount = 0;
+          orderDrainLoopPromise = null;
+        }
+      })();
+      return orderDrainLoopPromise;
+    }
+
+    function commitProjectOrder(nextIds) {
+      const cleaned = [];
+      const seen = new Set();
+      for (const rawId of (Array.isArray(nextIds) ? nextIds : [])) {
+        const id = String(rawId || '').trim();
+        if (!id || isNonProjectBucket(id) || seen.has(id)) continue;
+        seen.add(id);
+        cleaned.push(id);
+      }
+      if (cleaned.length < 2) return Promise.resolve({ ok: false, noop: true });
+      const currentIds = getCurrentOrderableProjectIds(latestSnap);
+      if (
+        !pendingQueuedOrderJob &&
+        projOrderInflightCount === 0 &&
+        currentIds.length === cleaned.length &&
+        currentIds.every((id, i) => id === cleaned[i])
+      ) {
+        return Promise.resolve({ ok: true, noop: true, projectOrder: cleaned });
+      }
+      if (!localOptimisticProjectOrder && currentIds.length >= 2) {
+        lastConfirmedProjectOrder = currentIds.slice();
+      }
+      const mySaveSeq = ++projOrderSaveSeq;
+      try { sessionStorage.setItem(ORDER_SEQ_SESSION_KEY, String(mySaveSeq)); } catch {}
+      localOptimisticProjectOrder = cleaned.slice();
+      pendingOrderAckRev = '';
+      lastProjectOrderSettledEpoch = ++clientSyncEpoch;
+      if (latestSnap) renderConversationList(latestSnap);
+      return new Promise((resolve) => {
+        if (pendingQueuedOrderJob) {
+          pendingQueuedOrderJob.cleaned = cleaned.slice();
+          pendingQueuedOrderJob.seq = mySaveSeq;
+          pendingQueuedOrderJob.resolvers.push(resolve);
+        } else {
+          pendingQueuedOrderJob = {
+            cleaned: cleaned.slice(),
+            seq: mySaveSeq,
+            resolvers: [resolve]
+          };
+        }
+        void ensureOrderDrainLoop();
+      });
+    }
+
+    function moveProjectOrderRelative(projectId, direction) {
+      const pid = String(projectId || '').trim();
+      if (!pid || isNonProjectBucket(pid)) return Promise.resolve({ ok: false, noop: true });
+      const ids = getCurrentOrderableProjectIds(latestSnap);
+      const idx = ids.indexOf(pid);
+      if (idx < 0 || ids.length < 2) return Promise.resolve({ ok: false, noop: true });
+      const next = ids.slice();
+      if (direction === 'top') {
+        if (idx === 0) return Promise.resolve({ ok: true, noop: true });
+        next.splice(idx, 1);
+        next.unshift(pid);
+      } else if (direction === 'up') {
+        if (idx <= 0) return Promise.resolve({ ok: true, noop: true });
+        const tmp = next[idx - 1];
+        next[idx - 1] = next[idx];
+        next[idx] = tmp;
+      } else if (direction === 'down') {
+        if (idx >= next.length - 1) return Promise.resolve({ ok: true, noop: true });
+        const tmp = next[idx + 1];
+        next[idx + 1] = next[idx];
+        next[idx] = tmp;
+      } else {
+        return Promise.resolve({ ok: false, noop: true });
+      }
+      return commitProjectOrder(next);
+    }
+
+    function reorderProjectBeforeOrAfter(srcPid, targetPid, placement) {
+      const fromId = String(srcPid || '').trim();
+      const toId = String(targetPid || '').trim();
+      if (!fromId || !toId || fromId === toId || isNonProjectBucket(fromId) || isNonProjectBucket(toId)) {
+        return Promise.resolve({ ok: false, noop: true });
+      }
+      const ids = getCurrentOrderableProjectIds(latestSnap);
+      if (!ids.includes(fromId) || !ids.includes(toId) || ids.length < 2) {
+        return Promise.resolve({ ok: false, noop: true });
+      }
+      const filtered = ids.filter((id) => id !== fromId);
+      const targetIdx = filtered.indexOf(toId);
+      if (targetIdx < 0) return Promise.resolve({ ok: false, noop: true });
+      const insertAt = placement === 'after' ? targetIdx + 1 : targetIdx;
+      filtered.splice(insertAt, 0, fromId);
+      return commitProjectOrder(filtered);
+    }
 
     function saveConvUiPrefs() {
       try {
@@ -13317,30 +15397,83 @@ function buildMobileAppHtml() {
 
     const FOLDER_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
     const FOLDER_SM_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+    const PROJ_EDIT_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>';
 
     let clientPrevConvStatus = new Map();
+    let clientSentNotifyTurnKeys = new Map();
     let clientNotifyBootstrapped = false;
     function maybeTriggerLocalNotifications(convs) {
       if (!Array.isArray(convs)) return;
       if (!clientNotifyBootstrapped) {
         for (const c of convs) {
-          if (c && c.id) clientPrevConvStatus.set(c.id, c.status || 'unknown');
+          if (c && c.id) {
+            clientPrevConvStatus.set(c.id, { status: c.status || 'unknown', updatedAt: Number(c.updatedAt) || 0 });
+          }
         }
         clientNotifyBootstrapped = true;
         return;
       }
       const canPop = !cachedHasActiveWebPush && isLocalNotifyEnabled() && typeof Notification === 'function' && Notification.permission === 'granted';
+      const showPreview = isLocalNotifyShowPreview();
+      const activeIds = new Set();
       for (const c of convs) {
         if (!c || !c.id) continue;
-        const prev = clientPrevConvStatus.get(c.id);
+        activeIds.add(c.id);
+        const prevRec = clientPrevConvStatus.get(c.id);
         const cur = c.status || 'unknown';
-        clientPrevConvStatus.set(c.id, cur);
-        if (!canPop || !prev) continue;
-        if (prev === 'running' && cur === 'idle' && c.completedUnread === true) {
-          showLocalSystemNotification('对话已完成', (c.title || 'Antigravity 对话') + (c.projectName ? (' · ' + c.projectName) : ''), c.id);
-        } else if (prev !== 'waiting' && cur === 'waiting') {
-          showLocalSystemNotification('需要你的确认', (c.title || 'Antigravity 对话') + ' 正在等待确认或审批', c.id);
+        const curUpdatedAt = Number(c.updatedAt) || 0;
+        clientPrevConvStatus.set(c.id, { status: cur, updatedAt: curUpdatedAt });
+        if (!canPop || !prevRec) continue;
+        let eventType = '';
+        if (prevRec.status === 'running' && cur === 'idle' && (c.completedUnread === true || curUpdatedAt > prevRec.updatedAt)) {
+          eventType = 'completed';
+        } else if (prevRec.status !== 'waiting' && cur === 'waiting') {
+          eventType = 'waiting';
         }
+        if (!eventType) continue;
+        if (eventType === 'completed' && !isLocalNotifyCompleted()) continue;
+        if (eventType === 'waiting' && !isLocalNotifyWaiting()) continue;
+        const fmt = formatClientNotification(c, eventType, showPreview);
+        const dedupKey = eventType + ':' + c.id;
+        const updAlias = curUpdatedAt > 0 ? ('u' + Math.floor(curUpdatedAt)) : '';
+        let sentSet = clientSentNotifyTurnKeys.get(dedupKey);
+        if (fmt.turnKey && sentSet) {
+          if (sentSet.has(fmt.turnKey)) continue;
+          if (updAlias && fmt.turnKey !== updAlias && sentSet.has('unstepped:' + updAlias)) {
+            sentSet.add(fmt.turnKey);
+            continue;
+          }
+          if (updAlias && fmt.turnKey === updAlias && sentSet.has('stepped:' + updAlias)) {
+            sentSet.add(fmt.turnKey);
+            continue;
+          }
+        }
+        if (fmt.turnKey) {
+          if (!sentSet) {
+            sentSet = new Set();
+            clientSentNotifyTurnKeys.set(dedupKey, sentSet);
+          }
+          sentSet.add(fmt.turnKey);
+          if (updAlias) {
+            sentSet.add(fmt.turnKey === updAlias ? ('unstepped:' + updAlias) : ('stepped:' + updAlias));
+          }
+          while (sentSet.size > 32) {
+            const oldestK = sentSet.values().next().value;
+            if (oldestK === undefined) break;
+            sentSet.delete(oldestK);
+          }
+        }
+        showLocalSystemNotification(fmt.title, fmt.body, c.id, fmt.tag);
+      }
+      for (const id of Array.from(clientPrevConvStatus.keys())) {
+        if (!activeIds.has(id)) {
+          clientPrevConvStatus.delete(id);
+        }
+      }
+      while (clientSentNotifyTurnKeys.size > 500) {
+        const oldestKey = clientSentNotifyTurnKeys.keys().next().value;
+        if (oldestKey === undefined) break;
+        clientSentNotifyTurnKeys.delete(oldestKey);
       }
     }
 
@@ -13358,36 +15491,15 @@ function buildMobileAppHtml() {
         }
       }
       const totalAllCount = Math.max(convs.length, Number(snap.totalConversations) || 0);
-      const rawProjects = Array.isArray(snap.projects) ? snap.projects : [];
-      const projMap = new Map();
-      const grouped = new Map();
-
-      for (const p of rawProjects) {
-        if (!p || !p.id) continue;
-        projMap.set(p.id, p);
-        grouped.set(p.id, []);
-      }
-      for (const c of convs) {
-        const pid = c.projectId || 'ungrouped';
-        if (!projMap.has(pid)) {
-          projMap.set(pid, {
-            id: pid,
-            name: c.projectName || (pid === 'ungrouped' ? '未归属项目' : pid),
-            conversationCount: 0,
-            runningCount: 0,
-            waitingCount: 0,
-            isEmpty: false
-          });
-        }
-        if (!grouped.has(pid)) grouped.set(pid, []);
-        grouped.get(pid).push(c);
-      }
+      const { projMap, grouped, orderedReal, orderedProjects } = computeOrderedProjectsForView(snap.projects, convs);
 
       const projCountEl = $('tab-proj-count');
       const convCountEl = $('tab-conv-count');
       if (projCountEl) projCountEl.textContent = projMap.size ? ('(' + projMap.size + ')') : '';
       if (convCountEl) convCountEl.textContent = totalAllCount ? ('(' + totalAllCount + ')') : '';
       syncConvTabsUi();
+      syncSortProjectsButtonUi(orderedReal.length);
+      convList.classList?.toggle?.('is-proj-sorting', Boolean(projSortMode && convViewMode === 'projects'));
 
       let html = '';
       if (convViewMode === 'recent') {
@@ -13408,12 +15520,11 @@ function buildMobileAppHtml() {
           }
         }
       } else {
-        const orderedProjects = Array.from(projMap.values())
-          .filter((p) =>
-            !isNonProjectBucket(p.id) || (p.conversationCount > 0) || ((grouped.get(p.id)?.length || 0) > 0)
-          )
-          .sort((a, b) => Number(isNonProjectBucket(a.id)) - Number(isNonProjectBucket(b.id)));
         const effProj = getEffectiveSelectedProject(snap);
+        const allowDesktopHeadDrag = Boolean(projSortMode || isDesktopPointerFineEnv());
+        const orderIdxById = new Map();
+        orderedReal.forEach((p, idx) => orderIdxById.set(p.id, idx));
+        const orderableTotal = orderedReal.length;
 
         if (!orderedProjects.length) {
           html = renderPanelStateHtml({
@@ -13431,24 +15542,43 @@ function buildMobileAppHtml() {
             const isEmptyProj = projTotal === 0 && list.length === 0;
             const hasRunning = (p.runningCount > 0) || list.some((x) => x.status === 'running');
             const hasWaiting = (p.waitingCount > 0) || list.some((x) => x.status === 'waiting');
-            const collapsed = !isEmptyProj && Boolean(collapsedProjMap[p.id]);
+            const collapsed = projSortMode ? true : (!isEmptyProj && Boolean(collapsedProjMap[p.id]));
             const isCurrentProj = Boolean(effProj.id && p.id === effProj.id);
             const isUngroupedProj = isNonProjectBucket(p.id);
             const groupCls = 'proj-group' + (isCurrentProj ? ' is-current' : '') + (isUngroupedProj ? ' is-ungrouped' : '') + (isEmptyProj ? ' is-empty' : '');
+            const groupAttrs = !isUngroupedProj
+              ? (' data-proj-group-id="' + esc(p.id) + '" data-orderable-proj="1"')
+              : (' data-proj-group-id="' + esc(p.id) + '"');
+            const headDragAttr = (!isUngroupedProj && allowDesktopHeadDrag && orderableTotal >= 2) ? ' draggable="true"' : '';
             const statDot = hasWaiting
               ? '<span class="proj-stat-dot waiting" title="有待确认操作"></span>'
               : (hasRunning ? '<span class="proj-stat-dot running" title="有运行中对话"></span>' : '');
+            const dragHandleHtml = (!isUngroupedProj && orderableTotal >= 2)
+              ? '<span class="proj-drag-handle" data-proj-drag-handle="' + esc(p.id) + '" title="拖拽调整项目顺序" aria-hidden="true">≡</span>'
+              : '';
+            const ordIdx = orderIdxById.has(p.id) ? orderIdxById.get(p.id) : -1;
+            const sortBtnsHtml = (!isUngroupedProj && orderableTotal >= 2 && ordIdx >= 0)
+              ? ('<span class="proj-sort-actions" role="group" aria-label="排序项目">'
+                + '<button class="proj-sort-btn" data-proj-move="top" data-proj-id="' + esc(p.id) + '" type="button" title="置顶该项目" aria-label="置顶 ' + esc(p.name) + '"' + (ordIdx === 0 ? ' disabled' : '') + '>⤒</button>'
+                + '<button class="proj-sort-btn" data-proj-move="up" data-proj-id="' + esc(p.id) + '" type="button" title="上移项目" aria-label="上移 ' + esc(p.name) + '"' + (ordIdx === 0 ? ' disabled' : '') + '>↑</button>'
+                + '<button class="proj-sort-btn" data-proj-move="down" data-proj-id="' + esc(p.id) + '" type="button" title="下移项目" aria-label="下移 ' + esc(p.name) + '"' + (ordIdx >= orderableTotal - 1 ? ' disabled' : '') + '>↓</button>'
+                + '</span>')
+              : (isUngroupedProj && projSortMode ? '<span class="proj-fixed-tag">固定垫底</span>' : '');
+            const editBtnHtml = (!isUngroupedProj && !projSortMode)
+              ? '<button class="proj-edit-btn" data-edit-proj="' + esc(p.id) + '" type="button" title="编辑项目设置" aria-label="编辑项目 ' + esc(p.name) + '">' + PROJ_EDIT_ICON_SVG + '</button>'
+              : '';
             const newBtnHtml = !isUngroupedProj
               ? '<button class="proj-new-btn" data-new-proj="' + esc(p.id) + '" type="button" title="在 ' + esc(p.name) + ' 中新建对话" aria-label="在 ' + esc(p.name) + ' 中新建对话">+</button>'
               : '';
             const projMoreHtml = list.length < projTotal
               ? '<button class="conv-more-btn" data-proj-more="' + esc(p.id) + '" type="button">加载该项目更多对话 (' + list.length + '/' + projTotal + ')</button>'
               : '';
-            const itemsHtml = (isEmptyProj || collapsed) ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + projMoreHtml + '</div>');
-            const chevChar = isEmptyProj ? '·' : (collapsed ? '▸' : '▾');
-            const expandedAttr = isEmptyProj ? '' : (' aria-expanded="' + (collapsed ? 'false' : 'true') + '"');
-            return '<div class="' + groupCls + '">' +
-              '<div class="proj-head">' +
+            const itemsHtml = (projSortMode || isEmptyProj || collapsed) ? '' : ('<div class="proj-body">' + list.map((c) => renderConvItemHtml(c, false)).join('') + projMoreHtml + '</div>');
+            const chevChar = projSortMode ? '·' : (isEmptyProj ? '·' : (collapsed ? '▸' : '▾'));
+            const expandedAttr = (projSortMode || isEmptyProj) ? '' : (' aria-expanded="' + (collapsed ? 'false' : 'true') + '"');
+            return '<div class="' + groupCls + '"' + groupAttrs + '>' +
+              '<div class="proj-head"' + headDragAttr + '>' +
+                dragHandleHtml +
                 '<button class="proj-toggle" data-proj-toggle="' + esc(p.id) + '" type="button"' + expandedAttr + '>' +
                   '<span class="proj-chev">' + chevChar + '</span>' +
                   '<span class="proj-icon">' + FOLDER_ICON_SVG + '</span>' +
@@ -13456,6 +15586,8 @@ function buildMobileAppHtml() {
                   statDot +
                   '<span class="proj-count">' + projTotal + '</span>' +
                 '</button>' +
+                sortBtnsHtml +
+                editBtnHtml +
                 newBtnHtml +
               '</div>' +
               itemsHtml +
@@ -13465,6 +15597,11 @@ function buildMobileAppHtml() {
       }
 
       if (convList.dataset.lastHtml !== html) {
+        if (touchDragState || activeDragProjectId) {
+          pendingConvListRerender = true;
+          return;
+        }
+        pendingConvListRerender = false;
         convList.innerHTML = html;
         convList.dataset.lastHtml = html;
       }
@@ -13601,6 +15738,7 @@ function buildMobileAppHtml() {
       };
       try {
         let res = await doFetch();
+        if (mySeq !== snapshotSeq) return;
         if (res.status === 401) { location.reload(); return; }
         if (res.status === 403) throw new Error('channel_disabled');
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -13616,9 +15754,11 @@ function buildMobileAppHtml() {
           renderModeEntryGate('正在自动尝试备用通道，也可直接点击已开启的方式立即进入：');
         }
         const switched = await tryFailoverEndpoint();
+        if (mySeq !== snapshotSeq) return;
         if (switched && !navigatingAway) {
           try {
             const retryRes = await doFetch();
+            if (mySeq !== snapshotSeq) return;
             if (retryRes.status === 401) { location.reload(); return; }
             if (retryRes.status === 403) throw new Error('channel_disabled');
             if (!retryRes.ok) throw new Error('HTTP ' + retryRes.status);
@@ -13627,7 +15767,7 @@ function buildMobileAppHtml() {
             return;
           } catch {}
         }
-        if (navigatingAway) return;
+        if (navigatingAway || mySeq !== snapshotSeq) return;
         $('status-dot').className = 'dot err';
         syncChannelPillUi('offline');
         $('sub-meta').textContent = '连接中断，点击可切换连接方式';
@@ -13730,69 +15870,327 @@ function buildMobileAppHtml() {
     };
 
     const EFFORT_META = {
-      max: { label: '最高 · Max', short: 'Max', rank: 0 },
-      xhigh: { label: '超高 · XHigh', short: 'XHigh', rank: 1 },
-      high: { label: '高 · High', short: 'High', rank: 2 },
-      medium: { label: '中 · Medium', short: 'Medium', rank: 3 },
-      low: { label: '低 · Low', short: 'Low', rank: 4 }
+      low: { label: 'Low', short: 'Low', rank: 1 },
+      medium: { label: 'Medium', short: 'Medium', rank: 2 },
+      high: { label: 'High', short: 'High', rank: 3 },
+      xhigh: { label: 'Extra High', short: 'Extra High', rank: 4 },
+      max: { label: 'Max', short: 'Max', rank: 5 }
     };
 
-    function groupModelsByBaseId(modelOptions, currentModelLabel) {
-      const groups = [];
-      const groupMap = new Map();
+    function parseClientModelVariant(rawLabelInput, rawModelIdInput) {
+      const rawLabel = String(rawLabelInput || '').trim();
+      const rawModelId = String(rawModelIdInput || '').trim();
+      const idMatch = rawModelId.match(/^(.*?)-(xhigh|high|medium|low|max)$/i);
+      const lblMatch = rawLabel.match(/^(.*?)\\s*\\((Extra\\s+High|XHigh|High|Medium|Low|Max)\\)\\s*$/i);
+      const rawEffort = idMatch
+        ? idMatch[2].toLowerCase()
+        : (lblMatch ? lblMatch[2].toLowerCase().replace(/\\s+/g, '') : '');
+      const effortKey = rawEffort === 'extrahigh' ? 'xhigh' : rawEffort;
+      const baseModelId = idMatch
+        ? idMatch[1].toLowerCase()
+        : (rawModelId || (lblMatch ? lblMatch[1].trim() : rawLabel)).toLowerCase();
+      const baseLabel = lblMatch ? lblMatch[1].trim() : rawLabel;
+      const meta = EFFORT_META[effortKey] || { label: effortKey || rawLabel, short: effortKey || '', rank: 9 };
+      return { rawLabel, rawModelId, baseModelId, baseLabel, effortKey, meta };
+    }
+
+    function pickPreferredGroupEffort(variants, defaultEffortKey) {
+      if (!Array.isArray(variants) || !variants.length) return '';
+      const activeVar = variants.find((v) => v.active);
+      if (activeVar?.effortShort) return activeVar.effortShort;
+      const defKey = String(defaultEffortKey || '').trim().toLowerCase();
+      const byDef = defKey ? variants.find((v) => v.effortKey === defKey) : null;
+      if (byDef?.effortShort) return byDef.effortShort;
+      const byPref = variants.find((v) => v.effortKey === 'high')
+        || variants.find((v) => v.effortKey === 'medium')
+        || variants[variants.length - 1];
+      return byPref?.effortShort || '';
+    }
+
+    function shortenOrchestratorSubLabel(baseLabel) {
+      return String(baseLabel || '')
+        .replace(/^Gemini\\s+4\\s+/i, '')
+        .replace(/^Claude\\s+/i, '')
+        .trim() || String(baseLabel || '').trim();
+    }
+
+    function groupModelsByBaseId(modelOptions, currentModelLabel, orchestratorConfig) {
+      const regularGroups = [];
+      const regularMap = new Map();
+      const rawOrchEntries = [];
+      const curLblText = String(currentModelLabel || '').trim();
+      const curIsOrch = Boolean(orchestratorConfig?.active || /^orchestrator\\b/i.test(curLblText));
+
       for (const m of (modelOptions || [])) {
         if (!m || !m.label) continue;
         const rawLabel = String(m.label).trim();
         const rawModelId = String(m.modelId || '').trim();
-        const idMatch = rawModelId.match(/^(.*?)-(xhigh|high|medium|low|max)$/i);
-        const lblMatch = rawLabel.match(/^(.*?)\\s*\\((XHigh|High|Medium|Low|Max)\\)\\s*$/i);
-        const effortKey = idMatch
-          ? idMatch[2].toLowerCase()
-          : (lblMatch ? lblMatch[2].toLowerCase() : '');
-        const baseModelId = idMatch
-          ? idMatch[1].toLowerCase()
-          : (rawModelId || (lblMatch ? lblMatch[1].trim() : rawLabel)).toLowerCase();
-        const baseLabel = lblMatch ? lblMatch[1].trim() : rawLabel;
-        const meta = EFFORT_META[effortKey] || { label: effortKey || rawLabel, short: effortKey || '', rank: 9 };
-        const isActive = Boolean(m.selected || rawLabel === currentModelLabel);
-
-        if (!groupMap.has(baseModelId)) {
-          const g = {
-            baseModelId,
-            baseLabel,
-            active: false,
-            hasEffortChoice: false,
-            variants: []
-          };
-          groupMap.set(baseModelId, g);
-          groups.push(g);
+        const isNewFlag = Boolean(m.isNew || /^new$/i.test(String(m.tagTitle || '').trim()));
+        const isOrchItem = /orchestrator/i.test(rawModelId + ' ' + rawLabel);
+        if (isOrchItem) {
+          rawOrchEntries.push({
+            label: rawLabel,
+            modelId: rawModelId,
+            isNew: isNewFlag,
+            active: Boolean(m.selected || rawLabel === curLblText)
+          });
+          continue;
         }
-        const grp = groupMap.get(baseModelId);
+        const parsed = parseClientModelVariant(rawLabel, rawModelId);
+        const isActive = !curIsOrch && Boolean(m.selected || rawLabel === curLblText);
+
+        if (!regularMap.has(parsed.baseModelId)) {
+          const g = {
+            baseModelId: parsed.baseModelId,
+            baseLabel: parsed.baseLabel,
+            active: false,
+            isNew: false,
+            isOrchestrator: false,
+            hasSubModels: false,
+            hasEffortChoice: false,
+            variants: [],
+            subModels: []
+          };
+          regularMap.set(parsed.baseModelId, g);
+          regularGroups.push(g);
+        }
+        const grp = regularMap.get(parsed.baseModelId);
         if (isActive) grp.active = true;
+        if (isNewFlag) grp.isNew = true;
+        if (m.defaultEffort && !grp.defaultEffort) grp.defaultEffort = String(m.defaultEffort);
         grp.variants.push({
           label: rawLabel,
           modelId: rawModelId,
-          effortKey,
-          effortLabel: meta.label,
-          effortShort: meta.short,
-          rank: meta.rank,
+          effortKey: parsed.effortKey,
+          effortLabel: parsed.meta.label,
+          effortShort: parsed.meta.short,
+          rank: parsed.meta.rank,
           active: isActive
         });
       }
-      for (const grp of groups) {
+
+      for (const grp of regularGroups) {
         grp.variants.sort((a, b) => a.rank - b.rank);
         grp.hasEffortChoice = grp.variants.length > 1;
+        grp.summaryText = pickPreferredGroupEffort(grp.variants, grp.defaultEffort);
       }
-      return groups;
+
+      const explicitPlanners = (orchestratorConfig?.canSelectPlanner !== false && Array.isArray(orchestratorConfig?.planners))
+        ? orchestratorConfig.planners.filter((p) => p && p.label && typeof p.value === 'number' && p.value > 0)
+        : [];
+      const hasMultiTierOrch = explicitPlanners.length > 0 || rawOrchEntries.length > 1;
+
+      if (hasMultiTierOrch) {
+        const primaryOrchModelId = String(
+          orchestratorConfig?.orchestratorModelId ||
+          rawOrchEntries.find((o) => o.active)?.modelId ||
+          rawOrchEntries[0]?.modelId ||
+          'gemini-pro-orchestrator-neon'
+        );
+        const subMap = new Map();
+        const subModels = [];
+        const resolveOrchModelIdForSlug = (baseId) => {
+          const slugMatch = String(baseId || '').match(/(neon|argon|carbon|hydrogen)/i);
+          const slug = slugMatch ? slugMatch[1].toLowerCase() : '';
+          if (slug === 'carbon') {
+            return rawOrchEntries.find((o) => /^gemini-pro-orchestrator$/i.test(o.modelId))?.modelId || primaryOrchModelId;
+          }
+          if (slug) {
+            return rawOrchEntries.find((o) => o.modelId.toLowerCase().includes('orchestrator-' + slug))?.modelId || primaryOrchModelId;
+          }
+          return primaryOrchModelId;
+        };
+
+        if (explicitPlanners.length > 0) {
+          const pickedPlannerId = String(orchestratorConfig?.pickedModelId || '').trim();
+          const defaultPlannerId = String(orchestratorConfig?.defaultModelId || '').trim();
+          for (const p of explicitPlanners) {
+            const parsed = parseClientModelVariant(p.label, p.modelId);
+            const isPlannerNew = Boolean(p.isNew || /^new$/i.test(String(p.tagTitle || '').trim()));
+            const isPlannerActive = Boolean(curIsOrch && (p.selected || (pickedPlannerId && parsed.rawModelId === pickedPlannerId)));
+            if (!subMap.has(parsed.baseModelId)) {
+              const sm = {
+                baseModelId: parsed.baseModelId,
+                baseLabel: parsed.baseLabel,
+                shortName: shortenOrchestratorSubLabel(parsed.baseLabel),
+                isNew: false,
+                active: false,
+                hasEffortChoice: false,
+                variants: []
+              };
+              subMap.set(parsed.baseModelId, sm);
+              subModels.push(sm);
+            }
+            const sm = subMap.get(parsed.baseModelId);
+            if (isPlannerNew) sm.isNew = true;
+            if (isPlannerActive) sm.active = true;
+            const dispTitle = 'Orchestrator · ' + sm.shortName + (parsed.meta.short ? (' (' + parsed.meta.short + ')') : '');
+            sm.variants.push({
+              label: dispTitle,
+              modelId: resolveOrchModelIdForSlug(parsed.baseModelId),
+              orchestrator: true,
+              plannerModelId: parsed.rawModelId,
+              plannerLabel: parsed.rawLabel,
+              plannerValue: Number(p.value),
+              effortKey: parsed.effortKey,
+              effortLabel: parsed.meta.label,
+              effortShort: parsed.meta.short,
+              rank: parsed.meta.rank,
+              isDefault: Boolean(defaultPlannerId && parsed.rawModelId === defaultPlannerId),
+              active: isPlannerActive
+            });
+          }
+        } else {
+          // 无 orchestratorPlanners / orchestratorPick 时，严禁借常规模型伪造不可执行的推理强度选项，仅展示真实可直选的 Orchestrator 基座
+          for (const oe of rawOrchEntries) {
+            const slugM = oe.label.match(/Orchestrator\\s*\\(([^)]+)\\)/i) || oe.modelId.match(/orchestrator-(neon|argon|carbon|hydrogen)/i);
+            const famHint = slugM ? slugM[1].trim() : oe.label;
+            subModels.push({
+              baseModelId: oe.modelId || famHint.toLowerCase(),
+              baseLabel: oe.label,
+              shortName: famHint,
+              isNew: Boolean(oe.isNew),
+              active: Boolean(oe.active),
+              hasEffortChoice: false,
+              variants: [{
+                label: oe.label,
+                modelId: oe.modelId,
+                orchestrator: false,
+                effortKey: '',
+                effortLabel: '',
+                effortShort: '',
+                rank: 1,
+                active: Boolean(oe.active)
+              }]
+            });
+          }
+        }
+
+        const PREFERRED_SUB_ORDER = ['neon', 'carbon', 'argon', 'opus', 'sonnet', 'hydrogen'];
+        subModels.sort((a, b) => {
+          const idxA = PREFERRED_SUB_ORDER.findIndex((k) => a.baseModelId.includes(k));
+          const idxB = PREFERRED_SUB_ORDER.findIndex((k) => b.baseModelId.includes(k));
+          const rA = idxA >= 0 ? idxA : 99;
+          const rB = idxB >= 0 ? idxB : 99;
+          return rA - rB;
+        });
+        for (const sm of subModels) {
+          sm.variants.sort((a, b) => a.rank - b.rank);
+          sm.hasEffortChoice = sm.variants.length > 1;
+          sm.summaryText = pickPreferredGroupEffort(sm.variants);
+        }
+
+        const activeSub = subModels.find((sm) => sm.active) || subModels[0] || null;
+        const activeSubVar = activeSub?.variants?.find((v) => v.active)
+          || activeSub?.variants?.find((v) => v.isDefault)
+          || activeSub?.variants?.find((v) => v.effortKey === 'high')
+          || activeSub?.variants?.[activeSub.variants.length - 1]
+          || null;
+        const orchSummary = activeSub
+          ? (activeSub.shortName + (activeSubVar?.effortShort ? (' · ' + activeSubVar.effortShort) : ''))
+          : '';
+        regularGroups.push({
+          baseModelId: primaryOrchModelId,
+          baseLabel: 'Orchestrator',
+          active: Boolean(curIsOrch || rawOrchEntries.some((o) => o.active)),
+          isNew: Boolean(orchestratorConfig?.isNew || rawOrchEntries.some((o) => o.isNew) || subModels.some((sm) => sm.isNew)),
+          isOrchestrator: true,
+          hasSubModels: subModels.length > 0,
+          hasEffortChoice: false,
+          summaryText: orchSummary,
+          variants: [],
+          subModels
+        });
+      } else if (rawOrchEntries.length === 1) {
+        const singleOrch = rawOrchEntries[0];
+        regularGroups.push({
+          baseModelId: singleOrch.modelId || 'orchestrator',
+          baseLabel: singleOrch.label,
+          active: Boolean(singleOrch.active),
+          isNew: Boolean(singleOrch.isNew),
+          isOrchestrator: false,
+          hasSubModels: false,
+          hasEffortChoice: false,
+          summaryText: '',
+          variants: [{
+            label: singleOrch.label,
+            modelId: singleOrch.modelId,
+            effortKey: '',
+            effortLabel: singleOrch.label,
+            effortShort: '',
+            rank: 1,
+            active: Boolean(singleOrch.active)
+          }],
+          subModels: []
+        });
+      }
+
+      return regularGroups;
     }
 
     async function applyModelSelection(opt) {
       if (!opt) return;
       showToast('正在切换至 ' + opt.label + '…');
       try {
-        const r = await apiAction({ action: 'select-model', label: opt.label, modelId: opt.modelId });
-        if (r?.ok) showToast('已切换到 ' + (r.actionResult?.model || opt.label));
-        else showToast(r?.error || r?.actionResult?.error || '切换模型失败，请确认电脑端窗口在线后重试');
+        const reqBody = {
+          action: 'select-model',
+          label: opt.label,
+          modelId: opt.modelId
+        };
+        if (opt.orchestrator) {
+          reqBody.orchestrator = true;
+          if (opt.plannerModelId) reqBody.plannerModelId = opt.plannerModelId;
+          if (opt.plannerLabel) reqBody.plannerLabel = opt.plannerLabel;
+          if (opt.plannerValue) reqBody.plannerValue = opt.plannerValue;
+          if (opt.effortKey) reqBody.effortKey = opt.effortKey;
+        }
+        const r = await apiAction(reqBody);
+        if (r?.ok) {
+          const nextModelTitle = String(r.actionResult?.model || opt.label || '').trim();
+          if (latestSnap && typeof latestSnap === 'object') {
+            if (nextModelTitle) latestSnap.model = nextModelTitle;
+            const selId = String(r.actionResult?.selectedModelId || opt.modelId || '').trim();
+            if (Array.isArray(latestSnap.modelOptions)) {
+              for (const mo of latestSnap.modelOptions) {
+                if (!mo) continue;
+                mo.selected = Boolean(
+                  (selId && mo.modelId === selId) ||
+                  (!opt.orchestrator && nextModelTitle && mo.label === nextModelTitle)
+                );
+              }
+            }
+            if (latestSnap.orchestratorConfig && typeof latestSnap.orchestratorConfig === 'object') {
+              const nextIsOrch = Boolean(opt.orchestrator);
+              latestSnap.orchestratorConfig.active = nextIsOrch;
+              if (nextIsOrch) {
+                const pId = String(r.actionResult?.plannerModelId || opt.plannerModelId || '').trim();
+                const pVal = Number(r.actionResult?.plannerValue || opt.plannerValue || 0);
+                if (pId) latestSnap.orchestratorConfig.pickedModelId = pId;
+                if (pVal > 0) latestSnap.orchestratorConfig.pickedValue = pVal;
+                if (selId) latestSnap.orchestratorConfig.orchestratorModelId = selId;
+                if (Array.isArray(latestSnap.orchestratorConfig.planners)) {
+                  for (const pl of latestSnap.orchestratorConfig.planners) {
+                    if (!pl) continue;
+                    pl.selected = Boolean((pId && pl.modelId === pId) || (pVal > 0 && Number(pl.value) === pVal));
+                  }
+                }
+              } else if (Array.isArray(latestSnap.orchestratorConfig.planners)) {
+                for (const pl of latestSnap.orchestratorConfig.planners) {
+                  if (pl) pl.selected = false;
+                }
+              }
+            }
+          }
+          if ($('model-inline-label') && nextModelTitle) {
+            $('model-inline-label').textContent = nextModelTitle;
+          }
+          if (r.snapshot && typeof renderSnapshot === 'function') {
+            renderSnapshot(r.snapshot);
+          }
+          showToast('已切换到 ' + (nextModelTitle || opt.label));
+        } else {
+          showToast(r?.error || r?.actionResult?.error || '切换模型失败，请确认电脑端窗口在线后重试');
+        }
       } catch (err) {
         showToast(humanizeRemoteError(err?.message, '切换模型失败，请确认电脑端窗口在线后重试'));
       }
@@ -13800,7 +16198,11 @@ function buildMobileAppHtml() {
 
     function openModelPicker() {
       activeSheetState = null;
-      const groups = groupModelsByBaseId(latestSnap?.modelOptions || [], latestSnap?.model || '');
+      const groups = groupModelsByBaseId(
+        latestSnap?.modelOptions || [],
+        latestSnap?.model || '',
+        latestSnap?.orchestratorConfig || null
+      );
       if (!groups.length) {
         showToast('未检测到可用模型列表');
         return;
@@ -13813,20 +16215,25 @@ function buildMobileAppHtml() {
         onBack: null
       });
       const listEl = $('sheet-list');
-      const groupsHtml = groups.map((g, gIdx) => {
-        const activeVar = g.variants.find((v) => v.active);
-        const effPill = (g.hasEffortChoice && activeVar?.effortShort)
-          ? '<span class="mode-pill cur">' + esc(activeVar.effortShort) + '</span>'
+      const groupsHtml = '<div class="model-col-hdr">1. 选择模型</div>' + groups.map((g, gIdx) => {
+        const hasNextStep = Boolean(g.hasSubModels || g.hasEffortChoice);
+        const checkHtml = '<span class="model-opt-check">' + (g.active ? '✓' : '') + '</span>';
+        const newBadge = g.isNew ? '<span class="mode-pill cur model-new-pill">New</span>' : '';
+        const summaryHtml = g.summaryText
+          ? (g.active
+            ? '<span class="mode-pill cur">' + esc(g.summaryText) + '</span>'
+            : '<span class="model-effort-hint">' + esc(g.summaryText) + '</span>')
           : '';
-        const rightTag = g.hasEffortChoice
-          ? ('<span class="lat-badge muted">' + g.variants.length + ' 档 ›</span>')
-          : (g.active ? '<span>✓</span>' : '');
-        return '<button class="sheet-opt' + (g.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" type="button">'
+        const arrowHtml = hasNextStep ? '<span class="model-opt-arrow">›</span>' : '';
+        const dividerHtml = (g.isOrchestrator && g.hasSubModels && gIdx > 0)
+          ? '<div class="model-picker-divider" role="separator"></div>'
+          : '';
+        return dividerHtml
+          + '<button class="sheet-opt' + (g.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" type="button">'
           + '<span class="sheet-opt-left">'
-          + '<span class="sheet-opt-top"><span>' + esc(g.baseLabel) + '</span>' + effPill + '</span>'
-          + (g.baseModelId ? ('<span class="sheet-opt-host">' + esc(g.baseModelId) + '</span>') : '')
+          + '<span class="sheet-opt-top">' + checkHtml + '<span>' + esc(g.baseLabel) + '</span>' + newBadge + '</span>'
           + '</span>'
-          + '<span class="sheet-opt-right">' + rightTag + '</span>'
+          + '<span class="sheet-opt-right">' + summaryHtml + arrowHtml + '</span>'
           + '</button>';
       }).join('');
 
@@ -13834,67 +16241,242 @@ function buildMobileAppHtml() {
         '<div class="sheet-stage-viewport">'
         + '<div id="sheet-stage-track" class="sheet-stage-track">'
         + '<div id="model-group-pane" class="sheet-stage-pane">' + groupsHtml + '</div>'
-        + '<div id="model-effort-pane" class="sheet-stage-pane"></div>'
+        + '<div id="model-submodel-pane" class="sheet-stage-pane" hidden></div>'
+        + '<div id="model-effort-pane" class="sheet-stage-pane is-empty-col"></div>'
         + '</div>'
         + '</div>';
 
       const findPane = (id) => $(id) || listEl.querySelector?.('#' + id) || null;
+      const readIdxAttr = (el, attrName, dsKey) => {
+        if (!el) return NaN;
+        const raw = el.getAttribute?.(attrName) ?? el.dataset?.[dsKey];
+        return raw !== undefined && raw !== null && raw !== '' ? Number(raw) : NaN;
+      };
+      const clearSlidingInPane = (pane) => {
+        pane?.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
+      };
+      const scheduleDeferredPaneClear = (trackEl, clearFn) => {
+        cancelDeferredStageCleanup();
+        if (isDesktopLayout() || !trackEl || typeof trackEl.addEventListener !== 'function') {
+          clearFn();
+          return;
+        }
+        const myCleanSeq = stageCleanupSeq;
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          if (stageCleanupTimer) {
+            clearTimeout(stageCleanupTimer);
+            stageCleanupTimer = null;
+          }
+          try { trackEl.removeEventListener?.('transitionend', onEnd); } catch {}
+          if (myCleanSeq === stageCleanupSeq) clearFn();
+        };
+        const onEnd = (ev) => {
+          if (!ev || ev.target === trackEl) finish();
+        };
+        try { trackEl.addEventListener('transitionend', onEnd); } catch {}
+        stageCleanupTimer = setTimeout(finish, 260);
+      };
+      const renderEffortOptionsHtml = (variants, gIdx, subIdx, colTitle) => {
+        const hdr = '<div class="model-col-hdr">' + esc(colTitle || '推理强度') + '</div>';
+        return hdr + variants.map((v, vIdx) =>
+          '<button class="sheet-opt' + (v.active ? ' active' : '') + '" data-group-idx="' + gIdx + '"'
+          + (Number.isInteger(subIdx) && subIdx >= 0 ? (' data-submodel-idx="' + subIdx + '"') : '')
+          + ' data-variant-idx="' + vIdx + '" type="button">'
+          + '<span class="sheet-opt-left">'
+          + '<span class="sheet-opt-top"><span class="model-opt-check">' + (v.active ? '✓' : '') + '</span><span>' + esc(v.effortLabel) + '</span>' + (v.active ? '<span class="mode-pill cur">当前</span>' : '') + '</span>'
+          + '</span>'
+          + '<span class="sheet-opt-right"></span>'
+          + '</button>'
+        ).join('');
+      };
+      const resetToRootStage = () => {
+        cancelDeferredStageCleanup();
+        const trackEl = findPane('sheet-stage-track');
+        const groupPane = findPane('model-group-pane');
+        const subPane = findPane('model-submodel-pane');
+        const effortPane = findPane('model-effort-pane');
+        if (trackEl) {
+          trackEl.classList.remove('step-effort');
+          trackEl.classList.remove('step-submodel');
+          trackEl.classList.remove('is-three-stage');
+        }
+        clearSlidingInPane(groupPane);
+        scheduleDeferredPaneClear(trackEl, () => {
+          if (subPane) {
+            subPane.hidden = true;
+            subPane.innerHTML = '';
+          }
+          if (effortPane) {
+            effortPane.innerHTML = '';
+            effortPane.classList.add('is-empty-col');
+          }
+        });
+        configureSheetChrome({
+          kind: 'model',
+          title: '切换模型',
+          subText: '',
+          showSpeed: false,
+          onBack: null
+        });
+      };
+      const openOrchestratorSubmodelStage = (g, gIdx, grpBtn) => {
+        cancelDeferredStageCleanup();
+        const trackEl = findPane('sheet-stage-track');
+        const groupPane = findPane('model-group-pane');
+        const subPane = findPane('model-submodel-pane');
+        const effortPane = findPane('model-effort-pane');
+        clearSlidingInPane(groupPane);
+        grpBtn?.classList?.add?.('sliding-out');
+        if (subPane) {
+          subPane.hidden = false;
+          subPane.innerHTML = '<div class="model-col-hdr">2. Orchestrator 编排模型</div>' + g.subModels.map((sm, smIdx) => {
+            const checkHtml = '<span class="model-opt-check">' + (sm.active ? '✓' : '') + '</span>';
+            const newBadge = sm.isNew ? '<span class="mode-pill cur model-new-pill">New</span>' : '';
+            const sumHtml = sm.summaryText
+              ? (sm.active
+                ? '<span class="mode-pill cur">' + esc(sm.summaryText) + '</span>'
+                : '<span class="model-effort-hint">' + esc(sm.summaryText) + '</span>')
+              : '';
+            const arrowHtml = sm.hasEffortChoice ? '<span class="model-opt-arrow">›</span>' : '';
+            return '<button class="sheet-opt' + (sm.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" data-submodel-idx="' + smIdx + '" type="button">'
+              + '<span class="sheet-opt-left">'
+              + '<span class="sheet-opt-top">' + checkHtml + '<span>' + esc(sm.baseLabel) + '</span>' + newBadge + '</span>'
+              + '</span>'
+              + '<span class="sheet-opt-right">' + sumHtml + arrowHtml + '</span>'
+              + '</button>';
+          }).join('');
+        }
+        if (effortPane) {
+          effortPane.innerHTML = '';
+          effortPane.classList.add('is-empty-col');
+        }
+        if (trackEl) {
+          trackEl.classList.remove('step-effort');
+          trackEl.classList.add('is-three-stage');
+          trackEl.classList.add('step-submodel');
+        }
+        configureSheetChrome({
+          kind: 'model-submodel',
+          title: 'Orchestrator',
+          subText: '选择候选编排模型',
+          showSpeed: false,
+          onBack: resetToRootStage
+        });
+      };
+
       listEl.onclick = async (e) => {
         const varBtn = e.target?.closest?.('[data-variant-idx]');
         if (varBtn) {
-          const g = groups[Number(varBtn.dataset.groupIdx)];
-          const v = g?.variants?.[Number(varBtn.dataset.variantIdx)];
+          const gIdx = readIdxAttr(varBtn, 'data-group-idx', 'groupIdx');
+          const subIdx = readIdxAttr(varBtn, 'data-submodel-idx', 'submodelIdx');
+          const vIdx = readIdxAttr(varBtn, 'data-variant-idx', 'variantIdx');
+          const g = groups[gIdx];
+          const v = (Number.isInteger(subIdx) && subIdx >= 0)
+            ? g?.subModels?.[subIdx]?.variants?.[vIdx]
+            : g?.variants?.[vIdx];
           closeSheet();
           if (v) await applyModelSelection(v);
           return;
         }
+        const subBtn = e.target?.closest?.('[data-submodel-idx]');
+        if (subBtn) {
+          const gIdx = readIdxAttr(subBtn, 'data-group-idx', 'groupIdx');
+          const subIdx = readIdxAttr(subBtn, 'data-submodel-idx', 'submodelIdx');
+          const g = groups[gIdx];
+          const sm = g?.subModels?.[subIdx];
+          if (!g || !sm) return;
+          if (!sm.hasEffortChoice) {
+            closeSheet();
+            if (sm.variants[0]) await applyModelSelection(sm.variants[0]);
+            return;
+          }
+          cancelDeferredStageCleanup();
+          const trackEl = findPane('sheet-stage-track');
+          const subPane = findPane('model-submodel-pane');
+          const effortPane = findPane('model-effort-pane');
+          clearSlidingInPane(subPane);
+          subBtn.classList?.add?.('sliding-out');
+          if (effortPane) {
+            effortPane.classList.remove('is-empty-col');
+            effortPane.innerHTML = renderEffortOptionsHtml(sm.variants, gIdx, subIdx, '3. 推理强度');
+          }
+          if (trackEl) {
+            trackEl.classList.remove('step-submodel');
+            trackEl.classList.add('is-three-stage');
+            trackEl.classList.add('step-effort');
+          }
+          configureSheetChrome({
+            kind: 'model-orch-effort',
+            title: sm.baseLabel,
+            subText: 'Orchestrator · 选择推理强度',
+            showSpeed: false,
+            onBack: () => {
+              if (trackEl) {
+                trackEl.classList.remove('step-effort');
+                trackEl.classList.add('is-three-stage');
+                trackEl.classList.add('step-submodel');
+              }
+              clearSlidingInPane(subPane);
+              scheduleDeferredPaneClear(trackEl, () => {
+                if (effortPane) {
+                  effortPane.innerHTML = '';
+                  effortPane.classList.add('is-empty-col');
+                }
+              });
+              configureSheetChrome({
+                kind: 'model-submodel',
+                title: 'Orchestrator',
+                subText: '选择候选编排模型',
+                showSpeed: false,
+                onBack: resetToRootStage
+              });
+            }
+          });
+          return;
+        }
         const grpBtn = e.target?.closest?.('[data-group-idx]');
         if (!grpBtn) return;
-        const gIdx = Number(grpBtn.dataset.groupIdx);
+        const gIdx = readIdxAttr(grpBtn, 'data-group-idx', 'groupIdx');
         const g = groups[gIdx];
         if (!g) return;
+        if (g.hasSubModels) {
+          openOrchestratorSubmodelStage(g, gIdx, grpBtn);
+          return;
+        }
         if (!g.hasEffortChoice) {
           closeSheet();
           await applyModelSelection(g.variants[0]);
           return;
         }
+        cancelDeferredStageCleanup();
         const trackEl = findPane('sheet-stage-track');
         const groupPane = findPane('model-group-pane');
+        const subPane = findPane('model-submodel-pane');
         const effortPane = findPane('model-effort-pane');
-        if (groupPane) {
-          groupPane.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
-        }
+        clearSlidingInPane(groupPane);
         grpBtn.classList?.add?.('sliding-out');
-        if (effortPane) {
-          effortPane.innerHTML = g.variants.map((v, vIdx) =>
-            '<button class="sheet-opt' + (v.active ? ' active' : '') + '" data-group-idx="' + gIdx + '" data-variant-idx="' + vIdx + '" type="button">'
-            + '<span class="sheet-opt-left">'
-            + '<span class="sheet-opt-top"><span>' + esc(v.effortLabel) + '</span>' + (v.active ? '<span class="mode-pill cur">当前</span>' : '') + '</span>'
-            + '<span class="sheet-opt-host">' + esc(v.modelId || v.label) + '</span>'
-            + '</span>'
-            + '<span class="sheet-opt-right">' + (v.active ? '<span>✓</span>' : '') + '</span>'
-            + '</button>'
-          ).join('');
+        if (subPane) {
+          subPane.hidden = true;
+          subPane.innerHTML = '';
         }
-        if (trackEl) trackEl.classList.add('step-effort');
+        if (effortPane) {
+          effortPane.classList.remove('is-empty-col');
+          effortPane.innerHTML = renderEffortOptionsHtml(g.variants, gIdx, -1, '2. 推理强度');
+        }
+        if (trackEl) {
+          trackEl.classList.remove('is-three-stage');
+          trackEl.classList.remove('step-submodel');
+          trackEl.classList.add('step-effort');
+        }
         configureSheetChrome({
           kind: 'model-effort',
           title: g.baseLabel,
-          subText: '选择思考等级 · ' + g.baseModelId,
+          subText: '选择推理强度',
           showSpeed: false,
-          onBack: () => {
-            if (trackEl) trackEl.classList.remove('step-effort');
-            if (groupPane) {
-              groupPane.querySelectorAll?.('.sheet-opt.sliding-out')?.forEach?.((el) => el.classList.remove('sliding-out'));
-            }
-            configureSheetChrome({
-              kind: 'model',
-              title: '切换模型',
-              subText: '',
-              showSpeed: false,
-              onBack: null
-            });
-          }
+          onBack: resetToRootStage
         });
       };
       $('sheet-backdrop').hidden = false;
@@ -14895,24 +17477,185 @@ function buildMobileAppHtml() {
       }
     });
 
-    const fvState = { tab: 'tree', curDir: '', activeRoot: '', showRootList: false, contextKey: '', reqSeq: 0, viewingFile: false, returnTab: 'tree' };
+    const FV_WIDTH_STORAGE_KEY = 'ag_remote_fv_width_v1';
+    const FV_OPEN_STORAGE_KEY = 'ag_remote_fv_open_v1';
+    const FV_DEFAULT_WIDTH = 420;
+    const FV_MIN_WIDTH = 300;
+    const FV_MAX_WIDTH = 680;
+    const fvWinRef = typeof window !== 'undefined' ? window : null;
+    const fvDocRef = typeof document !== 'undefined' ? document : null;
+    const wideWorkbenchMq = (fvWinRef && typeof fvWinRef.matchMedia === 'function')
+      ? fvWinRef.matchMedia('(min-width: 1180px)')
+      : null;
+
+    function clampFvSidebarWidth(raw) {
+      if (raw === null || raw === undefined || typeof raw === 'boolean') return FV_DEFAULT_WIDTH;
+      if (typeof raw === 'string' && raw.trim() === '') return FV_DEFAULT_WIDTH;
+      const n = Math.round(Number(raw));
+      if (!Number.isFinite(n)) return FV_DEFAULT_WIDTH;
+      return Math.max(FV_MIN_WIDTH, Math.min(FV_MAX_WIDTH, n));
+    }
+
+    function readStoredFvSidebarWidth() {
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FV_WIDTH_STORAGE_KEY) : null;
+        return clampFvSidebarWidth(raw);
+      } catch {
+        return FV_DEFAULT_WIDTH;
+      }
+    }
+
+    function readStoredFvOpenPref() {
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FV_OPEN_STORAGE_KEY) : null;
+        if (raw === '0') return false;
+        if (raw === '1') return true;
+        return null;
+      } catch {
+        return null;
+      }
+    }
+
+    function isWideDesktopWorkbench() {
+      if (!fvWinRef) return false;
+      const w = Number(fvWinRef.innerWidth);
+      if (Number.isFinite(w) && w > 0) return w >= 1180;
+      return Boolean(wideWorkbenchMq?.matches);
+    }
+
+    const fvState = {
+      tab: 'tree',
+      curDir: '',
+      activeRoot: '',
+      showRootList: false,
+      contextKey: '',
+      reqSeq: 0,
+      viewingFile: false,
+      returnTab: 'tree',
+      previewItem: null,
+      previewMode: 'render',
+      sandboxRefreshNonce: 0,
+      sidebarWidth: readStoredFvSidebarWidth(),
+      autoDockInitialized: false,
+      openedExplicitly: false,
+      userClosedDesktop: readStoredFvOpenPref() === false
+    };
+
+    function applyFvSidebarWidth(rawPx, persist = false) {
+      const w = clampFvSidebarWidth(rawPx);
+      fvState.sidebarWidth = w;
+      const bd = $('file-viewer-backdrop');
+      if (bd?.style?.setProperty) bd.style.setProperty('--fv-sidebar-w', w + 'px');
+      else if (bd?.style) bd.style.width = w + 'px';
+      fvDocRef?.documentElement?.style?.setProperty?.('--fv-sidebar-w', w + 'px');
+      if (persist) {
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem(FV_WIDTH_STORAGE_KEY, String(w)); } catch {}
+      }
+      return w;
+    }
+    applyFvSidebarWidth(fvState.sidebarWidth, false);
+
     function bumpFvRequestEpoch() {
       fvState.reqSeq = (Number(fvState.reqSeq) || 0) + 1;
       return fvState.reqSeq;
     }
+
+    function syncFvSidebarButtonsAndA11y() {
+      const bd = $('file-viewer-backdrop');
+      const isOpen = Boolean(bd && !bd.hidden);
+      const isWide = isWideDesktopWorkbench();
+      $('btn-files-panel')?.classList?.toggle?.('active', isOpen);
+      $('btn-files-panel')?.setAttribute?.('aria-expanded', isOpen ? 'true' : 'false');
+      const closeBtn = $('fv-close-btn');
+      if (closeBtn) {
+        closeBtn.textContent = isWide ? '⇥ 收起' : '✕ 关闭';
+        closeBtn.title = isWide ? '收起右侧常驻预览边栏' : '关闭预览抽屉';
+      }
+      fvDocRef?.body?.classList?.toggle?.('fv-docked-open', Boolean(isOpen && isWide));
+    }
+
+    function destroyFvSandboxIframes() {
+      const body = $('fv-body');
+      if (!body) return;
+      const frames = Array.from(body.querySelectorAll?.('iframe') || []);
+      if (!frames.length) return;
+      for (const f of frames) {
+        try { f.removeAttribute?.('srcdoc'); f.removeAttribute?.('src'); } catch {}
+        const wrap = f.closest?.('.fv-sandbox-wrap');
+        if (wrap && typeof wrap.remove === 'function') wrap.remove();
+        else if (wrap && wrap.parentElement && typeof wrap.parentElement.removeChild === 'function') wrap.parentElement.removeChild(wrap);
+        else if (typeof f.remove === 'function') f.remove();
+      }
+      if ((body.querySelectorAll?.('iframe') || []).length > 0) {
+        body.innerHTML = '';
+      }
+    }
+
     function closeFileViewerModal() {
       bumpFvRequestEpoch();
+      destroyFvSandboxIframes();
       const bd = $('file-viewer-backdrop');
       if (bd) bd.hidden = true;
+      fvState.openedExplicitly = false;
+      if (isWideDesktopWorkbench()) {
+        fvState.userClosedDesktop = true;
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem(FV_OPEN_STORAGE_KEY, '0'); } catch {}
+      }
+      syncFvSidebarButtonsAndA11y();
     }
-    function syncFvChrome() {
-      const tabsEl = $('fv-tabs');
-      const backBtn = $('fv-back-btn');
-      if (tabsEl) tabsEl.hidden = fvState.viewingFile;
-      if (backBtn) backBtn.hidden = !fvState.viewingFile;
-      $('fv-tab-tree')?.classList.toggle('active', fvState.tab === 'tree');
-      $('fv-tab-changes')?.classList.toggle('active', fvState.tab === 'changes');
+
+    function openFvWorkbenchContainer() {
+      const bd = $('file-viewer-backdrop');
+      if (!bd) return false;
+      bd.hidden = false;
+      fvState.openedExplicitly = true;
+      if (isWideDesktopWorkbench()) {
+        fvState.userClosedDesktop = false;
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem(FV_OPEN_STORAGE_KEY, '1'); } catch {}
+      }
+      applyFvSidebarWidth(fvState.sidebarWidth, false);
+      syncFvSidebarButtonsAndA11y();
+      if (fvState.tab === 'preview' && fvState.previewItem && fvState.previewMode !== 'source' && !$('fv-body')?.querySelector?.('iframe')) {
+        if (fvState.previewItem.kind === 'html' || fvState.previewItem.kind === 'svg') {
+          renderFvPreviewCurrentItem();
+        }
+      }
+      return true;
     }
+
+    function maybeAutoDockWidePreviewSidebar() {
+      if (!isWideDesktopWorkbench()) {
+        const bd = $('file-viewer-backdrop');
+        if (bd && !bd.hidden && !fvState.openedExplicitly) {
+          bumpFvRequestEpoch();
+          destroyFvSandboxIframes();
+          bd.hidden = true;
+          fvState.autoDockInitialized = false;
+          syncFvSidebarButtonsAndA11y();
+        }
+        return false;
+      }
+      if (fvState.autoDockInitialized) return false;
+      fvState.autoDockInitialized = true;
+      if (fvState.userClosedDesktop) {
+        syncFvSidebarButtonsAndA11y();
+        return false;
+      }
+      const bd = $('file-viewer-backdrop');
+      if (!bd) return false;
+      if (bd.hidden) {
+        bd.hidden = false;
+        fvState.openedExplicitly = false;
+        applyFvSidebarWidth(fvState.sidebarWidth, false);
+        syncFvSidebarButtonsAndA11y();
+        ensureFvContextFresh();
+        void loadProjectTreeView('');
+        return true;
+      }
+      syncFvSidebarButtonsAndA11y();
+      return false;
+    }
+
     function trimTrailingSlashes(raw) {
       let s = String(raw || '').trim();
       while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1);
@@ -14960,6 +17703,72 @@ function buildMobileAppHtml() {
       if (!t || !r) return false;
       return t === r || t.startsWith(r + '/');
     }
+    function formatWorkspaceChipLabel(wsPath, allPaths) {
+      const clean = trimTrailingSlashes(wsPath);
+      const parts = clean.split('/').filter(Boolean);
+      const base = parts[parts.length - 1] || clean;
+      const dupCount = (allPaths || []).filter((p) => {
+        const sp = trimTrailingSlashes(p).split('/').filter(Boolean);
+        return (sp[sp.length - 1] || p) === base;
+      }).length;
+      if (dupCount > 1 && parts.length >= 2) {
+        return parts[parts.length - 2] + '/' + base;
+      }
+      return base;
+    }
+    function syncFvPersistentWsBar(customRoots) {
+      const bar = $('fv-ws-persistent-bar');
+      if (!bar) return;
+      const roots = Array.isArray(customRoots) && customRoots.length > 0
+        ? customRoots
+        : resolveCurrentProjectWorkspacePaths();
+      if (!Array.isArray(roots) || roots.length <= 1) {
+        bar.hidden = true;
+        bar.innerHTML = '';
+        return;
+      }
+      bar.hidden = false;
+      const curActRoot = String(fvState.activeRoot || '').trim();
+      const curDir = String(fvState.curDir || '').trim();
+      const isOverview = Boolean(fvState.showRootList || (!curActRoot && !curDir));
+      bar.innerHTML =
+        '<button class="fv-ws-chip fv-ws-top-all' + (isOverview ? ' active' : '') + '" id="fv-ws-top-all" type="button">全部 (' + roots.length + ')</button>'
+        + roots.map((wr) => {
+          const isAct = !isOverview && (curActRoot ? (wr === curActRoot) : isPathInsideWorkspaceRoot(curDir, wr));
+          return '<button class="fv-ws-chip fv-ws-top-switch' + (isAct ? ' active' : '') + '" type="button" data-ws-root="' + esc(wr) + '" title="' + esc(wr) + '">'
+            + '📁 ' + esc(formatWorkspaceChipLabel(wr, roots))
+            + '</button>';
+        }).join('');
+      bar.querySelector('#fv-ws-top-all')?.addEventListener('click', () => {
+        renderWorkspaceRootsOverview(roots);
+      });
+      bar.querySelectorAll('.fv-ws-top-switch').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          const root = chip.getAttribute('data-ws-root') || chip.dataset?.wsRoot || '';
+          if (!root) return;
+          fvState.activeRoot = root;
+          fvState.curDir = root;
+          fvState.showRootList = false;
+          void loadProjectTreeView(root, { workspaceRoot: root });
+        });
+      });
+    }
+    function syncFvChrome() {
+      const tabsEl = $('fv-tabs');
+      const backBtn = $('fv-back-btn');
+      const toolbarEl = $('fv-preview-toolbar');
+      if (tabsEl) tabsEl.hidden = false;
+      if (backBtn) backBtn.hidden = !(fvState.tab === 'preview' && fvState.viewingFile);
+      if (toolbarEl && fvState.tab !== 'preview') {
+        toolbarEl.hidden = true;
+        toolbarEl.innerHTML = '';
+      }
+      $('fv-tab-tree')?.classList.toggle('active', fvState.tab === 'tree');
+      $('fv-tab-changes')?.classList.toggle('active', fvState.tab === 'changes');
+      $('fv-tab-preview')?.classList.toggle('active', fvState.tab === 'preview');
+      syncFvPersistentWsBar();
+      syncFvSidebarButtonsAndA11y();
+    }
     function computeFvContextKey() {
       const cid = String(latestSnap?.activeConversationId || latestSnap?.sessionId || selectedConversationId || '').trim();
       const pid = String(latestSnap?.currentProjectId || '').trim();
@@ -14969,7 +17778,11 @@ function buildMobileAppHtml() {
     function resetFvDirectoryContext(forceOverviewForMulti = false) {
       bumpFvRequestEpoch();
       const wsPaths = resolveCurrentProjectWorkspacePaths();
-      fvState.contextKey = computeFvContextKey();
+      const nextKey = computeFvContextKey();
+      if (fvState.previewItem && fvState.previewItem.contextKey !== nextKey) {
+        fvState.previewItem = null;
+      }
+      fvState.contextKey = nextKey;
       if (wsPaths.length === 1) {
         fvState.activeRoot = wsPaths[0];
         fvState.curDir = wsPaths[0];
@@ -15000,13 +17813,18 @@ function buildMobileAppHtml() {
       return false;
     }
     function syncFvModalOnContextChange() {
+      fvState.previewItem = null;
       const fvBd = $('file-viewer-backdrop');
       if (!fvBd || fvBd.hidden) {
+        destroyFvSandboxIframes();
         fvState.viewingFile = false;
+        fvState.tab = 'tree';
         fvState.returnTab = 'tree';
+        syncFvSidebarButtonsAndA11y();
         return;
       }
-      const targetTab = fvState.viewingFile ? (fvState.returnTab || fvState.tab || 'tree') : (fvState.tab || 'tree');
+      const rawTarget = (fvState.viewingFile || fvState.tab === 'preview') ? (fvState.returnTab || 'tree') : (fvState.tab || 'tree');
+      const targetTab = rawTarget === 'changes' ? 'changes' : 'tree';
       fvState.viewingFile = false;
       fvState.tab = targetTab;
       syncFvChrome();
@@ -15015,19 +17833,6 @@ function buildMobileAppHtml() {
       } else {
         void loadProjectTreeView('');
       }
-    }
-    function formatWorkspaceChipLabel(wsPath, allPaths) {
-      const clean = trimTrailingSlashes(wsPath);
-      const parts = clean.split('/').filter(Boolean);
-      const base = parts[parts.length - 1] || clean;
-      const dupCount = (allPaths || []).filter((p) => {
-        const sp = trimTrailingSlashes(p).split('/').filter(Boolean);
-        return (sp[sp.length - 1] || p) === base;
-      }).length;
-      if (dupCount > 1 && parts.length >= 2) {
-        return parts[parts.length - 2] + '/' + base;
-      }
-      return base;
     }
     function renderCodeWithLineNumbers(text, hlLine) {
       const lines = String(text || '').split(/\\r?\\n/);
@@ -15046,7 +17851,213 @@ function buildMobileAppHtml() {
         return '<span class="fv-code-line' + cls + '">' + esc(ln) + '</span>';
       }).join('\\n') + '</pre>';
     }
-    async function openFilePreviewModal(filePath, hlLine = 0) {
+    function buildSvgPreviewSrcdoc(svgMarkup) {
+      return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        + '<style>html,body{margin:0;padding:12px;display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 24px);background:#fff;overflow:auto}svg{max-width:100%;height:auto}</style>'
+        + '</head><body>' + String(svgMarkup || '') + '</body></html>';
+    }
+    function scrubParentLocationSecrets() {
+      try {
+        if (!fvWinRef || !fvWinRef.location) return true;
+        const loc = fvWinRef.location;
+        const hasSearchOrHash = Boolean((loc.search && loc.search.length > 0) || (loc.hash && loc.hash.length > 0));
+        if (hasSearchOrHash && fvWinRef.history && typeof fvWinRef.history.replaceState === 'function') {
+          fvWinRef.history.replaceState(null, '', loc.pathname || '/');
+        }
+        const combined = String(loc.href || '') + ' ' + String(loc.search || '') + ' ' + String(loc.hash || '');
+        const activeTok = String(pairState?.token || urlToken || '').trim();
+        if (activeTok && combined.includes(activeTok)) return false;
+        if (/[?#&](?:token|passcode|endpoints|spd)=/i.test(combined)) return false;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    function injectSandboxIsolatedBase(rawHtml, kind) {
+      const cleaned = String(rawHtml || '').replace(/<base\\b[^>]*>/gi, '');
+      const cspPolicy = kind === 'svg'
+        ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; script-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'"
+        : "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+      const metaTag = '<meta http-equiv="Content-Security-Policy" content="' + cspPolicy + '">';
+      let pos = 0;
+      const len = cleaned.length;
+      while (pos < len) {
+        while (pos < len && /\\s/.test(cleaned[pos])) pos += 1;
+        if (cleaned.slice(pos, pos + 4) === '<!--') {
+          const endC = cleaned.indexOf('-->', pos + 4);
+          if (endC < 0) break;
+          pos = endC + 3;
+          continue;
+        }
+        const dt = /^<!doctype\\b[^>]*>/i.exec(cleaned.slice(pos));
+        if (dt) {
+          pos += dt[0].length;
+          continue;
+        }
+        break;
+      }
+      const tail = cleaned.slice(pos);
+      const headOpen = /^((?:\\s|<\\!--[\\s\\S]*?-->)*<head\\b[^>]*>)/i.exec(tail);
+      if (headOpen) {
+        return cleaned.slice(0, pos) + headOpen[1] + metaTag + tail.slice(headOpen[1].length);
+      }
+      const htmlOpen = /^((?:\\s|<\\!--[\\s\\S]*?-->)*<html\\b[^>]*>)/i.exec(tail);
+      if (htmlOpen) {
+        const afterHtml = tail.slice(htmlOpen[1].length);
+        const nestedHead = /^((?:\\s|<\\!--[\\s\\S]*?-->)*<head\\b[^>]*>)/i.exec(afterHtml);
+        if (nestedHead) {
+          return cleaned.slice(0, pos) + htmlOpen[1] + nestedHead[1] + metaTag + afterHtml.slice(nestedHead[1].length);
+        }
+        return cleaned.slice(0, pos) + htmlOpen[1] + '<head>' + metaTag + '</head>' + afterHtml;
+      }
+      return cleaned.slice(0, pos) + '<head>' + metaTag + '</head>' + tail;
+    }
+    function mountIsolatedSandboxIframe(containerEl, item) {
+      if (!containerEl || !item) return null;
+      const urlClean = scrubParentLocationSecrets();
+      containerEl.innerHTML = '';
+      const wrap = document.createElement('div');
+      wrap.className = 'fv-sandbox-wrap';
+      const frame = document.createElement('iframe');
+      frame.className = 'fv-sandbox-iframe';
+      // 严禁授予同源权限，强制 opaque null origin 隔离父页面 localStorage / Cookie / 鉴权口令；SVG 彻底禁用脚本
+      frame.setAttribute('sandbox', item.kind === 'svg' ? '' : 'allow-scripts');
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      frame.setAttribute('title', String(item.name || 'HTML') + ' 沙盒预览');
+      frame.setAttribute('data-sandbox-nonce', String(fvState.sandboxRefreshNonce || 0));
+      frame.setAttribute('data-url-scrubbed', urlClean ? '1' : '0');
+      const rawDoc = item.kind === 'svg' ? buildSvgPreviewSrcdoc(item.content || '') : String(item.content || '');
+      const isolatedDoc = injectSandboxIsolatedBase(rawDoc, item.kind);
+      if (urlClean) {
+        try { frame.srcdoc = isolatedDoc; } catch {}
+        frame.setAttribute('srcdoc', isolatedDoc);
+      } else {
+        // 极端环境若 history.replaceState 被阻断导致父 URL 仍含口令参数，自动降级至独立 data: 文档彻底切断 srcdoc baseURI 继承
+        const dataUri = 'data:text/html;charset=utf-8,' + encodeURIComponent(isolatedDoc);
+        try { frame.src = dataUri; } catch {}
+        frame.setAttribute('src', dataUri);
+      }
+      wrap.appendChild(frame);
+      containerEl.appendChild(wrap);
+      return frame;
+    }
+    function renderFvPreviewCurrentItem() {
+      const body = $('fv-body');
+      const title = $('fv-title');
+      const toolbar = $('fv-preview-toolbar');
+      if (!body) return;
+      const item = fvState.previewItem;
+      if (!item || (item.contextKey && item.contextKey !== computeFvContextKey())) {
+        fvState.previewItem = null;
+        fvState.viewingFile = false;
+        if (toolbar) {
+          toolbar.hidden = true;
+          toolbar.innerHTML = '';
+        }
+        if (title) title.textContent = '文件预览';
+        body.innerHTML = renderPanelStateHtml({
+          icon: EMPTY_CHANGES_ICON_SVG,
+          compact: true,
+          title: '尚未选择预览文件',
+          desc: '在「目录」或「产物」中点选任意代码、Markdown 文档或 HTML/SVG 网页文件即可在此查看',
+          actionId: 'fv-preview-go-tree',
+          actionLabel: '浏览项目目录'
+        });
+        body.querySelector('#fv-preview-go-tree')?.addEventListener('click', () => {
+          void loadProjectTreeView(fvState.showRootList ? '' : fvState.curDir, { workspaceRoot: fvState.activeRoot });
+        });
+        return;
+      }
+
+      if (title) title.textContent = item.name || item.path || '文件预览';
+      const canToggleRender = item.kind === 'markdown' || item.kind === 'html' || item.kind === 'svg';
+      const isSandboxKind = item.kind === 'html' || item.kind === 'svg';
+      const mode = canToggleRender ? (fvState.previewMode === 'source' ? 'source' : 'render') : 'source';
+      const hlLine = Number(item.hlLine) || 0;
+
+      if (toolbar) {
+        if (canToggleRender || item.path) {
+          toolbar.hidden = false;
+          const jumpPillHtml = (canToggleRender && hlLine > 0 && mode === 'render')
+            ? ('<button id="fv-jump-line-btn" class="fv-line-jump-pill" type="button" data-target-line="' + hlLine + '">定位第 L' + hlLine + ' 行</button>')
+            : '';
+          const segHtml = canToggleRender
+            ? ('<div class="fv-seg-group" role="group" aria-label="预览模式切换">'
+              + '<button id="fv-mode-render" class="fv-seg-btn' + (mode === 'render' ? ' active' : '') + '" type="button" data-fv-mode="render">预览</button>'
+              + '<button id="fv-mode-source" class="fv-seg-btn' + (mode === 'source' ? ' active' : '') + '" type="button" data-fv-mode="source">源码</button>'
+              + (isSandboxKind ? '<button id="fv-refresh-sandbox" class="fv-seg-btn" type="button" title="刷新沙盒预览">↻ 刷新</button>' : '')
+              + '</div>')
+            : '';
+          toolbar.innerHTML =
+            '<div class="fv-preview-meta">'
+            + '<span class="fv-preview-path" title="' + esc(item.path || item.name || '') + '">' + esc(item.path || item.name || '') + '</span>'
+            + jumpPillHtml
+            + '</div>'
+            + segHtml;
+
+          toolbar.querySelector('#fv-mode-render')?.addEventListener('click', () => {
+            if (fvState.previewMode === 'render') return;
+            fvState.previewMode = 'render';
+            renderFvPreviewCurrentItem();
+          });
+          toolbar.querySelector('#fv-mode-source')?.addEventListener('click', () => {
+            if (fvState.previewMode === 'source') return;
+            fvState.previewMode = 'source';
+            renderFvPreviewCurrentItem();
+          });
+          toolbar.querySelector('#fv-jump-line-btn')?.addEventListener('click', () => {
+            fvState.previewMode = 'source';
+            renderFvPreviewCurrentItem();
+          });
+          toolbar.querySelector('#fv-refresh-sandbox')?.addEventListener('click', () => {
+            fvState.sandboxRefreshNonce = (Number(fvState.sandboxRefreshNonce) || 0) + 1;
+            fvState.previewMode = 'render';
+            if (item.path) {
+              void openFilePreviewModal(item.path, hlLine, { preserveReturnTab: true, forceMode: 'render' });
+            } else {
+              renderFvPreviewCurrentItem();
+            }
+          });
+        } else {
+          toolbar.hidden = true;
+          toolbar.innerHTML = '';
+        }
+      }
+
+      if (item.kind === 'image') {
+        const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(item.path) + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
+        body.innerHTML = '<img src="' + esc(mediaSrc) + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" alt="' + esc(item.name || '') + '" />';
+        return;
+      }
+      if (item.kind === 'binary') {
+        body.innerHTML = renderPanelStateHtml({
+          icon: EMPTY_CHANGES_ICON_SVG,
+          title: '暂不支持直接预览该文件',
+          desc: item.error || ('该文件为二进制或体积较大 (' + formatFileSizeShort(item.size) + ')，暂不支持纯文本预览')
+        });
+        return;
+      }
+      if (item.kind === 'diff') {
+        body.innerHTML = renderUnifiedDiffHtml(item.diff || '');
+        return;
+      }
+      if (item.kind === 'markdown' && mode === 'render') {
+        const htmlContent = renderMarkdownSafe(item.content || '');
+        body.innerHTML = '<div class="md-body fv-md-preview">' + htmlContent + '</div>';
+        return;
+      }
+      if ((item.kind === 'html' || item.kind === 'svg') && mode === 'render') {
+        mountIsolatedSandboxIframe(body, item);
+        return;
+      }
+
+      body.innerHTML = renderCodeWithLineNumbers(item.content || '', hlLine);
+      if (hlLine > 0) {
+        const target = body.querySelector('[data-ln="' + hlLine + '"]');
+        if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
+      }
+    }
+    async function openFilePreviewModal(filePath, hlLine = 0, previewOpts = {}) {
       const bd = $('file-viewer-backdrop');
       const body = $('fv-body');
       const title = $('fv-title');
@@ -15055,16 +18066,25 @@ function buildMobileAppHtml() {
       const reqEpoch = bumpFvRequestEpoch();
       const reqContextKey = computeFvContextKey();
       const reqActiveRoot = String(fvState.activeRoot || '').trim();
-      fvState.returnTab = fvState.tab;
+      if (!previewOpts.preserveReturnTab && fvState.tab !== 'preview') {
+        fvState.returnTab = fvState.tab || 'tree';
+      }
+      fvState.tab = 'preview';
       fvState.viewingFile = true;
-      bd.hidden = false;
+      openFvWorkbenchContainer();
       syncFvChrome();
+      const toolbar = $('fv-preview-toolbar');
+      if (toolbar) {
+        toolbar.hidden = true;
+        toolbar.innerHTML = '';
+      }
       if (title) title.textContent = String(filePath).split('/').pop() || filePath;
       body.innerHTML = renderSkeletonRowsHtml(6);
       const isFileReqStale = () => (
         reqEpoch !== fvState.reqSeq ||
         computeFvContextKey() !== reqContextKey ||
         !fvState.viewingFile ||
+        fvState.tab !== 'preview' ||
         Boolean($('file-viewer-backdrop')?.hidden) ||
         Boolean(reqActiveRoot && fvState.activeRoot && fvState.activeRoot !== reqActiveRoot)
       );
@@ -15078,7 +18098,7 @@ function buildMobileAppHtml() {
           actionLabel: '重试读取'
         });
         const retryBtn = $('fv-file-retry');
-        if (retryBtn) retryBtn.addEventListener('click', () => { void openFilePreviewModal(filePath, hlLine); });
+        if (retryBtn) retryBtn.addEventListener('click', () => { void openFilePreviewModal(filePath, hlLine, previewOpts); });
       };
       try {
         const res = await fetchWithTimeout((apiBase || '') + '/api/file-content?path=' + encodeURIComponent(filePath), { headers: authHeaders(), cache: 'no-store' }, 6000);
@@ -15089,26 +18109,40 @@ function buildMobileAppHtml() {
           showFileErr(data?.error || ('HTTP ' + res.status));
           return;
         }
-        if (title) title.textContent = data.name || filePath;
-        const pathBar = '<div class="fv-path-bar">' + esc(data.path || filePath) + '</div>';
-        if (data.isImage) {
-          const mediaSrc = (apiBase || '') + '/api/media?path=' + encodeURIComponent(data.path) + (apiBase && pairState.token ? ('&token=' + encodeURIComponent(pairState.token)) : '');
-          body.innerHTML = pathBar + '<img src="' + esc(mediaSrc) + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" alt="' + esc(data.name || '') + '" />';
-        } else if (data.isBinary || data.isTooLargeForText) {
-          body.innerHTML = pathBar + renderPanelStateHtml({
-            icon: EMPTY_CHANGES_ICON_SVG,
-            title: '暂不支持直接预览该文件',
-            desc: data.error || ('该文件为二进制或体积较大 (' + formatFileSizeShort(data.size) + ')，暂不支持纯文本预览')
-          });
-        } else if (data.isMarkdown && !hlLine) {
-          body.innerHTML = pathBar + '<div class="md-body">' + renderMarkdownSafe(data.content || '') + '</div>';
+        const resolvedName = data.name || String(filePath).split('/').pop() || filePath;
+        const resolvedPath = data.path || filePath;
+        const extLow = String(data.ext || resolvedName.slice(resolvedName.lastIndexOf('.')) || '').toLowerCase();
+        const isSvgFile = Boolean(data.isSvg || extLow === '.svg');
+        const isHtmlFile = Boolean(data.isHtml || extLow === '.html' || extLow === '.htm');
+        const isMdFile = Boolean(data.isMarkdown || extLow === '.md' || extLow === '.markdown');
+
+        let kind = 'code';
+        if (data.isImage && !isSvgFile) kind = 'image';
+        else if (data.isBinary || data.isTooLargeForText) kind = 'binary';
+        else if (isMdFile) kind = 'markdown';
+        else if (isHtmlFile) kind = 'html';
+        else if (isSvgFile) kind = 'svg';
+
+        fvState.previewItem = {
+          kind,
+          name: resolvedName,
+          path: resolvedPath,
+          content: String(data.content || ''),
+          renderedHtml: typeof data.renderedHtml === 'string' ? data.renderedHtml : '',
+          size: Number(data.size) || 0,
+          error: data.error || '',
+          hlLine: Number(hlLine) || 0,
+          contextKey: reqContextKey
+        };
+        if (previewOpts.forceMode === 'source' || previewOpts.forceMode === 'render') {
+          fvState.previewMode = previewOpts.forceMode;
+        } else if (kind === 'markdown' || kind === 'html' || kind === 'svg') {
+          // Markdown（含聊天内 #L109 行号锚点）与 HTML/SVG 默认进入可视化预览，可随时一键切至源码定位行号
+          fvState.previewMode = 'render';
         } else {
-          body.innerHTML = pathBar + renderCodeWithLineNumbers(data.content || '', hlLine);
-          if (hlLine > 0) {
-            const target = body.querySelector('[data-ln="' + hlLine + '"]');
-            if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
-          }
+          fvState.previewMode = 'source';
         }
+        renderFvPreviewCurrentItem();
       } catch (err) {
         showFileErr(err?.message);
       }
@@ -15162,6 +18196,7 @@ function buildMobileAppHtml() {
         bumpFvRequestEpoch();
         fvState.curDir = '';
         fvState.activeRoot = '';
+        syncFvPersistentWsBar([]);
         body.innerHTML = renderPanelStateHtml({
           icon: EMPTY_FOLDER_ICON_SVG,
           compact: true,
@@ -15191,6 +18226,7 @@ function buildMobileAppHtml() {
         fvState.activeRoot = matchedRoot;
         fvState.showRootList = false;
       }
+      syncFvPersistentWsBar(wsPaths);
 
       const buildWsBarHtml = (roots, curActiveRoot, curDirPath) => {
         if (!Array.isArray(roots) || roots.length <= 1) return '';
@@ -15271,6 +18307,7 @@ function buildMobileAppHtml() {
         if (data.emptyProject) {
           fvState.curDir = '';
           fvState.activeRoot = '';
+          syncFvPersistentWsBar([]);
           body.innerHTML = renderPanelStateHtml({
             icon: EMPTY_FOLDER_ICON_SVG,
             compact: true,
@@ -15285,6 +18322,7 @@ function buildMobileAppHtml() {
           : wsPaths;
         const effectiveActiveRoot = String(data.activeRoot || fvState.activeRoot || '').trim();
         if (effectiveActiveRoot) fvState.activeRoot = effectiveActiveRoot;
+        syncFvPersistentWsBar(effectiveRoots);
 
         const safeParentDir = (data.parentDir && (!effectiveActiveRoot || isPathInsideWorkspaceRoot(data.parentDir, effectiveActiveRoot)))
           ? data.parentDir
@@ -15399,11 +18437,23 @@ function buildMobileAppHtml() {
             if (!art) return;
             if (art.path) { void openFilePreviewModal(art.path, 0); return; }
             bumpFvRequestEpoch();
+            const artName = String(art.name || '生成产物');
+            const artExt = artName.toLowerCase();
+            const artKind = (artExt.endsWith('.html') || artExt.endsWith('.htm')) ? 'html' : (artExt.endsWith('.svg') ? 'svg' : 'markdown');
             fvState.returnTab = 'changes';
+            fvState.tab = 'preview';
             fvState.viewingFile = true;
+            fvState.previewMode = 'render';
+            fvState.previewItem = {
+              kind: artKind,
+              name: artName,
+              path: '',
+              content: String(art.content || ''),
+              hlLine: 0,
+              contextKey: computeFvContextKey()
+            };
             syncFvChrome();
-            if (title) title.textContent = art.name || '生成产物';
-            body.innerHTML = '<div class="md-body">' + renderMarkdownSafe(art.content || '') + '</div>';
+            renderFvPreviewCurrentItem();
           });
         });
         body.querySelectorAll('.fv-diff-row').forEach((btn) => {
@@ -15414,10 +18464,19 @@ function buildMobileAppHtml() {
             if (df.diff) {
               bumpFvRequestEpoch();
               fvState.returnTab = 'changes';
+              fvState.tab = 'preview';
               fvState.viewingFile = true;
+              fvState.previewMode = 'source';
+              fvState.previewItem = {
+                kind: 'diff',
+                name: df.name || df.path || '文件改动',
+                path: df.path || '',
+                diff: String(df.diff || ''),
+                hlLine: 0,
+                contextKey: computeFvContextKey()
+              };
               syncFvChrome();
-              if (title) title.textContent = df.name || df.path || '文件改动';
-              body.innerHTML = '<div class="fv-path-bar">' + esc(df.path || '') + '</div>' + renderUnifiedDiffHtml(df.diff);
+              renderFvPreviewCurrentItem();
             } else if (df.path) {
               void openFilePreviewModal(df.path, 0);
             }
@@ -15427,26 +18486,89 @@ function buildMobileAppHtml() {
         showChangesErr(err?.message);
       }
     }
+    $('fv-body')?.addEventListener('click', (e) => {
+      const fLink = e.target?.closest?.('.md-file-link');
+      if (fLink && fLink.dataset?.filePath) {
+        e.preventDefault();
+        void openFilePreviewModal(fLink.dataset.filePath, Number(fLink.dataset.fileLine || 0));
+      }
+    });
     $('btn-files-panel')?.addEventListener('click', () => {
-      const bd = $('file-viewer-backdrop');
-      if (!bd) return;
-      bd.hidden = false;
+      if (!openFvWorkbenchContainer()) return;
       ensureFvContextFresh();
       void loadProjectTreeView('');
     });
     $('fv-close-btn')?.addEventListener('click', closeFileViewerModal);
     $('file-viewer-backdrop')?.addEventListener('click', (e) => {
-      if (e.target === $('file-viewer-backdrop')) closeFileViewerModal();
+      if (!isWideDesktopWorkbench() && e.target === $('file-viewer-backdrop')) closeFileViewerModal();
     });
     $('fv-back-btn')?.addEventListener('click', () => {
       if (fvState.returnTab === 'changes') void loadSessionChangesView();
-      else void loadProjectTreeView(fvState.curDir, { workspaceRoot: fvState.activeRoot });
+      else void loadProjectTreeView(fvState.showRootList ? '' : fvState.curDir, { workspaceRoot: fvState.activeRoot });
     });
     $('fv-tab-tree')?.addEventListener('click', () => {
       ensureFvContextFresh();
       void loadProjectTreeView(fvState.showRootList ? '' : fvState.curDir, { workspaceRoot: fvState.activeRoot });
     });
     $('fv-tab-changes')?.addEventListener('click', () => { void loadSessionChangesView(); });
+    $('fv-tab-preview')?.addEventListener('click', () => {
+      bumpFvRequestEpoch();
+      ensureFvContextFresh();
+      if (fvState.tab !== 'preview') fvState.returnTab = fvState.tab || 'tree';
+      fvState.tab = 'preview';
+      fvState.viewingFile = Boolean(fvState.previewItem);
+      syncFvChrome();
+      renderFvPreviewCurrentItem();
+    });
+
+    let fvResizeDragState = null;
+    const fvResizeHandleEl = $('fv-resize-handle');
+    if (fvResizeHandleEl) {
+      fvResizeHandleEl.addEventListener('pointerdown', (e) => {
+        if (!isWideDesktopWorkbench()) return;
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        try { fvResizeHandleEl.setPointerCapture?.(e.pointerId); } catch {}
+        fvResizeDragState = {
+          pointerId: e.pointerId,
+          startX: Number(e.clientX) || 0,
+          startWidth: fvState.sidebarWidth || FV_DEFAULT_WIDTH
+        };
+        fvResizeHandleEl.classList.add('is-resizing');
+        fvDocRef?.body?.classList?.add?.('fv-resizing');
+      });
+    }
+    fvWinRef?.addEventListener?.('pointermove', (e) => {
+      if (!fvResizeDragState || (e?.pointerId !== undefined && e.pointerId !== fvResizeDragState.pointerId)) return;
+      const dx = (Number(e.clientX) || 0) - fvResizeDragState.startX;
+      applyFvSidebarWidth(fvResizeDragState.startWidth - dx, false);
+    });
+    const finishFvResizeDrag = (e) => {
+      if (!fvResizeDragState || (e?.pointerId !== undefined && e.pointerId !== fvResizeDragState.pointerId)) return;
+      fvResizeDragState = null;
+      fvResizeHandleEl?.classList?.remove?.('is-resizing');
+      fvDocRef?.body?.classList?.remove?.('fv-resizing');
+      applyFvSidebarWidth(fvState.sidebarWidth, true);
+    };
+    fvWinRef?.addEventListener?.('pointerup', finishFvResizeDrag);
+    fvWinRef?.addEventListener?.('pointercancel', finishFvResizeDrag);
+
+    try {
+      if (fvWinRef) {
+        fvWinRef.__fvWorkbenchHooks = {
+          getState: () => fvState,
+          isWideDesktopWorkbench,
+          clampFvSidebarWidth,
+          applyFvSidebarWidth,
+          openFilePreviewModal,
+          loadProjectTreeView,
+          loadSessionChangesView,
+          closeFileViewerModal,
+          renderMarkdownSafe,
+          renderSnapshot
+        };
+      }
+    } catch {}
 
     function readAttachmentFile(file) {
       if ((file?.size || 0) > 15 * 1024 * 1024) {
@@ -15805,7 +18927,32 @@ function buildMobileAppHtml() {
       });
     }
 
+    function normalizeClientFolderEntryPath(rawVal) {
+      let s = String(rawVal || '').trim();
+      if (!s) return '';
+      if (/^file:\\/\\//i.test(s)) {
+        try {
+          const u = new URL(s);
+          s = decodeURIComponent(u.pathname || '');
+        } catch {
+          s = s.replace(/^file:\\/\\/+/i, '/');
+        }
+      }
+      if (s.length > 1) s = s.replace(/\\/+$/, '');
+      return s;
+    }
+
     const projBrowserState = {
+      mode: 'create',
+      editingProjectId: '',
+      detailSeq: 0,
+      detailLoading: false,
+      detailLoaded: false,
+      detailError: '',
+      selectedFolders: [],
+      userTouchedFolders: false,
+      userTouchedName: false,
+      dirLoadSeq: 0,
       currentPath: '',
       parentPath: null,
       showHidden: false,
@@ -15817,10 +18964,110 @@ function buildMobileAppHtml() {
       submitting: false
     };
 
+    function isPathInSelectedFolders(candidatePath) {
+      const norm = normalizeClientFolderEntryPath(candidatePath);
+      if (!norm) return false;
+      return projBrowserState.selectedFolders.some((f) => normalizeClientFolderEntryPath(f.path) === norm);
+    }
+
+    function addFolderToProjSelection(rawPath, isGitHint) {
+      if (projBrowserState.mode === 'edit' && (projBrowserState.detailLoading || !projBrowserState.detailLoaded)) {
+        showToast(projBrowserState.detailError || '正在读取项目完整目录配置，请稍候');
+        return false;
+      }
+      const norm = normalizeClientFolderEntryPath(rawPath);
+      if (!norm) return false;
+      if (isPathInSelectedFolders(norm)) {
+        showToast('该目录已在项目目录列表中');
+        return false;
+      }
+      projBrowserState.userTouchedFolders = true;
+      projBrowserState.selectedFolders.push({
+        path: norm,
+        isGitRepo: Boolean(isGitHint)
+      });
+      if (projBrowserState.mode === 'create') {
+        const nameIn = $('proj-name-input');
+        if (nameIn && !String(nameIn.value || '').trim()) {
+          const baseSeg = norm.split('/').filter(Boolean).pop() || '';
+          if (baseSeg) nameIn.value = baseSeg;
+        }
+      }
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
+      syncCreateProjectSubmitUi();
+      return true;
+    }
+
+    function removeFolderFromProjSelection(idx) {
+      if (projBrowserState.mode === 'edit' && (projBrowserState.detailLoading || !projBrowserState.detailLoaded)) {
+        showToast(projBrowserState.detailError || '正在读取项目完整目录配置，请稍候');
+        return false;
+      }
+      const i = Number(idx);
+      if (!Number.isInteger(i) || i < 0 || i >= projBrowserState.selectedFolders.length) return false;
+      if (projBrowserState.mode === 'edit' && projBrowserState.selectedFolders.length <= 1) {
+        showToast('至少需要保留 1 个有效的项目目录');
+        return false;
+      }
+      projBrowserState.userTouchedFolders = true;
+      projBrowserState.selectedFolders.splice(i, 1);
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
+      syncCreateProjectSubmitUi();
+      return true;
+    }
+
+    function renderProjSelectedFoldersBox() {
+      const boxEl = $('proj-folders-box');
+      if (!boxEl) return;
+      const isEdit = projBrowserState.mode === 'edit';
+      const list = projBrowserState.selectedFolders;
+      if (isEdit && projBrowserState.detailLoading) {
+        boxEl.innerHTML =
+          '<div class="proj-folders-hdr"><span>已绑定项目目录 · 正在读取完整配置…</span></div>' +
+          '<div class="proj-folders-hint">正在从电脑端读取该项目的全部绑定目录，读取完成前暂不可修改或保存，以防丢失多目录配置。</div>';
+        return;
+      }
+      if (isEdit && !projBrowserState.detailLoaded) {
+        const errMsg = projBrowserState.detailError || '读取项目完整目录配置失败，请重试';
+        boxEl.innerHTML =
+          '<div class="proj-folders-hdr" style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+            '<span>无法读取完整绑定目录</span>' +
+            '<button id="proj-detail-retry-btn" class="proj-add-folder-btn" type="button">重新读取详情</button>' +
+          '</div>' +
+          '<div class="proj-folders-hint">' + esc(errMsg) + '（完整详情读取成功前已禁止保存，避免误删其他已绑定目录）</div>';
+        return;
+      }
+      if (!isEdit && list.length === 0) {
+        boxEl.innerHTML =
+          '<div class="proj-folders-hdr"><span>多目录工作区（可选）</span></div>' +
+          '<div class="proj-folders-hint">点击上方「＋ 加入项目目录」可连续添加多个文件夹；未手动加入时默认使用当前浏览目录创建项目。</div>';
+        return;
+      }
+      const titleLabel = isEdit
+        ? ('已绑定项目目录 (' + list.length + ') · 至少保留 1 个')
+        : ('已选项目目录 (' + list.length + ')');
+      const lockRemove = isEdit && list.length <= 1;
+      const rowsHtml = list.map((item, idx) => {
+        const primaryBadge = idx === 0 ? '<span class="proj-folder-primary-pill">主目录</span>' : '';
+        const rmTitle = lockRemove ? '至少保留 1 个有效项目目录' : '移除此目录';
+        return '<div class="proj-folder-chip" data-proj-folder-row="' + idx + '">' +
+          '<span class="proj-icon">' + FOLDER_SM_SVG + '</span>' +
+          '<span class="proj-folder-chip-path" title="' + esc(item.path) + '">' + esc(item.path) + '</span>' +
+          primaryBadge +
+          '<button class="proj-folder-rm-btn" data-rm-proj-folder="' + idx + '" type="button" title="' + esc(rmTitle) + '" aria-label="' + esc(rmTitle) + '"' + (lockRemove ? ' disabled' : '') + '>×</button>' +
+          '</div>';
+      }).join('');
+      boxEl.innerHTML =
+        '<div class="proj-folders-hdr"><span>' + esc(titleLabel) + '</span></div>' +
+        '<div class="proj-folders-list">' + rowsHtml + '</div>';
+    }
+
     function renderProjModalSummary() {
       const sumEl = $('proj-selected-summary');
       if (!sumEl) return;
-      if (projBrowserState.navFailedError && projBrowserState.existingProject) {
+      if (projBrowserState.mode === 'create' && projBrowserState.navFailedError && projBrowserState.existingProject) {
         sumEl.classList.add('is-warn');
         const exName = projBrowserState.existingProject.name || $('proj-name-input')?.value || '';
         const headline = projBrowserState.justCreatedButNavFailed
@@ -15834,20 +19081,63 @@ function buildMobileAppHtml() {
       }
       sumEl.classList.remove('is-warn');
       const repoBadge = projBrowserState.isGitRepo ? 'Git 仓库' : '普通目录';
-      const linkedHint = projBrowserState.existingProject
-        ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」（填写同名可直接进入，或填写新名称另建）')
+      const isEdit = projBrowserState.mode === 'edit';
+      const canShowLinkedHint = !isEdit && projBrowserState.existingProject && (
+        projBrowserState.selectedFolders.length === 0 ||
+        (projBrowserState.selectedFolders.length === 1 &&
+          normalizeClientFolderEntryPath(projBrowserState.selectedFolders[0]?.path) === normalizeClientFolderEntryPath(projBrowserState.currentPath))
+      );
+      const linkedHint = canShowLinkedHint
+        ? (' · 已关联项目「' + projBrowserState.existingProject.name + '」')
         : '';
+      const curPath = projBrowserState.currentPath;
+      const alreadyAdded = Boolean(curPath && isPathInSelectedFolders(curPath));
+      const editDetailNotReady = isEdit && (projBrowserState.detailLoading || !projBrowserState.detailLoaded);
+      const addDisabled = !curPath || alreadyAdded || projBrowserState.submitting || editDetailNotReady;
+      const addLabel = alreadyAdded ? '✓ 已在目录列表' : '＋ 加入项目目录';
       sumEl.innerHTML =
-        '<div><strong>当前选中目录</strong> (' + esc(repoBadge) + esc(linkedHint) + ')</div>' +
-        '<div class="proj-summary-path">' + esc(projBrowserState.currentPath) + '</div>';
+        '<div class="proj-summary-top">' +
+          '<span><strong>当前浏览目录</strong> (' + esc(repoBadge + linkedHint) + ')</span>' +
+          '<button id="proj-add-folder-btn" class="proj-add-folder-btn" type="button"' + (addDisabled ? ' disabled' : '') + '>' + esc(addLabel) + '</button>' +
+        '</div>' +
+        '<div class="proj-summary-path">' + esc(curPath || '正在读取电脑目录…') + '</div>';
     }
 
     function syncCreateProjectSubmitUi() {
       const submitBtn = $('proj-create-submit');
       if (!submitBtn) return;
       const typedName = String($('proj-name-input')?.value || '').trim();
+      const isEdit = projBrowserState.mode === 'edit';
+      if (isEdit) {
+        if (projBrowserState.submitting) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = '正在保存项目设置…';
+          return;
+        }
+        if (projBrowserState.detailLoading) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = '正在加载项目设置…';
+          return;
+        }
+        if (!projBrowserState.detailLoaded) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = '项目详情读取失败，无法保存';
+          return;
+        }
+        const hasValidFolders = projBrowserState.selectedFolders.length >= 1;
+        submitBtn.disabled = !hasValidFolders || !typedName;
+        submitBtn.textContent = '保存项目设置';
+        return;
+      }
       const ex = projBrowserState.existingProject;
-      const matchesExisting = Boolean(ex && typedName && typedName.toLowerCase() === String(ex.name || '').toLowerCase());
+      const effectiveCount = projBrowserState.selectedFolders.length;
+      const matchesExisting = Boolean(
+        effectiveCount <= 1 &&
+        ex &&
+        typedName &&
+        typedName.toLowerCase() === String(ex.name || '').toLowerCase() &&
+        (!effectiveCount || normalizeClientFolderEntryPath(projBrowserState.selectedFolders[0]?.path) === normalizeClientFolderEntryPath(projBrowserState.currentPath))
+      );
       if (projBrowserState.submitting) {
         submitBtn.disabled = true;
         submitBtn.textContent = (projBrowserState.navFailedError && matchesExisting)
@@ -15855,10 +19145,12 @@ function buildMobileAppHtml() {
           : '正在创建并打开项目…';
         return;
       }
-      const hasPath = Boolean(projBrowserState.currentPath);
+      const hasPath = Boolean(effectiveCount > 0 || projBrowserState.currentPath);
       submitBtn.disabled = !hasPath || !typedName;
       if (matchesExisting) {
         submitBtn.textContent = (projBrowserState.navFailedError ? '重试进入已有项目「' : '进入已有项目「') + ex.name + '」';
+      } else if (effectiveCount > 1) {
+        submitBtn.textContent = '创建多目录项目 (' + effectiveCount + ' 个目录) 并进入对话';
       } else {
         submitBtn.textContent = '创建项目并进入对话';
       }
@@ -15914,11 +19206,13 @@ function buildMobileAppHtml() {
       }
 
       renderProjModalSummary();
+      renderProjSelectedFoldersBox();
 
       syncCreateProjectSubmitUi();
     }
 
     async function loadHostDirListing(targetPath) {
+      const myDirSeq = ++projBrowserState.dirLoadSeq;
       projBrowserState.loading = true;
       const listEl = $('proj-dir-list');
       if (listEl && (!listEl.children.length || listEl.querySelector?.('.empty-state-card'))) {
@@ -15932,6 +19226,7 @@ function buildMobileAppHtml() {
         if (projBrowserState.showHidden) params.push('showHidden=1');
         const q = '/api/fs/dirs' + (params.length ? ('?' + params.join('&')) : '');
         const res = await fetchWithTimeout((apiBase || '') + q, { headers: authHeaders(), cache: 'no-store' }, 5000);
+        if (myDirSeq !== projBrowserState.dirLoadSeq) return false;
         if (res.status === 401) { location.reload(); return false; }
         const data = await res.json().catch(() => null);
         if (!res.ok || !data || data.ok === false) {
@@ -15941,6 +19236,7 @@ function buildMobileAppHtml() {
         renderDirBrowserData(data);
         return true;
       } catch (err) {
+        if (myDirSeq !== projBrowserState.dirLoadSeq) return false;
         projBrowserState.loading = false;
         const readableErr = humanizeRemoteError(err?.message, '读取电脑目录失败，请检查电脑端连接后重试');
         if (listEl && !projBrowserState.currentPath) {
@@ -15964,20 +19260,129 @@ function buildMobileAppHtml() {
     async function openCreateProjectModal() {
       const backdrop = $('proj-modal-backdrop');
       if (!backdrop) return;
+      projBrowserState.mode = 'create';
+      projBrowserState.editingProjectId = '';
+      projBrowserState.detailSeq++;
+      projBrowserState.detailLoading = false;
+      projBrowserState.detailLoaded = false;
+      projBrowserState.detailError = '';
+      projBrowserState.selectedFolders = [];
+      projBrowserState.userTouchedFolders = false;
+      projBrowserState.userTouchedName = false;
       projBrowserState.navFailedError = '';
       projBrowserState.justCreatedButNavFailed = false;
+      const titleEl = $('proj-modal-title');
+      if (titleEl) titleEl.textContent = '新建项目 · 选择电脑目录';
+      $('proj-modal-dialog')?.setAttribute?.('aria-label', '新建项目');
       if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
       if ($('proj-mkdir-input')) $('proj-mkdir-input').value = '';
       if ($('proj-name-input')) $('proj-name-input').value = '';
       backdrop.hidden = false;
       resetModalSheetShift();
       syncViewportHeight();
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
       syncCreateProjectSubmitUi();
       const initialPath = projBrowserState.currentPath || '';
       await loadHostDirListing(initialPath);
     }
 
+    async function loadEditProjectDetail(projectId, initialBrowseHint) {
+      const pid = String(projectId || '').trim();
+      const backdrop = $('proj-modal-backdrop');
+      if (!pid || !backdrop) return false;
+      const myDetailSeq = ++projBrowserState.detailSeq;
+      projBrowserState.detailLoading = true;
+      projBrowserState.detailLoaded = false;
+      projBrowserState.detailError = '';
+      renderProjModalSummary();
+      renderProjSelectedFoldersBox();
+      syncCreateProjectSubmitUi();
+
+      let browseSeedPath = String(initialBrowseHint || projBrowserState.currentPath || '').trim();
+      try {
+        const detRes = await fetchWithTimeout((apiBase || '') + '/api/projects/detail?id=' + encodeURIComponent(pid), {
+          headers: authHeaders(),
+          cache: 'no-store'
+        }, 4000);
+        if (detRes.status === 401) { location.reload(); return false; }
+        const detJson = await detRes.json().catch(() => null);
+        if (backdrop.hidden || myDetailSeq !== projBrowserState.detailSeq || projBrowserState.mode !== 'edit' || projBrowserState.editingProjectId !== pid) {
+          return false;
+        }
+        if (!detRes.ok || !detJson?.ok || !detJson.project) {
+          throw new Error(detJson?.error || ('读取项目详情失败 (HTTP ' + detRes.status + ')'));
+        }
+        const authFolders = Array.isArray(detJson.project.folders) && detJson.project.folders.length
+          ? detJson.project.folders.map((f) => ({ path: normalizeClientFolderEntryPath(f.path), isGitRepo: Boolean(f.isGitRepo) })).filter((f) => f.path)
+          : (Array.isArray(detJson.project.folderPaths) ? detJson.project.folderPaths.map((p) => ({ path: normalizeClientFolderEntryPath(p), isGitRepo: false })).filter((f) => f.path) : []);
+        if (!authFolders.length) {
+          throw new Error('该项目未包含有效的绑定目录，无法安全编辑');
+        }
+        projBrowserState.detailLoading = false;
+        projBrowserState.detailLoaded = true;
+        projBrowserState.detailError = '';
+        projBrowserState.selectedFolders = authFolders;
+        if (!browseSeedPath) browseSeedPath = authFolders[0].path;
+        if (detJson.project.name && $('proj-name-input') && !projBrowserState.userTouchedName) {
+          $('proj-name-input').value = String(detJson.project.name);
+        }
+        renderProjModalSummary();
+        renderProjSelectedFoldersBox();
+        syncCreateProjectSubmitUi();
+        await loadHostDirListing(browseSeedPath);
+        return true;
+      } catch (err) {
+        if (backdrop.hidden || myDetailSeq !== projBrowserState.detailSeq || projBrowserState.mode !== 'edit' || projBrowserState.editingProjectId !== pid) {
+          return false;
+        }
+        const readableErr = humanizeRemoteError(err?.message, '读取项目完整目录配置失败，请重试');
+        projBrowserState.detailLoading = false;
+        projBrowserState.detailLoaded = false;
+        projBrowserState.detailError = readableErr;
+        projBrowserState.selectedFolders = [];
+        renderProjModalSummary();
+        renderProjSelectedFoldersBox();
+        syncCreateProjectSubmitUi();
+        showToast(readableErr);
+        return false;
+      }
+    }
+
+    async function openEditProjectModal(projectId) {
+      const pid = String(projectId || '').trim();
+      if (!pid || isNonProjectBucket(pid)) return;
+      const backdrop = $('proj-modal-backdrop');
+      if (!backdrop) return;
+      const snapProj = (Array.isArray(latestSnap?.projects) ? latestSnap.projects : []).find((p) => p && p.id === pid) || null;
+      const browseHintRaw = (Array.isArray(snapProj?.workspacePaths) && snapProj.workspacePaths[0]) || snapProj?.path || '';
+      const browseHint = normalizeClientFolderEntryPath(browseHintRaw);
+      projBrowserState.mode = 'edit';
+      projBrowserState.editingProjectId = pid;
+      projBrowserState.detailLoading = true;
+      projBrowserState.detailLoaded = false;
+      projBrowserState.detailError = '';
+      // 严禁在权威详情接口成功返回前用仅含 path 主目录的快照残留初始化可保存目录列表，彻底防止漏读或失败时误删其他已绑定目录
+      projBrowserState.selectedFolders = [];
+      projBrowserState.userTouchedFolders = false;
+      projBrowserState.userTouchedName = false;
+      projBrowserState.navFailedError = '';
+      projBrowserState.justCreatedButNavFailed = false;
+      const titleEl = $('proj-modal-title');
+      if (titleEl) titleEl.textContent = '编辑项目设置';
+      $('proj-modal-dialog')?.setAttribute?.('aria-label', '编辑项目设置');
+      if ($('proj-mkdir-row')) $('proj-mkdir-row').hidden = true;
+      if ($('proj-mkdir-input')) $('proj-mkdir-input').value = '';
+      if ($('proj-name-input')) $('proj-name-input').value = String(snapProj?.name || '');
+      backdrop.hidden = false;
+      resetModalSheetShift();
+      syncViewportHeight();
+      await loadEditProjectDetail(pid, browseHint);
+    }
+
     function closeCreateProjectModal() {
+      projBrowserState.detailSeq++;
+      projBrowserState.dirLoadSeq++;
       const backdrop = $('proj-modal-backdrop');
       if (backdrop && backdrop.contains(document.activeElement)) {
         try { document.activeElement.blur(); } catch {}
@@ -16017,14 +19422,106 @@ function buildMobileAppHtml() {
 
     async function submitCreateProjectModal() {
       if (projBrowserState.submitting) return;
-      const folderPath = String(projBrowserState.currentPath || '').trim();
       const projectName = String($('proj-name-input')?.value || '').trim();
-      if (!folderPath) {
-        showToast('请先选择项目目录');
-        return;
-      }
       if (!projectName) {
         showToast('请输入项目名称');
+        return;
+      }
+
+      if (projBrowserState.mode === 'edit') {
+        if (projBrowserState.detailLoading || !projBrowserState.detailLoaded) {
+          showToast(projBrowserState.detailError || '正在加载项目完整目录配置，完成前暂不可保存');
+          return;
+        }
+        const editPid = String(projBrowserState.editingProjectId || '').trim();
+        const folderPaths = projBrowserState.selectedFolders
+          .map((f) => normalizeClientFolderEntryPath(f.path))
+          .filter(Boolean);
+        if (!editPid) {
+          showToast('缺少目标项目 ID');
+          return;
+        }
+        if (!folderPaths.length) {
+          showToast('请至少保留 1 个有效的项目目录');
+          return;
+        }
+        projBrowserState.submitting = true;
+        syncCreateProjectSubmitUi();
+        const editStartEpoch = ++clientSyncEpoch;
+        invalidateInflightSnapshotPolls();
+        try {
+          const res = await fetchWithTimeout((apiBase || '') + '/api/projects/update', {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({
+              id: editPid,
+              name: projectName,
+              folderPaths,
+              targetId: currentTargetId || undefined
+            })
+          }, 8000);
+          if (res.status === 401) { location.reload(); return; }
+          const data = await res.json().catch(() => null);
+          if (!res.ok || !data || data.ok === false) {
+            throw new Error(data?.error || ('保存项目设置失败 (HTTP ' + res.status + ')'));
+          }
+          const updatedName = String(data.project?.name || projectName).trim();
+          const updatedPaths = Array.isArray(data.project?.workspacePaths) && data.project.workspacePaths.length
+            ? data.project.workspacePaths
+            : folderPaths;
+          if (latestSnap && Array.isArray(latestSnap.projects)) {
+            for (const p of latestSnap.projects) {
+              if (p && p.id === editPid) {
+                p.name = updatedName;
+                p.workspacePaths = updatedPaths.slice();
+                p.path = updatedPaths[0] || '';
+                p.workspacePath = updatedPaths[0] || '';
+              }
+            }
+            if (latestSnap.currentProjectId === editPid) {
+              latestSnap.currentProjectName = updatedName;
+              latestSnap.currentWorkspacePaths = updatedPaths.slice();
+              latestSnap.currentProjectPath = updatedPaths[0] || '';
+            }
+          }
+          if (getEffectiveSelectedProject(latestSnap).id === editPid) {
+            setUserSelectedProject(editPid, updatedName);
+          }
+          let appliedEditSnap = false;
+          if (data.snapshot) {
+            appliedEditSnap = renderSnapshot(data.snapshot, {
+              reqStartEpoch: editStartEpoch,
+              advanceFloorOnApply: true
+            });
+            if (appliedEditSnap) invalidateInflightSnapshotPolls();
+          }
+          if (!appliedEditSnap && latestSnap) {
+            renderConversationList(latestSnap);
+            syncNewChatButtonUi(latestSnap);
+            if ($('conv-project-badge') && latestSnap.currentProjectId === editPid) {
+              $('conv-project-badge').textContent = updatedName;
+            }
+          }
+          closeCreateProjectModal();
+          showToast('已保存项目「' + updatedName + '」设置');
+        } catch (err) {
+          showToast(err?.message || '保存项目设置失败');
+        } finally {
+          projBrowserState.submitting = false;
+          syncCreateProjectSubmitUi();
+          if (!snapshotInflight) schedulePoll();
+        }
+        return;
+      }
+
+      const explicitPaths = projBrowserState.selectedFolders
+        .map((f) => normalizeClientFolderEntryPath(f.path))
+        .filter(Boolean);
+      const fallbackSingle = String(projBrowserState.currentPath || '').trim();
+      const folderPaths = explicitPaths.length > 0 ? explicitPaths : (fallbackSingle ? [fallbackSingle] : []);
+      const folderPath = folderPaths[0] || '';
+      if (!folderPaths.length) {
+        showToast('请先选择项目目录');
         return;
       }
       projBrowserState.submitting = true;
@@ -16034,13 +19531,18 @@ function buildMobileAppHtml() {
       const myNavSeq = ++lastNavActionSeq;
       invalidateInflightSnapshotPolls();
       try {
-        const ex = projBrowserState.existingProject;
+        const ex = (
+          folderPaths.length === 1 &&
+          projBrowserState.existingProject &&
+          normalizeClientFolderEntryPath(folderPaths[0]) === normalizeClientFolderEntryPath(projBrowserState.currentPath)
+        ) ? projBrowserState.existingProject : null;
         const forceNew = Boolean(ex && ex.name && projectName.toLowerCase() !== String(ex.name).toLowerCase());
         const res = await fetchWithTimeout((apiBase || '') + '/api/projects', {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             folderPath,
+            folderPaths,
             name: projectName,
             forceNew,
             existingProjectId: (!forceNew && ex?.id) ? ex.id : undefined,
@@ -16159,6 +19661,7 @@ function buildMobileAppHtml() {
       if (val) void loadHostDirListing(val);
     });
     $('proj-name-input')?.addEventListener('input', () => {
+      projBrowserState.userTouchedName = true;
       const typedName = String($('proj-name-input')?.value || '').trim();
       const ex = projBrowserState.existingProject;
       if (projBrowserState.navFailedError && (!ex || typedName.toLowerCase() !== String(ex.name || '').toLowerCase())) {
@@ -16168,7 +19671,29 @@ function buildMobileAppHtml() {
       }
       syncCreateProjectSubmitUi();
     });
+    $('proj-selected-summary')?.addEventListener('click', (e) => {
+      const addBtn = e.target?.closest?.('#proj-add-folder-btn');
+      if (addBtn && !addBtn.disabled && !addBtn.hasAttribute?.('disabled') && projBrowserState.currentPath) {
+        addFolderToProjSelection(projBrowserState.currentPath, projBrowserState.isGitRepo);
+      }
+    });
+    $('proj-folders-box')?.addEventListener('click', (e) => {
+      const retryDetBtn = e.target?.closest?.('#proj-detail-retry-btn');
+      if (retryDetBtn && projBrowserState.mode === 'edit' && projBrowserState.editingProjectId) {
+        void loadEditProjectDetail(projBrowserState.editingProjectId);
+        return;
+      }
+      const rmBtn = e.target?.closest?.('[data-rm-proj-folder]');
+      if (rmBtn && !rmBtn.disabled && !rmBtn.hasAttribute?.('disabled')) {
+        removeFolderFromProjSelection(rmBtn.getAttribute('data-rm-proj-folder'));
+      }
+    });
     $('proj-create-submit')?.addEventListener('click', () => { void submitCreateProjectModal(); });
+
+    $('btn-sort-projects')?.addEventListener('click', () => {
+      if (convViewMode !== 'projects') return;
+      setProjectSortMode(!projSortMode);
+    });
 
     const convViewTabsEl = $('conv-view-tabs');
     if (convViewTabsEl) {
@@ -16179,9 +19704,13 @@ function buildMobileAppHtml() {
         if (nextMode !== 'projects' && nextMode !== 'recent') return;
         if (convViewMode === nextMode) return;
         convViewMode = nextMode;
+        if (convViewMode !== 'projects' && projSortMode) projSortMode = false;
         saveConvUiPrefs();
         if (latestSnap) renderConversationList(latestSnap);
-        else syncConvTabsUi();
+        else {
+          syncConvTabsUi();
+          syncSortProjectsButtonUi(0);
+        }
       });
     }
     if ($('drawer-nav-bar')) {
@@ -16193,7 +19722,170 @@ function buildMobileAppHtml() {
       });
     }
 
+    function clearProjectDragVisuals() {
+      const listEl = $('conv-list');
+      if (!listEl) return;
+      listEl.querySelectorAll?.('.proj-group.is-dragging,.proj-group.drag-over-before,.proj-group.drag-over-after')?.forEach?.((el) => {
+        el.classList.remove('is-dragging', 'drag-over-before', 'drag-over-after');
+      });
+    }
+
+    function resolveDropTargetFromClientY(clientY, excludePid) {
+      const listEl = $('conv-list');
+      if (!listEl || !Number.isFinite(clientY)) return null;
+      const groups = Array.from(listEl.querySelectorAll?.('.proj-group[data-orderable-proj="1"]') || []);
+      for (const grp of groups) {
+        const pid = grp.getAttribute('data-proj-group-id') || '';
+        if (!pid || pid === excludePid) continue;
+        const rect = grp.getBoundingClientRect?.();
+        if (!rect || rect.height <= 0) continue;
+        if (clientY >= rect.top && clientY <= rect.bottom) {
+          const midY = rect.top + rect.height / 2;
+          return { el: grp, pid, placement: clientY < midY ? 'before' : 'after' };
+        }
+      }
+      return null;
+    }
+
+    $('conv-list').addEventListener('dragstart', (e) => {
+      const grp = e.target?.closest?.('.proj-group[data-orderable-proj="1"]');
+      if (!grp || !(projSortMode || isDesktopPointerFineEnv())) {
+        e.preventDefault?.();
+        return;
+      }
+      const pid = grp.getAttribute('data-proj-group-id') || '';
+      if (!pid || isNonProjectBucket(pid)) {
+        e.preventDefault?.();
+        return;
+      }
+      activeDragProjectId = pid;
+      grp.classList.add('is-dragging');
+      try {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', pid);
+      } catch {}
+    });
+
+    $('conv-list').addEventListener('dragover', (e) => {
+      if (!activeDragProjectId) return;
+      const hit = resolveDropTargetFromClientY(e.clientY, activeDragProjectId);
+      clearProjectDragVisuals();
+      const srcEl = $('conv-list')?.querySelector?.('.proj-group[data-proj-group-id="' + CSS.escape(activeDragProjectId) + '"]');
+      srcEl?.classList?.add?.('is-dragging');
+      if (!hit) return;
+      e.preventDefault?.();
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+      hit.el.classList.add(hit.placement === 'after' ? 'drag-over-after' : 'drag-over-before');
+    });
+
+    $('conv-list').addEventListener('drop', (e) => {
+      if (!activeDragProjectId) return;
+      e.preventDefault?.();
+      const srcPid = activeDragProjectId;
+      const hit = resolveDropTargetFromClientY(e.clientY, srcPid);
+      activeDragProjectId = '';
+      clearProjectDragVisuals();
+      if (pendingConvListRerender) {
+        pendingConvListRerender = false;
+        if (latestSnap) renderConversationList(latestSnap);
+      }
+      if (hit && hit.pid && hit.pid !== srcPid) {
+        void reorderProjectBeforeOrAfter(srcPid, hit.pid, hit.placement);
+      }
+    });
+
+    $('conv-list').addEventListener('dragend', () => {
+      activeDragProjectId = '';
+      clearProjectDragVisuals();
+      if (pendingConvListRerender) {
+        pendingConvListRerender = false;
+        if (latestSnap) renderConversationList(latestSnap);
+      }
+    });
+
+    $('conv-list').addEventListener('pointerdown', (e) => {
+      if (!projSortMode) return;
+      const handleEl = e.target?.closest?.('[data-proj-drag-handle]');
+      if (!handleEl) return;
+      const pid = handleEl.getAttribute('data-proj-drag-handle') || '';
+      if (!pid || isNonProjectBucket(pid)) return;
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      try { handleEl.setPointerCapture?.(e.pointerId); } catch {}
+      const grp = handleEl.closest?.('.proj-group[data-orderable-proj="1"]');
+      grp?.classList?.add?.('is-dragging');
+      touchDragState = { pointerId: e.pointerId, srcPid: pid, targetPid: '', placement: 'before' };
+    });
+
+    $('conv-list').addEventListener('pointermove', (e) => {
+      if (!touchDragState || e.pointerId !== touchDragState.pointerId) return;
+      e.preventDefault?.();
+      const hit = resolveDropTargetFromClientY(e.clientY, touchDragState.srcPid);
+      clearProjectDragVisuals();
+      const srcGrp = Array.from($('conv-list')?.querySelectorAll?.('.proj-group[data-orderable-proj="1"]') || [])
+        .find((el) => el.getAttribute('data-proj-group-id') === touchDragState.srcPid);
+      srcGrp?.classList?.add?.('is-dragging');
+      if (hit) {
+        touchDragState.targetPid = hit.pid;
+        touchDragState.placement = hit.placement;
+        hit.el.classList.add(hit.placement === 'after' ? 'drag-over-after' : 'drag-over-before');
+      } else {
+        touchDragState.targetPid = '';
+      }
+    });
+
+    const finishTouchProjectDrag = (e) => {
+      if (!touchDragState || (e?.pointerId !== undefined && e.pointerId !== touchDragState.pointerId)) return;
+      const { srcPid, targetPid, placement } = touchDragState;
+      touchDragState = null;
+      clearProjectDragVisuals();
+      if (pendingConvListRerender) {
+        pendingConvListRerender = false;
+        if (latestSnap) renderConversationList(latestSnap);
+      }
+      if (srcPid && targetPid && srcPid !== targetPid) {
+        void reorderProjectBeforeOrAfter(srcPid, targetPid, placement);
+      }
+    };
+    $('conv-list').addEventListener('pointerup', finishTouchProjectDrag);
+    $('conv-list').addEventListener('pointercancel', () => {
+      touchDragState = null;
+      clearProjectDragVisuals();
+      if (pendingConvListRerender) {
+        pendingConvListRerender = false;
+        if (latestSnap) renderConversationList(latestSnap);
+      }
+    });
+
+    try {
+      window.__projSortHooks = {
+        getSortMode: () => projSortMode,
+        setSortMode: setProjectSortMode,
+        moveProjectOrderRelative,
+        reorderProjectBeforeOrAfter,
+        commitProjectOrder,
+        getOrderedProjectIds: () => getCurrentOrderableProjectIds(latestSnap),
+        renderSnapshot
+      };
+    } catch {}
+
     $('conv-list').addEventListener('click', async (e) => {
+      const sortMoveBtn = e.target?.closest?.('.proj-sort-btn');
+      if (sortMoveBtn) {
+        e.stopPropagation();
+        const pid = sortMoveBtn.getAttribute('data-proj-id') || '';
+        const dir = sortMoveBtn.getAttribute('data-proj-move') || '';
+        if (pid && dir && !sortMoveBtn.disabled) {
+          await moveProjectOrderRelative(pid, dir);
+        }
+        return;
+      }
+
+      if (e.target?.closest?.('[data-proj-drag-handle]')) {
+        e.stopPropagation();
+        return;
+      }
+
       const emptyActBtn = e.target?.closest?.('[data-empty-action]');
       if (emptyActBtn) {
         const act = emptyActBtn.getAttribute('data-empty-action');
@@ -16203,6 +19895,14 @@ function buildMobileAppHtml() {
           const eff = getEffectiveSelectedProject(latestSnap);
           await startNewConversationInProject(eff.id, eff.name);
         }
+        return;
+      }
+
+      const editProjBtn = e.target?.closest?.('.proj-edit-btn');
+      if (editProjBtn) {
+        e.stopPropagation();
+        const pid = editProjBtn.getAttribute('data-edit-proj') || '';
+        if (pid) await openEditProjectModal(pid);
         return;
       }
 
@@ -16220,6 +19920,7 @@ function buildMobileAppHtml() {
       if (toggleBtn) {
         const pid = toggleBtn.getAttribute('data-proj-toggle') || '';
         if (!pid) return;
+        if (projSortMode) return;
         const wasSelected = getEffectiveSelectedProject(latestSnap).id === pid;
         const clickedChev = Boolean(e.target?.closest?.('.proj-chev'));
         const isEmptyGroup = Boolean(toggleBtn.closest?.('.proj-group')?.classList?.contains('is-empty'));
@@ -16394,12 +20095,20 @@ function buildMobileAppHtml() {
       } else {
         syncSidebarA11y();
       }
+      if (typeof syncFvSidebarButtonsAndA11y === 'function') syncFvSidebarButtonsAndA11y();
+      if (latestSnap && typeof maybeAutoDockWidePreviewSidebar === 'function') {
+        maybeAutoDockWidePreviewSidebar();
+      }
       if (typeof autoGrow === 'function') autoGrow();
     };
     window.addEventListener('resize', handleLayoutChange);
     if (desktopMq) {
       if (typeof desktopMq.addEventListener === 'function') desktopMq.addEventListener('change', handleLayoutChange);
       else if (typeof desktopMq.addListener === 'function') desktopMq.addListener(handleLayoutChange);
+    }
+    if (wideWorkbenchMq) {
+      if (typeof wideWorkbenchMq.addEventListener === 'function') wideWorkbenchMq.addEventListener('change', handleLayoutChange);
+      else if (typeof wideWorkbenchMq.addListener === 'function') wideWorkbenchMq.addListener(handleLayoutChange);
     }
     syncSidebarA11y();
 
@@ -16410,9 +20119,13 @@ function buildMobileAppHtml() {
       const t = e.touches[0];
       const isOpen = backdropEl.classList.contains('open');
       const target = e.target;
+      if (touchDragState || activeDragProjectId || target?.closest?.('[data-proj-drag-handle], .proj-sort-actions')) {
+        swipeState = null;
+        return;
+      }
       if (!isOpen) {
-        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden || ($('file-viewer-backdrop') && !$('file-viewer-backdrop').hidden)) return;
-        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail, .fv-ws-bar')) return;
+        if (!$('quota-drawer').hidden || !$('sheet-backdrop').hidden || !$('proj-modal-backdrop').hidden || (!isWideDesktopWorkbench() && $('file-viewer-backdrop') && !$('file-viewer-backdrop').hidden)) return;
+        if (target?.closest?.('pre, .md-table-wrap, .chips, textarea, select, #msg-rail, .fv-ws-bar, .fv-ws-persistent-bar, .fv-preview-toolbar, .fv-resize-handle')) return;
         if (t.clientX > window.innerWidth * 0.85) return;
       }
       swipeState = {
@@ -16426,6 +20139,7 @@ function buildMobileAppHtml() {
     }, { passive: true });
 
     document.addEventListener('touchmove', (e) => {
+      if (touchDragState || activeDragProjectId) { swipeState = null; return; }
       if (!swipeState || isDesktopLayout() || e.touches.length !== 1) return;
       const t = e.touches[0];
       const dx = t.clientX - swipeState.startX;
@@ -16593,8 +20307,10 @@ function buildMobileAppHtml() {
           const maxH = isDesktopLayout() ? 180 : 112;
           ta.style.height = Math.min(maxH, Math.max(28, ta.scrollHeight)) + 'px';
           if (wasBusyWhenSent) {
+            const normQueueCmp = (s) => String(s || '').replace(/[\u2066-\u2069\u200B-\u200D\uFEFF]/g, '').replace(/\\s+/g, ' ').trim();
+            const normTargetTxt = normQueueCmp(text);
             const snapToRender = (r?.snapshot && r.snapshot.ok !== false) ? r.snapshot : latestSnap;
-            if (snapToRender && (!Array.isArray(snapToRender.queuedMessages) || !snapToRender.queuedMessages.some((q) => String(q?.text || '').trim() === text.trim()))) {
+            if (snapToRender && (!Array.isArray(snapToRender.queuedMessages) || !snapToRender.queuedMessages.some((q) => normQueueCmp(q?.text) === normTargetTxt))) {
               const curQ = Array.isArray(snapToRender.queuedMessages) ? snapToRender.queuedMessages.slice() : [];
               curQ.push({ source: 'optimistic', stepIndex: -1, text, status: 'queued' });
               snapToRender.queuedMessages = curQ;
@@ -16697,9 +20413,11 @@ function isAllowedPrivateOrigin(rawOrigin, extraOrigin = '', allowedTailscaleDns
   try {
     const u = new URL(rawOrigin);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-    if (extraOrigin) {
+    const extraOrigins = Array.isArray(extraOrigin) ? extraOrigin : [extraOrigin];
+    for (const eo of extraOrigins) {
+      if (!eo) continue;
       try {
-        const eu = new URL(extraOrigin);
+        const eu = new URL(eo);
         if (u.origin === eu.origin) return true;
       } catch {}
     }
@@ -17645,7 +21363,226 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let cachedUsageData = null;
   let cachedUsageAt = 0;
   const dispatchedQueueDeletes = new Map();
-  const DISPATCHED_QUEUE_TTL_MS = 5 * 60 * 1000;
+  const maxDispatchedQueueDeletes = Number(options.maxDispatchedQueueDeletes) > 0 ? Number(options.maxDispatchedQueueDeletes) : 2048;
+  const evictedDispatchedDeleteBloom = new Uint8Array(8192);
+  const unknownDispatchedQueueSends = new Map();
+  const maxUnknownQueueSends = Number(options.maxUnknownQueueSends) > 0 ? Number(options.maxUnknownQueueSends) : 2048;
+  const evictedUnknownQueueBloom = new Uint8Array(8192);
+  const cascadesWithEvictedUnresolvedQueue = new Set();
+  const cascadesWithUnknownDomSend = new Set();
+  const addBoundedCascadeSet = (setObj, cid, maxEntries = 2048) => {
+    const cleanCid = String(cid || '').trim();
+    if (!cleanCid) return;
+    if (setObj.has(cleanCid)) setObj.delete(cleanCid);
+    while (setObj.size >= maxEntries) {
+      const oldestCid = setObj.values().next().value;
+      if (oldestCid === undefined) break;
+      setObj.delete(oldestCid);
+    }
+    setObj.add(cleanCid);
+  };
+  const inflightQueueDispatches = new Map();
+  const inflightDomQueueCascades = new Set();
+  const parseCascadeFromQueueKey = (rawKey) => String(rawKey || '').split('::')[0].trim();
+  const normalizeQueueDedupText = (rawText) => stripDisplayMediaSuffixFromQueuedText(String(rawText || ''), true)
+    .replace(/[\u200B-\u200D\u2060\u2066-\u2069\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const bloomPositions = (rawKey, bloom) => {
+    const dig = crypto.createHash('sha256').update(String(rawKey || '')).digest();
+    const totalBits = bloom && bloom.length > 0 ? (bloom.length << 3) : 65536;
+    return [
+      dig.readUInt16BE(0) % totalBits,
+      dig.readUInt16BE(2) % totalBits,
+      dig.readUInt16BE(4) % totalBits,
+      dig.readUInt16BE(6) % totalBits
+    ];
+  };
+  const setBloomBits = (bloom, rawKey) => {
+    for (const bit of bloomPositions(rawKey, bloom)) {
+      bloom[bit >> 3] |= (1 << (bit & 7));
+    }
+  };
+  const testBloomBits = (bloom, rawKey) => bloomPositions(rawKey, bloom).every((bit) => (bloom[bit >> 3] & (1 << (bit & 7))) !== 0);
+  const markUnknownQueueSend = (key, errMsg = '', text = '') => {
+    if (!key) return;
+    if (unknownDispatchedQueueSends.has(key)) unknownDispatchedQueueSends.delete(key);
+    while (unknownDispatchedQueueSends.size >= maxUnknownQueueSends) {
+      const oldest = unknownDispatchedQueueSends.keys().next().value;
+      if (oldest === undefined) break;
+      setBloomBits(evictedUnknownQueueBloom, oldest);
+      const evictedCid = parseCascadeFromQueueKey(oldest);
+      if (evictedCid) addBoundedCascadeSet(cascadesWithEvictedUnresolvedQueue, evictedCid);
+      unknownDispatchedQueueSends.delete(oldest);
+    }
+    unknownDispatchedQueueSends.set(key, {
+      at: getSendClockNow(),
+      error: String(errMsg || ''),
+      text: String(text || '')
+    });
+  };
+  const getUnknownQueueSendError = (key) => {
+    if (!key) return null;
+    const rec = unknownDispatchedQueueSends.get(key);
+    if (rec) return rec.error || '该排队消息此前立即发送响应超时、执行结果未知，已阻止重复发送，请先刷新核对会话消息';
+    if (testBloomBits(evictedUnknownQueueBloom, key)) {
+      return '该排队消息此前立即发送结果未知，已阻止重复发送，请先刷新核对会话消息';
+    }
+    return null;
+  };
+  const hasCascadeInflightQueueSend = (cid) => {
+    const cleanCid = String(cid || '').trim();
+    if (!cleanCid) return false;
+    const prefix = `${cleanCid}::`;
+    for (const k of inflightQueueDispatches.keys()) {
+      if (String(k).startsWith(prefix)) return true;
+    }
+    return false;
+  };
+  const getCascadeUnresolvedQueueSummary = (cid) => {
+    const cleanCid = String(cid || '').trim();
+    const msgIds = new Set();
+    const normTexts = new Set();
+    let hasNonMsgKey = cleanCid ? cascadesWithUnknownDomSend.has(cleanCid) : false;
+    const hasEvicted = cleanCid ? cascadesWithEvictedUnresolvedQueue.has(cleanCid) : false;
+    if (cleanCid) {
+      const prefix = `${cleanCid}::`;
+      const scanEntry = (k, rec) => {
+        const ks = String(k || '');
+        if (!ks.startsWith(prefix)) return;
+        const rest = ks.slice(prefix.length);
+        if (rest.startsWith('msg:')) {
+          const mid = rest.slice(4).trim();
+          if (mid) msgIds.add(mid);
+        } else {
+          hasNonMsgKey = true;
+        }
+        const nt = normalizeQueueDedupText(rec?.text);
+        if (nt) normTexts.add(nt);
+      };
+      for (const [k, rec] of unknownDispatchedQueueSends.entries()) scanEntry(k, rec);
+      for (const [k, rec] of dispatchedQueueDeletes.entries()) scanEntry(k, rec);
+    }
+    return {
+      hasAny: Boolean(hasEvicted || msgIds.size > 0 || hasNonMsgKey),
+      hasEvicted,
+      hasNonMsgKey,
+      msgIds,
+      normTexts
+    };
+  };
+  const getSendClockNow = typeof options.now === 'function' ? options.now : () => Date.now();
+  const recentSendActionCache = new Map();
+  const RECENT_SEND_ACTION_TTL_MS = 60 * 1000;
+  const maxRecentOkSendActions = Number(options.maxRecentOkSendActions) > 0 ? Number(options.maxRecentOkSendActions) : 300;
+  const completedSendActionMeta = new Map();
+  const maxCompletedSendActions = Number(options.maxCompletedSendActions) > 0 ? Number(options.maxCompletedSendActions) : 4096;
+  const completedBloomBytes = Number(options.completedBloomBytes) > 0 ? Number(options.completedBloomBytes) : 8192;
+  const evictedCompletedSendBloom = new Uint8Array(completedBloomBytes);
+  const completedSendSpillPath = path.join(
+    os.tmpdir(),
+    `ag-completed-sends-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.ndjson`
+  );
+  registerCompletedSendSpillFile(completedSendSpillPath);
+  const appendEvictedCompletedSendExact = (key, rec) => {
+    try {
+      const line = `${JSON.stringify({
+        k: String(key || ''),
+        cid: String(rec?.conversationId || ''),
+        ccid: String(rec?.createdConversationId || '')
+      })}\n`;
+      fs.appendFileSync(completedSendSpillPath, line, { encoding: 'utf8', mode: 0o600 });
+    } catch {}
+  };
+  const lookupEvictedCompletedSendExact = (key) => {
+    try {
+      if (!fs.existsSync(completedSendSpillPath)) return null;
+      const lines = fs.readFileSync(completedSendSpillPath, 'utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const ln = lines[i].trim();
+        if (!ln) continue;
+        let parsed = null;
+        try {
+          parsed = JSON.parse(ln);
+        } catch {
+          continue;
+        }
+        if (parsed && parsed.k === key) {
+          return {
+            evicted: true,
+            conversationId: String(parsed.cid || ''),
+            createdConversationId: String(parsed.ccid || '')
+          };
+        }
+      }
+    } catch {}
+    return null;
+  };
+  const markCompletedSendAction = (key, meta = {}) => {
+    if (!key) return;
+    if (completedSendActionMeta.has(key)) completedSendActionMeta.delete(key);
+    while (completedSendActionMeta.size >= maxCompletedSendActions) {
+      const oldestEntry = completedSendActionMeta.entries().next().value;
+      if (!oldestEntry) break;
+      const [oldestKey, oldestRec] = oldestEntry;
+      setBloomBits(evictedCompletedSendBloom, oldestKey);
+      appendEvictedCompletedSendExact(oldestKey, oldestRec);
+      completedSendActionMeta.delete(oldestKey);
+    }
+    completedSendActionMeta.set(key, {
+      at: getSendClockNow(),
+      conversationId: String(meta?.conversationId || '').trim(),
+      createdConversationId: String(meta?.createdConversationId || '').trim()
+    });
+  };
+  const getCompletedSendAction = (key) => {
+    if (!key) return null;
+    const rec = completedSendActionMeta.get(key);
+    if (rec) return rec;
+    // 布隆位图仅作为负向预过滤器避免常规新消息发生磁盘读取；命中时必须经精确归档键逐字比对通过才可返回已完成，彻底杜绝布隆假阳性静默吞掉合法新消息
+    if (!testBloomBits(evictedCompletedSendBloom, key)) {
+      return null;
+    }
+    return lookupEvictedCompletedSendExact(key);
+  };
+  const unknownSendActionMap = new Map();
+  const maxUnknownSendActions = Number(options.maxUnknownSendActions) > 0 ? Number(options.maxUnknownSendActions) : 2048;
+  const evictedUnknownSendBloom = new Uint8Array(8192);
+  const markUnknownSendAction = (key, errMsg = '') => {
+    if (!key) return;
+    recentSendActionCache.delete(key);
+    if (unknownSendActionMap.has(key)) unknownSendActionMap.delete(key);
+    while (unknownSendActionMap.size >= maxUnknownSendActions) {
+      const oldest = unknownSendActionMap.keys().next().value;
+      if (oldest === undefined) break;
+      setBloomBits(evictedUnknownSendBloom, oldest);
+      unknownSendActionMap.delete(oldest);
+    }
+    unknownSendActionMap.set(key, { at: getSendClockNow(), error: String(errMsg || '') });
+  };
+  const getUnknownSendActionError = (key) => {
+    if (!key) return null;
+    const rec = unknownSendActionMap.get(key);
+    if (rec) return rec.error || '上次发送请求超时或结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认';
+    if (testBloomBits(evictedUnknownSendBloom, key)) {
+      return '上次发送请求结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认';
+    }
+    return null;
+  };
+  const pruneRecentSendActions = () => {
+    const now = getSendClockNow();
+    for (const [k, rec] of recentSendActionCache.entries()) {
+      if (!rec || (!rec.inflight && (now - rec.at) > RECENT_SEND_ACTION_TTL_MS)) {
+        recentSendActionCache.delete(k);
+      }
+    }
+    while (recentSendActionCache.size > maxRecentOkSendActions) {
+      const oldest = recentSendActionCache.keys().next().value;
+      if (oldest === undefined) break;
+      if (recentSendActionCache.get(oldest)?.inflight) break;
+      recentSendActionCache.delete(oldest);
+    }
+  };
   const stagedEditUploadsByKey = new Map();
   let nextStagedUploadId = 1;
   const STAGED_EDIT_UPLOADS_TTL_MS = 30 * 60 * 1000;
@@ -17733,26 +21670,24 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     return 1;
   };
   const markDispatchedQueueDelete = (key, text = '', meta = {}) => {
-    const now = Date.now();
-    for (const [k, v] of dispatchedQueueDeletes.entries()) {
-      if (!v || (now - v.at) > DISPATCHED_QUEUE_TTL_MS) dispatchedQueueDeletes.delete(k);
-    }
-    if (dispatchedQueueDeletes.size >= 500 && !dispatchedQueueDeletes.has(key)) {
+    if (!key) return;
+    if (dispatchedQueueDeletes.has(key)) dispatchedQueueDeletes.delete(key);
+    while (dispatchedQueueDeletes.size >= maxDispatchedQueueDeletes) {
       const oldest = dispatchedQueueDeletes.keys().next().value;
-      if (oldest !== undefined) dispatchedQueueDeletes.delete(oldest);
+      if (oldest === undefined) break;
+      setBloomBits(evictedDispatchedDeleteBloom, oldest);
+      const evictedCid = parseCascadeFromQueueKey(oldest);
+      if (evictedCid) addBoundedCascadeSet(cascadesWithEvictedUnresolvedQueue, evictedCid);
+      dispatchedQueueDeletes.delete(oldest);
     }
-    dispatchedQueueDeletes.set(key, { at: now, text, ...(meta && typeof meta === 'object' ? meta : {}) });
+    dispatchedQueueDeletes.set(key, { at: getSendClockNow(), text: String(text || ''), ...(meta && typeof meta === 'object' ? meta : {}) });
   };
   const getDispatchedQueueDelete = (key) => {
-    const rec = dispatchedQueueDeletes.get(key);
-    if (!rec) return null;
-    if ((Date.now() - rec.at) > DISPATCHED_QUEUE_TTL_MS) {
-      dispatchedQueueDeletes.delete(key);
-      return null;
-    }
-    return rec;
+    if (!key) return null;
+    return dispatchedQueueDeletes.get(key) || null;
   };
-  const hasDispatchedQueueDelete = (key) => Boolean(getDispatchedQueueDelete(key));
+  const isEvictedDispatchedQueueDelete = (key) => Boolean(key && !dispatchedQueueDeletes.has(key) && testBloomBits(evictedDispatchedDeleteBloom, key));
+  const hasDispatchedQueueDelete = (key) => Boolean(dispatchedQueueDeletes.has(key) || isEvictedDispatchedQueueDelete(key));
   try {
     lastMtimeMs = fs.statSync(getRemoteConfigPath()).mtimeMs;
   } catch {}
@@ -17785,17 +21720,357 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
   let lastCompletedUnreadCount = 0;
   let pushWatcherTimer = null;
   let pushPollInFlight = false;
+  const convNotifyPreviewCache = new Map();
+  const convConfirmedTurnCache = new Map();
+
+  const rememberConfirmedTurn = (cid, updatedAt, stepCount) => {
+    const id = String(cid || '').trim();
+    const stepCnt = Math.max(0, Number(stepCount) || 0);
+    const upd = Math.max(0, Number(updatedAt) || 0);
+    if (!id || stepCnt <= 0) return;
+    if (convConfirmedTurnCache.size >= 500 && !convConfirmedTurnCache.has(id)) {
+      const oldest = convConfirmedTurnCache.keys().next().value;
+      if (oldest !== undefined) convConfirmedTurnCache.delete(oldest);
+    }
+    convConfirmedTurnCache.set(id, { updatedAt: upd, stepCount: stepCnt });
+  };
+
+  const isStepTerminalStatus = (raw) => {
+    const s = String(raw || '').trim().toUpperCase();
+    return Boolean(s && /(DONE|COMPLETED|FINISHED|SUCCEEDED|FAILED|CANCELLED|CANCELED|REJECTED|ERROR)/.test(s) && !/(WAITING|PENDING|PROPOSED|RUNNING)/.test(s));
+  };
+
+  const isCommandStepAlreadyExecuted = (st) => {
+    const rc = st?.runCommand || st?.commandAction || st?.commandStatus || st?.proposedCommand || null;
+    if (!rc || typeof rc !== 'object') return isStepTerminalStatus(st?.status);
+    if (rc.exitCode !== undefined && rc.exitCode !== null) return true;
+    if (rc.output || rc.stdout || rc.stderr || rc.combinedOutput) return true;
+    if (isStepTerminalStatus(rc.status || st?.status)) return true;
+    return false;
+  };
+
+  const extractWaitingSummaryFromStepList = (steps) => {
+    if (!Array.isArray(steps) || !steps.length) return '';
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const st = steps[i];
+      if (!st || typeof st !== 'object') continue;
+      if (st.userInput || String(st.type || '').toUpperCase().includes('USER_INPUT')) break;
+
+      const askObj = st?.askQuestion || st?.userInteraction || null;
+      if (askObj && typeof askObj === 'object') {
+        if (askObj.response !== undefined || askObj.answers !== undefined || isStepTerminalStatus(askObj.status || st?.status)) {
+          break;
+        }
+        const askText = askObj.question || askObj.prompt || '';
+        if (askText && String(askText).trim()) return String(askText).trim();
+      }
+
+      const pr = st.plannerResponse;
+      const rawCalls = [];
+      if (st?.metadata?.toolCall) rawCalls.push(st.metadata.toolCall);
+      if (Array.isArray(st?.toolCalls)) rawCalls.push(...st.toolCalls);
+      if (Array.isArray(pr?.toolCalls)) rawCalls.push(...pr.toolCalls);
+      let fallbackToolName = '';
+      for (const tc of rawCalls) {
+        if (!tc || typeof tc !== 'object') continue;
+        if (!pr && isStepTerminalStatus(tc.status || st?.status)) {
+          return '';
+        }
+        let args = tc.arguments && typeof tc.arguments === 'object' ? tc.arguments : null;
+        if (!args && typeof tc.argumentsJson === 'string' && tc.argumentsJson.trim()) {
+          try { args = JSON.parse(tc.argumentsJson); } catch {}
+        }
+        const toolName = String(tc.name || tc.toolName || '').trim();
+        if (args && typeof args === 'object') {
+          const firstQ = Array.isArray(args.questions) ? args.questions[0]?.question : (args.question || '');
+          if (firstQ && String(firstQ).trim()) return String(firstQ).trim();
+          const argCmd = args.CommandLine || args.commandLine || args.command || '';
+          if (argCmd && String(argCmd).trim()) return `待执行命令: ${String(argCmd).trim()}`;
+        }
+        if (toolName && !fallbackToolName) fallbackToolName = toolName;
+      }
+
+      if (pr && typeof pr === 'object') {
+        const replyRaw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
+        const hasPrTools = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
+        if (replyRaw && (hasPrTools || !isStopHookBlockedSystemStep(steps[i + 1], st, steps, i + 1))) {
+          return replyRaw;
+        }
+        if (fallbackToolName) return `等待授权工具: ${fallbackToolName}`;
+        if (replyRaw || pr.thinking || pr.thought || hasPrTools) break;
+      } else if (fallbackToolName) {
+        return `等待授权工具: ${fallbackToolName}`;
+      }
+
+      const cmdLine = st?.runCommand?.commandLine || st?.runCommand?.proposedCommandLine || st?.runCommand?.command
+        || st?.commandAction?.commandLine || st?.commandStatus?.commandLine || st?.proposedCommand?.commandLine || '';
+      if (cmdLine && String(cmdLine).trim()) {
+        if (!isCommandStepAlreadyExecuted(st)) {
+          return `待执行命令: ${String(cmdLine).trim()}`;
+        }
+        break;
+      }
+
+      if (st.toolResponse || st.commandOutput || isStepTerminalStatus(st?.status)) {
+        break;
+      }
+    }
+    return '';
+  };
+
+  const extractReplyPreviewFromMessages = (messages) => {
+    if (!Array.isArray(messages) || !messages.length) return '';
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (!m) continue;
+      if (m.role === 'user') break;
+      if (m.role === 'assistant' && String(m.text || '').trim()) {
+        return sanitizeNotificationPreview(m.text, 150, 420);
+      }
+    }
+    return '';
+  };
+
+  const extractReplyPreviewFromStepList = (steps) => {
+    if (!Array.isArray(steps) || !steps.length) return '';
+    const msgs = extractMessagesFromTrajectorySteps(steps, { lazyHtml: true });
+    const fromMsgs = extractReplyPreviewFromMessages(msgs);
+    if (fromMsgs) return fromMsgs;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const st = steps[i];
+      if (!st || typeof st !== 'object') continue;
+      if (st.userInput || String(st.type || '').toUpperCase().includes('USER_INPUT')) break;
+      const pr = st.plannerResponse;
+      if (pr && typeof pr === 'object') {
+        const raw = String(pr.modifiedResponse ?? pr.response ?? '').trim();
+        const hasToolCalls = Array.isArray(pr.toolCalls) && pr.toolCalls.length > 0;
+        if (raw && (hasToolCalls || !isStopHookBlockedSystemStep(steps[i + 1], st, steps, i + 1))) {
+          return sanitizeNotificationPreview(raw, 150, 420);
+        }
+      }
+    }
+    return '';
+  };
+
+  const rememberConvNotifyPreview = (cid, entry) => {
+    if (!cid || !entry) return;
+    if (convNotifyPreviewCache.size >= 200 && !convNotifyPreviewCache.has(cid)) {
+      const oldest = convNotifyPreviewCache.keys().next().value;
+      if (oldest !== undefined) convNotifyPreviewCache.delete(oldest);
+    }
+    convNotifyPreviewCache.set(cid, entry);
+  };
+
+  const isPushPreviewAllowed = () => {
+    try {
+      const info = typeof webPushManager.getPublicInfo === 'function' ? webPushManager.getPublicInfo() : null;
+      return info?.prefs?.showPreview !== false;
+    } catch {
+      return true;
+    }
+  };
+
+  const resolveConfirmedStepCount = (c) => {
+    if (!c || !c.id) return 0;
+    const liveStep = Math.max(0, Number(c.stepCount) || 0);
+    const liveUpd = Math.max(0, Number(c.updatedAt) || 0);
+    if (liveStep > 0) {
+      rememberConfirmedTurn(c.id, liveUpd, liveStep);
+      return liveStep;
+    }
+    const confirmed = convConfirmedTurnCache.get(c.id);
+    if (confirmed && confirmed.stepCount > 0 && liveUpd > 0 && confirmed.updatedAt === liveUpd) {
+      return confirmed.stepCount;
+    }
+    return 0;
+  };
+
+  const isPreviewCacheMatch = (cached, c) => {
+    if (!cached || !c) return false;
+    if (cached.status !== (c.status || '')) return false;
+    const curStep = resolveConfirmedStepCount(c);
+    const curUpd = Number(c.updatedAt) || 0;
+    if (curUpd > 0 && cached.updatedAt > 0 && cached.updatedAt !== curUpd) return false;
+    if (curStep > 0) return cached.stepCount === curStep;
+    if (curUpd > 0) return cached.updatedAt === curUpd;
+    return false;
+  };
+
+  const hydrateConversationsForNotifications = async (convList, activeSnap = null) => {
+    if (!Array.isArray(convList) || !convList.length) return convList;
+    const allowPreview = isPushPreviewAllowed();
+    for (const item of convList) {
+      if (item && item.id && Number(item.stepCount) > 0) {
+        rememberConfirmedTurn(item.id, item.updatedAt, item.stepCount);
+      }
+    }
+    const activeSid = String(activeSnap?.sessionId || activeSnap?.activeConversationId || '').trim();
+    if (activeSnap && activeSnap.ok !== false && activeSid && activeSid !== '__new__') {
+      const activeConv = convList.find((c) => c && c.id === activeSid);
+      const isActiveWaiting = activeConv?.status === 'waiting';
+      const replyPrev = extractReplyPreviewFromMessages(activeSnap.messages);
+      let waitPrev = '';
+      const approvals = Array.isArray(activeSnap.pendingApprovals) ? activeSnap.pendingApprovals : [];
+      const prompts = Array.isArray(activeSnap.pendingPrompts) ? activeSnap.pendingPrompts : [];
+      if (approvals.length > 0) {
+        const ap = approvals[0] || {};
+        const rawAp = ap.command || ap.commandLine || ap.title || ap.description || ap.label || ap.text || '';
+        waitPrev = sanitizeNotificationPreview(rawAp, 150, 420);
+      } else if (prompts.length > 0) {
+        const pp = prompts[0] || {};
+        const rawPp = pp.question || pp.prompt || pp.title || pp.text || '';
+        waitPrev = sanitizeNotificationPreview(rawPp, 150, 420);
+      }
+      const stepCnt = Math.max(0, Number(activeConv?.stepCount) || 0);
+      const curUpd = Math.max(0, Number(activeConv?.updatedAt) || 0);
+      const explicitSig = String(activeConv?.turnSig || '').trim();
+      const activeTurnSig = explicitSig || (stepCnt > 0 ? `s${stepCnt}` : (curUpd > 0 ? `u${Math.floor(curUpd)}` : ''));
+      const canCacheActiveSnap = isActiveWaiting ? Boolean(waitPrev) : Boolean(replyPrev);
+      if (canCacheActiveSnap && (stepCnt > 0 || curUpd > 0)) {
+        const prevCached = convNotifyPreviewCache.get(activeSid);
+        const sameUpdOk = !curUpd || !prevCached?.updatedAt || prevCached.updatedAt === curUpd;
+        const sameTurnCached = (prevCached && sameUpdOk && ((stepCnt > 0 && prevCached.stepCount === stepCnt) || (stepCnt <= 0 && curUpd > 0 && prevCached.updatedAt === curUpd)))
+          ? prevCached
+          : null;
+        rememberConvNotifyPreview(activeSid, {
+          updatedAt: curUpd,
+          status: activeConv?.status || '',
+          stepCount: stepCnt,
+          turnSig: activeTurnSig,
+          lastReplyPreview: replyPrev || sameTurnCached?.lastReplyPreview || '',
+          waitingSummary: waitPrev || (isActiveWaiting ? '' : (sameTurnCached?.waitingSummary || ''))
+        });
+      }
+    }
+
+    const pendingTransitions = typeof webPushManager.peekPendingTransitions === 'function'
+      ? webPushManager.peekPendingTransitions(convList)
+      : [];
+    const pendingSet = new Set(pendingTransitions.map((t) => t.id));
+    const priorityFetch = [];
+    const secondaryFetch = [];
+    for (const c of convList) {
+      if (!c || !c.id || c.id === '__new__') continue;
+      if (c.lastReplyPreview || c.waitingSummary) continue;
+      const isPendingTransition = pendingSet.has(c.id);
+      const needsSummary = isPendingTransition || c.completedUnread === true || c.status === 'waiting';
+      if (!needsSummary) continue;
+      const cached = convNotifyPreviewCache.get(c.id);
+      if (isPreviewCacheMatch(cached, c)) continue;
+      if (isPendingTransition) priorityFetch.push(c);
+      else secondaryFetch.push(c);
+    }
+    const toFetch = priorityFetch.concat(secondaryFetch);
+
+    if (toFetch.length > 0 && allowPreview) {
+      const fetchTailPreviewForConv = async (c) => {
+        try {
+          let totalSteps = resolveConfirmedStepCount(c);
+          let tailSteps = [];
+          if (totalSteps > 0) {
+            const offset = Math.max(0, totalSteps - 15);
+            const stepRes = await Promise.resolve().then(() => callLsRpc('GetCascadeTrajectorySteps', {
+              cascadeId: c.id,
+              stepOffset: offset,
+              trajectoryVerbosity: 3
+            }, 1200)).catch(() => null);
+            if (Array.isArray(stepRes?.steps) && stepRes.steps.length > 0) {
+              tailSteps = stepRes.steps;
+            }
+          }
+          if (!tailSteps.length) {
+            const trajRes = await Promise.resolve().then(() => callLsRpc('GetCascadeTrajectory', {
+              cascadeId: c.id,
+              trajectoryVerbosity: 3
+            }, 1200)).catch(() => null);
+            const firstSteps = Array.isArray(trajRes?.trajectory?.steps) ? trajRes.trajectory.steps : [];
+            const numTotal = Math.max(totalSteps, Number(trajRes?.numTotalSteps || trajRes?.trajectory?.numTotalSteps || firstSteps.length) || 0);
+            totalSteps = numTotal;
+            if (totalSteps > 0) {
+              rememberConfirmedTurn(c.id, c.updatedAt, totalSteps);
+            }
+            if (numTotal > firstSteps.length) {
+              const tailRes = await Promise.resolve().then(() => callLsRpc('GetCascadeTrajectorySteps', {
+                cascadeId: c.id,
+                stepOffset: Math.max(firstSteps.length, numTotal - 15),
+                trajectoryVerbosity: 3
+              }, 1200)).catch(() => null);
+              tailSteps = Array.isArray(tailRes?.steps) && tailRes.steps.length ? tailRes.steps : [];
+            } else {
+              tailSteps = firstSteps.slice(-15);
+            }
+          }
+          if (!tailSteps.length) return;
+          if (totalSteps > 0) {
+            rememberConfirmedTurn(c.id, c.updatedAt, totalSteps);
+          }
+          const replyPrev = extractReplyPreviewFromStepList(tailSteps);
+          const waitPrev = c.status === 'waiting'
+            ? sanitizeNotificationPreview(extractWaitingSummaryFromStepList(tailSteps), 150, 420)
+            : '';
+          rememberConvNotifyPreview(c.id, {
+            updatedAt: Number(c.updatedAt) || 0,
+            status: c.status || '',
+            stepCount: totalSteps,
+            turnSig: totalSteps > 0 ? `s${totalSteps}` : `u${Math.floor(Number(c.updatedAt) || 0)}`,
+            lastReplyPreview: replyPrev,
+            waitingSummary: waitPrev
+          });
+        } catch {}
+      };
+
+      let fetchCursor = 0;
+      const maxWorkers = Math.min(3, toFetch.length);
+      await Promise.all(Array.from({ length: maxWorkers }, async () => {
+        while (fetchCursor < toFetch.length) {
+          const nextConv = toFetch[fetchCursor++];
+          await fetchTailPreviewForConv(nextConv);
+        }
+      }));
+    }
+
+    return convList.map((c) => {
+      if (!c || !c.id) return c;
+      const rawCached = convNotifyPreviewCache.get(c.id);
+      const validCached = isPreviewCacheMatch(rawCached, c) ? rawCached : null;
+      const confirmedStep = resolveConfirmedStepCount(c);
+      const stepCnt = confirmedStep > 0 ? confirmedStep : Math.max(0, Number(validCached?.stepCount) || 0);
+      const liveUpd = Number(c.updatedAt) || 0;
+      const computedTurnSig = stepCnt > 0
+        ? `s${stepCnt}`
+        : (liveUpd > 0 ? `u${Math.floor(liveUpd)}` : (validCached?.turnSig || ''));
+      const turnSig = String(c.turnSig || computedTurnSig || '');
+      const out = { ...c };
+      if (stepCnt > 0) out.stepCount = stepCnt;
+      if (turnSig) out.turnSig = turnSig;
+      if (allowPreview) {
+        const replyPrev = c.lastReplyPreview || validCached?.lastReplyPreview || '';
+        const waitPrev = c.waitingSummary || validCached?.waitingSummary || '';
+        if (replyPrev) out.lastReplyPreview = replyPrev;
+        else delete out.lastReplyPreview;
+        if (waitPrev) out.waitingSummary = waitPrev;
+        else delete out.waitingSummary;
+      } else {
+        delete out.lastReplyPreview;
+        delete out.replyPreview;
+        delete out.waitingSummary;
+        delete out.pendingSummary;
+      }
+      return out;
+    });
+  };
 
   const refreshPushStateFromCatalog = async (force = false) => {
     if (pushPollInFlight && !force) return lastCompletedUnreadCount;
     pushPollInFlight = true;
     try {
       let convList = null;
+      let snapObj = null;
       if (typeof options.pollConversations === 'function') {
         convList = await options.pollConversations({ force });
       } else if (typeof options.fetchSnapshot === 'function') {
-        const snap = await options.fetchSnapshot({ bypassCache: force }).catch(() => null);
-        if (snap && Array.isArray(snap.conversations)) convList = snap.conversations;
+        snapObj = await options.fetchSnapshot({ bypassCache: force }).catch(() => null);
+        if (snapObj && Array.isArray(snapObj.conversations)) convList = snapObj.conversations;
       } else {
         const enriched = await enrichSnapshotWithCatalog({ ok: true, conversations: [] }, {
           bypassCache: force,
@@ -17804,7 +22079,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (enriched && Array.isArray(enriched.conversations)) convList = enriched.conversations;
       }
       if (Array.isArray(convList)) {
-        const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
+        const hydrated = await hydrateConversationsForNotifications(convList, snapObj);
+        const { completedUnreadCount } = webPushManager.observeCatalogItems(hydrated);
         lastCompletedUnreadCount = completedUnreadCount;
       }
     } catch {} finally {
@@ -17851,6 +22127,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     const convList = Array.isArray(snap.conversations) ? snap.conversations : [];
     const { completedUnreadCount } = webPushManager.observeCatalogItems(convList);
     lastCompletedUnreadCount = completedUnreadCount;
+    const pushPubInfo = typeof webPushManager?.getPublicInfo === 'function' ? webPushManager.getPublicInfo() : null;
     const out = {
       ...snap,
       activeConversationId: activeConvId,
@@ -17860,7 +22137,9 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       enabledChannels: config.enabledChannels,
       displayConfig: sanitizeRemoteDisplayConfig(config.remoteDisplay),
       longFold: typeof snap.longFold === 'boolean' ? snap.longFold : resolveCachedRemoteUiPrefs().longFold,
-      quickPrompts: Array.isArray(snap.quickPrompts) ? snap.quickPrompts : resolveCachedRemoteQuickPrompts()
+      showApiReferenceCost: typeof snap.showApiReferenceCost === 'boolean' ? snap.showApiReferenceCost : Boolean(resolveCachedRemoteUiPrefs().showApiReferenceCost),
+      quickPrompts: Array.isArray(snap.quickPrompts) ? snap.quickPrompts : resolveCachedRemoteQuickPrompts(),
+      ...(pushPubInfo?.prefs ? { pushPrefs: pushPubInfo.prefs } : {})
     };
     if (clientId) out.clientId = clientId;
     if (!out.usageSummary && fallbackUsageSummary) {
@@ -17964,7 +22243,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
-    const HTML_CSP = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob: http: https:; connect-src 'self' http: https:; base-uri 'none'; frame-ancestors 'none'";
+    const HTML_CSP = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob: http: https:; frame-src 'self' blob: data:; connect-src 'self' http: https:; base-uri 'none'; frame-ancestors 'none'";
     const remoteIp = req.socket?.remoteAddress || '';
     if (!isAllowedPrivateAddress(remoteIp)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -17972,18 +22251,24 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       return;
     }
 
-    const activeTunnelUrl = getTunnelOrigin() || readPersistedTunnelStatus().publicUrl || config.tunnelHostname || '';
+    const normCfgTunnelOrigin = (() => {
+      const raw = String(config.tunnelHostname || '').trim();
+      if (!raw) return '';
+      return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    })();
+    const activeTunnelUrls = [getTunnelOrigin(), readPersistedTunnelStatus().publicUrl, normCfgTunnelOrigin].filter(Boolean);
+    const activeTunnelUrl = activeTunnelUrls[0] || '';
     const skipTsForCors = config.enabledChannels?.tailscale === false || Boolean(config.tailscaleCustomHost);
     const allowedTsDns = options.allowedTailscaleDnsName !== undefined
       ? options.allowedTailscaleDnsName
       : [skipTsForCors ? '' : detectHostIdentityMeta().tailscaleDnsName, config.tailscaleCustomHost]
           .filter((h) => String(h || '').trim().toLowerCase().endsWith('.ts.net'));
     const reqOrigin = String(req.headers.origin || '').trim();
-    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrl, allowedTsDns)) {
+    if (reqOrigin && isAllowedPrivateOrigin(reqOrigin, activeTunnelUrls, allowedTsDns)) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id, X-AG-Client-Id, X-AG-Device-Hint, X-AG-Device-Fp, X-AG-Probe');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-AG-Remote-Token, X-AG-Device-Id, X-AG-Client-Id, X-AG-Order-Scope, X-AG-Device-Hint, X-AG-Device-Fp, X-AG-Probe');
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
     if (req.method === 'OPTIONS') {
@@ -18579,6 +22864,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
     if (req.method === 'GET' && pathname === '/api/context') {
       try {
         const clientId = extractRequestClientId(req, urlObj);
+        const snapOrderScope = String(req.headers['x-ag-order-scope'] || '').trim();
+        if (clientId && /^[a-z0-9:_-]{4,128}$/i.test(snapOrderScope)) {
+          const activeCatStore = options.catalogStore || defaultCatalogStore;
+          activeCatStore.registerOrderScope?.(clientId, snapOrderScope, {
+            ...(options.catalogOptions || {}),
+            ...(options.configDir ? { configDir: options.configDir } : {}),
+            ...(options.homeDir ? { homeDir: options.homeDir } : {})
+          });
+        }
         const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
         const targetId = urlObj.searchParams.get('targetId') || session?.targetId || '';
         const convId = (urlObj.searchParams.get('conversationId') || session?.conversationId || '').trim();
@@ -18597,7 +22891,8 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           model: snap.model || '',
           contextBadge: snap.contextBadge || '',
           pulseText: snap.pulseText || '',
-          contextPanel: snap.contextPanel || null
+          contextPanel: snap.contextPanel || null,
+          showApiReferenceCost: typeof snap.showApiReferenceCost === 'boolean' ? snap.showApiReferenceCost : Boolean(resolveCachedRemoteUiPrefs().showApiReferenceCost)
         }));
       } catch (err) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -18615,6 +22910,15 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       }
       try {
         const clientId = extractRequestClientId(req, urlObj);
+        const snapOrderScope = String(req.headers['x-ag-order-scope'] || '').trim();
+        if (clientId && /^[a-z0-9:_-]{4,128}$/i.test(snapOrderScope)) {
+          const activeCatStore = options.catalogStore || defaultCatalogStore;
+          activeCatStore.registerOrderScope?.(clientId, snapOrderScope, {
+            ...(options.catalogOptions || {}),
+            ...(options.configDir ? { configDir: options.configDir } : {}),
+            ...(options.homeDir ? { homeDir: options.homeDir } : {})
+          });
+        }
         const session = clientId ? getOrCreateClientSession(clientId, config.token) : null;
         const hasExplicitTarget = urlObj.searchParams.has('targetId');
         const hasExplicitConv = urlObj.searchParams.has('conversationId');
@@ -18738,6 +23042,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             session.conversationId = String(snap.activeConversationId || snap.sessionId || '');
           }
         }
+        if (snap && snap.ok !== false && Array.isArray(snap.conversations)) {
+          snap = {
+            ...snap,
+            conversations: await hydrateConversationsForNotifications(snap.conversations, snap)
+          };
+        }
         const usageSummary = (snap && snap.ok !== false && !snap.usageSummary)
           ? await getCachedUsageSummary()
           : null;
@@ -18828,11 +23138,20 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
       try {
         const payload = await readJsonBody(req);
         const rawOrder = payload?.projectOrder !== undefined ? payload.projectOrder : payload?.projectIds;
+        const clientId = extractRequestClientId(req, urlObj, payload);
+        const rawOrderScope = typeof payload?.orderScopeId === 'string' ? payload.orderScopeId.trim() : String(req.headers['x-ag-order-scope'] || '').trim();
+        const orderScopeId = /^[a-z0-9:_-]{4,128}$/i.test(rawOrderScope) ? rawOrderScope : clientId;
+        const clientPageEpoch = Number.isSafeInteger(payload?.clientPageEpoch) && payload.clientPageEpoch > 0 ? payload.clientPageEpoch : 0;
+        const clientOrderSeq = Number.isInteger(payload?.clientOrderSeq) && payload.clientOrderSeq > 0 ? payload.clientOrderSeq : 0;
         const activeCatStore = options.catalogStore || defaultCatalogStore;
         const result = activeCatStore.setProjectOrder(rawOrder, {
           ...(options.catalogOptions || {}),
           ...(options.configDir ? { configDir: options.configDir } : {}),
-          ...(options.homeDir ? { homeDir: options.homeDir } : {})
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(clientId ? { clientId } : {}),
+          ...(orderScopeId ? { orderScopeId } : {}),
+          ...(clientPageEpoch > 0 ? { clientPageEpoch } : {}),
+          ...(clientOrderSeq > 0 ? { clientOrderSeq } : {})
         });
         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
       } catch (err) {
@@ -18840,6 +23159,62 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (err?.status === 413) errHeaders.Connection = 'close';
         res.writeHead(err?.status || 400, errHeaders);
         res.end(JSON.stringify({ ok: false, error: err?.message || '保存项目顺序失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/projects/detail') {
+      try {
+        const projectId = String(urlObj.searchParams.get('id') || '').trim();
+        const detailRes = await readRemoteProjectDetail(projectId, {
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
+          ...(options.configDir ? { configDir: options.configDir } : {}),
+          ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
+          ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
+        });
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(detailRes));
+      } catch (err) {
+        res.writeHead(err?.status || 400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || '读取项目详情失败' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/projects/update') {
+      try {
+        const payload = await readJsonBody(req);
+        const clientId = extractRequestClientId(req, urlObj, payload);
+        const activeCatStore = options.catalogStore || defaultCatalogStore;
+        const updatedRes = await updateRemoteProject(payload, {
+          ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+          ...(Array.isArray(options.allowedRoots) ? { allowedRoots: options.allowedRoots } : {}),
+          ...(options.configDir ? { configDir: options.configDir } : {}),
+          ...(options.localApiConnect ? { localApiConnect: options.localApiConnect } : {}),
+          ...(options.allowDiskFallback !== undefined ? { allowDiskFallback: options.allowDiskFallback } : {})
+        });
+        activeCatStore.invalidateProjectsCache?.();
+        const doFetchSnapshot = typeof options.fetchSnapshot === 'function' ? options.fetchSnapshot : fetchSnapshotFromTarget;
+        let snapshot = await doFetchSnapshot(payload?.targetId || '', {
+          convLimit: 100,
+          msgLimit: 30,
+          bypassCache: true,
+          bypassCatalogCache: true,
+          clientId
+        }).catch(() => null);
+        if (snapshot && snapshot.ok !== false) {
+          const usageSummary = !snapshot.usageSummary ? await getCachedUsageSummary() : null;
+          snapshot = enrichSnapshotPayload(snapshot, config, activeTunnelUrl, clientId, usageSummary);
+        }
+        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+          ...updatedRes,
+          snapshot
+        }));
+      } catch (err) {
+        const errHeaders = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+        if (err?.status === 413) errHeaders.Connection = 'close';
+        res.writeHead(err?.status || 400, errHeaders);
+        res.end(JSON.stringify({ ok: false, error: err?.message || '保存项目设置失败' }));
       }
       return;
     }
@@ -18953,8 +23328,12 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: '当前尚未打开有效会话，请先选择一个对话' }));
             return;
           }
-          const messageId = String(payload?.messageId || '').trim();
-          const messageIds = Array.isArray(payload?.messageIds) ? payload.messageIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+          const rawMessageId = String(payload?.messageId || '').trim();
+          const optDomMessageId = /^opt-/i.test(rawMessageId) ? rawMessageId : '';
+          const messageId = optDomMessageId ? '' : rawMessageId;
+          const messageIds = Array.isArray(payload?.messageIds)
+            ? payload.messageIds.map((x) => String(x || '').trim()).filter((x) => x && !/^opt-/i.test(x))
+            : [];
           const isDomQueueSource = payload?.source === 'dom' && !messageId;
           let rpcRes = null;
           let usedDomFallback = false;
@@ -19240,6 +23619,60 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             const rawExpCount = overrides.expectedQueueCount !== undefined ? overrides.expectedQueueCount : payload?.expectedQueueCount;
             const hasExpCount = rawExpCount !== undefined && rawExpCount !== null && rawExpCount !== '' && Number.isInteger(Number(rawExpCount)) && Number(rawExpCount) > 0;
             const resolvedText = overrides.text !== undefined ? String(overrides.text) : editedText;
+            if (hasCascadeInflightQueueSend(cascadeId) || inflightDomQueueCascades.has(cascadeId)) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: '当前会话存在正在派发中的排队操作，已阻止并发桌面端回退操作以避免重复发送或冲突'
+              }));
+              return false;
+            }
+            if (domAct === 'send-queued-dom') {
+              const unresolved = getCascadeUnresolvedQueueSummary(cascadeId);
+              if (unresolved.hasAny) {
+                if (sendAllFlag !== false) {
+                  sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                    ok: false,
+                    outcomeUnknown: true,
+                    error: '当前会话存在发送结果未知或待移除的已发送排队项，已阻止桌面端全量回退发送以避免重复发送；请先核对或撤回对应排队项'
+                  }));
+                  return false;
+                }
+                const targetNormText = normalizeQueueDedupText(resolvedText);
+                const hasProvenDistinctId = Boolean(
+                  messageId &&
+                  !/^opt-/i.test(messageId) &&
+                  !unresolved.hasEvicted &&
+                  !unresolved.hasNonMsgKey &&
+                  !unresolved.msgIds.has(messageId) &&
+                  (!targetNormText || !unresolved.normTexts.has(targetNormText))
+                );
+                if (!hasProvenDistinctId) {
+                  sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                    ok: false,
+                    outcomeUnknown: true,
+                    error: '当前会话存在未决排队发送状态且无法确认目标项独立身份，已阻止桌面端回退发送以避免重复发送'
+                  }));
+                  return false;
+                }
+              }
+            }
+            const recordDomSendUnknownIfNeeded = (confirmedNotExec) => {
+              if (domAct !== 'send-queued-dom' || confirmedNotExec) return;
+              if (sendAllFlag !== false) {
+                if (cascadeId) addBoundedCascadeSet(cascadesWithUnknownDomSend, cascadeId);
+              } else {
+                const domUnknownKey = messageId
+                  ? `${cascadeId}::msg:${messageId}`
+                  : `${cascadeId}::dom:${optDomMessageId || (resolvedDomIdx !== undefined ? resolvedDomIdx : 'single')}`;
+                markUnknownQueueSend(
+                  domUnknownKey,
+                  '此前桌面端队列立即发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息',
+                  resolvedText
+                );
+              }
+            };
+            inflightDomQueueCascades.add(cascadeId);
             let domRes = null;
             try {
               domRes = await performAction({
@@ -19247,7 +23680,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 clientId,
                 targetId: effectiveTargetId || undefined,
                 conversationId: cascadeId,
-                ...(messageId ? { messageId } : {}),
+                ...((messageId || optDomMessageId) ? { messageId: messageId || optDomMessageId } : {}),
                 ...(resolvedDomIdx !== undefined && resolvedDomIdx >= 0 ? { domIndex: resolvedDomIdx } : {}),
                 ...(hasExpCount ? { expectedQueueCount: Number(rawExpCount) } : {}),
                 ...(payload?.hasMedia ? { hasMedia: true } : {}),
@@ -19255,12 +23688,30 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
                 text: resolvedText
               });
             } catch (domErr) {
-              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({ ok: false, error: domErr?.message || '桌面端队列操作失败' }));
-              return false;
-            }
-            if (!domRes?.ok) {
+              const errConfirmedNotExec = Boolean(domErr?.confirmedNotExecuted === true);
+              recordDomSendUnknownIfNeeded(errConfirmedNotExec);
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                 ok: false,
+                ...(domAct === 'send-queued-dom'
+                  ? (errConfirmedNotExec ? { confirmedNotExecuted: true } : { outcomeUnknown: true })
+                  : {}),
+                error: domErr?.message || '桌面端队列操作失败'
+              }));
+              return false;
+            } finally {
+              inflightDomQueueCascades.delete(cascadeId);
+            }
+            if (!domRes?.ok) {
+              const resConfirmedNotExec = Boolean(
+                domRes?.confirmedNotExecuted === true ||
+                domRes?.actionResult?.confirmedNotExecuted === true
+              );
+              recordDomSendUnknownIfNeeded(resConfirmedNotExec);
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                ...(domAct === 'send-queued-dom'
+                  ? (resConfirmedNotExec ? { confirmedNotExecuted: true } : { outcomeUnknown: true })
+                  : {}),
                 ...(domRes?.mediaRecoveryUnavailable || domRes?.actionResult?.mediaRecoveryUnavailable ? { mediaRecoveryUnavailable: true } : {}),
                 error: domRes?.error || domRes?.actionResult?.error || '电脑端队列操作未能生效，请重试'
               }));
@@ -19311,51 +23762,120 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }));
           };
           const sendSingleQueuedWithCheckedDelete = async ({ dispatchKey, text, hasMedia, deleteMethod, deleteBody, dispatchMeta }) => {
-            if (hasDispatchedQueueDelete(dispatchKey)) {
-              const delRetryOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
-              if (!delRetryOutcome.ok) {
-                return {
-                  ok: false,
-                  partialSuccess: true,
-                  error: delRetryOutcome.error || '消息此前已发送，重试移除原排队项仍失败；请稍后再试，不会重复发送'
-                };
-              }
-              dispatchedQueueDeletes.delete(dispatchKey);
-              return { ok: true, rpcRes: delRetryOutcome.result, deduplicatedRetry: true };
-            }
-            if (hasMedia || !String(text || '').trim()) {
-              return { ok: false, needsDomFallback: true };
-            }
-            const cascadeConfig = historyManager.getCachedUserConfig?.(cascadeId) || null;
-            const sendOutcome = await callLsRpcDetailed(
-              'SendUserCascadeMessage',
-              {
-                cascadeId,
-                items: [{ text: String(text) }],
-                deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION',
-                ...(cascadeConfig ? { cascadeConfig } : {})
-              },
-              rpcTimeoutMs
-            );
-            if (!sendOutcome.ok) {
+            if (inflightDomQueueCascades.has(cascadeId) || cascadesWithUnknownDomSend.has(cascadeId)) {
               return {
                 ok: false,
                 sendFailed: true,
-                confirmedNotExecuted: Boolean(sendOutcome.confirmedNotExecuted),
-                error: sendOutcome.error || '立即发送排队消息失败'
+                confirmedNotExecuted: false,
+                outcomeUnknown: true,
+                error: inflightDomQueueCascades.has(cascadeId)
+                  ? '当前会话存在正在执行的桌面端队列发送操作，已阻止并发直发以避免重复发送'
+                  : '当前会话此前桌面端队列发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息'
               };
             }
-            const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
-            if (!delOutcome.ok) {
-              markDispatchedQueueDelete(dispatchKey, String(text), dispatchMeta);
-              return {
-                ok: false,
-                partialSuccess: true,
-                error: delOutcome.error || '消息已立即发送，但移除原排队项失败；再次点击将仅重试移除而不重复发送'
-              };
+            if (dispatchKey && inflightQueueDispatches.has(dispatchKey)) {
+              const sharedOut = await inflightQueueDispatches.get(dispatchKey);
+              if (sharedOut?.ok) {
+                return { ...sharedOut, deduplicatedRetry: true };
+              }
+              if (sharedOut?.needsDomFallback || sharedOut?.confirmedNotExecuted) {
+                return {
+                  ok: false,
+                  sendFailed: true,
+                  confirmedNotExecuted: false,
+                  deduplicatedInflight: true,
+                  error: '同一排队消息已有并发发送请求正在处理，已阻止重复回退发送'
+                };
+              }
+              return { ...sharedOut, deduplicatedInflight: true };
             }
-            dispatchedQueueDeletes.delete(dispatchKey);
-            return { ok: true, rpcRes: sendOutcome.result, deduplicatedRetry: false };
+            const runSingleDispatch = async () => {
+              if (dispatchedQueueDeletes.has(dispatchKey)) {
+                const delRetryOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+                if (!delRetryOutcome.ok) {
+                  return {
+                    ok: false,
+                    partialSuccess: true,
+                    error: delRetryOutcome.error || '消息此前已发送，重试移除原排队项仍失败；请稍后再试，不会重复发送'
+                  };
+                }
+                dispatchedQueueDeletes.delete(dispatchKey);
+                unknownDispatchedQueueSends.delete(dispatchKey);
+                return { ok: true, rpcRes: delRetryOutcome.result, deduplicatedRetry: true };
+              }
+              if (isEvictedDispatchedQueueDelete(dispatchKey)) {
+                return {
+                  ok: false,
+                  sendFailed: true,
+                  confirmedNotExecuted: false,
+                  deduplicatedUnknownSend: true,
+                  error: '该排队消息此前已发送但移除状态记录已归档，已阻止重复发送，请先撤回或核对会话消息'
+                };
+              }
+              const priorUnknownErr = getUnknownQueueSendError(dispatchKey);
+              if (priorUnknownErr) {
+                return {
+                  ok: false,
+                  sendFailed: true,
+                  confirmedNotExecuted: false,
+                  deduplicatedUnknownSend: true,
+                  error: priorUnknownErr
+                };
+              }
+              if (hasMedia || !String(text || '').trim()) {
+                return { ok: false, needsDomFallback: true };
+              }
+              const cascadeConfig = historyManager.getCachedUserConfig?.(cascadeId) || null;
+              const sendOutcome = await callLsRpcDetailed(
+                'SendUserCascadeMessage',
+                {
+                  cascadeId,
+                  items: [{ text: String(text) }],
+                  deliveryStrategy: 'MESSAGE_DELIVERY_STRATEGY_NEXT_INVOCATION',
+                  ...(cascadeConfig ? { cascadeConfig } : {})
+                },
+                rpcTimeoutMs
+              );
+              if (!sendOutcome.ok) {
+                if (!sendOutcome.confirmedNotExecuted) {
+                  markUnknownQueueSend(
+                    dispatchKey,
+                    '该排队消息此前立即发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息',
+                    String(text)
+                  );
+                }
+                return {
+                  ok: false,
+                  sendFailed: true,
+                  confirmedNotExecuted: Boolean(sendOutcome.confirmedNotExecuted),
+                  error: sendOutcome.error || '立即发送排队消息失败'
+                };
+              }
+              const delOutcome = await callLsRpcDetailed(deleteMethod, deleteBody, rpcTimeoutMs);
+              if (!delOutcome.ok) {
+                markDispatchedQueueDelete(dispatchKey, String(text), dispatchMeta);
+                return {
+                  ok: false,
+                  partialSuccess: true,
+                  error: delOutcome.error || '消息已立即发送，但移除原排队项失败；再次点击将仅重试移除而不重复发送'
+                };
+              }
+              dispatchedQueueDeletes.delete(dispatchKey);
+              unknownDispatchedQueueSends.delete(dispatchKey);
+              return { ok: true, rpcRes: sendOutcome.result, deduplicatedRetry: false };
+            };
+            if (!dispatchKey) {
+              return await runSingleDispatch();
+            }
+            const dispatchPromise = runSingleDispatch();
+            inflightQueueDispatches.set(dispatchKey, dispatchPromise);
+            try {
+              return await dispatchPromise;
+            } finally {
+              if (inflightQueueDispatches.get(dispatchKey) === dispatchPromise) {
+                inflightQueueDispatches.delete(dispatchKey);
+              }
+            }
           };
           if (messageId) {
             const dispatchKey = `${cascadeId}::msg:${messageId}`;
@@ -19363,6 +23883,7 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               rpcRes = await callLsRpc('DeleteAgentMessage', { messageId, recipient: cascadeId }, rpcTimeoutMs);
               if (rpcRes !== null && rpcRes !== false) {
                 dispatchedQueueDeletes.delete(dispatchKey);
+                unknownDispatchedQueueSends.delete(dispatchKey);
               }
             } else if (actionName === 'edit-queued-message') {
               const pendingRec = await historyManager.resolvePendingMessageForEdit(cascadeId, messageId, {
@@ -19757,21 +24278,150 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
             }
           } else {
             // 全部立即发送：优先保留 SendAllQueuedMessages 契约；
-            // 仅当服务端明确返回 confirmedNotExecuted（如 Antigravity 2.0 报 deprecated/unimplemented）且携带 agent_state messageIds 时，才允许回退桌面端全发；
-            // 若返回 null/超时/未知错误，必须 fail-closed 严禁补发！
+            // 当服务端明确返回 confirmedNotExecuted（如 Antigravity 2.35+ 报 deprecated (error ID: ...) / unimplemented）时：
+            // 1) 若全部待发项均为具备真实服务端 messageId 的纯文本排队消息，优先逐条走与单条 → 一致的 SendUserCascadeMessage + DeleteAgentMessage 直发（支持隔离后台会话、无需切换桌面窗口）；
+            // 2) 含媒体或仅携带 messageIds/hasDomQueued 时安全回退桌面端 send-queued-dom(sendAll:true)；
+            // 3) 若返回 null/超时/未知错误，严格 fail-closed 严禁补发！
+            if (inflightDomQueueCascades.has(cascadeId) || cascadesWithUnknownDomSend.has(cascadeId)) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ok: false,
+                outcomeUnknown: true,
+                error: inflightDomQueueCascades.has(cascadeId)
+                  ? '当前会话存在正在执行的桌面端队列发送操作，已阻止并发全发以避免重复发送'
+                  : '当前会话此前桌面端队列发送响应超时或结果未知，已阻止重复发送，请先刷新核对会话消息'
+              }));
+              return;
+            }
             const sendAllOutcome = await callLsRpcDetailed('SendAllQueuedMessages', { cascadeId }, rpcTimeoutMs);
             if (sendAllOutcome.ok) {
               rpcRes = sendAllOutcome.result;
-            } else if (sendAllOutcome.confirmedNotExecuted && messageIds.length > 0) {
-              const okDom = await runQueuedDomFallback('send-queued-dom', true);
-              if (!okDom) return;
+            } else if (sendAllOutcome.confirmedNotExecuted) {
+              const rawQueuedItems = Array.isArray(payload?.queuedItems) ? payload.queuedItems.filter((it) => it && typeof it === 'object') : [];
+              const canQueryLivePending = Boolean(
+                typeof options.fetchPendingAgentMessages === 'function' ||
+                options.localApiConnect ||
+                globalThis.__AG_REMOTE_TEST_API__ ||
+                !isCatalogTestEnv()
+              );
+              let pendingQueryFailed = false;
+              const livePending = await historyManager.fetchPendingAgentMessages?.(cascadeId, {
+                localApiConnect: options.localApiConnect,
+                fetchPendingAgentMessages: options.fetchPendingAgentMessages,
+                bypassCache: true
+              }).catch(() => {
+                pendingQueryFailed = true;
+                return null;
+              });
+              if (pendingQueryFailed || (canQueryLivePending && !Array.isArray(livePending))) {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  outcomeUnknown: true,
+                  error: '无法实时核验服务端排队状态，已停止自动回退全发以避免重复发送'
+                }));
+                return;
+              }
+              if (Array.isArray(livePending)) {
+                if (!livePending.length) {
+                  if (payload?.hasDomQueued === true) {
+                    const okDom = await runQueuedDomFallback('send-queued-dom', true);
+                    if (!okDom) return;
+                  } else {
+                    sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                      ok: false,
+                      error: '当前已无待发送的排队消息（可能已被发送或撤回）'
+                    }));
+                    return;
+                  }
+                } else {
+                  const allLivePureText = livePending.every((lp) => {
+                    const mid = String(lp?.messageId || lp?.id || '').trim();
+                    const txt = String(lp?.text || '').trim();
+                    const hasMedia = Boolean(lp?.hasMedia || (Array.isArray(lp?.images) && lp.images.length > 0));
+                    return Boolean(lp?.source === 'agent_state' && mid && !/^opt-/i.test(mid) && txt && !hasMedia);
+                  });
+                  if (allLivePureText && !payload?.hasDomQueued) {
+                    let sentAny = false;
+                    let directAllOk = true;
+                    let fallbackDomAllowed = false;
+                    let batchErrOutcome = null;
+                    for (const lp of livePending) {
+                      const itMid = String(lp.messageId || lp.id || '').trim();
+                      const itTxt = String(lp.text || '');
+                      const singleOut = await sendSingleQueuedWithCheckedDelete({
+                        dispatchKey: `${cascadeId}::msg:${itMid}`,
+                        text: itTxt,
+                        hasMedia: false,
+                        deleteMethod: 'DeleteAgentMessage',
+                        deleteBody: { messageId: itMid, recipient: cascadeId }
+                      });
+                      if (singleOut.partialSuccess) {
+                        await respondPartialSendDeleteFailure({ messageId: itMid }, singleOut.error);
+                        return;
+                      }
+                      if (singleOut.ok) {
+                        sentAny = true;
+                        rpcRes = singleOut.rpcRes;
+                        if (singleOut.deduplicatedRetry) deduplicatedRetry = true;
+                        continue;
+                      }
+                      directAllOk = false;
+                      batchErrOutcome = singleOut;
+                      if (!sentAny && (singleOut.needsDomFallback || singleOut.confirmedNotExecuted)) {
+                        fallbackDomAllowed = true;
+                      }
+                      break;
+                    }
+                    if (!directAllOk) {
+                      if (fallbackDomAllowed) {
+                        const okDom = await runQueuedDomFallback('send-queued-dom', true);
+                        if (!okDom) return;
+                      } else {
+                        let partialFailSnap = null;
+                        if (sentAny) {
+                          historyManager.invalidateSession?.(cascadeId);
+                          const rawPartialFailSnap = await fetchSnapshot(effectiveTargetId, {
+                            conversationId: cascadeId,
+                            clientId,
+                            convLimit: 100,
+                            msgLimit: 30,
+                            bypassCache: true,
+                            bypassCatalogCache: true
+                          }).catch(() => null);
+                          if (rawPartialFailSnap && rawPartialFailSnap.ok !== false) {
+                            const partialUsage = !rawPartialFailSnap.usageSummary ? await getCachedUsageSummary() : null;
+                            partialFailSnap = enrichSnapshotPayload(rawPartialFailSnap, config, activeTunnelUrl, clientId, partialUsage);
+                          }
+                        }
+                        sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                          ok: false,
+                          ...(sentAny ? { partialSuccess: true, sent: true } : {}),
+                          ...(batchErrOutcome?.confirmedNotExecuted ? {} : { outcomeUnknown: true }),
+                          error: batchErrOutcome?.error || '立即发送排队消息超时或结果未知，已阻止继续自动补发以避免重复发送',
+                          ...(partialFailSnap ? { snapshot: partialFailSnap } : {})
+                        }));
+                        return;
+                      }
+                    }
+                  } else {
+                    const okDom = await runQueuedDomFallback('send-queued-dom', true);
+                    if (!okDom) return;
+                  }
+                }
+              } else if (messageIds.length > 0 || payload?.hasDomQueued === true || rawQueuedItems.length > 0) {
+                const okDom = await runQueuedDomFallback('send-queued-dom', true);
+                if (!okDom) return;
+              } else {
+                sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                  ok: false,
+                  error: sendAllOutcome.error || '本机 LanguageServer 队列操作失败'
+                }));
+                return;
+              }
             } else {
               sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
                 ok: false,
-                ...(sendAllOutcome.confirmedNotExecuted ? {} : { outcomeUnknown: true }),
-                error: sendAllOutcome.confirmedNotExecuted
-                  ? (sendAllOutcome.error || '本机 LanguageServer 队列操作失败')
-                  : '本机 LanguageServer 队列操作调用超时或结果未知，已阻止自动补发以避免重复发送'
+                outcomeUnknown: true,
+                error: '本机 LanguageServer 队列操作调用超时或结果未知，已阻止自动补发以避免重复发送'
               }));
               return;
             }
@@ -20189,8 +24839,75 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
           String(session.conversationId || '') === sendStartConvId &&
           Boolean(session.draftNewIsolated)
         );
+        const isSendConfirmedNotExecuted = (obj) => {
+          if (!obj || typeof obj !== 'object') return false;
+          if (obj.confirmedNotExecuted === true || obj.actionResult?.confirmedNotExecuted === true) return true;
+          if (obj.cdpDispatched === false) return true;
+          return false;
+        };
+        const clientActionId = actionName === 'send' ? String(payload?.clientActionId || '').trim().slice(0, 96) : '';
+        const sendDedupKey = clientActionId ? `${String(clientId || '__anon__')}::${clientActionId}` : '';
+        if (sendDedupKey) {
+          pruneRecentSendActions();
+          const existingUnknownErr = getUnknownSendActionError(sendDedupKey);
+          if (existingUnknownErr) {
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: false,
+              outcomeUnknown: true,
+              deduplicatedUnknownRetry: true,
+              error: existingUnknownErr
+            }));
+            return;
+          }
+          const existingSendRec = recentSendActionCache.get(sendDedupKey);
+          if (existingSendRec) {
+            if (existingSendRec.inflight) {
+              const sharedRes = await existingSendRec.inflight;
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(sharedRes));
+              return;
+            }
+            if (existingSendRec.result && existingSendRec.result.ok !== false) {
+              sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+                ...existingSendRec.result,
+                deduplicatedAction: true
+              }));
+              return;
+            }
+          }
+          const archivedCompletedSend = getCompletedSendAction(sendDedupKey);
+          if (archivedCompletedSend) {
+            const snapConvId = archivedCompletedSend.conversationId || (effectiveConvId && effectiveConvId !== '__new__' ? effectiveConvId : '');
+            const dedupRawSnap = await fetchSnapshot(effectiveTargetId, {
+              ...(snapConvId ? { conversationId: snapConvId } : {}),
+              clientId,
+              convLimit: 100,
+              msgLimit: 30
+            }).catch(() => null);
+            let dedupSnap = null;
+            if (dedupRawSnap && dedupRawSnap.ok !== false) {
+              const usageSummary = !dedupRawSnap.usageSummary ? await getCachedUsageSummary() : null;
+              dedupSnap = enrichSnapshotPayload(dedupRawSnap, config, activeTunnelUrl, clientId, usageSummary);
+            }
+            sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify({
+              ok: true,
+              deduplicatedAction: true,
+              actionResult: {
+                ok: true,
+                deduplicatedAction: true,
+                ...(archivedCompletedSend.createdConversationId ? { createdConversationId: archivedCompletedSend.createdConversationId } : {})
+              },
+              ...(dedupSnap ? { snapshot: dedupSnap } : {})
+            }));
+            return;
+          }
+        }
         if (isDeferredDraftSend && session) {
           session.draftSendInflight = true;
+        }
+        let resolveSendInflight = null;
+        if (sendDedupKey) {
+          const inflightPromise = new Promise((resolve) => { resolveSendInflight = resolve; });
+          recentSendActionCache.set(sendDedupKey, { at: getSendClockNow(), inflight: inflightPromise, result: null });
         }
         let result;
         try {
@@ -20292,6 +25009,28 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
               session.conversationId = respSid;
             }
           }
+        } catch (actErr) {
+          if (sendDedupKey) {
+            const confirmedNotExec = isSendConfirmedNotExecuted(actErr);
+            const errPayload = {
+              ok: false,
+              ...(confirmedNotExec ? { confirmedNotExecuted: true } : { outcomeUnknown: true }),
+              error: actErr?.message || '操作失败'
+            };
+            if (confirmedNotExec) {
+              recentSendActionCache.delete(sendDedupKey);
+            } else {
+              markUnknownSendAction(
+                sendDedupKey,
+                '上次发送请求响应超时或结果未知，已阻止同一操作自动重发以避免重复入队，请先刷新确认'
+              );
+            }
+            if (resolveSendInflight) {
+              resolveSendInflight(errPayload);
+              resolveSendInflight = null;
+            }
+          }
+          throw actErr;
         } finally {
           if (isDeferredDraftSend && session && (session.navEpoch || 0) === sendStartNavEpoch) {
             session.draftSendInflight = false;
@@ -20300,6 +25039,30 @@ function createRemoteHttpHandler(initialConfig, options = {}) {
         if (result?.snapshot) {
           const usageSummary = !result.snapshot.usageSummary ? await getCachedUsageSummary() : null;
           result.snapshot = enrichSnapshotPayload(result.snapshot, config, activeTunnelUrl, clientId, usageSummary);
+        }
+        if (sendDedupKey) {
+          if (result && result.ok !== false) {
+            recentSendActionCache.set(sendDedupKey, { at: getSendClockNow(), inflight: null, result });
+            const resolvedCompletedCid = String(
+              result?.actionResult?.createdConversationId ||
+              result?.snapshot?.activeConversationId ||
+              result?.snapshot?.sessionId ||
+              effectiveConvId ||
+              ''
+            ).trim();
+            markCompletedSendAction(sendDedupKey, {
+              conversationId: (resolvedCompletedCid && resolvedCompletedCid !== '__new__' && resolvedCompletedCid !== 'new') ? resolvedCompletedCid : '',
+              createdConversationId: String(result?.actionResult?.createdConversationId || '').trim()
+            });
+          } else if (isSendConfirmedNotExecuted(result)) {
+            recentSendActionCache.delete(sendDedupKey);
+          } else {
+            markUnknownSendAction(
+              sendDedupKey,
+              result?.error || result?.actionResult?.error || '上次发送结果未知，已阻止同一操作自动重发以避免重复入队'
+            );
+          }
+          if (resolveSendInflight) resolveSendInflight(result);
         }
         sendPayload(req, res, 200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, JSON.stringify(result));
       } catch (err) {
@@ -20876,6 +25639,7 @@ module.exports = {
   clearRemoteUiPrefsCacheForTests: () => {
     cachedRemoteUiPrefs = null;
     cachedRemoteUiPrefsAt = 0;
+    cachedRemoteUiPrefsStatSig = '';
   },
   getRemoteClientSession,
   clearRemoteClientSessionsForTests,
@@ -20922,7 +25686,10 @@ module.exports = {
   assertSafeHostDirectoryPath,
   listHostDirectories,
   createHostSubdirectory,
+  collectSafePreboundProjectFolders,
   createRemoteProject,
+  readRemoteProjectDetail,
+  updateRemoteProject,
   evalInCdpTarget,
   evalInPickedTarget,
   buildEnrichFallbackSnapshot,

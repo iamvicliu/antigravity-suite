@@ -658,6 +658,17 @@
     }
 
     /* 用户自定义功能显示开关 */
+    :host([data-layout="ring-only"][data-hide-context-ring="true"]) #badge-settings{
+      display:inline-flex!important;
+    }
+    :host([data-hide-context-ring="true"]) #badge,
+    :host([data-hide-inline-speed="true"]) #badge-speed,
+    :host([data-hide-inline-speed="true"]) #overflow-speed-btn,
+    :host([data-hide-api-cost="true"]) #round-cost-bar,
+    :host([data-hide-api-cost="true"]) #tok-view-cost,
+    :host([data-hide-api-cost="true"]) .t-card-cost,
+    :host([data-hide-api-cost="true"]) .heat-sum-item[data-cost-metric="true"],
+    :host([data-hide-api-cost="true"]) .heat-cost-disclaimer,
     :host([data-hide-tokens="true"]) #badge-tokens,
     :host([data-hide-tokens="true"]) #overflow-tokens-btn,
     :host([data-hide-cli="true"]) #badge-cli,
@@ -4096,19 +4107,19 @@
             <span class="heat-sum-label">区间合计:</span>
             <span id="h-sum-tokens" class="heat-sum-val">-- Tokens</span>
           </div>
-          <div class="heat-sum-item">
+          <div class="heat-sum-item" data-cost-metric="true">
             <span class="heat-sum-label">预估费用:</span>
             <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
           </div>
-          <div class="heat-sum-item">
+          <div class="heat-sum-item" data-cost-metric="true">
             <span class="heat-sum-label">折合每天:</span>
             <span id="h-sum-daily-avg" class="heat-sum-val">$0.00</span>
           </div>
-          <div class="heat-sum-item">
+          <div class="heat-sum-item" data-cost-metric="true">
             <span class="heat-sum-label">活跃日均:</span>
             <span id="h-sum-active-avg" class="heat-sum-val">$0.00 (0天)</span>
           </div>
-          <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" style="display:none">
+          <div id="h-sum-sub-ratio-wrap" class="heat-sum-item" data-cost-metric="true" style="display:none">
             <span class="heat-sum-label">订阅性价比:</span>
             <span id="h-sum-sub-ratio" class="heat-sum-val" style="color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))">--</span>
           </div>
@@ -4454,6 +4465,41 @@
           </div>
         </div>
 
+        <div id="settings-card-context-display" class="settings-card-box">
+          <div class="settings-card-hdr">
+            <span class="settings-card-title">上下文与指标精简显示</span>
+            <button id="btn-reset-context-display" class="switch-pill-btn" type="button" title="恢复上下文显示与指标默认设置">恢复默认</button>
+          </div>
+          <div class="settings-card-desc">默认同时保留右上角进度环、顶栏推理速度、输入框底部脉冲胶囊与 API 参考估算费用；需要极简界面时，可随时切换仅顶栏显示或按需隐藏。</div>
+          <div class="settings-pref-list">
+            <div class="settings-pref-row">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">上下文显示位置</span>
+                <span class="settings-pref-desc">切至「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口</span>
+              </div>
+              <div class="source-switch-bar" role="group" aria-label="上下文显示位置">
+                <button id="set-ctx-pos-topbar" class="switch-pill-btn" type="button" data-ctx-pos="topbar">右上角顶栏</button>
+                <button id="set-ctx-pos-footer" class="switch-pill-btn" type="button" data-ctx-pos="footer">输入框底部胶囊</button>
+                <button id="set-ctx-pos-both" class="switch-pill-btn active" type="button" data-ctx-pos="both">同时显示（默认）</button>
+              </div>
+            </div>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">顶栏常驻显示流式生成速度 (tok/s)</span>
+                <span class="settings-pref-desc">关闭时隐藏顶栏内联 tok/s 徽章，点击上下文圆环仍可在详情面板查看完整输出速度与首字延迟</span>
+              </div>
+              <input id="set-show-topbar-speed" type="checkbox" class="settings-checkbox" checked />
+            </label>
+            <label class="settings-pref-row settings-pref-check">
+              <div class="settings-pref-meta">
+                <span class="settings-pref-name">详情面板显示 API 参考估算费用 ($)</span>
+                <span class="settings-pref-desc">在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付），关闭可隐藏全部估算金额</span>
+              </div>
+              <input id="set-show-api-ref-cost" type="checkbox" class="settings-checkbox" checked />
+            </label>
+          </div>
+        </div>
+
         <div id="settings-card-features" class="settings-card-box">
           <div class="settings-card-hdr">
             <span class="settings-card-title">桌面功能显示开关</span>
@@ -4678,16 +4724,21 @@
               <div class="settings-select-wrap">
                 <select id="set-cli-model-select" class="settings-select" aria-label="CLI 默认启动模型">
                   <option value="">不指定 · 跟随 CLI 默认设置</option>
+                  <option value="gemini-4-neon-xhigh">Gemini 4 Neon (Extra High)</option>
+                  <option value="gemini-4-neon-high">Gemini 4 Neon (High)</option>
+                  <option value="gemini-4-neon-medium">Gemini 4 Neon (Medium)</option>
+                  <option value="gemini-4-neon-low">Gemini 4 Neon (Low)</option>
                   <option value="gemini-4-carbon-high">Gemini 4 Carbon (High)</option>
                   <option value="gemini-4-carbon-medium">Gemini 4 Carbon (Medium)</option>
                   <option value="gemini-4-carbon-low">Gemini 4 Carbon (Low)</option>
                   <option value="gemini-4-argon-high">Gemini 4 Argon (High)</option>
                   <option value="gemini-4-argon-medium">Gemini 4 Argon (Medium)</option>
                   <option value="gemini-4-argon-low">Gemini 4 Argon (Low)</option>
-                  <option value="gemini-4-hydrogen-xhigh">Gemini 4 Hydrogen (XHigh)</option>
+                  <option value="gemini-4-hydrogen-xhigh">Gemini 4 Hydrogen (Extra High)</option>
                   <option value="gemini-4-hydrogen-high">Gemini 4 Hydrogen (High)</option>
                   <option value="gemini-4-hydrogen-medium">Gemini 4 Hydrogen (Medium)</option>
                   <option value="gemini-4-hydrogen-low">Gemini 4 Hydrogen (Low)</option>
+                  <option value="gemini-pro-orchestrator-neon">Orchestrator (Neon)</option>
                   <option value="gemini-pro-orchestrator">Orchestrator (Carbon)</option>
                   <option value="gemini-pro-orchestrator-argon">Orchestrator (Argon)</option>
                   <option value="gemini-3.8-flash-high">Gemini 3.8 Flash (High)</option>
@@ -11068,7 +11119,13 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
-function positionHeatPopover(anchorX, anchorY) {
+function shouldShowApiRefCost() {
+    return typeof host !== 'undefined' && host?.getAttribute
+      ? host.getAttribute('data-hide-api-cost') !== 'true'
+      : true;
+  }
+
+  function positionHeatPopover(anchorX, anchorY) {
     if (!heatPop) return;
     const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
     const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
@@ -11134,9 +11191,12 @@ function positionHeatPopover(anchorX, anchorY) {
         const showPop = () => {
           const d = item.date;
           heatPopDate.textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${item.isToday ? '（今日）' : (item.key === win.firstStr ? '（首次使用）' : '')}`;
-          const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const cny = convertToCNY(costInfo.costUSD, 'USD');
-          const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          let costStr = '';
+          if (shouldShowApiRefCost()) {
+            const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
+            const cny = convertToCNY(costInfo.costUSD, 'USD');
+            costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          }
           heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? '未来日期（待产生记录）' : '0 Tokens');
           if (item.rec) {
             heatPopDet.innerHTML = `
@@ -11212,17 +11272,23 @@ function positionHeatPopover(anchorX, anchorY) {
       col.appendChild(fill);
 
       const showPop = () => {
-        const weekDates = [];
-        for (let r = 0; r < 7; r++) weekDates.push(formatLocalYmd(addDays(w.sDate, r)));
-        const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, weekDates, activeCostModel, {
-          mode: activeCostMode,
-          todayStr: formatLocalYmd(win.today)
-        });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const showCost = shouldShowApiRefCost();
+        let costStr = '';
+        let detHtml = '<span>周累计</span>';
+        if (showCost) {
+          const weekDates = [];
+          for (let r = 0; r < 7; r++) weekDates.push(formatLocalYmd(addDays(w.sDate, r)));
+          const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, weekDates, activeCostModel, {
+            mode: activeCostMode,
+            todayStr: formatLocalYmd(win.today)
+          });
+          const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+          costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          detHtml = `<span>周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+        }
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
         heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : '0 Tokens';
-        heatPopDet.innerHTML = `<span>周累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+        heatPopDet.innerHTML = detHtml;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
         positionHeatPopover(r.left + r.width / 2, r.top - 6);
@@ -11321,19 +11387,25 @@ function positionHeatPopover(anchorX, anchorY) {
       const mouseX = e.clientX - r.left;
       const idx = points.length === 1 ? 0 : Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
       const pt = points[idx];
-      const cumDates = [];
-      for (const k of Object.keys(map)) {
-        if (k <= pt.key) cumDates.push(k);
+      const showCost = shouldShowApiRefCost();
+      let costStr = '';
+      let detHtml = '<span>截至当日累计</span>';
+      if (showCost) {
+        const cumDates = [];
+        for (const k of Object.keys(map)) {
+          if (k <= pt.key) cumDates.push(k);
+        }
+        const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
+          mode: activeCostMode,
+          todayStr: formatLocalYmd(win.today)
+        });
+        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+        costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        detHtml = `<span>截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
       }
-      const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
-        mode: activeCostMode,
-        todayStr: formatLocalYmd(win.today)
-      });
-      const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-      const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
       heatPopDate.textContent = `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日 (累计)`;
       heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
-      heatPopDet.innerHTML = `<span>截至当日累计 (折合日均 $${costAgg.dailyAverageUSD.toFixed(2)})</span>`;
+      heatPopDet.innerHTML = detHtml;
       heatPopDet.style.display = 'block';
       positionHeatPopover(e.clientX, r.top + (height - (pt.val / max) * (height - 12)) - 6);
     };
@@ -11459,9 +11531,12 @@ function positionHeatPopover(anchorX, anchorY) {
       }
 
       const showPop = () => {
-        const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
-        const cny = convertToCNY(costInfo.costUSD, 'USD');
-        const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        let costStr = '';
+        if (shouldShowApiRefCost()) {
+          const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
+          const cny = convertToCNY(costInfo.costUSD, 'USD');
+          costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        }
         heatPopDate.textContent = `${targetYear}年${targetMonth + 1}月${day}日${isToday ? '（今日）' : ''}`;
         heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? '未来日期（待产生记录）' : '0 Tokens');
         if (rec) {
@@ -11629,15 +11704,22 @@ function positionHeatPopover(anchorX, anchorY) {
       g.appendChild(text);
 
       const showPop = () => {
-        const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, item.dates, activeCostModel, {
-          mode: activeCostMode,
-          todayStr: formatLocalYmd(win.today)
-        });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const showCost = shouldShowApiRefCost();
+        const activeDays = item.dates.reduce((cnt, dk) => cnt + (ANTIGRAVITY_TOKEN_DATA.dailyMap[dk]?.total > 0 ? 1 : 0), 0);
+        let costStr = '';
+        let detHtml = `<span>月累计 (活跃 ${activeDays} 天)</span>`;
+        if (showCost) {
+          const costAgg = calculateIntervalCost(ANTIGRAVITY_TOKEN_DATA.dailyMap, item.dates, activeCostModel, {
+            mode: activeCostMode,
+            todayStr: formatLocalYmd(win.today)
+          });
+          const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
+          costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+          detHtml = `<span>月累计 · 折合日均 $${costAgg.dailyAverageUSD.toFixed(2)} (活跃 ${costAgg.activeDays} 天)</span>`;
+        }
         heatPopDate.textContent = `${targetYear}年${item.monthName}${item.isCurrent ? '（进行中）' : (item.monthIndex === peakMonthIndex ? '（年度峰值）' : '')}`;
         heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? '未来月份（尚未产生用量）' : '0 Tokens');
-        heatPopDet.innerHTML = `<span>月累计 · 折合日均 $${costAgg.dailyAverageUSD.toFixed(2)} (活跃 ${costAgg.activeDays} 天)</span>`;
+        heatPopDet.innerHTML = detHtml;
         heatPopDet.style.display = 'block';
 
         const r = g.getBoundingClientRect ? g.getBoundingClientRect() : { left: cx, top: cy, width: radius * 2 };
@@ -12460,6 +12542,18 @@ function positionHeatPopover(anchorX, anchorY) {
     '🧰 终端与网络': '🧰 Terminal & Network',
     '📊 套餐与订阅': '📊 Plan & Subscription',
     '语言与明暗外观': 'Language & Appearance',
+    '上下文与指标精简显示': 'Context & Metric Display',
+    '恢复上下文显示与指标默认设置': 'Restore default context display & metric settings',
+    '默认同时保留右上角进度环、顶栏推理速度、输入框底部脉冲胶囊与 API 参考估算费用；需要极简界面时，可随时切换仅顶栏显示或按需隐藏。': 'Shows the topbar context ring, inline streaming speed, composer capsule, and API reference cost estimates by default; switch to Topbar-only mode or toggle items off anytime for a minimal UI.',
+    '上下文显示位置': 'Context Display Position',
+    '切至「右上角顶栏」时底部胶囊平时自动收起，仅在满 240K 或缓存失效时浮现预警与一键 /compact 入口': 'When set to Topbar, the bottom capsule stays tucked away until context hits 240K+ or cache expires, surfacing a compact alert and one-click /compact',
+    '右上角顶栏': 'Topbar Only',
+    '输入框底部胶囊': 'Composer Capsule',
+    '同时显示（默认）': 'Show Both (Default)',
+    '顶栏常驻显示流式生成速度 (tok/s)': 'Always Show Streaming Speed in Topbar (tok/s)',
+    '关闭时隐藏顶栏内联 tok/s 徽章，点击上下文圆环仍可在详情面板查看完整输出速度与首字延迟': 'Hides the inline tok/s badge in the topbar; full speed and TTFT metrics remain available inside the context detail panel',
+    '详情面板显示 API 参考估算费用 ($)': 'Show API Reference Cost Estimates in Panels ($)',
+    '在桌面端与手机远程详情面板中显示按公开 API 单价折算的参考金额（非订阅实付），关闭可隐藏全部估算金额': 'Displays public API price-equivalent reference costs (not actual subscription charges) in desktop and mobile remote detail panels; toggle off to hide all estimates',
     '桌面功能显示开关': 'Desktop Feature Toggles',
     '对话自动化与安全策略': 'Chat Automation & Safety',
     '自定义强调色与顶栏分项配色': 'Custom Accent & Topbar Colors',
@@ -12923,12 +13017,21 @@ function positionHeatPopover(anchorX, anchorY) {
     terminals: [],
     platform: (typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')) ? 'win32' : 'darwin'
   };
+  function normalizeContextDisplayMode(raw) {
+    const clean = String(raw || '').trim().toLowerCase();
+    if (clean === 'topbar' || clean === 'footer') return clean;
+    return 'both';
+  }
+
   let suiteEnhancerPrefs = {
     autoAccept: false,
     ghostSuggest: true,
     autoCompact: true,
     longFold: true,
     quickBuiltinAutoSend: false,
+    contextDisplayMode: 'both',
+    showTopbarSpeed: true,
+    showApiReferenceCost: true,
     dockBadgeEnabled: true,
     dockBadgeStyle: 'capsule',
     dockBadgeColorTier: true,
@@ -13598,6 +13701,18 @@ function positionHeatPopover(anchorX, anchorY) {
     if (lsQuickAutoSend === 'true' || lsQuickAutoSend === 'false') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = lsQuickAutoSend === 'true';
     }
+    const lsCtxPos = localStorage?.getItem?.('ag_suite_context_display_mode');
+    if (lsCtxPos) {
+      suiteEnhancerPrefs.contextDisplayMode = normalizeContextDisplayMode(lsCtxPos);
+    }
+    const lsShowSpeed = localStorage?.getItem?.('ag_suite_show_topbar_speed');
+    if (lsShowSpeed === 'true' || lsShowSpeed === 'false') {
+      suiteEnhancerPrefs.showTopbarSpeed = lsShowSpeed === 'true';
+    }
+    const lsShowRefCost = localStorage?.getItem?.('ag_suite_show_api_ref_cost');
+    if (lsShowRefCost === 'true' || lsShowRefCost === 'false') {
+      suiteEnhancerPrefs.showApiReferenceCost = lsShowRefCost === 'true';
+    }
     const lsDockEnabled = localStorage?.getItem?.('ag_suite_dock_badge_enabled');
     if (lsDockEnabled === 'true' || lsDockEnabled === 'false') {
       suiteEnhancerPrefs.dockBadgeEnabled = lsDockEnabled !== 'false';
@@ -13770,10 +13885,12 @@ function positionHeatPopover(anchorX, anchorY) {
     const curEntry = findSupportedLocaleEntry(suiteEnhancerPrefs.locale);
     const activeLocale = suiteEnhancerPrefs.locale || 'zh-CN';
     const hansLangVal = curEntry.hansCode === 'en' ? 'en' : 'zh';
+    const activeCtxPos = normalizeContextDisplayMode(suiteEnhancerPrefs.contextDisplayMode);
     try {
       if (typeof document !== 'undefined' && document.documentElement?.setAttribute) {
         document.documentElement.setAttribute('data-ag-suite-locale', activeLocale);
         document.documentElement.setAttribute('data-ag-hans-lang', hansLangVal);
+        document.documentElement.setAttribute('data-ag-context-display-mode', activeCtxPos);
       }
     } catch {}
     try {
@@ -13787,6 +13904,9 @@ function positionHeatPopover(anchorX, anchorY) {
       localStorage?.setItem?.('ag_suite_auto_compact', suiteEnhancerPrefs.autoCompact !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_long_fold', suiteEnhancerPrefs.longFold !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_quick_builtin_autosend', suiteEnhancerPrefs.quickBuiltinAutoSend ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_context_display_mode', activeCtxPos);
+      localStorage?.setItem?.('ag_suite_show_topbar_speed', suiteEnhancerPrefs.showTopbarSpeed ? 'true' : 'false');
+      localStorage?.setItem?.('ag_suite_show_api_ref_cost', suiteEnhancerPrefs.showApiReferenceCost ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_dock_badge_enabled', suiteEnhancerPrefs.dockBadgeEnabled !== false ? 'true' : 'false');
       localStorage?.setItem?.('ag_suite_dock_badge_style', suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule');
       localStorage?.setItem?.('ag_suite_dock_badge_color_tier', suiteEnhancerPrefs.dockBadgeColorTier !== false ? 'true' : 'false');
@@ -13817,6 +13937,9 @@ function positionHeatPopover(anchorX, anchorY) {
             autoCompact: suiteEnhancerPrefs.autoCompact !== false,
             longFold: suiteEnhancerPrefs.longFold !== false,
             quickBuiltinAutoSend: Boolean(suiteEnhancerPrefs.quickBuiltinAutoSend),
+            contextDisplayMode: activeCtxPos,
+            showTopbarSpeed: Boolean(suiteEnhancerPrefs.showTopbarSpeed),
+            showApiReferenceCost: Boolean(suiteEnhancerPrefs.showApiReferenceCost),
             dockBadgeEnabled: suiteEnhancerPrefs.dockBadgeEnabled !== false,
             dockBadgeStyle: suiteEnhancerPrefs.dockBadgeStyle === 'badge' ? 'badge' : 'capsule',
             dockBadgeColorTier: suiteEnhancerPrefs.dockBadgeColorTier !== false,
@@ -14121,16 +14244,73 @@ function positionHeatPopover(anchorX, anchorY) {
     }
   }
 
+  function syncContextDisplayControls() {
+    const mode = normalizeContextDisplayMode(suiteEnhancerPrefs.contextDisplayMode);
+    const btnTop = el('set-ctx-pos-topbar');
+    const btnFoot = el('set-ctx-pos-footer');
+    const btnBoth = el('set-ctx-pos-both');
+    setPillActive(btnTop, mode === 'topbar');
+    setPillActive(btnFoot, mode === 'footer');
+    setPillActive(btnBoth, mode === 'both');
+    if (btnTop) btnTop.setAttribute('aria-pressed', String(mode === 'topbar'));
+    if (btnFoot) btnFoot.setAttribute('aria-pressed', String(mode === 'footer'));
+    if (btnBoth) btnBoth.setAttribute('aria-pressed', String(mode === 'both'));
+    const chkSpeed = el('set-show-topbar-speed');
+    if (chkSpeed) chkSpeed.checked = Boolean(suiteEnhancerPrefs.showTopbarSpeed);
+    const chkCost = el('set-show-api-ref-cost');
+    if (chkCost) chkCost.checked = Boolean(suiteEnhancerPrefs.showApiReferenceCost);
+  }
+
+  function getContextDisplayPrefs() {
+    return {
+      contextDisplayMode: normalizeContextDisplayMode(suiteEnhancerPrefs.contextDisplayMode),
+      showTopbarSpeed: Boolean(suiteEnhancerPrefs.showTopbarSpeed),
+      showApiReferenceCost: Boolean(suiteEnhancerPrefs.showApiReferenceCost)
+    };
+  }
+
+  async function setContextDisplayPrefs(partialPrefs = {}, opts = {}) {
+    const savePayload = {};
+    if (partialPrefs && typeof partialPrefs === 'object') {
+      if (partialPrefs.contextDisplayMode !== undefined) {
+        suiteEnhancerPrefs.contextDisplayMode = normalizeContextDisplayMode(partialPrefs.contextDisplayMode);
+        savePayload.contextDisplayMode = suiteEnhancerPrefs.contextDisplayMode;
+      }
+      if (typeof partialPrefs.showTopbarSpeed === 'boolean') {
+        suiteEnhancerPrefs.showTopbarSpeed = partialPrefs.showTopbarSpeed;
+        savePayload.showTopbarSpeed = suiteEnhancerPrefs.showTopbarSpeed;
+      }
+      if (typeof partialPrefs.showApiReferenceCost === 'boolean') {
+        suiteEnhancerPrefs.showApiReferenceCost = partialPrefs.showApiReferenceCost;
+        savePayload.showApiReferenceCost = suiteEnhancerPrefs.showApiReferenceCost;
+      }
+    }
+    syncContextDisplayControls();
+    applySuiteFeatureFlags();
+    dispatchSuitePrefsChanged();
+    if (opts.syncHost !== false && Object.keys(savePayload).length > 0) {
+      await saveSuiteUiPrefs(savePayload);
+    }
+    return getContextDisplayPrefs();
+  }
+
   function applySuiteFeatureFlags() {
+    const activeCtxPos = normalizeContextDisplayMode(suiteEnhancerPrefs.contextDisplayMode);
     if (host?.setAttribute && host?.removeAttribute) {
       const toggleAttr = (attr, visible) => {
         if (visible === false) host.setAttribute(attr, 'true');
         else host.removeAttribute(attr);
       };
+      toggleAttr('data-hide-context-ring', activeCtxPos !== 'footer');
+      toggleAttr('data-hide-inline-speed', Boolean(suiteEnhancerPrefs.showTopbarSpeed));
+      toggleAttr('data-hide-api-cost', Boolean(suiteEnhancerPrefs.showApiReferenceCost));
       toggleAttr('data-hide-tokens', suiteFeatureFlags.showTopbarTokens);
       toggleAttr('data-hide-cli', suiteFeatureFlags.showTopbarCli);
       toggleAttr('data-hide-quota', suiteFeatureFlags.showTopbarQuota);
       toggleAttr('data-hide-remote', suiteFeatureFlags.showTopbarRemote);
+    }
+    if (!suiteEnhancerPrefs.showApiReferenceCost && typeof activeTokenView !== 'undefined' && activeTokenView === 'cost' && typeof switchTokenView === 'function') {
+      switchTokenView('tokens');
     }
     if (suiteFeatureFlags.showTopbarTokens === false) {
       const pTok = el('panel-tokens');
@@ -14170,6 +14350,7 @@ function positionHeatPopover(anchorX, anchorY) {
         }
       }
     }
+    syncContextDisplayControls();
     syncFeatureFlagControls();
     applySuiteFeatureFlags();
     dispatchSuitePrefsChanged();
@@ -14483,6 +14664,7 @@ function positionHeatPopover(anchorX, anchorY) {
         document.querySelectorAll('[data-agy-hans-ui]')?.forEach?.(node => node.remove?.());
       }
     } catch {}
+    syncContextDisplayControls();
     syncFeatureFlagControls();
     applySuiteFeatureFlags();
     syncLanguageDropdownOptions();
@@ -14813,6 +14995,15 @@ function positionHeatPopover(anchorX, anchorY) {
     }
     if (typeof uiPrefs.quickBuiltinAutoSend === 'boolean') {
       suiteEnhancerPrefs.quickBuiltinAutoSend = uiPrefs.quickBuiltinAutoSend;
+    }
+    if (typeof uiPrefs.contextDisplayMode === 'string' && uiPrefs.contextDisplayMode.trim()) {
+      suiteEnhancerPrefs.contextDisplayMode = normalizeContextDisplayMode(uiPrefs.contextDisplayMode);
+    }
+    if (typeof uiPrefs.showTopbarSpeed === 'boolean') {
+      suiteEnhancerPrefs.showTopbarSpeed = uiPrefs.showTopbarSpeed;
+    }
+    if (typeof uiPrefs.showApiReferenceCost === 'boolean') {
+      suiteEnhancerPrefs.showApiReferenceCost = uiPrefs.showApiReferenceCost;
     }
     if (typeof uiPrefs.dockBadgeEnabled === 'boolean') {
       suiteEnhancerPrefs.dockBadgeEnabled = uiPrefs.dockBadgeEnabled;
@@ -16744,6 +16935,28 @@ function positionHeatPopover(anchorX, anchorY) {
     void setSuiteFeatureFlags({ ...DEFAULT_SUITE_FEATURE_FLAGS });
   });
 
+  ['topbar', 'footer', 'both'].forEach(mode => {
+    el(`set-ctx-pos-${mode}`)?.addEventListener('click', () => {
+      void setContextDisplayPrefs({ contextDisplayMode: mode });
+    });
+  });
+
+  el('set-show-topbar-speed')?.addEventListener('change', e => {
+    void setContextDisplayPrefs({ showTopbarSpeed: Boolean(e?.target?.checked) });
+  });
+
+  el('set-show-api-ref-cost')?.addEventListener('change', e => {
+    void setContextDisplayPrefs({ showApiReferenceCost: Boolean(e?.target?.checked) });
+  });
+
+  el('btn-reset-context-display')?.addEventListener('click', () => {
+    void setContextDisplayPrefs({
+      contextDisplayMode: 'both',
+      showTopbarSpeed: true,
+      showApiReferenceCost: true
+    });
+  });
+
   el('btn-toggle-heat-advanced')?.addEventListener('click', () => {
     const box = el('heat-advanced-colors-box');
     const btn = el('btn-toggle-heat-advanced');
@@ -16875,6 +17088,8 @@ function positionHeatPopover(anchorX, anchorY) {
     toggleQuickPoolItem: (id, opts) => toggleSuiteQuickPoolItem(id, opts),
     getQuickBuiltinAutoSend: () => getSuiteQuickBuiltinAutoSend(),
     setQuickBuiltinAutoSend: (val, opts) => setSuiteQuickBuiltinAutoSend(val, opts),
+    getContextDisplayPrefs: () => getContextDisplayPrefs(),
+    setContextDisplayPrefs: (prefs, opts) => setContextDisplayPrefs(prefs, opts),
     getRemoteDisplayConfig: () => getRemoteDisplayConfig(),
     setRemoteDisplayConfig: cfg => setRemoteDisplayConfig(cfg),
     setHostElevated: flag => syncHostStackingElevation(Boolean(flag)),

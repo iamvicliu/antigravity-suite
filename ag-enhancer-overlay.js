@@ -4272,13 +4272,13 @@
       return { ok: true, method: 'button' };
     }
     if (sendBtn && isComposerSendButtonDisabled(sendBtn) && !allowEnterOnDisabled) {
-      return { ok: false, reason: 'send_disabled', error: '当前发送按钮不可用' };
+      return { ok: false, confirmedNotExecuted: true, reason: 'send_disabled', error: '当前发送按钮不可用' };
     }
     if (!allowEnterFallback) {
-      return { ok: false, reason: 'no_send_button', error: '未找到发送按钮' };
+      return { ok: false, confirmedNotExecuted: true, reason: 'no_send_button', error: '未找到发送按钮' };
     }
     if (checkBusyOnEnter && isAssistantBusy()) {
-      return { ok: false, reason: 'assistant_busy', error: '智能体正在响应中' };
+      return { ok: false, confirmedNotExecuted: true, reason: 'assistant_busy', error: '智能体正在响应中' };
     }
     const ed = getComposerEditor();
     if (ed) {
@@ -4295,7 +4295,7 @@
       hideNextStepGhost();
       return { ok: true, method: 'enter' };
     }
-    return { ok: false, reason: 'no_composer', error: '未找到发送按钮或输入框' };
+    return { ok: false, confirmedNotExecuted: true, reason: 'no_composer', error: '未找到发送按钮或输入框' };
   }
 
   function showQuickFillSuccessToast({ id, slash, label, fillRes }) {
@@ -9449,21 +9449,75 @@
   }
 
   function extractQueueFiberEntries(cardEl) {
-    try {
-      const fk = Object.keys(cardEl || {}).find((k) => k.startsWith('__reactFiber$'));
-      let f = fk ? cardEl[fk] : null;
-      for (let depth = 0; depth < 8 && f; depth += 1, f = f.return) {
+    const formatQueueStepItem = (it) => {
+      if (!it || typeof it !== 'object') return '';
+      if (typeof it.text === 'string' && it.text) return it.text;
+      const ch = it.chunk;
+      if (ch && typeof ch === 'object') {
+        if (ch.case === 'text') return String(ch.value || '');
+        if (ch.case === 'item' && ch.value && typeof ch.value === 'object') {
+          const v = ch.value;
+          const scope = v.scopeItem || v.item || v;
+          if (scope?.case === 'file' || scope?.file) {
+            const uri = String(scope.value?.absoluteUri || scope.file?.absoluteUri || '');
+            let base = uri.split('/').pop() || uri;
+            try { base = decodeURIComponent(base); } catch {}
+            return base ? `@${base}` : '';
+          }
+          if (scope?.case === 'directory' || scope?.directory) {
+            const uri = String(scope.value?.absoluteUri || scope.directory?.absoluteUri || '').replace(/\/+$/, '');
+            let base = uri.split('/').pop() || uri;
+            try { base = decodeURIComponent(base); } catch {}
+            return base ? `@${base}` : '';
+          }
+          if (scope?.case === 'slashCommand' || scope?.slashCommand) {
+            const nm = String(scope.value?.info?.name || scope.slashCommand?.info?.name || '');
+            return nm ? `/${nm}` : '';
+          }
+          return String(v.displayLabel || v.title || v.url || '');
+        }
+      }
+      if (it.item?.file?.absoluteUri) {
+        const uri = String(it.item.file.absoluteUri);
+        let base = uri.split('/').pop() || uri;
+        try { base = decodeURIComponent(base); } catch {}
+        return `@${base}`;
+      }
+      if (it.item?.directory?.absoluteUri) {
+        const uri = String(it.item.directory.absoluteUri).replace(/\/+$/, '');
+        let base = uri.split('/').pop() || uri;
+        try { base = decodeURIComponent(base); } catch {}
+        return `@${base}`;
+      }
+      if (it.item?.slashCommand?.info?.name) {
+        return `/${it.item.slashCommand.info.name}`;
+      }
+      return '';
+    };
+    const findArrFromNode = (el, maxDepth) => {
+      if (!el) return null;
+      const fk = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+      let f = fk ? el[fk] : null;
+      for (let depth = 0; depth < maxDepth && f; depth += 1, f = f.return) {
         const p = f.memoizedProps || {};
         const arr = Array.isArray(p.queuedUserInputs)
           ? p.queuedUserInputs
           : (Array.isArray(p.pendingUserInputs) ? p.pendingUserInputs : null);
-        if (!arr || !arr.length) continue;
+        if (arr && arr.length) return arr;
+      }
+      return null;
+    };
+    try {
+      const firstRowNode = cardEl?.querySelector?.('[data-queued-msg-id]') || null;
+      const arr = findArrFromNode(cardEl, 20) || findArrFromNode(firstRowNode, 14);
+      if (arr && arr.length) {
         return arr.map((item, idx) => {
           const msgId = String(item?.msgId || item?.id || item?.messageId || '').trim();
           const step = item?.step || item?.userInput || item || {};
+          const clientMessageId = String(step?.clientMessageId || step?.client_message_id || item?.clientMessageId || '').trim();
           const stepItems = Array.isArray(step.items) ? step.items : [];
-          const text = stepItems.map((it) => String(it?.text || '')).join('').trim()
-            || String(step.text || item?.text || '').trim();
+          const text = stepItems.map(formatQueueStepItem).join('').trim()
+            || String(step.userResponse || step.text || item?.text || '').trim();
           const rawMedia = Array.isArray(step.media)
             ? step.media
             : (Array.isArray(step.images)
@@ -9494,7 +9548,7 @@
               src: att.previewUrl,
               alt: att.name || '图片'
             }));
-          return { msgId, text, images: imgs, attachments, idx };
+          return { msgId, ...(clientMessageId ? { clientMessageId } : {}), text, images: imgs, attachments, idx };
         });
       }
     } catch {}
@@ -9573,10 +9627,14 @@
 
     const entries = [];
     const seenRowEls = new Set();
+    const explicitMsgIdRows = Array.from(cardRoot.querySelectorAll('[data-queued-msg-id]'))
+      .filter((el) => !isExcludedSuiteOrNavNode(el) && !isExpandBtn(el));
     const decoratorNodes = Array.from(cardRoot.querySelectorAll('[data-testid="queued-decorators"]'))
       .filter((d) => !isExcludedSuiteOrNavNode(d));
     let rowCandidates = [];
-    if (decoratorNodes.length) {
+    if (explicitMsgIdRows.length) {
+      rowCandidates = explicitMsgIdRows;
+    } else if (decoratorNodes.length) {
       rowCandidates = decoratorNodes.map((d) => {
         const p1 = d.parentElement;
         const p2 = p1?.parentElement;
@@ -9587,8 +9645,9 @@
         return (p1 && p1 !== cardRoot) ? p1 : d;
       }).filter(Boolean);
     } else {
-      rowCandidates = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'))
+      const rawMatched = Array.from(cardRoot.querySelectorAll('[data-testid*="queue-item" i], [data-testid*="queued-message" i], li, [role="listitem"]'))
         .filter((el) => !isExcludedSuiteOrNavNode(el) && !isExpandBtn(el));
+      rowCandidates = rawMatched.filter((el) => !rawMatched.some((other) => other !== el && typeof el.contains === 'function' && el.contains(other)));
     }
     const fallbackRows = (rowCandidates.length ? rowCandidates : Array.from(cardRoot.children).slice(1))
       .filter((el) => !isExcludedSuiteOrNavNode(el) && !isExpandBtn(el));
@@ -9596,20 +9655,37 @@
     const inspectRow = (rowEl, rowIdx) => {
       if (!rowEl || seenRowEls.has(rowEl) || isExcludedSuiteOrNavNode(rowEl) || isExpandBtn(rowEl)) return;
       seenRowEls.add(rowEl);
+      const rowMsgId = String(
+        rowEl.getAttribute?.('data-queued-msg-id') ||
+        rowEl.closest?.('[data-queued-msg-id]')?.getAttribute?.('data-queued-msg-id') ||
+        ''
+      ).trim();
       const cloneTxt = (() => {
         const dec = rowEl.querySelector?.('[data-testid="queued-decorators"]');
-        if (!dec || dec === rowEl) return rowEl.textContent || '';
-        const raw = String(rowEl.textContent || '');
-        const decTxt = String(dec.textContent || '');
-        return decTxt && raw.endsWith(decTxt) ? raw.slice(0, raw.length - decTxt.length) : raw;
+        let raw = String(rowEl.textContent || '');
+        if (dec && dec !== rowEl) {
+          const decTxt = String(dec.textContent || '');
+          if (decTxt && raw.endsWith(decTxt)) raw = raw.slice(0, raw.length - decTxt.length);
+        }
+        const tooltips = rowEl.querySelectorAll?.('[role="tooltip"]');
+        if (tooltips && tooltips.length) {
+          for (const tt of tooltips) {
+            const ttTxt = String(tt.textContent || '');
+            if (ttTxt && raw.endsWith(ttTxt)) raw = raw.slice(0, raw.length - ttTxt.length);
+          }
+        }
+        return raw;
       })();
       const rawTxt = stripHeaderNoise(cloneTxt);
       const imgs = Array.from(rowEl.querySelectorAll('img')).map((img) => ({
         src: String(img.getAttribute?.('src') || img.src || '').trim(),
         alt: String(img.getAttribute?.('alt') || '').trim()
       })).filter((im) => im.src && !im.src.startsWith('data:image/svg'));
-      const fiberRec = fiberItems[entries.length] || fiberItems[rowIdx] || null;
-      const finalText = rawTxt || fiberRec?.text || '';
+      const fiberRec = (rowMsgId ? fiberItems.find((fi) => fi && fi.msgId === rowMsgId) : null)
+        || fiberItems[entries.length]
+        || fiberItems[rowIdx]
+        || null;
+      const finalText = fiberRec?.text || rawTxt || '';
       const finalImgs = imgs.length ? imgs : (fiberRec?.images || []);
       const domAttachments = imgs.map((im, imIdx) => {
         const mimeMatch = im.src.match(/^data:([^;,\s]+);base64,/i);
@@ -9627,10 +9703,12 @@
         : domAttachments;
       if (!finalText && !finalImgs.length && !finalAttachments.length) return;
       const { sendBtn, editBtn, deleteBtn } = pickDecoratorBtns(rowEl);
+      const effMsgId = rowMsgId || fiberRec?.msgId || '';
       entries.push({
         domIndex: entries.length,
         stepIndex: -1,
-        messageId: fiberRec?.msgId || '',
+        messageId: effMsgId,
+        ...(fiberRec?.clientMessageId ? { clientMessageId: fiberRec.clientMessageId } : {}),
         source: 'dom',
         text: finalText || ((finalImgs.length || finalAttachments.length) ? `[图片 ×${finalImgs.length || finalAttachments.length}]` : ''),
         images: finalImgs.slice(0, 6),
@@ -9717,10 +9795,11 @@
   }
 
   function collectQueuedMessagesFromDom() {
-    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, messageId, source, text, images, hasMedia, status, hasEdit }) => ({
+    return findQueuedMessagesDomEntries().map(({ domIndex, stepIndex, messageId, clientMessageId, source, text, images, hasMedia, status, hasEdit }) => ({
       domIndex,
       stepIndex,
       ...(messageId ? { messageId } : {}),
+      ...(clientMessageId ? { clientMessageId } : {}),
       source,
       text,
       images,
@@ -10931,13 +11010,50 @@
       let f = fk ? btn[fk] : null;
       for (let i = 0; i < 28 && f; i++) {
         const v = f.memoizedProps?.value;
-        if (v && typeof v.setSelectedModel === 'function' && Array.isArray(v.modelOptions)) {
+        if (v && typeof v.setSelectedModel === 'function' && (
+          Array.isArray(v.modelOptions) ||
+          Array.isArray(v.userStatus?.cascadeModelConfigData?.clientModelConfigs)
+        )) {
           return v;
         }
         f = f.return;
       }
     } catch {}
     return null;
+  }
+
+  function resolveSelectableModelPool(modelCtx) {
+    if (!modelCtx || typeof modelCtx.setSelectedModel !== 'function') {
+      return { source: 'none', options: [], fallbackConfigs: [] };
+    }
+    const cascadeCfg = modelCtx.userStatus?.cascadeModelConfigData || null;
+    const fallbackConfigs = Array.isArray(cascadeCfg?.clientModelConfigs)
+      ? cascadeCfg.clientModelConfigs.filter((c) => c && typeof c === 'object' && !c.disabled && c.label)
+      : [];
+    const directOptions = Array.isArray(modelCtx.modelOptions)
+      ? modelCtx.modelOptions.filter((o) => o && typeof o === 'object' && !o.disabled && o.label)
+      : [];
+    if (directOptions.length > 0) {
+      return { source: 'modelOptions', options: directOptions, fallbackConfigs };
+    }
+    if (fallbackConfigs.length > 0) {
+      const normalizedFallback = fallbackConfigs.map((c) => {
+        const modelEnum = typeof c.value === 'number'
+          ? c.value
+          : (typeof c.modelOrAlias?.model === 'number' ? c.modelOrAlias.model : undefined);
+        const modelAlias = (typeof c.modelOrAlias?.model === 'string' && c.modelOrAlias.model.trim())
+          ? c.modelOrAlias.model.trim()
+          : (typeof c.modelId === 'string' ? c.modelId : '');
+        return {
+          ...c,
+          label: String(c.label),
+          modelId: String(c.modelId || modelAlias || ''),
+          ...(modelEnum !== undefined ? { value: modelEnum } : (modelAlias ? { value: modelAlias } : {}))
+        };
+      });
+      return { source: 'clientModelConfigs', options: normalizedFallback, fallbackConfigs };
+    }
+    return { source: 'empty', options: [], fallbackConfigs: [] };
   }
 
   function getPermissionPresetsMeta() {
@@ -11472,15 +11588,31 @@
     return { conversations: nextConvs, projectGroups: nextGroups };
   }
 
-  function getMobileSnapshot() {
+  function getMobileSnapshot(opts = {}) {
+    const parsedMsgLimit = (opts && opts.msgLimit !== undefined && opts.msgLimit !== null && opts.msgLimit !== '')
+      ? Number.parseInt(opts.msgLimit, 10)
+      : NaN;
+    const isModelMetaFastPath = Number.isFinite(parsedMsgLimit) && parsedMsgLimit <= 0;
+    const effectiveMsgLimit = (!isModelMetaFastPath && Number.isFinite(parsedMsgLimit) && parsedMsgLimit > 0) ? parsedMsgLimit : 60;
+    const parsedConvLimit = (opts && opts.convLimit !== undefined && opts.convLimit !== null && opts.convLimit !== '')
+      ? Number.parseInt(opts.convLimit, 10)
+      : 0;
+    const effectiveConvLimit = (Number.isFinite(parsedConvLimit) && parsedConvLimit > 0) ? parsedConvLimit : 0;
+
     const sessionId = getSessionIdFromLocation() || '';
-    if (resolveLanguageServerCsrfToken() && (Date.now() - lastCascadeSummaryFetchAt) >= 20000) {
+    if (!isModelMetaFastPath && resolveLanguageServerCsrfToken() && (Date.now() - lastCascadeSummaryFetchAt) >= 20000) {
       lastCascadeSummaryFetchAt = Date.now();
       void refreshCascadeTrajectorySummaries();
     }
-    const storeCatalog = extractSidebarStoreCatalog();
-    const conversations = collectSidebarConversations(0, storeCatalog);
-    const { projectGroups } = collectSidebarProjectGroups(60, storeCatalog);
+    const storeCatalog = isModelMetaFastPath
+      ? { projects: [], conversations: [] }
+      : extractSidebarStoreCatalog();
+    const conversations = isModelMetaFastPath
+      ? []
+      : collectSidebarConversations(effectiveConvLimit, storeCatalog);
+    const { projectGroups } = isModelMetaFastPath
+      ? { projectGroups: [] }
+      : collectSidebarProjectGroups(effectiveConvLimit > 0 ? Math.min(60, effectiveConvLimit) : 60, storeCatalog);
     const activeConv = conversations.find((c) => c.active);
     const busySignal = detectAssistantBusySignal();
     const busy = Boolean(busySignal);
@@ -11518,64 +11650,189 @@
         || (!isNewConversation && activeSumMeta?.project && (!currentProjectId || currentProjectId === cleanSidebarPid(activeSumMeta.projectId)) && !isSyntheticSidebarProjectName(activeSumMeta.project) ? String(activeSumMeta.project).trim() : '')
       );
     const { sr } = getMeterHostAndShadow();
-    const rawContextBadge = (
-      sr?.getElementById('amount')?.textContent ||
-      sr?.getElementById('badge-pct-val')?.textContent ||
-      sr?.getElementById('badge')?.textContent ||
-      ''
-    ).replace(/\s+/g, ' ').trim();
-    const speedBadge = (sr?.getElementById('badge-speed')?.textContent || '').replace(/\s+/g, ' ').trim();
-    const pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
-    const rawPulse = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
-    const speedMatch = rawPulse.match(/(\d+(?:\.\d+)?\s*tok\/s)/i);
-    const ratioMatch = rawContextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/i);
-    const fallbackPulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : rawContextBadge].filter(Boolean).join(' · ') || rawPulse;
     const modelCtx = getModelSelectorContext();
     const model = modelCtx?.selectedModel?.label || detectCurrentModelText();
-    const authCtx = resolveAuthoritativeContextMetrics(sessionId, {
-      pulseEl,
-      fallbackModel: model
-    });
-    const canonicalCtx = (authCtx && (authCtx.usedTokens > 0 || typeof authCtx.usagePercent === 'number'))
-      ? buildCanonicalContextPanelPayload(authCtx, {
-          fallbackBadge: rawContextBadge,
-          fallbackPulse: fallbackPulseText,
-          fallbackModel: model
-        })
-      : null;
-    const contextBadge = canonicalCtx ? canonicalCtx.contextBadge : rawContextBadge;
-    const pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
-    const EFFORT_ORDER = { xhigh: 1, high: 2, medium: 3, low: 4 };
-    const rawModels = Array.isArray(modelCtx?.modelOptions)
-      ? modelCtx.modelOptions.filter((o) => o && !o.disabled && o.label)
+    let contextBadge = '';
+    let pulseText = '';
+    let pulseEl = null;
+    let authCtx = null;
+    if (!isModelMetaFastPath) {
+      const rawContextBadge = (
+        sr?.getElementById('amount')?.textContent ||
+        sr?.getElementById('badge-pct-val')?.textContent ||
+        sr?.getElementById('badge')?.textContent ||
+        ''
+      ).replace(/\s+/g, ' ').trim();
+      const speedBadge = (sr?.getElementById('badge-speed')?.textContent || '').replace(/\s+/g, ' ').trim();
+      pulseEl = document.querySelector('[data-agy-context-capsule="1"]');
+      const rawPulse = (pulseEl?.textContent || speedBadge || '').replace(/\s+/g, ' ').trim();
+      const speedMatch = rawPulse.match(/(\d+(?:\.\d+)?\s*tok\/s)/i);
+      const ratioMatch = rawContextBadge.match(/(\d+(?:\.\d+)?[KM]?\s*\(\d+(?:\.\d+)?%\))/i);
+      const fallbackPulseText = [speedMatch ? speedMatch[1] : '', ratioMatch ? ratioMatch[1] : rawContextBadge].filter(Boolean).join(' · ') || rawPulse;
+      authCtx = resolveAuthoritativeContextMetrics(sessionId, {
+        pulseEl,
+        fallbackModel: model
+      });
+      const canonicalCtx = (authCtx && (authCtx.usedTokens > 0 || typeof authCtx.usagePercent === 'number'))
+        ? buildCanonicalContextPanelPayload(authCtx, {
+            fallbackBadge: rawContextBadge,
+            fallbackPulse: fallbackPulseText,
+            fallbackModel: model
+          })
+        : null;
+      contextBadge = canonicalCtx ? canonicalCtx.contextBadge : rawContextBadge;
+      pulseText = canonicalCtx ? canonicalCtx.pulseText : fallbackPulseText;
+    }
+    const EFFORT_ORDER = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
+    const EFFORT_DISPLAY = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
+    const cascadeCfg = modelCtx?.userStatus?.cascadeModelConfigData || null;
+    const rawGroupedModels = cascadeCfg?.groupedModels || null;
+    const lookupGroupedModelCfg = (baseId) => {
+      const key = String(baseId || '').trim().toLowerCase();
+      if (!key || !rawGroupedModels) return null;
+      if (typeof rawGroupedModels.get === 'function') return rawGroupedModels.get(key) || null;
+      if (typeof rawGroupedModels === 'object' && key in rawGroupedModels) return rawGroupedModels[key] || null;
+      return null;
+    };
+    const parseEffortFromModelItem = (rawLbl, rawId) => {
+      const idM = String(rawId || '').trim().match(/^(.*?)-(xhigh|high|medium|low|max)$/i);
+      const lblM = String(rawLbl || '').trim().match(/^(.*?)\s*\((Extra\s+High|XHigh|High|Medium|Low|Max)\)\s*$/i);
+      const rawEff = idM ? idM[2].toLowerCase() : (lblM ? lblM[2].toLowerCase().replace(/\s+/g, '') : '');
+      const effKey = rawEff === 'extrahigh' ? 'xhigh' : rawEff;
+      const baseId = idM ? idM[1].toLowerCase() : (String(rawId || '').trim() || (lblM ? lblM[1].trim() : String(rawLbl || '').trim())).toLowerCase();
+      const groupedEntry = lookupGroupedModelCfg(baseId);
+      const groupedLevels = Array.isArray(groupedEntry?.supportedThinkingLevels) ? groupedEntry.supportedThinkingLevels : [];
+      const matchedLevel = effKey
+        ? groupedLevels.find((lv) => String(lv?.thinkingSuffix || '').trim().toLowerCase() === effKey)
+        : null;
+      const effLabel = String(matchedLevel?.thinkingDisplayName || EFFORT_DISPLAY[effKey] || '').trim();
+      const defaultEffort = String(groupedEntry?.defaultThinkingSuffix || '').trim().toLowerCase();
+      const baseName = String(groupedEntry?.displayName || (lblM ? lblM[1].trim() : String(rawLbl || '').trim())).trim();
+      return { effKey, effLabel, defaultEffort, baseName, baseId };
+    };
+    const selectablePool = resolveSelectableModelPool(modelCtx);
+    const fallbackClientConfigs = selectablePool.fallbackConfigs;
+    const rawModels = selectablePool.options;
+    const selectedRawLabel = String(modelCtx?.selectedModel?.label || '').trim();
+    const selectedRawModelId = String(modelCtx?.selectedModel?.modelId || '').trim();
+    const isOrchOption = (o) => Boolean(o && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`));
+    const isOrchestratorSelected = isOrchOption(modelCtx?.selectedModel);
+    const canSelectOrchPlanner = typeof modelCtx?.orchestratorPick?.select === 'function';
+    const rawPlanners = canSelectOrchPlanner && Array.isArray(modelCtx?.orchestratorPlanners)
+      ? modelCtx.orchestratorPlanners.filter((p) =>
+          p && typeof p === 'object' && !p.disabled && p.label && typeof p.value === 'number' && p.value > 0
+        )
       : [];
+    const hasOrchBaseInPool = rawModels.some((o) => isOrchOption(o));
+    const pickedOrchValue = typeof modelCtx?.orchestratorPick?.model === 'number' ? modelCtx.orchestratorPick.model : 0;
+    let activeOrchPlanner = null;
+    if (rawPlanners.length > 0 && hasOrchBaseInPool) {
+      if (pickedOrchValue > 0) {
+        activeOrchPlanner = rawPlanners.find((p) => Number(p.value) === pickedOrchValue) || null;
+      }
+      if (!activeOrchPlanner && isOrchestratorSelected) {
+        const selSlugMatch = selectedRawModelId.match(/orchestrator-(neon|argon|carbon|hydrogen)/i);
+        const selSlug = selSlugMatch ? selSlugMatch[1].toLowerCase() : (/orchestrator$/i.test(selectedRawModelId) ? 'carbon' : '');
+        if (selSlug) {
+          activeOrchPlanner = rawPlanners.find((p) => String(p.modelId || '').toLowerCase().includes(`${selSlug}-high`))
+            || rawPlanners.find((p) => String(p.modelId || '').toLowerCase().includes(selSlug))
+            || null;
+        }
+      }
+      if (!activeOrchPlanner && modelCtx?.orchestratorDefaultPlanner && typeof modelCtx.orchestratorDefaultPlanner === 'object') {
+        const defId = String(modelCtx.orchestratorDefaultPlanner.modelId || '');
+        const defLbl = String(modelCtx.orchestratorDefaultPlanner.label || '');
+        activeOrchPlanner = rawPlanners.find((p) => (defId && p.modelId === defId) || (defLbl && p.label === defLbl)) || rawPlanners[0] || null;
+      }
+    }
+    const primaryOrchOption = (() => {
+      if (Array.isArray(modelCtx?.groups)) {
+        for (const grp of modelCtx.groups) {
+          const found = Array.isArray(grp?.options) ? grp.options.find((o) => o && !o.disabled && isOrchOption(o)) : null;
+          if (found) return found;
+        }
+      }
+      return rawModels.find((o) => isOrchOption(o)) || null;
+    })();
+    const orchestratorConfig = (canSelectOrchPlanner && rawPlanners.length > 0 && primaryOrchOption) ? {
+      enabled: true,
+      canSelectPlanner: true,
+      active: isOrchestratorSelected,
+      pickedValue: pickedOrchValue,
+      pickedModelId: activeOrchPlanner ? String(activeOrchPlanner.modelId || '') : '',
+      pickedLabel: activeOrchPlanner ? String(activeOrchPlanner.label || '') : '',
+      defaultModelId: String(modelCtx?.orchestratorDefaultPlanner?.modelId || ''),
+      orchestratorModelId: String((isOrchestratorSelected ? selectedRawModelId : '') || primaryOrchOption?.modelId || 'gemini-pro-orchestrator-neon'),
+      orchestratorLabel: 'Orchestrator',
+      tagTitle: String(primaryOrchOption?.tagTitle || ''),
+      isNew: /^new$/i.test(String(primaryOrchOption?.tagTitle || '').trim()),
+      planners: rawPlanners.map((p) => {
+        const pParsed = parseEffortFromModelItem(p.label, p.modelId);
+        return {
+          label: String(p.label || ''),
+          modelId: String(p.modelId || ''),
+          value: typeof p.value === 'number' ? p.value : 0,
+          tagTitle: String(p.tagTitle || ''),
+          isNew: /^new$/i.test(String(p.tagTitle || '').trim()),
+          ...(pParsed.defaultEffort ? { defaultEffort: pParsed.defaultEffort } : {}),
+          selected: Boolean(isOrchestratorSelected && activeOrchPlanner && (
+            (p.modelId && p.modelId === activeOrchPlanner.modelId) || p.label === activeOrchPlanner.label
+          ))
+        };
+      })
+    } : null;
+    const effectiveDisplayModel = (() => {
+      if (isOrchestratorSelected && activeOrchPlanner) {
+        const parsed = parseEffortFromModelItem(activeOrchPlanner.label, activeOrchPlanner.modelId);
+        const shortFam = parsed.baseName.replace(/^Gemini\s+4\s+/i, '').replace(/^Claude\s+/i, '').trim() || parsed.baseName;
+        return parsed.effLabel ? `Orchestrator · ${shortFam} (${parsed.effLabel})` : `Orchestrator · ${shortFam}`;
+      }
+      return model;
+    })();
     const familyOrder = new Map();
     const parsedModels = rawModels.map((o, idx) => {
       const label = String(o.label);
-      const m = label.match(/^(.*?)\s*\((XHigh|High|Medium|Low)\)\s*$/i);
-      const family = m ? m[1].trim().toLowerCase() : label.trim().toLowerCase();
-      const effort = m ? (EFFORT_ORDER[m[2].toLowerCase()] || 9) : 0;
+      const parsed = parseEffortFromModelItem(label, o.modelId);
+      const family = parsed.baseName.toLowerCase();
+      const effort = parsed.effKey ? (EFFORT_ORDER[parsed.effKey] || 9) : 0;
+      const cfgMatch = !o.tagTitle && fallbackClientConfigs.length
+        ? fallbackClientConfigs.find((c) => (o.modelId && c.modelId === o.modelId) || c.label === label)
+        : null;
+      const tagTitle = String(o.tagTitle || cfgMatch?.tagTitle || '').trim();
       if (!familyOrder.has(family)) familyOrder.set(family, idx);
       return {
         label,
         modelId: String(o.modelId || ''),
-        selected: Boolean(o.label === modelCtx?.selectedModel?.label),
+        selected: Boolean(
+          (selectedRawLabel && o.label === selectedRawLabel) ||
+          (selectedRawModelId && o.modelId && o.modelId === selectedRawModelId)
+        ),
+        tagTitle,
+        isNew: /^new$/i.test(tagTitle),
+        defaultEffort: parsed.defaultEffort,
         familyRank: familyOrder.get(family),
         effortRank: effort,
         origIdx: idx
       };
     });
     parsedModels.sort((a, b) => (a.familyRank - b.familyRank) || (a.effortRank - b.effortRank) || (a.origIdx - b.origIdx));
-    const modelOptions = parsedModels.map(({ label, modelId, selected }) => ({ label, modelId, selected }));
+    const modelOptions = parsedModels.map(({ label, modelId, selected, tagTitle, isNew, defaultEffort }) => ({
+      label,
+      modelId,
+      selected,
+      ...(tagTitle ? { tagTitle } : {}),
+      ...(isNew ? { isNew: true } : {}),
+      ...(defaultEffort ? { defaultEffort } : {})
+    }));
     const permBtn = document.querySelector('[data-testid="permissions-selector-trigger"]');
     const { permissionKey, permissionLabel } = resolvePermissionStateFromDom(permBtn);
-    const pendingApprovals = collectPendingApprovals();
-    const pendingPrompts = collectPendingPrompts();
-    const queuedMessages = collectQueuedMessagesFromDom();
-    const messages = collectRecentMessages(60);
-    const suggestions = !busy ? computeNextStepCandidates().candidates : [];
-    const contextPanel = collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, authCtx);
-    const usageSummary = collectDesktopUsageSummary(sr);
+    const pendingApprovals = isModelMetaFastPath ? [] : collectPendingApprovals();
+    const pendingPrompts = isModelMetaFastPath ? [] : collectPendingPrompts();
+    const queuedMessages = isModelMetaFastPath ? [] : collectQueuedMessagesFromDom();
+    const messages = isModelMetaFastPath ? [] : collectRecentMessages(effectiveMsgLimit);
+    const suggestions = (!isModelMetaFastPath && !busy) ? computeNextStepCandidates().candidates : [];
+    const contextPanel = isModelMetaFastPath ? null : collectDesktopContextPanelData(sr, pulseEl, contextBadge, model, authCtx);
+    const usageSummary = isModelMetaFastPath ? null : collectDesktopUsageSummary(sr);
 
     if (activeConv) {
       if (pendingApprovals.length > 0 || pendingPrompts.length > 0) activeConv.status = 'waiting';
@@ -11601,8 +11858,9 @@
       busySignal,
       strongDomBusy: busySignal === 'cancel-btn' || busySignal === 'thinking' || busySignal === 'spinner' || busySignal === 'recent-submit',
       autoAccept: autoAcceptEnabled,
-      model,
+      model: effectiveDisplayModel,
       modelOptions,
+      ...(orchestratorConfig ? { orchestratorConfig } : {}),
       permissionKey,
       permissionLabel,
       permissionOptions: getPermissionPresetsMeta(),
@@ -12191,7 +12449,7 @@
     if (action === 'send') {
       const text = String(payload?.text || '').trim();
       const pendingUploads = Array.isArray(payload?.pendingUploads) ? payload.pendingUploads : [];
-      if (!text && !pendingUploads.length) return { ok: false, error: '发送内容不能为空' };
+      if (!text && !pendingUploads.length) return { ok: false, confirmedNotExecuted: true, error: '发送内容不能为空' };
       const beforeRemoveBtns = pendingUploads.length > 0 ? new Set(findComposerAttachmentRemoveButtons()) : null;
       let injectedCount = 0;
       const rollbackNewlyInjected = () => {
@@ -12207,7 +12465,7 @@
             const upRes = await injectUploadedFileToDesktopComposer(att?.name, att?.mimeType, att?.base64);
             if (!upRes?.ok) {
               rollbackNewlyInjected();
-              return { ok: false, error: upRes?.error || '恢复附件注入桌面输入框失败，已回滚本次已注入附件并取消发送' };
+              return { ok: false, confirmedNotExecuted: true, error: upRes?.error || '恢复附件注入桌面输入框失败，已回滚本次已注入附件并取消发送' };
             }
             injectedCount += 1;
           }
@@ -12217,12 +12475,17 @@
           const filled = await fillComposerText(text);
           if (!filled) {
             rollbackNewlyInjected();
-            return { ok: false, error: '未能填入输入框' };
+            return { ok: false, confirmedNotExecuted: true, error: '未能填入输入框' };
           }
         }
         const submitRes = await submitCurrentComposer({ allowEnterOnDisabled: true, checkBusyOnEnter: false });
         if (!submitRes?.ok) {
           rollbackNewlyInjected();
+          return {
+            ...submitRes,
+            ok: false,
+            ...(submitRes?.confirmedNotExecuted === true ? { confirmedNotExecuted: true } : {})
+          };
         }
         return submitRes;
       } catch (err) {
@@ -12452,22 +12715,179 @@
     if (action === 'select-model') {
       const targetLabel = String(payload?.label || '').trim();
       const targetModelId = String(payload?.modelId || '').trim();
-      const modelCtx = getModelSelectorContext();
-      if (!modelCtx || !Array.isArray(modelCtx.modelOptions)) {
+      const reqEffortKey = String(payload?.effortKey || '').trim().toLowerCase();
+      const isOrchReq = Boolean(payload?.orchestrator === true || payload?.plannerModelId || payload?.plannerLabel);
+      let modelCtx = getModelSelectorContext();
+      if (!modelCtx || typeof modelCtx.setSelectedModel !== 'function') {
         return { ok: false, error: '未找到桌面端模型选择器' };
       }
-      const picked = modelCtx.modelOptions.find((o) =>
+      if ((!Array.isArray(modelCtx.modelOptions) || modelCtx.modelOptions.length === 0) && typeof modelCtx.refreshModels === 'function') {
+        try { await modelCtx.refreshModels(); } catch {}
+        modelCtx = getModelSelectorContext() || modelCtx;
+      }
+      const selectablePool = resolveSelectableModelPool(modelCtx);
+      if (!selectablePool.options.length) {
+        return { ok: false, error: '桌面端模型列表为空，暂无法切换模型' };
+      }
+      const normEffLbl = (s) => String(s || '').trim().replace(/\(Extra\s+High\)/i, '(XHigh)').toLowerCase();
+      const extractVariantEffKey = (lbl, mid) => {
+        const idM = String(mid || '').trim().match(/-(xhigh|high|medium|low|max)$/i);
+        if (idM) return idM[1].toLowerCase();
+        const lblM = String(lbl || '').trim().match(/\((Extra\s+High|XHigh|High|Medium|Low|Max)\)\s*$/i);
+        if (!lblM) return '';
+        const k = lblM[1].toLowerCase().replace(/\s+/g, '');
+        return k === 'extrahigh' ? 'xhigh' : k;
+      };
+
+      if (isOrchReq) {
+        const plannerModelId = String(payload?.plannerModelId || '').trim();
+        const plannerLabel = String(payload?.plannerLabel || '').trim();
+        const plannerValNum = Number(payload?.plannerValue || 0);
+        if (typeof modelCtx.orchestratorPick?.select !== 'function') {
+          return { ok: false, error: '当前桌面端不支持切换 Orchestrator 编排子模型或推理强度' };
+        }
+        const rawPlanners = Array.isArray(modelCtx.orchestratorPlanners)
+          ? modelCtx.orchestratorPlanners.filter((p) =>
+              p && typeof p === 'object' && !p.disabled && p.label && typeof p.value === 'number' && p.value > 0
+            )
+          : [];
+        if (!rawPlanners.length) {
+          return { ok: false, error: '当前桌面端未提供可用的 Orchestrator 候选编排模型列表' };
+        }
+        const pickedPlanner = rawPlanners.find((p) => {
+          const valHit = Number.isFinite(plannerValNum) && plannerValNum > 0 && Number(p.value) === plannerValNum;
+          const idHit = Boolean(plannerModelId && String(p.modelId || '') === plannerModelId);
+          const lblHit = Boolean(plannerLabel && normEffLbl(p.label) === normEffLbl(plannerLabel));
+          if (!valHit && !idHit && !lblHit) return false;
+          if (reqEffortKey) {
+            const pEff = extractVariantEffKey(p.label, p.modelId);
+            if (pEff && pEff !== reqEffortKey) return false;
+          }
+          return true;
+        }) || null;
+
+        if (!pickedPlanner) {
+          return {
+            ok: false,
+            error: `未找到可执行的目标编排模型或推理强度: ${plannerLabel || plannerModelId || reqEffortKey || targetLabel}`
+          };
+        }
+
+        const orchCandidates = selectablePool.options.filter((o) => o && !o.disabled && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`));
+        const plannerSlugMatch = String(pickedPlanner.modelId || plannerModelId || '').toLowerCase().match(/(neon|argon|carbon|hydrogen)/);
+        const plannerSlug = plannerSlugMatch ? plannerSlugMatch[1] : '';
+        const pickedOrchBase = orchCandidates.find((o) =>
+          (targetModelId && o.modelId === targetModelId) ||
+          (plannerSlug === 'carbon' && /^gemini-pro-orchestrator$/i.test(String(o.modelId || ''))) ||
+          (plannerSlug && String(o.modelId || '').toLowerCase().includes(`orchestrator-${plannerSlug}`))
+        ) || (() => {
+          if (Array.isArray(modelCtx.groups)) {
+            for (const grp of modelCtx.groups) {
+              const gOpt = Array.isArray(grp?.options) ? grp.options.find((o) => o && !o.disabled && /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`)) : null;
+              if (gOpt) return gOpt;
+            }
+          }
+          return orchCandidates[0] || null;
+        })();
+
+        if (!pickedOrchBase) {
+          return { ok: false, error: '未找到桌面端 Orchestrator 基座模型选项' };
+        }
+
+        modelCtx.setSelectedModel(pickedOrchBase);
+        modelCtx.orchestratorPick.select(pickedPlanner.value);
+
+        let postSnap = null;
+        let postOrch = null;
+        let baseVerified = false;
+        let plannerVerified = false;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          await new Promise((r) => setTimeout(r, 40));
+          postSnap = getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+          postOrch = postSnap?.orchestratorConfig || null;
+          const postOrchModelId = String(postOrch?.orchestratorModelId || '').toLowerCase();
+          const pickedBaseModelId = String(pickedOrchBase.modelId || '').toLowerCase();
+          baseVerified = Boolean(
+            postOrch?.active === true &&
+            (
+              !pickedBaseModelId ||
+              postOrchModelId === pickedBaseModelId ||
+              (/orchestrator/i.test(postOrchModelId) && /orchestrator/i.test(pickedBaseModelId))
+            )
+          );
+          plannerVerified = Boolean(
+            postOrch &&
+            Number(postOrch.pickedValue) === Number(pickedPlanner.value) &&
+            (!pickedPlanner.modelId || postOrch.pickedModelId === pickedPlanner.modelId)
+          );
+          if (baseVerified && plannerVerified) break;
+        }
+        if (!baseVerified || !plannerVerified) {
+          return {
+            ok: false,
+            error: '桌面端编排基座或目标推理强度切换后校验未生效，请确认客户端状态后重试'
+          };
+        }
+        return {
+          ok: true,
+          model: String(postSnap.model || targetLabel || `Orchestrator · ${pickedPlanner.label}`),
+          selectedModelId: String(postOrch.orchestratorModelId || pickedOrchBase.modelId || ''),
+          orchestrator: true,
+          plannerModelId: String(postOrch.pickedModelId || pickedPlanner.modelId || ''),
+          plannerValue: Number(postOrch.pickedValue || pickedPlanner.value),
+          effortKey: reqEffortKey || extractVariantEffKey(pickedPlanner.label, pickedPlanner.modelId),
+          source: selectablePool.source,
+          verifiedBySnapshot: true
+        };
+      }
+
+      const picked = selectablePool.options.find((o) =>
         o && !o.disabled && (
           (targetLabel && o.label === targetLabel) ||
-          (targetModelId && o.modelId === targetModelId)
+          (targetModelId && o.modelId === targetModelId) ||
+          (targetLabel && normEffLbl(o.label) === normEffLbl(targetLabel))
         )
       );
       if (!picked) {
         return { ok: false, error: `未找到目标模型: ${targetLabel || targetModelId}` };
       }
       modelCtx.setSelectedModel(picked);
-      await new Promise((r) => setTimeout(r, 80));
-      return { ok: true, model: picked.label };
+
+      let postSnap = null;
+      let postCtx = null;
+      let postSel = null;
+      let regularVerified = false;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await new Promise((r) => setTimeout(r, 40));
+        postSnap = getMobileSnapshot({ convLimit: 5, msgLimit: 0 });
+        postCtx = getModelSelectorContext() || modelCtx;
+        postSel = postCtx?.selectedModel || null;
+        regularVerified = Boolean(
+          (picked.modelId && (
+            postSel?.modelId === picked.modelId ||
+            postSnap?.modelOptions?.some((m) => m.modelId === picked.modelId && m.selected)
+          )) ||
+          (!picked.modelId && (
+            postSel?.label === picked.label ||
+            postSnap?.model === picked.label
+          ))
+        );
+        if (regularVerified) break;
+      }
+      if (!regularVerified) {
+        return {
+          ok: false,
+          error: `桌面端未能激活目标模型: ${picked.label || targetLabel || targetModelId}`
+        };
+      }
+      return {
+        ok: true,
+        model: String(postSnap?.model || picked.label),
+        selectedModelId: String(postSel?.modelId || picked.modelId || ''),
+        orchestrator: false,
+        source: selectablePool.source,
+        verifiedBySnapshot: true
+      };
     }
 
     if (action === 'select-permission') {
@@ -12646,20 +13066,6 @@
       if (!Array.isArray(entries) || !entries.length) {
         return { ok: false, error: '当前没有排队中的消息' };
       }
-      const reqMsgId = String(reqPayload?.messageId || '').trim();
-      if (reqMsgId) {
-        const matched = entries.find((e) => e.messageId && e.messageId === reqMsgId) || null;
-        if (!matched) {
-          return { ok: false, error: `目标排队消息已变化或不存在，已取消${actionVerb}以防误操作` };
-        }
-        return { ok: true, target: matched };
-      }
-      const expQueueCount = Number(reqPayload?.expectedQueueCount);
-      if (Number.isInteger(expQueueCount) && expQueueCount > 0 && entries.length !== expQueueCount) {
-        return { ok: false, error: `桌面排队数量已变化，已取消${actionVerb}以防索引移位误操作` };
-      }
-      const hasReqIdx = Number.isInteger(reqPayload?.domIndex);
-      const reqIdx = hasReqIdx ? reqPayload.domIndex : -1;
       const reqText = normQueuedText(reqPayload?.text);
       const reqTextCore = stripQueuedMediaSuffix(reqText);
       const matchesEntryText = (entry) => {
@@ -12670,6 +13076,32 @@
         if (reqTextCore) return Boolean(etCore && etCore === reqTextCore);
         return !etCore && ((Array.isArray(entry?.images) && entry.images.length > 0) || Boolean(entry?.hasMedia) || /\[(?:图片附件|图片\s*×\d+)\]/.test(et));
       };
+      const reqMsgId = String(reqPayload?.messageId || '').trim();
+      if (reqMsgId) {
+        const matched = entries.find((e) => (e.messageId && e.messageId === reqMsgId) || (e.clientMessageId && e.clientMessageId === reqMsgId)) || null;
+        if (matched) {
+          return { ok: true, target: matched };
+        }
+        // 仅在全部桌面项均处于未对账 opt-* 态、无任何其他真实服务端 ID，且当前队列中该文本能够唯一匹配单条 opt-* 项时才允许回退绑定；
+        // 若存在同文多条、发生替换/重排或无文本，即使总数量相同也一律拒绝（绝不回落按 domIndex 盲选）
+        if (
+          !/^opt-/i.test(reqMsgId) &&
+          reqText &&
+          !entries.some((e) => e?.messageId && !/^opt-/i.test(String(e.messageId)))
+        ) {
+          const uniqueOptMatches = entries.filter((e) => matchesEntryText(e));
+          if (uniqueOptMatches.length === 1 && /^opt-/i.test(String(uniqueOptMatches[0]?.messageId || ''))) {
+            return { ok: true, target: uniqueOptMatches[0] };
+          }
+        }
+        return { ok: false, error: `目标排队消息已变化或不存在，已取消${actionVerb}以防误操作` };
+      }
+      const expQueueCount = Number(reqPayload?.expectedQueueCount);
+      if (Number.isInteger(expQueueCount) && expQueueCount > 0 && entries.length !== expQueueCount) {
+        return { ok: false, error: `桌面排队数量已变化，已取消${actionVerb}以防索引移位误操作` };
+      }
+      const hasReqIdx = Number.isInteger(reqPayload?.domIndex);
+      const reqIdx = hasReqIdx ? reqPayload.domIndex : -1;
       if (hasReqIdx) {
         if (reqIdx < 0 || reqIdx >= entries.length) {
           return { ok: false, error: `目标排队索引越界，已取消${actionVerb}以防误操作` };
@@ -12700,7 +13132,7 @@
 
     if (action === 'send-queued-dom') {
       const entries = await ensureQueuedMessagesExpanded(findQueuedMessagesDomEntries(), 'sendBtn');
-      if (!entries.length) return { ok: false, error: '当前没有排队中的消息' };
+      if (!entries.length) return { ok: false, confirmedNotExecuted: true, error: '当前没有排队中的消息' };
       if (payload?.sendAll === true) {
         let sentCount = 0;
         for (const entry of entries) {
@@ -12709,13 +13141,13 @@
             sentCount += 1;
           }
         }
-        if (!sentCount) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+        if (!sentCount) return { ok: false, confirmedNotExecuted: true, error: '未找到桌面端排队消息发送按钮' };
         return { ok: true, source: 'dom', sentCount };
       }
       const resolved = resolveStrictQueuedDomTarget(entries, payload, '发送');
-      if (!resolved.ok) return { ok: false, error: resolved.error };
+      if (!resolved.ok) return { ok: false, confirmedNotExecuted: true, error: resolved.error };
       const target = resolved.target;
-      if (!target?.sendBtn) return { ok: false, error: '未找到桌面端排队消息发送按钮' };
+      if (!target?.sendBtn) return { ok: false, confirmedNotExecuted: true, error: '未找到桌面端排队消息发送按钮' };
       target.sendBtn.click();
       return { ok: true, source: 'dom', sentCount: 1 };
     }
@@ -13121,6 +13553,15 @@
       const bar = document.getElementById(QUICK_BAR_ID);
       if (bar) syncQuickBarActionButtons(bar);
     },
+    triggerCompact: (ev, triggerBtn) => runQuickPromptAction({
+      fillText: '/compact',
+      slash: 'compact',
+      label: '/compact 压缩',
+      id: 'compact',
+      defaultAutoSend: true,
+      event: ev || null,
+      triggerBtn: triggerBtn || null
+    }),
     runAutoCompactTick,
     getFeatureFlags: () => ({ ...featureFlags }),
     getQuickPool: () => ({ ...quickPoolState }),

@@ -115,6 +115,20 @@ process.exit(info && info.running ? 0 : 1);
 }
 
 is_shipit_running() {
+  if [ -n "${AG_MOCK_SHIPIT_RUNNING+x}" ]; then
+    [ "${AG_MOCK_SHIPIT_RUNNING}" = "1" ]
+    return $?
+  fi
+  local pgrep_bin
+  pgrep_bin="$(command -v pgrep 2>/dev/null || echo /usr/bin/pgrep)"
+  if [ "$pgrep_bin" = "/usr/bin/pgrep" ] && { [ -n "${AG_MOCK_PS_FILE:-}" ] || [ -n "${AG_MOCK_PS_OUTPUT+x}" ]; }; then
+    if [ -n "${AG_MOCK_PS_FILE:-}" ] && [ -f "$AG_MOCK_PS_FILE" ]; then
+      grep -qE '(^|[[:space:]/])ShipIt([[:space:]]|$)' "$AG_MOCK_PS_FILE" 2>/dev/null
+      return $?
+    fi
+    printf '%s\n' "${AG_MOCK_PS_OUTPUT:-}" | grep -qE '(^|[[:space:]/])ShipIt([[:space:]]|$)'
+    return $?
+  fi
   pgrep -x ShipIt >/dev/null 2>&1
 }
 
