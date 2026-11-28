@@ -610,6 +610,9 @@
     }
 
     /* 用户自定义功能显示开关 */
+    :host([data-layout="ring-only"][data-hide-context-ring="true"]) #badge-settings{
+      display:inline-flex!important;
+    }
     :host([data-hide-context-ring="true"]) #badge,
     :host([data-hide-inline-speed="true"]) #badge-speed,
     :host([data-hide-inline-speed="true"]) #overflow-speed-btn,

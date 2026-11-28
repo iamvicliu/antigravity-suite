@@ -206,7 +206,7 @@
             );
             if (cfgMode) return cfgMode;
         } catch (e) {}
-        return 'topbar';
+        return 'both';
     }
 
     async function triggerCapsuleCompactAction(ev, triggerBtn) {

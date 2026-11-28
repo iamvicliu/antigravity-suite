@@ -3427,18 +3427,18 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
     assert.equal(loadOrCreateRemoteConfig().tunnelHostname, 'https://ag.example.com', '非法域名不得覆盖已保存的域名');
 
     // *.cloudflareaccess.com / dash.cloudflare.com / *.trycloudflare.com 误填防护
-    const accessCheck = validateTunnelHostname('https://hubo1989.cloudflareaccess.com');
+    const accessCheck = validateTunnelHostname('https://demo-team.cloudflareaccess.com');
     assert.equal(accessCheck.ok, false);
     assert.match(accessCheck.error, /cloudflareaccess\.com/);
     assert.match(accessCheck.error, /NoAuth/);
-    assert.equal(normalizeTunnelHostname('https://hubo1989.cloudflareaccess.com'), '');
+    assert.equal(normalizeTunnelHostname('https://demo-team.cloudflareaccess.com'), '');
     assert.equal(validateTunnelHostname('https://one.dash.cloudflare.com').ok, false);
     assert.equal(validateTunnelHostname('https://abc.trycloudflare.com').ok, false);
 
     const accessStatus = await ctrl.configure({
       enabled: true,
       tunnelMode: 'named',
-      tunnelHostname: 'https://hubo1989.cloudflareaccess.com',
+      tunnelHostname: 'https://demo-team.cloudflareaccess.com',
       tunnelToken: stdToken
     });
     assert.equal(accessStatus.state, 'error');
@@ -3554,18 +3554,18 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
         enabled: true,
         mode: 'named',
         state: 'running',
-        publicUrl: 'https://hubo1989.cloudflareaccess.com',
+        publicUrl: 'https://demo-team.cloudflareaccess.com',
         error: '',
         binaryAvailable: true
       }
     });
-    staleNamedInfo.tunnelHostname = 'https://hubo1989.cloudflareaccess.com';
+    staleNamedInfo.tunnelHostname = 'https://demo-team.cloudflareaccess.com';
     const staleTunnelCh = staleNamedInfo.channels.find((c) => c.key === 'tunnel');
     if (staleTunnelCh) {
       staleTunnelCh.enabled = true;
       staleTunnelCh.available = true;
-      staleTunnelCh.displayHost = 'hubo1989.cloudflareaccess.com';
-      staleTunnelCh.tunnelHostname = 'https://hubo1989.cloudflareaccess.com';
+      staleTunnelCh.displayHost = 'demo-team.cloudflareaccess.com';
+      staleTunnelCh.tunnelHostname = 'https://demo-team.cloudflareaccess.com';
     }
     saveRemoteTunnelConfig({ enabled: true, tunnelMode: 'quick' });
     const quickReadyInfo = buildRemoteInfo({
@@ -3608,7 +3608,7 @@ test('需求 15: Cloudflare Tunnel Token/Hostname 预校验、表单错误保留
     assert.ok(paneQ.querySelector('#ag-rp-cf-quick .ag-rp-spin'), '切换按钮应渲染 .ag-rp-spin 加载动画');
     const toggleHostText = paneQ.querySelector('#ag-rp-tunnel-toggle')?.textContent || '';
     assert.ok(toggleHostText.includes('正在切换临时隧道'), '通道行应显示正在切换临时隧道');
-    assert.ok(!toggleHostText.includes('hubo1989.cloudflareaccess.com'), '切换期间通道行不得继续显示旧的 cloudflareaccess.com');
+    assert.ok(!toggleHostText.includes('demo-team.cloudflareaccess.com'), '切换期间通道行不得继续显示旧的 cloudflareaccess.com');
 
     resolveQuickReq({ ok: true, json: async () => ({ ok: true, data: quickReadyInfo }) });
     await new Promise(r => setTimeout(r, 30));
@@ -4124,7 +4124,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
         'user-agent': iphoneUa,
         'x-ag-device-id': 'dev-ts-origin',
         'x-ag-device-fp': 'fp-same111-393x852',
-        host: '100.67.239.94:18765'
+        host: '100.64.0.20:18765'
       },
       socket: { remoteAddress: '100.67.239.10' }
     }, tok, baseNow);
@@ -4214,7 +4214,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
 
     const gifBlocked = await runHttpReq({
       url: '/api/ping.gif?probe=1&_t=1',
-      headers: { host: '100.67.239.94:18765' },
+      headers: { host: '100.64.0.20:18765' },
       remoteAddress: '100.67.239.10'
     });
     assert.equal(gifBlocked.status, 403, '已停用的 Tailscale 通道请求 /api/ping.gif 应返回 403');
@@ -4385,18 +4385,18 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
 
     const testEps = [
       { url: 'http://10.181.51.171:18765', kind: 'lan', priority: 0 },
-      { url: 'http://100.67.239.94:18765', kind: 'tailscale', priority: 100 },
+      { url: 'http://100.64.0.20:18765', kind: 'tailscale', priority: 100 },
       { url: 'https://demo-quick.trycloudflare.com', kind: 'tunnel', priority: 250 }
     ];
     const encEps = encodeEndpointsParam(testEps);
 
     // 3a. 从较慢的明文 Tailscale 打开，自动测速发现 LAN (~4ms) 显著快于 Tailscale (~60ms) -> 调用 location.replace 自动切到 LAN 并携带 did/autosw/spd
     const autoVm = runMobileClientVm({
-      href: `http://100.67.239.94:18765/?token=${tok}&endpoints=${encEps}`,
+      href: `http://100.64.0.20:18765/?token=${tok}&endpoints=${encEps}`,
       fetchHandler: async (url) => {
         const u = String(url);
         if (u.includes('/api/ping')) {
-          const parsedU = new URL(u, 'http://100.67.239.94:18765');
+          const parsedU = new URL(u, 'http://100.64.0.20:18765');
           const nonce = parsedU.searchParams.get('_n') || '';
           const delayMs = u.includes('10.181.51.171') ? 4 : 60;
           await new Promise((r) => setTimeout(r, delayMs));
@@ -4499,9 +4499,9 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     // 3c. 模拟 iOS Safari 在 HTTPS 页面拦截全部 http:// 图片与 fetch 探测，结合 /api/probe-hints 仍能识别内网延迟并自动切换
     const fullEps = [
       { url: 'http://10.181.51.171:18765', kind: 'lan', priority: 0 },
-      { url: 'http://100.67.239.94:18765', kind: 'tailscale', priority: 100 },
-      { url: 'http://hubertdemacbook-pro.local:18765', kind: 'bonjour', priority: 200 },
-      { url: 'https://ag.20160325.xyz', kind: 'tunnel', priority: 250 }
+      { url: 'http://100.64.0.20:18765', kind: 'tailscale', priority: 100 },
+      { url: 'http://dev-macbook.local:18765', kind: 'bonjour', priority: 200 },
+      { url: 'https://ag.example.com', kind: 'tunnel', priority: 250 }
     ];
     const encFull = encodeEndpointsParam(fullEps);
     const makeSafariHttpsHandlers = () => ({
@@ -4525,7 +4525,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
           };
         }
         if (u.includes('/api/ping')) {
-          const parsedU = new URL(u, 'https://ag.20160325.xyz');
+          const parsedU = new URL(u, 'https://ag.example.com');
           const nonce = parsedU.searchParams.get('_n') || '';
           await new Promise((r) => setTimeout(r, 45));
           return { ok: true, status: 200, json: async () => ({ ok: true, service: 'ag-mobile-remote', nonce, endpoints: fullEps }) };
@@ -4542,7 +4542,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     });
 
     const safariAutoVm = runMobileClientVm({
-      href: `https://ag.20160325.xyz/?token=${tok}&endpoints=${encFull}`,
+      href: `https://ag.example.com/?token=${tok}&endpoints=${encFull}`,
       ...makeSafariHttpsHandlers()
     });
     try {
@@ -4553,7 +4553,7 @@ test('需求 19: 远程同设备跨通道去重合并、打开自动切换最快
     }
 
     const safariManualVm = runMobileClientVm({
-      href: `https://ag.20160325.xyz/?token=${tok}&manual=1&endpoints=${encFull}`,
+      href: `https://ag.example.com/?token=${tok}&manual=1&endpoints=${encFull}`,
       ...makeSafariHttpsHandlers()
     });
     try {
@@ -4781,7 +4781,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
   try {
     const fakeNets = {
       en0: [{ address: '10.181.51.171', netmask: '255.255.254.0', family: 'IPv4', internal: false }],
-      utun4: [{ address: '100.67.239.94', netmask: '255.255.255.255', family: 'IPv4', internal: false }]
+      utun4: [{ address: '100.64.0.20', netmask: '255.255.255.255', family: 'IPv4', internal: false }]
     };
     assert.equal(mr.isIpInLocalPhysicalLanSubnet('10.181.50.88', fakeNets), true, '同物理子网对端 IP 应匹配');
     assert.equal(mr.isIpInLocalPhysicalLanSubnet('10.181.51.171', fakeNets), false, '本机自身 LAN IP 必须排除，防环回 1ms');
@@ -4794,7 +4794,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
       url: '/api/snapshot?did=dev-iphone-stale1',
       headers: { host: '10.181.51.171:18765', 'user-agent': 'Mozilla/5.0 (iPhone)', 'x-ag-device-id': 'dev-iphone-stale1' },
       socket: { remoteAddress: '::ffff:10.181.51.88' }
-    }, 'tok-test-12345678901234567890', baseNow - 30000, 'https://ag.20160325.xyz');
+    }, 'tok-test-12345678901234567890', baseNow - 30000, 'https://ag.example.com');
 
     const executedCmds = [];
     const hints = await mr.probeClientPrivateReachability(
@@ -4871,8 +4871,8 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
     mEnv.sandbox.escape = (s) => encodeURIComponent(s);
     mEnv.sandbox.unescape = (s) => decodeURIComponent(s);
     mEnv.sandbox.location = {
-      href: 'https://ag.20160325.xyz/?token=tok-ui-test-1234567890&manual=1',
-      origin: 'https://ag.20160325.xyz',
+      href: 'https://ag.example.com/?token=tok-ui-test-1234567890&manual=1',
+      origin: 'https://ag.example.com',
       protocol: 'https:',
       pathname: '/',
       search: '?token=tok-ui-test-1234567890&manual=1',
@@ -4965,7 +4965,7 @@ test('需求 20: QuickBar 右对齐建议、免 CLI 提示词优化及手机端 
       ],
       endpoints: [
         { url: 'http://10.181.51.171:18765', kind: 'lan', priority: 0 },
-        { url: 'https://ag.20160325.xyz', kind: 'tunnel', priority: 250 }
+        { url: 'https://ag.example.com', kind: 'tunnel', priority: 250 }
       ]
     };
 
@@ -18931,21 +18931,21 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     ctx
   );
 
-  assert.equal(ctx.__detect('https://mini-lamp.tailab4819.ts.net'), 'tailscale', 'https://*.ts.net 必须识别为 tailscale 而非 tunnel');
-  assert.equal(ctx.__detect('http://100.103.118.78:18765'), 'tailscale');
+  assert.equal(ctx.__detect('https://demo-host.tail-demo.ts.net'), 'tailscale', 'https://*.ts.net 必须识别为 tailscale 而非 tunnel');
+  assert.equal(ctx.__detect('http://100.64.0.10:18765'), 'tailscale');
   assert.equal(ctx.__detect('https://demo.trycloudflare.com'), 'tunnel');
-  assert.equal(ctx.__detect('http://mini-lamp.local:18765'), 'bonjour');
+  assert.equal(ctx.__detect('http://demo-host.local:18765'), 'bonjour');
   assert.equal(ctx.__detect('http://192.168.1.8:18765'), 'lan');
 
-  assert.equal(ctx.__block('https://mini-lamp.tailab4819.ts.net', 'http://100.103.118.78:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文 Tailscale IP');
-  assert.equal(ctx.__block('https://mini-lamp.tailab4819.ts.net', 'http://192.168.1.8:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文局域网 IP');
+  assert.equal(ctx.__block('https://demo-host.tail-demo.ts.net', 'http://100.64.0.10:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文 Tailscale IP');
+  assert.equal(ctx.__block('https://demo-host.tail-demo.ts.net', 'http://192.168.1.8:18765', false), true, 'Tailscale HTTPS 源严禁自动降级到明文局域网 IP');
   assert.equal(ctx.__block('http://localhost:18765', 'http://192.168.1.8:18765', false), true, 'localhost 安全源严禁自动降级到非受信明文 IP');
   assert.equal(ctx.__block('http://127.0.0.1:18765', 'http://192.168.1.8:18765', false), true, '127.0.0.1 安全源严禁自动降级到非受信明文 IP');
   assert.equal(ctx.__block('https://demo.trycloudflare.com', 'http://192.168.1.8:18765', true), true, 'standalone 独立应用严禁自动降级跳往明文地址');
   assert.equal(ctx.__block('https://demo.trycloudflare.com', 'http://192.168.1.8:18765', false), true, '任意 HTTPS 安全源在当前路线可达时均严禁自动降级到非受信 HTTP');
-  assert.equal(ctx.__block('https://demo.trycloudflare.com', 'https://mini-lamp.tailab4819.ts.net', true), false, '允许安全源之间同级切换（HTTPS -> Tailscale HTTPS）');
-  assert.equal(ctx.__block('http://192.168.1.8:18765', 'https://mini-lamp.tailab4819.ts.net', false), false, '允许明文源升级至 HTTPS');
-  assert.equal(ctx.__block('http://100.103.118.78:18765', 'http://192.168.1.8:18765', false), false, '非 standalone 明文源之间允许按测速切换');
+  assert.equal(ctx.__block('https://demo.trycloudflare.com', 'https://demo-host.tail-demo.ts.net', true), false, '允许安全源之间同级切换（HTTPS -> Tailscale HTTPS）');
+  assert.equal(ctx.__block('http://192.168.1.8:18765', 'https://demo-host.tail-demo.ts.net', false), false, '允许明文源升级至 HTTPS');
+  assert.equal(ctx.__block('http://100.64.0.10:18765', 'http://192.168.1.8:18765', false), false, '非 standalone 明文源之间允许按测速切换');
 
   // 2b. runSpeedTest 与 tryFailoverEndpoint 两个自动切换入口端到端行为测试
   const mainScript = scripts.map((m) => m[1]).find((s) => s.includes('async function runSpeedTest(opts)'));
@@ -19138,7 +19138,7 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   // 2b-2: runSpeedTest 在 HTTPS 源下同时存在更快的 HTTP 与更快的 Tailscale HTTPS -> 跳过 HTTP，切往安全源
   const epsTunnelLanTsHttps = [
     { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
-    { url: 'https://mini-lamp.tailab4819.ts.net', kind: 'tailscale', priority: 90 },
+    { url: 'https://demo-host.tail-demo.ts.net', kind: 'tailscale', priority: 90 },
     { url: 'https://demo.trycloudflare.com', kind: 'tunnel', priority: 250 }
   ];
   const h2 = await runSwitchHarness({
@@ -19147,14 +19147,14 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     endpoints: epsTunnelLanTsHttps,
     latencyByUrl: {
       'http://192.168.1.8:18765': 3,
-      'https://mini-lamp.tailab4819.ts.net': 10,
+      'https://demo-host.tail-demo.ts.net': 10,
       'https://demo.trycloudflare.com': 60
     }
   });
   try {
     await new Promise((r) => setTimeout(r, 180));
     assert.equal(h2.replacedUrls.length, 1, 'runSpeedTest：存在更快的安全 HTTPS 源时应跳过 HTTP 并切换至安全源');
-    assert.equal(new URL(h2.replacedUrls[0]).origin, 'https://mini-lamp.tailab4819.ts.net');
+    assert.equal(new URL(h2.replacedUrls[0]).origin, 'https://demo-host.tail-demo.ts.net');
   } finally { h2.cleanup(); }
 
   // 2b-3: runSpeedTest 在 localhost 安全源下禁止降级到明文 LAN HTTP
@@ -19172,13 +19172,13 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   // 2b-3b: 当前 localhost 未列入测速列表、列表内 LAN 端点失败、明文 Tailscale 端点成功时，仍不得自动降级
   const epsLanFailTsOk = [
     { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
-    { url: 'http://100.103.118.78:18765', kind: 'tailscale', priority: 100 }
+    { url: 'http://100.64.0.10:18765', kind: 'tailscale', priority: 100 }
   ];
   const h3b = await runSwitchHarness({
     href: `http://localhost:18765/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsLanFailTsOk)}`,
     standalone: false,
     endpoints: epsLanFailTsOk,
-    latencyByUrl: { 'http://100.103.118.78:18765': 8 },
+    latencyByUrl: { 'http://100.64.0.10:18765': 8 },
     failUrls: ['http://192.168.1.8:18765']
   });
   try {
@@ -19189,13 +19189,13 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   // 2b-4: runSpeedTest 在 standalone 模式下严禁自动降级到非受信 HTTP
   const epsTsLan = [
     { url: 'http://192.168.1.8:18765', kind: 'lan', priority: 0 },
-    { url: 'http://100.103.118.78:18765', kind: 'tailscale', priority: 100 }
+    { url: 'http://100.64.0.10:18765', kind: 'tailscale', priority: 100 }
   ];
   const h4 = await runSwitchHarness({
-    href: `http://100.103.118.78:18765/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsTsLan)}`,
+    href: `http://100.64.0.10:18765/?token=tok37&endpoints=${remoteMod.encodeEndpointsParam(epsTsLan)}`,
     standalone: true,
     endpoints: epsTsLan,
-    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'http://100.103.118.78:18765': 60 }
+    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'http://100.64.0.10:18765': 60 }
   });
   try {
     await new Promise((r) => setTimeout(r, 150));
@@ -19233,13 +19233,13 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     href: `https://demo.trycloudflare.com/?token=tok37&manual=1&endpoints=${remoteMod.encodeEndpointsParam(epsTunnelLanTsHttps)}`,
     standalone: true,
     endpoints: epsTunnelLanTsHttps,
-    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'https://mini-lamp.tailab4819.ts.net': 12 },
+    latencyByUrl: { 'http://192.168.1.8:18765': 3, 'https://demo-host.tail-demo.ts.net': 12 },
     failUrls: ['https://demo.trycloudflare.com']
   });
   try {
     const ok7 = await h7.hooks.tryFailoverEndpoint();
     assert.equal(ok7, true, 'tryFailoverEndpoint：standalone 下存在可用 HTTPS 安全源时应正常切往该安全源');
-    assert.equal(h7.hooks.getApiBase(), 'https://mini-lamp.tailab4819.ts.net');
+    assert.equal(h7.hooks.getApiBase(), 'https://demo-host.tail-demo.ts.net');
   } finally { h7.cleanup(); }
 
   // 3. 服务端自动探测 CertDomains、托管 tailscale serve --bg 18765 与端点优先级排序
@@ -19248,11 +19248,11 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     calls.push({ bin, args });
     if (args[0] === 'status') {
       return JSON.stringify({
-        Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
-        CertDomains: ['mini-lamp.tailab4819.ts.net']
+        Self: { DNSName: 'demo-host.tail-demo.ts.net.', HostName: 'demo-host' },
+        CertDomains: ['demo-host.tail-demo.ts.net']
       });
     }
-    if (args[0] === 'serve') return 'Available within your tailnet:\nhttps://mini-lamp.tailab4819.ts.net/';
+    if (args[0] === 'serve') return 'Available within your tailnet:\nhttps://demo-host.tail-demo.ts.net/';
     return '';
   };
   const desc = remoteMod.collectFusedEndpointDescriptor(
@@ -19262,36 +19262,36 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     {
       execFileSync: mockExecOk,
       addresses: {
-        tailscale: [{ iface: 'utun4', address: '100.103.118.78', kind: 'tailscale' }],
+        tailscale: [{ iface: 'utun4', address: '100.64.0.10', kind: 'tailscale' }],
         lan: [{ iface: 'en0', address: '192.168.1.8', kind: 'lan' }],
         physicalLan: [{ iface: 'en0', address: '192.168.1.8', kind: 'lan' }]
       }
     }
   );
   assert.ok(calls.some((c) => c.args[0] === 'serve' && c.args[1] === '--bg' && c.args[2] === '18765'), '开通 CertDomains 时应以安全参数数组调用 tailscale serve --bg 18765');
-  assert.equal(desc.tailscaleHttpsUrl, 'https://mini-lamp.tailab4819.ts.net');
-  const tsHttpsEp = desc.endpoints.find((e) => e.url === 'https://mini-lamp.tailab4819.ts.net');
-  const tsHttpEp = desc.endpoints.find((e) => e.url === 'http://100.103.118.78:18765');
+  assert.equal(desc.tailscaleHttpsUrl, 'https://demo-host.tail-demo.ts.net');
+  const tsHttpsEp = desc.endpoints.find((e) => e.url === 'https://demo-host.tail-demo.ts.net');
+  const tsHttpEp = desc.endpoints.find((e) => e.url === 'http://100.64.0.10:18765');
   assert.ok(tsHttpsEp && tsHttpEp && tsHttpsEp.priority < tsHttpEp.priority, 'Tailscale HTTPS 端点优先级应高于明文 :18765 端点');
 
   // 3b. Origin 白名单严格收窄至本机 tailscaleDnsName：本机域名通过，其他 .ts.net 域名与空配置均拒绝
   assert.equal(
-    remoteMod.isAllowedPrivateOrigin('https://mini-lamp.tailab4819.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    remoteMod.isAllowedPrivateOrigin('https://demo-host.tail-demo.ts.net', '', 'demo-host.tail-demo.ts.net'),
     true,
     '服务端 Origin 白名单应放行本机 tailscaleDnsName'
   );
   assert.equal(
-    remoteMod.isAllowedPrivateOrigin('https://other-node.tailab4819.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    remoteMod.isAllowedPrivateOrigin('https://other-node.tail-demo.ts.net', '', 'demo-host.tail-demo.ts.net'),
     false,
     '服务端 Origin 白名单必须拒绝同 tailnet 的其他 .ts.net 域名'
   );
   assert.equal(
-    remoteMod.isAllowedPrivateOrigin('https://evil.other-tailnet.ts.net', '', 'mini-lamp.tailab4819.ts.net'),
+    remoteMod.isAllowedPrivateOrigin('https://evil.other-tailnet.ts.net', '', 'demo-host.tail-demo.ts.net'),
     false,
     '服务端 Origin 白名单必须拒绝任意外部 .ts.net 域名'
   );
   assert.equal(
-    remoteMod.isAllowedPrivateOrigin('https://mini-lamp.tailab4819.ts.net', '', ''),
+    remoteMod.isAllowedPrivateOrigin('https://demo-host.tail-demo.ts.net', '', ''),
     false,
     '未探测到本机 tailscaleDnsName 时必须拒绝所有 .ts.net 域名'
   );
@@ -19299,7 +19299,7 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   // 3c. HTTP Handler CORS 回归：本机 .ts.net Origin 获得 ACAO，其他 .ts.net Origin 被拒（无 ACAO）
   const corsHandler = remoteMod.createRemoteHttpHandler(
     { enabled: true, port: 18765, token: 'tok-cors-37', enabledChannels: { lan: true, tailscale: true, bonjour: true, tunnel: false } },
-    { allowedTailscaleDnsName: 'mini-lamp.tailab4819.ts.net' }
+    { allowedTailscaleDnsName: 'demo-host.tail-demo.ts.net' }
   );
   const runCorsReq = async (origin) => {
     const resHeaders = {};
@@ -19315,8 +19315,8 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
     );
     return { status, resHeaders };
   };
-  const selfCors = await runCorsReq('https://mini-lamp.tailab4819.ts.net');
-  assert.equal(selfCors.resHeaders['access-control-allow-origin'], 'https://mini-lamp.tailab4819.ts.net', '本机 .ts.net Origin 应下发 CORS 允许头');
+  const selfCors = await runCorsReq('https://demo-host.tail-demo.ts.net');
+  assert.equal(selfCors.resHeaders['access-control-allow-origin'], 'https://demo-host.tail-demo.ts.net', '本机 .ts.net Origin 应下发 CORS 允许头');
   const foreignCors = await runCorsReq('https://attacker.other-tailnet.ts.net');
   assert.equal(foreignCors.resHeaders['access-control-allow-origin'], undefined, '非本机 .ts.net Origin 不得下发 CORS 允许头');
 
@@ -19325,7 +19325,7 @@ test('消除桌面 PWA 不安全横幅：自动托管 tailscale serve HTTPS、�
   const noCertRes = remoteMod.ensureTailscaleServeHttps(18765, {
     execFileSync: (bin, args) => {
       noCertCalls.push(args);
-      return JSON.stringify({ Self: { DNSName: 'mini-lamp.tailab4819.ts.net.' }, CertDomains: [] });
+      return JSON.stringify({ Self: { DNSName: 'demo-host.tail-demo.ts.net.' }, CertDomains: [] });
     }
   });
   assert.equal(noCertRes.enabled, false);
@@ -19409,19 +19409,20 @@ test('遥控网页 Web Push 消息推送与桌面 PWA 图标未读角标 (#10)',
     'RFC 8291 Section 5 官方标准测试向量密文必须逐字节完全匹配'
   );
 
-  // 2c. 加密前 UTF-8 字节长度单记录上限边界验证 (rs=4096 -> max 4079 bytes)
+  // 2c. 加密前 UTF-8 字节长度单记录上限边界验证 (rs=4096 - 86B RFC8291 header - 16B tag - 1B 0x02 -> max 3993 bytes)
   const exactMaxPayload = 'a'.repeat(pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES);
   const exactMaxEnc = pushMod.encryptWebPushPayload(exactMaxPayload, validSub);
-  assert.equal(pushMod.decryptWebPushPayloadForTest(exactMaxEnc.body, uaEcdh.getPrivateKey(), uaAuth), exactMaxPayload, '恰好 4079 UTF-8 字节载荷应正常加密解密');
+  assert.ok(exactMaxEnc.body.length <= 4096, `单记录 Web Push 密文总长度必须 <= 4096B (实测 ${exactMaxEnc.body.length})`);
+  assert.equal(pushMod.decryptWebPushPayloadForTest(exactMaxEnc.body, uaEcdh.getPrivateKey(), uaAuth), exactMaxPayload, '恰好 3993 UTF-8 字节载荷应正常加密解密');
   assert.throws(
     () => pushMod.encryptWebPushPayload('a'.repeat(pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES + 1), validSub),
     RangeError,
-    '超过 4079 字节的载荷必须在加密前抛出 RangeError'
+    '超过 3993 字节的载荷必须在加密前抛出 RangeError'
   );
   assert.throws(
-    () => pushMod.encryptWebPushPayload('中'.repeat(1360), validSub), // 1360 * 3 = 4080 UTF-8 bytes
+    () => pushMod.encryptWebPushPayload('中'.repeat(1332), validSub), // 1332 * 3 = 3996 UTF-8 bytes
     RangeError,
-    '多字节 UTF-8 字符按字节长度超限(4080B > 4079B)必须抛出 RangeError'
+    '多字节 UTF-8 字符按字节长度超限(3996B > 3993B)必须抛出 RangeError'
   );
 
   // 3. 订阅校验与 SSRF 防护（含 DNS 解析私网拦截与禁止重定向）
@@ -19429,7 +19430,7 @@ test('遥控网页 Web Push 消息推送与桌面 PWA 图标未读角标 (#10)',
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'http://fcm.googleapis.com/plain' }).ok, false, '拒绝明文 http:// 订阅');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://127.0.0.1:8443/push' }).ok, false, '拒绝回环地址 SSRF');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://192.168.1.10/push' }).ok, false, '拒绝内网地址 SSRF');
-  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://100.103.118.78/push' }).ok, false, '拒绝 Tailscale 私网地址 SSRF');
+  assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://100.64.0.10/push' }).ok, false, '拒绝 Tailscale 私网地址 SSRF');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://198.18.0.1/push' }).ok, false, '拒绝 198.18.0.0/15 基准测试非公网地址');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://192.0.2.1/push' }).ok, false, '拒绝 192.0.2.0/24 TEST-NET-1 非公网地址');
   assert.equal(pushMod.validatePushSubscription({ ...validSub, endpoint: 'https://[2001:db8::1]/push' }).ok, false, '拒绝 2001:db8::/32 IPv6 文档非公网地址');
@@ -19887,7 +19888,7 @@ test('底栏视觉层级分隔 (#39) 与顶栏信息降噪及项目名双端正�
     screen: { width: 1280, height: 800 },
     devicePixelRatio: 2,
     navigator: { platform: 'MacIntel', maxTouchPoints: 0, hardwareConcurrency: 8 },
-    location: { origin: 'https://mini-lamp.tailab4819.ts.net', protocol: 'https:', hostname: 'mini-lamp.tailab4819.ts.net', pathname: '/', search: '', port: '', href: 'https://mini-lamp.tailab4819.ts.net/' },
+    location: { origin: 'https://demo-host.tail-demo.ts.net', protocol: 'https:', hostname: 'demo-host.tail-demo.ts.net', pathname: '/', search: '', port: '', href: 'https://demo-host.tail-demo.ts.net/' },
     history: { replaceState() {} },
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -26798,13 +26799,13 @@ test('PR #8 合并加固 (P0-1~P0-5 / P1): Tailscale Serve 护栏、Web Push 曲
       tsCalls.push(args);
       if (args[0] === 'status') {
         return JSON.stringify({
-          Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
-          CertDomains: ['mini-lamp.tailab4819.ts.net']
+          Self: { DNSName: 'demo-host.tail-demo.ts.net.', HostName: 'demo-host' },
+          CertDomains: ['demo-host.tail-demo.ts.net']
         });
       }
       if (args[0] === 'serve' && args[1] === 'status') {
         return JSON.stringify({
-          Web: { 'mini-lamp.tailab4819.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } }
+          Web: { 'demo-host.tail-demo.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } }
         });
       }
       return '';
@@ -26821,8 +26822,8 @@ test('PR #8 合并加固 (P0-1~P0-5 / P1): Tailscale Serve 护栏、Web Push 曲
       readOnlyCalls.push(args);
       if (args[0] === 'status') {
         return JSON.stringify({
-          Self: { DNSName: 'mini-lamp.tailab4819.ts.net.', HostName: 'mini-lamp' },
-          CertDomains: ['mini-lamp.tailab4819.ts.net']
+          Self: { DNSName: 'demo-host.tail-demo.ts.net.', HostName: 'demo-host' },
+          CertDomains: ['demo-host.tail-demo.ts.net']
         });
       }
       if (args[0] === 'serve' && args[1] === 'status') {
@@ -31467,8 +31468,9 @@ test('#48: Web Push 与本地系统通知升级会话标题+回复/审批摘要�
     ts: Date.now()
   });
   const fittedJson = JSON.stringify(fitted);
-  assert.ok(Buffer.byteLength(fittedJson, 'utf8') <= pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES, '裁剪后载荷字节数必须严格 <= 4079B');
+  assert.ok(Buffer.byteLength(fittedJson, 'utf8') <= pushMod.MAX_SINGLE_RECORD_PLAINTEXT_BYTES, '裁剪后载荷字节数必须严格 <= 3993B');
   const encHuge = pushMod.encryptWebPushPayload(fittedJson, sub);
+  assert.ok(encHuge.body.length <= 4096, `单记录推送总密文必须 <= 4096B (实测 ${encHuge.body.length})`);
   assert.equal(pushMod.decryptWebPushPayloadForTest(encHuge.body, uaEcdh.getPrivateKey(), uaAuth), fittedJson);
 
   // 2. completed / waiting 官方标题层级、按轮次 tag 堆叠、同轮防重复与 showPreview 隐私开关
@@ -33492,7 +33494,7 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
   try {
     mc.savePluginSettings({ uiPreferences: { longFold: false } });
     mr.clearRemoteUiPrefsCacheForTests();
-    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: false, showApiReferenceCost: false }, '应读取磁盘 uiPreferences.longFold = false');
+    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: false, showApiReferenceCost: true }, '应读取磁盘 uiPreferences.longFold = false 且默认保留 showApiReferenceCost=true');
 
     const stateHandler = mr.createRemoteHttpHandler({
       enabled: true,
@@ -33522,7 +33524,7 @@ test('长消息、长 Markdown 与长代码块折叠：设置同步、桌面端�
 
     mc.savePluginSettings({ uiPreferences: { longFold: true } });
     mr.clearRemoteUiPrefsCacheForTests();
-    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: true, showApiReferenceCost: false }, '开启开关并刷新缓存后应恢复 longFold = true');
+    assert.deepEqual(mr.resolveCachedRemoteUiPrefs(), { longFold: true, showApiReferenceCost: true }, '开启开关并刷新缓存后应恢复 longFold = true');
 
     const html = mr.buildMobileAppHtml();
     const scripts = html.match(/<script>([\s\S]*?)<\/script>/g) || [];
@@ -34184,36 +34186,44 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
 
     assert.ok(shadow.getElementById('settings-card-context-display'), '应包含上下文与指标精简显示设置卡片');
     assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
-      contextDisplayMode: 'topbar',
-      showTopbarSpeed: false,
-      showApiReferenceCost: false
-    }, '默认应为顶栏显示上下文、隐藏顶栏内联速度、隐藏详情面板 API 参考费用');
-    assert.equal(host.getAttribute('data-hide-context-ring'), null, '默认 topbar 模式应保留顶栏上下文圆环');
-    assert.equal(host.getAttribute('data-hide-inline-speed'), 'true', '默认应隐藏顶栏内联 tok/s 徽章');
-    assert.equal(host.getAttribute('data-hide-api-cost'), 'true', '默认应隐藏桌面端详情面板 API 参考估算金额');
-    assert.equal(env.doc.documentElement.getAttribute('data-ag-context-display-mode'), 'topbar');
+      contextDisplayMode: 'both',
+      showTopbarSpeed: true,
+      showApiReferenceCost: true
+    }, '默认应完整保留有用信息：同时显示顶栏与底部胶囊、显示顶栏内联速度、显示详情面板 API 参考费用');
+    assert.equal(host.getAttribute('data-hide-context-ring'), null, '默认 both 模式应保留顶栏上下文圆环');
+    assert.equal(host.getAttribute('data-hide-inline-speed'), null, '默认应显示顶栏内联 tok/s 徽章');
+    assert.equal(host.getAttribute('data-hide-api-cost'), null, '默认应显示桌面端详情面板 API 参考估算金额');
+    assert.equal(env.doc.documentElement.getAttribute('data-ag-context-display-mode'), 'both');
 
-    // 切换上下文显示位置到「输入框底部胶囊」
+    // 切换上下文显示位置到「输入框底部胶囊」并隐藏速度与 API 参考费用
     shadow.getElementById('set-ctx-pos-footer').click();
+    const chkSpeed = shadow.getElementById('set-show-topbar-speed');
+    chkSpeed.checked = false;
+    chkSpeed.dispatchEvent({ type: 'change', target: chkSpeed });
+    const chkCost = shadow.getElementById('set-show-api-ref-cost');
+    chkCost.checked = false;
+    chkCost.dispatchEvent({ type: 'change', target: chkCost });
     await new Promise((r) => setTimeout(r, 15));
     assert.equal(api.getContextDisplayPrefs().contextDisplayMode, 'footer');
     assert.equal(host.getAttribute('data-hide-context-ring'), 'true', '选底部胶囊模式时应隐藏顶栏圆环');
+    assert.equal(host.getAttribute('data-hide-inline-speed'), 'true', '关闭速度开关后应隐藏顶栏内联 tok/s');
+    assert.equal(host.getAttribute('data-hide-api-cost'), 'true', '关闭费用开关后应隐藏详情面板 API 参考费用');
     assert.equal(env.doc.documentElement.getAttribute('data-ag-context-display-mode'), 'footer');
     assert.equal(env.localStorage.getItem('ag_suite_context_display_mode'), 'footer');
     assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.contextDisplayMode === 'footer'));
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.showTopbarSpeed === false));
+    assert.ok(env.postedSettings.some((p) => p?.uiPreferences?.showApiReferenceCost === false));
 
-    // 切换到「同时显示」并开启速度与 API 参考费用
-    shadow.getElementById('set-ctx-pos-both').click();
-    const chkSpeed = shadow.getElementById('set-show-topbar-speed');
+    // 切换到「右上角顶栏」并开启速度与 API 参考费用
+    shadow.getElementById('set-ctx-pos-topbar').click();
     chkSpeed.checked = true;
     chkSpeed.dispatchEvent({ type: 'change', target: chkSpeed });
-    const chkCost = shadow.getElementById('set-show-api-ref-cost');
     chkCost.checked = true;
     chkCost.dispatchEvent({ type: 'change', target: chkCost });
     await new Promise((r) => setTimeout(r, 15));
 
     assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
-      contextDisplayMode: 'both',
+      contextDisplayMode: 'topbar',
       showTopbarSpeed: true,
       showApiReferenceCost: true
     });
@@ -34233,26 +34243,26 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
     assert.equal(host.getAttribute('data-hide-api-cost'), 'true');
     assert.equal(shadow.getElementById('cost-estimate-card').style.display, 'none', '关闭参考费用开关后应自动退回 Token 统计视图');
 
-    // 点击「恢复默认」一键还原精简降噪默认态
+    // 点击「恢复默认」一键还原信息保留默认态
     shadow.getElementById('btn-reset-context-display').click();
     await new Promise((r) => setTimeout(r, 15));
     assert.deepEqual({ ...api.getContextDisplayPrefs() }, {
-      contextDisplayMode: 'topbar',
-      showTopbarSpeed: false,
-      showApiReferenceCost: false
+      contextDisplayMode: 'both',
+      showTopbarSpeed: true,
+      showApiReferenceCost: true
     });
 
     env.sandbox.__AGEnhancer?.dispose?.();
     api.dispose?.();
   }
 
-  // 2. 底部脉冲胶囊：默认 topbar 模式平时自动收起，>=240K / >=328K / 缓存失效自动浮现紧凑预警与一键 /compact 入口
+  // 2. 底部脉冲胶囊：默认 both 模式常温常驻展示有用指标；切到 topbar 模式时平时自动收起，>=240K / >=328K / 缓存失效自动浮现预警与一键 /compact 入口
   {
     const envCap = createDomEnv();
     vm.runInContext(CAPSULE_SRC, envCap.sandbox);
     const capsApi = envCap.win.__AGY_CTX_CAPSULE_API__;
     assert.ok(capsApi);
-    assert.equal(capsApi.getContextDisplayMode(), 'topbar', '默认上下文显示模式应为 topbar');
+    assert.equal(capsApi.getContextDisplayMode(), 'both', '默认上下文显示模式应为 both');
 
     const composerWrap = envCap.doc.createElement('div');
     composerWrap.className = 'surface-composer';
@@ -34271,7 +34281,7 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
     composerWrap.appendChild(footerEl);
     envCap.doc.body.appendChild(composerWrap);
 
-    // 2a: 常态低水位 (120K / 512K) -> topbar 模式下自动收起胶囊且隐藏一键压缩按钮
+    // 2a-0: 默认 both 模式下常态低水位 (120K / 512K) 仍保留底部实时缓存与速度胶囊
     capsApi.renderFooterCapsule(footerEl, {
       contextUsed: 120000,
       contextLimit: 512000,
@@ -34285,6 +34295,21 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
     const capBtn = footerEl.querySelector('[data-agy-context-capsule="1"]');
     const compactBtn = footerEl.querySelector('[data-agy-compact-btn="1"]');
     assert.ok(capBtn && compactBtn);
+    assert.equal(capBtn.getAttribute('data-agy-display-mode'), 'both');
+    assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'false', '默认 both 模式下常态也应保留底部脉冲胶囊展示缓存命中率与速率');
+
+    // 2a: 切换至 topbar 极简模式 -> 常态低水位自动收起胶囊且隐藏一键压缩按钮
+    envCap.localStorage.setItem('ag_suite_context_display_mode', 'topbar');
+    capsApi.renderFooterCapsule(footerEl, {
+      contextUsed: 120000,
+      contextLimit: 512000,
+      usagePercent: 23.4,
+      cacheHitRate: 92.0,
+      hasPreciseSnapshot: true,
+      tokPerSec: 95,
+      cacheReadTokens: 110000,
+      inputTokens: 10000
+    });
     assert.equal(capBtn.getAttribute('data-agy-display-mode'), 'topbar');
     assert.equal(capBtn.getAttribute('data-agy-calm-hidden'), 'true', 'topbar 模式下常态低水位应自动隐藏底部重复胶囊');
     assert.equal(compactBtn.hidden, true, '常态低水位不应显示一键压缩按钮');
@@ -34448,16 +34473,16 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
     const remote = require('../mobile-remote');
     try {
       remote.clearRemoteUiPrefsCacheForTests();
-      assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, false, '远程端默认应关闭 API 参考费用展示');
+      assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, true, '远程端默认应保留 API 参考费用展示');
 
-      isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
+      isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
       assert.equal(
         remote.resolveCachedRemoteUiPrefs().showApiReferenceCost,
-        true,
-        '保存 settings.json 后无需等待 2 秒缓存过期即可立即读取最新 showApiReferenceCost=true'
+        false,
+        '保存 settings.json 后无需等待 2 秒缓存过期即可立即读取最新 showApiReferenceCost=false'
       );
-      isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
-      assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, false);
+      isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
+      assert.equal(remote.resolveCachedRemoteUiPrefs().showApiReferenceCost, true);
       const savedRemoteCfg = remote.loadOrCreateRemoteConfig();
       const activeTok = savedRemoteCfg.token;
 
@@ -34612,40 +34637,40 @@ test('需求 #50 Phase B: 上下文与速度指标降噪、三项可逆显示偏
         assert.match(byId['sub-meta'].textContent, /正在连接/);
 
         const snapInitial = await invokeRemoteApi('/api/snapshot');
-        assert.equal(snapInitial.showApiReferenceCost, false, JSON.stringify(snapInitial));
+        assert.equal(snapInitial.showApiReferenceCost, true, JSON.stringify(snapInitial));
         sandbox.__test50pb.renderSnapshot(snapInitial);
         assert.equal(byId['sub-meta'].hidden, true, '正常在线态必须隐藏 #sub-meta 避免与顶栏 [58%] 重复');
         assert.equal(byId['conv-project-badge'].textContent, 'essay-gen');
         assert.equal(byId['ctx-top-val'].textContent, '58%');
 
-        // 先真实拉取一次 /api/context 使客户端写入 cachedContextResp (showApiReferenceCost: false)
+        // 先真实拉取一次 /api/context 使客户端写入 cachedContextResp (showApiReferenceCost: true)
         const ctxInitial = await sandbox.__test50pb.fetchContextPanelData();
         assert.equal(ctxInitial.ok, true);
-        assert.equal(ctxInitial.showApiReferenceCost, false);
+        assert.equal(ctxInitial.showApiReferenceCost, true);
 
-        // 上下文抽屉应展示 1M 物理上限辅助说明且默认不渲染 $ 参考费用
+        // 上下文抽屉应展示 1M 物理上限辅助说明且默认保留渲染 $ 参考费用
         assert.match(byId['context-drawer'].innerHTML, /data-ctx-phys-note="1"/, '应展示物理窗口上限辅助说明');
         assert.match(byId['context-drawer'].innerHTML, /模型物理上限：1M（当前按 512k 自动压缩线计算）/);
-        assert.ok(!byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '默认关闭参考费用时上下文抽屉不得渲染 $ 金额');
-        assert.ok(!byId['usage-drawer'].innerHTML.includes('API 参考等值'), '默认关闭参考费用时用量抽屉不得渲染 API 参考等值卡片');
+        assert.ok(byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '默认开启参考费用时上下文抽屉应渲染 $ 金额');
+        assert.ok(byId['usage-drawer'].innerHTML.includes('API 参考等值'), '默认开启参考费用时用量抽屉应渲染 API 参考等值卡片');
 
-        // 桌面端切换开关 false -> true（不重新请求 /api/context，仅接收新 /api/snapshot）：已缓存的旧 ctxRes 不得覆盖新快照偏好
-        isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
-        const snapCostOn = await invokeRemoteApi('/api/snapshot');
-        assert.equal(snapCostOn.showApiReferenceCost, true, '服务端新快照应立即反映桌面开启的 showApiReferenceCost=true');
-        sandbox.__test50pb.renderSnapshot(snapCostOn);
-        assert.ok(byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '即使曾缓存旧 /api/context(false)，新快照开启后上下文抽屉也必须立即显示 $ 金额');
-        assert.ok(byId['usage-drawer'].innerHTML.includes('API 参考等值'), '开启参考费用后用量抽屉应同步显示 API 参考等值卡片');
-
-        // 再真实拉取一次 /api/context 使其缓存 showApiReferenceCost=true，随后桌面端切换 true -> false 并推送新快照
-        const ctxWhenOn = await sandbox.__test50pb.fetchContextPanelData();
-        assert.equal(ctxWhenOn.showApiReferenceCost, true);
+        // 桌面端切换开关 true -> false（不重新请求 /api/context，仅接收新 /api/snapshot）：已缓存的旧 ctxRes 不得覆盖新快照偏好
         isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: false } });
         const snapCostOff = await invokeRemoteApi('/api/snapshot');
         assert.equal(snapCostOff.showApiReferenceCost, false, '服务端新快照应立即反映桌面关闭的 showApiReferenceCost=false');
         sandbox.__test50pb.renderSnapshot(snapCostOff);
-        assert.ok(!byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '即使曾缓存 /api/context(true)，桌面关闭后新快照也必须立即隐藏上下文抽屉 $ 金额');
-        assert.ok(!byId['usage-drawer'].innerHTML.includes('API 参考等值'), '关闭参考费用后用量抽屉也必须立即隐藏 API 参考等值卡片');
+        assert.ok(!byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '即使曾缓存旧 /api/context(true)，新快照关闭后上下文抽屉也必须立即隐藏 $ 金额');
+        assert.ok(!byId['usage-drawer'].innerHTML.includes('API 参考等值'), '关闭参考费用后用量抽屉应同步隐藏 API 参考等值卡片');
+
+        // 再真实拉取一次 /api/context 使其缓存 showApiReferenceCost=false，随后桌面端切换 false -> true 并推送新快照
+        const ctxWhenOff = await sandbox.__test50pb.fetchContextPanelData();
+        assert.equal(ctxWhenOff.showApiReferenceCost, false);
+        isolatedCollector.savePluginSettings({ uiPreferences: { showApiReferenceCost: true } });
+        const snapCostOn = await invokeRemoteApi('/api/snapshot');
+        assert.equal(snapCostOn.showApiReferenceCost, true, '服务端新快照应立即反映桌面开启的 showApiReferenceCost=true');
+        sandbox.__test50pb.renderSnapshot(snapCostOn);
+        assert.ok(byId['context-drawer'].innerHTML.includes('会话累计 $1.45'), '即使曾缓存 /api/context(false)，桌面开启后新快照也必须立即显示上下文抽屉 $ 金额');
+        assert.ok(byId['usage-drawer'].innerHTML.includes('API 参考等值'), '开启参考费用后用量抽屉也必须立即显示 API 参考等值卡片');
 
         // 连接异常时 #sub-meta 自动恢复显示提示
         sandbox.__test50pb.renderSnapshot({ ok: false, error: '连接中断' });
@@ -35283,7 +35308,8 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       assert.equal(iframeEl.getAttribute('sandbox'), 'allow-scripts', 'iframe sandbox 必须严格等于 allow-scripts（禁止同源权限）');
       assert.equal(iframeEl.getAttribute('referrerpolicy'), 'no-referrer', 'iframe 必须设置 referrerpolicy="no-referrer"');
       assert.equal(iframeEl.getAttribute('data-url-scrubbed'), '1', 'URL 口令已净化时应标记 data-url-scrubbed=1');
-      assert.match(iframeEl.getAttribute('srcdoc') || '', /<base href="\/">/, 'srcdoc 应注入兼容 CSP base-uri self 的 <base href="/"> 并清除未受信 base 标签');
+      assert.match(iframeEl.getAttribute('srcdoc') || '', /<meta http-equiv="Content-Security-Policy" content="[^"]*connect-src 'none'[^"]*base-uri 'none'/i, 'srcdoc 应注入严格内层 CSP 封堵外连与 base');
+      assert.doesNotMatch(iframeEl.getAttribute('srcdoc') || '', /<base\b/i, 'srcdoc 应清除未受信 base 标签且不再注入会被外层 base-uri none 拦截的 <base>');
       assert.ok((iframeEl.getAttribute('srcdoc') || '').includes('Interactive Demo'), 'iframe srcdoc 应承载目标 HTML 内容');
 
       // 切换到源码再点击「↻ 刷新」重挂载验证
@@ -35296,16 +35322,18 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
       iframeEl = fvBody.querySelector('iframe');
       assert.ok(iframeEl && iframeEl.getAttribute('sandbox') === 'allow-scripts');
 
-      // SVG 沙盒预览验证
+      // SVG 沙盒预览验证（严格 sandbox="" 禁止执行脚本）
       await deskEnv.winObj.__fvWorkbenchHooks.openFilePreviewModal(svgFile, 0);
       const svgFrame = fvBody.querySelector('iframe');
       assert.ok(svgFrame, '打开 .svg 文件应挂载强隔离沙盒 iframe');
-      assert.equal(svgFrame.getAttribute('sandbox'), 'allow-scripts');
+      assert.equal(svgFrame.getAttribute('sandbox'), '', 'SVG 沙盒 iframe 必须严格 sandbox="" 禁用脚本');
+      assert.match(svgFrame.getAttribute('srcdoc') || '', /script-src 'none'/i);
       assert.ok((svgFrame.getAttribute('srcdoc') || '').includes('<svg'));
 
-      // 桌面收起持久化校验
+      // 桌面收起持久化校验（收起时必须销毁后台沙盒 iframe）
       closeBtn.click();
       assert.equal(bd.hidden, true, '点击「⇥ 收起」应收起右侧预览边栏');
+      assert.equal(fvBody.querySelector('iframe'), null, '关闭/收起预览后必须销毁沙盒 iframe');
       assert.equal(deskEnv.storage.get('ag_remote_fv_open_v1'), '0', '收起状态应持久化至 localStorage');
     } finally {
       deskEnv.cleanup();
@@ -35553,7 +35581,9 @@ test('需求 #30: 远程工作台常驻右侧预览边栏、多目录切换、�
           await Promise.race([exitWait, new Promise((r) => setTimeout(r, 500))]);
         }
         await new Promise((resolve) => server.close(resolve));
-        fs.rmSync(chromeUserDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
+        try {
+          fs.rmSync(chromeUserDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 80 });
+        } catch {}
       }
     }
   } finally {
@@ -36284,11 +36314,15 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
       uiEnv.sandbox.fetch = uiEnv.win.fetch;
 
       vm.runInNewContext(scriptMatch[1], uiEnv.sandbox);
-      await new Promise((r) => rawSetTimeout(r, 60));
+      const convList = uiEnv.doc.getElementById('conv-list');
+      let editBtns = [];
+      for (let w = 0; w < 40; w++) {
+        editBtns = convList.querySelectorAll('.proj-edit-btn');
+        if (editBtns.length >= 2) break;
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
 
       // 6a) 侧边栏真实项目分组头部渲染编辑入口按钮，点击打开编辑弹窗并回显 2 个已绑定目录
-      const convList = uiEnv.doc.getElementById('conv-list');
-      const editBtns = convList.querySelectorAll('.proj-edit-btn');
       assert.ok(editBtns.length >= 2, '每个真实项目行均应提供编辑项目设置按钮');
       const targetEditBtn = editBtns.find((b) => b.getAttribute('data-edit-proj') === newPid);
       assert.ok(targetEditBtn);
@@ -36654,10 +36688,13 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
       };
 
       vm.runInNewContext(scriptMatch[1], uiPartialEnv.sandbox);
-      await new Promise((r) => rawSetTimeout(r, 60));
-
       const partialConvList = uiPartialEnv.doc.getElementById('conv-list');
-      const partialEditBtn = partialConvList.querySelectorAll('.proj-edit-btn').find((b) => b.getAttribute('data-edit-proj') === customBranchPid);
+      let partialEditBtn = null;
+      for (let w = 0; w < 40; w++) {
+        partialEditBtn = partialConvList.querySelectorAll('.proj-edit-btn').find((b) => b.getAttribute('data-edit-proj') === customBranchPid) || null;
+        if (partialEditBtn) break;
+        await new Promise((r) => rawSetTimeout(r, 20));
+      }
       assert.ok(partialEditBtn, '仅含 path 的项目仍应渲染编辑入口');
 
       // 10a) 详情接口失败：保存按钮必须禁用、明确显示错误提示，点击提交绝不触发 /api/projects/update 误删第 2 目录
@@ -36812,11 +36849,15 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
         freshEnv.sandbox.URLSearchParams = URLSearchParams;
         freshEnv.win.fetch = freshEnv.sandbox.fetch = (u, init) => fetch(String(u).startsWith('http') ? String(u) : `${baseUrl}${u}`, init);
         vm.runInNewContext(scriptMatch[1], freshEnv.sandbox);
-        await new Promise((r) => rawSetTimeout(r, 60));
 
         failLsReadForStalePid = true;
         const freshConvList = freshEnv.doc.getElementById('conv-list');
-        const staleEditBtn = freshConvList.querySelectorAll('.proj-edit-btn').find((b) => b.getAttribute('data-edit-proj') === staleDiskPid);
+        let staleEditBtn = null;
+        for (let w = 0; w < 40; w++) {
+          staleEditBtn = freshConvList.querySelectorAll('.proj-edit-btn').find((b) => b.getAttribute('data-edit-proj') === staleDiskPid) || null;
+          if (staleEditBtn) break;
+          await new Promise((r) => rawSetTimeout(r, 20));
+        }
         assert.ok(staleEditBtn);
         await freshConvList.dispatchEvent({ type: 'click', target: staleEditBtn, stopPropagation() {} });
         await new Promise((r) => rawSetTimeout(r, 60));
@@ -36965,6 +37006,55 @@ test('需求 #41/#42: 远程多目录新建项目与编辑项目设置（ReadPro
   } finally {
     delete require.cache[require.resolve('../mobile-remote')];
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('PR15 加固回归: Markdown 防 ReDoS/二次展开、宿主机 options 传递、footer 极窄保底与 heatmap 费用门控', async () => {
+  const mr = require('../mobile-remote');
+  // 1. ReDoS 线性性能 & \u0000 编码注入防护
+  const t0 = Date.now();
+  const nastyInput = '[x](' + 'a'.repeat(120) + '!';
+  mr.renderSafeMarkdownToHtml(nastyInput);
+  const elapsedMs = Date.now() - t0;
+  assert.ok(elapsedMs < 80, `未闭合 Markdown 链接正则必须在 <80ms 内线性完成 (实测 ${elapsedMs}ms)`);
+  const nulHtml = mr.renderSafeMarkdownToHtml('[t](file:///%00IC0%00/etc/passwd) and `safe`');
+  assert.ok(!nulHtml.includes('data-file-path'), '含 %00 NUL 编码的 file:// URI 不得生成可点击文件链接');
+  assert.ok(!nulHtml.includes('<code>safe</code>"'), '内联代码不得展开进属性值内部');
+  assert.ok(!mr.renderSafeMarkdownToHtml('[bad](file:///tmp/%00evil)').includes('data-file-path'), '含 %00 NUL 字节的 file:// URI 不得生成可点击文件链接');
+
+  // 2. 前端 renderInlineClientMarkdown 线性耗时 & opt-* 二次升级合并
+  const html = mr.buildMobileAppHtml({ deviceName: 'Mac' });
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const clientJs = scripts[scripts.length - 1];
+  assert.ok(clientJs.includes('isOptimisticQueueId') || mr.mergeUniqueQueuedLists, '排队合并应完整升级 opt-* 乐观 ID');
+  const mergedUpgraded = mr.mergeUniqueQueuedLists(
+    [{ id: 'opt-local-1', clientMessageId: 'cid-upg-1', text: '升级测试', source: 'dom', domIndex: 0 }],
+    [{ messageId: 'srv-uuid-1', clientMessageId: 'cid-upg-1', text: '升级测试', source: 'agent_state', stepIndex: -1 }],
+    true
+  );
+  assert.equal(mergedUpgraded.length, 1);
+  assert.equal(mergedUpgraded[0].messageId, 'srv-uuid-1');
+  assert.equal(mergedUpgraded[0].id, 'srv-uuid-1', 'opt-* 升级后 id 不得残留 opt-* 前缀');
+
+  // 3. footer + ring-only 极窄顶栏保留设置按钮 & heatmap.js 5 处 Popover 门控
+  const cssSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'styles.css'), 'utf8');
+  assert.match(cssSrc, /:host\(\[data-layout="ring-only"\]\[data-hide-context-ring="true"\]\)\s*#badge-settings/);
+  const heatSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'heatmap.js'), 'utf8');
+  const showCostCalls = (heatSrc.match(/\bshouldShowApiRefCost\(\)/g) || []).length;
+  assert.equal(showCostCalls, 6, 'heatmap.js 应包含 1 处 shouldShowApiRefCost() 定义与全部 5 处视图 Popover 门控调用');
+
+  // 4. 宿主机 options.homeDir 敏感目录校验
+  const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-home-priv-'));
+  try {
+    const customLib = path.join(customHome, 'Library', 'Secrets');
+    fs.mkdirSync(customLib, { recursive: true });
+    assert.throws(
+      () => mr.assertSafeHostDirectoryPath(customLib, { homeDir: customHome, forceProd: true }),
+      (e) => e.status === 403,
+      '自定义 homeDir 下的 Library 目录也必须被 assertSafeHostDirectoryPath 拦截'
+    );
+  } finally {
+    fs.rmSync(customHome, { recursive: true, force: true });
   }
 });
 test('静态门禁：公开仓库源码、测试与文档严禁硬编码真实本机用户路径或个人社交短链', () => {
